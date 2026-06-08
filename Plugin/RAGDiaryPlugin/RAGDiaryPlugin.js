@@ -16,6 +16,7 @@ const ContextVectorManager = require('./ContextVectorManager.js');
 const FoldingStore = require('./FoldingStore.js'); // 🌟 V2折叠：SQLite 迷你数据库
 const CacheManager = require('./CacheManager.js'); // 🌟 新增：统一缓存管理器
 const TDBPlaceholderProcessor = require('./TDBPlaceholderProcessor.js'); // 🧊 冷知识库占位符适配层
+const DirectDiaryTextProcessor = require('./DirectDiaryTextProcessor.js'); // 📝 纯文本日记占位符处理器（{{...日记本...}}）
 const { chunkText } = require('../../TextChunker.js');
 const { getEmbeddingsBatch } = require('../../EmbeddingUtils.js');
 const {
@@ -78,6 +79,13 @@ class RAGDiaryPlugin {
 
         // 🧊 冷知识库占位符适配层（[[xx知识库]] / 《《xx知识库》》）
         this.tdbProcessor = new TDBPlaceholderProcessor(this);
+
+        // 📝 纯文本日记占位符处理器（{{xx日记本}} / {{xx日记本::LastN}}）
+        // 该管线不依赖向量库、不调用 Embedding API，用于直接文本引入和后续纯文本匹配扩展。
+        this.directDiaryTextProcessor = new DirectDiaryTextProcessor({
+            dailyNoteRootPath,
+            logger: console
+        });
     }
 
     async loadConfig() {
@@ -560,35 +568,7 @@ class RAGDiaryPlugin {
     }
 
     async getDiaryContent(characterName) {
-        const characterDirPath = path.join(dailyNoteRootPath, characterName);
-        let characterDiaryContent = `[${characterName}日记本内容为空]`;
-        try {
-            const files = await fs.readdir(characterDirPath);
-            const relevantFiles = files.filter(file => {
-                const lowerCaseFile = file.toLowerCase();
-                return lowerCaseFile.endsWith('.txt') || lowerCaseFile.endsWith('.md');
-            }).sort();
-
-            if (relevantFiles.length > 0) {
-                const fileContents = await Promise.all(
-                    relevantFiles.map(async (file) => {
-                        const filePath = path.join(characterDirPath, file);
-                        try {
-                            return await fs.readFile(filePath, 'utf-8');
-                        } catch (readErr) {
-                            return `[Error reading file: ${file}]`;
-                        }
-                    })
-                );
-                characterDiaryContent = fileContents.join('\n\n---\n\n');
-            }
-        } catch (charDirError) {
-            if (charDirError.code !== 'ENOENT') {
-                console.error(`[RAGDiaryPlugin] Error reading character directory ${characterDirPath}:`, charDirError.message);
-            }
-            characterDiaryContent = `[无法读取“${characterName}”的日记本，可能不存在]`;
-        }
-        return characterDiaryContent;
+        return this.directDiaryTextProcessor.getDiaryContent(characterName);
     }
 
     /**
@@ -597,15 +577,7 @@ class RAGDiaryPlugin {
      * 仅由 <<...>> 与 {{...}} 两类全量召回入口调用。
      */
     _extractLastLimit(modifiers) {
-        if (!modifiers || typeof modifiers !== 'string') return null;
-        const lastMatch = modifiers.match(/::Last(\d*)\b/);
-        if (!lastMatch) return null;
-
-        if (!lastMatch[1]) return 10;
-
-        const limit = parseInt(lastMatch[1], 10);
-        if (!Number.isFinite(limit) || limit <= 0) return 10;
-        return limit;
+        return this.directDiaryTextProcessor.extractLastLimit(modifiers);
     }
 
     /**
@@ -613,68 +585,7 @@ class RAGDiaryPlugin {
      * 排序依据为文件系统时间：max(mtimeMs, birthtimeMs, ctimeMs)，不读取文件名和内容做判定。
      */
     async getLastDiaryContent(characterName, limit = 10) {
-        const characterDirPath = path.join(dailyNoteRootPath, characterName);
-        const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
-
-        try {
-            const files = await fs.readdir(characterDirPath);
-            const diaryFiles = files.filter(file => {
-                const lowerCaseFile = file.toLowerCase();
-                return lowerCaseFile.endsWith('.txt') || lowerCaseFile.endsWith('.md');
-            });
-
-            if (diaryFiles.length === 0) {
-                return `[${characterName}日记本内容为空]`;
-            }
-
-            const fileMetas = await Promise.all(
-                diaryFiles.map(async (file) => {
-                    const filePath = path.join(characterDirPath, file);
-                    try {
-                        const stat = await fs.stat(filePath);
-                        return {
-                            file,
-                            filePath,
-                            timeMs: Math.max(stat.mtimeMs || 0, stat.birthtimeMs || 0, stat.ctimeMs || 0)
-                        };
-                    } catch (statErr) {
-                        console.warn(`[RAGDiaryPlugin] ::Last stat failed for ${filePath}:`, statErr.message);
-                        return null;
-                    }
-                })
-            );
-
-            const sortedFileMetas = fileMetas
-                .filter(Boolean)
-                .sort((a, b) => b.timeMs - a.timeMs);
-
-            if (safeLimit > sortedFileMetas.length) {
-                console.warn(`[RAGDiaryPlugin] ::Last${safeLimit}: "${characterName}" 仅有 ${sortedFileMetas.length} 个日记文件，将返回全部可用文件。`);
-            }
-
-            const recentFiles = sortedFileMetas.slice(0, safeLimit);
-
-            if (recentFiles.length === 0) {
-                return `[${characterName}日记本内容为空]`;
-            }
-
-            const fileContents = await Promise.all(
-                recentFiles.map(async ({ file, filePath }) => {
-                    try {
-                        return await fs.readFile(filePath, 'utf-8');
-                    } catch (readErr) {
-                        return `[Error reading file: ${file}]`;
-                    }
-                })
-            );
-
-            return fileContents.join('\n\n---\n\n');
-        } catch (charDirError) {
-            if (charDirError.code !== 'ENOENT') {
-                console.error(`[RAGDiaryPlugin] Error reading recent diary files in ${characterDirPath}:`, charDirError.message);
-            }
-            return `[无法读取“${characterName}”的日记本，可能不存在]`;
-        }
+        return this.directDiaryTextProcessor.getLastDiaryContent(characterName, limit);
     }
 
     _sigmoid(x) {
@@ -1263,6 +1174,26 @@ class RAGDiaryPlugin {
     // processMessages 是 messagePreprocessor 的标准接口
     async processMessages(messages, pluginConfig) {
         try {
+            // 📝 纯文本快速路径：
+            // 当虚拟 system 消息仅包含 {{xx日记本}} / {{xx日记本::LastN}} / {{xx日记本::BM25}} 直接引入占位符时，
+            // 直接由底层纯文本处理器接管，避免进入上下文向量更新、查询向量化、EPA/TagMemo 等语义管线。
+            // ::BM25 的查询输入严格使用“最新真实 user 发言 + sanitizeForEmbedding 净化后”的文本，
+            // 与主 RAG 链路中的 userContent 口径保持一致，不拼接历史 user 消息。
+            const directLatestUserMessage = findLastRealUserMessage(messages, {
+                sanitize: this.sanitizeForEmbedding.bind(this)
+            });
+            const directTextResult = await this.directDiaryTextProcessor.tryProcessMessages(messages, {
+                extractTextFromContent: this._extractTextFromContent.bind(this),
+                replaceTextInContent: this._replaceTextInContent.bind(this),
+                isBetaSystemUser: isBetaSystemUserText,
+                sanitizedUserInput: directLatestUserMessage.sanitizedContent || '',
+                evaluateRoleValve: this._evaluateRoleValve.bind(this),
+                pushVcpInfo: this.pushVcpInfo
+            });
+            if (directTextResult.processed) {
+                return directTextResult.messages;
+            }
+
             // ✅ 新增：更新上下文向量映射（为后续衰减聚合做准备）
             // 🌟 修复：传递 allowApi 配置，控制是否允许向量化历史消息
             await this.contextVectorManager.updateContext(messages, { allowApi: this.contextVectorAllowApi });
@@ -1874,11 +1805,7 @@ class RAGDiaryPlugin {
                     const diaryContent = lastLimit
                         ? await this.getLastDiaryContent(dbName, lastLimit)
                         : await this.getDiaryContent(dbName);
-                    const safeContent = diaryContent
-                        .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
-                        .replace(/<<.*日记本>>/g, '[循环占位符已移除]')
-                        .replace(/《《.*日记本.*》》/g, '[循环占位符已移除]')
-                        .replace(/\{\{.*日记本\}\}/g, '[循环占位符已移除]');
+                    const safeContent = this.directDiaryTextProcessor.sanitizeNestedPlaceholders(diaryContent);
 
                     if (this.pushVcpInfo) {
                         this.pushVcpInfo({
@@ -2207,63 +2134,22 @@ class RAGDiaryPlugin {
         }
 
         // --- 5. 处理 {{...日记本}} 直接引入模式 ---
+        // 注意：仅 {{...}} 的场景已在 processMessages 顶部由 DirectDiaryTextProcessor 快速路径接管，
+        // 不会进入向量化流程。这里保留混合占位符场景下的兼容处理（例如同一 system 同时含 [[...]] 与 {{...}}）。
         for (const match of directDiariesDeclarations) {
             const placeholder = match[0];
-            const dbName = match[1];
+            const dbName = (match[1] || '').trim();
             const modifiers = match[2] || '';
 
-            console.log(`[RAGDiaryPlugin] Processing {{...}} placeholder: "${placeholder}", dbName: "${dbName}", modifiers: "${modifiers}"`);
-
-            // 🌟 V4.2: RoleValve 检查 - 必须在所有其他检查之前执行
-            const roleValveResult = this._evaluateRoleValve(modifiers, messages);
-            console.log(`[RAGDiaryPlugin] RoleValve result for {{${dbName}}}: ${roleValveResult}`);
-
-            if (!roleValveResult) {
-                console.log(`[RAGDiaryPlugin] RoleValve blocked {{${dbName}}} retrieval. Adding empty content to processing queue.`);
-                // 关键修复：将空内容加入处理队列，确保占位符被替换
-                processingPromises.push(Promise.resolve({ placeholder, content: '' }));
-                console.log(`[RAGDiaryPlugin] processingPromises length after adding: ${processingPromises.length}`);
-                continue;
-            }
-
-            if (processedDiaries.has(dbName)) {
-                console.warn(`[RAGDiaryPlugin] Detected circular reference to "${dbName}" in {{...}}. Skipping.`);
-                processingPromises.push(Promise.resolve({ placeholder, content: `[检测到循环引用，已跳过"${dbName}日记本"的解析]` }));
-                continue;
-            }
-            // 标记以防其他模式循环
-            processedDiaries.add(dbName);
-
-            const lastLimit = this._extractLastLimit(modifiers);
-
-            // 直接获取内容，跳过阈值判断
             processingPromises.push((async () => {
-                try {
-                    const diaryContent = lastLimit
-                        ? await this.getLastDiaryContent(dbName, lastLimit)
-                        : await this.getDiaryContent(dbName);
-                    const safeContent = diaryContent
-                        .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
-                        .replace(/<<.*日记本.*>>/g, '[循环占位符已移除]')
-                        .replace(/《《.*日记本.*》》/g, '[循环占位符已移除]')
-                        .replace(/\{\{.*日记本.*\}\}/g, '[循环占位符已移除]');
-
-                    if (this.pushVcpInfo) {
-                        this.pushVcpInfo({
-                            type: 'DailyNote',
-                            action: 'DirectRecall',
-                            dbName: dbName,
-                            message: lastLimit
-                                ? `[RAGDiary] 已直接引入日记本：${dbName}，按文件时间召回最新 ${lastLimit} 条记录`
-                                : `[RAGDiary] 已直接引入日记本：${dbName}，共 1 条全量记录`
-                        });
-                    }
-
-                    return { placeholder, content: safeContent };
-                } catch (error) {
-                    console.error(`[RAGDiaryPlugin] 处理 {{...日记本}} 直接引入模式出错 (${dbName}):`, error);
-                    return { placeholder, content: `[处理失败: ${error.message}]` };
-                }
+                const content = await this.directDiaryTextProcessor.processContent(placeholder, {
+                    processedDiaries,
+                    messages,
+                    sanitizedUserInput: userContent,
+                    evaluateRoleValve: this._evaluateRoleValve.bind(this),
+                    pushVcpInfo: this.pushVcpInfo
+                });
+                return { placeholder, content };
             })());
         }
 
