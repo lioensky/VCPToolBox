@@ -2923,6 +2923,19 @@ class OneRingPreprocessor {
         };
     }
 
+    _hasOneRingActivationSignal(messages) {
+        if (!Array.isArray(messages)) return false;
+        if (messages.__oneRingMeta) return true;
+
+        for (const msg of messages) {
+            if (!msg || msg.role !== 'system') break;
+            const text = fuzzy.extractText(msg.content);
+            if (getLastTriggerMatch(text) || getLastNoticeMeta(text)) return true;
+        }
+
+        return false;
+    }
+
     extractMetaFromMessages(messages) {
         return this._extractMetaFromMessages(messages);
     }
@@ -2936,6 +2949,12 @@ class OneRingPreprocessor {
      */
     async recordAIResponseFromMessages(messages, aiText) {
         const meta = this._extractMetaFromMessages(messages);
+        if (!meta && !this._hasOneRingActivationSignal(messages)) {
+            if (debugMode) {
+                console.log('[OneRing] post回复跳过入库：未检测到OneRing触发信息。');
+            }
+            return;
+        }
         if (!meta || !meta.agentName || typeof aiText !== 'string') {
             console.warn(`[OneRing] post回复未写入OneRing：hook已收到但元信息无效或回复不是字符串 meta=${meta ? JSON.stringify(meta) : 'null'} aiTextType=${typeof aiText}`);
             return;

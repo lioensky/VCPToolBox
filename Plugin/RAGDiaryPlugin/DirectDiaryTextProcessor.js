@@ -63,7 +63,7 @@ class BM25Ranker {
  * 纯文本日记占位符处理器。
  *
  * 目标：
- * - 专门处理 {{xx日记本}} / {{xx日记本::LastN}} / {{xx日记本::BM25}} / {{xx日记本::BM25+}} 直接文本引入。
+ * - 专门处理 {{xx日记本}} / {{xx日记本::LastN}} / {{xx日记本::RandomN}} / {{xx日记本::BM25}} / {{xx日记本::BM25+}} 直接文本引入。
  * - 不依赖向量库、不调用 Embedding API、不参与 RAG 查询向量构建。
  * - 支持用净化后的用户输入对候选日记底部 Tag 行或正文做 BM25 匹配。
  */
@@ -262,6 +262,22 @@ class DirectDiaryTextProcessor {
         return limit;
     }
 
+    /**
+     * 解析随机召回专用的 ::Random 后缀。
+     * 支持 ::Random（默认1）、::Random5、::Random10。
+     */
+    extractRandomLimit(modifiers) {
+        if (!modifiers || typeof modifiers !== 'string') return null;
+        const randomMatch = modifiers.match(/::Random(\d*)\b/i);
+        if (!randomMatch) return null;
+
+        if (!randomMatch[1]) return 1;
+
+        const limit = parseInt(randomMatch[1], 10);
+        if (!Number.isFinite(limit) || limit <= 0) return 1;
+        return limit;
+    }
+
     getBM25Mode(modifiers) {
         if (typeof modifiers !== 'string') return null;
         if (/::BM25\+/i.test(modifiers)) return 'body';
@@ -430,6 +446,43 @@ class DirectDiaryTextProcessor {
         } catch (charDirError) {
             if (charDirError.code !== 'ENOENT') {
                 this.logger.error(`[DirectDiaryTextProcessor] Error reading recent diary files in ${characterDirPath}:`, charDirError.message);
+            }
+            return `[无法读取“${characterName}”的日记本，可能不存在]`;
+        }
+    }
+
+    async getRandomDiaryContent(characterName, limit = 1) {
+        const characterDirPath = path.join(this.dailyNoteRootPath, characterName);
+        const safeLimit = Math.max(1, parseInt(limit, 10) || 1);
+
+        try {
+            const files = await fs.readdir(characterDirPath);
+            const diaryFiles = files.filter(file => {
+                const lowerCaseFile = file.toLowerCase();
+                return lowerCaseFile.endsWith('.txt') || lowerCaseFile.endsWith('.md');
+            });
+
+            if (diaryFiles.length === 0) {
+                return `[${characterName}日记本内容为空]`;
+            }
+
+            if (safeLimit > diaryFiles.length) {
+                this.logger.warn(`[DirectDiaryTextProcessor] ::Random${safeLimit}: "${characterName}" 仅有 ${diaryFiles.length} 个日记文件，将返回全部可用文件。`);
+            }
+
+            const shuffledFiles = diaryFiles
+                .map(file => ({ file, random: Math.random() }))
+                .sort((a, b) => a.random - b.random)
+                .slice(0, safeLimit)
+                .map(({ file }) => ({
+                    file,
+                    filePath: path.join(characterDirPath, file)
+                }));
+
+            return await this.readDiaryFileMetas(shuffledFiles);
+        } catch (charDirError) {
+            if (charDirError.code !== 'ENOENT') {
+                this.logger.error(`[DirectDiaryTextProcessor] Error reading random diary files in ${characterDirPath}:`, charDirError.message);
             }
             return `[无法读取“${characterName}”的日记本，可能不存在]`;
         }
@@ -617,8 +670,10 @@ class DirectDiaryTextProcessor {
 
             try {
                 const requestedLastLimit = this.extractLastLimit(modifiers);
+                const requestedRandomLimit = this.extractRandomLimit(modifiers);
                 const bm25Mode = this.getBM25Mode(modifiers);
                 const useBM25 = bm25Mode !== null;
+                const useRandom = requestedRandomLimit !== null && !useBM25;
                 const effectiveLastLimit = requestedLastLimit || (useBM25 ? 10 : null);
                 const sanitizedUserInput = this.normalizeBM25QueryInput(
                     typeof options.sanitizedUserInput === 'string' ? options.sanitizedUserInput : ''
@@ -630,6 +685,8 @@ class DirectDiaryTextProcessor {
                 if (useBM25) {
                     bm25Result = await this.getBM25DiaryContent(dbName, sanitizedUserInput, effectiveLastLimit || 10, bm25Mode);
                     diaryContent = bm25Result.content;
+                } else if (useRandom) {
+                    diaryContent = await this.getRandomDiaryContent(dbName, requestedRandomLimit);
                 } else {
                     diaryContent = effectiveLastLimit
                         ? await this.getLastDiaryContent(dbName, effectiveLastLimit)
@@ -646,6 +703,8 @@ class DirectDiaryTextProcessor {
                     } else if (useBM25) {
                         const bm25Label = bm25Mode === 'body' ? '正文 BM25+' : 'Tag 行 BM25';
                         message = `[RAGDiary] ${bm25Label} 未命中，已兜底引入日记本：${dbName}，按文件时间召回最新 ${effectiveLastLimit} 条记录`;
+                    } else if (useRandom) {
+                        message = `[RAGDiary] 已随机引入日记本：${dbName}，随机召回 ${requestedRandomLimit} 条记录`;
                     } else if (effectiveLastLimit) {
                         message = `[RAGDiary] 已直接引入日记本：${dbName}，按文件时间召回最新 ${effectiveLastLimit} 条记录`;
                     } else {
@@ -654,7 +713,7 @@ class DirectDiaryTextProcessor {
 
                     pushVcpInfo({
                         type: 'DailyNote',
-                        action: useBM25 ? (bm25Mode === 'body' ? 'BM25BodyRecall' : 'BM25TagRecall') : 'DirectRecall',
+                        action: useBM25 ? (bm25Mode === 'body' ? 'BM25BodyRecall' : 'BM25TagRecall') : (useRandom ? 'RandomRecall' : 'DirectRecall'),
                         dbName,
                         message
                     });
