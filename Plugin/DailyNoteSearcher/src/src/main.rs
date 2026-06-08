@@ -747,7 +747,7 @@ fn search_bm25(config: &AppConfig, args: &InputArgs) -> Result<Output, io::Error
         .clone()
         .unwrap_or_else(|| tokenize_for_bm25(&args.query, &blacklist));
     let limit = args.bm25_limit.or(args.max_results).unwrap_or(10).max(1);
-    let mode = args.bm25_search_mode.as_deref().unwrap_or("tag");
+    let mode = args.bm25_search_mode.as_deref().unwrap_or("body");
 
     if query_tokens.is_empty() {
         return Ok(Output {
