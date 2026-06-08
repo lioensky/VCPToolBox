@@ -32,6 +32,32 @@ function getLastOnlyTriggerMatch(systemText) {
     return matches[matches.length - 1];
 }
 
+function getLastNoticeMeta(systemText) {
+    if (typeof systemText !== 'string') return null;
+
+    // 完整通知格式：
+    // [OneRing系统已启动，当前Agent小吉，当前客户端VCPChat，所有上下文OneRing信息来源标记由系统生成无需你自动输出。]
+    // 或：
+    // [OneRing系统已启动，当前Agent小吉，当前客户端VCPChat，当前模式Only，所有上下文OneRing信息来源标记由系统生成无需你自动输出。]
+    //
+    // final hook 兜底时可能只拿到被其他处理器截断/改写后的顶部占位符替换文本，例如：
+    // [OneRing系统已启动，当前Agent小吉，当前客户端VCPChat，
+    // 因此这里只解析 agent/frontend/mode 前缀，不强依赖完整尾句。
+    const re = /\[OneRing系统已启动，当前Agent([^，\]\r\n]+)，当前客户端([^，\]\r\n]+)(?:，当前模式([^，\]\r\n]+))?/g;
+    let m;
+    let last = null;
+    while ((m = re.exec(systemText)) !== null) {
+        last = m;
+    }
+    if (!last) return null;
+
+    return {
+        agentName: last[1].trim(),
+        frontendSource: last[2].trim(),
+        mode: last[3] ? last[3].trim() : ''
+    };
+}
+
 // ─── 顶层 system 触发块选择 ───────────────────────────────────────────────────
 function getTopLevelOneRingSystemMessage(messages) {
     if (!Array.isArray(messages)) return null;
@@ -2861,32 +2887,25 @@ class OneRingPreprocessor {
             const attachedMeta = messages.__oneRingMeta || null;
     
             // 触发符可能已被 processMessages 替换为通知文字；需同时检测两种形态。
-            // getTopLevelOneRingSystemMessage 仅匹配含原始触发符的 system 消息，
-            // 已处理后的消息需直接扫描开头连续 system 区间。
+            // final hook 可能拿到数组元信息丢失后的消息视图，甚至拿到只保留顶部通知前缀的文本；
+            // 因此扫描开头连续 system 前缀中的最后一个 OneRing 触发串或启动通知作为兜底。
             let systemText = '';
-            const systemMsg = getTopLevelOneRingSystemMessage(messages);
-            if (systemMsg) {
-                systemText = fuzzy.extractText(systemMsg.content);
-            } else {
-                // 已被替换为通知文字：扫描开头连续 system 前缀
-                for (const msg of messages) {
-                    if (!msg || msg.role !== 'system') break;
-                    const t = fuzzy.extractText(msg.content);
-                    if (/\[OneRing系统已启动/.test(t)) {
-                        systemText = t;
-                        break;
-                    }
+            for (const msg of messages) {
+                if (!msg || msg.role !== 'system') break;
+                const t = fuzzy.extractText(msg.content);
+                if (getLastTriggerMatch(t) || getLastNoticeMeta(t)) {
+                    systemText = t;
                 }
             }
             const triggerMatch = getLastTriggerMatch(systemText);
-            const noticeMatch = /\[OneRing系统已启动，当前Agent([\s\S]*?)，当前客户端([\s\S]*?)(?:，当前模式[\s\S]*?)?，所有上下文OneRing信息来源标记由系统生成无需你自动输出。\]/.exec(systemText);
+            const noticeMeta = getLastNoticeMeta(systemText);
 
         // final hook 有时拿到的是预处理前/数组元信息丢失后的消息视图；
-        // 此时必须允许回读顶层 OneRing 触发串，否则 agentName/frontendSource 会缺失，
+        // 此时必须允许回读顶层 OneRing 触发串或已替换的启动通知，否则 agentName/frontendSource 会缺失，
         // AI 回复可能被写入空 agent 的幽灵库（例如 ".db"）。
-        // 边界仍由 getTopLevelOneRingSystemMessage() 约束：只接受开头连续 system 前缀中的触发块。
-        const agentName = attachedMeta?.agentName || (triggerMatch ? triggerMatch[1].trim() : null) || (noticeMatch ? noticeMatch[1].trim() : null);
-        const frontendSourceFromTrigger = attachedMeta?.frontendSource || (triggerMatch ? triggerMatch[2].trim() : null) || (noticeMatch ? noticeMatch[2].trim() : null);
+        // 边界仍限制为开头连续 system 前缀，避免普通上下文/用户正文中的 OneRing 文本误触发。
+        const agentName = attachedMeta?.agentName || (triggerMatch ? triggerMatch[1].trim() : null) || noticeMeta?.agentName || null;
+        const frontendSourceFromTrigger = attachedMeta?.frontendSource || (triggerMatch ? triggerMatch[2].trim() : null) || noticeMeta?.frontendSource || null;
         if (!agentName || !frontendSourceFromTrigger) return null;
 
         const tailPostBatch = this._findTailPostBatch(messages, config.ONERING_USER_NAME || 'Ryan', agentName);
