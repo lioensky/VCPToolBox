@@ -525,17 +525,21 @@ function formatWeatherInfo(
     fullStr += '太阳角度信息获取失败。\n';
   }
 
+  const readableText = fullStr.trim();
   const outputObj = {
     vcp_dynamic_fold: true,
     plugin_description: "天气预报插件，提供各个城市及地区的实时天气、未来数天预报、空气质量预警与生活日出日落太阳位置",
     fold_blocks: [
-      { threshold: 0.5, content: fullStr.trim() },
+      { threshold: 0.5, content: readableText },
       { threshold: 0.35, content: shortStr.trim() },
       { threshold: 0.0, content: currentStr.trim() }
     ]
   };
 
-  return JSON.stringify(outputObj, null, 2);
+  return {
+    dynamicFoldText: JSON.stringify(outputObj, null, 2),
+    readableText,
+  };
 }
 
 // --- End QWeather API Functions ---
@@ -678,6 +682,8 @@ async function fetchAndCacheWeather() {
       hourlyForecastCount,
       forecastDays,
     );
+    const outputWeather = formattedWeather.dynamicFoldText || formattedWeather;
+    const readableWeather = formattedWeather.readableText || formattedWeather;
 
     // --- New JSON Cache Logic ---
     const rawWeatherData = {
@@ -698,13 +704,13 @@ async function fetchAndCacheWeather() {
     // --- End New JSON Cache Logic ---
 
     try {
-      await fs.writeFile(CACHE_FILE_PATH, formattedWeather, 'utf-8');
+      await fs.writeFile(CACHE_FILE_PATH, readableWeather, 'utf-8');
       console.error(`[WeatherReporter] Successfully fetched, formatted, and cached new weather info.`);
-      return { success: true, data: formattedWeather, error: null };
+      return { success: true, data: outputWeather, error: null };
     } catch (writeError) {
       lastError = writeError;
       console.error(`[WeatherReporter] Error writing to cache file: ${writeError.message}`);
-      return { success: false, data: formattedWeather, error: lastError }; // Return data even if cache write fails
+      return { success: false, data: outputWeather, error: lastError }; // Return data even if cache write fails
     }
   } else {
     // If all fetches failed
