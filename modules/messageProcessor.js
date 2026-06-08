@@ -255,6 +255,60 @@ async function resolveAllVariables(text, model, role, context, processingStack =
     return processedText;
 }
 
+const STATIC_FOLD_MODE_REGEX = /\[\[VCPStaticFold::(Auto|Lite|Full)\]\]/gi;
+
+function extractStaticFoldMode(text) {
+    const rawText = String(text || '');
+    let mode = 'auto';
+    let match;
+
+    while ((match = STATIC_FOLD_MODE_REGEX.exec(rawText)) !== null) {
+        mode = String(match[1] || 'Auto').toLowerCase();
+    }
+
+    STATIC_FOLD_MODE_REGEX.lastIndex = 0;
+    return mode;
+}
+
+function removeStaticFoldModePlaceholders(text) {
+    STATIC_FOLD_MODE_REGEX.lastIndex = 0;
+    return String(text || '').replace(STATIC_FOLD_MODE_REGEX, '').trim();
+}
+
+function getNormalizedFoldBlocks(foldObj) {
+    if (!foldObj || !Array.isArray(foldObj.fold_blocks)) return [];
+    return foldObj.fold_blocks
+        .map((block, index) => ({
+            ...block,
+            _originalIndex: index,
+            threshold: Number.isFinite(Number(block?.threshold)) ? Number(block.threshold) : 0
+        }))
+        .filter(block => block && typeof block.content === 'string');
+}
+
+function resolveStaticFoldLite(foldObj) {
+    const blocks = getNormalizedFoldBlocks(foldObj);
+    if (blocks.length === 0) return '';
+
+    const sortedBlocks = [...blocks].sort((a, b) => {
+        if (a.threshold !== b.threshold) return a.threshold - b.threshold;
+        return a._originalIndex - b._originalIndex;
+    });
+
+    return sortedBlocks[0]?.content || '';
+}
+
+function resolveStaticFoldFull(foldObj) {
+    const blocks = getNormalizedFoldBlocks(foldObj);
+    if (blocks.length === 0) return '';
+
+    return blocks
+        .sort((a, b) => a._originalIndex - b._originalIndex)
+        .map(block => block.content)
+        .filter(Boolean)
+        .join('\n\n---\n\n');
+}
+
 // 🌟 新增：动态折叠协议处理器
 async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
     if (!foldObj || !foldObj.vcp_dynamic_fold || !Array.isArray(foldObj.fold_blocks) || foldObj.fold_blocks.length === 0) {
@@ -637,6 +691,9 @@ async function replaceOtherVariables(text, model, role, context) {
         if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
         processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
 
+        const staticFoldMode = extractStaticFoldMode(processedText);
+        processedText = removeStaticFoldModePlaceholders(processedText);
+
         const staticPlaceholderValues = pluginManager.getAllPlaceholderValues(); // Use the getter
         if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
             for (const [placeholder, entry] of staticPlaceholderValues.entries()) {
@@ -654,7 +711,15 @@ async function replaceOtherVariables(text, model, role, context) {
 
                 // 支持 vcp_dynamic_fold 协议
                 if (typeof valueToInject === 'object' && valueToInject !== null && valueToInject.vcp_dynamic_fold) {
-                    valueToInject = await resolveDynamicFoldProtocol(valueToInject, context, placeholder);
+                    if (staticFoldMode === 'lite') {
+                        valueToInject = resolveStaticFoldLite(valueToInject);
+                        if (DEBUG_MODE) console.log(`[StaticFold] ${placeholder} 使用 Lite 模式，跳过语义向量判定。`);
+                    } else if (staticFoldMode === 'full') {
+                        valueToInject = resolveStaticFoldFull(valueToInject);
+                        if (DEBUG_MODE) console.log(`[StaticFold] ${placeholder} 使用 Full 模式，跳过语义向量判定。`);
+                    } else {
+                        valueToInject = await resolveDynamicFoldProtocol(valueToInject, context, placeholder);
+                    }
                 }
 
                 processedText = processedText.replace(placeholderRegex, valueToInject || `[${placeholder} 信息不可用]`);
