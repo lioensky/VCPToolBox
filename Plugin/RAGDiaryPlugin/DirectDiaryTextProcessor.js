@@ -1,5 +1,6 @@
 const fs = require('fs').promises;
 const path = require('path');
+const { spawn } = require('child_process');
 
 let Jieba = null;
 let jiebaDict = null;
@@ -87,6 +88,145 @@ class DirectDiaryTextProcessor {
             this.logger.warn('[DirectDiaryTextProcessor] Jieba initialization failed, falling back to regex tokenizer:', error.message);
             this.jiebaInstance = null;
         }
+    }
+
+    getDailyNoteSearcherExecutableCandidates() {
+        const pluginDir = path.resolve(__dirname, '..', 'DailyNoteSearcher');
+        if (process.platform === 'win32') {
+            return [path.join(pluginDir, 'DailyNoteSearcher.exe')];
+        }
+
+        return [
+            path.join(pluginDir, 'DailyNoteSearcher'),
+            path.join(pluginDir, 'DailyNoteSearcher-aarch64-unknown-linux-musl')
+        ];
+    }
+
+    async resolveDailyNoteSearcherExecutable() {
+        if (this.dailyNoteSearcherExecutablePath) {
+            return this.dailyNoteSearcherExecutablePath;
+        }
+
+        for (const executablePath of this.getDailyNoteSearcherExecutableCandidates()) {
+            try {
+                await fs.access(executablePath);
+                this.dailyNoteSearcherExecutablePath = executablePath;
+                return executablePath;
+            } catch (_) {
+                // 继续尝试下一个平台候选产物。
+            }
+        }
+
+        return null;
+    }
+
+    async tryRustBM25DiaryContent(characterName, queryText, queryTokens, recentFiles, limit, mode) {
+        const executablePath = await this.resolveDailyNoteSearcherExecutable();
+        if (!executablePath) {
+            return null;
+        }
+
+        const normalizedMode = mode === 'body' ? 'body' : 'tag';
+        const payload = {
+            mode: 'bm25',
+            query: String(queryText || ''),
+            folder: characterName,
+            root_path: this.dailyNoteRootPath,
+            allowed_extensions: 'md,txt',
+            max_results: limit,
+            bm25_limit: limit,
+            bm25_search_mode: normalizedMode,
+            query_tokens: queryTokens,
+            tag_blacklist: String(process.env.TAG_BLACKLIST || '')
+        };
+
+        try {
+            const stdout = await this.runDailyNoteSearcherExecutable(executablePath, payload);
+
+            const parsed = JSON.parse(String(stdout || '').trim());
+            if (parsed.status !== 'success') {
+                throw new Error(parsed.error || 'Rust BM25 returned non-success status');
+            }
+
+            const result = parsed.result || {};
+            const matchedCount = Number(result.total || 0);
+            if (matchedCount <= 0 || !result.content) {
+                return {
+                    matched: false,
+                    content: await this.readDiaryFileMetas(recentFiles),
+                    matchedCount: 0,
+                    queryTokens,
+                    acceleratedBy: 'rust-dailynote-searcher'
+                };
+            }
+
+            return {
+                matched: true,
+                content: result.content,
+                matchedCount,
+                queryTokens: Array.isArray(result.query_tokens) ? result.query_tokens : queryTokens,
+                acceleratedBy: 'rust-dailynote-searcher'
+            };
+        } catch (error) {
+            this.logger.warn(`[DirectDiaryTextProcessor] Rust DailyNoteSearcher BM25 failed, falling back to JS BM25: ${error.message}`);
+            return null;
+        }
+    }
+
+    runDailyNoteSearcherExecutable(executablePath, payload) {
+        return new Promise((resolve, reject) => {
+            const child = spawn(executablePath, [], {
+                cwd: path.resolve(__dirname, '..', '..'),
+                windowsHide: true,
+                stdio: ['pipe', 'pipe', 'pipe']
+            });
+
+            let stdout = '';
+            let stderr = '';
+            let settled = false;
+            const timer = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                child.kill();
+                reject(new Error('Rust DailyNoteSearcher BM25 timed out'));
+            }, 30000);
+
+            child.stdout.on('data', chunk => {
+                stdout += chunk.toString('utf8');
+                if (stdout.length > 64 * 1024 * 1024) {
+                    if (!settled) {
+                        settled = true;
+                        clearTimeout(timer);
+                        child.kill();
+                        reject(new Error('Rust DailyNoteSearcher BM25 stdout exceeded 64MB'));
+                    }
+                }
+            });
+
+            child.stderr.on('data', chunk => {
+                stderr += chunk.toString('utf8');
+            });
+
+            child.on('error', error => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                reject(error);
+            });
+
+            child.on('close', code => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                if (code !== 0) {
+                    reject(new Error(`Rust DailyNoteSearcher exited with code ${code}: ${stderr.trim()}`));
+                    return;
+                }
+                resolve(stdout);
+            });
+
+            child.stdin.end(JSON.stringify(payload));
+        });
     }
 
     setDailyNoteRootPath(dailyNoteRootPath) {
@@ -334,6 +474,19 @@ class DirectDiaryTextProcessor {
                     matchedCount: 0,
                     queryTokens
                 };
+            }
+
+            const rustBM25Result = await this.tryRustBM25DiaryContent(
+                characterName,
+                queryText,
+                queryTokens,
+                recentFiles,
+                safeLimit,
+                normalizedMode
+            );
+            if (rustBM25Result) {
+                this.logger.log(`[DirectDiaryTextProcessor] ::BM25${normalizedMode === 'body' ? '+' : ''} used Rust DailyNoteSearcher accelerator for "${characterName}".`);
+                return rustBM25Result;
             }
 
             const candidates = await Promise.all(
