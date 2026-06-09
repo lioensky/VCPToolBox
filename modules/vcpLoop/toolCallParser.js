@@ -106,6 +106,12 @@ class ToolCallParser {
       }
     }
 
+    // 兼容中性署名字段 valet：现有工具链统一读取 args.maid，
+    // 因此当 valet 存在且 maid 未显式提供时，镜像一份到 maid。
+    if (args.valet && !args.maid) {
+      args.maid = args.valet;
+    }
+
     return toolName ? { name: toolName, args, archery: isArchery, markHistory, river, vref } : null;
   }
 
