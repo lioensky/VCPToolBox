@@ -21,7 +21,8 @@ const { chunkText } = require('../../TextChunker.js');
 const { getEmbeddingsBatch } = require('../../EmbeddingUtils.js');
 const {
     findLastRealUserMessage,
-    isBetaSystemUserText
+    isBetaSystemUserText,
+    isSystemNotificationText
 } = require('../../modules/messageProcessor.js');
 
 
@@ -1171,6 +1172,12 @@ class RAGDiaryPlugin {
         });
     }
 
+    _isRagPlaceholderCarrierUserText(text) {
+        const normalizedText = String(text || '');
+        if (!normalizedText) return false;
+        return isBetaSystemUserText(normalizedText) || isSystemNotificationText(normalizedText);
+    }
+
     // processMessages 是 messagePreprocessor 的标准接口
     async processMessages(messages, pluginConfig) {
         try {
@@ -1185,7 +1192,7 @@ class RAGDiaryPlugin {
             const directTextResult = await this.directDiaryTextProcessor.tryProcessMessages(messages, {
                 extractTextFromContent: this._extractTextFromContent.bind(this),
                 replaceTextInContent: this._replaceTextInContent.bind(this),
-                isBetaSystemUser: isBetaSystemUserText,
+                isVirtualSystemUser: this._isRagPlaceholderCarrierUserText.bind(this),
                 sanitizedUserInput: directLatestUserMessage.sanitizedContent || '',
                 evaluateRoleValve: this._evaluateRoleValve.bind(this),
                 pushVcpInfo: this.pushVcpInfo
@@ -1211,11 +1218,11 @@ class RAGDiaryPlugin {
             //          目的是允许把日记本/元思考/AIMemo 占位符放在 user 楼层（例如系统提示注入或前置提示词）
             //          注意：识别为 BETA-system 的 user 消息将被同时排除在"真实用户查询"之外，避免污染向量化输入
             //
-            // 🚫 [系统通知] 是黑名单：以 [系统通知] 开头的 user 消息内的占位符不解析（视为纯文本），
-            //    避免运行时注入的系统通知里恰好携带的占位符模式被误解析。
-            //    （例：用户消息末尾被追加 [系统通知]当前时间 [[XXX日记本]] [系统通知结束]）
+            // ✅ [系统通知] 作为独立 user 块时同样允许承载占位符。
+            //    findLastRealUserMessage / sanitizeForEmbedding 仍会把它排除在真实用户查询之外，
+            //    因此只恢复替换能力，不把通知内容混入向量化输入。
             const SYSTEM_PREFIX_REGEX = /^\s*\[系统[^\]]*\]/;
-            const isBetaSystemUser = isBetaSystemUserText;
+            const isRagPlaceholderCarrierUser = this._isRagPlaceholderCarrierUserText.bind(this);
 
             let isAIMemoLicensed = false; // <--- AIMemo许可证 [[AIMemo=True]] 检测标志
             const targetSystemMessageIndices = messages.reduce((acc, m, index) => {
@@ -1225,7 +1232,7 @@ class RAGDiaryPlugin {
                 } else if (m.role === 'user') {
                     // 🧪 BETA 通道：user 消息以 [系统xxx] 开头但不是 [系统通知]
                     const userText = this._extractTextFromContent(m.content);
-                    if (isBetaSystemUser(userText)) {
+                    if (isRagPlaceholderCarrierUser(userText)) {
                         isVirtualSystem = true;
                     }
                 }
@@ -1485,17 +1492,13 @@ class RAGDiaryPlugin {
             console.error('[RAGDiaryPlugin] Error name:', error.name);
             console.error('[RAGDiaryPlugin] Error message:', error.message);
             // 返回原始消息，移除占位符以避免二次错误
-            // 🧪 BETA: 同时清理 BETA 占位符承载体（user 消息且以 [系统xxx] 开头但不是 [系统通知]）
-            const SYSTEM_PREFIX_REGEX_FALLBACK = /^\s*\[系统[^\]]*\]/;
-            const SYSTEM_NOTIFICATION_REGEX_FALLBACK = /^\s*\[系统通知\]/;
+            // 🧪 BETA: 同时清理 BETA 占位符承载体与独立 [系统通知] 承载体。
             const safeMessages = JSON.parse(JSON.stringify(messages));
             safeMessages.forEach(msg => {
                 let shouldClean = msg.role === 'system';
                 if (!shouldClean && msg.role === 'user') {
                     const text = this._extractTextFromContent(msg.content);
-                    if (text
-                        && SYSTEM_PREFIX_REGEX_FALLBACK.test(text)
-                        && !SYSTEM_NOTIFICATION_REGEX_FALLBACK.test(text)) {
+                    if (this._isRagPlaceholderCarrierUserText(text)) {
                         shouldClean = true;
                     }
                 }

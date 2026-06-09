@@ -744,7 +744,7 @@ class DirectDiaryTextProcessor {
 
         const extractTextFromContent = helpers.extractTextFromContent;
         const replaceTextInContent = helpers.replaceTextInContent;
-        const isBetaSystemUser = helpers.isBetaSystemUser || (() => false);
+        const isVirtualSystemUser = helpers.isVirtualSystemUser || helpers.isBetaSystemUser || (() => false);
 
         if (typeof extractTextFromContent !== 'function' || typeof replaceTextInContent !== 'function') {
             return { processed: false, messages };
@@ -759,7 +759,7 @@ class DirectDiaryTextProcessor {
                 isVirtualSystem = true;
             } else if (message.role === 'user') {
                 const userText = extractTextFromContent(message.content);
-                if (isBetaSystemUser(userText)) {
+                if (isVirtualSystemUser(userText)) {
                     isVirtualSystem = true;
                 }
             }
