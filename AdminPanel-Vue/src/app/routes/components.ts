@@ -29,6 +29,7 @@ export const APP_ROUTE_COMPONENTS = {
   "semantic-model-router-editor": () =>
     import("@/views/SemanticModelRouterEditor.vue"),
   "final-context-viewer": () => import("@/views/FinalContextViewer.vue"),
+  "bridge-hijack-config": () => import("@/views/BridgeHijackConfig.vue"),
   "theme-editor": () => import("@/views/ThemeEditor.vue"),
   "placeholder-viewer": () => import("@/views/PlaceholderViewer.vue"),
   plugins: () => import("@/views/PluginsHub.vue"),

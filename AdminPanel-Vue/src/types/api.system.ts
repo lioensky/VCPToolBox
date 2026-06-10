@@ -143,6 +143,18 @@ export interface OneRingConfig {
   timeInsert: boolean;
 }
 
+export interface BridgeHijackConfig {
+  port: number;
+  upstreamUrl: string;
+  upstreamKey: string;
+  upstreamType: 'chat' | 'anthropic' | 'gemini';
+  defaultModel: string;
+  systemPrompt: string;
+  hijackMode: 'off' | 'replace' | 'prepend' | 'append' | 'merge';
+  modelMap: Record<string, string>;
+  debugMode: boolean;
+}
+
 export interface OneRingConfigResponse {
   success?: boolean;
   config: OneRingConfig;
@@ -155,6 +167,22 @@ export interface OneRingConfigSaveResponse {
   success?: boolean;
   config: OneRingConfig;
   path?: string;
+  message?: string;
+}
+
+export interface BridgeHijackConfigResponse {
+  success?: boolean;
+  config: BridgeHijackConfig;
+  path?: string;
+  description?: Partial<Record<keyof BridgeHijackConfig, string>>;
+  message?: string;
+}
+
+export interface BridgeHijackConfigSaveResponse {
+  success?: boolean;
+  config: BridgeHijackConfig;
+  path?: string;
+  description?: Partial<Record<keyof BridgeHijackConfig, string>>;
   message?: string;
 }
 

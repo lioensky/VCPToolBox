@@ -36,6 +36,7 @@ export type AppRouteId =
   | "server-log-viewer"
   | "semantic-model-router-editor"
   | "final-context-viewer"
+  | "bridge-hijack-config"
   | "placeholder-viewer"
   | "plugins"
   | "plugin-store"
@@ -125,6 +126,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     path: "/final-context-viewer",
     title: "最终上下文处理",
     icon: "schema",
+    requiresAuth: true,
+    navGroup: "core",
+    showInSidebar: true,
+  },
+  {
+    id: "bridge-hijack-config",
+    routeName: "BridgeHijackConfig",
+    path: "/bridge-hijack-config",
+    title: "前端劫持配置",
+    icon: "settings_input_component",
     requiresAuth: true,
     navGroup: "core",
     showInSidebar: true,

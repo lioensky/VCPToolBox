@@ -6,6 +6,9 @@ import {
 } from "./requestWithUi";
 import type { UserAuthCodeResponse } from "@/types/api.auth";
 import type {
+  BridgeHijackConfig,
+  BridgeHijackConfigResponse,
+  BridgeHijackConfigSaveResponse,
   FinalContextResponse,
   OneRingConfig,
   OneRingConfigResponse,
@@ -18,7 +21,7 @@ import type {
   SystemResources,
 } from "@/types/api.system";
 
-export type { FinalContextResponse, OneRingConfig, OneRingConfigResponse, OneRingConfigSaveResponse, ServerLogQuery, ServerLogResponse } from "@/types/api.system";
+export type { BridgeHijackConfig, BridgeHijackConfigResponse, BridgeHijackConfigSaveResponse, FinalContextResponse, OneRingConfig, OneRingConfigResponse, OneRingConfigSaveResponse, ServerLogQuery, ServerLogResponse } from "@/types/api.system";
 export type { UserAuthCodeResponse } from "@/types/api.auth";
 
 export type SystemResourcesResponse = SystemResources;
@@ -150,6 +153,35 @@ export const systemApi = {
     return requestWithUi<OneRingConfigSaveResponse>(
       {
         url: "/admin_api/onering-config",
+        method: "PUT",
+        body: config,
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async getBridgeHijackConfig(
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<BridgeHijackConfigResponse> {
+    return requestWithUi<BridgeHijackConfigResponse>(
+      {
+        url: "/admin_api/bridge-config",
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async saveBridgeHijackConfig(
+    config: BridgeHijackConfig,
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = {}
+  ): Promise<BridgeHijackConfigSaveResponse> {
+    return requestWithUi<BridgeHijackConfigSaveResponse>(
+      {
+        url: "/admin_api/bridge-config",
         method: "PUT",
         body: config,
         ...requestContext,

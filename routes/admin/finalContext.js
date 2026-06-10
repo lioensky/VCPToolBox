@@ -2,6 +2,13 @@ const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
 const finalContextStore = require('../../modules/finalContextStore.js');
+const {
+    CONFIG_PATH: BRIDGE_CONFIG_PATH,
+    DESCRIPTION: BRIDGE_CONFIG_DESCRIPTION,
+    readBridgeConfig,
+    saveBridgeConfig,
+    normalizeBridgeConfig
+} = require('../../Plugin/VCPBridgeServer/bridgeConfig.js');
 
 const DEFAULT_ONERING_CONFIG = Object.freeze({
     enabled: true,
@@ -49,6 +56,7 @@ function getOneRingConfigPath() {
 
 module.exports = function() {
     const router = express.Router();
+    let bridgeConfigWatcher = null;
 
     router.get('/final-context', (req, res) => {
         const snapshot = finalContextStore.getLastFinalContext();
@@ -117,6 +125,60 @@ module.exports = function() {
             res.status(500).json({ success: false, error: '保存 OneRingConfig.json 失败', details: error.message });
         }
     });
+
+    router.get('/bridge-config', async (req, res) => {
+        try {
+            const config = readBridgeConfig();
+            res.json({
+                success: true,
+                config,
+                path: 'Plugin/VCPBridgeServer/bridge-config.json',
+                description: BRIDGE_CONFIG_DESCRIPTION,
+                message: '前端劫持配置已读取。该 JSON 文件是 VCPBridgeServer 的运行真相源。'
+            });
+        } catch (error) {
+            console.error('[FinalContext] Failed to read VCPBridge config:', error);
+            res.status(500).json({ success: false, error: '读取 VCPBridgeServer 配置失败', details: error.message });
+        }
+    });
+
+    router.put('/bridge-config', async (req, res) => {
+        try {
+            const nextConfig = normalizeBridgeConfig(req.body || {});
+            const saved = saveBridgeConfig(nextConfig);
+            res.json({
+                success: true,
+                config: normalizeBridgeConfig(saved),
+                path: 'Plugin/VCPBridgeServer/bridge-config.json',
+                description: BRIDGE_CONFIG_DESCRIPTION,
+                message: '前端劫持配置已保存，运行中的 VCPBridgeServer 会通过 chokidar 自动热加载。端口变更需重启后生效。'
+            });
+        } catch (error) {
+            console.error('[FinalContext] Failed to save VCPBridge config:', error);
+            res.status(500).json({ success: false, error: '保存 VCPBridgeServer 配置失败', details: error.message });
+        }
+    });
+
+    function ensureBridgeConfigWatcher() {
+        if (bridgeConfigWatcher) return;
+        try {
+            const chokidar = require('chokidar');
+            bridgeConfigWatcher = chokidar.watch(BRIDGE_CONFIG_PATH, {
+                ignoreInitial: true,
+                awaitWriteFinish: {
+                    stabilityThreshold: 250,
+                    pollInterval: 50
+                }
+            });
+            bridgeConfigWatcher.on('add', () => console.log('[FinalContext] VCPBridge config file created:', BRIDGE_CONFIG_PATH));
+            bridgeConfigWatcher.on('change', () => console.log('[FinalContext] VCPBridge config file changed:', BRIDGE_CONFIG_PATH));
+            bridgeConfigWatcher.on('error', error => console.error('[FinalContext] VCPBridge config watcher error:', error));
+        } catch (error) {
+            console.error('[FinalContext] Failed to watch VCPBridge config:', error);
+        }
+    }
+
+    ensureBridgeConfigWatcher();
 
     return router;
 };
