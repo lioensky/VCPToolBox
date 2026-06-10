@@ -807,7 +807,8 @@ function startServer() {
     app.post('/v1/messages', async (req, res) => {
         const body = req.body || {};
         const messages = extractFromAnthropicBody(body);
-        await proxyRequest(req, res, { messages, model: body.model, body, downstreamFormat: 'anthropic' });
+        const stream = body.stream === true || String(req.headers.accept || '').includes('text/event-stream');
+        await proxyRequest(req, res, { messages, model: body.model, body: { ...body, stream }, downstreamFormat: 'anthropic' });
     });
 
     // Gemini GenerateContent

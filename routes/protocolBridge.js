@@ -1046,15 +1046,17 @@ router.post('/v1/messages', async (req, res) => {
         });
     }
 
+    const wantsStream = body.stream === true || String(req.headers.accept || '').includes('text/event-stream');
+
     await forwardToChatCompletions(req, res, {
         messages,
         model: body.model,
         temperature: body.temperature,
         topP: body.top_p,
         maxTokens: body.max_tokens,
-        stream: body.stream === true,
+        stream: wantsStream,
         outputFormat: 'anthropic',
-        originalBody: body
+        originalBody: { ...body, stream: wantsStream }
     });
 });
 
