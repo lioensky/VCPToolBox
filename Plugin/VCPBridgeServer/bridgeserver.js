@@ -522,6 +522,20 @@ function applySystemPromptHijack(messages) {
             return result;
         }
 
+        case 'merge': {
+            // 合并所有 system 消息为一条置顶 system；注入提示词优先，然后按原消息顺序拼接已有 system。
+            const systemContents = [
+                injected.content,
+                ...result
+                    .filter(m => m.role === 'system')
+                    .map(m => m.content)
+                    .filter(content => typeof content === 'string' && content.trim())
+            ];
+            const mergedSystem = { role: 'system', content: systemContents.join('\n\n') };
+            const nonSystem = result.filter(m => m.role !== 'system');
+            return [mergedSystem, ...nonSystem];
+        }
+
         default:
             return result;
     }
