@@ -96,6 +96,79 @@ where
     deserializer.deserialize_any(UsizeVisitor)
 }
 
+fn deserialize_option_usize_from_string_or_number<'de, D>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct OptionalUsizeVisitor;
+    impl<'de> de::Visitor<'de> for OptionalUsizeVisitor {
+        type Value = Option<usize>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str(
+                "null, an unsigned integer, or a string representing an unsigned integer",
+            )
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserialize_usize_from_string_or_number(deserializer).map(Some)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(value as usize))
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if value >= 0 {
+                Ok(Some(value as usize))
+            } else {
+                Err(de::Error::custom("negative integer not allowed for usize"))
+            }
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+
+            trimmed.parse::<usize>().map(Some).map_err(|_| {
+                de::Error::invalid_value(Unexpected::Str(value), &"an unsigned integer string")
+            })
+        }
+    }
+
+    deserializer.deserialize_option(OptionalUsizeVisitor)
+}
+
 #[derive(Deserialize, Debug)]
 struct InputArgs {
     #[serde(default)]
@@ -126,7 +199,9 @@ struct InputArgs {
     root_path: Option<String>,
     ignored_folders: Option<String>,
     allowed_extensions: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_usize_from_string_or_number")]
     max_results: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_usize_from_string_or_number")]
     bm25_limit: Option<usize>,
     bm25_search_mode: Option<String>,
     query_tokens: Option<Vec<String>>,
