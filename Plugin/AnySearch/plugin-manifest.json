@@ -2,8 +2,8 @@
   "manifestVersion": "1.0.0",
   "name": "AnySearch",
   "displayName": "AnySearch 实时搜索插件",
-  "version": "1.0.0",
-  "description": "调用 AnySearch JSON-RPC API，支持通用网页搜索、垂直领域搜索、批量并行搜索、垂直领域目录查询和网页内容提取。",
+  "version": "2.1.0",
+  "description": "调用 AnySearch JSON-RPC API 的实时搜索插件：垂直领域搜索、通用搜索、批量并行搜索、网页正文提取。目录内附 sync.js 维护脚本，可手动同步描述中的子领域目录。",
   "author": "AnySearch Team / VCP",
   "pluginType": "synchronous",
   "entryPoint": {
@@ -17,17 +17,17 @@
   "configSchema": {
     "ANYSEARCH_API_KEY": {
       "type": "string",
-      "description": "AnySearch API Key。可选；不配置时使用匿名访问，额度较低。支持填写多个 Key，并用英文逗号分隔，插件每次请求会随机选择一个 Key，例如: as_sk_xxx,as_sk_yyy。",
+      "description": "可选。不配置时匿名访问（额度较低）。可填多个 Key 用英文逗号分隔，每次请求随机选用一个，例如 as_sk_xxx,as_sk_yyy。",
       "default": ""
     },
     "ANYSEARCH_ENDPOINT": {
       "type": "string",
-      "description": "AnySearch JSON-RPC endpoint。",
+      "description": "AnySearch JSON-RPC endpoint，默认 https://api.anysearch.com/mcp。",
       "default": "https://api.anysearch.com/mcp"
     },
     "ANYSEARCH_TIMEOUT_MS": {
       "type": "integer",
-      "description": "HTTP 请求超时时间，单位毫秒。",
+      "description": "HTTP 请求超时（毫秒），默认 30000，范围 1000-120000。",
       "default": 30000
     }
   },
@@ -35,8 +35,8 @@
     "invocationCommands": [
       {
         "commandIdentifier": "AnySearch",
-        "description": "调用 AnySearch 进行实时搜索、垂直领域搜索、批量搜索、领域目录查询或网页正文提取。\n参数:\n- command/action (string, 可选, 默认 search): search、list_domains、batch_search、extract。\n- query/q/text (string, search 必需): 搜索词。垂直搜索时必须遵循 list_domains 返回的 query_format。\n- domain (string, 可选): 垂直领域，如 finance、academic、security、code、tech、legal 等。\n- sub_domain (string, 垂直搜索建议/通常必需): 子领域路由，如 finance.us_stock、academic.doi、security.cve。\n- sub_domain_params (object|string, 可选): 子领域额外参数。\n- content_types (string|array, 可选): web、news、code、doc、academic、data、image、video、audio。\n- zone (string, 可选): cn 或 intl；当 list_domains 标记 zone=CN 时必须传 cn。\n- max_results (integer, 可选): 结果数量，范围 1-100。\n- freshness (string, 可选): day、week、month、year。\n- domains (string|array, list_domains 可选): 批量查询最多 5 个领域；与 domain 二选一。\n- queries (array|string, batch_search 必需): 1-5 个查询对象或字符串。\n- url (string, extract 必需): 需要提取正文的网页 URL。\n调用格式示例:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AnySearch「末」,\ncommand:「始」search「末」,\nquery:「始」AI regulation 2026「末」,\ncontent_types:「始」news「末」,\nfreshness:「始」week「末」,\nmax_results:「始」5「末」\n<<<[END_TOOL_REQUEST]>>>\n\n垂直搜索前先调用 list_domains 获取 sub_domain、query_format、params_schema 和 zone 约束。",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」AnySearch「末」,\ncommand:「始」list_domains「末」,\ndomain:「始」finance「末」\n<<<[END_TOOL_REQUEST]>>>\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AnySearch「末」,\ncommand:「始」extract「末」,\nurl:「始」https://example.com/article「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "联网搜索与网页正文提取。优先垂直搜索：从下方目录选 domain 与 sub_domain；纯百科常识可省略 domain；多个独立查询用 batch_search 并行。\n参数:\n- command (可选, 默认 search): search / batch_search / extract / get_sub_domains。\n- query (search 必需): 搜索词。\n- domain、sub_domain: 垂直搜索成对使用，取自下方目录；只传 domain 不传 sub_domain 等同通用搜索。\n- sub_domain_params (JSON 对象, 按需): 子领域参数，必填项无适用值传 \"\"；各子领域的参数定义可用 get_sub_domains(domain) 查询。\n- max_results (可选): 1-10。\n- queries (batch_search 必需): 1-5 条字符串或对象；顶层 domain/sub_domain/sub_domain_params/max_results 自动注入每条，条目内字段优先。\n- url (extract 必需): 要提取正文的网页地址。\n领域目录(domain: 子领域):\ngeneral: general\nfinance: fundamental quote screen macro calendar news\nacademic: search dataset preprint citation biomedical\nsecurity: noise intel scan vuln\nbusiness: trade company jobs people\nlegal: legislation case statute\nhealth: drug trial stats\ncode: doc snippet\nenergy: production electricity\ntravel: flight flight_status\ngaming: store esports\nresource: image\nsocial_media: social_media\nip: global\nenvironment: aqi\nagriculture: fao\nfilm: torrent\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AnySearch「末」,\ncommand:「始」search「末」,\nquery:「始」Apple 最新公司新闻「末」,\ndomain:「始」finance「末」,\nsub_domain:「始」finance.news「末」,\nsub_domain_params:「始」{\"type\":\"stock\",\"symbol\":\"AAPL\"}「末」,\nmax_results:「始」5「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」AnySearch「末」,\ncommand:「始」batch_search「末」,\ndomain:「始」finance「末」,\nsub_domain:「始」finance.news「末」,\nsub_domain_params:「始」{\"type\":\"general\"}「末」,\nmax_results:「始」3「末」,\nqueries:「始」[\"AI chip demand outlook\",\"global EV market 2026\"]「末」\n<<<[END_TOOL_REQUEST]>>>\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AnySearch「末」,\ncommand:「始」extract「末」,\nurl:「始」https://example.com/article「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   },
