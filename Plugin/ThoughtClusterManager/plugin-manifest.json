@@ -24,6 +24,11 @@
       {
         "commandIdentifier": "EditClusterFile",
         "description": "编辑一个已存在的思维簇文件，通过查找并替换文本内容。\n参数:\n- clusterName (字符串, 可选): 指定在哪个簇文件夹中进行搜索。如果未提供，将在所有'簇'结尾的文件夹中搜索。\n- targetText (字符串, 必需): 需要被替换的目标文本，长度不能少于15个字符。\n- replacementText (字符串, 必需): 用于替换目标文本的新内容。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ThoughtClusterManager「末」,\ncommand:「始」EditClusterFile「末」,\nclusterName:「始」前思维簇「末」,\ntargetText:「始」这是需要被替换的旧的思考内容，确保它不少于15字。「末」,\nreplacementText:「始」这是更新后的新的思考内容。「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "ListClusters",
+        "description": "查看思维簇文件内容。支持三种查询模式：\n1. 不传参数：列出所有以'簇'结尾的文件夹及完整内容\n2. clusterName参数：指定簇文件夹名（逗号分隔多个）\n3. chainName参数：按链名查询（从meta_thinking_chains.json解析对应的簇列表）\n\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ThoughtClusterManager「末」,\ncommand:「始」ListClusters「末」,\nchainName:「始」coding「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ThoughtClusterManager「末」,\ncommand:「始」ListClusters「末」,\nchainName:「始」default「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }
