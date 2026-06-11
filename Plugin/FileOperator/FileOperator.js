@@ -239,15 +239,11 @@ function resolveAndNormalizePath(inputPath) {
     return path.resolve(originalPath);
   }
 
-  // 2. 🔧 关键修改：幂等性保护 - 如果路径已经在 FileOperator 目录下，直接返回
-  const resolvedInput = path.resolve(originalPath);
-  const fileOperatorRoot = path.resolve(__dirname);
-
-  // 使用 startsWith 检查是否已经是 FileOperator 下的绝对路径
-  // 注意：Windows 下路径大小写不敏感，但这里主要是解决 Linux/Mac 的双写问题
-  if (resolvedInput.toLowerCase().startsWith(fileOperatorRoot.toLowerCase())) {
-    return resolvedInput;
-  }
+  // 2. BASE_PATH: configurable project root for bare relative paths.
+  // Falls back to two levels up from this plugin's directory.
+  const BASE_PATH = process.env.BASE_PATH
+    ? path.resolve(process.env.BASE_PATH)
+    : path.resolve(__dirname, '..', '..');
 
   // 3. 虚拟根逻辑：将 /xxx 映射到 FileOperator/xxx
   // 在 Windows 上，/foo 不是绝对路径，所以会进入此逻辑
@@ -272,9 +268,8 @@ function resolveAndNormalizePath(inputPath) {
   const startsWithDotDot = normalized.startsWith(`..${path.sep}`);
 
   if (!startsWithDot && !startsWithDotDot) {
-    // Path is like 'foo/bar', so treat it as relative to the project root.
-    // The project root is two levels up from this script's directory.
-    return path.resolve(__dirname, '..', '..', normalized);
+    // Treat plain relative paths like "foo/bar" as BASE_PATH relative.
+    return path.resolve(BASE_PATH, normalized);
   } else {
     // Path is like './foo' or '../foo', so it's explicitly relative to this script's directory.
     return path.resolve(__dirname, normalized);
