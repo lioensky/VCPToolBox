@@ -448,7 +448,7 @@ class TagMemoEngine {
                         const rows = this.db.prepare(`SELECT id, name, vector FROM tags WHERE name IN (${placeholders})`).all(...missingCoreTags);
 
                         // 获取当前 pyramid 的最大权重作为基准
-                        const maxBaseWeight = allTags.length > 0 ? Math.max(...allTags.map(t => t.adjustedWeight / 1.33)) : 1.0;
+                        const maxBaseWeight = allTags.length > 0 ? Math.max(...allTags.map(t => t.adjustedWeight / coreBoostFactor)) : 1.0;
 
                         rows.forEach(row => {
                             if (!seenTagIds.has(row.id)) {
@@ -469,11 +469,14 @@ class TagMemoEngine {
                 }
             }
 
+            // [4.6] 核心 Tag 补全和 [4.7] 幽灵节点在脉冲传播之后注入：
+            // 幽灵节点是负 id 且无矩阵边；补全核心 Tag 作为“最终融合锚点”而非拓扑扩散种子，
+            // 避免用户显式 coreTags 反向扩大本轮脉冲传播范围。
             // [4.7] 🎈 注入幽灵节点 (暗度陈仓)
             let ghostIdCounter = -1; // 专属负数 ID
             const ghostVectorMap = new Map();
             // 获取当前基准权重
-            const maxBaseWeight = allTags.length > 0 ? Math.max(...allTags.map(t => t.adjustedWeight / 1.33)) : 1.0;
+            const maxBaseWeight = allTags.length > 0 ? Math.max(...allTags.map(t => t.adjustedWeight / coreBoostFactor)) : 1.0;
 
             const injectGhosts = (ghosts, isCore) => {
                 ghosts.forEach(ghost => {
@@ -515,27 +518,33 @@ class TagMemoEngine {
             // 目的：消除冗余标签（如“委内瑞拉局势”与“委内瑞拉危机”），为多样性腾出空间
             const deduplicatedTags = [];
             const sortedTags = [...allTags].sort((a, b) => b.adjustedWeight - a.adjustedWeight);
+            const normalizedVectorCache = new Map(); // id -> { vec: Float32Array, norm: Number }
 
             for (const tag of sortedTags) {
                 const data = tagDataMap.get(tag.id);
                 const vec = data ? this._decodeVectorBlob(data.vector, dim, `tag:${tag.id}`) : null;
                 if (!vec) continue;
 
+                let normSq = 0;
+                for (let d = 0; d < dim; d++) normSq += vec[d] * vec[d];
+                const norm = Math.sqrt(normSq);
+                if (norm <= 1e-9) continue;
+
+                normalizedVectorCache.set(tag.id, { vec, norm });
+
                 let isRedundant = false;
 
                 for (const existing of deduplicatedTags) {
-                    const existingData = tagDataMap.get(existing.id);
-                    const existingVec = existingData ? this._decodeVectorBlob(existingData.vector, dim, `tag:${existing.id}`) : null;
-                    if (!existingVec) continue;
+                    const existingCached = normalizedVectorCache.get(existing.id);
+                    if (!existingCached) continue;
 
-                    // 计算余弦相似度
-                    let dot = 0, normA = 0, normB = 0;
+                    // 计算余弦相似度：向量解码与范数已缓存，避免 O(n²) 重复分配/重复 norm。
+                    let dot = 0;
+                    const existingVec = existingCached.vec;
                     for (let d = 0; d < dim; d++) {
                         dot += vec[d] * existingVec[d];
-                        normA += vec[d] * vec[d];
-                        normB += existingVec[d] * existingVec[d];
                     }
-                    const similarity = dot / (Math.sqrt(normA) * Math.sqrt(normB));
+                    const similarity = dot / (norm * existingCached.norm);
 
                     const dedupThreshold = config.deduplicationThreshold ?? 0.88;
                     if (similarity > dedupThreshold) {
@@ -663,7 +672,11 @@ class TagMemoEngine {
      * @returns {Array} 重排后的完整数组（不截断）
      */
     geodesicRerank(candidates, options = {}) {
-        const energyField = options.energyField || this.lastEnergyField;
+        let energyField = options.energyField;
+        if (!energyField && options.allowLastEnergyFieldFallback === true) {
+            energyField = this.lastEnergyField;
+            console.warn('[TagMemoEngine] ⚠️ geodesicRerank using lastEnergyField fallback by explicit opt-in; prefer query-scoped options.energyField to avoid cross-query contamination.');
+        }
 
         // L0: 距离场为空 → 整体退化
         if (!energyField || energyField.size === 0) {
@@ -1278,7 +1291,9 @@ class TagMemoEngine {
 
         this._matrixRebuildTimer = setTimeout(() => {
             console.log(`[TagMemoEngine] 📈 Changes reached threshold (${this._accumulatedTagChanges} >= ${threshold}) and quiet period finished. Rebuilding matrix...`);
-            this.doMatrixRebuild();
+            this.doMatrixRebuild().catch(e => {
+                console.error('[TagMemoEngine] ❌ Unhandled matrix rebuild failure from threshold timer:', e.message || e);
+            });
         }, delayMs);
 
         if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
@@ -1355,10 +1370,15 @@ class TagMemoEngine {
                 this._scheduleMatrixRebuildTimer(300000);
                 return;
             }
+        } catch (e) {
+            console.error('[TagMemoEngine] ❌ Matrix rebuild failed; preserving accumulated changes and scheduling retry:', e.message || e);
+            if (e.stack) console.error(e.stack);
+            this._accumulatedTagChanges += changesAtStart;
+            this._scheduleMatrixRebuildTimer(300000);
         } finally {
             this._isMatrixRebuilding = false;
             if (this._accumulatedTagChanges > 0) {
-                console.log(`[TagMemoEngine] 🔁 ${this._accumulatedTagChanges} tag changes arrived during rebuild; scheduling follow-up debounce.`);
+                console.log(`[TagMemoEngine] 🔁 ${this._accumulatedTagChanges} tag changes pending after rebuild attempt; scheduling follow-up debounce.`);
                 this._scheduleMatrixRebuildTimer(300000);
             }
             console.log(`[TagMemoEngine] Matrix rebuild finished for ${changesAtStart} accumulated tag change(s).`);
@@ -1373,7 +1393,9 @@ class TagMemoEngine {
         this._matrixRebuildScheduleLogged = true;
         this._matrixRebuildTimer = setTimeout(() => {
             console.log(`[TagMemoEngine] 📈 Follow-up quiet period finished. Rebuilding matrix for ${this._accumulatedTagChanges} accumulated change(s)...`);
-            this.doMatrixRebuild();
+            this.doMatrixRebuild().catch(e => {
+                console.error('[TagMemoEngine] ❌ Unhandled matrix rebuild failure from follow-up timer:', e.message || e);
+            });
         }, delayMs);
 
         if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
