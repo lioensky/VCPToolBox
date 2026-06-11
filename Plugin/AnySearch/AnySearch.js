@@ -70,12 +70,19 @@ function firstString(source, keys) {
 }
 
 function normalizeCommand(payload) {
-  const raw = firstString(payload, ["command", "action", "tool", "mode"]) || "search";
-  const command = raw.toLowerCase().replace(/-/g, "_").trim();
-  if (!COMMANDS.has(command)) {
-    fail("无效命令。可用命令：search、get_sub_domains、batch_search、extract。");
+  const raw = firstString(payload, ["command", "action", "tool", "mode"]);
+  if (raw) {
+    const command = raw.toLowerCase().replace(/-/g, "_").trim();
+    if (!COMMANDS.has(command)) {
+      fail("无效命令。可用命令：search、get_sub_domains、batch_search、extract。");
+    }
+    return command;
   }
-  return command;
+  // command 省略时按参数推断：有 queries 即批量，有 url（且无 query）即提取，否则搜索。
+  if (payload.queries !== undefined || payload.query_items !== undefined) return "batch_search";
+  const hasQuery = !!firstString(payload, ["query", "q", "text", "Query"]);
+  if (!hasQuery && firstString(payload, ["url", "URL", "link"])) return "extract";
+  return "search";
 }
 
 function parseMaxResults(source) {
@@ -86,17 +93,32 @@ function parseMaxResults(source) {
   return Math.max(MAX_RESULTS_MIN, Math.min(MAX_RESULTS_MAX, parsed));
 }
 
+// 子领域参数：首选纯文本 k=v,k2=v2（空值写 k=）；也接受对象 / JSON 对象字符串。
 function parseSubDomainParams(source) {
-  const value = source.sub_domain_params ?? source.subDomainParams ?? source.sdp;
+  const value = source.params ?? source.sub_domain_params ?? source.subDomainParams ?? source.sdp;
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value === "object" && !Array.isArray(value)) return value;
   if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-    } catch (_) { /* fall through to the error below */ }
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+      } catch (_) { /* fall through to the error below */ }
+    } else if (trimmed.includes("=")) {
+      const result = {};
+      for (const pair of trimmed.split(",")) {
+        const item = pair.trim();
+        if (!item) continue;
+        const eq = item.indexOf("=");
+        if (eq <= 0) fail(`sub_domain_params 文本格式应为 k=v,k2=v2（空值写 k=），收到："${item}"。`);
+        result[item.slice(0, eq).trim()] = item.slice(eq + 1).trim();
+      }
+      return result;
+    }
   }
-  fail('sub_domain_params 必须是 JSON 对象，例如 {"ticker":"AAPL"}。');
+  fail("sub_domain_params 应为 k=v,k2=v2 文本（空值写 k=），或 JSON 对象。");
 }
 
 function parseDomainList(value) {
@@ -122,13 +144,20 @@ function assertDomain(domain) {
   return domain;
 }
 
-// Shared option parsing for `search` and for every `batch_search` query item.
+// search 与 batch_search 查询项共用的选项解析。
+// domain 可省略：自动取 sub_domain 的「域.」前缀；显式给出且与前缀矛盾时报错。
 function buildSearchOptions(source) {
   const options = {};
-  const domain = firstString(source, ["domain", "Domain"]).toLowerCase();
-  if (domain) options.domain = assertDomain(domain);
-
   const subDomain = firstString(source, ["sub_domain", "subDomain", "subdomain"]);
+  let domain = firstString(source, ["domain", "Domain"]).toLowerCase();
+  if (subDomain) {
+    const prefix = subDomain.split(".")[0].toLowerCase();
+    if (domain && domain !== prefix) {
+      fail(`domain "${domain}" 与 sub_domain 前缀 "${prefix}" 不一致；domain 可直接省略。`);
+    }
+    domain = prefix;
+  }
+  if (domain) options.domain = assertDomain(domain);
   if (subDomain) options.sub_domain = subDomain;
 
   const subDomainParams = parseSubDomainParams(source);
@@ -301,25 +330,18 @@ function callAnySearch(toolName, args) {
   });
 }
 
-function formatResult(command, args, content) {
-  const text = typeof content === "string" ? content.trim() : "";
-  return [
-    "## AnySearch 执行结果",
-    "",
-    `- **命令**: \`${command}\``,
-    `- **参数**: \`${JSON.stringify(args)}\``,
-    "",
-    text || "_AnySearch API 未返回可读文本内容。_",
-  ].join("\n");
-}
-
 async function main() {
   try {
     const payload = parsePayload(await readStdin());
     const command = normalizeCommand(payload);
     const args = ARGUMENT_BUILDERS[command](payload);
     const content = await callAnySearch(command, args);
-    emit({ status: "success", result: formatResult(command, args, content) });
+    const text = typeof content === "string" && content.trim()
+      ? content.trim()
+      : "AnySearch API 未返回可读文本内容。";
+    // 富内容形态：server 的 _formatResult 会直接取 text，AI 收到干净 Markdown，
+    // 不会被包进 original_plugin_output 的 JSON 转义串。
+    emit({ status: "success", result: { content: [{ type: "text", text }] } });
   } catch (error) {
     fail(error.message || String(error));
   }
