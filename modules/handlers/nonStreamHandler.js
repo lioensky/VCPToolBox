@@ -254,7 +254,7 @@ class NonStreamHandler {
             conversationHistoryForClient.push('\n<<<[ROLE_DIVIDE_USER]>>>\n');
             hasStartedUserBlock = true;
           }
-          conversationHistoryForClient.push(`\n[系统提示:] 本轮工具调用状态：${toolStatusSummaryItems.join('；')}。\n`);
+          conversationHistoryForClient.push(`\n[本轮工具调用摘要:]\n${toolStatusSummaryItems.join('；')}。\n[本轮工具调用摘要结束]\n`);
         }
         
         if (hasStartedUserBlock && enableRoleDivider) {

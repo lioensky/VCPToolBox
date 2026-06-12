@@ -453,7 +453,7 @@ class StreamHandler {
           res.write(`data: ${JSON.stringify({
             id: `chatcmpl-vcp-summary-${Date.now()}`,
             object: "chat.completion.chunk",
-            choices: [{ index: 0, delta: { content: `\n[系统提示:] 本轮工具调用状态：${toolStatusSummaryItems.join('；')}。\n` }, finish_reason: null }]
+            choices: [{ index: 0, delta: { content: `\n[本轮工具调用摘要:]\n${toolStatusSummaryItems.join('；')}。\n[本轮工具调用摘要结束]\n` }, finish_reason: null }]
           })}\n\n`);
         } catch (e) {}
       }
