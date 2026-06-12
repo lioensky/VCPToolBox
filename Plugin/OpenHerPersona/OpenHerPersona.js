@@ -3,6 +3,12 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+let Database = null;
+try {
+  Database = require("better-sqlite3");
+} catch (error) {
+  Database = null;
+}
 const {
   isBetaSystemUserText,
   isSystemNotificationText,
@@ -78,6 +84,7 @@ const DEFAULT_CONFIG = {
   DebugMode: false,
   OpenHerPersonaEnabled: true,
   OpenHerPersonaHintEnabled: true,
+  OpenHerPersonaObserveOnly: false,
   OpenHerPersonaTickEnabled: true,
   OpenHerPersonaCooldownMinutes: 240,
   OpenHerPersonaImpulseThreshold: 0.8,
@@ -180,8 +187,8 @@ const STATE_STORE_VERSION = 3;
 const DEFAULT_AGENT_KEY = "__default__";
 const DEFAULT_AGENT_LABEL = "default";
 const MAX_AGENT_KEY_LENGTH = 80;
-const ONE_RING_TRIGGER_PATTERN = /\[\[OneRing::([^:]+?)::([^:\]]+?)(?:::([^\]]+?))?\]\]/;
-const ONE_RING_NOTICE_PATTERN = /\[OneRing系统已启动，当前Agent([^，\]\r\n]+)，当前客户端([^，\]\r\n]+)(?:，当前模式([^，\]\r\n]+))?/;
+const ONE_RING_TRIGGER_PATTERN = /\[\[\s*OneRing\s*[:：]{2}\s*([^:：\]\r\n]+?)\s*[:：]{2}\s*([^:：\]\r\n]+?)\s*(?:[:：]{2}\s*([^\]\r\n]+?)\s*)?\]\]/gi;
+const ONE_RING_NOTICE_PATTERN = /\[OneRing系统已启动，当前Agent([^，\]\r\n]+)，当前客户端([^，\]\r\n]+)(?:，当前模式([^，\]\r\n]+))?/g;
 
 let activeConfig = { ...DEFAULT_CONFIG };
 let contextBridge = null;
@@ -410,6 +417,10 @@ function resolveConfig(config) {
     OpenHerPersonaHintEnabled: normalizeBoolean(
       merged.OpenHerPersonaHintEnabled,
       DEFAULT_CONFIG.OpenHerPersonaHintEnabled
+    ),
+    OpenHerPersonaObserveOnly: normalizeBoolean(
+      merged.OpenHerPersonaObserveOnly,
+      DEFAULT_CONFIG.OpenHerPersonaObserveOnly
     ),
     OpenHerPersonaTickEnabled: normalizeBoolean(
       merged.OpenHerPersonaTickEnabled,
@@ -692,8 +703,42 @@ function firstNonEmptyString(...values) {
   return null;
 }
 
-function resolveAgentIdentityFromObject(raw) {
+function resolveAgentIdentityFromKnownVcpFields(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+
+  const candidates = [
+    raw.agentKey,
+    raw.agentId,
+    raw.agent,
+    raw.agentName,
+    raw.agentLabel,
+    raw.maidName,
+    raw.maid,
+    raw.name,
+    raw.currentAgent,
+    raw.currentAgentName,
+    raw.currentMaid,
+    raw.currentMaidName,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string" || !candidate.trim()) continue;
+    const value = candidate.trim();
+    if (value === DEFAULT_AGENT_KEY || value === DEFAULT_AGENT_LABEL) continue;
+    return {
+      agentKey: normalizeAgentKey(value),
+      agentLabel: normalizeAgentLabel(value),
+      source: "object_field",
+    };
+  }
+
+  return null;
+}
+
+function resolveAgentIdentityFromObject(raw, depth = 0, seen = new Set()) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || depth > 5 || seen.has(raw)) return null;
+  seen.add(raw);
+
   const directKey = firstNonEmptyString(raw.agentKey, raw.agentId, raw.agent, raw.maidName, raw.maid);
   const directLabel = firstNonEmptyString(raw.agentLabel, raw.agentName, raw.name, raw.maidName, raw.maid, directKey);
   if (directKey || directLabel) {
@@ -704,6 +749,9 @@ function resolveAgentIdentityFromObject(raw) {
     };
   }
 
+  const fieldResolved = resolveAgentIdentityFromKnownVcpFields(raw);
+  if (fieldResolved) return fieldResolved;
+
   const nestedCandidates = [
     raw.openHerPersona,
     raw.openHerPersonaAgent,
@@ -712,35 +760,64 @@ function resolveAgentIdentityFromObject(raw) {
     raw.vcpchatExtensions && raw.vcpchatExtensions.openHerPersonaAgent,
     raw.context,
     raw.currentAgent,
+    raw.currentAgentInfo,
+    raw.agentInfo,
+    raw.metadata,
+    raw.extra_body,
+    raw.extraBody,
   ];
   for (const candidate of nestedCandidates) {
-    const resolved = resolveAgentIdentityFromObject(candidate);
+    const resolved = resolveAgentIdentityFromObject(candidate, depth + 1, seen);
     if (resolved) return resolved;
   }
+
+  for (const value of Object.values(raw)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const resolved = resolveAgentIdentityFromObject(value, depth + 1, seen);
+    if (resolved) return resolved;
+  }
+
   return null;
 }
 
 function resolveAgentIdentityFromText(text) {
   const content = String(text || "");
-  const triggerMatch = ONE_RING_TRIGGER_PATTERN.exec(content);
+  const triggerMatches = Array.from(content.matchAll(ONE_RING_TRIGGER_PATTERN));
+  const triggerMatch = triggerMatches.length ? triggerMatches[triggerMatches.length - 1] : null;
   if (triggerMatch && triggerMatch[1]) {
     const agent = triggerMatch[1].trim();
     if (triggerMatch[2] && triggerMatch[2].trim()) {
       activeClientLabel = triggerMatch[2].trim();
       if (/vcp?chat/i.test(activeClientLabel)) activeClientIsVcpChat = true;
     }
-    return { agentKey: normalizeAgentKey(agent), agentLabel: normalizeAgentLabel(agent), source: "onering_trigger" };
+    const resolved = { agentKey: normalizeAgentKey(agent), agentLabel: normalizeAgentLabel(agent), source: "onering_trigger" };
+    debugLog("identity text matched latest OneRing trigger", {
+      resolved,
+      clientLabel: activeClientLabel,
+      rawMatch: triggerMatch[0],
+      matchCount: triggerMatches.length,
+    });
+    return resolved;
   }
 
-  const noticeMatch = ONE_RING_NOTICE_PATTERN.exec(content);
+  const noticeMatches = Array.from(content.matchAll(ONE_RING_NOTICE_PATTERN));
+  const noticeMatch = noticeMatches.length ? noticeMatches[noticeMatches.length - 1] : null;
   if (noticeMatch && noticeMatch[1]) {
     const agent = noticeMatch[1].trim();
     if (noticeMatch[2] && noticeMatch[2].trim()) {
       activeClientLabel = noticeMatch[2].trim();
       if (/vcp?chat/i.test(activeClientLabel)) activeClientIsVcpChat = true;
     }
-    return { agentKey: normalizeAgentKey(agent), agentLabel: normalizeAgentLabel(agent), source: "onering_notice" };
+    const resolved = { agentKey: normalizeAgentKey(agent), agentLabel: normalizeAgentLabel(agent), source: "onering_notice" };
+    debugLog("identity text matched latest OneRing notice", {
+      resolved,
+      clientLabel: activeClientLabel,
+      rawMatch: noticeMatch[0],
+      matchCount: noticeMatches.length,
+    });
+    return resolved;
   }
+
   return null;
 }
 
@@ -754,30 +831,67 @@ function resolveAgentIdentity(messages, requestConfig) {
   );
   const fromConfig = resolveAgentIdentityFromObject(requestConfig);
 
+  debugLog("identity resolve start", {
+    messageCount: Array.isArray(messages) ? messages.length : null,
+    systemMessageCount: Array.isArray(messages) ? messages.filter((message) => message && message.role === "system").length : null,
+    requestConfigKeys: requestConfig && typeof requestConfig === "object" ? Object.keys(requestConfig).slice(0, 30) : [],
+    fromConfig,
+    activeClientIsVcpChat,
+  });
+
+  let fromLatestSystem = null;
   if (Array.isArray(messages)) {
-    for (const message of messages) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
       if (!message || message.role !== "system") continue;
+      debugLog("identity inspect system message", summarizeMessageForDebug(message, index));
       const resolved = resolveAgentIdentityFromText(messageContentToText(message.content));
-      if (resolved && !fromConfig) return resolved;
-      if (resolved) break;
-    }
-  }
-  if (fromConfig) return fromConfig;
-
-  if (Array.isArray(messages)) {
-    for (const message of messages) {
-      const resolved = resolveAgentIdentityFromText(messageContentToText(message && message.content));
-      if (resolved) return resolved;
+      if (resolved) {
+        fromLatestSystem = resolved;
+        debugLog("identity selected latest system match", { index, resolved });
+        break;
+      }
     }
   }
 
-  return { agentKey: DEFAULT_AGENT_KEY, agentLabel: DEFAULT_AGENT_LABEL, source: "default" };
+  let finalIdentity;
+  if (fromConfig && (fromConfig.source === "object" || !fromLatestSystem)) {
+    finalIdentity = fromConfig;
+  } else if (fromLatestSystem) {
+    finalIdentity = fromLatestSystem;
+  } else if (activeAgentKey && activeAgentKey !== DEFAULT_AGENT_KEY && stateStore.agents && stateStore.agents[activeAgentKey]) {
+    finalIdentity = {
+      agentKey: activeAgentKey,
+      agentLabel: stateStore.agents[activeAgentKey].agentLabel || activeAgentKey,
+      source: "active_fallback",
+    };
+  } else {
+    finalIdentity = { agentKey: DEFAULT_AGENT_KEY, agentLabel: DEFAULT_AGENT_LABEL, source: "default" };
+  }
+
+  debugLog("identity resolve final", {
+    finalIdentity,
+    fromLatestSystem,
+    fromConfig,
+    activeAgentKey,
+    activeClientLabel,
+    activeClientIsVcpChat,
+  });
+
+  return finalIdentity;
 }
 
 function activateAgentForRequest(messages, requestConfig) {
   const identity = resolveAgentIdentity(messages, requestConfig);
   const activation = activateAgentState(identity.agentKey, identity.agentLabel);
   activation.source = identity.source;
+  debugLog("identity activation result", {
+    identity,
+    activatedAgentKey: activation.agentKey,
+    activatedAgentLabel: activation.agentLabel,
+    changed: activation.changed,
+    switched: activation.switched,
+  });
   return activation;
 }
 
@@ -847,6 +961,9 @@ function initialize(config, dependencies) {
   if (dependencies && typeof dependencies.embeddingProvider === "function") {
     embeddingProvider = dependencies.embeddingProvider;
     embeddingProviderTag = "injected";
+  } else if (contextBridge && typeof contextBridge.embedText === "function") {
+    embeddingProvider = createContextBridgeEmbeddingProvider(contextBridge);
+    embeddingProviderTag = "contextBridge";
   } else {
     embeddingProvider = createDefaultEmbeddingProvider();
     embeddingProviderTag = "default";
@@ -881,6 +998,27 @@ function getTopFrustration(limit = 2) {
 
 function hashText(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex").slice(0, 24);
+}
+
+function debugLog(...args) {
+  if (!activeConfig.DebugMode) return;
+  console.log(`[${PLUGIN_NAME}][Debug]`, ...args);
+}
+
+function summarizeMessageForDebug(message, index) {
+  const text = messageContentToText(message && message.content);
+  const oneRingMatches = Array.from(text.matchAll(ONE_RING_TRIGGER_PATTERN));
+  const noticeMatches = Array.from(text.matchAll(ONE_RING_NOTICE_PATTERN));
+  return {
+    index,
+    role: message && message.role,
+    textPreviewHead: text.replace(/\s+/g, " ").slice(0, 180),
+    textPreviewTail: text.replace(/\s+/g, " ").slice(-240),
+    oneRingTriggerCount: oneRingMatches.length,
+    oneRingNoticeCount: noticeMatches.length,
+    latestOneRingTrigger: oneRingMatches.length ? oneRingMatches[oneRingMatches.length - 1][0] : null,
+    latestOneRingNotice: noticeMatches.length ? noticeMatches[noticeMatches.length - 1][0] : null,
+  };
 }
 
 function messageContentToText(content) {
@@ -1086,7 +1224,8 @@ const SEMANTIC_TIMEOUT_MS = 2500;
 const SEMANTIC_GAIN = 12;
 const SEMANTIC_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 const MESSAGE_VECTOR_CACHE_LIMIT = 50;
-const ANCHOR_CACHE_PATH = path.join(STATE_DIR, "semantic-anchor-cache.json");
+const ANCHOR_CACHE_DB_PATH = path.join(STATE_DIR, "semantic-anchor-cache.sqlite");
+const LEGACY_ANCHOR_CACHE_PATH = path.join(STATE_DIR, "semantic-anchor-cache.json");
 
 let embeddingProvider = createDefaultEmbeddingProvider();
 let embeddingProviderTag = "default";
@@ -1102,6 +1241,43 @@ function createDefaultEmbeddingProvider() {
     if (!apiUrl || !apiKey) return null;
     return getEmbeddingsBatch(texts, { apiUrl, apiKey });
   };
+}
+
+function createContextBridgeEmbeddingProvider(bridge) {
+  return async (texts) => {
+    if (!Array.isArray(texts)) return null;
+    return Promise.all(
+      texts.map(async (text) => {
+        const normalized = String(text || "").trim();
+        if (!normalized) return null;
+
+        if (typeof bridge.getEmbeddingFromCache === "function") {
+          const exact = bridge.getEmbeddingFromCache(normalized);
+          if (exact) return exact;
+        }
+
+        if (typeof bridge.getFuzzyEmbeddingFromCache === "function") {
+          const fuzzy = bridge.getFuzzyEmbeddingFromCache(normalized);
+          if (fuzzy && fuzzy.vector) return fuzzy.vector;
+        }
+
+        return bridge.embedText(normalized);
+      })
+    );
+  };
+}
+
+function sanitizeForEmbedding(text, role = "user") {
+  const raw = String(text || "");
+  if (!contextBridge || typeof contextBridge.sanitize !== "function") return raw.trim();
+  try {
+    return String(contextBridge.sanitize(raw, role) || "").trim();
+  } catch (error) {
+    if (activeConfig.DebugMode) {
+      console.warn(`[${PLUGIN_NAME}] contextBridge sanitize failed: ${error.message}`);
+    }
+    return raw.trim();
+  }
 }
 
 function withTimeout(promise, ms) {
@@ -1122,25 +1298,52 @@ function getAnchorCacheSignature() {
   };
 }
 
-function loadAnchorVectorsFromDisk() {
+function validateAnchorVectors(vectors) {
+  if (!vectors || typeof vectors !== "object" || Array.isArray(vectors)) return false;
+  for (const feature of CONTEXT_FEATURES) {
+    const list = vectors[feature];
+    if (!Array.isArray(list) || list.length !== CONTEXT_ANCHORS[feature].length) return false;
+    if (!list.every((vector) => Array.isArray(vector) && vector.length > 0)) return false;
+  }
+  return true;
+}
+
+function openAnchorCacheDb() {
+  if (!Database) return null;
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  const db = new Database(ANCHOR_CACHE_DB_PATH);
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS semantic_anchor_cache (
+      cache_key TEXT PRIMARY KEY,
+      model_sig TEXT NOT NULL,
+      anchors_hash TEXT NOT NULL,
+      provider_tag TEXT NOT NULL,
+      vectors_json TEXT NOT NULL,
+      saved_at TEXT NOT NULL
+    );
+  `);
+  return db;
+}
+
+function getAnchorCacheKey(signature = getAnchorCacheSignature()) {
+  return hashText(`${signature.modelSig}\n${signature.anchorsHash}\n${signature.providerTag}`);
+}
+
+function loadAnchorVectorsFromLegacyJson() {
   try {
-    if (!fs.existsSync(ANCHOR_CACHE_PATH)) return null;
-    const cached = JSON.parse(fs.readFileSync(ANCHOR_CACHE_PATH, "utf8"));
+    if (!fs.existsSync(LEGACY_ANCHOR_CACHE_PATH)) return null;
+    const cached = JSON.parse(fs.readFileSync(LEGACY_ANCHOR_CACHE_PATH, "utf8"));
     const signature = getAnchorCacheSignature();
     if (
       !cached ||
       cached.modelSig !== signature.modelSig ||
       cached.anchorsHash !== signature.anchorsHash ||
       cached.providerTag !== signature.providerTag ||
-      !cached.vectors ||
-      typeof cached.vectors !== "object"
+      !validateAnchorVectors(cached.vectors)
     ) {
       return null;
-    }
-    for (const feature of CONTEXT_FEATURES) {
-      const list = cached.vectors[feature];
-      if (!Array.isArray(list) || list.length !== CONTEXT_ANCHORS[feature].length) return null;
-      if (!list.every((vector) => Array.isArray(vector) && vector.length > 0)) return null;
     }
     return cached.vectors;
   } catch (error) {
@@ -1148,17 +1351,67 @@ function loadAnchorVectorsFromDisk() {
   }
 }
 
-function saveAnchorVectorsToDisk(vectors) {
+function loadAnchorVectorsFromDisk() {
+  const signature = getAnchorCacheSignature();
+
   try {
-    fs.mkdirSync(STATE_DIR, { recursive: true });
-    fs.writeFileSync(
-      ANCHOR_CACHE_PATH,
-      JSON.stringify({ ...getAnchorCacheSignature(), savedAt: nowIso(), vectors }),
-      "utf8"
-    );
+    const db = openAnchorCacheDb();
+    if (db) {
+      try {
+        const row = db.prepare(
+          `SELECT vectors_json FROM semantic_anchor_cache
+           WHERE cache_key = ? AND model_sig = ? AND anchors_hash = ? AND provider_tag = ?
+           LIMIT 1`
+        ).get(getAnchorCacheKey(signature), signature.modelSig, signature.anchorsHash, signature.providerTag);
+        if (row && row.vectors_json) {
+          const vectors = JSON.parse(row.vectors_json);
+          if (validateAnchorVectors(vectors)) return vectors;
+        }
+      } finally {
+        db.close();
+      }
+    }
   } catch (error) {
     if (activeConfig.DebugMode) {
-      console.warn(`[${PLUGIN_NAME}] failed to persist anchor cache: ${error.message}`);
+      console.warn(`[${PLUGIN_NAME}] failed to load SQLite anchor cache: ${error.message}`);
+    }
+  }
+
+  const legacyVectors = loadAnchorVectorsFromLegacyJson();
+  if (legacyVectors) {
+    saveAnchorVectorsToDisk(legacyVectors);
+    return legacyVectors;
+  }
+
+  return null;
+}
+
+function saveAnchorVectorsToDisk(vectors) {
+  if (!validateAnchorVectors(vectors)) return;
+
+  try {
+    const db = openAnchorCacheDb();
+    if (!db) return;
+    try {
+      const signature = getAnchorCacheSignature();
+      db.prepare(
+        `INSERT OR REPLACE INTO semantic_anchor_cache
+         (cache_key, model_sig, anchors_hash, provider_tag, vectors_json, saved_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(
+        getAnchorCacheKey(signature),
+        signature.modelSig,
+        signature.anchorsHash,
+        signature.providerTag,
+        JSON.stringify(vectors),
+        nowIso()
+      );
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    if (activeConfig.DebugMode) {
+      console.warn(`[${PLUGIN_NAME}] failed to persist SQLite anchor cache: ${error.message}`);
     }
   }
 }
@@ -1216,10 +1469,30 @@ function rememberMessageVector(key, vector) {
   }
 }
 
-async function getMessageVector(text) {
-  const key = hashText(text);
+async function getMessageVector(text, role = "user") {
+  const normalizedText = sanitizeForEmbedding(text, role).slice(0, 2000);
+  if (!normalizedText) return null;
+
+  const key = hashText(`${role}:${normalizedText}`);
   if (messageVectorCache.has(key)) return messageVectorCache.get(key);
-  const embedded = await withTimeout(embeddingProvider([text]), SEMANTIC_TIMEOUT_MS);
+
+  if (contextBridge && typeof contextBridge.getEmbeddingFromCache === "function") {
+    const exact = contextBridge.getEmbeddingFromCache(normalizedText);
+    if (exact) {
+      rememberMessageVector(key, exact);
+      return exact;
+    }
+  }
+
+  if (contextBridge && typeof contextBridge.getFuzzyEmbeddingFromCache === "function") {
+    const fuzzy = contextBridge.getFuzzyEmbeddingFromCache(normalizedText);
+    if (fuzzy && fuzzy.vector) {
+      rememberMessageVector(key, fuzzy.vector);
+      return fuzzy.vector;
+    }
+  }
+
+  const embedded = await withTimeout(embeddingProvider([normalizedText]), SEMANTIC_TIMEOUT_MS);
   const vector = Array.isArray(embedded) && Array.isArray(embedded[0]) ? embedded[0] : null;
   if (vector) rememberMessageVector(key, vector);
   return vector;
@@ -1232,7 +1505,7 @@ async function estimateContextSemantic(text) {
   try {
     const anchors = await ensureAnchorVectors();
     if (!anchors) return null;
-    const vector = await getMessageVector(String(text || "").slice(0, 2000));
+    const vector = await getMessageVector(text, "user");
     if (!vector) return null;
 
     const sims = {};
@@ -2191,12 +2464,14 @@ async function processMessages(messages, requestConfig = {}) {
   const effectiveConfig = resolveConfig({ ...activeConfig, ...(requestConfig || {}) });
   if (
     !effectiveConfig.OpenHerPersonaEnabled ||
-    !effectiveConfig.OpenHerPersonaHintEnabled ||
     !Array.isArray(messages) ||
     messages.length === 0
   ) {
     return messages;
   }
+
+  const previousConfig = activeConfig;
+  activeConfig = effectiveConfig;
 
   const activationResult = activateAgentForRequest(messages, requestConfig);
   const metabolismResult = await applyMessageMetabolism(messages, Date.now());
@@ -2215,8 +2490,13 @@ async function processMessages(messages, requestConfig = {}) {
     saveState();
   }
 
-  const hint = buildPersonaHint();
   const processed = messages.map(stripExistingPersonaHint);
+  if (!effectiveConfig.OpenHerPersonaHintEnabled || effectiveConfig.OpenHerPersonaObserveOnly) {
+    activeConfig = previousConfig;
+    return processed;
+  }
+
+  const hint = buildPersonaHint();
   const firstSystemIndex = processed.findIndex((message) => message && message.role === "system");
 
   if (firstSystemIndex >= 0) {
@@ -2229,6 +2509,7 @@ async function processMessages(messages, requestConfig = {}) {
     processed.unshift({ role: "system", content: hint });
   }
 
+  activeConfig = previousConfig;
   return processed;
 }
 
@@ -2375,6 +2656,7 @@ function getStatus() {
     agents: getAgentSummaries(),
     enabled: activeConfig.OpenHerPersonaEnabled,
     hintEnabled: activeConfig.OpenHerPersonaHintEnabled,
+    observeOnly: activeConfig.OpenHerPersonaObserveOnly,
     tickEnabled: activeConfig.OpenHerPersonaTickEnabled,
     contextBridgeAvailable: Boolean(contextBridge),
     semanticContext: {

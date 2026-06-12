@@ -109,6 +109,31 @@ test('OpenHerPersona injects hidden persona hint into system while preserving On
   });
 });
 
+test('OpenHerPersona resolves agent identity from the latest OneRing marker in system blocks', async () => {
+  await withRestoredState(async () => {
+    const plugin = freshPlugin();
+    await plugin.processToolCall({ command: 'reset' });
+
+    await plugin.processMessages([
+      {
+        role: 'system',
+        content: [
+          '记忆召回旧块：[[OneRing::MemoryGhost::VCPChat]]',
+          '已被前置预处理器替换掉的其他占位符内容',
+          '[[OneRing::Nova::VCPChat]]',
+          '后续还有别的工具调用指南，不应影响 OneRing 身份识别。',
+        ].join('\n'),
+      },
+      { role: 'system', content: '后续工具指南：这里没有 OneRing 身份标记。' },
+      { role: 'user', content: '验证 system 块内部的最后一个 OneRing 身份识别。' },
+    ]);
+
+    const state = readActiveState();
+    assert.equal(state.agentKey, 'Nova');
+    assert(!readAgentState('MemoryGhost'), 'older memory-like OneRing marker must not override the latest marker in system prompt');
+  });
+});
+
 test('OpenHerPersona applies assistant persona_delta once, keeps signal_delta after metabolism, and dedupes repeats', async () => {
   await withRestoredState(async () => {
     await withFixedRandom(async () => {
@@ -759,13 +784,21 @@ test('OpenHerPersona burst mode follows expression state and strict client gatin
   });
 });
 
-const anchorCachePath = path.join(repoRoot, 'Plugin', 'OpenHerPersona', 'state', 'semantic-anchor-cache.json');
+const anchorCachePath = path.join(repoRoot, 'Plugin', 'OpenHerPersona', 'state', 'semantic-anchor-cache.sqlite');
+const legacyAnchorCachePath = path.join(repoRoot, 'Plugin', 'OpenHerPersona', 'state', 'semantic-anchor-cache.json');
 
 function removeAnchorCache() {
-  try {
-    fs.unlinkSync(anchorCachePath);
-  } catch (_) {
-    // cache may not exist
+  for (const cachePath of [
+    anchorCachePath,
+    `${anchorCachePath}-shm`,
+    `${anchorCachePath}-wal`,
+    legacyAnchorCachePath,
+  ]) {
+    try {
+      fs.unlinkSync(cachePath);
+    } catch (_) {
+      // cache may not exist
+    }
   }
 }
 
@@ -811,7 +844,7 @@ test('OpenHerPersona semantic context raises matching feature above the keyword 
           semanticAffection > heuristicAffection + 0.1,
           `semantic affection ${semanticAffection} should exceed heuristic ${heuristicAffection}`
         );
-        assert(fs.existsSync(anchorCachePath), 'anchor vectors should be cached to disk');
+        assert(fs.existsSync(anchorCachePath), 'anchor vectors should be cached to SQLite on disk');
         assertBoundedState(semanticState);
       } finally {
         removeAnchorCache();

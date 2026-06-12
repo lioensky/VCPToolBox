@@ -3,7 +3,7 @@
   "name": "OpenHerPersona",
   "version": "0.5.1",
   "displayName": "OpenHer Persona Bridge",
-  "description": "VCP-native persona-state bridge inspired by OpenHer drives/signals. Keeps lightweight homeostatic drive state, per-agent temperament genomes and metabolic constitutions with slow plasticity, mood-inertia behavior signals, an emotional phase-transition machine (strained/eruption/cooling), expression-driven chat-burst hinting (split replies into IM-style bubbles via brk comment markers, no extra model calls), short persona_state_hint preprocessing, and direct status/tick/reset/explain commands without proactive sending or long-term memory writes.",
+  "description": "VCP-native persona-state bridge inspired by OpenHer drives/signals. Keeps lightweight homeostatic drive state, per-agent temperament genomes and metabolic constitutions with slow plasticity, mood-inertia behavior signals, an emotional phase-transition machine (strained/eruption/cooling), expression-driven chat-burst hinting (split replies into IM-style bubbles via brk comment markers, no extra model calls), short persona_state_hint preprocessing, observe-only statistics mode without prompt injection, and direct status/tick/reset/explain commands without proactive sending or long-term memory writes.",
   "author": "Nova",
   "pluginType": "hybridservice",
   "entryPoint": {
@@ -14,10 +14,12 @@
     "protocol": "direct",
     "timeout": 30000
   },
+  "requiresContextBridge": true,
   "configSchema": {
     "DebugMode": "boolean",
     "OpenHerPersonaEnabled": "boolean",
     "OpenHerPersonaHintEnabled": "boolean",
+    "OpenHerPersonaObserveOnly": "boolean",
     "OpenHerPersonaTickEnabled": "boolean",
     "OpenHerPersonaCooldownMinutes": "integer",
     "OpenHerPersonaImpulseThreshold": "string",
