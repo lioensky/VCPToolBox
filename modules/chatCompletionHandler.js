@@ -869,6 +869,7 @@ class ChatCompletionHandler {
       // 创建一个包含所有所需依赖的统一上下文
       const processingContext = {
         pluginManager,
+        webSocketServer,
         cachedEmojiLists: this.config.cachedEmojiLists,
         detectors: this.config.detectors,
         superDetectors: this.config.superDetectors,

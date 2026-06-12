@@ -669,6 +669,19 @@ async function replaceOtherVariables(text, model, role, context) {
             }
         }
 
+        if (processedText.includes('{{VCPDistributedServerList}}')) {
+            let distributedServerListText = '[VCPDistributedServerList information unavailable]';
+            try {
+                const formatter = context.webSocketServer?.formatDistributedServerListForPrompt;
+                if (typeof formatter === 'function') {
+                    distributedServerListText = formatter();
+                }
+            } catch (error) {
+                console.error('[replaceOtherVariables] Error processing {{VCPDistributedServerList}}:', error);
+            }
+            processedText = processedText.replaceAll('{{VCPDistributedServerList}}', distributedServerListText);
+        }
+
         const now = new Date();
         if (DEBUG_MODE) {
             console.log(`[TimeVar] Raw Date: ${now.toISOString()}`);

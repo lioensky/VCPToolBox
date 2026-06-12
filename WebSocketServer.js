@@ -194,7 +194,13 @@ function initialize(httpServer, config) {
                 if (clientType === 'DistributedServer') {
                     const serverId = `dist-${clientId}`;
                     ws.serverId = serverId;
-                    distributedServers.set(serverId, { ws, tools: [], ips: {} }); // 初始化ips字段
+                    distributedServers.set(serverId, {
+                        ws,
+                        tools: [],
+                        ips: {},
+                        connectedAt: new Date().toISOString(),
+                        lastSeenAt: new Date().toISOString()
+                    }); // 初始化ips字段
                     writeLog(`Distributed Server ${serverId} authenticated and connected.`);
                 } else if (clientType === 'ChromeObserver') {
                     console.log(`[WebSocketServer FORCE LOG] A client with type 'ChromeObserver' (ID: ${clientId}) has connected.`); // 强制日志
@@ -567,8 +573,12 @@ async function handleDistributedServerMessage(serverId, message) {
                 const externalTools = message.data.tools.filter(t => t.name !== 'internal_request_file');
                 pluginManager.registerDistributedTools(serverId, externalTools);
                 serverEntry.tools = externalTools.map(t => t.name);
+                if (message.data.serverName) {
+                    serverEntry.serverName = message.data.serverName;
+                }
+                serverEntry.lastSeenAt = new Date().toISOString();
                 distributedServers.set(serverId, serverEntry);
-                writeLog(`Registered ${externalTools.length} external tools from server ${serverId}.`);
+                writeLog(`Registered ${externalTools.length} external tools from server ${serverId}${serverEntry.serverName ? ` (${serverEntry.serverName})` : ''}.`);
             }
             break;
        case 'report_ip':
@@ -577,12 +587,17 @@ async function handleDistributedServerMessage(serverId, message) {
                const ipData = {
                    localIPs: message.data.localIPs || [],
                    publicIP: message.data.publicIP || null,
-                   serverName: message.data.serverName || serverId
+                   serverName: message.data.serverName || serverInfo.serverName || serverId
                };
                distributedServerIPs.set(serverId, ipData);
                
-               // 将 serverName 也存储在主连接对象中，以便通过名字查找
+               // 将 serverName 和 IP 信息也存储在主连接对象中，以便通过名字查找和提示词快照读取
                serverInfo.serverName = ipData.serverName;
+               serverInfo.ips = {
+                   localIPs: ipData.localIPs,
+                   publicIP: ipData.publicIP
+               };
+               serverInfo.lastSeenAt = new Date().toISOString();
                distributedServers.set(serverId, serverInfo);
 
                // 强制日志记录，无论debug模式如何
@@ -677,6 +692,63 @@ function findServerByIp(ip) {
    return null;
 }
 
+function getDistributedServerSnapshot() {
+    return Array.from(distributedServers.entries()).map(([serverId, serverInfo]) => {
+        const ipInfo = distributedServerIPs.get(serverId) || {};
+        const localIPs = Array.isArray(ipInfo.localIPs)
+            ? ipInfo.localIPs
+            : (Array.isArray(serverInfo.ips?.localIPs) ? serverInfo.ips.localIPs : []);
+
+        return {
+            serverId,
+            clientId: serverInfo.ws?.clientId || null,
+            serverName: serverInfo.serverName || ipInfo.serverName || serverId,
+            localIPs,
+            publicIP: ipInfo.publicIP ?? serverInfo.ips?.publicIP ?? null,
+            tools: Array.isArray(serverInfo.tools) ? [...serverInfo.tools] : [],
+            connected: serverInfo.ws?.readyState === WebSocket.OPEN,
+            connectedAt: serverInfo.connectedAt || null,
+            lastSeenAt: serverInfo.lastSeenAt || null
+        };
+    });
+}
+
+function formatDistributedServerListForPrompt() {
+    const servers = getDistributedServerSnapshot()
+        .filter(server => server.connected)
+        .sort((a, b) => String(a.serverName).localeCompare(String(b.serverName), 'zh-CN'));
+
+    if (servers.length === 0) {
+        return [
+            '[VCP Distributed Server List]',
+            '当前没有已连接的 VCP 分布式服务器。'
+        ].join('\n');
+    }
+
+    const lines = [
+        '[VCP Distributed Server List]',
+        `当前已连接 ${servers.length} 个 VCP 分布式服务器。`,
+        '说明：serverId 可用于精确定位分布式节点；serverName 是节点自报名称；IP 信息来自节点最近一次上报。'
+    ];
+
+    for (const server of servers) {
+        lines.push(
+            [
+                `- serverName: ${server.serverName}`,
+                `  serverId: ${server.serverId}`,
+                `  clientId: ${server.clientId || 'unknown'}`,
+                `  publicIP: ${server.publicIP || 'N/A'}`,
+                `  localIPs: ${server.localIPs.length > 0 ? server.localIPs.join(', ') : 'N/A'}`,
+                `  tools: ${server.tools.length > 0 ? server.tools.join(', ') : 'N/A'}`,
+                `  connectedAt: ${server.connectedAt || 'unknown'}`,
+                `  lastSeenAt: ${server.lastSeenAt || 'unknown'}`
+            ].join('\n')
+        );
+    }
+
+    return lines.join('\n');
+}
+
 // 新增：专门广播给管理面板
 function broadcastToAdminPanel(data) {
     if (!wssInstance) return;
@@ -704,5 +776,7 @@ module.exports = {
     executeDistributedTool,
     handleDistributedServerMessage,
     findServerByIp,
+    getDistributedServerSnapshot,
+    formatDistributedServerListForPrompt,
     shutdown
 };
