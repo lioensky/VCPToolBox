@@ -6,9 +6,114 @@ const path = require('path');
 const repoRoot = path.resolve(__dirname, '..');
 const pluginPath = path.join(repoRoot, 'Plugin', 'OpenHerPersona', 'OpenHerPersona.js');
 const statePath = path.join(repoRoot, 'Plugin', 'OpenHerPersona', 'state', 'openher-persona-state.json');
+const stateDbPath = path.join(repoRoot, 'Plugin', 'OpenHerPersona', 'state', 'openher-persona-state.sqlite');
 const orderPath = path.join(repoRoot, 'preprocessor_order.json');
+const Database = require('better-sqlite3');
+
+function dbSidecarPaths(dbPath) {
+  return [dbPath, `${dbPath}-shm`, `${dbPath}-wal`];
+}
+
+function backupFile(filePath) {
+  return fs.existsSync(filePath) ? fs.readFileSync(filePath) : null;
+}
+
+function restoreFile(filePath, content) {
+  if (content === null) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch (_) {
+      // file may not exist
+    }
+    return;
+  }
+  fs.writeFileSync(filePath, content);
+}
+
+function readStoreFromDb() {
+  if (!fs.existsSync(stateDbPath)) return null;
+  const db = new Database(stateDbPath, { readonly: true });
+  try {
+    const metaRows = db.prepare('SELECT key, value FROM openher_persona_meta').all();
+    const meta = Object.fromEntries(metaRows.map((row) => [row.key, row.value]));
+    const rows = db.prepare('SELECT agent_key, state_json FROM openher_persona_agents ORDER BY agent_key ASC').all();
+    if (!rows.length) return null;
+    const agents = {};
+    for (const row of rows) {
+      agents[row.agent_key] = JSON.parse(row.state_json);
+    }
+    const activeAgentKey = meta.activeAgentKey && agents[meta.activeAgentKey]
+      ? meta.activeAgentKey
+      : Object.keys(agents)[0];
+    return {
+      schemaVersion: Number(meta.schemaVersion) || 3,
+      plugin: meta.plugin || 'OpenHerPersona',
+      pluginVersion: meta.pluginVersion || '0.5.1',
+      updatedAt: meta.updatedAt || null,
+      createdAt: meta.createdAt || null,
+      activeAgentKey,
+      agents,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function writeStoreToDb(store) {
+  const db = new Database(stateDbPath);
+  try {
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS openher_persona_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS openher_persona_agents (
+        agent_key TEXT PRIMARY KEY,
+        agent_label TEXT NOT NULL,
+        state_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    const writeMeta = db.prepare(
+      'INSERT INTO openher_persona_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    );
+    const upsertAgent = db.prepare(
+      `INSERT INTO openher_persona_agents (agent_key, agent_label, state_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(agent_key) DO UPDATE SET
+         agent_label = excluded.agent_label,
+         state_json = excluded.state_json,
+         updated_at = excluded.updated_at`
+    );
+    const transaction = db.transaction(() => {
+      writeMeta.run('schemaVersion', String(store.schemaVersion || 3));
+      writeMeta.run('plugin', store.plugin || 'OpenHerPersona');
+      writeMeta.run('pluginVersion', store.pluginVersion || '0.5.1');
+      writeMeta.run('createdAt', store.createdAt || new Date(0).toISOString());
+      writeMeta.run('updatedAt', store.updatedAt || new Date().toISOString());
+      writeMeta.run('activeAgentKey', store.activeAgentKey);
+      for (const [agentKey, agentState] of Object.entries(store.agents || {})) {
+        upsertAgent.run(
+          agentKey,
+          agentState.agentLabel || agentState.agentName || agentKey,
+          JSON.stringify(agentState),
+          agentState.createdAt || store.createdAt || new Date(0).toISOString(),
+          agentState.updatedAt || store.updatedAt || new Date().toISOString()
+        );
+      }
+    });
+    transaction();
+  } finally {
+    db.close();
+  }
+}
 
 function readStore() {
+  const dbStore = readStoreFromDb();
+  if (dbStore) return dbStore;
   return JSON.parse(fs.readFileSync(statePath, 'utf8'));
 }
 
@@ -36,18 +141,14 @@ function freshPlugin(config = {}, dependencies = {}) {
 }
 
 async function withRestoredState(fn) {
-  const originalState = fs.existsSync(statePath) ? fs.readFileSync(statePath, 'utf8') : null;
+  const originalState = backupFile(statePath);
+  const originalDbFiles = Object.fromEntries(dbSidecarPaths(stateDbPath).map((filePath) => [filePath, backupFile(filePath)]));
   try {
     await fn();
   } finally {
-    if (originalState === null) {
-      try {
-        fs.unlinkSync(statePath);
-      } catch (_) {
-        // state may not have been created
-      }
-    } else {
-      fs.writeFileSync(statePath, originalState, 'utf8');
+    restoreFile(statePath, originalState);
+    for (const [filePath, content] of Object.entries(originalDbFiles)) {
+      restoreFile(filePath, content);
     }
   }
 }
@@ -99,7 +200,7 @@ test('OpenHerPersona injects hidden persona hint into system while preserving On
     assert.match(processed[0].content, /signal_delta/);
     assert.match(processed[0].content, /persona_expression 回填指令/);
     assert.match(processed[0].content, /表达倾向/);
-    assert.match(processed[0].content, /偏热切/);
+    assert.match(processed[0].content, /当前人格信号/);
     assert(!processed.some((message) => message.role === 'user' && String(message.content).includes('persona_state_hint')));
 
     const state = readActiveState();
@@ -141,7 +242,7 @@ test('OpenHerPersona applies assistant persona_delta once, keeps signal_delta af
       await plugin.processToolCall({ command: 'reset' });
 
       const baseMessages = [
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '应用 delta。' },
         {
           role: 'assistant',
@@ -155,7 +256,7 @@ test('OpenHerPersona applies assistant persona_delta once, keeps signal_delta af
       await plugin.processToolCall({ command: 'reset' });
       const before = readActiveState();
       const messages = [
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '应用 delta。' },
         {
           role: 'assistant',
@@ -198,7 +299,7 @@ test('OpenHerPersona records assistant persona_expression once and dedupes repea
     await plugin.processToolCall({ command: 'reset' });
 
     const messages = [
-      { role: 'system', content: 'base system' },
+      { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
       { role: 'user', content: '记录表达方式。' },
       {
         role: 'assistant',
@@ -235,13 +336,13 @@ test('OpenHerPersona ignores VCP pseudo user blocks when detecting new turns', a
     await plugin.processToolCall({ command: 'reset' });
 
     await plugin.processMessages([
-      { role: 'system', content: 'base system' },
+      { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
       { role: 'user', content: '真人用户消息。' },
     ]);
     const afterRealUser = readActiveState();
 
     await plugin.processMessages([
-      { role: 'system', content: 'base system' },
+      { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
       { role: 'user', content: '真人用户消息。' },
       { role: 'assistant', content: '上一轮回复。' },
       { role: 'user', content: '[系统提示:][OneRing通知:上一条消息由Nova于2026-06-10 12:00:00发送于VCPChat]' },
@@ -326,7 +427,7 @@ test('OpenHerPersona tick status exposes the latest metric change values', async
 
     const store = readStore();
     store.agents['nova-id'].lastTickAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-    fs.writeFileSync(statePath, JSON.stringify(store, null, 2), 'utf8');
+    writeStoreToDb(store);
 
     const reloadedPlugin = freshPlugin();
     const tickStatus = await reloadedPlugin.processToolCall({ command: 'tick', agentId: 'nova-id', agentName: 'Nova' });
@@ -342,6 +443,59 @@ test('OpenHerPersona tick status exposes the latest metric change values', async
       tickStatus.tick.state.trends.signals.warmth
     );
     assertBoundedState(readAgentState('nova-id'));
+  });
+});
+
+test('OpenHerPersona persists agent buckets into SQLite rows and migrates legacy JSON store', async () => {
+  await withRestoredState(async () => {
+    for (const filePath of dbSidecarPaths(stateDbPath)) {
+      restoreFile(filePath, null);
+    }
+    restoreFile(statePath, null);
+
+    const plugin = freshPlugin();
+    await plugin.processMessages([
+      { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
+      { role: 'user', content: 'SQLite Nova 第一轮。' },
+    ]);
+    await plugin.processMessages([
+      { role: 'system', content: '[[OneRing::Kira::VCPChat]]\nbase system' },
+      { role: 'user', content: 'SQLite Kira 第一轮。' },
+    ]);
+
+    assert(fs.existsSync(stateDbPath), 'SQLite state database should be created');
+    const dbStore = readStoreFromDb();
+    assert(dbStore.agents.Nova, 'missing Nova SQLite row');
+    assert(dbStore.agents.Kira, 'missing Kira SQLite row');
+    assert(!dbStore.agents.__default__, 'default bucket should not be persisted to SQLite');
+    assert.equal(dbStore.agents.Nova.agentKey, 'Nova');
+    assert.equal(dbStore.agents.Kira.agentKey, 'Kira');
+
+    for (const filePath of dbSidecarPaths(stateDbPath)) {
+      restoreFile(filePath, null);
+    }
+    const legacyStore = {
+      schemaVersion: 3,
+      plugin: 'OpenHerPersona',
+      pluginVersion: '0.5.1',
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      activeAgentKey: 'Nova',
+      agents: {
+        Nova: dbStore.agents.Nova,
+        Kira: dbStore.agents.Kira,
+      },
+    };
+    fs.writeFileSync(statePath, JSON.stringify(legacyStore, null, 2), 'utf8');
+
+    const migratedPlugin = freshPlugin();
+    const status = await migratedPlugin.processToolCall({ command: 'status', agentId: 'Kira', agentName: 'Kira' });
+    assert.equal(status.agent.agentKey, 'Kira');
+
+    const migratedStore = readStoreFromDb();
+    assert(migratedStore.agents.Nova, 'legacy Nova should migrate to SQLite');
+    assert(migratedStore.agents.Kira, 'legacy Kira should migrate to SQLite');
+    assert(!migratedStore.agents.__default__, 'legacy migration must not create default SQLite row');
   });
 });
 
@@ -466,7 +620,7 @@ test('OpenHerPersona homeostasis keeps connection frustration from saturating ov
 
       for (let turn = 0; turn < 30; turn += 1) {
         await plugin.processMessages([
-          { role: 'system', content: 'base system' },
+          { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
           { role: 'user', content: `第 ${turn} 轮普通消息，继续聊聊今天的进展。` },
         ]);
       }
@@ -490,7 +644,7 @@ test('OpenHerPersona silence gap rekindles connection longing', async () => {
       await plugin.processToolCall({ command: 'reset' });
 
       await plugin.processMessages([
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '先正常聊一轮。' },
       ]);
       const activeConnection = readActiveState().frustration.connection;
@@ -498,11 +652,11 @@ test('OpenHerPersona silence gap rekindles connection longing', async () => {
       const store = readStore();
       const active = store.agents[store.activeAgentKey];
       active.lastActiveAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      fs.writeFileSync(statePath, JSON.stringify(store, null, 2), 'utf8');
+      writeStoreToDb(store);
 
       const reloadedPlugin = freshPlugin();
       await reloadedPlugin.processMessages([
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '隔了一天才回来找你。' },
       ]);
       const afterGap = readActiveState();
@@ -522,7 +676,7 @@ test('OpenHerPersona persists signal_delta influence through later metabolism vi
       await plugin.processToolCall({ command: 'reset' });
 
       await plugin.processMessages([
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '先聊一轮。' },
         {
           role: 'assistant',
@@ -533,7 +687,7 @@ test('OpenHerPersona persists signal_delta influence through later metabolism vi
       assert(afterDelta.signalBias.warmth > 0, 'signal bias should absorb the delta');
 
       await plugin.processMessages([
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '再聊一轮新的话题。' },
       ]);
       const afterNextTurn = readActiveState();
@@ -583,7 +737,7 @@ test('OpenHerPersona persona_delta impact tiers unlock larger one-shot changes w
       // Default (minor) clamps a large delta to +-0.8.
       await plugin.processToolCall({ command: 'reset' });
       await plugin.processMessages([
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '触发回填一。' },
         { role: 'assistant', content: '<!--persona_delta:{"frustration_delta":{"connection":2.5},"reason":"unit"}-->' },
       ]);
@@ -593,7 +747,7 @@ test('OpenHerPersona persona_delta impact tiers unlock larger one-shot changes w
       // major allows frustration_set jumps and stamps the cooldown.
       await plugin.processToolCall({ command: 'reset' });
       await plugin.processMessages([
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '触发回填二。' },
         {
           role: 'assistant',
@@ -609,7 +763,7 @@ test('OpenHerPersona persona_delta impact tiers unlock larger one-shot changes w
       // A second major inside the cooldown window downgrades to moderate:
       // frustration_set is ignored and the delta is clamped to +-1.5.
       await plugin.processMessages([
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '触发回填三。' },
         {
           role: 'assistant',
@@ -627,7 +781,7 @@ test('OpenHerPersona persona_delta impact tiers unlock larger one-shot changes w
       // major without a reason also downgrades, so the set is ignored.
       await plugin.processToolCall({ command: 'reset' });
       await plugin.processMessages([
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '触发回填四。' },
         { role: 'assistant', content: '<!--persona_delta:{"impact":"major","frustration_set":{"connection":5}}-->' },
       ]);
@@ -676,7 +830,7 @@ test('OpenHerPersona phase transition erupts under accumulated pressure then coo
       let eruptionHint = null;
       for (let turn = 0; turn < 8 && !eruptionHint; turn += 1) {
         const processed = await plugin.processMessages([
-          { role: 'system', content: 'base system' },
+          { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
           { role: 'user', content: `你又搞错了，报错了，停下别这样，第 ${turn} 次失败。` },
           {
             role: 'assistant',
@@ -696,7 +850,7 @@ test('OpenHerPersona phase transition erupts under accumulated pressure then coo
       assert(erupted.phase.lastEruptionAt, 'eruption timestamp missing');
 
       await plugin.processMessages([
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '怎么突然这么大火气……' },
       ]);
       const cooling = readActiveState();
@@ -704,7 +858,7 @@ test('OpenHerPersona phase transition erupts under accumulated pressure then coo
       assert(cooling.signals.warmth <= 0.45, 'cooling keeps warmth subdued');
 
       await plugin.processMessages([
-        { role: 'system', content: 'base system' },
+        { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
         { role: 'user', content: '抱抱你，我很喜欢你，想你了，温柔点好不好。' },
       ]);
       const grounded = readActiveState();
@@ -823,7 +977,7 @@ test('OpenHerPersona semantic context raises matching feature above the keyword 
         const heuristicPlugin = freshPlugin({ OpenHerPersonaSemanticContext: false });
         await heuristicPlugin.processToolCall({ command: 'reset' });
         await heuristicPlugin.processMessages([
-          { role: 'system', content: 'base system' },
+          { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
           { role: 'user', content: affectionMessage },
         ]);
         const heuristicAffection = readActiveState().genome.lastContext.affection;
@@ -834,7 +988,7 @@ test('OpenHerPersona semantic context raises matching feature above the keyword 
         );
         await semanticPlugin.processToolCall({ command: 'reset' });
         await semanticPlugin.processMessages([
-          { role: 'system', content: 'base system' },
+          { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
           { role: 'user', content: affectionMessage },
         ]);
         const semanticState = readActiveState();
@@ -865,7 +1019,7 @@ test('OpenHerPersona falls back to the keyword heuristic when the embedding prov
         await plugin.processToolCall({ command: 'reset' });
 
         await plugin.processMessages([
-          { role: 'system', content: 'base system' },
+          { role: 'system', content: '[[OneRing::Nova::VCPChat]]\nbase system' },
           { role: 'user', content: '嵌入挂了也要正常聊天。' },
         ]);
         const state = readActiveState();

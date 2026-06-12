@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const chokidar = require("chokidar");
 let Database = null;
 try {
   Database = require("better-sqlite3");
@@ -97,6 +98,7 @@ const DEFAULT_CONFIG = {
   OpenHerPersonaBurstMode: "auto",
   OpenHerPersonaHtmlHintEnabled: true,
 };
+const CONFIG_KEYS = Object.keys(DEFAULT_CONFIG);
 
 const PERSONA_HINT_PATTERN = /<!--persona_state_hint[\s\S]*?-->\s*/g;
 const PERSONA_DELTA_MARKER_PATTERN = /<!--\s*persona_delta\s*:/g;
@@ -183,6 +185,8 @@ const MOOD_THERMAL_RESPONSIVENESS = 0.25;
 
 const STATE_DIR = path.join(__dirname, "state");
 const STATE_PATH = path.join(STATE_DIR, "openher-persona-state.json");
+const STATE_DB_PATH = path.join(STATE_DIR, "openher-persona-state.sqlite");
+const CONFIG_PATH = path.join(STATE_DIR, "openher-persona-config.json");
 const STATE_STORE_VERSION = 3;
 const DEFAULT_AGENT_KEY = "__default__";
 const DEFAULT_AGENT_LABEL = "default";
@@ -191,6 +195,8 @@ const ONE_RING_TRIGGER_PATTERN = /\[\[\s*OneRing\s*[:：]{2}\s*([^:：\]\r\n]+?)
 const ONE_RING_NOTICE_PATTERN = /\[OneRing系统已启动，当前Agent([^，\]\r\n]+)，当前客户端([^，\]\r\n]+)(?:，当前模式([^，\]\r\n]+))?/g;
 
 let activeConfig = { ...DEFAULT_CONFIG };
+let configWatcher = null;
+let lastConfigWriteAt = 0;
 let contextBridge = null;
 let stateStore = createDefaultStateStore();
 let state = stateStore.agents[DEFAULT_AGENT_KEY];
@@ -406,6 +412,26 @@ function normalizeInteger(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function getConfigSchema() {
+  return {
+    DebugMode: { type: "boolean", label: "调试日志", description: "输出 OpenHerPersona 调试日志。" },
+    OpenHerPersonaEnabled: { type: "boolean", label: "启用人格情绪", description: "总开关；关闭后不处理情绪状态。" },
+    OpenHerPersonaHintEnabled: { type: "boolean", label: "注入情绪提示", description: "向系统提示词注入当前人格状态提示。" },
+    OpenHerPersonaObserveOnly: { type: "boolean", label: "观察模式", description: "仅记录状态，不向提示词注入情绪提示。" },
+    OpenHerPersonaTickEnabled: { type: "boolean", label: "启用 Tick", description: "允许时间代谢 Tick 更新驱力。" },
+    OpenHerPersonaCooldownMinutes: { type: "integer", label: "冲动冷却分钟", min: 1, max: 10080 },
+    OpenHerPersonaImpulseThreshold: { type: "number", label: "冲动阈值", min: 0, max: 5, step: 0.05 },
+    OpenHerPersonaTemperamentSpread: { type: "number", label: "气质分散度", min: 0, max: 0.4, step: 0.01 },
+    OpenHerPersonaSemanticContext: { type: "boolean", label: "语义上下文", description: "使用 embedding 语义锚点辅助判断语境。" },
+    OpenHerPersonaSemanticWeight: { type: "number", label: "语义权重", min: 0, max: 1, step: 0.05 },
+    OpenHerPersonaPhaseEnabled: { type: "boolean", label: "启用情绪相变", description: "允许紧绷、爆发、冷却状态机。" },
+    OpenHerPersonaEruptionCooldownMinutes: { type: "integer", label: "爆发冷却分钟", min: 1, max: 10080 },
+    OpenHerPersonaBurstEnabled: { type: "boolean", label: "启用分条倾向", description: "允许对 VCPChat 下发即时聊天分条提示。" },
+    OpenHerPersonaBurstMode: { type: "select", label: "分条模式", options: ["auto", "always", "off"] },
+    OpenHerPersonaHtmlHintEnabled: { type: "boolean", label: "HTML 表达提示", description: "允许对 VCPChat 下发轻量 HTML 表达提示。" },
+  };
+}
+
 function resolveConfig(config) {
   const merged = { ...DEFAULT_CONFIG, ...(config || {}) };
   return {
@@ -489,6 +515,140 @@ function resolveConfig(config) {
       DEFAULT_CONFIG.OpenHerPersonaHtmlHintEnabled
     ),
   };
+}
+
+function readConfigFile() {
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) return null;
+    const parsed = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed;
+  } catch (error) {
+    console.warn(`[${PLUGIN_NAME}] failed to read JSON config, using previous/default config: ${error.message}`);
+    return null;
+  }
+}
+
+function hasExplicitConfigOverrides(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return false;
+  return CONFIG_KEYS.some((key) => Object.prototype.hasOwnProperty.call(config, key));
+}
+
+function shouldRefreshMigratedConfigFromEnv(existingDocument, envConfig = {}) {
+  // JSON is the source of truth once it has been saved from the runtime/admin panel.
+  // Before that point the file is only the automatic env/default migration artifact;
+  // allowing explicit initialize() overrides to refresh it keeps tests and one-shot
+  // env migration deterministic without letting stale env silently override a panel
+  // managed JSON document.
+  return (
+    existingDocument &&
+    existingDocument.migratedFromEnv !== false &&
+    hasExplicitConfigOverrides(envConfig)
+  );
+}
+
+function buildConfigDocument(config, migratedFromEnv = false) {
+  return {
+    schemaVersion: 1,
+    plugin: PLUGIN_NAME,
+    updatedAt: nowIso(),
+    migratedFromEnv,
+    config: resolveConfig(config),
+  };
+}
+
+function writeConfigDocument(document) {
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  const tmpPath = `${CONFIG_PATH}.tmp`;
+  lastConfigWriteAt = Date.now();
+  fs.writeFileSync(tmpPath, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+  fs.renameSync(tmpPath, CONFIG_PATH);
+}
+
+function loadConfigFromJsonOrMigrate(envConfig = {}) {
+  const existing = readConfigFile();
+  if (existing && existing.config && typeof existing.config === "object") {
+    if (shouldRefreshMigratedConfigFromEnv(existing, envConfig)) {
+      const refreshed = buildConfigDocument({ ...existing.config, ...envConfig }, true);
+      writeConfigDocument(refreshed);
+      if (refreshed.config.DebugMode) {
+        console.log(`[${PLUGIN_NAME}] JSON config refreshed from explicit initialize() overrides at ${CONFIG_PATH}.`);
+      }
+      return refreshed.config;
+    }
+
+    const normalized = resolveConfig(existing.config);
+    const normalizedDoc = { ...existing, schemaVersion: 1, plugin: PLUGIN_NAME, updatedAt: existing.updatedAt || nowIso(), config: normalized };
+    if (JSON.stringify(existing.config) !== JSON.stringify(normalized)) {
+      writeConfigDocument(normalizedDoc);
+    }
+    return normalized;
+  }
+
+  const migrated = buildConfigDocument(envConfig, true);
+  writeConfigDocument(migrated);
+  console.log(`[${PLUGIN_NAME}] JSON config initialized at ${CONFIG_PATH}. Values were migrated from env/default config once; JSON is now the source of truth.`);
+  return migrated.config;
+}
+
+function reloadConfigFromDisk(reason = "watch") {
+  const document = readConfigFile();
+  if (!document || !document.config || typeof document.config !== "object") return false;
+  const nextConfig = resolveConfig(document.config);
+  activeConfig = nextConfig;
+  if (state && state.cooldown) {
+    state.cooldown.minutes = activeConfig.OpenHerPersonaCooldownMinutes;
+  }
+  if (activeConfig.DebugMode) {
+    console.log(`[${PLUGIN_NAME}] JSON config reloaded (${reason}).`);
+  }
+  return true;
+}
+
+function saveRuntimeConfig(nextConfig) {
+  const normalized = resolveConfig(nextConfig);
+  const document = buildConfigDocument(normalized, false);
+  writeConfigDocument(document);
+  activeConfig = normalized;
+  if (state && state.cooldown) {
+    state.cooldown.minutes = activeConfig.OpenHerPersonaCooldownMinutes;
+  }
+  return getConfigStatus();
+}
+
+function getConfigStatus() {
+  return {
+    status: "success",
+    plugin: PLUGIN_NAME,
+    path: CONFIG_PATH,
+    schema: getConfigSchema(),
+    defaults: { ...DEFAULT_CONFIG },
+    config: { ...activeConfig },
+    sourceOfTruth: "json",
+  };
+}
+
+function startConfigWatcher() {
+  if (configWatcher) return;
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  configWatcher = chokidar.watch(CONFIG_PATH, {
+    ignoreInitial: true,
+    awaitWriteFinish: {
+      stabilityThreshold: 200,
+      pollInterval: 50,
+    },
+  });
+  configWatcher.on("add", () => reloadConfigFromDisk("add"));
+  configWatcher.on("change", () => {
+    if (Date.now() - lastConfigWriteAt < 300) return;
+    reloadConfigFromDisk("change");
+  });
+  configWatcher.on("error", (error) => {
+    console.warn(`[${PLUGIN_NAME}] config watcher error: ${error.message}`);
+  });
+  if (typeof configWatcher.unref === "function") {
+    configWatcher.unref();
+  }
 }
 
 function clamp01(value) {
@@ -658,6 +818,18 @@ function ensureStateStoreShape(raw) {
   };
 }
 
+function pruneDefaultAgentBucket() {
+  if (!stateStore || !stateStore.agents || typeof stateStore.agents !== "object") return false;
+  const realAgentKeys = Object.keys(stateStore.agents).filter((key) => key !== DEFAULT_AGENT_KEY);
+  if (realAgentKeys.length === 0 || !stateStore.agents[DEFAULT_AGENT_KEY]) return false;
+  delete stateStore.agents[DEFAULT_AGENT_KEY];
+  if (stateStore.activeAgentKey === DEFAULT_AGENT_KEY) {
+    stateStore.activeAgentKey = realAgentKeys.includes(activeAgentKey) ? activeAgentKey : realAgentKeys[0];
+  }
+  legacySingleStatePending = false;
+  return true;
+}
+
 function activateAgentState(agentKey = DEFAULT_AGENT_KEY, agentLabel = null) {
   const key = normalizeAgentKey(agentKey);
   const label = normalizeAgentLabel(agentLabel || key, key);
@@ -690,6 +862,11 @@ function activateAgentState(agentKey = DEFAULT_AGENT_KEY, agentLabel = null) {
   activeAgentKey = key;
   stateStore.activeAgentKey = key;
   state = stateStore.agents[key];
+  if (key !== DEFAULT_AGENT_KEY) {
+    changed = pruneDefaultAgentBucket() || changed;
+    stateStore.activeAgentKey = key;
+    state = stateStore.agents[key];
+  }
   state.cooldown.minutes = activeConfig.OpenHerPersonaCooldownMinutes;
   return { state, agentKey: key, agentLabel: label, changed, switched };
 }
@@ -854,19 +1031,11 @@ function resolveAgentIdentity(messages, requestConfig) {
     }
   }
 
-  let finalIdentity;
+  let finalIdentity = null;
   if (fromConfig && (fromConfig.source === "object" || !fromLatestSystem)) {
     finalIdentity = fromConfig;
   } else if (fromLatestSystem) {
     finalIdentity = fromLatestSystem;
-  } else if (activeAgentKey && activeAgentKey !== DEFAULT_AGENT_KEY && stateStore.agents && stateStore.agents[activeAgentKey]) {
-    finalIdentity = {
-      agentKey: activeAgentKey,
-      agentLabel: stateStore.agents[activeAgentKey].agentLabel || activeAgentKey,
-      source: "active_fallback",
-    };
-  } else {
-    finalIdentity = { agentKey: DEFAULT_AGENT_KEY, agentLabel: DEFAULT_AGENT_LABEL, source: "default" };
   }
 
   debugLog("identity resolve final", {
@@ -883,8 +1052,28 @@ function resolveAgentIdentity(messages, requestConfig) {
 
 function activateAgentForRequest(messages, requestConfig) {
   const identity = resolveAgentIdentity(messages, requestConfig);
+  if (!identity) {
+    const activation = {
+      state,
+      agentKey: null,
+      agentLabel: null,
+      changed: false,
+      switched: false,
+      source: "unresolved",
+      resolved: false,
+    };
+    debugLog("identity activation skipped", {
+      identity,
+      activeAgentKey,
+      activeClientLabel,
+      activeClientIsVcpChat,
+    });
+    return activation;
+  }
+
   const activation = activateAgentState(identity.agentKey, identity.agentLabel);
   activation.source = identity.source;
+  activation.resolved = true;
   debugLog("identity activation result", {
     identity,
     activatedAgentKey: activation.agentKey,
@@ -893,6 +1082,178 @@ function activateAgentForRequest(messages, requestConfig) {
     switched: activation.switched,
   });
   return activation;
+}
+
+function openStateDb() {
+  if (!Database) return null;
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  const db = new Database(STATE_DB_PATH);
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
+  db.pragma("busy_timeout = 5000");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS openher_persona_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS openher_persona_agents (
+      agent_key TEXT PRIMARY KEY,
+      agent_label TEXT NOT NULL,
+      state_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_openher_persona_agents_updated_at
+      ON openher_persona_agents(updated_at);
+  `);
+  return db;
+}
+
+function readStateMeta(db, key) {
+  const row = db.prepare("SELECT value FROM openher_persona_meta WHERE key = ?").get(key);
+  return row ? row.value : null;
+}
+
+function writeStateMeta(db, key, value) {
+  db.prepare(
+    `INSERT INTO openher_persona_meta (key, value)
+     VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(key, String(value));
+}
+
+function loadStateStoreFromDb() {
+  if (!Database || !fs.existsSync(STATE_DB_PATH)) return null;
+  const db = openStateDb();
+  if (!db) return null;
+  try {
+    const rows = db
+      .prepare("SELECT agent_key, agent_label, state_json FROM openher_persona_agents ORDER BY updated_at ASC")
+      .all();
+    if (!rows.length) return null;
+
+    const base = createDefaultStateStore();
+    const agents = {};
+    for (const row of rows) {
+      try {
+        const rawState = JSON.parse(row.state_json);
+        const key = normalizeAgentKey(rawState.agentKey || row.agent_key);
+        if (key === DEFAULT_AGENT_KEY) continue;
+        const label = normalizeAgentLabel(rawState.agentLabel || row.agent_label || key, key);
+        agents[key] = ensureStateShape(rawState, key, label);
+      } catch (error) {
+        // Skip corrupt rows so one bad agent entry does not kill the whole store.
+      }
+    }
+
+    if (Object.keys(agents).length === 0) return null;
+
+    const requestedActiveKey = normalizeAgentKey(readStateMeta(db, "activeAgentKey") || DEFAULT_AGENT_KEY);
+    const activeKey = agents[requestedActiveKey] ? requestedActiveKey : Object.keys(agents)[0];
+    return {
+      store: {
+        ...base,
+        schemaVersion: STATE_STORE_VERSION,
+        plugin: PLUGIN_NAME,
+        pluginVersion: PLUGIN_VERSION,
+        createdAt: readStateMeta(db, "createdAt") || base.createdAt,
+        updatedAt: readStateMeta(db, "updatedAt") || nowIso(),
+        activeAgentKey: activeKey,
+        legacySingleStatePending: false,
+        agents,
+      },
+      legacySingleStatePending: false,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function saveCurrentAgentStateToDb() {
+  if (!Database || activeAgentKey === DEFAULT_AGENT_KEY) return false;
+  const db = openStateDb();
+  if (!db) return false;
+
+  const now = nowIso();
+  state.agentKey = activeAgentKey;
+  state.updatedAt = now;
+  state.pluginVersion = PLUGIN_VERSION;
+  stateStore.agents[activeAgentKey] = state;
+  pruneDefaultAgentBucket();
+
+  try {
+    const transaction = db.transaction(() => {
+      const createdAt = state.createdAt || now;
+      db.prepare(
+        `INSERT INTO openher_persona_agents (agent_key, agent_label, state_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(agent_key) DO UPDATE SET
+           agent_label = excluded.agent_label,
+           state_json = excluded.state_json,
+           updated_at = excluded.updated_at`
+      ).run(
+        activeAgentKey,
+        state.agentLabel || activeAgentKey,
+        JSON.stringify(state),
+        createdAt,
+        now
+      );
+
+      writeStateMeta(db, "schemaVersion", String(STATE_STORE_VERSION));
+      writeStateMeta(db, "plugin", PLUGIN_NAME);
+      writeStateMeta(db, "pluginVersion", PLUGIN_VERSION);
+      writeStateMeta(db, "createdAt", stateStore.createdAt || createdAt);
+      writeStateMeta(db, "updatedAt", now);
+      writeStateMeta(db, "activeAgentKey", activeAgentKey);
+    });
+    transaction();
+    return true;
+  } finally {
+    db.close();
+  }
+}
+
+function saveAllAgentStatesToDb() {
+  if (!Database) return false;
+  const db = openStateDb();
+  if (!db) return false;
+
+  const now = nowIso();
+  pruneDefaultAgentBucket();
+
+  try {
+    const transaction = db.transaction(() => {
+      for (const [agentKey, agentState] of Object.entries(stateStore.agents || {})) {
+        if (agentKey === DEFAULT_AGENT_KEY || !agentState) continue;
+        const shaped = ensureStateShape(agentState, agentKey, agentState.agentLabel || agentKey);
+        db.prepare(
+          `INSERT INTO openher_persona_agents (agent_key, agent_label, state_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(agent_key) DO UPDATE SET
+             agent_label = excluded.agent_label,
+             state_json = excluded.state_json,
+             updated_at = excluded.updated_at`
+        ).run(
+          agentKey,
+          shaped.agentLabel || agentKey,
+          JSON.stringify(shaped),
+          shaped.createdAt || now,
+          shaped.updatedAt || now
+        );
+      }
+
+      writeStateMeta(db, "schemaVersion", String(STATE_STORE_VERSION));
+      writeStateMeta(db, "plugin", PLUGIN_NAME);
+      writeStateMeta(db, "pluginVersion", PLUGIN_VERSION);
+      writeStateMeta(db, "createdAt", stateStore.createdAt || now);
+      writeStateMeta(db, "updatedAt", now);
+      writeStateMeta(db, "activeAgentKey", activeAgentKey !== DEFAULT_AGENT_KEY ? activeAgentKey : stateStore.activeAgentKey);
+    });
+    transaction();
+    return true;
+  } finally {
+    db.close();
+  }
 }
 
 function getAgentSummaries() {
@@ -909,6 +1270,15 @@ function getAgentSummaries() {
 
 function loadState() {
   try {
+    const loadedFromDb = loadStateStoreFromDb();
+    if (loadedFromDb) {
+      stateStore = loadedFromDb.store;
+      legacySingleStatePending = loadedFromDb.legacySingleStatePending;
+      const activeState = stateStore.agents[stateStore.activeAgentKey];
+      activateAgentState(stateStore.activeAgentKey, activeState && activeState.agentLabel);
+      return;
+    }
+
     if (!fs.existsSync(STATE_PATH)) {
       stateStore = createDefaultStateStore();
       legacySingleStatePending = false;
@@ -920,6 +1290,7 @@ function loadState() {
     legacySingleStatePending = loaded.legacySingleStatePending;
     const activeState = stateStore.agents[stateStore.activeAgentKey];
     activateAgentState(stateStore.activeAgentKey, activeState && activeState.agentLabel);
+    saveAllAgentStatesToDb();
   } catch (error) {
     stateStore = createDefaultStateStore();
     legacySingleStatePending = false;
@@ -934,17 +1305,28 @@ function loadState() {
 }
 
 function saveState() {
-  fs.mkdirSync(STATE_DIR, { recursive: true });
+  if (activeAgentKey === DEFAULT_AGENT_KEY) {
+    return;
+  }
+
   const now = nowIso();
+  state.agentKey = activeAgentKey;
   state.updatedAt = now;
   state.pluginVersion = PLUGIN_VERSION;
   stateStore.agents[activeAgentKey] = state;
+  pruneDefaultAgentBucket();
   stateStore.schemaVersion = STATE_STORE_VERSION;
   stateStore.plugin = PLUGIN_NAME;
   stateStore.pluginVersion = PLUGIN_VERSION;
   stateStore.activeAgentKey = activeAgentKey;
   stateStore.legacySingleStatePending = legacySingleStatePending;
   stateStore.updatedAt = now;
+
+  if (saveCurrentAgentStateToDb()) {
+    return;
+  }
+
+  fs.mkdirSync(STATE_DIR, { recursive: true });
   const tmpPath = `${STATE_PATH}.tmp`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(stateStore, null, 2)}\n`, "utf8");
   fs.renameSync(tmpPath, STATE_PATH);
@@ -956,7 +1338,8 @@ function pushAudit(entry) {
 }
 
 function initialize(config, dependencies) {
-  activeConfig = resolveConfig(config);
+  activeConfig = loadConfigFromJsonOrMigrate(config || {});
+  startConfigWatcher();
   contextBridge = dependencies && dependencies.contextBridge ? dependencies.contextBridge : null;
   if (dependencies && typeof dependencies.embeddingProvider === "function") {
     embeddingProvider = dependencies.embeddingProvider;
@@ -974,8 +1357,10 @@ function initialize(config, dependencies) {
   messageVectorCache.clear();
   loadState();
   state.cooldown.minutes = activeConfig.OpenHerPersonaCooldownMinutes;
-  pushAudit({ type: "initialize", hintEnabled: activeConfig.OpenHerPersonaHintEnabled });
-  saveState();
+  if (activeAgentKey !== DEFAULT_AGENT_KEY) {
+    pushAudit({ type: "initialize", hintEnabled: activeConfig.OpenHerPersonaHintEnabled });
+    saveState();
+  }
 
   if (activeConfig.DebugMode) {
     console.log(`[${PLUGIN_NAME}] initialized. contextBridge=${Boolean(contextBridge)}`);
@@ -2474,6 +2859,12 @@ async function processMessages(messages, requestConfig = {}) {
   activeConfig = effectiveConfig;
 
   const activationResult = activateAgentForRequest(messages, requestConfig);
+  if (!activationResult.resolved) {
+    const processed = messages.map(stripExistingPersonaHint);
+    activeConfig = previousConfig;
+    return processed;
+  }
+
   const metabolismResult = await applyMessageMetabolism(messages, Date.now());
   const deltaResult = applyPersonaDeltas(messages);
   const expressionResult = applyPersonaExpressions(messages);
@@ -2654,6 +3045,9 @@ function getStatus() {
       agentLabel: state.agentLabel || activeAgentKey,
     },
     agents: getAgentSummaries(),
+    config: { ...activeConfig },
+    configSource: "json",
+    configPath: CONFIG_PATH,
     enabled: activeConfig.OpenHerPersonaEnabled,
     hintEnabled: activeConfig.OpenHerPersonaHintEnabled,
     observeOnly: activeConfig.OpenHerPersonaObserveOnly,
@@ -2805,6 +3199,15 @@ async function processToolCall(params) {
     return { status: "success", reset: true, result: resetState() };
   }
 
+  if (command === "config" || command === "get_config") {
+    return getConfigStatus();
+  }
+
+  if (command === "save_config" || command === "set_config") {
+    const nextConfig = params && params.config && typeof params.config === "object" ? params.config : params;
+    return saveRuntimeConfig({ ...activeConfig, ...(nextConfig || {}) });
+  }
+
   if (command === "explain") {
     return explain();
   }
@@ -2813,12 +3216,16 @@ async function processToolCall(params) {
     status: "error",
     plugin: PLUGIN_NAME,
     message: `Unsupported command: ${command}`,
-    supportedCommands: ["status", "tick", "reset", "explain"],
+    supportedCommands: ["status", "tick", "reset", "config", "save_config", "explain"],
   };
 }
 
 function shutdown() {
   try {
+    if (configWatcher) {
+      configWatcher.close();
+      configWatcher = null;
+    }
     pushAudit({ type: "shutdown" });
     saveState();
   } catch (error) {

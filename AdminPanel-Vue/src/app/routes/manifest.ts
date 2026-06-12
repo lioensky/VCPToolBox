@@ -21,6 +21,7 @@ export type AppRouteId =
   | "vcptavern-editor"
   | "agent-files-editor"
   | "agent-assistant-config"
+  | "agent-emotion-manager"
   | "forum-assistant-config"
   | "agent-scores"
   | "toolbox-manager"
@@ -157,6 +158,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     path: "/agent-assistant-config",
     title: "Agent 通讯配置",
     icon: "diversity_3",
+    requiresAuth: true,
+    navGroup: "agentContent",
+    showInSidebar: true,
+  },
+  {
+    id: "agent-emotion-manager",
+    routeName: "AgentEmotionManager",
+    path: "/agent-emotion-manager",
+    title: "Agent 情绪管理",
+    icon: "neurology",
     requiresAuth: true,
     navGroup: "agentContent",
     showInSidebar: true,

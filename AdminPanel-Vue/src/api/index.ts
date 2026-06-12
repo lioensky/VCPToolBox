@@ -40,6 +40,9 @@ export type * from './plugin'
 export { agentApi } from './agent'
 export type * from './agent'
 
+export { openHerPersonaApi } from './openHerPersona'
+export type * from './openHerPersona'
+
 export { adminConfigApi } from './admin-config'
 export type * from './admin-config'
 
