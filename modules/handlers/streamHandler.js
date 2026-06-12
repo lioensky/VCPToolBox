@@ -420,7 +420,13 @@ class StreamHandler {
         const result = toolResults[i];
         const forceThisOne = !shouldShowVCP && toolCall.markHistory;
         const isError = !result?.success || (result?.raw && this.context.isToolResultError(result.raw));
-        const statusText = isError ? '调用失败' : '调用成功';
+        const errorText = [
+          result?.error,
+          result?.raw,
+          ...(Array.isArray(result?.content) ? result.content.map(item => item?.text) : [])
+        ].filter(Boolean).map(item => typeof item === 'string' ? item : JSON.stringify(item)).join('\n');
+        const isTimeout = /超时|timeout|timed\s*out|DIRECT_TOOL_TIMEOUT|TIMEOUT/i.test(errorText);
+        const statusText = isTimeout ? '调用超时' : (isError ? '调用失败' : '调用成功');
         toolStatusSummaryItems.push(`${toolCall.name} ${statusText}`);
 
         if ((shouldShowVCP || forceThisOne) && !res.writableEnded && !res.destroyed) {
