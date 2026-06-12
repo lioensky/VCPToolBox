@@ -1385,17 +1385,29 @@ class PluginManager extends EventEmitter {
         });
     }
 
-    handleApprovalResponse(requestId, approved) {
+    handleApprovalResponse(requestId, approved, reason) {
         const approval = this.pendingApprovals.get(requestId);
         if (approval) {
             this.pendingApprovals.delete(requestId);
             clearTimeout(approval.timeoutId);
+
+            const normalizedReason = typeof reason === 'string' ? reason.trim() : '';
+
             if (approved) {
+                if (this.debugMode && normalizedReason) {
+                    console.log(`[PluginManager] Manual approval for ${requestId} included user note: ${normalizedReason.substring(0, 300)}`);
+                }
                 approval.resolve();
             } else if (approval.notifyAiOnReject === false) {
+                if (this.debugMode && normalizedReason) {
+                    console.log(`[PluginManager] Silent manual rejection for ${requestId} included user note hidden from AI: ${normalizedReason.substring(0, 300)}`);
+                }
                 approval.resolve({ silentRejected: true });
             } else {
-                approval.reject(new Error(JSON.stringify({ plugin_error: 'Manual approval was REJECTED by user.' })));
+                const rejectionMessage = normalizedReason
+                    ? `Manual approval was REJECTED by user. User reason: ${normalizedReason}`
+                    : 'Manual approval was REJECTED by user.';
+                approval.reject(new Error(JSON.stringify({ plugin_error: rejectionMessage })));
             }
             return true;
         }

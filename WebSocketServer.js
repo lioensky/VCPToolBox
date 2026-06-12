@@ -381,11 +381,14 @@ function initialize(httpServer, config) {
                         }
                     }
                 } else if (parsedMessage.type === 'tool_approval_response') {
-                    const { requestId, approved } = parsedMessage.data;
+                    const { requestId, approved, reason } = parsedMessage.data || {};
                     if (pluginManager) {
-                        const success = pluginManager.handleApprovalResponse(requestId, approved);
+                        const success = pluginManager.handleApprovalResponse(requestId, approved, reason);
                         if (serverConfig.debugMode) {
-                            console.log(`[WebSocketServer] Approval response for ${requestId}: ${approved ? 'APPROVED' : 'REJECTED'}. Handled: ${success}`);
+                            const reasonPreview = typeof reason === 'string' && reason.trim()
+                                ? ` Reason: ${reason.trim().substring(0, 200)}`
+                                : '';
+                            console.log(`[WebSocketServer] Approval response for ${requestId}: ${approved ? 'APPROVED' : 'REJECTED'}. Handled: ${success}.${reasonPreview}`);
                         }
                     }
                 } else if (ws.clientType === 'AdminPanel') {
