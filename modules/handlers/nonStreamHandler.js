@@ -239,8 +239,9 @@ class NonStreamHandler {
             result?.raw,
             ...(Array.isArray(result?.content) ? result.content.map(item => item?.text) : [])
           ].filter(Boolean).map(item => typeof item === 'string' ? item : JSON.stringify(item)).join('\n');
+          const isRejected = /拒绝|rejected\s*by\s*user|manual\s*approval\s*was\s*rejected|approval\s*rejected/i.test(errorText);
           const isTimeout = /超时|timeout|timed\s*out|DIRECT_TOOL_TIMEOUT|TIMEOUT/i.test(errorText);
-          const statusText = isTimeout ? '调用超时' : (isError ? '调用失败' : '调用成功');
+          const statusText = isRejected ? '调用拒绝' : (isTimeout ? '调用超时' : (isError ? '调用失败' : '调用成功'));
           toolStatusSummaryItems.push(`${toolCall.name} ${statusText}`);
 
           if (shouldShowVCP || forceThisOne) {
