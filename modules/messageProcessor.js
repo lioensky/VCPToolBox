@@ -9,7 +9,7 @@ const dynamicToolRegistry = require('./dynamicToolRegistry.js');
 const sarPromptManager = require('./sarPromptManager.js');
 
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
-const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Shanghai'; // 新增：用于控制 AI 报告的时间，默认回退到中国时区
+const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || DEFAULT_TIMEZONE; // 用于控制 AI 报告的时间，默认回退到根目录 config.env 的 DEFAULT_TIMEZONE
 function resolveAgentDir() {
     const configPath = process.env.AGENT_DIR_PATH;
     if (!configPath || typeof configPath !== 'string' || configPath.trim() === '') {
@@ -688,16 +688,24 @@ async function replaceOtherVariables(text, model, role, context) {
             console.log(`[TimeVar] Default Timezone (for internal use): ${DEFAULT_TIMEZONE}`);
             console.log(`[TimeVar] Report Timezone (for AI prompt): ${REPORT_TIMEZONE}`);
         }
-        // 使用 REPORT_TIMEZONE 替换时间占位符
+        // 使用 REPORT_TIMEZONE 替换时间占位符；REPORT_TIMEZONE 未配置时回退 DEFAULT_TIMEZONE
         const date = now.toLocaleDateString('zh-CN', { timeZone: REPORT_TIMEZONE });
         processedText = processedText.replace(/\{\{Date\}\}/g, date);
         const time = now.toLocaleTimeString('zh-CN', { timeZone: REPORT_TIMEZONE });
         processedText = processedText.replace(/\{\{Time\}\}/g, time);
         const today = now.toLocaleDateString('zh-CN', { weekday: 'long', timeZone: REPORT_TIMEZONE });
         processedText = processedText.replace(/\{\{Today\}\}/g, today);
-        const year = now.getFullYear();
-        const month = now.getMonth() + 1;
-        const day = now.getDate();
+
+        // 农历/节气也必须按同一报告时区取年月日，不能使用服务器宿主机本地时区
+        const dateParts = new Intl.DateTimeFormat('zh-CN', {
+            timeZone: REPORT_TIMEZONE,
+            year: 'numeric',
+            month: 'numeric',
+            day: 'numeric'
+        }).formatToParts(now);
+        const year = Number(dateParts.find(part => part.type === 'year')?.value);
+        const month = Number(dateParts.find(part => part.type === 'month')?.value);
+        const day = Number(dateParts.find(part => part.type === 'day')?.value);
         const lunarDate = lunarCalendar.getLunar(year, month, day);
         let yearName = lunarDate.lunarYear.replace('年', '');
         let festivalInfo = `${yearName}${lunarDate.zodiac}年${lunarDate.dateStr}`;
