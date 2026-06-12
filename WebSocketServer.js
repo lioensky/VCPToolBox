@@ -26,6 +26,30 @@ const pendingToolRequests = new Map(); // 跨服务器工具调用的待处理�
 const distributedServerIPs = new Map(); // 新增：存储分布式服务器的IP信息
 const waitingControlClients = new Map(); // 新增：存储等待页面更新的ChromeControl客户端 (clientId -> requestId)
 const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, 'VCPAsyncResults');
+const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
+
+function formatDateTimeForConfiguredTimezone(date = new Date()) {
+    try {
+        const parts = new Intl.DateTimeFormat('zh-CN', {
+            timeZone: DEFAULT_TIMEZONE,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+            timeZoneName: 'longOffset'
+        }).formatToParts(date);
+
+        const getPart = (type) => parts.find(part => part.type === type)?.value;
+        const offset = (getPart('timeZoneName') || '').replace('GMT', '') || DEFAULT_TIMEZONE;
+        return `${getPart('year')}-${getPart('month')}-${getPart('day')}T${getPart('hour')}:${getPart('minute')}:${getPart('second')}${offset}`;
+    } catch (error) {
+        console.error(`[WebSocketServer] Failed to format date with timezone ${DEFAULT_TIMEZONE}:`, error.message);
+        return date.toISOString();
+    }
+}
 
 function generateClientId() {
     // 用于生成客户端ID和请求ID
@@ -198,8 +222,8 @@ function initialize(httpServer, config) {
                         ws,
                         tools: [],
                         ips: {},
-                        connectedAt: new Date().toISOString(),
-                        lastSeenAt: new Date().toISOString()
+                        connectedAt: formatDateTimeForConfiguredTimezone(),
+                        lastSeenAt: formatDateTimeForConfiguredTimezone()
                     }); // 初始化ips字段
                     writeLog(`Distributed Server ${serverId} authenticated and connected.`);
                 } else if (clientType === 'ChromeObserver') {
@@ -576,7 +600,7 @@ async function handleDistributedServerMessage(serverId, message) {
                 if (message.data.serverName) {
                     serverEntry.serverName = message.data.serverName;
                 }
-                serverEntry.lastSeenAt = new Date().toISOString();
+                serverEntry.lastSeenAt = formatDateTimeForConfiguredTimezone();
                 distributedServers.set(serverId, serverEntry);
                 writeLog(`Registered ${externalTools.length} external tools from server ${serverId}${serverEntry.serverName ? ` (${serverEntry.serverName})` : ''}.`);
             }
@@ -597,7 +621,7 @@ async function handleDistributedServerMessage(serverId, message) {
                    localIPs: ipData.localIPs,
                    publicIP: ipData.publicIP
                };
-               serverInfo.lastSeenAt = new Date().toISOString();
+               serverInfo.lastSeenAt = formatDateTimeForConfiguredTimezone();
                distributedServers.set(serverId, serverInfo);
 
                // 强制日志记录，无论debug模式如何
