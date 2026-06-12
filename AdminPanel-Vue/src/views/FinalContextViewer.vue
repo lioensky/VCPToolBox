@@ -134,7 +134,7 @@
             type="button"
             class="jump-chip"
             :title="jumpChipTitle(block)"
-            :class="[roleClass(block.role), userBlockJumpClass(block), oneRingJumpClass(block), { matched: isBlockMatched(block.index), active: activeBlockIndex === block.index }]"
+            :class="[roleClass(displayRole(block)), userBlockJumpClass(block), oneRingJumpClass(block), { matched: isBlockMatched(block.index), active: activeBlockIndex === block.index }]"
             @click="scrollToBlock(block.index)"
           >
             <span class="jump-main">
@@ -153,12 +153,12 @@
             :key="block.index"
             :ref="(el) => setBlockRef(block.index, el)"
             class="context-block"
-            :class="[roleClass(block.role), oneRingBlockClass(block), { active: activeBlockIndex === block.index }]"
+            :class="[roleClass(displayRole(block)), oneRingBlockClass(block), { active: activeBlockIndex === block.index }]"
           >
             <header class="block-header">
               <div class="block-identity">
                 <span class="block-index">#{{ block.index }}</span>
-                <span class="block-role">{{ normalizeRoleLabel(block.role) }}</span>
+                <span class="block-role">{{ normalizeRoleLabel(displayRole(block)) }}</span>
                 <span v-if="getUserBlockBadge(block)" class="block-badge" :class="getUserBlockBadge(block)?.className">
                   {{ getUserBlockBadge(block)?.label }}
                 </span>
@@ -422,6 +422,17 @@ function normalizeRoleLabel(role: string): string {
   return map[role] || `${role.toUpperCase()} 块`
 }
 
+function isToolSummaryUserBlock(block: FinalContextBlockSummary): boolean {
+  if (block.role !== 'user') return false
+
+  const text = String(block.text || '')
+  return text.includes('[本轮工具调用摘要:]') && text.includes('[本轮工具调用摘要结束]')
+}
+
+function displayRole(block: FinalContextBlockSummary): string {
+  return isToolSummaryUserBlock(block) ? 'tool' : block.role
+}
+
 function roleClass(role: string): string {
   return `role-${String(role || 'unknown').toLowerCase().replace(/[^a-z0-9_-]/g, '-')}`
 }
@@ -430,11 +441,11 @@ function jumpChipTitle(block: FinalContextBlockSummary): string {
   const meta = getDisplayOneRingMeta(block)
   const sourceText = meta?.frontendSource ? `｜${meta.frontendSource}` : ''
   const senderText = meta?.senderName ? `｜${meta.senderName}` : ''
-  return `#${block.index} ${normalizeRoleLabel(block.role)}${senderText}${sourceText}｜${formatNumber(block.tokenCount)} tokens`
+  return `#${block.index} ${normalizeRoleLabel(displayRole(block))}${senderText}${sourceText}｜${formatNumber(block.tokenCount)} tokens`
 }
 
 function getUserBlockBadge(block: FinalContextBlockSummary): { label: string; className: string } | null {
-  if (block.role !== 'user') return null
+  if (displayRole(block) !== 'user') return null
   const text = String(block.text || '').trimStart()
   const oneRingMeta = getOneRingMeta(block)
   if (oneRingMeta?.isAssistantSystemUserBlock) {
@@ -450,7 +461,7 @@ function getUserBlockBadge(block: FinalContextBlockSummary): { label: string; cl
 }
 
 function jumpSpeakerLabel(block: FinalContextBlockSummary): string {
-  const roleLabel = normalizeRoleLabel(block.role).replace(' 块', '')
+  const roleLabel = normalizeRoleLabel(displayRole(block)).replace(' 块', '')
   const oneRingMeta = getDisplayOneRingMeta(block)
   if (oneRingMeta?.senderName) return `${roleLabel}/${oneRingMeta.senderName}`
 
@@ -600,7 +611,8 @@ function blockToSearchText(block: FinalContextBlockSummary): string {
   return [
     String(block.index),
     block.role,
-    normalizeRoleLabel(block.role),
+    displayRole(block),
+    normalizeRoleLabel(displayRole(block)),
     block.contentType,
     String(block.tokenCount || 0),
     String(block.textTokenCount || 0),
@@ -734,7 +746,7 @@ function formatBlockAsText(block: FinalContextBlockSummary): string {
     : ''
 
   return [
-    `===== #${block.index} ${normalizeRoleLabel(block.role)} (${block.contentType}) =====`,
+    `===== #${block.index} ${normalizeRoleLabel(displayRole(block))} (${block.contentType}) =====`,
     `字符数：${formatNumber(block.textLength)}`,
     `Token：${formatNumber(block.tokenCount)} = 文本 ${formatNumber(block.textTokenCount)} + 附件估算 ${formatNumber(block.attachmentTokenCount)} (${block.tokenMethod || snapshot.value?.summary.tokenMethod || 'unknown'})`,
     attachmentLine,
