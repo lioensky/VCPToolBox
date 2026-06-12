@@ -739,7 +739,6 @@ function formatDistributedServerListForPrompt() {
                 `  clientId: ${server.clientId || 'unknown'}`,
                 `  publicIP: ${server.publicIP || 'N/A'}`,
                 `  localIPs: ${server.localIPs.length > 0 ? server.localIPs.join(', ') : 'N/A'}`,
-                `  tools: ${server.tools.length > 0 ? server.tools.join(', ') : 'N/A'}`,
                 `  connectedAt: ${server.connectedAt || 'unknown'}`,
                 `  lastSeenAt: ${server.lastSeenAt || 'unknown'}`
             ].join('\n')
