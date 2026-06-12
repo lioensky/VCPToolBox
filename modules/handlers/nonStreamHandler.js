@@ -228,10 +228,14 @@ class NonStreamHandler {
 
         // VCP 信息展示 - 批量包裹为单个 USER 角色
         let hasStartedUserBlock = false;
+        const toolStatusSummaryItems = [];
         for (let i = 0; i < normalCalls.length; i++) {
           const toolCall = normalCalls[i];
           const result = toolResults[i];
           const forceThisOne = !shouldShowVCP && toolCall.markHistory;
+          const isError = !result?.success || (result?.raw && this.context.isToolResultError(result.raw));
+          const statusText = isError ? '调用失败' : '调用成功';
+          toolStatusSummaryItems.push(`${toolCall.name} ${statusText}`);
 
           if (shouldShowVCP || forceThisOne) {
             const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
@@ -243,6 +247,14 @@ class NonStreamHandler {
               conversationHistoryForClient.push(vcpText);
             }
           }
+        }
+
+        if (toolStatusSummaryItems.length > 0) {
+          if (!hasStartedUserBlock && enableRoleDivider) {
+            conversationHistoryForClient.push('\n<<<[ROLE_DIVIDE_USER]>>>\n');
+            hasStartedUserBlock = true;
+          }
+          conversationHistoryForClient.push(`\n[系统提示:] 本轮工具调用状态：${toolStatusSummaryItems.join('；')}。\n`);
         }
         
         if (hasStartedUserBlock && enableRoleDivider) {
