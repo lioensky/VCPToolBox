@@ -8,6 +8,51 @@ let vcpProjectBasePath = '';
 let serverPort = '8080';
 let serverKey = '';
 
+const VCP_RAG_BLOCK_REGEX = /<!--\s*VCP_RAG_BLOCK_START\b[\s\S]*?<!--\s*VCP_RAG_BLOCK_END\s*-->/gi;
+
+function stripVcpRagBlocks(text) {
+    return typeof text === 'string' ? text.replace(VCP_RAG_BLOCK_REGEX, '') : text;
+}
+
+function getVcpRagBlockRanges(text) {
+    if (typeof text !== 'string') return [];
+    const ranges = [];
+    const re = new RegExp(VCP_RAG_BLOCK_REGEX.source, VCP_RAG_BLOCK_REGEX.flags);
+    let match;
+    while ((match = re.exec(text)) !== null) {
+        ranges.push({ start: match.index, end: match.index + match[0].length });
+    }
+    return ranges;
+}
+
+function isOutsideVcpRagBlocks(start, end, ranges) {
+    return !ranges.some(range => start < range.end && end > range.start);
+}
+
+function replaceOutsideVcpRagBlocks(text, regex, replacement) {
+    if (typeof text !== 'string' || !(regex instanceof RegExp)) return text;
+    const flags = regex.flags.includes('g') ? regex.flags : `${regex.flags}g`;
+    const re = new RegExp(regex.source, flags);
+    const ranges = getVcpRagBlockRanges(text);
+    let result = '';
+    let lastIndex = 0;
+    let match;
+
+    while ((match = re.exec(text)) !== null) {
+        const start = match.index;
+        const end = start + match[0].length;
+        if (!isOutsideVcpRagBlocks(start, end, ranges)) continue;
+
+        result += text.slice(lastIndex, start);
+        result += typeof replacement === 'function'
+            ? replacement(...match, start, text)
+            : replacement;
+        lastIndex = end;
+    }
+
+    return result + text.slice(lastIndex);
+}
+
 /**
  * 通过 /v1/human/tool 端点调用分布式 ScreenPilot
  * @param {Object} params ScreenPilot 的参数
@@ -236,7 +281,7 @@ class CapturePreprocessor {
         // {{VCPScreenShot:[长窗口标题]}}, {{VCPScreenShot:28182346}} 和 {{VCPCameraCapture(N)}}。
         // 说明：纯数字目标会被视为 hwnd；方括号包裹用于兼容带空格、冒号、逗号等标点的长标题。
         const placeholderRegex = /{{\s*(?:(VCPScreenShotMini|VCPScreenShot)(?::(\[[\s\S]*?\]|[^}]+))?|VCPCameraCapture(?:\((\d+)\))?)\s*}}/g;
-        const matches = [...systemPromptText.matchAll(placeholderRegex)];
+        const matches = [...stripVcpRagBlocks(systemPromptText).matchAll(placeholderRegex)];
 
         if (matches.length === 0) {
             return messages;
@@ -354,7 +399,7 @@ class CapturePreprocessor {
 
         // Clean the system prompt and merge user message content
         systemPrompt.content = this._replaceTextInContent(systemPrompt.content, (text) =>
-            text.replace(placeholderRegex, '').trim()
+            replaceOutsideVcpRagBlocks(text, placeholderRegex, '').trim()
         );
 
         const mergedContent = [];

@@ -193,6 +193,7 @@ const DEFAULT_AGENT_LABEL = "default";
 const MAX_AGENT_KEY_LENGTH = 80;
 const ONE_RING_TRIGGER_PATTERN = /\[\[\s*OneRing\s*[:：]{2}\s*([^:：\]\r\n]+?)\s*[:：]{2}\s*([^:：\]\r\n]+?)\s*(?:[:：]{2}\s*([^\]\r\n]+?)\s*)?\]\]/gi;
 const ONE_RING_NOTICE_PATTERN = /\[OneRing系统已启动，当前Agent([^，\]\r\n]+)，当前客户端([^，\]\r\n]+)(?:，当前模式([^，\]\r\n]+))?/g;
+const VCP_RAG_BLOCK_PATTERN = /<!--\s*VCP_RAG_BLOCK_START\b[\s\S]*?<!--\s*VCP_RAG_BLOCK_END\s*-->/gi;
 
 let activeConfig = { ...DEFAULT_CONFIG };
 let configWatcher = null;
@@ -871,6 +872,10 @@ function activateAgentState(agentKey = DEFAULT_AGENT_KEY, agentLabel = null) {
   return { state, agentKey: key, agentLabel: label, changed, switched };
 }
 
+function stripVcpRagBlocks(text) {
+  return typeof text === "string" ? text.replace(VCP_RAG_BLOCK_PATTERN, "") : text;
+}
+
 function firstNonEmptyString(...values) {
   for (const value of values) {
     if (typeof value !== "string") continue;
@@ -958,7 +963,7 @@ function resolveAgentIdentityFromObject(raw, depth = 0, seen = new Set()) {
 }
 
 function resolveAgentIdentityFromText(text) {
-  const content = String(text || "");
+  const content = stripVcpRagBlocks(String(text || ""));
   const triggerMatches = Array.from(content.matchAll(ONE_RING_TRIGGER_PATTERN));
   const triggerMatch = triggerMatches.length ? triggerMatches[triggerMatches.length - 1] : null;
   if (triggerMatch && triggerMatch[1]) {
@@ -1392,8 +1397,9 @@ function debugLog(...args) {
 
 function summarizeMessageForDebug(message, index) {
   const text = messageContentToText(message && message.content);
-  const oneRingMatches = Array.from(text.matchAll(ONE_RING_TRIGGER_PATTERN));
-  const noticeMatches = Array.from(text.matchAll(ONE_RING_NOTICE_PATTERN));
+  const identityText = stripVcpRagBlocks(text);
+  const oneRingMatches = Array.from(identityText.matchAll(ONE_RING_TRIGGER_PATTERN));
+  const noticeMatches = Array.from(identityText.matchAll(ONE_RING_NOTICE_PATTERN));
   return {
     index,
     role: message && message.role,

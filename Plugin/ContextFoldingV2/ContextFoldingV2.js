@@ -16,6 +16,7 @@ const ACTIVATION_PLACEHOLDER = '{{ContextFoldingV2}}';
 const ACTIVATION_PLACEHOLDER_BRACKET = '[[ContextFoldingV2]]';
 
 const ONERING_TAIL_REGEX = /\s*\[OneRing通知:[\s\S]*?\]\s*$/g;
+const VCP_RAG_BLOCK_REGEX = /<!--\s*VCP_RAG_BLOCK_START\b[\s\S]*?<!--\s*VCP_RAG_BLOCK_END\s*-->/gi;
 
 class ContextFoldingV2 {
     constructor() {
@@ -173,7 +174,7 @@ class ContextFoldingV2 {
             for (let i = 0; i < messages.length; i++) {
                 if (messages[i].role === 'system') {
                     const systemText = this._getContent(messages[i]);
-                    const match = systemText.match(activationRegex);
+                    const match = this._stripVcpRagBlocks(systemText).match(activationRegex);
                     if (match) {
                         activated = true;
                         activationIndex = i;
@@ -201,9 +202,11 @@ class ContextFoldingV2 {
             if (activationIndex >= 0 && matchedPlaceholder) {
                 this._setContent(
                     newMessages[activationIndex],
-                    this._getContent(newMessages[activationIndex])
-                        .replace(matchedPlaceholder, '')
-                        .trim()
+                    this._replaceOutsideVcpRagBlocks(
+                        this._getContent(newMessages[activationIndex]),
+                        matchedPlaceholder,
+                        ''
+                    ).trim()
                 );
             }
 
@@ -623,6 +626,40 @@ class ContextFoldingV2 {
     // ═══════════════════════════════════════════════════
     // 工具方法
     // ═══════════════════════════════════════════════════
+
+    /**
+     * 剥离 VCP_RAG_BLOCK 记忆块。
+     * 用于系统提示词占位符扫描，确保记忆块内部的触发符不会激活/清理预处理器。
+     */
+    _stripVcpRagBlocks(text) {
+        return typeof text === 'string' ? text.replace(VCP_RAG_BLOCK_REGEX, '') : text;
+    }
+
+    _getVcpRagBlockRanges(text) {
+        if (typeof text !== 'string') return [];
+        const ranges = [];
+        const re = new RegExp(VCP_RAG_BLOCK_REGEX.source, VCP_RAG_BLOCK_REGEX.flags);
+        let match;
+        while ((match = re.exec(text)) !== null) {
+            ranges.push({ start: match.index, end: match.index + match[0].length });
+        }
+        return ranges;
+    }
+
+    _replaceOutsideVcpRagBlocks(text, search, replacement) {
+        if (typeof text !== 'string' || !search) return text;
+        const ranges = this._getVcpRagBlockRanges(text);
+        let idx = text.indexOf(search);
+        while (idx >= 0) {
+            const end = idx + search.length;
+            const insideRagBlock = ranges.some(range => idx < range.end && end > range.start);
+            if (!insideRagBlock) {
+                return text.slice(0, idx) + replacement + text.slice(end);
+            }
+            idx = text.indexOf(search, idx + 1);
+        }
+        return text;
+    }
 
     /**
      * 剥离 OneRing 尾部来源标记。

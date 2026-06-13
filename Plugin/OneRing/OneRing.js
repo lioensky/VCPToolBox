@@ -17,23 +17,58 @@ const { ServerInferredTimelineStrategy } = require('./OneRingServerInferredTimel
 const TRIGGER_REGEX = /\[\[OneRing::([^:]+?)::([^:\]]+?)(?:::([^\]]+?))?\]\]/;
 const TRIGGER_GLOBAL_REGEX = /\[\[OneRing::([^:]+?)::([^:\]]+?)(?:::([^\]]+?))?\]\]/g;
 const ONLY_TRIGGER_GLOBAL_REGEX = /\[\[OneRing::Only\]\]/gi;
+const VCP_RAG_BLOCK_REGEX = /<!--\s*VCP_RAG_BLOCK_START\b[\s\S]*?<!--\s*VCP_RAG_BLOCK_END\s*-->/gi;
+
+function stripVcpRagBlocks(text) {
+    return typeof text === 'string' ? text.replace(VCP_RAG_BLOCK_REGEX, '') : text;
+}
+
+function getVcpRagBlockRanges(text) {
+    if (typeof text !== 'string') return [];
+    const ranges = [];
+    const re = new RegExp(VCP_RAG_BLOCK_REGEX.source, VCP_RAG_BLOCK_REGEX.flags);
+    let match;
+    while ((match = re.exec(text)) !== null) {
+        ranges.push({ start: match.index, end: match.index + match[0].length });
+    }
+    return ranges;
+}
+
+function overlapsAnyRange(start, end, ranges) {
+    return ranges.some(range => start < range.end && end > range.start);
+}
+
+function replaceLastOccurrenceOutsideVcpRagBlocks(text, search, replacement) {
+    if (typeof text !== 'string' || !search) return text;
+    const ranges = getVcpRagBlockRanges(text);
+    let idx = text.lastIndexOf(search);
+    while (idx >= 0) {
+        const end = idx + search.length;
+        if (!overlapsAnyRange(idx, end, ranges)) {
+            return text.slice(0, idx) + replacement + text.slice(end);
+        }
+        idx = text.lastIndexOf(search, idx - 1);
+    }
+    return text;
+}
 
 function getLastTriggerMatch(systemText) {
     if (typeof systemText !== 'string') return null;
-    const matches = [...systemText.matchAll(TRIGGER_GLOBAL_REGEX)];
+    const matches = [...stripVcpRagBlocks(systemText).matchAll(TRIGGER_GLOBAL_REGEX)];
     if (matches.length === 0) return null;
     return matches[matches.length - 1];
 }
 
 function getLastOnlyTriggerMatch(systemText) {
     if (typeof systemText !== 'string') return null;
-    const matches = [...systemText.matchAll(ONLY_TRIGGER_GLOBAL_REGEX)];
+    const matches = [...stripVcpRagBlocks(systemText).matchAll(ONLY_TRIGGER_GLOBAL_REGEX)];
     if (matches.length === 0) return null;
     return matches[matches.length - 1];
 }
 
 function getLastNoticeMeta(systemText) {
     if (typeof systemText !== 'string') return null;
+    systemText = stripVcpRagBlocks(systemText);
 
     // 完整通知格式：
     // [OneRing系统已启动，当前Agent小吉，当前客户端VCPChat，所有上下文OneRing信息来源标记由系统生成无需你自动输出。]
@@ -412,7 +447,7 @@ function replaceTriggerWithNotice(content, triggerText, agentName, frontendSourc
     const notice = `[OneRing系统已启动，当前Agent${agentName}，当前客户端${frontendSource}${modeNotice}，所有上下文OneRing信息来源标记由系统生成无需你自动输出。]`;
 
     if (typeof content === 'string') {
-        return replaceLastOccurrence(content, triggerText, notice);
+        return replaceLastOccurrenceOutsideVcpRagBlocks(content, triggerText, notice);
     }
 
     if (Array.isArray(content)) {
@@ -425,7 +460,7 @@ function replaceTriggerWithNotice(content, triggerText, agentName, frontendSourc
                 typeof part.text === 'string' &&
                 part.text.includes(triggerText)
             ) {
-                result[i] = { ...part, text: replaceLastOccurrence(part.text, triggerText, notice) };
+                result[i] = { ...part, text: replaceLastOccurrenceOutsideVcpRagBlocks(part.text, triggerText, notice) };
                 return result;
             }
         }
@@ -433,7 +468,7 @@ function replaceTriggerWithNotice(content, triggerText, agentName, frontendSourc
     }
 
     if (content && typeof content === 'object' && typeof content.text === 'string') {
-        return { ...content, text: replaceLastOccurrence(content.text, triggerText, notice) };
+        return { ...content, text: replaceLastOccurrenceOutsideVcpRagBlocks(content.text, triggerText, notice) };
     }
 
     return content;
@@ -443,7 +478,7 @@ function replaceOnlyTriggerWithNotice(content, triggerText) {
     const notice = '[OneRing Only模式已启动：本次只入库/标记，不做跨端上下文追加。]';
 
     if (typeof content === 'string') {
-        return replaceLastOccurrence(content, triggerText, notice);
+        return replaceLastOccurrenceOutsideVcpRagBlocks(content, triggerText, notice);
     }
 
     if (Array.isArray(content)) {
@@ -456,7 +491,7 @@ function replaceOnlyTriggerWithNotice(content, triggerText) {
                 typeof part.text === 'string' &&
                 part.text.includes(triggerText)
             ) {
-                result[i] = { ...part, text: replaceLastOccurrence(part.text, triggerText, notice) };
+                result[i] = { ...part, text: replaceLastOccurrenceOutsideVcpRagBlocks(part.text, triggerText, notice) };
                 return result;
             }
         }
@@ -464,7 +499,7 @@ function replaceOnlyTriggerWithNotice(content, triggerText) {
     }
 
     if (content && typeof content === 'object' && typeof content.text === 'string') {
-        return { ...content, text: replaceLastOccurrence(content.text, triggerText, notice) };
+        return { ...content, text: replaceLastOccurrenceOutsideVcpRagBlocks(content.text, triggerText, notice) };
     }
 
     return content;
