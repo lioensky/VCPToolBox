@@ -420,13 +420,20 @@ class StreamHandler {
         const result = toolResults[i];
         const forceThisOne = !shouldShowVCP && toolCall.markHistory;
         const isError = !result?.success || (result?.raw && this.context.isToolResultError(result.raw));
-        const errorText = [
+        const rawObject = result?.raw && typeof result.raw === 'object' ? result.raw : null;
+        const errorText = isError ? [
           result?.error,
           result?.raw,
           ...(Array.isArray(result?.content) ? result.content.map(item => item?.text) : [])
-        ].filter(Boolean).map(item => typeof item === 'string' ? item : JSON.stringify(item)).join('\n');
-        const isRejected = /拒绝|rejected\s*by\s*user|manual\s*approval\s*was\s*rejected|approval\s*rejected/i.test(errorText);
-        const isTimeout = /超时|timeout|timed\s*out|DIRECT_TOOL_TIMEOUT|TIMEOUT/i.test(errorText);
+        ].filter(Boolean).map(item => typeof item === 'string' ? item : JSON.stringify(item)).join('\n') : '';
+
+        // 摘要状态顺序：先由 isError/结构化 success 确定成败；只有失败时才进一步细分“拒绝”，最后再判超时。
+        const isRejected = isError && (
+          rawObject?.rejected_by_user === true ||
+          rawObject?.error_type === 'approval_rejected' ||
+          /manual\s*approval\s*was\s*rejected|rejected\s*by\s*user|approval\s*rejected|用户拒绝|人工审核.*拒绝/i.test(errorText)
+        );
+        const isTimeout = isError && !isRejected && /超时|timeout|timed\s*out|DIRECT_TOOL_TIMEOUT|TIMEOUT/i.test(errorText);
         const statusText = isRejected ? '调用拒绝' : (isTimeout ? '调用超时' : (isError ? '调用失败' : '调用成功'));
         toolStatusSummaryItems.push(`${toolCall.name} ${statusText}`);
 

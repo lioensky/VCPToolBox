@@ -1407,7 +1407,11 @@ class PluginManager extends EventEmitter {
                 const rejectionMessage = normalizedReason
                     ? `Manual approval was REJECTED by user. User reason: ${normalizedReason}`
                     : 'Manual approval was REJECTED by user.';
-                approval.reject(new Error(JSON.stringify({ plugin_error: rejectionMessage })));
+                approval.reject(new Error(JSON.stringify({
+                    plugin_error: rejectionMessage,
+                    error_type: 'approval_rejected',
+                    rejected_by_user: true
+                })));
             }
             return true;
         }

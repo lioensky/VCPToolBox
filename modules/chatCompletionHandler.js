@@ -235,23 +235,36 @@ function isToolResultError(result) {
 
   // 1. 对象形式的错误检测
   if (typeof result === 'object') {
-    // 检查常见的错误标识字段
-    if (result.error === true ||
+    // 判定顺序必须先看明确成功标志：
+    // 工具成功返回的正文/嵌套字段里可能包含“拒绝/错误/error”等业务文本，不能因此覆盖 status: success。
+    if (
+      result.success === true ||
+      result.status === 'success' ||
+      result.status === 'ok' ||
+      result.ok === true
+    ) {
+      return false;
+    }
+
+    // 然后只信任结构化失败字段。
+    if (
+      result.error === true ||
       result.success === false ||
       result.status === 'error' ||
       result.status === 'failed' ||
-      result.code?.toString().startsWith('4') || // 4xx 错误码
-      result.code?.toString().startsWith('5')) { // 5xx 错误码
+      result.status === 'failure' ||
+      result.ok === false
+    ) {
       return true;
     }
 
-    // 对象转字符串后检查
-    try {
-      const jsonStr = JSON.stringify(result).toLowerCase();
-      return jsonStr.includes('"error"') && !jsonStr.includes('"error":false');
-    } catch (e) {
-      return false;
+    const codeValue = result.code ?? result.statusCode ?? result.httpStatus;
+    const numericCode = Number(codeValue);
+    if (Number.isFinite(numericCode) && numericCode >= 400 && numericCode < 600) {
+      return true;
     }
+
+    return false;
   }
 
   // 2. 字符串形式的错误检测（模糊匹配）
@@ -268,10 +281,8 @@ function isToolResultError(result) {
       }
     }
 
-    // 模糊匹配（需要更谨慎）
-    // 只有在明确包含"错误"或"失败"这类强指示词时才认为是错误
-    if (result.includes('错误') || result.includes('失败') ||
-      lowerResult.includes('error:') || lowerResult.includes('failed:')) {
+    // 字符串仅接受显式错误前缀/格式，不再因正文任意位置包含“错误/失败/拒绝”等业务文本而误判。
+    if (lowerResult.includes('error:') || lowerResult.includes('failed:')) {
       return true;
     }
   }
