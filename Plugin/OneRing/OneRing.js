@@ -1068,7 +1068,7 @@ class OneRingPreprocessor {
             // 注意：长上下文无匹配时不补充；只有短新 user 场景可以尝试接入同 Agent 既有时间线。
             if (dbBlocks.length === 0 && historyBlocks.length <= 4) {
                 isFreshShortContext = true;
-                const newConversationStartUserIndex = this._detectNewConversationStartUserIndex(messages, defaultUserName, agentName);
+                const newConversationStartUserIndex = this._detectNewConversationStartUserIndexForTimeline(messages, defaultUserName, agentName, hasClientTimestampTruth);
                 const freshStats = this._recordFreshShortContext(agentName, frontendSource, defaultUserName, historyBlocks, threshold, newConversationStartUserIndex);
                 summaryStats.dbInserted += freshStats.inserted || 0;
                 summaryStats.dbUpdated += freshStats.updated || 0;
@@ -1089,7 +1089,7 @@ class OneRingPreprocessor {
         // 下一轮前端带回来的 assistant 历史可能没有 OneRing 标记，因此这里必须补标。
         const nextTimestamp = createOneRingTimestampSequencer();
         const now = nextTimestamp();
-        const newConversationStartUserIndex = this._detectNewConversationStartUserIndex(messages, defaultUserName, agentName);
+        const newConversationStartUserIndex = this._detectNewConversationStartUserIndexForTimeline(messages, defaultUserName, agentName, hasClientTimestampTruth);
 
         // 入库必须以“实际 post 传入的上下文”为真相；
         // DB 补齐必须在 post 本体写库/补标之后进行，否则前端不回传 OneRing 时间戳时，
@@ -1809,6 +1809,26 @@ class OneRingPreprocessor {
         return effectiveBlocks[0].index;
     }
 
+    _detectFirstUserIndexForClientHashTimeline(messages, defaultUserName, agentName) {
+        if (!Array.isArray(messages)) return -1;
+
+        for (let i = 0; i < messages.length; i++) {
+            const message = messages[i];
+            if (!message || message.role !== 'user') continue;
+
+            const classified = classifyUserContent(message.content, defaultUserName, agentName);
+            if (classified) return i;
+        }
+
+        return -1;
+    }
+
+    _detectNewConversationStartUserIndexForTimeline(messages, defaultUserName, agentName, hasClientTimestampTruth = false) {
+        return hasClientTimestampTruth
+            ? this._detectFirstUserIndexForClientHashTimeline(messages, defaultUserName, agentName)
+            : this._detectNewConversationStartUserIndex(messages, defaultUserName, agentName);
+    }
+
     _createPostRequestHash(postBlocks) {
         const normalizedBlocks = (Array.isArray(postBlocks) ? postBlocks : []).map(block => ({
             role: block.role,
@@ -2063,6 +2083,12 @@ class OneRingPreprocessor {
                 'only-client-verified-hash'
             );
         if (clientTimestampBindings.verifiedBindings.length > 0) {
+            const newConversationStartUserIndex = this._detectNewConversationStartUserIndexForTimeline(
+                result,
+                defaultUserName,
+                agentName,
+                timelineStrategy.hasClientTimestampTruth
+            );
             const timestamped = this._markTimelineBindings(
                 result,
                 result,
@@ -2070,14 +2096,14 @@ class OneRingPreprocessor {
                 defaultUserName,
                 agentName,
                 frontendSource,
-                this._detectNewConversationStartUserIndex(result, defaultUserName, agentName)
+                newConversationStartUserIndex
             );
             result = this._upsertTimelineTailTags(
                 timestamped,
                 defaultUserName,
                 agentName,
                 frontendSource,
-                this._detectNewConversationStartUserIndex(result, defaultUserName, agentName)
+                newConversationStartUserIndex
             );
             timelineStrategy.scheduleTimestampCorrections?.(agentName, frontendSource, clientTimestampBindings.verifiedBindings, 'only-client-hash');
         }
@@ -2210,7 +2236,7 @@ class OneRingPreprocessor {
         }
         timing.mark('snapshotApply', `edited=${summaryStats.snapshotEdited}`);
 
-        const newConversationStartUserIndex = this._detectNewConversationStartUserIndex(result, defaultUserName, agentName);
+        const newConversationStartUserIndex = this._detectNewConversationStartUserIndexForTimeline(result, defaultUserName, agentName, timelineStrategy.hasClientTimestampTruth);
         let syncStats = null;
         try {
             const appendResult = snapshot.detectSnapshotAppend(
