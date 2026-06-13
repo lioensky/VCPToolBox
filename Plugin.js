@@ -670,7 +670,10 @@ class PluginManager extends EventEmitter {
                     initialConfig.Key = process.env.Key;
                     initialConfig.PROJECT_BASE_PATH = this.projectBasePath;
 
-                    const dependencies = { vcpLogFunctions: this.getVCPLogFunctions() };
+                    const dependencies = {
+                        vcpLogFunctions: this.getVCPLogFunctions(),
+                        pluginManager: this
+                    };
 
                     // --- 注入 VectorDBManager ---
                     if (manifest.name === 'RAGDiaryPlugin') {
@@ -1617,6 +1620,292 @@ class PluginManager extends EventEmitter {
         await this.loadPlugins();
         console.log('[PluginManager] Hot reload complete.');
         return this.getPreprocessorOrder();
+    }
+
+    _normalizePluginCommands(manifest) {
+        const commands = manifest?.capabilities?.invocationCommands;
+        if (!Array.isArray(commands)) return [];
+        return commands.map((cmd, index) => {
+            const identifier = cmd.commandIdentifier || cmd.command || cmd.name || `command_${index + 1}`;
+            return {
+                commandIdentifier: cmd.commandIdentifier || null,
+                command: cmd.command || null,
+                name: cmd.name || null,
+                identifier,
+                description: cmd.description || '',
+                example: cmd.example || null
+            };
+        });
+    }
+
+    _summarizePluginRegistryEntry(manifest, enabled, extra = {}) {
+        const isDistributed = !!manifest.isDistributed;
+        const commands = this._normalizePluginCommands(manifest);
+        const placeholderKey = `VCP${manifest.name}`;
+        return {
+            name: manifest.name,
+            displayName: manifest.displayName || manifest.name,
+            description: manifest.description || '',
+            version: manifest.version || null,
+            pluginType: manifest.pluginType || 'unknown',
+            enabled,
+            status: enabled ? 'enabled' : 'disabled',
+            origin: isDistributed ? 'cloud' : 'local',
+            isDistributed,
+            serverId: manifest.serverId || null,
+            requiresAdmin: !!manifest.requiresAdmin,
+            hasApiRoutes: !!manifest.hasApiRoutes,
+            communicationProtocol: manifest.communication?.protocol || null,
+            commandCount: commands.length,
+            commands: commands.map(cmd => cmd.identifier),
+            placeholder: commands.length > 0 ? `{{${placeholderKey}}}` : null,
+            basePath: manifest.basePath || null,
+            manifestFile: extra.manifestFile || (enabled ? manifestFileName : `${manifestFileName}.block`),
+            folderName: extra.folderName || null
+        };
+    }
+
+    async _discoverDisabledPluginManifests() {
+        const disabledPlugins = [];
+        const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
+        for (const folder of pluginFolders) {
+            if (!folder.isDirectory()) continue;
+            const pluginPath = path.join(PLUGIN_DIR, folder.name);
+            const blockedManifestPath = path.join(pluginPath, `${manifestFileName}.block`);
+            try {
+                const manifestContent = await fs.readFile(blockedManifestPath, 'utf-8');
+                const manifest = JSON.parse(manifestContent);
+                if (!manifest.name) continue;
+                manifest.basePath = pluginPath;
+                disabledPlugins.push({
+                    manifest,
+                    folderName: folder.name,
+                    manifestPath: blockedManifestPath
+                });
+            } catch (error) {
+                if (error.code !== 'ENOENT' && this.debugMode) {
+                    console.warn(`[PluginManager] Error reading disabled plugin manifest in ${folder.name}: ${error.message}`);
+                }
+            }
+        }
+        return disabledPlugins;
+    }
+
+    async listPluginRegistry() {
+        const pluginDataMap = new Map();
+
+        for (const manifest of this.plugins.values()) {
+            if (!manifest || !manifest.name) continue;
+            pluginDataMap.set(manifest.name, this._summarizePluginRegistryEntry(manifest, true));
+        }
+
+        const disabledPlugins = await this._discoverDisabledPluginManifests();
+        for (const item of disabledPlugins) {
+            if (pluginDataMap.has(item.manifest.name)) continue;
+            pluginDataMap.set(
+                item.manifest.name,
+                this._summarizePluginRegistryEntry(item.manifest, false, {
+                    manifestFile: `${manifestFileName}.block`,
+                    folderName: item.folderName
+                })
+            );
+        }
+
+        const plugins = Array.from(pluginDataMap.values()).sort((a, b) => {
+            if (a.origin !== b.origin) return a.origin.localeCompare(b.origin);
+            if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+            return a.name.localeCompare(b.name);
+        });
+
+        return {
+            status: 'success',
+            total: plugins.length,
+            enabledCount: plugins.filter(p => p.enabled).length,
+            disabledCount: plugins.filter(p => !p.enabled).length,
+            cloudCount: plugins.filter(p => p.isDistributed).length,
+            localCount: plugins.filter(p => !p.isDistributed).length,
+            plugins
+        };
+    }
+
+    async getPluginRegistryDetail(pluginName) {
+        const name = String(pluginName || '').trim();
+        if (!name) {
+            throw new Error('pluginName is required.');
+        }
+
+        let manifest = this.plugins.get(name);
+        let enabled = !!manifest;
+        let folderName = manifest?.basePath ? path.basename(manifest.basePath) : null;
+        let manifestFile = manifestFileName;
+
+        if (!manifest) {
+            const disabledPlugins = await this._discoverDisabledPluginManifests();
+            const disabled = disabledPlugins.find(item => item.manifest.name === name);
+            if (!disabled) {
+                throw new Error(`Plugin "${name}" not found.`);
+            }
+            manifest = disabled.manifest;
+            enabled = false;
+            folderName = disabled.folderName;
+            manifestFile = `${manifestFileName}.block`;
+        }
+
+        const commands = this._normalizePluginCommands(manifest);
+        const placeholderKey = `VCP${manifest.name}`;
+        const descriptionEntry = this.individualPluginDescriptions.get(placeholderKey) || null;
+
+        return {
+            status: 'success',
+            plugin: {
+                ...this._summarizePluginRegistryEntry(manifest, enabled, { folderName, manifestFile }),
+                author: manifest.author || null,
+                manifestVersion: manifest.manifestVersion || null,
+                entryPoint: manifest.entryPoint || null,
+                communication: manifest.communication || null,
+                configSchema: manifest.configSchema || null,
+                capabilities: manifest.capabilities || null,
+                commands,
+                placeholderDescription: descriptionEntry,
+                rawManifest: manifest
+            }
+        };
+    }
+
+    async _findLocalPluginManifestPaths(pluginName) {
+        const name = String(pluginName || '').trim();
+        if (!name) {
+            throw new Error('pluginName is required.');
+        }
+
+        const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
+        for (const folder of pluginFolders) {
+            if (!folder.isDirectory()) continue;
+
+            const pluginPath = path.join(PLUGIN_DIR, folder.name);
+            const enabledManifestPath = path.join(pluginPath, manifestFileName);
+            const disabledManifestPath = `${enabledManifestPath}.block`;
+
+            for (const candidate of [
+                { manifestPath: enabledManifestPath, enabled: true },
+                { manifestPath: disabledManifestPath, enabled: false }
+            ]) {
+                try {
+                    const manifestContent = await fs.readFile(candidate.manifestPath, 'utf-8');
+                    const manifest = JSON.parse(manifestContent);
+                    if (manifest.name === name) {
+                        return {
+                            pluginPath,
+                            folderName: folder.name,
+                            manifest,
+                            enabled: candidate.enabled,
+                            enabledManifestPath,
+                            disabledManifestPath
+                        };
+                    }
+                } catch (error) {
+                    if (error.code !== 'ENOENT' && this.debugMode) {
+                        console.warn(`[PluginManager] Error checking manifest for ${folder.name}: ${error.message}`);
+                    }
+                }
+            }
+        }
+
+        throw new Error(`Local plugin "${name}" not found.`);
+    }
+
+    _assertPluginToggleAllowed(pluginName, enable, manifest = null) {
+        const toggleAllowedTypes = new Set(['synchronous', 'asynchronous', 'static']);
+        const protectedPlugins = new Set([
+            'PluginManager',
+            'UserAuth',
+            'VCPLog',
+            'VCPInfo',
+            'VCPToolBridge'
+        ]);
+
+        if (!enable && protectedPlugins.has(pluginName)) {
+            throw new Error(`Plugin "${pluginName}" is protected and cannot be disabled by PluginManager.`);
+        }
+
+        if (manifest && !toggleAllowedTypes.has(manifest.pluginType)) {
+            throw new Error(`Plugin "${pluginName}" is type "${manifest.pluginType}". PluginManager can only enable/disable synchronous, asynchronous, and static plugins.`);
+        }
+    }
+
+    async setLocalPluginEnabled(pluginName, enable) {
+        if (typeof enable !== 'boolean') {
+            throw new Error('enable must be a boolean.');
+        }
+
+        const name = String(pluginName || '').trim();
+
+        const loadedManifest = this.plugins.get(name);
+        if (loadedManifest?.isDistributed) {
+            throw new Error(`Plugin "${name}" is a cloud/distributed tool and cannot be enabled or disabled locally.`);
+        }
+
+        const target = await this._findLocalPluginManifestPaths(name);
+        this._assertPluginToggleAllowed(name, enable, target.manifest);
+
+        if (target.manifest.isDistributed) {
+            throw new Error(`Plugin "${name}" is marked as distributed and cannot be toggled locally.`);
+        }
+
+        if (enable && target.enabled) {
+            return {
+                status: 'success',
+                changed: false,
+                message: `插件 ${name} 已经是启用状态。`,
+                plugin: this._summarizePluginRegistryEntry(target.manifest, true, {
+                    folderName: target.folderName,
+                    manifestFile: manifestFileName
+                })
+            };
+        }
+
+        if (!enable && !target.enabled) {
+            return {
+                status: 'success',
+                changed: false,
+                message: `插件 ${name} 已经是禁用状态。`,
+                plugin: this._summarizePluginRegistryEntry(target.manifest, false, {
+                    folderName: target.folderName,
+                    manifestFile: `${manifestFileName}.block`
+                })
+            };
+        }
+
+        if (enable) {
+            await fs.rename(target.disabledManifestPath, target.enabledManifestPath);
+        } else {
+            await fs.rename(target.enabledManifestPath, target.disabledManifestPath);
+        }
+
+        await this.loadPlugins();
+
+        if (this.webSocketServer && typeof this.webSocketServer.broadcastToAdminPanel === 'function') {
+            this.webSocketServer.broadcastToAdminPanel({
+                type: 'plugins-reloaded',
+                message: `Plugin ${name} has been ${enable ? 'enabled' : 'disabled'} by PluginManager.`
+            });
+        }
+
+        const detail = await this.getPluginRegistryDetail(name);
+        return {
+            status: 'success',
+            changed: true,
+            message: `插件 ${name} 已${enable ? '启用' : '禁用'}。`,
+            plugin: detail.plugin
+        };
+    }
+
+    async enableLocalPlugin(pluginName) {
+        return this.setLocalPluginEnabled(pluginName, true);
+    }
+
+    async disableLocalPlugin(pluginName) {
+        return this.setLocalPluginEnabled(pluginName, false);
     }
 
     getPreprocessorOrder() {

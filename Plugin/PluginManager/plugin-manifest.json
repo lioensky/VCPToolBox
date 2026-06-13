@@ -1,0 +1,52 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "PluginManager",
+  "version": "1.0.0",
+  "displayName": "插件管理器",
+  "description": "VCP 元插件：查询本地/云端/禁用插件列表，查看插件指令与描述，并在管理员授权后启用、禁用同步/异步/静态本地插件或重载插件。",
+  "author": "VCPToolBox",
+  "pluginType": "hybridservice",
+  "requiresAdmin": true,
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "PluginManager.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 60000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "ListPlugins",
+        "command": "ListPlugins",
+        "description": "查询当前 VCP 插件注册表，返回所有已启用本地工具、云端/分布式工具、以及本地禁用插件。\n参数:\n- command (字符串, 必需): 固定为 ListPlugins。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PluginManager「末」,\ncommand:「始」ListPlugins「末」,\nrequireAdmin:「始」用户提供的6位管理员验证码「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」PluginManager「末」,\ncommand:「始」ListPlugins「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "GetPluginDetail",
+        "command": "GetPluginDetail",
+        "description": "查询指定插件的详细 manifest、注册指令、描述、占位符与来源信息。\n参数:\n- command (字符串, 必需): 固定为 GetPluginDetail。\n- pluginName (字符串, 必需): 插件唯一英文名。\n- requireAdmin (字符串, 必需): 用户提供的6位管理员验证码。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PluginManager「末」,\ncommand:「始」GetPluginDetail「末」,\npluginName:「始」FileOperator「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」PluginManager「末」,\ncommand:「始」GetPluginDetail「末」,\npluginName:「始」LightMemo「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "EnablePlugin",
+        "command": "EnablePlugin",
+        "description": "启用一个本地禁用插件。此操作会将 plugin-manifest.json.block 改回 plugin-manifest.json，并触发插件重载。仅允许启用 pluginType 为 synchronous、asynchronous 或 static 的本地插件；不能用于 service、hybridservice、messagePreprocessor、云端/分布式插件。\n参数:\n- command (字符串, 必需): 固定为 EnablePlugin。\n- pluginName (字符串, 必需): 插件唯一英文名。\n- requireAdmin (字符串, 必需): 用户提供的6位管理员验证码。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PluginManager「末」,\ncommand:「始」EnablePlugin「末」,\npluginName:「始」SomePlugin「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」PluginManager「末」,\ncommand:「始」EnablePlugin「末」,\npluginName:「始」SomePlugin「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "DisablePlugin",
+        "command": "DisablePlugin",
+        "description": "禁用一个本地插件。此操作会将 plugin-manifest.json 改为 plugin-manifest.json.block，并触发插件重载。仅允许禁用 pluginType 为 synchronous、asynchronous 或 static 的本地插件；不能禁用受保护核心插件，不能用于 service、hybridservice、messagePreprocessor、云端/分布式插件。\n参数:\n- command (字符串, 必需): 固定为 DisablePlugin。\n- pluginName (字符串, 必需): 插件唯一英文名。\n- requireAdmin (字符串, 必需): 用户提供的6位管理员验证码。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PluginManager「末」,\ncommand:「始」DisablePlugin「末」,\npluginName:「始」SomePlugin「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」PluginManager「末」,\ncommand:「始」DisablePlugin「末」,\npluginName:「始」SomePlugin「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "ReloadPlugins",
+        "command": "ReloadPlugins",
+        "description": "手动触发插件热重载，并返回重载后的预处理器顺序。\n参数:\n- command (字符串, 必需): 固定为 ReloadPlugins。\n- requireAdmin (字符串, 必需): 用户提供的6位管理员验证码。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PluginManager「末」,\ncommand:「始」ReloadPlugins「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」PluginManager「末」,\ncommand:「始」ReloadPlugins「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

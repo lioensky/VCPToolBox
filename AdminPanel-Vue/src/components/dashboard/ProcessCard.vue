@@ -27,14 +27,25 @@
 
       <div class="dashboard-card-panel auth-code-display">
         <h4>用户认证码</h4>
-        <p>{{ authCode }}</p>
+        <div class="auth-code-row">
+          <p>{{ authCode }}</p>
+          <button
+            type="button"
+            class="copy-auth-code-button"
+            :disabled="!authCode || authCode === '加载中...'"
+            :aria-label="copied ? '已复制用户认证码' : '复制用户认证码'"
+            @click="copyAuthCode"
+          >
+            {{ copied ? "已复制" : "复制" }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import type { PM2Process } from "@/types/api.system";
 
 const props = defineProps<{
@@ -42,6 +53,9 @@ const props = defineProps<{
   authCode: string;
   maxDisplay?: number;
 }>();
+
+const copied = ref(false);
+let copiedResetTimer: ReturnType<typeof window.setTimeout> | undefined;
 
 const displayedProcesses = computed(() => {
   return props.processes.slice(0, props.maxDisplay ?? 20);
@@ -62,6 +76,48 @@ function getStatusLabel(status: string): string {
 
 function formatProcessMemory(bytes: number): string {
   return (bytes / 1024 / 1024).toFixed(1);
+}
+
+async function copyAuthCode() {
+  if (!props.authCode || props.authCode === "加载中...") {
+    return;
+  }
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(props.authCode);
+  } else {
+    copyTextWithFallback(props.authCode);
+  }
+
+  copied.value = true;
+
+  if (copiedResetTimer) {
+    window.clearTimeout(copiedResetTimer);
+  }
+
+  copiedResetTimer = window.setTimeout(() => {
+    copied.value = false;
+  }, 1500);
+}
+
+function copyTextWithFallback(text: string) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-9999px";
+  textarea.style.left = "-9999px";
+  textarea.style.opacity = "0";
+
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  try {
+    document.execCommand("copy");
+  } finally {
+    document.body.removeChild(textarea);
+  }
 }
 </script>
 
@@ -174,7 +230,14 @@ function formatProcessMemory(bytes: number): string {
   color: var(--secondary-text);
 }
 
+.auth-code-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .auth-code-display p {
+  min-width: 0;
   margin: 0;
   font-size: var(--font-size-title);
   font-weight: 700;
@@ -182,6 +245,33 @@ function formatProcessMemory(bytes: number): string {
   word-break: break-all;
   color: var(--highlight-text);
   font-family: monospace;
+}
+
+.copy-auth-code-button {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid var(--dashboard-accent-border);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--dashboard-accent-soft);
+  color: var(--highlight-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    opacity 0.18s ease;
+}
+
+.copy-auth-code-button:hover:not(:disabled) {
+  border-color: var(--dashboard-accent);
+  background: color-mix(in srgb, var(--dashboard-accent) 26%, transparent);
+}
+
+.copy-auth-code-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .empty-state {
@@ -229,6 +319,11 @@ function formatProcessMemory(bytes: number): string {
 
   .process-item .status {
     justify-self: start;
+  }
+
+  .auth-code-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .auth-code-display p {
