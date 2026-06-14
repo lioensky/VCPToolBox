@@ -34,6 +34,8 @@
 | 文档 | 描述 | 优先级 |
 |------|------|--------|
 | [MEMORY_SYSTEM.md](./MEMORY_SYSTEM.md) | TagMemo算法、EPA模块、残差金字塔、向量索引 | ⭐⭐⭐ |
+| [VCP记忆管理系统.md](./VCP记忆管理系统.md) | 记忆系统上手、日记本管理、记忆注入与操作指南 | ⭐⭐⭐ |
+| [TagMemo_Wave_Algorithm_Deep_Dive.md](./TagMemo_Wave_Algorithm_Deep_Dive.md) | TagMemo / 浪潮算法数学原理、语义动力学与深层机制 | ⭐⭐⭐ |
 | [CONTEXT_BRIDGE.md](./CONTEXT_BRIDGE.md) | 上下文向量引力场公开接口、插件间向量共享机制 | ⭐⭐⭐ |
 | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) | WebSocket协议、节点注册、工具执行、文件传输 | ⭐⭐ |
 | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) | N-API接口、向量操作、性能特性 | ⭐⭐ |
@@ -43,6 +45,7 @@
 
 | 文档 | 描述 | 优先级 |
 |------|------|--------|
+| [TECHNICAL_LITE.md](./TECHNICAL_LITE.md) | README 与完整文档之间的轻量技术地图，汇总核心系统与阅读路径 | ⭐⭐ |
 | [FILE_INVENTORY.md](./FILE_INVENTORY.md) | 所有重要文件的职责、入口、依赖关系 | ⭐ |
 | [FEATURE_MATRIX.md](./FEATURE_MATRIX.md) | 每项功能的入口、触发条件、处理流程、配置项 | ⭐ |
 | [OPERATIONS.md](./OPERATIONS.md) | 启动方式、依赖要求、Docker配置、故障排查 | ⭐ |
@@ -61,6 +64,8 @@
 | 修改配置参数 | [CONFIGURATION.md](./CONFIGURATION.md) § 配置语义总表 |
 | 添加新API端点 | [API_ROUTES.md](./API_ROUTES.md) § 路由挂载流程 |
 | 优化RAG检索 | [MEMORY_SYSTEM.md](./MEMORY_SYSTEM.md) § TagMemo算法 |
+| 上手机忆/日记系统 | [VCP记忆管理系统.md](./VCP记忆管理系统.md) |
+| 深入TagMemo数学原理 | [TagMemo_Wave_Algorithm_Deep_Dive.md](./TagMemo_Wave_Algorithm_Deep_Dive.md) |
 | 部署分布式节点 | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) § 节点注册 |
 | 调试向量索引 | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) § 错误处理 |
 | 定制管理面板 | [FRONTEND_COMPONENTS.md](./FRONTEND_COMPONENTS.md) § AdminPanel |
@@ -205,7 +210,9 @@
 
 - **项目README**：[README.md](../README.md)
 - **VCP理论文档**：[VCP.md](../VCP.md)
-- **TagMemo算法深度解析**：[TagMemo_Wave_Algorithm_Deep_Dive.md](../TagMemo_Wave_Algorithm_Deep_Dive.md)
+- **VCP技术Lite索引**：[TECHNICAL_LITE.md](./TECHNICAL_LITE.md)
+- **VCP记忆管理系统指南**：[VCP记忆管理系统.md](./VCP记忆管理系统.md)
+- **TagMemo算法深度解析**：[TagMemo_Wave_Algorithm_Deep_Dive.md](./TagMemo_Wave_Algorithm_Deep_Dive.md)
 - **变更日志**：[ChangeLog.md](../ChangeLog.md)
 
 ### 外部参考
