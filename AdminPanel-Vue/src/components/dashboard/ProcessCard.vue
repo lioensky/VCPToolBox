@@ -55,7 +55,7 @@ const props = defineProps<{
 }>();
 
 const copied = ref(false);
-let copiedResetTimer: ReturnType<typeof window.setTimeout> | undefined;
+let copiedResetTimer: number | undefined;
 
 const displayedProcesses = computed(() => {
   return props.processes.slice(0, props.maxDisplay ?? 20);

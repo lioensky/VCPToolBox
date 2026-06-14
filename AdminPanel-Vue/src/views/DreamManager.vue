@@ -8,8 +8,105 @@
       <p v-else-if="listState.status === 'error'" class="dream-error-message">
         加载失败: {{ listState.message }}
       </p>
+      <template v-else>
+        <div class="dream-workbench">
+          <div class="dream-stat-strip">
+            <span class="dream-stat">
+              <strong>{{ filterStats.total }}</strong>
+              梦日志
+            </span>
+            <span class="dream-stat pending">
+              <strong>{{ filterStats.pending }}</strong>
+              待审批
+            </span>
+            <span class="dream-stat">
+              <strong>{{ filterStats.error }}</strong>
+              出错
+            </span>
+            <span v-if="isRefreshing" class="dream-refreshing">同步中...</span>
+          </div>
+
+          <div class="dream-filter-grid">
+            <label class="dream-filter-field">
+              <span>状态</span>
+              <select v-model="filters.status">
+                <option value="all">全部状态</option>
+                <option value="pending">仅待审批</option>
+                <option value="handled">已处理完</option>
+                <option value="approved">含已批准</option>
+                <option value="rejected">含已拒绝</option>
+                <option value="error">含出错</option>
+              </select>
+            </label>
+
+            <label class="dream-filter-field">
+              <span>Agent</span>
+              <select v-model="filters.agent">
+                <option value="all">全部 Agent</option>
+                <option
+                  v-for="agent in agentOptions"
+                  :key="agent"
+                  :value="agent"
+                >
+                  {{ agent }}
+                </option>
+              </select>
+            </label>
+
+            <label class="dream-filter-field">
+              <span>类型</span>
+              <select v-model="filters.type">
+                <option value="all">全部类型</option>
+                <option value="merge">合并</option>
+                <option value="delete">删除</option>
+                <option value="insight">感悟</option>
+                <option value="unknown">未知</option>
+              </select>
+            </label>
+
+            <label class="dream-filter-field dream-filter-search">
+              <span>搜索</span>
+              <input
+                v-model.trim="filters.query"
+                type="search"
+                placeholder="文件名、Agent、状态"
+              />
+            </label>
+          </div>
+
+          <div class="dream-toolbar-actions">
+            <button type="button" class="btn-secondary" @click="resetFilters">
+              重置筛选
+            </button>
+            <button
+              type="button"
+              class="btn-secondary"
+              :disabled="isRefreshing"
+              @click="refreshDreams"
+            >
+              刷新
+            </button>
+            <button
+              type="button"
+              class="btn-success"
+              :disabled="visiblePendingCount === 0 || batchProcessing"
+              @click="batchReviewVisible('approve')"
+            >
+              批准当前筛选待审
+            </button>
+            <button
+              type="button"
+              class="btn-danger"
+              :disabled="visiblePendingCount === 0 || batchProcessing"
+              @click="batchReviewVisible('reject')"
+            >
+              拒绝当前筛选待审
+            </button>
+          </div>
+        </div>
+
       <div
-        v-else-if="listState.dreams.length === 0"
+          v-if="loadedDreams.length === 0"
         class="dream-empty-state"
       >
         <span class="material-symbols-outlined dream-empty-icon"
@@ -20,9 +117,16 @@
           当 Agent 发起梦操作后，日志将出现在这里
         </p>
       </div>
+        <div v-else-if="visibleDreams.length === 0" class="dream-empty-state">
+          <span class="material-symbols-outlined dream-empty-icon">filter_alt</span>
+          <p>当前筛选没有结果</p>
+          <p class="dream-empty-subtitle">
+            换个状态、Agent 或搜索词就能继续找
+          </p>
+        </div>
       <div
         v-else
-        v-for="dream in listState.dreams"
+          v-for="dream in visibleDreams"
         :key="dream.id"
         class="dream-log-card"
         :class="{ 'has-pending': dream.pendingCount > 0 }"
@@ -46,6 +150,24 @@
             <span>{{ formatDreamTimestamp(dream.timestamp) }}</span>
             <span>{{ dream.operationCount }} 个操作</span>
           </div>
+            <div v-if="dream.pendingCount > 0" class="dream-log-actions">
+              <button
+                type="button"
+                class="btn-success compact"
+                :disabled="batchProcessing"
+                @click.stop="batchReviewDream(dream, 'approve')"
+              >
+                批准本条待审
+              </button>
+              <button
+                type="button"
+                class="btn-danger compact"
+                :disabled="batchProcessing"
+                @click.stop="batchReviewDream(dream, 'reject')"
+              >
+                拒绝本条待审
+              </button>
+            </div>
         </div>
 
         <div
@@ -86,6 +208,33 @@
                 class="dream-narrative-text"
                 v-html="dream.detailState.detail.narrativeHtml"
               ></div>
+            </div>
+
+            <div
+              v-if="getPendingOperations(dream).length > 0"
+              class="dream-detail-toolbar"
+            >
+              <span>
+                本日志还有 {{ getPendingOperations(dream).length }} 个待审操作
+              </span>
+              <div class="dream-detail-actions">
+                <button
+                  type="button"
+                  class="btn-success compact"
+                  :disabled="batchProcessing"
+                  @click.stop="batchReviewDream(dream, 'approve')"
+                >
+                  全部批准
+                </button>
+                <button
+                  type="button"
+                  class="btn-danger compact"
+                  :disabled="batchProcessing"
+                  @click.stop="batchReviewDream(dream, 'reject')"
+                >
+                  全部拒绝
+                </button>
+              </div>
             </div>
 
             <div class="dream-ops-list">
@@ -198,16 +347,18 @@
                   <button
                     type="button"
                     class="btn-success"
+                    :disabled="isOperationProcessing(dream.filename, operation.id)"
                     @click.stop="approveOperation(dream.filename, operation.id)"
                   >
-                    ✅ 批准执行
+                    批准执行
                   </button>
                   <button
                     type="button"
                     class="btn-danger"
+                    :disabled="isOperationProcessing(dream.filename, operation.id)"
                     @click.stop="rejectOperation(dream.filename, operation.id)"
                   >
-                    ❌ 拒绝
+                    拒绝
                   </button>
                 </div>
                 <p v-else-if="operation.reviewedAt" class="dream-reviewed-info">
@@ -218,15 +369,18 @@
           </template>
         </div>
       </div>
+      </template>
     </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { useMarkdownRenderer } from "@/composables/useMarkdownRenderer";
 import {
   dreamApi,
+  type BatchDreamOperationInput,
+  type BatchDreamOperationResult,
   type DreamLogSummary,
   type DreamOperationAction,
   type DreamOperationSummary,
@@ -316,9 +470,60 @@ type DreamListState =
   | { status: "error"; message: string }
   | { status: "loaded"; dreams: DreamSummaryView[] };
 
+type DreamStatusFilter =
+  | "all"
+  | "pending"
+  | "handled"
+  | "approved"
+  | "rejected"
+  | "error";
+
+type DreamTypeFilter = "all" | "merge" | "delete" | "insight" | "unknown";
+
 const { renderMarkdownSync, initializeRenderer } = useMarkdownRenderer();
 
 const listState = ref<DreamListState>({ status: "loading" });
+const isRefreshing = ref(false);
+const batchProcessing = ref(false);
+const processingOperationKeys = ref(new Set<string>());
+const filters = reactive<{
+  status: DreamStatusFilter;
+  agent: string;
+  type: DreamTypeFilter;
+  query: string;
+}>({
+  status: "pending",
+  agent: "all",
+  type: "all",
+  query: "",
+});
+
+const loadedDreams = computed(() =>
+  listState.value.status === "loaded" ? listState.value.dreams : []
+);
+
+const filterStats = computed(() => {
+  const dreams = loadedDreams.value;
+  return {
+    total: dreams.length,
+    pending: dreams.reduce((sum, dream) => sum + dream.pendingCount, 0),
+    error: dreams.filter((dream) => hasOperationStatus(dream, "error")).length,
+  };
+});
+
+const agentOptions = computed(() =>
+  Array.from(new Set(loadedDreams.value.map((dream) => dream.agentName))).sort(
+    (left, right) => left.localeCompare(right, "zh-CN")
+  )
+);
+
+const visibleDreams = computed(() =>
+  loadedDreams.value.filter((dream) => dreamMatchesFilters(dream))
+);
+
+const visiblePendingCount = computed(() =>
+  visibleDreams.value.reduce((sum, dream) => sum + dream.pendingCount, 0)
+);
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -412,6 +617,22 @@ function toDreamSummaryView(summary: DreamLogSummary): DreamSummaryView {
   };
 }
 
+function mergeDreamSummaryView(
+  summary: DreamLogSummary,
+  previous?: DreamSummaryView
+): DreamSummaryView {
+  const next = toDreamSummaryView(summary);
+  if (!previous) {
+    return next;
+  }
+
+  return {
+    ...next,
+    expanded: previous.expanded,
+    detailState: previous.detailState,
+  };
+}
+
 function createOperationBaseView(
   operation: RawDreamOperation,
   index: number
@@ -496,13 +717,86 @@ function getLoadedDreams(): DreamSummaryView[] | null {
   return listState.value.dreams;
 }
 
-async function loadDreams(): Promise<void> {
-  listState.value = { status: "loading" };
+function hasOperationStatus(dream: DreamSummaryView, status: string): boolean {
+  return dream.operationSummary.some((operation) => operation.status === status);
+}
+
+function hasOperationType(dream: DreamSummaryView, type: string): boolean {
+  return dream.operationSummary.some((operation) => operation.type === type);
+}
+
+function dreamMatchesFilters(dream: DreamSummaryView): boolean {
+  if (filters.agent !== "all" && dream.agentName !== filters.agent) {
+    return false;
+  }
+
+  if (filters.type !== "all" && !hasOperationType(dream, filters.type)) {
+    return false;
+  }
+
+  switch (filters.status) {
+    case "pending":
+      if (dream.pendingCount <= 0) return false;
+      break;
+    case "handled":
+      if (dream.pendingCount > 0) return false;
+      break;
+    case "approved":
+    case "rejected":
+    case "error":
+      if (!hasOperationStatus(dream, filters.status)) return false;
+      break;
+    case "all":
+      break;
+  }
+
+  const query = filters.query.trim().toLowerCase();
+  if (!query) {
+    return true;
+  }
+
+  const haystack = [
+    dream.filename,
+    dream.agentName,
+    dream.timestamp || "",
+    ...dream.operationSummary.flatMap((operation) => [
+      operation.type,
+      getOpTypeLabel(operation.type),
+      operation.status,
+      getStatusLabel(operation.status),
+    ]),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return haystack.includes(query);
+}
+
+function resetFilters(): void {
+  filters.status = "all";
+  filters.agent = "all";
+  filters.type = "all";
+  filters.query = "";
+}
+
+async function loadDreams(options: { preserveState?: boolean } = {}): Promise<void> {
+  const previousDreams =
+    listState.value.status === "loaded"
+      ? new Map(listState.value.dreams.map((dream) => [dream.id, dream]))
+      : new Map<string, DreamSummaryView>();
+
+  if (!options.preserveState || listState.value.status !== "loaded") {
+    listState.value = { status: "loading" };
+  } else {
+    isRefreshing.value = true;
+  }
 
   try {
     const summaries = await dreamApi.getDreamLogSummaries();
     const dreams = summaries
-      .map(toDreamSummaryView)
+      .map((summary) =>
+        mergeDreamSummaryView(summary, previousDreams.get(summary.filename))
+      )
       .sort((left, right) => {
         const leftTime = left.timestamp ? new Date(left.timestamp).getTime() : 0;
         const rightTime = right.timestamp
@@ -520,7 +814,13 @@ async function loadDreams(): Promise<void> {
       status: "error",
       message: getErrorMessage(error),
     };
+  } finally {
+    isRefreshing.value = false;
   }
+}
+
+async function refreshDreams(): Promise<void> {
+  await loadDreams({ preserveState: true });
 }
 
 async function loadDreamDetail(dream: DreamSummaryView): Promise<void> {
@@ -544,6 +844,24 @@ async function loadDreamDetail(dream: DreamSummaryView): Promise<void> {
   }
 }
 
+async function ensureDreamDetail(
+  dream: DreamSummaryView,
+  options: { expand?: boolean } = {}
+): Promise<DreamSummaryView> {
+  if (dream.detailState.status !== "loaded") {
+    if (options.expand && !dream.expanded) {
+      dream.expanded = true;
+    }
+    await loadDreamDetail(dream);
+  }
+
+  if (dream.detailState.status !== "loaded") {
+    throw new Error(`${dream.agentName} 的梦日志详情加载失败`);
+  }
+
+  return dream;
+}
+
 function toggleDreamDetail(dreamId: string): void {
   const dreams = getLoadedDreams();
   if (!dreams) {
@@ -561,6 +879,82 @@ function toggleDreamDetail(dreamId: string): void {
   }
 
   void loadDreamDetail(dream);
+}
+
+function getOperationKey(filename: string, operationId: string): string {
+  return `${filename}::${operationId}`;
+}
+
+function setOperationProcessing(
+  filename: string,
+  operationId: string,
+  processing: boolean
+): void {
+  const next = new Set(processingOperationKeys.value);
+  const key = getOperationKey(filename, operationId);
+  if (processing) {
+    next.add(key);
+  } else {
+    next.delete(key);
+  }
+  processingOperationKeys.value = next;
+}
+
+function isOperationProcessing(filename: string, operationId: string): boolean {
+  return processingOperationKeys.value.has(getOperationKey(filename, operationId));
+}
+
+function syncDreamSummaryFromDetail(dream: DreamSummaryView): void {
+  if (dream.detailState.status !== "loaded") {
+    return;
+  }
+
+  const operations = dream.detailState.detail.operations;
+  dream.operationCount = operations.length;
+  dream.pendingCount = operations.filter((operation) => operation.isPending).length;
+  dream.operationSummary = operations.map((operation) => ({
+    type: operation.type,
+    status: operation.status,
+  }));
+}
+
+function patchReviewedOperation(
+  filename: string,
+  rawOperation?: RawDreamOperation
+): void {
+  if (!rawOperation) {
+    return;
+  }
+
+  const dreams = getLoadedDreams();
+  const dream = dreams?.find((item) => item.filename === filename);
+  if (!dream || dream.detailState.status !== "loaded") {
+    return;
+  }
+
+  const operationId = String(rawOperation.operationId ?? rawOperation.id ?? "");
+  const operationIndex = dream.detailState.detail.operations.findIndex(
+    (operation) => operation.id === operationId
+  );
+  if (operationIndex < 0) {
+    return;
+  }
+
+  dream.detailState.detail.operations[operationIndex] = toDreamOperationView(
+    rawOperation,
+    operationIndex
+  );
+  syncDreamSummaryFromDetail(dream);
+}
+
+function getPendingOperations(dream: DreamSummaryView): DreamOperationView[] {
+  if (dream.detailState.status !== "loaded") {
+    return [];
+  }
+
+  return dream.detailState.detail.operations.filter(
+    (operation) => operation.isPending
+  );
 }
 
 async function reviewOperation(
@@ -581,6 +975,7 @@ async function reviewOperation(
   }
 
   try {
+    setOperationProcessing(filename, operationId, true);
     const result = await dreamApi.reviewDreamOperation(
       filename,
       operationId,
@@ -590,10 +985,12 @@ async function reviewOperation(
       }
     );
 
+    patchReviewedOperation(filename, result.operation);
     showMessage(result.message || `操作已${actionLabel}`, "success");
-    await loadDreams();
   } catch (error) {
     showMessage(`${actionLabel}失败: ${getErrorMessage(error)}`, "error");
+  } finally {
+    setOperationProcessing(filename, operationId, false);
   }
 }
 
@@ -609,6 +1006,109 @@ async function rejectOperation(
   operationId: string
 ): Promise<void> {
   await reviewOperation(filename, operationId, "reject");
+}
+
+function formatBatchMessage(
+  action: DreamOperationAction,
+  successCount: number,
+  failedCount: number
+): string {
+  const actionLabel = action === "approve" ? "批准" : "拒绝";
+  if (failedCount === 0) {
+    return `已${actionLabel} ${successCount} 个操作`;
+  }
+
+  return `已${actionLabel} ${successCount} 个操作，${failedCount} 个失败`;
+}
+
+function applyBatchResults(results: BatchDreamOperationResult[] = []): void {
+  for (const result of results) {
+    if (result.ok && result.filename && result.operation) {
+      patchReviewedOperation(result.filename, result.operation);
+    }
+  }
+}
+
+async function batchReviewOperations(
+  operations: BatchDreamOperationInput[],
+  action: DreamOperationAction
+): Promise<void> {
+  if (operations.length === 0) {
+    showMessage("没有可处理的待审批操作", "info");
+    return;
+  }
+
+  const actionLabel = action === "approve" ? "批准" : "拒绝";
+  const warning =
+    action === "approve" ? "批准后将顺序执行实际的文件操作。" : "";
+
+  if (
+    !(await askConfirm({
+      message: `确定${actionLabel} ${operations.length} 个待审批操作吗？${warning}`,
+      danger: action === "approve",
+      confirmText: actionLabel,
+    }))
+  ) {
+    return;
+  }
+
+  try {
+    batchProcessing.value = true;
+    const result = await dreamApi.batchReviewDreamOperations(operations, action, {
+      loadingKey: `dream-manager.batch.${action}`,
+    });
+    const successCount = result.successCount ?? 0;
+    const failedCount = result.failedCount ?? 0;
+    applyBatchResults(result.results);
+    showMessage(
+      formatBatchMessage(action, successCount, failedCount),
+      failedCount > 0 ? "warning" : "success"
+    );
+  } catch (error) {
+    showMessage(`批量${actionLabel}失败: ${getErrorMessage(error)}`, "error");
+  } finally {
+    batchProcessing.value = false;
+  }
+}
+
+async function batchReviewDream(
+  dream: DreamSummaryView,
+  action: DreamOperationAction
+): Promise<void> {
+  try {
+    await ensureDreamDetail(dream);
+    const operations = getPendingOperations(dream).map((operation) => ({
+      filename: dream.filename,
+      operationId: operation.id,
+    }));
+    await batchReviewOperations(operations, action);
+  } catch (error) {
+    showMessage(getErrorMessage(error), "error");
+  }
+}
+
+async function batchReviewVisible(action: DreamOperationAction): Promise<void> {
+  const operations: BatchDreamOperationInput[] = [];
+
+  try {
+    for (const dream of visibleDreams.value) {
+      if (dream.pendingCount <= 0) {
+        continue;
+      }
+
+      await ensureDreamDetail(dream);
+      operations.push(
+        ...getPendingOperations(dream).map((operation) => ({
+          filename: dream.filename,
+          operationId: operation.id,
+        }))
+      );
+    }
+
+    await batchReviewOperations(operations, action);
+  } catch (error) {
+    showMessage(getErrorMessage(error), "error");
+  }
 }
 
 onMounted(async () => {
@@ -652,6 +1152,119 @@ onMounted(async () => {
 .dream-empty-subtitle {
   font-size: var(--font-size-helper);
   opacity: 0.7;
+}
+
+.dream-workbench {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--secondary-bg);
+  padding: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.dream-stat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.dream-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding: 4px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--tertiary-bg);
+  font-size: var(--font-size-helper);
+}
+
+.dream-stat strong {
+  font-size: var(--font-size-body);
+}
+
+.dream-stat.pending {
+  color: var(--warning-text);
+}
+
+.dream-refreshing {
+  font-size: var(--font-size-helper);
+  opacity: 0.7;
+}
+
+.dream-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(140px, 1fr)) minmax(220px, 2fr);
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.dream-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  font-size: var(--font-size-caption);
+  color: var(--text-secondary);
+}
+
+.dream-filter-field select,
+.dream-filter-field input {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--primary-bg);
+  color: var(--text-primary);
+  padding: 0 var(--space-2);
+  font: inherit;
+}
+
+.dream-filter-field input {
+  font-size: var(--font-size-helper);
+}
+
+.dream-toolbar-actions,
+.dream-log-actions,
+.dream-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.dream-toolbar-actions {
+  justify-content: flex-end;
+}
+
+.dream-log-actions {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.dream-detail-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  margin-bottom: var(--space-3);
+  font-size: var(--font-size-helper);
+}
+
+.compact {
+  min-height: 28px;
+  padding: 3px var(--space-2);
+  font-size: var(--font-size-helper);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .dream-log-card {
@@ -938,9 +1551,31 @@ onMounted(async () => {
 }
 
 @media (max-width: 720px) {
+  .dream-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dream-toolbar-actions,
+  .dream-log-actions,
+  .dream-detail-toolbar,
+  .dream-detail-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dream-toolbar-actions button,
+  .dream-log-actions button,
+  .dream-detail-actions button {
+    width: 100%;
+  }
+
   .dream-log-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .dream-log-actions {
+    margin-left: 0;
   }
 
   .dream-log-meta {
