@@ -11,7 +11,7 @@
   "entryPoint": {
     "command": "node FileTreeGenerator.js"
   },
-  "refreshIntervalCron": "*/5 * * * *",
+  "refreshIntervalCron": "*/15 * * * * *",
   "capabilities": {
     "systemPromptPlaceholders": [
       {
