@@ -30,8 +30,22 @@ module.exports = function(options) {
         try {
             await fs.mkdir(ASSISTANT_DIR, { recursive: true });
             
-            // 直接保存 JSON
-            const config = req.body;
+            // 合并旧配置后保存，避免旧版/移动端面板未提交的字段被覆盖丢失
+            let existingConfig = {};
+            try {
+                const existingContent = await fs.readFile(AGENT_ASSISTANT_CONFIG_FILE, 'utf-8');
+                existingConfig = JSON.parse(existingContent || '{}');
+            } catch (readErr) {
+                if (readErr.code !== 'ENOENT') {
+                    console.warn('[AgentAssistant Route] Failed to read existing config before save, using request body only:', readErr.message);
+                }
+            }
+
+            const incomingConfig = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+            const config = {
+                ...existingConfig,
+                ...incomingConfig
+            };
             await fs.writeFile(AGENT_ASSISTANT_CONFIG_FILE, JSON.stringify(config, null, 4), 'utf-8');
 
             // 触发插件热重载

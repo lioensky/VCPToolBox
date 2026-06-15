@@ -16,6 +16,10 @@ export interface AgentAssistantConfigResponse {
   globalSystemPrompt?: string;
   maxHistoryRounds?: number | string;
   contextTtlHours?: number | string;
+  delegationMaxRounds?: number | string;
+  delegationTimeout?: number | string;
+  delegationSystemPrompt?: string;
+  delegationHeartbeatPrompt?: string;
   agents?: AgentAssistantConfigAgent[];
 }
 
@@ -23,6 +27,10 @@ export interface SaveAgentAssistantConfigPayload {
   maxHistoryRounds: number;
   contextTtlHours: number;
   globalSystemPrompt: string;
+  delegationMaxRounds: number;
+  delegationTimeout: number;
+  delegationSystemPrompt: string;
+  delegationHeartbeatPrompt: string;
   agents: AgentAssistantConfigAgent[];
 }
 

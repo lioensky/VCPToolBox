@@ -3,9 +3,10 @@
     <p class="description">
       这里用于配置 <strong>AgentAssistant</strong> 插件。你可以：
       <br />1）从已注册的 Agent 一键创建助手； <br />2）添加完全自定义的助手；
-      <br />3）为每个助手设置模型、性格说明和系统提示词。
+      <br />3）为每个助手设置模型、性格说明和系统提示词；
+      <br />4）调整异步委托模式的最大轮数、总超时和心跳提示词。
       <br />所有修改会自动写入
-      <code>Plugin/AgentAssistant/config.env</code> 中，无需手动编辑文本。
+      <code>Plugin/AgentAssistant/config.json</code> 中，无需手动编辑文本。
     </p>
 
     <div class="aa-config-container">
@@ -57,6 +58,79 @@
           ></textarea>
           <p class="aa-hint">
             这里的内容会自动追加到每个助手的系统提示词后面，可用于统一规定整体风格和安全边界。
+          </p>
+        </div>
+      </div>
+
+      <!-- 异步委托设置 -->
+      <div class="aa-global-settings card aa-delegation-settings">
+        <h3>异步委托设置</h3>
+        <p class="aa-section-description">
+          当工具调用中传入 <code>task_delegation: true</code> 时，AgentAssistant
+          会立即返回委托 ID，并在后台按下面的限制循环唤醒目标 Agent 执行任务。
+          普通即时通讯不受这里的总超时控制。
+        </p>
+
+        <div class="aa-global-grid">
+          <div class="aa-global-item">
+            <label for="aa-delegation-max-rounds">委托最大对话轮数</label>
+            <input
+              type="number"
+              id="aa-delegation-max-rounds"
+              v-model.number="globalConfig.delegationMaxRounds"
+              min="1"
+              max="200"
+              step="1"
+              placeholder="例如：15"
+            />
+            <p class="aa-hint">
+              后台委托最多执行多少轮模型回复。达到上限但没有输出
+              <code>[[TaskComplete]]</code> 或 <code>[[TaskFailed]]</code> 时，会判定为失败。
+            </p>
+          </div>
+
+          <div class="aa-global-item">
+            <label for="aa-delegation-timeout">委托总超时（毫秒）</label>
+            <input
+              type="number"
+              id="aa-delegation-timeout"
+              v-model.number="globalConfig.delegationTimeout"
+              min="10000"
+              step="1000"
+              placeholder="例如：300000"
+            />
+            <p class="aa-hint">
+              从委托创建开始计算的总运行时间。300000 = 5 分钟，1800000 = 30 分钟。
+              这个值由插件内部 <code>delegationTimeout</code> 使用。
+            </p>
+          </div>
+        </div>
+
+        <div class="aa-global-item-full">
+          <label for="aa-delegation-system-prompt">委托模式系统提示词（可选）</label>
+          <textarea
+            id="aa-delegation-system-prompt"
+            v-model="globalConfig.delegationSystemPrompt"
+            rows="8"
+            placeholder="留空时使用插件内置默认委托提示词。可使用 {{SenderName}} 和 {{TaskPrompt}} 占位符。"
+          ></textarea>
+          <p class="aa-hint">
+            会拼接到目标 Agent 的系统提示词后面，用于说明异步委托任务规则。
+            请保留 <code v-pre>{{TaskPrompt}}</code>，否则目标 Agent 可能看不到原始任务内容。
+          </p>
+        </div>
+
+        <div class="aa-global-item-full">
+          <label for="aa-delegation-heartbeat-prompt">委托心跳提示词（可选）</label>
+          <textarea
+            id="aa-delegation-heartbeat-prompt"
+            v-model="globalConfig.delegationHeartbeatPrompt"
+            rows="4"
+            placeholder="留空时使用插件内置默认心跳提示词。"
+          ></textarea>
+          <p class="aa-hint">
+            当上一轮没有完成任务时，系统会把这段文字作为下一轮 user 消息发给目标 Agent。
+            Agent 可输出 <code>[[NextHeartbeat::秒数]]</code> 推迟下一次心跳。
           </p>
         </div>
       </div>
@@ -291,6 +365,27 @@ const {
   font-size: var(--font-size-body);
   resize: vertical;
   font-family: inherit;
+}
+
+.aa-section-description {
+  margin: 0 0 var(--space-4);
+  color: var(--secondary-text);
+  line-height: 1.6;
+  font-size: var(--font-size-body);
+}
+
+.aa-section-description code,
+.aa-hint code {
+  color: var(--primary-color);
+  background: var(--surface-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xs);
+  padding: 1px 4px;
+  white-space: nowrap;
+}
+
+.aa-delegation-settings {
+  border-left: 3px solid var(--primary-color);
 }
 
 .aa-agents-header {
