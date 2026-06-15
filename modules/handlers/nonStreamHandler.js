@@ -2,6 +2,118 @@
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
 
+function hasVisibleContent(content) {
+  if (typeof content === 'string') return content.trim().length > 0;
+  if (Array.isArray(content)) {
+    return content.some(part => {
+      if (typeof part === 'string') return part.trim().length > 0;
+      if (part?.type === 'text' && typeof part.text === 'string') return part.text.trim().length > 0;
+      return false;
+    });
+  }
+  return content !== undefined && content !== null && String(content).trim().length > 0;
+}
+
+function hasReasoningOnlySignal(message, choice) {
+  const reasoningKeys = [
+    'reasoning_content',
+    'reasoning',
+    'reasoning_details',
+    'thoughts',
+    'thinking',
+    'reasoning_text'
+  ];
+
+  const hasReasoningField = (obj) => obj && typeof obj === 'object' && reasoningKeys.some(key => hasVisibleContent(obj[key]));
+  return hasReasoningField(message) || hasReasoningField(choice) || hasReasoningField(choice?.delta);
+}
+
+function hasToolOrRefusalPayload(message) {
+  return (
+    (Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) ||
+    (message?.function_call && typeof message.function_call === 'object') ||
+    hasVisibleContent(message?.refusal)
+  );
+}
+
+function parseNonStreamResponse(rawResponseText) {
+  try {
+    const parsedJson = JSON.parse(rawResponseText);
+    return {
+      parsedJson,
+      message: parsedJson.choices?.[0]?.message || null,
+      choice: parsedJson.choices?.[0] || null
+    };
+  } catch (e) {
+    return { parsedJson: null, message: null, choice: null };
+  }
+}
+
+function isReasoningOnlyNonStreamResponse(rawResponseText) {
+  const { parsedJson, message, choice } = parseNonStreamResponse(rawResponseText);
+  if (!parsedJson || !message || hasToolOrRefusalPayload(message)) return false;
+  return !hasVisibleContent(message.content) && hasReasoningOnlySignal(message, choice);
+}
+
+async function readNonStreamResponseWithSemanticRetry({
+  initialResponse = null,
+  fetchResponse,
+  retries = 3,
+  delay = 1000,
+  debugMode = false,
+  label = 'non_stream'
+}) {
+  const maxAttempts = Math.max(Number.isFinite(Number(retries)) && Number(retries) > 0 ? Math.floor(Number(retries)) : 1, 1);
+  let response = initialResponse;
+  let responseText = '';
+  let lastReasoningOnlyText = '';
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (!response) {
+      response = await fetchResponse(attempt);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    responseText = Buffer.from(arrayBuffer).toString('utf-8');
+
+    if (!response.ok || !isReasoningOnlyNonStreamResponse(responseText)) {
+      return {
+        response,
+        text: responseText,
+        semanticRetryTriggered: attempt > 0,
+        semanticRetryExhausted: false
+      };
+    }
+
+    lastReasoningOnlyText = responseText;
+    if (attempt >= maxAttempts - 1) {
+      if (debugMode) {
+        console.warn(`[NonStream Semantic Retry] ${label}: reasoning-only response detected, but semantic retries are exhausted. Returning last response.`);
+      }
+      return {
+        response,
+        text: lastReasoningOnlyText,
+        semanticRetryTriggered: true,
+        semanticRetryExhausted: true
+      };
+    }
+
+    const currentDelay = delay * (attempt + 1);
+    if (debugMode) {
+      console.warn(`[NonStream Semantic Retry] ${label}: upstream returned reasoning-only response without visible content. Retrying in ${currentDelay}ms... (${attempt + 1}/${maxAttempts})`);
+    }
+    await new Promise(resolve => setTimeout(resolve, currentDelay));
+    response = null;
+  }
+
+  return {
+    response,
+    text: responseText || lastReasoningOnlyText,
+    semanticRetryTriggered: true,
+    semanticRetryExhausted: true
+  };
+}
+
 class NonStreamHandler {
   constructor(context) {
     this.context = context;
@@ -42,9 +154,27 @@ class NonStreamHandler {
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || this.context.forceShowVCP;
 
-    const firstArrayBuffer = await firstAiAPIResponse.arrayBuffer();
-    const responseBuffer = Buffer.from(firstArrayBuffer);
-    const aiResponseText = responseBuffer.toString('utf-8');
+    const fetchNonStreamCompletion = (body, label) => fetchWithRetry(
+      `${apiUrl}/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(body),
+        signal: abortController.signal,
+      },
+      { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, modelFallbackCandidates: semanticModelFallbackCandidates }
+    );
+
+    const firstReadResult = await readNonStreamResponseWithSemanticRetry({
+      initialResponse: firstAiAPIResponse,
+      fetchResponse: () => fetchNonStreamCompletion(originalBody, 'initial'),
+      retries: apiRetries,
+      delay: apiRetryDelay,
+      debugMode: DEBUG_MODE,
+      label: 'initial'
+    });
+    firstAiAPIResponse = firstReadResult.response;
+    const aiResponseText = firstReadResult.text;
     let firstResponseRawDataForClientAndDiary = aiResponseText;
     let chatLogs = [];
     let oneRingAssistantTurnParts = [];
@@ -67,14 +197,7 @@ class NonStreamHandler {
     };
 
     let fullContentFromAI = '';
-    const extractedMessage = (rawResponseText) => {
-      try {
-        const parsedJson = JSON.parse(rawResponseText);
-        return parsedJson.choices?.[0]?.message;
-      } catch (e) {
-        return null;
-      }
-    };
+    const extractedMessage = (rawResponseText) => parseNonStreamResponse(rawResponseText).message;
     const extractVisibleContent = (message, fallbackText = '') => {
       if (!message) return fallbackText;
       // P0 安全修复：OneRing 入库和 VCP 循环只使用可见正文 content。
@@ -157,21 +280,18 @@ class NonStreamHandler {
           const errorPayload = `<!-- VCP_TOOL_PAYLOAD -->\n${JSON.stringify(archeryErrorContents)}`;
           currentMessagesForNonStreamLoop.push({ role: 'user', content: errorPayload });
 
-          const recursionAiResponse = await fetchWithRetry(
-            `${apiUrl}/v1/chat/completions`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-              body: JSON.stringify({ ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false }),
-              signal: abortController.signal,
-            },
-            { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, modelFallbackCandidates: semanticModelFallbackCandidates }
-          );
+          const recursionBody = { ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false };
+          const recursionReadResult = await readNonStreamResponseWithSemanticRetry({
+            fetchResponse: () => fetchNonStreamCompletion(recursionBody, `archery_error_depth_${recursionDepth}`),
+            retries: apiRetries,
+            delay: apiRetryDelay,
+            debugMode: DEBUG_MODE,
+            label: `archery_error_depth_${recursionDepth}`
+          });
+          const recursionAiResponse = recursionReadResult.response;
 
           if (recursionAiResponse.ok) {
-            const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
-            const recursionBuffer = Buffer.from(recursionArrayBuffer);
-            const recursionText = recursionBuffer.toString('utf-8');
+            const recursionText = recursionReadResult.text;
             const recursionMessage = extractedMessage(recursionText);
             if (recursionMessage) {
               currentAIContentForLoop = '\n' + extractVisibleContent(recursionMessage);
@@ -293,22 +413,19 @@ class NonStreamHandler {
 
         currentMessagesForNonStreamLoop.push({ role: 'user', content: finalToolPayloadForAI });
 
-        const recursionAiResponse = await fetchWithRetry(
-          `${apiUrl}/v1/chat/completions`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-            body: JSON.stringify({ ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false }),
-            signal: abortController.signal,
-          },
-          { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, modelFallbackCandidates: semanticModelFallbackCandidates }
-        );
+        const recursionBody = { ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false };
+        const recursionReadResult = await readNonStreamResponseWithSemanticRetry({
+          fetchResponse: () => fetchNonStreamCompletion(recursionBody, `tool_loop_depth_${recursionDepth}`),
+          retries: apiRetries,
+          delay: apiRetryDelay,
+          debugMode: DEBUG_MODE,
+          label: `tool_loop_depth_${recursionDepth}`
+        });
+        const recursionAiResponse = recursionReadResult.response;
 
         if (!recursionAiResponse.ok) break;
 
-        const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
-        const recursionBuffer = Buffer.from(recursionArrayBuffer);
-        const recursionText = recursionBuffer.toString('utf-8');
+        const recursionText = recursionReadResult.text;
         const recursionMessage = extractedMessage(recursionText);
         if (recursionMessage) {
           currentAIContentForLoop = '\n' + extractVisibleContent(recursionMessage);
