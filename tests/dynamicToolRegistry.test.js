@@ -578,6 +578,46 @@ test('fast distributed register/unregister preserves an offline catalog record',
   assert.equal(calls.length, 1, 'the disconnected tool should have been classified once for cache reuse');
 });
 
+test('distributed reconnect with new ephemeral server ids does not accumulate admin duplicates', async () => {
+  const projectRoot = await makeProjectRoot();
+  const calls = [];
+  const pluginManager = new EventedPluginManager([]);
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({ classificationDebounceMs: 0 }),
+    classifier: classifierFactory(calls)
+  });
+
+  for (const serverId of ['dist-day-1', 'dist-day-2', 'dist-day-3']) {
+    const manifest = makeManifest('DailyRemoteSearch', 'Remote search service for web lookup.', {
+      serverId,
+      displayName: '[云端] DailyRemoteSearch'
+    });
+    pluginManager.plugins.set(manifest.name, manifest);
+    pluginManager.emit('tools_changed', { reason: 'distributed_register', serverId });
+    await registry.syncPromise;
+    await registry.flushClassificationQueue();
+
+    pluginManager.emit('distributed_tools_offline', {
+      serverId,
+      pluginNames: [manifest.name],
+      manifests: [{ ...manifest }]
+    });
+    pluginManager.plugins.delete(manifest.name);
+    pluginManager.emit('tools_changed', { reason: 'distributed_unregister', serverId, pluginNames: [manifest.name] });
+    await registry.syncPromise;
+    await registry.flushClassificationQueue();
+  }
+
+  const state = registry.getAdminState();
+  const records = state.records.filter((record) => record.pluginName === 'DailyRemoteSearch');
+  assert.equal(records.length, 1, 'admin state must expose one stable row for repeated reconnects of the same distributed tool');
+  assert.equal(records[0].available, false);
+  assert.equal(calls.length, 1, 'classification cache should be reused across ephemeral distributed server ids');
+});
+
 test('classification uses RAG embedding fallback when no small model or classifier is configured', async () => {
   const projectRoot = await makeProjectRoot();
   const pluginManager = makePluginManager([

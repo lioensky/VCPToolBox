@@ -302,10 +302,20 @@ class DynamicToolRegistry {
 
         for (const record of currentRecords) {
             const previous = this.catalog.get(record.originKey);
+            const reusablePrevious = previous || this._findReusableDistributedRecord(record);
+            if (!previous && reusablePrevious && reusablePrevious.originKey !== record.originKey) {
+                const reusableClassification = this.categories.get(reusablePrevious.originKey);
+                if (reusableClassification && !this.categories.has(record.originKey)) {
+                    this.categories.set(record.originKey, {
+                        ...reusableClassification,
+                        pluginName: record.pluginName
+                    });
+                }
+            }
             const merged = {
-                ...(previous || {}),
+                ...(reusablePrevious || {}),
                 ...record,
-                firstSeenAt: previous?.firstSeenAt || now,
+                firstSeenAt: reusablePrevious?.firstSeenAt || now,
                 lastSeenAt: now
             };
 
@@ -337,6 +347,8 @@ class DynamicToolRegistry {
             this.catalog.set(originKey, next);
         }
 
+        this._compactDistributedHistory();
+
         this.snapshotId += 1;
         await this._writeCatalog();
         this._scheduleClassificationFlush();
@@ -357,16 +369,32 @@ class DynamicToolRegistry {
 
         for (const record of manifestRecords) {
             const previous = this.catalog.get(record.originKey);
+            const reusablePrevious = previous || this._findReusableDistributedRecord(record);
+            if (!previous && reusablePrevious && reusablePrevious.originKey !== record.originKey) {
+                const reusableClassification = this.categories.get(reusablePrevious.originKey);
+                if (reusableClassification && !this.categories.has(record.originKey)) {
+                    this.categories.set(record.originKey, {
+                        ...reusableClassification,
+                        pluginName: record.pluginName
+                    });
+                }
+            }
             const next = {
-                ...(previous || {}),
+                ...(reusablePrevious || {}),
                 ...record,
-                enabled: previous?.enabled !== false,
+                enabled: reusablePrevious?.enabled !== false,
                 online: false,
                 available: false,
-                firstSeenAt: previous?.firstSeenAt || now,
+                firstSeenAt: reusablePrevious?.firstSeenAt || now,
                 lastSeenAt: now,
                 lastStatusChangeAt: now
             };
+            if (reusablePrevious && reusablePrevious.sourceHash) {
+                next.manifestHash = reusablePrevious.manifestHash;
+                next.descriptionHash = reusablePrevious.descriptionHash;
+                next.sourceHash = reusablePrevious.sourceHash;
+                next.fullDescription = reusablePrevious.fullDescription || record.fullDescription;
+            }
             this.catalog.set(record.originKey, next);
             const classification = this.categories.get(record.originKey);
             if (!classification || classification.sourceHash !== next.sourceHash) {
@@ -388,10 +416,84 @@ class DynamicToolRegistry {
             }
         }
         if (changed) {
+            this._compactDistributedHistory();
             this.snapshotId += 1;
             await this._writeCatalog();
             this._scheduleClassificationFlush();
         }
+    }
+
+    _findReusableDistributedRecord(record) {
+        if (!record || record.originKind !== 'distributed') return null;
+        const identityKey = this._stableDistributedIdentityKey(record);
+        if (!identityKey) return null;
+
+        const candidates = Array.from(this.catalog.values())
+            .filter((item) => (
+                item &&
+                item.originKind === 'distributed' &&
+                item.originKey !== record.originKey &&
+                this._stableDistributedIdentityKey(item) === identityKey
+            ))
+            .sort((a, b) => this._compareDistributedHistoryCandidates(a, b));
+
+        return candidates[0] || null;
+    }
+
+    _compactDistributedHistory() {
+        const groups = new Map();
+        for (const record of this.catalog.values()) {
+            if (!record || record.originKind !== 'distributed') continue;
+            const identityKey = this._stableDistributedIdentityKey(record);
+            if (!identityKey) continue;
+            if (!groups.has(identityKey)) groups.set(identityKey, []);
+            groups.get(identityKey).push(record);
+        }
+
+        for (const records of groups.values()) {
+            if (records.length <= 1) continue;
+            records.sort((a, b) => this._compareDistributedHistoryCandidates(a, b));
+            const keeper = records[0];
+            const keeperClassification = this.categories.get(keeper.originKey);
+
+            for (const duplicate of records.slice(1)) {
+                const duplicateClassification = this.categories.get(duplicate.originKey);
+                if (!keeperClassification && duplicateClassification) {
+                    this.categories.set(keeper.originKey, {
+                        ...duplicateClassification,
+                        pluginName: keeper.pluginName
+                    });
+                }
+                this.catalog.delete(duplicate.originKey);
+                this.categories.delete(duplicate.originKey);
+                this._removeClassificationQueueEntriesForOrigin(duplicate.originKey);
+            }
+        }
+    }
+
+    _removeClassificationQueueEntriesForOrigin(originKey) {
+        if (!originKey) return;
+        for (const queueKey of Array.from(this.classificationQueue.keys())) {
+            if (queueKey.startsWith(`${originKey}:`)) {
+                this.classificationQueue.delete(queueKey);
+            }
+        }
+    }
+
+    _compareDistributedHistoryCandidates(a, b) {
+        const aAvailable = this._isAvailable(a) && a.available !== false ? 1 : 0;
+        const bAvailable = this._isAvailable(b) && b.available !== false ? 1 : 0;
+        if (aAvailable !== bAvailable) return bAvailable - aAvailable;
+
+        const aOnline = a.online !== false ? 1 : 0;
+        const bOnline = b.online !== false ? 1 : 0;
+        if (aOnline !== bOnline) return bOnline - aOnline;
+
+        const aSeen = Date.parse(a.lastSeenAt || a.lastStatusChangeAt || a.firstSeenAt || 0) || 0;
+        const bSeen = Date.parse(b.lastSeenAt || b.lastStatusChangeAt || b.firstSeenAt || 0) || 0;
+        if (aSeen !== bSeen) return bSeen - aSeen;
+
+        return String(a.originKey || '').localeCompare(String(b.originKey || ''));
     }
 
     enqueueClassification(record, reason = 'source_changed') {
@@ -637,19 +739,28 @@ class DynamicToolRegistry {
 
     _getAdminRecords() {
         const records = Array.from(this.catalog.values());
-        const availableIdentityKeys = new Set(
-            records
-                .filter((record) => record?.originKind === 'distributed' && this._isAvailable(record) && record.available !== false)
-                .map((record) => this._stableDistributedIdentityKey(record))
-                .filter(Boolean)
-        );
+        const distributedGroups = new Map();
+
+        for (const record of records) {
+            if (!record || record.originKind !== 'distributed') continue;
+            const identityKey = this._stableDistributedIdentityKey(record);
+            if (!identityKey) continue;
+            if (!distributedGroups.has(identityKey)) distributedGroups.set(identityKey, []);
+            distributedGroups.get(identityKey).push(record);
+        }
+
+        const visibleDistributedKeys = new Set();
+        for (const group of distributedGroups.values()) {
+            group.sort((a, b) => this._compareDistributedHistoryCandidates(a, b));
+            if (group[0]?.originKey) visibleDistributedKeys.add(group[0].originKey);
+        }
 
         return records
             .filter((record) => {
                 if (!record || record.originKind !== 'distributed') return true;
-                if (this._isAvailable(record) && record.available !== false) return true;
                 const identityKey = this._stableDistributedIdentityKey(record);
-                return !identityKey || !availableIdentityKeys.has(identityKey);
+                if (!identityKey) return true;
+                return visibleDistributedKeys.has(record.originKey);
             })
             .sort((a, b) => this._compareRecordsWithPinned(a, b));
     }
@@ -658,9 +769,15 @@ class DynamicToolRegistry {
         if (!record || record.originKind !== 'distributed') return '';
         return [
             record.pluginName || '',
-            record.displayName || '',
-            record.descriptionHash || record.sourceHash || ''
+            this._normalizeDistributedDisplayName(record.displayName || record.pluginName),
+            record.description || ''
         ].map((item) => String(item).trim()).join('::');
+    }
+
+    _normalizeDistributedDisplayName(value) {
+        return String(value || '')
+            .replace(/^(?:\s*\[云端\]\s*)+/u, '')
+            .trim();
     }
 
     _extractRecords(pluginManager, now) {
