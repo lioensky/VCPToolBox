@@ -436,6 +436,51 @@ function sendResponseToWs(message) {
     }
 }
 
+function parseJsonParam(value, fallback = {}) {
+    if (value === undefined || value === null || value === '') return fallback;
+    if (typeof value === 'object') return value;
+    if (typeof value === 'string') {
+        try {
+            return JSON.parse(value);
+        } catch (error) {
+            throw new Error(`JSON 参数解析失败: ${error.message}`);
+        }
+    }
+    throw new Error('JSON 参数必须是对象或 JSON 字符串');
+}
+
+function parseBooleanParam(value, defaultValue = false) {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+    }
+    return Boolean(value);
+}
+
+function parseNumberParam(value, defaultValue, minValue, maxValue) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return defaultValue;
+    return Math.min(Math.max(parsed, minValue), maxValue);
+}
+
+async function ensureDebuggerAttached(tabId) {
+    if (attachedTabId === tabId) return;
+    if (attachedTabId) await detachDebugger(attachedTabId);
+    await attachDebugger(tabId);
+}
+
+function sendCdpCommand(tabId, method, params = {}) {
+    return new Promise((resolve, reject) => {
+        chrome.debugger.sendCommand({ tabId }, method, params, (result) => {
+            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+            else resolve(result || {});
+        });
+    });
+}
+
 async function executeScriptInMainWorld(commandData) {
     const tabId = currentActiveTabId;
     const code = commandData.text || '';
@@ -562,7 +607,29 @@ function closeTab(commandData) {
 }
 
 async function processCdpCommand(commandData) {
-    const { command, urlIncludes, cdpRequestId } = commandData;
+    const {
+        command,
+        urlIncludes,
+        cdpRequestId,
+        expression,
+        selector,
+        nodeId,
+        depth,
+        pierce,
+        headers,
+        userAgent,
+        acceptLanguage,
+        platform,
+        timezoneId,
+        locale,
+        width,
+        height,
+        deviceScaleFactor,
+        mobile,
+        origin,
+        storageTypes,
+        cdpParams
+    } = commandData;
     const tabId = currentActiveTabId;
 
     if (!tabId) throw new Error('没有活动的标签页');
@@ -587,16 +654,122 @@ async function processCdpCommand(commandData) {
 
         case 'cdp_get_response_body':
             if (!attachedTabId) throw new Error('CDP 未启动');
-            return new Promise((resolve, reject) => {
-                chrome.debugger.sendCommand({ tabId: attachedTabId }, "Network.getResponseBody", { requestId: cdpRequestId }, (result) => {
-                    if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
-                    else resolve({ result });
-                });
-            });
+            return { result: await sendCdpCommand(attachedTabId, 'Network.getResponseBody', { requestId: cdpRequestId }) };
 
         case 'cdp_clear_network':
             networkLogs.clear();
             return { message: '网络日志已清空' };
+
+        case 'cdp_runtime_evaluate':
+            await ensureDebuggerAttached(tabId);
+            if (!expression || !String(expression).trim()) throw new Error('cdp_runtime_evaluate 缺少 expression 参数');
+            return {
+                message: 'Runtime.evaluate 执行成功',
+                result: await sendCdpCommand(tabId, 'Runtime.evaluate', {
+                    expression: String(expression),
+                    awaitPromise: true,
+                    returnByValue: true,
+                    ...parseJsonParam(cdpParams, {})
+                })
+            };
+
+        case 'cdp_dom_get_document':
+            await ensureDebuggerAttached(tabId);
+            return {
+                message: 'DOM.getDocument 执行成功',
+                result: await sendCdpCommand(tabId, 'DOM.getDocument', {
+                    depth: parseNumberParam(depth, 1, -1, 100),
+                    pierce: parseBooleanParam(pierce, false),
+                    ...parseJsonParam(cdpParams, {})
+                })
+            };
+
+        case 'cdp_dom_query_selector':
+            await ensureDebuggerAttached(tabId);
+            if (!selector || !String(selector).trim()) throw new Error('cdp_dom_query_selector 缺少 selector 参数');
+            let rootNodeId = Number(nodeId);
+            if (!Number.isFinite(rootNodeId) || rootNodeId <= 0) {
+                const documentResult = await sendCdpCommand(tabId, 'DOM.getDocument', { depth: 1, pierce: true });
+                rootNodeId = documentResult.root?.nodeId;
+            }
+            if (!rootNodeId) throw new Error('无法获取 DOM 根节点 nodeId');
+            return {
+                message: 'DOM.querySelector 执行成功',
+                result: await sendCdpCommand(tabId, 'DOM.querySelector', {
+                    nodeId: rootNodeId,
+                    selector: String(selector),
+                    ...parseJsonParam(cdpParams, {})
+                })
+            };
+
+        case 'cdp_network_set_extra_http_headers':
+            await ensureDebuggerAttached(tabId);
+            return {
+                message: 'Network.setExtraHTTPHeaders 执行成功',
+                result: await sendCdpCommand(tabId, 'Network.setExtraHTTPHeaders', {
+                    headers: parseJsonParam(headers || cdpParams, {})
+                })
+            };
+
+        case 'cdp_network_set_user_agent_override':
+            await ensureDebuggerAttached(tabId);
+            if (!userAgent || !String(userAgent).trim()) throw new Error('cdp_network_set_user_agent_override 缺少 userAgent 参数');
+            return {
+                message: 'Network.setUserAgentOverride 执行成功',
+                result: await sendCdpCommand(tabId, 'Network.setUserAgentOverride', {
+                    userAgent: String(userAgent),
+                    ...(acceptLanguage ? { acceptLanguage: String(acceptLanguage) } : {}),
+                    ...(platform ? { platform: String(platform) } : {}),
+                    ...parseJsonParam(cdpParams, {})
+                })
+            };
+
+        case 'cdp_emulation_set_timezone_override':
+            await ensureDebuggerAttached(tabId);
+            if (!timezoneId || !String(timezoneId).trim()) throw new Error('cdp_emulation_set_timezone_override 缺少 timezoneId 参数');
+            return {
+                message: 'Emulation.setTimezoneOverride 执行成功',
+                result: await sendCdpCommand(tabId, 'Emulation.setTimezoneOverride', { timezoneId: String(timezoneId) })
+            };
+
+        case 'cdp_emulation_set_locale_override':
+            await ensureDebuggerAttached(tabId);
+            if (!locale || !String(locale).trim()) throw new Error('cdp_emulation_set_locale_override 缺少 locale 参数');
+            return {
+                message: 'Emulation.setLocaleOverride 执行成功',
+                result: await sendCdpCommand(tabId, 'Emulation.setLocaleOverride', { locale: String(locale) })
+            };
+
+        case 'cdp_emulation_set_device_metrics_override':
+            await ensureDebuggerAttached(tabId);
+            return {
+                message: 'Emulation.setDeviceMetricsOverride 执行成功',
+                result: await sendCdpCommand(tabId, 'Emulation.setDeviceMetricsOverride', {
+                    width: parseNumberParam(width, 1280, 1, 10000),
+                    height: parseNumberParam(height, 720, 1, 10000),
+                    deviceScaleFactor: parseNumberParam(deviceScaleFactor, 1, 0, 10),
+                    mobile: parseBooleanParam(mobile, false),
+                    ...parseJsonParam(cdpParams, {})
+                })
+            };
+
+        case 'cdp_storage_get_cookies':
+            await ensureDebuggerAttached(tabId);
+            return {
+                message: 'Storage.getCookies 执行成功',
+                result: await sendCdpCommand(tabId, 'Storage.getCookies', parseJsonParam(cdpParams, {}))
+            };
+
+        case 'cdp_storage_clear_data_for_origin':
+            await ensureDebuggerAttached(tabId);
+            if (!origin || !String(origin).trim()) throw new Error('cdp_storage_clear_data_for_origin 缺少 origin 参数');
+            return {
+                message: 'Storage.clearDataForOrigin 执行成功',
+                result: await sendCdpCommand(tabId, 'Storage.clearDataForOrigin', {
+                    origin: String(origin),
+                    storageTypes: String(storageTypes || 'cookies,local_storage,session_storage,cache_storage,indexeddb')
+                })
+            };
 
         default:
             throw new Error('未知的 CDP 指令: ' + command);
@@ -606,9 +779,10 @@ async function processCdpCommand(commandData) {
 function attachDebugger(tabId) {
     return new Promise((resolve, reject) => {
         chrome.debugger.attach({ tabId }, "1.3", () => {
-            if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
+            if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
             attachedTabId = tabId;
             chrome.debugger.sendCommand({ tabId }, "Network.enable", {}, () => {
+                if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
                 console.log('[VCP Background] CDP Network enabled');
                 resolve();
             });

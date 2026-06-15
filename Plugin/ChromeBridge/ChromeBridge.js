@@ -78,13 +78,57 @@ function handleClientMessage(clientId, message) {
     }
 }
 
+function buildCommandFromParams(params, suffix = '') {
+    const cmd = {
+        command: params[`command${suffix}`],
+        target: params[`target${suffix}`],
+        text: params[`text${suffix}`],
+        url: params[`url${suffix}`],
+        urlIncludes: params[`urlIncludes${suffix}`],
+        cdpRequestId: params[`requestId${suffix}`] || params[`cdpRequestId${suffix}`],
+        query: params[`query${suffix}`],
+        scope: params[`scope${suffix}`],
+        useRegex: params[`useRegex${suffix}`],
+        caseSensitive: params[`caseSensitive${suffix}`],
+        contextChars: params[`contextChars${suffix}`],
+        maxResults: params[`maxResults${suffix}`],
+        scriptName: params[`scriptName${suffix}`],
+        direction: params[`direction${suffix}`],
+        amount: params[`amount${suffix}`],
+        x: params[`x${suffix}`],
+        y: params[`y${suffix}`],
+        behavior: params[`behavior${suffix}`],
+        expression: params[`expression${suffix}`],
+        selector: params[`selector${suffix}`],
+        nodeId: params[`nodeId${suffix}`],
+        depth: params[`depth${suffix}`],
+        pierce: params[`pierce${suffix}`],
+        headers: params[`headers${suffix}`],
+        userAgent: params[`userAgent${suffix}`],
+        acceptLanguage: params[`acceptLanguage${suffix}`],
+        platform: params[`platform${suffix}`],
+        timezoneId: params[`timezoneId${suffix}`],
+        locale: params[`locale${suffix}`],
+        width: params[`width${suffix}`],
+        height: params[`height${suffix}`],
+        deviceScaleFactor: params[`deviceScaleFactor${suffix}`],
+        mobile: params[`mobile${suffix}`],
+        origin: params[`origin${suffix}`],
+        storageTypes: params[`storageTypes${suffix}`],
+        cdpParams: params[`cdpParams${suffix}`]
+    };
+
+    Object.keys(cmd).forEach(key => cmd[key] === undefined && delete cmd[key]);
+    return cmd;
+}
+
 // 执行单个命令的辅助函数（内部使用）
 async function executeSingleCommand(chromeWs, cmdParams, waitForPageInfo = false, isInCommandChain = false) {
     const bridgeRequestId = `cb-req-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     const { command } = cmdParams;
     
     // 只有会导致页面导航/交互变化的命令才默认等待页面信息；CDP/查询/脚本执行类指令直接返回结构化结果
-    const pageChangingCommands = new Set(['open_url', 'click', 'type']);
+    const pageChangingCommands = new Set(['open_url', 'click', 'type', 'scroll']);
     const needsPageLoad = (command === 'open_url' && isInCommandChain);
     const actualWaitForPageInfo = (waitForPageInfo && pageChangingCommands.has(command)) || needsPageLoad || cmdParams.wait_for_page_info === true;
     
@@ -182,46 +226,13 @@ async function processToolCall(params) {
     
     // 检查是否有编号的命令（command1, command2, ...）
     while (params[`command${commandIndex}`]) {
-        const cmd = {
-            command: params[`command${commandIndex}`],
-            target: params[`target${commandIndex}`],
-            text: params[`text${commandIndex}`],
-            url: params[`url${commandIndex}`],
-            urlIncludes: params[`urlIncludes${commandIndex}`],
-            cdpRequestId: params[`requestId${commandIndex}`] || params[`cdpRequestId${commandIndex}`],
-            query: params[`query${commandIndex}`],
-            scope: params[`scope${commandIndex}`],
-            useRegex: params[`useRegex${commandIndex}`],
-            caseSensitive: params[`caseSensitive${commandIndex}`],
-            contextChars: params[`contextChars${commandIndex}`],
-            maxResults: params[`maxResults${commandIndex}`],
-            scriptName: params[`scriptName${commandIndex}`]
-        };
-        // 移除未定义的参数
-        Object.keys(cmd).forEach(key => cmd[key] === undefined && delete cmd[key]);
-        commands.push(cmd);
+        commands.push(buildCommandFromParams(params, String(commandIndex)));
         commandIndex++;
     }
     
     // 如果没有编号命令，检查单个命令
     if (commands.length === 0 && params.command) {
-        const cmd = {
-            command: params.command,
-            target: params.target,
-            text: params.text,
-            url: params.url,
-            urlIncludes: params.urlIncludes,
-            cdpRequestId: params.requestId || params.cdpRequestId,
-            query: params.query,
-            scope: params.scope,
-            useRegex: params.useRegex,
-            caseSensitive: params.caseSensitive,
-            contextChars: params.contextChars,
-            maxResults: params.maxResults,
-            scriptName: params.scriptName
-        };
-        Object.keys(cmd).forEach(key => cmd[key] === undefined && delete cmd[key]);
-        commands.push(cmd);
+        commands.push(buildCommandFromParams(params));
     }
     
     if (commands.length === 0) {

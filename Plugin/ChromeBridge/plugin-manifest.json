@@ -1,7 +1,7 @@
 {
     "name": "ChromeBridge",
     "displayName": "Chrome 浏览器桥接器",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "description": "混合插件：既能让AI实时观察Chrome页面内容（Service模式），又能执行浏览器控制命令并等待页面刷新（Direct模式）。",
     "pluginType": "hybridservice",
     "entryPoint": {
@@ -34,6 +34,11 @@
                 "command": "open_url",
                 "description": "在新的标签页中打开指定的URL，并等待页面加载完成后返回页面内容。\n- `command`: 固定为 `open_url`。\n- `url`: 要打开的完整URL地址。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」open_url「末」,\nurl: 「始」https://www.google.com「末」\n<<<[END_TOOL_REQUEST]>>>",
                 "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」open_url「末」,\nurl: 「始」https://www.google.com「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "scroll",
+                "description": "滚动当前页面或指定可滚动元素，并等待页面内容刷新后返回新的页面内容。\n- `command`: 固定为 `scroll`。\n- `direction`: 可选，滚动方向：`down` / `up` / `left` / `right` / `bottom` / `top` / `to` / `page_down` / `page_up` / `page_left` / `page_right`，默认 `down`。\n- `amount`: 可选，滚动像素数，默认约为视口高度的 80%。\n- `target`: 可选，目标可滚动元素标识符，支持 vcp-id、selector、xpath、模糊文本等；不填则滚动窗口。\n- `x` / `y`: 可选，当 `direction` 为 `to` 时表示滚动到指定坐标。\n- `behavior`: 可选，`smooth` / `auto` / `instant`，默认 `smooth`。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」scroll「末」,\ndirection: 「始」down「末」,\namount: 「始」900「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」scroll「末」,\ndirection: 「始」bottom「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
                 "command": "query_html",
@@ -74,6 +79,56 @@
                 "command": "cdp_clear_network",
                 "description": "清空当前捕获的网络请求日志。\n- `command`: 固定为 `cdp_clear_network`。",
                 "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_clear_network「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_runtime_evaluate",
+                "description": "通过 CDP Runtime.evaluate 在当前活动标签页执行表达式，适合读取运行时状态或执行 DevTools 层面的 JS 表达式。\n- `command`: 固定为 `cdp_runtime_evaluate`。\n- `expression`: 必填，JavaScript 表达式。\n- `cdpParams`: 可选，JSON 字符串或对象，会合并到 Runtime.evaluate 参数中。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_runtime_evaluate「末」,\nexpression: 「始」document.title「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_dom_get_document",
+                "description": "通过 CDP DOM.getDocument 获取当前页面 DOM 文档树。\n- `command`: 固定为 `cdp_dom_get_document`。\n- `depth`: 可选，返回深度，默认 1，-1 表示完整子树。\n- `pierce`: 可选，是否穿透 iframe/shadow root，默认 false。\n- `cdpParams`: 可选，JSON 字符串或对象，会合并到 DOM.getDocument 参数中。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_dom_get_document「末」,\ndepth: 「始」2「末」,\npierce: 「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_dom_query_selector",
+                "description": "通过 CDP DOM.querySelector 在指定 nodeId 或文档根节点下查询 CSS 选择器。\n- `command`: 固定为 `cdp_dom_query_selector`。\n- `selector`: 必填，CSS 选择器。\n- `nodeId`: 可选，父节点 nodeId；不填时自动先获取文档根节点。\n- `cdpParams`: 可选，JSON 字符串或对象，会合并到 DOM.querySelector 参数中。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_dom_query_selector「末」,\nselector: 「始」main article「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_network_set_extra_http_headers",
+                "description": "通过 CDP Network.setExtraHTTPHeaders 设置当前调试标签页的额外 HTTP 请求头，通常需要在导航或请求前设置。\n- `command`: 固定为 `cdp_network_set_extra_http_headers`。\n- `headers`: 必填，JSON 对象或 JSON 字符串，例如 `{ \"X-Test\": \"1\" }`。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_network_set_extra_http_headers「末」,\nheaders: 「始」{\"Accept-Language\":\"zh-CN,zh;q=0.9\"}「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_network_set_user_agent_override",
+                "description": "通过 CDP Network.setUserAgentOverride 覆盖当前调试标签页 User-Agent。\n- `command`: 固定为 `cdp_network_set_user_agent_override`。\n- `userAgent`: 必填，新的 User-Agent 字符串。\n- `acceptLanguage`: 可选，Accept-Language。\n- `platform`: 可选，平台字符串。\n- `cdpParams`: 可选，JSON 字符串或对象，会合并到 CDP 参数中。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_network_set_user_agent_override「末」,\nuserAgent: 「始」Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36「末」,\nacceptLanguage: 「始」zh-CN,zh;q=0.9「末」,\nplatform: 「始」Windows「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_emulation_set_timezone_override",
+                "description": "通过 CDP Emulation.setTimezoneOverride 覆盖当前调试标签页时区。\n- `command`: 固定为 `cdp_emulation_set_timezone_override`。\n- `timezoneId`: 必填，例如 `Asia/Shanghai`、`America/New_York`。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_emulation_set_timezone_override「末」,\ntimezoneId: 「始」Asia/Shanghai「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_emulation_set_locale_override",
+                "description": "通过 CDP Emulation.setLocaleOverride 覆盖当前调试标签页 locale。\n- `command`: 固定为 `cdp_emulation_set_locale_override`。\n- `locale`: 必填，例如 `zh-CN`、`en-US`。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_emulation_set_locale_override「末」,\nlocale: 「始」zh-CN「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_emulation_set_device_metrics_override",
+                "description": "通过 CDP Emulation.setDeviceMetricsOverride 覆盖当前调试标签页视口/设备指标。\n- `command`: 固定为 `cdp_emulation_set_device_metrics_override`。\n- `width`: 可选，默认 1280。\n- `height`: 可选，默认 720。\n- `deviceScaleFactor`: 可选，默认 1。\n- `mobile`: 可选，是否模拟移动设备，默认 false。\n- `cdpParams`: 可选，JSON 字符串或对象，会合并到 CDP 参数中。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_emulation_set_device_metrics_override「末」,\nwidth: 「始」390「末」,\nheight: 「始」844「末」,\nmobile: 「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_storage_get_cookies",
+                "description": "通过 CDP Storage.getCookies 获取浏览器当前上下文 Cookie。\n- `command`: 固定为 `cdp_storage_get_cookies`。\n- `cdpParams`: 可选，JSON 字符串或对象，例如传入 `urls` 数组过滤特定 URL。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_storage_get_cookies「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_storage_clear_data_for_origin",
+                "description": "通过 CDP Storage.clearDataForOrigin 清理指定 origin 的站点数据。\n- `command`: 固定为 `cdp_storage_clear_data_for_origin`。\n- `origin`: 必填，例如 `https://example.com`。\n- `storageTypes`: 可选，默认 `cookies,local_storage,session_storage,cache_storage,indexeddb`。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_storage_clear_data_for_origin「末」,\norigin: 「始」https://example.com「末」,\nstorageTypes: 「始」cookies,local_storage「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
                 "command": "page_code_search",

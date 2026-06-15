@@ -632,6 +632,125 @@ function searchInSource(source, regex, contextChars, maxResultsPerSource) {
     return results;
 }
 
+function performScroll(params = {}) {
+    const direction = String(params.direction || 'down').toLowerCase();
+    const behavior = ['auto', 'smooth', 'instant'].includes(String(params.behavior || '').toLowerCase())
+        ? String(params.behavior).toLowerCase()
+        : 'smooth';
+    const amountParam = params.amount;
+    const xParam = params.x;
+    const yParam = params.y;
+    const target = params.target;
+
+    let scrollTarget = window;
+    let targetLabel = 'window';
+
+    if (target) {
+        const element = findElementWithLogging(target);
+        if (!element) throw new Error(`未找到滚动目标元素: ${target}`);
+        scrollTarget = element;
+        targetLabel = getElementDescriptor(element);
+    }
+
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1200;
+    const defaultAmount = Math.floor(viewportHeight * 0.8);
+    const amount = parseNumberParam(amountParam, defaultAmount, 1, 100000);
+    let left = Number.isFinite(Number(xParam)) ? Number(xParam) : 0;
+    let top = Number.isFinite(Number(yParam)) ? Number(yParam) : 0;
+
+    if (direction === 'down') {
+        top = amount;
+    } else if (direction === 'up') {
+        top = -amount;
+    } else if (direction === 'right') {
+        left = amount;
+    } else if (direction === 'left') {
+        left = -amount;
+    } else if (direction === 'bottom') {
+        if (scrollTarget === window) {
+            top = Math.max(
+                document.documentElement.scrollHeight,
+                document.body?.scrollHeight || 0
+            );
+        } else {
+            top = scrollTarget.scrollHeight;
+        }
+    } else if (direction === 'top') {
+        if (scrollTarget === window) {
+            window.scrollTo({ top: 0, left: window.scrollX, behavior });
+        } else {
+            scrollTarget.scrollTo({ top: 0, left: scrollTarget.scrollLeft, behavior });
+        }
+        return {
+            status: 'success',
+            message: `已滚动到顶部 (${targetLabel})`,
+            result: getScrollState(scrollTarget, targetLabel)
+        };
+    } else if (direction === 'to') {
+        top = Number.isFinite(Number(yParam)) ? Number(yParam) : 0;
+        left = Number.isFinite(Number(xParam)) ? Number(xParam) : 0;
+        if (scrollTarget === window) {
+            window.scrollTo({ top, left, behavior });
+        } else {
+            scrollTarget.scrollTo({ top, left, behavior });
+        }
+        return {
+            status: 'success',
+            message: `已滚动到指定坐标 (${targetLabel})`,
+            result: getScrollState(scrollTarget, targetLabel)
+        };
+    } else if (direction === 'page_down') {
+        top = viewportHeight;
+    } else if (direction === 'page_up') {
+        top = -viewportHeight;
+    } else if (direction === 'page_right') {
+        left = viewportWidth;
+    } else if (direction === 'page_left') {
+        left = -viewportWidth;
+    } else {
+        throw new Error(`不支持的滚动方向: ${direction}`);
+    }
+
+    if (scrollTarget === window) {
+        window.scrollBy({ top, left, behavior });
+    } else {
+        scrollTarget.scrollBy({ top, left, behavior });
+    }
+
+    return {
+        status: 'success',
+        message: `滚动成功: direction=${direction}, amount=${amount}, target=${targetLabel}`,
+        result: getScrollState(scrollTarget, targetLabel)
+    };
+}
+
+function getScrollState(scrollTarget, targetLabel) {
+    if (scrollTarget === window) {
+        const doc = document.documentElement;
+        const body = document.body;
+        return {
+            target: targetLabel,
+            scrollX: window.scrollX,
+            scrollY: window.scrollY,
+            innerWidth: window.innerWidth,
+            innerHeight: window.innerHeight,
+            scrollWidth: Math.max(doc?.scrollWidth || 0, body?.scrollWidth || 0),
+            scrollHeight: Math.max(doc?.scrollHeight || 0, body?.scrollHeight || 0)
+        };
+    }
+
+    return {
+        target: targetLabel,
+        scrollLeft: scrollTarget.scrollLeft,
+        scrollTop: scrollTarget.scrollTop,
+        clientWidth: scrollTarget.clientWidth,
+        clientHeight: scrollTarget.clientHeight,
+        scrollWidth: scrollTarget.scrollWidth,
+        scrollHeight: scrollTarget.scrollHeight
+    };
+}
+
 function pageCodeSearch(params = {}) {
     const requestedMode = String(params.searchMode || 'auto').toLowerCase();
     const effectiveMode = requestedMode === 'enhanced' ? 'light' : (requestedMode === 'light' ? 'light' : 'auto');
@@ -754,7 +873,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         return true; // 保持消息通道开放
     } else if (request.type === 'EXECUTE_COMMAND') {
-        const { command, target, text, requestId, sourceClientId, query, scope, useRegex, caseSensitive, contextChars, maxResults, searchMode } = request.data;
+        const { command, target, text, requestId, sourceClientId, query, scope, useRegex, caseSensitive, contextChars, maxResults, searchMode, direction, amount, x, y, behavior } = request.data;
         
         const handleCommand = async () => {
             let result = {};
@@ -778,6 +897,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                         contextChars,
                         maxResults,
                         searchMode
+                    });
+                } else if (command === 'scroll') {
+                    result = performScroll({
+                        target,
+                        direction,
+                        amount,
+                        x,
+                        y,
+                        behavior
                     });
                 } else if (command === 'execute_script') {
                     throw new Error('execute_script 已迁移到 background 的 chrome.scripting MAIN world 执行路径');
