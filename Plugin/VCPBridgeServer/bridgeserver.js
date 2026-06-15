@@ -6,11 +6,13 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const chokidar = require('chokidar');
-const { CONFIG_PATH, migrateBridgeConfig, normalizeBridgeConfig, parseModelMap } = require('./bridgeConfig');
+const { CONFIG_PATH, PROFILES_DIR, migrateBridgeConfig, normalizeBridgeConfig, parseModelMap, profileExists, readProfile, listProfiles } = require('./bridgeConfig');
 
 let server = null;
 let configWatcher = null;
+let profilesWatcher = null;
 let runtimeConfig = {};
+let profilesCache = new Map();
 
 // ============================================================
 // 初始化与生命周期
@@ -20,8 +22,36 @@ function initialize(config) {
     const bridgeConfig = migrateBridgeConfig();
     applyBridgeRuntimeConfig(bridgeConfig, config, true);
     startConfigWatcher(config);
+    startProfilesWatcher();
+    loadAllProfiles();
     startServer();
-    console.log(`[VCPBridgeServer] Initialized. Hijack mode: ${runtimeConfig.hijackMode}, Port: ${runtimeConfig.port}, Upstream: ${runtimeConfig.upstreamUrl}`);
+    console.log(`[VCPBridgeServer] Initialized. Hijack mode: ${runtimeConfig.hijackMode}, Port: ${runtimeConfig.port}, Upstream: ${runtimeConfig.upstreamUrl}, Profiles: ${profilesCache.size}`);
+}
+
+function startProfilesWatcher() {
+    if (profilesWatcher) return;
+    try {
+        const fs_sync = require('fs');
+        if (!fs_sync.existsSync(PROFILES_DIR)) {
+            fs_sync.mkdirSync(PROFILES_DIR, { recursive: true });
+        }
+        profilesWatcher = chokidar.watch(PROFILES_DIR, {
+            ignoreInitial: true,
+            awaitWriteFinish: {
+                stabilityThreshold: 250,
+                pollInterval: 50
+            }
+        });
+        const reload = () => loadAllProfiles();
+        profilesWatcher.on('add', reload);
+        profilesWatcher.on('change', reload);
+        profilesWatcher.on('unlink', reload);
+        profilesWatcher.on('error', error => {
+            console.error('[VCPBridgeServer] Profiles watcher error:', error);
+        });
+    } catch (error) {
+        console.error('[VCPBridgeServer] Failed to start profiles watcher:', error);
+    }
 }
 
 function applyBridgeRuntimeConfig(bridgeConfig, hostConfig = {}, isInitial = false) {
@@ -93,6 +123,10 @@ function shutdown() {
         configWatcher.close();
         configWatcher = null;
     }
+    if (profilesWatcher) {
+        profilesWatcher.close();
+        profilesWatcher = null;
+    }
     if (server) {
         server.close();
         server = null;
@@ -115,11 +149,17 @@ function resolveSystemPrompt(raw) {
     const trimmed = String(raw || '').trim();
     if (!trimmed) return '';
 
-    // 如果是 .txt 文件名，从插件目录加载
+    // 如果是 .txt 文件名，按优先级搜索多个目录
     if (/^[^\\\/:*?"<>|\r\n]+\.txt$/i.test(trimmed)) {
-        const filePath = path.join(__dirname, trimmed);
-        if (fs.existsSync(filePath)) {
-            return fs.readFileSync(filePath, 'utf8').trim();
+        const searchDirs = [
+            __dirname,                          // 插件根目录
+            path.join(__dirname, 'presets')      // presets 子目录
+        ];
+        for (const dir of searchDirs) {
+            const filePath = path.join(dir, trimmed);
+            if (fs.existsSync(filePath)) {
+                return fs.readFileSync(filePath, 'utf8').trim();
+            }
         }
     }
     return trimmed;
@@ -533,6 +573,115 @@ async function sendResponsesJsonFromProtocol(res, upstreamResponse, { model, api
 }
 
 // ============================================================
+// Profile 缓存管理
+// ============================================================
+
+function loadAllProfiles() {
+    profilesCache.clear();
+    try {
+        const profiles = listProfiles();
+        for (const p of profiles) {
+            profilesCache.set(p.name, p);
+        }
+        if (runtimeConfig.debugMode) {
+            console.log(`[VCPBridgeServer] Profiles cache reloaded: ${profilesCache.size} profiles.`);
+        }
+    } catch (error) {
+        console.error('[VCPBridgeServer] Failed to load profiles:', error.message);
+    }
+}
+
+function readProfileCached(name) {
+    if (!name) return null;
+    const cleaned = String(name).trim().toLowerCase();
+    if (profilesCache.has(cleaned)) return profilesCache.get(cleaned);
+    const profile = readProfile(cleaned);
+    if (profile) profilesCache.set(cleaned, profile);
+    return profile;
+}
+
+/**
+ * 解析当前请求应该使用的 Profile 配置
+ * 优先级：URL path > HTTP header > model name prefix > defaultProfile > null
+ */
+function resolveProfileForRequest(req, model) {
+    if (req.bridgeProfile) {
+        const profile = readProfileCached(req.bridgeProfile);
+        if (profile) return profile;
+    }
+
+    const headerProfile = req.headers['x-bridge-profile'];
+    if (headerProfile) {
+        const profile = readProfileCached(headerProfile);
+        if (profile) return profile;
+    }
+
+    if (model && model.includes('/')) {
+        const slashIdx = model.indexOf('/');
+        const maybeProfile = model.slice(0, slashIdx);
+        const cachedProfile = readProfileCached(maybeProfile);
+        if (cachedProfile) {
+            return { ...cachedProfile, _extractedModel: model.slice(slashIdx + 1) };
+        }
+    }
+
+    if (runtimeConfig.defaultProfile) {
+        const profile = readProfileCached(runtimeConfig.defaultProfile);
+        if (profile) return profile;
+    }
+
+    return null;
+}
+
+// ============================================================
+// System Prompt 劫持逻辑（带参数版本）
+// ============================================================
+
+function applySystemPromptHijackWithConfig(messages, systemPrompt, hijackMode) {
+    if (!systemPrompt || hijackMode === 'off') {
+        return messages;
+    }
+
+    const result = [...messages];
+    const injected = { role: 'system', content: systemPrompt };
+
+    switch (hijackMode) {
+        case 'replace':
+            const nonSystem = result.filter(m => m.role !== 'system');
+            return [injected, ...nonSystem];
+
+        case 'prepend':
+            return [injected, ...result];
+
+        case 'append': {
+            const lastSystemIdx = result.reduce((acc, m, i) => m.role === 'system' ? i : acc, -1);
+            if (lastSystemIdx >= 0) {
+                result.splice(lastSystemIdx + 1, 0, injected);
+            } else {
+                result.unshift(injected);
+            }
+            return result;
+        }
+
+        case 'merge': {
+            const systemContents = [
+                injected.content,
+                ...result
+                    .filter(m => m.role === 'system')
+                    .map(m => m.content)
+                    .filter(content => typeof content === 'string' && content.trim())
+            ];
+            const mergedSystem = { role: 'system', content: systemContents.join('\n\n') };
+            const nonSys = result.filter(m => m.role !== 'system');
+            return [mergedSystem, ...nonSys];
+        }
+
+        default:
+            return result;
+    }
+}
+
+// ============================================================
 // System Prompt 劫持逻辑
 // ============================================================
 
@@ -622,7 +771,7 @@ function extractFromAnthropicBody(body) {
     if (body.system) {
         const sys = typeof body.system === 'string' ? body.system
             : Array.isArray(body.system) ? body.system.map(i => i?.text || '').filter(Boolean).join('\n')
-            : '';
+                : '';
         if (sys) messages.push({ role: 'system', content: sys });
     }
     // messages
@@ -728,24 +877,43 @@ function resolveUpstreamEndpoint(model, stream) {
 // ============================================================
 
 async function proxyRequest(req, res, { messages, model, body, downstreamFormat }) {
-    // 1. 应用 system prompt 劫持
-    const hijackedMessages = applySystemPromptHijack(messages);
+    // 0. 解析 Profile（请求级动态切换）
+    const profileConfig = resolveProfileForRequest(req, model);
+
+    // 如果 profile 通过 model 前缀提取了真实 model，使用它
+    const effectiveModel = profileConfig?._extractedModel || model;
+
+    // 1. 应用 system prompt 劫持（使用 profile 配置或全局兜底）
+    let hijackedMessages;
+    if (profileConfig && profileConfig.systemPrompt) {
+        const resolvedPrompt = resolveSystemPrompt(profileConfig.systemPrompt);
+        const resolvedMode = profileConfig.hijackMode || runtimeConfig.hijackMode;
+        hijackedMessages = applySystemPromptHijackWithConfig(messages, resolvedPrompt, resolvedMode);
+        if (runtimeConfig.debugMode) {
+            console.log(`[VCPBridgeServer] Using profile "${profileConfig.name}" | mode=${resolvedMode} | prompt=${profileConfig.systemPrompt.substring(0, 40)}...`);
+        }
+    } else {
+        hijackedMessages = applySystemPromptHijack(messages);
+    }
+
+    // 如果 profile 有 modelOverride，优先使用
+    const finalModel = profileConfig?.modelOverride || effectiveModel;
 
     // 2. 解析上游端点
     const stream = body.stream === true;
-    const endpoint = resolveUpstreamEndpoint(model, stream);
+    const endpoint = resolveUpstreamEndpoint(finalModel, stream);
 
     // 3. 构建上游请求体
     let upstreamBody;
     switch (endpoint.type) {
         case 'anthropic':
-            upstreamBody = buildUpstreamAnthropicBody(hijackedMessages, model, body);
+            upstreamBody = buildUpstreamAnthropicBody(hijackedMessages, finalModel, body);
             break;
         case 'gemini':
-            upstreamBody = buildUpstreamGeminiBody(hijackedMessages, model, body);
+            upstreamBody = buildUpstreamGeminiBody(hijackedMessages, finalModel, body);
             break;
         default:
-            upstreamBody = buildUpstreamChatBody(hijackedMessages, model, body);
+            upstreamBody = buildUpstreamChatBody(hijackedMessages, finalModel, body);
     }
 
     // 4. 构建请求头
@@ -778,7 +946,7 @@ async function proxyRequest(req, res, { messages, model, body, downstreamFormat 
 
     // 6. Responses API 下游必须返回 Responses 格式，不能裸透传 chat/anthropic/gemini SSE。
     if (downstreamFormat === 'responses') {
-        const fallbackModel = resolveModel(model);
+        const fallbackModel = resolveModel(finalModel);
         if (stream && upstreamResponse.body) {
             return sendResponsesStreamFromProtocol(res, upstreamResponse, {
                 model: fallbackModel,
@@ -831,6 +999,47 @@ function startServer() {
             configPath: runtimeConfig.configPath
         });
     });
+
+    // ─── Profile-prefixed routes ─────────────────────────────────────────
+    // URL pattern: /v1/:profile/chat/completions, /v1/:profile/responses, etc.
+    // These must be registered BEFORE the standard routes to take priority.
+
+    app.post('/v1/:profile/chat/completions', async (req, res, next) => {
+        const profile = req.params.profile;
+        if (['chat', 'responses', 'messages', 'beta'].includes(profile)) {
+            return next();
+        }
+        req.bridgeProfile = profile;
+        const body = req.body || {};
+        const messages = Array.isArray(body.messages) ? body.messages : [];
+        await proxyRequest(req, res, { messages, model: body.model, body, downstreamFormat: 'chat' });
+    });
+
+    app.post('/v1/:profile/responses', async (req, res, next) => {
+        const profile = req.params.profile;
+        if (['chat', 'responses', 'messages', 'beta'].includes(profile)) {
+            return next();
+        }
+        req.bridgeProfile = profile;
+        const body = req.body || {};
+        const messages = extractFromResponsesInput(body.input);
+        const stream = body.stream === true || String(req.headers.accept || '').includes('text/event-stream');
+        await proxyRequest(req, res, { messages, model: body.model, body: { ...body, stream }, downstreamFormat: 'responses' });
+    });
+
+    app.post('/v1/:profile/messages', async (req, res, next) => {
+        const profile = req.params.profile;
+        if (['chat', 'responses', 'messages', 'beta'].includes(profile)) {
+            return next();
+        }
+        req.bridgeProfile = profile;
+        const body = req.body || {};
+        const messages = extractFromAnthropicBody(body);
+        const stream = body.stream === true || String(req.headers.accept || '').includes('text/event-stream');
+        await proxyRequest(req, res, { messages, model: body.model, body: { ...body, stream }, downstreamFormat: 'anthropic' });
+    });
+
+    // ─── Standard routes (no profile prefix) ─────────────────────────────
 
     // OpenAI Chat Completions
     app.post('/v1/chat/completions', async (req, res) => {

@@ -105,6 +105,7 @@ module.exports = function (
   mount("/", "sarPrompts"); // Handles /sarprompts/*
   mount("/", "emojis"); // Handles /emojis/*
   mount("/", "pluginStore"); // Handles /plugin-store/*
+  mount("/", "bridgeProfiles"); // Handles /bridge-profiles/*
 
   return adminApiRouter;
 };

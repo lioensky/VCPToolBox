@@ -6,6 +6,7 @@ const CONFIG_FILE_NAME = 'bridge-config.json';
 const PLUGIN_DIR = __dirname;
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const CONFIG_PATH = path.join(PLUGIN_DIR, CONFIG_FILE_NAME);
+const PROFILES_DIR = path.join(PLUGIN_DIR, 'profiles');
 
 const DEFAULT_BRIDGE_CONFIG = Object.freeze({
     port: 3100,
@@ -16,7 +17,8 @@ const DEFAULT_BRIDGE_CONFIG = Object.freeze({
     systemPrompt: '',
     hijackMode: 'off',
     modelMap: {},
-    debugMode: false
+    debugMode: false,
+    defaultProfile: ''
 });
 
 const DESCRIPTION = Object.freeze({
@@ -25,11 +27,16 @@ const DESCRIPTION = Object.freeze({
     upstreamKey: '上游 API Key。留空时使用主服务 Key 或透传下游 Authorization Bearer。',
     upstreamType: '上游 API 类型：chat / anthropic / gemini。',
     defaultModel: '默认模型名。下游请求未指定 model 时使用。',
-    systemPrompt: '注入的 System Prompt。支持填写插件目录下的 .txt 文件名。',
-    hijackMode: '劫持模式：off / replace / prepend / append / merge。',
+    systemPrompt: '注入的 System Prompt（全局兜底）。支持填写插件目录下的 .txt 文件名。当无 Profile 匹配时使用此值。',
+    hijackMode: '劫持模式（全局兜底）：off / replace / prepend / append / merge。当无 Profile 匹配时使用此值。',
     modelMap: '模型名映射对象，例如 {"gpt-4":"gemini-2.5-pro"}。',
-    debugMode: '是否输出桥接代理调试日志。'
+    debugMode: '是否输出桥接代理调试日志。',
+    defaultProfile: '默认 Profile 名称。请求未指定 Profile 时自动使用此 Profile（留空则使用全局 systemPrompt/hijackMode）。'
 });
+
+// ============================================================
+// 基础类型归一化工具
+// ============================================================
 
 function normalizeApiType(value) {
     const normalized = String(value || '').trim().toLowerCase();
@@ -90,6 +97,10 @@ function formatModelMap(modelMap) {
         .join(',');
 }
 
+// ============================================================
+// 环境变量读取
+// ============================================================
+
 function readEnvFileIfExists(filePath) {
     try {
         if (!fs.existsSync(filePath)) return null;
@@ -106,6 +117,10 @@ function selectEnvSource() {
     return readEnvFileIfExists(pluginEnvPath) || readEnvFileIfExists(pluginExamplePath) || {};
 }
 
+// ============================================================
+// 全局配置管理
+// ============================================================
+
 function normalizeBridgeConfig(raw = {}, fallbackEnv = {}) {
     const mainServerPort = raw.mainServerPort || fallbackEnv.PORT || process.env.PORT || 6005;
     const defaultUpstream = `http://127.0.0.1:${mainServerPort}`;
@@ -120,7 +135,8 @@ function normalizeBridgeConfig(raw = {}, fallbackEnv = {}) {
         systemPrompt: String(raw.systemPrompt ?? raw.BRIDGE_SYSTEM_PROMPT ?? fallbackEnv.BRIDGE_SYSTEM_PROMPT ?? ''),
         hijackMode: normalizeHijackMode(raw.hijackMode ?? raw.BRIDGE_HIJACK_MODE ?? fallbackEnv.BRIDGE_HIJACK_MODE),
         modelMap: parseModelMap(raw.modelMap ?? raw.BRIDGE_MODEL_MAP ?? fallbackEnv.BRIDGE_MODEL_MAP),
-        debugMode: normalizeBoolean(raw.debugMode ?? raw.DebugMode ?? fallbackEnv.DebugMode, DEFAULT_BRIDGE_CONFIG.debugMode)
+        debugMode: normalizeBoolean(raw.debugMode ?? raw.DebugMode ?? fallbackEnv.DebugMode, DEFAULT_BRIDGE_CONFIG.debugMode),
+        defaultProfile: String(raw.defaultProfile ?? '').trim()
     };
 }
 
@@ -187,14 +203,158 @@ function toEnvCompatConfig(config) {
     };
 }
 
+// ============================================================
+// Profile 管理
+// ============================================================
+
+/**
+ * 确保 profiles 目录存在
+ */
+function ensureProfilesDir() {
+    if (!fs.existsSync(PROFILES_DIR)) {
+        fs.mkdirSync(PROFILES_DIR, { recursive: true });
+    }
+}
+
+/**
+ * 对 profile 数据进行归一化和验证
+ * @param {string} name - Profile 文件名（不含扩展名）
+ * @param {object} raw - 原始 profile 数据
+ * @returns {object} 归一化后的 profile 对象
+ */
+function normalizeProfile(name, raw = {}) {
+    return {
+        name: String(name || raw.name || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, ''),
+        displayName: String(raw.displayName || raw.name || name || '').trim(),
+        systemPrompt: String(raw.systemPrompt || '').trim(),
+        hijackMode: normalizeHijackMode(raw.hijackMode),
+        modelOverride: String(raw.modelOverride || '').trim(),
+        description: String(raw.description || '').trim()
+    };
+}
+
+/**
+ * 验证 profile name 是否合法（防路径穿越）
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isValidProfileName(name) {
+    if (!name || typeof name !== 'string') return false;
+    const cleaned = name.trim().toLowerCase();
+    return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(cleaned);
+}
+
+/**
+ * 判断指定 profile 是否存在
+ * @param {string} name
+ * @returns {boolean}
+ */
+function profileExists(name) {
+    if (!isValidProfileName(name)) return false;
+    return fs.existsSync(path.join(PROFILES_DIR, `${name}.json`));
+}
+
+/**
+ * 列出所有 profile
+ * @returns {Array<object>} profile 对象数组
+ */
+function listProfiles() {
+    ensureProfilesDir();
+    try {
+        return fs.readdirSync(PROFILES_DIR)
+            .filter(f => f.endsWith('.json'))
+            .map(f => {
+                try {
+                    const filePath = path.join(PROFILES_DIR, f);
+                    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                    const name = f.replace(/\.json$/, '');
+                    return normalizeProfile(name, parsed);
+                } catch {
+                    return null;
+                }
+            })
+            .filter(Boolean);
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * 读取单个 profile
+ * @param {string} name - Profile 名称
+ * @returns {object|null} profile 对象或 null
+ */
+function readProfile(name) {
+    if (!isValidProfileName(name)) return null;
+    const filePath = path.join(PROFILES_DIR, `${name}.json`);
+    if (!fs.existsSync(filePath)) return null;
+    try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        return normalizeProfile(name, parsed);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * 保存/创建 profile
+ * @param {string} name - Profile 名称
+ * @param {object} data - Profile 数据
+ * @returns {object} 归一化后的 profile
+ */
+function saveProfile(name, data = {}) {
+    if (!isValidProfileName(name)) {
+        throw new Error(`Invalid profile name: "${name}". Only lowercase letters, digits, hyphens and underscores allowed (1-64 chars).`);
+    }
+    ensureProfilesDir();
+    const normalized = normalizeProfile(name, data);
+    const filePath = path.join(PROFILES_DIR, `${name}.json`);
+    fs.writeFileSync(filePath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+    return normalized;
+}
+
+/**
+ * 删除 profile
+ * @param {string} name - Profile 名称
+ * @returns {boolean} 是否成功删除
+ */
+function deleteProfile(name) {
+    if (!isValidProfileName(name)) return false;
+    const filePath = path.join(PROFILES_DIR, `${name}.json`);
+    if (!fs.existsSync(filePath)) return false;
+    try {
+        fs.unlinkSync(filePath);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// ============================================================
+// 导出
+// ============================================================
+
 module.exports = {
+    // 路径常量
     CONFIG_PATH,
     CONFIG_FILE_NAME,
+    PROFILES_DIR,
     DESCRIPTION,
+
+    // 全局配置管理
     normalizeBridgeConfig,
     migrateBridgeConfig,
     readBridgeConfig,
     saveBridgeConfig,
     toEnvCompatConfig,
-    parseModelMap
+    parseModelMap,
+
+    // Profile 管理
+    normalizeProfile,
+    isValidProfileName,
+    profileExists,
+    listProfiles,
+    readProfile,
+    saveProfile,
+    deleteProfile
 };

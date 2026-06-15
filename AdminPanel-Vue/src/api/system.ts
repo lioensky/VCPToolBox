@@ -9,6 +9,11 @@ import type {
   BridgeHijackConfig,
   BridgeHijackConfigResponse,
   BridgeHijackConfigSaveResponse,
+  BridgeProfile,
+  BridgeProfileActivateResponse,
+  BridgeProfileDeleteResponse,
+  BridgeProfileResponse,
+  BridgeProfilesResponse,
   FinalContextResponse,
   OneRingConfig,
   OneRingConfigResponse,
@@ -231,6 +236,96 @@ export const systemApi = {
       {
         url: "/admin_api/logout",
         method: "POST",
+      },
+      uiOptions
+    );
+  },
+
+  // ─── Bridge Profiles ───────────────────────────────────────────────
+
+  async getBridgeProfiles(
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<BridgeProfilesResponse> {
+    return requestWithUi<BridgeProfilesResponse>(
+      {
+        url: "/admin_api/bridge-profiles",
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async getBridgeProfile(
+    name: string,
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<BridgeProfileResponse> {
+    return requestWithUi<BridgeProfileResponse>(
+      {
+        url: `/admin_api/bridge-profiles/${encodeURIComponent(name)}`,
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async saveBridgeProfile(
+    name: string,
+    data: Partial<BridgeProfile>,
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = {}
+  ): Promise<BridgeProfileResponse> {
+    return requestWithUi<BridgeProfileResponse>(
+      {
+        url: `/admin_api/bridge-profiles/${encodeURIComponent(name)}`,
+        method: "POST",
+        body: data,
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async deleteBridgeProfile(
+    name: string,
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = {}
+  ): Promise<BridgeProfileDeleteResponse> {
+    return requestWithUi<BridgeProfileDeleteResponse>(
+      {
+        url: `/admin_api/bridge-profiles/${encodeURIComponent(name)}`,
+        method: "DELETE",
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async activateBridgeProfile(
+    name: string,
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = {}
+  ): Promise<BridgeProfileActivateResponse> {
+    return requestWithUi<BridgeProfileActivateResponse>(
+      {
+        url: `/admin_api/bridge-profiles/${encodeURIComponent(name)}/activate`,
+        method: "POST",
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async deactivateBridgeProfile(
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = {}
+  ): Promise<BridgeProfileActivateResponse> {
+    return requestWithUi<BridgeProfileActivateResponse>(
+      {
+        url: "/admin_api/bridge-profiles/deactivate",
+        method: "POST",
+        ...requestContext,
       },
       uiOptions
     );
