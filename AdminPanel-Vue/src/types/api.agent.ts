@@ -34,6 +34,38 @@ export interface SaveAgentAssistantConfigPayload {
   agents: AgentAssistantConfigAgent[];
 }
 
+export interface AgentAssistantDelegationTask {
+  id: string;
+  status: "running" | "waiting" | "cancelling" | "completed" | "failed" | "cancelled" | string;
+  agentName?: string;
+  agentBaseName?: string;
+  senderName?: string;
+  currentRound?: number;
+  maxRounds?: number;
+  startTime?: number;
+  updatedAt?: number;
+  endTime?: number | null;
+  elapsedMs?: number;
+  taskPromptPreview?: string;
+  lastResponsePreview?: string;
+  lastHeartbeatDelaySeconds?: number;
+  cancelRequested?: boolean;
+  completionStatus?: string | null;
+  finalReportPreview?: string;
+  archivePath?: string | null;
+}
+
+export interface AgentAssistantDelegationsResponse {
+  active: AgentAssistantDelegationTask[];
+  recent: AgentAssistantDelegationTask[];
+}
+
+export interface CancelAgentAssistantDelegationResponse {
+  success: boolean;
+  message: string;
+  task?: AgentAssistantDelegationTask;
+}
+
 export interface AgentMapResponse {
   [agentName: string]: string;
 }

@@ -22,7 +22,10 @@ let DELEGATION_HEARTBEAT_PROMPT;
 const AGENTS = {};
 const agentContexts = new Map();
 const activeSessionLocks = new Set(); // 追踪正在进行中的持久对话 session
-const activeDelegations = new Map(); // delegationId -> { status, agentName, currentRound, startTime }
+const activeDelegations = new Map(); // delegationId -> delegation tracking state
+const completedDelegations = []; // 最近完成/失败/取消的委托任务快照，供管理面板查看
+const COMPLETED_DELEGATION_HISTORY_LIMIT = 50;
+const DELEGATION_PREVIEW_CHARS = 800;
 
 let pushVcpInfo = () => { }; // Default no-op function
 let cleanupInterval;
@@ -497,6 +500,95 @@ function buildTemporaryToolsSystemPrompt(injectToolsRaw) {
     }
 }
 
+function truncateText(value, maxChars = DELEGATION_PREVIEW_CHARS) {
+    const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+    if (text.length <= maxChars) return text;
+    return `${text.slice(0, maxChars)}...`;
+}
+
+function createDelegationSnapshot(state) {
+    if (!state) return null;
+    const now = Date.now();
+    return {
+        id: state.id,
+        status: state.status,
+        agentName: state.agentName,
+        agentBaseName: state.agentBaseName,
+        senderName: state.senderName,
+        currentRound: state.currentRound,
+        maxRounds: DELEGATION_MAX_ROUNDS,
+        startTime: state.startTime,
+        updatedAt: state.updatedAt,
+        endTime: state.endTime || null,
+        elapsedMs: (state.endTime || now) - state.startTime,
+        taskPromptPreview: state.taskPromptPreview,
+        lastResponsePreview: state.lastResponsePreview || '',
+        lastHeartbeatDelaySeconds: state.lastHeartbeatDelaySeconds || 0,
+        cancelRequested: !!state.cancelRequested,
+        completionStatus: state.completionStatus || null,
+        finalReportPreview: state.finalReportPreview || '',
+        archivePath: state.archivePath || null
+    };
+}
+
+function rememberCompletedDelegation(state) {
+    const snapshot = createDelegationSnapshot(state);
+    if (!snapshot) return;
+    completedDelegations.unshift(snapshot);
+    if (completedDelegations.length > COMPLETED_DELEGATION_HISTORY_LIMIT) {
+        completedDelegations.length = COMPLETED_DELEGATION_HISTORY_LIMIT;
+    }
+}
+
+function listDelegations() {
+    return {
+        active: Array.from(activeDelegations.values()).map(createDelegationSnapshot),
+        recent: completedDelegations
+    };
+}
+
+function getDelegationDetail(delegationId) {
+    if (activeDelegations.has(delegationId)) {
+        return createDelegationSnapshot(activeDelegations.get(delegationId));
+    }
+    return completedDelegations.find(item => item.id === delegationId) || null;
+}
+
+function cancelDelegation(delegationId, reason = '用户从管理面板请求取消。') {
+    const state = activeDelegations.get(delegationId);
+    if (!state) {
+        return { success: false, message: `未找到运行中的委托任务: ${delegationId}` };
+    }
+    if (state.cancelRequested || state.status === 'cancelling') {
+        return { success: true, message: `委托任务 ${delegationId} 已经在取消中。`, task: createDelegationSnapshot(state) };
+    }
+    state.cancelRequested = true;
+    state.cancelReason = String(reason || '用户请求取消。');
+    state.status = 'cancelling';
+    state.updatedAt = Date.now();
+    activeDelegations.set(delegationId, state);
+    return { success: true, message: `已请求取消委托任务 ${delegationId}。任务会在当前等待/请求结束后尽快退出。`, task: createDelegationSnapshot(state) };
+}
+
+function assertDelegationNotCancelled(delegationId) {
+    const state = activeDelegations.get(delegationId);
+    if (state && state.cancelRequested) {
+        const err = new Error(state.cancelReason || '委托任务已被取消。');
+        err.code = 'DELEGATION_CANCELLED';
+        throw err;
+    }
+    return state;
+}
+
+async function sleepWithDelegationCancel(delegationId, totalMs, stepMs = 1000) {
+    const deadline = Date.now() + Math.max(0, totalMs);
+    while (Date.now() < deadline) {
+        assertDelegationNotCancelled(delegationId);
+        await new Promise(resolve => setTimeout(resolve, Math.min(stepMs, deadline - Date.now())));
+    }
+    assertDelegationNotCancelled(delegationId);
+}
+
 function sanitizeTextForLog(value) {
     const text = typeof value === 'string'
         ? value
@@ -533,13 +625,19 @@ async function processToolCall(args) {
         throwToolError(errorMsg);
     }
 
-    const { agent_name, prompt, timely_contact, temporary_contact, maid, task_delegation, query_delegation, inject_tools, river_context, __vcp_timed_call } = args;
+    const { agent_name, prompt, timely_contact, temporary_contact, maid, task_delegation, query_delegation, cancel_delegation, inject_tools, river_context, __vcp_timed_call } = args;
+
+    // Handle cancelling a delegation
+    if (cancel_delegation) {
+        const cancelResult = cancelDelegation(cancel_delegation, maid ? `由 ${maid} 请求取消。` : '用户请求取消。');
+        return createTextResult(cancelResult.message);
+    }
 
     // Handle querying a delegation status
     if (query_delegation) {
         if (activeDelegations.has(query_delegation)) {
             const state = activeDelegations.get(query_delegation);
-            return createTextResult(`委托任务 (ID: ${query_delegation}) 仍在进行中。当前状态: ${state.status}。被委托 Agent: ${state.agentName}。已执行轮数: ${state.currentRound}/${DELEGATION_MAX_ROUNDS}。已运行时长: ${Math.round((Date.now() - state.startTime) / 1000)}s。`);
+            return createTextResult(`委托任务 (ID: ${query_delegation}) 仍在进行中。当前状态: ${state.status}。被委托 Agent: ${state.agentName}。已执行轮数: ${state.currentRound}/${DELEGATION_MAX_ROUNDS}。已运行时长: ${Math.round((Date.now() - state.startTime) / 1000)}s。\n\n原始任务预览:\n${state.taskPromptPreview || '[无]'}\n\n最近回复预览:\n${state.lastResponsePreview || '[尚未产生回复]'}`);
         } else {
             // Check if the result file already exists signaling completion
             try {
@@ -639,10 +737,22 @@ async function processToolCall(args) {
         const temporaryToolsSystemPrompt = buildTemporaryToolsSystemPrompt(inject_tools);
 
         activeDelegations.set(delegationId, {
+            id: delegationId,
             status: 'running',
             agentName: agent_name,
+            agentBaseName: agentConfig.baseName,
+            senderName: delegationSenderName,
             currentRound: 0,
-            startTime: Date.now()
+            startTime: Date.now(),
+            updatedAt: Date.now(),
+            taskPromptPreview: truncateText(promptTextForStorage),
+            lastResponsePreview: '',
+            lastHeartbeatDelaySeconds: 0,
+            cancelRequested: false,
+            cancelReason: '',
+            completionStatus: null,
+            finalReportPreview: '',
+            archivePath: null
         });
 
         if (DEBUG_MODE) console.error(`[AgentAssistant Service] Starting async delegation ${delegationId} for ${agent_name}`);
@@ -651,8 +761,16 @@ async function processToolCall(args) {
         executeDelegation(delegationId, agentConfig, promptTextForStorage, delegationSenderName, temporaryToolsSystemPrompt).catch(async err => {
             console.error(`[AgentAssistant Service] Background delegation task ${delegationId} failed:`, err);
             const state = activeDelegations.get(delegationId);
-            if (state) state.status = 'failed';
-            await sendDelegationCallback(delegationId, 'Failed', `任务执行过程中发生异常: ${err.message}`, agent_name);
+            const status = err.code === 'DELEGATION_CANCELLED' ? 'Cancelled' : 'Failed';
+            if (state) {
+                state.status = status === 'Cancelled' ? 'cancelled' : 'failed';
+                state.completionStatus = status;
+                state.finalReportPreview = truncateText(`任务执行过程中发生异常: ${err.message}`);
+                state.endTime = Date.now();
+                state.updatedAt = Date.now();
+                rememberCompletedDelegation(state);
+            }
+            await sendDelegationCallback(delegationId, status, `任务执行过程中发生异常: ${err.message}`, agent_name);
             activeDelegations.delete(delegationId);
         });
 
@@ -821,7 +939,7 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
     // 我们对于代理任务也是一个持久会话，因此需要占线锁保护
     while (activeSessionLocks.has(lockKey)) {
         if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] Wait for lock: ${lockKey}`);
-        await new Promise(r => setTimeout(r, 2000));
+        await sleepWithDelegationCancel(delegationId, 2000);
         const state = activeDelegations.get(delegationId);
         if (Date.now() - state.startTime > DELEGATION_TIMEOUT) {
             throw new Error("Acquiring session lock timed out");
@@ -851,11 +969,16 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
         let state = activeDelegations.get(delegationId);
 
         while (state.currentRound < DELEGATION_MAX_ROUNDS) {
+            state = assertDelegationNotCancelled(delegationId);
             if (Date.now() - state.startTime > DELEGATION_TIMEOUT) {
                 completionStatus = 'Failed';
                 finalReport = '委托任务执行超时。';
                 break;
             }
+
+            state.status = 'running';
+            state.updatedAt = Date.now();
+            activeDelegations.set(delegationId, state);
 
             if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] Round ${state.currentRound + 1}/${DELEGATION_MAX_ROUNDS} for ${delegationId}`);
 
@@ -878,6 +1001,10 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
             }
 
             const cleanedAssistantResponse = removeVCPThinkingChain(assistantResponseContent);
+            state = assertDelegationNotCancelled(delegationId);
+            state.lastResponsePreview = truncateText(cleanedAssistantResponse);
+            state.updatedAt = Date.now();
+            activeDelegations.set(delegationId, state);
 
             // 检查完成标记的容错正则
             const completionMatch = cleanedAssistantResponse.match(/\[\[TaskComplete(?:\s*\]\]|\s[\s\S]*?\]\])/i);
@@ -895,6 +1022,11 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
                     potentialReport = cleanedAssistantResponse;
                 }
                 finalReport = potentialReport;
+                state.status = 'completed';
+                state.completionStatus = completionStatus;
+                state.finalReportPreview = truncateText(finalReport);
+                state.updatedAt = Date.now();
+                activeDelegations.set(delegationId, state);
                 break; // Exit the loop
             } else if (failureMatch) {
                 // Task is explicitly failed by the agent
@@ -908,6 +1040,11 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
                     potentialReport = cleanedAssistantResponse;
                 }
                 finalReport = "【Agent主动放弃任务】\n" + potentialReport;
+                state.status = 'failed';
+                state.completionStatus = completionStatus;
+                state.finalReportPreview = truncateText(finalReport);
+                state.updatedAt = Date.now();
+                activeDelegations.set(delegationId, state);
                 break; // Exit the loop
             } else {
                 // Task is not completed yet, push history and add heartbeat prompt
@@ -924,8 +1061,12 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
                         const actualDelayMs = Math.min(delaySeconds * 1000, Math.max(0, remainingTimeout - 10000)); // 预留10s缓冲
 
                         if (actualDelayMs > 0) {
+                            state.status = 'waiting';
+                            state.lastHeartbeatDelaySeconds = Math.round(actualDelayMs / 1000);
+                            state.updatedAt = Date.now();
+                            activeDelegations.set(delegationId, state);
                             if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] AI requested heartbeat delay: ${delaySeconds}s. Actual delay: ${Math.round(actualDelayMs / 1000)}s.`);
-                            await new Promise(resolve => setTimeout(resolve, actualDelayMs));
+                            await sleepWithDelegationCancel(delegationId, actualDelayMs);
                         }
                     }
                 }
@@ -941,11 +1082,25 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
             finalReport = `达到最大轮数限制 (${DELEGATION_MAX_ROUNDS} 轮)，任务尚未自动上报完成。`;
         }
 
+    } catch (err) {
+        if (err && err.code === 'DELEGATION_CANCELLED') {
+            completionStatus = 'Cancelled';
+            finalReport = `委托任务已取消。原因: ${err.message}`;
+        } else {
+            throw err;
+        }
     } finally {
         activeSessionLocks.delete(lockKey);
-        activeDelegations.delete(delegationId);
 
         const secureReport = finalReport || "未知错误导致无报告";
+        const finalState = activeDelegations.get(delegationId);
+        if (finalState) {
+            finalState.status = completionStatus === 'Succeed' ? 'completed' : (completionStatus === 'Cancelled' ? 'cancelled' : 'failed');
+            finalState.completionStatus = completionStatus;
+            finalState.finalReportPreview = truncateText(secureReport);
+            finalState.endTime = Date.now();
+            finalState.updatedAt = Date.now();
+        }
 
         // 给成功完成任务的 Agent 发放积分奖励
         if (completionStatus === 'Succeed') {
@@ -953,7 +1108,12 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
         }
 
         // Save to AgentTask Document Directory
-        await archiveDelegationReport(delegationId, agentConfig.baseName, completionStatus, secureReport, taskPrompt);
+        const archivePath = await archiveDelegationReport(delegationId, agentConfig.baseName, completionStatus, secureReport, taskPrompt);
+        if (finalState) {
+            finalState.archivePath = archivePath || null;
+            rememberCompletedDelegation(finalState);
+        }
+        activeDelegations.delete(delegationId);
 
         await sendDelegationCallback(delegationId, completionStatus, secureReport, agentConfig.baseName);
     }
@@ -986,8 +1146,10 @@ async function archiveDelegationReport(delegationId, agentName, status, report, 
 
         fs.writeFileSync(filePath, fileContent, 'utf-8');
         if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] Archived report to ${filePath}`);
+        return `file/document/AgentTask/${fileName}`;
     } catch (e) {
         console.error(`[AgentAssistant Delegation] Failed to archive report file for ${delegationId}:`, e.message);
+        return null;
     }
 }
 
@@ -1026,5 +1188,8 @@ module.exports = {
     initialize,
     shutdown,
     processToolCall,
-    reloadConfig: loadAgentsFromLocalConfig
+    reloadConfig: loadAgentsFromLocalConfig,
+    listDelegations,
+    getDelegationDetail,
+    cancelDelegation
 };

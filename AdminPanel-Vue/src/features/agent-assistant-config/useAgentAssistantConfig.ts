@@ -1,10 +1,11 @@
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { agentApi, pluginApi } from "@/api";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import type {
   AgentAssistantConfigAgent,
   AgentAssistantConfigResponse,
   SaveAgentAssistantConfigPayload,
+  AgentAssistantDelegationTask,
 } from "@/types/api.agent";
 import { showMessage } from "@/utils";
 import { createLogger } from "@/utils/logger";
@@ -498,6 +499,11 @@ export function useAgentAssistantConfig() {
   const selectedExistingAgent = ref("");
   const statusMessage = ref("");
   const statusType = ref<"info" | "success" | "error">("info");
+  const activeDelegations = ref<AgentAssistantDelegationTask[]>([]);
+  const recentDelegations = ref<AgentAssistantDelegationTask[]>([]);
+  const delegationStatusMessage = ref("");
+  const delegationLoading = ref(false);
+  let delegationPollingTimer: number | undefined;
 
   async function loadConfig() {
     try {
@@ -553,6 +559,59 @@ export function useAgentAssistantConfig() {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger.error("Failed to load config:", errorMessage);
       showMessage(`加载配置失败：${errorMessage}`, "error");
+    }
+  }
+
+  async function loadDelegations() {
+    try {
+      delegationLoading.value = true;
+      const data = await agentApi.getAgentDelegations(
+        {},
+        {
+          showLoader: false,
+          loadingKey: "agent-assistant.delegations.load",
+        }
+      );
+      activeDelegations.value = Array.isArray(data.active) ? data.active : [];
+      recentDelegations.value = Array.isArray(data.recent) ? data.recent : [];
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.warn("Failed to load delegations:", errorMessage);
+      delegationStatusMessage.value = `加载委托任务失败：${errorMessage}`;
+    } finally {
+      delegationLoading.value = false;
+    }
+  }
+
+  function startDelegationPolling() {
+    if (delegationPollingTimer) {
+      window.clearInterval(delegationPollingTimer);
+    }
+    delegationPollingTimer = window.setInterval(() => {
+      loadDelegations();
+    }, 5000);
+  }
+
+  async function cancelDelegation(delegationId: string) {
+    if (!(await askConfirm({
+      message: `确定要取消委托任务 ${delegationId} 吗？当前正在进行的模型请求可能需要等本轮返回后才会退出。`,
+      danger: true,
+      confirmText: "取消委托",
+    }))) {
+      return;
+    }
+
+    try {
+      const result = await agentApi.cancelAgentDelegation(delegationId, "用户从 AgentAssistant 面板请求取消。", {
+        loadingKey: "agent-assistant.delegations.cancel",
+      });
+      delegationStatusMessage.value = result.message || "已请求取消委托任务。";
+      showMessage(delegationStatusMessage.value, result.success ? "success" : "error");
+      await loadDelegations();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      delegationStatusMessage.value = `取消失败：${errorMessage}`;
+      showMessage(delegationStatusMessage.value, "error");
     }
   }
 
@@ -654,16 +713,30 @@ export function useAgentAssistantConfig() {
 
   onMounted(() => {
     loadConfig();
+    loadDelegations();
+    startDelegationPolling();
+  });
+
+  onUnmounted(() => {
+    if (delegationPollingTimer) {
+      window.clearInterval(delegationPollingTimer);
+    }
   });
 
   return {
     globalConfig,
     agents,
+    activeDelegations,
+    recentDelegations,
+    delegationStatusMessage,
+    delegationLoading,
     availableAgents,
     selectedExistingAgent,
     statusMessage,
     statusType,
     loadConfig,
+    loadDelegations,
+    cancelDelegation,
     addFromExisting,
     addCustomAgent,
     removeAgent,

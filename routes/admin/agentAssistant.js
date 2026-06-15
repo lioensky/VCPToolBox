@@ -68,6 +68,51 @@ module.exports = function(options) {
         }
     });
 
+    router.get('/agent-assistant/delegations', async (req, res) => {
+        try {
+            const assistantModule = options.pluginManager?.getServiceModule('AgentAssistant');
+            if (!assistantModule || typeof assistantModule.listDelegations !== 'function') {
+                return res.status(503).json({ error: 'AgentAssistant service is not available.' });
+            }
+            res.json({ success: true, data: assistantModule.listDelegations() });
+        } catch (error) {
+            console.error('[AgentAssistant Route] List Delegations Error:', error);
+            res.status(500).json({ error: 'Failed to list delegations' });
+        }
+    });
+
+    router.get('/agent-assistant/delegations/:delegationId', async (req, res) => {
+        try {
+            const assistantModule = options.pluginManager?.getServiceModule('AgentAssistant');
+            if (!assistantModule || typeof assistantModule.getDelegationDetail !== 'function') {
+                return res.status(503).json({ error: 'AgentAssistant service is not available.' });
+            }
+            const task = assistantModule.getDelegationDetail(req.params.delegationId);
+            if (!task) {
+                return res.status(404).json({ error: 'Delegation task not found.' });
+            }
+            res.json({ success: true, data: task });
+        } catch (error) {
+            console.error('[AgentAssistant Route] Get Delegation Error:', error);
+            res.status(500).json({ error: 'Failed to get delegation detail' });
+        }
+    });
+
+    router.post('/agent-assistant/delegations/:delegationId/cancel', async (req, res) => {
+        try {
+            const assistantModule = options.pluginManager?.getServiceModule('AgentAssistant');
+            if (!assistantModule || typeof assistantModule.cancelDelegation !== 'function') {
+                return res.status(503).json({ error: 'AgentAssistant service is not available.' });
+            }
+            const reason = req.body?.reason || '用户从管理面板请求取消。';
+            const result = assistantModule.cancelDelegation(req.params.delegationId, reason);
+            res.status(result.success ? 200 : 404).json(result);
+        } catch (error) {
+            console.error('[AgentAssistant Route] Cancel Delegation Error:', error);
+            res.status(500).json({ error: 'Failed to cancel delegation' });
+        }
+    });
+
     router.get('/agent-assistant/scores', async (req, res) => {
         try {
             const content = await fs.readFile(AGENT_ASSISTANT_SCORES_FILE, 'utf-8');
