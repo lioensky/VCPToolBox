@@ -153,6 +153,43 @@ export interface BridgeHijackConfig {
   hijackMode: 'off' | 'replace' | 'prepend' | 'append' | 'merge';
   modelMap: Record<string, string>;
   debugMode: boolean;
+  defaultProfile: string;
+}
+
+export interface BridgeProfile {
+  name: string;
+  displayName: string;
+  systemPrompt: string;
+  hijackMode: 'off' | 'replace' | 'prepend' | 'append' | 'merge';
+  modelOverride: string;
+  description: string;
+}
+
+export interface BridgeProfilesResponse {
+  success?: boolean;
+  profiles: BridgeProfile[];
+  activeDefault: string;
+  profilesDir: string;
+  count: number;
+  message?: string;
+}
+
+export interface BridgeProfileResponse {
+  success?: boolean;
+  profile: BridgeProfile;
+  created?: boolean;
+  message?: string;
+}
+
+export interface BridgeProfileDeleteResponse {
+  success?: boolean;
+  message?: string;
+}
+
+export interface BridgeProfileActivateResponse {
+  success?: boolean;
+  activeDefault: string;
+  message?: string;
 }
 
 export interface OneRingConfigResponse {
