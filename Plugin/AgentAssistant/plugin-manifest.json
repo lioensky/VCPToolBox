@@ -10,7 +10,8 @@
     "script": "AgentAssistant.js"
   },
   "communication": {
-    "protocol": "direct"
+    "protocol": "direct",
+    "timeout": 358000
   },
   "webSocketPush": {
     "enabled": true,
