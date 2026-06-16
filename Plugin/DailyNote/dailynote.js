@@ -266,19 +266,19 @@ async function processLocalFiles(content) {
 
 // --- 'create' Command Logic ---
 async function handleCreateCommand(args) {
-    // 兼容 'Date'/'dateString', 'Content'/'contentText', 'maid'/'maidName' (case-insensitive for maid)
+    // 兼容 'Date'/'dateString', 'Content'/'contentText'/'content', 'maid'/'maidName' (case-insensitive for maid)
     // 新增 folder 字段：用于直接指定存储目录，避免必须把目录塞进 maid 的 [文件夹]署名格式。
     // 额外兼容 fold，降低模型误拼写导致目录未生效的概率。
     const maid = args.maid || args.maidName || args.Maid || args.MAID;
     const folder = args.folder || args.Folder || args.folderName || args.FolderName || args.fold || args.Fold;
     const dateString = args.dateString || args.Date;
-    const contentText = args.contentText || args.Content;
+    const contentText = args.contentText || args.Content || args.content;
     const tag = args.Tag || args.tag;
     const fileName = args.fileName || args.FileName;
 
     debugLog(`Processing 'create' for Maid: ${maid}, Folder: ${folder || 'Not specified'}, Date: ${dateString}, fileName: ${fileName}`);
     if (!maid || !dateString || !contentText) {
-        return { status: "error", error: 'Invalid input for create: Missing maid/maidName, dateString/Date, or contentText/Content.' };
+        return { status: "error", error: 'Invalid input for create: Missing maid/maidName, dateString/Date, or contentText/Content/content.' };
     }
 
     try {
