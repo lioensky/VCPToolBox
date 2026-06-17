@@ -27,14 +27,55 @@ allowed_operators = {
 }
 
 # 支持的数学和统计函数 (用于直接数值计算)
+def _factorial(x):
+    """支持整数与浮点数的阶乘。整数走 math.factorial（精确大整数），浮点/负数走 gamma(x+1)。"""
+    # 处理 SymPy 数值类型（仅 SymPy 对象用 evalf；Python float 也有 is_integer 方法但不是 SymPy 属性）
+    if isinstance(x, sympy.Integer):
+        x = int(x)
+    elif isinstance(x, (sympy.Float, sympy.Rational, sympy.Number)):
+        try:
+            x = float(x.evalf())
+        except Exception:
+            raise ValueError(f"factorial() cannot evaluate symbolic argument: {x}")
+    if isinstance(x, bool):
+        x = int(x)
+    if isinstance(x, int):
+        if x < 0:
+            raise ValueError("factorial() not defined for negative integers")
+        return math.factorial(x)
+    if isinstance(x, float):
+        if x.is_integer() and x >= 0:
+            return math.factorial(int(x))
+        # 非整数或负数浮点数使用 gamma 函数推广（gamma 在负整数处发散）
+        return math.gamma(x + 1)
+    raise ValueError(f"factorial() unsupported argument type: {type(x).__name__}")
+
+def _comb(n, k):
+    n_i, k_i = int(n), int(k)
+    if hasattr(math, 'comb'):
+        return math.comb(n_i, k_i)
+    return math.factorial(n_i) // (math.factorial(k_i) * math.factorial(n_i - k_i))
+
+def _perm(n, k):
+    n_i, k_i = int(n), int(k)
+    if hasattr(math, 'perm'):
+        return math.perm(n_i, k_i)
+    return math.factorial(n_i) // math.factorial(n_i - k_i)
+
 math_functions = {
     'sin': math.sin, 'cos': math.cos, 'tan': math.tan, 'asin': math.asin,
     'acos': math.acos, 'atan': math.atan, 'arctan': math.atan, 'arcsin': math.asin,
     'arccos': math.acos, 'sinh': math.sinh, 'cosh': math.cosh, 'tanh': math.tanh,
     'asinh': math.asinh, 'acosh': math.acosh, 'atanh': math.atanh,
     'sqrt': lambda x: math.sqrt(x), 'root': lambda x, n: x ** (1 / n),
-    'log': math.log, 'exp': math.exp, 'abs': math.fabs, 'ceil': math.ceil,
-    'floor': math.floor, 'mean': statistics.mean, 'median': statistics.median,
+    'log': math.log, 'log2': math.log2, 'log10': math.log10,
+    'exp': math.exp, 'abs': math.fabs, 'ceil': math.ceil,
+    'floor': math.floor,
+    'factorial': _factorial, 'gamma': math.gamma, 'lgamma': math.lgamma,
+    'comb': _comb, 'perm': _perm,
+    'gcd': math.gcd, 'min': min, 'max': max, 'round': round,
+    'degrees': math.degrees, 'radians': math.radians,
+    'mean': statistics.mean, 'median': statistics.median,
     'mode': statistics.mode, 'variance': statistics.variance, 'stdev': statistics.stdev,
     'norm_pdf': stats.norm.pdf, 'norm_cdf': stats.norm.cdf,
     't_test': lambda data, mu: stats.ttest_1samp(data, mu).pvalue,
@@ -293,12 +334,25 @@ def evaluate(expression: str) -> str:
                     raise ValueError("confidence_interval() requires data_list and confidence_level")
                 return compute_confidence_interval(args[0], args[1], args[2] if len(args) > 2 else None) 
             elif func_name in math_functions:
-                if func_name == 'log' and len(args) == 2: return math_functions[func_name](args[0], args[1]) 
-                if func_name == 'root' and len(args) == 2: return math_functions[func_name](args[0], args[1]) 
+                if func_name == 'log' and len(args) == 2: return math_functions[func_name](args[0], args[1])
+                if func_name == 'root' and len(args) == 2: return math_functions[func_name](args[0], args[1])
+                if func_name in ('comb', 'perm', 'gcd'):
+                    if len(args) != 2: raise ValueError(f"{func_name} requires exactly 2 arguments.")
+                    return math_functions[func_name](args[0], args[1])
+                if func_name in ('min', 'max'):
+                    if len(args) == 1 and isinstance(args[0], (list, tuple)):
+                        return math_functions[func_name](args[0])
+                    if len(args) >= 2:
+                        return math_functions[func_name](*args)
+                    raise ValueError(f"{func_name} requires at least 2 arguments or a list.")
+                if func_name == 'round':
+                    if len(args) == 1: return round(args[0])
+                    if len(args) == 2: return round(args[0], int(args[1]))
+                    raise ValueError("round requires 1 or 2 arguments.")
                 if func_name in ['mean', 'median', 'mode', 'variance', 'stdev']:
                     if not isinstance(args[0], list): raise ValueError(f"{func_name} requires a list input for its first argument.")
-                    return math_functions[func_name](*args) 
-                if func_name == 't_test': 
+                    return math_functions[func_name](*args)
+                if func_name == 't_test':
                      if not (isinstance(args[0], list) and isinstance(args[1], (int,float))):
                          raise ValueError("t_test requires a list and a number (mu).")
                      return math_functions[func_name](args[0], args[1])
