@@ -10,15 +10,27 @@ const crypto = require('crypto');
 const ONERING_TAIL_REGEX = /(?:\s*\[OneRing通知:[^\]]*\]\s*)+$/;
 const SYSTEM_NOTICE_REGEX = /\[系统通知\][\s\S]*?\[系统通知结束\]/g;
 const GROUPCHAT_HEAD_REGEX = /^\s*\[[^\]]{1,30}的发言\]\s*[:：]\s*/;
+// VCP 多模态翻译块：ImageProcessor / MultiModalProcessor 在 {{TransBase64}} / {{TransBase64+}} 模式下
+// 会向 user 文本内注入 <VCP_MULTIMODAL_INFO>...[MULTIMODAL_DATA_N_Info: 描述]...</VCP_MULTIMODAL_INFO>
+// 在 TransBase64+ 模式下，第⑧阶段（chatCompletionHandler.js 970-1003）会把它从 AI 视野中删除并还原原始 base64。
+// 但 OneRing 在第⑦阶段看到的正是这个被污染的中间态：
+//   1) 同一张图每轮的多模态描述文字可能不同（编号 N 重排、模型重新生成等）；
+//   2) 旧 user 块在历史中已被还原为原图，下一轮又会被注入新的 <VCP_MULTIMODAL_INFO>。
+// 因此该块绝不能进入 hash / 相似度比对，否则 OneRing 的 snapshot/exact hash 对齐会全面失配。
+// 这里只在 normalize 时剥离它供哈希计算使用，DB 实际写入的 content（来自 classifyUserContent
+// 的 cleanText）仍保留原样，AI 视野不受影响。
+const VCP_MULTIMODAL_INFO_REGEX = /<VCP_MULTIMODAL_INFO>[\s\S]*?<\/VCP_MULTIMODAL_INFO>/g;
 
 /**
  * 归一化：只剥离 OneRing/服务端临时标记，保留真实上下文内容用于比对。
  * 群聊头 [xxx的发言]: 是 AI 实际看到的正文，也是区分说话者的关键信息，不能剥离。
+ * <VCP_MULTIMODAL_INFO> 是 TransBase64/TransBase64+ 中间态翻译，仅在 hash 计算时剥离。
  */
 function normalize(text) {
     if (typeof text !== 'string') return '';
     let t = text;
     t = t.replace(SYSTEM_NOTICE_REGEX, '');
+    t = t.replace(VCP_MULTIMODAL_INFO_REGEX, '');
     t = t.replace(ONERING_TAIL_REGEX, '');
     // 折叠多余空白
     t = t.replace(/\s+/g, ' ').trim();
@@ -218,5 +230,6 @@ module.exports = {
     // 暴露常量，供主处理器复用同一套标记定义
     ONERING_TAIL_REGEX,
     SYSTEM_NOTICE_REGEX,
-    GROUPCHAT_HEAD_REGEX
+    GROUPCHAT_HEAD_REGEX,
+    VCP_MULTIMODAL_INFO_REGEX
 };
