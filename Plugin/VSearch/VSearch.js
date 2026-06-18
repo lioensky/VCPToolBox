@@ -683,10 +683,18 @@ async function main(request) {
     const { deadline } = await createDeadlineContext();
     log(`启动 VSearch [模式: ${SearchMode}]。主题: "${SearchTopic}"，关键词数量: ${keywordList.length}`);
 
+    // AI 友好型返回：将报告文本包裹进 content 数组的 type:'text' 元素，规避 JSON 转义地狱
+    const buildAiFriendlyResult = (reportText) => ({
+        content: [
+            { type: 'text', text: reportText }
+        ]
+    });
+
     if (SearchMode === 'grok') {
         // Grok 模式：单次请求处理所有关键词，安全截止前截断流式输出，并对 503/空响应做指数退避重试
         const result = await callGrokMode(SearchTopic, keywordList, deadline);
-        return sendResponse({ status: "success", result: `## VSearch 检索报告 [模式: Grok]\n\n**研究主题**: ${SearchTopic}\n\n${result}` });
+        const reportText = `## VSearch 检索报告 [模式: Grok]\n\n**研究主题**: ${SearchTopic}\n\n${result}`;
+        return sendResponse({ status: "success", result: buildAiFriendlyResult(reportText) });
     }
 
     if (SearchMode === 'tavily') {
@@ -703,7 +711,8 @@ async function main(request) {
             return sendResponse({ status: "error", error: "Tavily 模式需要在根目录 config.env 中配置 TavilyKey。" });
         }
         const result = await callTavilyMode(SearchTopic, keywordList, tavilyKeyStr);
-        return sendResponse({ status: "success", result: `## VSearch 检索报告 [模式: Tavily]\n\n**研究主题**: ${SearchTopic}\n\n${result}` });
+        const reportText = `## VSearch 检索报告 [模式: Tavily]\n\n**研究主题**: ${SearchTopic}\n\n${result}`;
+        return sendResponse({ status: "success", result: buildAiFriendlyResult(reportText) });
     }
 
     if (SearchMode === 'kimisearch') {
@@ -715,7 +724,8 @@ async function main(request) {
             return sendResponse({ status: "error", error: "KimiSearch 模式需要在 config.env 中配置 KimiSearchUrl。" });
         }
         const result = await callKimiSearchMode(SearchTopic, keywordList, KIMI_SEARCH_KEY, KIMI_SEARCH_URL, KIMI_MAX_RESULTS, KIMI_INCLUDE_CONTENT);
-        return sendResponse({ status: "success", result: `## VSearch 检索报告 [模式: KimiSearch]\n\n**研究主题**: ${SearchTopic}\n\n${result}` });
+        const reportText = `## VSearch 检索报告 [模式: KimiSearch]\n\n**研究主题**: ${SearchTopic}\n\n${result}`;
+        return sendResponse({ status: "success", result: buildAiFriendlyResult(reportText) });
     }
 
     // Grounding 模式：并发分批执行；到达安全截止时间时，抛弃未返回搜索，直接返回已完成结果
@@ -764,7 +774,7 @@ async function main(request) {
         ? `\n\n> [提示] 已到达插件安全截止时间，未完成的 Grounding 搜索已被抛弃；以下为截止前已完成的结果。\n\n`
         : '\n\n';
     const finalOutput = `## VSearch 检索报告 [模式: Grounding]\n\n**研究主题**: ${SearchTopic}${timeoutNotice}${allResults.join('') || '[提示] 安全截止前没有搜索任务完成。'}`;
-    sendResponse({ status: "success", result: finalOutput });
+    sendResponse({ status: "success", result: buildAiFriendlyResult(finalOutput) });
 }
 
 // 插件入口 (stdio)

@@ -161,6 +161,9 @@ tag-processor-config.env
 DebugLog/
 dailynote/*
 !dailynote/VCP桌面知识/
+!dailynote/VCP桌面知识/**
+!dailynote/VCP开发/
+!dailynote/VCP开发/**
 ip_blacklist.json
 /VectorStore
 
