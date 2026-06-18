@@ -202,6 +202,53 @@ function consumeVcpToolUseForbiddenPlaceholder(messages) {
 }
 
 /**
+ * 检测当前真实后端模型是否命中纯文本模型 Tag 列表（不区分大小写）。
+ * 配合模型动态路由（VCPModelAuto / SemanticModelRouter）使用：
+ * 当语义路由切换到不支持多模态的模型（如 deepseek-v4 / GLM-4.5）时，
+ * 自动把 base64 翻译为文本，避免上游 API 报错或丢图。
+ *
+ * @param {string} modelName 真实后端模型名（已经过 ModelRedirect 与语义路由解析）
+ * @param {string[]} tagList tag 数组（已统一为小写，由 server.js 解析）
+ * @returns {boolean} 是否命中
+ */
+function isTextOnlyModelByTag(modelName, tagList) {
+  if (!modelName || !Array.isArray(tagList) || tagList.length === 0) return false;
+  const lowerName = String(modelName).toLowerCase();
+  for (const tag of tagList) {
+    if (!tag) continue;
+    if (lowerName.includes(tag)) return true;
+  }
+  return false;
+}
+
+/**
+ * 检测一条消息（或其 content 数组）中是否包含 base64 多模态部分。
+ * 仅用于 Force-Translate 触发判定，避免在没有图片/音视频的请求里空转翻译插件。
+ *
+ * @param {Array} messages 消息数组
+ * @returns {boolean}
+ */
+function messagesContainBase64Media(messages) {
+  if (!Array.isArray(messages)) return false;
+  for (const msg of messages) {
+    if (!msg || (msg.role !== 'user' && msg.role !== 'system')) continue;
+    if (!Array.isArray(msg.content)) continue;
+    for (const part of msg.content) {
+      if (
+        part &&
+        part.type === 'image_url' &&
+        part.image_url &&
+        typeof part.image_url.url === 'string' &&
+        /^data:(image|audio|video)\/[^;]+;base64,/.test(part.image_url.url)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Copy non-enumerable array metadata produced by upstream preprocessors.
  * OneRing attaches __oneRingMeta to the messages array itself; any pipeline
  * step that returns a fresh array must preserve it explicitly.
@@ -614,6 +661,7 @@ class ChatCompletionHandler {
       chinaModel1, // 新增
       chinaModel1Cot, // 新增
       semanticModelRouter,
+      multiModalForceTranslateModels, // 新增：纯文本模型强制翻译多模态 tag 列表
     } = this.config;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP;
@@ -874,6 +922,27 @@ class ChatCompletionHandler {
 
           applyChinaModelThinkingControl(originalBody);
         }
+      }
+
+      // --- 纯文本模型强制翻译多模态 ---
+      // 当语义路由 / ModelRedirect 解析后的真实后端模型命中
+      // MultiModalForceTranslateModels 列表（不区分大小写、tag 子串匹配）时：
+      // 1) 自动开启多模态翻译（无视用户是否配置 {{TransBase64}}/{{TransBase64+}}）
+      // 2) 强制关闭 + 模式的 base64 还原（因为目标模型是纯文本模型，无法处理 base64）
+      // 3) 仅在消息确实含有 base64 多模态时触发，避免空转翻译插件
+      if (
+        Array.isArray(multiModalForceTranslateModels) &&
+        multiModalForceTranslateModels.length > 0 &&
+        isTextOnlyModelByTag(originalBody.model, multiModalForceTranslateModels) &&
+        messagesContainBase64Media(tavernProcessedMessages)
+      ) {
+        const previousMode = shouldProcessMediaPlus ? 'TransBase64+' : (shouldProcessMedia ? 'TransBase64' : 'none');
+        shouldProcessMedia = true;
+        shouldProcessMediaPlus = false; // 关键：禁用还原 base64
+        console.log(
+          `[MultiModalForceTranslate] 模型 '${originalBody.model}' 命中纯文本模型 tag 列表，` +
+          `自动启用多模态文本翻译并禁用 base64 还原（先前模式: ${previousMode}）。`
+        );
       }
 
       // --- 统一处理所有变量替换 ---

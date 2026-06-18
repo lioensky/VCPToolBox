@@ -397,6 +397,21 @@ try {
 }
 const CHINA_MODEL_1_COT = (process.env.ChinaModel1Cot || "false").toLowerCase() === "true";
 
+// 纯文本模型强制翻译多模态：tag 列表，命中即无视 {{TransBase64}}/{{TransBase64+}} 占位符
+// 用于配合模型动态路由（VCPModelAuto/SemanticModelRouter），避免把 base64 多模态传给纯文本模型
+let MULTIMODAL_FORCE_TRANSLATE_MODELS = [];
+try {
+    MULTIMODAL_FORCE_TRANSLATE_MODELS = (process.env.MultiModalForceTranslateModels || "")
+        .split(',')
+        .map(tag => tag.trim().toLowerCase())
+        .filter(tag => tag !== "");
+    if (MULTIMODAL_FORCE_TRANSLATE_MODELS.length > 0) {
+        console.log(`[Server] MultiModalForceTranslateModels 已加载 ${MULTIMODAL_FORCE_TRANSLATE_MODELS.length} 个 tag: [${MULTIMODAL_FORCE_TRANSLATE_MODELS.join(', ')}]`);
+    }
+} catch (e) {
+    console.error("Failed to parse MultiModalForceTranslateModels:", e);
+}
+
 // 新增：模型重定向功能
 const ModelRedirectHandler = require('./modelRedirectHandler.js');
 const modelRedirectHandler = new ModelRedirectHandler();
@@ -1165,7 +1180,8 @@ const chatCompletionHandler = new ChatCompletionHandler({
     superDetectors,
     chinaModel1: CHINA_MODEL_1,
     chinaModel1Cot: CHINA_MODEL_1_COT,
-    semanticModelRouter
+    semanticModelRouter,
+    multiModalForceTranslateModels: MULTIMODAL_FORCE_TRANSLATE_MODELS // 纯文本模型 tag 命中后强制翻译多模态
 });
 
 // Route for standard chat completions. VCP info is shown based on the .env config.
