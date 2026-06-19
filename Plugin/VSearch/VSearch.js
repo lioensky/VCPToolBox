@@ -172,7 +172,7 @@ const callGroundingMode = async (topic, keyword, showURL = false, deadline, sign
 
 行动指南：
 1. 意图对齐：深入理解【检索目标主题】，确保搜索结果能直接服务于该主题的研究。
-2. 深度检索：利用内置的 googleSearch 工具获取实时信息。
+2. 深度检索：利用内置的 Google Search grounding 工具获取实时信息。
 3. 信息精炼：不要简单堆砌搜索结果。请从网页中提取关键事实、核心数据、专家观点或最新进展。
 4. 语言风格：专业、客观、精炼。
 ${showURL ? '5. 严格溯源：每一条重要信息必须附带来源 URL。如果你使用了引用标记（如 [cite: X]），请确保在回复末尾的 [参考来源] 部分列出这些标记对应的完整 URL。' : '5. 节省Token：除非特别重要，否则不需要在正文中列出 URL 链接。'}`;
@@ -193,7 +193,10 @@ ${showURL ? '5. 严格溯源：每一条重要信息必须附带来源 URL。如
         ],
         stream: false,
         max_tokens: TOKENS,
-        tool_choice: "auto",
+        // NewAPI 的 /v1/chat/completions 兼容层对 Gemini Grounding 的处理更接近
+        // OpenAI-compatible tool 外壳：保留原先可识别的 function/googleSearch 声明，
+        // 但显式关闭 function_calling_config，避免 tool_choice: "auto" 触发
+        // "Function calling config is set without function_declarations."
         tools: [{
             type: "function",
             function: {
@@ -201,7 +204,12 @@ ${showURL ? '5. 严格溯源：每一条重要信息必须附带来源 URL。如
                 description: "从谷歌搜索引擎获取实时信息。",
                 parameters: { type: "object", properties: { query: { type: "string" } } }
             }
-        }]
+        }],
+        tool_config: {
+            function_calling_config: {
+                mode: "NONE"
+            }
+        }
     };
 
     try {
