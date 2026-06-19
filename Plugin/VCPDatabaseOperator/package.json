@@ -1,0 +1,11 @@
+{
+  "name": "vcp-database-operator",
+  "version": "1.0.2",
+  "description": "VCP数据库操作插件 - SQL-First + AST解析 + 五道安全闸",
+  "main": "DatabaseOperatorService.js",
+  "dependencies": {
+    "mysql2": "3.9.4",
+    "dotenv": "16.4.5",
+    "node-sql-parser": "5.3.0"
+  }
+}

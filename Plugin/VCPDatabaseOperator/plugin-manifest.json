@@ -1,0 +1,58 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "VCPDatabaseOperator",
+  "displayName": "VCP数据库操作工具",
+  "version": "1.0.3",
+  "description": "VCP数据库操作插件（SQL-First）。AI 直接写原生 MySQL 语句，插件做 AST 解析 + 五道安全闸（动词过滤/表白名单/CRUD权限矩阵/参数化绑定/写操作熔断）。推荐用 ExecuteSQL；保留 QueryTable/InsertRow/UpdateRow/DeleteRow 结构化命令做兼容。",
+  "author": "pioneer798",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "DatabaseOperatorService.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 60000
+  },
+  "configSchema": {
+    "DebugMode": {
+      "type": "boolean",
+      "description": "是否启用调试日志输出。",
+      "default": false
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "ExecuteSQL",
+        "commandIdentifier": "ExecuteSQL",
+        "description": "[主入口·推荐] 直接执行原生 MySQL 语句。\n\n参数:\n- sql (字符串, 必需): 单条 MySQL 语句，支持 ? 占位符。仅允许 SELECT/INSERT/UPDATE/DELETE，禁止多语句。\n- sql_params (数组, 可选): 对应 sql 中 ? 占位符的值列表。无变量传 [] 或省略。强烈推荐用占位符防注入。\n- maid (字符串, 可选): 调用方 Agent 名称，用于频率限制按调用方分桶。\n- confirm (布尔, 可选): 仅 UPDATE/DELETE 用。EXPLAIN 预估影响行数超阈值时，必须 confirm:true 二次确认才会真执行。\n\nSQL 黑白名单:\n- 允许: SELECT / INSERT / UPDATE / DELETE / 子查询 / JOIN / 聚合 / GROUP BY / HAVING / LIMIT\n- 拒绝: DROP / TRUNCATE / ALTER / CREATE / RENAME / GRANT / REVOKE / SET / 多语句\n\n参数化绑定原则:\n- 正确: sql=\"SELECT * FROM x WHERE id=?\", sql_params=[42]\n- 错误: sql=\"SELECT * FROM x WHERE id=42\" （拼字符串有注入风险）\n- 所有用户输入/变量值必须走 sql_params；只有字段名/表名/排序方向才能直接出现在 sql 里。\n\n返回结构:\n- SELECT  -> { status, mode:'sql', sql_type:'SELECT', target_tables:[...], rows:[...], count, duration_ms? }\n- INSERT  -> { status, sql_type:'INSERT', target_tables, affected_rows, inserted_id, duration_ms? }\n- UPDATE  -> { status, sql_type:'UPDATE', target_tables, affected_rows, duration_ms? }\n- DELETE  -> { status, sql_type:'DELETE', target_tables, affected_rows, duration_ms? }\n- 写操作熔断 -> { status:'error', code:'WRITE_AFFECT_TOO_MANY', affected_rows_estimate, sql_type, target_tables }\n- 安全拒绝 -> { plugin_error:'OPERATION_FORBIDDEN/...' }\n\n常见错误对照:\n- 拼字符串 -> 注入风险，请改用 ? + sql_params\n- 多语句（用分号拆多条） -> 报 MULTI_STATEMENT_FORBIDDEN\n- DDL（DROP/TRUNCATE/ALTER 等） -> 报 OPERATION_FORBIDDEN\n- 表不在白名单 -> 报 TABLE_NOT_ALLOWED\n- 表权限不够（如对 READONLY 表 INSERT） -> 报 PERMISSION_DENIED\n- sql_params 数量与 ? 不符 -> mysql2 抛 ER 错误\n- 写操作影响行数超阈值未带 confirm -> 返回 WRITE_AFFECT_TOO_MANY，需重试时加 confirm:true",
+        "example": "示例1·最简查询:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」ExecuteSQL「末exp」,\nmaid:「始exp」先驱798「末exp」,\nsql:「始exp」SELECT * FROM sys_access_log ORDER BY id DESC LIMIT 10「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>\n\n示例2·参数化查询（防注入推荐）:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」ExecuteSQL「末exp」,\nmaid:「始exp」先驱798「末exp」,\nsql:「始exp」SELECT id, title, status FROM article WHERE author_id = ? AND status = ? ORDER BY created_at DESC LIMIT 20「末exp」,\nsql_params:「始exp」[42, \"published\"]「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>\n\n示例3·聚合统计（接口性能分析）:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」ExecuteSQL「末exp」,\nmaid:「始exp」先驱798「末exp」,\nsql:「始exp」SELECT uri, COUNT(*) AS cnt, AVG(duration) AS avg_ms, MAX(duration) AS max_ms FROM sys_access_log WHERE created_at > ? GROUP BY uri ORDER BY avg_ms DESC LIMIT 20「末exp」,\nsql_params:「始exp」[\"2026-05-01 00:00:00\"]「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>\n\n示例4·INSERT 新增记录:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」ExecuteSQL「末exp」,\nmaid:「始exp」先驱798「末exp」,\nsql:「始exp」INSERT INTO comment (article_id, author, content, created_at) VALUES (?, ?, ?, NOW())「末exp」,\nsql_params:「始exp」[100, \"先驱798\", \"AI 写的评论\"]「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>\n\n示例5·UPDATE（小范围，无需 confirm）:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」ExecuteSQL「末exp」,\nmaid:「始exp」先驱798「末exp」,\nsql:「始exp」UPDATE article SET status = ? WHERE id = ?「末exp」,\nsql_params:「始exp」[\"archived\", 100]「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>\n\n示例6·UPDATE/DELETE 大范围（先空跑被熔断 → 加 confirm 重试）:\n第一次（不带 confirm，会被熔断并返回预估行数）:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」ExecuteSQL「末exp」,\nmaid:「始exp」先驱798「末exp」,\nsql:「始exp」DELETE FROM sys_access_log WHERE created_at < ?「末exp」,\nsql_params:「始exp」[\"2026-01-01 00:00:00\"]「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>\n回执: { status:'error', code:'WRITE_AFFECT_TOO_MANY', affected_rows_estimate:1834 }\n\n第二次（确认无误后加 confirm:true 重试）:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」ExecuteSQL「末exp」,\nmaid:「始exp」先驱798「末exp」,\nsql:「始exp」DELETE FROM sys_access_log WHERE created_at < ?「末exp」,\nsql_params:「始exp」[\"2026-01-01 00:00:00\"]「末exp」,\nconfirm:「始exp」true「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>\n\n示例7·LIKE 模糊查询（% 写在参数里）:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」ExecuteSQL「末exp」,\nmaid:「始exp」先驱798「末exp」,\nsql:「始exp」SELECT id, uri FROM sys_access_log WHERE uri LIKE ? LIMIT 50「末exp」,\nsql_params:「始exp」[\"/api/v1/%\"]「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>\n\n示例8·IN 子句（参数数量必须严格对应 ? 个数）:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」ExecuteSQL「末exp」,\nmaid:「始exp」先驱798「末exp」,\nsql:「始exp」SELECT id, title FROM article WHERE id IN (?, ?, ?)「末exp」,\nsql_params:「始exp」[10, 20, 30]「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>\n\n示例9·JOIN 联表（所有涉及表都会过白名单校验）:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」ExecuteSQL「末exp」,\nmaid:「始exp」先驱798「末exp」,\nsql:「始exp」SELECT a.id, a.title, c.content FROM article a LEFT JOIN comment c ON c.article_id = a.id WHERE a.id = ? LIMIT 100「末exp」,\nsql_params:「始exp」[100]「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>"
+      },
+      {
+        "command": "QueryTable",
+        "commandIdentifier": "QueryTable",
+        "description": "[结构化兼容] 旧版 API。新代码请用 ExecuteSQL。\n\n参数:\n- params (JSON 对象字符串, 必需): 包含以下字段\n  · table (字符串, 必需): 表名\n  · columns (数组, 可选): 列名数组，省略则 SELECT *\n  · where (对象, 可选): 等值条件，如 {\"id\":1,\"status\":\"published\"}\n  · order_by (对象, 可选): 排序，如 {\"id\":\"DESC\"}\n  · limit (数字, 可选): 行数限制\n  · offset (数字, 可选): 偏移量\n- maid (字符串, 可选): 调用方 Agent 名称",
+        "example": "<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」QueryTable「末exp」,\nmaid:「始exp」先驱798「末exp」,\nparams:「始exp」{\"table\":\"sys_access_log\",\"columns\":[\"id\",\"uri\",\"duration\"],\"where\":{\"status\":200},\"order_by\":{\"id\":\"DESC\"},\"limit\":10}「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>"
+      },
+      {
+        "command": "InsertRow",
+        "commandIdentifier": "InsertRow",
+        "description": "[结构化兼容] 旧版 API。新代码请用 ExecuteSQL。\n\n参数:\n- params (JSON 对象字符串, 必需):\n  · table (字符串, 必需): 表名\n  · values (对象, 必需): 列名→值的映射，如 {\"author\":\"foo\",\"content\":\"bar\"}\n- maid (字符串, 可选): 调用方 Agent 名称",
+        "example": "<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」InsertRow「末exp」,\nmaid:「始exp」先驱798「末exp」,\nparams:「始exp」{\"table\":\"comment\",\"values\":{\"article_id\":100,\"author\":\"先驱798\",\"content\":\"测试评论\"}}「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>"
+      },
+      {
+        "command": "UpdateRow",
+        "commandIdentifier": "UpdateRow",
+        "description": "[结构化兼容] 旧版 API。新代码请用 ExecuteSQL。\n\n参数:\n- params (JSON 对象字符串, 必需):\n  · table (字符串, 必需): 表名\n  · set (对象, 必需): 要更新的列值，如 {\"status\":\"archived\"}\n  · where (对象, 必需): 等值条件，禁止省略防误改全表\n  · confirm (布尔, 可选): 影响行数超阈值时需 true\n- maid (字符串, 可选): 调用方 Agent 名称",
+        "example": "<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」UpdateRow「末exp」,\nmaid:「始exp」先驱798「末exp」,\nparams:「始exp」{\"table\":\"article\",\"set\":{\"status\":\"archived\"},\"where\":{\"id\":100}}「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>"
+      },
+      {
+        "command": "DeleteRow",
+        "commandIdentifier": "DeleteRow",
+        "description": "[结构化兼容] 旧版 API。新代码请用 ExecuteSQL。\n\n参数:\n- params (JSON 对象字符串, 必需):\n  · table (字符串, 必需): 表名\n  · where (对象, 必需): 等值条件，禁止省略防误删全表\n  · confirm (布尔, 可选): 影响行数超阈值时需 true\n- maid (字符串, 可选): 调用方 Agent 名称",
+        "example": "<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」VCPDatabaseOperator「末exp」,\ncommand:「始exp」DeleteRow「末exp」,\nmaid:「始exp」先驱798「末exp」,\nparams:「始exp」{\"table\":\"comment\",\"where\":{\"id\":1}}「末exp」\n<<<[END_TOOL_REQUEST_EXP]>>>"
+      }
+    ]
+  }
+}
