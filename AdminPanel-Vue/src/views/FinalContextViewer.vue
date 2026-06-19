@@ -326,6 +326,70 @@
             </button>
           </section>
 
+          <section class="moonlight-spectrum" aria-label="线性证据密度图">
+            <div class="moonlight-section-title">
+              <strong>线性证据密度图</strong>
+              <small>将此前上下文按净化后文本长度压成一条线性轴；宽度代表文本占比，亮度代表加权命中强度。</small>
+            </div>
+            <div class="moonlight-linear-map" role="img" aria-label="池月线性证据密度图">
+              <button
+                v-for="segment in moonlightReport.linearSegments"
+                :key="`moonlight-linear-${segment.blockIndex}`"
+                type="button"
+                class="moonlight-linear-segment"
+                :class="roleClass(segment.displayRole)"
+                :title="moonlightLinearSegmentTitle(segment)"
+                :style="{
+                  '--segment-width': `${segment.widthRatio * 100}%`,
+                  '--segment-alpha': String(0.16 + segment.normalizedWeightedScore * 0.78)
+                }"
+                @click="jumpFromMoonlightModal(segment.blockIndex)"
+              >
+                <span class="moonlight-linear-heat"></span>
+              </button>
+            </div>
+            <div v-if="moonlightReport.curvePoints.length > 0" class="moonlight-curve-card" role="img" aria-label="池月线性注意力代理曲线图">
+              <svg class="moonlight-curve-svg" viewBox="0 0 1000 220" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="moonlightCurveFill" x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="0%" stop-color="currentColor" stop-opacity="0.26" />
+                    <stop offset="100%" stop-color="currentColor" stop-opacity="0.02" />
+                  </linearGradient>
+                </defs>
+                <line x1="0" y1="190" x2="1000" y2="190" class="moonlight-curve-axis" />
+                <line x1="0" y1="30" x2="1000" y2="30" class="moonlight-curve-guide strong" />
+                <line x1="0" y1="110" x2="1000" y2="110" class="moonlight-curve-guide" />
+                <line x1="0" y1="150" x2="1000" y2="150" class="moonlight-curve-guide" />
+                <path class="moonlight-curve-fill" :d="moonlightCurveFillPath" />
+                <path class="moonlight-curve-line" :d="moonlightCurveLinePath" />
+              </svg>
+              <button
+                v-for="point in moonlightReport.curvePoints"
+                :key="`moonlight-curve-${point.blockIndex}`"
+                type="button"
+                class="moonlight-curve-point"
+                :class="[roleClass(point.displayRole), { peak: point.isPeak, valley: point.isValley }]"
+                :title="moonlightCurvePointTitle(point)"
+                :style="{
+                  '--point-x': `${point.x * 100}%`,
+                  '--point-y': `${(1 - point.y) * 100}%`,
+                  '--point-size': `${point.isPeak ? 14 : point.isValley ? 11 : 8}px`
+                }"
+                @click="jumpFromMoonlightModal(point.blockIndex)"
+              >
+                <span class="moonlight-curve-point-label">#{{ point.blockIndex }}</span>
+              </button>
+            </div>
+            <div class="moonlight-linear-legend">
+              <span><i class="legend-system"></i>SYSTEM</span>
+              <span><i class="legend-user"></i>USER</span>
+              <span><i class="legend-assistant"></i>AI历史</span>
+              <span><i class="legend-tool"></i>TOOL</span>
+              <span><i class="legend-peak"></i>波峰</span>
+              <span><i class="legend-valley"></i>波谷</span>
+            </div>
+          </section>
+
           <section class="moonlight-spectrum" aria-label="全上下文证据分布光谱">
             <div class="moonlight-section-title">
               <strong>全上下文块级光谱</strong>
@@ -466,6 +530,8 @@ import {
   getDefaultMoonlightOptions,
   runMoonlightAnalysis,
   type MoonlightBlockScore,
+  type MoonlightCurvePoint,
+  type MoonlightLinearSegment,
   type MoonlightReport,
   type MoonlightTermStat,
 } from '@/utils/moonlight'
@@ -566,6 +632,20 @@ const oneRingSourcesSummary = computed(() => {
   return oneRingSourceStats.value
     .map((source) => `${source.frontendSource}: ${source.count}`)
     .join(' / ')
+})
+
+const moonlightCurveLinePath = computed(() => {
+  const points = moonlightReport.value?.curvePoints ?? []
+  return buildMoonlightCurvePath(points)
+})
+
+const moonlightCurveFillPath = computed(() => {
+  const points = moonlightReport.value?.curvePoints ?? []
+  const linePath = buildMoonlightCurvePath(points)
+  if (!linePath || points.length === 0) return ''
+  const first = curvePointToSvg(points[0])
+  const last = curvePointToSvg(points[points.length - 1])
+  return `${linePath} L ${last.x.toFixed(2)} 190 L ${first.x.toFixed(2)} 190 Z`
 })
 
 const moonlightSpecialTerms = computed<MoonlightTermStat[]>(() => {
@@ -748,6 +828,51 @@ function formatMoonlightReportAsMarkdown(report: MoonlightReport): string {
 
 function formatPercent(value: number | undefined): string {
   return `${Math.round(Number(value || 0) * 100)}%`
+}
+
+function moonlightLinearSegmentTitle(segment: MoonlightLinearSegment): string {
+  return `#${segment.blockIndex} ${normalizeRoleLabel(segment.displayRole)}｜文本占比 ${(segment.widthRatio * 100).toFixed(2)}%｜weighted ${segment.weightedScore.toFixed(2)}｜命中 ${segment.matchedTermCount}｜${segment.textPreview || '空预览'}`
+}
+
+function moonlightCurvePointTitle(point: MoonlightCurvePoint): string {
+  const shape = point.isPeak ? '｜波峰' : point.isValley ? '｜波谷' : ''
+  return `#${point.blockIndex} ${normalizeRoleLabel(point.displayRole)}${shape}｜线性位置 ${(point.x * 100).toFixed(2)}%｜强度 ${Math.round(point.y * 100)}%｜weighted ${point.weightedScore.toFixed(2)}｜命中 ${point.matchedTermCount}｜${point.textPreview || '空预览'}`
+}
+
+function buildMoonlightCurvePath(points: MoonlightCurvePoint[]): string {
+  if (points.length === 0) return ''
+
+  const svgPoints = points.map(curvePointToSvg)
+  const firstPoint = svgPoints[0]
+  const lastPoint = svgPoints[svgPoints.length - 1]
+  const anchoredPoints = [
+    { x: 0, y: firstPoint.y },
+    ...svgPoints,
+    { x: 1000, y: lastPoint.y },
+  ]
+
+  if (anchoredPoints.length === 1) {
+    const point = anchoredPoints[0]
+    return `M ${point.x.toFixed(2)} ${point.y.toFixed(2)}`
+  }
+
+  const commands = [`M ${anchoredPoints[0].x.toFixed(2)} ${anchoredPoints[0].y.toFixed(2)}`]
+
+  for (let index = 1; index < anchoredPoints.length; index += 1) {
+    const previous = anchoredPoints[index - 1]
+    const current = anchoredPoints[index]
+    const controlX = (previous.x + current.x) / 2
+    commands.push(`C ${controlX.toFixed(2)} ${previous.y.toFixed(2)}, ${controlX.toFixed(2)} ${current.y.toFixed(2)}, ${current.x.toFixed(2)} ${current.y.toFixed(2)}`)
+  }
+
+  return commands.join(' ')
+}
+
+function curvePointToSvg(point: MoonlightCurvePoint): { x: number; y: number } {
+  return {
+    x: point.x * 1000,
+    y: 190 - (point.y * 160),
+  }
 }
 
 function moonlightScoreTitle(score: MoonlightBlockScore): string {
@@ -1420,6 +1545,236 @@ onMounted(() => {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   background: var(--primary-bg);
+}
+
+.moonlight-linear-map {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--tertiary-bg);
+}
+
+.moonlight-linear-segment {
+  --segment-width: 1%;
+  --segment-alpha: 0.2;
+  position: relative;
+  flex: 0 0 max(var(--segment-width), 3px);
+  min-width: 3px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid color-mix(in srgb, var(--border-color) 75%, transparent);
+  background: color-mix(in srgb, var(--secondary-text) 16%, var(--primary-bg));
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.moonlight-linear-segment.role-system {
+  background: color-mix(in srgb, var(--info-text) 22%, var(--primary-bg));
+}
+
+.moonlight-linear-segment.role-user {
+  background: color-mix(in srgb, var(--success-text) 22%, var(--primary-bg));
+}
+
+.moonlight-linear-segment.role-assistant {
+  background: color-mix(in srgb, var(--highlight-text) 18%, var(--primary-bg));
+}
+
+.moonlight-linear-segment.role-tool {
+  background: color-mix(in srgb, var(--warning-text) 24%, var(--primary-bg));
+}
+
+.moonlight-linear-heat {
+  position: absolute;
+  inset: 0;
+  background: var(--highlight-text);
+  opacity: var(--segment-alpha);
+}
+
+.moonlight-linear-segment.role-system .moonlight-linear-heat {
+  background: var(--info-text);
+}
+
+.moonlight-linear-segment.role-user .moonlight-linear-heat {
+  background: var(--success-text);
+}
+
+.moonlight-linear-segment.role-assistant .moonlight-linear-heat {
+  background: var(--highlight-text);
+}
+
+.moonlight-linear-segment.role-tool .moonlight-linear-heat {
+  background: var(--warning-text);
+}
+
+.moonlight-linear-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.moonlight-linear-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.moonlight-linear-legend i {
+  width: 12px;
+  height: 8px;
+  border-radius: var(--radius-sm);
+  display: inline-block;
+}
+
+.legend-system {
+  background: var(--info-text);
+}
+
+.legend-user {
+  background: var(--success-text);
+}
+
+.legend-assistant {
+  background: var(--highlight-text);
+}
+
+.legend-tool {
+  background: var(--warning-text);
+}
+
+.legend-peak {
+  background: var(--danger-text, #ff5c7a);
+}
+
+.legend-valley {
+  background: var(--secondary-text);
+}
+
+.moonlight-curve-card {
+  position: relative;
+  height: 220px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--highlight-bg) 14%, transparent), transparent),
+    var(--tertiary-bg);
+  color: var(--highlight-text);
+}
+
+.moonlight-curve-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.moonlight-curve-axis,
+.moonlight-curve-guide {
+  stroke: color-mix(in srgb, var(--secondary-text) 28%, transparent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.moonlight-curve-guide {
+  stroke-dasharray: 6 8;
+}
+
+.moonlight-curve-guide.strong {
+  stroke: color-mix(in srgb, var(--highlight-text) 42%, transparent);
+}
+
+.moonlight-curve-fill {
+  fill: url(#moonlightCurveFill);
+  color: var(--highlight-text);
+  pointer-events: none;
+}
+
+.moonlight-curve-line {
+  fill: none;
+  stroke: var(--highlight-text);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--highlight-text) 45%, transparent));
+  pointer-events: none;
+}
+
+.moonlight-curve-point {
+  --point-x: 0%;
+  --point-y: 100%;
+  --point-size: 8px;
+  position: absolute;
+  left: var(--point-x);
+  top: calc(30px + (var(--point-y) * 1.6));
+  width: var(--point-size);
+  height: var(--point-size);
+  padding: 0;
+  border: 2px solid var(--primary-bg);
+  border-radius: var(--radius-full);
+  background: var(--highlight-text);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--highlight-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--highlight-text) 38%, transparent);
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+}
+
+.moonlight-curve-point.role-system {
+  background: var(--info-text);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--info-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--info-text) 38%, transparent);
+}
+
+.moonlight-curve-point.role-user {
+  background: var(--success-text);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--success-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--success-text) 38%, transparent);
+}
+
+.moonlight-curve-point.role-assistant {
+  background: var(--highlight-text);
+}
+
+.moonlight-curve-point.role-tool {
+  background: var(--warning-text);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--warning-text) 38%, transparent);
+}
+
+.moonlight-curve-point.peak {
+  border-color: var(--danger-text, #ff5c7a);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger-text, #ff5c7a) 72%, transparent), 0 0 14px color-mix(in srgb, var(--danger-text, #ff5c7a) 55%, transparent);
+}
+
+.moonlight-curve-point.valley {
+  opacity: 0.78;
+  border-color: var(--secondary-text);
+}
+
+.moonlight-curve-point-label {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 5px);
+  transform: translateX(-50%);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary-bg) 86%, transparent);
+  color: var(--primary-text);
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.moonlight-curve-point:hover .moonlight-curve-point-label,
+.moonlight-curve-point.peak .moonlight-curve-point-label,
+.moonlight-curve-point.valley .moonlight-curve-point-label {
+  opacity: 1;
 }
 
 .moonlight-bars {

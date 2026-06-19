@@ -59,6 +59,37 @@ export interface MoonlightDomainSummary {
   matchedBlockCount: number
 }
 
+export interface MoonlightLinearSegment {
+  blockIndex: number
+  role: MoonlightRole
+  displayRole: MoonlightRole
+  startRatio: number
+  endRatio: number
+  widthRatio: number
+  rawScore: number
+  weightedScore: number
+  normalizedWeightedScore: number
+  sanitizedLength: number
+  matchedTermCount: number
+  textPreview: string
+}
+
+export interface MoonlightCurvePoint {
+  blockIndex: number
+  role: MoonlightRole
+  displayRole: MoonlightRole
+  x: number
+  y: number
+  normalizedWeightedScore: number
+  weightedScore: number
+  rawScore: number
+  matchedTermCount: number
+  sanitizedLength: number
+  isPeak: boolean
+  isValley: boolean
+  textPreview: string
+}
+
 export interface MoonlightReport {
   selectedBlockIndex: number
   selectedTextPreview: string
@@ -84,6 +115,8 @@ export interface MoonlightReport {
   }
   scores: MoonlightBlockScore[]
   systemScores: MoonlightBlockScore[]
+  linearSegments: MoonlightLinearSegment[]
+  curvePoints: MoonlightCurvePoint[]
   domainSummary: Record<string, MoonlightDomainSummary>
   metrics: {
     coverage: number
@@ -424,6 +457,8 @@ export function runMoonlightAnalysis(
 
   normalizeScores(scores)
   const systemScores = scores.filter((score) => score.displayRole === 'system')
+  const linearSegments = buildLinearSegments(indexedBlocks, scores)
+  const curvePoints = buildCurvePoints(linearSegments)
   const domainSummary = summarizeDomains(scores)
   const metrics = computeMetrics(scores, selectedBlock, retainedQueryTerms, systemScores)
   const labels = buildLabels(metrics, selectedBlock, scores)
@@ -458,6 +493,8 @@ export function runMoonlightAnalysis(
     },
     scores: scores.sort((a, b) => a.blockIndex - b.blockIndex),
     systemScores,
+    linearSegments,
+    curvePoints,
     domainSummary,
     metrics,
     labels,
@@ -587,6 +624,73 @@ function normalizeScores(scores: MoonlightBlockScore[]): void {
     score.normalizedScore = maxRaw > 0 ? score.rawScore / maxRaw : 0
     score.normalizedWeightedScore = maxWeighted > 0 ? score.weightedScore / maxWeighted : 0
   }
+}
+
+function buildLinearSegments(
+  indexedBlocks: MoonlightIndexedBlock[],
+  scores: MoonlightBlockScore[]
+): MoonlightLinearSegment[] {
+  const scoreMap = new Map(scores.map((score) => [score.blockIndex, score]))
+  const totalLength = indexedBlocks.reduce((sum, block) => sum + Math.max(1, block.sanitizedText.length), 0)
+  let cursor = 0
+
+  return indexedBlocks.map((block) => {
+    const length = Math.max(1, block.sanitizedText.length)
+    const startRatio = totalLength > 0 ? cursor / totalLength : 0
+    cursor += length
+    const endRatio = totalLength > 0 ? cursor / totalLength : 1
+    const score = scoreMap.get(block.index)
+
+    return {
+      blockIndex: block.index,
+      role: block.role,
+      displayRole: block.displayRole,
+      startRatio,
+      endRatio,
+      widthRatio: Math.max(0.002, endRatio - startRatio),
+      rawScore: score?.rawScore ?? 0,
+      weightedScore: score?.weightedScore ?? 0,
+      normalizedWeightedScore: score?.normalizedWeightedScore ?? 0,
+      sanitizedLength: block.sanitizedText.length,
+      matchedTermCount: score?.matchedTermCount ?? 0,
+      textPreview: createPreview(block.sanitizedText),
+    }
+  })
+}
+
+function buildCurvePoints(segments: MoonlightLinearSegment[]): MoonlightCurvePoint[] {
+  const points = segments.map((segment) => ({
+    blockIndex: segment.blockIndex,
+    role: segment.role,
+    displayRole: segment.displayRole,
+    x: clamp01((segment.startRatio + segment.endRatio) / 2),
+    y: clamp01(segment.normalizedWeightedScore),
+    normalizedWeightedScore: segment.normalizedWeightedScore,
+    weightedScore: segment.weightedScore,
+    rawScore: segment.rawScore,
+    matchedTermCount: segment.matchedTermCount,
+    sanitizedLength: segment.sanitizedLength,
+    isPeak: false,
+    isValley: false,
+    textPreview: segment.textPreview,
+  }))
+
+  for (let index = 0; index < points.length; index += 1) {
+    const previous = points[index - 1]
+    const current = points[index]
+    const next = points[index + 1]
+    if (!previous || !next) continue
+
+    const isStrictPeak = current.y > previous.y && current.y >= next.y
+    const isStrictValley = current.y < previous.y && current.y <= next.y
+    const hasMeaningfulPeak = current.y >= 0.12 && (current.y - Math.max(previous.y, next.y)) >= 0.04
+    const hasMeaningfulValley = Math.max(previous.y, next.y) >= 0.18 && (Math.min(previous.y, next.y) - current.y) >= 0.04
+
+    current.isPeak = isStrictPeak && hasMeaningfulPeak
+    current.isValley = isStrictValley && hasMeaningfulValley
+  }
+
+  return points
 }
 
 function summarizeDomains(scores: MoonlightBlockScore[]): Record<string, MoonlightDomainSummary> {
