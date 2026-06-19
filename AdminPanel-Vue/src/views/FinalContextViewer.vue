@@ -192,6 +192,17 @@
                   </span>
                 </div>
                 <button
+                  v-if="displayRole(block) === 'assistant'"
+                  type="button"
+                  class="moonlight-run-button"
+                  title="以本 AI 块为 query，运行池月1号上下文分布验证"
+                  aria-label="池月1号算法验证"
+                  @click="runMoonlightForBlock(block)"
+                >
+                  <span class="material-symbols-outlined">monitoring</span>
+                  池月1号
+                </button>
+                <button
                   type="button"
                   class="block-copy-button"
                   title="复制本块"
@@ -226,6 +237,167 @@
           </article>
         </main>
       </template>
+    </div>
+
+    <div v-if="showMoonlightModal && moonlightReport" class="modal-backdrop" @click.self="closeMoonlightModal">
+      <section class="moonlight-modal" role="dialog" aria-modal="true" aria-labelledby="moonlight-report-title">
+        <header class="modal-header moonlight-modal-header">
+          <div class="moonlight-title">
+            <span class="material-symbols-outlined">monitoring</span>
+            <div>
+              <h3 id="moonlight-report-title">池月1号算法验证：#{{ moonlightReport.selectedBlockIndex }}</h3>
+              <p>基于选中 AI 块之前的上下文，统计词项证据分布与 system 提示词材料关联；此处为外部可观测代理，不等同模型内部注意力。</p>
+            </div>
+          </div>
+          <div class="moonlight-modal-actions">
+            <button type="button" class="btn-secondary" @click="copyMoonlightReportJson">
+              复制 JSON
+            </button>
+            <button type="button" class="btn-secondary" @click="copyMoonlightReportMarkdown">
+              复制 MD
+            </button>
+            <button type="button" class="icon-button" aria-label="关闭" @click="closeMoonlightModal">
+              <span class="material-symbols-outlined">close</span>
+            </button>
+          </div>
+        </header>
+
+        <div class="moonlight-modal-body">
+          <section class="moonlight-metrics">
+            <div class="moonlight-metric">
+              <span>上下文注意力代理</span>
+              <strong>{{ formatPercent(moonlightReport.metrics.contextAttentionProxy) }}</strong>
+            </div>
+            <div class="moonlight-metric">
+              <span>System遵循代理</span>
+              <strong>{{ formatPercent(moonlightReport.metrics.systemAdherenceProxy) }}</strong>
+            </div>
+            <div class="moonlight-metric warning">
+              <span>自激回声风险</span>
+              <strong>{{ formatPercent(moonlightReport.metrics.selfEchoRisk) }}</strong>
+            </div>
+            <div class="moonlight-metric warning">
+              <span>空洞总结风险</span>
+              <strong>{{ formatPercent(moonlightReport.metrics.hollowSummaryRisk) }}</strong>
+            </div>
+            <div class="moonlight-metric">
+              <span>覆盖率</span>
+              <strong>{{ formatPercent(moonlightReport.metrics.coverage) }}</strong>
+            </div>
+            <div class="moonlight-metric">
+              <span>最大空洞</span>
+              <strong>{{ moonlightReport.metrics.gapMax }} 块</strong>
+            </div>
+            <div class="moonlight-metric">
+              <span>外部证据占比</span>
+              <strong>{{ formatPercent(moonlightReport.metrics.externalSupportRatio) }}</strong>
+            </div>
+            <div class="moonlight-metric">
+              <span>System占比</span>
+              <strong>{{ formatPercent(moonlightReport.metrics.systemSupportRatio) }}</strong>
+            </div>
+          </section>
+
+          <div class="moonlight-labels">
+            <span v-for="label in moonlightReport.labels" :key="label" class="moonlight-label">
+              {{ label }}
+            </span>
+          </div>
+
+          <section class="moonlight-config">
+            <label>
+              <span>移除最高频词</span>
+              <input v-model.number="moonlightOptions.topStopwordCount" type="number" min="0" max="200" step="1" />
+            </label>
+            <label>
+              <span>最小词长</span>
+              <input v-model.number="moonlightOptions.minTermLength" type="number" min="1" max="8" step="1" />
+            </label>
+            <label>
+              <input v-model="moonlightOptions.useCharBigrams" type="checkbox" />
+              <span>中文2-gram</span>
+            </label>
+            <label>
+              <input v-model="moonlightOptions.useCharTrigrams" type="checkbox" />
+              <span>中文3-gram</span>
+            </label>
+            <button type="button" class="btn-secondary" @click="rerunMoonlightWithCurrentOptions">
+              应用配置重算
+            </button>
+          </section>
+
+          <section class="moonlight-spectrum" aria-label="全上下文证据分布光谱">
+            <div class="moonlight-section-title">
+              <strong>全上下文块级光谱</strong>
+              <small>柱高为加权 BM25；颜色继承块角色。点击柱可跳转到对应上下文块并关闭模态窗。</small>
+            </div>
+            <div class="moonlight-bars">
+              <button
+                v-for="score in moonlightReport.scores"
+                :key="`moonlight-score-${score.blockIndex}`"
+                type="button"
+                class="moonlight-bar"
+                :class="roleClass(score.displayRole)"
+                :title="moonlightScoreTitle(score)"
+                :style="{ '--bar-height': `${Math.max(4, Math.round(score.normalizedWeightedScore * 100))}%` }"
+                @click="jumpFromMoonlightModal(score.blockIndex)"
+              >
+                <span class="moonlight-bar-fill"></span>
+                <span class="moonlight-bar-label">#{{ score.blockIndex }}</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="moonlight-spectrum" aria-label="System 提示词材料关联光谱">
+            <div class="moonlight-section-title">
+              <strong>System 提示词关联</strong>
+              <small>只展示 system 块命中，用于验证 AI 输出与系统提示词材料/术语的可观测关联。</small>
+            </div>
+            <div v-if="moonlightReport.systemScores.length > 0" class="moonlight-bars compact">
+              <button
+                v-for="score in moonlightReport.systemScores"
+                :key="`moonlight-system-${score.blockIndex}`"
+                type="button"
+                class="moonlight-bar role-system"
+                :title="moonlightScoreTitle(score)"
+                :style="{ '--bar-height': `${Math.max(4, Math.round(score.normalizedWeightedScore * 100))}%` }"
+                @click="jumpFromMoonlightModal(score.blockIndex)"
+              >
+                <span class="moonlight-bar-fill"></span>
+                <span class="moonlight-bar-label">#{{ score.blockIndex }}</span>
+              </button>
+            </div>
+            <p v-else class="moonlight-empty-line">此前上下文中没有可索引的 system 块。</p>
+          </section>
+
+          <section class="moonlight-term-grid">
+            <div>
+              <strong>保留高贡献词</strong>
+              <span v-for="term in moonlightReport.query.topQueryTerms.slice(0, 24)" :key="`top-${term.term}`" class="term-chip">
+                {{ term.term }} · idf {{ term.idf.toFixed(2) }}
+              </span>
+            </div>
+            <div>
+              <strong>被移除高频词</strong>
+              <span v-for="term in moonlightReport.query.removedHighFrequencyTerms.slice(0, 24)" :key="`removed-${term.term}`" class="term-chip muted">
+                {{ term.term }} · {{ term.corpusFrequency }}
+              </span>
+            </div>
+            <div>
+              <strong>数字/版本/标识符</strong>
+              <span v-for="term in moonlightSpecialTerms" :key="`special-${term.term}`" class="term-chip info">
+                {{ term.term }} · df {{ term.documentFrequency }}
+              </span>
+            </div>
+            <div>
+              <strong>零命中具体词</strong>
+              <span v-for="term in moonlightReport.query.zeroHitTerms.slice(0, 24)" :key="`zero-${term.term}`" class="term-chip danger">
+                {{ term.term }}
+              </span>
+            </div>
+          </section>
+        </div>
+      </section>
     </div>
 
     <div v-if="showOneRingConfigModal" class="modal-backdrop" @click.self="closeOneRingConfigModal">
@@ -286,10 +458,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, type ComponentPublicInstance } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, type ComponentPublicInstance } from 'vue'
 import { systemApi } from '@/api'
 import type { FinalContextBlockSummary, FinalContextListItem, FinalContextSnapshot, OneRingConfig } from '@/types/api.system'
 import { copyToClipboard, showMessage } from '@/utils'
+import {
+  getDefaultMoonlightOptions,
+  runMoonlightAnalysis,
+  type MoonlightBlockScore,
+  type MoonlightReport,
+  type MoonlightTermStat,
+} from '@/utils/moonlight'
 
 const snapshot = ref<FinalContextSnapshot | null>(null)
 const emptyMessage = ref('尚未捕获任何最终上下文。请先发起一次聊天请求。')
@@ -312,6 +491,10 @@ const showOneRingConfigModal = ref(false)
 const isOneRingConfigLoading = ref(false)
 const isOneRingConfigSaving = ref(false)
 const oneRingConfigDraft = ref<OneRingConfig>({ ...defaultOneRingConfig })
+const moonlightOptions = reactive(getDefaultMoonlightOptions())
+const moonlightReport = ref<MoonlightReport | null>(null)
+const showMoonlightModal = ref(false)
+const moonlightSelectedBlock = ref<FinalContextBlockSummary | null>(null)
 
 const blocks = computed(() => snapshot.value?.summary.blocks ?? [])
 const visibleBlocks = computed(() => blocks.value.filter((block) => !isDetachedAssistantOneRingMarker(block)))
@@ -385,6 +568,19 @@ const oneRingSourcesSummary = computed(() => {
     .join(' / ')
 })
 
+const moonlightSpecialTerms = computed<MoonlightTermStat[]>(() => {
+  if (!moonlightReport.value) return []
+  const seen = new Set<string>()
+  return [
+    ...moonlightReport.value.query.numericTerms,
+    ...moonlightReport.value.query.identifierTerms,
+  ].filter((term) => {
+    if (seen.has(term.term)) return false
+    seen.add(term.term)
+    return true
+  }).slice(0, 20)
+})
+
 const normalizedSearch = computed(() => searchText.value.trim().toLowerCase())
 
 const matchedBlocks = computed(() => {
@@ -445,6 +641,118 @@ async function loadSnapshot(targetId?: number | null) {
   } finally {
     isLoading.value = false
   }
+}
+
+function runMoonlightForBlock(block: FinalContextBlockSummary) {
+  if (displayRole(block) !== 'assistant') {
+    showMessage('池月1号第一期仅支持选择 AI/Assistant 块作为验证对象', 'error')
+    return
+  }
+
+  try {
+    moonlightSelectedBlock.value = block
+    moonlightReport.value = runMoonlightAnalysis(
+      blocks.value,
+      block,
+      { ...moonlightOptions },
+      displayRole
+    )
+    showMoonlightModal.value = true
+    activeBlockIndex.value = block.index
+    showMessage(`池月1号已完成 #${block.index} 的上下文分布验证`, 'success')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    showMessage(`池月1号验证失败：${message}`, 'error')
+  }
+}
+
+function closeMoonlightModal() {
+  showMoonlightModal.value = false
+}
+
+function rerunMoonlightWithCurrentOptions() {
+  if (!moonlightSelectedBlock.value) return
+  runMoonlightForBlock(moonlightSelectedBlock.value)
+}
+
+function jumpFromMoonlightModal(index: number) {
+  closeMoonlightModal()
+  void nextTick(() => scrollToBlock(index))
+}
+
+async function copyMoonlightReportJson() {
+  if (!moonlightReport.value) return
+  const success = await copyToClipboard(JSON.stringify(moonlightReport.value, null, 2))
+  showMessage(success ? '池月报告 JSON 已复制' : '复制 JSON 失败', success ? 'success' : 'error')
+}
+
+async function copyMoonlightReportMarkdown() {
+  if (!moonlightReport.value) return
+  const success = await copyToClipboard(formatMoonlightReportAsMarkdown(moonlightReport.value))
+  showMessage(success ? '池月报告 Markdown 已复制' : '复制 Markdown 失败', success ? 'success' : 'error')
+}
+
+function formatMoonlightReportAsMarkdown(report: MoonlightReport): string {
+  const topScores = report.scores
+    .filter((score) => score.rawScore > 0)
+    .sort((a, b) => b.weightedScore - a.weightedScore)
+    .slice(0, 12)
+
+  return [
+    `# 池月1号算法验证报告 #${report.selectedBlockIndex}`,
+    '',
+    '> 说明：本报告为基于可观测上下文文本的词项证据分布统计，不等同模型内部真实注意力。',
+    '',
+    '## 核心指标',
+    '',
+    `- 上下文注意力代理：${formatPercent(report.metrics.contextAttentionProxy)}`,
+    `- System遵循代理：${formatPercent(report.metrics.systemAdherenceProxy)}`,
+    `- 自激回声风险：${formatPercent(report.metrics.selfEchoRisk)}`,
+    `- 空洞总结风险：${formatPercent(report.metrics.hollowSummaryRisk)}`,
+    `- 覆盖率：${formatPercent(report.metrics.coverage)}`,
+    `- 最大空洞：${report.metrics.gapMax} 块`,
+    `- 外部证据占比：${formatPercent(report.metrics.externalSupportRatio)}`,
+    `- System占比：${formatPercent(report.metrics.systemSupportRatio)}`,
+    '',
+    '## 诊断标签',
+    '',
+    ...report.labels.map((label) => `- ${label}`),
+    '',
+    '## Query 统计',
+    '',
+    `- 原始长度：${report.query.rawLength}`,
+    `- 净化后长度：${report.query.sanitizedLength}`,
+    `- 原始词项数：${report.query.rawTermCount}`,
+    `- 保留词项数：${report.query.retainedTermCount}`,
+    `- 唯一保留词项数：${report.query.uniqueRetainedTermCount}`,
+    '',
+    '## Top 命中块',
+    '',
+    '| Block | Role | Raw | Weighted | 命中词 |',
+    '|---:|---|---:|---:|---|',
+    ...topScores.map((score) => `| #${score.blockIndex} | ${score.displayRole} | ${score.rawScore.toFixed(2)} | ${score.weightedScore.toFixed(2)} | ${score.matchedTerms.slice(0, 8).map((term) => term.term).join(' / ')} |`),
+    '',
+    '## 保留高贡献词',
+    '',
+    report.query.topQueryTerms.slice(0, 32).map((term) => `\`${term.term}\`(${term.idf.toFixed(2)})`).join(' '),
+    '',
+    '## 被移除高频词',
+    '',
+    report.query.removedHighFrequencyTerms.slice(0, 32).map((term) => `\`${term.term}\`(${term.corpusFrequency})`).join(' '),
+    '',
+    '## 零命中具体词',
+    '',
+    report.query.zeroHitTerms.slice(0, 32).map((term) => `\`${term.term}\``).join(' '),
+  ].join('\n')
+}
+
+function formatPercent(value: number | undefined): string {
+  return `${Math.round(Number(value || 0) * 100)}%`
+}
+
+function moonlightScoreTitle(score: MoonlightBlockScore): string {
+  const terms = score.matchedTerms.slice(0, 8).map((term) => term.term).join(' / ') || '无命中词'
+  return `#${score.blockIndex} ${normalizeRoleLabel(score.displayRole)}｜raw ${score.rawScore.toFixed(2)}｜weighted ${score.weightedScore.toFixed(2)}｜命中 ${score.matchedTermCount}｜${terms}`
 }
 
 async function refreshList() {
@@ -939,6 +1247,312 @@ onMounted(() => {
   font-size: var(--font-size-helper);
 }
 
+.moonlight-modal {
+  position: relative;
+  z-index: 10001;
+  width: min(1180px, calc(100vw - 24px));
+  max-height: calc(var(--app-viewport-height, 100vh) - 96px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--secondary-bg);
+  box-shadow: var(--shadow-lg);
+}
+
+.moonlight-modal-header {
+  flex: 0 0 auto;
+}
+
+.moonlight-title {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.moonlight-title .material-symbols-outlined {
+  margin-top: 2px;
+  color: var(--highlight-text);
+}
+
+.moonlight-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.moonlight-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 14px 16px 18px;
+  overflow: auto;
+}
+
+.moonlight-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 55%, var(--border-color));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--highlight-bg) 18%, var(--secondary-bg)), var(--secondary-bg));
+}
+
+.moonlight-header,
+.moonlight-header > div,
+.moonlight-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.moonlight-header > div {
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+
+.moonlight-header .material-symbols-outlined {
+  color: var(--highlight-text);
+}
+
+.moonlight-header strong,
+.moonlight-section-title strong,
+.moonlight-term-grid strong {
+  color: var(--primary-text);
+}
+
+.moonlight-header small,
+.moonlight-section-title small,
+.moonlight-empty-line {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.moonlight-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.moonlight-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--primary-bg);
+}
+
+.moonlight-metric span {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.moonlight-metric strong {
+  color: var(--highlight-text);
+  font-size: 1.15em;
+}
+
+.moonlight-metric.warning strong {
+  color: var(--warning-text);
+}
+
+.moonlight-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.moonlight-label,
+.term-chip {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 45%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-bg) 35%, var(--tertiary-bg));
+  color: var(--highlight-text);
+  font-size: var(--font-size-helper);
+  word-break: break-all;
+}
+
+.moonlight-config {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--primary-bg);
+}
+
+.moonlight-config label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.moonlight-config input[type="number"] {
+  width: 72px;
+  padding: 5px 7px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--primary-text);
+}
+
+.moonlight-spectrum {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--primary-bg);
+}
+
+.moonlight-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  min-height: 130px;
+  overflow-x: auto;
+  padding: 8px 4px 2px;
+}
+
+.moonlight-bars.compact {
+  min-height: 92px;
+}
+
+.moonlight-bar {
+  --bar-height: 4%;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 112px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--tertiary-bg);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.moonlight-bars.compact .moonlight-bar {
+  height: 76px;
+}
+
+.moonlight-bar-fill {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: var(--bar-height);
+  background: var(--highlight-text);
+  opacity: 0.78;
+}
+
+.moonlight-bar.role-system .moonlight-bar-fill {
+  background: var(--info-text);
+}
+
+.moonlight-bar.role-user .moonlight-bar-fill {
+  background: var(--success-text);
+}
+
+.moonlight-bar.role-assistant .moonlight-bar-fill {
+  background: var(--highlight-text);
+}
+
+.moonlight-bar.role-tool .moonlight-bar-fill {
+  background: var(--warning-text);
+}
+
+.moonlight-bar-label {
+  position: relative;
+  z-index: 1;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  color: var(--primary-text);
+  font-size: 10px;
+  line-height: 1;
+  text-shadow: 0 1px 2px var(--primary-bg);
+}
+
+.moonlight-term-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  gap: var(--space-3);
+}
+
+.moonlight-term-grid > div {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  align-content: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--primary-bg);
+}
+
+.moonlight-term-grid > div strong {
+  flex: 0 0 100%;
+}
+
+.term-chip.muted {
+  color: var(--secondary-text);
+  border-color: var(--border-color);
+  background: var(--tertiary-bg);
+}
+
+.term-chip.info {
+  color: var(--info-text);
+  border-color: var(--info-text);
+  background: var(--info-bg);
+}
+
+.term-chip.danger {
+  color: var(--warning-text);
+  border-color: var(--warning-text);
+  background: var(--warning-bg);
+}
+
+.moonlight-run-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 55%, var(--border-color));
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--highlight-bg) 35%, var(--secondary-bg));
+  color: var(--highlight-text);
+  cursor: pointer;
+  font-size: var(--font-size-helper);
+  font-weight: 700;
+}
+
+.moonlight-run-button .material-symbols-outlined {
+  font-size: 17px !important;
+}
+
 .summary-card {
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));
@@ -1318,15 +1932,19 @@ onMounted(() => {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 10000;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: var(--space-4);
+  box-sizing: border-box;
+  padding: 72px 12px 12px;
   background: rgba(0, 0, 0, 0.5);
+  overflow: hidden;
 }
 
 .onering-modal {
+  position: relative;
+  z-index: 10001;
   width: min(620px, 100%);
   max-height: calc(100vh - 48px);
   overflow: auto;
@@ -1461,6 +2079,8 @@ onMounted(() => {
     align-items: stretch;
   }
 
+  .moonlight-metrics,
+  .moonlight-term-grid,
   .summary-card {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
   }
@@ -1472,6 +2092,21 @@ onMounted(() => {
 }
 
 @media (max-width: 560px) {
+  .modal-backdrop {
+    padding: 64px 8px 8px;
+  }
+
+  .moonlight-modal {
+    width: calc(100vw - 16px);
+    max-height: calc(var(--app-viewport-height, 100vh) - 80px);
+  }
+
+  .moonlight-modal-body {
+    padding: 10px;
+  }
+
+  .moonlight-term-grid,
+  .moonlight-metrics,
   .summary-card {
     grid-template-columns: 1fr;
   }
