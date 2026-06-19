@@ -39,7 +39,11 @@ class StreamHandler {
       fetchWithRetry,
       vcpToolUseForbidden,
       semanticModelFallbackCandidates,
-      oneRingResponseMeta
+      oneRingResponseMeta,
+      shouldProcessMedia,
+      shouldProcessMediaPlus,
+      isTextOnlyForceTranslateModel,
+      requestPreprocessorConfig
     } = this.context;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || this.context.forceShowVCP;
@@ -52,6 +56,56 @@ class StreamHandler {
     let currentAIRawDataForDiary = '';
     let chatLogs = [];
     let oneRingAssistantTurnParts = [];
+
+    const containsImageUrlPart = (content) => Array.isArray(content) &&
+      content.some(part => part?.type === 'image_url' && part.image_url && typeof part.image_url.url === 'string');
+
+    const maybeTranslateToolPayloadMedia = async (content) => {
+      if (!containsImageUrlPart(content)) return content;
+
+      const shouldTranslateToolMedia = shouldProcessMedia || isTextOnlyForceTranslateModel;
+      if (!shouldTranslateToolMedia) return content;
+
+      const processorName = pluginManager.messagePreprocessors.has('MultiModalProcessor')
+        ? 'MultiModalProcessor'
+        : 'ImageProcessor';
+      if (!pluginManager.messagePreprocessors.has(processorName)) {
+        if (DEBUG_MODE) console.warn(`[VCP Stream Loop] Tool payload contains image_url, but ${processorName} is unavailable. Forwarding original payload.`);
+        return content;
+      }
+
+      const originalImageParts = content.filter(part => part?.type === 'image_url' && part.image_url && typeof part.image_url.url === 'string');
+      const payloadMessage = { role: 'user', content: JSON.parse(JSON.stringify(content)) };
+
+      if (DEBUG_MODE) {
+        console.log(`[VCP Stream Loop] Translating tool-returned image_url content via ${processorName}. textOnly=${!!isTextOnlyForceTranslateModel}, plus=${!!shouldProcessMediaPlus}`);
+      }
+
+      let translatedMessages;
+      try {
+        translatedMessages = await pluginManager.executeMessagePreprocessor(
+          processorName,
+          [payloadMessage],
+          requestPreprocessorConfig || {}
+        );
+      } catch (pluginError) {
+        console.error(`[VCP Stream Loop] Error translating tool-returned media via ${processorName}:`, pluginError);
+        return content;
+      }
+
+      const translatedContent = translatedMessages?.[0]?.content;
+      if (!Array.isArray(translatedContent)) return content;
+
+      if (shouldProcessMediaPlus && !isTextOnlyForceTranslateModel) {
+        const translatedWithoutImages = translatedContent.filter(part => part?.type !== 'image_url');
+        return [
+          ...translatedWithoutImages,
+          ...JSON.parse(JSON.stringify(originalImageParts))
+        ];
+      }
+
+      return translatedContent;
+    };
 
     const recordOneRingAIResponse = (aiText, phaseLabel) => {
       const oneRingModule = pluginManager?.messagePreprocessors?.get?.('OneRing');
@@ -496,8 +550,14 @@ class StreamHandler {
       }
 
       const hasImage = combinedToolResultsForAI.some(item => item.type === 'image_url');
+      const translatedToolResultsForAI = hasImage
+        ? await maybeTranslateToolPayloadMedia([
+          { type: 'text', text: `<!-- VCP_TOOL_PAYLOAD -->\nResults:` },
+          ...combinedToolResultsForAI
+        ])
+        : null;
       const finalToolPayloadForAI = hasImage
-        ? [{ type: 'text', text: `<!-- VCP_TOOL_PAYLOAD -->\nResults:` }, ...combinedToolResultsForAI]
+        ? translatedToolResultsForAI
         : `<!-- VCP_TOOL_PAYLOAD -->\n${toolResultsTextForRAG}`;
 
       currentMessagesForLoop.push({ role: 'user', content: finalToolPayloadForAI });

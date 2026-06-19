@@ -950,11 +950,13 @@ class ChatCompletionHandler {
       // MultiModalForceTranslateModels 列表（不区分大小写、tag 子串匹配）时：
       // 1) 自动开启多模态翻译（无视用户是否配置 {{TransBase64}}/{{TransBase64+}}）
       // 2) 强制关闭 + 模式的 base64 还原（因为目标模型是纯文本模型，无法处理 base64）
-      // 3) 仅在消息确实含有 base64 多模态时触发，避免空转翻译插件
-      if (
-        Array.isArray(multiModalForceTranslateModels) &&
+      // 3) 初始请求仍仅在消息确实含有 base64 多模态时执行翻译，避免空转翻译插件
+      // 4) 该标记也会传递给 VCP loop，用于工具回包后才出现 image_url 的情况
+      const isTextOnlyForceTranslateModel = Array.isArray(multiModalForceTranslateModels) &&
         multiModalForceTranslateModels.length > 0 &&
-        isTextOnlyModelByTag(originalBody.model, multiModalForceTranslateModels) &&
+        isTextOnlyModelByTag(originalBody.model, multiModalForceTranslateModels);
+      if (
+        isTextOnlyForceTranslateModel &&
         messagesContainBase64Media(tavernProcessedMessages)
       ) {
         const previousMode = shouldProcessMediaPlus ? 'TransBase64+' : (shouldProcessMedia ? 'TransBase64' : 'none');
@@ -1276,7 +1278,11 @@ class ChatCompletionHandler {
         formatToolResult,
         vcpToolUseForbidden,
         semanticModelFallbackCandidates,
-        oneRingResponseMeta
+        oneRingResponseMeta,
+        shouldProcessMedia,
+        shouldProcessMediaPlus,
+        isTextOnlyForceTranslateModel,
+        requestPreprocessorConfig
       };
 
       if (isUpstreamStreaming) {
