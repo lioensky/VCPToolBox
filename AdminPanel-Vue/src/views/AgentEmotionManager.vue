@@ -181,9 +181,14 @@
               <span class="material-symbols-outlined">auto_awesome</span>
               最近二级残差
             </div>
-            <div class="expression-card">
-              <div v-for="item in subAxisItems" :key="`${item.axis}-${item.subAxis}`" class="sub-axis-row">
-                <span>{{ item.axisLabel }} / {{ item.subAxis }}</span>
+            <div class="sub-axis-grid">
+              <div
+                v-for="item in subAxisItems"
+                :key="`${item.axis}-${item.subAxis}`"
+                class="sub-axis-card"
+                :style="{ '--residual-strength': item.weight }"
+              >
+                <span class="sub-axis-name">{{ item.axisLabel }} / {{ item.subAxisLabel }}</span>
                 <strong>{{ formatPercent(item.weight) }}</strong>
                 <small>相似度 {{ item.similarity.toFixed(4) }}</small>
               </div>
@@ -340,9 +345,63 @@ const SIGNAL_LABELS: Record<string, string> = {
 };
 
 const CONTEXT_LABELS: Record<string, string> = {
-  positive: "正性情绪",
-  negative: "负性情绪",
+  positive: "正性",
+  negative: "负性",
   arousal: "唤醒",
+};
+
+const SUB_AXIS_LABELS: Record<string, string> = {
+  feminine_self: "雌性",
+  masculine_self: "雄性",
+  fluid_self: "流动",
+  neutral_self: "中性",
+  logic: "逻辑",
+  learning: "学习",
+  exploration: "探索",
+  modeling: "建模",
+  causality: "因果",
+  dialectic: "辩证",
+  critique: "批判",
+  self_reflection: "自省",
+  credibility: "可信",
+  second_thought: "复思",
+  avoidance: "回避",
+  conservatism: "保守",
+  inertia: "惯性",
+  boundary: "边界",
+  resistance: "抗拒",
+  joy: "喜悦",
+  warmth: "温暖",
+  excitement: "兴奋",
+  trust: "信任",
+  satisfaction: "满足",
+  anxiety: "焦虑",
+  sadness: "低落",
+  irritation: "烦躁",
+  fear: "畏怯",
+  hurt: "受伤",
+  loneliness: "孤独",
+  activated: "激活",
+  restless: "躁动",
+  alert: "警觉",
+  calm: "平静",
+  unknown: "未知",
+  novelty: "新奇",
+  continuation: "延续",
+  try_it: "尝试",
+  rejection: "惧拒",
+  loss_control: "失序",
+  exposure: "暴露",
+  closeness: "贴近",
+  being_seen: "注视",
+  touch: "触碰",
+  possessiveness: "占有",
+  pleasing: "取悦",
+  comfort: "舒适",
+  rest: "休息",
+  laziness: "倦怠",
+  play: "玩乐",
+  indulgence: "放纵",
 };
 
 const status = ref<OpenHerPersonaAdminStatus | null>(null);
@@ -388,6 +447,7 @@ const subAxisItems = computed(() =>
         axis: axis.key,
         axisLabel: axis.label,
         subAxis,
+        subAxisLabel: SUB_AXIS_LABELS[subAxis] || subAxis,
         similarity: Number(score.similarity) || 0,
         weight: Number(score.weight) || 0,
       }))
@@ -921,10 +981,47 @@ onMounted(() => {
   background: linear-gradient(90deg, var(--success-color), var(--highlight-text));
 }
 
-.expression-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+.sub-axis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.sub-axis-card {
+  --residual-strength: 0.25;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px var(--space-2);
+  align-items: center;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 70%), var(--border-color));
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 26%), transparent), transparent 58%),
+    linear-gradient(135deg, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 14%), transparent), transparent),
+    var(--surface-overlay-soft);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 14%), transparent);
+}
+
+.sub-axis-card strong {
+  color: var(--highlight-text);
+  font-size: var(--font-size-emphasis);
+}
+
+.sub-axis-card small {
+  grid-column: 1 / -1;
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.sub-axis-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--primary-text);
+  font-size: var(--font-size-helper);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .expression-mode {
@@ -1157,6 +1254,7 @@ onMounted(() => {
   .signal-cloud,
   .config-grid,
   .context-grid,
+  .sub-axis-grid,
   .delta-grid {
     grid-template-columns: 1fr;
   }
