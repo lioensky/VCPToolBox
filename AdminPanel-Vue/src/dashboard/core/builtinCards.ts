@@ -1,12 +1,27 @@
 import type { BuiltinDashboardCardContribution } from "@/dashboard/core/types";
 import type { useDashboardState } from "@/composables/useDashboardState";
+import { discoveredCards } from "@/dashboard/core/builtinComponentMap";
 
 export type DashboardBuiltinState = ReturnType<typeof useDashboardState>;
 
+/**
+ * 仪表盘官方核心卡片 + 第三方贡献卡片合并入口。
+ *
+ * 两类卡片：
+ *   1) 官方核心卡（legacy 段）：依赖 `useDashboardState` 注入响应式数据，
+ *      在下方 `legacyCards` 数组里手动声明 buildProps；
+ *   2) 第三方贡献卡（auto 段）：放在 `components/dashboard/contrib/` 下，
+ *      自描述 `cardMeta` 元信息，并通过 `_sdk.ts` 自取数据。
+ *
+ * 自描述卡片由 [`builtinComponentMap.ts`](./builtinComponentMap.ts) 的
+ * `import.meta.glob` 自动发现，零配置即可纳入"管理卡片"目录。
+ *
+ * 详见：docs/DASHBOARD_CONTRIB_GUIDE.md
+ */
 export function getBuiltinDashboardCards(
   state: DashboardBuiltinState
 ): BuiltinDashboardCardContribution[] {
-  return [
+  const legacyCards: BuiltinDashboardCardContribution[] = [
     {
       typeId: "builtin.weather",
       title: "天气预报",
@@ -190,4 +205,46 @@ export function getBuiltinDashboardCards(
       },
     },
   ];
+
+  // ─── 自描述卡片（第三方贡献区 + 任何带有 cardMeta 的官方卡片）──────────
+  // 这些卡片不依赖 useDashboardState 注入，自行通过 contrib/_sdk.ts 取数。
+  const legacyComponentKeys = new Set(
+    legacyCards.map((card) => card.renderer.componentKey)
+  );
+
+  const autoCards: BuiltinDashboardCardContribution[] = discoveredCards
+    .filter((card) => {
+      // 必须有自描述 meta，并且没有被 legacy 段占用相同的 componentKey
+      if (!card.meta) {
+        return false;
+      }
+      if (legacyComponentKeys.has(card.componentKey)) {
+        // 同名时优先以 legacy 段为准（保持向下兼容）
+        return false;
+      }
+      return true;
+    })
+    .map((card) => {
+      const meta = card.meta!;
+      return {
+        typeId: meta.typeId,
+        title: meta.title,
+        description: meta.description,
+        source: "builtin",
+        singleton: meta.singleton ?? true,
+        defaultEnabled: meta.defaultEnabled ?? false,
+        legacyId: null,
+        defaultSize: meta.defaultSize,
+        minSize: meta.minSize,
+        maxSize: meta.maxSize,
+        renderer: {
+          kind: "builtin",
+          componentKey: card.componentKey,
+          // 第三方/自描述卡片自行管理状态，无需注入 props
+          buildProps: () => ({}),
+        },
+      } satisfies BuiltinDashboardCardContribution;
+    });
+
+  return [...legacyCards, ...autoCards];
 }
