@@ -205,7 +205,9 @@
           <div v-if="state.lastObservation" class="delta-grid">
             <div>
               <span>输入指纹</span>
-              <strong>{{ state.lastObservation.inputHash || "unknown" }}</strong>
+              <strong :title="state.lastObservation.inputHash || 'unknown'">
+                {{ formatFingerprint(state.lastObservation.inputHash) }}
+              </strong>
             </div>
             <div>
               <span>观测时间</span>
@@ -631,6 +633,13 @@ function relativeTime(value?: string | null): string {
 
 function initials(name: string): string {
   return (name || "?").trim().slice(0, 2).toUpperCase();
+}
+
+function formatFingerprint(value?: string | null): string {
+  const text = String(value || "").trim();
+  if (!text) return "unknown";
+  if (text.length <= 16) return text;
+  return `${text.slice(0, 8)}…${text.slice(-6)}`;
 }
 
 function moodColor(mood?: OpenHerPersonaMood): string {
