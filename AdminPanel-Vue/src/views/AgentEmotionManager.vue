@@ -4,17 +4,17 @@
       <div class="hero-copy">
         <span class="hero-kicker">
           <span class="material-symbols-outlined">favorite</span>
-          OpenHerPersona 情绪数据库
+          OpenHerPersona 轴体观测器
         </span>
-        <h2>Agent 情绪管理</h2>
+        <h2>Agent 心理轴体观测</h2>
         <p class="description">
-          可视化每个 Agent 的心境、驱力热度、人格信号、表达倾向与相变状态。数据来自 OpenHerPersona 的本地状态库。
+          可视化每个 Agent 的心理性别、知性轴、感性轴、驱力轴与二级向量残差。当前版本为纯异步观察器，不注入提示词。
         </p>
       </div>
       <div class="hero-actions">
         <button class="btn-secondary" :disabled="isConfigLoading" @click="openConfigModal">
           <span class="material-symbols-outlined">tune</span>
-          情绪配置
+          观测配置
         </button>
         <button class="btn-secondary" :disabled="isLoading" @click="refresh">
           <span class="material-symbols-outlined">refresh</span>
@@ -28,33 +28,33 @@
       <div class="overview-card card">
         <span class="overview-label">插件状态</span>
         <strong>{{ overview?.enabled ? "已启用" : "未启用" }}</strong>
-        <small>提示注入：{{ overview?.hintEnabled ? "开启" : "关闭" }} · 观察模式：{{ overview?.observeOnly ? "是" : "否" }}</small>
+        <small>提示注入：{{ overview?.boundaries?.noPromptInjection ? "已移除" : "未知" }} · 模式：纯异步观察</small>
       </div>
       <div class="overview-card card">
         <span class="overview-label">记录 Agent</span>
         <strong>{{ validAgents.length }}</strong>
-        <small>活跃：{{ overview?.activeAgent?.agentLabel || "无" }}</small>
+        <small>最近：{{ validAgents[0]?.summary.agentLabel || "无" }}</small>
       </div>
       <div class="overview-card card">
-        <span class="overview-label">语义上下文</span>
-        <strong>{{ overview?.semanticContext?.enabled ? "开启" : "关闭" }}</strong>
-        <small>权重 {{ formatPercent(overview?.semanticContext?.weight ?? 0) }} · {{ overview?.semanticContext?.provider || "unknown" }}</small>
+        <span class="overview-label">算法边界</span>
+        <strong>{{ overview?.boundaries?.noKeywordHeuristic ? "已重构" : "未知" }}</strong>
+        <small>无时间衰减 · 无关键词启发</small>
       </div>
       <div class="overview-card card">
-        <span class="overview-label">ContextBridge</span>
-        <strong>{{ overview?.contextBridgeAvailable ? "可用" : "不可用" }}</strong>
-        <small>锚点：{{ overview?.semanticContext?.anchorsReady ? "Ready" : "Pending" }}</small>
+        <span class="overview-label">存储形态</span>
+        <strong>SQLite 轴状态</strong>
+        <small>每 Agent 独立二级锚点</small>
       </div>
     </div>
 
     <div v-if="isLoading && validAgents.length === 0" class="empty-state card">
       <span class="loading-spinner loading-spinner--sm"></span>
-      <p>正在读取 Agent 情绪状态…</p>
+      <p>正在读取 Agent 轴体状态…</p>
     </div>
 
     <div v-else-if="validAgents.length === 0" class="empty-state card">
       <span class="material-symbols-outlined">sentiment_neutral</span>
-      <p>暂未记录任何 Agent 情绪状态。</p>
+      <p>暂未记录任何 Agent 轴体状态。</p>
       <small>当 OpenHerPersona 识别到 Agent 身份并处理对话后，这里会出现对应条目。</small>
     </div>
 
@@ -74,9 +74,9 @@
           <span class="agent-avatar">{{ initials(agent.summary.agentLabel) }}</span>
           <span class="agent-tab-main">
             <strong>{{ agent.summary.agentLabel }}</strong>
-            <small>{{ agent.summary.turnCount }} 轮 · {{ relativeTime(agent.summary.lastActiveAt || agent.summary.updatedAt) }}</small>
+            <small>{{ agent.summary.observationCount ?? agent.summary.turnCount ?? 0 }} 次观测 · {{ relativeTime(agent.summary.lastObservedAt || agent.summary.lastActiveAt || agent.summary.updatedAt) }}</small>
           </span>
-          <span class="mood-dot" :style="{ background: moodColor(agent.status?.state.mood) }"></span>
+          <span class="mood-dot" :style="{ background: moodColor(agent.status?.state?.mood) }"></span>
         </button>
       </aside>
 
@@ -85,38 +85,39 @@
           <div>
             <span class="hero-kicker">
               <span class="material-symbols-outlined">psychology_alt</span>
-              {{ state.phase.name }} · {{ state.expression.label }}
+              纯异步观察 · {{ state.mood.label }}
             </span>
             <h2>{{ state.agentLabel }}</h2>
             <p>{{ moodDescription }}</p>
           </div>
           <div class="mood-orb" :style="{ '--mood-color': moodColor(state.mood) }">
             <strong>{{ state.mood.label }}</strong>
-            <span>愉悦 {{ formatPercent(state.mood.valence) }}</span>
-            <span>激活 {{ formatPercent(state.mood.arousal) }}</span>
+            <span>正性 {{ formatPercent(state.mood.positive) }}</span>
+            <span>负性 {{ formatPercent(state.mood.negative) }}</span>
+            <span>唤醒 {{ formatPercent(state.mood.arousal) }}</span>
           </div>
         </div>
 
         <div class="metric-grid">
           <div class="metric-card card">
-            <span class="metric-label">对话轮次</span>
-            <strong>{{ state.turnCount }}</strong>
-            <small>最近活跃：{{ formatDate(state.lastActiveAt) }}</small>
+            <span class="metric-label">观测次数</span>
+            <strong>{{ state.observationCount }}</strong>
+            <small>最近观测：{{ formatDate(state.lastObservedAt) }}</small>
           </div>
           <div class="metric-card card">
-            <span class="metric-label">相变压力</span>
-            <strong>{{ formatPercent(state.phase.charge / 1.2) }}</strong>
-            <small>{{ phaseText }}</small>
+            <span class="metric-label">心理性别轴</span>
+            <strong>{{ formatPercent(state.psyGender) }}</strong>
+            <small>雌性倾向 ⇄ 雄性/中性/流动态</small>
           </div>
           <div class="metric-card card">
-            <span class="metric-label">表达强度</span>
-            <strong>{{ formatPercent(state.expression.intensity) }}</strong>
-            <small>{{ state.expression.reason || "无记录" }}</small>
+            <span class="metric-label">情绪张力</span>
+            <strong>{{ formatPercent(state.mood.tension) }}</strong>
+            <small>正负情绪并存，不做对冲抵消</small>
           </div>
           <div class="metric-card card">
-            <span class="metric-label">冷却周期</span>
-            <strong>{{ state.cooldown.minutes || 0 }}m</strong>
-            <small>上次冲动：{{ formatDate(state.cooldown.lastImpulseAt) }}</small>
+            <span class="metric-label">队列状态</span>
+            <strong>{{ selectedAgent?.status?.queue.running ? "运行中" : "空闲" }}</strong>
+            <small>待处理：{{ selectedAgent?.status?.queue.pending ?? 0 }}</small>
           </div>
         </div>
 
@@ -124,18 +125,18 @@
           <section class="card emotion-panel">
             <div class="panel-title">
               <span class="material-symbols-outlined">local_fire_department</span>
-              五维驱力热度
+              驱力轴
             </div>
             <div class="bar-list">
               <div v-for="item in driveItems" :key="item.key" class="bar-row">
                 <div class="bar-meta">
                   <span>{{ item.label }}</span>
-                  <strong>{{ item.value.toFixed(2) }}/5</strong>
+                  <strong>{{ formatPercent(item.value) }}</strong>
                 </div>
                 <div class="bar-track">
-                  <div class="bar-fill drive" :style="{ width: `${(item.value / 5) * 100}%` }"></div>
+                  <div class="bar-fill drive" :style="{ width: `${item.value * 100}%` }"></div>
                 </div>
-                <small :class="trendClass(item.trend)">{{ trendText(item.trend, "升温", "回落") }}</small>
+                <small>激活 {{ formatPercent(item.activation) }} · 锐度 {{ formatPercent(item.sharpness) }}</small>
               </div>
             </div>
           </section>
@@ -143,7 +144,7 @@
           <section class="card emotion-panel">
             <div class="panel-title">
               <span class="material-symbols-outlined">graphic_eq</span>
-              八维人格信号
+              知性轴
             </div>
             <div class="signal-cloud">
               <div
@@ -154,7 +155,7 @@
               >
                 <span>{{ item.label }}</span>
                 <strong>{{ formatPercent(item.value) }}</strong>
-                <small :class="trendClass(item.trend)">{{ trendText(item.trend, "增强", "收束") }}</small>
+                <small>激活 {{ formatPercent(item.activation) }} · 锐度 {{ formatPercent(item.sharpness) }}</small>
               </div>
             </div>
           </section>
@@ -162,7 +163,7 @@
           <section class="card emotion-panel">
             <div class="panel-title">
               <span class="material-symbols-outlined">radar</span>
-              当前语境雷达
+              感性轴
             </div>
             <div class="context-grid">
               <div v-for="item in contextItems" :key="item.key" class="context-cell">
@@ -178,27 +179,15 @@
           <section class="card emotion-panel">
             <div class="panel-title">
               <span class="material-symbols-outlined">auto_awesome</span>
-              表达倾向
+              最近二级残差
             </div>
             <div class="expression-card">
-              <div class="expression-mode">
-                <span class="material-symbols-outlined">{{ expressionIcon }}</span>
-                <div>
-                  <strong>{{ state.expression.label }}</strong>
-                  <small>{{ paceLabel(state.expression.pace) }} · {{ state.expression.burst ? "分条倾向" : "连续表达" }}</small>
-                </div>
+              <div v-for="item in subAxisItems" :key="`${item.axis}-${item.subAxis}`" class="sub-axis-row">
+                <span>{{ item.axisLabel }} / {{ item.subAxis }}</span>
+                <strong>{{ formatPercent(item.weight) }}</strong>
+                <small>相似度 {{ item.similarity.toFixed(4) }}</small>
               </div>
-              <div class="expression-tags">
-                <span :class="{ active: state.expression.emoji }">表情感</span>
-                <span :class="{ active: state.expression.burst }">即时分条</span>
-                <span :class="{ active: state.expression.silence }">静默</span>
-              </div>
-              <p>{{ state.expression.reason || "表达原因尚未记录" }}</p>
-              <p v-if="state.expression.modelChoice" class="model-choice">
-                模型回填：{{ state.expression.modelChoice.mode || "unknown" }} /
-                {{ paceLabel(state.expression.modelChoice.pace || "balanced") }} /
-                {{ formatPercent(state.expression.modelChoice.intensity || 0) }}
-              </p>
+              <p v-if="subAxisItems.length === 0" class="description">暂无二级残差记录，等待下一次向量观测。</p>
             </div>
           </section>
         </div>
@@ -206,33 +195,33 @@
         <section class="card delta-panel">
           <div class="panel-title">
             <span class="material-symbols-outlined">history</span>
-            最近情绪回填
+            最近观测快照
           </div>
-          <div v-if="state.lastAppliedPersonaDelta" class="delta-grid">
+          <div v-if="state.lastObservation" class="delta-grid">
             <div>
-              <span>影响等级</span>
-              <strong>{{ state.lastAppliedPersonaDelta.impact || "unknown" }}</strong>
+              <span>输入指纹</span>
+              <strong>{{ state.lastObservation.inputHash || "unknown" }}</strong>
             </div>
             <div>
-              <span>记录时间</span>
-              <strong>{{ formatDate(state.lastAppliedPersonaDelta.at) }}</strong>
+              <span>观测时间</span>
+              <strong>{{ formatDate(state.lastObservation.at) }}</strong>
             </div>
             <div class="delta-reason">
-              <span>原因</span>
-              <strong>{{ state.lastAppliedPersonaDelta.reason || "未提供" }}</strong>
+              <span>心境</span>
+              <strong>{{ state.lastObservation.mood?.label || state.mood.label }}</strong>
             </div>
           </div>
-          <p v-else class="description">暂无 persona_delta 回填记录。</p>
+          <p v-else class="description">暂无观测快照。</p>
         </section>
 
         <div class="action-row card">
           <button class="btn-secondary" :disabled="isActionRunning" @click="tickSelected">
             <span class="material-symbols-outlined">update</span>
-            手动 Tick
+            手动刷新快照
           </button>
           <button class="btn-danger" :disabled="isActionRunning" @click="resetSelected">
             <span class="material-symbols-outlined">restart_alt</span>
-            重置该 Agent 情绪
+            重置该 Agent 轴状态
           </button>
         </div>
       </main>
@@ -254,8 +243,8 @@
               <span class="material-symbols-outlined">settings_heart</span>
               JSON 配置 · {{ configSourceLabel }}
             </span>
-            <h2>OpenHerPersona 配置</h2>
-            <p class="description">配置已从 env 迁移到插件 state 目录 JSON，保存后立即写入并由插件热加载生效。</p>
+            <h2>OpenHerPersona 观测配置</h2>
+            <p class="description">配置已从 env 迁移到插件 state 目录 JSON。当前算法为异步观测，不再注入提示词或 persona_delta。</p>
           </div>
           <button class="icon-btn" type="button" aria-label="关闭配置" @click="closeConfigModal">
             <span class="material-symbols-outlined">close</span>
@@ -338,33 +327,22 @@ import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
 const DRIVE_LABELS: Record<string, string> = {
-  connection: "联结",
-  novelty: "新鲜",
-  expression: "表达",
-  safety: "安全",
-  play: "玩闹",
+  curiosity: "好奇",
+  fear: "恐惧",
+  libido: "性欲",
+  hedonia: "享乐",
 };
 
 const SIGNAL_LABELS: Record<string, string> = {
-  directness: "直接度",
-  vulnerability: "坦露度",
-  playfulness: "玩闹度",
-  initiative: "主动度",
-  depth: "深度",
-  warmth: "温暖度",
-  defiance: "倔强度",
-  curiosity: "好奇度",
+  inquiry: "求知",
+  discernment: "分辨",
+  refusal: "拒绝",
 };
 
 const CONTEXT_LABELS: Record<string, string> = {
-  engagement: "投入",
-  constraint: "约束",
-  technicality: "技术性",
-  playfulness: "玩笑",
-  affection: "亲昵",
-  urgency: "紧迫",
-  novelty: "新鲜",
-  depth: "深度",
+  positive: "正性情绪",
+  negative: "负性情绪",
+  arousal: "唤醒",
 };
 
 const status = ref<OpenHerPersonaAdminStatus | null>(null);
@@ -384,55 +362,54 @@ const validAgents = computed(() => status.value?.agents || []);
 const selectedAgent = computed<OpenHerPersonaAdminAgent | undefined>(() => {
   return validAgents.value.find((agent) => agent.summary.agentKey === selectedAgentKey.value) || validAgents.value[0];
 });
-const state = computed<OpenHerPersonaState>(() => selectedAgent.value!.status!.state);
+const state = computed<OpenHerPersonaState>(() => selectedAgent.value!.status!.state!);
 
-const driveItems = computed(() =>
-  Object.entries(state.value.frustration || {}).map(([key, value]) => ({
+function axisItems(layer: OpenHerPersonaState["drive"], labels: Record<string, string>) {
+  return Object.entries(layer || {}).map(([key, axis]) => ({
     key,
-    label: DRIVE_LABELS[key] || key,
-    value: Number(value) || 0,
-    trend: Number(state.value.trends?.frustration?.[key]) || 0,
-  }))
-);
+    label: labels[key] || key,
+    value: Number(axis.value) || 0,
+    activation: Number(axis.activation) || 0,
+    sharpness: Number(axis.sharpness) || 0,
+    subAxes: axis.subAxes || {},
+  }));
+}
 
-const signalItems = computed(() =>
-  Object.entries(state.value.signals || {}).map(([key, value]) => ({
-    key,
-    label: SIGNAL_LABELS[key] || key,
-    value: Number(value) || 0,
-    trend: Number(state.value.trends?.signals?.[key]) || 0,
-  }))
-);
+const driveItems = computed(() => axisItems(state.value.drive, DRIVE_LABELS));
 
-const contextItems = computed(() =>
-  Object.entries(state.value.genome?.lastContext || {}).map(([key, value]) => ({
-    key,
-    label: CONTEXT_LABELS[key] || key,
-    value: Number(value) || 0,
-  }))
+const signalItems = computed(() => axisItems(state.value.cognitive, SIGNAL_LABELS));
+
+const contextItems = computed(() => axisItems(state.value.affective, CONTEXT_LABELS));
+
+const subAxisItems = computed(() =>
+  [...driveItems.value, ...signalItems.value, ...contextItems.value]
+    .flatMap((axis) =>
+      Object.entries(axis.subAxes).map(([subAxis, score]) => ({
+        axis: axis.key,
+        axisLabel: axis.label,
+        subAxis,
+        similarity: Number(score.similarity) || 0,
+        weight: Number(score.weight) || 0,
+      }))
+    )
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 10)
 );
 
 const moodDescription = computed(() => {
-  const topSignals = state.value.topSignals?.map((item) => item.label).join("、") || "平稳";
-  const topDrives = state.value.topFrustration?.map((item) => item.label).join("、") || "无明显热度";
-  return `当前心境为「${state.value.mood.label}」，主要信号：${topSignals}；驱力热点：${topDrives}。`;
-});
-
-const phaseText = computed(() => {
-  const phase = state.value.phase.name;
-  if (phase === "eruption") return "爆发态：短时强烈表达";
-  if (phase === "cooling") return "冷却态：防御与回落";
-  if (phase === "strained") return "紧绷态：压力积累";
-  return "稳定态：压力平稳";
-});
-
-const expressionIcon = computed(() => {
-  const mode = state.value.expression.mode;
-  if (mode === "emoji_like") return "mood";
-  if (mode === "voice_like") return "record_voice_over";
-  if (mode === "long_text") return "subject";
-  if (mode === "reserved") return "more_horiz";
-  return "chat";
+  const topCognitive = signalItems.value
+    .slice()
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 2)
+    .map((item) => item.label)
+    .join("、") || "平稳";
+  const topDrive = driveItems.value
+    .slice()
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 2)
+    .map((item) => item.label)
+    .join("、") || "无明显驱力";
+  return `当前心境为「${state.value.mood.label}」，知性主轴：${topCognitive}；驱力热点：${topDrive}。`;
 });
 
 const agentHeaderStyle = computed(() => ({
@@ -597,32 +574,13 @@ function initials(name: string): string {
 }
 
 function moodColor(mood?: OpenHerPersonaMood): string {
-  const valence = mood?.valence ?? 0.5;
+  const positive = mood?.positive ?? 0.5;
+  const negative = mood?.negative ?? 0.25;
   const arousal = mood?.arousal ?? 0.5;
-  const hue = 210 - valence * 110 + arousal * 25;
-  const saturation = 55 + arousal * 35;
-  const lightness = 48 + valence * 18;
+  const hue = 205 - positive * 85 + negative * 45 + arousal * 18;
+  const saturation = 52 + arousal * 36;
+  const lightness = 42 + positive * 16 - negative * 8;
   return `hsl(${hue} ${saturation}% ${lightness}%)`;
-}
-
-function trendText(value: number, upWord: string, downWord: string): string {
-  if (Math.abs(value) < 0.015) return "稳定";
-  return `${value > 0 ? upWord : downWord} ${Math.abs(value).toFixed(3)}`;
-}
-
-function trendClass(value: number): string {
-  if (Math.abs(value) < 0.015) return "trend stable";
-  return value > 0 ? "trend up" : "trend down";
-}
-
-function paceLabel(pace: string): string {
-  const labels: Record<string, string> = {
-    short: "短句",
-    balanced: "平稳",
-    flowing: "流动",
-    long: "展开",
-  };
-  return labels[pace] || pace;
 }
 
 onMounted(() => {

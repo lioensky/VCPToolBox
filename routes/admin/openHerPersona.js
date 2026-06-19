@@ -15,12 +15,16 @@ module.exports = function(options) {
     }
 
     function normalizeAgentSummary(agent) {
+        const observationCount = Number(agent.observationCount);
+        const turnCount = Number(agent.turnCount);
         return {
             agentKey: agent.agentKey || agent.agentId || '__default__',
             agentLabel: agent.agentLabel || agent.agentName || agent.agentKey || 'default',
-            turnCount: Number(agent.turnCount) || 0,
+            observationCount: Number.isFinite(observationCount) ? observationCount : 0,
+            turnCount: Number.isFinite(turnCount) ? turnCount : (Number.isFinite(observationCount) ? observationCount : 0),
             updatedAt: agent.updatedAt || null,
-            lastActiveAt: agent.lastActiveAt || null,
+            lastActiveAt: agent.lastActiveAt || agent.lastObservedAt || null,
+            lastObservedAt: agent.lastObservedAt || agent.lastActiveAt || null,
         };
     }
 
@@ -94,9 +98,9 @@ module.exports = function(options) {
                     version: baseStatus.version,
                     enabled: Boolean(baseStatus.enabled),
                     hintEnabled: Boolean(baseStatus.hintEnabled),
-                    observeOnly: Boolean(baseStatus.observeOnly),
+                    observeOnly: Boolean(baseStatus.observeOnly || baseStatus.mode === 'async_observer'),
                     tickEnabled: Boolean(baseStatus.tickEnabled),
-                    contextBridgeAvailable: Boolean(baseStatus.contextBridgeAvailable),
+                    contextBridgeAvailable: Boolean(baseStatus.contextBridgeAvailable || baseStatus.provider === 'contextBridge'),
                     semanticContext: baseStatus.semanticContext || null,
                     activeAgent: baseStatus.agent || null,
                     boundaries: baseStatus.boundaries || null,

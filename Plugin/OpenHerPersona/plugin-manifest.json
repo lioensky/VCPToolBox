@@ -1,0 +1,53 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "OpenHerPersona",
+  "version": "0.6.0-observer",
+  "displayName": "OpenHer Persona Observer",
+  "description": "Pure asynchronous persona observation and measurement plugin. It never injects prompt text, never emits brk/HTML hints, never asks for persona_delta JSON, and never uses wall-clock emotional decay or keyword heuristics. It observes per-agent messages through subject-anchored secondary vector axes, computes cognitive/affective/drive/psychological-gender measurements, applies soft coupling, serializes concurrent observations through per-agent queues, and persists openher_axis_* SQLite state for dashboards and later experiments.",
+  "author": "Nova",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "OpenHerPersona.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 30000
+  },
+  "requiresContextBridge": true,
+  "configSchema": {
+    "DebugMode": "boolean",
+    "OpenHerPersonaEnabled": "boolean",
+    "OpenHerPersonaAsyncObservation": "boolean",
+    "OpenHerPersonaQueueMaxSize": "integer",
+    "OpenHerPersonaEmbeddingTimeoutMs": "integer",
+    "OpenHerPersonaAnchorTemperature": "string",
+    "OpenHerPersonaStateEma": "string",
+    "OpenHerPersonaCouplingStrength": "string",
+    "OpenHerPersonaDropLegacyState": "boolean"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "status",
+        "description": "Return current async observer configuration, queue status, known agents, and the selected agent axis snapshot. Does not call an LLM and never mutates prompts.\n- `command`: fixed as `status`.\n- Optional: `agent` / `agentKey` / `agentLabel` to select an agent.",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」OpenHerPersona「末」,\ncommand: 「始」status「末」,\nagent: 「始」Nova「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "snapshot",
+        "description": "Alias of status, intended for dashboards that only need the latest measured axes.\n- `command`: fixed as `snapshot`.\n- Optional: `agent` / `agentKey` / `agentLabel`.",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」OpenHerPersona「末」,\ncommand: 「始」snapshot「末」,\nagent: 「始」Nova「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "reset",
+        "description": "Reset one agent's observer state and subject-anchored vectors. Does not touch long-term VCP memory.\n- `command`: fixed as `reset`.\n- Optional: `agent` / `agentKey` / `agentLabel`.",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」OpenHerPersona「末」,\ncommand: 「始」reset「末」,\nagent: 「始」Nova「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "explain",
+        "description": "Explain the observer-only architecture boundaries and removed prompt-injection behavior.\n- `command`: fixed as `explain`.",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」OpenHerPersona「末」,\ncommand: 「始」explain「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

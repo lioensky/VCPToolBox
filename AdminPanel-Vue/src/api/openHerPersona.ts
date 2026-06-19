@@ -6,117 +6,97 @@ import {
 
 const DEFAULT_READ_UI_OPTIONS: RequestUiOptions = { showLoader: false };
 
-export interface OpenHerPersonaMap {
-  [key: string]: number;
+export interface OpenHerPersonaAxisSubScore {
+  similarity?: number;
+  weight?: number;
+}
+
+export interface OpenHerPersonaAxisState {
+  value: number;
+  activation: number;
+  sharpness: number;
+  subAxes: Record<string, OpenHerPersonaAxisSubScore>;
+}
+
+export interface OpenHerPersonaAxisLayer {
+  [axis: string]: OpenHerPersonaAxisState;
 }
 
 export interface OpenHerPersonaMood {
-  valence: number;
+  positive: number;
+  negative: number;
   arousal: number;
+  tension: number;
+  dominance: number;
   label: string;
 }
 
-export interface OpenHerPersonaExpression {
-  mode: string;
+export interface OpenHerPersonaTopAxis {
+  axis: string;
   label: string;
-  pace: string;
-  intensity: number;
-  emoji: boolean;
-  silence: boolean;
-  burst: boolean;
-  burstSegments: [number, number];
-  reason: string;
-  modelChoice?: {
-    mode?: string;
-    pace?: string;
-    intensity?: number;
-    reason?: string;
-    at?: string | null;
-  } | null;
-  updatedAt?: string | null;
+  activation: number;
+  sharpness: number;
 }
 
-export interface OpenHerPersonaPhase {
-  name: "grounded" | "strained" | "eruption" | "cooling" | string;
-  charge: number;
-  enteredAt?: string | null;
-  lastEruptionAt?: string | null;
-  coolingTurns?: number;
-}
-
-export interface OpenHerPersonaTrendMap {
-  frustration: OpenHerPersonaMap;
-  signals: OpenHerPersonaMap;
+export interface OpenHerPersonaLastObservation {
+  at?: string | null;
+  inputHash?: string | null;
+  scores?: Record<string, OpenHerPersonaAxisState>;
+  coupled?: Record<string, number>;
+  mood?: OpenHerPersonaMood;
 }
 
 export interface OpenHerPersonaAgentSummary {
   agentKey: string;
   agentLabel: string;
-  turnCount: number;
+  turnCount?: number;
+  observationCount?: number;
   updatedAt: string | null;
-  lastActiveAt: string | null;
+  lastActiveAt?: string | null;
+  lastObservedAt?: string | null;
 }
 
 export interface OpenHerPersonaState {
   agentKey: string;
   agentLabel: string;
-  updatedAt?: string | null;
-  lastTickAt?: string | null;
-  lastActiveAt?: string | null;
-  turnCount: number;
-  lastTurnFingerprint?: string | null;
-  frustration: OpenHerPersonaMap;
-  signals: OpenHerPersonaMap;
-  temperament: OpenHerPersonaMap;
-  signalBias: OpenHerPersonaMap;
-  metabolism: {
-    growthGain: OpenHerPersonaMap;
-    reliefGain: OpenHerPersonaMap;
-  };
-  phase: OpenHerPersonaPhase;
+  psyGender: number;
+  cognitive: OpenHerPersonaAxisLayer;
+  affective: OpenHerPersonaAxisLayer;
+  drive: OpenHerPersonaAxisLayer;
   mood: OpenHerPersonaMood;
-  trends: OpenHerPersonaTrendMap;
-  lastChange: OpenHerPersonaTrendMap;
-  expression: OpenHerPersonaExpression;
-  lastAppliedPersonaDelta?: {
-    at?: string;
-    impact?: string;
-    downgradedFrom?: string | null;
-    reason?: string | null;
-    frustration_set?: OpenHerPersonaMap;
-    frustration_delta?: OpenHerPersonaMap;
-    signal_delta?: OpenHerPersonaMap;
-  } | null;
-  genome: {
-    recurrentState: number[];
-    lastContext: OpenHerPersonaMap;
-  };
-  topSignals: Array<{ key: string; label: string; value: number }>;
-  topFrustration: Array<{ key: string; label: string; value: number }>;
-  cooldown: {
-    minutes?: number;
-    lastImpulseAt?: string | null;
-  };
+  observationCount: number;
+  lastObservedAt?: string | null;
+  lastInputHash?: string | null;
+  lastObservation?: OpenHerPersonaLastObservation | null;
+  updatedAt?: string | null;
+  createdAt?: string | null;
 }
 
 export interface OpenHerPersonaPluginStatus {
   status: string;
   plugin: string;
   version: string;
-  agent: OpenHerPersonaAgentSummary;
-  agents: OpenHerPersonaAgentSummary[];
+  mode: "async_observer" | string;
   enabled: boolean;
-  hintEnabled: boolean;
-  observeOnly: boolean;
-  tickEnabled: boolean;
-  contextBridgeAvailable: boolean;
-  semanticContext: {
-    enabled: boolean;
-    weight: number;
-    anchorsReady: boolean;
-    provider: string;
+  promptInjection: boolean;
+  timeMetabolism: boolean;
+  keywordHeuristic: boolean;
+  provider: string;
+  config: Record<string, boolean | number | string>;
+  configPath: string;
+  database: {
+    available: boolean;
+    path: string;
+    schema: string;
   };
-  state: OpenHerPersonaState;
+  queue: {
+    agentKey: string;
+    running: boolean;
+    pending: number;
+    maxSize: number;
+  };
+  agents: OpenHerPersonaAgentSummary[];
+  state: OpenHerPersonaState | null;
   boundaries?: Record<string, boolean>;
 }
 
@@ -132,11 +112,11 @@ export interface OpenHerPersonaAdminStatus {
   overview: {
     version?: string;
     enabled: boolean;
-    hintEnabled: boolean;
-    observeOnly: boolean;
-    tickEnabled: boolean;
-    contextBridgeAvailable: boolean;
-    semanticContext?: OpenHerPersonaPluginStatus["semanticContext"] | null;
+    hintEnabled?: boolean;
+    observeOnly?: boolean;
+    tickEnabled?: boolean;
+    contextBridgeAvailable?: boolean;
+    semanticContext?: null;
     activeAgent?: OpenHerPersonaAgentSummary | null;
     boundaries?: Record<string, boolean> | null;
   };
