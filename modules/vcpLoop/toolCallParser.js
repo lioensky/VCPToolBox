@@ -55,18 +55,18 @@ class ToolCallParser {
   static extractNextToolBlock(content, fromIndex = 0) {
     if (!content || typeof content !== 'string') return null;
 
-    const startIndex = content.indexOf(this.MARKERS.START, fromIndex);
-    if (startIndex === -1) return null;
+    const startMatch = toolMarkerFuzzyMatcher.findBlockStartMarker(content, fromIndex);
+    if (!startMatch) return null;
 
-    const blockStart = startIndex + this.MARKERS.START.length;
-    const endIndex = this._findBlockEnd(content, blockStart);
-    if (endIndex === -1) return null;
+    const blockStart = startMatch.index + startMatch.marker.length;
+    const endMatch = this._findBlockEnd(content, blockStart);
+    if (!endMatch) return null;
 
     return {
-      blockContent: content.substring(blockStart, endIndex).trim(),
-      startIndex,
-      endIndex,
-      nextOffset: endIndex + this.MARKERS.END.length
+      blockContent: content.substring(blockStart, endMatch.index).trim(),
+      startIndex: startMatch.index,
+      endIndex: endMatch.index,
+      nextOffset: endMatch.index + endMatch.marker.length
     };
   }
 
@@ -125,25 +125,25 @@ class ToolCallParser {
       const startMatch = escapeStartRegex.exec(remaining);
       const nextEscapeStart = startMatch ? cursor + startMatch.index : -1;
       
-      const nextBlockEnd = content.indexOf(this.MARKERS.END, cursor);
+      const endMatch = toolMarkerFuzzyMatcher.findBlockEndMarker(content, cursor);
 
-      if (nextBlockEnd === -1) return -1;
-      if (nextEscapeStart === -1 || nextBlockEnd < nextEscapeStart) {
-        return nextBlockEnd;
+      if (!endMatch) return null;
+      if (nextEscapeStart === -1 || endMatch.index < nextEscapeStart) {
+        return endMatch;
       }
 
       const searchStartFrom = nextEscapeStart + startMatch[0].length;
-      const endMatch = escapeEndRegex.exec(content.slice(searchStartFrom));
+      const escapeEndMatch = escapeEndRegex.exec(content.slice(searchStartFrom));
 
-      if (!endMatch) {
-        return -1;
+      if (!escapeEndMatch) {
+        return null;
       }
 
-      const escapedEnd = searchStartFrom + endMatch.index;
-      cursor = escapedEnd + endMatch[0].length;
+      const escapedEnd = searchStartFrom + escapeEndMatch.index;
+      cursor = escapedEnd + escapeEndMatch[0].length;
     }
 
-    return -1;
+    return null;
   }
 
   static _scanFields(blockContent) {

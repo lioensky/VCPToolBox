@@ -29,6 +29,50 @@ class ToolMarkerFuzzyMatcher {
     return new RegExp(`${anchor ? '^' : ''}[「{]末ESCAPE[」}]`, 'i');
   }
 
+  _findToolBlockMarker(content, cursor, label, canonicalMarker) {
+    if (!content || typeof content !== 'string') {
+      return null;
+    }
+
+    if (!this.enabled) {
+      const index = content.indexOf(canonicalMarker, cursor);
+      return index === -1
+        ? null
+        : {
+            index,
+            marker: canonicalMarker,
+            fuzzy: false
+          };
+    }
+
+    const markerRegex = new RegExp(`<{2,4}\\[${label}\\]>{2,4}`, 'gi');
+    markerRegex.lastIndex = cursor;
+
+    const match = markerRegex.exec(content);
+    if (!match) {
+      return null;
+    }
+
+    const fuzzy = match[0] !== canonicalMarker;
+    if (fuzzy) {
+      this._log(`Fuzzy block marker matched for ${label}: ${JSON.stringify(match[0])}`);
+    }
+
+    return {
+      index: match.index,
+      marker: match[0],
+      fuzzy
+    };
+  }
+
+  findBlockStartMarker(content, cursor) {
+    return this._findToolBlockMarker(content, cursor, 'TOOL_REQUEST', '<<<[TOOL_REQUEST]>>>');
+  }
+
+  findBlockEndMarker(content, cursor) {
+    return this._findToolBlockMarker(content, cursor, 'END_TOOL_REQUEST', '<<<[END_TOOL_REQUEST]>>>');
+  }
+
   matchFieldStartMarker(content, cursor) {
     if (!content || typeof content !== 'string') {
       return null;
