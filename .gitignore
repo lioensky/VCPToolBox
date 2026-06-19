@@ -152,6 +152,8 @@ ModelRedirect.json
 agent_map.json
 preprocessor_order.json
 tag-processor-config.env
+# 多模态识别 JSON 真相源（首启自动生成；私密提示词不应入库）
+multimodal-config.json
 
 # ===== 运行时数据 / 缓存 =====
 *.sqlite

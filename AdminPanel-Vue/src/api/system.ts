@@ -14,7 +14,10 @@ import type {
   BridgeProfileDeleteResponse,
   BridgeProfileResponse,
   BridgeProfilesResponse,
+  FinalContextListResponse,
   FinalContextResponse,
+  MultiModalConfig,
+  MultiModalConfigResponse,
   OneRingConfig,
   OneRingConfigResponse,
   OneRingConfigSaveResponse,
@@ -26,7 +29,7 @@ import type {
   SystemResources,
 } from "@/types/api.system";
 
-export type { BridgeHijackConfig, BridgeHijackConfigResponse, BridgeHijackConfigSaveResponse, FinalContextResponse, OneRingConfig, OneRingConfigResponse, OneRingConfigSaveResponse, ServerLogQuery, ServerLogResponse } from "@/types/api.system";
+export type { BridgeHijackConfig, BridgeHijackConfigResponse, BridgeHijackConfigSaveResponse, FinalContextListResponse, FinalContextResponse, MultiModalConfig, MultiModalConfigResponse, OneRingConfig, OneRingConfigResponse, OneRingConfigSaveResponse, ServerLogQuery, ServerLogResponse } from "@/types/api.system";
 export type { UserAuthCodeResponse } from "@/types/api.auth";
 
 export type SystemResourcesResponse = SystemResources;
@@ -126,11 +129,57 @@ export const systemApi = {
 
   async getFinalContext(
     requestContext: HttpRequestContext = {},
-    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS,
+    snapshotId?: number | string
   ): Promise<FinalContextResponse> {
     return requestWithUi<FinalContextResponse>(
       {
         url: "/admin_api/final-context",
+        query: snapshotId !== undefined && snapshotId !== ''
+          ? { id: snapshotId }
+          : undefined,
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async listFinalContexts(
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<FinalContextListResponse> {
+    return requestWithUi<FinalContextListResponse>(
+      {
+        url: "/admin_api/final-context/list",
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async getMultiModalConfig(
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<MultiModalConfigResponse> {
+    return requestWithUi<MultiModalConfigResponse>(
+      {
+        url: "/admin_api/multimodal-config",
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async saveMultiModalConfig(
+    config: Partial<MultiModalConfig>,
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = {}
+  ): Promise<MultiModalConfigResponse> {
+    return requestWithUi<MultiModalConfigResponse>(
+      {
+        url: "/admin_api/multimodal-config",
+        method: "PUT",
+        body: config,
         ...requestContext,
       },
       uiOptions

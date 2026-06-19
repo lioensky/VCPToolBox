@@ -9,6 +9,14 @@ const http = require('http');
 const https = require('https');
 const finalContextStore = require('./finalContextStore.js');
 
+// 多模态配置真相源（JSON 优先 + 热更新），用于在请求时动态拉取 MultiModalForceTranslateModels
+let multiModalConfigStore = null;
+try {
+  multiModalConfigStore = require('./multiModalConfigStore.js');
+} catch (storeError) {
+  multiModalConfigStore = null;
+}
+
 // 🌟 核心网络优化：引入防御性长连接池 (Keep-Alive Pool)
 // 解决 "-1s Socket Hang Up" 与上游代理秒断僵尸连接的问题
 const agentOptions = {
@@ -661,8 +669,21 @@ class ChatCompletionHandler {
       chinaModel1, // 新增
       chinaModel1Cot, // 新增
       semanticModelRouter,
-      multiModalForceTranslateModels, // 新增：纯文本模型强制翻译多模态 tag 列表
+      multiModalForceTranslateModels: configForceTranslateModels, // 启动时快照（ENV）作为兜底
     } = this.config;
+
+    // 优先从 multimodal-config.json 真相源拉取最新 tag 列表，失败时回退 ENV 快照
+    let multiModalForceTranslateModels = configForceTranslateModels;
+    if (multiModalConfigStore) {
+      try {
+        const liveTags = multiModalConfigStore.getForceTranslateModels();
+        if (Array.isArray(liveTags)) {
+          multiModalForceTranslateModels = liveTags;
+        }
+      } catch (storeReadErr) {
+        // 静默回退，不阻塞请求
+      }
+    }
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP;
     const applyChinaModelThinkingControl = (body) => {

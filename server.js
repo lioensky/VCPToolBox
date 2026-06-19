@@ -397,16 +397,32 @@ try {
 }
 const CHINA_MODEL_1_COT = (process.env.ChinaModel1Cot || "false").toLowerCase() === "true";
 
+// 多模态配置 JSON 真相源（multimodal-config.json）：优先级高于 config.env，支持热更新
+// 在初始化阶段先确保文件存在并加载内存配置；运行时由 chatCompletionHandler / image-processor 直接调用 store。
+const multiModalConfigStore = require('./modules/multiModalConfigStore.js');
+try {
+    multiModalConfigStore.init();
+    console.log('[Server] multimodal-config.json 配置真相源已加载，路径：', multiModalConfigStore.CONFIG_PATH);
+} catch (multiModalInitErr) {
+    console.error('[Server] 初始化 multimodal-config.json 失败：', multiModalInitErr);
+}
+
 // 纯文本模型强制翻译多模态：tag 列表，命中即无视 {{TransBase64}}/{{TransBase64+}} 占位符
 // 用于配合模型动态路由（VCPModelAuto/SemanticModelRouter），避免把 base64 多模态传给纯文本模型
+// 仅作为启动快照保留；运行时 chatCompletionHandler 会从 multiModalConfigStore 拉取最新值
 let MULTIMODAL_FORCE_TRANSLATE_MODELS = [];
 try {
-    MULTIMODAL_FORCE_TRANSLATE_MODELS = (process.env.MultiModalForceTranslateModels || "")
-        .split(',')
-        .map(tag => tag.trim().toLowerCase())
-        .filter(tag => tag !== "");
+    const storeTags = multiModalConfigStore.getForceTranslateModels();
+    if (Array.isArray(storeTags) && storeTags.length > 0) {
+        MULTIMODAL_FORCE_TRANSLATE_MODELS = storeTags;
+    } else {
+        MULTIMODAL_FORCE_TRANSLATE_MODELS = (process.env.MultiModalForceTranslateModels || "")
+            .split(',')
+            .map(tag => tag.trim().toLowerCase())
+            .filter(tag => tag !== "");
+    }
     if (MULTIMODAL_FORCE_TRANSLATE_MODELS.length > 0) {
-        console.log(`[Server] MultiModalForceTranslateModels 已加载 ${MULTIMODAL_FORCE_TRANSLATE_MODELS.length} 个 tag: [${MULTIMODAL_FORCE_TRANSLATE_MODELS.join(', ')}]`);
+        console.log(`[Server] MultiModalForceTranslateModels 启动快照已加载 ${MULTIMODAL_FORCE_TRANSLATE_MODELS.length} 个 tag: [${MULTIMODAL_FORCE_TRANSLATE_MODELS.join(', ')}]`);
     }
 } catch (e) {
     console.error("Failed to parse MultiModalForceTranslateModels:", e);

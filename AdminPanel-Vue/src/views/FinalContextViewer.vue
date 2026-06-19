@@ -11,11 +11,24 @@
         </div>
 
         <div class="context-actions">
+          <label v-if="snapshotList.length > 0" class="snapshot-selector">
+            <span class="material-symbols-outlined">history</span>
+            <select :value="selectedSnapshotId" @change="onSnapshotSelectChange">
+              <option
+                v-for="item in snapshotList"
+                :key="item.id"
+                :value="item.id"
+              >
+                #{{ item.id }} · {{ formatSnapshotLabel(item) }}
+              </option>
+            </select>
+            <small>{{ snapshotList.length }} / {{ maxSnapshots }} 缓存</small>
+          </label>
           <button type="button" class="btn-secondary" @click="openOneRingConfigModal" :disabled="isOneRingConfigLoading">
             <span class="material-symbols-outlined" :class="{ spinning: isOneRingConfigLoading }">settings</span>
             ORing配置
           </button>
-          <button type="button" class="btn-secondary" @click="loadSnapshot" :disabled="isLoading">
+          <button type="button" class="btn-secondary" @click="refreshList" :disabled="isLoading">
             <span class="material-symbols-outlined" :class="{ spinning: isLoading }">sync</span>
             刷新
           </button>
@@ -275,7 +288,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, type ComponentPublicInstance } from 'vue'
 import { systemApi } from '@/api'
-import type { FinalContextBlockSummary, FinalContextSnapshot, OneRingConfig } from '@/types/api.system'
+import type { FinalContextBlockSummary, FinalContextListItem, FinalContextSnapshot, OneRingConfig } from '@/types/api.system'
 import { copyToClipboard, showMessage } from '@/utils'
 
 const snapshot = ref<FinalContextSnapshot | null>(null)
@@ -284,6 +297,9 @@ const isLoading = ref(false)
 const searchText = ref('')
 const activeBlockIndex = ref<number | null>(null)
 const blockRefs = new Map<number, Element>()
+const snapshotList = ref<FinalContextListItem[]>([])
+const selectedSnapshotId = ref<number | null>(null)
+const maxSnapshots = ref(5)
 
 const defaultOneRingConfig: OneRingConfig = {
   enabled: true,
@@ -380,24 +396,43 @@ const matchedBlocks = computed(() => {
 
 const filteredBlocks = computed(() => matchedBlocks.value)
 
-async function loadSnapshot() {
+function formatSnapshotLabel(item: FinalContextListItem): string {
+  const captured = item.capturedAt || ''
+  const time = captured ? captured.replace('T', ' ').replace(/\.\d+Z?$/, '') : '-'
+  const model = item.summary?.model || 'unknown'
+  const tokens = formatNumber(item.summary?.totalTokenCount || 0)
+  return `${time} · ${model} · ${tokens} tokens`
+}
+
+async function loadSnapshot(targetId?: number | null) {
   isLoading.value = true
   try {
+    const idArg = (targetId === null || targetId === undefined) ? undefined : targetId
     const response = await systemApi.getFinalContext(
       {},
       {
         showLoader: false,
         suppressErrorMessage: true,
-      }
+      },
+      idArg
     )
+
+    if (Array.isArray(response.list)) {
+      snapshotList.value = response.list
+    }
+    if (typeof response.maxSnapshots === 'number' && response.maxSnapshots > 0) {
+      maxSnapshots.value = response.maxSnapshots
+    }
 
     if (!response.available || !response.snapshot) {
       snapshot.value = null
+      selectedSnapshotId.value = null
       emptyMessage.value = response.message || '尚未捕获任何最终上下文。'
       return
     }
 
     snapshot.value = response.snapshot
+    selectedSnapshotId.value = response.snapshot.id ?? null
     activeBlockIndex.value = response.snapshot.summary.blocks[0]?.index ?? null
     await nextTick()
     if (activeBlockIndex.value !== null) {
@@ -410,6 +445,32 @@ async function loadSnapshot() {
   } finally {
     isLoading.value = false
   }
+}
+
+async function refreshList() {
+  // 刷新优先取列表，但展示当前选中的快照（若仍存在）；否则取最新一条
+  try {
+    const listResponse = await systemApi.listFinalContexts({}, { showLoader: false, suppressErrorMessage: true })
+    snapshotList.value = listResponse.list || []
+    if (typeof listResponse.maxSnapshots === 'number' && listResponse.maxSnapshots > 0) {
+      maxSnapshots.value = listResponse.maxSnapshots
+    }
+    const stillExists = selectedSnapshotId.value !== null
+      && snapshotList.value.some(item => item.id === selectedSnapshotId.value)
+    await loadSnapshot(stillExists ? selectedSnapshotId.value : null)
+  } catch (error) {
+    // 列表查询失败时回退到 loadSnapshot 默认行为
+    await loadSnapshot()
+  }
+}
+
+function onSnapshotSelectChange(event: Event) {
+  const target = event.target as HTMLSelectElement | null
+  if (!target) return
+  const numericId = Number(target.value)
+  if (!Number.isFinite(numericId)) return
+  selectedSnapshotId.value = numericId
+  void loadSnapshot(numericId)
 }
 
 function normalizeRoleLabel(role: string): string {
@@ -761,6 +822,44 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.snapshot-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--tertiary-bg);
+  color: var(--primary-text);
+}
+
+.snapshot-selector .material-symbols-outlined {
+  font-size: 18px !important;
+  color: var(--highlight-text);
+}
+
+.snapshot-selector select {
+  padding: 4px 6px;
+  border: none;
+  background: transparent;
+  color: var(--primary-text);
+  font: inherit;
+  outline: none;
+  max-width: 320px;
+}
+
+/* 修复深色模式下原生下拉项默认白底问题 */
+.snapshot-selector select option {
+  background: var(--secondary-bg);
+  color: var(--primary-text);
+}
+
+.snapshot-selector small {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  white-space: nowrap;
+}
+
 .context-viewer {
   display: flex;
   flex-direction: column;

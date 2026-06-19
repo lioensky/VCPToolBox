@@ -109,6 +109,7 @@ export interface FinalContextBlockSummary {
 }
 
 export interface FinalContextSnapshot {
+  id?: number;
   capturedAt: string;
   metadata: Record<string, unknown>;
   body: Record<string, unknown> & {
@@ -130,10 +131,54 @@ export interface FinalContextSnapshot {
   };
 }
 
+export interface FinalContextListItem {
+  id: number;
+  capturedAt: string;
+  metadata: Record<string, unknown>;
+  summary: {
+    model: string | null;
+    stream: boolean;
+    messageCount: number;
+    totalTokenCount: number;
+    totalTextTokenCount?: number;
+    totalAttachmentTokenCount?: number;
+    tokenMethod?: string | null;
+    roleCounts: Record<string, number>;
+  };
+}
+
 export interface FinalContextResponse {
   available: boolean;
   message?: string;
   snapshot?: FinalContextSnapshot;
+  list?: FinalContextListItem[];
+  maxSnapshots?: number;
+}
+
+export interface FinalContextListResponse {
+  success?: boolean;
+  list: FinalContextListItem[];
+  maxSnapshots: number;
+}
+
+export interface MultiModalConfig {
+  MultiModalModel: string;
+  MultiModalPrompt: string;
+  MediaInsertPrompt: string;
+  MultiModalModelOutputMaxTokens: number;
+  MultiModalModelContent: number;
+  MultiModalModelThinkingBudget: number;
+  MultiModalModelAsynchronousLimit: number;
+  MultiModalForceTranslateModels: string[];
+}
+
+export interface MultiModalConfigResponse {
+  success?: boolean;
+  config: MultiModalConfig;
+  path?: string;
+  watcherActive?: boolean;
+  lastLoadError?: string | null;
+  message?: string;
 }
 
 export interface OneRingConfig {

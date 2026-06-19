@@ -1,4 +1,11 @@
 // modules/finalContextStore.js
+//
+// 最终上下文快照管理（含 5 组缓存的滑窗）
+// ----------------------------------------------------------------
+// - 每次 chatCompletionHandler 完成最终请求体合成后，调用 setLastFinalContext(body, metadata)
+// - 服务器在内存中保留最近 MAX_SNAPSHOTS 个会话快照（默认 5 组）
+// - 管理面板可通过 listFinalContexts() 拉取所有快照的元信息（id + capturedAt + metadata.model 等）
+//   并通过 getFinalContextById(id) 切换查看具体快照内容
 
 let encoding = null;
 const TOKENIZER_NAME = 'cl100k_base';
@@ -11,7 +18,9 @@ try {
   encoding = null;
 }
 
-let lastFinalContextSnapshot = null;
+const MAX_SNAPSHOTS = 5;
+const snapshots = []; // 数组首位为最新快照（unshift 写入）
+let snapshotIdSeq = 0;
 
 function safeClone(value) {
   if (value === undefined || value === null) {
@@ -278,19 +287,67 @@ function buildSummary(body) {
 
 function setLastFinalContext(body, metadata = {}) {
   const clonedBody = safeClone(body);
-  lastFinalContextSnapshot = {
+  const snapshot = {
+    id: ++snapshotIdSeq,
     capturedAt: new Date().toISOString(),
     metadata: safeClone(metadata) || {},
     body: clonedBody,
     summary: buildSummary(clonedBody)
   };
+  snapshots.unshift(snapshot);
+  while (snapshots.length > MAX_SNAPSHOTS) {
+    snapshots.pop();
+  }
 }
 
 function getLastFinalContext() {
-  return safeClone(lastFinalContextSnapshot);
+  return snapshots.length > 0 ? safeClone(snapshots[0]) : null;
+}
+
+/**
+ * 列出所有缓存中的快照轻量元信息（不含 body / blocks），用于前端构建切换下拉。
+ * 返回数组按时间倒序排列（最新在前）。
+ */
+function listFinalContexts() {
+  return snapshots.map(snapshot => ({
+    id: snapshot.id,
+    capturedAt: snapshot.capturedAt,
+    metadata: safeClone(snapshot.metadata) || {},
+    summary: {
+      model: snapshot.summary?.model ?? null,
+      stream: snapshot.summary?.stream ?? false,
+      messageCount: snapshot.summary?.messageCount ?? 0,
+      totalTokenCount: snapshot.summary?.totalTokenCount ?? 0,
+      totalTextTokenCount: snapshot.summary?.totalTextTokenCount ?? 0,
+      totalAttachmentTokenCount: snapshot.summary?.totalAttachmentTokenCount ?? 0,
+      tokenMethod: snapshot.summary?.tokenMethod ?? null,
+      roleCounts: snapshot.summary?.roleCounts ?? {}
+    }
+  }));
+}
+
+/**
+ * 根据 id 取回完整快照副本。id 不存在时返回 null。
+ */
+function getFinalContextById(id) {
+  const numericId = Number(id);
+  if (!Number.isFinite(numericId)) return null;
+  const target = snapshots.find(snapshot => snapshot.id === numericId);
+  return target ? safeClone(target) : null;
+}
+
+/**
+ * 清空所有缓存（管理面板可通过专用按钮触发，目前未对外暴露）。
+ */
+function clearFinalContexts() {
+  snapshots.length = 0;
 }
 
 module.exports = {
   setLastFinalContext,
-  getLastFinalContext
+  getLastFinalContext,
+  listFinalContexts,
+  getFinalContextById,
+  clearFinalContexts,
+  MAX_SNAPSHOTS
 };

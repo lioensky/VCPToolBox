@@ -14,6 +14,9 @@
         >
           加载测试数据
         </button>
+        <button class="btn-secondary" type="button" @click="openMultiModalConfigModal" :disabled="isMultiModalConfigLoading">
+          多模态配置
+        </button>
         <button class="btn-secondary" type="button" @click="refreshCurrentPage" :disabled="isLoading">
           刷新
         </button>
@@ -138,6 +141,86 @@
       </article>
     </div>
 
+    <!-- 多模态配置模态窗：编辑 multimodal-config.json，热更新 image-processor / reidentify -->
+    <BaseModal
+      v-model="multiModalConfigOpen"
+      aria-label="多模态配置编辑器"
+      @close="closeMultiModalConfigModal"
+    >
+      <template #default="{ overlayAttrs, panelAttrs, panelRef }">
+        <div v-bind="overlayAttrs" class="mm-config-overlay">
+          <div :ref="panelRef" v-bind="panelAttrs" class="mm-config-panel" role="dialog" aria-modal="true">
+            <header class="mm-config-header">
+              <div>
+                <h3>多模态配置 (multimodal-config.json)</h3>
+                <p>JSON 真相源，保存后立即热加载，无需重启服务器。</p>
+              </div>
+              <button class="modal-close" type="button" aria-label="关闭" @click="closeMultiModalConfigModal">×</button>
+            </header>
+
+            <p v-if="isMultiModalConfigLoading" class="status-tip">正在加载…</p>
+            <p v-if="multiModalConfigError" class="status-tip mm-error">{{ multiModalConfigError }}</p>
+
+            <div class="mm-config-body">
+              <label class="mm-field">
+                <span>多模态识别模型 (MultiModalModel)</span>
+                <input v-model="multiModalConfigDraft.MultiModalModel" type="text" placeholder="例如：gemini-2.5-flash" />
+              </label>
+
+              <label class="mm-field">
+                <span>多模态识别提示词 (MultiModalPrompt)</span>
+                <textarea v-model="multiModalConfigDraft.MultiModalPrompt" rows="6"></textarea>
+              </label>
+
+              <label class="mm-field">
+                <span>多模态信息插入提示词 (MediaInsertPrompt)</span>
+                <textarea v-model="multiModalConfigDraft.MediaInsertPrompt" rows="3"></textarea>
+              </label>
+
+              <div class="mm-grid">
+                <label class="mm-field">
+                  <span>最大输出 Tokens (MultiModalModelOutputMaxTokens)</span>
+                  <input v-model.number="multiModalConfigDraft.MultiModalModelOutputMaxTokens" type="number" min="1" />
+                </label>
+                <label class="mm-field">
+                  <span>最大上下文 Tokens (MultiModalModelContent)</span>
+                  <input v-model.number="multiModalConfigDraft.MultiModalModelContent" type="number" min="1" />
+                </label>
+                <label class="mm-field">
+                  <span>Thinking Budget (MultiModalModelThinkingBudget)</span>
+                  <input v-model.number="multiModalConfigDraft.MultiModalModelThinkingBudget" type="number" min="0" />
+                </label>
+                <label class="mm-field">
+                  <span>异步并发上限 (MultiModalModelAsynchronousLimit)</span>
+                  <input v-model.number="multiModalConfigDraft.MultiModalModelAsynchronousLimit" type="number" min="1" />
+                </label>
+              </div>
+
+              <label class="mm-field">
+                <span>纯文本模型强制翻译列表 (MultiModalForceTranslateModels)，逗号分隔</span>
+                <input v-model="multiModalConfigForceTranslateText" type="text" placeholder="deepseek,glm" />
+                <small>命中其中任意 tag（不区分大小写、子串匹配）即把多模态强制翻译为文本，并禁用 base64 还原。</small>
+              </label>
+
+              <p v-if="multiModalConfigPath" class="mm-meta">
+                配置文件：<code>{{ multiModalConfigPath }}</code>
+                <span v-if="multiModalConfigWatcher" class="mm-meta-tag">热加载已启用</span>
+              </p>
+            </div>
+
+            <footer class="mm-config-footer">
+              <button class="btn-secondary" type="button" @click="closeMultiModalConfigModal" :disabled="isMultiModalConfigSaving">
+                取消
+              </button>
+              <button class="btn-success" type="button" @click="saveMultiModalConfig" :disabled="isMultiModalConfigSaving || isMultiModalConfigLoading">
+                {{ isMultiModalConfigSaving ? '保存中…' : '保存配置' }}
+              </button>
+            </footer>
+          </div>
+        </div>
+      </template>
+    </BaseModal>
+
     <BaseModal
       v-model="previewOpen"
       aria-label="媒体预览"
@@ -157,12 +240,24 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
-import { mediaCacheApi, type MediaCacheItem } from '@/api'
+import { mediaCacheApi, systemApi, type MediaCacheItem } from '@/api'
+import type { MultiModalConfig } from '@/types/api.system'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
+
+const DEFAULT_MULTIMODAL_CONFIG: MultiModalConfig = {
+  MultiModalModel: '',
+  MultiModalPrompt: '',
+  MediaInsertPrompt: '',
+  MultiModalModelOutputMaxTokens: 50000,
+  MultiModalModelContent: 250000,
+  MultiModalModelThinkingBudget: 0,
+  MultiModalModelAsynchronousLimit: 1,
+  MultiModalForceTranslateModels: []
+}
 
 const DEFAULT_PAGE_SIZE = 20
 const isDev = import.meta.env.DEV
@@ -195,6 +290,92 @@ const previewOpen = ref(false)
 const previewDataUrl = ref('')
 const previewType = ref<'image' | 'video'>('image')
 const modalCloseBtn = ref<HTMLButtonElement | null>(null)
+
+// ──────────── 多模态配置模态状态 ────────────
+const multiModalConfigOpen = ref(false)
+const isMultiModalConfigLoading = ref(false)
+const isMultiModalConfigSaving = ref(false)
+const multiModalConfigError = ref<string | null>(null)
+const multiModalConfigPath = ref<string>('')
+const multiModalConfigWatcher = ref<boolean>(false)
+const multiModalConfigDraft = reactive<MultiModalConfig>({ ...DEFAULT_MULTIMODAL_CONFIG })
+const multiModalConfigForceTranslateText = ref<string>('')
+
+function applyMultiModalConfig(config: MultiModalConfig) {
+  multiModalConfigDraft.MultiModalModel = config.MultiModalModel ?? ''
+  multiModalConfigDraft.MultiModalPrompt = config.MultiModalPrompt ?? ''
+  multiModalConfigDraft.MediaInsertPrompt = config.MediaInsertPrompt ?? ''
+  multiModalConfigDraft.MultiModalModelOutputMaxTokens = Number(config.MultiModalModelOutputMaxTokens) || 0
+  multiModalConfigDraft.MultiModalModelContent = Number(config.MultiModalModelContent) || 0
+  multiModalConfigDraft.MultiModalModelThinkingBudget = Number(config.MultiModalModelThinkingBudget) || 0
+  multiModalConfigDraft.MultiModalModelAsynchronousLimit = Math.max(1, Number(config.MultiModalModelAsynchronousLimit) || 1)
+  multiModalConfigDraft.MultiModalForceTranslateModels = Array.isArray(config.MultiModalForceTranslateModels)
+    ? [...config.MultiModalForceTranslateModels]
+    : []
+  multiModalConfigForceTranslateText.value = multiModalConfigDraft.MultiModalForceTranslateModels.join(',')
+}
+
+async function openMultiModalConfigModal() {
+  multiModalConfigOpen.value = true
+  isMultiModalConfigLoading.value = true
+  multiModalConfigError.value = null
+  try {
+    const response = await systemApi.getMultiModalConfig({}, { showLoader: false, suppressErrorMessage: true })
+    applyMultiModalConfig(response.config)
+    multiModalConfigPath.value = response.path || ''
+    multiModalConfigWatcher.value = !!response.watcherActive
+    if (response.lastLoadError) {
+      multiModalConfigError.value = `JSON 解析警告：${response.lastLoadError}`
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    multiModalConfigError.value = `加载多模态配置失败：${message}`
+  } finally {
+    isMultiModalConfigLoading.value = false
+  }
+}
+
+function closeMultiModalConfigModal() {
+  if (isMultiModalConfigSaving.value) return
+  multiModalConfigOpen.value = false
+}
+
+function parseForceTranslateInput(raw: string): string[] {
+  return raw
+    .split(',')
+    .map(item => item.trim().toLowerCase())
+    .filter(item => item !== '')
+}
+
+async function saveMultiModalConfig() {
+  if (isMultiModalConfigSaving.value) return
+  isMultiModalConfigSaving.value = true
+  try {
+    const payload: Partial<MultiModalConfig> = {
+      MultiModalModel: multiModalConfigDraft.MultiModalModel,
+      MultiModalPrompt: multiModalConfigDraft.MultiModalPrompt,
+      MediaInsertPrompt: multiModalConfigDraft.MediaInsertPrompt,
+      MultiModalModelOutputMaxTokens: Number(multiModalConfigDraft.MultiModalModelOutputMaxTokens) || 0,
+      MultiModalModelContent: Number(multiModalConfigDraft.MultiModalModelContent) || 0,
+      MultiModalModelThinkingBudget: Number(multiModalConfigDraft.MultiModalModelThinkingBudget) || 0,
+      MultiModalModelAsynchronousLimit: Math.max(1, Number(multiModalConfigDraft.MultiModalModelAsynchronousLimit) || 1),
+      MultiModalForceTranslateModels: parseForceTranslateInput(multiModalConfigForceTranslateText.value)
+    }
+    const response = await systemApi.saveMultiModalConfig(payload, {}, { showLoader: false })
+    applyMultiModalConfig(response.config)
+    multiModalConfigPath.value = response.path || multiModalConfigPath.value
+    multiModalConfigWatcher.value = !!response.watcherActive
+    multiModalConfigError.value = null
+    multiModalConfigOpen.value = false
+    showMessage(response.message || '多模态配置已保存。', 'success')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    multiModalConfigError.value = `保存失败：${message}`
+    showMessage(`保存多模态配置失败：${message}`, 'error')
+  } finally {
+    isMultiModalConfigSaving.value = false
+  }
+}
 
 let previouslyFocusedElement: HTMLElement | null = null
 
@@ -758,6 +939,121 @@ textarea:focus-visible,
   }
 
   .media-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ──────────── Multi-modal config modal ──────────── */
+.mm-config-overlay {
+  background: var(--overlay-backdrop-strong, rgba(0, 0, 0, 0.6));
+}
+
+.mm-config-panel {
+  width: min(720px, 94vw);
+  max-height: 90vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--secondary-bg);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-lg);
+  position: relative;
+}
+
+.mm-config-header {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+
+.mm-config-header h3 {
+  margin: 0;
+}
+
+.mm-config-header p {
+  margin: 4px 0 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.mm-config-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.mm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mm-field span {
+  font-size: var(--font-size-helper);
+  color: var(--secondary-text);
+}
+
+.mm-field input,
+.mm-field textarea {
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--primary-text);
+  font: inherit;
+  resize: vertical;
+}
+
+.mm-field small {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.mm-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  gap: var(--space-3);
+}
+
+.mm-meta {
+  font-size: var(--font-size-helper);
+  color: var(--secondary-text);
+  margin: 0;
+}
+
+.mm-meta code {
+  background: var(--input-bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.mm-meta-tag {
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--success-color, #22c55e);
+  color: var(--on-accent-text, #fff);
+  font-size: var(--font-size-caption);
+}
+
+.mm-error {
+  color: var(--danger-color, #ef4444);
+}
+
+.mm-config-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  border-top: 1px solid var(--border-color);
+  padding-top: var(--space-3);
+}
+
+@media (max-width: 600px) {
+  .mm-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -59,18 +59,47 @@ module.exports = function() {
     let bridgeConfigWatcher = null;
 
     router.get('/final-context', (req, res) => {
-        const snapshot = finalContextStore.getLastFinalContext();
+        // 支持通过 ?id=xxx 切换查看历史快照；不传 id 则返回最新一条
+        const requestedId = req.query?.id;
+        const list = finalContextStore.listFinalContexts();
+
+        if (list.length === 0) {
+            return res.json({
+                available: false,
+                message: '尚未捕获任何最终上下文。请先发起一次 /v1/chat/completions 请求。',
+                list: [],
+                maxSnapshots: finalContextStore.MAX_SNAPSHOTS
+            });
+        }
+
+        const snapshot = requestedId !== undefined && requestedId !== ''
+            ? finalContextStore.getFinalContextById(requestedId)
+            : finalContextStore.getLastFinalContext();
 
         if (!snapshot) {
             return res.json({
                 available: false,
-                message: '尚未捕获任何最终上下文。请先发起一次 /v1/chat/completions 请求。'
+                message: `未找到 id=${requestedId} 的快照，可能已被新请求挤出 ${finalContextStore.MAX_SNAPSHOTS} 组缓存。`,
+                list,
+                maxSnapshots: finalContextStore.MAX_SNAPSHOTS
             });
         }
 
         res.json({
             available: true,
-            snapshot
+            snapshot,
+            list,
+            maxSnapshots: finalContextStore.MAX_SNAPSHOTS
+        });
+    });
+
+    // 仅返回快照元信息列表（轻量），用于前端下拉刷新而无需重传整份 body
+    router.get('/final-context/list', (req, res) => {
+        const list = finalContextStore.listFinalContexts();
+        res.json({
+            success: true,
+            list,
+            maxSnapshots: finalContextStore.MAX_SNAPSHOTS
         });
     });
 

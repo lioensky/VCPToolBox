@@ -106,6 +106,7 @@ module.exports = function (
   mount("/", "emojis"); // Handles /emojis/*
   mount("/", "pluginStore"); // Handles /plugin-store/*
   mount("/", "bridgeProfiles"); // Handles /bridge-profiles/*
+  mount("/", "multimodalConfig"); // Handles /multimodal-config (JSON 真相源 + 热更新)
 
   return adminApiRouter;
 };
