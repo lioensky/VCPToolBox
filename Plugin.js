@@ -11,9 +11,23 @@ const chokidar = require('chokidar');
 const { getAuthCode } = require('./modules/captchaDecoder'); // 导入统一的解码函数
 const ToolApprovalManager = require('./modules/toolApprovalManager');
 const { hasFoldMarkers, buildDynamicFoldObject } = require('./modules/foldProtocol');
+const {
+    createPluginRootResolver,
+    discoverLegacyManifestRecordsFromRoot
+} = require('./modules/pluginRootResolver');
+const { classifyExternalPluginManifest } = require('./modules/externalPluginSafetyGate');
+const {
+    evaluateExternalPluginAllowPolicy
+} = require('./modules/externalPluginAllowPolicy');
+const {
+    buildExternalPluginRuntimeEnv,
+    isPluginRuntimeEnvKeyDenied
+} = require('./modules/pluginRuntimeEnvSandbox');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
+const EXTERNAL_LEGACY_PLUGIN_DIRS_ENV = 'VCP_PLUGIN_DIRS';
+const EXTERNAL_PLUGIN_ALLOWLIST_ENV = 'VCP_EXTERNAL_PLUGIN_ALLOWLIST';
 const PREPROCESSOR_ORDER_FILE = path.join(__dirname, 'preprocessor_order.json');
 const SSH_MANAGER_ENV_PLUGIN_ALLOWLIST = new Set([
     'LinuxShellExecutor',
@@ -22,6 +36,43 @@ const SSH_MANAGER_ENV_PLUGIN_ALLOWLIST = new Set([
 const LOG_MONITOR_ENV_PLUGIN_ALLOWLIST = new Set([
     'LinuxLogMonitor'
 ]);
+
+const PLUGIN_DIAGNOSTIC_SECRET_PATTERNS = [
+    /((?:api[_-]?key|apikey|token|secret|password|passwd|pwd|authorization|bearer|cookie|session|credential|private[_-]?key)\s*[:=]\s*)[^\s"',;}\]]+/gi,
+    /\b(?:sk|ghp|github_pat|xox[baprs]|ya29)\b[-_A-Za-z0-9]{12,}/gi,
+    /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi
+];
+
+function scrubPluginDiagnosticText(value) {
+    if (value === undefined || value === null) {
+        return '';
+    }
+
+    let text = String(value);
+    for (const pattern of PLUGIN_DIAGNOSTIC_SECRET_PATTERNS) {
+        text = text.replace(pattern, (match, prefix) => (
+            prefix ? `${prefix}[redacted]` : '[redacted]'
+        ));
+    }
+    text = text.replace(/\b[A-Za-z]:\\[^\s"',;}\]]+/g, '[path]');
+    text = text.replace(/(^|[\s"'(])\/(?:Users|home|var|tmp|etc|opt|srv|mnt)\/[^\s"',;}\]]+/g, '$1[path]');
+    text = text.replace(/\\\\[^\\\s"',;}\]]+(?:\\[^\s"',;}\]]+)+/g, '[path]');
+    return text;
+}
+
+function scrubPluginDiagnosticSnippet(value, maxLength) {
+    return scrubPluginDiagnosticText(value).substring(0, maxLength);
+}
+
+function formatRuntimeEnvDebugKeyList(env = {}) {
+    const keys = Object.keys(env || {});
+    const visibleKeys = keys
+        .filter(key => !isPluginRuntimeEnvKeyDenied(key))
+        .sort();
+    const redactedCount = keys.length - visibleKeys.length;
+    const suffix = redactedCount > 0 ? ` (redacted ${redactedCount} sensitive keys)` : '';
+    return `${visibleKeys.join(',')}${suffix}`;
+}
 
 class PluginManager extends EventEmitter {
     constructor() {
@@ -42,6 +93,11 @@ class PluginManager extends EventEmitter {
         this.tdbKnowledgeManager = null; // 冷知识库管理器，等待 server.js 注入
         this.toolApprovalManager = new ToolApprovalManager(path.join(__dirname, 'toolApprovalConfig.json'));
         this.pendingApprovals = new Map(); // requestId -> { resolve, reject, timeoutId }
+        this.pluginRootResolver = createPluginRootResolver({
+            projectRoot: __dirname,
+            env: process.env
+        });
+        this.lastPluginRootSnapshot = null;
     }
 
     setWebSocketServer(wss) {
@@ -183,6 +239,409 @@ class PluginManager extends EventEmitter {
         return true;
     }
 
+    _isExternalPluginManifest(plugin) {
+        return plugin?.pluginSource === 'external';
+    }
+
+    _spawnPluginProcess(command, args, options) {
+        return spawn(command, args, options);
+    }
+
+    _buildPluginProcessEnv(plugin, pluginConfig = {}, additionalEnv = {}) {
+        if (this._isExternalPluginManifest(plugin)) {
+            return buildExternalPluginRuntimeEnv(process.env, pluginConfig, additionalEnv);
+        }
+
+        return {
+            ...process.env,
+            ...Object.fromEntries(
+                Object.entries(pluginConfig || {})
+                    .filter(([, value]) => value !== undefined)
+                    .map(([key, value]) => [key, String(value)])
+            ),
+            ...additionalEnv
+        };
+    }
+
+    async _loadPluginEnvConfig(pluginPath, pluginName) {
+        try {
+            const pluginEnvContent = await fs.readFile(path.join(pluginPath, 'config.env'), 'utf-8');
+            return dotenv.parse(pluginEnvContent);
+        } catch (envError) {
+            if (envError.code !== 'ENOENT') {
+                console.warn(`[PluginManager] Error reading config.env for ${pluginName}:`, scrubPluginDiagnosticText(envError.message));
+            }
+            return {};
+        }
+    }
+
+    _parseExternalLegacyPluginDirs(rawValue) {
+        if (!rawValue || typeof rawValue !== 'string') {
+            return [];
+        }
+
+        const hasWindowsDrivePrefix = /^[A-Za-z]:[\\/]/.test(rawValue);
+        const primarySeparator = rawValue.includes(';') ? ';' : (hasWindowsDrivePrefix ? null : ':');
+        const rawParts = primarySeparator ? rawValue.split(primarySeparator) : [rawValue];
+        const seen = new Set();
+        const dirs = [];
+
+        for (const rawPart of rawParts) {
+            const trimmed = rawPart.trim();
+            if (!trimmed) continue;
+
+            const resolved = path.resolve(__dirname, trimmed);
+            const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            dirs.push(resolved);
+        }
+
+        return dirs;
+    }
+
+    _getExternalLegacyPluginDirs() {
+        return this._parseExternalLegacyPluginDirs(process.env[EXTERNAL_LEGACY_PLUGIN_DIRS_ENV]);
+    }
+
+    _formatPluginRootForLog(rootInfo, fallbackLabel = 'plugin-root') {
+        if (!rootInfo || typeof rootInfo !== 'object') return fallbackLabel;
+        const rootId = rootInfo.rootId || fallbackLabel;
+        const displayPath = rootInfo.displayPath || rootInfo.root || null;
+        return displayPath ? `${rootId}(${displayPath})` : rootId;
+    }
+
+    _formatPluginRootDiagnosticForLog(item) {
+        if (!item || typeof item !== 'object') return 'plugin-root';
+        return this._formatPluginRootForLog(
+            { rootId: item.rootId || item.code || 'plugin-root', displayPath: item.root || null },
+            item.code || 'plugin-root'
+        );
+    }
+
+    _formatPluginErrorForLog(error) {
+        if (!error || typeof error !== 'object') return 'UNKNOWN_ERROR';
+        return error.code || error.name || 'UNKNOWN_ERROR';
+    }
+
+    getPluginRootSnapshot() {
+        return this.lastPluginRootSnapshot || this.pluginRootResolver.getPluginRootSnapshotSync();
+    }
+
+    _getPluginRootInfosForLog(snapshot = null) {
+        const rootSnapshot = snapshot || this.getPluginRootSnapshot();
+        return [
+            rootSnapshot.coreLegacyRoot,
+            rootSnapshot.coreModernRoot,
+            ...(rootSnapshot.externalLegacyRoots || [])
+        ].filter(Boolean);
+    }
+
+    _isPathInsideRoot(candidatePath, rootPath) {
+        const relative = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+        return !relative.startsWith('..') && !path.isAbsolute(relative);
+    }
+
+    _formatPluginEventPathForLog(filePath) {
+        if (!filePath || typeof filePath !== 'string') return 'unknown';
+        const rootInfos = this._getPluginRootInfosForLog()
+            .filter(rootInfo => rootInfo.rootPath)
+            .sort((a, b) => b.rootPath.length - a.rootPath.length);
+
+        for (const rootInfo of rootInfos) {
+            if (this._isPathInsideRoot(filePath, rootInfo.rootPath)) {
+                const relative = path.relative(rootInfo.rootPath, filePath).replace(/\\/g, '/');
+                return `${this._formatPluginRootForLog(rootInfo)}/${relative || path.basename(filePath)}`;
+            }
+        }
+
+        return path.basename(filePath);
+    }
+
+    _getExternalPluginRuntimeAllowPolicy() {
+        return process.env[EXTERNAL_PLUGIN_ALLOWLIST_ENV] || '';
+    }
+
+    _getExternalRegistrationReasonCode(policyDecision, classification) {
+        const reasons = [
+            ...(classification?.reasons || []),
+            ...(policyDecision?.reasons || [])
+        ].join('\n');
+
+        if (classification?.duplicateOfBuiltIn) return 'external_runtime_duplicate_core_name';
+        if (/missing a concrete plugin name|missing a plugin name/i.test(reasons)) return 'external_runtime_missing_name';
+        if (/missing a base path/i.test(reasons)) return 'external_runtime_missing_base_path';
+        if (/invalid entries|wildcard allowlist|name-only allowlist|path-only/i.test(reasons)) return 'external_runtime_invalid_policy';
+        if (/source directory did not match/i.test(reasons)) return 'external_runtime_source_mismatch';
+        if (/requires explicit name and source directory allow policy/i.test(reasons)) return 'external_runtime_allowlist_required';
+        if (/entrypoint is missing or unsupported/i.test(reasons)) return 'external_runtime_unsupported_entrypoint';
+        return 'external_runtime_registration_blocked';
+    }
+
+    _sanitizeExternalRootIdForLog(rootId) {
+        if (typeof rootId !== 'string') return 'external:unknown';
+
+        const trimmed = rootId.trim();
+        if (!trimmed.startsWith('external:')) return 'external:unknown';
+
+        const value = trimmed.slice('external:'.length).trim();
+        if (!value) return 'external:unknown';
+
+        if (
+            value.includes('/') ||
+            value.includes('\\') ||
+            path.isAbsolute(value) ||
+            path.win32.isAbsolute(value)
+        ) {
+            return 'external:path';
+        }
+
+        if (!/^[A-Za-z0-9_.-]+$/.test(value)) {
+            return 'external:opaque';
+        }
+
+        return `external:${value}`;
+    }
+
+    _sanitizeExternalRuntimeRootId(rootId) {
+        return this._sanitizeExternalRootIdForLog(rootId);
+    }
+
+    _sanitizeExternalRuntimeDisplayPath(displayPath) {
+        if (typeof displayPath === 'string' && displayPath.startsWith('[external]')) {
+            return displayPath;
+        }
+        return '[external]';
+    }
+
+    _isExternalDirectOrHybridSameProcess(manifest) {
+        if (!this._isExternalPluginManifest(manifest)) {
+            return false;
+        }
+        const protocol = manifest?.communication?.protocol;
+        return protocol === 'direct' && typeof manifest.entryPoint?.script === 'string' && manifest.entryPoint.script.trim();
+    }
+
+    _getExternalDirectRuntimeBlockReason(manifest) {
+        if (manifest?.requiresAdmin === true) {
+            return 'external_direct_requires_admin_denied';
+        }
+
+        if (manifest?.pluginType === 'hybridservice') {
+            return 'external_hybrid_runtime_denied';
+        }
+
+        return 'external_direct_runtime_denied';
+    }
+
+    _evaluateExternalPluginRuntimeRegistration(manifest) {
+        if (!this._isExternalPluginManifest(manifest)) {
+            return {
+                allowed: true,
+                decision: 'observe',
+                pluginName: manifest?.name || 'unknown',
+                pluginSource: manifest?.pluginSource || 'core'
+            };
+        }
+
+        const classification = classifyExternalPluginManifest(manifest, {
+            projectRoot: __dirname,
+            isExternal: true,
+            builtInPluginNames: Array.from(this.plugins.keys())
+        });
+
+        if (this._isExternalDirectOrHybridSameProcess(manifest)) {
+            return {
+                allowed: false,
+                decision: 'blocked',
+                code: this._getExternalDirectRuntimeBlockReason(manifest),
+                pluginName: classification.pluginName,
+                pluginSource: 'external',
+                pluginRootId: this._sanitizeExternalRuntimeRootId(manifest.pluginRootId),
+                pluginRootDisplayPath: this._sanitizeExternalRuntimeDisplayPath(manifest.pluginRootDisplayPath),
+                risk: classification.risk,
+                entryPointKind: classification.entryPointKind
+            };
+        }
+
+        const policyDecision = evaluateExternalPluginAllowPolicy(
+            classification,
+            this._getExternalPluginRuntimeAllowPolicy(),
+            { projectRoot: __dirname }
+        );
+        const duplicateExisting = Boolean(manifest.name && this.plugins.has(manifest.name));
+        const allowed = policyDecision.decision === 'would_allow'
+            && classification.duplicateOfBuiltIn !== true
+            && duplicateExisting !== true;
+
+        return {
+            allowed,
+            decision: allowed ? 'allowed' : 'blocked',
+            code: allowed
+                ? 'external_runtime_registration_allowed'
+                : this._getExternalRegistrationReasonCode(policyDecision, {
+                    ...classification,
+                    duplicateOfBuiltIn: classification.duplicateOfBuiltIn || duplicateExisting
+                }),
+            pluginName: classification.pluginName,
+            pluginSource: 'external',
+            pluginRootId: this._sanitizeExternalRuntimeRootId(manifest.pluginRootId),
+            pluginRootDisplayPath: this._sanitizeExternalRuntimeDisplayPath(manifest.pluginRootDisplayPath),
+            risk: classification.risk,
+            entryPointKind: classification.entryPointKind
+        };
+    }
+
+    _warnExternalPluginRegistrationBlocked(decision) {
+        const pluginName = decision?.pluginName || 'unknown';
+        const rootId = decision?.pluginRootId || 'external:unknown';
+        const rootLabel = decision?.pluginRootDisplayPath || '[external]';
+        const code = decision?.code || 'external_runtime_registration_blocked';
+        console.warn(`[PluginManager] Skipped external plugin runtime registration: ${pluginName} (${rootId}, ${rootLabel}) ${code}`);
+    }
+
+    _sanitizeRuntimeDuplicateSource(source) {
+        if (source === 'external') return 'external';
+        if (source === 'distributed') return 'distributed';
+        return 'core';
+    }
+
+    _sanitizeRuntimeDuplicateRootId(source, rootId) {
+        const safeSource = this._sanitizeRuntimeDuplicateSource(source);
+        if (typeof rootId !== 'string' || !rootId.trim()) {
+            return safeSource === 'external' ? 'external:unknown' : `${safeSource}:unknown`;
+        }
+        if (rootId.startsWith('external:')) return this._sanitizeExternalRootIdForLog(rootId);
+        if (rootId.startsWith('core:')) return rootId;
+        if (rootId.startsWith('distributed:')) return rootId;
+        return `${safeSource}:unknown`;
+    }
+
+    _buildRuntimeDuplicateDescriptor(manifest) {
+        const source = this._sanitizeRuntimeDuplicateSource(
+            manifest?.pluginSource || (manifest?.isDistributed ? 'distributed' : 'core')
+        );
+        return {
+            source,
+            rootId: this._sanitizeRuntimeDuplicateRootId(source, manifest?.pluginRootId)
+        };
+    }
+
+    _warnDuplicateLocalPluginSkipped(skippedManifest, existingManifest = null) {
+        const pluginName = skippedManifest?.name || 'unknown';
+        const skipped = this._buildRuntimeDuplicateDescriptor(skippedManifest);
+        const existing = this._buildRuntimeDuplicateDescriptor(existingManifest);
+        console.warn(
+            `[PluginManager] Skipped duplicate local plugin manifest: ${pluginName} ` +
+            `(existing ${existing.source}/${existing.rootId}, skipped ${skipped.source}/${skipped.rootId}) duplicate_plugin_name`
+        );
+    }
+
+    async _discoverLegacyPluginManifestsFromDir(pluginRoot, sourceLabel = 'core', rootInfo = null) {
+        const effectiveRootInfo = rootInfo || {
+            rootId: sourceLabel === 'external' ? 'external:manual' : 'core:legacy',
+            source: sourceLabel,
+            rootPath: pluginRoot,
+            displayPath: sourceLabel === 'external' ? '[external]' : 'Plugin',
+            allowConfigEnv: sourceLabel !== 'external',
+            enabled: true
+        };
+        const result = await discoverLegacyManifestRecordsFromRoot(effectiveRootInfo);
+
+        if (result.diagnostics?.length && this.debugMode) {
+            result.diagnostics.forEach(item => {
+                const rootLabel = this._formatPluginRootDiagnosticForLog(item);
+                console.warn(`[PluginManager] Plugin manifest diagnostic: ${item.code} ${rootLabel}`.trim());
+            });
+        }
+
+        const manifests = [];
+        for (const record of result.records || []) {
+            if (!record.enabled) continue;
+
+            try {
+                await fs.access(path.join(record.pluginPath, '.disabled'));
+                continue;
+            } catch (error) {
+                if (error.code !== 'ENOENT') {
+                    continue;
+                }
+            }
+
+            const manifest = record.manifest;
+            if (!manifest.name || !manifest.pluginType || !manifest.entryPoint) continue;
+
+            manifest.basePath = record.pluginPath;
+            manifest.pluginSource = record.source;
+            manifest.pluginRoot = record.rootPath;
+            manifest.pluginRootId = record.rootId;
+            manifest.pluginRootDisplayPath = record.rootDisplayPath;
+            manifest.pluginSpecificEnvConfig = record.allowConfigEnv === false
+                ? {}
+                : await this._loadPluginEnvConfig(record.pluginPath, manifest.name);
+            manifests.push(manifest);
+        }
+
+        return manifests;
+    }
+
+    async _discoverLegacyPluginManifests() {
+        const rootSnapshot = await this.pluginRootResolver.getPluginRootSnapshot();
+        this.lastPluginRootSnapshot = rootSnapshot;
+
+        if (rootSnapshot.diagnostics?.length && this.debugMode) {
+            rootSnapshot.diagnostics.forEach(item => {
+                const rootLabel = this._formatPluginRootDiagnosticForLog(item);
+                console.warn(`[PluginManager] Plugin root diagnostic: ${item.code} ${rootLabel} ${item.message || ''}`.trim());
+            });
+        }
+
+        const manifests = [];
+        for (const rootInfo of rootSnapshot.legacyLoadRoots) {
+            const rootManifests = await this._discoverLegacyPluginManifestsFromDir(
+                rootInfo.rootPath,
+                rootInfo.source,
+                rootInfo
+            );
+            manifests.push(...rootManifests);
+        }
+        return manifests;
+    }
+
+    async _registerLocalPlugin(manifest, discoveredPreprocessors, modulesToInitialize) {
+        const registrationDecision = this._evaluateExternalPluginRuntimeRegistration(manifest);
+        if (!registrationDecision.allowed) {
+            this._warnExternalPluginRegistrationBlocked(registrationDecision);
+            return false;
+        }
+
+        this.plugins.set(manifest.name, manifest);
+        console.log(`[PluginManager] Loaded manifest: ${manifest.displayName} (${manifest.name}, Type: ${manifest.pluginType})`);
+
+        const isPreprocessor = manifest.pluginType === 'messagePreprocessor' || manifest.pluginType === 'hybridservice';
+        const isService = manifest.pluginType === 'service' || manifest.pluginType === 'hybridservice';
+
+        if ((isPreprocessor || isService) && manifest.entryPoint.script && manifest.communication?.protocol === 'direct') {
+            try {
+                const scriptPath = path.join(manifest.basePath, manifest.entryPoint.script);
+                const module = require(scriptPath);
+
+                modulesToInitialize.push({ manifest, module });
+
+                if (isPreprocessor && typeof module.processMessages === 'function') {
+                    discoveredPreprocessors.set(manifest.name, module);
+                }
+                if (isService) {
+                    this.serviceModules.set(manifest.name, { manifest, module });
+                }
+            } catch (error) {
+                console.error(`[PluginManager] Error loading module for ${manifest.name}:`, scrubPluginDiagnosticText(error.message));
+            }
+        }
+
+        return true;
+    }
+
     /**
      * 跨平台进程树终止方法。
      * Windows 上 shell:true 会创建 cmd.exe 包装进程，直接 kill 只杀 cmd 不杀子进程，
@@ -222,19 +681,14 @@ class PluginManager extends EventEmitter {
 
         return new Promise((resolve, reject) => {
             const pluginConfig = this._getPluginConfig(plugin);
-            const envForProcess = { ...process.env };
-            for (const key in pluginConfig) {
-                if (pluginConfig.hasOwnProperty(key) && pluginConfig[key] !== undefined) {
-                    envForProcess[key] = String(pluginConfig[key]);
-                }
-            }
+            const additionalEnv = {};
             if (this.projectBasePath) { // Add projectBasePath for static plugins too if needed
-                envForProcess.PROJECT_BASE_PATH = this.projectBasePath;
+                additionalEnv.PROJECT_BASE_PATH = this.projectBasePath;
             }
-
+            const envForProcess = this._buildPluginProcessEnv(plugin, pluginConfig, additionalEnv);
 
             const [command, ...args] = plugin.entryPoint.command.split(' ');
-            const pluginProcess = spawn(command, args, { cwd: plugin.basePath, shell: true, env: envForProcess, windowsHide: true });
+            const pluginProcess = this._spawnPluginProcess(command, args, { cwd: plugin.basePath, shell: true, env: envForProcess, windowsHide: true });
             let output = '';
             let errorOutput = '';
             let processExited = false;
@@ -255,8 +709,9 @@ class PluginManager extends EventEmitter {
             pluginProcess.on('error', (err) => {
                 processExited = true;
                 clearTimeout(timeoutId);
-                console.error(`[PluginManager] Failed to start static plugin ${plugin.name}: ${err.message}`);
-                reject(err);
+                const safeMessage = scrubPluginDiagnosticText(err.message);
+                console.error(`[PluginManager] Failed to start static plugin ${plugin.name}: ${safeMessage}`);
+                reject(new Error(safeMessage));
             });
 
             pluginProcess.on('exit', (code, signal) => {
@@ -271,12 +726,12 @@ class PluginManager extends EventEmitter {
                     return;
                 }
                 if (code !== 0) {
-                    const errMsg = `Static plugin ${plugin.name} exited with code ${code}. Stderr: ${errorOutput.trim()}`;
+                    const errMsg = `Static plugin ${plugin.name} exited with code ${code}. Stderr: ${scrubPluginDiagnosticText(errorOutput.trim())}`;
                     console.error(`[PluginManager] ${errMsg}`);
                     reject(new Error(errMsg));
                 } else {
                     if (errorOutput.trim() && this.debugMode) {
-                        console.warn(`[PluginManager] Static plugin ${plugin.name} produced stderr output: ${errorOutput.trim()}`);
+                        console.warn(`[PluginManager] Static plugin ${plugin.name} produced stderr output: ${scrubPluginDiagnosticText(errorOutput.trim())}`);
                     }
                     resolve(output.trim());
                 }
@@ -567,55 +1022,13 @@ class PluginManager extends EventEmitter {
 
         try {
             // 2. 发现并加载所有插件模块，但不初始化
-            const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
-            for (const folder of pluginFolders) {
-                if (folder.isDirectory()) {
-                    const pluginPath = path.join(PLUGIN_DIR, folder.name);
-                    const manifestPath = path.join(pluginPath, manifestFileName);
-                    try {
-                        const manifestContent = await fs.readFile(manifestPath, 'utf-8');
-                        const manifest = JSON.parse(manifestContent);
-                        if (!manifest.name || !manifest.pluginType || !manifest.entryPoint) continue;
-                        if (this.plugins.has(manifest.name)) continue;
-
-                        manifest.basePath = pluginPath;
-                        manifest.pluginSpecificEnvConfig = {};
-                        try {
-                            const pluginEnvContent = await fs.readFile(path.join(pluginPath, 'config.env'), 'utf-8');
-                            manifest.pluginSpecificEnvConfig = dotenv.parse(pluginEnvContent);
-                        } catch (envError) {
-                            if (envError.code !== 'ENOENT') console.warn(`[PluginManager] Error reading config.env for ${manifest.name}:`, envError.message);
-                        }
-
-                        this.plugins.set(manifest.name, manifest);
-                        console.log(`[PluginManager] Loaded manifest: ${manifest.displayName} (${manifest.name}, Type: ${manifest.pluginType})`);
-
-                        const isPreprocessor = manifest.pluginType === 'messagePreprocessor' || manifest.pluginType === 'hybridservice';
-                        const isService = manifest.pluginType === 'service' || manifest.pluginType === 'hybridservice';
-
-                        if ((isPreprocessor || isService) && manifest.entryPoint.script && manifest.communication?.protocol === 'direct') {
-                            try {
-                                const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
-                                const module = require(scriptPath);
-
-                                modulesToInitialize.push({ manifest, module });
-
-                                if (isPreprocessor && typeof module.processMessages === 'function') {
-                                    discoveredPreprocessors.set(manifest.name, module);
-                                }
-                                if (isService) {
-                                    this.serviceModules.set(manifest.name, { manifest, module });
-                                }
-                            } catch (e) {
-                                console.error(`[PluginManager] Error loading module for ${manifest.name}:`, e);
-                            }
-                        }
-                    } catch (error) {
-                        if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) {
-                            console.error(`[PluginManager] Error loading plugin from ${folder.name}:`, error);
-                        }
-                    }
+            const legacyManifests = await this._discoverLegacyPluginManifests();
+            for (const manifest of legacyManifests) {
+                if (this.plugins.has(manifest.name)) {
+                    this._warnDuplicateLocalPluginSkipped(manifest, this.plugins.get(manifest.name));
+                    continue;
                 }
+                await this._registerLocalPlugin(manifest, discoveredPreprocessors, modulesToInitialize);
             }
 
             // 3. 确定预处理器加载顺序
@@ -1131,7 +1544,7 @@ class PluginManager extends EventEmitter {
         }
     }
 
-    async executePlugin(pluginName, inputData, requestIp = null) {
+    async executePlugin(pluginName, inputData, requestIp = null, executionContext = null) {
         const plugin = this.plugins.get(pluginName);
         if (!plugin) {
             // This case should ideally be caught by processToolCall before calling executePlugin
@@ -1146,14 +1559,6 @@ class PluginManager extends EventEmitter {
         }
 
         const pluginConfig = this._getPluginConfig(plugin);
-        const envForProcess = { ...process.env };
-
-        for (const key in pluginConfig) {
-            if (pluginConfig.hasOwnProperty(key) && pluginConfig[key] !== undefined) {
-                envForProcess[key] = String(pluginConfig[key]);
-            }
-        }
-
         const additionalEnv = {};
         if (this.projectBasePath) {
             additionalEnv.PROJECT_BASE_PATH = this.projectBasePath;
@@ -1161,8 +1566,26 @@ class PluginManager extends EventEmitter {
             if (this.debugMode) console.warn("[PluginManager executePlugin] projectBasePath not set, PROJECT_BASE_PATH will not be available to plugins.");
         }
 
+        if (executionContext && typeof executionContext === 'object') {
+            if (executionContext.requestSource) {
+                additionalEnv.VCP_REQUEST_SOURCE = executionContext.requestSource;
+            }
+            if (executionContext.agentAlias) {
+                additionalEnv.VCP_AGENT_ALIAS = executionContext.agentAlias;
+            }
+            if (executionContext.agentId) {
+                additionalEnv.VCP_AGENT_ID = executionContext.agentId;
+            }
+            if (executionContext.executionContext) {
+                additionalEnv.VCP_EXECUTION_CONTEXT = executionContext.executionContext;
+            }
+        }
+
         // 如果插件需要管理员权限，则获取解密后的验证码并注入环境变量
         if (plugin.requiresAdmin) {
+            if (this._isExternalPluginManifest(plugin)) {
+                throw new Error(`External plugin "${pluginName}" cannot receive admin authentication.`);
+            }
             const decryptedCode = await this._getDecryptedAuthCode();
             if (decryptedCode) {
                 additionalEnv.DECRYPTED_AUTH_CODE = decryptedCode;
@@ -1225,10 +1648,11 @@ class PluginManager extends EventEmitter {
 
         // Force Python stdio encoding to UTF-8
         additionalEnv.PYTHONIOENCODING = 'utf-8';
-        const finalEnv = { ...envForProcess, ...additionalEnv };
+        const finalEnv = this._buildPluginProcessEnv(plugin, pluginConfig, additionalEnv);
 
         if (this.debugMode && plugin.pluginType === 'asynchronous') {
-            console.log(`[PluginManager executePlugin] Final ENV for async plugin ${pluginName}:`, JSON.stringify(finalEnv, null, 2).substring(0, 500) + "...");
+            const scope = this._isExternalPluginManifest(plugin) ? 'External' : 'Core';
+            console.log(`[PluginManager executePlugin] ${scope} async plugin ${pluginName} runtime env keys:`, formatRuntimeEnvDebugKeyList(finalEnv));
         }
 
         return new Promise((resolve, reject) => {
@@ -1236,7 +1660,7 @@ class PluginManager extends EventEmitter {
             const [command, ...args] = plugin.entryPoint.command.split(' ');
             if (this.debugMode) console.log(`[PluginManager executePlugin Internal] Attempting to spawn command: "${command}" with args: [${args.join(', ')}] in cwd: ${plugin.basePath}`);
 
-            const pluginProcess = spawn(command, args, { cwd: plugin.basePath, shell: true, env: finalEnv, windowsHide: true });
+            const pluginProcess = this._spawnPluginProcess(command, args, { cwd: plugin.basePath, shell: true, env: finalEnv, windowsHide: true });
 
 
             let outputBuffer = ''; // Buffer to accumulate data chunks
@@ -1271,7 +1695,7 @@ class PluginManager extends EventEmitter {
                 if (processExited || (isAsyncPlugin && initialResponseSent)) {
                     // If async and initial response sent, or process exited, ignore further stdout for this Promise.
                     // The plugin's background task might still log to its own stdout, but we don't collect it here.
-                    if (this.debugMode && isAsyncPlugin && initialResponseSent) console.log(`[PluginManager executePlugin Internal] Async plugin ${pluginName} (initial response sent) produced more stdout: ${data.substring(0, 100)}...`);
+                    if (this.debugMode && isAsyncPlugin && initialResponseSent) console.log(`[PluginManager executePlugin Internal] Async plugin ${pluginName} (initial response sent) produced more stdout: ${scrubPluginDiagnosticSnippet(data, 100)}...`);
                     return;
                 }
                 outputBuffer += data;
@@ -1305,22 +1729,23 @@ class PluginManager extends EventEmitter {
                     }
                 } catch (e) {
                     // Incomplete JSON or invalid JSON, wait for more data or 'exit' event.
-                    if (this.debugMode && outputBuffer.length > 2) console.log(`[PluginManager executePlugin Internal] Plugin "${pluginName}" stdout buffer not yet a complete JSON or invalid. Buffer: ${outputBuffer.substring(0, 100)}...`);
+                    if (this.debugMode && outputBuffer.length > 2) console.log(`[PluginManager executePlugin Internal] Plugin "${pluginName}" stdout buffer not yet a complete JSON or invalid. Buffer: ${scrubPluginDiagnosticSnippet(outputBuffer, 100)}...`);
                 }
             });
 
             pluginProcess.stderr.setEncoding('utf8');
             pluginProcess.stderr.on('data', (data) => {
                 errorOutput += data;
-                if (this.debugMode) console.warn(`[PluginManager executePlugin Internal stderr] Plugin "${pluginName}": ${data.trim()}`);
+                if (this.debugMode) console.warn(`[PluginManager executePlugin Internal stderr] Plugin "${pluginName}": ${scrubPluginDiagnosticText(data.trim())}`);
             });
 
             pluginProcess.on('error', (err) => {
                 processExited = true; clearTimeout(timeoutId);
+                const safeMessage = scrubPluginDiagnosticText(err.message);
                 if (!initialResponseSent) { // Only reject if initial response (for async) or any response (for sync) hasn't been sent
-                    reject(new Error(`Failed to start plugin "${pluginName}": ${err.message}`));
+                    reject(new Error(`Failed to start plugin "${pluginName}": ${safeMessage}`));
                 } else if (this.debugMode) {
-                    console.error(`[PluginManager executePlugin Internal] Error after initial response for async plugin "${pluginName}": ${err.message}. Process might have been expected to continue.`);
+                    console.error(`[PluginManager executePlugin Internal] Error after initial response for async plugin "${pluginName}": ${safeMessage}. Process might have been expected to continue.`);
                 }
             });
 
@@ -1350,26 +1775,26 @@ class PluginManager extends EventEmitter {
                         if (code === 0 && parsedOutput.status === "error" && this.debugMode) {
                             console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" exited with code 0 but reported error in JSON. Trusting JSON.`);
                         }
-                        if (errorOutput.trim()) parsedOutput.pluginStderr = errorOutput.trim();
+                        if (errorOutput.trim()) parsedOutput.pluginStderr = scrubPluginDiagnosticText(errorOutput.trim());
 
                         if (!initialResponseSent) resolve(parsedOutput); // Ensure resolve only once
                         else if (this.debugMode) console.log(`[PluginManager executePlugin Internal] Plugin ${pluginName} exited, initial async response already sent.`);
                         return;
                     }
-                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" final stdout was not in the expected JSON format: ${outputBuffer.trim().substring(0, 100)}`);
+                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" final stdout was not in the expected JSON format: ${scrubPluginDiagnosticSnippet(outputBuffer.trim(), 100)}`);
                 } catch (e) {
-                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Failed to parse final stdout JSON from plugin "${pluginName}". Error: ${e.message}. Stdout: ${outputBuffer.trim().substring(0, 100)}`);
+                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Failed to parse final stdout JSON from plugin "${pluginName}". Error: ${scrubPluginDiagnosticText(e.message)}. Stdout: ${scrubPluginDiagnosticSnippet(outputBuffer.trim(), 100)}`);
                 }
 
                 if (!initialResponseSent) { // Only reject if no response has been sent yet
                     if (code !== 0) {
                         let detailedError = `Plugin "${pluginName}" exited with code ${code}.`;
-                        if (outputBuffer.trim()) detailedError += ` Stdout: ${outputBuffer.trim().substring(0, 200)}`;
-                        if (errorOutput.trim()) detailedError += ` Stderr: ${errorOutput.trim().substring(0, 200)}`;
+                        if (outputBuffer.trim()) detailedError += ` Stdout: ${scrubPluginDiagnosticSnippet(outputBuffer.trim(), 200)}`;
+                        if (errorOutput.trim()) detailedError += ` Stderr: ${scrubPluginDiagnosticSnippet(errorOutput.trim(), 200)}`;
                         reject(new Error(detailedError));
                     } else {
                         // Exit code 0, but no valid initial JSON response was sent/parsed.
-                        reject(new Error(`Plugin "${pluginName}" exited successfully but did not provide a valid initial JSON response. Stdout: ${outputBuffer.trim().substring(0, 200)}`));
+                        reject(new Error(`Plugin "${pluginName}" exited successfully but did not provide a valid initial JSON response. Stdout: ${scrubPluginDiagnosticSnippet(outputBuffer.trim(), 200)}`));
                     }
                 }
             });
@@ -1380,9 +1805,10 @@ class PluginManager extends EventEmitter {
                 }
                 pluginProcess.stdin.end();
             } catch (e) {
-                console.error(`[PluginManager executePlugin Internal] Stdin write error for "${pluginName}": ${e.message}`);
+                const safeMessage = scrubPluginDiagnosticText(e.message);
+                console.error(`[PluginManager executePlugin Internal] Stdin write error for "${pluginName}": ${safeMessage}`);
                 if (!initialResponseSent) { // Only reject if no response has been sent yet
-                    reject(new Error(`Stdin write error for "${pluginName}": ${e.message}`));
+                    reject(new Error(`Stdin write error for "${pluginName}": ${safeMessage}`));
                 }
             }
         });
@@ -1922,7 +2348,8 @@ class PluginManager extends EventEmitter {
     startPluginWatcher() {
         if (this.debugMode) console.log('[PluginManager] Starting plugin file watcher...');
 
-        const watcher = chokidar.watch(PLUGIN_DIR, {
+        const watchRoots = this.pluginRootResolver.getWatchRoots();
+        const watcher = chokidar.watch(watchRoots, {
             ignored: [
                 '**/node_modules/**',
                 '**/.git/**',
@@ -1955,7 +2382,7 @@ class PluginManager extends EventEmitter {
                 if (filterManifest(filePath)) this.handlePluginManifestChange('unlink', filePath);
             });
 
-        console.log(`[PluginManager] Chokidar is now watching ${PLUGIN_DIR} for manifest changes.`);
+        console.log(`[PluginManager] Chokidar is now watching ${watchRoots.map(rootPath => this._formatPluginEventPathForLog(rootPath)).join(', ')} for manifest changes.`);
     }
 
     handlePluginManifestChange(eventType, filePath) {
