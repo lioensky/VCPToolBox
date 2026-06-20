@@ -1,0 +1,81 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "AgnesVideoGen",
+  "displayName": "Agnes 视频生成器",
+  "version": "1.1.0",
+  "description": "Agnes Video V2.0 视频生成插件。两步完成：submit 提交任务（秒级返回 task_id），query 查询结果（好了返回视频链接）。支持文生视频、图生视频、多图视频、关键帧动画。",
+  "author": "自定义插件（基于 Agnes Video V2.0 API）",
+  "pluginType": "asynchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node AgnesVideoGen.mjs"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 1800000
+  },
+  "configSchema": {
+    "AGNES_VIDEO_API_KEY": {
+      "type": "string",
+      "description": "Agnes API 密钥（Bearer Token），必填"
+    },
+    "AGNES_VIDEO_MODEL": {
+      "type": "string",
+      "description": "视频生成模型，默认 agnes-video-v2.0",
+      "default": "agnes-video-v2.0"
+    },
+    "AGNES_VIDEO_DEFAULT_WIDTH": {
+      "type": "string",
+      "description": "默认视频宽度（像素），默认 1152",
+      "default": "1152"
+    },
+    "AGNES_VIDEO_DEFAULT_HEIGHT": {
+      "type": "string",
+      "description": "默认视频高度（像素），默认 768",
+      "default": "768"
+    },
+    "AGNES_VIDEO_DEFAULT_NUM_FRAMES": {
+      "type": "string",
+      "description": "默认帧数，必须满足 8n+1（如 81/121/241/441），默认 121 约等于 5 秒",
+      "default": "121"
+    },
+    "AGNES_VIDEO_DEFAULT_FRAME_RATE": {
+      "type": "string",
+      "description": "默认帧率（FPS），1-60，默认 24",
+      "default": "24"
+    },
+    "IMAGESERVER_FILE_KEY": {
+      "type": "string",
+      "description": "文件服务鉴权密钥（VCP 自动注入）。视频走 /files/ 路径，用这个密钥鉴权。"
+    },
+    "USE_PUBLIC_URL": {
+      "type": "boolean",
+      "description": "视频链接用对外地址(true)还是内网地址(false)。统一在主 config.env 里设置。",
+      "default": false
+    },
+    "DebugMode": {
+      "type": "boolean",
+      "description": "调试模式，开启后输出详细日志",
+      "default": false
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "submit",
+        "description": "【第一步：提交视频生成任务】向 agnes 提交任务，秒级返回 task_id，不等视频生成完成。\n\n提交后告知用户“视频生成中，需要 1-5 分钟”，过 1-2 分钟后用 query 命令查询结果。\n\n【四种模式，自动判断】\n- 不填图片            → 文生视频\n- 填 image（单张URL）  → 图生视频（把图片动起来）\n- 填 images（多张URL） → 多图视频\n- 填 images + mode:keyframes → 关键帧动画\n\n【参数说明】\n- prompt（必需）：视频内容描述，建议英文。推荐格式：主体+动作+场景+镜头+光线+风格\n- image（可选）：单张图片URL，图生视频用\n- images（可选）：多张图片URL的JSON数组，如 [\"url1\",\"url2\"]\n- mode（可选）：填 keyframes 启用关键帧动画（需同时提供 images）\n- num_frames（可选）：帧数，必须满足 8n+1 且 ≤441。121≈5秒、241≈10秒、441≈18秒（24fps）\n- frame_rate（可选）：帧率，默认 24\n- width/height（可选）：视频尺寸，默认 1152x768\n- negative_prompt（可选）：不想出现的内容\n- seed（可选）：固定种子可复现结果\n\n成功返回：task_id 供后续 query 使用\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgnesVideoGen「末」,\ncommand:「始」submit「末」,\nprompt:「始」（必需）视频描述，建议英文「末」,\nimage:「始」（可选）单张图片URL「末」,\nimages:「始」（可选）多张图片URL数组，如 [\"url1\",\"url2\"]「末」,\nmode:「始」（可选）keyframes 启用关键帧模式「末」,\nnum_frames:「始」（可选）帧数，如 121。默认 121「末」,\nframe_rate:「始」（可选）帧率，默认 24「末」,\nwidth:「始」（可选）宽度，默认 1152「末」,\nheight:「始」（可选）高度，默认 768「末」,\nnegative_prompt:「始」（可选）不想出现的内容「末」,\nseed:「始」（可选）随机种子「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgnesVideoGen「末」,\ncommand:「始」submit「末」,\nprompt:「始」A cyberpunk cat walking through neon-lit rainy streets, slow cinematic tracking shot, dramatic lighting「末」,\nnum_frames:「始」121「末」,\nframe_rate:「始」24「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "query",
+        "description": "【第二步：查询视频生成结果】用 submit 返回的 task_id 查询任务状态。\n\n- 还没好（queued/in_progress）：返回当前进度，告知用户继续等待，1-2 分钟后再查\n- 生成完成（completed）：自动下载视频存到本地，返回可播放的视频链接\n- 生成失败（failed）：返回失败原因\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgnesVideoGen「末」,\ncommand:「始」query「末」,\ntask_id:「始」填写 submit 返回的 task_id「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgnesVideoGen「末」,\ncommand:「始」query「末」,\ntask_id:「始」task_YOUR_TASK_ID_HERE「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "concat",
+        "description": "【视频拼接】把多个视频按顺序合并成一个长视频。不需要 prompt，只要视频链接。\n\n用途：单次生成最长约 18 秒（441 帧 @ 24fps）。想要更长的成片，就分多段生成，再用 concat 拼起来。\n\n这是同步命令，拼接完直接返回结果（不用 query）。底层用 ffmpeg 合并并重编码，保证不同来源的视频也能兼容。\n\n【参数说明】\n- 至少需要 2 个视频链接，两种写法二选一：\n  - 编号写法：video_url1、video_url2、video_url3 …（按编号顺序拼接）\n  - 数组写法：videos，填 JSON 数组，如 [\"url1\",\"url2\",\"url3\"]\n- 链接可以是 http(s) 网址，也可以是服务器本地视频路径\n\n成功返回：拼接后的视频链接（本地 /files/ 路径，可直接播放）\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgnesVideoGen「末」,\ncommand:「始」concat「末」,\nvideo_url1:「始」第一个视频链接「末」,\nvideo_url2:「始」第二个视频链接「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgnesVideoGen「末」,\ncommand:「始」concat「末」,\nvideo_url1:「始」http://host:port/pw=KEY/files/agnesvideogen/clip1.mp4「末」,\nvideo_url2:「始」http://host:port/pw=KEY/files/agnesvideogen/clip2.mp4「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

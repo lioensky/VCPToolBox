@@ -1,0 +1,36 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "AICodeWorker",
+  "version": "1.1.0",
+  "displayName": "AI 代码工程 Worker",
+  "description": "让 VCP Agent 可以安全调度服务器本地的 opencode，作为下游代码分析、patch 生成、文件修改 Worker。",
+  "author": "Local",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node AICodeWorker.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "configSchema": {
+    "ENABLE_OPENCODE":                { "type": "boolean", "default": true  },
+    "OPENCODE_BIN":                   { "type": "string",  "default": "opencode" },
+    "OPENCODE_BASE_URL":              { "type": "string",  "default": "" },
+    "OPENCODE_API_KEY":               { "type": "string",  "default": "" },
+    "ALLOWED_PROJECT_ROOTS":          { "type": "string",  "default": "/app/VCPToolBox_new" },
+    "DEFAULT_TIMEOUT_SEC":            { "type": "integer", "default": 600 },
+    "MAX_TASK_CHARS":                 { "type": "integer", "default": 20000 },
+    "ALLOW_DANGEROUS_SKIP_PERMISSIONS": { "type": "boolean", "default": false },
+    "REDACT_SECRETS":                 { "type": "boolean", "default": true  }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "AICodeWorker",
+        "description": "═══════════════════════════════════════════\n【AICodeWorker 工具使用手册 v1.1】\n═══════════════════════════════════════════\n\n这个工具让你可以把代码任务委托给服务器本地的 opencode（AI 代码引擎）执行。\n你是调度者和审查者，opencode 是执行层。\n\n▌支持的三种工作模式\n\n  analyze（默认）：只读分析。opencode 读取代码，输出分析报告，不修改任何文件。\n  patch：生成修改建议。opencode 以 unified diff 格式输出修改方案，不落盘。你审查后用 ServerFileOperator 应用。\n  write：直接修改文件。opencode 读取并修改/新增文件，完成后输出变更摘要。用于你已明确要求某项修改的场景。\n\n▌核心概念：任务是异步的\n  第一步：run（提交任务）→ 立刻拿到 jobId\n  第二步：query（查询结果）→ 反复查直到 state = completed\n\n⚠️ 铁律：\n  - run 后必须 query，不能跳过\n  - state = running 时等几秒再查\n  - patch 模式输出的 diff 只是建议，必须你确认后再落盘\n  - write 模式 opencode 会直接改文件，提交前确认 task 描述准确\n  - 不要在 task 里写 API Key 或密码\n\n═══════════════════════════════════════════\n【模式选择指南】\n═══════════════════════════════════════════\n\n  用 analyze：我想了解这段代码是怎么工作的 / 有没有 bug / 代码质量怎么样\n  用 patch：我知道要改什么，先让 opencode 出方案，我审查后再决定\n  用 write：我已经明确要加/改某个功能，直接让 opencode 实现\n\n═══════════════════════════════════════════\n【完整工作流示例】\n═══════════════════════════════════════════\n\n─── 示例A：analyze（只读分析）───\n\n第一步：提交\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AICodeWorker「末」,\ncommand:「始」run「末」,\nworker:「始」opencode「末」,\nprojectPath:「始」/app/VCPToolBox_new「末」,\ntask:「始」请分析 Plugin/AICodeWorker/AICodeWorker.js 文件的整体结构，说明主要函数的作用，不要修改任何文件。「末」,\nmode:「始」analyze「末」\n<<<[END_TOOL_REQUEST]>>>\n\n第二步：查询（等 state=completed）\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AICodeWorker「末」,\ncommand:「始」query「末」,\njobId:「始」job_20260620_001910_172286「末」\n<<<[END_TOOL_REQUEST]>>>\n\n─── 示例B：patch（生成 diff，人工审查后落盘）───\n\n第一步：提交\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AICodeWorker「末」,\ncommand:「始」run「末」,\nworker:「始」opencode「末」,\nprojectPath:「始」/app/VCPToolBox_new「末」,\ntask:「始」请检查 Plugin/AICodeWorker/runner.js 的错误处理逻辑，如发现遗漏，以 unified diff 格式输出修改建议，不要直接修改文件。「末」,\nmode:「始」patch「末」\n<<<[END_TOOL_REQUEST]>>>\n\n第二步：query 拿到 diff 内容后，展示给用户确认，用户批准后再用 ServerFileOperator 应用 patch。\n\n─── 示例C：write（opencode 直接修改文件）───\n\n⚠️ write 模式会直接改文件，提交前确认 task 描述准确！\n\n第一步：提交\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AICodeWorker「末」,\ncommand:「始」run「末」,\nworker:「始」opencode「末」,\nprojectPath:「始」/app/VCPToolBox_new「末」,\ntask:「始」请在 Plugin/AICodeWorker/AICodeWorker.js 的 generateJobId 函数中，把 pid 替换为4位随机数，避免暴露进程ID。只修改这一处，其他代码不动。完成后输出变更摘要。「末」,\nmode:「始」write「末」\n<<<[END_TOOL_REQUEST]>>>\n\n第二步：query 拿到变更摘要后，汇报给用户哪些文件被修改了。\n\n═══════════════════════════════════════════\n【五个命令速查】\n═══════════════════════════════════════════\n\n命令1：capabilities（查询可用 Worker）\n无参数。确认 opencode 版本和可用状态。\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AICodeWorker「末」,\ncommand:「始」capabilities「末」\n<<<[END_TOOL_REQUEST]>>>\n\n命令2：run（提交任务）\n  worker      必填  opencode\n  projectPath 必填  白名单内的项目根目录（/app/VCPToolBox_new, /app/ZhongZhuan, /app/claud）\n  task        必填  任务描述\n  mode        选填  analyze（默认）/ patch / write\n  timeoutSec  选填  超时秒数，默认 600\n\n命令3：query（查询结果）\n  jobId  必填  run 返回的 jobId\n  state 含义：running=进行中 / completed=成功 / failed=失败 / timeout=超时 / cancelled=已取消\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AICodeWorker「末」,\ncommand:「始」query「末」,\njobId:「始」job_20260620_001910_172286「末」\n<<<[END_TOOL_REQUEST]>>>\n\n命令4：listJobs（列出历史任务）\n  limit  选填  最多返回条数，默认10\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AICodeWorker「末」,\ncommand:「始」listJobs「末」,\nlimit:「始」5「末」\n<<<[END_TOOL_REQUEST]>>>\n\n命令5：cancel（取消任务）\n  jobId  必填  要取消的任务ID\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AICodeWorker「末」,\ncommand:「始」cancel「末」,\njobId:「始」job_20260620_001910_172286「末」\n<<<[END_TOOL_REQUEST]>>>\n\n═══════════════════════════════════════════\n【write 模式后处理流程】\n═══════════════════════════════════════════\n\n1. run（mode=write）→ 拿到 jobId\n2. query → 等 state=completed\n3. 读取 output 中的变更摘要\n4. 向用户汇报：修改了哪些文件、改了什么\n5. 如用户要求回滚，使用 ServerFileOperator 恢复（前提：任务前已备份或有 git）\n\n═══════════════════════════════════════════\n【patch 模式后处理流程】\n═══════════════════════════════════════════\n\n1. run（mode=patch）→ 拿到 jobId\n2. query → 等 state=completed\n3. 读取 output 中的 unified diff 内容\n4. 向用户展示 diff，解释每处变更\n5. 用户确认后 → 用 ServerFileOperator 逐文件应用修改\n6. 用户拒绝 → 丢弃，不做任何改动\n\n═══════════════════════════════════════════\n【常见错误处理】\n═══════════════════════════════════════════\n\nprojectPath 不在白名单 → 换成白名单内路径\nstate = running → 等几秒再 query，不要停\nstate = timeout → 下次 run 时加 timeoutSec（如 1200），或拆小任务\noutput 被截断 → 用 ServerFileOperator 读 outputFile 字段的完整文件"
+      }
+    ]
+  }
+}
