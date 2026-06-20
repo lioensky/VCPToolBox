@@ -1688,7 +1688,12 @@ async function startServer() {
         // Initialize the new WebSocketServer
         if (DEBUG_MODE) console.log('[Server] Initializing WebSocketServer...');
         const vcpKeyValue = pluginManager.getResolvedPluginConfigValue('VCPLog', 'VCP_Key') || process.env.VCP_Key;
-        webSocketServer.initialize(server, { debugMode: DEBUG_MODE, vcpKey: vcpKeyValue });
+        const distributedMusicPlaylistSyncEnabled = (process.env.DISTRIBUTED_MUSIC_PLAYLIST_SYNC_ENABLED || 'false').toLowerCase() === 'true';
+        webSocketServer.initialize(server, {
+            debugMode: DEBUG_MODE,
+            vcpKey: vcpKeyValue,
+            distributedMusicPlaylistSyncEnabled
+        });
 
         // --- 注入依赖 ---
         webSocketServer.setPluginManager(pluginManager);

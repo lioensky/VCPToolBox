@@ -3,6 +3,7 @@ const WebSocket = require('ws');
 const url = require('url');
 const fs = require('fs').promises;
 const path = require('path');
+const { syncDistributedMusicDiary } = require('./modules/distributedMusicDiarySync');
 
 let wssInstance;
 let pluginManager = null; // 为 PluginManager 实例占位
@@ -13,7 +14,8 @@ let shutdownPromise = null;
 
 let serverConfig = {
     debugMode: false,
-    vcpKey: null
+    vcpKey: null,
+    distributedMusicPlaylistSyncEnabled: false
 };
 
 // 用于存储不同类型的客户端
@@ -640,6 +642,71 @@ async function handleDistributedServerMessage(serverId, message) {
                 
                 // 将分布式服务器的静态占位符更新推送到主服务器的插件管理器
                 pluginManager.updateDistributedStaticPlaceholders(serverId, serverName, placeholders);
+            }
+            break;
+        case 'music_playlist_update':
+            try {
+                const serverInfo = distributedServers.get(serverId);
+                const data = {
+                    ...(message.data || {}),
+                    serverName: message.data?.serverName || serverInfo?.serverName || serverId
+                };
+
+                if (!serverConfig.distributedMusicPlaylistSyncEnabled) {
+                    if (serverInfo) {
+                        serverInfo.serverName = data.serverName;
+                        serverInfo.lastSeenAt = formatDateTimeForConfiguredTimezone();
+                        serverInfo.musicPlaylist = {
+                            exists: data.exists === true,
+                            count: Array.isArray(data.tracks) ? data.tracks.length : 0,
+                            playlistPath: data.playlistPath || '',
+                            updatedAt: data.updatedAt || null,
+                            lastSyncedAt: null,
+                            syncResult: {
+                                skipped: true,
+                                reason: 'disabled_by_config',
+                                added: 0,
+                                removed: 0,
+                                kept: 0,
+                                desiredCount: 0
+                            }
+                        };
+                        distributedServers.set(serverId, serverInfo);
+                    }
+
+                    if (serverConfig.debugMode) {
+                        console.log(`[WebSocketServer] Distributed music playlist sync disabled by config. Received ${Array.isArray(data.tracks) ? data.tracks.length : 0} tracks from ${data.serverName}.`);
+                    }
+                    break;
+                }
+
+                const result = await syncDistributedMusicDiary(data, { logger: console });
+                if (serverInfo) {
+                    serverInfo.serverName = data.serverName;
+                    serverInfo.lastSeenAt = formatDateTimeForConfiguredTimezone();
+                    serverInfo.musicPlaylist = {
+                        exists: data.exists === true,
+                        count: Array.isArray(data.tracks) ? data.tracks.length : 0,
+                        playlistPath: data.playlistPath || '',
+                        updatedAt: data.updatedAt || null,
+                        lastSyncedAt: formatDateTimeForConfiguredTimezone(),
+                        syncResult: {
+                            skipped: result.skipped,
+                            reason: result.reason || null,
+                            added: result.added?.length || 0,
+                            removed: result.removed?.length || 0,
+                            kept: result.kept?.length || 0,
+                            desiredCount: result.desiredCount || 0
+                        }
+                    };
+                    distributedServers.set(serverId, serverInfo);
+                }
+
+                if (serverConfig.debugMode) {
+                    console.log(`[WebSocketServer] Music playlist sync from ${data.serverName}:`, result);
+                }
+            } catch (error) {
+                console.error(`[WebSocketServer] Failed to sync distributed music playlist from ${serverId}:`, error);
             }
             break;
         case 'tool_result':
