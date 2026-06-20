@@ -35,7 +35,7 @@
       },
       {
         "command": "send_mail",
-        "description": "发送 ClawEmail 邮件。正文中可直接包含图片/文件 URL；attachments 可额外传 URL、file:// 或数组，插件会尽量下载并转换为 SDK 可接受格式。\n参数:\n- command: 固定为 send_mail。\n- user: 可选，发件邮箱；不填则使用默认邮箱。\n- to: 必填，收件人，逗号分隔或 JSON 数组。\n- cc/bcc: 可选，抄送/密送。\n- subject: 必填，主题。\n- body: 必填，正文文本或 HTML。\n- html: 可选，true/false，默认 false。\n- attachments: 可选，附件 URL/file://，逗号分隔或 JSON 数组。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」send_mail「末」,\nto:「始」someone@example.com「末」,\nsubject:「始」主题「末」,\nbody:「始」正文，可包含 https://... 图片或文件 URL「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "发送 ClawEmail 邮件。正文中可直接包含图片/文件 URL；attachments 可额外传 URL、file:// 或数组，插件会尽量下载并转换为 SDK 可接受格式。\n参数:\n- command: 固定为 send_mail。\n- user: 可选，发件邮箱；不填则使用默认邮箱。\n- to: 必填，收件人，逗号分隔或 JSON 数组。\n- cc/bcc: 可选，抄送/密送。\n- subject: 必填，主题。\n- body: 必填，正文文本或 HTML。\n- html: 可选，true/false，默认 false。\n- attachments: 可选，附件 URL/file://，逗号分隔或 JSON 数组。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」send_mail「末」,\nto:「始」someone@example.com「末」,\nsubject:「始」主题「末」,\nbody:「始」正文，可包含 https://... 图片，而http或者file类需要放到附件里「末」,\nattachments:「始」https://example.com/file1.pdf,file:///H:/VCP/VCPToolBox/image/demo.png「末」 //可选，决策是否添加附件，支持逗号隔开发送多个。\n<<<[END_TOOL_REQUEST]>>>",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」send_mail「末」,\nto:「始」someone@example.com「末」,\nsubject:「始」测试邮件「末」,\nbody:「始」你好，这是一封来自 VCP 的邮件。「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
