@@ -6,4 +6,4 @@ Vchat支持多种流式HTML渲染器。
 <!DOCTYPE html>
 </html>
 ```
-**引擎兼容**: Vchat内置'const container = document.querySelector('.message-item[data-message-id="..."] .md-content')'，所以无需声明container作用域，直接<script src="..."></script>即可。但请避免使用document.getElementById('canvas') 或 #canvas { ... }污染全局，使用唯一的类名（如 .vcp-fluid-canvas-unique），并推荐使用 IIFE 隔离变量作用域。
+**引擎兼容**: 在VCHAT输出DIV动画时，脚本内可直接使用当前消息容器 container。交互事件推荐用 container.querySelector(...) + addEventListener 绑定。请勿使用onclick 等内联事件、全局函数、document.getElementById 和全局 #id！元素用唯一 class，推荐用 div 裸露块表达动画和情绪，JS 用 IIFE 隔离变量。
