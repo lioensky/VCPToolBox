@@ -22,6 +22,89 @@ export interface OpenHerPersonaAxisLayer {
   [axis: string]: OpenHerPersonaAxisState;
 }
 
+export interface OpenHerPersonaMoodArchetype {
+  label: string;
+  score: number;
+  recipe?: string[];
+}
+
+export interface OpenHerPersonaMoodRelativeAxis {
+  base: number;
+  delta: number;
+  above: number;
+  below: number;
+}
+
+export interface OpenHerPersonaMoodArchetypes {
+  primary?: OpenHerPersonaMoodArchetype | null;
+  secondary?: OpenHerPersonaMoodArchetype | null;
+  candidates?: OpenHerPersonaMoodArchetype[];
+  relative?: Record<string, OpenHerPersonaMoodRelativeAxis>;
+}
+
+export interface OpenHerPersonaDominantSubAxis {
+  subAxis: string;
+  weight: number;
+  similarity: number;
+}
+
+export interface OpenHerPersonaExpressionAffective {
+  label: string;
+  positive: number;
+  negative: number;
+  arousal: number;
+  tension: number;
+  dominance: number;
+  dominantAxis?: string;
+  dominantSubAxis?: OpenHerPersonaDominantSubAxis | null;
+}
+
+export interface OpenHerPersonaExpressionDriveAxis {
+  axis: string;
+  label: string;
+  value: number;
+  subAxis?: OpenHerPersonaDominantSubAxis | null;
+}
+
+export interface OpenHerPersonaExpressionDrive {
+  label?: string | null;
+  primaryDrive?: OpenHerPersonaExpressionDriveAxis | null;
+  counterDrive?: OpenHerPersonaExpressionDriveAxis | null;
+  counterPressure?: {
+    axis: string;
+    label: string;
+    pressure: number;
+  } | null;
+  sentence?: string | null;
+}
+
+export interface OpenHerPersonaExpressionGenderAxis {
+  axis: string;
+  label: string;
+  value: number;
+  sharpness: number;
+  subAxis?: OpenHerPersonaDominantSubAxis | null;
+  pole: "masculine" | "feminine" | "neutral" | string;
+}
+
+export interface OpenHerPersonaExpressionGender {
+  label?: string | null;
+  globalPolarity?: string;
+  dominantGenderAxis?: OpenHerPersonaExpressionGenderAxis | null;
+  masculineAxes?: string[];
+  feminineAxes?: string[];
+  sentence?: string | null;
+}
+
+export interface OpenHerPersonaExpression {
+  shortLabel?: string;
+  sentence?: string;
+  affective?: OpenHerPersonaExpressionAffective;
+  drive?: OpenHerPersonaExpressionDrive;
+  gender?: OpenHerPersonaExpressionGender;
+  archetypes?: OpenHerPersonaMoodArchetype[];
+}
+
 export interface OpenHerPersonaMood {
   positive: number;
   negative: number;
@@ -29,6 +112,8 @@ export interface OpenHerPersonaMood {
   tension: number;
   dominance: number;
   label: string;
+  archetypes?: OpenHerPersonaMoodArchetypes;
+  expression?: OpenHerPersonaExpression;
 }
 
 export interface OpenHerPersonaTopAxis {
@@ -38,11 +123,34 @@ export interface OpenHerPersonaTopAxis {
   sharpness: number;
 }
 
+export interface OpenHerPersonaDriveCounterbalance {
+  pressures?: Record<string, number>;
+  details?: Array<{
+    drive: string;
+    counter: string;
+    driveValue: number;
+    counterValue: number;
+    pressure: number;
+  }>;
+}
+
+export interface OpenHerPersonaBaselineAxis {
+  mean: number;
+  mad: number;
+  count: number;
+  updatedAt?: string | null;
+}
+
+export interface OpenHerPersonaBaseline {
+  version?: number;
+  axes?: Record<string, OpenHerPersonaBaselineAxis>;
+}
+
 export interface OpenHerPersonaLastObservation {
   at?: string | null;
   inputHash?: string | null;
   scores?: Record<string, OpenHerPersonaAxisState>;
-  coupled?: Record<string, number>;
+  coupled?: Record<string, number | OpenHerPersonaDriveCounterbalance | null>;
   mood?: OpenHerPersonaMood;
 }
 
@@ -60,9 +168,15 @@ export interface OpenHerPersonaState {
   agentKey: string;
   agentLabel: string;
   psyGender: number;
+  gender?: OpenHerPersonaAxisLayer;
   cognitive: OpenHerPersonaAxisLayer;
   affective: OpenHerPersonaAxisLayer;
   drive: OpenHerPersonaAxisLayer;
+  baseline?: OpenHerPersonaBaseline;
+  coupling?: {
+    lastCounterbalance?: OpenHerPersonaDriveCounterbalance | null;
+    [key: string]: unknown;
+  };
   mood: OpenHerPersonaMood;
   observationCount: number;
   lastObservedAt?: string | null;

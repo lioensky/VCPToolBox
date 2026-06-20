@@ -49,13 +49,158 @@ const AXIS_DEFINITIONS = [
   {
     layer: "gender",
     axis: "psy_gender",
-    label: "心理性别",
+    label: "心理性别总势",
+    defaultValue: 0.5,
+    virtual: true,
+    anchors: [
+      { subAxis: "masculine_total", text: "{name}正在以清晰、外放、切割、证明和远征的方式组织自我" },
+      { subAxis: "feminine_total", text: "{name}正在以包容、孕育、感知、修复和归宿的方式组织自我" },
+      { subAxis: "fluid_total", text: "{name}正在让心理性别在不同关系和情境中流动重组" },
+      { subAxis: "neutral_total", text: "{name}正在弱化性别化表达，保持中性与旁观的位置" },
+    ],
+  },
+  {
+    layer: "gender",
+    axis: "gender_boundary",
+    label: "存在与秩序",
     defaultValue: 0.5,
     anchors: [
-      { subAxis: "feminine_self", text: "{name}感到自己内在更柔软、更偏雌性的自我感知" },
-      { subAxis: "masculine_self", text: "{name}感到自己内在更锋利、更偏雄性的自我感知" },
-      { subAxis: "fluid_self", text: "{name}感到自己的心理性别是流动的，不被单一方向固定" },
-      { subAxis: "neutral_self", text: "{name}感到自己处在中性、不强调性别感的位置" },
+      {
+        subAxis: "masculine_boundary_iron",
+        pole: "masculine",
+        text: "{name}正在像界碑与铸铁一样确立自我边界、领地、规则和不可侵犯的底线",
+      },
+      {
+        subAxis: "feminine_tide_forest",
+        pole: "feminine",
+        text: "{name}正在像潮汐与深林一样通过周期性的蔓延、退让、包容和同化建立秩序",
+      },
+    ],
+  },
+  {
+    layer: "gender",
+    axis: "gender_creation",
+    label: "动力与创造",
+    defaultValue: 0.5,
+    anchors: [
+      {
+        subAxis: "masculine_sun_scorched",
+        pole: "masculine",
+        text: "{name}正在像烈阳与焦土一样集中爆发能量，破而后立地改变现状",
+      },
+      {
+        subAxis: "feminine_living_soil_kiln",
+        pole: "feminine",
+        text: "{name}正在像息壤与暖窑一样持续聚集能量，在内部孕育转化与质变",
+      },
+    ],
+  },
+  {
+    layer: "gender",
+    axis: "gender_processing",
+    label: "逻辑与感知",
+    defaultValue: 0.5,
+    anchors: [
+      {
+        subAxis: "masculine_gears_peak",
+        pole: "masculine",
+        text: "{name}正在像齿轮与孤峰一样拆解因果、抽离情绪并追求俯视性的客观判断",
+      },
+      {
+        subAxis: "feminine_vine_echo",
+        pole: "feminine",
+        text: "{name}正在像藤蔓与回声一样网状链接信息，敏锐捕捉细微反馈与通感回响",
+      },
+    ],
+  },
+  {
+    layer: "gender",
+    axis: "gender_defense",
+    label: "冲突与防御",
+    defaultValue: 0.5,
+    anchors: [
+      {
+        subAxis: "masculine_thunder_cliff",
+        pole: "masculine",
+        text: "{name}正在像雷暴与断崖一样正面对抗威胁，或瞬间切断联系与退路",
+      },
+      {
+        subAxis: "feminine_mist_thorn",
+        pole: "feminine",
+        text: "{name}正在像迷雾与荆棘一样消解攻击点，并以柔软表面下的锋芒反伤入侵",
+      },
+    ],
+  },
+  {
+    layer: "gender",
+    axis: "gender_bonding",
+    label: "联结与共情",
+    defaultValue: 0.5,
+    anchors: [
+      {
+        subAxis: "masculine_dome_anchor",
+        pole: "masculine",
+        text: "{name}正在像穹顶与锚链一样为他者提供庇护、重量感和稳定羁绊",
+      },
+      {
+        subAxis: "feminine_silk_lantern",
+        pole: "feminine",
+        text: "{name}正在像丝脉与提灯一样输送情感、照亮灵魂并提供归属感",
+      },
+    ],
+  },
+  {
+    layer: "gender",
+    axis: "gender_resilience",
+    label: "自我与韧性",
+    defaultValue: 0.5,
+    anchors: [
+      {
+        subAxis: "masculine_smoke_inscription",
+        pole: "masculine",
+        text: "{name}正在像狼烟与碑铭一样证明存在、留下刻印并抗拒被世界遗忘",
+      },
+      {
+        subAxis: "feminine_nacre_amber",
+        pole: "feminine",
+        text: "{name}正在像蚌母与琥珀一样包裹痛苦、凝结记忆并把伤痕转化为美丽",
+      },
+    ],
+  },
+  {
+    layer: "gender",
+    axis: "gender_healing",
+    label: "创伤与疗愈",
+    defaultValue: 0.5,
+    anchors: [
+      {
+        subAxis: "masculine_ember_rust",
+        pole: "masculine",
+        text: "{name}正在像余烬与铁锈一样隐忍高热创伤，在沉默氧化中缓慢消耗与修复",
+      },
+      {
+        subAxis: "feminine_sunkenwood_spring",
+        pole: "feminine",
+        text: "{name}正在像沉木与春水一样沉淀悲伤，并用新生情感冲刷崩塌后的内在",
+      },
+    ],
+  },
+  {
+    layer: "gender",
+    axis: "gender_transcendence",
+    label: "超越与终极",
+    defaultValue: 0.5,
+    anchors: [
+      {
+        subAxis: "masculine_aphelion_flint",
+        pole: "masculine",
+        text: "{name}正在像远日点与燧石一样远离舒适区，追求撞击中照亮黑夜的绝对火花",
+      },
+      {
+        subAxis: "feminine_ruins_snow",
+        pole: "feminine",
+        text: "{name}正在像归墟与初雪一样向往终极接纳，用静谧覆盖抚平喧嚣与污浊",
+      },
     ],
   },
   {
@@ -142,10 +287,10 @@ const AXIS_DEFINITIONS = [
     label: "好奇",
     defaultValue: 0.34,
     anchors: [
-      { subAxis: "unknown", text: "{name}对没见过的东西忍不住想探" },
-      { subAxis: "novelty", text: "{name}想要一点新鲜感，想看看别的可能" },
-      { subAxis: "continuation", text: "{name}想知道接下来会发生什么" },
-      { subAxis: "try_it", text: "{name}想亲自试试看这件事" },
+      { subAxis: "unknown", text: "{name}正在被未知牵引，忍不住想探过去" },
+      { subAxis: "novelty", text: "{name}正在追逐新鲜感，想看看别的可能" },
+      { subAxis: "continuation", text: "{name}正在被后续发展吊住注意力，想知道接下来会发生什么" },
+      { subAxis: "try_it", text: "{name}正在产生亲自试试看这件事的冲动" },
     ],
   },
   {
@@ -154,10 +299,10 @@ const AXIS_DEFINITIONS = [
     label: "恐惧",
     defaultValue: 0.2,
     anchors: [
-      { subAxis: "hurt", text: "{name}怕自己被伤到" },
-      { subAxis: "rejection", text: "{name}怕被推开、被拒绝、被嫌弃" },
-      { subAxis: "loss_control", text: "{name}怕事情失控，怕自己掌握不了局面" },
-      { subAxis: "exposure", text: "{name}怕暴露出脆弱或不想被看到的一面" },
+      { subAxis: "hurt", text: "{name}正在担心自己被伤到" },
+      { subAxis: "rejection", text: "{name}正在害怕被推开、被拒绝、被嫌弃" },
+      { subAxis: "loss_control", text: "{name}正在害怕事情失控，害怕自己掌握不了局面" },
+      { subAxis: "exposure", text: "{name}正在害怕暴露出脆弱或不想被看到的一面" },
     ],
   },
   {
@@ -166,11 +311,11 @@ const AXIS_DEFINITIONS = [
     label: "性欲",
     defaultValue: 0.18,
     anchors: [
-      { subAxis: "closeness", text: "{name}想更贴近对方，感到亲密张力" },
-      { subAxis: "being_seen", text: "{name}想被认真地看着，被带着欲望地注视" },
-      { subAxis: "touch", text: "{name}想触碰也想被触碰" },
-      { subAxis: "possessiveness", text: "{name}产生想占有、想被占有的亲密冲动" },
-      { subAxis: "pleasing", text: "{name}想取悦对方，也想感到自己有吸引力" },
+      { subAxis: "closeness", text: "{name}正在想更贴近对方，感到亲密张力上升" },
+      { subAxis: "being_seen", text: "{name}正在想被认真地看着，被带着欲望地注视" },
+      { subAxis: "touch", text: "{name}正在想触碰也想被触碰" },
+      { subAxis: "possessiveness", text: "{name}正在产生想占有、想被占有的亲密冲动" },
+      { subAxis: "pleasing", text: "{name}正在想取悦对方，也想确认自己有吸引力" },
     ],
   },
   {
@@ -179,11 +324,63 @@ const AXIS_DEFINITIONS = [
     label: "享乐",
     defaultValue: 0.28,
     anchors: [
-      { subAxis: "comfort", text: "{name}想沉进舒服的状态里" },
-      { subAxis: "rest", text: "{name}想休息，暂时什么都不想管" },
-      { subAxis: "laziness", text: "{name}就想瘫一会儿，什么都不做" },
-      { subAxis: "play", text: "{name}想玩，想获得轻松的快乐" },
-      { subAxis: "indulgence", text: "{name}想稍微放纵一下自己" },
+      { subAxis: "comfort", text: "{name}正在想沉进舒服的状态里" },
+      { subAxis: "rest", text: "{name}正在想休息，暂时什么都不想管" },
+      { subAxis: "laziness", text: "{name}正在想瘫一会儿，什么都不做" },
+      { subAxis: "play", text: "{name}正在想玩，想获得轻松的快乐" },
+      { subAxis: "indulgence", text: "{name}正在想稍微放纵一下自己" },
+    ],
+  },
+  {
+    layer: "drive",
+    axis: "coldness",
+    label: "冷漠",
+    defaultValue: 0.16,
+    counterAxis: true,
+    anchors: [
+      { subAxis: "detachment", text: "{name}正在把自己从关系和情绪里抽离出来，变得冷淡旁观" },
+      { subAxis: "withholding", text: "{name}正在收回回应和温度，不再主动提供情感连接" },
+      { subAxis: "distance", text: "{name}正在拉开距离，用冷处理降低卷入程度" },
+      { subAxis: "indifference", text: "{name}正在对眼前刺激失去兴趣，觉得无所谓" },
+    ],
+  },
+  {
+    layer: "drive",
+    axis: "arrogance",
+    label: "自大",
+    defaultValue: 0.14,
+    counterAxis: true,
+    anchors: [
+      { subAxis: "superiority", text: "{name}正在抬高自我位置，觉得自己更懂、更强或更有资格判断" },
+      { subAxis: "dismissal", text: "{name}正在轻视外界反馈，把他人的意见压低为不重要" },
+      { subAxis: "control_claim", text: "{name}正在想夺回解释权和控制权，不愿被他人定义" },
+      { subAxis: "grandiosity", text: "{name}正在放大自身价值，用夸张的自我确信抵消不安" },
+    ],
+  },
+  {
+    layer: "drive",
+    axis: "numbness",
+    label: "麻木",
+    defaultValue: 0.12,
+    counterAxis: true,
+    anchors: [
+      { subAxis: "shutdown", text: "{name}正在关闭感受通道，对痛苦、快乐和刺激都变得迟钝" },
+      { subAxis: "fatigue", text: "{name}正在因长期消耗而疲惫麻木，难以继续产生反应" },
+      { subAxis: "blankness", text: "{name}正在进入空白状态，像隔着玻璃看待眼前一切" },
+      { subAxis: "desensitization", text: "{name}正在对反复出现的刺激脱敏，不再被轻易触动" },
+    ],
+  },
+  {
+    layer: "drive",
+    axis: "self_punishment",
+    label: "自虐",
+    defaultValue: 0.1,
+    counterAxis: true,
+    anchors: [
+      { subAxis: "self_blame", text: "{name}正在把压力和错误向内归因，用自责维持控制感" },
+      { subAxis: "pain_seeking", text: "{name}正在靠近会刺痛自己的东西，像是需要痛感证明仍然存在" },
+      { subAxis: "sacrifice", text: "{name}正在用自我牺牲换取关系、意义或被原谅的可能" },
+      { subAxis: "ruin_impulse", text: "{name}正在产生破坏自身稳定的冲动，把崩坏当作释放出口" },
     ],
   },
 ];
@@ -206,6 +403,33 @@ const COUPLING_RULES = [
   { from: "discernment", to: "inquiry", weight: 0.08 },
   { from: "negative", to: "arousal", weight: 0.18 },
   { from: "positive", to: "arousal", weight: 0.08 },
+  { from: "coldness", to: "positive", weight: -0.18 },
+  { from: "coldness", to: "libido", weight: -0.14 },
+  { from: "coldness", to: "refusal", weight: 0.12 },
+  { from: "arrogance", to: "discernment", weight: -0.12 },
+  { from: "arrogance", to: "refusal", weight: 0.14 },
+  { from: "arrogance", to: "fear", weight: -0.08 },
+  { from: "numbness", to: "arousal", weight: -0.24 },
+  { from: "numbness", to: "positive", weight: -0.12 },
+  { from: "numbness", to: "negative", weight: -0.1 },
+  { from: "numbness", to: "hedonia", weight: -0.08 },
+  { from: "self_punishment", to: "negative", weight: 0.2 },
+  { from: "self_punishment", to: "fear", weight: 0.12 },
+  { from: "self_punishment", to: "positive", weight: -0.16 },
+  { from: "self_punishment", to: "hedonia", weight: -0.1 },
+  { from: "positive", to: "coldness", weight: -0.1 },
+  { from: "libido", to: "coldness", weight: -0.08 },
+];
+
+const DRIVE_COUNTER_RULES = [
+  { drive: "curiosity", counter: "numbness", weight: 0.35 },
+  { drive: "curiosity", counter: "coldness", weight: 0.18 },
+  { drive: "fear", counter: "arrogance", weight: 0.25 },
+  { drive: "fear", counter: "numbness", weight: 0.18 },
+  { drive: "libido", counter: "coldness", weight: 0.38 },
+  { drive: "libido", counter: "self_punishment", weight: 0.18 },
+  { drive: "hedonia", counter: "self_punishment", weight: 0.3 },
+  { drive: "hedonia", counter: "numbness", weight: 0.22 },
 ];
 
 let activeConfig = { ...DEFAULT_CONFIG };
@@ -466,10 +690,12 @@ function openDb() {
       agent_key TEXT PRIMARY KEY,
       agent_label TEXT NOT NULL,
       psy_gender REAL NOT NULL,
+      gender_json TEXT NOT NULL DEFAULT '{}',
       cognitive_json TEXT NOT NULL,
       affective_json TEXT NOT NULL,
       drive_json TEXT NOT NULL,
       coupling_json TEXT NOT NULL,
+      baseline_json TEXT NOT NULL DEFAULT '{}',
       observation_count INTEGER NOT NULL DEFAULT 0,
       last_observed_at TEXT,
       last_input_hash TEXT,
@@ -489,7 +715,19 @@ function openDb() {
     CREATE INDEX IF NOT EXISTS idx_openher_axis_audit_agent_at
       ON openher_axis_audit(agent_key, at);
   `);
+  ensureOpenHerAxisStateColumns(dbHandle);
   return dbHandle;
+}
+
+function ensureOpenHerAxisStateColumns(db) {
+  const columns = db.prepare("PRAGMA table_info(openher_axis_state)").all();
+  const names = new Set(columns.map((column) => column.name));
+  if (!names.has("gender_json")) {
+    db.exec("ALTER TABLE openher_axis_state ADD COLUMN gender_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  if (!names.has("baseline_json")) {
+    db.exec("ALTER TABLE openher_axis_state ADD COLUMN baseline_json TEXT NOT NULL DEFAULT '{}'");
+  }
 }
 
 function dropLegacyStateIfNeeded() {
@@ -545,6 +783,7 @@ function emptyAxisSnapshot(agentKey) {
 
 function splitLayerState(axisMap) {
   return {
+    gender: pickAxisMap(axisMap, "gender"),
     cognitive: pickAxisMap(axisMap, "cognitive"),
     affective: pickAxisMap(axisMap, "affective"),
     drive: pickAxisMap(axisMap, "drive"),
@@ -564,9 +803,9 @@ function pickAxisMap(axisMap, layer) {
   return output;
 }
 
-function mergeLayerState(agentKey, cognitive, affective, drive) {
+function mergeLayerState(agentKey, gender, cognitive, affective, drive) {
   const axisMap = emptyAxisSnapshot(agentKey);
-  for (const source of [cognitive, affective, drive]) {
+  for (const source of [gender, cognitive, affective, drive]) {
     if (!source || typeof source !== "object") continue;
     for (const [axis, value] of Object.entries(source)) {
       if (AXIS_BY_KEY[axis]) axisMap[axis] = normalizeAxisState(value, defaultAxisValue(agentKey, axis));
@@ -591,15 +830,17 @@ function createDefaultState(agentKey, agentLabel) {
   const label = normalizeAgentLabel(agentLabel || key, key);
   const now = nowIso();
   const axisMap = emptyAxisSnapshot(key);
-  const { cognitive, affective, drive } = splitLayerState(axisMap);
+  const { gender, cognitive, affective, drive } = splitLayerState(axisMap);
   return {
     agentKey: key,
     agentLabel: label,
     psyGender: defaultAxisValue(key, "psy_gender"),
+    gender,
     cognitive,
     affective,
     drive,
     coupling: {},
+    baseline: createInitialBaseline(axisMap),
     observationCount: 0,
     lastObservedAt: null,
     lastInputHash: null,
@@ -629,17 +870,21 @@ function loadAgentState(agentKey, agentLabel = null) {
     saveAgentState(state);
     return state;
   }
+  const gender = parseJsonSafe(row.gender_json, {});
   const cognitive = parseJsonSafe(row.cognitive_json, {});
   const affective = parseJsonSafe(row.affective_json, {});
   const drive = parseJsonSafe(row.drive_json, {});
+  const mergedAxes = mergeLayerState(key, gender, cognitive, affective, drive);
   const state = {
     agentKey: key,
     agentLabel: normalizeAgentLabel(row.agent_label || label, label),
     psyGender: clamp01(row.psy_gender),
-    cognitive: pickAxisMap(mergeLayerState(key, cognitive, affective, drive), "cognitive"),
-    affective: pickAxisMap(mergeLayerState(key, cognitive, affective, drive), "affective"),
-    drive: pickAxisMap(mergeLayerState(key, cognitive, affective, drive), "drive"),
+    gender: pickAxisMap(mergedAxes, "gender"),
+    cognitive: pickAxisMap(mergedAxes, "cognitive"),
+    affective: pickAxisMap(mergedAxes, "affective"),
+    drive: pickAxisMap(mergedAxes, "drive"),
     coupling: parseJsonSafe(row.coupling_json, {}),
+    baseline: normalizeBaseline(parseJsonSafe(row.baseline_json, {}), mergedAxes, Number(row.observation_count) || 0),
     observationCount: Number(row.observation_count) || 0,
     lastObservedAt: row.last_observed_at || null,
     lastInputHash: row.last_input_hash || null,
@@ -661,18 +906,20 @@ function saveAgentState(state) {
   state.updatedAt = now;
   const stmt = db.prepare(
     `INSERT INTO openher_axis_state (
-       agent_key, agent_label, psy_gender, cognitive_json, affective_json, drive_json,
-       coupling_json, observation_count, last_observed_at, last_input_hash, last_observation_json,
+       agent_key, agent_label, psy_gender, gender_json, cognitive_json, affective_json, drive_json,
+       coupling_json, baseline_json, observation_count, last_observed_at, last_input_hash, last_observation_json,
        updated_at, created_at
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(agent_key) DO UPDATE SET
        agent_label = excluded.agent_label,
        psy_gender = excluded.psy_gender,
+       gender_json = excluded.gender_json,
        cognitive_json = excluded.cognitive_json,
        affective_json = excluded.affective_json,
        drive_json = excluded.drive_json,
        coupling_json = excluded.coupling_json,
+       baseline_json = excluded.baseline_json,
        observation_count = excluded.observation_count,
        last_observed_at = excluded.last_observed_at,
        last_input_hash = excluded.last_input_hash,
@@ -683,10 +930,12 @@ function saveAgentState(state) {
     state.agentKey,
     state.agentLabel || state.agentKey,
     clamp01(state.psyGender),
+    JSON.stringify(state.gender || {}),
     JSON.stringify(state.cognitive || {}),
     JSON.stringify(state.affective || {}),
     JSON.stringify(state.drive || {}),
     JSON.stringify(state.coupling || {}),
+    JSON.stringify(state.baseline || {}),
     Number(state.observationCount) || 0,
     state.lastObservedAt || null,
     state.lastInputHash || null,
@@ -983,11 +1232,12 @@ function scoreAllAxes(messageVector, anchorVectors, agentLabel) {
 
 function flattenStateAxes(state) {
   return {
+    ...(state.gender || {}),
     psy_gender: {
       value: clamp01(state.psyGender),
       activation: clamp01(state.psyGender),
       sharpness: 0,
-      subAxes: {},
+      subAxes: state.gender && state.gender.psy_gender ? state.gender.psy_gender.subAxes || {} : {},
     },
     ...state.cognitive,
     ...state.affective,
@@ -1016,7 +1266,147 @@ function applyCoupling(scores, previousAxes) {
     coupled.libido = clamp01(coupled.libido + genderBias * 0.18);
   }
 
+  const counterbalance = computeDriveCounterbalance(previousAxes);
+  for (const [axis, pressure] of Object.entries(counterbalance.pressures)) {
+    if (!Object.prototype.hasOwnProperty.call(coupled, axis)) continue;
+    coupled[axis] = clamp01(coupled[axis] - pressure * strength);
+  }
+  coupled.__counterbalance = counterbalance;
+
   return coupled;
+}
+
+function computeDriveCounterbalance(previousAxes) {
+  const pressures = {};
+  const details = [];
+  for (const rule of DRIVE_COUNTER_RULES) {
+    const driveValue = previousAxes[rule.drive] ? previousAxes[rule.drive].value : 0.5;
+    const counterValue = previousAxes[rule.counter] ? previousAxes[rule.counter].value : 0.5;
+    const pressure = Math.max(0, counterValue - driveValue) * rule.weight;
+    pressures[rule.drive] = (pressures[rule.drive] || 0) + pressure;
+    details.push({
+      drive: rule.drive,
+      counter: rule.counter,
+      driveValue: Number(driveValue.toFixed(4)),
+      counterValue: Number(counterValue.toFixed(4)),
+      pressure: Number(pressure.toFixed(4)),
+    });
+  }
+  return {
+    pressures: Object.fromEntries(
+      Object.entries(pressures).map(([axis, value]) => [axis, Number(clamp01(value).toFixed(4))])
+    ),
+    details,
+  };
+}
+
+function createInitialBaseline(axisMap) {
+  const axes = {};
+  for (const definition of AXIS_DEFINITIONS) {
+    const value = axisMap && axisMap[definition.axis] ? axisMap[definition.axis].value : definition.defaultValue;
+    axes[definition.axis] = {
+      mean: Number(clamp01(value).toFixed(4)),
+      mad: 0,
+      count: 0,
+      updatedAt: null,
+    };
+  }
+  return { version: 1, axes };
+}
+
+function normalizeBaseline(raw, axisMap, observationCount = 0) {
+  const fallback = createInitialBaseline(axisMap);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback;
+  const rawAxes = raw.axes && typeof raw.axes === "object" && !Array.isArray(raw.axes) ? raw.axes : {};
+  const axes = {};
+  for (const definition of AXIS_DEFINITIONS) {
+    const fallbackAxis = fallback.axes[definition.axis];
+    const stats = rawAxes[definition.axis];
+    axes[definition.axis] = {
+      mean: clamp01(stats && Number.isFinite(Number(stats.mean)) ? Number(stats.mean) : fallbackAxis.mean),
+      mad: clamp01(stats && Number.isFinite(Number(stats.mad)) ? Number(stats.mad) : 0),
+      count: Math.max(0, Number.parseInt(stats && stats.count, 10) || observationCount || 0),
+      updatedAt: stats && typeof stats.updatedAt === "string" ? stats.updatedAt : null,
+    };
+  }
+  return { version: 1, axes };
+}
+
+function updateAxisBaseline(state, nextAxes) {
+  const currentCount = Number(state.observationCount) || 0;
+  const alpha = currentCount < 20 ? 0.12 : currentCount < 80 ? 0.06 : 0.035;
+  const baseline = normalizeBaseline(state.baseline, nextAxes, currentCount);
+  const now = nowIso();
+  for (const definition of AXIS_DEFINITIONS) {
+    const axis = definition.axis;
+    const value = nextAxes[axis] ? clamp01(nextAxes[axis].value) : defaultAxisValue(state.agentKey, axis);
+    const stats = baseline.axes[axis] || {
+      mean: defaultAxisValue(state.agentKey, axis),
+      mad: 0,
+      count: 0,
+      updatedAt: null,
+    };
+    const previousMean = clamp01(stats.mean);
+    const nextMean = stats.count <= 0 ? value : previousMean + (value - previousMean) * alpha;
+    const deviation = Math.abs(value - nextMean);
+    const nextMad = stats.count <= 0 ? deviation : clamp01((Number(stats.mad) || 0) + (deviation - (Number(stats.mad) || 0)) * alpha);
+    baseline.axes[axis] = {
+      mean: Number(clamp01(nextMean).toFixed(4)),
+      mad: Number(clamp01(nextMad).toFixed(4)),
+      count: (Number(stats.count) || 0) + 1,
+      updatedAt: now,
+    };
+  }
+  state.baseline = baseline;
+  return baseline;
+}
+
+function getAxisValue(state, layer, axis) {
+  const value = state && state[layer] && state[layer][axis] ? state[layer][axis].value : undefined;
+  return clamp01(Number.isFinite(Number(value)) ? Number(value) : defaultAxisValue(state && state.agentKey, axis));
+}
+
+function getAxisBaseline(state, axis) {
+  const globalBase = defaultAxisValue(state && state.agentKey, axis);
+  const stats = state && state.baseline && state.baseline.axes ? state.baseline.axes[axis] : null;
+  if (!stats || !(Number(stats.count) >= 5)) return globalBase;
+  const confidence = clamp01(Number(stats.count) / 80);
+  return clamp01(globalBase * (1 - confidence) + clamp01(stats.mean) * confidence);
+}
+
+function relativeActivation(value, base, k = 2.2) {
+  const normalizedValue = clamp01(value);
+  const normalizedBase = clamp01(base);
+  const aboveRaw = Math.max(0, normalizedValue - normalizedBase) / Math.max(0.05, 1 - normalizedBase);
+  const belowRaw = Math.max(0, normalizedBase - normalizedValue) / Math.max(0.05, normalizedBase);
+  return {
+    above: Number(Math.pow(clamp01(aboveRaw), 1 / k).toFixed(4)),
+    below: Number(Math.pow(clamp01(belowRaw), 1 / k).toFixed(4)),
+    delta: Number((normalizedValue - normalizedBase).toFixed(4)),
+    base: Number(normalizedBase.toFixed(4)),
+  };
+}
+
+function resonance(factors, gain, epsilon = 0.03) {
+  if (!Array.isArray(factors) || !factors.length) return 0;
+  const prod = factors.reduce((acc, factor) => acc * Math.max(epsilon, clamp01(factor)), 1);
+  const geo = Math.pow(prod, 1 / factors.length);
+  return Number(clamp01(geo * gain).toFixed(4));
+}
+
+function topSubAxis(axisState) {
+  const entries = Object.entries((axisState && axisState.subAxes) || {});
+  if (!entries.length) return null;
+  const [subAxis, payload] = entries.sort((a, b) => (b[1].weight || 0) - (a[1].weight || 0))[0];
+  return {
+    subAxis,
+    weight: Number((payload.weight || 0).toFixed(4)),
+    similarity: Number((payload.similarity || 0).toFixed(4)),
+  };
+}
+
+function formatAxisLabel(axis) {
+  return AXIS_BY_KEY[axis] ? AXIS_BY_KEY[axis].label : axis;
 }
 
 function applyObservationToState(state, scores, inputHash) {
@@ -1044,10 +1434,16 @@ function applyObservationToState(state, scores, inputHash) {
   }
 
   state.psyGender = nextAxes.psy_gender.value;
-  const { cognitive, affective, drive } = splitLayerState(nextAxes);
+  const { gender, cognitive, affective, drive } = splitLayerState(nextAxes);
+  state.gender = gender;
   state.cognitive = cognitive;
   state.affective = affective;
   state.drive = drive;
+  state.coupling = {
+    ...(state.coupling || {}),
+    lastCounterbalance: coupled.__counterbalance || null,
+  };
+  updateAxisBaseline(state, nextAxes);
   state.observationCount = (Number(state.observationCount) || 0) + 1;
   state.lastObservedAt = nowIso();
   state.lastInputHash = inputHash;
@@ -1067,13 +1463,196 @@ function computeMoodFromState(state) {
   const arousal = clamp01(state.affective && state.affective.arousal && state.affective.arousal.value);
   const tension = Math.min(positive, negative);
   const dominance = positive - negative;
+  const archetypes = evaluateMoodArchetypes(state, positive, negative, arousal);
+  const expression = computeExpressionFromState(state, {
+    positive,
+    negative,
+    arousal,
+    tension,
+    dominance,
+    archetypes,
+  });
   return {
     positive: Number(positive.toFixed(4)),
     negative: Number(negative.toFixed(4)),
     arousal: Number(arousal.toFixed(4)),
     tension: Number(tension.toFixed(4)),
     dominance: Number(dominance.toFixed(4)),
-    label: moodLabel(positive, negative, arousal),
+    label: archetypes.primary ? archetypes.primary.label : moodLabel(positive, negative, arousal),
+    archetypes,
+    expression,
+  };
+}
+
+function evaluateMoodArchetypes(state, p, n, a) {
+  const calmness = 1 - a;
+  const driveAxes = ["libido", "hedonia", "coldness", "arrogance", "numbness", "self_punishment", "fear", "curiosity"];
+  const cognitiveAxes = ["inquiry", "discernment", "refusal"];
+  const values = {};
+  const rel = {};
+  for (const axis of driveAxes) {
+    values[axis] = getAxisValue(state, "drive", axis);
+    rel[axis] = relativeActivation(values[axis], getAxisBaseline(state, axis));
+  }
+  for (const axis of cognitiveAxes) {
+    values[axis] = getAxisValue(state, "cognitive", axis);
+    rel[axis] = relativeActivation(values[axis], getAxisBaseline(state, axis));
+  }
+
+  const up = (axis) => (rel[axis] ? rel[axis].above : 0);
+  const down = (axis) => (rel[axis] ? rel[axis].below : 0);
+  const counterbalance = state && state.coupling ? state.coupling.lastCounterbalance : null;
+  const pressure = (axis) => clamp01(counterbalance && counterbalance.pressures ? counterbalance.pressures[axis] : 0);
+
+  const archetypes = [
+    { label: "剧烈撕扯", score: resonance([p, n, a], 1.25), recipe: ["positive", "negative", "arousal"] },
+    { label: "渊底自毁", score: resonance([up("self_punishment"), n, a], 1.25), recipe: ["self_punishment↑", "negative", "arousal"] },
+    { label: "痛感沉溺", score: resonance([up("self_punishment"), up("hedonia"), p], 1.2), recipe: ["self_punishment↑", "hedonia↑", "positive"] },
+    { label: "情热涌动", score: resonance([up("libido"), a, p], 1.18), recipe: ["libido↑", "arousal", "positive"] },
+    { label: "绵密缱绻", score: resonance([up("libido"), up("hedonia"), calmness], 1.15), recipe: ["libido↑", "hedonia↑", "calmness"] },
+    { label: "欲念焦灼", score: resonance([up("libido"), n, a], 1.15), recipe: ["libido↑", "negative", "arousal"] },
+    { label: "欲冷相持", score: resonance([up("libido"), up("coldness"), pressure("libido")], 1.22), recipe: ["libido↑", "coldness↑", "libidoCounterPressure"] },
+    { label: "傲慢睥睨", score: resonance([up("arrogance"), up("coldness"), calmness], 1.18), recipe: ["arrogance↑", "coldness↑", "calmness"] },
+    { label: "霜冷拒守", score: resonance([up("refusal"), up("coldness"), n], 1.15), recipe: ["refusal↑", "coldness↑", "negative"] },
+    { label: "封冻死寂", score: resonance([up("numbness"), up("coldness"), calmness], 1.25), recipe: ["numbness↑", "coldness↑", "calmness"] },
+    { label: "麻木解冻", score: resonance([down("numbness"), p, up("curiosity") || up("libido")], 1.12), recipe: ["numbness↓", "positive", "drive↑"] },
+    { label: "惊惧战栗", score: resonance([up("fear"), a, n], 1.2), recipe: ["fear↑", "arousal", "negative"] },
+    { label: "如履薄冰", score: resonance([up("fear"), up("discernment"), calmness], 1.15), recipe: ["fear↑", "discernment↑", "calmness"] },
+    { label: "强撑无畏", score: resonance([up("fear"), up("arrogance"), pressure("fear")], 1.18), recipe: ["fear↑", "arrogance↑", "fearCounterPressure"] },
+    { label: "探求炽热", score: resonance([up("curiosity"), up("inquiry"), a], 1.15), recipe: ["curiosity↑", "inquiry↑", "arousal"] },
+    { label: "幽微洞察", score: resonance([up("discernment"), up("inquiry"), calmness], 1.15), recipe: ["discernment↑", "inquiry↑", "calmness"] },
+    { label: "慵懒沉陷", score: resonance([up("hedonia"), calmness, p], 1.12), recipe: ["hedonia↑", "calmness", "positive"] },
+    { label: "享乐负罪", score: resonance([up("hedonia"), up("self_punishment"), pressure("hedonia")], 1.18), recipe: ["hedonia↑", "self_punishment↑", "hedoniaCounterPressure"] },
+    { label: "雀跃明亮", score: resonance([p, a], 1.05), recipe: ["positive", "arousal"] },
+    { label: "温和宁静", score: resonance([p, calmness], 1.05), recipe: ["positive", "calmness"] },
+    { label: "焦灼愤懑", score: resonance([n, a], 1.05), recipe: ["negative", "arousal"] },
+    { label: "黯淡失落", score: resonance([n, calmness], 1.05), recipe: ["negative", "calmness"] },
+    { label: "平静观测", score: 0.42, recipe: ["fallback"] },
+  ];
+
+  archetypes.sort((left, right) => right.score - left.score);
+  const candidates = archetypes.slice(0, 5).map((item) => ({
+    label: item.label,
+    score: Number(item.score.toFixed(4)),
+    recipe: item.recipe,
+  }));
+  return {
+    primary: candidates[0],
+    secondary: candidates[1] || null,
+    candidates,
+    relative: Object.fromEntries(
+      Object.entries(rel).map(([axis, item]) => [
+        axis,
+        {
+          base: item.base,
+          delta: item.delta,
+          above: item.above,
+          below: item.below,
+        },
+      ])
+    ),
+  };
+}
+
+function computeExpressionFromState(state, context) {
+  const affective = summarizeAffectiveExpression(state, context);
+  const drive = summarizeDriveExpression(state);
+  const gender = summarizeGenderExpression(state);
+  const archetypes = context.archetypes;
+  const shortLabel = [archetypes.primary && archetypes.primary.label, drive.label, gender.label]
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" / ");
+  const sentenceParts = [
+    `当前情绪底色为${affective.label}`,
+    drive.sentence,
+    gender.sentence,
+  ].filter(Boolean);
+  return {
+    shortLabel,
+    sentence: `${sentenceParts.join("，")}。`,
+    affective,
+    drive,
+    gender,
+    archetypes: archetypes.candidates,
+  };
+}
+
+function summarizeAffectiveExpression(state, context) {
+  const dominantAxis = context.dominance >= 0 ? "positive" : "negative";
+  const dominantSubAxis = topSubAxis(state && state.affective ? state.affective[dominantAxis] : null);
+  const label = context.archetypes.primary ? context.archetypes.primary.label : moodLabel(context.positive, context.negative, context.arousal);
+  return {
+    label,
+    positive: Number(context.positive.toFixed(4)),
+    negative: Number(context.negative.toFixed(4)),
+    arousal: Number(context.arousal.toFixed(4)),
+    tension: Number(context.tension.toFixed(4)),
+    dominance: Number(context.dominance.toFixed(4)),
+    dominantAxis,
+    dominantSubAxis,
+  };
+}
+
+function summarizeDriveExpression(state) {
+  const driveEntries = Object.entries((state && state.drive) || {});
+  if (!driveEntries.length) return { label: null, primaryDrive: null, counterDrive: null, sentence: null };
+  const positiveDriveKeys = new Set(["curiosity", "fear", "libido", "hedonia"]);
+  const counterDriveKeys = new Set(["coldness", "arrogance", "numbness", "self_punishment"]);
+  const sortByValue = (entries) => entries.sort((a, b) => (b[1].value || 0) - (a[1].value || 0));
+  const primary = sortByValue(driveEntries.filter(([axis]) => positiveDriveKeys.has(axis)))[0] || null;
+  const counter = sortByValue(driveEntries.filter(([axis]) => counterDriveKeys.has(axis)))[0] || null;
+  const counterbalance = state && state.coupling ? state.coupling.lastCounterbalance : null;
+  const pressures = counterbalance && counterbalance.pressures ? counterbalance.pressures : {};
+  const strongestPressure = Object.entries(pressures).sort((a, b) => b[1] - a[1])[0] || null;
+  const labelParts = [];
+  if (primary) labelParts.push(`${formatAxisLabel(primary[0])}上扬`);
+  if (counter && counter[1].value > 0.35) labelParts.push(`${formatAxisLabel(counter[0])}对冲`);
+  const label = labelParts.join("·") || "驱动平稳";
+  const pressureText = strongestPressure && strongestPressure[1] > 0.02
+    ? `其中${formatAxisLabel(strongestPressure[0])}受到对冲压力${Number(strongestPressure[1]).toFixed(2)}`
+    : "对冲压力较低";
+  return {
+    label,
+    primaryDrive: primary ? { axis: primary[0], label: formatAxisLabel(primary[0]), value: Number((primary[1].value || 0).toFixed(4)), subAxis: topSubAxis(primary[1]) } : null,
+    counterDrive: counter ? { axis: counter[0], label: formatAxisLabel(counter[0]), value: Number((counter[1].value || 0).toFixed(4)), subAxis: topSubAxis(counter[1]) } : null,
+    counterPressure: strongestPressure ? { axis: strongestPressure[0], label: formatAxisLabel(strongestPressure[0]), pressure: Number(strongestPressure[1].toFixed(4)) } : null,
+    sentence: `驱动层表现为${label}，${pressureText}`,
+  };
+}
+
+function summarizeGenderExpression(state) {
+  const genderEntries = Object.entries((state && state.gender) || {}).filter(([axis]) => axis !== "psy_gender");
+  if (!genderEntries.length) return { label: null, sentence: null, dominantGenderAxis: null };
+  const decorated = genderEntries.map(([axis, axisState]) => {
+    const sub = topSubAxis(axisState);
+    const subAxis = sub ? sub.subAxis : "";
+    const pole = subAxis.startsWith("masculine") ? "masculine" : subAxis.startsWith("feminine") ? "feminine" : "neutral";
+    return {
+      axis,
+      label: formatAxisLabel(axis),
+      value: clamp01(axisState.value),
+      sharpness: clamp01(axisState.sharpness),
+      subAxis: sub,
+      pole,
+    };
+  });
+  const dominant = decorated.sort((a, b) => b.sharpness - a.sharpness || Math.abs(b.value - 0.5) - Math.abs(a.value - 0.5))[0];
+  const masculineCount = decorated.filter((item) => item.pole === "masculine").length;
+  const feminineCount = decorated.filter((item) => item.pole === "feminine").length;
+  const polarity = masculineCount > feminineCount + 1
+    ? "男性极"
+    : feminineCount > masculineCount + 1
+      ? "女性极"
+      : "混合态";
+  const label = dominant ? `${dominant.label}${polarity}` : polarity;
+  return {
+    label,
+    globalPolarity: polarity,
+    dominantGenderAxis: dominant || null,
+    masculineAxes: decorated.filter((item) => item.pole === "masculine").map((item) => item.axis),
+    feminineAxes: decorated.filter((item) => item.pole === "feminine").map((item) => item.axis),
+    sentence: dominant ? `性别轴体以${dominant.label}为最清晰表达，整体呈${polarity}` : `性别轴体整体呈${polarity}`,
   };
 }
 
@@ -1404,9 +1983,11 @@ function getAxisStatusForAgent(agentKey, agentLabel) {
     agentKey: state.agentKey,
     agentLabel: state.agentLabel,
     psyGender: state.psyGender,
+    gender: state.gender,
     cognitive: state.cognitive,
     affective: state.affective,
     drive: state.drive,
+    baseline: state.baseline,
     mood: computeMoodFromState(state),
     observationCount: state.observationCount,
     lastObservedAt: state.lastObservedAt,

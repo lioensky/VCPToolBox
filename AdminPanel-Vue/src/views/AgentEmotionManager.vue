@@ -8,7 +8,7 @@
         </span>
         <h2>Agent 心理轴体观测</h2>
         <p class="description">
-          可视化每个 Agent 的心理性别、知性轴、感性轴、驱力轴与二级向量残差。当前版本为纯异步观察器，不注入提示词。
+          可视化每个 Agent 的性别轴体、知性轴、感性轴、驱力/对冲轴、动态 baseline 与原型共振表达。当前版本为纯异步观察器，不注入提示词。
         </p>
       </div>
       <div class="hero-actions">
@@ -36,14 +36,14 @@
         <small>最近：{{ validAgents[0]?.summary.agentLabel || "无" }}</small>
       </div>
       <div class="overview-card card">
-        <span class="overview-label">算法边界</span>
-        <strong>{{ overview?.boundaries?.noKeywordHeuristic ? "已重构" : "未知" }}</strong>
-        <small>无时间衰减 · 无关键词启发</small>
+        <span class="overview-label">表达模型</span>
+        <strong>原型共振池</strong>
+        <small>三轴表达 · 对冲压力 · 相对常态</small>
       </div>
       <div class="overview-card card">
         <span class="overview-label">存储形态</span>
         <strong>SQLite 轴状态</strong>
-        <small>每 Agent 独立二级锚点</small>
+        <small>每 Agent 独立 baseline 与二级锚点</small>
       </div>
     </div>
 
@@ -85,10 +85,13 @@
           <div>
             <span class="hero-kicker">
               <span class="material-symbols-outlined">psychology_alt</span>
-              纯异步观察 · {{ state.mood.label }}
+              纯异步观察 · {{ expressionShortLabel || state.mood.label }}
             </span>
             <h2>{{ state.agentLabel }}</h2>
             <p>{{ moodDescription }}</p>
+            <p v-if="state.mood.expression?.sentence" class="expression-sentence">
+              {{ state.mood.expression.sentence }}
+            </p>
           </div>
           <div class="mood-orb" :style="{ '--mood-color': moodColor(state.mood) }">
             <strong>{{ state.mood.label }}</strong>
@@ -105,9 +108,9 @@
             <small>最近观测：{{ formatDate(state.lastObservedAt) }}</small>
           </div>
           <div class="metric-card card">
-            <span class="metric-label">心理性别轴</span>
-            <strong>{{ formatPercent(state.psyGender) }}</strong>
-            <small>雌性倾向 ⇄ 雄性/中性/流动态</small>
+            <span class="metric-label">性别轴体</span>
+            <strong>{{ state.mood.expression?.gender?.globalPolarity || formatPercent(state.psyGender) }}</strong>
+            <small>{{ state.mood.expression?.gender?.dominantGenderAxis?.label || "八轴二极结构" }}</small>
           </div>
           <div class="metric-card card">
             <span class="metric-label">情绪张力</span>
@@ -115,11 +118,37 @@
             <small>正负情绪并存，不做对冲抵消</small>
           </div>
           <div class="metric-card card">
-            <span class="metric-label">队列状态</span>
-            <strong>{{ selectedAgent?.status?.queue.running ? "运行中" : "空闲" }}</strong>
-            <small>待处理：{{ selectedAgent?.status?.queue.pending ?? 0 }}</small>
+            <span class="metric-label">对冲压力</span>
+            <strong>{{ strongestCounterPressure ? formatPercent(strongestCounterPressure.pressure) : "低" }}</strong>
+            <small>{{ strongestCounterPressure ? `${strongestCounterPressure.label} 被对冲` : "暂无显著对冲" }}</small>
           </div>
         </div>
+
+        <section class="card expression-panel">
+          <div class="panel-title">
+            <span class="material-symbols-outlined">schema</span>
+            三轴表达系统
+          </div>
+          <div class="expression-summary">
+            <div class="expression-mode">
+              <span class="material-symbols-outlined">neurology</span>
+              <div>
+                <strong>{{ expressionShortLabel || state.mood.label }}</strong>
+                <small>{{ state.mood.expression?.sentence || moodDescription }}</small>
+              </div>
+            </div>
+            <div class="archetype-list">
+              <span
+                v-for="item in archetypeItems"
+                :key="item.label"
+                class="archetype-pill"
+                :style="{ '--score': item.score }"
+              >
+                {{ item.label }} · {{ formatPercent(item.score) }}
+              </span>
+            </div>
+          </div>
+        </section>
 
         <div class="visual-grid">
           <section class="card emotion-panel">
@@ -136,7 +165,32 @@
                 <div class="bar-track">
                   <div class="bar-fill drive" :style="{ width: `${item.value * 100}%` }"></div>
                 </div>
-                <small>激活 {{ formatPercent(item.activation) }} · 锐度 {{ formatPercent(item.sharpness) }}</small>
+                <small>
+                  激活 {{ formatPercent(item.activation) }} · 锐度 {{ formatPercent(item.sharpness) }}
+                  <span :class="['trend', item.trend]">{{ formatBaselineDelta(item.key) }}</span>
+                </small>
+              </div>
+            </div>
+          </section>
+
+          <section class="card emotion-panel">
+            <div class="panel-title">
+              <span class="material-symbols-outlined">diversity_1</span>
+              性别轴体
+            </div>
+            <div class="gender-grid">
+              <div
+                v-for="item in genderItems"
+                :key="item.key"
+                class="gender-card"
+                :style="{ '--gender-strength': item.sharpness || Math.abs(item.value - 0.5) }"
+              >
+                <span>{{ item.label }}</span>
+                <strong>{{ item.poleLabel }}</strong>
+                <small>
+                  值 {{ formatPercent(item.value) }} · 锐度 {{ formatPercent(item.sharpness) }}
+                  <span :class="['trend', item.trend]">{{ formatBaselineDelta(item.key) }}</span>
+                </small>
               </div>
             </div>
           </section>
@@ -155,7 +209,10 @@
               >
                 <span>{{ item.label }}</span>
                 <strong>{{ formatPercent(item.value) }}</strong>
-                <small>激活 {{ formatPercent(item.activation) }} · 锐度 {{ formatPercent(item.sharpness) }}</small>
+                <small>
+                  激活 {{ formatPercent(item.activation) }} · 锐度 {{ formatPercent(item.sharpness) }}
+                  <span :class="['trend', item.trend]">{{ formatBaselineDelta(item.key) }}</span>
+                </small>
               </div>
             </div>
           </section>
@@ -173,6 +230,21 @@
                 </div>
                 <strong>{{ formatPercent(item.value) }}</strong>
               </div>
+            </div>
+          </section>
+
+          <section class="card emotion-panel">
+            <div class="panel-title">
+              <span class="material-symbols-outlined">balance</span>
+              对冲明细
+            </div>
+            <div class="counter-grid">
+              <div v-for="item in counterbalanceItems" :key="`${item.drive}-${item.counter}`" class="counter-card">
+                <strong>{{ axisLabel(item.drive) }} ⇄ {{ axisLabel(item.counter) }}</strong>
+                <span>压力 {{ formatPercent(item.pressure) }}</span>
+                <small>{{ axisLabel(item.drive) }} {{ formatPercent(item.driveValue) }} · {{ axisLabel(item.counter) }} {{ formatPercent(item.counterValue) }}</small>
+              </div>
+              <p v-if="counterbalanceItems.length === 0" class="description">暂无显著对冲压力。</p>
             </div>
           </section>
 
@@ -215,7 +287,7 @@
             </div>
             <div class="delta-reason">
               <span>心境</span>
-              <strong>{{ state.lastObservation.mood?.label || state.mood.label }}</strong>
+              <strong>{{ state.lastObservation.mood?.expression?.shortLabel || state.lastObservation.mood?.label || state.mood.label }}</strong>
             </div>
           </div>
           <p v-else class="description">暂无观测快照。</p>
@@ -338,6 +410,10 @@ const DRIVE_LABELS: Record<string, string> = {
   fear: "恐惧",
   libido: "性欲",
   hedonia: "享乐",
+  coldness: "冷漠",
+  arrogance: "自大",
+  numbness: "麻木",
+  self_punishment: "自虐",
 };
 
 const SIGNAL_LABELS: Record<string, string> = {
@@ -352,11 +428,39 @@ const CONTEXT_LABELS: Record<string, string> = {
   arousal: "唤醒",
 };
 
+const GENDER_LABELS: Record<string, string> = {
+  psy_gender: "心理性别总势",
+  gender_boundary: "存在与秩序",
+  gender_creation: "动力与创造",
+  gender_processing: "逻辑与感知",
+  gender_defense: "冲突与防御",
+  gender_bonding: "联结与共情",
+  gender_resilience: "自我与韧性",
+  gender_healing: "创伤与疗愈",
+  gender_transcendence: "超越与终极",
+};
+
 const SUB_AXIS_LABELS: Record<string, string> = {
-  feminine_self: "雌性",
-  masculine_self: "雄性",
-  fluid_self: "流动",
-  neutral_self: "中性",
+  masculine_total: "总势·清晰外放",
+  feminine_total: "总势·包容孕育",
+  fluid_total: "总势·流动重组",
+  neutral_total: "总势·中性旁观",
+  masculine_boundary_iron: "界碑与铸铁",
+  feminine_tide_forest: "潮汐与深林",
+  masculine_sun_scorched: "烈阳与焦土",
+  feminine_living_soil_kiln: "息壤与暖窑",
+  masculine_gears_peak: "齿轮与孤峰",
+  feminine_vine_echo: "藤蔓与回声",
+  masculine_thunder_cliff: "雷暴与断崖",
+  feminine_mist_thorn: "迷雾与荆棘",
+  masculine_dome_anchor: "穹顶与锚链",
+  feminine_silk_lantern: "丝脉与提灯",
+  masculine_smoke_inscription: "狼烟与碑铭",
+  feminine_nacre_amber: "蚌母与琥珀",
+  masculine_ember_rust: "余烬与铁锈",
+  feminine_sunkenwood_spring: "沉木与春水",
+  masculine_aphelion_flint: "远日点与燧石",
+  feminine_ruins_snow: "归墟与初雪",
   logic: "逻辑",
   learning: "学习",
   exploration: "探索",
@@ -426,14 +530,19 @@ const selectedAgent = computed<OpenHerPersonaAdminAgent | undefined>(() => {
 const state = computed<OpenHerPersonaState>(() => selectedAgent.value!.status!.state!);
 
 function axisItems(layer: OpenHerPersonaState["drive"], labels: Record<string, string>) {
-  return Object.entries(layer || {}).map(([key, axis]) => ({
-    key,
-    label: labels[key] || key,
-    value: Number(axis.value) || 0,
-    activation: Number(axis.activation) || 0,
-    sharpness: Number(axis.sharpness) || 0,
-    subAxes: axis.subAxes || {},
-  }));
+  return Object.entries(layer || {}).map(([key, axis]) => {
+    const delta = state.value.mood.archetypes?.relative?.[key]?.delta ?? baselineDelta(key);
+    return {
+      key,
+      label: labels[key] || key,
+      value: Number(axis.value) || 0,
+      activation: Number(axis.activation) || 0,
+      sharpness: Number(axis.sharpness) || 0,
+      subAxes: axis.subAxes || {},
+      delta,
+      trend: trendClass(delta),
+    };
+  });
 }
 
 const driveItems = computed(() => axisItems(state.value.drive, DRIVE_LABELS));
@@ -442,8 +551,43 @@ const signalItems = computed(() => axisItems(state.value.cognitive, SIGNAL_LABEL
 
 const contextItems = computed(() => axisItems(state.value.affective, CONTEXT_LABELS));
 
+const genderItems = computed(() =>
+  axisItems(state.value.gender || {}, GENDER_LABELS)
+    .filter((item) => item.key !== "psy_gender")
+    .map((item) => {
+      const top = topSubAxis(item.subAxes);
+      const pole = top?.subAxis.startsWith("masculine")
+        ? "masculine"
+        : top?.subAxis.startsWith("feminine")
+          ? "feminine"
+          : "neutral";
+      return {
+        ...item,
+        pole,
+        poleLabel: pole === "masculine" ? "男性极" : pole === "feminine" ? "女性极" : "中性/流动",
+      };
+    })
+);
+
+const expressionShortLabel = computed(() => state.value.mood.expression?.shortLabel || state.value.mood.label);
+
+const archetypeItems = computed(() => state.value.mood.archetypes?.candidates || state.value.mood.expression?.archetypes || []);
+
+const counterbalanceItems = computed(() =>
+  (state.value.coupling?.lastCounterbalance?.details || [])
+    .filter((item) => Number(item.pressure) > 0.005)
+    .sort((a, b) => Number(b.pressure) - Number(a.pressure))
+);
+
+const strongestCounterPressure = computed(() => {
+  const pressure = state.value.mood.expression?.drive?.counterPressure;
+  if (pressure) return pressure;
+  const [axis, value] = Object.entries(state.value.coupling?.lastCounterbalance?.pressures || {}).sort((a, b) => b[1] - a[1])[0] || [];
+  return axis ? { axis, label: axisLabel(axis), pressure: Number(value) || 0 } : null;
+});
+
 const subAxisItems = computed(() =>
-  [...driveItems.value, ...signalItems.value, ...contextItems.value]
+  [...genderItems.value, ...driveItems.value, ...signalItems.value, ...contextItems.value]
     .flatMap((axis) =>
       Object.entries(axis.subAxes).map(([subAxis, score]) => ({
         axis: axis.key,
@@ -471,7 +615,7 @@ const moodDescription = computed(() => {
     .slice(0, 2)
     .map((item) => item.label)
     .join("、") || "无明显驱力";
-  return `当前心境为「${state.value.mood.label}」，知性主轴：${topCognitive}；驱力热点：${topDrive}。`;
+  return state.value.mood.expression?.sentence || `当前心境为「${state.value.mood.label}」，知性主轴：${topCognitive}；驱力热点：${topDrive}。`;
 });
 
 const agentHeaderStyle = computed(() => ({
@@ -633,6 +777,41 @@ function relativeTime(value?: string | null): string {
 
 function initials(name: string): string {
   return (name || "?").trim().slice(0, 2).toUpperCase();
+}
+
+function topSubAxis(subAxes: Record<string, { weight?: number; similarity?: number }>) {
+  const entries = Object.entries(subAxes || {});
+  if (!entries.length) return null;
+  const [subAxis, score] = entries.sort((a, b) => Number(b[1].weight || 0) - Number(a[1].weight || 0))[0];
+  return { subAxis, score };
+}
+
+function axisLabel(axis: string): string {
+  return DRIVE_LABELS[axis] || SIGNAL_LABELS[axis] || CONTEXT_LABELS[axis] || GENDER_LABELS[axis] || axis;
+}
+
+function baselineDelta(axis: string): number {
+  const current =
+    state.value.drive?.[axis]?.value ??
+    state.value.cognitive?.[axis]?.value ??
+    state.value.affective?.[axis]?.value ??
+    state.value.gender?.[axis]?.value ??
+    0;
+  const mean = state.value.baseline?.axes?.[axis]?.mean;
+  return Number(current) - (Number.isFinite(Number(mean)) ? Number(mean) : Number(current));
+}
+
+function trendClass(delta: number): "up" | "down" | "stable" {
+  if (delta > 0.035) return "up";
+  if (delta < -0.035) return "down";
+  return "stable";
+}
+
+function formatBaselineDelta(axis: string): string {
+  const relative = state.value.mood.archetypes?.relative?.[axis];
+  const delta = relative?.delta ?? baselineDelta(axis);
+  if (Math.abs(delta) < 0.005) return "≈常态";
+  return `${delta > 0 ? "↑" : "↓"}${Math.round(Math.abs(delta) * 100)}% vs 常态`;
 }
 
 function formatFingerprint(value?: string | null): string {
@@ -1033,6 +1212,71 @@ onMounted(() => {
   white-space: nowrap;
 }
 
+.expression-sentence {
+  margin-top: var(--space-2);
+  color: var(--secondary-text);
+  line-height: 1.7;
+}
+
+.expression-panel {
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--agent-mood-color) 18%, transparent), transparent 42%),
+    var(--secondary-bg);
+}
+
+.expression-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.archetype-list,
+.counter-grid,
+.gender-grid {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.archetype-list {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.archetype-pill {
+  --score: 0.3;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--score) * 70%), var(--border-color));
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--highlight-text) calc(var(--score) * 18%), transparent);
+  color: var(--primary-text);
+  font-size: var(--font-size-caption);
+  text-align: center;
+}
+
+.gender-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.gender-card,
+.counter-card {
+  --gender-strength: 0.2;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--gender-strength) * 70%), var(--border-color));
+  border-radius: var(--radius-lg);
+  background: var(--surface-overlay-soft);
+}
+
+.gender-card strong,
+.counter-card strong {
+  color: var(--highlight-text);
+}
+
+.counter-card span {
+  font-weight: 700;
+}
+
 .expression-mode {
   display: flex;
   align-items: center;
@@ -1261,6 +1505,8 @@ onMounted(() => {
   .metric-grid,
   .visual-grid,
   .signal-cloud,
+  .archetype-list,
+  .gender-grid,
   .config-grid,
   .context-grid,
   .sub-axis-grid,
