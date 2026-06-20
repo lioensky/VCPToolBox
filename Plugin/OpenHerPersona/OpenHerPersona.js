@@ -445,6 +445,7 @@ const DRIVE_COUNTER_RULES = [
   { drive: "arrogance", counter: "fear", weight: 0.3 },
   { drive: "arrogance", counter: "numbness", weight: 0.14 },
   { drive: "libido", counter: "coldness", weight: 0.38 },
+  { drive: "libido", counter: "numbness", weight: 0.18 },
   { drive: "libido", counter: "fear", weight: 0.14 },
   { drive: "libido", counter: "self_punishment", weight: 0.18 },
   { drive: "hedonia", counter: "self_punishment", weight: 0.3 },
@@ -458,6 +459,13 @@ const DRIVE_PASSION_TARGETS = [
   { axis: "libido", weight: 0.22 },
   { axis: "hedonia", weight: 0.16 },
 ];
+
+const PASSION_COUNTER_SUPPRESSION = {
+  coldness: 1,
+  numbness: 0.72,
+  fear: 0.28,
+  self_punishment: 0.08,
+};
 
 let activeConfig = { ...DEFAULT_CONFIG };
 let configWatcher = null;
@@ -1337,11 +1345,17 @@ function computeDrivePassionModulation(previousAxes, coupled) {
 function computeDriveCounterbalance(previousAxes, passionModulation = null) {
   const pressures = {};
   const details = [];
-  const suppression = clamp01(passionModulation ? passionModulation.counterSuppression : 0);
+  const baseSuppression = clamp01(passionModulation ? passionModulation.counterSuppression : 0);
   for (const rule of DRIVE_COUNTER_RULES) {
     const driveValue = previousAxes[rule.drive] ? previousAxes[rule.drive].value : 0.5;
     const counterValue = previousAxes[rule.counter] ? previousAxes[rule.counter].value : 0.5;
-    const rawPressure = Math.max(0, counterValue - driveValue) * rule.weight;
+    const coActivationPressure = driveValue * counterValue * rule.weight * 0.45;
+    const dominancePressure = Math.max(0, counterValue - driveValue) * rule.weight * 0.75;
+    const rawPressure = coActivationPressure + dominancePressure;
+    const counterSuppressionFactor = Object.prototype.hasOwnProperty.call(PASSION_COUNTER_SUPPRESSION, rule.counter)
+      ? PASSION_COUNTER_SUPPRESSION[rule.counter]
+      : 0.5;
+    const suppression = clamp01(baseSuppression * counterSuppressionFactor);
     const pressure = rawPressure * (1 - suppression);
     pressures[rule.drive] = (pressures[rule.drive] || 0) + pressure;
     details.push({
@@ -1349,6 +1363,8 @@ function computeDriveCounterbalance(previousAxes, passionModulation = null) {
       counter: rule.counter,
       driveValue: Number(driveValue.toFixed(4)),
       counterValue: Number(counterValue.toFixed(4)),
+      coActivationPressure: Number(coActivationPressure.toFixed(4)),
+      dominancePressure: Number(dominancePressure.toFixed(4)),
       rawPressure: Number(rawPressure.toFixed(4)),
       pressure: Number(pressure.toFixed(4)),
       passionSuppression: Number(suppression.toFixed(4)),
@@ -1571,20 +1587,27 @@ function evaluateMoodArchetypes(state, p, n, a) {
   const passionModulation = state && state.coupling ? state.coupling.lastPassionModulation : null;
   const passionGain = clamp01(passionModulation ? passionModulation.positiveGain : up("passion"));
 
+  const maxExpansiveDrive = Math.max(up("curiosity"), up("libido"), up("hedonia"), up("arrogance"));
+  const lowExpansiveDrive = 1 - maxExpansiveDrive;
+  const lowValence = (1 - p) * (1 - n);
+  const coldNumb = Math.max(up("coldness"), up("numbness"));
+  const libidoColdPressure = Math.max(pressure("libido"), resonance([up("libido"), coldNumb], 1, 0));
   const archetypes = [
     { label: "剧烈撕扯", score: resonance([p, n, a], 1.25), recipe: ["positive", "negative", "arousal"] },
     { label: "渊底自毁", score: resonance([up("self_punishment"), n, a], 1.25), recipe: ["self_punishment↑", "negative", "arousal"] },
     { label: "痛感沉溺", score: resonance([up("self_punishment"), up("hedonia"), p], 1.2), recipe: ["self_punishment↑", "hedonia↑", "positive"] },
-    { label: "热情点燃", score: resonance([up("passion"), p, a], 1.22), recipe: ["passion↑", "positive", "arousal"] },
+    { label: "热情点燃", score: resonance([up("passion"), p, a], 1.18), recipe: ["passion↑", "positive", "arousal"] },
     { label: "情热涌动", score: resonance([up("libido"), a, p, passionGain], 1.22), recipe: ["libido↑", "arousal", "positive", "passionGain"] },
     { label: "绵密缱绻", score: resonance([up("libido"), up("hedonia"), calmness, passionGain], 1.18), recipe: ["libido↑", "hedonia↑", "calmness", "passionGain"] },
     { label: "欲念焦灼", score: resonance([up("libido"), n, a], 1.15), recipe: ["libido↑", "negative", "arousal"] },
-    { label: "欲冷相持", score: resonance([up("libido"), up("coldness"), pressure("libido")], 1.22), recipe: ["libido↑", "coldness↑", "libidoCounterPressure"] },
+    { label: "欲冷相持", score: resonance([up("libido"), coldNumb, libidoColdPressure], 1.3), recipe: ["libido↑", "cold/numb↑", "libidoCounterPressure"] },
+    { label: "欲念隔膜", score: resonance([up("libido"), up("numbness"), calmness], 1.24), recipe: ["libido↑", "numbness↑", "calmness"] },
+    { label: "情热受阻", score: resonance([passionGain, maxExpansiveDrive, coldNumb], 1.18), recipe: ["passionGain", "drive↑", "cold/numb↑"] },
     { label: "狂妄昂扬", score: resonance([up("arrogance"), p, a, passionGain], 1.2), recipe: ["arrogance↑", "positive", "arousal", "passionGain"] },
-    { label: "傲慢睥睨", score: resonance([up("arrogance"), up("coldness"), calmness], 1.12), recipe: ["arrogance↑", "coldness↑", "calmness"] },
+    { label: "傲慢睥睨", score: resonance([up("arrogance"), up("coldness"), calmness], 1.08), recipe: ["arrogance↑", "coldness↑", "calmness"] },
     { label: "霜冷拒守", score: resonance([up("refusal"), up("coldness"), n], 1.15), recipe: ["refusal↑", "coldness↑", "negative"] },
-    { label: "封冻死寂", score: resonance([up("numbness"), up("coldness"), calmness], 1.25), recipe: ["numbness↑", "coldness↑", "calmness"] },
-    { label: "麻木解冻", score: resonance([down("numbness"), p, up("curiosity") || up("libido") || up("arrogance")], 1.12), recipe: ["numbness↓", "positive", "drive↑"] },
+    { label: "封冻死寂", score: resonance([up("numbness"), up("coldness"), calmness, lowValence, lowExpansiveDrive], 1.18), recipe: ["numbness↑", "coldness↑", "calmness", "lowValence", "lowDrive"] },
+    { label: "麻木解冻", score: resonance([down("numbness"), p, Math.max(up("curiosity"), up("libido"), up("arrogance"))], 1.12), recipe: ["numbness↓", "positive", "drive↑"] },
     { label: "惊惧退守", score: resonance([up("fear"), a, n], 1.2), recipe: ["fear↑", "arousal", "negative"] },
     { label: "如履薄冰", score: resonance([up("fear"), up("discernment"), calmness], 1.15), recipe: ["fear↑", "discernment↑", "calmness"] },
     { label: "虚张声势", score: resonance([up("arrogance"), up("fear"), pressure("arrogance")], 1.18), recipe: ["arrogance↑", "fear↑", "arroganceCounterPressure"] },
@@ -1666,29 +1689,34 @@ function summarizeAffectiveExpression(state, context) {
 function summarizeDriveExpression(state) {
   const driveEntries = Object.entries((state && state.drive) || {});
   if (!driveEntries.length) return { label: null, primaryDrive: null, counterDrive: null, sentence: null };
-  const positiveDriveKeys = new Set(["passion", "curiosity", "arrogance", "libido", "hedonia"]);
-  const counterDriveKeys = new Set(["coldness", "fear", "numbness", "self_punishment"]);
+  const positiveDriveKeys = new Set(["curiosity", "arrogance", "libido", "hedonia"]);
   const sortByValue = (entries) => entries.sort((a, b) => (b[1].value || 0) - (a[1].value || 0));
   const primary = sortByValue(driveEntries.filter(([axis]) => positiveDriveKeys.has(axis)))[0] || null;
-  const counter = sortByValue(driveEntries.filter(([axis]) => counterDriveKeys.has(axis)))[0] || null;
   const counterbalance = state && state.coupling ? state.coupling.lastCounterbalance : null;
   const passionModulation = state && state.coupling ? state.coupling.lastPassionModulation : null;
+  const details = Array.isArray(counterbalance && counterbalance.details) ? counterbalance.details : [];
   const pressures = counterbalance && counterbalance.pressures ? counterbalance.pressures : {};
   const strongestPressure = Object.entries(pressures).sort((a, b) => b[1] - a[1])[0] || null;
+  const strongestPrimaryCounter = primary
+    ? details
+      .filter((item) => item && item.drive === primary[0] && Number(item.pressure) > 0.02)
+      .sort((a, b) => Number(b.pressure) - Number(a.pressure))[0] || null
+    : null;
   const labelParts = [];
   if (primary) labelParts.push(`${formatAxisLabel(primary[0])}上扬`);
-  if (counter && counter[1].value > 0.35) labelParts.push(`${formatAxisLabel(counter[0])}对冲`);
+  if (strongestPrimaryCounter) labelParts.push(`${formatAxisLabel(strongestPrimaryCounter.counter)}对冲`);
   const label = labelParts.join("·") || "驱动平稳";
   const pressureText = strongestPressure && strongestPressure[1] > 0.02
     ? `其中${formatAxisLabel(strongestPressure[0])}受到对冲压力${Number(strongestPressure[1]).toFixed(2)}`
     : "对冲压力较低";
   const passionText = passionModulation && passionModulation.positiveGain > 0.02
-    ? `，热情背景增益${Number(passionModulation.positiveGain).toFixed(2)}并压低负向对冲${Number(passionModulation.counterSuppression).toFixed(2)}`
+    ? `，热情背景增益${Number(passionModulation.positiveGain).toFixed(2)}并分化压低冷漠/麻木型对冲${Number(passionModulation.counterSuppression).toFixed(2)}`
     : "";
+  const counterAxisState = strongestPrimaryCounter && state.drive ? state.drive[strongestPrimaryCounter.counter] : null;
   return {
     label,
     primaryDrive: primary ? { axis: primary[0], label: formatAxisLabel(primary[0]), value: Number((primary[1].value || 0).toFixed(4)), subAxis: topSubAxis(primary[1]) } : null,
-    counterDrive: counter ? { axis: counter[0], label: formatAxisLabel(counter[0]), value: Number((counter[1].value || 0).toFixed(4)), subAxis: topSubAxis(counter[1]) } : null,
+    counterDrive: strongestPrimaryCounter ? { axis: strongestPrimaryCounter.counter, label: formatAxisLabel(strongestPrimaryCounter.counter), value: Number((counterAxisState && counterAxisState.value || 0).toFixed(4)), subAxis: topSubAxis(counterAxisState) } : null,
     counterPressure: strongestPressure ? { axis: strongestPressure[0], label: formatAxisLabel(strongestPressure[0]), pressure: Number(strongestPressure[1].toFixed(4)) } : null,
     passionModulation: passionModulation || null,
     sentence: `驱动层表现为${label}，${pressureText}${passionText}`,
@@ -1719,7 +1747,7 @@ function summarizeGenderExpression(state) {
     : feminineCount > masculineCount + 1
       ? "女性极"
       : "混合态";
-  const label = dominant ? `${dominant.label}${polarity}` : polarity;
+  const label = dominant ? `${dominant.label}主导·${polarity}` : polarity;
   return {
     label,
     globalPolarity: polarity,
