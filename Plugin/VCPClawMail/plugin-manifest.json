@@ -1,0 +1,94 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "VCPClawMail",
+  "displayName": "VCP ClawEmail 邮件助手",
+  "version": "0.1.0",
+  "description": "混合插件：常驻轮询 claw.163.com 邮箱并提供最近邮件占位符，同时允许 AI 列出、读取、发送和回复 ClawEmail 邮件。附件可由 URL/file:// 传入，读取到的图片/附件会尽量以可继续解析的 URL 或本地缓存路径返回。",
+  "author": "VCPToolBox",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "VCPClawMail.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 120000
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{VCPClawMailInbox}}",
+        "description": "ClawEmail 最近邮件摘要，包含邮箱、发件人、主题、时间、未读状态、正文预览和可读取的 mailId。",
+        "isDynamic": true
+      }
+    ],
+    "invocationCommands": [
+      {
+        "command": "list_recent",
+        "description": "列出 ClawEmail 最近邮件摘要。\n参数:\n- command: 固定为 list_recent。\n- user: 可选，邮箱地址；不填则使用默认邮箱。\n- limit: 可选，返回数量，默认 20。\n- unreadOnly: 可选，是否只看未读，true/false。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」list_recent「末」,\nlimit:「始」10「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」list_recent「末」,\nlimit:「始」10「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "read_mail",
+        "description": "读取单封 ClawEmail 邮件详情，并返回正文、HTML 转 Markdown、图片 URL、附件元数据。若 markRead=true 会尝试标记已读。\n参数:\n- command: 固定为 read_mail。\n- user: 可选，邮箱地址；不填则使用默认邮箱。\n- mailId: 必填，邮件 ID。\n- markRead: 可选，true/false，默认 false。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」read_mail「末」,\nmailId:「始」邮件ID「末」,\nmarkRead:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」read_mail「末」,\nmailId:「始」abc123「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "send_mail",
+        "description": "发送 ClawEmail 邮件。正文中可直接包含图片/文件 URL；attachments 可额外传 URL、file:// 或数组，插件会尽量下载并转换为 SDK 可接受格式。\n参数:\n- command: 固定为 send_mail。\n- user: 可选，发件邮箱；不填则使用默认邮箱。\n- to: 必填，收件人，逗号分隔或 JSON 数组。\n- cc/bcc: 可选，抄送/密送。\n- subject: 必填，主题。\n- body: 必填，正文文本或 HTML。\n- html: 可选，true/false，默认 false。\n- attachments: 可选，附件 URL/file://，逗号分隔或 JSON 数组。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」send_mail「末」,\nto:「始」someone@example.com「末」,\nsubject:「始」主题「末」,\nbody:「始」正文，可包含 https://... 图片或文件 URL「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」send_mail「末」,\nto:「始」someone@example.com「末」,\nsubject:「始」测试邮件「末」,\nbody:「始」你好，这是一封来自 VCP 的邮件。「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "reply_mail",
+        "description": "回复一封 ClawEmail 邮件。若 SDK 不支持原生 reply，会降级为普通 send_mail 并在主题前添加 Re:。\n参数:\n- command: 固定为 reply_mail。\n- user: 可选，邮箱地址；不填则使用默认邮箱。\n- mailId: 必填，被回复邮件 ID。\n- body: 必填，回复正文。\n- html: 可选，true/false。\n- attachments: 可选，附件 URL/file://。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」reply_mail「末」,\nmailId:「始」邮件ID「末」,\nbody:「始」回复内容「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」reply_mail「末」,\nmailId:「始」abc123「末」,\nbody:「始」已收到，我会尽快处理。「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "download_attachment",
+        "description": "下载邮件附件到本地缓存目录，并返回可供后续工具解析的 file:// 路径或缓存信息。\n参数:\n- command: 固定为 download_attachment。\n- user: 可选，邮箱地址；不填则使用默认邮箱。\n- mailId: 必填，邮件 ID。\n- attachmentId/partId/url: 至少提供一个，用于定位附件。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」download_attachment「末」,\nmailId:「始」邮件ID「末」,\nattachmentId:「始」附件ID「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」download_attachment「末」,\nmailId:「始」abc123「末」,\nattachmentId:「始」att-1「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ],
+    "services": [
+      {
+        "serviceName": "ClawMailPolling",
+        "description": "常驻轮询 ClawEmail 最近邮件并更新 {{VCPClawMailInbox}}。"
+      }
+    ]
+  },
+  "configSchema": {
+    "ClawMailKey": {
+      "type": "string",
+      "description": "ClawEmail API Key",
+      "required": true
+    },
+    "ClawMailUsers": {
+      "type": "string",
+      "description": "逗号分隔的 ClawEmail 邮箱列表；第一个为默认发件/读取邮箱"
+    },
+    "ClawMailDefaultUser": {
+      "type": "string",
+      "description": "默认 ClawEmail 邮箱"
+    },
+    "ClawMailPollIntervalMs": {
+      "type": "integer",
+      "description": "邮件轮询间隔，毫秒，默认 60000"
+    },
+    "ClawMailPollLimit": {
+      "type": "integer",
+      "description": "每次轮询缓存邮件数量，默认 20"
+    },
+    "ClawMailAutoMarkRead": {
+      "type": "boolean",
+      "description": "读取邮件详情时默认是否标记已读，默认 false"
+    },
+    "DebugMode": "boolean"
+  },
+  "configSchemaDescriptions": {
+    "ClawMailKey": "ClawEmail API Key。不是 npx claw-setup 的临时 auth-url；auth-url 只用于官方 CLI/Channel 一键配置。",
+    "ClawMailUsers": "例如 bot@claw.163.com,notice@claw.163.com",
+    "ClawMailDefaultUser": "不传 user 时使用的邮箱",
+    "ClawMailPollIntervalMs": "常驻轮询周期，建议 30000-300000",
+    "ClawMailPollLimit": "占位符中保留的最近邮件数量"
+  }
+}
