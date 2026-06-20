@@ -8,6 +8,13 @@ const TurndownService = require('turndown');
 const { fileURLToPath } = require('url');
 const pluginManager = require('../../Plugin.js');
 
+let mammoth = null;
+let pdfParse = null;
+let ExcelJS = null;
+try { mammoth = require('mammoth'); } catch (_) {}
+try { pdfParse = require('pdf-parse'); } catch (_) {}
+try { ExcelJS = require('exceljs'); } catch (_) {}
+
 let MailClient;
 try {
   ({ MailClient } = require('@clawemail/node-sdk'));
@@ -157,14 +164,15 @@ function formatArrayForMd(value) {
   return value || '';
 }
 
-function asAiText(markdown, meta = {}) {
+function asAiContent(markdown, extraContent = [], meta = {}) {
   const text = mdBlock(markdown, '无内容');
   return {
     content: [
       {
         type: 'text',
         text
-      }
+      },
+      ...extraContent
     ],
     meta: {
       plugin: 'VCPClawMail',
@@ -172,6 +180,29 @@ function asAiText(markdown, meta = {}) {
       ...meta
     }
   };
+}
+
+function asAiText(markdown, meta = {}) {
+  return asAiContent(markdown, [], meta);
+}
+
+function isImageContentType(contentType) {
+  return String(contentType || '').toLowerCase().startsWith('image/');
+}
+
+function isTextLikeContentType(contentType) {
+  const type = String(contentType || '').toLowerCase();
+  return type.startsWith('text/') || type.includes('json') || type.includes('xml') || type.includes('csv') || type.includes('markdown');
+}
+
+function extOfFilename(filename) {
+  return String(path.extname(filename || '') || '').toLowerCase();
+}
+
+function truncateForPrompt(text, maxChars = 16000) {
+  const value = String(text || '').trim();
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}\n\n...[已截断，原文约 ${value.length} 字符]`;
 }
 
 function normalizeAddressList(value) {
@@ -443,6 +474,114 @@ async function listEmails(args = {}) {
   });
 }
 
+async function attachmentResponseToBuffer(response) {
+  if (!response) throw new Error('空附件响应。');
+  if (typeof response.buffer === 'function') return await response.buffer();
+  if (Buffer.isBuffer(response.data)) return response.data;
+  if (Buffer.isBuffer(response.content)) return response.content;
+  if (typeof response.data === 'string') return Buffer.from(response.data, response.encoding === 'base64' ? 'base64' : 'utf8');
+  if (typeof response.content === 'string') return Buffer.from(response.content, response.encoding === 'base64' ? 'base64' : 'utf8');
+  throw new Error(`无法转成 Buffer，响应 keys=${Object.keys(response || {}).join(',')}`);
+}
+
+async function parseDocumentAttachment(buffer, filename, contentType) {
+  const ext = extOfFilename(filename);
+  const type = String(contentType || '').toLowerCase();
+
+  if (isTextLikeContentType(type) || ['.txt', '.md', '.csv', '.json', '.xml', '.log'].includes(ext)) {
+    return truncateForPrompt(buffer.toString('utf8'));
+  }
+
+  if ((ext === '.docx' || type.includes('wordprocessingml')) && mammoth) {
+    const result = await mammoth.extractRawText({ buffer });
+    return truncateForPrompt(result.value || '');
+  }
+
+  if ((ext === '.pdf' || type.includes('pdf')) && pdfParse) {
+    const result = await pdfParse(buffer);
+    return truncateForPrompt(result.text || '');
+  }
+
+  if ((ext === '.xlsx' || type.includes('spreadsheetml')) && ExcelJS) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+    const parts = [];
+    workbook.worksheets.forEach((sheet) => {
+      parts.push(`### 工作表：${sheet.name}`);
+      sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+        const values = row.values.slice(1).map(v => {
+          if (v === null || v === undefined) return '';
+          if (typeof v === 'object') return v.text || v.result || JSON.stringify(v);
+          return String(v);
+        });
+        parts.push(`第 ${rowNumber} 行：${values.join(' | ')}`);
+      });
+    });
+    return truncateForPrompt(parts.join('\n'));
+  }
+
+  return '';
+}
+
+async function enrichReadMailAttachments(client, normalized, options = {}) {
+  const includeAttachmentContent = options.includeAttachmentContent !== false;
+  const maxAttachments = normalizeInteger(options.maxAttachments, 8);
+  const imageContent = [];
+  const parsedDocuments = [];
+  const attachmentNotes = [];
+
+  if (!includeAttachmentContent || normalized.attachments.length === 0) {
+    return { imageContent, parsedDocuments, attachmentNotes };
+  }
+
+  for (const [index, att] of normalized.attachments.slice(0, maxAttachments).entries()) {
+    const part = att.partId || att.attachmentId || att.id;
+    if (!part) {
+      attachmentNotes.push(`- 附件 #${index + 1} 缺少 partId，无法自动读取。`);
+      continue;
+    }
+
+    try {
+      const response = await client.mail.getAttachment({ id: normalized.mailId, part: String(part) });
+      const filename = safeFilename(response?.filename || att.filename || `attachment-${index + 1}`);
+      const contentType = response?.contentType || att.contentType || mime.lookup(filename) || 'application/octet-stream';
+      const buffer = await attachmentResponseToBuffer(response);
+
+      if (isImageContentType(contentType)) {
+        imageContent.push({
+          type: 'image_url',
+          image_url: {
+            url: `data:${contentType};base64,${buffer.toString('base64')}`
+          }
+        });
+        attachmentNotes.push(`- 图片附件已作为多模态 image_url 返回：${filename} (${contentType}, ${buffer.length} bytes)。`);
+        continue;
+      }
+
+      const parsedText = await parseDocumentAttachment(buffer, filename, contentType);
+      if (parsedText) {
+        parsedDocuments.push({
+          filename,
+          contentType,
+          size: buffer.length,
+          text: parsedText
+        });
+        attachmentNotes.push(`- 文档附件已解析为文本：${filename} (${contentType}, ${buffer.length} bytes)。`);
+      } else {
+        attachmentNotes.push(`- 附件未自动解析：${filename} (${contentType}, ${buffer.length} bytes)。可使用 download_attachment 获取 file:// 后交给其他工具。`);
+      }
+    } catch (error) {
+      attachmentNotes.push(`- 附件 #${index + 1} 读取失败：${att.filename || part}，原因：${error.message}`);
+    }
+  }
+
+  if (normalized.attachments.length > maxAttachments) {
+    attachmentNotes.push(`- 附件数量超过自动处理上限：已处理 ${maxAttachments}/${normalized.attachments.length}。`);
+  }
+
+  return { imageContent, parsedDocuments, attachmentNotes };
+}
+
 async function readMail(args = {}) {
   const user = getDefaultUser(args.user);
   const mailId = args.mailId || args.id;
@@ -460,6 +599,10 @@ async function readMail(args = {}) {
     'get'
   ], [{ id: mailId, mailId, markRead, user }]);
   const normalized = normalizeReadMail(mail || {}, user, mailId);
+  const { imageContent, parsedDocuments, attachmentNotes } = await enrichReadMailAttachments(client, normalized, {
+    includeAttachmentContent: args.includeAttachmentContent === undefined ? true : normalizeBoolean(args.includeAttachmentContent, true),
+    maxAttachments: args.maxAttachments
+  });
   const lines = [];
 
   lines.push('# ClawEmail 邮件详情');
@@ -530,6 +673,28 @@ async function readMail(args = {}) {
     lines.push('```');
   }
   lines.push('');
+  if (attachmentNotes.length > 0) {
+    lines.push('## 附件自动处理结果');
+    lines.push('');
+    lines.push(...attachmentNotes);
+    lines.push('');
+  }
+
+  if (parsedDocuments.length > 0) {
+    lines.push('## 文档附件解析文本');
+    lines.push('');
+    parsedDocuments.forEach((doc, index) => {
+      lines.push(`### 文档 ${index + 1}：${doc.filename}`);
+      lines.push('');
+      lines.push(`- MIME：${doc.contentType}`);
+      lines.push(`- 大小：${doc.size} bytes`);
+      lines.push('');
+      lines.push('```text');
+      lines.push(doc.text);
+      lines.push('```');
+      lines.push('');
+    });
+  }
 
   lines.push('## 可执行后续动作');
   lines.push('');
@@ -537,12 +702,13 @@ async function readMail(args = {}) {
   lines.push('- 下载附件：调用 `download_attachment`。');
   lines.push('- 转发/新发：调用 `send_mail`，正文或 `attachments` 可包含 URL / `file://`。');
 
-  return asAiText(lines.join('\n'), {
+  return asAiContent(lines.join('\n'), imageContent, {
     command: 'read_mail',
     user,
     mailId: normalized.mailId || mailId,
     attachmentCount: normalized.attachments.length,
-    imageCount: normalized.imageUrls.length
+    imageCount: normalized.imageUrls.length + imageContent.length,
+    parsedDocumentCount: parsedDocuments.length
   });
 }
 
