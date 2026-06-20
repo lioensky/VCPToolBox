@@ -38,10 +38,10 @@ const DEFAULT_CONFIG = {
   OpenHerPersonaAsyncObservation: true,
   OpenHerPersonaQueueMaxSize: 64,
   OpenHerPersonaEmbeddingTimeoutMs: 2500,
-  OpenHerPersonaAnchorTemperature: 0.12,
+  OpenHerPersonaAnchorTemperature: 0.08,
   OpenHerPersonaStateEma: 0.35,
-  OpenHerPersonaDriveStateEma: 0.62,
-  OpenHerPersonaCouplingStrength: 0.18,
+  OpenHerPersonaDriveStateEma: 0.78,
+  OpenHerPersonaCouplingStrength: 0.32,
   OpenHerPersonaDropLegacyState: true,
 };
 const CONFIG_KEYS = Object.keys(DEFAULT_CONFIG);
@@ -414,7 +414,8 @@ const COUPLING_RULES = [
   { from: "fear", to: "negative", weight: 0.12 },
   { from: "positive", to: "negative", weight: -0.12 },
   { from: "positive", to: "fear", weight: -0.08 },
-  { from: "positive", to: "passion", weight: 0.18 },
+  { from: "positive", to: "passion", weight: 0.34 },
+  { from: "passion", to: "positive", weight: 0.16 },
   { from: "positive", to: "libido", weight: 0.12 },
   { from: "libido", to: "positive", weight: 0.08 },
   { from: "passion", to: "negative", weight: -0.1 },
@@ -462,10 +463,10 @@ const DRIVE_COUNTER_RULES = [
 ];
 
 const DRIVE_PASSION_TARGETS = [
-  { axis: "curiosity", weight: 0.24 },
-  { axis: "arrogance", weight: 0.16 },
-  { axis: "libido", weight: 0.3 },
-  { axis: "hedonia", weight: 0.22 },
+  { axis: "curiosity", weight: 0.34 },
+  { axis: "arrogance", weight: 0.12 },
+  { axis: "libido", weight: 0.34 },
+  { axis: "hedonia", weight: 0.32 },
 ];
 
 const PASSION_COUNTER_SUPPRESSION = {
@@ -1345,10 +1346,10 @@ function computeDrivePassionModulation(previousAxes, coupled) {
       ? previousAxes.positive.value
       : positiveBase;
   const positiveLift = Math.max(0, positiveValue - positiveBase) / Math.max(0.05, 1 - positiveBase);
-  const blendedPassion = clamp01(previousPassion * 0.25 + observedPassion * 0.55 + positiveLift * 0.2);
+  const blendedPassion = clamp01(previousPassion * 0.15 + observedPassion * 0.62 + positiveLift * 0.32);
   const base = defaultPassion;
   const aboveBase = Math.max(0, blendedPassion - base) / Math.max(0.05, 1 - base);
-  const positiveGain = Math.pow(clamp01(aboveBase), 0.62);
+  const positiveGain = Math.pow(clamp01(aboveBase), 0.48);
   const counterSuppression = clamp01(positiveGain * 0.9);
   return {
     passion: Number(blendedPassion.toFixed(4)),
@@ -1489,6 +1490,13 @@ function resonance(factors, gain, epsilon = 0.03) {
   return Number(clamp01(geo * gain).toFixed(4));
 }
 
+function affectiveSalience(value, neutral = 0.34, k = 1.55) {
+  const normalizedValue = clamp01(value);
+  const normalizedNeutral = clamp01(neutral);
+  const aboveRaw = Math.max(0, normalizedValue - normalizedNeutral) / Math.max(0.05, 1 - normalizedNeutral);
+  return Number(Math.pow(clamp01(aboveRaw), 1 / k).toFixed(4));
+}
+
 function topSubAxis(axisState) {
   const entries = Object.entries((axisState && axisState.subAxes) || {});
   if (!entries.length) return null;
@@ -1609,34 +1617,38 @@ function evaluateMoodArchetypes(state, p, n, a) {
   const lowValence = (1 - p) * (1 - n);
   const coldNumb = Math.max(up("coldness"), up("numbness"));
   const libidoColdPressure = Math.max(pressure("libido"), resonance([up("libido"), coldNumb], 1, 0));
+  const pTone = affectiveSalience(p, 0.5);
+  const nTone = affectiveSalience(n, 0.5);
+  const aTone = affectiveSalience(a, 0.5);
+  const calmTone = affectiveSalience(calmness, 0.72);
   const archetypes = [
-    { label: "剧烈撕扯", score: resonance([p, n, a], 1.25), recipe: ["positive", "negative", "arousal"] },
-    { label: "渊底自毁", score: resonance([up("self_punishment"), n, a], 1.25), recipe: ["self_punishment↑", "negative", "arousal"] },
-    { label: "痛感沉溺", score: resonance([up("self_punishment"), up("hedonia"), p], 1.2), recipe: ["self_punishment↑", "hedonia↑", "positive"] },
-    { label: "热情点燃", score: resonance([up("passion"), p, a], 1.18), recipe: ["passion↑", "positive", "arousal"] },
-    { label: "情热涌动", score: resonance([up("libido"), a, p, passionGain], 1.22), recipe: ["libido↑", "arousal", "positive", "passionGain"] },
-    { label: "绵密缱绻", score: resonance([up("libido"), up("hedonia"), calmness, passionGain], 1.18), recipe: ["libido↑", "hedonia↑", "calmness", "passionGain"] },
-    { label: "欲念焦灼", score: resonance([up("libido"), n, a], 1.15), recipe: ["libido↑", "negative", "arousal"] },
-    { label: "欲冷相持", score: resonance([up("libido"), coldNumb, libidoColdPressure], 1.3), recipe: ["libido↑", "cold/numb↑", "libidoCounterPressure"] },
-    { label: "欲念隔膜", score: resonance([up("libido"), up("numbness"), calmness], 1.24), recipe: ["libido↑", "numbness↑", "calmness"] },
+    { label: "悲喜交欢", score: resonance([pTone, nTone, aTone], 1.12), recipe: ["positive↑", "negative↑", "arousal↑"] },
+    { label: "渊底自毁", score: resonance([up("self_punishment"), nTone, aTone], 1.24), recipe: ["self_punishment↑", "negative↑", "arousal↑"] },
+    { label: "痛感沉溺", score: resonance([up("self_punishment"), up("hedonia"), pTone], 1.18), recipe: ["self_punishment↑", "hedonia↑", "positive↑"] },
+    { label: "热情点燃", score: resonance([up("passion"), Math.max(pTone, up("hedonia")), Math.max(aTone, up("curiosity"))], 1.28), recipe: ["passion↑", "positive↑/hedonia↑", "arousal↑/curiosity↑"] },
+    { label: "情热涌动", score: resonance([up("libido"), aTone, pTone, passionGain], 1.2), recipe: ["libido↑", "arousal↑", "positive↑", "passionGain"] },
+    { label: "绵密缱绻", score: resonance([up("libido"), up("hedonia"), calmTone, passionGain], 1.18), recipe: ["libido↑", "hedonia↑", "calmness↑", "passionGain"] },
+    { label: "欲念焦灼", score: resonance([up("libido"), nTone, aTone], 1.15), recipe: ["libido↑", "negative↑", "arousal↑"] },
+    { label: "欲冷相娇", score: resonance([up("libido"), coldNumb, libidoColdPressure], 1.3), recipe: ["libido↑", "cold/numb↑", "libidoCounterPressure"] },
+    { label: "冷欲渐起", score: resonance([up("libido"), up("numbness"), calmTone], 1.2), recipe: ["libido↑", "numbness↑", "calmness↑"] },
     { label: "情热受阻", score: resonance([passionGain, maxExpansiveDrive, coldNumb], 1.18), recipe: ["passionGain", "drive↑", "cold/numb↑"] },
-    { label: "狂妄昂扬", score: resonance([up("arrogance"), p, a, passionGain], 1.2), recipe: ["arrogance↑", "positive", "arousal", "passionGain"] },
-    { label: "傲慢睥睨", score: resonance([up("arrogance"), up("coldness"), calmness], 1.08), recipe: ["arrogance↑", "coldness↑", "calmness"] },
-    { label: "霜冷拒守", score: resonance([up("refusal"), up("coldness"), n], 1.15), recipe: ["refusal↑", "coldness↑", "negative"] },
-    { label: "封冻死寂", score: resonance([up("numbness"), up("coldness"), calmness, lowValence, lowExpansiveDrive], 1.18), recipe: ["numbness↑", "coldness↑", "calmness", "lowValence", "lowDrive"] },
-    { label: "麻木解冻", score: resonance([down("numbness"), p, Math.max(up("curiosity"), up("libido"), up("arrogance"))], 1.12), recipe: ["numbness↓", "positive", "drive↑"] },
-    { label: "惊惧退守", score: resonance([up("fear"), a, n], 1.2), recipe: ["fear↑", "arousal", "negative"] },
-    { label: "如履薄冰", score: resonance([up("fear"), up("discernment"), calmness], 1.15), recipe: ["fear↑", "discernment↑", "calmness"] },
+    { label: "狂妄昂扬", score: resonance([up("arrogance"), pTone, aTone, passionGain], 1.2), recipe: ["arrogance↑", "positive↑", "arousal↑", "passionGain"] },
+    { label: "傲慢睥睨", score: resonance([up("arrogance"), up("coldness"), calmTone], 1.05), recipe: ["arrogance↑", "coldness↑", "calmness↑"] },
+    { label: "霜冷拒守", score: resonance([up("refusal"), up("coldness"), nTone], 1.12), recipe: ["refusal↑", "coldness↑", "negative↑"] },
+    { label: "封冻死寂", score: resonance([up("numbness"), up("coldness"), calmTone, lowValence, lowExpansiveDrive], 1.16), recipe: ["numbness↑", "coldness↑", "calmness↑", "lowValence", "lowDrive"] },
+    { label: "麻木解冻", score: resonance([down("numbness"), pTone, Math.max(up("curiosity"), up("libido"), up("arrogance"))], 1.1), recipe: ["numbness↓", "positive↑", "drive↑"] },
+    { label: "惊惧退守", score: resonance([up("fear"), aTone, nTone], 1.18), recipe: ["fear↑", "arousal↑", "negative↑"] },
+    { label: "如履薄冰", score: resonance([up("fear"), up("discernment"), calmTone], 1.12), recipe: ["fear↑", "discernment↑", "calmness↑"] },
     { label: "虚张声势", score: resonance([up("arrogance"), up("fear"), pressure("arrogance")], 1.18), recipe: ["arrogance↑", "fear↑", "arroganceCounterPressure"] },
-    { label: "探求炽热", score: resonance([up("curiosity"), up("inquiry"), a], 1.15), recipe: ["curiosity↑", "inquiry↑", "arousal"] },
-    { label: "幽微洞察", score: resonance([up("discernment"), up("inquiry"), calmness], 1.15), recipe: ["discernment↑", "inquiry↑", "calmness"] },
-    { label: "慵懒沉陷", score: resonance([up("hedonia"), calmness, p], 1.12), recipe: ["hedonia↑", "calmness", "positive"] },
+    { label: "探求炽热", score: resonance([up("curiosity"), up("inquiry"), aTone], 1.15), recipe: ["curiosity↑", "inquiry↑", "arousal↑"] },
+    { label: "幽微洞察", score: resonance([up("discernment"), up("inquiry"), calmTone], 1.12), recipe: ["discernment↑", "inquiry↑", "calmness↑"] },
+    { label: "慵懒沉陷", score: resonance([up("hedonia"), calmTone, pTone], 1.1), recipe: ["hedonia↑", "calmness↑", "positive↑"] },
     { label: "享乐负罪", score: resonance([up("hedonia"), up("self_punishment"), pressure("hedonia")], 1.18), recipe: ["hedonia↑", "self_punishment↑", "hedoniaCounterPressure"] },
-    { label: "雀跃明亮", score: resonance([p, a], 1.05), recipe: ["positive", "arousal"] },
-    { label: "温和宁静", score: resonance([p, calmness], 1.05), recipe: ["positive", "calmness"] },
-    { label: "焦灼愤懑", score: resonance([n, a], 1.05), recipe: ["negative", "arousal"] },
-    { label: "黯淡失落", score: resonance([n, calmness], 1.05), recipe: ["negative", "calmness"] },
-    { label: "平静观测", score: 0.42, recipe: ["fallback"] },
+    { label: "雀跃明亮", score: resonance([pTone, aTone], 0.98), recipe: ["positive↑", "arousal↑"] },
+    { label: "温和宁静", score: resonance([pTone, calmTone], 0.98), recipe: ["positive↑", "calmness↑"] },
+    { label: "焦灼愤懑", score: resonance([nTone, aTone], 0.98), recipe: ["negative↑", "arousal↑"] },
+    { label: "黯淡失落", score: resonance([nTone, calmTone], 0.98), recipe: ["negative↑", "calmness↑"] },
+    { label: "平静观测", score: 0.43, recipe: ["fallback"] },
   ];
 
   archetypes.sort((left, right) => right.score - left.score);
