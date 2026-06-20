@@ -286,7 +286,7 @@ const AXIS_DEFINITIONS = [
     layer: "drive",
     axis: "passion",
     label: "热情",
-    defaultValue: 0.42,
+    defaultValue: 0.34,
     backgroundVector: true,
     anchors: [
       { subAxis: "devotion", text: "{name}正在被热情点燃，愿意投入、靠近并持续回应眼前的人与事" },
@@ -412,8 +412,13 @@ const COUPLING_RULES = [
   { from: "fear", to: "arrogance", weight: -0.1 },
   { from: "negative", to: "fear", weight: 0.2 },
   { from: "fear", to: "negative", weight: 0.12 },
+  { from: "positive", to: "negative", weight: -0.12 },
+  { from: "positive", to: "fear", weight: -0.08 },
+  { from: "positive", to: "passion", weight: 0.18 },
   { from: "positive", to: "libido", weight: 0.12 },
   { from: "libido", to: "positive", weight: 0.08 },
+  { from: "passion", to: "negative", weight: -0.1 },
+  { from: "passion", to: "fear", weight: -0.08 },
   { from: "hedonia", to: "refusal", weight: 0.1 },
   { from: "discernment", to: "refusal", weight: -0.08 },
   { from: "discernment", to: "inquiry", weight: 0.08 },
@@ -430,6 +435,9 @@ const COUPLING_RULES = [
   { from: "numbness", to: "positive", weight: -0.12 },
   { from: "numbness", to: "negative", weight: -0.1 },
   { from: "numbness", to: "hedonia", weight: -0.08 },
+  { from: "passion", to: "coldness", weight: -0.12 },
+  { from: "passion", to: "numbness", weight: -0.1 },
+  { from: "passion", to: "self_punishment", weight: -0.06 },
   { from: "self_punishment", to: "negative", weight: 0.2 },
   { from: "self_punishment", to: "fear", weight: 0.16 },
   { from: "self_punishment", to: "positive", weight: -0.16 },
@@ -454,17 +462,17 @@ const DRIVE_COUNTER_RULES = [
 ];
 
 const DRIVE_PASSION_TARGETS = [
-  { axis: "curiosity", weight: 0.18 },
-  { axis: "arrogance", weight: 0.14 },
-  { axis: "libido", weight: 0.22 },
-  { axis: "hedonia", weight: 0.16 },
+  { axis: "curiosity", weight: 0.24 },
+  { axis: "arrogance", weight: 0.16 },
+  { axis: "libido", weight: 0.3 },
+  { axis: "hedonia", weight: 0.22 },
 ];
 
 const PASSION_COUNTER_SUPPRESSION = {
   coldness: 1,
-  numbness: 0.72,
-  fear: 0.28,
-  self_punishment: 0.08,
+  numbness: 0.82,
+  fear: 0.46,
+  self_punishment: 0.24,
 };
 
 let activeConfig = { ...DEFAULT_CONFIG };
@@ -1326,17 +1334,26 @@ function applyCoupling(scores, previousAxes) {
 
 function computeDrivePassionModulation(previousAxes, coupled) {
   const definition = AXIS_BY_KEY.passion;
-  const defaultPassion = definition ? definition.defaultValue : 0.42;
+  const defaultPassion = definition ? definition.defaultValue : 0.34;
+  const positiveDefinition = AXIS_BY_KEY.positive;
+  const positiveBase = positiveDefinition ? positiveDefinition.defaultValue : 0.32;
   const previousPassion = previousAxes.passion ? previousAxes.passion.value : defaultPassion;
   const observedPassion = Object.prototype.hasOwnProperty.call(coupled, "passion") ? coupled.passion : previousPassion;
-  const blendedPassion = clamp01(previousPassion * 0.35 + observedPassion * 0.65);
+  const positiveValue = Object.prototype.hasOwnProperty.call(coupled, "positive")
+    ? coupled.positive
+    : previousAxes.positive
+      ? previousAxes.positive.value
+      : positiveBase;
+  const positiveLift = Math.max(0, positiveValue - positiveBase) / Math.max(0.05, 1 - positiveBase);
+  const blendedPassion = clamp01(previousPassion * 0.25 + observedPassion * 0.55 + positiveLift * 0.2);
   const base = defaultPassion;
   const aboveBase = Math.max(0, blendedPassion - base) / Math.max(0.05, 1 - base);
-  const positiveGain = Math.pow(clamp01(aboveBase), 0.72);
-  const counterSuppression = clamp01(positiveGain * 0.82);
+  const positiveGain = Math.pow(clamp01(aboveBase), 0.62);
+  const counterSuppression = clamp01(positiveGain * 0.9);
   return {
     passion: Number(blendedPassion.toFixed(4)),
     base: Number(base.toFixed(4)),
+    positiveLift: Number(clamp01(positiveLift).toFixed(4)),
     positiveGain: Number(positiveGain.toFixed(4)),
     counterSuppression: Number(counterSuppression.toFixed(4)),
   };
