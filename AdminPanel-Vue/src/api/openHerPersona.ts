@@ -66,6 +66,13 @@ export interface OpenHerPersonaExpressionDriveAxis {
   subAxis?: OpenHerPersonaDominantSubAxis | null;
 }
 
+export interface OpenHerPersonaDrivePassionModulation {
+  passion?: number;
+  base?: number;
+  positiveGain?: number;
+  counterSuppression?: number;
+}
+
 export interface OpenHerPersonaExpressionDrive {
   label?: string | null;
   primaryDrive?: OpenHerPersonaExpressionDriveAxis | null;
@@ -75,6 +82,7 @@ export interface OpenHerPersonaExpressionDrive {
     label: string;
     pressure: number;
   } | null;
+  passionModulation?: OpenHerPersonaDrivePassionModulation | null;
   sentence?: string | null;
 }
 
@@ -130,7 +138,9 @@ export interface OpenHerPersonaDriveCounterbalance {
     counter: string;
     driveValue: number;
     counterValue: number;
+    rawPressure?: number;
     pressure: number;
+    passionSuppression?: number;
   }>;
 }
 
@@ -150,7 +160,7 @@ export interface OpenHerPersonaLastObservation {
   at?: string | null;
   inputHash?: string | null;
   scores?: Record<string, OpenHerPersonaAxisState>;
-  coupled?: Record<string, number | OpenHerPersonaDriveCounterbalance | null>;
+  coupled?: Record<string, number | OpenHerPersonaDriveCounterbalance | OpenHerPersonaDrivePassionModulation | null>;
   mood?: OpenHerPersonaMood;
 }
 
@@ -174,6 +184,7 @@ export interface OpenHerPersonaState {
   drive: OpenHerPersonaAxisLayer;
   baseline?: OpenHerPersonaBaseline;
   coupling?: {
+    lastPassionModulation?: OpenHerPersonaDrivePassionModulation | null;
     lastCounterbalance?: OpenHerPersonaDriveCounterbalance | null;
     [key: string]: unknown;
   };

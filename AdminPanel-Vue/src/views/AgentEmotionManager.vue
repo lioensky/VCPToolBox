@@ -38,7 +38,7 @@
       <div class="overview-card card">
         <span class="overview-label">表达模型</span>
         <strong>原型共振池</strong>
-        <small>三轴表达 · 对冲压力 · 相对常态</small>
+        <small>三轴表达 · 热情背景 · 对冲压力 · 相对常态</small>
       </div>
       <div class="overview-card card">
         <span class="overview-label">存储形态</span>
@@ -120,7 +120,7 @@
           <div class="metric-card card">
             <span class="metric-label">对冲压力</span>
             <strong>{{ strongestCounterPressure ? formatPercent(strongestCounterPressure.pressure) : "低" }}</strong>
-            <small>{{ strongestCounterPressure ? `${strongestCounterPressure.label} 被对冲` : "暂无显著对冲" }}</small>
+            <small>{{ passionModulationText || (strongestCounterPressure ? `${strongestCounterPressure.label} 被对冲` : "暂无显著对冲") }}</small>
           </div>
         </div>
 
@@ -242,7 +242,12 @@
               <div v-for="item in counterbalanceItems" :key="`${item.drive}-${item.counter}`" class="counter-card">
                 <strong>{{ axisLabel(item.drive) }} ⇄ {{ axisLabel(item.counter) }}</strong>
                 <span>压力 {{ formatPercent(item.pressure) }}</span>
-                <small>{{ axisLabel(item.drive) }} {{ formatPercent(item.driveValue) }} · {{ axisLabel(item.counter) }} {{ formatPercent(item.counterValue) }}</small>
+                <small>
+                  {{ axisLabel(item.drive) }} {{ formatPercent(item.driveValue) }} · {{ axisLabel(item.counter) }} {{ formatPercent(item.counterValue) }}
+                  <template v-if="Number(item.rawPressure) > Number(item.pressure)">
+                    · 原始 {{ formatPercent(Number(item.rawPressure) || 0) }} · 热情压制 {{ formatPercent(item.passionSuppression || 0) }}
+                  </template>
+                </small>
               </div>
               <p v-if="counterbalanceItems.length === 0" class="description">暂无显著对冲压力。</p>
             </div>
@@ -406,12 +411,13 @@ import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
 const DRIVE_LABELS: Record<string, string> = {
+  passion: "热情",
   curiosity: "好奇",
-  fear: "恐惧",
+  arrogance: "狂妄",
   libido: "性欲",
   hedonia: "享乐",
   coldness: "冷漠",
-  arrogance: "自大",
+  fear: "恐惧",
   numbness: "麻木",
   self_punishment: "自虐",
 };
@@ -491,10 +497,18 @@ const SUB_AXIS_LABELS: Record<string, string> = {
   restless: "躁动",
   alert: "警觉",
   calm: "平静",
+  devotion: "投入",
+  spark: "火花",
+  absorption: "沉浸",
+  affirming_energy: "肯定能量",
   unknown: "未知",
   novelty: "新奇",
   continuation: "延续",
   try_it: "尝试",
+  superiority: "优越",
+  dismissal: "轻视",
+  control_claim: "夺回控制",
+  grandiosity: "夸张确信",
   rejection: "惧拒",
   loss_control: "失序",
   exposure: "暴露",
@@ -584,6 +598,12 @@ const strongestCounterPressure = computed(() => {
   if (pressure) return pressure;
   const [axis, value] = Object.entries(state.value.coupling?.lastCounterbalance?.pressures || {}).sort((a, b) => b[1] - a[1])[0] || [];
   return axis ? { axis, label: axisLabel(axis), pressure: Number(value) || 0 } : null;
+});
+
+const passionModulationText = computed(() => {
+  const modulation = state.value.coupling?.lastPassionModulation;
+  if (!modulation || Number(modulation.positiveGain) <= 0.02) return "";
+  return `热情增益 ${formatPercent(Number(modulation.positiveGain))} · 对冲压制 ${formatPercent(Number(modulation.counterSuppression))}`;
 });
 
 const subAxisItems = computed(() =>
