@@ -17,9 +17,17 @@ const GROUPCHAT_HEAD_REGEX = /^\s*\[[^\]]{1,30}的发言\]\s*[:：]\s*/;
 //   1) 同一张图每轮的多模态描述文字可能不同（编号 N 重排、模型重新生成等）；
 //   2) 旧 user 块在历史中已被还原为原图，下一轮又会被注入新的 <VCP_MULTIMODAL_INFO>。
 // 因此该块绝不能进入 hash / 相似度比对，否则 OneRing 的 snapshot/exact hash 对齐会全面失配。
-// 这里只在 normalize 时剥离它供哈希计算使用，DB 实际写入的 content（来自 classifyUserContent
+// 这里只在 normalize/hash 时剥离它供哈希计算使用，DB 实际写入的 content（来自 classifyUserContent
 // 的 cleanText）仍保留原样，AI 视野不受影响。
-const VCP_MULTIMODAL_INFO_REGEX = /<VCP_MULTIMODAL_INFO>[\s\S]*?<\/VCP_MULTIMODAL_INFO>/g;
+// 注意：用户正文可能字面讨论 "<VCP_MULTIMODAL_INFO> 到 </VCP_MULTIMODAL_INFO> 的剥离函数"。
+// 因此不能无条件剥离所有成对标签，只剥离内部包含“服务器已处理多模态数据”或
+// MULTIMODAL_DATA_N_Info 的自动注入块。
+const VCP_MULTIMODAL_INFO_REGEX = /<VCP_MULTIMODAL_INFO\b[^>]*>(?=[\s\S]*?(?:服务器已处理多模态数据|\[MULTIMODAL_DATA_\d+_Info:))[\s\S]*?<\/VCP_MULTIMODAL_INFO>/g;
+
+function stripVcpMultimodalInfoForHash(text) {
+    if (typeof text !== 'string') return '';
+    return text.replace(VCP_MULTIMODAL_INFO_REGEX, '');
+}
 
 /**
  * 归一化：只剥离 OneRing/服务端临时标记，保留真实上下文内容用于比对。
@@ -30,7 +38,7 @@ function normalize(text) {
     if (typeof text !== 'string') return '';
     let t = text;
     t = t.replace(SYSTEM_NOTICE_REGEX, '');
-    t = t.replace(VCP_MULTIMODAL_INFO_REGEX, '');
+    t = stripVcpMultimodalInfoForHash(t);
     t = t.replace(ONERING_TAIL_REGEX, '');
     // 折叠多余空白
     t = t.replace(/\s+/g, ' ').trim();
@@ -224,6 +232,7 @@ module.exports = {
     normalize,
     normalizedHash,
     normalizedHashFromKey,
+    stripVcpMultimodalInfoForHash,
     similarity,
     extractText,
     diffContext,

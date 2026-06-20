@@ -152,7 +152,8 @@ class RawClientTimelineStrategy {
 
                 baseRecord.kind = 'context-assistant';
                 baseRecord.contextIndex = contextIndex++;
-                baseRecord.hashText = rawText;
+                // hashText 只用于客户端 hash 绑定；剥离服务端多模态注入块，避免与前端原始安全 hash 失配。
+                baseRecord.hashText = fuzzy.stripVcpMultimodalInfoForHash(rawText);
                 baseRecord.dbText = classified.cleanText;
                 baseRecord.classified = classified;
                 records.push(baseRecord);
@@ -195,7 +196,8 @@ class RawClientTimelineStrategy {
 
             baseRecord.kind = hasNoticePrefix ? 'context-user-vcp-notice-prefix' : 'context-user';
             baseRecord.contextIndex = contextIndex++;
-            baseRecord.hashText = hashText;
+            // hashText 只用于客户端 hash 绑定；剥离服务端多模态注入块，避免与前端原始安全 hash 失配。
+            baseRecord.hashText = fuzzy.stripVcpMultimodalInfoForHash(hashText);
             baseRecord.dbText = classified.cleanText;
             baseRecord.classified = classified;
             records.push(baseRecord);
