@@ -5,6 +5,9 @@ const crypto = require('crypto');
 const axios = require('axios');
 const mime = require('mime-types');
 const TurndownService = require('turndown');
+
+let HttpsProxyAgent = null;
+try { HttpsProxyAgent = require('https-proxy-agent').HttpsProxyAgent; } catch (_) {}
 const { fileURLToPath } = require('url');
 const pluginManager = require('../../Plugin.js');
 
@@ -77,6 +80,44 @@ function splitList(value) {
   return [String(value).trim()].filter(Boolean);
 }
 
+function getProxyUrl() {
+  return config.ClawMailProxy || process.env.ClawMailProxy || process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || '';
+}
+
+function parseProxyUrl(url) {
+  if (!url) return null;
+  try {
+    return new URL(url);
+  } catch (_) {
+    return null;
+  }
+}
+
+function createProxyAgent(proxyUrl) {
+  if (!proxyUrl || !HttpsProxyAgent) return null;
+  const parsed = parseProxyUrl(proxyUrl);
+  if (!parsed) return null;
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  try {
+    return new HttpsProxyAgent(proxyUrl);
+  } catch (error) {
+    warn('创建 HTTPS 代理 Agent 失败:', error.message);
+    return null;
+  }
+}
+
+function maskProxyUrl(url) {
+  if (!url) return '';
+  try {
+    const u = new URL(url);
+    if (u.username) u.username = '***';
+    if (u.password) u.password = '***';
+    return u.toString();
+  } catch (_) {
+    return url;
+  }
+}
+
 function getUsers() {
   const users = splitList(config.ClawMailUsers);
   const defaultUser = String(config.ClawMailDefaultUser || '').trim();
@@ -111,6 +152,19 @@ function getClient(user) {
       apiKey,
       user: normalizedUser
     });
+    const proxyUrl = getProxyUrl();
+    if (proxyUrl) {
+      const agent = createProxyAgent(proxyUrl);
+      if (agent) {
+        if (client.http && client.http.defaults) {
+          client.http.defaults.httpsAgent = agent;
+          client.http.defaults.proxy = false;
+        }
+        log(`已为用户 ${normalizedUser} 配置网络代理: ${maskProxyUrl(proxyUrl)}`);
+      } else {
+        warn('配置的代理无法解析或不被支持（仅支持 http/https 代理）:', maskProxyUrl(proxyUrl));
+      }
+    }
     clients.set(normalizedUser, client);
   }
   return clients.get(normalizedUser);
@@ -467,11 +521,13 @@ async function listEmails(args = {}) {
   lines.push('');
   lines.push('如需读取正文，请用 `read_mail` 并传入表格中的 `mailId`。');
 
-  return asAiText(lines.join('\n'), {
+  const aiResult = asAiText(lines.join('\n'), {
     command: 'list_recent',
     user,
     count: emails.length
   });
+  aiResult.emails = emails;
+  return aiResult;
 }
 
 async function attachmentResponseToBuffer(response) {
@@ -744,12 +800,34 @@ async function downloadUrlToAttachment(url) {
     };
   }
 
-  const response = await axios.get(url, {
+  const axiosOptions = {
     responseType: 'arraybuffer',
     timeout: 60_000,
     maxContentLength: MAX_ATTACHMENT_BYTES,
     maxBodyLength: MAX_ATTACHMENT_BYTES
-  });
+  };
+
+  const proxyUrl = getProxyUrl();
+  if (proxyUrl) {
+    const targetProtocol = new URL(url).protocol;
+    const agent = createProxyAgent(proxyUrl);
+    if (targetProtocol === 'https:' && agent) {
+      axiosOptions.httpsAgent = agent;
+      axiosOptions.proxy = false;
+    } else {
+      const parsed = parseProxyUrl(proxyUrl);
+      if (parsed && (parsed.protocol === 'http:' || parsed.protocol === 'https:')) {
+        axiosOptions.proxy = {
+          protocol: parsed.protocol.replace(':', ''),
+          host: parsed.hostname,
+          port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+          auth: parsed.username ? { username: parsed.username, password: parsed.password } : undefined
+        };
+      }
+    }
+  }
+
+  const response = await axios.get(url, axiosOptions);
   const contentType = response.headers['content-type'] || 'application/octet-stream';
   const urlPath = new URL(url).pathname;
   const ext = mime.extension(contentType) || path.extname(urlPath).replace(/^\./, '') || 'bin';
@@ -1143,6 +1221,7 @@ async function processToolCall(params = {}) {
         '# ClawEmail 插件状态',
         '',
         `- SDK 已加载：${mdBool(Boolean(MailClient))}`,
+        `- 网络代理：${maskProxyUrl(getProxyUrl()) || '无'}`,
         `- 配置邮箱：${getUsers().join(', ') || '无'}`,
         `- 默认邮箱：${config.ClawMailDefaultUser || getUsers()[0] || '无'}`,
         `- 缓存更新时间：${cache.updatedAt || '尚未完成首次轮询'}`,
