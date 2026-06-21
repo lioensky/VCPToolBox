@@ -758,7 +758,7 @@ async function processToolCall(args) {
         if (DEBUG_MODE) console.error(`[AgentAssistant Service] Starting async delegation ${delegationId} for ${agent_name}`);
 
         // Launch the background task un-awaited
-        executeDelegation(delegationId, agentConfig, promptTextForStorage, delegationSenderName, temporaryToolsSystemPrompt).catch(async err => {
+        executeDelegation(delegationId, agentConfig, promptWithRiverAttachment, promptTextForStorage, delegationSenderName, temporaryToolsSystemPrompt).catch(async err => {
             console.error(`[AgentAssistant Service] Background delegation task ${delegationId} failed:`, err);
             const state = activeDelegations.get(delegationId);
             const status = err.code === 'DELEGATION_CANCELLED' ? 'Cancelled' : 'Failed';
@@ -932,7 +932,7 @@ async function processToolCall(args) {
 /**
  * Executes a delegated task asynchronously by running a bounded conversation loop
  */
-async function executeDelegation(delegationId, agentConfig, taskPrompt, senderName, temporaryToolsSystemPrompt = '') {
+async function executeDelegation(delegationId, agentConfig, taskPromptContent, taskPromptText, senderName, temporaryToolsSystemPrompt = '') {
     const userSessionId = `agent_${agentConfig.baseName}_delegation_session`;
     const lockKey = `${agentConfig.baseName}::${userSessionId}`;
 
@@ -952,9 +952,26 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
     let completionStatus = 'Failed';
 
     try {
+        const taskPromptForSystem = String(taskPromptText ?? (
+            typeof taskPromptContent === 'string'
+                ? taskPromptContent
+                : (Array.isArray(taskPromptContent)
+                    ? (taskPromptContent.find(part => part && part.type === 'text')?.text || '[多模态任务内容，文本为空]')
+                    : String(taskPromptContent ?? ''))
+        ));
+        const userTaskPromptContent = Array.isArray(taskPromptContent)
+            ? [
+                {
+                    type: 'text',
+                    text: await replacePlaceholdersInUserPrompt(taskPromptContent.find(part => part && part.type === 'text')?.text || '', agentConfig)
+                },
+                ...taskPromptContent.filter(part => !(part && part.type === 'text'))
+            ]
+            : await replacePlaceholdersInUserPrompt(taskPromptContent, agentConfig);
+
         const delegationPrompt = DELEGATION_SYSTEM_PROMPT
             .replace(/\{\{SenderName\}\}/g, senderName)
-            .replace(/\{\{TaskPrompt\}\}/g, taskPrompt);
+            .replace(/\{\{TaskPrompt\}\}/g, taskPromptForSystem);
 
         const injectedSystemPrompt = temporaryToolsSystemPrompt
             ? `${agentConfig.systemPrompt}\n\n${temporaryToolsSystemPrompt}\n\n${delegationPrompt}`
@@ -963,7 +980,7 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
         // 我们使用独立的历史记录
         let messagesForVCP = [
             { role: 'system', content: injectedSystemPrompt },
-            { role: 'user', content: taskPrompt }
+            { role: 'user', content: userTaskPromptContent }
         ];
 
         let state = activeDelegations.get(delegationId);
@@ -1108,7 +1125,7 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
         }
 
         // Save to AgentTask Document Directory
-        const archivePath = await archiveDelegationReport(delegationId, agentConfig.baseName, completionStatus, secureReport, taskPrompt);
+        const archivePath = await archiveDelegationReport(delegationId, agentConfig.baseName, completionStatus, secureReport, taskPromptForSystem);
         if (finalState) {
             finalState.archivePath = archivePath || null;
             rememberCompletedDelegation(finalState);
