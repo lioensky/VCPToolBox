@@ -233,3 +233,44 @@ npm run inspect:sdk
 - 90% 邮件只作为数据：占位符摘要、列表、按需读、按规则下载附件。
 - 10% 邮件作为指令：AI 读取正文后决定是否回复、转发、调用外部工具。
 - 发邮件属于高风险动作，可在 VCPToolBox 的工具审核配置里为 `VCPClawMail` 增加人工确认规则。
+
+## 补充调查：删除邮件能力
+
+当前已安装并检查的 SDK 版本为 `@clawemail/node-sdk@0.2.4`。结论是：SDK 没有公开的高级 `delete_mail` / `deleteMessage` / `trashMessage` 邮件删除接口。
+
+已确认事实：
+
+- 公开邮件资源 `client.mail` 只提供 `read`、`getAttachment`、`send`、`reply`。
+- 运行时检查 `client.mail` 原型方法，也只有 `read`、`getAttachment`、`send`、`reply`，没有 `delete` / `remove` / `trash`。
+- 底层 `client.transport` 存在 `moveMessages(ids, target, folder?)`，因此理论上可以通过“移动到垃圾箱文件夹”实现软删除。
+- SDK 类型中还出现过 `remove(uid)`，但它属于底层 Ajax/token 相关接口，不是邮件删除 API，不能当作删除邮件能力使用。
+
+建议实现方向：
+
+1. 不建议直接命名为硬删除；如果后续开发，应优先实现为 `trash_mail` 或 `move_to_trash`。
+2. 先调用 `client.transport.listFolders()` 获取真实文件夹列表，查找类似 `Trash`、`Deleted`、`已删除`、`垃圾箱` 的文件夹 id。
+3. 找到垃圾箱 folder id 后，再调用 `client.transport.moveMessages([mailId], trashFolderId, sourceFolderId?)`。
+4. 如果无法稳定识别垃圾箱 id，应拒绝执行，而不是猜测删除目标。
+5. 该功能属于高风险动作，必须接入工具审核或白名单规则，避免 Agent 被邮件内容诱导删除重要邮件。
+6. 对自动唤醒 Agent 场景，默认只能读信和归档，不应默认允许删除；删除应要求明确人工确认。
+
+推荐后续命令设计：
+
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」VCPClawMail「末」,
+command:「始」move_to_trash「末」,
+user:「始」bot@claw.163.com「末」,
+mailId:「始」邮件ID「末」,
+confirm:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+推荐返回内容应包含：
+
+- 被处理邮箱。
+- 被移动的 `mailId`。
+- 源文件夹 id。
+- 目标垃圾箱 folder id。
+- SDK 调用结果。
+- 是否刷新了 `{{VCPClawMailInbox}}` 缓存。
