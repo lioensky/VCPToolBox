@@ -1,7 +1,7 @@
 {
   "manifestVersion": "1.0.0",
   "name": "AICodeWorker",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "displayName": "AI 代码工程 Worker",
   "description": "AICodeWorker v1.5 — 规范化报告输出：三模式强制输出【读取文件清单】+【执行结果摘要】锚点，buildResult 精准提取，新增 fileReadList 字段。省 token 与工作质量双保证。",
   "author": "Local",
