@@ -882,6 +882,52 @@ class SecurityLevelValidator {
         this.globalSettings = config.globalSettings || {};}
     
     /**
+     * Strip quoted content for safe pattern matching.
+     * Replaces characters inside single/double quotes with underscores so that
+     * pipe symbols (|), redirects (><), etc. inside quoted strings do not
+     * trigger false positives in security checks.
+     * Example: grep "Error:|init" f.log  =>  grep "_________" f.log
+     */
+    _stripQuotedContent(str) {
+        let result = '';
+        let inSingle = false;
+        let inDouble = false;
+        let escaped = false;
+        for (let i = 0; i < str.length; i++) {
+            const c = str[i];
+            if (escaped) { result += '_'; escaped = false; continue; }
+            if (c === '\\' && (inSingle || inDouble)) { result += '_'; escaped = true; continue; }
+            if (c === "'" && !inDouble) { inSingle = !inSingle; result += c; continue; }
+            if (c === '"' && !inSingle) { inDouble = !inDouble; result += c; continue; }
+            result += (inSingle || inDouble) ? '_' : c;
+        }
+        return result;
+    }
+
+    /**
+     * Split a string by delimiter while respecting single/double-quoted sections.
+     * Prevents grep "a|b" from being split into two segments at the | inside quotes.
+     */
+    _splitUnquoted(str, delimiter) {
+        const parts = [];
+        let current = '';
+        let inSingle = false;
+        let inDouble = false;
+        let escaped = false;
+        for (let i = 0; i < str.length; i++) {
+            const c = str[i];
+            if (escaped) { current += c; escaped = false; continue; }
+            if (c === '\\' && (inSingle || inDouble)) { current += c; escaped = true; continue; }
+            if (c === "'" && !inDouble) { inSingle = !inSingle; current += c; continue; }
+            if (c === '"' && !inSingle) { inDouble = !inDouble; current += c; continue; }
+            if (!inSingle && !inDouble && c === delimiter) { parts.push(current); current = ''; continue; }
+            current += c;
+        }
+        parts.push(current);
+        return parts;
+    }
+
+    /**
      * 获取命令的安全级别
      */
     getCommandLevel(command) {
@@ -930,9 +976,12 @@ class SecurityLevelValidator {
             }
         }
 
-        const hasRedirect = /[><]/.test(command);
-        const hasPipe = command.includes('|');
-        let segments = hasPipe ? command.split('|').map(s => s.trim()).filter(s => s.length > 0) : [command.trim()];
+        // Quote-aware pipe/redirect detection: ignore | and > inside quoted strings
+        // e.g. grep "Error:|Warning:" file.log should NOT be treated as a pipeline
+        const strippedForOp = this._stripQuotedContent(command);
+        const hasRedirect = /[><]/.test(strippedForOp);
+        const hasPipe = strippedForOp.includes('|');
+        let segments = hasPipe ? this._splitUnquoted(command, '|').map(s => s.trim()).filter(s => s.length > 0) : [command.trim()];
         
         let highestRiskLevel = 'read';
         const levelPriority = { 'read': 0, 'safe': 1, 'write': 2, 'danger': 3, 'unknown': 4 };
@@ -1559,13 +1608,16 @@ class RlimitManager {
         // ulimit 参数说明：
         // -t: CPU 时间（秒）
         // -f: 文件大小（块，1块=512字节，所以需要除以512）
-        // -u: 用户进程数
         // -n: 文件描述符数
         // -v: 虚拟内存（KB）
+        // 注意：不设置 -u (nproc)。ulimit -u 限制的是当前用户的全局进程数，
+        // 当 VCP 系统已运行大量进程时（通常 100+），设为 10 会导致所有后续
+        // fork() 立即失败，报 "Resource temporarily unavailable"。
         const parts = [
             `-t ${this.limits.cpu}`,
             `-f ${Math.floor(this.limits.fsize / 512)}`,
-            `-u ${this.limits.nproc}`
+            `-n ${this.limits.nofile}`,
+            `-v ${Math.floor(this.limits.as / 1024)}`
         ];
         // nofile=0 → 继承父进程限制（系统默认通常为1024）
         if (this.limits.nofile > 0) {
