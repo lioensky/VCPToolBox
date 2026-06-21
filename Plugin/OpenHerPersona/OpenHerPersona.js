@@ -17,7 +17,7 @@ const {
 const { getEmbeddingsBatch, cosineSimilarity } = require("../../EmbeddingUtils.js");
 
 const PLUGIN_NAME = "OpenHerPersona";
-const PLUGIN_VERSION = "0.6.0-observer";
+const PLUGIN_VERSION = "0.6.1-observer";
 
 const DEFAULT_AGENT_KEY = "__default__";
 const DEFAULT_AGENT_LABEL = "default";
@@ -210,11 +210,11 @@ const AXIS_DEFINITIONS = [
     label: "求知",
     defaultValue: 0.35,
     anchors: [
-      { subAxis: "logic", text: "{name}想顺着逻辑把这件事推理清楚" },
-      { subAxis: "learning", text: "{name}想把这个新知识真正学进去" },
-      { subAxis: "exploration", text: "{name}对未知的东西忍不住想探索" },
-      { subAxis: "modeling", text: "{name}想把零碎的信息拼成完整的理解框架" },
-      { subAxis: "causality", text: "{name}想弄明白背后的原因而不只知道表面" },
+      { subAxis: "logic", text: "{name}想顺着逻辑、证据和推导把这件事推理清楚" },
+      { subAxis: "learning", text: "{name}想把这个新知识真正学进去，理解概念、方法和结论" },
+      { subAxis: "exploration", text: "{name}对未知的现象、问题和研究方向忍不住想探索" },
+      { subAxis: "modeling", text: "{name}想把零碎的信息、实验结果和理论拼成完整的理解框架" },
+      { subAxis: "causality", text: "{name}想弄明白背后的原因、机制和因果链条而不只知道表面" },
     ],
   },
   {
@@ -286,25 +286,25 @@ const AXIS_DEFINITIONS = [
     layer: "drive",
     axis: "passion",
     label: "热情",
-    defaultValue: 0.34,
+    defaultValue: 0.38,
     backgroundVector: true,
     anchors: [
-      { subAxis: "devotion", text: "{name}正在被热情点燃，愿意投入、靠近并持续回应眼前的人与事" },
-      { subAxis: "spark", text: "{name}感到内在火花被触发，兴致、期待和主动性一起升高" },
-      { subAxis: "absorption", text: "{name}正在沉浸其中，注意力带着温度黏附在当下体验上" },
-      { subAxis: "affirming_energy", text: "{name}正在产生肯定性的生命力，想把能量投注到喜欢的方向" },
+      { subAxis: "devotion", text: "{name}正在被热情点燃，愿意投入精力、持续回应并认真推进眼前的人与事" },
+      { subAxis: "spark", text: "{name}感到内在火花被触发，兴致、期待、创造欲和主动性一起升高" },
+      { subAxis: "absorption", text: "{name}正在沉浸其中，注意力带着温度黏附在研究、创作、讨论或当下体验上" },
+      { subAxis: "affirming_energy", text: "{name}正在产生肯定性的生命力，想把能量投注到喜欢、重视或正在钻研的方向" },
     ],
   },
   {
     layer: "drive",
     axis: "curiosity",
     label: "好奇",
-    defaultValue: 0.34,
+    defaultValue: 0.38,
     anchors: [
-      { subAxis: "unknown", text: "{name}正在被未知牵引，忍不住想探过去" },
-      { subAxis: "novelty", text: "{name}正在追逐新鲜感，想看看别的可能" },
-      { subAxis: "continuation", text: "{name}正在被后续发展吊住注意力，想知道接下来会发生什么" },
-      { subAxis: "try_it", text: "{name}正在产生亲自试试看这件事的冲动" },
+      { subAxis: "unknown", text: "{name}正在被未知问题、未解现象或新线索牵引，忍不住想探过去" },
+      { subAxis: "novelty", text: "{name}正在追逐新鲜感，想看看别的可能、假设和解释路径" },
+      { subAxis: "continuation", text: "{name}正在被后续发展、实验结果或推理链条吊住注意力，想知道接下来会发生什么" },
+      { subAxis: "try_it", text: "{name}正在产生亲自试试看、验证一下或继续研究这件事的冲动" },
     ],
   },
   {
@@ -323,13 +323,13 @@ const AXIS_DEFINITIONS = [
     layer: "drive",
     axis: "libido",
     label: "性欲",
-    defaultValue: 0.18,
+    defaultValue: 0.11,
     anchors: [
-      { subAxis: "closeness", text: "{name}正在想更贴近对方，感到亲密张力上升" },
-      { subAxis: "being_seen", text: "{name}正在想被认真地看着，被带着欲望地注视" },
-      { subAxis: "touch", text: "{name}正在想触碰也想被触碰" },
-      { subAxis: "possessiveness", text: "{name}正在产生想占有、想被占有的亲密冲动" },
-      { subAxis: "pleasing", text: "{name}正在想取悦对方，也想确认自己有吸引力" },
+      { subAxis: "erotic_closeness", text: "{name}正在产生明确的情色亲近欲，想以带有性意味的方式贴近对方" },
+      { subAxis: "erotic_gaze", text: "{name}正在渴望被带着性欲、身体吸引和情色意味地注视" },
+      { subAxis: "sexual_touch", text: "{name}正在幻想带有性意味的触碰、抚摸、亲吻或身体接触" },
+      { subAxis: "possessive_desire", text: "{name}正在产生带有占有、臣服、支配或被支配色彩的性冲动" },
+      { subAxis: "seduction", text: "{name}正在想诱惑或取悦对方，并确认自己在性吸引力上的存在感" },
     ],
   },
   {
@@ -414,10 +414,10 @@ const COUPLING_RULES = [
   { from: "fear", to: "negative", weight: 0.12 },
   { from: "positive", to: "negative", weight: -0.12 },
   { from: "positive", to: "fear", weight: -0.08 },
-  { from: "positive", to: "passion", weight: 0.34 },
+  { from: "positive", to: "passion", weight: 0.38 },
   { from: "passion", to: "positive", weight: 0.16 },
-  { from: "positive", to: "libido", weight: 0.12 },
-  { from: "libido", to: "positive", weight: 0.08 },
+  { from: "positive", to: "libido", weight: 0.04 },
+  { from: "libido", to: "positive", weight: 0.04 },
   { from: "passion", to: "negative", weight: -0.1 },
   { from: "passion", to: "fear", weight: -0.08 },
   { from: "hedonia", to: "refusal", weight: 0.1 },
@@ -463,10 +463,10 @@ const DRIVE_COUNTER_RULES = [
 ];
 
 const DRIVE_PASSION_TARGETS = [
-  { axis: "curiosity", weight: 0.34 },
-  { axis: "arrogance", weight: 0.12 },
-  { axis: "libido", weight: 0.34 },
-  { axis: "hedonia", weight: 0.32 },
+  { axis: "curiosity", weight: 0.42 },
+  { axis: "arrogance", weight: 0.1 },
+  { axis: "libido", weight: 0.16 },
+  { axis: "hedonia", weight: 0.26 },
 ];
 
 const PASSION_COUNTER_SUPPRESSION = {
@@ -1346,7 +1346,7 @@ function computeDrivePassionModulation(previousAxes, coupled) {
       ? previousAxes.positive.value
       : positiveBase;
   const positiveLift = Math.max(0, positiveValue - positiveBase) / Math.max(0.05, 1 - positiveBase);
-  const blendedPassion = clamp01(previousPassion * 0.15 + observedPassion * 0.62 + positiveLift * 0.32);
+  const blendedPassion = clamp01(previousPassion * 0.12 + observedPassion * 0.68 + positiveLift * 0.3);
   const base = defaultPassion;
   const aboveBase = Math.max(0, blendedPassion - base) / Math.max(0.05, 1 - base);
   const positiveGain = Math.pow(clamp01(aboveBase), 0.48);
@@ -1625,10 +1625,10 @@ function evaluateMoodArchetypes(state, p, n, a) {
     { label: "悲喜交欢", score: resonance([pTone, nTone, aTone], 1.12), recipe: ["positive↑", "negative↑", "arousal↑"] },
     { label: "渊底自毁", score: resonance([up("self_punishment"), nTone, aTone], 1.24), recipe: ["self_punishment↑", "negative↑", "arousal↑"] },
     { label: "痛感沉溺", score: resonance([up("self_punishment"), up("hedonia"), pTone], 1.18), recipe: ["self_punishment↑", "hedonia↑", "positive↑"] },
-    { label: "热情点燃", score: resonance([up("passion"), Math.max(pTone, up("hedonia")), Math.max(aTone, up("curiosity"))], 1.28), recipe: ["passion↑", "positive↑/hedonia↑", "arousal↑/curiosity↑"] },
-    { label: "情热涌动", score: resonance([up("libido"), aTone, pTone, passionGain], 1.2), recipe: ["libido↑", "arousal↑", "positive↑", "passionGain"] },
-    { label: "绵密缱绻", score: resonance([up("libido"), up("hedonia"), calmTone, passionGain], 1.18), recipe: ["libido↑", "hedonia↑", "calmness↑", "passionGain"] },
-    { label: "欲念焦灼", score: resonance([up("libido"), nTone, aTone], 1.15), recipe: ["libido↑", "negative↑", "arousal↑"] },
+    { label: "热情点燃", score: resonance([up("passion"), Math.max(pTone, up("hedonia")), Math.max(aTone, up("curiosity"))], 1.34), recipe: ["passion↑", "positive↑/hedonia↑", "arousal↑/curiosity↑"] },
+    { label: "情热涌动", score: resonance([up("libido"), aTone, pTone, passionGain], 1.05), recipe: ["libido↑", "arousal↑", "positive↑", "passionGain"] },
+    { label: "绵密缱绻", score: resonance([up("libido"), up("hedonia"), calmTone, passionGain], 1.04), recipe: ["libido↑", "hedonia↑", "calmness↑", "passionGain"] },
+    { label: "欲念焦灼", score: resonance([up("libido"), nTone, aTone], 1.02), recipe: ["libido↑", "negative↑", "arousal↑"] },
     { label: "欲冷相娇", score: resonance([up("libido"), coldNumb, libidoColdPressure], 1.3), recipe: ["libido↑", "cold/numb↑", "libidoCounterPressure"] },
     { label: "冷欲渐起", score: resonance([up("libido"), up("numbness"), calmTone], 1.2), recipe: ["libido↑", "numbness↑", "calmness↑"] },
     { label: "情热受阻", score: resonance([passionGain, maxExpansiveDrive, coldNumb], 1.18), recipe: ["passionGain", "drive↑", "cold/numb↑"] },
@@ -1640,7 +1640,7 @@ function evaluateMoodArchetypes(state, p, n, a) {
     { label: "惊惧退守", score: resonance([up("fear"), aTone, nTone], 1.18), recipe: ["fear↑", "arousal↑", "negative↑"] },
     { label: "如履薄冰", score: resonance([up("fear"), up("discernment"), calmTone], 1.12), recipe: ["fear↑", "discernment↑", "calmness↑"] },
     { label: "虚张声势", score: resonance([up("arrogance"), up("fear"), pressure("arrogance")], 1.18), recipe: ["arrogance↑", "fear↑", "arroganceCounterPressure"] },
-    { label: "探求炽热", score: resonance([up("curiosity"), up("inquiry"), aTone], 1.15), recipe: ["curiosity↑", "inquiry↑", "arousal↑"] },
+    { label: "探求炽热", score: resonance([up("curiosity"), up("inquiry"), Math.max(aTone, up("passion"))], 1.28), recipe: ["curiosity↑", "inquiry↑", "arousal↑/passion↑"] },
     { label: "幽微洞察", score: resonance([up("discernment"), up("inquiry"), calmTone], 1.12), recipe: ["discernment↑", "inquiry↑", "calmness↑"] },
     { label: "慵懒沉陷", score: resonance([up("hedonia"), calmTone, pTone], 1.1), recipe: ["hedonia↑", "calmness↑", "positive↑"] },
     { label: "享乐负罪", score: resonance([up("hedonia"), up("self_punishment"), pressure("hedonia")], 1.18), recipe: ["hedonia↑", "self_punishment↑", "hedoniaCounterPressure"] },
