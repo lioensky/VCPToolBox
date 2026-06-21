@@ -189,7 +189,7 @@ class ToolExecutor {
    * @returns {Promise<{success: boolean, content: Array, error?: string, raw?: any}>}
    */
   async execute(toolCall, clientIp, contextMessages = []) {
-    const { name, args, river, vref } = toolCall;
+    const { name, args, river, vref, archeryNoReply } = toolCall;
 
     // === river 上下文注入 ===
     // river 协议允许 AI 在工具调用时携带对话上下文，支持四种模式：
@@ -342,7 +342,7 @@ class ToolExecutor {
     // 执行插件
     try {
       if (this.debugMode) console.log(`[ToolExecutor] Calling processToolCall for ${name} with args keys: ${Object.keys(args).join(', ')}`);
-      const result = await this.pluginManager.processToolCall(name, args, clientIp, 'post');
+      const result = await this.pluginManager.processToolCall(name, args, clientIp, 'post', { archeryNoReply: !!archeryNoReply });
       return this._processResult(name, result);
     } catch (error) {
       return this._createErrorResult(name, `执行错误: ${error.message}`);
@@ -361,8 +361,30 @@ class ToolExecutor {
   _processResult(toolName, result) {
     const formatted = this._formatResult(result);
     
-    // WebSocket广播
+    // WebSocket广播：即使是 archery no-reply 静默结果，也保留 VCPLog 可见性。
     this._broadcast(toolName, 'success', formatted.text);
+
+    // archery no-reply 的“静默”只表示不回灌给 AI / 不触发二次 loop；
+    // 用户侧仍应通过 VCPInfo WS 看到工具已被接收，后续真实进度由插件自己的 VCPLog/VCPInfo 继续推送。
+    if (result && typeof result === 'object' && result.__vcpArcheryNoReplySilent) {
+      try {
+        const vcpLogFunctions = this.pluginManager?.getVCPLogFunctions?.();
+        if (vcpLogFunctions && typeof vcpLogFunctions.pushVcpInfo === 'function') {
+          vcpLogFunctions.pushVcpInfo({
+            type: 'TOOL_NO_REPLY_ACCEPTED',
+            toolName,
+            status: 'success',
+            noReply: true,
+            message: result.message || `Async no-reply tool "${toolName}" accepted silently.`,
+            timestamp: new Date().toISOString()
+          });
+        }
+      } catch (broadcastError) {
+        if (this.debugMode) {
+          console.warn(`[ToolExecutor] Failed to broadcast no-reply VCPInfo for ${toolName}: ${broadcastError.message}`);
+        }
+      }
+    }
     
     return {
       success: true,

@@ -22,7 +22,7 @@ class ToolCallParser {
   /**
    * 解析AI响应中的所有工具调用
    * @param {string} content - AI响应内容
-   * @returns {Array<{name: string, args: object, archery: boolean}>}
+   * @returns {Array<{name: string, args: object, archery: boolean, archeryNoReply?: boolean}>}
    */
   static parse(content) {
     if (!content || typeof content !== 'string') return [];
@@ -73,7 +73,7 @@ class ToolCallParser {
   /**
    * 解析单个工具调用块，可供其他入口（如人类直调工具）复用
    * @param {string} blockContent
-   * @returns {{name: string, args: object, archery: boolean, markHistory: boolean, river: string|null, vref: string|null}|null}
+   * @returns {{name: string, args: object, archery: boolean, archeryNoReply: boolean, markHistory: boolean, river: string|null, vref: string|null}|null}
    */
   static parseBlock(blockContent) {
     if (!blockContent || typeof blockContent !== 'string') return null;
@@ -84,6 +84,7 @@ class ToolCallParser {
     const args = {};
     let toolName = null;
     let isArchery = false;
+    let archeryNoReply = false;
     let markHistory = false;
     let river = null;
     let vref = null;
@@ -95,6 +96,7 @@ class ToolCallParser {
         toolName = trimmedValue;
       } else if (field.key === 'archery') {
         isArchery = trimmedValue === 'true' || trimmedValue === 'no_reply';
+        archeryNoReply = trimmedValue === 'no_reply';
       } else if (field.key === 'ink') {
         markHistory = trimmedValue === 'mark_history';
       } else if (field.key === 'river') {
@@ -112,7 +114,7 @@ class ToolCallParser {
       args.maid = args.valet;
     }
 
-    return toolName ? { name: toolName, args, archery: isArchery, markHistory, river, vref } : null;
+    return toolName ? { name: toolName, args, archery: isArchery, archeryNoReply, markHistory, river, vref } : null;
   }
 
   static _findBlockEnd(content, fromIndex) {
