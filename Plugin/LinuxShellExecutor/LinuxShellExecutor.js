@@ -1589,8 +1589,8 @@ class RlimitManager {
             cpu: parseInt(process.env.RLIMIT_CPU) || 30,           // CPU 时间（秒）
             fsize: parseInt(process.env.RLIMIT_FSIZE) || 10485760, // 文件大小（字节，10MB）
             nproc: parseInt(process.env.RLIMIT_NPROC) || 10,       // 最大进程数
-            nofile: parseInt(process.env.RLIMIT_NOFILE) || 64,     // 最大文件描述符
-            as: parseInt(process.env.RLIMIT_AS) || 536870912       // 虚拟内存（字节，512MB）
+            nofile: parseInt(process.env.RLIMIT_NOFILE) || 0,      // 最大文件描述符（0=继承系统默认，通常为1024）
+            as: parseInt(process.env.RLIMIT_AS) || 0               // 虚拟内存（0=不限制；512MB 默认值会导致 Node.js V8 OOM）
         };
         
         this.enabled = process.env.ENABLE_RLIMIT !== 'false';
@@ -1619,6 +1619,15 @@ class RlimitManager {
             `-n ${this.limits.nofile}`,
             `-v ${Math.floor(this.limits.as / 1024)}`
         ];
+        // nofile=0 → 继承父进程限制（系统默认通常为1024）
+        if (this.limits.nofile > 0) {
+            parts.push(`-n ${this.limits.nofile}`);
+        }
+        // as=0 → 不限制虚拟内存。Node.js V8 启动需要约 4GB 虚拟地址空间，
+        // 512MB 默认值会触发 "Fatal process out of memory: SegmentedTable::InitializeTable"
+        if (this.limits.as > 0) {
+            parts.push(`-v ${Math.floor(this.limits.as / 1024)}`);
+        }
         
         return `ulimit ${parts.join(' ')} 2>/dev/null; `;
     }
