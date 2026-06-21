@@ -64,7 +64,15 @@ async function run() {
             OPENAI_BASE_URL:   cfg.OPENCODE_BASE_URL.replace(/\/v1\/?$/, "") + "/v1",
             ANTHROPIC_API_KEY:  "",
             ANTHROPIC_BASE_URL: "",
-        } : {})
+        } : {
+            // 不路由：显式清空上游 key，强制 opencode 用自带免费模型。
+            // 否则 VCP 主进程环境里的 OPENAI_API_KEY 会被子进程继承，
+            // 导致本想用免费模型却误走了付费 OpenAI 通道。
+            OPENAI_API_KEY:    "",
+            OPENAI_BASE_URL:   "",
+            ANTHROPIC_API_KEY:  "",
+            ANTHROPIC_BASE_URL: "",
+        })
     };
 
     // 有指定模型时注入 -m，无论是否走 VCP 路由

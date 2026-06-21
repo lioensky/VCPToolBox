@@ -38,7 +38,9 @@ function loadConfig() {
         enableMimocode:   (raw.ENABLE_MIMOCODE   || "false") !== "false",
         opencodeBin:      raw.OPENCODE_BIN       || "opencode",
         opencodeBaseUrl:  raw.OPENCODE_BASE_URL  || "",
-        opencodeApiKey:   raw.OPENCODE_API_KEY   || process.env.ANTHROPIC_API_KEY || "",
+        // 不回退 process.env.ANTHROPIC_API_KEY：留空即走 opencode 免费模型，
+        // 避免无意中把宿主的 key 注入、误用付费通道。
+        opencodeApiKey:   raw.OPENCODE_API_KEY   || "",
         opencodeModel:    raw.OPENCODE_MODEL      || "",
         allowedRoots:     (raw.ALLOWED_PROJECT_ROOTS || "/app/VCPToolBox_new,/app/ZhongZhuan,/app/claud")
                               .split(",").map(s => s.trim()).filter(Boolean),

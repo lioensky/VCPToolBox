@@ -26,10 +26,15 @@ OPENCODE_BIN=opencode
 # 允许操作的项目根目录白名单（逗号分隔），projectPath 必须在其中
 ALLOWED_PROJECT_ROOTS=/app/VCPToolBox_new,/app/myproject
 
-# 进阶：把 opencode 的模型请求路由到 VCP 主链路（留空使用 opencode 内置模型）
+# 模型：BASE_URL/API_KEY 都留空 = 用 opencode 自带【免费】模型（不烧你的 token）。
+# 但 OPENCODE_MODEL 别留空（留空会回退到付费默认模型），填一个 opencode/ 开头的免费模型：
+#   opencode/deepseek-v4-flash-free（推荐，代码强）/ opencode/north-mini-code-free（轻量）
+#   / opencode/mimo-v2.5-free / opencode/big-pickle
+# 用 `opencode models | grep opencode/` 看最新清单。
+# 若要改用自有模型：把 BASE_URL 和 API_KEY 都填上即切换（会消耗你的 token，且别用推理模型）。
 OPENCODE_BASE_URL=
 OPENCODE_API_KEY=
-OPENCODE_MODEL=opencode/north-mini-code-free
+OPENCODE_MODEL=opencode/deepseek-v4-flash-free
 
 # 单次任务最大字符数（默认 20000）
 MAX_TASK_CHARS=20000
