@@ -1,29 +1,33 @@
 {
-    "manifestVersion": "1.0.0",
-    "name": "LinuxShellExecutor",
-    "version": "1.2.0",
-    "displayName": "Linux Shell 安全执行器",
-    "description": "六层安全防护的 Linux Shell 命令执行器。支持多发行版静默安装、异步任务托管、交互阻塞探测及跨插件联动监控。",
-    "author": "VCP Team",
-    "pluginType": "hybridservice",
-    "requiresAdmin": true,
-    "entryPoint": {
-        "type": "nodejs",
-        "script": "LinuxShellExecutor.js",
-        "command": "node LinuxShellExecutor.js"
-    },
-    "communication": {
-        "protocol": "direct",
-        "timeout": 60000
-    },
-    "dependencies": {
-        "npm": ["ssh2", "dotenv"]
-    },
-    "capabilities": {
-        "invocationCommands": [
-            {
-                "commandIdentifier": "LinuxShellExecutor",
-                "description": "在安全沙箱中执行 Linux Shell 命令，支持本地和远程 SSH 执行。\n\n🆕 v1.1.7 审计加固版:\n- 异步闭环：修复 isLongRunning 逻辑，确保 yum/apt/tail 等指令真实托管。\n- 资产引导修复：修正 Discovery 状态透传，引导 hostId 自动发现。\n- 安全逃逸支持：授权码 (authCode) 可绕过白名单及安全层级限制。\n- 鲁棒性增强：新增特殊操作符 (; && |) 校验及全局 1MB/5MB 输出截断防护。\n\n参数:\n- command (字符串, 必需): 要执行的 Shell 命令，或 preset:预设名?参数 格式。\n- hostId (字符串, 可选): 目标主机ID，默认 'local'。\n- isLongRunning (布尔, 可选): 是否为长待机指令，设为 true 时任务将转入后台并返回 taskId。\n- requireAdmin (字符串, 可选): 管理员验证码/授权码。用于 write/danger 级别确认，或强制执行不在白名单内的命令。\n- timeout (数字, 可选): 超时时间（毫秒）。\n- outputFormat (字符串, 可选): 输出格式 'raw'|'formatted'|'json'。\n\n授权码执行示例:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」unknown-tool --args「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>\n\n长待机指令调用:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」yum install -y nginx「末」,\nisLongRunning:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>\n\n列出主机列表:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\naction:「始」listHosts「末」\n<<<[END_TOOL_REQUEST]>>>"}
-        ]
-    }
+  "manifestVersion": "1.0.0",
+  "name": "LinuxShellExecutor",
+  "version": "1.2.0",
+  "displayName": "Linux Shell 安全执行器",
+  "description": "六层安全防护的 Linux Shell 命令执行器。支持多发行版静默安装、异步任务托管、交互阻塞探测及跨插件联动监控。",
+  "author": "VCP Team",
+  "pluginType": "hybridservice",
+  "requiresAdmin": true,
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "LinuxShellExecutor.js",
+    "command": "node LinuxShellExecutor.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 60000
+  },
+  "dependencies": {
+    "npm": [
+      "ssh2",
+      "dotenv"
+    ]
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "LinuxShellExecutor",
+        "description": "在安全沙箱中执行 Linux Shell 命令，支持本地和远程 SSH 执行。\n\n🆕 v1.1.7 审计加固版:\n- 异步闭环：修复 isLongRunning 逻辑，确保 yum/apt/tail 等指令真实托管。\n- 资产引导修复：修正 Discovery 状态透传，引导 hostId 自动发现。\n- 安全逃逸支持：授权码 (authCode) 可绕过白名单及安全层级限制。\n- 鲁棒性增强：分号(;)被安全层禁止，请改用 && 进行命令链式执行；管道(|)正常支持；全局输出截断防护。\n\n参数:\n- command (字符串, 必需): 要执行的 Shell 命令，或 preset:预设名?参数 格式。\n- hostId (字符串, 可选): 目标主机ID，默认 'local'。\n- isLongRunning (布尔, 可选): 是否为长待机指令，设为 true 时任务将转入后台并返回 taskId。\n- requireAdmin (字符串, 可选): 管理员验证码/授权码。用于 write/danger 级别确认，或强制执行不在白名单内的命令。\n- timeout (数字, 可选): 超时时间（毫秒）。\n- outputFormat (字符串, 可选): 输出格式 'raw'|'formatted'|'json'。\n\n⚠️ 命令编写规范:\n- 禁用 ; 作为分隔符（安全层拦截）\n- 多命令链式：使用 &&（如 cmd1 && cmd2）\n- 引号内分号合法：grep \"pattern;\" file\n\n授权码执行示例:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」unknown-tool --args「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>\n\n长待机指令调用:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」yum install -y nginx「末」,\nisLongRunning:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>\n\n列出主机列表:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\naction:「始」listHosts「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
 }
