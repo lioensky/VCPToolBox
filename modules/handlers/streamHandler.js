@@ -360,6 +360,7 @@ class StreamHandler {
 
       const { normal: normalCalls, archery: archeryCalls } = ToolCallParser.separate(toolCalls);
       const archeryErrorContents = [];
+      const archeryStatusSummaryItems = [];
 
       // 执行 Archery 调用
       const archeryLogs = await Promise.all(archeryCalls.map(async toolCall => {
@@ -368,6 +369,7 @@ class StreamHandler {
           const isError = !result.success || (result.raw && this.context.isToolResultError(result.raw));
 
           if (isError) {
+            archeryStatusSummaryItems.push(`${toolCall.name} 调用失败`);
             archeryErrorContents.push({
               type: 'text',
               text: `[异步工具 "${toolCall.name}" 返回了错误，请注意]:\n${result.content[0].text}`
@@ -392,6 +394,27 @@ class StreamHandler {
 
         if (!res.writableEnded && !res.destroyed) {
           try {
+            if (archeryStatusSummaryItems.length > 0) {
+              if (enableRoleDivider) {
+                res.write(`data: ${JSON.stringify({
+                  id: `chatcmpl-vcp-start-${Date.now()}`,
+                  object: "chat.completion.chunk",
+                  choices: [{ index: 0, delta: { content: "\n<<<[ROLE_DIVIDE_USER]>>>\n" }, finish_reason: null }]
+                })}\n\n`);
+              }
+              res.write(`data: ${JSON.stringify({
+                id: `chatcmpl-vcp-summary-${Date.now()}`,
+                object: "chat.completion.chunk",
+                choices: [{ index: 0, delta: { content: `\n[本轮工具调用摘要:]\n${archeryStatusSummaryItems.join('；')}。\n[本轮工具调用摘要结束]\n` }, finish_reason: null }]
+              })}\n\n`);
+              if (enableRoleDivider) {
+                res.write(`data: ${JSON.stringify({
+                  id: `chatcmpl-vcp-end-${Date.now()}`,
+                  object: "chat.completion.chunk",
+                  choices: [{ index: 0, delta: { content: "\n<<<[END_ROLE_DIVIDE_USER]>>>\n" }, finish_reason: null }]
+                })}\n\n`);
+              }
+            }
             res.write(`data: ${JSON.stringify({
               id: `chatcmpl-VCP-separator-${Date.now()}`,
               object: 'chat.completion.chunk',
@@ -468,7 +491,7 @@ class StreamHandler {
 
       // VCP 信息展示 - 批量包裹为单个 USER 角色
       let hasStartedUserBlock = false;
-      const toolStatusSummaryItems = [];
+      const toolStatusSummaryItems = [...archeryStatusSummaryItems];
       for (let i = 0; i < normalCalls.length; i++) {
         const toolCall = normalCalls[i];
         const result = toolResults[i];

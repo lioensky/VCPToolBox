@@ -292,6 +292,7 @@ class NonStreamHandler {
         anyToolProcessedInCurrentIteration = true;
         const { normal: normalCalls, archery: archeryCalls } = ToolCallParser.separate(toolCalls);
         const archeryErrorContents = [];
+        const archeryStatusSummaryItems = [];
 
         // 执行 Archery 调用
         const archeryLogs = await Promise.all(archeryCalls.map(async toolCall => {
@@ -300,6 +301,7 @@ class NonStreamHandler {
             const isError = !result.success || (result.raw && this.context.isToolResultError(result.raw));
 
             if (isError) {
+              archeryStatusSummaryItems.push(`${toolCall.name} 调用失败`);
               archeryErrorContents.push({
                 type: 'text',
                 text: `[异步工具 "${toolCall.name}" 返回了错误，请注意]:\n${result.content[0].text}`
@@ -333,6 +335,16 @@ class NonStreamHandler {
 
           const errorPayload = `<!-- VCP_TOOL_PAYLOAD -->\n${JSON.stringify(archeryErrorContents)}`;
           currentMessagesForNonStreamLoop.push({ role: 'user', content: errorPayload });
+
+          if (archeryStatusSummaryItems.length > 0) {
+            if (enableRoleDivider) {
+              conversationHistoryForClient.push('\n<<<[ROLE_DIVIDE_USER]>>>\n');
+            }
+            conversationHistoryForClient.push(`\n[本轮工具调用摘要:]\n${archeryStatusSummaryItems.join('；')}。\n[本轮工具调用摘要结束]\n`);
+            if (enableRoleDivider) {
+              conversationHistoryForClient.push('\n<<<[END_ROLE_DIVIDE_USER]>>>\n');
+            }
+          }
 
           const recursionBody = { ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false };
           const recursionReadResult = await readNonStreamResponseWithSemanticRetry({
@@ -402,7 +414,7 @@ class NonStreamHandler {
 
         // VCP 信息展示 - 批量包裹为单个 USER 角色
         let hasStartedUserBlock = false;
-        const toolStatusSummaryItems = [];
+        const toolStatusSummaryItems = [...archeryStatusSummaryItems];
         for (let i = 0; i < normalCalls.length; i++) {
           const toolCall = normalCalls[i];
           const result = toolResults[i];
