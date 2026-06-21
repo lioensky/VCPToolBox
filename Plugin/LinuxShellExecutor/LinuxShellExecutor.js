@@ -1559,13 +1559,14 @@ class RlimitManager {
         // ulimit 参数说明：
         // -t: CPU 时间（秒）
         // -f: 文件大小（块，1块=512字节，所以需要除以512）
-        // -u: 用户进程数
         // -n: 文件描述符数
         // -v: 虚拟内存（KB）
+        // 注意：不设置 -u (nproc)。ulimit -u 限制的是当前用户的全局进程数，
+        // 当 VCP 系统已运行大量进程时（通常 100+），设为 10 会导致所有后续
+        // fork() 立即失败，报 "Resource temporarily unavailable"。
         const parts = [
             `-t ${this.limits.cpu}`,
             `-f ${Math.floor(this.limits.fsize / 512)}`,
-            `-u ${this.limits.nproc}`,
             `-n ${this.limits.nofile}`,
             `-v ${Math.floor(this.limits.as / 1024)}`
         ];
