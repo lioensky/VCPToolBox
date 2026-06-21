@@ -21,6 +21,7 @@ export type AppRouteId =
   | "vcptavern-editor"
   | "agent-files-editor"
   | "agent-assistant-config"
+  | "claw-mail-manager"
   | "agent-emotion-manager"
   | "forum-assistant-config"
   | "agent-scores"
@@ -158,6 +159,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     path: "/agent-assistant-config",
     title: "Agent 通讯配置",
     icon: "diversity_3",
+    requiresAuth: true,
+    navGroup: "agentContent",
+    showInSidebar: true,
+  },
+  {
+    id: "claw-mail-manager",
+    routeName: "ClawMailManager",
+    path: "/claw-mail-manager",
+    title: "Agent 信箱",
+    icon: "mark_email_unread",
     requiresAuth: true,
     navGroup: "agentContent",
     showInSidebar: true,

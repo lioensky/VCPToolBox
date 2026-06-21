@@ -11,6 +11,7 @@ export const APP_ROUTE_COMPONENTS = {
   "vcptavern-editor": () => import("@/views/VcptavernEditor.vue"),
   "agent-files-editor": () => import("@/views/AgentFilesEditor.vue"),
   "agent-assistant-config": () => import("@/views/AgentAssistantConfig.vue"),
+  "claw-mail-manager": () => import("@/views/ClawMailManager.vue"),
   "agent-emotion-manager": () => import("@/views/AgentEmotionManager.vue"),
   "forum-assistant-config": () => import("@/views/ForumAssistantConfig.vue"),
   "agent-scores": () => import("@/views/AgentScores.vue"),

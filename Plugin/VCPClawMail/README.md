@@ -5,7 +5,7 @@ VCPClawMail 是面向 claw.163.com / ClawEmail 的 VCPToolBox 混合插件。
 它采用 `hybridservice` 形态：
 
 - 常驻服务：优先使用 WebSocket 即达推送监听新邮件，并用低频轮询兜底更新 `{{VCPClawMailInbox}}`、`{{VCPClawMailInboxMail1}}` 到 `{{VCPClawMailInboxMail4}}` 占位符。
-- 同步工具：允许 AI 调用 `list_recent`、`read_mail`、`send_mail`、`reply_mail`、`download_attachment`。
+- 同步工具：允许 AI 调用 `list_recent`、`read_mail`、`send_mail`、`reply_mail`、`download_attachment`、`list_folders`、`move_to_trash`。
 - 多邮箱分布：保留公共邮箱作为默认邮箱，同时支持 `mail1`、`mail2`、`mail3`、`mail4` 四组 Agent 子邮箱。
 - 附件链路：AI 可以在正文或 `attachments` 参数里直接写 `https://...` 或 `file://...`，插件会尽量下载/归一化为 SDK 可发送的附件对象。
 - 读取链路：读邮件时返回正文、HTML 转 Markdown、图片 URL、附件元数据；图片附件会尽量转 OpenAI 多模态 `image_url`，文档附件会尽量解析为文本。
@@ -212,6 +212,41 @@ attachmentId:「始」附件ID「末」
 
 返回的 `file://...` 可继续交给后续工具处理。
 
+### 移入垃圾箱
+
+`move_to_trash` 是软删除：它会先通过 `list_folders` 识别真实垃圾箱/已删除文件夹，再调用底层 `client.transport.moveMessages()` 移动邮件。无法稳定识别垃圾箱时会拒绝执行。
+
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」VCPClawMail「末」,
+command:「始」move_to_trash「末」,
+mailbox:「始」mail1「末」,
+mailId:「始」邮件ID「末」,
+confirm:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+也可以先查看文件夹：
+
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」VCPClawMail「末」,
+command:「始」list_folders「末」,
+mailbox:「始」mail1「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+## 管理面板 Agent 信箱
+
+服务器管理面板已新增「Agent & 内容」分类下的「Agent 信箱」页面：
+
+- 查看 VCPClawMail 已配置的公共邮箱与 `mail1` 到 `mail4` 子邮箱。
+- 手动刷新邮箱缓存。
+- 按邮箱列出最近邮件，可切换数量与“仅未读”。
+- 点击邮件读取详情，默认不标记已读、不自动解析附件正文，避免面板查看产生额外副作用。
+- 点击“移入垃圾箱”会弹出人工确认，再调用后端软删除接口。
+- 面板后端接口位于 `/admin_api/claw-mail/*`，依赖 VCPClawMail 插件已加载。
+
 ## 多邮箱与子邮箱自动 Agent 通讯
 
 公共邮箱仍由 `ClawMailUsers` / `ClawMailDefaultUser` 控制；所有工具调用不传 `mailbox` 时都会走公共默认邮箱。
@@ -323,7 +358,7 @@ npm run inspect:sdk
 
 ## 补充调查：删除邮件能力
 
-当前已安装并检查的 SDK 版本为 `@clawemail/node-sdk@0.2.4`。结论是：SDK 没有公开的高级 `delete_mail` / `deleteMessage` / `trashMessage` 邮件删除接口。
+当前已安装并检查的 SDK 版本为 `@clawemail/node-sdk@0.2.4`。结论是：SDK 没有公开的高级 `delete_mail` / `deleteMessage` / `trashMessage` 邮件删除接口。本插件已实现面向“移入垃圾箱”的 `move_to_trash` 软删除命令与管理面板确认入口。
 
 已确认事实：
 
@@ -332,14 +367,14 @@ npm run inspect:sdk
 - 底层 `client.transport` 存在 `moveMessages(ids, target, folder?)`，因此理论上可以通过“移动到垃圾箱文件夹”实现软删除。
 - SDK 类型中还出现过 `remove(uid)`，但它属于底层 Ajax/token 相关接口，不是邮件删除 API，不能当作删除邮件能力使用。
 
-建议实现方向：
+已实现方向：
 
-1. 不建议直接命名为硬删除；如果后续开发，应优先实现为 `trash_mail` 或 `move_to_trash`。
+1. 不命名为硬删除；功能名为 `move_to_trash`，兼容别名 `trash_mail` / `trash`。
 2. 先调用 `client.transport.listFolders()` 获取真实文件夹列表，查找类似 `Trash`、`Deleted`、`已删除`、`垃圾箱` 的文件夹 id。
 3. 找到垃圾箱 folder id 后，再调用 `client.transport.moveMessages([mailId], trashFolderId, sourceFolderId?)`。
-4. 如果无法稳定识别垃圾箱 id，应拒绝执行，而不是猜测删除目标。
-5. 该功能属于高风险动作，必须接入工具审核或白名单规则，避免 Agent 被邮件内容诱导删除重要邮件。
-6. 对自动唤醒 Agent 场景，默认只能读信和归档，不应默认允许删除；删除应要求明确人工确认。
+4. 如果无法稳定识别垃圾箱 id，会拒绝执行，而不是猜测删除目标。
+5. 该功能属于高风险动作；工具调用必须传入 `confirm=true`，管理面板入口也会弹出人工确认。
+6. 对自动唤醒 Agent 场景，默认仍只读信和投递，不自动删除；删除必须由显式工具调用或面板用户操作触发。
 
 推荐后续命令设计：
 

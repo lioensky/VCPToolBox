@@ -107,6 +107,7 @@ module.exports = function (
   mount("/", "pluginStore"); // Handles /plugin-store/*
   mount("/", "bridgeProfiles"); // Handles /bridge-profiles/*
   mount("/", "multimodalConfig"); // Handles /multimodal-config (JSON 真相源 + 热更新)
+  mount("/", "clawMail"); // Handles /claw-mail/*
 
   return adminApiRouter;
 };

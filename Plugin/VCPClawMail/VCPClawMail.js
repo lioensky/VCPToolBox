@@ -498,6 +498,18 @@ function bodyContent(part) {
   return undefined;
 }
 
+function normalizeFolder(folder) {
+  if (!folder || typeof folder !== 'object') return null;
+  const id = pickFirst(folder.id, folder.fid, folder.folderId, folder.uid, folder.key);
+  const name = pickFirst(folder.name, folder.folderName, folder.title, folder.displayName, folder.label);
+  return {
+    id,
+    fid: id,
+    name,
+    raw: folder
+  };
+}
+
 function normalizeReadMail(mail, user, mailId) {
   const html = bodyContent(pickFirst(mail.html, mail.htmlBody, mail.bodyHtml));
   const text = bodyContent(pickFirst(mail.text, mail.textBody, mail.bodyText, mail.body, mail.content));
@@ -764,6 +776,121 @@ async function listEmails(args = {}) {
   });
   aiResult.emails = emails;
   return aiResult;
+}
+
+async function listFolders(args = {}) {
+  const mailboxInfo = resolveMailboxArgs(args);
+  const user = mailboxInfo.user;
+  const client = getClient(user);
+
+  const result = client.transport && typeof client.transport.listFolders === 'function'
+    ? await client.transport.listFolders()
+    : await callFirstAvailable(client, [
+      'mail.listFolders',
+      'folders.list',
+      'listFolders',
+      'mailbox.listFolders'
+    ], [{ user }]);
+
+  const rawList = Array.isArray(result)
+    ? result
+    : Array.isArray(result?.folders)
+      ? result.folders
+      : Array.isArray(result?.data)
+        ? result.data
+        : Array.isArray(result?.list)
+          ? result.list
+          : [];
+
+  const folders = rawList.map(normalizeFolder).filter(Boolean);
+  return {
+    user,
+    mailbox: mailboxInfo.mailbox,
+    folders,
+    rawShape: Array.isArray(result) ? 'array' : Object.keys(result || {}).join(', ') || 'unknown'
+  };
+}
+
+function findTrashFolder(folders) {
+  const candidates = folders.filter(folder => {
+    const name = String(folder.name || '').trim().toLowerCase();
+    return [
+      'trash',
+      'deleted',
+      'deleted items',
+      'deleted messages',
+      'bin',
+      '垃圾箱',
+      '废纸篓',
+      '已删除',
+      '已删除邮件',
+      '删除邮件'
+    ].some(keyword => name === keyword || name.includes(keyword));
+  });
+  return candidates[0] || null;
+}
+
+async function moveToTrash(args = {}) {
+  const mailboxInfo = resolveMailboxArgs(args);
+  const user = mailboxInfo.user;
+  const mailId = args.mailId || args.id;
+  if (!mailId) throw new Error('move_to_trash 需要 mailId。');
+  if (args.confirm !== true && String(args.confirm).toLowerCase() !== 'true') {
+    throw new Error('move_to_trash 是高风险操作，需要 confirm=true。');
+  }
+
+  const client = getClient(user);
+  if (!client.transport || typeof client.transport.moveMessages !== 'function') {
+    throw new Error('当前 @clawemail/node-sdk 未暴露 client.transport.moveMessages，无法安全移入垃圾箱。');
+  }
+
+  const sourceFolderId = args.sourceFolderId || args.fid || args.folderId || 1;
+  const targetFolderId = args.targetFolderId || args.trashFolderId;
+  let trashFolder = null;
+  let folders = [];
+
+  if (targetFolderId) {
+    trashFolder = { id: targetFolderId, fid: targetFolderId, name: args.targetFolderName || '指定垃圾箱' };
+  } else {
+    const folderResult = await listFolders({ user });
+    folders = folderResult.folders;
+    trashFolder = findTrashFolder(folders);
+  }
+
+  if (!trashFolder || !trashFolder.id) {
+    throw new Error(`无法稳定识别垃圾箱文件夹，请先通过面板查看文件夹列表后传入 targetFolderId。已发现文件夹：${folders.map(folder => `${folder.name || '未命名'}(${folder.id || '无ID'})`).join(', ') || '无'}`);
+  }
+
+  const result = await client.transport.moveMessages([String(mailId)], String(trashFolder.id), String(sourceFolderId));
+  await pollOnce().catch(error => warn('移入垃圾箱后刷新缓存失败:', error.message));
+
+  return asAiText([
+    '# ClawEmail 移入垃圾箱结果',
+    '',
+    '## 状态',
+    '',
+    '- 结果：邮件已请求移入垃圾箱',
+    `- 邮箱：${user}`,
+    `- 邮箱槽位：${mailboxInfo.mailbox}`,
+    `- mailId：\`${mailId}\``,
+    `- 源文件夹 id：${sourceFolderId}`,
+    `- 目标垃圾箱：${trashFolder.name || '未知'} (${trashFolder.id})`,
+    `- 缓存刷新时间：${cache.updatedAt || '未知'}`,
+    '',
+    '## SDK 返回',
+    '',
+    '```json',
+    JSON.stringify(result || null, null, 2),
+    '```'
+  ].join('\n'), {
+    command: 'move_to_trash',
+    user,
+    mailbox: mailboxInfo.mailbox,
+    mailId,
+    sourceFolderId,
+    trashFolderId: trashFolder.id,
+    refreshedAt: cache.updatedAt || null
+  });
 }
 
 async function attachmentResponseToBuffer(response) {
@@ -1786,6 +1913,32 @@ async function processToolCall(params = {}) {
     case 'download_attachment':
     case 'download':
       return await downloadAttachment(params);
+    case 'list_folders':
+    case 'folders':
+      {
+        const folderResult = await listFolders(params);
+        return asAiText([
+          '# ClawEmail 文件夹列表',
+          '',
+          `- 邮箱：${folderResult.user}`,
+          `- 邮箱槽位：${folderResult.mailbox}`,
+          `- 返回数量：${folderResult.folders.length}`,
+          `- SDK 返回形态：${folderResult.rawShape}`,
+          '',
+          '| # | folderId | 名称 |',
+          '|---:|---|---|',
+          ...folderResult.folders.map((folder, index) => `| ${index + 1} | \`${mdInline(folder.id, '未知')}\` | ${mdInline(folder.name, '未命名')} |`)
+        ].join('\n'), {
+          command: 'list_folders',
+          user: folderResult.user,
+          mailbox: folderResult.mailbox,
+          count: folderResult.folders.length
+        });
+      }
+    case 'move_to_trash':
+    case 'trash_mail':
+    case 'trash':
+      return await moveToTrash(params);
     case 'poll_now':
       await pollOnce();
       return asAiText([
@@ -1839,17 +1992,90 @@ async function shutdown() {
   }
 }
 
+function extractTextContent(result) {
+  if (!result || !Array.isArray(result.content)) return '';
+  const part = result.content.find(item => item && item.type === 'text');
+  return part?.text || '';
+}
+
+async function getAdminMailboxes() {
+  const users = getAllConfiguredUsers();
+  return users.map(user => {
+    const subMail = getSubMailConfigByUser(user);
+    return {
+      user,
+      mailbox: subMail?.slot || 'public',
+      label: subMail ? `${subMail.slot} · ${user}` : `public · ${user}`,
+      agentName: subMail?.agentName || null,
+      enabled: subMail ? subMail.enabled : true,
+      cachedCount: cache.users[user]?.length || 0
+    };
+  });
+}
+
+async function getAdminMailboxState(options = {}) {
+  if (normalizeBoolean(options.refresh, false)) {
+    await pollOnce();
+  }
+  const mailboxes = await getAdminMailboxes();
+  return {
+    status: MailClient ? 'available' : 'sdk_missing',
+    sdkLoaded: Boolean(MailClient),
+    updatedAt: cache.updatedAt,
+    lastError: cache.lastError,
+    mailboxes,
+    users: cache.users,
+    wsStates: [...wsStates.values()]
+  };
+}
+
+async function adminListEmails(args = {}) {
+  const result = await listEmails(args);
+  return {
+    meta: result.meta,
+    emails: result.emails || [],
+    markdown: extractTextContent(result)
+  };
+}
+
+async function adminReadMail(args = {}) {
+  const result = await readMail({
+    ...args,
+    includeAttachmentContent: args.includeAttachmentContent === undefined ? false : args.includeAttachmentContent
+  });
+  return {
+    meta: result.meta,
+    markdown: extractTextContent(result),
+    content: result.content || []
+  };
+}
+
+async function adminMoveToTrash(args = {}) {
+  const result = await moveToTrash(args);
+  return {
+    meta: result.meta,
+    markdown: extractTextContent(result)
+  };
+}
+
 module.exports = {
   initialize,
   processToolCall,
   shutdown,
   pollOnce,
+  getAdminMailboxState,
+  adminListEmails,
+  adminReadMail,
+  adminMoveToTrash,
   _private: {
     buildPlaceholderText,
     buildSubMailboxPlaceholderText,
     normalizeAttachmentInputs,
     splitList,
     parseSubMailConfigs,
-    resolveMailboxArgs
+    resolveMailboxArgs,
+    listFolders,
+    findTrashFolder,
+    moveToTrash
   }
 };
