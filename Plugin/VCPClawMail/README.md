@@ -4,10 +4,11 @@ VCPClawMail 是面向 claw.163.com / ClawEmail 的 VCPToolBox 混合插件。
 
 它采用 `hybridservice` 形态：
 
-- 常驻服务：周期轮询邮箱，更新 `{{VCPClawMailInbox}}` 占位符。
+- 常驻服务：优先使用 WebSocket 即达推送监听新邮件，并用低频轮询兜底更新 `{{VCPClawMailInbox}}` 占位符。
 - 同步工具：允许 AI 调用 `list_recent`、`read_mail`、`send_mail`、`reply_mail`、`download_attachment`。
 - 附件链路：AI 可以在正文或 `attachments` 参数里直接写 `https://...` 或 `file://...`，插件会尽量下载/归一化为 SDK 可发送的附件对象。
 - 读取链路：读邮件时返回正文、HTML 转 Markdown、图片 URL、附件元数据；后续图片/文档解析可继续交给 VCP 现有工具链处理。
+- 即达链路：SDK 的 `client.ws.onMessage()` 收到 `mailId` 后立刻触发缓存刷新，并输出服务器日志，便于后续扩展“邮件抵达自动唤醒 Agent”。
 
 ## 关键事实
 
@@ -24,6 +25,14 @@ npx "@clawemail/claw-setup@latest" --auth-url "..."
 ```env
 ClawMailKey=...
 ```
+
+已确认的 SDK 能力边界：
+
+- `@clawemail/node-sdk@0.2.4` 没有传统 HTTP webhook / callback URL 注册接口。
+- SDK 有 WebSocket 即达推送能力：`client.ws.onMessage(async ({ mailId }) => ...)` + `await client.ws.connect()`。
+- WebSocket 底层是 WuKongIM 长连接，默认地址为 `wss://claw.126.net:5210`，可通过 `wsUrl` 覆盖。
+- 推送事件只携带 `mailId`，业务侧需要再调用 `client.mail.read({ id: mailId })` 或刷新列表。
+- SDK 自身不做自动重连；插件侧已实现指数退避重连，并保留低频轮询兜底。
 
 ## 安装
 
@@ -62,7 +71,19 @@ cp Plugin/VCPClawMail/config.env.example Plugin/VCPClawMail/config.env
 ClawMailKey=你的 ClawEmail API Key
 ClawMailUsers=bot@claw.163.com,notice@claw.163.com
 ClawMailDefaultUser=bot@claw.163.com
-ClawMailPollIntervalMs=60000
+
+# WebSocket 即达推送，默认启用；禁用后仅保留低频轮询兜底。
+ClawMailRealtimeEnabled=true
+
+# 可选：覆盖 SDK 默认 WuKongIM WebSocket 地址，通常无需填写。
+# ClawMailWsUrl=wss://claw.126.net:5210
+
+# 低频兜底轮询间隔。代码会强制不低于 5 分钟，默认 10 分钟。
+ClawMailFallbackPollIntervalMs=600000
+
+# 兼容旧配置名；若未填写 ClawMailFallbackPollIntervalMs，会读取此项。
+ClawMailPollIntervalMs=600000
+
 ClawMailPollLimit=20
 ClawMailAutoMarkRead=false
 DebugMode=false
@@ -139,6 +160,8 @@ body:「始」已收到，我会尽快处理。「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
 
+`reply_mail` 会在回复前强制读取并标记原邮件为已读，不再让 AI 选择 `markRead`。原因是只要执行回复，就代表当前邮件已经进入处理流程。
+
 ### 下载附件
 
 ```text
@@ -151,6 +174,39 @@ attachmentId:「始」附件ID「末」
 ```
 
 返回的 `file://...` 可继续交给后续工具处理。
+
+## WebSocket 即达与低频轮询兜底
+
+当前实现采用“WebSocket 即达 + 低频轮询兜底”：
+
+1. 初始化时为每个 `ClawMailUsers` 用户创建 `MailClient`。
+2. 若 `ClawMailRealtimeEnabled` 未设为 `false`，插件调用 `client.ws.onMessage()` 注册新邮件回调，再调用 `client.ws.connect()` 建立长连接。
+3. 收到 `{ mailId }` 后，插件输出日志：
+
+```text
+[VCPClawMail] 收到新邮件推送: user=..., mailId=..., time=...
+```
+
+4. 推送到达后立即调用 `pollOnce()` 刷新 `{{VCPClawMailInbox}}` 缓存。
+5. 若 WebSocket 断开，插件会按 `1s → 2s → 5s → 10s → 30s → 60s` 指数退避重连。
+6. 低频轮询仍会运行，用于兜底处理断线、漏消息、进程重启后的状态校准。
+
+### 二次开发：邮件即达自动唤醒 Agent
+
+后续如果要做“mail 即达自动唤醒 Agent”，建议以当前 WebSocket 回调为入口，而不是再加高频轮询：
+
+- 入口位置：`refreshAfterMailPush(user, mailId)`。
+- 推荐流程：
+  1. 收到 `mailId`。
+  2. 调用 `client.mail.read({ id: mailId, markRead: false })` 读取摘要或完整正文。
+  3. 做发件人白名单、主题规则、正文指令解析、附件安全检查。
+  4. 写入任务队列或调用 VCP 内部 Agent 调度接口。
+  5. 由 Agent 决定是否回复、转发、调用工具或仅记录。
+- 安全建议：
+  - 自动唤醒只应默认读取，不应默认发送邮件。
+  - 自动回复、转发、外部命令执行应接入工具审核。
+  - 对附件和正文中的 URL 需要做来源校验，避免邮件触发 SSRF / 任意文件访问链路。
+  - 对重复 `mailId` 做幂等去重，避免断线重连或服务端重复推送导致重复执行。
 
 ## SDK 不确定性处理
 

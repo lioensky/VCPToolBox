@@ -26,15 +26,19 @@ try {
 }
 
 const PLACEHOLDER = '{{VCPClawMailInbox}}';
-const DEFAULT_POLL_INTERVAL_MS = 60_000;
+const DEFAULT_POLL_INTERVAL_MS = 10 * 60_000;
+const MIN_FALLBACK_POLL_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_POLL_LIMIT = 20;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const WS_RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
 
 let config = {};
 let dependencies = {};
 let debugMode = false;
 let pollTimer = null;
 let clients = new Map();
+let wsStates = new Map();
+let wsReconnectTimers = new Map();
 let cache = {
   updatedAt: null,
   users: {},
@@ -148,10 +152,12 @@ function getClient(user) {
   }
   const normalizedUser = getDefaultUser(user);
   if (!clients.has(normalizedUser)) {
-    const client = new MailClient({
+    const clientOptions = {
       apiKey,
       user: normalizedUser
-    });
+    };
+    if (config.ClawMailWsUrl) clientOptions.wsUrl = String(config.ClawMailWsUrl).trim();
+    const client = new MailClient(clientOptions);
     const proxyUrl = getProxyUrl();
     if (proxyUrl) {
       const agent = createProxyAgent(proxyUrl);
@@ -954,6 +960,14 @@ async function replyMail(args = {}) {
   if (!args.body) throw new Error('reply_mail 需要 body。');
 
   const client = getClient(user);
+  await callFirstAvailable(client, [
+    'mail.read',
+    'read',
+    'emails.read',
+    'messages.read',
+    'mail.get',
+    'get'
+  ], [{ id: mailId, mailId, markRead: true, user }]);
   const body = String(args.body);
   const { attachments, warnings } = await prepareAttachments(args.attachments, body);
   const payload = {
@@ -986,6 +1000,7 @@ async function replyMail(args = {}) {
     lines.push('- 结果：邮件回复请求已提交');
     lines.push(`- 邮箱：${user}`);
     lines.push(`- 被回复 mailId：\`${mailId}\``);
+    lines.push('- 回复前已强制标记已读：是');
     lines.push(`- 回复全部：${mdBool(payload.toAll)}`);
     if (payload.cc) lines.push(`- 抄送：${payload.cc.join(', ')}`);
     if (payload.overrideTo) lines.push(`- 覆盖收件人：${payload.overrideTo.join(', ')}`);
@@ -1142,7 +1157,8 @@ async function pollOnce() {
 
 function startPolling() {
   stopPolling();
-  const interval = Math.max(10_000, normalizeInteger(config.ClawMailPollIntervalMs, DEFAULT_POLL_INTERVAL_MS));
+  const configuredInterval = config.ClawMailFallbackPollIntervalMs || config.ClawMailPollIntervalMs;
+  const interval = Math.max(MIN_FALLBACK_POLL_INTERVAL_MS, normalizeInteger(configuredInterval, DEFAULT_POLL_INTERVAL_MS));
   pollOnce().catch(error => {
     cache.lastError = error.message;
     updatePlaceholder();
@@ -1154,13 +1170,153 @@ function startPolling() {
     });
   }, interval);
   if (pollTimer.unref) pollTimer.unref();
-  log(`轮询已启动，interval=${interval}ms`);
+  console.log(`[VCPClawMail] 低频兜底轮询已启动，interval=${interval}ms`);
 }
 
 function stopPolling() {
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
+  }
+}
+
+function getWsState(user) {
+  if (!wsStates.has(user)) {
+    wsStates.set(user, {
+      user,
+      connected: false,
+      connecting: false,
+      stopped: false,
+      retries: 0,
+      lastConnectedAt: null,
+      lastDisconnectedAt: null,
+      lastError: null,
+      lastMailAt: null,
+      lastMailId: null
+    });
+  }
+  return wsStates.get(user);
+}
+
+function scheduleWsReconnect(user, reason = 'unknown') {
+  const state = getWsState(user);
+  if (state.stopped) return;
+  if (wsReconnectTimers.has(user)) return;
+  const delay = WS_RECONNECT_BACKOFF_MS[Math.min(state.retries, WS_RECONNECT_BACKOFF_MS.length - 1)];
+  state.retries += 1;
+  console.warn(`[VCPClawMail] WebSocket 将在 ${delay}ms 后重连: user=${user}, reason=${reason}`);
+  const timer = setTimeout(() => {
+    wsReconnectTimers.delete(user);
+    connectWsForUser(user).catch(error => {
+      state.lastError = error.message;
+      cache.lastError = `${user} WebSocket 重连失败: ${error.message}`;
+      updatePlaceholder();
+      warn('WebSocket 重连失败:', user, error.message);
+      scheduleWsReconnect(user, error.message);
+    });
+  }, delay);
+  if (timer.unref) timer.unref();
+  wsReconnectTimers.set(user, timer);
+}
+
+async function refreshAfterMailPush(user, mailId) {
+  console.log(`[VCPClawMail] 收到新邮件推送: user=${user}, mailId=${mailId || 'unknown'}, time=${new Date().toISOString()}`);
+  try {
+    await pollOnce();
+  } catch (error) {
+    cache.lastError = `${user} 新邮件推送后刷新失败: ${error.message}`;
+    updatePlaceholder();
+    warn('新邮件推送后刷新失败:', cache.lastError);
+  }
+}
+
+async function connectWsForUser(user) {
+  const state = getWsState(user);
+  if (state.stopped || state.connecting || state.connected) return;
+  const client = getClient(user);
+  if (!client.ws || typeof client.ws.connect !== 'function') {
+    state.lastError = '当前 SDK 未暴露 client.ws.connect。';
+    warn(`WebSocket 不可用: ${user}: ${state.lastError}`);
+    return;
+  }
+
+  state.connecting = true;
+  try {
+    client.ws.onMessage(({ mailId } = {}) => {
+      state.lastMailAt = new Date().toISOString();
+      state.lastMailId = mailId || null;
+      refreshAfterMailPush(user, mailId).catch(error => {
+        warn('处理新邮件推送失败:', user, mailId, error.message);
+      });
+    });
+
+    client.ws.onDisconnect((reason) => {
+      state.connected = false;
+      state.connecting = false;
+      state.lastDisconnectedAt = new Date().toISOString();
+      state.lastError = reason || null;
+      console.warn(`[VCPClawMail] WebSocket 已断开: user=${user}, reason=${reason || 'unknown'}`);
+      scheduleWsReconnect(user, reason || 'disconnect');
+    });
+
+    await client.ws.connect();
+    state.connected = true;
+    state.connecting = false;
+    state.retries = 0;
+    state.lastConnectedAt = new Date().toISOString();
+    state.lastError = null;
+    console.log(`[VCPClawMail] WebSocket 即达监听已连接: user=${user}`);
+  } catch (error) {
+    state.connected = false;
+    state.connecting = false;
+    state.lastError = error.message;
+    throw error;
+  }
+}
+
+function startWsListeners() {
+  if (normalizeBoolean(config.ClawMailRealtimeEnabled, true) === false) {
+    console.log('[VCPClawMail] WebSocket 即达监听已禁用，仅使用低频轮询兜底。');
+    return;
+  }
+
+  const users = getUsers();
+  if (users.length === 0) {
+    warn('未配置邮箱用户，无法启动 WebSocket 即达监听。');
+    return;
+  }
+
+  for (const user of users) {
+    const state = getWsState(user);
+    state.stopped = false;
+    connectWsForUser(user).catch(error => {
+      state.lastError = error.message;
+      cache.lastError = `${user} WebSocket 连接失败: ${error.message}`;
+      updatePlaceholder();
+      warn('WebSocket 连接失败:', user, error.message);
+      scheduleWsReconnect(user, error.message);
+    });
+  }
+}
+
+function stopWsListeners() {
+  for (const [user, timer] of wsReconnectTimers.entries()) {
+    clearTimeout(timer);
+    wsReconnectTimers.delete(user);
+  }
+
+  for (const [user, state] of wsStates.entries()) {
+    state.stopped = true;
+    state.connected = false;
+    state.connecting = false;
+    try {
+      const client = clients.get(user);
+      if (client?.ws && typeof client.ws.disconnect === 'function') {
+        client.ws.disconnect();
+      }
+    } catch (error) {
+      warn('关闭 WebSocket 监听失败:', user, error.message);
+    }
   }
 }
 
@@ -1180,6 +1336,7 @@ async function initialize(initialConfig = {}, injectedDependencies = {}) {
     serverId: 'local'
   });
 
+  startWsListeners();
   startPolling();
 }
 
@@ -1226,6 +1383,8 @@ async function processToolCall(params = {}) {
         `- 默认邮箱：${config.ClawMailDefaultUser || getUsers()[0] || '无'}`,
         `- 缓存更新时间：${cache.updatedAt || '尚未完成首次轮询'}`,
         `- 最近错误：${cache.lastError || '无'}`,
+        `- WebSocket 即达监听：${normalizeBoolean(config.ClawMailRealtimeEnabled, true) === false ? '禁用' : '启用'}`,
+        `- WebSocket 状态：${[...wsStates.values()].map(s => `${s.user}:${s.connected ? 'connected' : (s.connecting ? 'connecting' : 'disconnected')}${s.lastMailId ? `/last=${s.lastMailId}` : ''}`).join(', ') || '尚未启动'}`,
         '',
         '## 当前占位符内容',
         '',
@@ -1241,6 +1400,7 @@ async function processToolCall(params = {}) {
 
 async function shutdown() {
   stopPolling();
+  stopWsListeners();
   clients.clear();
   try {
     await ensureDataDirs();
