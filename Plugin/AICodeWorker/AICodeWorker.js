@@ -42,6 +42,10 @@ function loadConfig() {
         // 避免无意中把宿主的 key 注入、误用付费通道。
         opencodeApiKey:   raw.OPENCODE_API_KEY   || "",
         opencodeModel:    raw.OPENCODE_MODEL      || "",
+        enableAntigravity:(raw.ENABLE_ANTIGRAVITY || "false") !== "false",
+        agyBin:           raw.AGY_BIN             || "agy",
+        agyModel:         raw.AGY_MODEL           || "",
+        agyProxy:         raw.AGY_PROXY           || "http://127.0.0.1:7890",
         allowedRoots:     (raw.ALLOWED_PROJECT_ROOTS || "/app/VCPToolBox_new,/app/ZhongZhuan,/app/claud")
                               .split(",").map(s => s.trim()).filter(Boolean),
         jobRoot:          raw.JOB_ROOT           || path.join(__dirname, "jobs"),
@@ -493,8 +497,27 @@ async function checkOcVersion() {
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
+let _agyVersionCache = null;
+async function checkAgyVersion() {
+    if (_agyVersionCache && (Date.now() - _agyVersionCache.ts) < 300000)
+        return _agyVersionCache;
+    const result = await new Promise(resolve => {
+        const ap = spawn(CFG.agyBin, ["--version"], {
+            env: { ...process.env, PATH: `${process.env.HOME || ""}/.local/bin:${process.env.PATH || ""}` },
+            stdio: ["ignore", "pipe", "ignore"]
+        });
+        let ver = "";
+        ap.stdout.on("data", d => { ver += d.toString(); });
+        ap.on("close", code => resolve({ ok: code === 0, ver: ver.trim() }));
+        ap.on("error", () => resolve({ ok: false, ver: "" }));
+    });
+    _agyVersionCache = { ...result, ts: Date.now() };
+    return _agyVersionCache;
+}
+
 async function cmdCapabilities() {
     const ocOk = await checkOcVersion();
+    const agyOk = CFG.enableAntigravity ? await checkAgyVersion() : { ok: false, ver: "" };
     return {
         status: "success",
         workers: [
@@ -508,6 +531,14 @@ async function cmdCapabilities() {
                 note: CFG.allowDangerSkip
                     ? "auto-approve 已启用，opencode 不会等待权限提示"
                     : "auto-approve 未启用，若 opencode 出现权限提示可能阻塞直到超时"
+            },
+            {
+                name: "antigravity",
+                available: CFG.enableAntigravity && agyOk.ok,
+                version: agyOk.ver || "unknown",
+                note: CFG.enableAntigravity
+                    ? "复杂/严谨任务专用 · Gemini Pro 配额(约1500/天) · worker:antigravity 调用"
+                    : "未启用(ENABLE_ANTIGRAVITY=false),复杂任务需在 config.env 开启"
             },
             { name: "mimocode", available: false, note: "adapter 预留，暂未实现" }
         ]
@@ -523,7 +554,7 @@ async function cmdRun(input) {
     }
 
     const { worker = "opencode", projectPath, task, mode = "analyze",
-            sessionId, attachments = [], timeoutSec, summaryHint } = input;
+            sessionId, attachments = [], timeoutSec, summaryHint, model } = input;
 
     if (!task)
         return { status: "error", error: "task 是必填参数。若要快速上手可使用 preset 参数，例如：preset=index, targetPath=/path/to/file.js" };
@@ -533,37 +564,59 @@ async function cmdRun(input) {
     const pathErr = validatePath(projectPath);
     if (pathErr) return { status: "error", error: pathErr };
 
-    if (worker !== "opencode")
-        return { status: "error", error: `worker "${worker}" 暂未支持，当前仅支持: opencode` };
-    if (!CFG.enableOpencode)
-        return { status: "error", error: "opencode 已被禁用（ENABLE_OPENCODE=false）。" };
-
-    const ocOk = await checkOcVersion();
-    if (!ocOk.ok)
-        return { status: "error", error: `找不到 opencode（OPENCODE_BIN=${CFG.opencodeBin}），请确认已安装。` };
+    const normWorker = (worker === "agy") ? "antigravity" : worker;
+    if (normWorker !== "opencode" && normWorker !== "antigravity")
+        return { status: "error", error: `worker "${worker}" 不支持。可用: opencode, antigravity` };
 
     ensureJobDirs();
     const jobId = generateJobId();
     const p = jobPaths(jobId);
-
     const finalTask = wrapTask(task, mode);
-    const ocArgs = ["run", "--format", "json"];
-    if (CFG.opencodeModel)  ocArgs.push("-m", CFG.opencodeModel);
-    if (sessionId)          ocArgs.push("--session", String(sessionId));
-    for (const f of attachments) {
-        if (typeof f === "string" && f.trim()) ocArgs.push("-f", f.trim());
-    }
-    if (mode === "write" || CFG.allowDangerSkip) ocArgs.push("--dangerously-skip-permissions");
-    ocArgs.push(finalTask);
+    const wantSkip = (mode === "write" || CFG.allowDangerSkip);
+    const timeoutS = Number(timeoutSec) || CFG.defaultTimeout;
 
-    const runnerArgs = {
-        jobId, jobRoot: CFG.jobRoot,
-        opencodeBin: CFG.opencodeBin, opencodeBaseUrl: CFG.opencodeBaseUrl,
-        projectPath: path.resolve(projectPath),
-        ocArgs,
-        timeoutSec:    Number(timeoutSec) || CFG.defaultTimeout,
-        redactSecrets: CFG.redactSecrets,
-    };
+    let runnerArgs;
+    if (normWorker === "opencode") {
+        if (!CFG.enableOpencode)
+            return { status: "error", error: "opencode 已被禁用（ENABLE_OPENCODE=false）。" };
+        const ocOk = await checkOcVersion();
+        if (!ocOk.ok)
+            return { status: "error", error: `找不到 opencode（OPENCODE_BIN=${CFG.opencodeBin}），请确认已安装。` };
+        const ocArgs = ["run", "--format", "json"];
+        if (CFG.opencodeModel)  ocArgs.push("-m", CFG.opencodeModel);
+        if (sessionId)          ocArgs.push("--session", String(sessionId));
+        for (const f of attachments) {
+            if (typeof f === "string" && f.trim()) ocArgs.push("-f", f.trim());
+        }
+        if (wantSkip) ocArgs.push("--dangerously-skip-permissions");
+        ocArgs.push(finalTask);
+        runnerArgs = {
+            jobId, jobRoot: CFG.jobRoot, worker: "opencode",
+            opencodeBin: CFG.opencodeBin, opencodeBaseUrl: CFG.opencodeBaseUrl,
+            projectPath: path.resolve(projectPath),
+            ocArgs,
+            timeoutSec: timeoutS,
+            redactSecrets: CFG.redactSecrets,
+        };
+    } else {
+        if (!CFG.enableAntigravity)
+            return { status: "error", error: "Antigravity 未启用（ENABLE_ANTIGRAVITY=false）。请用 worker=opencode 或在 config.env 开启。" };
+        const agyOk = await checkAgyVersion();
+        if (!agyOk.ok)
+            return { status: "error", error: `找不到 agy（AGY_BIN=${CFG.agyBin}），请确认 Antigravity CLI 已安装。` };
+        const agyModel = (typeof model === "string" && model.trim()) ? model.trim() : CFG.agyModel;
+        const agyArgs = ["--print", finalTask, "--print-timeout", `${timeoutS}s`];
+        if (agyModel) agyArgs.push("--model", agyModel);
+        if (wantSkip) agyArgs.push("--dangerously-skip-permissions");
+        runnerArgs = {
+            jobId, jobRoot: CFG.jobRoot, worker: "antigravity",
+            agyBin: CFG.agyBin, agyProxy: CFG.agyProxy,
+            projectPath: path.resolve(projectPath),
+            agyArgs,
+            timeoutSec: timeoutS,
+            redactSecrets: CFG.redactSecrets,
+        };
+    }
     fs.writeFileSync(p.args, JSON.stringify(runnerArgs), "utf8");
 
     const warnings = [...preflightCheck(task, mode), ...checkFileSizes(task)];
