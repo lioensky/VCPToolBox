@@ -15,6 +15,7 @@ const {
   isSystemNotificationText,
 } = require("../../modules/messageProcessor.js");
 const { getEmbeddingsBatch, cosineSimilarity } = require("../../EmbeddingUtils.js");
+const { evaluateMoodStateMachine } = require("./OpenHerMoodStateMachine.js");
 
 const PLUGIN_NAME = "OpenHerPersona";
 const PLUGIN_VERSION = "0.6.1-observer";
@@ -1569,7 +1570,11 @@ function computeMoodFromState(state) {
   const arousal = clamp01(state.affective && state.affective.arousal && state.affective.arousal.value);
   const tension = Math.min(positive, negative);
   const dominance = positive - negative;
-  const archetypes = evaluateMoodArchetypes(state, positive, negative, arousal);
+  const archetypes = evaluateMoodStateMachine(state, positive, negative, arousal, {
+    getAxisValue,
+    getAxisBaseline,
+    relativeActivation,
+  });
   const expression = computeExpressionFromState(state, {
     positive,
     negative,
