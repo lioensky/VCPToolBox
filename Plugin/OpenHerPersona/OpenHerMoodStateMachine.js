@@ -26,9 +26,9 @@ const DEFAULT_BASELINE = {
   arrogance: 0.24,
   libido: 0.11,
   hedonia: 0.28,
-  coldness: 0.16,
-  fear: 0.18,
-  numbness: 0.12,
+  coldness: 0.15,
+  fear: 0.17,
+  numbness: 0.11,
   self_punishment: 0.08,
 };
 
@@ -146,7 +146,8 @@ const FAMILY_DEFINITIONS = [
         required: ["fearUp", "threat", "aTone"],
         support: ["refusalUp"],
         against: ["pTone", "calmTone"],
-        recipe: ["fear↑", "negative↑", "arousal↑"],
+        recipe: ["fear↑↓", "negative↑", "arousal↑"],
+        weight: 0.8,
       },
       {
         id: "careful_ice",
@@ -154,7 +155,8 @@ const FAMILY_DEFINITIONS = [
         required: ["fearUp", "discernmentUp", "calmTone"],
         support: ["refusalUp"],
         against: ["aTone"],
-        recipe: ["fear↑", "discernment↑", "calmness↑"],
+        recipe: ["fear↑↓", "discernment↑", "calmness↑"],
+        weight: 0.8,
       },
       {
         id: "cold_boundary",
@@ -162,7 +164,8 @@ const FAMILY_DEFINITIONS = [
         required: ["refusalUp", "coldnessUp"],
         support: ["threat"],
         against: ["warmth", "eroticity"],
-        recipe: ["refusal↑", "coldness↑", "boundary"],
+        recipe: ["refusal↑", "coldness↑↓", "boundary"],
+        weight: 0.85,
       },
       {
         id: "frozen_shutdown",
@@ -170,7 +173,8 @@ const FAMILY_DEFINITIONS = [
         required: ["shutdown", "coldnessUp", "numbnessUp"],
         support: ["lowDrive", "calmTone"],
         against: ["warmth", "aTone", "eroticity"],
-        recipe: ["shutdown↑", "coldness↑", "numbness↑"],
+        recipe: ["shutdown↑", "coldness↑↓", "numbness↑↓"],
+        weight: 0.8,
       },
       {
         id: "thawing",
@@ -240,7 +244,8 @@ const FAMILY_DEFINITIONS = [
         required: ["arroganceUp", "coldnessUp"],
         support: ["calmTone"],
         against: ["warmth", "fearUp"],
-        recipe: ["arrogance↑", "coldness↑", "calmness↑"],
+        recipe: ["arrogance↑", "coldness↑↓", "calmness↑"],
+        weight: 0.85,
       },
       {
         id: "bravado",
@@ -248,7 +253,8 @@ const FAMILY_DEFINITIONS = [
         required: ["arroganceUp", "fearUp"],
         support: ["aTone"],
         against: ["calmTone", "discernmentUp"],
-        recipe: ["arrogance↑", "fear↑", "compensation"],
+        recipe: ["arrogance↑", "fear↑↓", "compensation"],
+        weight: 0.8,
       },
       {
         id: "self_ruin",

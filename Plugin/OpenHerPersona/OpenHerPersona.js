@@ -350,7 +350,7 @@ const AXIS_DEFINITIONS = [
     layer: "drive",
     axis: "coldness",
     label: "冷漠",
-    defaultValue: 0.16,
+    defaultValue: 0.15,
     counterAxis: true,
     anchors: [
       { subAxis: "detachment", text: "{name}正在把自己从关系和情绪里抽离出来，变得冷淡旁观" },
@@ -363,7 +363,7 @@ const AXIS_DEFINITIONS = [
     layer: "drive",
     axis: "fear",
     label: "恐惧",
-    defaultValue: 0.18,
+    defaultValue: 0.17,
     counterAxis: true,
     anchors: [
       { subAxis: "hurt", text: "{name}正在担心自己被伤到，倾向先收缩和自保" },
@@ -376,7 +376,7 @@ const AXIS_DEFINITIONS = [
     layer: "drive",
     axis: "numbness",
     label: "麻木",
-    defaultValue: 0.12,
+    defaultValue: 0.11,
     counterAxis: true,
     anchors: [
       { subAxis: "shutdown", text: "{name}正在关闭感受通道，对痛苦、快乐和刺激都变得迟钝" },
@@ -1338,16 +1338,20 @@ function applyCoupling(scores, previousAxes) {
     coupled[axis] = clamp01(coupled[axis] - pressure * strength);
   }
 
-  // 自虐轴累加抑制：把围绕 0.5 的偏离向下压缩，并整体下推到接近默认基线
-  // 让自虐更难因为常规消息（如自责、利他、为他人付出）而被推高
-  if (Object.prototype.hasOwnProperty.call(coupled, "self_punishment")) {
-    const SELF_PUNISH_GAIN_DECAY = 0.65; // 上行偏离衰减为原来的 65%
-    const SELF_PUNISH_FLOOR_PULL = 0.18; // 18% 拉向默认基线 0.08
-    const SELF_PUNISH_BASELINE = 0.08;
-    const raw = coupled.self_punishment;
-    const aboveMean = Math.max(0, raw - SELF_PUNISH_BASELINE);
-    const decayed = SELF_PUNISH_BASELINE + aboveMean * SELF_PUNISH_GAIN_DECAY;
-    coupled.self_punishment = clamp01(decayed * (1 - SELF_PUNISH_FLOOR_PULL) + SELF_PUNISH_BASELINE * SELF_PUNISH_FLOOR_PULL);
+  // 反向驱力轴累加抑制：让自虐/恐惧/麻木/冷漠更难因常规消息被推高
+  // 比例：自虐 100% 基准，恐惧/麻木 = 2/3，冷漠 = 1/2
+  const NEGATIVE_DRIVE_DAMPING = [
+    { axis: "self_punishment", baseline: 0.08, decay: 0.65, floorPull: 0.18 },
+    { axis: "fear", baseline: 0.17, decay: 0.77, floorPull: 0.12 },
+    { axis: "numbness", baseline: 0.11, decay: 0.77, floorPull: 0.12 },
+    { axis: "coldness", baseline: 0.15, decay: 0.83, floorPull: 0.09 },
+  ];
+  for (const item of NEGATIVE_DRIVE_DAMPING) {
+    if (!Object.prototype.hasOwnProperty.call(coupled, item.axis)) continue;
+    const raw = coupled[item.axis];
+    const aboveMean = Math.max(0, raw - item.baseline);
+    const decayed = item.baseline + aboveMean * item.decay;
+    coupled[item.axis] = clamp01(decayed * (1 - item.floorPull) + item.baseline * item.floorPull);
   }
 
   coupled.__passionModulation = passionModulation;
@@ -1658,17 +1662,17 @@ function evaluateMoodArchetypes(state, p, n, a) {
     { label: "情热涌动", score: resonance([up("libido"), aTone, pTone, passionGain], 1.05), recipe: ["libido↑", "arousal↑", "positive↑", "passionGain"] },
     { label: "绵密缱绻", score: resonance([up("libido"), up("hedonia"), calmTone, passionGain], 1.04), recipe: ["libido↑", "hedonia↑", "calmness↑", "passionGain"] },
     { label: "欲念焦灼", score: resonance([up("libido"), nTone, aTone], 1.02), recipe: ["libido↑", "negative↑", "arousal↑"] },
-    { label: "欲冷相娇", score: resonance([up("libido"), coldNumb, libidoColdPressure], 1.3), recipe: ["libido↑", "cold/numb↑", "libidoCounterPressure"] },
-    { label: "冷欲渐起", score: resonance([up("libido"), up("numbness"), calmTone], 1.2), recipe: ["libido↑", "numbness↑", "calmness↑"] },
-    { label: "情热受阻", score: resonance([passionGain, maxExpansiveDrive, coldNumb], 1.18), recipe: ["passionGain", "drive↑", "cold/numb↑"] },
+    { label: "欲冷相娇", score: resonance([up("libido"), coldNumb, libidoColdPressure], 1.16), recipe: ["libido↑", "cold/numb↑", "libidoCounterPressure"] },
+    { label: "冷欲渐起", score: resonance([up("libido"), up("numbness"), calmTone], 1.04), recipe: ["libido↑", "numbness↑", "calmness↑"] },
+    { label: "情热受阻", score: resonance([passionGain, maxExpansiveDrive, coldNumb], 1.05), recipe: ["passionGain", "drive↑", "cold/numb↑"] },
     { label: "狂妄昂扬", score: resonance([up("arrogance"), pTone, aTone, passionGain], 1.2), recipe: ["arrogance↑", "positive↑", "arousal↑", "passionGain"] },
-    { label: "傲慢睥睨", score: resonance([up("arrogance"), up("coldness"), calmTone], 1.05), recipe: ["arrogance↑", "coldness↑", "calmness↑"] },
-    { label: "霜冷拒守", score: resonance([up("refusal"), up("coldness"), nTone], 1.12), recipe: ["refusal↑", "coldness↑", "negative↑"] },
-    { label: "封冻死寂", score: resonance([up("numbness"), up("coldness"), calmTone, lowValence, lowExpansiveDrive], 1.16), recipe: ["numbness↑", "coldness↑", "calmness↑", "lowValence", "lowDrive"] },
+    { label: "傲慢睥睨", score: resonance([up("arrogance"), up("coldness"), calmTone], 0.93), recipe: ["arrogance↑", "coldness↑↓", "calmness↑"] },
+    { label: "霜冷拒守", score: resonance([up("refusal"), up("coldness"), nTone], 1.00), recipe: ["refusal↑", "coldness↑↓", "negative↑"] },
+    { label: "封冻死寂", score: resonance([up("numbness"), up("coldness"), calmTone, lowValence, lowExpansiveDrive], 0.99), recipe: ["numbness↑↓", "coldness↑↓", "calmness↑", "lowValence", "lowDrive"] },
     { label: "麻木解冻", score: resonance([down("numbness"), pTone, Math.max(up("curiosity"), up("libido"), up("arrogance"))], 1.1), recipe: ["numbness↓", "positive↑", "drive↑"] },
-    { label: "惊惧退守", score: resonance([up("fear"), aTone, nTone], 1.18), recipe: ["fear↑", "arousal↑", "negative↑"] },
-    { label: "如履薄冰", score: resonance([up("fear"), up("discernment"), calmTone], 1.12), recipe: ["fear↑", "discernment↑", "calmness↑"] },
-    { label: "虚张声势", score: resonance([up("arrogance"), up("fear"), pressure("arrogance")], 1.18), recipe: ["arrogance↑", "fear↑", "arroganceCounterPressure"] },
+    { label: "惊惧退守", score: resonance([up("fear"), aTone, nTone], 1.00), recipe: ["fear↑↓", "arousal↑", "negative↑"] },
+    { label: "如履薄冰", score: resonance([up("fear"), up("discernment"), calmTone], 0.95), recipe: ["fear↑↓", "discernment↑", "calmness↑"] },
+    { label: "虚张声势", score: resonance([up("arrogance"), up("fear"), pressure("arrogance")], 1.00), recipe: ["arrogance↑", "fear↑↓", "arroganceCounterPressure"] },
     { label: "探求炽热", score: resonance([up("curiosity"), up("inquiry"), Math.max(aTone, up("passion"))], 1.28), recipe: ["curiosity↑", "inquiry↑", "arousal↑/passion↑"] },
     { label: "幽微洞察", score: resonance([up("discernment"), up("inquiry"), calmTone], 1.12), recipe: ["discernment↑", "inquiry↑", "calmness↑"] },
     { label: "慵懒沉陷", score: resonance([up("hedonia"), calmTone, pTone], 1.1), recipe: ["hedonia↑", "calmness↑", "positive↑"] },
