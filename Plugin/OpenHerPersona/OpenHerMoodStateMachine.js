@@ -21,7 +21,7 @@ const DEFAULT_BASELINE = {
   positive: 0.32,
   negative: 0.22,
   arousal: 0.32,
-  passion: 0.38,
+  passion: 0.30,
   curiosity: 0.38,
   arrogance: 0.24,
   libido: 0.11,
@@ -29,7 +29,7 @@ const DEFAULT_BASELINE = {
   coldness: 0.16,
   fear: 0.18,
   numbness: 0.12,
-  self_punishment: 0.1,
+  self_punishment: 0.08,
 };
 
 const FAMILY_DEFINITIONS = [
@@ -253,18 +253,20 @@ const FAMILY_DEFINITIONS = [
       {
         id: "self_ruin",
         label: "渊底自毁",
-        required: ["selfPunishmentUp", "threat"],
+        required: ["selfPunishmentUp", "selfPunishmentUp", "threat", "nTone"],
         support: ["aTone", "fearUp"],
-        against: ["pTone", "warmth"],
-        recipe: ["self_punishment↑", "negative↑", "collapse"],
+        against: ["pTone", "warmth", "hedonicEase", "passionUp"],
+        recipe: ["self_punishment↑↑", "negative↑", "threat", "collapse"],
+        weight: 0.7,
       },
       {
         id: "guilty_indulgence",
         label: "耽于逸乐",
-        required: ["hedonicEase", "selfPunishmentUp"],
+        required: ["hedonicEase", "selfPunishmentUp", "selfPunishmentUp"],
         support: ["tension"],
-        against: ["clarity", "calmTone"],
-        recipe: ["hedonia↑", "self_punishment↑", "tension"],
+        against: ["clarity", "calmTone", "warmth"],
+        recipe: ["hedonia↑", "self_punishment↑↑", "tension"],
+        weight: 0.75,
       },
     ],
   },
@@ -398,7 +400,8 @@ function scoreState(definition, features) {
   const supportScore = support.length ? weightedMean(support) : 0.5;
   const penalty = 1 - Math.min(0.78, weightedMean(against) * 0.68);
   const complexity = Math.pow(Math.max(1, definition.required.length), 0.08);
-  const score = round4(requiredScore * (0.72 + supportScore * 0.28) * penalty * complexity);
+  const stateWeight = Number.isFinite(Number(definition.weight)) ? clamp01(Number(definition.weight)) : 1;
+  const score = round4(requiredScore * (0.72 + supportScore * 0.28) * penalty * complexity * stateWeight);
   return {
     stateId: definition.id,
     label: definition.label,
