@@ -127,7 +127,7 @@ const FAMILY_DEFINITIONS = [
       },
       {
         id: "blocked_heat",
-        label: "情热受阻",
+        label: "情热压抑",
         required: ["desirePressure", "inhibition"],
         support: ["passionGain", "warmth"],
         against: ["shutdown"],
@@ -174,7 +174,7 @@ const FAMILY_DEFINITIONS = [
       },
       {
         id: "thawing",
-        label: "麻木解冻",
+        label: "冰封初释",
         required: ["numbnessDown", "reengagement"],
         support: ["pTone"],
         against: ["shutdown", "coldnessUp"],
@@ -260,7 +260,7 @@ const FAMILY_DEFINITIONS = [
       },
       {
         id: "guilty_indulgence",
-        label: "享乐负罪",
+        label: "耽于逸乐",
         required: ["hedonicEase", "selfPunishmentUp"],
         support: ["tension"],
         against: ["clarity", "calmTone"],
