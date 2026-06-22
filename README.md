@@ -204,10 +204,10 @@ docker-compose up -d
 
 更详细的安装、分布式节点部署、前端配置，见 [运维部署文档](docs/OPERATIONS.md)。
 
-**推荐前端**：[VCPChat](https://github.com/lioensky/VCPChat)（官方）。
-**推荐后端**：支持 SSE 流式输出、格式标准化的官方或聚合 API。请再次注意，**不要使用反代或中转 API**。
-**VCPMobile** (友情项目):[VCPMobile](https://github.com/MRiecy/VCPMobile) - Vchat的第三方移动端移植版本，支持数据双向同步。
-**aio-hub** (友情项目): [aio-hub](https://github.com/miaotouy/aio-hub) - 一个基于 Tauri 开发的更高性能的桌面 LLM 聊天客户端，并作了部分 VCP 的原生 API 兼容。
+- **推荐前端**：[VCPChat](https://github.com/lioensky/VCPChat)（官方）。
+- **推荐后端**：支持 SSE 流式输出、格式标准化的官方或聚合 API。例如NewAPI，Openrouter等。请再次注意，**不要使用反代或中转 API**。
+- **VCPMobile** (友情项目):[VCPMobile](https://github.com/MRiecy/VCPMobile) - Vchat的第三方移动端移植版本，支持数据双向同步。
+- **aio-hub** (友情项目): [aio-hub](https://github.com/miaotouy/aio-hub) - 一个基于 Tauri 开发的高性能的桌面 LLM 聊天客户端，拥有丰富的编译和调试工具栈，非常适合AI开发使用，并作了部分 VCP 的原生 API 兼容。
 
 ---
 
