@@ -37,7 +37,8 @@ async function run() {
 
     const {
         jobId, jobRoot, opencodeBin, opencodeBaseUrl,
-        projectPath, ocArgs, timeoutSec
+        projectPath, ocArgs, timeoutSec,
+        worker = "opencode", agyBin, agyArgs, agyProxy
     } = runArgs;
 
     const metaPath  = path.join(jobRoot, "meta",   `${jobId}.json`);
@@ -76,7 +77,7 @@ async function run() {
     };
 
     // 有指定模型时注入 -m，无论是否走 VCP 路由
-    if (model && !ocArgs.includes("--model") && !ocArgs.includes("-m")) {
+    if (worker !== "antigravity" && model && !ocArgs.includes("--model") && !ocArgs.includes("-m")) {
         ocArgs.splice(1, 0, "-m", model);
     }
 
@@ -85,9 +86,24 @@ async function run() {
     const logFd = fs.openSync(logPath,    "a");
 
     let timedOut = false;
-    const child = spawn(opencodeBin, ocArgs, {
+    let spawnBin = opencodeBin, spawnArgs = ocArgs, spawnEnv = childEnv;
+    if (worker === "antigravity") {
+        spawnBin = agyBin;
+        spawnArgs = agyArgs;
+        spawnEnv = {
+            ...process.env,
+            LANG: "C.UTF-8",
+            LC_ALL: "C.UTF-8",
+            https_proxy: agyProxy || "http://127.0.0.1:7890",
+            http_proxy:  agyProxy || "http://127.0.0.1:7890",
+            no_proxy: "localhost,127.0.0.1",
+            NO_PROXY: "localhost,127.0.0.1",
+            PATH: `${process.env.HOME || ""}/.local/bin:${process.env.PATH || ""}`
+        };
+    }
+    const child = spawn(spawnBin, spawnArgs, {
         cwd:   projectPath,
-        env:   childEnv,
+        env:   spawnEnv,
         stdio: ["ignore", outFd, logFd]
     });
 
