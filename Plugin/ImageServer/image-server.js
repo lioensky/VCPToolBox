@@ -399,6 +399,32 @@ function createSecureStaticMiddleware(rootDir, serviceType) {
 }
 
 /**
+ * 创建单数路径到复数路径的安全重定向中间件。
+ * 只做 308 跳转，不直接提供文件；跳转后的复数路由仍会经过认证、路径安全校验和静态文件安全检查。
+ */
+function createSingularPathRedirectMiddleware(singularSegment, pluralSegment, serviceType) {
+    return (req, res) => {
+        const originalUrl = req.originalUrl || req.url || '';
+        const pathSegmentWithKey = req.params.pathSegmentWithKey;
+        const singularPrefix = `/${pathSegmentWithKey}/${singularSegment}`;
+        const pluralPrefix = `/${pathSegmentWithKey}/${pluralSegment}`;
+        
+        if (!originalUrl.startsWith(singularPrefix)) {
+            console.warn(`[${serviceType}Redirect] 🚨 单数路径重定向前缀异常: ${originalUrl} from IP: ${req.ip}`);
+            return res.status(400).type('text/plain').send('Bad Request: Invalid redirect path format.');
+        }
+
+        const targetUrl = pluralPrefix + originalUrl.slice(singularPrefix.length);
+        
+        if (pluginDebugMode) {
+            console.log(`[${serviceType}Redirect] ${originalUrl} -> ${targetUrl}`);
+        }
+
+        return res.redirect(308, targetUrl);
+    };
+}
+
+/**
  * Registers the image and file server routes and middleware with the Express app.
  * @param {object} app - The Express application instance.
  * @param {object} pluginConfig - Configuration for this plugin.
@@ -449,6 +475,12 @@ function registerRoutes(app, pluginConfig, projectBasePath) {
         const globalImageDir = path.join(projectBasePath, 'image');
         const secureImageStatic = createSecureStaticMiddleware(globalImageDir, 'Image');
         
+        // 兼容 AI 偶尔漏写复数 s：/image/... -> /images/...
+        // 注意：这里只重定向，不提供文件；实际访问仍由 /images 路由完成完整安全校验。
+        app.use('/:pathSegmentWithKey/image',
+            createSingularPathRedirectMiddleware('image', 'images', 'Image')
+        );
+        
         app.use('/:pathSegmentWithKey/images',
             imageSecurityMonitoring,
             imageAuthMiddleware,
@@ -466,6 +498,12 @@ function registerRoutes(app, pluginConfig, projectBasePath) {
     if (serverFileKeyForAuth) {
         const globalFileDir = path.join(projectBasePath, 'file');
         const secureFileStatic = createSecureStaticMiddleware(globalFileDir, 'File');
+        
+        // 兼容 AI 偶尔漏写复数 s：/file/... -> /files/...
+        // 注意：这里只重定向，不提供文件；实际访问仍由 /files 路由完成完整安全校验。
+        app.use('/:pathSegmentWithKey/file',
+            createSingularPathRedirectMiddleware('file', 'files', 'File')
+        );
         
         app.use('/:pathSegmentWithKey/files',
             fileSecurityMonitoring,
