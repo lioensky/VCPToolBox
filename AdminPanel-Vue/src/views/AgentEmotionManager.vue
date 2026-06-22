@@ -113,9 +113,14 @@
             <small>{{ state.mood.expression?.gender?.dominantGenderAxis?.label || "八轴二极结构" }}</small>
           </div>
           <div class="metric-card card">
+            <span class="metric-label">情绪极性</span>
+            <strong :style="{ color: affectiveDominanceColor }">{{ affectiveDominanceLabel }}</strong>
+            <small>正 {{ formatPercent(state.mood.positive) }} · 负 {{ formatPercent(state.mood.negative) }} · 唤醒 {{ formatPercent(state.mood.arousal) }}</small>
+          </div>
+          <div class="metric-card card">
             <span class="metric-label">情绪张力</span>
             <strong>{{ formatPercent(state.mood.tension) }}</strong>
-            <small>正负情绪并存，不做对冲抵消</small>
+            <small>{{ topAffectiveSubAxisLabel || "正负情绪并存，不做对冲抵消" }}</small>
           </div>
           <div class="metric-card card">
             <span class="metric-label">对冲压力</span>
@@ -222,13 +227,28 @@
               <span class="material-symbols-outlined">radar</span>
               感性轴
             </div>
-            <div class="context-grid">
-              <div v-for="item in contextItems" :key="item.key" class="context-cell">
-                <span>{{ item.label }}</span>
-                <div class="mini-gauge">
-                  <i :style="{ width: `${item.value * 100}%` }"></i>
+            <div class="affective-grid">
+              <div
+                v-for="item in contextItems"
+                :key="item.key"
+                :class="['affective-card', `affective-${item.key}`]"
+                :style="{ '--affective-strength': item.value }"
+              >
+                <div class="affective-head">
+                  <span class="affective-name">{{ item.label }}</span>
+                  <strong>{{ formatPercent(item.value) }}</strong>
                 </div>
-                <strong>{{ formatPercent(item.value) }}</strong>
+                <div class="bar-track">
+                  <div :class="['bar-fill', `affective-fill-${item.key}`]" :style="{ width: `${item.value * 100}%` }"></div>
+                </div>
+                <div class="affective-meta">
+                  <small>激活 {{ formatPercent(item.activation) }} · 锐度 {{ formatPercent(item.sharpness) }}</small>
+                  <span :class="['trend', item.trend]">{{ formatBaselineDelta(item.key) }}</span>
+                </div>
+                <small v-if="affectiveTopSub(item)" class="affective-sub">
+                  峰值 · {{ affectiveTopSub(item)?.label }}
+                  <em>{{ formatPercent(affectiveTopSub(item)?.weight ?? 0) }}</em>
+                </small>
               </div>
             </div>
           </section>
@@ -585,6 +605,46 @@ const genderItems = computed(() =>
 
 const expressionShortLabel = computed(() => state.value.mood.expression?.shortLabel || state.value.mood.label);
 
+const affectiveDominanceLabel = computed(() => {
+  const positive = Number(state.value.mood?.positive) || 0;
+  const negative = Number(state.value.mood?.negative) || 0;
+  const diff = positive - negative;
+  if (Math.abs(diff) < 0.03) return "中性平衡";
+  return diff > 0 ? "正向偏移" : "负向偏移";
+});
+
+const affectiveDominanceColor = computed(() => {
+  const positive = Number(state.value.mood?.positive) || 0;
+  const negative = Number(state.value.mood?.negative) || 0;
+  const diff = positive - negative;
+  if (Math.abs(diff) < 0.03) return "var(--secondary-text)";
+  return diff > 0 ? "var(--success-text)" : "var(--danger-text)";
+});
+
+function affectiveTopSub(item: { subAxes: Record<string, { weight?: number; similarity?: number }> }): { label: string; weight: number } | null {
+  const entries = Object.entries(item.subAxes || {});
+  if (!entries.length) return null;
+  const sorted = entries.sort((a, b) => Number(b[1].weight || 0) - Number(a[1].weight || 0));
+  const [subAxis, score] = sorted[0];
+  const weight = Number(score.weight) || 0;
+  if (weight < 0.001) return null;
+  return { label: SUB_AXIS_LABELS[subAxis] || subAxis, weight };
+}
+
+const topAffectiveSubAxisLabel = computed(() => {
+  const candidates = contextItems.value
+    .map((item) => {
+      const top = affectiveTopSub(item);
+      if (!top) return null;
+      return { axisLabel: item.label, sub: top };
+    })
+    .filter((entry): entry is { axisLabel: string; sub: { label: string; weight: number } } => entry !== null)
+    .sort((a, b) => b.sub.weight - a.sub.weight);
+  if (!candidates.length) return "";
+  const winner = candidates[0];
+  return `${winner.axisLabel} · ${winner.sub.label} ${formatPercent(winner.sub.weight)}`;
+});
+
 const archetypeItems = computed(() => state.value.mood.archetypes?.candidates || state.value.mood.expression?.archetypes || []);
 
 const counterbalanceItems = computed(() =>
@@ -914,10 +974,15 @@ onMounted(() => {
   justify-content: flex-end;
 }
 
-.overview-grid,
-.metric-grid {
+.overview-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: var(--space-4);
 }
 
@@ -1187,6 +1252,95 @@ onMounted(() => {
 
 .mini-gauge i {
   background: linear-gradient(90deg, var(--success-color), var(--highlight-text));
+}
+
+.affective-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.affective-card {
+  --affective-strength: 0.2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--affective-strength) * 60%), var(--border-color));
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) calc(var(--affective-strength) * 22%), transparent), transparent 56%),
+    var(--surface-overlay-soft);
+}
+
+.affective-positive {
+  border-color: color-mix(in srgb, var(--success-color) calc(var(--affective-strength) * 70%), var(--border-color));
+}
+
+.affective-negative {
+  border-color: color-mix(in srgb, var(--danger-color) calc(var(--affective-strength) * 70%), var(--border-color));
+}
+
+.affective-arousal {
+  border-color: color-mix(in srgb, var(--warning-color) calc(var(--affective-strength) * 70%), var(--border-color));
+}
+
+.affective-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.affective-name {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.affective-head strong {
+  font-size: var(--font-size-emphasis);
+  color: var(--highlight-text);
+}
+
+.affective-fill-positive {
+  background: linear-gradient(90deg, var(--success-color), color-mix(in srgb, var(--success-color) 40%, var(--highlight-text)));
+}
+
+.affective-fill-negative {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--danger-color) 70%, var(--warning-color)), var(--danger-color));
+}
+
+.affective-fill-arousal {
+  background: linear-gradient(90deg, var(--warning-color), color-mix(in srgb, var(--warning-color) 50%, var(--danger-color)));
+}
+
+.affective-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.affective-meta small {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.affective-sub {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px dashed color-mix(in srgb, var(--highlight-text) 24%, var(--border-color));
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.affective-sub em {
+  color: var(--highlight-text);
+  font-style: normal;
+  font-weight: 700;
 }
 
 .sub-axis-grid {
@@ -1498,6 +1652,16 @@ onMounted(() => {
   border-top: 1px solid var(--border-color);
 }
 
+@media (max-width: 1280px) {
+  .metric-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .affective-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 1180px) {
   .overview-grid,
   .metric-grid,
@@ -1529,6 +1693,7 @@ onMounted(() => {
   .gender-grid,
   .config-grid,
   .context-grid,
+  .affective-grid,
   .sub-axis-grid,
   .delta-grid {
     grid-template-columns: 1fr;
