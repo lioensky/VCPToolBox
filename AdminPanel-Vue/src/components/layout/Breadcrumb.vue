@@ -1,5 +1,5 @@
 <template>
-  <nav class="breadcrumb" aria-label="面包屑导航">
+  <nav class="breadcrumb" :class="{ 'breadcrumb--compact': compact }" aria-label="面包屑导航">
     <ol>
       <li>
         <a href="#" @click.prevent="goToDashboard" aria-label="返回首页">
@@ -43,6 +43,13 @@ interface BreadcrumbItem {
   title: string;
   route: RouteLocationRaw;
 }
+
+withDefaults(
+  defineProps<{
+    compact?: boolean;
+  }>(),
+  { compact: false }
+);
 
 const router = useRouter();
 const route = useRoute();
@@ -167,6 +174,31 @@ function navigateTo(location: RouteLocationRaw) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 顶栏内嵌模式：单行、去 margin、紧凑尺寸 */
+.breadcrumb--compact {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.breadcrumb--compact ol {
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.breadcrumb--compact .breadcrumb a,
+.breadcrumb--compact .breadcrumb-current {
+  padding: 4px 8px;
+  font-size: var(--font-size-helper);
+}
+
+.breadcrumb--compact .breadcrumb-current {
+  max-width: 240px;
+}
+
+.breadcrumb--compact .breadcrumb-separator .material-symbols-outlined {
+  font-size: var(--font-size-body);
 }
 
 @media (max-width: 768px) {

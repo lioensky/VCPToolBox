@@ -1,6 +1,7 @@
 <template>
-  <header class="top-bar">
+  <header class="top-bar" :class="{ 'sidebar-collapsed': isSidebarCollapsed }">
     <div class="top-bar-content">
+      <!-- 左列：折叠开关 + 品牌，宽度对齐侧栏 -->
       <div class="top-bar-left">
         <button
           id="mobile-menu-toggle"
@@ -11,16 +12,16 @@
         >
           <span class="material-symbols-outlined" aria-hidden="true">menu</span>
         </button>
-        <button
+        <UiIconButton
           class="sidebar-collapse-toggle"
-          @click="toggleSidebarCollapse"
-          aria-label="折叠侧边栏"
+          :label="isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
           :title="isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
+          @click="toggleSidebarCollapse"
         >
           <span class="material-symbols-outlined" aria-hidden="true">
             {{ isSidebarCollapsed ? "chevron_right" : "chevron_left" }}
           </span>
-        </button>
+        </UiIconButton>
         <button
           type="button"
           class="brand"
@@ -31,6 +32,17 @@
         </button>
       </div>
 
+      <!-- 中列：搜索 + 面包屑 -->
+      <div class="top-bar-center">
+        <TopBarSearch
+          :model-value="sidebarSearchQuery"
+          @update:model-value="emit('update:sidebarSearchQuery', $event)"
+          @open-command-palette="emit('openCommandPalette')"
+        />
+        <Breadcrumb compact />
+      </div>
+
+      <!-- 右列：通知 + 系统菜单 + 用户菜单 -->
       <div class="header-actions">
         <!-- 通知图标（预留） -->
         <button
@@ -117,6 +129,9 @@ import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { useAppStore } from "@/stores/app";
 import { useAuthStore } from "@/stores/auth";
 import { showMessage, createLogger } from "@/utils";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import Breadcrumb from "@/components/layout/Breadcrumb.vue";
+import TopBarSearch from "@/components/layout/TopBarSearch.vue";
 
 interface Props {
   isMobileMenuOpen: boolean;
@@ -124,6 +139,7 @@ interface Props {
   isSystemMenuOpen: boolean;
   isUserMenuOpen: boolean;
   hasNotifications: boolean;
+  sidebarSearchQuery: string;
 }
 
 // 使用 _props 忽略未使用警告
@@ -135,6 +151,8 @@ interface Emits {
   (e: "toggleSystemMenu"): void;
   (e: "toggleUserMenu"): void;
   (e: "closeAllMenus"): void;
+  (e: "update:sidebarSearchQuery", value: string): void;
+  (e: "openCommandPalette"): void;
 }
 
 const emit = defineEmits<Emits>();
@@ -226,23 +244,34 @@ function goToDashboard() {
   padding: 0 20px;
 }
 
+/* 三列网格：左列对齐侧栏宽度，折叠时切图标宽度 */
 .top-bar-content {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns:
+    var(--app-sidebar-width, 280px)
+    minmax(0, 1fr)
+    auto;
   align-items: center;
   width: 100%;
-  max-width: 1800px;
-  margin: 0 auto;
+  gap: 16px;
+  transition: grid-template-columns 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.top-bar.sidebar-collapsed .top-bar-content {
+  grid-template-columns:
+    var(--app-sidebar-width-icon, 72px)
+    minmax(0, 1fr)
+    auto;
 }
 
 .top-bar-left {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  min-width: 0;
 }
 
-.mobile-menu-toggle,
-.sidebar-collapse-toggle {
+.mobile-menu-toggle {
   display: none;
   background: none;
   border: none;
@@ -253,13 +282,16 @@ function goToDashboard() {
   transition: background-color 0.2s;
 }
 
-.mobile-menu-toggle:hover,
-.sidebar-collapse-toggle:hover {
+/* 折叠开关由 UiIconButton 提供视觉，此处仅控制显隐 */
+.sidebar-collapse-toggle {
+  display: inline-flex;
+}
+
+.mobile-menu-toggle:hover {
   background-color: var(--accent-bg);
 }
 
 .mobile-menu-toggle:focus-visible,
-.sidebar-collapse-toggle:focus-visible,
 .brand:focus-visible,
 .icon-button:focus-visible,
 .user-avatar-btn:focus-visible,
@@ -268,15 +300,40 @@ function goToDashboard() {
   outline-offset: 2px;
 }
 
+/* 中列：搜索 + 面包屑 */
+.top-bar-center {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* 右列 */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: end;
+}
+
 @media (max-width: 768px) {
   .top-bar {
     padding: 0 12px;
   }
 
+  .top-bar-content {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .top-bar.sidebar-collapsed .top-bar-content {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
   .top-bar-left {
     min-width: 0;
     flex: 1;
-    gap: 8px;
+    gap: 4px;
   }
 
   .mobile-menu-toggle {
@@ -305,6 +362,11 @@ function goToDashboard() {
     font-size: var(--font-size-body);
   }
 
+  .top-bar-center {
+    /* 移动端搜索框已隐藏，仅留面包屑 */
+    gap: 0;
+  }
+
   .header-actions {
     gap: 4px;
     flex-shrink: 0;
@@ -330,8 +392,17 @@ function goToDashboard() {
     padding: 0 10px;
   }
 
+  /* 超窄屏隐藏中列面包屑，让品牌标题与操作按钮有足够空间 */
+  .top-bar-content {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .top-bar-center {
+    display: none;
+  }
+
   .top-bar-left {
-    gap: 6px;
+    gap: 4px;
   }
 
   .brand {
@@ -375,39 +446,17 @@ function goToDashboard() {
   }
 }
 
-.sidebar-collapse-toggle {
-  display: block;
-  /* 侧边栏收缩后宽度 72px，图标中心点在 36px 位置
-     顶栏 padding-left 为 20px，按钮宽度约 32px
-     按钮中心点需要对齐 36px，即按钮左边缘应在 36px - 16px = 20px
-     由于顶栏已有 20px padding，margin-left 设为 0 即可对齐 */
-  margin-left: 0;
-}
-
-@media (max-width: 768px) {
-  .sidebar-collapse-toggle {
-    display: none;
-  }
-}
-
-@media (min-width: 769px) {
-  .sidebar-collapse-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-}
-
 .brand {
   display: flex;
   align-items: center;
   gap: 0;
   cursor: pointer;
-  margin-left: 8px;
+  margin-left: 4px;
   background: none;
   border: 0;
   padding: 0;
   color: inherit;
+  min-width: 0;
 }
 
 .server-title {
@@ -415,12 +464,9 @@ function goToDashboard() {
   font-weight: 700;
   color: var(--primary-text);
   letter-spacing: 0.5px;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .icon-button {

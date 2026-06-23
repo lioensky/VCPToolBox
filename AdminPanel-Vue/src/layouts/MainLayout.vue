@@ -18,11 +18,14 @@
         :is-system-menu-open="isSystemMenuOpen"
         :is-user-menu-open="isUserMenuOpen"
         :has-notifications="hasNotifications"
+        :sidebar-search-query="sidebarSearchQuery"
         @toggleMobileMenu="toggleMobileMenu"
         @toggleSidebarCollapse="toggleSidebarCollapse"
         @toggleSystemMenu="toggleSystemMenu"
         @toggleUserMenu="toggleUserMenu"
         @closeAllMenus="closeAllMenus"
+        @update:sidebarSearchQuery="sidebarSearchQuery = $event"
+        @openCommandPalette="openCommandPalette"
       />
     </div>
 
@@ -35,6 +38,7 @@
           :is-hovering-sidebar="isHoveringSidebar"
           :is-hover-enabled="isHoverEnabled"
           :recent-visits="recentVisits"
+          :sidebar-search-query="sidebarSearchQuery"
           @navigate-to="navigateTo"
           @open-command-palette="openCommandPalette"
           @update:is-hovering-sidebar="isHoveringSidebar = $event"
@@ -50,9 +54,6 @@
 
       <!-- 主内容区 -->
       <main ref="contentRef" class="content" id="config-details-container">
-        <!-- 面包屑组件 -->
-        <Breadcrumb />
-
         <section class="unified-page-header">
           <h1>{{ currentPageTitle }}</h1>
         </section>
@@ -120,7 +121,6 @@ import SolarSystemBg from "@/components/SolarSystemBg.vue";
 import GlobalCommandPalette from "@/components/layout/GlobalCommandPalette.vue";
 import TopBar from "@/components/layout/TopBar.vue";
 import Sidebar from "@/components/layout/Sidebar.vue";
-import Breadcrumb from "@/components/layout/Breadcrumb.vue";
 import { useMainLayoutState } from "@/composables/useMainLayoutState";
 import { useAppStore } from "@/stores/app";
 
@@ -135,6 +135,7 @@ const {
   isSystemMenuOpen,
   isUserMenuOpen,
   hasNotifications,
+  sidebarSearchQuery,
   showBackToTop,
   contentRef,
   recentVisits,

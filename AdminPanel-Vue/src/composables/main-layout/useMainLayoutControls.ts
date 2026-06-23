@@ -12,6 +12,7 @@ export function useMainLayoutControls() {
   const isSystemMenuOpen = ref(false);
   const isUserMenuOpen = ref(false);
   const hasNotifications = ref(false);
+  const sidebarSearchQuery = ref("");
 
   function openCommandPalette() {
     isCommandPaletteOpen.value = true;
@@ -57,6 +58,7 @@ export function useMainLayoutControls() {
     closeCommandPalette();
     closeMobileMenu();
     closeAllMenus();
+    sidebarSearchQuery.value = "";
   }
 
   function enterImmersiveMode() {
@@ -77,6 +79,7 @@ export function useMainLayoutControls() {
     isSystemMenuOpen,
     isUserMenuOpen,
     hasNotifications,
+    sidebarSearchQuery,
     openCommandPalette,
     closeCommandPalette,
     toggleMobileMenu,

@@ -10,15 +10,6 @@
     @mouseenter="handleSidebarHover(true)"
     @mouseleave="handleSidebarHover(false)"
   >
-    <SidebarSearch
-      :is-expanded-state="isExpandedState"
-      :is-sidebar-collapsed="isSidebarCollapsed"
-      :is-hovering-sidebar="isHoveringSidebar"
-      :search-query="searchQuery"
-      @update:search-query="searchQuery = $event"
-      @open-command-palette="emit('openCommandPalette')"
-    />
-
     <SidebarRecentVisits
       :recent-visits="recentVisits"
       :is-sidebar-collapsed="isSidebarCollapsed"
@@ -41,14 +32,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { stripAppRouterBase } from "@/app/routes/base";
 import { useAppStore, type NavItem } from "@/stores/app";
 import { useLocalStorage } from "@/composables/useLocalStorage";
 import type { RecentVisit } from "@/composables/useRecentVisits";
 import type { PluginInfo } from "@/types/api.plugin";
-import SidebarSearch from "./sidebar/SidebarSearch.vue";
 import SidebarRecentVisits from "./sidebar/SidebarRecentVisits.vue";
 import SidebarNavList from "./sidebar/SidebarNavList.vue";
 
@@ -58,6 +48,7 @@ interface Props {
   isHoveringSidebar: boolean;
   isHoverEnabled: boolean;
   recentVisits: readonly RecentVisit[];
+  sidebarSearchQuery: string;
 }
 
 const props = defineProps<Props>();
@@ -65,6 +56,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   (e: "navigateTo", target: string, pluginName?: string): void;
   (e: "update:isHoveringSidebar", value: boolean): void;
+  (e: "update:sidebarSearchQuery", value: string): void;
   (e: "openCommandPalette"): void;
 }>();
 
@@ -76,14 +68,13 @@ const plugins = computed(() => appStore.plugins);
 const isExpandedState = computed(
   () => !props.isSidebarCollapsed || props.isHoveringSidebar
 );
-const searchQuery = ref("");
 const isRecentVisitsCollapsed = useLocalStorage<boolean>(
   "sidebarRecentCollapsed",
   false
 );
 
 const filteredNavItems = computed(() => {
-  const searchTerm = searchQuery.value.toLowerCase().trim();
+  const searchTerm = props.sidebarSearchQuery.toLowerCase().trim();
   if (!searchTerm) {
     return appendPinnedPluginItems(navItems.value);
   }
@@ -239,7 +230,7 @@ defineExpose({
 
 <style scoped>
 .sidebar {
-  width: 280px;
+  width: var(--app-sidebar-width, 280px);
   flex-shrink: 0;
   background-color: var(--secondary-bg);
   backdrop-filter: var(--glass-blur, blur(12px));
@@ -252,7 +243,7 @@ defineExpose({
 }
 
 .sidebar.collapsed {
-  width: 72px;
+  width: var(--app-sidebar-width-icon, 72px);
 }
 
 @media (max-width: 768px) {
@@ -261,7 +252,7 @@ defineExpose({
     top: var(--app-top-bar-height, 60px);
     left: 0;
     bottom: 0;
-    width: min(280px, calc(100vw - 20px));
+    width: min(var(--app-sidebar-width, 280px), calc(100vw - 20px));
     max-width: calc(100vw - 20px);
     transform: translateX(-100%);
     z-index: 999;
@@ -273,7 +264,7 @@ defineExpose({
   }
 
   .sidebar.collapsed {
-    width: min(280px, calc(100vw - 20px));
+    width: min(var(--app-sidebar-width, 280px), calc(100vw - 20px));
   }
 }
 
