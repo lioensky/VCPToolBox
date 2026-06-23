@@ -156,6 +156,28 @@ onUnmounted(() => {
   box-sizing: border-box;
   overflow-y: auto;
   padding: 4px 8px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--secondary-text) 30%, transparent) transparent;
+}
+
+/* 自定义滚动条：窄轨道 + 透明背景 + 半透明滑块，视觉融入右侧 padding */
+#plugin-nav::-webkit-scrollbar {
+  width: 8px;
+}
+
+#plugin-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#plugin-nav::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--secondary-text) 30%, transparent);
+  border-radius: var(--radius-full);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+#plugin-nav::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--secondary-text) 50%, transparent);
 }
 
 /* 折叠态隐藏滚动条，保持图标列干净 */

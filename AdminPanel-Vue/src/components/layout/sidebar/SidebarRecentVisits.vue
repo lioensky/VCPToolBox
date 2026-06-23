@@ -60,7 +60,9 @@ defineEmits<{
 
 <style scoped>
 .recent-visits {
+  /* 右侧多预留 8px 对齐下方 NavList 滚动条占用的宽度，使 hover 行右边缘齐平 */
   padding: 4px 8px 0;
+  margin-right: 8px;
   transition: padding 0.25s ease;
 }
 
