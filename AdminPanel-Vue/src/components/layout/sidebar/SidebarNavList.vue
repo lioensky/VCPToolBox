@@ -106,7 +106,7 @@ const {
 } = useVirtualScroll(
   computed(() => (shouldVirtualize.value ? props.filteredNavItems : props.filteredNavItems)),
   {
-    itemHeight: 44,
+    itemHeight: 32,
     containerHeight: computed(() => navHeight.value),
     overscan: computed(() => navOverscan.value)
   }
@@ -151,14 +151,17 @@ onUnmounted(() => {
 <style scoped>
 #plugin-nav {
   flex-grow: 1;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   overflow-y: auto;
-  padding: 16px;
+  padding: 4px 8px 8px;
 }
 
 /* 折叠态隐藏滚动条，保持图标列干净 */
 #plugin-nav.nav-collapsed {
   scrollbar-width: none;
-  padding-inline: 8px;
+  padding: 4px 14px 8px;
 }
 
 #plugin-nav.nav-collapsed::-webkit-scrollbar {
@@ -171,103 +174,119 @@ onUnmounted(() => {
   margin: 0;
 }
 
+#plugin-nav.nav-collapsed ul {
+  width: 32px;
+}
+
 /* 虚拟滚动模式下，为 ul 添加底部内边距防止最后一项被截断 */
 #plugin-nav > div > ul {
-  padding-bottom: 44px; /* 等于一个项目的高度 */
+  padding-bottom: 32px; /* 等于一个项目的高度 */
 }
 
 #plugin-nav li a {
   display: flex;
   align-items: center;
-  gap: 12px;
-  color: var(--secondary-text);
-  padding: 10px 12px;
+  gap: 8px;
+  color: var(--primary-text);
+  padding: 8px;
   text-decoration: none;
   border-radius: var(--radius-md);
-  margin-bottom: 2px;
-  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
-  font-size: var(--font-size-body);
-  border: 1px solid transparent;
+  margin-bottom: 0;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    font-weight 0.2s ease;
+  font-size: 0.875rem;
+  line-height: 1.25;
+  border: 0;
   overflow: hidden;
+  height: 32px;
+  outline: none;
 }
 
 #plugin-nav li a:hover {
   background-color: var(--accent-bg);
   color: var(--primary-text);
+  transform: none;
 }
 
 #plugin-nav li a:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+  background-color: var(--accent-bg);
+  color: var(--primary-text);
 }
 
 #plugin-nav li a.active {
-  background-color: var(--button-bg);
-  color: var(--on-accent-text);
-  font-weight: 600;
-  box-shadow: var(--shadow-overlay-soft);
+  background-color: var(--accent-bg);
+  color: var(--primary-text);
+  font-weight: 500;
+  box-shadow: none;
 }
 
 #plugin-nav li a.sidebar-collapsed {
   justify-content: center;
   gap: 0;
-  padding: 12px;
+  padding: 8px;
+  width: 32px;
+  min-width: 32px;
+  max-width: 32px;
+  height: 32px;
 }
 
 #plugin-nav li a.sidebar-collapsed .material-symbols-outlined {
   margin: 0;
 }
 
+#plugin-nav li a .material-symbols-outlined {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
 #plugin-nav li.nav-category {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 18px 6px 8px;
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-  font-weight: 600;
-  letter-spacing: 0.12em;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--secondary-text) 72%, transparent);
+  font-weight: 500;
+  letter-spacing: 0.08em;
   opacity: 1;
   transform: translateX(0);
   transition: opacity 0.25s ease, transform 0.25s ease, padding 0.25s ease;
   overflow: hidden;
   white-space: nowrap;
-  text-transform: none;
+  text-transform: uppercase;
 }
 
 #plugin-nav li.nav-category::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: linear-gradient(
-    to right,
-    var(--border-color) 0%,
-    transparent 100%
-  );
-  opacity: 0.7;
+  content: none;
 }
 
 .nav-category-text {
-  color: var(--primary-text);
+  color: inherit;
   padding: 0;
-  font-size: calc(var(--font-size-helper) + 1px);
+  font-size: inherit;
 }
 
 .nav-category.fade-label-hidden {
   opacity: 0;
   transform: translateX(-10px);
-  padding-left: 10px;
-  padding-right: 10px;
+  height: 0;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
   pointer-events: none;
 }
 
 .nav-label {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: block;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
   max-width: 220px;
   opacity: 1;
   transform: translateX(0);
@@ -285,6 +304,7 @@ a.sidebar-collapsed .nav-label {
   font-size: var(--font-size-caption);
   opacity: 0.6;
   font-weight: normal;
+  margin-left: 4px;
 }
 
 .plugin-disabled-badge {

@@ -6,34 +6,34 @@
   >
     <button
       type="button"
-      class="recent-header recent-toggle"
+      class="recent-menu-button"
       :class="{ 'fade-label-hidden': isSidebarCollapsed && !isHoveringSidebar }"
       :aria-expanded="!isRecentVisitsCollapsed"
       @click="$emit('toggleRecent')"
     >
-      <span class="recent-title">
-        <span class="material-symbols-outlined">history</span>
-        <span>最近访问</span>
-      </span>
-      <span class="material-symbols-outlined recent-chevron" :class="{ 'recent-chevron--collapsed': isRecentVisitsCollapsed }">
+      <span class="material-symbols-outlined">history</span>
+      <span class="recent-label">最近访问</span>
+      <span class="material-symbols-outlined recent-chevron" :class="{ open: !isRecentVisitsCollapsed }">
         chevron_right
       </span>
     </button>
 
-    <nav class="recent-nav" :class="{ 'recent-nav--collapsed': isRecentVisitsCollapsed }">
-      <a
-        v-for="item in recentVisits"
-        :key="`${item.target}-${item.pluginName || ''}`"
-        href="#"
-        class="recent-item"
-        :class="{ 'sidebar-collapsed': isSidebarCollapsed && !isHoveringSidebar }"
-        :title="item.label"
-        @click.prevent="$emit('navigateTo', item.target, item.pluginName)"
-      >
-        <span class="material-symbols-outlined">{{ item.icon || 'extension' }}</span>
-        <span class="recent-label">{{ item.label }}</span>
-      </a>
-    </nav>
+    <div class="recent-collapsible" :class="{ open: !isRecentVisitsCollapsed }">
+      <nav class="recent-nav">
+        <a
+          v-for="item in recentVisits"
+          :key="`${item.target}-${item.pluginName || ''}`"
+          href="#"
+          class="recent-menu-button"
+          :class="{ 'sidebar-collapsed': isSidebarCollapsed && !isHoveringSidebar }"
+          :title="item.label"
+          @click.prevent="$emit('navigateTo', item.target, item.pluginName)"
+        >
+          <span class="material-symbols-outlined">{{ item.icon || 'extension' }}</span>
+          <span class="recent-label">{{ item.label }}</span>
+        </a>
+      </nav>
+    </div>
   </div>
 </template>
 
@@ -60,110 +60,125 @@ defineEmits<{
 
 <style scoped>
 .recent-visits {
-  padding: 16px;
-  border-bottom: 1px solid var(--border-color);
+  padding: 4px 8px 0;
   transition: padding 0.25s ease;
 }
 
 .recent-visits.sidebar-collapsed {
-  padding: 16px 10px;
+  padding: 4px 14px 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 
-.recent-header {
+.recent-menu-button {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-  margin-bottom: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  transition: opacity 0.25s ease, transform 0.25s ease;
-  overflow: hidden;
-}
-
-.recent-header.fade-label-hidden {
-  opacity: 0;
-  transform: translateX(-10px);
-  pointer-events: none;
-}
-
-.recent-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.recent-toggle {
   width: 100%;
-  background: none;
-  border: none;
-  padding: 0;
+  height: 32px;
+  margin-bottom: 0;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--primary-text);
   cursor: pointer;
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.25;
+  text-align: left;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    opacity 0.25s ease,
+    transform 0.25s ease;
+  outline: none;
 }
 
-.recent-toggle:hover {
+.recent-menu-button:hover {
+  background-color: var(--accent-bg);
   color: var(--primary-text);
 }
 
-.recent-chevron {
-  font-size: var(--font-size-emphasis);
-  transition: transform var(--transition-fast);
+.recent-menu-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--focus-ring);
+  background-color: var(--accent-bg);
+  color: var(--primary-text);
 }
 
-.recent-chevron--collapsed {
-  transform: rotate(-90deg);
+.recent-menu-button.fade-label-hidden,
+.recent-menu-button.sidebar-collapsed {
+  justify-content: center;
+  gap: 0;
+  padding: 8px;
+  width: 32px;
+  min-width: 32px;
+  max-width: 32px;
 }
 
-.recent-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 500px;
+.recent-menu-button.fade-label-hidden .recent-label,
+.recent-menu-button.fade-label-hidden .recent-chevron,
+.recent-menu-button.sidebar-collapsed .recent-label {
+  max-width: 0;
+  opacity: 0;
+  transform: translateX(-6px);
+  pointer-events: none;
+}
+
+.recent-collapsible {
+  display: grid;
+  grid-template-rows: 0fr;
   overflow: hidden;
-  transition: max-height var(--transition-normal), opacity var(--transition-fast);
+  opacity: 0;
+  transition:
+    grid-template-rows 300ms ease-out,
+    opacity 180ms ease-out;
+}
+
+.recent-collapsible.open {
+  grid-template-rows: 1fr;
   opacity: 1;
 }
 
-.recent-nav--collapsed {
-  max-height: 0;
-  opacity: 0;
+.recent-chevron {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.72;
+  transition: transform 200ms ease;
 }
 
-.recent-item {
+.recent-chevron.open {
+  transform: rotate(90deg);
+}
+
+.recent-nav {
+  min-height: 0;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  color: var(--secondary-text);
-  text-decoration: none;
-  border-radius: 8px;
-  transition: background-color 0.2s ease, color 0.2s ease, opacity 0.25s ease, transform 0.25s ease;
-  font-size: var(--font-size-body);
-  overflow: hidden;
+  flex-direction: column;
+  gap: 0;
+}
+
+.recent-menu-button .material-symbols-outlined {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.recent-label {
+  display: flex;
+  min-width: 0;
+  flex: 1;
   white-space: nowrap;
-}
-
-.recent-item.sidebar-collapsed {
-  justify-content: center;
-  padding: 8px;
-}
-
-.recent-item.sidebar-collapsed .material-symbols-outlined {
-  margin: 0;
-}
-
-.recent-item.sidebar-collapsed .recent-label {
-  opacity: 0;
-  transform: translateX(-10px);
-  pointer-events: none;
-}
-
-.recent-item:hover {
-  background-color: var(--accent-bg);
-  color: var(--primary-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition:
+    max-width 0.28s ease,
+    opacity 0.2s ease,
+    transform 0.24s ease;
 }
 </style>
