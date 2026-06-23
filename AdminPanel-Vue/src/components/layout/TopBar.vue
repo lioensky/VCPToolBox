@@ -35,6 +35,12 @@
           @click="goToDashboard"
           aria-label="返回仪表盘"
         >
+          <img
+            class="brand-logo"
+            src="/AdminPanel/brand/nova-logo.png"
+            alt=""
+            aria-hidden="true"
+          />
           <span class="server-title">VCPToolBox</span>
         </button>
       </div>
@@ -487,6 +493,14 @@ function goToDashboard() {
   border: 0;
   color: inherit;
   min-width: 0;
+}
+
+.brand-logo {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  object-fit: contain;
 }
 
 .top-bar.sidebar-collapsed .brand {
