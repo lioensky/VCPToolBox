@@ -368,7 +368,10 @@ async function handleCreateCommand(args) {
 
         debugLog(`Target file path: ${filePath}`);
         const timeStringForContent = `${hours}:${minutes}`;
-        const fileContent = `[${datePart}] - ${actualMaidName}\n[${timeStringForContent}]\n${processedContent}`;
+        const contentStartsWithTimeLine = /^\s*\[\d{1,2}:\d{2}(?::\d{2})?\]\s*(?:\r?\n|$)/.test(processedContent);
+        const fileContent = contentStartsWithTimeLine
+            ? `[${datePart}] - ${actualMaidName}\n${processedContent}`
+            : `[${datePart}] - ${actualMaidName}\n[${timeStringForContent}]\n${processedContent}`;
         await fs.writeFile(filePath, fileContent);
         debugLog(`Successfully wrote file (length: ${fileContent.length})`);
         return {
