@@ -2,8 +2,8 @@
   <nav class="breadcrumb" :class="{ 'breadcrumb--compact': compact }" aria-label="面包屑导航">
     <ol>
       <li>
-        <a href="#" @click.prevent="goToDashboard" aria-label="返回首页">
-          <span class="material-symbols-outlined">home</span>
+        <a class="breadcrumb-home" href="#" @click.prevent="goToDashboard" aria-label="返回首页">
+          <span class="material-symbols-outlined">space_dashboard</span>
         </a>
       </li>
 
@@ -183,22 +183,43 @@ function navigateTo(location: RouteLocationRaw) {
 }
 
 .breadcrumb--compact ol {
+  height: 32px;
   flex-wrap: nowrap;
   gap: 4px;
 }
 
-.breadcrumb--compact .breadcrumb a,
-.breadcrumb--compact .breadcrumb-current {
-  padding: 4px 8px;
-  font-size: var(--font-size-helper);
+.breadcrumb.breadcrumb--compact a,
+.breadcrumb.breadcrumb--compact .breadcrumb-current {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 0.875rem;
+  line-height: 1;
+  border-radius: var(--radius-md);
 }
 
-.breadcrumb--compact .breadcrumb-current {
+.breadcrumb.breadcrumb--compact .breadcrumb-home {
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.breadcrumb.breadcrumb--compact .breadcrumb-current {
   max-width: 240px;
 }
 
-.breadcrumb--compact .breadcrumb-separator .material-symbols-outlined {
-  font-size: var(--font-size-body);
+.breadcrumb.breadcrumb--compact .breadcrumb-home .material-symbols-outlined {
+  display: block;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.breadcrumb.breadcrumb--compact .breadcrumb-separator .material-symbols-outlined {
+  display: block;
+  font-size: 16px;
+  line-height: 1;
 }
 
 @media (max-width: 768px) {

@@ -258,11 +258,30 @@ defineExpose({
 }
 
 .sidebar-search {
-  padding: 8px;
-  border-bottom: 1px solid var(--border-color);
+  padding: 4px 16px 0 8px;
 }
 
 .sidebar-search.sidebar-collapsed {
+  padding: 4px 8px 0;
+}
+
+.sidebar-search.sidebar-collapsed :deep(.top-bar-search) {
+  width: 100%;
+}
+
+.sidebar-search.sidebar-collapsed :deep(input) {
+  padding-right: 0;
+  color: transparent;
+  caret-color: transparent;
+  pointer-events: none;
+}
+
+.sidebar-search.sidebar-collapsed :deep(input::placeholder) {
+  color: transparent;
+}
+
+.sidebar-search.sidebar-collapsed :deep(.search-shortcut),
+.sidebar-search.sidebar-collapsed :deep(.search-clear) {
   display: none;
 }
 

@@ -183,7 +183,7 @@ onUnmounted(() => {
 /* 折叠态隐藏滚动条，保持图标列干净 */
 #plugin-nav.nav-collapsed {
   scrollbar-width: none;
-  padding: 4px 14px 8px;
+  padding: 4px 8px 8px;
 }
 
 #plugin-nav.nav-collapsed::-webkit-scrollbar {
@@ -194,10 +194,6 @@ onUnmounted(() => {
   list-style: none;
   padding: 0;
   margin: 0;
-}
-
-#plugin-nav.nav-collapsed ul {
-  width: 32px;
 }
 
 /* 虚拟滚动模式下，为 ul 添加底部内边距防止最后一项被截断 */
@@ -246,12 +242,11 @@ onUnmounted(() => {
 }
 
 #plugin-nav li a.sidebar-collapsed {
-  justify-content: center;
   gap: 0;
   padding: 8px;
-  width: 32px;
-  min-width: 32px;
-  max-width: 32px;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
   height: 32px;
 }
 

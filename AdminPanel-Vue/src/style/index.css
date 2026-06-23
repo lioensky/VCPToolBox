@@ -100,7 +100,7 @@
   --app-top-bar-height: 48px;
   --app-viewport-height: 100vh;
   --app-sidebar-width: 280px;
-  --app-sidebar-width-icon: 72px;
+  --app-sidebar-width-icon: 48px;
 
   /* --- Dashboard 专用变量 --- */
   --dashboard-radius: var(--radius-xl, 20px);

@@ -267,9 +267,10 @@ function goToDashboard() {
 .top-bar-left {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0;
   flex: 0 0 auto;
   min-width: 0;
+  height: 32px;
 }
 
 .mobile-menu-toggle {
@@ -329,6 +330,7 @@ function goToDashboard() {
   gap: 8px;
   min-width: 0;
   flex: 1 1 auto;
+  height: 32px;
 }
 
 /* 右列 */
@@ -338,6 +340,7 @@ function goToDashboard() {
   gap: 6px;
   min-width: 0;
   justify-self: end;
+  height: 32px;
 }
 
 @media (max-width: 768px) {
@@ -473,11 +476,12 @@ function goToDashboard() {
 .brand {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   cursor: pointer;
   margin-left: 0;
   height: 32px;
-  padding: 0 8px;
+  padding: 0;
   border-radius: 8px;
   background: transparent;
   border: 0;
@@ -500,6 +504,13 @@ function goToDashboard() {
 }
 
 .icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
   background: transparent;
   border: 0;
   color: var(--primary-text);

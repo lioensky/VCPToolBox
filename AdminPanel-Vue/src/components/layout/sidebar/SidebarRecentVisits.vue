@@ -1,6 +1,6 @@
 <template>
   <div
-    v-if="recentVisits.length > 0 && (!isSidebarCollapsed || isHoveringSidebar)"
+    v-if="recentVisits.length > 0"
     class="recent-visits"
     :class="{ 'sidebar-collapsed': isSidebarCollapsed && !isHoveringSidebar }"
   >
@@ -67,7 +67,7 @@ defineEmits<{
 }
 
 .recent-visits.sidebar-collapsed {
-  padding: 4px 14px 0;
+  padding: 4px 8px 0;
   width: 100%;
   box-sizing: border-box;
 }
@@ -113,12 +113,11 @@ defineEmits<{
 
 .recent-menu-button.fade-label-hidden,
 .recent-menu-button.sidebar-collapsed {
-  justify-content: center;
   gap: 0;
   padding: 8px;
-  width: 32px;
-  min-width: 32px;
-  max-width: 32px;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
 }
 
 .recent-menu-button.fade-label-hidden .recent-label,

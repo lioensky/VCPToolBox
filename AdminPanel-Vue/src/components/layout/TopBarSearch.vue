@@ -68,73 +68,86 @@ defineExpose({
   display: flex;
   align-items: center;
   width: 100%;
-  max-width: 360px;
+  height: 32px;
+  color: var(--primary-text);
+  border-radius: var(--radius-md);
+  background: transparent;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.top-bar-search:hover,
+.top-bar-search:focus-within {
+  background-color: var(--accent-bg);
 }
 
 .search-icon {
   position: absolute;
-  left: 12px;
-  color: var(--secondary-text);
-  font-size: var(--font-size-emphasis);
+  left: 8px;
+  color: var(--primary-text);
+  font-size: 16px;
+  line-height: 1;
   pointer-events: none;
+  transition: color 0.2s ease;
 }
 
 .top-bar-search input {
   width: 100%;
-  padding: 8px 74px 8px 40px;
-  border: 1px solid var(--border-color);
+  height: 32px;
+  padding: 0 56px 0 32px;
+  border: 0;
   border-radius: var(--radius-md);
-  background-color: var(--input-bg);
+  background-color: transparent;
   color: var(--primary-text);
-  font-size: var(--font-size-body);
-  transition:
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast),
-    background-color var(--transition-fast);
+  font-size: 0.875rem;
+  line-height: 32px;
+  outline: none;
 }
 
 .top-bar-search input::placeholder {
-  color: var(--secondary-text);
+  color: var(--primary-text);
+  opacity: 1;
 }
 
 .top-bar-search input:focus-visible {
   outline: none;
-  border-color: var(--highlight-text);
-  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
-.top-bar-search input:focus:not(:focus-visible) {
-  border-color: var(--highlight-text);
+.top-bar-search:has(input:focus-visible) {
   box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .search-shortcut {
   position: absolute;
-  right: 6px;
+  right: 8px;
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 2px 6px;
-  font-size: var(--font-size-caption);
-  color: var(--secondary-text);
-  background: var(--accent-bg);
-  border: 1px solid transparent;
+  height: 20px;
+  padding: 0 4px;
+  font-size: 0.6875rem;
+  line-height: 1;
+  color: var(--primary-text);
+  background: color-mix(in srgb, var(--primary-text) 8%, transparent);
+  border: 0;
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-family: var(--font-mono, ui-monospace, monospace);
   transition:
+    background-color var(--transition-fast),
     color var(--transition-fast),
-    border-color var(--transition-fast);
+    opacity var(--transition-fast);
 }
 
 .search-shortcut:hover {
   color: var(--primary-text);
-  border-color: color-mix(in srgb, var(--button-bg) 24%, transparent);
+  background-color: color-mix(in srgb, var(--primary-text) 14%, transparent);
 }
 
 .search-clear {
   position: absolute;
-  right: 6px;
+  right: 5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -150,7 +163,8 @@ defineExpose({
 }
 
 .search-clear .material-symbols-outlined {
-  font-size: var(--font-size-body);
+  font-size: 16px;
+  line-height: 1;
 }
 
 .search-clear:hover {
