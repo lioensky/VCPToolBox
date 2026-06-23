@@ -232,10 +232,9 @@ defineExpose({
 .sidebar {
   width: var(--app-sidebar-width, 280px);
   flex-shrink: 0;
-  background-color: var(--secondary-bg);
-  backdrop-filter: var(--glass-blur, blur(12px));
-  -webkit-backdrop-filter: var(--glass-blur, blur(12px));
-  border-right: 1px solid var(--border-color);
+  /* 不透明面板：把半透明 secondary-bg 压实在 primary-bg 上，挡住星空 */
+  background-color: color-mix(in srgb, var(--secondary-bg) 100%, var(--primary-bg));
+  border-right: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;

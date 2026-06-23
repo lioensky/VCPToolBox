@@ -233,11 +233,9 @@ function goToDashboard() {
   top: 0;
   left: 0;
   right: 0;
-  height: var(--app-top-bar-height, 60px);
-  background-color: var(--secondary-bg);
-  backdrop-filter: var(--glass-blur, blur(12px));
-  -webkit-backdrop-filter: var(--glass-blur, blur(12px));
-  border-bottom: 1px solid var(--border-color);
+  height: var(--app-top-bar-height, 48px);
+  background-color: color-mix(in srgb, var(--secondary-bg) 100%, var(--primary-bg));
+  border-bottom: 0;
   z-index: 1000;
   display: flex;
   align-items: center;

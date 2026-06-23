@@ -97,7 +97,7 @@
   --transition-normal: 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-slow: 0.5s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-spring: 220ms cubic-bezier(0.22, 1, 0.36, 1);
-  --app-top-bar-height: 60px;
+  --app-top-bar-height: 48px;
   --app-viewport-height: 100vh;
   --app-sidebar-width: 280px;
   --app-sidebar-width-icon: 72px;
