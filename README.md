@@ -2,7 +2,7 @@
 
 ![VCP Logo](docs/image/VCPLogo.png)
 
-**官网：[www.vcptoolbox.com](https://www.vcptoolbox.com)**
+**VCP官网：[通过官网迅速了解 VCP](https://www.vcptoolbox.com)**
 
 [English](README_en.md) | [日本語](README_ja.md) | [Русский](README_ru.md)
 
