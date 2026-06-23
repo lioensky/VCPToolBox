@@ -18,9 +18,16 @@
           :title="isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
           @click="toggleSidebarCollapse"
         >
-          <span class="material-symbols-outlined" aria-hidden="true">
-            {{ isSidebarCollapsed ? "chevron_right" : "chevron_left" }}
-          </span>
+          <svg
+            class="sidebar-trigger-icon"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="M4 5.75C4 4.78 4.78 4 5.75 4h12.5C19.22 4 20 4.78 20 5.75v12.5c0 .97-.78 1.75-1.75 1.75H5.75C4.78 20 4 19.22 4 18.25V5.75Z" />
+            <path d="M9.5 4.5v15" />
+            <path d="m15 9-3 3 3 3" />
+          </svg>
         </UiIconButton>
         <button
           type="button"
@@ -235,11 +242,15 @@ function goToDashboard() {
   right: 0;
   height: var(--app-top-bar-height, 48px);
   background-color: color-mix(in srgb, var(--secondary-bg) 100%, var(--primary-bg));
+  color: var(--primary-text);
   border-bottom: 0;
   z-index: 1000;
   display: flex;
   align-items: center;
-  padding: 0 20px;
+  padding: 0 8px;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 /* 三列网格：左列对齐侧栏宽度，折叠时切图标宽度 */
@@ -250,8 +261,8 @@ function goToDashboard() {
     minmax(0, 1fr)
     auto;
   align-items: center;
+  gap: 8px;
   width: 100%;
-  gap: 16px;
   transition: grid-template-columns 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -266,6 +277,7 @@ function goToDashboard() {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
   min-width: 0;
 }
 
@@ -275,42 +287,65 @@ function goToDashboard() {
   border: none;
   color: var(--primary-text);
   cursor: pointer;
-  padding: 8px;
+  padding: 0;
   border-radius: 8px;
-  transition: background-color 0.2s;
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast);
 }
 
 /* 折叠开关由 UiIconButton 提供视觉，此处仅控制显隐 */
 .sidebar-collapse-toggle {
   display: inline-flex;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
 }
 
-.mobile-menu-toggle:hover {
+.mobile-menu-toggle:hover,
+.sidebar-collapse-toggle:hover {
   background-color: var(--accent-bg);
+  color: var(--primary-text);
 }
 
 .mobile-menu-toggle:focus-visible,
+.sidebar-collapse-toggle:focus-visible,
 .brand:focus-visible,
 .icon-button:focus-visible,
 .user-avatar-btn:focus-visible,
 .dropdown-item:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
+  outline: none;
+  border-color: color-mix(in srgb, var(--highlight-text) 64%, var(--border-color));
+  background: var(--accent-bg);
+}
+
+.sidebar-trigger-icon {
+  width: 18px;
+  height: 18px;
+  color: currentColor;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* 中列：搜索 + 面包屑 */
 .top-bar-center {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 8px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 /* 右列 */
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
   justify-self: end;
 }
 
@@ -387,7 +422,7 @@ function goToDashboard() {
 
 @media (max-width: 480px) {
   .top-bar {
-    padding: 0 10px;
+    padding: 0 8px;
   }
 
   /* 超窄屏隐藏中列面包屑，让品牌标题与操作按钮有足够空间 */
@@ -447,32 +482,38 @@ function goToDashboard() {
 .brand {
   display: flex;
   align-items: center;
-  gap: 0;
+  gap: 6px;
   cursor: pointer;
   margin-left: 0;
-  background: none;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: transparent;
   border: 0;
-  padding: 0;
   color: inherit;
   min-width: 0;
 }
 
+.top-bar.sidebar-collapsed .brand {
+  display: none;
+}
+
 .server-title {
-  font-size: var(--font-size-title);
-  font-weight: 700;
+  font-size: 0.875rem;
+  font-weight: 600;
   color: var(--primary-text);
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .icon-button {
-  background: none;
-  border: none;
+  background: transparent;
+  border: 0;
   color: var(--primary-text);
   cursor: pointer;
-  padding: 8px;
+  padding: 0;
   border-radius: 8px;
   transition:
     background-color var(--transition-fast),
@@ -480,14 +521,28 @@ function goToDashboard() {
   position: relative;
 }
 
+.icon-button .material-symbols-outlined,
+.mobile-menu-toggle .material-symbols-outlined,
+.user-avatar-btn .material-symbols-outlined {
+  font-size: 18px;
+  line-height: 1;
+}
+
 .icon-button:hover {
   background-color: var(--accent-bg);
+  color: var(--primary-text);
+}
+
+.dropdown-open > .icon-button,
+.dropdown-open > .user-avatar-btn {
+  background-color: var(--accent-bg);
+  color: var(--primary-text);
 }
 
 .notification-btn .notification-badge {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 7px;
+  right: 7px;
   width: 8px;
   height: 8px;
   background-color: var(--danger-color);
@@ -503,15 +558,17 @@ function goToDashboard() {
   position: absolute;
   top: 100%;
   right: 0;
-  margin-top: 8px;
+  margin-top: 4px;
   background-color: var(--tertiary-bg);
   border: 1px solid var(--border-color);
-  border-radius: 12px;
-  min-width: 200px;
-  box-shadow: var(--overlay-panel-shadow);
+  border-radius: 8px;
+  min-width: 168px;
+  padding: 4px;
+  box-shadow: var(--shadow-overlay-soft);
   opacity: 0;
   visibility: hidden;
-  transform: translateY(-10px);
+  transform: translateY(-4px) scale(0.98);
+  transform-origin: top right;
   transition:
     opacity var(--transition-fast),
     visibility var(--transition-fast),
@@ -521,37 +578,51 @@ function goToDashboard() {
 .dropdown-open .dropdown-menu {
   opacity: 1;
   visibility: visible;
-  transform: translateY(0);
+  transform: translateY(0) scale(1);
 }
 
 .dropdown-header {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-color);
-  font-weight: 600;
-  color: var(--primary-text);
+  padding: 4px 6px;
+  border-bottom: 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--secondary-text);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  line-height: 1.35;
 }
 
 .dropdown-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   width: 100%;
-  padding: 10px 16px;
+  min-height: 28px;
+  padding: 4px 6px;
   background: none;
   border: none;
   color: var(--primary-text);
   cursor: pointer;
-  font-size: var(--font-size-body);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.35;
   transition: background-color 0.2s;
   white-space: nowrap;
   text-align: left;
+  border-radius: 6px;
+}
+
+.dropdown-item .material-symbols-outlined,
+.dropdown-header .material-symbols-outlined {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1;
 }
 
 .dropdown-item:hover {
   background-color: var(--accent-bg);
+  color: var(--primary-text);
 }
 
 .dropdown-item.danger {
@@ -559,33 +630,31 @@ function goToDashboard() {
 }
 
 .dropdown-item.danger:hover {
-  background-color: var(--danger-bg);
+  background-color: color-mix(in srgb, var(--danger-color) 14%, transparent);
 }
 
 .dropdown-divider {
   height: 1px;
   background-color: var(--border-color);
-  margin: 4px 0;
+  margin: 4px -4px;
 }
 
 .user-avatar-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: var(--accent-bg);
-  border: 2px solid var(--border-color);
+  background-color: transparent;
+  border: 0;
   transition:
-    border-color var(--transition-fast),
     background-color var(--transition-fast),
     color var(--transition-fast);
 }
 
 .user-avatar-btn:hover {
-  border-color: var(--highlight-text);
-  background-color: var(--button-bg);
-  color: var(--on-accent-text);
+  background-color: var(--accent-bg);
+  color: var(--primary-text);
 }
 </style>
