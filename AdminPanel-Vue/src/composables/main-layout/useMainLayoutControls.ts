@@ -1,11 +1,12 @@
 import { computed, ref } from "vue";
 import { useAppStore } from "@/stores/app";
+import { useLocalStorage } from "@/composables/useLocalStorage";
 
 export function useMainLayoutControls() {
   const appStore = useAppStore();
   const isMobileMenuOpen = ref(false);
   const isImmersiveMode = computed(() => appStore.isImmersiveMode);
-  const isSidebarCollapsed = ref(false);
+  const isSidebarCollapsed = useLocalStorage<boolean>("sidebarCollapsed", false);
   const isHoveringSidebar = ref(false);
   const isHoverEnabled = ref(false);
   const isCommandPaletteOpen = ref(false);

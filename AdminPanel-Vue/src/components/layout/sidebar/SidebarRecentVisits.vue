@@ -15,12 +15,12 @@
         <span class="material-symbols-outlined">history</span>
         <span>最近访问</span>
       </span>
-      <span class="material-symbols-outlined recent-chevron">
-        {{ isRecentVisitsCollapsed ? 'expand_more' : 'expand_less' }}
+      <span class="material-symbols-outlined recent-chevron" :class="{ 'recent-chevron--collapsed': isRecentVisitsCollapsed }">
+        chevron_right
       </span>
     </button>
 
-    <nav v-show="!isRecentVisitsCollapsed && !isSidebarCollapsed || isHoveringSidebar" class="recent-nav">
+    <nav class="recent-nav" :class="{ 'recent-nav--collapsed': isRecentVisitsCollapsed }">
       <a
         v-for="item in recentVisits"
         :key="`${item.target}-${item.pluginName || ''}`"
@@ -111,12 +111,26 @@ defineEmits<{
 
 .recent-chevron {
   font-size: var(--font-size-emphasis);
+  transition: transform var(--transition-fast);
+}
+
+.recent-chevron--collapsed {
+  transform: rotate(-90deg);
 }
 
 .recent-nav {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-height: 500px;
+  overflow: hidden;
+  transition: max-height var(--transition-normal), opacity var(--transition-fast);
+  opacity: 1;
+}
+
+.recent-nav--collapsed {
+  max-height: 0;
+  opacity: 0;
 }
 
 .recent-item {

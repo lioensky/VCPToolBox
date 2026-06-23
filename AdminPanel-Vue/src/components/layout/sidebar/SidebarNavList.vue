@@ -1,5 +1,5 @@
 <template>
-  <nav id="plugin-nav" ref="navRef" @scroll="handleNavScroll">
+  <nav id="plugin-nav" ref="navRef" :class="{ 'nav-collapsed': isSidebarCollapsed && !isHoveringSidebar }" @scroll="handleNavScroll">
     <div v-if="shouldVirtualize" :style="{ height: `${totalHeight}px`, position: 'relative' }">
       <ul :style="{ transform: `translateY(${offsetY}px)` }">
       <template v-for="item in filteredNavItems" :key="item.category ? `category-${item.category}` : `nav-${item.target || item.pluginName || item.label}`">
@@ -106,7 +106,7 @@ const {
 } = useVirtualScroll(
   computed(() => (shouldVirtualize.value ? props.filteredNavItems : props.filteredNavItems)),
   {
-    itemHeight: 56,
+    itemHeight: 44,
     containerHeight: computed(() => navHeight.value),
     overscan: computed(() => navOverscan.value)
   }
@@ -155,6 +155,16 @@ onUnmounted(() => {
   padding: 16px;
 }
 
+/* 折叠态隐藏滚动条，保持图标列干净 */
+#plugin-nav.nav-collapsed {
+  scrollbar-width: none;
+  padding-inline: 8px;
+}
+
+#plugin-nav.nav-collapsed::-webkit-scrollbar {
+  display: none;
+}
+
 #plugin-nav ul {
   list-style: none;
   padding: 0;
@@ -163,19 +173,19 @@ onUnmounted(() => {
 
 /* 虚拟滚动模式下，为 ul 添加底部内边距防止最后一项被截断 */
 #plugin-nav > div > ul {
-  padding-bottom: 56px; /* 等于一个项目的高度 */
+  padding-bottom: 44px; /* 等于一个项目的高度 */
 }
 
 #plugin-nav li a {
   display: flex;
   align-items: center;
-  gap: 15px;
+  gap: 12px;
   color: var(--secondary-text);
-  padding: 12px 16px;
+  padding: 10px 12px;
   text-decoration: none;
-  border-radius: 12px;
-  margin-bottom: 4px;
-  transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  border-radius: var(--radius-md);
+  margin-bottom: 2px;
+  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
   font-size: var(--font-size-body);
   border: 1px solid transparent;
   overflow: hidden;
@@ -184,7 +194,6 @@ onUnmounted(() => {
 #plugin-nav li a:hover {
   background-color: var(--accent-bg);
   color: var(--primary-text);
-  transform: translateX(4px);
 }
 
 #plugin-nav li a:focus-visible {
