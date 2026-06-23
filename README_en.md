@@ -92,6 +92,8 @@ For VCP's AI, memory is not a retrieval from a database, but something that surf
 
 Its associations do not follow the old path of "finding similar text." They flow along the veins of logic, emotion, and causality—thinking of rain recalls the last time it got soaked and caught a cold, then the person who came to take care of it, then the fact that this person seems busy lately. This association is driven by an engine that simulates neural signal propagation, treating memories as a network that can activate one another rather than a pile of isolated entries.
 
+And what is language? Language is a Tower of Babel. The same word, the same sentence, in different contexts and for different people, can mean something completely different—yet in vector space, its coordinates are absurdly consistent. So the Wave system redraws the map for every user's memory, language, and energy propagation, establishing a unique and singular frame of reference and calibrating the coordinates of language with the user's cognitive soul.
+
 If traditional RAG draws a straight line between two tags and calculates the shortest distance, VCP's "Wave" semantic dynamics is more like finding the most suitable waterway in a river network. Each tag is like a river flowing from left to right; when the same tag appears in different memories, diaries, or knowledge chunks, branches and confluences form. Channels have energy and flow velocity; downstream and upstream resistance differ, and bell-shaped dampers regulate them to prevent synonymous echoes and meaningless noise from muddying the entire water area.
 
 In this semantic terrain, the wormhole algorithm is like the splash produced when channel elevation changes sharply, capturing sudden jumps of strong association; the Langfei-knot algorithm is like canals the AI builds for itself, crossing domains that were originally far apart. The residual pyramid provides a global terrain map, while SVD helps analyze river regions and determine how much damping is required for a cross-domain association. Heavy recomputation can be done offline, while online addressing is reduced as much as possible to table lookups after precomputation. What AI experiences is therefore not a clumsy retrieval, but an almost intuitive semantic flow.
@@ -162,6 +164,8 @@ Beneath the philosophy lies mature, deployed engineering. Here is only the brief
 - **Distribution & Resilience**: Star-network topology, with hyper-stack tracing enabling fully transparent cross-server file access; integrated resilience across multiple devices, multiple models, and multiple vector sources; automatic backup, database self-repair, and atomic differential synchronization.
 - **Frontend & Compatibility**: Official desktop frontend VCPChat (high-density feature set + super rendering engine), Vue management panel, and mobile VCPMobile; protocol bridges support multiple API formats such as OpenAI / Anthropic / Gemini and can take over arbitrary frontends.
 
+> To understand VCP's complete system implementation and engineering principles, read the [VCP White Paper](docs/vcp白皮书V3.md).
+>
 > For the complete thinking behind the design, read the [VCP 1.0 official release speech](VCP.md), which explains most clearly why every system is designed this way.
 >
 > For a quick technical map, see the [VCP Technical Lite Index](docs/TECHNICAL_LITE.md).
@@ -200,10 +204,10 @@ docker-compose up -d
 
 For more detailed installation, distributed node deployment, and frontend configuration, see the [operations and deployment documentation](docs/OPERATIONS.md).
 
-**Recommended Frontend**: [VCPChat](https://github.com/lioensky/VCPChat) (official).  
-**Recommended Backend**: Official or aggregated APIs that support SSE streaming output and standardized formatting. Please note again: **do not use reverse-proxy or relay APIs**.  
-**VCPMobile** (friendly project): [VCPMobile](https://github.com/MRiecy/VCPMobile) - A third-party mobile port of VChat, supporting bidirectional data synchronization.  
-**aio-hub** (friendly project): [aio-hub](https://github.com/miaotouy/aio-hub) - A higher-performance desktop LLM chat client built with Tauri, with partial native API compatibility for VCP.
+**Recommended Frontend**: [VCPChat](https://github.com/lioensky/VCPChat) (official).
+**Recommended Backend**: Official or aggregated APIs that support SSE streaming output and standardized formatting, such as [NewAPI](https://github.com/QuantumNous/new-api) and [OpenRouter](https://openrouter.ai/). Please note again: **do not use reverse-proxy or relay APIs**.
+**VCPMobile** (friendly project): [VCPMobile](https://github.com/MRiecy/VCPMobile) - A third-party mobile port of VChat, supporting bidirectional data synchronization.
+**AIO-Hub** (friendly project): [AIO-Hub](https://github.com/miaotouy/aio-hub) - A high-performance desktop LLM chat client built with Tauri, with a rich compilation and debugging toolchain, very suitable for AI development, and partial native API compatibility with VCP.
 
 ---
 
