@@ -10,14 +10,16 @@
     @mouseenter="handleSidebarHover(true)"
     @mouseleave="handleSidebarHover(false)"
   >
-    <SidebarSearch
-      :is-expanded-state="isExpandedState"
-      :is-sidebar-collapsed="isSidebarCollapsed"
-      :is-hovering-sidebar="isHoveringSidebar"
-      :search-query="searchQuery"
-      @update:search-query="searchQuery = $event"
-      @open-command-palette="emit('openCommandPalette')"
-    />
+    <div
+      class="sidebar-search"
+      :class="{ 'sidebar-collapsed': isSidebarCollapsed && !isHoveringSidebar }"
+    >
+      <TopBarSearch
+        :model-value="sidebarSearchQuery"
+        @update:model-value="emit('update:sidebarSearchQuery', $event)"
+        @open-command-palette="emit('openCommandPalette')"
+      />
+    </div>
 
     <SidebarRecentVisits
       :recent-visits="recentVisits"
@@ -41,16 +43,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { stripAppRouterBase } from "@/app/routes/base";
 import { useAppStore, type NavItem } from "@/stores/app";
 import { useLocalStorage } from "@/composables/useLocalStorage";
 import type { RecentVisit } from "@/composables/useRecentVisits";
 import type { PluginInfo } from "@/types/api.plugin";
-import SidebarSearch from "./sidebar/SidebarSearch.vue";
 import SidebarRecentVisits from "./sidebar/SidebarRecentVisits.vue";
 import SidebarNavList from "./sidebar/SidebarNavList.vue";
+import TopBarSearch from "@/components/layout/TopBarSearch.vue";
 
 interface Props {
   isMobileMenuOpen: boolean;
@@ -58,6 +60,7 @@ interface Props {
   isHoveringSidebar: boolean;
   isHoverEnabled: boolean;
   recentVisits: readonly RecentVisit[];
+  sidebarSearchQuery: string;
 }
 
 const props = defineProps<Props>();
@@ -65,6 +68,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   (e: "navigateTo", target: string, pluginName?: string): void;
   (e: "update:isHoveringSidebar", value: boolean): void;
+  (e: "update:sidebarSearchQuery", value: string): void;
   (e: "openCommandPalette"): void;
 }>();
 
@@ -76,14 +80,13 @@ const plugins = computed(() => appStore.plugins);
 const isExpandedState = computed(
   () => !props.isSidebarCollapsed || props.isHoveringSidebar
 );
-const searchQuery = ref("");
 const isRecentVisitsCollapsed = useLocalStorage<boolean>(
   "sidebarRecentCollapsed",
   false
 );
 
 const filteredNavItems = computed(() => {
-  const searchTerm = searchQuery.value.toLowerCase().trim();
+  const searchTerm = props.sidebarSearchQuery.toLowerCase().trim();
   if (!searchTerm) {
     return appendPinnedPluginItems(navItems.value);
   }
@@ -239,12 +242,11 @@ defineExpose({
 
 <style scoped>
 .sidebar {
-  width: 280px;
+  width: var(--app-sidebar-width, 280px);
   flex-shrink: 0;
-  background-color: var(--secondary-bg);
-  backdrop-filter: var(--glass-blur, blur(12px));
-  -webkit-backdrop-filter: var(--glass-blur, blur(12px));
-  border-right: 1px solid var(--border-color);
+  /* 不透明面板：把半透明 secondary-bg 压实在 primary-bg 上，挡住星空 */
+  background-color: color-mix(in srgb, var(--secondary-bg) 100%, var(--primary-bg));
+  border-right: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -252,7 +254,35 @@ defineExpose({
 }
 
 .sidebar.collapsed {
-  width: 72px;
+  width: var(--app-sidebar-width-icon, 72px);
+}
+
+.sidebar-search {
+  padding: 4px 16px 0 8px;
+}
+
+.sidebar-search.sidebar-collapsed {
+  padding: 4px 8px 0;
+}
+
+.sidebar-search.sidebar-collapsed :deep(.top-bar-search) {
+  width: 100%;
+}
+
+.sidebar-search.sidebar-collapsed :deep(input) {
+  padding-right: 0;
+  color: transparent;
+  caret-color: transparent;
+  pointer-events: none;
+}
+
+.sidebar-search.sidebar-collapsed :deep(input::placeholder) {
+  color: transparent;
+}
+
+.sidebar-search.sidebar-collapsed :deep(.search-shortcut),
+.sidebar-search.sidebar-collapsed :deep(.search-clear) {
+  display: none;
 }
 
 @media (max-width: 768px) {
@@ -261,7 +291,7 @@ defineExpose({
     top: var(--app-top-bar-height, 60px);
     left: 0;
     bottom: 0;
-    width: min(280px, calc(100vw - 20px));
+    width: min(var(--app-sidebar-width, 280px), calc(100vw - 20px));
     max-width: calc(100vw - 20px);
     transform: translateX(-100%);
     z-index: 999;
@@ -273,7 +303,7 @@ defineExpose({
   }
 
   .sidebar.collapsed {
-    width: min(280px, calc(100vw - 20px));
+    width: min(var(--app-sidebar-width, 280px), calc(100vw - 20px));
   }
 }
 

@@ -1,9 +1,9 @@
 <template>
-  <nav class="breadcrumb" aria-label="面包屑导航">
+  <nav class="breadcrumb" :class="{ 'breadcrumb--compact': compact }" aria-label="面包屑导航">
     <ol>
       <li>
-        <a href="#" @click.prevent="goToDashboard" aria-label="返回首页">
-          <span class="material-symbols-outlined">home</span>
+        <a class="breadcrumb-home" href="#" @click.prevent="goToDashboard" aria-label="返回首页">
+          <span class="material-symbols-outlined">space_dashboard</span>
         </a>
       </li>
 
@@ -43,6 +43,13 @@ interface BreadcrumbItem {
   title: string;
   route: RouteLocationRaw;
 }
+
+withDefaults(
+  defineProps<{
+    compact?: boolean;
+  }>(),
+  { compact: false }
+);
 
 const router = useRouter();
 const route = useRoute();
@@ -167,6 +174,52 @@ function navigateTo(location: RouteLocationRaw) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 顶栏内嵌模式：单行、去 margin、紧凑尺寸 */
+.breadcrumb--compact {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.breadcrumb--compact ol {
+  height: 32px;
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.breadcrumb.breadcrumb--compact a,
+.breadcrumb.breadcrumb--compact .breadcrumb-current {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 0.875rem;
+  line-height: 1;
+  border-radius: var(--radius-md);
+}
+
+.breadcrumb.breadcrumb--compact .breadcrumb-home {
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.breadcrumb.breadcrumb--compact .breadcrumb-current {
+  max-width: 240px;
+}
+
+.breadcrumb.breadcrumb--compact .breadcrumb-home .material-symbols-outlined {
+  display: block;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.breadcrumb.breadcrumb--compact .breadcrumb-separator .material-symbols-outlined {
+  display: block;
+  font-size: 16px;
+  line-height: 1;
 }
 
 @media (max-width: 768px) {
