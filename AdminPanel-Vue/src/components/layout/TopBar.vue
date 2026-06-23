@@ -265,7 +265,7 @@ function goToDashboard() {
 .top-bar-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -449,7 +449,7 @@ function goToDashboard() {
   align-items: center;
   gap: 0;
   cursor: pointer;
-  margin-left: 4px;
+  margin-left: 0;
   background: none;
   border: 0;
   padding: 0;

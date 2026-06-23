@@ -13,12 +13,23 @@
       @keydown.meta.k.prevent="emit('openCommandPalette')"
     />
     <button
+      v-if="modelValue"
+      type="button"
+      class="search-clear"
+      aria-label="清空筛选"
+      @click="emit('update:modelValue', '')"
+    >
+      <span class="material-symbols-outlined" aria-hidden="true">close</span>
+    </button>
+    <button
+      v-else
       type="button"
       class="search-shortcut"
       title="打开全局跳转"
       @click="emit('openCommandPalette')"
     >
-      Ctrl+K
+      <span>Ctrl</span>
+      <span>K</span>
     </button>
   </div>
 </template>
@@ -100,13 +111,17 @@ defineExpose({
 .search-shortcut {
   position: absolute;
   right: 6px;
-  padding: 3px 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
   font-size: var(--font-size-caption);
   color: var(--secondary-text);
   background: var(--accent-bg);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
   transition:
     color var(--transition-fast),
     border-color var(--transition-fast);
@@ -115,6 +130,32 @@ defineExpose({
 .search-shortcut:hover {
   color: var(--primary-text);
   border-color: color-mix(in srgb, var(--button-bg) 24%, transparent);
+}
+
+.search-clear {
+  position: absolute;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--secondary-text);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.search-clear .material-symbols-outlined {
+  font-size: var(--font-size-body);
+}
+
+.search-clear:hover {
+  color: var(--primary-text);
+  background: var(--accent-bg);
 }
 
 @media (max-width: 768px) {
