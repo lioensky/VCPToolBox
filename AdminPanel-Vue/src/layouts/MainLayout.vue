@@ -18,14 +18,11 @@
         :is-system-menu-open="isSystemMenuOpen"
         :is-user-menu-open="isUserMenuOpen"
         :has-notifications="hasNotifications"
-        :sidebar-search-query="sidebarSearchQuery"
         @toggleMobileMenu="toggleMobileMenu"
         @toggleSidebarCollapse="toggleSidebarCollapse"
         @toggleSystemMenu="toggleSystemMenu"
         @toggleUserMenu="toggleUserMenu"
         @closeAllMenus="closeAllMenus"
-        @update:sidebarSearchQuery="sidebarSearchQuery = $event"
-        @openCommandPalette="openCommandPalette"
       />
     </div>
 
@@ -42,6 +39,7 @@
           @navigate-to="navigateTo"
           @open-command-palette="openCommandPalette"
           @update:is-hovering-sidebar="isHoveringSidebar = $event"
+          @update:sidebarSearchQuery="sidebarSearchQuery = $event"
         />
       </div>
 

@@ -157,10 +157,4 @@ defineExpose({
   color: var(--primary-text);
   background: var(--accent-bg);
 }
-
-@media (max-width: 768px) {
-  .top-bar-search {
-    display: none;
-  }
-}
 </style>

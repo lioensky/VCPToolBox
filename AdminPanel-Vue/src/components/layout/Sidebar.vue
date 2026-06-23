@@ -10,6 +10,17 @@
     @mouseenter="handleSidebarHover(true)"
     @mouseleave="handleSidebarHover(false)"
   >
+    <div
+      class="sidebar-search"
+      :class="{ 'sidebar-collapsed': isSidebarCollapsed && !isHoveringSidebar }"
+    >
+      <TopBarSearch
+        :model-value="sidebarSearchQuery"
+        @update:model-value="emit('update:sidebarSearchQuery', $event)"
+        @open-command-palette="emit('openCommandPalette')"
+      />
+    </div>
+
     <SidebarRecentVisits
       :recent-visits="recentVisits"
       :is-sidebar-collapsed="isSidebarCollapsed"
@@ -41,6 +52,7 @@ import type { RecentVisit } from "@/composables/useRecentVisits";
 import type { PluginInfo } from "@/types/api.plugin";
 import SidebarRecentVisits from "./sidebar/SidebarRecentVisits.vue";
 import SidebarNavList from "./sidebar/SidebarNavList.vue";
+import TopBarSearch from "@/components/layout/TopBarSearch.vue";
 
 interface Props {
   isMobileMenuOpen: boolean;
@@ -243,6 +255,15 @@ defineExpose({
 
 .sidebar.collapsed {
   width: var(--app-sidebar-width-icon, 72px);
+}
+
+.sidebar-search {
+  padding: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.sidebar-search.sidebar-collapsed {
+  display: none;
 }
 
 @media (max-width: 768px) {

@@ -39,13 +39,8 @@
         </button>
       </div>
 
-      <!-- 中列：搜索 + 面包屑 -->
+      <!-- 中列：面包屑 -->
       <div class="top-bar-center">
-        <TopBarSearch
-          :model-value="sidebarSearchQuery"
-          @update:model-value="emit('update:sidebarSearchQuery', $event)"
-          @open-command-palette="emit('openCommandPalette')"
-        />
         <Breadcrumb compact />
       </div>
 
@@ -138,7 +133,6 @@ import { useAuthStore } from "@/stores/auth";
 import { showMessage, createLogger } from "@/utils";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import Breadcrumb from "@/components/layout/Breadcrumb.vue";
-import TopBarSearch from "@/components/layout/TopBarSearch.vue";
 
 interface Props {
   isMobileMenuOpen: boolean;
@@ -146,7 +140,6 @@ interface Props {
   isSystemMenuOpen: boolean;
   isUserMenuOpen: boolean;
   hasNotifications: boolean;
-  sidebarSearchQuery: string;
 }
 
 // 使用 _props 忽略未使用警告
@@ -158,8 +151,6 @@ interface Emits {
   (e: "toggleSystemMenu"): void;
   (e: "toggleUserMenu"): void;
   (e: "closeAllMenus"): void;
-  (e: "update:sidebarSearchQuery", value: string): void;
-  (e: "openCommandPalette"): void;
 }
 
 const emit = defineEmits<Emits>();
