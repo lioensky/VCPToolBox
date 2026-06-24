@@ -2,6 +2,14 @@
   <div class="vcp-animation-container">
     <div class="vcp-logo-container">
       <img
+        :src="novaLogoUrl"
+        alt=""
+        aria-hidden="true"
+        class="vcp-side-logo"
+        loading="eager"
+        @click="handleLogoClick"
+      />
+      <img
         src="/VCPLogo2.png"
         alt="VCPToolBox Logo"
         class="vcp-logo"
@@ -18,6 +26,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { useAppStore } from "@/stores/app";
+import novaLogoUrl from "@/assets/nova-logo.png";
 
 const canvas = ref<HTMLCanvasElement | null>(null);
 const appStore = useAppStore();
@@ -293,14 +302,34 @@ onUnmounted(() => {
   left: 50%;
   transform: translate(-50%, -50%);
   z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(4px, 0.7vw, 10px);
+  width: min(78vw, 900px);
   text-align: center;
+  animation: laser-outline-orbit 4s infinite linear;
+}
+
+.vcp-side-logo {
+  width: clamp(64px, 9vw, 112px);
+  height: clamp(64px, 9vw, 112px);
+  flex: 0 0 auto;
+  object-fit: contain;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.vcp-side-logo:active {
+  transform: scale(0.95);
 }
 
 .vcp-logo {
+  min-width: 0;
   max-width: 800px;
   max-height: 80%;
   height: auto;
-  animation: laser-outline-orbit 4s infinite linear;
   cursor: pointer;
   user-select: none;
   transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
@@ -344,7 +373,12 @@ onUnmounted(() => {
   }
 
   .vcp-logo {
-    max-width: 280px;
+    max-width: 260px;
+  }
+
+  .vcp-side-logo {
+    width: 48px;
+    height: 48px;
   }
 }
 </style>

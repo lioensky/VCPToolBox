@@ -35,6 +35,12 @@
           @click="goToDashboard"
           aria-label="返回仪表盘"
         >
+          <img
+            class="brand-logo"
+            :src="topbarLogoUrl"
+            alt=""
+            aria-hidden="true"
+          />
           <span class="server-title">VCPToolBox</span>
         </button>
       </div>
@@ -133,6 +139,7 @@ import { useAuthStore } from "@/stores/auth";
 import { showMessage, createLogger } from "@/utils";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import Breadcrumb from "@/components/layout/Breadcrumb.vue";
+import topbarLogoUrl from "@/assets/topbar-logo.png";
 
 interface Props {
   isMobileMenuOpen: boolean;
@@ -487,6 +494,15 @@ function goToDashboard() {
   border: 0;
   color: inherit;
   min-width: 0;
+}
+
+.brand-logo {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  border-radius: 4px;
 }
 
 .top-bar.sidebar-collapsed .brand {
