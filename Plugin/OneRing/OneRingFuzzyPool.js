@@ -24,11 +24,23 @@ class OneRingFuzzyWorkerPool {
     }
 
     start() {
-        if (this.started || this.closed) return;
+        if (this.started) return;
+        if (this.closed) {
+            this.reopen();
+        }
         this.started = true;
         for (let i = 0; i < this.size; i++) {
             this._createWorker();
         }
+    }
+
+    reopen() {
+        if (!this.closed) return;
+        this.closed = false;
+        this.started = false;
+        this.workers = [];
+        this.idleWorkers = [];
+        this.queue = [];
     }
 
     similarity(a, b) {
@@ -42,7 +54,7 @@ class OneRingFuzzyWorkerPool {
 
     run(type, payload) {
         if (this.closed) {
-            return Promise.reject(new Error('OneRing fuzzy worker pool is closed.'));
+            this.reopen();
         }
         this.start();
         return new Promise((resolve, reject) => {
@@ -52,7 +64,9 @@ class OneRingFuzzyWorkerPool {
     }
 
     close() {
+        if (this.closed && !this.started && this.workers.length === 0) return;
         this.closed = true;
+        this.started = false;
         const pending = this.queue.splice(0);
         for (const task of pending) {
             task.reject(new Error('OneRing fuzzy worker pool closed before task execution.'));
