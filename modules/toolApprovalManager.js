@@ -12,7 +12,10 @@ class ToolApprovalManager {
             timeoutMinutes: 5,
             approveAll: false,
             approvalList: [],
-            fuzzyToolMatching: false
+            fuzzyToolMatching: false,
+            privacyProtection: {
+                enabled: false
+            }
         };
         this.watcher = null;
         this.loadConfig();
@@ -30,7 +33,10 @@ class ToolApprovalManager {
                     approveAll: Boolean(loadedConfig.approveAll),
                     approvalList: Array.isArray(loadedConfig.approvalList) ? loadedConfig.approvalList : [],
                     fuzzyToolMatching: Boolean(loadedConfig.fuzzyToolMatching),
-                    debugMode: Boolean(loadedConfig.debugMode)
+                    debugMode: Boolean(loadedConfig.debugMode),
+                    privacyProtection: (loadedConfig.privacyProtection && typeof loadedConfig.privacyProtection === 'object')
+                        ? { ...loadedConfig.privacyProtection, enabled: loadedConfig.privacyProtection.enabled === true }
+                        : { enabled: false }
                 };
                 this.applyRuntimeConfig();
                 console.log(`[ToolApprovalManager] Configuration loaded from ${this.configPath}`);
@@ -224,6 +230,10 @@ class ToolApprovalManager {
 
     getTimeoutMs() {
         return (this.config.timeoutMinutes || 5) * 60 * 1000;
+    }
+
+    getPrivacyProtectionConfig() {
+        return this.config.privacyProtection || { enabled: false };
     }
 
     shutdown() {

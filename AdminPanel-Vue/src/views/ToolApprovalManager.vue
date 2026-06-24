@@ -28,6 +28,10 @@
           <AppSwitch v-model="config.fuzzyToolMatching" :disabled="saving" label="是否开启模糊工具匹配" />
           <p class="aa-hint">开启后，工具参数值边界除标准「始」「末」外，还会兼容「始}、{始」、以及「始`」「始text」「始``」「始%20」等异常标记。</p>
         </div>
+        <div class="config-item privacy-protection-item">
+          <AppSwitch v-model="config.privacyProtectionEnabled" :disabled="saving" label="是否开启工具调用隐私保护" />
+          <p class="aa-hint">默认关闭。开启后，会在工具结果返回给 AI 前保守打码疑似 .env 单行密钥、password、api key、token，以及 sk- 等高置信长令牌；不会影响工具实际执行与人工审核参数。</p>
+        </div>
         <div class="config-item">
           <label for="tool-approval-timeout">设置审核最大等待时间 (分钟)</label>
           <input type="number" id="tool-approval-timeout" v-model.number="config.timeoutMinutes" min="1" max="60" :disabled="saving">
@@ -57,6 +61,7 @@ interface ToolApprovalFormState {
   approveAll: boolean
   timeoutMinutes: number
   fuzzyToolMatching: boolean
+  privacyProtectionEnabled: boolean
   approvalListText: string
 }
 
@@ -66,6 +71,7 @@ function createDefaultConfig(): ToolApprovalFormState {
     approveAll: false,
     timeoutMinutes: 5,
     fuzzyToolMatching: false,
+    privacyProtectionEnabled: false,
     approvalListText: ''
   }
 }
@@ -82,6 +88,7 @@ function normalizeToolApprovalConfig(data: ToolApprovalConfig): ToolApprovalForm
     approveAll: Boolean(data.approveAll),
     timeoutMinutes: data.timeoutMinutes ?? data.timeout ?? 5,
     fuzzyToolMatching: Boolean(data.fuzzyToolMatching),
+    privacyProtectionEnabled: data.privacyProtection?.enabled === true,
     approvalListText: approvalList.join('\n')
   }
 }
@@ -98,6 +105,9 @@ function buildPayload(state: ToolApprovalFormState) {
     approveAll: state.approveAll,
     timeoutMinutes: state.timeoutMinutes,
     fuzzyToolMatching: state.fuzzyToolMatching,
+    privacyProtection: {
+      enabled: state.privacyProtectionEnabled
+    },
     approvalList: state.approvalListText
       .split('\n')
       .map((line) => line.trim())
