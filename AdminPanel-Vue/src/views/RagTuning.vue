@@ -559,6 +559,83 @@
             </button>
           </div>
 
+          <div class="rag-console__section rag-console__section--themes">
+            <div class="rag-console__themes-header">
+              <div>
+                <span class="rag-console__label">参数预设</span>
+                <p>以 <code>rag_params_模型名.json</code> 形式保存不同向量模型的调参方案。</p>
+              </div>
+              <button
+                type="button"
+                class="btn-secondary rag-console__mini-action"
+                :disabled="isThemeLoading"
+                @click="loadThemes"
+              >
+                {{ isThemeLoading ? "刷新中…" : "刷新" }}
+              </button>
+            </div>
+
+            <label class="theme-field">
+              <span>选择预设</span>
+              <select v-model="selectedThemeName" :disabled="isThemeLoading || isThemeSaving">
+                <option value="">未选择预设</option>
+                <option
+                  v-for="theme in ragParamThemes"
+                  :key="theme.fileName"
+                  :value="theme.name"
+                >
+                  {{ theme.name }}
+                </option>
+              </select>
+            </label>
+
+            <div class="rag-console__actions rag-console__theme-actions">
+              <button
+                type="button"
+                class="btn-secondary"
+                :disabled="!selectedThemeName || isThemeLoading || isThemeSaving"
+                @click="openSelectedTheme"
+              >
+                打开预设调参
+              </button>
+              <button
+                type="button"
+                class="btn-secondary"
+                :disabled="!selectedThemeName || isThemeLoading || isThemeSaving || !hasParams"
+                @click="saveCurrentToSelectedTheme"
+              >
+                保存到所选预设
+              </button>
+              <button
+                type="button"
+                class="btn-primary"
+                :disabled="!selectedThemeName || isThemeLoading || isThemeSaving"
+                @click="applySelectedTheme"
+              >
+                应用所选预设
+              </button>
+            </div>
+
+            <label class="theme-field">
+              <span>新预设名称 / 向量模型名</span>
+              <input
+                v-model.trim="newThemeName"
+                type="text"
+                placeholder="例如 gemini-embedding-2-preview"
+                :disabled="isThemeSaving"
+              />
+            </label>
+
+            <button
+              type="button"
+              class="btn-primary"
+              :disabled="!canSaveNewTheme"
+              @click="saveCurrentAsNewTheme"
+            >
+              {{ isThemeSaving ? "保存预设中…" : "保存当前为新预设" }}
+            </button>
+          </div>
+
           <p
             v-if="statusMessage"
             :class="['rag-console__status', `rag-console__status--${statusType}`]"
@@ -692,7 +769,13 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ragApi, type ParamGroup, type ParamValue, type RagParams } from "@/api";
+import {
+  ragApi,
+  type ParamGroup,
+  type ParamValue,
+  type RagParamTheme,
+  type RagParams,
+} from "@/api";
 import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { useAppStore } from "@/stores/app";
 import OrderedCooccurrenceModal from "@/features/rag-tuning/OrderedCooccurrenceModal.vue";
@@ -777,6 +860,11 @@ const wormholeModalOpen = ref(false);
 const orderedCooccurrenceModalOpen = ref(false);
 const semanticSimulationOpen = ref(false);
 const semanticSimulationFrame = ref<HTMLIFrameElement | null>(null);
+const ragParamThemes = ref<RagParamTheme[]>([]);
+const selectedThemeName = ref("");
+const newThemeName = ref("");
+const isThemeLoading = ref(false);
+const isThemeSaving = ref(false);
 
 const { collapsed: asideCollapsed, toggle: toggleAside } = useConsoleCollapse(
   "rag-tuning-aside"
@@ -923,6 +1011,10 @@ const changedLeafCount = computed(() =>
 
 const isDirty = computed(() => changedLeafCount.value > 0);
 const hasParams = computed(() => groupSections.value.length > 0);
+
+const canSaveNewTheme = computed(
+  () => hasParams.value && newThemeName.value.trim().length > 0 && !isThemeSaving.value
+);
 
 const wormholeEntry = computed<NestedParamEntry | null>(() => {
   const section = groupSections.value.find((item) => item.name === WORMHOLE_GROUP_NAME);
@@ -1250,6 +1342,130 @@ function closeSemanticSimulation(): void {
   semanticSimulationOpen.value = false;
 }
 
+async function loadThemes(): Promise<void> {
+  isThemeLoading.value = true;
+
+  try {
+    ragParamThemes.value = await ragApi.getRagParamThemes({
+      showLoader: false,
+      loadingKey: "rag-tuning.themes.load",
+    });
+
+    if (
+      selectedThemeName.value &&
+      !ragParamThemes.value.some((theme) => theme.name === selectedThemeName.value)
+    ) {
+      selectedThemeName.value = "";
+    }
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    statusMessage.value = `预设列表加载失败：${errorMessage}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isThemeLoading.value = false;
+  }
+}
+
+async function openSelectedTheme(): Promise<void> {
+  if (!selectedThemeName.value || isThemeLoading.value || isThemeSaving.value) {
+    return;
+  }
+
+  isThemeLoading.value = true;
+
+  try {
+    const data = await ragApi.getRagParamTheme(selectedThemeName.value, {
+      loadingKey: "rag-tuning.themes.open",
+    });
+
+    params.value = cloneParams(data);
+    originalParams.value = cloneParams(data);
+    statusMessage.value = `已打开预设「${selectedThemeName.value}」，可继续调参后保存到该预设。`;
+    statusType.value = "success";
+    showMessage(statusMessage.value, "success");
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    statusMessage.value = `打开预设失败：${errorMessage}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isThemeLoading.value = false;
+  }
+}
+
+async function saveTheme(themeName: string, successMessage: string): Promise<void> {
+  if (!themeName || !hasParams.value || isThemeSaving.value) {
+    return;
+  }
+
+  isThemeSaving.value = true;
+
+  try {
+    const response = await ragApi.saveRagParamTheme(themeName, params.value, {
+      loadingKey: "rag-tuning.themes.save",
+    });
+
+    const savedThemeName = response.theme?.name || themeName;
+    selectedThemeName.value = savedThemeName;
+    newThemeName.value = "";
+    originalParams.value = cloneParams(params.value);
+    await loadThemes();
+    statusMessage.value = successMessage.replace("{theme}", savedThemeName);
+    statusType.value = "success";
+    showMessage(statusMessage.value, "success");
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    statusMessage.value = `保存预设失败：${errorMessage}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isThemeSaving.value = false;
+  }
+}
+
+async function saveCurrentAsNewTheme(): Promise<void> {
+  await saveTheme(newThemeName.value, "已保存当前参数为预设「{theme}」。");
+}
+
+async function saveCurrentToSelectedTheme(): Promise<void> {
+  await saveTheme(selectedThemeName.value, "已更新预设「{theme}」。");
+}
+
+async function applySelectedTheme(): Promise<void> {
+  if (!selectedThemeName.value || isThemeLoading.value || isThemeSaving.value) {
+    return;
+  }
+
+  isThemeSaving.value = true;
+
+  try {
+    const response = await ragApi.applyRagParamTheme(selectedThemeName.value, {
+      loadingKey: "rag-tuning.themes.apply",
+    });
+
+    if (response.params) {
+      params.value = cloneParams(response.params);
+      originalParams.value = cloneParams(response.params);
+    } else {
+      await loadParams();
+    }
+
+    const appliedThemeName = response.theme?.name || selectedThemeName.value;
+    selectedThemeName.value = appliedThemeName;
+    statusMessage.value = `已应用预设「${appliedThemeName}」到主 RAG 参数。`;
+    statusType.value = "success";
+    showMessage(statusMessage.value, "success");
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    statusMessage.value = `应用预设失败：${errorMessage}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isThemeSaving.value = false;
+  }
+}
+
 async function loadParams(): Promise<void> {
   isLoading.value = true;
   loadError.value = "";
@@ -1328,6 +1544,7 @@ watch(
 onMounted(() => {
   window.addEventListener("message", handleSemanticSimulationMessage);
   void loadParams();
+  void loadThemes();
 });
 
 onBeforeUnmount(() => {
@@ -2098,6 +2315,54 @@ onBeforeUnmount(() => {
   background: var(--danger-bg);
   border-color: var(--danger-border);
   color: var(--danger-text);
+}
+
+.rag-console__themes-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.rag-console__themes-header code {
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+.rag-console__mini-action {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  font-size: var(--font-size-helper);
+}
+
+.theme-field {
+  display: grid;
+  gap: var(--space-2);
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.theme-field input,
+.theme-field select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--input-bg);
+  color: var(--primary-text);
+}
+
+.rag-console__theme-actions {
+  grid-template-columns: 1fr;
+}
+
+.rag-console__section--themes {
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 20%, var(--border-color));
+  border-radius: var(--radius-xl);
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--highlight-text) 10%, transparent), transparent 46%),
+    var(--surface-overlay-soft);
 }
 
 .rag-console__jump-btn {

@@ -9,6 +9,26 @@ export type ParamValue = number | number[] | Record<string, number>;
 export type ParamGroup = Record<string, ParamValue>;
 export type RagParams = Record<string, ParamGroup>;
 
+export interface RagParamTheme {
+  name: string;
+  fileName: string;
+}
+
+export interface RagParamThemesResponse {
+  themes?: RagParamTheme[];
+}
+
+export interface RagParamThemeApplyResponse {
+  message?: string;
+  theme?: RagParamTheme;
+  params?: RagParams;
+}
+
+export interface RagParamThemeSaveResponse {
+  message?: string;
+  theme?: RagParamTheme;
+}
+
 export interface SemanticGroupData {
   words?: string[];
   auto_learned?: string[];
@@ -54,6 +74,58 @@ export const ragApi = {
         url: "/admin_api/rag-params",
         method: "POST",
         body: params,
+      },
+      uiOptions
+    );
+  },
+
+  async getRagParamThemes(
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<RagParamTheme[]> {
+    const response = await requestWithUi<RagParamThemesResponse>(
+      {
+        url: "/admin_api/rag-param-themes",
+      },
+      uiOptions
+    );
+    return response.themes || [];
+  },
+
+  async getRagParamTheme(
+    themeName: string,
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<RagParams> {
+    return requestWithUi(
+      {
+        url: `/admin_api/rag-param-themes/${encodeURIComponent(themeName)}`,
+      },
+      uiOptions
+    );
+  },
+
+  async saveRagParamTheme(
+    themeName: string,
+    params: RagParams,
+    uiOptions: RequestUiOptions = {}
+  ): Promise<RagParamThemeSaveResponse> {
+    return requestWithUi(
+      {
+        url: `/admin_api/rag-param-themes/${encodeURIComponent(themeName)}`,
+        method: "POST",
+        body: params,
+      },
+      uiOptions
+    );
+  },
+
+  async applyRagParamTheme(
+    themeName: string,
+    uiOptions: RequestUiOptions = {}
+  ): Promise<RagParamThemeApplyResponse> {
+    return requestWithUi(
+      {
+        url: `/admin_api/rag-param-themes/${encodeURIComponent(themeName)}/apply`,
+        method: "POST",
       },
       uiOptions
     );

@@ -1,0 +1,98 @@
+{
+  "ContextFoldingV2": {
+    "thresholdBase": 0.5,
+    "thresholdRange": [
+      0.4,
+      0.6
+    ],
+    "lWeight": 0.05,
+    "sWeight": 0.05,
+    "fuzzyEmbedding": {
+      "threshold": 0.96,
+      "minLength": 80,
+      "maxScan": 200,
+      "maxLengthDiffRatio": 0.02,
+      "maxLengthDiffAbs": 80
+    }
+  },
+  "RAGDiaryPlugin": {
+    "noise_penalty": 0.05,
+    "tagWeightRange": [
+      0.05,
+      0.45
+    ],
+    "tagTruncationBase": 0.6,
+    "tagTruncationRange": [
+      0.5,
+      0.9
+    ],
+    "timeDecay": {
+      "halfLifeDays": 30,
+      "minScore": 0.5
+    },
+    "mainSearchWeights": [
+      0.7,
+      0.3
+    ],
+    "shotgunDecayFactor": 0.75,
+    "shotgunHistorySegmentLimit": 3,
+    "refreshWeights": [
+      0.5,
+      0.35,
+      0.15
+    ],
+    "metaThinkingWeights": [
+      0.8,
+      0.2
+    ]
+  },
+  "KnowledgeBaseManager": {
+    "geodesicRerank": {
+      "alpha": 0.5,
+      "minGeoSamples": 4
+    },
+    "spikeRouting": {
+      "maxSafeHops": 4,
+      "baseMomentum": 2,
+      "firingThreshold": 0.1,
+      "baseDecay": 0.25,
+      "wormholeDecay": 0.7,
+      "tensionThreshold": 1,
+      "maxEmergentNodes": 50,
+      "maxNeighborsPerNode": 20
+    },
+    "orderedCooccurrence": {
+      "forwardGain": 1,
+      "reverseGain": 0.35,
+      "minReverseGain": 0.25,
+      "maxReverseGain": 0.6,
+      "distanceDecay": 0.08,
+      "reverseAnchorBoost": 1,
+      "reverseAnchorMax": 1.35,
+      "semanticGainEnabled": 1,
+      "semanticGainPeak": 0.65,
+      "semanticGainSigma": 0.25,
+      "semanticGainLowSimFallback": 0.1,
+      "reverseInversionGuard": 0.9
+    },
+    "activationMultiplier": [
+      0.5,
+      1.5
+    ],
+    "dynamicBoostRange": [
+      0.3,
+      2
+    ],
+    "coreBoostRange": [
+      1.2,
+      1.4
+    ],
+    "deduplicationThreshold": 0.88,
+    "techTagThreshold": 0.08,
+    "normalTagThreshold": 0.015,
+    "languageCompensator": {
+      "penaltyUnknown": 0.05,
+      "penaltyCrossDomain": 0.1
+    }
+  }
+}
