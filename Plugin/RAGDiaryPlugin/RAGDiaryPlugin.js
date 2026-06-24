@@ -1191,8 +1191,8 @@ class RAGDiaryPlugin {
                 console.log(`[RAGDiaryPlugin] Tagmemo V4: Detected ${historySegments.length} history segments.`);
             }
 
-            const combinedTextForTimeParsing = [userContent, aiContent].filter(Boolean).join('\n');
-            const timeRanges = this.timeParser.parse(combinedTextForTimeParsing);
+            // Time 语法只解析最新真实用户发言；不再读取 AI 输出中的时间范围词，避免 AI 叙述反向约束日记召回范围。
+            const timeRanges = this.timeParser.parse(userContent || '');
 
             // 🌟 V4.1: 上下文日记去重 - 提取当前上下文中所有 DailyNote create 的 Content 前缀
             const contextDiaryPrefixes = this._extractContextDiaryPrefixes(messages);
