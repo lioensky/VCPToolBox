@@ -572,6 +572,101 @@ class RAGDiaryPlugin {
         return this.directDiaryTextProcessor.getDiaryContent(characterName);
     }
 
+    _buildWeightedBM25QueryText(userContent, aiContent) {
+        const config = this.ragParams?.RAGDiaryPlugin || {};
+        const weights = Array.isArray(config.mainSearchWeights) ? config.mainSearchWeights : [0.7, 0.3];
+        const userWeight = Number.isFinite(Number(weights[0])) ? Math.max(0, Number(weights[0])) : 0.7;
+        const aiWeight = Number.isFinite(Number(weights[1])) ? Math.max(0, Number(weights[1])) : 0.3;
+        const weightSum = userWeight + aiWeight;
+
+        const normalize = (text) => this.directDiaryTextProcessor.normalizeBM25QueryInput(String(text || ''));
+        const userText = normalize(userContent);
+        const aiText = normalize(aiContent);
+
+        if (!userText && !aiText) return '';
+
+        const userRatio = weightSum > 0 ? userWeight / weightSum : 0.7;
+        const aiRatio = weightSum > 0 ? aiWeight / weightSum : 0.3;
+        const scale = this.ragParams?.RAGDiaryPlugin?.bm25QueryRepeatScale || 10;
+        const userRepeats = userText ? Math.max(1, Math.round(userRatio * scale)) : 0;
+        const aiRepeats = aiText ? Math.max(1, Math.round(aiRatio * scale)) : 0;
+
+        return [
+            ...new Array(userRepeats).fill(userText),
+            ...new Array(aiRepeats).fill(aiText)
+        ].filter(Boolean).join('\n');
+    }
+
+    async _getBM25RagCandidates(dbName, userContent, aiContent, limit, mode, queryVector, contextDiaryPrefixes = new Set()) {
+        const weightedQueryText = this._buildWeightedBM25QueryText(userContent, aiContent);
+        const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
+        const bm25Candidates = await this.directDiaryTextProcessor.getBM25DiaryCandidates(
+            dbName,
+            weightedQueryText,
+            safeLimit,
+            mode
+        );
+
+        if (!bm25Candidates.matched || !Array.isArray(bm25Candidates.entries) || bm25Candidates.entries.length === 0) {
+            return {
+                matched: false,
+                results: [],
+                queryTokens: bm25Candidates.queryTokens || [],
+                matchedCount: 0,
+                weightedQueryText
+            };
+        }
+
+        const maxBm25Score = bm25Candidates.entries.reduce((max, entry) => Math.max(max, entry.bm25Score || 0), 0) || 1;
+        const scoreByPath = new Map();
+        for (const entry of bm25Candidates.entries) {
+            const relativePath = entry.relativePath || path.join(dbName, entry.file);
+            scoreByPath.set(relativePath, {
+                bm25Score: entry.bm25Score || 0,
+                normalizedBM25Score: Math.min(1, (entry.bm25Score || 0) / maxBm25Score),
+                matchText: entry.matchText || ''
+            });
+        }
+
+        let chunks = [];
+        try {
+            chunks = await this.vectorDBManager.getChunksByFilePaths(Array.from(scoreByPath.keys()));
+        } catch (error) {
+            console.warn(`[RAGDiaryPlugin] BM25 getChunksByFilePaths failed for "${dbName}":`, error.message);
+            chunks = [];
+        }
+
+        let results = chunks.map(chunk => {
+            const chunkPath = chunk.fullPath || chunk.sourceFile || '';
+            const bm25Info = scoreByPath.get(chunkPath) || { bm25Score: 0, normalizedBM25Score: 0, matchText: '' };
+            const vectorScore = queryVector && chunk.vector
+                ? this.cosineSimilarity(queryVector, Array.from(chunk.vector))
+                : 0;
+            const hybridScore = (bm25Info.normalizedBM25Score * 0.65) + (vectorScore * 0.35);
+
+            return {
+                ...chunk,
+                score: hybridScore,
+                original_score: vectorScore,
+                bm25Score: bm25Info.bm25Score,
+                normalizedBM25Score: bm25Info.normalizedBM25Score,
+                bm25MatchText: bm25Info.matchText,
+                source: mode === 'body' ? 'bm25_body' : 'bm25_tag'
+            };
+        });
+
+        results = this._filterContextDuplicates(results, contextDiaryPrefixes);
+        results.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+        return {
+            matched: results.length > 0,
+            results,
+            queryTokens: bm25Candidates.queryTokens || [],
+            matchedCount: bm25Candidates.matchedCount || results.length,
+            weightedQueryText
+        };
+    }
+
     /**
      * 解析全量召回专用的 ::Last 后缀。
      * 支持 ::Last（默认10）、::Last5、::Last20。
@@ -1805,25 +1900,21 @@ class RAGDiaryPlugin {
                 const finalSimilarity = Math.max(baseSimilarity, enhancedSimilarity);
 
                 if (finalSimilarity >= localThreshold) {
-                    const diaryContent = lastLimit
-                        ? await this.getLastDiaryContent(dbName, lastLimit)
-                        : await this.getDiaryContent(dbName);
-                    const safeContent = this.directDiaryTextProcessor.sanitizeNestedPlaceholders(diaryContent);
-
-                    if (this.pushVcpInfo) {
-                        this.pushVcpInfo({
-                            type: 'DailyNote',
-                            action: 'FullTextRecall',
-                            dbName: dbName,
-                            message: lastLimit
-                                ? `[RAGDiary] 已全文召回日记本：${dbName}，按文件时间召回最新 ${lastLimit} 条记录`
-                                : `[RAGDiary] 已全文召回日记本：${dbName}，共 1 条全量记录`
-                        });
-                    }
+                    // <<...>> 仅负责相似度触发/门控；门控通过后的文本读取统一复用 {{...}} 纯文本管线。
+                    // 这样 <<xx日记本::LastN / ::RandomN / ::BM25 / ::BM25+>> 会自动继承
+                    // DirectDiaryTextProcessor 中持续迭代的纯文本能力。
+                    const directPlaceholder = `{{${dbName}日记本${modifiers}}}`;
+                    const directContent = await this.directDiaryTextProcessor.processContent(directPlaceholder, {
+                        processedDiaries: new Set(),
+                        messages,
+                        sanitizedUserInput: userContent,
+                        evaluateRoleValve: this._evaluateRoleValve.bind(this),
+                        pushVcpInfo: this.pushVcpInfo
+                    });
 
                     // ✅ 缓存结果
-                    this._setCachedResult(cacheKey, { content: safeContent });
-                    return { placeholder, content: safeContent };
+                    this._setCachedResult(cacheKey, { content: directContent });
+                    return { placeholder, content: directContent };
                 }
 
                 // ✅ 缓存空结果（阈值不匹配）
@@ -2695,6 +2786,9 @@ class RAGDiaryPlugin {
         const rrfAlpha = useRerankPlus ? (rerankPlusMatch[1] ? Math.min(1.0, Math.max(0.0, parseFloat(rerankPlusMatch[1]))) : 0.5) : null;
         const useRerank = modifiers.includes('::Rerank'); // 匹配 ::Rerank 和 ::Rerank+
 
+        const bm25Mode = this.directDiaryTextProcessor.getBM25Mode(modifiers);
+        const useBM25 = bm25Mode !== null;
+
         // ✅ 解析 TimeDecay 参数：::TimeDecay[halfLife]/[minScore]/[whitelistTags]
         // 示例：::TimeDecay30/0.5/box归档
         // 统一使用 / 分隔符
@@ -2742,7 +2836,8 @@ class RAGDiaryPlugin {
         const metadata = {
             dbName: dbName,
             modifiers: modifiers,
-            k: finalK
+            k: finalK,
+            bm25: useBM25 ? bm25Mode : undefined
             // V4.0: originalQuery has been removed to save tokens.
         };
 
@@ -2751,6 +2846,7 @@ class RAGDiaryPlugin {
         let activatedGroups = null;
         let finalResultsForBroadcast = null;
         let extraContinuityResults = [];
+        let bm25InfoForBroadcast = null;
         let vcpInfoData = null;
 
         if (useGroup) {
@@ -2820,6 +2916,25 @@ class RAGDiaryPlugin {
             }
         }
 
+        if (useBM25) {
+            const bm25Limit = Math.max(kForSearch, finalK * (useRerank ? 5 : 3));
+            bm25InfoForBroadcast = await this._getBM25RagCandidates(
+                dbName,
+                userContent,
+                aiContent,
+                bm25Limit,
+                bm25Mode,
+                finalQueryVector,
+                contextDiaryPrefixes
+            );
+
+            if (bm25InfoForBroadcast.results.length > 0) {
+                console.log(`[RAGDiaryPlugin] BM25 ${bm25Mode === 'body' ? '正文' : 'Tag行'} sparse recall: ${bm25InfoForBroadcast.results.length} chunks from ${bm25InfoForBroadcast.matchedCount} files.`);
+            } else {
+                console.log(`[RAGDiaryPlugin] BM25 ${bm25Mode === 'body' ? '正文' : 'Tag行'} sparse recall: no positive match, keep vector pipeline only.`);
+            }
+        }
+
         if (useTime && timeRanges && timeRanges.length > 0) {
             // --- 🌟 V5: 平衡双路召回 (Balanced Dual-Path Retrieval) ---
             // 目标：语义召回占 60%，时间召回占 40%，且时间召回也进行相关性排序
@@ -2859,6 +2974,14 @@ class RAGDiaryPlugin {
                     allEntries.set(trimmedText, r);
                 }
             });
+            if (bm25InfoForBroadcast?.results?.length > 0) {
+                bm25InfoForBroadcast.results.forEach(r => {
+                    const trimmedText = r.text?.trim();
+                    if (trimmedText && !allEntries.has(trimmedText)) {
+                        allEntries.set(trimmedText, r);
+                    }
+                });
+            }
             candidates = Array.from(allEntries.values());
 
         } else {
@@ -2899,6 +3022,9 @@ class RAGDiaryPlugin {
 
             const resultsArrays = await Promise.all(searchPromises);
             let flattenedResults = resultsArrays.flat();
+            if (bm25InfoForBroadcast?.results?.length > 0) {
+                flattenedResults.push(...bm25InfoForBroadcast.results);
+            }
             flattenedResults = this._filterContextDuplicates(flattenedResults, contextDiaryPrefixes);
             candidates = await this.vectorDBManager.deduplicateResults(flattenedResults, finalQueryVector);
         }
@@ -3063,6 +3189,10 @@ class RAGDiaryPlugin {
                     geoAlpha: geoOptions?.geoAlpha, // 🌟 V8: 测地线混合权重
                     useExpand: useExpand, // 🌟 V9: 父文档展开标识
                     useAssociate: useAssociate, // 🌟 V10: 联想共现标识
+                    useBM25: useBM25,
+                    bm25Mode: bm25Mode,
+                    bm25QueryTokens: bm25InfoForBroadcast?.queryTokens,
+                    bm25MatchedCount: bm25InfoForBroadcast?.matchedCount,
                     associateCount: useAssociate ? (finalResultsForBroadcast?.filter(r => r.source === 'associate').length || 0) : undefined,
                     useTagMemo: tagWeight !== null, // ✅ 添加Tag模式标识
                     tagWeight: tagWeight, // ✅ 添加Tag权重
@@ -3997,6 +4127,9 @@ class RAGDiaryPlugin {
                 fullPath: r.fullPath || undefined,
                 sourceFile: r.sourceFile || undefined,
             };
+
+            if (r.bm25Score !== undefined) cleaned.bm25Score = r.bm25Score;
+            if (r.normalizedBM25Score !== undefined) cleaned.normalizedBM25Score = r.normalizedBM25Score;
 
             // ✅ 新增：包含Tag相关信息（如果存在）
             if (r.originalScore !== undefined) cleaned.originalScore = r.originalScore;

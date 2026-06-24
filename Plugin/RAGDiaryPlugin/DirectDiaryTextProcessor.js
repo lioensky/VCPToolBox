@@ -376,6 +376,7 @@ class DirectDiaryTextProcessor {
                     return {
                         file,
                         filePath,
+                        relativePath: path.join(characterName, file),
                         timeMs: Math.max(stat.mtimeMs || 0, stat.birthtimeMs || 0, stat.ctimeMs || 0)
                     };
                 } catch (statErr) {
@@ -502,10 +503,114 @@ class DirectDiaryTextProcessor {
         return fileContents.join('\n\n---\n\n');
     }
 
-    async getBM25DiaryContent(characterName, queryText, limit = 10, mode = 'tag') {
+    async getBM25DiaryCandidates(characterName, queryText, limit = 10, mode = 'tag') {
         const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
         const normalizedMode = mode === 'body' ? 'body' : 'tag';
         const modeLabel = normalizedMode === 'body' ? '正文' : 'Tag 行';
+        const recentFiles = await this.getRecentDiaryFileMetas(characterName, safeLimit);
+
+        if (recentFiles.length === 0) {
+            return {
+                matched: false,
+                entries: [],
+                matchedCount: 0,
+                queryTokens: [],
+                fallbackFiles: recentFiles,
+                reason: 'empty'
+            };
+        }
+
+        const queryTokens = this.tokenize(queryText);
+        if (queryTokens.length === 0) {
+            this.logger.warn(`[DirectDiaryTextProcessor] ::BM25${normalizedMode === 'body' ? '+' : ''} query tokens are empty after sanitization/blacklist. Fallback to ::Last${safeLimit}.`);
+            return {
+                matched: false,
+                entries: [],
+                matchedCount: 0,
+                queryTokens,
+                fallbackFiles: recentFiles,
+                reason: 'empty-query'
+            };
+        }
+
+        const candidates = await Promise.all(
+            recentFiles.map(async (meta) => {
+                try {
+                    const content = await fs.readFile(meta.filePath, 'utf-8');
+                    const matchText = normalizedMode === 'body'
+                        ? this.extractBodyForBM25(content)
+                        : this.extractTagLine(content);
+                    return {
+                        ...meta,
+                        content,
+                        matchText,
+                        tokens: this.tokenize(matchText)
+                    };
+                } catch (readErr) {
+                    return {
+                        ...meta,
+                        content: `[Error reading file: ${meta.file}]`,
+                        matchText: '',
+                        tokens: []
+                    };
+                }
+            })
+        );
+
+        const docsWithTokens = candidates.filter(candidate => candidate.tokens.length > 0);
+        if (docsWithTokens.length === 0) {
+            this.logger.warn(`[DirectDiaryTextProcessor] ::BM25${normalizedMode === 'body' ? '+' : ''} found no ${modeLabel} tokens in "${characterName}". Fallback to ::Last${safeLimit}.`);
+            return {
+                matched: false,
+                entries: [],
+                matchedCount: 0,
+                queryTokens,
+                fallbackFiles: recentFiles,
+                reason: 'empty-doc-tokens'
+            };
+        }
+
+        const ranker = new BM25Ranker();
+        const allDocs = docsWithTokens.map(candidate => candidate.tokens);
+        const idfScores = ranker.calculateIDF(allDocs);
+        const avgDocLength = allDocs.reduce((sum, tokens) => sum + tokens.length, 0) / allDocs.length;
+
+        const rankedCandidates = docsWithTokens
+            .map(candidate => ({
+                ...candidate,
+                bm25Score: ranker.score(queryTokens, candidate.tokens, avgDocLength, idfScores)
+            }))
+            .filter(candidate => candidate.bm25Score > 0)
+            .sort((a, b) => {
+                if (b.bm25Score !== a.bm25Score) return b.bm25Score - a.bm25Score;
+                return b.timeMs - a.timeMs;
+            });
+
+        if (rankedCandidates.length === 0) {
+            this.logger.warn(`[DirectDiaryTextProcessor] ::BM25${normalizedMode === 'body' ? '+' : ''} no positive ${modeLabel} match for "${characterName}". Fallback to ::Last${safeLimit}.`);
+            return {
+                matched: false,
+                entries: [],
+                matchedCount: 0,
+                queryTokens,
+                fallbackFiles: recentFiles,
+                reason: 'no-positive-score'
+            };
+        }
+
+        return {
+            matched: true,
+            entries: rankedCandidates,
+            matchedCount: rankedCandidates.length,
+            queryTokens,
+            fallbackFiles: recentFiles,
+            reason: 'matched'
+        };
+    }
+
+    async getBM25DiaryContent(characterName, queryText, limit = 10, mode = 'tag') {
+        const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
+        const normalizedMode = mode === 'body' ? 'body' : 'tag';
 
         try {
             const recentFiles = await this.getRecentDiaryFileMetas(characterName, safeLimit);
@@ -542,72 +647,21 @@ class DirectDiaryTextProcessor {
                 return rustBM25Result;
             }
 
-            const candidates = await Promise.all(
-                recentFiles.map(async (meta) => {
-                    try {
-                        const content = await fs.readFile(meta.filePath, 'utf-8');
-                        const matchText = normalizedMode === 'body'
-                            ? this.extractBodyForBM25(content)
-                            : this.extractTagLine(content);
-                        return {
-                            ...meta,
-                            content,
-                            matchText,
-                            tokens: this.tokenize(matchText)
-                        };
-                    } catch (readErr) {
-                        return {
-                            ...meta,
-                            content: `[Error reading file: ${meta.file}]`,
-                            matchText: '',
-                            tokens: []
-                        };
-                    }
-                })
-            );
-
-            const docsWithTokens = candidates.filter(candidate => candidate.tokens.length > 0);
-            if (docsWithTokens.length === 0) {
-                this.logger.warn(`[DirectDiaryTextProcessor] ::BM25${normalizedMode === 'body' ? '+' : ''} found no ${modeLabel} tokens in "${characterName}". Fallback to ::Last${safeLimit}.`);
+            const bm25Candidates = await this.getBM25DiaryCandidates(characterName, queryText, safeLimit, normalizedMode);
+            if (!bm25Candidates.matched) {
                 return {
                     matched: false,
                     content: await this.readDiaryFileMetas(recentFiles),
                     matchedCount: 0,
-                    queryTokens
-                };
-            }
-
-            const ranker = new BM25Ranker();
-            const allDocs = docsWithTokens.map(candidate => candidate.tokens);
-            const idfScores = ranker.calculateIDF(allDocs);
-            const avgDocLength = allDocs.reduce((sum, tokens) => sum + tokens.length, 0) / allDocs.length;
-
-            const rankedCandidates = docsWithTokens
-                .map(candidate => ({
-                    ...candidate,
-                    bm25Score: ranker.score(queryTokens, candidate.tokens, avgDocLength, idfScores)
-                }))
-                .filter(candidate => candidate.bm25Score > 0)
-                .sort((a, b) => {
-                    if (b.bm25Score !== a.bm25Score) return b.bm25Score - a.bm25Score;
-                    return b.timeMs - a.timeMs;
-                });
-
-            if (rankedCandidates.length === 0) {
-                this.logger.warn(`[DirectDiaryTextProcessor] ::BM25${normalizedMode === 'body' ? '+' : ''} no positive ${modeLabel} match for "${characterName}". Fallback to ::Last${safeLimit}.`);
-                return {
-                    matched: false,
-                    content: await this.readDiaryFileMetas(recentFiles),
-                    matchedCount: 0,
-                    queryTokens
+                    queryTokens: bm25Candidates.queryTokens || queryTokens
                 };
             }
 
             return {
                 matched: true,
-                content: rankedCandidates.map(candidate => candidate.content).join('\n\n---\n\n'),
-                matchedCount: rankedCandidates.length,
-                queryTokens
+                content: bm25Candidates.entries.map(candidate => candidate.content).join('\n\n---\n\n'),
+                matchedCount: bm25Candidates.matchedCount,
+                queryTokens: bm25Candidates.queryTokens || queryTokens
             };
         } catch (charDirError) {
             if (charDirError.code !== 'ENOENT') {

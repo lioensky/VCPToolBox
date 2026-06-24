@@ -46,7 +46,30 @@
               </small>
             </label>
 
-            <div class="syntax-card syntax-card--mode">
+            <div class="dsl-page-tabs" role="tablist" aria-label="日记本 DSL 类型">
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="dslPage === 'advanced'"
+                :class="{ active: dslPage === 'advanced' }"
+                @click="dslPage = 'advanced'"
+              >
+                <span class="material-symbols-outlined">auto_awesome</span>
+                [[]] / 《《》》 高级 RAG
+              </button>
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="dslPage === 'direct'"
+                :class="{ active: dslPage === 'direct' }"
+                @click="dslPage = 'direct'"
+              >
+                <span class="material-symbols-outlined">subject</span>
+                {{}} / <<>> 轻量直读
+              </button>
+            </div>
+
+            <div v-if="dslPage === 'advanced'" class="syntax-card syntax-card--mode">
               <div class="syntax-card-title">
                 <span class="material-symbols-outlined">route</span>
                 注入模式
@@ -73,7 +96,7 @@
               </p>
             </div>
 
-            <div class="syntax-grid">
+            <div v-if="dslPage === 'advanced'" class="syntax-grid">
               <div class="syntax-card syntax-option-card syntax-option-card--wide syntax-classic-card">
                 <div class="syntax-card-title">
                   <span class="material-symbols-outlined">auto_awesome</span>
@@ -81,9 +104,10 @@
                 </div>
                 <p>
                   这些是最常用的单语法开关，可自由组合。<code>::Time</code> 负责时间感知，
-                  <code>::Group</code> 负责语义组增强，<code>::Rerank</code> 负责普通精排，
-                  <code>::Expand</code> 负责父文档展开。注意：普通 <code>::Rerank</code>
-                  与 <code>::Rerank+</code> 只能二选一。
+                  <code>::Group</code> 负责语义组增强，<code>::BM25+</code> 负责日记全文 BM25 匹配，
+                  <code>::BM25</code> 负责日记 tag / keyword BM25 匹配，
+                  <code>::Rerank</code> 负责普通精排，<code>::Expand</code> 负责父文档展开。
+                  注意：普通 <code>::Rerank</code> 与 <code>::Rerank+</code> 只能二选一。
                 </p>
               </div>
 
@@ -107,6 +131,28 @@
                   <AppSwitch v-model="enabledSuffixes.group" />
                 </div>
                 <p>命中语义组后融合组向量，适合逻辑串、黑话、玩梗和专精主题捕网。</p>
+              </div>
+
+              <div class="syntax-card syntax-option-card">
+                <div class="syntax-option-head">
+                  <div>
+                    <strong>BM25+ 日记全文匹配</strong>
+                    <code>::BM25+</code>
+                  </div>
+                  <AppSwitch v-model="enabledSuffixes.bm25Plus" />
+                </div>
+                <p>启用日记全文 BM25 关键词匹配，适合通过原文措辞、专有名词或精确短语补充向量召回。</p>
+              </div>
+
+              <div class="syntax-card syntax-option-card">
+                <div class="syntax-option-head">
+                  <div>
+                    <strong>BM25 Tag / Keyword 匹配</strong>
+                    <code>::BM25</code>
+                  </div>
+                  <AppSwitch v-model="enabledSuffixes.bm25" />
+                </div>
+                <p>启用日记 tag / keyword 字段的 BM25 匹配，适合用标签、关键词和主题词快速命中相关记忆。</p>
               </div>
 
               <div class="syntax-card syntax-option-card">
@@ -451,7 +497,7 @@
               </div>
             </div>
 
-            <div class="syntax-card k-card">
+            <div v-if="dslPage === 'advanced'" class="syntax-card k-card">
               <div class="syntax-option-head">
                 <div>
                   <strong>K 倍率（必须放最后）</strong>
@@ -476,6 +522,251 @@
                   @keydown.stop
                 />
               </label>
+            </div>
+
+            <div v-if="dslPage === 'direct'" class="direct-dsl-page">
+              <div class="syntax-card syntax-card--mode">
+                <div class="syntax-card-title">
+                  <span class="material-symbols-outlined">route</span>
+                  轻量直读模式
+                </div>
+                <div class="mode-toggle">
+                  <button
+                    type="button"
+                    :class="{ active: directSyntaxMode === 'static' }"
+                    @click="directSyntaxMode = 'static'"
+                  >
+                    {{}} 直接文本注入
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ active: directSyntaxMode === 'dynamic' }"
+                    @click="directSyntaxMode = 'dynamic'"
+                  >
+                    <<>> 相关时注入
+                  </button>
+                </div>
+                <p>
+                  <strong>{{}}</strong> 直接读取日记文本；<strong><<>></strong>
+                  会先判断上下文相关性，再复用轻量直读能力注入文本。
+                </p>
+              </div>
+
+              <div class="syntax-grid">
+                <div class="syntax-card syntax-option-card syntax-option-card--wide syntax-classic-card">
+                  <div class="syntax-card-title">
+                    <span class="material-symbols-outlined">subject</span>
+                    轻量直读 DSL
+                  </div>
+                  <p>
+                    该模式不启用完整向量 RAG，只生成当前支持的轻量后缀：
+                    <code>::Random</code>、<code>::RandomN</code>、<code>::LastN</code>、
+                    <code>::BM25</code>、<code>::BM25+</code> 与
+                    <code>::RoleValve@User>3</code>。
+                  </p>
+                </div>
+
+                <div class="syntax-card syntax-option-card">
+                  <div class="syntax-option-head">
+                    <div>
+                      <strong>默认读取</strong>
+                      <code>无后缀</code>
+                    </div>
+                    <input
+                      type="radio"
+                      name="direct-recall-mode"
+                      value="none"
+                      v-model="directRecallMode"
+                    />
+                  </div>
+                  <p>不追加检索后缀，使用后端默认的直接文本读取策略。</p>
+                </div>
+
+                <div class="syntax-card syntax-option-card">
+                  <div class="syntax-option-head">
+                    <div>
+                      <strong>随机 1 篇</strong>
+                      <code>::Random</code>
+                    </div>
+                    <input
+                      type="radio"
+                      name="direct-recall-mode"
+                      value="random"
+                      v-model="directRecallMode"
+                    />
+                  </div>
+                  <p>随机抽取 1 篇日记，适合灵感、回忆和非确定性背景注入。</p>
+                </div>
+
+                <div class="syntax-card syntax-option-card">
+                  <div class="syntax-option-head">
+                    <div>
+                      <strong>随机 N 篇</strong>
+                      <code>::RandomN</code>
+                    </div>
+                    <input
+                      type="radio"
+                      name="direct-recall-mode"
+                      value="randomN"
+                      v-model="directRecallMode"
+                    />
+                  </div>
+                  <p>随机抽取指定数量的日记。</p>
+                  <label class="inline-number">
+                    <span>数量 N</span>
+                    <input
+                      v-model="directRandomCount"
+                      :disabled="directRecallMode !== 'randomN'"
+                      type="number"
+                      min="1"
+                      max="100"
+                      step="1"
+                      placeholder="5"
+                      @keydown.stop
+                    />
+                  </label>
+                </div>
+
+                <div class="syntax-card syntax-option-card">
+                  <div class="syntax-option-head">
+                    <div>
+                      <strong>最近 N 篇</strong>
+                      <code>::LastN</code>
+                    </div>
+                    <input
+                      type="radio"
+                      name="direct-recall-mode"
+                      value="lastN"
+                      v-model="directRecallMode"
+                    />
+                  </div>
+                  <p>读取最近 N 篇日记，适合近期状态、连续剧情和短期记忆。</p>
+                  <label class="inline-number">
+                    <span>数量 N</span>
+                    <input
+                      v-model="directLastCount"
+                      :disabled="directRecallMode !== 'lastN'"
+                      type="number"
+                      min="1"
+                      max="100"
+                      step="1"
+                      placeholder="10"
+                      @keydown.stop
+                    />
+                  </label>
+                </div>
+
+                <div class="syntax-card syntax-option-card">
+                  <div class="syntax-option-head">
+                    <div>
+                      <strong>BM25 Tag / Keyword 匹配</strong>
+                      <code>::BM25</code>
+                    </div>
+                    <input
+                      type="radio"
+                      name="direct-recall-mode"
+                      value="bm25"
+                      v-model="directRecallMode"
+                    />
+                  </div>
+                  <p>使用最新用户输入匹配日记 tag / keyword 字段。</p>
+                </div>
+
+                <div class="syntax-card syntax-option-card">
+                  <div class="syntax-option-head">
+                    <div>
+                      <strong>BM25+ 日记全文匹配</strong>
+                      <code>::BM25+</code>
+                    </div>
+                    <input
+                      type="radio"
+                      name="direct-recall-mode"
+                      value="bm25Plus"
+                      v-model="directRecallMode"
+                    />
+                  </div>
+                  <p>使用最新用户输入匹配日记全文内容，适合精确短语和原文措辞。</p>
+                </div>
+
+                <div class="syntax-card syntax-option-card syntax-option-card--wide">
+                  <div class="syntax-option-head">
+                    <div>
+                      <strong>RoleValve 角色楼层门控</strong>
+                      <code>::RoleValve@User>3</code>
+                    </div>
+                    <AppSwitch v-model="directRoleValveEnabled" />
+                  </div>
+                  <p>
+                    根据上下文中 User / Assistant / System 的发言楼层数决定是否加载轻量日记文本。
+                  </p>
+
+                  <div class="role-valve-builder" :class="{ disabled: !directRoleValveEnabled }">
+                    <div class="role-valve-row">
+                      <select v-model="roleValveDraft.role" :disabled="!directRoleValveEnabled">
+                        <option value="@User">@User 用户发言</option>
+                        <option value="@Assistant">@Assistant 助手发言</option>
+                        <option value="@System">@System 系统消息</option>
+                      </select>
+                      <select v-model="roleValveDraft.operator" :disabled="!directRoleValveEnabled">
+                        <option value=">">></option>
+                        <option value="<"><</option>
+                        <option value=">=">>=</option>
+                        <option value="<="><=</option>
+                      </select>
+                      <input
+                        v-model.number="roleValveDraft.count"
+                        :disabled="!directRoleValveEnabled"
+                        type="number"
+                        min="0"
+                        step="1"
+                        @keydown.stop
+                      />
+                      <button
+                        type="button"
+                        class="btn-secondary btn-sm"
+                        :disabled="!directRoleValveEnabled"
+                        @click="addRoleValveCondition"
+                      >
+                        添加条件
+                      </button>
+                    </div>
+
+                    <div class="logic-row">
+                      <span>条件连接符</span>
+                      <button
+                        type="button"
+                        :class="{ active: roleValveJoiner === '&' }"
+                        :disabled="!directRoleValveEnabled"
+                        @click="roleValveJoiner = '&'"
+                      >
+                        且 &
+                      </button>
+                      <button
+                        type="button"
+                        :class="{ active: roleValveJoiner === '|' }"
+                        :disabled="!directRoleValveEnabled"
+                        @click="roleValveJoiner = '|'"
+                      >
+                        或 |
+                      </button>
+                    </div>
+
+                    <div class="condition-list">
+                      <span
+                        v-for="(condition, index) in roleValveConditions"
+                        :key="`direct-${condition}-${index}`"
+                        class="condition-chip"
+                      >
+                        {{ condition }}
+                        <button type="button" @click="removeRoleValveCondition(index)">×</button>
+                      </span>
+                      <span v-if="roleValveConditions.length === 0" class="condition-empty">
+                        暂无条件，将使用当前编辑行自动生成。
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -506,11 +797,16 @@ import { computed, reactive, ref } from "vue";
 import AppSwitch from "@/components/ui/AppSwitch.vue";
 import { showMessage } from "@/utils";
 
+type DslPage = "advanced" | "direct";
 type SyntaxMode = "dynamic" | "fixed";
+type DirectSyntaxMode = "static" | "dynamic";
+type DirectRecallMode = "none" | "random" | "randomN" | "lastN" | "bm25" | "bm25Plus";
 type AiMode = "none" | "aimemo" | "aimemoPlus";
 type SuffixKey =
   | "time"
   | "group"
+  | "bm25Plus"
+  | "bm25"
   | "rerank"
   | "timeDecay"
   | "expand"
@@ -538,7 +834,13 @@ const emit = defineEmits<{
 }>();
 
 const notebookName = ref("小吉日记本");
+const dslPage = ref<DslPage>("advanced");
 const syntaxMode = ref<SyntaxMode>("dynamic");
+const directSyntaxMode = ref<DirectSyntaxMode>("static");
+const directRecallMode = ref<DirectRecallMode>("none");
+const directRandomCount = ref("5");
+const directLastCount = ref("10");
+const directRoleValveEnabled = ref(false);
 const useKMultiplier = ref(false);
 const kMultiplier = ref("1.5");
 const tagMemoWeight = ref("");
@@ -561,6 +863,8 @@ const roleValveDraft = reactive<RoleValveDraft>({
 const enabledSuffixes = reactive<Record<SuffixKey, boolean>>({
   time: false,
   group: false,
+  bm25Plus: false,
+  bm25: false,
   rerank: false,
   timeDecay: false,
   expand: false,
@@ -575,10 +879,17 @@ const enabledSuffixes = reactive<Record<SuffixKey, boolean>>({
 
 const generatedSyntax = computed(() => {
   const rawName = notebookName.value.trim() || "日记本";
+
+  if (dslPage.value === "direct") {
+    return buildDirectSyntax(rawName);
+  }
+
   const suffixes: string[] = [];
 
   if (enabledSuffixes.time) suffixes.push("::Time");
   if (enabledSuffixes.group) suffixes.push("::Group");
+  if (enabledSuffixes.bm25Plus) suffixes.push("::BM25+");
+  if (enabledSuffixes.bm25) suffixes.push("::BM25");
   if (enabledSuffixes.tagMemo) suffixes.push(`::TagMemo${sanitizeNumber(tagMemoWeight.value)}`);
   if (enabledSuffixes.tagMemoPlus) suffixes.push(`::TagMemo+${sanitizeNumber(tagMemoPlusWeight.value)}`);
   if (enabledSuffixes.rerank) suffixes.push("::Rerank");
@@ -597,6 +908,37 @@ const generatedSyntax = computed(() => {
 
   return syntaxMode.value === "dynamic" ? `《《${inner}》》` : `[[${inner}]]`;
 });
+
+function buildDirectSyntax(rawName: string): string {
+  const suffixes: string[] = [];
+
+  if (directRecallMode.value === "random") {
+    suffixes.push("::Random");
+  }
+
+  if (directRecallMode.value === "randomN") {
+    suffixes.push(`::Random${sanitizePositiveInteger(directRandomCount.value, "5")}`);
+  }
+
+  if (directRecallMode.value === "lastN") {
+    suffixes.push(`::Last${sanitizePositiveInteger(directLastCount.value, "10")}`);
+  }
+
+  if (directRecallMode.value === "bm25") {
+    suffixes.push("::BM25");
+  }
+
+  if (directRecallMode.value === "bm25Plus") {
+    suffixes.push("::BM25+");
+  }
+
+  if (directRoleValveEnabled.value) {
+    suffixes.push(`::RoleValve${buildRoleValveExpression()}`);
+  }
+
+  const inner = `${rawName}${suffixes.join("")}`;
+  return directSyntaxMode.value === "dynamic" ? `<<${inner}>>` : `{{${inner}}}`;
+}
 
 function setExclusiveSuffix(key: SuffixKey, value: boolean): void {
   enabledSuffixes[key] = value;
@@ -637,6 +979,15 @@ function sanitizeNumber(value: unknown): string {
   }
 
   return String(numeric);
+}
+
+function sanitizePositiveInteger(value: unknown, fallback: string): string {
+  const numeric = Number(sanitizeNumber(value));
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  return String(Math.max(1, Math.floor(numeric)));
 }
 
 function formatAiPreset(): string {
@@ -869,6 +1220,7 @@ function close(): void {
   grid-column: 1 / -1;
 }
 
+.dsl-page-tabs,
 .mode-toggle,
 .ai-mode-row,
 .logic-row,
@@ -879,6 +1231,7 @@ function close(): void {
   align-items: center;
 }
 
+.dsl-page-tabs button,
 .mode-toggle button,
 .ai-mode-row button,
 .logic-row button {
@@ -890,12 +1243,36 @@ function close(): void {
   cursor: pointer;
 }
 
+.dsl-page-tabs button.active,
 .mode-toggle button.active,
 .ai-mode-row button.active,
 .logic-row button.active {
   border-color: var(--highlight-text);
   background: var(--info-bg);
   color: var(--highlight-text);
+}
+
+.dsl-page-tabs {
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  background: var(--tertiary-bg);
+}
+
+.dsl-page-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dsl-page-tabs button .material-symbols-outlined {
+  font-size: 18px !important;
+}
+
+.direct-dsl-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }
 
 .inline-number {
