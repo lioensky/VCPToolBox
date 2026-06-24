@@ -950,9 +950,10 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
 
     let finalReport = null;
     let completionStatus = 'Failed';
+    let taskPromptForSystem = '';
 
     try {
-        const taskPromptForSystem = String(taskPromptText ?? (
+        taskPromptForSystem = String(taskPromptText ?? (
             typeof taskPromptContent === 'string'
                 ? taskPromptContent
                 : (Array.isArray(taskPromptContent)
