@@ -954,6 +954,10 @@ class LightMemoPlugin {
         return folders.length > 0 ? folders.join(',') : null;
     }
 
+    _isBM25TokenLikeWord(token) {
+        return /[\p{Script=Han}a-z0-9_]/iu.test(String(token || ''));
+    }
+
     /**
      * 改用jieba分词（保留词组）
      */
@@ -967,6 +971,7 @@ class LightMemoPlugin {
             return text.split(/\s+/)
                 .map(w => w.toLowerCase().trim())
                 .filter(w => w.length >= 1) // 允许单字，提高搜索召回率（特别是姓名）
+                .filter(w => this._isBM25TokenLikeWord(w))
                 .filter(w => !this.stopWords.has(w));
         }
 
@@ -975,6 +980,7 @@ class LightMemoPlugin {
         return words
             .map(w => w.toLowerCase().trim())
             .filter(w => w.length >= 1) // 允许单字，提高搜索召回率（特别是姓名）
+            .filter(w => this._isBM25TokenLikeWord(w))
             .filter(w => !this.stopWords.has(w))
             .filter(w => w.length > 0);
     }

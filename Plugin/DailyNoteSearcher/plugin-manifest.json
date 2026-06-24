@@ -3,18 +3,32 @@
   "name": "DailyNoteSearcher",
   "version": "1.0.0",
   "displayName": "日记/知识库搜索器 (Rust)",
-  "description": "一个使用Rust编写的高性能文本搜索插件，支持在日记目录或 knowledge 冷知识库目录中进行快速、精准的文本或正则表达式搜索，并返回完整文件内容或匹配上下文。",
+  "description": "一个使用 Rust 编写的高性能文本搜索插件，支持在日记目录或 knowledge 冷知识库目录中进行快速、精准的文本/正则/BM25 搜索。当前以 hybridservice/direct 方式常驻启动本地 HTTP 服务，同时 Rust 可执行文件仍保留 stdin 一次性调用兼容路径。",
   "author": "Kilo Code",
-  "pluginType": "synchronous",
+  "pluginType": "hybridservice",
   "entryPoint": {
-    "type": "executable",
-    "command": "DailyNoteSearcher.exe"
+    "script": "DailyNoteSearcher.js"
   },
   "communication": {
-    "protocol": "stdio",
+    "protocol": "direct",
     "timeout": 60000
   },
   "configSchema": {
+    "DAILY_NOTE_SEARCHER_HOST": {
+      "type": "string",
+      "description": "DailyNoteSearcher 常驻 HTTP 服务绑定地址。默认仅监听本机回环地址。",
+      "default": "127.0.0.1"
+    },
+    "DAILY_NOTE_SEARCHER_PORT": {
+      "type": "integer",
+      "description": "DailyNoteSearcher 常驻 HTTP 服务固定端口，供 RAGDiary 与其他模块统一调用。",
+      "default": 38765
+    },
+    "DAILY_NOTE_SEARCHER_TIMEOUT": {
+      "type": "integer",
+      "description": "DailyNoteSearcher direct/HTTP 调用超时时间（毫秒）。",
+      "default": 60000
+    },
     "DAILY_NOTE_ROOT": {
       "type": "string",
       "description": "日记本根目录的相对路径（相对于项目根目录）。",
