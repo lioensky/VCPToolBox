@@ -1,7 +1,7 @@
 .dashboard-card-shell {
   --dashboard-accent: var(--highlight-text);
   --dashboard-accent-border: color-mix(in srgb, var(--dashboard-accent) 28%, transparent);
-  --dashboard-radius: var(--radius-xl, 20px);
+  --dashboard-radius: var(--radius-lg, 14px);
   --dashboard-shadow: var(--shadow-md, 0 4px 12px oklch(0 0 0 / 0.40));
   --dashboard-shadow-hover: var(--shadow-lg, 0 8px 32px oklch(0 0 0 / 0.50));
   --transition-normal: 0.35s cubic-bezier(0.4, 0, 0.2, 1);
@@ -161,7 +161,7 @@
 @media (max-width: 768px) {
   .dashboard-card-shell {
     padding: 20px 20px 24px;
-    border-radius: var(--radius-xl, 20px);
+    border-radius: var(--radius-lg, 14px);
   }
 
   .dashboard-card-header {
@@ -178,7 +178,7 @@
 @media (max-width: 480px) {
   .dashboard-card-shell {
     padding: 16px 16px 22px;
-    border-radius: var(--radius-lg, 14px);
+    border-radius: var(--radius-md, 10px);
   }
 
   .dashboard-card-panel {
@@ -255,7 +255,7 @@
 @container dashboard-card (max-width: 360px) {
   .dashboard-card-shell {
     padding: 18px 18px 22px;
-    border-radius: var(--radius-lg, 14px);
+    border-radius: var(--radius-md, 10px);
   }
 
   .dashboard-card-header {

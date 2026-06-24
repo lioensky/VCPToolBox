@@ -103,7 +103,7 @@
   --app-sidebar-width-icon: 48px;
 
   /* --- Dashboard 专用变量 --- */
-  --dashboard-radius: var(--radius-xl, 20px);
+  --dashboard-radius: var(--radius-lg, 14px);
   --dashboard-shadow: var(--shadow-md, 0 4px 12px oklch(0 0 0 / 0.40));
   --dashboard-shadow-hover: var(--shadow-lg, 0 8px 32px oklch(0 0 0 / 0.50));
 
@@ -583,7 +583,7 @@ input[type="checkbox"] {
 .card {
   background: var(--secondary-bg);
   border: 1px solid var(--border-color);
-  border-radius: 16px;
+  border-radius: var(--radius-md);
   padding: 20px;
 }
 
@@ -665,7 +665,7 @@ input[type="checkbox"] {
 
   .card {
     padding: 16px;
-    border-radius: 14px;
+    border-radius: var(--radius-md);
   }
 
   .form-group {
