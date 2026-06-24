@@ -2,6 +2,7 @@
   <div class="vcp-animation-container">
     <div class="vcp-logo-container">
       <button
+        ref="novaLogoButtonRef"
         type="button"
         class="vcp-side-logo-button"
         :class="{ 'is-active': novaBubbleVisible }"
@@ -18,6 +19,7 @@
         <Transition name="nova-bubble">
         <aside
           v-if="novaBubbleVisible"
+          ref="novaBubbleRef"
           class="nova-maid-bubble"
           role="status"
           aria-live="polite"
@@ -81,7 +83,7 @@ let animationFrameId: number | null = null;
 let isAnimating = false;
 
 const NOVA_EMOJI_CATEGORY = "Nova表情包";
-const NOVA_BUBBLE_AUTO_CLOSE_MS = 12000;
+const NOVA_BUBBLE_AUTO_CLOSE_MS = 5000;
 const NOVA_FALLBACK_EMOJIS: EmojiGalleryItem[] = [
   createNovaFallbackEmoji("启动.png"),
   createNovaFallbackEmoji("计算中.jpeg"),
@@ -123,6 +125,8 @@ const NOVA_LINES = [
   "Nova 的小秘密：其实每次「换一句」都会认真想新的台词哦……大概。",
 ];
 
+const novaLogoButtonRef = ref<HTMLButtonElement | null>(null);
+const novaBubbleRef = ref<HTMLElement | null>(null);
 const novaBubbleVisible = ref(false);
 const novaEmojiPool = ref<EmojiGalleryItem[]>([]);
 const currentNovaEmoji = ref<EmojiGalleryItem | null>(null);
@@ -238,6 +242,26 @@ function closeNovaBubble() {
     clearTimeout(novaBubbleTimer);
     novaBubbleTimer = null;
   }
+}
+
+function handleOutsideClick(event: MouseEvent) {
+  if (!novaBubbleVisible.value) {
+    return;
+  }
+
+  const target = event.target as Node | null;
+  if (!target) {
+    return;
+  }
+
+  const button = novaLogoButtonRef.value;
+  const bubble = novaBubbleRef.value;
+
+  if (button?.contains(target) || bubble?.contains(target)) {
+    return;
+  }
+
+  closeNovaBubble();
 }
 
 // ── 彩蛋：快速点击 5 次 logo → 进入沉浸观星模式 ──
@@ -479,12 +503,14 @@ watch(animationsEnabled, (enabled) => {
 onMounted(() => {
   initVCPAnimation();
   window.addEventListener("resize", handleResize);
+  document.addEventListener("click", handleOutsideClick);
 });
 
 onUnmounted(() => {
   stopAnimationLoop();
   closeNovaBubble();
   window.removeEventListener("resize", handleResize);
+  document.removeEventListener("click", handleOutsideClick);
 });
 </script>
 
