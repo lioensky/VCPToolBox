@@ -152,8 +152,21 @@ class LightMemoPlugin {
             tag_boost: rawTagBoost = 0.5,
             core_tags = [],
             core_boost_factor = 1.33,
-            knowledge_base = null
+            knowledge_base = null,
+            BM25: rawBM25Upper,
+            bm25: rawBM25Lower,
+            use_bm25: rawUseBM25
         } = args;
+
+        const useBM25 = this._parseBooleanAlias(
+            [
+                ['BM25', rawBM25Upper],
+                ['bm25', rawBM25Lower],
+                ['use_bm25', rawUseBM25]
+            ],
+            true,
+            'BM25'
+        );
 
         // 🧊 冷知识库（TriviumDB）检索分流：
         //   - query 中带 [知识库] 或 [知识库:库名1,库名2] 语法
@@ -268,6 +281,9 @@ class LightMemoPlugin {
         if (isMusicSearch) {
             console.log(`[LightMemo] [音乐检索] 触发，跳过BM25关键词检索。`);
             topByKeyword = candidates; // 直接所有进入下一阶段
+        } else if (!useBM25) {
+            console.log('[LightMemo] BM25 keyword retrieval disabled by request. Using vector-only candidate pool.');
+            topByKeyword = candidates;
         } else {
             // --- 第一阶段：关键词初筛（BM25） ---
             const queryTokens = this._tokenize(actualQuery);
@@ -360,7 +376,7 @@ class LightMemoPlugin {
         // 混合BM25和向量分数
         // 🚀 优化：动态调整权重。如果有 BM25 分数，则关键词权重高；如果没有，则全靠向量。
         const hybridScored = vectorScoredCandidates.map(c => {
-            if (isMusicSearch) {
+            if (isMusicSearch || !useBM25) {
                 return {
                     ...c,
                     hybridScore: c.vectorScore, // 完全依赖向量分数
@@ -852,10 +868,36 @@ class LightMemoPlugin {
         if (typeof value !== 'string') return defaultValue;
 
         const normalized = value.trim().toLowerCase();
-        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
-        if (['false', '0', 'no', 'n', 'off', ''].includes(normalized)) return false;
+        if (['true', '1', 'yes', 'y', 'on', 'enable', 'enabled', '开启', '启用', '是'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off', '', 'disable', 'disabled', '关闭', '禁用', '否'].includes(normalized)) return false;
 
         return defaultValue;
+    }
+
+    /**
+     * 从多个别名参数中解析布尔开关。
+     * 后出现的显式可解析值优先生效，未提供或不可解析时保留默认值。
+     */
+    _parseBooleanAlias(namedValues, defaultValue = false, label = 'boolean option') {
+        let result = defaultValue;
+        let matchedName = null;
+
+        for (const [name, value] of namedValues) {
+            if (value === undefined || value === null) continue;
+            const parsed = this._parseBoolean(value, null);
+            if (parsed === null) {
+                console.warn(`[LightMemo] Ignoring invalid ${label} value from ${name}: ${value}`);
+                continue;
+            }
+            result = parsed;
+            matchedName = name;
+        }
+
+        if (matchedName) {
+            console.log(`[LightMemo] ${label} resolved from ${matchedName}: ${result}`);
+        }
+
+        return result;
     }
 
     /**
