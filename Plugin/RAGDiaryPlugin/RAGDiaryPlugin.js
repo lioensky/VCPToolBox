@@ -597,7 +597,7 @@ class RAGDiaryPlugin {
         ].filter(Boolean).join('\n');
     }
 
-    async _getBM25RagCandidates(dbName, userContent, aiContent, limit, mode, queryVector, contextDiaryPrefixes = new Set()) {
+    async _getBM25RagCandidates(dbName, userContent, aiContent, limit, mode, queryVector, contextDiaryPrefixes = new Set(), requestCache = null) {
         const weightedQueryText = this._buildWeightedBM25QueryText(userContent, aiContent);
         const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
         const bm25Candidates = await this.directDiaryTextProcessor.getBM25DiaryCandidates(
@@ -630,7 +630,7 @@ class RAGDiaryPlugin {
 
         let chunks = [];
         try {
-            chunks = await this.vectorDBManager.getChunksByFilePaths(Array.from(scoreByPath.keys()));
+            chunks = await this._getChunksByFilePathsCached(Array.from(scoreByPath.keys()), requestCache);
         } catch (error) {
             console.warn(`[RAGDiaryPlugin] BM25 getChunksByFilePaths failed for "${dbName}":`, error.message);
             chunks = [];
@@ -640,7 +640,7 @@ class RAGDiaryPlugin {
             const chunkPath = chunk.fullPath || chunk.sourceFile || '';
             const bm25Info = scoreByPath.get(chunkPath) || { bm25Score: 0, normalizedBM25Score: 0, matchText: '' };
             const vectorScore = queryVector && chunk.vector
-                ? this.cosineSimilarity(queryVector, Array.from(chunk.vector))
+                ? this.cosineSimilarity(queryVector, chunk.vector)
                 : 0;
             const hybridScore = (bm25Info.normalizedBM25Score * 0.65) + (vectorScore * 0.35);
 
@@ -1541,6 +1541,7 @@ class RAGDiaryPlugin {
             // 3. 循环处理每个识别到的 system 消息
             const newMessages = JSON.parse(JSON.stringify(messages));
             const globalProcessedDiaries = new Set(); // 在最外层维护一个 Set
+            const requestCache = this._createRequestCache(); // 🌟 单轮请求级缓存：chunks/time/fullDoc/diaryScore/tagBoost
             // 🌟 优化：并发处理所有目标 system 消息，显著提升多日记本场景下的 Rerank 速度
             await Promise.all(targetSystemMessageIndices.map(async (index) => {
                 console.log(`[RAGDiaryPlugin] Processing system message at index: ${index}`);
@@ -1565,7 +1566,8 @@ class RAGDiaryPlugin {
                     messages, // 🌟 V4.2: 传递完整消息用于 RoleValve
                     ghostTags, // 🌟 V6: 传递幽灵节点
                     collectedAttachments, // 🌟 V7: 传递附件收集器
-                    isFreshTimeConversationStart // 🌟 Time 新对话补充召回开关
+                    isFreshTimeConversationStart, // 🌟 Time 新对话补充召回开关
+                    requestCache // 🌟 单轮请求级缓存
                 );
 
                 newMessages[index].content = this._replaceTextInContent(
@@ -1652,7 +1654,7 @@ class RAGDiaryPlugin {
     }
 
     // V3.0 新增: 处理单条 system 消息内容的辅助函数
-    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed, dynamicTagWeight = 0.15, tagTruncationRatio = 0.5, metrics = {}, historySegments = [], contextDiaryPrefixes = new Set(), messages = [], ghostTags = [], collectedAttachments = [], isFreshTimeConversationStart = false) {
+    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed, dynamicTagWeight = 0.15, tagTruncationRatio = 0.5, metrics = {}, historySegments = [], contextDiaryPrefixes = new Set(), messages = [], ghostTags = [], collectedAttachments = [], isFreshTimeConversationStart = false, requestCache = null) {
         if (!this.pushVcpInfo) {
             console.warn('[RAGDiaryPlugin] _processSingleSystemMessage: pushVcpInfo is null. Cannot broadcast RAG details.');
         }
@@ -1821,7 +1823,8 @@ class RAGDiaryPlugin {
                                 contextDiaryPrefixes, // 🌟 V4.1
                                 ghostTags, // 🌟 修复 3：补齐漏传的幽灵节点参数！
                                 collectedAttachments, // 🌟 V7
-                                isFreshTimeConversationStart // 🌟 Time 新对话补充召回
+                                isFreshTimeConversationStart, // 🌟 Time 新对话补充召回
+                                requestCache
                             });
                             return { placeholder, content: retrievedContent };
                         } catch (error) {
@@ -1873,7 +1876,8 @@ class RAGDiaryPlugin {
                             contextDiaryPrefixes, // 🌟 V4.1: 传入上下文日记去重前缀
                             ghostTags, // 🌟 V6: 传入幽灵节点
                             collectedAttachments, // 🌟 V7
-                            isFreshTimeConversationStart // 🌟 Time 新对话补充召回
+                            isFreshTimeConversationStart, // 🌟 Time 新对话补充召回
+                            requestCache
                         });
                         return { placeholder, content: retrievedContent };
                     } catch (error) {
@@ -1926,18 +1930,15 @@ class RAGDiaryPlugin {
             processingPromises.push((async () => {
                 const diaryConfig = this.ragConfig[dbName] || {};
                 const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
-                const dbNameVector = await this.vectorDBManager.getDiaryNameVector(dbName); // <--- 使用缓存
-                if (!dbNameVector) {
+                const diarySimilarity = await this._getDiarySimilarityCached(dbName, queryVector, requestCache);
+                if (!diarySimilarity) {
                     console.warn(`[RAGDiaryPlugin] Could not find cached vector for diary name: "${dbName}". Skipping.`);
                     const emptyResult = '';
                     this._setCachedResult(cacheKey, { content: emptyResult }); // ✅ 缓存空结果
                     return { placeholder, content: emptyResult };
                 }
 
-                const baseSimilarity = this.cosineSimilarity(queryVector, dbNameVector);
-                const enhancedVector = this.enhancedVectorCache[dbName];
-                const enhancedSimilarity = enhancedVector ? this.cosineSimilarity(queryVector, enhancedVector) : 0;
-                const finalSimilarity = Math.max(baseSimilarity, enhancedSimilarity);
+                const finalSimilarity = diarySimilarity.finalSimilarity;
 
                 if (finalSimilarity >= localThreshold) {
                     // <<...>> 仅负责相似度触发/门控；门控通过后的文本读取统一复用 {{...}} 纯文本管线。
@@ -1949,7 +1950,8 @@ class RAGDiaryPlugin {
                         messages,
                         sanitizedUserInput: userContent,
                         evaluateRoleValve: this._evaluateRoleValve.bind(this),
-                        pushVcpInfo: this.pushVcpInfo
+                        pushVcpInfo: this.pushVcpInfo,
+                        requestCache
                     });
 
                     // ✅ 缓存结果
@@ -1990,13 +1992,9 @@ class RAGDiaryPlugin {
 
                         for (const name of aggregateInfo.diaryNames) {
                             try {
-                                let diaryVec = this.enhancedVectorCache[name] || null;
-                                if (!diaryVec) {
-                                    diaryVec = await this.vectorDBManager.getDiaryNameVector(name);
-                                }
-                                if (diaryVec) {
-                                    const sim = this.cosineSimilarity(queryVector, diaryVec);
-                                    maxSimilarity = Math.max(maxSimilarity, sim);
+                                const diarySimilarity = await this._getDiarySimilarityCached(name, queryVector, requestCache);
+                                if (diarySimilarity) {
+                                    maxSimilarity = Math.max(maxSimilarity, diarySimilarity.finalSimilarity);
                                 }
                             } catch (e) {
                                 console.warn(`[RAGDiaryPlugin] 《《》》聚合阈值检查: "${name}" 向量获取失败, 跳过`);
@@ -2047,7 +2045,8 @@ class RAGDiaryPlugin {
                             contextDiaryPrefixes, // 🌟 V4.1
                             ghostTags, // 🌟 修复 3：补齐漏传的幽灵节点参数！
                             collectedAttachments, // 🌟 V7
-                            isFreshTimeConversationStart // 🌟 Time 新对话补充召回
+                            isFreshTimeConversationStart, // 🌟 Time 新对话补充召回
+                            requestCache
                         });
                         return { placeholder, content: retrievedContent };
                     } catch (error) {
@@ -2088,18 +2087,15 @@ class RAGDiaryPlugin {
                 try {
                     const diaryConfig = this.ragConfig[dbName] || {};
                     const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
-                    const dbNameVector = await this.vectorDBManager.getDiaryNameVector(dbName);
-                    if (!dbNameVector) {
+                    const diarySimilarity = await this._getDiarySimilarityCached(dbName, queryVector, requestCache);
+                    if (!diarySimilarity) {
                         console.warn(`[RAGDiaryPlugin] Could not find cached vector for diary name: "${dbName}". Skipping.`);
                         const emptyResult = '';
                         this._setCachedResult(cacheKey, { content: emptyResult });
                         return { placeholder, content: emptyResult };
                     }
 
-                    const baseSimilarity = this.cosineSimilarity(queryVector, dbNameVector);
-                    const enhancedVector = this.enhancedVectorCache[dbName];
-                    const enhancedSimilarity = enhancedVector ? this.cosineSimilarity(queryVector, enhancedVector) : 0;
-                    const finalSimilarity = Math.max(baseSimilarity, enhancedSimilarity);
+                    const finalSimilarity = diarySimilarity.finalSimilarity;
 
                     // 🌟 解析 Truncate 阈值
                     const truncateThreshold = this._extractTruncateThreshold(modifiers);
@@ -2134,7 +2130,8 @@ class RAGDiaryPlugin {
                                 contextDiaryPrefixes, // 🌟 V4.1: 传入上下文日记去重前缀
                                 ghostTags, // 🌟 V6: 传入幽灵节点
                                 collectedAttachments, // 🌟 V7
-                                isFreshTimeConversationStart // 🌟 Time 新对话补充召回
+                                isFreshTimeConversationStart, // 🌟 Time 新对话补充召回
+                                requestCache
                             });
 
                             // ✅ 缓存结果（RAG已在内部缓存，这里是额外保险）
@@ -2194,7 +2191,8 @@ class RAGDiaryPlugin {
                                 contextDiaryPrefixes,
                                 ghostTags,
                                 collectedAttachments,
-                                isFreshTimeConversationStart
+                                isFreshTimeConversationStart,
+                                requestCache
                             });
 
                             aggregatedResult = await this.aiMemoHandler.processAIMemoPlusAggregated(
@@ -2281,7 +2279,8 @@ class RAGDiaryPlugin {
                     messages,
                     sanitizedUserInput: userContent,
                     evaluateRoleValve: this._evaluateRoleValve.bind(this),
-                    pushVcpInfo: this.pushVcpInfo
+                    pushVcpInfo: this.pushVcpInfo,
+                    requestCache
                 });
                 return { placeholder, content };
             })());
@@ -2438,7 +2437,8 @@ class RAGDiaryPlugin {
             contextDiaryPrefixes = new Set(),
             ghostTags = [],
             collectedAttachments = [],
-            isFreshTimeConversationStart = false
+            isFreshTimeConversationStart = false,
+            requestCache = null
         } = options;
 
         const seenRequestKeys = new Set();
@@ -2470,7 +2470,8 @@ class RAGDiaryPlugin {
                     ghostTags,
                     collectedAttachments,
                     isFreshTimeConversationStart,
-                    returnRawResults: true
+                    returnRawResults: true,
+                    requestCache
                 });
 
                 const resultFiles = (rawResults || [])
@@ -2533,7 +2534,8 @@ class RAGDiaryPlugin {
             contextDiaryPrefixes = new Set(), // 🌟 V4.1: 上下文日记去重前缀
             ghostTags = [], // 🌟 修复 4.1：接收幽灵节点
             collectedAttachments = [], // 🌟 V7
-            isFreshTimeConversationStart = false // 🌟 Time 新对话补充召回
+            isFreshTimeConversationStart = false, // 🌟 Time 新对话补充召回
+            requestCache = null
         } = options;
 
         const totalK = Math.max(1, Math.round(dynamicK * kMultiplier));
@@ -2556,19 +2558,13 @@ class RAGDiaryPlugin {
             }
 
             try {
-                // 优先使用标签组网向量 (enhancedVectorCache)，回退到纯名字向量
-                let diaryVec = this.enhancedVectorCache[name] || null;
-                if (!diaryVec) {
-                    diaryVec = await this.vectorDBManager.getDiaryNameVector(name);
-                }
-
-                if (!diaryVec) {
+                const diarySimilarity = await this._getDiarySimilarityCached(name, queryVector, requestCache);
+                if (!diarySimilarity) {
                     console.warn(`[RAGDiaryPlugin] 聚合模式: 无法获取 "${name}" 的向量，跳过`);
                     continue;
                 }
 
-                const sim = this.cosineSimilarity(queryVector, diaryVec);
-                diaryScores.push({ name, similarity: sim });
+                diaryScores.push({ name, similarity: diarySimilarity.finalSimilarity });
             } catch (e) {
                 console.error(`[RAGDiaryPlugin] 聚合模式: 获取 "${name}" 向量时出错:`, e.message);
                 // 不崩溃，继续处理其他日记本
@@ -2632,7 +2628,8 @@ class RAGDiaryPlugin {
                     ghostTags, // 🌟 修复 4.2：透传给底层具体执行的日记本！
                     collectedAttachments, // 🌟 V7
                     associateDiaries: diaryNames, // 🌟 V10: 聚合模式下传入所有日记本名，实现跨索引联想共现
-                    isFreshTimeConversationStart // 🌟 Time 新对话补充召回
+                    isFreshTimeConversationStart, // 🌟 Time 新对话补充召回
+                    requestCache
                 });
                 return { name: allocation.name, content, k: allocation.k, success: true };
             } catch (e) {
@@ -2781,7 +2778,8 @@ class RAGDiaryPlugin {
             collectedAttachments = [], // 🌟 V7
             associateDiaries = [], // 🌟 V10: Associate 联想共现搜索范围（聚合模式传入所有日记本名）
             isFreshTimeConversationStart = false, // 🌟 Time 新对话补充召回
-            returnRawResults = false // 🌟 AIMemo+: 返回完整后缀管线处理后的候选结果，供 LLM 总结
+            returnRawResults = false, // 🌟 AIMemo+: 返回完整后缀管线处理后的候选结果，供 LLM 总结
+            requestCache = null
         } = options;
 
         // 1️⃣ 生成缓存键
@@ -2852,6 +2850,7 @@ class RAGDiaryPlugin {
             geoAlpha: geoConfig.alpha,
             minGeoSamples: geoConfig.minGeoSamples
         } : undefined;
+        let searchOptions = geoOptions;
 
         // 🌟 解析 Truncate 阈值
         const truncateThreshold = this._extractTruncateThreshold(modifiers);
@@ -2904,31 +2903,20 @@ class RAGDiaryPlugin {
         let coreTagsForSearch = [];
         if (tagWeight !== null && this.vectorDBManager.applyTagBoost) {
             try {
-                // 🌟 V6: 巧妙合并：把字符串和幽灵对象全塞进同一个 coreTagsForSearch 数组里！
-                // 底层引擎会自动把它们分流
-                const initialCoreTags = ghostTags.length > 0 ? [...ghostTags] : [];
-                if (ghostTags.length > 0) {
-                    console.log(`[RAGDiaryPlugin] 注入幽灵节点: ${ghostTags.length} 个`);
-                }
-
-                // 模拟 LightMemo 的第一次“感应”过程，获取 ResidualPyramid 识别出的语义标签
-                const boostResult = this.vectorDBManager.applyTagBoost(new Float32Array(queryVector), tagWeight, initialCoreTags);
-                if (boostResult && boostResult.info && boostResult.info.matchedTags) {
-                    const rawTags = boostResult.info.matchedTags;
-                    // 🌟 应用截断技术规避尾部噪音
-                    coreTagsForSearch = this._truncateCoreTags(rawTags, tagTruncationRatio, metrics);
-
-                    // 重新混入幽灵节点（因为 _truncateCoreTags 可能会把它们择出去，或者它们本身就是 Object）
-                    // 实际上 applyTagBoost 返回的 matchedTags 主要是字符串 ID。
-                    // 我们需要确保 ghostTags 始终在 coreTagsForSearch 中。
-                    if (ghostTags.length > 0) {
-                        coreTagsForSearch = [...coreTagsForSearch, ...ghostTags];
-                    }
-
-                    console.log(`[RAGDiaryPlugin] TagBoost: ${coreTagsForSearch.length}个核心Tag (含${ghostTags.length}个幽灵)`);
-                } else if (ghostTags.length > 0) {
-                    // 如果 boost 没结果，至少保留幽灵节点
-                    coreTagsForSearch = ghostTags;
+                const preparedTagBoost = this._getPreparedTagBoostCached({
+                    queryVector: finalQueryVector,
+                    tagWeight,
+                    ghostTags,
+                    tagTruncationRatio,
+                    metrics,
+                    requestCache
+                });
+                coreTagsForSearch = preparedTagBoost.coreTagsForSearch;
+                if (preparedTagBoost.boostResult) {
+                    searchOptions = {
+                        ...(geoOptions || {}),
+                        preparedBoostResult: preparedTagBoost.boostResult
+                    };
                 }
             } catch (e) {
                 console.warn('[RAGDiaryPlugin] Failed to sense tags via applyTagBoost:', e.message);
@@ -2948,7 +2936,7 @@ class RAGDiaryPlugin {
         // 🌟 Time 连续性补充准备：只要启用 ::Time 且命中新对话判定，就预先准备最近 3 条
         // 注意：不依赖 timeRanges 是否解析成功，最终仍在主召回完成后做 K 外追加
         if (useTime && isFreshTimeConversationStart) {
-            extraContinuityResults = await this._getRecentDiaryChunks(dbName, 3, finalQueryVector, contextDiaryPrefixes);
+            extraContinuityResults = await this._getRecentDiaryChunks(dbName, 3, finalQueryVector, contextDiaryPrefixes, requestCache);
             if (extraContinuityResults.length > 0) {
                 console.log(`[RAGDiaryPlugin] Time continuity recall: Prepared ${extraContinuityResults.length} extra recent chunks for fresh conversation start.`);
             } else {
@@ -2965,7 +2953,8 @@ class RAGDiaryPlugin {
                 bm25Limit,
                 bm25Mode,
                 finalQueryVector,
-                contextDiaryPrefixes
+                contextDiaryPrefixes,
+                requestCache
             );
 
             if (bm25InfoForBroadcast.results.length > 0) {
@@ -2983,23 +2972,23 @@ class RAGDiaryPlugin {
 
             // 1. 语义路召回 (多取一些用于后续衰减/重排)
             const searchK = useRerank ? Math.max(kSemantic * 2, 20) : kSemantic + 10;
-            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, searchK + dedupBuffer, tagWeight, coreTagsForSearch, undefined, geoOptions);
+            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, searchK + dedupBuffer, tagWeight, coreTagsForSearch, undefined, searchOptions);
             ragResults = this._filterContextDuplicates(ragResults, contextDiaryPrefixes);
             ragResults = ragResults.map(r => ({ ...r, source: 'rag' }));
 
             // 2. 时间路召回 (带相关性排序)
             let timeFilePaths = [];
             for (const timeRange of timeRanges) {
-                const files = await this._getTimeRangeFilePaths(dbName, timeRange);
+                const files = await this._getTimeRangeFilePathsCached(dbName, timeRange, requestCache);
                 timeFilePaths.push(...files);
             }
             timeFilePaths = [...new Set(timeFilePaths)];
 
             let timeResults = [];
             if (timeFilePaths.length > 0) {
-                const timeChunks = await this.vectorDBManager.getChunksByFilePaths(timeFilePaths);
+                const timeChunks = await this._getChunksByFilePathsCached(timeFilePaths, requestCache);
                 timeResults = timeChunks.map(chunk => {
-                    const sim = chunk.vector ? this.cosineSimilarity(finalQueryVector, Array.from(chunk.vector)) : 0;
+                    const sim = chunk.vector ? this.cosineSimilarity(finalQueryVector, chunk.vector) : 0;
                     return { ...chunk, score: sim, source: 'time' };
                 });
                 console.log(`[RAGDiaryPlugin] Time path: Found ${timeChunks.length} chunks in range.`);
@@ -3049,7 +3038,8 @@ class RAGDiaryPlugin {
             const searchPromises = searchVectors.map(async (qv) => {
                 try {
                     const k = qv.type === 'current' ? kForSearch : Math.max(2, Math.round(kForSearch / 2));
-                    let results = await this.vectorDBManager.search(dbName, qv.vector, k, tagWeight, coreTagsForSearch, undefined, geoOptions);
+                    const perVectorSearchOptions = qv.type === 'current' ? searchOptions : geoOptions;
+                    let results = await this.vectorDBManager.search(dbName, qv.vector, k, tagWeight, coreTagsForSearch, undefined, perVectorSearchOptions);
                     if (qv.weight !== 1.0) {
                         results = results.map(r => ({ ...r, score: r.score * qv.weight, original_score: r.score }));
                     }
@@ -3154,7 +3144,7 @@ class RAGDiaryPlugin {
 
         // 🌟 V9: 父文档展开 - 将命中的 chunk 展开为完整日记文件（按文件去重）— 始终在最后执行
         if (useExpand && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
-            finalResultsForBroadcast = await this._expandChunksToFullDocuments(finalResultsForBroadcast, dbName);
+            finalResultsForBroadcast = await this._expandChunksToFullDocuments(finalResultsForBroadcast, dbName, requestCache);
         }
 
         if (useTime && timeRanges && timeRanges.length > 0) {
@@ -3295,7 +3285,7 @@ class RAGDiaryPlugin {
      * @param {string} dbName - 日记本名称
      * @returns {Promise<Array>} 展开后的结果数组（每个元素的 text 为完整文件内容）
      */
-    async _expandChunksToFullDocuments(results, dbName) {
+    async _expandChunksToFullDocuments(results, dbName, requestCache = null) {
         if (!results || results.length === 0) return results;
 
         // 1. 按 fullPath 分组，保留每个文件的最高分和元数据
@@ -3339,25 +3329,38 @@ class RAGDiaryPlugin {
         let expandedFileCount = 0;
         let totalChunksCollapsed = 0;
 
-        for (const [filePath, info] of fileMap) {
-            try {
-                const absolutePath = path.join(dailyNoteRootPath, filePath);
-                const fullContent = await fs.readFile(absolutePath, 'utf-8');
+        const expandedEntries = await Promise.allSettled(
+            Array.from(fileMap.entries()).map(async ([filePath, info]) => {
+                try {
+                    const absolutePath = path.join(dailyNoteRootPath, filePath);
+                    let fullContent = requestCache?.fullDocumentCache?.get(filePath);
+                    if (!fullContent) {
+                        fullContent = await fs.readFile(absolutePath, 'utf-8');
+                        requestCache?.fullDocumentCache?.set(filePath, fullContent);
+                    }
 
-                // 用完整文件内容替换 chunk 文本，保留原始结果的其他元数据
-                expandedResults.push({
-                    ...info.bestResult,
-                    text: fullContent,
-                    score: info.bestScore,
-                    _expanded: true,
-                    _originalChunkCount: info.chunkCount
-                });
+                    return {
+                        ...info.bestResult,
+                        text: fullContent,
+                        score: info.bestScore,
+                        _expanded: true,
+                        _originalChunkCount: info.chunkCount,
+                        _expandedFilePath: filePath
+                    };
+                } catch (e) {
+                    console.warn(`[RAGDiaryPlugin] Expand: 文件读取失败 "${filePath}": ${e.message}，回退到原始 chunk`);
+                    return info.bestResult;
+                }
+            })
+        );
+
+        for (const entry of expandedEntries) {
+            if (entry.status !== 'fulfilled') continue;
+            const result = entry.value;
+            expandedResults.push(result);
+            if (result?._expanded) {
                 expandedFileCount++;
-                totalChunksCollapsed += info.chunkCount;
-            } catch (e) {
-                // 文件读取失败时回退到原始 chunk
-                console.warn(`[RAGDiaryPlugin] Expand: 文件读取失败 "${filePath}": ${e.message}，回退到原始 chunk`);
-                expandedResults.push(info.bestResult);
+                totalChunksCollapsed += result._originalChunkCount || 0;
             }
         }
 
@@ -3401,9 +3404,20 @@ class RAGDiaryPlugin {
         for (const r of seedResults) {
             if (!r.text) continue;
             try {
-                const vec = await this.vectorDBManager.getVectorByText(null, r.text);
+                let vec = null;
+                if (r.vector) {
+                    vec = r.vector;
+                } else if (r.chunkId && typeof this.vectorDBManager.getVectorByChunkId === 'function') {
+                    vec = await this.vectorDBManager.getVectorByChunkId(r.chunkId);
+                }
+
+                // 兼容旧结果对象：没有 chunkId 时才回退到全文精确匹配。
+                if (!vec) {
+                    vec = await this.vectorDBManager.getVectorByText(null, r.text);
+                }
+
                 if (vec) {
-                    seedChunks.push({ text: r.text.trim(), vector: vec, fullPath: r.fullPath });
+                    seedChunks.push({ text: r.text.trim(), vector: vec, fullPath: r.fullPath, chunkId: r.chunkId });
                 }
             } catch (e) {
                 // 向量获取失败，跳过该种子
@@ -3501,59 +3515,24 @@ class RAGDiaryPlugin {
      * @param {Set<string>} contextDiaryPrefixes
      * @returns {Promise<Array>}
      */
-    async _getRecentDiaryChunks(dbName, limit = 3, queryVector = null, contextDiaryPrefixes = new Set()) {
+    async _getRecentDiaryChunks(dbName, limit = 3, queryVector = null, contextDiaryPrefixes = new Set(), requestCache = null) {
         if (!dbName || limit <= 0) return [];
 
-        const characterDirPath = path.join(dailyNoteRootPath, dbName);
-        const fileMetas = [];
-
-        try {
-            const files = await fs.readdir(characterDirPath);
-            const diaryFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
-
-            for (const file of diaryFiles) {
-                const filePath = path.join(characterDirPath, file);
-                try {
-                    const fd = await fs.open(filePath, 'r');
-                    const buffer = Buffer.alloc(100);
-                    await fd.read(buffer, 0, 100, 0);
-                    await fd.close();
-
-                    const content = buffer.toString('utf-8');
-                    const firstLine = content.split('\n')[0];
-                    const match = firstLine.match(/^\[?(\d{4}[-.]\d{2}[-.]\d{2})\]?/);
-
-                    if (match) {
-                        const normalizedDateStr = match[1].replace(/\./g, '-');
-                        fileMetas.push({
-                            relativePath: path.join(dbName, file),
-                            date: normalizedDateStr
-                        });
-                    }
-                } catch (readErr) { }
-            }
-        } catch (dirError) {
-            if (dirError.code !== 'ENOENT') {
-                console.error(`[RAGDiaryPlugin] Recent chunk recall failed while scanning ${characterDirPath}:`, dirError.message);
-            }
-            return [];
-        }
+        const fileMetas = await this._getDiaryDateIndexCached(dbName, requestCache);
 
         if (fileMetas.length === 0) return [];
-
-        fileMetas.sort((a, b) => new Date(b.date) - new Date(a.date));
         const recentFilePaths = fileMetas.map(meta => meta.relativePath);
         const fileDateMap = new Map(fileMetas.map(meta => [meta.relativePath, meta.date]));
 
         try {
-            const chunks = await this.vectorDBManager.getChunksByFilePaths(recentFilePaths);
+            const chunks = await this._getChunksByFilePathsCached(recentFilePaths, requestCache);
             if (!chunks || chunks.length === 0) return [];
 
             let recentResults = chunks.map((chunk, index) => {
                 const chunkPath = chunk.fullPath || chunk.sourceFile || '';
                 const date = fileDateMap.get(chunkPath) || null;
                 const sim = queryVector && chunk.vector
-                    ? this.cosineSimilarity(queryVector, Array.from(chunk.vector))
+                    ? this.cosineSimilarity(queryVector, chunk.vector)
                     : 0;
 
                 return {
@@ -3581,46 +3560,219 @@ class RAGDiaryPlugin {
         }
     }
 
-    /**
-     * 🌟 新增：仅获取时间范围内的文件路径列表
-     * 用于 V5 平衡召回逻辑
-     */
-    async _getTimeRangeFilePaths(dbName, timeRange) {
-        const characterDirPath = path.join(dailyNoteRootPath, dbName);
-        let filePathsInRange = [];
+    _createRequestCache() {
+        return {
+            chunksByFilePath: new Map(),
+            fullDocumentCache: new Map(),
+            timeRangeFilePaths: new Map(),
+            diarySimilarity: new Map(),
+            tagBoost: new Map(),
+            diaryDateIndex: new Map()
+        };
+    }
 
-        if (!timeRange || !timeRange.start || !timeRange.end) return filePathsInRange;
+    _getQueryVectorCacheKey(queryVector) {
+        if (!queryVector || typeof queryVector.length !== 'number') return 'no-vector';
+        const dim = queryVector.length;
+        const sampleCount = Math.min(16, dim);
+        const sample = [];
+        for (let i = 0; i < sampleCount; i++) {
+            const idx = Math.floor(i * dim / sampleCount);
+            sample.push(Number(queryVector[idx] || 0).toFixed(6));
+        }
+        return `${dim}:${sample.join(',')}`;
+    }
+
+    _getPreparedTagBoostCached({ queryVector, tagWeight, ghostTags = [], tagTruncationRatio = 0.5, metrics = {}, requestCache = null }) {
+        const initialCoreTags = ghostTags.length > 0 ? [...ghostTags] : [];
+        const ghostKey = ghostTags
+            .map(tag => `${tag.isCore ? '!' : ''}${tag.name || String(tag)}`)
+            .sort()
+            .join(',');
+        const cacheKey = [
+            this._getQueryVectorCacheKey(queryVector),
+            Number(tagWeight || 0).toFixed(6),
+            Number(tagTruncationRatio || 0).toFixed(6),
+            ghostKey
+        ].join('|');
+
+        if (requestCache?.tagBoost?.has(cacheKey)) {
+            return requestCache.tagBoost.get(cacheKey);
+        }
+
+        if (ghostTags.length > 0) {
+            console.log(`[RAGDiaryPlugin] 注入幽灵节点: ${ghostTags.length} 个`);
+        }
+
+        const boostResult = this.vectorDBManager.applyTagBoost(new Float32Array(queryVector), tagWeight, initialCoreTags);
+        let coreTagsForSearch = [];
+
+        if (boostResult && boostResult.info && boostResult.info.matchedTags) {
+            const rawTags = boostResult.info.matchedTags;
+            coreTagsForSearch = this._truncateCoreTags(rawTags, tagTruncationRatio, metrics);
+
+            if (ghostTags.length > 0) {
+                coreTagsForSearch = [...coreTagsForSearch, ...ghostTags];
+            }
+
+            console.log(`[RAGDiaryPlugin] TagBoost: ${coreTagsForSearch.length}个核心Tag (含${ghostTags.length}个幽灵)`);
+        } else if (ghostTags.length > 0) {
+            coreTagsForSearch = ghostTags;
+        }
+
+        const prepared = { coreTagsForSearch, boostResult };
+        requestCache?.tagBoost?.set(cacheKey, prepared);
+        return prepared;
+    }
+
+    async _getDiaryDateIndexCached(dbName, requestCache = null) {
+        if (!dbName) return [];
+        if (requestCache?.diaryDateIndex?.has(dbName)) {
+            return requestCache.diaryDateIndex.get(dbName);
+        }
+
+        const normalizeMetas = (metas) => (Array.isArray(metas) ? metas : [])
+            .filter(meta => meta && meta.relativePath && meta.date)
+            .map(meta => ({
+                relativePath: meta.relativePath,
+                date: meta.date,
+                diaryDate: meta.diaryDate || dayjs.tz(meta.date, DEFAULT_TIMEZONE).startOf('day').toDate()
+            }))
+            .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        if (typeof this.vectorDBManager?.getDiaryDateIndex === 'function') {
+            const indexedMetas = normalizeMetas(this.vectorDBManager.getDiaryDateIndex(dbName));
+            requestCache?.diaryDateIndex?.set(dbName, indexedMetas);
+            return indexedMetas;
+        }
+
+        const characterDirPath = path.join(dailyNoteRootPath, dbName);
+        const fileMetas = [];
 
         try {
             const files = await fs.readdir(characterDirPath);
             const diaryFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
 
-            for (const file of diaryFiles) {
+            await Promise.all(diaryFiles.map(async (file) => {
                 const filePath = path.join(characterDirPath, file);
                 try {
-                    // 优化：只读取前 100 个字符来解析日期，不读取全文
                     const fd = await fs.open(filePath, 'r');
-                    const buffer = Buffer.alloc(100);
-                    await fd.read(buffer, 0, 100, 0);
-                    await fd.close();
+                    try {
+                        const buffer = Buffer.alloc(100);
+                        await fd.read(buffer, 0, 100, 0);
 
-                    const content = buffer.toString('utf-8');
-                    const firstLine = content.split('\n')[0];
-                    const match = firstLine.match(/^\[?(\d{4}[-.]\d{2}[-.]\d{2})\]?/);
+                        const content = buffer.toString('utf-8');
+                        const firstLine = content.split('\n')[0];
+                        const match = firstLine.match(/^\[?(\d{4}[-.]\d{2}[-.]\d{2})\]?/);
 
-                    if (match) {
-                        const dateStr = match[1];
-                        const normalizedDateStr = dateStr.replace(/\./g, '-');
-                        const diaryDate = dayjs.tz(normalizedDateStr, DEFAULT_TIMEZONE).startOf('day').toDate();
-
-                        if (diaryDate >= timeRange.start && diaryDate <= timeRange.end) {
-                            // 存储相对于知识库根目录的路径，以便 KnowledgeBaseManager 查询
-                            filePathsInRange.push(path.join(dbName, file));
+                        if (match) {
+                            const normalizedDateStr = match[1].replace(/\./g, '-');
+                            fileMetas.push({
+                                relativePath: path.join(dbName, file),
+                                date: normalizedDateStr,
+                                diaryDate: dayjs.tz(normalizedDateStr, DEFAULT_TIMEZONE).startOf('day').toDate()
+                            });
                         }
+                    } finally {
+                        await fd.close();
                     }
                 } catch (readErr) { }
+            }));
+        } catch (dirError) {
+            if (dirError.code !== 'ENOENT') {
+                console.error(`[RAGDiaryPlugin] Diary date index failed while scanning ${characterDirPath}:`, dirError.message);
             }
-        } catch (dirError) { }
+        }
+
+        const normalizedFileMetas = normalizeMetas(fileMetas);
+        requestCache?.diaryDateIndex?.set(dbName, normalizedFileMetas);
+        return normalizedFileMetas;
+    }
+
+    async _getChunksByFilePathsCached(filePaths, requestCache = null) {
+        if (!filePaths || filePaths.length === 0) return [];
+
+        const uniquePaths = [...new Set(filePaths.filter(Boolean))];
+        if (!requestCache?.chunksByFilePath) {
+            return await this.vectorDBManager.getChunksByFilePaths(uniquePaths);
+        }
+
+        const missingPaths = uniquePaths.filter(filePath => !requestCache.chunksByFilePath.has(filePath));
+        if (missingPaths.length > 0) {
+            const chunks = await this.vectorDBManager.getChunksByFilePaths(missingPaths);
+            const grouped = new Map(missingPaths.map(filePath => [filePath, []]));
+            for (const chunk of chunks) {
+                const chunkPath = chunk.fullPath || chunk.sourceFile || '';
+                if (!grouped.has(chunkPath)) grouped.set(chunkPath, []);
+                grouped.get(chunkPath).push(chunk);
+            }
+            for (const filePath of missingPaths) {
+                requestCache.chunksByFilePath.set(filePath, grouped.get(filePath) || []);
+            }
+        }
+
+        return uniquePaths.flatMap(filePath => requestCache.chunksByFilePath.get(filePath) || []);
+    }
+
+    async _getDiarySimilarityCached(dbName, queryVector, requestCache = null) {
+        if (!dbName || !queryVector) return null;
+
+        const cacheKey = `${dbName}|${this._getQueryVectorCacheKey(queryVector)}`;
+        if (requestCache?.diarySimilarity?.has(cacheKey)) {
+            return requestCache.diarySimilarity.get(cacheKey);
+        }
+
+        let dbNameVector = null;
+        try {
+            dbNameVector = await this.vectorDBManager.getDiaryNameVector(dbName);
+        } catch (e) {
+            dbNameVector = null;
+        }
+
+        const enhancedVector = this.enhancedVectorCache[dbName];
+        if (!dbNameVector && !enhancedVector) return null;
+
+        const baseSimilarity = dbNameVector ? this.cosineSimilarity(queryVector, dbNameVector) : 0;
+        const enhancedSimilarity = enhancedVector ? this.cosineSimilarity(queryVector, enhancedVector) : 0;
+        const result = {
+            baseSimilarity,
+            enhancedSimilarity,
+            finalSimilarity: Math.max(baseSimilarity, enhancedSimilarity)
+        };
+
+        requestCache?.diarySimilarity?.set(cacheKey, result);
+        return result;
+    }
+
+    async _getTimeRangeFilePathsCached(dbName, timeRange, requestCache = null) {
+        if (!timeRange || !timeRange.start || !timeRange.end) return [];
+        const startKey = timeRange.start instanceof Date ? timeRange.start.toISOString() : String(timeRange.start);
+        const endKey = timeRange.end instanceof Date ? timeRange.end.toISOString() : String(timeRange.end);
+        const cacheKey = `${dbName}|${startKey}|${endKey}`;
+
+        if (requestCache?.timeRangeFilePaths?.has(cacheKey)) {
+            return requestCache.timeRangeFilePaths.get(cacheKey);
+        }
+
+        const paths = await this._getTimeRangeFilePaths(dbName, timeRange, requestCache);
+        requestCache?.timeRangeFilePaths?.set(cacheKey, paths);
+        return paths;
+    }
+
+    /**
+     * 🌟 新增：仅获取时间范围内的文件路径列表
+     * 用于 V5 平衡召回逻辑
+     */
+    async _getTimeRangeFilePaths(dbName, timeRange, requestCache = null) {
+        let filePathsInRange = [];
+
+        if (!timeRange || !timeRange.start || !timeRange.end) return filePathsInRange;
+
+        const fileMetas = await this._getDiaryDateIndexCached(dbName, requestCache);
+        filePathsInRange = fileMetas
+            .filter(meta => meta.diaryDate >= timeRange.start && meta.diaryDate <= timeRange.end)
+            .map(meta => meta.relativePath);
+
         return filePathsInRange;
     }
 

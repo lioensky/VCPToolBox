@@ -94,6 +94,9 @@ class KnowledgeBaseManager {
         this.eventLoopWatchdogTimer = null;
         this._lastEventLoopWatchdogAt = 0;
         this.diaryNameVectorCache = new Map();
+        // 🌟 日记时间索引缓存：随日记本向量索引加载/卸载生命周期维护，供 RAG ::Time 直接查询。
+        // diaryName -> [{ relativePath, date }]
+        this.diaryDateIndexCache = new Map();
         this.pendingFiles = new Set();
         this.fileRetryCount = new Map(); // 🛡️ 文件重试计数器，防止无限循环
         this.batchTimer = null;
@@ -846,6 +849,7 @@ class KnowledgeBaseManager {
         }
 
         this.diaryIndices.set(diaryName, idx);
+        this._ensureDiaryDateIndexCached(diaryName);
         return idx;
     }
 
@@ -969,11 +973,22 @@ class KnowledgeBaseManager {
 
         try {
             if (tagBoost > 0 && this.tagMemoEngine) {
-                // 🌟 TagMemo 逻辑回归：应用 Tag 增强 (强制使用 V6)
-                const boostResult = this.tagMemoEngine.applyTagBoost(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
-                searchVecFloat = boostResult.vector;
-                tagInfo = boostResult.info;
-                energyField = boostResult.energyField || null;
+                const preparedBoostResult = options?.preparedBoostResult || options?.boostResult || null;
+                if (preparedBoostResult?.vector) {
+                    // 🌟 请求级 TagBoost 复用：调用方已经对同一 queryVector/tagWeight/coreTags 完成感应，
+                    // 搜索层直接使用增强后的向量与 energyField，避免同一轮多占位符/多日记本重复跑 TagMemo。
+                    searchVecFloat = preparedBoostResult.vector instanceof Float32Array
+                        ? preparedBoostResult.vector
+                        : new Float32Array(preparedBoostResult.vector);
+                    tagInfo = preparedBoostResult.info || null;
+                    energyField = preparedBoostResult.energyField || null;
+                } else {
+                    // 🌟 TagMemo 逻辑回归：应用 Tag 增强 (强制使用 V6)
+                    const boostResult = this.tagMemoEngine.applyTagBoost(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
+                    searchVecFloat = boostResult.vector;
+                    tagInfo = boostResult.info;
+                    energyField = boostResult.energyField || null;
+                }
             } else {
                 searchVecFloat = vector instanceof Float32Array ? vector : new Float32Array(vector);
             }
@@ -1008,13 +1023,14 @@ class KnowledgeBaseManager {
             });
         }
 
-        // Hydrate results
-        const hydrate = this.db.prepare(`
-            SELECT c.content as text, f.path as sourceFile, f.updated_at, f.id as file_id
+        // Hydrate results（批量回填，避免每个候选一次同步 SQLite 往返）
+        const resultChunkIds = results.map(res => Number(res.id)).filter(Number.isFinite);
+        const rows = this._queryByChunks(`
+            SELECT c.id, c.content as text, f.path as sourceFile, f.updated_at, f.id as file_id
             FROM chunks c
             JOIN files f ON c.file_id = f.id
-            WHERE c.id = ?
-        `);
+            WHERE c.id`, resultChunkIds);
+        const rowByChunkId = new Map(rows.map(row => [row.id, row]));
 
         // 🛠️ V8.1 修复：per-chunk 标签关联（替代全局 tagInfo 覆盖）
         const hydratedResults = [];
@@ -1022,7 +1038,7 @@ class KnowledgeBaseManager {
 
         for (const res of results) {
             const chunkId = Number(res.id);
-            const row = hydrate.get(chunkId);
+            const row = rowByChunkId.get(chunkId);
             if (!row) {
                 console.warn(`[KnowledgeBase] 👻 Ghost Index detected for ID ${chunkId} in "${diaryName}". Cleaning up...`);
                 if (idx.remove) idx.remove(res.id);
@@ -1030,7 +1046,7 @@ class KnowledgeBaseManager {
             }
             fileIdsForTagLookup.set(chunkId, row.file_id);
             hydratedResults.push({
-                _chunkId: chunkId,
+                chunkId,
                 _fileId: row.file_id,
                 text: row.text,
                 score: res.score,
@@ -1084,9 +1100,8 @@ class KnowledgeBaseManager {
             }
         }
 
-        // 清理内部字段
+        // 清理内部字段；保留公开 chunkId，供 Associate 等后续管线直接回取向量，避免 content 精确回查。
         for (const r of hydratedResults) {
-            delete r._chunkId;
             delete r._fileId;
         }
 
@@ -1100,10 +1115,19 @@ class KnowledgeBaseManager {
         let energyField = null;
 
         if (tagBoost > 0 && this.tagMemoEngine) {
-            const boostResult = this.tagMemoEngine.applyTagBoost(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
-            searchVecFloat = boostResult.vector;
-            tagInfo = boostResult.info;
-            energyField = boostResult.energyField || null;
+            const preparedBoostResult = options?.preparedBoostResult || options?.boostResult || null;
+            if (preparedBoostResult?.vector) {
+                searchVecFloat = preparedBoostResult.vector instanceof Float32Array
+                    ? preparedBoostResult.vector
+                    : new Float32Array(preparedBoostResult.vector);
+                tagInfo = preparedBoostResult.info || null;
+                energyField = preparedBoostResult.energyField || null;
+            } else {
+                const boostResult = this.tagMemoEngine.applyTagBoost(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
+                searchVecFloat = boostResult.vector;
+                tagInfo = boostResult.info;
+                energyField = boostResult.energyField || null;
+            }
         } else {
             searchVecFloat = vector instanceof Float32Array ? vector : new Float32Array(vector);
         }
@@ -1140,22 +1164,25 @@ class KnowledgeBaseManager {
 
         const topK = allResults.slice(0, k);
 
-        const hydrate = this.db.prepare(`
-            SELECT c.content as text, f.path as sourceFile, f.id as file_id
-            FROM chunks c JOIN files f ON c.file_id = f.id WHERE c.id = ?
-        `);
+        const topChunkIds = topK.map(res => Number(res.id)).filter(Number.isFinite);
+        const rows = this._queryByChunks(`
+            SELECT c.id, c.content as text, f.path as sourceFile, f.id as file_id
+            FROM chunks c JOIN files f ON c.file_id = f.id WHERE c.id`, topChunkIds);
+        const rowByChunkId = new Map(rows.map(row => [row.id, row]));
 
         // 🛠️ V8.1 修复：per-chunk 标签关联（与 _searchSpecificIndex 对称）
         const hydratedResults = [];
         for (const res of topK) {
             const chunkId = Number(res.id);
-            const row = hydrate.get(chunkId);
+            const row = rowByChunkId.get(chunkId);
             if (!row) continue;
             hydratedResults.push({
+                chunkId,
                 _fileId: row.file_id,
                 text: row.text,
                 score: res.score,
                 sourceFile: path.basename(row.sourceFile),
+                fullPath: row.sourceFile,
                 boostFactor: tagInfo ? tagInfo.boostFactor : 0,
                 tagMatchScore: tagInfo ? tagInfo.totalSpikeScore : 0,
             });
@@ -1246,6 +1273,71 @@ class KnowledgeBaseManager {
     async deduplicateResults(candidates, queryVector) {
         if (!this.resultDeduplicator) return candidates;
         return await this.resultDeduplicator.deduplicate(candidates, queryVector);
+    }
+
+    // =========================================================================
+    // 日记日期索引 API
+    // =========================================================================
+
+    _extractDiaryDateFromText(text) {
+        if (!text || typeof text !== 'string') return null;
+        const firstLine = text.split('\n')[0] || '';
+        const match = firstLine.match(/^\[?(\d{4}[-.]\d{2}[-.]\d{2})\]?/);
+        return match ? match[1].replace(/\./g, '-') : null;
+    }
+
+    _buildDiaryDateIndexFromSqlite(diaryName) {
+        if (!diaryName || !this.db) return [];
+
+        try {
+            const rows = this.db.prepare(`
+                SELECT f.path AS relativePath, c.content AS content
+                FROM files f
+                JOIN chunks c ON c.file_id = f.id AND c.chunk_index = 0
+                WHERE f.diary_name = ?
+                ORDER BY f.path ASC
+            `).all(diaryName);
+
+            const fileMetas = [];
+            for (const row of rows) {
+                const date = this._extractDiaryDateFromText(row.content);
+                if (!date) continue;
+                fileMetas.push({
+                    relativePath: row.relativePath,
+                    date
+                });
+            }
+
+            fileMetas.sort((a, b) => new Date(b.date) - new Date(a.date));
+            return fileMetas;
+        } catch (e) {
+            console.warn(`[KnowledgeBase] ⚠️ Failed to build diary date index for "${diaryName}": ${e.message}`);
+            return [];
+        }
+    }
+
+    _ensureDiaryDateIndexCached(diaryName) {
+        if (!diaryName) return [];
+        if (this.diaryDateIndexCache.has(diaryName)) {
+            return this.diaryDateIndexCache.get(diaryName);
+        }
+
+        const fileMetas = this._buildDiaryDateIndexFromSqlite(diaryName);
+        this.diaryDateIndexCache.set(diaryName, fileMetas);
+        if (fileMetas.length > 0) {
+            console.log(`[KnowledgeBase] 🗓️ Diary date index cached for "${diaryName}": ${fileMetas.length} file(s).`);
+        }
+        return fileMetas;
+    }
+
+    getDiaryDateIndex(diaryName) {
+        const fileMetas = this._ensureDiaryDateIndexCached(diaryName);
+        return fileMetas.map(meta => ({ ...meta }));
+    }
+
+    invalidateDiaryDateIndex(diaryName) {
+        if (!diaryName) return;
+        this.diaryDateIndexCache.delete(diaryName);
     }
 
     // =========================================================================
@@ -1357,8 +1449,18 @@ class KnowledgeBaseManager {
         const stmt = this.db.prepare('SELECT vector FROM chunks WHERE content = ? LIMIT 1');
         const row = stmt.get(text);
         if (row && row.vector) {
-            const decoded = this._decodeVectorBlob(row.vector, this.config.dimension, 'chunk:content_lookup');
-            return decoded ? Array.from(decoded) : null;
+            return this._decodeVectorBlob(row.vector, this.config.dimension, 'chunk:content_lookup');
+        }
+        return null;
+    }
+
+    async getVectorByChunkId(chunkId) {
+        const numericChunkId = Number(chunkId);
+        if (!Number.isFinite(numericChunkId)) return null;
+
+        const row = this.db.prepare('SELECT vector FROM chunks WHERE id = ? LIMIT 1').get(numericChunkId);
+        if (row && row.vector) {
+            return this._decodeVectorBlob(row.vector, this.config.dimension, `chunk:${numericChunkId}`);
         }
         return null;
     }
@@ -1529,9 +1631,11 @@ class KnowledgeBaseManager {
             const rows = stmt.all(...batch);
             const processed = rows.map(r => ({
                 id: r.id,
+                chunkId: r.id,
                 text: r.text,
                 vector: this._decodeVectorBlob(r.vector, this.config.dimension, `chunk:${r.id}`),
-                sourceFile: r.sourceFile
+                sourceFile: r.sourceFile,
+                fullPath: r.sourceFile
             }));
             allResults.push(...processed);
         }
@@ -2109,6 +2213,13 @@ class KnowledgeBaseManager {
                 this.fileRetryCount.delete(f); // 清空重试计数
             });
 
+            for (const dName of updates.keys()) {
+                this.invalidateDiaryDateIndex(dName);
+                if (this.diaryIndices.has(dName)) {
+                    this._ensureDiaryDateIndexCached(dName);
+                }
+            }
+
             console.log(`[KnowledgeBase] ✅ Batch complete. Updated ${updates.size} diary indices.`);
 
             // 优化1：数据更新后，检查是否需要重建矩阵（防抖 + 阈值）
@@ -2253,6 +2364,10 @@ class KnowledgeBaseManager {
 
             if (rows.length > 1) {
                 console.warn(`[KnowledgeBase] 🧹 Batched delete removed ${rows.length} file record(s), ${totalChunks} chunk vector(s).`);
+            }
+
+            for (const diaryName of chunkIdsByDiary.keys()) {
+                this.invalidateDiaryDateIndex(diaryName);
             }
 
             for (const [diaryName, chunkIds] of chunkIdsByDiary) {
@@ -2471,6 +2586,7 @@ class KnowledgeBaseManager {
                 this._saveIndexToDisk(diaryName);
                 this.diaryIndices.delete(diaryName);
                 this.diaryIndexLastUsed.delete(diaryName);
+                this.diaryDateIndexCache.delete(diaryName);
                 evictedCount++;
                 console.log(`[KnowledgeBase] 🧹 Evicted idle index: "${diaryName}" (idle ${Math.round((now - lastUsed) / 60000)}min)`);
             } catch (e) {
