@@ -6,8 +6,6 @@ const path = require('path');
 const chokidar = require('chokidar');
 const crypto = require('crypto');
 const dotenv = require('dotenv');
-const cheerio = require('cheerio');
-const mime = require('mime-types');
 const TimeExpressionParser = require('./TimeExpressionParser.js');
 const MetaThinkingManager = require('./MetaThinkingManager.js');
 const SemanticGroupManager = require('./SemanticGroupManager.js');
@@ -17,6 +15,11 @@ const FoldingStore = require('./FoldingStore.js'); // 🌟 V2折叠：SQLite 迷
 const CacheManager = require('./CacheManager.js'); // 🌟 新增：统一缓存管理器
 const TDBPlaceholderProcessor = require('./TDBPlaceholderProcessor.js'); // 🧊 冷知识库占位符适配层
 const DirectDiaryTextProcessor = require('./DirectDiaryTextProcessor.js'); // 📝 纯文本日记占位符处理器（{{...日记本...}}）
+const MessageContentUtils = require('./MessageContentUtils.js');
+const TextSanitizer = require('./TextSanitizer.js');
+const VectorMathUtils = require('./VectorMathUtils.js');
+const AttachmentMemoUtils = require('./AttachmentMemoUtils.js');
+const RAGResultFormatter = require('./RAGResultFormatter.js');
 const { chunkText } = require('../../TextChunker.js');
 const { getEmbeddingsBatch } = require('../../EmbeddingUtils.js');
 const {
@@ -485,87 +488,18 @@ class RAGDiaryPlugin {
     }
 
     cosineSimilarity(vecA, vecB) {
-        if (!vecA || !vecB || vecA.length !== vecB.length) {
-            return 0;
-        }
-        let dotProduct = 0;
-        let normA = 0;
-        let normB = 0;
-        for (let i = 0; i < vecA.length; i++) {
-            dotProduct += vecA[i] * vecB[i];
-            normA += vecA[i] * vecA[i];
-            normB += vecB[i] * vecB[i];
-        }
-        if (normA === 0 || normB === 0) {
-            return 0;
-        }
-        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+        return VectorMathUtils.cosineSimilarity(vecA, vecB);
     }
 
     _getWeightedAverageVector(vectors, weights) {
-        // 1. 过滤掉无效的向量及其对应的权重
-        const validVectors = [];
-        const validWeights = [];
-        for (let i = 0; i < vectors.length; i++) {
-            if (vectors[i] && vectors[i].length > 0) {
-                validVectors.push(vectors[i]);
-                validWeights.push(weights[i] || 0);
-            }
-        }
-
-        if (validVectors.length === 0) return null;
-        if (validVectors.length === 1) return validVectors[0];
-
-        // 2. 归一化权重
-        let weightSum = validWeights.reduce((sum, w) => sum + w, 0);
-        if (weightSum === 0) {
-            console.warn('[RAGDiaryPlugin] Weight sum is zero, using equal weights.');
-            validWeights.fill(1 / validVectors.length);
-            weightSum = 1;
-        }
-
-        const normalizedWeights = validWeights.map(w => w / weightSum);
-        const dimension = validVectors[0].length;
-        const result = new Array(dimension).fill(0);
-
-        // 3. 计算加权平均值
-        for (let i = 0; i < validVectors.length; i++) {
-            const vector = validVectors[i];
-            const weight = normalizedWeights[i];
-            if (vector.length !== dimension) {
-                console.error('[RAGDiaryPlugin] Vector dimensions do not match. Skipping mismatched vector.');
-                continue;
-            }
-            for (let j = 0; j < dimension; j++) {
-                result[j] += vector[j] * weight;
-            }
-        }
-
-        return result;
+        return VectorMathUtils.getWeightedAverageVector(vectors, weights, { logger: console });
     }
 
     /**
      * 计算多个向量的平均值
      */
     _getAverageVector(vectors) {
-        if (!vectors || vectors.length === 0) return null;
-        if (vectors.length === 1) return vectors[0];
-
-        const dimension = vectors[0].length;
-        const result = new Array(dimension).fill(0);
-
-        for (const vector of vectors) {
-            if (!vector || vector.length !== dimension) continue;
-            for (let i = 0; i < dimension; i++) {
-                result[i] += vector[i];
-            }
-        }
-
-        for (let i = 0; i < dimension; i++) {
-            result[i] /= vectors.length;
-        }
-
-        return result;
+        return VectorMathUtils.getAverageVector(vectors);
     }
 
     async getDiaryContent(characterName) {
@@ -685,65 +619,15 @@ class RAGDiaryPlugin {
     }
 
     _sigmoid(x) {
-        return 1 / (1 + Math.exp(-x));
+        return VectorMathUtils.sigmoid(x);
     }
 
     _extractTextFromContent(content) {
-        if (typeof content === 'string') return content;
-        if (Array.isArray(content)) {
-            return content
-                .filter(part => part && part.type === 'text' && typeof part.text === 'string')
-                .map(part => part.text)
-                .join('\n')
-                .trim();
-        }
-        if (content && typeof content === 'object' && typeof content.text === 'string') {
-            return content.text;
-        }
-        return '';
+        return MessageContentUtils.extractTextFromContent(content);
     }
 
     _replaceTextInContent(content, replacer) {
-        if (typeof replacer !== 'function') return content;
-
-        if (typeof content === 'string') {
-            return replacer(content);
-        }
-
-        if (Array.isArray(content)) {
-            const textIndices = [];
-            const textValues = [];
-
-            content.forEach((part, index) => {
-                if (part && part.type === 'text' && typeof part.text === 'string') {
-                    textIndices.push(index);
-                    textValues.push(part.text);
-                }
-            });
-
-            const mergedText = textValues.join('\n').trim();
-            const replacedText = replacer(mergedText);
-
-            if (textIndices.length > 0) {
-                const firstIndex = textIndices[0];
-                const newContent = content.map((part, index) => {
-                    if (!textIndices.includes(index)) return part;
-                    if (index === firstIndex) {
-                        return { ...part, text: replacedText };
-                    }
-                    return null;
-                }).filter(Boolean);
-                return newContent;
-            }
-
-            return [...content, { type: 'text', text: replacedText }];
-        }
-
-        if (content && typeof content === 'object' && typeof content.text === 'string') {
-            return { ...content, text: replacer(content.text) };
-        }
-
-        return content;
+        return MessageContentUtils.replaceTextInContent(content, replacer);
     }
 
     /**
@@ -870,49 +754,11 @@ class RAGDiaryPlugin {
     }
 
     _stripHtml(html) {
-        if (!html) return ''; // 确保返回空字符串而不是 null/undefined
-
-        // 如果不是字符串，尝试强制转换，避免 cheerio 或后续 trim 报错
-        if (typeof html !== 'string') {
-            return String(html);
-        }
-
-        // 1. 使用 cheerio 加载 HTML 并提取纯文本
-        try {
-            const $ = cheerio.load(html);
-            // 关键修复：在提取文本之前，显式移除 style 和 script 标签
-            $('style, script').remove();
-            const plainText = $.text();
-
-            // 3. 移除每行开头的空格，并将多个连续换行符压缩为最多两个
-            return plainText
-                .replace(/^[ \t]+/gm, '')
-                .replace(/\n{3,}/g, '\n\n')
-                .trim();
-        } catch (e) {
-            console.error('[RAGDiaryPlugin] _stripHtml error:', e);
-            return html; // 解析失败则返回原始内容
-        }
+        return TextSanitizer.stripHtml(html);
     }
 
     _stripEmoji(text) {
-        if (!text || typeof text !== 'string') {
-            return text;
-        }
-        // 移除所有 emoji 和特殊符号
-        // 这个正则表达式匹配大部分 emoji 范围
-        return text.replace(/[\u{1F600}-\u{1F64F}]/gu, '') // 表情符号
-            .replace(/[\u{1F300}-\u{1F5FF}]/gu, '') // 杂项符号和象形文字
-            .replace(/[\u{1F680}-\u{1F6FF}]/gu, '') // 交通和地图符号
-            .replace(/[\u{1F1E0}-\u{1F1FF}]/gu, '') // 旗帜
-            .replace(/[\u{2600}-\u{26FF}]/gu, '')   // 杂项符号
-            .replace(/[\u{2700}-\u{27BF}]/gu, '')   // 装饰符号
-            .replace(/[\u{1F900}-\u{1F9FF}]/gu, '') // 补充符号和象形文字
-            .replace(/[\u{1FA00}-\u{1FA6F}]/gu, '') // 扩展-A
-            .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '') // 扩展-B
-            .replace(/[\u{FE00}-\u{FE0F}]/gu, '')   // 变体选择器
-            .replace(/[\u{200D}]/gu, '')            // 零宽连接符
-            .trim();
+        return TextSanitizer.stripEmoji(text);
     }
 
     /**
@@ -920,66 +766,14 @@ class RAGDiaryPlugin {
      * 移除 AI 工具调用的技术标记，防止其作为“英文偏好”噪音干扰向量搜索
      */
     _stripToolMarkers(text) {
-        if (!text || typeof text !== 'string') return text;
-
-        // 1. 识别完整的工具调用块 <<<[TOOL_REQUEST]>>> ... <<<[END_TOOL_REQUEST]>>>
-        let processed = text.replace(/<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>/gi, (match, block) => {
-            // 2. 提取并过滤键值对，支持 key:「始」value「末」 格式
-            const blacklistedKeys = ['tool_name', 'command', 'archery', 'maid'];
-            const blacklistedValues = ['dailynote', 'update', 'create', 'no_reply'];
-
-            const results = [];
-            // 🌟 关键修复：匹配完整的 「始」...「末」 容器，防止内容截断
-            const regex = /(\w+):\s*[「『]始[」』]([\s\S]*?)[「『]末[」』]/g;
-            let m;
-            while ((m = regex.exec(block)) !== null) {
-                const key = m[1].toLowerCase();
-                const val = m[2].trim();
-                const valLower = val.toLowerCase();
-
-                const isTechKey = blacklistedKeys.includes(key);
-                const isTechVal = blacklistedValues.some(bv => valLower.includes(bv));
-
-                if (!isTechKey && !isTechVal && val.length > 1) {
-                    results.push(val);
-                }
-            }
-
-            // 如果正则没匹配到（可能是旧格式或非标准格式），回退到行处理
-            if (results.length === 0) {
-                return block.split('\n')
-                    .map(line => {
-                        const cleanLine = line.replace(/\w+:\s*[「『]始[」』]/g, '').replace(/[「『]末[」』]/g, '').trim();
-                        const lower = cleanLine.toLowerCase();
-                        if (blacklistedValues.some(bv => lower.includes(bv))) return '';
-                        return cleanLine;
-                    })
-                    .filter(l => l.length > 0)
-                    .join('\n');
-            }
-
-            return results.join('\n');
-        });
-
-        // 3. 移除起止符和残余标记
-        return processed
-            .replace(/<<<\[?TOOL_REQUEST\]?>>>/gi, '')
-            .replace(/<<<\[?END_TOOL_REQUEST\]?>>>/gi, '')
-            .replace(/[「」『』]始[「」『』]/g, '')
-            .replace(/[「」『』]末[「」『』]/g, '')
-            .replace(/[「」『』]/g, '')
-            .replace(/[ \t]+/g, ' ') // 仅压缩水平空格，保留换行
-            .replace(/\n{3,}/g, '\n\n') // 压缩过多换行
-            .trim();
+        return TextSanitizer.stripToolMarkers(text);
     }
 
     /**
      * 移除系统追加在用户消息末尾的“系统通知”部分，避免将其混入向量化。
      */
     _stripSystemNotification(text) {
-        if (!text || typeof text !== 'string') return text;
-        // 匹配从[系统通知]到[系统通知结束]的整个块，可能包含前后空白
-        return text.replace(/\[系统通知\][\s\S]*?\[系统通知结束\]/g, '').trim();
+        return TextSanitizer.stripSystemNotification(text);
     }
 
     /**
@@ -989,25 +783,7 @@ class RAGDiaryPlugin {
      * @returns {string} 净化后的文本
      */
     sanitizeForEmbedding(content, role) {
-        if (!content || typeof content !== 'string') return '';
-
-        let processed = content;
-
-        // 1. 角色特定预处理
-        if (role === 'user') {
-            processed = this._stripSystemNotification(processed);
-        } else if (role === 'assistant') {
-            // 🌟 V4.3 修改：不再从向量化文本中剔除 @tag，将其视为正常上下文语义的一部分
-            // const anchorRegex = /\[@(!)?([^\]]+)\]/g;
-            // processed = processed.replace(anchorRegex, '');
-        }
-
-        // 2. 通用净化流程 (顺序必须严格一致)
-        processed = this._stripHtml(processed);
-        processed = this._stripEmoji(processed);
-        processed = this._stripToolMarkers(processed);
-
-        return processed.trim();
+        return TextSanitizer.sanitizeForEmbedding(content, role);
     }
 
     /**
@@ -1112,23 +888,7 @@ class RAGDiaryPlugin {
      * @returns {boolean} 是否可能是 Base64 数据
      */
     _isLikelyBase64(str) {
-        if (!str || str.length < 100) return false;
-
-        // Base64 特征检测
-        const sample = str.substring(0, 200);
-
-        // 1. 检查是否只包含 Base64 字符
-        if (!/^[A-Za-z0-9+/=]+$/.test(sample)) return false;
-
-        // 2. 检查长度是否合理（Base64 通常是 4 的倍数）
-        if (str.length % 4 !== 0 && str.length % 4 !== 2 && str.length % 4 !== 3) return false;
-
-        // 3. 检查字符多样性（真正的文本不太可能有这么高的字符密度）
-        const uniqueChars = new Set(sample).size;
-        if (uniqueChars > 50) return true; // Base64 通常有 60+ 种不同字符
-
-        // 4. 长度超过 500 且符合格式，大概率是 Base64
-        return str.length > 500;
+        return TextSanitizer.isLikelyBase64(str);
     }
 
     /**
@@ -1138,108 +898,7 @@ class RAGDiaryPlugin {
      * @returns {string}
      */
     _jsonToMarkdown(obj, depth = 0) {
-        if (obj === null || obj === undefined) return '';
-        if (typeof obj !== 'object') return String(obj);
-
-        let md = '';
-        const indent = '  '.repeat(depth);
-
-        if (Array.isArray(obj)) {
-            for (const item of obj) {
-                // 特殊处理 VCP 的 content part 格式: [{"type":"text", "text":"..."}]
-                if (item && typeof item === 'object' && item.type === 'text' && item.text) {
-                    // ✅ 新增：检查 text 内容是否包含嵌套 JSON
-                    let textContent = item.text;
-
-                    // 尝试提取并解析嵌套的 JSON - 改进的正则表达式
-                    const jsonMatch = textContent.match(/:\s*\n(\{[\s\S]*?\}|\[[\s\S]*?\])\s*$/);
-                    if (jsonMatch) {
-                        try {
-                            const nestedJson = JSON.parse(jsonMatch[1]);
-                            // 将前缀文字 + 递归解析的 JSON 内容合并
-                            const prefix = textContent.substring(0, jsonMatch.index + 1).trim();
-                            const nestedMd = this._jsonToMarkdown(nestedJson, depth + 1);
-                            md += `${prefix}\n${nestedMd}\n`;
-                            continue;
-                        } catch (e) {
-                            // 解析失败，使用原始文本
-                            console.debug('[RAGDiaryPlugin] Failed to parse nested JSON in text content:', e.message);
-                        }
-                    }
-
-                    // ✅ 新增：检查是否有内联 JSON（不在行尾的情况）
-                    const inlineJsonMatch = textContent.match(/(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\])/);
-                    if (inlineJsonMatch && inlineJsonMatch[0].length > 50) {
-                        try {
-                            const inlineJson = JSON.parse(inlineJsonMatch[0]);
-                            const beforeJson = textContent.substring(0, inlineJsonMatch.index).trim();
-                            const afterJson = textContent.substring(inlineJsonMatch.index + inlineJsonMatch[0].length).trim();
-                            const inlineMd = this._jsonToMarkdown(inlineJson, depth + 1);
-
-                            md += `${beforeJson}\n${inlineMd}`;
-                            if (afterJson) md += `\n${afterJson}`;
-                            md += '\n';
-                            continue;
-                        } catch (e) {
-                            // 解析失败，使用原始文本
-                            console.debug('[RAGDiaryPlugin] Failed to parse inline JSON in text content:', e.message);
-                        }
-                    }
-
-                    md += `${textContent}\n`;
-                } else if (typeof item !== 'object') {
-                    md += `${indent}- ${item}\n`;
-                } else {
-                    md += `${this._jsonToMarkdown(item, depth)}\n`;
-                }
-            }
-        } else {
-            for (const [key, value] of Object.entries(obj)) {
-                if (value === null || value === undefined) continue;
-
-                if (typeof value === 'object') {
-                    const subContent = this._jsonToMarkdown(value, depth + 1);
-                    if (subContent.trim()) {
-                        md += `${indent}# ${key}:\n${subContent}`;
-                    }
-                } else {
-                    // ✅ 改进：检查字符串值是否包含嵌套 JSON
-                    const valStr = String(value);
-
-                    // 先检查是否是 Base64 数据
-                    if (valStr.length > 200 && (valStr.includes('base64') || this._isLikelyBase64(valStr))) {
-                        md += `${indent}* **${key}**: [Data Omitted]\n`;
-                        continue;
-                    }
-
-                    // 检查是否包含 JSON 结构
-                    if (valStr.length > 100 && (valStr.includes('{') || valStr.includes('['))) {
-                        const nestedJsonMatch = valStr.match(/^(.*?)(\{[\s\S]*\}|\[[\s\S]*\])(.*)$/);
-                        if (nestedJsonMatch) {
-                            try {
-                                const nestedJson = JSON.parse(nestedJsonMatch[2]);
-                                const prefix = nestedJsonMatch[1].trim();
-                                const suffix = nestedJsonMatch[3].trim();
-                                const nestedMd = this._jsonToMarkdown(nestedJson, depth + 1);
-
-                                md += `${indent}* **${key}**: `;
-                                if (prefix) md += `${prefix} `;
-                                md += `\n${nestedMd}`;
-                                if (suffix) md += `${indent}  ${suffix}\n`;
-                                continue;
-                            } catch (e) {
-                                // 解析失败，使用原始文本
-                                console.debug(`[RAGDiaryPlugin] Failed to parse nested JSON in field "${key}":`, e.message);
-                            }
-                        }
-                    }
-
-                    // 默认处理
-                    md += `${indent}* **${key}**: ${valStr}\n`;
-                }
-            }
-        }
-        return md;
+        return TextSanitizer.jsonToMarkdown(obj, depth);
     }
 
     /**
@@ -3827,123 +3486,23 @@ class RAGDiaryPlugin {
     }
 
     _formatResultPathLine(result) {
-        const rawPath = result?.fullPath || result?.sourceFile || result?.path || '';
-        if (!rawPath) return '';
-
-        const normalizedPath = String(rawPath).replace(/\\/g, '/');
-        const localUrl = normalizedPath.startsWith('file://')
-            ? normalizedPath
-            : `file:///${normalizedPath}`;
-
-        return `    [路径: ${localUrl}]\n`;
+        return RAGResultFormatter.formatResultPathLine(result);
     }
 
     _formatMemoryEntry(result, { prefix = '* ', text = null } = {}) {
-        const body = text !== null ? text : (result?.text || '').trim();
-        return `${prefix}${body}\n${this._formatResultPathLine(result)}`;
+        return RAGResultFormatter.formatMemoryEntry(result, { prefix, text });
     }
 
     formatStandardResults(searchResults, displayName, metadata) {
-        const mainResults = searchResults ? searchResults.filter(r => r.source !== 'associate') : [];
-        const associateResults = searchResults ? searchResults.filter(r => r.source === 'associate') : [];
-
-        let innerContent = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
-        if (mainResults.length > 0) {
-            innerContent += mainResults.map(r => this._formatMemoryEntry(r).trimEnd()).join('\n');
-        } else {
-            innerContent += "没有找到直接相关的记忆片段。";
-        }
-
-        if (associateResults.length > 0) {
-            innerContent += `\n\n【联想共现记忆 (${associateResults.length}条, 多条记忆交叉关联)】\n`;
-            innerContent += associateResults.map(r => this._formatMemoryEntry(r).trimEnd()).join('\n');
-        }
-
-        innerContent += `\n[--- 记忆片段结束 ---]\n`;
-
-        const metadataString = JSON.stringify(metadata).replace(/-->/g, '--\\>');
-        return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
+        return RAGResultFormatter.formatStandardResults(searchResults, displayName, metadata);
     }
 
     formatCombinedTimeAwareResults(results, timeRanges, dbName, metadata) {
-        const displayName = dbName + '日记本';
-        const formatDate = (date) => {
-            const d = new Date(date);
-            return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-        }
-
-        let innerContent = `\n[--- "${displayName}" 多时间感知检索结果 ---]\n`;
-
-        const formattedRanges = timeRanges.map(tr => `"${formatDate(tr.start)} ~ ${formatDate(tr.end)}"`).join(' 和 ');
-        innerContent += `[合并查询的时间范围: ${formattedRanges}]\n`;
-
-        const ragEntries = results.filter(e => e.source === 'rag');
-        const timeEntries = results.filter(e => e.source === 'time');
-        const associateEntries = results.filter(e => e.source === 'associate');
-
-        innerContent += `[统计: 共找到 ${results.length} 条不重复记忆 (语义相关 ${ragEntries.length}条, 时间范围 ${timeEntries.length}条${associateEntries.length > 0 ? `, 联想共现 ${associateEntries.length}条` : ''})]\n\n`;
-
-        if (ragEntries.length > 0) {
-            innerContent += '【语义相关记忆】\n';
-            ragEntries.forEach(entry => {
-                const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
-                const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
-                const body = `${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}`;
-                innerContent += this._formatMemoryEntry(entry, { text: body });
-            });
-        }
-
-        if (timeEntries.length > 0) {
-            innerContent += '\n【时间范围记忆】\n';
-            // 按日期从新到旧排序
-            timeEntries.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
-            timeEntries.forEach(entry => {
-                const dateMatch = entry.text.match(/^\[(\d{4}[-.]\d{2}[-.]\d{2})\]/);
-                const datePrefix = entry.date || (dateMatch ? dateMatch[1].replace(/\./g, '-') : '未知日期');
-                const body = entry.text.replace(/^\[\d{4}[-.]\d{2}[-.]\d{2}\]\s*-\s*[^\n]*\n?/, '').trim();
-                innerContent += this._formatMemoryEntry(entry, { text: `[${datePrefix}] ${body}` });
-            });
-        }
-
-        if (associateEntries.length > 0) {
-            innerContent += '\n【联想共现记忆】\n';
-            associateEntries.forEach(entry => {
-                const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
-                const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
-                const body = `${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}`;
-                innerContent += this._formatMemoryEntry(entry, { text: body });
-            });
-        }
-
-        innerContent += `[--- 检索结束 ---]\n`;
-
-        const metadataString = JSON.stringify(metadata).replace(/-->/g, '--\\>');
-        return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
+        return RAGResultFormatter.formatCombinedTimeAwareResults(results, timeRanges, dbName, metadata);
     }
 
     formatGroupRAGResults(searchResults, displayName, activatedGroups, metadata) {
-        let innerContent = `\n[--- "${displayName}" 语义组增强检索结果 ---]\n`;
-
-        if (activatedGroups && activatedGroups.size > 0) {
-            innerContent += `[激活的语义组:]\n`;
-            for (const [groupName, data] of activatedGroups) {
-                innerContent += `  • ${groupName} (${(data.strength * 100).toFixed(0)}%激活): 匹配到 "${data.matchedWords.join(', ')}"\n`;
-            }
-            innerContent += '\n';
-        } else {
-            innerContent += `[未激活特定语义组]\n\n`;
-        }
-
-        innerContent += `[检索到 ${searchResults ? searchResults.length : 0} 条相关记忆]\n`;
-        if (searchResults && searchResults.length > 0) {
-            innerContent += searchResults.map(r => this._formatMemoryEntry(r).trimEnd()).join('\n');
-        } else {
-            innerContent += "没有找到直接相关的记忆片段。";
-        }
-        innerContent += `\n[--- 检索结束 ---]\n`;
-
-        const metadataString = JSON.stringify(metadata).replace(/-->/g, '--\\>');
-        return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
+        return RAGResultFormatter.formatGroupRAGResults(searchResults, displayName, activatedGroups, metadata);
     }
 
     /**
@@ -4308,78 +3867,14 @@ class RAGDiaryPlugin {
     }
 
     _cleanResultsForBroadcast(results) {
-        if (!Array.isArray(results)) return [];
-        return results.map(r => {
-            // 仅保留可序列化的关键属性
-            const cleaned = {
-                text: r.text || '',
-                score: r.score || undefined,
-                source: r.source || undefined,
-                date: r.date || undefined,
-                fullPath: r.fullPath || undefined,
-                sourceFile: r.sourceFile || undefined,
-            };
-
-            if (r.bm25Score !== undefined) cleaned.bm25Score = r.bm25Score;
-            if (r.normalizedBM25Score !== undefined) cleaned.normalizedBM25Score = r.normalizedBM25Score;
-
-            // ✅ 新增：包含Tag相关信息（如果存在）
-            if (r.originalScore !== undefined) cleaned.originalScore = r.originalScore;
-            if (r.tagMatchScore !== undefined) cleaned.tagMatchScore = r.tagMatchScore;
-
-            let finalTags = [];
-            if (r.matchedTags && Array.isArray(r.matchedTags)) {
-                finalTags = r.matchedTags.map(t => {
-                    if (typeof t === 'string') return t;
-                    if (t && t.name) return t.name;
-                    return String(t);
-                });
-            }
-            if (r.source === 'time' && !finalTags.includes('time')) {
-                finalTags.push('time');
-            }
-            if (finalTags.length > 0) {
-                cleaned.matchedTags = finalTags;
-            }
-
-            if (r.tagMatchCount !== undefined) cleaned.tagMatchCount = r.tagMatchCount;
-            if (r.boostFactor !== undefined) cleaned.boostFactor = r.boostFactor;
-            if (r._associateCoCount !== undefined) cleaned.associateCoCount = r._associateCoCount; // 🌟 V10
-            // 🛡️ 确保 coreTagsMatched 是纯字符串数组 (脱水处理)
-            if (r.coreTagsMatched && Array.isArray(r.coreTagsMatched)) {
-                cleaned.coreTagsMatched = r.coreTagsMatched.map(t => {
-                    if (typeof t === 'string') return t;
-                    if (t && t.name) return t.isCore ? `!${t.name}` : t.name;
-                    return String(t);
-                });
-            }
-
-            return cleaned;
-        });
+        return RAGResultFormatter.cleanResultsForBroadcast(results);
     }
 
     /**
      * ✅ 新增：汇总Tag统计信息
      */
     _aggregateTagStats(results) {
-        const allMatchedTags = new Set();
-        let totalBoostFactor = 0;
-        let resultsWithTags = 0;
-
-        for (const r of results) {
-            if (r.matchedTags && r.matchedTags.length > 0) {
-                r.matchedTags.forEach(tag => allMatchedTags.add(tag));
-                resultsWithTags++;
-                if (r.boostFactor) totalBoostFactor += r.boostFactor;
-            }
-        }
-
-        return {
-            uniqueMatchedTags: Array.from(allMatchedTags),
-            totalTagMatches: allMatchedTags.size,
-            resultsWithTags: resultsWithTags,
-            avgBoostFactor: resultsWithTags > 0 ? (totalBoostFactor / resultsWithTags).toFixed(3) : 1.0
-        };
+        return RAGResultFormatter.aggregateTagStats(results);
     }
 
     async getSingleEmbedding(text) {
@@ -4614,30 +4109,7 @@ class RAGDiaryPlugin {
     }
 
     _textDiceSimilarity(textA, textB) {
-        if (textA === textB) return 1;
-        if (!textA || !textB || textA.length < 2 || textB.length < 2) return 0;
-
-        const buildBigrams = (text) => {
-            const bigrams = new Map();
-            for (let i = 0; i < text.length - 1; i++) {
-                const gram = text.slice(i, i + 2);
-                bigrams.set(gram, (bigrams.get(gram) || 0) + 1);
-            }
-            return bigrams;
-        };
-
-        const bigramsA = buildBigrams(textA);
-        const bigramsB = buildBigrams(textB);
-        let intersection = 0;
-
-        for (const [gram, countA] of bigramsA.entries()) {
-            const countB = bigramsB.get(gram) || 0;
-            intersection += Math.min(countA, countB);
-        }
-
-        const totalA = Array.from(bigramsA.values()).reduce((sum, count) => sum + count, 0);
-        const totalB = Array.from(bigramsB.values()).reduce((sum, count) => sum + count, 0);
-        return totalA + totalB > 0 ? (2 * intersection) / (totalA + totalB) : 0;
+        return VectorMathUtils.textDiceSimilarity(textA, textB);
     }
 
     _getFuzzyEmbeddingOptions(options = {}) {
@@ -4736,62 +4208,14 @@ class RAGDiaryPlugin {
      * 排除表情包路径
      */
     _extractAttachments(text) {
-        if (!text) return [];
-        // 匹配 http, https, file 协议的链接
-        const regex = /(https?:\/\/[^\s\)\"\'\>]+|file:\/\/[^\s\)\"\'\>]+)/gi;
-        const matches = text.match(regex) || [];
-
-        return matches.filter(url => {
-            const lowerUrl = url.toLowerCase();
-            // 排除表情包路径
-            if (lowerUrl.includes('表情包') || lowerUrl.includes('emoji') || lowerUrl.includes('sticker')) {
-                return false;
-            }
-            // 检查常见的媒体后缀
-            return /\.(jpg|jpeg|png|gif|webp|mp3|wav|ogg|mp4|webm|pdf)$/i.test(lowerUrl);
-        });
+        return AttachmentMemoUtils.extractAttachments(text);
     }
 
     /**
      * 🌟 V7 新增：获取链接内容的 Base64
      */
     async _fetchAsBase64(url) {
-        try {
-            let buffer;
-            let mimeType;
-
-            if (url.startsWith('file://')) {
-                // 处理本地文件
-                let filePath = url.replace(/^file:\/\/\/?/, '');
-                // Windows 路径处理：如果路径以 H: 这种开头，确保格式正确
-                if (/^[a-zA-Z]:/.test(filePath)) {
-                    // 保持原样
-                } else if (filePath.startsWith('/')) {
-                    // 可能需要根据系统调整
-                }
-
-                // 尝试解码 URL 编码的路径
-                try {
-                    filePath = decodeURIComponent(filePath);
-                } catch (e) { }
-
-                buffer = await fs.readFile(filePath);
-                mimeType = mime.lookup(filePath) || 'application/octet-stream';
-            } else {
-                // 处理网络链接
-                const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 10000 });
-                buffer = Buffer.from(response.data);
-                mimeType = response.headers['content-type'] || mime.lookup(url) || 'application/octet-stream';
-            }
-
-            if (buffer) {
-                const base64 = buffer.toString('base64');
-                return `data:${mimeType};base64,${base64}`;
-            }
-        } catch (e) {
-            console.error(`[RAGDiaryPlugin] 🌟 V7: 获取附件 Base64 失败 (${url}):`, e.message);
-        }
-        return null;
+        return AttachmentMemoUtils.fetchAsBase64(url, { logger: console });
     }
 
     //####################################################################################
