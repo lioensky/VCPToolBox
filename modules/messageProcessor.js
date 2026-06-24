@@ -719,11 +719,14 @@ async function replaceOtherVariables(text, model, role, context) {
         if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
             for (const [placeholder, entry] of staticPlaceholderValues.entries()) {
                 // 修复上下文折叠漏洞：如果当前文本压根没有这个占位符，直接跳过，避免触发不必要的向量化和计算
-                if (!processedText.includes(placeholder)) {
+                // 修复占位符前缀包含冲突：使用 {{}} 边界精确匹配，防止短名称吞噬长名称（如 VCPClawMailInbox ⊂ VCPClawMailInboxMail1）
+                const fullPlaceholder = `{{${placeholder}}}`;
+                if (!processedText.includes(fullPlaceholder)) {
                     continue;
                 }
 
-                const placeholderRegex = new RegExp(placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g');
+                const escapedPlaceholder = placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+                const placeholderRegex = new RegExp('\\{\\{' + escapedPlaceholder + '\\}\\}', 'g');
 
                 let valueToInject = entry;
                 if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
