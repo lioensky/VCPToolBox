@@ -79,6 +79,13 @@
 
     <FeedbackHost />
 
+    <!-- 沉浸观星模式彩蛋文本 -->
+    <Transition name="immersive-easter-quote">
+      <p v-if="isImmersiveMode" class="immersive-easter-quote" aria-live="polite">
+        让智能链接灵魂与星空。——By VCP
+      </p>
+    </Transition>
+
     <!-- 退出沉浸模式按钮 -->
     <Transition name="immersive-exit-btn">
       <button
@@ -327,6 +334,63 @@ void contentRef;
   display: none;
 }
 
+/* 沉浸模式彩蛋文本 */
+.immersive-easter-quote {
+  position: fixed;
+  left: 50%;
+  bottom: clamp(72px, 12vh, 132px);
+  z-index: 10000;
+  margin: 0;
+  padding: 12px 22px;
+  max-width: min(720px, calc(100vw - 48px));
+  transform: translateX(-50%);
+  color: color-mix(in srgb, var(--primary-text) 88%, var(--highlight-text));
+  font-size: clamp(18px, 2.8vw, 30px);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  line-height: 1.7;
+  text-align: center;
+  text-wrap: balance;
+  text-shadow:
+    0 0 18px color-mix(in srgb, var(--highlight-text) 34%, transparent),
+    0 0 42px color-mix(in srgb, var(--primary-bg) 92%, transparent);
+  pointer-events: none;
+  user-select: none;
+}
+
+.immersive-easter-quote-enter-active {
+  transition:
+    opacity 2.4s cubic-bezier(0.22, 1, 0.36, 1) 0.8s,
+    transform 2.8s cubic-bezier(0.22, 1, 0.36, 1) 0.8s,
+    filter 2.4s ease 0.8s;
+}
+
+.immersive-easter-quote-leave-active {
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease,
+    filter 0.5s ease;
+}
+
+.immersive-easter-quote-enter-from {
+  opacity: 0;
+  transform: translateX(-50%) translateY(18px) scale(0.98);
+  filter: blur(16px);
+}
+
+.immersive-easter-quote-enter-to,
+.immersive-easter-quote-leave-from {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0) scale(1);
+  filter: blur(0);
+}
+
+.immersive-easter-quote-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px) scale(0.99);
+  filter: blur(10px);
+}
+
 /* 退出沉浸模式按钮 */
 .exit-immersive-button {
   position: fixed;
@@ -451,6 +515,13 @@ void contentRef;
 
   .back-to-top-btn .material-symbols-outlined {
     font-size: var(--font-size-title);
+  }
+
+  .immersive-easter-quote {
+    bottom: 84px;
+    max-width: calc(100vw - 28px);
+    padding: 10px 14px;
+    letter-spacing: 0.04em;
   }
 
   .exit-immersive-button {
