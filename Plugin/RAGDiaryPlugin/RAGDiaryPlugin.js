@@ -804,6 +804,38 @@ class RAGDiaryPlugin {
         };
     }
 
+    _getFreshConversationKMultiplier() {
+        const rawMultiplier = parseFloat(process.env.RAG_FRESH_CONVERSATION_K_MULTIPLIER);
+        if (!Number.isFinite(rawMultiplier) || rawMultiplier <= 0) return 1.2;
+        return rawMultiplier;
+    }
+
+    _applyFreshConversationKCompensation(baseK, assistantMessageCount, hasValidUserMessage) {
+        const safeBaseK = Math.max(1, Math.round(Number(baseK) || 1));
+        const isFreshConversationStart = hasValidUserMessage && assistantMessageCount < 2;
+
+        if (!isFreshConversationStart) {
+            return {
+                k: safeBaseK,
+                applied: false,
+                multiplier: 1.0
+            };
+        }
+
+        const multiplier = this._getFreshConversationKMultiplier();
+        const compensatedK = Math.max(safeBaseK, Math.round(safeBaseK * multiplier));
+
+        if (compensatedK > safeBaseK) {
+            console.log(`[RAGDiaryPlugin] Fresh conversation K compensation: assistantCount=${assistantMessageCount}, K=${safeBaseK} -> ${compensatedK} (x${multiplier})`);
+        }
+
+        return {
+            k: compensatedK,
+            applied: compensatedK > safeBaseK,
+            multiplier
+        };
+    }
+
     // 保留旧方法作为回退或基础参考
     _calculateDynamicK(userText, aiText = null) {
         const userLen = userText ? userText.length : 0;
@@ -1485,6 +1517,14 @@ class RAGDiaryPlugin {
             // 🌟 V3 增强：计算动态参数 (K, TagWeight)
             const dynamicParams = await this._calculateDynamicParams(queryVector, userContent, aiContent);
 
+            // 🌟 新对话 K 补偿：当 assistant 块 < 2 时，适度放大所有后续 RAG K，补足全新对话早期背景
+            const freshKCompensation = this._applyFreshConversationKCompensation(
+                dynamicParams.k,
+                assistantMessageCount,
+                hasValidUserMessage
+            );
+            const effectiveDynamicK = freshKCompensation.k;
+
             // 🌟 Tagmemo V4: 获取上下文分段 (Segments)
             // 结合当前查询向量和历史主题分段，形成"霰弹枪"查询阵列
             const historySegments = this.contextVectorManager.segmentContext(messages);
@@ -1513,7 +1553,7 @@ class RAGDiaryPlugin {
                     userContent, // 传递 userContent 用于语义组和时间解析
                     aiContent, // 传递 aiContent 用于 AIMemo
                     combinedQueryForDisplay, // V3.5: 传递组合后的查询字符串用于广播
-                    dynamicParams.k,
+                    effectiveDynamicK,
                     timeRanges,
                     globalProcessedDiaries, // 传递全局 Set
                     isAIMemoLicensed, // 新增：AIMemo许可证
