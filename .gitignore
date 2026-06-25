@@ -234,3 +234,6 @@ Plugin/XiaohongshuFetch/config.env
 pluginStoreSources.json
 tmp/
 Plugin/.backup/
+
+# ==== 开发SDK ====
+Plugin/VCPQQBotServer/bot-node-sdk-main
