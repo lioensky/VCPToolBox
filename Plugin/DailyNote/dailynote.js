@@ -412,23 +412,8 @@ async function processLocalFiles(content) {
 }
 
 // --- 'create' Command Logic ---
-function normalizeLeadingTimePrefix(content, fallbackTimeString) {
-    const text = typeof content === 'string' ? content : '';
-    const timePrefixMatch = text.match(/^\s*\[(\d{1,2}:\d{2}(?::\d{2})?)\](?:[ \t]*(?:\r?\n|$)|[ \t]+)/);
-
-    if (!timePrefixMatch) {
-        return {
-            timeString: fallbackTimeString,
-            body: text,
-        };
-    }
-
-    const normalizedTimeString = timePrefixMatch[1].split(':').slice(0, 2).join(':');
-    const rest = text.slice(timePrefixMatch[0].length);
-    return {
-        timeString: normalizedTimeString,
-        body: rest.replace(/^\s*\r?\n?/, ''),
-    };
+function contentStartsWithAiTimePrefix(content) {
+    return /^\s*\[\d{1,2}:\d{2}(?::\d{2})?\](?=\s|$)/.test(content);
 }
 
 async function handleCreateCommand(args) {
@@ -534,8 +519,9 @@ async function handleCreateCommand(args) {
 
         debugLog(`Target file path: ${filePath}`);
         const timeStringForContent = `${hours}:${minutes}`;
-        const normalizedContent = normalizeLeadingTimePrefix(processedContent, timeStringForContent);
-        const fileContent = `[${datePart}] - ${actualMaidName}\n[${normalizedContent.timeString}]\n${normalizedContent.body}`;
+        const fileContent = contentStartsWithAiTimePrefix(processedContent)
+            ? `[${datePart}] - ${actualMaidName}\n${processedContent}`
+            : `[${datePart}] - ${actualMaidName}\n[${timeStringForContent}]\n${processedContent}`;
         await fs.writeFile(filePath, fileContent);
         debugLog(`Successfully wrote file (length: ${fileContent.length})`);
         return {
