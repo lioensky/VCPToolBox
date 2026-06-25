@@ -65,6 +65,10 @@ class RAGDiaryPlugin {
         this.ragParams = {};
         this.ragParamsWatcher = null;
         this.ragTagsWatcher = null;
+        this.ragParamsReloadTimer = null;
+        this.ragTagsReloadTimer = null;
+        this.ragParamsReloadPromise = Promise.resolve();
+        this.ragTagsReloadPromise = Promise.resolve();
 
         // 🌟 统一缓存管理器
         this.cacheManager = new CacheManager();
@@ -160,8 +164,11 @@ class RAGDiaryPlugin {
             } else {
                 let cache = null;
                 try {
-                    const cacheData = await fs.readFile(cachePath, 'utf-8');
-                    cache = JSON.parse(cacheData);
+                    cache = await this._readJsonFileStable(cachePath, null, {
+                        label: 'vector_cache.json',
+                        maxAttempts: 3,
+                        retryDelayMs: 100
+                    });
                 } catch (e) {
                     console.log('[RAGDiaryPlugin] 缓存文件不存在或已损坏，将重新构建。');
                 }
@@ -169,7 +176,7 @@ class RAGDiaryPlugin {
                 if (cache && cache.sourceHash === currentConfigHash) {
                     // --- 缓存命中 ---
                     console.log('[RAGDiaryPlugin] 缓存有效，从磁盘加载向量...');
-                    this.ragConfig = JSON.parse(await fs.readFile(configPath, 'utf-8'));
+                    this.ragConfig = await this._readJsonFileStable(configPath, {}, { label: 'rag_tags.json' });
                     this.enhancedVectorCache = cache.vectors;
                     console.log(`[RAGDiaryPlugin] 成功从缓存加载 ${Object.keys(this.enhancedVectorCache).length} 个向量。`);
                 } else {
@@ -180,8 +187,7 @@ class RAGDiaryPlugin {
                         console.log('[RAGDiaryPlugin] 未找到有效缓存，首次构建向量缓存...');
                     }
 
-                    const configData = await fs.readFile(configPath, 'utf-8');
-                    this.ragConfig = JSON.parse(configData);
+                    this.ragConfig = await this._readJsonFileStable(configPath, {}, { label: 'rag_tags.json' });
 
                     // 调用 _buildAndSaveCache 来生成向量
                     await this._buildAndSaveCache(currentConfigHash, cachePath);
@@ -249,12 +255,13 @@ class RAGDiaryPlugin {
     async loadRagParams() {
         const paramsPath = path.join(projectBasePath || path.join(__dirname, '../../'), 'rag_params.json');
         try {
-            const data = await fs.readFile(paramsPath, 'utf-8');
-            this.ragParams = JSON.parse(data);
+            this.ragParams = await this._readJsonFileStable(paramsPath, { RAGDiaryPlugin: {} }, { label: 'rag_params.json' });
             console.log('[RAGDiaryPlugin] ✅ RAG 热调控参数已加载');
         } catch (e) {
             console.error('[RAGDiaryPlugin] ❌ 加载 rag_params.json 失败:', e.message);
-            this.ragParams = { RAGDiaryPlugin: {} };
+            this.ragParams = this.ragParams && Object.keys(this.ragParams).length > 0
+                ? this.ragParams
+                : { RAGDiaryPlugin: {} };
         }
     }
 
@@ -265,10 +272,18 @@ class RAGDiaryPlugin {
         const paramsPath = path.join(projectBasePath || path.join(__dirname, '../../'), 'rag_params.json');
         if (this.ragParamsWatcher) return;
 
-        this.ragParamsWatcher = chokidar.watch(paramsPath);
-        this.ragParamsWatcher.on('change', async () => {
-            console.log('[RAGDiaryPlugin] 🔄 检测到 rag_params.json 变更，正在重新加载...');
-            await this.loadRagParams();
+        this.ragParamsWatcher = chokidar.watch(paramsPath, {
+            ignoreInitial: true,
+            awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 }
+        });
+        this.ragParamsWatcher.on('change', () => {
+            console.log('[RAGDiaryPlugin] 🔄 检测到 rag_params.json 变更，准备防抖重新加载...');
+            clearTimeout(this.ragParamsReloadTimer);
+            this.ragParamsReloadTimer = setTimeout(() => {
+                this.ragParamsReloadPromise = this.ragParamsReloadPromise
+                    .catch(() => { })
+                    .then(() => this.loadRagParams());
+            }, 250);
         });
     }
 
@@ -280,43 +295,18 @@ class RAGDiaryPlugin {
         const configPath = path.join(__dirname, 'rag_tags.json');
         if (this.ragTagsWatcher) return;
 
-        this.ragTagsWatcher = chokidar.watch(configPath, { ignoreInitial: true });
-        this.ragTagsWatcher.on('change', async () => {
-            console.log('[RAGDiaryPlugin] 🔄 检测到 rag_tags.json 变更，正在热重载配置与向量缓存...');
-            try {
-                const cachePath = path.join(__dirname, 'vector_cache.json');
-                const currentConfigHash = await this._getFileHash(configPath);
-
-                if (!currentConfigHash) {
-                    console.warn('[RAGDiaryPlugin] 热重载: rag_tags.json 文件不存在或为空，跳过。');
-                    return;
-                }
-
-                // 哈希未变则跳过（防止编辑器保存但内容未变的情况）
-                if (this.lastConfigHash === currentConfigHash) {
-                    console.log('[RAGDiaryPlugin] 热重载: 文件哈希未变，跳过重建。');
-                    return;
-                }
-
-                this.lastConfigHash = currentConfigHash;
-
-                // 重新读取配置
-                const configData = await fs.readFile(configPath, 'utf-8');
-                this.ragConfig = JSON.parse(configData);
-
-                // 重建向量缓存
-                await this._buildAndSaveCache(currentConfigHash, cachePath);
-
-                // 清空查询缓存（配置变了，旧缓存结果可能不准确）
-                if (this.queryCacheEnabled) {
-                    this.cacheManager.clear('query');
-                    console.log('[RAGDiaryPlugin] 热重载: 查询缓存已清空。');
-                }
-
-                console.log('[RAGDiaryPlugin] ✅ rag_tags.json 热重载完成。');
-            } catch (error) {
-                console.error('[RAGDiaryPlugin] ❌ rag_tags.json 热重载失败:', error.message);
-            }
+        this.ragTagsWatcher = chokidar.watch(configPath, {
+            ignoreInitial: true,
+            awaitWriteFinish: { stabilityThreshold: 700, pollInterval: 100 }
+        });
+        this.ragTagsWatcher.on('change', () => {
+            console.log('[RAGDiaryPlugin] 🔄 检测到 rag_tags.json 变更，准备防抖热重载配置与向量缓存...');
+            clearTimeout(this.ragTagsReloadTimer);
+            this.ragTagsReloadTimer = setTimeout(() => {
+                this.ragTagsReloadPromise = this.ragTagsReloadPromise
+                    .catch(() => { })
+                    .then(() => this._reloadRagTagsConfig(configPath));
+            }, 300);
         });
     }
 
@@ -374,7 +364,7 @@ class RAGDiaryPlugin {
         };
 
         try {
-            await fs.writeFile(cachePath, JSON.stringify(newCache, null, 2), 'utf-8');
+            await this._writeJsonFileAtomic(cachePath, newCache);
             console.log(`[RAGDiaryPlugin] 向量缓存已成功写入到 ${cachePath}`);
         } catch (writeError) {
             console.error('[RAGDiaryPlugin] 写入缓存文件失败:', writeError);
@@ -384,13 +374,139 @@ class RAGDiaryPlugin {
 
     async _getFileHash(filePath) {
         try {
-            const fileContent = await fs.readFile(filePath, 'utf-8');
+            const fileContent = await this._readTextFileStable(filePath, {
+                label: path.basename(filePath),
+                maxAttempts: 3,
+                retryDelayMs: 100,
+                allowEmpty: false
+            });
             return crypto.createHash('sha256').update(fileContent).digest('hex');
         } catch (error) {
-            if (error.code === 'ENOENT') {
-                return null; // 文件不存在则没有哈希
+            if (error.code === 'ENOENT' || error.code === 'EMPTY_FILE') {
+                return null; // 文件不存在或写入暂态空文件则没有哈希
             }
             throw error; // 其他错误则抛出
+        }
+    }
+
+    _sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async _readTextFileStable(filePath, options = {}) {
+        const {
+            label = path.basename(filePath),
+            maxAttempts = 6,
+            retryDelayMs = 150,
+            allowEmpty = false
+        } = options;
+
+        let lastError = null;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                const content = await fs.readFile(filePath, 'utf-8');
+                if (!allowEmpty && content.trim().length === 0) {
+                    const emptyError = new Error(`${label} is empty while being written`);
+                    emptyError.code = 'EMPTY_FILE';
+                    throw emptyError;
+                }
+                return content;
+            } catch (error) {
+                lastError = error;
+                if (error.code === 'ENOENT') throw error;
+
+                if (attempt < maxAttempts) {
+                    console.warn(`[RAGDiaryPlugin] ${label} 读取暂不可用 (${error.message})，${retryDelayMs}ms 后重试 ${attempt}/${maxAttempts}...`);
+                    await this._sleep(retryDelayMs);
+                    continue;
+                }
+            }
+        }
+
+        throw lastError;
+    }
+
+    async _readJsonFileStable(filePath, fallback = null, options = {}) {
+        const {
+            label = path.basename(filePath),
+            maxAttempts = 6,
+            retryDelayMs = 150
+        } = options;
+
+        let lastError = null;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                const content = await this._readTextFileStable(filePath, {
+                    label,
+                    maxAttempts: 1,
+                    retryDelayMs,
+                    allowEmpty: false
+                });
+                return JSON.parse(content);
+            } catch (error) {
+                lastError = error;
+                if (error.code === 'ENOENT') {
+                    if (fallback !== null) return fallback;
+                    throw error;
+                }
+
+                if (attempt < maxAttempts) {
+                    console.warn(`[RAGDiaryPlugin] ${label} JSON 解析暂失败 (${error.message})，${retryDelayMs}ms 后重试 ${attempt}/${maxAttempts}...`);
+                    await this._sleep(retryDelayMs);
+                    continue;
+                }
+            }
+        }
+
+        if (fallback !== null) return fallback;
+        throw lastError;
+    }
+
+    async _writeJsonFileAtomic(filePath, data) {
+        const dir = path.dirname(filePath);
+        const base = path.basename(filePath);
+        const tempPath = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
+        const json = JSON.stringify(data, null, 2);
+
+        await fs.writeFile(tempPath, json, 'utf-8');
+        await fs.rename(tempPath, filePath);
+    }
+
+    async _reloadRagTagsConfig(configPath) {
+        console.log('[RAGDiaryPlugin] 🔄 正在热重载 rag_tags.json 配置与向量缓存...');
+        try {
+            const cachePath = path.join(__dirname, 'vector_cache.json');
+            const nextConfig = await this._readJsonFileStable(configPath, {}, { label: 'rag_tags.json' });
+            const currentConfigHash = crypto.createHash('sha256')
+                .update(JSON.stringify(nextConfig, null, 2))
+                .digest('hex');
+
+            if (!currentConfigHash) {
+                console.warn('[RAGDiaryPlugin] 热重载: rag_tags.json 文件不存在或为空，跳过。');
+                return;
+            }
+
+            // 哈希未变则跳过（防止编辑器保存但内容未变的情况）
+            if (this.lastConfigHash === currentConfigHash) {
+                console.log('[RAGDiaryPlugin] 热重载: 文件哈希未变，跳过重建。');
+                return;
+            }
+
+            this.lastConfigHash = currentConfigHash;
+            this.ragConfig = nextConfig;
+
+            // 重建向量缓存
+            await this._buildAndSaveCache(currentConfigHash, cachePath);
+
+            // 清空查询缓存（配置变了，旧缓存结果可能不准确）
+            if (this.queryCacheEnabled) {
+                this.cacheManager.clear('query');
+                console.log('[RAGDiaryPlugin] 热重载: 查询缓存已清空。');
+            }
+
+            console.log('[RAGDiaryPlugin] ✅ rag_tags.json 热重载完成。');
+        } catch (error) {
+            console.error('[RAGDiaryPlugin] ❌ rag_tags.json 热重载失败:', error.message);
         }
     }
 
@@ -4532,6 +4648,14 @@ class RAGDiaryPlugin {
     }
 
     shutdown() {
+        if (this.ragParamsReloadTimer) {
+            clearTimeout(this.ragParamsReloadTimer);
+            this.ragParamsReloadTimer = null;
+        }
+        if (this.ragTagsReloadTimer) {
+            clearTimeout(this.ragTagsReloadTimer);
+            this.ragTagsReloadTimer = null;
+        }
         if (this.ragParamsWatcher) {
             this.ragParamsWatcher.close();
             this.ragParamsWatcher = null;

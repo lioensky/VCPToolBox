@@ -26,11 +26,22 @@ module.exports = function(options) {
         }
     };
 
+    const writeJsonFileAtomic = async (filePath, body) => {
+        assertPlainObject(body);
+        const dir = path.dirname(filePath);
+        const base = path.basename(filePath);
+        const tempPath = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
+        const content = JSON.stringify(body, null, 2);
+
+        await fs.writeFile(tempPath, content, 'utf-8');
+        await fs.rename(tempPath, filePath);
+    };
+
     const saveMergedJsonFile = async (filePath, body) => {
         assertPlainObject(body);
 
         const existing = await readJsonFile(filePath, {});
-        await fs.writeFile(filePath, JSON.stringify({ ...existing, ...body }, null, 2), 'utf-8');
+        await writeJsonFileAtomic(filePath, { ...existing, ...body });
     };
 
     const normalizeThemeName = (rawName) => {
@@ -63,8 +74,7 @@ module.exports = function(options) {
     };
 
     const writeJsonFile = async (filePath, body) => {
-        assertPlainObject(body);
-        await fs.writeFile(filePath, JSON.stringify(body, null, 2), 'utf-8');
+        await writeJsonFileAtomic(filePath, body);
     };
 
     const createJsonConfigRoutes = (routePath, fileName) => {
@@ -162,7 +172,7 @@ module.exports = function(options) {
     router.post('/semantic-groups', async (req, res) => {
         const editFilePath = path.join(__dirname, '..', '..', 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.edit.json');
         try {
-            await fs.writeFile(editFilePath, JSON.stringify(req.body, null, 2), 'utf-8');
+            await writeJsonFile(editFilePath, req.body);
             res.json({ message: 'Saved' });
         } catch (error) { res.status(500).json({ error: 'Failed' }); }
     });
@@ -178,7 +188,7 @@ module.exports = function(options) {
     router.post('/thinking-chains', async (req, res) => {
         const chainsPath = path.join(__dirname, '..', '..', 'Plugin', 'RAGDiaryPlugin', 'meta_thinking_chains.json');
         try {
-            await fs.writeFile(chainsPath, JSON.stringify(req.body, null, 2), 'utf-8');
+            await writeJsonFile(chainsPath, req.body);
             res.json({ message: 'Saved' });
         } catch (error) { res.status(500).json({ error: 'Failed' }); }
     });
