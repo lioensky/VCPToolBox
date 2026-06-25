@@ -11,6 +11,8 @@ const DEFAULT_CONFIG = {
 const SENSITIVE_KEY_PATTERN = /(?:^|[_\-\s.])(?:api[_\-\s]?key|apikey|secret|token|access[_\-\s]?token|refresh[_\-\s]?token|auth[_\-\s]?token|bearer|password|passwd|pwd|credential|credentials|private[_\-\s]?key|client[_\-\s]?secret|webhook[_\-\s]?secret)(?:$|[_\-\s.])/i;
 
 const ENV_ASSIGNMENT_PATTERN = /^(\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*\s*=\s*)(["']?)([^\r\n]*?)(\2)(\s*(?:#.*)?$)/;
+const DATA_BASE64_URI_PATTERN = /\bdata:[A-Za-z0-9][A-Za-z0-9.+-]*\/[A-Za-z0-9][A-Za-z0-9.+-]*(?:;[A-Za-z0-9.+-]+=[A-Za-z0-9.+/_-]+)*;base64,[A-Za-z0-9+/=\r\n]+/gi;
+const DATA_BASE64_URI_FULL_PATTERN = /^data:[A-Za-z0-9][A-Za-z0-9.+-]*\/[A-Za-z0-9][A-Za-z0-9.+-]*(?:;[A-Za-z0-9.+-]+=[A-Za-z0-9.+/_-]+)*;base64,[A-Za-z0-9+/=\r\n]+$/i;
 
 const HIGH_CONFIDENCE_TOKEN_PATTERNS = [
     /\bsk-[A-Za-z0-9_-]{24,}\b/g,
@@ -54,6 +56,10 @@ function isSensitiveKey(key) {
     return typeof key === 'string' && SENSITIVE_KEY_PATTERN.test(key);
 }
 
+function isDataBase64Uri(value) {
+    return typeof value === 'string' && DATA_BASE64_URI_FULL_PATTERN.test(value.trim());
+}
+
 function shouldMaskValue(value, config) {
     if (value === null || value === undefined) return false;
     const text = String(value);
@@ -62,6 +68,7 @@ function shouldMaskValue(value, config) {
     if (trimmed.length < config.minSecretLength) return false;
     if (/^(?:true|false|null|undefined)$/i.test(trimmed)) return false;
     if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) return false;
+    if (isDataBase64Uri(trimmed)) return false;
 
     return true;
 }
@@ -90,6 +97,22 @@ function maskHighConfidenceTokens(text, config) {
     return result;
 }
 
+function maskHighConfidenceTokensPreservingDataBase64(text, config) {
+    DATA_BASE64_URI_PATTERN.lastIndex = 0;
+    const preservedDataUris = [];
+    const placeholderPrefix = `__VCP_DATA_BASE64_${Date.now()}_${Math.random().toString(36).slice(2)}_`;
+    const protectedText = text.replace(DATA_BASE64_URI_PATTERN, (match) => {
+        const index = preservedDataUris.push(match) - 1;
+        return `${placeholderPrefix}${index}__`;
+    });
+
+    let result = maskHighConfidenceTokens(protectedText, config);
+    for (let i = 0; i < preservedDataUris.length; i++) {
+        result = result.split(`${placeholderPrefix}${i}__`).join(preservedDataUris[i]);
+    }
+    return result;
+}
+
 function maskEnvAssignmentLine(line, config) {
     const match = line.match(ENV_ASSIGNMENT_PATTERN);
     if (!match) return line;
@@ -114,7 +137,7 @@ function maskString(text, config) {
         .map(part => (part === '\n' || part === '\r\n') ? part : maskEnvAssignmentLine(part, config))
         .join('');
 
-    return maskHighConfidenceTokens(lineMasked, config);
+    return maskHighConfidenceTokensPreservingDataBase64(lineMasked, config);
 }
 
 function sanitizeValue(value, config, depth, seen, keyHint = '') {
@@ -175,5 +198,6 @@ module.exports = {
     sanitizeToolResult,
     normalizeConfig,
     isSensitiveKey,
+    isDataBase64Uri,
     maskString
 };
