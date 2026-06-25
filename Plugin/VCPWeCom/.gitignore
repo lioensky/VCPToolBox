@@ -1,0 +1,15 @@
+# 真实配置，不外传
+config.env
+
+# 依赖
+node_modules/
+
+# 日志
+*.log
+
+# manifest 真实文件（按 VCP 习惯可 .gitignore，但本插件先提交以便参考）
+# plugin-manifest.json
+
+# 备份
+*.bak
+*.orig
