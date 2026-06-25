@@ -15,7 +15,23 @@ let mammoth = null;
 let pdfParse = null;
 let ExcelJS = null;
 try { mammoth = require('mammoth'); } catch (_) {}
-try { pdfParse = require('pdf-parse'); } catch (_) {}
+try {
+  const pdfParseModule = require('pdf-parse');
+  if (typeof pdfParseModule === 'function') {
+    pdfParse = async buffer => pdfParseModule(buffer);
+  } else if (typeof pdfParseModule?.default === 'function') {
+    pdfParse = async buffer => pdfParseModule.default(buffer);
+  } else if (typeof pdfParseModule?.PDFParse === 'function') {
+    pdfParse = async buffer => {
+      const parser = new pdfParseModule.PDFParse({ data: buffer });
+      try {
+        return await parser.getText();
+      } finally {
+        await parser.destroy().catch(() => {});
+      }
+    };
+  }
+} catch (_) {}
 try { ExcelJS = require('exceljs'); } catch (_) {}
 
 let MailClient;
@@ -916,7 +932,10 @@ async function parseDocumentAttachment(buffer, filename, contentType) {
     return truncateForPrompt(result.value || '');
   }
 
-  if ((ext === '.pdf' || type.includes('pdf')) && pdfParse) {
+  if (ext === '.pdf' || type.includes('pdf')) {
+    if (!pdfParse) {
+      throw new Error('PDF 附件解析需要安装 pdf-parse。请在 Plugin/VCPClawMail 目录运行 npm install。');
+    }
     const result = await pdfParse(buffer);
     return truncateForPrompt(result.text || '');
   }
