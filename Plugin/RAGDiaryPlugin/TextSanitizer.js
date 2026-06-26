@@ -123,6 +123,35 @@ function stripSystemNotification(text) {
 }
 
 /**
+ * 剥离 VCPClawMail 自动投递给 Agent 时包裹的注入提示词，仅保留实际邮件内容，降低向量噪音。
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function stripClawMailInjectedPrompt(text) {
+    if (!text || typeof text !== 'string') return text;
+
+    const mailContentBlocks = [];
+    const contentRegex = /<<<\[VCP_CLAWMAIL_MAIL_CONTENT\]>>>([\s\S]*?)<<<\[END_VCP_CLAWMAIL_MAIL_CONTENT\]>>>/gi;
+    let match;
+
+    while ((match = contentRegex.exec(text)) !== null) {
+        const block = match[1].trim();
+        if (block) mailContentBlocks.push(block);
+    }
+
+    if (mailContentBlocks.length > 0) {
+        return mailContentBlocks.join('\n\n').trim();
+    }
+
+    return text
+        .replace(/<<<\[VCP_CLAWMAIL_INJECTED_PROMPT\]>>>[\s\S]*?<<<\[END_VCP_CLAWMAIL_INJECTED_PROMPT\]>>>/gi, '')
+        .replace(/<<<\[VCP_CLAWMAIL_MAIL_CONTENT\]>>>/gi, '')
+        .replace(/<<<\[END_VCP_CLAWMAIL_MAIL_CONTENT\]>>>/gi, '')
+        .trim();
+}
+
+/**
  * 统一内容净化器。该方法是向量化缓存哈希一致性的公共入口，外部调用应保持走这里。
  *
  * @param {string} content
@@ -133,6 +162,8 @@ function sanitizeForEmbedding(content, role) {
     if (!content || typeof content !== 'string') return '';
 
     let processed = content;
+
+    processed = stripClawMailInjectedPrompt(processed);
 
     if (role === 'user') {
         processed = stripSystemNotification(processed);
@@ -272,6 +303,7 @@ module.exports = {
     stripEmoji,
     stripToolMarkers,
     stripSystemNotification,
+    stripClawMailInjectedPrompt,
     sanitizeForEmbedding,
     isLikelyBase64,
     jsonToMarkdown

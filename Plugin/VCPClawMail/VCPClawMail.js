@@ -54,6 +54,10 @@ const MIN_FALLBACK_POLL_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_POLL_LIMIT = 20;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const WS_RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
+const INJECTED_PROMPT_START = '<<<[VCP_CLAWMAIL_INJECTED_PROMPT]>>>';
+const INJECTED_PROMPT_END = '<<<[END_VCP_CLAWMAIL_INJECTED_PROMPT]>>>';
+const MAIL_CONTENT_START = '<<<[VCP_CLAWMAIL_MAIL_CONTENT]>>>';
+const MAIL_CONTENT_END = '<<<[END_VCP_CLAWMAIL_MAIL_CONTENT]>>>';
 
 let config = {};
 let dependencies = {};
@@ -1714,7 +1718,18 @@ function buildAutoAgentPrompt(subMail, readResult, mailId) {
     : [];
 
   return [
-    { type: 'text', text: `${header}${mailText}` },
+    {
+      type: 'text',
+      text: [
+        INJECTED_PROMPT_START,
+        header.trimEnd(),
+        INJECTED_PROMPT_END,
+        '',
+        MAIL_CONTENT_START,
+        mailText,
+        MAIL_CONTENT_END
+      ].join('\n')
+    },
     ...mediaParts
   ];
 }
