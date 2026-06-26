@@ -1,0 +1,27 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "AnimeFinder",
+  "version": "1.0.0",
+  "displayName": "以图找番",
+  "description": "一个通过图片URL或本地文件路径查找对应动漫信息的插件。",
+  "author": "v0",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node AnimeFinder.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "configSchema": {},
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "findAnimeByUrl",
+        "description": "调用此工具通过图片URL或file://路径查找动漫信息。\n参数:\n- imageUrl (字符串, 必需): 需要识别的图片URL（支持http, https, file协议）。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AnimeFinder「末」,\nimageUrl:「始」https://example.com/anime_image.jpg「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」AnimeFinder「末」,\nimageUrl:「始」https://images.plurk.com/32B15UXxymfSMwKGTObY5e.jpg「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
