@@ -1,6 +1,6 @@
 <template>
   <section class="config-section active-section emotion-page">
-    <div class="emotion-hero card">
+    <UiCard class="emotion-hero">
       <div class="hero-copy">
         <span class="hero-kicker">
           <span class="material-symbols-outlined">favorite</span>
@@ -12,54 +12,54 @@
         </p>
       </div>
       <div class="hero-actions">
-        <button class="btn-secondary" :disabled="isConfigLoading" @click="openConfigModal">
-          <span class="material-symbols-outlined">tune</span>
+        <UiButton variant="outline" :disabled="isConfigLoading" @click="openConfigModal">
+          <template #leading><span class="material-symbols-outlined">tune</span></template>
           观测配置
-        </button>
-        <button class="btn-secondary" :disabled="isLoading" @click="refresh">
-          <span class="material-symbols-outlined">refresh</span>
+        </UiButton>
+        <UiButton variant="outline" :disabled="isLoading" @click="refresh">
+          <template #leading><span class="material-symbols-outlined">refresh</span></template>
           {{ isLoading ? "刷新中…" : "刷新" }}
-        </button>
-        <span v-if="statusMessage" :class="['status-message', statusType]">{{ statusMessage }}</span>
+        </UiButton>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
       </div>
-    </div>
+    </UiCard>
 
     <div class="overview-grid">
-      <div class="overview-card card">
+      <UiCard class="overview-card" size="sm" variant="flat">
         <span class="overview-label">插件状态</span>
         <strong>{{ overview?.enabled ? "已启用" : "未启用" }}</strong>
         <small>提示注入：{{ overview?.boundaries?.noPromptInjection ? "已移除" : "未知" }} · 模式：纯异步观察</small>
-      </div>
-      <div class="overview-card card">
+      </UiCard>
+      <UiCard class="overview-card" size="sm" variant="flat">
         <span class="overview-label">记录 Agent</span>
         <strong>{{ validAgents.length }}</strong>
         <small>最近：{{ validAgents[0]?.summary.agentLabel || "无" }}</small>
-      </div>
-      <div class="overview-card card">
+      </UiCard>
+      <UiCard class="overview-card" size="sm" variant="flat">
         <span class="overview-label">表达模型</span>
         <strong>原型共振池</strong>
         <small>三轴表达 · 热情背景 · 对冲压力 · 相对常态</small>
-      </div>
-      <div class="overview-card card">
+      </UiCard>
+      <UiCard class="overview-card" size="sm" variant="flat">
         <span class="overview-label">存储形态</span>
         <strong>SQLite 轴状态</strong>
         <small>每 Agent 独立 baseline 与二级锚点</small>
-      </div>
+      </UiCard>
     </div>
 
-    <div v-if="isLoading && validAgents.length === 0" class="empty-state card">
+    <UiCard v-if="isLoading && validAgents.length === 0" class="empty-state">
       <span class="loading-spinner loading-spinner--sm"></span>
       <p>正在读取 Agent 轴体状态…</p>
-    </div>
+    </UiCard>
 
-    <div v-else-if="validAgents.length === 0" class="empty-state card">
+    <UiCard v-else-if="validAgents.length === 0" class="empty-state">
       <span class="material-symbols-outlined">sentiment_neutral</span>
       <p>暂未记录任何 Agent 轴体状态。</p>
       <small>当 OpenHerPersona 识别到 Agent 身份并处理对话后，这里会出现对应条目。</small>
-    </div>
+    </UiCard>
 
     <div v-else class="emotion-layout">
-      <aside class="agent-list card">
+      <UiCard class="agent-list">
         <div class="panel-title">
           <span class="material-symbols-outlined">groups</span>
           Agent 列表
@@ -78,7 +78,7 @@
           </span>
           <span class="mood-dot" :style="{ background: moodColor(agent.status?.state?.mood) }"></span>
         </button>
-      </aside>
+      </UiCard>
 
       <main v-if="selectedAgent?.status?.state" class="agent-detail">
         <div class="agent-header card" :style="agentHeaderStyle">
@@ -318,29 +318,29 @@
           <p v-else class="description">暂无观测快照。</p>
         </section>
 
-        <div class="action-row card">
-          <button class="btn-secondary" :disabled="isActionRunning" @click="tickSelected">
-            <span class="material-symbols-outlined">update</span>
+        <UiCard class="action-row" size="sm" variant="flat">
+          <UiButton variant="outline" :disabled="isActionRunning" @click="tickSelected">
+            <template #leading><span class="material-symbols-outlined">update</span></template>
             手动刷新快照
-          </button>
-          <button class="btn-danger" :disabled="isActionRunning" @click="resetSelected">
-            <span class="material-symbols-outlined">restart_alt</span>
+          </UiButton>
+          <UiButton variant="danger" :disabled="isActionRunning" @click="resetSelected">
+            <template #leading><span class="material-symbols-outlined">restart_alt</span></template>
             重置该 Agent 轴状态
-          </button>
-        </div>
+          </UiButton>
+        </UiCard>
       </main>
 
       <main v-else class="agent-detail">
-        <div class="empty-state card">
+        <UiCard class="empty-state">
           <span class="material-symbols-outlined">error</span>
           <p>该 Agent 状态读取失败。</p>
           <small>{{ selectedAgent?.error || "未知错误" }}</small>
-        </div>
+        </UiCard>
       </main>
     </div>
 
     <div v-if="showConfigModal" class="config-modal-backdrop" @click.self="closeConfigModal">
-      <div class="config-modal card" role="dialog" aria-modal="true" aria-label="OpenHerPersona 配置">
+      <UiCard class="config-modal" role="dialog" aria-modal="true" aria-label="OpenHerPersona 配置">
         <div class="config-modal-header">
           <div>
             <span class="hero-kicker">
@@ -350,9 +350,9 @@
             <h2>OpenHerPersona 观测配置</h2>
             <p class="description">配置已从 env 迁移到插件 state 目录 JSON。当前算法为异步观测，不再注入提示词或 persona_delta。</p>
           </div>
-          <button class="icon-btn" type="button" aria-label="关闭配置" @click="closeConfigModal">
+          <UiIconButton class="modal-close-btn" type="button" label="关闭配置" @click="closeConfigModal">
             <span class="material-symbols-outlined">close</span>
-          </button>
+          </UiIconButton>
         </div>
 
         <div v-if="isConfigLoading" class="empty-state config-loading">
@@ -373,45 +373,47 @@
                 <small>{{ item.schema.description || item.key }}</small>
               </span>
 
-              <span v-if="item.schema.type === 'boolean'" class="switch">
-                <input v-model="configDraft[item.key]" type="checkbox" />
-                <span class="slider"></span>
-              </span>
+              <AppSwitch
+                v-if="item.schema.type === 'boolean'"
+                :model-value="Boolean(configDraft[item.key])"
+                :aria-label="item.schema.label || item.key"
+                @update:model-value="value => setConfigDraftValue(item.key, value)"
+              />
 
-              <select
+              <UiSelect
                 v-else-if="item.schema.type === 'select'"
-                v-model="configDraft[item.key]"
-                class="config-control"
+                :model-value="configDraftSelectValue(item.key)"
+                @update:model-value="value => setConfigDraftValue(item.key, value)"
               >
                 <option v-for="option in item.schema.options || []" :key="option" :value="option">
                   {{ option }}
                 </option>
-              </select>
+              </UiSelect>
 
-              <input
+              <UiInput
                 v-else
-                v-model.number="configDraft[item.key]"
-                class="config-control"
+                :model-value="configDraftNumberValue(item.key)"
                 type="number"
                 :min="item.schema.min"
                 :max="item.schema.max"
                 :step="item.schema.step || (item.schema.type === 'integer' ? 1 : 0.01)"
+                @update:model-value="value => setConfigDraftValue(item.key, value)"
               />
             </label>
           </div>
 
           <div class="config-modal-actions">
-            <button class="btn-secondary" type="button" @click="resetConfigDraft">
-              <span class="material-symbols-outlined">undo</span>
+            <UiButton variant="outline" type="button" @click="resetConfigDraft">
+              <template #leading><span class="material-symbols-outlined">undo</span></template>
               还原
-            </button>
-            <button class="btn-primary" type="submit" :disabled="isConfigSaving">
-              <span class="material-symbols-outlined">save</span>
+            </UiButton>
+            <UiButton type="submit" :disabled="isConfigSaving">
+              <template #leading><span class="material-symbols-outlined">save</span></template>
               {{ isConfigSaving ? "保存中…" : "保存配置" }}
-            </button>
+            </UiButton>
           </div>
         </form>
-      </div>
+      </UiCard>
     </div>
   </section>
 </template>
@@ -427,6 +429,13 @@ import {
   type OpenHerPersonaMood,
   type OpenHerPersonaState,
 } from "@/api";
+import AppSwitch from "@/components/ui/AppSwitch.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
@@ -550,6 +559,11 @@ const isLoading = ref(false);
 const isActionRunning = ref(false);
 const statusMessage = ref("");
 const statusType = ref<"info" | "success" | "error">("info");
+const statusBadgeVariant = computed(() => {
+  if (statusType.value === "success") return "success";
+  if (statusType.value === "error") return "danger";
+  return "info";
+});
 const showConfigModal = ref(false);
 const isConfigLoading = ref(false);
 const isConfigSaving = ref(false);
@@ -812,6 +826,22 @@ async function loadConfig(): Promise<void> {
 
 function resetConfigDraft(): void {
   configDraft.value = { ...(configResponse.value?.config || {}) };
+}
+
+function setConfigDraftValue(key: string, value: boolean | number | string): void {
+  configDraft.value[key] = value;
+}
+
+function configDraftSelectValue(key: string): string | number {
+  const value = configDraft.value[key];
+  if (typeof value === "string" || typeof value === "number") return value;
+  return "";
+}
+
+function configDraftNumberValue(key: string): string | number {
+  const value = configDraft.value[key];
+  if (typeof value === "number" || typeof value === "string") return value;
+  return "";
 }
 
 async function saveConfig(): Promise<void> {
@@ -1561,23 +1591,6 @@ onMounted(() => {
   font-size: var(--font-size-display);
 }
 
-.icon-btn {
-  display: inline-flex;
-  width: 42px;
-  height: 42px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-full);
-  color: var(--primary-text);
-  background: var(--surface-overlay);
-  cursor: pointer;
-}
-
-.icon-btn:hover {
-  background: var(--surface-overlay-strong);
-}
-
 .config-loading {
   min-height: 180px;
 }
@@ -1632,16 +1645,6 @@ onMounted(() => {
 .config-item-copy small {
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
-}
-
-.config-control {
-  min-width: 140px;
-  padding: 8px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  color: var(--primary-text);
-  background: var(--input-bg);
-  font: inherit;
 }
 
 .config-modal-actions {
@@ -1716,7 +1719,8 @@ onMounted(() => {
     grid-template-columns: 1fr;
   }
 
-  .config-control {
+  .config-item :deep(.ui-input),
+  .config-item :deep(.ui-select) {
     width: 100%;
   }
 }
