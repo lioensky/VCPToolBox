@@ -56,11 +56,41 @@ function handleInput(event: Event): void {
   emit("input", event);
 }
 
-function focus(): void {
-  textareaRef.value?.focus();
+function focus(options?: FocusOptions): void {
+  textareaRef.value?.focus(options);
 }
 
-defineExpose({ focus });
+function setSelectionRange(start: number, end: number): void {
+  textareaRef.value?.setSelectionRange(start, end);
+}
+
+function getSelectionRange(): { start: number; end: number } {
+  return {
+    start: textareaRef.value?.selectionStart ?? 0,
+    end: textareaRef.value?.selectionEnd ?? 0,
+  };
+}
+
+function getScrollPosition(): { top: number; left: number } {
+  return {
+    top: textareaRef.value?.scrollTop ?? 0,
+    left: textareaRef.value?.scrollLeft ?? 0,
+  };
+}
+
+function setScrollPosition(position: { top: number; left: number }): void {
+  if (!textareaRef.value) return;
+  textareaRef.value.scrollTop = position.top;
+  textareaRef.value.scrollLeft = position.left;
+}
+
+defineExpose({
+  focus,
+  getScrollPosition,
+  getSelectionRange,
+  setScrollPosition,
+  setSelectionRange,
+});
 </script>
 
 <style scoped>
