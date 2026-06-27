@@ -8,86 +8,104 @@
         </p>
       </div>
       <div class="header-actions">
-        <button
-          class="btn-secondary"
+        <UiButton
+          variant="outline"
+          size="sm"
           type="button"
           :disabled="isLoading"
           @click="fetchSarPrompts"
         >
           刷新
-        </button>
-        <button
-          class="btn-primary"
+        </UiButton>
+        <UiButton
+          size="sm"
           type="button"
           :disabled="isLoading"
           @click="addSarGroup"
         >
           新增Sar组
-        </button>
+        </UiButton>
       </div>
     </div>
 
-    <div v-if="isLoading" class="empty-tip card">
-      <p>正在加载...</p>
-    </div>
+    <UiCard v-if="isLoading" variant="subtle">
+      <UiEmptyState title="正在加载..." description="正在读取 SarPrompt 配置。" />
+    </UiCard>
 
-    <div v-else-if="sarPrompts.length === 0" class="empty-tip card">
-      <p>暂无SarPrompt配置，点击“新增Sar组”开始。</p>
-    </div>
+    <UiCard v-else-if="sarPrompts.length === 0" variant="subtle">
+      <UiEmptyState title="暂无SarPrompt配置" description="点击新增Sar组开始维护模型提示词映射。">
+        <template #action>
+          <UiButton size="sm" type="button" @click="addSarGroup">新增Sar组</UiButton>
+        </template>
+      </UiEmptyState>
+    </UiCard>
 
     <div v-else class="sarprompt-list">
-      <article
+      <UiCard
         v-for="(group, index) in sarPrompts"
         :key="index"
-        class="rule-card sarprompt-card card"
+        class="sarprompt-card"
+        size="sm"
+        variant="subtle"
+        divided
       >
-        <div class="rule-head">
-          <input
+        <template #title>
+          <UiInput
             v-model="group.promptKey"
             class="rule-title"
+            size="sm"
             type="text"
             placeholder="提示词键 (如 SarPrompt1)"
           />
-          <div class="flex-grow"></div>
-          <button
-            class="btn-danger btn-sm"
+        </template>
+        <template #action>
+          <UiButton
+            variant="danger"
+            size="sm"
             type="button"
             @click="removeSarGroup(index)"
           >
             删除
-          </button>
-        </div>
+          </UiButton>
+        </template>
 
-        <div class="rule-body">
-          <div class="form-group full-width">
-            <label>适用模型 (逗号分隔)</label>
-            <input
+        <UiSettingsForm as="div" :columns="1" gap="sm">
+          <UiField
+            label="适用模型"
+            description="多个模型用英文逗号分隔。"
+            size="sm"
+          >
+            <UiInput
               v-model="group.modelsInput"
+              size="sm"
               type="text"
               placeholder="例如: gpt-4, claude-3-opus"
               @blur="syncModelsArray(index)"
             />
-          </div>
-          <div class="form-group full-width">
-            <label>注入内容 (文本或 .txt 文件名)</label>
-            <textarea
+          </UiField>
+          <UiField
+            label="注入内容"
+            description="可直接输入提示词，或填写 TVStxt 目录下的 .txt 文件名。"
+            size="sm"
+          >
+            <UiTextarea
               v-model="group.content"
+              size="sm"
               rows="6"
               placeholder="直接输入提示词，或输入 TVStxt 目录下的文件名"
-            ></textarea>
-          </div>
-        </div>
-      </article>
+            />
+          </UiField>
+        </UiSettingsForm>
+      </UiCard>
 
       <div class="editor-actions">
-        <button
-          class="btn-success"
+        <UiButton
           type="button"
-          :disabled="isSaving"
+          :loading="isSaving"
           @click="saveSarPrompts"
         >
           {{ isSaving ? "保存中…" : "保存配置" }}
-        </button>
+        </UiButton>
       </div>
     </div>
   </section>
@@ -96,6 +114,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { sarPromptApi, type SarPrompt } from "@/api/sarPrompt";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSettingsForm from "@/components/ui/UiSettingsForm.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
 
 const sarPrompts = ref<(SarPrompt & { modelsInput: string })[]>([]);
 const isLoading = ref(false);
@@ -186,75 +211,15 @@ onMounted(() => {
   gap: var(--space-4);
 }
 
-.sarprompt-card {
-  border: 1px solid var(--border-color);
-  transition: border-color 0.2s ease;
-}
-
-.sarprompt-card:hover {
-  border-color: var(--highlight-text);
-}
-
-.rule-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: var(--space-3);
-}
-
 .rule-title {
+  width: min(320px, 100%);
   font-weight: 600;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  padding: 6px 10px;
-  color: var(--primary-text);
-}
-
-.flex-grow {
-  flex-grow: 1;
-}
-
-.rule-body {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: var(--space-3);
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.form-group label {
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-}
-
-input,
-textarea {
-  border: 1px solid var(--border-color);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  border-radius: var(--radius-sm);
-  padding: 10px;
-}
-
-textarea {
-  resize: vertical;
 }
 
 .editor-actions {
   display: flex;
   justify-content: flex-end;
-  margin-top: 16px;
-}
-
-.empty-tip {
-  color: var(--secondary-text);
-  text-align: center;
-  padding: 40px;
+  margin-top: var(--space-1);
 }
 
 code {
