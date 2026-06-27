@@ -2,48 +2,72 @@
   <section class="config-section active-section tool-approval-page">
     <p class="description">在此管理工具调用的审核机制。开启后，特定的工具调用将需要通过管理面板进行人工确认。</p>
 
-    <div class="card tool-approval-toolbar" :class="{ 'is-dirty': isDirty }">
-      <div class="toolbar-meta">
-        <span class="dirty-badge" :class="{ 'dirty-badge--active': isDirty }">
-          {{ isDirty ? '配置已修改' : '暂无改动' }}
-        </span>
-        <span v-if="statusMessage" :class="['status-message', statusType]">{{ statusMessage }}</span>
-      </div>
-      <button type="button" class="btn-primary" :disabled="saving || !isDirty" @click="saveConfig">
-        <span class="material-symbols-outlined" :class="{ spinning: saving }">{{ saving ? 'sync' : 'save' }}</span>
-        <span>{{ saving ? '保存中…' : '保存审核配置' }}</span>
-      </button>
-    </div>
+    <UiToolbar class="tool-approval-toolbar" :class="{ 'is-dirty': isDirty }">
+      <template #default>
+        <UiDirtyIndicator :dirty="isDirty" label="配置已修改" />
+        <UiBadge v-if="!isDirty" variant="outline">暂无改动</UiBadge>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
+      </template>
+      <template #actions>
+        <UiButton type="button" :disabled="saving || !isDirty" :loading="saving" @click="saveConfig">
+          {{ saving ? '保存中…' : '保存审核配置' }}
+        </UiButton>
+      </template>
+    </UiToolbar>
 
-    <div class="card">
+    <UiSettingsCard
+      title="审核规则"
+      description="控制工具调用进入人工审核的范围、等待时间与隐私保护策略。"
+      variant="subtle"
+    >
       <form @submit.prevent="saveConfig">
-        <div class="config-item">
-          <AppSwitch v-model="config.enabled" :disabled="saving" label="是否开启工具调用审核" />
-        </div>
-        <div class="config-item">
-          <AppSwitch v-model="config.approveAll" :disabled="saving" label="是否开启所有工具调用审核" />
+        <UiSettingsGroup inset>
+          <div class="config-item">
+            <AppSwitch v-model="config.enabled" :disabled="saving" label="是否开启工具调用审核" />
+          </div>
+          <div class="config-item">
+            <AppSwitch v-model="config.approveAll" :disabled="saving" label="是否开启所有工具调用审核" />
           <p class="aa-hint">如果开启，所有工具调用都将进入审核流程，无论是否在名单中。</p>
-        </div>
-        <div class="config-item">
-          <AppSwitch v-model="config.fuzzyToolMatching" :disabled="saving" label="是否开启模糊工具匹配" />
+          </div>
+          <div class="config-item">
+            <AppSwitch v-model="config.fuzzyToolMatching" :disabled="saving" label="是否开启模糊工具匹配" />
           <p class="aa-hint">开启后，工具参数值边界除标准「始」「末」外，还会兼容「始}、{始」、以及「始`」「始text」「始``」「始%20」等异常标记。</p>
-        </div>
-        <div class="config-item privacy-protection-item">
-          <AppSwitch v-model="config.privacyProtectionEnabled" :disabled="saving" label="是否开启工具调用隐私保护" />
+          </div>
+          <div class="config-item privacy-protection-item">
+            <AppSwitch v-model="config.privacyProtectionEnabled" :disabled="saving" label="是否开启工具调用隐私保护" />
           <p class="aa-hint">默认关闭。开启后，会在工具结果返回给 AI 前保守打码疑似 .env 单行密钥、password、api key、token，以及 sk- 等高置信长令牌；不会影响工具实际执行与人工审核参数。</p>
-        </div>
-        <div class="config-item">
-          <label for="tool-approval-timeout">设置审核最大等待时间 (分钟)</label>
-          <input type="number" id="tool-approval-timeout" v-model.number="config.timeoutMinutes" min="1" max="60" :disabled="saving">
-          <p class="aa-hint">超时后，该审核请求将自动拒绝。</p>
-        </div>
-        <div class="config-item">
-          <label for="tool-approval-list">被审核规则名单 (每行一条规则)</label>
-          <textarea id="tool-approval-list" v-model="config.approvalListText" rows="8" :disabled="saving" placeholder="例如：&#10;SciCalculator&#10;PowerShellExecutor:Get-ChildItem&#10;PowerShellExecutor::SilentReject&#10;PowerShellExecutor:Remove-Item::SilentReject"></textarea>
-          <p class="aa-hint">支持四种格式：ToolName、ToolName:Command、ToolName::SilentReject、ToolName:Command::SilentReject。带“::SilentReject”的规则在用户拒绝时不会向 AI 返回拒绝提示。</p>
-        </div>
+          </div>
+        </UiSettingsGroup>
+        <UiSettingsForm as="div" :columns="2" gap="md">
+          <UiField label="审核最大等待时间" description="超时后，该审核请求将自动拒绝。" for-id="tool-approval-timeout">
+            <UiInput
+              id="tool-approval-timeout"
+              v-model.number="config.timeoutMinutes"
+              class="timeout-input"
+              type="number"
+              min="1"
+              max="60"
+              :disabled="saving"
+            />
+          </UiField>
+          <UiField
+            label="被审核规则名单"
+            description="支持 ToolName、ToolName:Command、ToolName::SilentReject、ToolName:Command::SilentReject。带 ::SilentReject 的规则在用户拒绝时不会向 AI 返回拒绝提示。"
+            for-id="tool-approval-list"
+            data-settings-span="full"
+          >
+            <UiTextarea
+              id="tool-approval-list"
+              v-model="config.approvalListText"
+              class="approval-list-textarea"
+              rows="8"
+              :disabled="saving"
+              placeholder="例如：&#10;SciCalculator&#10;PowerShellExecutor:Get-ChildItem&#10;PowerShellExecutor::SilentReject&#10;PowerShellExecutor:Remove-Item::SilentReject"
+            />
+          </UiField>
+        </UiSettingsForm>
       </form>
-    </div>
+    </UiSettingsCard>
   </section>
 </template>
 
@@ -53,6 +77,16 @@ import { onBeforeRouteLeave } from 'vue-router'
 import { adminConfigApi } from '@/api'
 import type { ToolApprovalConfig } from '@/api/admin-config'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiDirtyIndicator from '@/components/ui/UiDirtyIndicator.vue'
+import UiField from '@/components/ui/UiField.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiSettingsCard from '@/components/ui/UiSettingsCard.vue'
+import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
+import UiSettingsGroup from '@/components/ui/UiSettingsGroup.vue'
+import UiTextarea from '@/components/ui/UiTextarea.vue'
+import UiToolbar from '@/components/ui/UiToolbar.vue'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
 
@@ -121,6 +155,12 @@ function buildConfigSignature(state: ToolApprovalFormState): string {
 
 const isDirty = computed(() => {
   return buildConfigSignature(config.value) !== initialSignature.value
+})
+
+const statusBadgeVariant = computed(() => {
+  if (statusType.value === 'success') return 'success'
+  if (statusType.value === 'error') return 'danger'
+  return 'info'
 })
 
 async function loadConfig() {
@@ -227,90 +267,34 @@ onBeforeRouteLeave(async () => {
   position: sticky;
   top: 0;
   z-index: 12;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-4);
+  padding: var(--space-3) 0;
+  backdrop-filter: blur(8px);
 }
 
 .tool-approval-toolbar.is-dirty {
-  border-color: color-mix(in srgb, var(--warning-text) 30%, var(--border-color));
-}
-
-.toolbar-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-
-.dirty-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  font-weight: 600;
-}
-
-.dirty-badge--active {
-  background: var(--warning-bg);
-  border-color: var(--warning-border);
-  color: var(--warning-text);
-}
-
-.card {
-  padding: var(--space-5);
+  color: var(--warning-color);
 }
 
 .config-item {
-  margin-bottom: var(--space-5);
+  min-width: 0;
 }
 
-.config-item > label:not(.switch-row) {
-  display: block;
-  margin-bottom: var(--space-2);
-  font-weight: 500;
+.config-item + .config-item {
+  margin-top: var(--space-3);
 }
 
-.config-item input[type="number"] {
-  width: 100px;
-  padding: var(--space-2) var(--space-3);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
+.timeout-input {
+  max-width: 120px;
 }
 
-.config-item textarea {
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
+.approval-list-textarea {
   font-family: 'Consolas', 'Monaco', monospace;
-  resize: vertical;
 }
 
 .aa-hint {
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
-  margin-top: var(--space-2);
+  margin: var(--space-2) 0 0;
 }
 
-.spinning {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 </style>
