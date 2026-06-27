@@ -411,7 +411,7 @@ input[type="checkbox"] {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border-color);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: transparent;
   background: var(--secondary-bg);
   font-size: 12px;
@@ -723,7 +723,7 @@ input[type="checkbox"] {
 .status-message {
   font-size: var(--font-size-caption);
   padding: 6px 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .status-message.info {

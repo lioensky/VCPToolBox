@@ -162,7 +162,14 @@ const headerClass = computed(() => [
 }
 
 .ui-card__content {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  gap: var(--space-4);
+}
+
+.ui-card--sm .ui-card__content {
+  gap: var(--space-3);
 }
 
 .ui-card__footer {

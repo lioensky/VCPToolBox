@@ -8,6 +8,7 @@
         </p>
       </div>
       <div class="header-actions">
+        <UiDirtyIndicator :dirty="isDirty" />
         <UiButton variant="outline" size="lg" :disabled="isLoading" @click="loadAll">
           <template #leading>
             <span class="material-symbols-outlined">refresh</span>
@@ -23,9 +24,12 @@
       </div>
     </div>
 
-    <UiCard v-if="isLoading" class="empty-state">
-      <span class="loading-spinner loading-spinner--sm"></span>
-      <p>正在加载语义模型路由配置…</p>
+    <UiCard v-if="isLoading">
+      <UiEmptyState title="正在加载语义模型路由配置…">
+        <template #icon>
+          <span class="loading-spinner loading-spinner--sm"></span>
+        </template>
+      </UiEmptyState>
     </UiCard>
 
     <template v-else>
@@ -51,10 +55,12 @@
         </div>
       </div>
 
-      <div v-if="upstreamWarning" class="warning-box">
-        <span class="material-symbols-outlined">warning</span>
+      <UiAlert v-if="upstreamWarning" variant="warning">
+        <template #icon>
+          <span class="material-symbols-outlined">warning</span>
+        </template>
         <span>{{ upstreamWarning }}</span>
-      </div>
+      </UiAlert>
 
       <div class="layout-grid">
         <UiCard class="preset-sidebar" title="预设列表" divided>
@@ -68,157 +74,151 @@
           </template>
 
           <div class="sidebar-field-stack">
-            <label class="field">
-              <span>自动模型名</span>
+            <UiField label="自动模型名">
               <UiInput v-model.trim="config.autoModelName" type="text" placeholder="VCPModelAuto" />
-            </label>
+            </UiField>
 
-            <label class="field">
-              <span>默认预设</span>
-              <select v-model="config.defaultPreset">
+            <UiField label="默认预设">
+              <UiSelect v-model="config.defaultPreset">
                 <option v-for="[presetId] in presetEntries" :key="presetId" :value="presetId">
                   {{ presetId }}
                 </option>
-              </select>
-            </label>
+              </UiSelect>
+            </UiField>
 
-            <label class="field">
-              <span>全局阈值</span>
-              <UiInput v-model.number="config.matchThreshold" type="number" min="0" max="1" step="0.01" />
-            </label>
-            <label class="field">
-              <span>User 权重</span>
-              <UiInput v-model.number="globalUserWeight" type="number" min="0" step="0.1" />
-            </label>
-            <label class="field">
-              <span>AI 权重</span>
-              <UiInput v-model.number="globalAssistantWeight" type="number" min="0" step="0.1" />
-            </label>
+            <UiSettingsGroup title="全局匹配参数" inset>
+              <UiSettingsForm as="div" :columns="1" gap="sm">
+                <UiField label="全局阈值">
+                  <UiInput v-model.number="config.matchThreshold" type="number" min="0" max="1" step="0.01" />
+                </UiField>
+                <UiField label="User 权重">
+                  <UiInput v-model.number="globalUserWeight" type="number" min="0" step="0.1" />
+                </UiField>
+                <UiField label="AI 权重">
+                  <UiInput v-model.number="globalAssistantWeight" type="number" min="0" step="0.1" />
+                </UiField>
+              </UiSettingsForm>
+            </UiSettingsGroup>
           </div>
 
-          <div class="preset-list">
-            <button
+          <UiList class="preset-list">
+            <UiListItem
               v-for="[presetId, preset] in presetEntries"
               :key="presetId"
-              type="button"
-              :class="['preset-item', selectedPresetId === presetId ? 'active' : '']"
+              :title="presetId"
+              :description="preset.displayName || '未命名'"
+              :active="selectedPresetId === presetId"
               @click="selectedPresetId = presetId"
             >
-              <span>
-                <strong>{{ presetId }}</strong>
-                <small>{{ preset.displayName || "未命名" }}</small>
-              </span>
-              <em>{{ enabledRouteCount(preset) }}/{{ preset.routes.length }}</em>
-            </button>
-          </div>
+              <template #trailing>
+                <UiBadge variant="outline">{{ enabledRouteCount(preset) }}/{{ preset.routes.length }}</UiBadge>
+              </template>
+            </UiListItem>
+          </UiList>
         </UiCard>
 
         <main class="editor-stack">
           <UiCard v-if="hasSelectedPreset" class="editor-card" :title="`预设：${selectedPresetId}`">
             <template #action>
-              <div class="header-actions">
-                <UiButton variant="outline" size="sm" @click="duplicatePreset">
-                  <template #leading>
-                    <span class="material-symbols-outlined">content_copy</span>
-                  </template>
-                  复制
-                </UiButton>
-                <UiButton variant="danger" size="sm" :disabled="presetEntries.length <= 1" @click="removePreset">
-                  <template #leading>
-                    <span class="material-symbols-outlined">delete</span>
-                  </template>
-                  删除
-                </UiButton>
-              </div>
+              <UiToolbar density="compact">
+                <template #actions>
+                  <UiButton variant="outline" size="sm" @click="duplicatePreset">
+                    <template #leading>
+                      <span class="material-symbols-outlined">content_copy</span>
+                    </template>
+                    复制
+                  </UiButton>
+                  <UiButton variant="danger" size="sm" :disabled="presetEntries.length <= 1" @click="removePreset">
+                    <template #leading>
+                      <span class="material-symbols-outlined">delete</span>
+                    </template>
+                    删除
+                  </UiButton>
+                </template>
+              </UiToolbar>
             </template>
 
-            <div class="form-grid">
-              <label class="field">
-                <span>预设 ID</span>
+            <UiSettingsForm as="div">
+              <UiField label="预设 ID">
                 <UiInput :model-value="selectedPresetId" type="text" @change="renamePreset(($event.target as HTMLInputElement).value)" />
-              </label>
-              <label class="field">
-                <span>展示名</span>
+              </UiField>
+              <UiField label="展示名">
                 <UiInput v-model.trim="selectedPreset.displayName" type="text" placeholder="VCPModelAuto" />
-              </label>
-              <label class="field">
-                <span>默认模型</span>
+              </UiField>
+              <UiField label="默认模型">
                 <UiInput v-model.trim="selectedPreset.defaultModel" type="text" list="semantic-router-models" />
-              </label>
-              <label class="field">
-                <span>预设阈值</span>
+              </UiField>
+              <UiField label="预设阈值">
                 <UiInput v-model.number="selectedPreset.matchThreshold" type="number" min="0" max="1" step="0.01" />
-              </label>
-              <label class="field">
-                <span>User 权重</span>
+              </UiField>
+              <UiField label="User 权重">
                 <UiInput v-model.number="presetUserWeight" type="number" min="0" step="0.1" />
-              </label>
-              <label class="field">
-                <span>AI 权重</span>
+              </UiField>
+              <UiField label="AI 权重">
                 <UiInput v-model.number="presetAssistantWeight" type="number" min="0" step="0.1" />
-              </label>
-            </div>
+              </UiField>
 
-            <label class="field">
-              <span>容灾模型（每行一个，按顺序尝试）</span>
-              <UiTextarea v-model="fallbackModelsText" rows="3" placeholder="gpt-5.5&#10;DeepSeek-V4-Pro" @blur="syncFallbackModels" />
-            </label>
+              <UiField label="容灾模型（每行一个，按顺序尝试）" data-settings-span="full">
+                <UiTextarea v-model="fallbackModelsText" rows="3" placeholder="gpt-5.5&#10;DeepSeek-V4-Pro" @blur="syncFallbackModels" />
+              </UiField>
+            </UiSettingsForm>
 
-            <div class="routes-header">
-              <div>
-                <h3>语义路由项</h3>
-                <p class="field-hint">描述越具体，embedding 匹配越稳定；关闭 enabled 后该项不会参与匹配。</p>
-              </div>
-              <UiButton size="sm" @click="addRoute">
-                <template #leading>
-                  <span class="material-symbols-outlined">add</span>
+            <UiSection title="语义路由项" description="描述越具体，embedding 匹配越稳定；关闭 enabled 后该项不会参与匹配。">
+              <template #action>
+                <UiButton size="sm" @click="addRoute">
+                  <template #leading>
+                    <span class="material-symbols-outlined">add</span>
+                  </template>
+                  新增路由
+                </UiButton>
+              </template>
+
+              <UiEmptyState v-if="selectedPreset.routes.length === 0" title="还没有路由项" description="添加路由项后，语义模型路由器会根据描述匹配最合适的模型。">
+                <template #action>
+                  <UiButton size="sm" @click="addRoute">新增路由</UiButton>
                 </template>
-                新增路由
-              </UiButton>
-            </div>
+              </UiEmptyState>
 
-            <div class="route-list">
-              <UiCard v-for="(route, routeIndex) in selectedPreset.routes" :key="routeIndex" class="route-card" size="sm" variant="subtle">
-                <div class="route-head">
-                  <label class="switch-row">
-                    <input v-model="route.enabled" type="checkbox">
-                    <span>启用</span>
-                  </label>
-                  <label class="switch-row">
-                    <input v-model="route.failoverPool" type="checkbox">
-                    <span>加入容灾池</span>
-                  </label>
-                  <div class="flex-grow"></div>
-                  <UiButton variant="outline" size="sm" :disabled="routeIndex === 0" @click="moveRoute(routeIndex, -1)">
-                    上移
-                  </UiButton>
-                  <UiButton variant="outline" size="sm" :disabled="routeIndex === selectedPreset.routes.length - 1" @click="moveRoute(routeIndex, 1)">
-                    下移
-                  </UiButton>
-                  <UiButton variant="danger" size="sm" @click="removeRoute(routeIndex)">删除</UiButton>
-                </div>
+              <div v-else class="route-list">
+                <UiCard v-for="(route, routeIndex) in selectedPreset.routes" :key="routeIndex" class="route-card" size="sm" variant="subtle">
+                  <div class="route-head">
+                    <div class="route-status">
+                      <UiBadge :variant="route.enabled ? 'success' : 'secondary'">
+                        {{ route.enabled ? "启用中" : "已关闭" }}
+                      </UiBadge>
+                      <AppCheckbox :model-value="route.enabled !== false" label="启用" @update:model-value="route.enabled = $event" />
+                      <AppCheckbox :model-value="route.failoverPool !== false" label="加入容灾池" @update:model-value="route.failoverPool = $event" />
+                    </div>
+                    <div class="route-actions">
+                      <UiButton variant="outline" size="sm" :disabled="routeIndex === 0" @click="moveRoute(routeIndex, -1)">
+                        上移
+                      </UiButton>
+                      <UiButton variant="outline" size="sm" :disabled="routeIndex === selectedPreset.routes.length - 1" @click="moveRoute(routeIndex, 1)">
+                        下移
+                      </UiButton>
+                      <UiButton variant="danger" size="sm" @click="removeRoute(routeIndex)">删除</UiButton>
+                    </div>
+                  </div>
 
-                <div class="form-grid route-grid">
-                  <label class="field">
-                    <span>名称</span>
-                    <UiInput v-model.trim="route.name" type="text" placeholder="research_and_coding" />
-                  </label>
-                  <label class="field">
-                    <span>模型</span>
-                    <UiInput v-model.trim="route.model" type="text" list="semantic-router-models" />
-                  </label>
-                </div>
+                  <UiSettingsForm as="div" class="route-form">
+                    <UiField label="名称">
+                      <UiInput v-model.trim="route.name" type="text" placeholder="research_and_coding" />
+                    </UiField>
+                    <UiField label="模型">
+                      <UiInput v-model.trim="route.model" type="text" list="semantic-router-models" />
+                    </UiField>
 
-                <label class="field">
-                  <span>语义描述</span>
-                  <UiTextarea v-model="route.description" rows="4" placeholder="该模型擅长的场景、关键词、任务类型……" />
-                </label>
+                    <UiField label="语义描述" data-settings-span="full">
+                      <UiTextarea v-model="route.description" rows="4" placeholder="该模型擅长的场景、关键词、任务类型……" />
+                    </UiField>
+                  </UiSettingsForm>
 
-                <p v-if="route.description && route.description.trim().length < 20" class="field-hint warning">
-                  描述少于 20 字，建议补充更多任务关键词以提升匹配质量。
-                </p>
-              </UiCard>
-            </div>
+                  <UiAlert v-if="route.description && route.description.trim().length < 20" variant="warning">
+                    描述少于 20 字，建议补充更多任务关键词以提升匹配质量。
+                  </UiAlert>
+                </UiCard>
+              </div>
+            </UiSection>
           </UiCard>
 
           <UiCard class="preview-card" title="匹配预览">
@@ -231,16 +231,14 @@
               </UiButton>
             </template>
 
-            <div class="form-grid">
-              <label class="field">
-                <span>用户示例文本</span>
+            <UiSettingsForm as="div">
+              <UiField label="用户示例文本">
                 <UiTextarea v-model="previewUserText" rows="4" placeholder="输入一段用户请求，用于测试路由匹配" />
-              </label>
-              <label class="field">
-                <span>上一条 AI 文本（可选）</span>
+              </UiField>
+              <UiField label="上一条 AI 文本（可选）">
                 <UiTextarea v-model="previewAssistantText" rows="4" placeholder="可选：上一条 assistant 回复" />
-              </label>
-            </div>
+              </UiField>
+            </UiSettingsForm>
 
             <div v-if="previewResult" class="preview-result">
               <div class="result-line">
@@ -254,7 +252,7 @@
               <div class="candidate-chain">
                 <span v-for="candidate in previewResult.candidates" :key="candidate" class="tag">{{ candidate }}</span>
               </div>
-              <table class="rank-table">
+              <UiTableFrame density="compact">
                 <thead>
                   <tr>
                     <th>路由</th>
@@ -271,7 +269,7 @@
                     <td>{{ route.failoverPool === false ? "否" : "是" }}</td>
                   </tr>
                 </tbody>
-              </table>
+              </UiTableFrame>
             </div>
           </UiCard>
         </main>
@@ -289,11 +287,25 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
+import AppCheckbox from "@/components/ui/AppCheckbox.vue";
 import AppSwitch from "@/components/ui/AppSwitch.vue";
+import UiAlert from "@/components/ui/UiAlert.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiCard from "@/components/ui/UiCard.vue";
+import UiDirtyIndicator from "@/components/ui/UiDirtyIndicator.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
+import UiField from "@/components/ui/UiField.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiList from "@/components/ui/UiList.vue";
+import UiListItem from "@/components/ui/UiListItem.vue";
+import UiSection from "@/components/ui/UiSection.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
+import UiSettingsForm from "@/components/ui/UiSettingsForm.vue";
+import UiSettingsGroup from "@/components/ui/UiSettingsGroup.vue";
+import UiTableFrame from "@/components/ui/UiTableFrame.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
+import UiToolbar from "@/components/ui/UiToolbar.vue";
 import {
   semanticRouterApi,
   type SemanticRouterConfig,
@@ -676,17 +688,14 @@ onBeforeRouteLeave(async () => {
   gap: var(--space-4);
 }
 
-.page-header,
-.routes-header,
-.route-head {
+.page-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
 }
 
-.page-header h2,
-.routes-header h3 {
+.page-header h2 {
   margin: 0;
 }
 
@@ -750,121 +759,35 @@ onBeforeRouteLeave(async () => {
   gap: var(--space-4);
 }
 
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-
-.route-grid {
-  grid-template-columns: minmax(180px, 0.7fr) minmax(220px, 1fr);
-}
-
 .sidebar-field-stack {
   display: grid;
   gap: var(--space-3);
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.field span,
-.switch-row > span {
-  color: var(--primary-text);
-  font-weight: 600;
-}
-
-.field select {
-  width: 100%;
-  height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  font: inherit;
-  font-size: var(--font-size-helper);
-}
-
-.field select:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
-}
-
-.field select:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-  border-color: var(--highlight-text);
-}
-
-.field-hint {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
-.field-hint.warning {
-  color: var(--warning-color);
-}
-
 .preset-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
   margin-top: var(--space-4);
 }
 
-.preset-item {
-  width: 100%;
+.route-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  text-align: left;
-  cursor: pointer;
-}
-
-.preset-item.active {
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-text) 14%, var(--input-bg));
-}
-
-.preset-item small {
-  display: block;
-  color: var(--secondary-text);
-}
-
-.preset-item em {
-  color: var(--secondary-text);
-  font-style: normal;
-  font-size: var(--font-size-helper);
-}
-
-.route-head {
-  align-items: center;
   flex-wrap: wrap;
+  gap: var(--space-3);
 }
 
-.flex-grow {
-  flex: 1;
-}
-
-.warning-box {
+.route-status,
+.route-actions {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--warning-color);
-  border-radius: var(--radius-md);
-  color: var(--warning-color);
-  background: color-mix(in srgb, var(--warning-color) 14%, transparent);
+}
+
+.route-actions {
+  margin-left: auto;
+  justify-content: flex-end;
 }
 
 .preview-result {
@@ -879,65 +802,34 @@ onBeforeRouteLeave(async () => {
   justify-content: space-between;
   gap: var(--space-3);
   padding: var(--space-3);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--input-bg);
 }
 
 .tag {
   display: inline-flex;
   align-items: center;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-full);
   padding: 2px 8px;
   color: var(--primary-text);
   background: var(--hover-bg, var(--tertiary-bg));
   font-size: var(--font-size-helper);
 }
 
-.rank-table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 640px;
-}
-
-.rank-table th,
-.rank-table td {
-  padding: var(--space-3);
-  border-bottom: 1px solid var(--border-color);
-  text-align: left;
-}
-
-.rank-table th {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
-.empty-state {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-3);
-  min-height: 160px;
-  color: var(--secondary-text);
-}
-
 code {
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--tertiary-bg);
   color: var(--highlight-text);
 }
 
 @media (max-width: 1100px) {
   .layout-grid,
-  .summary-grid,
-  .form-grid,
-  .route-grid {
+  .summary-grid {
     grid-template-columns: 1fr;
   }
 
-  .page-header,
-  .card-header,
-  .routes-header {
+  .page-header {
     flex-direction: column;
   }
 }
