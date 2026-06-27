@@ -4,14 +4,14 @@
     <div class="config-manager card">
       <h2 class="section-header tle-section-header">
         配置管理
-        <span v-if="isDirty" class="dirty-badge">未保存</span>
+        <UiBadge v-if="isDirty" variant="warning" class="dirty-badge">未保存</UiBadge>
       </h2>
 
       <div class="config-row">
         <label class="config-label" for="tool-config-select">已有配置</label>
-        <select
+        <UiSelect
           id="tool-config-select"
-          :value="selectedConfig"
+          :model-value="selectedConfig"
           :disabled="saving || deleting || exporting || loadingConfig"
           aria-label="选择已有配置或新建"
           @change="
@@ -29,16 +29,16 @@
           >
             {{ config }}
           </option>
-        </select>
+        </UiSelect>
       </div>
 
       <div class="config-row">
         <label class="config-label" for="tool-config-name">配置名称</label>
-        <input
+        <UiInput
           id="tool-config-name"
           type="text"
-          :value="configNameInput"
-          :class="{ 'input-invalid': Boolean(configNameError) }"
+          :model-value="configNameInput"
+          :invalid="Boolean(configNameError)"
           :aria-invalid="configNameError ? 'true' : 'false'"
           :disabled="saving || deleting || exporting || loadingConfig"
           placeholder="输入名称后点击保存（改名即另存为）"
@@ -61,41 +61,38 @@
         role="status"
       >
         <span>当前包含 {{ missingToolCount }} 个失效工具 ID。</span>
-        <button
-          type="button"
-          class="btn-link"
+        <UiButton
+          variant="link"
+          size="xs"
           :disabled="saving || deleting || exporting || loadingConfig"
           @click="emit('clearMissingTools')"
         >
           清理
-        </button>
+        </UiButton>
       </p>
 
       <div class="config-actions">
-        <button
-          type="button"
-          class="btn-success"
+        <UiButton
+          variant="primary"
           :disabled="Boolean(configNameError) || saving || deleting || exporting || loadingConfig"
           @click="emit('saveConfig')"
         >
           {{ saving ? "保存中..." : "保存" }}
-        </button>
-        <button
-          type="button"
-          class="btn-danger"
+        </UiButton>
+        <UiButton
+          variant="danger"
           :disabled="!selectedConfig || saving || deleting || exporting || loadingConfig"
           @click="emit('deleteConfig')"
         >
           {{ deleting ? "删除中..." : "删除" }}
-        </button>
-        <button
-          type="button"
+        </UiButton>
+        <UiButton
           :disabled="!hasSelection || Boolean(configNameError) || saving || deleting || exporting || loadingConfig"
-          class="btn-primary"
+          variant="primary"
           @click="emit('exportTxt')"
         >
           {{ exporting ? "导出中..." : "导出" }}
-        </button>
+        </UiButton>
       </div>
 
       <p v-if="loadingConfig" class="config-loading" role="status" aria-live="polite">
@@ -125,22 +122,24 @@
       </div>
 
       <div class="preview-output-wrapper">
-        <textarea
+        <UiTextarea
           id="preview-output"
           readonly
-          :value="previewContent"
+          :model-value="previewContent"
+          resize="none"
           placeholder="选择工具后将在此显示配置内容…"
-        ></textarea>
-        <button
-          type="button"
+        />
+        <UiButton
           class="preview-copy-btn"
+          variant="outline"
+          size="sm"
           :disabled="copying || !previewContent"
           :aria-label="copying ? '正在复制预览内容' : '复制预览内容到剪贴板'"
           :title="copying ? '复制中...' : '复制预览内容'"
           @click="emit('copyPreview')"
         >
           {{ copying ? "复制中..." : "复制" }}
-        </button>
+        </UiButton>
       </div>
     </div>
   </div>
@@ -148,6 +147,11 @@
 
 <script setup lang="ts">
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
 
 defineProps<{
   availableConfigs: string[];
@@ -207,13 +211,7 @@ const emit = defineEmits<{
 }
 
 .dirty-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: var(--font-size-helper);
-  color: var(--warning-text);
-  border: 1px solid var(--warning-text);
+  margin-left: var(--space-2);
 }
 
 .config-row {
@@ -229,36 +227,14 @@ const emit = defineEmits<{
   color: var(--secondary-text);
 }
 
-.config-row select,
-.config-row input[type="text"] {
+.config-row :deep(.ui-select),
+.config-row :deep(.ui-input) {
   flex: 1;
-  padding: 10px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
-  box-sizing: border-box;
 }
 
-.config-row input[type="text"].input-invalid {
-  border-color: var(--danger-color);
-}
-
-.config-row input[type="text"]:focus-visible,
-.config-row select:focus-visible,
-.config-actions button:focus-visible,
-.preview-controls button:focus-visible,
-.preview-copy-btn:focus-visible,
-.checkbox-label:focus-within,
-.btn-link:focus-visible {
+.checkbox-label:focus-within {
   outline: 2px solid var(--highlight-text);
   outline-offset: 1px;
-}
-
-.config-row input[type="text"]:focus,
-.config-row select:focus {
-  border-color: var(--highlight-text);
 }
 
 .config-error {
@@ -281,22 +257,6 @@ const emit = defineEmits<{
   flex-wrap: wrap;
 }
 
-.btn-link {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--highlight-text);
-  font-size: var(--font-size-helper);
-  cursor: pointer;
-  text-decoration: underline;
-}
-
-.btn-link:disabled {
-  color: var(--secondary-text);
-  cursor: not-allowed;
-  text-decoration: none;
-}
-
 .config-actions {
   display: flex;
   gap: 10px;
@@ -304,7 +264,7 @@ const emit = defineEmits<{
   margin-top: 4px;
 }
 
-.config-actions button {
+.config-actions :deep(.ui-button) {
   flex: 1 1 auto;
   min-width: 80px;
 }
@@ -330,51 +290,29 @@ const emit = defineEmits<{
   display: flex;
 }
 
-#preview-output {
+.preview-output-wrapper :deep(.ui-textarea) {
   flex: 1;
   width: 100%;
+  height: 100%;
   min-height: 0;
-  padding: 12px;
   padding-right: 84px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
   font-family: "Consolas", "Monaco", monospace;
   font-size: var(--font-size-body);
-  resize: none;
-  box-sizing: border-box;
 }
 
 .preview-copy-btn {
   position: absolute;
   top: 8px;
   right: 8px;
-  padding: 4px 10px;
-  font-size: var(--font-size-helper);
-  color: var(--primary-text);
-  background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
   opacity: 0.85;
-  transition: opacity 0.15s ease;
 }
 
 .preview-copy-btn:hover:not(:disabled) {
   opacity: 1;
-  border-color: var(--highlight-text);
 }
 
 .preview-copy-btn:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.preview-copy-btn:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 1px;
-  opacity: 1;
 }
 
 @media (max-width: 1024px) {
@@ -399,7 +337,7 @@ const emit = defineEmits<{
   .config-actions {
     gap: 8px;
   }
-  .config-actions button {
+  .config-actions :deep(.ui-button) {
     flex: 1 1 calc(33.333% - 8px);
     min-width: 0;
     padding-left: 8px;

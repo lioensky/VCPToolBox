@@ -8,25 +8,27 @@
 
       <div class="filter-section">
         <div class="search-row">
-          <input
+          <UiInput
             type="search"
-            :value="searchQuery"
+            :model-value="searchQuery"
             placeholder="搜索工具 / 插件 / 说明…"
             class="tool-search"
+            size="md"
             aria-label="搜索工具"
             @input="handleSearchInput"
             @compositionstart="emit('searchCompositionStart')"
             @compositionend="handleSearchCompositionEnd"
           />
-          <button
+          <UiButton
             v-if="searchQuery"
-            type="button"
-            class="btn-secondary btn-sm search-clear-btn"
+            variant="ghost"
+            size="sm"
+            class="search-clear-btn"
             aria-label="清除搜索关键词"
             @click="emit('clearSearch')"
           >
             清除
-          </button>
+          </UiButton>
         </div>
 
         <p
@@ -46,33 +48,33 @@
             label="只显示已选"
             @update:model-value="emit('update:showSelectedOnly', $event)"
           />
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
+          <UiButton
+            variant="outline"
+            size="sm"
             :disabled="loading"
             :title="selectCurrentTitle"
             @click="emit('selectAll')"
           >
             选中当前结果
-          </button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
+          </UiButton>
+          <UiButton
+            variant="outline"
+            size="sm"
             :disabled="loading"
             @click="emit('deselectAll')"
           >
             取消全选
-          </button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
+          </UiButton>
+          <UiButton
+            variant="outline"
+            size="sm"
             :disabled="loading"
             aria-label="刷新工具列表"
             title="重新从后端拉取工具列表"
             @click="emit('refreshTools')"
           >
             刷新
-          </button>
+          </UiButton>
         </div>
       </div>
 
@@ -115,20 +117,21 @@
               >
                 <span class="tool-name">{{ tool.name }}</span>
                 <span class="tool-plugin">{{ tool.pluginName }}</span>
-                <span
+                <UiBadge
                   v-if="toolDescriptions[tool.uniqueId]"
+                  variant="info"
                   class="tool-badge"
                   title="已自定义说明"
-                >已自定义</span>
+                >已自定义</UiBadge>
               </AppCheckbox>
-              <button
-                type="button"
-                class="btn-secondary btn-sm"
+              <UiButton
+                variant="outline"
+                size="sm"
                 :aria-label="`编辑 ${tool.name} 的说明`"
                 @click="emit('editDescription', tool)"
               >
                 编辑说明
-              </button>
+              </UiButton>
             </div>
           </div>
         </div>
@@ -161,6 +164,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { Tool } from "@/features/tool-list/types";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
 
 const props = defineProps<{
   loading: boolean;
@@ -321,20 +327,9 @@ onBeforeUnmount(() => {
 
 .tool-search {
   flex: 1;
-  padding: 10px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
-  box-sizing: border-box;
 }
 
-.tool-search:focus-visible,
-.search-clear-btn:focus-visible,
-.tool-checkbox:focus-within,
-.tool-item button:focus-visible,
-.filter-actions button:focus-visible {
+.tool-checkbox:focus-within {
   outline: 2px solid var(--highlight-text);
   outline-offset: 1px;
 }
@@ -347,10 +342,6 @@ onBeforeUnmount(() => {
 
 .search-clear-btn {
   flex-shrink: 0;
-}
-
-.tool-search:focus {
-  border-color: var(--highlight-text);
 }
 
 .filter-actions {
@@ -366,7 +357,7 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  background: var(--tertiary-bg);
+  background: var(--secondary-bg);
   min-height: 0;
   position: relative;
 }
@@ -422,12 +413,6 @@ onBeforeUnmount(() => {
 }
 
 .tool-badge {
-  font-size: var(--font-size-helper);
-  color: var(--highlight-text);
-  background: var(--info-bg);
-  border: 1px solid var(--highlight-text);
-  padding: 1px 6px;
-  border-radius: 4px;
   flex-shrink: 0;
 }
 
@@ -465,7 +450,7 @@ onBeforeUnmount(() => {
   .filter-actions {
     gap: 8px 10px;
   }
-  .filter-actions .btn-secondary {
+  .filter-actions :deep(.ui-button) {
     flex: 0 1 auto;
     padding-left: 10px;
     padding-right: 10px;
