@@ -1,6 +1,6 @@
 <template>
   <section class="claw-mail-page">
-    <section class="card hero-card">
+    <UiCard class="hero-card" variant="subtle">
       <div>
         <span class="eyebrow">VCPClawMail</span>
         <h2>邮件总览与垃圾箱操作</h2>
@@ -9,14 +9,14 @@
         </p>
       </div>
       <div class="hero-actions">
-        <button type="button" class="btn-secondary" :disabled="isLoadingState" @click="loadState(true)">
+        <UiButton type="button" variant="outline" :disabled="isLoadingState" :loading="isLoadingState" @click="loadState(true)">
           <span class="material-symbols-outlined">sync</span>
           <span>{{ isLoadingState ? "刷新中…" : "刷新邮箱缓存" }}</span>
-        </button>
+        </UiButton>
       </div>
-    </section>
+    </UiCard>
 
-    <section class="card status-card">
+    <UiCard class="status-card" variant="subtle">
       <article class="stat-chip">
         <span>SDK</span>
         <strong :class="state?.sdkLoaded ? 'ok' : 'danger'">{{ state?.sdkLoaded ? "已加载" : "不可用" }}</strong>
@@ -33,10 +33,10 @@
         <span>最近错误</span>
         <strong>{{ state.lastError }}</strong>
       </article>
-    </section>
+    </UiCard>
 
     <section class="mail-layout">
-      <aside class="card mailbox-panel">
+      <UiCard class="mailbox-panel" variant="subtle">
         <div class="panel-header">
           <h3>邮箱</h3>
         </div>
@@ -56,10 +56,10 @@
             </small>
           </span>
         </button>
-        <div v-if="!state?.mailboxes.length" class="empty-note">暂无已配置邮箱。</div>
-      </aside>
+        <UiEmptyState v-if="!state?.mailboxes.length" title="暂无已配置邮箱" />
+      </UiCard>
 
-      <section class="card message-panel">
+      <UiCard class="message-panel" variant="subtle">
         <div class="panel-header message-toolbar">
           <div>
             <h3>邮件列表</h3>
@@ -68,21 +68,18 @@
           <div class="toolbar-actions">
             <label class="inline-field">
               <span>数量</span>
-              <input v-model.number="limit" type="number" min="1" max="100" />
+              <UiInput v-model.number="limit" class="limit-input" type="number" min="1" max="100" size="sm" />
             </label>
-            <label class="checkbox-field">
-              <input v-model="unreadOnly" type="checkbox" />
-              <span>仅未读</span>
-            </label>
-            <button type="button" class="btn-secondary" :disabled="!selectedMailbox || isLoadingMessages" @click="loadMessages()">
+            <AppCheckbox v-model="unreadOnly" label="仅未读" />
+            <UiButton type="button" variant="outline" size="sm" :disabled="!selectedMailbox || isLoadingMessages" :loading="isLoadingMessages" @click="loadMessages()">
               <span class="material-symbols-outlined">refresh</span>
               <span>{{ isLoadingMessages ? "加载中…" : "加载邮件" }}</span>
-            </button>
+            </UiButton>
           </div>
         </div>
 
-        <div v-if="isLoadingMessages" class="empty-state">正在加载邮件…</div>
-        <div v-else-if="messages.length === 0" class="empty-state">暂无邮件，或尚未选择邮箱。</div>
+        <UiEmptyState v-if="isLoadingMessages" title="正在加载邮件..." />
+        <UiEmptyState v-else-if="messages.length === 0" title="暂无邮件" description="请选择邮箱，或调整筛选条件后重新加载。" />
         <div v-else class="message-list">
           <article
             v-for="message in messages"
@@ -98,31 +95,36 @@
                 <span>{{ message.preview || "无预览" }}</span>
               </span>
             </button>
-            <button type="button" class="btn-danger trash-btn" @click="trashMessage(message)">
+            <UiButton type="button" variant="danger" size="sm" class="trash-btn" @click="trashMessage(message)">
               <span class="material-symbols-outlined">delete</span>
               <span>移入垃圾箱</span>
-            </button>
+            </UiButton>
           </article>
         </div>
-      </section>
+      </UiCard>
     </section>
 
-    <section v-if="selectedMailMarkdown" class="card detail-card">
+    <UiCard v-if="selectedMailMarkdown" class="detail-card" variant="subtle">
       <div class="panel-header">
         <h3>邮件详情</h3>
-        <button type="button" class="btn-secondary" @click="selectedMailMarkdown = ''">
+        <UiButton type="button" variant="ghost" size="sm" @click="selectedMailMarkdown = ''">
           <span class="material-symbols-outlined">close</span>
           <span>关闭</span>
-        </button>
+        </UiButton>
       </div>
       <pre>{{ selectedMailMarkdown }}</pre>
-    </section>
+    </UiCard>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { clawMailApi, type ClawMailMailbox, type ClawMailState, type ClawMailSummary } from "@/api";
+import AppCheckbox from "@/components/ui/AppCheckbox.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
+import UiInput from "@/components/ui/UiInput.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
@@ -275,8 +277,6 @@ onMounted(() => {
 .hero-card {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
 }
 
 .hero-card h2 {
@@ -329,13 +329,6 @@ onMounted(() => {
 .mail-layout {
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   align-items: start;
-}
-
-.mailbox-panel,
-.message-panel,
-.detail-card {
-  background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
 }
 
 .panel-header {
@@ -403,7 +396,7 @@ onMounted(() => {
   color: var(--secondary-text);
 }
 
-.inline-field input {
+.limit-input {
   width: 72px;
 }
 
@@ -486,13 +479,6 @@ onMounted(() => {
   border-radius: var(--radius-lg);
   background: var(--tertiary-bg);
   color: var(--primary-text);
-}
-
-.empty-state,
-.empty-note {
-  padding: var(--space-5);
-  border: 1px dashed var(--border-color);
-  border-radius: var(--radius-md);
 }
 
 @media (max-width: 1024px) {
