@@ -183,7 +183,10 @@ onUnmounted(() => {
 /* 折叠态隐藏滚动条，保持图标列干净 */
 #plugin-nav.nav-collapsed {
   scrollbar-width: none;
-  padding: 4px 8px 8px;
+  width: 40px;
+  padding: 4px 0 8px 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 #plugin-nav.nav-collapsed::-webkit-scrollbar {
@@ -244,10 +247,12 @@ onUnmounted(() => {
 #plugin-nav li a.sidebar-collapsed {
   gap: 0;
   padding: 8px;
-  width: 100%;
+  width: 32px;
   min-width: 0;
   max-width: none;
   height: 32px;
+  justify-content: center;
+  box-sizing: border-box;
 }
 
 #plugin-nav li a.sidebar-collapsed .material-symbols-outlined {
@@ -280,6 +285,10 @@ onUnmounted(() => {
 
 #plugin-nav li.nav-category::after {
   content: none;
+}
+
+#plugin-nav.nav-collapsed li.nav-category {
+  display: none;
 }
 
 .nav-category-text {

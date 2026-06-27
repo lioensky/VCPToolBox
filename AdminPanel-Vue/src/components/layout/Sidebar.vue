@@ -244,9 +244,9 @@ defineExpose({
 .sidebar {
   width: var(--app-sidebar-width, 280px);
   flex-shrink: 0;
-  /* 不透明面板：把半透明 secondary-bg 压实在 primary-bg 上，挡住星空 */
-  background-color: color-mix(in srgb, var(--secondary-bg) 100%, var(--primary-bg));
+  background-color: var(--app-shell-bg);
   border-right: 0;
+  padding: 8px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -258,10 +258,20 @@ defineExpose({
 }
 
 .sidebar-search {
-  padding: 4px 16px 0 8px;
+  padding: 0 8px;
 }
 
 .sidebar-search.sidebar-collapsed {
+  padding: 0 8px;
+}
+
+:global(html[data-theme-shell-layout="sidebar"] .sidebar) {
+  padding: 4px 8px 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:global(html[data-theme-shell-layout="sidebar"] .sidebar-search) {
   padding: 4px 8px 0;
 }
 

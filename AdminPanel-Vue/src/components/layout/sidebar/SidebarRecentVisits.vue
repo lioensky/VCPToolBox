@@ -67,8 +67,9 @@ defineEmits<{
 }
 
 .recent-visits.sidebar-collapsed {
-  padding: 4px 8px 0;
-  width: 100%;
+  padding: 4px 0 0 8px;
+  width: 40px;
+  margin-right: 0;
   box-sizing: border-box;
 }
 
@@ -115,9 +116,11 @@ defineEmits<{
 .recent-menu-button.sidebar-collapsed {
   gap: 0;
   padding: 8px;
-  width: 100%;
+  width: 32px;
   min-width: 0;
   max-width: none;
+  justify-content: center;
+  box-sizing: border-box;
 }
 
 .recent-menu-button.fade-label-hidden .recent-label,

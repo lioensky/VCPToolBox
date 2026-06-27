@@ -1,0 +1,196 @@
+/*
+ * Attribute-driven theme customization for VCPToolBox.
+ * These rules intentionally target existing VCPToolBox tokens instead of
+ * introducing shadcn/Tailwind token names.
+ */
+
+html[data-theme-preset="midnight-purple"] {
+  --highlight-text-dark: oklch(0.75 0.14 270);
+  --highlight-text-light: oklch(0.45 0.14 270);
+  --accent-bg-dark: oklch(0.30 0.08 270);
+  --accent-bg-light: oklch(0.92 0.04 270);
+  --button-bg-dark: oklch(0.68 0.16 270);
+  --button-bg-light: oklch(0.68 0.16 270);
+  --button-hover-bg-dark: oklch(0.60 0.18 270);
+  --button-hover-bg-light: oklch(0.60 0.18 270);
+}
+
+html[data-theme-preset="aurora-green"] {
+  --highlight-text-dark: oklch(0.75 0.14 155);
+  --highlight-text-light: oklch(0.45 0.14 155);
+  --accent-bg-dark: oklch(0.30 0.08 155);
+  --accent-bg-light: oklch(0.92 0.04 155);
+  --button-bg-dark: oklch(0.68 0.16 155);
+  --button-bg-light: oklch(0.68 0.16 155);
+  --button-hover-bg-dark: oklch(0.60 0.18 155);
+  --button-hover-bg-light: oklch(0.60 0.18 155);
+}
+
+html[data-theme-preset="sunset-orange"] {
+  --highlight-text-dark: oklch(0.75 0.14 30);
+  --highlight-text-light: oklch(0.45 0.14 30);
+  --accent-bg-dark: oklch(0.30 0.08 30);
+  --accent-bg-light: oklch(0.92 0.04 30);
+  --button-bg-dark: oklch(0.68 0.16 30);
+  --button-bg-light: oklch(0.68 0.16 30);
+  --button-hover-bg-dark: oklch(0.60 0.18 30);
+  --button-hover-bg-light: oklch(0.60 0.18 30);
+}
+
+html[data-theme-preset="cherry-red"],
+html[data-theme-preset="rose-garden"] {
+  --highlight-text-dark: oklch(0.75 0.14 0);
+  --highlight-text-light: oklch(0.45 0.14 0);
+  --accent-bg-dark: oklch(0.30 0.08 0);
+  --accent-bg-light: oklch(0.92 0.04 0);
+  --button-bg-dark: oklch(0.68 0.16 0);
+  --button-bg-light: oklch(0.68 0.16 0);
+  --button-hover-bg-dark: oklch(0.60 0.18 0);
+  --button-hover-bg-light: oklch(0.60 0.18 0);
+}
+
+html[data-theme-preset="ocean-cyan"],
+html[data-theme-preset="lake-view"] {
+  --highlight-text-dark: oklch(0.75 0.14 190);
+  --highlight-text-light: oklch(0.45 0.14 190);
+  --accent-bg-dark: oklch(0.30 0.08 190);
+  --accent-bg-light: oklch(0.92 0.04 190);
+  --button-bg-dark: oklch(0.68 0.16 190);
+  --button-bg-light: oklch(0.68 0.16 190);
+  --button-hover-bg-dark: oklch(0.60 0.18 190);
+  --button-hover-bg-light: oklch(0.60 0.18 190);
+}
+
+html[data-theme-preset="rose-pink"],
+html[data-theme-preset="lavender-dream"] {
+  --highlight-text-dark: oklch(0.75 0.14 310);
+  --highlight-text-light: oklch(0.45 0.14 310);
+  --accent-bg-dark: oklch(0.30 0.08 310);
+  --accent-bg-light: oklch(0.92 0.04 310);
+  --button-bg-dark: oklch(0.68 0.16 310);
+  --button-bg-light: oklch(0.68 0.16 310);
+  --button-hover-bg-dark: oklch(0.60 0.18 310);
+  --button-hover-bg-light: oklch(0.60 0.18 310);
+}
+
+html[data-theme-preset="golden-amber"] {
+  --highlight-text-dark: oklch(0.75 0.14 60);
+  --highlight-text-light: oklch(0.45 0.14 60);
+  --accent-bg-dark: oklch(0.30 0.08 60);
+  --accent-bg-light: oklch(0.92 0.04 60);
+  --button-bg-dark: oklch(0.68 0.16 60);
+  --button-bg-light: oklch(0.68 0.16 60);
+  --button-hover-bg-dark: oklch(0.60 0.18 60);
+  --button-hover-bg-light: oklch(0.60 0.18 60);
+}
+
+html[data-theme-preset="anthropic"] {
+  --primary-bg-dark: oklch(0.13 0.015 72);
+  --secondary-bg-dark: oklch(0.20 0.018 72 / 0.88);
+  --tertiary-bg-dark: oklch(0.28 0.02 72 / 0.72);
+  --highlight-text-dark: oklch(0.78 0.12 38);
+  --button-bg-dark: oklch(0.685 0.142 38);
+  --button-hover-bg-dark: oklch(0.61 0.15 38);
+  --accent-bg-dark: oklch(0.685 0.142 38 / 0.16);
+  --primary-bg-light: oklch(0.984 0.005 95);
+  --secondary-bg-light: oklch(0.965 0.008 95 / 0.92);
+  --tertiary-bg-light: oklch(0.93 0.014 95 / 0.74);
+  --highlight-text-light: oklch(0.52 0.12 38);
+  --button-bg-light: oklch(0.685 0.142 38);
+  --button-hover-bg-light: oklch(0.61 0.15 38);
+  --accent-bg-light: oklch(0.685 0.142 38 / 0.12);
+}
+
+html[data-theme-preset="ocean-breeze"] {
+  --highlight-text-dark: oklch(0.70 0.16 265);
+  --highlight-text-light: oklch(0.48 0.16 265);
+  --accent-bg-dark: oklch(0.30 0.08 265);
+  --accent-bg-light: oklch(0.92 0.04 265);
+  --button-bg-dark: oklch(0.60 0.20 270);
+  --button-bg-light: oklch(0.58 0.18 270);
+  --button-hover-bg-dark: oklch(0.54 0.22 270);
+  --button-hover-bg-light: oklch(0.50 0.20 270);
+}
+
+html[data-theme-radius="none"] {
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+}
+
+html[data-theme-radius="sm"] {
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+html[data-theme-radius="md"] {
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+html[data-theme-radius="lg"] {
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 26px;
+}
+
+html[data-theme-radius="xl"] {
+  --radius-sm: 12px;
+  --radius-md: 18px;
+  --radius-lg: 26px;
+  --radius-xl: 34px;
+}
+
+html[data-theme-scale="sm"] {
+  --space-2: 6px;
+  --space-3: 10px;
+  --space-4: 14px;
+  --space-5: 20px;
+  --font-fluid-base: clamp(0.8125rem, 0.78rem + 0.18vw, 0.9375rem);
+}
+
+html[data-theme-scale="lg"] {
+  --space-2: 10px;
+  --space-3: 14px;
+  --space-4: 18px;
+  --space-5: 28px;
+  --font-fluid-base: clamp(0.9375rem, 0.86rem + 0.25vw, 1.0625rem);
+}
+
+html[data-theme-scale="xl"] {
+  --space-2: 12px;
+  --space-3: 16px;
+  --space-4: 22px;
+  --space-5: 32px;
+  --font-fluid-base: clamp(1rem, 0.9rem + 0.35vw, 1.125rem);
+}
+
+html[data-theme-font="sans"] {
+  --font-body: "Noto Sans SC Variable", "Noto Sans SC", system-ui, sans-serif;
+}
+
+html[data-theme-font="serif"] {
+  --font-body: "Noto Serif SC", "Songti SC", "SimSun", serif;
+}
+
+html[data-theme-content-layout="centered"] .content {
+  max-width: 1280px;
+  margin-inline: auto;
+}
+
+html[data-theme="light"]:not([data-theme-shell-layout]),
+html[data-theme="light"][data-theme-shell-layout="inset"] {
+  --app-shell-bg: oklch(0.975 0 0 / 0.14);
+  --app-content-bg: oklch(1 0 0 / 0.50);
+}
+
+html[data-theme-shell-layout="sidebar"] {
+  --app-shell-bg: color-mix(in srgb, var(--secondary-bg) 18%, transparent);
+  --app-shell-border: transparent;
+}

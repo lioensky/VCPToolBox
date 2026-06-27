@@ -86,10 +86,8 @@
               <span>{{ animationsEnabled ? "关闭动画" : "开启动画" }}</span>
             </button>
             <button @click="toggleTheme" class="dropdown-item">
-              <span class="material-symbols-outlined">{{
-                theme === "dark" ? "light_mode" : "dark_mode"
-              }}</span>
-              <span>{{ theme === "dark" ? "切换亮色" : "切换暗色" }}</span>
+              <span class="material-symbols-outlined">{{ themeToggleIcon }}</span>
+              <span>{{ themeToggleLabel }}</span>
             </button>
             <div class="dropdown-divider"></div>
             <button @click="restartServer" class="dropdown-item danger">
@@ -167,6 +165,14 @@ const appStore = useAppStore();
 const authStore = useAuthStore();
 
 const theme = computed(() => appStore.theme);
+const themeToggleIcon = computed(() => {
+  if (theme.value === "dark") return "light_mode";
+  return "dark_mode";
+});
+const themeToggleLabel = computed(() => {
+  if (theme.value === "dark") return "切换亮色";
+  return "切换暗色";
+});
 const animationsEnabled = computed(() => appStore.animationsEnabled);
 const logger = createLogger("TopBar");
 
@@ -187,7 +193,8 @@ function toggleUserMenu() {
 }
 
 function toggleTheme() {
-  appStore.setTheme(theme.value === "dark" ? "light" : "dark");
+  const nextTheme = theme.value === "dark" ? "light" : "dark";
+  appStore.setTheme(nextTheme);
   emit("closeAllMenus");
 }
 
@@ -239,7 +246,7 @@ function goToDashboard() {
   left: 0;
   right: 0;
   height: var(--app-top-bar-height, 48px);
-  background-color: color-mix(in srgb, var(--secondary-bg) 100%, var(--primary-bg));
+  background-color: var(--app-shell-bg);
   color: var(--primary-text);
   border-bottom: 0;
   z-index: 1000;
@@ -249,6 +256,15 @@ function goToDashboard() {
   transition:
     background-color var(--transition-fast),
     border-color var(--transition-fast);
+}
+
+:global(html:not([data-theme-shell-layout]) .top-bar),
+:global(html[data-theme-shell-layout="inset"] .top-bar) {
+  background-color: var(--app-shell-bg);
+}
+
+:global(html[data-theme-shell-layout="sidebar"] .top-bar) {
+  background-color: var(--app-shell-bg);
 }
 
 /* 三列网格：左列对齐侧栏宽度，折叠时切图标宽度 */
@@ -278,6 +294,8 @@ function goToDashboard() {
   flex: 0 0 auto;
   min-width: 0;
   height: 32px;
+  box-sizing: border-box;
+  padding-left: 8px;
 }
 
 .mobile-menu-toggle {
