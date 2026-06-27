@@ -11,14 +11,14 @@
         </div>
 
         <div class="bridge-actions">
-          <button type="button" class="btn-secondary" @click="loadConfig" :disabled="isLoading || isSaving">
+          <UiButton variant="outline" @click="loadConfig" :disabled="isLoading || isSaving">
             <span class="material-symbols-outlined" :class="{ spinning: isLoading }">sync</span>
             刷新
-          </button>
-          <button type="button" class="btn-primary" @click="saveConfig" :disabled="isLoading || isSaving">
+          </UiButton>
+          <UiButton variant="primary" @click="saveConfig" :disabled="isLoading || isSaving">
             <span v-if="isSaving" class="material-symbols-outlined spinning">sync</span>
             保存配置
-          </button>
+          </UiButton>
         </div>
       </header>
 
@@ -32,79 +32,63 @@
       </section>
 
       <form class="config-grid" @submit.prevent="saveConfig">
-        <label class="config-field">
-          <span>监听端口</span>
-          <input v-model.number="draft.port" type="number" min="1" max="65535" step="1" />
-          <small>{{ descriptions.port }}</small>
-        </label>
+        <UiField label="监听端口" :description="descriptions.port" class="config-field">
+          <UiInput v-model.number="draft.port" type="number" min="1" max="65535" step="1" />
+        </UiField>
 
-        <label class="config-field">
-          <span>上游 API 地址</span>
-          <input v-model.trim="draft.upstreamUrl" type="text" placeholder="http://127.0.0.1:6005" />
-          <small>{{ descriptions.upstreamUrl }}</small>
-        </label>
+        <UiField label="上游 API 地址" :description="descriptions.upstreamUrl" class="config-field">
+          <UiInput v-model.trim="draft.upstreamUrl" type="text" placeholder="http://127.0.0.1:6005" />
+        </UiField>
 
-        <label class="config-field">
-          <span>上游 API Key</span>
-          <input v-model="draft.upstreamKey" :type="showKey ? 'text' : 'password'" placeholder="留空则使用主服务 Key 或透传下游 Key" />
-          <small>{{ descriptions.upstreamKey }}</small>
-        </label>
+        <UiField label="上游 API Key" :description="descriptions.upstreamKey" class="config-field">
+          <UiInput v-model="draft.upstreamKey" :type="showKey ? 'text' : 'password'" placeholder="留空则使用主服务 Key 或透传下游 Key" />
+        </UiField>
 
-        <label class="config-field">
-          <span>上游协议类型</span>
-          <select v-model="draft.upstreamType">
+        <UiField label="上游协议类型" :description="descriptions.upstreamType" class="config-field">
+          <UiSelect v-model="draft.upstreamType">
             <option value="chat">chat：OpenAI Chat Completions</option>
             <option value="anthropic">anthropic：Claude Messages</option>
             <option value="gemini">gemini：Google Gemini</option>
-          </select>
-          <small>{{ descriptions.upstreamType }}</small>
-        </label>
+          </UiSelect>
+        </UiField>
 
-        <label class="config-field">
-          <span>默认模型</span>
-          <input v-model.trim="draft.defaultModel" type="text" />
-          <small>{{ descriptions.defaultModel }}</small>
-        </label>
+        <UiField label="默认模型" :description="descriptions.defaultModel" class="config-field">
+          <UiInput v-model.trim="draft.defaultModel" type="text" />
+        </UiField>
 
-        <label class="config-field">
-          <span>劫持模式</span>
-          <select v-model="draft.hijackMode">
+        <UiField label="劫持模式" :description="descriptions.hijackMode" class="config-field">
+          <UiSelect v-model="draft.hijackMode">
             <option value="off">off：关闭劫持</option>
             <option value="replace">replace：替换所有 system</option>
             <option value="prepend">prepend：前置插入 system</option>
             <option value="append">append：追加到最后一条 system 后</option>
             <option value="merge">merge：合并为一条置顶 system</option>
-          </select>
-          <small>{{ descriptions.hijackMode }}</small>
-        </label>
+          </UiSelect>
+        </UiField>
 
-        <label class="config-toggle-row">
-          <input v-model="draft.debugMode" type="checkbox" />
+        <div class="config-toggle-row">
           <span>
             <strong>开启调试日志</strong>
             <small>{{ descriptions.debugMode }}</small>
           </span>
-        </label>
+          <AppSwitch v-model="draft.debugMode" />
+        </div>
 
-        <label class="config-toggle-row">
-          <input v-model="showKey" type="checkbox" />
+        <div class="config-toggle-row">
           <span>
             <strong>显示 API Key</strong>
             <small>仅影响当前页面输入框显示方式，不会修改配置语义。</small>
           </span>
-        </label>
+          <AppSwitch v-model="showKey" />
+        </div>
 
-        <label class="config-field span-2">
-          <span>注入 System Prompt（全局兜底）</span>
-          <textarea v-model="draft.systemPrompt" rows="9" placeholder="可直接填写提示词，也可填写插件目录下的 .txt 文件名"></textarea>
-          <small>{{ descriptions.systemPrompt }}</small>
-        </label>
+        <UiField label="注入 System Prompt（全局兜底）" :description="descriptions.systemPrompt" class="config-field span-2">
+          <UiTextarea v-model="draft.systemPrompt" rows="9" placeholder="可直接填写提示词，也可填写插件目录下的 .txt 文件名" class="code-textarea" />
+        </UiField>
 
-        <label class="config-field span-2">
-          <span>模型映射（每行 alias=target 或 alias:target）</span>
-          <textarea v-model="modelMapText" rows="7" placeholder="gpt-4.1-mini=gemini-2.5-flash&#10;claude-sonnet=gpt-4.1"></textarea>
-          <small>{{ descriptions.modelMap }}</small>
-        </label>
+        <UiField label="模型映射（每行 alias=target 或 alias:target）" :description="descriptions.modelMap" class="config-field span-2">
+          <UiTextarea v-model="modelMapText" rows="7" placeholder="gpt-4.1-mini=gemini-2.5-flash&#10;claude-sonnet=gpt-4.1" class="code-textarea" />
+        </UiField>
       </form>
 
       <!-- ═══════════════════════════════════════════════════════════════
@@ -121,14 +105,14 @@
             </div>
           </div>
           <div class="profiles-actions">
-            <button type="button" class="btn-secondary" @click="loadProfiles" :disabled="profilesLoading">
+            <UiButton variant="outline" @click="loadProfiles" :disabled="profilesLoading">
               <span class="material-symbols-outlined" :class="{ spinning: profilesLoading }">sync</span>
               刷新
-            </button>
-            <button type="button" class="btn-primary" @click="showCreateDialog = true">
+            </UiButton>
+            <UiButton variant="primary" @click="showCreateDialog = true">
               <span class="material-symbols-outlined">add</span>
               新建
-            </button>
+            </UiButton>
           </div>
         </header>
 
@@ -149,51 +133,45 @@
           </ul>
 
           <div class="profile-editor" v-if="selectedProfile">
-            <label class="config-field">
-              <span>显示名称</span>
-              <input v-model="profileDraft.displayName" type="text" />
-            </label>
-            <label class="config-field">
-              <span>System Prompt（.txt 文件名或直接文本）</span>
-              <input v-model="profileDraft.systemPrompt" type="text" placeholder="Research_Rule.txt" />
-            </label>
-            <label class="config-field">
-              <span>劫持模式</span>
-              <select v-model="profileDraft.hijackMode">
+            <UiField label="显示名称" class="config-field">
+              <UiInput v-model="profileDraft.displayName" type="text" />
+            </UiField>
+            <UiField label="System Prompt（.txt 文件名或直接文本）" class="config-field">
+              <UiInput v-model="profileDraft.systemPrompt" type="text" placeholder="Research_Rule.txt" />
+            </UiField>
+            <UiField label="劫持模式" class="config-field">
+              <UiSelect v-model="profileDraft.hijackMode">
                 <option value="off">off</option>
                 <option value="replace">replace</option>
                 <option value="prepend">prepend</option>
                 <option value="append">append</option>
                 <option value="merge">merge</option>
-              </select>
-            </label>
-            <label class="config-field">
-              <span>模型覆盖（留空则使用全局 defaultModel）</span>
-              <input v-model="profileDraft.modelOverride" type="text" placeholder="" />
-            </label>
-            <label class="config-field span-2">
-              <span>描述</span>
-              <textarea v-model="profileDraft.description" rows="3"></textarea>
-            </label>
+              </UiSelect>
+            </UiField>
+            <UiField label="模型覆盖（留空则使用全局 defaultModel）" class="config-field">
+              <UiInput v-model="profileDraft.modelOverride" type="text" placeholder="" />
+            </UiField>
+            <UiField label="描述" class="config-field span-2">
+              <UiTextarea v-model="profileDraft.description" rows="3" />
+            </UiField>
 
             <div class="profile-editor-actions">
-              <button type="button" class="btn-primary" @click="saveCurrentProfile" :disabled="profileSaving">
+              <UiButton variant="primary" @click="saveCurrentProfile" :disabled="profileSaving">
                 <span v-if="profileSaving" class="material-symbols-outlined spinning">sync</span>
                 保存 Profile
-              </button>
-              <button
-                type="button"
-                class="btn-secondary"
+              </UiButton>
+              <UiButton
+                variant="outline"
                 @click="activateProfile"
                 :disabled="selectedProfile.name === activeDefault"
               >
                 <span class="material-symbols-outlined">star</span>
                 {{ selectedProfile.name === activeDefault ? '已是默认' : '设为默认' }}
-              </button>
-              <button type="button" class="btn-danger" @click="deleteCurrentProfile" :disabled="selectedProfile.name === activeDefault">
+              </UiButton>
+              <UiButton variant="danger" @click="deleteCurrentProfile" :disabled="selectedProfile.name === activeDefault">
                 <span class="material-symbols-outlined">delete</span>
                 删除
-              </button>
+              </UiButton>
             </div>
 
             <div class="profile-usage-hint">
@@ -213,17 +191,15 @@
       <div class="modal-overlay" v-if="showCreateDialog" @click.self="showCreateDialog = false">
         <div class="modal-card">
           <h3>新建 Profile</h3>
-          <label class="config-field">
-            <span>Profile 名称（小写字母、数字、连字符）</span>
-            <input v-model="newProfileName" type="text" placeholder="research" pattern="[a-z0-9][a-z0-9_-]*" />
-          </label>
-          <label class="config-field">
-            <span>显示名称</span>
-            <input v-model="newProfileDisplayName" type="text" placeholder="科研分身" />
-          </label>
+          <UiField label="Profile 名称（小写字母、数字、连字符）" class="config-field">
+            <UiInput v-model="newProfileName" type="text" placeholder="research" pattern="[a-z0-9][a-z0-9_-]*" />
+          </UiField>
+          <UiField label="显示名称" class="config-field">
+            <UiInput v-model="newProfileDisplayName" type="text" placeholder="科研分身" />
+          </UiField>
           <div class="modal-actions">
-            <button type="button" class="btn-secondary" @click="showCreateDialog = false">取消</button>
-            <button type="button" class="btn-primary" @click="createProfile" :disabled="!newProfileName.trim()">创建</button>
+            <UiButton variant="outline" @click="showCreateDialog = false">取消</UiButton>
+            <UiButton variant="primary" @click="createProfile" :disabled="!newProfileName.trim()">创建</UiButton>
           </div>
         </div>
       </div>
@@ -231,10 +207,10 @@
       <section class="preview-card">
         <header>
           <strong>JSON 预览</strong>
-          <button type="button" class="btn-secondary" @click="copyJsonPreview">
+          <UiButton variant="outline" size="sm" @click="copyJsonPreview">
             <span class="material-symbols-outlined">content_copy</span>
             复制
-          </button>
+          </UiButton>
         </header>
         <pre>{{ jsonPreview }}</pre>
       </section>
@@ -244,6 +220,12 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import AppSwitch from '@/components/ui/AppSwitch.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiField from '@/components/ui/UiField.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiSelect from '@/components/ui/UiSelect.vue'
+import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { systemApi } from '@/api'
 import type { BridgeHijackConfig, BridgeProfile } from '@/types/api.system'
 import { copyToClipboard, showMessage } from '@/utils'
@@ -497,7 +479,9 @@ onMounted(() => {
 .profiles-section {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
+  background:
+    linear-gradient(135deg, var(--surface-overlay-soft), transparent),
+    var(--secondary-bg);
 }
 
 .bridge-header {
@@ -526,7 +510,6 @@ onMounted(() => {
 
 .bridge-title p,
 .notice-card p,
-.config-field small,
 .config-toggle-row small {
   margin: 4px 0 0;
   color: var(--secondary-text);
@@ -563,61 +546,35 @@ onMounted(() => {
   gap: var(--space-3);
 }
 
-.config-field,
 .config-toggle-row {
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
-}
-
-.config-field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px 16px;
-}
-
-.config-field > span,
-.config-toggle-row strong {
-  color: var(--primary-text);
-  font-weight: 700;
-}
-
-.config-field input,
-.config-field select,
-.config-field textarea {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 10px 12px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  font: inherit;
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
-.config-field textarea {
-  resize: vertical;
+.code-textarea {
   min-height: 120px;
   font-family: Consolas, Monaco, "Courier New", monospace;
-  line-height: 1.5;
 }
 
 .config-toggle-row {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: 14px 16px;
-}
-
-.config-toggle-row input {
-  margin-top: 4px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 64px;
+  padding: var(--space-3);
 }
 
 .config-toggle-row span {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.config-toggle-row strong {
+  color: var(--primary-text);
+  font-weight: 700;
 }
 
 .span-2 {
@@ -741,8 +698,7 @@ onMounted(() => {
 }
 
 .profile-editor .config-field {
-  border: none;
-  padding: 8px 0;
+  min-width: 0;
 }
 
 .profile-editor-actions {
@@ -815,32 +771,6 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
-}
-
-/* ─── Buttons ───────────────────────────────────────────────────────── */
-
-.btn-danger {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border: 1px solid #f44336;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: #f44336;
-  font: inherit;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.btn-danger:hover {
-  background: #f44336;
-  color: #fff;
-}
-
-.btn-danger:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 
 /* ─── Preview Card ──────────────────────────────────────────────────── */
