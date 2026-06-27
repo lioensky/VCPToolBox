@@ -6,15 +6,14 @@
   >
     <template v-if="collapsed">
       <div class="console-rail">
-        <button
-          type="button"
+        <UiIconButton
           class="console-rail-toggle"
-          aria-label="展开操作台"
+          label="展开操作台"
           title="展开操作台"
           @click="toggleSidebar"
         >
           <span class="material-symbols-outlined">left_panel_open</span>
-        </button>
+        </UiIconButton>
         <div class="console-rail-divider"></div>
         <button
           v-for="folder in filteredFolders.slice(0, 8)"
@@ -36,15 +35,14 @@
           <h3>{{ folderLabel }}列表</h3>
           <div class="sidebar-header-meta">
             <span class="folder-count">{{ filteredFolders.length }}/{{ folders.length }} 个</span>
-            <button
-              type="button"
+            <UiIconButton
               class="console-rail-toggle"
-              aria-label="折叠操作台"
+              label="折叠操作台"
               title="折叠操作台"
               @click="toggleSidebar"
             >
               <span class="material-symbols-outlined">left_panel_close</span>
-            </button>
+            </UiIconButton>
           </div>
         </div>
       </div>
@@ -52,22 +50,23 @@
       <div class="folder-console__section">
         <label class="folder-search-label" for="folder-search-input">搜索筛选</label>
         <div class="folder-search-box">
-          <input
+          <UiInput
             id="folder-search-input"
             v-model="folderQuery"
             type="search"
             class="folder-search-input"
+            size="md"
             :placeholder="`按${folderLabel}名称筛选...`"
-          >
-          <button
+          />
+          <UiButton
             v-if="folderQuery"
-            type="button"
+            variant="ghost"
+            size="md"
             class="folder-search-clear"
-            aria-label="清空筛选"
             @click="clearFolderQuery"
           >
             清空
-          </button>
+          </UiButton>
         </div>
       </div>
 
@@ -99,6 +98,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useConsoleCollapse } from '@/composables/useConsoleCollapse'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiIconButton from '@/components/ui/UiIconButton.vue'
+import UiInput from '@/components/ui/UiInput.vue'
 
 const props = defineProps<{
   folders: string[];
@@ -222,24 +224,6 @@ defineExpose({ collapsed })
 
 .folder-search-clear {
   flex-shrink: 0;
-  padding: 0 var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--surface-overlay-soft);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
-}
-
-.folder-search-clear:hover {
-  border-color: var(--highlight-text);
-  color: var(--highlight-text);
-  background: var(--info-bg);
-}
-
-.folder-search-clear:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
 }
 
 .notes-folder-list {
@@ -274,13 +258,12 @@ defineExpose({ collapsed })
   cursor: pointer;
   box-sizing: border-box;
   min-height: 52px;
-  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast);
 }
 
 .folder-row:hover {
-  border-color: var(--highlight-text);
-  background: var(--info-bg);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+  background: var(--accent-bg);
 }
 
 .folder-row.is-active {

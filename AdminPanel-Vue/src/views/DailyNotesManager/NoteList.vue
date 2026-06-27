@@ -1,25 +1,26 @@
 <template>
   <div v-if="selectedFolder" class="notes-content-area">
     <div class="notes-toolbar">
-      <input
+      <UiInput
         type="search"
-        :value="searchQuery"
+        :model-value="searchQuery"
+        size="md"
         :placeholder="`搜索${itemLabel}…`"
         autocomplete="off"
         :aria-label="`搜索${itemLabel}`"
         @input="onSearchInput"
       />
-      <button
+      <UiButton
         v-if="showMoveActions"
-        class="btn-secondary"
+        variant="outline"
         :disabled="selectedNotes.length === 0"
         @click="$emit('moveSelectedNotes')"
       >
         移动选中项到…
-      </button>
-      <select
+      </UiButton>
+      <UiSelect
         v-if="showMoveActions"
-        :value="moveTargetFolder"
+        :model-value="moveTargetFolder"
         :disabled="selectedNotes.length === 0"
         @change="onMoveTargetChange"
       >
@@ -32,14 +33,14 @@
         >
           {{ folder }}
         </option>
-      </select>
-      <button
-        class="btn-danger"
+      </UiSelect>
+      <UiButton
+        variant="danger"
         :disabled="selectedNotes.length === 0"
         @click="$emit('deleteSelectedNotes')"
       >
         批量删除选中项
-      </button>
+      </UiButton>
       <span v-if="notesStatus" :class="['status-message', notesStatusType]">{{
         notesStatus
       }}</span>
@@ -115,25 +116,28 @@
                 <div class="note-card-footer">
                   <span class="note-meta">{{ formatDate(note.modified) }}</span>
                   <div class="note-actions">
-                    <button
-                      class="btn-secondary btn-sm"
+                    <UiButton
+                      variant="outline"
+                      size="sm"
                       @click="$emit('editNote', note)"
                     >
                       编辑
-                    </button>
-                    <button
+                    </UiButton>
+                    <UiButton
                       v-if="showDiscoveryAction"
-                      class="btn-secondary btn-sm"
+                      variant="outline"
+                      size="sm"
                       @click="$emit('discoveryNote', note)"
                     >
                       联想
-                    </button>
-                    <button
-                      class="btn-danger btn-sm"
+                    </UiButton>
+                    <UiButton
+                      variant="danger"
+                      size="sm"
                       @click="$emit('deleteNote', note)"
                     >
                       删除
-                    </button>
+                    </UiButton>
                   </div>
                 </div>
               </div>
@@ -167,25 +171,28 @@
         <div class="note-card-footer">
           <span class="note-meta">{{ formatDate(note.modified) }}</span>
           <div class="note-actions">
-            <button
-              class="btn-secondary btn-sm"
+            <UiButton
+              variant="outline"
+              size="sm"
               @click="$emit('editNote', note)"
             >
               编辑
-            </button>
-            <button
+            </UiButton>
+            <UiButton
               v-if="showDiscoveryAction"
-              class="btn-secondary btn-sm"
+              variant="outline"
+              size="sm"
               @click="$emit('discoveryNote', note)"
             >
               联想
-            </button>
-            <button
-              class="btn-danger btn-sm"
+            </UiButton>
+            <UiButton
+              variant="danger"
+              size="sm"
               @click="$emit('deleteNote', note)"
             >
               删除
-            </button>
+            </UiButton>
           </div>
         </div>
       </div>
@@ -199,6 +206,9 @@ import { useVirtualScroll } from "@/composables/useVirtualScroll";
 import { useDebounceFn } from "@/composables/useDebounceFn";
 import { formatDate } from "@/utils/format";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
 
 interface Note {
   file: string;
@@ -454,22 +464,14 @@ function toggleSelected(file: string, checked: boolean) {
   flex-wrap: wrap;
 }
 
-.notes-toolbar input[type="search"] {
+.notes-toolbar :deep(.ui-input) {
   flex: 1;
   min-width: 200px;
-  padding: 8px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
 }
 
-.notes-toolbar select {
-  padding: 8px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
+.notes-toolbar :deep(.ui-select) {
+  width: auto;
+  min-width: 180px;
 }
 
 .notes-list-view {
@@ -522,13 +524,12 @@ function toggleSelected(file: string, checked: boolean) {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   background: var(--surface-overlay-soft);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast);
 }
 
 .note-card:hover {
-  border-color: var(--highlight-text);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+  background: var(--secondary-bg);
 }
 
 .note-card-header {
@@ -618,10 +619,9 @@ function toggleSelected(file: string, checked: boolean) {
     align-items: stretch;
   }
 
-  .notes-toolbar input[type="search"],
-  .notes-toolbar select,
-  .notes-toolbar .btn-secondary,
-  .notes-toolbar .btn-danger {
+  .notes-toolbar :deep(.ui-input),
+  .notes-toolbar :deep(.ui-select),
+  .notes-toolbar :deep(.ui-button) {
     width: 100%;
     min-width: 0;
   }

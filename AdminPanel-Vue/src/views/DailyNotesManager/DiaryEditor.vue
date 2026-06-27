@@ -2,30 +2,34 @@
   <div v-if="editingNote" class="note-editor-area card">
     <div class="editor-header">
       <div class="editor-title-section">
-        <button
-          class="btn-secondary btn-back"
+        <UiIconButton
+          class="editor-back-button"
+          label="返回日记列表"
+          title="返回日记列表"
           aria-label="返回日记列表"
           @click="$emit('cancelEdit')"
         >
           <span class="material-symbols-outlined">arrow_back</span>
-        </button>
+        </UiIconButton>
         <h3>编辑日记：{{ editingNote.file }}</h3>
       </div>
       <div class="editor-actions">
-        <button
-          class="btn-primary"
+        <UiButton
+          variant="primary"
+          size="md"
           :disabled="savingNote"
           @click="$emit('saveNote')"
         >
           {{ savingNote ? "保存中…" : "保存日记" }}
-        </button>
-        <button
-          class="btn-secondary"
+        </UiButton>
+        <UiButton
+          variant="outline"
+          size="md"
           :disabled="savingNote"
           @click="$emit('cancelEdit')"
         >
           取消编辑
-        </button>
+        </UiButton>
         <span
           v-if="editorStatus"
           :class="['status-message', editorStatusType]"
@@ -41,6 +45,9 @@
 </template>
 
 <script setup lang="ts">
+import UiButton from "@/components/ui/UiButton.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+
 interface Note {
   file: string;
 }
@@ -102,23 +109,15 @@ defineEmits<{
   font-size: var(--font-size-title);
 }
 
-.btn-back {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  min-height: 36px;
-  padding: 0;
+.editor-back-button {
   transition: transform 0.2s ease;
 }
 
-.btn-back:hover {
+.editor-back-button:hover {
   transform: translateX(-4px);
 }
 
-.btn-back .material-symbols-outlined {
+.editor-back-button .material-symbols-outlined {
   font-size: var(--font-size-title) !important;
 }
 
@@ -224,8 +223,7 @@ defineEmits<{
     gap: 8px;
   }
 
-  .editor-actions .btn-primary,
-  .editor-actions .btn-secondary {
+  .editor-actions :deep(.ui-button) {
     flex: 1 1 calc(50% - 4px);
     min-height: 40px;
   }

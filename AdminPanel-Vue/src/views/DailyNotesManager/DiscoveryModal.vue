@@ -8,9 +8,9 @@
         <div :ref="panelRef" v-bind="panelAttrs" class="modal-content discovery-modal">
     <div class="modal-header">
       <h3>联想追溯：{{ sourceFileName }}</h3>
-      <button class="modal-close" @click="closeModal">
+      <UiIconButton class="modal-close" label="关闭联想追溯" title="关闭" @click="closeModal">
         <span class="material-symbols-outlined">close</span>
-      </button>
+      </UiIconButton>
     </div>
 
     <div class="modal-body">
@@ -99,14 +99,16 @@
     </div>
 
     <div class="modal-footer">
-      <button
-        class="btn-primary"
+      <UiButton
+        variant="primary"
         @click="performDiscovery"
         :disabled="loading"
       >
-        <span class="material-symbols-outlined">psychology</span>
+        <template #leading>
+          <span class="material-symbols-outlined">psychology</span>
+        </template>
         开始联想
-      </button>
+      </UiButton>
     </div>
         </div>
       </div>
@@ -119,6 +121,8 @@ import { ref, computed, watch } from "vue";
 import { diaryApi } from "@/api";
 import { showMessage } from "@/utils";
 import BaseModal from "@/components/ui/BaseModal.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
 
 const props = defineProps<{
   modelValue: boolean;
@@ -288,24 +292,6 @@ watch(
   color: var(--primary-text);
 }
 
-.modal-close {
-  background: transparent;
-  border: none;
-  color: var(--secondary-text);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background-color 0.2s ease;
-}
-
-.modal-close:hover {
-  background: var(--accent-bg);
-  color: var(--primary-text);
-}
-
 .modal-body {
   flex: 1;
   overflow-y: auto;
@@ -434,15 +420,13 @@ watch(
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition:
-    transform 0.2s ease,
-    border-color 0.2s ease,
-    background-color 0.2s ease;
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
 }
 
 .discovery-result-card:hover {
-  border-color: var(--highlight-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
   background: var(--accent-bg);
-  transform: translateX(4px);
 }
 
 .result-header {
@@ -529,12 +513,6 @@ watch(
   justify-content: flex-end;
 }
 
-.modal-footer button {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
 .modal-footer .material-symbols-outlined {
   font-size: var(--font-size-emphasis) !important;
 }
@@ -601,7 +579,7 @@ watch(
     padding: 12px;
   }
 
-  .modal-footer .btn-primary {
+  .modal-footer :deep(.ui-button) {
     width: 100%;
     justify-content: center;
   }
