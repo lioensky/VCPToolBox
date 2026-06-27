@@ -54,7 +54,7 @@
       <div class="controls-main-row">
         <label class="search-field" v-if="activeTab === 'market'">
           <span class="material-symbols-outlined">search</span>
-          <input
+          <UiInput
             ref="marketSearchInputRef"
             v-model="keyword"
             type="search"
@@ -67,15 +67,16 @@
           <span>{{ tabIntro }}</span>
         </div>
 
-        <button
-          type="button"
-          class="btn-secondary"
+        <UiButton
+          variant="outline"
           :disabled="isLoading"
           @click="refreshAll"
         >
-          <span class="material-symbols-outlined">refresh</span>
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
           <span>{{ isLoading ? '刷新中…' : '刷新列表' }}</span>
-        </button>
+        </UiButton>
       </div>
 
       <div v-if="activeTab === 'market'" class="filter-row" aria-label="按源筛选">
@@ -163,10 +164,12 @@
         <span class="material-symbols-outlined">dns</span>
         <h3>尚未配置任何源</h3>
         <p>请先切换到「源管理」添加一个 Registry 或 GitHub 仓库，然后回到市场浏览。</p>
-        <button type="button" class="btn-primary" @click="activeTab = 'sources'">
-          <span class="material-symbols-outlined">add_link</span>
+        <UiButton variant="primary" @click="activeTab = 'sources'">
+          <template #leading>
+            <span class="material-symbols-outlined">add_link</span>
+          </template>
           <span>去添加源</span>
-        </button>
+        </UiButton>
       </section>
 
       <section
@@ -235,27 +238,24 @@
                       <div class="plugin-heading">
                         <div class="plugin-title-row">
                           <h3>{{ plugin.displayName || plugin.name }}</h3>
-                          <span
-                            class="status-badge"
-                            :class="pluginStatusClass(plugin)"
-                          >
+                          <UiBadge :variant="pluginStatusVariant(plugin)">
                             {{ pluginStatusText(plugin) }}
-                          </span>
+                          </UiBadge>
                         </div>
                         <p class="plugin-original-name">{{ plugin.name }}</p>
                       </div>
                     </div>
 
                     <div class="plugin-card-side">
-                      <span v-if="plugin.version" class="plugin-version-badge">
+                      <UiBadge v-if="plugin.version" variant="outline" class="plugin-version-badge">
                         市场 {{ formatVersion(plugin.version) }}
-                      </span>
-                      <span v-if="plugin.installedVersion" class="plugin-version-badge plugin-version-local">
+                      </UiBadge>
+                      <UiBadge v-if="plugin.installedVersion" variant="success" class="plugin-version-badge plugin-version-local">
                         本地 {{ formatVersion(plugin.installedVersion) }}
-                      </span>
-                      <span v-if="isPluginUpdateAvailable(plugin)" class="plugin-version-badge plugin-version-update">
+                      </UiBadge>
+                      <UiBadge v-if="isPluginUpdateAvailable(plugin)" variant="warning" class="plugin-version-badge plugin-version-update">
                         有新版本
-                      </span>
+                      </UiBadge>
                     </div>
                   </div>
 
@@ -265,57 +265,65 @@
                     </p>
 
                     <div class="plugin-status-pills">
-                      <span v-if="plugin.sourceName" class="mini-pill mini-pill--neutral">
-                        <span class="material-symbols-outlined mini-pill-icon">lan</span>
+                      <UiBadge v-if="plugin.sourceName" variant="secondary" class="mini-pill mini-pill--neutral">
+                        <template #leading>
+                          <span class="material-symbols-outlined mini-pill-icon">lan</span>
+                        </template>
                         {{ plugin.sourceName }}
-                      </span>
-                      <span v-if="plugin.author" class="mini-pill mini-pill--changed">
-                        <span class="material-symbols-outlined mini-pill-icon">person</span>
+                      </UiBadge>
+                      <UiBadge v-if="plugin.author" variant="outline" class="mini-pill mini-pill--changed">
+                        <template #leading>
+                          <span class="material-symbols-outlined mini-pill-icon">person</span>
+                        </template>
                         {{ plugin.author }}
-                      </span>
+                      </UiBadge>
                     </div>
 
                     <div class="plugin-actions">
                       <template v-if="plugin.installed">
-                        <button
+                        <UiButton
                           v-if="isPluginUpdateAvailable(plugin)"
-                          type="button"
-                          class="btn-primary"
+                          variant="primary"
                           :disabled="isOperationBusy"
                           @click="updateFromCard(plugin)"
                         >
-                          <span class="material-symbols-outlined">system_update</span>
+                          <template #leading>
+                            <span class="material-symbols-outlined">system_update</span>
+                          </template>
                           <span>{{ isPluginInstalling(plugin) ? '更新中…' : `更新到 ${formatVersion(plugin.version)}` }}</span>
-                        </button>
-                        <button
-                          type="button"
-                          class="btn-secondary"
+                        </UiButton>
+                        <UiButton
+                          variant="outline"
                           :disabled="isOperationBusy"
                           @click="reinstallFromCard(plugin)"
                         >
-                          <span class="material-symbols-outlined">replay</span>
+                          <template #leading>
+                            <span class="material-symbols-outlined">replay</span>
+                          </template>
                           <span>{{ isPluginInstalling(plugin) ? '重装中…' : '覆盖重装' }}</span>
-                        </button>
-                        <button
-                          type="button"
-                          class="btn-danger"
+                        </UiButton>
+                        <UiButton
+                          variant="danger"
                           :disabled="isOperationBusy"
                           @click="uninstallFromCard(plugin)"
                         >
-                          <span class="material-symbols-outlined">{{ isPluginUninstalling(plugin) ? 'hourglass_top' : 'delete' }}</span>
+                          <template #leading>
+                            <span class="material-symbols-outlined">{{ isPluginUninstalling(plugin) ? 'hourglass_top' : 'delete' }}</span>
+                          </template>
                           <span>{{ isPluginUninstalling(plugin) ? '卸载中…' : '卸载' }}</span>
-                        </button>
+                        </UiButton>
                       </template>
-                      <button
+                      <UiButton
                         v-else
-                        type="button"
-                        class="btn-primary"
+                        variant="primary"
                         :disabled="isOperationBusy"
                         @click="installFromCard(plugin)"
                       >
-                        <span class="material-symbols-outlined">download</span>
+                        <template #leading>
+                          <span class="material-symbols-outlined">download</span>
+                        </template>
                         <span>{{ isPluginInstalling(plugin) ? '安装中…' : '安装插件' }}</span>
-                      </button>
+                      </UiButton>
                     </div>
                   </div>
                 </article>
@@ -343,31 +351,30 @@
         </div>
 
         <form class="source-form" @submit.prevent="submitSource">
-          <div class="form-group">
-            <label>名称</label>
-            <input v-model="newSource.name" type="text" placeholder="例：MyRegistry" required />
-          </div>
-          <div class="form-group">
-            <label>类型</label>
-            <select v-model="newSource.type">
+          <UiField label="名称">
+            <UiInput v-model="newSource.name" type="text" placeholder="例：MyRegistry" required />
+          </UiField>
+          <UiField label="类型">
+            <UiSelect v-model="newSource.type">
               <option value="registry">Registry (JSON 列表)</option>
               <option value="github">GitHub 仓库</option>
-            </select>
-          </div>
-          <div class="form-group form-group-wide">
-            <label>URL</label>
-            <input
+            </UiSelect>
+          </UiField>
+          <UiField label="URL" class="source-form-wide">
+            <UiInput
               v-model="newSource.url"
               type="url"
               :placeholder="newSource.type === 'github' ? 'https://github.com/owner/repo' : 'https://example.com/plugins.json'"
               required
             />
-          </div>
+          </UiField>
           <div class="form-actions">
-            <button type="submit" class="btn-primary" :disabled="sourceSaving">
-              <span class="material-symbols-outlined">add</span>
+            <UiButton type="submit" variant="primary" :disabled="sourceSaving">
+              <template #leading>
+                <span class="material-symbols-outlined">add</span>
+              </template>
               <span>{{ sourceSaving ? '添加中…' : '添加源' }}</span>
-            </button>
+            </UiButton>
           </div>
         </form>
       </article>
@@ -396,23 +403,25 @@
                 <td>
                   <div class="source-name-cell">
                     <span>{{ s.name }}</span>
-                    <span v-if="s.builtin" class="mini-pill mini-pill--neutral">内置</span>
+                    <UiBadge v-if="s.builtin" variant="secondary" class="mini-pill mini-pill--neutral">内置</UiBadge>
                   </div>
                 </td>
                 <td>
-                  <span class="mini-pill mini-pill--changed">{{ s.type }}</span>
+                  <UiBadge variant="outline" class="mini-pill mini-pill--changed">{{ s.type }}</UiBadge>
                 </td>
                 <td class="url-cell"><code>{{ s.url }}</code></td>
                 <td class="col-actions">
-                  <button
-                    type="button"
-                    class="btn-danger btn-small"
+                  <UiButton
+                    variant="danger"
+                    size="sm"
                     :disabled="s.builtin"
                     @click="removeSource(s)"
                   >
-                    <span class="material-symbols-outlined">delete</span>
+                    <template #leading>
+                      <span class="material-symbols-outlined">delete</span>
+                    </template>
                     <span>删除</span>
-                  </button>
+                  </UiButton>
                 </td>
               </tr>
             </tbody>
@@ -462,14 +471,18 @@
         <div class="upload-buttons">
           <input ref="zipInput" type="file" :accept="supportedArchiveAccept" class="hidden-input" @change="onArchiveSelected" />
           <input ref="folderInput" type="file" class="hidden-input" webkitdirectory directory multiple @change="onFolderSelected" />
-          <button type="button" class="btn-secondary" @click="zipInput?.click()" :disabled="isOperationBusy">
-            <span class="material-symbols-outlined">archive</span>
+          <UiButton variant="outline" @click="zipInput?.click()" :disabled="isOperationBusy">
+            <template #leading>
+              <span class="material-symbols-outlined">archive</span>
+            </template>
             <span>选择压缩包</span>
-          </button>
-          <button type="button" class="btn-secondary" @click="folderInput?.click()" :disabled="isOperationBusy">
-            <span class="material-symbols-outlined">folder</span>
+          </UiButton>
+          <UiButton variant="outline" @click="folderInput?.click()" :disabled="isOperationBusy">
+            <template #leading>
+              <span class="material-symbols-outlined">folder</span>
+            </template>
             <span>选择文件夹</span>
-          </button>
+          </UiButton>
         </div>
       </article>
 
@@ -488,17 +501,18 @@
         <div class="github-row">
           <label class="search-field">
             <span class="material-symbols-outlined">link</span>
-            <input v-model="githubUrl" type="url" placeholder="https://github.com/owner/repo" />
+            <UiInput v-model="githubUrl" type="url" placeholder="https://github.com/owner/repo" />
           </label>
-          <button
-            type="button"
-            class="btn-primary"
+          <UiButton
+            variant="primary"
             :disabled="!githubUrl || isOperationBusy"
             @click="installFromGithub"
           >
-            <span class="material-symbols-outlined">download</span>
+            <template #leading>
+              <span class="material-symbols-outlined">download</span>
+            </template>
             <span>{{ isInstalling ? '安装中…' : '安装' }}</span>
-          </button>
+          </UiButton>
         </div>
       </article>
     </section>
@@ -509,21 +523,25 @@
         <div class="log-header">
           <span class="material-symbols-outlined">terminal</span>
           <strong>安装日志</strong>
-          <span class="status-badge" :class="logStatusClass">{{ installStatusLabel }}</span>
-          <button
+          <UiBadge :variant="logStatusVariant">{{ installStatusLabel }}</UiBadge>
+          <UiButton
             v-if="canForceRetry"
-            type="button"
-            class="btn-primary btn-small"
+            variant="primary"
+            size="sm"
             :disabled="isOperationBusy"
             @click="retryWithForce"
           >
-            <span class="material-symbols-outlined">replay</span>
+            <template #leading>
+              <span class="material-symbols-outlined">replay</span>
+            </template>
             <span>强制覆盖重装</span>
-          </button>
-          <button type="button" class="btn-secondary btn-small" @click="clearLog">
-            <span class="material-symbols-outlined">close</span>
+          </UiButton>
+          <UiButton variant="outline" size="sm" @click="clearLog">
+            <template #leading>
+              <span class="material-symbols-outlined">close</span>
+            </template>
             <span>关闭</span>
-          </button>
+          </UiButton>
         </div>
         <p v-if="showUploadRetryHint" class="log-hint">
           已存在同名插件。若要覆盖，请重新选择压缩包或文件夹后再次安装（上传数据不可自动重放）。
@@ -541,6 +559,11 @@ import {
   type PluginSource,
   type PluginStoreItem,
 } from '@/api'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiField from '@/components/ui/UiField.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiSelect from '@/components/ui/UiSelect.vue'
 import { useAppStore } from '@/stores/app'
 import { showMessage } from '@/utils'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
@@ -572,7 +595,7 @@ watch(keyword, (v) => {
 })
 
 const filterSourceId = ref('')
-const marketSearchInputRef = ref<HTMLInputElement | null>(null)
+const marketSearchInputRef = ref<InstanceType<typeof UiInput> | null>(null)
 const sourceOverflowOpen = ref(false)
 const MAX_VISIBLE_SOURCE_FILTERS = 5
 
@@ -675,13 +698,13 @@ const installStatusLabel = computed(() => {
   }
 })
 
-const logStatusClass = computed(() => {
+const logStatusVariant = computed<"secondary" | "success" | "danger" | "warning">(() => {
   switch (installStatus.value) {
-    case 'running': return 'status-neutral'
-    case 'success': return 'status-enabled'
-    case 'error': return 'status-disabled'
-    case 'conflict': return 'status-pinned'
-    default: return 'status-neutral'
+    case 'running': return 'secondary'
+    case 'success': return 'success'
+    case 'error': return 'danger'
+    case 'conflict': return 'warning'
+    default: return 'secondary'
   }
 })
 
@@ -960,10 +983,10 @@ function isPluginUpdateAvailable(plugin: PluginStoreItem) {
   return compared !== null && compared > 0
 }
 
-function pluginStatusClass(plugin: PluginStoreItem) {
-  if (!plugin.installed) return 'status-neutral'
-  if (isPluginUpdateAvailable(plugin)) return 'status-pinned'
-  return 'status-enabled'
+function pluginStatusVariant(plugin: PluginStoreItem): "secondary" | "success" | "warning" {
+  if (!plugin.installed) return 'secondary'
+  if (isPluginUpdateAvailable(plugin)) return 'warning'
+  return 'success'
 }
 
 function pluginStatusText(plugin: PluginStoreItem) {
@@ -1374,6 +1397,23 @@ onBeforeUnmount(() => {
   color: var(--highlight-text);
 }
 
+.search-field {
+  flex: 1;
+  min-width: 240px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.search-field .material-symbols-outlined {
+  color: var(--secondary-text);
+  font-size: 18px !important;
+}
+
+.search-field :deep(.ui-input) {
+  min-width: 0;
+}
+
 .view-mode-switch {
   display: flex;
   flex-wrap: wrap;
@@ -1643,15 +1683,14 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-xl);
   padding: 20px;
   background: var(--secondary-bg);
-  box-shadow: var(--shadow-sm);
   transition:
-    box-shadow 0.2s ease,
+    background-color 0.2s ease,
     border-color 0.2s ease;
 }
 
 .plugin-card:hover {
-  box-shadow: var(--shadow-md);
   border-color: color-mix(in srgb, var(--button-bg) 28%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-bg) 42%, var(--secondary-bg));
 }
 
 .plugin-card-top {
@@ -1714,64 +1753,7 @@ onBeforeUnmount(() => {
 }
 
 .plugin-version-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  line-height: 1;
   white-space: nowrap;
-}
-
-.plugin-version-local {
-  background: var(--accent-bg);
-  color: var(--primary-text);
-}
-
-.plugin-version-update {
-  background: var(--warning-bg);
-  color: var(--warning-text);
-  border-color: var(--warning-border);
-}
-
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: var(--font-size-caption);
-  font-weight: 600;
-  border: 1px solid transparent;
-}
-
-.status-enabled {
-  color: var(--success-text);
-  background: var(--success-bg);
-  border-color: var(--success-border);
-}
-
-.status-disabled {
-  color: var(--danger-text);
-  background: var(--danger-bg);
-  border-color: var(--danger-border);
-}
-
-.status-neutral {
-  color: var(--warning-text);
-  background: var(--warning-bg);
-  border-color: var(--warning-border);
-}
-
-.status-pinned {
-  color: var(--info-text);
-  background: var(--info-bg);
-  border-color: var(--info-border);
 }
 
 .plugin-status-pills {
@@ -1846,37 +1828,8 @@ onBeforeUnmount(() => {
   gap: var(--space-3);
 }
 
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.form-group-wide {
+.source-form-wide {
   grid-column: 1 / -1;
-}
-
-.form-group label {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  font-weight: 600;
-}
-
-.form-group input,
-.form-group select {
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.form-group input:focus-visible,
-.form-group select:focus-visible {
-  outline: none;
-  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .form-actions {
@@ -1928,16 +1881,6 @@ onBeforeUnmount(() => {
 .col-actions {
   width: 120px;
   text-align: right;
-}
-
-.btn-small {
-  padding: 4px 10px;
-  font-size: var(--font-size-caption);
-  min-height: 30px;
-}
-
-.btn-small .material-symbols-outlined {
-  font-size: var(--font-size-helper);
 }
 
 /* ========== Manual pane ========== */
@@ -2148,12 +2091,12 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 
-  .plugin-actions :deep(button) {
+  .plugin-actions :deep(.ui-button) {
     width: 100%;
     justify-content: center;
   }
 
-  .upload-buttons :deep(button) {
+  .upload-buttons :deep(.ui-button) {
     flex: 1;
     justify-content: center;
   }
