@@ -37,12 +37,12 @@ export const THEME_MODE_OPTIONS: Array<{ id: ThemeMode; label: string; descripti
 ]
 
 export const THEME_RADIUS_OPTIONS: Array<{ id: ThemeRadius; label: string; description: string }> = [
-  { id: 'default', label: '默认', description: '使用预设推荐圆角' },
-  { id: 'none', label: '直角', description: '更紧凑的工具感' },
-  { id: 'sm', label: '小', description: '轻微圆角' },
-  { id: 'md', label: '中', description: '平衡圆角' },
-  { id: 'lg', label: '大', description: '更柔和的界面' },
-  { id: 'xl', label: '圆润', description: '更明显的圆角' },
+  { id: 'default', label: '默认', description: '12 / 18 / 26 / 34px' },
+  { id: 'none', label: '直角', description: '0 / 0 / 0 / 0px' },
+  { id: 'sm', label: '小', description: '4 / 6 / 8 / 12px' },
+  { id: 'md', label: '中', description: '6 / 10 / 14 / 20px' },
+  { id: 'lg', label: '大', description: '8 / 12 / 18 / 26px' },
+  { id: 'xl', label: '圆润', description: '12 / 18 / 26 / 34px' },
 ]
 
 export const THEME_SCALE_OPTIONS: Array<{ id: ThemeScale; label: string; description: string }> = [
@@ -788,7 +788,7 @@ function resolvePresetDefaults(presetId: string | null) {
 export function applyThemePreferences(snapshot: Pick<ThemeSnapshot, 'activePresetId' | 'radius' | 'scale' | 'font' | 'contentLayout'>): void {
   const preset = resolvePresetDefaults(snapshot.activePresetId)
   setBodyAttribute('data-theme-preset', snapshot.activePresetId && snapshot.activePresetId !== 'default-blue' ? snapshot.activePresetId : null)
-  setBodyAttribute('data-theme-radius', snapshot.radius === 'default' ? preset?.defaultRadius || null : snapshot.radius)
+  setBodyAttribute('data-theme-radius', snapshot.radius === 'default' ? 'xl' : snapshot.radius)
   setBodyAttribute('data-theme-scale', snapshot.scale === 'default' ? null : snapshot.scale)
   setBodyAttribute('data-theme-font', snapshot.font === 'default' ? preset?.defaultFont || null : snapshot.font)
   setBodyAttribute('data-theme-content-layout', snapshot.contentLayout === 'full' ? null : snapshot.contentLayout)
