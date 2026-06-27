@@ -5,30 +5,41 @@
       越靠上的插件越优先执行。
     </p>
 
-    <div class="preprocessor-order-controls">
-      <span class="dirty-summary" :class="{ 'is-dirty': hasChanges }">
-        {{ hasChanges ? `已修改 ${changedItemCount} 项` : '当前顺序未修改' }}
-      </span>
-      <button
-        type="button"
-        class="btn-secondary"
-        :disabled="!hasChanges || isSaving"
-        @click="resetOrder"
-      >
-        撤销
-      </button>
-      <button
-        type="button"
-        class="btn-primary"
-        :disabled="!hasChanges || isSaving"
-        @click="saveOrder"
-      >
-        {{ isSaving ? '保存中…' : '保存顺序并热重载' }}
-      </button>
-      <span v-if="statusMessage" :class="['status-message', statusType]">
-        {{ statusMessage }}
-      </span>
-    </div>
+    <UiCard class="preprocessor-order-panel" variant="default" size="sm">
+      <UiToolbar density="compact">
+        <div class="order-summary">
+          <UiBadge variant="outline">
+            {{ orderedPreprocessors.length }} 个预处理器
+          </UiBadge>
+          <UiDirtyIndicator :dirty="hasChanges" :label="`已修改 ${changedItemCount} 项`" />
+          <UiBadge v-if="!hasChanges" variant="secondary">当前顺序未修改</UiBadge>
+          <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
+            {{ statusMessage }}
+          </UiBadge>
+        </div>
+
+        <template #actions>
+          <UiButton
+            type="button"
+            variant="outline"
+            size="md"
+            :disabled="!hasChanges || isSaving"
+            @click="resetOrder"
+          >
+            撤销
+          </UiButton>
+          <UiButton
+            type="button"
+            size="md"
+            :loading="isSaving"
+            :disabled="!hasChanges || isSaving"
+            @click="saveOrder"
+          >
+            保存顺序并热重载
+          </UiButton>
+        </template>
+      </UiToolbar>
+    </UiCard>
 
     <TransitionGroup
       id="preprocessor-list"
@@ -84,10 +95,15 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from "vue";
+import { computed, onBeforeUnmount, onMounted } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { usePreprocessorOrderManager } from "@/features/preprocessor-order-manager/usePreprocessorOrderManager";
 import DragHandle from "@/components/ui/DragHandle.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiDirtyIndicator from "@/components/ui/UiDirtyIndicator.vue";
+import UiToolbar from "@/components/ui/UiToolbar.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 
 const {
@@ -106,6 +122,12 @@ const {
   resetOrder,
   saveOrder,
 } = usePreprocessorOrderManager();
+
+const statusBadgeVariant = computed(() => {
+  if (statusType.value === "success") return "success";
+  if (statusType.value === "error") return "danger";
+  return "info";
+});
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -152,67 +174,47 @@ void dragGhostElement
 </script>
 
 <style scoped>
-.preprocessor-order-controls {
+.preprocessor-order-panel {
+  margin-bottom: var(--space-3);
+}
+
+.order-summary {
   display: flex;
+  min-width: 0;
   flex-wrap: wrap;
-  gap: var(--space-3);
   align-items: center;
-  margin-bottom: var(--space-4);
-  position: sticky;
-  top: 0;
-  z-index: 12;
-  padding: var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
-}
-
-.dirty-summary {
-  display: inline-flex;
-  align-items: center;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  font-weight: 600;
-}
-
-.dirty-summary.is-dirty {
-  color: var(--warning-text);
-  background: var(--warning-bg);
-  border-color: var(--warning-border);
+  gap: var(--space-2);
 }
 
 .draggable-list {
   list-style: none;
   padding: 0;
   margin: 0;
+  display: grid;
+  gap: var(--space-2);
 }
 
 .draggable-item {
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
-  padding: var(--space-4) var(--space-4);
-  border: 1px solid var(--border-color);
+  gap: var(--space-2);
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: var(--radius-md);
-  background: var(--secondary-bg);
+  background: color-mix(in srgb, var(--primary-bg) 62%, transparent);
   will-change: transform;
   transition:
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
     opacity 0.18s ease,
     filter 0.18s ease;
 }
 
 .draggable-item:hover {
-  border-color: var(--highlight-text);
-  box-shadow: var(--shadow-md);
+  border-color: color-mix(in srgb, var(--highlight-text) 32%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-bg) 34%, transparent);
 }
 
 .draggable-item--dragging {
@@ -242,9 +244,12 @@ void dragGhostElement
 }
 
 .plugin-index {
-  min-width: 30px;
+  min-width: 28px;
   color: var(--secondary-text);
-  font-weight: 700;
+  font-family: "Consolas", "Monaco", "Courier New", monospace;
+  font-size: var(--font-size-helper);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 
 .plugin-copy {
@@ -277,7 +282,7 @@ void dragGhostElement
   flex-direction: column;
   justify-content: center;
   min-height: 100%;
-  padding: var(--space-4);
+  padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--highlight-text) 35%, var(--border-color));
   border-radius: var(--radius-md);
   background: var(--secondary-bg);
@@ -311,5 +316,14 @@ void dragGhostElement
 .drag-sort-leave-to {
   opacity: 0;
   transform: translateY(6px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .draggable-item,
+  .drag-sort-move,
+  .drag-sort-enter-active,
+  .drag-sort-leave-active {
+    transition: none;
+  }
 }
 </style>
