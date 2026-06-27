@@ -1,12 +1,6 @@
 <template>
   <section class="config-section active-section semantic-router-page">
-    <div class="page-header">
-      <div>
-        <h2>语义模型路由器</h2>
-        <p class="description">
-          可视化编辑 <code>SemanticModelRouter.json</code>：管理虚拟模型、预设、候选模型语义描述与容灾链。
-        </p>
-      </div>
+    <Teleport to="#page-header-actions">
       <div class="header-actions">
         <UiDirtyIndicator :dirty="isDirty" />
         <UiButton variant="outline" size="lg" :disabled="isLoading" @click="loadAll">
@@ -22,7 +16,12 @@
           {{ isSaving ? "保存中…" : "保存配置" }}
         </UiButton>
       </div>
-    </div>
+    </Teleport>
+
+    <header class="semantic-router-intro">
+      <h2>语义模型路由器</h2>
+      <p>可视化编辑 SemanticModelRouter.json：管理虚拟模型、预设、候选模型语义描述与容灾链。</p>
+    </header>
 
     <UiCard v-if="isLoading">
       <UiEmptyState title="正在加载语义模型路由配置…">
@@ -686,17 +685,27 @@ onBeforeRouteLeave(async () => {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  min-height: 100%;
 }
 
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
+.semantic-router-intro {
+  display: grid;
+  gap: var(--space-1);
 }
 
-.page-header h2 {
+.semantic-router-intro h2 {
   margin: 0;
+  color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.semantic-router-intro p {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
 .header-actions,
@@ -827,10 +836,6 @@ code {
   .layout-grid,
   .summary-grid {
     grid-template-columns: 1fr;
-  }
-
-  .page-header {
-    flex-direction: column;
   }
 }
 </style>

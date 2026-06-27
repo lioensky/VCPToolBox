@@ -878,7 +878,7 @@ input[type="checkbox"] {
 }
 
 #config-details-container > [data-page] {
-  margin-top: var(--space-4);
+  margin-top: 0;
 }
 
 /* 收紧主标题到副标题的节奏：带副标题/页头的页面上方使用更紧凑间距 */
