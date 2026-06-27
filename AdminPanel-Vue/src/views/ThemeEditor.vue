@@ -11,22 +11,30 @@
       </div>
 
       <div class="theme-lab__hero-actions">
-        <button class="btn-secondary" type="button" @click="handleImport">
-          <span class="material-symbols-outlined">upload</span>
+        <UiButton variant="outline" @click="handleImport">
+          <template #leading>
+            <span class="material-symbols-outlined">upload</span>
+          </template>
           导入
-        </button>
-        <button class="btn-secondary" type="button" @click="handleExport">
-          <span class="material-symbols-outlined">download</span>
+        </UiButton>
+        <UiButton variant="outline" @click="handleExport">
+          <template #leading>
+            <span class="material-symbols-outlined">download</span>
+          </template>
           导出
-        </button>
-        <button class="btn-secondary" type="button" @click="handleReset">
-          <span class="material-symbols-outlined">restart_alt</span>
+        </UiButton>
+        <UiButton variant="outline" @click="handleReset">
+          <template #leading>
+            <span class="material-symbols-outlined">restart_alt</span>
+          </template>
           恢复默认
-        </button>
-        <button class="btn-primary" type="button" @click="handleSave">
-          <span class="material-symbols-outlined">save</span>
+        </UiButton>
+        <UiButton variant="primary" @click="handleSave">
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
           保存主题
-        </button>
+        </UiButton>
       </div>
     </header>
 
@@ -238,13 +246,14 @@
                   v-if="currentPresetId === ut.id"
                   class="material-symbols-outlined preset-card__check"
                 >check_circle</span>
-                <button
+                <UiIconButton
                   class="preset-card__delete"
+                  label="删除此主题"
                   title="删除此主题"
                   @click.stop="deleteUserTheme(ut.id)"
                 >
                   <span class="material-symbols-outlined">delete</span>
-                </button>
+                </UiIconButton>
               </div>
             </div>
           </article>
@@ -252,10 +261,12 @@
       </template>
 
       <div class="theme-lab__save-theme-row">
-        <button class="btn-secondary" type="button" @click="openSaveAsDialog">
-          <span class="material-symbols-outlined">add</span>
+        <UiButton variant="outline" @click="openSaveAsDialog">
+          <template #leading>
+            <span class="material-symbols-outlined">add</span>
+          </template>
           将当前配置保存为主题
-        </button>
+        </UiButton>
       </div>
 
       <div class="theme-lab__section-split" aria-hidden="true"></div>
@@ -346,33 +357,34 @@
                           @input="onPickerInput(v.cssVar, ($event.target as HTMLInputElement).value)"
                         >
                       </div>
-                      <input
+                      <UiInput
                         :id="`color-${v.name}`"
                         type="text"
                         class="color-row__input"
-                        :value="draft.colorOverrides[v.cssVar] || ''"
+                        :model-value="draft.colorOverrides[v.cssVar] || ''"
                         :placeholder="getCurrentDefault(v)"
                         @input="onColorInput(v.cssVar, ($event.target as HTMLInputElement).value)"
-                      >
+                      />
                     </template>
                     <template v-else>
-                      <input
+                      <UiInput
                         :id="`color-${v.name}`"
                         type="text"
                         class="color-row__input color-row__input--wide"
-                        :value="draft.colorOverrides[v.cssVar] || ''"
+                        :model-value="draft.colorOverrides[v.cssVar] || ''"
                         :placeholder="getCurrentDefault(v)"
                         @input="onColorInput(v.cssVar, ($event.target as HTMLInputElement).value)"
-                      >
+                      />
                     </template>
-                    <button
+                    <UiIconButton
                       v-if="draft.colorOverrides[v.cssVar]"
                       class="color-row__reset"
+                      label="恢复此项默认值"
                       title="恢复此项默认值"
                       @click="resetSingleColor(v.cssVar)"
                     >
                       <span class="material-symbols-outlined">close</span>
-                    </button>
+                    </UiIconButton>
                   </div>
                 </div>
               </div>
@@ -390,21 +402,22 @@
                   </div>
 
                   <div class="color-row__controls">
-                    <input
+                    <UiInput
                       type="text"
                       class="color-row__input color-row__input--wide"
-                      :value="draft.colorOverrides[cssVar] || ''"
+                      :model-value="draft.colorOverrides[cssVar] || ''"
                       :placeholder="getGlobalVarDefault(cssVar)"
                       @input="onColorInput(cssVar, ($event.target as HTMLInputElement).value)"
-                    >
-                    <button
+                    />
+                    <UiIconButton
                       v-if="draft.colorOverrides[cssVar]"
                       class="color-row__reset"
+                      label="恢复此项默认值"
                       title="恢复此项默认值"
                       @click="resetSingleColor(cssVar)"
                     >
                       <span class="material-symbols-outlined">close</span>
-                    </button>
+                    </UiIconButton>
                   </div>
                 </div>
               </div>
@@ -440,17 +453,19 @@
         <div class="theme-lab__bg-input-row">
           <label class="search-field">
             <span class="material-symbols-outlined">image</span>
-            <input
+            <UiInput
               type="text"
-              :value="draft.backgroundImage"
+              :model-value="draft.backgroundImage"
               placeholder="https://example.com/background.jpg"
               @input="onBgInput(($event.target as HTMLInputElement).value)"
-            >
+            />
           </label>
-          <button class="btn-secondary" type="button" @click="triggerFileUpload">
-            <span class="material-symbols-outlined">upload_file</span>
+          <UiButton variant="outline" @click="triggerFileUpload">
+            <template #leading>
+              <span class="material-symbols-outlined">upload_file</span>
+            </template>
             本地上传
-          </button>
+          </UiButton>
           <input
             ref="fileInputRef"
             type="file"
@@ -458,15 +473,16 @@
             class="theme-lab__file-input"
             @change="onFileSelected"
           >
-          <button
+          <UiButton
             v-if="draft.backgroundImage"
-            class="btn-secondary"
-            type="button"
+            variant="outline"
             @click="clearBg"
           >
-            <span class="material-symbols-outlined">close</span>
+            <template #leading>
+              <span class="material-symbols-outlined">close</span>
+            </template>
             清除
-          </button>
+          </UiButton>
         </div>
 
         <div class="theme-lab__bg-meta">
@@ -474,16 +490,17 @@
             支持 <code>http/https</code> 网络源（包含返回图片流的 API，如 <code>https://picsum.photos/1600/900</code>）和本地上传。
             若 API 返回 JSON，请将其中图片字段对应的 URL 填入此处。
           </p>
-          <button
+          <UiButton
             v-if="draft.backgroundImage"
-            class="btn-secondary"
-            type="button"
+            variant="outline"
             :disabled="bgSourceChecking"
             @click="checkBackgroundSource"
           >
-            <span class="material-symbols-outlined">network_check</span>
+            <template #leading>
+              <span class="material-symbols-outlined">network_check</span>
+            </template>
             {{ bgSourceChecking ? '检测中…' : '检测网络源可用性' }}
-          </button>
+          </UiButton>
         </div>
 
         <p
@@ -518,13 +535,13 @@
             <span class="theme-lab__css-lang">CSS</span>
             <span class="theme-lab__css-lines">{{ cssLineCount }} 行</span>
           </div>
-          <textarea
+          <UiTextarea
             class="theme-lab__css-editor"
-            :value="draft.customCss"
+            :model-value="draft.customCss"
             placeholder="/* 在此输入自定义 CSS */&#10;&#10;body {&#10;  /* 自定义样式 */&#10;}"
             spellcheck="false"
             @input="onCssInput(($event.target as HTMLTextAreaElement).value)"
-          ></textarea>
+          />
         </div>
 
         <details class="theme-lab__css-tips">
@@ -608,15 +625,15 @@
           <div :ref="panelRef" v-bind="panelAttrs" class="theme-lab__modal">
             <h3>导入主题配置</h3>
             <p class="description">粘贴之前导出的 JSON 主题配置。</p>
-            <textarea
+            <UiTextarea
               v-model="importJson"
               class="theme-lab__import-editor"
               placeholder="粘贴 JSON 配置…"
               spellcheck="false"
-            ></textarea>
+            />
             <div class="theme-lab__modal-actions">
-              <button class="btn-secondary" type="button" @click="showImportDialog = false">取消</button>
-              <button class="btn-primary" type="button" @click="confirmImport">确认导入</button>
+              <UiButton variant="outline" @click="showImportDialog = false">取消</UiButton>
+              <UiButton variant="primary" @click="confirmImport">确认导入</UiButton>
             </div>
           </div>
         </div>
@@ -630,17 +647,17 @@
           <div :ref="panelRef" v-bind="panelAttrs" class="theme-lab__modal">
             <h3>保存为我的主题</h3>
             <p class="description">为当前配置命名，方便日后复用。</p>
-            <input
+            <UiInput
               v-model="saveAsName"
               type="text"
               class="theme-lab__save-name-input"
               placeholder="输入主题名称…"
               maxlength="30"
               @keydown.enter="confirmSaveAs"
-            >
+            />
             <div class="theme-lab__modal-actions">
-              <button class="btn-secondary" type="button" @click="showSaveAsDialog = false">取消</button>
-              <button class="btn-primary" type="button" :disabled="!saveAsName.trim()" @click="confirmSaveAs">保存</button>
+              <UiButton variant="outline" @click="showSaveAsDialog = false">取消</UiButton>
+              <UiButton variant="primary" :disabled="!saveAsName.trim()" @click="confirmSaveAs">保存</UiButton>
             </div>
           </div>
         </div>
@@ -653,6 +670,10 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import BaseModal from '@/components/ui/BaseModal.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiIconButton from '@/components/ui/UiIconButton.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiTextarea from '@/components/ui/UiTextarea.vue'
 import {
   FULL_PRESET_THEMES,
   THEME_COLOR_GROUPS,
@@ -1979,22 +2000,7 @@ onUnmounted(() => {
 }
 
 .preset-card__delete {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: none;
-  border: none;
   color: var(--secondary-text);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: color var(--transition-fast), background-color var(--transition-fast);
-}
-
-.preset-card__delete:hover {
-  color: var(--danger-color);
-  background: var(--danger-bg);
 }
 
 .preset-card__delete .material-symbols-outlined {
@@ -2215,24 +2221,12 @@ onUnmounted(() => {
 .color-row__input {
   flex: 1;
   min-width: 0;
-  min-height: 40px;
-  padding: 10px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  color: var(--primary-text);
   font-size: var(--font-size-helper);
   font-family: var(--font-mono);
 }
 
 .color-row__input--wide {
   max-width: min(100%, 240px);
-}
-
-.color-row__input:focus-visible {
-  border-color: var(--highlight-text);
-  box-shadow: 0 0 0 2px var(--focus-ring);
-  outline: none;
 }
 
 .color-group__locked {
@@ -2290,25 +2284,12 @@ onUnmounted(() => {
 }
 
 .color-row__reset {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: none;
-  border: none;
   color: var(--secondary-text);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
   flex-shrink: 0;
-  transition:
-    color var(--transition-fast),
-    background-color var(--transition-fast);
 }
 
 .color-row__reset:hover {
   color: var(--danger-color);
-  background: var(--danger-bg);
 }
 
 .color-row__reset .material-symbols-outlined {
@@ -2424,26 +2405,21 @@ onUnmounted(() => {
 }
 
 .theme-lab__css-editor {
-  width: 100%;
   min-height: 300px;
-  padding: var(--space-3);
-  background: var(--input-bg);
-  border: none;
-  color: var(--primary-text);
   font-family: var(--font-mono);
   font-size: var(--font-size-helper);
   line-height: 1.6;
-  resize: vertical;
   tab-size: 2;
 }
 
-.theme-lab__css-editor:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-}
-
-.theme-lab__css-editor:focus:not(:focus-visible) {
-  outline: none;
+.theme-lab__css-editor.ui-textarea {
+  min-height: 300px;
+  border: none;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-helper);
+  line-height: 1.6;
+  tab-size: 2;
 }
 
 .theme-lab__css-tips {
@@ -2565,48 +2541,21 @@ onUnmounted(() => {
 }
 
 .theme-lab__import-editor {
-  width: 100%;
   min-height: 200px;
-  padding: var(--space-3);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
   font-family: var(--font-mono);
   font-size: var(--font-size-helper);
-  resize: vertical;
   margin-bottom: var(--space-4);
 }
 
-.theme-lab__import-editor:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-}
-
-.theme-lab__import-editor:focus:not(:focus-visible) {
-  border-color: var(--highlight-text);
-  outline: none;
+.theme-lab__import-editor.ui-textarea {
+  min-height: 200px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-helper);
 }
 
 .theme-lab__save-name-input {
-  width: 100%;
-  padding: var(--space-3);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
   font-size: var(--font-size-body);
   margin-bottom: var(--space-4);
-}
-
-.theme-lab__save-name-input:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-}
-
-.theme-lab__save-name-input:focus:not(:focus-visible) {
-  border-color: var(--highlight-text);
-  outline: none;
 }
 
 .theme-lab__modal-actions {
