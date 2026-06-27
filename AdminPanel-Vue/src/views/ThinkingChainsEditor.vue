@@ -6,12 +6,12 @@
     </p>
 
     <div id="thinking-chains-editor-controls" class="form-actions">
-      <button type="button" class="btn-primary" @click="saveThinkingChains">
+      <UiButton variant="primary" @click="saveThinkingChains">
         保存所有更改
-      </button>
-      <button type="button" class="btn-secondary" @click="addThinkingChain">
+      </UiButton>
+      <UiButton variant="outline" @click="addThinkingChain">
         添加新主题
-      </button>
+      </UiButton>
       <span v-if="statusMessage" :class="['status-message', statusType]">
         {{ statusMessage }}
       </span>
@@ -33,35 +33,39 @@
           <details open>
             <summary class="chain-header">
               <span class="theme-name">主题：{{ chain.theme || '未命名主题' }}</span>
-              <button
-                type="button"
-                class="btn-danger btn-sm"
+              <UiButton
+                variant="danger"
+                size="sm"
                 @click.stop.prevent="removeChain(index)"
               >
                 删除
-              </button>
+              </UiButton>
             </summary>
 
             <div class="chain-content">
-              <div class="form-group theme-editor">
-                <label :for="`thinking-theme-${index}`">主题名称</label>
-                <input
+              <UiField
+                class="theme-editor"
+                label="主题名称"
+                :for-id="`thinking-theme-${index}`"
+                size="sm"
+              >
+                <UiInput
                   :id="`thinking-theme-${index}`"
                   v-model.trim="chain.theme"
                   type="text"
                   placeholder="请输入主题名称"
                   @click.stop
                 />
-              </div>
+              </UiField>
 
               <div class="cluster-picker-entry">
-                <button
-                  type="button"
-                  class="btn-secondary btn-sm"
+                <UiButton
+                  variant="outline"
+                  size="sm"
                   @click="openClusterPicker(index)"
                 >
                   添加思维模块
-                </button>
+                </UiButton>
                 <span class="cluster-picker-entry-tip">点击模块即可勾选，支持多选后批量加入当前主题</span>
               </div>
 
@@ -100,7 +104,7 @@
                     <span class="cluster-name">{{ cluster }}</span>
                     <label class="cluster-k-control" :for="`cluster-k-value-${index}-${cluster}`">
                       <span class="cluster-k-label">K 值</span>
-                      <input
+                      <UiInput
                         :id="`cluster-k-value-${index}-${cluster}`"
                         type="number"
                         min="1"
@@ -113,13 +117,13 @@
                       />
                     </label>
                   </div>
-                  <button
-                    type="button"
-                    class="btn-danger btn-sm"
+                  <UiButton
+                    variant="danger"
+                    size="sm"
                     @click="removeClusterByName(index, cluster)"
                   >
                     移除
-                  </button>
+                  </UiButton>
                 </li>
 
                 <li
@@ -181,27 +185,27 @@
             当前主题：{{ pickerChain?.theme || "未命名主题" }}
           </p>
         </div>
-        <button
-          type="button"
-          class="btn-danger btn-sm"
+        <UiButton
+          variant="ghost"
+          size="sm"
           @click="closeClusterPicker"
         >
           关闭
-        </button>
+        </UiButton>
       </header>
 
       <div class="cluster-picker-toolbar">
-        <button type="button" class="btn-secondary btn-sm" @click="selectAllPickerClusters">
+        <UiButton variant="outline" size="sm" @click="selectAllPickerClusters">
           全选可用
-        </button>
-        <button
-          type="button"
-          class="btn-secondary btn-sm"
+        </UiButton>
+        <UiButton
+          variant="outline"
+          size="sm"
           :disabled="pendingClusterSelection.length === 0"
           @click="clearPickerSelection"
         >
           清空选择
-        </button>
+        </UiButton>
       </div>
 
       <ul class="cluster-picker-list">
@@ -247,17 +251,16 @@
       <footer class="cluster-picker-footer">
         <span class="cluster-picker-count">已选 {{ pendingClusterSelection.length }} 项</span>
         <div class="cluster-picker-footer-actions">
-          <button type="button" class="btn-secondary" @click="closeClusterPicker">
+          <UiButton variant="outline" @click="closeClusterPicker">
             取消
-          </button>
-          <button
-            type="button"
-            class="btn-primary"
+          </UiButton>
+          <UiButton
+            variant="primary"
             :disabled="!canConfirmPicker"
             @click="confirmAddClusters"
           >
             添加选中项
-          </button>
+          </UiButton>
         </div>
       </footer>
           </div>
@@ -283,6 +286,9 @@ import { computed, ref } from "vue";
 import { useThinkingChainsEditor } from "@/features/thinking-chains-editor/useThinkingChainsEditor";
 import BaseModal from "@/components/ui/BaseModal.vue";
 import DragHandle from "@/components/ui/DragHandle.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
 
 const {
   thinkingChains,
@@ -522,8 +528,8 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .chain-item:hover {
-  border-color: var(--highlight-text);
-  box-shadow: var(--shadow-md);
+  border-color: color-mix(in srgb, var(--highlight-text) 34%, var(--border-color));
+  background: var(--accent-bg);
 }
 
 .chain-item--dragging {
@@ -585,19 +591,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 
 .cluster-k-input {
   width: 56px;
-  padding: 4px 8px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
   text-align: center;
-}
-
-.cluster-k-input:focus {
-  outline: none;
-  border-color: var(--highlight-text);
-  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .chain-item--available {
@@ -929,7 +923,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   }
 
   .cluster-content,
-  .chain-item .btn-danger {
+  .chain-item :deep(.ui-button) {
     grid-column: 1 / -1;
   }
 
@@ -939,7 +933,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   }
 
   .cluster-k-control,
-  .chain-item .btn-danger {
+  .chain-item :deep(.ui-button) {
     width: 100%;
   }
 
