@@ -119,15 +119,10 @@
           ]"
         >
           <div class="rule-head">
-            <button
-              class="drag-handle"
-              type="button"
-              aria-label="拖动排序"
-              title="拖动排序"
+            <DragHandle
+              label="拖动排序"
               @pointerdown="handleRulePointerDown(rule.id, $event)"
-            >
-              ⋮⋮
-            </button>
+            />
             <UiInput
               v-model="rule.name"
               class="rule-title"
@@ -216,6 +211,7 @@
 
 <script setup lang="ts">
 import AppSwitch from "@/components/ui/AppSwitch.vue";
+import DragHandle from "@/components/ui/DragHandle.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiCard from "@/components/ui/UiCard.vue";
 import UiEmptyState from "@/components/ui/UiEmptyState.vue";
@@ -368,33 +364,6 @@ void dragGhostElement
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   gap: var(--space-2);
   align-items: center;
-}
-
-.drag-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border-color);
-  background: var(--input-bg);
-  color: var(--secondary-text);
-  border-radius: var(--radius-sm);
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  cursor: grab;
-  font-size: var(--font-size-body);
-  flex-shrink: 0;
-  user-select: none;
-  touch-action: none;
-}
-
-.drag-handle:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-}
-
-.drag-handle:active {
-  cursor: grabbing;
 }
 
 .rule-title {
