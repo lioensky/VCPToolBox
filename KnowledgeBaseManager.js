@@ -697,6 +697,12 @@ class KnowledgeBaseManager {
         return rows;
     }
 
+    _isVectorLike(value) {
+        return Array.isArray(value) ||
+            value instanceof Float32Array ||
+            (ArrayBuffer.isView(value) && typeof value.length === 'number');
+    }
+
     _cleanupStalePairwiseSimilarityModels() {
         try {
             if (!this.tagMemoEngine?.modelSig) return;
