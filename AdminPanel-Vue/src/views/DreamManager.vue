@@ -27,21 +27,19 @@
           </div>
 
           <div class="dream-filter-grid">
-            <label class="dream-filter-field">
-              <span>状态</span>
-              <select v-model="filters.status">
+            <UiField label="状态" size="sm">
+              <UiSelect v-model="filters.status">
                 <option value="all">全部状态</option>
                 <option value="pending">仅待审批</option>
                 <option value="handled">已处理完</option>
                 <option value="approved">含已批准</option>
                 <option value="rejected">含已拒绝</option>
                 <option value="error">含出错</option>
-              </select>
-            </label>
+              </UiSelect>
+            </UiField>
 
-            <label class="dream-filter-field">
-              <span>Agent</span>
-              <select v-model="filters.agent">
+            <UiField label="Agent" size="sm">
+              <UiSelect v-model="filters.agent">
                 <option value="all">全部 Agent</option>
                 <option
                   v-for="agent in agentOptions"
@@ -50,80 +48,74 @@
                 >
                   {{ agent }}
                 </option>
-              </select>
-            </label>
+              </UiSelect>
+            </UiField>
 
-            <label class="dream-filter-field">
-              <span>类型</span>
-              <select v-model="filters.type">
+            <UiField label="类型" size="sm">
+              <UiSelect v-model="filters.type">
                 <option value="all">全部类型</option>
                 <option value="merge">合并</option>
                 <option value="delete">删除</option>
                 <option value="insight">感悟</option>
                 <option value="unknown">未知</option>
-              </select>
-            </label>
+              </UiSelect>
+            </UiField>
 
-            <label class="dream-filter-field dream-filter-search">
-              <span>搜索</span>
-              <input
+            <UiField label="搜索" size="sm" class="dream-filter-search">
+              <UiInput
                 v-model.trim="filters.query"
                 type="search"
                 placeholder="文件名、Agent、状态"
               />
-            </label>
+            </UiField>
           </div>
 
           <div class="dream-toolbar-actions">
-            <button type="button" class="btn-secondary" @click="resetFilters">
+            <UiButton variant="outline" @click="resetFilters">
               重置筛选
-            </button>
-            <button
-              type="button"
-              class="btn-secondary"
+            </UiButton>
+            <UiButton
+              variant="outline"
               :disabled="isRefreshing"
               @click="refreshDreams"
             >
               刷新
-            </button>
-            <button
-              type="button"
-              class="btn-success"
+            </UiButton>
+            <UiButton
+              variant="primary"
               :disabled="visiblePendingCount === 0 || batchProcessing"
               @click="batchReviewVisible('approve')"
             >
               批准当前筛选待审
-            </button>
-            <button
-              type="button"
-              class="btn-danger"
+            </UiButton>
+            <UiButton
+              variant="danger"
               :disabled="visiblePendingCount === 0 || batchProcessing"
               @click="batchReviewVisible('reject')"
             >
               拒绝当前筛选待审
-            </button>
+            </UiButton>
           </div>
         </div>
 
-      <div
+        <UiEmptyState
           v-if="loadedDreams.length === 0"
-        class="dream-empty-state"
-      >
-        <span class="material-symbols-outlined dream-empty-icon"
-          >nights_stay</span
+          title="暂无梦操作日志"
+          description="当 Agent 发起梦操作后，日志将出现在这里"
         >
-        <p>暂无梦操作日志</p>
-        <p class="dream-empty-subtitle">
-          当 Agent 发起梦操作后，日志将出现在这里
-        </p>
-      </div>
-        <div v-else-if="visibleDreams.length === 0" class="dream-empty-state">
-          <span class="material-symbols-outlined dream-empty-icon">filter_alt</span>
-          <p>当前筛选没有结果</p>
-          <p class="dream-empty-subtitle">
-            换个状态、Agent 或搜索词就能继续找
-          </p>
-        </div>
+          <template #icon>
+            <span class="material-symbols-outlined">nights_stay</span>
+          </template>
+        </UiEmptyState>
+        <UiEmptyState
+          v-else-if="visibleDreams.length === 0"
+          title="当前筛选没有结果"
+          description="换个状态、Agent 或搜索词就能继续找"
+        >
+          <template #icon>
+            <span class="material-symbols-outlined">filter_alt</span>
+          </template>
+        </UiEmptyState>
       <div
         v-else
           v-for="dream in visibleDreams"
@@ -135,38 +127,35 @@
           <div class="dream-log-title">
             <span class="material-symbols-outlined">nights_stay</span>
             <strong>{{ dream.agentName }}</strong>
-            <span
-              class="dream-badge"
-              :class="dream.pendingCount > 0 ? 'pending' : 'done'"
-            >
+            <UiBadge :variant="dream.pendingCount > 0 ? 'warning' : 'success'">
               {{
                 dream.pendingCount > 0
                   ? `${dream.pendingCount} 待审批`
                   : "已处理"
               }}
-            </span>
+            </UiBadge>
           </div>
           <div class="dream-log-meta">
             <span>{{ formatDreamTimestamp(dream.timestamp) }}</span>
             <span>{{ dream.operationCount }} 个操作</span>
           </div>
             <div v-if="dream.pendingCount > 0" class="dream-log-actions">
-              <button
-                type="button"
-                class="btn-success compact"
+              <UiButton
+                variant="primary"
+                size="sm"
                 :disabled="batchProcessing"
                 @click.stop="batchReviewDream(dream, 'approve')"
               >
                 批准本条待审
-              </button>
-              <button
-                type="button"
-                class="btn-danger compact"
+              </UiButton>
+              <UiButton
+                variant="danger"
+                size="sm"
                 :disabled="batchProcessing"
                 @click.stop="batchReviewDream(dream, 'reject')"
               >
                 拒绝本条待审
-              </button>
+              </UiButton>
             </div>
         </div>
 
@@ -174,15 +163,14 @@
           v-if="dream.operationSummary.length > 0"
           class="dream-log-ops-summary"
         >
-          <span
+          <UiBadge
             v-for="(operation, index) in dream.operationSummary"
             :key="`${dream.id}:${index}`"
-            class="dream-op-chip"
-            :class="operation.status"
+            :variant="getStatusBadgeVariant(operation.status)"
           >
             {{ getOpTypeLabel(operation.type) }} ·
             {{ getStatusLabel(operation.status) }}
-          </span>
+          </UiBadge>
         </div>
 
         <div v-if="dream.expanded" class="dream-log-detail">
@@ -218,22 +206,22 @@
                 本日志还有 {{ getPendingOperations(dream).length }} 个待审操作
               </span>
               <div class="dream-detail-actions">
-                <button
-                  type="button"
-                  class="btn-success compact"
+                <UiButton
+                  variant="primary"
+                  size="sm"
                   :disabled="batchProcessing"
                   @click.stop="batchReviewDream(dream, 'approve')"
                 >
                   全部批准
-                </button>
-                <button
-                  type="button"
-                  class="btn-danger compact"
+                </UiButton>
+                <UiButton
+                  variant="danger"
+                  size="sm"
                   :disabled="batchProcessing"
                   @click.stop="batchReviewDream(dream, 'reject')"
                 >
                   全部拒绝
-                </button>
+                </UiButton>
               </div>
             </div>
 
@@ -248,9 +236,9 @@
                   <span class="dream-op-type">
                     {{ operation.typeIcon }} {{ operation.typeLabel }}
                   </span>
-                  <span class="dream-op-status" :class="operation.status">
+                  <UiBadge :variant="getStatusBadgeVariant(operation.status)">
                     {{ operation.statusLabel }}
-                  </span>
+                  </UiBadge>
                 </div>
 
                 <div class="dream-op-body">
@@ -344,22 +332,22 @@
                 </div>
 
                 <div v-if="operation.isPending" class="dream-op-actions">
-                  <button
-                    type="button"
-                    class="btn-success"
+                  <UiButton
+                    variant="primary"
+                    size="sm"
                     :disabled="isOperationProcessing(dream.filename, operation.id)"
                     @click.stop="approveOperation(dream.filename, operation.id)"
                   >
                     批准执行
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-danger"
+                  </UiButton>
+                  <UiButton
+                    variant="danger"
+                    size="sm"
                     :disabled="isOperationProcessing(dream.filename, operation.id)"
                     @click.stop="rejectOperation(dream.filename, operation.id)"
                   >
                     拒绝
-                  </button>
+                  </UiButton>
                 </div>
                 <p v-else-if="operation.reviewedAt" class="dream-reviewed-info">
                   审批时间: {{ formatDreamTimestamp(operation.reviewedAt) }}
@@ -377,6 +365,12 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { useMarkdownRenderer } from "@/composables/useMarkdownRenderer";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
 import {
   dreamApi,
   type BatchDreamOperationInput,
@@ -589,6 +583,22 @@ function getStatusLabel(status?: string): string {
       return "执行出错";
     default:
       return status || "未知";
+  }
+}
+
+function getStatusBadgeVariant(
+  status?: string
+): "secondary" | "success" | "warning" | "danger" | "outline" {
+  switch (status) {
+    case "pending_review":
+      return "warning";
+    case "approved":
+      return "success";
+    case "rejected":
+    case "error":
+      return "danger";
+    default:
+      return "secondary";
   }
 }
 
@@ -1136,28 +1146,10 @@ onMounted(async () => {
   color: var(--danger-color);
 }
 
-.dream-empty-state {
-  text-align: center;
-  padding: var(--space-8) var(--space-5);
-  opacity: 0.7;
-}
-
-.dream-empty-icon {
-  display: block;
-  font-size: var(--font-size-icon-empty-lg);
-  opacity: 0.3;
-  margin-bottom: var(--space-3);
-}
-
-.dream-empty-subtitle {
-  font-size: var(--font-size-helper);
-  opacity: 0.7;
-}
-
 .dream-workbench {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  background: var(--secondary-bg);
+  background: color-mix(in srgb, var(--secondary-bg) 72%, transparent);
   padding: var(--space-3);
   margin-bottom: var(--space-4);
 }
@@ -1200,29 +1192,8 @@ onMounted(async () => {
   margin-bottom: var(--space-3);
 }
 
-.dream-filter-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+.dream-filter-grid :deep(.ui-field) {
   min-width: 0;
-  font-size: var(--font-size-caption);
-  color: var(--text-secondary);
-}
-
-.dream-filter-field select,
-.dream-filter-field input {
-  width: 100%;
-  min-height: 34px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--primary-bg);
-  color: var(--text-primary);
-  padding: 0 var(--space-2);
-  font: inherit;
-}
-
-.dream-filter-field input {
-  font-size: var(--font-size-helper);
 }
 
 .dream-toolbar-actions,
@@ -1254,17 +1225,6 @@ onMounted(async () => {
   color: var(--warning-text);
   margin-bottom: var(--space-3);
   font-size: var(--font-size-helper);
-}
-
-.compact {
-  min-height: 28px;
-  padding: 3px var(--space-2);
-  font-size: var(--font-size-helper);
-}
-
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
 }
 
 .dream-log-card {
@@ -1306,6 +1266,11 @@ button:disabled {
   font-size: var(--font-size-body);
 }
 
+.dream-log-title .material-symbols-outlined {
+  font-size: 18px;
+  line-height: 1;
+}
+
 .dream-log-meta {
   display: flex;
   gap: var(--space-4);
@@ -1314,51 +1279,11 @@ button:disabled {
   flex-shrink: 0;
 }
 
-.dream-badge {
-  font-size: var(--font-size-helper);
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-sm);
-  font-weight: 600;
-}
-
-.dream-badge.pending {
-  background: var(--warning-bg);
-  color: var(--warning-text);
-}
-
-.dream-badge.done {
-  background: var(--success-bg);
-  color: var(--success-text);
-}
-
 .dream-log-ops-summary {
   padding: 0 var(--space-4) var(--space-2);
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-}
-
-.dream-op-chip {
-  font-size: var(--font-size-helper);
-  padding: 2px var(--space-2);
-  border-radius: 4px;
-  background: var(--tertiary-bg);
-}
-
-.dream-op-chip.pending_review {
-  color: var(--warning-text);
-}
-
-.dream-op-chip.approved {
-  color: var(--success-text);
-}
-
-.dream-op-chip.rejected {
-  color: var(--danger-text);
-}
-
-.dream-op-chip.error {
-  color: var(--danger-text);
 }
 
 .dream-log-detail {
@@ -1422,28 +1347,6 @@ button:disabled {
 .dream-op-type {
   font-weight: 600;
   font-size: var(--font-size-body);
-}
-
-.dream-op-status {
-  font-size: var(--font-size-caption);
-  padding: 2px var(--space-2);
-  border-radius: 4px;
-}
-
-.dream-op-status.pending_review {
-  color: var(--warning-text);
-}
-
-.dream-op-status.approved {
-  color: var(--success-text);
-}
-
-.dream-op-status.rejected {
-  color: var(--danger-text);
-}
-
-.dream-op-status.error {
-  color: var(--danger-text);
 }
 
 .dream-op-body {
@@ -1563,9 +1466,9 @@ button:disabled {
     flex-direction: column;
   }
 
-  .dream-toolbar-actions button,
-  .dream-log-actions button,
-  .dream-detail-actions button {
+  .dream-toolbar-actions :deep(.ui-button),
+  .dream-log-actions :deep(.ui-button),
+  .dream-detail-actions :deep(.ui-button) {
     width: 100%;
   }
 
