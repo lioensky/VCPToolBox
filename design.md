@@ -453,6 +453,145 @@ new-api 常见动效:
 - 新增原语必须包含 `@media (prefers-reduced-motion: reduce)`。
 - 复杂页面不要加额外装饰动画; 只保留状态反馈和布局过渡。
 
+## 单页改造流程
+
+后续每次改造 AdminPanel 页面, 不应直接开始堆样式。推荐采用"研究参考 -> 抽象规律 -> 小步落地 -> 验证回收"四段流程。
+
+### 1. 先界定页面类型
+
+改造前先判断当前页面属于哪一种后台页面, 因为不同页面的视觉重心不同:
+
+| 页面类型 | 主要目标 | 参考方向 |
+| --- | --- | --- |
+| 复杂设置页 | 分清全局设置、当前对象设置、重复项和危险操作 | new-api system settings / provider settings |
+| 列表/表格页 | 扫描、筛选、分页、批量操作 | new-api data-table / usage logs |
+| 日志/运维页 | 高密度阅读、过滤、状态统计、滚动控制 | new-api usage logs / deployment logs |
+| 编辑器页 | 左右结构、文件/对象选择、编辑、预览/保存 | new-api settings + editor-like dialogs |
+| 仪表盘页 | 信息摘要、状态卡片、主次分区 | new-api overview/dashboard |
+
+不要用同一种卡片/表单样式套所有页面。日志页应像工具, 设置页应像结构化表单, 仪表盘应像摘要面板。
+
+### 2. 去 new-api 找同类参考
+
+在 `C:\VCP\Eric\new-api\web\default\src\features` 里先找同类页面, 再看它使用了哪些公共组件。
+
+常用搜索方式:
+
+```bash
+rg -n "Logs|Settings|Table|Filter|Toolbar|Section|Card|Switch|Input" C:\VCP\Eric\new-api\web\default\src\features
+```
+
+重点不要只看页面入口, 还要追到组件层:
+
+- 页面框架: `SectionPageLayout`, `SettingsSection`, `SettingsPage`。
+- 工具条: filter toolbar、header actions、view options。
+- 表单结构: settings-form-layout、field、switch item、control group。
+- 列表/表格: data-table、columns、mobile card。
+- 状态统计: stats badge、summary cards、alert。
+- 弹窗/抽屉: dialog、drawer、footer actions。
+
+阅读参考页面时记录五件事:
+
+1. 页面分几层: header、toolbar、content、footer、dialog。
+2. 哪些区域有背景色, 哪些区域只是透明/白底。
+3. 主题色用在哪里: 主按钮、焦点、选中态、细 accent、状态点。
+4. 控件高度和间距: 28/32/36px 哪一档, gap 是 8/12/16px 哪一档。
+5. 重复数据怎么呈现: 表格、紧凑列表、摘要行 + 详情区、tabs/chips。
+
+### 3. 抽象规律, 不复制技术栈
+
+new-api 的实现依赖 React、Tailwind 和 shadcn 风格组件, 本项目不要复制这些技术栈。要抽象的是视觉和信息架构:
+
+- 把 Tailwind class 翻译成项目 token 和局部 CSS。
+- 把 shadcn 组件结构翻译成 `Ui*` 原语或页面内 class。
+- 用项目已有 token: `--primary-text`, `--secondary-text`, `--input-bg`, `--border-color`, `--accent-bg`, `--highlight-text`。
+- 避免复制 `bg-card/50` 这类写法; 应翻译成 `color-mix(...)` 或现有 surface token。
+- 如果一个效果需要全局能力, 优先沉淀到 `UiField / UiSettingsGroup / UiToolbar / UiTableFrame` 等原语, 不要每页重复写。
+
+判断是否应该抽成原语:
+
+- 同类结构已经出现 2-3 次。
+- 该结构包含 label/description/error/action 等语义, 不只是单纯 margin。
+- 页面局部 class 已经开始影响多个业务区。
+- 后续迁移页面明显会继续用到。
+
+判断不应该抽象:
+
+- 只是某个页面的特殊布局。
+- 还没有确认视觉方向稳定。
+- 需要牵动大量旧页面兼容。
+- 会为了抽象而改变业务逻辑或数据结构。
+
+### 4. 小步落地页面
+
+每次页面改造优先控制范围, 不要一次做全站重写。
+
+必须遵守的落地约束:
+
+- 优先使用已有原语: `UiButton`, `UiIconButton`, `UiInput`, `UiSelect`, `UiTextarea`, `UiBadge`, `UiField`, `UiSettingsCard`, `UiSettingsForm`, `UiSettingsGroup`, `UiSettingsSwitchRow`, `UiPageActions`。
+- 不要在页面里重新发明按钮、输入框、开关、badge、danger zone; 只有当原语确实无法表达时, 才写页面局部 class。
+- 页面局部 class 应主要负责布局和少量特殊场景, 不应复制一整套控件视觉。
+- 如果发现某个页面局部控件会在多个页面复用, 先考虑补原语或增强现有原语, 再继续页面迁移。
+- 颜色必须先对齐项目 token 和已完成试点页面, 不要临时写固定色值。
+- 主题色只用于 primary action、focus、选中态、状态 accent 和危险/警告/成功提示; 普通表单和列表优先使用中性 surface。
+- 节奏必须对齐 28/32/36px 控件高度、8/12/16px 间距阶梯、16-18px 图标基准。
+- hover/focus/active 只能有一套清晰反馈, 避免内层 input 和外层容器同时出现描边。
+- 改颜色前先判断该元素的语义: 可编辑输入、只读数据、状态 badge、列表行、危险操作, 不能都用同一种灰底。
+
+推荐顺序:
+
+1. 先保留业务逻辑和数据流, 只改模板结构与 CSS。
+2. 先整理页面层级: header、toolbar、content、footer。
+3. 再统一控件高度: 28/32/36px, 图标 16-18px。
+4. 再调颜色: 中性 surface 优先, 主题色只做焦点/选中/状态。
+5. 再优化密度: gap、padding、表格行高、列表项高度。
+6. 最后处理响应式和滚动: 外层滚动 vs 内部滚动只能有一个主导。
+
+页面改造时的检查清单:
+
+- 页面是否第一屏就是可操作界面, 没有多余说明占位。
+- 标题、说明、操作按钮是否分层清楚。
+- 普通输入项是否像输入项, 统计数据是否像 badge/summary, 危险操作是否独立。
+- 普通列表行是否透明或中性, 特殊状态才使用轻 tint。
+- hover/focus 是否只有一层反馈, 没有内外双 outline。
+- 滚动条是否只出现在最合理的容器里。
+- 移动端是否只是自然堆叠, 不出现按钮挤压和文字溢出。
+
+### 5. 对照本项目已完成试点
+
+当前可作为参考的本项目页面:
+
+- `SemanticModelRouterEditor`: 复杂设置页试点。适合参考设置项分层、重复项压缩、预设切换、未保存状态和保存动作。
+- `ServerLogViewer`: 日志/运维页试点。适合参考顶部工具条、统计 badge、透明普通日志行、特殊状态细 accent 和内部滚动。
+- 主题编辑器 shell 选项: 适合参考布局模式切换、外壳设置、快速外观与高级配置分区。
+
+改新页面时, 先找这几个页面中最相近的一个, 再去 new-api 找外部参考。这样能保证本项目内部视觉连续, 不会每页都像从不同系统搬来的。
+
+### 6. 验证和提交
+
+每次改造完成后至少做:
+
+```bash
+cd AdminPanel-Vue
+npx vue-tsc --noEmit
+npx vite build --mode development
+```
+
+提交前检查:
+
+- 只 stage 源码和必要文档。
+- 不把 `AdminPanel-Vue/dist` hash 构建产物混入 PR, 除非上游明确要求提交构建结果。
+- 不提交运行时数据, 如 `SemanticModelRouter.json`, plugin state, `code.bin`, `sarPrompt.json`。
+- PR 说明用中文简洁说明"打磨了什么、为什么、验证了什么"。
+
+如果工作区已经有很多脏文件, 使用显式路径 stage:
+
+```bash
+git add AdminPanel-Vue/src/views/SomePage.vue design.md
+```
+
+不要使用 `git add -A`。
+
 ## 优先级建议
 
 短期最有收益:
