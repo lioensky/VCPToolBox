@@ -76,10 +76,12 @@
                 <span class="material-symbols-outlined">more_vert</span>
               </summary>
               <div class="pane-toolbar-menu-content" role="menu" aria-label="Agent 映射更多操作">
-                <button type="button" @click="refreshAll" class="pane-toolbar-menu-item">
-                  <span class="material-symbols-outlined">refresh</span>
+                <UiButton variant="ghost" size="sm" class="pane-toolbar-menu-item" @click="refreshAll">
+                  <template #leading>
+                    <span class="material-symbols-outlined">refresh</span>
+                  </template>
                   刷新数据
-                </button>
+                </UiButton>
               </div>
             </details>
           </div>
@@ -314,14 +316,14 @@
                 <span class="eyebrow">Quick Insert</span>
                 <h4>常用占位符</h4>
               </div>
-              <button
-                type="button"
+              <UiIconButton
                 class="placeholder-sidebar-close"
+                label="收起常用占位符侧栏"
                 aria-label="收起常用占位符侧栏"
                 @click="isPlaceholderSidebarOpen = false"
               >
                 <span class="material-symbols-outlined">chevron_right</span>
-              </button>
+              </UiIconButton>
             </header>
 
             <div class="placeholder-search">
@@ -1399,20 +1401,7 @@ onBeforeRouteLeave(async () => {
 }
 
 .placeholder-sidebar-close {
-  display: inline-grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-full);
-  background: var(--secondary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-}
-
-.placeholder-sidebar-close:hover {
-  color: var(--primary-text);
-  border-color: var(--highlight-text);
+  flex: 0 0 auto;
 }
 
 .placeholder-search {
