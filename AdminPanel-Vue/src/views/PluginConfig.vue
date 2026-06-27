@@ -66,16 +66,17 @@
                   rows="4"
                   :class="{ 'password-masked': !sensitiveFields[entry.key] }"
                 />
-                <UiButton
-                  variant="ghost"
-                  size="xs"
+                <UiIconButton
                   class="toggle-visibility-btn"
+                  :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                  :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                   @click="toggleSensitiveField(entry.key)"
-                  :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                   :aria-pressed="sensitiveFields[entry.key]"
                 >
-                  {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                </UiButton>
+                  <span class="material-symbols-outlined">
+                    {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                  </span>
+                </UiIconButton>
               </div>
               <UiTextarea
                 v-else
@@ -93,16 +94,17 @@
                 :model-value="toTextInputValue(entry.value)"
                 @update:model-value="entry.value = $event"
               />
-              <UiButton
-                variant="ghost"
-                size="xs"
+              <UiIconButton
                 class="toggle-visibility-btn"
+                :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                 @click="toggleSensitiveField(entry.key)"
-                :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                 :aria-pressed="sensitiveFields[entry.key]"
               >
-                {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-              </UiButton>
+                <span class="material-symbols-outlined">
+                  {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                </span>
+              </UiIconButton>
             </div>
 
             <UiInput
@@ -172,16 +174,17 @@
                     rows="4"
                     :class="{ 'password-masked': !sensitiveFields[entry.key] }"
                   />
-                  <UiButton
-                    variant="ghost"
-                    size="xs"
+                  <UiIconButton
                     class="toggle-visibility-btn"
+                    :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                    :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                     @click="toggleSensitiveField(entry.key)"
-                    :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                     :aria-pressed="sensitiveFields[entry.key]"
                   >
-                    {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                  </UiButton>
+                    <span class="material-symbols-outlined">
+                      {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                    </span>
+                  </UiIconButton>
                 </div>
                 <UiTextarea
                   v-else
@@ -199,16 +202,17 @@
                   :model-value="toTextInputValue(entry.value)"
                   @update:model-value="entry.value = $event"
                 />
-                <UiButton
-                  variant="ghost"
-                  size="xs"
+                <UiIconButton
                   class="toggle-visibility-btn"
+                  :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                  :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                   @click="toggleSensitiveField(entry.key)"
-                  :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                   :aria-pressed="sensitiveFields[entry.key]"
                 >
-                  {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                </UiButton>
+                  <span class="material-symbols-outlined">
+                    {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                  </span>
+                </UiIconButton>
               </div>
 
               <UiInput
@@ -274,6 +278,7 @@ import UiButton from '@/components/ui/UiButton.vue'
 import UiCard from '@/components/ui/UiCard.vue'
 import UiEmptyState from '@/components/ui/UiEmptyState.vue'
 import UiField from '@/components/ui/UiField.vue'
+import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { usePluginConfigStore, type InvocationCommand } from '@/stores/pluginConfig'
@@ -462,13 +467,13 @@ watch(
 }
 
 .input-with-toggle :deep(.ui-input) {
-  padding-right: 70px;
+  padding-right: 42px;
 }
 
 .toggle-visibility-btn {
   position: absolute;
   right: 8px;
-  top: 4px;
+  top: 2px;
 }
 
 /* 文本掩码样式 (用于 textarea) */
