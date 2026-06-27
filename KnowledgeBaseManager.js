@@ -697,6 +697,12 @@ class KnowledgeBaseManager {
         return rows;
     }
 
+    _isVectorLike(value) {
+        return Array.isArray(value) ||
+            value instanceof Float32Array ||
+            (ArrayBuffer.isView(value) && typeof value.length === 'number');
+    }
+
     _cleanupStalePairwiseSimilarityModels() {
         try {
             if (!this.tagMemoEngine?.modelSig) return;
@@ -902,7 +908,7 @@ class KnowledgeBaseManager {
             let coreBoostFactor = 1.33; // 默认 33% 提升
             let options = null; // 🌟 V8: 扩展选项（geodesicRerank 等）
 
-            if (typeof arg1 === 'string' && Array.isArray(arg2)) {
+            if (typeof arg1 === 'string' && this._isVectorLike(arg2)) {
                 diaryName = arg1;
                 queryVec = arg2;
                 k = arg3 || 5;
@@ -928,7 +934,7 @@ class KnowledgeBaseManager {
             } else if (typeof arg1 === 'string') {
                 // 纯文本搜索暂略，通常插件会先向量化
                 return [];
-            } else if (Array.isArray(arg1)) {
+            } else if (this._isVectorLike(arg1)) {
                 queryVec = arg1;
                 k = arg2 || 5;
                 tagBoost = arg3 || 0;
