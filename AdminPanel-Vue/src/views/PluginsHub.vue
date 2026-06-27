@@ -1,6 +1,6 @@
 <template>
   <section class="plugins-hub">
-    <section class="hub-hero card">
+    <UiCard class="hub-hero">
       <div class="hero-copy">
         <span class="eyebrow hero-eyebrow">Plugin Center</span>
         <h2>插件中心与启用管理</h2>
@@ -27,38 +27,36 @@
           <strong>{{ pluginSummary.pinned }}</strong>
         </article>
       </div>
-    </section>
+    </UiCard>
 
-    <section class="card view-tabs-card">
+    <UiCard class="view-tabs-card" size="sm" variant="subtle">
       <div class="view-mode-switch" role="group" aria-label="插件视图切换">
-        <button
+        <UiButton
           type="button"
-          class="view-mode-btn"
-          :class="{ active: viewMode === 'grouped' }"
+          :variant="viewMode === 'grouped' ? 'primary' : 'outline'"
           :aria-pressed="viewMode === 'grouped'"
           @click="viewMode = 'grouped'"
         >
-          <span class="material-symbols-outlined">view_agenda</span>
+          <template #leading><span class="material-symbols-outlined">view_agenda</span></template>
           <span>分组视图</span>
-        </button>
-        <button
+        </UiButton>
+        <UiButton
           type="button"
-          class="view-mode-btn"
-          :class="{ active: viewMode === 'list' }"
+          :variant="viewMode === 'list' ? 'primary' : 'outline'"
           :aria-pressed="viewMode === 'list'"
           @click="viewMode = 'list'"
         >
-          <span class="material-symbols-outlined">view_list</span>
+          <template #leading><span class="material-symbols-outlined">view_list</span></template>
           <span>列表视图</span>
-        </button>
+        </UiButton>
       </div>
-    </section>
+    </UiCard>
 
-    <section class="card controls-card">
+    <UiCard class="controls-card" size="sm" variant="subtle">
       <div class="controls-main-row">
         <label class="search-field">
           <span class="material-symbols-outlined">search</span>
-          <input
+          <UiInput
             ref="pluginSearchInputRef"
             v-model="searchQuery"
             type="search"
@@ -67,29 +65,29 @@
           />
         </label>
 
-        <button
+        <UiButton
           type="button"
-          class="btn-secondary"
+          variant="outline"
           :disabled="isRefreshing"
           @click="refreshPlugins()"
         >
-          <span class="material-symbols-outlined">refresh</span>
+          <template #leading><span class="material-symbols-outlined">refresh</span></template>
           <span>{{ isRefreshing ? "刷新中…" : "刷新列表" }}</span>
-        </button>
+        </UiButton>
       </div>
 
       <div class="filter-row" aria-label="插件筛选">
-        <button
+        <UiButton
           v-for="filter in visibleFilterOptions"
           :key="filter.value"
           type="button"
-          class="filter-pill"
-          :class="{ active: activeFilter === filter.value }"
+          size="sm"
+          :variant="activeFilter === filter.value ? 'primary' : 'outline'"
           :aria-pressed="activeFilter === filter.value"
           @click="selectFilter(filter.value)"
         >
           {{ filter.label }}
-        </button>
+        </UiButton>
 
         <details
           v-if="overflowFilterOptions.length > 0"
@@ -102,69 +100,60 @@
             <span class="pill-count">{{ overflowFilterOptions.length }}</span>
           </summary>
           <div class="filters-overflow-menu" role="menu" aria-label="更多插件筛选">
-            <button
+            <UiButton
               v-for="filter in overflowFilterOptions"
               :key="filter.value"
               type="button"
-              class="filter-pill"
-              :class="{ active: activeFilter === filter.value }"
+              size="sm"
+              :variant="activeFilter === filter.value ? 'primary' : 'ghost'"
               :aria-pressed="activeFilter === filter.value"
               @click="selectFilter(filter.value)"
             >
               {{ filter.label }}
-            </button>
+            </UiButton>
           </div>
         </details>
       </div>
-    </section>
+    </UiCard>
 
     <section
       v-if="pinnedPluginRecords.length > 0 || recentPluginVisits.length > 0"
       class="quick-grid"
     >
-      <article v-if="pinnedPluginRecords.length > 0" class="card quick-card">
-        <div class="card-header quick-card-header">
-          <h3 class="card-title">
-            <span class="material-symbols-outlined">keep</span>
-            <span>侧栏固定插件</span>
-          </h3>
-        </div>
-
+      <UiCard v-if="pinnedPluginRecords.length > 0" class="quick-card" title="侧栏固定插件" size="sm" variant="subtle">
+        <template #icon><span class="material-symbols-outlined">keep</span></template>
         <div class="quick-list">
-          <button
+          <UiButton
             v-for="plugin in pinnedPluginRecords"
             :key="plugin.pluginName"
             type="button"
-            class="quick-link"
+            variant="outline"
+            size="sm"
             @click="openPluginConfig(plugin.pluginName)"
           >
-            <span class="material-symbols-outlined">{{ plugin.icon }}</span>
+            <template #leading><span class="material-symbols-outlined">{{ plugin.icon }}</span></template>
             <span>{{ plugin.displayName }}</span>
-          </button>
+          </UiButton>
         </div>
-      </article>
+      </UiCard>
 
-      <article v-if="recentPluginVisits.length > 0" class="card quick-card">
-        <div class="card-header quick-card-header">
-          <h3 class="card-title">
-            <span class="material-symbols-outlined">history</span>
-            <span>最近访问插件</span>
-          </h3>
-        </div>
+      <UiCard v-if="recentPluginVisits.length > 0" class="quick-card" title="最近访问插件" size="sm" variant="subtle">
+        <template #icon><span class="material-symbols-outlined">history</span></template>
 
         <div class="quick-list">
-          <button
+          <UiButton
             v-for="item in recentPluginVisits"
             :key="item.pluginName"
             type="button"
-            class="quick-link"
+            variant="outline"
+            size="sm"
             @click="openPluginConfig(item.pluginName)"
           >
-            <span class="material-symbols-outlined">{{ item.icon }}</span>
+            <template #leading><span class="material-symbols-outlined">{{ item.icon }}</span></template>
             <span>{{ item.label }}</span>
-          </button>
+          </UiButton>
         </div>
-      </article>
+      </UiCard>
     </section>
 
     <section class="results-header">
@@ -178,11 +167,9 @@
       </div>
     </section>
 
-    <section v-if="visiblePluginRecords.length === 0" class="card empty-state">
-      <span class="material-symbols-outlined">search_off</span>
-      <h3>没有匹配的插件</h3>
-      <p>试试切换筛选条件，或者搜索插件原始名称。</p>
-    </section>
+    <UiCard v-if="visiblePluginRecords.length === 0" class="empty-state" variant="subtle">
+      <UiEmptyState title="没有匹配的插件" description="试试切换筛选条件，或者搜索插件原始名称。" />
+    </UiCard>
 
     <section v-else-if="viewMode === 'grouped'" class="plugin-grouped-view">
       <article
@@ -197,19 +184,23 @@
             <span class="type-count">{{ group.records.length }}</span>
           </h3>
 
-          <button
+          <UiButton
             type="button"
             class="group-collapse-toggle"
-            :class="{ 'is-collapsed': isTypeGroupCollapsed(group.type) }"
+            variant="outline"
+            size="sm"
             :aria-expanded="!isTypeGroupCollapsed(group.type)"
             :aria-controls="getPluginTypeGroupContentId(group.type)"
             @click="toggleTypeGroupCollapsed(group.type)"
           >
             <span>{{ isTypeGroupCollapsed(group.type) ? "展开" : "折叠" }}</span>
-            <span class="material-symbols-outlined group-collapse-icon"
-              >expand_more</span
-            >
-          </button>
+            <template #trailing>
+              <span
+                class="material-symbols-outlined group-collapse-icon"
+                :class="{ 'is-collapsed': isTypeGroupCollapsed(group.type) }"
+              >expand_more</span>
+            </template>
+          </UiButton>
         </div>
 
         <transition name="group-collapse">
@@ -233,45 +224,39 @@
                     <div class="plugin-heading">
                       <div class="plugin-title-row">
                         <h3>{{ plugin.displayName }}</h3>
-                        <span
-                          class="status-badge"
-                          :class="plugin.enabled ? 'status-enabled' : 'status-disabled'"
-                        >
+                        <UiBadge :variant="plugin.enabled ? 'success' : 'danger'">
                           {{ plugin.enabled ? "启用中" : "已禁用" }}
-                        </span>
-                        <span
+                        </UiBadge>
+                        <UiBadge
                           v-if="plugin.isDistributed"
-                          class="status-badge status-neutral"
+                          variant="warning"
                         >
                           分布式
-                        </span>
-                        <span
+                        </UiBadge>
+                        <UiBadge
                           v-if="plugin.isPinned"
-                          class="status-badge status-pinned"
+                          variant="info"
                         >
                           已固定
-                        </span>
+                        </UiBadge>
                       </div>
                       <p class="plugin-original-name">{{ plugin.pluginName }}</p>
                     </div>
                   </div>
 
                   <div class="plugin-card-side">
-                    <button
+                    <UiIconButton
                       type="button"
-                      class="pin-toggle"
-                      :class="{ 'is-active': plugin.isPinned }"
+                      :active="plugin.isPinned"
                       :title="plugin.isPinned ? '取消固定' : '固定到侧栏'"
-                      :aria-label="
-                        plugin.isPinned ? '取消固定到侧栏' : '固定到侧栏'
-                      "
+                      :label="plugin.isPinned ? '取消固定到侧栏' : '固定到侧栏'"
                       :aria-pressed="plugin.isPinned"
                       @click="togglePinned(plugin.pluginName)"
                     >
                       <span class="material-symbols-outlined">
                         {{ plugin.isPinned ? "keep" : "keep_off" }}
                       </span>
-                    </button>
+                    </UiIconButton>
 
                     <span class="plugin-version-badge">
                       v{{ plugin.plugin.manifest.version || "0.0.0" }}
@@ -310,18 +295,17 @@
                   </div>
 
                   <div class="plugin-actions">
-                    <button
+                    <UiButton
                       type="button"
-                      class="btn-primary"
                       @click="openPluginConfig(plugin.pluginName)"
                     >
-                      <span class="material-symbols-outlined">open_in_new</span>
+                      <template #leading><span class="material-symbols-outlined">open_in_new</span></template>
                       <span>打开配置</span>
-                    </button>
+                    </UiButton>
 
-                    <button
+                    <UiButton
                       type="button"
-                      :class="plugin.enabled ? 'btn-danger' : 'btn-secondary'"
+                      :variant="plugin.enabled ? 'danger' : 'outline'"
                       :disabled="
                         plugin.isDistributed || isPluginPending(plugin.pluginName)
                       "
@@ -330,9 +314,9 @@
                       "
                       @click="togglePlugin(plugin.plugin)"
                     >
-                      <span class="material-symbols-outlined">
+                      <template #leading><span class="material-symbols-outlined">
                         {{ plugin.enabled ? "power_settings_new" : "bolt" }}
-                      </span>
+                      </span></template>
                       <span>{{
                         isPluginPending(plugin.pluginName)
                           ? "处理中…"
@@ -340,7 +324,7 @@
                             ? "禁用插件"
                             : "启用插件"
                       }}</span>
-                    </button>
+                    </UiButton>
                   </div>
                 </div>
               </article>
@@ -366,40 +350,36 @@
               <div class="plugin-heading">
                 <div class="plugin-title-row">
                   <h3>{{ plugin.displayName }}</h3>
-                  <span
-                    class="status-badge"
-                    :class="plugin.enabled ? 'status-enabled' : 'status-disabled'"
-                  >
+                  <UiBadge :variant="plugin.enabled ? 'success' : 'danger'">
                     {{ plugin.enabled ? "启用中" : "已禁用" }}
-                  </span>
-                  <span
+                  </UiBadge>
+                  <UiBadge
                     v-if="plugin.isDistributed"
-                    class="status-badge status-neutral"
+                    variant="warning"
                   >
                     分布式
-                  </span>
-                  <span v-if="plugin.isPinned" class="status-badge status-pinned">
+                  </UiBadge>
+                  <UiBadge v-if="plugin.isPinned" variant="info">
                     已固定
-                  </span>
+                  </UiBadge>
                 </div>
                 <p class="plugin-original-name">{{ plugin.pluginName }}</p>
               </div>
             </div>
 
             <div class="plugin-card-side">
-              <button
+              <UiIconButton
                 type="button"
-                class="pin-toggle"
-                :class="{ 'is-active': plugin.isPinned }"
+                :active="plugin.isPinned"
                 :title="plugin.isPinned ? '取消固定' : '固定到侧栏'"
-                :aria-label="plugin.isPinned ? '取消固定到侧栏' : '固定到侧栏'"
+                :label="plugin.isPinned ? '取消固定到侧栏' : '固定到侧栏'"
                 :aria-pressed="plugin.isPinned"
                 @click="togglePinned(plugin.pluginName)"
               >
                 <span class="material-symbols-outlined">
                   {{ plugin.isPinned ? "keep" : "keep_off" }}
                 </span>
-              </button>
+              </UiIconButton>
 
               <span class="plugin-version-badge">
                 v{{ plugin.plugin.manifest.version || "0.0.0" }}
@@ -427,25 +407,24 @@
             </div>
 
             <div class="plugin-actions">
-              <button
+              <UiButton
                 type="button"
-                class="btn-primary"
                 @click="openPluginConfig(plugin.pluginName)"
               >
-                <span class="material-symbols-outlined">open_in_new</span>
+                <template #leading><span class="material-symbols-outlined">open_in_new</span></template>
                 <span>打开配置</span>
-              </button>
+              </UiButton>
 
-              <button
+              <UiButton
                 type="button"
-                :class="plugin.enabled ? 'btn-danger' : 'btn-secondary'"
+                :variant="plugin.enabled ? 'danger' : 'outline'"
                 :disabled="plugin.isDistributed || isPluginPending(plugin.pluginName)"
                 :title="plugin.isDistributed ? '分布式插件状态由所属节点管理' : undefined"
                 @click="togglePlugin(plugin.plugin)"
               >
-                <span class="material-symbols-outlined">
+                <template #leading><span class="material-symbols-outlined">
                   {{ plugin.enabled ? "power_settings_new" : "bolt" }}
-                </span>
+                </span></template>
                 <span>{{
                   isPluginPending(plugin.pluginName)
                     ? "处理中…"
@@ -453,7 +432,7 @@
                       ? "禁用插件"
                       : "启用插件"
                 }}</span>
-              </button>
+              </UiButton>
             </div>
           </div>
         </article>
@@ -485,6 +464,12 @@ import {
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { useAppStore } from "@/stores/app";
 import { showMessage } from "@/utils";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
 import type { PluginInfo } from "@/types/api.plugin";
 
 const router = useRouter();
@@ -521,7 +506,7 @@ const pendingPluginNames = ref<string[]>([]);
 const recentVisits = useRecentVisits();
 const navigationUsage = useNavigationUsage();
 const collapsedTypeGroups = ref<Record<string, boolean>>({});
-const pluginSearchInputRef = ref<HTMLInputElement | null>(null);
+const pluginSearchInputRef = ref<{ focus: () => void; select: () => void } | null>(null);
 const filterOverflowOpen = ref(false);
 const MAX_VISIBLE_FILTERS = 5;
 
@@ -887,45 +872,6 @@ watch(activeFilter, () => {
   gap: var(--space-2);
 }
 
-.view-mode-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition:
-    background-color 0.2s ease,
-    color 0.2s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-.view-mode-btn:hover {
-  color: var(--primary-text);
-  background: var(--accent-bg);
-  border-color: color-mix(in srgb, var(--button-bg) 30%, transparent);
-}
-
-.view-mode-btn.active {
-  color: var(--on-accent-text);
-  background: var(--button-bg);
-  border-color: color-mix(in srgb, var(--button-bg) 72%, var(--border-color));
-}
-
-.view-mode-btn:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
-
-.search-field input:focus:not(:focus-visible) {
-  outline: none;
-}
-
 .filter-row {
   display: flex;
   flex-wrap: wrap;
@@ -996,11 +942,6 @@ watch(activeFilter, () => {
   z-index: 5;
 }
 
-.filters-overflow-menu .filter-pill {
-  width: 100%;
-  justify-content: space-between;
-}
-
 .quick-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1014,33 +955,7 @@ watch(activeFilter, () => {
 .quick-list {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
-}
-
-.quick-link {
-  display: inline-flex;
-  align-items: center;
   gap: var(--space-2);
-  padding: 10px 14px;
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
-  background: var(--tertiary-bg);
-  color: var(--primary-text);
-  cursor: pointer;
-  transition:
-    border-color 0.2s ease,
-    background-color 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-.quick-link:hover {
-  border-color: color-mix(in srgb, var(--button-bg) 36%, transparent);
-  background: var(--accent-bg);
-}
-
-.quick-link:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .results-header {
@@ -1112,31 +1027,7 @@ watch(activeFilter, () => {
 }
 
 .group-collapse-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--secondary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition:
-    color 0.2s ease,
-    background-color 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.group-collapse-toggle:hover {
-  color: var(--primary-text);
-  background: color-mix(in srgb, var(--button-bg) 10%, transparent);
-  border-color: color-mix(in srgb, var(--button-bg) 28%, transparent);
-}
-
-.group-collapse-toggle:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  flex: 0 0 auto;
 }
 
 .group-collapse-icon {
@@ -1145,7 +1036,7 @@ watch(activeFilter, () => {
   transition: transform 0.24s ease;
 }
 
-.group-collapse-toggle.is-collapsed .group-collapse-icon {
+.group-collapse-icon.is-collapsed {
   transform: rotate(-90deg);
 }
 
@@ -1279,40 +1170,6 @@ watch(activeFilter, () => {
   white-space: nowrap;
 }
 
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: var(--font-size-caption);
-  font-weight: 600;
-  border: 1px solid transparent;
-}
-
-.status-enabled {
-  color: var(--success-text);
-  background: var(--success-bg);
-  border-color: var(--success-border);
-}
-
-.status-disabled {
-  color: var(--danger-text);
-  background: var(--danger-bg);
-  border-color: var(--danger-border);
-}
-
-.status-neutral {
-  color: var(--warning-text);
-  background: var(--warning-bg);
-  border-color: var(--warning-border);
-}
-
-.status-pinned {
-  color: var(--info-text);
-  background: var(--info-bg);
-  border-color: var(--info-border);
-}
-
 /* ========== Mini Pills (RagTuning 风格) ========== */
 
 .plugin-status-pills {
@@ -1320,43 +1177,6 @@ watch(activeFilter, () => {
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: 12px;
-}
-
-.pin-toggle {
-  display: inline-grid;
-  place-items: center;
-  align-items: center;
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--surface-overlay-soft);
-  color: var(--secondary-text);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition:
-    color 0.2s ease,
-    border-color 0.2s ease,
-    background-color 0.2s ease,
-    transform 0.2s ease;
-}
-
-.pin-toggle:hover {
-  color: var(--primary-text);
-  border-color: color-mix(in srgb, var(--button-bg) 30%, transparent);
-  background: color-mix(in srgb, var(--button-bg) 10%, transparent);
-}
-
-.pin-toggle.is-active {
-  color: var(--highlight-text);
-  border-color: color-mix(in srgb, var(--button-bg) 38%, transparent);
-  background: color-mix(in srgb, var(--button-bg) 14%, transparent);
-}
-
-.pin-toggle:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .plugin-card-main {
@@ -1429,15 +1249,11 @@ watch(activeFilter, () => {
     padding: 12px;
   }
 
-  .controls-main-row .btn-secondary {
-    justify-content: center;
-  }
-
   .view-mode-switch {
     width: 100%;
   }
 
-  .view-mode-btn {
+  .view-mode-switch :deep(.ui-button) {
     flex: 1;
     justify-content: center;
   }
