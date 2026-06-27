@@ -902,7 +902,7 @@ class KnowledgeBaseManager {
             let coreBoostFactor = 1.33; // 默认 33% 提升
             let options = null; // 🌟 V8: 扩展选项（geodesicRerank 等）
 
-            if (typeof arg1 === 'string' && Array.isArray(arg2)) {
+            if (typeof arg1 === 'string' && (Array.isArray(arg2) || arg2 instanceof Float32Array)) {
                 diaryName = arg1;
                 queryVec = arg2;
                 k = arg3 || 5;
@@ -928,7 +928,7 @@ class KnowledgeBaseManager {
             } else if (typeof arg1 === 'string') {
                 // 纯文本搜索暂略，通常插件会先向量化
                 return [];
-            } else if (Array.isArray(arg1)) {
+            } else if (Array.isArray(arg1) || arg1 instanceof Float32Array) {
                 queryVec = arg1;
                 k = arg2 || 5;
                 tagBoost = arg3 || 0;
