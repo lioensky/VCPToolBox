@@ -48,6 +48,101 @@
       </div>
     </section>
 
+    <section class="card theme-lab__quick-panel">
+      <div class="theme-lab__section-header">
+        <h3>快速外观</h3>
+        <p>这些选项参考 new-api 的主题抽屉：外观模式、圆角、密度、字体和内容宽度独立切换，保存后下次启动自动恢复。</p>
+      </div>
+
+      <div class="theme-lab__option-grid">
+        <div class="theme-lab__option-group">
+          <span class="theme-lab__option-title">外观模式</span>
+          <div class="theme-lab__choice-row">
+            <button
+              v-for="item in themeModeOptions"
+              :key="item.id"
+              type="button"
+              class="theme-choice"
+              :class="{ 'theme-choice--active': draft.themeMode === item.id }"
+              @click="setThemeMode(item.id)"
+            >
+              <span class="material-symbols-outlined">{{ item.icon }}</span>
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.description }}</small>
+            </button>
+          </div>
+        </div>
+
+        <div class="theme-lab__option-group">
+          <span class="theme-lab__option-title">圆角</span>
+          <div class="theme-lab__choice-row theme-lab__choice-row--compact">
+            <button
+              v-for="item in radiusOptions"
+              :key="item.id"
+              type="button"
+              class="theme-choice theme-choice--compact"
+              :class="{ 'theme-choice--active': draft.radius === item.id }"
+              @click="setRadius(item.id)"
+            >
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.description }}</small>
+            </button>
+          </div>
+        </div>
+
+        <div class="theme-lab__option-group">
+          <span class="theme-lab__option-title">密度</span>
+          <div class="theme-lab__choice-row theme-lab__choice-row--compact">
+            <button
+              v-for="item in scaleOptions"
+              :key="item.id"
+              type="button"
+              class="theme-choice theme-choice--compact"
+              :class="{ 'theme-choice--active': draft.scale === item.id }"
+              @click="setScale(item.id)"
+            >
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.description }}</small>
+            </button>
+          </div>
+        </div>
+
+        <div class="theme-lab__option-group">
+          <span class="theme-lab__option-title">字体</span>
+          <div class="theme-lab__choice-row theme-lab__choice-row--compact">
+            <button
+              v-for="item in fontOptions"
+              :key="item.id"
+              type="button"
+              class="theme-choice theme-choice--compact"
+              :class="{ 'theme-choice--active': draft.font === item.id }"
+              @click="setFont(item.id)"
+            >
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.description }}</small>
+            </button>
+          </div>
+        </div>
+
+        <div class="theme-lab__option-group">
+          <span class="theme-lab__option-title">内容宽度</span>
+          <div class="theme-lab__choice-row theme-lab__choice-row--compact">
+            <button
+              v-for="item in contentLayoutOptions"
+              :key="item.id"
+              type="button"
+              class="theme-choice theme-choice--compact"
+              :class="{ 'theme-choice--active': draft.contentLayout === item.id }"
+              @click="setContentLayout(item.id)"
+            >
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.description }}</small>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Theme (Preset + Colors) -->
     <section v-if="activeSection === 'theme'" class="theme-lab__section">
       <div class="theme-lab__section-header">
@@ -539,6 +634,11 @@ import BaseModal from '@/components/ui/BaseModal.vue'
 import {
   FULL_PRESET_THEMES,
   THEME_COLOR_GROUPS,
+  THEME_CONTENT_LAYOUT_OPTIONS,
+  THEME_FONT_OPTIONS,
+  THEME_MODE_OPTIONS,
+  THEME_RADIUS_OPTIONS,
+  THEME_SCALE_OPTIONS,
   applyThemeVars,
   applyCustomCss,
   applyBackgroundImage,
@@ -552,6 +652,11 @@ import {
   saveUserThemes,
   type FullPresetTheme,
   type ThemeColorVariable,
+  type ThemeContentLayout,
+  type ThemeFont,
+  type ThemeMode,
+  type ThemeRadius,
+  type ThemeScale,
   type ThemeSnapshot,
   type UserTheme,
 } from '@/features/theme-editor/themeEngine'
@@ -579,6 +684,11 @@ const activeSection = ref('theme')
 
 const presets = FULL_PRESET_THEMES
 const colorGroups = THEME_COLOR_GROUPS
+const themeModeOptions = THEME_MODE_OPTIONS
+const radiusOptions = THEME_RADIUS_OPTIONS
+const scaleOptions = THEME_SCALE_OPTIONS
+const fontOptions = THEME_FONT_OPTIONS
+const contentLayoutOptions = THEME_CONTENT_LAYOUT_OPTIONS
 const appStore = useAppStore()
 
 const savedSnapshot = loadThemeSnapshot()
@@ -632,6 +742,12 @@ function applyUserTheme(ut: UserTheme) {
   draft.colorOverrides = { ...ut.snapshot.colorOverrides }
   draft.customCss = ut.snapshot.customCss
   draft.backgroundImage = normalizeBackgroundSource(ut.snapshot.backgroundImage)
+  draft.themeMode = ut.snapshot.themeMode || 'dark'
+  draft.radius = ut.snapshot.radius || 'default'
+  draft.scale = ut.snapshot.scale || 'default'
+  draft.font = ut.snapshot.font || 'default'
+  draft.contentLayout = ut.snapshot.contentLayout || 'full'
+  appStore.setTheme(draft.themeMode)
   resetBgSourceCheck()
   applyFullTheme(draft)
 }
@@ -1109,11 +1225,11 @@ function getGlobalVarDefault(cssVar: string): string {
 // -- Preset themes --
 
 function getPresetAccentColor(preset: FullPresetTheme): string {
-  return preset.colors['--highlight-text-dark'] || 'oklch(0.75 0.14 230)'
+  return preset.swatches?.[0] || preset.colors['--highlight-text-dark'] || 'oklch(0.75 0.14 230)'
 }
 
 function getPresetButtonColor(preset: FullPresetTheme): string {
-  return preset.colors['--button-bg-dark'] || 'oklch(0.68 0.16 230)'
+  return preset.swatches?.[1] || preset.colors['--button-bg-dark'] || 'oklch(0.68 0.16 230)'
 }
 
 function getPresetPreviewStyle(preset: FullPresetTheme) {
@@ -1125,6 +1241,9 @@ function getPresetPreviewStyle(preset: FullPresetTheme) {
 }
 
 function getPresetSwatches(preset: FullPresetTheme): string[] {
+  if (preset.swatches?.length) {
+    return preset.swatches
+  }
   const accent = getPresetAccentColor(preset)
   const button = getPresetButtonColor(preset)
   const bg = preset.colors['--accent-bg-dark'] || 'oklch(0.30 0.08 230)'
@@ -1134,17 +1253,49 @@ function getPresetSwatches(preset: FullPresetTheme): string[] {
 function applyPreset(preset: FullPresetTheme) {
   currentPresetId.value = preset.id
   draft.activePresetId = preset.id
-  draft.colorOverrides = { ...preset.colors }
+  draft.colorOverrides = {}
   draft.customCss = preset.customCss || ''
   draft.backgroundImage = normalizeBackgroundSource(preset.backgroundImage || '')
   resetBgSourceCheck()
   applyFullTheme(draft)
 }
 
+function setThemeMode(mode: ThemeMode) {
+  draft.themeMode = mode
+  appStore.setTheme(mode)
+}
+
+function setRadius(radius: ThemeRadius) {
+  draft.radius = radius
+  applyFullTheme(draft)
+}
+
+function setScale(scale: ThemeScale) {
+  draft.scale = scale
+  applyFullTheme(draft)
+}
+
+function setFont(font: ThemeFont) {
+  draft.font = font
+  applyFullTheme(draft)
+}
+
+function setContentLayout(layout: ThemeContentLayout) {
+  draft.contentLayout = layout
+  applyFullTheme(draft)
+}
+
 // -- Color editing --
 
 function getCurrentDefault(v: ThemeColorVariable): string {
-  return appStore.theme === 'dark' ? v.defaultDark : v.defaultLight
+  if (typeof window !== 'undefined') {
+    const computedValue = getComputedStyle(document.documentElement).getPropertyValue(v.cssVar).trim()
+    if (computedValue) {
+      return computedValue
+    }
+  }
+
+  return appStore.resolvedTheme === 'dark' ? v.defaultDark : v.defaultLight
 }
 
 function getEffectiveColor(v: ThemeColorVariable): string {
@@ -1361,6 +1512,12 @@ async function handleReset() {
   draft.customCss = ''
   draft.backgroundImage = ''
   draft.activePresetId = null
+  draft.themeMode = 'dark'
+  draft.radius = 'default'
+  draft.scale = 'default'
+  draft.font = 'default'
+  draft.contentLayout = 'full'
+  appStore.setTheme('dark')
   currentPresetId.value = null
   resetBgSourceCheck()
   originalSnapshot.value = JSON.parse(JSON.stringify(draft))
@@ -1394,7 +1551,13 @@ function confirmImport() {
   draft.customCss = snapshot.customCss
   draft.backgroundImage = normalizeBackgroundSource(snapshot.backgroundImage)
   draft.activePresetId = snapshot.activePresetId
+  draft.themeMode = snapshot.themeMode
+  draft.radius = snapshot.radius
+  draft.scale = snapshot.scale
+  draft.font = snapshot.font
+  draft.contentLayout = snapshot.contentLayout
   currentPresetId.value = snapshot.activePresetId
+  appStore.setTheme(snapshot.themeMode)
   resetBgSourceCheck()
   applyFullTheme(draft)
   showImportDialog.value = false
@@ -1404,6 +1567,7 @@ function confirmImport() {
 // -- Lifecycle & guards --
 
 watch(() => appStore.theme, () => {
+  draft.themeMode = appStore.theme
   applyFullTheme(draft)
   refreshGlobalCssVars()
 })
@@ -1499,6 +1663,91 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-3);
+}
+
+.theme-lab__quick-panel {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.theme-lab__option-grid {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.theme-lab__option-group {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.theme-lab__option-title {
+  color: var(--primary-text);
+  font-size: var(--font-size-helper);
+  font-weight: 700;
+}
+
+.theme-lab__choice-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--space-2);
+}
+
+.theme-lab__choice-row--compact {
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+}
+
+.theme-choice {
+  display: grid;
+  gap: 4px;
+  min-height: 74px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(135deg, var(--surface-overlay-soft), transparent),
+    var(--secondary-bg);
+  color: var(--secondary-text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    background-color var(--transition-fast),
+    color var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.theme-choice:hover {
+  border-color: color-mix(in srgb, var(--highlight-text) 44%, var(--border-color));
+  color: var(--primary-text);
+  transform: translateY(-1px);
+}
+
+.theme-choice--active {
+  border-color: var(--highlight-text);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--highlight-text) 18%, transparent), transparent),
+    var(--secondary-bg);
+  color: var(--primary-text);
+}
+
+.theme-choice--compact {
+  min-height: 64px;
+}
+
+.theme-choice .material-symbols-outlined {
+  color: var(--highlight-text);
+  font-size: 1.25rem;
+}
+
+.theme-choice strong {
+  font-size: var(--font-size-helper);
+  font-weight: 700;
+}
+
+.theme-choice small {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  line-height: 1.35;
 }
 
 /* Section shared */

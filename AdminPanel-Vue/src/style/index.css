@@ -1,5 +1,6 @@
 @import "./fonts.css";
 @import "./layout.css";
+@import "./theme-presets.css";
 
 :root {
   /* --- 优化暗色主题 (深邃/玻璃拟态) - OKLCH 色彩空间 --- */
@@ -192,6 +193,7 @@
   --space-3xl: var(--space-8);
 
   /* --- 等宽字体栈（代码/变量展示） --- */
+  --font-body: "Noto Sans SC Variable", "Noto Sans SC", system-ui, sans-serif;
   --font-mono: "Consolas", "Monaco", "Fira Code", monospace;
 
   /* --- 排版系统（流体字号 Token）--- */
@@ -324,14 +326,14 @@ html[data-theme="light"] {
 
 html,
 body {
+  font-family: var(--font-body);
   overflow-x: hidden;
   width: 100%;
   height: 100%;
 }
 
 body {
-  font-family: "Noto Sans SC Variable", "Noto Sans SC", "PingFang SC",
-    "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  font-family: var(--font-body);
   background-color: var(--primary-bg);
   background-image: radial-gradient(
       at 0% 0%,

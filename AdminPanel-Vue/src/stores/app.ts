@@ -12,6 +12,7 @@ import {
 import { pluginApi } from "@/api";
 import { useLocalStorage } from "@/composables/useLocalStorage";
 import { applyActiveTheme } from "@/features/theme-editor/themeEngine";
+import type { ThemeMode } from "@/features/theme-editor/themeEngine";
 import type { PluginInfo } from "@/types/api.plugin";
 
 export type NavItem = AppNavItem;
@@ -33,7 +34,8 @@ function comparePluginLabels(a: PluginInfo, b: PluginInfo): number {
 }
 
 export const useAppStore = defineStore("app", () => {
-  const theme = useLocalStorage<"dark" | "light">("theme", "dark");
+  const theme = useLocalStorage<ThemeMode>("theme", "dark");
+  const resolvedTheme = ref<"dark" | "light">("dark");
   const animationsEnabled = useLocalStorage<boolean>("animationsEnabled", true);
   const isImmersiveMode = ref(false);
   const pinnedPluginNames = useLocalStorage<string[]>(
@@ -47,20 +49,46 @@ export const useAppStore = defineStore("app", () => {
   const pluginsLoaded = ref(false);
   let pluginsLoadPromise: Promise<PluginInfo[]> | null = null;
 
+  function getSystemTheme(): "dark" | "light" {
+    if (typeof window === "undefined") {
+      return "dark";
+    }
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  }
+
+  function syncThemeToDom(newTheme: ThemeMode) {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const nextResolvedTheme = newTheme === "system" ? getSystemTheme() : newTheme;
+    resolvedTheme.value = nextResolvedTheme;
+    document.documentElement.setAttribute("data-theme", nextResolvedTheme);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) {
+      meta.setAttribute("content", nextResolvedTheme === "light" ? "#f2f4f8" : "#08090d");
+    }
+  }
+
   // 自动同步主题状态到 DOM，确保 CSS 变量正确应用
   watch(
     theme,
     (newTheme) => {
-      if (typeof document !== "undefined") {
-        document.documentElement.setAttribute("data-theme", newTheme);
-        const meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) {
-          meta.setAttribute("content", newTheme === "light" ? "#f2f4f8" : "#08090d");
-        }
-      }
+      syncThemeToDom(newTheme);
     },
     { immediate: true }
   );
+
+  if (typeof window !== "undefined") {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    mediaQuery.addEventListener("change", () => {
+      if (theme.value === "system") {
+        syncThemeToDom("system");
+      }
+    });
+  }
 
   // 启动时应用保存的自定义主题（覆盖 -dark/-light 变量，切换模式时 CSS 自动选择）
   applyActiveTheme();
@@ -74,7 +102,7 @@ export const useAppStore = defineStore("app", () => {
       .filter((plugin): plugin is PluginInfo => plugin !== undefined)
   );
 
-  function setTheme(newTheme: "dark" | "light") {
+  function setTheme(newTheme: ThemeMode) {
     theme.value = newTheme;
   }
 
@@ -179,6 +207,7 @@ export const useAppStore = defineStore("app", () => {
 
   return {
     theme,
+    resolvedTheme,
     animationsEnabled,
     isImmersiveMode,
     navItems,

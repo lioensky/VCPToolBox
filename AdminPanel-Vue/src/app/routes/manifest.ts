@@ -11,6 +11,7 @@ export type AppRouteId =
   | "login"
   | "dashboard"
   | "base-config"
+  | "theme-editor"
   | "dynamic-tools-manager"
   | "daily-notes-manager"
   | "knowledge-base-manager"
@@ -98,6 +99,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     path: "/base-config",
     title: "全局基础配置",
     icon: "settings",
+    requiresAuth: true,
+    navGroup: "core",
+    showInSidebar: true,
+  },
+  {
+    id: "theme-editor",
+    routeName: "ThemeEditor",
+    path: "/theme-editor",
+    title: "主题编辑器",
+    icon: "palette",
     requiresAuth: true,
     navGroup: "core",
     showInSidebar: true,

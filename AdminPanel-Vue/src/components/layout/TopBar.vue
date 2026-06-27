@@ -86,10 +86,8 @@
               <span>{{ animationsEnabled ? "关闭动画" : "开启动画" }}</span>
             </button>
             <button @click="toggleTheme" class="dropdown-item">
-              <span class="material-symbols-outlined">{{
-                theme === "dark" ? "light_mode" : "dark_mode"
-              }}</span>
-              <span>{{ theme === "dark" ? "切换亮色" : "切换暗色" }}</span>
+              <span class="material-symbols-outlined">{{ themeToggleIcon }}</span>
+              <span>{{ themeToggleLabel }}</span>
             </button>
             <div class="dropdown-divider"></div>
             <button @click="restartServer" class="dropdown-item danger">
@@ -167,6 +165,16 @@ const appStore = useAppStore();
 const authStore = useAuthStore();
 
 const theme = computed(() => appStore.theme);
+const themeToggleIcon = computed(() => {
+  if (theme.value === "dark") return "light_mode";
+  if (theme.value === "light") return "desktop_windows";
+  return "dark_mode";
+});
+const themeToggleLabel = computed(() => {
+  if (theme.value === "dark") return "切换亮色";
+  if (theme.value === "light") return "跟随系统";
+  return "切换暗色";
+});
 const animationsEnabled = computed(() => appStore.animationsEnabled);
 const logger = createLogger("TopBar");
 
@@ -187,7 +195,8 @@ function toggleUserMenu() {
 }
 
 function toggleTheme() {
-  appStore.setTheme(theme.value === "dark" ? "light" : "dark");
+  const nextTheme = theme.value === "dark" ? "light" : theme.value === "light" ? "system" : "dark";
+  appStore.setTheme(nextTheme);
   emit("closeAllMenus");
 }
 
