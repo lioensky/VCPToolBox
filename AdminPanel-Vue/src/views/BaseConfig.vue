@@ -73,16 +73,17 @@
                           :class="{ 'password-masked': !sensitiveFields[entry.key] }"
                           autocomplete="off"
                         />
-                        <UiButton
-                          type="button"
+                        <UiIconButton
                           class="toggle-visibility-btn"
-                          variant="ghost"
                           size="sm"
+                          :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                          :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                           @click="toggleSensitiveField(entry.key)"
-                          :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                         >
-                          {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                        </UiButton>
+                          <span class="material-symbols-outlined">
+                            {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                          </span>
+                        </UiIconButton>
                       </div>
 
                       <UiTextarea
@@ -102,16 +103,17 @@
                           size="sm"
                           autocomplete="off"
                         />
-                        <UiButton
-                          type="button"
+                        <UiIconButton
                           class="toggle-visibility-btn"
-                          variant="ghost"
                           size="sm"
+                          :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                          :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                           @click="toggleSensitiveField(entry.key)"
-                          :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                         >
-                          {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                        </UiButton>
+                          <span class="material-symbols-outlined">
+                            {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                          </span>
+                        </UiIconButton>
                       </div>
 
                       <UiInput
@@ -1256,13 +1258,13 @@ onBeforeUnmount(() => {
 .input-with-toggle :deep(.ui-input),
 .input-with-toggle :deep(.ui-textarea) {
   flex: 1;
-  padding-right: 70px;
+  padding-right: 42px;
 }
 
 .toggle-visibility-btn {
   position: absolute;
   right: 8px;
-  min-height: 30px;
+  top: 2px;
   z-index: 2;
 }
 
