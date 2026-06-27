@@ -5,49 +5,47 @@
     </p>
 
     <div v-if="statusMessage" class="semantic-groups-controls">
-      <span :class="['status-message', statusType]">
-        {{ statusMessage }}
-      </span>
+      <UiBadge :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
     </div>
 
     <div id="semantic-groups-container" class="semantic-groups-layout" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
-      <aside
-        class="semantic-groups-sidebar card"
+      <UiCard
+        class="semantic-groups-sidebar"
         :class="{ 'is-collapsed': sidebarCollapsed }"
         :aria-label="sidebarCollapsed ? '语义组操作台（已折叠）' : '语义组操作台'"
+        size="sm"
+        variant="subtle"
       >
         <template v-if="sidebarCollapsed">
           <div class="console-rail">
-            <button
-              type="button"
+            <UiIconButton
               class="console-rail-toggle"
-              aria-label="展开操作台"
+              label="展开操作台"
               title="展开操作台"
               @click="toggleSidebar"
             >
               <span class="material-symbols-outlined">left_panel_open</span>
-            </button>
+            </UiIconButton>
             <div class="console-rail-divider"></div>
-            <button
-              type="button"
+            <UiIconButton
               class="console-rail-icon"
-              aria-label="添加新组"
+              label="添加新组"
               title="添加新组"
               @click="addSemanticGroup"
             >
               <span class="material-symbols-outlined">add</span>
-            </button>
-            <button
+            </UiIconButton>
+            <UiIconButton
               v-for="entry in filteredGroupEntries.slice(0, 8)"
               :key="entry.group.localId"
-              type="button"
               class="console-rail-icon"
-              :class="{ 'is-active': entry.index === selectedGroupIndex }"
+              :active="entry.index === selectedGroupIndex"
+              :label="entry.group.name || `未命名组 #${entry.index + 1}`"
               :title="entry.group.name || `未命名组 #${entry.index + 1}`"
               @click="selectGroup(entry.index)"
             >
               <span class="material-symbols-outlined">category</span>
-            </button>
+            </UiIconButton>
           </div>
         </template>
         <template v-else>
@@ -56,47 +54,48 @@
             <div class="semantic-groups-sidebar-header">
               <h3>语义组列表</h3>
               <div class="sidebar-header-meta">
-                <span class="group-count">{{ filteredGroupEntries.length }}/{{ semanticGroups.length }} 组</span>
-                <button
-                  type="button"
+                <UiBadge variant="outline">{{ filteredGroupEntries.length }}/{{ semanticGroups.length }} 组</UiBadge>
+                <UiIconButton
                   class="console-rail-toggle"
-                  aria-label="折叠操作台"
+                  label="折叠操作台"
                   title="折叠操作台"
                   @click="toggleSidebar"
                 >
                   <span class="material-symbols-outlined">left_panel_close</span>
-                </button>
+                </UiIconButton>
               </div>
             </div>
           </div>
 
           <div class="group-console__section">
-            <label class="group-search-label" for="semantic-group-search-input">搜索筛选</label>
-            <div class="group-search-box">
-              <input
+            <UiField label="搜索筛选" for-id="semantic-group-search-input" size="sm">
+              <div class="group-search-box">
+              <UiInput
                 id="semantic-group-search-input"
                 v-model="groupQuery"
                 type="search"
-                class="group-search-input"
+                size="sm"
                 placeholder="按语义组名称或关键词筛选..."
               />
-              <button
+              <UiButton
                 v-if="groupQuery"
                 type="button"
-                class="group-search-clear"
+                variant="ghost"
+                size="sm"
                 aria-label="清空筛选"
                 @click="clearGroupQuery"
               >
                 清空
-              </button>
-            </div>
+              </UiButton>
+              </div>
+            </UiField>
           </div>
 
           <div class="group-console__section group-console__section--actions">
-            <button type="button" class="btn-primary btn-sm" @click="addSemanticGroup">
+            <UiButton type="button" size="sm" block @click="addSemanticGroup">
               <span class="material-symbols-outlined">add</span>
               添加新组
-            </button>
+            </UiButton>
           </div>
 
           <ul class="semantic-groups-list">
@@ -114,83 +113,98 @@
                 <span class="group-row-meta">{{ getKeywordCount(entry.group.keywords) }} 个关键词</span>
               </button>
             </li>
-            <li v-if="semanticGroups.length === 0" class="no-groups">暂无语义组。</li>
-            <li v-else-if="filteredGroupEntries.length === 0" class="no-groups">
-              未找到匹配“{{ groupQuery }}”的语义组
+            <li v-if="semanticGroups.length === 0">
+              <UiEmptyState title="暂无语义组" />
+            </li>
+            <li v-else-if="filteredGroupEntries.length === 0">
+              <UiEmptyState title="未找到匹配项" :description="`未找到匹配“${groupQuery}”的语义组`" />
             </li>
           </ul>
         </template>
-      </aside>
+      </UiCard>
 
-      <div v-if="selectedGroup" class="semantic-group-item card semantic-group-detail">
-        <div class="semantic-group-header">
-          <h3>编辑语义组</h3>
-        </div>
-
-        <div class="semantic-group-field">
-          <label>组名称</label>
-          <input
+      <UiSettingsCard
+        v-if="selectedGroup"
+        class="semantic-group-detail"
+        title="编辑语义组"
+        description="维护语义组名称、权重与关键词。"
+        variant="subtle"
+      >
+        <UiSettingsForm as="div" :columns="2" gap="md">
+          <UiField label="组名称" for-id="semantic-group-name">
+            <UiInput
+            id="semantic-group-name"
             v-model="selectedGroup.name"
             type="text"
             placeholder="组名称"
-            class="group-name-input"
             maxlength="100"
           />
-        </div>
+          </UiField>
 
-        <div class="semantic-group-field">
-          <label>权重</label>
-          <input
+          <UiField label="权重" for-id="semantic-group-weight">
+            <UiInput
+            id="semantic-group-weight"
             v-model.number="selectedGroup.weight"
             type="number"
             min="0"
             max="10"
             step="0.1"
             class="group-weight-input"
+            size="sm"
           />
-        </div>
+          </UiField>
 
-        <div class="semantic-group-field">
-          <label>关键词（逗号分隔）</label>
-          <textarea
+          <UiField
+            label="关键词"
+            description="用英文逗号分隔。"
+            data-settings-span="full"
+          >
+            <UiTextarea
             v-model="selectedGroup.keywords"
             placeholder="关键词 1, 关键词 2, ..."
             rows="6"
             maxlength="5000"
-          ></textarea>
+          />
           <div class="keyword-stats">
             <span class="keyword-count">
               关键词数：{{ getKeywordCount(selectedGroup.keywords) }}
             </span>
           </div>
-        </div>
+          </UiField>
 
-        <div v-if="selectedGroup.autoLearned.length > 0" class="semantic-group-field">
-          <label>自动学习的关键词（只读）</label>
+          <UiField
+            v-if="selectedGroup.autoLearned.length > 0"
+            label="自动学习的关键词"
+            description="只读，由系统学习生成。"
+            data-settings-span="full"
+          >
           <div class="auto-learned-tags">
-            <span
+            <UiBadge
               v-for="word in selectedGroup.autoLearned"
               :key="word"
-              class="auto-learned-tag"
+              variant="secondary"
             >
               {{ word }}
-            </span>
+            </UiBadge>
           </div>
-        </div>
+          </UiField>
+        </UiSettingsForm>
 
-        <div class="detail-actions">
-          <button class="btn-danger" type="button" @click="removeSelectedGroup">
+        <template #footer>
+          <div class="detail-actions">
+          <UiButton variant="danger" type="button" @click="removeSelectedGroup">
             删除
-          </button>
-          <button class="btn-primary" type="button" @click="saveSemanticGroups">
+          </UiButton>
+          <UiButton type="button" @click="saveSemanticGroups">
             保存更改
-          </button>
-        </div>
-      </div>
+          </UiButton>
+          </div>
+        </template>
+      </UiSettingsCard>
 
-      <div v-else class="semantic-group-detail-empty card">
-        <p>请选择左侧语义组进行编辑，或先添加新组。</p>
-      </div>
+      <UiCard v-else class="semantic-group-detail-empty" variant="subtle">
+        <UiEmptyState title="请选择语义组" description="请选择左侧语义组进行编辑，或先添加新组。" />
+      </UiCard>
     </div>
   </section>
 </template>
@@ -200,6 +214,16 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { ragApi } from "@/api";
 import type { SemanticGroupsResponse } from "@/api/rag";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSettingsCard from "@/components/ui/UiSettingsCard.vue";
+import UiSettingsForm from "@/components/ui/UiSettingsForm.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
 import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
@@ -222,6 +246,12 @@ const isDirty = ref(false);
 const { collapsed: sidebarCollapsed, toggle: toggleSidebar } = useConsoleCollapse(
   "semantic-groups"
 );
+
+const statusBadgeVariant = computed(() => {
+  if (statusType.value === "success") return "success";
+  if (statusType.value === "error") return "danger";
+  return "info";
+});
 
 let nextLocalId = 0;
 let suppressDirtyWatch = false;
@@ -501,6 +531,14 @@ onUnmounted(() => {
   align-items: center;
 }
 
+.semantic-groups-sidebar :deep(.ui-card__content) {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
 .sidebar-header-meta {
   display: inline-flex;
   align-items: center;
@@ -534,52 +572,14 @@ onUnmounted(() => {
   color: var(--primary-text);
 }
 
-.group-count {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-  font-weight: 500;
-}
-
-.group-search-label {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  font-weight: 600;
-}
-
 .group-search-box {
   display: flex;
   gap: var(--space-2);
 }
 
-.group-search-input {
+.group-search-box :deep(.ui-input) {
   flex: 1;
   min-width: 0;
-}
-
-.group-search-clear {
-  flex-shrink: 0;
-  padding: 0 var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--surface-overlay-soft);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
-}
-
-.group-search-clear:hover {
-  border-color: var(--highlight-text);
-  color: var(--highlight-text);
-  background: var(--info-bg);
-}
-
-.group-search-clear:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-}
-
-.group-console__section--actions .btn-primary {
-  justify-content: center;
 }
 
 .semantic-groups-list {
@@ -652,15 +652,6 @@ onUnmounted(() => {
   font-size: var(--font-size-helper);
 }
 
-.no-groups {
-  padding: var(--space-3);
-  border: 1px dashed var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--secondary-text);
-  text-align: center;
-  font-size: var(--font-size-helper);
-}
-
 .semantic-group-detail,
 .semantic-group-detail-empty {
   min-height: 320px;
@@ -673,58 +664,8 @@ onUnmounted(() => {
   color: var(--secondary-text);
 }
 
-.semantic-group-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-3);
-}
-
-.semantic-group-header h3 {
-  margin: 0;
-  color: var(--primary-text);
-}
-
-.semantic-group-field {
-  margin-bottom: var(--space-3);
-}
-
-.semantic-group-field label {
-  display: block;
-  margin-bottom: var(--space-2);
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
-.group-name-input,
-.group-weight-input {
-  padding: var(--space-2) var(--space-3);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
-}
-
-.group-name-input {
-  flex: 1;
-  width: 100%;
-}
-
 .group-weight-input {
   width: 120px;
-}
-
-.semantic-group-field textarea {
-  width: 100%;
-  min-height: 80px;
-  padding: var(--space-2) var(--space-3);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
-  resize: vertical;
 }
 
 .keyword-stats {
@@ -745,23 +686,12 @@ onUnmounted(() => {
   gap: var(--space-2);
 }
 
-.auto-learned-tag {
-  display: inline-block;
-  padding: var(--space-1) var(--space-3);
-  background: var(--surface-overlay-soft);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  line-height: 1.4;
-}
-
 .detail-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   justify-content: flex-end;
-  margin-top: var(--space-4);
+  width: 100%;
 }
 
 @media (max-width: 1024px) {
