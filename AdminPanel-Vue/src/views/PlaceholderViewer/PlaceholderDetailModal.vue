@@ -16,62 +16,61 @@
         <span class="placeholder-detail-type">{{ placeholderTypeLabel }}</span>
       </h3>
       <div class="placeholder-detail-header-actions">
-        <button type="button" class="btn-secondary btn-sm" @click="emit('copyDetail')">
+        <UiButton type="button" variant="outline" size="sm" @click="emit('copyDetail')">
           复制内容
-        </button>
-        <button type="button" class="btn-secondary btn-sm" @click="emit('copyJson')">
+        </UiButton>
+        <UiButton type="button" variant="outline" size="sm" @click="emit('copyJson')">
           复制 JSON
-        </button>
-        <button
+        </UiButton>
+        <UiIconButton
           type="button"
-          class="placeholder-detail-modal-close"
+          label="关闭弹窗"
           @click="emit('close')"
-          aria-label="关闭弹窗"
         >
-          &times;
-        </button>
+          <span class="material-symbols-outlined">close</span>
+        </UiIconButton>
       </div>
     </div>
     <div class="placeholder-detail-tabs" role="tablist" aria-label="详情展示模式">
-      <button
+      <UiButton
         type="button"
         role="tab"
         :id="getTabId('raw')"
         :aria-selected="activeTab === 'raw'"
         :aria-controls="getPanelId('raw')"
         :tabindex="activeTab === 'raw' ? 0 : -1"
-        :class="['placeholder-detail-tab', { active: activeTab === 'raw' }]"
+        size="sm"
+        :variant="activeTab === 'raw' ? 'primary' : 'outline'"
         @click="emit('update:activeTab', 'raw')"
       >
         原始文本
-      </button>
-      <button
+      </UiButton>
+      <UiButton
         type="button"
         role="tab"
         :id="getTabId('markdown')"
         :aria-selected="activeTab === 'markdown'"
         :aria-controls="getPanelId('markdown')"
         :tabindex="activeTab === 'markdown' ? 0 : -1"
-        :class="[
-          'placeholder-detail-tab',
-          { active: activeTab === 'markdown' },
-        ]"
+        size="sm"
+        :variant="activeTab === 'markdown' ? 'primary' : 'outline'"
         @click="emit('update:activeTab', 'markdown')"
       >
         Markdown 渲染
-      </button>
-      <button
+      </UiButton>
+      <UiButton
         type="button"
         role="tab"
         :id="getTabId('json')"
         :aria-selected="activeTab === 'json'"
         :aria-controls="getPanelId('json')"
         :tabindex="activeTab === 'json' ? 0 : -1"
-        :class="['placeholder-detail-tab', { active: activeTab === 'json' }]"
+        size="sm"
+        :variant="activeTab === 'json' ? 'primary' : 'outline'"
         @click="emit('update:activeTab', 'json')"
       >
         JSON 格式化
-      </button>
+      </UiButton>
     </div>
     <div id="placeholder-detail-body" class="placeholder-detail-modal-body">
       <div
@@ -115,6 +114,8 @@ import type {
 } from "@/features/placeholder-viewer/types";
 import { getPlaceholderTypeLabel } from "@/features/placeholder-viewer/placeholderTypeLabel";
 import BaseModal from "@/components/ui/BaseModal.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
 
 const props = defineProps<{
   selectedPlaceholder: Placeholder | null;
@@ -206,73 +207,12 @@ function handleModalVisibility(visible: boolean): void {
   flex-shrink: 0;
 }
 
-.placeholder-detail-modal-close {
-  display: grid;
-  place-items: center;
-  min-width: 36px;
-  min-height: 36px;
-  background: var(--surface-overlay-soft);
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
-  font-size: var(--font-size-display);
-  color: var(--secondary-text);
-  cursor: pointer;
-  padding: 0;
-  line-height: 1;
-  flex-shrink: 0;
-  transition:
-    color 0.2s ease,
-    border-color 0.2s ease,
-    background-color 0.2s ease;
-}
-
-.placeholder-detail-modal-close:hover {
-  color: var(--primary-text);
-  border-color: color-mix(in srgb, var(--button-bg) 35%, var(--border-color));
-  background: var(--accent-bg);
-}
-
-.placeholder-detail-modal-close:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 46%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
-
 .placeholder-detail-tabs {
   display: flex;
   gap: 8px;
   padding: 12px 20px;
   border-bottom: 1px solid var(--border-color);
   background: var(--tertiary-bg);
-}
-
-.placeholder-detail-tab {
-  padding: 8px 16px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--secondary-text);
-  cursor: pointer;
-  font-size: var(--font-size-body);
-  transition:
-    color 0.2s ease,
-    border-color 0.2s ease,
-    background-color 0.2s ease;
-}
-
-.placeholder-detail-tab:hover {
-  background: var(--accent-bg);
-  color: var(--primary-text);
-}
-
-.placeholder-detail-tab.active {
-  background: var(--button-bg);
-  color: var(--on-accent-text);
-  border-color: var(--button-bg);
-}
-
-.placeholder-detail-tab:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .placeholder-detail-modal-body {
@@ -324,22 +264,14 @@ function handleModalVisibility(visible: boolean): void {
     word-break: break-all;
   }
 
-  .placeholder-detail-modal-close {
-    min-width: 36px;
-    min-height: 36px;
-    font-size: var(--font-size-title);
-  }
-
   .placeholder-detail-tabs {
     padding: 10px 12px;
     overflow-x: auto;
     gap: 6px;
   }
 
-  .placeholder-detail-tab {
+  .placeholder-detail-tabs :deep(.ui-button) {
     flex: 0 0 auto;
-    padding: 7px 12px;
-    font-size: var(--font-size-helper);
     white-space: nowrap;
   }
 

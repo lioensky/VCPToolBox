@@ -54,24 +54,28 @@
             <h3>
               <span class="material-symbols-outlined">folder</span>
               {{ getTypeLabel(type) }}
-              <span class="type-count">{{
+              <UiBadge variant="outline">{{
                 filteredGroupedPlaceholders[type]?.length ?? 0
-              }}</span>
+              }}</UiBadge>
             </h3>
 
-            <button
+            <UiButton
               type="button"
               class="group-collapse-toggle"
-              :class="{ 'is-collapsed': isTypeGroupCollapsed(type) }"
+              variant="outline"
+              size="sm"
               :aria-expanded="!isTypeGroupCollapsed(type)"
               :aria-controls="getTypeGroupContentId(type)"
               @click="toggleTypeGroupCollapsed(type)"
             >
               <span>{{ isTypeGroupCollapsed(type) ? "展开" : "折叠" }}</span>
-              <span class="material-symbols-outlined group-collapse-icon"
-                >expand_more</span
-              >
-            </button>
+              <template #trailing>
+                <span
+                  class="material-symbols-outlined group-collapse-icon"
+                  :class="{ 'is-collapsed': isTypeGroupCollapsed(type) }"
+                >expand_more</span>
+              </template>
+            </UiButton>
           </div>
 
           <div
@@ -148,6 +152,8 @@ import type {
 } from "@/features/placeholder-viewer/types";
 import { showMessage } from "@/utils";
 import { createLogger } from "@/utils/logger";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
 import PlaceholderCard from "./PlaceholderViewer/PlaceholderCard.vue";
 import PlaceholderFilterBar from "./PlaceholderViewer/PlaceholderFilterBar.vue";
 import PlaceholderDetailModal from "./PlaceholderViewer/PlaceholderDetailModal.vue";
@@ -614,41 +620,8 @@ onMounted(() => {
   color: var(--highlight-text);
 }
 
-.type-count {
-  font-size: var(--font-size-helper);
-  padding: 2px 10px;
-  background: var(--button-bg);
-  color: var(--on-accent-text);
-  border-radius: var(--radius-md);
-  font-weight: 600;
-}
-
 .group-collapse-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--secondary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition:
-    color 0.2s ease,
-    background-color 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.group-collapse-toggle:hover {
-  color: var(--primary-text);
-  background: color-mix(in srgb, var(--button-bg) 10%, transparent);
-  border-color: color-mix(in srgb, var(--button-bg) 28%, transparent);
-}
-
-.group-collapse-toggle:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  flex: 0 0 auto;
 }
 
 .group-collapse-icon {
@@ -657,7 +630,7 @@ onMounted(() => {
   transition: transform 0.24s ease;
 }
 
-.group-collapse-toggle.is-collapsed .group-collapse-icon {
+.group-collapse-icon.is-collapsed {
   transform: rotate(-90deg);
 }
 
