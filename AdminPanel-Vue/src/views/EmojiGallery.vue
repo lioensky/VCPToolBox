@@ -31,7 +31,7 @@
         <div class="hero-search-group">
           <label class="search-field hero-search-field">
             <span class="material-symbols-outlined">search</span>
-            <input
+            <UiInput
               v-model.trim="searchInput"
               type="search"
               aria-label="搜索表情包"
@@ -41,30 +41,28 @@
             />
           </label>
 
-          <button
-            type="button"
-            class="btn-primary"
+          <UiButton
+            variant="primary"
             :disabled="isLoading"
             @click="applySearch"
           >
             搜索
-          </button>
+          </UiButton>
 
-          <button
+          <UiButton
             v-if="activeKeyword"
-            type="button"
-            class="btn-secondary"
+            variant="outline"
             :disabled="isLoading"
             @click="clearSearch"
           >
             清空
-          </button>
+          </UiButton>
         </div>
 
         <div class="hero-toolbar-actions">
           <label class="page-size-control">
             <span>每页</span>
-            <select
+            <UiSelect
               v-model.number="pageSize"
               :disabled="isLoading"
               @change="handlePageSizeChange"
@@ -76,35 +74,32 @@
               >
                 {{ size }}
               </option>
-            </select>
+            </UiSelect>
           </label>
 
-          <button
-            type="button"
-            class="btn-secondary"
+          <UiButton
+            variant="outline"
             :disabled="isLoading"
             @click="refreshCurrentPage"
           >
             {{ isLoading && hasLoadedOnce ? "刷新中…" : "刷新" }}
-          </button>
+          </UiButton>
 
-          <button
-            type="button"
-            class="btn-secondary"
+          <UiButton
+            variant="outline"
             :disabled="isRebuildingList"
             @click="rebuildGeneratedEmojiLists"
           >
             {{ isRebuildingList ? "重建中…" : "重建列表" }}
-          </button>
+          </UiButton>
 
-          <button
-            type="button"
-            class="btn-secondary"
+          <UiButton
+            variant="outline"
             :disabled="isLoading || isUploading"
             @click="createCategory"
           >
             新建目录
-          </button>
+          </UiButton>
         </div>
       </div>
 
@@ -131,36 +126,33 @@
         >
           <template v-if="consoleCollapsed">
             <div class="console-rail">
-              <button
-                type="button"
+              <UiIconButton
                 class="console-rail-toggle"
-                aria-label="展开操作台"
+                label="展开操作台"
                 title="展开操作台"
                 @click="toggleConsole"
               >
                 <span class="material-symbols-outlined">left_panel_open</span>
-              </button>
+              </UiIconButton>
               <div class="console-rail-divider"></div>
-              <button
-                type="button"
+              <UiIconButton
                 class="console-rail-icon"
-                aria-label="刷新"
+                label="刷新"
                 title="刷新"
                 :disabled="isLoading"
                 @click="refreshCurrentPage"
               >
                 <span class="material-symbols-outlined">refresh</span>
-              </button>
-              <button
-                type="button"
+              </UiIconButton>
+              <UiIconButton
                 class="console-rail-icon"
-                aria-label="新建目录"
+                label="新建目录"
                 title="新建目录"
                 :disabled="isLoading || isUploading"
                 @click="createCategory"
               >
                 <span class="material-symbols-outlined">create_new_folder</span>
-              </button>
+              </UiIconButton>
               <button
                 type="button"
                 class="console-rail-icon"
@@ -181,44 +173,43 @@
                 <span class="operations-console__label">Library Rail</span>
                 <h3>目录导航</h3>
               </div>
-              <button
-                type="button"
+              <UiIconButton
                 class="console-rail-toggle"
-                aria-label="折叠操作台"
+                label="折叠操作台"
                 title="折叠操作台"
                 @click="toggleConsole"
               >
                 <span class="material-symbols-outlined">left_panel_close</span>
-              </button>
+              </UiIconButton>
             </div>
             <p class="panel-hint">用目录快速缩小浏览范围，维护动作留在这里集中处理。</p>
 
             <div class="quick-actions">
-              <button
-                type="button"
-                class="btn-secondary"
+              <UiButton
+                variant="outline"
+                size="sm"
                 :disabled="isLoading"
                 @click="refreshCurrentPage"
               >
                 刷新
-              </button>
+              </UiButton>
 
-              <button
-                type="button"
-                class="btn-secondary"
+              <UiButton
+                variant="outline"
+                size="sm"
                 :disabled="isLoading || isUploading"
                 @click="createCategory"
               >
                 新建目录
-              </button>
-              <button
-                type="button"
-                class="btn-secondary"
+              </UiButton>
+              <UiButton
+                variant="outline"
+                size="sm"
                 :disabled="isRebuildingList"
                 @click="rebuildGeneratedEmojiLists"
               >
                 重建列表
-              </button>
+              </UiButton>
             </div>
 
             <div class="rail-meta">
@@ -260,15 +251,16 @@
               </button>
             </div>
 
-            <button
+            <UiButton
               v-if="selectedCategory && selectedCategory !== ROOT_CATEGORY_NAME"
-              type="button"
-              class="btn-danger btn-sm delete-category-btn"
+              variant="danger"
+              size="sm"
+              class="delete-category-btn"
               :disabled="isDeletingCategory || isLoading"
               @click="deleteSelectedCategory"
             >
               {{ isDeletingCategory ? "删除中…" : `删除目录 “${selectedCategory}”` }}
-            </button>
+            </UiButton>
           </div>
           </template>
         </section>
@@ -311,32 +303,29 @@
           </AppCheckbox>
 
           <div class="upload-entry-actions">
-            <button
-              type="button"
-              class="btn-secondary"
+            <UiButton
+              variant="outline"
               :disabled="isUploading"
               @click="triggerFileSelect"
             >
               选择图片文件
-            </button>
+            </UiButton>
 
-            <button
-              type="button"
-              class="btn-secondary"
+            <UiButton
+              variant="outline"
               :disabled="isUploading"
               @click="triggerFolderSelect"
             >
               选择文件夹
-            </button>
+            </UiButton>
 
-            <button
-              type="button"
-              class="btn-secondary"
+            <UiButton
+              variant="outline"
               :disabled="isUploading"
               @click="triggerArchiveSelect"
             >
               选择压缩包
-            </button>
+            </UiButton>
           </div>
 
           <input
@@ -390,35 +379,34 @@
                 </span>
               </div>
               <span class="upload-file-meta">{{ formatFileSize(file.size) }}</span>
-              <button
-                type="button"
+              <UiButton
                 class="upload-file-remove"
+                variant="ghost"
+                size="sm"
                 :disabled="isUploading"
                 @click="removeSelectedFile(index)"
               >
                 移除
-              </button>
+              </UiButton>
             </li>
           </ul>
 
           <div class="upload-actions">
-            <button
-              type="button"
-              class="btn-secondary"
+            <UiButton
+              variant="outline"
               :disabled="isUploading || selectedFiles.length === 0"
               @click="clearSelectedFiles"
             >
               清空待上传
-            </button>
+            </UiButton>
 
-            <button
-              type="button"
-              class="btn-primary"
+            <UiButton
+              variant="primary"
               :disabled="isUploading || selectedFiles.length === 0"
               @click="uploadSelectedFiles"
             >
               {{ isUploading ? "上传中…" : `开始上传（${selectedFiles.length}）` }}
-            </button>
+            </UiButton>
           </div>
 
           <div v-if="lastRejectedItems.length > 0" class="upload-rejected">
@@ -521,7 +509,7 @@
             <div class="emoji-meta">
               <div class="emoji-title-row">
                 <h3 :title="item.name">{{ item.name }}</h3>
-                <span class="format-badge">{{ item.extension.toUpperCase() }}</span>
+              <UiBadge variant="outline" class="format-badge">{{ item.extension.toUpperCase() }}</UiBadge>
               </div>
 
               <p class="emoji-category">{{ item.category }}</p>
@@ -529,16 +517,16 @@
             </div>
 
             <div class="emoji-actions">
-              <button
-                type="button"
-                class="btn-secondary btn-sm"
+              <UiButton
+                variant="outline"
+                size="sm"
                 @click="copyRelativePath(item.relativePath)"
               >
                 复制路径
-              </button>
+              </UiButton>
 
               <a
-                class="btn-secondary btn-sm"
+                class="emoji-link-button"
                 :href="item.previewUrl"
                 target="_blank"
                 rel="noopener noreferrer"
@@ -546,39 +534,37 @@
                 新窗口
               </a>
 
-              <button
-                type="button"
-                class="btn-danger btn-sm"
+              <UiButton
+                variant="danger"
+                size="sm"
                 :disabled="deletingPaths.has(item.relativePath)"
                 @click="deleteEmojiItem(item)"
               >
                 {{ deletingPaths.has(item.relativePath) ? "删除中…" : "删除" }}
-              </button>
+              </UiButton>
             </div>
           </article>
           </section>
         </section>
 
         <section class="pagination-controls">
-          <button
-            type="button"
-            class="btn-secondary"
+          <UiButton
+            variant="outline"
             :disabled="isLoading || currentPage <= 1"
             @click="goToPreviousPage"
           >
             上一页
-          </button>
+          </UiButton>
 
           <span class="pagination-summary">{{ paginationSummary }}</span>
 
-          <button
-            type="button"
-            class="btn-secondary"
+          <UiButton
+            variant="outline"
             :disabled="isLoading || currentPage >= totalPages"
             @click="goToNextPage"
           >
             下一页
-          </button>
+          </UiButton>
         </section>
       </section>
     </div>
@@ -650,6 +636,11 @@ import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter, type LocationQueryRaw } from "vue-router";
 import BaseModal from "@/components/ui/BaseModal.vue";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
 import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { useLocalStorage } from "@/composables/useLocalStorage";
 import {
@@ -1881,10 +1872,6 @@ onUnmounted(() => {
   gap: var(--space-sm);
   flex: 1 1 auto;
   min-width: 0;
-  padding: 0 var(--space-sm);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-  background: var(--input-bg);
 }
 
 .search-field .material-symbols-outlined {
@@ -1892,24 +1879,8 @@ onUnmounted(() => {
   font-size: 1.2rem;
 }
 
-.search-field input {
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--primary-text);
-  padding: 10px 0;
-}
-
-.search-field input:focus:not(:focus-visible) {
-  outline: none;
-}
-
-.page-size-control select {
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  padding: 8px 10px;
+.search-field :deep(.ui-input) {
+  min-width: 0;
 }
 
 .directory-list {
@@ -2245,10 +2216,6 @@ onUnmounted(() => {
 .format-badge {
   flex-shrink: 0;
   font-size: var(--font-size-caption);
-  color: var(--secondary-text);
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
-  border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
 }
 
 .emoji-category {
@@ -2271,11 +2238,30 @@ onUnmounted(() => {
   padding: 0 var(--space-sm) var(--space-sm);
 }
 
-.emoji-actions a {
+.emoji-link-button {
+  height: 28px;
   text-decoration: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--primary-text);
+  font-size: var(--font-size-helper);
+  font-weight: 600;
+  line-height: 1;
+  transition:
+    color var(--transition-fast),
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.emoji-link-button:hover {
+  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+  background: var(--accent-bg);
+  color: var(--primary-text);
 }
 
 .pagination-controls {
@@ -2358,30 +2344,6 @@ onUnmounted(() => {
   to {
     transform: translateX(100%);
   }
-}
-
-.btn-danger {
-  border: 1px solid color-mix(in srgb, var(--danger-color, #ef4444) 60%, transparent);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--danger-color, #ef4444) 12%, transparent);
-  color: var(--danger-color, #ef4444);
-  cursor: pointer;
-  padding: 6px 10px;
-  transition: background var(--transition-fast), border-color var(--transition-fast);
-}
-
-.btn-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger-color, #ef4444) 24%, transparent);
-  border-color: color-mix(in srgb, var(--danger-color, #ef4444) 80%, transparent);
-}
-
-.btn-danger:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.btn-sm {
-  font-size: var(--font-size-helper);
 }
 
 .delete-category-btn {
