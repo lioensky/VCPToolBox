@@ -49,26 +49,16 @@ export const useAppStore = defineStore("app", () => {
   const pluginsLoaded = ref(false);
   let pluginsLoadPromise: Promise<PluginInfo[]> | null = null;
 
-  function getSystemTheme(): "dark" | "light" {
-    if (typeof window === "undefined") {
-      return "dark";
-    }
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
-  }
-
   function syncThemeToDom(newTheme: ThemeMode) {
     if (typeof document === "undefined") {
       return;
     }
 
-    const nextResolvedTheme = newTheme === "system" ? getSystemTheme() : newTheme;
-    resolvedTheme.value = nextResolvedTheme;
-    document.documentElement.setAttribute("data-theme", nextResolvedTheme);
+    resolvedTheme.value = newTheme;
+    document.documentElement.setAttribute("data-theme", newTheme);
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) {
-      meta.setAttribute("content", nextResolvedTheme === "light" ? "#f2f4f8" : "#08090d");
+      meta.setAttribute("content", newTheme === "light" ? "#f2f4f8" : "#08090d");
     }
   }
 
@@ -80,15 +70,6 @@ export const useAppStore = defineStore("app", () => {
     },
     { immediate: true }
   );
-
-  if (typeof window !== "undefined") {
-    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    mediaQuery.addEventListener("change", () => {
-      if (theme.value === "system") {
-        syncThemeToDom("system");
-      }
-    });
-  }
 
   // 启动时应用保存的自定义主题（覆盖 -dark/-light 变量，切换模式时 CSS 自动选择）
   applyActiveTheme();

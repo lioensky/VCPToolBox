@@ -53,6 +53,9 @@
     var(--highlight-text) 30%,
     transparent
   );
+  --app-shell-bg: color-mix(in srgb, var(--secondary-bg) 18%, transparent);
+  --app-shell-border: transparent;
+  --app-content-bg: color-mix(in srgb, var(--primary-bg) 8%, transparent);
 
   /* --- 语义状态色（自动跟随主题主色） --- */
   --success-hover-bg: color-mix(in srgb, var(--success-color) 88%, oklch(0 0 0));
@@ -255,6 +258,9 @@ html[data-theme="dark"] {
   color-scheme: dark;
 
   --primary-color-translucent: oklch(0.70 0.12 240 / 0.3);
+  --app-shell-bg: color-mix(in srgb, var(--secondary-bg) 18%, transparent);
+  --app-shell-border: transparent;
+  --app-content-bg: color-mix(in srgb, var(--primary-bg) 8%, transparent);
   --star-color: oklch(0.96 0.003 230);
   --sun-color: oklch(0.85 0.18 95);
   --orbit-color: oklch(1 0 0 / 0.1);
@@ -303,6 +309,9 @@ html[data-theme="light"] {
   color-scheme: light;
 
   --primary-color-translucent: oklch(0.68 0.16 230 / 0.3);
+  --app-shell-bg: oklch(0.975 0 0 / 0.16);
+  --app-shell-border: transparent;
+  --app-content-bg: oklch(1 0 0 / 0.50);
   --star-color: oklch(0.55 0.18 250);
   --sun-color: oklch(0.75 0.18 85);
   --orbit-color: oklch(0 0 0 / 0.05);

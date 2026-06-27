@@ -31,20 +31,25 @@ body {
 }
 
 /* 滚动条美化 - 使用设计系统变量 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--scrollbar-track);
-  border-radius: 5px;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
-  border-radius: 5px;
-  border: 2px solid var(--scrollbar-track);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -376,7 +381,6 @@ button {
     background: currentColor;
   }
 }
-
 /* ========== 操作台折叠：共享样式 ========== */
 /* 供带有「操作台」侧栏卡片的页面复用。页面只需：
  *   1. 在侧栏卡片根元素上切换 is-collapsed 类

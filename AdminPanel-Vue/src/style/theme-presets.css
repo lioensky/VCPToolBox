@@ -1,5 +1,5 @@
 /*
- * Attribute-driven theme customization inspired by new-api.
+ * Attribute-driven theme customization for VCPToolBox.
  * These rules intentionally target existing VCPToolBox tokens instead of
  * introducing shadcn/Tailwind token names.
  */
@@ -182,4 +182,15 @@ html[data-theme-font="serif"] {
 html[data-theme-content-layout="centered"] .content {
   max-width: 1280px;
   margin-inline: auto;
+}
+
+html[data-theme="light"]:not([data-theme-shell-layout]),
+html[data-theme="light"][data-theme-shell-layout="inset"] {
+  --app-shell-bg: oklch(0.975 0 0 / 0.14);
+  --app-content-bg: oklch(1 0 0 / 0.50);
+}
+
+html[data-theme-shell-layout="sidebar"] {
+  --app-shell-bg: color-mix(in srgb, var(--secondary-bg) 18%, transparent);
+  --app-shell-border: transparent;
 }

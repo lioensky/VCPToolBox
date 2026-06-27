@@ -48,10 +48,10 @@
       </div>
     </section>
 
-    <section class="card theme-lab__quick-panel">
+    <section v-if="activeSection === 'theme'" class="card theme-lab__quick-panel">
       <div class="theme-lab__section-header">
         <h3>快速外观</h3>
-        <p>这些选项参考 new-api 的主题抽屉：外观模式、圆角、密度、字体和内容宽度独立切换，保存后下次启动自动恢复。</p>
+        <p>外观模式、圆角、密度、字体、内容宽度和外壳布局独立切换，保存后下次启动自动恢复。</p>
       </div>
 
       <div class="theme-lab__option-grid">
@@ -80,12 +80,17 @@
               v-for="item in radiusOptions"
               :key="item.id"
               type="button"
-              class="theme-choice theme-choice--compact"
+              class="theme-choice theme-choice--compact theme-choice--radius"
               :class="{ 'theme-choice--active': draft.radius === item.id }"
               @click="setRadius(item.id)"
             >
-              <strong>{{ item.label }}</strong>
-              <small>{{ item.description }}</small>
+              <span class="radius-preview" aria-hidden="true">
+                <span class="radius-preview__corner" :style="{ borderTopLeftRadius: item.preview }" />
+              </span>
+              <span class="radius-preview__meta">
+                <strong>{{ item.label }}</strong>
+                <small>{{ item.description }}</small>
+              </span>
             </button>
           </div>
         </div>
@@ -134,6 +139,23 @@
               class="theme-choice theme-choice--compact"
               :class="{ 'theme-choice--active': draft.contentLayout === item.id }"
               @click="setContentLayout(item.id)"
+            >
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.description }}</small>
+            </button>
+          </div>
+        </div>
+
+        <div class="theme-lab__option-group">
+          <span class="theme-lab__option-title">外壳布局</span>
+          <div class="theme-lab__choice-row theme-lab__choice-row--compact">
+            <button
+              v-for="item in shellLayoutOptions"
+              :key="item.id"
+              type="button"
+              class="theme-choice theme-choice--compact"
+              :class="{ 'theme-choice--active': draft.shellLayout === item.id }"
+              @click="setShellLayout(item.id)"
             >
               <strong>{{ item.label }}</strong>
               <small>{{ item.description }}</small>
@@ -639,6 +661,7 @@ import {
   THEME_MODE_OPTIONS,
   THEME_RADIUS_OPTIONS,
   THEME_SCALE_OPTIONS,
+  THEME_SHELL_LAYOUT_OPTIONS,
   applyThemeVars,
   applyCustomCss,
   applyBackgroundImage,
@@ -657,6 +680,7 @@ import {
   type ThemeMode,
   type ThemeRadius,
   type ThemeScale,
+  type ThemeShellLayout,
   type ThemeSnapshot,
   type UserTheme,
 } from '@/features/theme-editor/themeEngine'
@@ -689,6 +713,7 @@ const radiusOptions = THEME_RADIUS_OPTIONS
 const scaleOptions = THEME_SCALE_OPTIONS
 const fontOptions = THEME_FONT_OPTIONS
 const contentLayoutOptions = THEME_CONTENT_LAYOUT_OPTIONS
+const shellLayoutOptions = THEME_SHELL_LAYOUT_OPTIONS
 const appStore = useAppStore()
 
 const savedSnapshot = loadThemeSnapshot()
@@ -747,6 +772,7 @@ function applyUserTheme(ut: UserTheme) {
   draft.scale = ut.snapshot.scale || 'default'
   draft.font = ut.snapshot.font || 'default'
   draft.contentLayout = ut.snapshot.contentLayout || 'full'
+  draft.shellLayout = ut.snapshot.shellLayout || 'inset'
   appStore.setTheme(draft.themeMode)
   resetBgSourceCheck()
   applyFullTheme(draft)
@@ -1285,6 +1311,11 @@ function setContentLayout(layout: ThemeContentLayout) {
   applyFullTheme(draft)
 }
 
+function setShellLayout(layout: ThemeShellLayout) {
+  draft.shellLayout = layout
+  applyFullTheme(draft)
+}
+
 // -- Color editing --
 
 function getCurrentDefault(v: ThemeColorVariable): string {
@@ -1517,6 +1548,7 @@ async function handleReset() {
   draft.scale = 'default'
   draft.font = 'default'
   draft.contentLayout = 'full'
+  draft.shellLayout = 'inset'
   appStore.setTheme('dark')
   currentPresetId.value = null
   resetBgSourceCheck()
@@ -1556,6 +1588,7 @@ function confirmImport() {
   draft.scale = snapshot.scale
   draft.font = snapshot.font
   draft.contentLayout = snapshot.contentLayout
+  draft.shellLayout = snapshot.shellLayout
   currentPresetId.value = snapshot.activePresetId
   appStore.setTheme(snapshot.themeMode)
   resetBgSourceCheck()
@@ -1732,6 +1765,48 @@ onUnmounted(() => {
 
 .theme-choice--compact {
   min-height: 64px;
+}
+
+.theme-choice--radius {
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  min-height: 58px;
+  padding: 8px 10px;
+}
+
+.radius-preview {
+  position: relative;
+  display: block;
+  width: 36px;
+  height: 36px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-overlay-soft) 58%, transparent);
+}
+
+.radius-preview__corner {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 20px;
+  height: 20px;
+  border-top: 2px solid color-mix(in srgb, var(--primary-text) 72%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--primary-text) 72%, transparent);
+}
+
+.theme-choice--active .radius-preview {
+  border-color: color-mix(in srgb, var(--highlight-text) 60%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 10%, var(--secondary-bg));
+}
+
+.theme-choice--active .radius-preview__corner {
+  border-color: var(--highlight-text);
+}
+
+.radius-preview__meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
 }
 
 .theme-choice .material-symbols-outlined {

@@ -162,7 +162,6 @@ const {
 const navItems = computed(() => appStore.navItems);
 const plugins = computed(() => appStore.plugins);
 const pinnedPluginNames = computed(() => appStore.pinnedPluginNames);
-
 void contentRef;
 </script>
 
@@ -205,22 +204,108 @@ void contentRef;
     var(--app-viewport-height, 100vh) - var(--app-top-bar-height, 48px)
   );
   margin-top: var(--app-top-bar-height, 48px);
+  background: var(--app-shell-bg);
   transition: opacity 1.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+.admin-layout.sidebar-collapsed .container {
+  gap: 12px;
+}
+
 .content {
+  position: relative;
   flex-grow: 1;
   padding: 24px 32px;
   box-sizing: border-box;
+  border: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   height: 100%;
-  /* 透明：露出底层 SolarSystemBg 星空 */
+  background: var(--app-content-bg);
+  clip-path: inset(0 round var(--radius-xl));
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--secondary-text) 12%, transparent)
+    transparent;
+  /* 白色主画布；星空保持在全局最底层 */
   /* 不在默认态设置 identity transform，避免创建 stacking context */
   opacity: 1;
   transition:
     opacity 1.6s cubic-bezier(0.4, 0, 0.2, 1),
     transform 2s cubic-bezier(0.4, 0, 0.2, 1),
-    filter 1.8s ease;
+    filter 1.8s ease,
+    border-color var(--transition-fast);
+}
+
+.content:hover {
+  scrollbar-color: color-mix(in srgb, var(--secondary-text) 28%, transparent)
+    transparent;
+}
+
+.content::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.content::-webkit-scrollbar-button,
+.content::-webkit-scrollbar-button:single-button,
+.content::-webkit-scrollbar-button:vertical:start,
+.content::-webkit-scrollbar-button:vertical:end,
+.content::-webkit-scrollbar-button:vertical:decrement,
+.content::-webkit-scrollbar-button:vertical:increment {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.content::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--secondary-text) 10%, transparent);
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-block-width: 18px;
+  border-radius: 999px;
+}
+
+.content:hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--secondary-text) 26%, transparent);
+}
+
+.content:hover::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--secondary-text) 42%, transparent);
+}
+
+:global(html:not([data-theme-shell-layout]) .container),
+:global(html[data-theme-shell-layout="inset"] .container) {
+  padding: 4px 8px 4px 0;
+}
+
+:global(html:not([data-theme-shell-layout]) .content),
+:global(html[data-theme-shell-layout="inset"] .content) {
+  height: calc(100% - 8px);
+  margin: 0 0 0 0;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-overlay-soft);
+}
+
+:global(html[data-theme-shell-layout="sidebar"] .container) {
+  padding: 0;
+  background: transparent;
+}
+
+:global(html[data-theme-shell-layout="sidebar"] .content) {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  clip-path: inset(0 round 0);
+  box-shadow: none;
 }
 
 .sidebar-overlay {
@@ -450,7 +535,14 @@ void contentRef;
   z-index: 998;
 }
 
+.unified-page-header {
+  position: relative;
+  overflow: hidden;
+}
+
 .unified-page-header h1 {
+  position: relative;
+  z-index: 1;
   font-size: var(--font-size-title);
   line-height: 1.25;
 }

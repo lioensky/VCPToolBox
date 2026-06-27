@@ -15,6 +15,7 @@ const STORAGE_KEY_RADIUS = 'customThemeRadius'
 const STORAGE_KEY_SCALE = 'customThemeScale'
 const STORAGE_KEY_FONT = 'customThemeFont'
 const STORAGE_KEY_CONTENT_LAYOUT = 'customThemeContentLayout'
+const STORAGE_KEY_SHELL_LAYOUT = 'customThemeShellLayout'
 const INJECTED_CSS_ID = 'vcp-custom-theme-css'
 const INJECTED_BG_ID = 'vcp-custom-theme-bg'
 
@@ -24,25 +25,25 @@ export interface CustomThemeVars {
   [varName: string]: string
 }
 
-export type ThemeMode = 'dark' | 'light' | 'system'
+export type ThemeMode = 'dark' | 'light'
 export type ThemeRadius = 'default' | 'none' | 'sm' | 'md' | 'lg' | 'xl'
 export type ThemeScale = 'default' | 'sm' | 'lg' | 'xl'
 export type ThemeFont = 'default' | 'sans' | 'serif'
 export type ThemeContentLayout = 'full' | 'centered'
+export type ThemeShellLayout = 'inset' | 'sidebar'
 
 export const THEME_MODE_OPTIONS: Array<{ id: ThemeMode; label: string; description: string; icon: string }> = [
   { id: 'dark', label: '暗色', description: '深色玻璃拟态界面', icon: 'dark_mode' },
   { id: 'light', label: '亮色', description: '柔和亮色界面', icon: 'light_mode' },
-  { id: 'system', label: '跟随系统', description: '自动匹配系统外观', icon: 'desktop_windows' },
 ]
 
-export const THEME_RADIUS_OPTIONS: Array<{ id: ThemeRadius; label: string; description: string }> = [
-  { id: 'default', label: '默认', description: '12 / 18 / 26 / 34px' },
-  { id: 'none', label: '直角', description: '0 / 0 / 0 / 0px' },
-  { id: 'sm', label: '小', description: '4 / 6 / 8 / 12px' },
-  { id: 'md', label: '中', description: '6 / 10 / 14 / 20px' },
-  { id: 'lg', label: '大', description: '8 / 12 / 18 / 26px' },
-  { id: 'xl', label: '圆润', description: '12 / 18 / 26 / 34px' },
+export const THEME_RADIUS_OPTIONS: Array<{ id: ThemeRadius; label: string; description: string; preview: string }> = [
+  { id: 'default', label: '默认', description: '12 / 18 / 26 / 34px', preview: '34px' },
+  { id: 'none', label: '直角', description: '0 / 0 / 0 / 0px', preview: '0' },
+  { id: 'sm', label: '小', description: '4 / 6 / 8 / 12px', preview: '8px' },
+  { id: 'md', label: '中', description: '6 / 10 / 14 / 20px', preview: '18px' },
+  { id: 'lg', label: '大', description: '8 / 12 / 18 / 26px', preview: '30px' },
+  { id: 'xl', label: '圆润', description: '12 / 18 / 26 / 34px', preview: '34px' },
 ]
 
 export const THEME_SCALE_OPTIONS: Array<{ id: ThemeScale; label: string; description: string }> = [
@@ -63,6 +64,11 @@ export const THEME_CONTENT_LAYOUT_OPTIONS: Array<{ id: ThemeContentLayout; label
   { id: 'centered', label: '居中', description: '限制内容宽度，适合阅读配置' },
 ]
 
+export const THEME_SHELL_LAYOUT_OPTIONS: Array<{ id: ThemeShellLayout; label: string; description: string }> = [
+  { id: 'inset', label: '内嵌', description: '内容面板嵌入灰色外壳，保留圆角层次' },
+  { id: 'sidebar', label: '侧边栏', description: '传统贴边侧栏，右侧内容面板直角铺满' },
+]
+
 export interface ThemeSnapshot {
   colorOverrides: Record<string, string>
   customCss: string
@@ -73,6 +79,7 @@ export interface ThemeSnapshot {
   scale: ThemeScale
   font: ThemeFont
   contentLayout: ThemeContentLayout
+  shellLayout: ThemeShellLayout
 }
 
 export interface UserTheme {
@@ -569,7 +576,7 @@ function saveOption<T extends string>(key: string, value: T, fallback: T): void 
 }
 
 export function loadThemeMode(): ThemeMode {
-  return readOption(STORAGE_KEY_THEME_MODE, ['dark', 'light', 'system'] as const, 'dark')
+  return readOption(STORAGE_KEY_THEME_MODE, ['dark', 'light'] as const, 'dark')
 }
 
 export function saveThemeMode(mode: ThemeMode): void {
@@ -608,6 +615,14 @@ export function saveThemeContentLayout(layout: ThemeContentLayout): void {
   saveOption(STORAGE_KEY_CONTENT_LAYOUT, layout, 'full')
 }
 
+export function loadThemeShellLayout(): ThemeShellLayout {
+  return readOption(STORAGE_KEY_SHELL_LAYOUT, ['inset', 'sidebar'] as const, 'inset')
+}
+
+export function saveThemeShellLayout(layout: ThemeShellLayout): void {
+  saveOption(STORAGE_KEY_SHELL_LAYOUT, layout, 'inset')
+}
+
 // ── 用户自定义主题 ──
 
 export function loadUserThemes(): UserTheme[] {
@@ -638,6 +653,7 @@ export function loadThemeSnapshot(): ThemeSnapshot {
     scale: loadThemeScale(),
     font: loadThemeFont(),
     contentLayout: loadThemeContentLayout(),
+    shellLayout: loadThemeShellLayout(),
   }
 }
 
@@ -651,6 +667,7 @@ export function saveThemeSnapshot(snapshot: ThemeSnapshot): boolean {
   saveThemeScale(snapshot.scale)
   saveThemeFont(snapshot.font)
   saveThemeContentLayout(snapshot.contentLayout)
+  saveThemeShellLayout(snapshot.shellLayout)
   return bgOk
 }
 
@@ -681,11 +698,12 @@ export function importThemeJson(json: string): ThemeSnapshot | null {
       customCss: typeof parsed.customCss === 'string' ? parsed.customCss : '',
       backgroundImage: typeof parsed.backgroundImage === 'string' ? parsed.backgroundImage : '',
       activePresetId: typeof parsed.activePresetId === 'string' ? parsed.activePresetId : null,
-      themeMode: ['dark', 'light', 'system'].includes(parsed.themeMode) ? parsed.themeMode : loadThemeMode(),
+      themeMode: ['dark', 'light'].includes(parsed.themeMode) ? parsed.themeMode : loadThemeMode(),
       radius: ['default', 'none', 'sm', 'md', 'lg', 'xl'].includes(parsed.radius) ? parsed.radius : 'default',
       scale: ['default', 'sm', 'lg', 'xl'].includes(parsed.scale) ? parsed.scale : 'default',
       font: ['default', 'sans', 'serif'].includes(parsed.font) ? parsed.font : 'default',
       contentLayout: ['full', 'centered'].includes(parsed.contentLayout) ? parsed.contentLayout : 'full',
+      shellLayout: ['inset', 'sidebar'].includes(parsed.shellLayout) ? parsed.shellLayout : 'inset',
     }
   } catch {
     return null
@@ -785,13 +803,14 @@ function resolvePresetDefaults(presetId: string | null) {
   return FULL_PRESET_THEMES.find((preset) => preset.id === presetId)
 }
 
-export function applyThemePreferences(snapshot: Pick<ThemeSnapshot, 'activePresetId' | 'radius' | 'scale' | 'font' | 'contentLayout'>): void {
+export function applyThemePreferences(snapshot: Pick<ThemeSnapshot, 'activePresetId' | 'radius' | 'scale' | 'font' | 'contentLayout' | 'shellLayout'>): void {
   const preset = resolvePresetDefaults(snapshot.activePresetId)
   setBodyAttribute('data-theme-preset', snapshot.activePresetId && snapshot.activePresetId !== 'default-blue' ? snapshot.activePresetId : null)
   setBodyAttribute('data-theme-radius', snapshot.radius === 'default' ? 'xl' : snapshot.radius)
   setBodyAttribute('data-theme-scale', snapshot.scale === 'default' ? null : snapshot.scale)
   setBodyAttribute('data-theme-font', snapshot.font === 'default' ? preset?.defaultFont || null : snapshot.font)
   setBodyAttribute('data-theme-content-layout', snapshot.contentLayout === 'full' ? null : snapshot.contentLayout)
+  setBodyAttribute('data-theme-shell-layout', snapshot.shellLayout === 'inset' ? null : snapshot.shellLayout)
 }
 
 export function clearThemePreferences(): void {
@@ -800,11 +819,13 @@ export function clearThemePreferences(): void {
   setBodyAttribute('data-theme-scale', null)
   setBodyAttribute('data-theme-font', null)
   setBodyAttribute('data-theme-content-layout', null)
+  setBodyAttribute('data-theme-shell-layout', null)
   localStorage.removeItem(STORAGE_KEY_THEME_MODE)
   localStorage.removeItem(STORAGE_KEY_RADIUS)
   localStorage.removeItem(STORAGE_KEY_SCALE)
   localStorage.removeItem(STORAGE_KEY_FONT)
   localStorage.removeItem(STORAGE_KEY_CONTENT_LAYOUT)
+  localStorage.removeItem(STORAGE_KEY_SHELL_LAYOUT)
 }
 
 /**
