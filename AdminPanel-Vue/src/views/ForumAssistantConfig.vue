@@ -9,29 +9,26 @@
       <div class="toolbar-row">
         <AppSwitch v-model="globalEnabled" label="启用任务派发中心" />
 
-        <label class="field compact-field">
-          <span>保留历史条数</span>
-          <input v-model.number="maxHistory" type="number" min="20" max="10000" step="1" />
-        </label>
+        <UiField label="保留历史条数" class="compact-field" size="sm">
+          <UiInput v-model.number="maxHistory" type="number" min="20" max="10000" step="1" size="sm" />
+        </UiField>
       </div>
 
       <div class="toolbar-actions">
-        <button
-          type="button"
-          class="btn-secondary"
+        <UiButton
+          variant="outline"
           :disabled="isLoading || isSaving"
           @click="refreshAll(true)"
         >
           {{ isLoading ? "刷新中…" : "刷新配置" }}
-        </button>
-        <button
-          type="button"
-          class="btn-success"
+        </UiButton>
+        <UiButton
+          variant="primary"
           :disabled="isLoading || isSaving"
           @click="saveConfig"
         >
           {{ isSaving ? "保存中…" : "保存任务配置" }}
-        </button>
+        </UiButton>
       </div>
 
       <p
@@ -53,12 +50,9 @@
         <div class="status-metrics">
           <div class="metric">
             <span class="metric-label">当前状态</span>
-            <span
-              class="status-badge"
-              :class="runtimeStatus?.globalEnabled ? 'status-enabled' : 'status-disabled'"
-            >
+            <UiBadge :variant="runtimeStatus?.globalEnabled ? 'success' : 'secondary'">
               {{ runtimeStatus?.globalEnabled ? "运行中" : "已停止" }}
-            </span>
+            </UiBadge>
           </div>
           <div class="metric">
             <span class="metric-label">任务总数</span>
@@ -102,9 +96,9 @@
 
         <form class="composer-controls" aria-label="快速创建任务" @submit.prevent="addTask">
           <div class="quick-create-actions">
-            <button type="submit" class="btn-primary">
+            <UiButton type="submit" variant="primary">
               新增空白任务
-            </button>
+            </UiButton>
           </div>
         </form>
       </div>
@@ -126,19 +120,19 @@
               <h4>{{ task.name || "未命名任务" }}</h4>
               <p>
                 {{ resolveTaskTypeLabel(task.type) }}
-                <span
+                <UiBadge
                   v-if="isOnceTaskExpired(task)"
-                  class="status-badge status-disabled once-expired-badge"
+                  variant="secondary"
+                  class="once-expired-badge"
                 >
                   已过期
-                </span>
+                </UiBadge>
               </p>
             </div>
 
             <div class="task-card-actions">
-              <button
-                type="button"
-                class="btn-secondary"
+              <UiButton
+                variant="outline"
                 :disabled="!task.id || isTaskTriggerPending(task.id)"
                 :title="task.id ? '立即触发当前任务' : '请先保存任务再触发'"
                 @click="triggerTask(task)"
@@ -148,26 +142,23 @@
                     ? "执行中…"
                     : "立即执行"
                 }}
-              </button>
-              <button
-                type="button"
-                class="btn-danger"
+              </UiButton>
+              <UiButton
+                variant="danger"
                 @click="removeTask(task)"
               >
                 移除
-              </button>
+              </UiButton>
             </div>
           </header>
 
           <div class="task-grid">
-            <label class="field">
-              <span>任务名称</span>
-              <input v-model.trim="task.name" type="text" maxlength="100" placeholder="例如：论坛巡航可可" />
-            </label>
+            <UiField label="任务名称">
+              <UiInput v-model.trim="task.name" type="text" maxlength="100" placeholder="例如：论坛巡航可可" />
+            </UiField>
 
-            <label class="field">
-              <span>任务类型</span>
-              <select v-model="task.type" @change="handleTaskTypeChange(task)">
+            <UiField label="任务类型">
+              <UiSelect v-model="task.type" @change="handleTaskTypeChange(task)">
                 <option
                   v-for="taskType in resolvedTaskTypes"
                   :key="taskType.type"
@@ -175,13 +166,12 @@
                 >
                   {{ taskType.label }}
                 </option>
-              </select>
-            </label>
+              </UiSelect>
+            </UiField>
 
-            <label class="field">
-              <span>目标 Agent</span>
+            <UiField label="目标 Agent">
               <div class="agent-input-wrapper">
-                <input
+                <UiInput
                   v-model="task.targetAgentsText"
                   type="text"
                   maxlength="500"
@@ -189,7 +179,7 @@
                   :list="`agent-suggestions-${task.localKey}`"
                   @input="updateRandomOptions(task)"
                 />
-                <select
+                <UiSelect
                   class="agent-quick-select"
                   aria-label="目标 Agent 快速选择"
                   @change="handleAgentQuickSelect(task, $event)"
@@ -202,8 +192,8 @@
                   >
                     {{ agent.chineseName }}
                   </option>
-                </select>
-                <select
+                </UiSelect>
+                <UiSelect
                   class="agent-random-select"
                   aria-label="随机执行人数"
                   :value="task.randomCount > 0 ? `random${task.randomCount}` : ''"
@@ -217,7 +207,7 @@
                   >
                     随机 {{ n }} 人
                   </option>
-                </select>
+                </UiSelect>
                 <datalist :id="`agent-suggestions-${task.localKey}`">
                   <option
                     v-for="agent in availableAgents"
@@ -226,24 +216,22 @@
                   />
                 </datalist>
               </div>
-            </label>
+            </UiField>
 
-            <label class="field">
-              <span>请求发送者</span>
-              <input v-model.trim="task.maid" type="text" maxlength="50" placeholder="默认 VCP系统" />
-            </label>
+            <UiField label="请求发送者">
+              <UiInput v-model.trim="task.maid" type="text" maxlength="50" placeholder="默认 VCP系统" />
+            </UiField>
 
-            <div class="field full-field schedule-field">
-              <span>调度方式</span>
+            <UiField label="调度方式" class="full-field schedule-field">
               <div class="schedule-inline-row">
-                <select v-model="task.scheduleMode" class="schedule-mode-select">
+                <UiSelect v-model="task.scheduleMode" class="schedule-mode-select">
                   <option value="interval">循环任务</option>
                   <option value="cron">CRON 定时</option>
                   <option value="manual">仅手动触发</option>
                   <option value="once">一次性任务</option>
-                </select>
+                </UiSelect>
 
-                <input
+                <UiInput
                   v-if="task.scheduleMode === 'interval'"
                   v-model.number="task.intervalMinutes"
                   class="schedule-mode-input"
@@ -253,7 +241,7 @@
                   placeholder="循环间隔（分钟）"
                 />
 
-                <input
+                <UiInput
                   v-else-if="task.scheduleMode === 'cron'"
                   v-model.trim="task.cronValue"
                   class="schedule-mode-input"
@@ -262,7 +250,7 @@
                   placeholder="例如：0 0 * * * (每日凌晨)"
                 />
 
-                <input
+                <UiInput
                   v-else-if="task.scheduleMode === 'once'"
                   v-model="task.runAtLocal"
                   class="schedule-mode-input"
@@ -273,7 +261,7 @@
                   当前为“仅手动触发”，无需填写定时参数。
                 </p>
               </div>
-            </div>
+            </UiField>
           </div>
 
           <AppSwitch v-model="task.enabled" class="section-switch" label="启用该任务" />
@@ -288,49 +276,47 @@
             />
 
             <div class="task-grid">
-              <label class="field">
-                <span>论坛列表占位符</span>
-                <input
+              <UiField label="论坛列表占位符">
+                <UiInput
                   v-model.trim="task.forumListPlaceholder"
                   type="text"
                   placeholder="{{forum_post_list}}"
                   :disabled="!task.includeForumPostList"
                 />
-              </label>
+              </UiField>
 
-              <label class="field">
-                <span>最大读取帖子数</span>
-                <input
+              <UiField label="最大读取帖子数">
+                <UiInput
                   v-model.number="task.maxPosts"
                   type="number"
                   min="1"
                   step="1"
                   :disabled="!task.includeForumPostList"
                 />
-              </label>
+              </UiField>
             </div>
           </template>
 
-          <label class="field full-field">
-            <span>提示词模板</span>
-            <textarea
+          <UiField label="提示词模板" class="full-field">
+            <UiTextarea
               v-model="task.promptTemplate"
               rows="8"
               maxlength="20000"
               placeholder="这里是任务的提示词模板"
-            ></textarea>
-          </label>
+            />
+          </UiField>
 
           <div class="placeholder-row">
             <span class="placeholder-label">可用占位符</span>
             <template v-if="getPlaceholdersForTask(task).length > 0">
-              <span
+              <UiBadge
                 v-for="placeholder in getPlaceholdersForTask(task)"
                 :key="`${task.localKey}-${placeholder}`"
+                variant="outline"
                 class="placeholder-chip"
               >
                 {{ placeholder }}
-              </span>
+              </UiBadge>
             </template>
             <span v-else class="placeholder-empty">
               当前任务没有额外占位符
@@ -342,12 +328,9 @@
 
           <div class="runtime-panel">
             <div class="runtime-state-row">
-              <span
-                class="status-badge"
-                :class="task.runtime?.running ? 'status-running' : 'status-neutral'"
-              >
+              <UiBadge :variant="task.runtime?.running ? 'info' : 'secondary'">
                 {{ task.runtime?.running ? "执行中" : "待机" }}
-              </span>
+              </UiBadge>
               <span class="runtime-summary">
                 成功 {{ task.runtime?.successCount ?? 0 }} 次 / 失败
                 {{ task.runtime?.errorCount ?? 0 }} 次 / 总计
@@ -402,12 +385,9 @@
         >
           <div class="history-item-top">
             <strong>{{ item.taskName || item.taskId || "未知任务" }}</strong>
-            <span
-              class="status-badge"
-              :class="item.status === 'error' ? 'status-disabled' : 'status-enabled'"
-            >
+            <UiBadge :variant="item.status === 'error' ? 'danger' : 'success'">
               {{ item.status || "unknown" }}
-            </span>
+            </UiBadge>
           </div>
           <p>{{ item.message || "无返回信息" }}</p>
           <div class="history-meta">
@@ -417,14 +397,14 @@
           </div>
         </article>
 
-        <button
+        <UiButton
           v-if="hasMoreHistory"
-          type="button"
-          class="btn-secondary history-more-btn"
+          variant="outline"
+          class="history-more-btn"
           @click="showMoreHistory"
         >
           查看更多（已显示 {{ visibleHistoryItems.length }} / {{ historyItems.length }} 条）
-        </button>
+        </UiButton>
       </div>
     </section>
   </section>
@@ -434,6 +414,12 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import AppSwitch from "@/components/ui/AppSwitch.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
 import {
   agentApi,
   forumAssistantApi,
@@ -1260,30 +1246,6 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.field span {
-  font-weight: 600;
-  color: var(--primary-text);
-}
-
-.field input,
-.field select,
-.field textarea,
-.composer-controls input,
-.composer-controls select {
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--input-bg);
-  color: var(--primary-text);
-}
-
 .compact-field {
   min-width: 180px;
 }
@@ -1349,14 +1311,6 @@ onBeforeUnmount(() => {
   flex: 1;
   justify-content: flex-end;
   align-items: flex-end;
-}
-
-.composer-controls input {
-  max-width: 240px;
-}
-
-.composer-controls select {
-  max-width: 220px;
 }
 
 .quick-create-actions {
@@ -1433,6 +1387,11 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 
+.full-field :deep(.ui-textarea) {
+  max-height: none;
+  min-height: 168px;
+}
+
 .section-switch {
   margin-top: -4px;
 }
@@ -1450,10 +1409,6 @@ onBeforeUnmount(() => {
 }
 
 .placeholder-chip {
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--button-bg) 18%, transparent);
-  color: var(--primary-text);
   font-family: monospace;
 }
 
@@ -1518,37 +1473,6 @@ onBeforeUnmount(() => {
   color: var(--secondary-text);
 }
 
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: var(--font-size-helper);
-  font-weight: 700;
-}
-
-.status-enabled {
-  background: var(--success-bg);
-  color: var(--success-text);
-}
-
-.status-disabled {
-  background: var(--danger-bg);
-  color: var(--danger-text);
-}
-
-.status-neutral {
-  background: color-mix(in srgb, var(--border-color) 32%, transparent);
-  color: var(--secondary-text);
-}
-
-.status-running {
-  background: var(--info-bg);
-  color: var(--info-text);
-}
-
 .error-text {
   color: var(--danger-text);
 }
@@ -1560,14 +1484,9 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 
-.agent-input-wrapper input {
+.agent-input-wrapper :deep(.ui-input) {
   flex: 1;
   min-width: 120px;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--input-bg);
-  color: var(--primary-text);
 }
 
 .agent-quick-select,
@@ -1576,18 +1495,6 @@ onBeforeUnmount(() => {
   width: auto;
   min-width: 100px;
   max-width: 140px;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  font-size: var(--font-size-helper);
-  cursor: pointer;
-}
-
-.agent-quick-select:hover,
-.agent-random-select:hover {
-  border-color: var(--highlight-text);
 }
 
 .once-expired-badge {
@@ -1613,11 +1520,6 @@ onBeforeUnmount(() => {
     justify-content: stretch;
   }
 
-  .composer-controls input,
-  .composer-controls select {
-    max-width: none;
-  }
-
   .schedule-inline-row {
     flex-direction: column;
     align-items: stretch;
@@ -1630,7 +1532,7 @@ onBeforeUnmount(() => {
     max-width: none;
   }
 
-  .quick-create-actions .btn-primary {
+  .quick-create-actions :deep(.ui-button) {
     width: 100%;
   }
 
