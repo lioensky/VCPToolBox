@@ -8,23 +8,18 @@
     <form v-else-if="groupedEntries.length > 0" id="base-config-form" @submit.prevent="handleSubmit">
       <div class="base-config-workspace" :class="{ 'is-aside-collapsed': asideCollapsed }">
         <div class="base-config-main">
-          <section
+          <UiSettingsCard
             v-for="group in groupedEntries"
             :id="group.anchor"
             :key="group.id"
-            class="group-card card"
+            class="group-card"
+            :title="group.title"
+            :description="group.description"
+            variant="subtle"
           >
-            <header class="group-header">
-              <div class="group-head-main">
-                <h3>{{ group.title }}</h3>
-                <p v-if="group.description" class="group-description">
-                  {{ group.description }}
-                </p>
-              </div>
-              <div class="group-head-meta">
-                <span class="group-count">{{ group.totalEntries }} 项</span>
-              </div>
-            </header>
+            <template #action>
+              <UiBadge variant="outline">{{ group.totalEntries }} 项</UiBadge>
+            </template>
 
             <div class="group-sections">
               <section
@@ -37,134 +32,145 @@
                   <span class="group-section-count">{{ section.entries.length }} 项</span>
                 </header>
 
-                <div class="group-grid">
-                  <div v-for="entry in section.entries" :key="entry.uid" class="form-group">
-                    <label :for="`config-${entry.uid}`">
-                      <span class="key-name">{{ entry.key }}</span>
-                    </label>
+                <UiSettingsForm as="div" :columns="2" gap="sm">
+                  <UiSettingsSwitchRow
+                    v-for="entry in section.entries.filter((item) => item.type === 'boolean')"
+                    :key="entry.uid"
+                    :model-value="entry.value === 'true'"
+                    :input-id="`config-${entry.uid}`"
+                    :label="entry.key || '未命名配置'"
+                    :description="entry.commentText"
+                    density="compact"
+                    @update:model-value="updateBooleanEntryValue(entry, $event)"
+                  />
 
-                    <div v-if="entry.type === 'boolean'" class="switch-container">
-                      <AppSwitch
-                        :input-id="`config-${entry.uid}`"
-                        :model-value="entry.value === 'true'"
-                        :label="entry.value === 'true' ? '启用' : '禁用'"
-                        @update:model-value="updateBooleanEntryValue(entry, $event)"
+                  <UiField
+                    v-for="entry in section.entries.filter((item) => item.type !== 'boolean')"
+                    :key="entry.uid"
+                    :label="entry.key || '未命名配置'"
+                    :description="entry.commentText"
+                    :for-id="`config-${entry.uid}`"
+                    :data-settings-span="entry.isMultilineQuoted || String(entry.value ?? '').length > 60 ? 'full' : undefined"
+                    size="sm"
+                  >
+                    <div v-if="entry.type === 'integer'">
+                      <UiInput
+                        :id="`config-${entry.uid}`"
+                        :model-value="entry.value"
+                        type="number"
+                        step="1"
+                        size="sm"
+                        @input="updateIntegerEntry(entry, $event)"
                       />
                     </div>
 
-                    <div v-else-if="entry.type === 'integer'">
-                      <input
-                        :id="`config-${entry.uid}`"
-                        :value="entry.value"
-                        type="number"
-                        step="1"
-                        @input="updateIntegerEntry(entry, $event)"
-                      >
-                    </div>
-
-                    <div
-                      v-else-if="entry.isMultilineQuoted || String(entry.value ?? '').length > 60"
-                    >
+                    <div v-else-if="entry.isMultilineQuoted || String(entry.value ?? '').length > 60">
                       <div v-if="entry.key && isSensitiveConfigKey(entry.key)" class="input-with-toggle">
-                        <textarea
+                        <UiTextarea
                           :id="`config-${entry.uid}`"
                           v-model="entry.value"
                           :rows="Math.min(10, Math.max(3, String(entry.value ?? '').split('\\n').length + 1))"
                           :class="{ 'password-masked': !sensitiveFields[entry.key] }"
                           autocomplete="off"
-                        ></textarea>
-                        <button
+                        />
+                        <UiButton
                           type="button"
                           class="toggle-visibility-btn"
+                          variant="ghost"
+                          size="sm"
                           @click="toggleSensitiveField(entry.key)"
                           :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                         >
                           {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                        </button>
+                        </UiButton>
                       </div>
 
-                      <textarea
+                      <UiTextarea
                         v-else
                         :id="`config-${entry.uid}`"
                         v-model="entry.value"
                         :rows="Math.min(10, Math.max(3, String(entry.value ?? '').split('\\n').length + 1))"
-                      ></textarea>
+                      />
                     </div>
 
                     <div v-else>
                       <div v-if="entry.key && isSensitiveConfigKey(entry.key)" class="input-with-toggle">
-                        <input
+                        <UiInput
                           :type="sensitiveFields[entry.key] ? 'text' : 'password'"
                           :id="`config-${entry.uid}`"
                           v-model="entry.value"
+                          size="sm"
                           autocomplete="off"
-                        >
-                        <button
+                        />
+                        <UiButton
                           type="button"
                           class="toggle-visibility-btn"
+                          variant="ghost"
+                          size="sm"
                           @click="toggleSensitiveField(entry.key)"
                           :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                         >
                           {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                        </button>
+                        </UiButton>
                       </div>
 
-                      <input
+                      <UiInput
                         v-else
                         :id="`config-${entry.uid}`"
                         v-model="entry.value"
                         type="text"
-                      >
+                        size="sm"
+                      />
                     </div>
-
-                    <span v-if="entry.commentText" class="description">
-                      {{ entry.commentText }}
-                    </span>
-                  </div>
-                </div>
+                  </UiField>
+                </UiSettingsForm>
               </section>
             </div>
 
-          </section>
+          </UiSettingsCard>
         </div>
 
         <aside class="base-config-aside">
-          <div
-            class="base-console card"
+          <UiCard
+            class="base-console"
             :class="{ 'is-collapsed': asideCollapsed }"
             :aria-label="asideCollapsed ? '配置操作台（已折叠）' : '配置操作台'"
+            size="sm"
+            variant="subtle"
           >
             <template v-if="asideCollapsed">
               <div class="console-rail">
-                <button
+                <UiIconButton
                   type="button"
                   class="console-rail-toggle"
+                  label="展开操作台"
                   aria-label="展开操作台"
                   title="展开操作台"
                   @click="toggleAside"
                 >
                   <span class="material-symbols-outlined">right_panel_open</span>
-                </button>
+                </UiIconButton>
                 <div class="console-rail-divider"></div>
-                <button
-                  type="submit"
+                <UiIconButton
                   class="console-rail-icon"
-                  aria-label="保存全局配置"
+                  label="保存全局配置"
                   title="保存全局配置"
+                  @click="handleSubmit"
                 >
                   <span class="material-symbols-outlined">save</span>
-                </button>
-                <button
+                </UiIconButton>
+                <UiIconButton
                   v-for="group in groupedEntries.slice(0, 8)"
                   :key="`${group.id}-rail`"
                   type="button"
                   class="console-rail-icon"
-                  :class="{ 'is-active': activeGroupAnchor === group.anchor }"
+                  :active="activeGroupAnchor === group.anchor"
+                  :label="group.title"
                   :title="group.title"
                   @click="scrollToGroup(group.anchor)"
                 >
                   <span class="material-symbols-outlined">tune</span>
-                </button>
+                </UiIconButton>
               </div>
             </template>
             <template v-else>
@@ -174,20 +180,21 @@
                   <span class="base-console__label">操作台</span>
                   <h3>保存与跳转</h3>
                 </div>
-                <button
+                <UiIconButton
                   type="button"
                   class="console-rail-toggle"
+                  label="折叠操作台"
                   aria-label="折叠操作台"
                   title="折叠操作台"
                   @click="toggleAside"
                 >
                   <span class="material-symbols-outlined">right_panel_close</span>
-                </button>
+                </UiIconButton>
               </div>
             </div>
 
             <div class="base-console__actions">
-              <button type="submit" class="btn-primary">保存全局配置</button>
+              <UiButton type="submit">保存全局配置</UiButton>
             </div>
 
             <p class="entry-count">共 {{ editableEntryCount }} 个配置项</p>
@@ -221,15 +228,17 @@
               </div>
             </div>
             </template>
-          </div>
+          </UiCard>
         </aside>
       </div>
     </form>
 
     <div v-else class="config-empty">
-      <span class="material-symbols-outlined">settings_suggest</span>
-      <h3>暂无配置项</h3>
-      <p>未检测到可用配置，请检查根目录的 config.env 或 config.env.example。</p>
+      <UiEmptyState title="暂无配置项" description="未检测到可用配置，请检查根目录的 config.env 或 config.env.example。">
+        <template #icon>
+          <span class="material-symbols-outlined">settings_suggest</span>
+        </template>
+      </UiEmptyState>
     </div>
   </section>
 </template>
@@ -237,7 +246,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { adminConfigApi } from '@/api'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
+import UiEmptyState from '@/components/ui/UiEmptyState.vue'
+import UiField from '@/components/ui/UiField.vue'
+import UiIconButton from '@/components/ui/UiIconButton.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiSettingsCard from '@/components/ui/UiSettingsCard.vue'
+import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
+import UiSettingsSwitchRow from '@/components/ui/UiSettingsSwitchRow.vue'
+import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { useConsoleCollapse } from '@/composables/useConsoleCollapse'
 import {
   showMessage,
@@ -1011,74 +1030,6 @@ onBeforeUnmount(() => {
   align-self: start;
 }
 
-.source-banner {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-4);
-}
-
-.source-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--highlight-text) 18%, transparent);
-}
-
-.source-label {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-}
-
-.source-hint {
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-}
-
-.group-card {
-  padding: var(--space-4);
-}
-
-.group-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
-}
-
-.group-head-main {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.group-head-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.group-header h3 {
-  margin: 0;
-  font-size: var(--font-size-emphasis);
-  color: var(--primary-text);
-}
-
-.group-description {
-  margin: 0;
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  white-space: pre-line;
-}
-
 .group-section {
   display: inline-flex;
   align-items: center;
@@ -1087,17 +1038,6 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--highlight-text) 16%, transparent);
   color: var(--primary-text);
   font-size: var(--font-size-helper);
-}
-
-.group-count {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
-.group-grid {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
 }
 
 .group-sections {
@@ -1129,38 +1069,6 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-helper);
 }
 
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
-  background: color-mix(in srgb, var(--tertiary-bg) 55%, transparent);
-}
-
-.key-name {
-  font-weight: 600;
-  color: var(--primary-text);
-}
-
-.description {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  white-space: pre-line;
-}
-
-.switch-container {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.form-group textarea {
-  min-height: 120px;
-  resize: vertical;
-}
-
 .base-console {
   display: flex;
   flex-direction: column;
@@ -1181,6 +1089,16 @@ onBeforeUnmount(() => {
   padding: var(--space-3) 0;
   gap: 0;
   align-items: center;
+}
+
+.base-console :deep(.ui-card__content) {
+  min-height: 0;
+  flex: 1;
+}
+
+.base-console:not(.is-collapsed) :deep(.ui-card__content) {
+  display: flex;
+  flex-direction: column;
 }
 
 .base-console__section {
@@ -1326,32 +1244,6 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-4);
   padding: var(--space-9) var(--space-4);
-  color: var(--secondary-text);
-  text-align: center;
-}
-
-.config-empty .material-symbols-outlined {
-  font-size: var(--font-size-icon-empty-lg);
-  opacity: 0.3;
-  color: var(--highlight-text);
-}
-
-.config-empty h3 {
-  color: var(--primary-text);
-  font-size: var(--font-size-emphasis);
-}
-
-.config-empty p {
-  max-width: 45ch;
-  font-size: var(--font-size-body);
-  line-height: 1.6;
-}
-
-.form-group-comment pre {
-  color: var(--secondary-text);
-  font-family: inherit;
-  white-space: pre-wrap;
-  margin: 8px 0;
 }
 
 /* 敏感信息打码样式 */
@@ -1361,7 +1253,8 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 
-.input-with-toggle input {
+.input-with-toggle :deep(.ui-input),
+.input-with-toggle :deep(.ui-textarea) {
   flex: 1;
   padding-right: 70px;
 }
@@ -1370,134 +1263,12 @@ onBeforeUnmount(() => {
   position: absolute;
   right: 8px;
   min-height: 30px;
-  padding: 4px 10px;
-  background: var(--tertiary-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  color: var(--primary-text);
-  font-size: var(--font-size-helper);
-  cursor: pointer;
   z-index: 2;
 }
 
 /* 文本掩码样式 (用于 textarea) */
 .password-masked {
   -webkit-text-security: disc !important;
-}
-
-.toggle-visibility-btn:hover {
-  background: var(--accent-bg);
-}
-
-/* 一体化胶囊操作中心 */
-.config-action-capsule-container {
-  position: fixed;
-  bottom: 30px;
-  right: 30px;
-  z-index: var(--z-index-message);
-  display: flex;
-  justify-content: flex-end;
-  pointer-events: none;
-  transition: transform var(--transition-normal), opacity var(--transition-normal);
-}
-
-.config-action-capsule {
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  height: 50px;
-  background-color: var(--button-bg);
-  color: var(--on-accent-text);
-  border-radius: 25px;
-  box-shadow: var(--shadow-overlay-soft);
-  overflow: hidden;
-  transition:
-    background-color var(--transition-spring),
-    transform var(--transition-spring),
-    box-shadow var(--transition-spring);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.config-action-capsule:hover {
-  background-color: var(--button-hover-bg);
-  transform: translateY(-4px);
-  box-shadow: var(--overlay-panel-shadow);
-}
-
-.capsule-segment {
-  height: 100%;
-  border: none;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 16px;
-  transition: background-color var(--transition-fast);
-}
-
-.capsule-segment:hover {
-  background-color: rgba(255, 255, 255, 0.1);
-}
-
-.save-segment {
-  gap: 8px;
-  min-width: 120px;
-}
-
-.top-segment {
-  width: 50px;
-  padding: 0;
-}
-
-.capsule-divider {
-  width: 1px;
-  height: 24px;
-  background-color: rgba(255, 255, 255, 0.2);
-}
-
-.label-text, .status-text {
-  font-size: var(--font-size-helper);
-  font-weight: 500;
-}
-
-.status-text.success {
-  color: #a7f3d0;
-}
-
-.status-text.error {
-  color: #fecaca;
-}
-
-.loading-spinner-sm {
-  width: 18px;
-  height: 18px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-/* 文本切换动画 */
-.fade-text-enter-active,
-.fade-text-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-
-.fade-text-enter-from {
-  opacity: 0;
-  transform: translateY(10px);
-}
-
-.fade-text-leave-to {
-  opacity: 0;
-  transform: translateY(-10px);
-}
-
-/* 隐藏全局回到顶部 */
-:global(.hide-global-back-to-top .back-to-top-btn) {
-  display: none !important;
 }
 
 #base-config-section {
@@ -1545,8 +1316,5 @@ onBeforeUnmount(() => {
     max-height: 38vh;
   }
 
-  .source-banner {
-    align-items: flex-start;
-  }
 }
 </style>
