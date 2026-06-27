@@ -42,30 +42,35 @@
       <template #left-actions>
         <div class="pane-toolbar pane-toolbar--left">
           <div class="pane-toolbar-main">
-            <button
+            <UiButton
               @click="addAgentEntry"
-              class="btn-primary btn-sm btn-sm-touch"
+              variant="primary"
+              size="sm"
               aria-label="添加新 Agent"
               title="添加新 Agent"
             >
-              <span class="material-symbols-outlined" aria-hidden="true">add</span>
+              <template #leading>
+                <span class="material-symbols-outlined" aria-hidden="true">add</span>
+              </template>
               添加
-            </button>
-            <button
-              type="button"
+            </UiButton>
+            <UiButton
               @click="saveAgentMap"
-              class="btn-success btn-sm btn-sm-touch"
+              variant="primary"
+              size="sm"
               :disabled="isSavingMap || !mapDirty"
               aria-label="保存映射表"
               title="保存映射表"
             >
-              <span
-                class="material-symbols-outlined"
-                :class="{ spinning: isSavingMap }"
-                aria-hidden="true"
-              >{{ isSavingMap ? "sync" : "save" }}</span>
+              <template #leading>
+                <span
+                  class="material-symbols-outlined"
+                  :class="{ spinning: isSavingMap }"
+                  aria-hidden="true"
+                >{{ isSavingMap ? "sync" : "save" }}</span>
+              </template>
               {{ isSavingMap ? "保存中…" : mapDirty ? "保存" : "已保存" }}
-            </button>
+            </UiButton>
             <details class="pane-toolbar-menu">
               <summary class="pane-toolbar-menu-trigger" aria-label="更多操作" title="更多操作">
                 <span class="material-symbols-outlined">more_vert</span>
@@ -78,14 +83,13 @@
               </div>
             </details>
           </div>
-          <span
-            class="pane-toolbar-chip"
-            :class="{ 'pane-toolbar-chip--active': mapDirty }"
+          <UiBadge
+            :variant="mapDirty ? 'warning' : 'success'"
             :title="mapDirty ? '映射未保存' : '映射已同步'"
             :aria-label="mapDirty ? '映射未保存' : '映射已同步'"
           >
             {{ mapDirty ? '映射未保存' : '映射已同步' }}
-          </span>
+          </UiBadge>
         </div>
       </template>
 
@@ -118,16 +122,16 @@
             <div class="agent-entry-header">
               <span class="material-symbols-outlined header-icon">smart_toy</span>
               <span class="header-title">{{ entry.name || "未命名 Agent" }}</span>
-              <span class="header-status-badge" :class="doesFileExist(entry.file) ? 'active' : 'pending'">
+              <UiBadge :variant="doesFileExist(entry.file) ? 'success' : 'warning'" class="agent-binding-badge">
                 {{ doesFileExist(entry.file) ? '已绑定' : '待绑定' }}
-              </span>
+              </UiBadge>
             </div>
 
             <!-- 第二层：中间输入配置 (PC垂直，移动端并排对齐) -->
             <div class="agent-entry-fields">
               <div class="agent-entry-row">
                 <label>Agent 名称:</label>
-                <input
+                <UiInput
                   v-model="entry.name"
                   type="text"
                   placeholder="输入 Agent 名称"
@@ -136,7 +140,7 @@
 
               <div class="agent-entry-row">
                 <label>关联文件:</label>
-                <input
+                <UiInput
                   v-model="entry.file"
                   :list="agentFilesDatalistId"
                   type="text"
@@ -178,38 +182,47 @@
 
             <!-- 第三层：操作动作按钮组 -->
             <div class="agent-entry-actions">
-              <button
+              <UiButton
                 @click="createAndBindAgentFile(entry)"
                 :disabled="!canCreateAgentFile(entry.file)"
-                class="btn-primary btn-sm btn-sm-touch"
+                variant="primary"
+                size="sm"
               >
-                <span class="material-symbols-outlined">note_add</span>
+                <template #leading>
+                  <span class="material-symbols-outlined">note_add</span>
+                </template>
                 创建并绑定
-              </button>
-              <button
+              </UiButton>
+              <UiButton
                 @click="selectAgentFile(resolveAgentFileName(entry.file))"
                 :disabled="!doesFileExist(entry.file)"
-                class="btn-secondary btn-sm btn-sm-touch"
+                variant="outline"
+                size="sm"
               >
-                <span class="material-symbols-outlined">edit</span>
+                <template #leading>
+                  <span class="material-symbols-outlined">edit</span>
+                </template>
                 编辑文件
-              </button>
-              <button
+              </UiButton>
+              <UiButton
                 @click="removeAgentEntry(index)"
-                class="btn-danger btn-sm btn-sm-touch"
+                variant="danger"
+                size="sm"
               >
-                <span class="material-symbols-outlined">delete</span>
+                <template #leading>
+                  <span class="material-symbols-outlined">delete</span>
+                </template>
                 删除
-              </button>
+              </UiButton>
             </div>
           </div>
 
           <div v-if="agentMap.length === 0" class="empty-state">
             <span class="material-symbols-outlined">smart_toy</span>
             <p>暂无 Agent 映射</p>
-            <button @click="addAgentEntry" class="btn-primary">
+            <UiButton @click="addAgentEntry" variant="primary">
               添加第一个 Agent
-            </button>
+            </UiButton>
           </div>
         </div>
       </template>
@@ -217,36 +230,41 @@
       <template #right-actions>
         <div v-if="editingFile" class="pane-toolbar pane-toolbar--right">
           <div class="pane-toolbar-main">
-            <button
-              type="button"
+            <UiButton
               @click="openDiarySyntaxEditor"
-              class="btn-secondary btn-sm btn-sm-touch"
+              variant="outline"
+              size="sm"
               aria-label="打开日记本语法编辑器"
               title="日记本语法编辑器"
             >
-              <span class="material-symbols-outlined">auto_fix_high</span>
+              <template #leading>
+                <span class="material-symbols-outlined">auto_fix_high</span>
+              </template>
               日记本语法编辑器
-            </button>
-            <button
-              type="button"
+            </UiButton>
+            <UiButton
               @click="togglePlaceholderSidebar"
-              class="btn-secondary btn-sm btn-sm-touch"
-              :class="{ active: isPlaceholderSidebarOpen }"
+              variant="outline"
+              size="sm"
               aria-label="切换常用占位符侧栏"
               :title="isPlaceholderSidebarOpen ? '收起常用占位符' : '展开常用占位符'"
             >
-              <span class="material-symbols-outlined">data_object</span>
+              <template #leading>
+                <span class="material-symbols-outlined">data_object</span>
+              </template>
               占位符
-            </button>
-            <button
-              type="button"
+            </UiButton>
+            <UiButton
               @click="saveAgentFile"
               :disabled="!fileDirty || isSavingFile"
-              class="btn-success btn-sm btn-sm-touch"
+              variant="primary"
+              size="sm"
             >
-              <span class="material-symbols-outlined" :class="{ spinning: isSavingFile }">{{ isSavingFile ? "sync" : "save" }}</span>
+              <template #leading>
+                <span class="material-symbols-outlined" :class="{ spinning: isSavingFile }">{{ isSavingFile ? "sync" : "save" }}</span>
+              </template>
               {{ isSavingFile ? "保存中…" : fileDirty ? "保存文件" : "已保存" }}
-            </button>
+            </UiButton>
           </div>
         </div>
       </template>
@@ -261,14 +279,14 @@
                 <span v-if="fileDirty" class="dirty-indicator">（未保存）</span>
               </span>
             </div>
-            <textarea
+            <UiTextarea
               ref="fileContentEditorRef"
               v-model="fileContent"
               spellcheck="false"
               rows="20"
               placeholder="从左侧选择一个 Agent 以编辑其关联的 .txt / .md 文件…"
               class="file-content-editor"
-            ></textarea>
+            />
             <span
               v-if="fileStatusMessage"
               :class="['status-message', fileStatusType]"
@@ -308,20 +326,20 @@
 
             <div class="placeholder-search">
               <span class="material-symbols-outlined search-icon">search</span>
-              <input
+              <UiInput
                 v-model="placeholderQuery"
                 type="text"
                 placeholder="搜索占位符…"
               />
-              <button
+              <UiIconButton
                 v-if="placeholderQuery"
-                type="button"
                 class="search-clear"
-                aria-label="清除搜索"
+                label="清除搜索"
+                title="清除搜索"
                 @click="placeholderQuery = ''"
               >
                 <span class="material-symbols-outlined">close</span>
-              </button>
+              </UiIconButton>
             </div>
 
             <div
@@ -415,6 +433,11 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { agentApi, placeholderApi, toolboxApi } from "@/api";
 import DualPaneEditor from "@/components/DualPaneEditor.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
 import DiarySyntaxEditorModal from "./AgentFilesEditor/DiarySyntaxEditorModal.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import type {
@@ -478,7 +501,7 @@ const placeholderLoadError = ref("");
 const placeholderQuery = ref("");
 const toolboxPlaceholders = ref<QuickPlaceholderItem[]>([]);
 const envPlaceholders = ref<QuickPlaceholderItem[]>([]);
-const fileContentEditorRef = ref<HTMLTextAreaElement | null>(null);
+const fileContentEditorRef = ref<InstanceType<typeof UiTextarea> | null>(null);
 const collapsedPlaceholderGroups = ref<Record<string, boolean>>({
   toolbox: false,
   env: false,
@@ -765,20 +788,17 @@ async function insertPlaceholderAtCursor(token: string): Promise<void> {
     return;
   }
 
-  const selectionStart = editor.selectionStart ?? fileContent.value.length;
-  const selectionEnd = editor.selectionEnd ?? selectionStart;
+  const { start: selectionStart, end: selectionEnd } = editor.getSelectionRange();
   const before = fileContent.value.slice(0, selectionStart);
   const after = fileContent.value.slice(selectionEnd);
-  const previousScrollTop = editor.scrollTop;
-  const previousScrollLeft = editor.scrollLeft;
+  const previousScrollPosition = editor.getScrollPosition();
   fileContent.value = `${before}${token}${after}`;
 
   await nextTick();
   editor.focus({ preventScroll: true });
   const nextCursor = selectionStart + token.length;
   editor.setSelectionRange(nextCursor, nextCursor);
-  editor.scrollTop = previousScrollTop;
-  editor.scrollLeft = previousScrollLeft;
+  editor.setScrollPosition(previousScrollPosition);
   showMessage(`已插入 ${token}`, "success");
 }
 
@@ -1178,46 +1198,6 @@ onBeforeRouteLeave(async () => {
   font-weight: 500;
 }
 
-.agent-entry-row input,
-.agent-entry-row select {
-  width: 100%;
-  padding: 10px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
-  font-family: inherit;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.agent-entry-row input {
-  padding-right: 12px;
-  cursor: text;
-}
-
-.agent-entry-row input:hover,
-.agent-entry-row select:hover {
-  border-color: var(--highlight-text);
-}
-
-.agent-entry-row input:focus-visible,
-.agent-entry-row select:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-  border-color: var(--highlight-text);
-  box-shadow: 0 0 0 2px var(--primary-color-translucent);
-}
-
-.agent-entry-row input:focus:not(:focus-visible),
-.agent-entry-row select:focus:not(:focus-visible) {
-  border-color: var(--highlight-text);
-}
-
-.agent-entry-row input::placeholder {
-  color: var(--secondary-text);
-}
-
 .loading-hint {
   display: flex;
   align-items: center;
@@ -1318,21 +1298,20 @@ onBeforeRouteLeave(async () => {
   flex: 1;
   width: 100%;
   min-height: 240px;
-  resize: none;
-  padding: 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
   font-size: var(--font-size-body);
   line-height: 1.6;
   font-family: "Consolas", "Monaco", monospace;
 }
 
-.file-content-editor:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-  border-color: var(--highlight-text);
+.file-content-editor :deep(.ui-textarea),
+.file-content-editor.ui-textarea {
+  height: 100%;
+  max-height: none;
+  min-height: 240px;
+  resize: none;
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: var(--font-size-body);
+  line-height: 1.6;
 }
 
 .editor-actions {
@@ -1442,19 +1421,9 @@ onBeforeRouteLeave(async () => {
   border-bottom: 1px solid var(--border-color);
 }
 
-.placeholder-search input {
-  width: 100%;
-  padding: 8px 32px 8px 34px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
-  color: var(--primary-text);
-}
-
-.placeholder-search input:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-  border-color: var(--highlight-text);
+.placeholder-search :deep(.ui-input) {
+  padding-left: 34px;
+  padding-right: 32px;
 }
 
 .placeholder-search .search-icon {
@@ -1472,18 +1441,6 @@ onBeforeRouteLeave(async () => {
   top: 50%;
   right: 18px;
   transform: translateY(-50%);
-  display: inline-grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border: none;
-  background: transparent;
-  color: var(--secondary-text);
-  cursor: pointer;
-}
-
-.placeholder-search .search-clear:hover {
-  color: var(--primary-text);
 }
 
 .placeholder-search .search-clear .material-symbols-outlined {
@@ -1642,22 +1599,8 @@ onBeforeRouteLeave(async () => {
   color: var(--primary-text);
 }
 
-.header-status-badge {
+.agent-binding-badge {
   margin-left: auto;
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-weight: 500;
-}
-
-.header-status-badge.active {
-  background: rgba(46, 204, 113, 0.1);
-  color: var(--success-text, #2ecc71);
-}
-
-.header-status-badge.pending {
-  background: rgba(241, 196, 15, 0.15);
-  color: var(--warning-text, #f1c40f);
 }
 
 .agent-entry-fields {
@@ -1735,8 +1678,7 @@ onBeforeRouteLeave(async () => {
     margin-top: 12px;
   }
 
-  /* 让删除按钮独占一整行，红底警示且醒目 */
-  .agent-entry-actions button:last-child {
+  .agent-entry-actions :deep(.ui-button:last-child) {
     grid-column: span 2;
   }
 
@@ -1766,10 +1708,6 @@ onBeforeRouteLeave(async () => {
   .file-content-editor {
     height: 100%;
     min-height: 280px;
-    background: var(--input-bg, #ffffff) !important; /* 完美兼容深色模式输入框背景 */
-    color: var(--primary-text) !important;
-    border: 1px solid var(--border-color, rgba(0, 0, 0, 0.08)) !important;
-    border-radius: 8px;
   }
 
   /* 移动端底部极简悬浮胶囊 (iOS Segmented Control 质感) - 彻底消灭顶部滞空压迫感 */
