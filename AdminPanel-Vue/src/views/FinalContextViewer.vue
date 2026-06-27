@@ -182,13 +182,17 @@
               <div class="block-identity">
                 <span class="block-index">#{{ block.index }}</span>
                 <span class="block-role">{{ normalizeRoleLabel(displayRole(block)) }}</span>
-                <span v-if="getUserBlockBadge(block)" class="block-badge" :class="getUserBlockBadge(block)?.className">
+                <UiBadge
+                  v-if="getUserBlockBadge(block)"
+                  class="block-badge"
+                  :variant="getUserBlockBadgeVariant(block)"
+                >
                   {{ getUserBlockBadge(block)?.label }}
-                </span>
-                <span v-if="getDisplayOneRingMeta(block)" class="block-badge badge-onering-source">
+                </UiBadge>
+                <UiBadge v-if="getDisplayOneRingMeta(block)" class="block-badge" variant="info">
                   {{ getDisplayOneRingMeta(block)?.isDetachedUserMarker ? '分离User标记' : 'OneRing来源' }}
-                </span>
-                <span class="block-type">{{ block.contentType }}</span>
+                </UiBadge>
+                <UiBadge class="block-type" variant="outline">{{ block.contentType }}</UiBadge>
               </div>
               <div class="block-header-right">
                 <div class="block-meta">
@@ -531,6 +535,7 @@
 import { computed, nextTick, onMounted, reactive, ref, type ComponentPublicInstance } from 'vue'
 import { systemApi } from '@/api'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
@@ -964,6 +969,17 @@ function getUserBlockBadge(block: FinalContextBlockSummary): { label: string; cl
     return { label: '携带通知栏', className: 'badge-system-notice' }
   }
   return null
+}
+
+function getUserBlockBadgeVariant(block: FinalContextBlockSummary): 'secondary' | 'warning' | 'info' {
+  const badge = getUserBlockBadge(block)
+  if (badge?.className === 'badge-pseudo-system') {
+    return 'warning'
+  }
+  if (badge?.className === 'badge-ai-source-notice') {
+    return 'info'
+  }
+  return 'secondary'
 }
 
 function jumpSpeakerLabel(block: FinalContextBlockSummary): string {
@@ -2116,36 +2132,6 @@ onMounted(() => {
   font-weight: 700;
 }
 
-.block-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
-  font-size: var(--font-size-helper);
-  font-weight: 700;
-  border: 1px solid transparent;
-}
-
-.badge-pseudo-system {
-  color: var(--info-text);
-  background: var(--info-bg);
-  border-color: var(--info-text);
-}
-
-.badge-system-notice {
-  color: var(--warning-text);
-  background: var(--warning-bg);
-  border-color: var(--warning-text);
-}
-
-.badge-ai-source-notice,
-.badge-onering-source {
-  color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-bg) 70%, var(--tertiary-bg));
-  border-color: var(--highlight-text);
-}
-
-.block-type,
 .block-meta {
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
