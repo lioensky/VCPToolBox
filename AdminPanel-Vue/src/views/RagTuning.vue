@@ -39,7 +39,7 @@
         <strong>参数加载失败</strong>
         <p>{{ loadError }}</p>
       </div>
-      <button type="button" class="btn-secondary" @click="loadParams">重新加载</button>
+      <UiButton variant="secondary" @click="loadParams">重新加载</UiButton>
     </div>
 
     <form v-else :id="formId" class="rag-lab__workspace" :class="{ 'is-aside-collapsed': asideCollapsed }" @submit.prevent="saveParams">
@@ -141,9 +141,9 @@
                     </div>
 
                     <div class="wormhole-launchpad__footer">
-                      <button type="button" class="btn-primary" @click="openWormholeModal">
+                      <UiButton @click="openWormholeModal">
                         打开虫洞控制舱
-                      </button>
+                      </UiButton>
                     </div>
                   </div>
                 </div>
@@ -210,9 +210,9 @@
                     </div>
 
                     <div class="wormhole-launchpad__footer">
-                      <button type="button" class="btn-primary" @click="openOrderedCooccurrenceModal">
+                      <UiButton @click="openOrderedCooccurrenceModal">
                         打开 V8.2 流形舱
-                      </button>
+                      </UiButton>
                     </div>
                   </div>
                 </div>
@@ -296,7 +296,7 @@
                         :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
                         :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
                       />
-                      <input
+                      <UiInput
                         v-model.number="
                           (section.raw[entry.key] as Record<string, number>)[subKey]
                         "
@@ -309,14 +309,13 @@
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    class="btn-secondary"
+                  <UiButton
+                    variant="secondary"
                     :disabled="entry.changedLeaves === 0"
                     @click="resetGeodesicParams"
                   >
                     恢复测地线参数
-                  </button>
+                  </UiButton>
                 </div>
               </template>
 
@@ -365,9 +364,9 @@
                 <div class="param-row__control">
                   <div v-if="entry.kind === 'number'" class="control-shell">
                     <label class="control-shell__label" :for="entry.fieldId">当前数值</label>
-                    <input
+                    <UiInput
                       :id="entry.fieldId"
-                      v-model.number="section.raw[entry.key]"
+                      v-model.number="(section.raw as Record<string, number>)[entry.key]"
                       type="number"
                       :step="getNumberStep(entry.value)"
                     />
@@ -384,7 +383,7 @@
                         class="tuple-field"
                       >
                         <span>{{ getTupleFieldLabel(entry, index) }}</span>
-                        <input
+                        <UiInput
                           v-model.number="(section.raw[entry.key] as number[])[index]"
                           type="number"
                           :step="getNumberStep(itemValue)"
@@ -450,7 +449,7 @@
                             :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
                             :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
                           />
-                          <input
+                          <UiInput
                             v-model.number="
                               (section.raw[entry.key] as Record<string, number>)[subKey]
                             "
@@ -542,21 +541,21 @@
           </div>
 
           <div class="rag-console__actions">
-            <button
+            <UiButton
               type="submit"
-              class="btn-primary"
               :disabled="isSaving || !hasParams || !isDirty"
+              block
             >
               {{ isSaving ? "保存中…" : "保存参数配置" }}
-            </button>
-            <button
-              type="button"
-              class="btn-secondary"
+            </UiButton>
+            <UiButton
+              variant="secondary"
               :disabled="!isDirty"
+              block
               @click="resetParams"
             >
               重置未保存修改
-            </button>
+            </UiButton>
           </div>
 
           <div class="rag-console__section rag-console__section--themes">
@@ -565,19 +564,20 @@
                 <span class="rag-console__label">参数预设</span>
                 <p>以 <code>rag_params_模型名.json</code> 形式保存不同向量模型的调参方案。</p>
               </div>
-              <button
-                type="button"
-                class="btn-secondary rag-console__mini-action"
+              <UiButton
+                variant="secondary"
+                size="sm"
+                class="rag-console__mini-action"
                 :disabled="isThemeLoading"
                 @click="loadThemes"
               >
                 {{ isThemeLoading ? "刷新中…" : "刷新" }}
-              </button>
+              </UiButton>
             </div>
 
             <label class="theme-field">
               <span>选择预设</span>
-              <select v-model="selectedThemeName" :disabled="isThemeLoading || isThemeSaving">
+              <UiSelect v-model="selectedThemeName" :disabled="isThemeLoading || isThemeSaving">
                 <option value="">未选择预设</option>
                 <option
                   v-for="theme in ragParamThemes"
@@ -586,39 +586,35 @@
                 >
                   {{ theme.name }}
                 </option>
-              </select>
+              </UiSelect>
             </label>
 
             <div class="rag-console__actions rag-console__theme-actions">
-              <button
-                type="button"
-                class="btn-secondary"
+              <UiButton
+                variant="secondary"
                 :disabled="!selectedThemeName || isThemeLoading || isThemeSaving"
                 @click="openSelectedTheme"
               >
                 打开预设调参
-              </button>
-              <button
-                type="button"
-                class="btn-secondary"
+              </UiButton>
+              <UiButton
+                variant="secondary"
                 :disabled="!selectedThemeName || isThemeLoading || isThemeSaving || !hasParams"
                 @click="saveCurrentToSelectedTheme"
               >
                 保存到所选预设
-              </button>
-              <button
-                type="button"
-                class="btn-primary"
+              </UiButton>
+              <UiButton
                 :disabled="!selectedThemeName || isThemeLoading || isThemeSaving"
                 @click="applySelectedTheme"
               >
                 应用所选预设
-              </button>
+              </UiButton>
             </div>
 
             <label class="theme-field">
               <span>新预设名称 / 向量模型名</span>
-              <input
+              <UiInput
                 v-model.trim="newThemeName"
                 type="text"
                 placeholder="例如 gemini-embedding-2-preview"
@@ -626,14 +622,13 @@
               />
             </label>
 
-            <button
-              type="button"
-              class="btn-primary"
+            <UiButton
               :disabled="!canSaveNewTheme"
+              block
               @click="saveCurrentAsNewTheme"
             >
               {{ isThemeSaving ? "保存预设中…" : "保存当前为新预设" }}
-            </button>
+            </UiButton>
           </div>
 
           <p
@@ -655,9 +650,9 @@
                 <strong>浪潮语义地形模拟器</strong>
                 <p>在子模态窗中预览 KNN 击中、顺逆流、虫洞跃迁与测地线能量场。</p>
               </div>
-              <button type="button" class="btn-primary" @click="openSemanticSimulation">
+              <UiButton @click="openSemanticSimulation">
                 打开沙盘
-              </button>
+              </UiButton>
             </div>
           </div>
 
@@ -746,12 +741,12 @@
               </p>
             </div>
             <div class="semantic-sim-modal__actions">
-              <button type="button" class="btn-secondary" @click="postSemanticSimulationParams">
+              <UiButton variant="secondary" @click="postSemanticSimulationParams">
                 同步当前参数
-              </button>
-              <button type="button" class="btn-secondary" @click="closeSemanticSimulation">
+              </UiButton>
+              <UiButton variant="secondary" @click="closeSemanticSimulation">
                 关闭沙盘
-              </button>
+              </UiButton>
             </div>
           </header>
           <iframe
@@ -778,6 +773,9 @@ import {
 } from "@/api";
 import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { useAppStore } from "@/stores/app";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
 import OrderedCooccurrenceModal from "@/features/rag-tuning/OrderedCooccurrenceModal.vue";
 import WormholeRoutingModal from "@/features/rag-tuning/WormholeRoutingModal.vue";
 import {
@@ -1885,16 +1883,9 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-helper);
 }
 
-.control-shell input,
-.tuple-field input,
+.control-shell :deep(.ui-input),
+.tuple-field :deep(.ui-input),
 .nested-item__number {
-  width: 100%;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--input-bg);
-  color: var(--primary-text);
   font-family: "Consolas", "Monaco", monospace;
 }
 
@@ -2071,8 +2062,8 @@ onBeforeUnmount(() => {
   gap: 0;
 }
 
-.wormhole-launchpad__footer .btn-primary,
-.wormhole-launchpad__control .btn-primary {
+.wormhole-launchpad__footer :deep(.ui-button),
+.wormhole-launchpad__control :deep(.ui-button) {
   width: 100%;
   justify-content: center;
 }
@@ -2330,8 +2321,6 @@ onBeforeUnmount(() => {
 
 .rag-console__mini-action {
   flex: 0 0 auto;
-  padding: 7px 10px;
-  font-size: var(--font-size-helper);
 }
 
 .theme-field {
@@ -2339,17 +2328,6 @@ onBeforeUnmount(() => {
   gap: var(--space-2);
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
-}
-
-.theme-field input,
-.theme-field select {
-  width: 100%;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--input-bg);
-  color: var(--primary-text);
 }
 
 .rag-console__theme-actions {
@@ -2463,7 +2441,7 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
-.semantic-sim-card .btn-primary {
+.semantic-sim-card :deep(.ui-button) {
   position: relative;
   z-index: 1;
   justify-content: center;
