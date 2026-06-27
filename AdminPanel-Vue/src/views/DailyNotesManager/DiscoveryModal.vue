@@ -33,15 +33,16 @@
         <div class="config-row">
           <label>搜索范围:</label>
           <div class="folder-chips-container">
-            <div
+            <button
               v-for="folder in folders"
               :key="folder"
+              type="button"
               class="folder-chip"
               :class="{ active: selectedFolders.includes(folder) }"
               @click="toggleFolder(folder)"
             >
               {{ folder }}
-            </div>
+            </button>
           </div>
         </div>
       </div>
@@ -68,9 +69,7 @@
         >
           <div class="result-header">
             <span class="result-filename">{{ result.name }}</span>
-            <span class="result-score-tag"
-              >匹配度：{{ result.scorePercent }}%</span
-            >
+            <UiBadge variant="default">匹配度：{{ result.scorePercent }}%</UiBadge>
           </div>
           <div class="result-score-bar-container">
             <div
@@ -79,13 +78,13 @@
             ></div>
           </div>
           <div class="result-tags">
-            <span
+            <UiBadge
               v-for="(tag, i) in result.matchedTags?.slice(0, 5)"
               :key="`${tag}-${i}`"
-              class="result-tag"
+              variant="info"
             >
               #{{ tag }}
-            </span>
+            </UiBadge>
           </div>
           <div class="result-preview">{{ result.preview }}</div>
         </div>
@@ -121,6 +120,7 @@ import { ref, computed, watch } from "vue";
 import { diaryApi } from "@/api";
 import { showMessage } from "@/utils";
 import BaseModal from "@/components/ui/BaseModal.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 
@@ -364,12 +364,18 @@ watch(
   border: 1px solid var(--border-color);
   border-radius: 20px;
   font-size: var(--font-size-helper);
+  font: inherit;
   cursor: pointer;
   transition:
     background-color 0.2s ease,
     border-color 0.2s ease,
     color 0.2s ease;
   color: var(--primary-text);
+}
+
+.folder-chip:focus-visible {
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
 }
 
 .folder-chip:hover {
@@ -442,15 +448,6 @@ watch(
   font-size: var(--font-size-body);
 }
 
-.result-score-tag {
-  padding: 4px 8px;
-  background: var(--highlight-text);
-  color: var(--on-accent-text);
-  border-radius: 4px;
-  font-size: var(--font-size-helper);
-  font-weight: 600;
-}
-
 .result-score-bar-container {
   height: 6px;
   background: var(--border-color);
@@ -471,14 +468,6 @@ watch(
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: var(--space-2);
-}
-
-.result-tag {
-  padding: 2px 8px;
-  background: var(--info-bg);
-  color: var(--highlight-text);
-  border-radius: var(--radius-md);
-  font-size: var(--font-size-helper);
 }
 
 .result-preview {
@@ -571,7 +560,7 @@ watch(
     gap: 6px;
   }
 
-  .result-score-tag {
+  .result-header :deep(.ui-badge) {
     align-self: flex-start;
   }
 
