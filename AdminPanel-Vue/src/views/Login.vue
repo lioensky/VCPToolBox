@@ -62,9 +62,13 @@
             登 录
           </UiButton>
 
-          <div v-if="message" :class="['message', messageType]">
+          <UiAlert
+            v-if="message"
+            class="message"
+            :variant="messageType === 'error' ? 'danger' : 'success'"
+          >
             {{ message }}
-          </div>
+          </UiAlert>
         </form>
 
         <p class="footer-text">安全连接 · 仅限授权管理员访问</p>
@@ -77,6 +81,7 @@
 import { ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { resolveSafeAppRedirect } from "@/app/routes/redirect";
+import UiAlert from "@/components/ui/UiAlert.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiCard from "@/components/ui/UiCard.vue";
 import UiField from "@/components/ui/UiField.vue";
@@ -150,11 +155,11 @@ async function handleLogin() {
 .login-container {
   width: 100%;
   max-width: 420px;
-  padding: 20px;
+  padding: var(--space-5);
 }
 
 .login-card {
-  padding: 48px 40px;
+  padding: var(--space-6) var(--space-5);
 }
 
 .logo-section {
@@ -175,7 +180,7 @@ async function handleLogin() {
 
 form {
   display: grid;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
 .input-wrapper {
@@ -190,7 +195,7 @@ form {
   color: var(--secondary-text);
   font-size: var(--font-size-title);
   pointer-events: none;
-  transition: color 0.2s;
+  transition: color var(--transition-fast);
 }
 
 .input-wrapper :deep(.ui-input) {
@@ -216,12 +221,6 @@ form {
 
 .message {
   margin-top: var(--space-4);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-body);
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
   animation: fadeIn 0.3s ease;
 }
 
@@ -234,18 +233,6 @@ form {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-.message.error {
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-border);
-  color: var(--danger-color);
-}
-
-.message.success {
-  background: var(--success-bg);
-  border: 1px solid var(--success-border);
-  color: var(--success-color);
 }
 
 .footer-text {
@@ -298,7 +285,6 @@ form {
   }
 
   .message {
-    padding: 10px 12px;
     font-size: var(--font-size-helper);
   }
 
