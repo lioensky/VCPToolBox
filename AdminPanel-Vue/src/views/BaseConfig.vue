@@ -1039,11 +1039,14 @@ onBeforeUnmount(() => {
 .group-section {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--highlight-text) 16%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   color: var(--primary-text);
   font-size: var(--font-size-helper);
+  font-weight: 600;
 }
 
 .group-sections {
@@ -1088,7 +1091,7 @@ onBeforeUnmount(() => {
     var(--base-console-viewport-gap)
   );
   overflow: hidden;
-  transition: padding 0.2s ease;
+  transition: padding var(--transition-fast);
 }
 
 .base-console.is-collapsed {
@@ -1139,7 +1142,7 @@ onBeforeUnmount(() => {
 .base-console__actions,
 .base-console__jump-list {
   display: grid;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 .base-console__jump-list {
@@ -1168,13 +1171,17 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: var(--space-3);
   width: 100%;
-  padding: var(--space-3) var(--space-4);
+  min-height: 36px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--primary-text);
   cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
   text-align: left;
 }
 
@@ -1186,12 +1193,11 @@ onBeforeUnmount(() => {
 }
 
 .base-console__jump-btn:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 38%, var(--border-color));
   background: var(--accent-bg);
 }
 
 .base-console__jump-btn.is-active {
-  border-color: var(--highlight-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 52%, var(--border-color));
   background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
 }
 
@@ -1203,6 +1209,13 @@ onBeforeUnmount(() => {
 .base-console__jump-btn small {
   color: var(--secondary-text);
   flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .base-console,
+  .base-console__jump-btn {
+    transition: none;
+  }
 }
 
 .form-actions {
