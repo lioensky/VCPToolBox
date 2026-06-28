@@ -67,9 +67,9 @@
             </template>
             下一个
           </UiButton>
-          <span class="match-status">
+          <UiBadge class="match-status" variant="outline">
             匹配 {{ matchedBlocks.length }} / 总块 {{ blocks.length }}
-          </span>
+          </UiBadge>
         </div>
       </div>
 
@@ -445,27 +445,27 @@
           <section class="moonlight-term-grid">
             <div>
               <strong>保留高贡献词</strong>
-              <span v-for="term in moonlightReport.query.topQueryTerms.slice(0, 24)" :key="`top-${term.term}`" class="term-chip">
+              <UiBadge v-for="term in moonlightReport.query.topQueryTerms.slice(0, 24)" :key="`top-${term.term}`" class="term-chip" variant="info">
                 {{ term.term }} · idf {{ term.idf.toFixed(2) }}
-              </span>
+              </UiBadge>
             </div>
             <div>
               <strong>被移除高频词</strong>
-              <span v-for="term in moonlightReport.query.removedHighFrequencyTerms.slice(0, 24)" :key="`removed-${term.term}`" class="term-chip muted">
+              <UiBadge v-for="term in moonlightReport.query.removedHighFrequencyTerms.slice(0, 24)" :key="`removed-${term.term}`" class="term-chip" variant="secondary">
                 {{ term.term }} · {{ term.corpusFrequency }}
-              </span>
+              </UiBadge>
             </div>
             <div>
               <strong>数字/版本/标识符</strong>
-              <span v-for="term in moonlightSpecialTerms" :key="`special-${term.term}`" class="term-chip info">
+              <UiBadge v-for="term in moonlightSpecialTerms" :key="`special-${term.term}`" class="term-chip" variant="outline">
                 {{ term.term }} · df {{ term.documentFrequency }}
-              </span>
+              </UiBadge>
             </div>
             <div>
               <strong>零命中具体词</strong>
-              <span v-for="term in moonlightReport.query.zeroHitTerms.slice(0, 24)" :key="`zero-${term.term}`" class="term-chip danger">
+              <UiBadge v-for="term in moonlightReport.query.zeroHitTerms.slice(0, 24)" :key="`zero-${term.term}`" class="term-chip" variant="warning">
                 {{ term.term }}
-              </span>
+              </UiBadge>
             </div>
           </section>
         </div>
@@ -1375,11 +1375,6 @@ onMounted(() => {
   min-width: 260px;
 }
 
-.match-status {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
 .moonlight-modal {
   position: relative;
   z-index: 10001;
@@ -1502,8 +1497,7 @@ onMounted(() => {
   gap: 8px;
 }
 
-.moonlight-label,
-.term-chip {
+.moonlight-label {
   display: inline-flex;
   align-items: center;
   width: fit-content;
@@ -1514,6 +1508,11 @@ onMounted(() => {
   background: color-mix(in srgb, var(--highlight-bg) 35%, var(--tertiary-bg));
   color: var(--highlight-text);
   font-size: var(--font-size-helper);
+  word-break: break-all;
+}
+
+.term-chip {
+  white-space: normal;
   word-break: break-all;
 }
 
@@ -1864,24 +1863,6 @@ onMounted(() => {
 
 .moonlight-term-grid > div strong {
   flex: 0 0 100%;
-}
-
-.term-chip.muted {
-  color: var(--secondary-text);
-  border-color: var(--border-color);
-  background: var(--tertiary-bg);
-}
-
-.term-chip.info {
-  color: var(--info-text);
-  border-color: var(--info-text);
-  background: var(--info-bg);
-}
-
-.term-chip.danger {
-  color: var(--warning-text);
-  border-color: var(--warning-text);
-  background: var(--warning-bg);
 }
 
 .moonlight-run-button {
