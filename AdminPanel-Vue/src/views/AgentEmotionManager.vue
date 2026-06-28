@@ -1104,7 +1104,6 @@ onMounted(() => {
 .agent-tab.active {
   border-color: color-mix(in srgb, var(--highlight-text) 60%, transparent);
   background: color-mix(in srgb, var(--highlight-text) 12%, transparent);
-  transform: translateY(-1px);
 }
 
 .agent-avatar {
