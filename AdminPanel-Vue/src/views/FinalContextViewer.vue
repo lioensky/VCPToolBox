@@ -1643,7 +1643,7 @@ onMounted(() => {
 }
 
 .legend-peak {
-  background: var(--danger-text, #ff5c7a);
+  background: var(--danger-text);
 }
 
 .legend-valley {
@@ -1715,19 +1715,16 @@ onMounted(() => {
   border: 2px solid var(--primary-bg);
   border-radius: var(--radius-full);
   background: var(--highlight-text);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--highlight-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--highlight-text) 38%, transparent);
   cursor: pointer;
   transform: translate(-50%, -50%);
 }
 
 .moonlight-curve-point.role-system {
   background: var(--info-text);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--info-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--info-text) 38%, transparent);
 }
 
 .moonlight-curve-point.role-user {
   background: var(--success-text);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--success-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--success-text) 38%, transparent);
 }
 
 .moonlight-curve-point.role-assistant {
@@ -1736,12 +1733,10 @@ onMounted(() => {
 
 .moonlight-curve-point.role-tool {
   background: var(--warning-text);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--warning-text) 38%, transparent);
 }
 
 .moonlight-curve-point.peak {
-  border-color: var(--danger-text, #ff5c7a);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger-text, #ff5c7a) 72%, transparent), 0 0 14px color-mix(in srgb, var(--danger-text, #ff5c7a) 55%, transparent);
+  border-color: var(--danger-text);
 }
 
 .moonlight-curve-point.valley {
