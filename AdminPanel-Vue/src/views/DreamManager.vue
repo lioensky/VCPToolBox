@@ -1147,10 +1147,12 @@ onMounted(async () => {
 }
 
 .dream-workbench {
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--secondary-bg) 72%, transparent);
-  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(135deg, var(--surface-overlay-soft), transparent),
+    var(--secondary-bg);
+  padding: var(--space-4);
   margin-bottom: var(--space-4);
 }
 
@@ -1166,9 +1168,11 @@ onMounted(async () => {
   display: inline-flex;
   align-items: baseline;
   gap: var(--space-1);
-  padding: 4px var(--space-2);
-  border-radius: var(--radius-sm);
-  background: var(--tertiary-bg);
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-full);
+  background: transparent;
   font-size: var(--font-size-helper);
 }
 
@@ -1220,7 +1224,7 @@ onMounted(async () => {
   gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--warning-border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--warning-bg);
   color: var(--warning-text);
   margin-bottom: var(--space-3);
@@ -1228,13 +1232,14 @@ onMounted(async () => {
 }
 
 .dream-log-card {
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-top: 2px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-lg);
   margin-bottom: var(--space-3);
   overflow: hidden;
-  transition: border-color 0.2s ease;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
   position: relative;
+  background: transparent;
 }
 
 .dream-log-card.has-pending {
@@ -1242,7 +1247,7 @@ onMounted(async () => {
 }
 
 .dream-log-card:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 34%, var(--border-color));
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .dream-log-header {
@@ -1252,11 +1257,11 @@ onMounted(async () => {
   padding: var(--space-3) var(--space-4);
   cursor: pointer;
   gap: var(--space-3);
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .dream-log-header:hover {
-  background: var(--accent-bg);
+  background: transparent;
 }
 
 .dream-log-title {
@@ -1288,13 +1293,14 @@ onMounted(async () => {
 
 .dream-log-detail {
   padding: 0 var(--space-4) var(--space-4);
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .dream-narrative-block {
-  background: var(--secondary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
   padding: var(--space-3);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   margin-bottom: var(--space-4);
 }
 
@@ -1311,9 +1317,9 @@ onMounted(async () => {
 }
 
 .dream-op-card {
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-top: 2px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   margin-bottom: var(--space-2);
   overflow: hidden;
   position: relative;
@@ -1341,7 +1347,7 @@ onMounted(async () => {
   justify-content: space-between;
   align-items: center;
   padding: var(--space-2) var(--space-3);
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .dream-op-type {
@@ -1372,16 +1378,18 @@ onMounted(async () => {
 
 .dream-file-path {
   font-size: var(--font-size-helper);
-  background: var(--tertiary-bg);
-  padding: 2px 6px;
-  border-radius: 3px;
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
   font-family: "Consolas", "Monaco", monospace;
 }
 
 .dream-content-preview {
-  background: var(--surface-overlay-strong);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
   padding: var(--space-2);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   font-size: var(--font-size-helper);
   word-break: break-word;
   max-height: 250px;
@@ -1415,7 +1423,7 @@ onMounted(async () => {
   display: flex;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .dream-reviewed-info {
