@@ -50,7 +50,7 @@
           v-model="searchText"
           type="search"
           class="context-search"
-          placeholder="🔍 搜索角色、块编号、文本内容、附件类型…"
+          placeholder="搜索角色、块编号、文本内容、附件类型…"
           @keydown.enter.prevent="jumpToNextMatch"
         />
 
@@ -136,25 +136,26 @@
             </div>
           </div>
           <div class="onering-source-list">
-            <button
+            <UiButton
               v-for="source in oneRingSourceStats"
               :key="source.key"
-              type="button"
+              variant="ghost"
+              size="sm"
               class="onering-source-chip"
               @click="scrollToBlock(source.firstBlockIndex)"
             >
               <span class="source-frontend">{{ source.frontendSource }}</span>
               <span class="source-count">{{ source.count }} 块</span>
               <span class="source-senders">{{ source.senders.join(' / ') }}</span>
-            </button>
+            </UiButton>
           </div>
         </section>
 
         <nav class="jump-index" :class="{ 'jump-index-dense': useDenseJumpIndex }" aria-label="上下文块跳转索引">
-          <button
+          <UiButton
             v-for="block in visibleBlocks"
             :key="`jump-${block.index}`"
-            type="button"
+            variant="ghost"
             class="jump-chip"
             :title="jumpChipTitle(block)"
             :class="[roleClass(displayRole(block)), userBlockJumpClass(block), oneRingJumpClass(block), { matched: isBlockMatched(block.index), active: activeBlockIndex === block.index }]"
@@ -167,7 +168,7 @@
             <span class="jump-source-line">
               {{ jumpSourceLabel(block) }}
             </span>
-          </button>
+          </UiButton>
         </nav>
 
         <main class="block-list">
@@ -1320,9 +1321,9 @@ onMounted(() => {
 .jump-index,
 .context-block,
 .empty-state {
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
+  background: transparent;
 }
 
 .context-header {
@@ -1330,7 +1331,7 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: var(--space-4);
-  padding: 16px;
+  padding: var(--space-4);
 }
 
 .context-title {
@@ -1367,7 +1368,7 @@ onMounted(() => {
   display: flex;
   gap: var(--space-3);
   align-items: center;
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
 }
 
 .context-search {
@@ -1385,7 +1386,7 @@ onMounted(() => {
   overflow: hidden;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
+  background: var(--primary-bg);
   box-shadow: var(--shadow-lg);
 }
 
@@ -1425,9 +1426,11 @@ onMounted(() => {
   flex-direction: column;
   gap: var(--space-3);
   padding: 14px 16px;
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 55%, var(--border-color));
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
   border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, color-mix(in srgb, var(--highlight-bg) 18%, var(--secondary-bg)), var(--secondary-bg));
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--highlight-text) 8%, transparent), transparent 42%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .moonlight-header,
@@ -1504,8 +1507,8 @@ onMounted(() => {
   max-width: 100%;
   padding: 3px 8px;
   border-radius: var(--radius-full);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 45%, var(--border-color));
-  background: color-mix(in srgb, var(--highlight-bg) 35%, var(--tertiary-bg));
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 24%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
   color: var(--highlight-text);
   font-size: var(--font-size-helper);
   word-break: break-all;
@@ -1522,9 +1525,9 @@ onMounted(() => {
   gap: var(--space-3);
   align-items: flex-end;
   padding: var(--space-3);
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
-  background: var(--primary-bg);
+  background: transparent;
 }
 
 .moonlight-config :deep(.ui-field) {
@@ -1536,9 +1539,9 @@ onMounted(() => {
   flex-direction: column;
   gap: 10px;
   padding: 12px;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
-  background: var(--primary-bg);
+  background: transparent;
 }
 
 .moonlight-linear-map {
@@ -1546,9 +1549,9 @@ onMounted(() => {
   width: 100%;
   min-height: 34px;
   overflow: hidden;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .moonlight-linear-segment {
@@ -1654,11 +1657,11 @@ onMounted(() => {
   position: relative;
   height: 220px;
   overflow: hidden;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--highlight-bg) 14%, transparent), transparent),
-    var(--tertiary-bg);
+    linear-gradient(180deg, color-mix(in srgb, var(--highlight-text) 6%, transparent), transparent),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
   color: var(--highlight-text);
 }
 
@@ -1789,9 +1792,9 @@ onMounted(() => {
   min-width: 28px;
   height: 112px;
   padding: 0;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-sm);
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   cursor: pointer;
   overflow: hidden;
 }
@@ -1851,9 +1854,9 @@ onMounted(() => {
   gap: 6px;
   min-width: 0;
   padding: 10px;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
-  background: var(--primary-bg);
+  background: transparent;
 }
 
 .moonlight-term-grid > div strong {
@@ -1899,9 +1902,11 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: 14px 16px;
-  border-color: color-mix(in srgb, var(--highlight-text) 50%, var(--border-color));
-  background: linear-gradient(135deg, color-mix(in srgb, var(--highlight-bg) 16%, var(--secondary-bg)), var(--secondary-bg));
+  padding: var(--space-4);
+  border-color: color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--highlight-text) 6%, transparent), transparent 42%),
+    transparent;
 }
 
 .onering-source-title {
@@ -1932,15 +1937,14 @@ onMounted(() => {
 }
 
 .onering-source-chip {
+  border-color: color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  border-radius: var(--radius-full);
+}
+
+.onering-source-chip :deep(.ui-button__content) {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 60%, var(--border-color));
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--highlight-bg) 40%, var(--tertiary-bg));
-  color: var(--primary-text);
-  cursor: pointer;
+  gap: var(--space-2);
 }
 
 .source-frontend {
@@ -1980,20 +1984,24 @@ onMounted(() => {
   width: var(--jump-chip-width);
   height: 58px;
   min-width: 0;
+  justify-content: stretch;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  border-color: color-mix(in srgb, var(--border-color) 78%, transparent);
+  overflow: hidden;
+  text-align: left;
+}
+
+.jump-chip :deep(.ui-button__content) {
   display: grid;
   grid-template-rows: 20px 18px;
   grid-template-columns: minmax(0, 1fr);
   align-content: center;
   gap: 3px;
-  padding: 7px 9px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
-  color: var(--primary-text);
-  cursor: pointer;
+  width: 100%;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  text-align: left;
 }
 
 .jump-main,
@@ -2032,8 +2040,8 @@ onMounted(() => {
 
 .jump-chip.jump-has-onering-source,
 .jump-chip.jump-has-onering-ai-source {
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-bg) 60%, var(--tertiary-bg));
+  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 6%, transparent);
 }
 
 .jump-chip.jump-has-onering-ai-source {
@@ -2046,13 +2054,13 @@ onMounted(() => {
 
 .jump-chip.jump-badge-pseudo-system {
   border-color: var(--info-text);
-  background: color-mix(in srgb, var(--info-bg) 70%, var(--tertiary-bg));
+  background: color-mix(in srgb, var(--info-text) 8%, transparent);
   color: var(--info-text);
 }
 
 .jump-chip.jump-badge-system-notice {
   border-color: var(--warning-text);
-  background: color-mix(in srgb, var(--warning-bg) 70%, var(--tertiary-bg));
+  background: color-mix(in srgb, var(--warning-text) 8%, transparent);
   color: var(--warning-text);
 }
 
@@ -2082,8 +2090,8 @@ onMounted(() => {
   justify-content: space-between;
   gap: var(--space-3);
   padding: 12px 16px;
-  border-bottom: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .block-identity,
@@ -2207,7 +2215,7 @@ onMounted(() => {
   justify-content: center;
   box-sizing: border-box;
   padding: 72px 12px 12px;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-backdrop-strong);
   overflow: hidden;
 }
 
@@ -2219,7 +2227,7 @@ onMounted(() => {
   overflow: auto;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
+  background: var(--primary-bg);
   box-shadow: var(--shadow-lg);
 }
 
