@@ -783,15 +783,15 @@ watch(activeFilter, () => {
 .plugins-hub {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
 .hub-hero {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
-  gap: var(--space-5);
-  background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
+  gap: var(--space-4);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
 }
 
 .hero-copy h2 {
@@ -819,10 +819,10 @@ watch(activeFilter, () => {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: 16px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--tertiary-bg);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .stat-chip strong {
@@ -842,18 +842,14 @@ watch(activeFilter, () => {
   font-size: var(--font-size-helper);
 }
 
-.view-tabs-card {
-  background: var(--secondary-bg);
-}
-
 .controls-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
   position: sticky;
   top: 0;
   z-index: 17;
-  background: var(--secondary-bg);
+  background: var(--primary-bg);
 }
 
 .controls-top,
@@ -873,7 +869,7 @@ watch(activeFilter, () => {
 .filter-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-2);
   position: relative;
 }
 
@@ -908,14 +904,23 @@ watch(activeFilter, () => {
 .filters-overflow-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 0 12px;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding: 0 var(--space-3);
   border: 1px dashed var(--border-color);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   color: var(--secondary-text);
   cursor: pointer;
-  background: var(--tertiary-bg);
+  background: transparent;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.filters-overflow-trigger:hover {
+  background: var(--accent-bg);
+  color: var(--primary-text);
 }
 
 .filters-overflow[open] .filters-overflow-trigger {
@@ -931,10 +936,10 @@ watch(activeFilter, () => {
   min-width: 220px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--secondary-bg);
   box-shadow: var(--shadow-lg);
   z-index: 5;
@@ -943,7 +948,7 @@ watch(activeFilter, () => {
 .quick-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
 .quick-card-header {
@@ -968,7 +973,7 @@ watch(activeFilter, () => {
 
 .results-header p {
   color: var(--secondary-text);
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 
 /* .empty-state 已在全局 layout.css 中统一定义 */
@@ -976,7 +981,7 @@ watch(activeFilter, () => {
 .plugin-grouped-view {
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: var(--space-4);
 }
 
 .plugin-list-view {
@@ -984,9 +989,9 @@ watch(activeFilter, () => {
 }
 
 .plugin-type-group {
-  background: var(--secondary-bg);
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--border-color);
+  background: transparent;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   overflow: hidden;
 }
 
@@ -995,9 +1000,9 @@ watch(activeFilter, () => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  background: var(--tertiary-bg);
-  border-bottom: 1px solid var(--border-color);
+  padding: var(--space-3) var(--space-4);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
 }
 
 .type-group-header h3 {
@@ -1031,7 +1036,7 @@ watch(activeFilter, () => {
 .group-collapse-icon {
   font-size: var(--font-size-title);
   line-height: 1;
-  transition: transform 0.24s ease;
+  transition: transform var(--transition-fast);
 }
 
 .group-collapse-icon.is-collapsed {
@@ -1039,7 +1044,7 @@ watch(activeFilter, () => {
 }
 
 .type-group-content {
-  padding: 16px;
+  padding: var(--space-3);
 }
 
 .group-collapse-enter-active,
@@ -1072,25 +1077,22 @@ watch(activeFilter, () => {
 .plugin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 18px;
+  gap: var(--space-3);
 }
 
 .plugin-card {
   display: flex;
   flex-direction: column;
   height: 100%;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-xl);
-  padding: 20px;
-  background: var(--secondary-bg);
-  transition:
-    background-color var(--transition-fast),
-    border-color var(--transition-fast);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  background: transparent;
+  transition: background-color var(--transition-fast);
 }
 
 .plugin-card:hover {
-  background: color-mix(in srgb, var(--accent-bg) 42%, var(--secondary-bg));
-  border-color: color-mix(in srgb, var(--highlight-text) 34%, var(--border-color));
+  background: var(--accent-bg);
 }
 
 .plugin-card-top {
@@ -1103,17 +1105,17 @@ watch(activeFilter, () => {
 
 .plugin-identity {
   display: flex;
-  gap: 14px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
 .plugin-icon-shell {
-  width: 48px;
-  height: 48px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--button-bg) 18%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
   color: var(--highlight-text);
   flex-shrink: 0;
 }
@@ -1137,7 +1139,7 @@ watch(activeFilter, () => {
 }
 
 .plugin-original-name {
-  margin-top: 6px;
+  margin-top: var(--space-1);
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
   overflow-wrap: anywhere;
@@ -1155,7 +1157,7 @@ watch(activeFilter, () => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .plugin-card-main {
@@ -1176,7 +1178,7 @@ watch(activeFilter, () => {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3);
 }
 
 .plugin-meta {
@@ -1197,9 +1199,9 @@ watch(activeFilter, () => {
 .plugin-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-2);
   margin-top: auto;
-  padding-top: 4px;
+  padding-top: var(--space-1);
 }
 
 @media (max-width: 1024px) {
@@ -1225,7 +1227,7 @@ watch(activeFilter, () => {
   }
 
   .type-group-content {
-    padding: 12px;
+    padding: var(--space-3);
   }
 
   .view-mode-switch {
@@ -1266,7 +1268,7 @@ watch(activeFilter, () => {
   }
 
   .plugin-card {
-    padding: 16px;
+    padding: var(--space-3);
   }
 
   .plugin-actions {
@@ -1276,6 +1278,14 @@ watch(activeFilter, () => {
   .plugin-actions :deep(button) {
     width: 100%;
     justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .filters-overflow-trigger,
+  .group-collapse-icon,
+  .plugin-card {
+    transition: none;
   }
 }
 </style>
