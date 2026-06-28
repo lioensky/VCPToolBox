@@ -1,6 +1,22 @@
 <template>
   <section class="plugin-store">
-    <section class="store-hero card">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton
+          variant="outline"
+          size="lg"
+          :disabled="isLoading"
+          @click="refreshAll"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
+          <span>{{ isLoading ? '刷新中…' : '刷新列表' }}</span>
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
+    <UiCard class="store-hero">
       <div class="hero-copy">
         <span class="eyebrow hero-eyebrow">Plugin Marketplace</span>
         <h2>插件商店与安装中心</h2>
@@ -27,37 +43,36 @@
           <strong>{{ storeSummary.failedSources }}</strong>
         </article>
       </div>
-    </section>
+    </UiCard>
 
-    <section class="card tab-nav-card">
+    <section class="store-toolbar" aria-label="插件商店视图与筛选">
       <div class="view-mode-switch" role="tablist" aria-label="插件商店视图切换">
-        <button
+        <UiButton
           v-for="tab in tabs"
           :key="tab.id"
           :id="`plugin-store-tab-${tab.id}`"
           type="button"
+          size="sm"
           role="tab"
-          class="view-mode-btn"
-          :class="{ active: activeTab === tab.id }"
+          :variant="activeTab === tab.id ? 'primary' : 'outline'"
           :aria-selected="activeTab === tab.id"
           :aria-controls="`plugin-store-panel-${tab.id}`"
           :tabindex="activeTab === tab.id ? 0 : -1"
           @click="activeTab = tab.id"
         >
-          <span class="material-symbols-outlined">{{ tab.icon }}</span>
+          <template #leading><span class="material-symbols-outlined">{{ tab.icon }}</span></template>
           <span>{{ tab.label }}</span>
-        </button>
+        </UiButton>
       </div>
-    </section>
 
-    <section class="card controls-card">
       <div class="controls-main-row">
         <label class="search-field" v-if="activeTab === 'market'">
           <span class="material-symbols-outlined">search</span>
-          <input
+          <UiInput
             ref="marketSearchInputRef"
             v-model="keyword"
             type="search"
+            size="sm"
             placeholder="搜索插件名、描述或作者…"
             aria-label="搜索插件"
           />
@@ -66,39 +81,31 @@
           <span class="material-symbols-outlined">info</span>
           <span>{{ tabIntro }}</span>
         </div>
-
-        <button
-          type="button"
-          class="btn-secondary"
-          :disabled="isLoading"
-          @click="refreshAll"
-        >
-          <span class="material-symbols-outlined">refresh</span>
-          <span>{{ isLoading ? '刷新中…' : '刷新列表' }}</span>
-        </button>
       </div>
 
       <div v-if="activeTab === 'market'" class="filter-row" aria-label="按源筛选">
-        <button
+        <UiButton
           type="button"
-          class="filter-pill"
-          :class="{ active: filterSourceId === '' }"
+          size="xs"
+          :variant="filterSourceId === '' ? 'primary' : 'outline'"
+          :aria-pressed="filterSourceId === ''"
           @click="selectSource('')"
         >
           全部源
           <span class="pill-count">{{ storePlugins.length }}</span>
-        </button>
-        <button
+        </UiButton>
+        <UiButton
           v-for="s in visibleSourceFilters"
           :key="s.id"
           type="button"
-          class="filter-pill"
-          :class="{ active: filterSourceId === s.id }"
+          size="xs"
+          :variant="filterSourceId === s.id ? 'primary' : 'outline'"
+          :aria-pressed="filterSourceId === s.id"
           @click="selectSource(s.id)"
         >
           {{ s.name }}
           <span class="pill-count">{{ sourcePluginCount(s.id) }}</span>
-        </button>
+        </UiButton>
 
         <details
           v-if="overflowSourceFilters.length > 0"
@@ -111,17 +118,18 @@
             <span class="pill-count">{{ overflowSourceFilters.length }}</span>
           </summary>
           <div class="source-overflow-menu" role="menu" aria-label="更多源筛选">
-            <button
+            <UiButton
               v-for="s in overflowSourceFilters"
               :key="s.id"
               type="button"
-              class="filter-pill"
-              :class="{ active: filterSourceId === s.id }"
+              size="xs"
+              :variant="filterSourceId === s.id ? 'primary' : 'ghost'"
+              :aria-pressed="filterSourceId === s.id"
               @click="selectSource(s.id)"
             >
               {{ s.name }}
               <span class="pill-count">{{ sourcePluginCount(s.id) }}</span>
-            </button>
+            </UiButton>
           </div>
         </details>
       </div>
@@ -135,7 +143,7 @@
       role="tabpanel"
       aria-labelledby="plugin-store-tab-market"
     >
-      <div v-if="sourceErrors.length" class="card source-errors">
+      <UiCard v-if="sourceErrors.length" class="source-errors" size="sm" variant="subtle">
         <div class="card-header">
           <h3 class="card-title">
             <span class="material-symbols-outlined">error</span>
@@ -148,35 +156,39 @@
             <strong>{{ sourceName(err.sourceId) }}</strong>：{{ err.error }}
           </li>
         </ul>
-      </div>
+      </UiCard>
 
-      <section v-if="isLoading" class="card empty-state">
+      <UiCard v-if="isLoading" class="empty-state" variant="subtle">
         <span class="material-symbols-outlined">progress_activity</span>
         <h3>正在加载插件列表</h3>
         <p>正从全部已配置源中获取最新数据…</p>
-      </section>
+      </UiCard>
 
-      <section
+      <UiCard
         v-else-if="sources.length === 0"
-        class="card empty-state"
+        class="empty-state"
+        variant="subtle"
       >
         <span class="material-symbols-outlined">dns</span>
         <h3>尚未配置任何源</h3>
         <p>请先切换到「源管理」添加一个 Registry 或 GitHub 仓库，然后回到市场浏览。</p>
-        <button type="button" class="btn-primary" @click="activeTab = 'sources'">
-          <span class="material-symbols-outlined">add_link</span>
+        <UiButton variant="primary" @click="activeTab = 'sources'">
+          <template #leading>
+            <span class="material-symbols-outlined">add_link</span>
+          </template>
           <span>去添加源</span>
-        </button>
-      </section>
+        </UiButton>
+      </UiCard>
 
-      <section
+      <UiCard
         v-else-if="filteredPlugins.length === 0"
-        class="card empty-state"
+        class="empty-state"
+        variant="subtle"
       >
         <span class="material-symbols-outlined">search_off</span>
         <h3>暂无匹配的插件</h3>
         <p>请检查源配置、调整筛选条件，或切换到「手动安装」选项卡。</p>
-      </section>
+      </UiCard>
 
       <section v-else class="results-header">
         <div>
@@ -201,17 +213,20 @@
               <span class="type-count">{{ group.plugins.length }}</span>
             </h3>
 
-            <button
+            <UiButton
               type="button"
               class="group-collapse-toggle"
-              :class="{ 'is-collapsed': isCategoryGroupCollapsed(group.key) }"
+              variant="outline"
+              size="sm"
               :aria-expanded="!isCategoryGroupCollapsed(group.key)"
               :aria-controls="getCategoryGroupContentId(group.key)"
               @click="toggleCategoryGroupCollapsed(group.key)"
             >
               <span>{{ isCategoryGroupCollapsed(group.key) ? '展开' : '折叠' }}</span>
-              <span class="material-symbols-outlined group-collapse-icon">expand_more</span>
-            </button>
+              <template #trailing>
+                <span class="material-symbols-outlined group-collapse-icon" :class="{ 'is-collapsed': isCategoryGroupCollapsed(group.key) }">expand_more</span>
+              </template>
+            </UiButton>
           </div>
 
           <transition name="group-collapse">
@@ -235,27 +250,24 @@
                       <div class="plugin-heading">
                         <div class="plugin-title-row">
                           <h3>{{ plugin.displayName || plugin.name }}</h3>
-                          <span
-                            class="status-badge"
-                            :class="pluginStatusClass(plugin)"
-                          >
+                          <UiBadge :variant="pluginStatusVariant(plugin)">
                             {{ pluginStatusText(plugin) }}
-                          </span>
+                          </UiBadge>
                         </div>
                         <p class="plugin-original-name">{{ plugin.name }}</p>
                       </div>
                     </div>
 
                     <div class="plugin-card-side">
-                      <span v-if="plugin.version" class="plugin-version-badge">
+                      <UiBadge v-if="plugin.version" variant="outline" class="plugin-version-badge">
                         市场 {{ formatVersion(plugin.version) }}
-                      </span>
-                      <span v-if="plugin.installedVersion" class="plugin-version-badge plugin-version-local">
+                      </UiBadge>
+                      <UiBadge v-if="plugin.installedVersion" variant="success" class="plugin-version-badge plugin-version-local">
                         本地 {{ formatVersion(plugin.installedVersion) }}
-                      </span>
-                      <span v-if="isPluginUpdateAvailable(plugin)" class="plugin-version-badge plugin-version-update">
+                      </UiBadge>
+                      <UiBadge v-if="isPluginUpdateAvailable(plugin)" variant="warning" class="plugin-version-badge plugin-version-update">
                         有新版本
-                      </span>
+                      </UiBadge>
                     </div>
                   </div>
 
@@ -265,57 +277,69 @@
                     </p>
 
                     <div class="plugin-status-pills">
-                      <span v-if="plugin.sourceName" class="mini-pill mini-pill--neutral">
-                        <span class="material-symbols-outlined mini-pill-icon">lan</span>
+                      <UiBadge v-if="plugin.sourceName" variant="secondary">
+                        <template #leading>
+                          <span class="material-symbols-outlined">lan</span>
+                        </template>
                         {{ plugin.sourceName }}
-                      </span>
-                      <span v-if="plugin.author" class="mini-pill mini-pill--changed">
-                        <span class="material-symbols-outlined mini-pill-icon">person</span>
+                      </UiBadge>
+                      <UiBadge v-if="plugin.author" variant="outline">
+                        <template #leading>
+                          <span class="material-symbols-outlined">person</span>
+                        </template>
                         {{ plugin.author }}
-                      </span>
+                      </UiBadge>
                     </div>
 
                     <div class="plugin-actions">
                       <template v-if="plugin.installed">
-                        <button
+                        <UiButton
                           v-if="isPluginUpdateAvailable(plugin)"
-                          type="button"
-                          class="btn-primary"
+                          variant="primary"
+                          size="sm"
                           :disabled="isOperationBusy"
                           @click="updateFromCard(plugin)"
                         >
-                          <span class="material-symbols-outlined">system_update</span>
+                          <template #leading>
+                            <span class="material-symbols-outlined">system_update</span>
+                          </template>
                           <span>{{ isPluginInstalling(plugin) ? '更新中…' : `更新到 ${formatVersion(plugin.version)}` }}</span>
-                        </button>
-                        <button
-                          type="button"
-                          class="btn-secondary"
+                        </UiButton>
+                        <UiButton
+                          variant="outline"
+                          size="sm"
                           :disabled="isOperationBusy"
                           @click="reinstallFromCard(plugin)"
                         >
-                          <span class="material-symbols-outlined">replay</span>
+                          <template #leading>
+                            <span class="material-symbols-outlined">replay</span>
+                          </template>
                           <span>{{ isPluginInstalling(plugin) ? '重装中…' : '覆盖重装' }}</span>
-                        </button>
-                        <button
-                          type="button"
-                          class="btn-danger"
+                        </UiButton>
+                        <UiButton
+                          variant="danger"
+                          size="sm"
                           :disabled="isOperationBusy"
                           @click="uninstallFromCard(plugin)"
                         >
-                          <span class="material-symbols-outlined">{{ isPluginUninstalling(plugin) ? 'hourglass_top' : 'delete' }}</span>
+                          <template #leading>
+                            <span class="material-symbols-outlined">{{ isPluginUninstalling(plugin) ? 'hourglass_top' : 'delete' }}</span>
+                          </template>
                           <span>{{ isPluginUninstalling(plugin) ? '卸载中…' : '卸载' }}</span>
-                        </button>
+                        </UiButton>
                       </template>
-                      <button
+                      <UiButton
                         v-else
-                        type="button"
-                        class="btn-primary"
+                        variant="primary"
+                        size="sm"
                         :disabled="isOperationBusy"
                         @click="installFromCard(plugin)"
                       >
-                        <span class="material-symbols-outlined">download</span>
+                        <template #leading>
+                          <span class="material-symbols-outlined">download</span>
+                        </template>
                         <span>{{ isPluginInstalling(plugin) ? '安装中…' : '安装插件' }}</span>
-                      </button>
+                      </UiButton>
                     </div>
                   </div>
                 </article>
@@ -334,7 +358,7 @@
       role="tabpanel"
       aria-labelledby="plugin-store-tab-sources"
     >
-      <article class="card">
+      <article class="card store-section-card">
         <div class="card-header">
           <h3 class="card-title">
             <span class="material-symbols-outlined">add_link</span>
@@ -343,36 +367,35 @@
         </div>
 
         <form class="source-form" @submit.prevent="submitSource">
-          <div class="form-group">
-            <label>名称</label>
-            <input v-model="newSource.name" type="text" placeholder="例：MyRegistry" required />
-          </div>
-          <div class="form-group">
-            <label>类型</label>
-            <select v-model="newSource.type">
+          <UiField label="名称">
+            <UiInput v-model="newSource.name" type="text" placeholder="例：MyRegistry" required />
+          </UiField>
+          <UiField label="类型">
+            <UiSelect v-model="newSource.type">
               <option value="registry">Registry (JSON 列表)</option>
               <option value="github">GitHub 仓库</option>
-            </select>
-          </div>
-          <div class="form-group form-group-wide">
-            <label>URL</label>
-            <input
+            </UiSelect>
+          </UiField>
+          <UiField label="URL" class="source-form-wide">
+            <UiInput
               v-model="newSource.url"
               type="url"
               :placeholder="newSource.type === 'github' ? 'https://github.com/owner/repo' : 'https://example.com/plugins.json'"
               required
             />
-          </div>
+          </UiField>
           <div class="form-actions">
-            <button type="submit" class="btn-primary" :disabled="sourceSaving">
-              <span class="material-symbols-outlined">add</span>
+            <UiButton type="submit" variant="primary" :disabled="sourceSaving">
+              <template #leading>
+                <span class="material-symbols-outlined">add</span>
+              </template>
               <span>{{ sourceSaving ? '添加中…' : '添加源' }}</span>
-            </button>
+            </UiButton>
           </div>
         </form>
       </article>
 
-      <article class="card">
+      <article class="card store-section-card">
         <div class="card-header">
           <h3 class="card-title">
             <span class="material-symbols-outlined">lan</span>
@@ -396,23 +419,25 @@
                 <td>
                   <div class="source-name-cell">
                     <span>{{ s.name }}</span>
-                    <span v-if="s.builtin" class="mini-pill mini-pill--neutral">内置</span>
+                    <UiBadge v-if="s.builtin" variant="secondary">内置</UiBadge>
                   </div>
                 </td>
                 <td>
-                  <span class="mini-pill mini-pill--changed">{{ s.type }}</span>
+                  <UiBadge variant="outline">{{ s.type }}</UiBadge>
                 </td>
                 <td class="url-cell"><code>{{ s.url }}</code></td>
                 <td class="col-actions">
-                  <button
-                    type="button"
-                    class="btn-danger btn-small"
+                  <UiButton
+                    variant="danger"
+                    size="sm"
                     :disabled="s.builtin"
                     @click="removeSource(s)"
                   >
-                    <span class="material-symbols-outlined">delete</span>
+                    <template #leading>
+                      <span class="material-symbols-outlined">delete</span>
+                    </template>
                     <span>删除</span>
-                  </button>
+                  </UiButton>
                 </td>
               </tr>
             </tbody>
@@ -435,7 +460,7 @@
       role="tabpanel"
       aria-labelledby="plugin-store-tab-manual"
     >
-      <article class="card">
+      <article class="card store-section-card">
         <div class="card-header">
           <h3 class="card-title">
             <span class="material-symbols-outlined">upload_file</span>
@@ -462,18 +487,22 @@
         <div class="upload-buttons">
           <input ref="zipInput" type="file" :accept="supportedArchiveAccept" class="hidden-input" @change="onArchiveSelected" />
           <input ref="folderInput" type="file" class="hidden-input" webkitdirectory directory multiple @change="onFolderSelected" />
-          <button type="button" class="btn-secondary" @click="zipInput?.click()" :disabled="isOperationBusy">
-            <span class="material-symbols-outlined">archive</span>
+          <UiButton variant="outline" size="sm" @click="zipInput?.click()" :disabled="isOperationBusy">
+            <template #leading>
+              <span class="material-symbols-outlined">archive</span>
+            </template>
             <span>选择压缩包</span>
-          </button>
-          <button type="button" class="btn-secondary" @click="folderInput?.click()" :disabled="isOperationBusy">
-            <span class="material-symbols-outlined">folder</span>
+          </UiButton>
+          <UiButton variant="outline" size="sm" @click="folderInput?.click()" :disabled="isOperationBusy">
+            <template #leading>
+              <span class="material-symbols-outlined">folder</span>
+            </template>
             <span>选择文件夹</span>
-          </button>
+          </UiButton>
         </div>
       </article>
 
-      <article class="card">
+      <article class="card store-section-card">
         <div class="card-header">
           <h3 class="card-title">
             <span class="material-symbols-outlined">cloud_download</span>
@@ -488,17 +517,19 @@
         <div class="github-row">
           <label class="search-field">
             <span class="material-symbols-outlined">link</span>
-            <input v-model="githubUrl" type="url" placeholder="https://github.com/owner/repo" />
+            <UiInput v-model="githubUrl" type="url" placeholder="https://github.com/owner/repo" />
           </label>
-          <button
-            type="button"
-            class="btn-primary"
+          <UiButton
+            variant="primary"
+            size="sm"
             :disabled="!githubUrl || isOperationBusy"
             @click="installFromGithub"
           >
-            <span class="material-symbols-outlined">download</span>
+            <template #leading>
+              <span class="material-symbols-outlined">download</span>
+            </template>
             <span>{{ isInstalling ? '安装中…' : '安装' }}</span>
-          </button>
+          </UiButton>
         </div>
       </article>
     </section>
@@ -509,21 +540,25 @@
         <div class="log-header">
           <span class="material-symbols-outlined">terminal</span>
           <strong>安装日志</strong>
-          <span class="status-badge" :class="logStatusClass">{{ installStatusLabel }}</span>
-          <button
+          <UiBadge :variant="logStatusVariant">{{ installStatusLabel }}</UiBadge>
+          <UiButton
             v-if="canForceRetry"
-            type="button"
-            class="btn-primary btn-small"
+            variant="primary"
+            size="sm"
             :disabled="isOperationBusy"
             @click="retryWithForce"
           >
-            <span class="material-symbols-outlined">replay</span>
+            <template #leading>
+              <span class="material-symbols-outlined">replay</span>
+            </template>
             <span>强制覆盖重装</span>
-          </button>
-          <button type="button" class="btn-secondary btn-small" @click="clearLog">
-            <span class="material-symbols-outlined">close</span>
+          </UiButton>
+          <UiButton variant="outline" size="sm" @click="clearLog">
+            <template #leading>
+              <span class="material-symbols-outlined">close</span>
+            </template>
             <span>关闭</span>
-          </button>
+          </UiButton>
         </div>
         <p v-if="showUploadRetryHint" class="log-hint">
           已存在同名插件。若要覆盖，请重新选择压缩包或文件夹后再次安装（上传数据不可自动重放）。
@@ -541,6 +576,13 @@ import {
   type PluginSource,
   type PluginStoreItem,
 } from '@/api'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
+import UiField from '@/components/ui/UiField.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
+import UiSelect from '@/components/ui/UiSelect.vue'
 import { useAppStore } from '@/stores/app'
 import { showMessage } from '@/utils'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
@@ -572,7 +614,7 @@ watch(keyword, (v) => {
 })
 
 const filterSourceId = ref('')
-const marketSearchInputRef = ref<HTMLInputElement | null>(null)
+const marketSearchInputRef = ref<InstanceType<typeof UiInput> | null>(null)
 const sourceOverflowOpen = ref(false)
 const MAX_VISIBLE_SOURCE_FILTERS = 5
 
@@ -675,13 +717,13 @@ const installStatusLabel = computed(() => {
   }
 })
 
-const logStatusClass = computed(() => {
+const logStatusVariant = computed<"secondary" | "success" | "danger" | "warning">(() => {
   switch (installStatus.value) {
-    case 'running': return 'status-neutral'
-    case 'success': return 'status-enabled'
-    case 'error': return 'status-disabled'
-    case 'conflict': return 'status-pinned'
-    default: return 'status-neutral'
+    case 'running': return 'secondary'
+    case 'success': return 'success'
+    case 'error': return 'danger'
+    case 'conflict': return 'warning'
+    default: return 'secondary'
   }
 })
 
@@ -960,10 +1002,10 @@ function isPluginUpdateAvailable(plugin: PluginStoreItem) {
   return compared !== null && compared > 0
 }
 
-function pluginStatusClass(plugin: PluginStoreItem) {
-  if (!plugin.installed) return 'status-neutral'
-  if (isPluginUpdateAvailable(plugin)) return 'status-pinned'
-  return 'status-enabled'
+function pluginStatusVariant(plugin: PluginStoreItem): "secondary" | "success" | "warning" {
+  if (!plugin.installed) return 'secondary'
+  if (isPluginUpdateAvailable(plugin)) return 'warning'
+  return 'success'
 }
 
 function pluginStatusText(plugin: PluginStoreItem) {
@@ -1277,51 +1319,70 @@ onBeforeUnmount(() => {
 .plugin-store {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
 /* ========== Hero ========== */
 .store-hero {
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 94%, transparent);
+}
+
+.store-hero :deep(.ui-card__content) {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
-  gap: var(--space-5);
-  background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
+  gap: var(--space-3);
+  align-items: stretch;
 }
 
 .hero-copy h2 {
-  font-size: var(--font-size-headline);
-  line-height: 1.2;
-  margin-bottom: var(--space-3);
+  margin: 0 0 var(--space-1);
+  color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .hero-copy p {
+  margin: 0;
   max-width: 56ch;
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
 .hero-eyebrow {
-  margin-bottom: var(--space-3);
+  display: inline-flex;
+  margin-bottom: var(--space-1);
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .hero-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .stat-chip {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: 16px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--tertiary-bg);
+  gap: 2px;
+  min-height: 54px;
+  justify-content: center;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .stat-chip strong {
-  font-size: var(--font-size-display);
+  font-size: var(--font-size-emphasis);
+  line-height: 1.1;
 }
 
 .stat-chip.installed strong {
@@ -1338,26 +1399,26 @@ onBeforeUnmount(() => {
 }
 
 /* ========== Controls ========== */
-.tab-nav-card {
-  background: var(--secondary-bg);
-}
-
-.controls-card {
+.store-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
   position: sticky;
   top: 0;
   z-index: 17;
-  background: var(--secondary-bg);
+  padding: var(--space-2) 0 var(--space-1);
+  background: color-mix(in srgb, var(--primary-bg) 82%, transparent);
+  backdrop-filter: blur(10px);
 }
 
-.controls-top,
 .controls-main-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
+  flex: 1 1 260px;
+  min-width: 220px;
 }
 
 .controls-intro {
@@ -1374,51 +1435,34 @@ onBeforeUnmount(() => {
   color: var(--highlight-text);
 }
 
+.search-field {
+  flex: 1;
+  min-width: 240px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.search-field .material-symbols-outlined {
+  color: var(--secondary-text);
+  font-size: 18px !important;
+}
+
+.search-field :deep(.ui-input) {
+  min-width: 0;
+}
+
 .view-mode-switch {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
 }
 
-.view-mode-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition:
-    background-color 0.2s ease,
-    color 0.2s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-.view-mode-btn:hover {
-  color: var(--primary-text);
-  background: var(--accent-bg);
-  border-color: color-mix(in srgb, var(--button-bg) 30%, transparent);
-}
-
-.view-mode-btn.active {
-  color: var(--on-accent-text);
-  background: var(--button-bg);
-  border-color: color-mix(in srgb, var(--button-bg) 72%, var(--border-color));
-}
-
-.view-mode-btn:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
-
 .filter-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-2);
+  align-items: center;
   position: relative;
 }
 
@@ -1437,14 +1481,24 @@ onBeforeUnmount(() => {
 .source-overflow-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 0 12px;
+  gap: var(--space-2);
+  min-height: 24px;
+  padding: 0 var(--space-2);
   border: 1px dashed var(--border-color);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
   cursor: pointer;
-  background: var(--tertiary-bg);
+  background: transparent;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.source-overflow-trigger:hover {
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
+  color: var(--primary-text);
 }
 
 .source-overflow[open] .source-overflow-trigger {
@@ -1460,21 +1514,21 @@ onBeforeUnmount(() => {
   min-width: 240px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 92%, transparent);
   box-shadow: var(--shadow-lg);
   z-index: 5;
 }
 
-.source-overflow-menu .filter-pill {
+.source-overflow-menu :deep(.ui-button) {
   width: 100%;
   justify-content: space-between;
 }
 
-.filter-pill .pill-count {
+.pill-count {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1495,15 +1549,19 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: end;
   justify-content: space-between;
+  padding-top: var(--space-1);
 }
 
 .results-header h3 {
-  font-size: var(--font-size-title);
+  margin: 0;
+  font-size: var(--font-size-emphasis);
+  line-height: 1.35;
 }
 
 .results-header p {
   color: var(--secondary-text);
-  margin-top: 4px;
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-helper);
 }
 
 .tab-pane {
@@ -1516,13 +1574,13 @@ onBeforeUnmount(() => {
 .plugin-grouped-view {
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: var(--space-4);
 }
 
 .plugin-type-group {
-  background: var(--secondary-bg);
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border-color) 94%, transparent);
   overflow: hidden;
 }
 
@@ -1531,29 +1589,36 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  background: var(--tertiary-bg);
-  border-bottom: 1px solid var(--border-color);
+  min-height: 42px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--primary-text) 2.2%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
 }
 
 .type-group-header h3 {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--font-size-emphasis);
+  font-size: var(--font-size-helper);
+  font-weight: 700;
   margin: 0;
+}
+
+.type-group-header .material-symbols-outlined {
+  color: var(--secondary-text);
+  font-size: 16px;
 }
 
 .type-count {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 28px;
-  height: 24px;
+  min-width: 24px;
+  height: 20px;
   padding: 0 8px;
   border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  background: transparent;
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
   font-weight: 600;
@@ -1561,45 +1626,21 @@ onBeforeUnmount(() => {
 }
 
 .group-collapse-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--secondary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition:
-    color 0.2s ease,
-    background-color 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.group-collapse-toggle:hover {
-  color: var(--primary-text);
-  background: color-mix(in srgb, var(--button-bg) 10%, transparent);
-  border-color: color-mix(in srgb, var(--button-bg) 28%, transparent);
-}
-
-.group-collapse-toggle:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  flex: 0 0 auto;
 }
 
 .group-collapse-icon {
   font-size: var(--font-size-title);
   line-height: 1;
-  transition: transform 0.24s ease;
+  transition: transform var(--transition-fast);
 }
 
-.group-collapse-toggle.is-collapsed .group-collapse-icon {
+.group-collapse-icon.is-collapsed {
   transform: rotate(-90deg);
 }
 
 .type-group-content {
-  padding: 16px;
+  padding: 10px;
 }
 
 .group-collapse-enter-active,
@@ -1632,51 +1673,54 @@ onBeforeUnmount(() => {
 .plugin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 18px;
+  gap: var(--space-3);
 }
 
 .plugin-card {
   display: flex;
   flex-direction: column;
   height: 100%;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-xl);
-  padding: 20px;
-  background: var(--secondary-bg);
-  box-shadow: var(--shadow-sm);
+  border: 1px solid color-mix(in srgb, var(--border-color) 92%, transparent);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  background: color-mix(in srgb, var(--primary-text) 0.7%, transparent);
   transition:
-    box-shadow 0.2s ease,
-    border-color 0.2s ease;
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .plugin-card:hover {
-  box-shadow: var(--shadow-md);
-  border-color: color-mix(in srgb, var(--button-bg) 28%, var(--border-color));
+  border-color: color-mix(in srgb, var(--highlight-text) 24%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 3.5%, transparent);
 }
 
 .plugin-card-top {
   display: flex;
   align-items: start;
   justify-content: space-between;
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
 }
 
 .plugin-identity {
   display: flex;
-  gap: 14px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .plugin-icon-shell {
-  width: 48px;
-  height: 48px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--button-bg) 18%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
   color: var(--highlight-text);
   flex-shrink: 0;
+}
+
+.plugin-icon-shell .material-symbols-outlined {
+  font-size: 18px;
 }
 
 .plugin-heading {
@@ -1687,21 +1731,21 @@ onBeforeUnmount(() => {
 .plugin-title-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-xs);
   align-items: center;
 }
 
 .plugin-title-row h3 {
-  font-size: var(--font-size-emphasis);
+  font-size: var(--font-size-body);
   line-height: 1.3;
   overflow-wrap: anywhere;
   margin: 0;
 }
 
 .plugin-original-name {
-  margin-top: 6px;
+  margin-top: 2px;
   color: var(--secondary-text);
-  font-size: var(--font-size-helper);
+  font-size: var(--font-size-caption);
   overflow-wrap: anywhere;
 }
 
@@ -1709,76 +1753,19 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: var(--space-2);
+  gap: var(--space-xs);
   flex-shrink: 0;
 }
 
 .plugin-version-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  line-height: 1;
   white-space: nowrap;
-}
-
-.plugin-version-local {
-  background: var(--accent-bg);
-  color: var(--primary-text);
-}
-
-.plugin-version-update {
-  background: var(--warning-bg);
-  color: var(--warning-text);
-  border-color: var(--warning-border);
-}
-
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: var(--font-size-caption);
-  font-weight: 600;
-  border: 1px solid transparent;
-}
-
-.status-enabled {
-  color: var(--success-text);
-  background: var(--success-bg);
-  border-color: var(--success-border);
-}
-
-.status-disabled {
-  color: var(--danger-text);
-  background: var(--danger-bg);
-  border-color: var(--danger-border);
-}
-
-.status-neutral {
-  color: var(--warning-text);
-  background: var(--warning-bg);
-  border-color: var(--warning-border);
-}
-
-.status-pinned {
-  color: var(--info-text);
-  background: var(--info-bg);
-  border-color: var(--info-border);
 }
 
 .plugin-status-pills {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: 12px;
+  gap: var(--space-xs);
+  margin-top: var(--space-2);
 }
 
 .plugin-card-main {
@@ -1790,24 +1777,26 @@ onBeforeUnmount(() => {
 
 .plugin-description {
   color: var(--secondary-text);
-  line-height: 1.55;
-  min-height: calc(1.55em * 3);
-  max-height: calc(1.55em * 3);
+  font-size: var(--font-size-helper);
+  line-height: 1.5;
+  min-height: calc(1.5em * 2);
+  max-height: calc(1.5em * 3);
   overflow: hidden;
   overflow-wrap: anywhere;
   word-break: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
-  margin-bottom: 14px;
+  margin-bottom: var(--space-2);
 }
 
 .plugin-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-xs);
   margin-top: auto;
-  padding-top: 4px;
+  padding-top: var(--space-2);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
 }
 
 /* ========== Source errors ========== */
@@ -1835,6 +1824,11 @@ onBeforeUnmount(() => {
   gap: var(--space-4);
 }
 
+.store-section-card {
+  border: 1px solid color-mix(in srgb, var(--border-color) 94%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+}
+
 .header-count {
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
@@ -1846,37 +1840,8 @@ onBeforeUnmount(() => {
   gap: var(--space-3);
 }
 
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.form-group-wide {
+.source-form-wide {
   grid-column: 1 / -1;
-}
-
-.form-group label {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  font-weight: 600;
-}
-
-.form-group input,
-.form-group select {
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.form-group input:focus-visible,
-.form-group select:focus-visible {
-  outline: none;
-  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .form-actions {
@@ -1894,12 +1859,20 @@ onBeforeUnmount(() => {
 .source-table th,
 .source-table td {
   text-align: left;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border-color);
+  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
 }
 
 .source-table tbody tr:last-child td {
   border-bottom: none;
+}
+
+.source-table tbody tr {
+  transition: background-color var(--transition-fast);
+}
+
+.source-table tbody tr:hover {
+  background: color-mix(in srgb, var(--highlight-text) 3.5%, transparent);
 }
 
 .source-table th {
@@ -1907,8 +1880,7 @@ onBeforeUnmount(() => {
   font-weight: 600;
   text-transform: uppercase;
   font-size: var(--font-size-caption);
-  letter-spacing: 0.4px;
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .source-name-cell {
@@ -1930,16 +1902,6 @@ onBeforeUnmount(() => {
   text-align: right;
 }
 
-.btn-small {
-  padding: 4px 10px;
-  font-size: var(--font-size-caption);
-  min-height: 30px;
-}
-
-.btn-small .material-symbols-outlined {
-  font-size: var(--font-size-helper);
-}
-
 /* ========== Manual pane ========== */
 .manual-pane {
   display: flex;
@@ -1957,7 +1919,7 @@ onBeforeUnmount(() => {
 .hint code {
   padding: 2px 6px;
   border-radius: 4px;
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
   font-family: var(--font-mono, Consolas, monospace);
   font-size: 0.9em;
 }
@@ -1967,14 +1929,14 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-3);
-  border: 2px dashed var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: var(--space-6) var(--space-4);
+  gap: var(--space-2);
+  border: 1px dashed color-mix(in srgb, var(--border-color) 92%, transparent);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
   text-align: center;
   color: var(--secondary-text);
   cursor: pointer;
-  background: var(--tertiary-bg);
+  background: transparent;
   transition:
     border-color 0.2s ease,
     background 0.2s ease,
@@ -1984,12 +1946,12 @@ onBeforeUnmount(() => {
 .drop-zone:hover,
 .drop-zone.dragging {
   border-color: color-mix(in srgb, var(--button-bg) 50%, transparent);
-  background: color-mix(in srgb, var(--button-bg) 8%, var(--tertiary-bg));
+  background: color-mix(in srgb, var(--highlight-text) 4%, transparent);
   color: var(--primary-text);
 }
 
 .drop-icon {
-  font-size: 42px !important;
+  font-size: 32px !important;
   color: var(--highlight-text);
 }
 
@@ -2000,8 +1962,8 @@ onBeforeUnmount(() => {
 .upload-buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
-  margin-top: var(--space-4);
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .hidden-input {
@@ -2010,7 +1972,7 @@ onBeforeUnmount(() => {
 
 .github-row {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: stretch;
 }
 
@@ -2025,6 +1987,8 @@ onBeforeUnmount(() => {
   padding: 0;
   overflow: hidden;
   z-index: 5;
+  border: 1px solid color-mix(in srgb, var(--border-color) 94%, transparent);
+  background: color-mix(in srgb, var(--primary-bg) 94%, transparent);
 }
 
 .log-header {
@@ -2032,8 +1996,8 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-3);
   padding: 12px 16px;
-  background: var(--tertiary-bg);
-  border-bottom: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
 }
 
 .log-header .material-symbols-outlined {
@@ -2059,14 +2023,16 @@ onBeforeUnmount(() => {
   max-height: 280px;
   overflow: auto;
   margin: 0;
-  padding: var(--space-4);
+  padding: 12px;
   font-family: var(--font-mono, Consolas, monospace);
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-  background: #0e0e0e;
-  color: #dcdcdc;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--primary-text);
 }
 
 .log-slide-enter-active,
@@ -2084,7 +2050,7 @@ onBeforeUnmount(() => {
 
 /* ========== Responsive ========== */
 @media (max-width: 1024px) {
-  .store-hero {
+  .store-hero :deep(.ui-card__content) {
     grid-template-columns: 1fr;
   }
 }
@@ -2099,7 +2065,7 @@ onBeforeUnmount(() => {
     width: 100%;
   }
 
-  .view-mode-btn {
+  .view-mode-switch :deep(.ui-button) {
     flex: 1;
     justify-content: center;
   }
@@ -2133,7 +2099,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 480px) {
   .hero-copy h2 {
-    font-size: var(--font-size-display);
+    font-size: 1rem;
   }
 
   .hero-stats {
@@ -2141,21 +2107,29 @@ onBeforeUnmount(() => {
   }
 
   .plugin-card {
-    padding: 16px;
+    padding: var(--space-3);
   }
 
   .plugin-actions {
     flex-direction: column;
   }
 
-  .plugin-actions :deep(button) {
+  .plugin-actions :deep(.ui-button) {
     width: 100%;
     justify-content: center;
   }
 
-  .upload-buttons :deep(button) {
+  .upload-buttons :deep(.ui-button) {
     flex: 1;
     justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .source-overflow-trigger,
+  .group-collapse-icon,
+  .plugin-card {
+    transition: none;
   }
 }
 </style>

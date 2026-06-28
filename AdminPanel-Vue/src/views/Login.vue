@@ -1,20 +1,20 @@
 <template>
   <div class="login-page">
     <div class="login-container">
-      <div class="login-card">
+      <UiCard class="login-card" variant="subtle">
         <div class="logo-section">
           <img src="/VCPLogo2.png" alt="VCP Logo" @error="onImageError" />
           <p>控制中心管理面板</p>
         </div>
 
         <form @submit.prevent="handleLogin">
-          <div class="form-group">
-            <label for="username">用户名</label>
+          <UiField label="用户名" for-id="username">
             <div class="input-wrapper">
-              <input
+              <UiInput
                 type="text"
                 id="username"
                 v-model="username"
+                size="lg"
                 placeholder="请输入用户名"
                 autocomplete="username"
                 name="username"
@@ -22,52 +22,57 @@
               />
               <span class="material-symbols-outlined input-icon" aria-hidden="true">person</span>
             </div>
-          </div>
+          </UiField>
 
-          <div class="form-group">
-            <label for="password">密码</label>
+          <UiField label="密码" for-id="password">
             <div class="input-wrapper">
-              <input
+              <UiInput
                 :type="showPassword ? 'text' : 'password'"
                 id="password"
                 v-model="password"
+                size="lg"
                 placeholder="请输入密码"
                 autocomplete="current-password"
                 name="password"
                 required
               />
               <span class="material-symbols-outlined input-icon" aria-hidden="true">lock</span>
-              <button
-                type="button"
+              <UiIconButton
                 class="password-toggle"
+                :label="showPassword ? '隐藏密码' : '显示密码'"
+                :title="showPassword ? '隐藏密码' : '显示密码'"
                 @click="togglePassword"
-                :aria-label="showPassword ? '隐藏密码' : '显示密码'"
                 :aria-pressed="showPassword"
               >
                 <span class="material-symbols-outlined" aria-hidden="true">
                   {{ showPassword ? "visibility_off" : "visibility" }}
                 </span>
-              </button>
+              </UiIconButton>
             </div>
-          </div>
+          </UiField>
 
-          <button
+          <UiButton
             type="submit"
-            class="btn-primary login-button"
+            class="login-button"
+            size="lg"
+            block
             :disabled="isLoading"
-            :class="{ loading: isLoading }"
+            :loading="isLoading"
           >
-            <span class="spinner"></span>
-            <span class="btn-text">登 录</span>
-          </button>
+            登 录
+          </UiButton>
 
-          <div v-if="message" :class="['message', messageType]">
+          <UiAlert
+            v-if="message"
+            class="message"
+            :variant="messageType === 'error' ? 'danger' : 'success'"
+          >
             {{ message }}
-          </div>
+          </UiAlert>
         </form>
 
         <p class="footer-text">安全连接 · 仅限授权管理员访问</p>
-      </div>
+      </UiCard>
     </div>
   </div>
 </template>
@@ -76,6 +81,12 @@
 import { ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { resolveSafeAppRedirect } from "@/app/routes/redirect";
+import UiAlert from "@/components/ui/UiAlert.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
 import { useAuthStore } from "@/stores/auth";
 
 const router = useRouter();
@@ -144,15 +155,11 @@ async function handleLogin() {
 .login-container {
   width: 100%;
   max-width: 420px;
-  padding: 20px;
+  padding: var(--space-5);
 }
 
 .login-card {
-  background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: 48px 40px;
-  box-shadow: var(--shadow-md);
+  padding: var(--space-6) var(--space-5);
 }
 
 .logo-section {
@@ -171,16 +178,9 @@ async function handleLogin() {
   font-size: var(--font-size-body);
 }
 
-.form-group {
-  margin-bottom: var(--space-5);
-}
-
-.form-group label {
-  display: block;
-  margin-bottom: var(--space-2);
-  font-size: var(--font-size-body);
-  font-weight: 500;
-  color: var(--primary-text);
+form {
+  display: grid;
+  gap: var(--space-4);
 }
 
 .input-wrapper {
@@ -195,30 +195,12 @@ async function handleLogin() {
   color: var(--secondary-text);
   font-size: var(--font-size-title);
   pointer-events: none;
-  transition: color 0.2s;
+  transition: color var(--transition-fast);
 }
 
-.form-group input {
-  width: 100%;
-  padding: 14px 14px 14px 48px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  font-size: var(--font-size-body);
-  color: var(--primary-text);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.form-group input:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-  border-color: var(--highlight-text);
-  box-shadow: 0 0 0 3px var(--focus-ring);
-}
-
-.form-group input:focus:not(:focus-visible) {
-  border-color: var(--highlight-text);
-  box-shadow: 0 0 0 3px var(--focus-ring);
+.input-wrapper :deep(.ui-input) {
+  padding-left: 44px;
+  padding-right: 44px;
 }
 
 .password-toggle {
@@ -226,26 +208,6 @@ async function handleLogin() {
   right: var(--space-2);
   top: 50%;
   transform: translateY(-50%);
-  background: none;
-  border: none;
-  color: var(--secondary-text);
-  cursor: pointer;
-  padding: var(--space-1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.2s;
-  border-radius: var(--radius-sm);
-}
-
-.password-toggle:hover {
-  color: var(--primary-text);
-  background: var(--surface-overlay);
-}
-
-.password-toggle:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
 }
 
 .password-toggle .material-symbols-outlined {
@@ -253,42 +215,12 @@ async function handleLogin() {
 }
 
 .login-button {
-  width: 100%;
-  padding: 14px var(--space-5);
   position: relative;
   overflow: hidden;
-  justify-content: center;
-}
-
-.login-button .spinner {
-  display: none;
-  width: 20px;
-  height: 20px;
-  border: 2px solid color-mix(in srgb, var(--on-accent-text) 30%, transparent);
-  border-top-color: var(--on-accent-text);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  margin-right: var(--space-2);
-}
-
-.login-button.loading .spinner {
-  display: inline-block;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .message {
   margin-top: var(--space-4);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-body);
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
   animation: fadeIn 0.3s ease;
 }
 
@@ -301,18 +233,6 @@ async function handleLogin() {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-.message.error {
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-border);
-  color: var(--danger-color);
-}
-
-.message.success {
-  background: var(--success-bg);
-  border: 1px solid var(--success-border);
-  color: var(--success-color);
 }
 
 .footer-text {
@@ -351,15 +271,6 @@ async function handleLogin() {
     font-size: var(--font-size-helper);
   }
 
-  .form-group {
-    margin-bottom: var(--space-4);
-  }
-
-  .form-group input {
-    padding: 13px 44px 13px 44px;
-    font-size: var(--font-size-body);
-  }
-
   .input-wrapper .input-icon {
     left: 12px;
     font-size: var(--font-size-emphasis);
@@ -373,13 +284,7 @@ async function handleLogin() {
     font-size: var(--font-size-emphasis);
   }
 
-  .login-button {
-    padding: 13px var(--space-4);
-    font-size: var(--font-size-body);
-  }
-
   .message {
-    padding: 10px 12px;
     font-size: var(--font-size-helper);
   }
 
@@ -390,14 +295,11 @@ async function handleLogin() {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .login-button .spinner,
   .message {
     animation: none;
   }
 
-  .form-group input,
-  .password-toggle,
-  .login-button {
+  .password-toggle {
     transition: none;
   }
 }

@@ -1,94 +1,123 @@
 <template>
   <section class="config-section active-section sarprompt-page">
-    <div class="page-header">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton
+          variant="outline"
+          size="lg"
+          type="button"
+          :disabled="isLoading"
+          @click="fetchSarPrompts"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
+          刷新
+        </UiButton>
+        <UiButton
+          variant="secondary"
+          size="lg"
+          type="button"
+          :loading="isSaving"
+          @click="saveSarPrompts"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          {{ isSaving ? "保存中…" : "保存配置" }}
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
+    <UiToolbar class="page-header" align="start">
       <div>
+        <h2>SarPrompt 提示词映射</h2>
         <p class="description">
           多模型提示词管理。用于为不同模型映射特定的提示词内容，解决新模型对齐问题。
           支持 <code>SarPromptN</code> 占位符的热载入。
         </p>
       </div>
-      <div class="header-actions">
-        <button
-          class="btn-secondary"
-          type="button"
-          :disabled="isLoading"
-          @click="fetchSarPrompts"
-        >
-          刷新
-        </button>
-        <button
-          class="btn-primary"
+      <template #actions>
+        <UiButton
+          size="sm"
           type="button"
           :disabled="isLoading"
           @click="addSarGroup"
         >
           新增Sar组
-        </button>
-      </div>
-    </div>
+        </UiButton>
+      </template>
+    </UiToolbar>
 
-    <div v-if="isLoading" class="empty-tip card">
-      <p>正在加载...</p>
-    </div>
+    <UiCard v-if="isLoading" class="sarprompt-surface" variant="subtle">
+      <UiEmptyState title="正在加载..." description="正在读取 SarPrompt 配置。" />
+    </UiCard>
 
-    <div v-else-if="sarPrompts.length === 0" class="empty-tip card">
-      <p>暂无SarPrompt配置，点击“新增Sar组”开始。</p>
-    </div>
+    <UiCard v-else-if="sarPrompts.length === 0" class="sarprompt-surface" variant="subtle">
+      <UiEmptyState title="暂无SarPrompt配置" description="点击新增Sar组开始维护模型提示词映射。">
+        <template #action>
+          <UiButton size="sm" type="button" @click="addSarGroup">新增Sar组</UiButton>
+        </template>
+      </UiEmptyState>
+    </UiCard>
 
     <div v-else class="sarprompt-list">
-      <article
+      <UiCard
         v-for="(group, index) in sarPrompts"
         :key="index"
-        class="rule-card sarprompt-card card"
+        class="sarprompt-card sarprompt-surface"
+        size="sm"
+        variant="subtle"
+        divided
       >
-        <div class="rule-head">
-          <input
+        <template #title>
+          <UiInput
             v-model="group.promptKey"
             class="rule-title"
+            size="sm"
             type="text"
             placeholder="提示词键 (如 SarPrompt1)"
           />
-          <div class="flex-grow"></div>
-          <button
-            class="btn-danger btn-sm"
+        </template>
+        <template #action>
+          <UiButton
+            variant="danger"
+            size="sm"
             type="button"
             @click="removeSarGroup(index)"
           >
             删除
-          </button>
-        </div>
+          </UiButton>
+        </template>
 
-        <div class="rule-body">
-          <div class="form-group full-width">
-            <label>适用模型 (逗号分隔)</label>
-            <input
+        <UiSettingsForm as="div" :columns="1" gap="sm">
+          <UiField
+            label="适用模型"
+            description="多个模型用英文逗号分隔。"
+            size="sm"
+          >
+            <UiInput
               v-model="group.modelsInput"
+              size="sm"
               type="text"
               placeholder="例如: gpt-4, claude-3-opus"
               @blur="syncModelsArray(index)"
             />
-          </div>
-          <div class="form-group full-width">
-            <label>注入内容 (文本或 .txt 文件名)</label>
-            <textarea
+          </UiField>
+          <UiField
+            label="注入内容"
+            description="可直接输入提示词，或填写 TVStxt 目录下的 .txt 文件名。"
+            size="sm"
+          >
+            <UiTextarea
               v-model="group.content"
+              size="sm"
               rows="6"
               placeholder="直接输入提示词，或输入 TVStxt 目录下的文件名"
-            ></textarea>
-          </div>
-        </div>
-      </article>
-
-      <div class="editor-actions">
-        <button
-          class="btn-success"
-          type="button"
-          :disabled="isSaving"
-          @click="saveSarPrompts"
-        >
-          {{ isSaving ? "保存中…" : "保存配置" }}
-        </button>
-      </div>
+            />
+          </UiField>
+        </UiSettingsForm>
+      </UiCard>
     </div>
   </section>
 </template>
@@ -96,6 +125,15 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { sarPromptApi, type SarPrompt } from "@/api/sarPrompt";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
+import UiSettingsForm from "@/components/ui/UiSettingsForm.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
+import UiToolbar from "@/components/ui/UiToolbar.vue";
 
 const sarPrompts = ref<(SarPrompt & { modelsInput: string })[]>([]);
 const isLoading = ref(false);
@@ -165,19 +203,43 @@ onMounted(() => {
 .sarprompt-page {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .page-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
+  min-height: 36px;
 }
 
-.header-actions {
-  display: flex;
-  gap: var(--space-3);
+.page-header h2 {
+  margin: 0;
+  line-height: 1.25;
+}
+
+.page-header .description {
+  margin-top: var(--space-1);
+}
+
+.sarprompt-surface {
+  --sarprompt-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
+  --sarprompt-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+}
+
+.sarprompt-surface,
+:deep(.ui-card.sarprompt-surface) {
+  border-color: var(--sarprompt-surface-border);
+  background: var(--sarprompt-card-surface);
+}
+
+.sarprompt-surface :deep(.ui-card__header),
+:deep(.ui-card.sarprompt-surface.ui-card--divided .ui-card__header) {
+  border-bottom-color: var(--sarprompt-surface-border);
+}
+
+.sarprompt-surface :deep(.ui-input),
+.sarprompt-surface :deep(.ui-textarea) {
+  border-color: var(--sarprompt-surface-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
 }
 
 .sarprompt-list {
@@ -186,81 +248,31 @@ onMounted(() => {
   gap: var(--space-4);
 }
 
-.sarprompt-card {
-  border: 1px solid var(--border-color);
-  transition: border-color 0.2s ease;
-}
-
-.sarprompt-card:hover {
-  border-color: var(--highlight-text);
-}
-
-.rule-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: var(--space-3);
-}
-
 .rule-title {
+  width: min(320px, 100%);
   font-weight: 600;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  padding: 6px 10px;
-  color: var(--primary-text);
-}
-
-.flex-grow {
-  flex-grow: 1;
-}
-
-.rule-body {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: var(--space-3);
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.form-group label {
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-}
-
-input,
-textarea {
-  border: 1px solid var(--border-color);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  border-radius: var(--radius-sm);
-  padding: 10px;
-}
-
-textarea {
-  resize: vertical;
-}
-
-.editor-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 16px;
-}
-
-.empty-tip {
-  color: var(--secondary-text);
-  text-align: center;
-  padding: 40px;
 }
 
 code {
-  background: var(--secondary-bg);
-  padding: 2px 4px;
-  border-radius: 4px;
+  background: color-mix(in srgb, var(--primary-text) 6%, transparent);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
   color: var(--highlight-text);
+  font-size: var(--font-size-caption);
+}
+
+@media (max-width: 640px) {
+  .page-header {
+    align-items: stretch;
+  }
+
+  .page-header :deep(.ui-toolbar__actions),
+  .page-header :deep(.ui-toolbar__main) {
+    width: 100%;
+  }
+
+  .page-header :deep(.ui-button) {
+    flex: 1;
+  }
 }
 </style>

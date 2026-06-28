@@ -1,22 +1,30 @@
 <template>
   <div class="forum-controls">
-    <label for="forum-board-filter">筛选板块:</label>
-    <select id="forum-board-filter" :value="selectedBoard" @change="emit('update:selectedBoard', ($event.target as HTMLSelectElement).value)">
-      <option value="all">全部板块</option>
-      <option v-for="board in boards" :key="board" :value="board">
-        {{ board }}
-      </option>
-    </select>
-    <input
-      type="search"
-      :value="searchQuery"
-      @input="emit('update:searchQuery', ($event.target as HTMLInputElement).value)"
-      placeholder="搜索帖子标题或作者…"
-    >
+    <UiField label="筛选板块" for-id="forum-board-filter" size="sm">
+      <UiSelect id="forum-board-filter" size="sm" :model-value="selectedBoard" @update:model-value="value => emit('update:selectedBoard', String(value))">
+        <option value="all">全部板块</option>
+        <option v-for="board in boards" :key="board" :value="board">
+          {{ board }}
+        </option>
+      </UiSelect>
+    </UiField>
+    <UiField label="搜索" size="sm">
+      <UiInput
+        type="search"
+        size="sm"
+        :model-value="searchQuery"
+        placeholder="搜索帖子标题或作者…"
+        @update:model-value="value => emit('update:searchQuery', String(value))"
+      />
+    </UiField>
   </div>
 </template>
 
 <script setup lang="ts">
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
+
 defineProps<{
   boards: string[]
   selectedBoard: string
@@ -33,18 +41,16 @@ const emit = defineEmits<{
 .forum-controls {
   display: flex;
   gap: var(--space-3);
-  align-items: center;
+  align-items: flex-end;
   margin-bottom: var(--space-4);
   flex-wrap: wrap;
 }
 
-.forum-controls select,
-.forum-controls input {
-  padding: var(--space-2) var(--space-3);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
+.forum-controls :deep(.ui-field) {
+  min-width: min(100%, 220px);
+}
+
+.forum-controls :deep(.ui-field:last-child) {
+  flex: 1 1 280px;
 }
 </style>

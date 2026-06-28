@@ -1,21 +1,37 @@
 <template>
   <section class="config-section active-section">
-    <p v-if="pluginName" class="description">配置插件：{{ pluginName }}</p>
-
-    <div v-if="pluginData" class="plugin-config-container">
-      <div class="plugin-controls">
-        <button
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge v-if="statusMessage" :variant="getStatusVariant(statusType)">
+          {{ statusMessage }}
+        </UiBadge>
+        <UiButton
+          v-if="pluginData"
+          type="button"
           @click="togglePlugin"
-          class="btn-primary"
-          :class="{ 'disabled-state': !pluginData.enabled }"
+          :variant="pluginData.enabled ? 'danger' : 'secondary'"
           :disabled="isDistributedPlugin"
           :title="isDistributedPlugin ? '分布式插件状态由所属节点管理' : undefined"
         >
           {{ pluginData.enabled ? '禁用插件' : '启用插件' }}
-        </button>
-        <span v-if="statusMessage" :class="['status-message', statusType]">{{ statusMessage }}</span>
-      </div>
+        </UiButton>
+        <UiButton
+          v-if="pluginData"
+          type="button"
+          variant="secondary"
+          @click="savePluginConfig"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          保存 {{ pluginName }} 配置
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
 
+    <p v-if="pluginName" class="description">配置插件：{{ pluginName }}</p>
+
+    <div v-if="pluginData" class="plugin-config-container">
       <form @submit.prevent="savePluginConfig">
         <div v-if="!hasEnvContent && !hasConfigSchema" class="config-warning">
           <div class="warning-content">
@@ -31,10 +47,13 @@
 
         <div v-if="hasSchemaFields" class="schema-fields-section">
           <h3>Schema 定义的配置</h3>
-          <div v-for="(entry, index) in schemaEntries" :key="entry.key || `schema-${index}`" class="form-group">
-            <label :for="`plugin-${entry.key}`">
-              <span class="key-name">{{ entry.key }}</span>
-            </label>
+          <UiField
+            v-for="(entry, index) in schemaEntries"
+            :key="entry.key || `schema-${index}`"
+            :label="entry.key || ''"
+            :for-id="`plugin-${entry.key}`"
+            class="config-field"
+          >
 
             <div v-if="entry.type === 'boolean'" class="switch-container">
               <AppSwitch
@@ -45,63 +64,70 @@
               />
             </div>
 
-            <input
+            <UiInput
               v-else-if="entry.type === 'integer'"
               type="number"
               :id="`plugin-${entry.key}`"
-              v-model.number="entry.value"
-            >
+              :model-value="toNumberInputValue(entry.value)"
+              @update:model-value="entry.value = $event"
+            />
 
             <div v-if="entry.isMultilineQuoted || String(entry.value || '').length > 60" class="textarea-wrapper">
               <div v-if="entry.key && isSensitiveKey(entry.key)" class="input-with-toggle">
-                <textarea
+                <UiTextarea
                   :id="`plugin-${entry.key}`"
                   :value="entry.value as unknown as TextareaValue"
-                  @input="entry.value = ($event.target as HTMLTextAreaElement).value"
+                  @update:model-value="entry.value = $event"
                   rows="4"
                   :class="{ 'password-masked': !sensitiveFields[entry.key] }"
-                ></textarea>
-                <button
-                  type="button"
+                />
+                <UiIconButton
                   class="toggle-visibility-btn"
+                  :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                  :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                   @click="toggleSensitiveField(entry.key)"
-                  :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                   :aria-pressed="sensitiveFields[entry.key]"
                 >
-                  {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                </button>
+                  <span class="material-symbols-outlined">
+                    {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                  </span>
+                </UiIconButton>
               </div>
-              <textarea
+              <UiTextarea
                 v-else
                 :id="`plugin-${entry.key}`"
                 :value="entry.value as unknown as TextareaValue"
-                @input="entry.value = ($event.target as HTMLTextAreaElement).value"
+                @update:model-value="entry.value = $event"
                 rows="4"
-              ></textarea>
+              />
             </div>
 
             <div v-else-if="entry.key && isSensitiveKey(entry.key)" class="input-with-toggle">
-              <input
+              <UiInput
                 :type="sensitiveFields[entry.key] ? 'text' : 'password'"
                 :id="`plugin-${entry.key}`"
-                v-model="entry.value"
-              >
-              <button
-                type="button"
+                :model-value="toTextInputValue(entry.value)"
+                @update:model-value="entry.value = $event"
+              />
+              <UiIconButton
                 class="toggle-visibility-btn"
+                :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                 @click="toggleSensitiveField(entry.key)"
-                :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                 :aria-pressed="sensitiveFields[entry.key]"
               >
-                {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-              </button>
+                <span class="material-symbols-outlined">
+                  {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                </span>
+              </UiIconButton>
             </div>
 
-            <input
+            <UiInput
               v-else
               type="text"
               :id="`plugin-${entry.key}`"
-              v-model="entry.value"
+              :model-value="toTextInputValue(entry.value)"
+              @update:model-value="entry.value = $event"
             />
 
             <span v-if="entry.key" class="description">
@@ -110,27 +136,32 @@
               <span class="defined-in" v-else-if="hasDefault(entry.key)">(使用插件清单默认值)</span>
               <span class="defined-in" v-else>(未设置，将继承全局或为空)</span>
             </span>
-          </div>
+          </UiField>
         </div>
 
         <div v-if="hasCustomFields || hasCommentEntries" class="custom-fields-section">
           <h3>自定义 .env 配置项 (及注释/空行)</h3>
-          <div v-for="(entry, index) in customEntries" :key="entry.key || `custom-${index}`" class="form-group">
-            <div v-if="entry.isCommentOrEmpty" class="form-group-comment">
+          <div v-for="(entry, index) in customEntries" :key="entry.key || `custom-${index}`" class="custom-entry-row">
+            <div v-if="entry.isCommentOrEmpty" class="custom-entry-comment">
               <pre>{{ entry.value }}</pre>
             </div>
 
             <div v-else>
-              <label :for="`plugin-${entry.key}`">
-                <span class="key-name">{{ entry.key }}</span>
-                <button
-                  v-if="entry.key && !isKeyInSchema(entry.key)"
-                  type="button"
-                  class="delete-config-btn"
-                  @click="removeCustomField(entry.key)"
-                  :title="`删除自定义项 ${entry.key}`"
-                >×</button>
-              </label>
+              <UiField
+                :label="entry.key || ''"
+                :for-id="`plugin-${entry.key}`"
+                class="config-field"
+              >
+                <template v-if="entry.key && !isKeyInSchema(entry.key)" #action>
+                  <UiButton
+                    variant="danger"
+                    size="xs"
+                    @click="removeCustomField(entry.key)"
+                    :title="`删除自定义项 ${entry.key}`"
+                  >
+                    删除
+                  </UiButton>
+                </template>
 
               <div v-if="entry.type === 'boolean'" class="switch-container">
                 <AppSwitch
@@ -141,66 +172,74 @@
                 />
               </div>
 
-              <input
+              <UiInput
                 v-else-if="entry.type === 'integer'"
                 type="number"
                 :id="`plugin-${entry.key}`"
-                v-model.number="entry.value"
-              >
+                :model-value="toNumberInputValue(entry.value)"
+                @update:model-value="entry.value = $event"
+              />
 
               <div v-if="entry.isMultilineQuoted || String(entry.value || '').length > 60" class="textarea-wrapper">
                 <div v-if="entry.key && isSensitiveKey(entry.key)" class="input-with-toggle">
-                  <textarea
+                  <UiTextarea
                     :id="`plugin-${entry.key}`"
                     :value="entry.value as unknown as TextareaValue"
-                    @input="entry.value = ($event.target as HTMLTextAreaElement).value"
+                    @update:model-value="entry.value = $event"
                     rows="4"
                     :class="{ 'password-masked': !sensitiveFields[entry.key] }"
-                  ></textarea>
-                  <button
-                    type="button"
+                  />
+                  <UiIconButton
                     class="toggle-visibility-btn"
+                    :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                    :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                     @click="toggleSensitiveField(entry.key)"
-                    :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                     :aria-pressed="sensitiveFields[entry.key]"
                   >
-                    {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                  </button>
+                    <span class="material-symbols-outlined">
+                      {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                    </span>
+                  </UiIconButton>
                 </div>
-                <textarea
+                <UiTextarea
                   v-else
                   :id="`plugin-${entry.key}`"
                   :value="entry.value as unknown as TextareaValue"
-                  @input="entry.value = ($event.target as HTMLTextAreaElement).value"
+                  @update:model-value="entry.value = $event"
                   rows="4"
-                ></textarea>
+                />
               </div>
 
               <div v-else-if="entry.key && isSensitiveKey(entry.key)" class="input-with-toggle">
-                <input
+                <UiInput
                   :type="sensitiveFields[entry.key] ? 'text' : 'password'"
                   :id="`plugin-${entry.key}`"
-                  v-model="entry.value"
-                >
-                <button
-                  type="button"
+                  :model-value="toTextInputValue(entry.value)"
+                  @update:model-value="entry.value = $event"
+                />
+                <UiIconButton
                   class="toggle-visibility-btn"
+                  :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                  :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                   @click="toggleSensitiveField(entry.key)"
-                  :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                   :aria-pressed="sensitiveFields[entry.key]"
                 >
-                  {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                </button>
+                  <span class="material-symbols-outlined">
+                    {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                  </span>
+                </UiIconButton>
               </div>
 
-              <input
+              <UiInput
                 v-else
                 type="text"
                 :id="`plugin-${entry.key}`"
-                v-model="entry.value"
+                :model-value="toTextInputValue(entry.value)"
+                @update:model-value="entry.value = $event"
               />
 
               <span v-if="entry.key" class="description">自定义配置项：{{ entry.key }} <span class="defined-in">(当前在插件 .env 中定义)</span></span>
+              </UiField>
             </div>
           </div>
         </div>
@@ -213,36 +252,37 @@
             class="command-item"
           >
             <h4>命令: {{ getCommandIdentifier(cmd) }}</h4>
-            <div class="form-group">
-              <label :for="`cmd-desc-${getCommandIdentifier(cmd)}`">指令描述 (AI Instructions):</label>
-              <textarea
+            <UiField label="指令描述 (AI Instructions)" :for-id="`cmd-desc-${getCommandIdentifier(cmd)}`">
+              <UiTextarea
                 :id="`cmd-desc-${getCommandIdentifier(cmd)}`"
                 class="command-description-edit"
                 rows="5"
                 v-model="commandDescriptions[getCommandIdentifier(cmd)]"
-              ></textarea>
-              <button
-                type="button"
+              />
+              <UiButton
                 @click="saveInvocationCommandDescription(cmd)"
-                class="btn-secondary command-save-btn"
-              >保存此指令描述</button>
-              <p :class="['status', 'command-status', commandStatuses[getCommandIdentifier(cmd)]?.type || '']">
-                {{ commandStatuses[getCommandIdentifier(cmd)]?.message || '' }}
-              </p>
-            </div>
+                variant="outline"
+                size="sm"
+                class="command-save-btn"
+              >保存此指令描述</UiButton>
+              <UiBadge
+                v-if="commandStatuses[getCommandIdentifier(cmd)]?.message"
+                class="command-status"
+                :variant="getStatusVariant(commandStatuses[getCommandIdentifier(cmd)]?.type)"
+              >
+                {{ commandStatuses[getCommandIdentifier(cmd)]?.message }}
+              </UiBadge>
+            </UiField>
           </div>
         </div>
 
         <div class="form-actions">
-          <button type="button" class="btn-secondary" @click="addCustomField">添加自定义配置项</button>
-          <button type="submit" class="btn-success">保存 {{ pluginName }} 配置</button>
+          <UiButton variant="outline" @click="addCustomField">添加自定义配置项</UiButton>
         </div>
       </form>
     </div>
 
-    <div v-else class="empty-state">
-      <p>加载插件配置中…</p>
-    </div>
+    <UiEmptyState v-else title="加载插件配置中…" />
   </section>
 </template>
 
@@ -251,6 +291,14 @@ import { computed, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiEmptyState from '@/components/ui/UiEmptyState.vue'
+import UiField from '@/components/ui/UiField.vue'
+import UiIconButton from '@/components/ui/UiIconButton.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
+import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { usePluginConfigStore, type InvocationCommand } from '@/stores/pluginConfig'
 
 type TextareaValue = string | number | readonly string[] | null
@@ -300,6 +348,28 @@ async function savePluginConfig() {
   await pluginConfigStore.savePluginConfig(pluginName.value)
 }
 
+function getStatusVariant(status?: string): "secondary" | "success" | "warning" | "danger" | "info" {
+  switch (status) {
+    case "success":
+      return "success"
+    case "error":
+      return "danger"
+    case "warning":
+      return "warning"
+    default:
+      return "info"
+  }
+}
+
+function toTextInputValue(value: unknown): string {
+  return value == null ? "" : String(value)
+}
+
+function toNumberInputValue(value: unknown): number {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue : 0
+}
+
 watch(
   () => pluginName.value,
   () => {
@@ -312,13 +382,8 @@ watch(
 <style scoped>
 .plugin-config-container {
   max-width: 900px;
-}
-
-.plugin-controls {
-  display: flex;
-  gap: var(--space-3);
-  align-items: center;
-  margin-bottom: var(--space-5);
+  display: grid;
+  gap: var(--space-4);
 }
 
 .config-warning {
@@ -329,7 +394,6 @@ watch(
   background: var(--warning-bg);
   border: 1px solid var(--warning-border);
   border-radius: var(--radius-sm);
-  margin-bottom: var(--space-5);
 }
 
 .warning-content {
@@ -349,7 +413,38 @@ watch(
 
 .schema-fields-section,
 .custom-fields-section {
-  margin-bottom: var(--space-5);
+  margin: 0;
+}
+
+.schema-fields-section,
+.custom-fields-section,
+.invocation-commands-section {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: transparent;
+}
+
+.schema-fields-section h3,
+.custom-fields-section h3,
+.invocation-commands-section h3 {
+  margin: 0;
+  color: var(--primary-text);
+  font-size: var(--font-size-title);
+  line-height: 1.35;
+}
+
+.config-field {
+  min-width: 0;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+}
+
+.config-field:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
 }
 
 .defined-in {
@@ -357,15 +452,23 @@ watch(
 }
 
 .invocation-commands-section {
-  margin-bottom: var(--space-5);
+  margin: 0;
 }
 
 .command-item {
-  margin-bottom: var(--space-4);
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .command-item h4 {
-  margin: 6px 0 8px;
+  margin: 0;
+  color: var(--primary-text);
+  font-size: var(--font-size-body);
+  line-height: 1.35;
 }
 
 .command-description-edit {
@@ -373,70 +476,38 @@ watch(
 }
 
 .command-save-btn {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .command-status {
-  margin: 8px 0 0;
+  margin: var(--space-2) 0 0;
+  align-self: flex-start;
 }
 
-.form-group-comment pre {
+.custom-entry-comment pre {
   color: var(--secondary-text);
   font-family: inherit;
   white-space: pre-wrap;
-  margin: 8px 0;
-}
-
-.delete-config-btn {
-  margin-left: 8px;
-  min-width: 28px;
-  min-height: 28px;
-  border: 1px solid transparent;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
   border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--danger-text);
-  font-size: var(--font-size-emphasis);
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    color var(--transition-fast),
-    border-color var(--transition-fast),
-    background-color var(--transition-fast);
-}
-
-.delete-config-btn:hover {
-  color: var(--danger-color);
-  border-color: var(--danger-border);
-  background: var(--danger-bg);
-}
-
-.delete-config-btn:focus-visible {
-  border-color: var(--danger-color);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger-color) 24%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .input-with-toggle {
   position: relative;
-  display: flex;
-  align-items: center;
+  display: block;
 }
 
-.input-with-toggle input {
-  flex: 1;
-  padding-right: 70px;
+.input-with-toggle :deep(.ui-input) {
+  padding-right: 42px;
 }
 
 .toggle-visibility-btn {
   position: absolute;
   right: 8px;
-  min-height: 30px;
-  padding: 4px 10px;
-  background: var(--tertiary-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  color: var(--primary-text);
-  font-size: var(--font-size-helper);
-  cursor: pointer;
+  top: 2px;
 }
 
 /* 文本掩码样式 (用于 textarea) */
@@ -445,19 +516,11 @@ watch(
   text-security: disc !important;
 }
 
-.toggle-visibility-btn:hover {
-  background: var(--accent-bg);
-}
-
-.toggle-visibility-btn:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-}
-
-.disabled-state {
-  opacity: 0.6;
-  background: var(--border-color);
-  color: var(--secondary-text);
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
 /* .empty-state 已在全局 layout.css 中统一定义 */

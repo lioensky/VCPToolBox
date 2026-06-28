@@ -1,6 +1,21 @@
 <template>
   <section class="plugins-hub">
-    <section class="hub-hero card">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton
+          type="button"
+          variant="outline"
+          size="lg"
+          :disabled="isRefreshing"
+          @click="refreshPlugins()"
+        >
+          <template #leading><span class="material-symbols-outlined">refresh</span></template>
+          <span>{{ isRefreshing ? "刷新中…" : "刷新列表" }}</span>
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
+    <UiCard class="hub-hero">
       <div class="hero-copy">
         <span class="eyebrow hero-eyebrow">Plugin Center</span>
         <h2>插件中心与启用管理</h2>
@@ -27,69 +42,58 @@
           <strong>{{ pluginSummary.pinned }}</strong>
         </article>
       </div>
-    </section>
+    </UiCard>
 
-    <section class="card view-tabs-card">
+    <section class="plugins-toolbar" aria-label="插件筛选与视图">
       <div class="view-mode-switch" role="group" aria-label="插件视图切换">
-        <button
+        <UiButton
           type="button"
-          class="view-mode-btn"
-          :class="{ active: viewMode === 'grouped' }"
+          size="sm"
+          :variant="viewMode === 'grouped' ? 'primary' : 'outline'"
           :aria-pressed="viewMode === 'grouped'"
           @click="viewMode = 'grouped'"
         >
-          <span class="material-symbols-outlined">view_agenda</span>
+          <template #leading><span class="material-symbols-outlined">view_agenda</span></template>
           <span>分组视图</span>
-        </button>
-        <button
+        </UiButton>
+        <UiButton
           type="button"
-          class="view-mode-btn"
-          :class="{ active: viewMode === 'list' }"
+          size="sm"
+          :variant="viewMode === 'list' ? 'primary' : 'outline'"
           :aria-pressed="viewMode === 'list'"
           @click="viewMode = 'list'"
         >
-          <span class="material-symbols-outlined">view_list</span>
+          <template #leading><span class="material-symbols-outlined">view_list</span></template>
           <span>列表视图</span>
-        </button>
+        </UiButton>
       </div>
-    </section>
 
-    <section class="card controls-card">
       <div class="controls-main-row">
         <label class="search-field">
           <span class="material-symbols-outlined">search</span>
-          <input
+          <UiInput
             ref="pluginSearchInputRef"
             v-model="searchQuery"
             type="search"
+            size="sm"
             placeholder="搜索插件名称、原始名或描述…"
             aria-label="搜索插件"
           />
         </label>
-
-        <button
-          type="button"
-          class="btn-secondary"
-          :disabled="isRefreshing"
-          @click="refreshPlugins()"
-        >
-          <span class="material-symbols-outlined">refresh</span>
-          <span>{{ isRefreshing ? "刷新中…" : "刷新列表" }}</span>
-        </button>
       </div>
 
       <div class="filter-row" aria-label="插件筛选">
-        <button
+        <UiButton
           v-for="filter in visibleFilterOptions"
           :key="filter.value"
           type="button"
-          class="filter-pill"
-          :class="{ active: activeFilter === filter.value }"
+          size="xs"
+          :variant="activeFilter === filter.value ? 'primary' : 'outline'"
           :aria-pressed="activeFilter === filter.value"
           @click="selectFilter(filter.value)"
         >
           {{ filter.label }}
-        </button>
+        </UiButton>
 
         <details
           v-if="overflowFilterOptions.length > 0"
@@ -102,17 +106,17 @@
             <span class="pill-count">{{ overflowFilterOptions.length }}</span>
           </summary>
           <div class="filters-overflow-menu" role="menu" aria-label="更多插件筛选">
-            <button
+            <UiButton
               v-for="filter in overflowFilterOptions"
               :key="filter.value"
               type="button"
-              class="filter-pill"
-              :class="{ active: activeFilter === filter.value }"
+              size="xs"
+              :variant="activeFilter === filter.value ? 'primary' : 'ghost'"
               :aria-pressed="activeFilter === filter.value"
               @click="selectFilter(filter.value)"
             >
               {{ filter.label }}
-            </button>
+            </UiButton>
           </div>
         </details>
       </div>
@@ -122,49 +126,40 @@
       v-if="pinnedPluginRecords.length > 0 || recentPluginVisits.length > 0"
       class="quick-grid"
     >
-      <article v-if="pinnedPluginRecords.length > 0" class="card quick-card">
-        <div class="card-header quick-card-header">
-          <h3 class="card-title">
-            <span class="material-symbols-outlined">keep</span>
-            <span>侧栏固定插件</span>
-          </h3>
-        </div>
-
+      <UiCard v-if="pinnedPluginRecords.length > 0" class="quick-card" title="侧栏固定插件" size="sm" variant="subtle">
+        <template #icon><span class="material-symbols-outlined">keep</span></template>
         <div class="quick-list">
-          <button
+          <UiButton
             v-for="plugin in pinnedPluginRecords"
             :key="plugin.pluginName"
             type="button"
-            class="quick-link"
+            variant="outline"
+            size="sm"
             @click="openPluginConfig(plugin.pluginName)"
           >
-            <span class="material-symbols-outlined">{{ plugin.icon }}</span>
+            <template #leading><span class="material-symbols-outlined">{{ plugin.icon }}</span></template>
             <span>{{ plugin.displayName }}</span>
-          </button>
+          </UiButton>
         </div>
-      </article>
+      </UiCard>
 
-      <article v-if="recentPluginVisits.length > 0" class="card quick-card">
-        <div class="card-header quick-card-header">
-          <h3 class="card-title">
-            <span class="material-symbols-outlined">history</span>
-            <span>最近访问插件</span>
-          </h3>
-        </div>
+      <UiCard v-if="recentPluginVisits.length > 0" class="quick-card" title="最近访问插件" size="sm" variant="subtle">
+        <template #icon><span class="material-symbols-outlined">history</span></template>
 
         <div class="quick-list">
-          <button
+          <UiButton
             v-for="item in recentPluginVisits"
             :key="item.pluginName"
             type="button"
-            class="quick-link"
+            variant="outline"
+            size="sm"
             @click="openPluginConfig(item.pluginName)"
           >
-            <span class="material-symbols-outlined">{{ item.icon }}</span>
+            <template #leading><span class="material-symbols-outlined">{{ item.icon }}</span></template>
             <span>{{ item.label }}</span>
-          </button>
+          </UiButton>
         </div>
-      </article>
+      </UiCard>
     </section>
 
     <section class="results-header">
@@ -178,11 +173,9 @@
       </div>
     </section>
 
-    <section v-if="visiblePluginRecords.length === 0" class="card empty-state">
-      <span class="material-symbols-outlined">search_off</span>
-      <h3>没有匹配的插件</h3>
-      <p>试试切换筛选条件，或者搜索插件原始名称。</p>
-    </section>
+    <UiCard v-if="visiblePluginRecords.length === 0" class="empty-state" variant="subtle">
+      <UiEmptyState title="没有匹配的插件" description="试试切换筛选条件，或者搜索插件原始名称。" />
+    </UiCard>
 
     <section v-else-if="viewMode === 'grouped'" class="plugin-grouped-view">
       <article
@@ -197,19 +190,23 @@
             <span class="type-count">{{ group.records.length }}</span>
           </h3>
 
-          <button
+          <UiButton
             type="button"
             class="group-collapse-toggle"
-            :class="{ 'is-collapsed': isTypeGroupCollapsed(group.type) }"
+            variant="outline"
+            size="sm"
             :aria-expanded="!isTypeGroupCollapsed(group.type)"
             :aria-controls="getPluginTypeGroupContentId(group.type)"
             @click="toggleTypeGroupCollapsed(group.type)"
           >
             <span>{{ isTypeGroupCollapsed(group.type) ? "展开" : "折叠" }}</span>
-            <span class="material-symbols-outlined group-collapse-icon"
-              >expand_more</span
-            >
-          </button>
+            <template #trailing>
+              <span
+                class="material-symbols-outlined group-collapse-icon"
+                :class="{ 'is-collapsed': isTypeGroupCollapsed(group.type) }"
+              >expand_more</span>
+            </template>
+          </UiButton>
         </div>
 
         <transition name="group-collapse">
@@ -233,49 +230,43 @@
                     <div class="plugin-heading">
                       <div class="plugin-title-row">
                         <h3>{{ plugin.displayName }}</h3>
-                        <span
-                          class="status-badge"
-                          :class="plugin.enabled ? 'status-enabled' : 'status-disabled'"
-                        >
+                        <UiBadge :variant="plugin.enabled ? 'success' : 'danger'">
                           {{ plugin.enabled ? "启用中" : "已禁用" }}
-                        </span>
-                        <span
+                        </UiBadge>
+                        <UiBadge
                           v-if="plugin.isDistributed"
-                          class="status-badge status-neutral"
+                          variant="warning"
                         >
                           分布式
-                        </span>
-                        <span
+                        </UiBadge>
+                        <UiBadge
                           v-if="plugin.isPinned"
-                          class="status-badge status-pinned"
+                          variant="info"
                         >
                           已固定
-                        </span>
+                        </UiBadge>
                       </div>
                       <p class="plugin-original-name">{{ plugin.pluginName }}</p>
                     </div>
                   </div>
 
                   <div class="plugin-card-side">
-                    <button
+                    <UiIconButton
                       type="button"
-                      class="pin-toggle"
-                      :class="{ 'is-active': plugin.isPinned }"
+                      :active="plugin.isPinned"
                       :title="plugin.isPinned ? '取消固定' : '固定到侧栏'"
-                      :aria-label="
-                        plugin.isPinned ? '取消固定到侧栏' : '固定到侧栏'
-                      "
+                      :label="plugin.isPinned ? '取消固定到侧栏' : '固定到侧栏'"
                       :aria-pressed="plugin.isPinned"
                       @click="togglePinned(plugin.pluginName)"
                     >
                       <span class="material-symbols-outlined">
                         {{ plugin.isPinned ? "keep" : "keep_off" }}
                       </span>
-                    </button>
+                    </UiIconButton>
 
-                    <span class="plugin-version-badge">
+                    <UiBadge class="plugin-version-badge" variant="outline">
                       v{{ plugin.plugin.manifest.version || "0.0.0" }}
-                    </span>
+                    </UiBadge>
                   </div>
                 </div>
 
@@ -287,41 +278,20 @@
                     {{ plugin.summary }}
                   </p>
 
-                  <div
-                    v-if="plugin.isDistributed || plugin.isPinned"
-                    class="plugin-status-pills"
-                  >
-                    <span
-                      v-if="plugin.isDistributed"
-                      class="mini-pill mini-pill--sensitive"
-                    >
-                      <span class="material-symbols-outlined mini-pill-icon">hub</span>
-                      分布式
-                    </span>
-                    <span
-                      v-if="plugin.isPinned"
-                      class="mini-pill mini-pill--changed"
-                    >
-                      <span class="material-symbols-outlined mini-pill-icon"
-                        >push_pin</span
-                      >
-                      已固定
-                    </span>
-                  </div>
-
                   <div class="plugin-actions">
-                    <button
+                    <UiButton
                       type="button"
-                      class="btn-primary"
+                      size="sm"
                       @click="openPluginConfig(plugin.pluginName)"
                     >
-                      <span class="material-symbols-outlined">open_in_new</span>
+                      <template #leading><span class="material-symbols-outlined">open_in_new</span></template>
                       <span>打开配置</span>
-                    </button>
+                    </UiButton>
 
-                    <button
+                    <UiButton
                       type="button"
-                      :class="plugin.enabled ? 'btn-danger' : 'btn-secondary'"
+                      size="sm"
+                      :variant="plugin.enabled ? 'danger' : 'outline'"
                       :disabled="
                         plugin.isDistributed || isPluginPending(plugin.pluginName)
                       "
@@ -330,9 +300,9 @@
                       "
                       @click="togglePlugin(plugin.plugin)"
                     >
-                      <span class="material-symbols-outlined">
+                      <template #leading><span class="material-symbols-outlined">
                         {{ plugin.enabled ? "power_settings_new" : "bolt" }}
-                      </span>
+                      </span></template>
                       <span>{{
                         isPluginPending(plugin.pluginName)
                           ? "处理中…"
@@ -340,7 +310,7 @@
                             ? "禁用插件"
                             : "启用插件"
                       }}</span>
-                    </button>
+                    </UiButton>
                   </div>
                 </div>
               </article>
@@ -366,44 +336,40 @@
               <div class="plugin-heading">
                 <div class="plugin-title-row">
                   <h3>{{ plugin.displayName }}</h3>
-                  <span
-                    class="status-badge"
-                    :class="plugin.enabled ? 'status-enabled' : 'status-disabled'"
-                  >
+                  <UiBadge :variant="plugin.enabled ? 'success' : 'danger'">
                     {{ plugin.enabled ? "启用中" : "已禁用" }}
-                  </span>
-                  <span
+                  </UiBadge>
+                  <UiBadge
                     v-if="plugin.isDistributed"
-                    class="status-badge status-neutral"
+                    variant="warning"
                   >
                     分布式
-                  </span>
-                  <span v-if="plugin.isPinned" class="status-badge status-pinned">
+                  </UiBadge>
+                  <UiBadge v-if="plugin.isPinned" variant="info">
                     已固定
-                  </span>
+                  </UiBadge>
                 </div>
                 <p class="plugin-original-name">{{ plugin.pluginName }}</p>
               </div>
             </div>
 
             <div class="plugin-card-side">
-              <button
+              <UiIconButton
                 type="button"
-                class="pin-toggle"
-                :class="{ 'is-active': plugin.isPinned }"
+                :active="plugin.isPinned"
                 :title="plugin.isPinned ? '取消固定' : '固定到侧栏'"
-                :aria-label="plugin.isPinned ? '取消固定到侧栏' : '固定到侧栏'"
+                :label="plugin.isPinned ? '取消固定到侧栏' : '固定到侧栏'"
                 :aria-pressed="plugin.isPinned"
                 @click="togglePinned(plugin.pluginName)"
               >
                 <span class="material-symbols-outlined">
                   {{ plugin.isPinned ? "keep" : "keep_off" }}
                 </span>
-              </button>
+              </UiIconButton>
 
-              <span class="plugin-version-badge">
+              <UiBadge class="plugin-version-badge" variant="outline">
                 v{{ plugin.plugin.manifest.version || "0.0.0" }}
-              </span>
+              </UiBadge>
             </div>
           </div>
 
@@ -415,37 +381,27 @@
               {{ plugin.summary }}
             </p>
 
-            <div v-if="plugin.isDistributed || plugin.isPinned" class="plugin-status-pills">
-              <span v-if="plugin.isDistributed" class="mini-pill mini-pill--sensitive">
-                <span class="material-symbols-outlined mini-pill-icon">hub</span>
-                分布式
-              </span>
-              <span v-if="plugin.isPinned" class="mini-pill mini-pill--changed">
-                <span class="material-symbols-outlined mini-pill-icon">push_pin</span>
-                已固定
-              </span>
-            </div>
-
             <div class="plugin-actions">
-              <button
+              <UiButton
                 type="button"
-                class="btn-primary"
+                size="sm"
                 @click="openPluginConfig(plugin.pluginName)"
               >
-                <span class="material-symbols-outlined">open_in_new</span>
+                <template #leading><span class="material-symbols-outlined">open_in_new</span></template>
                 <span>打开配置</span>
-              </button>
+              </UiButton>
 
-              <button
+              <UiButton
                 type="button"
-                :class="plugin.enabled ? 'btn-danger' : 'btn-secondary'"
+                size="sm"
+                :variant="plugin.enabled ? 'danger' : 'outline'"
                 :disabled="plugin.isDistributed || isPluginPending(plugin.pluginName)"
                 :title="plugin.isDistributed ? '分布式插件状态由所属节点管理' : undefined"
                 @click="togglePlugin(plugin.plugin)"
               >
-                <span class="material-symbols-outlined">
+                <template #leading><span class="material-symbols-outlined">
                   {{ plugin.enabled ? "power_settings_new" : "bolt" }}
-                </span>
+                </span></template>
                 <span>{{
                   isPluginPending(plugin.pluginName)
                     ? "处理中…"
@@ -453,7 +409,7 @@
                       ? "禁用插件"
                       : "启用插件"
                 }}</span>
-              </button>
+              </UiButton>
             </div>
           </div>
         </article>
@@ -485,6 +441,13 @@ import {
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { useAppStore } from "@/stores/app";
 import { showMessage } from "@/utils";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import type { PluginInfo } from "@/types/api.plugin";
 
 const router = useRouter();
@@ -521,7 +484,7 @@ const pendingPluginNames = ref<string[]>([]);
 const recentVisits = useRecentVisits();
 const navigationUsage = useNavigationUsage();
 const collapsedTypeGroups = ref<Record<string, boolean>>({});
-const pluginSearchInputRef = ref<HTMLInputElement | null>(null);
+const pluginSearchInputRef = ref<{ focus: () => void; select: () => void } | null>(null);
 const filterOverflowOpen = ref(false);
 const MAX_VISIBLE_FILTERS = 5;
 
@@ -800,50 +763,69 @@ watch(activeFilter, () => {
 .plugins-hub {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
 .hub-hero {
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 94%, transparent);
+}
+
+.hub-hero :deep(.ui-card__content) {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
-  gap: var(--space-5);
-  background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
+  gap: var(--space-3);
+  align-items: stretch;
 }
 
 .hero-copy h2 {
-  font-size: var(--font-size-headline);
-  line-height: 1.2;
-  margin-bottom: var(--space-3);
+  margin: 0 0 var(--space-1);
+  color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .hero-copy p {
+  margin: 0;
   max-width: 56ch;
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
 .hero-eyebrow {
-  margin-bottom: var(--space-3);
+  display: inline-flex;
+  margin-bottom: var(--space-1);
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .hero-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .stat-chip {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: 16px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--tertiary-bg);
+  gap: 2px;
+  min-height: 54px;
+  justify-content: center;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .stat-chip strong {
-  font-size: var(--font-size-display);
+  font-size: var(--font-size-emphasis);
+  line-height: 1.1;
 }
 
 .stat-chip.enabled strong {
@@ -859,26 +841,33 @@ watch(activeFilter, () => {
   font-size: var(--font-size-helper);
 }
 
-.view-tabs-card {
-  background: var(--secondary-bg);
-}
-
-.controls-card {
+.plugins-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
   position: sticky;
   top: 0;
   z-index: 17;
-  background: var(--secondary-bg);
+  padding: var(--space-2) 0 var(--space-1);
+  background: color-mix(in srgb, var(--primary-bg) 82%, transparent);
+  backdrop-filter: blur(10px);
 }
 
-.controls-top,
 .controls-main-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
+}
+
+.controls-main-row {
+  flex: 1 1 240px;
+  min-width: 220px;
+}
+
+.search-field {
+  width: 100%;
 }
 
 .view-mode-switch {
@@ -887,49 +876,11 @@ watch(activeFilter, () => {
   gap: var(--space-2);
 }
 
-.view-mode-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition:
-    background-color 0.2s ease,
-    color 0.2s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-.view-mode-btn:hover {
-  color: var(--primary-text);
-  background: var(--accent-bg);
-  border-color: color-mix(in srgb, var(--button-bg) 30%, transparent);
-}
-
-.view-mode-btn.active {
-  color: var(--on-accent-text);
-  background: var(--button-bg);
-  border-color: color-mix(in srgb, var(--button-bg) 72%, var(--border-color));
-}
-
-.view-mode-btn:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
-
-.search-field input:focus:not(:focus-visible) {
-  outline: none;
-}
-
 .filter-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-2);
+  align-items: center;
   position: relative;
 }
 
@@ -964,14 +915,24 @@ watch(activeFilter, () => {
 .filters-overflow-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 0 12px;
+  gap: var(--space-2);
+  min-height: 24px;
+  padding: 0 var(--space-2);
   border: 1px dashed var(--border-color);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
   cursor: pointer;
-  background: var(--tertiary-bg);
+  background: transparent;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.filters-overflow-trigger:hover {
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
+  color: var(--primary-text);
 }
 
 .filters-overflow[open] .filters-overflow-trigger {
@@ -987,75 +948,49 @@ watch(activeFilter, () => {
   min-width: 220px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 92%, transparent);
   box-shadow: var(--shadow-lg);
   z-index: 5;
-}
-
-.filters-overflow-menu .filter-pill {
-  width: 100%;
-  justify-content: space-between;
 }
 
 .quick-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-5);
+  gap: var(--space-2);
 }
 
-.quick-card-header {
-  margin-bottom: var(--space-4);
+.quick-card {
+  border-color: color-mix(in srgb, var(--border-color) 92%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
 }
 
 .quick-list {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
-}
-
-.quick-link {
-  display: inline-flex;
-  align-items: center;
   gap: var(--space-2);
-  padding: 10px 14px;
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
-  background: var(--tertiary-bg);
-  color: var(--primary-text);
-  cursor: pointer;
-  transition:
-    border-color 0.2s ease,
-    background-color 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-.quick-link:hover {
-  border-color: color-mix(in srgb, var(--button-bg) 36%, transparent);
-  background: var(--accent-bg);
-}
-
-.quick-link:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .results-header {
   display: flex;
   align-items: end;
   justify-content: space-between;
+  padding-top: var(--space-1);
 }
 
 .results-header h3 {
-  font-size: var(--font-size-title);
+  margin: 0;
+  font-size: var(--font-size-emphasis);
+  line-height: 1.35;
 }
 
 .results-header p {
   color: var(--secondary-text);
-  margin-top: 4px;
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-helper);
 }
 
 /* .empty-state 已在全局 layout.css 中统一定义 */
@@ -1063,7 +998,7 @@ watch(activeFilter, () => {
 .plugin-grouped-view {
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: var(--space-4);
 }
 
 .plugin-list-view {
@@ -1071,9 +1006,9 @@ watch(activeFilter, () => {
 }
 
 .plugin-type-group {
-  background: var(--secondary-bg);
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border-color) 94%, transparent);
   overflow: hidden;
 }
 
@@ -1082,29 +1017,36 @@ watch(activeFilter, () => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  background: var(--tertiary-bg);
-  border-bottom: 1px solid var(--border-color);
+  min-height: 42px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--primary-text) 2.2%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
 }
 
 .type-group-header h3 {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--font-size-emphasis);
+  font-size: var(--font-size-helper);
+  font-weight: 700;
   margin: 0;
+}
+
+.type-group-header .material-symbols-outlined {
+  color: var(--secondary-text);
+  font-size: 16px;
 }
 
 .type-count {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 28px;
-  height: 24px;
+  min-width: 24px;
+  height: 20px;
   padding: 0 8px;
   border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  background: transparent;
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
   font-weight: 600;
@@ -1112,45 +1054,21 @@ watch(activeFilter, () => {
 }
 
 .group-collapse-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--secondary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition:
-    color 0.2s ease,
-    background-color 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.group-collapse-toggle:hover {
-  color: var(--primary-text);
-  background: color-mix(in srgb, var(--button-bg) 10%, transparent);
-  border-color: color-mix(in srgb, var(--button-bg) 28%, transparent);
-}
-
-.group-collapse-toggle:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  flex: 0 0 auto;
 }
 
 .group-collapse-icon {
   font-size: var(--font-size-title);
   line-height: 1;
-  transition: transform 0.24s ease;
+  transition: transform var(--transition-fast);
 }
 
-.group-collapse-toggle.is-collapsed .group-collapse-icon {
+.group-collapse-icon.is-collapsed {
   transform: rotate(-90deg);
 }
 
 .type-group-content {
-  padding: 16px;
+  padding: 10px;
 }
 
 .group-collapse-enter-active,
@@ -1183,51 +1101,54 @@ watch(activeFilter, () => {
 .plugin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 18px;
+  gap: var(--space-3);
 }
 
 .plugin-card {
   display: flex;
   flex-direction: column;
   height: 100%;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-xl);
-  padding: 20px;
-  background: var(--secondary-bg);
-  box-shadow: var(--shadow-sm);
+  border: 1px solid color-mix(in srgb, var(--border-color) 92%, transparent);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  background: color-mix(in srgb, var(--primary-text) 0.7%, transparent);
   transition:
-    box-shadow 0.2s ease,
-    border-color 0.2s ease;
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .plugin-card:hover {
-  box-shadow: var(--shadow-md);
-  border-color: color-mix(in srgb, var(--button-bg) 28%, var(--border-color));
+  border-color: color-mix(in srgb, var(--highlight-text) 24%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 3.5%, transparent);
 }
 
 .plugin-card-top {
   display: flex;
   align-items: start;
   justify-content: space-between;
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
 }
 
 .plugin-identity {
   display: flex;
-  gap: 14px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .plugin-icon-shell {
-  width: 48px;
-  height: 48px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--button-bg) 18%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
   color: var(--highlight-text);
   flex-shrink: 0;
+}
+
+.plugin-icon-shell .material-symbols-outlined {
+  font-size: 18px;
 }
 
 .plugin-heading {
@@ -1238,20 +1159,20 @@ watch(activeFilter, () => {
 .plugin-title-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-xs);
   align-items: center;
 }
 
 .plugin-title-row h3 {
-  font-size: var(--font-size-emphasis);
+  font-size: var(--font-size-body);
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
 .plugin-original-name {
-  margin-top: 6px;
+  margin-top: 2px;
   color: var(--secondary-text);
-  font-size: var(--font-size-helper);
+  font-size: var(--font-size-caption);
   overflow-wrap: anywhere;
 }
 
@@ -1259,104 +1180,8 @@ watch(activeFilter, () => {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: var(--space-2);
+  gap: var(--space-xs);
   flex-shrink: 0;
-}
-
-.plugin-version-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: var(--font-size-caption);
-  font-weight: 600;
-  border: 1px solid transparent;
-}
-
-.status-enabled {
-  color: var(--success-text);
-  background: var(--success-bg);
-  border-color: var(--success-border);
-}
-
-.status-disabled {
-  color: var(--danger-text);
-  background: var(--danger-bg);
-  border-color: var(--danger-border);
-}
-
-.status-neutral {
-  color: var(--warning-text);
-  background: var(--warning-bg);
-  border-color: var(--warning-border);
-}
-
-.status-pinned {
-  color: var(--info-text);
-  background: var(--info-bg);
-  border-color: var(--info-border);
-}
-
-/* ========== Mini Pills (RagTuning 风格) ========== */
-
-.plugin-status-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: 12px;
-}
-
-.pin-toggle {
-  display: inline-grid;
-  place-items: center;
-  align-items: center;
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--surface-overlay-soft);
-  color: var(--secondary-text);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition:
-    color 0.2s ease,
-    border-color 0.2s ease,
-    background-color 0.2s ease,
-    transform 0.2s ease;
-}
-
-.pin-toggle:hover {
-  color: var(--primary-text);
-  border-color: color-mix(in srgb, var(--button-bg) 30%, transparent);
-  background: color-mix(in srgb, var(--button-bg) 10%, transparent);
-}
-
-.pin-toggle.is-active {
-  color: var(--highlight-text);
-  border-color: color-mix(in srgb, var(--button-bg) 38%, transparent);
-  background: color-mix(in srgb, var(--button-bg) 14%, transparent);
-}
-
-.pin-toggle:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .plugin-card-main {
@@ -1368,43 +1193,30 @@ watch(activeFilter, () => {
 
 .plugin-description {
   color: var(--secondary-text);
-  line-height: 1.55;
-  min-height: calc(1.55em * 3);
-  max-height: calc(1.55em * 3);
+  font-size: var(--font-size-helper);
+  line-height: 1.5;
+  min-height: calc(1.5em * 2);
+  max-height: calc(1.5em * 3);
   overflow: hidden;
   overflow-wrap: anywhere;
   word-break: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
-  margin-bottom: 14px;
-}
-
-.plugin-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  margin-bottom: 18px;
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
-.plugin-meta span {
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: var(--tertiary-bg);
+  margin-bottom: var(--space-2);
 }
 
 .plugin-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-xs);
   margin-top: auto;
-  padding-top: 4px;
+  padding-top: var(--space-2);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
 }
 
 @media (max-width: 1024px) {
-  .hub-hero,
+  .hub-hero :deep(.ui-card__content),
   .quick-grid {
     grid-template-columns: 1fr;
   }
@@ -1426,18 +1238,14 @@ watch(activeFilter, () => {
   }
 
   .type-group-content {
-    padding: 12px;
-  }
-
-  .controls-main-row .btn-secondary {
-    justify-content: center;
+    padding: var(--space-3);
   }
 
   .view-mode-switch {
     width: 100%;
   }
 
-  .view-mode-btn {
+  .view-mode-switch :deep(.ui-button) {
     flex: 1;
     justify-content: center;
   }
@@ -1458,7 +1266,7 @@ watch(activeFilter, () => {
 }
 
 @media (max-width: 480px) {
-  .hub-hero {
+  .hub-hero :deep(.ui-card__content) {
     gap: var(--space-4);
   }
 
@@ -1471,7 +1279,7 @@ watch(activeFilter, () => {
   }
 
   .plugin-card {
-    padding: 16px;
+    padding: var(--space-3);
   }
 
   .plugin-actions {
@@ -1481,6 +1289,14 @@ watch(activeFilter, () => {
   .plugin-actions :deep(button) {
     width: 100%;
     justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .filters-overflow-trigger,
+  .group-collapse-icon,
+  .plugin-card {
+    transition: none;
   }
 }
 </style>

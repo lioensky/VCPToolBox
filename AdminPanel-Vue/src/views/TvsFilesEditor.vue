@@ -13,173 +13,190 @@
       >
         <template v-if="sidebarCollapsed">
           <div class="console-rail">
-            <button
+            <UiIconButton
               type="button"
               class="console-rail-toggle"
-              aria-label="展开操作台"
+              label="展开操作台"
               title="展开操作台"
               @click="toggleSidebar"
             >
               <span class="material-symbols-outlined">left_panel_open</span>
-            </button>
+            </UiIconButton>
             <div class="console-rail-divider"></div>
-            <button
+            <UiIconButton
               type="button"
               class="console-rail-icon"
-              aria-label="新建文件"
+              label="新建文件"
               title="新建文件"
               :disabled="isCreating"
               @click="beginCreateFile"
             >
               <span class="material-symbols-outlined">add</span>
-            </button>
-            <button
+            </UiIconButton>
+            <UiIconButton
               v-for="file in filteredFiles.slice(0, 8)"
               :key="file"
-              type="button"
               class="console-rail-icon"
-              :class="{ 'is-active': file === selectedFile }"
+              :active="file === selectedFile"
+              :label="`打开变量文件 ${file}`"
               :title="file"
               @click="requestSelectFile(file)"
             >
               <span class="material-symbols-outlined">description</span>
-            </button>
+            </UiIconButton>
           </div>
         </template>
         <template v-else>
-        <div class="tvs-console__section">
-          <span class="tvs-console__label">操作台</span>
-          <div class="tvs-console__header">
-            <h3>变量文件</h3>
-            <div class="sidebar-header-meta">
-              <span class="tvs-file-count">
-                {{ filteredFiles.length }}/{{ files.length }} 个
-              </span>
-              <button
-                type="button"
-                class="console-rail-toggle"
-                aria-label="折叠操作台"
-                title="折叠操作台"
-                @click="toggleSidebar"
-              >
-                <span class="material-symbols-outlined">left_panel_close</span>
-              </button>
+          <div class="tvs-console__section">
+            <span class="tvs-console__label">操作台</span>
+            <div class="tvs-console__header">
+              <h3>变量文件</h3>
+              <div class="sidebar-header-meta">
+                <span class="tvs-file-count">
+                  {{ filteredFiles.length }}/{{ files.length }} 个
+                </span>
+                <UiIconButton
+                  type="button"
+                  class="console-rail-toggle"
+                  label="折叠操作台"
+                  title="折叠操作台"
+                  @click="toggleSidebar"
+                >
+                  <span class="material-symbols-outlined">left_panel_close</span>
+                </UiIconButton>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div class="tvs-console__section">
-          <label class="tvs-search-label" for="tvs-file-search-input">搜索筛选</label>
-          <div class="tvs-search-box">
-            <input
-              id="tvs-file-search-input"
-              v-model="searchQuery"
-              type="search"
-              class="tvs-search-input"
-              placeholder="按文件名筛选..."
-            />
-            <button
-              v-if="searchQuery"
-              type="button"
-              class="btn-secondary btn-sm"
-              aria-label="清空筛选"
-              @click="searchQuery = ''"
-            >
-              清空
-            </button>
+          <div class="tvs-console__section">
+            <UiField label="搜索筛选" for-id="tvs-file-search-input" size="sm">
+              <div class="tvs-search-box">
+                <UiInput
+                  id="tvs-file-search-input"
+                  v-model="searchQuery"
+                  type="search"
+                  class="tvs-search-input"
+                  placeholder="按文件名筛选..."
+                />
+                <UiButton
+                  v-if="searchQuery"
+                  variant="ghost"
+                  size="sm"
+                  aria-label="清空筛选"
+                  @click="searchQuery = ''"
+                >
+                  清空
+                </UiButton>
+              </div>
+            </UiField>
           </div>
-        </div>
 
-        <div class="tvs-console__actions">
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
-            title="刷新"
-            :disabled="loadingFiles"
-            @click="reloadFiles"
-          >
-            ↻
-          </button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
-            :disabled="isCreating"
-            @click="beginCreateFile"
-          >
-            新建
-          </button>
-        </div>
-
-        <div v-if="isCreating" class="tvs-console__section tvs-new-file">
-          <label class="tvs-search-label" for="tvs-new-file-input">新建文件</label>
-          <div class="tvs-search-box">
-            <input
-              id="tvs-new-file-input"
-              ref="newFileInputRef"
-              v-model="newFileName"
-              type="text"
-              class="tvs-search-input"
-              placeholder="文件名（自动补 .txt）"
-              @keydown.enter.prevent="confirmCreateFile"
-              @keydown.esc.prevent="cancelCreateFile"
-            />
+          <div class="tvs-console__actions">
+            <UiIconButton
+              type="button"
+              class="tvs-refresh-button"
+              size="sm"
+              label="刷新文件列表"
+              title="刷新"
+              :disabled="loadingFiles"
+              @click="reloadFiles"
+            >
+              <span class="material-symbols-outlined">refresh</span>
+            </UiIconButton>
+            <UiButton
+              variant="outline"
+              size="sm"
+              :disabled="isCreating"
+              @click="beginCreateFile"
+            >
+              新建
+            </UiButton>
           </div>
-          <div class="tvs-new-file__actions">
-            <button
-              type="button"
-              class="btn-success btn-sm"
-              @click="confirmCreateFile"
-            >
-              创建
-            </button>
-            <button
-              type="button"
-              class="btn-secondary btn-sm"
-              @click="cancelCreateFile"
-            >
-              取消
-            </button>
+
+          <div v-if="isCreating" class="tvs-console__section tvs-new-file">
+            <UiField label="新建文件" for-id="tvs-new-file-input" size="sm">
+              <div class="tvs-search-box">
+                <UiInput
+                  id="tvs-new-file-input"
+                  ref="newFileInputRef"
+                  v-model="newFileName"
+                  type="text"
+                  class="tvs-search-input"
+                  placeholder="文件名（自动补 .txt）"
+                  @keydown.enter.prevent="confirmCreateFile"
+                  @keydown.esc.prevent="cancelCreateFile"
+                />
+              </div>
+            </UiField>
+            <div class="tvs-new-file__actions">
+              <UiButton
+                variant="primary"
+                size="sm"
+                block
+                @click="confirmCreateFile"
+              >
+                创建
+              </UiButton>
+              <UiButton
+                variant="outline"
+                size="sm"
+                block
+                @click="cancelCreateFile"
+              >
+                取消
+              </UiButton>
+            </div>
+            <p v-if="createError" class="tvs-new-file__error">{{ createError }}</p>
           </div>
-          <p v-if="createError" class="tvs-new-file__error">{{ createError }}</p>
-        </div>
 
-        <div v-if="loadingFiles" class="tvs-file-loading">
-          <span class="loading-spinner loading-spinner--sm"></span>
-          <p>正在加载文件列表…</p>
-        </div>
-
-        <div v-else-if="files.length === 0" class="tvs-file-empty">
-          <span class="material-symbols-outlined">edit_note</span>
-          <h4>暂无变量文件</h4>
-          <p>点击上方「新建」创建第一个 TVS 变量文件。</p>
-        </div>
-
-        <div v-else-if="filteredFiles.length === 0" class="tvs-file-empty subtle">
-          <p>未找到匹配「{{ searchQuery }}」的文件。</p>
-        </div>
-
-        <ul v-else class="tvs-file-list">
-          <li
-            v-for="file in filteredFiles"
-            :key="file"
-            class="tvs-file-list-item"
+          <UiEmptyState
+            v-if="loadingFiles"
+            title="正在加载文件列表…"
+            description="请稍候，面板正在读取 TVS 变量文件。"
           >
-            <button
-              type="button"
-              :class="['tvs-file-row', { 'is-active': file === selectedFile }]"
-              @click="requestSelectFile(file)"
+            <template #icon>
+              <span class="material-symbols-outlined spinning">progress_activity</span>
+            </template>
+          </UiEmptyState>
+
+          <UiEmptyState
+            v-else-if="files.length === 0"
+            title="暂无变量文件"
+            description="点击上方新建创建第一个 TVS 变量文件。"
+          >
+            <template #icon>
+              <span class="material-symbols-outlined">edit_note</span>
+            </template>
+          </UiEmptyState>
+
+          <UiEmptyState
+            v-else-if="filteredFiles.length === 0"
+            title="未找到匹配文件"
+            :description="`未找到匹配「${searchQuery}」的文件。`"
+          />
+
+          <ul v-else class="tvs-file-list">
+            <li
+              v-for="file in filteredFiles"
+              :key="file"
+              class="tvs-file-list-item"
             >
-              <span class="material-symbols-outlined tvs-file-icon">description</span>
-              <span class="tvs-file-name">{{ file }}</span>
-              <span
-                v-if="file === selectedFile && isDirty"
-                class="tvs-file-dirty"
-                title="有未保存更改"
-                aria-label="有未保存更改"
-              >●</span>
-            </button>
-          </li>
-        </ul>
+              <button
+                type="button"
+                :class="['tvs-file-row', { 'is-active': file === selectedFile }]"
+                @click="requestSelectFile(file)"
+              >
+                <span class="material-symbols-outlined tvs-file-icon">description</span>
+                <span class="tvs-file-name">{{ file }}</span>
+                <span
+                  v-if="file === selectedFile && isDirty"
+                  class="tvs-file-dirty"
+                  title="有未保存更改"
+                  aria-label="有未保存更改"
+                >●</span>
+              </button>
+            </li>
+          </ul>
         </template>
       </aside>
 
@@ -195,72 +212,78 @@
                   <span class="tvs-editor__filename">
                     {{ selectedFile || "未选择文件" }}
                   </span>
-                  <span v-if="isDirty" class="tvs-editor__dirty">未保存</span>
+                  <UiBadge v-if="isDirty" variant="warning">未保存</UiBadge>
                 </div>
               </div>
             </div>
 
             <div class="tvs-editor__actions">
-              <button
-                type="button"
-                class="btn-secondary btn-sm"
+              <UiButton
+                variant="outline"
+                size="sm"
                 :disabled="!isDirty"
                 @click="resetContent"
               >
                 撤销更改
-              </button>
-              <button
-                type="button"
-                class="btn-secondary btn-sm"
+              </UiButton>
+              <UiButton
+                variant="outline"
+                size="sm"
                 :disabled="!selectedFile"
                 @click="copyContent"
               >
                 复制
-              </button>
-              <button
-                type="button"
-                class="btn-danger btn-sm"
+              </UiButton>
+              <UiButton
+                variant="danger"
+                size="sm"
                 :disabled="!selectedFile"
                 @click="deleteFile"
               >
                 删除
-              </button>
-              <button
-                type="button"
-                class="btn-success"
+              </UiButton>
+              <UiButton
+                variant="primary"
                 :disabled="!selectedFile || !isDirty"
                 :title="selectedFile ? '保存 (Ctrl+S)' : ''"
                 @click="saveFile"
               >
                 保存
-              </button>
+              </UiButton>
             </div>
           </div>
 
-          <p
+          <UiBadge
             v-if="statusMessage"
-            :class="['status-message', statusType]"
+            :variant="getStatusVariant(statusType)"
+            class="tvs-status-badge"
             role="status"
             aria-live="polite"
           >
             {{ statusMessage }}
-          </p>
+          </UiBadge>
 
-          <div v-if="!selectedFile" class="tvs-editor__hint">
-            <span class="material-symbols-outlined">arrow_back</span>
-            <h4>未选择文件</h4>
-            <p>从左侧列表选择一个变量文件开始编辑，或新建一个文件。</p>
-          </div>
+          <UiEmptyState
+            v-if="!selectedFile"
+            title="未选择文件"
+            description="从左侧列表选择一个变量文件开始编辑，或新建一个文件。"
+            class="tvs-editor__hint"
+          >
+            <template #icon>
+              <span class="material-symbols-outlined">arrow_back</span>
+            </template>
+          </UiEmptyState>
 
           <div v-else class="tvs-editor__workspace">
-            <textarea
+            <UiTextarea
               id="tvs-file-content-editor"
               v-model="fileContent"
               class="tvs-editor__textarea"
+              resize="none"
               spellcheck="false"
               placeholder="# 注释以 # 开头&#10;KEY=VALUE"
               @keydown="handleEditorKeydown"
-            ></textarea>
+            />
 
             <div class="tvs-editor__footer">
               <span class="tvs-editor__stats">
@@ -278,6 +301,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { tvsApi } from "@/api";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
 import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
@@ -298,7 +328,7 @@ const searchQuery = ref("");
 const isCreating = ref(false);
 const newFileName = ref("");
 const createError = ref("");
-const newFileInputRef = ref<HTMLInputElement | null>(null);
+const newFileInputRef = ref<InstanceType<typeof UiInput> | null>(null);
 
 const statusMessage = ref("");
 const statusType = ref<"info" | "success" | "error">("info");
@@ -348,6 +378,10 @@ function setStatus(message: string, type: "info" | "success" | "error"): void {
       statusMessage.value = "";
     }, STATUS_AUTO_CLEAR_MS);
   }
+}
+
+function getStatusVariant(status: "info" | "success" | "error"): "info" | "success" | "danger" {
+  return status === "error" ? "danger" : status;
 }
 
 function clearStatus(): void {
@@ -592,8 +626,12 @@ onBeforeRouteLeave(async () => {
 }
 
 .tvs-files-editor-page > .description code {
-  padding: 1px 6px;
-  background: var(--tertiary-bg);
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 var(--space-2);
+  background: color-mix(in srgb, var(--primary-text) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: var(--font-size-helper);
@@ -636,7 +674,7 @@ onBeforeRouteLeave(async () => {
   overflow: hidden;
   padding: var(--space-5);
   border-radius: var(--radius-xl);
-  transition: padding 0.2s ease;
+  transition: padding var(--transition-fast);
 }
 
 .tvs-console.is-collapsed {
@@ -678,12 +716,6 @@ onBeforeRouteLeave(async () => {
   font-weight: 500;
 }
 
-.tvs-search-label {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  font-weight: 600;
-}
-
 .tvs-search-box {
   display: flex;
   gap: var(--space-2);
@@ -706,53 +738,10 @@ onBeforeRouteLeave(async () => {
   gap: var(--space-2);
 }
 
-.tvs-new-file__actions > button {
-  flex: 1;
-}
-
 .tvs-new-file__error {
   margin: 0;
   color: var(--danger-text);
   font-size: var(--font-size-helper);
-}
-
-.tvs-file-loading {
-  text-align: center;
-  padding: var(--space-7) var(--space-4);
-  color: var(--secondary-text);
-}
-
-.tvs-file-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-7) var(--space-4);
-  color: var(--secondary-text);
-  text-align: center;
-}
-
-.tvs-file-empty.subtle {
-  padding: var(--space-5) var(--space-4);
-}
-
-.tvs-file-empty .material-symbols-outlined {
-  font-size: var(--font-size-icon-empty);
-  opacity: 0.4;
-  color: var(--highlight-text);
-}
-
-.tvs-file-empty h4 {
-  margin: 0;
-  color: var(--primary-text);
-  font-size: var(--font-size-emphasis);
-}
-
-.tvs-file-empty p {
-  max-width: 45ch;
-  font-size: var(--font-size-body);
-  line-height: 1.6;
-  margin: 0;
 }
 
 .tvs-file-list {
@@ -778,31 +767,27 @@ onBeforeRouteLeave(async () => {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
+  padding: 0 var(--space-3);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--primary-text);
   text-align: left;
   cursor: pointer;
   box-sizing: border-box;
-  min-height: 52px;
+  min-height: 36px;
   transition:
     border-color var(--transition-fast),
-    background var(--transition-fast),
-    transform var(--transition-fast);
+    background-color var(--transition-fast);
 }
 
 .tvs-file-row:hover {
-  border-color: var(--highlight-text);
-  background: var(--info-bg);
-  transform: translateY(-1px);
+  background: var(--accent-bg);
 }
 
 .tvs-file-row.is-active {
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-text) 14%, transparent);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--highlight-text) 20%, transparent);
+  border-color: color-mix(in srgb, var(--highlight-text) 52%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
 }
 
 .tvs-file-icon {
@@ -812,7 +797,7 @@ onBeforeRouteLeave(async () => {
 }
 
 .tvs-file-row.is-active .tvs-file-icon {
-  color: var(--highlight-text);
+  color: color-mix(in srgb, var(--highlight-text) 78%, var(--secondary-text));
 }
 
 .tvs-file-name {
@@ -827,7 +812,6 @@ onBeforeRouteLeave(async () => {
 }
 
 .tvs-file-row.is-active .tvs-file-name {
-  color: var(--highlight-text);
   font-weight: 600;
 }
 
@@ -912,17 +896,6 @@ onBeforeRouteLeave(async () => {
   word-break: break-all;
 }
 
-.tvs-editor__dirty {
-  font-size: var(--font-size-caption);
-  padding: 2px 8px;
-  background: var(--warning-bg);
-  color: var(--warning-text);
-  border: 1px solid var(--warning-border);
-  border-radius: var(--radius-sm);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-
 .tvs-editor__actions {
   display: flex;
   gap: var(--space-2);
@@ -932,33 +905,8 @@ onBeforeRouteLeave(async () => {
 
 .tvs-editor__hint {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
   justify-content: center;
-  gap: var(--space-3);
-  padding: var(--space-9) var(--space-4);
-  color: var(--secondary-text);
-  text-align: center;
   min-height: 0;
-}
-
-.tvs-editor__hint .material-symbols-outlined {
-  font-size: var(--font-size-icon-hero);
-  opacity: 0.35;
-  color: var(--highlight-text);
-}
-
-.tvs-editor__hint h4 {
-  margin: 0;
-  font-size: var(--font-size-emphasis);
-  color: var(--primary-text);
-}
-
-.tvs-editor__hint p {
-  max-width: 45ch;
-  margin: 0;
-  line-height: 1.6;
 }
 
 .tvs-editor__workspace {
@@ -975,24 +923,17 @@ onBeforeRouteLeave(async () => {
   width: 100%;
   height: auto;
   min-height: 0;
-  padding: var(--space-4) var(--space-5);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  color: var(--primary-text);
+}
+
+.tvs-editor__textarea :deep(.ui-textarea) {
+  height: 100%;
+  max-height: none;
+  min-height: 0;
   font-family: var(--font-mono);
   font-size: var(--font-size-body);
   line-height: 1.75;
-  resize: none;
-  box-sizing: border-box;
   tab-size: 4;
-}
-
-.tvs-editor__textarea:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-  border-color: var(--highlight-text);
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  border-radius: var(--radius-md);
 }
 
 .tvs-editor__footer {
@@ -1000,12 +941,12 @@ onBeforeRouteLeave(async () => {
   justify-content: space-between;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
   flex-wrap: wrap;
   border-top: 1px solid var(--border-color);
-  background: var(--surface-overlay-soft);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   border-radius: var(--radius-md);
 }
 
@@ -1042,7 +983,18 @@ onBeforeRouteLeave(async () => {
   .tvs-editor__textarea {
     height: auto;
     min-height: 360px;
+  }
+
+  .tvs-editor__textarea :deep(.ui-textarea) {
+    min-height: 360px;
     resize: vertical;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tvs-console,
+  .tvs-file-row {
+    transition: none;
   }
 }
 
@@ -1056,7 +1008,7 @@ onBeforeRouteLeave(async () => {
     justify-content: stretch;
   }
 
-  .tvs-editor__actions > button {
+  .tvs-editor__actions :deep(.ui-button) {
     flex: 1;
   }
 }

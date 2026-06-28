@@ -1,10 +1,6 @@
 <template>
   <div class="forum-posts-list">
-    <div v-if="posts.length === 0" class="empty-state">
-      <span class="material-symbols-outlined empty-state-icon">forum</span>
-      <p>暂无帖子</p>
-      <p class="empty-hint">当有新帖子发布时，它们将显示在这里</p>
-    </div>
+    <UiEmptyState v-if="posts.length === 0" title="暂无帖子" description="当有新帖子发布时，它们将显示在这里" />
 
     <div
       v-for="post in posts"
@@ -14,7 +10,7 @@
       @click="emit('viewPost', post)"
     >
       <div class="forum-post-header">
-        <span v-if="isPinnedPost(post)" class="pin-badge">置顶</span>
+        <UiBadge v-if="isPinnedPost(post)" variant="info">置顶</UiBadge>
         <span class="post-title" :title="post.title">
           {{ post.title }}
         </span>
@@ -28,23 +24,25 @@
     </div>
 
     <div v-if="totalPages > 1" class="pagination-controls">
-      <button
-        class="btn-secondary btn-sm"
+      <UiButton
+        variant="outline"
+        size="sm"
         :disabled="!hasPrev"
         @click="emit('prevPage')"
       >
-        <span class="material-symbols-outlined">chevron_left</span>
+        <template #leading><span class="material-symbols-outlined">chevron_left</span></template>
         上一页
-      </button>
+      </UiButton>
       <span class="pagination-info">第 {{ currentPage }} / {{ totalPages }} 页</span>
-      <button
-        class="btn-secondary btn-sm"
+      <UiButton
+        variant="outline"
+        size="sm"
         :disabled="!hasNext"
         @click="emit('nextPage')"
       >
         下一页
-        <span class="material-symbols-outlined">chevron_right</span>
-      </button>
+        <template #trailing><span class="material-symbols-outlined">chevron_right</span></template>
+      </UiButton>
     </div>
   </div>
 </template>
@@ -53,6 +51,9 @@
 import { formatDate } from "@/utils";
 import { isPinnedPost } from "@/features/vcp-forum/useVcpForum";
 import type { ForumPost } from "@/features/vcp-forum/types";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 
 defineProps<{
   posts: ForumPost[];
@@ -82,7 +83,7 @@ const emit = defineEmits<{
   border-radius: var(--radius-sm);
   padding: 16px;
   cursor: pointer;
-  transition: background 0.2s ease, transform 0.2s ease;
+  transition: background 0.2s ease;
 }
 
 .forum-post-item {
@@ -91,7 +92,6 @@ const emit = defineEmits<{
 
 .forum-post-item:hover {
   background: var(--accent-bg);
-  transform: translateX(4px);
 }
 
 .forum-post-item.pinned-post {
@@ -119,35 +119,12 @@ const emit = defineEmits<{
   word-break: break-word;
 }
 
-.pin-badge {
-  background: var(--highlight-text);
-  color: var(--on-accent-text);
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: var(--font-size-helper);
-  font-weight: 600;
-}
-
 .forum-post-meta {
   display: flex;
   gap: 16px;
   flex-wrap: wrap;
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
-}
-
-/* .empty-state 已在全局 layout.css 中统一定义 */
-
-.empty-state-icon {
-  font-size: var(--font-size-icon-empty-lg);
-  opacity: 0.3;
-  color: var(--highlight-text);
-}
-
-.empty-hint {
-  font-size: var(--font-size-helper);
-  opacity: 0.7;
-  max-width: 45ch;
 }
 
 .pagination-controls {

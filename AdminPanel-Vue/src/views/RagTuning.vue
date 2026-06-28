@@ -1,5 +1,28 @@
 <template>
   <section class="config-section active-section rag-lab">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiDirtyIndicator
+          label="未保存"
+          :is-dirty="isDirty"
+        />
+        <UiButton
+          variant="secondary"
+          :disabled="!isDirty"
+          @click="resetParams"
+        >
+          重置修改
+        </UiButton>
+        <UiButton
+          type="submit"
+          :form="formId"
+          :disabled="isSaving || !hasParams || !isDirty"
+        >
+          {{ isSaving ? "保存中…" : "保存参数配置" }}
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <header class="rag-lab__hero card">
       <div class="rag-lab__hero-copy">
         <span class="eyebrow rag-lab__eyebrow">Wave RAG Parameter Lab</span>
@@ -39,7 +62,7 @@
         <strong>参数加载失败</strong>
         <p>{{ loadError }}</p>
       </div>
-      <button type="button" class="btn-secondary" @click="loadParams">重新加载</button>
+      <UiButton variant="secondary" @click="loadParams">重新加载</UiButton>
     </div>
 
     <form v-else :id="formId" class="rag-lab__workspace" :class="{ 'is-aside-collapsed': asideCollapsed }" @submit.prevent="saveParams">
@@ -53,7 +76,7 @@
         >
           <header class="group-panel__header">
             <div class="group-panel__header-main">
-              <span class="group-panel__badge">{{ section.meta.badge }}</span>
+              <UiBadge class="group-panel__badge" variant="outline">{{ section.meta.badge }}</UiBadge>
               <div class="group-panel__title-row">
                 <span class="material-symbols-outlined">{{ section.meta.icon }}</span>
                 <div>
@@ -101,15 +124,15 @@
                       </div>
 
                       <div class="param-row__pills">
-                        <span class="mini-pill mini-pill--critical">
+                        <UiBadge :variant="getToneBadgeVariant(entry.meta.tone)">
                           {{ getToneLabel(entry.meta.tone) }}
-                        </span>
-                        <span
+                        </UiBadge>
+                        <UiBadge
                           v-if="entry.changedLeaves > 0"
-                          class="mini-pill mini-pill--changed"
+                          variant="info"
                         >
                           已修改 {{ entry.changedLeaves }}
-                        </span>
+                        </UiBadge>
                       </div>
                     </div>
 
@@ -141,9 +164,9 @@
                     </div>
 
                     <div class="wormhole-launchpad__footer">
-                      <button type="button" class="btn-primary" @click="openWormholeModal">
+                      <UiButton @click="openWormholeModal">
                         打开虫洞控制舱
-                      </button>
+                      </UiButton>
                     </div>
                   </div>
                 </div>
@@ -159,15 +182,15 @@
                       </div>
 
                       <div class="param-row__pills">
-                        <span class="mini-pill mini-pill--critical">
+                        <UiBadge :variant="getToneBadgeVariant(entry.meta.tone)">
                           {{ getToneLabel(entry.meta.tone) }}
-                        </span>
-                        <span
+                        </UiBadge>
+                        <UiBadge
                           v-if="entry.changedLeaves > 0"
-                          class="mini-pill mini-pill--changed"
+                          variant="info"
                         >
                           已修改 {{ entry.changedLeaves }}
-                        </span>
+                        </UiBadge>
                       </div>
                     </div>
 
@@ -210,9 +233,9 @@
                     </div>
 
                     <div class="wormhole-launchpad__footer">
-                      <button type="button" class="btn-primary" @click="openOrderedCooccurrenceModal">
+                      <UiButton @click="openOrderedCooccurrenceModal">
                         打开 V8.2 流形舱
-                      </button>
+                      </UiButton>
                     </div>
                   </div>
                 </div>
@@ -227,15 +250,15 @@
                     </div>
 
                     <div class="param-row__pills">
-                      <span class="mini-pill mini-pill--sensitive">
+                      <UiBadge :variant="getToneBadgeVariant(entry.meta.tone)">
                         {{ getToneLabel(entry.meta.tone) }}
-                      </span>
-                      <span
+                      </UiBadge>
+                      <UiBadge
                         v-if="entry.changedLeaves > 0"
-                        class="mini-pill mini-pill--changed"
+                        variant="info"
                       >
                         已修改 {{ entry.changedLeaves }}
-                      </span>
+                      </UiBadge>
                     </div>
                   </div>
 
@@ -296,7 +319,7 @@
                         :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
                         :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
                       />
-                      <input
+                      <UiInput
                         v-model.number="
                           (section.raw[entry.key] as Record<string, number>)[subKey]
                         "
@@ -309,14 +332,13 @@
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    class="btn-secondary"
+                  <UiButton
+                    variant="secondary"
                     :disabled="entry.changedLeaves === 0"
                     @click="resetGeodesicParams"
                   >
                     恢复测地线参数
-                  </button>
+                  </UiButton>
                 </div>
               </template>
 
@@ -329,21 +351,21 @@
                     </div>
 
                     <div class="param-row__pills">
-                      <span class="mini-pill mini-pill--neutral">
+                      <UiBadge variant="secondary">
                         {{ getKindLabel(entry.kind) }}
-                      </span>
-                      <span
+                      </UiBadge>
+                      <UiBadge
                         v-if="entry.meta.tone"
-                        :class="['mini-pill', `mini-pill--${entry.meta.tone}`]"
+                        :variant="getToneBadgeVariant(entry.meta.tone)"
                       >
                         {{ getToneLabel(entry.meta.tone) }}
-                      </span>
-                      <span
+                      </UiBadge>
+                      <UiBadge
                         v-if="entry.changedLeaves > 0"
-                        class="mini-pill mini-pill--changed"
+                        variant="info"
                       >
                         已修改 {{ entry.changedLeaves }}
-                      </span>
+                      </UiBadge>
                     </div>
                   </div>
 
@@ -365,9 +387,9 @@
                 <div class="param-row__control">
                   <div v-if="entry.kind === 'number'" class="control-shell">
                     <label class="control-shell__label" :for="entry.fieldId">当前数值</label>
-                    <input
+                    <UiInput
                       :id="entry.fieldId"
-                      v-model.number="section.raw[entry.key]"
+                      v-model.number="(section.raw as Record<string, number>)[entry.key]"
                       type="number"
                       :step="getNumberStep(entry.value)"
                     />
@@ -384,7 +406,7 @@
                         class="tuple-field"
                       >
                         <span>{{ getTupleFieldLabel(entry, index) }}</span>
-                        <input
+                        <UiInput
                           v-model.number="(section.raw[entry.key] as number[])[index]"
                           type="number"
                           :step="getNumberStep(itemValue)"
@@ -416,19 +438,16 @@
                           </p>
 
                           <div class="nested-item__meta">
-                            <span
+                            <UiBadge
                               v-if="getNestedMeta(section.name, entry.key, subKey).tone"
-                              :class="[
-                                'mini-pill',
-                                `mini-pill--${getNestedMeta(section.name, entry.key, subKey).tone}`,
-                              ]"
+                              :variant="getToneBadgeVariant(getNestedMeta(section.name, entry.key, subKey).tone)"
                             >
                               {{
                                 getToneLabel(
                                   getNestedMeta(section.name, entry.key, subKey).tone
                                 )
                               }}
-                            </span>
+                            </UiBadge>
                             <span
                               v-if="getNestedMeta(section.name, entry.key, subKey).range"
                               class="nested-item__range"
@@ -450,7 +469,7 @@
                             :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
                             :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
                           />
-                          <input
+                          <UiInput
                             v-model.number="
                               (section.raw[entry.key] as Record<string, number>)[subKey]
                             "
@@ -480,45 +499,33 @@
         >
           <template v-if="asideCollapsed">
             <div class="console-rail">
-              <button
-                type="button"
+              <UiIconButton
                 class="console-rail-toggle"
-                aria-label="展开操作台"
+                label="展开操作台"
                 title="展开操作台"
                 @click="toggleAside"
               >
                 <span class="material-symbols-outlined">right_panel_open</span>
-              </button>
+              </UiIconButton>
               <div class="console-rail-divider"></div>
-              <button
-                type="submit"
-                class="console-rail-icon"
-                aria-label="保存参数配置"
-                title="保存参数配置"
-                :disabled="isSaving || !hasParams || !isDirty"
-              >
-                <span class="material-symbols-outlined">save</span>
-              </button>
-              <button
-                type="button"
+              <UiIconButton
                 class="console-rail-icon console-rail-icon--simulation"
-                aria-label="打开浪潮语义沙盘"
+                label="打开浪潮语义沙盘"
                 title="打开浪潮语义沙盘"
                 @click="openSemanticSimulation"
               >
                 <span class="material-symbols-outlined">travel_explore</span>
-              </button>
-              <button
+              </UiIconButton>
+              <UiIconButton
                 v-for="section in groupSections.slice(0, 8)"
                 :key="`${section.anchor}-rail`"
-                type="button"
                 class="console-rail-icon"
                 :title="section.meta.title"
-                :aria-label="`跳转到 ${section.meta.title}`"
+                :label="`跳转到 ${section.meta.title}`"
                 @click="scrollToGroup(section.anchor)"
               >
                 <span class="material-symbols-outlined">tune</span>
-              </button>
+              </UiIconButton>
             </div>
           </template>
           <template v-else>
@@ -526,37 +533,18 @@
             <div class="rag-console__header">
               <div>
                 <span class="rag-console__label">操作台</span>
-                <h3>保存与回退</h3>
-                <p>建议一次只改一组高敏参数，并在每次保存后观察实际召回结果。</p>
+                <h3>参数预设与沙盘</h3>
+                <p>保存与回退已统一放在页面标题右侧，这里保留预设管理、模块跳转和语义沙盘。</p>
               </div>
-              <button
-                type="button"
+              <UiIconButton
                 class="console-rail-toggle"
-                aria-label="折叠操作台"
+                label="折叠操作台"
                 title="折叠操作台"
                 @click="toggleAside"
               >
                 <span class="material-symbols-outlined">right_panel_close</span>
-              </button>
+              </UiIconButton>
             </div>
-          </div>
-
-          <div class="rag-console__actions">
-            <button
-              type="submit"
-              class="btn-primary"
-              :disabled="isSaving || !hasParams || !isDirty"
-            >
-              {{ isSaving ? "保存中…" : "保存参数配置" }}
-            </button>
-            <button
-              type="button"
-              class="btn-secondary"
-              :disabled="!isDirty"
-              @click="resetParams"
-            >
-              重置未保存修改
-            </button>
           </div>
 
           <div class="rag-console__section rag-console__section--themes">
@@ -565,19 +553,20 @@
                 <span class="rag-console__label">参数预设</span>
                 <p>以 <code>rag_params_模型名.json</code> 形式保存不同向量模型的调参方案。</p>
               </div>
-              <button
-                type="button"
-                class="btn-secondary rag-console__mini-action"
+              <UiButton
+                variant="secondary"
+                size="sm"
+                class="rag-console__mini-action"
                 :disabled="isThemeLoading"
                 @click="loadThemes"
               >
                 {{ isThemeLoading ? "刷新中…" : "刷新" }}
-              </button>
+              </UiButton>
             </div>
 
             <label class="theme-field">
               <span>选择预设</span>
-              <select v-model="selectedThemeName" :disabled="isThemeLoading || isThemeSaving">
+              <UiSelect v-model="selectedThemeName" :disabled="isThemeLoading || isThemeSaving">
                 <option value="">未选择预设</option>
                 <option
                   v-for="theme in ragParamThemes"
@@ -586,39 +575,35 @@
                 >
                   {{ theme.name }}
                 </option>
-              </select>
+              </UiSelect>
             </label>
 
             <div class="rag-console__actions rag-console__theme-actions">
-              <button
-                type="button"
-                class="btn-secondary"
+              <UiButton
+                variant="secondary"
                 :disabled="!selectedThemeName || isThemeLoading || isThemeSaving"
                 @click="openSelectedTheme"
               >
                 打开预设调参
-              </button>
-              <button
-                type="button"
-                class="btn-secondary"
+              </UiButton>
+              <UiButton
+                variant="secondary"
                 :disabled="!selectedThemeName || isThemeLoading || isThemeSaving || !hasParams"
                 @click="saveCurrentToSelectedTheme"
               >
                 保存到所选预设
-              </button>
-              <button
-                type="button"
-                class="btn-primary"
+              </UiButton>
+              <UiButton
                 :disabled="!selectedThemeName || isThemeLoading || isThemeSaving"
                 @click="applySelectedTheme"
               >
                 应用所选预设
-              </button>
+              </UiButton>
             </div>
 
             <label class="theme-field">
               <span>新预设名称 / 向量模型名</span>
-              <input
+              <UiInput
                 v-model.trim="newThemeName"
                 type="text"
                 placeholder="例如 gemini-embedding-2-preview"
@@ -626,24 +611,24 @@
               />
             </label>
 
-            <button
-              type="button"
-              class="btn-primary"
+            <UiButton
               :disabled="!canSaveNewTheme"
+              block
               @click="saveCurrentAsNewTheme"
             >
               {{ isThemeSaving ? "保存预设中…" : "保存当前为新预设" }}
-            </button>
+            </UiButton>
           </div>
 
-          <p
+          <UiBadge
             v-if="statusMessage"
-            :class="['rag-console__status', `rag-console__status--${statusType}`]"
+            class="rag-console__status"
+            :variant="statusBadgeVariant"
             role="status"
             aria-live="polite"
           >
             {{ statusMessage }}
-          </p>
+          </UiBadge>
 
           <div class="rag-console__section rag-console__section--simulation">
             <span class="rag-console__label">语义沙盘</span>
@@ -655,25 +640,25 @@
                 <strong>浪潮语义地形模拟器</strong>
                 <p>在子模态窗中预览 KNN 击中、顺逆流、虫洞跃迁与测地线能量场。</p>
               </div>
-              <button type="button" class="btn-primary" @click="openSemanticSimulation">
+              <UiButton @click="openSemanticSimulation">
                 打开沙盘
-              </button>
+              </UiButton>
             </div>
           </div>
 
           <div class="rag-console__section">
             <span class="rag-console__label">快速跳转</span>
             <div class="rag-console__jump-list">
-              <button
+              <UiButton
                 v-for="section in groupSections"
                 :key="`${section.name}-jump`"
-                type="button"
+                variant="ghost"
                 class="rag-console__jump-btn"
                 @click="scrollToGroup(section.anchor)"
               >
                 <span>{{ section.meta.title }}</span>
                 <small>{{ section.changedLeaves }}/{{ section.totalLeaves }}</small>
-              </button>
+              </UiButton>
             </div>
           </div>
 
@@ -746,12 +731,12 @@
               </p>
             </div>
             <div class="semantic-sim-modal__actions">
-              <button type="button" class="btn-secondary" @click="postSemanticSimulationParams">
+              <UiButton variant="secondary" @click="postSemanticSimulationParams">
                 同步当前参数
-              </button>
-              <button type="button" class="btn-secondary" @click="closeSemanticSimulation">
+              </UiButton>
+              <UiButton variant="secondary" @click="closeSemanticSimulation">
                 关闭沙盘
-              </button>
+              </UiButton>
             </div>
           </header>
           <iframe
@@ -778,6 +763,13 @@ import {
 } from "@/api";
 import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { useAppStore } from "@/stores/app";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiDirtyIndicator from "@/components/ui/UiDirtyIndicator.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
 import OrderedCooccurrenceModal from "@/features/rag-tuning/OrderedCooccurrenceModal.vue";
 import WormholeRoutingModal from "@/features/rag-tuning/WormholeRoutingModal.vue";
 import {
@@ -792,6 +784,7 @@ import {
   getTupleLabel,
   type GroupMeta,
   type ParamMeta,
+  type ParamTone,
   type OrderedCooccurrencePrimaryKey,
   type WormholePrimaryKey,
 } from "@/features/rag-tuning/metadata";
@@ -800,6 +793,7 @@ import { showMessage } from "@/utils";
 type NumericRecord = Record<string, number>;
 type ParamEntryKind = "number" | "tuple" | "nested";
 type StatusType = "info" | "success" | "error";
+type BadgeVariant = "default" | "secondary" | "success" | "warning" | "danger" | "info" | "outline";
 
 interface ParamEntryBase {
   key: string;
@@ -1011,6 +1005,11 @@ const changedLeafCount = computed(() =>
 
 const isDirty = computed(() => changedLeafCount.value > 0);
 const hasParams = computed(() => groupSections.value.length > 0);
+const statusBadgeVariant = computed<BadgeVariant>(() => {
+  if (statusType.value === "success") return "success";
+  if (statusType.value === "error") return "danger";
+  return "info";
+});
 
 const canSaveNewTheme = computed(
   () => hasParams.value && newThemeName.value.trim().length > 0 && !isThemeSaving.value
@@ -1088,6 +1087,12 @@ function getKindLabel(kind: ParamEntryKind): string {
     default:
       return "参数";
   }
+}
+
+function getToneBadgeVariant(tone?: ParamTone): BadgeVariant {
+  if (tone === "critical") return "danger";
+  if (tone === "sensitive") return "warning";
+  return "secondary";
 }
 
 function formatNumber(value: number | undefined): string {
@@ -1620,10 +1625,11 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-4);
-  border: 1px solid var(--border-color);
+  min-height: 72px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  background: transparent;
 }
 
 .hero-stat--warning {
@@ -1715,14 +1721,7 @@ onBeforeUnmount(() => {
 }
 
 .group-panel__badge {
-  display: inline-flex;
   width: fit-content;
-  padding: 5px var(--space-3);
-  border-radius: var(--radius-full);
-  background: var(--surface-overlay-strong);
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
 }
 
 .group-panel__title-row {
@@ -1766,9 +1765,11 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--space-1);
   justify-content: center;
-  padding: 14px var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  min-height: 64px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .group-panel__metric span {
@@ -1793,7 +1794,7 @@ onBeforeUnmount(() => {
 }
 
 .param-row--changed {
-  background: var(--info-bg);
+  background: color-mix(in srgb, var(--highlight-text) 4%, transparent);
 }
 
 .param-row__copy {
@@ -1839,9 +1840,11 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-2);
   width: fit-content;
-  padding: 7px var(--space-3);
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
   border-radius: var(--radius-full);
-  background: var(--surface-overlay-soft);
+  background: transparent;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
 }
@@ -1874,8 +1877,9 @@ onBeforeUnmount(() => {
   gap: var(--space-3);
   width: 100%;
   padding: var(--space-4);
-  border-radius: var(--radius-xl);
-  background: var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .control-shell__label,
@@ -1885,16 +1889,9 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-helper);
 }
 
-.control-shell input,
-.tuple-field input,
+.control-shell :deep(.ui-input),
+.tuple-field :deep(.ui-input),
 .nested-item__number {
-  width: 100%;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--input-bg);
-  color: var(--primary-text);
   font-family: "Consolas", "Monaco", monospace;
 }
 
@@ -1929,10 +1926,11 @@ onBeforeUnmount(() => {
 .nested-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 160px;
-  gap: 14px;
-  padding: 14px;
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-strong);
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .nested-item__copy {
@@ -1975,9 +1973,11 @@ onBeforeUnmount(() => {
 .nested-item__range {
   display: inline-flex;
   align-items: center;
-  padding: 5px 10px;
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
   border-radius: var(--radius-full);
-  background: var(--surface-overlay);
+  background: transparent;
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
 }
@@ -2034,9 +2034,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   width: 100%;
   padding: var(--space-4);
-  border-radius: var(--radius-xl);
-  background: var(--surface-overlay-soft);
-  border: 1px solid var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .wormhole-launchpad__stats {
@@ -2049,9 +2049,11 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay);
+  min-height: 64px;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .wormhole-launchpad__stat span {
@@ -2071,17 +2073,17 @@ onBeforeUnmount(() => {
   gap: 0;
 }
 
-.wormhole-launchpad__footer .btn-primary,
-.wormhole-launchpad__control .btn-primary {
+.wormhole-launchpad__footer :deep(.ui-button),
+.wormhole-launchpad__control :deep(.ui-button) {
   width: 100%;
   justify-content: center;
 }
 
 .ordered-launchpad__control {
-  border-color: color-mix(in srgb, var(--highlight-text) 20%, var(--border-color));
+  border-color: color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
   background:
-    radial-gradient(circle at 16% 0%, color-mix(in srgb, var(--highlight-text) 12%, transparent), transparent 42%),
-    var(--surface-overlay-soft);
+    radial-gradient(circle at 16% 0%, color-mix(in srgb, var(--highlight-text) 8%, transparent), transparent 42%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .ordered-launchpad__axis {
@@ -2095,9 +2097,11 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay);
+  min-height: 56px;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .ordered-launchpad__axis-card span {
@@ -2122,19 +2126,20 @@ onBeforeUnmount(() => {
   gap: var(--space-4);
   width: 100%;
   padding: var(--space-4);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 22%, var(--border-color));
-  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--highlight-text) 14%, transparent), transparent 42%),
-    var(--surface-overlay-soft);
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--highlight-text) 8%, transparent), transparent 42%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .geodesic-meter {
   display: grid;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .geodesic-meter__label-row {
@@ -2168,11 +2173,12 @@ onBeforeUnmount(() => {
 .geodesic-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 170px;
-  gap: var(--space-4);
+  gap: var(--space-3);
   align-items: center;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .geodesic-field__copy {
@@ -2209,9 +2215,10 @@ onBeforeUnmount(() => {
 
 .geodesic-field__control input[type="number"] {
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: var(--radius-sm);
   background: var(--input-bg);
   color: var(--primary-text);
   font-family: "Consolas", "Monaco", monospace;
@@ -2293,28 +2300,8 @@ onBeforeUnmount(() => {
 }
 
 .rag-console__status {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  border: 1px solid transparent;
-  font-size: var(--font-size-body);
-}
-
-.rag-console__status--info {
-  background: var(--info-bg);
-  border-color: var(--info-border);
-}
-
-.rag-console__status--success {
-  background: var(--success-bg);
-  border-color: var(--success-border);
-  color: var(--success-text);
-}
-
-.rag-console__status--error {
-  background: var(--danger-bg);
-  border-color: var(--danger-border);
-  color: var(--danger-text);
+  max-width: 100%;
+  white-space: normal;
 }
 
 .rag-console__themes-header {
@@ -2330,8 +2317,6 @@ onBeforeUnmount(() => {
 
 .rag-console__mini-action {
   flex: 0 0 auto;
-  padding: 7px 10px;
-  font-size: var(--font-size-helper);
 }
 
 .theme-field {
@@ -2341,55 +2326,32 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-helper);
 }
 
-.theme-field input,
-.theme-field select {
-  width: 100%;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--input-bg);
-  color: var(--primary-text);
-}
-
 .rag-console__theme-actions {
   grid-template-columns: 1fr;
 }
 
 .rag-console__section--themes {
   padding: var(--space-4);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 20%, var(--border-color));
-  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--highlight-text) 10%, transparent), transparent 46%),
-    var(--surface-overlay-soft);
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--highlight-text) 6%, transparent), transparent 46%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .rag-console__jump-btn {
+  width: 100%;
+  border-color: transparent;
+  color: var(--primary-text);
+  text-align: left;
+}
+
+.rag-console__jump-btn :deep(.ui-button__content) {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
   width: 100%;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
-  color: var(--primary-text);
-  cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
-  text-align: left;
-}
-
-.rag-console__jump-btn:hover {
-  border-color: var(--highlight-text);
-  background: var(--info-bg);
-  transform: translateY(-1px);
-}
-
-.rag-console__jump-btn:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
 }
 
 .rag-console__jump-btn small,
@@ -2414,11 +2376,11 @@ onBeforeUnmount(() => {
   display: grid;
   gap: var(--space-3);
   padding: var(--space-4);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 24%, var(--border-color));
-  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 14% 0%, color-mix(in srgb, var(--highlight-text) 18%, transparent), transparent 42%),
-    linear-gradient(135deg, var(--surface-overlay-soft), var(--surface-overlay));
+    radial-gradient(circle at 14% 0%, color-mix(in srgb, var(--highlight-text) 10%, transparent), transparent 42%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .semantic-sim-card::after {
@@ -2438,12 +2400,11 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--highlight-text) 14%, transparent);
   color: var(--highlight-text);
-  box-shadow: 0 0 28px color-mix(in srgb, var(--highlight-text) 20%, transparent);
 }
 
 .semantic-sim-card__copy {
@@ -2463,7 +2424,7 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
-.semantic-sim-card .btn-primary {
+.semantic-sim-card :deep(.ui-button) {
   position: relative;
   z-index: 1;
   justify-content: center;

@@ -1,6 +1,6 @@
 <template>
   <button
-    type="button"
+    :type="type"
     class="ui-icon-button"
     :class="[`ui-icon-button--${size}`, { 'ui-icon-button--active': active }]"
     :disabled="disabled"
@@ -20,6 +20,7 @@ withDefaults(
     title?: string;
     disabled?: boolean;
     size?: "sm" | "md";
+    type?: "button" | "submit" | "reset";
     active?: boolean;
     ariaExpanded?: boolean;
     ariaHaspopup?: "true" | "false" | "menu" | "dialog" | "listbox";
@@ -28,6 +29,7 @@ withDefaults(
     title: undefined,
     disabled: false,
     size: "md",
+    type: "button",
     active: false,
     ariaExpanded: undefined,
     ariaHaspopup: undefined,

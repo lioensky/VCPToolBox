@@ -6,62 +6,67 @@
     </p>
 
     <div id="thinking-chains-editor-controls" class="form-actions">
-      <button type="button" class="btn-primary" @click="saveThinkingChains">
+      <UiButton variant="primary" @click="saveThinkingChains">
         保存所有更改
-      </button>
-      <button type="button" class="btn-secondary" @click="addThinkingChain">
+      </UiButton>
+      <UiButton variant="outline" @click="addThinkingChain">
         添加新主题
-      </button>
-      <span v-if="statusMessage" :class="['status-message', statusType]">
+      </UiButton>
+      <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
         {{ statusMessage }}
-      </span>
+      </UiBadge>
     </div>
 
     <div id="thinking-chains-container" class="thinking-chains-layout">
       <div class="thinking-chains-editor">
         <h3>思考主题列表</h3>
 
-        <div
+        <UiCard
           v-for="(chain, index) in thinkingChains"
           :key="chain.uiId"
+          size="sm"
+          variant="subtle"
           :class="[
             'thinking-chain-item',
-            'card',
             { 'thinking-chain-item--active': index === pickerChainIndex },
           ]"
         >
           <details open>
             <summary class="chain-header">
               <span class="theme-name">主题：{{ chain.theme || '未命名主题' }}</span>
-              <button
-                type="button"
-                class="btn-danger btn-sm"
+              <UiButton
+                variant="danger"
+                size="sm"
                 @click.stop.prevent="removeChain(index)"
               >
                 删除
-              </button>
+              </UiButton>
             </summary>
 
             <div class="chain-content">
-              <div class="form-group theme-editor">
-                <label :for="`thinking-theme-${index}`">主题名称</label>
-                <input
+              <UiField
+                class="theme-editor"
+                label="主题名称"
+                :for-id="`thinking-theme-${index}`"
+                size="sm"
+              >
+                <UiInput
                   :id="`thinking-theme-${index}`"
                   v-model.trim="chain.theme"
                   type="text"
                   placeholder="请输入主题名称"
                   @click.stop
                 />
-              </div>
+              </UiField>
 
               <div class="cluster-picker-entry">
-                <button
-                  type="button"
-                  class="btn-secondary btn-sm"
+                <UiButton
+                  variant="outline"
+                  size="sm"
                   @click="openClusterPicker(index)"
                 >
                   添加思维模块
-                </button>
+                </UiButton>
                 <span class="cluster-picker-entry-tip">点击模块即可勾选，支持多选后批量加入当前主题</span>
               </div>
 
@@ -100,7 +105,7 @@
                     <span class="cluster-name">{{ cluster }}</span>
                     <label class="cluster-k-control" :for="`cluster-k-value-${index}-${cluster}`">
                       <span class="cluster-k-label">K 值</span>
-                      <input
+                      <UiInput
                         :id="`cluster-k-value-${index}-${cluster}`"
                         type="number"
                         min="1"
@@ -113,13 +118,13 @@
                       />
                     </label>
                   </div>
-                  <button
-                    type="button"
-                    class="btn-danger btn-sm"
+                  <UiButton
+                    variant="danger"
+                    size="sm"
                     @click="removeClusterByName(index, cluster)"
                   >
                     移除
-                  </button>
+                  </UiButton>
                 </li>
 
                 <li
@@ -135,12 +140,16 @@
               </TransitionGroup>
             </div>
           </details>
-        </div>
+        </UiCard>
       </div>
 
-      <div class="available-clusters-panel card">
-        <h3>可用的思维簇模块</h3>
-        <p class="description">将模块从这里拖拽到左侧的主题列表中。</p>
+      <UiCard
+        class="available-clusters-panel"
+        title="可用的思维簇模块"
+        description="将模块从这里拖拽到左侧的主题列表中。"
+        size="sm"
+        variant="subtle"
+      >
         <ul class="draggable-list available-clusters-list">
           <li
             v-for="cluster in availableClusters"
@@ -162,7 +171,7 @@
             未找到可用的思维簇模块
           </li>
         </ul>
-      </div>
+      </UiCard>
     </div>
 
     <BaseModal
@@ -181,27 +190,27 @@
             当前主题：{{ pickerChain?.theme || "未命名主题" }}
           </p>
         </div>
-        <button
-          type="button"
-          class="btn-danger btn-sm"
+        <UiButton
+          variant="ghost"
+          size="sm"
           @click="closeClusterPicker"
         >
           关闭
-        </button>
+        </UiButton>
       </header>
 
       <div class="cluster-picker-toolbar">
-        <button type="button" class="btn-secondary btn-sm" @click="selectAllPickerClusters">
+        <UiButton variant="outline" size="sm" @click="selectAllPickerClusters">
           全选可用
-        </button>
-        <button
-          type="button"
-          class="btn-secondary btn-sm"
+        </UiButton>
+        <UiButton
+          variant="outline"
+          size="sm"
           :disabled="pendingClusterSelection.length === 0"
           @click="clearPickerSelection"
         >
           清空选择
-        </button>
+        </UiButton>
       </div>
 
       <ul class="cluster-picker-list">
@@ -235,7 +244,7 @@
               </span>
             </span>
             <span class="cluster-picker-option-label">{{ cluster.name }}</span>
-            <span v-if="cluster.disabled" class="cluster-picker-badge">已在主题中</span>
+            <UiBadge v-if="cluster.disabled" class="cluster-picker-badge" variant="warning">已在主题中</UiBadge>
           </button>
         </li>
 
@@ -247,17 +256,16 @@
       <footer class="cluster-picker-footer">
         <span class="cluster-picker-count">已选 {{ pendingClusterSelection.length }} 项</span>
         <div class="cluster-picker-footer-actions">
-          <button type="button" class="btn-secondary" @click="closeClusterPicker">
+          <UiButton variant="outline" @click="closeClusterPicker">
             取消
-          </button>
-          <button
-            type="button"
-            class="btn-primary"
+          </UiButton>
+          <UiButton
+            variant="primary"
             :disabled="!canConfirmPicker"
             @click="confirmAddClusters"
           >
             添加选中项
-          </button>
+          </UiButton>
         </div>
       </footer>
           </div>
@@ -283,6 +291,11 @@ import { computed, ref } from "vue";
 import { useThinkingChainsEditor } from "@/features/thinking-chains-editor/useThinkingChainsEditor";
 import BaseModal from "@/components/ui/BaseModal.vue";
 import DragHandle from "@/components/ui/DragHandle.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
 
 const {
   thinkingChains,
@@ -316,6 +329,9 @@ const pickerChainIndex = ref<number | null>(null);
 const pendingClusterSelection = ref<string[]>([]);
 
 const pickerSelectionSet = computed(() => new Set(pendingClusterSelection.value));
+const statusBadgeVariant = computed(() =>
+  statusType.value === "error" ? "danger" : statusType.value
+);
 const pickerSelectionOrderMap = computed(() => {
   const selectionOrderMap = new Map<string, number>();
   pendingClusterSelection.value.forEach((clusterName, index) => {
@@ -415,13 +431,13 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 .thinking-chains-layout {
   display: grid;
   grid-template-columns: 1fr 300px;
-  gap: 24px;
+  gap: var(--space-4);
 }
 
 .thinking-chains-editor {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-3);
 }
 
 .thinking-chains-editor > h3 {
@@ -430,16 +446,12 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .thinking-chain-item {
-  padding: 16px;
-  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.2s ease, background 0.2s ease;
 }
 
 .thinking-chain-item--active {
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-text) 10%, var(--secondary-bg));
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--highlight-text) 34%, transparent),
-    var(--shadow-md);
+  border-color: color-mix(in srgb, var(--highlight-text) 52%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 6%, transparent);
 }
 
 .thinking-chain-item--active .theme-name {
@@ -450,7 +462,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   cursor: pointer;
   user-select: none;
 }
@@ -463,8 +475,8 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 .chain-content {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  margin-top: 16px;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
 }
 
 .theme-editor {
@@ -475,7 +487,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   flex-wrap: wrap;
 }
 
@@ -486,16 +498,17 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 
 .draggable-list {
   list-style: none;
-  padding: 8px;
+  padding: var(--space-2);
   margin: 0;
-  min-height: 60px;
-  border: 2px dashed var(--border-color);
+  min-height: 56px;
+  border: 1px dashed color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: var(--radius-md);
-  background: var(--secondary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .draggable-list--active-target {
-  border-color: var(--highlight-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 62%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 5%, transparent);
 }
 
 .chain-item {
@@ -503,16 +516,17 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 12px;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   margin-bottom: var(--space-2);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
+  min-height: 40px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-md);
   will-change: transform;
   transition:
     border-color 0.2s ease,
-    box-shadow 0.2s ease,
+    background-color 0.2s ease,
     opacity 0.18s ease,
     filter 0.18s ease;
 }
@@ -522,8 +536,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .chain-item:hover {
-  border-color: var(--highlight-text);
-  box-shadow: var(--shadow-md);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .chain-item--dragging {
@@ -557,7 +570,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .cluster-name {
@@ -568,11 +581,12 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 .cluster-k-control {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px 6px 10px;
-  border: 1px solid var(--border-color);
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+  min-height: 28px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: var(--radius-sm);
-  background: var(--input-bg);
+  background: color-mix(in srgb, var(--input-bg) 62%, transparent);
   flex-shrink: 0;
 }
 
@@ -585,19 +599,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 
 .cluster-k-input {
   width: 56px;
-  padding: 4px 8px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
   text-align: center;
-}
-
-.cluster-k-input:focus {
-  outline: none;
-  border-color: var(--highlight-text);
-  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .chain-item--available {
@@ -605,7 +607,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .drop-placeholder {
-  padding: 20px;
+  padding: var(--space-4);
   text-align: center;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
@@ -619,24 +621,12 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   height: fit-content;
 }
 
-.available-clusters-panel > h3 {
-  margin: 0 0 8px;
-  font-size: var(--font-size-emphasis);
-  color: var(--primary-text);
-}
-
-.available-clusters-panel > .description {
-  margin: 0 0 16px;
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-}
-
 .available-clusters-list .chain-item {
   cursor: grab;
 }
 
 .no-clusters {
-  padding: 20px;
+  padding: var(--space-4);
   text-align: center;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
@@ -704,14 +694,8 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 
 .cluster-picker-overlay {
   z-index: var(--z-index-modal);
-  padding: 24px;
-  background:
-    radial-gradient(
-      circle at top,
-      color-mix(in srgb, var(--highlight-text) 18%, transparent),
-      transparent 40%
-    ),
-    var(--overlay-backdrop-strong);
+  padding: var(--space-6);
+  background: var(--overlay-backdrop-strong);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
 }
@@ -722,15 +706,9 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border-color);
-  border-radius: 24px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  background:
-    linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--primary-bg) 86%, var(--surface-overlay-strong)),
-      color-mix(in srgb, var(--secondary-bg) 90%, var(--primary-bg))
-    ),
-    var(--secondary-bg);
+  background: var(--secondary-bg);
   box-shadow: var(--overlay-panel-shadow);
 }
 
@@ -738,10 +716,10 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  padding: 22px 24px 18px;
+  gap: var(--space-3);
+  padding: var(--space-4);
   border-bottom: 1px solid var(--border-color);
-  background: linear-gradient(180deg, var(--surface-overlay-soft), transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .cluster-picker-header h3 {
@@ -755,18 +733,18 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 .cluster-picker-toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
-  padding: 14px 24px 0;
+  padding: var(--space-3) var(--space-4) 0;
 }
 
 .cluster-picker-list {
   list-style: none;
   margin: 0;
-  padding: 16px 24px;
+  padding: var(--space-3) var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   overflow: auto;
 }
 
@@ -779,18 +757,18 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--input-bg) 90%, transparent);
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  min-height: 36px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--primary-text);
   font-weight: 600;
   text-align: left;
   cursor: pointer;
   transition:
     border-color 0.2s ease,
-    box-shadow 0.2s ease,
     background-color 0.2s ease;
 }
 
@@ -800,13 +778,12 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .cluster-picker-option:hover {
-  border-color: var(--highlight-text);
-  box-shadow: var(--shadow-md);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .cluster-picker-option--selected {
-  border-color: color-mix(in srgb, var(--highlight-text) 78%, var(--border-color));
-  background: color-mix(in srgb, var(--highlight-text) 12%, var(--input-bg));
+  border-color: color-mix(in srgb, var(--highlight-text) 62%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
 }
 
 .cluster-picker-check {
@@ -826,26 +803,18 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .cluster-picker-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--warning-color) 14%, transparent);
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 600;
+  justify-self: flex-end;
 }
 
 .cluster-picker-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   flex-wrap: wrap;
-  padding: 16px 24px 20px;
+  padding: var(--space-3) var(--space-4) var(--space-4);
   border-top: 1px solid var(--border-color);
-  background: linear-gradient(0deg, var(--surface-overlay-soft), transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .cluster-picker-count {
@@ -856,7 +825,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 .cluster-picker-footer-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .thinking-chain-drag-ghost {
@@ -871,7 +840,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   flex-direction: column;
   justify-content: center;
   min-height: 100%;
-  padding: 16px;
+  padding: var(--space-3);
   border: 1px solid color-mix(in srgb, var(--highlight-text) 35%, var(--border-color));
   border-radius: var(--radius-md);
   background: var(--secondary-bg);
@@ -929,7 +898,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   }
 
   .cluster-content,
-  .chain-item .btn-danger {
+  .chain-item :deep(.ui-button) {
     grid-column: 1 / -1;
   }
 
@@ -939,7 +908,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   }
 
   .cluster-k-control,
-  .chain-item .btn-danger {
+  .chain-item :deep(.ui-button) {
     width: 100%;
   }
 

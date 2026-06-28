@@ -1,82 +1,101 @@
 <template>
   <section class="config-section active-section media-cache-page">
-    <div class="page-header">
-      <div>
-        <p class="description">编辑多媒体缓存记录，支持搜索、分页、重新识别与预览。</p>
-      </div>
-      <div class="header-actions">
-        <button
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton
           v-if="isDev"
-          class="btn-secondary"
+          variant="outline"
           type="button"
           @click="loadTestData"
           :disabled="isLoading"
         >
           加载测试数据
-        </button>
-        <button class="btn-secondary" type="button" @click="openMultiModalConfigModal" :disabled="isMultiModalConfigLoading">
+        </UiButton>
+        <UiButton variant="outline" type="button" @click="openMultiModalConfigModal" :disabled="isMultiModalConfigLoading">
           多模态配置
-        </button>
-        <button class="btn-secondary" type="button" @click="refreshCurrentPage" :disabled="isLoading">
+        </UiButton>
+        <UiButton variant="outline" type="button" @click="refreshCurrentPage" :disabled="isLoading">
           刷新
-        </button>
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
+    <div class="page-header">
+      <div>
+        <p class="description">编辑多媒体缓存记录，支持搜索、分页、重新识别与预览。</p>
       </div>
     </div>
 
     <div class="toolbar">
       <div class="search-box">
-        <input
+        <UiInput
           v-model.trim="searchInput"
           type="search"
           placeholder="搜索媒体描述…"
           :disabled="isLoading"
           @keydown.enter.prevent="applySearch"
-        >
-        <button class="btn-secondary" type="button" @click="applySearch" :disabled="isLoading">
+        />
+        <UiButton variant="outline" type="button" @click="applySearch" :disabled="isLoading">
           搜索
-        </button>
+        </UiButton>
       </div>
 
       <div class="pagination-controls">
-        <button class="btn-secondary" type="button" @click="goToPreviousPage" :disabled="isLoading || currentPage <= 1">
+        <UiButton variant="outline" type="button" @click="goToPreviousPage" :disabled="isLoading || currentPage <= 1">
           上一页
-        </button>
+        </UiButton>
         <span class="pagination-summary">{{ paginationSummary }}</span>
-        <button
-          class="btn-secondary"
+        <UiButton
+          variant="outline"
           type="button"
           @click="goToNextPage"
           :disabled="isLoading || currentPage >= totalPages"
         >
           下一页
-        </button>
+        </UiButton>
       </div>
     </div>
 
-    <p v-if="isLoading" class="status-tip">正在加载多媒体缓存数据…</p>
-    <p v-else-if="mediaItems.length === 0" class="status-tip">{{ emptyMessage }}</p>
+    <UiEmptyState
+      v-if="isLoading"
+      title="正在加载多媒体缓存数据…"
+      description="请稍候，面板正在同步缓存索引。"
+    >
+      <template #icon>
+        <span class="material-symbols-outlined spinning">progress_activity</span>
+      </template>
+    </UiEmptyState>
+    <UiEmptyState
+      v-else-if="mediaItems.length === 0"
+      title="暂无多媒体缓存"
+      :description="emptyMessage"
+    >
+      <template #icon>
+        <span class="material-symbols-outlined">perm_media</span>
+      </template>
+    </UiEmptyState>
 
     <div v-else class="media-grid">
-      <article v-for="item in mediaItems" :key="item.hash" class="media-card">
+      <UiCard v-for="item in mediaItems" :key="item.hash" class="media-card" size="sm" variant="flat">
         <div class="card-actions">
-          <button
-            class="icon-btn reidentify"
+          <UiIconButton
+            class="reidentify"
             type="button"
             :disabled="isItemBusy(item)"
-            :aria-label="item.isReidentifying ? '正在重新识别' : '重新识别媒体描述'"
+            :label="item.isReidentifying ? '正在重新识别' : '重新识别媒体描述'"
             @click="reidentifyItem(item)"
           >
-            {{ item.isReidentifying ? '…' : '↻' }}
-          </button>
-          <button
-            class="icon-btn delete"
+            <span class="material-symbols-outlined">{{ item.isReidentifying ? 'progress_activity' : 'refresh' }}</span>
+          </UiIconButton>
+          <UiIconButton
+            class="delete"
             type="button"
             :disabled="isItemBusy(item)"
-            aria-label="删除条目"
+            label="删除条目"
             @click="removeItem(item)"
           >
-            {{ item.isDeleting ? '…' : '×' }}
-          </button>
+            <span class="material-symbols-outlined">{{ item.isDeleting ? 'progress_activity' : 'delete' }}</span>
+          </UiIconButton>
         </div>
 
         <h3>时间戳: {{ item.timestamp || 'N/A' }}</h3>
@@ -118,27 +137,28 @@
           </div>
         </div>
 
-        <label class="desc-label" :for="`desc-${item.hash}`">媒体描述:</label>
-        <textarea
-          :id="`desc-${item.hash}`"
-          v-model="item.description"
-          rows="4"
-          :disabled="item.isDeleting || item.isSaving"
-          placeholder="请输入媒体描述…"
-        ></textarea>
+        <UiField class="media-description-field" label="媒体描述" :for-id="`desc-${item.hash}`" size="sm">
+          <UiTextarea
+            :id="`desc-${item.hash}`"
+            v-model="item.description"
+            rows="4"
+            size="sm"
+            :disabled="item.isDeleting || item.isSaving"
+            placeholder="请输入媒体描述…"
+          />
+        </UiField>
 
-        <button
-          class="btn-success"
-          style="width: 100%;"
+        <UiButton
+          block
           type="button"
           :disabled="isItemBusy(item) || !isItemDirty(item)"
           @click="saveItem(item)"
         >
           {{ saveButtonLabel(item) }}
-        </button>
+        </UiButton>
 
         <div class="hash-info">Hash (部分): {{ item.hash.slice(0, 30) }}{{ item.hash.length > 30 ? '…' : '' }}</div>
-      </article>
+      </UiCard>
     </div>
 
     <!-- 多模态配置模态窗：编辑 multimodal-config.json，热更新 image-processor / reidentify -->
@@ -155,66 +175,66 @@
                 <h3>多模态配置 (multimodal-config.json)</h3>
                 <p>JSON 真相源，保存后立即热加载，无需重启服务器。</p>
               </div>
-              <button class="modal-close" type="button" aria-label="关闭" @click="closeMultiModalConfigModal">×</button>
+              <UiIconButton class="modal-close" type="button" label="关闭" @click="closeMultiModalConfigModal">
+                <span class="material-symbols-outlined">close</span>
+              </UiIconButton>
             </header>
 
-            <p v-if="isMultiModalConfigLoading" class="status-tip">正在加载…</p>
-            <p v-if="multiModalConfigError" class="status-tip mm-error">{{ multiModalConfigError }}</p>
+            <UiBadge v-if="isMultiModalConfigLoading" variant="outline" role="status" aria-live="polite">
+              正在加载…
+            </UiBadge>
+            <UiBadge v-if="multiModalConfigError" variant="danger" role="status" aria-live="polite">
+              {{ multiModalConfigError }}
+            </UiBadge>
 
             <div class="mm-config-body">
-              <label class="mm-field">
-                <span>多模态识别模型 (MultiModalModel)</span>
-                <input v-model="multiModalConfigDraft.MultiModalModel" type="text" placeholder="例如：gemini-2.5-flash" />
-              </label>
+              <UiField label="多模态识别模型 (MultiModalModel)">
+                <UiInput v-model="multiModalConfigDraft.MultiModalModel" type="text" placeholder="例如：gemini-2.5-flash" />
+              </UiField>
 
-              <label class="mm-field">
-                <span>多模态识别提示词 (MultiModalPrompt)</span>
-                <textarea v-model="multiModalConfigDraft.MultiModalPrompt" rows="6"></textarea>
-              </label>
+              <UiField label="多模态识别提示词 (MultiModalPrompt)">
+                <UiTextarea v-model="multiModalConfigDraft.MultiModalPrompt" rows="6" />
+              </UiField>
 
-              <label class="mm-field">
-                <span>多模态信息插入提示词 (MediaInsertPrompt)</span>
-                <textarea v-model="multiModalConfigDraft.MediaInsertPrompt" rows="3"></textarea>
-              </label>
+              <UiField label="多模态信息插入提示词 (MediaInsertPrompt)">
+                <UiTextarea v-model="multiModalConfigDraft.MediaInsertPrompt" rows="3" />
+              </UiField>
 
               <div class="mm-grid">
-                <label class="mm-field">
-                  <span>最大输出 Tokens (MultiModalModelOutputMaxTokens)</span>
-                  <input v-model.number="multiModalConfigDraft.MultiModalModelOutputMaxTokens" type="number" min="1" />
-                </label>
-                <label class="mm-field">
-                  <span>最大上下文 Tokens (MultiModalModelContent)</span>
-                  <input v-model.number="multiModalConfigDraft.MultiModalModelContent" type="number" min="1" />
-                </label>
-                <label class="mm-field">
-                  <span>Thinking Budget (MultiModalModelThinkingBudget)</span>
-                  <input v-model.number="multiModalConfigDraft.MultiModalModelThinkingBudget" type="number" min="0" />
-                </label>
-                <label class="mm-field">
-                  <span>异步并发上限 (MultiModalModelAsynchronousLimit)</span>
-                  <input v-model.number="multiModalConfigDraft.MultiModalModelAsynchronousLimit" type="number" min="1" />
-                </label>
+                <UiField label="最大输出 Tokens (MultiModalModelOutputMaxTokens)">
+                  <UiInput v-model.number="multiModalConfigDraft.MultiModalModelOutputMaxTokens" type="number" min="1" />
+                </UiField>
+                <UiField label="最大上下文 Tokens (MultiModalModelContent)">
+                  <UiInput v-model.number="multiModalConfigDraft.MultiModalModelContent" type="number" min="1" />
+                </UiField>
+                <UiField label="Thinking Budget (MultiModalModelThinkingBudget)">
+                  <UiInput v-model.number="multiModalConfigDraft.MultiModalModelThinkingBudget" type="number" min="0" />
+                </UiField>
+                <UiField label="异步并发上限 (MultiModalModelAsynchronousLimit)">
+                  <UiInput v-model.number="multiModalConfigDraft.MultiModalModelAsynchronousLimit" type="number" min="1" />
+                </UiField>
               </div>
 
-              <label class="mm-field">
-                <span>纯文本模型强制翻译列表 (MultiModalForceTranslateModels)，逗号分隔</span>
-                <input v-model="multiModalConfigForceTranslateText" type="text" placeholder="deepseek,glm" />
-                <small>命中其中任意 tag（不区分大小写、子串匹配）即把多模态强制翻译为文本，并禁用 base64 还原。</small>
-              </label>
+              <UiField
+                label="纯文本模型强制翻译列表 (MultiModalForceTranslateModels)，逗号分隔"
+                description="命中其中任意 tag（不区分大小写、子串匹配）即把多模态强制翻译为文本，并禁用 base64 还原。"
+              >
+                <UiInput v-model="multiModalConfigForceTranslateText" type="text" placeholder="deepseek,glm" />
+              </UiField>
 
               <p v-if="multiModalConfigPath" class="mm-meta">
                 配置文件：<code>{{ multiModalConfigPath }}</code>
-                <span v-if="multiModalConfigWatcher" class="mm-meta-tag">热加载已启用</span>
+                <UiBadge v-if="multiModalConfigWatcher" class="mm-meta-tag" variant="success">热加载已启用</UiBadge>
               </p>
             </div>
 
             <footer class="mm-config-footer">
-              <button class="btn-secondary" type="button" @click="closeMultiModalConfigModal" :disabled="isMultiModalConfigSaving">
+              <UiButton variant="outline" type="button" @click="closeMultiModalConfigModal" :disabled="isMultiModalConfigSaving">
                 取消
-              </button>
-              <button class="btn-success" type="button" @click="saveMultiModalConfig" :disabled="isMultiModalConfigSaving || isMultiModalConfigLoading">
+              </UiButton>
+              <UiButton type="button" @click="saveMultiModalConfig" :disabled="isMultiModalConfigSaving || isMultiModalConfigLoading">
                 {{ isMultiModalConfigSaving ? '保存中…' : '保存配置' }}
-              </button>
+              </UiButton>
             </footer>
           </div>
         </div>
@@ -229,7 +249,9 @@
       <template #default="{ overlayAttrs, panelAttrs, panelRef }">
         <div v-bind="overlayAttrs" class="preview-modal">
           <div :ref="panelRef" v-bind="panelAttrs" class="modal-content">
-      <button ref="modalCloseBtn" class="modal-close" type="button" aria-label="关闭预览" @click="closePreview">×</button>
+      <UiIconButton ref="modalCloseBtn" class="modal-close" type="button" label="关闭预览" @click="closePreview">
+        <span class="material-symbols-outlined">close</span>
+      </UiIconButton>
       <img v-if="previewType === 'image'" :src="previewDataUrl" alt="放大预览图" />
       <video v-else controls :src="previewDataUrl"></video>
           </div>
@@ -245,6 +267,15 @@ import { onBeforeRouteLeave } from 'vue-router'
 import { mediaCacheApi, systemApi, type MediaCacheItem } from '@/api'
 import type { MultiModalConfig } from '@/types/api.system'
 import BaseModal from '@/components/ui/BaseModal.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
+import UiEmptyState from '@/components/ui/UiEmptyState.vue'
+import UiField from '@/components/ui/UiField.vue'
+import UiIconButton from '@/components/ui/UiIconButton.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
+import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
 
@@ -289,7 +320,7 @@ const pageSize = ref(DEFAULT_PAGE_SIZE)
 const previewOpen = ref(false)
 const previewDataUrl = ref('')
 const previewType = ref<'image' | 'video'>('image')
-const modalCloseBtn = ref<HTMLButtonElement | null>(null)
+const modalCloseBtn = ref<{ focus: () => void } | null>(null)
 
 // ──────────── 多模态配置模态状态 ────────────
 const multiModalConfigOpen = ref(false)
@@ -714,11 +745,6 @@ onUnmounted(() => {
   margin: 0;
 }
 
-.header-actions {
-  display: flex;
-  gap: var(--space-3);
-}
-
 .toolbar {
   display: flex;
   justify-content: space-between;
@@ -729,18 +755,13 @@ onUnmounted(() => {
 
 .search-box {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   flex: 1 1 320px;
 }
 
-.search-box input {
+.search-box :deep(.ui-input) {
   flex: 1;
   min-width: 0;
-  border: 1px solid var(--border-color);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
 }
 
 .pagination-controls {
@@ -755,11 +776,6 @@ onUnmounted(() => {
   color: var(--secondary-text);
   white-space: nowrap;
 }
-.status-tip {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-}
-
 .media-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -768,10 +784,6 @@ onUnmounted(() => {
 
 .media-card {
   position: relative;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  background: var(--tertiary-bg);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -791,26 +803,17 @@ onUnmounted(() => {
   gap: 6px;
 }
 
-.icon-btn {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  border: none;
-  color: var(--on-accent-text);
-  cursor: pointer;
+.card-actions :deep(.ui-icon-button) {
+  width: 28px;
+  height: 28px;
 }
 
-.icon-btn.reidentify {
-  background: var(--success-color);
+.card-actions :deep(.ui-icon-button.reidentify) {
+  color: var(--success-color);
 }
 
-.icon-btn.delete {
-  background: var(--danger-color);
-}
-
-.icon-btn:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
+.card-actions :deep(.ui-icon-button.delete) {
+  color: var(--danger-color);
 }
 
 .media-preview-wrap {
@@ -850,26 +853,7 @@ onUnmounted(() => {
   color: var(--secondary-text);
 }
 
-.desc-label {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-}
-
-textarea {
-  width: 100%;
-  min-height: 96px;
-  border: 1px solid var(--border-color);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  border-radius: var(--radius-sm);
-  padding: 10px;
-  resize: vertical;
-}
-
-.search-box input:focus-visible,
-textarea:focus-visible,
 .media-preview-button:focus-visible,
-.icon-btn:focus-visible,
 .modal-close:focus-visible {
   outline: 2px solid var(--highlight-text);
   outline-offset: 2px;
@@ -908,15 +892,6 @@ textarea:focus-visible,
   position: absolute;
   top: 16px;
   right: 20px;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 1px solid var(--overlay-frost-border);
-  background: var(--overlay-frost-bg);
-  color: var(--on-accent-text);
-  font-size: var(--font-size-icon-modal-close);
-  line-height: 1;
-  cursor: pointer;
 }
 
 @media (max-width: 768px) {
@@ -926,15 +901,13 @@ textarea:focus-visible,
     align-items: stretch;
   }
 
-  .header-actions,
   .search-box,
   .pagination-controls {
     width: 100%;
   }
 
-  .header-actions button,
-  .search-box button,
-  .pagination-controls button {
+  .search-box :deep(.ui-button),
+  .pagination-controls :deep(.ui-button) {
     flex: 1;
   }
 
@@ -945,7 +918,7 @@ textarea:focus-visible,
 
 /* ──────────── Multi-modal config modal ──────────── */
 .mm-config-overlay {
-  background: var(--overlay-backdrop-strong, rgba(0, 0, 0, 0.6));
+  background: var(--overlay-backdrop-strong);
 }
 
 .mm-config-panel {
@@ -986,33 +959,6 @@ textarea:focus-visible,
   gap: var(--space-3);
 }
 
-.mm-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.mm-field span {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-}
-
-.mm-field input,
-.mm-field textarea {
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  font: inherit;
-  resize: vertical;
-}
-
-.mm-field small {
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-}
-
 .mm-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(160px, 1fr));
@@ -1033,15 +979,7 @@ textarea:focus-visible,
 
 .mm-meta-tag {
   margin-left: 8px;
-  padding: 2px 6px;
-  border-radius: 3px;
-  background: var(--success-color, #22c55e);
-  color: var(--on-accent-text, #fff);
-  font-size: var(--font-size-caption);
-}
-
-.mm-error {
-  color: var(--danger-color, #ef4444);
+  vertical-align: middle;
 }
 
 .mm-config-footer {

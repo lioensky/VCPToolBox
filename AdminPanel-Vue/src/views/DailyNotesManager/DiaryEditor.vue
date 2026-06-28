@@ -1,51 +1,68 @@
 <template>
-  <div v-if="editingNote" class="note-editor-area card">
+  <UiCard
+    v-if="editingNote"
+    class="note-editor-area"
+    size="sm"
+    variant="subtle"
+  >
     <div class="editor-header">
       <div class="editor-title-section">
-        <button
-          class="btn-secondary btn-back"
+        <UiIconButton
+          class="editor-back-button"
+          label="返回日记列表"
+          title="返回日记列表"
           aria-label="返回日记列表"
           @click="$emit('cancelEdit')"
         >
           <span class="material-symbols-outlined">arrow_back</span>
-        </button>
+        </UiIconButton>
         <h3>编辑日记：{{ editingNote.file }}</h3>
       </div>
       <div class="editor-actions">
-        <button
-          class="btn-primary"
+        <UiButton
+          variant="primary"
+          size="md"
           :disabled="savingNote"
           @click="$emit('saveNote')"
         >
           {{ savingNote ? "保存中…" : "保存日记" }}
-        </button>
-        <button
-          class="btn-secondary"
+        </UiButton>
+        <UiButton
+          variant="outline"
+          size="md"
           :disabled="savingNote"
           @click="$emit('cancelEdit')"
         >
           取消编辑
-        </button>
-        <span
+        </UiButton>
+        <UiBadge
           v-if="editorStatus"
-          :class="['status-message', editorStatusType]"
-          >{{ editorStatus }}</span
+          :variant="editorStatusBadgeVariant"
+          class="editor-status"
         >
+          {{ editorStatus }}
+        </UiBadge>
       </div>
     </div>
 
     <div class="markdown-editor-wrapper">
       <slot name="editor-textarea"></slot>
     </div>
-  </div>
+  </UiCard>
 </template>
 
 <script setup lang="ts">
+import { computed } from "vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+
 interface Note {
   file: string;
 }
 
-defineProps<{
+const props = defineProps<{
   editingNote: Note | null;
   savingNote: boolean;
   editorStatus: string;
@@ -56,15 +73,14 @@ defineEmits<{
   (e: "saveNote"): void;
   (e: "cancelEdit"): void;
 }>();
+
+const editorStatusBadgeVariant = computed(() =>
+  props.editorStatusType === "error" ? "danger" : props.editorStatusType
+);
 </script>
 
 <style scoped>
 .note-editor-area {
-  padding: var(--space-5);
-  background: var(--secondary-bg);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-  display: block;
   visibility: visible;
   opacity: 1;
   animation: fadeIn 0.3s ease-out;
@@ -85,7 +101,7 @@ defineEmits<{
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: var(--space-5);
+  margin-bottom: var(--space-4);
   flex-wrap: wrap;
   gap: var(--space-4);
 }
@@ -102,23 +118,7 @@ defineEmits<{
   font-size: var(--font-size-title);
 }
 
-.btn-back {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  min-height: 36px;
-  padding: 0;
-  transition: transform 0.2s ease;
-}
-
-.btn-back:hover {
-  transform: translateX(-4px);
-}
-
-.btn-back .material-symbols-outlined {
+.editor-back-button .material-symbols-outlined {
   font-size: var(--font-size-title) !important;
 }
 
@@ -129,9 +129,9 @@ defineEmits<{
 }
 
 .markdown-editor-wrapper {
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   overflow: hidden;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   max-width: 90ch;
   margin-inline: auto;
 }
@@ -143,7 +143,7 @@ defineEmits<{
 }
 
 :deep(.EasyMDEContainer .editor-toolbar) {
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   border-bottom-color: var(--border-color);
 }
 
@@ -152,7 +152,7 @@ defineEmits<{
 }
 
 :deep(.EasyMDEContainer .editor-toolbar button:hover) {
-  background: var(--accent-bg) !important;
+  background: color-mix(in srgb, var(--primary-text) 4%, transparent) !important;
 }
 
 :deep(.EasyMDEContainer .CodeMirror) {
@@ -179,7 +179,7 @@ defineEmits<{
 }
 
 :deep(.EasyMDEContainer .editor-statusbar) {
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   border-top-color: var(--border-color);
   color: var(--secondary-text);
 }
@@ -194,7 +194,6 @@ defineEmits<{
 
 @media (max-width: 768px) {
   .note-editor-area {
-    padding: 14px;
     border-radius: var(--radius-sm);
   }
 
@@ -224,13 +223,12 @@ defineEmits<{
     gap: 8px;
   }
 
-  .editor-actions .btn-primary,
-  .editor-actions .btn-secondary {
+  .editor-actions :deep(.ui-button) {
     flex: 1 1 calc(50% - 4px);
     min-height: 40px;
   }
 
-  .editor-actions .status-message {
+  .editor-actions .editor-status {
     width: 100%;
   }
 

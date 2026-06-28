@@ -1,57 +1,64 @@
 <template>
-  <!-- 视图切换 -->
-  <div class="placeholder-view-mode">
-    <button
-      :class="['view-mode-btn', { active: viewMode === 'grouped' }]"
-      @click="emit('update:viewMode', 'grouped')"
-    >
-      <span class="material-symbols-outlined">view_agenda</span>
-      分组视图
-    </button>
-    <button
-      :class="['view-mode-btn', { active: viewMode === 'list' }]"
-      @click="emit('update:viewMode', 'list')"
-    >
-      <span class="material-symbols-outlined">view_list</span>
-      列表视图
-    </button>
-  </div>
-
-  <!-- 筛选器 -->
-  <div class="placeholder-viewer-filters">
-    <label for="placeholder-filter-type">类型筛选：</label>
-    <select
-      id="placeholder-filter-type"
-      :value="selectedType"
-      class="placeholder-filter-select"
-      @change="
-        emit('update:selectedType', ($event.target as HTMLSelectElement).value)
-      "
-    >
-      <option value="">全部类型</option>
-      <option
-        v-for="option in typeOptions"
-        :key="option.value"
-        :value="option.value"
+  <div class="placeholder-toolbar" aria-label="占位符筛选与视图切换">
+    <div class="placeholder-view-mode" role="tablist" aria-label="视图模式">
+      <UiButton
+        type="button"
+        size="sm"
+        :variant="viewMode === 'grouped' ? 'primary' : 'outline'"
+        :aria-pressed="viewMode === 'grouped'"
+        @click="emit('update:viewMode', 'grouped')"
       >
-        {{ option.label }} ({{ option.count }})
-      </option>
-    </select>
-    <label for="placeholder-filter-keyword">搜索：</label>
-    <input
-      type="text"
-      id="placeholder-filter-keyword"
-      :value="filterKeyword"
-      class="placeholder-filter-input"
-      placeholder="搜索占位符名称、预览或描述…"
-      @input="
-        emit('update:filterKeyword', ($event.target as HTMLInputElement).value)
-      "
-    />
+        <template #leading><span class="material-symbols-outlined">view_agenda</span></template>
+        分组
+      </UiButton>
+      <UiButton
+        type="button"
+        size="sm"
+        :variant="viewMode === 'list' ? 'primary' : 'outline'"
+        :aria-pressed="viewMode === 'list'"
+        @click="emit('update:viewMode', 'list')"
+      >
+        <template #leading><span class="material-symbols-outlined">view_list</span></template>
+        列表
+      </UiButton>
+    </div>
+
+    <UiField label="类型筛选" for-id="placeholder-filter-type" size="sm">
+      <UiSelect
+        id="placeholder-filter-type"
+        size="sm"
+        :model-value="selectedType"
+        @update:model-value="value => emit('update:selectedType', String(value))"
+      >
+        <option value="">全部类型</option>
+        <option
+          v-for="option in typeOptions"
+          :key="option.value"
+          :value="option.value"
+        >
+          {{ option.label }} ({{ option.count }})
+        </option>
+      </UiSelect>
+    </UiField>
+
+    <UiField class="placeholder-search-field" label="搜索" for-id="placeholder-filter-keyword" size="sm">
+      <UiInput
+        type="text"
+        id="placeholder-filter-keyword"
+        size="sm"
+        :model-value="filterKeyword"
+        placeholder="搜索占位符名称、预览或描述…"
+        @update:model-value="value => emit('update:filterKeyword', String(value))"
+      />
+    </UiField>
   </div>
 </template>
 
 <script setup lang="ts">
+import UiButton from "@/components/ui/UiButton.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
 import type {
   PlaceholderTypeOption,
   PlaceholderViewMode,
@@ -72,108 +79,64 @@ const emit = defineEmits<{
 </script>
 
 <style scoped>
-.placeholder-view-mode {
-  display: flex;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
-}
-
-.view-mode-btn {
+.placeholder-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  background: var(--tertiary-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--secondary-text);
-  cursor: pointer;
-  font-size: var(--font-size-body);
-  box-shadow: inset 0 1px 0 var(--surface-overlay-soft);
-  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
-}
-
-.view-mode-btn:hover {
-  background: var(--accent-bg);
-  color: var(--primary-text);
-}
-
-.view-mode-btn.active {
-  background: var(--button-bg);
-  color: var(--on-accent-text);
-  border-color: var(--button-bg);
-}
-
-.view-mode-btn:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
-
-.view-mode-btn .material-symbols-outlined {
-  font-size: var(--font-size-emphasis) !important;
-}
-
-.placeholder-viewer-filters {
-  display: flex;
-  gap: var(--space-3);
-  align-items: center;
-  margin-bottom: var(--space-5);
   flex-wrap: wrap;
+  gap: var(--space-3);
 }
 
-.placeholder-viewer-filters label {
-  font-size: var(--font-size-body);
-  color: var(--secondary-text);
-  font-weight: 500;
+.placeholder-view-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 96%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
 }
 
-.placeholder-filter-select,
-.placeholder-filter-input {
-  padding: 8px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
-  min-width: 150px;
+.placeholder-view-mode :deep(.ui-button) {
+  min-width: 68px;
+  justify-content: center;
+  border-color: transparent;
 }
-.placeholder-filter-input {
+
+.placeholder-toolbar :deep(.ui-field) {
+  min-width: 160px;
+  gap: 4px;
+}
+
+.placeholder-toolbar :deep(.ui-field__label) {
+  font-size: var(--font-size-caption);
+  line-height: 1.25;
+}
+
+.placeholder-search-field {
   flex: 1;
-  min-width: 180px;
-}
-
-.placeholder-filter-select:focus-visible,
-.placeholder-filter-input:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  min-width: min(240px, 100%);
 }
 
 @media (max-width: 768px) {
+  .placeholder-toolbar {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--space-3);
+  }
+
   .placeholder-view-mode {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-2);
   }
 
-  .view-mode-btn {
-    justify-content: center;
-    min-height: 40px;
-    padding: 8px 10px;
-  }
-
-  .placeholder-viewer-filters {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .placeholder-viewer-filters label {
-    margin-bottom: 2px;
-  }
-
-  .placeholder-filter-select,
-  .placeholder-filter-input {
+  .placeholder-toolbar :deep(.ui-field),
+  .placeholder-search-field {
     width: 100%;
     min-width: 0;
+  }
+
+  .placeholder-view-mode :deep(.ui-button) {
+    width: 100%;
   }
 }
 </style>

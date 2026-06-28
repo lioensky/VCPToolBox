@@ -1,6 +1,9 @@
 <template>
   <section class="config-section active-section tool-list-editor-page">
-    <p class="description">快速制作工具列表配置文件，用于 Agent 的提示词中。</p>
+    <header class="tool-list-editor-intro">
+      <h2>工具列表配置</h2>
+      <p>从当前可用工具中筛选组合，生成可供 Agent 提示词引用的工具列表配置文件。</p>
+    </header>
 
     <div class="tool-list-editor">
       <ToolSelectionPanel
@@ -741,14 +744,36 @@ onBeforeRouteLeave(async () => {
 
 .tool-list-editor-page > .description {
   flex-shrink: 0;
+  margin-bottom: var(--space-3);
+}
+
+.tool-list-editor-intro {
+  flex-shrink: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.tool-list-editor-intro h2 {
+  margin: 0;
+  color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.tool-list-editor-intro p {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
 .tool-list-editor {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
+  grid-template-columns: minmax(420px, 1fr) minmax(360px, 0.86fr);
+  gap: var(--space-4);
   align-items: stretch;
   overflow: hidden;
 }

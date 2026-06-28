@@ -14,45 +14,45 @@
           <h3 class="input-dialog-title">{{ title }}</h3>
           <p v-if="message" class="input-dialog-message">{{ message }}</p>
 
-          <textarea
+          <UiTextarea
             v-if="multiline"
             ref="inputEl"
             class="input-dialog-control"
-            :value="modelInputValue"
+            :model-value="modelInputValue"
             :placeholder="placeholder"
             rows="6"
-            @input="onInput(($event.target as HTMLTextAreaElement).value)"
+            @update:model-value="onInput(String($event))"
             @keydown.ctrl.enter.prevent="handleConfirm"
             @keydown.meta.enter.prevent="handleConfirm"
-          ></textarea>
-          <input
+          />
+          <UiInput
             v-else
             ref="inputEl"
             class="input-dialog-control"
             type="text"
-            :value="modelInputValue"
+            :model-value="modelInputValue"
             :placeholder="placeholder"
-            @input="onInput(($event.target as HTMLInputElement).value)"
+            @update:model-value="onInput(String($event))"
             @keydown.enter.prevent="handleConfirm"
           />
 
           <p v-if="error" class="input-dialog-error">{{ error }}</p>
 
           <div class="input-dialog-actions">
-            <button
-              class="btn-secondary"
+            <UiButton
+              variant="secondary"
               type="button"
               @click="handleCancel"
             >
               {{ cancelText || "取消" }}
-            </button>
-            <button
-              class="btn-primary"
+            </UiButton>
+            <UiButton
+              variant="primary"
               type="button"
               @click="handleConfirm"
             >
               {{ confirmText || "确定" }}
-            </button>
+            </UiButton>
           </div>
         </div>
       </div>
@@ -62,6 +62,9 @@
 
 <script setup lang="ts">
 import { nextTick, ref, watch } from "vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -93,7 +96,7 @@ const emit = defineEmits<{
   cancel: [];
 }>();
 
-const inputEl = ref<HTMLInputElement | HTMLTextAreaElement | null>(null);
+const inputEl = ref<InstanceType<typeof UiInput> | InstanceType<typeof UiTextarea> | null>(null);
 const modelInputValue = ref(props.inputValue);
 
 watch(
@@ -109,9 +112,7 @@ watch(
     if (visible) {
       await nextTick();
       inputEl.value?.focus();
-      if (inputEl.value && "select" in inputEl.value) {
-        (inputEl.value as HTMLInputElement).select();
-      }
+      inputEl.value && "select" in inputEl.value && inputEl.value.select();
     }
   }
 );
@@ -145,8 +146,8 @@ function handleCancel(): void {
 }
 
 .input-dialog-panel {
-  background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--primary-bg) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
   border-radius: var(--radius-lg);
   padding: 24px;
   min-width: 360px;
@@ -168,27 +169,9 @@ function handleCancel(): void {
   font-size: var(--font-size-body);
 }
 
-.input-dialog-control {
-  width: 100%;
-  padding: 10px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
-  box-sizing: border-box;
-  font-family: inherit;
-}
-
-textarea.input-dialog-control {
-  resize: vertical;
+.input-dialog-control :deep(.ui-textarea),
+.input-dialog-control.ui-textarea {
   min-height: 120px;
-  font-family: "Consolas", "Monaco", monospace;
-}
-
-.input-dialog-control:focus {
-  outline: none;
-  border-color: var(--highlight-text);
 }
 
 .input-dialog-error {

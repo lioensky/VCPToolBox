@@ -75,13 +75,17 @@ defineExpose({ focus });
 .ui-select {
   width: 100%;
   min-width: 0;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
+  border: 1px solid color-mix(in srgb, var(--border-color) 92%, transparent);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(45deg, transparent 50%, var(--secondary-text) 50%) calc(100% - 15px) 50% / 5px 5px no-repeat,
+    linear-gradient(135deg, var(--secondary-text) 50%, transparent 50%) calc(100% - 10px) 50% / 5px 5px no-repeat,
+    color-mix(in srgb, var(--primary-bg) 42%, transparent);
   color: var(--primary-text);
   font: inherit;
   outline: none;
   cursor: pointer;
+  appearance: none;
   transition:
     color var(--transition-fast),
     background-color var(--transition-fast),
@@ -102,13 +106,15 @@ defineExpose({ focus });
 }
 
 .ui-select:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+  border-color: color-mix(in srgb, var(--highlight-text) 34%, var(--border-color));
+  background-color: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
 .ui-select:focus-visible {
   outline: 2px solid var(--highlight-text);
   outline-offset: 2px;
   border-color: var(--highlight-text);
+  background-color: color-mix(in srgb, var(--primary-bg) 56%, transparent);
 }
 
 .ui-select--invalid,

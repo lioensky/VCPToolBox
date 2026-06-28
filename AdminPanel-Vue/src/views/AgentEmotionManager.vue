@@ -1,6 +1,20 @@
 <template>
   <section class="config-section active-section emotion-page">
-    <div class="emotion-hero card">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
+        <UiButton variant="outline" size="lg" :disabled="isConfigLoading" @click="openConfigModal">
+          <template #leading><span class="material-symbols-outlined">tune</span></template>
+          观测配置
+        </UiButton>
+        <UiButton variant="outline" size="lg" :disabled="isLoading" @click="refresh">
+          <template #leading><span class="material-symbols-outlined">refresh</span></template>
+          {{ isLoading ? "刷新中…" : "刷新" }}
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
+    <UiCard class="emotion-hero">
       <div class="hero-copy">
         <span class="hero-kicker">
           <span class="material-symbols-outlined">favorite</span>
@@ -11,63 +25,52 @@
           可视化每个 Agent 的性别轴体、知性轴、感性轴、驱力/对冲轴、动态 baseline 与原型共振表达。当前版本为纯异步观察器，不注入提示词。
         </p>
       </div>
-      <div class="hero-actions">
-        <button class="btn-secondary" :disabled="isConfigLoading" @click="openConfigModal">
-          <span class="material-symbols-outlined">tune</span>
-          观测配置
-        </button>
-        <button class="btn-secondary" :disabled="isLoading" @click="refresh">
-          <span class="material-symbols-outlined">refresh</span>
-          {{ isLoading ? "刷新中…" : "刷新" }}
-        </button>
-        <span v-if="statusMessage" :class="['status-message', statusType]">{{ statusMessage }}</span>
-      </div>
-    </div>
+    </UiCard>
 
     <div class="overview-grid">
-      <div class="overview-card card">
+      <UiCard class="overview-card" size="sm" variant="flat">
         <span class="overview-label">插件状态</span>
         <strong>{{ overview?.enabled ? "已启用" : "未启用" }}</strong>
         <small>提示注入：{{ overview?.boundaries?.noPromptInjection ? "已移除" : "未知" }} · 模式：纯异步观察</small>
-      </div>
-      <div class="overview-card card">
+      </UiCard>
+      <UiCard class="overview-card" size="sm" variant="flat">
         <span class="overview-label">记录 Agent</span>
         <strong>{{ validAgents.length }}</strong>
         <small>最近：{{ validAgents[0]?.summary.agentLabel || "无" }}</small>
-      </div>
-      <div class="overview-card card">
+      </UiCard>
+      <UiCard class="overview-card" size="sm" variant="flat">
         <span class="overview-label">表达模型</span>
         <strong>原型共振池</strong>
         <small>三轴表达 · 热情背景 · 对冲压力 · 相对常态</small>
-      </div>
-      <div class="overview-card card">
+      </UiCard>
+      <UiCard class="overview-card" size="sm" variant="flat">
         <span class="overview-label">存储形态</span>
         <strong>SQLite 轴状态</strong>
         <small>每 Agent 独立 baseline 与二级锚点</small>
-      </div>
+      </UiCard>
     </div>
 
-    <div v-if="isLoading && validAgents.length === 0" class="empty-state card">
+    <UiCard v-if="isLoading && validAgents.length === 0" class="empty-state">
       <span class="loading-spinner loading-spinner--sm"></span>
       <p>正在读取 Agent 轴体状态…</p>
-    </div>
+    </UiCard>
 
-    <div v-else-if="validAgents.length === 0" class="empty-state card">
+    <UiCard v-else-if="validAgents.length === 0" class="empty-state">
       <span class="material-symbols-outlined">sentiment_neutral</span>
       <p>暂未记录任何 Agent 轴体状态。</p>
       <small>当 OpenHerPersona 识别到 Agent 身份并处理对话后，这里会出现对应条目。</small>
-    </div>
+    </UiCard>
 
     <div v-else class="emotion-layout">
-      <aside class="agent-list card">
+      <UiCard class="agent-list">
         <div class="panel-title">
           <span class="material-symbols-outlined">groups</span>
           Agent 列表
         </div>
-        <button
+        <UiButton
           v-for="agent in validAgents"
           :key="agent.summary.agentKey"
-          type="button"
+          variant="ghost"
           :class="['agent-tab', { active: selectedAgentKey === agent.summary.agentKey }]"
           @click="selectedAgentKey = agent.summary.agentKey"
         >
@@ -77,8 +80,8 @@
             <small>{{ agent.summary.observationCount ?? agent.summary.turnCount ?? 0 }} 次观测 · {{ relativeTime(agent.summary.lastObservedAt || agent.summary.lastActiveAt || agent.summary.updatedAt) }}</small>
           </span>
           <span class="mood-dot" :style="{ background: moodColor(agent.status?.state?.mood) }"></span>
-        </button>
-      </aside>
+        </UiButton>
+      </UiCard>
 
       <main v-if="selectedAgent?.status?.state" class="agent-detail">
         <div class="agent-header card" :style="agentHeaderStyle">
@@ -143,14 +146,14 @@
               </div>
             </div>
             <div class="archetype-list">
-              <span
+              <UiBadge
                 v-for="item in archetypeItems"
                 :key="item.label"
                 class="archetype-pill"
-                :style="{ '--score': item.score }"
+                variant="outline"
               >
                 {{ item.label }} · {{ formatPercent(item.score) }}
-              </span>
+              </UiBadge>
             </div>
           </div>
         </section>
@@ -318,29 +321,29 @@
           <p v-else class="description">暂无观测快照。</p>
         </section>
 
-        <div class="action-row card">
-          <button class="btn-secondary" :disabled="isActionRunning" @click="tickSelected">
-            <span class="material-symbols-outlined">update</span>
+        <UiCard class="action-row" size="sm" variant="flat">
+          <UiButton variant="outline" :disabled="isActionRunning" @click="tickSelected">
+            <template #leading><span class="material-symbols-outlined">update</span></template>
             手动刷新快照
-          </button>
-          <button class="btn-danger" :disabled="isActionRunning" @click="resetSelected">
-            <span class="material-symbols-outlined">restart_alt</span>
+          </UiButton>
+          <UiButton variant="danger" :disabled="isActionRunning" @click="resetSelected">
+            <template #leading><span class="material-symbols-outlined">restart_alt</span></template>
             重置该 Agent 轴状态
-          </button>
-        </div>
+          </UiButton>
+        </UiCard>
       </main>
 
       <main v-else class="agent-detail">
-        <div class="empty-state card">
+        <UiCard class="empty-state">
           <span class="material-symbols-outlined">error</span>
           <p>该 Agent 状态读取失败。</p>
           <small>{{ selectedAgent?.error || "未知错误" }}</small>
-        </div>
+        </UiCard>
       </main>
     </div>
 
     <div v-if="showConfigModal" class="config-modal-backdrop" @click.self="closeConfigModal">
-      <div class="config-modal card" role="dialog" aria-modal="true" aria-label="OpenHerPersona 配置">
+      <UiCard class="config-modal" role="dialog" aria-modal="true" aria-label="OpenHerPersona 配置">
         <div class="config-modal-header">
           <div>
             <span class="hero-kicker">
@@ -350,9 +353,9 @@
             <h2>OpenHerPersona 观测配置</h2>
             <p class="description">配置已从 env 迁移到插件 state 目录 JSON。当前算法为异步观测，不再注入提示词或 persona_delta。</p>
           </div>
-          <button class="icon-btn" type="button" aria-label="关闭配置" @click="closeConfigModal">
+          <UiIconButton class="modal-close-btn" type="button" label="关闭配置" @click="closeConfigModal">
             <span class="material-symbols-outlined">close</span>
-          </button>
+          </UiIconButton>
         </div>
 
         <div v-if="isConfigLoading" class="empty-state config-loading">
@@ -373,45 +376,47 @@
                 <small>{{ item.schema.description || item.key }}</small>
               </span>
 
-              <span v-if="item.schema.type === 'boolean'" class="switch">
-                <input v-model="configDraft[item.key]" type="checkbox" />
-                <span class="slider"></span>
-              </span>
+              <AppSwitch
+                v-if="item.schema.type === 'boolean'"
+                :model-value="Boolean(configDraft[item.key])"
+                :aria-label="item.schema.label || item.key"
+                @update:model-value="value => setConfigDraftValue(item.key, value)"
+              />
 
-              <select
+              <UiSelect
                 v-else-if="item.schema.type === 'select'"
-                v-model="configDraft[item.key]"
-                class="config-control"
+                :model-value="configDraftSelectValue(item.key)"
+                @update:model-value="value => setConfigDraftValue(item.key, value)"
               >
                 <option v-for="option in item.schema.options || []" :key="option" :value="option">
                   {{ option }}
                 </option>
-              </select>
+              </UiSelect>
 
-              <input
+              <UiInput
                 v-else
-                v-model.number="configDraft[item.key]"
-                class="config-control"
+                :model-value="configDraftNumberValue(item.key)"
                 type="number"
                 :min="item.schema.min"
                 :max="item.schema.max"
                 :step="item.schema.step || (item.schema.type === 'integer' ? 1 : 0.01)"
+                @update:model-value="value => setConfigDraftValue(item.key, value)"
               />
             </label>
           </div>
 
           <div class="config-modal-actions">
-            <button class="btn-secondary" type="button" @click="resetConfigDraft">
-              <span class="material-symbols-outlined">undo</span>
+            <UiButton variant="outline" type="button" @click="resetConfigDraft">
+              <template #leading><span class="material-symbols-outlined">undo</span></template>
               还原
-            </button>
-            <button class="btn-primary" type="submit" :disabled="isConfigSaving">
-              <span class="material-symbols-outlined">save</span>
+            </UiButton>
+            <UiButton type="submit" :disabled="isConfigSaving">
+              <template #leading><span class="material-symbols-outlined">save</span></template>
               {{ isConfigSaving ? "保存中…" : "保存配置" }}
-            </button>
+            </UiButton>
           </div>
         </form>
-      </div>
+      </UiCard>
     </div>
   </section>
 </template>
@@ -427,6 +432,14 @@ import {
   type OpenHerPersonaMood,
   type OpenHerPersonaState,
 } from "@/api";
+import AppSwitch from "@/components/ui/AppSwitch.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
@@ -550,6 +563,11 @@ const isLoading = ref(false);
 const isActionRunning = ref(false);
 const statusMessage = ref("");
 const statusType = ref<"info" | "success" | "error">("info");
+const statusBadgeVariant = computed(() => {
+  if (statusType.value === "success") return "success";
+  if (statusType.value === "error") return "danger";
+  return "info";
+});
 const showConfigModal = ref(false);
 const isConfigLoading = ref(false);
 const isConfigSaving = ref(false);
@@ -814,6 +832,22 @@ function resetConfigDraft(): void {
   configDraft.value = { ...(configResponse.value?.config || {}) };
 }
 
+function setConfigDraftValue(key: string, value: boolean | number | string): void {
+  configDraft.value[key] = value;
+}
+
+function configDraftSelectValue(key: string): string | number {
+  const value = configDraft.value[key];
+  if (typeof value === "string" || typeof value === "number") return value;
+  return "";
+}
+
+function configDraftNumberValue(key: string): string | number {
+  const value = configDraft.value[key];
+  if (typeof value === "number" || typeof value === "string") return value;
+  return "";
+}
+
 async function saveConfig(): Promise<void> {
   isConfigSaving.value = true;
   try {
@@ -930,8 +964,8 @@ onMounted(() => {
   overflow: hidden;
   position: relative;
   background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--highlight-text) 22%, transparent), transparent 34%),
-    linear-gradient(135deg, var(--secondary-bg), color-mix(in srgb, var(--tertiary-bg) 70%, transparent));
+    radial-gradient(circle at top left, color-mix(in srgb, var(--highlight-text) 12%, transparent), transparent 34%),
+    linear-gradient(135deg, color-mix(in srgb, var(--primary-text) 2%, transparent), transparent);
 }
 
 .emotion-hero::after {
@@ -945,8 +979,7 @@ onMounted(() => {
   pointer-events: none;
 }
 
-.hero-copy,
-.hero-actions {
+.hero-copy {
   position: relative;
   z-index: 1;
 }
@@ -966,14 +999,6 @@ onMounted(() => {
   font-size: var(--font-size-helper);
 }
 
-.hero-actions {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
 .overview-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -991,6 +1016,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  border-color: color-mix(in srgb, var(--border-color) 82%, transparent);
+  background: transparent;
 }
 
 .overview-card strong,
@@ -1052,29 +1079,29 @@ onMounted(() => {
 }
 
 .agent-tab {
+  width: 100%;
+  height: auto;
+  min-height: 64px;
+  justify-content: stretch;
+  padding: var(--space-2);
+  border-color: color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+
+.agent-tab.active {
+  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 6%, transparent);
+  color: var(--primary-text);
+}
+
+.agent-tab :deep(.ui-button__content) {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr) 10px;
   gap: var(--space-3);
   align-items: center;
   width: 100%;
-  padding: var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
-  color: var(--primary-text);
-  cursor: pointer;
-  text-align: left;
-  transition:
-    border-color var(--transition-fast),
-    background-color var(--transition-fast),
-    transform var(--transition-fast);
-}
-
-.agent-tab:hover,
-.agent-tab.active {
-  border-color: color-mix(in srgb, var(--highlight-text) 60%, transparent);
-  background: color-mix(in srgb, var(--highlight-text) 12%, transparent);
-  transform: translateY(-1px);
+  min-width: 0;
 }
 
 .agent-avatar {
@@ -1106,7 +1133,6 @@ onMounted(() => {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  box-shadow: 0 0 16px currentColor;
 }
 
 .agent-detail {
@@ -1122,8 +1148,8 @@ onMounted(() => {
   gap: var(--space-5);
   align-items: center;
   background:
-    radial-gradient(circle at 92% 16%, color-mix(in srgb, var(--agent-mood-color) 34%, transparent), transparent 34%),
-    var(--secondary-bg);
+    radial-gradient(circle at 92% 16%, color-mix(in srgb, var(--agent-mood-color) 20%, transparent), transparent 34%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .mood-orb {
@@ -1181,7 +1207,7 @@ onMounted(() => {
   height: 10px;
   border-radius: var(--radius-full);
   overflow: hidden;
-  background: var(--surface-overlay-strong);
+  background: color-mix(in srgb, var(--primary-text) 6%, transparent);
 }
 
 .bar-fill,
@@ -1225,11 +1251,11 @@ onMounted(() => {
   flex-direction: column;
   gap: 4px;
   padding: var(--space-3);
-  border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--strength) * 56%), var(--border-color));
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--strength) * 36%), var(--border-color));
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--highlight-text) calc(var(--strength) * 22%), transparent), transparent),
-    var(--surface-overlay-soft);
+    linear-gradient(135deg, color-mix(in srgb, var(--highlight-text) calc(var(--strength) * 10%), transparent), transparent),
+    transparent;
 }
 
 .signal-chip strong {
@@ -1266,11 +1292,11 @@ onMounted(() => {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--affective-strength) * 60%), var(--border-color));
-  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--affective-strength) * 36%), var(--border-color));
+  border-radius: var(--radius-md);
   background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) calc(var(--affective-strength) * 22%), transparent), transparent 56%),
-    var(--surface-overlay-soft);
+    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) calc(var(--affective-strength) * 10%), transparent), transparent 56%),
+    transparent;
 }
 
 .affective-positive {
@@ -1356,13 +1382,12 @@ onMounted(() => {
   gap: 4px var(--space-2);
   align-items: center;
   padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 70%), var(--border-color));
-  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 40%), var(--border-color));
+  border-radius: var(--radius-md);
   background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 26%), transparent), transparent 58%),
-    linear-gradient(135deg, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 14%), transparent), transparent),
-    var(--surface-overlay-soft);
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 14%), transparent);
+    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 10%), transparent), transparent 58%),
+    linear-gradient(135deg, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 6%), transparent), transparent),
+    transparent;
 }
 
 .sub-axis-card strong {
@@ -1394,8 +1419,8 @@ onMounted(() => {
 
 .expression-panel {
   background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--agent-mood-color) 18%, transparent), transparent 42%),
-    var(--secondary-bg);
+    radial-gradient(circle at top right, color-mix(in srgb, var(--agent-mood-color) 10%, transparent), transparent 42%),
+    transparent;
 }
 
 .expression-summary {
@@ -1416,14 +1441,7 @@ onMounted(() => {
 }
 
 .archetype-pill {
-  --score: 0.3;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--score) * 70%), var(--border-color));
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--highlight-text) calc(var(--score) * 18%), transparent);
-  color: var(--primary-text);
-  font-size: var(--font-size-caption);
-  text-align: center;
+  justify-self: center;
 }
 
 .gender-grid {
@@ -1437,9 +1455,9 @@ onMounted(() => {
   flex-direction: column;
   gap: 4px;
   padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--gender-strength) * 70%), var(--border-color));
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--gender-strength) * 40%), var(--border-color));
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .gender-card strong,
@@ -1477,19 +1495,6 @@ onMounted(() => {
   display: flex;
   gap: var(--space-2);
   flex-wrap: wrap;
-}
-
-.expression-tags span {
-  padding: 6px 10px;
-  border-radius: var(--radius-full);
-  color: var(--secondary-text);
-  background: var(--surface-overlay);
-  font-size: var(--font-size-caption);
-}
-
-.expression-tags span.active {
-  color: var(--success-text);
-  background: var(--success-bg);
 }
 
 .model-choice {
@@ -1561,23 +1566,6 @@ onMounted(() => {
   font-size: var(--font-size-display);
 }
 
-.icon-btn {
-  display: inline-flex;
-  width: 42px;
-  height: 42px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-full);
-  color: var(--primary-text);
-  background: var(--surface-overlay);
-  cursor: pointer;
-}
-
-.icon-btn:hover {
-  background: var(--surface-overlay-strong);
-}
-
 .config-loading {
   min-height: 180px;
 }
@@ -1593,9 +1581,9 @@ onMounted(() => {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   color: var(--secondary-text);
   overflow-wrap: anywhere;
 }
@@ -1617,9 +1605,9 @@ onMounted(() => {
   gap: var(--space-3);
   align-items: center;
   padding: var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .config-item-copy {
@@ -1632,16 +1620,6 @@ onMounted(() => {
 .config-item-copy small {
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
-}
-
-.config-control {
-  min-width: 140px;
-  padding: 8px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  color: var(--primary-text);
-  background: var(--input-bg);
-  font: inherit;
 }
 
 .config-modal-actions {
@@ -1716,7 +1694,8 @@ onMounted(() => {
     grid-template-columns: 1fr;
   }
 
-  .config-control {
+  .config-item :deep(.ui-input),
+  .config-item :deep(.ui-select) {
     width: 100%;
   }
 }

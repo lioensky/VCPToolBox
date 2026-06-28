@@ -1,5 +1,28 @@
 <template>
   <section class="config-section active-section">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton variant="outline" @click="openOneRingConfigModal" :disabled="isOneRingConfigLoading">
+          <template #leading>
+            <span class="material-symbols-outlined" :class="{ spinning: isOneRingConfigLoading }">settings</span>
+          </template>
+          ORing配置
+        </UiButton>
+        <UiButton variant="outline" @click="refreshList" :disabled="isLoading">
+          <template #leading>
+            <span class="material-symbols-outlined" :class="{ spinning: isLoading }">sync</span>
+          </template>
+          刷新
+        </UiButton>
+        <UiButton variant="outline" @click="copyVisibleText" :disabled="!snapshot">
+          <template #leading>
+            <span class="material-symbols-outlined">content_copy</span>
+          </template>
+          复制可见文本
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <div class="context-viewer">
       <header class="context-header">
         <div class="context-title">
@@ -13,7 +36,7 @@
         <div class="context-actions">
           <label v-if="snapshotList.length > 0" class="snapshot-selector">
             <span class="material-symbols-outlined">history</span>
-            <select :value="selectedSnapshotId" @change="onSnapshotSelectChange">
+            <UiSelect :model-value="selectedSnapshotId" size="sm" @change="onSnapshotSelectChange">
               <option
                 v-for="item in snapshotList"
                 :key="item.id"
@@ -21,45 +44,37 @@
               >
                 #{{ item.id }} · {{ formatSnapshotLabel(item) }}
               </option>
-            </select>
+            </UiSelect>
             <small>{{ snapshotList.length }} / {{ maxSnapshots }} 缓存</small>
           </label>
-          <button type="button" class="btn-secondary" @click="openOneRingConfigModal" :disabled="isOneRingConfigLoading">
-            <span class="material-symbols-outlined" :class="{ spinning: isOneRingConfigLoading }">settings</span>
-            ORing配置
-          </button>
-          <button type="button" class="btn-secondary" @click="refreshList" :disabled="isLoading">
-            <span class="material-symbols-outlined" :class="{ spinning: isLoading }">sync</span>
-            刷新
-          </button>
-          <button type="button" class="btn-secondary" @click="copyVisibleText" :disabled="!snapshot">
-            <span class="material-symbols-outlined">content_copy</span>
-            复制可见文本
-          </button>
         </div>
       </header>
 
       <div class="context-toolbar">
-        <input
+        <UiInput
           v-model="searchText"
           type="search"
           class="context-search"
-          placeholder="🔍 搜索角色、块编号、文本内容、附件类型…"
+          placeholder="搜索角色、块编号、文本内容、附件类型…"
           @keydown.enter.prevent="jumpToNextMatch"
         />
 
         <div class="search-actions">
-          <button type="button" class="btn-secondary" @click="jumpToPreviousMatch" :disabled="matchedBlocks.length === 0">
-            <span class="material-symbols-outlined">keyboard_arrow_up</span>
+          <UiButton variant="outline" size="sm" @click="jumpToPreviousMatch" :disabled="matchedBlocks.length === 0">
+            <template #leading>
+              <span class="material-symbols-outlined">keyboard_arrow_up</span>
+            </template>
             上一个
-          </button>
-          <button type="button" class="btn-secondary" @click="jumpToNextMatch" :disabled="matchedBlocks.length === 0">
-            <span class="material-symbols-outlined">keyboard_arrow_down</span>
+          </UiButton>
+          <UiButton variant="outline" size="sm" @click="jumpToNextMatch" :disabled="matchedBlocks.length === 0">
+            <template #leading>
+              <span class="material-symbols-outlined">keyboard_arrow_down</span>
+            </template>
             下一个
-          </button>
-          <span class="match-status">
+          </UiButton>
+          <UiBadge class="match-status" variant="outline">
             匹配 {{ matchedBlocks.length }} / 总块 {{ blocks.length }}
-          </span>
+          </UiBadge>
         </div>
       </div>
 
@@ -126,25 +141,26 @@
             </div>
           </div>
           <div class="onering-source-list">
-            <button
+            <UiButton
               v-for="source in oneRingSourceStats"
               :key="source.key"
-              type="button"
+              variant="ghost"
+              size="sm"
               class="onering-source-chip"
               @click="scrollToBlock(source.firstBlockIndex)"
             >
               <span class="source-frontend">{{ source.frontendSource }}</span>
               <span class="source-count">{{ source.count }} 块</span>
               <span class="source-senders">{{ source.senders.join(' / ') }}</span>
-            </button>
+            </UiButton>
           </div>
         </section>
 
         <nav class="jump-index" :class="{ 'jump-index-dense': useDenseJumpIndex }" aria-label="上下文块跳转索引">
-          <button
+          <UiButton
             v-for="block in visibleBlocks"
             :key="`jump-${block.index}`"
-            type="button"
+            variant="ghost"
             class="jump-chip"
             :title="jumpChipTitle(block)"
             :class="[roleClass(displayRole(block)), userBlockJumpClass(block), oneRingJumpClass(block), { matched: isBlockMatched(block.index), active: activeBlockIndex === block.index }]"
@@ -157,7 +173,7 @@
             <span class="jump-source-line">
               {{ jumpSourceLabel(block) }}
             </span>
-          </button>
+          </UiButton>
         </nav>
 
         <main class="block-list">
@@ -172,13 +188,17 @@
               <div class="block-identity">
                 <span class="block-index">#{{ block.index }}</span>
                 <span class="block-role">{{ normalizeRoleLabel(displayRole(block)) }}</span>
-                <span v-if="getUserBlockBadge(block)" class="block-badge" :class="getUserBlockBadge(block)?.className">
+                <UiBadge
+                  v-if="getUserBlockBadge(block)"
+                  class="block-badge"
+                  :variant="getUserBlockBadgeVariant(block)"
+                >
                   {{ getUserBlockBadge(block)?.label }}
-                </span>
-                <span v-if="getDisplayOneRingMeta(block)" class="block-badge badge-onering-source">
+                </UiBadge>
+                <UiBadge v-if="getDisplayOneRingMeta(block)" class="block-badge" variant="info">
                   {{ getDisplayOneRingMeta(block)?.isDetachedUserMarker ? '分离User标记' : 'OneRing来源' }}
-                </span>
-                <span class="block-type">{{ block.contentType }}</span>
+                </UiBadge>
+                <UiBadge class="block-type" variant="outline">{{ block.contentType }}</UiBadge>
               </div>
               <div class="block-header-right">
                 <div class="block-meta">
@@ -191,26 +211,28 @@
                     附件 {{ block.attachments.length }} 个：{{ attachmentCountsText(block) }}
                   </span>
                 </div>
-                <button
+                <UiButton
                   v-if="displayRole(block) === 'assistant'"
-                  type="button"
                   class="moonlight-run-button"
+                  variant="outline"
+                  size="xs"
                   title="以本 AI 块为 query，运行池月1号上下文分布验证"
                   aria-label="池月1号算法验证"
                   @click="runMoonlightForBlock(block)"
                 >
-                  <span class="material-symbols-outlined">monitoring</span>
+                  <template #leading>
+                    <span class="material-symbols-outlined">monitoring</span>
+                  </template>
                   池月1号
-                </button>
-                <button
-                  type="button"
+                </UiButton>
+                <UiIconButton
                   class="block-copy-button"
+                  label="复制本块"
                   title="复制本块"
-                  aria-label="复制本块"
                   @click="copySingleBlock(block)"
                 >
                   <span class="material-symbols-outlined">content_copy</span>
-                </button>
+                </UiIconButton>
               </div>
             </header>
 
@@ -251,15 +273,15 @@
             </div>
           </div>
           <div class="moonlight-modal-actions">
-            <button type="button" class="btn-secondary" @click="copyMoonlightReportJson">
+            <UiButton variant="outline" size="sm" @click="copyMoonlightReportJson">
               复制 JSON
-            </button>
-            <button type="button" class="btn-secondary" @click="copyMoonlightReportMarkdown">
+            </UiButton>
+            <UiButton variant="outline" size="sm" @click="copyMoonlightReportMarkdown">
               复制 MD
-            </button>
-            <button type="button" class="icon-button" aria-label="关闭" @click="closeMoonlightModal">
+            </UiButton>
+            <UiIconButton label="关闭" title="关闭" @click="closeMoonlightModal">
               <span class="material-symbols-outlined">close</span>
-            </button>
+            </UiIconButton>
           </div>
         </header>
 
@@ -306,25 +328,17 @@
           </div>
 
           <section class="moonlight-config">
-            <label>
-              <span>移除最高频词</span>
-              <input v-model.number="moonlightOptions.topStopwordCount" type="number" min="0" max="200" step="1" />
-            </label>
-            <label>
-              <span>最小词长</span>
-              <input v-model.number="moonlightOptions.minTermLength" type="number" min="1" max="8" step="1" />
-            </label>
-            <label>
-              <input v-model="moonlightOptions.useCharBigrams" type="checkbox" />
-              <span>中文2-gram</span>
-            </label>
-            <label>
-              <input v-model="moonlightOptions.useCharTrigrams" type="checkbox" />
-              <span>中文3-gram</span>
-            </label>
-            <button type="button" class="btn-secondary" @click="rerunMoonlightWithCurrentOptions">
+            <UiField label="移除最高频词" for-id="moonlight-top-stopword-count" size="sm">
+              <UiInput id="moonlight-top-stopword-count" v-model.number="moonlightOptions.topStopwordCount" type="number" min="0" max="200" step="1" size="sm" />
+            </UiField>
+            <UiField label="最小词长" for-id="moonlight-min-term-length" size="sm">
+              <UiInput id="moonlight-min-term-length" v-model.number="moonlightOptions.minTermLength" type="number" min="1" max="8" step="1" size="sm" />
+            </UiField>
+            <AppCheckbox v-model="moonlightOptions.useCharBigrams" label="中文2-gram" />
+            <AppCheckbox v-model="moonlightOptions.useCharTrigrams" label="中文3-gram" />
+            <UiButton variant="outline" size="sm" @click="rerunMoonlightWithCurrentOptions">
               应用配置重算
-            </button>
+            </UiButton>
           </section>
 
           <section class="moonlight-spectrum" aria-label="线性证据密度图">
@@ -438,27 +452,27 @@
           <section class="moonlight-term-grid">
             <div>
               <strong>保留高贡献词</strong>
-              <span v-for="term in moonlightReport.query.topQueryTerms.slice(0, 24)" :key="`top-${term.term}`" class="term-chip">
+              <UiBadge v-for="term in moonlightReport.query.topQueryTerms.slice(0, 24)" :key="`top-${term.term}`" class="term-chip" variant="info">
                 {{ term.term }} · idf {{ term.idf.toFixed(2) }}
-              </span>
+              </UiBadge>
             </div>
             <div>
               <strong>被移除高频词</strong>
-              <span v-for="term in moonlightReport.query.removedHighFrequencyTerms.slice(0, 24)" :key="`removed-${term.term}`" class="term-chip muted">
+              <UiBadge v-for="term in moonlightReport.query.removedHighFrequencyTerms.slice(0, 24)" :key="`removed-${term.term}`" class="term-chip" variant="secondary">
                 {{ term.term }} · {{ term.corpusFrequency }}
-              </span>
+              </UiBadge>
             </div>
             <div>
               <strong>数字/版本/标识符</strong>
-              <span v-for="term in moonlightSpecialTerms" :key="`special-${term.term}`" class="term-chip info">
+              <UiBadge v-for="term in moonlightSpecialTerms" :key="`special-${term.term}`" class="term-chip" variant="outline">
                 {{ term.term }} · df {{ term.documentFrequency }}
-              </span>
+              </UiBadge>
             </div>
             <div>
               <strong>零命中具体词</strong>
-              <span v-for="term in moonlightReport.query.zeroHitTerms.slice(0, 24)" :key="`zero-${term.term}`" class="term-chip danger">
+              <UiBadge v-for="term in moonlightReport.query.zeroHitTerms.slice(0, 24)" :key="`zero-${term.term}`" class="term-chip" variant="warning">
                 {{ term.term }}
-              </span>
+              </UiBadge>
             </div>
           </section>
           </div>
@@ -474,50 +488,52 @@
             <h3 id="onering-config-title">OneRing 热配置</h3>
             <p>保存后会写入 Plugin/OneRing/OneRingConfig.json，运行中的 OneRing 会通过 chokidar 自动热加载。</p>
           </div>
-          <button type="button" class="icon-button" aria-label="关闭" @click="closeOneRingConfigModal">
+          <UiIconButton label="关闭" title="关闭" @click="closeOneRingConfigModal">
             <span class="material-symbols-outlined">close</span>
-          </button>
+          </UiIconButton>
         </header>
 
         <div class="modal-body">
-          <label class="config-toggle-row">
-            <input v-model="oneRingConfigDraft.enabled" type="checkbox" />
+          <div class="config-toggle-row">
+            <AppCheckbox v-model="oneRingConfigDraft.enabled" aria-label="启用 OneRing" />
             <span>
               <strong>启用 OneRing</strong>
               <small>false 时插件直接透传 messages。</small>
             </span>
-          </label>
+          </div>
 
           <label class="config-field">
             <span>来源标记输出位置</span>
-            <select v-model="oneRingConfigDraft.tailTagPlacement">
+            <UiSelect v-model="oneRingConfigDraft.tailTagPlacement">
               <option value="inline">inline：追加到原 user/assistant 块内部</option>
               <option value="system_user_block">system_user_block：拆成独立 user 伪系统提示块</option>
-            </select>
+            </UiSelect>
           </label>
 
           <label class="config-field">
             <span>最大补充后上下文 block 数</span>
-            <input v-model.number="oneRingConfigDraft.maxContextBlocks" type="number" min="1" step="1" />
+            <UiInput v-model.number="oneRingConfigDraft.maxContextBlocks" type="number" min="1" step="1" />
           </label>
 
-          <label class="config-toggle-row">
-            <input v-model="oneRingConfigDraft.timeInsert" type="checkbox" />
+          <div class="config-toggle-row">
+            <AppCheckbox v-model="oneRingConfigDraft.timeInsert" aria-label="允许时间线内插入" />
             <span>
               <strong>允许时间线内插入</strong>
               <small>true 时按 OneRing 时间戳合并补入消息；false 时不做时间线内插入。</small>
             </span>
-          </label>
+          </div>
         </div>
 
         <footer class="modal-actions">
-          <button type="button" class="btn-secondary" @click="closeOneRingConfigModal" :disabled="isOneRingConfigSaving">
+          <UiButton variant="outline" @click="closeOneRingConfigModal" :disabled="isOneRingConfigSaving">
             取消
-          </button>
-          <button type="button" class="btn-primary" @click="saveOneRingConfig" :disabled="isOneRingConfigSaving">
-            <span v-if="isOneRingConfigSaving" class="material-symbols-outlined spinning">sync</span>
+          </UiButton>
+          <UiButton variant="primary" @click="saveOneRingConfig" :disabled="isOneRingConfigSaving">
+            <template v-if="isOneRingConfigSaving" #leading>
+              <span class="material-symbols-outlined spinning">sync</span>
+            </template>
             保存
-          </button>
+          </UiButton>
         </footer>
         </section>
       </div>
@@ -528,6 +544,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, type ComponentPublicInstance } from 'vue'
 import { systemApi } from '@/api'
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiField from '@/components/ui/UiField.vue'
+import UiIconButton from '@/components/ui/UiIconButton.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
+import UiSelect from '@/components/ui/UiSelect.vue'
 import type { FinalContextBlockSummary, FinalContextListItem, FinalContextSnapshot, OneRingConfig } from '@/types/api.system'
 import { copyToClipboard, showMessage } from '@/utils'
 import {
@@ -958,6 +982,17 @@ function getUserBlockBadge(block: FinalContextBlockSummary): { label: string; cl
   return null
 }
 
+function getUserBlockBadgeVariant(block: FinalContextBlockSummary): 'secondary' | 'warning' | 'info' {
+  const badge = getUserBlockBadge(block)
+  if (badge?.className === 'badge-pseudo-system') {
+    return 'warning'
+  }
+  if (badge?.className === 'badge-ai-source-notice') {
+    return 'info'
+  }
+  return 'secondary'
+}
+
 function jumpSpeakerLabel(block: FinalContextBlockSummary): string {
   const roleLabel = normalizeRoleLabel(displayRole(block)).replace(' 块', '')
   const oneRingMeta = getDisplayOneRingMeta(block)
@@ -1263,10 +1298,6 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--tertiary-bg);
   color: var(--primary-text);
 }
 
@@ -1275,20 +1306,9 @@ onMounted(() => {
   color: var(--highlight-text);
 }
 
-.snapshot-selector select {
-  padding: 4px 6px;
-  border: none;
-  background: transparent;
-  color: var(--primary-text);
-  font: inherit;
-  outline: none;
+.snapshot-selector :deep(.ui-select) {
   max-width: 320px;
-}
-
-/* 修复深色模式下原生下拉项默认白底问题 */
-.snapshot-selector select option {
-  background: var(--secondary-bg);
-  color: var(--primary-text);
+  min-width: 220px;
 }
 
 .snapshot-selector small {
@@ -1311,9 +1331,9 @@ onMounted(() => {
 .jump-index,
 .context-block,
 .empty-state {
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
+  background: transparent;
 }
 
 .context-header {
@@ -1321,7 +1341,7 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: var(--space-4);
-  padding: 16px;
+  padding: var(--space-4);
 }
 
 .context-title {
@@ -1358,22 +1378,12 @@ onMounted(() => {
   display: flex;
   gap: var(--space-3);
   align-items: center;
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
 }
 
 .context-search {
   flex: 1;
   min-width: 260px;
-  padding: 10px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  color: var(--primary-text);
-}
-
-.match-status {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
 }
 
 .moonlight-modal {
@@ -1386,7 +1396,7 @@ onMounted(() => {
   overflow: hidden;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
+  background: var(--primary-bg);
   box-shadow: var(--shadow-lg);
 }
 
@@ -1426,9 +1436,11 @@ onMounted(() => {
   flex-direction: column;
   gap: var(--space-3);
   padding: 14px 16px;
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 55%, var(--border-color));
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
   border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, color-mix(in srgb, var(--highlight-bg) 18%, var(--secondary-bg)), var(--secondary-bg));
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--highlight-text) 8%, transparent), transparent 42%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .moonlight-header,
@@ -1498,47 +1510,38 @@ onMounted(() => {
   gap: 8px;
 }
 
-.moonlight-label,
-.term-chip {
+.moonlight-label {
   display: inline-flex;
   align-items: center;
   width: fit-content;
   max-width: 100%;
   padding: 3px 8px;
   border-radius: var(--radius-full);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 45%, var(--border-color));
-  background: color-mix(in srgb, var(--highlight-bg) 35%, var(--tertiary-bg));
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 24%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
   color: var(--highlight-text);
   font-size: var(--font-size-helper);
+  word-break: break-all;
+}
+
+.term-chip {
+  white-space: normal;
   word-break: break-all;
 }
 
 .moonlight-config {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 14px;
-  align-items: center;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
+  gap: var(--space-3);
+  align-items: flex-end;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
-  background: var(--primary-bg);
+  background: transparent;
 }
 
-.moonlight-config label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
-.moonlight-config input[type="number"] {
+.moonlight-config :deep(.ui-field) {
   width: 72px;
-  padding: 5px 7px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
-  color: var(--primary-text);
 }
 
 .moonlight-spectrum {
@@ -1546,9 +1549,9 @@ onMounted(() => {
   flex-direction: column;
   gap: 10px;
   padding: 12px;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
-  background: var(--primary-bg);
+  background: transparent;
 }
 
 .moonlight-linear-map {
@@ -1556,9 +1559,9 @@ onMounted(() => {
   width: 100%;
   min-height: 34px;
   overflow: hidden;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .moonlight-linear-segment {
@@ -1653,7 +1656,7 @@ onMounted(() => {
 }
 
 .legend-peak {
-  background: var(--danger-text, #ff5c7a);
+  background: var(--danger-text);
 }
 
 .legend-valley {
@@ -1664,11 +1667,11 @@ onMounted(() => {
   position: relative;
   height: 220px;
   overflow: hidden;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--highlight-bg) 14%, transparent), transparent),
-    var(--tertiary-bg);
+    linear-gradient(180deg, color-mix(in srgb, var(--highlight-text) 6%, transparent), transparent),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
   color: var(--highlight-text);
 }
 
@@ -1725,19 +1728,16 @@ onMounted(() => {
   border: 2px solid var(--primary-bg);
   border-radius: var(--radius-full);
   background: var(--highlight-text);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--highlight-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--highlight-text) 38%, transparent);
   cursor: pointer;
   transform: translate(-50%, -50%);
 }
 
 .moonlight-curve-point.role-system {
   background: var(--info-text);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--info-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--info-text) 38%, transparent);
 }
 
 .moonlight-curve-point.role-user {
   background: var(--success-text);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--success-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--success-text) 38%, transparent);
 }
 
 .moonlight-curve-point.role-assistant {
@@ -1746,12 +1746,10 @@ onMounted(() => {
 
 .moonlight-curve-point.role-tool {
   background: var(--warning-text);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning-text) 60%, transparent), 0 0 10px color-mix(in srgb, var(--warning-text) 38%, transparent);
 }
 
 .moonlight-curve-point.peak {
-  border-color: var(--danger-text, #ff5c7a);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger-text, #ff5c7a) 72%, transparent), 0 0 14px color-mix(in srgb, var(--danger-text, #ff5c7a) 55%, transparent);
+  border-color: var(--danger-text);
 }
 
 .moonlight-curve-point.valley {
@@ -1804,9 +1802,9 @@ onMounted(() => {
   min-width: 28px;
   height: 112px;
   padding: 0;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-sm);
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   cursor: pointer;
   overflow: hidden;
 }
@@ -1866,50 +1864,21 @@ onMounted(() => {
   gap: 6px;
   min-width: 0;
   padding: 10px;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
-  background: var(--primary-bg);
+  background: transparent;
 }
 
 .moonlight-term-grid > div strong {
   flex: 0 0 100%;
 }
 
-.term-chip.muted {
-  color: var(--secondary-text);
-  border-color: var(--border-color);
-  background: var(--tertiary-bg);
-}
-
-.term-chip.info {
-  color: var(--info-text);
-  border-color: var(--info-text);
-  background: var(--info-bg);
-}
-
-.term-chip.danger {
-  color: var(--warning-text);
-  border-color: var(--warning-text);
-  background: var(--warning-bg);
-}
-
 .moonlight-run-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 30px;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 55%, var(--border-color));
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--highlight-bg) 35%, var(--secondary-bg));
-  color: var(--highlight-text);
-  cursor: pointer;
-  font-size: var(--font-size-helper);
-  font-weight: 700;
 }
 
 .moonlight-run-button .material-symbols-outlined {
-  font-size: 17px !important;
+  font-size: 14px !important;
 }
 
 .summary-card {
@@ -1943,9 +1912,11 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: 14px 16px;
-  border-color: color-mix(in srgb, var(--highlight-text) 50%, var(--border-color));
-  background: linear-gradient(135deg, color-mix(in srgb, var(--highlight-bg) 16%, var(--secondary-bg)), var(--secondary-bg));
+  padding: var(--space-4);
+  border-color: color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--highlight-text) 6%, transparent), transparent 42%),
+    transparent;
 }
 
 .onering-source-title {
@@ -1976,15 +1947,14 @@ onMounted(() => {
 }
 
 .onering-source-chip {
+  border-color: color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  border-radius: var(--radius-full);
+}
+
+.onering-source-chip :deep(.ui-button__content) {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 60%, var(--border-color));
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--highlight-bg) 40%, var(--tertiary-bg));
-  color: var(--primary-text);
-  cursor: pointer;
+  gap: var(--space-2);
 }
 
 .source-frontend {
@@ -2024,20 +1994,24 @@ onMounted(() => {
   width: var(--jump-chip-width);
   height: 58px;
   min-width: 0;
+  justify-content: stretch;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  border-color: color-mix(in srgb, var(--border-color) 78%, transparent);
+  overflow: hidden;
+  text-align: left;
+}
+
+.jump-chip :deep(.ui-button__content) {
   display: grid;
   grid-template-rows: 20px 18px;
   grid-template-columns: minmax(0, 1fr);
   align-content: center;
   gap: 3px;
-  padding: 7px 9px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
-  color: var(--primary-text);
-  cursor: pointer;
+  width: 100%;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  text-align: left;
 }
 
 .jump-main,
@@ -2076,8 +2050,8 @@ onMounted(() => {
 
 .jump-chip.jump-has-onering-source,
 .jump-chip.jump-has-onering-ai-source {
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-bg) 60%, var(--tertiary-bg));
+  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 6%, transparent);
 }
 
 .jump-chip.jump-has-onering-ai-source {
@@ -2090,13 +2064,13 @@ onMounted(() => {
 
 .jump-chip.jump-badge-pseudo-system {
   border-color: var(--info-text);
-  background: color-mix(in srgb, var(--info-bg) 70%, var(--tertiary-bg));
+  background: color-mix(in srgb, var(--info-text) 8%, transparent);
   color: var(--info-text);
 }
 
 .jump-chip.jump-badge-system-notice {
   border-color: var(--warning-text);
-  background: color-mix(in srgb, var(--warning-bg) 70%, var(--tertiary-bg));
+  background: color-mix(in srgb, var(--warning-text) 8%, transparent);
   color: var(--warning-text);
 }
 
@@ -2126,8 +2100,8 @@ onMounted(() => {
   justify-content: space-between;
   gap: var(--space-3);
   padding: 12px 16px;
-  border-bottom: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .block-identity,
@@ -2152,63 +2126,17 @@ onMounted(() => {
   font-weight: 700;
 }
 
-.block-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
-  font-size: var(--font-size-helper);
-  font-weight: 700;
-  border: 1px solid transparent;
-}
-
-.badge-pseudo-system {
-  color: var(--info-text);
-  background: var(--info-bg);
-  border-color: var(--info-text);
-}
-
-.badge-system-notice {
-  color: var(--warning-text);
-  background: var(--warning-bg);
-  border-color: var(--warning-text);
-}
-
-.badge-ai-source-notice,
-.badge-onering-source {
-  color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-bg) 70%, var(--tertiary-bg));
-  border-color: var(--highlight-text);
-}
-
-.block-type,
 .block-meta {
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
 }
 
 .block-copy-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 auto;
-  border: 1px solid var(--border-color);
   border-radius: var(--radius-full);
-  background: var(--secondary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-}
-
-.block-copy-button:hover {
-  border-color: var(--highlight-text);
-  color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-bg) 35%, var(--secondary-bg));
 }
 
 .block-copy-button .material-symbols-outlined {
-  font-size: 18px !important;
+  font-size: 16px !important;
 }
 
 .attachment-panel {
@@ -2297,7 +2225,7 @@ onMounted(() => {
   justify-content: center;
   box-sizing: border-box;
   padding: 72px 12px 12px;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-backdrop-strong);
   overflow: hidden;
 }
 
@@ -2309,7 +2237,7 @@ onMounted(() => {
   overflow: auto;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
+  background: var(--primary-bg);
   box-shadow: var(--shadow-lg);
 }
 
@@ -2331,19 +2259,6 @@ onMounted(() => {
   margin: 4px 0 0;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
-}
-
-.icon-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-full);
-  background: var(--tertiary-bg);
-  color: var(--primary-text);
-  cursor: pointer;
 }
 
 .modal-body {
@@ -2368,25 +2283,12 @@ onMounted(() => {
   color: var(--primary-text);
 }
 
-.config-field input,
-.config-field select {
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--input-bg);
-  color: var(--primary-text);
-}
-
 .config-toggle-row {
   align-items: flex-start;
   padding: 12px;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   border-radius: var(--radius-md);
-  background: var(--primary-bg);
-}
-
-.config-toggle-row input {
-  margin-top: 3px;
+  background: transparent;
 }
 
 .config-toggle-row span {

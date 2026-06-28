@@ -16,20 +16,24 @@
       <template #left-actions>
         <div class="pane-toolbar pane-toolbar--left">
           <div class="pane-toolbar-main">
-            <button type="button" @click="openCreateDialog" class="btn-primary btn-sm btn-sm-touch" title="新建 Toolbox 映射">
-              <span class="material-symbols-outlined">add</span>
+            <UiButton @click="openCreateDialog" variant="primary" size="sm" title="新建 Toolbox 映射">
+              <template #leading>
+                <span class="material-symbols-outlined">add</span>
+              </template>
               新建
-            </button>
-            <button
-              type="button"
+            </UiButton>
+            <UiButton
               @click="saveToolboxMap"
               :disabled="mapSaving || !mapDirty"
-              class="btn-success btn-sm btn-sm-touch"
+              variant="primary"
+              size="sm"
               title="保存映射表"
             >
-              <span class="material-symbols-outlined">save</span>
+              <template #leading>
+                <span class="material-symbols-outlined">save</span>
+              </template>
               {{ mapSaving ? '保存中…' : mapDirty ? '保存' : '已保存' }}
-            </button>
+            </UiButton>
             <details class="pane-toolbar-menu">
               <summary class="pane-toolbar-menu-trigger" aria-label="更多操作" title="更多操作">
                 <span class="material-symbols-outlined">more_vert</span>
@@ -42,14 +46,13 @@
               </div>
             </details>
           </div>
-          <span
-            class="pane-toolbar-chip"
-            :class="{ 'pane-toolbar-chip--active': mapDirty }"
+          <UiBadge
+            :variant="mapDirty ? 'warning' : 'success'"
             :title="mapDirty ? '映射未保存' : '映射已同步'"
             :aria-label="mapDirty ? '映射未保存' : '映射已同步'"
           >
             {{ mapDirty ? '映射未保存' : '映射已同步' }}
-          </span>
+          </UiBadge>
         </div>
       </template>
 
@@ -76,15 +79,15 @@
       <template #left-content>
         <div class="toolbox-search">
           <span class="material-symbols-outlined search-icon">search</span>
-          <input
+          <UiInput
             v-model="searchQuery"
             type="text"
             placeholder="搜索别名、文件名或描述…"
             class="search-input"
-          >
-          <button v-if="searchQuery" @click="searchQuery = ''" class="search-clear" title="清除">
+          />
+          <UiIconButton v-if="searchQuery" @click="searchQuery = ''" class="search-clear" label="清除搜索" title="清除">
             <span class="material-symbols-outlined">close</span>
-          </button>
+          </UiIconButton>
         </div>
 
         <div class="toolbox-map-list">
@@ -92,12 +95,12 @@
             <div class="toolbox-entry-row">
               <label>别名 (Alias):</label>
               <div class="input-validated">
-                <input
+                <UiInput
                   type="text"
                   v-model="entry.alias"
                   placeholder="例如：MyToolBox（仅英文、数字、下划线）"
-                  :class="{ 'input-error': entry.alias.trim() && !isValidAlias(entry.alias.trim()) }"
-                >
+                  :invalid="Boolean(entry.alias.trim()) && !isValidAlias(entry.alias.trim())"
+                />
                 <span v-if="entry.alias.trim() && !isValidAlias(entry.alias.trim())" class="validation-hint">
                   仅允许英文字母、数字和下划线
                 </span>
@@ -106,13 +109,13 @@
             <div class="toolbox-entry-row">
               <label>文件名:</label>
               <div class="input-validated">
-                <input
+                <UiInput
                   type="text"
                   v-model="entry.file"
                   placeholder="例如：MyTool.txt"
                   list="tvs-files-datalist"
-                  :class="{ 'input-error': entry.file.trim() && !isValidToolboxFileName(entry.file.trim()) }"
-                >
+                  :invalid="Boolean(entry.file.trim()) && !isValidToolboxFileName(entry.file.trim())"
+                />
                 <span v-if="entry.file.trim() && !isValidToolboxFileName(entry.file.trim())" class="validation-hint">
                   文件名须以 .txt 或 .md 结尾，不可含非法字符
                 </span>
@@ -120,26 +123,31 @@
             </div>
             <div class="toolbox-entry-row">
               <label>描述:</label>
-              <input
+              <UiInput
                 type="text"
                 v-model="entry.description"
                 placeholder="工具描述…"
                 maxlength="200"
-              >
+              />
             </div>
             <div class="toolbox-entry-actions">
-              <button
+              <UiButton
                 @click="selectToolboxFile(entry.file)"
-                class="btn-secondary btn-sm btn-sm-touch"
+                variant="outline"
+                size="sm"
                 :disabled="!entry.file.trim() || !isValidToolboxFileName(entry.file.trim())"
               >
-                <span class="material-symbols-outlined">edit</span>
+                <template #leading>
+                  <span class="material-symbols-outlined">edit</span>
+                </template>
                 编辑
-              </button>
-              <button @click="removeToolboxEntry(entry.localId)" class="btn-danger btn-sm btn-sm-touch">
-                <span class="material-symbols-outlined">delete</span>
+              </UiButton>
+              <UiButton @click="removeToolboxEntry(entry.localId)" variant="danger" size="sm">
+                <template #leading>
+                  <span class="material-symbols-outlined">delete</span>
+                </template>
                 删除
-              </button>
+              </UiButton>
             </div>
           </div>
 
@@ -151,7 +159,7 @@
           <div v-if="toolboxMap.length === 0" class="empty-state">
             <span class="material-symbols-outlined">inventory_2</span>
             <p>暂无 Toolbox 映射</p>
-            <button @click="openCreateDialog" class="btn-primary">新建第一个 Toolbox</button>
+            <UiButton @click="openCreateDialog" variant="primary">新建第一个 Toolbox</UiButton>
           </div>
         </div>
       </template>
@@ -160,22 +168,24 @@
         <div v-if="editingFile" class="pane-toolbar pane-toolbar--right">
           <div class="pane-toolbar-main">
             <div class="editor-mode-toggle">
-              <button :class="['mode-btn', { active: editorMode === 'visual' }]" @click="switchEditorMode('visual')" title="可视化 Fold 块编辑">
+              <UiButton :class="['mode-btn', { active: editorMode === 'visual' }]" variant="ghost" size="sm" @click="switchEditorMode('visual')" title="可视化 Fold 块编辑">
                 <span class="material-symbols-outlined">view_agenda</span> 可视化
-              </button>
-              <button :class="['mode-btn', { active: editorMode === 'raw' }]" @click="switchEditorMode('raw')" title="原始文本编辑">
+              </UiButton>
+              <UiButton :class="['mode-btn', { active: editorMode === 'raw' }]" variant="ghost" size="sm" @click="switchEditorMode('raw')" title="原始文本编辑">
                 <span class="material-symbols-outlined">code</span> 原始
-              </button>
+              </UiButton>
             </div>
-            <button
-              type="button"
+            <UiButton
               @click="saveToolboxFile"
               :disabled="!fileDirty || fileSaving"
-              class="btn-success btn-sm btn-sm-touch"
+              variant="primary"
+              size="sm"
             >
-              <span class="material-symbols-outlined">save</span>
+              <template #leading>
+                <span class="material-symbols-outlined">save</span>
+              </template>
               {{ fileSaving ? '保存中…' : fileDirty ? '保存文件' : '已保存' }}
-            </button>
+            </UiButton>
             <details class="pane-toolbar-menu">
               <summary class="pane-toolbar-menu-trigger" aria-label="文件更多操作" title="文件更多操作">
                 <span class="material-symbols-outlined">more_vert</span>
@@ -224,62 +234,65 @@
                 <div class="fold-block-card card" :class="{ 'block-hidden': block.threshold > simulatedThreshold }">
                   <div class="fold-block-header">
                     <span class="block-index">Block {{ i + 1 }}</span>
-                    <span class="block-threshold-badge" :class="thresholdClass(block.threshold)">
+                    <UiBadge class="block-threshold-badge" :variant="thresholdVariant(block.threshold)">
                       {{ block.threshold.toFixed(2) }}
-                    </span>
-                    <span v-if="block.threshold > simulatedThreshold" class="block-folded-badge">折叠中</span>
+                    </UiBadge>
+                    <UiBadge v-if="block.threshold > simulatedThreshold" variant="danger" class="block-folded-badge">折叠中</UiBadge>
                     <span class="flex-spacer"></span>
-                    <button
+                    <UiIconButton
                       @click="removeFoldBlock(i)"
-                      class="btn-danger btn-sm"
+                      label="删除此块"
+                      class="fold-block-delete"
                       :disabled="foldBlocks.length <= 1"
                       title="删除此块"
                     >
                       <span class="material-symbols-outlined">close</span>
-                    </button>
+                    </UiIconButton>
                   </div>
                   <div class="fold-block-meta">
                     <div class="fold-block-field">
                       <label>阈值:</label>
                       <input type="range" v-model.number="block.threshold" min="0" max="1" step="0.05" class="block-threshold-slider">
-                      <input type="number" v-model.number="block.threshold" min="0" max="1" step="0.05" class="block-threshold-input">
+                      <UiInput type="number" v-model.number="block.threshold" min="0" max="1" step="0.05" class="block-threshold-input" size="sm" />
                     </div>
                     <div class="fold-block-field">
                       <label>语义描述:</label>
-                      <input type="text" v-model="block.description" placeholder="用于按块独立语义匹配（为空则按工具箱整体描述匹配）" class="block-desc-input">
+                      <UiInput type="text" v-model="block.description" placeholder="用于按块独立语义匹配（为空则按工具箱整体描述匹配）" class="block-desc-input" />
                     </div>
                   </div>
-                  <textarea
+                  <UiTextarea
                     v-model="block.content"
                     class="fold-block-content"
                     rows="6"
                     spellcheck="false"
                     placeholder="输入此块的内容…"
-                  ></textarea>
+                  />
                 </div>
                 <div class="block-divider">
-                  <button @click="addFoldBlockAfter(i)" class="btn-add-block" title="在此处插入新块">
+                  <UiIconButton @click="addFoldBlockAfter(i)" class="add-block-button" label="在此处插入新块" title="在此处插入新块">
                     <span class="material-symbols-outlined">add_circle</span>
-                  </button>
+                  </UiIconButton>
                 </div>
               </template>
 
-              <button @click="addFoldBlockAtEnd" class="btn-secondary btn-sm add-block-final">
-                <span class="material-symbols-outlined">add</span>
+              <UiButton @click="addFoldBlockAtEnd" variant="outline" size="sm" class="add-block-final">
+                <template #leading>
+                  <span class="material-symbols-outlined">add</span>
+                </template>
                 新增 Block
-              </button>
+              </UiButton>
             </div>
           </template>
 
           <!-- Raw mode -->
           <template v-if="editorMode === 'raw'">
-            <textarea
+            <UiTextarea
               v-model="fileContent"
               spellcheck="false"
               rows="20"
               placeholder="从左侧选择一个 Toolbox 以编辑其关联文件…"
               class="file-content-editor"
-            ></textarea>
+            />
           </template>
 
           <!-- No file selected placeholder -->
@@ -309,13 +322,13 @@
       <div class="toolbox-entry-row">
         <label>别名 (Alias):</label>
         <div class="input-validated">
-          <input
+          <UiInput
             ref="createAliasRef"
             v-model="newAlias"
             placeholder="例如：VCPMyToolBox"
-            :class="{ 'input-error': newAlias.trim() && !isValidAlias(newAlias.trim()) }"
+            :invalid="Boolean(newAlias.trim()) && !isValidAlias(newAlias.trim())"
             @keydown.esc="showCreateDialog = false"
-          >
+          />
           <span v-if="newAlias.trim() && !isValidAlias(newAlias.trim())" class="validation-hint">
             仅允许英文字母、数字和下划线
           </span>
@@ -324,12 +337,12 @@
       <div class="toolbox-entry-row">
         <label>文件名:</label>
         <div class="input-validated">
-          <input
+          <UiInput
             v-model="newFile"
             placeholder="例如：MyTool.txt（无后缀自动加 .txt）"
             list="tvs-files-datalist"
             @keydown.esc="showCreateDialog = false"
-          >
+          />
           <span v-if="newFile.trim() && !isValidFileName(newFile.trim())" class="validation-hint">
             文件名包含非法字符
           </span>
@@ -343,22 +356,23 @@
       </div>
       <div class="toolbox-entry-row">
         <label>描述:</label>
-        <input
+        <UiInput
           v-model="newDesc"
           placeholder="工具箱描述…"
           maxlength="200"
           @keydown.esc="showCreateDialog = false"
-        >
+        />
       </div>
       <div class="dialog-actions">
-        <button @click="showCreateDialog = false" class="btn-secondary btn-sm">取消</button>
-        <button
+        <UiButton @click="showCreateDialog = false" variant="outline" size="sm">取消</UiButton>
+        <UiButton
           @click="confirmCreateToolbox"
-          class="btn-primary btn-sm"
+          variant="primary"
+          size="sm"
           :disabled="!canCreate"
         >
           创建
-        </button>
+        </UiButton>
       </div>
           </div>
         </div>
@@ -375,6 +389,11 @@ import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
 import DualPaneEditor from '@/components/DualPaneEditor.vue'
 import BaseModal from '@/components/ui/BaseModal.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiIconButton from '@/components/ui/UiIconButton.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiTextarea from '@/components/ui/UiTextarea.vue'
 
 /* ── Types ── */
 interface ToolboxEntry {
@@ -418,7 +437,7 @@ const showCreateDialog = ref(false)
 const newAlias = ref('')
 const newFile = ref('')
 const newDesc = ref('')
-const createAliasRef = ref<HTMLInputElement | null>(null)
+const createAliasRef = ref<InstanceType<typeof UiInput> | null>(null)
 
 /* ── Computed ── */
 const fileDirty = computed(() => {
@@ -542,10 +561,10 @@ function serializeFoldBlocks(blocks: FoldBlock[]): string {
   }).join('\n\n')
 }
 
-function thresholdClass(t: number): string {
-  if (t <= 0.3) return 'threshold-low'
-  if (t <= 0.6) return 'threshold-mid'
-  return 'threshold-high'
+function thresholdVariant(t: number): 'success' | 'warning' | 'danger' {
+  if (t <= 0.3) return 'success'
+  if (t <= 0.6) return 'warning'
+  return 'danger'
 }
 
 /* ── Data Loading ── */
@@ -870,7 +889,7 @@ onBeforeRouteLeave(async () => {
 .collapsed-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   align-items: center;
 }
 
@@ -878,19 +897,29 @@ onBeforeRouteLeave(async () => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--tertiary-bg);
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--secondary-text);
   cursor: pointer;
   padding: 0;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.collapsed-item:hover {
+  background: var(--accent-bg);
+  color: var(--primary-text);
 }
 
 .collapsed-item.active {
-  color: var(--highlight-text);
-  border-color: color-mix(in srgb, var(--button-bg) 36%, var(--border-color));
+  color: var(--primary-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 52%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
 }
 
 .collapsed-label {
@@ -919,7 +948,7 @@ onBeforeRouteLeave(async () => {
 .toolbox-manager-page :deep(.pane-right .pane-header) {
   flex-wrap: nowrap;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .toolbox-manager-page :deep(.pane-right .pane-header h3) {
@@ -959,19 +988,8 @@ onBeforeRouteLeave(async () => {
 }
 
 .search-input {
-  width: 100%;
-  padding: 8px 32px 8px 36px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
-}
-
-.search-input:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-  border-color: var(--highlight-text);
+  padding-left: 36px;
+  padding-right: 32px;
 }
 
 .search-clear {
@@ -979,16 +997,6 @@ onBeforeRouteLeave(async () => {
   right: 4px;
   top: 50%;
   transform: translateY(-50%);
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--secondary-text);
-  padding: 4px;
-  line-height: 1;
-}
-
-.search-clear:hover {
-  color: var(--primary-text);
 }
 
 .search-clear .material-symbols-outlined {
@@ -1003,7 +1011,8 @@ onBeforeRouteLeave(async () => {
 }
 
 .toolbox-map-entry {
-  padding: var(--space-4);
+  padding: var(--space-3);
+  border-color: color-mix(in srgb, var(--border-color) 84%, transparent);
 }
 
 .toolbox-entry-row {
@@ -1019,33 +1028,14 @@ onBeforeRouteLeave(async () => {
   font-weight: 500;
 }
 
-.toolbox-entry-row input {
-  padding: 8px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
-}
-
-.toolbox-entry-row input:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-  border-color: var(--highlight-text);
-}
-
 .input-validated {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.input-error {
-  border-color: var(--danger-color) !important;
-}
-
 .validation-hint {
-  font-size: 11px;
+  font-size: var(--font-size-helper);
   color: var(--danger-text);
   line-height: 1.3;
 }
@@ -1060,36 +1050,20 @@ onBeforeRouteLeave(async () => {
 .editor-mode-toggle {
   display: flex;
   gap: 2px;
-  background: var(--input-bg);
-  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary-text) 4%, transparent);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
   padding: 2px;
 }
 
 .mode-btn {
-  display: flex;
-  align-items: center;
   gap: 4px;
-  padding: 4px 10px;
-  border: none;
-  background: transparent;
-  color: var(--secondary-text);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
   font-size: var(--font-size-helper);
-  transition:
-    color 0.15s ease,
-    background-color 0.15s ease,
-    transform 0.15s ease;
-  white-space: nowrap;
-}
-
-.mode-btn:hover {
-  color: var(--primary-text);
 }
 
 .mode-btn.active {
-  background: var(--highlight-text);
   color: var(--on-accent-text);
+  background: var(--button-bg);
 }
 
 .mode-btn .material-symbols-outlined {
@@ -1104,12 +1078,13 @@ onBeforeRouteLeave(async () => {
 
 .toolbox-editor-controls {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
   margin-bottom: var(--space-3);
-  padding: var(--space-3);
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
 }
 
 .editing-file-display {
@@ -1122,7 +1097,7 @@ onBeforeRouteLeave(async () => {
 }
 
 .editing-file-display .material-symbols-outlined {
-  font-size: var(--font-size-emphasis) !important;
+  font-size: 18px !important;
 }
 
 .dirty-indicator {
@@ -1156,20 +1131,15 @@ onBeforeRouteLeave(async () => {
   width: 100%;
   min-height: 400px;
   font-family: 'Consolas', 'Monaco', monospace;
-  resize: vertical;
-  padding: var(--space-3);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
   font-size: var(--font-size-body);
   line-height: 1.6;
 }
 
-.file-content-editor:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-  border-color: var(--highlight-text);
+.file-content-editor.ui-textarea {
+  min-height: 400px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: var(--font-size-body);
+  line-height: 1.6;
 }
 
 /* ── Visual Editor ── */
@@ -1177,10 +1147,11 @@ onBeforeRouteLeave(async () => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
-  padding: 10px 14px;
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-sm);
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
   margin-bottom: var(--space-3);
 }
 
@@ -1215,8 +1186,9 @@ onBeforeRouteLeave(async () => {
 }
 
 .fold-block-card {
-  padding: var(--space-4);
-  transition: opacity 0.2s;
+  padding: var(--space-3);
+  border-color: color-mix(in srgb, var(--border-color) 84%, transparent);
+  transition: opacity var(--transition-fast);
 }
 
 .fold-block-card.block-hidden {
@@ -1226,7 +1198,7 @@ onBeforeRouteLeave(async () => {
 .fold-block-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin-bottom: var(--space-3);
 }
 
@@ -1236,25 +1208,6 @@ onBeforeRouteLeave(async () => {
   color: var(--primary-text);
 }
 
-.block-threshold-badge {
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-helper);
-  font-weight: 500;
-}
-
-.threshold-low  { background: var(--success-bg); color: var(--success-text); }
-.threshold-mid  { background: var(--warning-bg); color: var(--warning-text); }
-.threshold-high { background: var(--danger-bg); color: var(--danger-text); }
-
-.block-folded-badge {
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-helper);
-  background: var(--danger-bg);
-  color: var(--danger-text);
-}
-
 .flex-spacer {
   flex: 1;
 }
@@ -1262,14 +1215,14 @@ onBeforeRouteLeave(async () => {
 .fold-block-meta {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   margin-bottom: var(--space-3);
 }
 
 .fold-block-field {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .fold-block-field label {
@@ -1287,73 +1240,52 @@ onBeforeRouteLeave(async () => {
 
 .block-threshold-input {
   width: 64px;
-  padding: 4px 6px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
   font-size: var(--font-size-helper);
   text-align: center;
 }
 
 .block-desc-input {
   flex: 1;
-  padding: 6px 10px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
   font-size: var(--font-size-body);
 }
 
 .fold-block-content {
   width: 100%;
   min-height: 100px;
-  padding: 8px 12px;
   font-family: 'Consolas', 'Monaco', monospace;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
   font-size: var(--font-size-body);
   line-height: 1.6;
-  resize: vertical;
 }
 
-.fold-block-content:focus-visible,
-.block-desc-input:focus-visible,
-.block-threshold-input:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-  border-color: var(--highlight-text);
+.fold-block-content.ui-textarea {
+  min-height: 100px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: var(--font-size-body);
+  line-height: 1.6;
 }
 
 .block-divider {
   display: flex;
   justify-content: center;
-  padding: 4px 0;
+  padding: var(--space-1) 0;
 }
 
-.btn-add-block {
+.add-block-button {
   opacity: 0;
-  transition: opacity 0.2s;
-  background: none;
   border: 1px dashed var(--border-color);
-  border-radius: var(--radius-sm);
-  padding: 2px 16px;
-  cursor: pointer;
-  color: var(--secondary-text);
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  width: 56px;
+  transition:
+    opacity var(--transition-fast),
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
-.btn-add-block .material-symbols-outlined {
+.add-block-button .material-symbols-outlined {
   font-size: 18px !important;
 }
 
-.block-divider:hover .btn-add-block,
-.btn-add-block:focus-visible {
+.block-divider:hover .add-block-button,
+.add-block-button:focus-visible {
   opacity: 1;
 }
 
@@ -1368,9 +1300,10 @@ onBeforeRouteLeave(async () => {
   gap: var(--space-3);
   align-items: center;
   margin-top: var(--space-3);
-  padding: var(--space-3);
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
 }
 
 /* ── Dialog ── */
@@ -1400,7 +1333,7 @@ onBeforeRouteLeave(async () => {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--font-size-helper);
   line-height: 1.3;
 }
 
@@ -1420,6 +1353,14 @@ onBeforeRouteLeave(async () => {
 @media (max-width: 1024px) {
   .file-content-editor {
     min-height: 300px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collapsed-item,
+  .fold-block-card,
+  .add-block-button {
+    transition: none;
   }
 }
 </style>

@@ -1,76 +1,95 @@
 <template>
   <section class="config-section active-section">
-    <p class="description">
-      在这里，您可以调整消息预处理器的执行顺序。按住左侧手柄拖动时会实时预览落位，
-      越靠上的插件越优先执行。
-    </p>
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiDirtyIndicator :dirty="hasChanges" :label="`已修改 ${changedItemCount} 项`" />
+        <UiBadge v-if="!hasChanges" variant="secondary">当前顺序未修改</UiBadge>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
+          {{ statusMessage }}
+        </UiBadge>
+        <UiButton
+          type="button"
+          variant="outline"
+          size="lg"
+          :disabled="!hasChanges || isSaving"
+          @click="resetOrder"
+        >
+          撤销
+        </UiButton>
+        <UiButton
+          type="button"
+          variant="primary"
+          size="lg"
+          :loading="isSaving"
+          :disabled="!hasChanges || isSaving"
+          @click="saveOrder"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          保存顺序
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
 
-    <div class="preprocessor-order-controls">
-      <span class="dirty-summary" :class="{ 'is-dirty': hasChanges }">
-        {{ hasChanges ? `已修改 ${changedItemCount} 项` : '当前顺序未修改' }}
-      </span>
-      <button
-        type="button"
-        class="btn-secondary"
-        :disabled="!hasChanges || isSaving"
-        @click="resetOrder"
-      >
-        撤销
-      </button>
-      <button
-        type="button"
-        class="btn-primary"
-        :disabled="!hasChanges || isSaving"
-        @click="saveOrder"
-      >
-        {{ isSaving ? '保存中…' : '保存顺序并热重载' }}
-      </button>
-      <span v-if="statusMessage" :class="['status-message', statusType]">
-        {{ statusMessage }}
-      </span>
-    </div>
-
-    <TransitionGroup
-      id="preprocessor-list"
-      tag="ul"
-      name="drag-sort"
-      class="draggable-list"
-      data-preprocessor-list="true"
+    <UiCard
+      class="preprocessor-order-panel"
+      variant="subtle"
+      size="sm"
+      title="预处理器执行顺序"
+      description="按住左侧手柄拖动排序，越靠上的插件越优先执行。保存后会触发热重载。"
+      divided
     >
-      <li
-        v-for="(plugin, index) in orderedPreprocessors"
-        :key="plugin.name"
-        :data-preprocessor-name="plugin.name"
-        :class="[
-          'draggable-item',
-          {
-            'draggable-item--dragging': draggingPluginName === plugin.name,
-            'draggable-item--drop-before':
-              draggingPluginName !== null &&
-              dragOverPluginName === plugin.name &&
-              dropPlacement === 'before',
-            'draggable-item--drop-after':
-              draggingPluginName !== null &&
-              dragOverPluginName === plugin.name &&
-              dropPlacement === 'after',
-          },
-        ]"
+      <UiToolbar class="order-toolbar" density="compact">
+        <div class="order-summary">
+          <UiBadge variant="outline">
+            {{ orderedPreprocessors.length }} 个预处理器
+          </UiBadge>
+        </div>
+      </UiToolbar>
+
+      <TransitionGroup
+        id="preprocessor-list"
+        tag="ul"
+        name="drag-sort"
+        class="draggable-list"
+        data-preprocessor-list="true"
       >
-        <DragHandle
-          label="拖动排序"
-          @pointerdown="handleDragHandlePointerDown(plugin.name, $event)"
-        />
+        <li
+          v-for="(plugin, index) in orderedPreprocessors"
+          :key="plugin.name"
+          :data-preprocessor-name="plugin.name"
+          :class="[
+            'draggable-item',
+            {
+              'draggable-item--dragging': draggingPluginName === plugin.name,
+              'draggable-item--drop-before':
+                draggingPluginName !== null &&
+                dragOverPluginName === plugin.name &&
+                dropPlacement === 'before',
+              'draggable-item--drop-after':
+                draggingPluginName !== null &&
+                dragOverPluginName === plugin.name &&
+                dropPlacement === 'after',
+            },
+          ]"
+        >
+          <DragHandle
+            label="拖动排序"
+            @pointerdown="handleDragHandlePointerDown(plugin.name, $event)"
+          />
 
-        <span class="plugin-index">{{ index + 1 }}.</span>
+          <span class="plugin-index">{{ index + 1 }}.</span>
 
-        <span class="plugin-copy">
-          <span class="plugin-name">{{ plugin.displayName || plugin.name }}</span>
-          <span v-if="plugin.description" class="plugin-description">
-            {{ plugin.description }}
+          <span class="plugin-copy">
+            <span class="plugin-name">{{ plugin.displayName || plugin.name }}</span>
+            <span v-if="plugin.description" class="plugin-description">
+              {{ plugin.description }}
+            </span>
           </span>
-        </span>
-      </li>
-    </TransitionGroup>
+        </li>
+      </TransitionGroup>
+    </UiCard>
 
     <div v-if="dragGhost" ref="dragGhostElement" class="preprocessor-drag-ghost">
       <div class="preprocessor-drag-ghost-shell">
@@ -84,10 +103,16 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from "vue";
+import { computed, onBeforeUnmount, onMounted } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { usePreprocessorOrderManager } from "@/features/preprocessor-order-manager/usePreprocessorOrderManager";
 import DragHandle from "@/components/ui/DragHandle.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiDirtyIndicator from "@/components/ui/UiDirtyIndicator.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
+import UiToolbar from "@/components/ui/UiToolbar.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 
 const {
@@ -106,6 +131,12 @@ const {
   resetOrder,
   saveOrder,
 } = usePreprocessorOrderManager();
+
+const statusBadgeVariant = computed(() => {
+  if (statusType.value === "success") return "success";
+  if (statusType.value === "error") return "danger";
+  return "info";
+});
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -152,67 +183,65 @@ void dragGhostElement
 </script>
 
 <style scoped>
-.preprocessor-order-controls {
+.preprocessor-order-panel {
+  border-color: color-mix(in srgb, var(--border-color) 88%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
+}
+
+.preprocessor-order-panel :deep(.ui-card__header) {
+  border-bottom-color: color-mix(in srgb, var(--border-color) 88%, transparent);
+}
+
+.order-toolbar {
+  min-height: 28px;
+  margin-bottom: var(--space-2);
+}
+
+.order-summary {
   display: flex;
+  min-width: 0;
   flex-wrap: wrap;
-  gap: var(--space-3);
   align-items: center;
-  margin-bottom: var(--space-4);
-  position: sticky;
-  top: 0;
-  z-index: 12;
-  padding: var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--secondary-bg);
-}
-
-.dirty-summary {
-  display: inline-flex;
-  align-items: center;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  font-weight: 600;
-}
-
-.dirty-summary.is-dirty {
-  color: var(--warning-text);
-  background: var(--warning-bg);
-  border-color: var(--warning-border);
+  gap: var(--space-2);
 }
 
 .draggable-list {
   list-style: none;
   padding: 0;
   margin: 0;
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .draggable-item {
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
-  padding: var(--space-4) var(--space-4);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--secondary-bg);
+  gap: var(--space-2);
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: 0;
+  background: transparent;
   will-change: transform;
   transition:
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
     opacity 0.18s ease,
     filter 0.18s ease;
 }
 
+.draggable-item:last-child {
+  border-bottom: 0;
+}
+
 .draggable-item:hover {
-  border-color: var(--highlight-text);
-  box-shadow: var(--shadow-md);
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
 .draggable-item--dragging {
@@ -224,8 +253,8 @@ void dragGhostElement
 .draggable-item--drop-after::after {
   content: "";
   position: absolute;
-  left: 12px;
-  right: 12px;
+  left: 10px;
+  right: 10px;
   z-index: 2;
   height: 2px;
   border-radius: 999px;
@@ -242,9 +271,12 @@ void dragGhostElement
 }
 
 .plugin-index {
-  min-width: 30px;
+  min-width: 26px;
   color: var(--secondary-text);
-  font-weight: 700;
+  font-family: "Consolas", "Monaco", "Courier New", monospace;
+  font-size: var(--font-size-helper);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 
 .plugin-copy {
@@ -262,7 +294,7 @@ void dragGhostElement
 .plugin-description {
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
-  line-height: 1.45;
+  line-height: 1.35;
 }
 
 .preprocessor-drag-ghost {
@@ -277,10 +309,10 @@ void dragGhostElement
   flex-direction: column;
   justify-content: center;
   min-height: 100%;
-  padding: var(--space-4);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 35%, var(--border-color));
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 28%, var(--border-color));
   border-radius: var(--radius-md);
-  background: var(--secondary-bg);
+  background: color-mix(in srgb, var(--primary-bg) 96%, transparent);
   box-shadow: var(--shadow-lg);
 }
 
@@ -312,4 +344,14 @@ void dragGhostElement
   opacity: 0;
   transform: translateY(6px);
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .draggable-item,
+  .drag-sort-move,
+  .drag-sort-enter-active,
+  .drag-sort-leave-active {
+    transition: none;
+  }
+}
+
 </style>

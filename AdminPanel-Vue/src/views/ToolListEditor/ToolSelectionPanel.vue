@@ -1,78 +1,90 @@
 <template>
   <div class="left-panel">
-    <div class="tools-container card">
-      <h2 class="section-header tle-section-header">
-        可用工具
-        <span class="tool-count">({{ filteredTools.length }})</span>
-      </h2>
+    <UiCard class="tools-container" variant="default">
+      <div class="tools-header">
+        <div>
+          <h2 class="section-header tle-section-header">可用工具</h2>
+          <p class="tools-subtitle">
+            显示 {{ filteredTools.length }} / {{ allToolsCount }} 个工具
+          </p>
+        </div>
+        <UiBadge v-if="selectedTools.size > 0" variant="info">
+          已选 {{ selectedTools.size }}
+        </UiBadge>
+      </div>
 
       <div class="filter-section">
         <div class="search-row">
-          <input
+          <UiInput
             type="search"
-            :value="searchQuery"
+            :model-value="searchQuery"
             placeholder="搜索工具 / 插件 / 说明…"
             class="tool-search"
+            size="md"
             aria-label="搜索工具"
             @input="handleSearchInput"
             @compositionstart="emit('searchCompositionStart')"
             @compositionend="handleSearchCompositionEnd"
           />
-          <button
+          <UiButton
             v-if="searchQuery"
-            type="button"
-            class="btn-secondary btn-sm search-clear-btn"
+            variant="ghost"
+            size="xs"
+            class="search-clear-btn"
             aria-label="清除搜索关键词"
             @click="emit('clearSearch')"
           >
             清除
-          </button>
+          </UiButton>
         </div>
 
-        <p
+        <UiBadge
           v-if="searching || isSearchComposing"
           class="search-status"
+          variant="outline"
           role="status"
           aria-live="polite"
         >
           {{ isSearchComposing ? "输入法组合中…" : "正在更新搜索结果…" }}
-        </p>
+        </UiBadge>
 
         <div class="filter-actions">
-          <AppCheckbox
-            class="checkbox-label tle-checkbox-label"
-            :model-value="showSelectedOnly"
-            aria-label="只显示已选工具"
-            label="只显示已选"
-            @update:model-value="emit('update:showSelectedOnly', $event)"
-          />
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
+          <div class="filter-primary">
+            <AppCheckbox
+              class="checkbox-label tle-checkbox-label"
+              :model-value="showSelectedOnly"
+              aria-label="只显示已选工具"
+              label="只显示已选"
+              @update:model-value="emit('update:showSelectedOnly', $event)"
+            />
+          </div>
+          <UiButton
+            variant="outline"
+            size="xs"
             :disabled="loading"
             :title="selectCurrentTitle"
             @click="emit('selectAll')"
           >
             选中当前结果
-          </button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
+          </UiButton>
+          <UiButton
+            variant="outline"
+            size="xs"
             :disabled="loading"
             @click="emit('deselectAll')"
           >
             取消全选
-          </button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
+          </UiButton>
+          <UiButton
+            variant="outline"
+            size="xs"
             :disabled="loading"
             aria-label="刷新工具列表"
             title="重新从后端拉取工具列表"
             @click="emit('refreshTools')"
           >
             刷新
-          </button>
+          </UiButton>
         </div>
       </div>
 
@@ -114,21 +126,22 @@
                 @update:model-value="emit('toggleTool', tool.uniqueId, $event)"
               >
                 <span class="tool-name">{{ tool.name }}</span>
-                <span class="tool-plugin">{{ tool.pluginName }}</span>
-                <span
+                <UiBadge class="tool-plugin" variant="secondary">{{ tool.pluginName }}</UiBadge>
+                <UiBadge
                   v-if="toolDescriptions[tool.uniqueId]"
+                  variant="info"
                   class="tool-badge"
                   title="已自定义说明"
-                >已自定义</span>
+                >已自定义</UiBadge>
               </AppCheckbox>
-              <button
-                type="button"
-                class="btn-secondary btn-sm"
+              <UiButton
+                variant="outline"
+                size="xs"
                 :aria-label="`编辑 ${tool.name} 的说明`"
                 @click="emit('editDescription', tool)"
               >
                 编辑说明
-              </button>
+              </UiButton>
             </div>
           </div>
         </div>
@@ -153,7 +166,7 @@
           </template>
         </div>
       </div>
-    </div>
+    </UiCard>
   </div>
 </template>
 
@@ -161,6 +174,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { Tool } from "@/features/tool-list/types";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiInput from "@/components/ui/UiInput.vue";
 
 const props = defineProps<{
   loading: boolean;
@@ -290,83 +307,89 @@ onBeforeUnmount(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: var(--space-4);
   min-height: 0;
 }
 
 .tools-container {
-  padding: 20px;
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  gap: 0;
+  padding: 0;
   overflow: hidden;
+  border-color: color-mix(in srgb, var(--border-color) 94%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
 }
 
-.tool-count {
-  font-size: var(--font-size-body);
+.tools-container :deep(.ui-card__content) {
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+}
+
+.tools-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-3) var(--space-2);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+}
+
+.tools-subtitle {
+  margin: 3px 0 0;
+  font-size: var(--font-size-helper);
   color: var(--secondary-text);
-  font-weight: normal;
 }
 
 .filter-section {
-  margin-bottom: var(--space-5);
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
 }
 
 .search-row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
 }
 
 .tool-search {
   flex: 1;
-  padding: 10px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
-  box-sizing: border-box;
-}
-
-.tool-search:focus-visible,
-.search-clear-btn:focus-visible,
-.tool-checkbox:focus-within,
-.tool-item button:focus-visible,
-.filter-actions button:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 1px;
 }
 
 .search-status {
-  margin: 8px 0 0;
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
+  justify-self: flex-start;
 }
 
 .search-clear-btn {
   flex-shrink: 0;
 }
 
-.tool-search:focus {
-  border-color: var(--highlight-text);
-}
-
 .filter-actions {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2);
   align-items: center;
   flex-wrap: wrap;
-  margin-top: var(--space-3);
+}
+
+.filter-primary {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  margin-right: auto;
 }
 
 .tools-list {
   flex: 1;
   overflow-y: auto;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--tertiary-bg);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   min-height: 0;
   position: relative;
 }
@@ -385,18 +408,23 @@ onBeforeUnmount(() => {
 }
 
 .tool-item {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border-color);
+  padding: 6px var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   box-sizing: border-box;
+  transition: background-color var(--transition-fast);
+}
+
+.tool-item:hover {
+  background: color-mix(in srgb, var(--highlight-text) 4%, transparent);
 }
 
 .tool-checkbox {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   cursor: pointer;
   flex: 1;
   min-width: 0;
@@ -413,27 +441,20 @@ onBeforeUnmount(() => {
 }
 
 .tool-plugin {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-  background: var(--input-bg);
-  padding: 2px 8px;
-  border-radius: 4px;
   flex-shrink: 0;
 }
 
+.tool-plugin :deep(.ui-badge) {
+  max-width: 128px;
+}
+
 .tool-badge {
-  font-size: var(--font-size-helper);
-  color: var(--highlight-text);
-  background: var(--info-bg);
-  border: 1px solid var(--highlight-text);
-  padding: 1px 6px;
-  border-radius: 4px;
   flex-shrink: 0;
 }
 
 .loading-state {
   text-align: center;
-  padding: 60px 20px;
+  padding: var(--space-6) var(--space-4);
   color: var(--secondary-text);
 }
 
@@ -445,16 +466,13 @@ onBeforeUnmount(() => {
   transform: translateY(-50%);
   text-align: center;
   color: var(--secondary-text);
-  padding: 20px;
+  padding: var(--space-4);
   pointer-events: none;
 }
 
 @media (max-width: 1024px) {
   .left-panel {
     overflow: visible;
-  }
-  .tools-container {
-    padding: 16px;
   }
   .tools-list {
     max-height: 480px;
@@ -463,21 +481,27 @@ onBeforeUnmount(() => {
 
 @media (max-width: 768px) {
   .filter-actions {
-    gap: 8px 10px;
+    gap: var(--space-2);
   }
-  .filter-actions .btn-secondary {
+  .filter-actions :deep(.ui-button) {
     flex: 0 1 auto;
     padding-left: 10px;
     padding-right: 10px;
     font-size: var(--font-size-helper);
   }
   .search-row {
-    gap: 6px;
+    gap: var(--space-2);
   }
   .search-clear-btn {
     flex: 0 0 auto;
     padding-left: 10px;
     padding-right: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-item {
+    transition: none;
   }
 }
 </style>

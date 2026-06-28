@@ -1,8 +1,9 @@
 <template>
-  <section class="config-section active-section">
-    <p class="description">
-      当前可用的系统提示词占位符列表，按类型分类展示。点击「查看详情」可查看完整内容。
-    </p>
+  <section class="config-section active-section placeholder-viewer-page">
+    <header class="placeholder-viewer-intro">
+      <h2>占位符列表</h2>
+      <p>按类型浏览当前可用的系统提示词占位符；点击查看详情可阅读完整内容并复制名称或 JSON。</p>
+    </header>
 
     <PlaceholderFilterBar
       :view-mode="viewMode"
@@ -14,35 +15,42 @@
       @update:filterKeyword="handleFilterKeywordUpdate"
     />
 
-    <div
+    <UiEmptyState
       v-if="isLoadingPlaceholders"
-      class="placeholder-status"
+      title="正在加载占位符..."
       role="status"
       aria-live="polite"
     >
-      正在加载占位符...
-    </div>
+      <template #icon>
+        <span class="material-symbols-outlined">hourglass_top</span>
+      </template>
+    </UiEmptyState>
 
-    <div
+    <UiEmptyState
       v-else-if="loadErrorMessage"
-      class="placeholder-status placeholder-status-error"
+      title="占位符加载失败"
+      :description="loadErrorMessage"
       role="status"
       aria-live="polite"
     >
-      {{ loadErrorMessage }}
-    </div>
+      <template #icon>
+        <span class="material-symbols-outlined">error</span>
+      </template>
+    </UiEmptyState>
 
     <template v-else>
       <!-- 分组视图 -->
       <div v-if="viewMode === 'grouped'" class="placeholder-grouped-view">
-        <div
+        <UiEmptyState
           v-if="shouldShowEmptyState"
-          class="placeholder-status"
+          :title="emptyStateText"
           role="status"
           aria-live="polite"
         >
-          {{ emptyStateText }}
-        </div>
+          <template #icon>
+            <span class="material-symbols-outlined">search_off</span>
+          </template>
+        </UiEmptyState>
 
         <div
           v-for="type in filteredTypes"
@@ -54,24 +62,28 @@
             <h3>
               <span class="material-symbols-outlined">folder</span>
               {{ getTypeLabel(type) }}
-              <span class="type-count">{{
+              <UiBadge variant="outline">{{
                 filteredGroupedPlaceholders[type]?.length ?? 0
-              }}</span>
+              }}</UiBadge>
             </h3>
 
-            <button
+            <UiButton
               type="button"
               class="group-collapse-toggle"
-              :class="{ 'is-collapsed': isTypeGroupCollapsed(type) }"
+              variant="outline"
+              size="sm"
               :aria-expanded="!isTypeGroupCollapsed(type)"
               :aria-controls="getTypeGroupContentId(type)"
               @click="toggleTypeGroupCollapsed(type)"
             >
               <span>{{ isTypeGroupCollapsed(type) ? "展开" : "折叠" }}</span>
-              <span class="material-symbols-outlined group-collapse-icon"
-                >expand_more</span
-              >
-            </button>
+              <template #trailing>
+                <span
+                  class="material-symbols-outlined group-collapse-icon"
+                  :class="{ 'is-collapsed': isTypeGroupCollapsed(type) }"
+                >expand_more</span>
+              </template>
+            </UiButton>
           </div>
 
           <div
@@ -98,14 +110,17 @@
 
       <!-- 列表视图 -->
       <div v-else class="placeholder-list-view">
-        <div
+        <UiEmptyState
           v-if="shouldShowEmptyState"
-          class="placeholder-status"
+          class="placeholder-empty-state"
+          :title="emptyStateText"
           role="status"
           aria-live="polite"
         >
-          {{ emptyStateText }}
-        </div>
+          <template #icon>
+            <span class="material-symbols-outlined">search_off</span>
+          </template>
+        </UiEmptyState>
 
         <PlaceholderCard
           v-for="placeholder in filteredPlaceholders"
@@ -148,6 +163,9 @@ import type {
 } from "@/features/placeholder-viewer/types";
 import { showMessage } from "@/utils";
 import { createLogger } from "@/utils/logger";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import PlaceholderCard from "./PlaceholderViewer/PlaceholderCard.vue";
 import PlaceholderFilterBar from "./PlaceholderViewer/PlaceholderFilterBar.vue";
 import PlaceholderDetailModal from "./PlaceholderViewer/PlaceholderDetailModal.vue";
@@ -580,84 +598,81 @@ onMounted(() => {
 .placeholder-grouped-view {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--space-4);
 }
 
 .placeholder-type-group {
-  background: var(--secondary-bg);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 96%, transparent);
   overflow: hidden;
+}
+
+.placeholder-viewer-page {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.placeholder-viewer-intro {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.placeholder-viewer-intro h2 {
+  margin: 0;
+  color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.placeholder-viewer-intro p {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
 .type-group-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  background: var(--tertiary-bg);
-  border-bottom: 1px solid var(--border-color);
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--primary-text) 2.6%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
 }
 
 .type-group-header h3 {
   margin: 0;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  font-size: var(--font-size-title);
+  gap: var(--space-2);
+  font-size: var(--font-size-helper);
+  font-weight: 700;
   color: var(--primary-text);
+  min-width: 0;
 }
 
 .type-group-header .material-symbols-outlined {
-  font-size: var(--font-size-title) !important;
-  color: var(--highlight-text);
-}
-
-.type-count {
-  font-size: var(--font-size-helper);
-  padding: 2px 10px;
-  background: var(--button-bg);
-  color: var(--on-accent-text);
-  border-radius: var(--radius-md);
-  font-weight: 600;
+  font-size: 16px !important;
+  color: var(--secondary-text);
 }
 
 .group-collapse-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--secondary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition:
-    color 0.2s ease,
-    background-color 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.group-collapse-toggle:hover {
-  color: var(--primary-text);
-  background: color-mix(in srgb, var(--button-bg) 10%, transparent);
-  border-color: color-mix(in srgb, var(--button-bg) 28%, transparent);
-}
-
-.group-collapse-toggle:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  flex: 0 0 auto;
 }
 
 .group-collapse-icon {
   font-size: var(--font-size-title);
   line-height: 1;
-  transition: transform 0.24s ease;
+  transition: transform var(--transition-fast);
 }
 
-.group-collapse-toggle.is-collapsed .group-collapse-icon {
+.group-collapse-icon.is-collapsed {
   transform: rotate(-90deg);
 }
 
@@ -665,8 +680,8 @@ onMounted(() => {
   display: grid;
   grid-template-rows: 1fr;
   transition:
-    grid-template-rows 0.24s ease,
-    opacity 0.24s ease;
+    grid-template-rows var(--transition-fast),
+    opacity var(--transition-fast);
 }
 
 .type-group-collapse.is-collapsed {
@@ -680,50 +695,33 @@ onMounted(() => {
 }
 
 .type-group-content {
-  padding: var(--space-5);
+  padding: 10px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-3);
   align-items: stretch;
 }
 
 /* 列表视图 */
 .placeholder-list-view {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-3);
   align-items: stretch;
 }
 
-.placeholder-status {
-  padding: var(--space-5);
-  background: var(--tertiary-bg);
-  border: 1px dashed var(--border-color);
-  border-radius: var(--radius-md);
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-}
-
-.placeholder-status-error {
-  border-style: solid;
-  border-color: color-mix(in srgb, var(--danger-color) 32%, var(--border-color));
-  background: color-mix(in srgb, var(--danger-color) 8%, transparent);
-  color: var(--primary-text);
-}
-
-.placeholder-list-view > .placeholder-status {
+.placeholder-empty-state {
   grid-column: 1 / -1;
 }
 
 /* 响应式 */
 @media (max-width: 768px) {
   .type-group-header {
-    flex-direction: column;
-    align-items: flex-start;
+    align-items: center;
   }
 
   .group-collapse-toggle {
-    align-self: flex-end;
+    align-self: auto;
   }
 
   .type-group-content {
@@ -732,6 +730,13 @@ onMounted(() => {
 
   .placeholder-list-view {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .group-collapse-icon,
+  .type-group-collapse {
+    transition: none;
   }
 }
 </style>

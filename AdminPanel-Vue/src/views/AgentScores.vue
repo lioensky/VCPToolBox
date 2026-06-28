@@ -1,69 +1,115 @@
 <template>
   <section class="config-section active-section">
-    <p class="description">在这里查看 Agent 的积分情况。</p>
-    <div class="agent-scores-container card">
-      <div class="scores-header">
-        <button @click="refreshScores" class="btn-secondary">
-          <span class="material-symbols-outlined">refresh</span> 刷新数据
-        </button>
-        <span v-if="statusMessage" :class="['status-message', statusType]">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
           {{ statusMessage }}
-        </span>
-      </div>
-      <div class="table-container">
-        <table class="modern-table" id="agent-scores-table">
-          <thead>
-            <tr>
-              <th>排名</th>
-              <th>执行者 (Agent)</th>
-              <th>总积分</th>
-              <th>最近动态</th>
-              <th>获取时间</th>
-            </tr>
-          </thead>
-          <tbody id="agent-scores-body">
-            <tr v-if="isLoading">
-              <td colspan="5" class="table-center-cell">
-                正在加载积分数据…
-              </td>
-            </tr>
-            <tr v-else-if="paginatedScores.length === 0">
-              <td colspan="5" class="table-center-cell table-empty-state">
-                <span class="material-symbols-outlined table-empty-icon">leaderboard</span>
-                暂无积分数据
-              </td>
-            </tr>
-            <tr v-for="(score, index) in paginatedScores" v-else :key="score.agent">
-              <td>{{ (currentPage - 1) * 10 + index + 1 }}</td>
-              <td>{{ score.agent }}</td>
-              <td>{{ score.totalScore }}</td>
-              <td>{{ score.recentActivity }}</td>
-              <td>{{ score.lastUpdated }}</td>
-            </tr>
-          </tbody>
-        </table>
+        </UiBadge>
+        <UiButton variant="outline" size="lg" :loading="isLoading" @click="refreshScores">
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
+          刷新数据
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
 
-        <div v-if="totalPages > 1" class="pagination-controls">
-          <button class="btn-secondary btn-sm" :disabled="!hasPrev" @click="prevPage">
-            <span class="material-symbols-outlined">chevron_left</span>
-            上一页
-          </button>
-          <span class="pagination-info">第 {{ currentPage }} / {{ totalPages }} 页</span>
-          <button class="btn-secondary btn-sm" :disabled="!hasNext" @click="nextPage">
-            下一页
-            <span class="material-symbols-outlined">chevron_right</span>
-          </button>
+    <UiCard
+      class="agent-scores-card"
+      variant="default"
+      size="sm"
+      title="Agent 积分排行"
+      description="查看各 Agent 的累计积分、最近动态和更新时间。"
+      divided
+    >
+      <UiToolbar density="compact" class="scores-toolbar">
+        <div class="scores-summary">
+          <UiBadge variant="outline">
+            共 {{ scores.length }} 个 Agent
+          </UiBadge>
         </div>
-      </div>
-    </div>
+      </UiToolbar>
+
+      <UiTableFrame density="compact">
+        <thead>
+          <tr>
+            <th>排名</th>
+            <th>执行者 (Agent)</th>
+            <th>总积分</th>
+            <th>最近动态</th>
+            <th>获取时间</th>
+          </tr>
+        </thead>
+        <tbody id="agent-scores-body">
+          <tr v-if="isLoading">
+            <td colspan="5" class="table-center-cell">
+              <UiEmptyState title="正在加载积分数据…" description="请稍候，积分排行即将更新。">
+                <template #icon>
+                  <span class="material-symbols-outlined spinning">sync</span>
+                </template>
+              </UiEmptyState>
+            </td>
+          </tr>
+          <tr v-else-if="paginatedScores.length === 0">
+            <td colspan="5" class="table-center-cell">
+              <UiEmptyState title="暂无积分数据" description="当 Agent 产生积分记录后，会在这里展示排行。">
+                <template #icon>
+                  <span class="material-symbols-outlined">leaderboard</span>
+                </template>
+              </UiEmptyState>
+            </td>
+          </tr>
+          <tr v-for="(score, index) in paginatedScores" v-else :key="score.agent">
+            <td>
+              <UiBadge variant="outline">
+                #{{ (currentPage - 1) * 10 + index + 1 }}
+              </UiBadge>
+            </td>
+            <td>
+              <span class="agent-name">{{ score.agent }}</span>
+            </td>
+            <td>
+              <strong class="score-value">{{ score.totalScore }}</strong>
+            </td>
+            <td>{{ score.recentActivity }}</td>
+            <td>{{ score.lastUpdated }}</td>
+          </tr>
+        </tbody>
+      </UiTableFrame>
+
+      <template v-if="totalPages > 1" #footer>
+        <div class="pagination-controls">
+          <UiButton variant="outline" size="sm" :disabled="!hasPrev" @click="prevPage">
+            <template #leading>
+              <span class="material-symbols-outlined">chevron_left</span>
+            </template>
+            上一页
+          </UiButton>
+          <span class="pagination-info">第 {{ currentPage }} / {{ totalPages }} 页</span>
+          <UiButton variant="outline" size="sm" :disabled="!hasNext" @click="nextPage">
+            下一页
+            <template #trailing>
+              <span class="material-symbols-outlined">chevron_right</span>
+            </template>
+          </UiButton>
+        </div>
+      </template>
+    </UiCard>
   </section>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { agentApi } from '@/api'
 import { showMessage } from '@/utils'
 import { usePagination } from '@/composables/usePagination'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
+import UiEmptyState from '@/components/ui/UiEmptyState.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
+import UiTableFrame from '@/components/ui/UiTableFrame.vue'
+import UiToolbar from '@/components/ui/UiToolbar.vue'
 
 interface AgentScore {
   agent: string
@@ -76,6 +122,12 @@ const scores = ref<AgentScore[]>([])
 const isLoading = ref(false)
 const statusMessage = ref('')
 const statusType = ref<'info' | 'success' | 'error'>('info')
+
+const statusBadgeVariant = computed(() => {
+  if (statusType.value === 'success') return 'success'
+  if (statusType.value === 'error') return 'danger'
+  return 'info'
+})
 
 const {
   items: paginatedScores,
@@ -136,93 +188,77 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.agent-scores-container {
-  padding: var(--space-5);
-}
-
-.scores-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: var(--space-4);
-}
-
-.table-center-cell {
-  text-align: center;
-  padding: var(--space-7) var(--space-4);
-  color: var(--secondary-text);
-}
-
-.table-empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+.agent-scores-card {
   gap: var(--space-3);
 }
 
-.table-empty-icon {
-  font-size: var(--font-size-icon-empty);
-  opacity: 0.3;
-  color: var(--highlight-text);
+.scores-toolbar {
+  min-height: 32px;
 }
 
-.table-container {
-  overflow-x: auto;
+.scores-summary {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.table-center-cell {
+  padding: 0;
+  color: var(--secondary-text);
+  text-align: center;
+}
+
+.agent-name {
+  color: var(--primary-text);
+  font-weight: 600;
+}
+
+.score-value {
+  font-family: "Consolas", "Monaco", "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .pagination-controls {
   display: flex;
-  justify-content: flex-start;
+  width: 100%;
   align-items: center;
-  gap: var(--space-4);
-  margin-top: var(--space-5);
-  padding: var(--space-4) 0;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 .pagination-info {
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
-  padding: 0 12px;
+  padding: 0 var(--space-2);
 }
 
-.modern-table {
-  width: 100%;
-  border-collapse: collapse;
+.spinning {
+  animation: spin 1s linear infinite;
 }
 
-.modern-table th,
-.modern-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.modern-table th {
-  background: var(--tertiary-bg);
-  font-weight: 600;
-  color: var(--primary-text);
-}
-
-.modern-table tr:hover {
-  background: var(--accent-bg);
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 480px) {
-  .scores-header {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--space-3);
-  }
-
   .pagination-controls {
     flex-direction: column;
     align-items: stretch;
-    gap: var(--space-3);
   }
 
   .pagination-info {
     padding: 0;
     text-align: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinning {
+    animation: none;
   }
 }
 </style>

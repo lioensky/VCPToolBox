@@ -54,7 +54,11 @@
       <main class="content">
         <section class="unified-page-header">
           <h1>{{ currentPageTitle }}</h1>
-          <div id="page-header-actions" class="unified-page-header__actions"></div>
+          <div
+            id="page-header-actions"
+            ref="pageHeaderActionsRef"
+            class="unified-page-header__actions"
+          ></div>
         </section>
 
         <!-- 返回顶部按钮 -->
@@ -71,10 +75,8 @@
 
         <div ref="contentRef" class="content-scroll-region" id="config-details-container">
           <!-- 路由视图 -->
-          <router-view v-slot="{ Component, route }">
-            <transition name="fade" mode="out-in">
-              <component :is="Component" :key="route.fullPath" :data-page="String(route.name || '')" />
-            </transition>
+          <router-view v-if="isPageHeaderActionsReady" v-slot="{ Component, route }">
+            <component :is="Component" :key="route.fullPath" :data-page="String(route.name || '')" />
           </router-view>
         </div>
       </main>
@@ -123,7 +125,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import FeedbackHost from "@/components/feedback/FeedbackHost.vue";
 import SolarSystemBg from "@/components/SolarSystemBg.vue";
 import GlobalCommandPalette from "@/components/layout/GlobalCommandPalette.vue";
@@ -165,6 +167,14 @@ const {
 const navItems = computed(() => appStore.navItems);
 const plugins = computed(() => appStore.plugins);
 const pinnedPluginNames = computed(() => appStore.pinnedPluginNames);
+const pageHeaderActionsRef = ref<HTMLElement | null>(null);
+const isPageHeaderActionsReady = ref(false);
+
+onMounted(async () => {
+  await nextTick();
+  isPageHeaderActionsReady.value = pageHeaderActionsRef.value !== null;
+});
+
 void contentRef;
 </script>
 

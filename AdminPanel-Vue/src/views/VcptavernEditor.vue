@@ -1,97 +1,101 @@
 <template>
   <section class="config-section active-section vcp-tavern-page">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton
+          variant="outline"
+          :disabled="isLoading"
+          @click="fetchPresets"
+        >
+          刷新
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <div class="page-header">
       <div>
         <p class="description">
           管理上下文注入预设与规则。按住规则左侧手柄可像仪表盘一样实时预览排序位置，
           并在释放时提交最终顺序。
         </p></div>
-      <div class="header-actions">
-        <button
-          class="btn-secondary"
-          type="button"
-          :disabled="isLoading"
-          @click="fetchPresets"
-        >
-          刷新
-        </button></div>
     </div>
 
-    <div class="preset-toolbar card">
-      <label for="preset-select">选择预设</label>
-      <select
-        id="preset-select"
-        v-model="selectedPresetName"
-        :disabled="isLoading"
-      >
-        <option value="">-- 选择一个预设 --</option>
-        <option v-for="name in presetNames" :key="name" :value="name">
-          {{ name }}
-        </option>
-      </select>
+    <UiCard class="preset-toolbar" size="sm">
+      <UiField label="选择预设" for-id="preset-select" class="preset-select-field">
+        <UiSelect
+          id="preset-select"
+          v-model="selectedPresetName"
+          :disabled="isLoading"
+        >
+          <option value="">-- 选择一个预设 --</option>
+          <option v-for="name in presetNames" :key="name" :value="name">
+            {{ name }}
+          </option>
+        </UiSelect>
+      </UiField>
 
-      <button
-        class="btn-primary"
-        type="button"
+      <UiButton
+        variant="primary"
         :disabled="!selectedPresetName || isLoading"
         @click="selectPreset(selectedPresetName)"
       >
         加载
-      </button>
-      <button
-        class="btn-secondary"
-        type="button"
+      </UiButton>
+      <UiButton
+        variant="outline"
         :disabled="isLoading"
         @click="createNewPreset"
       >
         新建
-      </button>
-      <button
-        class="btn-danger"
-        type="button"
+      </UiButton>
+      <UiButton
+        variant="danger"
         :disabled="!selectedPresetName || isLoading"
         @click="deletePreset"
       >
         删除
-      </button>
-    </div>
+      </UiButton>
+    </UiCard>
 
-    <div v-if="!isEditorVisible" class="empty-tip card">
-      <p>请选择一个预设进行编辑，或点击"新建"创建预设。</p>
-    </div>
+    <UiEmptyState
+      v-if="!isEditorVisible"
+      title="请选择预设"
+      description="选择一个预设进行编辑，或点击新建创建预设。"
+    />
 
-    <div v-else class="editor card">
+    <UiCard v-else class="editor" size="sm">
       <div class="meta-grid">
-        <div class="form-group">
-          <label for="preset-name">预设名称</label>
-          <input
+        <UiField label="预设名称" for-id="preset-name">
+          <UiInput
             id="preset-name"
             v-model.trim="editorState.name"
             type="text"
             placeholder="仅限字母、数字、下划线和连字符"
             :disabled="!isNewPreset"
           />
-        </div>
-        <div class="form-group full-width">
-          <label for="preset-description">预设描述</label>
-          <textarea
+        </UiField>
+        <UiField label="预设描述" for-id="preset-description" class="full-width">
+          <UiTextarea
             id="preset-description"
             v-model="editorState.description"
             rows="3"
             placeholder="描述预设用途"
-          ></textarea>
-        </div>
+          />
+        </UiField>
       </div>
 
       <div class="rules-header">
         <h3>注入规则</h3>
-        <button class="btn-secondary" type="button" @click="addRule">
+        <UiButton variant="outline" size="sm" @click="addRule">
           添加规则
-        </button>
+        </UiButton>
       </div>
 
-      <div v-if="editorState.rules.length === 0" class="empty-rules">暂无规则，点击"添加规则"创建。
-      </div>
+      <UiEmptyState
+        v-if="editorState.rules.length === 0"
+        title="暂无规则"
+        description="点击添加规则创建第一条注入规则。"
+      />
 
       <TransitionGroup
         tag="div"
@@ -119,103 +123,87 @@
           ]"
         >
           <div class="rule-head">
-            <button
-              class="drag-handle"
-              type="button"
-              aria-label="拖动排序"
-              title="拖动排序"
+            <DragHandle
+              label="拖动排序"
               @pointerdown="handleRulePointerDown(rule.id, $event)"
-            >
-              ⋮⋮
-            </button>
-            <input
+            />
+            <UiInput
               v-model="rule.name"
               class="rule-title"
               type="text"
               placeholder="规则名称"
             />
-            <label class="enabled-switch">
-              <input v-model="rule.enabled" type="checkbox" />
+            <div class="enabled-switch">
               <span>{{ rule.enabled ? "启用" : "停用" }}</span>
-            </label>
-            <button
-              class="btn-danger btn-sm"
-              type="button"
-              @click="removeRule(index)"
-            >
+              <AppSwitch v-model="rule.enabled" />
+            </div>
+            <UiButton variant="danger" size="sm" @click="removeRule(index)">
               删除
-            </button>
+            </UiButton>
           </div>
 
           <div class="rule-body">
-            <div class="form-group">
-              <label>注入类型</label>
-              <select v-model="rule.type">
+            <UiField label="注入类型">
+              <UiSelect v-model="rule.type">
                 <option value="relative">相对注入</option>
                 <option value="depth">深度注入</option>
                 <option value="embed">嵌入</option>
-              </select>
-            </div>
+              </UiSelect>
+            </UiField>
 
-            <div
+            <UiField
               v-if="rule.type === 'relative' || rule.type === 'embed'"
-              class="form-group"
+              label="相对位置"
             >
-              <label>相对位置</label>
-              <select v-model="rule.position">
+              <UiSelect v-model="rule.position">
                 <option value="before">之前</option>
                 <option value="after">之后</option>
-              </select>
-            </div>
+              </UiSelect>
+            </UiField>
 
-            <div
+            <UiField
               v-if="rule.type === 'relative' || rule.type === 'embed'"
-              class="form-group"
+              label="目标"
             >
-              <label>目标</label>
-              <select v-model="rule.target">
+              <UiSelect v-model="rule.target">
                 <option value="system">系统提示</option>
                 <option value="last_user">最后的用户消息</option>
                 <option value="first_user">第一个用户消息</option>
-              </select>
-            </div>
+              </UiSelect>
+            </UiField>
 
-            <div v-if="rule.type === 'depth'" class="form-group">
-              <label>深度</label>
-              <input v-model.number="rule.depth" type="number" min="1" />
-            </div>
+            <UiField v-if="rule.type === 'depth'" label="深度">
+              <UiInput v-model.number="rule.depth" type="number" min="1" />
+            </UiField>
 
-            <div v-if="rule.type !== 'embed'" class="form-group">
-              <label>注入角色</label>
-              <select v-model="rule.content.role">
+            <UiField v-if="rule.type !== 'embed'" label="注入角色">
+              <UiSelect v-model="rule.content.role">
                 <option value="system">system</option>
                 <option value="user">user</option>
                 <option value="assistant">assistant</option>
-              </select>
-            </div>
+              </UiSelect>
+            </UiField>
 
-            <div class="form-group full-width">
-              <label>注入内容</label>
-              <textarea
+            <UiField label="注入内容" class="full-width">
+              <UiTextarea
                 v-model="rule.content.content"
                 rows="5"
                 placeholder="请输入要注入的文本"
-              ></textarea>
-            </div>
+              />
+            </UiField>
           </div>
         </article>
       </TransitionGroup>
 
       <div class="editor-actions">
-        <button
-          class="btn-success"
-          type="button"
+        <UiButton
+          variant="primary"
           :disabled="isSaving"
           @click="savePreset"
         >
           {{ isSaving ? "保存中…" : "保存预设" }}
-        </button></div>
-    </div>
+        </UiButton></div>
+    </UiCard>
 
     <div v-if="dragGhost" ref="dragGhostElement" class="rule-drag-ghost">
       <div class="rule-drag-ghost-shell">
@@ -226,6 +214,16 @@
 </template>
 
 <script setup lang="ts">
+import AppSwitch from "@/components/ui/AppSwitch.vue";
+import DragHandle from "@/components/ui/DragHandle.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
 import { useVcptavernEditor } from "@/features/vcptavern-editor/useVcptavernEditor";
 
 const {
@@ -257,34 +255,29 @@ void dragGhostElement
 .vcp-tavern-page {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
   align-items: flex-start;
 }
 
-.header-actions {
-  display: flex;
-  gap: var(--space-3);
-}
-
 .preset-toolbar {
+  min-width: 0;
+}
+
+.preset-toolbar :deep(.ui-card__content) {
   display: grid;
-  grid-template-columns: minmax(110px, auto) minmax(240px, 1fr) auto auto auto;
-  gap: 10px;
-  align-items: center;
+  grid-template-columns: minmax(240px, 1fr) auto auto auto;
+  gap: var(--space-2);
+  align-items: end;
 }
 
-.preset-toolbar label {
-  color: var(--secondary-text);
-}
-
-.preset-toolbar select {
-  width: 100%;
+.preset-select-field {
+  min-width: 0;
 }
 
 .editor {
@@ -299,47 +292,17 @@ void dragGhostElement
   gap: var(--space-3);
 }
 
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap:6px;
-}
-
-.form-group.full-width {
+.full-width {
   grid-column: 1 / -1;
-}
-
-.form-group label {
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-}
-
-input,
-select,
-textarea {
-  border: 1px solid var(--border-color);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  border-radius: var(--radius-sm);
-  padding: 10px;
-}
-
-textarea {
-  resize: vertical;
-}
-
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
-button:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
 }
 
 .rules-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .rules-header h3 {
@@ -354,10 +317,10 @@ button:focus-visible {
 
 .rule-card {
   position: relative;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: var(--radius-md);
-  background: var(--secondary-bg);
-  padding: 14px;
+  background: transparent;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -366,12 +329,11 @@ button:focus-visible {
     opacity 0.18s ease,
     filter 0.18s ease,
     border-color 0.2s ease,
-    box-shadow 0.2s ease;
+    background-color 0.2s ease;
 }
 
 .rule-card:hover {
-  border-color: var(--highlight-text);
-  box-shadow: var(--shadow-md);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .rule-card--dragging {
@@ -401,30 +363,11 @@ button:focus-visible {
 
 .rule-head {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
-  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: var(--space-2);
   align-items: center;
-}
-
-.drag-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border-color);
-  background: var(--input-bg);
-  color: var(--secondary-text);
-  border-radius: var(--radius-sm);
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  cursor: grab;
-  font-size: var(--font-size-body);
-  flex-shrink: 0;user-select: none;
-  touch-action: none;
-}
-
-.drag-handle:active {
-  cursor: grabbing;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
 }
 
 .rule-title {
@@ -435,7 +378,9 @@ button:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  min-height: 32px;
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
 }
 
 .rule-body {
@@ -447,11 +392,8 @@ button:focus-visible {
 .editor-actions {
   display: flex;
   justify-content: flex-end;
-}
-
-.empty-tip,
-.empty-rules {
-  color: var(--secondary-text);
+  padding-top: var(--space-3);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .rule-drag-ghost {
@@ -466,7 +408,7 @@ button:focus-visible {
   flex-direction: column;
   justify-content: center;
   min-height: 100%;
-  padding: 16px;
+  padding: var(--space-3);
   border: 1px solid color-mix(in srgb, var(--highlight-text) 35%, var(--border-color));
   border-radius: var(--radius-md);
   background: var(--secondary-bg);
@@ -482,7 +424,8 @@ button:focus-visible {
 
 .rule-drag-ghost-meta {
   margin-top: 6px;
-  color: var(--secondary-text);font-size: var(--font-size-helper);
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
   line-height: 1.45;
   text-transform: capitalize;
 }
@@ -503,12 +446,8 @@ button:focus-visible {
 }
 
 @media (max-width: 980px) {
-  .preset-toolbar {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .preset-toolbar label {
-    grid-column: 1 / -1;
+  .preset-toolbar :deep(.ui-card__content) {
+    grid-template-columns: 1fr;
   }
 
   .meta-grid {
@@ -520,7 +459,7 @@ button:focus-visible {
   }
 
   .enabled-switch,
-  .rule-head .btn-danger {
+  .rule-head :deep(.ui-button) {
     grid-column: 1 / -1;
   }
 }

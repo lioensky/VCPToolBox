@@ -778,29 +778,6 @@ onBeforeRouteLeave(async () => {
   border-left-color: var(--semantic-router-surface-border);
 }
 
-.semantic-settings-surface :deep(.ui-input),
-.semantic-settings-surface :deep(.ui-select),
-.semantic-settings-surface :deep(.ui-textarea) {
-  border-color: var(--semantic-router-control-border);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
-}
-
-.semantic-settings-surface :deep(.ui-input:hover:not(:disabled)),
-.semantic-settings-surface :deep(.ui-select:hover:not(:disabled)),
-.semantic-settings-surface :deep(.ui-textarea:hover:not(:disabled)) {
-  border-color: color-mix(in srgb, var(--highlight-text) 34%, var(--border-color));
-  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
-}
-
-.semantic-settings-surface :deep(.ui-input:focus-visible),
-.semantic-settings-surface :deep(.ui-select:focus-visible),
-.semantic-settings-surface :deep(.ui-textarea:focus-visible) {
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--primary-bg) 56%, transparent);
-  outline-color: color-mix(in srgb, var(--highlight-text) 70%, transparent);
-}
-
 .semantic-settings-surface :deep(.ui-textarea--md) {
   min-height: 72px;
   padding: 8px 10px;
@@ -808,18 +785,6 @@ onBeforeRouteLeave(async () => {
 
 .semantic-settings-surface :deep(.ui-textarea--sm) {
   min-height: 64px;
-}
-
-.semantic-settings-surface :deep(.ui-select) {
-  appearance: none;
-  background-image:
-    linear-gradient(45deg, transparent 50%, var(--secondary-text) 50%),
-    linear-gradient(135deg, var(--secondary-text) 50%, transparent 50%);
-  background-position:
-    calc(100% - 15px) 13px,
-    calc(100% - 10px) 13px;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
 }
 
 .summary-grid {

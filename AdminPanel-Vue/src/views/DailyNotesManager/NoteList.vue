@@ -1,25 +1,26 @@
 <template>
   <div v-if="selectedFolder" class="notes-content-area">
     <div class="notes-toolbar">
-      <input
+      <UiInput
         type="search"
-        :value="searchQuery"
+        :model-value="searchQuery"
+        size="md"
         :placeholder="`搜索${itemLabel}…`"
         autocomplete="off"
         :aria-label="`搜索${itemLabel}`"
         @input="onSearchInput"
       />
-      <button
+      <UiButton
         v-if="showMoveActions"
-        class="btn-secondary"
+        variant="outline"
         :disabled="selectedNotes.length === 0"
         @click="$emit('moveSelectedNotes')"
       >
         移动选中项到…
-      </button>
-      <select
+      </UiButton>
+      <UiSelect
         v-if="showMoveActions"
-        :value="moveTargetFolder"
+        :model-value="moveTargetFolder"
         :disabled="selectedNotes.length === 0"
         @change="onMoveTargetChange"
       >
@@ -32,17 +33,17 @@
         >
           {{ folder }}
         </option>
-      </select>
-      <button
-        class="btn-danger"
+      </UiSelect>
+      <UiButton
+        variant="danger"
         :disabled="selectedNotes.length === 0"
         @click="$emit('deleteSelectedNotes')"
       >
         批量删除选中项
-      </button>
-      <span v-if="notesStatus" :class="['status-message', notesStatusType]">{{
-        notesStatus
-      }}</span>
+      </UiButton>
+      <UiBadge v-if="notesStatus" :variant="notesStatusBadgeVariant">
+        {{ notesStatus }}
+      </UiBadge>
     </div>
 
     <div
@@ -86,10 +87,12 @@
                 gridTemplateColumns: `repeat(${displayColumnCount}, minmax(0, 1fr))`,
               }"
             >
-              <div
+              <UiCard
                 v-for="note in row.item"
                 :key="note.file"
-                class="note-card card virtual-card"
+                class="note-card virtual-card"
+                size="sm"
+                variant="subtle"
               >
                 <div class="note-card-header">
                   <AppCheckbox
@@ -115,37 +118,42 @@
                 <div class="note-card-footer">
                   <span class="note-meta">{{ formatDate(note.modified) }}</span>
                   <div class="note-actions">
-                    <button
-                      class="btn-secondary btn-sm"
+                    <UiButton
+                      variant="outline"
+                      size="sm"
                       @click="$emit('editNote', note)"
                     >
                       编辑
-                    </button>
-                    <button
+                    </UiButton>
+                    <UiButton
                       v-if="showDiscoveryAction"
-                      class="btn-secondary btn-sm"
+                      variant="outline"
+                      size="sm"
                       @click="$emit('discoveryNote', note)"
                     >
                       联想
-                    </button>
-                    <button
-                      class="btn-danger btn-sm"
+                    </UiButton>
+                    <UiButton
+                      variant="danger"
+                      size="sm"
                       @click="$emit('deleteNote', note)"
                     >
                       删除
-                    </button>
+                    </UiButton>
                   </div>
                 </div>
-              </div>
+              </UiCard>
             </div>
           </div>
         </div>
       </div>
-      <div
+      <UiCard
         v-else
         v-for="note in filteredNotes"
         :key="note.file"
-        class="note-card card"
+        class="note-card"
+        size="sm"
+        variant="subtle"
       >
         <div class="note-card-header">
           <AppCheckbox
@@ -167,28 +175,31 @@
         <div class="note-card-footer">
           <span class="note-meta">{{ formatDate(note.modified) }}</span>
           <div class="note-actions">
-            <button
-              class="btn-secondary btn-sm"
+            <UiButton
+              variant="outline"
+              size="sm"
               @click="$emit('editNote', note)"
             >
               编辑
-            </button>
-            <button
+            </UiButton>
+            <UiButton
               v-if="showDiscoveryAction"
-              class="btn-secondary btn-sm"
+              variant="outline"
+              size="sm"
               @click="$emit('discoveryNote', note)"
             >
               联想
-            </button>
-            <button
-              class="btn-danger btn-sm"
+            </UiButton>
+            <UiButton
+              variant="danger"
+              size="sm"
               @click="$emit('deleteNote', note)"
             >
               删除
-            </button>
+            </UiButton>
           </div>
         </div>
-      </div>
+      </UiCard>
     </div>
   </div>
 </template>
@@ -199,6 +210,11 @@ import { useVirtualScroll } from "@/composables/useVirtualScroll";
 import { useDebounceFn } from "@/composables/useDebounceFn";
 import { formatDate } from "@/utils/format";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
 
 interface Note {
   file: string;
@@ -249,6 +265,9 @@ const itemLabel = computed(() => props.itemLabel || "日记");
 const folderLabel = computed(() => props.folderLabel || "知识库");
 const showMoveActions = computed(() => props.showMoveActions !== false);
 const showDiscoveryAction = computed(() => props.showDiscoveryAction !== false);
+const notesStatusBadgeVariant = computed(() =>
+  props.notesStatusType === "error" ? "danger" : props.notesStatusType
+);
 const shouldVirtualize = computed(() => props.filteredNotes.length > 50);
 const isVirtualListMode = computed(
   () => shouldVirtualize.value && !props.loadingNotes && props.filteredNotes.length > 0
@@ -448,28 +467,20 @@ function toggleSelected(file: string, checked: boolean) {
 <style scoped>
 .notes-toolbar {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-3);
   flex-wrap: wrap;
 }
 
-.notes-toolbar input[type="search"] {
+.notes-toolbar :deep(.ui-input) {
   flex: 1;
   min-width: 200px;
-  padding: 8px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
 }
 
-.notes-toolbar select {
-  padding: 8px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
+.notes-toolbar :deep(.ui-select) {
+  width: auto;
+  min-width: 180px;
 }
 
 .notes-list-view {
@@ -518,24 +529,18 @@ function toggleSelected(file: string, checked: boolean) {
   flex-direction: column;
   gap: var(--space-3);
   min-height: 190px;
-  padding: var(--space-4);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast);
 }
 
 .note-card:hover {
-  border-color: var(--highlight-text);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .note-card-header {
   display: flex;
   align-items: center;
   padding-bottom: var(--space-2);
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .note-select-label {
@@ -563,10 +568,10 @@ function toggleSelected(file: string, checked: boolean) {
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
-  padding: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
-  background: var(--tertiary-bg);
-  border: 1px solid color-mix(in srgb, var(--border-color) 50%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
 }
 
 .note-card-footer {
@@ -576,7 +581,7 @@ function toggleSelected(file: string, checked: boolean) {
   gap: var(--space-3);
   margin-top: auto;
   padding-top: var(--space-3);
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .note-meta {
@@ -618,10 +623,9 @@ function toggleSelected(file: string, checked: boolean) {
     align-items: stretch;
   }
 
-  .notes-toolbar input[type="search"],
-  .notes-toolbar select,
-  .notes-toolbar .btn-secondary,
-  .notes-toolbar .btn-danger {
+  .notes-toolbar :deep(.ui-input),
+  .notes-toolbar :deep(.ui-select),
+  .notes-toolbar :deep(.ui-button) {
     width: 100%;
     min-width: 0;
   }

@@ -1,35 +1,70 @@
 <template>
   <section id="base-config-section" class="config-section active-section">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge
+          v-if="statusMessage"
+          :variant="statusBadgeVariant"
+          role="status"
+          aria-live="polite"
+        >
+          {{ statusMessage }}
+        </UiBadge>
+        <UiBadge v-else-if="!isLoading" variant="outline">{{ editableEntryCount }} 项</UiBadge>
+        <UiButton
+          type="button"
+          size="lg"
+          variant="primary"
+          :disabled="isLoading || groupedEntries.length === 0"
+          @click="handleSubmit"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          保存全局配置
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <p v-if="isLoading" class="config-loading">
       <span class="loading-spinner"></span>
       加载全局配置中…
     </p>
 
     <form v-else-if="groupedEntries.length > 0" id="base-config-form" @submit.prevent="handleSubmit">
-      <div class="base-config-workspace" :class="{ 'is-aside-collapsed': asideCollapsed }">
-        <div class="base-config-main">
-          <section
+      <div class="base-config-workspace">
+        <aside
+          class="base-config-aside"
+          aria-label="配置导航"
+        >
+          <UiSideConsoleNav
+            :items="consoleNavItems"
+            :open-ids="openGroupAnchorList"
+            @item-click="handleConsoleGroupClick"
+            @child-click="handleConsoleSectionClick"
+            @toggle="handleConsoleGroupToggle"
+          />
+        </aside>
+
+        <div id="base-config-details-container" class="base-config-main">
+          <UiSettingsCard
             v-for="group in groupedEntries"
             :id="group.anchor"
             :key="group.id"
-            class="group-card card"
+            class="group-card base-settings-surface"
+            :title="group.title"
+            :description="group.description"
+            variant="flat"
           >
-            <header class="group-header">
-              <div class="group-head-main">
-                <h3>{{ group.title }}</h3>
-                <p v-if="group.description" class="group-description">
-                  {{ group.description }}
-                </p>
-              </div>
-              <div class="group-head-meta">
-                <span class="group-count">{{ group.totalEntries }} 项</span>
-              </div>
-            </header>
+            <template #action>
+              <UiBadge variant="outline">{{ group.totalEntries }} 项</UiBadge>
+            </template>
 
             <div class="group-sections">
               <section
                 v-for="section in group.sections"
                 :key="section.id"
+                :id="section.anchor"
                 class="group-section-block"
               >
                 <header v-if="section.title" class="group-section-row">
@@ -37,199 +72,115 @@
                   <span class="group-section-count">{{ section.entries.length }} 项</span>
                 </header>
 
-                <div class="group-grid">
-                  <div v-for="entry in section.entries" :key="entry.uid" class="form-group">
-                    <label :for="`config-${entry.uid}`">
-                      <span class="key-name">{{ entry.key }}</span>
-                    </label>
+                <UiSettingsForm as="div" :columns="2" gap="sm">
+                  <UiSettingsSwitchRow
+                    v-for="entry in section.entries.filter((item) => item.type === 'boolean')"
+                    :key="entry.uid"
+                    :model-value="entry.value === 'true'"
+                    :input-id="`config-${entry.uid}`"
+                    :label="entry.key || '未命名配置'"
+                    :description="entry.commentText"
+                    density="compact"
+                    @update:model-value="updateBooleanEntryValue(entry, $event)"
+                  />
 
-                    <div v-if="entry.type === 'boolean'" class="switch-container">
-                      <AppSwitch
-                        :input-id="`config-${entry.uid}`"
-                        :model-value="entry.value === 'true'"
-                        :label="entry.value === 'true' ? '启用' : '禁用'"
-                        @update:model-value="updateBooleanEntryValue(entry, $event)"
+                  <UiField
+                    v-for="entry in section.entries.filter((item) => item.type !== 'boolean')"
+                    :key="entry.uid"
+                    :label="entry.key || '未命名配置'"
+                    :description="entry.commentText"
+                    :for-id="`config-${entry.uid}`"
+                    :data-settings-span="entry.isMultilineQuoted || String(entry.value ?? '').length > 60 ? 'full' : undefined"
+                    size="sm"
+                  >
+                    <div v-if="entry.type === 'integer'">
+                      <UiInput
+                        :id="`config-${entry.uid}`"
+                        :model-value="entry.value"
+                        type="number"
+                        step="1"
+                        size="sm"
+                        @input="updateIntegerEntry(entry, $event)"
                       />
                     </div>
 
-                    <div v-else-if="entry.type === 'integer'">
-                      <input
-                        :id="`config-${entry.uid}`"
-                        :value="entry.value"
-                        type="number"
-                        step="1"
-                        @input="updateIntegerEntry(entry, $event)"
-                      >
-                    </div>
-
-                    <div
-                      v-else-if="entry.isMultilineQuoted || String(entry.value ?? '').length > 60"
-                    >
+                    <div v-else-if="entry.isMultilineQuoted || String(entry.value ?? '').length > 60">
                       <div v-if="entry.key && isSensitiveConfigKey(entry.key)" class="input-with-toggle">
-                        <textarea
+                        <UiTextarea
                           :id="`config-${entry.uid}`"
                           v-model="entry.value"
                           :rows="Math.min(10, Math.max(3, String(entry.value ?? '').split('\\n').length + 1))"
                           :class="{ 'password-masked': !sensitiveFields[entry.key] }"
                           autocomplete="off"
-                        ></textarea>
-                        <button
-                          type="button"
+                        />
+                        <UiIconButton
                           class="toggle-visibility-btn"
+                          size="sm"
+                          :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                          :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                           @click="toggleSensitiveField(entry.key)"
-                          :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                         >
-                          {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                        </button>
+                          <span class="material-symbols-outlined">
+                            {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                          </span>
+                        </UiIconButton>
                       </div>
 
-                      <textarea
+                      <UiTextarea
                         v-else
                         :id="`config-${entry.uid}`"
                         v-model="entry.value"
                         :rows="Math.min(10, Math.max(3, String(entry.value ?? '').split('\\n').length + 1))"
-                      ></textarea>
+                      />
                     </div>
 
                     <div v-else>
                       <div v-if="entry.key && isSensitiveConfigKey(entry.key)" class="input-with-toggle">
-                        <input
+                        <UiInput
                           :type="sensitiveFields[entry.key] ? 'text' : 'password'"
                           :id="`config-${entry.uid}`"
                           v-model="entry.value"
+                          size="sm"
                           autocomplete="off"
-                        >
-                        <button
-                          type="button"
+                        />
+                        <UiIconButton
                           class="toggle-visibility-btn"
+                          size="sm"
+                          :label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                          :title="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                           @click="toggleSensitiveField(entry.key)"
-                          :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
                         >
-                          {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
-                        </button>
+                          <span class="material-symbols-outlined">
+                            {{ sensitiveFields[entry.key] ? 'visibility_off' : 'visibility' }}
+                          </span>
+                        </UiIconButton>
                       </div>
 
-                      <input
+                      <UiInput
                         v-else
                         :id="`config-${entry.uid}`"
                         v-model="entry.value"
                         type="text"
-                      >
+                        size="sm"
+                      />
                     </div>
-
-                    <span v-if="entry.commentText" class="description">
-                      {{ entry.commentText }}
-                    </span>
-                  </div>
-                </div>
+                  </UiField>
+                </UiSettingsForm>
               </section>
             </div>
 
-          </section>
+          </UiSettingsCard>
         </div>
 
-        <aside class="base-config-aside">
-          <div
-            class="base-console card"
-            :class="{ 'is-collapsed': asideCollapsed }"
-            :aria-label="asideCollapsed ? '配置操作台（已折叠）' : '配置操作台'"
-          >
-            <template v-if="asideCollapsed">
-              <div class="console-rail">
-                <button
-                  type="button"
-                  class="console-rail-toggle"
-                  aria-label="展开操作台"
-                  title="展开操作台"
-                  @click="toggleAside"
-                >
-                  <span class="material-symbols-outlined">right_panel_open</span>
-                </button>
-                <div class="console-rail-divider"></div>
-                <button
-                  type="submit"
-                  class="console-rail-icon"
-                  aria-label="保存全局配置"
-                  title="保存全局配置"
-                >
-                  <span class="material-symbols-outlined">save</span>
-                </button>
-                <button
-                  v-for="group in groupedEntries.slice(0, 8)"
-                  :key="`${group.id}-rail`"
-                  type="button"
-                  class="console-rail-icon"
-                  :class="{ 'is-active': activeGroupAnchor === group.anchor }"
-                  :title="group.title"
-                  @click="scrollToGroup(group.anchor)"
-                >
-                  <span class="material-symbols-outlined">tune</span>
-                </button>
-              </div>
-            </template>
-            <template v-else>
-            <div class="base-console__section">
-              <div class="base-console__header">
-                <div>
-                  <span class="base-console__label">操作台</span>
-                  <h3>保存与跳转</h3>
-                </div>
-                <button
-                  type="button"
-                  class="console-rail-toggle"
-                  aria-label="折叠操作台"
-                  title="折叠操作台"
-                  @click="toggleAside"
-                >
-                  <span class="material-symbols-outlined">right_panel_close</span>
-                </button>
-              </div>
-            </div>
-
-            <div class="base-console__actions">
-              <button type="submit" class="btn-primary">保存全局配置</button>
-            </div>
-
-            <p class="entry-count">共 {{ editableEntryCount }} 个配置项</p>
-
-            <p
-              v-if="statusMessage"
-              :class="['base-console__status', `base-console__status--${statusType}`]"
-              role="status"
-              aria-live="polite"
-            >
-              {{ statusMessage }}
-            </p>
-
-            <div class="base-console__section base-console__section--jump">
-              <span class="base-console__label">快速跳转</span>
-              <div class="base-console__jump-list">
-                <button
-                  v-for="group in groupedEntries"
-                  :key="`${group.id}-jump`"
-                  type="button"
-                  :class="[
-                    'base-console__jump-btn',
-                    { 'is-active': activeGroupAnchor === group.anchor },
-                  ]"
-                  :title="group.title"
-                  @click="scrollToGroup(group.anchor)"
-                >
-                  <span>{{ getJumpLabel(group.title) }}</span>
-                  <small>{{ group.totalEntries }} 项</small>
-                </button>
-              </div>
-            </div>
-            </template>
-          </div>
-        </aside>
       </div>
     </form>
 
     <div v-else class="config-empty">
-      <span class="material-symbols-outlined">settings_suggest</span>
-      <h3>暂无配置项</h3>
-      <p>未检测到可用配置，请检查根目录的 config.env 或 config.env.example。</p>
+      <UiEmptyState title="暂无配置项" description="未检测到可用配置，请检查根目录的 config.env 或 config.env.example。">
+        <template #icon>
+          <span class="material-symbols-outlined">settings_suggest</span>
+        </template>
+      </UiEmptyState>
     </div>
   </section>
 </template>
@@ -237,8 +188,21 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { adminConfigApi } from '@/api'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
-import { useConsoleCollapse } from '@/composables/useConsoleCollapse'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiEmptyState from '@/components/ui/UiEmptyState.vue'
+import UiField from '@/components/ui/UiField.vue'
+import UiIconButton from '@/components/ui/UiIconButton.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
+import UiSettingsCard from '@/components/ui/UiSettingsCard.vue'
+import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
+import UiSettingsSwitchRow from '@/components/ui/UiSettingsSwitchRow.vue'
+import UiSideConsoleNav, {
+  type UiSideConsoleNavChild,
+  type UiSideConsoleNavItem,
+} from '@/components/ui/UiSideConsoleNav.vue'
+import UiTextarea from '@/components/ui/UiTextarea.vue'
 import {
   showMessage,
   parseEnvToList,
@@ -262,6 +226,7 @@ interface ConfigEntry extends EnvEntry {
 
 interface ConfigSection {
   id: string
+  anchor: string
   title: string
   entries: ConfigEntry[]
 }
@@ -292,14 +257,15 @@ interface ConfigDocumentationMetadata {
 const configEntries = ref<ConfigEntry[]>([])
 const statusMessage = ref('')
 const statusType = ref<'info' | 'success' | 'error'>('info')
+const statusBadgeVariant = computed(() =>
+  statusType.value === 'error' ? 'danger' : statusType.value
+)
 const isLoading = ref(true)
 const activeGroupAnchor = ref('')
+const activeSectionAnchor = ref('')
+const openGroupAnchors = ref<Set<string>>(new Set())
 const configDocumentation = ref<ConfigDocumentationMetadata>(createEmptyDocumentationMetadata())
 const sensitiveFields = reactive<Record<string, boolean>>({})
-
-const { collapsed: asideCollapsed, toggle: toggleAside } = useConsoleCollapse(
-  'base-config-aside'
-)
 
 function toggleSensitiveField(key: string): void {
   sensitiveFields[key] = !sensitiveFields[key]
@@ -342,6 +308,15 @@ function createGroupAnchor(groupId: string, index: number): string {
   return `base-config-group-${normalized || index + 1}`
 }
 
+function createSectionAnchor(groupAnchor: string, sectionTitle: string, index: number): string {
+  const normalized = sectionTitle
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase()
+
+  return `${groupAnchor}-section-${normalized || index + 1}`
+}
+
 const groupedEntries = computed<ConfigGroup[]>(() => {
   const groupMap = new Map<
     string,
@@ -375,6 +350,7 @@ const groupedEntries = computed<ConfigGroup[]>(() => {
     if (!groupBucket.sectionsMap.has(sectionId)) {
       groupBucket.sectionsMap.set(sectionId, {
         id: sectionId,
+        anchor: '',
         title: sectionTitle,
         entries: [],
       })
@@ -416,14 +392,39 @@ const groupedEntries = computed<ConfigGroup[]>(() => {
     return a.title.localeCompare(b.title, 'zh-CN', { sensitivity: 'base' })
   })
 
-  return groups.map((group, index) => ({
-    ...group,
-    anchor: createGroupAnchor(group.title, index),
-  }))
+  return groups.map((group, index) => {
+    const groupAnchor = createGroupAnchor(group.title, index)
+
+    return {
+      ...group,
+      anchor: groupAnchor,
+      sections: group.sections.map((section, sectionIndex) => ({
+        ...section,
+        anchor: createSectionAnchor(groupAnchor, section.title, sectionIndex),
+      })),
+    }
+  })
 })
 
 const editableEntryCount = computed(() =>
   groupedEntries.value.reduce((sum, group) => sum + group.totalEntries, 0)
+)
+const openGroupAnchorList = computed(() => Array.from(openGroupAnchors.value))
+const consoleNavItems = computed<UiSideConsoleNavItem[]>(() =>
+  groupedEntries.value.map((group) => ({
+    id: group.anchor,
+    label: getJumpLabel(group.title),
+    title: group.title,
+    meta: `${group.totalEntries} 项`,
+    active: activeGroupAnchor.value === group.anchor,
+    children: visibleSectionLinks(group).map((section) => ({
+      id: section.anchor,
+      label: getSectionJumpLabel(section.title),
+      title: section.title,
+      meta: `${section.entries.length} 项`,
+      active: activeSectionAnchor.value === section.anchor,
+    })),
+  }))
 )
 
 const JUMP_LABEL_ALIAS: Record<string, string> = {
@@ -452,6 +453,58 @@ function getJumpLabel(groupTitle: string): string {
     .trim()
 
   return truncateLabel(compactTitle || groupTitle)
+}
+
+function getSectionJumpLabel(sectionTitle: string): string {
+  return truncateLabel(sectionTitle, 12)
+}
+
+function visibleSectionLinks(group: ConfigGroup): ConfigSection[] {
+  return group.sections.filter((section) => section.title.trim().length > 0)
+}
+
+function openGroup(anchor: string): void {
+  openGroupAnchors.value = new Set([anchor])
+}
+
+function toggleGroupOpen(group: ConfigGroup): void {
+  const next = new Set(openGroupAnchors.value)
+  if (next.has(group.anchor)) {
+    next.delete(group.anchor)
+  } else {
+    next.add(group.anchor)
+  }
+
+  openGroupAnchors.value = next
+}
+
+function handleGroupExpandClick(group: ConfigGroup): void {
+  if (visibleSectionLinks(group).length === 0) {
+    scrollToAnchor(group.anchor)
+    return
+  }
+
+  toggleGroupOpen(group)
+}
+
+function handleConsoleGroupClick(item: UiSideConsoleNavItem): void {
+  scrollToAnchor(item.id)
+}
+
+function handleConsoleGroupToggle(item: UiSideConsoleNavItem): void {
+  const group = groupedEntries.value.find((entry) => entry.anchor === item.id)
+  if (!group) {
+    return
+  }
+
+  handleGroupExpandClick(group)
+}
+
+function handleConsoleSectionClick(
+  _item: UiSideConsoleNavItem,
+  child: UiSideConsoleNavChild
+): void {
+  scrollToAnchor(child.id)
 }
 
 function normalizeCommentLine(rawLine: string): string | null {
@@ -715,13 +768,25 @@ function resolveContentContainer(target?: HTMLElement): HTMLElement | null {
   return null
 }
 
-function scrollToGroup(anchor: string): void {
+function scrollToAnchor(anchor: string, options: { openGroup?: boolean } = {}): void {
   const target = document.getElementById(anchor)
   if (!target) {
     return
   }
 
-  activeGroupAnchor.value = anchor
+  const group = groupedEntries.value.find((entry) =>
+    entry.anchor === anchor || entry.sections.some((section) => section.anchor === anchor)
+  )
+
+  if (group) {
+    activeGroupAnchor.value = group.anchor
+    if (options.openGroup) {
+      openGroup(group.anchor)
+    }
+  }
+
+  activeSectionAnchor.value =
+    group?.sections.find((section) => section.anchor === anchor)?.anchor || ''
 
   const contentContainer = resolveContentContainer(target)
   if (contentContainer) {
@@ -752,34 +817,52 @@ function updateActiveGroupByViewport(): void {
   const viewportBottom = contentContainer.getBoundingClientRect().bottom
 
   let bestAnchor = groupedEntries.value[0]?.anchor || ''
+  let bestSectionAnchor = ''
   let bestVisibleRatio = -1
   let bestTopDelta = Number.POSITIVE_INFINITY
 
   groupedEntries.value.forEach((group) => {
-    const target = document.getElementById(group.anchor)
-    if (!target) {
-      return
-    }
+    const candidates = [
+      { anchor: group.anchor, groupAnchor: group.anchor, sectionAnchor: '' },
+      ...group.sections.map((section) => ({
+        anchor: section.anchor,
+        groupAnchor: group.anchor,
+        sectionAnchor: section.title.trim() ? section.anchor : '',
+      })),
+    ]
 
-    const rect = target.getBoundingClientRect()
-    const visibleTop = Math.max(rect.top, viewportTop)
-    const visibleBottom = Math.min(rect.bottom, viewportBottom)
-    const visiblePx = Math.max(0, visibleBottom - visibleTop)
-    const visibleRatio = visiblePx / Math.max(rect.height, 1)
-    const topDelta = Math.abs(rect.top - viewportTop - GROUP_SCROLL_OFFSET)
+    candidates.forEach((candidate) => {
+      const target = document.getElementById(candidate.anchor)
+      if (!target) {
+        return
+      }
 
-    if (
-      visibleRatio > bestVisibleRatio ||
-      (visibleRatio === bestVisibleRatio && topDelta < bestTopDelta)
-    ) {
-      bestVisibleRatio = visibleRatio
-      bestTopDelta = topDelta
-      bestAnchor = group.anchor
-    }
+      const rect = target.getBoundingClientRect()
+      const visibleTop = Math.max(rect.top, viewportTop)
+      const visibleBottom = Math.min(rect.bottom, viewportBottom)
+      const visiblePx = Math.max(0, visibleBottom - visibleTop)
+      const visibleRatio = visiblePx / Math.max(rect.height, 1)
+      const topDelta = Math.abs(rect.top - viewportTop - GROUP_SCROLL_OFFSET)
+
+      if (
+        visibleRatio > bestVisibleRatio ||
+        (visibleRatio === bestVisibleRatio && topDelta < bestTopDelta)
+      ) {
+        bestVisibleRatio = visibleRatio
+        bestTopDelta = topDelta
+        bestAnchor = candidate.groupAnchor
+        bestSectionAnchor = candidate.sectionAnchor
+      }
+    })
   })
 
   if (bestAnchor) {
+    const previousGroupAnchor = activeGroupAnchor.value
     activeGroupAnchor.value = bestAnchor
+    activeSectionAnchor.value = bestSectionAnchor
+    if (bestAnchor !== previousGroupAnchor) {
+      openGroup(bestAnchor)
+    }
   }
 }
 
@@ -945,6 +1028,9 @@ watch(
   groupedEntries,
   async () => {
     await nextTick()
+    if (groupedEntries.value.length > 0 && openGroupAnchors.value.size === 0) {
+      openGroup(groupedEntries.value[0].anchor)
+    }
     scheduleActiveGroupUpdate()
   },
   { flush: 'post' }
@@ -967,7 +1053,7 @@ onBeforeUnmount(() => {
   width: 100%;
   max-width: min(1680px, calc(100vw - var(--space-6) * 2));
   margin: 0 auto;
-  padding: 0 var(--space-5) var(--space-6);
+  padding: 0 0 var(--space-6);
 }
 
 #base-config-form {
@@ -976,145 +1062,85 @@ onBeforeUnmount(() => {
 
 .base-config-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 400px);
-  gap: var(--space-6);
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  gap: var(--space-4);
   align-items: start;
-}
-
-.base-config-workspace.is-aside-collapsed {
-  grid-template-columns: minmax(0, 1fr) 56px;
-}
-
-.base-console__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.base-console__header > div {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
 }
 
 .base-config-main {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-3);
 }
 
 .base-config-aside {
-  --base-console-viewport-gap: var(--space-4);
+  --base-console-viewport-gap: 0px;
+  --base-console-scroll-padding: 22px;
   position: sticky;
   top: var(--base-console-viewport-gap);
   align-self: start;
-}
-
-.source-banner {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-4);
-}
-
-.source-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--highlight-text) 18%, transparent);
-}
-
-.source-label {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-}
-
-.source-hint {
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-}
-
-.group-card {
-  padding: var(--space-4);
-}
-
-.group-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
-}
-
-.group-head-main {
-  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-3);
+  height: calc(
+    var(--app-viewport-height, 100vh) -
+    var(--app-top-bar-height, 60px) -
+    var(--base-console-scroll-padding) -
+    var(--base-console-viewport-gap)
+  );
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
-.group-head-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+.base-settings-surface {
+  --base-config-surface-border: color-mix(in srgb, var(--border-color) 88%, transparent);
+  --base-config-muted-surface: color-mix(in srgb, var(--primary-text) 2.4%, transparent);
+  --base-config-card-surface: color-mix(in srgb, var(--primary-text) 0.7%, transparent);
+  border-color: var(--base-config-surface-border);
+  background: var(--base-config-card-surface);
 }
 
-.group-header h3 {
-  margin: 0;
-  font-size: var(--font-size-emphasis);
-  color: var(--primary-text);
+.base-settings-surface :deep(.ui-card__header),
+:deep(.ui-card.base-settings-surface.ui-card--divided .ui-card__header) {
+  border-bottom-color: var(--base-config-surface-border);
 }
 
-.group-description {
-  margin: 0;
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  white-space: pre-line;
+.base-settings-surface :deep(.ui-input),
+.base-settings-surface :deep(.ui-textarea) {
+  border-color: var(--base-config-surface-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
 }
 
 .group-section {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--highlight-text) 16%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.8%, transparent);
   color: var(--primary-text);
   font-size: var(--font-size-helper);
-}
-
-.group-count {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
-.group-grid {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  font-weight: 600;
 }
 
 .group-sections {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .group-section-block {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .group-section-block + .group-section-block {
   border-top: 1px dashed color-mix(in srgb, var(--border-color) 76%, transparent);
-  padding-top: var(--space-3);
+  padding-top: var(--space-2);
 }
 
 .group-section-row {
@@ -1129,174 +1155,10 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-helper);
 }
 
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
-  background: color-mix(in srgb, var(--tertiary-bg) 55%, transparent);
-}
-
-.key-name {
-  font-weight: 600;
-  color: var(--primary-text);
-}
-
-.description {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  white-space: pre-line;
-}
-
-.switch-container {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.form-group textarea {
-  min-height: 120px;
-  resize: vertical;
-}
-
-.base-console {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-5);
-  border-radius: var(--radius-xl);
-  height: calc(
-    var(--app-viewport-height, 100vh) -
-    var(--app-top-bar-height, 60px) -
-    var(--base-console-viewport-gap) -
-    var(--base-console-viewport-gap)
-  );
-  overflow: hidden;
-  transition: padding 0.2s ease;
-}
-
-.base-console.is-collapsed {
-  padding: var(--space-3) 0;
-  gap: 0;
-  align-items: center;
-}
-
-.base-console__section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.base-console__section--jump {
-  min-height: 0;
-  flex: 1;
-}
-
-.base-console__section h3,
-.base-console__section p {
-  margin: 0;
-}
-
-.base-console__section p {
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-}
-
-.base-console__label {
-  color: var(--highlight-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.base-console__actions,
-.base-console__jump-list {
-  display: grid;
-  gap: 10px;
-}
-
-.base-console__jump-list {
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: 4px;
-  scrollbar-gutter: stable;
-}
-
-.base-console__actions button {
-  justify-content: center;
-}
-
-.base-console__status {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  border: 1px solid transparent;
-  font-size: var(--font-size-body);
-}
-
-.base-console__status--info {
-  background: var(--info-bg);
-  border-color: var(--info-border);
-}
-
-.base-console__status--success {
-  background: var(--success-bg);
-  border-color: var(--success-border);
-  color: var(--success-text);
-}
-
-.base-console__status--error {
-  background: var(--danger-bg);
-  border-color: var(--danger-border);
-  color: var(--danger-text);
-}
-
-.base-console__jump-btn {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  width: 100%;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
-  color: var(--primary-text);
-  cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
-  text-align: left;
-}
-
-.base-console__jump-btn > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.base-console__jump-btn:hover {
-  border-color: var(--highlight-text);
-  background: var(--info-bg);
-  transform: translateY(-1px);
-}
-
-.base-console__jump-btn.is-active {
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-text) 14%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--highlight-text) 34%, transparent);
-}
-
-.base-console__jump-btn:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-}
-
-.base-console__jump-btn small {
-  color: var(--secondary-text);
-  flex-shrink: 0;
+@media (prefers-reduced-motion: reduce) {
+  .base-config-aside {
+    transition: none;
+  }
 }
 
 .form-actions {
@@ -1304,11 +1166,6 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-3);
   flex-wrap: wrap;
-}
-
-.entry-count {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
 }
 
 .config-loading {
@@ -1326,32 +1183,6 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-4);
   padding: var(--space-9) var(--space-4);
-  color: var(--secondary-text);
-  text-align: center;
-}
-
-.config-empty .material-symbols-outlined {
-  font-size: var(--font-size-icon-empty-lg);
-  opacity: 0.3;
-  color: var(--highlight-text);
-}
-
-.config-empty h3 {
-  color: var(--primary-text);
-  font-size: var(--font-size-emphasis);
-}
-
-.config-empty p {
-  max-width: 45ch;
-  font-size: var(--font-size-body);
-  line-height: 1.6;
-}
-
-.form-group-comment pre {
-  color: var(--secondary-text);
-  font-family: inherit;
-  white-space: pre-wrap;
-  margin: 8px 0;
 }
 
 /* 敏感信息打码样式 */
@@ -1361,143 +1192,22 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 
-.input-with-toggle input {
+.input-with-toggle :deep(.ui-input),
+.input-with-toggle :deep(.ui-textarea) {
   flex: 1;
-  padding-right: 70px;
+  padding-right: 42px;
 }
 
 .toggle-visibility-btn {
   position: absolute;
   right: 8px;
-  min-height: 30px;
-  padding: 4px 10px;
-  background: var(--tertiary-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  color: var(--primary-text);
-  font-size: var(--font-size-helper);
-  cursor: pointer;
+  top: 2px;
   z-index: 2;
 }
 
 /* 文本掩码样式 (用于 textarea) */
 .password-masked {
   -webkit-text-security: disc !important;
-}
-
-.toggle-visibility-btn:hover {
-  background: var(--accent-bg);
-}
-
-/* 一体化胶囊操作中心 */
-.config-action-capsule-container {
-  position: fixed;
-  bottom: 30px;
-  right: 30px;
-  z-index: var(--z-index-message);
-  display: flex;
-  justify-content: flex-end;
-  pointer-events: none;
-  transition: transform var(--transition-normal), opacity var(--transition-normal);
-}
-
-.config-action-capsule {
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  height: 50px;
-  background-color: var(--button-bg);
-  color: var(--on-accent-text);
-  border-radius: 25px;
-  box-shadow: var(--shadow-overlay-soft);
-  overflow: hidden;
-  transition:
-    background-color var(--transition-spring),
-    transform var(--transition-spring),
-    box-shadow var(--transition-spring);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.config-action-capsule:hover {
-  background-color: var(--button-hover-bg);
-  transform: translateY(-4px);
-  box-shadow: var(--overlay-panel-shadow);
-}
-
-.capsule-segment {
-  height: 100%;
-  border: none;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 16px;
-  transition: background-color var(--transition-fast);
-}
-
-.capsule-segment:hover {
-  background-color: rgba(255, 255, 255, 0.1);
-}
-
-.save-segment {
-  gap: 8px;
-  min-width: 120px;
-}
-
-.top-segment {
-  width: 50px;
-  padding: 0;
-}
-
-.capsule-divider {
-  width: 1px;
-  height: 24px;
-  background-color: rgba(255, 255, 255, 0.2);
-}
-
-.label-text, .status-text {
-  font-size: var(--font-size-helper);
-  font-weight: 500;
-}
-
-.status-text.success {
-  color: #a7f3d0;
-}
-
-.status-text.error {
-  color: #fecaca;
-}
-
-.loading-spinner-sm {
-  width: 18px;
-  height: 18px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-/* 文本切换动画 */
-.fade-text-enter-active,
-.fade-text-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-
-.fade-text-enter-from {
-  opacity: 0;
-  transform: translateY(10px);
-}
-
-.fade-text-leave-to {
-  opacity: 0;
-  transform: translateY(-10px);
-}
-
-/* 隐藏全局回到顶部 */
-:global(.hide-global-back-to-top .back-to-top-btn) {
-  display: none !important;
 }
 
 #base-config-section {
@@ -1507,46 +1217,38 @@ onBeforeUnmount(() => {
 @media (max-width: 1200px) {
   #base-config-section {
     max-width: 100%;
-    padding-inline: var(--space-4);
+    padding-inline: 0;
   }
 
   .base-config-workspace {
-    grid-template-columns: minmax(0, 1fr) minmax(300px, 340px);
+    grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
     gap: var(--space-4);
   }
 }
 
 @media (max-width: 768px) {
   #base-config-section {
-    padding: 0 var(--space-3) var(--space-4);
+    padding: 0 0 var(--space-4);
   }
 
-  .base-config-workspace,
-  .base-config-workspace.is-aside-collapsed {
+  .base-config-workspace {
     grid-template-columns: 1fr;
   }
 
   .base-config-aside {
     position: static;
-  }
-
-  .base-console {
-    padding: var(--space-4);
     height: auto;
     max-height: none;
     overflow: visible;
+    padding: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
   }
 
-  .base-console__section--jump {
-    flex: initial;
-  }
-
-  .base-console__jump-list {
+  .base-config-aside :deep(.ui-side-console-nav) {
     max-height: 38vh;
   }
 
-  .source-banner {
-    align-items: flex-start;
-  }
 }
 </style>

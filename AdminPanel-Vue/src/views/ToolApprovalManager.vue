@@ -1,49 +1,123 @@
 <template>
   <section class="config-section active-section tool-approval-page">
-    <p class="description">在此管理工具调用的审核机制。开启后，特定的工具调用将需要通过管理面板进行人工确认。</p>
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiDirtyIndicator :dirty="isDirty" label="配置已修改" />
+        <UiBadge v-if="!isDirty" variant="outline">暂无改动</UiBadge>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
+        <UiButton type="button" :disabled="saving || !isDirty" :loading="saving" @click="saveConfig">
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          {{ saving ? '保存中…' : '保存审核配置' }}
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
 
-    <div class="card tool-approval-toolbar" :class="{ 'is-dirty': isDirty }">
-      <div class="toolbar-meta">
-        <span class="dirty-badge" :class="{ 'dirty-badge--active': isDirty }">
-          {{ isDirty ? '配置已修改' : '暂无改动' }}
-        </span>
-        <span v-if="statusMessage" :class="['status-message', statusType]">{{ statusMessage }}</span>
-      </div>
-      <button type="button" class="btn-primary" :disabled="saving || !isDirty" @click="saveConfig">
-        <span class="material-symbols-outlined" :class="{ spinning: saving }">{{ saving ? 'sync' : 'save' }}</span>
-        <span>{{ saving ? '保存中…' : '保存审核配置' }}</span>
-      </button>
-    </div>
+    <header class="tool-approval-intro">
+      <h2>工具调用审核</h2>
+      <p>管理工具调用进入人工确认流程的条件、等待时间和隐私保护策略。</p>
+    </header>
 
-    <div class="card">
-      <form @submit.prevent="saveConfig">
-        <div class="config-item">
-          <AppSwitch v-model="config.enabled" :disabled="saving" label="是否开启工具调用审核" />
-        </div>
-        <div class="config-item">
-          <AppSwitch v-model="config.approveAll" :disabled="saving" label="是否开启所有工具调用审核" />
-          <p class="aa-hint">如果开启，所有工具调用都将进入审核流程，无论是否在名单中。</p>
-        </div>
-        <div class="config-item">
-          <AppSwitch v-model="config.fuzzyToolMatching" :disabled="saving" label="是否开启模糊工具匹配" />
-          <p class="aa-hint">开启后，工具参数值边界除标准「始」「末」外，还会兼容「始}、{始」、以及「始`」「始text」「始``」「始%20」等异常标记。</p>
-        </div>
-        <div class="config-item privacy-protection-item">
-          <AppSwitch v-model="config.privacyProtectionEnabled" :disabled="saving" label="是否开启工具调用隐私保护" />
-          <p class="aa-hint">默认关闭。开启后，会在工具结果返回给 AI 前保守打码疑似 .env 单行密钥、password、api key、token，以及 sk- 等高置信长令牌；不会影响工具实际执行与人工审核参数。</p>
-        </div>
-        <div class="config-item">
-          <label for="tool-approval-timeout">设置审核最大等待时间 (分钟)</label>
-          <input type="number" id="tool-approval-timeout" v-model.number="config.timeoutMinutes" min="1" max="60" :disabled="saving">
-          <p class="aa-hint">超时后，该审核请求将自动拒绝。</p>
-        </div>
-        <div class="config-item">
-          <label for="tool-approval-list">被审核规则名单 (每行一条规则)</label>
-          <textarea id="tool-approval-list" v-model="config.approvalListText" rows="8" :disabled="saving" placeholder="例如：&#10;SciCalculator&#10;PowerShellExecutor:Get-ChildItem&#10;PowerShellExecutor::SilentReject&#10;PowerShellExecutor:Remove-Item::SilentReject"></textarea>
-          <p class="aa-hint">支持四种格式：ToolName、ToolName:Command、ToolName::SilentReject、ToolName:Command::SilentReject。带“::SilentReject”的规则在用户拒绝时不会向 AI 返回拒绝提示。</p>
-        </div>
-      </form>
-    </div>
+    <section class="approval-summary" aria-label="工具调用审核摘要">
+      <span class="summary-item">
+        <strong>{{ config.enabled ? '已启用' : '未启用' }}</strong>
+        <small>审核状态</small>
+      </span>
+      <span class="summary-item">
+        <strong>{{ config.approveAll ? '全部工具' : '规则命中' }}</strong>
+        <small>审核范围</small>
+      </span>
+      <span class="summary-item">
+        <strong>{{ config.timeoutMinutes }} 分钟</strong>
+        <small>最大等待</small>
+      </span>
+      <span class="summary-item">
+        <strong>{{ approvalRuleCount }}</strong>
+        <small>规则数量</small>
+      </span>
+    </section>
+
+    <form class="approval-layout" @submit.prevent="saveConfig">
+      <UiSettingsCard
+        class="tool-approval-surface"
+        title="审核范围"
+        description="控制哪些工具调用需要人工确认，以及审核请求的等待时间。"
+        variant="subtle"
+      >
+        <UiSettingsForm as="div" :columns="2" gap="sm">
+          <UiSettingsSwitchRow
+            v-model="config.enabled"
+            :disabled="saving"
+            label="启用工具调用审核"
+            description="开启后，命中规则的工具调用会进入人工确认流程。"
+            data-settings-span="full"
+          />
+          <UiSettingsSwitchRow
+            v-model="config.approveAll"
+            :disabled="saving"
+            label="审核所有工具调用"
+            description="开启后，所有工具调用都会进入审核流程，无论是否在名单中。"
+            data-settings-span="full"
+          />
+          <UiField label="最大等待时间" description="超时后，该审核请求将自动拒绝。" for-id="tool-approval-timeout">
+            <UiInput
+              id="tool-approval-timeout"
+              v-model.number="config.timeoutMinutes"
+              class="timeout-input"
+              type="number"
+              min="1"
+              max="60"
+              :disabled="saving"
+            />
+          </UiField>
+        </UiSettingsForm>
+      </UiSettingsCard>
+
+      <UiSettingsCard
+        class="tool-approval-surface"
+        title="匹配与保护"
+        description="配置工具名匹配方式，以及结果返回给 AI 前的敏感信息保护。"
+        variant="subtle"
+      >
+        <UiSettingsForm as="div" :columns="1" gap="sm">
+          <UiSettingsSwitchRow
+            v-model="config.fuzzyToolMatching"
+            :disabled="saving"
+            label="启用模糊工具匹配"
+            description="工具参数值边界除标准「始」「末」外，还会兼容异常标记。"
+          />
+          <UiSettingsSwitchRow
+            v-model="config.privacyProtectionEnabled"
+            :disabled="saving"
+            label="启用工具调用隐私保护"
+            description="开启后，会在工具结果返回给 AI 前保守打码疑似密钥、password、api key、token 等高置信长令牌；不影响工具实际执行与人工审核参数。"
+          />
+        </UiSettingsForm>
+      </UiSettingsCard>
+
+      <UiSettingsCard
+        class="tool-approval-surface approval-rules-card"
+        title="被审核规则名单"
+        description="支持 ToolName、ToolName:Command、ToolName::SilentReject、ToolName:Command::SilentReject。"
+        variant="subtle"
+      >
+        <UiField
+          label="规则列表"
+          description="每行一条规则。带 ::SilentReject 的规则在用户拒绝时不会向 AI 返回拒绝提示。"
+          for-id="tool-approval-list"
+        >
+          <UiTextarea
+            id="tool-approval-list"
+            v-model="config.approvalListText"
+            class="approval-list-textarea"
+            rows="8"
+            :disabled="saving"
+            placeholder="例如：&#10;SciCalculator&#10;PowerShellExecutor:Get-ChildItem&#10;PowerShellExecutor::SilentReject&#10;PowerShellExecutor:Remove-Item::SilentReject"
+          />
+        </UiField>
+      </UiSettingsCard>
+    </form>
   </section>
 </template>
 
@@ -52,7 +126,16 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { adminConfigApi } from '@/api'
 import type { ToolApprovalConfig } from '@/api/admin-config'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiDirtyIndicator from '@/components/ui/UiDirtyIndicator.vue'
+import UiField from '@/components/ui/UiField.vue'
+import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
+import UiSettingsCard from '@/components/ui/UiSettingsCard.vue'
+import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
+import UiSettingsSwitchRow from '@/components/ui/UiSettingsSwitchRow.vue'
+import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
 
@@ -121,6 +204,16 @@ function buildConfigSignature(state: ToolApprovalFormState): string {
 
 const isDirty = computed(() => {
   return buildConfigSignature(config.value) !== initialSignature.value
+})
+
+const approvalRuleCount = computed(() => {
+  return buildPayload(config.value).approvalList.length
+})
+
+const statusBadgeVariant = computed(() => {
+  if (statusType.value === 'success') return 'success'
+  if (statusType.value === 'error') return 'danger'
+  return 'info'
 })
 
 async function loadConfig() {
@@ -223,94 +316,100 @@ onBeforeRouteLeave(async () => {
   gap: var(--space-4);
 }
 
-.tool-approval-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 12;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-4);
+.tool-approval-intro {
+  display: grid;
+  gap: var(--space-1);
 }
 
-.tool-approval-toolbar.is-dirty {
-  border-color: color-mix(in srgb, var(--warning-text) 30%, var(--border-color));
-}
-
-.toolbar-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-
-.dirty-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
+.tool-approval-intro h2 {
+  margin: 0;
+  color: var(--primary-text);
+  font-size: 1rem;
   font-weight: 600;
+  line-height: 1.4;
 }
 
-.dirty-badge--active {
-  background: var(--warning-bg);
-  border-color: var(--warning-border);
-  color: var(--warning-text);
-}
-
-.card {
-  padding: var(--space-5);
-}
-
-.config-item {
-  margin-bottom: var(--space-5);
-}
-
-.config-item > label:not(.switch-row) {
-  display: block;
-  margin-bottom: var(--space-2);
-  font-weight: 500;
-}
-
-.config-item input[type="number"] {
-  width: 100px;
-  padding: var(--space-2) var(--space-3);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-}
-
-.config-item textarea {
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-family: 'Consolas', 'Monaco', monospace;
-  resize: vertical;
-}
-
-.aa-hint {
-  font-size: var(--font-size-helper);
+.tool-approval-intro p {
+  margin: 0;
   color: var(--secondary-text);
-  margin-top: var(--space-2);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
-.spinning {
-  animation: spin 1s linear infinite;
+.approval-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-2);
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
+.summary-item {
+  display: grid;
+  gap: 2px;
+  min-height: 52px;
+  justify-content: start;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 90%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+}
+
+.summary-item strong {
+  color: var(--primary-text);
+  font-size: var(--font-size-emphasis);
+  line-height: 1.15;
+}
+
+.summary-item small {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.approval-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.86fr);
+  gap: var(--space-4);
+}
+
+.tool-approval-surface {
+  --tool-approval-surface-border: color-mix(in srgb, var(--border-color) 94%, transparent);
+  --tool-approval-card-surface: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+}
+
+.tool-approval-surface,
+:deep(.ui-card.tool-approval-surface) {
+  border-color: var(--tool-approval-surface-border);
+  background: var(--tool-approval-card-surface);
+}
+
+.tool-approval-surface :deep(.ui-card__header),
+:deep(.ui-card.tool-approval-surface.ui-card--divided .ui-card__header) {
+  border-bottom-color: var(--tool-approval-surface-border);
+}
+
+.tool-approval-surface :deep(.ui-input),
+.tool-approval-surface :deep(.ui-textarea) {
+  border-color: color-mix(in srgb, var(--border-color) 90%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
+}
+
+.timeout-input {
+  max-width: 120px;
+}
+
+.approval-rules-card {
+  grid-column: 1 / -1;
+}
+
+.approval-list-textarea {
+  font-family: 'Consolas', 'Monaco', monospace;
+  line-height: 1.55;
+}
+
+@media (max-width: 960px) {
+  .approval-summary,
+  .approval-layout {
+    grid-template-columns: 1fr;
   }
 }
 </style>

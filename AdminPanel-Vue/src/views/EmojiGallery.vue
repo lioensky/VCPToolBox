@@ -1,37 +1,48 @@
 <template>
   <section class="config-section active-section emoji-gallery-page">
-    <header class="hero-card card">
-      <div class="hero-copy">
-        <span class="hero-kicker">Image Workspace</span>
-        <div class="hero-title-row">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton
+          variant="outline"
+          :disabled="isLoading"
+          @click="refreshCurrentPage"
+        >
+          {{ isLoading && hasLoadedOnce ? "刷新中…" : "刷新" }}
+        </UiButton>
+
+        <UiButton
+          variant="outline"
+          :disabled="isRebuildingList"
+          @click="rebuildGeneratedEmojiLists"
+        >
+          {{ isRebuildingList ? "重建中…" : "重建列表" }}
+        </UiButton>
+
+        <UiButton
+          :disabled="isLoading || isUploading"
+          @click="createCategory"
+        >
+          新建目录
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
+    <header class="gallery-topbar">
+      <div class="gallery-heading-panel">
+        <div class="gallery-heading-copy">
+          <span class="gallery-kicker">Image Workspace</span>
           <div>
-            <h1>表情包画廊</h1>
+            <h2>表情包画廊</h2>
             <p class="description">
               浏览并整理 `image` 目录中的表情包资源，支持检索、目录筛选、上传导入、分页浏览与大图预览。
             </p>
           </div>
-          <div class="hero-badges" aria-live="polite">
-            <span class="hero-badge">
-              <strong>{{ matchedEmojiCount }}</strong>
-              <span>命中</span>
-            </span>
-            <span class="hero-badge">
-              <strong>{{ categories.length }}</strong>
-              <span>目录</span>
-            </span>
-            <span class="hero-badge">
-              <strong>{{ items.length }}</strong>
-              <span>当前页</span>
-            </span>
-          </div>
         </div>
-      </div>
 
-      <div class="hero-toolbar">
-        <div class="hero-search-group">
-          <label class="search-field hero-search-field">
+        <div class="gallery-toolbar">
+          <label class="search-field gallery-search-field">
             <span class="material-symbols-outlined">search</span>
-            <input
+            <UiInput
               v-model.trim="searchInput"
               type="search"
               aria-label="搜索表情包"
@@ -41,30 +52,26 @@
             />
           </label>
 
-          <button
-            type="button"
-            class="btn-primary"
+          <UiButton
+            variant="primary"
             :disabled="isLoading"
             @click="applySearch"
           >
             搜索
-          </button>
+          </UiButton>
 
-          <button
+          <UiButton
             v-if="activeKeyword"
-            type="button"
-            class="btn-secondary"
+            variant="outline"
             :disabled="isLoading"
             @click="clearSearch"
           >
             清空
-          </button>
-        </div>
+          </UiButton>
 
-        <div class="hero-toolbar-actions">
           <label class="page-size-control">
             <span>每页</span>
-            <select
+            <UiSelect
               v-model.number="pageSize"
               :disabled="isLoading"
               @change="handlePageSizeChange"
@@ -76,41 +83,11 @@
               >
                 {{ size }}
               </option>
-            </select>
+            </UiSelect>
           </label>
-
-          <button
-            type="button"
-            class="btn-secondary"
-            :disabled="isLoading"
-            @click="refreshCurrentPage"
-          >
-            {{ isLoading && hasLoadedOnce ? "刷新中…" : "刷新" }}
-          </button>
-
-          <button
-            type="button"
-            class="btn-secondary"
-            :disabled="isRebuildingList"
-            @click="rebuildGeneratedEmojiLists"
-          >
-            {{ isRebuildingList ? "重建中…" : "重建列表" }}
-          </button>
-
-          <button
-            type="button"
-            class="btn-secondary"
-            :disabled="isLoading || isUploading"
-            @click="createCategory"
-          >
-            新建目录
-          </button>
         </div>
-      </div>
 
-      <div class="hero-status-row">
-        <p class="hero-status-tip">{{ refreshStateText }}</p>
-        <div class="hero-filter-summary">
+        <div class="gallery-filter-summary">
           <span class="filter-pill" :class="{ active: selectedCategory === '' }">
             {{ selectedCategory ? `目录：${selectedCategory}` : "全部目录" }}
           </span>
@@ -120,223 +97,147 @@
           <span class="filter-pill">{{ paginationSummary }}</span>
         </div>
       </div>
+
+      <aside class="gallery-summary-card" aria-live="polite">
+        <div class="gallery-summary-grid">
+          <span class="gallery-summary-item">
+            <strong>{{ matchedEmojiCount }}</strong>
+            <span>命中</span>
+          </span>
+          <span class="gallery-summary-item">
+            <strong>{{ categories.length }}</strong>
+            <span>目录</span>
+          </span>
+          <span class="gallery-summary-item">
+            <strong>{{ items.length }}</strong>
+            <span>当前页</span>
+          </span>
+        </div>
+        <p>{{ refreshStateText }}</p>
+      </aside>
     </header>
 
-    <div class="gallery-workspace" :class="{ 'is-console-collapsed': consoleCollapsed }">
+    <div class="gallery-workspace">
       <aside class="operations-column">
-        <section
-          class="operations-console card"
-          :class="{ 'is-collapsed': consoleCollapsed }"
-          :aria-label="consoleCollapsed ? '表情包操作台（已折叠）' : '表情包操作台'"
-        >
-          <template v-if="consoleCollapsed">
-            <div class="console-rail">
-              <button
-                type="button"
-                class="console-rail-toggle"
-                aria-label="展开操作台"
-                title="展开操作台"
-                @click="toggleConsole"
-              >
-                <span class="material-symbols-outlined">left_panel_open</span>
-              </button>
-              <div class="console-rail-divider"></div>
-              <button
-                type="button"
-                class="console-rail-icon"
-                aria-label="刷新"
-                title="刷新"
-                :disabled="isLoading"
-                @click="refreshCurrentPage"
-              >
-                <span class="material-symbols-outlined">refresh</span>
-              </button>
-              <button
-                type="button"
-                class="console-rail-icon"
-                aria-label="新建目录"
-                title="新建目录"
-                :disabled="isLoading || isUploading"
-                @click="createCategory"
-              >
-                <span class="material-symbols-outlined">create_new_folder</span>
-              </button>
-              <button
-                type="button"
-                class="console-rail-icon"
-                :class="{ 'is-active': selectedCategory === '' }"
-                aria-label="全部目录"
-                title="全部目录"
-                :disabled="isLoading"
-                @click="selectCategory('')"
-              >
-                <span class="material-symbols-outlined">folder_copy</span>
-              </button>
-            </div>
-          </template>
-          <template v-else>
+        <section class="operations-console" aria-label="表情包操作台">
           <div class="operations-console__section">
-            <div class="operations-console__header">
-              <div>
-                <span class="operations-console__label">Library Rail</span>
-                <h3>目录导航</h3>
-              </div>
-              <button
-                type="button"
-                class="console-rail-toggle"
-                aria-label="折叠操作台"
-                title="折叠操作台"
-                @click="toggleConsole"
-              >
-                <span class="material-symbols-outlined">left_panel_close</span>
-              </button>
-            </div>
-            <p class="panel-hint">用目录快速缩小浏览范围，维护动作留在这里集中处理。</p>
-
             <div class="quick-actions">
-              <button
-                type="button"
-                class="btn-secondary"
+              <UiButton
+                variant="outline"
+                size="sm"
                 :disabled="isLoading"
                 @click="refreshCurrentPage"
               >
                 刷新
-              </button>
+              </UiButton>
 
-              <button
-                type="button"
-                class="btn-secondary"
+              <UiButton
+                variant="outline"
+                size="sm"
                 :disabled="isLoading || isUploading"
                 @click="createCategory"
               >
                 新建目录
-              </button>
-              <button
-                type="button"
-                class="btn-secondary"
+              </UiButton>
+              <UiButton
+                variant="outline"
+                size="sm"
                 :disabled="isRebuildingList"
                 @click="rebuildGeneratedEmojiLists"
               >
                 重建列表
-              </button>
-            </div>
-
-            <div class="rail-meta">
-              <span>{{ matchedEmojiCount }} 项命中</span>
-              <span>{{ totalEmojiCount }} 项总量</span>
+              </UiButton>
             </div>
           </div>
 
           <div class="operations-console__section">
-            <span class="operations-console__label">目录筛选</span>
-            <h3>按目录过滤</h3>
-            <p class="panel-hint">目录计数显示为“当前命中 / 总量”。</p>
+            <UiSideConsoleNav
+              label="操作台"
+              :items="directoryNavItems"
+              @item-click="handleDirectoryNavClick"
+              @toggle="handleDirectoryNavClick"
+            />
 
-            <div class="directory-list" aria-label="目录筛选">
-              <button
-                type="button"
-                class="directory-pill"
-                :class="{ active: selectedCategory === '' }"
-                :disabled="isLoading"
-                @click="selectCategory('')"
-              >
-                <span>全部目录</span>
-                <span class="pill-count">{{ totalEmojiCount }}</span>
-              </button>
-
-              <button
-                v-for="category in categories"
-                :key="category.name"
-                type="button"
-                class="directory-pill"
-                :class="{ active: selectedCategory === category.name }"
-                :disabled="isLoading"
-                @click="selectCategory(category.name)"
-              >
-                <span>{{ category.name }}</span>
-                <span class="pill-count">
-                  {{ category.matchedCount }} / {{ category.totalCount }}
-                </span>
-              </button>
-            </div>
-
-            <button
+            <UiButton
               v-if="selectedCategory && selectedCategory !== ROOT_CATEGORY_NAME"
-              type="button"
-              class="btn-danger btn-sm delete-category-btn"
+              variant="danger"
+              size="sm"
+              class="delete-category-btn"
               :disabled="isDeletingCategory || isLoading"
               @click="deleteSelectedCategory"
             >
               {{ isDeletingCategory ? "删除中…" : `删除目录 “${selectedCategory}”` }}
-            </button>
+            </UiButton>
           </div>
-          </template>
         </section>
       </aside>
 
       <section class="content-column">
-        <section class="upload-console card">
+        <section class="upload-console">
           <div class="upload-console__header">
-            <span class="upload-console__label">本地上传</span>
-            <h3>上传图片、文件夹或压缩包</h3>
-            <p class="panel-hint">
-              支持图片文件、文件夹与压缩包上传。若目录名以“表情包”结尾，可同步生成 EmojiListGenerator 列表。
-            </p>
-            <p
-              v-if="uploadMode === 'files'"
-              class="upload-target-tip"
-            >
-              图片文件将上传到：{{ effectiveUploadCategory }}
-            </p>
-            <p
-              v-else-if="uploadMode === 'folder'"
-              class="upload-target-tip"
-            >
-              文件夹模式：保留原始目录结构上传
-            </p>
-            <p
-              v-else-if="uploadMode === 'archive'"
-              class="upload-target-tip"
-            >
-              压缩包模式：解压后保留内部结构
-            </p>
+            <div class="upload-console__title">
+              <span class="upload-console__label">本地上传</span>
+              <h3>上传图片、文件夹或压缩包</h3>
+            </div>
+            <div class="upload-console__meta">
+              <p class="panel-hint">
+                支持图片文件、文件夹与压缩包上传。若目录名以“表情包”结尾，可同步生成 EmojiListGenerator 列表。
+              </p>
+              <p
+                v-if="uploadMode === 'files'"
+                class="upload-target-tip"
+              >
+                上传到：{{ effectiveUploadCategory }}
+              </p>
+              <p
+                v-else-if="uploadMode === 'folder'"
+                class="upload-target-tip"
+              >
+                保留文件夹原始目录结构
+              </p>
+              <p
+                v-else-if="uploadMode === 'archive'"
+                class="upload-target-tip"
+              >
+                解压后保留内部结构
+              </p>
+            </div>
           </div>
 
-          <AppCheckbox
-            v-model="uploadSyncList"
-            class="upload-sync-option"
-            :disabled="isUploading"
-          >
-            上传后同步重建 generated_lists
-          </AppCheckbox>
-
-          <div class="upload-entry-actions">
-            <button
-              type="button"
-              class="btn-secondary"
+          <div class="upload-console__body">
+            <AppCheckbox
+              v-model="uploadSyncList"
+              class="upload-sync-option"
               :disabled="isUploading"
-              @click="triggerFileSelect"
             >
-              选择图片文件
-            </button>
+              上传后同步重建 generated_lists
+            </AppCheckbox>
 
-            <button
-              type="button"
-              class="btn-secondary"
-              :disabled="isUploading"
-              @click="triggerFolderSelect"
-            >
-              选择文件夹
-            </button>
+            <div class="upload-entry-actions">
+              <UiButton
+                variant="outline"
+                :disabled="isUploading"
+                @click="triggerFileSelect"
+              >
+                选择图片文件
+              </UiButton>
 
-            <button
-              type="button"
-              class="btn-secondary"
-              :disabled="isUploading"
-              @click="triggerArchiveSelect"
-            >
-              选择压缩包
-            </button>
+              <UiButton
+                variant="outline"
+                :disabled="isUploading"
+                @click="triggerFolderSelect"
+              >
+                选择文件夹
+              </UiButton>
+
+              <UiButton
+                variant="outline"
+                :disabled="isUploading"
+                @click="triggerArchiveSelect"
+              >
+                选择压缩包
+              </UiButton>
+            </div>
           </div>
 
           <input
@@ -367,58 +268,59 @@
             @change="handleArchiveSelected"
           />
 
-          <div v-if="selectedFiles.length > 0" class="upload-summary">
-            <span>模式：{{ selectedUploadModeLabel }}</span>
-            <span>文件：{{ selectedFiles.length }}</span>
-            <span>总大小：{{ formatFileSize(selectedUploadTotalSize) }}</span>
-          </div>
+          <div v-if="selectedFiles.length > 0" class="upload-queue">
+            <div class="upload-summary">
+              <span>模式：{{ selectedUploadModeLabel }}</span>
+              <span>文件：{{ selectedFiles.length }}</span>
+              <span>总大小：{{ formatFileSize(selectedUploadTotalSize) }}</span>
+            </div>
 
-          <ul v-if="selectedFiles.length > 0" class="upload-file-list">
-            <li
-              v-for="(file, index) in selectedFiles"
-              :key="`${file.name}-${file.lastModified}-${index}`"
-              class="upload-file-item"
-            >
-              <div class="upload-file-copy">
-                <span class="upload-file-name" :title="file.name">{{ file.name }}</span>
-                <span
-                  v-if="uploadMode === 'folder'"
-                  class="upload-file-path"
-                  :title="selectedRelativePaths[index]"
-                >
-                  {{ selectedRelativePaths[index] }}
-                </span>
-              </div>
-              <span class="upload-file-meta">{{ formatFileSize(file.size) }}</span>
-              <button
-                type="button"
-                class="upload-file-remove"
-                :disabled="isUploading"
-                @click="removeSelectedFile(index)"
+            <ul class="upload-file-list">
+              <li
+                v-for="(file, index) in selectedFiles"
+                :key="`${file.name}-${file.lastModified}-${index}`"
+                class="upload-file-item"
               >
-                移除
-              </button>
-            </li>
-          </ul>
+                <div class="upload-file-copy">
+                  <span class="upload-file-name" :title="file.name">{{ file.name }}</span>
+                  <span
+                    v-if="uploadMode === 'folder'"
+                    class="upload-file-path"
+                    :title="selectedRelativePaths[index]"
+                  >
+                    {{ selectedRelativePaths[index] }}
+                  </span>
+                </div>
+                <span class="upload-file-meta">{{ formatFileSize(file.size) }}</span>
+                <UiButton
+                  class="upload-file-remove"
+                  variant="ghost"
+                  size="sm"
+                  :disabled="isUploading"
+                  @click="removeSelectedFile(index)"
+                >
+                  移除
+                </UiButton>
+              </li>
+            </ul>
 
-          <div class="upload-actions">
-            <button
-              type="button"
-              class="btn-secondary"
-              :disabled="isUploading || selectedFiles.length === 0"
-              @click="clearSelectedFiles"
-            >
-              清空待上传
-            </button>
+            <div class="upload-actions">
+              <UiButton
+                variant="outline"
+                :disabled="isUploading || selectedFiles.length === 0"
+                @click="clearSelectedFiles"
+              >
+                清空待上传
+              </UiButton>
 
-            <button
-              type="button"
-              class="btn-primary"
-              :disabled="isUploading || selectedFiles.length === 0"
-              @click="uploadSelectedFiles"
-            >
-              {{ isUploading ? "上传中…" : `开始上传（${selectedFiles.length}）` }}
-            </button>
+              <UiButton
+                variant="primary"
+                :disabled="isUploading || selectedFiles.length === 0"
+                @click="uploadSelectedFiles"
+              >
+                {{ isUploading ? "上传中…" : `开始上传（${selectedFiles.length}）` }}
+              </UiButton>
+            </div>
           </div>
 
           <div v-if="lastRejectedItems.length > 0" class="upload-rejected">
@@ -447,7 +349,7 @@
           </div>
         </section>
 
-        <section class="overview-card card" aria-live="polite">
+        <section class="overview-card" aria-live="polite">
           <div class="content-header">
             <h3>
               {{ selectedCategory ? `${selectedCategory} · 表情包` : "全部目录 · 表情包" }}
@@ -484,7 +386,7 @@
           </article>
         </section>
 
-        <section v-else-if="items.length === 0" class="card empty-state emoji-empty-state">
+        <section v-else-if="items.length === 0" class="empty-state emoji-empty-state">
           <span class="material-symbols-outlined">sentiment_dissatisfied</span>
           <h3>暂时没有结果</h3>
           <p>{{ emptyMessage }}</p>
@@ -521,7 +423,7 @@
             <div class="emoji-meta">
               <div class="emoji-title-row">
                 <h3 :title="item.name">{{ item.name }}</h3>
-                <span class="format-badge">{{ item.extension.toUpperCase() }}</span>
+              <UiBadge variant="outline" class="format-badge">{{ item.extension.toUpperCase() }}</UiBadge>
               </div>
 
               <p class="emoji-category">{{ item.category }}</p>
@@ -529,16 +431,16 @@
             </div>
 
             <div class="emoji-actions">
-              <button
-                type="button"
-                class="btn-secondary btn-sm"
+              <UiButton
+                variant="outline"
+                size="sm"
                 @click="copyRelativePath(item.relativePath)"
               >
                 复制路径
-              </button>
+              </UiButton>
 
               <a
-                class="btn-secondary btn-sm"
+                class="emoji-link-button"
                 :href="item.previewUrl"
                 target="_blank"
                 rel="noopener noreferrer"
@@ -546,39 +448,37 @@
                 新窗口
               </a>
 
-              <button
-                type="button"
-                class="btn-danger btn-sm"
+              <UiButton
+                variant="danger"
+                size="sm"
                 :disabled="deletingPaths.has(item.relativePath)"
                 @click="deleteEmojiItem(item)"
               >
                 {{ deletingPaths.has(item.relativePath) ? "删除中…" : "删除" }}
-              </button>
+              </UiButton>
             </div>
           </article>
           </section>
         </section>
 
         <section class="pagination-controls">
-          <button
-            type="button"
-            class="btn-secondary"
+          <UiButton
+            variant="outline"
             :disabled="isLoading || currentPage <= 1"
             @click="goToPreviousPage"
           >
             上一页
-          </button>
+          </UiButton>
 
           <span class="pagination-summary">{{ paginationSummary }}</span>
 
-          <button
-            type="button"
-            class="btn-secondary"
+          <UiButton
+            variant="outline"
             :disabled="isLoading || currentPage >= totalPages"
             @click="goToNextPage"
           >
             下一页
-          </button>
+          </UiButton>
         </section>
       </section>
     </div>
@@ -650,7 +550,14 @@ import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter, type LocationQueryRaw } from "vue-router";
 import BaseModal from "@/components/ui/BaseModal.vue";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
-import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
+import UiSideConsoleNav, {
+  type UiSideConsoleNavItem,
+} from "@/components/ui/UiSideConsoleNav.vue";
 import { useLocalStorage } from "@/composables/useLocalStorage";
 import {
   emojisApi,
@@ -734,10 +641,6 @@ const isDeletingCategory = ref(false);
 const lastRejectedItems = ref<Array<{ fileName: string; reason: string }>>([]);
 const showRejectedList = ref(false);
 
-const { collapsed: consoleCollapsed, toggle: toggleConsole } = useConsoleCollapse(
-  "emoji-gallery-console"
-);
-
 let currentLoadController: AbortController | null = null;
 
 const totalEmojiCount = computed(() =>
@@ -747,6 +650,23 @@ const totalEmojiCount = computed(() =>
 const matchedEmojiCount = computed(() =>
   categories.value.reduce((sum, category) => sum + category.matchedCount, 0)
 );
+
+const directoryNavItems = computed<UiSideConsoleNavItem[]>(() => [
+  {
+    id: "",
+    label: "全部目录",
+    title: "全部目录",
+    meta: String(totalEmojiCount.value),
+    active: selectedCategory.value === "",
+  },
+  ...categories.value.map((category) => ({
+    id: category.name,
+    label: category.name,
+    title: category.name,
+    meta: `${category.matchedCount}/${category.totalCount}`,
+    active: selectedCategory.value === category.name,
+  })),
+]);
 
 const previewIndex = computed(() => {
   if (!previewItem.value) {
@@ -1034,6 +954,10 @@ function selectCategory(categoryName: string): void {
 
   selectedCategory.value = categoryName;
   void loadGallery(1);
+}
+
+function handleDirectoryNavClick(item: UiSideConsoleNavItem): void {
+  selectCategory(item.id);
 }
 
 function handlePageSizeChange(): void {
@@ -1602,201 +1526,196 @@ onUnmounted(() => {
 .emoji-gallery-page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
+  gap: var(--space-4);
 }
 
-.hero-card {
+.gallery-topbar {
   display: grid;
-  gap: var(--space-md);
-  padding: clamp(20px, 3vw, 28px);
-  border-radius: calc(var(--radius-xl) + 4px);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
-  background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) 16%, transparent), transparent 34%),
-    linear-gradient(
-      140deg,
-      color-mix(in srgb, var(--secondary-bg) 92%, transparent),
-      color-mix(in srgb, var(--surface-overlay-strong) 88%, transparent)
-    );
-  box-shadow: var(--shadow-overlay-soft);
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
+  gap: var(--space-4);
+  align-items: stretch;
 }
 
-.hero-copy {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-}
-
-.hero-kicker {
-  color: var(--highlight-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.hero-title-row {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-md);
-  align-items: flex-start;
-}
-
-.hero-title-row h1 {
-  margin: 0;
-  font-size: calc(var(--font-size-title) * 1.55);
-  line-height: 1.08;
-}
-
-.hero-badges {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(88px, 1fr));
-  gap: var(--space-sm);
-  min-width: min(100%, 320px);
-}
-
-.hero-badge {
-  display: grid;
-  gap: 2px;
-  padding: 12px 14px;
+.gallery-heading-panel,
+.gallery-summary-card {
+  border: 1px solid color-mix(in srgb, var(--border-color) 96%, transparent);
   border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 16%, var(--border-color));
-  background: color-mix(in srgb, var(--surface-overlay-soft) 76%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
 }
 
-.hero-badge strong {
-  font-size: 1.05rem;
-  line-height: 1;
-}
-
-.hero-badge span {
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-}
-
-.hero-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-sm);
-  align-items: center;
-}
-
-.hero-search-group,
-.hero-toolbar-actions,
-.hero-status-row,
-.hero-filter-summary {
-  display: flex;
-  gap: var(--space-sm);
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.hero-search-group {
-  min-width: 0;
-}
-
-.hero-search-field {
-  min-width: min(100%, 380px);
-}
-
-.hero-toolbar-actions {
-  justify-content: flex-end;
-}
-
-.hero-status-row {
-  justify-content: space-between;
-  align-items: flex-start;
-}
-
-.hero-status-tip {
-  margin: 0;
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  line-height: 1.6;
-}
-
-.filter-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 12px;
-  border-radius: var(--radius-full);
-  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 82%, transparent);
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
-.filter-pill.active {
-  color: var(--primary-text);
-  border-color: color-mix(in srgb, var(--highlight-text) 32%, transparent);
-  background: color-mix(in srgb, var(--highlight-text) 18%, transparent);
-}
-
-.description {
-  margin: 0;
-  color: var(--secondary-text);
-  white-space: normal;
-  line-height: 1.65;
-  max-width: 72ch;
-}
-
-.upload-console {
-  display: grid;
-  gap: var(--space-sm);
-  padding: var(--space-md);
-  border-radius: var(--radius-xl);
-}
-
-.upload-console__header {
+.gallery-heading-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--space-3);
+  padding: var(--space-4);
 }
 
-.upload-console__header h3 {
-  margin: 0;
-  font-size: var(--font-size-title);
+.gallery-heading-copy {
+  display: grid;
+  gap: var(--space-1);
 }
 
-.upload-console__label,
-.operations-console__label {
-  color: var(--highlight-text);
+.gallery-kicker {
+  color: var(--secondary-text);
   font-size: var(--font-size-caption);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.gallery-workspace {
-  display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-  gap: var(--space-md);
-  align-items: start;
+.gallery-heading-copy h2 {
+  margin: 0;
+  color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
-.gallery-workspace.is-console-collapsed {
-  grid-template-columns: 56px minmax(0, 1fr);
+.gallery-toolbar,
+.gallery-filter-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.gallery-search-field {
+  flex: 1 1 280px;
+  max-width: 520px;
+}
+
+.gallery-summary-card {
+  display: grid;
+  align-content: space-between;
+  gap: var(--space-3);
+  padding: 14px 16px;
+}
+
+.gallery-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.gallery-summary-item {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gallery-summary-item strong {
+  color: var(--primary-text);
+  font-size: var(--font-size-emphasis);
+  line-height: 1.1;
+}
+
+.gallery-summary-item span,
+.gallery-summary-card p {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.gallery-summary-card p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-full);
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  background: transparent;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.filter-pill.active {
+  color: var(--highlight-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 56%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
+}
+
+.description {
+  margin: 0;
+  color: var(--secondary-text);
+  white-space: normal;
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
+  max-width: 72ch;
+}
+
+.upload-console {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 90%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 1.6%, transparent);
+}
+
+.upload-console__header {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.34fr) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+}
+
+.upload-console__title,
+.upload-console__meta {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.upload-console__header h3 {
+  margin: 0;
+  font-size: var(--font-size-emphasis);
+  line-height: 1.4;
+}
+
+.upload-console__body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.upload-console__label,
+.operations-console__label {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.gallery-workspace {
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
 }
 
 .operations-column {
   position: sticky;
-  top: calc(var(--app-top-bar-height, 60px) + 20px);
+  top: 0;
+  align-self: start;
+  max-height: calc(var(--app-viewport-height, 100vh) - var(--app-top-bar-height, 60px) - 22px);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .operations-console {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
-  padding: var(--space-md);
-  border-radius: var(--radius-xl);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 14%, var(--border-color));
-  transition: padding 0.2s ease;
-}
-
-.operations-console.is-collapsed {
-  padding: var(--space-3) 0;
-  gap: 0;
-  align-items: center;
+  gap: var(--space-3);
+  min-height: 0;
+  height: 100%;
 }
 
 .operations-console__header {
@@ -1815,12 +1734,13 @@ onUnmounted(() => {
 .operations-console__section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: var(--space-2);
 }
 
 .operations-console__section + .operations-console__section {
-  padding-top: var(--space-sm);
-  border-top: 1px solid var(--border-color);
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 .operations-console__section h3 {
@@ -1839,7 +1759,7 @@ onUnmounted(() => {
   margin: 0;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
 .quick-actions,
@@ -1848,21 +1768,6 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-sm);
-}
-
-.rail-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-xs);
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-}
-
-.rail-meta span {
-  padding: 4px 9px;
-  border-radius: var(--radius-full);
-  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 75%, transparent);
 }
 
 .search-row {
@@ -1881,10 +1786,6 @@ onUnmounted(() => {
   gap: var(--space-sm);
   flex: 1 1 auto;
   min-width: 0;
-  padding: 0 var(--space-sm);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-  background: var(--input-bg);
 }
 
 .search-field .material-symbols-outlined {
@@ -1892,68 +1793,15 @@ onUnmounted(() => {
   font-size: 1.2rem;
 }
 
-.search-field input {
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--primary-text);
-  padding: 10px 0;
-}
-
-.search-field input:focus:not(:focus-visible) {
-  outline: none;
-}
-
-.page-size-control select {
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  padding: 8px 10px;
-}
-
-.directory-list {
-  display: grid;
-  gap: 8px;
-  max-height: 280px;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.directory-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-sm);
-  width: 100%;
-  text-align: left;
-  padding: 8px 12px;
-  border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--border-color) 92%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 78%, transparent);
-  color: var(--primary-text);
-  cursor: pointer;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
-}
-
-.directory-pill:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 40%, transparent);
-}
-
-.directory-pill.active {
-  border-color: color-mix(in srgb, var(--highlight-text) 72%, transparent);
-  background: color-mix(in srgb, var(--highlight-text) 20%, transparent);
-}
-
-.pill-count {
-  font-size: var(--font-size-caption);
-  color: var(--secondary-text);
+.search-field :deep(.ui-input) {
+  min-width: 0;
 }
 
 .upload-target-tip {
   margin: 0;
-  color: var(--secondary-text);
+  color: var(--primary-text);
   font-size: var(--font-size-helper);
+  font-weight: 500;
 }
 
 .upload-sync-option {
@@ -1970,6 +1818,13 @@ onUnmounted(() => {
   display: none;
 }
 
+.upload-queue {
+  display: grid;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+}
+
 .upload-summary {
   display: flex;
   flex-wrap: wrap;
@@ -1979,10 +1834,10 @@ onUnmounted(() => {
 }
 
 .upload-summary span {
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--border-color) 85%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 75%, transparent);
+  background: transparent;
 }
 
 .upload-file-list {
@@ -1990,7 +1845,7 @@ onUnmounted(() => {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 6px;
+  gap: var(--space-2);
   max-height: 220px;
   overflow-y: auto;
 }
@@ -2000,10 +1855,11 @@ onUnmounted(() => {
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--space-sm);
-  padding: 8px 10px;
+  min-height: 34px;
+  padding: 6px var(--space-2);
   border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  background: transparent;
 }
 
 .upload-file-copy {
@@ -2034,15 +1890,6 @@ onUnmounted(() => {
   font-size: var(--font-size-caption);
 }
 
-.upload-file-remove {
-  border: 1px solid color-mix(in srgb, var(--border-color) 85%, transparent);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--secondary-text);
-  cursor: pointer;
-  padding: 2px 8px;
-}
-
 .upload-file-remove:hover {
   color: var(--danger-color);
 }
@@ -2055,8 +1902,11 @@ onUnmounted(() => {
 
 .overview-card {
   display: grid;
-  gap: var(--space-sm);
-  padding: var(--space-md);
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 90%, transparent);
+  border-radius: var(--radius-lg);
+  background: transparent;
 }
 
 .content-header {
@@ -2087,16 +1937,20 @@ onUnmounted(() => {
 }
 
 .stats-strip span {
-  padding: 5px 10px;
+  min-height: 28px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-full);
-  border: 1px solid color-mix(in srgb, var(--border-color) 85%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 75%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
+  background: transparent;
 }
 
 .emoji-empty-state {
   display: grid;
   gap: var(--space-xs);
   padding: clamp(28px, 5vw, 42px);
+  border: 1px dashed color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .emoji-grid-shell {
@@ -2111,12 +1965,12 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-xs);
   margin-bottom: var(--space-sm);
-  padding: 8px 12px;
+  min-height: 32px;
+  padding: 0 var(--space-3);
   border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--highlight-text) 26%, transparent);
   background: color-mix(in srgb, var(--highlight-text) 14%, var(--surface-overlay-soft));
   color: var(--primary-text);
-  box-shadow: var(--shadow-overlay-soft);
 }
 
 .grid-refresh-banner .material-symbols-outlined {
@@ -2138,19 +1992,21 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--space-sm);
   border-radius: var(--radius-lg);
-  border: 1px solid var(--border-color);
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--secondary-bg) 88%, transparent),
-      color-mix(in srgb, var(--surface-overlay-strong) 82%, transparent)
-    );
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
   overflow: hidden;
-  box-shadow: var(--shadow-overlay-soft);
   content-visibility: auto;
   contain-intrinsic-size: 320px;
   animation: emoji-card-enter 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: var(--stagger-delay, 0ms);
+  transition:
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+.emoji-card:hover {
+  border-color: color-mix(in srgb, var(--highlight-text) 24%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 4%, transparent);
 }
 
 .emoji-card--skeleton {
@@ -2162,7 +2018,7 @@ onUnmounted(() => {
   padding: 0;
   margin: 0;
   cursor: zoom-in;
-  background: color-mix(in srgb, var(--tertiary-bg) 86%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
   aspect-ratio: 1 / 1;
 }
 
@@ -2198,7 +2054,7 @@ onUnmounted(() => {
   position: relative;
   overflow: hidden;
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 88%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 5%, transparent);
 }
 
 .skeleton-line--title {
@@ -2224,7 +2080,7 @@ onUnmounted(() => {
 .emoji-meta {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   padding: 0 var(--space-sm);
 }
 
@@ -2245,15 +2101,11 @@ onUnmounted(() => {
 .format-badge {
   flex-shrink: 0;
   font-size: var(--font-size-caption);
-  color: var(--secondary-text);
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
-  border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
 }
 
 .emoji-category {
   margin: 0;
-  color: var(--highlight-text);
+  color: var(--secondary-text);
   font-size: var(--font-size-helper);
 }
 
@@ -2267,15 +2119,33 @@ onUnmounted(() => {
 .emoji-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-sm);
+  gap: var(--space-xs);
   padding: 0 var(--space-sm) var(--space-sm);
 }
 
-.emoji-actions a {
+.emoji-link-button {
+  height: 28px;
   text-decoration: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--primary-text);
+  font-size: var(--font-size-helper);
+  font-weight: 600;
+  line-height: 1;
+  transition:
+    color var(--transition-fast),
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.emoji-link-button:hover {
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  color: var(--primary-text);
 }
 
 .pagination-controls {
@@ -2360,30 +2230,6 @@ onUnmounted(() => {
   }
 }
 
-.btn-danger {
-  border: 1px solid color-mix(in srgb, var(--danger-color, #ef4444) 60%, transparent);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--danger-color, #ef4444) 12%, transparent);
-  color: var(--danger-color, #ef4444);
-  cursor: pointer;
-  padding: 6px 10px;
-  transition: background var(--transition-fast), border-color var(--transition-fast);
-}
-
-.btn-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger-color, #ef4444) 24%, transparent);
-  border-color: color-mix(in srgb, var(--danger-color, #ef4444) 80%, transparent);
-}
-
-.btn-danger:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.btn-sm {
-  font-size: var(--font-size-helper);
-}
-
 .delete-category-btn {
   margin-top: var(--space-sm);
   width: 100%;
@@ -2402,9 +2248,9 @@ onUnmounted(() => {
   align-items: center;
   padding: 6px 10px;
   border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--danger-color, #ef4444) 40%, transparent);
-  background: color-mix(in srgb, var(--danger-color, #ef4444) 10%, transparent);
-  color: var(--danger-color, #ef4444);
+  border: 1px solid color-mix(in srgb, var(--danger-color) 40%, transparent);
+  background: color-mix(in srgb, var(--danger-color) 10%, transparent);
+  color: var(--danger-color);
   cursor: pointer;
   font-size: var(--font-size-helper);
 }
@@ -2419,7 +2265,7 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 6px 8px;
   border-radius: var(--radius-md);
-  border: 1px dashed color-mix(in srgb, var(--danger-color, #ef4444) 40%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--danger-color) 40%, transparent);
 }
 
 .upload-rejected__item {
@@ -2437,7 +2283,7 @@ onUnmounted(() => {
 }
 
 .upload-rejected__reason {
-  color: var(--danger-color, #ef4444);
+  color: var(--danger-color);
 }
 
 .preview-nav {
@@ -2479,47 +2325,40 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1200px) {
-  .hero-title-row,
-  .hero-toolbar,
-  .hero-status-row {
-    grid-template-columns: 1fr;
-    display: grid;
-  }
-
-  .hero-badges,
-  .hero-toolbar-actions {
-    min-width: 0;
-    justify-content: flex-start;
+  .gallery-topbar {
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
   }
 
   .gallery-workspace {
-    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+    grid-template-columns: minmax(210px, 240px) minmax(0, 1fr);
   }
 }
 
 @media (max-width: 1024px) {
-  .gallery-workspace,
-  .gallery-workspace.is-console-collapsed {
+  .gallery-topbar,
+  .gallery-workspace {
     grid-template-columns: 1fr;
   }
 
   .operations-column {
     position: static;
+    max-height: none;
+    overflow: visible;
   }
 }
 
 @media (max-width: 768px) {
-  .hero-card {
-    padding: var(--space-md);
+  .gallery-heading-panel,
+  .gallery-summary-card {
+    padding: var(--space-3);
   }
 
-  .hero-badges {
+  .gallery-summary-grid {
     grid-template-columns: 1fr;
   }
 
-  .hero-search-group,
-  .hero-toolbar-actions,
-  .hero-filter-summary,
+  .gallery-toolbar,
+  .gallery-filter-summary,
   .quick-actions,
   .upload-entry-actions,
   .upload-actions {
@@ -2527,8 +2366,13 @@ onUnmounted(() => {
     grid-template-columns: 1fr;
   }
 
-  .hero-search-field {
+  .gallery-search-field {
     min-width: 0;
+    max-width: none;
+  }
+
+  .upload-console__header {
+    grid-template-columns: 1fr;
   }
 
   .upload-file-item {

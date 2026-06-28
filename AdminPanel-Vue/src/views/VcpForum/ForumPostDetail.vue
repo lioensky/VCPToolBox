@@ -2,18 +2,19 @@
   <div v-if="selectedPost" class="forum-post-detail">
     <div class="post-detail-header">
       <div class="post-detail-actions">
-        <button @click="emit('backToList')" class="btn-secondary btn-sm">
-          <span class="material-symbols-outlined">arrow_back</span>
+        <UiButton variant="outline" size="sm" @click="emit('backToList')">
+          <template #leading><span class="material-symbols-outlined">arrow_back</span></template>
           返回列表
-        </button>
-        <button
+        </UiButton>
+        <UiButton
           v-if="canDelete"
           @click="emit('deletePost')"
-          class="btn-danger btn-sm"
+          variant="danger"
+          size="sm"
           :disabled="isDeletingPost"
         >
           {{ isDeletingPost ? "删除中..." : "删除整个帖子" }}
-        </button>
+        </UiButton>
       </div>
       <span class="post-title">{{ selectedPost.title }}</span>
     </div>
@@ -24,7 +25,7 @@
       <span>板块：{{ selectedPost.board }}</span>
     </div>
 
-    <div class="post-detail-content card" v-html="selectedPost.contentHtml"></div>
+    <UiCard class="post-detail-content" variant="flat" v-html="selectedPost.contentHtml"></UiCard>
 
     <div class="post-replies">
       <h3>回复 ({{ selectedPost.replies }})</h3>
@@ -45,45 +46,45 @@
             <span class="reply-author">{{ reply.author }}</span>
             <span class="reply-time">{{ formatDate(reply.createdAt) }}</span>
           </div>
-          <button
+          <UiButton
             v-if="canDelete"
-            class="btn-danger btn-sm"
+            variant="danger"
+            size="sm"
             :disabled="deletingReplyFloor === reply.floor"
             @click="emit('deleteReply', reply.floor)"
           >
             {{ deletingReplyFloor === reply.floor ? "删除中..." : "删除此楼层" }}
-          </button>
+          </UiButton>
         </div>
         <div class="reply-content" v-html="reply.contentHtml"></div>
       </div>
     </div>
 
-    <div class="reply-form card">
-      <h3>发表回复</h3>
-      <label class="reply-author-field">
-        <span class="reply-author-label">昵称</span>
-        <input
+    <UiCard class="reply-form" title="发表回复" variant="subtle">
+      <UiField label="昵称">
+        <UiInput
           type="text"
           maxlength="50"
-          :value="replyAuthor"
+          :model-value="replyAuthor"
           placeholder="请输入回复昵称"
-          @input="emit('update:replyAuthor', ($event.target as HTMLInputElement).value)"
-        >
-      </label>
-      <textarea
-        :value="newReplyContent"
+          @update:model-value="value => emit('update:replyAuthor', String(value))"
+        />
+      </UiField>
+      <UiField label="回复内容">
+      <UiTextarea
+        :model-value="newReplyContent"
         rows="4"
         placeholder="输入您的回复内容（支持 Markdown）..."
-        @input="emit('update:newReplyContent', ($event.target as HTMLTextAreaElement).value)"
-      ></textarea>
-      <button
+        @update:model-value="value => emit('update:newReplyContent', String(value))"
+      />
+      </UiField>
+      <UiButton
         @click="emit('submitReply')"
-        class="btn-primary"
         :disabled="isSubmitting || !newReplyContent.trim() || !replyAuthor.trim()"
       >
         {{ isSubmitting ? "提交中..." : "发表回复" }}
-      </button>
-    </div>
+      </UiButton>
+    </UiCard>
   </div>
 </template>
 
@@ -91,6 +92,11 @@
 import { nextTick, watch } from "vue";
 import { formatDate } from "@/utils";
 import type { ForumPostDetail } from "@/features/vcp-forum/types";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
 
 const props = defineProps<{
   selectedPost: ForumPostDetail | null;
@@ -163,7 +169,6 @@ watch(
 }
 
 .post-detail-content {
-  padding: var(--space-5);
   margin-bottom: var(--space-6);
   line-height: 1.6;
   width: 100%;
@@ -246,47 +251,10 @@ watch(
 }
 
 .reply-form {
-  padding: var(--space-5);
   margin-top: var(--space-6);
-}
-
-.reply-form h3 {
-  margin: 0 0 var(--space-4);
-}
-
-.reply-author-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-bottom: var(--space-3);
-}
-
-.reply-author-label {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
-.reply-form input,
-.reply-form textarea {
-  width: 100%;
-  padding: 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-family: inherit;
-}
-
-.reply-form input:focus-visible,
-.reply-form textarea:focus-visible {
-  outline: none;
-  border-color: color-mix(in srgb, var(--button-bg) 46%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
-
-.reply-form textarea {
-  resize: vertical;
-  margin-bottom: var(--space-3);
+  gap: var(--space-3);
 }
 
 .material-symbols-outlined {
