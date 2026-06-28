@@ -24,7 +24,9 @@
       >
         <span class="material-symbols-outlined">edit_note</span>
         编辑器
-        <span v-if="fileDirty" class="dirty-badge"></span>
+        <UiBadge v-if="fileDirty" variant="warning" class="mobile-dirty-badge">
+          未保存
+        </UiBadge>
       </button>
     </div>
 
@@ -289,12 +291,12 @@
               placeholder="从左侧选择一个 Agent 以编辑其关联的 .txt / .md 文件…"
               class="file-content-editor"
             />
-            <span
+            <UiBadge
               v-if="fileStatusMessage"
-              :class="['status-message', fileStatusType]"
+              :variant="fileStatusBadgeVariant"
             >
               {{ fileStatusMessage }}
-            </span>
+            </UiBadge>
           </div>
 
           <button
@@ -421,12 +423,15 @@
       @insert="insertDiarySyntax"
     />
 
-    <span
+    <UiBadge
       v-if="statusMessage"
-      :class="['status-message', 'floating-status', statusType]"
+      :variant="statusBadgeVariant"
+      class="floating-status"
+      role="status"
+      aria-live="polite"
     >
       {{ statusMessage }}
-    </span>
+    </UiBadge>
   </section>
 </template>
 
@@ -493,6 +498,12 @@ const fileContent = ref("");
 const originalFileContent = ref("");
 const fileStatusMessage = ref("");
 const fileStatusType = ref<AgentFilesStatusType>("info");
+const statusBadgeVariant = computed(() =>
+  statusType.value === "error" ? "danger" : statusType.value
+);
+const fileStatusBadgeVariant = computed(() =>
+  fileStatusType.value === "error" ? "danger" : fileStatusType.value
+);
 const isSavingMap = ref(false);
 const isSavingFile = ref(false);
 const initialAgentMapSnapshot = ref("[]");
@@ -1549,9 +1560,6 @@ onBeforeRouteLeave(async () => {
   right: 30px;
   bottom: 30px;
   z-index: 1000;
-  padding: 12px 20px;
-  border-radius: var(--radius-full);
-  box-shadow: var(--shadow-lg);
   animation: slideInRight 0.3s ease;
 }
 
@@ -1749,14 +1757,12 @@ onBeforeRouteLeave(async () => {
     color: #4a4a4a !important;
   }
 
-  .dirty-badge {
-    width: 6px;
-    height: 6px;
-    background: var(--danger-text, #ff4a4a);
-    border-radius: 50%;
+  .mobile-dirty-badge {
     position: absolute;
-    top: 8px;
-    right: 12%;
+    top: -8px;
+    right: 2px;
+    transform: scale(0.86);
+    transform-origin: top right;
   }
 
   /* 强力释放编辑大视口：顶部不再有 tab 占高，给编辑区域与输入法最广阔的空间 */
