@@ -1,5 +1,28 @@
 <template>
   <section class="config-section active-section">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton variant="outline" @click="openOneRingConfigModal" :disabled="isOneRingConfigLoading">
+          <template #leading>
+            <span class="material-symbols-outlined" :class="{ spinning: isOneRingConfigLoading }">settings</span>
+          </template>
+          ORing配置
+        </UiButton>
+        <UiButton variant="outline" @click="refreshList" :disabled="isLoading">
+          <template #leading>
+            <span class="material-symbols-outlined" :class="{ spinning: isLoading }">sync</span>
+          </template>
+          刷新
+        </UiButton>
+        <UiButton variant="outline" @click="copyVisibleText" :disabled="!snapshot">
+          <template #leading>
+            <span class="material-symbols-outlined">content_copy</span>
+          </template>
+          复制可见文本
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <div class="context-viewer">
       <header class="context-header">
         <div class="context-title">
@@ -24,24 +47,6 @@
             </UiSelect>
             <small>{{ snapshotList.length }} / {{ maxSnapshots }} 缓存</small>
           </label>
-          <UiButton variant="outline" @click="openOneRingConfigModal" :disabled="isOneRingConfigLoading">
-            <template #leading>
-              <span class="material-symbols-outlined" :class="{ spinning: isOneRingConfigLoading }">settings</span>
-            </template>
-            ORing配置
-          </UiButton>
-          <UiButton variant="outline" @click="refreshList" :disabled="isLoading">
-            <template #leading>
-              <span class="material-symbols-outlined" :class="{ spinning: isLoading }">sync</span>
-            </template>
-            刷新
-          </UiButton>
-          <UiButton variant="outline" @click="copyVisibleText" :disabled="!snapshot">
-            <template #leading>
-              <span class="material-symbols-outlined">content_copy</span>
-            </template>
-            复制可见文本
-          </UiButton>
         </div>
       </header>
 
@@ -541,6 +546,7 @@ import UiButton from '@/components/ui/UiButton.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiSelect from '@/components/ui/UiSelect.vue'
 import type { FinalContextBlockSummary, FinalContextListItem, FinalContextSnapshot, OneRingConfig } from '@/types/api.system'
 import { copyToClipboard, showMessage } from '@/utils'

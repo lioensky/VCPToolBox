@@ -1,5 +1,21 @@
 <template>
   <section class="plugin-store">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton
+          variant="outline"
+          size="lg"
+          :disabled="isLoading"
+          @click="refreshAll"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
+          <span>{{ isLoading ? '刷新中…' : '刷新列表' }}</span>
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <UiCard class="store-hero">
       <div class="hero-copy">
         <span class="eyebrow hero-eyebrow">Plugin Marketplace</span>
@@ -65,17 +81,6 @@
           <span class="material-symbols-outlined">info</span>
           <span>{{ tabIntro }}</span>
         </div>
-
-        <UiButton
-          variant="outline"
-          :disabled="isLoading"
-          @click="refreshAll"
-        >
-          <template #leading>
-            <span class="material-symbols-outlined">refresh</span>
-          </template>
-          <span>{{ isLoading ? '刷新中…' : '刷新列表' }}</span>
-        </UiButton>
       </div>
 
       <div v-if="activeTab === 'market'" class="filter-row" aria-label="按源筛选">
@@ -571,6 +576,7 @@ import UiButton from '@/components/ui/UiButton.vue'
 import UiCard from '@/components/ui/UiCard.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiSelect from '@/components/ui/UiSelect.vue'
 import { useAppStore } from '@/stores/app'
 import { showMessage } from '@/utils'

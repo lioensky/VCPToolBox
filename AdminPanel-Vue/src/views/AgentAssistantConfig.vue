@@ -1,5 +1,17 @@
 <template>
   <section class="config-section active-section">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant()">{{ statusMessage }}</UiBadge>
+        <UiButton size="lg" variant="secondary" @click="saveConfig">
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          保存 AgentAssistant 配置
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <p class="description">
       这里用于配置 <strong>AgentAssistant</strong> 插件。你可以：
       <br />1）从已注册的 Agent 一键创建助手； <br />2）添加完全自定义的助手；
@@ -11,6 +23,7 @@
 
     <div class="aa-config-container">
       <UiSettingsCard
+        class="aa-settings-surface"
         title="全局会话设置"
         description="控制 AgentAssistant 的会话记忆与共享补充提示词。"
         variant="subtle"
@@ -63,7 +76,7 @@
       </UiSettingsCard>
 
       <UiSettingsCard
-        class="aa-delegation-settings"
+        class="aa-delegation-settings aa-settings-surface"
         title="异步委托设置"
         description="当工具调用中传入 task_delegation: true 时，AgentAssistant 会立即返回委托 ID，并在后台按限制循环唤醒目标 Agent 执行任务。"
         variant="subtle"
@@ -131,7 +144,7 @@
       </UiSettingsCard>
 
       <UiSettingsCard
-        class="aa-delegation-tracker"
+        class="aa-delegation-tracker aa-settings-surface"
         title="异步委托任务追踪"
         description="这里显示当前运行中的异步委托和最近完成记录。面板每 5 秒自动刷新一次。"
         variant="subtle"
@@ -228,6 +241,7 @@
       </UiSettingsCard>
 
       <UiSettingsCard
+        class="aa-settings-surface"
         title="已配置的 Agent 助手"
         description="从已注册 Agent 创建助手，或添加完全自定义的助手配置。"
         variant="subtle"
@@ -362,12 +376,6 @@
       </div>
       </UiSettingsCard>
 
-      <div class="aa-footer-actions">
-        <UiButton size="lg" @click="saveConfig">
-          保存 AgentAssistant 配置
-        </UiButton>
-        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant()">{{ statusMessage }}</UiBadge>
-      </div>
     </div>
   </section>
 </template>
@@ -380,6 +388,7 @@ import UiCard from "@/components/ui/UiCard.vue";
 import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import UiField from "@/components/ui/UiField.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import UiSettingsCard from "@/components/ui/UiSettingsCard.vue";
 import UiSettingsForm from "@/components/ui/UiSettingsForm.vue";
@@ -445,6 +454,30 @@ function formatDelegationStatus(status?: string): string {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+}
+
+.aa-settings-surface {
+  --aa-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
+  --aa-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+}
+
+.aa-settings-surface,
+:deep(.ui-card.aa-settings-surface) {
+  border-color: var(--aa-surface-border);
+  background: var(--aa-card-surface);
+}
+
+.aa-settings-surface :deep(.ui-card__header),
+:deep(.ui-card.aa-settings-surface.ui-card--divided .ui-card__header) {
+  border-bottom-color: var(--aa-surface-border);
+}
+
+.aa-settings-surface :deep(.ui-input),
+.aa-settings-surface :deep(.ui-select),
+.aa-settings-surface :deep(.ui-textarea) {
+  border-color: var(--aa-surface-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
 }
 
 .aa-delegation-settings {
@@ -607,11 +640,4 @@ function formatDelegationStatus(status?: string): string {
   }
 }
 
-.aa-footer-actions {
-  display: flex;
-  gap: var(--space-3);
-  align-items: center;
-  justify-content: flex-end;
-  padding: var(--space-3) 0;
-}
 </style>

@@ -1,5 +1,34 @@
 <template>
   <section class="config-section active-section sarprompt-page">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton
+          variant="outline"
+          size="lg"
+          type="button"
+          :disabled="isLoading"
+          @click="fetchSarPrompts"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
+          刷新
+        </UiButton>
+        <UiButton
+          variant="secondary"
+          size="lg"
+          type="button"
+          :loading="isSaving"
+          @click="saveSarPrompts"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          {{ isSaving ? "保存中…" : "保存配置" }}
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <UiToolbar class="page-header" align="start">
       <div>
         <h2>SarPrompt 提示词映射</h2>
@@ -9,15 +38,6 @@
         </p>
       </div>
       <template #actions>
-        <UiButton
-          variant="outline"
-          size="sm"
-          type="button"
-          :disabled="isLoading"
-          @click="fetchSarPrompts"
-        >
-          刷新
-        </UiButton>
         <UiButton
           size="sm"
           type="button"
@@ -29,11 +49,11 @@
       </template>
     </UiToolbar>
 
-    <UiCard v-if="isLoading" variant="subtle">
+    <UiCard v-if="isLoading" class="sarprompt-surface" variant="subtle">
       <UiEmptyState title="正在加载..." description="正在读取 SarPrompt 配置。" />
     </UiCard>
 
-    <UiCard v-else-if="sarPrompts.length === 0" variant="subtle">
+    <UiCard v-else-if="sarPrompts.length === 0" class="sarprompt-surface" variant="subtle">
       <UiEmptyState title="暂无SarPrompt配置" description="点击新增Sar组开始维护模型提示词映射。">
         <template #action>
           <UiButton size="sm" type="button" @click="addSarGroup">新增Sar组</UiButton>
@@ -45,7 +65,7 @@
       <UiCard
         v-for="(group, index) in sarPrompts"
         :key="index"
-        class="sarprompt-card"
+        class="sarprompt-card sarprompt-surface"
         size="sm"
         variant="subtle"
         divided
@@ -98,16 +118,6 @@
           </UiField>
         </UiSettingsForm>
       </UiCard>
-
-      <div class="editor-actions">
-        <UiButton
-          type="button"
-          :loading="isSaving"
-          @click="saveSarPrompts"
-        >
-          {{ isSaving ? "保存中…" : "保存配置" }}
-        </UiButton>
-      </div>
     </div>
   </section>
 </template>
@@ -120,6 +130,7 @@ import UiCard from "@/components/ui/UiCard.vue";
 import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import UiField from "@/components/ui/UiField.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSettingsForm from "@/components/ui/UiSettingsForm.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
 import UiToolbar from "@/components/ui/UiToolbar.vue";
@@ -208,6 +219,29 @@ onMounted(() => {
   margin-top: var(--space-1);
 }
 
+.sarprompt-surface {
+  --sarprompt-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
+  --sarprompt-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+}
+
+.sarprompt-surface,
+:deep(.ui-card.sarprompt-surface) {
+  border-color: var(--sarprompt-surface-border);
+  background: var(--sarprompt-card-surface);
+}
+
+.sarprompt-surface :deep(.ui-card__header),
+:deep(.ui-card.sarprompt-surface.ui-card--divided .ui-card__header) {
+  border-bottom-color: var(--sarprompt-surface-border);
+}
+
+.sarprompt-surface :deep(.ui-input),
+.sarprompt-surface :deep(.ui-textarea) {
+  border-color: var(--sarprompt-surface-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
+}
+
 .sarprompt-list {
   display: flex;
   flex-direction: column;
@@ -217,12 +251,6 @@ onMounted(() => {
 .rule-title {
   width: min(320px, 100%);
   font-weight: 600;
-}
-
-.editor-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: var(--space-1);
 }
 
 code {
@@ -243,8 +271,7 @@ code {
     width: 100%;
   }
 
-  .page-header :deep(.ui-button),
-  .editor-actions :deep(.ui-button) {
+  .page-header :deep(.ui-button) {
     flex: 1;
   }
 }

@@ -1,5 +1,37 @@
 <template>
   <section class="config-section active-section">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiDirtyIndicator :dirty="hasChanges" :label="`已修改 ${changedItemCount} 项`" />
+        <UiBadge v-if="!hasChanges" variant="secondary">当前顺序未修改</UiBadge>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
+          {{ statusMessage }}
+        </UiBadge>
+        <UiButton
+          type="button"
+          variant="outline"
+          size="lg"
+          :disabled="!hasChanges || isSaving"
+          @click="resetOrder"
+        >
+          撤销
+        </UiButton>
+        <UiButton
+          type="button"
+          variant="secondary"
+          size="lg"
+          :loading="isSaving"
+          :disabled="!hasChanges || isSaving"
+          @click="saveOrder"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          保存顺序
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <UiCard
       class="preprocessor-order-panel"
       variant="default"
@@ -8,38 +40,10 @@
       description="按住左侧手柄拖动排序，越靠上的插件越优先执行。保存后会触发热重载。"
       divided
     >
-      <template #action>
-        <div class="order-actions">
-          <UiButton
-            type="button"
-            variant="outline"
-            size="md"
-            :disabled="!hasChanges || isSaving"
-            @click="resetOrder"
-          >
-            撤销
-          </UiButton>
-          <UiButton
-            type="button"
-            size="md"
-            :loading="isSaving"
-            :disabled="!hasChanges || isSaving"
-            @click="saveOrder"
-          >
-            保存顺序
-          </UiButton>
-        </div>
-      </template>
-
       <UiToolbar class="order-toolbar" density="compact">
         <div class="order-summary">
           <UiBadge variant="outline">
             {{ orderedPreprocessors.length }} 个预处理器
-          </UiBadge>
-          <UiDirtyIndicator :dirty="hasChanges" :label="`已修改 ${changedItemCount} 项`" />
-          <UiBadge v-if="!hasChanges" variant="secondary">当前顺序未修改</UiBadge>
-          <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
-            {{ statusMessage }}
           </UiBadge>
         </div>
       </UiToolbar>
@@ -107,6 +111,7 @@ import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiCard from "@/components/ui/UiCard.vue";
 import UiDirtyIndicator from "@/components/ui/UiDirtyIndicator.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiToolbar from "@/components/ui/UiToolbar.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 
@@ -178,13 +183,6 @@ void dragGhostElement
 </script>
 
 <style scoped>
-.order-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--space-2);
-}
-
 .order-toolbar {
   min-height: 32px;
 }
@@ -338,13 +336,4 @@ void dragGhostElement
   }
 }
 
-@media (max-width: 640px) {
-  .order-actions {
-    width: 100%;
-  }
-
-  .order-actions :deep(.ui-button) {
-    flex: 1;
-  }
-}
 </style>

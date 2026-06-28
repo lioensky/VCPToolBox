@@ -1,5 +1,31 @@
 <template>
   <section id="base-config-section" class="config-section active-section">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge
+          v-if="statusMessage"
+          :variant="statusBadgeVariant"
+          role="status"
+          aria-live="polite"
+        >
+          {{ statusMessage }}
+        </UiBadge>
+        <UiBadge v-else-if="!isLoading" variant="outline">{{ editableEntryCount }} 项</UiBadge>
+        <UiButton
+          type="button"
+          size="lg"
+          variant="secondary"
+          :disabled="isLoading || groupedEntries.length === 0"
+          @click="handleSubmit"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          保存全局配置
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <p v-if="isLoading" class="config-loading">
       <span class="loading-spinner"></span>
       加载全局配置中…
@@ -154,14 +180,6 @@
                 </UiIconButton>
                 <div class="console-rail-divider"></div>
                 <UiIconButton
-                  class="console-rail-icon"
-                  label="保存全局配置"
-                  title="保存全局配置"
-                  @click="handleSubmit"
-                >
-                  <span class="material-symbols-outlined">save</span>
-                </UiIconButton>
-                <UiIconButton
                   v-for="group in groupedEntries.slice(0, 8)"
                   :key="`${group.id}-rail`"
                   type="button"
@@ -180,7 +198,7 @@
               <div class="base-console__header">
                 <div>
                   <span class="base-console__label">操作台</span>
-                  <h3>保存与跳转</h3>
+                  <h3>快速跳转</h3>
                 </div>
                 <UiIconButton
                   type="button"
@@ -195,21 +213,7 @@
               </div>
             </div>
 
-            <div class="base-console__actions">
-              <UiButton type="submit">保存全局配置</UiButton>
-            </div>
-
             <p class="entry-count">共 {{ editableEntryCount }} 个配置项</p>
-
-            <UiBadge
-              v-if="statusMessage"
-              :variant="statusBadgeVariant"
-              class="base-console__status"
-              role="status"
-              aria-live="polite"
-            >
-              {{ statusMessage }}
-            </UiBadge>
 
             <div class="base-console__section base-console__section--jump">
               <span class="base-console__label">快速跳转</span>
@@ -256,6 +260,7 @@ import UiEmptyState from '@/components/ui/UiEmptyState.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiSettingsCard from '@/components/ui/UiSettingsCard.vue'
 import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
 import UiSettingsSwitchRow from '@/components/ui/UiSettingsSwitchRow.vue'
@@ -1163,7 +1168,6 @@ onBeforeUnmount(() => {
   text-transform: uppercase;
 }
 
-.base-console__actions,
 .base-console__jump-list {
   display: grid;
   gap: var(--space-2);
@@ -1174,19 +1178,6 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   padding-right: 4px;
   scrollbar-gutter: stable;
-}
-
-.base-console__actions button {
-  justify-content: center;
-}
-
-.base-console__status {
-  justify-content: flex-start;
-  max-width: 100%;
-  height: auto;
-  min-height: 24px;
-  white-space: normal;
-  line-height: 1.45;
 }
 
 .base-console__jump-btn {

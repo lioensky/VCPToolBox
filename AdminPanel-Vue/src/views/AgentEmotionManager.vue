@@ -1,5 +1,19 @@
 <template>
   <section class="config-section active-section emotion-page">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
+        <UiButton variant="outline" size="lg" :disabled="isConfigLoading" @click="openConfigModal">
+          <template #leading><span class="material-symbols-outlined">tune</span></template>
+          观测配置
+        </UiButton>
+        <UiButton variant="outline" size="lg" :disabled="isLoading" @click="refresh">
+          <template #leading><span class="material-symbols-outlined">refresh</span></template>
+          {{ isLoading ? "刷新中…" : "刷新" }}
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <UiCard class="emotion-hero">
       <div class="hero-copy">
         <span class="hero-kicker">
@@ -10,17 +24,6 @@
         <p class="description">
           可视化每个 Agent 的性别轴体、知性轴、感性轴、驱力/对冲轴、动态 baseline 与原型共振表达。当前版本为纯异步观察器，不注入提示词。
         </p>
-      </div>
-      <div class="hero-actions">
-        <UiButton variant="outline" :disabled="isConfigLoading" @click="openConfigModal">
-          <template #leading><span class="material-symbols-outlined">tune</span></template>
-          观测配置
-        </UiButton>
-        <UiButton variant="outline" :disabled="isLoading" @click="refresh">
-          <template #leading><span class="material-symbols-outlined">refresh</span></template>
-          {{ isLoading ? "刷新中…" : "刷新" }}
-        </UiButton>
-        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
       </div>
     </UiCard>
 
@@ -435,6 +438,7 @@ import UiButton from "@/components/ui/UiButton.vue";
 import UiCard from "@/components/ui/UiCard.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
@@ -975,8 +979,7 @@ onMounted(() => {
   pointer-events: none;
 }
 
-.hero-copy,
-.hero-actions {
+.hero-copy {
   position: relative;
   z-index: 1;
 }
@@ -994,14 +997,6 @@ onMounted(() => {
   color: var(--highlight-text);
   font-weight: 700;
   font-size: var(--font-size-helper);
-}
-
-.hero-actions {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .overview-grid {

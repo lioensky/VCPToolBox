@@ -1,5 +1,28 @@
 <template>
   <section class="config-section active-section rag-lab">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiDirtyIndicator
+          label="未保存"
+          :is-dirty="isDirty"
+        />
+        <UiButton
+          variant="secondary"
+          :disabled="!isDirty"
+          @click="resetParams"
+        >
+          重置修改
+        </UiButton>
+        <UiButton
+          type="submit"
+          :form="formId"
+          :disabled="isSaving || !hasParams || !isDirty"
+        >
+          {{ isSaving ? "保存中…" : "保存参数配置" }}
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <header class="rag-lab__hero card">
       <div class="rag-lab__hero-copy">
         <span class="eyebrow rag-lab__eyebrow">Wave RAG Parameter Lab</span>
@@ -486,15 +509,6 @@
               </UiIconButton>
               <div class="console-rail-divider"></div>
               <UiIconButton
-                type="submit"
-                class="console-rail-icon"
-                label="保存参数配置"
-                title="保存参数配置"
-                :disabled="isSaving || !hasParams || !isDirty"
-              >
-                <span class="material-symbols-outlined">save</span>
-              </UiIconButton>
-              <UiIconButton
                 class="console-rail-icon console-rail-icon--simulation"
                 label="打开浪潮语义沙盘"
                 title="打开浪潮语义沙盘"
@@ -519,8 +533,8 @@
             <div class="rag-console__header">
               <div>
                 <span class="rag-console__label">操作台</span>
-                <h3>保存与回退</h3>
-                <p>建议一次只改一组高敏参数，并在每次保存后观察实际召回结果。</p>
+                <h3>参数预设与沙盘</h3>
+                <p>保存与回退已统一放在页面标题右侧，这里保留预设管理、模块跳转和语义沙盘。</p>
               </div>
               <UiIconButton
                 class="console-rail-toggle"
@@ -531,24 +545,6 @@
                 <span class="material-symbols-outlined">right_panel_close</span>
               </UiIconButton>
             </div>
-          </div>
-
-          <div class="rag-console__actions">
-            <UiButton
-              type="submit"
-              :disabled="isSaving || !hasParams || !isDirty"
-              block
-            >
-              {{ isSaving ? "保存中…" : "保存参数配置" }}
-            </UiButton>
-            <UiButton
-              variant="secondary"
-              :disabled="!isDirty"
-              block
-              @click="resetParams"
-            >
-              重置未保存修改
-            </UiButton>
           </div>
 
           <div class="rag-console__section rag-console__section--themes">
@@ -769,8 +765,10 @@ import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { useAppStore } from "@/stores/app";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
+import UiDirtyIndicator from "@/components/ui/UiDirtyIndicator.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import OrderedCooccurrenceModal from "@/features/rag-tuning/OrderedCooccurrenceModal.vue";
 import WormholeRoutingModal from "@/features/rag-tuning/WormholeRoutingModal.vue";

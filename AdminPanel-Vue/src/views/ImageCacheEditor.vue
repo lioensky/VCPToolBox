@@ -1,10 +1,7 @@
 <template>
   <section class="config-section active-section media-cache-page">
-    <div class="page-header">
-      <div>
-        <p class="description">编辑多媒体缓存记录，支持搜索、分页、重新识别与预览。</p>
-      </div>
-      <div class="header-actions">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
         <UiButton
           v-if="isDev"
           variant="outline"
@@ -20,6 +17,12 @@
         <UiButton variant="outline" type="button" @click="refreshCurrentPage" :disabled="isLoading">
           刷新
         </UiButton>
+      </UiPageActions>
+    </Teleport>
+
+    <div class="page-header">
+      <div>
+        <p class="description">编辑多媒体缓存记录，支持搜索、分页、重新识别与预览。</p>
       </div>
     </div>
 
@@ -271,6 +274,7 @@ import UiEmptyState from '@/components/ui/UiEmptyState.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
@@ -741,11 +745,6 @@ onUnmounted(() => {
   margin: 0;
 }
 
-.header-actions {
-  display: flex;
-  gap: var(--space-3);
-}
-
 .toolbar {
   display: flex;
   justify-content: space-between;
@@ -902,13 +901,11 @@ onUnmounted(() => {
     align-items: stretch;
   }
 
-  .header-actions,
   .search-box,
   .pagination-controls {
     width: 100%;
   }
 
-  .header-actions :deep(.ui-button),
   .search-box :deep(.ui-button),
   .pagination-controls :deep(.ui-button) {
     flex: 1;

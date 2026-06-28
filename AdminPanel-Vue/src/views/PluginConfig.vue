@@ -1,22 +1,37 @@
 <template>
   <section class="config-section active-section">
-    <p v-if="pluginName" class="description">配置插件：{{ pluginName }}</p>
-
-    <div v-if="pluginData" class="plugin-config-container">
-      <UiCard class="plugin-controls" size="sm">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge v-if="statusMessage" :variant="getStatusVariant(statusType)">
+          {{ statusMessage }}
+        </UiBadge>
         <UiButton
+          v-if="pluginData"
+          type="button"
           @click="togglePlugin"
-          :variant="pluginData.enabled ? 'danger' : 'primary'"
+          :variant="pluginData.enabled ? 'danger' : 'secondary'"
           :disabled="isDistributedPlugin"
           :title="isDistributedPlugin ? '分布式插件状态由所属节点管理' : undefined"
         >
           {{ pluginData.enabled ? '禁用插件' : '启用插件' }}
         </UiButton>
-        <UiBadge v-if="statusMessage" :variant="getStatusVariant(statusType)">
-          {{ statusMessage }}
-        </UiBadge>
-      </UiCard>
+        <UiButton
+          v-if="pluginData"
+          type="button"
+          variant="secondary"
+          @click="savePluginConfig"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          保存 {{ pluginName }} 配置
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
 
+    <p v-if="pluginName" class="description">配置插件：{{ pluginName }}</p>
+
+    <div v-if="pluginData" class="plugin-config-container">
       <form @submit.prevent="savePluginConfig">
         <div v-if="!hasEnvContent && !hasConfigSchema" class="config-warning">
           <div class="warning-content">
@@ -263,7 +278,6 @@
 
         <div class="form-actions">
           <UiButton variant="outline" @click="addCustomField">添加自定义配置项</UiButton>
-          <UiButton type="submit" variant="primary">保存 {{ pluginName }} 配置</UiButton>
         </div>
       </form>
     </div>
@@ -279,11 +293,11 @@ import { useRoute } from 'vue-router'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
-import UiCard from '@/components/ui/UiCard.vue'
 import UiEmptyState from '@/components/ui/UiEmptyState.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { usePluginConfigStore, type InvocationCommand } from '@/stores/pluginConfig'
 
@@ -370,17 +384,6 @@ watch(
   max-width: 900px;
   display: grid;
   gap: var(--space-4);
-}
-
-.plugin-controls {
-  margin: 0;
-}
-
-.plugin-controls :deep(.ui-card__content) {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  flex-wrap: wrap;
 }
 
 .config-warning {

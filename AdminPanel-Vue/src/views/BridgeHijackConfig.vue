@@ -1,5 +1,26 @@
 <template>
   <section class="config-section active-section">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge v-if="statusMessage" variant="info" role="status" aria-live="polite">
+          {{ statusMessage }}
+        </UiBadge>
+        <UiButton variant="outline" size="lg" @click="loadConfig" :disabled="isLoading || isSaving">
+          <template #leading>
+            <span class="material-symbols-outlined" :class="{ spinning: isLoading }">sync</span>
+          </template>
+          刷新
+        </UiButton>
+        <UiButton variant="secondary" size="lg" @click="saveConfig" :disabled="isLoading || isSaving">
+          <template #leading>
+            <span v-if="isSaving" class="material-symbols-outlined spinning">sync</span>
+            <span v-else class="material-symbols-outlined">save</span>
+          </template>
+          保存配置
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <div class="bridge-config">
       <header class="bridge-header">
         <div class="bridge-title">
@@ -8,17 +29,6 @@
             <h2>前端劫持配置</h2>
             <p>配置 VCPBridgeServer 的 System Prompt 劫持代理。JSON 配置文件是运行真相源，保存后自动热加载。</p>
           </div>
-        </div>
-
-        <div class="bridge-actions">
-          <UiButton variant="outline" @click="loadConfig" :disabled="isLoading || isSaving">
-            <span class="material-symbols-outlined" :class="{ spinning: isLoading }">sync</span>
-            刷新
-          </UiButton>
-          <UiButton variant="primary" @click="saveConfig" :disabled="isLoading || isSaving">
-            <span v-if="isSaving" class="material-symbols-outlined spinning">sync</span>
-            保存配置
-          </UiButton>
         </div>
       </header>
 
@@ -224,6 +234,7 @@ import AppSwitch from '@/components/ui/AppSwitch.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiSelect from '@/components/ui/UiSelect.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { systemApi } from '@/api'
@@ -486,9 +497,7 @@ onMounted(() => {
 
 .bridge-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: var(--space-4);
   padding: 16px;
 }
 
@@ -514,13 +523,6 @@ onMounted(() => {
   margin: 4px 0 0;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
-}
-
-.bridge-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
 }
 
 .notice-card {

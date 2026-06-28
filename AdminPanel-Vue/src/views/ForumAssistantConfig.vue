@@ -1,5 +1,41 @@
 <template>
   <section class="config-section active-section forum-assistant-view">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge
+          v-if="statusMessage"
+          :variant="statusBadgeVariant"
+          role="status"
+          aria-live="polite"
+        >
+          {{ statusMessage }}
+        </UiBadge>
+        <UiDirtyIndicator :dirty="isDirty" />
+        <UiButton
+          variant="outline"
+          size="lg"
+          :disabled="isLoading || isSaving"
+          @click="refreshAll(true)"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
+          {{ isLoading ? "刷新中…" : "刷新配置" }}
+        </UiButton>
+        <UiButton
+          variant="secondary"
+          size="lg"
+          :disabled="isLoading || isSaving"
+          @click="saveConfig"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          {{ isSaving ? "保存中…" : "保存任务配置" }}
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <p class="description">
       这里用于配置任务派发中心。你可以为一个或多个 Agent 预设任务，按间隔执行、一次性执行，
       或仅保留为手动触发任务。
@@ -14,32 +50,6 @@
         </UiField>
       </div>
 
-      <div class="toolbar-actions">
-        <UiButton
-          variant="outline"
-          :disabled="isLoading || isSaving"
-          @click="refreshAll(true)"
-        >
-          {{ isLoading ? "刷新中…" : "刷新配置" }}
-        </UiButton>
-        <UiButton
-          variant="primary"
-          :disabled="isLoading || isSaving"
-          @click="saveConfig"
-        >
-          {{ isSaving ? "保存中…" : "保存任务配置" }}
-        </UiButton>
-      </div>
-
-      <UiBadge
-        v-if="statusMessage"
-        :variant="statusBadgeVariant"
-        class="toolbar-status"
-        role="status"
-        aria-live="polite"
-      >
-        {{ statusMessage }}
-      </UiBadge>
     </section>
 
     <section class="status-grid">
@@ -417,8 +427,10 @@ import { onBeforeRouteLeave } from "vue-router";
 import AppSwitch from "@/components/ui/AppSwitch.vue";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
+import UiDirtyIndicator from "@/components/ui/UiDirtyIndicator.vue";
 import UiField from "@/components/ui/UiField.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
 import {
@@ -1223,7 +1235,6 @@ onBeforeUnmount(() => {
 }
 
 .toolbar-row,
-.toolbar-actions,
 .composer-head,
 .composer-controls,
 .status-metrics,
@@ -1244,14 +1255,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
 }
 
-.toolbar-actions,
 .composer-controls,
 .task-card-actions {
   flex-wrap: wrap;
-}
-
-.toolbar-status {
-  align-self: flex-start;
 }
 
 .compact-field {

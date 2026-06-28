@@ -1,20 +1,28 @@
 <template>
   <section class="config-section active-section dynamic-tools-page">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
+        <UiButton type="button" variant="outline" size="lg" @click="loadState">
+          <template #leading><span class="material-symbols-outlined">refresh</span></template>
+          刷新
+        </UiButton>
+        <UiButton type="button" variant="outline" size="lg" @click="copyPlaceholder">
+          <template #leading><span class="material-symbols-outlined">content_copy</span></template>
+          复制占位符
+        </UiButton>
+        <UiButton type="button" size="lg" variant="secondary" @click="saveDynamicConfig">
+          <template #leading><span class="material-symbols-outlined">save</span></template>
+          保存
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <UiToolbar class="dynamic-tools-header" align="start">
       <div>
         <h2>动态工具清单</h2>
         <p class="description">管理 {{ placeholderText }} 的注入配置、分类状态和工具暴露规则。</p>
       </div>
-      <template #actions>
-        <UiButton type="button" variant="outline" size="sm" @click="loadState">
-          <template #leading><span class="material-symbols-outlined">refresh</span></template>
-          刷新
-        </UiButton>
-        <UiButton type="button" size="sm" @click="copyPlaceholder">
-          <template #leading><span class="material-symbols-outlined">content_copy</span></template>
-          复制占位符
-        </UiButton>
-      </template>
     </UiToolbar>
 
     <div class="summary-grid">
@@ -43,14 +51,7 @@
     </div>
 
     <form class="panel-grid" @submit.prevent="saveDynamicConfig">
-      <UiSettingsCard class="config-card" title="注入配置" variant="subtle">
-        <template #action>
-          <UiButton type="submit" size="sm">
-            <template #leading><span class="material-symbols-outlined">save</span></template>
-            保存
-          </UiButton>
-        </template>
-
+      <UiSettingsCard class="config-card dynamic-settings-surface" title="注入配置" variant="subtle">
         <UiSettingsForm as="div" :columns="2" gap="sm">
           <UiSettingsSwitchRow v-model="config.enabled" label="启用动态工具清单" data-settings-span="full" />
 
@@ -65,7 +66,7 @@
         </UiSettingsForm>
       </UiSettingsCard>
 
-      <UiSettingsCard class="config-card" title="小模型分类" variant="subtle">
+      <UiSettingsCard class="config-card dynamic-settings-surface" title="小模型分类" variant="subtle">
         <template #action>
           <UiButton type="button" variant="outline" size="sm" @click="openPluginConfig">
             <template #leading><span class="material-symbols-outlined">extension</span></template>
@@ -96,7 +97,7 @@
       </UiSettingsCard>
     </form>
 
-    <UiSettingsCard class="operations-card" title="分类维护" variant="subtle">
+    <UiSettingsCard class="operations-card dynamic-settings-surface" title="分类维护" variant="subtle">
       <template #action>
         <div class="header-actions">
           <UiButton type="button" variant="outline" size="sm" :disabled="isClassifying" @click="rebuild('catalog')">
@@ -123,7 +124,7 @@
       </UiField>
     </UiSettingsCard>
 
-    <UiSettingsCard class="records-card" title="工具状态" variant="subtle">
+    <UiSettingsCard class="records-card dynamic-settings-surface" title="工具状态" variant="subtle">
       <template #action>
         <UiInput
           v-model.trim="filterText"
@@ -186,8 +187,6 @@
 
       <UiEmptyState v-if="filteredRecords.length === 0" title="没有匹配的工具记录" />
     </UiSettingsCard>
-
-    <UiBadge v-if="statusMessage" class="floating-status" :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
   </section>
 </template>
 
@@ -211,6 +210,7 @@ import UiCard from "@/components/ui/UiCard.vue";
 import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import UiField from "@/components/ui/UiField.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSettingsCard from "@/components/ui/UiSettingsCard.vue";
 import UiSettingsForm from "@/components/ui/UiSettingsForm.vue";
 import UiSettingsSwitchRow from "@/components/ui/UiSettingsSwitchRow.vue";
@@ -574,6 +574,34 @@ onBeforeUnmount(() => {
   margin-top: var(--space-1);
 }
 
+.dynamic-settings-surface {
+  --dynamic-tools-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
+  --dynamic-tools-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+}
+
+.dynamic-settings-surface,
+:deep(.ui-card.dynamic-settings-surface) {
+  border-color: var(--dynamic-tools-surface-border);
+  background: var(--dynamic-tools-card-surface);
+}
+
+.dynamic-settings-surface :deep(.ui-card__header),
+:deep(.ui-card.dynamic-settings-surface.ui-card--divided .ui-card__header) {
+  border-bottom-color: var(--dynamic-tools-surface-border);
+}
+
+.dynamic-settings-surface :deep(.ui-input),
+.dynamic-settings-surface :deep(.ui-textarea) {
+  border-color: var(--dynamic-tools-surface-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
+}
+
+.dynamic-settings-surface :deep(.ui-table-frame) {
+  border-color: var(--dynamic-tools-surface-border);
+  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
+}
+
 .header-actions {
   display: flex;
   flex-wrap: wrap;
@@ -650,13 +678,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-}
-
-.floating-status {
-  position: fixed;
-  right: var(--space-5);
-  bottom: var(--space-5);
-  z-index: 1000;
 }
 
 @media (max-width: 960px) {

@@ -1,5 +1,34 @@
 <template>
   <section class="config-section active-section">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton variant="outline" @click="resetFilters">
+          重置筛选
+        </UiButton>
+        <UiButton
+          variant="outline"
+          :disabled="isRefreshing"
+          @click="refreshDreams"
+        >
+          刷新
+        </UiButton>
+        <UiButton
+          variant="primary"
+          :disabled="visiblePendingCount === 0 || batchProcessing"
+          @click="batchReviewVisible('approve')"
+        >
+          批准当前筛选待审
+        </UiButton>
+        <UiButton
+          variant="danger"
+          :disabled="visiblePendingCount === 0 || batchProcessing"
+          @click="batchReviewVisible('reject')"
+        >
+          拒绝当前筛选待审
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <p class="description">在梦境操作触及日记文件前进行审核。</p>
     <div id="dream-manager-content">
       <p v-if="listState.status === 'loading'" class="dream-placeholder">
@@ -70,32 +99,6 @@
             </UiField>
           </div>
 
-          <div class="dream-toolbar-actions">
-            <UiButton variant="outline" @click="resetFilters">
-              重置筛选
-            </UiButton>
-            <UiButton
-              variant="outline"
-              :disabled="isRefreshing"
-              @click="refreshDreams"
-            >
-              刷新
-            </UiButton>
-            <UiButton
-              variant="primary"
-              :disabled="visiblePendingCount === 0 || batchProcessing"
-              @click="batchReviewVisible('approve')"
-            >
-              批准当前筛选待审
-            </UiButton>
-            <UiButton
-              variant="danger"
-              :disabled="visiblePendingCount === 0 || batchProcessing"
-              @click="batchReviewVisible('reject')"
-            >
-              拒绝当前筛选待审
-            </UiButton>
-          </div>
         </div>
 
         <UiEmptyState
@@ -370,6 +373,7 @@ import UiButton from "@/components/ui/UiButton.vue";
 import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import UiField from "@/components/ui/UiField.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import {
   dreamApi,
@@ -1200,16 +1204,11 @@ onMounted(async () => {
   min-width: 0;
 }
 
-.dream-toolbar-actions,
 .dream-log-actions,
 .dream-detail-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-}
-
-.dream-toolbar-actions {
-  justify-content: flex-end;
 }
 
 .dream-log-actions {
@@ -1466,7 +1465,6 @@ onMounted(async () => {
     grid-template-columns: 1fr;
   }
 
-  .dream-toolbar-actions,
   .dream-log-actions,
   .dream-detail-toolbar,
   .dream-detail-actions {
@@ -1474,7 +1472,6 @@ onMounted(async () => {
     flex-direction: column;
   }
 
-  .dream-toolbar-actions :deep(.ui-button),
   .dream-log-actions :deep(.ui-button),
   .dream-detail-actions :deep(.ui-button) {
     width: 100%;

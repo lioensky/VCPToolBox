@@ -1,21 +1,23 @@
 <template>
   <section class="config-section active-section tool-approval-page">
-    <p class="description">在此管理工具调用的审核机制。开启后，特定的工具调用将需要通过管理面板进行人工确认。</p>
-
-    <UiToolbar class="tool-approval-toolbar" :class="{ 'is-dirty': isDirty }">
-      <template #default>
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
         <UiDirtyIndicator :dirty="isDirty" label="配置已修改" />
         <UiBadge v-if="!isDirty" variant="outline">暂无改动</UiBadge>
         <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
-      </template>
-      <template #actions>
         <UiButton type="button" :disabled="saving || !isDirty" :loading="saving" @click="saveConfig">
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
           {{ saving ? '保存中…' : '保存审核配置' }}
         </UiButton>
-      </template>
-    </UiToolbar>
+      </UiPageActions>
+    </Teleport>
+
+    <p class="description">在此管理工具调用的审核机制。开启后，特定的工具调用将需要通过管理面板进行人工确认。</p>
 
     <UiSettingsCard
+      class="tool-approval-surface"
       title="审核规则"
       description="控制工具调用进入人工审核的范围、等待时间与隐私保护策略。"
       variant="subtle"
@@ -93,12 +95,12 @@ import UiButton from '@/components/ui/UiButton.vue'
 import UiDirtyIndicator from '@/components/ui/UiDirtyIndicator.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiSettingsCard from '@/components/ui/UiSettingsCard.vue'
 import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
 import UiSettingsGroup from '@/components/ui/UiSettingsGroup.vue'
 import UiSettingsSwitchRow from '@/components/ui/UiSettingsSwitchRow.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
-import UiToolbar from '@/components/ui/UiToolbar.vue'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
 
@@ -275,12 +277,32 @@ onBeforeRouteLeave(async () => {
   gap: var(--space-4);
 }
 
-.tool-approval-toolbar {
-  padding: 0;
+.tool-approval-surface {
+  --tool-approval-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
+  --tool-approval-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
 }
 
-.tool-approval-toolbar.is-dirty {
-  color: var(--warning-color);
+.tool-approval-surface,
+:deep(.ui-card.tool-approval-surface) {
+  border-color: var(--tool-approval-surface-border);
+  background: var(--tool-approval-card-surface);
+}
+
+.tool-approval-surface :deep(.ui-card__header),
+:deep(.ui-card.tool-approval-surface.ui-card--divided .ui-card__header) {
+  border-bottom-color: var(--tool-approval-surface-border);
+}
+
+.tool-approval-surface :deep(.ui-settings-group) {
+  border-color: var(--tool-approval-surface-border);
+  background: color-mix(in srgb, var(--primary-text) 3.5%, transparent);
+}
+
+.tool-approval-surface :deep(.ui-input),
+.tool-approval-surface :deep(.ui-textarea) {
+  border-color: var(--tool-approval-surface-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
 }
 
 .timeout-input {

@@ -1,5 +1,35 @@
 <template>
   <section class="config-section active-section theme-lab">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiDirtyIndicator :dirty="isDirty" />
+        <UiButton variant="outline" size="lg" @click="handleImport">
+          <template #leading>
+            <span class="material-symbols-outlined">upload</span>
+          </template>
+          导入
+        </UiButton>
+        <UiButton variant="outline" size="lg" @click="handleExport">
+          <template #leading>
+            <span class="material-symbols-outlined">download</span>
+          </template>
+          导出
+        </UiButton>
+        <UiButton variant="outline" size="lg" @click="handleReset">
+          <template #leading>
+            <span class="material-symbols-outlined">restart_alt</span>
+          </template>
+          恢复默认
+        </UiButton>
+        <UiButton variant="secondary" size="lg" @click="handleSave">
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          保存主题
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <!-- Hero -->
     <header class="page-hero card">
       <div>
@@ -10,32 +40,6 @@
         </p>
       </div>
 
-      <div class="theme-lab__hero-actions">
-        <UiButton variant="outline" @click="handleImport">
-          <template #leading>
-            <span class="material-symbols-outlined">upload</span>
-          </template>
-          导入
-        </UiButton>
-        <UiButton variant="outline" @click="handleExport">
-          <template #leading>
-            <span class="material-symbols-outlined">download</span>
-          </template>
-          导出
-        </UiButton>
-        <UiButton variant="outline" @click="handleReset">
-          <template #leading>
-            <span class="material-symbols-outlined">restart_alt</span>
-          </template>
-          恢复默认
-        </UiButton>
-        <UiButton variant="primary" @click="handleSave">
-          <template #leading>
-            <span class="material-symbols-outlined">save</span>
-          </template>
-          保存主题
-        </UiButton>
-      </div>
     </header>
 
     <!-- Tab Pills -->
@@ -672,8 +676,10 @@ import { onBeforeRouteLeave } from 'vue-router'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
+import UiDirtyIndicator from '@/components/ui/UiDirtyIndicator.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
 import {
   FULL_PRESET_THEMES,
@@ -1700,13 +1706,6 @@ onUnmounted(() => {
   margin-bottom: var(--space-3);
 }
 
-.theme-lab__hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  justify-content: flex-end;
-}
-
 /* Tab controls */
 .theme-lab__controls {
   display: flex;
@@ -2554,16 +2553,6 @@ onUnmounted(() => {
 
 /* Responsive */
 @media (max-width: 768px) {
-  .theme-lab__hero-actions {
-    justify-content: stretch;
-  }
-
-  .theme-lab__hero-actions button {
-    flex: 1;
-    min-width: 0;
-    justify-content: center;
-  }
-
   .theme-lab__preset-grid {
     grid-template-columns: 1fr;
   }
@@ -2612,15 +2601,6 @@ onUnmounted(() => {
 }
 
 @media (max-width: 480px) {
-  .theme-lab__hero-actions {
-    flex-direction: column;
-  }
-
-  .theme-lab__hero-actions button {
-    width: 100%;
-    justify-content: center;
-  }
-
   .preset-card__body {
     padding: var(--space-2) var(--space-3);
   }

@@ -1,19 +1,23 @@
 <template>
   <section class="config-section active-section vcp-tavern-page">
-    <div class="page-header">
-      <div>
-        <p class="description">
-          管理上下文注入预设与规则。按住规则左侧手柄可像仪表盘一样实时预览排序位置，
-          并在释放时提交最终顺序。
-        </p></div>
-      <div class="header-actions">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
         <UiButton
           variant="outline"
           :disabled="isLoading"
           @click="fetchPresets"
         >
           刷新
-        </UiButton></div>
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
+    <div class="page-header">
+      <div>
+        <p class="description">
+          管理上下文注入预设与规则。按住规则左侧手柄可像仪表盘一样实时预览排序位置，
+          并在释放时提交最终顺序。
+        </p></div>
     </div>
 
     <UiCard class="preset-toolbar" size="sm">
@@ -217,6 +221,7 @@ import UiCard from "@/components/ui/UiCard.vue";
 import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import UiField from "@/components/ui/UiField.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
 import { useVcptavernEditor } from "@/features/vcptavern-editor/useVcptavernEditor";
@@ -258,11 +263,6 @@ void dragGhostElement
   justify-content: space-between;
   gap: var(--space-4);
   align-items: flex-start;
-}
-
-.header-actions {
-  display: flex;
-  gap: var(--space-3);
 }
 
 .preset-toolbar {

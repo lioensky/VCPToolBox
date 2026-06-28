@@ -1,5 +1,32 @@
 <template>
   <section class="config-section active-section emoji-gallery-page">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton
+          variant="outline"
+          :disabled="isLoading"
+          @click="refreshCurrentPage"
+        >
+          {{ isLoading && hasLoadedOnce ? "刷新中…" : "刷新" }}
+        </UiButton>
+
+        <UiButton
+          variant="outline"
+          :disabled="isRebuildingList"
+          @click="rebuildGeneratedEmojiLists"
+        >
+          {{ isRebuildingList ? "重建中…" : "重建列表" }}
+        </UiButton>
+
+        <UiButton
+          :disabled="isLoading || isUploading"
+          @click="createCategory"
+        >
+          新建目录
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <header class="hero-card">
       <div class="hero-copy">
         <span class="hero-kicker">Image Workspace</span>
@@ -77,29 +104,6 @@
             </UiSelect>
           </label>
 
-          <UiButton
-            variant="outline"
-            :disabled="isLoading"
-            @click="refreshCurrentPage"
-          >
-            {{ isLoading && hasLoadedOnce ? "刷新中…" : "刷新" }}
-          </UiButton>
-
-          <UiButton
-            variant="outline"
-            :disabled="isRebuildingList"
-            @click="rebuildGeneratedEmojiLists"
-          >
-            {{ isRebuildingList ? "重建中…" : "重建列表" }}
-          </UiButton>
-
-          <UiButton
-            variant="outline"
-            :disabled="isLoading || isUploading"
-            @click="createCategory"
-          >
-            新建目录
-          </UiButton>
         </div>
       </div>
 
@@ -640,6 +644,7 @@ import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { useLocalStorage } from "@/composables/useLocalStorage";

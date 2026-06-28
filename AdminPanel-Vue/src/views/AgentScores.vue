@@ -1,5 +1,19 @@
 <template>
   <section class="config-section active-section">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
+          {{ statusMessage }}
+        </UiBadge>
+        <UiButton variant="outline" size="lg" :loading="isLoading" @click="refreshScores">
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
+          刷新数据
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <UiCard
       class="agent-scores-card"
       variant="default"
@@ -8,22 +22,10 @@
       description="查看各 Agent 的累计积分、最近动态和更新时间。"
       divided
     >
-      <template #action>
-        <UiButton variant="outline" size="md" :loading="isLoading" @click="refreshScores">
-          <template #leading>
-            <span class="material-symbols-outlined">refresh</span>
-          </template>
-          刷新数据
-        </UiButton>
-      </template>
-
       <UiToolbar density="compact" class="scores-toolbar">
         <div class="scores-summary">
           <UiBadge variant="outline">
             共 {{ scores.length }} 个 Agent
-          </UiBadge>
-          <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
-            {{ statusMessage }}
           </UiBadge>
         </div>
       </UiToolbar>
@@ -105,6 +107,7 @@ import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiCard from '@/components/ui/UiCard.vue'
 import UiEmptyState from '@/components/ui/UiEmptyState.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiTableFrame from '@/components/ui/UiTableFrame.vue'
 import UiToolbar from '@/components/ui/UiToolbar.vue'
 

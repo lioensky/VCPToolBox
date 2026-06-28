@@ -10,7 +10,7 @@
 
     <div id="semantic-groups-container" class="semantic-groups-layout" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
       <UiCard
-        class="semantic-groups-sidebar"
+        class="semantic-groups-sidebar semantic-groups-surface"
         :class="{ 'is-collapsed': sidebarCollapsed }"
         :aria-label="sidebarCollapsed ? '语义组操作台（已折叠）' : '语义组操作台'"
         size="sm"
@@ -125,7 +125,7 @@
 
       <UiSettingsCard
         v-if="selectedGroup"
-        class="semantic-group-detail"
+        class="semantic-group-detail semantic-groups-surface"
         title="编辑语义组"
         description="维护语义组名称、权重与关键词。"
         variant="subtle"
@@ -202,7 +202,7 @@
         </template>
       </UiSettingsCard>
 
-      <UiCard v-else class="semantic-group-detail-empty" variant="subtle">
+      <UiCard v-else class="semantic-group-detail-empty semantic-groups-surface" variant="subtle">
         <UiEmptyState title="请选择语义组" description="请选择左侧语义组进行编辑，或先添加新组。" />
       </UiCard>
     </div>
@@ -494,6 +494,29 @@ onUnmounted(() => {
 <style scoped>
 .semantic-groups-controls {
   margin-bottom: var(--space-4);
+}
+
+.semantic-groups-surface {
+  --semantic-groups-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
+  --semantic-groups-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+}
+
+.semantic-groups-surface,
+:deep(.ui-card.semantic-groups-surface) {
+  border-color: var(--semantic-groups-surface-border);
+  background: var(--semantic-groups-card-surface);
+}
+
+.semantic-groups-surface :deep(.ui-card__header),
+:deep(.ui-card.semantic-groups-surface.ui-card--divided .ui-card__header) {
+  border-bottom-color: var(--semantic-groups-surface-border);
+}
+
+.semantic-groups-surface :deep(.ui-input),
+.semantic-groups-surface :deep(.ui-textarea) {
+  border-color: var(--semantic-groups-surface-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
 }
 
 .semantic-group-item {

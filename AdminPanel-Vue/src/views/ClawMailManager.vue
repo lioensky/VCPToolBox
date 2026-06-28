@@ -1,5 +1,14 @@
 <template>
   <section class="claw-mail-page">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton type="button" variant="outline" :disabled="isLoadingState" :loading="isLoadingState" @click="loadState(true)">
+          <span class="material-symbols-outlined">sync</span>
+          <span>{{ isLoadingState ? "刷新中…" : "刷新邮箱缓存" }}</span>
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <UiCard class="hero-card" variant="subtle">
       <div>
         <span class="eyebrow">VCPClawMail</span>
@@ -7,12 +16,6 @@
         <p>
           在服务器面板中查看 VCPClawMail 已配置的公共邮箱与子邮箱邮件，支持读取正文，并将邮件安全移入垃圾箱。
         </p>
-      </div>
-      <div class="hero-actions">
-        <UiButton type="button" variant="outline" :disabled="isLoadingState" :loading="isLoadingState" @click="loadState(true)">
-          <span class="material-symbols-outlined">sync</span>
-          <span>{{ isLoadingState ? "刷新中…" : "刷新邮箱缓存" }}</span>
-        </UiButton>
       </div>
     </UiCard>
 
@@ -128,6 +131,7 @@ import UiButton from "@/components/ui/UiButton.vue";
 import UiCard from "@/components/ui/UiCard.vue";
 import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
@@ -290,11 +294,6 @@ onMounted(() => {
 .hero-card p,
 .panel-header p {
   color: var(--secondary-text);
-}
-
-.hero-actions {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .status-card {
@@ -504,7 +503,6 @@ onMounted(() => {
     grid-template-columns: 1fr;
   }
 
-  .hero-actions,
   .toolbar-actions {
     justify-content: flex-start;
   }

@@ -1,5 +1,20 @@
 <template>
   <section class="plugins-hub">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiButton
+          type="button"
+          variant="outline"
+          size="lg"
+          :disabled="isRefreshing"
+          @click="refreshPlugins()"
+        >
+          <template #leading><span class="material-symbols-outlined">refresh</span></template>
+          <span>{{ isRefreshing ? "刷新中…" : "刷新列表" }}</span>
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
+
     <UiCard class="hub-hero">
       <div class="hero-copy">
         <span class="eyebrow hero-eyebrow">Plugin Center</span>
@@ -64,16 +79,6 @@
             aria-label="搜索插件"
           />
         </label>
-
-        <UiButton
-          type="button"
-          variant="outline"
-          :disabled="isRefreshing"
-          @click="refreshPlugins()"
-        >
-          <template #leading><span class="material-symbols-outlined">refresh</span></template>
-          <span>{{ isRefreshing ? "刷新中…" : "刷新列表" }}</span>
-        </UiButton>
       </div>
 
       <div class="filter-row" aria-label="插件筛选">
@@ -468,6 +473,7 @@ import UiCard from "@/components/ui/UiCard.vue";
 import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import type { PluginInfo } from "@/types/api.plugin";
 
 const router = useRouter();
