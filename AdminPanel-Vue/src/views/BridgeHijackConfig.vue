@@ -668,7 +668,6 @@ onMounted(() => {
 
 .profile-indicator.default {
   background: var(--success-color);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--success-color) 50%, transparent);
 }
 
 .profile-meta {
