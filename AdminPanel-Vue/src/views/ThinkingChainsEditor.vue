@@ -12,9 +12,9 @@
       <UiButton variant="outline" @click="addThinkingChain">
         添加新主题
       </UiButton>
-      <span v-if="statusMessage" :class="['status-message', statusType]">
+      <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
         {{ statusMessage }}
-      </span>
+      </UiBadge>
     </div>
 
     <div id="thinking-chains-container" class="thinking-chains-layout">
@@ -323,6 +323,9 @@ const pickerChainIndex = ref<number | null>(null);
 const pendingClusterSelection = ref<string[]>([]);
 
 const pickerSelectionSet = computed(() => new Set(pendingClusterSelection.value));
+const statusBadgeVariant = computed(() =>
+  statusType.value === "error" ? "danger" : statusType.value
+);
 const pickerSelectionOrderMap = computed(() => {
   const selectionOrderMap = new Map<string, number>();
   pendingClusterSelection.value.forEach((clusterName, index) => {
