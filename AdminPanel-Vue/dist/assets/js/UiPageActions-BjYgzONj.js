@@ -1,0 +1,1 @@
+import{E as t,L as a,P as s,f as r,n as _,y as o}from"./dashboard-card-activitychart-BPlOnjp7.js";var n=o({inheritAttrs:!1,__name:"UiPageActions",setup(i){return(e,p)=>(s(),r("div",t({class:"ui-page-actions"},e.$attrs),[a(e.$slots,"default",{},void 0,!0)],16))}}),l=_(n,[["__scopeId","data-v-dd65e53c"]]);export{l as t};
