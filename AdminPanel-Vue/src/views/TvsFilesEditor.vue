@@ -149,10 +149,15 @@
             <p v-if="createError" class="tvs-new-file__error">{{ createError }}</p>
           </div>
 
-          <div v-if="loadingFiles" class="tvs-file-loading">
-            <span class="loading-spinner loading-spinner--sm"></span>
-            <p>正在加载文件列表…</p>
-          </div>
+          <UiEmptyState
+            v-if="loadingFiles"
+            title="正在加载文件列表…"
+            description="请稍候，面板正在读取 TVS 变量文件。"
+          >
+            <template #icon>
+              <span class="material-symbols-outlined spinning">progress_activity</span>
+            </template>
+          </UiEmptyState>
 
           <UiEmptyState
             v-else-if="files.length === 0"
@@ -733,12 +738,6 @@ onBeforeRouteLeave(async () => {
   margin: 0;
   color: var(--danger-text);
   font-size: var(--font-size-helper);
-}
-
-.tvs-file-loading {
-  text-align: center;
-  padding: var(--space-7) var(--space-4);
-  color: var(--secondary-text);
 }
 
 .tvs-file-list {
