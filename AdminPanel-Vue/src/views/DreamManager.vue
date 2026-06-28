@@ -1242,7 +1242,7 @@ onMounted(async () => {
 }
 
 .dream-log-card:hover {
-  box-shadow: var(--shadow-overlay-soft);
+  border-color: color-mix(in srgb, var(--highlight-text) 34%, var(--border-color));
 }
 
 .dream-log-header {
