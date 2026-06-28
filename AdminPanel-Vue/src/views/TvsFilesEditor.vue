@@ -626,8 +626,12 @@ onBeforeRouteLeave(async () => {
 }
 
 .tvs-files-editor-page > .description code {
-  padding: 1px 6px;
-  background: var(--tertiary-bg);
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 var(--space-2);
+  background: color-mix(in srgb, var(--primary-text) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: var(--font-size-helper);
@@ -670,7 +674,7 @@ onBeforeRouteLeave(async () => {
   overflow: hidden;
   padding: var(--space-5);
   border-radius: var(--radius-xl);
-  transition: padding 0.2s ease;
+  transition: padding var(--transition-fast);
 }
 
 .tvs-console.is-collapsed {
@@ -778,13 +782,12 @@ onBeforeRouteLeave(async () => {
 }
 
 .tvs-file-row:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 34%, var(--border-color));
   background: var(--accent-bg);
 }
 
 .tvs-file-row.is-active {
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-text) 14%, transparent);
+  border-color: color-mix(in srgb, var(--highlight-text) 52%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
 }
 
 .tvs-file-icon {
@@ -794,7 +797,7 @@ onBeforeRouteLeave(async () => {
 }
 
 .tvs-file-row.is-active .tvs-file-icon {
-  color: var(--highlight-text);
+  color: color-mix(in srgb, var(--highlight-text) 78%, var(--secondary-text));
 }
 
 .tvs-file-name {
@@ -809,7 +812,6 @@ onBeforeRouteLeave(async () => {
 }
 
 .tvs-file-row.is-active .tvs-file-name {
-  color: var(--highlight-text);
   font-weight: 600;
 }
 
@@ -939,12 +941,12 @@ onBeforeRouteLeave(async () => {
   justify-content: space-between;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
   flex-wrap: wrap;
   border-top: 1px solid var(--border-color);
-  background: var(--surface-overlay-soft);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   border-radius: var(--radius-md);
 }
 
@@ -986,6 +988,13 @@ onBeforeRouteLeave(async () => {
   .tvs-editor__textarea :deep(.ui-textarea) {
     min-height: 360px;
     resize: vertical;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tvs-console,
+  .tvs-file-row {
+    transition: none;
   }
 }
 
