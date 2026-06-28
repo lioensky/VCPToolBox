@@ -18,7 +18,7 @@
         </UiButton>
         <UiButton
           type="button"
-          variant="secondary"
+          variant="primary"
           size="lg"
           :loading="isSaving"
           :disabled="!hasChanges || isSaving"
@@ -34,7 +34,7 @@
 
     <UiCard
       class="preprocessor-order-panel"
-      variant="default"
+      variant="subtle"
       size="sm"
       title="预处理器执行顺序"
       description="按住左侧手柄拖动排序，越靠上的插件越优先执行。保存后会触发热重载。"
@@ -183,8 +183,18 @@ void dragGhostElement
 </script>
 
 <style scoped>
+.preprocessor-order-panel {
+  border-color: color-mix(in srgb, var(--border-color) 88%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
+}
+
+.preprocessor-order-panel :deep(.ui-card__header) {
+  border-bottom-color: color-mix(in srgb, var(--border-color) 88%, transparent);
+}
+
 .order-toolbar {
-  min-height: 32px;
+  min-height: 28px;
+  margin-bottom: var(--space-2);
 }
 
 .order-summary {
@@ -200,7 +210,11 @@ void dragGhostElement
   padding: 0;
   margin: 0;
   display: grid;
-  gap: var(--space-2);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .draggable-item {
@@ -208,10 +222,11 @@ void dragGhostElement
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 52px;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
-  border-radius: var(--radius-md);
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: 0;
   background: transparent;
   will-change: transform;
   transition:
@@ -221,9 +236,12 @@ void dragGhostElement
     filter 0.18s ease;
 }
 
+.draggable-item:last-child {
+  border-bottom: 0;
+}
+
 .draggable-item:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 28%, var(--border-color));
-  background: color-mix(in srgb, var(--accent-bg) 24%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
 .draggable-item--dragging {
@@ -235,8 +253,8 @@ void dragGhostElement
 .draggable-item--drop-after::after {
   content: "";
   position: absolute;
-  left: 12px;
-  right: 12px;
+  left: 10px;
+  right: 10px;
   z-index: 2;
   height: 2px;
   border-radius: 999px;
@@ -253,7 +271,7 @@ void dragGhostElement
 }
 
 .plugin-index {
-  min-width: 28px;
+  min-width: 26px;
   color: var(--secondary-text);
   font-family: "Consolas", "Monaco", "Courier New", monospace;
   font-size: var(--font-size-helper);
@@ -276,7 +294,7 @@ void dragGhostElement
 .plugin-description {
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
-  line-height: 1.45;
+  line-height: 1.35;
 }
 
 .preprocessor-drag-ghost {
@@ -292,9 +310,9 @@ void dragGhostElement
   justify-content: center;
   min-height: 100%;
   padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 35%, var(--border-color));
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 28%, var(--border-color));
   border-radius: var(--radius-md);
-  background: var(--secondary-bg);
+  background: color-mix(in srgb, var(--primary-bg) 96%, transparent);
   box-shadow: var(--shadow-lg);
 }
 
