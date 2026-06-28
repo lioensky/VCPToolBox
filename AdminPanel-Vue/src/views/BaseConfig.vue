@@ -37,67 +37,13 @@
           class="base-config-aside"
           aria-label="配置导航"
         >
-          <nav class="base-console__jump-list">
-            <div class="base-console__category">操作台</div>
-            <div
-              v-for="group in groupedEntries"
-              :key="`${group.id}-jump`"
-              class="base-console__nav-group"
-              :class="{ 'is-open': isGroupOpen(group) }"
-            >
-              <div
-                :class="[
-                  'base-console__group-row',
-                  { 'is-active': activeGroupAnchor === group.anchor },
-                ]"
-              >
-                <button
-                  type="button"
-                  class="base-console__group-trigger"
-                  :title="group.title"
-                  @click="scrollToAnchor(group.anchor)"
-                >
-                  <span>{{ getJumpLabel(group.title) }}</span>
-                </button>
-                <small>{{ group.totalEntries }} 项</small>
-                <button
-                  type="button"
-                  class="base-console__expand-btn"
-                  :class="{
-                    'is-open': isGroupOpen(group),
-                    'is-placeholder': visibleSectionLinks(group).length === 0,
-                  }"
-                  :aria-label="visibleSectionLinks(group).length > 0
-                    ? (isGroupOpen(group) ? '收起子设置项' : '展开子设置项')
-                    : '跳转到该配置分组'"
-                  @click.stop="handleGroupExpandClick(group)"
-                >
-                  <span class="material-symbols-outlined">chevron_right</span>
-                </button>
-              </div>
-
-              <div
-                v-if="isGroupOpen(group) && visibleSectionLinks(group).length > 0"
-                class="base-console__sub-list"
-              >
-                <button
-                  v-for="section in visibleSectionLinks(group)"
-                  :key="`${section.id}-jump`"
-                  type="button"
-                  :class="[
-                    'base-console__jump-btn',
-                    'base-console__jump-btn--sub',
-                    { 'is-active': activeSectionAnchor === section.anchor },
-                  ]"
-                  :title="section.title"
-                  @click="scrollToAnchor(section.anchor)"
-                >
-                  <span>{{ getSectionJumpLabel(section.title) }}</span>
-                  <small>{{ section.entries.length }} 项</small>
-                </button>
-              </div>
-            </div>
-          </nav>
+          <UiSideConsoleNav
+            :items="consoleNavItems"
+            :open-ids="openGroupAnchorList"
+            @item-click="handleConsoleGroupClick"
+            @child-click="handleConsoleSectionClick"
+            @toggle="handleConsoleGroupToggle"
+          />
         </aside>
 
         <div class="base-config-main">
@@ -252,6 +198,10 @@ import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiSettingsCard from '@/components/ui/UiSettingsCard.vue'
 import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
 import UiSettingsSwitchRow from '@/components/ui/UiSettingsSwitchRow.vue'
+import UiSideConsoleNav, {
+  type UiSideConsoleNavChild,
+  type UiSideConsoleNavItem,
+} from '@/components/ui/UiSideConsoleNav.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
 import {
   showMessage,
@@ -459,6 +409,23 @@ const groupedEntries = computed<ConfigGroup[]>(() => {
 const editableEntryCount = computed(() =>
   groupedEntries.value.reduce((sum, group) => sum + group.totalEntries, 0)
 )
+const openGroupAnchorList = computed(() => Array.from(openGroupAnchors.value))
+const consoleNavItems = computed<UiSideConsoleNavItem[]>(() =>
+  groupedEntries.value.map((group) => ({
+    id: group.anchor,
+    label: getJumpLabel(group.title),
+    title: group.title,
+    meta: `${group.totalEntries} 项`,
+    active: activeGroupAnchor.value === group.anchor,
+    children: visibleSectionLinks(group).map((section) => ({
+      id: section.anchor,
+      label: getSectionJumpLabel(section.title),
+      title: section.title,
+      meta: `${section.entries.length} 项`,
+      active: activeSectionAnchor.value === section.anchor,
+    })),
+  }))
+)
 
 const JUMP_LABEL_ALIAS: Record<string, string> = {
   '知识库 (Knowledge Base) V2 - Powered by Vexus-Lite': '知识库 V2',
@@ -496,10 +463,6 @@ function visibleSectionLinks(group: ConfigGroup): ConfigSection[] {
   return group.sections.filter((section) => section.title.trim().length > 0)
 }
 
-function isGroupOpen(group: ConfigGroup): boolean {
-  return openGroupAnchors.value.has(group.anchor)
-}
-
 function openGroup(anchor: string): void {
   openGroupAnchors.value = new Set([anchor])
 }
@@ -522,6 +485,26 @@ function handleGroupExpandClick(group: ConfigGroup): void {
   }
 
   toggleGroupOpen(group)
+}
+
+function handleConsoleGroupClick(item: UiSideConsoleNavItem): void {
+  scrollToAnchor(item.id)
+}
+
+function handleConsoleGroupToggle(item: UiSideConsoleNavItem): void {
+  const group = groupedEntries.value.find((entry) => entry.anchor === item.id)
+  if (!group) {
+    return
+  }
+
+  handleGroupExpandClick(group)
+}
+
+function handleConsoleSectionClick(
+  _item: UiSideConsoleNavItem,
+  child: UiSideConsoleNavChild
+): void {
+  scrollToAnchor(child.id)
 }
 
 function normalizeCommentLine(rawLine: string): string | null {
@@ -1170,243 +1153,8 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-helper);
 }
 
-.base-console__jump-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  min-height: 0;
-  width: 100%;
-  padding: 0 0 8px;
-  overflow-y: auto;
-  box-sizing: border-box;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--secondary-text) 30%, transparent) transparent;
-}
-
-.base-console__jump-list::-webkit-scrollbar {
-  width: 8px;
-}
-
-.base-console__jump-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.base-console__jump-list::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: var(--radius-full);
-  background-color: color-mix(in srgb, var(--secondary-text) 30%, transparent);
-  background-clip: padding-box;
-}
-
-.base-console__jump-list::-webkit-scrollbar-thumb:hover {
-  background-color: color-mix(in srgb, var(--secondary-text) 50%, transparent);
-}
-
-.base-console__category {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  padding: 0 8px;
-  color: color-mix(in srgb, var(--secondary-text) 72%, transparent);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  line-height: 1.25;
-  overflow: hidden;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.base-console__nav-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.base-console__sub-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  margin: 0 0 var(--space-1) 14px;
-  padding-left: 10px;
-  border-left: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
-}
-
-.base-console__group-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 32px;
-  padding: 0 4px 0 8px;
-  border-radius: var(--radius-md);
-  color: var(--primary-text);
-  transition:
-    background-color 0.2s ease,
-    color 0.2s ease;
-  overflow: hidden;
-}
-
-.base-console__group-row:hover,
-.base-console__group-row.is-active {
-  background-color: var(--accent-bg);
-  color: var(--primary-text);
-}
-
-.base-console__group-row.is-active .base-console__group-trigger {
-  font-weight: 500;
-}
-
-.base-console__group-trigger {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  flex: 1;
-  height: 100%;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.875rem;
-  line-height: 1.25;
-  text-align: left;
-  outline: none;
-}
-
-.base-console__group-trigger > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.base-console__group-row small {
-  color: var(--secondary-text);
-  flex-shrink: 0;
-  font-size: var(--font-size-caption);
-}
-
-.base-console__expand-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition:
-    background-color 0.2s ease,
-    color 0.2s ease;
-}
-
-.base-console__expand-btn:hover,
-.base-console__expand-btn:focus-visible {
-  background: color-mix(in srgb, var(--primary-text) 4%, transparent);
-  color: var(--primary-text);
-  outline: none;
-}
-
-.base-console__expand-btn.is-placeholder {
-  color: transparent;
-}
-
-.base-console__expand-btn.is-placeholder:hover,
-.base-console__expand-btn.is-placeholder:focus-visible {
-  background: transparent;
-  color: transparent;
-}
-
-.base-console__expand-btn .material-symbols-outlined {
-  font-size: 16px;
-  line-height: 1;
-  transition: transform 0.2s ease;
-}
-
-.base-console__expand-btn.is-open .material-symbols-outlined {
-  transform: rotate(90deg);
-}
-
-.base-console__jump-btn {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  height: 32px;
-  padding: 8px;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--primary-text);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.875rem;
-  line-height: 1.25;
-  transition:
-    background-color 0.2s ease,
-    color 0.2s ease,
-    font-weight 0.2s ease;
-  text-align: left;
-  text-decoration: none;
-  outline: none;
-  overflow: hidden;
-}
-
-.base-console__jump-btn--sub {
-  height: 28px;
-  padding: 6px 8px;
-  color: var(--secondary-text);
-  font-size: 0.8125rem;
-}
-
-.base-console__jump-btn > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.base-console__jump-btn:hover {
-  background-color: var(--accent-bg);
-  color: var(--primary-text);
-}
-
-.base-console__jump-btn.is-active {
-  background-color: var(--accent-bg);
-  color: var(--primary-text);
-  font-weight: 500;
-}
-
-.base-console__jump-btn--sub.is-active {
-  color: var(--primary-text);
-}
-
-.base-console__jump-btn:focus-visible {
-  box-shadow: 0 0 0 2px var(--focus-ring);
-  background-color: var(--accent-bg);
-  color: var(--primary-text);
-}
-
-.base-console__jump-btn small {
-  color: var(--secondary-text);
-  flex-shrink: 0;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .base-config-aside,
-  .base-console__group-row,
-  .base-console__expand-btn,
-  .base-console__expand-btn .material-symbols-outlined,
-  .base-console__jump-btn {
+  .base-config-aside {
     transition: none;
   }
 }

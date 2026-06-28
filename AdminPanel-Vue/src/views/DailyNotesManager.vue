@@ -1,12 +1,11 @@
 <template>
   <section class="config-section active-section">
-    <div class="daily-notes-manager" :class="{ 'is-sidebar-collapsed': folderSidebarCollapsed }">
+    <div class="daily-notes-manager">
       <FolderList
         :folders="folders"
         :selected-folder="selectedFolder"
         :folder-label="resourceConfig.folderLabel"
         @selectFolder="selectFolder"
-        @update:collapsed="folderSidebarCollapsed = $event"
       />
 
       <div class="notes-main-area">
@@ -128,8 +127,6 @@ const savingNote = ref(false)
 const isEditorInitializing = ref(false)
 const editorStatus = ref('')
 const editorStatusType = ref<'info' | 'success' | 'error'>('info')
-
-const folderSidebarCollapsed = ref(false)
 
 const showDiscoveryModal = ref(false)
 const discoverySourceNote = ref<{ file: string; title?: string } | null>(null)
@@ -426,10 +423,6 @@ onMounted(() => {
   align-items: start;
 }
 
-.daily-notes-manager.is-sidebar-collapsed {
-  grid-template-columns: 56px minmax(0, 1fr);
-}
-
 .notes-main-area {
   display: flex;
   flex-direction: column;
@@ -438,8 +431,7 @@ onMounted(() => {
 }
 
 @media (max-width: 768px) {
-  .daily-notes-manager,
-  .daily-notes-manager.is-sidebar-collapsed {
+  .daily-notes-manager {
     grid-template-columns: 1fr;
   }
 }
