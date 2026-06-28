@@ -44,10 +44,11 @@
       </div>
     </UiCard>
 
-    <UiCard class="view-tabs-card" size="sm" variant="subtle">
+    <section class="plugins-toolbar" aria-label="插件筛选与视图">
       <div class="view-mode-switch" role="group" aria-label="插件视图切换">
         <UiButton
           type="button"
+          size="sm"
           :variant="viewMode === 'grouped' ? 'primary' : 'outline'"
           :aria-pressed="viewMode === 'grouped'"
           @click="viewMode = 'grouped'"
@@ -57,6 +58,7 @@
         </UiButton>
         <UiButton
           type="button"
+          size="sm"
           :variant="viewMode === 'list' ? 'primary' : 'outline'"
           :aria-pressed="viewMode === 'list'"
           @click="viewMode = 'list'"
@@ -65,9 +67,7 @@
           <span>列表视图</span>
         </UiButton>
       </div>
-    </UiCard>
 
-    <UiCard class="controls-card" size="sm" variant="subtle">
       <div class="controls-main-row">
         <label class="search-field">
           <span class="material-symbols-outlined">search</span>
@@ -75,6 +75,7 @@
             ref="pluginSearchInputRef"
             v-model="searchQuery"
             type="search"
+            size="sm"
             placeholder="搜索插件名称、原始名或描述…"
             aria-label="搜索插件"
           />
@@ -86,7 +87,7 @@
           v-for="filter in visibleFilterOptions"
           :key="filter.value"
           type="button"
-          size="sm"
+          size="xs"
           :variant="activeFilter === filter.value ? 'primary' : 'outline'"
           :aria-pressed="activeFilter === filter.value"
           @click="selectFilter(filter.value)"
@@ -109,7 +110,7 @@
               v-for="filter in overflowFilterOptions"
               :key="filter.value"
               type="button"
-              size="sm"
+              size="xs"
               :variant="activeFilter === filter.value ? 'primary' : 'ghost'"
               :aria-pressed="activeFilter === filter.value"
               @click="selectFilter(filter.value)"
@@ -119,7 +120,7 @@
           </div>
         </details>
       </div>
-    </UiCard>
+    </section>
 
     <section
       v-if="pinnedPluginRecords.length > 0 || recentPluginVisits.length > 0"
@@ -300,6 +301,7 @@
                   <div class="plugin-actions">
                     <UiButton
                       type="button"
+                      size="sm"
                       @click="openPluginConfig(plugin.pluginName)"
                     >
                       <template #leading><span class="material-symbols-outlined">open_in_new</span></template>
@@ -308,6 +310,7 @@
 
                     <UiButton
                       type="button"
+                      size="sm"
                       :variant="plugin.enabled ? 'danger' : 'outline'"
                       :disabled="
                         plugin.isDistributed || isPluginPending(plugin.pluginName)
@@ -412,6 +415,7 @@
             <div class="plugin-actions">
               <UiButton
                 type="button"
+                size="sm"
                 @click="openPluginConfig(plugin.pluginName)"
               >
                 <template #leading><span class="material-symbols-outlined">open_in_new</span></template>
@@ -420,6 +424,7 @@
 
               <UiButton
                 type="button"
+                size="sm"
                 :variant="plugin.enabled ? 'danger' : 'outline'"
                 :disabled="plugin.isDistributed || isPluginPending(plugin.pluginName)"
                 :title="plugin.isDistributed ? '分布式插件状态由所属节点管理' : undefined"
@@ -789,7 +794,7 @@ watch(activeFilter, () => {
 .plugins-hub {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .hub-hero {
@@ -803,7 +808,7 @@ watch(activeFilter, () => {
 .hero-copy h2 {
   font-size: var(--font-size-headline);
   line-height: 1.2;
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 .hero-copy p {
@@ -812,7 +817,7 @@ watch(activeFilter, () => {
 }
 
 .hero-eyebrow {
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 .hero-stats {
@@ -848,22 +853,32 @@ watch(activeFilter, () => {
   font-size: var(--font-size-helper);
 }
 
-.controls-card {
+.plugins-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
   position: sticky;
   top: 0;
   z-index: 17;
-  background: var(--primary-bg);
+  padding: var(--space-2) 0;
+  background: color-mix(in srgb, var(--primary-bg) 88%, transparent);
 }
 
-.controls-top,
 .controls-main-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
+}
+
+.controls-main-row {
+  flex: 1 1 240px;
+  min-width: 220px;
+}
+
+.search-field {
+  width: 100%;
 }
 
 .view-mode-switch {
@@ -876,6 +891,7 @@ watch(activeFilter, () => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+  align-items: center;
   position: relative;
 }
 
@@ -911,11 +927,12 @@ watch(activeFilter, () => {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 32px;
-  padding: 0 var(--space-3);
+  min-height: 24px;
+  padding: 0 var(--space-2);
   border: 1px dashed var(--border-color);
   border-radius: var(--radius-md);
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
   cursor: pointer;
   background: transparent;
   transition:
@@ -946,7 +963,7 @@ watch(activeFilter, () => {
   padding: var(--space-2);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-bg) 78%, transparent);
+  background: color-mix(in srgb, var(--primary-bg) 92%, transparent);
   box-shadow: var(--shadow-lg);
   z-index: 5;
 }
@@ -954,11 +971,7 @@ watch(activeFilter, () => {
 .quick-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-4);
-}
-
-.quick-card-header {
-  margin-bottom: var(--space-4);
+  gap: var(--space-3);
 }
 
 .quick-list {
@@ -987,7 +1000,7 @@ watch(activeFilter, () => {
 .plugin-grouped-view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .plugin-list-view {
@@ -1006,8 +1019,8 @@ watch(activeFilter, () => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  padding: var(--space-3);
+  background: color-mix(in srgb, var(--primary-text) 2.4%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
 }
 
@@ -1050,7 +1063,7 @@ watch(activeFilter, () => {
 }
 
 .type-group-content {
-  padding: var(--space-3);
+  padding: var(--space-2);
 }
 
 .group-collapse-enter-active,
@@ -1083,7 +1096,7 @@ watch(activeFilter, () => {
 .plugin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .plugin-card {
@@ -1091,8 +1104,8 @@ watch(activeFilter, () => {
   flex-direction: column;
   height: 100%;
   border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
   background: transparent;
   transition: background-color var(--transition-fast);
 }
@@ -1105,8 +1118,8 @@ watch(activeFilter, () => {
   display: flex;
   align-items: start;
   justify-content: space-between;
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
 .plugin-identity {
@@ -1176,7 +1189,7 @@ watch(activeFilter, () => {
 .plugin-description {
   color: var(--secondary-text);
   line-height: 1.55;
-  min-height: calc(1.55em * 3);
+  min-height: calc(1.55em * 2);
   max-height: calc(1.55em * 3);
   overflow: hidden;
   overflow-wrap: anywhere;
@@ -1184,22 +1197,7 @@ watch(activeFilter, () => {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
-  margin-bottom: var(--space-3);
-}
-
-.plugin-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  margin-bottom: 18px;
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
-.plugin-meta span {
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: var(--tertiary-bg);
+  margin-bottom: var(--space-2);
 }
 
 .plugin-actions {
@@ -1207,7 +1205,7 @@ watch(activeFilter, () => {
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: auto;
-  padding-top: var(--space-1);
+  padding-top: var(--space-2);
 }
 
 @media (max-width: 1024px) {
