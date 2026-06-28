@@ -1,5 +1,10 @@
 <template>
-  <div v-if="selectedFolder" class="rag-tags-config-area card">
+  <UiCard
+    v-if="selectedFolder"
+    class="rag-tags-config-area"
+    size="sm"
+    variant="subtle"
+  >
     <div class="rag-tags-header">
       <div class="rag-tags-title-row">
         <h3>{{ titleLabel }} - {{ selectedFolder }}</h3>
@@ -120,7 +125,7 @@
         </UiBadge>
       </div>
     </div>
-  </div>
+  </UiCard>
 </template>
 
 <script setup lang="ts">
@@ -128,6 +133,7 @@ import { computed } from 'vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
@@ -189,12 +195,8 @@ function onDescriptionInput(event: Event) {
 </script>
 
 <style scoped>
-.rag-tags-config-area {
-  padding: var(--space-5);
-}
-
 .rag-tags-header {
-  margin-bottom: var(--space-5);
+  margin-bottom: var(--space-4);
 }
 
 .rag-tags-title-row {
@@ -235,8 +237,9 @@ function onDescriptionInput(event: Event) {
   gap: var(--space-2);
   margin-bottom: var(--space-4);
   padding: var(--space-3);
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .description-label {
@@ -268,8 +271,9 @@ function onDescriptionInput(event: Event) {
   gap: var(--space-3);
   margin-bottom: var(--space-4);
   padding: var(--space-3);
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .threshold-controls input[type="range"] {
@@ -290,8 +294,9 @@ function onDescriptionInput(event: Event) {
   gap: var(--space-3);
   margin-bottom: var(--space-4);
   padding: var(--space-3);
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .empty-tags-hint {
@@ -320,17 +325,16 @@ function onDescriptionInput(event: Event) {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-md);
   transition: border-color var(--transition-fast), background-color var(--transition-fast);
   min-width: 0;
   max-width: 100%;
 }
 
 .tag-item:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
-  background: var(--secondary-bg);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .tag-index {
@@ -367,8 +371,9 @@ function onDescriptionInput(event: Event) {
   gap: var(--space-3);
   margin-bottom: var(--space-4);
   padding: var(--space-3);
-  background: var(--accent-bg);
-  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .tag-count {
@@ -381,8 +386,8 @@ function onDescriptionInput(event: Event) {
   display: flex;
   gap: var(--space-3);
   align-items: center;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-color);
+  padding-top: var(--space-3);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .material-symbols-outlined {
@@ -391,10 +396,6 @@ function onDescriptionInput(event: Event) {
 }
 
 @media (max-width: 768px) {
-  .rag-tags-config-area {
-    padding: 14px;
-  }
-
   .rag-tags-title-row {
     flex-direction: column;
     align-items: flex-start;

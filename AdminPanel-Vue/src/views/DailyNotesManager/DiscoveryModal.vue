@@ -265,7 +265,7 @@ watch(
 
 .modal-content {
   background: var(--secondary-bg);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   max-width: 800px;
   width: 90%;
   max-height: 85vh;
@@ -274,7 +274,7 @@ watch(
 }
 
 .discovery-modal {
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   box-shadow: var(--overlay-panel-shadow);
 }
 
@@ -282,8 +282,9 @@ watch(
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 20px 24px;
-  border-bottom: 1px solid var(--border-color);
+  padding: var(--space-4);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .modal-header h3 {
@@ -295,14 +296,15 @@ watch(
 .modal-body {
   flex: 1;
   overflow-y: auto;
-  padding: 24px;
+  padding: var(--space-4);
 }
 
 .discovery-config {
-  margin-bottom: var(--space-5);
-  padding: 16px;
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .config-row {
@@ -355,14 +357,15 @@ watch(
 .folder-chips-container {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .folder-chip {
-  padding: 6px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 20px;
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-full);
   font-size: var(--font-size-helper);
   font: inherit;
   cursor: pointer;
@@ -379,14 +382,13 @@ watch(
 }
 
 .folder-chip:hover {
-  border-color: var(--highlight-text);
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .folder-chip.active {
-  background: var(--highlight-text);
-  color: var(--on-accent-text);
-  border-color: var(--highlight-text);
+  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
+  color: var(--highlight-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 58%, var(--border-color));
 }
 
 .loading-state {
@@ -400,11 +402,11 @@ watch(
 .warning-message {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
+  gap: var(--space-2);
+  padding: var(--space-3);
   background: var(--warning-bg);
   border: 1px solid var(--warning-border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   color: var(--warning-text);
   margin-bottom: var(--space-4);
 }
@@ -416,14 +418,14 @@ watch(
 .discovery-results-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .discovery-result-card {
-  padding: 16px;
-  background: var(--tertiary-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition:
     border-color var(--transition-fast),
@@ -431,8 +433,7 @@ watch(
 }
 
 .discovery-result-card:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .result-header {
@@ -496,8 +497,9 @@ watch(
 }
 
 .modal-footer {
-  padding: 16px 24px;
-  border-top: 1px solid var(--border-color);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   display: flex;
   justify-content: flex-end;
 }

@@ -87,10 +87,12 @@
                 gridTemplateColumns: `repeat(${displayColumnCount}, minmax(0, 1fr))`,
               }"
             >
-              <div
+              <UiCard
                 v-for="note in row.item"
                 :key="note.file"
-                class="note-card card virtual-card"
+                class="note-card virtual-card"
+                size="sm"
+                variant="subtle"
               >
                 <div class="note-card-header">
                   <AppCheckbox
@@ -140,16 +142,18 @@
                     </UiButton>
                   </div>
                 </div>
-              </div>
+              </UiCard>
             </div>
           </div>
         </div>
       </div>
-      <div
+      <UiCard
         v-else
         v-for="note in filteredNotes"
         :key="note.file"
-        class="note-card card"
+        class="note-card"
+        size="sm"
+        variant="subtle"
       >
         <div class="note-card-header">
           <AppCheckbox
@@ -195,7 +199,7 @@
             </UiButton>
           </div>
         </div>
-      </div>
+      </UiCard>
     </div>
   </div>
 </template>
@@ -208,6 +212,7 @@ import { formatDate } from "@/utils/format";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 
@@ -462,9 +467,9 @@ function toggleSelected(file: string, checked: boolean) {
 <style scoped>
 .notes-toolbar {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-3);
   flex-wrap: wrap;
 }
 
@@ -524,23 +529,18 @@ function toggleSelected(file: string, checked: boolean) {
   flex-direction: column;
   gap: var(--space-3);
   min-height: 190px;
-  padding: var(--space-4);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
   transition: border-color var(--transition-fast), background-color var(--transition-fast);
 }
 
 .note-card:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
-  background: var(--secondary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .note-card-header {
   display: flex;
   align-items: center;
   padding-bottom: var(--space-2);
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .note-select-label {
@@ -568,10 +568,10 @@ function toggleSelected(file: string, checked: boolean) {
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
-  padding: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
-  background: var(--tertiary-bg);
-  border: 1px solid color-mix(in srgb, var(--border-color) 50%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
 }
 
 .note-card-footer {
@@ -581,7 +581,7 @@ function toggleSelected(file: string, checked: boolean) {
   gap: var(--space-3);
   margin-top: auto;
   padding-top: var(--space-3);
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .note-meta {

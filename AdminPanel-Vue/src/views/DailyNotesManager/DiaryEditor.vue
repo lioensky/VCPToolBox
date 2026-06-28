@@ -1,5 +1,10 @@
 <template>
-  <div v-if="editingNote" class="note-editor-area card">
+  <UiCard
+    v-if="editingNote"
+    class="note-editor-area"
+    size="sm"
+    variant="subtle"
+  >
     <div class="editor-header">
       <div class="editor-title-section">
         <UiIconButton
@@ -43,13 +48,14 @@
     <div class="markdown-editor-wrapper">
       <slot name="editor-textarea"></slot>
     </div>
-  </div>
+  </UiCard>
 </template>
 
 <script setup lang="ts">
 import { computed } from "vue";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 
 interface Note {
@@ -75,11 +81,6 @@ const editorStatusBadgeVariant = computed(() =>
 
 <style scoped>
 .note-editor-area {
-  padding: var(--space-5);
-  background: var(--secondary-bg);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-  display: block;
   visibility: visible;
   opacity: 1;
   animation: fadeIn 0.3s ease-out;
@@ -100,7 +101,7 @@ const editorStatusBadgeVariant = computed(() =>
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: var(--space-5);
+  margin-bottom: var(--space-4);
   flex-wrap: wrap;
   gap: var(--space-4);
 }
@@ -128,9 +129,9 @@ const editorStatusBadgeVariant = computed(() =>
 }
 
 .markdown-editor-wrapper {
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   overflow: hidden;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   max-width: 90ch;
   margin-inline: auto;
 }
@@ -142,7 +143,7 @@ const editorStatusBadgeVariant = computed(() =>
 }
 
 :deep(.EasyMDEContainer .editor-toolbar) {
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   border-bottom-color: var(--border-color);
 }
 
@@ -151,7 +152,7 @@ const editorStatusBadgeVariant = computed(() =>
 }
 
 :deep(.EasyMDEContainer .editor-toolbar button:hover) {
-  background: var(--accent-bg) !important;
+  background: color-mix(in srgb, var(--primary-text) 4%, transparent) !important;
 }
 
 :deep(.EasyMDEContainer .CodeMirror) {
@@ -178,7 +179,7 @@ const editorStatusBadgeVariant = computed(() =>
 }
 
 :deep(.EasyMDEContainer .editor-statusbar) {
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   border-top-color: var(--border-color);
   color: var(--secondary-text);
 }
@@ -193,7 +194,6 @@ const editorStatusBadgeVariant = computed(() =>
 
 @media (max-width: 768px) {
   .note-editor-area {
-    padding: 14px;
     border-radius: var(--radius-sm);
   }
 

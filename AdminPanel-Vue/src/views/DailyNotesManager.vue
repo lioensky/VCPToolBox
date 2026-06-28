@@ -422,7 +422,7 @@ onMounted(() => {
 .daily-notes-manager {
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-  gap: var(--space-5);
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -433,7 +433,7 @@ onMounted(() => {
 .notes-main-area {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
   min-height: 400px;
 }
 

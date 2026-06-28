@@ -1,6 +1,6 @@
 <template>
   <aside
-    class="notes-sidebar card"
+    class="notes-sidebar"
     :class="{ 'is-collapsed': collapsed }"
     :aria-label="collapsed ? `${folderLabel}操作台（已折叠）` : `${folderLabel}操作台`"
   >
@@ -157,7 +157,11 @@ defineExpose({ collapsed })
   max-height: calc(100vh - (var(--folder-console-viewport-gap) * 2));
   overflow: hidden;
   padding: var(--space-5);
-  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(135deg, var(--surface-overlay-soft), transparent),
+    var(--secondary-bg);
   transition: padding 0.2s ease;
 }
 
@@ -180,10 +184,10 @@ defineExpose({ collapsed })
 }
 
 .folder-console__label {
-  color: var(--highlight-text);
+  color: var(--secondary-text);
   font-size: var(--font-size-caption);
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -249,26 +253,25 @@ defineExpose({ collapsed })
   align-items: center;
   justify-content: flex-start;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--primary-text);
   text-align: left;
   cursor: pointer;
   box-sizing: border-box;
-  min-height: 52px;
+  min-height: 36px;
   transition: border-color var(--transition-fast), background-color var(--transition-fast);
 }
 
 .folder-row:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .folder-row.is-active {
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-text) 14%, transparent);
+  border-color: color-mix(in srgb, var(--highlight-text) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
 }
 
 .folder-row:focus-visible {
@@ -291,8 +294,8 @@ defineExpose({ collapsed })
 
 .no-folders {
   padding: var(--space-4);
-  border: 1px dashed var(--border-color);
-  border-radius: var(--radius-sm);
+  border: 1px dashed color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-md);
   color: var(--secondary-text);
   text-align: center;
   font-size: var(--font-size-helper);
