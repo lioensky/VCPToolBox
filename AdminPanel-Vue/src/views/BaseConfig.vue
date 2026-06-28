@@ -276,7 +276,7 @@ const SECTION_KEY_SEPARATOR = '::'
 const GROUP_TITLE_REGEX = /^\[(.+?)\]\s*(.*)$/
 const SECTION_TITLE_REGEX = /^-+\s*(.+?)\s*-+$/
 const COMMENTED_ASSIGNMENT_REGEX = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/
-const CONTENT_CONTAINER_ID = 'base-config-details-container'
+const CONTENT_CONTAINER_ID = 'config-details-container'
 const GROUP_SCROLL_OFFSET = 16
 
 let contentScrollContainer: HTMLElement | null = null
@@ -1053,14 +1053,7 @@ onBeforeUnmount(() => {
   width: 100%;
   max-width: min(1680px, calc(100vw - var(--space-6) * 2));
   margin: 0 auto;
-  height: calc(
-    var(--app-viewport-height, 100vh) -
-    var(--app-top-bar-height, 60px) -
-    22px
-  );
-  min-height: 0;
-  padding: 0;
-  overflow: hidden;
+  padding: 0 0 var(--space-6);
 }
 
 #base-config-form {
@@ -1072,49 +1065,29 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
   gap: var(--space-4);
   align-items: start;
-  height: 100%;
-  min-height: 0;
 }
 
 .base-config-main {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  height: 100%;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0 2px var(--space-6) 0;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--secondary-text) 24%, transparent) transparent;
-}
-
-.base-config-main::-webkit-scrollbar {
-  width: 8px;
-}
-
-.base-config-main::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.base-config-main::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: var(--radius-full);
-  background-color: color-mix(in srgb, var(--secondary-text) 24%, transparent);
-  background-clip: padding-box;
-}
-
-.base-config-main::-webkit-scrollbar-thumb:hover {
-  background-color: color-mix(in srgb, var(--secondary-text) 42%, transparent);
 }
 
 .base-config-aside {
+  --base-console-viewport-gap: 0px;
+  --base-console-scroll-padding: 22px;
+  position: sticky;
+  top: var(--base-console-viewport-gap);
   align-self: start;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  height: 100%;
+  height: calc(
+    var(--app-viewport-height, 100vh) -
+    var(--app-top-bar-height, 60px) -
+    var(--base-console-scroll-padding) -
+    var(--base-console-viewport-gap)
+  );
   min-height: 0;
   padding: 0;
   overflow: hidden;
@@ -1237,6 +1210,10 @@ onBeforeUnmount(() => {
   -webkit-text-security: disc !important;
 }
 
+#base-config-section {
+  padding-bottom: 100px;
+}
+
 @media (max-width: 1200px) {
   #base-config-section {
     max-width: 100%;
@@ -1251,24 +1228,15 @@ onBeforeUnmount(() => {
 
 @media (max-width: 768px) {
   #base-config-section {
-    height: auto;
-    min-height: 0;
-    overflow: visible;
     padding: 0 0 var(--space-4);
   }
 
   .base-config-workspace {
     grid-template-columns: 1fr;
-    height: auto;
-  }
-
-  .base-config-main {
-    height: auto;
-    overflow: visible;
-    padding: 0;
   }
 
   .base-config-aside {
+    position: static;
     height: auto;
     max-height: none;
     overflow: visible;

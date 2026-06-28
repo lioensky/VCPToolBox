@@ -421,11 +421,7 @@ onMounted(() => {
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   gap: var(--space-4);
   align-items: start;
-  height: calc(
-    var(--app-viewport-height, 100vh) -
-    var(--app-top-bar-height, 60px) -
-    22px
-  );
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
