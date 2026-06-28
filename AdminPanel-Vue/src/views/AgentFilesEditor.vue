@@ -117,10 +117,12 @@
 
       <template #left-content>
         <div class="agent-map-list">
-          <div
+          <UiCard
             v-for="(entry, index) in agentMap"
             :key="entry.localId"
-            class="agent-map-entry card"
+            class="agent-map-entry"
+            size="sm"
+            variant="subtle"
           >
             <!-- 第一层：头部标题栏 -->
             <div class="agent-entry-header">
@@ -219,7 +221,7 @@
                 删除
               </UiButton>
             </div>
-          </div>
+          </UiCard>
 
           <div v-if="agentMap.length === 0" class="empty-state">
             <span class="material-symbols-outlined">smart_toy</span>
@@ -442,6 +444,7 @@ import { agentApi, placeholderApi, toolboxApi } from "@/api";
 import DualPaneEditor from "@/components/DualPaneEditor.vue";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
@@ -1149,7 +1152,7 @@ onBeforeRouteLeave(async () => {
 .collapsed-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   align-items: center;
 }
 
@@ -1157,14 +1160,20 @@ onBeforeRouteLeave(async () => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
-  border: 1px solid var(--border-color);
+  width: 36px;
+  height: 36px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   border-radius: var(--radius-sm);
-  background: var(--tertiary-bg);
+  background: transparent;
   color: var(--secondary-text);
   cursor: pointer;
   padding: 0;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.collapsed-item:hover {
+  background: color-mix(in srgb, var(--primary-text) 4%, transparent);
+  color: var(--primary-text);
 }
 
 .collapsed-avatar {
@@ -1192,10 +1201,6 @@ onBeforeRouteLeave(async () => {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-}
-
-.agent-map-entry {
-  padding: var(--space-4);
 }
 
 .agent-entry-row {
@@ -1255,7 +1260,7 @@ onBeforeRouteLeave(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .agent-file-workspace {
@@ -1284,9 +1289,11 @@ onBeforeRouteLeave(async () => {
   align-items: center;
   gap: var(--space-3);
   margin-bottom: var(--space-3);
-  padding: 12px;
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  min-height: 36px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .editing-file-display {
@@ -1331,23 +1338,24 @@ onBeforeRouteLeave(async () => {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  margin-top: 12px;
-  padding: 12px;
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-sm);
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .placeholder-sidebar-rail {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
   min-height: 180px;
-  padding: 10px 6px;
-  border: 1px solid var(--border-color);
+  padding: var(--space-3) var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   border-radius: var(--radius-md);
-  background: var(--tertiary-bg);
+  background: transparent;
   color: var(--secondary-text);
   cursor: pointer;
   writing-mode: vertical-rl;
@@ -1360,8 +1368,7 @@ onBeforeRouteLeave(async () => {
 
 .placeholder-sidebar-rail:hover {
   color: var(--primary-text);
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--button-bg) 10%, var(--tertiary-bg));
+  background: color-mix(in srgb, var(--primary-text) 4%, transparent);
 }
 
 .placeholder-sidebar-rail .material-symbols-outlined {
@@ -1375,9 +1382,9 @@ onBeforeRouteLeave(async () => {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   border-radius: var(--radius-md);
-  background: var(--secondary-bg);
+  background: transparent;
   transition:
     opacity 0.2s ease,
     transform 0.2s ease;
@@ -1394,7 +1401,7 @@ onBeforeRouteLeave(async () => {
   gap: var(--space-2);
   padding: var(--space-3);
   border-bottom: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .placeholder-sidebar-header h4 {
@@ -1450,8 +1457,8 @@ onBeforeRouteLeave(async () => {
 .placeholder-sidebar-status {
   margin: var(--space-3);
   padding: var(--space-3);
-  border: 1px dashed var(--border-color);
-  border-radius: var(--radius-sm);
+  border: 1px dashed color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: var(--radius-md);
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
   line-height: 1.5;
@@ -1475,9 +1482,10 @@ onBeforeRouteLeave(async () => {
 .placeholder-group-title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
-  padding: 10px var(--space-3);
+  min-height: 36px;
+  padding: var(--space-2) var(--space-3);
   border: none;
   background: transparent;
   color: var(--primary-text);
@@ -1486,7 +1494,7 @@ onBeforeRouteLeave(async () => {
 }
 
 .placeholder-group-title:hover {
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .placeholder-group-title .material-symbols-outlined {
@@ -1524,20 +1532,19 @@ onBeforeRouteLeave(async () => {
 .placeholder-chip {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   width: 100%;
-  padding: 8px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--primary-text);
   cursor: pointer;
   text-align: left;
 }
 
 .placeholder-chip:hover {
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--button-bg) 8%, var(--input-bg));
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .placeholder-chip code {
@@ -1579,10 +1586,10 @@ onBeforeRouteLeave(async () => {
 .agent-entry-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin-bottom: var(--space-3);
   padding-bottom: var(--space-2);
-  border-bottom: 1px dashed var(--border-color);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .header-icon {
@@ -1607,8 +1614,8 @@ onBeforeRouteLeave(async () => {
 }
 
 .agent-entry-hints {
-  margin-top: 4px;
-  margin-bottom: 12px;
+  margin-top: var(--space-1);
+  margin-bottom: var(--space-3);
   min-height: 16px;
 }
 
@@ -1642,15 +1649,10 @@ onBeforeRouteLeave(async () => {
     flex: 1 !important;
   }
 
-  /* 智能体卡片移动端极简化去投影阴影，完全不强写 background，使其自适应、天然继承 PC 端全局 .card 已有暗色模式/浅色模式底色 */
-  .agent-map-entry.card {
-    border: 1px solid var(--border-color) !important;
-    box-shadow: none !important;
-    border-radius: 8px;
-    padding: var(--space-3) !important;
+  .agent-map-entry {
+    border-color: color-mix(in srgb, var(--border-color) 84%, transparent);
   }
 
-  /* 第二层：中间输入配置在移动端开启双列 Grid 水平对齐排布 */
   .agent-entry-fields {
     display: grid !important;
     grid-template-columns: 1fr 1fr;
@@ -1667,7 +1669,6 @@ onBeforeRouteLeave(async () => {
     margin-bottom: 8px;
   }
 
-  /* 操作按钮精致栅格排布，杜绝由于挤压造成的堆叠错位，降低误触 */
   .agent-entry-actions {
     display: grid !important;
     grid-template-columns: repeat(2, 1fr);
@@ -1707,7 +1708,6 @@ onBeforeRouteLeave(async () => {
     min-height: 280px;
   }
 
-  /* 移动端底部极简悬浮胶囊 (iOS Segmented Control 质感) - 彻底消灭顶部滞空压迫感 */
   .mobile-tab-nav {
     display: flex !important;
     position: fixed !important;
@@ -1715,8 +1715,8 @@ onBeforeRouteLeave(async () => {
     left: 50%;
     transform: translateX(-50%);
     z-index: 999;
-    border: 1px solid var(--border-color);
-    background: var(--input-bg);
+    border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+    background: var(--secondary-bg);
     padding: 4px;
     gap: 4px;
     width: 220px;
@@ -1745,8 +1745,13 @@ onBeforeRouteLeave(async () => {
       color var(--transition-fast);
   }
 
+  .mobile-tab-btn:hover {
+    background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+    color: var(--primary-text);
+  }
+
   .mobile-tab-btn.active {
-    background: var(--primary-bg);
+    background: var(--accent-bg);
     color: var(--primary-text);
     font-weight: 600;
   }
@@ -1763,7 +1768,6 @@ onBeforeRouteLeave(async () => {
     transform-origin: top right;
   }
 
-  /* 强力释放编辑大视口：顶部不再有 tab 占高，给编辑区域与输入法最广阔的空间 */
   .agent-files-page {
     --dual-pane-height: calc(var(--app-viewport-height, 100vh) - 150px);
   }
