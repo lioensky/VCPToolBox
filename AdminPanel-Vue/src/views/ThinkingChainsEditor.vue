@@ -441,15 +441,12 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 
 .thinking-chain-item {
   padding: 16px;
-  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.2s ease, background 0.2s ease;
 }
 
 .thinking-chain-item--active {
   border-color: var(--highlight-text);
   background: color-mix(in srgb, var(--highlight-text) 10%, var(--secondary-bg));
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--highlight-text) 34%, transparent),
-    var(--shadow-md);
 }
 
 .thinking-chain-item--active .theme-name {
@@ -522,7 +519,6 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   will-change: transform;
   transition:
     border-color 0.2s ease,
-    box-shadow 0.2s ease,
     opacity 0.18s ease,
     filter 0.18s ease;
 }
@@ -788,7 +784,6 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   cursor: pointer;
   transition:
     border-color 0.2s ease,
-    box-shadow 0.2s ease,
     background-color 0.2s ease;
 }
 
@@ -799,7 +794,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 
 .cluster-picker-option:hover {
   border-color: var(--highlight-text);
-  box-shadow: var(--shadow-md);
+  background: var(--accent-bg);
 }
 
 .cluster-picker-option--selected {
