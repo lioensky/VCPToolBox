@@ -1135,7 +1135,6 @@ onMounted(() => {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  box-shadow: 0 0 16px currentColor;
 }
 
 .agent-detail {
@@ -1391,7 +1390,6 @@ onMounted(() => {
     radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 26%), transparent), transparent 58%),
     linear-gradient(135deg, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 14%), transparent), transparent),
     var(--surface-overlay-soft);
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 14%), transparent);
 }
 
 .sub-axis-card strong {
