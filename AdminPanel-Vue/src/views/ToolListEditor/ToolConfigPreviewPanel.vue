@@ -2,54 +2,56 @@
   <div class="right-panel">
     <!-- 配置文件管理 -->
     <UiCard class="config-manager" variant="default">
-      <h2 class="section-header tle-section-header">
-        配置管理
+      <div class="panel-heading">
+        <h2 class="section-header tle-section-header">配置管理</h2>
         <UiBadge v-if="isDirty" variant="warning" class="dirty-badge">未保存</UiBadge>
-      </h2>
+      </div>
 
-      <UiField class="config-row" label="已有配置" for-id="tool-config-select" size="sm">
-        <UiSelect
-          id="tool-config-select"
-          size="sm"
-          :model-value="selectedConfig"
-          :disabled="saving || deleting || exporting || loadingConfig"
-          aria-label="选择已有配置或新建"
-          @change="
-            emit(
-              'update:selectedConfig',
-              ($event.target as HTMLSelectElement).value
-            )
-          "
-        >
-          <option value="">-- 新建配置 --</option>
-          <option
-            v-for="config in availableConfigs"
-            :key="config"
-            :value="config"
+      <div class="config-form-grid">
+        <UiField class="config-row" label="已有配置" for-id="tool-config-select" size="sm">
+          <UiSelect
+            id="tool-config-select"
+            size="sm"
+            :model-value="selectedConfig"
+            :disabled="saving || deleting || exporting || loadingConfig"
+            aria-label="选择已有配置或新建"
+            @change="
+              emit(
+                'update:selectedConfig',
+                ($event.target as HTMLSelectElement).value
+              )
+            "
           >
-            {{ config }}
-          </option>
-        </UiSelect>
-      </UiField>
+            <option value="">-- 新建配置 --</option>
+            <option
+              v-for="config in availableConfigs"
+              :key="config"
+              :value="config"
+            >
+              {{ config }}
+            </option>
+          </UiSelect>
+        </UiField>
 
-      <UiField class="config-row" label="配置名称" for-id="tool-config-name" size="sm">
-        <UiInput
-          id="tool-config-name"
-          type="text"
-          size="sm"
-          :model-value="configNameInput"
-          :invalid="Boolean(configNameError)"
-          :aria-invalid="configNameError ? 'true' : 'false'"
-          :disabled="saving || deleting || exporting || loadingConfig"
-          placeholder="输入名称后点击保存（改名即另存为）"
-          @input="
-            emit(
-              'update:configNameInput',
-              ($event.target as HTMLInputElement).value
-            )
-          "
-        />
-      </UiField>
+        <UiField class="config-row" label="配置名称" for-id="tool-config-name" size="sm">
+          <UiInput
+            id="tool-config-name"
+            type="text"
+            size="sm"
+            :model-value="configNameInput"
+            :invalid="Boolean(configNameError)"
+            :aria-invalid="configNameError ? 'true' : 'false'"
+            :disabled="saving || deleting || exporting || loadingConfig"
+            placeholder="输入名称后点击保存（改名即另存为）"
+            @input="
+              emit(
+                'update:configNameInput',
+                ($event.target as HTMLInputElement).value
+              )
+            "
+          />
+        </UiField>
+      </div>
 
       <p v-if="configNameError" class="config-error" role="alert">
         {{ configNameError }}
@@ -105,23 +107,24 @@
 
     <!-- 预览区域 -->
     <UiCard class="preview-section" variant="default">
-      <h2 class="section-header tle-section-header">生成预览</h2>
-
-      <div class="preview-controls">
-        <AppCheckbox
-          class="checkbox-label tle-checkbox-label"
-          :model-value="includeHeader"
-          :disabled="saving || deleting || exporting || loadingConfig"
-          label="包含文件头"
-          @update:model-value="emit('update:includeHeader', $event)"
-        />
-        <AppCheckbox
-          class="checkbox-label tle-checkbox-label"
-          :model-value="includeExamples"
-          :disabled="saving || deleting || exporting || loadingConfig"
-          label="包含示例"
-          @update:model-value="emit('update:includeExamples', $event)"
-        />
+      <div class="panel-heading">
+        <h2 class="section-header tle-section-header">生成预览</h2>
+        <div class="preview-controls">
+          <AppCheckbox
+            class="checkbox-label tle-checkbox-label"
+            :model-value="includeHeader"
+            :disabled="saving || deleting || exporting || loadingConfig"
+            label="包含文件头"
+            @update:model-value="emit('update:includeHeader', $event)"
+          />
+          <AppCheckbox
+            class="checkbox-label tle-checkbox-label"
+            :model-value="includeExamples"
+            :disabled="saving || deleting || exporting || loadingConfig"
+            label="包含示例"
+            @update:model-value="emit('update:includeExamples', $event)"
+          />
+        </div>
       </div>
 
       <div class="preview-output-wrapper">
@@ -202,12 +205,14 @@ const emit = defineEmits<{
 .preview-section {
   display: flex;
   flex-direction: column;
+  border-color: color-mix(in srgb, var(--border-color) 94%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
 }
 
-.config-manager,
-.preview-section {
-  border-color: color-mix(in srgb, var(--border-color) 86%, transparent);
-  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+.config-manager :deep(.ui-card__content),
+.preview-section :deep(.ui-card__content) {
+  min-height: 0;
+  gap: var(--space-3);
 }
 
 .config-manager {
@@ -221,11 +226,24 @@ const emit = defineEmits<{
 }
 
 .dirty-badge {
-  margin-left: var(--space-2);
+  flex-shrink: 0;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.config-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-3);
 }
 
 .config-row {
-  margin-bottom: var(--space-3);
+  min-width: 0;
 }
 
 .config-error {
@@ -252,7 +270,8 @@ const emit = defineEmits<{
   display: flex;
   gap: var(--space-2);
   flex-wrap: wrap;
-  margin-top: 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
 }
 
 .config-actions :deep(.ui-button) {
@@ -270,7 +289,6 @@ const emit = defineEmits<{
   display: flex;
   gap: var(--space-2);
   align-items: center;
-  margin-bottom: var(--space-2);
   flex-wrap: wrap;
 }
 
@@ -288,7 +306,8 @@ const emit = defineEmits<{
   min-height: 0;
   padding-right: 84px;
   font-family: "Consolas", "Monaco", monospace;
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
 .preview-copy-btn {
@@ -314,10 +333,14 @@ const emit = defineEmits<{
 }
 
 @media (max-width: 768px) {
+  .panel-heading,
   .config-row {
     flex-direction: column;
     align-items: stretch;
     gap: var(--space-2);
+  }
+  .config-form-grid {
+    grid-template-columns: 1fr;
   }
   .config-label {
     flex: none;

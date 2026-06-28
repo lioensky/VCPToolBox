@@ -49,13 +49,15 @@
         </UiBadge>
 
         <div class="filter-actions">
-          <AppCheckbox
-            class="checkbox-label tle-checkbox-label"
-            :model-value="showSelectedOnly"
-            aria-label="只显示已选工具"
-            label="只显示已选"
-            @update:model-value="emit('update:showSelectedOnly', $event)"
-          />
+          <div class="filter-primary">
+            <AppCheckbox
+              class="checkbox-label tle-checkbox-label"
+              :model-value="showSelectedOnly"
+              aria-label="只显示已选工具"
+              label="只显示已选"
+              @update:model-value="emit('update:showSelectedOnly', $event)"
+            />
+          </div>
           <UiButton
             variant="outline"
             size="xs"
@@ -314,9 +316,17 @@ onBeforeUnmount(() => {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  gap: 0;
+  padding: 0;
   overflow: hidden;
-  border-color: color-mix(in srgb, var(--border-color) 86%, transparent);
-  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+  border-color: color-mix(in srgb, var(--border-color) 94%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+}
+
+.tools-container :deep(.ui-card__content) {
+  flex: 1;
+  min-height: 0;
+  gap: 0;
 }
 
 .tools-header {
@@ -324,6 +334,8 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
+  padding: var(--space-3) var(--space-3) var(--space-2);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
 }
 
 .tools-subtitle {
@@ -335,7 +347,9 @@ onBeforeUnmount(() => {
 .filter-section {
   display: grid;
   gap: var(--space-2);
-  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
 }
 
 .search-row {
@@ -363,11 +377,18 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 
+.filter-primary {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  margin-right: auto;
+}
+
 .tools-list {
   flex: 1;
   overflow-y: auto;
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
-  border-radius: var(--radius-md);
+  border: 0;
+  border-radius: 0;
   background: transparent;
   min-height: 0;
   position: relative;
@@ -387,8 +408,8 @@ onBeforeUnmount(() => {
 }
 
 .tool-item {
-  padding: 7px 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  padding: 6px var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -397,7 +418,7 @@ onBeforeUnmount(() => {
 }
 
 .tool-item:hover {
-  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
+  background: color-mix(in srgb, var(--highlight-text) 4%, transparent);
 }
 
 .tool-checkbox {
@@ -421,6 +442,10 @@ onBeforeUnmount(() => {
 
 .tool-plugin {
   flex-shrink: 0;
+}
+
+.tool-plugin :deep(.ui-badge) {
+  max-width: 128px;
 }
 
 .tool-badge {
