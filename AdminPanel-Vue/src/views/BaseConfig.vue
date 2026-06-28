@@ -32,82 +32,72 @@
     </p>
 
     <form v-else-if="groupedEntries.length > 0" id="base-config-form" @submit.prevent="handleSubmit">
-      <div class="base-config-workspace" :class="{ 'is-aside-collapsed': asideCollapsed }">
+      <div class="base-config-workspace">
         <aside
           class="base-config-aside"
-          :class="{ 'is-collapsed': asideCollapsed }"
-          :aria-label="asideCollapsed ? '配置导航（已折叠）' : '配置导航'"
+          aria-label="配置导航"
         >
-          <template v-if="asideCollapsed">
-            <div class="console-rail">
-              <UiIconButton
-                type="button"
-                class="console-rail-toggle"
-                label="展开配置导航"
-                aria-label="展开配置导航"
-                title="展开配置导航"
-                @click="toggleAside"
+          <nav class="base-console__jump-list">
+            <div class="base-console__category">操作台</div>
+            <div
+              v-for="group in groupedEntries"
+              :key="`${group.id}-jump`"
+              class="base-console__nav-group"
+              :class="{ 'is-open': isGroupOpen(group) }"
+            >
+              <div
+                :class="[
+                  'base-console__group-row',
+                  { 'is-active': activeGroupAnchor === group.anchor },
+                ]"
               >
-                <span class="material-symbols-outlined">left_panel_open</span>
-              </UiIconButton>
-              <div class="console-rail-divider"></div>
-              <UiIconButton
-                v-for="group in groupedEntries.slice(0, 8)"
-                :key="`${group.id}-rail`"
-                type="button"
-                class="console-rail-icon"
-                :active="activeGroupAnchor === group.anchor"
-                :label="group.title"
-                :title="group.title"
-                @click="scrollToGroup(group.anchor)"
-              >
-                <span class="material-symbols-outlined">tune</span>
-              </UiIconButton>
-            </div>
-          </template>
-
-          <template v-else>
-            <div class="base-console__section">
-              <div class="base-console__header">
-                <div>
-                  <span class="base-console__label">配置导航</span>
-                  <h3>快速跳转</h3>
-                </div>
-                <UiIconButton
-                  type="button"
-                  class="console-rail-toggle"
-                  label="折叠配置导航"
-                  aria-label="折叠配置导航"
-                  title="折叠配置导航"
-                  @click="toggleAside"
-                >
-                  <span class="material-symbols-outlined">left_panel_close</span>
-                </UiIconButton>
-              </div>
-            </div>
-
-            <p class="entry-count">共 {{ editableEntryCount }} 个配置项</p>
-
-            <div class="base-console__section base-console__section--jump">
-              <span class="base-console__label">分组</span>
-              <div class="base-console__jump-list">
                 <button
-                  v-for="group in groupedEntries"
-                  :key="`${group.id}-jump`"
+                  type="button"
+                  class="base-console__group-trigger"
+                  :title="group.title"
+                  @click="scrollToAnchor(group.anchor)"
+                >
+                  <span>{{ getJumpLabel(group.title) }}</span>
+                </button>
+                <small>{{ group.totalEntries }} 项</small>
+                <button
+                  type="button"
+                  class="base-console__expand-btn"
+                  :class="{
+                    'is-open': isGroupOpen(group),
+                    'is-placeholder': visibleSectionLinks(group).length === 0,
+                  }"
+                  :aria-label="visibleSectionLinks(group).length > 0
+                    ? (isGroupOpen(group) ? '收起子设置项' : '展开子设置项')
+                    : '跳转到该配置分组'"
+                  @click.stop="handleGroupExpandClick(group)"
+                >
+                  <span class="material-symbols-outlined">chevron_right</span>
+                </button>
+              </div>
+
+              <div
+                v-if="isGroupOpen(group) && visibleSectionLinks(group).length > 0"
+                class="base-console__sub-list"
+              >
+                <button
+                  v-for="section in visibleSectionLinks(group)"
+                  :key="`${section.id}-jump`"
                   type="button"
                   :class="[
                     'base-console__jump-btn',
-                    { 'is-active': activeGroupAnchor === group.anchor },
+                    'base-console__jump-btn--sub',
+                    { 'is-active': activeSectionAnchor === section.anchor },
                   ]"
-                  :title="group.title"
-                  @click="scrollToGroup(group.anchor)"
+                  :title="section.title"
+                  @click="scrollToAnchor(section.anchor)"
                 >
-                  <span>{{ getJumpLabel(group.title) }}</span>
-                  <small>{{ group.totalEntries }} 项</small>
+                  <span>{{ getSectionJumpLabel(section.title) }}</span>
+                  <small>{{ section.entries.length }} 项</small>
                 </button>
               </div>
             </div>
-          </template>
+          </nav>
         </aside>
 
         <div class="base-config-main">
@@ -118,7 +108,7 @@
             class="group-card base-settings-surface"
             :title="group.title"
             :description="group.description"
-            variant="subtle"
+            variant="flat"
           >
             <template #action>
               <UiBadge variant="outline">{{ group.totalEntries }} 项</UiBadge>
@@ -128,6 +118,7 @@
               <section
                 v-for="section in group.sections"
                 :key="section.id"
+                :id="section.anchor"
                 class="group-section-block"
               >
                 <header v-if="section.title" class="group-section-row">
@@ -262,7 +253,6 @@ import UiSettingsCard from '@/components/ui/UiSettingsCard.vue'
 import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
 import UiSettingsSwitchRow from '@/components/ui/UiSettingsSwitchRow.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
-import { useConsoleCollapse } from '@/composables/useConsoleCollapse'
 import {
   showMessage,
   parseEnvToList,
@@ -286,6 +276,7 @@ interface ConfigEntry extends EnvEntry {
 
 interface ConfigSection {
   id: string
+  anchor: string
   title: string
   entries: ConfigEntry[]
 }
@@ -321,12 +312,10 @@ const statusBadgeVariant = computed(() =>
 )
 const isLoading = ref(true)
 const activeGroupAnchor = ref('')
+const activeSectionAnchor = ref('')
+const openGroupAnchors = ref<Set<string>>(new Set())
 const configDocumentation = ref<ConfigDocumentationMetadata>(createEmptyDocumentationMetadata())
 const sensitiveFields = reactive<Record<string, boolean>>({})
-
-const { collapsed: asideCollapsed, toggle: toggleAside } = useConsoleCollapse(
-  'base-config-aside'
-)
 
 function toggleSensitiveField(key: string): void {
   sensitiveFields[key] = !sensitiveFields[key]
@@ -369,6 +358,15 @@ function createGroupAnchor(groupId: string, index: number): string {
   return `base-config-group-${normalized || index + 1}`
 }
 
+function createSectionAnchor(groupAnchor: string, sectionTitle: string, index: number): string {
+  const normalized = sectionTitle
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase()
+
+  return `${groupAnchor}-section-${normalized || index + 1}`
+}
+
 const groupedEntries = computed<ConfigGroup[]>(() => {
   const groupMap = new Map<
     string,
@@ -402,6 +400,7 @@ const groupedEntries = computed<ConfigGroup[]>(() => {
     if (!groupBucket.sectionsMap.has(sectionId)) {
       groupBucket.sectionsMap.set(sectionId, {
         id: sectionId,
+        anchor: '',
         title: sectionTitle,
         entries: [],
       })
@@ -443,10 +442,18 @@ const groupedEntries = computed<ConfigGroup[]>(() => {
     return a.title.localeCompare(b.title, 'zh-CN', { sensitivity: 'base' })
   })
 
-  return groups.map((group, index) => ({
-    ...group,
-    anchor: createGroupAnchor(group.title, index),
-  }))
+  return groups.map((group, index) => {
+    const groupAnchor = createGroupAnchor(group.title, index)
+
+    return {
+      ...group,
+      anchor: groupAnchor,
+      sections: group.sections.map((section, sectionIndex) => ({
+        ...section,
+        anchor: createSectionAnchor(groupAnchor, section.title, sectionIndex),
+      })),
+    }
+  })
 })
 
 const editableEntryCount = computed(() =>
@@ -479,6 +486,42 @@ function getJumpLabel(groupTitle: string): string {
     .trim()
 
   return truncateLabel(compactTitle || groupTitle)
+}
+
+function getSectionJumpLabel(sectionTitle: string): string {
+  return truncateLabel(sectionTitle, 12)
+}
+
+function visibleSectionLinks(group: ConfigGroup): ConfigSection[] {
+  return group.sections.filter((section) => section.title.trim().length > 0)
+}
+
+function isGroupOpen(group: ConfigGroup): boolean {
+  return openGroupAnchors.value.has(group.anchor)
+}
+
+function openGroup(anchor: string): void {
+  openGroupAnchors.value = new Set([anchor])
+}
+
+function toggleGroupOpen(group: ConfigGroup): void {
+  const next = new Set(openGroupAnchors.value)
+  if (next.has(group.anchor)) {
+    next.delete(group.anchor)
+  } else {
+    next.add(group.anchor)
+  }
+
+  openGroupAnchors.value = next
+}
+
+function handleGroupExpandClick(group: ConfigGroup): void {
+  if (visibleSectionLinks(group).length === 0) {
+    scrollToAnchor(group.anchor)
+    return
+  }
+
+  toggleGroupOpen(group)
 }
 
 function normalizeCommentLine(rawLine: string): string | null {
@@ -742,13 +785,25 @@ function resolveContentContainer(target?: HTMLElement): HTMLElement | null {
   return null
 }
 
-function scrollToGroup(anchor: string): void {
+function scrollToAnchor(anchor: string, options: { openGroup?: boolean } = {}): void {
   const target = document.getElementById(anchor)
   if (!target) {
     return
   }
 
-  activeGroupAnchor.value = anchor
+  const group = groupedEntries.value.find((entry) =>
+    entry.anchor === anchor || entry.sections.some((section) => section.anchor === anchor)
+  )
+
+  if (group) {
+    activeGroupAnchor.value = group.anchor
+    if (options.openGroup) {
+      openGroup(group.anchor)
+    }
+  }
+
+  activeSectionAnchor.value =
+    group?.sections.find((section) => section.anchor === anchor)?.anchor || ''
 
   const contentContainer = resolveContentContainer(target)
   if (contentContainer) {
@@ -779,34 +834,52 @@ function updateActiveGroupByViewport(): void {
   const viewportBottom = contentContainer.getBoundingClientRect().bottom
 
   let bestAnchor = groupedEntries.value[0]?.anchor || ''
+  let bestSectionAnchor = ''
   let bestVisibleRatio = -1
   let bestTopDelta = Number.POSITIVE_INFINITY
 
   groupedEntries.value.forEach((group) => {
-    const target = document.getElementById(group.anchor)
-    if (!target) {
-      return
-    }
+    const candidates = [
+      { anchor: group.anchor, groupAnchor: group.anchor, sectionAnchor: '' },
+      ...group.sections.map((section) => ({
+        anchor: section.anchor,
+        groupAnchor: group.anchor,
+        sectionAnchor: section.title.trim() ? section.anchor : '',
+      })),
+    ]
 
-    const rect = target.getBoundingClientRect()
-    const visibleTop = Math.max(rect.top, viewportTop)
-    const visibleBottom = Math.min(rect.bottom, viewportBottom)
-    const visiblePx = Math.max(0, visibleBottom - visibleTop)
-    const visibleRatio = visiblePx / Math.max(rect.height, 1)
-    const topDelta = Math.abs(rect.top - viewportTop - GROUP_SCROLL_OFFSET)
+    candidates.forEach((candidate) => {
+      const target = document.getElementById(candidate.anchor)
+      if (!target) {
+        return
+      }
 
-    if (
-      visibleRatio > bestVisibleRatio ||
-      (visibleRatio === bestVisibleRatio && topDelta < bestTopDelta)
-    ) {
-      bestVisibleRatio = visibleRatio
-      bestTopDelta = topDelta
-      bestAnchor = group.anchor
-    }
+      const rect = target.getBoundingClientRect()
+      const visibleTop = Math.max(rect.top, viewportTop)
+      const visibleBottom = Math.min(rect.bottom, viewportBottom)
+      const visiblePx = Math.max(0, visibleBottom - visibleTop)
+      const visibleRatio = visiblePx / Math.max(rect.height, 1)
+      const topDelta = Math.abs(rect.top - viewportTop - GROUP_SCROLL_OFFSET)
+
+      if (
+        visibleRatio > bestVisibleRatio ||
+        (visibleRatio === bestVisibleRatio && topDelta < bestTopDelta)
+      ) {
+        bestVisibleRatio = visibleRatio
+        bestTopDelta = topDelta
+        bestAnchor = candidate.groupAnchor
+        bestSectionAnchor = candidate.sectionAnchor
+      }
+    })
   })
 
   if (bestAnchor) {
+    const previousGroupAnchor = activeGroupAnchor.value
     activeGroupAnchor.value = bestAnchor
+    activeSectionAnchor.value = bestSectionAnchor
+    if (bestAnchor !== previousGroupAnchor) {
+      openGroup(bestAnchor)
+    }
   }
 }
 
@@ -972,6 +1045,9 @@ watch(
   groupedEntries,
   async () => {
     await nextTick()
+    if (groupedEntries.value.length > 0 && openGroupAnchors.value.size === 0) {
+      openGroup(groupedEntries.value[0].anchor)
+    }
     scheduleActiveGroupUpdate()
   },
   { flush: 'post' }
@@ -994,7 +1070,7 @@ onBeforeUnmount(() => {
   width: 100%;
   max-width: min(1680px, calc(100vw - var(--space-6) * 2));
   margin: 0 auto;
-  padding: 0 var(--space-4) var(--space-6);
+  padding: 0 0 var(--space-6);
 }
 
 #base-config-form {
@@ -1006,23 +1082,6 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
   gap: var(--space-4);
   align-items: start;
-}
-
-.base-config-workspace.is-aside-collapsed {
-  grid-template-columns: 48px minmax(0, 1fr);
-}
-
-.base-console__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.base-console__header > div {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
 }
 
 .base-config-main {
@@ -1046,39 +1105,14 @@ onBeforeUnmount(() => {
     var(--base-console-viewport-gap)
   );
   min-height: 0;
-  padding: var(--space-2) var(--space-1);
+  padding: 0;
   overflow: hidden;
-}
-
-.base-config-aside.is-collapsed {
-  align-items: center;
-  padding-inline: 0;
-}
-
-.console-rail {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-1);
-  width: 40px;
-  min-height: 0;
-}
-
-.console-rail-divider {
-  width: 20px;
-  height: 1px;
-  margin: var(--space-1) 0;
-  background: color-mix(in srgb, var(--border-color) 72%, transparent);
-}
-
-.console-rail-icon {
-  flex: 0 0 auto;
 }
 
 .base-settings-surface {
   --base-config-surface-border: color-mix(in srgb, var(--border-color) 88%, transparent);
   --base-config-muted-surface: color-mix(in srgb, var(--primary-text) 2.4%, transparent);
-  --base-config-card-surface: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
+  --base-config-card-surface: color-mix(in srgb, var(--primary-text) 0.7%, transparent);
   border-color: var(--base-config-surface-border);
   background: var(--base-config-card-surface);
 }
@@ -1137,65 +1171,202 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-helper);
 }
 
-.base-console__section {
+.base-console__jump-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-}
-
-.base-console__section--jump {
+  gap: 0;
   min-height: 0;
-  flex: 1;
-}
-
-.base-console__section h3,
-.base-console__section p {
-  margin: 0;
-}
-
-.base-console__section p {
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-}
-
-.base-console__label {
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.base-console__jump-list {
-  display: grid;
-  gap: var(--space-1);
-}
-
-.base-console__jump-list {
-  min-height: 0;
+  width: 100%;
+  padding: 4px 0 8px;
   overflow-y: auto;
-  padding-right: 2px;
+  box-sizing: border-box;
   scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--secondary-text) 30%, transparent) transparent;
+}
+
+.base-console__jump-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.base-console__jump-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.base-console__jump-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--radius-full);
+  background-color: color-mix(in srgb, var(--secondary-text) 30%, transparent);
+  background-clip: padding-box;
+}
+
+.base-console__jump-list::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--secondary-text) 50%, transparent);
+}
+
+.base-console__category {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px;
+  color: color-mix(in srgb, var(--secondary-text) 72%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
+  overflow: hidden;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.base-console__nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.base-console__sub-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0 0 var(--space-1) 14px;
+  padding-left: 10px;
+  border-left: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+}
+
+.base-console__group-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--radius-md);
+  color: var(--primary-text);
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+  overflow: hidden;
+}
+
+.base-console__group-row:hover,
+.base-console__group-row.is-active {
+  background-color: var(--accent-bg);
+  color: var(--primary-text);
+}
+
+.base-console__group-row.is-active .base-console__group-trigger {
+  font-weight: 500;
+}
+
+.base-console__group-trigger {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.25;
+  text-align: left;
+  outline: none;
+}
+
+.base-console__group-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.base-console__group-row small {
+  color: var(--secondary-text);
+  flex-shrink: 0;
+  font-size: var(--font-size-caption);
+}
+
+.base-console__expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--secondary-text);
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.base-console__expand-btn:hover,
+.base-console__expand-btn:focus-visible {
+  background: color-mix(in srgb, var(--primary-text) 4%, transparent);
+  color: var(--primary-text);
+  outline: none;
+}
+
+.base-console__expand-btn.is-placeholder {
+  color: transparent;
+}
+
+.base-console__expand-btn.is-placeholder:hover,
+.base-console__expand-btn.is-placeholder:focus-visible {
+  background: transparent;
+  color: transparent;
+}
+
+.base-console__expand-btn .material-symbols-outlined {
+  font-size: 16px;
+  line-height: 1;
+  transition: transform 0.2s ease;
+}
+
+.base-console__expand-btn.is-open .material-symbols-outlined {
+  transform: rotate(90deg);
 }
 
 .base-console__jump-btn {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
+  gap: 8px;
   width: 100%;
-  min-height: 32px;
-  padding: 6px var(--space-2);
-  border: 1px solid transparent;
+  height: 32px;
+  padding: 8px;
+  border: 0;
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--primary-text);
   cursor: pointer;
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.25;
   transition:
-    background-color var(--transition-fast),
-    border-color var(--transition-fast),
-    color var(--transition-fast);
+    background-color 0.2s ease,
+    color 0.2s ease,
+    font-weight 0.2s ease;
   text-align: left;
+  text-decoration: none;
+  outline: none;
+  overflow: hidden;
+}
+
+.base-console__jump-btn--sub {
+  height: 28px;
+  padding: 6px 8px;
+  color: var(--secondary-text);
+  font-size: 0.8125rem;
 }
 
 .base-console__jump-btn > span {
@@ -1206,18 +1377,24 @@ onBeforeUnmount(() => {
 }
 
 .base-console__jump-btn:hover {
-  background: color-mix(in srgb, var(--primary-text) 2.8%, transparent);
+  background-color: var(--accent-bg);
+  color: var(--primary-text);
 }
 
 .base-console__jump-btn.is-active {
-  border-color: color-mix(in srgb, var(--highlight-text) 22%, transparent);
-  background: color-mix(in srgb, var(--highlight-text) 5.5%, transparent);
+  background-color: var(--accent-bg);
+  color: var(--primary-text);
+  font-weight: 500;
+}
+
+.base-console__jump-btn--sub.is-active {
   color: var(--primary-text);
 }
 
 .base-console__jump-btn:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+  background-color: var(--accent-bg);
+  color: var(--primary-text);
 }
 
 .base-console__jump-btn small {
@@ -1227,6 +1404,9 @@ onBeforeUnmount(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .base-config-aside,
+  .base-console__group-row,
+  .base-console__expand-btn,
+  .base-console__expand-btn .material-symbols-outlined,
   .base-console__jump-btn {
     transition: none;
   }
@@ -1237,11 +1417,6 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-3);
   flex-wrap: wrap;
-}
-
-.entry-count {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
 }
 
 .config-loading {
@@ -1293,7 +1468,7 @@ onBeforeUnmount(() => {
 @media (max-width: 1200px) {
   #base-config-section {
     max-width: 100%;
-    padding-inline: var(--space-4);
+    padding-inline: 0;
   }
 
   .base-config-workspace {
@@ -1304,11 +1479,10 @@ onBeforeUnmount(() => {
 
 @media (max-width: 768px) {
   #base-config-section {
-    padding: 0 var(--space-3) var(--space-4);
+    padding: 0 0 var(--space-4);
   }
 
-  .base-config-workspace,
-  .base-config-workspace.is-aside-collapsed {
+  .base-config-workspace {
     grid-template-columns: 1fr;
   }
 
@@ -1321,10 +1495,6 @@ onBeforeUnmount(() => {
     border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
     border-radius: var(--radius-lg);
     background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
-  }
-
-  .base-console__section--jump {
-    flex: initial;
   }
 
   .base-console__jump-list {
