@@ -53,7 +53,7 @@
         >
           <header class="group-panel__header">
             <div class="group-panel__header-main">
-              <span class="group-panel__badge">{{ section.meta.badge }}</span>
+              <UiBadge class="group-panel__badge" variant="outline">{{ section.meta.badge }}</UiBadge>
               <div class="group-panel__title-row">
                 <span class="material-symbols-outlined">{{ section.meta.icon }}</span>
                 <div>
@@ -101,15 +101,15 @@
                       </div>
 
                       <div class="param-row__pills">
-                        <span class="mini-pill mini-pill--critical">
+                        <UiBadge :variant="getToneBadgeVariant(entry.meta.tone)">
                           {{ getToneLabel(entry.meta.tone) }}
-                        </span>
-                        <span
+                        </UiBadge>
+                        <UiBadge
                           v-if="entry.changedLeaves > 0"
-                          class="mini-pill mini-pill--changed"
+                          variant="info"
                         >
                           已修改 {{ entry.changedLeaves }}
-                        </span>
+                        </UiBadge>
                       </div>
                     </div>
 
@@ -159,15 +159,15 @@
                       </div>
 
                       <div class="param-row__pills">
-                        <span class="mini-pill mini-pill--critical">
+                        <UiBadge :variant="getToneBadgeVariant(entry.meta.tone)">
                           {{ getToneLabel(entry.meta.tone) }}
-                        </span>
-                        <span
+                        </UiBadge>
+                        <UiBadge
                           v-if="entry.changedLeaves > 0"
-                          class="mini-pill mini-pill--changed"
+                          variant="info"
                         >
                           已修改 {{ entry.changedLeaves }}
-                        </span>
+                        </UiBadge>
                       </div>
                     </div>
 
@@ -227,15 +227,15 @@
                     </div>
 
                     <div class="param-row__pills">
-                      <span class="mini-pill mini-pill--sensitive">
+                      <UiBadge :variant="getToneBadgeVariant(entry.meta.tone)">
                         {{ getToneLabel(entry.meta.tone) }}
-                      </span>
-                      <span
+                      </UiBadge>
+                      <UiBadge
                         v-if="entry.changedLeaves > 0"
-                        class="mini-pill mini-pill--changed"
+                        variant="info"
                       >
                         已修改 {{ entry.changedLeaves }}
-                      </span>
+                      </UiBadge>
                     </div>
                   </div>
 
@@ -328,21 +328,21 @@
                     </div>
 
                     <div class="param-row__pills">
-                      <span class="mini-pill mini-pill--neutral">
+                      <UiBadge variant="secondary">
                         {{ getKindLabel(entry.kind) }}
-                      </span>
-                      <span
+                      </UiBadge>
+                      <UiBadge
                         v-if="entry.meta.tone"
-                        :class="['mini-pill', `mini-pill--${entry.meta.tone}`]"
+                        :variant="getToneBadgeVariant(entry.meta.tone)"
                       >
                         {{ getToneLabel(entry.meta.tone) }}
-                      </span>
-                      <span
+                      </UiBadge>
+                      <UiBadge
                         v-if="entry.changedLeaves > 0"
-                        class="mini-pill mini-pill--changed"
+                        variant="info"
                       >
                         已修改 {{ entry.changedLeaves }}
-                      </span>
+                      </UiBadge>
                     </div>
                   </div>
 
@@ -415,19 +415,16 @@
                           </p>
 
                           <div class="nested-item__meta">
-                            <span
+                            <UiBadge
                               v-if="getNestedMeta(section.name, entry.key, subKey).tone"
-                              :class="[
-                                'mini-pill',
-                                `mini-pill--${getNestedMeta(section.name, entry.key, subKey).tone}`,
-                              ]"
+                              :variant="getToneBadgeVariant(getNestedMeta(section.name, entry.key, subKey).tone)"
                             >
                               {{
                                 getToneLabel(
                                   getNestedMeta(section.name, entry.key, subKey).tone
                                 )
                               }}
-                            </span>
+                            </UiBadge>
                             <span
                               v-if="getNestedMeta(section.name, entry.key, subKey).range"
                               class="nested-item__range"
@@ -631,14 +628,15 @@
             </UiButton>
           </div>
 
-          <p
+          <UiBadge
             v-if="statusMessage"
-            :class="['rag-console__status', `rag-console__status--${statusType}`]"
+            class="rag-console__status"
+            :variant="statusBadgeVariant"
             role="status"
             aria-live="polite"
           >
             {{ statusMessage }}
-          </p>
+          </UiBadge>
 
           <div class="rag-console__section rag-console__section--simulation">
             <span class="rag-console__label">语义沙盘</span>
@@ -773,6 +771,7 @@ import {
 } from "@/api";
 import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { useAppStore } from "@/stores/app";
+import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
@@ -790,6 +789,7 @@ import {
   getTupleLabel,
   type GroupMeta,
   type ParamMeta,
+  type ParamTone,
   type OrderedCooccurrencePrimaryKey,
   type WormholePrimaryKey,
 } from "@/features/rag-tuning/metadata";
@@ -798,6 +798,7 @@ import { showMessage } from "@/utils";
 type NumericRecord = Record<string, number>;
 type ParamEntryKind = "number" | "tuple" | "nested";
 type StatusType = "info" | "success" | "error";
+type BadgeVariant = "default" | "secondary" | "success" | "warning" | "danger" | "info" | "outline";
 
 interface ParamEntryBase {
   key: string;
@@ -1009,6 +1010,11 @@ const changedLeafCount = computed(() =>
 
 const isDirty = computed(() => changedLeafCount.value > 0);
 const hasParams = computed(() => groupSections.value.length > 0);
+const statusBadgeVariant = computed<BadgeVariant>(() => {
+  if (statusType.value === "success") return "success";
+  if (statusType.value === "error") return "danger";
+  return "info";
+});
 
 const canSaveNewTheme = computed(
   () => hasParams.value && newThemeName.value.trim().length > 0 && !isThemeSaving.value
@@ -1086,6 +1092,12 @@ function getKindLabel(kind: ParamEntryKind): string {
     default:
       return "参数";
   }
+}
+
+function getToneBadgeVariant(tone?: ParamTone): BadgeVariant {
+  if (tone === "critical") return "danger";
+  if (tone === "sensitive") return "warning";
+  return "secondary";
 }
 
 function formatNumber(value: number | undefined): string {
@@ -1713,14 +1725,7 @@ onBeforeUnmount(() => {
 }
 
 .group-panel__badge {
-  display: inline-flex;
   width: fit-content;
-  padding: 5px var(--space-3);
-  border-radius: var(--radius-full);
-  background: var(--surface-overlay-strong);
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
 }
 
 .group-panel__title-row {
@@ -2284,28 +2289,8 @@ onBeforeUnmount(() => {
 }
 
 .rag-console__status {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  border: 1px solid transparent;
-  font-size: var(--font-size-body);
-}
-
-.rag-console__status--info {
-  background: var(--info-bg);
-  border-color: var(--info-border);
-}
-
-.rag-console__status--success {
-  background: var(--success-bg);
-  border-color: var(--success-border);
-  color: var(--success-text);
-}
-
-.rag-console__status--error {
-  background: var(--danger-bg);
-  border-color: var(--danger-border);
-  color: var(--danger-text);
+  max-width: 100%;
+  white-space: normal;
 }
 
 .rag-console__themes-header {
