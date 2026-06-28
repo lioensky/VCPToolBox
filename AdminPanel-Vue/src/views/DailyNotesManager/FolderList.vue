@@ -269,7 +269,6 @@ defineExpose({ collapsed })
 .folder-row.is-active {
   border-color: var(--highlight-text);
   background: color-mix(in srgb, var(--highlight-text) 14%, transparent);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--highlight-text) 20%, transparent);
 }
 
 .folder-row:focus-visible {

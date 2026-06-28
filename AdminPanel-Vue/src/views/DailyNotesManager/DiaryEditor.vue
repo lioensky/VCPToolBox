@@ -117,14 +117,6 @@ const editorStatusBadgeVariant = computed(() =>
   font-size: var(--font-size-title);
 }
 
-.editor-back-button {
-  transition: transform 0.2s ease;
-}
-
-.editor-back-button:hover {
-  transform: translateX(-4px);
-}
-
 .editor-back-button .material-symbols-outlined {
   font-size: var(--font-size-title) !important;
 }
