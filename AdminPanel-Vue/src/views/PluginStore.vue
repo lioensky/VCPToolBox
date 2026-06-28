@@ -265,15 +265,15 @@
                     </p>
 
                     <div class="plugin-status-pills">
-                      <UiBadge v-if="plugin.sourceName" variant="secondary" class="mini-pill mini-pill--neutral">
+                      <UiBadge v-if="plugin.sourceName" variant="secondary">
                         <template #leading>
-                          <span class="material-symbols-outlined mini-pill-icon">lan</span>
+                          <span class="material-symbols-outlined">lan</span>
                         </template>
                         {{ plugin.sourceName }}
                       </UiBadge>
-                      <UiBadge v-if="plugin.author" variant="outline" class="mini-pill mini-pill--changed">
+                      <UiBadge v-if="plugin.author" variant="outline">
                         <template #leading>
-                          <span class="material-symbols-outlined mini-pill-icon">person</span>
+                          <span class="material-symbols-outlined">person</span>
                         </template>
                         {{ plugin.author }}
                       </UiBadge>
@@ -403,11 +403,11 @@
                 <td>
                   <div class="source-name-cell">
                     <span>{{ s.name }}</span>
-                    <UiBadge v-if="s.builtin" variant="secondary" class="mini-pill mini-pill--neutral">内置</UiBadge>
+                    <UiBadge v-if="s.builtin" variant="secondary">内置</UiBadge>
                   </div>
                 </td>
                 <td>
-                  <UiBadge variant="outline" class="mini-pill mini-pill--changed">{{ s.type }}</UiBadge>
+                  <UiBadge variant="outline">{{ s.type }}</UiBadge>
                 </td>
                 <td class="url-cell"><code>{{ s.url }}</code></td>
                 <td class="col-actions">
