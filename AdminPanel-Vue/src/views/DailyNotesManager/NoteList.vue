@@ -41,9 +41,9 @@
       >
         批量删除选中项
       </UiButton>
-      <span v-if="notesStatus" :class="['status-message', notesStatusType]">{{
-        notesStatus
-      }}</span>
+      <UiBadge v-if="notesStatus" :variant="notesStatusBadgeVariant">
+        {{ notesStatus }}
+      </UiBadge>
     </div>
 
     <div
@@ -206,6 +206,7 @@ import { useVirtualScroll } from "@/composables/useVirtualScroll";
 import { useDebounceFn } from "@/composables/useDebounceFn";
 import { formatDate } from "@/utils/format";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
@@ -259,6 +260,9 @@ const itemLabel = computed(() => props.itemLabel || "日记");
 const folderLabel = computed(() => props.folderLabel || "知识库");
 const showMoveActions = computed(() => props.showMoveActions !== false);
 const showDiscoveryAction = computed(() => props.showDiscoveryAction !== false);
+const notesStatusBadgeVariant = computed(() =>
+  props.notesStatusType === "error" ? "danger" : props.notesStatusType
+);
 const shouldVirtualize = computed(() => props.filteredNotes.length > 50);
 const isVirtualListMode = computed(
   () => shouldVirtualize.value && !props.loadingNotes && props.filteredNotes.length > 0
