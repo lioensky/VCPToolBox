@@ -1091,7 +1091,7 @@ onBeforeUnmount(() => {
 }
 
 .base-config-aside {
-  --base-console-viewport-gap: var(--space-4);
+  --base-console-viewport-gap: 0px;
   position: sticky;
   top: var(--base-console-viewport-gap);
   align-self: start;
@@ -1101,7 +1101,6 @@ onBeforeUnmount(() => {
   height: calc(
     var(--app-viewport-height, 100vh) -
     var(--app-top-bar-height, 60px) -
-    var(--base-console-viewport-gap) -
     var(--base-console-viewport-gap)
   );
   min-height: 0;
@@ -1177,7 +1176,7 @@ onBeforeUnmount(() => {
   gap: 0;
   min-height: 0;
   width: 100%;
-  padding: 4px 0 8px;
+  padding: 0 0 8px;
   overflow-y: auto;
   box-sizing: border-box;
   scrollbar-gutter: stable;
