@@ -6,11 +6,11 @@
           <UiToolbar density="compact">
             <template #default>
               <UiIconButton label="上个月" title="上个月" size="sm" @click="prevMonth">
-              <span class="material-symbols-outlined">chevron_left</span>
+                <span class="material-symbols-outlined">chevron_left</span>
               </UiIconButton>
               <h3 id="current-month-year" class="calendar-title">{{ currentMonthYear }}</h3>
               <UiIconButton label="下个月" title="下个月" size="sm" @click="nextMonth">
-              <span class="material-symbols-outlined">chevron_right</span>
+                <span class="material-symbols-outlined">chevron_right</span>
               </UiIconButton>
             </template>
           </UiToolbar>
@@ -48,20 +48,20 @@
           <UiSettingsForm as="div" :columns="1" gap="sm">
             <UiField label="时间" for-id="new-schedule-time" size="sm">
               <UiInput
-              id="new-schedule-time"
-              v-model="newSchedule.time"
-              size="sm"
-              type="datetime-local"
-            />
+                id="new-schedule-time"
+                v-model="newSchedule.time"
+                size="sm"
+                type="datetime-local"
+              />
             </UiField>
             <UiField label="内容" for-id="new-schedule-content" size="sm">
               <UiTextarea
-              id="new-schedule-content"
-              v-model="newSchedule.content"
-              size="sm"
-              rows="3"
-              placeholder="描述日程内容…"
-            />
+                id="new-schedule-content"
+                v-model="newSchedule.content"
+                size="sm"
+                rows="3"
+                placeholder="描述日程内容…"
+              />
             </UiField>
           </UiSettingsForm>
           <template #footer>
@@ -354,13 +354,16 @@ onMounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 8px;
+  padding: var(--space-2);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
   position: relative;
-  transition: background 0.2s ease;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
   /* Button reset styles */
-  border: none;
   background: transparent;
   font: inherit;
   color: inherit;
@@ -372,12 +375,14 @@ onMounted(() => {
 }
 
 .calendar-day.today {
-  background: var(--button-bg);
-  color: var(--on-accent-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 56%, transparent);
+  color: var(--highlight-text);
 }
 
 .calendar-day.selected {
-  border: 2px solid var(--highlight-text);
+  background: var(--button-bg);
+  border-color: var(--button-bg);
+  color: var(--on-accent-text);
 }
 
 .calendar-day.other-month {
@@ -399,7 +404,11 @@ onMounted(() => {
   height: 4px;
   background: var(--highlight-text);
   border-radius: 50%;
-  margin-top: 4px;
+  margin-top: var(--space-1);
+}
+
+.calendar-day.selected .schedule-indicator {
+  background: currentColor;
 }
 
 .card-footer-actions {
@@ -417,7 +426,7 @@ onMounted(() => {
 .schedule-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
   max-height: 500px;
   overflow-y: auto;
 }
@@ -425,7 +434,7 @@ onMounted(() => {
 .schedule-item {
   display: flex;
   min-height: 44px;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: center;
   padding: var(--space-2) 0;
   border-bottom: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
