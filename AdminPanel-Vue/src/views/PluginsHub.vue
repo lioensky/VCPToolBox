@@ -1083,15 +1083,14 @@ watch(activeFilter, () => {
   border-radius: var(--radius-xl);
   padding: 20px;
   background: var(--secondary-bg);
-  box-shadow: var(--shadow-sm);
   transition:
-    box-shadow 0.2s ease,
-    border-color 0.2s ease;
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .plugin-card:hover {
-  box-shadow: var(--shadow-md);
-  border-color: color-mix(in srgb, var(--button-bg) 28%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-bg) 42%, var(--secondary-bg));
+  border-color: color-mix(in srgb, var(--highlight-text) 34%, var(--border-color));
 }
 
 .plugin-card-top {
