@@ -85,24 +85,24 @@ const resolvedTypeLabel = computed(() => {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 94%, transparent);
   border-radius: var(--radius-md);
-  background: transparent;
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
   transition:
     background-color var(--transition-fast),
     border-color var(--transition-fast);
 }
 
 .placeholder-item:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 28%, var(--border-color));
-  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
+  border-color: color-mix(in srgb, var(--border-color) 100%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2.4%, transparent);
 }
 
 .placeholder-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .placeholder-title-group {
@@ -112,9 +112,10 @@ const resolvedTypeLabel = computed(() => {
 }
 
 .placeholder-name {
-  font-weight: 600;
+  font-weight: 650;
   font-family: "Consolas", "Monaco", monospace;
   font-size: var(--font-size-helper);
+  line-height: 1.25;
   color: var(--primary-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -130,14 +131,14 @@ const resolvedTypeLabel = computed(() => {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 .placeholder-description {
   margin: 0;
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
-  line-height: 1.45;
+  line-height: 1.5;
   display: -webkit-box;
   overflow: hidden;
   -webkit-line-clamp: 2;
@@ -150,8 +151,8 @@ const resolvedTypeLabel = computed(() => {
   align-items: flex-end;
   gap: var(--space-2);
   margin-top: auto;
-  padding-top: var(--space-2);
-  border-top: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
 }
 
 .placeholder-charcount {

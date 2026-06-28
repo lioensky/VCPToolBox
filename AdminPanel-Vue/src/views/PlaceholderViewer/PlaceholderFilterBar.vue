@@ -81,36 +81,47 @@ const emit = defineEmits<{
 <style scoped>
 .placeholder-toolbar {
   display: flex;
-  align-items: end;
+  align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
+  gap: var(--space-3);
 }
 
 .placeholder-view-mode {
-  display: flex;
-  gap: var(--space-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 96%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
 }
 
 .placeholder-view-mode :deep(.ui-button) {
-  min-width: 74px;
+  min-width: 68px;
   justify-content: center;
+  border-color: transparent;
 }
 
 .placeholder-toolbar :deep(.ui-field) {
-  min-width: 156px;
+  min-width: 160px;
+  gap: 4px;
+}
+
+.placeholder-toolbar :deep(.ui-field__label) {
+  font-size: var(--font-size-caption);
+  line-height: 1.25;
 }
 
 .placeholder-search-field {
   flex: 1;
-  min-width: min(260px, 100%);
+  min-width: min(240px, 100%);
 }
 
 @media (max-width: 768px) {
   .placeholder-toolbar {
     display: grid;
     grid-template-columns: 1fr;
-    gap: var(--space-2);
+    gap: var(--space-3);
   }
 
   .placeholder-view-mode {

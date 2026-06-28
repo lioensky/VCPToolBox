@@ -1,8 +1,9 @@
 <template>
-  <section class="config-section active-section">
-    <p class="description">
-      当前可用的系统提示词占位符列表，按类型分类展示。点击「查看详情」可查看完整内容。
-    </p>
+  <section class="config-section active-section placeholder-viewer-page">
+    <header class="placeholder-viewer-intro">
+      <h2>占位符列表</h2>
+      <p>按类型浏览当前可用的系统提示词占位符；点击查看详情可阅读完整内容并复制名称或 JSON。</p>
+    </header>
 
     <PlaceholderFilterBar
       :view-mode="viewMode"
@@ -597,14 +598,41 @@ onMounted(() => {
 .placeholder-grouped-view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .placeholder-type-group {
-  background: transparent;
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
   border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 96%, transparent);
   overflow: hidden;
+}
+
+.placeholder-viewer-page {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.placeholder-viewer-intro {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.placeholder-viewer-intro h2 {
+  margin: 0;
+  color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.placeholder-viewer-intro p {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
 .type-group-header {
@@ -613,9 +641,9 @@ onMounted(() => {
   justify-content: space-between;
   gap: var(--space-2);
   min-height: 40px;
-  padding: 6px 10px;
-  background: color-mix(in srgb, var(--primary-text) 1.8%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--primary-text) 2.6%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
 }
 
 .type-group-header h3 {
@@ -623,13 +651,14 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-helper);
+  font-weight: 700;
   color: var(--primary-text);
   min-width: 0;
 }
 
 .type-group-header .material-symbols-outlined {
-  font-size: 18px !important;
+  font-size: 16px !important;
   color: var(--secondary-text);
 }
 
@@ -666,10 +695,10 @@ onMounted(() => {
 }
 
 .type-group-content {
-  padding: var(--space-3);
+  padding: 10px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: var(--space-2);
+  gap: var(--space-3);
   align-items: stretch;
 }
 
@@ -677,7 +706,7 @@ onMounted(() => {
 .placeholder-list-view {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: var(--space-2);
+  gap: var(--space-3);
   align-items: stretch;
 }
 

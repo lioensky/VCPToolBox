@@ -157,8 +157,8 @@ function handleModalVisibility(visible: boolean): void {
 }
 
 .placeholder-detail-modal-content {
-  background: color-mix(in srgb, var(--primary-bg) 82%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  background: color-mix(in srgb, var(--primary-bg) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 96%, transparent);
   border-radius: var(--radius-lg);
   width: 90%;
   max-width: 800px;
@@ -173,8 +173,8 @@ function handleModalVisibility(visible: boolean): void {
   justify-content: space-between;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-4);
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  padding: 14px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
 }
 
 .placeholder-detail-modal-header h3 {
@@ -183,7 +183,9 @@ function handleModalVisibility(visible: boolean): void {
   align-items: center;
   gap: var(--space-3);
   flex: 1;
-  font-size: var(--font-size-title);
+  font-size: var(--font-size-body);
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 .placeholder-detail-header-actions {
@@ -214,14 +216,14 @@ function handleModalVisibility(visible: boolean): void {
   display: flex;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-4);
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
-  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
 }
 
 .placeholder-detail-modal-body {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-4);
+  padding: 16px;
 }
 
 .placeholder-detail-panel pre {
@@ -230,9 +232,9 @@ function handleModalVisibility(visible: boolean): void {
   font-family: "Consolas", "Monaco", monospace;
   font-size: var(--font-size-helper);
   line-height: 1.6;
-  padding: var(--space-4);
-  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
-  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 92%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
   border-radius: var(--radius-md);
   overflow-x: auto;
 }
