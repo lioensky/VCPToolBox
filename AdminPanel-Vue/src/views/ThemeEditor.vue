@@ -2071,8 +2071,8 @@ onUnmounted(() => {
 }
 
 .group-collapse-toggle:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
 }
 
 .group-collapse-icon {
@@ -2196,8 +2196,8 @@ onUnmounted(() => {
 }
 
 .color-row__swatch-wrap:focus-within {
-  border-color: var(--highlight-text);
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
 }
 
 .color-row__picker {
