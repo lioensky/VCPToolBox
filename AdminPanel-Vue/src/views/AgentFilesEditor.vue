@@ -1582,11 +1582,11 @@ onBeforeRouteLeave(async () => {
   gap: 8px;
   margin-bottom: var(--space-3);
   padding-bottom: var(--space-2);
-  border-bottom: 1px dashed var(--border-color, rgba(0, 0, 0, 0.08));
+  border-bottom: 1px dashed var(--border-color);
 }
 
 .header-icon {
-  color: var(--highlight-text, #00f0ff);
+  color: var(--highlight-text);
   font-size: 18px !important;
 }
 
@@ -1644,7 +1644,7 @@ onBeforeRouteLeave(async () => {
 
   /* 智能体卡片移动端极简化去投影阴影，完全不强写 background，使其自适应、天然继承 PC 端全局 .card 已有暗色模式/浅色模式底色 */
   .agent-map-entry.card {
-    border: 1px solid var(--border-color, rgba(0, 0, 0, 0.08)) !important;
+    border: 1px solid var(--border-color) !important;
     box-shadow: none !important;
     border-radius: 8px;
     padding: var(--space-3) !important;
@@ -1715,7 +1715,6 @@ onBeforeRouteLeave(async () => {
     left: 50%;
     transform: translateX(-50%);
     z-index: 999;
-    background: rgba(245, 245, 247, 0.88) !important; /* 精致浅灰白半透明磨砂 */
     border: 1px solid var(--border-color);
     background: var(--input-bg);
     padding: 4px;
