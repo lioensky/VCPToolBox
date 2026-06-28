@@ -231,6 +231,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiInput from '@/components/ui/UiInput.vue'
@@ -479,26 +480,26 @@ onMounted(() => {
 
 <style scoped>
 .bridge-config {
+  --bridge-surface-border: color-mix(in srgb, var(--border-color) 90%, transparent);
+  --bridge-card-surface: color-mix(in srgb, var(--primary-text) 0.7%, transparent);
+  --bridge-muted-surface: color-mix(in srgb, var(--primary-text) 2.4%, transparent);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
 }
 
-.bridge-header,
 .notice-card,
 .preview-card,
 .profiles-section {
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--bridge-surface-border);
   border-radius: var(--radius-lg);
-  background:
-    linear-gradient(135deg, var(--surface-overlay-soft), transparent),
-    var(--secondary-bg);
+  background: var(--bridge-card-surface);
 }
 
 .bridge-header {
   display: flex;
   align-items: center;
-  padding: 16px;
+  padding: 0 0 var(--space-1);
 }
 
 .bridge-title {
@@ -508,13 +509,14 @@ onMounted(() => {
 }
 
 .bridge-title .material-symbols-outlined {
-  font-size: 32px !important;
+  font-size: 28px !important;
   color: var(--highlight-text);
 }
 
 .bridge-title h2 {
   margin: 0;
-  font-size: var(--font-size-title);
+  font-size: 1rem;
+  line-height: 1.4;
 }
 
 .bridge-title p,
@@ -528,10 +530,10 @@ onMounted(() => {
 .notice-card {
   display: flex;
   align-items: flex-start;
-  gap: var(--space-2);
-  padding: 14px 16px;
-  border-color: color-mix(in srgb, var(--highlight-text) 45%, var(--border-color));
-  background: linear-gradient(135deg, color-mix(in srgb, var(--highlight-bg) 18%, var(--secondary-bg)), var(--secondary-bg));
+  gap: var(--space-3);
+  padding: 12px 14px;
+  border-color: color-mix(in srgb, var(--highlight-text) 22%, var(--bridge-surface-border));
+  background: color-mix(in srgb, var(--highlight-text) 3.5%, transparent);
 }
 
 .notice-card > .material-symbols-outlined {
@@ -549,9 +551,9 @@ onMounted(() => {
 }
 
 .config-toggle-row {
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border: 1px solid var(--bridge-surface-border);
   border-radius: var(--radius-md);
-  background: transparent;
+  background: var(--bridge-card-surface);
 }
 
 .code-textarea {
@@ -594,8 +596,8 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: var(--space-4);
-  padding: 16px;
-  border-bottom: 1px solid var(--border-color);
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--bridge-surface-border);
 }
 
 .profiles-title {
@@ -605,13 +607,14 @@ onMounted(() => {
 }
 
 .profiles-title .material-symbols-outlined {
-  font-size: 28px !important;
+  font-size: 24px !important;
   color: var(--highlight-text);
 }
 
 .profiles-title h3 {
   margin: 0;
-  font-size: var(--font-size-subtitle, 1.1rem);
+  font-size: 1rem;
+  line-height: 1.4;
 }
 
 .profiles-title p {
@@ -636,7 +639,7 @@ onMounted(() => {
   list-style: none;
   margin: 0;
   padding: 8px;
-  border-right: 1px solid var(--border-color);
+  border-right: 1px solid var(--bridge-surface-border);
   overflow-y: auto;
   max-height: 420px;
 }
@@ -645,26 +648,29 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
+  min-height: 32px;
+  padding: 6px 8px;
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: background 0.15s;
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .profiles-list li:hover {
-  background: var(--tertiary-bg);
+  background: var(--accent-bg);
 }
 
 .profiles-list li.active {
-  background: color-mix(in srgb, var(--highlight-bg) 25%, var(--secondary-bg));
-  border: 1px solid var(--highlight-text);
+  background: var(--accent-bg);
+  color: var(--primary-text);
 }
 
 .profile-indicator {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--secondary-text);
+  background: color-mix(in srgb, var(--secondary-text) 55%, transparent);
   flex-shrink: 0;
 }
 
@@ -694,7 +700,7 @@ onMounted(() => {
 .profile-editor {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: var(--space-2);
+  gap: var(--space-3);
   padding: 16px;
 }
 
@@ -706,8 +712,8 @@ onMounted(() => {
   grid-column: 1 / -1;
   display: flex;
   gap: var(--space-2);
-  padding-top: 8px;
-  border-top: 1px solid var(--border-color);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--bridge-surface-border);
 }
 
 .profile-usage-hint {
@@ -717,7 +723,7 @@ onMounted(() => {
   gap: 8px;
   padding: 10px 14px;
   border-radius: var(--radius-md);
-  background: var(--tertiary-bg);
+  background: var(--bridge-muted-surface);
   font-size: 0.85rem;
 }
 
@@ -755,7 +761,7 @@ onMounted(() => {
 
 .modal-card {
   background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--bridge-surface-border);
   border-radius: var(--radius-lg);
   padding: 24px;
   width: min(420px, 90vw);
@@ -786,8 +792,8 @@ onMounted(() => {
   justify-content: space-between;
   gap: var(--space-2);
   padding: 12px 16px;
-  border-bottom: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
+  border-bottom: 1px solid var(--bridge-surface-border);
+  background: var(--bridge-muted-surface);
 }
 
 .preview-card pre {
@@ -798,7 +804,7 @@ onMounted(() => {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--primary-text);
-  background: var(--primary-bg);
+  background: color-mix(in srgb, var(--primary-bg) 48%, transparent);
   font-family: Consolas, Monaco, "Courier New", monospace;
   font-size: var(--font-size-helper);
   line-height: 1.55;
