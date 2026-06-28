@@ -174,7 +174,7 @@ function handleModalVisibility(visible: boolean): void {
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-4);
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
 }
 
 .placeholder-detail-modal-header h3 {
@@ -213,9 +213,9 @@ function handleModalVisibility(visible: boolean): void {
 .placeholder-detail-tabs {
   display: flex;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border-color);
-  background: transparent;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
 }
 
 .placeholder-detail-modal-body {

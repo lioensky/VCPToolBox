@@ -597,13 +597,13 @@ onMounted(() => {
 .placeholder-grouped-view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .placeholder-type-group {
   background: transparent;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   overflow: hidden;
 }
 
@@ -611,23 +611,25 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
-  border-bottom: 1px solid var(--border-color);
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--primary-text) 1.8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .type-group-header h3 {
   margin: 0;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  font-size: var(--font-size-title);
+  gap: var(--space-2);
+  font-size: var(--font-size-body);
   color: var(--primary-text);
+  min-width: 0;
 }
 
 .type-group-header .material-symbols-outlined {
-  font-size: var(--font-size-title) !important;
+  font-size: 18px !important;
   color: var(--secondary-text);
 }
 
@@ -664,18 +666,18 @@ onMounted(() => {
 }
 
 .type-group-content {
-  padding: var(--space-4);
+  padding: var(--space-3);
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-2);
   align-items: stretch;
 }
 
 /* 列表视图 */
 .placeholder-list-view {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-2);
   align-items: stretch;
 }
 
@@ -686,12 +688,11 @@ onMounted(() => {
 /* 响应式 */
 @media (max-width: 768px) {
   .type-group-header {
-    flex-direction: column;
-    align-items: flex-start;
+    align-items: center;
   }
 
   .group-collapse-toggle {
-    align-self: flex-end;
+    align-self: auto;
   }
 
   .type-group-content {

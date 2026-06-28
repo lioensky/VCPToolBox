@@ -1,9 +1,14 @@
 <template>
-  <UiCard class="placeholder-item" variant="flat">
+  <UiCard class="placeholder-item" variant="flat" size="sm">
     <div class="placeholder-header">
-      <span class="placeholder-name" :title="placeholder.name">{{
-        placeholder.name
-      }}</span>
+      <div class="placeholder-title-group">
+        <span class="placeholder-name" :title="placeholder.name">{{
+          placeholder.name
+        }}</span>
+        <span class="placeholder-charcount">
+          {{ placeholder.charCount ? `${placeholder.charCount} 字符` : "未知长度" }}
+        </span>
+      </div>
       <UiBadge
         v-if="showTypeBadge"
         variant="outline"
@@ -13,18 +18,15 @@
       </UiBadge>
     </div>
 
-    <div class="placeholder-preview" :title="placeholder.preview">
-      {{ placeholder.preview }}
-    </div>
+    <p class="placeholder-preview" :title="placeholder.preview">
+      {{ placeholder.preview || "暂无预览内容" }}
+    </p>
 
-    <div v-if="placeholder.description" class="placeholder-description">
+    <p v-if="placeholder.description" class="placeholder-description">
       {{ placeholder.description }}
-    </div>
+    </p>
 
-    <div class="placeholder-footer">
-      <span class="placeholder-charcount">
-        {{ placeholder.charCount ? `${placeholder.charCount} 字符` : "—" }}
-      </span>
+    <div class="placeholder-footer" aria-label="占位符操作">
       <div class="placeholder-actions">
         <UiButton
           type="button"
@@ -81,27 +83,46 @@ const resolvedTypeLabel = computed(() => {
 .placeholder-item {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
   height: 100%;
-  min-height: 210px;
+  min-height: 0;
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.placeholder-item:hover {
+  border-color: color-mix(in srgb, var(--highlight-text) 28%, var(--border-color));
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
 .placeholder-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  gap: var(--space-2);
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.placeholder-title-group {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
 }
 
 .placeholder-name {
   font-weight: 600;
   font-family: "Consolas", "Monaco", monospace;
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-helper);
   color: var(--primary-text);
-  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .placeholder-preview {
+  margin: 0;
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
   overflow: hidden;
@@ -109,33 +130,34 @@ const resolvedTypeLabel = computed(() => {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .placeholder-description {
+  margin: 0;
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
-  padding: var(--space-2);
-  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
-  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
-  border-radius: var(--radius-sm);
-  line-height: 1.5;
+  line-height: 1.45;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .placeholder-footer {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-3);
+  justify-content: flex-end;
+  align-items: flex-end;
+  gap: var(--space-2);
   margin-top: auto;
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border-color);
+  padding-top: var(--space-2);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
 }
 
 .placeholder-charcount {
-  font-size: var(--font-size-helper);
+  font-size: var(--font-size-caption);
   color: var(--secondary-text);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .placeholder-actions {
@@ -147,9 +169,18 @@ const resolvedTypeLabel = computed(() => {
 }
 
 @media (max-width: 768px) {
+  .placeholder-header {
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .placeholder-name {
+    white-space: normal;
+  }
+
   .placeholder-footer {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
   }
 
   .placeholder-actions {

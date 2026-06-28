@@ -1,26 +1,28 @@
 <template>
-  <!-- 视图切换 -->
-  <div class="placeholder-view-mode">
-    <UiButton
-      type="button"
-      :variant="viewMode === 'grouped' ? 'primary' : 'outline'"
-      @click="emit('update:viewMode', 'grouped')"
-    >
-      <template #leading><span class="material-symbols-outlined">view_agenda</span></template>
-      分组视图
-    </UiButton>
-    <UiButton
-      type="button"
-      :variant="viewMode === 'list' ? 'primary' : 'outline'"
-      @click="emit('update:viewMode', 'list')"
-    >
-      <template #leading><span class="material-symbols-outlined">view_list</span></template>
-      列表视图
-    </UiButton>
-  </div>
+  <div class="placeholder-toolbar" aria-label="占位符筛选与视图切换">
+    <div class="placeholder-view-mode" role="tablist" aria-label="视图模式">
+      <UiButton
+        type="button"
+        size="sm"
+        :variant="viewMode === 'grouped' ? 'primary' : 'outline'"
+        :aria-pressed="viewMode === 'grouped'"
+        @click="emit('update:viewMode', 'grouped')"
+      >
+        <template #leading><span class="material-symbols-outlined">view_agenda</span></template>
+        分组
+      </UiButton>
+      <UiButton
+        type="button"
+        size="sm"
+        :variant="viewMode === 'list' ? 'primary' : 'outline'"
+        :aria-pressed="viewMode === 'list'"
+        @click="emit('update:viewMode', 'list')"
+      >
+        <template #leading><span class="material-symbols-outlined">view_list</span></template>
+        列表
+      </UiButton>
+    </div>
 
-  <!-- 筛选器 -->
-  <div class="placeholder-viewer-filters">
     <UiField label="类型筛选" for-id="placeholder-filter-type" size="sm">
       <UiSelect
         id="placeholder-filter-type"
@@ -38,7 +40,8 @@
         </option>
       </UiSelect>
     </UiField>
-    <UiField label="搜索" for-id="placeholder-filter-keyword" size="sm">
+
+    <UiField class="placeholder-search-field" label="搜索" for-id="placeholder-filter-keyword" size="sm">
       <UiInput
         type="text"
         id="placeholder-filter-keyword"
@@ -76,48 +79,53 @@ const emit = defineEmits<{
 </script>
 
 <style scoped>
-.placeholder-view-mode {
+.placeholder-toolbar {
   display: flex;
+  align-items: end;
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin-bottom: var(--space-4);
 }
 
-.placeholder-viewer-filters {
+.placeholder-view-mode {
   display: flex;
-  gap: var(--space-3);
-  align-items: center;
-  margin-bottom: var(--space-5);
-  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
-.placeholder-viewer-filters :deep(.ui-field) {
-  min-width: 150px;
+.placeholder-view-mode :deep(.ui-button) {
+  min-width: 74px;
+  justify-content: center;
 }
 
-.placeholder-viewer-filters :deep(.ui-field:last-child) {
+.placeholder-toolbar :deep(.ui-field) {
+  min-width: 156px;
+}
+
+.placeholder-search-field {
   flex: 1;
-  min-width: 180px;
+  min-width: min(260px, 100%);
 }
 
 @media (max-width: 768px) {
-  .placeholder-view-mode {
+  .placeholder-toolbar {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
     gap: var(--space-2);
   }
 
-  .placeholder-view-mode :deep(.ui-button) {
-    justify-content: center;
+  .placeholder-view-mode {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .placeholder-viewer-filters {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .placeholder-viewer-filters :deep(.ui-field) {
+  .placeholder-toolbar :deep(.ui-field),
+  .placeholder-search-field {
     width: 100%;
     min-width: 0;
+  }
+
+  .placeholder-view-mode :deep(.ui-button) {
+    width: 100%;
   }
 }
 </style>
