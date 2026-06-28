@@ -112,11 +112,12 @@
           </template>
           保存更改到 {{ targetFileName }}
         </UiButton>
-        <span
+        <UiBadge
           v-if="ragTagsStatus"
-          :class="['status-message', ragTagsStatusType]"
-          >{{ ragTagsStatus }}</span
+          :variant="ragTagsStatusBadgeVariant"
         >
+          {{ ragTagsStatus }}
+        </UiBadge>
       </div>
     </div>
   </div>
@@ -125,6 +126,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
@@ -148,6 +150,9 @@ const props = withDefaults(defineProps<{
 });
 
 const isKnowledgeMode = computed(() => props.mode === "knowledge");
+const ragTagsStatusBadgeVariant = computed(() =>
+  props.ragTagsStatusType === "error" ? "danger" : props.ragTagsStatusType
+);
 const targetFileName = computed(() => isKnowledgeMode.value ? "tdb_tags.json" : "rag_tags.json");
 const titleLabel = computed(() => isKnowledgeMode.value ? "冷知识库标签与门控配置" : "知识库标签列表");
 const showDescription = computed(() => isKnowledgeMode.value);
