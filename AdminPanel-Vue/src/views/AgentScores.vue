@@ -1,8 +1,23 @@
 <template>
   <section class="config-section active-section">
-    <p class="description">在这里查看 Agent 的积分情况。</p>
-    <UiCard class="agent-scores-card" variant="default" size="sm">
-      <UiToolbar density="compact">
+    <UiCard
+      class="agent-scores-card"
+      variant="default"
+      size="sm"
+      title="Agent 积分排行"
+      description="查看各 Agent 的累计积分、最近动态和更新时间。"
+      divided
+    >
+      <template #action>
+        <UiButton variant="outline" size="md" :loading="isLoading" @click="refreshScores">
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
+          刷新数据
+        </UiButton>
+      </template>
+
+      <UiToolbar density="compact" class="scores-toolbar">
         <div class="scores-summary">
           <UiBadge variant="outline">
             共 {{ scores.length }} 个 Agent
@@ -11,15 +26,6 @@
             {{ statusMessage }}
           </UiBadge>
         </div>
-
-        <template #actions>
-          <UiButton variant="outline" size="md" :loading="isLoading" @click="refreshScores">
-            <template #leading>
-              <span class="material-symbols-outlined">refresh</span>
-            </template>
-            刷新数据
-          </UiButton>
-        </template>
       </UiToolbar>
 
       <UiTableFrame density="compact">
@@ -69,21 +75,23 @@
         </tbody>
       </UiTableFrame>
 
-      <div v-if="totalPages > 1" class="pagination-controls">
-        <UiButton variant="outline" size="sm" :disabled="!hasPrev" @click="prevPage">
-          <template #leading>
-            <span class="material-symbols-outlined">chevron_left</span>
-          </template>
-          上一页
-        </UiButton>
-        <span class="pagination-info">第 {{ currentPage }} / {{ totalPages }} 页</span>
-        <UiButton variant="outline" size="sm" :disabled="!hasNext" @click="nextPage">
-          下一页
-          <template #trailing>
-            <span class="material-symbols-outlined">chevron_right</span>
-          </template>
-        </UiButton>
-      </div>
+      <template v-if="totalPages > 1" #footer>
+        <div class="pagination-controls">
+          <UiButton variant="outline" size="sm" :disabled="!hasPrev" @click="prevPage">
+            <template #leading>
+              <span class="material-symbols-outlined">chevron_left</span>
+            </template>
+            上一页
+          </UiButton>
+          <span class="pagination-info">第 {{ currentPage }} / {{ totalPages }} 页</span>
+          <UiButton variant="outline" size="sm" :disabled="!hasNext" @click="nextPage">
+            下一页
+            <template #trailing>
+              <span class="material-symbols-outlined">chevron_right</span>
+            </template>
+          </UiButton>
+        </div>
+      </template>
     </UiCard>
   </section>
 </template>
@@ -181,6 +189,10 @@ onMounted(() => {
   gap: var(--space-3);
 }
 
+.scores-toolbar {
+  min-height: 32px;
+}
+
 .scores-summary {
   display: flex;
   min-width: 0;
@@ -207,9 +219,10 @@ onMounted(() => {
 
 .pagination-controls {
   display: flex;
+  width: 100%;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--space-2);
-  padding-top: var(--space-1);
 }
 
 .pagination-info {
