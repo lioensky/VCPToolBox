@@ -2,8 +2,8 @@
   <section class="config-section active-section">
     <Teleport to="#page-header-actions">
       <UiPageActions>
-        <UiBadge v-if="statusMessage" variant="info" role="status" aria-live="polite">
-          {{ statusMessage }}
+        <UiBadge v-if="statusMessage" class="bridge-status-badge" variant="info" role="status" aria-live="polite" :title="statusMessage">
+          {{ compactStatusMessage }}
         </UiBadge>
         <UiButton variant="outline" size="lg" @click="loadConfig" :disabled="isLoading || isSaving">
           <template #leading>
@@ -41,64 +41,106 @@
         </div>
       </section>
 
-      <form class="config-grid" @submit.prevent="saveConfig">
-        <UiField label="监听端口" :description="descriptions.port" class="config-field">
-          <UiInput v-model.number="draft.port" type="number" min="1" max="65535" step="1" />
-        </UiField>
+      <form class="settings-stack" @submit.prevent="saveConfig">
+        <UiSettingsCard class="bridge-settings-surface" title="基础连接" description="定义桥接服务监听端口、上游 API 地址和默认模型。">
+          <UiSettingsForm as="div" :columns="2" gap="md">
+            <UiField label="监听端口" :description="descriptions.port" class="config-field">
+              <UiInput v-model.number="draft.port" type="number" min="1" max="65535" step="1" />
+            </UiField>
 
-        <UiField label="上游 API 地址" :description="descriptions.upstreamUrl" class="config-field">
-          <UiInput v-model.trim="draft.upstreamUrl" type="text" placeholder="http://127.0.0.1:6005" />
-        </UiField>
+            <UiField label="上游 API 地址" :description="descriptions.upstreamUrl" class="config-field">
+              <UiInput v-model.trim="draft.upstreamUrl" type="text" placeholder="http://127.0.0.1:6005" />
+            </UiField>
 
-        <UiField label="上游 API Key" :description="descriptions.upstreamKey" class="config-field">
-          <UiInput v-model="draft.upstreamKey" :type="showKey ? 'text' : 'password'" placeholder="留空则使用主服务 Key 或透传下游 Key" />
-        </UiField>
+            <UiField label="上游协议类型" :description="descriptions.upstreamType" class="config-field">
+              <UiSelect v-model="draft.upstreamType">
+                <option value="chat">chat：OpenAI Chat Completions</option>
+                <option value="anthropic">anthropic：Claude Messages</option>
+                <option value="gemini">gemini：Google Gemini</option>
+              </UiSelect>
+            </UiField>
 
-        <UiField label="上游协议类型" :description="descriptions.upstreamType" class="config-field">
-          <UiSelect v-model="draft.upstreamType">
-            <option value="chat">chat：OpenAI Chat Completions</option>
-            <option value="anthropic">anthropic：Claude Messages</option>
-            <option value="gemini">gemini：Google Gemini</option>
-          </UiSelect>
-        </UiField>
+            <UiField label="默认模型" :description="descriptions.defaultModel" class="config-field">
+              <UiInput v-model.trim="draft.defaultModel" type="text" />
+            </UiField>
+          </UiSettingsForm>
+        </UiSettingsCard>
 
-        <UiField label="默认模型" :description="descriptions.defaultModel" class="config-field">
-          <UiInput v-model.trim="draft.defaultModel" type="text" />
-        </UiField>
+        <UiSettingsCard class="bridge-settings-surface" title="认证与劫持行为" description="控制上游鉴权、System Prompt 注入方式与调试输出。">
+          <UiSettingsForm as="div" :columns="2" gap="md">
+            <UiField label="上游 API Key" :description="descriptions.upstreamKey" class="config-field">
+              <UiInput v-model="draft.upstreamKey" :type="showKey ? 'text' : 'password'" placeholder="留空则使用主服务 Key 或透传下游 Key" />
+            </UiField>
 
-        <UiField label="劫持模式" :description="descriptions.hijackMode" class="config-field">
-          <UiSelect v-model="draft.hijackMode">
-            <option value="off">off：关闭劫持</option>
-            <option value="replace">replace：替换所有 system</option>
-            <option value="prepend">prepend：前置插入 system</option>
-            <option value="append">append：追加到最后一条 system 后</option>
-            <option value="merge">merge：合并为一条置顶 system</option>
-          </UiSelect>
-        </UiField>
+            <UiField label="劫持模式" :description="descriptions.hijackMode" class="config-field">
+              <UiSelect v-model="draft.hijackMode">
+                <option value="off">off：关闭劫持</option>
+                <option value="replace">replace：替换所有 system</option>
+                <option value="prepend">prepend：前置插入 system</option>
+                <option value="append">append：追加到最后一条 system 后</option>
+                <option value="merge">merge：合并为一条置顶 system</option>
+              </UiSelect>
+            </UiField>
 
-        <div class="config-toggle-row">
-          <span>
-            <strong>开启调试日志</strong>
-            <small>{{ descriptions.debugMode }}</small>
-          </span>
-          <AppSwitch v-model="draft.debugMode" />
-        </div>
+            <UiSettingsSwitchRow v-model="draft.debugMode" label="开启调试日志" :description="descriptions.debugMode" />
+            <UiSettingsSwitchRow v-model="showKey" label="显示 API Key" description="仅影响当前页面输入框显示方式，不会修改配置语义。" />
+          </UiSettingsForm>
+        </UiSettingsCard>
 
-        <div class="config-toggle-row">
-          <span>
-            <strong>显示 API Key</strong>
-            <small>仅影响当前页面输入框显示方式，不会修改配置语义。</small>
-          </span>
-          <AppSwitch v-model="showKey" />
-        </div>
+        <UiSettingsCard class="bridge-settings-surface" title="Prompt 与模型映射" description="配置全局兜底 Prompt，并把客户端模型名映射到真实上游模型。">
+          <UiSettingsForm as="div" :columns="1" gap="md">
+            <UiField label="注入 System Prompt（全局兜底）" :description="descriptions.systemPrompt" class="config-field">
+              <UiTextarea v-model="draft.systemPrompt" rows="8" placeholder="可直接填写提示词，也可填写插件目录下的 .txt 文件名" class="code-textarea" />
+            </UiField>
 
-        <UiField label="注入 System Prompt（全局兜底）" :description="descriptions.systemPrompt" class="config-field span-2">
-          <UiTextarea v-model="draft.systemPrompt" rows="9" placeholder="可直接填写提示词，也可填写插件目录下的 .txt 文件名" class="code-textarea" />
-        </UiField>
+            <UiField label="模型映射" :description="descriptions.modelMap" class="config-field">
+              <div class="mapping-editor">
+                <div class="mapping-toolbar">
+                  <div class="mapping-mode" role="tablist" aria-label="模型映射编辑模式">
+                    <button type="button" :class="{ active: mappingMode === 'visual' }" @click="mappingMode = 'visual'">
+                      <span class="material-symbols-outlined">table_rows</span>
+                      可视化
+                    </button>
+                    <button type="button" :class="{ active: mappingMode === 'text' }" @click="mappingMode = 'text'">
+                      <span class="material-symbols-outlined">code</span>
+                      文本
+                    </button>
+                  </div>
+                  <UiButton v-if="mappingMode === 'visual'" variant="outline" size="sm" type="button" @click="addMappingRow">
+                    <span class="material-symbols-outlined">add</span>
+                    添加映射
+                  </UiButton>
+                </div>
 
-        <UiField label="模型映射（每行 alias=target 或 alias:target）" :description="descriptions.modelMap" class="config-field span-2">
-          <UiTextarea v-model="modelMapText" rows="7" placeholder="gpt-4.1-mini=gemini-2.5-flash&#10;claude-sonnet=gpt-4.1" class="code-textarea" />
-        </UiField>
+                <div v-if="mappingMode === 'visual'" class="mapping-table">
+                  <div class="mapping-head">
+                    <span>客户端模型</span>
+                    <span>上游模型</span>
+                    <span></span>
+                  </div>
+                  <div v-if="modelMapRows.length === 0" class="mapping-empty">
+                    暂无模型映射。未配置时会直接使用请求中的模型名。
+                  </div>
+                  <div v-for="row in modelMapRows" :key="row.id" class="mapping-row">
+                    <UiInput :model-value="row.alias" placeholder="gpt-4.1-mini" @update:model-value="updateMappingRow(row.id, 'alias', String($event))" />
+                    <UiInput :model-value="row.target" placeholder="gemini-2.5-flash" @update:model-value="updateMappingRow(row.id, 'target', String($event))" />
+                    <UiButton variant="ghost" size="sm" type="button" aria-label="删除映射" @click="deleteMappingRow(row.id)">
+                      <span class="material-symbols-outlined">delete</span>
+                    </UiButton>
+                  </div>
+                </div>
+
+                <UiTextarea
+                  v-else
+                  v-model="modelMapText"
+                  rows="7"
+                  placeholder="gpt-4.1-mini=gemini-2.5-flash&#10;claude-sonnet=gpt-4.1"
+                  class="code-textarea"
+                />
+              </div>
+            </UiField>
+          </UiSettingsForm>
+        </UiSettingsCard>
       </form>
 
       <!-- ═══════════════════════════════════════════════════════════════
@@ -230,13 +272,15 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
 import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiInput from '@/components/ui/UiInput.vue'
 import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiSelect from '@/components/ui/UiSelect.vue'
+import UiSettingsCard from '@/components/ui/UiSettingsCard.vue'
+import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
+import UiSettingsSwitchRow from '@/components/ui/UiSettingsSwitchRow.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { systemApi } from '@/api'
 import type { BridgeHijackConfig, BridgeProfile } from '@/types/api.system'
@@ -262,9 +306,16 @@ const descriptions = ref<Record<string, string>>({})
 const configPath = ref('')
 const statusMessage = ref('')
 const modelMapText = ref('')
+const mappingMode = ref<'visual' | 'text'>('visual')
 const showKey = ref(false)
 const isLoading = ref(false)
 const isSaving = ref(false)
+
+type ModelMapRow = {
+  id: string
+  alias: string
+  target: string
+}
 
 const normalizedDraft = computed<BridgeHijackConfig>(() => ({
   port: normalizePort(draft.value.port),
@@ -280,6 +331,13 @@ const normalizedDraft = computed<BridgeHijackConfig>(() => ({
 }))
 
 const jsonPreview = computed(() => JSON.stringify(normalizedDraft.value, null, 2))
+const compactStatusMessage = computed(() => {
+  const message = statusMessage.value.trim()
+  return message.length > 18 ? `${message.slice(0, 18)}...` : message
+})
+const modelMapRows = computed<ModelMapRow[]>(() =>
+  parseModelMapRows(modelMapText.value)
+)
 
 function normalizePort(value: unknown): number {
   const parsed = Number.parseInt(String(value), 10)
@@ -312,6 +370,54 @@ function parseModelMapText(text: string): Record<string, string> {
     if (alias && target) result[alias] = target
   }
   return result
+}
+
+function parseModelMapRows(text: string): ModelMapRow[] {
+  return text
+    .split(/\r?\n/)
+    .map((line, index) => {
+      const trimmed = line.trim()
+      const separatorIndex = trimmed.includes('=') ? trimmed.indexOf('=') : trimmed.indexOf(':')
+      if (!trimmed || trimmed.startsWith('#')) return null
+      if (separatorIndex < 0) {
+        return { id: `row-${index}-${trimmed}`, alias: trimmed, target: '' }
+      }
+      const alias = trimmed.slice(0, separatorIndex).trim()
+      const target = trimmed.slice(separatorIndex + 1).trim()
+      return { id: `row-${index}-${alias || 'empty'}`, alias, target }
+    })
+    .filter((row): row is ModelMapRow => Boolean(row))
+}
+
+function serializeModelMapRows(rows: ModelMapRow[]): string {
+  return rows
+    .map(row => {
+      const alias = row.alias.trim()
+      const target = row.target.trim()
+      return alias || target ? `${alias}=${target}` : ''
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+function addMappingRow() {
+  const rows = modelMapRows.value
+  let index = rows.length + 1
+  let alias = `client-model-${index}`
+  while (rows.some(row => row.alias === alias)) {
+    index += 1
+    alias = `client-model-${index}`
+  }
+  modelMapText.value = serializeModelMapRows([...rows, { id: alias, alias, target: '' }])
+}
+
+function updateMappingRow(id: string, field: 'alias' | 'target', value: string) {
+  const rows = modelMapRows.value.map(row => (row.id === id ? { ...row, [field]: value } : row))
+  modelMapText.value = serializeModelMapRows(rows)
+}
+
+function deleteMappingRow(id: string) {
+  modelMapText.value = serializeModelMapRows(modelMapRows.value.filter(row => row.id !== id))
 }
 
 function applyConfig(config: BridgeHijackConfig) {
@@ -480,12 +586,21 @@ onMounted(() => {
 
 <style scoped>
 .bridge-config {
-  --bridge-surface-border: color-mix(in srgb, var(--border-color) 90%, transparent);
-  --bridge-card-surface: color-mix(in srgb, var(--primary-text) 0.7%, transparent);
-  --bridge-muted-surface: color-mix(in srgb, var(--primary-text) 2.4%, transparent);
+  --bridge-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
+  --bridge-control-border: color-mix(in srgb, var(--border-color) 100%, transparent);
+  --bridge-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+  --bridge-muted-surface: color-mix(in srgb, var(--primary-text) 3.5%, transparent);
+  --surface-overlay-soft: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
+}
+
+.bridge-status-badge {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .notice-card,
@@ -505,17 +620,18 @@ onMounted(() => {
 .bridge-title {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .bridge-title .material-symbols-outlined {
-  font-size: 28px !important;
+  font-size: 20px !important;
   color: var(--highlight-text);
 }
 
 .bridge-title h2 {
   margin: 0;
   font-size: 1rem;
+  font-weight: 600;
   line-height: 1.4;
 }
 
@@ -525,6 +641,7 @@ onMounted(() => {
   margin: 4px 0 0;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
 .notice-card {
@@ -540,20 +657,37 @@ onMounted(() => {
   color: var(--highlight-text);
 }
 
+.notice-card strong,
+.notice-card p {
+  overflow-wrap: anywhere;
+}
+
 .notice-card .warning {
   color: var(--warning-text);
 }
 
-.config-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(260px, 1fr));
-  gap: var(--space-3);
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }
 
-.config-toggle-row {
-  border: 1px solid var(--bridge-surface-border);
-  border-radius: var(--radius-md);
+:deep(.ui-card.bridge-settings-surface) {
+  border-color: var(--bridge-surface-border);
   background: var(--bridge-card-surface);
+}
+
+:deep(.ui-card.bridge-settings-surface.ui-card--divided .ui-card__header) {
+  border-bottom-color: var(--bridge-surface-border);
+}
+
+.bridge-settings-surface :deep(.ui-card__content) {
+  gap: var(--space-5);
+}
+
+.bridge-settings-surface :deep(.ui-textarea--md) {
+  min-height: 72px;
+  padding: 8px 10px;
 }
 
 .code-textarea {
@@ -561,34 +695,103 @@ onMounted(() => {
   font-family: Consolas, Monaco, "Courier New", monospace;
 }
 
-.config-toggle-row {
+.mapping-editor {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.mapping-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  min-height: 64px;
-  padding: var(--space-3);
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
-.config-toggle-row span {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.mapping-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--bridge-surface-border);
+  border-radius: var(--radius-md);
+  background: var(--bridge-card-surface);
 }
 
-.config-toggle-row strong {
+.mapping-mode button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--primary-text);
-  font-weight: 700;
+  font-size: var(--font-size-helper);
+  cursor: pointer;
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast);
 }
 
-.span-2 {
-  grid-column: 1 / -1;
+.mapping-mode button:hover,
+.mapping-mode button.active {
+  background: var(--accent-bg);
+  color: var(--primary-text);
+}
+
+.mapping-mode .material-symbols-outlined {
+  font-size: 16px !important;
+}
+
+.mapping-table {
+  overflow: hidden;
+  border: 1px solid var(--bridge-control-border);
+  border-radius: var(--radius-md);
+  background: var(--bridge-card-surface);
+}
+
+.mapping-head,
+.mapping-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px;
+}
+
+.mapping-head {
+  min-height: 36px;
+  border-bottom: 1px solid var(--bridge-surface-border);
+  background: var(--bridge-muted-surface);
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+}
+
+.mapping-row + .mapping-row {
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+}
+
+.mapping-empty {
+  display: flex;
+  min-height: 96px;
+  align-items: center;
+  justify-content: center;
+  padding: 18px 12px;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  text-align: center;
 }
 
 /* ─── Profiles Section ──────────────────────────────────────────────── */
 
 .profiles-section {
   overflow: hidden;
+  background: var(--bridge-card-surface);
 }
 
 .profiles-header {
@@ -603,17 +806,18 @@ onMounted(() => {
 .profiles-title {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .profiles-title .material-symbols-outlined {
-  font-size: 24px !important;
+  font-size: 18px !important;
   color: var(--highlight-text);
 }
 
 .profiles-title h3 {
   margin: 0;
   font-size: 1rem;
+  font-weight: 600;
   line-height: 1.4;
 }
 
@@ -621,6 +825,7 @@ onMounted(() => {
   margin: 4px 0 0;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
 .profiles-actions {
@@ -686,7 +891,9 @@ onMounted(() => {
 }
 
 .profile-meta strong {
-  font-size: 0.9rem;
+  font-size: var(--font-size-helper);
+  font-weight: 700;
+  line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -694,13 +901,14 @@ onMounted(() => {
 
 .profile-meta small {
   color: var(--secondary-text);
-  font-size: 0.75rem;
+  font-size: var(--font-size-caption);
+  line-height: 1.35;
 }
 
 .profile-editor {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: var(--space-3);
+  gap: var(--space-5) var(--space-5);
   padding: 16px;
 }
 
@@ -827,10 +1035,6 @@ onMounted(() => {
     align-items: stretch;
   }
 
-  .config-grid {
-    grid-template-columns: 1fr;
-  }
-
   .profiles-body {
     grid-template-columns: 1fr;
   }
@@ -839,6 +1043,15 @@ onMounted(() => {
     border-right: none;
     border-bottom: 1px solid var(--border-color);
     max-height: 200px;
+  }
+
+  .mapping-head,
+  .mapping-row {
+    grid-template-columns: 1fr;
+  }
+
+  .mapping-head {
+    display: none;
   }
 }
 </style>
