@@ -421,18 +421,59 @@ onMounted(() => {
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   gap: var(--space-4);
   align-items: start;
+  height: calc(
+    var(--app-viewport-height, 100vh) -
+    var(--app-top-bar-height, 60px) -
+    22px
+  );
+  min-height: 0;
+  overflow: hidden;
 }
 
 .notes-main-area {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  height: 100%;
   min-height: 400px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 2px var(--space-6) 0;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--secondary-text) 24%, transparent) transparent;
+}
+
+.notes-main-area::-webkit-scrollbar {
+  width: 8px;
+}
+
+.notes-main-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.notes-main-area::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--radius-full);
+  background-color: color-mix(in srgb, var(--secondary-text) 24%, transparent);
+  background-clip: padding-box;
+}
+
+.notes-main-area::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--secondary-text) 42%, transparent);
 }
 
 @media (max-width: 768px) {
   .daily-notes-manager {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
+  }
+
+  .notes-main-area {
+    height: auto;
+    overflow: visible;
+    padding: 0;
   }
 }
 </style>
