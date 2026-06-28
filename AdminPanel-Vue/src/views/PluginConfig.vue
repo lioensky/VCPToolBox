@@ -368,10 +368,12 @@ watch(
 <style scoped>
 .plugin-config-container {
   max-width: 900px;
+  display: grid;
+  gap: var(--space-4);
 }
 
 .plugin-controls {
-  margin-bottom: var(--space-4);
+  margin: 0;
 }
 
 .plugin-controls :deep(.ui-card__content) {
@@ -389,7 +391,6 @@ watch(
   background: var(--warning-bg);
   border: 1px solid var(--warning-border);
   border-radius: var(--radius-sm);
-  margin-bottom: var(--space-5);
 }
 
 .warning-content {
@@ -409,7 +410,7 @@ watch(
 
 .schema-fields-section,
 .custom-fields-section {
-  margin-bottom: var(--space-5);
+  margin: 0;
 }
 
 .schema-fields-section,
@@ -417,6 +418,19 @@ watch(
 .invocation-commands-section {
   display: grid;
   gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: transparent;
+}
+
+.schema-fields-section h3,
+.custom-fields-section h3,
+.invocation-commands-section h3 {
+  margin: 0;
+  color: var(--primary-text);
+  font-size: var(--font-size-title);
+  line-height: 1.35;
 }
 
 .config-field {
@@ -435,15 +449,23 @@ watch(
 }
 
 .invocation-commands-section {
-  margin-bottom: var(--space-5);
+  margin: 0;
 }
 
 .command-item {
-  margin-bottom: var(--space-4);
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .command-item h4 {
-  margin: 6px 0 8px;
+  margin: 0;
+  color: var(--primary-text);
+  font-size: var(--font-size-body);
+  line-height: 1.35;
 }
 
 .command-description-edit {
@@ -451,11 +473,11 @@ watch(
 }
 
 .command-save-btn {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .command-status {
-  margin: 8px 0 0;
+  margin: var(--space-2) 0 0;
   align-self: flex-start;
 }
 
@@ -463,7 +485,11 @@ watch(
   color: var(--secondary-text);
   font-family: inherit;
   white-space: pre-wrap;
-  margin: 8px 0;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .input-with-toggle {
