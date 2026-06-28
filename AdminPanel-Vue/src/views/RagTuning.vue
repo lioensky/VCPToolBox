@@ -476,45 +476,42 @@
         >
           <template v-if="asideCollapsed">
             <div class="console-rail">
-              <button
-                type="button"
+              <UiIconButton
                 class="console-rail-toggle"
-                aria-label="展开操作台"
+                label="展开操作台"
                 title="展开操作台"
                 @click="toggleAside"
               >
                 <span class="material-symbols-outlined">right_panel_open</span>
-              </button>
+              </UiIconButton>
               <div class="console-rail-divider"></div>
-              <button
+              <UiIconButton
                 type="submit"
                 class="console-rail-icon"
-                aria-label="保存参数配置"
+                label="保存参数配置"
                 title="保存参数配置"
                 :disabled="isSaving || !hasParams || !isDirty"
               >
                 <span class="material-symbols-outlined">save</span>
-              </button>
-              <button
-                type="button"
+              </UiIconButton>
+              <UiIconButton
                 class="console-rail-icon console-rail-icon--simulation"
-                aria-label="打开浪潮语义沙盘"
+                label="打开浪潮语义沙盘"
                 title="打开浪潮语义沙盘"
                 @click="openSemanticSimulation"
               >
                 <span class="material-symbols-outlined">travel_explore</span>
-              </button>
-              <button
+              </UiIconButton>
+              <UiIconButton
                 v-for="section in groupSections.slice(0, 8)"
                 :key="`${section.anchor}-rail`"
-                type="button"
                 class="console-rail-icon"
                 :title="section.meta.title"
-                :aria-label="`跳转到 ${section.meta.title}`"
+                :label="`跳转到 ${section.meta.title}`"
                 @click="scrollToGroup(section.anchor)"
               >
                 <span class="material-symbols-outlined">tune</span>
-              </button>
+              </UiIconButton>
             </div>
           </template>
           <template v-else>
@@ -525,15 +522,14 @@
                 <h3>保存与回退</h3>
                 <p>建议一次只改一组高敏参数，并在每次保存后观察实际召回结果。</p>
               </div>
-              <button
-                type="button"
+              <UiIconButton
                 class="console-rail-toggle"
-                aria-label="折叠操作台"
+                label="折叠操作台"
                 title="折叠操作台"
                 @click="toggleAside"
               >
                 <span class="material-symbols-outlined">right_panel_close</span>
-              </button>
+              </UiIconButton>
             </div>
           </div>
 
@@ -657,16 +653,16 @@
           <div class="rag-console__section">
             <span class="rag-console__label">快速跳转</span>
             <div class="rag-console__jump-list">
-              <button
+              <UiButton
                 v-for="section in groupSections"
                 :key="`${section.name}-jump`"
-                type="button"
+                variant="ghost"
                 class="rag-console__jump-btn"
                 @click="scrollToGroup(section.anchor)"
               >
                 <span>{{ section.meta.title }}</span>
                 <small>{{ section.changedLeaves }}/{{ section.totalLeaves }}</small>
-              </button>
+              </UiButton>
             </div>
           </div>
 
@@ -773,6 +769,7 @@ import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { useAppStore } from "@/stores/app";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import OrderedCooccurrenceModal from "@/features/rag-tuning/OrderedCooccurrenceModal.vue";
@@ -1630,10 +1627,11 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-4);
-  border: 1px solid var(--border-color);
+  min-height: 72px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  background: transparent;
 }
 
 .hero-stat--warning {
@@ -1769,9 +1767,11 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--space-1);
   justify-content: center;
-  padding: 14px var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  min-height: 64px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .group-panel__metric span {
@@ -1796,7 +1796,7 @@ onBeforeUnmount(() => {
 }
 
 .param-row--changed {
-  background: var(--info-bg);
+  background: color-mix(in srgb, var(--highlight-text) 4%, transparent);
 }
 
 .param-row__copy {
@@ -1842,9 +1842,11 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-2);
   width: fit-content;
-  padding: 7px var(--space-3);
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
   border-radius: var(--radius-full);
-  background: var(--surface-overlay-soft);
+  background: transparent;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
 }
@@ -1877,8 +1879,9 @@ onBeforeUnmount(() => {
   gap: var(--space-3);
   width: 100%;
   padding: var(--space-4);
-  border-radius: var(--radius-xl);
-  background: var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .control-shell__label,
@@ -1925,10 +1928,11 @@ onBeforeUnmount(() => {
 .nested-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 160px;
-  gap: 14px;
-  padding: 14px;
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-strong);
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .nested-item__copy {
@@ -1971,9 +1975,11 @@ onBeforeUnmount(() => {
 .nested-item__range {
   display: inline-flex;
   align-items: center;
-  padding: 5px 10px;
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
   border-radius: var(--radius-full);
-  background: var(--surface-overlay);
+  background: transparent;
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
 }
@@ -2030,9 +2036,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   width: 100%;
   padding: var(--space-4);
-  border-radius: var(--radius-xl);
-  background: var(--surface-overlay-soft);
-  border: 1px solid var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .wormhole-launchpad__stats {
@@ -2045,9 +2051,11 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay);
+  min-height: 64px;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .wormhole-launchpad__stat span {
@@ -2074,10 +2082,10 @@ onBeforeUnmount(() => {
 }
 
 .ordered-launchpad__control {
-  border-color: color-mix(in srgb, var(--highlight-text) 20%, var(--border-color));
+  border-color: color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
   background:
-    radial-gradient(circle at 16% 0%, color-mix(in srgb, var(--highlight-text) 12%, transparent), transparent 42%),
-    var(--surface-overlay-soft);
+    radial-gradient(circle at 16% 0%, color-mix(in srgb, var(--highlight-text) 8%, transparent), transparent 42%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .ordered-launchpad__axis {
@@ -2091,9 +2099,11 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay);
+  min-height: 56px;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .ordered-launchpad__axis-card span {
@@ -2118,19 +2128,20 @@ onBeforeUnmount(() => {
   gap: var(--space-4);
   width: 100%;
   padding: var(--space-4);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 22%, var(--border-color));
-  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--highlight-text) 14%, transparent), transparent 42%),
-    var(--surface-overlay-soft);
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--highlight-text) 8%, transparent), transparent 42%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .geodesic-meter {
   display: grid;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .geodesic-meter__label-row {
@@ -2164,11 +2175,12 @@ onBeforeUnmount(() => {
 .geodesic-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 170px;
-  gap: var(--space-4);
+  gap: var(--space-3);
   align-items: center;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .geodesic-field__copy {
@@ -2205,9 +2217,10 @@ onBeforeUnmount(() => {
 
 .geodesic-field__control input[type="number"] {
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: var(--radius-sm);
   background: var(--input-bg);
   color: var(--primary-text);
   font-family: "Consolas", "Monaco", monospace;
@@ -2321,37 +2334,26 @@ onBeforeUnmount(() => {
 
 .rag-console__section--themes {
   padding: var(--space-4);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 20%, var(--border-color));
-  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--highlight-text) 10%, transparent), transparent 46%),
-    var(--surface-overlay-soft);
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--highlight-text) 6%, transparent), transparent 46%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .rag-console__jump-btn {
+  width: 100%;
+  border-color: transparent;
+  color: var(--primary-text);
+  text-align: left;
+}
+
+.rag-console__jump-btn :deep(.ui-button__content) {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
   width: 100%;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
-  color: var(--primary-text);
-  cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease;
-  text-align: left;
-}
-
-.rag-console__jump-btn:hover {
-  border-color: var(--highlight-text);
-  background: var(--info-bg);
-}
-
-.rag-console__jump-btn:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
 }
 
 .rag-console__jump-btn small,
@@ -2376,11 +2378,11 @@ onBeforeUnmount(() => {
   display: grid;
   gap: var(--space-3);
   padding: var(--space-4);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 24%, var(--border-color));
-  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 14% 0%, color-mix(in srgb, var(--highlight-text) 18%, transparent), transparent 42%),
-    linear-gradient(135deg, var(--surface-overlay-soft), var(--surface-overlay));
+    radial-gradient(circle at 14% 0%, color-mix(in srgb, var(--highlight-text) 10%, transparent), transparent 42%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .semantic-sim-card::after {
@@ -2400,9 +2402,9 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--highlight-text) 14%, transparent);
   color: var(--highlight-text);
 }
