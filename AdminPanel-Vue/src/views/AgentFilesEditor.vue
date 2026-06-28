@@ -1,9 +1,60 @@
 <template>
   <section class="config-section active-section agent-files-page">
-    <p class="description">
-      管理 Agent 的定义名称与对应的 `.txt` / `.md` 文件。你可以在这里添加、删除和修改
-      Agent 映射，并直接编辑关联的文本文件。
-    </p>
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <p class="agent-page-summary">
+          管理 Agent 名称、关联文件与文本内容。
+        </p>
+        <UiBadge
+          :variant="mapDirty ? 'warning' : 'success'"
+          :title="mapDirty ? '映射未保存' : '映射已同步'"
+          :aria-label="mapDirty ? '映射未保存' : '映射已同步'"
+        >
+          {{ mapDirty ? '映射未保存' : '映射已同步' }}
+        </UiBadge>
+        <UiButton
+          @click="refreshAll"
+          variant="outline"
+          size="lg"
+          aria-label="刷新 Agent 数据"
+          title="刷新 Agent 数据"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
+          刷新
+        </UiButton>
+        <UiButton
+          @click="addAgentEntry"
+          variant="outline"
+          size="lg"
+          aria-label="添加新 Agent"
+          title="添加新 Agent"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined" aria-hidden="true">add</span>
+          </template>
+          添加
+        </UiButton>
+        <UiButton
+          @click="saveAgentMap"
+          variant="primary"
+          size="lg"
+          :disabled="isSavingMap || !mapDirty"
+          aria-label="保存映射表"
+          title="保存映射表"
+        >
+          <template #leading>
+            <span
+              class="material-symbols-outlined"
+              :class="{ spinning: isSavingMap }"
+              aria-hidden="true"
+            >{{ isSavingMap ? "sync" : "save" }}</span>
+          </template>
+          {{ isSavingMap ? "保存中…" : mapDirty ? "保存映射" : "已保存" }}
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
 
     <!-- 移动端视口切换胶囊 -->
     <div class="mobile-tab-nav">
@@ -30,99 +81,15 @@
       </button>
     </div>
 
-    <DualPaneEditor
-      left-title="Agent 映射表"
-      right-title="Agent 文件内容"
-      :initial-left-width="450"
-      :min-left-width="350"
-      :max-left-width="600"
-      collapsible
-      persist-key="agentFilesEditor"
-      class="agent-dual-pane"
-      :class="'mobile-view-' + activeTab"
-    >
-      <template #left-actions>
-        <div class="pane-toolbar pane-toolbar--left">
-          <div class="pane-toolbar-main">
-            <UiButton
-              @click="addAgentEntry"
-              variant="primary"
-              size="sm"
-              aria-label="添加新 Agent"
-              title="添加新 Agent"
-            >
-              <template #leading>
-                <span class="material-symbols-outlined" aria-hidden="true">add</span>
-              </template>
-              添加
-            </UiButton>
-            <UiButton
-              @click="saveAgentMap"
-              variant="primary"
-              size="sm"
-              :disabled="isSavingMap || !mapDirty"
-              aria-label="保存映射表"
-              title="保存映射表"
-            >
-              <template #leading>
-                <span
-                  class="material-symbols-outlined"
-                  :class="{ spinning: isSavingMap }"
-                  aria-hidden="true"
-                >{{ isSavingMap ? "sync" : "save" }}</span>
-              </template>
-              {{ isSavingMap ? "保存中…" : mapDirty ? "保存" : "已保存" }}
-            </UiButton>
-            <details class="pane-toolbar-menu">
-              <summary class="pane-toolbar-menu-trigger" aria-label="更多操作" title="更多操作">
-                <span class="material-symbols-outlined">more_vert</span>
-              </summary>
-              <div class="pane-toolbar-menu-content" role="menu" aria-label="Agent 映射更多操作">
-                <UiButton variant="ghost" size="sm" class="pane-toolbar-menu-item" @click="refreshAll">
-                  <template #leading>
-                    <span class="material-symbols-outlined">refresh</span>
-                  </template>
-                  刷新数据
-                </UiButton>
-              </div>
-            </details>
-          </div>
-          <UiBadge
-            :variant="mapDirty ? 'warning' : 'success'"
-            :title="mapDirty ? '映射未保存' : '映射已同步'"
-            :aria-label="mapDirty ? '映射未保存' : '映射已同步'"
-          >
-            {{ mapDirty ? '映射未保存' : '映射已同步' }}
-          </UiBadge>
-        </div>
-      </template>
-
-      <template #left-collapsed>
-        <div class="collapsed-list">
-          <button
-            v-for="entry in agentMap"
-            :key="entry.localId"
-            type="button"
-            class="collapsed-item"
-            :title="entry.name || entry.file"
-            @click="selectAgentFile(resolveAgentFileName(entry.file))"
-          >
-            <span class="collapsed-avatar">{{ (entry.name || entry.file || 'A').slice(0, 1).toUpperCase() }}</span>
-          </button>
-          <div v-if="agentMap.length === 0" class="collapsed-empty">
-            <span class="material-symbols-outlined">smart_toy</span>
-          </div>
-        </div>
-      </template>
-
-      <template #left-content>
+    <div class="agent-editor-shell" :class="'mobile-view-' + activeTab">
+      <aside class="agent-map-pane" aria-label="Agent 映射表">
+        <div class="agent-pane-label">Agent 映射表</div>
         <div class="agent-map-list">
-          <UiCard
+          <article
             v-for="(entry, index) in agentMap"
             :key="entry.localId"
             class="agent-map-entry"
-            size="sm"
-            variant="subtle"
+            :class="{ 'is-active': !!entry.file && editingFile === resolveAgentFileName(entry.file) }"
           >
             <!-- 第一层：头部标题栏 -->
             <div class="agent-entry-header">
@@ -131,6 +98,32 @@
               <UiBadge :variant="doesFileExist(entry.file) ? 'success' : 'warning'" class="agent-binding-badge">
                 {{ doesFileExist(entry.file) ? '已绑定' : '待绑定' }}
               </UiBadge>
+              <div class="agent-entry-actions">
+                <UiIconButton
+                  @click="createAndBindAgentFile(entry)"
+                  :disabled="!canCreateAgentFile(entry.file)"
+                  label="创建并绑定"
+                  title="创建并绑定"
+                >
+                  <span class="material-symbols-outlined">note_add</span>
+                </UiIconButton>
+                <UiIconButton
+                  @click="selectAgentFile(resolveAgentFileName(entry.file))"
+                  :disabled="!doesFileExist(entry.file)"
+                  label="编辑文件"
+                  title="编辑文件"
+                >
+                  <span class="material-symbols-outlined">edit</span>
+                </UiIconButton>
+                <UiIconButton
+                  @click="removeAgentEntry(index)"
+                  variant="danger"
+                  label="删除"
+                  title="删除"
+                >
+                  <span class="material-symbols-outlined">delete</span>
+                </UiIconButton>
+              </div>
             </div>
 
             <!-- 第二层：中间输入配置 (PC垂直，移动端并排对齐) -->
@@ -166,7 +159,7 @@
               </span>
 
               <span
-                v-else-if="entry.file"
+                v-else-if="entry.file && (!doesFileExist(entry.file) || hasInvalidAgentFilePath(entry.file))"
                 :class="[
                   'file-hint',
                   hasInvalidAgentFilePath(entry.file)
@@ -186,42 +179,7 @@
               </span>
             </div>
 
-            <!-- 第三层：操作动作按钮组 -->
-            <div class="agent-entry-actions">
-              <UiButton
-                @click="createAndBindAgentFile(entry)"
-                :disabled="!canCreateAgentFile(entry.file)"
-                variant="primary"
-                size="sm"
-              >
-                <template #leading>
-                  <span class="material-symbols-outlined">note_add</span>
-                </template>
-                创建并绑定
-              </UiButton>
-              <UiButton
-                @click="selectAgentFile(resolveAgentFileName(entry.file))"
-                :disabled="!doesFileExist(entry.file)"
-                variant="outline"
-                size="sm"
-              >
-                <template #leading>
-                  <span class="material-symbols-outlined">edit</span>
-                </template>
-                编辑文件
-              </UiButton>
-              <UiButton
-                @click="removeAgentEntry(index)"
-                variant="danger"
-                size="sm"
-              >
-                <template #leading>
-                  <span class="material-symbols-outlined">delete</span>
-                </template>
-                删除
-              </UiButton>
-            </div>
-          </UiCard>
+          </article>
 
           <div v-if="agentMap.length === 0" class="empty-state">
             <span class="material-symbols-outlined">smart_toy</span>
@@ -231,11 +189,15 @@
             </UiButton>
           </div>
         </div>
-      </template>
+      </aside>
 
-      <template #right-actions>
-        <div v-if="editingFile" class="pane-toolbar pane-toolbar--right">
-          <div class="pane-toolbar-main">
+      <main class="agent-file-pane" aria-label="Agent 文件内容">
+        <header class="agent-file-pane-header">
+          <div>
+            <span class="agent-pane-label">Agent 文件内容</span>
+            <p>{{ editingFile || "从左侧选择一个 Agent 以编辑其关联文件。" }}</p>
+          </div>
+          <div v-if="editingFile" class="agent-file-actions">
             <UiButton
               @click="openDiarySyntaxEditor"
               variant="outline"
@@ -249,18 +211,6 @@
               日记本语法编辑器
             </UiButton>
             <UiButton
-              @click="togglePlaceholderSidebar"
-              variant="outline"
-              size="sm"
-              aria-label="切换常用占位符侧栏"
-              :title="isPlaceholderSidebarOpen ? '收起常用占位符' : '展开常用占位符'"
-            >
-              <template #leading>
-                <span class="material-symbols-outlined">data_object</span>
-              </template>
-              占位符
-            </UiButton>
-            <UiButton
               @click="saveAgentFile"
               :disabled="!fileDirty || isSavingFile"
               variant="primary"
@@ -272,11 +222,9 @@
               {{ isSavingFile ? "保存中…" : fileDirty ? "保存文件" : "已保存" }}
             </UiButton>
           </div>
-        </div>
-      </template>
+        </header>
 
-      <template #right-content>
-        <div class="agent-file-workspace" :class="{ 'placeholder-sidebar-collapsed': !isPlaceholderSidebarOpen }">
+        <div class="agent-file-workspace">
           <div class="agent-file-editor">
             <div class="agent-editor-controls">
               <span class="editing-file-display">
@@ -300,119 +248,96 @@
               {{ fileStatusMessage }}
             </UiBadge>
           </div>
-
-          <button
-            v-if="!isPlaceholderSidebarOpen"
-            type="button"
-            class="placeholder-sidebar-rail"
-            aria-label="展开常用占位符侧栏"
-            title="展开常用占位符"
-            @click="isPlaceholderSidebarOpen = true"
-          >
-            <span class="material-symbols-outlined">data_object</span>
-            <span>占位符</span>
-            <span class="material-symbols-outlined">chevron_left</span>
-          </button>
-
-          <aside class="placeholder-sidebar" :aria-hidden="!isPlaceholderSidebarOpen">
-            <header class="placeholder-sidebar-header">
-              <div>
-                <span class="eyebrow">Quick Insert</span>
-                <h4>常用占位符</h4>
-              </div>
-              <UiIconButton
-                class="placeholder-sidebar-close"
-                label="收起常用占位符侧栏"
-                aria-label="收起常用占位符侧栏"
-                @click="isPlaceholderSidebarOpen = false"
-              >
-                <span class="material-symbols-outlined">chevron_right</span>
-              </UiIconButton>
-            </header>
-
-            <div class="placeholder-search">
-              <span class="material-symbols-outlined search-icon">search</span>
-              <UiInput
-                v-model="placeholderQuery"
-                type="text"
-                placeholder="搜索占位符…"
-              />
-              <UiIconButton
-                v-if="placeholderQuery"
-                class="search-clear"
-                label="清除搜索"
-                title="清除搜索"
-                @click="placeholderQuery = ''"
-              >
-                <span class="material-symbols-outlined">close</span>
-              </UiIconButton>
-            </div>
-
-            <div
-              v-if="isLoadingCommonPlaceholders"
-              class="placeholder-sidebar-status"
-              role="status"
-              aria-live="polite"
-            >
-              正在加载占位符…
-            </div>
-
-            <div
-              v-else-if="placeholderLoadError"
-              class="placeholder-sidebar-status error"
-              role="status"
-              aria-live="polite"
-            >
-              {{ placeholderLoadError }}
-            </div>
-
-            <template v-else>
-              <section
-                v-for="group in filteredPlaceholderGroups"
-                :key="group.key"
-                class="placeholder-group"
-              >
-                <button
-                  type="button"
-                  class="placeholder-group-title"
-                  :aria-expanded="!collapsedPlaceholderGroups[group.key]"
-                  @click="togglePlaceholderGroup(group.key)"
-                >
-                  <span class="material-symbols-outlined">{{ group.icon }}</span>
-                  <span>{{ group.title }}</span>
-                  <span class="placeholder-count">{{ group.items.length }}</span>
-                  <span class="material-symbols-outlined group-chevron">expand_more</span>
-                </button>
-
-                <div
-                  v-show="!collapsedPlaceholderGroups[group.key]"
-                  class="placeholder-chip-list"
-                >
-                  <button
-                    v-for="item in group.items"
-                    :key="`${group.key}-${item.token}`"
-                    type="button"
-                    class="placeholder-chip"
-                    :title="item.description || item.token"
-                    @click="insertPlaceholderAtCursor(item.token)"
-                  >
-                    <code>{{ item.token }}</code>
-                    <span v-if="item.description">{{ item.description }}</span>
-                  </button>
-                </div>
-              </section>
-
-              <div
-                v-if="filteredPlaceholderGroups.length === 0"
-                class="placeholder-sidebar-status"
-              >
-                没有匹配的占位符。
-              </div>
-            </template>
-          </aside>
         </div>
-      </template>
-    </DualPaneEditor>
+      </main>
+
+      <aside class="placeholder-sidebar" aria-label="常用占位符">
+        <header class="placeholder-sidebar-header">
+          <span class="eyebrow">Quick Insert</span>
+          <h4>常用占位符</h4>
+        </header>
+
+        <div class="placeholder-search">
+          <span class="material-symbols-outlined search-icon">search</span>
+          <UiInput
+            v-model="placeholderQuery"
+            type="text"
+            placeholder="搜索占位符…"
+          />
+          <UiIconButton
+            v-if="placeholderQuery"
+            class="search-clear"
+            label="清除搜索"
+            title="清除搜索"
+            @click="placeholderQuery = ''"
+          >
+            <span class="material-symbols-outlined">close</span>
+          </UiIconButton>
+        </div>
+
+        <div
+          v-if="isLoadingCommonPlaceholders"
+          class="placeholder-sidebar-status"
+          role="status"
+          aria-live="polite"
+        >
+          正在加载占位符…
+        </div>
+
+        <div
+          v-else-if="placeholderLoadError"
+          class="placeholder-sidebar-status error"
+          role="status"
+          aria-live="polite"
+        >
+          {{ placeholderLoadError }}
+        </div>
+
+        <template v-else>
+          <section
+            v-for="group in filteredPlaceholderGroups"
+            :key="group.key"
+            class="placeholder-group"
+          >
+            <button
+              type="button"
+              class="placeholder-group-title"
+              :aria-expanded="!collapsedPlaceholderGroups[group.key]"
+              @click="togglePlaceholderGroup(group.key)"
+            >
+              <span class="material-symbols-outlined">{{ group.icon }}</span>
+              <span>{{ group.title }}</span>
+              <span class="placeholder-count">{{ group.items.length }}</span>
+              <span class="material-symbols-outlined group-chevron">expand_more</span>
+            </button>
+
+            <div
+              v-show="!collapsedPlaceholderGroups[group.key]"
+              class="placeholder-chip-list"
+            >
+              <button
+                v-for="item in group.items"
+                :key="`${group.key}-${item.token}`"
+                type="button"
+                class="placeholder-chip"
+                :title="item.description || item.token"
+                @click="insertPlaceholderAtCursor(item.token)"
+              >
+                <code>{{ item.token }}</code>
+                <span v-if="item.description">{{ item.description }}</span>
+              </button>
+            </div>
+          </section>
+
+          <div
+            v-if="filteredPlaceholderGroups.length === 0"
+            class="placeholder-sidebar-status"
+          >
+            没有匹配的占位符。
+          </div>
+        </template>
+      </aside>
+    </div>
 
     <datalist :id="agentFilesDatalistId">
       <option v-for="file in availableFiles" :key="file" :value="file">
@@ -441,12 +366,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { agentApi, placeholderApi, toolboxApi } from "@/api";
-import DualPaneEditor from "@/components/DualPaneEditor.vue";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
-import UiCard from "@/components/ui/UiCard.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
 import DiarySyntaxEditorModal from "./AgentFilesEditor/DiarySyntaxEditorModal.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
@@ -511,7 +435,6 @@ const isSavingMap = ref(false);
 const isSavingFile = ref(false);
 const initialAgentMapSnapshot = ref("[]");
 const isDiarySyntaxEditorOpen = ref(false);
-const isPlaceholderSidebarOpen = ref(true);
 const isLoadingCommonPlaceholders = ref(false);
 const placeholderLoadError = ref("");
 const placeholderQuery = ref("");
@@ -740,10 +663,6 @@ const filteredPlaceholderGroups = computed<QuickPlaceholderGroup[]>(() => {
     }))
     .filter((group) => group.items.length > 0);
 });
-
-function togglePlaceholderSidebar(): void {
-  isPlaceholderSidebarOpen.value = !isPlaceholderSidebarOpen.value;
-}
 
 function togglePlaceholderGroup(groupKey: string): void {
   collapsedPlaceholderGroups.value = {
@@ -1149,71 +1068,170 @@ onBeforeRouteLeave(async () => {
 </script>
 
 <style scoped>
-.collapsed-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  align-items: center;
-}
-
-.collapsed-item {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--secondary-text);
-  cursor: pointer;
-  padding: 0;
-  transition: background-color var(--transition-fast), color var(--transition-fast);
-}
-
-.collapsed-item:hover {
-  background: color-mix(in srgb, var(--primary-text) 4%, transparent);
-  color: var(--primary-text);
-}
-
-.collapsed-avatar {
-  font-size: var(--font-size-helper);
-  font-weight: 700;
-  color: inherit;
-}
-
-.collapsed-empty {
-  color: var(--secondary-text);
-}
-
 .agent-files-page {
-  --dual-pane-height: calc(var(--app-viewport-height, 100vh) - 260px);
-  --dual-pane-min-height: 420px;
+  --agent-workspace-height: calc(var(--app-viewport-height, 100vh) - 236px);
+  --agent-workspace-min-height: 520px;
 }
 
-.agent-files-page :deep(.pane-right .pane-content) {
+.agent-page-summary {
+  max-width: 340px;
+  margin: 0 var(--space-2) 0 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.35;
+}
+
+.agent-editor-shell {
+  display: grid;
+  grid-template-columns: minmax(292px, 340px) minmax(0, 1fr) minmax(240px, 284px);
+  gap: var(--space-4);
+  min-height: var(--agent-workspace-min-height);
+  height: max(var(--agent-workspace-height), var(--agent-workspace-min-height));
+}
+
+.agent-map-pane,
+.agent-file-pane,
+.placeholder-sidebar {
+  min-width: 0;
+  min-height: 0;
+}
+
+.agent-map-pane {
   display: flex;
   flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.agent-file-pane {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+  overflow: hidden;
+}
+
+.agent-pane-label {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  color: color-mix(in srgb, var(--secondary-text) 72%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.agent-map-pane > .agent-pane-label {
+  min-height: 65px;
+  align-items: flex-start;
+  padding-top: var(--space-4);
+}
+
+.agent-file-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+}
+
+.agent-file-pane-header .agent-pane-label {
   min-height: 0;
+  padding: 0;
+}
+
+.agent-file-pane-header p {
+  margin: 4px 0 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.45;
+}
+
+.agent-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 .agent-map-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 0 var(--space-2);
+  scrollbar-gutter: stable;
+}
+
+.agent-map-entry {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--button-bg) 5%, transparent),
+      color-mix(in srgb, var(--primary-text) 0.8%, transparent)
+    );
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease;
+  overflow: hidden;
+}
+
+.agent-map-entry:hover {
+  border-color: color-mix(in srgb, var(--button-bg) 24%, var(--border-color));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--button-bg) 8%, transparent),
+      color-mix(in srgb, var(--primary-text) 1.8%, transparent)
+    );
+}
+
+.agent-map-entry.is-active {
+  border-color: color-mix(in srgb, var(--button-bg) 42%, var(--border-color));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--button-bg) 12%, transparent),
+      color-mix(in srgb, var(--primary-text) 2.2%, transparent)
+    );
+}
+
+.agent-map-entry.is-active::before {
+  content: "";
+  position: absolute;
+  inset: 8px auto 8px 0;
+  width: 2px;
+  border-radius: var(--radius-full);
+  background: var(--button-bg);
 }
 
 .agent-entry-row {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
 }
 
 .agent-entry-row label {
   color: var(--secondary-text);
-  font-size: var(--font-size-helper);
+  font-size: 0.75rem;
   font-weight: 500;
+  line-height: 1.25;
+  white-space: nowrap;
 }
 
 .loading-hint {
@@ -1232,7 +1250,6 @@ onBeforeRouteLeave(async () => {
 
 .file-hint {
   display: block;
-  margin-top: 2px;
   font-size: var(--font-size-helper);
   line-height: 1.45;
 }
@@ -1258,22 +1275,26 @@ onBeforeRouteLeave(async () => {
 
 .agent-entry-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+.agent-entry-actions :deep(.ui-icon-button) {
+  width: 28px;
+  height: 28px;
+}
+
+.agent-entry-actions :deep(.ui-icon-button .material-symbols-outlined) {
+  font-size: 16px !important;
 }
 
 .agent-file-workspace {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
-  gap: var(--space-3);
+  display: flex;
   min-height: 0;
   flex: 1;
-}
-
-.agent-file-workspace.placeholder-sidebar-collapsed {
-  grid-template-columns: minmax(0, 1fr) 42px;
-  gap: var(--space-2);
+  padding: var(--space-3);
 }
 
 .agent-file-editor {
@@ -1288,12 +1309,12 @@ onBeforeRouteLeave(async () => {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2);
   padding: var(--space-2) var(--space-3);
   min-height: 36px;
-  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
 }
 
 .editing-file-display {
@@ -1345,69 +1366,31 @@ onBeforeRouteLeave(async () => {
   background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
-.placeholder-sidebar-rail {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  min-width: 0;
-  min-height: 180px;
-  padding: var(--space-3) var(--space-2);
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--secondary-text);
-  cursor: pointer;
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  transition:
-    color 0.2s ease,
-    border-color 0.2s ease,
-    background-color 0.2s ease;
-}
-
-.placeholder-sidebar-rail:hover {
-  color: var(--primary-text);
-  background: color-mix(in srgb, var(--primary-text) 4%, transparent);
-}
-
-.placeholder-sidebar-rail .material-symbols-outlined {
-  color: var(--highlight-text);
-  font-size: 18px !important;
-  writing-mode: horizontal-tb;
-}
-
 .placeholder-sidebar {
   display: flex;
   flex-direction: column;
-  min-width: 0;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
-  border-radius: var(--radius-md);
-  background: transparent;
-  transition:
-    opacity 0.2s ease,
-    transform 0.2s ease;
-}
-
-.placeholder-sidebar-collapsed .placeholder-sidebar {
-  display: none;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
 }
 
 .placeholder-sidebar-header {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: flex-start;
   gap: var(--space-2);
-  padding: var(--space-3);
+  min-height: 65px;
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border-color);
   background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .placeholder-sidebar-header h4 {
-  margin: 2px 0 0;
+  margin: 0;
   color: var(--primary-text);
   font-size: var(--font-size-body);
+  line-height: 1.25;
 }
 
 .placeholder-sidebar-header .eyebrow {
@@ -1416,10 +1399,7 @@ onBeforeRouteLeave(async () => {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-}
-
-.placeholder-sidebar-close {
-  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .placeholder-search {
@@ -1582,41 +1562,47 @@ onBeforeRouteLeave(async () => {
   }
 }
 
-/* 卡片三层架构默认基础类名 (PC端布局) */
+/* 左侧映射列表：保持类似基础配置操作台的轻量层级 */
 .agent-entry-header {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: var(--space-3);
-  padding-bottom: var(--space-2);
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+  min-height: 30px;
+  padding: 0;
 }
 
 .header-icon {
-  color: var(--highlight-text);
-  font-size: 18px !important;
+  color: var(--secondary-text);
+  font-size: 16px !important;
+  flex: 0 0 auto;
 }
 
 .header-title {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 0.875rem;
+  line-height: 1.25;
   color: var(--primary-text);
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-binding-badge {
-  margin-left: auto;
+  margin-left: var(--space-1);
+  flex: 0 0 auto;
 }
 
 .agent-entry-fields {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 6px;
 }
 
 .agent-entry-hints {
-  margin-top: var(--space-1);
-  margin-bottom: var(--space-3);
-  min-height: 16px;
+  min-height: 0;
+  padding: 0;
 }
 
 /* 移动端精致化响应式滑盖与底置 Segmented 胶囊导航 */
@@ -1625,28 +1611,33 @@ onBeforeRouteLeave(async () => {
 }
 
 @media (max-width: 768px) {
-  .description {
-    margin-bottom: var(--space-3) !important;
+  .agent-page-summary {
+    display: none;
   }
 
   /* 根据 activeTab 完全隐藏另一侧，保障单屏100%全景视图 */
-  .agent-dual-pane.mobile-view-list :deep(.pane-right) {
+  .agent-editor-shell.mobile-view-list .agent-file-pane {
     display: none !important;
   }
 
-  .agent-dual-pane.mobile-view-editor :deep(.pane-left) {
+  .agent-editor-shell .placeholder-sidebar {
     display: none !important;
   }
 
-  /* 消除分割线 */
-  .agent-dual-pane :deep(.split-handle) {
+  .agent-editor-shell.mobile-view-editor .agent-map-pane {
     display: none !important;
   }
 
-  .agent-dual-pane.mobile-view-list :deep(.pane-left),
-  .agent-dual-pane.mobile-view-editor :deep(.pane-right) {
-    width: 100% !important;
-    flex: 1 !important;
+  .agent-editor-shell {
+    display: flex;
+    min-height: calc(var(--app-viewport-height, 100vh) - 150px);
+    height: calc(var(--app-viewport-height, 100vh) - 150px);
+  }
+
+  .agent-map-pane,
+  .agent-file-pane {
+    width: 100%;
+    flex: 1;
   }
 
   .agent-map-entry {
@@ -1654,30 +1645,25 @@ onBeforeRouteLeave(async () => {
   }
 
   .agent-entry-fields {
-    display: grid !important;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-3) !important;
-    align-items: start;
+    display: flex !important;
+    gap: var(--space-2) !important;
   }
 
   .agent-entry-fields .agent-entry-row {
     margin-bottom: 0 !important;
   }
 
+  .agent-entry-row {
+    grid-template-columns: 68px minmax(0, 1fr);
+  }
+
   .agent-entry-hints {
-    margin-top: 8px;
-    margin-bottom: 8px;
+    margin: 0;
   }
 
   .agent-entry-actions {
-    display: grid !important;
-    grid-template-columns: repeat(2, 1fr);
-    gap: var(--space-2) !important;
-    margin-top: 12px;
-  }
-
-  .agent-entry-actions :deep(.ui-button:last-child) {
-    grid-column: span 2;
+    gap: var(--space-1) !important;
+    margin-left: auto;
   }
 
   .agent-file-workspace {
@@ -1686,17 +1672,8 @@ onBeforeRouteLeave(async () => {
     height: 100%;
   }
 
-  .agent-file-workspace.placeholder-sidebar-collapsed {
-    gap: var(--space-2);
-  }
-
   .agent-file-editor {
     height: 100%;
-  }
-
-  .placeholder-sidebar-rail {
-    min-height: 40px;
-    writing-mode: horizontal-tb;
   }
 
   .placeholder-sidebar {
@@ -1769,11 +1746,19 @@ onBeforeRouteLeave(async () => {
   }
 
   .agent-files-page {
-    --dual-pane-height: calc(var(--app-viewport-height, 100vh) - 150px);
+    --agent-workspace-height: calc(var(--app-viewport-height, 100vh) - 150px);
   }
 }
 
 @media (max-width: 1024px) and (min-width: 769px) {
+  .agent-editor-shell {
+    grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
+  }
+
+  .agent-editor-shell .placeholder-sidebar {
+    display: none;
+  }
+
   .agent-map-list {
     max-height: none;
   }
