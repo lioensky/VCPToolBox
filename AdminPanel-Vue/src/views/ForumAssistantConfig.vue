@@ -31,14 +31,15 @@
         </UiButton>
       </div>
 
-      <p
+      <UiBadge
         v-if="statusMessage"
-        :class="['status-message', statusType]"
+        :variant="statusBadgeVariant"
+        class="toolbar-status"
         role="status"
         aria-live="polite"
       >
         {{ statusMessage }}
-      </p>
+      </UiBadge>
     </section>
 
     <section class="status-grid">
@@ -506,6 +507,9 @@ const visibleHistoryItems = computed(() =>
 );
 const hasMoreHistory = computed(() =>
   historyItems.value.length > historyDisplayCount.value
+);
+const statusBadgeVariant = computed(() =>
+  statusType.value === "error" ? "danger" : statusType.value
 );
 
 function createDefaultRuntime(): ForumAssistantTaskRuntime {
@@ -1244,6 +1248,10 @@ onBeforeUnmount(() => {
 .composer-controls,
 .task-card-actions {
   flex-wrap: wrap;
+}
+
+.toolbar-status {
+  align-self: flex-start;
 }
 
 .compact-field {
