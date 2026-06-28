@@ -613,19 +613,19 @@ onUnmounted(() => {
   text-align: left;
   cursor: pointer;
   box-sizing: border-box;
-  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  transition:
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
 }
 
 .group-row:hover {
-  border-color: var(--highlight-text);
-  background: var(--info-bg);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--highlight-text) 34%, var(--border-color));
+  background: var(--accent-bg);
 }
 
 .group-row.is-active {
   border-color: var(--highlight-text);
   background: color-mix(in srgb, var(--highlight-text) 14%, transparent);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--highlight-text) 20%, transparent);
 }
 
 .group-row:focus-visible {
