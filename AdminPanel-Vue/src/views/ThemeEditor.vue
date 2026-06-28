@@ -1767,14 +1767,13 @@ onUnmounted(() => {
   transition:
     border-color var(--transition-fast),
     background-color var(--transition-fast),
-    color var(--transition-fast),
-    transform var(--transition-fast);
+    color var(--transition-fast);
 }
 
 .theme-choice:hover {
   border-color: color-mix(in srgb, var(--highlight-text) 44%, var(--border-color));
+  background: var(--accent-bg);
   color: var(--primary-text);
-  transform: translateY(-1px);
 }
 
 .theme-choice--active {
@@ -1899,21 +1898,17 @@ onUnmounted(() => {
   overflow: hidden;
   transition:
     border-color var(--transition-fast),
-    box-shadow var(--transition-fast),
-    transform var(--transition-fast);
+    background-color var(--transition-fast);
 }
 
 .preset-card:hover {
   border-color: color-mix(in srgb, var(--highlight-text) 50%, var(--border-color));
-  box-shadow: 0 4px 20px color-mix(in srgb, var(--highlight-text) 10%, transparent);
-  transform: translateY(-2px);
+  background: var(--accent-bg);
 }
 
 .preset-card--active {
   border-color: var(--highlight-text);
-  box-shadow:
-    0 0 0 1px var(--highlight-text),
-    0 4px 20px color-mix(in srgb, var(--highlight-text) 16%, transparent);
+  background: color-mix(in srgb, var(--highlight-text) 8%, var(--secondary-bg));
 }
 
 .preset-card__preview {
