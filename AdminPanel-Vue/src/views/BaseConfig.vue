@@ -12,7 +12,7 @@
             v-for="group in groupedEntries"
             :id="group.anchor"
             :key="group.id"
-            class="group-card"
+            class="group-card base-settings-surface"
             :title="group.title"
             :description="group.description"
             variant="subtle"
@@ -134,7 +134,7 @@
 
         <aside class="base-config-aside">
           <UiCard
-            class="base-console"
+            class="base-console base-settings-surface"
             :class="{ 'is-collapsed': asideCollapsed }"
             :aria-label="asideCollapsed ? '配置操作台（已折叠）' : '配置操作台'"
             size="sm"
@@ -1036,6 +1036,30 @@ onBeforeUnmount(() => {
   align-self: start;
 }
 
+.base-settings-surface {
+  --base-config-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
+  --base-config-muted-surface: color-mix(in srgb, var(--primary-text) 3.5%, transparent);
+  --base-config-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+}
+
+.base-settings-surface,
+:deep(.ui-card.base-settings-surface) {
+  border-color: var(--base-config-surface-border);
+  background: var(--base-config-card-surface);
+}
+
+.base-settings-surface :deep(.ui-card__header),
+:deep(.ui-card.base-settings-surface.ui-card--divided .ui-card__header) {
+  border-bottom-color: var(--base-config-surface-border);
+}
+
+.base-settings-surface :deep(.ui-input),
+.base-settings-surface :deep(.ui-textarea) {
+  border-color: var(--base-config-surface-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
+}
+
 .group-section {
   display: inline-flex;
   align-items: center;
@@ -1197,8 +1221,8 @@ onBeforeUnmount(() => {
 }
 
 .base-console__jump-btn.is-active {
-  border-color: color-mix(in srgb, var(--highlight-text) 52%, var(--border-color));
-  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
+  border-color: color-mix(in srgb, var(--highlight-text) 38%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 6%, transparent);
 }
 
 .base-console__jump-btn:focus-visible {

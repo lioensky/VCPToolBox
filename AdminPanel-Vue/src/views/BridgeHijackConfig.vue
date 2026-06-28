@@ -547,9 +547,9 @@ onMounted(() => {
 }
 
 .config-toggle-row {
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  background: transparent;
 }
 
 .code-textarea {
