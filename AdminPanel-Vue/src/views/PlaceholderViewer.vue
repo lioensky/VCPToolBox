@@ -597,12 +597,12 @@ onMounted(() => {
 .placeholder-grouped-view {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--space-4);
 }
 
 .placeholder-type-group {
-  background: var(--secondary-bg);
-  border-radius: var(--radius-md);
+  background: transparent;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border-color);
   overflow: hidden;
 }
@@ -612,8 +612,8 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  background: var(--tertiary-bg);
+  padding: var(--space-3) var(--space-4);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -628,7 +628,7 @@ onMounted(() => {
 
 .type-group-header .material-symbols-outlined {
   font-size: var(--font-size-title) !important;
-  color: var(--highlight-text);
+  color: var(--secondary-text);
 }
 
 .group-collapse-toggle {
@@ -638,7 +638,7 @@ onMounted(() => {
 .group-collapse-icon {
   font-size: var(--font-size-title);
   line-height: 1;
-  transition: transform 0.24s ease;
+  transition: transform var(--transition-fast);
 }
 
 .group-collapse-icon.is-collapsed {
@@ -649,8 +649,8 @@ onMounted(() => {
   display: grid;
   grid-template-rows: 1fr;
   transition:
-    grid-template-rows 0.24s ease,
-    opacity 0.24s ease;
+    grid-template-rows var(--transition-fast),
+    opacity var(--transition-fast);
 }
 
 .type-group-collapse.is-collapsed {
@@ -664,7 +664,7 @@ onMounted(() => {
 }
 
 .type-group-content {
-  padding: var(--space-5);
+  padding: var(--space-4);
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--space-4);
@@ -700,6 +700,13 @@ onMounted(() => {
 
   .placeholder-list-view {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .group-collapse-icon,
+  .type-group-collapse {
+    transition: none;
   }
 }
 </style>

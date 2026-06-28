@@ -90,7 +90,7 @@ const resolvedTypeLabel = computed(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .placeholder-name {
@@ -115,8 +115,9 @@ const resolvedTypeLabel = computed(() => {
 .placeholder-description {
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
-  padding: 8px;
-  background: var(--tertiary-bg);
+  padding: var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   border-radius: var(--radius-sm);
   line-height: 1.5;
 }
@@ -127,7 +128,7 @@ const resolvedTypeLabel = computed(() => {
   align-items: center;
   gap: var(--space-3);
   margin-top: auto;
-  padding-top: 12px;
+  padding-top: var(--space-3);
   border-top: 1px solid var(--border-color);
 }
 
@@ -140,7 +141,7 @@ const resolvedTypeLabel = computed(() => {
 .placeholder-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
   justify-content: flex-end;
 }
