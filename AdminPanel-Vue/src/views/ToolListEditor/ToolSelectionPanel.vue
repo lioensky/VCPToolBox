@@ -1,10 +1,17 @@
 <template>
   <div class="left-panel">
     <UiCard class="tools-container" variant="default">
-      <h2 class="section-header tle-section-header">
-        可用工具
-        <span class="tool-count">({{ filteredTools.length }})</span>
-      </h2>
+      <div class="tools-header">
+        <div>
+          <h2 class="section-header tle-section-header">可用工具</h2>
+          <p class="tools-subtitle">
+            显示 {{ filteredTools.length }} / {{ allToolsCount }} 个工具
+          </p>
+        </div>
+        <UiBadge v-if="selectedTools.size > 0" variant="info">
+          已选 {{ selectedTools.size }}
+        </UiBadge>
+      </div>
 
       <div class="filter-section">
         <div class="search-row">
@@ -22,7 +29,7 @@
           <UiButton
             v-if="searchQuery"
             variant="ghost"
-            size="sm"
+            size="xs"
             class="search-clear-btn"
             aria-label="清除搜索关键词"
             @click="emit('clearSearch')"
@@ -51,7 +58,7 @@
           />
           <UiButton
             variant="outline"
-            size="sm"
+            size="xs"
             :disabled="loading"
             :title="selectCurrentTitle"
             @click="emit('selectAll')"
@@ -60,7 +67,7 @@
           </UiButton>
           <UiButton
             variant="outline"
-            size="sm"
+            size="xs"
             :disabled="loading"
             @click="emit('deselectAll')"
           >
@@ -68,7 +75,7 @@
           </UiButton>
           <UiButton
             variant="outline"
-            size="sm"
+            size="xs"
             :disabled="loading"
             aria-label="刷新工具列表"
             title="重新从后端拉取工具列表"
@@ -127,7 +134,7 @@
               </AppCheckbox>
               <UiButton
                 variant="outline"
-                size="sm"
+                size="xs"
                 :aria-label="`编辑 ${tool.name} 的说明`"
                 @click="emit('editDescription', tool)"
               >
@@ -308,16 +315,27 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  border-color: color-mix(in srgb, var(--border-color) 86%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
 }
 
-.tool-count {
-  font-size: var(--font-size-body);
+.tools-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.tools-subtitle {
+  margin: 3px 0 0;
+  font-size: var(--font-size-helper);
   color: var(--secondary-text);
-  font-weight: normal;
 }
 
 .filter-section {
-  margin-bottom: var(--space-4);
+  display: grid;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
 .search-row {
@@ -331,7 +349,7 @@ onBeforeUnmount(() => {
 }
 
 .search-status {
-  margin-top: var(--space-2);
+  justify-self: flex-start;
 }
 
 .search-clear-btn {
@@ -343,7 +361,6 @@ onBeforeUnmount(() => {
   gap: var(--space-2);
   align-items: center;
   flex-wrap: wrap;
-  margin-top: var(--space-3);
 }
 
 .tools-list {
@@ -370,7 +387,7 @@ onBeforeUnmount(() => {
 }
 
 .tool-item {
-  padding: var(--space-2) var(--space-3);
+  padding: 7px 10px;
   border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
   display: flex;
   align-items: center;
@@ -380,7 +397,7 @@ onBeforeUnmount(() => {
 }
 
 .tool-item:hover {
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
 .tool-checkbox {

@@ -7,10 +7,10 @@
         <UiBadge v-if="isDirty" variant="warning" class="dirty-badge">未保存</UiBadge>
       </h2>
 
-      <div class="config-row">
-        <label class="config-label" for="tool-config-select">已有配置</label>
+      <UiField class="config-row" label="已有配置" for-id="tool-config-select" size="sm">
         <UiSelect
           id="tool-config-select"
+          size="sm"
           :model-value="selectedConfig"
           :disabled="saving || deleting || exporting || loadingConfig"
           aria-label="选择已有配置或新建"
@@ -30,13 +30,13 @@
             {{ config }}
           </option>
         </UiSelect>
-      </div>
+      </UiField>
 
-      <div class="config-row">
-        <label class="config-label" for="tool-config-name">配置名称</label>
+      <UiField class="config-row" label="配置名称" for-id="tool-config-name" size="sm">
         <UiInput
           id="tool-config-name"
           type="text"
+          size="sm"
           :model-value="configNameInput"
           :invalid="Boolean(configNameError)"
           :aria-invalid="configNameError ? 'true' : 'false'"
@@ -49,7 +49,7 @@
             )
           "
         />
-      </div>
+      </UiField>
 
       <p v-if="configNameError" class="config-error" role="alert">
         {{ configNameError }}
@@ -74,6 +74,7 @@
       <div class="config-actions">
         <UiButton
           variant="primary"
+          size="sm"
           :disabled="Boolean(configNameError) || saving || deleting || exporting || loadingConfig"
           @click="emit('saveConfig')"
         >
@@ -81,6 +82,7 @@
         </UiButton>
         <UiButton
           variant="danger"
+          size="sm"
           :disabled="!selectedConfig || saving || deleting || exporting || loadingConfig"
           @click="emit('deleteConfig')"
         >
@@ -88,7 +90,8 @@
         </UiButton>
         <UiButton
           :disabled="!hasSelection || Boolean(configNameError) || saving || deleting || exporting || loadingConfig"
-          variant="primary"
+          variant="outline"
+          size="sm"
           @click="emit('exportTxt')"
         >
           {{ exporting ? "导出中..." : "导出" }}
@@ -150,6 +153,7 @@ import AppCheckbox from "@/components/ui/AppCheckbox.vue";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiCard from "@/components/ui/UiCard.vue";
+import UiField from "@/components/ui/UiField.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
@@ -221,21 +225,7 @@ const emit = defineEmits<{
 }
 
 .config-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
   margin-bottom: var(--space-3);
-}
-
-.config-label {
-  flex: 0 0 72px;
-  font-size: var(--font-size-body);
-  color: var(--secondary-text);
-}
-
-.config-row :deep(.ui-select),
-.config-row :deep(.ui-input) {
-  flex: 1;
 }
 
 .config-error {
@@ -262,7 +252,7 @@ const emit = defineEmits<{
   display: flex;
   gap: var(--space-2);
   flex-wrap: wrap;
-  margin-top: var(--space-1);
+  margin-top: 0;
 }
 
 .config-actions :deep(.ui-button) {
@@ -278,9 +268,9 @@ const emit = defineEmits<{
 
 .preview-controls {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2);
   flex-wrap: wrap;
 }
 

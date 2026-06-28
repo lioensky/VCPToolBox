@@ -741,14 +741,15 @@ onBeforeRouteLeave(async () => {
 
 .tool-list-editor-page > .description {
   flex-shrink: 0;
+  margin-bottom: var(--space-3);
 }
 
 .tool-list-editor {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-4);
+  grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr);
+  gap: var(--space-3);
   align-items: stretch;
   overflow: hidden;
 }
