@@ -53,8 +53,24 @@
       </div>
     </div>
 
-    <p v-if="isLoading" class="status-tip">正在加载多媒体缓存数据…</p>
-    <p v-else-if="mediaItems.length === 0" class="status-tip">{{ emptyMessage }}</p>
+    <UiEmptyState
+      v-if="isLoading"
+      title="正在加载多媒体缓存数据…"
+      description="请稍候，面板正在同步缓存索引。"
+    >
+      <template #icon>
+        <span class="material-symbols-outlined spinning">progress_activity</span>
+      </template>
+    </UiEmptyState>
+    <UiEmptyState
+      v-else-if="mediaItems.length === 0"
+      title="暂无多媒体缓存"
+      :description="emptyMessage"
+    >
+      <template #icon>
+        <span class="material-symbols-outlined">perm_media</span>
+      </template>
+    </UiEmptyState>
 
     <div v-else class="media-grid">
       <UiCard v-for="item in mediaItems" :key="item.hash" class="media-card" size="sm" variant="flat">
@@ -161,8 +177,12 @@
               </UiIconButton>
             </header>
 
-            <p v-if="isMultiModalConfigLoading" class="status-tip">正在加载…</p>
-            <p v-if="multiModalConfigError" class="status-tip mm-error">{{ multiModalConfigError }}</p>
+            <UiBadge v-if="isMultiModalConfigLoading" variant="outline" role="status" aria-live="polite">
+              正在加载…
+            </UiBadge>
+            <UiBadge v-if="multiModalConfigError" variant="danger" role="status" aria-live="polite">
+              {{ multiModalConfigError }}
+            </UiBadge>
 
             <div class="mm-config-body">
               <UiField label="多模态识别模型 (MultiModalModel)">
@@ -247,6 +267,7 @@ import BaseModal from '@/components/ui/BaseModal.vue'
 import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiCard from '@/components/ui/UiCard.vue'
+import UiEmptyState from '@/components/ui/UiEmptyState.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
@@ -756,11 +777,6 @@ onUnmounted(() => {
   color: var(--secondary-text);
   white-space: nowrap;
 }
-.status-tip {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-}
-
 .media-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -967,10 +983,6 @@ onUnmounted(() => {
 .mm-meta-tag {
   margin-left: 8px;
   vertical-align: middle;
-}
-
-.mm-error {
-  color: var(--danger-color, #ef4444);
 }
 
 .mm-config-footer {
