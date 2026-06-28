@@ -1,24 +1,15 @@
 <template>
   <section class="config-section active-section">
-    <p class="description">
-      在这里，您可以调整消息预处理器的执行顺序。按住左侧手柄拖动时会实时预览落位，
-      越靠上的插件越优先执行。
-    </p>
-
-    <UiCard class="preprocessor-order-panel" variant="default" size="sm">
-      <UiToolbar density="compact">
-        <div class="order-summary">
-          <UiBadge variant="outline">
-            {{ orderedPreprocessors.length }} 个预处理器
-          </UiBadge>
-          <UiDirtyIndicator :dirty="hasChanges" :label="`已修改 ${changedItemCount} 项`" />
-          <UiBadge v-if="!hasChanges" variant="secondary">当前顺序未修改</UiBadge>
-          <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
-            {{ statusMessage }}
-          </UiBadge>
-        </div>
-
-        <template #actions>
+    <UiCard
+      class="preprocessor-order-panel"
+      variant="default"
+      size="sm"
+      title="预处理器执行顺序"
+      description="按住左侧手柄拖动排序，越靠上的插件越优先执行。保存后会触发热重载。"
+      divided
+    >
+      <template #action>
+        <div class="order-actions">
           <UiButton
             type="button"
             variant="outline"
@@ -35,53 +26,66 @@
             :disabled="!hasChanges || isSaving"
             @click="saveOrder"
           >
-            保存顺序并热重载
+            保存顺序
           </UiButton>
-        </template>
+        </div>
+      </template>
+
+      <UiToolbar class="order-toolbar" density="compact">
+        <div class="order-summary">
+          <UiBadge variant="outline">
+            {{ orderedPreprocessors.length }} 个预处理器
+          </UiBadge>
+          <UiDirtyIndicator :dirty="hasChanges" :label="`已修改 ${changedItemCount} 项`" />
+          <UiBadge v-if="!hasChanges" variant="secondary">当前顺序未修改</UiBadge>
+          <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
+            {{ statusMessage }}
+          </UiBadge>
+        </div>
       </UiToolbar>
-    </UiCard>
 
-    <TransitionGroup
-      id="preprocessor-list"
-      tag="ul"
-      name="drag-sort"
-      class="draggable-list"
-      data-preprocessor-list="true"
-    >
-      <li
-        v-for="(plugin, index) in orderedPreprocessors"
-        :key="plugin.name"
-        :data-preprocessor-name="plugin.name"
-        :class="[
-          'draggable-item',
-          {
-            'draggable-item--dragging': draggingPluginName === plugin.name,
-            'draggable-item--drop-before':
-              draggingPluginName !== null &&
-              dragOverPluginName === plugin.name &&
-              dropPlacement === 'before',
-            'draggable-item--drop-after':
-              draggingPluginName !== null &&
-              dragOverPluginName === plugin.name &&
-              dropPlacement === 'after',
-          },
-        ]"
+      <TransitionGroup
+        id="preprocessor-list"
+        tag="ul"
+        name="drag-sort"
+        class="draggable-list"
+        data-preprocessor-list="true"
       >
-        <DragHandle
-          label="拖动排序"
-          @pointerdown="handleDragHandlePointerDown(plugin.name, $event)"
-        />
+        <li
+          v-for="(plugin, index) in orderedPreprocessors"
+          :key="plugin.name"
+          :data-preprocessor-name="plugin.name"
+          :class="[
+            'draggable-item',
+            {
+              'draggable-item--dragging': draggingPluginName === plugin.name,
+              'draggable-item--drop-before':
+                draggingPluginName !== null &&
+                dragOverPluginName === plugin.name &&
+                dropPlacement === 'before',
+              'draggable-item--drop-after':
+                draggingPluginName !== null &&
+                dragOverPluginName === plugin.name &&
+                dropPlacement === 'after',
+            },
+          ]"
+        >
+          <DragHandle
+            label="拖动排序"
+            @pointerdown="handleDragHandlePointerDown(plugin.name, $event)"
+          />
 
-        <span class="plugin-index">{{ index + 1 }}.</span>
+          <span class="plugin-index">{{ index + 1 }}.</span>
 
-        <span class="plugin-copy">
-          <span class="plugin-name">{{ plugin.displayName || plugin.name }}</span>
-          <span v-if="plugin.description" class="plugin-description">
-            {{ plugin.description }}
+          <span class="plugin-copy">
+            <span class="plugin-name">{{ plugin.displayName || plugin.name }}</span>
+            <span v-if="plugin.description" class="plugin-description">
+              {{ plugin.description }}
+            </span>
           </span>
-        </span>
-      </li>
-    </TransitionGroup>
+        </li>
+      </TransitionGroup>
+    </UiCard>
 
     <div v-if="dragGhost" ref="dragGhostElement" class="preprocessor-drag-ghost">
       <div class="preprocessor-drag-ghost-shell">
@@ -174,8 +178,15 @@ void dragGhostElement
 </script>
 
 <style scoped>
-.preprocessor-order-panel {
-  margin-bottom: var(--space-3);
+.order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.order-toolbar {
+  min-height: 32px;
 }
 
 .order-summary {
@@ -199,11 +210,11 @@ void dragGhostElement
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 56px;
+  min-height: 52px;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-bg) 62%, transparent);
+  background: transparent;
   will-change: transform;
   transition:
     background-color var(--transition-fast),
@@ -213,8 +224,8 @@ void dragGhostElement
 }
 
 .draggable-item:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 32%, var(--border-color));
-  background: color-mix(in srgb, var(--accent-bg) 34%, transparent);
+  border-color: color-mix(in srgb, var(--highlight-text) 28%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-bg) 24%, transparent);
 }
 
 .draggable-item--dragging {
@@ -324,6 +335,16 @@ void dragGhostElement
   .drag-sort-enter-active,
   .drag-sort-leave-active {
     transition: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .order-actions {
+    width: 100%;
+  }
+
+  .order-actions :deep(.ui-button) {
+    flex: 1;
   }
 }
 </style>
