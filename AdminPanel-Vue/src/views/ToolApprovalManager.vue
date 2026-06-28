@@ -22,21 +22,33 @@
     >
       <form @submit.prevent="saveConfig">
         <UiSettingsGroup inset>
-          <div class="config-item">
-            <AppSwitch v-model="config.enabled" :disabled="saving" label="是否开启工具调用审核" />
-          </div>
-          <div class="config-item">
-            <AppSwitch v-model="config.approveAll" :disabled="saving" label="是否开启所有工具调用审核" />
-          <p class="aa-hint">如果开启，所有工具调用都将进入审核流程，无论是否在名单中。</p>
-          </div>
-          <div class="config-item">
-            <AppSwitch v-model="config.fuzzyToolMatching" :disabled="saving" label="是否开启模糊工具匹配" />
-          <p class="aa-hint">开启后，工具参数值边界除标准「始」「末」外，还会兼容「始}、{始」、以及「始`」「始text」「始``」「始%20」等异常标记。</p>
-          </div>
-          <div class="config-item privacy-protection-item">
-            <AppSwitch v-model="config.privacyProtectionEnabled" :disabled="saving" label="是否开启工具调用隐私保护" />
-          <p class="aa-hint">默认关闭。开启后，会在工具结果返回给 AI 前保守打码疑似 .env 单行密钥、password、api key、token，以及 sk- 等高置信长令牌；不会影响工具实际执行与人工审核参数。</p>
-          </div>
+          <UiSettingsSwitchRow
+            v-model="config.enabled"
+            :disabled="saving"
+            density="compact"
+            label="是否开启工具调用审核"
+          />
+          <UiSettingsSwitchRow
+            v-model="config.approveAll"
+            :disabled="saving"
+            density="compact"
+            label="是否开启所有工具调用审核"
+            description="如果开启，所有工具调用都将进入审核流程，无论是否在名单中。"
+          />
+          <UiSettingsSwitchRow
+            v-model="config.fuzzyToolMatching"
+            :disabled="saving"
+            density="compact"
+            label="是否开启模糊工具匹配"
+            description="开启后，工具参数值边界除标准「始」「末」外，还会兼容异常标记。"
+          />
+          <UiSettingsSwitchRow
+            v-model="config.privacyProtectionEnabled"
+            :disabled="saving"
+            density="compact"
+            label="是否开启工具调用隐私保护"
+            description="默认关闭。开启后，会在工具结果返回给 AI 前保守打码疑似密钥、password、api key、token 等高置信长令牌；不影响工具实际执行与人工审核参数。"
+          />
         </UiSettingsGroup>
         <UiSettingsForm as="div" :columns="2" gap="md">
           <UiField label="审核最大等待时间" description="超时后，该审核请求将自动拒绝。" for-id="tool-approval-timeout">
@@ -76,7 +88,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { adminConfigApi } from '@/api'
 import type { ToolApprovalConfig } from '@/api/admin-config'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
 import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiDirtyIndicator from '@/components/ui/UiDirtyIndicator.vue'
@@ -85,6 +96,7 @@ import UiInput from '@/components/ui/UiInput.vue'
 import UiSettingsCard from '@/components/ui/UiSettingsCard.vue'
 import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
 import UiSettingsGroup from '@/components/ui/UiSettingsGroup.vue'
+import UiSettingsSwitchRow from '@/components/ui/UiSettingsSwitchRow.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
 import UiToolbar from '@/components/ui/UiToolbar.vue'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
@@ -264,23 +276,11 @@ onBeforeRouteLeave(async () => {
 }
 
 .tool-approval-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 12;
-  padding: var(--space-3) 0;
-  backdrop-filter: blur(8px);
+  padding: 0;
 }
 
 .tool-approval-toolbar.is-dirty {
   color: var(--warning-color);
-}
-
-.config-item {
-  min-width: 0;
-}
-
-.config-item + .config-item {
-  margin-top: var(--space-3);
 }
 
 .timeout-input {
@@ -289,12 +289,6 @@ onBeforeRouteLeave(async () => {
 
 .approval-list-textarea {
   font-family: 'Consolas', 'Monaco', monospace;
-}
-
-.aa-hint {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-  margin: var(--space-2) 0 0;
 }
 
 </style>
