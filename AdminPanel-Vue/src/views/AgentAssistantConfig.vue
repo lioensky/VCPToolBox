@@ -444,15 +444,15 @@ function formatDelegationStatus(status?: string): string {
 .aa-config-container {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
 .aa-delegation-settings {
-  border-left: 2px solid color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+  border-left: 1px solid color-mix(in srgb, var(--highlight-text) 36%, var(--border-color));
 }
 
 .aa-delegation-tracker {
-  border-left: 2px solid color-mix(in srgb, var(--warning-color) 52%, var(--border-color));
+  border-left: 1px solid color-mix(in srgb, var(--warning-color) 42%, var(--border-color));
 }
 
 .aa-delegation-status {
@@ -463,7 +463,7 @@ function formatDelegationStatus(status?: string): string {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  margin-top: var(--space-4);
+  margin-top: var(--space-3);
 }
 
 .aa-delegation-list h4 {
@@ -478,17 +478,17 @@ function formatDelegationStatus(status?: string): string {
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .aa-delegation-card.active {
-  border-left-color: color-mix(in srgb, var(--highlight-text) 55%, var(--border-color));
+  border-left-color: color-mix(in srgb, var(--highlight-text) 48%, var(--border-color));
 }
 
 .aa-delegation-card.recent {
-  opacity: 0.92;
+  background: transparent;
 }
 
 .aa-delegation-card-header {
@@ -504,7 +504,7 @@ function formatDelegationStatus(status?: string): string {
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
   word-break: break-all;
-  margin-top: 2px;
+  margin-top: var(--space-1);
 }
 
 .aa-delegation-meta {
@@ -519,6 +519,10 @@ function formatDelegationStatus(status?: string): string {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .aa-preview-block label {
@@ -529,7 +533,7 @@ function formatDelegationStatus(status?: string): string {
 
 .aa-preview-block p {
   margin: 0;
-  color: var(--primary-text);
+  color: var(--secondary-text);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
@@ -550,7 +554,7 @@ function formatDelegationStatus(status?: string): string {
 .aa-agent-cards-container {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  gap: var(--space-4);
+  gap: var(--space-3);
   max-width: 100%;
   overflow: visible;
 }
@@ -559,10 +563,11 @@ function formatDelegationStatus(status?: string): string {
   box-sizing: border-box;
   max-width: 100%;
   overflow: hidden;
+  border-color: color-mix(in srgb, var(--border-color) 84%, transparent);
 }
 
 .aa-agent-card-header {
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-3);
 }
 
 .aa-agent-name-row {
@@ -580,15 +585,15 @@ function formatDelegationStatus(status?: string): string {
 .aa-agent-card-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .aa-advanced-params {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--space-4);
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--border-color);
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
   width: 100%;
 }
 
@@ -607,6 +612,6 @@ function formatDelegationStatus(status?: string): string {
   gap: var(--space-3);
   align-items: center;
   justify-content: flex-end;
-  padding: 16px 0;
+  padding: var(--space-3) 0;
 }
 </style>
