@@ -921,7 +921,7 @@ onUnmounted(() => {
 
 /* ──────────── Multi-modal config modal ──────────── */
 .mm-config-overlay {
-  background: var(--overlay-backdrop-strong, rgba(0, 0, 0, 0.6));
+  background: var(--overlay-backdrop-strong);
 }
 
 .mm-config-panel {
