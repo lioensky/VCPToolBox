@@ -1,6 +1,6 @@
 <template>
   <section class="plugin-store">
-    <section class="store-hero card">
+    <UiCard class="store-hero">
       <div class="hero-copy">
         <span class="eyebrow hero-eyebrow">Plugin Marketplace</span>
         <h2>插件商店与安装中心</h2>
@@ -27,30 +27,29 @@
           <strong>{{ storeSummary.failedSources }}</strong>
         </article>
       </div>
-    </section>
+    </UiCard>
 
-    <section class="card tab-nav-card">
+    <UiCard class="tab-nav-card" size="sm" variant="subtle">
       <div class="view-mode-switch" role="tablist" aria-label="插件商店视图切换">
-        <button
+        <UiButton
           v-for="tab in tabs"
           :key="tab.id"
           :id="`plugin-store-tab-${tab.id}`"
           type="button"
           role="tab"
-          class="view-mode-btn"
-          :class="{ active: activeTab === tab.id }"
+          :variant="activeTab === tab.id ? 'primary' : 'outline'"
           :aria-selected="activeTab === tab.id"
           :aria-controls="`plugin-store-panel-${tab.id}`"
           :tabindex="activeTab === tab.id ? 0 : -1"
           @click="activeTab = tab.id"
         >
-          <span class="material-symbols-outlined">{{ tab.icon }}</span>
+          <template #leading><span class="material-symbols-outlined">{{ tab.icon }}</span></template>
           <span>{{ tab.label }}</span>
-        </button>
+        </UiButton>
       </div>
-    </section>
+    </UiCard>
 
-    <section class="card controls-card">
+    <UiCard class="controls-card" size="sm" variant="subtle">
       <div class="controls-main-row">
         <label class="search-field" v-if="activeTab === 'market'">
           <span class="material-symbols-outlined">search</span>
@@ -80,26 +79,28 @@
       </div>
 
       <div v-if="activeTab === 'market'" class="filter-row" aria-label="按源筛选">
-        <button
+        <UiButton
           type="button"
-          class="filter-pill"
-          :class="{ active: filterSourceId === '' }"
+          size="sm"
+          :variant="filterSourceId === '' ? 'primary' : 'outline'"
+          :aria-pressed="filterSourceId === ''"
           @click="selectSource('')"
         >
           全部源
           <span class="pill-count">{{ storePlugins.length }}</span>
-        </button>
-        <button
+        </UiButton>
+        <UiButton
           v-for="s in visibleSourceFilters"
           :key="s.id"
           type="button"
-          class="filter-pill"
-          :class="{ active: filterSourceId === s.id }"
+          size="sm"
+          :variant="filterSourceId === s.id ? 'primary' : 'outline'"
+          :aria-pressed="filterSourceId === s.id"
           @click="selectSource(s.id)"
         >
           {{ s.name }}
           <span class="pill-count">{{ sourcePluginCount(s.id) }}</span>
-        </button>
+        </UiButton>
 
         <details
           v-if="overflowSourceFilters.length > 0"
@@ -112,21 +113,22 @@
             <span class="pill-count">{{ overflowSourceFilters.length }}</span>
           </summary>
           <div class="source-overflow-menu" role="menu" aria-label="更多源筛选">
-            <button
+            <UiButton
               v-for="s in overflowSourceFilters"
               :key="s.id"
               type="button"
-              class="filter-pill"
-              :class="{ active: filterSourceId === s.id }"
+              size="sm"
+              :variant="filterSourceId === s.id ? 'primary' : 'ghost'"
+              :aria-pressed="filterSourceId === s.id"
               @click="selectSource(s.id)"
             >
               {{ s.name }}
               <span class="pill-count">{{ sourcePluginCount(s.id) }}</span>
-            </button>
+            </UiButton>
           </div>
         </details>
       </div>
-    </section>
+    </UiCard>
 
     <!-- =========================================================== Market -->
     <section
@@ -136,7 +138,7 @@
       role="tabpanel"
       aria-labelledby="plugin-store-tab-market"
     >
-      <div v-if="sourceErrors.length" class="card source-errors">
+      <UiCard v-if="sourceErrors.length" class="source-errors" size="sm" variant="subtle">
         <div class="card-header">
           <h3 class="card-title">
             <span class="material-symbols-outlined">error</span>
@@ -149,17 +151,18 @@
             <strong>{{ sourceName(err.sourceId) }}</strong>：{{ err.error }}
           </li>
         </ul>
-      </div>
+      </UiCard>
 
-      <section v-if="isLoading" class="card empty-state">
+      <UiCard v-if="isLoading" class="empty-state" variant="subtle">
         <span class="material-symbols-outlined">progress_activity</span>
         <h3>正在加载插件列表</h3>
         <p>正从全部已配置源中获取最新数据…</p>
-      </section>
+      </UiCard>
 
-      <section
+      <UiCard
         v-else-if="sources.length === 0"
-        class="card empty-state"
+        class="empty-state"
+        variant="subtle"
       >
         <span class="material-symbols-outlined">dns</span>
         <h3>尚未配置任何源</h3>
@@ -170,16 +173,17 @@
           </template>
           <span>去添加源</span>
         </UiButton>
-      </section>
+      </UiCard>
 
-      <section
+      <UiCard
         v-else-if="filteredPlugins.length === 0"
-        class="card empty-state"
+        class="empty-state"
+        variant="subtle"
       >
         <span class="material-symbols-outlined">search_off</span>
         <h3>暂无匹配的插件</h3>
         <p>请检查源配置、调整筛选条件，或切换到「手动安装」选项卡。</p>
-      </section>
+      </UiCard>
 
       <section v-else class="results-header">
         <div>
@@ -204,17 +208,20 @@
               <span class="type-count">{{ group.plugins.length }}</span>
             </h3>
 
-            <button
+            <UiButton
               type="button"
               class="group-collapse-toggle"
-              :class="{ 'is-collapsed': isCategoryGroupCollapsed(group.key) }"
+              variant="outline"
+              size="sm"
               :aria-expanded="!isCategoryGroupCollapsed(group.key)"
               :aria-controls="getCategoryGroupContentId(group.key)"
               @click="toggleCategoryGroupCollapsed(group.key)"
             >
               <span>{{ isCategoryGroupCollapsed(group.key) ? '展开' : '折叠' }}</span>
-              <span class="material-symbols-outlined group-collapse-icon">expand_more</span>
-            </button>
+              <template #trailing>
+                <span class="material-symbols-outlined group-collapse-icon" :class="{ 'is-collapsed': isCategoryGroupCollapsed(group.key) }">expand_more</span>
+              </template>
+            </UiButton>
           </div>
 
           <transition name="group-collapse">
@@ -561,6 +568,7 @@ import {
 } from '@/api'
 import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
+import UiCard from '@/components/ui/UiCard.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiInput from '@/components/ui/UiInput.vue'
 import UiSelect from '@/components/ui/UiSelect.vue'
@@ -1300,16 +1308,16 @@ onBeforeUnmount(() => {
 .plugin-store {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
 /* ========== Hero ========== */
 .store-hero {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
-  gap: var(--space-5);
-  background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
+  gap: var(--space-4);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
 }
 
 .hero-copy h2 {
@@ -1337,10 +1345,10 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: 16px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--tertiary-bg);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .stat-chip strong {
@@ -1361,18 +1369,14 @@ onBeforeUnmount(() => {
 }
 
 /* ========== Controls ========== */
-.tab-nav-card {
-  background: var(--secondary-bg);
-}
-
 .controls-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
   position: sticky;
   top: 0;
   z-index: 17;
-  background: var(--secondary-bg);
+  background: var(--primary-bg);
 }
 
 .controls-top,
@@ -1420,44 +1424,10 @@ onBeforeUnmount(() => {
   gap: var(--space-2);
 }
 
-.view-mode-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition:
-    background-color 0.2s ease,
-    color 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.view-mode-btn:hover {
-  color: var(--primary-text);
-  background: var(--accent-bg);
-  border-color: color-mix(in srgb, var(--button-bg) 30%, transparent);
-}
-
-.view-mode-btn.active {
-  color: var(--on-accent-text);
-  background: var(--button-bg);
-  border-color: color-mix(in srgb, var(--button-bg) 72%, var(--border-color));
-}
-
-.view-mode-btn:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-}
-
 .filter-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-2);
   position: relative;
 }
 
@@ -1476,14 +1446,23 @@ onBeforeUnmount(() => {
 .source-overflow-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 0 12px;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding: 0 var(--space-3);
   border: 1px dashed var(--border-color);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   color: var(--secondary-text);
   cursor: pointer;
-  background: var(--tertiary-bg);
+  background: transparent;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.source-overflow-trigger:hover {
+  background: var(--accent-bg);
+  color: var(--primary-text);
 }
 
 .source-overflow[open] .source-overflow-trigger {
@@ -1499,21 +1478,21 @@ onBeforeUnmount(() => {
   min-width: 240px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--secondary-bg);
   box-shadow: var(--shadow-lg);
   z-index: 5;
 }
 
-.source-overflow-menu .filter-pill {
+.source-overflow-menu :deep(.ui-button) {
   width: 100%;
   justify-content: space-between;
 }
 
-.filter-pill .pill-count {
+.pill-count {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1542,7 +1521,7 @@ onBeforeUnmount(() => {
 
 .results-header p {
   color: var(--secondary-text);
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 
 .tab-pane {
@@ -1555,13 +1534,13 @@ onBeforeUnmount(() => {
 .plugin-grouped-view {
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: var(--space-4);
 }
 
 .plugin-type-group {
-  background: var(--secondary-bg);
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--border-color);
+  background: transparent;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   overflow: hidden;
 }
 
@@ -1570,9 +1549,9 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  background: var(--tertiary-bg);
-  border-bottom: 1px solid var(--border-color);
+  padding: var(--space-3) var(--space-4);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
 }
 
 .type-group-header h3 {
@@ -1600,45 +1579,21 @@ onBeforeUnmount(() => {
 }
 
 .group-collapse-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--secondary-bg);
-  color: var(--secondary-text);
-  cursor: pointer;
-  transition:
-    color 0.2s ease,
-    background-color 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.group-collapse-toggle:hover {
-  color: var(--primary-text);
-  background: color-mix(in srgb, var(--button-bg) 10%, transparent);
-  border-color: color-mix(in srgb, var(--button-bg) 28%, transparent);
-}
-
-.group-collapse-toggle:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
+  flex: 0 0 auto;
 }
 
 .group-collapse-icon {
   font-size: var(--font-size-title);
   line-height: 1;
-  transition: transform 0.24s ease;
+  transition: transform var(--transition-fast);
 }
 
-.group-collapse-toggle.is-collapsed .group-collapse-icon {
+.group-collapse-icon.is-collapsed {
   transform: rotate(-90deg);
 }
 
 .type-group-content {
-  padding: 16px;
+  padding: var(--space-3);
 }
 
 .group-collapse-enter-active,
@@ -1671,25 +1626,22 @@ onBeforeUnmount(() => {
 .plugin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 18px;
+  gap: var(--space-3);
 }
 
 .plugin-card {
   display: flex;
   flex-direction: column;
   height: 100%;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-xl);
-  padding: 20px;
-  background: var(--secondary-bg);
-  transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease;
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  background: transparent;
+  transition: background-color var(--transition-fast);
 }
 
 .plugin-card:hover {
-  border-color: color-mix(in srgb, var(--button-bg) 28%, var(--border-color));
-  background: color-mix(in srgb, var(--accent-bg) 42%, var(--secondary-bg));
+  background: var(--accent-bg);
 }
 
 .plugin-card-top {
@@ -1702,17 +1654,17 @@ onBeforeUnmount(() => {
 
 .plugin-identity {
   display: flex;
-  gap: 14px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
 .plugin-icon-shell {
-  width: 48px;
-  height: 48px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--button-bg) 18%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
   color: var(--highlight-text);
   flex-shrink: 0;
 }
@@ -1737,7 +1689,7 @@ onBeforeUnmount(() => {
 }
 
 .plugin-original-name {
-  margin-top: 6px;
+  margin-top: var(--space-1);
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
   overflow-wrap: anywhere;
@@ -1759,7 +1711,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .plugin-card-main {
@@ -1780,15 +1732,15 @@ onBeforeUnmount(() => {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3);
 }
 
 .plugin-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-2);
   margin-top: auto;
-  padding-top: 4px;
+  padding-top: var(--space-1);
 }
 
 /* ========== Source errors ========== */
@@ -2043,7 +1995,7 @@ onBeforeUnmount(() => {
     width: 100%;
   }
 
-  .view-mode-btn {
+  .view-mode-switch :deep(.ui-button) {
     flex: 1;
     justify-content: center;
   }
@@ -2085,7 +2037,7 @@ onBeforeUnmount(() => {
   }
 
   .plugin-card {
-    padding: 16px;
+    padding: var(--space-3);
   }
 
   .plugin-actions {
@@ -2100,6 +2052,14 @@ onBeforeUnmount(() => {
   .upload-buttons :deep(.ui-button) {
     flex: 1;
     justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .source-overflow-trigger,
+  .group-collapse-icon,
+  .plugin-card {
+    transition: none;
   }
 }
 </style>
