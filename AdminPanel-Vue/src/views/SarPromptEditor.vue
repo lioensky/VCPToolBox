@@ -1,13 +1,14 @@
 <template>
   <section class="config-section active-section sarprompt-page">
-    <div class="page-header">
+    <UiToolbar class="page-header" align="start">
       <div>
+        <h2>SarPrompt 提示词映射</h2>
         <p class="description">
           多模型提示词管理。用于为不同模型映射特定的提示词内容，解决新模型对齐问题。
           支持 <code>SarPromptN</code> 占位符的热载入。
         </p>
       </div>
-      <div class="header-actions">
+      <template #actions>
         <UiButton
           variant="outline"
           size="sm"
@@ -25,8 +26,8 @@
         >
           新增Sar组
         </UiButton>
-      </div>
-    </div>
+      </template>
+    </UiToolbar>
 
     <UiCard v-if="isLoading" variant="subtle">
       <UiEmptyState title="正在加载..." description="正在读取 SarPrompt 配置。" />
@@ -121,6 +122,7 @@ import UiField from "@/components/ui/UiField.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiSettingsForm from "@/components/ui/UiSettingsForm.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
+import UiToolbar from "@/components/ui/UiToolbar.vue";
 
 const sarPrompts = ref<(SarPrompt & { modelsInput: string })[]>([]);
 const isLoading = ref(false);
@@ -190,19 +192,20 @@ onMounted(() => {
 .sarprompt-page {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .page-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
+  min-height: 36px;
 }
 
-.header-actions {
-  display: flex;
-  gap: var(--space-3);
+.page-header h2 {
+  margin: 0;
+  line-height: 1.25;
+}
+
+.page-header .description {
+  margin-top: var(--space-1);
 }
 
 .sarprompt-list {
@@ -223,9 +226,26 @@ onMounted(() => {
 }
 
 code {
-  background: var(--secondary-bg);
-  padding: 2px 4px;
-  border-radius: 4px;
+  background: color-mix(in srgb, var(--primary-text) 6%, transparent);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
   color: var(--highlight-text);
+  font-size: var(--font-size-caption);
+}
+
+@media (max-width: 640px) {
+  .page-header {
+    align-items: stretch;
+  }
+
+  .page-header :deep(.ui-toolbar__actions),
+  .page-header :deep(.ui-toolbar__main) {
+    width: 100%;
+  }
+
+  .page-header :deep(.ui-button),
+  .editor-actions :deep(.ui-button) {
+    flex: 1;
+  }
 }
 </style>
