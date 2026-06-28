@@ -11,7 +11,7 @@
           <template #leading><span class="material-symbols-outlined">content_copy</span></template>
           复制占位符
         </UiButton>
-        <UiButton type="button" size="lg" variant="secondary" @click="saveDynamicConfig">
+        <UiButton type="button" size="lg" variant="primary" @click="saveDynamicConfig">
           <template #leading><span class="material-symbols-outlined">save</span></template>
           保存
         </UiButton>
@@ -108,7 +108,7 @@
             <template #leading><span class="material-symbols-outlined">category</span></template>
             重建分类
           </UiButton>
-          <UiButton type="button" size="sm" :disabled="isClassifying" @click="rebuild('all')">
+          <UiButton type="button" variant="danger" size="sm" :disabled="isClassifying" @click="rebuild('all')">
             <template #leading><span class="material-symbols-outlined">sync</span></template>
             全量重建
           </UiButton>
@@ -130,6 +130,7 @@
           v-model.trim="filterText"
           class="records-search"
           type="search"
+          size="sm"
           placeholder="搜索插件、分类、关键词"
         />
       </template>
@@ -173,10 +174,10 @@
             <td class="brief-cell">{{ record.brief || '-' }}</td>
             <td>
               <div class="row-actions">
-                <UiButton type="button" variant="outline" size="sm" @click="toggleOverride(record, 'pinned')">
+                <UiButton type="button" variant="outline" size="xs" @click="toggleOverride(record, 'pinned')">
                   {{ isPinned(record.originKey) ? '取消固定' : '固定' }}
                 </UiButton>
-                <UiButton type="button" variant="outline" size="sm" @click="toggleOverride(record, 'excluded')">
+                <UiButton type="button" variant="outline" size="xs" @click="toggleOverride(record, 'excluded')">
                   {{ isExcluded(record.originKey) ? '恢复' : '排除' }}
                 </UiButton>
               </div>
@@ -558,7 +559,7 @@ onBeforeUnmount(() => {
 .dynamic-tools-page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .dynamic-tools-header {
@@ -575,8 +576,8 @@ onBeforeUnmount(() => {
 }
 
 .dynamic-settings-surface {
-  --dynamic-tools-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
-  --dynamic-tools-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+  --dynamic-tools-surface-border: color-mix(in srgb, var(--border-color) 88%, transparent);
+  --dynamic-tools-card-surface: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
 }
 
 .dynamic-settings-surface,
@@ -599,7 +600,7 @@ onBeforeUnmount(() => {
 
 .dynamic-settings-surface :deep(.ui-table-frame) {
   border-color: var(--dynamic-tools-surface-border);
-  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
+  background: transparent;
 }
 
 .header-actions {
@@ -615,22 +616,34 @@ onBeforeUnmount(() => {
   gap: var(--space-2);
 }
 
+.summary-item {
+  border-color: color-mix(in srgb, var(--border-color) 86%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
+}
+
 .summary-label {
   display: block;
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-1);
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
 }
 
 .summary-item strong {
-  font-size: 1.6rem;
+  font-size: 1.45rem;
   line-height: 1.1;
+}
+
+.summary-item small {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
 }
 
 .panel-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .muted {
@@ -646,7 +659,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--warning-color);
   border-radius: var(--radius-md);
   color: var(--warning-color);
@@ -655,6 +668,14 @@ onBeforeUnmount(() => {
 
 .records-table-frame :deep(.ui-table-frame__table) {
   min-width: 980px;
+}
+
+.records-table-frame :deep(tbody tr) {
+  transition: background-color var(--transition-fast);
+}
+
+.records-table-frame :deep(tbody tr:hover) {
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
 .records-search {
@@ -677,7 +698,17 @@ onBeforeUnmount(() => {
 .row-actions {
   display: flex;
   flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.row-actions {
   gap: var(--space-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .records-table-frame :deep(tbody tr) {
+    transition: none;
+  }
 }
 
 @media (max-width: 960px) {
