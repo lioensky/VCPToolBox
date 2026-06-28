@@ -457,6 +457,19 @@ new-api 常见动效:
 
 后续每次改造 AdminPanel 页面, 不应直接开始堆样式。推荐采用"研究参考 -> 抽象规律 -> 小步落地 -> 验证回收"四段流程。
 
+### 0. 改造硬性守则
+
+以下规则优先级高于页面局部审美判断。每次改页面前先过一遍, 避免重新回到"每页自造一套控件"的问题:
+
+- 优先使用已有 `Ui*` 原语: `UiButton`, `UiIconButton`, `UiInput`, `UiSelect`, `UiTextarea`, `UiBadge`, `UiField`, `UiCard`, `UiSettingsCard`, `UiSettingsForm`, `UiSettingsGroup`, `UiSettingsSwitchRow`, `UiPageActions`。
+- 不要在页面里重复发明按钮、输入框、开关、badge、danger zone。页面局部 class 主要负责布局、密度和特殊业务结构, 不复制整套控件视觉。
+- 颜色必须对齐项目 token 和已完成试点页面。普通 surface 优先使用中性 token, 不写裸色值和临时 `rgba()`。
+- 主题色只用于主按钮、focus、选中态、当前项、状态 accent 等关键位置, 不用于普通设置块大面积铺底。
+- 控件高度按 28/32/36px 三档处理, 间距按 8/12/16px 节奏处理, 图标默认 16px 或 18px。
+- hover/focus/active 只能有一层反馈。外层容器有 hover 时, 内层控件不要再制造第二层描边或强背景。
+- 改颜色前先判断元素语义: 可编辑输入、只读数据、badge/status、列表行、危险操作不能混成同一种灰底。
+- 遇到多个页面重复出现的结构, 先考虑增强原语或新增轻量原语, 再做页面迁移。
+
 ### 1. 先界定页面类型
 
 改造前先判断当前页面属于哪一种后台页面, 因为不同页面的视觉重心不同:
