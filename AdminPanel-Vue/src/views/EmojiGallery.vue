@@ -2364,9 +2364,9 @@ onUnmounted(() => {
   align-items: center;
   padding: 6px 10px;
   border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--danger-color, #ef4444) 40%, transparent);
-  background: color-mix(in srgb, var(--danger-color, #ef4444) 10%, transparent);
-  color: var(--danger-color, #ef4444);
+  border: 1px solid color-mix(in srgb, var(--danger-color) 40%, transparent);
+  background: color-mix(in srgb, var(--danger-color) 10%, transparent);
+  color: var(--danger-color);
   cursor: pointer;
   font-size: var(--font-size-helper);
 }
@@ -2381,7 +2381,7 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 6px 8px;
   border-radius: var(--radius-md);
-  border: 1px dashed color-mix(in srgb, var(--danger-color, #ef4444) 40%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--danger-color) 40%, transparent);
 }
 
 .upload-rejected__item {
@@ -2399,7 +2399,7 @@ onUnmounted(() => {
 }
 
 .upload-rejected__reason {
-  color: var(--danger-color, #ef4444);
+  color: var(--danger-color);
 }
 
 .preview-nav {
