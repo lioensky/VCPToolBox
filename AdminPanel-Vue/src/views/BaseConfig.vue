@@ -201,14 +201,15 @@
 
             <p class="entry-count">共 {{ editableEntryCount }} 个配置项</p>
 
-            <p
+            <UiBadge
               v-if="statusMessage"
-              :class="['base-console__status', `base-console__status--${statusType}`]"
+              :variant="statusBadgeVariant"
+              class="base-console__status"
               role="status"
               aria-live="polite"
             >
               {{ statusMessage }}
-            </p>
+            </UiBadge>
 
             <div class="base-console__section base-console__section--jump">
               <span class="base-console__label">快速跳转</span>
@@ -313,6 +314,9 @@ interface ConfigDocumentationMetadata {
 const configEntries = ref<ConfigEntry[]>([])
 const statusMessage = ref('')
 const statusType = ref<'info' | 'success' | 'error'>('info')
+const statusBadgeVariant = computed(() =>
+  statusType.value === 'error' ? 'danger' : statusType.value
+)
 const isLoading = ref(true)
 const activeGroupAnchor = ref('')
 const configDocumentation = ref<ConfigDocumentationMetadata>(createEmptyDocumentationMetadata())
@@ -1150,28 +1154,12 @@ onBeforeUnmount(() => {
 }
 
 .base-console__status {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  border: 1px solid transparent;
-  font-size: var(--font-size-body);
-}
-
-.base-console__status--info {
-  background: var(--info-bg);
-  border-color: var(--info-border);
-}
-
-.base-console__status--success {
-  background: var(--success-bg);
-  border-color: var(--success-border);
-  color: var(--success-text);
-}
-
-.base-console__status--error {
-  background: var(--danger-bg);
-  border-color: var(--danger-border);
-  color: var(--danger-text);
+  justify-content: flex-start;
+  max-width: 100%;
+  height: auto;
+  min-height: 24px;
+  white-space: normal;
+  line-height: 1.45;
 }
 
 .base-console__jump-btn {
@@ -1198,15 +1186,13 @@ onBeforeUnmount(() => {
 }
 
 .base-console__jump-btn:hover {
-  border-color: var(--highlight-text);
-  background: var(--info-bg);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--highlight-text) 38%, var(--border-color));
+  background: var(--accent-bg);
 }
 
 .base-console__jump-btn.is-active {
   border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-text) 14%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--highlight-text) 34%, transparent);
+  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
 }
 
 .base-console__jump-btn:focus-visible {
