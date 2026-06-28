@@ -250,9 +250,13 @@
                 size="sm"
                 class="command-save-btn"
               >保存此指令描述</UiButton>
-              <p :class="['status', 'command-status', commandStatuses[getCommandIdentifier(cmd)]?.type || '']">
-                {{ commandStatuses[getCommandIdentifier(cmd)]?.message || '' }}
-              </p>
+              <UiBadge
+                v-if="commandStatuses[getCommandIdentifier(cmd)]?.message"
+                class="command-status"
+                :variant="getStatusVariant(commandStatuses[getCommandIdentifier(cmd)]?.type)"
+              >
+                {{ commandStatuses[getCommandIdentifier(cmd)]?.message }}
+              </UiBadge>
             </UiField>
           </div>
         </div>
@@ -452,6 +456,7 @@ watch(
 
 .command-status {
   margin: 8px 0 0;
+  align-self: flex-start;
 }
 
 .custom-entry-comment pre {
