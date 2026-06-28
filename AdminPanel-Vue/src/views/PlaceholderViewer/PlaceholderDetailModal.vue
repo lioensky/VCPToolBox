@@ -157,8 +157,8 @@ function handleModalVisibility(visible: boolean): void {
 }
 
 .placeholder-detail-modal-content {
-  background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--primary-bg) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
   border-radius: var(--radius-lg);
   width: 90%;
   max-width: 800px;
@@ -231,9 +231,9 @@ function handleModalVisibility(visible: boolean): void {
   font-size: var(--font-size-helper);
   line-height: 1.6;
   padding: var(--space-4);
-  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
-  background: var(--input-bg);
-  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
+  border-radius: var(--radius-md);
   overflow-x: auto;
 }
 

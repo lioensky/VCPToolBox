@@ -200,6 +200,12 @@ const emit = defineEmits<{
   flex-direction: column;
 }
 
+.config-manager,
+.preview-section {
+  border-color: color-mix(in srgb, var(--border-color) 86%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+}
+
 .config-manager {
   flex-shrink: 0;
 }

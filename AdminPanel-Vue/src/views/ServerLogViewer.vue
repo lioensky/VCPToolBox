@@ -10,22 +10,24 @@
 
           <label class="limit-control">
             <span>行数</span>
-            <input
+            <UiInput
               type="number"
               v-model.number="logLimit"
               min="100"
               max="100000"
               step="500"
+              size="sm"
               class="limit-input"
             />
           </label>
 
           <label class="log-search">
             <span class="material-symbols-outlined" aria-hidden="true">search</span>
-            <input
+            <UiInput
               type="search"
               v-model="filterText"
               placeholder="过滤日志内容"
+              size="sm"
               @input="handleFilter"
             />
           </label>
@@ -125,6 +127,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
 import { useServerLogViewer } from "@/features/server-log-viewer/useServerLogViewer";
 
 const {
@@ -233,8 +236,7 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
 }
 
 .log-path-chip,
-.limit-control,
-.log-search {
+.limit-control {
   min-height: 32px;
   border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-sm);
@@ -245,8 +247,7 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
 }
 
 .log-path-chip:hover,
-.limit-control:hover,
-.log-search:hover {
+.limit-control:hover {
   background: color-mix(in srgb, var(--primary-bg) 92%, transparent);
   border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
 }
@@ -286,13 +287,6 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
 
 .limit-input {
   width: 82px;
-  height: 24px;
-  padding: 0 6px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--primary-text);
-  font-size: var(--font-size-helper);
   font-variant-numeric: tabular-nums;
 }
 
@@ -301,38 +295,13 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
   align-items: center;
   gap: 7px;
   flex: 1 1 260px;
-  padding: 0 10px;
   color: var(--secondary-text);
 }
 
-.log-search input {
-  width: 100%;
-  height: 30px;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  outline: none;
-  box-shadow: none;
-  background: transparent;
-  color: var(--primary-text);
-  font-size: var(--font-size-helper);
+.log-search :deep(.ui-input) {
+  flex: 1;
 }
 
-.log-search input:hover,
-.log-search input:focus,
-.log-search input:focus-visible {
-  border-color: transparent;
-  outline: none;
-  box-shadow: none;
-  background: transparent;
-}
-
-.log-search input::placeholder {
-  color: var(--secondary-text);
-  opacity: 0.78;
-}
-
-.log-search:focus-within,
 .limit-control:focus-within {
   border-color: var(--highlight-text);
   outline: none;

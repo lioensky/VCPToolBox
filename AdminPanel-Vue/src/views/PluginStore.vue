@@ -1467,7 +1467,7 @@ onBeforeUnmount(() => {
 }
 
 .source-overflow-trigger:hover {
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
   color: var(--primary-text);
 }
 
@@ -1488,7 +1488,7 @@ onBeforeUnmount(() => {
   padding: var(--space-2);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  background: var(--secondary-bg);
+  background: color-mix(in srgb, var(--primary-bg) 78%, transparent);
   box-shadow: var(--shadow-lg);
   z-index: 5;
 }
@@ -1647,7 +1647,7 @@ onBeforeUnmount(() => {
 }
 
 .plugin-card:hover {
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
 .plugin-card-top {
@@ -1818,7 +1818,7 @@ onBeforeUnmount(() => {
   text-transform: uppercase;
   font-size: var(--font-size-caption);
   letter-spacing: 0.4px;
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
 .source-name-cell {
@@ -1857,7 +1857,7 @@ onBeforeUnmount(() => {
 .hint code {
   padding: 2px 6px;
   border-radius: 4px;
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
   font-family: var(--font-mono, Consolas, monospace);
   font-size: 0.9em;
 }
@@ -1874,7 +1874,7 @@ onBeforeUnmount(() => {
   text-align: center;
   color: var(--secondary-text);
   cursor: pointer;
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   transition:
     border-color 0.2s ease,
     background 0.2s ease,
@@ -1884,7 +1884,7 @@ onBeforeUnmount(() => {
 .drop-zone:hover,
 .drop-zone.dragging {
   border-color: color-mix(in srgb, var(--button-bg) 50%, transparent);
-  background: color-mix(in srgb, var(--button-bg) 8%, var(--tertiary-bg));
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
   color: var(--primary-text);
 }
 
@@ -1932,7 +1932,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-3);
   padding: 12px 16px;
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
   border-bottom: 1px solid var(--border-color);
 }
 

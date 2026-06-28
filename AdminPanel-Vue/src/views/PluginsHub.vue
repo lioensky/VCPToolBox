@@ -925,7 +925,7 @@ watch(activeFilter, () => {
 }
 
 .filters-overflow-trigger:hover {
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
   color: var(--primary-text);
 }
 
@@ -946,7 +946,7 @@ watch(activeFilter, () => {
   padding: var(--space-2);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  background: var(--secondary-bg);
+  background: color-mix(in srgb, var(--primary-bg) 78%, transparent);
   box-shadow: var(--shadow-lg);
   z-index: 5;
 }
@@ -1098,7 +1098,7 @@ watch(activeFilter, () => {
 }
 
 .plugin-card:hover {
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
 .plugin-card-top {

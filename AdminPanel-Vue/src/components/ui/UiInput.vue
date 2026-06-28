@@ -84,9 +84,9 @@ defineExpose({ focus, select });
 .ui-input {
   width: 100%;
   min-width: 0;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
+  border: 1px solid color-mix(in srgb, var(--border-color) 92%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
   color: var(--primary-text);
   font: inherit;
   outline: none;
@@ -120,13 +120,15 @@ defineExpose({ focus, select });
 }
 
 .ui-input:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+  border-color: color-mix(in srgb, var(--highlight-text) 34%, var(--border-color));
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
 .ui-input:focus-visible {
   outline: 2px solid var(--highlight-text);
   outline-offset: 2px;
   border-color: var(--highlight-text);
+  background: color-mix(in srgb, var(--primary-bg) 56%, transparent);
 }
 
 .ui-input--invalid,
