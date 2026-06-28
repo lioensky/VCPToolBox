@@ -46,7 +46,7 @@
           />
         </aside>
 
-        <div id="config-details-container" class="base-config-main">
+        <div id="base-config-details-container" class="base-config-main">
           <UiSettingsCard
             v-for="group in groupedEntries"
             :id="group.anchor"
@@ -276,7 +276,7 @@ const SECTION_KEY_SEPARATOR = '::'
 const GROUP_TITLE_REGEX = /^\[(.+?)\]\s*(.*)$/
 const SECTION_TITLE_REGEX = /^-+\s*(.+?)\s*-+$/
 const COMMENTED_ASSIGNMENT_REGEX = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/
-const CONTENT_CONTAINER_ID = 'config-details-container'
+const CONTENT_CONTAINER_ID = 'base-config-details-container'
 const GROUP_SCROLL_OFFSET = 16
 
 let contentScrollContainer: HTMLElement | null = null

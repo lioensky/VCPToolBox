@@ -69,14 +69,17 @@
           <span class="material-symbols-outlined">keyboard_arrow_up</span>
         </button>
 
-        <div ref="contentRef" class="content-scroll-region" id="config-details-container">
-          <!-- 路由视图 -->
-          <router-view v-slot="{ Component, route }">
-            <transition name="fade" mode="out-in">
-              <component :is="Component" :key="route.fullPath" :data-page="String(route.name || '')" />
-            </transition>
-          </router-view>
-        </div>
+        <!-- 路由视图 -->
+        <router-view v-slot="{ Component, route }">
+          <div
+            :key="`content-${route.fullPath}`"
+            ref="contentRef"
+            class="content-scroll-region"
+            id="config-details-container"
+          >
+            <component :is="Component" :key="route.fullPath" :data-page="String(route.name || '')" />
+          </div>
+        </router-view>
       </main>
     </div>
 
