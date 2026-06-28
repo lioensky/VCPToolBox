@@ -70,23 +70,23 @@
           <div class="group-console__section">
             <UiField label="搜索筛选" for-id="semantic-group-search-input" size="sm">
               <div class="group-search-box">
-              <UiInput
-                id="semantic-group-search-input"
-                v-model="groupQuery"
-                type="search"
-                size="sm"
-                placeholder="按语义组名称或关键词筛选..."
-              />
-              <UiButton
-                v-if="groupQuery"
-                type="button"
-                variant="ghost"
-                size="sm"
-                aria-label="清空筛选"
-                @click="clearGroupQuery"
-              >
-                清空
-              </UiButton>
+                <UiInput
+                  id="semantic-group-search-input"
+                  v-model="groupQuery"
+                  type="search"
+                  size="sm"
+                  placeholder="按语义组名称或关键词筛选..."
+                />
+                <UiButton
+                  v-if="groupQuery"
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label="清空筛选"
+                  @click="clearGroupQuery"
+                >
+                  清空
+                </UiButton>
               </div>
             </UiField>
           </div>
@@ -133,25 +133,25 @@
         <UiSettingsForm as="div" :columns="2" gap="md">
           <UiField label="组名称" for-id="semantic-group-name">
             <UiInput
-            id="semantic-group-name"
-            v-model="selectedGroup.name"
-            type="text"
-            placeholder="组名称"
-            maxlength="100"
-          />
+              id="semantic-group-name"
+              v-model="selectedGroup.name"
+              type="text"
+              placeholder="组名称"
+              maxlength="100"
+            />
           </UiField>
 
           <UiField label="权重" for-id="semantic-group-weight">
             <UiInput
-            id="semantic-group-weight"
-            v-model.number="selectedGroup.weight"
-            type="number"
-            min="0"
-            max="10"
-            step="0.1"
-            class="group-weight-input"
-            size="sm"
-          />
+              id="semantic-group-weight"
+              v-model.number="selectedGroup.weight"
+              type="number"
+              min="0"
+              max="10"
+              step="0.1"
+              class="group-weight-input"
+              size="sm"
+            />
           </UiField>
 
           <UiField
@@ -160,16 +160,16 @@
             data-settings-span="full"
           >
             <UiTextarea
-            v-model="selectedGroup.keywords"
-            placeholder="关键词 1, 关键词 2, ..."
-            rows="6"
-            maxlength="5000"
-          />
-          <div class="keyword-stats">
-            <span class="keyword-count">
-              关键词数：{{ getKeywordCount(selectedGroup.keywords) }}
-            </span>
-          </div>
+              v-model="selectedGroup.keywords"
+              placeholder="关键词 1, 关键词 2, ..."
+              rows="6"
+              maxlength="5000"
+            />
+            <div class="keyword-stats">
+              <span class="keyword-count">
+                关键词数：{{ getKeywordCount(selectedGroup.keywords) }}
+              </span>
+            </div>
           </UiField>
 
           <UiField
@@ -178,26 +178,26 @@
             description="只读，由系统学习生成。"
             data-settings-span="full"
           >
-          <div class="auto-learned-tags">
-            <UiBadge
-              v-for="word in selectedGroup.autoLearned"
-              :key="word"
-              variant="secondary"
-            >
-              {{ word }}
-            </UiBadge>
-          </div>
+            <div class="auto-learned-tags">
+              <UiBadge
+                v-for="word in selectedGroup.autoLearned"
+                :key="word"
+                variant="secondary"
+              >
+                {{ word }}
+              </UiBadge>
+            </div>
           </UiField>
         </UiSettingsForm>
 
         <template #footer>
           <div class="detail-actions">
-          <UiButton variant="danger" type="button" @click="removeSelectedGroup">
-            删除
-          </UiButton>
-          <UiButton type="button" @click="saveSemanticGroups">
-            保存更改
-          </UiButton>
+            <UiButton variant="danger" type="button" @click="removeSelectedGroup">
+              删除
+            </UiButton>
+            <UiButton type="button" @click="saveSemanticGroups">
+              保存更改
+            </UiButton>
           </div>
         </template>
       </UiSettingsCard>
@@ -523,6 +523,7 @@ onUnmounted(() => {
   overflow: hidden;
   padding: var(--space-5);
   border-radius: var(--radius-xl);
+  transition: padding var(--transition-fast);
 }
 
 .semantic-groups-sidebar.is-collapsed {
@@ -605,10 +606,11 @@ onUnmounted(() => {
   grid-template-columns: minmax(0, 1fr);
   justify-items: start;
   gap: var(--space-1);
-  padding: var(--space-3) var(--space-4);
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--primary-text);
   text-align: left;
   cursor: pointer;
@@ -619,13 +621,12 @@ onUnmounted(() => {
 }
 
 .group-row:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 34%, var(--border-color));
   background: var(--accent-bg);
 }
 
 .group-row.is-active {
-  border-color: var(--highlight-text);
-  background: color-mix(in srgb, var(--highlight-text) 14%, transparent);
+  border-color: color-mix(in srgb, var(--highlight-text) 52%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
 }
 
 .group-row:focus-visible {
@@ -644,7 +645,7 @@ onUnmounted(() => {
 }
 
 .group-row.is-active .group-row-name {
-  color: var(--highlight-text);
+  color: var(--primary-text);
 }
 
 .group-row-meta {
@@ -692,6 +693,13 @@ onUnmounted(() => {
   gap: var(--space-2);
   justify-content: flex-end;
   width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .semantic-groups-sidebar,
+  .group-row {
+    transition: none;
+  }
 }
 
 @media (max-width: 1024px) {
