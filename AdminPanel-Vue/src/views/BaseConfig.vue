@@ -33,6 +33,83 @@
 
     <form v-else-if="groupedEntries.length > 0" id="base-config-form" @submit.prevent="handleSubmit">
       <div class="base-config-workspace" :class="{ 'is-aside-collapsed': asideCollapsed }">
+        <aside
+          class="base-config-aside"
+          :class="{ 'is-collapsed': asideCollapsed }"
+          :aria-label="asideCollapsed ? '配置导航（已折叠）' : '配置导航'"
+        >
+          <template v-if="asideCollapsed">
+            <div class="console-rail">
+              <UiIconButton
+                type="button"
+                class="console-rail-toggle"
+                label="展开配置导航"
+                aria-label="展开配置导航"
+                title="展开配置导航"
+                @click="toggleAside"
+              >
+                <span class="material-symbols-outlined">left_panel_open</span>
+              </UiIconButton>
+              <div class="console-rail-divider"></div>
+              <UiIconButton
+                v-for="group in groupedEntries.slice(0, 8)"
+                :key="`${group.id}-rail`"
+                type="button"
+                class="console-rail-icon"
+                :active="activeGroupAnchor === group.anchor"
+                :label="group.title"
+                :title="group.title"
+                @click="scrollToGroup(group.anchor)"
+              >
+                <span class="material-symbols-outlined">tune</span>
+              </UiIconButton>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="base-console__section">
+              <div class="base-console__header">
+                <div>
+                  <span class="base-console__label">配置导航</span>
+                  <h3>快速跳转</h3>
+                </div>
+                <UiIconButton
+                  type="button"
+                  class="console-rail-toggle"
+                  label="折叠配置导航"
+                  aria-label="折叠配置导航"
+                  title="折叠配置导航"
+                  @click="toggleAside"
+                >
+                  <span class="material-symbols-outlined">left_panel_close</span>
+                </UiIconButton>
+              </div>
+            </div>
+
+            <p class="entry-count">共 {{ editableEntryCount }} 个配置项</p>
+
+            <div class="base-console__section base-console__section--jump">
+              <span class="base-console__label">分组</span>
+              <div class="base-console__jump-list">
+                <button
+                  v-for="group in groupedEntries"
+                  :key="`${group.id}-jump`"
+                  type="button"
+                  :class="[
+                    'base-console__jump-btn',
+                    { 'is-active': activeGroupAnchor === group.anchor },
+                  ]"
+                  :title="group.title"
+                  @click="scrollToGroup(group.anchor)"
+                >
+                  <span>{{ getJumpLabel(group.title) }}</span>
+                  <small>{{ group.totalEntries }} 项</small>
+                </button>
+              </div>
+            </div>
+          </template>
+        </aside>
+
         <div class="base-config-main">
           <UiSettingsCard
             v-for="group in groupedEntries"
@@ -158,85 +235,6 @@
           </UiSettingsCard>
         </div>
 
-        <aside class="base-config-aside">
-          <UiCard
-            class="base-console base-settings-surface"
-            :class="{ 'is-collapsed': asideCollapsed }"
-            :aria-label="asideCollapsed ? '配置操作台（已折叠）' : '配置操作台'"
-            size="sm"
-            variant="subtle"
-          >
-            <template v-if="asideCollapsed">
-              <div class="console-rail">
-                <UiIconButton
-                  type="button"
-                  class="console-rail-toggle"
-                  label="展开操作台"
-                  aria-label="展开操作台"
-                  title="展开操作台"
-                  @click="toggleAside"
-                >
-                  <span class="material-symbols-outlined">right_panel_open</span>
-                </UiIconButton>
-                <div class="console-rail-divider"></div>
-                <UiIconButton
-                  v-for="group in groupedEntries.slice(0, 8)"
-                  :key="`${group.id}-rail`"
-                  type="button"
-                  class="console-rail-icon"
-                  :active="activeGroupAnchor === group.anchor"
-                  :label="group.title"
-                  :title="group.title"
-                  @click="scrollToGroup(group.anchor)"
-                >
-                  <span class="material-symbols-outlined">tune</span>
-                </UiIconButton>
-              </div>
-            </template>
-            <template v-else>
-            <div class="base-console__section">
-              <div class="base-console__header">
-                <div>
-                  <span class="base-console__label">操作台</span>
-                  <h3>快速跳转</h3>
-                </div>
-                <UiIconButton
-                  type="button"
-                  class="console-rail-toggle"
-                  label="折叠操作台"
-                  aria-label="折叠操作台"
-                  title="折叠操作台"
-                  @click="toggleAside"
-                >
-                  <span class="material-symbols-outlined">right_panel_close</span>
-                </UiIconButton>
-              </div>
-            </div>
-
-            <p class="entry-count">共 {{ editableEntryCount }} 个配置项</p>
-
-            <div class="base-console__section base-console__section--jump">
-              <span class="base-console__label">快速跳转</span>
-              <div class="base-console__jump-list">
-                <button
-                  v-for="group in groupedEntries"
-                  :key="`${group.id}-jump`"
-                  type="button"
-                  :class="[
-                    'base-console__jump-btn',
-                    { 'is-active': activeGroupAnchor === group.anchor },
-                  ]"
-                  :title="group.title"
-                  @click="scrollToGroup(group.anchor)"
-                >
-                  <span>{{ getJumpLabel(group.title) }}</span>
-                  <small>{{ group.totalEntries }} 项</small>
-                </button>
-              </div>
-            </div>
-            </template>
-          </UiCard>
-        </aside>
       </div>
     </form>
 
@@ -255,7 +253,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { adminConfigApi } from '@/api'
 import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
-import UiCard from '@/components/ui/UiCard.vue'
 import UiEmptyState from '@/components/ui/UiEmptyState.vue'
 import UiField from '@/components/ui/UiField.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
@@ -1006,13 +1003,13 @@ onBeforeUnmount(() => {
 
 .base-config-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 400px);
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
   gap: var(--space-4);
   align-items: start;
 }
 
 .base-config-workspace.is-aside-collapsed {
-  grid-template-columns: minmax(0, 1fr) 56px;
+  grid-template-columns: 48px minmax(0, 1fr);
 }
 
 .base-console__header {
@@ -1039,16 +1036,49 @@ onBeforeUnmount(() => {
   position: sticky;
   top: var(--base-console-viewport-gap);
   align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  height: calc(
+    var(--app-viewport-height, 100vh) -
+    var(--app-top-bar-height, 60px) -
+    var(--base-console-viewport-gap) -
+    var(--base-console-viewport-gap)
+  );
+  min-height: 0;
+  padding: var(--space-2) var(--space-1);
+  overflow: hidden;
+}
+
+.base-config-aside.is-collapsed {
+  align-items: center;
+  padding-inline: 0;
+}
+
+.console-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  width: 40px;
+  min-height: 0;
+}
+
+.console-rail-divider {
+  width: 20px;
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: color-mix(in srgb, var(--border-color) 72%, transparent);
+}
+
+.console-rail-icon {
+  flex: 0 0 auto;
 }
 
 .base-settings-surface {
   --base-config-surface-border: color-mix(in srgb, var(--border-color) 88%, transparent);
   --base-config-muted-surface: color-mix(in srgb, var(--primary-text) 2.4%, transparent);
   --base-config-card-surface: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
-}
-
-.base-settings-surface,
-:deep(.ui-card.base-settings-surface) {
   border-color: var(--base-config-surface-border);
   background: var(--base-config-card-surface);
 }
@@ -1107,38 +1137,6 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-helper);
 }
 
-.base-console {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border-radius: var(--radius-lg);
-  height: calc(
-    var(--app-viewport-height, 100vh) -
-    var(--app-top-bar-height, 60px) -
-    var(--base-console-viewport-gap) -
-    var(--base-console-viewport-gap)
-  );
-  overflow: hidden;
-  transition: padding var(--transition-fast);
-}
-
-.base-console.is-collapsed {
-  padding: var(--space-3) 0;
-  gap: 0;
-  align-items: center;
-}
-
-.base-console :deep(.ui-card__content) {
-  min-height: 0;
-  flex: 1;
-}
-
-.base-console:not(.is-collapsed) :deep(.ui-card__content) {
-  display: flex;
-  flex-direction: column;
-}
-
 .base-console__section {
   display: flex;
   flex-direction: column;
@@ -1161,7 +1159,7 @@ onBeforeUnmount(() => {
 }
 
 .base-console__label {
-  color: var(--highlight-text);
+  color: var(--secondary-text);
   font-size: var(--font-size-caption);
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -1176,7 +1174,7 @@ onBeforeUnmount(() => {
 .base-console__jump-list {
   min-height: 0;
   overflow-y: auto;
-  padding-right: 4px;
+  padding-right: 2px;
   scrollbar-gutter: stable;
 }
 
@@ -1188,7 +1186,7 @@ onBeforeUnmount(() => {
   width: 100%;
   min-height: 32px;
   padding: 6px var(--space-2);
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--primary-text);
@@ -1208,12 +1206,13 @@ onBeforeUnmount(() => {
 }
 
 .base-console__jump-btn:hover {
-  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2.8%, transparent);
 }
 
 .base-console__jump-btn.is-active {
-  border-color: color-mix(in srgb, var(--highlight-text) 38%, var(--border-color));
-  background: color-mix(in srgb, var(--highlight-text) 5%, transparent);
+  border-color: color-mix(in srgb, var(--highlight-text) 22%, transparent);
+  background: color-mix(in srgb, var(--highlight-text) 5.5%, transparent);
+  color: var(--primary-text);
 }
 
 .base-console__jump-btn:focus-visible {
@@ -1227,7 +1226,7 @@ onBeforeUnmount(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .base-console,
+  .base-config-aside,
   .base-console__jump-btn {
     transition: none;
   }
@@ -1298,7 +1297,7 @@ onBeforeUnmount(() => {
   }
 
   .base-config-workspace {
-    grid-template-columns: minmax(0, 1fr) minmax(300px, 340px);
+    grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
     gap: var(--space-4);
   }
 }
@@ -1315,13 +1314,13 @@ onBeforeUnmount(() => {
 
   .base-config-aside {
     position: static;
-  }
-
-  .base-console {
-    padding: var(--space-4);
     height: auto;
     max-height: none;
     overflow: visible;
+    padding: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
   }
 
   .base-console__section--jump {
