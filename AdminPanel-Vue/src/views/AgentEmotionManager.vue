@@ -64,10 +64,10 @@
           <span class="material-symbols-outlined">groups</span>
           Agent 列表
         </div>
-        <button
+        <UiButton
           v-for="agent in validAgents"
           :key="agent.summary.agentKey"
-          type="button"
+          variant="ghost"
           :class="['agent-tab', { active: selectedAgentKey === agent.summary.agentKey }]"
           @click="selectedAgentKey = agent.summary.agentKey"
         >
@@ -77,7 +77,7 @@
             <small>{{ agent.summary.observationCount ?? agent.summary.turnCount ?? 0 }} 次观测 · {{ relativeTime(agent.summary.lastObservedAt || agent.summary.lastActiveAt || agent.summary.updatedAt) }}</small>
           </span>
           <span class="mood-dot" :style="{ background: moodColor(agent.status?.state?.mood) }"></span>
-        </button>
+        </UiButton>
       </UiCard>
 
       <main v-if="selectedAgent?.status?.state" class="agent-detail">
@@ -960,8 +960,8 @@ onMounted(() => {
   overflow: hidden;
   position: relative;
   background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--highlight-text) 22%, transparent), transparent 34%),
-    linear-gradient(135deg, var(--secondary-bg), color-mix(in srgb, var(--tertiary-bg) 70%, transparent));
+    radial-gradient(circle at top left, color-mix(in srgb, var(--highlight-text) 12%, transparent), transparent 34%),
+    linear-gradient(135deg, color-mix(in srgb, var(--primary-text) 2%, transparent), transparent);
 }
 
 .emotion-hero::after {
@@ -1021,6 +1021,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  border-color: color-mix(in srgb, var(--border-color) 82%, transparent);
+  background: transparent;
 }
 
 .overview-card strong,
@@ -1082,28 +1084,29 @@ onMounted(() => {
 }
 
 .agent-tab {
+  width: 100%;
+  height: auto;
+  min-height: 64px;
+  justify-content: stretch;
+  padding: var(--space-2);
+  border-color: color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+
+.agent-tab.active {
+  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 6%, transparent);
+  color: var(--primary-text);
+}
+
+.agent-tab :deep(.ui-button__content) {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr) 10px;
   gap: var(--space-3);
   align-items: center;
   width: 100%;
-  padding: var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
-  color: var(--primary-text);
-  cursor: pointer;
-  text-align: left;
-  transition:
-    border-color var(--transition-fast),
-    background-color var(--transition-fast),
-    transform var(--transition-fast);
-}
-
-.agent-tab:hover,
-.agent-tab.active {
-  border-color: color-mix(in srgb, var(--highlight-text) 60%, transparent);
-  background: color-mix(in srgb, var(--highlight-text) 12%, transparent);
+  min-width: 0;
 }
 
 .agent-avatar {
@@ -1150,8 +1153,8 @@ onMounted(() => {
   gap: var(--space-5);
   align-items: center;
   background:
-    radial-gradient(circle at 92% 16%, color-mix(in srgb, var(--agent-mood-color) 34%, transparent), transparent 34%),
-    var(--secondary-bg);
+    radial-gradient(circle at 92% 16%, color-mix(in srgb, var(--agent-mood-color) 20%, transparent), transparent 34%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .mood-orb {
@@ -1209,7 +1212,7 @@ onMounted(() => {
   height: 10px;
   border-radius: var(--radius-full);
   overflow: hidden;
-  background: var(--surface-overlay-strong);
+  background: color-mix(in srgb, var(--primary-text) 6%, transparent);
 }
 
 .bar-fill,
@@ -1253,11 +1256,11 @@ onMounted(() => {
   flex-direction: column;
   gap: 4px;
   padding: var(--space-3);
-  border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--strength) * 56%), var(--border-color));
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--strength) * 36%), var(--border-color));
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--highlight-text) calc(var(--strength) * 22%), transparent), transparent),
-    var(--surface-overlay-soft);
+    linear-gradient(135deg, color-mix(in srgb, var(--highlight-text) calc(var(--strength) * 10%), transparent), transparent),
+    transparent;
 }
 
 .signal-chip strong {
@@ -1294,11 +1297,11 @@ onMounted(() => {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--affective-strength) * 60%), var(--border-color));
-  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--affective-strength) * 36%), var(--border-color));
+  border-radius: var(--radius-md);
   background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) calc(var(--affective-strength) * 22%), transparent), transparent 56%),
-    var(--surface-overlay-soft);
+    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) calc(var(--affective-strength) * 10%), transparent), transparent 56%),
+    transparent;
 }
 
 .affective-positive {
@@ -1384,12 +1387,12 @@ onMounted(() => {
   gap: 4px var(--space-2);
   align-items: center;
   padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 70%), var(--border-color));
-  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 40%), var(--border-color));
+  border-radius: var(--radius-md);
   background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 26%), transparent), transparent 58%),
-    linear-gradient(135deg, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 14%), transparent), transparent),
-    var(--surface-overlay-soft);
+    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 10%), transparent), transparent 58%),
+    linear-gradient(135deg, color-mix(in srgb, var(--highlight-text) calc(var(--residual-strength) * 6%), transparent), transparent),
+    transparent;
 }
 
 .sub-axis-card strong {
@@ -1421,8 +1424,8 @@ onMounted(() => {
 
 .expression-panel {
   background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--agent-mood-color) 18%, transparent), transparent 42%),
-    var(--secondary-bg);
+    radial-gradient(circle at top right, color-mix(in srgb, var(--agent-mood-color) 10%, transparent), transparent 42%),
+    transparent;
 }
 
 .expression-summary {
@@ -1457,9 +1460,9 @@ onMounted(() => {
   flex-direction: column;
   gap: 4px;
   padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--gender-strength) * 70%), var(--border-color));
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--gender-strength) * 40%), var(--border-color));
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .gender-card strong,
@@ -1583,9 +1586,9 @@ onMounted(() => {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   color: var(--secondary-text);
   overflow-wrap: anywhere;
 }
@@ -1607,9 +1610,9 @@ onMounted(() => {
   gap: var(--space-3);
   align-items: center;
   padding: var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .config-item-copy {
