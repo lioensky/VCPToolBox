@@ -277,22 +277,22 @@
       </div>
 
       <div class="theme-lab__coverage" role="status" aria-live="polite">
-        <span class="theme-lab__coverage-tag">
+        <UiBadge class="theme-lab__coverage-tag" variant="outline">
           全局变量
           <strong>{{ globalVarStats.total }}</strong>
-        </span>
-        <span class="theme-lab__coverage-tag">
+        </UiBadge>
+        <UiBadge class="theme-lab__coverage-tag" variant="outline">
           分组卡片
           <strong>{{ globalVarStats.cards }}</strong>
-        </span>
-        <span class="theme-lab__coverage-tag">
+        </UiBadge>
+        <UiBadge class="theme-lab__coverage-tag" variant="outline">
           可调变量
           <strong>{{ globalVarStats.editable }}</strong>
-        </span>
-        <span class="theme-lab__coverage-tag">
+        </UiBadge>
+        <UiBadge class="theme-lab__coverage-tag" variant="outline">
           受保护变量
           <strong>{{ globalVarStats.locked }}</strong>
-        </span>
+        </UiBadge>
       </div>
 
       <article
@@ -670,6 +670,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import BaseModal from '@/components/ui/BaseModal.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
@@ -1877,15 +1878,7 @@ onUnmounted(() => {
 }
 
 .theme-lab__coverage-tag {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
-  padding: 4px 10px;
-  font-size: var(--font-size-caption);
-  color: var(--secondary-text);
-  background: var(--surface-overlay-soft);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-full);
 }
 
 .theme-lab__coverage-tag strong {
