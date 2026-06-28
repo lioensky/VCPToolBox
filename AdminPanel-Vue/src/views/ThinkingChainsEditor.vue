@@ -239,7 +239,7 @@
               </span>
             </span>
             <span class="cluster-picker-option-label">{{ cluster.name }}</span>
-            <span v-if="cluster.disabled" class="cluster-picker-badge">已在主题中</span>
+            <UiBadge v-if="cluster.disabled" class="cluster-picker-badge" variant="warning">已在主题中</UiBadge>
           </button>
         </li>
 
@@ -286,6 +286,7 @@ import { computed, ref } from "vue";
 import { useThinkingChainsEditor } from "@/features/thinking-chains-editor/useThinkingChainsEditor";
 import BaseModal from "@/components/ui/BaseModal.vue";
 import DragHandle from "@/components/ui/DragHandle.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiField from "@/components/ui/UiField.vue";
 import UiInput from "@/components/ui/UiInput.vue";
@@ -820,15 +821,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .cluster-picker-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--warning-color) 14%, transparent);
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 600;
+  justify-self: flex-end;
 }
 
 .cluster-picker-footer {
