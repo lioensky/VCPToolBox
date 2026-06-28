@@ -93,15 +93,26 @@ function handleFolderNavClick(item: UiSideConsoleNavItem): void {
 
 <style scoped>
 .notes-sidebar {
-  --folder-console-viewport-gap: var(--space-4);
+  --folder-console-viewport-gap: 0px;
+  --folder-console-scroll-padding: 22px;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
   position: sticky;
   top: var(--folder-console-viewport-gap);
   align-self: start;
-  height: calc(100vh - (var(--folder-console-viewport-gap) * 2));
-  max-height: calc(100vh - (var(--folder-console-viewport-gap) * 2));
+  height: calc(
+    var(--app-viewport-height, 100vh) -
+    var(--app-top-bar-height, 60px) -
+    var(--folder-console-scroll-padding) -
+    var(--folder-console-viewport-gap)
+  );
+  max-height: calc(
+    var(--app-viewport-height, 100vh) -
+    var(--app-top-bar-height, 60px) -
+    var(--folder-console-scroll-padding) -
+    var(--folder-console-viewport-gap)
+  );
   overflow: hidden;
   padding: 0;
   background: transparent;

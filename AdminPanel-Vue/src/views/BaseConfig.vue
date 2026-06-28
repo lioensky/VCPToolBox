@@ -1075,6 +1075,7 @@ onBeforeUnmount(() => {
 
 .base-config-aside {
   --base-console-viewport-gap: 0px;
+  --base-console-scroll-padding: 22px;
   position: sticky;
   top: var(--base-console-viewport-gap);
   align-self: start;
@@ -1084,6 +1085,7 @@ onBeforeUnmount(() => {
   height: calc(
     var(--app-viewport-height, 100vh) -
     var(--app-top-bar-height, 60px) -
+    var(--base-console-scroll-padding) -
     var(--base-console-viewport-gap)
   );
   min-height: 0;
