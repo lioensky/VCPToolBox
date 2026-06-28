@@ -1,11 +1,11 @@
 <template>
   <section class="config-section active-section dynamic-tools-page">
-    <div class="dynamic-tools-header">
+    <UiToolbar class="dynamic-tools-header" align="start">
       <div>
         <h2>动态工具清单</h2>
         <p class="description">管理 {{ placeholderText }} 的注入配置、分类状态和工具暴露规则。</p>
       </div>
-      <div class="header-actions">
+      <template #actions>
         <UiButton type="button" variant="outline" size="sm" @click="loadState">
           <template #leading><span class="material-symbols-outlined">refresh</span></template>
           刷新
@@ -14,8 +14,8 @@
           <template #leading><span class="material-symbols-outlined">content_copy</span></template>
           复制占位符
         </UiButton>
-      </div>
-    </div>
+      </template>
+    </UiToolbar>
 
     <div class="summary-grid">
       <UiCard class="summary-item" size="sm" variant="flat">
@@ -85,12 +85,12 @@
             label="独立 OpenAI 兼容端点"
             description="复用主配置时只填模型名；独立端点的 API Key 在插件中心 DynamicToolBridge 私有配置里填写。"
           >
-          <UiInput
-            type="text"
-            v-model.trim="config.smallModel.endpoint"
-            :disabled="config.smallModel.useMainConfig"
-            placeholder="https://example.com 或完整 /v1/chat/completions"
-          />
+            <UiInput
+              v-model.trim="config.smallModel.endpoint"
+              type="text"
+              :disabled="config.smallModel.useMainConfig"
+              placeholder="https://example.com 或完整 /v1/chat/completions"
+            />
           </UiField>
         </UiSettingsForm>
       </UiSettingsCard>
@@ -125,58 +125,63 @@
 
     <UiSettingsCard class="records-card" title="工具状态" variant="subtle">
       <template #action>
-        <UiInput v-model.trim="filterText" type="search" placeholder="搜索插件、分类、关键词" />
+        <UiInput
+          v-model.trim="filterText"
+          class="records-search"
+          type="search"
+          placeholder="搜索插件、分类、关键词"
+        />
       </template>
 
       <UiTableFrame class="records-table-frame" density="compact">
-          <thead v-once>
-            <tr>
-              <th>插件</th>
-              <th>来源</th>
-              <th>状态</th>
-              <th>分类</th>
-              <th>说明</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="record in filteredRecords" :key="record.originKey">
-              <td>
-                <strong>{{ record.displayName || record.pluginName }}</strong>
-                <small>{{ record.pluginName }}</small>
-              </td>
-              <td>
-                <UiBadge variant="outline">{{ record.originKind === 'distributed' ? record.originId : 'local' }}</UiBadge>
-              </td>
-              <td>
-                <div class="status-stack">
-                  <UiBadge :variant="record.available ? 'success' : 'secondary'">
-                    {{ record.available ? 'available' : 'hidden' }}
-                  </UiBadge>
-                  <UiBadge v-if="!record.online" variant="warning">offline</UiBadge>
-                  <UiBadge v-if="isExcluded(record.originKey)" variant="danger">excluded</UiBadge>
-                  <UiBadge v-if="isPinned(record.originKey)" variant="info">pinned</UiBadge>
-                </div>
-              </td>
-              <td>
-                <div class="tag-list">
-                  <UiBadge v-for="category in record.categories" :key="`${record.originKey}-${category}`" variant="secondary">{{ category }}</UiBadge>
-                  <span v-if="record.categories.length === 0" class="muted">未分类</span>
-                </div>
-              </td>
-              <td class="brief-cell">{{ record.brief || '-' }}</td>
-              <td>
-                <div class="row-actions">
-                  <UiButton type="button" variant="outline" size="sm" @click="toggleOverride(record, 'pinned')">
-                    {{ isPinned(record.originKey) ? '取消固定' : '固定' }}
-                  </UiButton>
-                  <UiButton type="button" variant="outline" size="sm" @click="toggleOverride(record, 'excluded')">
-                    {{ isExcluded(record.originKey) ? '恢复' : '排除' }}
-                  </UiButton>
-                </div>
-              </td>
-            </tr>
-          </tbody>
+        <thead v-once>
+          <tr>
+            <th>插件</th>
+            <th>来源</th>
+            <th>状态</th>
+            <th>分类</th>
+            <th>说明</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="record in filteredRecords" :key="record.originKey">
+            <td>
+              <strong>{{ record.displayName || record.pluginName }}</strong>
+              <small>{{ record.pluginName }}</small>
+            </td>
+            <td>
+              <UiBadge variant="outline">{{ record.originKind === 'distributed' ? record.originId : 'local' }}</UiBadge>
+            </td>
+            <td>
+              <div class="status-stack">
+                <UiBadge :variant="record.available ? 'success' : 'secondary'">
+                  {{ record.available ? 'available' : 'hidden' }}
+                </UiBadge>
+                <UiBadge v-if="!record.online" variant="warning">offline</UiBadge>
+                <UiBadge v-if="isExcluded(record.originKey)" variant="danger">excluded</UiBadge>
+                <UiBadge v-if="isPinned(record.originKey)" variant="info">pinned</UiBadge>
+              </div>
+            </td>
+            <td>
+              <div class="tag-list">
+                <UiBadge v-for="category in record.categories" :key="`${record.originKey}-${category}`" variant="secondary">{{ category }}</UiBadge>
+                <span v-if="record.categories.length === 0" class="muted">未分类</span>
+              </div>
+            </td>
+            <td class="brief-cell">{{ record.brief || '-' }}</td>
+            <td>
+              <div class="row-actions">
+                <UiButton type="button" variant="outline" size="sm" @click="toggleOverride(record, 'pinned')">
+                  {{ isPinned(record.originKey) ? '取消固定' : '固定' }}
+                </UiButton>
+                <UiButton type="button" variant="outline" size="sm" @click="toggleOverride(record, 'excluded')">
+                  {{ isExcluded(record.originKey) ? '恢复' : '排除' }}
+                </UiButton>
+              </div>
+            </td>
+          </tr>
+        </tbody>
       </UiTableFrame>
 
       <UiEmptyState v-if="filteredRecords.length === 0" title="没有匹配的工具记录" />
@@ -211,6 +216,7 @@ import UiSettingsForm from "@/components/ui/UiSettingsForm.vue";
 import UiSettingsSwitchRow from "@/components/ui/UiSettingsSwitchRow.vue";
 import UiTableFrame from "@/components/ui/UiTableFrame.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
+import UiToolbar from "@/components/ui/UiToolbar.vue";
 
 const placeholderText = "{{VCPDynamicTools}}";
 
@@ -556,14 +562,16 @@ onBeforeUnmount(() => {
 }
 
 .dynamic-tools-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
+  min-height: 36px;
 }
 
 .dynamic-tools-header h2 {
   margin: 0;
+  line-height: 1.25;
+}
+
+.dynamic-tools-header .description {
+  margin-top: var(--space-1);
 }
 
 .header-actions {
@@ -576,7 +584,7 @@ onBeforeUnmount(() => {
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .summary-label {
@@ -588,6 +596,7 @@ onBeforeUnmount(() => {
 
 .summary-item strong {
   font-size: 1.6rem;
+  line-height: 1.1;
 }
 
 .panel-grid {
@@ -620,7 +629,11 @@ onBeforeUnmount(() => {
   min-width: 980px;
 }
 
-.records-table td small {
+.records-search {
+  width: min(280px, 100%);
+}
+
+.records-table-frame :deep(td small) {
   display: block;
   margin-top: var(--space-1);
   color: var(--secondary-text);
@@ -653,7 +666,13 @@ onBeforeUnmount(() => {
   }
 
   .dynamic-tools-header {
-    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .dynamic-tools-header :deep(.ui-toolbar__actions),
+  .records-card :deep(.ui-card__action),
+  .records-search {
+    width: 100%;
   }
 }
 </style>
