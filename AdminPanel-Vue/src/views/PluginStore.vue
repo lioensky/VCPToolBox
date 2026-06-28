@@ -45,13 +45,14 @@
       </div>
     </UiCard>
 
-    <UiCard class="tab-nav-card" size="sm" variant="subtle">
+    <section class="store-toolbar" aria-label="插件商店视图与筛选">
       <div class="view-mode-switch" role="tablist" aria-label="插件商店视图切换">
         <UiButton
           v-for="tab in tabs"
           :key="tab.id"
           :id="`plugin-store-tab-${tab.id}`"
           type="button"
+          size="sm"
           role="tab"
           :variant="activeTab === tab.id ? 'primary' : 'outline'"
           :aria-selected="activeTab === tab.id"
@@ -63,9 +64,7 @@
           <span>{{ tab.label }}</span>
         </UiButton>
       </div>
-    </UiCard>
 
-    <UiCard class="controls-card" size="sm" variant="subtle">
       <div class="controls-main-row">
         <label class="search-field" v-if="activeTab === 'market'">
           <span class="material-symbols-outlined">search</span>
@@ -73,6 +72,7 @@
             ref="marketSearchInputRef"
             v-model="keyword"
             type="search"
+            size="sm"
             placeholder="搜索插件名、描述或作者…"
             aria-label="搜索插件"
           />
@@ -86,7 +86,7 @@
       <div v-if="activeTab === 'market'" class="filter-row" aria-label="按源筛选">
         <UiButton
           type="button"
-          size="sm"
+          size="xs"
           :variant="filterSourceId === '' ? 'primary' : 'outline'"
           :aria-pressed="filterSourceId === ''"
           @click="selectSource('')"
@@ -98,7 +98,7 @@
           v-for="s in visibleSourceFilters"
           :key="s.id"
           type="button"
-          size="sm"
+          size="xs"
           :variant="filterSourceId === s.id ? 'primary' : 'outline'"
           :aria-pressed="filterSourceId === s.id"
           @click="selectSource(s.id)"
@@ -122,7 +122,7 @@
               v-for="s in overflowSourceFilters"
               :key="s.id"
               type="button"
-              size="sm"
+              size="xs"
               :variant="filterSourceId === s.id ? 'primary' : 'ghost'"
               :aria-pressed="filterSourceId === s.id"
               @click="selectSource(s.id)"
@@ -133,7 +133,7 @@
           </div>
         </details>
       </div>
-    </UiCard>
+    </section>
 
     <!-- =========================================================== Market -->
     <section
@@ -296,6 +296,7 @@
                         <UiButton
                           v-if="isPluginUpdateAvailable(plugin)"
                           variant="primary"
+                          size="sm"
                           :disabled="isOperationBusy"
                           @click="updateFromCard(plugin)"
                         >
@@ -306,6 +307,7 @@
                         </UiButton>
                         <UiButton
                           variant="outline"
+                          size="sm"
                           :disabled="isOperationBusy"
                           @click="reinstallFromCard(plugin)"
                         >
@@ -316,6 +318,7 @@
                         </UiButton>
                         <UiButton
                           variant="danger"
+                          size="sm"
                           :disabled="isOperationBusy"
                           @click="uninstallFromCard(plugin)"
                         >
@@ -328,6 +331,7 @@
                       <UiButton
                         v-else
                         variant="primary"
+                        size="sm"
                         :disabled="isOperationBusy"
                         @click="installFromCard(plugin)"
                       >
@@ -354,7 +358,7 @@
       role="tabpanel"
       aria-labelledby="plugin-store-tab-sources"
     >
-      <article class="card">
+      <article class="card store-section-card">
         <div class="card-header">
           <h3 class="card-title">
             <span class="material-symbols-outlined">add_link</span>
@@ -391,7 +395,7 @@
         </form>
       </article>
 
-      <article class="card">
+      <article class="card store-section-card">
         <div class="card-header">
           <h3 class="card-title">
             <span class="material-symbols-outlined">lan</span>
@@ -456,7 +460,7 @@
       role="tabpanel"
       aria-labelledby="plugin-store-tab-manual"
     >
-      <article class="card">
+      <article class="card store-section-card">
         <div class="card-header">
           <h3 class="card-title">
             <span class="material-symbols-outlined">upload_file</span>
@@ -483,13 +487,13 @@
         <div class="upload-buttons">
           <input ref="zipInput" type="file" :accept="supportedArchiveAccept" class="hidden-input" @change="onArchiveSelected" />
           <input ref="folderInput" type="file" class="hidden-input" webkitdirectory directory multiple @change="onFolderSelected" />
-          <UiButton variant="outline" @click="zipInput?.click()" :disabled="isOperationBusy">
+          <UiButton variant="outline" size="sm" @click="zipInput?.click()" :disabled="isOperationBusy">
             <template #leading>
               <span class="material-symbols-outlined">archive</span>
             </template>
             <span>选择压缩包</span>
           </UiButton>
-          <UiButton variant="outline" @click="folderInput?.click()" :disabled="isOperationBusy">
+          <UiButton variant="outline" size="sm" @click="folderInput?.click()" :disabled="isOperationBusy">
             <template #leading>
               <span class="material-symbols-outlined">folder</span>
             </template>
@@ -498,7 +502,7 @@
         </div>
       </article>
 
-      <article class="card">
+      <article class="card store-section-card">
         <div class="card-header">
           <h3 class="card-title">
             <span class="material-symbols-outlined">cloud_download</span>
@@ -517,6 +521,7 @@
           </label>
           <UiButton
             variant="primary"
+            size="sm"
             :disabled="!githubUrl || isOperationBusy"
             @click="installFromGithub"
           >
@@ -1314,7 +1319,7 @@ onBeforeUnmount(() => {
 .plugin-store {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 /* ========== Hero ========== */
@@ -1329,7 +1334,7 @@ onBeforeUnmount(() => {
 .hero-copy h2 {
   font-size: var(--font-size-headline);
   line-height: 1.2;
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 .hero-copy p {
@@ -1338,7 +1343,7 @@ onBeforeUnmount(() => {
 }
 
 .hero-eyebrow {
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 .hero-stats {
@@ -1375,22 +1380,25 @@ onBeforeUnmount(() => {
 }
 
 /* ========== Controls ========== */
-.controls-card {
+.store-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
   position: sticky;
   top: 0;
   z-index: 17;
-  background: var(--primary-bg);
+  padding: var(--space-2) 0;
+  background: color-mix(in srgb, var(--primary-bg) 88%, transparent);
 }
 
-.controls-top,
 .controls-main-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
+  flex: 1 1 260px;
+  min-width: 220px;
 }
 
 .controls-intro {
@@ -1434,6 +1442,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+  align-items: center;
   position: relative;
 }
 
@@ -1453,11 +1462,12 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 32px;
-  padding: 0 var(--space-3);
+  min-height: 24px;
+  padding: 0 var(--space-2);
   border: 1px dashed var(--border-color);
   border-radius: var(--radius-md);
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
   cursor: pointer;
   background: transparent;
   transition:
@@ -1488,7 +1498,7 @@ onBeforeUnmount(() => {
   padding: var(--space-2);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-bg) 78%, transparent);
+  background: color-mix(in srgb, var(--primary-bg) 92%, transparent);
   box-shadow: var(--shadow-lg);
   z-index: 5;
 }
@@ -1533,14 +1543,14 @@ onBeforeUnmount(() => {
 .tab-pane {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 /* ========== Plugin grid (market) ========== */
 .plugin-grouped-view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .plugin-type-group {
@@ -1555,8 +1565,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  padding: var(--space-3);
+  background: color-mix(in srgb, var(--primary-text) 2.4%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
 }
 
@@ -1599,7 +1609,7 @@ onBeforeUnmount(() => {
 }
 
 .type-group-content {
-  padding: var(--space-3);
+  padding: var(--space-2);
 }
 
 .group-collapse-enter-active,
@@ -1632,7 +1642,7 @@ onBeforeUnmount(() => {
 .plugin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .plugin-card {
@@ -1640,8 +1650,8 @@ onBeforeUnmount(() => {
   flex-direction: column;
   height: 100%;
   border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
   background: transparent;
   transition: background-color var(--transition-fast);
 }
@@ -1654,8 +1664,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: start;
   justify-content: space-between;
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
 .plugin-identity {
@@ -1730,7 +1740,7 @@ onBeforeUnmount(() => {
 .plugin-description {
   color: var(--secondary-text);
   line-height: 1.55;
-  min-height: calc(1.55em * 3);
+  min-height: calc(1.55em * 2);
   max-height: calc(1.55em * 3);
   overflow: hidden;
   overflow-wrap: anywhere;
@@ -1738,7 +1748,7 @@ onBeforeUnmount(() => {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 .plugin-actions {
@@ -1746,7 +1756,7 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: auto;
-  padding-top: var(--space-1);
+  padding-top: var(--space-2);
 }
 
 /* ========== Source errors ========== */
@@ -1771,7 +1781,12 @@ onBeforeUnmount(() => {
 .sources-pane {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
+}
+
+.store-section-card {
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
 }
 
 .header-count {
@@ -1804,7 +1819,7 @@ onBeforeUnmount(() => {
 .source-table th,
 .source-table td {
   text-align: left;
-  padding: 12px 14px;
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -1812,12 +1827,19 @@ onBeforeUnmount(() => {
   border-bottom: none;
 }
 
+.source-table tbody tr {
+  transition: background-color var(--transition-fast);
+}
+
+.source-table tbody tr:hover {
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
+}
+
 .source-table th {
   color: var(--secondary-text);
   font-weight: 600;
   text-transform: uppercase;
   font-size: var(--font-size-caption);
-  letter-spacing: 0.4px;
   background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
@@ -1844,7 +1866,7 @@ onBeforeUnmount(() => {
 .manual-pane {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .hint {
@@ -1867,10 +1889,10 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   border: 2px dashed var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: var(--space-6) var(--space-4);
+  border-radius: var(--radius-md);
+  padding: var(--space-5) var(--space-4);
   text-align: center;
   color: var(--secondary-text);
   cursor: pointer;
@@ -1900,8 +1922,8 @@ onBeforeUnmount(() => {
 .upload-buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
-  margin-top: var(--space-4);
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .hidden-input {
@@ -1910,7 +1932,7 @@ onBeforeUnmount(() => {
 
 .github-row {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: stretch;
 }
 
