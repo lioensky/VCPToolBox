@@ -38,6 +38,7 @@ function getDb(agentName, projectBasePath) {
         frontendSource TEXT NOT NULL,
         requestHash TEXT NOT NULL,
         requestBlockCount INTEGER NOT NULL,
+        requestTotalBlockCount INTEGER,
         status TEXT NOT NULL,
         responseMessageId INTEGER,
         responseContentHash TEXT,
@@ -50,6 +51,11 @@ function getDb(agentName, projectBasePath) {
         ON postTurns(agentName, frontendSource, updatedAt);
     CREATE INDEX IF NOT EXISTS idx_post_turns_request_hash
         ON postTurns(agentName, frontendSource, requestHash);`);
+
+    const postTurnColumns = db.prepare('PRAGMA table_info(postTurns)').all().map(column => column.name);
+    if (!postTurnColumns.includes('requestTotalBlockCount')) {
+        db.prepare('ALTER TABLE postTurns ADD COLUMN requestTotalBlockCount INTEGER').run();
+    }
     dbCache.set(agentName, db);
     return db;
 }
@@ -109,15 +115,16 @@ function updateMessageTimestampById(agentName, id, timestamp, projectBasePath) {
     return db.prepare(`UPDATE messages SET timestamp=? WHERE agentName=? AND id=?`).run(timestamp, agentName, id);
 }
 
-function insertPostTurn(agentName, { turnId, frontendSource, requestHash, requestBlockCount, status = 'pending', responseMessageId = null, responseContentHash = null, createdAt, updatedAt }, projectBasePath) {
+function insertPostTurn(agentName, { turnId, frontendSource, requestHash, requestBlockCount, requestTotalBlockCount = null, status = 'pending', responseMessageId = null, responseContentHash = null, createdAt, updatedAt }, projectBasePath) {
     const db = getDb(agentName, projectBasePath);
     db.prepare(
         `INSERT INTO postTurns
-         (turnId, agentName, frontendSource, requestHash, requestBlockCount, status, responseMessageId, responseContentHash, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (turnId, agentName, frontendSource, requestHash, requestBlockCount, requestTotalBlockCount, status, responseMessageId, responseContentHash, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(turnId) DO UPDATE SET
              requestHash=excluded.requestHash,
              requestBlockCount=excluded.requestBlockCount,
+             requestTotalBlockCount=excluded.requestTotalBlockCount,
              status=excluded.status,
              responseMessageId=COALESCE(excluded.responseMessageId, postTurns.responseMessageId),
              responseContentHash=COALESCE(excluded.responseContentHash, postTurns.responseContentHash),
@@ -128,6 +135,7 @@ function insertPostTurn(agentName, { turnId, frontendSource, requestHash, reques
         frontendSource,
         requestHash,
         requestBlockCount,
+        requestTotalBlockCount,
         status,
         responseMessageId,
         responseContentHash,

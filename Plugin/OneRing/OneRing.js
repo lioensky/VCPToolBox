@@ -1861,6 +1861,15 @@ class OneRingPreprocessor {
         return snapshot.contentHash(JSON.stringify(normalizedBlocks));
     }
 
+    _getPostBlockTotalCount(postBlocks) {
+        const blocks = Array.isArray(postBlocks) ? postBlocks : [];
+        const maxIndex = blocks.reduce((max, block) => {
+            const index = Number(block?.index);
+            return Number.isInteger(index) && index >= 0 ? Math.max(max, index) : max;
+        }, -1);
+        return maxIndex >= 0 ? maxIndex + 1 : blocks.length;
+    }
+
     _createTurnId(agentName, frontendSource, requestHash) {
         const safeAgent = String(agentName || 'agent').replace(/[^\w.-]+/g, '_');
         const safeFrontend = String(frontendSource || 'frontend').replace(/[^\w.-]+/g, '_');
@@ -1878,17 +1887,24 @@ class OneRingPreprocessor {
             }
 
             // 极短 retry 保守判定：
-            // 旧逻辑只要求 blockCount 一致，通用客户端无 hash 包体时会把连续短新对话误判为 retry，
-            // 导致 post 回复 update 上一轮 assistant。这里改为必须 requestHash 完全一致。
-            // 用户改写内容时 requestHash 会变化，不再误复用最近 completed turn。
+            // requestHash 只能证明当前可见短窗口一致，不能证明它来自同一个长上下文。
+            // 因此必须同时校验：
+            // 1) 当前参与 hash 的短窗口 block 数一致；
+            // 2) 当前 post 的真实聊天楼层总数一致（例如 28 楼不能误复用 58 楼的 turn）；
+            // 3) requestHash 完全一致。
+            // 旧库没有 requestTotalBlockCount 的 completed turn 一律不参与自动 retry 复用。
             const blockCount = Array.isArray(postBlocks) ? postBlocks.length : 0;
+            const totalBlockCount = this._getPostBlockTotalCount(postBlocks);
             const latest = recentTurns[0] || null;
+            const latestTotalBlockCount = Number(latest?.requestTotalBlockCount);
             const requestHash = this._createPostRequestHash(postBlocks);
             if (
                 latest &&
                 blockCount > 0 &&
                 blockCount <= 2 &&
                 Number(latest.requestBlockCount) === blockCount &&
+                Number.isInteger(latestTotalBlockCount) &&
+                latestTotalBlockCount === totalBlockCount &&
                 latest.requestHash === requestHash
             ) {
                 return latest;
@@ -1908,6 +1924,7 @@ class OneRingPreprocessor {
             frontendSource,
             requestHash,
             requestBlockCount: Array.isArray(postBlocks) ? postBlocks.length : 0,
+            requestTotalBlockCount: this._getPostBlockTotalCount(postBlocks),
             status: 'pending',
             createdAt: nowIso,
             updatedAt: nowIso
