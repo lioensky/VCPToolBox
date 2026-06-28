@@ -19,7 +19,9 @@
     <UiCard class="status-card" variant="subtle">
       <article class="stat-chip">
         <span>SDK</span>
-        <strong :class="state?.sdkLoaded ? 'ok' : 'danger'">{{ state?.sdkLoaded ? "已加载" : "不可用" }}</strong>
+        <UiBadge :variant="state?.sdkLoaded ? 'success' : 'danger'">
+          {{ state?.sdkLoaded ? "已加载" : "不可用" }}
+        </UiBadge>
       </article>
       <article class="stat-chip">
         <span>邮箱数</span>
@@ -31,7 +33,7 @@
       </article>
       <article v-if="state?.lastError" class="stat-chip warning">
         <span>最近错误</span>
-        <strong>{{ state.lastError }}</strong>
+        <UiBadge variant="danger">{{ state.lastError }}</UiBadge>
       </article>
     </UiCard>
 
@@ -121,6 +123,7 @@
 import { computed, onMounted, ref } from "vue";
 import { clawMailApi, type ClawMailMailbox, type ClawMailState, type ClawMailSummary } from "@/api";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiCard from "@/components/ui/UiCard.vue";
 import UiEmptyState from "@/components/ui/UiEmptyState.vue";
@@ -302,10 +305,10 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 14px;
+  padding: var(--space-3);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--tertiary-bg);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .stat-chip span {
@@ -315,15 +318,6 @@ onMounted(() => {
 
 .stat-chip strong {
   overflow-wrap: anywhere;
-}
-
-.stat-chip .ok {
-  color: var(--success-color);
-}
-
-.stat-chip .danger,
-.stat-chip.warning strong {
-  color: var(--danger-color);
 }
 
 .mail-layout {
