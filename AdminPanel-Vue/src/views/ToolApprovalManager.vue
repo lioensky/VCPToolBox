@@ -14,46 +14,31 @@
       </UiPageActions>
     </Teleport>
 
-    <p class="description">在此管理工具调用的审核机制。开启后，特定的工具调用将需要通过管理面板进行人工确认。</p>
+    <p class="description">在此管理工具调用的审核机制。开启后，特定工具调用会进入人工确认流程。</p>
 
-    <UiSettingsCard
-      class="tool-approval-surface"
-      title="审核规则"
-      description="控制工具调用进入人工审核的范围、等待时间与隐私保护策略。"
-      variant="subtle"
-    >
-      <form @submit.prevent="saveConfig">
-        <UiSettingsGroup inset>
+    <form class="approval-layout" @submit.prevent="saveConfig">
+      <UiSettingsCard
+        class="tool-approval-surface"
+        title="审核范围"
+        description="控制哪些工具调用需要人工确认，以及审核请求的等待时间。"
+        variant="subtle"
+      >
+        <UiSettingsForm as="div" :columns="2" gap="sm">
           <UiSettingsSwitchRow
             v-model="config.enabled"
             :disabled="saving"
-            density="compact"
-            label="是否开启工具调用审核"
+            label="启用工具调用审核"
+            description="开启后，命中规则的工具调用会进入人工确认流程。"
+            data-settings-span="full"
           />
           <UiSettingsSwitchRow
             v-model="config.approveAll"
             :disabled="saving"
-            density="compact"
-            label="是否开启所有工具调用审核"
-            description="如果开启，所有工具调用都将进入审核流程，无论是否在名单中。"
+            label="审核所有工具调用"
+            description="开启后，所有工具调用都会进入审核流程，无论是否在名单中。"
+            data-settings-span="full"
           />
-          <UiSettingsSwitchRow
-            v-model="config.fuzzyToolMatching"
-            :disabled="saving"
-            density="compact"
-            label="是否开启模糊工具匹配"
-            description="开启后，工具参数值边界除标准「始」「末」外，还会兼容异常标记。"
-          />
-          <UiSettingsSwitchRow
-            v-model="config.privacyProtectionEnabled"
-            :disabled="saving"
-            density="compact"
-            label="是否开启工具调用隐私保护"
-            description="默认关闭。开启后，会在工具结果返回给 AI 前保守打码疑似密钥、password、api key、token 等高置信长令牌；不影响工具实际执行与人工审核参数。"
-          />
-        </UiSettingsGroup>
-        <UiSettingsForm as="div" :columns="2" gap="md">
-          <UiField label="审核最大等待时间" description="超时后，该审核请求将自动拒绝。" for-id="tool-approval-timeout">
+          <UiField label="最大等待时间" description="超时后，该审核请求将自动拒绝。" for-id="tool-approval-timeout">
             <UiInput
               id="tool-approval-timeout"
               v-model.number="config.timeoutMinutes"
@@ -64,24 +49,53 @@
               :disabled="saving"
             />
           </UiField>
-          <UiField
-            label="被审核规则名单"
-            description="支持 ToolName、ToolName:Command、ToolName::SilentReject、ToolName:Command::SilentReject。带 ::SilentReject 的规则在用户拒绝时不会向 AI 返回拒绝提示。"
-            for-id="tool-approval-list"
-            data-settings-span="full"
-          >
-            <UiTextarea
-              id="tool-approval-list"
-              v-model="config.approvalListText"
-              class="approval-list-textarea"
-              rows="8"
-              :disabled="saving"
-              placeholder="例如：&#10;SciCalculator&#10;PowerShellExecutor:Get-ChildItem&#10;PowerShellExecutor::SilentReject&#10;PowerShellExecutor:Remove-Item::SilentReject"
-            />
-          </UiField>
         </UiSettingsForm>
-      </form>
-    </UiSettingsCard>
+      </UiSettingsCard>
+
+      <UiSettingsCard
+        class="tool-approval-surface"
+        title="匹配与保护"
+        description="配置工具名匹配方式，以及结果返回给 AI 前的敏感信息保护。"
+        variant="subtle"
+      >
+        <UiSettingsForm as="div" :columns="1" gap="sm">
+          <UiSettingsSwitchRow
+            v-model="config.fuzzyToolMatching"
+            :disabled="saving"
+            label="启用模糊工具匹配"
+            description="工具参数值边界除标准「始」「末」外，还会兼容异常标记。"
+          />
+          <UiSettingsSwitchRow
+            v-model="config.privacyProtectionEnabled"
+            :disabled="saving"
+            label="启用工具调用隐私保护"
+            description="开启后，会在工具结果返回给 AI 前保守打码疑似密钥、password、api key、token 等高置信长令牌；不影响工具实际执行与人工审核参数。"
+          />
+        </UiSettingsForm>
+      </UiSettingsCard>
+
+      <UiSettingsCard
+        class="tool-approval-surface approval-rules-card"
+        title="被审核规则名单"
+        description="支持 ToolName、ToolName:Command、ToolName::SilentReject、ToolName:Command::SilentReject。"
+        variant="subtle"
+      >
+        <UiField
+          label="规则列表"
+          description="每行一条规则。带 ::SilentReject 的规则在用户拒绝时不会向 AI 返回拒绝提示。"
+          for-id="tool-approval-list"
+        >
+          <UiTextarea
+            id="tool-approval-list"
+            v-model="config.approvalListText"
+            class="approval-list-textarea"
+            rows="8"
+            :disabled="saving"
+            placeholder="例如：&#10;SciCalculator&#10;PowerShellExecutor:Get-ChildItem&#10;PowerShellExecutor::SilentReject&#10;PowerShellExecutor:Remove-Item::SilentReject"
+          />
+        </UiField>
+      </UiSettingsCard>
+    </form>
   </section>
 </template>
 
@@ -98,7 +112,6 @@ import UiInput from '@/components/ui/UiInput.vue'
 import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiSettingsCard from '@/components/ui/UiSettingsCard.vue'
 import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
-import UiSettingsGroup from '@/components/ui/UiSettingsGroup.vue'
 import UiSettingsSwitchRow from '@/components/ui/UiSettingsSwitchRow.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
@@ -274,12 +287,18 @@ onBeforeRouteLeave(async () => {
 .tool-approval-page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
+}
+
+.approval-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.86fr);
+  gap: var(--space-3);
 }
 
 .tool-approval-surface {
-  --tool-approval-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
-  --tool-approval-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+  --tool-approval-surface-border: color-mix(in srgb, var(--border-color) 88%, transparent);
+  --tool-approval-card-surface: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
 }
 
 .tool-approval-surface,
@@ -293,11 +312,6 @@ onBeforeRouteLeave(async () => {
   border-bottom-color: var(--tool-approval-surface-border);
 }
 
-.tool-approval-surface :deep(.ui-settings-group) {
-  border-color: var(--tool-approval-surface-border);
-  background: color-mix(in srgb, var(--primary-text) 3.5%, transparent);
-}
-
 .tool-approval-surface :deep(.ui-input),
 .tool-approval-surface :deep(.ui-textarea) {
   border-color: var(--tool-approval-surface-border);
@@ -309,8 +323,17 @@ onBeforeRouteLeave(async () => {
   max-width: 120px;
 }
 
+.approval-rules-card {
+  grid-column: 1 / -1;
+}
+
 .approval-list-textarea {
   font-family: 'Consolas', 'Monaco', monospace;
 }
 
+@media (max-width: 960px) {
+  .approval-layout {
+    grid-template-columns: 1fr;
+  }
+}
 </style>
