@@ -30,11 +30,13 @@
         >
           取消编辑
         </UiButton>
-        <span
+        <UiBadge
           v-if="editorStatus"
-          :class="['status-message', editorStatusType]"
-          >{{ editorStatus }}</span
+          :variant="editorStatusBadgeVariant"
+          class="editor-status"
         >
+          {{ editorStatus }}
+        </UiBadge>
       </div>
     </div>
 
@@ -45,6 +47,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from "vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 
@@ -52,7 +56,7 @@ interface Note {
   file: string;
 }
 
-defineProps<{
+const props = defineProps<{
   editingNote: Note | null;
   savingNote: boolean;
   editorStatus: string;
@@ -63,6 +67,10 @@ defineEmits<{
   (e: "saveNote"): void;
   (e: "cancelEdit"): void;
 }>();
+
+const editorStatusBadgeVariant = computed(() =>
+  props.editorStatusType === "error" ? "danger" : props.editorStatusType
+);
 </script>
 
 <style scoped>
@@ -228,7 +236,7 @@ defineEmits<{
     min-height: 40px;
   }
 
-  .editor-actions .status-message {
+  .editor-actions .editor-status {
     width: 100%;
   }
 
