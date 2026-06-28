@@ -83,7 +83,7 @@ const emit = defineEmits<{
   border-radius: var(--radius-sm);
   padding: 16px;
   cursor: pointer;
-  transition: background 0.2s ease, transform 0.2s ease;
+  transition: background 0.2s ease;
 }
 
 .forum-post-item {
@@ -92,7 +92,6 @@ const emit = defineEmits<{
 
 .forum-post-item:hover {
   background: var(--accent-bg);
-  transform: translateX(4px);
 }
 
 .forum-post-item.pinned-post {
