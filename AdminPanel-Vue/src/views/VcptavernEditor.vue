@@ -326,7 +326,7 @@ void dragGhostElement
     opacity 0.18s ease,
     filter 0.18s ease,
     border-color 0.2s ease,
-    box-shadow 0.2s ease;
+    background-color 0.2s ease;
 }
 
 .rule-card:hover {
