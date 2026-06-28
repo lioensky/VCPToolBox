@@ -1,5 +1,5 @@
 <template>
-  <section class="config-section active-section">
+  <section class="config-section active-section final-context-page">
     <Teleport to="#page-header-actions">
       <UiPageActions>
         <UiButton variant="outline" @click="openOneRingConfigModal" :disabled="isOneRingConfigLoading">
@@ -738,10 +738,6 @@ async function loadSnapshot(targetId?: number | null) {
     snapshot.value = response.snapshot
     selectedSnapshotId.value = response.snapshot.id ?? null
     activeBlockIndex.value = response.snapshot.summary.blocks[0]?.index ?? null
-    await nextTick()
-    if (activeBlockIndex.value !== null) {
-      scrollToBlock(activeBlockIndex.value, false)
-    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     emptyMessage.value = `加载最终上下文失败：${message}`
@@ -1177,9 +1173,20 @@ function scrollToBlock(index: number, smooth = true) {
   const el = blockRefs.get(index)
   if (!el) return
 
-  el.scrollIntoView({
+  const scrollRegion = el.closest('.content-scroll-region') as HTMLElement | null
+  if (!scrollRegion) return
+
+  const regionRect = scrollRegion.getBoundingClientRect()
+  const elementRect = el.getBoundingClientRect()
+  const targetTop =
+    scrollRegion.scrollTop +
+    elementRect.top -
+    regionRect.top -
+    (regionRect.height - elementRect.height) / 2
+
+  scrollRegion.scrollTo({
+    top: Math.max(0, targetTop),
     behavior: smooth ? 'smooth' : 'auto',
-    block: 'center',
   })
 }
 
@@ -1317,10 +1324,18 @@ onMounted(() => {
   white-space: nowrap;
 }
 
+.final-context-page {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
 .context-viewer {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  min-width: 0;
+  max-width: 100%;
   min-height: calc(var(--app-viewport-height, 100vh) - 140px);
 }
 
@@ -1341,6 +1356,8 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: var(--space-4);
+  min-width: 0;
+  max-width: 100%;
   padding: var(--space-4);
 }
 
@@ -1378,6 +1395,8 @@ onMounted(() => {
   display: flex;
   gap: var(--space-3);
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
   padding: var(--space-3) var(--space-4);
 }
 
@@ -1883,8 +1902,10 @@ onMounted(() => {
 
 .summary-card {
   display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-3);
+  min-width: 0;
+  max-width: 100%;
   padding: 14px 16px;
 }
 
@@ -1971,9 +1992,11 @@ onMounted(() => {
 .jump-index {
   --jump-chip-width: 148px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--jump-chip-width), var(--jump-chip-width)));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--jump-chip-width)), var(--jump-chip-width)));
   justify-content: start;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
   padding: 12px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -2083,10 +2106,14 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  min-width: 0;
+  max-width: 100%;
   padding-bottom: var(--space-4);
 }
 
 .context-block {
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
 }
 
@@ -2099,6 +2126,8 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   gap: var(--space-3);
+  min-width: 0;
+  max-width: 100%;
   padding: 12px 16px;
   border-bottom: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   background: color-mix(in srgb, var(--primary-text) 2%, transparent);
@@ -2110,6 +2139,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
   flex-wrap: wrap;
 }
 
@@ -2187,11 +2217,15 @@ onMounted(() => {
 }
 
 .block-content {
+  box-sizing: border-box;
   margin: 0;
   padding: 16px;
+  width: 100%;
+  max-width: 100%;
   max-height: 520px;
   overflow: auto;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
   font-family: Consolas, Monaco, "Courier New", monospace;
   font-size: var(--font-size-helper);

@@ -43,7 +43,7 @@ export function isAuthError(error: unknown): boolean {
 
 function reportRequestFailure(url: string, error: unknown): void {
   if (isAbortError(error)) {
-    logger.warn("API request aborted:", url);
+    logger.debug("API request aborted:", url);
     return;
   }
 

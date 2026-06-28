@@ -52,10 +52,6 @@ export default defineConfig(({ mode }) => {
       // 预优化依赖，加快开发启动速度
       include: ["vue", "vue-router", "pinia", "marked", "dompurify", "easymde"],
     },
-    css: {
-      // 关闭 CSS 模块开发工具，减少开发模式下的开销
-      devtools: false,
-    },
     build: {
       outDir: "dist",
       assetsDir: "assets",
@@ -89,21 +85,13 @@ export default defineConfig(({ mode }) => {
                 return "easymde";
               }
             }
-            // 将 Dashboard 相关组件拆分到独立 chunk
-            const dashboardCardMatch = id.match(
-              /[\\/]components[\\/]dashboard[\\/](.+Card)\.vue$/
-            );
-            if (dashboardCardMatch?.[1]) {
-              const cardChunkName = dashboardCardMatch[1]
-                .replace(/Card$/, "")
-                .replace(/[^a-zA-Z0-9]+/g, "-")
-                .toLowerCase();
-
-              return `dashboard-card-${cardChunkName}`;
-            }
-            if (id.includes("/components/dashboard/")) {
-              return "dashboard-components";
-            }
+            // 不再强制把每个 Dashboard 卡片拆成手工命名 chunk。
+            // 这些卡片本身已经由 import.meta.glob + defineAsyncComponent 按需加载；
+            // 继续在 manualChunks 中把 .vue SFC 强行切成 dashboard-card-* chunk，
+            // 会让首次进入 Dashboard 后快速路由切换时，更容易撞上异步卡片解析
+            // 与父级卸载/Teleport 清理交叠的 Vue DOM remove 竞态。
+            // 交给 Rollup/Vite 默认 chunk 图处理，可以保持异步边界，同时避免
+            // dashboard-card-* chunk 在卸载阶段触发 parentNode/null 幽灵错误。
           },
           // CSS 文件输出到独立目录
           chunkFileNames: "assets/js/[name]-[hash].js",

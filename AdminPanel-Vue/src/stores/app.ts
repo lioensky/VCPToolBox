@@ -33,8 +33,28 @@ function comparePluginLabels(a: PluginInfo, b: PluginInfo): number {
   });
 }
 
+function parseThemeStorageValue(value: string): ThemeMode {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed === "dark" || parsed === "light") {
+      return parsed;
+    }
+  } catch {
+    // 兼容旧版裸字符串 localStorage.theme = dark/light
+  }
+
+  if (value === "dark" || value === "light") {
+    return value;
+  }
+
+  return "dark";
+}
+
 export const useAppStore = defineStore("app", () => {
-  const theme = useLocalStorage<ThemeMode>("theme", "dark");
+  const theme = useLocalStorage<ThemeMode>("theme", "dark", {
+    parser: parseThemeStorageValue,
+    serializer: (value) => value,
+  });
   const resolvedTheme = ref<"dark" | "light">("dark");
   const animationsEnabled = useLocalStorage<boolean>("animationsEnabled", true);
   const isImmersiveMode = ref(false);
