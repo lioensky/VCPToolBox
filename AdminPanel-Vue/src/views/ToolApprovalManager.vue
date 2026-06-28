@@ -14,7 +14,29 @@
       </UiPageActions>
     </Teleport>
 
-    <p class="description">在此管理工具调用的审核机制。开启后，特定工具调用会进入人工确认流程。</p>
+    <header class="tool-approval-intro">
+      <h2>工具调用审核</h2>
+      <p>管理工具调用进入人工确认流程的条件、等待时间和隐私保护策略。</p>
+    </header>
+
+    <section class="approval-summary" aria-label="工具调用审核摘要">
+      <span class="summary-item">
+        <strong>{{ config.enabled ? '已启用' : '未启用' }}</strong>
+        <small>审核状态</small>
+      </span>
+      <span class="summary-item">
+        <strong>{{ config.approveAll ? '全部工具' : '规则命中' }}</strong>
+        <small>审核范围</small>
+      </span>
+      <span class="summary-item">
+        <strong>{{ config.timeoutMinutes }} 分钟</strong>
+        <small>最大等待</small>
+      </span>
+      <span class="summary-item">
+        <strong>{{ approvalRuleCount }}</strong>
+        <small>规则数量</small>
+      </span>
+    </section>
 
     <form class="approval-layout" @submit.prevent="saveConfig">
       <UiSettingsCard
@@ -184,6 +206,10 @@ const isDirty = computed(() => {
   return buildConfigSignature(config.value) !== initialSignature.value
 })
 
+const approvalRuleCount = computed(() => {
+  return buildPayload(config.value).approvalList.length
+})
+
 const statusBadgeVariant = computed(() => {
   if (statusType.value === 'success') return 'success'
   if (statusType.value === 'error') return 'danger'
@@ -287,18 +313,66 @@ onBeforeRouteLeave(async () => {
 .tool-approval-page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
+}
+
+.tool-approval-intro {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.tool-approval-intro h2 {
+  margin: 0;
+  color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.tool-approval-intro p {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
+}
+
+.approval-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.summary-item {
+  display: grid;
+  gap: 2px;
+  min-height: 52px;
+  justify-content: start;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 90%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+}
+
+.summary-item strong {
+  color: var(--primary-text);
+  font-size: var(--font-size-emphasis);
+  line-height: 1.15;
+}
+
+.summary-item small {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
 }
 
 .approval-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 0.86fr);
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .tool-approval-surface {
-  --tool-approval-surface-border: color-mix(in srgb, var(--border-color) 88%, transparent);
-  --tool-approval-card-surface: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
+  --tool-approval-surface-border: color-mix(in srgb, var(--border-color) 94%, transparent);
+  --tool-approval-card-surface: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
 }
 
 .tool-approval-surface,
@@ -314,9 +388,9 @@ onBeforeRouteLeave(async () => {
 
 .tool-approval-surface :deep(.ui-input),
 .tool-approval-surface :deep(.ui-textarea) {
-  border-color: var(--tool-approval-surface-border);
+  border-color: color-mix(in srgb, var(--border-color) 90%, transparent);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
+  background: transparent;
 }
 
 .timeout-input {
@@ -329,9 +403,11 @@ onBeforeRouteLeave(async () => {
 
 .approval-list-textarea {
   font-family: 'Consolas', 'Monaco', monospace;
+  line-height: 1.55;
 }
 
 @media (max-width: 960px) {
+  .approval-summary,
   .approval-layout {
     grid-template-columns: 1fr;
   }
