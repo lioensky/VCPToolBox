@@ -14,7 +14,7 @@
         <UiButton
           type="button"
           size="lg"
-          variant="secondary"
+          variant="primary"
           :disabled="isLoading || groupedEntries.length === 0"
           @click="handleSubmit"
         >
@@ -997,7 +997,7 @@ onBeforeUnmount(() => {
   width: 100%;
   max-width: min(1680px, calc(100vw - var(--space-6) * 2));
   margin: 0 auto;
-  padding: 0 var(--space-5) var(--space-6);
+  padding: 0 var(--space-4) var(--space-6);
 }
 
 #base-config-form {
@@ -1007,7 +1007,7 @@ onBeforeUnmount(() => {
 .base-config-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(340px, 400px);
-  gap: var(--space-6);
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -1031,7 +1031,7 @@ onBeforeUnmount(() => {
 .base-config-main {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-3);
 }
 
 .base-config-aside {
@@ -1042,9 +1042,9 @@ onBeforeUnmount(() => {
 }
 
 .base-settings-surface {
-  --base-config-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
-  --base-config-muted-surface: color-mix(in srgb, var(--primary-text) 3.5%, transparent);
-  --base-config-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+  --base-config-surface-border: color-mix(in srgb, var(--border-color) 88%, transparent);
+  --base-config-muted-surface: color-mix(in srgb, var(--primary-text) 2.4%, transparent);
+  --base-config-card-surface: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
 }
 
 .base-settings-surface,
@@ -1072,7 +1072,7 @@ onBeforeUnmount(() => {
   padding: 0 var(--space-2);
   border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.8%, transparent);
   color: var(--primary-text);
   font-size: var(--font-size-helper);
   font-weight: 600;
@@ -1081,18 +1081,18 @@ onBeforeUnmount(() => {
 .group-sections {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .group-section-block {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .group-section-block + .group-section-block {
   border-top: 1px dashed color-mix(in srgb, var(--border-color) 76%, transparent);
-  padding-top: var(--space-3);
+  padding-top: var(--space-2);
 }
 
 .group-section-row {
@@ -1110,9 +1110,9 @@ onBeforeUnmount(() => {
 .base-console {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-5);
-  border-radius: var(--radius-xl);
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
   height: calc(
     var(--app-viewport-height, 100vh) -
     var(--app-top-bar-height, 60px) -
@@ -1170,7 +1170,7 @@ onBeforeUnmount(() => {
 
 .base-console__jump-list {
   display: grid;
-  gap: var(--space-2);
+  gap: var(--space-1);
 }
 
 .base-console__jump-list {
@@ -1186,9 +1186,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: var(--space-3);
   width: 100%;
-  min-height: 36px;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-color);
+  min-height: 32px;
+  padding: 6px var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--primary-text);
@@ -1208,12 +1208,12 @@ onBeforeUnmount(() => {
 }
 
 .base-console__jump-btn:hover {
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
 .base-console__jump-btn.is-active {
   border-color: color-mix(in srgb, var(--highlight-text) 38%, var(--border-color));
-  background: color-mix(in srgb, var(--highlight-text) 6%, transparent);
+  background: color-mix(in srgb, var(--highlight-text) 5%, transparent);
 }
 
 .base-console__jump-btn:focus-visible {
