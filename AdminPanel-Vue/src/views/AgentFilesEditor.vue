@@ -1716,14 +1716,12 @@ onBeforeRouteLeave(async () => {
     transform: translateX(-50%);
     z-index: 999;
     background: rgba(245, 245, 247, 0.88) !important; /* 精致浅灰白半透明磨砂 */
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid rgba(0, 0, 0, 0.06) !important;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08); /* 优雅环境环境投影 */
+    border: 1px solid var(--border-color);
+    background: var(--input-bg);
     padding: 4px;
     gap: 4px;
-    width: 220px; /* 固定精致小巧宽度 */
-    border-radius: 30px;
+    width: 220px;
+    border-radius: var(--radius-full);
     margin: 0 !important;
   }
 
@@ -1733,28 +1731,29 @@ onBeforeRouteLeave(async () => {
     align-items: center;
     justify-content: center;
     gap: 6px;
-    padding: 8px 12px;
+    min-height: 32px;
+    padding: 0 12px;
     border: none;
     background: transparent;
-    color: var(--secondary-text, #555555);
-    font-size: 13px;
+    color: var(--secondary-text);
+    font-size: var(--font-size-helper);
     font-weight: 500;
-    border-radius: 20px;
+    border-radius: var(--radius-full);
     cursor: pointer;
     position: relative;
-    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    transition:
+      background var(--transition-fast),
+      color var(--transition-fast);
   }
 
   .mobile-tab-btn.active {
-    background: #ffffff !important; /* 激活项采用纯白实体卡片滑块 */
-    color: #4a4a4a !important; /* 彻底重构为高级莫灰色，不刺眼不辣眼 */
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    background: var(--primary-bg);
+    color: var(--primary-text);
     font-weight: 600;
   }
 
-  /* 确保激活状态下的 SVG 图标也同步转为莫灰色，彻底消融刺眼高亮蓝 */
   .mobile-tab-btn.active .material-symbols-outlined {
-    color: #4a4a4a !important;
+    color: var(--primary-text);
   }
 
   .mobile-dirty-badge {
