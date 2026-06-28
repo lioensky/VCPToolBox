@@ -31,14 +31,15 @@
           </UiButton>
         </div>
 
-        <p
+        <UiBadge
           v-if="searching || isSearchComposing"
           class="search-status"
+          variant="outline"
           role="status"
           aria-live="polite"
         >
           {{ isSearchComposing ? "输入法组合中…" : "正在更新搜索结果…" }}
-        </p>
+        </UiBadge>
 
         <div class="filter-actions">
           <AppCheckbox
@@ -116,7 +117,7 @@
                 @update:model-value="emit('toggleTool', tool.uniqueId, $event)"
               >
                 <span class="tool-name">{{ tool.name }}</span>
-                <span class="tool-plugin">{{ tool.pluginName }}</span>
+                <UiBadge class="tool-plugin" variant="secondary">{{ tool.pluginName }}</UiBadge>
                 <UiBadge
                   v-if="toolDescriptions[tool.uniqueId]"
                   variant="info"
@@ -335,9 +336,7 @@ onBeforeUnmount(() => {
 }
 
 .search-status {
-  margin: 8px 0 0;
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
+  margin-top: 8px;
 }
 
 .search-clear-btn {
@@ -404,11 +403,6 @@ onBeforeUnmount(() => {
 }
 
 .tool-plugin {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-  background: var(--input-bg);
-  padding: 2px 8px;
-  border-radius: 4px;
   flex-shrink: 0;
 }
 
