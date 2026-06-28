@@ -33,17 +33,17 @@
             >
               <span class="material-symbols-outlined">add</span>
             </UiIconButton>
-            <button
+            <UiIconButton
               v-for="file in filteredFiles.slice(0, 8)"
               :key="file"
-              type="button"
               class="console-rail-icon"
-              :class="{ 'is-active': file === selectedFile }"
+              :active="file === selectedFile"
+              :label="`打开变量文件 ${file}`"
               :title="file"
               @click="requestSelectFile(file)"
             >
               <span class="material-symbols-outlined">description</span>
-            </button>
+            </UiIconButton>
           </div>
         </template>
         <template v-else>
@@ -92,15 +92,17 @@
           </div>
 
           <div class="tvs-console__actions">
-            <UiButton
-              variant="outline"
+            <UiIconButton
+              type="button"
+              class="tvs-refresh-button"
               size="sm"
+              label="刷新文件列表"
               title="刷新"
               :disabled="loadingFiles"
               @click="reloadFiles"
             >
-              ↻
-            </UiButton>
+              <span class="material-symbols-outlined">refresh</span>
+            </UiIconButton>
             <UiButton
               variant="outline"
               size="sm"
