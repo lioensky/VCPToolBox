@@ -258,9 +258,9 @@
                       </span>
                     </UiIconButton>
 
-                    <span class="plugin-version-badge">
+                    <UiBadge class="plugin-version-badge" variant="outline">
                       v{{ plugin.plugin.manifest.version || "0.0.0" }}
-                    </span>
+                    </UiBadge>
                   </div>
                 </div>
 
@@ -276,22 +276,20 @@
                     v-if="plugin.isDistributed || plugin.isPinned"
                     class="plugin-status-pills"
                   >
-                    <span
+                    <UiBadge
                       v-if="plugin.isDistributed"
-                      class="mini-pill mini-pill--sensitive"
+                      variant="warning"
                     >
-                      <span class="material-symbols-outlined mini-pill-icon">hub</span>
+                      <template #leading><span class="material-symbols-outlined">hub</span></template>
                       分布式
-                    </span>
-                    <span
+                    </UiBadge>
+                    <UiBadge
                       v-if="plugin.isPinned"
-                      class="mini-pill mini-pill--changed"
+                      variant="info"
                     >
-                      <span class="material-symbols-outlined mini-pill-icon"
-                        >push_pin</span
-                      >
+                      <template #leading><span class="material-symbols-outlined">push_pin</span></template>
                       已固定
-                    </span>
+                    </UiBadge>
                   </div>
 
                   <div class="plugin-actions">
@@ -381,9 +379,9 @@
                 </span>
               </UiIconButton>
 
-              <span class="plugin-version-badge">
+              <UiBadge class="plugin-version-badge" variant="outline">
                 v{{ plugin.plugin.manifest.version || "0.0.0" }}
-              </span>
+              </UiBadge>
             </div>
           </div>
 
@@ -396,14 +394,14 @@
             </p>
 
             <div v-if="plugin.isDistributed || plugin.isPinned" class="plugin-status-pills">
-              <span v-if="plugin.isDistributed" class="mini-pill mini-pill--sensitive">
-                <span class="material-symbols-outlined mini-pill-icon">hub</span>
+              <UiBadge v-if="plugin.isDistributed" variant="warning">
+                <template #leading><span class="material-symbols-outlined">hub</span></template>
                 分布式
-              </span>
-              <span v-if="plugin.isPinned" class="mini-pill mini-pill--changed">
-                <span class="material-symbols-outlined mini-pill-icon">push_pin</span>
+              </UiBadge>
+              <UiBadge v-if="plugin.isPinned" variant="info">
+                <template #leading><span class="material-symbols-outlined">push_pin</span></template>
                 已固定
-              </span>
+              </UiBadge>
             </div>
 
             <div class="plugin-actions">
@@ -1153,24 +1151,6 @@ watch(activeFilter, () => {
   gap: var(--space-2);
   flex-shrink: 0;
 }
-
-.plugin-version-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-/* ========== Mini Pills (RagTuning 风格) ========== */
 
 .plugin-status-pills {
   display: flex;
