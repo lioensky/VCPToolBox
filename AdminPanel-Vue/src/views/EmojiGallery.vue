@@ -1,6 +1,6 @@
 <template>
   <section class="config-section active-section emoji-gallery-page">
-    <header class="hero-card card">
+    <header class="hero-card">
       <div class="hero-copy">
         <span class="hero-kicker">Image Workspace</span>
         <div class="hero-title-row">
@@ -120,7 +120,7 @@
     <div class="gallery-workspace" :class="{ 'is-console-collapsed': consoleCollapsed }">
       <aside class="operations-column">
         <section
-          class="operations-console card"
+          class="operations-console"
           :class="{ 'is-collapsed': consoleCollapsed }"
           :aria-label="consoleCollapsed ? '表情包操作台（已折叠）' : '表情包操作台'"
         >
@@ -267,7 +267,7 @@
       </aside>
 
       <section class="content-column">
-        <section class="upload-console card">
+        <section class="upload-console">
           <div class="upload-console__header">
             <span class="upload-console__label">本地上传</span>
             <h3>上传图片、文件夹或压缩包</h3>
@@ -435,7 +435,7 @@
           </div>
         </section>
 
-        <section class="overview-card card" aria-live="polite">
+        <section class="overview-card" aria-live="polite">
           <div class="content-header">
             <h3>
               {{ selectedCategory ? `${selectedCategory} · 表情包` : "全部目录 · 表情包" }}
@@ -472,7 +472,7 @@
           </article>
         </section>
 
-        <section v-else-if="items.length === 0" class="card empty-state emoji-empty-state">
+        <section v-else-if="items.length === 0" class="empty-state emoji-empty-state">
           <span class="material-symbols-outlined">sentiment_dissatisfied</span>
           <h3>暂时没有结果</h3>
           <p>{{ emptyMessage }}</p>
@@ -1598,18 +1598,13 @@ onUnmounted(() => {
 
 .hero-card {
   display: grid;
-  gap: var(--space-md);
-  padding: clamp(20px, 3vw, 28px);
-  border-radius: calc(var(--radius-xl) + 4px);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) 16%, transparent), transparent 34%),
-    linear-gradient(
-      140deg,
-      color-mix(in srgb, var(--secondary-bg) 92%, transparent),
-      color-mix(in srgb, var(--surface-overlay-strong) 88%, transparent)
-    );
-  box-shadow: var(--shadow-overlay-soft);
+    linear-gradient(135deg, var(--surface-overlay-soft), transparent),
+    var(--secondary-bg);
 }
 
 .hero-copy {
@@ -1619,10 +1614,10 @@ onUnmounted(() => {
 }
 
 .hero-kicker {
-  color: var(--highlight-text);
+  color: var(--secondary-text);
   font-size: var(--font-size-caption);
   font-weight: 700;
-  letter-spacing: 0.14em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1649,10 +1644,11 @@ onUnmounted(() => {
 .hero-badge {
   display: grid;
   gap: 2px;
-  padding: 12px 14px;
-  border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 16%, var(--border-color));
-  background: color-mix(in srgb, var(--surface-overlay-soft) 76%, transparent);
+  padding: var(--space-2) var(--space-3);
+  min-height: 52px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .hero-badge strong {
@@ -1709,18 +1705,19 @@ onUnmounted(() => {
 .filter-pill {
   display: inline-flex;
   align-items: center;
-  padding: 6px 12px;
+  min-height: 28px;
+  padding: 0 var(--space-3);
   border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 82%, transparent);
+  background: transparent;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
 }
 
 .filter-pill.active {
-  color: var(--primary-text);
-  border-color: color-mix(in srgb, var(--highlight-text) 32%, transparent);
-  background: color-mix(in srgb, var(--highlight-text) 18%, transparent);
+  color: var(--highlight-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 56%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
 }
 
 .description {
@@ -1733,9 +1730,13 @@ onUnmounted(() => {
 
 .upload-console {
   display: grid;
-  gap: var(--space-sm);
-  padding: var(--space-md);
-  border-radius: var(--radius-xl);
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(135deg, var(--surface-overlay-soft), transparent),
+    var(--secondary-bg);
 }
 
 .upload-console__header {
@@ -1751,10 +1752,10 @@ onUnmounted(() => {
 
 .upload-console__label,
 .operations-console__label {
-  color: var(--highlight-text);
+  color: var(--secondary-text);
   font-size: var(--font-size-caption);
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1777,10 +1778,13 @@ onUnmounted(() => {
 .operations-console {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
-  padding: var(--space-md);
-  border-radius: var(--radius-xl);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 14%, var(--border-color));
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  background:
+    linear-gradient(135deg, var(--surface-overlay-soft), transparent),
+    var(--secondary-bg);
   transition: padding 0.2s ease;
 }
 
@@ -1811,7 +1815,7 @@ onUnmounted(() => {
 
 .operations-console__section + .operations-console__section {
   padding-top: var(--space-sm);
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .operations-console__section h3 {
@@ -1850,10 +1854,10 @@ onUnmounted(() => {
 }
 
 .rail-meta span {
-  padding: 4px 9px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 75%, transparent);
+  background: transparent;
 }
 
 .search-row {
@@ -1885,7 +1889,7 @@ onUnmounted(() => {
 
 .directory-list {
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
   max-height: 280px;
   overflow-y: auto;
   padding-right: 4px;
@@ -1898,22 +1902,23 @@ onUnmounted(() => {
   gap: var(--space-sm);
   width: 100%;
   text-align: left;
-  padding: 8px 12px;
+  min-height: 36px;
+  padding: 0 var(--space-3);
   border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--border-color) 92%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  background: transparent;
   color: var(--primary-text);
   cursor: pointer;
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
 .directory-pill:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 40%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .directory-pill.active {
-  border-color: color-mix(in srgb, var(--highlight-text) 72%, transparent);
-  background: color-mix(in srgb, var(--highlight-text) 20%, transparent);
+  border-color: color-mix(in srgb, var(--highlight-text) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
 }
 
 .pill-count {
@@ -1950,10 +1955,10 @@ onUnmounted(() => {
 }
 
 .upload-summary span {
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--border-color) 85%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 75%, transparent);
+  background: transparent;
 }
 
 .upload-file-list {
@@ -1961,7 +1966,7 @@ onUnmounted(() => {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 6px;
+  gap: var(--space-2);
   max-height: 220px;
   overflow-y: auto;
 }
@@ -1971,10 +1976,11 @@ onUnmounted(() => {
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--space-sm);
-  padding: 8px 10px;
+  min-height: 36px;
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 70%, transparent);
+  background: transparent;
 }
 
 .upload-file-copy {
@@ -2005,15 +2011,6 @@ onUnmounted(() => {
   font-size: var(--font-size-caption);
 }
 
-.upload-file-remove {
-  border: 1px solid color-mix(in srgb, var(--border-color) 85%, transparent);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--secondary-text);
-  cursor: pointer;
-  padding: 2px 8px;
-}
-
 .upload-file-remove:hover {
   color: var(--danger-color);
 }
@@ -2026,8 +2023,13 @@ onUnmounted(() => {
 
 .overview-card {
   display: grid;
-  gap: var(--space-sm);
-  padding: var(--space-md);
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(135deg, var(--surface-overlay-soft), transparent),
+    var(--secondary-bg);
 }
 
 .content-header {
@@ -2058,16 +2060,20 @@ onUnmounted(() => {
 }
 
 .stats-strip span {
-  padding: 5px 10px;
+  min-height: 28px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--border-color) 85%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 75%, transparent);
+  background: transparent;
 }
 
 .emoji-empty-state {
   display: grid;
   gap: var(--space-xs);
   padding: clamp(28px, 5vw, 42px);
+  border: 1px dashed color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .emoji-grid-shell {
@@ -2082,12 +2088,12 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-xs);
   margin-bottom: var(--space-sm);
-  padding: 8px 12px;
+  min-height: 32px;
+  padding: 0 var(--space-3);
   border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--highlight-text) 26%, transparent);
   background: color-mix(in srgb, var(--highlight-text) 14%, var(--surface-overlay-soft));
   color: var(--primary-text);
-  box-shadow: var(--shadow-overlay-soft);
 }
 
 .grid-refresh-banner .material-symbols-outlined {
@@ -2109,15 +2115,9 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--space-sm);
   border-radius: var(--radius-lg);
-  border: 1px solid var(--border-color);
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--secondary-bg) 88%, transparent),
-      color-mix(in srgb, var(--surface-overlay-strong) 82%, transparent)
-    );
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  background: var(--secondary-bg);
   overflow: hidden;
-  box-shadow: var(--shadow-overlay-soft);
   content-visibility: auto;
   contain-intrinsic-size: 320px;
   animation: emoji-card-enter 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -2133,7 +2133,7 @@ onUnmounted(() => {
   padding: 0;
   margin: 0;
   cursor: zoom-in;
-  background: color-mix(in srgb, var(--tertiary-bg) 86%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
   aspect-ratio: 1 / 1;
 }
 
@@ -2169,7 +2169,7 @@ onUnmounted(() => {
   position: relative;
   overflow: hidden;
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 88%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 5%, transparent);
 }
 
 .skeleton-line--title {
@@ -2220,7 +2220,7 @@ onUnmounted(() => {
 
 .emoji-category {
   margin: 0;
-  color: var(--highlight-text);
+  color: var(--secondary-text);
   font-size: var(--font-size-helper);
 }
 
@@ -2245,7 +2245,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   padding: 0 10px;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--primary-text);
@@ -2259,8 +2259,7 @@ onUnmounted(() => {
 }
 
 .emoji-link-button:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
   color: var(--primary-text);
 }
 
