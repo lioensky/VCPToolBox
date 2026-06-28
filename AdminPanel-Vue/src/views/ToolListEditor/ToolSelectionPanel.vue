@@ -1,6 +1,6 @@
 <template>
   <div class="left-panel">
-    <div class="tools-container card">
+    <UiCard class="tools-container" variant="default">
       <h2 class="section-header tle-section-header">
         可用工具
         <span class="tool-count">({{ filteredTools.length }})</span>
@@ -157,7 +157,7 @@
           </template>
         </div>
       </div>
-    </div>
+    </UiCard>
   </div>
 </template>
 
@@ -167,6 +167,7 @@ import type { Tool } from "@/features/tool-list/types";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 
 const props = defineProps<{
@@ -297,12 +298,11 @@ onBeforeUnmount(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: var(--space-4);
   min-height: 0;
 }
 
 .tools-container {
-  padding: 20px;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -317,12 +317,12 @@ onBeforeUnmount(() => {
 }
 
 .filter-section {
-  margin-bottom: var(--space-5);
+  margin-bottom: var(--space-4);
 }
 
 .search-row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
 }
 
@@ -330,13 +330,8 @@ onBeforeUnmount(() => {
   flex: 1;
 }
 
-.tool-checkbox:focus-within {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 1px;
-}
-
 .search-status {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .search-clear-btn {
@@ -345,7 +340,7 @@ onBeforeUnmount(() => {
 
 .filter-actions {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2);
   align-items: center;
   flex-wrap: wrap;
   margin-top: var(--space-3);
@@ -354,9 +349,9 @@ onBeforeUnmount(() => {
 .tools-list {
   flex: 1;
   overflow-y: auto;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--secondary-bg);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
   min-height: 0;
   position: relative;
 }
@@ -375,18 +370,23 @@ onBeforeUnmount(() => {
 }
 
 .tool-item {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border-color);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   box-sizing: border-box;
+  transition: background-color var(--transition-fast);
+}
+
+.tool-item:hover {
+  background: var(--accent-bg);
 }
 
 .tool-checkbox {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   cursor: pointer;
   flex: 1;
   min-width: 0;
@@ -412,7 +412,7 @@ onBeforeUnmount(() => {
 
 .loading-state {
   text-align: center;
-  padding: 60px 20px;
+  padding: var(--space-6) var(--space-4);
   color: var(--secondary-text);
 }
 
@@ -424,16 +424,13 @@ onBeforeUnmount(() => {
   transform: translateY(-50%);
   text-align: center;
   color: var(--secondary-text);
-  padding: 20px;
+  padding: var(--space-4);
   pointer-events: none;
 }
 
 @media (max-width: 1024px) {
   .left-panel {
     overflow: visible;
-  }
-  .tools-container {
-    padding: 16px;
   }
   .tools-list {
     max-height: 480px;
@@ -442,7 +439,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 768px) {
   .filter-actions {
-    gap: 8px 10px;
+    gap: var(--space-2);
   }
   .filter-actions :deep(.ui-button) {
     flex: 0 1 auto;
@@ -451,12 +448,18 @@ onBeforeUnmount(() => {
     font-size: var(--font-size-helper);
   }
   .search-row {
-    gap: 6px;
+    gap: var(--space-2);
   }
   .search-clear-btn {
     flex: 0 0 auto;
     padding-left: 10px;
     padding-right: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-item {
+    transition: none;
   }
 }
 </style>

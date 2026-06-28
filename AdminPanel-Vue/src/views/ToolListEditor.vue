@@ -748,7 +748,7 @@ onBeforeRouteLeave(async () => {
   min-height: 0;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 20px;
+  gap: var(--space-4);
   align-items: stretch;
   overflow: hidden;
 }

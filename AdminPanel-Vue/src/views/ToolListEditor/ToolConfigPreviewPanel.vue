@@ -1,7 +1,7 @@
 <template>
   <div class="right-panel">
     <!-- 配置文件管理 -->
-    <div class="config-manager card">
+    <UiCard class="config-manager" variant="default">
       <h2 class="section-header tle-section-header">
         配置管理
         <UiBadge v-if="isDirty" variant="warning" class="dirty-badge">未保存</UiBadge>
@@ -98,10 +98,10 @@
       <p v-if="loadingConfig" class="config-loading" role="status" aria-live="polite">
         正在加载配置内容...
       </p>
-    </div>
+    </UiCard>
 
     <!-- 预览区域 -->
-    <div class="preview-section card">
+    <UiCard class="preview-section" variant="default">
       <h2 class="section-header tle-section-header">生成预览</h2>
 
       <div class="preview-controls">
@@ -141,7 +141,7 @@
           {{ copying ? "复制中..." : "复制" }}
         </UiButton>
       </div>
-    </div>
+    </UiCard>
   </div>
 </template>
 
@@ -149,6 +149,7 @@
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
@@ -189,13 +190,12 @@ const emit = defineEmits<{
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: var(--space-4);
   min-height: 0;
 }
 
 .config-manager,
 .preview-section {
-  padding: 20px;
   display: flex;
   flex-direction: column;
 }
@@ -217,8 +217,8 @@ const emit = defineEmits<{
 .config-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: var(--space-4);
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
 .config-label {
@@ -232,11 +232,6 @@ const emit = defineEmits<{
   flex: 1;
 }
 
-.checkbox-label:focus-within {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 1px;
-}
-
 .config-error {
   margin: 0 0 var(--space-3);
   font-size: var(--font-size-helper);
@@ -245,23 +240,23 @@ const emit = defineEmits<{
 
 .missing-notice {
   margin: 0 0 var(--space-3);
-  padding: 6px 10px;
+  padding: var(--space-2) var(--space-3);
   font-size: var(--font-size-helper);
   color: var(--warning-text);
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-text);
-  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning-color) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning-color) 36%, var(--border-color));
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
 .config-actions {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2);
   flex-wrap: wrap;
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 
 .config-actions :deep(.ui-button) {
@@ -270,16 +265,16 @@ const emit = defineEmits<{
 }
 
 .config-loading {
-  margin: 10px 0 0;
+  margin: var(--space-2) 0 0;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
 }
 
 .preview-controls {
   display: flex;
-  gap: 15px;
+  gap: var(--space-3);
   align-items: center;
-  margin-bottom: 15px;
+  margin-bottom: var(--space-3);
   flex-wrap: wrap;
 }
 
@@ -302,9 +297,10 @@ const emit = defineEmits<{
 
 .preview-copy-btn {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: var(--space-2);
+  right: var(--space-2);
   opacity: 0.85;
+  transition: opacity var(--transition-fast);
 }
 
 .preview-copy-btn:hover:not(:disabled) {
@@ -319,23 +315,19 @@ const emit = defineEmits<{
   .right-panel {
     overflow: visible;
   }
-  .config-manager,
-  .preview-section {
-    padding: 16px;
-  }
 }
 
 @media (max-width: 768px) {
   .config-row {
     flex-direction: column;
     align-items: stretch;
-    gap: 6px;
+    gap: var(--space-2);
   }
   .config-label {
     flex: none;
   }
   .config-actions {
-    gap: 8px;
+    gap: var(--space-2);
   }
   .config-actions :deep(.ui-button) {
     flex: 1 1 calc(33.333% - 8px);
@@ -345,10 +337,16 @@ const emit = defineEmits<{
     font-size: var(--font-size-helper);
   }
   .preview-controls {
-    gap: 12px 16px;
+    gap: var(--space-2) var(--space-3);
   }
   .missing-notice {
     font-size: var(--font-size-helper);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preview-copy-btn {
+    transition: none;
   }
 }
 </style>
