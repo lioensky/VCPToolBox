@@ -1,30 +1,34 @@
 <template>
   <section id="dashboard-section" class="config-section active-section">
-    <VcpAnimation />
-
-    <div class="dashboard-layout-toolbar">
-      <div class="dashboard-layout-help">
-        <button
-          type="button"
-          class="dashboard-layout-hint-btn"
-          aria-label="查看布局操作提示"
-          title="查看布局操作提示"
-        >
-          <span class="material-symbols-outlined">info</span>
-        </button>
-        <div class="dashboard-layout-hint-tooltip" role="tooltip">
-          按住卡片顶部拖动排序，右下角调整大小，布局会自动保存到本地。
+    <Teleport to="#page-header-actions">
+      <div class="dashboard-layout-actions dashboard-layout-actions--header">
+        <div class="dashboard-layout-help">
+          <button
+            type="button"
+            class="dashboard-layout-hint-btn"
+            aria-label="查看布局操作提示"
+            title="查看布局操作提示"
+          >
+            <span class="material-symbols-outlined">info</span>
+          </button>
+          <div class="dashboard-layout-hint-tooltip" role="tooltip">
+            按住卡片顶部拖动排序，右下角调整大小，布局会自动保存到本地。
+          </div>
         </div>
-      </div>
-      <div class="dashboard-layout-actions">
         <button type="button" class="btn-primary dashboard-layout-manage" @click="showManager = true">
           管理卡片
         </button>
-        <button type="button" class="btn-secondary dashboard-layout-reset" @click="resetLayout">
+        <button
+          type="button"
+          class="btn-secondary dashboard-layout-reset"
+          @click="resetLayout"
+        >
           恢复默认
         </button>
       </div>
-    </div>
+    </Teleport>
+
+    <VcpAnimation />
 
     <!-- 加载状态 -->
     <div v-if="!catalogReady" class="dashboard-loading">
@@ -918,14 +922,26 @@ onBeforeUnmount(() => {
 }
 
 .dashboard-layout-actions {
+  align-items: center;
   display: flex;
   gap: 10px;
+}
+
+.dashboard-layout-actions--header {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.dashboard-layout-actions--header .dashboard-layout-hint-tooltip {
+  right: 0;
+  left: auto;
 }
 
 .dashboard-layout-manage,
 .dashboard-layout-reset {
   flex-shrink: 0;
-  padding: 9px 14px;
+  min-height: 34px;
+  padding: 7px 12px;
   border-radius: 999px;
   font-size: var(--font-size-helper);
   font-weight: 700;
@@ -1159,14 +1175,8 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 767px) {
-  .dashboard-layout-toolbar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
   .dashboard-layout-actions {
-    width: 100%;
-    flex-direction: column;
+    align-items: stretch;
   }
 
   .dashboard-layout-manage,
@@ -1192,12 +1202,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 480px) {
-  .dashboard-layout-toolbar {
-    margin-bottom: 18px;
-    padding: 12px 14px;
-    border-radius: 16px;
-  }
-
   .dashboard-layout-hint-tooltip {
     width: min(300px, calc(100vw - 40px));
   }

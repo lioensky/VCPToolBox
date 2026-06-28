@@ -1,10 +1,22 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
+import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 import { visualizer } from "rollup-plugin-visualizer";
 
+function readVcpServerPort(): string {
+  const configPath = resolve(__dirname, "..", "config.env");
+  if (!existsSync(configPath)) return "6005";
+
+  const content = readFileSync(configPath, "utf-8");
+  const match = content.match(/^\s*PORT\s*=\s*([^\r\n#]+)/m);
+  return match?.[1]?.trim() || "6005";
+}
+
 export default defineConfig(({ mode }) => {
   const shouldAnalyze = mode === "analyze" || process.env.ANALYZE === "true";
+  const adminApiTarget =
+    process.env.VCP_ADMIN_API_TARGET || `http://localhost:${readVcpServerPort()}`;
 
   return {
     plugins: [
@@ -31,7 +43,7 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         "/admin_api": {
-          target: "http://localhost:3000",
+          target: adminApiTarget,
           changeOrigin: true,
         },
       },

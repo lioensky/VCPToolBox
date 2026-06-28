@@ -1,130 +1,117 @@
 <template>
-  <section class="config-section active-section">
+  <section class="config-section active-section server-log-section">
     <div class="log-viewer-container">
-      <!-- 日志头部控制栏 -->
-      <div class="log-header">  
-        <!-- “log-path”和“行数限制”共占一行的容器 -->
-        <div class="path-limit-row">
-          <span class="log-path">  
-            <span class="material-symbols-outlined">description</span>  
-            {{ logPath }}  
-          </span>  
-          
-          <label class="control-item">  
-            <span>行数限制:</span>  
-            <input  
-              type="number"  
-              v-model.number="logLimit"  
-              min="100"  
-              max="100000"  
-              step="500"  
-              class="limit-input"  
-            />  
+      <div class="log-toolbar">
+        <div class="log-toolbar__primary">
+          <div class="log-path-chip" :title="logPath">
+            <span class="material-symbols-outlined">description</span>
+            <span class="log-path-chip__text">{{ logPath }}</span>
+          </div>
+
+          <label class="limit-control">
+            <span>行数</span>
+            <input
+              type="number"
+              v-model.number="logLimit"
+              min="100"
+              max="100000"
+              step="500"
+              class="limit-input"
+            />
+          </label>
+
+          <label class="log-search">
+            <span class="material-symbols-outlined" aria-hidden="true">search</span>
+            <input
+              type="search"
+              v-model="filterText"
+              placeholder="过滤日志内容"
+              @input="handleFilter"
+            />
           </label>
         </div>
-        
-        <input  
-          type="search"  
-          v-model="filterText"  
-          placeholder="🔍 过滤日志内容…"  
-          class="log-filter"  
-          @input="handleFilter"  
-        />  
-        
-        <div class="log-stats">  
-          <span class="stat-item">  
-            <span class="stat-label">总行数:</span>  
-            <strong>{{ totalLines }}</strong>  
-          </span>  
-          <span class="stat-item">  
-            <span class="stat-label">显示:</span>  
-            <strong>{{ displayedLines.length }}</strong>  
-          </span>  
-          <span class="stat-item">  
-            <span class="stat-label">匹配:</span>  
-            <strong>{{ filteredLines.length }}</strong>  
-          </span>  
-        </div>  
-        
-        <div class="log-controls">  
-          <!-- 只保留四个按钮 -->  
-          <button  
-            type="button"  
-            @click="toggleReverse"  
-            :class="['btn-secondary', { active: isReverse }]"  
-            aria-label="切换日志顺序"  
-            title="切换顺序"  
-          >  
-            <span class="material-symbols-outlined">swap_vert</span>  
-          </button>  
-        
-          <button 
-            type="button" 
-            @click="copyLog" 
-            @touchend.prevent="copyLog"
-            class="btn-secondary" 
-            aria-label="复制日志" 
-            title="复制日志"
-          >  
-            <span class="material-symbols-outlined">content_copy</span>  
-            <span v-if="showCopyTip" class="copy-tip">已复制</span>
-          </button>  
-        
-          <button type="button" @click="clearLog" class="btn-secondary" aria-label="清空日志显示" title="清空显示">  
-            <span class="material-symbols-outlined">delete</span>  
-          </button>  
-        
-          <button  
-            type="button"  
-            @click="toggleAutoScroll"  
-            :class="['btn-secondary', { active: autoScroll }]"  
-            aria-label="切换自动滚动"  
-            title="自动滚动"  
-          >  
-            <span class="material-symbols-outlined">autoplay</span>  
-          </button>  
-        </div>  
-      </div>
 
-      <!-- 虚拟滚动日志区域 -->
-      <div
-        ref="logContainerRef"
-        class="log-content-virtual"
-        @scroll="handleScroll"
-      >
-        <div class="log-spacer" :style="{ height: totalHeight + 'px' }">
-          <div
-            class="log-viewport"
-            :style="{ transform: `translateY(${offsetY}px)` }"
-          >
-            <div
-              v-for="line in visibleLines"
-              :key="line.index"
-              v-memo="[line.item.content, filterText]"
-              class="log-line"
-              :class="getLineClass(line.item.content)"
-            >
-              <span class="line-number">{{ line.index + 1 }}</span>
-              <span
-                class="line-content"
-                v-html="highlightText(line.item.content)"
-              ></span>
-            </div>
+        <div class="log-toolbar__secondary">
+          <div class="log-stats">
+            <span class="stat-badge stat-badge--total">
+              <span class="stat-badge__accent" />
+              <span class="stat-badge__label">总行数</span>
+              <strong>{{ totalLines }}</strong>
+            </span>
+            <span class="stat-badge stat-badge--displayed">
+              <span class="stat-badge__accent" />
+              <span class="stat-badge__label">显示</span>
+              <strong>{{ displayedLines.length }}</strong>
+            </span>
+            <span class="stat-badge stat-badge--matched">
+              <span class="stat-badge__accent" />
+              <span class="stat-badge__label">匹配</span>
+              <strong>{{ filteredLines.length }}</strong>
+            </span>
+          </div>
+
+          <div class="log-controls">
+            <UiIconButton label="切换日志顺序" title="切换顺序" :active="isReverse" @click="toggleReverse">
+              <span class="material-symbols-outlined">swap_vert</span>
+            </UiIconButton>
+
+            <UiIconButton label="复制日志" title="复制日志" class="copy-button" @click="copyLog" @touchend.prevent="copyLog">
+              <span class="material-symbols-outlined">content_copy</span>
+              <span v-if="showCopyTip" class="copy-tip">已复制</span>
+            </UiIconButton>
+
+            <UiIconButton label="清空日志显示" title="清空显示" @click="clearLog">
+              <span class="material-symbols-outlined">delete</span>
+            </UiIconButton>
+
+            <UiIconButton label="切换自动滚动" title="自动滚动" :active="autoScroll" @click="toggleAutoScroll">
+              <span class="material-symbols-outlined">autoplay</span>
+            </UiIconButton>
           </div>
         </div>
       </div>
 
-      <!-- 快速操作按钮 -->
-      <transition name="fade">
+      <div class="log-panel">
+        <!-- 虚拟滚动日志区域 -->
         <div
-          v-if="showScrollToBottom"
-          class="scroll-to-bottom-btn"
-          @click="scrollToBottom"
+          ref="logContainerRef"
+          class="log-content-virtual"
+          @scroll="handleScroll"
         >
-          <span class="material-symbols-outlined">arrow_downward</span>
-          跳到底部
+          <div class="log-spacer" :style="{ height: totalHeight + 'px' }">
+            <div
+              class="log-viewport"
+              :style="{ transform: `translateY(${offsetY}px)` }"
+            >
+              <div
+                v-for="line in visibleLines"
+                :key="line.index"
+                v-memo="[line.item.content, filterText]"
+                class="log-line"
+                :class="getLineClass(line.item.content)"
+              >
+                <span class="line-number">{{ line.index + 1 }}</span>
+                <span
+                  class="line-content"
+                  v-html="highlightText(line.item.content)"
+                ></span>
+              </div>
+            </div>
+          </div>
         </div>
-      </transition>
+
+        <!-- 快速操作按钮 -->
+        <transition name="fade">
+          <div
+            v-if="showScrollToBottom"
+            class="scroll-to-bottom-btn"
+            @click="scrollToBottom"
+          >
+            <span class="material-symbols-outlined">arrow_downward</span>
+            跳到底部
+          </div>
+        </transition>
+      </div>
 
       <!-- 加载状态 -->
       <div v-if="isLoading" class="loading-indicator">
@@ -137,6 +124,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue';
+import UiIconButton from "@/components/ui/UiIconButton.vue";
 import { useServerLogViewer } from "@/features/server-log-viewer/useServerLogViewer";
 
 const {
@@ -195,126 +183,218 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
 </script>
 
 <style scoped>
+.server-log-section {
+  display: flex;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
 .log-viewer-container {
   display: flex;
   flex-direction: column;
-  height: calc(var(--app-viewport-height, 100vh) - 140px);
-  gap: var(--space-3);
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  gap: 12px;
   position: relative;
 }
 
-.log-header {
+.log-toolbar {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  align-items: center;
-  padding: 12px 16px;
-  background: var(--secondary-bg);
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--highlight-text) 4%, transparent),
+      transparent
+    ),
+    color-mix(in srgb, var(--secondary-bg) 88%, var(--primary-bg));
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  border: 1px solid var(--border-color);
 }
 
-/* 新增：让 log-path 和 control-item 共占一行的弹性容器 */
-.path-limit-row {
+.log-toolbar__primary,
+.log-toolbar__secondary {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 8px;
   flex-wrap: wrap;
 }
 
-.log-path {
-  display: flex;
+.log-toolbar__primary {
+  align-items: stretch;
+}
+
+.log-toolbar__secondary {
+  justify-content: space-between;
+}
+
+.log-path-chip,
+.limit-control,
+.log-search {
+  min-height: 32px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary-bg) 82%, transparent);
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.log-path-chip:hover,
+.limit-control:hover,
+.log-search:hover {
+  background: color-mix(in srgb, var(--primary-bg) 92%, transparent);
+  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+}
+
+.log-path-chip {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
+  min-width: 220px;
+  max-width: min(38vw, 520px);
+  padding: 0 10px;
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
-  min-width: 200px;
 }
 
-.log-path .material-symbols-outlined {
-  font-size: var(--font-size-emphasis) !important;
+.log-path-chip .material-symbols-outlined,
+.log-search .material-symbols-outlined,
+.log-controls :deep(.material-symbols-outlined) {
+  font-size: 18px !important;
+  line-height: 1;
 }
 
-.log-filter {
-  flex: 1;
-  min-width: 200px;
-  padding: 8px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
+.log-path-chip__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.log-filter:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
-  border-color: var(--highlight-text);
-}
-
-.log-stats {
-  display: flex;
-  gap: var(--space-4);
-  font-size: var(--font-size-helper);
-}
-
-.stat-item {
-  display: flex;
-  gap: var(--space-2);
+.limit-control {
+  display: inline-flex;
   align-items: center;
-}
-
-.stat-label {
+  gap: 8px;
+  padding: 0 8px 0 10px;
   color: var(--secondary-text);
-}
-
-.log-controls {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.control-item {
-  display: flex;
-  gap: 8px;
-  align-items: center;
   font-size: var(--font-size-helper);
 }
 
 .limit-input {
-  width: 70px;
-  padding: 6px 8px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
+  width: 82px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--primary-text);
+  font-size: var(--font-size-helper);
+  font-variant-numeric: tabular-nums;
+}
+
+.log-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 260px;
+  padding: 0 10px;
+  color: var(--secondary-text);
+}
+
+.log-search input {
+  width: 100%;
+  height: 30px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
   color: var(--primary-text);
   font-size: var(--font-size-helper);
 }
 
-.btn-secondary {
-  padding: 8px;
-  min-width: 40px;
-  min-height: 40px;
+.log-search input:hover,
+.log-search input:focus,
+.log-search input:focus-visible {
+  border-color: transparent;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+.log-search input::placeholder {
+  color: var(--secondary-text);
+  opacity: 0.78;
+}
+
+.log-search:focus-within,
+.limit-control:focus-within {
+  border-color: var(--highlight-text);
+  outline: none;
+  background: color-mix(in srgb, var(--primary-bg) 96%, transparent);
+}
+
+.log-stats {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--input-bg) 48%, transparent);
+  font-size: var(--font-size-helper);
+  color: var(--secondary-text);
+  box-shadow: var(--shadow-xs, none);
+}
+
+.stat-badge__accent {
+  width: 2px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--highlight-text) 74%, transparent);
+}
+
+.stat-badge--displayed .stat-badge__accent {
+  background: color-mix(in srgb, var(--success-color, var(--highlight-text)) 70%, transparent);
+}
+
+.stat-badge--matched .stat-badge__accent {
+  background: color-mix(in srgb, var(--warning-color, var(--highlight-text)) 70%, transparent);
+}
+
+.stat-badge strong {
+  color: var(--primary-text);
+  font-family: "Consolas", "Monaco", "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-controls {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.copy-button {
   position: relative;
-}
-
-.btn-secondary .material-symbols-outlined {
-  font-size: var(--font-size-emphasis) !important;
-}
-
-.btn-secondary.active {
-  background: var(--accent-bg);
-  border-color: var(--highlight-text);
-  color: var(--highlight-text);
 }
 
 /* 复制成功提示 */
 .copy-tip {
   position: absolute;
-  top: -30px;
+  top: -32px;
   left: 50%;
   transform: translateX(-50%);
   background: var(--button-bg);
@@ -346,16 +426,26 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
   }
 }
 
-/* 虚拟滚动日志区域 */
+.log-panel {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-bg) 26%, transparent);
+}
+
 .log-content-virtual {
   flex: 1;
+  min-height: 0;
   overflow: auto;
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-color);
   font-family: "Consolas", "Monaco", "Courier New", monospace;
   font-size: var(--font-size-helper);
-  line-height: 1.5;
+  line-height: 1.45;
+  scrollbar-gutter: stable;
 }
 
 .log-spacer {
@@ -368,57 +458,81 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
   top: 0;
   left: 0;
   min-width: 100%;
-  padding-bottom: 22px; /* 增加底部内边距，防止最后一行被截断 */
+  padding-bottom: 18px;
 }
 
 .log-line {
+  position: relative;
   display: flex;
-  gap: var(--space-3);
-  padding: 2px 16px;
-  border-bottom: 1px solid var(--border-color);
-  transition: background 0.15s;
+  gap: 10px;
+  min-height: 24px;
+  padding: 2px 14px 2px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 54%, transparent);
+  background: transparent;
   font-size: var(--font-size-helper);
+  transition: background-color var(--transition-fast);
+}
+
+.log-line::before {
+  content: "";
+  flex: 0 0 3px;
+  align-self: stretch;
+  background: transparent;
 }
 
 .log-line:hover {
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--accent-bg) 34%, transparent);
 }
 
 .line-number {
   flex-shrink: 0;
-  width: auto;
-  min-width: 0;
-  text-align: center;
+  width: 54px;
+  text-align: right;
   color: var(--secondary-text);
   user-select: none;
-  opacity: 0.75;
-  padding: 0 8px;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
 }
 
 .line-content {
   flex: 1;
+  min-width: 0;
   white-space: pre;
 }
 
 /* 日志级别样式 */
 .log-error {
-  background: var(--danger-bg);
   color: var(--danger-text);
+  background: color-mix(in srgb, var(--danger-bg) 28%, transparent);
+}
+
+.log-error::before {
+  background: var(--danger-color);
 }
 
 .log-warn {
-  background: var(--warning-bg);
   color: var(--warning-text);
+  background: color-mix(in srgb, var(--warning-bg) 24%, transparent);
+}
+
+.log-warn::before {
+  background: var(--warning-color, var(--highlight-text));
 }
 
 .log-info {
-  background: var(--info-bg);
   color: var(--info-text);
 }
 
+.log-info::before {
+  background: color-mix(in srgb, var(--info-color, var(--highlight-text)) 62%, transparent);
+}
+
 .log-debug {
-  background: var(--success-bg);
   color: var(--success-text);
+}
+
+.log-debug::before {
+  background: color-mix(in srgb, var(--success-color, var(--highlight-text)) 58%, transparent);
 }
 
 .log-normal {
@@ -436,19 +550,21 @@ mark {
 
 /* 滚动到底部按钮 */
 .scroll-to-bottom-btn {
-  position: fixed;
-  bottom: 30px;
-  right: 30px;
+  position: absolute;
+  bottom: 14px;
+  right: 18px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 20px;
-  background: var(--button-bg);
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  background: color-mix(in srgb, var(--button-bg) 92%, transparent);
   color: var(--on-accent-text);
   border-radius: var(--radius-full);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
   cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
+  font-size: var(--font-size-helper);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
   z-index: 100;
 }
 
@@ -464,13 +580,14 @@ mark {
 /* 加载指示器 */
 .loading-indicator {
   position: absolute;
-  top: 80px;
-  right: 20px;
+  top: 72px;
+  right: 12px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
-  background: var(--secondary-bg);
+  height: 30px;
+  padding: 0 12px;
+  background: color-mix(in srgb, var(--secondary-bg) 88%, transparent);
   border-radius: var(--radius-full);
   border: 1px solid var(--border-color);
   font-size: var(--font-size-helper);
@@ -500,73 +617,47 @@ mark {
 
 /* 响应式 */
 @media (max-width: 1024px) {
-  .log-header {
-    flex-direction: column;
+  .log-toolbar__primary,
+  .log-toolbar__secondary {
     align-items: stretch;
   }
 
-  .log-stats {
-    justify-content: space-between;
+  .log-path-chip,
+  .log-search {
+    max-width: none;
+    flex: 1 1 100%;
   }
 
   .log-controls {
-    flex-wrap: wrap;
-    justify-content: center;
-  }
-
-  .limit-input {
-    width: 100%;
+    margin-left: auto;
   }
 }
 
-/* 移动端优化 */  
 @media (max-width: 768px) {  
-  /* 确保 path-limit-row 始终保持横向排列，不换行 */
-  .path-limit-row {
-    flex-wrap: nowrap;
-    align-items: center;
+  .limit-control,
+  .log-search,
+  .stat-badge {
+    min-height: 34px;
   }
 
-  /* 让 log-path 收缩，给输入框留出空间 */
-  .log-path {
-    min-width: 0;
-    flex-shrink: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .log-stats {
+    flex: 1 1 100%;
   }
 
-  /* control-item 不收缩，保证输入框完整显示 */
-  .control-item {
-    flex-shrink: 0;
+  .line-number {
+    width: 42px;
   }
 
-  .log-controls {  
-    flex-direction: row;  
-    flex-wrap: nowrap;  
-    gap: 4px;  
-  }  
-  
-  .control-item {  
-    flex: 1;
-    min-width: 0;  
-  }  
-  
-  .limit-input {  
-    width: 100%;  
-  }  
-  
-  .btn-secondary {  
-    flex: 1;
-    min-width: 0;  
-    padding: 6px;  
-    min-height: 36px;  
-  }
-
-  /* 日志内容在移动端自动换行 */
   .line-content {
     white-space: pre-wrap;
     word-break: break-all;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .log-line,
+  .scroll-to-bottom-btn {
+    transition: none;
   }
 }
 </style>

@@ -51,9 +51,10 @@
       ></div>
 
       <!-- 主内容区 -->
-      <main ref="contentRef" class="content" id="config-details-container">
+      <main class="content">
         <section class="unified-page-header">
           <h1>{{ currentPageTitle }}</h1>
+          <div id="page-header-actions" class="unified-page-header__actions"></div>
         </section>
 
         <!-- 返回顶部按钮 -->
@@ -68,12 +69,14 @@
           <span class="material-symbols-outlined">keyboard_arrow_up</span>
         </button>
 
-        <!-- 路由视图 -->
-        <router-view v-slot="{ Component, route }">
-          <transition name="fade" mode="out-in">
-            <component :is="Component" :key="route.fullPath" :data-page="String(route.name || '')" />
-          </transition>
-        </router-view>
+        <div ref="contentRef" class="content-scroll-region" id="config-details-container">
+          <!-- 路由视图 -->
+          <router-view v-slot="{ Component, route }">
+            <transition name="fade" mode="out-in">
+              <component :is="Component" :key="route.fullPath" :data-page="String(route.name || '')" />
+            </transition>
+          </router-view>
+        </div>
       </main>
     </div>
 
@@ -214,19 +217,15 @@ void contentRef;
 
 .content {
   position: relative;
+  display: flex;
+  flex-direction: column;
   flex-grow: 1;
-  padding: 24px 32px;
   box-sizing: border-box;
   border: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   height: 100%;
   background: var(--app-content-bg);
   clip-path: inset(0 round var(--radius-xl));
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--secondary-text) 12%, transparent)
-    transparent;
   /* 白色主画布；星空保持在全局最底层 */
   /* 不在默认态设置 identity transform，避免创建 stacking context */
   opacity: 1;
@@ -237,26 +236,39 @@ void contentRef;
     border-color var(--transition-fast);
 }
 
-.content:hover {
+.content-scroll-region {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 16px 16px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--secondary-text) 12%, transparent)
+    transparent;
+}
+
+.content-scroll-region:hover {
   scrollbar-color: color-mix(in srgb, var(--secondary-text) 28%, transparent)
     transparent;
 }
 
-.content::-webkit-scrollbar {
+.content-scroll-region::-webkit-scrollbar {
   width: 14px;
   height: 14px;
 }
 
-.content::-webkit-scrollbar-track {
+.content-scroll-region::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.content::-webkit-scrollbar-button,
-.content::-webkit-scrollbar-button:single-button,
-.content::-webkit-scrollbar-button:vertical:start,
-.content::-webkit-scrollbar-button:vertical:end,
-.content::-webkit-scrollbar-button:vertical:decrement,
-.content::-webkit-scrollbar-button:vertical:increment {
+.content-scroll-region::-webkit-scrollbar-button,
+.content-scroll-region::-webkit-scrollbar-button:single-button,
+.content-scroll-region::-webkit-scrollbar-button:vertical:start,
+.content-scroll-region::-webkit-scrollbar-button:vertical:end,
+.content-scroll-region::-webkit-scrollbar-button:vertical:decrement,
+.content-scroll-region::-webkit-scrollbar-button:vertical:increment {
   appearance: none;
   -webkit-appearance: none;
   background: transparent;
@@ -265,7 +277,7 @@ void contentRef;
   height: 0;
 }
 
-.content::-webkit-scrollbar-thumb {
+.content-scroll-region::-webkit-scrollbar-thumb {
   background-color: color-mix(in srgb, var(--secondary-text) 10%, transparent);
   background-clip: content-box;
   border: 3px solid transparent;
@@ -273,11 +285,11 @@ void contentRef;
   border-radius: 999px;
 }
 
-.content:hover::-webkit-scrollbar-thumb {
+.content-scroll-region:hover::-webkit-scrollbar-thumb {
   background-color: color-mix(in srgb, var(--secondary-text) 26%, transparent);
 }
 
-.content:hover::-webkit-scrollbar-thumb:hover {
+.content-scroll-region:hover::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--secondary-text) 42%, transparent);
 }
 
@@ -537,14 +549,34 @@ void contentRef;
 
 .unified-page-header {
   position: relative;
-  overflow: hidden;
+  z-index: 20;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 20px 16px 12px;
+  overflow: visible;
 }
 
 .unified-page-header h1 {
   position: relative;
   z-index: 1;
-  font-size: var(--font-size-title);
-  line-height: 1.25;
+  min-width: 0;
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.unified-page-header__actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 36px;
 }
 
 /* 淡入淡出动画 */
@@ -561,16 +593,23 @@ void contentRef;
 /* 移动端适配 */
 @media (max-width: 768px) {
   .content {
-    padding: 14px;
+    padding: 0;
+  }
+
+  .content-scroll-region {
+    padding: 4px 12px 12px;
   }
 
   .unified-page-header {
-    margin: 0 0 14px;
-    padding: 12px 14px;
+    padding: 12px 12px 10px;
   }
 
   .unified-page-header h1 {
-    font-size: var(--font-size-emphasis);
+    font-size: 1rem;
+  }
+
+  .unified-page-header__actions {
+    min-height: 32px;
   }
 
   .back-to-top-btn {
@@ -584,11 +623,17 @@ void contentRef;
 
 @media (max-width: 480px) {
   .content {
-    padding: 12px;
+    padding: 0;
+  }
+
+  .content-scroll-region {
+    padding: 4px 12px 12px;
   }
 
   .unified-page-header {
-    margin-bottom: 12px;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-2);
     padding: 10px 12px;
     border-radius: 12px;
   }
