@@ -201,7 +201,7 @@
 
               <p v-if="multiModalConfigPath" class="mm-meta">
                 配置文件：<code>{{ multiModalConfigPath }}</code>
-                <span v-if="multiModalConfigWatcher" class="mm-meta-tag">热加载已启用</span>
+                <UiBadge v-if="multiModalConfigWatcher" class="mm-meta-tag" variant="success">热加载已启用</UiBadge>
               </p>
             </div>
 
@@ -244,6 +244,7 @@ import { onBeforeRouteLeave } from 'vue-router'
 import { mediaCacheApi, systemApi, type MediaCacheItem } from '@/api'
 import type { MultiModalConfig } from '@/types/api.system'
 import BaseModal from '@/components/ui/BaseModal.vue'
+import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiCard from '@/components/ui/UiCard.vue'
 import UiField from '@/components/ui/UiField.vue'
@@ -965,11 +966,7 @@ onUnmounted(() => {
 
 .mm-meta-tag {
   margin-left: 8px;
-  padding: 2px 6px;
-  border-radius: 3px;
-  background: var(--success-color, #22c55e);
-  color: var(--on-accent-text, #fff);
-  font-size: var(--font-size-caption);
+  vertical-align: middle;
 }
 
 .mm-error {
