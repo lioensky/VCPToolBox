@@ -1434,8 +1434,7 @@ onBeforeUnmount(() => {
   transition:
     background-color 0.2s ease,
     color 0.2s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease;
+    border-color 0.2s ease;
 }
 
 .view-mode-btn:hover {
@@ -1451,8 +1450,8 @@ onBeforeUnmount(() => {
 }
 
 .view-mode-btn:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
 }
 
 .filter-row {
@@ -1624,8 +1623,8 @@ onBeforeUnmount(() => {
 }
 
 .group-collapse-toggle:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
 }
 
 .group-collapse-icon {
@@ -2008,8 +2007,10 @@ onBeforeUnmount(() => {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-  background: #0e0e0e;
-  color: #dcdcdc;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--primary-bg);
+  color: var(--primary-text);
 }
 
 .log-slide-enter-active,
