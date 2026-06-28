@@ -2340,14 +2340,13 @@ onBeforeUnmount(() => {
   background: var(--surface-overlay-soft);
   color: var(--primary-text);
   cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  transition: border-color 0.2s ease, background 0.2s ease;
   text-align: left;
 }
 
 .rag-console__jump-btn:hover {
   border-color: var(--highlight-text);
   background: var(--info-bg);
-  transform: translateY(-1px);
 }
 
 .rag-console__jump-btn:focus-visible {
@@ -2406,7 +2405,6 @@ onBeforeUnmount(() => {
   border-radius: 16px;
   background: color-mix(in srgb, var(--highlight-text) 14%, transparent);
   color: var(--highlight-text);
-  box-shadow: 0 0 28px color-mix(in srgb, var(--highlight-text) 20%, transparent);
 }
 
 .semantic-sim-card__copy {
