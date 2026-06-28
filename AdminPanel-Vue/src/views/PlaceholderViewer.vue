@@ -14,35 +14,42 @@
       @update:filterKeyword="handleFilterKeywordUpdate"
     />
 
-    <div
+    <UiEmptyState
       v-if="isLoadingPlaceholders"
-      class="placeholder-status"
+      title="正在加载占位符..."
       role="status"
       aria-live="polite"
     >
-      正在加载占位符...
-    </div>
+      <template #icon>
+        <span class="material-symbols-outlined">hourglass_top</span>
+      </template>
+    </UiEmptyState>
 
-    <div
+    <UiEmptyState
       v-else-if="loadErrorMessage"
-      class="placeholder-status placeholder-status-error"
+      title="占位符加载失败"
+      :description="loadErrorMessage"
       role="status"
       aria-live="polite"
     >
-      {{ loadErrorMessage }}
-    </div>
+      <template #icon>
+        <span class="material-symbols-outlined">error</span>
+      </template>
+    </UiEmptyState>
 
     <template v-else>
       <!-- 分组视图 -->
       <div v-if="viewMode === 'grouped'" class="placeholder-grouped-view">
-        <div
+        <UiEmptyState
           v-if="shouldShowEmptyState"
-          class="placeholder-status"
+          :title="emptyStateText"
           role="status"
           aria-live="polite"
         >
-          {{ emptyStateText }}
-        </div>
+          <template #icon>
+            <span class="material-symbols-outlined">search_off</span>
+          </template>
+        </UiEmptyState>
 
         <div
           v-for="type in filteredTypes"
@@ -102,14 +109,17 @@
 
       <!-- 列表视图 -->
       <div v-else class="placeholder-list-view">
-        <div
+        <UiEmptyState
           v-if="shouldShowEmptyState"
-          class="placeholder-status"
+          class="placeholder-empty-state"
+          :title="emptyStateText"
           role="status"
           aria-live="polite"
         >
-          {{ emptyStateText }}
-        </div>
+          <template #icon>
+            <span class="material-symbols-outlined">search_off</span>
+          </template>
+        </UiEmptyState>
 
         <PlaceholderCard
           v-for="placeholder in filteredPlaceholders"
@@ -154,6 +164,7 @@ import { showMessage } from "@/utils";
 import { createLogger } from "@/utils/logger";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import PlaceholderCard from "./PlaceholderViewer/PlaceholderCard.vue";
 import PlaceholderFilterBar from "./PlaceholderViewer/PlaceholderFilterBar.vue";
 import PlaceholderDetailModal from "./PlaceholderViewer/PlaceholderDetailModal.vue";
@@ -668,23 +679,7 @@ onMounted(() => {
   align-items: stretch;
 }
 
-.placeholder-status {
-  padding: var(--space-5);
-  background: var(--tertiary-bg);
-  border: 1px dashed var(--border-color);
-  border-radius: var(--radius-md);
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-}
-
-.placeholder-status-error {
-  border-style: solid;
-  border-color: color-mix(in srgb, var(--danger-color) 32%, var(--border-color));
-  background: color-mix(in srgb, var(--danger-color) 8%, transparent);
-  color: var(--primary-text);
-}
-
-.placeholder-list-view > .placeholder-status {
+.placeholder-empty-state {
   grid-column: 1 / -1;
 }
 
