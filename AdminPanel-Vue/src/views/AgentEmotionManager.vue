@@ -143,14 +143,14 @@
               </div>
             </div>
             <div class="archetype-list">
-              <span
+              <UiBadge
                 v-for="item in archetypeItems"
                 :key="item.label"
                 class="archetype-pill"
-                :style="{ '--score': item.score }"
+                variant="outline"
               >
                 {{ item.label }} · {{ formatPercent(item.score) }}
-              </span>
+              </UiBadge>
             </div>
           </div>
         </section>
@@ -1446,14 +1446,7 @@ onMounted(() => {
 }
 
 .archetype-pill {
-  --score: 0.3;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--highlight-text) calc(var(--score) * 70%), var(--border-color));
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--highlight-text) calc(var(--score) * 18%), transparent);
-  color: var(--primary-text);
-  font-size: var(--font-size-caption);
-  text-align: center;
+  justify-self: center;
 }
 
 .gender-grid {
@@ -1507,19 +1500,6 @@ onMounted(() => {
   display: flex;
   gap: var(--space-2);
   flex-wrap: wrap;
-}
-
-.expression-tags span {
-  padding: 6px 10px;
-  border-radius: var(--radius-full);
-  color: var(--secondary-text);
-  background: var(--surface-overlay);
-  font-size: var(--font-size-caption);
-}
-
-.expression-tags span.active {
-  color: var(--success-text);
-  background: var(--success-bg);
 }
 
 .model-choice {
