@@ -304,7 +304,7 @@ onMounted(() => {
 .stat-chip {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: var(--space-3);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -336,21 +336,29 @@ onMounted(() => {
 .mailbox-item {
   width: 100%;
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: center;
-  padding: 12px;
+  min-height: 44px;
+  padding: var(--space-3);
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--primary-text);
   text-align: left;
   cursor: pointer;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
 }
 
-.mailbox-item:hover,
+.mailbox-item:hover {
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+}
+
 .mailbox-item.active {
   border-color: color-mix(in srgb, var(--button-bg) 36%, var(--border-color));
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--button-bg) 8%, transparent);
 }
 
 .mailbox-copy {
@@ -385,7 +393,7 @@ onMounted(() => {
 .inline-field,
 .checkbox-field {
   display: inline-flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
   color: var(--secondary-text);
 }
@@ -397,28 +405,36 @@ onMounted(() => {
 .message-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-2);
 }
 
 .message-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: center;
-  padding: 12px;
+  padding: var(--space-3);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  background: var(--tertiary-bg);
+  background: transparent;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.message-item:hover {
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .message-item.active {
   border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
+  background: color-mix(in srgb, var(--button-bg) 6%, transparent);
 }
 
 .message-main {
   display: flex;
   min-width: 0;
-  gap: 12px;
+  gap: var(--space-3);
   border: 0;
   background: transparent;
   color: var(--primary-text);
@@ -471,8 +487,15 @@ onMounted(() => {
   word-break: break-word;
   padding: var(--space-4);
   border-radius: var(--radius-lg);
-  background: var(--tertiary-bg);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
   color: var(--primary-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mailbox-item,
+  .message-item {
+    transition: none;
+  }
 }
 
 @media (max-width: 1024px) {
