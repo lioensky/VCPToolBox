@@ -261,9 +261,10 @@
       </template>
     </div>
 
-    <div v-if="showMoonlightModal && moonlightReport" class="modal-backdrop" @click.self="closeMoonlightModal">
-      <section class="moonlight-modal" role="dialog" aria-modal="true" aria-labelledby="moonlight-report-title">
-        <header class="modal-header moonlight-modal-header">
+    <Teleport to="body">
+      <div v-if="showMoonlightModal && moonlightReport" class="modal-backdrop" @click.self="closeMoonlightModal">
+        <section class="moonlight-modal" role="dialog" aria-modal="true" aria-labelledby="moonlight-report-title">
+          <header class="modal-header moonlight-modal-header">
           <div class="moonlight-title">
             <span class="material-symbols-outlined">monitoring</span>
             <div>
@@ -474,13 +475,15 @@
               </UiBadge>
             </div>
           </section>
-        </div>
-      </section>
-    </div>
+          </div>
+        </section>
+      </div>
+    </Teleport>
 
-    <div v-if="showOneRingConfigModal" class="modal-backdrop" @click.self="closeOneRingConfigModal">
-      <section class="onering-modal" role="dialog" aria-modal="true" aria-labelledby="onering-config-title">
-        <header class="modal-header">
+    <Teleport to="body">
+      <div v-if="showOneRingConfigModal" class="modal-backdrop" @click.self="closeOneRingConfigModal">
+        <section class="onering-modal" role="dialog" aria-modal="true" aria-labelledby="onering-config-title">
+          <header class="modal-header">
           <div>
             <h3 id="onering-config-title">OneRing 热配置</h3>
             <p>保存后会写入 Plugin/OneRing/OneRingConfig.json，运行中的 OneRing 会通过 chokidar 自动热加载。</p>
@@ -532,8 +535,9 @@
             保存
           </UiButton>
         </footer>
-      </section>
-    </div>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -1384,7 +1388,7 @@ onMounted(() => {
 
 .moonlight-modal {
   position: relative;
-  z-index: 10001;
+  z-index: 2147483001;
   width: min(1180px, calc(100vw - 24px));
   max-height: calc(var(--app-viewport-height, 100vh) - 96px);
   display: flex;
@@ -2215,7 +2219,7 @@ onMounted(() => {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 10000;
+  z-index: 2147483000;
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -2227,7 +2231,7 @@ onMounted(() => {
 
 .onering-modal {
   position: relative;
-  z-index: 10001;
+  z-index: 2147483001;
   width: min(620px, 100%);
   max-height: calc(100vh - 48px);
   overflow: auto;
