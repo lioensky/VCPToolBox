@@ -278,26 +278,6 @@
                     {{ plugin.summary }}
                   </p>
 
-                  <div
-                    v-if="plugin.isDistributed || plugin.isPinned"
-                    class="plugin-status-pills"
-                  >
-                    <UiBadge
-                      v-if="plugin.isDistributed"
-                      variant="warning"
-                    >
-                      <template #leading><span class="material-symbols-outlined">hub</span></template>
-                      分布式
-                    </UiBadge>
-                    <UiBadge
-                      v-if="plugin.isPinned"
-                      variant="info"
-                    >
-                      <template #leading><span class="material-symbols-outlined">push_pin</span></template>
-                      已固定
-                    </UiBadge>
-                  </div>
-
                   <div class="plugin-actions">
                     <UiButton
                       type="button"
@@ -400,17 +380,6 @@
             >
               {{ plugin.summary }}
             </p>
-
-            <div v-if="plugin.isDistributed || plugin.isPinned" class="plugin-status-pills">
-              <UiBadge v-if="plugin.isDistributed" variant="warning">
-                <template #leading><span class="material-symbols-outlined">hub</span></template>
-                分布式
-              </UiBadge>
-              <UiBadge v-if="plugin.isPinned" variant="info">
-                <template #leading><span class="material-symbols-outlined">push_pin</span></template>
-                已固定
-              </UiBadge>
-            </div>
 
             <div class="plugin-actions">
               <UiButton
@@ -794,50 +763,69 @@ watch(activeFilter, () => {
 .plugins-hub {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .hub-hero {
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 94%, transparent);
+}
+
+.hub-hero :deep(.ui-card__content) {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
-  gap: var(--space-4);
-  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  gap: var(--space-3);
+  align-items: stretch;
 }
 
 .hero-copy h2 {
-  font-size: var(--font-size-headline);
-  line-height: 1.2;
-  margin-bottom: var(--space-2);
+  margin: 0 0 var(--space-1);
+  color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .hero-copy p {
+  margin: 0;
   max-width: 56ch;
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
 .hero-eyebrow {
-  margin-bottom: var(--space-2);
+  display: inline-flex;
+  margin-bottom: var(--space-1);
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .hero-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .stat-chip {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  gap: 2px;
+  min-height: 54px;
+  justify-content: center;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  background: transparent;
 }
 
 .stat-chip strong {
-  font-size: var(--font-size-display);
+  font-size: var(--font-size-emphasis);
+  line-height: 1.1;
 }
 
 .stat-chip.enabled strong {
@@ -861,8 +849,9 @@ watch(activeFilter, () => {
   position: sticky;
   top: 0;
   z-index: 17;
-  padding: var(--space-2) 0;
-  background: color-mix(in srgb, var(--primary-bg) 88%, transparent);
+  padding: var(--space-2) 0 var(--space-1);
+  background: color-mix(in srgb, var(--primary-bg) 82%, transparent);
+  backdrop-filter: blur(10px);
 }
 
 .controls-main-row {
@@ -971,7 +960,12 @@ watch(activeFilter, () => {
 .quick-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
+  gap: var(--space-2);
+}
+
+.quick-card {
+  border-color: color-mix(in srgb, var(--border-color) 92%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
 }
 
 .quick-list {
@@ -984,15 +978,19 @@ watch(activeFilter, () => {
   display: flex;
   align-items: end;
   justify-content: space-between;
+  padding-top: var(--space-1);
 }
 
 .results-header h3 {
-  font-size: var(--font-size-title);
+  margin: 0;
+  font-size: var(--font-size-emphasis);
+  line-height: 1.35;
 }
 
 .results-header p {
   color: var(--secondary-text);
-  margin-top: var(--space-1);
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-helper);
 }
 
 /* .empty-state 已在全局 layout.css 中统一定义 */
@@ -1000,7 +998,7 @@ watch(activeFilter, () => {
 .plugin-grouped-view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .plugin-list-view {
@@ -1008,9 +1006,9 @@ watch(activeFilter, () => {
 }
 
 .plugin-type-group {
-  background: transparent;
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
   border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 94%, transparent);
   overflow: hidden;
 }
 
@@ -1019,29 +1017,36 @@ watch(activeFilter, () => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-3);
-  background: color-mix(in srgb, var(--primary-text) 2.4%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  min-height: 42px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--primary-text) 2.2%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
 }
 
 .type-group-header h3 {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--font-size-emphasis);
+  font-size: var(--font-size-helper);
+  font-weight: 700;
   margin: 0;
+}
+
+.type-group-header .material-symbols-outlined {
+  color: var(--secondary-text);
+  font-size: 16px;
 }
 
 .type-count {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 28px;
-  height: 24px;
+  min-width: 24px;
+  height: 20px;
   padding: 0 8px;
   border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  background: transparent;
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
   font-weight: 600;
@@ -1063,7 +1068,7 @@ watch(activeFilter, () => {
 }
 
 .type-group-content {
-  padding: var(--space-2);
+  padding: 10px;
 }
 
 .group-collapse-enter-active,
@@ -1096,47 +1101,54 @@ watch(activeFilter, () => {
 .plugin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
 .plugin-card {
   display: flex;
   flex-direction: column;
   height: 100%;
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 92%, transparent);
   border-radius: var(--radius-md);
-  padding: var(--space-3);
-  background: transparent;
-  transition: background-color var(--transition-fast);
+  padding: 10px;
+  background: color-mix(in srgb, var(--primary-text) 0.7%, transparent);
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .plugin-card:hover {
-  background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
+  border-color: color-mix(in srgb, var(--highlight-text) 24%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 3.5%, transparent);
 }
 
 .plugin-card-top {
   display: flex;
   align-items: start;
   justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
 }
 
 .plugin-identity {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .plugin-icon-shell {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
   color: var(--highlight-text);
   flex-shrink: 0;
+}
+
+.plugin-icon-shell .material-symbols-outlined {
+  font-size: 18px;
 }
 
 .plugin-heading {
@@ -1147,20 +1159,20 @@ watch(activeFilter, () => {
 .plugin-title-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-xs);
   align-items: center;
 }
 
 .plugin-title-row h3 {
-  font-size: var(--font-size-emphasis);
+  font-size: var(--font-size-body);
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
 .plugin-original-name {
-  margin-top: var(--space-1);
+  margin-top: 2px;
   color: var(--secondary-text);
-  font-size: var(--font-size-helper);
+  font-size: var(--font-size-caption);
   overflow-wrap: anywhere;
 }
 
@@ -1168,15 +1180,8 @@ watch(activeFilter, () => {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: var(--space-2);
+  gap: var(--space-xs);
   flex-shrink: 0;
-}
-
-.plugin-status-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
 }
 
 .plugin-card-main {
@@ -1188,9 +1193,10 @@ watch(activeFilter, () => {
 
 .plugin-description {
   color: var(--secondary-text);
-  line-height: 1.55;
-  min-height: calc(1.55em * 2);
-  max-height: calc(1.55em * 3);
+  font-size: var(--font-size-helper);
+  line-height: 1.5;
+  min-height: calc(1.5em * 2);
+  max-height: calc(1.5em * 3);
   overflow: hidden;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -1203,13 +1209,14 @@ watch(activeFilter, () => {
 .plugin-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-xs);
   margin-top: auto;
   padding-top: var(--space-2);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
 }
 
 @media (max-width: 1024px) {
-  .hub-hero,
+  .hub-hero :deep(.ui-card__content),
   .quick-grid {
     grid-template-columns: 1fr;
   }
@@ -1259,7 +1266,7 @@ watch(activeFilter, () => {
 }
 
 @media (max-width: 480px) {
-  .hub-hero {
+  .hub-hero :deep(.ui-card__content) {
     gap: var(--space-4);
   }
 
