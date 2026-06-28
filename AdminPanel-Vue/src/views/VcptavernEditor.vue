@@ -250,13 +250,13 @@ void dragGhostElement
 .vcp-tavern-page {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
   align-items: flex-start;
 }
 
@@ -300,6 +300,9 @@ void dragGhostElement
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .rules-header h3 {
@@ -314,9 +317,9 @@ void dragGhostElement
 
 .rule-card {
   position: relative;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--secondary-bg) 76%, transparent);
+  background: transparent;
   padding: var(--space-3);
   display: flex;
   flex-direction: column;
@@ -330,8 +333,7 @@ void dragGhostElement
 }
 
 .rule-card:hover {
-  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .rule-card--dragging {
@@ -364,6 +366,8 @@ void dragGhostElement
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   gap: var(--space-2);
   align-items: center;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
 }
 
 .rule-title {
@@ -374,6 +378,7 @@ void dragGhostElement
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  min-height: 32px;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
 }
@@ -387,6 +392,8 @@ void dragGhostElement
 .editor-actions {
   display: flex;
   justify-content: flex-end;
+  padding-top: var(--space-3);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .rule-drag-ghost {
@@ -401,7 +408,7 @@ void dragGhostElement
   flex-direction: column;
   justify-content: center;
   min-height: 100%;
-  padding: 16px;
+  padding: var(--space-3);
   border: 1px solid color-mix(in srgb, var(--highlight-text) 35%, var(--border-color));
   border-radius: var(--radius-md);
   background: var(--secondary-bg);
