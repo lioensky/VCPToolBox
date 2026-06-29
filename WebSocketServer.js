@@ -4,6 +4,7 @@ const url = require('url');
 const fs = require('fs').promises;
 const path = require('path');
 const { syncDistributedMusicDiary } = require('./modules/distributedMusicDiarySync');
+const vcpLogReplayManager = require('./modules/vcpLogReplayManager');
 
 let wssInstance;
 let pluginManager = null; // 为 PluginManager 实例占位
@@ -211,11 +212,21 @@ function initialize(httpServer, config) {
             return;
         }
 
+        // 提前提取一次 clientIp,供 VCPLog 类型在 handleUpgrade 内部使用(此处仍能拿到 socket)
+        const rawRemoteAddress =
+            (request.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+            socket.remoteAddress ||
+            '';
+        const clientIp = rawRemoteAddress.startsWith('::ffff:')
+            ? rawRemoteAddress.substring(7)
+            : rawRemoteAddress;
+
         if (isAuthenticated) {
             wssInstance.handleUpgrade(request, socket, head, (ws) => {
                 const clientId = generateClientId();
                 ws.clientId = clientId;
                 ws.clientType = clientType;
+                ws.clientIp = clientIp || null;
 
                 if (clientType === 'DistributedServer') {
                     const serverId = `dist-${clientId}`;
@@ -256,6 +267,28 @@ function initialize(httpServer, config) {
                 } else {
                     clients.set(clientId, ws);
                     writeLog(`Client ${clientId} (Type: ${clientType}) authenticated and connected.`);
+
+                    // VCPLog 类型客户端接入设备识别 + 离线补发管理器
+                    if (clientType === 'VCPLog') {
+                        const deviceKey = ws.clientIp || `noip-${clientId}`;
+                        ws.vcpLogDeviceKey = deviceKey;
+                        try {
+                            vcpLogReplayManager.registerOnline({
+                                deviceKey,
+                                clientIp: ws.clientIp,
+                                clientId,
+                                sendFn: (payload) => {
+                                    if (ws.readyState === WebSocket.OPEN) {
+                                        ws.send(JSON.stringify(payload));
+                                    } else {
+                                        throw new Error('VCPLog ws not open during replay.');
+                                    }
+                                }
+                            });
+                        } catch (e) {
+                            console.error(`[WebSocketServer] VcpLogReplayManager.registerOnline failed for ${clientId}:`, e.message);
+                        }
+                    }
                 }
                 
                 wssInstance.emit('connection', ws, request);
@@ -453,6 +486,17 @@ function initialize(httpServer, config) {
               writeLog(`Admin Panel client ${ws.clientId} disconnected and removed.`);
            } else {
                clients.delete(ws.clientId);
+               // VCPLog 设备离线通知给 replay 管理器
+               if (ws.clientType === 'VCPLog' && ws.vcpLogDeviceKey) {
+                   try {
+                       vcpLogReplayManager.handleOffline({
+                           deviceKey: ws.vcpLogDeviceKey,
+                           clientId: ws.clientId
+                       });
+                   } catch (e) {
+                       console.error(`[WebSocketServer] VcpLogReplayManager.handleOffline failed for ${ws.clientId}:`, e.message);
+                   }
+               }
            }
             if (serverConfig.debugMode) {
                 console.log(`[WebSocketServer] Client ${ws.clientId} (${ws.clientType}) disconnected.`);
@@ -483,6 +527,19 @@ function broadcast(data, targetClientType = null, abortController = null) {
     }
     
     if (!wssInstance) return;
+
+    // VCPLog 通道:进入离线补发缓存(只对 targetClientType === 'VCPLog' 的广播缓存,
+    //              其它通道维持原行为不变,避免影响 VCPInfo / 通用广播)
+    let cacheEntryId = null;
+    if (targetClientType === 'VCPLog' && data && typeof data === 'object') {
+        try {
+            const entry = vcpLogReplayManager.enqueue(data);
+            cacheEntryId = entry ? entry.id : null;
+        } catch (e) {
+            console.error('[WebSocketServer] vcpLogReplayManager.enqueue failed:', e.message);
+        }
+    }
+
     const messageString = JSON.stringify(data);
     
     const clientsToBroadcast = new Map([
@@ -493,7 +550,17 @@ function broadcast(data, targetClientType = null, abortController = null) {
     clientsToBroadcast.forEach(clientWs => {
         if (clientWs.readyState === WebSocket.OPEN) {
             if (targetClientType === null || clientWs.clientType === targetClientType) {
-                clientWs.send(messageString);
+                try {
+                    clientWs.send(messageString);
+                    // 投递成功 → 记入对应设备的 deliveredIds
+                    if (cacheEntryId && clientWs.clientType === 'VCPLog' && clientWs.vcpLogDeviceKey) {
+                        vcpLogReplayManager.recordDelivered(clientWs.vcpLogDeviceKey, cacheEntryId);
+                    }
+                } catch (sendErr) {
+                    if (serverConfig.debugMode) {
+                        console.warn(`[WebSocketServer] broadcast send failed to ${clientWs.clientId}: ${sendErr.message}`);
+                    }
+                }
             }
         }
     });
@@ -868,5 +935,8 @@ module.exports = {
     findServerByIp,
     getDistributedServerSnapshot,
     formatDistributedServerListForPrompt,
-    shutdown
+    shutdown,
+    // 暴露给 PluginManager,在审核响应到达时清除对应缓存
+    cancelVcpLogApprovalCache: (requestId) => vcpLogReplayManager.cancelApprovalCache(requestId),
+    getVcpLogReplayStats: () => vcpLogReplayManager.getStats()
 };

@@ -987,6 +987,7 @@ class PluginManager extends EventEmitter {
 
             // 发送审核请求到管理面板
             if (this.webSocketServer) {
+                const approvalTtlMs = this.toolApprovalManager.getTimeoutMs();
                 const approvalRequest = {
                     type: 'tool_approval_request',
                     data: {
@@ -994,7 +995,8 @@ class PluginManager extends EventEmitter {
                         toolName,
                         maid: maidNameFromArgs,
                         args: pluginSpecificArgs,
-                        timestamp: _getFormattedLocalTimestamp()
+                        timestamp: _getFormattedLocalTimestamp(),
+                        approvalTtlMs // 同步给 VCPLog 补发缓存使用,确保超时后能自动清除
                     }
                 };
                 this.webSocketServer.broadcast(approvalRequest, 'VCPLog');
@@ -1461,6 +1463,15 @@ class PluginManager extends EventEmitter {
         if (approval) {
             this.pendingApprovals.delete(requestId);
             clearTimeout(approval.timeoutId);
+
+            // 用户已经响应,把对应的 VCPLog 缓存条目清除,避免后续重连时把已处理的审核请求补发
+            try {
+                if (this.webSocketServer && typeof this.webSocketServer.cancelVcpLogApprovalCache === 'function') {
+                    this.webSocketServer.cancelVcpLogApprovalCache(requestId);
+                }
+            } catch (e) {
+                if (this.debugMode) console.warn(`[PluginManager] cancelVcpLogApprovalCache failed for ${requestId}: ${e.message}`);
+            }
 
             const normalizedReason = typeof reason === 'string' ? reason.trim() : '';
 
