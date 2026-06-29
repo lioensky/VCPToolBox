@@ -134,30 +134,36 @@ function copyTextWithFallback(text: string) {
 }
 
 .process-layout {
-  display: flex;
+  display: grid;
   flex: 1;
-  flex-direction: column;
+  grid-template-columns: minmax(0, 2fr) minmax(118px, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
   min-height: 0;
-  gap: 20px;
+  gap: 10px;
 }
 
 .status-card-content {
   display: flex;
   flex: 1;
   min-height: 0;
+  height: 100%;
 }
 
 .status-card-content .empty-state {
   flex: 1;
   min-height: 0;
 }
-
 .process-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   flex: 1;
+  grid-template-columns: 1fr;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(54px, auto);
+  align-content: stretch;
   min-height: 0;
-  gap: 12px;
+  height: 100%;
+  gap: 8px;
   overflow-y: auto;
 }
 
@@ -165,31 +171,47 @@ function copyTextWithFallback(text: string) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 6px 10px;
-  padding: 10px 12px;
-  font-size: var(--font-size-body);
-  line-height: 1.5;
-  overflow-wrap: anywhere;
+  align-content: center;
+  gap: 4px 8px;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 10px;
+  font-size: var(--font-size-helper);
+  line-height: 1.35;
+  overflow: hidden;
 }
 
-.process-item strong,
+.process-item strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .process-item .process-usage {
   min-width: 0;
   grid-column: 1 / -1;
 }
 
 .process-meta {
-  font-size: var(--font-size-caption);
+  min-width: 0;
+  overflow: hidden;
   color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .process-usage {
-  font-size: var(--font-size-helper);
+  overflow: hidden;
   color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .process-item .status {
-  justify-self: start;
+  justify-self: end;
   padding: 3px 8px;
   border-radius: var(--radius-full, 999px);
   font-size: var(--font-size-caption);
@@ -221,34 +243,41 @@ function copyTextWithFallback(text: string) {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 18px;
+  min-width: 0;
+  height: 100%;
+  padding: 12px;
 }
 
 .auth-code-display h4 {
   margin: 0 0 8px;
-  font-size: var(--font-size-body);
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
 }
 
 .auth-code-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .auth-code-display p {
   min-width: 0;
   margin: 0;
-  font-size: var(--font-size-title);
-  font-weight: 700;
-  letter-spacing: 1.5px;
-  word-break: break-all;
   color: var(--highlight-text);
   font-family: monospace;
+  font-size: var(--font-size-emphasis);
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 .copy-auth-code-button {
   flex: 0 0 auto;
+  width: auto;
+  min-width: 54px;
   padding: 6px 10px;
   border: 1px solid var(--dashboard-accent-border);
   border-radius: var(--radius-sm, 8px);
@@ -278,52 +307,42 @@ function copyTextWithFallback(text: string) {
   padding-inline: 12px;
 }
 
-/* 断点 1: ≥520px - 双列布局 */
+/* 断点 1: ≥520px - 宽卡片下略放大认证码列 */
 @container dashboard-card (min-width: 520px) {
   .process-layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1.45fr) minmax(220px, 0.75fr);
-    align-items: stretch;
+    grid-template-columns: minmax(0, 2fr) minmax(140px, 1fr);
   }
 
   .process-item {
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    min-height: 0;
   }
 
-  .process-item strong,
-  .process-item .process-usage {
-    grid-column: auto;
-  }
-
-  .process-item .process-usage {
-    justify-self: end;
-    text-align: right;
+  .auth-code-display {
+    align-self: stretch;
   }
 }
 
-/* 断点 2: ≤420px - 单列布局 */
-@container dashboard-card (max-width: 420px) {
+/* 断点 2: ≤360px - 极窄卡片才回退单列 */
+@container dashboard-card (max-width: 360px) {
   .process-layout {
-    gap: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
   }
 
   .process-list {
-    gap: 10px;
+    grid-template-columns: 1fr;
+    gap: 8px;
   }
 
   .process-item {
-    grid-template-columns: 1fr;
-    padding: 12px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 8px 10px;
     font-size: var(--font-size-helper);
   }
 
   .process-item .status {
-    justify-self: start;
-  }
-
-  .auth-code-row {
-    align-items: flex-start;
-    flex-direction: column;
+    justify-self: end;
   }
 
   .auth-code-display p {
