@@ -529,11 +529,12 @@ function toggleSelected(file: string, checked: boolean) {
   flex-direction: column;
   gap: var(--space-3);
   min-height: 190px;
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
   transition: border-color var(--transition-fast), background-color var(--transition-fast);
 }
 
 .note-card:hover {
-  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 3.5%, transparent);
 }
 
 .note-card-header {
@@ -568,10 +569,10 @@ function toggleSelected(file: string, checked: boolean) {
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .note-card-footer {
