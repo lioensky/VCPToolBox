@@ -478,6 +478,18 @@ select {
     background var(--transition-fast);
 }
 
+select option,
+select optgroup {
+  background-color: var(--secondary-bg);
+  color: var(--primary-text);
+}
+
+html[data-theme="dark"] select option,
+html[data-theme="dark"] select optgroup {
+  background-color: oklch(0.18 0.015 230);
+  color: var(--primary-text-dark);
+}
+
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {

@@ -117,6 +117,18 @@ defineExpose({ focus });
   background-color: color-mix(in srgb, var(--primary-bg) 56%, transparent);
 }
 
+.ui-select option,
+.ui-select optgroup {
+  background-color: var(--secondary-bg);
+  color: var(--primary-text);
+}
+
+html[data-theme="dark"] .ui-select option,
+html[data-theme="dark"] .ui-select optgroup {
+  background-color: oklch(0.18 0.015 230);
+  color: var(--primary-text-dark);
+}
+
 .ui-select--invalid,
 .ui-select[aria-invalid="true"] {
   border-color: var(--danger-color);

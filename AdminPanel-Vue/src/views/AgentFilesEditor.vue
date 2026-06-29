@@ -138,15 +138,39 @@
 
               <div class="agent-entry-row">
                 <label>关联文件:</label>
-                <UiInput
-                  v-model="entry.file"
-                  :list="agentFilesDatalistId"
-                  type="text"
-                  class="file-input"
-                  :disabled="isLoadingFiles"
-                  placeholder="选择或输入文件名"
-                  @blur="normalizeEntryFile(entry)"
-                />
+                <UiSelect
+                  :model-value="resolveAgentFileName(entry.file)"
+                  class="agent-file-picker"
+                  :disabled="isLoadingFiles || availableFiles.length === 0"
+                  aria-label="选择已有 Agent 文件"
+                  @change="handleAgentFilePickerChange(entry, $event)"
+                >
+                  <option value="">选择已有文件…</option>
+                  <optgroup
+                    v-if="getAgentFilePickerGroups(entry).matched.length > 0"
+                    label="名称匹配（置顶）"
+                  >
+                    <option
+                      v-for="file in getAgentFilePickerGroups(entry).matched"
+                      :key="`matched-${entry.localId}-${file}`"
+                      :value="file"
+                    >
+                      {{ file }}
+                    </option>
+                  </optgroup>
+                  <optgroup
+                    v-if="getAgentFilePickerGroups(entry).others.length > 0"
+                    label="──────── 其他文件 ────────"
+                  >
+                    <option
+                      v-for="file in getAgentFilePickerGroups(entry).others"
+                      :key="`other-${entry.localId}-${file}`"
+                      :value="file"
+                    >
+                      {{ file }}
+                    </option>
+                  </optgroup>
+                </UiSelect>
               </div>
             </div>
 
@@ -366,6 +390,7 @@ import UiButton from "@/components/ui/UiButton.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiPageActions from "@/components/ui/UiPageActions.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
 import DiarySyntaxEditorModal from "./AgentFilesEditor/DiarySyntaxEditorModal.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
@@ -607,6 +632,36 @@ function deduplicateAgentFiles(files: readonly string[]): string[] {
   return [...uniqueFiles.values()].sort((left, right) =>
     left.localeCompare(right, undefined, { sensitivity: "base" })
   );
+}
+
+function getAgentFilePickerGroups(entry: AgentMapDraft): {
+  matched: string[];
+  others: string[];
+} {
+  const normalizedName = entry.name.trim().toLowerCase();
+  const matched: string[] = [];
+  const others: string[] = [];
+
+  availableFiles.value.forEach((file) => {
+    const comparableFile = file.toLowerCase();
+    if (normalizedName && comparableFile.includes(normalizedName)) {
+      matched.push(file);
+      return;
+    }
+
+    others.push(file);
+  });
+
+  return { matched, others };
+}
+
+function handleAgentFilePickerChange(entry: AgentMapDraft, event: Event): void {
+  const selectedFile = (event.target as HTMLSelectElement).value;
+  if (!selectedFile) {
+    return;
+  }
+
+  entry.file = selectedFile;
 }
 
 function normalizePlaceholderToken(name: string): string {
@@ -1164,19 +1219,20 @@ onBeforeRouteLeave(async () => {
 .agent-map-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-3);
   min-height: 0;
   overflow-y: auto;
-  padding: 0 0 var(--space-2);
+  padding: 0 var(--space-1) var(--space-3) 0;
   scrollbar-gutter: stable;
 }
 
 .agent-map-entry {
   position: relative;
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 8px 8px 12px;
+  gap: var(--space-2);
+  padding: var(--space-3);
   border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
   border-radius: var(--radius-md);
   background:
@@ -1226,6 +1282,10 @@ onBeforeRouteLeave(async () => {
   align-items: center;
   gap: 8px;
   margin-bottom: 0;
+}
+
+.agent-file-picker {
+  width: 100%;
 }
 
 .agent-entry-row label {
@@ -1638,12 +1698,13 @@ onBeforeRouteLeave(async () => {
 .agent-entry-fields {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .agent-entry-hints {
   min-height: 0;
   padding: 0;
+  overflow-wrap: anywhere;
 }
 
 /* 移动端精致化响应式滑盖与底置 Segmented 胶囊导航 */
