@@ -697,7 +697,7 @@ const placeholderGroups = computed<QuickPlaceholderGroup[]>(() => [
   {
     key: "env",
     title: "Tar / Var / Sar 变量",
-    shortTitle: "Tar 变量",
+    shortTitle: "TVS 变量",
     icon: "tune",
     items: envPlaceholders.value,
   },
