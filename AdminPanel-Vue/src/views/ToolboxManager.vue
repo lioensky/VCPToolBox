@@ -1,82 +1,58 @@
 <template>
   <section class="config-section active-section toolbox-manager-page">
-    <p class="description">
-      维护 toolbox_map.json（alias→file+description），并编辑 TVStxt 下映射文件内容。
-    </p>
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <p class="toolbox-page-summary">
+          维护 toolbox_map.json，并编辑 TVStxt 下映射文件内容。
+        </p>
+        <UiBadge
+          :variant="mapDirty ? 'warning' : 'success'"
+          :title="mapDirty ? '映射未保存' : '映射已同步'"
+          :aria-label="mapDirty ? '映射未保存' : '映射已同步'"
+        >
+          {{ mapDirty ? '映射未保存' : '映射已同步' }}
+        </UiBadge>
+        <UiButton
+          @click="refreshAll"
+          variant="outline"
+          size="lg"
+          title="刷新 Toolbox 数据"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
+          刷新
+        </UiButton>
+        <UiButton
+          @click="openCreateDialog"
+          variant="outline"
+          size="lg"
+          title="新建 Toolbox 映射"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">add</span>
+          </template>
+          新建
+        </UiButton>
+        <UiButton
+          @click="saveToolboxMap"
+          :disabled="mapSaving || !mapDirty"
+          variant="primary"
+          size="lg"
+          title="保存映射表"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined" :class="{ spinning: mapSaving }">
+              {{ mapSaving ? 'sync' : 'save' }}
+            </span>
+          </template>
+          {{ mapSaving ? '保存中…' : mapDirty ? '保存映射' : '已保存' }}
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
 
-    <DualPaneEditor
-      left-title="Toolbox 映射表"
-      right-title="Toolbox 文件内容"
-      :initial-left-width="450"
-      :min-left-width="350"
-      :max-left-width="600"
-      collapsible
-      persist-key="toolboxManager"
-    >
-      <template #left-actions>
-        <div class="pane-toolbar pane-toolbar--left">
-          <div class="pane-toolbar-main">
-            <UiButton @click="openCreateDialog" variant="primary" size="sm" title="新建 Toolbox 映射">
-              <template #leading>
-                <span class="material-symbols-outlined">add</span>
-              </template>
-              新建
-            </UiButton>
-            <UiButton
-              @click="saveToolboxMap"
-              :disabled="mapSaving || !mapDirty"
-              variant="primary"
-              size="sm"
-              title="保存映射表"
-            >
-              <template #leading>
-                <span class="material-symbols-outlined">save</span>
-              </template>
-              {{ mapSaving ? '保存中…' : mapDirty ? '保存' : '已保存' }}
-            </UiButton>
-            <details class="pane-toolbar-menu">
-              <summary class="pane-toolbar-menu-trigger" aria-label="更多操作" title="更多操作">
-                <span class="material-symbols-outlined">more_vert</span>
-              </summary>
-              <div class="pane-toolbar-menu-content" role="menu" aria-label="Toolbox 映射更多操作">
-                <button type="button" @click="refreshAll" class="pane-toolbar-menu-item">
-                  <span class="material-symbols-outlined">refresh</span>
-                  刷新数据
-                </button>
-              </div>
-            </details>
-          </div>
-          <UiBadge
-            :variant="mapDirty ? 'warning' : 'success'"
-            :title="mapDirty ? '映射未保存' : '映射已同步'"
-            :aria-label="mapDirty ? '映射未保存' : '映射已同步'"
-          >
-            {{ mapDirty ? '映射未保存' : '映射已同步' }}
-          </UiBadge>
-        </div>
-      </template>
-
-      <template #left-collapsed>
-        <div class="collapsed-list">
-          <button
-            v-for="entry in toolboxMap"
-            :key="entry.localId"
-            type="button"
-            class="collapsed-item"
-            :class="{ active: editingFile === entry.file }"
-            :title="entry.alias"
-            @click="selectToolboxFile(entry.file)"
-          >
-            <span class="material-symbols-outlined">inventory_2</span>
-            <span class="collapsed-label">{{ entry.alias }}</span>
-          </button>
-          <div v-if="toolboxMap.length === 0" class="collapsed-empty">
-            <span class="material-symbols-outlined">inventory_2</span>
-          </div>
-        </div>
-      </template>
-
-      <template #left-content>
+    <div class="toolbox-manager-shell">
+      <aside class="toolbox-map-pane" aria-label="Toolbox 映射表">
         <div class="toolbox-search">
           <span class="material-symbols-outlined search-icon">search</span>
           <UiInput
@@ -91,9 +67,48 @@
         </div>
 
         <div class="toolbox-map-list">
-          <div v-for="entry in filteredToolboxMap" :key="entry.localId" class="toolbox-map-entry card">
-            <div class="toolbox-entry-row">
-              <label>别名 (Alias):</label>
+          <article
+            v-for="entry in filteredToolboxMap"
+            :key="entry.localId"
+            class="toolbox-map-entry"
+            :class="{ 'is-active': editingFile === entry.file }"
+          >
+            <div class="toolbox-entry-header">
+              <div class="toolbox-entry-identity">
+                <span class="material-symbols-outlined">inventory_2</span>
+                <div class="toolbox-entry-title-group">
+                  <span class="toolbox-entry-title">{{ entry.alias || '未命名 Toolbox' }}</span>
+                  <span class="toolbox-entry-file">{{ entry.file || '未绑定文件' }}</span>
+                </div>
+              </div>
+              <UiBadge
+                :variant="isValidAlias(entry.alias.trim()) && isValidToolboxFileName(entry.file.trim()) ? 'success' : 'warning'"
+              >
+                {{ isValidAlias(entry.alias.trim()) && isValidToolboxFileName(entry.file.trim()) ? '可用' : '待完善' }}
+              </UiBadge>
+              <div class="toolbox-entry-actions">
+                <UiIconButton
+                  @click="selectToolboxEntry(entry)"
+                  label="编辑 Toolbox 文件"
+                  title="编辑"
+                  :disabled="!entry.file.trim() || !isValidToolboxFileName(entry.file.trim())"
+                >
+                  <span class="material-symbols-outlined">edit</span>
+                </UiIconButton>
+                <UiIconButton
+                  @click="removeToolboxEntry(entry.localId)"
+                  variant="danger"
+                  label="删除 Toolbox 映射"
+                  title="删除"
+                >
+                  <span class="material-symbols-outlined">delete</span>
+                </UiIconButton>
+              </div>
+            </div>
+
+            <div class="toolbox-entry-fields">
+              <div class="toolbox-entry-row">
+                <label>别名</label>
               <div class="input-validated">
                 <UiInput
                   type="text"
@@ -107,49 +122,60 @@
               </div>
             </div>
             <div class="toolbox-entry-row">
-              <label>文件名:</label>
+              <label>文件</label>
               <div class="input-validated">
-                <UiInput
-                  type="text"
-                  v-model="entry.file"
-                  placeholder="例如：MyTool.txt"
-                  list="tvs-files-datalist"
+                <UiSelect
+                  :model-value="entry.file.trim()"
+                  class="toolbox-file-picker"
                   :invalid="Boolean(entry.file.trim()) && !isValidToolboxFileName(entry.file.trim())"
-                />
+                  :disabled="tvsFiles.length === 0"
+                  aria-label="选择已有 Toolbox 文件"
+                  @change="handleToolboxFilePickerChange(entry, $event)"
+                >
+                  <option value="">选择已有文件…</option>
+                  <optgroup
+                    v-if="getToolboxFilePickerGroups(entry).matched.length > 0"
+                    label="名称匹配（置顶）"
+                  >
+                    <option
+                      v-for="file in getToolboxFilePickerGroups(entry).matched"
+                      :key="`matched-${entry.localId}-${file}`"
+                      :value="file"
+                    >
+                      {{ file }}
+                    </option>
+                  </optgroup>
+                  <optgroup
+                    v-if="getToolboxFilePickerGroups(entry).others.length > 0"
+                    label="──────── 其他文件 ────────"
+                  >
+                    <option
+                      v-for="file in getToolboxFilePickerGroups(entry).others"
+                      :key="`other-${entry.localId}-${file}`"
+                      :value="file"
+                    >
+                      {{ file }}
+                    </option>
+                  </optgroup>
+                </UiSelect>
                 <span v-if="entry.file.trim() && !isValidToolboxFileName(entry.file.trim())" class="validation-hint">
                   文件名须以 .txt 或 .md 结尾，不可含非法字符
                 </span>
               </div>
             </div>
-            <div class="toolbox-entry-row">
-              <label>描述:</label>
-              <UiInput
-                type="text"
+            <div class="toolbox-entry-row toolbox-entry-row--description">
+              <label>描述</label>
+              <UiTextarea
                 v-model="entry.description"
                 placeholder="工具描述…"
                 maxlength="200"
+                rows="3"
+                size="sm"
+                resize="none"
               />
             </div>
-            <div class="toolbox-entry-actions">
-              <UiButton
-                @click="selectToolboxFile(entry.file)"
-                variant="outline"
-                size="sm"
-                :disabled="!entry.file.trim() || !isValidToolboxFileName(entry.file.trim())"
-              >
-                <template #leading>
-                  <span class="material-symbols-outlined">edit</span>
-                </template>
-                编辑
-              </UiButton>
-              <UiButton @click="removeToolboxEntry(entry.localId)" variant="danger" size="sm">
-                <template #leading>
-                  <span class="material-symbols-outlined">delete</span>
-                </template>
-                删除
-              </UiButton>
             </div>
-          </div>
+          </article>
 
           <div v-if="filteredToolboxMap.length === 0 && toolboxMap.length > 0" class="empty-state">
             <span class="material-symbols-outlined">search_off</span>
@@ -162,11 +188,18 @@
             <UiButton @click="openCreateDialog" variant="primary">新建第一个 Toolbox</UiButton>
           </div>
         </div>
-      </template>
+      </aside>
 
-      <template #right-actions>
-        <div v-if="editingFile" class="pane-toolbar pane-toolbar--right">
-          <div class="pane-toolbar-main">
+      <main class="toolbox-file-pane" aria-label="Toolbox 文件内容">
+        <header class="toolbox-file-pane-header">
+          <div class="toolbox-file-title">
+            <span class="toolbox-pane-label">Toolbox 文件内容</span>
+            <span class="toolbox-file-name">
+              <span class="material-symbols-outlined">description</span>
+              {{ editingFile || '未选择文件' }}
+            </span>
+          </div>
+          <div v-if="editingFile" class="toolbox-file-actions">
             <div class="editor-mode-toggle">
               <UiButton :class="['mode-btn', { active: editorMode === 'visual' }]" variant="ghost" size="sm" @click="switchEditorMode('visual')" title="可视化 Fold 块编辑">
                 <span class="material-symbols-outlined">view_agenda</span> 可视化
@@ -184,33 +217,36 @@
               <template #leading>
                 <span class="material-symbols-outlined">save</span>
               </template>
-              {{ fileSaving ? '保存中…' : fileDirty ? '保存文件' : '已保存' }}
+              {{ fileSaving ? '保存中…' : '保存文件' }}
             </UiButton>
-            <details class="pane-toolbar-menu">
-              <summary class="pane-toolbar-menu-trigger" aria-label="文件更多操作" title="文件更多操作">
-                <span class="material-symbols-outlined">more_vert</span>
-              </summary>
-              <div class="pane-toolbar-menu-content pane-toolbar-menu-content--right" role="menu" aria-label="文件更多操作">
-                <button type="button" @click="deleteCurrentFile" class="pane-toolbar-menu-item pane-toolbar-menu-item--danger">
-                  <span class="material-symbols-outlined">delete_forever</span>
-                  删除文件
-                </button>
-              </div>
-            </details>
+            <UiButton
+              @click="deleteCurrentFile"
+              variant="danger"
+              size="sm"
+              title="删除当前 Toolbox 文件"
+            >
+              <template #leading>
+                <span class="material-symbols-outlined">delete_forever</span>
+              </template>
+              删除文件
+            </UiButton>
+            <UiButton
+              v-if="editorMode === 'visual'"
+              @click="addFoldBlockAtEnd"
+              variant="outline"
+              size="sm"
+              title="新增 Block"
+            >
+              <template #leading>
+                <span class="material-symbols-outlined">add</span>
+              </template>
+              新增 Block
+            </UiButton>
           </div>
-        </div>
-      </template>
+        </header>
 
-      <template #right-content>
-        <div class="toolbox-file-editor">
-          <div class="toolbox-editor-controls">
-            <span class="editing-file-display">
-              <span class="material-symbols-outlined">description</span>
-              {{ editingFile || '未选择文件' }}
-              <span v-if="fileDirty" class="dirty-indicator">（未保存）</span>
-            </span>
-          </div>
-
+        <div class="toolbox-file-workspace">
+          <div class="toolbox-file-editor">
           <!-- Visual mode (default) -->
           <template v-if="editorMode === 'visual' && editingFile">
             <div class="threshold-simulator">
@@ -223,6 +259,7 @@
                 v-model.number="simulatedThreshold"
                 min="0" max="1" step="0.05"
                 class="threshold-slider"
+                :style="rangeProgressStyle(simulatedThreshold)"
               >
               <span class="threshold-hint">
                 {{ visibleBlockCount }}/{{ foldBlocks.length }} 块可见
@@ -231,14 +268,24 @@
 
             <div class="fold-blocks-visual">
               <template v-for="(block, i) in foldBlocks" :key="i">
-                <div class="fold-block-card card" :class="{ 'block-hidden': block.threshold > simulatedThreshold }">
-                  <div class="fold-block-header">
-                    <span class="block-index">Block {{ i + 1 }}</span>
-                    <UiBadge class="block-threshold-badge" :variant="thresholdVariant(block.threshold)">
-                      {{ block.threshold.toFixed(2) }}
-                    </UiBadge>
-                    <UiBadge v-if="block.threshold > simulatedThreshold" variant="danger" class="block-folded-badge">折叠中</UiBadge>
-                    <span class="flex-spacer"></span>
+                <article class="fold-block-card" :class="{ 'block-hidden': block.threshold > simulatedThreshold }">
+                  <div class="fold-block-topline">
+                    <div class="fold-block-header">
+                      <span class="block-index">Block {{ i + 1 }}</span>
+                      <UiBadge class="block-threshold-badge" :variant="thresholdVariant(block.threshold)">
+                        {{ block.threshold.toFixed(2) }}
+                      </UiBadge>
+                      <UiBadge v-if="block.threshold > simulatedThreshold" variant="danger" class="block-folded-badge">折叠中</UiBadge>
+                    </div>
+                    <div class="fold-block-field">
+                      <label>阈值:</label>
+                      <input type="range" v-model.number="block.threshold" min="0" max="1" step="0.05" class="block-threshold-slider" :style="rangeProgressStyle(block.threshold)">
+                      <UiInput type="number" v-model.number="block.threshold" min="0" max="1" step="0.05" class="block-threshold-input" size="sm" />
+                    </div>
+                    <div class="fold-block-field">
+                      <label>语义:</label>
+                      <UiInput type="text" v-model="block.description" placeholder="用于按块独立语义匹配（为空则按工具箱整体描述匹配）" class="block-desc-input" />
+                    </div>
                     <UiIconButton
                       @click="removeFoldBlock(i)"
                       label="删除此块"
@@ -249,17 +296,6 @@
                       <span class="material-symbols-outlined">close</span>
                     </UiIconButton>
                   </div>
-                  <div class="fold-block-meta">
-                    <div class="fold-block-field">
-                      <label>阈值:</label>
-                      <input type="range" v-model.number="block.threshold" min="0" max="1" step="0.05" class="block-threshold-slider">
-                      <UiInput type="number" v-model.number="block.threshold" min="0" max="1" step="0.05" class="block-threshold-input" size="sm" />
-                    </div>
-                    <div class="fold-block-field">
-                      <label>语义描述:</label>
-                      <UiInput type="text" v-model="block.description" placeholder="用于按块独立语义匹配（为空则按工具箱整体描述匹配）" class="block-desc-input" />
-                    </div>
-                  </div>
                   <UiTextarea
                     v-model="block.content"
                     class="fold-block-content"
@@ -267,20 +303,13 @@
                     spellcheck="false"
                     placeholder="输入此块的内容…"
                   />
-                </div>
+                </article>
                 <div class="block-divider">
                   <UiIconButton @click="addFoldBlockAfter(i)" class="add-block-button" label="在此处插入新块" title="在此处插入新块">
                     <span class="material-symbols-outlined">add_circle</span>
                   </UiIconButton>
                 </div>
               </template>
-
-              <UiButton @click="addFoldBlockAtEnd" variant="outline" size="sm" class="add-block-final">
-                <template #leading>
-                  <span class="material-symbols-outlined">add</span>
-                </template>
-                新增 Block
-              </UiButton>
             </div>
           </template>
 
@@ -302,8 +331,9 @@
           </div>
 
         </div>
-      </template>
-    </DualPaneEditor>
+        </div>
+      </main>
+    </div>
 
     <!-- File autocomplete datalist -->
     <datalist id="tvs-files-datalist">
@@ -387,12 +417,13 @@ import { onBeforeRouteLeave } from 'vue-router'
 import { toolboxApi } from '@/api'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
-import DualPaneEditor from '@/components/DualPaneEditor.vue'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
+import UiPageActions from '@/components/ui/UiPageActions.vue'
+import UiSelect from '@/components/ui/UiSelect.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
 
 /* ── Types ── */
@@ -520,6 +551,34 @@ function isValidToolboxFileName(name: string): boolean {
   return lower.endsWith('.txt') || lower.endsWith('.md')
 }
 
+function getToolboxFilePickerGroups(entry: ToolboxEntry): {
+  matched: string[]
+  others: string[]
+} {
+  const normalizedAlias = entry.alias.trim().toLowerCase()
+  const matched: string[] = []
+  const others: string[] = []
+
+  tvsFiles.value.forEach((file) => {
+    const comparableFile = file.toLowerCase()
+    if (normalizedAlias && comparableFile.includes(normalizedAlias)) {
+      matched.push(file)
+      return
+    }
+
+    others.push(file)
+  })
+
+  return { matched, others }
+}
+
+function handleToolboxFilePickerChange(entry: ToolboxEntry, event: Event): void {
+  const selectedFile = (event.target as HTMLSelectElement).value
+  if (!selectedFile) return
+
+  entry.file = selectedFile
+}
+
 /* ── Fold Block Parsing & Serialization ── */
 function parseFoldBlocks(content: string): FoldBlock[] {
   const blocks: FoldBlock[] = []
@@ -565,6 +624,11 @@ function thresholdVariant(t: number): 'success' | 'warning' | 'danger' {
   if (t <= 0.3) return 'success'
   if (t <= 0.6) return 'warning'
   return 'danger'
+}
+
+function rangeProgressStyle(value: number) {
+  const progress = Math.max(0, Math.min(100, value * 100))
+  return { '--range-progress': `${progress}%` }
 }
 
 /* ── Data Loading ── */
@@ -644,7 +708,8 @@ async function openFileInEditor(fileName: string, isNewlyCreated = false) {
   originalFoldSerialized.value = serializeFoldBlocks(foldBlocks.value)
 }
 
-async function selectToolboxFile(fileName: string) {
+async function selectToolboxEntry(entry: ToolboxEntry) {
+  const fileName = entry.file.trim()
   if (!fileName) return
   if (fileDirty.value && !(await askConfirm('当前文件有未保存的修改，确定放弃并切换吗？'))) return
   await openFileInEditor(fileName)
@@ -730,7 +795,17 @@ async function removeToolboxEntry(localId: string) {
     confirmText: '删除',
   }))) return
   const idx = toolboxMap.value.findIndex(e => e.localId === localId)
-  if (idx !== -1) toolboxMap.value.splice(idx, 1)
+  if (idx !== -1) {
+    const [removed] = toolboxMap.value.splice(idx, 1)
+    if (editingFile.value === removed?.file) {
+      editingFile.value = ''
+      fileContent.value = ''
+      originalFileContent.value = ''
+      originalFoldSerialized.value = ''
+      foldBlocks.value = []
+      if (removed?.file) fileContentCache.delete(removed.file)
+    }
+  }
   showMessage('已删除映射条目，请点击"保存"以生效', 'info')
 }
 
@@ -886,95 +961,114 @@ onBeforeRouteLeave(async () => {
 </script>
 
 <style scoped>
-.collapsed-list {
+.toolbox-manager-page {
+  --toolbox-workspace-height: calc(var(--app-viewport-height, 100vh) - 150px);
+  --toolbox-workspace-min-height: 520px;
+}
+
+.toolbox-page-summary {
+  max-width: 390px;
+  margin: 0 var(--space-2) 0 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.35;
+}
+
+.toolbox-manager-shell {
+  display: grid;
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  gap: var(--space-4);
+  min-height: var(--toolbox-workspace-min-height);
+  height: max(var(--toolbox-workspace-height), var(--toolbox-workspace-min-height));
+}
+
+.toolbox-map-pane,
+.toolbox-file-pane {
+  min-width: 0;
+  min-height: 0;
+}
+
+.toolbox-map-pane {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  align-items: center;
+  padding: 0;
+  overflow: hidden;
 }
 
-.collapsed-item {
+.toolbox-file-pane {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+}
+
+.toolbox-file-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 58px;
+  padding: var(--space-3) var(--space-4);
+}
+
+.toolbox-file-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.toolbox-pane-label {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--secondary-text) 72%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.toolbox-file-name {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--secondary-text);
-  cursor: pointer;
-  padding: 0;
-  transition:
-    background-color var(--transition-fast),
-    border-color var(--transition-fast),
-    color var(--transition-fast);
-}
-
-.collapsed-item:hover {
-  background: var(--accent-bg);
-  color: var(--primary-text);
-}
-
-.collapsed-item.active {
-  color: var(--primary-text);
-  border-color: color-mix(in srgb, var(--highlight-text) 52%, var(--border-color));
-  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
-}
-
-.collapsed-label {
-  display: none;
-}
-
-.collapsed-empty {
-  color: var(--secondary-text);
-}
-
-.toolbox-manager-page {
-  --dual-pane-min-height: 420px;
-}
-
-/* Allow both panes to expand naturally with content */
-.toolbox-manager-page :deep(.dual-pane-editor) {
-  height: auto;
-  min-height: var(--dual-pane-min-height);
-}
-
-.toolbox-manager-page :deep(.pane) {
-  overflow: visible;
-}
-
-/* 右侧 pane header 保持单行：标题 + 可视化/原始切换 + 保存 + more_vert */
-.toolbox-manager-page :deep(.pane-right .pane-header) {
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.toolbox-manager-page :deep(.pane-right .pane-header h3) {
-  flex: 0 1 auto;
+  gap: 6px;
   min-width: 0;
-  white-space: nowrap;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.toolbox-manager-page :deep(.pane-right .pane-toolbar),
-.toolbox-manager-page :deep(.pane-right .pane-toolbar-main) {
-  flex-wrap: nowrap;
-  width: auto;
+.toolbox-file-name .material-symbols-outlined {
   flex: 0 0 auto;
+  font-size: 16px !important;
 }
 
-.toolbox-manager-page :deep(.pane-content) {
-  overflow-y: visible;
-  flex: none;
+.toolbox-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.toolbox-file-workspace {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  padding: 0 var(--space-3) var(--space-3);
 }
 
 /* ── Search ── */
 .toolbox-search {
   position: relative;
   margin-bottom: var(--space-3);
+  width: 100%;
 }
 
 .search-icon {
@@ -1007,25 +1101,144 @@ onBeforeRouteLeave(async () => {
 .toolbox-map-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--space-1) var(--space-2) 0;
+  scrollbar-gutter: stable;
 }
 
 .toolbox-map-entry {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   padding: var(--space-3);
-  border-color: color-mix(in srgb, var(--border-color) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--button-bg) 5%, transparent),
+      color-mix(in srgb, var(--primary-text) 0.8%, transparent)
+    );
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
+  overflow: visible;
+}
+
+.toolbox-map-entry:hover {
+  border-color: color-mix(in srgb, var(--button-bg) 24%, var(--border-color));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--button-bg) 8%, transparent),
+      color-mix(in srgb, var(--primary-text) 1.8%, transparent)
+    );
+}
+
+.toolbox-map-entry.is-active {
+  border-color: color-mix(in srgb, var(--button-bg) 42%, var(--border-color));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--button-bg) 12%, transparent),
+      color-mix(in srgb, var(--primary-text) 2.2%, transparent)
+    );
+}
+
+.toolbox-map-entry.is-active::before {
+  content: "";
+  position: absolute;
+  inset: 8px auto 8px 2px;
+  width: 2px;
+  border-radius: var(--radius-full);
+  background: var(--button-bg);
+}
+
+.toolbox-entry-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.toolbox-entry-identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.toolbox-entry-identity > .material-symbols-outlined {
+  flex: 0 0 auto;
+  color: var(--secondary-text);
+  font-size: 18px !important;
+}
+
+.toolbox-entry-title-group {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.toolbox-entry-title,
+.toolbox-entry-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbox-entry-title {
+  color: var(--primary-text);
+  font-size: var(--font-size-body);
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.toolbox-entry-file {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  line-height: 1.3;
+}
+
+.toolbox-entry-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px var(--space-2);
 }
 
 .toolbox-entry-row {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
+  gap: 5px;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.toolbox-entry-row--description {
+  grid-column: 1 / -1;
+}
+
+.toolbox-entry-row--description :deep(.ui-textarea) {
+  min-height: 66px;
+  max-height: none;
+  padding-block: 6px;
+  overflow: hidden;
+}
+
+.toolbox-file-picker {
+  width: 100%;
 }
 
 .toolbox-entry-row label {
-  font-size: var(--font-size-helper);
   color: var(--secondary-text);
-  font-weight: 500;
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  line-height: 1.25;
 }
 
 .input-validated {
@@ -1042,8 +1255,19 @@ onBeforeRouteLeave(async () => {
 
 .toolbox-entry-actions {
   display: flex;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+.toolbox-entry-actions :deep(.ui-icon-button) {
+  width: 28px;
+  height: 28px;
+}
+
+.toolbox-entry-actions :deep(.ui-icon-button .material-symbols-outlined) {
+  font-size: 16px !important;
 }
 
 /* ── Mode Toggle ── */
@@ -1074,35 +1298,10 @@ onBeforeRouteLeave(async () => {
 .toolbox-file-editor {
   display: flex;
   flex-direction: column;
-}
-
-.toolbox-editor-controls {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  margin-bottom: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
-  border-radius: var(--radius-md);
-}
-
-.editing-file-display {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--font-size-body);
-  color: var(--secondary-text);
-  font-weight: 500;
-}
-
-.editing-file-display .material-symbols-outlined {
-  font-size: 18px !important;
-}
-
-.dirty-indicator {
-  color: var(--highlight-text);
-  font-size: var(--font-size-helper);
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .editor-placeholder {
@@ -1128,18 +1327,34 @@ onBeforeRouteLeave(async () => {
 
 /* ── Raw Editor ── */
 .file-content-editor {
+  flex: 1;
   width: 100%;
-  min-height: 400px;
+  min-height: 300px;
   font-family: 'Consolas', 'Monaco', monospace;
   font-size: var(--font-size-body);
   line-height: 1.6;
 }
 
+.file-content-editor :deep(.ui-textarea),
 .file-content-editor.ui-textarea {
-  min-height: 400px;
+  height: 100%;
+  max-height: none;
+  min-height: 300px;
+  border-color: transparent;
+  background: transparent;
+  border-radius: 0;
+  resize: none;
   font-family: 'Consolas', 'Monaco', monospace;
   font-size: var(--font-size-body);
   line-height: 1.6;
+}
+
+.file-content-editor :deep(.ui-textarea:hover:not(:disabled)),
+.file-content-editor.ui-textarea:hover:not(:disabled),
+.file-content-editor :deep(.ui-textarea:focus-visible),
+.file-content-editor.ui-textarea:focus-visible {
+  border-color: transparent;
+  background: transparent;
 }
 
 /* ── Visual Editor ── */
@@ -1148,9 +1363,10 @@ onBeforeRouteLeave(async () => {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-3);
+  flex: 0 0 auto;
   padding: var(--space-2) var(--space-3);
-  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  background: color-mix(in srgb, var(--button-bg) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
   border-radius: var(--radius-md);
   margin-bottom: var(--space-3);
 }
@@ -1171,7 +1387,6 @@ onBeforeRouteLeave(async () => {
 .threshold-slider {
   flex: 1;
   min-width: 100px;
-  accent-color: var(--highlight-text);
 }
 
 .threshold-hint {
@@ -1183,69 +1398,183 @@ onBeforeRouteLeave(async () => {
 .fold-blocks-visual {
   display: flex;
   flex-direction: column;
+  gap: var(--space-1);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: var(--space-1);
+  scrollbar-gutter: stable;
 }
 
 .fold-block-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   padding: var(--space-3);
-  border-color: color-mix(in srgb, var(--border-color) 84%, transparent);
-  transition: opacity var(--transition-fast);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 1.4%, transparent);
+  transition:
+    opacity var(--transition-fast),
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+.fold-block-card:hover {
+  border-color: color-mix(in srgb, var(--highlight-text) 22%, var(--border-color));
+  background: color-mix(in srgb, var(--primary-text) 2.2%, transparent);
 }
 
 .fold-block-card.block-hidden {
-  opacity: 0.4;
+  opacity: 0.52;
+}
+
+.fold-block-topline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .fold-block-header {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: var(--space-3);
+  min-width: max-content;
 }
 
 .block-index {
-  font-weight: 600;
-  font-size: var(--font-size-body);
   color: var(--primary-text);
-}
-
-.flex-spacer {
-  flex: 1;
-}
-
-.fold-block-meta {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
+  font-size: var(--font-size-body);
+  font-weight: 650;
+  line-height: 1.25;
 }
 
 .fold-block-field {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
+}
+
+.fold-block-field:first-of-type {
+  flex: 0 1 250px;
+}
+
+.fold-block-field:nth-of-type(2) {
+  flex: 1 1 280px;
 }
 
 .fold-block-field label {
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
-  min-width: 56px;
+  min-width: 36px;
   flex-shrink: 0;
 }
 
 .block-threshold-slider {
   flex: 1;
-  max-width: 180px;
-  accent-color: var(--highlight-text);
+  max-width: 112px;
+}
+
+.threshold-slider,
+.block-threshold-slider {
+  --range-progress: 100%;
+  --range-track: color-mix(in srgb, var(--primary-text) 9%, transparent);
+  --range-fill: var(--button-bg);
+  --range-thumb-border: color-mix(in srgb, var(--button-bg) 52%, var(--border-color));
+  appearance: none;
+  height: 18px;
+  margin: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background:
+    linear-gradient(
+      to right,
+      var(--range-fill) 0 var(--range-progress),
+      var(--range-track) var(--range-progress) 100%
+    )
+    center / 100% 4px no-repeat;
+  cursor: pointer;
+}
+
+.threshold-slider:focus-visible,
+.block-threshold-slider:focus-visible {
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
+}
+
+.threshold-slider::-webkit-slider-thumb,
+.block-threshold-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--range-thumb-border);
+  border-radius: var(--radius-full);
+  background: var(--primary-bg);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--primary-text) 18%, transparent);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.threshold-slider:hover::-webkit-slider-thumb,
+.block-threshold-slider:hover::-webkit-slider-thumb {
+  border-color: var(--button-bg);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--button-bg) 12%, transparent);
+}
+
+.threshold-slider:active::-webkit-slider-thumb,
+.block-threshold-slider:active::-webkit-slider-thumb {
+  transform: scale(1.08);
+}
+
+.threshold-slider::-moz-range-track,
+.block-threshold-slider::-moz-range-track {
+  height: 4px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--range-track);
+}
+
+.threshold-slider::-moz-range-progress,
+.block-threshold-slider::-moz-range-progress {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--range-fill);
+}
+
+.threshold-slider::-moz-range-thumb,
+.block-threshold-slider::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--range-thumb-border);
+  border-radius: var(--radius-full);
+  background: var(--primary-bg);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--primary-text) 18%, transparent);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.threshold-slider:hover::-moz-range-thumb,
+.block-threshold-slider:hover::-moz-range-thumb {
+  border-color: var(--button-bg);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--button-bg) 12%, transparent);
 }
 
 .block-threshold-input {
-  width: 64px;
+  width: 56px;
   font-size: var(--font-size-helper);
   text-align: center;
 }
 
 .block-desc-input {
   flex: 1;
+  min-width: 0;
   font-size: var(--font-size-body);
 }
 
@@ -1259,15 +1588,29 @@ onBeforeRouteLeave(async () => {
 
 .fold-block-content.ui-textarea {
   min-height: 100px;
+  padding: var(--space-2) 0 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: 0;
+  background: transparent;
+  resize: vertical;
   font-family: 'Consolas', 'Monaco', monospace;
   font-size: var(--font-size-body);
   line-height: 1.6;
 }
 
+.fold-block-content.ui-textarea:hover:not(:disabled),
+.fold-block-content.ui-textarea:focus-visible {
+  border-color: color-mix(in srgb, var(--highlight-text) 32%, var(--border-color));
+  background: transparent;
+}
+
 .block-divider {
   display: flex;
   justify-content: center;
-  padding: var(--space-1) 0;
+  height: var(--space-2);
+  margin: 0;
+  padding: 0;
 }
 
 .add-block-button {
@@ -1287,11 +1630,6 @@ onBeforeRouteLeave(async () => {
 .block-divider:hover .add-block-button,
 .add-block-button:focus-visible {
   opacity: 1;
-}
-
-.add-block-final {
-  align-self: flex-start;
-  margin-top: var(--space-3);
 }
 
 /* ── Editor Actions ── */
@@ -1351,13 +1689,21 @@ onBeforeRouteLeave(async () => {
 
 /* ── Responsive ── */
 @media (max-width: 1024px) {
+  .toolbox-manager-shell {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .toolbox-entry-fields {
+    grid-template-columns: 1fr;
+  }
+
   .file-content-editor {
     min-height: 300px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .collapsed-item,
   .fold-block-card,
   .add-block-button {
     transition: none;
