@@ -18,6 +18,8 @@ import type {
   FinalContextResponse,
   MultiModalConfig,
   MultiModalConfigResponse,
+  NotificationsConnectionInfo,
+  NotificationsConnectionResponse,
   OneRingConfig,
   OneRingConfigResponse,
   OneRingConfigSaveResponse,
@@ -264,6 +266,20 @@ export const systemApi = {
       requestContext,
       uiOptions
     );
+  },
+
+  async getNotificationsConnection(
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<NotificationsConnectionInfo> {
+    const response = await requestWithUi<NotificationsConnectionResponse>(
+      {
+        url: "/admin_api/notifications/connection",
+        ...requestContext,
+      },
+      uiOptions
+    );
+    return response.connection;
   },
 
   async restartServer(

@@ -191,5 +191,44 @@ module.exports = function(options) {
         }
     });
 
+    // 获取 VCPLog WebSocket 通知通道连接信息（VCP_Key + PORT）
+    // 用于 Vue 管理面板的右上角通知中心直连 VCP 主服务器的 VCPLog 频道
+    router.get('/notifications/connection', (req, res) => {
+        try {
+            const vcpKey = process.env.VCP_Key || '';
+            const port = parseInt(process.env.PORT, 10) || 6005;
+            if (!vcpKey) {
+                return res.status(503).json({
+                    success: false,
+                    error: 'VCP_Key 未在 config.env 中配置，无法建立 VCPLog 通知连接。'
+                });
+            }
+
+            // 优先使用请求的 Host (反向代理后的对外域名/IP)；fallback 到 localhost
+            const rawHost = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${port}`;
+            const hostname = String(rawHost).split(':')[0] || 'localhost';
+            const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().split(',')[0].trim();
+            const proto = forwardedProto || (req.protocol === 'https' ? 'https' : 'http');
+            const wsProto = proto === 'https' ? 'wss' : 'ws';
+
+            res.json({
+                success: true,
+                connection: {
+                    vcpKey,
+                    port,
+                    hostname,
+                    wsUrl: `${wsProto}://${hostname}:${port}/VCPlog/VCP_Key=${encodeURIComponent(vcpKey)}`
+                }
+            });
+        } catch (error) {
+            console.error('[Notifications] Failed to build VCPLog connection info:', error);
+            res.status(500).json({
+                success: false,
+                error: '获取 VCPLog 连接信息失败。',
+                details: error.message
+            });
+        }
+    });
+
     return router;
 };

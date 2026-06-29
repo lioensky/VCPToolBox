@@ -83,6 +83,7 @@
     </div>
 
     <FeedbackHost />
+    <NotificationsDrawer />
 
     <!-- 沉浸观星模式彩蛋文本 -->
     <Transition name="immersive-easter-quote">
@@ -125,16 +126,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import FeedbackHost from "@/components/feedback/FeedbackHost.vue";
 import SolarSystemBg from "@/components/SolarSystemBg.vue";
 import GlobalCommandPalette from "@/components/layout/GlobalCommandPalette.vue";
 import TopBar from "@/components/layout/TopBar.vue";
 import Sidebar from "@/components/layout/Sidebar.vue";
+import NotificationsDrawer from "@/components/layout/NotificationsDrawer.vue";
 import { useMainLayoutState } from "@/composables/useMainLayoutState";
 import { useAppStore } from "@/stores/app";
+import { useNotificationsStore } from "@/stores/notifications";
 
 const appStore = useAppStore();
+const notificationsStore = useNotificationsStore();
 const {
   isMobileMenuOpen,
   isImmersiveMode,
@@ -173,6 +177,11 @@ const isPageHeaderActionsReady = ref(false);
 onMounted(async () => {
   await nextTick();
   isPageHeaderActionsReady.value = pageHeaderActionsRef.value !== null;
+  void notificationsStore.connect();
+});
+
+onBeforeUnmount(() => {
+  notificationsStore.disconnect();
 });
 
 void contentRef;

@@ -95,13 +95,19 @@
         <!-- 通知图标（预留） -->
         <button
           class="icon-button notification-btn"
-          :aria-label="hasNotifications ? '系统通知（有新通知）' : '系统通知'"
-          :title="hasNotifications ? '有新通知' : '系统通知'"
+          :class="{ active: notificationsStore.isDrawerOpen }"
+          :aria-label="notificationsStore.hasUnread ? `系统通知（${notificationsStore.unreadCount} 条未读）` : '系统通知'"
+          :title="notificationsStore.hasUnread ? `${notificationsStore.unreadCount} 条新通知` : '系统通知'"
+          aria-haspopup="dialog"
+          :aria-expanded="notificationsStore.isDrawerOpen"
+          @click="toggleNotifications"
         >
           <span class="material-symbols-outlined" aria-hidden="true"
             >notifications</span
           >
-          <span v-if="hasNotifications" class="notification-badge"></span>
+          <span v-if="notificationsStore.hasUnread" class="notification-badge">
+            {{ badgeText }}
+          </span>
         </button>
 
         <!-- 系统菜单下拉 -->
@@ -175,6 +181,7 @@ import { systemApi } from "@/api";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { useAppStore } from "@/stores/app";
 import { useAuthStore } from "@/stores/auth";
+import { useNotificationsStore } from "@/stores/notifications";
 import { showMessage, createLogger } from "@/utils";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import Breadcrumb from "@/components/layout/Breadcrumb.vue";
@@ -206,6 +213,8 @@ const router = useRouter();
 const appStore = useAppStore();
 const authStore = useAuthStore();
 
+const notificationsStore = useNotificationsStore();
+
 const theme = computed(() => appStore.theme);
 const isThemeQuickDrawerOpen = ref(false);
 const themeToggleIcon = computed(() => {
@@ -217,6 +226,10 @@ const themeToggleLabel = computed(() => {
   return "切换暗色";
 });
 const animationsEnabled = computed(() => appStore.animationsEnabled);
+const badgeText = computed(() => {
+  const count = notificationsStore.unreadCount;
+  return count > 99 ? "99+" : count > 0 ? String(count) : "";
+});
 const logger = createLogger("TopBar");
 
 function toggleMobileMenu() {
@@ -242,6 +255,11 @@ function openThemeQuickDrawer() {
 
 function closeThemeQuickDrawer() {
   isThemeQuickDrawerOpen.value = false;
+}
+
+function toggleNotifications() {
+  notificationsStore.toggleDrawer();
+  emit("closeAllMenus");
 }
 
 function openExternalLink(url: string) {
@@ -633,7 +651,8 @@ function goToDashboard() {
   line-height: 1;
 }
 
-.icon-button:hover {
+.icon-button:hover,
+.icon-button.active {
   background-color: var(--accent-bg);
   color: var(--primary-text);
 }
@@ -646,13 +665,20 @@ function goToDashboard() {
 
 .notification-btn .notification-badge {
   position: absolute;
-  top: 7px;
-  right: 7px;
-  width: 8px;
-  height: 8px;
+  top: 2px;
+  right: 1px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  box-sizing: border-box;
   background-color: var(--danger-color);
-  border-radius: 50%;
+  color: #ffffff;
+  border-radius: 999px;
   border: 2px solid var(--secondary-bg);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 11px;
+  text-align: center;
 }
 
 .dropdown {

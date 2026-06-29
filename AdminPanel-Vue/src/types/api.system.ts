@@ -272,3 +272,16 @@ export interface SystemMonitorResponse {
   system: SystemResources;
   pm2?: PM2Process[];
 }
+
+export interface NotificationsConnectionInfo {
+  vcpKey: string;
+  port: number;
+  hostname: string;
+  wsUrl: string;
+}
+
+export interface NotificationsConnectionResponse {
+  success?: boolean;
+  connection: NotificationsConnectionInfo;
+  error?: string;
+}

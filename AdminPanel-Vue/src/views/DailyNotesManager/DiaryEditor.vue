@@ -224,8 +224,8 @@ const editorStatusBadgeVariant = computed(() =>
 :deep(.EasyMDEContainer .editor-preview-side p),
 :deep(.EasyMDEContainer .editor-preview li),
 :deep(.EasyMDEContainer .editor-preview-side li),
-:deep(.EasyMDEContainer .editor-preview span),
-:deep(.EasyMDEContainer .editor-preview-side span) {
+:deep(.EasyMDEContainer .editor-preview span:not([class^="hljs-"]):not([class*=" hljs-"])),
+:deep(.EasyMDEContainer .editor-preview-side span:not([class^="hljs-"]):not([class*=" hljs-"])) {
   color: var(--primary-text) !important;
 }
 
