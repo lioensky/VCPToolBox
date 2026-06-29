@@ -667,7 +667,11 @@ onUnmounted(() => {
   height: 100%;
   overflow: visible;
   pointer-events: none;
-  transform: rotate(-90deg);
+  /*
+   * 不把 SVG 圆路径起点放在正顶部，避免 stroke-dashoffset 循环重置时
+   * 在 Nova 头像 12 点方向出现短暂断口。
+   */
+  transform: rotate(18deg);
 }
 
 .nova-ring-base,
@@ -685,7 +689,7 @@ onUnmounted(() => {
 
 .nova-ring-flow {
   stroke-width: 4;
-  stroke-dasharray: 82 252;
+  stroke-dasharray: 92 242;
   animation: nova-ring-flow 3.8s linear infinite;
 }
 
