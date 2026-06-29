@@ -2041,7 +2041,7 @@ class KnowledgeBaseManager {
                 const updates = new Map();
                 const deletions = new Map(); // 💡 新增：记录待删除的 chunk ID
                 const tagUpdates = [];
-                let actualTagChanges = 0;
+                const newTagIds = [];
 
                 const insertTag = this.db.prepare('INSERT INTO tags (name, vector) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET vector = excluded.vector');
                 const getTagId = this.db.prepare('SELECT id FROM tags WHERE name = ?');
@@ -2062,6 +2062,7 @@ class KnowledgeBaseManager {
                     const id = getTagId.get(t).id;
                     tagCache.set(t, { id, vector: vecBuf });
                     tagUpdates.push({ id, vec: vecFloat });
+                    newTagIds.push(id);
                     // 失效旧的 pairwise similarity / intrinsic residual 记录
                     invalidatePairSim.run(id, id);
                     invalidateIntrinsicResidual.run(id);
@@ -2132,7 +2133,6 @@ class KnowledgeBaseManager {
                             const tInfo = tagCache.get(t);
                             if (tInfo) {
                                 addRel.run(fileId, tInfo.id, index + 1);
-                                actualTagChanges++;
                             }
                         });
 
@@ -2142,10 +2142,10 @@ class KnowledgeBaseManager {
                     });
                 }
 
-                return { updates, tagUpdates, deletions, actualTagChanges };
+                return { updates, tagUpdates, deletions, newTagIds };
             });
 
-            const { updates, tagUpdates, deletions, actualTagChanges } = transaction();
+            const { updates, tagUpdates, deletions, newTagIds } = transaction();
 
             // 💡 核心修复：在添加新向量之前，先从 Vexus 索引中移除所有旧的向量
             if (deletions && deletions.size > 0) {
@@ -2229,8 +2229,9 @@ class KnowledgeBaseManager {
             console.log(`[KnowledgeBase] ✅ Batch complete. Updated ${updates.size} diary indices.`);
 
             // 优化1：数据更新后，检查是否需要重建矩阵（防抖 + 阈值）
-            // 🌟 V7.2: 使用实际生成的 tag 共现对变动（以写入 file_tags 的行数为准）进行触发
-            if (this.tagMemoEngine) this.tagMemoEngine.scheduleMatrixRebuild(actualTagChanges);
+            // 🌟 V8.3: 使用“成功新增的唯一 tag id”累计触发 1% 阈值；
+            // file_tags 组关系仍是共现矩阵真相，但不再作为“新增 1% tag”的计数依据。
+            if (this.tagMemoEngine) this.tagMemoEngine.scheduleMatrixRebuildForNewTags(newTagIds);
 
         } catch (e) {
             console.error('[KnowledgeBase] ❌ Batch processing failed catastrophically.');

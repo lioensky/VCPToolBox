@@ -21,7 +21,10 @@ class TagMemoEngine {
         this.tagIntrinsicResiduals = null;
 
         // 🌟 TagMemo V7.1: 矩阵计算防抖系统
-        this._accumulatedTagChanges = 0;
+        // V8.3: 阈值触发改为“唯一新增 tag”Set 累积，而不是 file_tags 关系数累加。
+        // 共现矩阵仍以 file_tags 组关系为真相；这里只负责判断“是否真的出现了足够多没见过的新 tag”。
+        this._accumulatedTagChanges = 0; // legacy 诊断字段，不再作为阈值主依据
+        this._accumulatedNewTagIds = new Set();
         this._matrixRebuildTimer = null;
         this._matrixRebuildScheduleLogged = false;
         this._isMatrixRebuilding = false;
@@ -57,6 +60,16 @@ class TagMemoEngine {
         return this._envFlag('TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE', false);
     }
 
+    _isIntrinsicResidualThresholdRecomputeEnabled() {
+        return this._envFlag('TAGMEMO_IR_RECOMPUTE_ON_THRESHOLD', true);
+    }
+
+    _getMatrixRebuildQuietMs() {
+        const raw = Number(process.env.TAGMEMO_MATRIX_REBUILD_QUIET_MS);
+        if (!Number.isFinite(raw)) return 300000;
+        return Math.max(0, Math.floor(raw));
+    }
+
     _hasWarmDerivedCaches() {
         const epaReady = !!(this.epa && this.epa.initialized && this.epa.orthoBasis && this.epa.orthoBasis.length > 0);
         const pairwiseReady = this.tagPairSimilarities instanceof Map && this.tagPairSimilarities.size > 0;
@@ -69,7 +82,7 @@ class TagMemoEngine {
         const epaHotOff = !this._isEpaBackgroundRecomputeEnabled();
         const irHotOff = !this._isIntrinsicResidualRecomputeEnabled();
         const caches = this._hasWarmDerivedCaches();
-        const noTagChanges = this._accumulatedTagChanges <= 0;
+        const noTagChanges = this._accumulatedNewTagIds.size <= 0;
 
         return {
             skip: epaHotOff && irHotOff && noTagChanges && caches.epaReady && caches.pairwiseReady && caches.intrinsicReady && caches.matrixReady,
@@ -1284,14 +1297,14 @@ class TagMemoEngine {
         return threshold;
     }
 
-    _scheduleThresholdMatrixRebuild(threshold, delayMs = 300000, reason = 'threshold') {
+    _scheduleThresholdMatrixRebuild(threshold, delayMs = this._getMatrixRebuildQuietMs(), reason = 'threshold') {
         if (this._matrixRebuildTimer) {
             clearTimeout(this._matrixRebuildTimer);
         }
 
         this._matrixRebuildTimer = setTimeout(() => {
-            console.log(`[TagMemoEngine] 📈 Changes reached threshold (${this._accumulatedTagChanges} >= ${threshold}) and quiet period finished. Rebuilding matrix...`);
-            this.doMatrixRebuild().catch(e => {
+            console.log(`[TagMemoEngine] 📈 New unique tags reached threshold (${this._accumulatedNewTagIds.size} >= ${threshold}) and quiet period finished. Rebuilding matrix...`);
+            this.doMatrixRebuild({ reason: 'threshold' }).catch(e => {
                 console.error('[TagMemoEngine] ❌ Unhandled matrix rebuild failure from threshold timer:', e.message || e);
             });
         }, delayMs);
@@ -1299,7 +1312,7 @@ class TagMemoEngine {
         if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
 
         if (!this._matrixRebuildScheduleLogged) {
-            console.log(`[TagMemoEngine] 🛡️ Matrix rebuild ${reason}: ${this._accumulatedTagChanges} >= ${threshold}. Scheduled after ${Math.round(delayMs / 1000)}s of quiescence.`);
+            console.log(`[TagMemoEngine] 🛡️ Matrix rebuild ${reason}: newUniqueTags=${this._accumulatedNewTagIds.size} >= ${threshold}. Scheduled after ${Math.round(delayMs / 1000)}s of quiescence.`);
             this._matrixRebuildScheduleLogged = true;
         }
     }
@@ -1307,34 +1320,54 @@ class TagMemoEngine {
     _ensureMatrixRebuildScheduledIfThreshold(reason = 'threshold') {
         const threshold = this._getMatrixRebuildThreshold();
 
-        // 仅在达到阈值后，才进入防抖逻辑（实现“大变动后的冷静期”）
-        if (this._accumulatedTagChanges >= threshold) {
-            this._scheduleThresholdMatrixRebuild(threshold, 300000, reason);
+        // 仅在唯一新增 tag 达到阈值后，才进入防抖逻辑（实现“大变动后的冷静期”）
+        if (this._accumulatedNewTagIds.size >= threshold) {
+            this._scheduleThresholdMatrixRebuild(threshold, this._getMatrixRebuildQuietMs(), reason);
             return true;
         }
 
         return false;
     }
 
-    // 🌟 TagMemo V7.7: 混合调度器 (阈值门槛 + 滑动窗口防抖)
-    scheduleMatrixRebuild(changeCount = 1) {
-        if (changeCount <= 0) return;
+    // 🌟 TagMemo V8.3: 以唯一新增 tag Set 作为 1% 阈值依据
+    scheduleMatrixRebuildForNewTags(newTagIds = []) {
+        if (!Array.isArray(newTagIds) || newTagIds.length === 0) return;
 
-        this._accumulatedTagChanges += changeCount;
-        this._ensureMatrixRebuildScheduledIfThreshold('threshold reached');
+        let added = 0;
+        for (const id of newTagIds) {
+            const numericId = Number(id);
+            if (!Number.isFinite(numericId) || numericId <= 0) continue;
+            const before = this._accumulatedNewTagIds.size;
+            this._accumulatedNewTagIds.add(numericId);
+            if (this._accumulatedNewTagIds.size > before) added++;
+        }
+
+        if (added <= 0) return;
+        this._accumulatedTagChanges = this._accumulatedNewTagIds.size; // legacy 诊断镜像
+        this._ensureMatrixRebuildScheduledIfThreshold('new unique tag threshold reached');
         // 低于阈值时不执行任何操作，不计入倒计时。
     }
 
-    async doMatrixRebuild() {
+    // 🌟 Legacy 兼容入口：旧的 file_tags 关系数不再驱动 1% 阈值。
+    scheduleMatrixRebuild(changeCount = 1) {
+        if (changeCount > 0) {
+            console.log(`[TagMemoEngine] 🛡️ Ignored legacy relation-count matrix rebuild signal (${changeCount}); V8.3 threshold uses unique new tag ids.`);
+        }
+    }
+
+    async doMatrixRebuild(options = {}) {
+        const rebuildReason = options.reason || 'manual';
         if (this._isMatrixRebuilding) {
-            console.warn('[TagMemoEngine] Matrix rebuild already running; keeping accumulated changes for next debounce window.');
-            if (!this._matrixRebuildTimer && this._accumulatedTagChanges > 0) {
-                this._scheduleMatrixRebuildTimer(300000);
+            console.warn('[TagMemoEngine] Matrix rebuild already running; keeping accumulated new tags for next debounce window.');
+            if (!this._matrixRebuildTimer && this._accumulatedNewTagIds.size > 0) {
+                this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), 'follow-up-threshold');
             }
             return;
         }
 
-        const changesAtStart = this._accumulatedTagChanges;
+        const newTagIdsAtStart = new Set(this._accumulatedNewTagIds);
+        const changesAtStart = newTagIdsAtStart.size;
+        this._accumulatedNewTagIds.clear();
         this._accumulatedTagChanges = 0;
         this._matrixRebuildTimer = null;
         this._matrixRebuildScheduleLogged = false;
@@ -1351,13 +1384,23 @@ class TagMemoEngine {
                 if (!this._assertHealthyAfterRustWrite('pairwise-sim load barrier')) return false;
                 this.loadPairwiseSimilarities({ failOnCorruption: true });
 
-                if (this._isIntrinsicResidualRecomputeEnabled()) {
+                const isThresholdRebuild = rebuildReason === 'threshold' || rebuildReason === 'follow-up-threshold';
+                const shouldRecomputeIntrinsicResiduals = this._isIntrinsicResidualRecomputeEnabled()
+                    || (isThresholdRebuild && this._isIntrinsicResidualThresholdRecomputeEnabled());
+
+                if (shouldRecomputeIntrinsicResiduals) {
+                    if (isThresholdRebuild && !this._isIntrinsicResidualRecomputeEnabled()) {
+                        console.log('[TagMemoEngine] 🔁 Intrinsic residual recompute enabled for threshold matrix rebuild: TAGMEMO_IR_RECOMPUTE_ON_THRESHOLD=true.');
+                    }
                     const intrinsicResult = await this.recomputeIntrinsicResiduals({ leaseAlreadyHeld: true });
                     if (!intrinsicResult) return false;
                     if (!this._assertHealthyAfterRustWrite('intrinsic-residuals load barrier')) return false;
                     this.loadIntrinsicResiduals({ failOnCorruption: true });
                 } else {
-                    console.log('[TagMemoEngine] 🛡️ Intrinsic residual hot recompute skipped: TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE=false. Loading existing residual cache only.');
+                    const skipReason = isThresholdRebuild
+                        ? 'TAGMEMO_IR_RECOMPUTE_ON_THRESHOLD=false and TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE=false'
+                        : 'TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE=false';
+                    console.log(`[TagMemoEngine] 🛡️ Intrinsic residual hot recompute skipped: ${skipReason}. Loading existing residual cache only.`);
                     this.loadIntrinsicResiduals({ failOnCorruption: true });
                 }
 
@@ -1366,34 +1409,37 @@ class TagMemoEngine {
             }, { pendingThreshold: 0 });
 
             if (!rebuilt) {
-                this._accumulatedTagChanges += changesAtStart;
-                this._scheduleMatrixRebuildTimer(300000);
+                for (const id of newTagIdsAtStart) this._accumulatedNewTagIds.add(id);
+                this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
+                this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), rebuildReason);
                 return;
             }
         } catch (e) {
             console.error('[TagMemoEngine] ❌ Matrix rebuild failed; preserving accumulated changes and scheduling retry:', e.message || e);
             if (e.stack) console.error(e.stack);
-            this._accumulatedTagChanges += changesAtStart;
-            this._scheduleMatrixRebuildTimer(300000);
+            for (const id of newTagIdsAtStart) this._accumulatedNewTagIds.add(id);
+            this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
+            this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), rebuildReason);
         } finally {
             this._isMatrixRebuilding = false;
-            if (this._accumulatedTagChanges > 0) {
-                console.log(`[TagMemoEngine] 🔁 ${this._accumulatedTagChanges} tag changes pending after rebuild attempt; scheduling follow-up debounce.`);
-                this._scheduleMatrixRebuildTimer(300000);
+            if (this._accumulatedNewTagIds.size > 0) {
+                this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
+                console.log(`[TagMemoEngine] 🔁 ${this._accumulatedNewTagIds.size} new unique tag(s) pending after rebuild attempt; scheduling follow-up debounce.`);
+                this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), 'follow-up-threshold');
             }
-            console.log(`[TagMemoEngine] Matrix rebuild finished for ${changesAtStart} accumulated tag change(s).`);
+            console.log(`[TagMemoEngine] Matrix rebuild finished for ${changesAtStart} accumulated new unique tag(s).`);
         }
     }
 
-    _scheduleMatrixRebuildTimer(delayMs) {
+    _scheduleMatrixRebuildTimer(delayMs, reason = 'follow-up-threshold') {
         if (this._matrixRebuildTimer) {
             clearTimeout(this._matrixRebuildTimer);
         }
 
         this._matrixRebuildScheduleLogged = true;
         this._matrixRebuildTimer = setTimeout(() => {
-            console.log(`[TagMemoEngine] 📈 Follow-up quiet period finished. Rebuilding matrix for ${this._accumulatedTagChanges} accumulated change(s)...`);
-            this.doMatrixRebuild().catch(e => {
+            console.log(`[TagMemoEngine] 📈 Follow-up quiet period finished. Rebuilding matrix for ${this._accumulatedNewTagIds.size} accumulated new unique tag(s)...`);
+            this.doMatrixRebuild({ reason }).catch(e => {
                 console.error('[TagMemoEngine] ❌ Unhandled matrix rebuild failure from follow-up timer:', e.message || e);
             });
         }, delayMs);
@@ -1494,16 +1540,16 @@ class TagMemoEngine {
                     );
                 }
                 this._enqueueDerivedTask('matrix-rebuild', async () => {
-                    await this.doMatrixRebuild();
+                    await this.doMatrixRebuild({ reason: forceFullDerivedRefresh ? 'startup-full-derived-refresh' : 'startup-bootstrap' });
                     return true;
                 });
-            } else if (this._accumulatedTagChanges > 0) {
-                const scheduled = this._ensureMatrixRebuildScheduledIfThreshold('post-startup accumulated changes');
+            } else if (this._accumulatedNewTagIds.size > 0) {
+                const scheduled = this._ensureMatrixRebuildScheduledIfThreshold('post-startup accumulated new unique tags');
                 if (!scheduled) {
                     const threshold = this._getMatrixRebuildThreshold();
                     console.log(
                         `[TagMemoEngine] 🛡️ Post-startup matrix rebuild delegated to threshold scheduler: ` +
-                        `${this._accumulatedTagChanges}/${threshold} accumulated tag changes; below threshold, no rebuild scheduled.`
+                        `${this._accumulatedNewTagIds.size}/${threshold} accumulated new unique tag(s); below threshold, no rebuild scheduled.`
                     );
                 }
             }
