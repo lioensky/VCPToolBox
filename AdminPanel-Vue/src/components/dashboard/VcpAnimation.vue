@@ -9,13 +9,19 @@
         aria-label="唤醒 Nova"
         @click="handleNovaLogoClick"
       >
-        <img
-          :src="novaLogoUrl"
-          alt=""
-          aria-hidden="true"
-          class="vcp-side-logo"
-          loading="eager"
-        />
+        <span class="nova-logo-orb" aria-hidden="true">
+          <img
+            :src="novaLogoUrl"
+            alt=""
+            class="vcp-side-logo"
+            loading="eager"
+          />
+          <svg class="nova-logo-flow-ring" viewBox="0 0 120 120" focusable="false">
+            <circle class="nova-ring-base" cx="60" cy="60" r="53" />
+            <circle class="nova-ring-flow nova-ring-flow--cyan" cx="60" cy="60" r="53" />
+            <circle class="nova-ring-flow nova-ring-flow--pink" cx="60" cy="60" r="53" />
+          </svg>
+        </span>
         <Transition name="nova-bubble">
         <aside
           v-if="novaBubbleVisible"
@@ -53,15 +59,56 @@
         </aside>
       </Transition>
     </button>
-    <img
-      src="/VCPLogo2.png"
-      alt="VCPToolBox Logo"
-      class="vcp-logo"
-      width="500"
-      height="200"
-      loading="eager"
+    <button
+      type="button"
+      class="vcp-cyber-logo"
+      aria-label="VCPToolBox Logo，连续点击 5 次进入沉浸观星模式"
       @click="handleLogoClick"
-    />
+    >
+      <svg
+        class="vcp-cyber-logo-svg"
+        viewBox="0 0 1000 200"
+        role="img"
+        aria-labelledby="vcp-cyber-logo-title"
+      >
+        <title id="vcp-cyber-logo-title">VCPToolBox</title>
+        <defs>
+          <filter id="vcpCyberLogoGlow" x="-20%" y="-35%" width="140%" height="170%">
+            <feGaussianBlur stdDeviation="4" result="blur" />
+            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+          </filter>
+        </defs>
+        <text
+          x="50%"
+          y="50%"
+          text-anchor="middle"
+          dominant-baseline="middle"
+          class="vcp-cyber-text vcp-cyber-text-base"
+        >
+          vcptoolbox
+        </text>
+        <text
+          x="50%"
+          y="50%"
+          text-anchor="middle"
+          dominant-baseline="middle"
+          class="vcp-cyber-text vcp-cyber-text-flow vcp-cyber-flow-cyan"
+          filter="url(#vcpCyberLogoGlow)"
+        >
+          vcptoolbox
+        </text>
+        <text
+          x="50%"
+          y="50%"
+          text-anchor="middle"
+          dominant-baseline="middle"
+          class="vcp-cyber-text vcp-cyber-text-flow vcp-cyber-flow-pink"
+          filter="url(#vcpCyberLogoGlow)"
+        >
+          vcptoolbox
+        </text>
+      </svg>
+    </button>
     </div>
     <canvas ref="canvas" id="vcp-animation-canvas"></canvas>
   </div>
@@ -516,6 +563,12 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+@font-face {
+  font-family: "VCP Orbitron";
+  src: url("/Google Orbitron.ttf") format("truetype");
+  font-display: swap;
+}
+
 .vcp-animation-container {
   position: relative;
   width: 100%;
@@ -529,7 +582,7 @@ onUnmounted(() => {
 
 .vcp-logo-container {
   position: absolute;
-  top: 50%;
+  top: 53%;
   left: 50%;
   transform: translate(-50%, -50%);
   z-index: 2;
@@ -539,7 +592,6 @@ onUnmounted(() => {
   gap: clamp(4px, 0.7vw, 10px);
   width: min(78vw, 900px);
   text-align: center;
-  animation: laser-outline-orbit 4s infinite linear;
 }
 
 .vcp-side-logo-button {
@@ -556,53 +608,154 @@ onUnmounted(() => {
   z-index: 5;
 }
 
-.vcp-side-logo-button::before {
-  content: "";
-  position: absolute;
-  inset: -10px;
+.nova-logo-orb {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: clamp(76px, 10vw, 126px);
+  height: clamp(76px, 10vw, 126px);
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 22%, transparent);
-  background:
-    radial-gradient(circle, color-mix(in srgb, var(--highlight-text) 18%, transparent), transparent 58%),
-    conic-gradient(from 120deg, transparent, color-mix(in srgb, #7dd3fc 32%, transparent), transparent);
-  opacity: 0;
-  transform: scale(0.86) rotate(0deg);
-  transition:
-    opacity var(--transition-fast, 0.2s ease),
-    transform var(--transition-fast, 0.2s ease);
+  transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
-.vcp-side-logo-button:hover::before,
-.vcp-side-logo-button.is-active::before {
-  opacity: 1;
-  transform: scale(1) rotate(16deg);
+.nova-logo-orb::before {
+  content: "";
+  position: absolute;
+  inset: 8%;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, color-mix(in srgb, #00f3ff 20%, transparent), transparent 62%),
+    radial-gradient(circle, color-mix(in srgb, #ff00ea 18%, transparent), transparent 70%);
+  filter: blur(14px);
+  opacity: 0.72;
+  transform: scale(0.92);
+  pointer-events: none;
 }
 
 .vcp-side-logo {
   position: relative;
-  width: clamp(64px, 9vw, 112px);
-  height: clamp(64px, 9vw, 112px);
-  object-fit: contain;
+  z-index: 1;
+  width: calc(100% - 14px);
+  height: calc(100% - 14px);
+  border-radius: 999px;
+  object-fit: cover;
   user-select: none;
-  transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
-.vcp-side-logo-button:active .vcp-side-logo {
+.nova-logo-flow-ring {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  transform: rotate(-90deg);
+}
+
+.nova-ring-base,
+.nova-ring-flow {
+  fill: transparent;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.nova-ring-base {
+  stroke: color-mix(in srgb, #101426 78%, var(--highlight-text));
+  stroke-width: 2;
+}
+
+.nova-ring-flow {
+  stroke-width: 4;
+  stroke-dasharray: 82 252;
+  animation: nova-ring-flow 3.8s linear infinite;
+}
+
+.nova-ring-flow--cyan {
+  stroke: #00f3ff;
+  filter: drop-shadow(0 0 6px #00f3ff) drop-shadow(0 0 14px #00f3ff);
+}
+
+.nova-ring-flow--pink {
+  stroke: #ff00ea;
+  filter: drop-shadow(0 0 6px #ff00ea) drop-shadow(0 0 14px #ff00ea);
+  animation-delay: -1.9s;
+}
+
+.vcp-side-logo-button:hover .nova-logo-orb,
+.vcp-side-logo-button.is-active .nova-logo-orb {
+  transform: scale(1.04);
+}
+
+.vcp-side-logo-button:active .nova-logo-orb {
   transform: scale(0.95);
 }
 
-.vcp-logo {
+.vcp-cyber-logo {
+  flex: 1 1 auto;
   min-width: 0;
-  max-width: 800px;
-  max-height: 80%;
-  height: auto;
+  max-width: 840px;
+  width: min(65vw, 840px);
+  padding: 0;
+  border: 0;
+  background: transparent;
   cursor: pointer;
   user-select: none;
   transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
-.vcp-logo:active {
-  transform: scale(0.95);
+.vcp-cyber-logo:active {
+  transform: scale(0.96);
+}
+
+.vcp-cyber-logo-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.vcp-cyber-text {
+  font-family: "VCP Orbitron", "Orbitron", system-ui, sans-serif;
+  font-size: 110px;
+  font-weight: 900;
+  letter-spacing: 5px;
+  text-transform: uppercase;
+}
+
+.vcp-cyber-text-base {
+  fill: color-mix(in srgb, var(--primary-bg) 88%, #050508);
+  stroke: color-mix(in srgb, #1a1a2e 78%, var(--border-color));
+  stroke-width: 2px;
+  transition:
+    fill var(--transition-fast, 0.2s ease),
+    stroke var(--transition-fast, 0.2s ease);
+}
+
+.vcp-cyber-text-flow {
+  fill: transparent;
+  stroke-width: 4px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 150 400;
+  animation: cyber-text-flow 6s linear infinite;
+}
+
+.vcp-cyber-flow-cyan {
+  stroke: #00f3ff;
+  filter: drop-shadow(0 0 8px #00f3ff) drop-shadow(0 0 20px #00f3ff);
+}
+
+.vcp-cyber-flow-pink {
+  stroke: #ff00ea;
+  filter: drop-shadow(0 0 8px #ff00ea) drop-shadow(0 0 20px #ff00ea);
+  animation-delay: -3s;
+}
+
+.vcp-cyber-logo:hover .vcp-cyber-text-base {
+  fill: color-mix(in srgb, var(--primary-bg) 74%, #111122);
+  stroke: color-mix(in srgb, var(--highlight-text) 32%, #1a1a2e);
 }
 
 .nova-maid-bubble {
@@ -814,21 +967,23 @@ onUnmounted(() => {
   }
 }
 
-@keyframes laser-outline-orbit {
-  0% {
-    filter: drop-shadow(0 -7px 4px var(--highlight-text));
+@keyframes cyber-text-flow {
+  from {
+    stroke-dashoffset: 550;
   }
-  25% {
-    filter: drop-shadow(7px 0 4px var(--highlight-text));
+
+  to {
+    stroke-dashoffset: 0;
   }
-  50% {
-    filter: drop-shadow(0 7px 4px var(--highlight-text));
+}
+
+@keyframes nova-ring-flow {
+  from {
+    stroke-dashoffset: 334;
   }
-  75% {
-    filter: drop-shadow(-7px 0 4px var(--highlight-text));
-  }
-  100% {
-    filter: drop-shadow(0 -7px 4px var(--highlight-text));
+
+  to {
+    stroke-dashoffset: 0;
   }
 }
 
@@ -847,13 +1002,13 @@ onUnmounted(() => {
     margin-bottom: 20px;
   }
 
-  .vcp-logo {
-    max-width: 260px;
+  .vcp-cyber-logo {
+    width: min(65vw, 280px);
   }
 
-  .vcp-side-logo {
-    width: 48px;
-    height: 48px;
+  .nova-logo-orb {
+    width: 60px;
+    height: 60px;
   }
 
   .nova-maid-bubble {
@@ -882,7 +1037,9 @@ onUnmounted(() => {
 @media (prefers-reduced-motion: reduce) {
   .nova-bubble-orbit,
   .nova-bubble-content::after,
-  .nova-bubble-avatar {
+  .nova-bubble-avatar,
+  .nova-ring-flow,
+  .vcp-cyber-text-flow {
     animation: none;
   }
 }
