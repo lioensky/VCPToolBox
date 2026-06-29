@@ -1,5 +1,8 @@
 <template>
-  <div class="vcp-animation-container" :class="`theme-${theme}`">
+  <div
+    class="vcp-animation-container"
+    :class="[`theme-${theme}`, { 'animations-disabled': !animationsEnabled }]"
+  >
     <div class="vcp-logo-container">
       <button
         ref="novaLogoButtonRef"
@@ -17,6 +20,14 @@
             loading="eager"
           />
           <svg class="nova-logo-flow-ring" viewBox="0 0 120 120" focusable="false">
+            <defs>
+              <linearGradient id="novaStaticRingStroke" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#00f3ff" />
+                <stop offset="50%" stop-color="#00f3ff" />
+                <stop offset="50%" stop-color="#ff00ea" />
+                <stop offset="100%" stop-color="#ff00ea" />
+              </linearGradient>
+            </defs>
             <circle class="nova-ring-base" cx="60" cy="60" r="53" />
             <circle class="nova-ring-flow nova-ring-flow--cyan" cx="60" cy="60" r="53" />
             <circle class="nova-ring-flow nova-ring-flow--pink" cx="60" cy="60" r="53" />
@@ -77,6 +88,12 @@
             <feGaussianBlur stdDeviation="4" result="blur" />
             <feComposite in="SourceGraphic" in2="blur" operator="over" />
           </filter>
+          <linearGradient id="vcpCyberStaticStroke" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#00f3ff" />
+            <stop offset="50%" stop-color="#00f3ff" />
+            <stop offset="50%" stop-color="#ff00ea" />
+            <stop offset="100%" stop-color="#ff00ea" />
+          </linearGradient>
         </defs>
         <text
           x="50%"
@@ -758,16 +775,43 @@ onUnmounted(() => {
   stroke: color-mix(in srgb, var(--highlight-text) 32%, #1a1a2e);
 }
 
-.theme-light .nova-ring-base {
+.animations-disabled .nova-ring-base {
+  stroke: url("#novaStaticRingStroke");
+  stroke-width: 4;
+  filter:
+    drop-shadow(0 0 5px #00f3ff)
+    drop-shadow(0 0 5px #ff00ea);
+}
+
+.animations-disabled .nova-ring-flow {
+  opacity: 0;
+  animation: none;
+}
+
+.animations-disabled .vcp-cyber-text-base,
+.animations-disabled .vcp-cyber-logo:hover .vcp-cyber-text-base {
+  stroke: url("#vcpCyberStaticStroke");
+  stroke-width: 4px;
+  filter:
+    drop-shadow(0 0 7px #00f3ff)
+    drop-shadow(0 0 7px #ff00ea);
+}
+
+.animations-disabled .vcp-cyber-text-flow {
+  opacity: 0;
+  animation: none;
+}
+
+.theme-light:not(.animations-disabled) .nova-ring-base {
   stroke: color-mix(in srgb, #ffffff 86%, #94a3b8);
 }
 
-.theme-light .vcp-cyber-text-base {
+.theme-light:not(.animations-disabled) .vcp-cyber-text-base {
   fill: color-mix(in srgb, #ffffff 82%, #e2e8f0);
   stroke: color-mix(in srgb, #ffffff 76%, #94a3b8);
 }
 
-.theme-light .vcp-cyber-logo:hover .vcp-cyber-text-base {
+.theme-light:not(.animations-disabled) .vcp-cyber-logo:hover .vcp-cyber-text-base {
   fill: color-mix(in srgb, #ffffff 72%, #dbeafe);
   stroke: color-mix(in srgb, #ffffff 64%, var(--highlight-text));
 }
