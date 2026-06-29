@@ -1,6 +1,7 @@
 import { ref, computed } from "vue";
 import type * as DOMPurifyModule from "dompurify";
 import type * as Marked from "marked";
+import type HLJS from "highlight.js";
 
 const MARKDOWN_SANITIZE_OPTIONS: DOMPurifyModule.Config = {
   USE_PROFILES: { html: true },
@@ -18,6 +19,7 @@ const MARKDOWN_SANITIZE_OPTIONS: DOMPurifyModule.Config = {
   ],
   FORBID_ATTR: ["style"],
   ALLOW_DATA_ATTR: false,
+  ADD_ATTR: ["class"],
 };
 
 function escapeHtml(content: string): string {
@@ -49,12 +51,13 @@ function escapeHtml(content: string): string {
 export function useMarkdownRenderer() {
   let markedModule: typeof Marked | null = null;
   let dompurifyModule: typeof DOMPurifyModule | null = null;
+  let hljsModule: typeof HLJS | null = null;
   const isReady = ref(false);
   const lastRenderedContent = ref("");
 
   /**
    * 初始化 Markdown 渲染引擎
-   * 懒加载 marked 和 DOMPurify，减少初始包体积
+   * 懒加载 marked、DOMPurify 与 highlight.js（代码块高亮），减少初始包体积
    */
   async function initializeRenderer(): Promise<void> {
     if (isReady.value) {
@@ -62,13 +65,49 @@ export function useMarkdownRenderer() {
     }
 
     try {
-      const [marked, DOMPurify] = await Promise.all([
+      const [marked, DOMPurify, hljs, markedHighlight] = await Promise.all([
         import("marked"),
         import("dompurify"),
+        import("highlight.js"),
+        import("marked-highlight"),
       ]);
 
       markedModule = marked;
       dompurifyModule = DOMPurify;
+      hljsModule = (hljs.default ?? hljs) as typeof HLJS;
+
+      // 通过官方 marked-highlight 适配器接入 highlight.js
+      // 该适配器会在生成的 <code> 上自动加 hljs / language-xxx class，
+      // 内部 token 也都带上 .hljs-keyword / .hljs-string 等类。
+      const mh = (markedHighlight as { markedHighlight?: typeof markedHighlight.markedHighlight }).markedHighlight
+        ?? (markedHighlight as unknown as { default: typeof markedHighlight.markedHighlight }).default;
+
+      if (typeof mh === "function") {
+        markedModule.marked.use(
+          mh({
+            langPrefix: "hljs language-",
+            highlight(code: string, lang: string): string {
+              const safeLang = (lang || "").trim().split(/\s+/)[0] || "";
+              if (!hljsModule) return code;
+              try {
+                if (safeLang && hljsModule.getLanguage(safeLang)) {
+                  return hljsModule.highlight(code, {
+                    language: safeLang,
+                    ignoreIllegals: true,
+                  }).value;
+                }
+                return hljsModule.highlightAuto(code).value;
+              } catch (err) {
+                console.warn("[useMarkdownRenderer] highlight 失败，回退原文:", err);
+                return code;
+              }
+            },
+          })
+        );
+      } else {
+        console.warn("[useMarkdownRenderer] marked-highlight 适配器加载失败，代码块将不会高亮");
+      }
+
       isReady.value = true;
     } catch (error) {
       console.error("[useMarkdownRenderer] 初始化失败:", error);

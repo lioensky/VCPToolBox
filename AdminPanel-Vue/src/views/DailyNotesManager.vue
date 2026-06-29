@@ -92,6 +92,8 @@ import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
 import 'easymde/dist/easymde.min.css'
+import 'font-awesome/css/font-awesome.min.css'
+import 'highlight.js/styles/github-dark.css'
 import DiaryEditor from './DailyNotesManager/DiaryEditor.vue'
 import DiscoveryModal from './DailyNotesManager/DiscoveryModal.vue'
 import FolderList from './DailyNotesManager/FolderList.vue'
@@ -174,6 +176,7 @@ async function initMarkdownEditor(content = ''): Promise<void> {
     easyMDE = new EasyMDE({
       element: markdownEditorRef.value,
       spellChecker: false,
+      autoDownloadFontAwesome: false,
       status: ['lines', 'words', 'cursor'],
       minHeight: '500px',
       maxHeight: '700px',

@@ -126,7 +126,7 @@
                         max="20"
                         size="sm"
                         class="cluster-k-input"
-                        :value="getRenderedKValue(index, cluster)"
+                        :model-value="getRenderedKValue(index, cluster)"
                         @input="handleKValueInput(index, cluster, $event)"
                         @click.stop
                         @pointerdown.stop

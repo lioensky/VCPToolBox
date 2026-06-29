@@ -1746,6 +1746,8 @@ onBeforeUnmount(() => {
 
 .group-panel__list {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
 }
 
 .param-row {
@@ -1757,12 +1759,43 @@ onBeforeUnmount(() => {
   border-top: 1px solid color-mix(in srgb, var(--border-color) 58%, transparent);
 }
 
-.group-panel__list .param-row:first-child {
+/* 第一行去除上边框：第一个项总要去掉；
+   如果第一个是简单卡片且第二个也是简单卡片（两者并排为第一行），第二个也要去掉。 */
+.group-panel__list > .param-row:first-child {
+  border-top: 0;
+}
+.group-panel__list > .param-row--number:first-child + .param-row--number,
+.group-panel__list > .param-row--number:first-child + .param-row--tuple,
+.group-panel__list > .param-row--tuple:first-child + .param-row--number,
+.group-panel__list > .param-row--tuple:first-child + .param-row--tuple {
   border-top: 0;
 }
 
 .param-row--changed {
   background: color-mix(in srgb, var(--highlight-text) 4%, transparent);
+}
+
+/* 简单卡片（单值 / 区间）：在 2 列父网格中占 1 列，
+   内部从左右两栏改为单列上下堆叠，提高窄宽度下的可读性。 */
+.param-row--number,
+.param-row--tuple {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+  align-content: start;
+  align-items: stretch;
+}
+
+.param-row--number .param-row__control,
+.param-row--tuple .param-row__control {
+  align-self: stretch;
+}
+
+/* 复杂卡片：跨满父网格两列，内部仍保留原左右两栏布局。 */
+.param-row--nested,
+.param-row--wormhole,
+.param-row--ordered,
+.param-row--geodesic {
+  grid-column: 1 / -1;
 }
 
 .param-row--nested {
@@ -2645,6 +2678,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 960px) {
+  .group-panel__list {
+    grid-template-columns: 1fr;
+  }
+
   .group-panel__header,
   .param-row,
   .wormhole-launchpad,
