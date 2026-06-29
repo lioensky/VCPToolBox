@@ -95,7 +95,7 @@ function handleFolderNavClick(item: UiSideConsoleNavItem): void {
 .notes-sidebar {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-2);
   align-self: start;
   height: 100%;
   max-height: 100%;
@@ -107,30 +107,39 @@ function handleFolderNavClick(item: UiSideConsoleNavItem): void {
 
 .folder-search-label {
   display: block;
-  margin: 0 0 var(--space-2);
+  margin: 0 0 6px;
   padding: 0 8px;
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-  font-weight: 600;
+  color: color-mix(in srgb, var(--secondary-text) 72%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
+  text-transform: uppercase;
 }
 
 .folder-console__search {
-  padding: 0 0 var(--space-3);
+  padding: 0;
 }
 
 .folder-search-box {
-  display: flex;
-  gap: var(--space-2);
-  padding: 0 8px;
+  position: relative;
+  display: block;
+  padding: 0;
 }
 
 .folder-search-input {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
 }
 
 .folder-search-clear {
-  flex-shrink: 0;
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+}
+
+.folder-search-box:has(.folder-search-clear) .folder-search-input {
+  padding-right: 54px;
 }
 
 .notes-sidebar__nav {
@@ -150,15 +159,12 @@ function handleFolderNavClick(item: UiSideConsoleNavItem): void {
   .notes-sidebar {
     height: auto;
     max-height: none;
-    padding: var(--space-4);
+    padding: 0;
   }
 
   .notes-sidebar__nav {
     max-height: 40vh;
   }
 
-  .folder-search-box {
-    flex-direction: column;
-  }
 }
 </style>
