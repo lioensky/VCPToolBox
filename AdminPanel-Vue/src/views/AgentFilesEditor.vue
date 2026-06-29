@@ -83,7 +83,6 @@
 
     <div class="agent-editor-shell" :class="'mobile-view-' + activeTab">
       <aside class="agent-map-pane" aria-label="Agent 映射表">
-        <div class="agent-pane-label">Agent 映射表</div>
         <div class="agent-map-list">
           <article
             v-for="(entry, index) in agentMap"
@@ -193,9 +192,13 @@
 
       <main class="agent-file-pane" aria-label="Agent 文件内容">
         <header class="agent-file-pane-header">
-          <div>
+          <div class="agent-file-title">
             <span class="agent-pane-label">Agent 文件内容</span>
-            <p>{{ editingFile || "从左侧选择一个 Agent 以编辑其关联文件。" }}</p>
+            <span class="agent-file-name">
+              <span class="material-symbols-outlined">description</span>
+              {{ editingFile || "未选择文件" }}
+            </span>
+            <UiBadge v-if="fileDirty" variant="warning">未保存</UiBadge>
           </div>
           <div v-if="editingFile" class="agent-file-actions">
             <UiButton
@@ -226,13 +229,6 @@
 
         <div class="agent-file-workspace">
           <div class="agent-file-editor">
-            <div class="agent-editor-controls">
-              <span class="editing-file-display">
-                <span class="material-symbols-outlined">description</span>
-                {{ editingFile || "未选择文件" }}
-                <span v-if="fileDirty" class="dirty-indicator">（未保存）</span>
-              </span>
-            </div>
             <UiTextarea
               ref="fileContentEditorRef"
               v-model="fileContent"
@@ -253,27 +249,41 @@
 
       <aside class="placeholder-sidebar" aria-label="常用占位符">
         <header class="placeholder-sidebar-header">
-          <span class="eyebrow">Quick Insert</span>
-          <h4>常用占位符</h4>
-        </header>
+          <div class="placeholder-source-tabs" role="tablist" aria-label="占位符类型">
+            <button
+              v-for="group in placeholderGroups"
+              :key="group.key"
+              type="button"
+              class="placeholder-source-tab"
+              :class="{ 'is-active': activePlaceholderSource === group.key }"
+              role="tab"
+              :aria-selected="activePlaceholderSource === group.key"
+              @click="activePlaceholderSource = group.key"
+            >
+              <span class="material-symbols-outlined">{{ group.icon }}</span>
+              <span>{{ group.shortTitle }}</span>
+              <span class="placeholder-count">{{ group.items.length }}</span>
+            </button>
+          </div>
 
-        <div class="placeholder-search">
-          <span class="material-symbols-outlined search-icon">search</span>
-          <UiInput
-            v-model="placeholderQuery"
-            type="text"
-            placeholder="搜索占位符…"
-          />
-          <UiIconButton
-            v-if="placeholderQuery"
-            class="search-clear"
-            label="清除搜索"
-            title="清除搜索"
-            @click="placeholderQuery = ''"
-          >
-            <span class="material-symbols-outlined">close</span>
-          </UiIconButton>
-        </div>
+          <div class="placeholder-search">
+            <span class="material-symbols-outlined search-icon">search</span>
+            <UiInput
+              v-model="placeholderQuery"
+              type="text"
+              placeholder="搜索占位符…"
+            />
+            <UiIconButton
+              v-if="placeholderQuery"
+              class="search-clear"
+              label="清除搜索"
+              title="清除搜索"
+              @click="placeholderQuery = ''"
+            >
+              <span class="material-symbols-outlined">close</span>
+            </UiIconButton>
+          </div>
+        </header>
 
         <div
           v-if="isLoadingCommonPlaceholders"
@@ -293,33 +303,18 @@
           {{ placeholderLoadError }}
         </div>
 
-        <template v-else>
+        <div v-else class="placeholder-scroll">
           <section
             v-for="group in filteredPlaceholderGroups"
             :key="group.key"
             class="placeholder-group"
           >
-            <button
-              type="button"
-              class="placeholder-group-title"
-              :aria-expanded="!collapsedPlaceholderGroups[group.key]"
-              @click="togglePlaceholderGroup(group.key)"
-            >
-              <span class="material-symbols-outlined">{{ group.icon }}</span>
-              <span>{{ group.title }}</span>
-              <span class="placeholder-count">{{ group.items.length }}</span>
-              <span class="material-symbols-outlined group-chevron">expand_more</span>
-            </button>
-
-            <div
-              v-show="!collapsedPlaceholderGroups[group.key]"
-              class="placeholder-chip-list"
-            >
+            <div class="placeholder-command-list">
               <button
                 v-for="item in group.items"
                 :key="`${group.key}-${item.token}`"
                 type="button"
-                class="placeholder-chip"
+                class="placeholder-command-item"
                 :title="item.description || item.token"
                 @click="insertPlaceholderAtCursor(item.token)"
               >
@@ -335,7 +330,7 @@
           >
             没有匹配的占位符。
           </div>
-        </template>
+        </div>
       </aside>
     </div>
 
@@ -396,6 +391,7 @@ interface QuickPlaceholderItem {
 interface QuickPlaceholderGroup {
   key: "toolbox" | "env";
   title: string;
+  shortTitle: string;
   icon: string;
   items: QuickPlaceholderItem[];
 }
@@ -438,13 +434,10 @@ const isDiarySyntaxEditorOpen = ref(false);
 const isLoadingCommonPlaceholders = ref(false);
 const placeholderLoadError = ref("");
 const placeholderQuery = ref("");
+const activePlaceholderSource = ref<QuickPlaceholderGroup["key"]>("toolbox");
 const toolboxPlaceholders = ref<QuickPlaceholderItem[]>([]);
 const envPlaceholders = ref<QuickPlaceholderItem[]>([]);
 const fileContentEditorRef = ref<InstanceType<typeof UiTextarea> | null>(null);
-const collapsedPlaceholderGroups = ref<Record<string, boolean>>({
-  toolbox: false,
-  env: false,
-});
 
 const agentFilesDatalistId = "agent-file-options";
 const AGENT_FILE_EXTENSION_PATTERN = /\.(txt|md)$/i;
@@ -642,12 +635,14 @@ const placeholderGroups = computed<QuickPlaceholderGroup[]>(() => [
   {
     key: "toolbox",
     title: "Toolbox 占位符",
+    shortTitle: "Toolbox",
     icon: "inventory_2",
     items: toolboxPlaceholders.value,
   },
   {
     key: "env",
     title: "Tar / Var / Sar 变量",
+    shortTitle: "Tar 变量",
     icon: "tune",
     items: envPlaceholders.value,
   },
@@ -657,19 +652,13 @@ const filteredPlaceholderGroups = computed<QuickPlaceholderGroup[]>(() => {
   const query = placeholderQuery.value.trim().toLowerCase();
 
   return placeholderGroups.value
+    .filter((group) => group.key === activePlaceholderSource.value)
     .map((group) => ({
       ...group,
       items: group.items.filter((item) => matchesPlaceholderQuery(item, query)),
     }))
     .filter((group) => group.items.length > 0);
 });
-
-function togglePlaceholderGroup(groupKey: string): void {
-  collapsedPlaceholderGroups.value = {
-    ...collapsedPlaceholderGroups.value,
-    [groupKey]: !collapsedPlaceholderGroups.value[groupKey],
-  };
-}
 
 async function loadCommonPlaceholders(): Promise<void> {
   isLoadingCommonPlaceholders.value = true;
@@ -1069,7 +1058,7 @@ onBeforeRouteLeave(async () => {
 
 <style scoped>
 .agent-files-page {
-  --agent-workspace-height: calc(var(--app-viewport-height, 100vh) - 236px);
+  --agent-workspace-height: calc(var(--app-viewport-height, 100vh) - 150px);
   --agent-workspace-min-height: 520px;
 }
 
@@ -1083,7 +1072,7 @@ onBeforeRouteLeave(async () => {
 
 .agent-editor-shell {
   display: grid;
-  grid-template-columns: minmax(292px, 340px) minmax(0, 1fr) minmax(240px, 284px);
+  grid-template-columns: minmax(292px, 340px) minmax(360px, 1fr) minmax(320px, 360px);
   gap: var(--space-4);
   min-height: var(--agent-workspace-min-height);
   height: max(var(--agent-workspace-height), var(--agent-workspace-min-height));
@@ -1125,31 +1114,44 @@ onBeforeRouteLeave(async () => {
   text-transform: uppercase;
 }
 
-.agent-map-pane > .agent-pane-label {
-  min-height: 65px;
-  align-items: flex-start;
-  padding-top: var(--space-4);
-}
-
 .agent-file-pane-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+  min-height: 58px;
   padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+}
+
+.agent-file-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .agent-file-pane-header .agent-pane-label {
   min-height: 0;
   padding: 0;
+  flex: 0 0 auto;
 }
 
-.agent-file-pane-header p {
-  margin: 4px 0 0;
+.agent-file-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
-  line-height: 1.45;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-file-name .material-symbols-outlined {
+  flex: 0 0 auto;
+  font-size: 16px !important;
 }
 
 .agent-file-actions {
@@ -1294,7 +1296,7 @@ onBeforeRouteLeave(async () => {
   display: flex;
   min-height: 0;
   flex: 1;
-  padding: var(--space-3);
+  padding: 0 var(--space-3) var(--space-3);
 }
 
 .agent-file-editor {
@@ -1303,36 +1305,6 @@ onBeforeRouteLeave(async () => {
   flex: 1;
   min-width: 0;
   min-height: 0;
-}
-
-.agent-editor-controls {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  min-height: 36px;
-  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
-}
-
-.editing-file-display {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-  font-weight: 500;
-}
-
-.editing-file-display .material-symbols-outlined {
-  font-size: var(--font-size-emphasis) !important;
-}
-
-.dirty-indicator {
-  color: var(--highlight-text);
-  font-size: var(--font-size-helper);
 }
 
 .file-content-editor {
@@ -1349,10 +1321,26 @@ onBeforeRouteLeave(async () => {
   height: 100%;
   max-height: none;
   min-height: 240px;
+  border-color: transparent;
+  background: transparent;
+  border-radius: 0;
   resize: none;
   font-family: "Consolas", "Monaco", monospace;
   font-size: var(--font-size-body);
   line-height: 1.6;
+}
+
+.file-content-editor :deep(.ui-textarea:hover:not(:disabled)),
+.file-content-editor.ui-textarea:hover:not(:disabled) {
+  border-color: transparent;
+  background: transparent;
+}
+
+.file-content-editor :deep(.ui-textarea:focus-visible),
+.file-content-editor.ui-textarea:focus-visible {
+  border-color: transparent;
+  background: transparent;
+  outline-offset: -2px;
 }
 
 .editor-actions {
@@ -1377,35 +1365,68 @@ onBeforeRouteLeave(async () => {
 
 .placeholder-sidebar-header {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: stretch;
   gap: var(--space-2);
-  min-height: 65px;
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border-color);
-  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  padding: var(--space-3);
 }
 
-.placeholder-sidebar-header h4 {
-  margin: 0;
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
-  line-height: 1.25;
+.placeholder-source-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 1.6%, transparent);
 }
 
-.placeholder-sidebar-header .eyebrow {
+.placeholder-source-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  white-space: nowrap;
+  font-size: var(--font-size-helper);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.placeholder-source-tab:hover {
+  background: var(--accent-bg);
+  color: var(--primary-text);
+}
+
+.placeholder-source-tab.is-active {
+  background: color-mix(in srgb, var(--button-bg) 12%, transparent);
+  color: var(--primary-text);
+}
+
+.placeholder-source-tab .material-symbols-outlined {
+  flex: 0 0 auto;
+  font-size: 16px !important;
+}
+
+.placeholder-source-tab .placeholder-count {
+  margin-left: 0;
+  background: color-mix(in srgb, var(--primary-text) 5%, transparent);
 }
 
 .placeholder-search {
   position: relative;
-  padding: var(--space-3);
-  border-bottom: 1px solid var(--border-color);
+  width: 100%;
 }
 
 .placeholder-search :deep(.ui-input) {
@@ -1416,7 +1437,7 @@ onBeforeRouteLeave(async () => {
 .placeholder-search .search-icon {
   position: absolute;
   top: 50%;
-  left: 22px;
+  left: 10px;
   transform: translateY(-50%);
   color: var(--secondary-text);
   font-size: 18px !important;
@@ -1426,7 +1447,7 @@ onBeforeRouteLeave(async () => {
 .placeholder-search .search-clear {
   position: absolute;
   top: 50%;
-  right: 18px;
+  right: 6px;
   transform: translateY(-50%);
 }
 
@@ -1451,8 +1472,35 @@ onBeforeRouteLeave(async () => {
   color: var(--primary-text);
 }
 
+.placeholder-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 2px var(--space-2);
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--secondary-text) 26%, transparent) transparent;
+}
+
+.placeholder-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.placeholder-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.placeholder-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--radius-full);
+  background-color: color-mix(in srgb, var(--secondary-text) 28%, transparent);
+  background-clip: padding-box;
+}
+
 .placeholder-group {
-  border-bottom: 1px solid var(--border-color);
+  flex: 0 0 auto;
+  padding: var(--space-2);
 }
 
 .placeholder-group:last-child {
@@ -1464,80 +1512,73 @@ onBeforeRouteLeave(async () => {
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  min-height: 36px;
-  padding: var(--space-2) var(--space-3);
-  border: none;
-  background: transparent;
-  color: var(--primary-text);
-  cursor: pointer;
-  text-align: left;
-}
-
-.placeholder-group-title:hover {
-  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  color: color-mix(in srgb, var(--secondary-text) 78%, transparent);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .placeholder-group-title .material-symbols-outlined {
-  color: var(--highlight-text);
-  font-size: 18px !important;
+  color: var(--secondary-text);
+  font-size: 15px !important;
 }
 
 .placeholder-count {
   margin-left: auto;
-  padding: 1px 8px;
+  padding: 0 6px;
   border-radius: var(--radius-full);
-  background: var(--button-bg);
-  color: var(--on-accent-text);
+  background: color-mix(in srgb, var(--primary-text) 4%, transparent);
+  color: var(--secondary-text);
   font-size: var(--font-size-caption);
-  font-weight: 700;
+  font-weight: 600;
 }
 
-.group-chevron {
-  transition: transform 0.2s ease;
-}
-
-.placeholder-group-title[aria-expanded="false"] .group-chevron {
-  transform: rotate(-90deg);
-}
-
-.placeholder-chip-list {
+.placeholder-command-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  max-height: 280px;
-  overflow-y: auto;
-  padding: 0 var(--space-3) var(--space-3);
+  gap: 6px;
 }
 
-.placeholder-chip {
+.placeholder-command-item {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 3px;
   width: 100%;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  min-height: 0;
+  padding: 7px 8px;
+  border: 0;
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--primary-text);
   cursor: pointer;
   text-align: left;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
 }
 
-.placeholder-chip:hover {
-  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+.placeholder-command-item:hover {
+  background: var(--accent-bg);
 }
 
-.placeholder-chip code {
+.placeholder-command-item code {
+  min-width: 0;
   color: var(--highlight-text);
   font-family: "Consolas", "Monaco", monospace;
   font-size: var(--font-size-helper);
-  word-break: break-all;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
-.placeholder-chip span {
+.placeholder-command-item span {
+  min-width: 0;
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
   line-height: 1.4;
+  white-space: normal;
 }
 
 /* .empty-state 已在全局 layout.css 中统一定义 */

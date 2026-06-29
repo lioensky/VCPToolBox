@@ -24,130 +24,60 @@
         >
           新建目录
         </UiButton>
+
+        <UiButton
+          variant="outline"
+          :disabled="isUploading"
+          @click="triggerFileSelect"
+        >
+          选择图片
+        </UiButton>
+
+        <UiButton
+          variant="outline"
+          :disabled="isUploading"
+          @click="triggerFolderSelect"
+        >
+          文件夹
+        </UiButton>
+
+        <UiButton
+          variant="outline"
+          :disabled="isUploading"
+          @click="triggerArchiveSelect"
+        >
+          压缩包
+        </UiButton>
       </UiPageActions>
     </Teleport>
-
-    <header class="gallery-topbar">
-      <div class="gallery-heading-panel">
-        <div class="gallery-heading-copy">
-          <span class="gallery-kicker">Image Workspace</span>
-          <div>
-            <h2>表情包画廊</h2>
-            <p class="description">
-              浏览并整理 `image` 目录中的表情包资源，支持检索、目录筛选、上传导入、分页浏览与大图预览。
-            </p>
-          </div>
-        </div>
-
-        <div class="gallery-toolbar">
-          <label class="search-field gallery-search-field">
-            <span class="material-symbols-outlined">search</span>
-            <UiInput
-              v-model.trim="searchInput"
-              type="search"
-              aria-label="搜索表情包"
-              placeholder="搜索文件名、路径或目录…"
-              :disabled="isLoading"
-              @keydown.enter.prevent="applySearch"
-            />
-          </label>
-
-          <UiButton
-            variant="primary"
-            :disabled="isLoading"
-            @click="applySearch"
-          >
-            搜索
-          </UiButton>
-
-          <UiButton
-            v-if="activeKeyword"
-            variant="outline"
-            :disabled="isLoading"
-            @click="clearSearch"
-          >
-            清空
-          </UiButton>
-
-          <label class="page-size-control">
-            <span>每页</span>
-            <UiSelect
-              v-model.number="pageSize"
-              :disabled="isLoading"
-              @change="handlePageSizeChange"
-            >
-              <option
-                v-for="size in PAGE_SIZE_OPTIONS"
-                :key="size"
-                :value="size"
-              >
-                {{ size }}
-              </option>
-            </UiSelect>
-          </label>
-        </div>
-
-        <div class="gallery-filter-summary">
-          <span class="filter-pill" :class="{ active: selectedCategory === '' }">
-            {{ selectedCategory ? `目录：${selectedCategory}` : "全部目录" }}
-          </span>
-          <span v-if="activeKeyword" class="filter-pill active">
-            关键词：{{ activeKeyword }}
-          </span>
-          <span class="filter-pill">{{ paginationSummary }}</span>
-        </div>
-      </div>
-
-      <aside class="gallery-summary-card" aria-live="polite">
-        <div class="gallery-summary-grid">
-          <span class="gallery-summary-item">
-            <strong>{{ matchedEmojiCount }}</strong>
-            <span>命中</span>
-          </span>
-          <span class="gallery-summary-item">
-            <strong>{{ categories.length }}</strong>
-            <span>目录</span>
-          </span>
-          <span class="gallery-summary-item">
-            <strong>{{ items.length }}</strong>
-            <span>当前页</span>
-          </span>
-        </div>
-        <p>{{ refreshStateText }}</p>
-      </aside>
-    </header>
 
     <div class="gallery-workspace">
       <aside class="operations-column">
         <section class="operations-console" aria-label="表情包操作台">
           <div class="operations-console__section">
-            <div class="quick-actions">
-              <UiButton
-                variant="outline"
-                size="sm"
-                :disabled="isLoading"
-                @click="refreshCurrentPage"
-              >
-                刷新
-              </UiButton>
+            <span class="operations-console__label">操作台</span>
 
-              <UiButton
-                variant="outline"
-                size="sm"
-                :disabled="isLoading || isUploading"
-                @click="createCategory"
+            <div class="gallery-search-field">
+              <span class="material-symbols-outlined search-icon">search</span>
+              <UiInput
+                v-model.trim="searchInput"
+                type="search"
+                aria-label="搜索表情包"
+                placeholder="搜索文件名、路径或目录…"
+                :disabled="isLoading"
+              />
+              <UiIconButton
+                v-if="searchInput"
+                class="search-clear"
+                label="清除搜索"
+                title="清除搜索"
+                :disabled="isLoading"
+                @click="clearSearch"
               >
-                新建目录
-              </UiButton>
-              <UiButton
-                variant="outline"
-                size="sm"
-                :disabled="isRebuildingList"
-                @click="rebuildGeneratedEmojiLists"
-              >
-                重建列表
-              </UiButton>
+                <span class="material-symbols-outlined">close</span>
+              </UiIconButton>
             </div>
+
           </div>
 
           <div class="operations-console__section">
@@ -173,38 +103,46 @@
       </aside>
 
       <section class="content-column">
-        <section class="upload-console">
-          <div class="upload-console__header">
-            <div class="upload-console__title">
-              <span class="upload-console__label">本地上传</span>
-              <h3>上传图片、文件夹或压缩包</h3>
-            </div>
-            <div class="upload-console__meta">
-              <p class="panel-hint">
-                支持图片文件、文件夹与压缩包上传。若目录名以“表情包”结尾，可同步生成 EmojiListGenerator 列表。
-              </p>
-              <p
-                v-if="uploadMode === 'files'"
-                class="upload-target-tip"
-              >
-                上传到：{{ effectiveUploadCategory }}
-              </p>
-              <p
-                v-else-if="uploadMode === 'folder'"
-                class="upload-target-tip"
-              >
-                保留文件夹原始目录结构
-              </p>
-              <p
-                v-else-if="uploadMode === 'archive'"
-                class="upload-target-tip"
-              >
-                解压后保留内部结构
-              </p>
-            </div>
-          </div>
+        <input
+          ref="fileInputRef"
+          class="upload-file-input"
+          type="file"
+          :accept="IMAGE_UPLOAD_ACCEPT"
+          multiple
+          @change="handleFileSelected"
+        />
 
-          <div class="upload-console__body">
+        <input
+          ref="folderInputRef"
+          class="upload-file-input"
+          type="file"
+          :accept="IMAGE_UPLOAD_ACCEPT"
+          webkitdirectory
+          directory
+          multiple
+          @change="handleFolderSelected"
+        />
+
+        <input
+          ref="archiveInputRef"
+          class="upload-file-input"
+          type="file"
+          :accept="ARCHIVE_UPLOAD_ACCEPT"
+          @change="handleArchiveSelected"
+        />
+
+        <section
+          v-if="selectedFiles.length > 0 || lastRejectedItems.length > 0"
+          class="upload-queue-panel"
+        >
+          <div v-if="selectedFiles.length > 0" class="upload-queue">
+            <div class="upload-summary">
+              <span>模式：{{ selectedUploadModeLabel }}</span>
+              <span>文件：{{ selectedFiles.length }}</span>
+              <span>总大小：{{ formatFileSize(selectedUploadTotalSize) }}</span>
+              <span v-if="uploadMode === 'files'">上传到：{{ effectiveUploadCategory }}</span>
+            </div>
+
             <AppCheckbox
               v-model="uploadSyncList"
               class="upload-sync-option"
@@ -212,68 +150,6 @@
             >
               上传后同步重建 generated_lists
             </AppCheckbox>
-
-            <div class="upload-entry-actions">
-              <UiButton
-                variant="outline"
-                :disabled="isUploading"
-                @click="triggerFileSelect"
-              >
-                选择图片文件
-              </UiButton>
-
-              <UiButton
-                variant="outline"
-                :disabled="isUploading"
-                @click="triggerFolderSelect"
-              >
-                选择文件夹
-              </UiButton>
-
-              <UiButton
-                variant="outline"
-                :disabled="isUploading"
-                @click="triggerArchiveSelect"
-              >
-                选择压缩包
-              </UiButton>
-            </div>
-          </div>
-
-          <input
-            ref="fileInputRef"
-            class="upload-file-input"
-            type="file"
-            :accept="IMAGE_UPLOAD_ACCEPT"
-            multiple
-            @change="handleFileSelected"
-          />
-
-          <input
-            ref="folderInputRef"
-            class="upload-file-input"
-            type="file"
-            :accept="IMAGE_UPLOAD_ACCEPT"
-            webkitdirectory
-            directory
-            multiple
-            @change="handleFolderSelected"
-          />
-
-          <input
-            ref="archiveInputRef"
-            class="upload-file-input"
-            type="file"
-            :accept="ARCHIVE_UPLOAD_ACCEPT"
-            @change="handleArchiveSelected"
-          />
-
-          <div v-if="selectedFiles.length > 0" class="upload-queue">
-            <div class="upload-summary">
-              <span>模式：{{ selectedUploadModeLabel }}</span>
-              <span>文件：{{ selectedFiles.length }}</span>
-              <span>总大小：{{ formatFileSize(selectedUploadTotalSize) }}</span>
-            </div>
 
             <ul class="upload-file-list">
               <li
@@ -307,18 +183,20 @@
             <div class="upload-actions">
               <UiButton
                 variant="outline"
+                size="sm"
                 :disabled="isUploading || selectedFiles.length === 0"
                 @click="clearSelectedFiles"
               >
-                清空待上传
+                清空
               </UiButton>
 
               <UiButton
                 variant="primary"
+                size="sm"
                 :disabled="isUploading || selectedFiles.length === 0"
                 @click="uploadSelectedFiles"
               >
-                {{ isUploading ? "上传中…" : `开始上传（${selectedFiles.length}）` }}
+                {{ isUploading ? "上传中…" : `上传（${selectedFiles.length}）` }}
               </UiButton>
             </div>
           </div>
@@ -330,7 +208,7 @@
               @click="showRejectedList = !showRejectedList"
             >
               <span>
-                最近一次校验有 {{ lastRejectedItems.length }} 个文件被过滤
+                {{ lastRejectedItems.length }} 个文件被过滤
               </span>
               <span>{{ showRejectedList ? "收起" : "展开" }}</span>
             </button>
@@ -351,10 +229,23 @@
 
         <section class="overview-card" aria-live="polite">
           <div class="content-header">
-            <h3>
-              {{ selectedCategory ? `${selectedCategory} · 表情包` : "全部目录 · 表情包" }}
-            </h3>
-            <p>{{ paginationSummary }}</p>
+            <div>
+              <h3>
+                {{ selectedCategory ? `${selectedCategory} · 表情包` : "全部目录 · 表情包" }}
+              </h3>
+              <p>{{ refreshStateText }}</p>
+            </div>
+
+            <span class="pagination-summary">{{ paginationSummary }}</span>
+          </div>
+
+          <div class="gallery-filter-summary">
+            <span class="filter-pill" :class="{ active: selectedCategory === '' }">
+              {{ selectedCategory ? `目录：${selectedCategory}` : "全部目录" }}
+            </span>
+            <span v-if="activeKeyword" class="filter-pill active">
+              关键词：{{ activeKeyword }}
+            </span>
           </div>
 
           <section class="stats-strip">
@@ -399,69 +290,89 @@
           </div>
 
           <section class="emoji-grid" aria-label="表情包列表">
-          <article
-            v-for="(item, index) in items"
-            :key="item.relativePath"
-            class="emoji-card"
-            v-memo="[item.relativePath, deletingPaths.has(item.relativePath)]"
-            :style="{ '--stagger-delay': `${Math.min(index, 24) * 22}ms` }"
-          >
-            <button
-              type="button"
-              class="preview-shell"
-              :aria-label="`预览 ${item.name}`"
-              @click="openPreview(item)"
+            <article
+              v-for="(item, index) in items"
+              :key="item.relativePath"
+              class="emoji-card"
+              v-memo="[item.relativePath, deletingPaths.has(item.relativePath)]"
+              :style="{ '--stagger-delay': `${Math.min(index, 24) * 22}ms` }"
             >
-              <img
-                v-lazy="item.thumbnailUrl"
-                :alt="item.name"
-                decoding="async"
-                loading="lazy"
-              />
-            </button>
+              <details class="emoji-card-menu">
+                <summary aria-label="表情包操作">
+                  <span class="material-symbols-outlined">more_horiz</span>
+                </summary>
 
-            <div class="emoji-meta">
-              <div class="emoji-title-row">
-                <h3 :title="item.name">{{ item.name }}</h3>
-              <UiBadge variant="outline" class="format-badge">{{ item.extension.toUpperCase() }}</UiBadge>
+                <div class="emoji-card-menu__content">
+                  <button
+                    type="button"
+                    @click="copyRelativePath(item.relativePath)"
+                  >
+                    复制路径
+                  </button>
+
+                  <a
+                    :href="item.previewUrl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    新窗口打开
+                  </a>
+
+                  <button
+                    type="button"
+                    class="danger"
+                    :disabled="deletingPaths.has(item.relativePath)"
+                    @click="deleteEmojiItem(item)"
+                  >
+                    {{ deletingPaths.has(item.relativePath) ? "删除中…" : "删除" }}
+                  </button>
+                </div>
+              </details>
+
+              <button
+                type="button"
+                class="preview-shell"
+                :aria-label="`预览 ${item.name}`"
+                @click="openPreview(item)"
+              >
+                <img
+                  v-lazy="item.thumbnailUrl"
+                  :alt="item.name"
+                  decoding="async"
+                  loading="lazy"
+                />
+              </button>
+
+              <div class="emoji-meta">
+                <p class="emoji-path" :title="item.relativePath">{{ item.relativePath }}</p>
               </div>
-
-              <p class="emoji-category">{{ item.category }}</p>
-              <p class="emoji-path" :title="item.relativePath">{{ item.relativePath }}</p>
-            </div>
-
-            <div class="emoji-actions">
-              <UiButton
-                variant="outline"
-                size="sm"
-                @click="copyRelativePath(item.relativePath)"
-              >
-                复制路径
-              </UiButton>
-
-              <a
-                class="emoji-link-button"
-                :href="item.previewUrl"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                新窗口
-              </a>
-
-              <UiButton
-                variant="danger"
-                size="sm"
-                :disabled="deletingPaths.has(item.relativePath)"
-                @click="deleteEmojiItem(item)"
-              >
-                {{ deletingPaths.has(item.relativePath) ? "删除中…" : "删除" }}
-              </UiButton>
-            </div>
-          </article>
+            </article>
           </section>
         </section>
 
         <section class="pagination-controls">
+          <div class="pagination-size-control">
+            <span>共 {{ matchedEmojiCount }} 项</span>
+
+            <label class="page-size-control">
+              <span>每页</span>
+              <UiSelect
+                v-model.number="pageSize"
+                :disabled="isLoading"
+                @change="handlePageSizeChange"
+              >
+                <option
+                  v-for="size in PAGE_SIZE_OPTIONS"
+                  :key="size"
+                  :value="size"
+                >
+                  {{ size }}
+                </option>
+              </UiSelect>
+            </label>
+          </div>
+
+          <div class="pagination-nav">
           <UiButton
             variant="outline"
             :disabled="isLoading || currentPage <= 1"
@@ -479,6 +390,7 @@
           >
             下一页
           </UiButton>
+          </div>
         </section>
       </section>
     </div>
@@ -550,8 +462,8 @@ import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter, type LocationQueryRaw } from "vue-router";
 import BaseModal from "@/components/ui/BaseModal.vue";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
-import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
@@ -642,6 +554,7 @@ const lastRejectedItems = ref<Array<{ fileName: string; reason: string }>>([]);
 const showRejectedList = ref(false);
 
 let currentLoadController: AbortController | null = null;
+let searchSyncTimer: ReturnType<typeof setTimeout> | null = null;
 
 const totalEmojiCount = computed(() =>
   categories.value.reduce((sum, category) => sum + category.totalCount, 0)
@@ -893,15 +806,6 @@ async function loadGallery(
   }
 }
 
-function applySearch(): void {
-  const nextKeyword = searchInput.value.trim();
-  if (nextKeyword === activeKeyword.value) {
-    return;
-  }
-  activeKeyword.value = nextKeyword;
-  void loadGallery(1);
-}
-
 function clearSearch(): void {
   searchInput.value = "";
   if (activeKeyword.value === "") {
@@ -912,10 +816,21 @@ function clearSearch(): void {
 }
 
 watch(searchInput, (nextValue) => {
-  if (nextValue.trim() === "" && activeKeyword.value !== "") {
-    activeKeyword.value = "";
-    void loadGallery(1);
+  if (searchSyncTimer) {
+    clearTimeout(searchSyncTimer);
+    searchSyncTimer = null;
   }
+
+  const nextKeyword = nextValue.trim();
+  if (nextKeyword === activeKeyword.value) {
+    return;
+  }
+
+  searchSyncTimer = setTimeout(() => {
+    activeKeyword.value = nextKeyword;
+    void loadGallery(1);
+    searchSyncTimer = null;
+  }, 260);
 });
 
 watch(
@@ -1515,6 +1430,11 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (searchSyncTimer) {
+    clearTimeout(searchSyncTimer);
+    searchSyncTimer = null;
+  }
+
   if (currentLoadController) {
     currentLoadController.abort();
     currentLoadController = null;
@@ -1527,97 +1447,6 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-}
-
-.gallery-topbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
-  gap: var(--space-4);
-  align-items: stretch;
-}
-
-.gallery-heading-panel,
-.gallery-summary-card {
-  border: 1px solid color-mix(in srgb, var(--border-color) 96%, transparent);
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
-}
-
-.gallery-heading-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-}
-
-.gallery-heading-copy {
-  display: grid;
-  gap: var(--space-1);
-}
-
-.gallery-kicker {
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.gallery-heading-copy h2 {
-  margin: 0;
-  color: var(--primary-text);
-  font-size: 1rem;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
-.gallery-toolbar,
-.gallery-filter-summary {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.gallery-search-field {
-  flex: 1 1 280px;
-  max-width: 520px;
-}
-
-.gallery-summary-card {
-  display: grid;
-  align-content: space-between;
-  gap: var(--space-3);
-  padding: 14px 16px;
-}
-
-.gallery-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-
-.gallery-summary-item {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.gallery-summary-item strong {
-  color: var(--primary-text);
-  font-size: var(--font-size-emphasis);
-  line-height: 1.1;
-}
-
-.gallery-summary-item span,
-.gallery-summary-card p {
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-}
-
-.gallery-summary-card p {
-  margin: 0;
-  line-height: 1.45;
 }
 
 .filter-pill {
@@ -1638,54 +1467,6 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
 }
 
-.description {
-  margin: 0;
-  color: var(--secondary-text);
-  white-space: normal;
-  font-size: var(--font-size-helper);
-  line-height: 1.55;
-  max-width: 72ch;
-}
-
-.upload-console {
-  display: grid;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--border-color) 90%, transparent);
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--primary-text) 1.6%, transparent);
-}
-
-.upload-console__header {
-  display: grid;
-  grid-template-columns: minmax(170px, 0.34fr) minmax(0, 1fr);
-  gap: var(--space-3);
-  align-items: start;
-  padding-bottom: var(--space-3);
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
-}
-
-.upload-console__title,
-.upload-console__meta {
-  display: grid;
-  gap: var(--space-xs);
-}
-
-.upload-console__header h3 {
-  margin: 0;
-  font-size: var(--font-size-emphasis);
-  line-height: 1.4;
-}
-
-.upload-console__body {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.upload-console__label,
 .operations-console__label {
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
@@ -1696,7 +1477,7 @@ onUnmounted(() => {
 
 .gallery-workspace {
   display: grid;
-  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  grid-template-columns: minmax(230px, 270px) minmax(0, 1fr);
   gap: var(--space-4);
   align-items: start;
 }
@@ -1713,7 +1494,7 @@ onUnmounted(() => {
 .operations-console {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
   min-height: 0;
   height: 100%;
 }
@@ -1737,7 +1518,7 @@ onUnmounted(() => {
   gap: var(--space-2);
 }
 
-.operations-console__section + .operations-console__section {
+.operations-console__section:last-child {
   min-height: 0;
   flex: 1;
   overflow: hidden;
@@ -1751,57 +1532,57 @@ onUnmounted(() => {
 .page-size-control {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-sm);
   color: var(--secondary-text);
-}
-
-.panel-hint {
-  margin: 0;
-  color: var(--secondary-text);
   font-size: var(--font-size-helper);
-  line-height: 1.55;
 }
 
-.quick-actions,
-.upload-entry-actions,
+.page-size-control :deep(.ui-select) {
+  width: 88px;
+}
+
 .upload-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-sm);
 }
 
-.search-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-}
-
-.search-row > button {
-  white-space: nowrap;
-}
-
-.search-field {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-sm);
+.upload-actions :deep(.ui-button) {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-.search-field .material-symbols-outlined {
+.gallery-search-field {
+  position: relative;
+  width: 100%;
+}
+
+.gallery-search-field :deep(.ui-input) {
+  width: 100%;
+  padding-left: 34px;
+  padding-right: 32px;
+}
+
+.gallery-search-field .search-icon {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  transform: translateY(-50%);
   color: var(--secondary-text);
-  font-size: 1.2rem;
+  font-size: 18px !important;
+  pointer-events: none;
 }
 
-.search-field :deep(.ui-input) {
-  min-width: 0;
+.gallery-search-field .search-clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
 }
 
-.upload-target-tip {
-  margin: 0;
-  color: var(--primary-text);
-  font-size: var(--font-size-helper);
-  font-weight: 500;
+.gallery-search-field .search-clear .material-symbols-outlined {
+  font-size: 16px !important;
 }
 
 .upload-sync-option {
@@ -1818,11 +1599,18 @@ onUnmounted(() => {
   display: none;
 }
 
+.upload-queue-panel {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 1.4%, transparent);
+}
+
 .upload-queue {
   display: grid;
   gap: var(--space-2);
-  padding-top: var(--space-2);
-  border-top: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
 }
 
 .upload-summary {
@@ -1890,6 +1678,10 @@ onUnmounted(() => {
   font-size: var(--font-size-caption);
 }
 
+.upload-file-remove {
+  justify-self: end;
+}
+
 .upload-file-remove:hover {
   color: var(--danger-color);
 }
@@ -1903,7 +1695,7 @@ onUnmounted(() => {
 .overview-card {
   display: grid;
   gap: var(--space-2);
-  padding: var(--space-3);
+  padding: 10px var(--space-3);
   border: 1px solid color-mix(in srgb, var(--border-color) 90%, transparent);
   border-radius: var(--radius-lg);
   background: transparent;
@@ -1919,13 +1711,15 @@ onUnmounted(() => {
 
 .content-header h3 {
   margin: 0;
-  font-size: var(--font-size-title);
+  font-size: var(--font-size-emphasis);
+  line-height: 1.35;
 }
 
 .content-header p {
-  margin: 0;
+  margin: 2px 0 0;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
+  line-height: 1.4;
 }
 
 .stats-strip {
@@ -1988,9 +1782,10 @@ onUnmounted(() => {
 }
 
 .emoji-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: 0;
   border-radius: var(--radius-lg);
   border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
   background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
@@ -2011,6 +1806,91 @@ onUnmounted(() => {
 
 .emoji-card--skeleton {
   overflow: hidden;
+}
+
+.emoji-card-menu {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+}
+
+.emoji-card-menu summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--primary-bg) 72%, transparent);
+  color: var(--primary-text);
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  list-style: none;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.emoji-card-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.emoji-card-menu summary:hover,
+.emoji-card-menu[open] summary {
+  border-color: color-mix(in srgb, var(--highlight-text) 30%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-bg) 82%, transparent);
+}
+
+.emoji-card-menu summary .material-symbols-outlined {
+  font-size: 18px !important;
+}
+
+.emoji-card-menu__content {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  display: grid;
+  gap: 2px;
+  min-width: 128px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 94%, transparent);
+  box-shadow: var(--overlay-panel-shadow);
+}
+
+.emoji-card-menu__content button,
+.emoji-card-menu__content a {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--primary-text);
+  font: inherit;
+  font-size: var(--font-size-helper);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.emoji-card-menu__content button:hover,
+.emoji-card-menu__content a:hover {
+  background: var(--accent-bg);
+}
+
+.emoji-card-menu__content button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.emoji-card-menu__content .danger {
+  color: var(--danger-color);
 }
 
 .preview-shell {
@@ -2080,84 +1960,48 @@ onUnmounted(() => {
 .emoji-meta {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 0 var(--space-sm);
-}
-
-.emoji-title-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-sm);
-}
-
-.emoji-title-row h3 {
-  margin: 0;
-  font-size: var(--font-size-body);
-  line-height: 1.45;
-  word-break: break-word;
-}
-
-.format-badge {
-  flex-shrink: 0;
-  font-size: var(--font-size-caption);
-}
-
-.emoji-category {
-  margin: 0;
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
+  padding: 8px 10px 10px;
 }
 
 .emoji-path {
   margin: 0;
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
-  word-break: break-all;
-}
-
-.emoji-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-xs);
-  padding: 0 var(--space-sm) var(--space-sm);
-}
-
-.emoji-link-button {
-  height: 28px;
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--primary-text);
-  font-size: var(--font-size-helper);
-  font-weight: 600;
-  line-height: 1;
-  transition:
-    color var(--transition-fast),
-    background-color var(--transition-fast),
-    border-color var(--transition-fast);
-}
-
-.emoji-link-button:hover {
-  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
-  color: var(--primary-text);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pagination-controls {
   display: flex;
-  justify-content: center;
+  justify-content: space-between;
   align-items: center;
-  gap: var(--space-md);
+  gap: var(--space-3);
   flex-wrap: wrap;
+  min-height: 40px;
+  padding: var(--space-2) 0;
 }
 
 .pagination-summary {
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.pagination-size-control,
+.pagination-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pagination-size-control {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.pagination-size-control > span {
+  white-space: nowrap;
 }
 
 .preview-modal {
@@ -2325,17 +2169,12 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1200px) {
-  .gallery-topbar {
-    grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
-  }
-
   .gallery-workspace {
     grid-template-columns: minmax(210px, 240px) minmax(0, 1fr);
   }
 }
 
 @media (max-width: 1024px) {
-  .gallery-topbar,
   .gallery-workspace {
     grid-template-columns: 1fr;
   }
@@ -2348,19 +2187,7 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
-  .gallery-heading-panel,
-  .gallery-summary-card {
-    padding: var(--space-3);
-  }
-
-  .gallery-summary-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .gallery-toolbar,
   .gallery-filter-summary,
-  .quick-actions,
-  .upload-entry-actions,
   .upload-actions {
     display: grid;
     grid-template-columns: 1fr;
@@ -2369,10 +2196,6 @@ onUnmounted(() => {
   .gallery-search-field {
     min-width: 0;
     max-width: none;
-  }
-
-  .upload-console__header {
-    grid-template-columns: 1fr;
   }
 
   .upload-file-item {
@@ -2396,10 +2219,6 @@ onUnmounted(() => {
 
   .emoji-grid {
     grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  }
-
-  .emoji-actions {
-    grid-template-columns: 1fr;
   }
 
   .preview-nav--prev {
