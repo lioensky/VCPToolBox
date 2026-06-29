@@ -1,18 +1,6 @@
 <template>
   <div class="left-panel">
     <UiCard class="tools-container" variant="default">
-      <div class="tools-header">
-        <div>
-          <h2 class="section-header tle-section-header">可用工具</h2>
-          <p class="tools-subtitle">
-            显示 {{ filteredTools.length }} / {{ allToolsCount }} 个工具
-          </p>
-        </div>
-        <UiBadge v-if="selectedTools.size > 0" variant="info">
-          已选 {{ selectedTools.size }}
-        </UiBadge>
-      </div>
-
       <div class="filter-section">
         <div class="search-row">
           <UiInput
@@ -36,6 +24,12 @@
           >
             清除
           </UiButton>
+          <UiBadge variant="outline" class="tool-count-badge">
+            {{ filteredTools.length }} / {{ allToolsCount }}
+          </UiBadge>
+          <UiBadge v-if="selectedTools.size > 0" variant="info" class="tool-count-badge">
+            已选 {{ selectedTools.size }}
+          </UiBadge>
         </div>
 
         <UiBadge
@@ -329,25 +323,10 @@ onBeforeUnmount(() => {
   gap: 0;
 }
 
-.tools-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-3) var(--space-2);
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
-}
-
-.tools-subtitle {
-  margin: 3px 0 0;
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-}
-
 .filter-section {
   display: grid;
   gap: var(--space-2);
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-3) var(--space-2);
   border-bottom: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
 }
@@ -367,6 +346,10 @@ onBeforeUnmount(() => {
 }
 
 .search-clear-btn {
+  flex-shrink: 0;
+}
+
+.tool-count-badge {
   flex-shrink: 0;
 }
 

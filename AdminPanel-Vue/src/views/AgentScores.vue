@@ -14,14 +14,14 @@
       </UiPageActions>
     </Teleport>
 
-    <UiCard
-      class="agent-scores-card"
-      variant="default"
-      size="sm"
-      title="Agent 积分排行"
-      description="查看各 Agent 的累计积分、最近动态和更新时间。"
-      divided
-    >
+    <div class="agent-scores-shell">
+      <header class="scores-heading">
+        <div>
+          <h2>Agent 积分排行</h2>
+          <p>查看各 Agent 的累计积分、最近动态和更新时间。</p>
+        </div>
+      </header>
+
       <UiToolbar density="compact" class="scores-toolbar">
         <div class="scores-summary">
           <UiBadge variant="outline">
@@ -77,24 +77,22 @@
         </tbody>
       </UiTableFrame>
 
-      <template v-if="totalPages > 1" #footer>
-        <div class="pagination-controls">
-          <UiButton variant="outline" size="sm" :disabled="!hasPrev" @click="prevPage">
-            <template #leading>
-              <span class="material-symbols-outlined">chevron_left</span>
-            </template>
-            上一页
-          </UiButton>
-          <span class="pagination-info">第 {{ currentPage }} / {{ totalPages }} 页</span>
-          <UiButton variant="outline" size="sm" :disabled="!hasNext" @click="nextPage">
-            下一页
-            <template #trailing>
-              <span class="material-symbols-outlined">chevron_right</span>
-            </template>
-          </UiButton>
-        </div>
-      </template>
-    </UiCard>
+      <div v-if="totalPages > 1" class="pagination-controls">
+        <UiButton variant="outline" size="sm" :disabled="!hasPrev" @click="prevPage">
+          <template #leading>
+            <span class="material-symbols-outlined">chevron_left</span>
+          </template>
+          上一页
+        </UiButton>
+        <span class="pagination-info">第 {{ currentPage }} / {{ totalPages }} 页</span>
+        <UiButton variant="outline" size="sm" :disabled="!hasNext" @click="nextPage">
+          下一页
+          <template #trailing>
+            <span class="material-symbols-outlined">chevron_right</span>
+          </template>
+        </UiButton>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -105,7 +103,6 @@ import { showMessage } from '@/utils'
 import { usePagination } from '@/composables/usePagination'
 import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
-import UiCard from '@/components/ui/UiCard.vue'
 import UiEmptyState from '@/components/ui/UiEmptyState.vue'
 import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiTableFrame from '@/components/ui/UiTableFrame.vue'
@@ -188,8 +185,31 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.agent-scores-card {
+.agent-scores-shell {
+  display: grid;
   gap: var(--space-3);
+}
+
+.scores-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.scores-heading h2 {
+  margin: 0;
+  color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.scores-heading p {
+  margin: var(--space-1) 0 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.5;
 }
 
 .scores-toolbar {

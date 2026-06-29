@@ -1,131 +1,84 @@
 <template>
-  <section class="config-section active-section">
-    <p class="description">
-      管理 RAGDiaryPlugin 使用的语义组。语义组会通过关键词激活，将相关向量注入查询，以提升检索准确性。
-    </p>
+  <section class="config-section active-section semantic-groups-page">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <p class="semantic-page-summary">
+          管理 RAGDiaryPlugin 语义组，通过关键词激活相关向量以提升检索准确性。
+        </p>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
+        <UiBadge v-else :variant="isDirty ? 'warning' : 'success'">
+          {{ isDirty ? "未保存" : "已同步" }}
+        </UiBadge>
+        <UiButton type="button" variant="outline" size="lg" @click="addSemanticGroup">
+          <span class="material-symbols-outlined">add</span>
+          新增语义组
+        </UiButton>
+        <UiButton type="button" size="lg" :disabled="!isDirty" @click="saveSemanticGroups">
+          <span class="material-symbols-outlined">save</span>
+          保存更改
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
 
-    <div v-if="statusMessage" class="semantic-groups-controls">
-      <UiBadge :variant="statusBadgeVariant">{{ statusMessage }}</UiBadge>
-    </div>
+    <div id="semantic-groups-container" class="semantic-groups-layout">
+      <aside class="semantic-groups-sidebar" aria-label="语义组操作台">
+        <span class="group-console__label">操作台</span>
+        <div class="semantic-groups-sidebar-header">
+          <h3>语义组</h3>
+          <UiBadge variant="outline">{{ filteredGroupEntries.length }}/{{ semanticGroups.length }}</UiBadge>
+        </div>
 
-    <div id="semantic-groups-container" class="semantic-groups-layout" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
-      <UiCard
-        class="semantic-groups-sidebar semantic-groups-surface"
-        :class="{ 'is-collapsed': sidebarCollapsed }"
-        :aria-label="sidebarCollapsed ? '语义组操作台（已折叠）' : '语义组操作台'"
-        size="sm"
-        variant="subtle"
-      >
-        <template v-if="sidebarCollapsed">
-          <div class="console-rail">
-            <UiIconButton
-              class="console-rail-toggle"
-              label="展开操作台"
-              title="展开操作台"
-              @click="toggleSidebar"
-            >
-              <span class="material-symbols-outlined">left_panel_open</span>
-            </UiIconButton>
-            <div class="console-rail-divider"></div>
-            <UiIconButton
-              class="console-rail-icon"
-              label="添加新组"
-              title="添加新组"
-              @click="addSemanticGroup"
-            >
-              <span class="material-symbols-outlined">add</span>
-            </UiIconButton>
-            <UiIconButton
-              v-for="entry in filteredGroupEntries.slice(0, 8)"
-              :key="entry.group.localId"
-              class="console-rail-icon"
-              :active="entry.index === selectedGroupIndex"
-              :label="entry.group.name || `未命名组 #${entry.index + 1}`"
-              :title="entry.group.name || `未命名组 #${entry.index + 1}`"
+        <div class="group-search-box">
+          <span class="material-symbols-outlined">search</span>
+          <UiInput
+            id="semantic-group-search-input"
+            v-model="groupQuery"
+            type="search"
+            size="sm"
+            placeholder="筛选名称或关键词..."
+          />
+          <UiIconButton
+            v-if="groupQuery"
+            label="清空筛选"
+            title="清空筛选"
+            @click="clearGroupQuery"
+          >
+            <span class="material-symbols-outlined">close</span>
+          </UiIconButton>
+        </div>
+
+        <ul class="semantic-groups-list">
+          <li
+            v-for="entry in filteredGroupEntries"
+            :key="entry.group.localId"
+            class="group-list-item"
+          >
+            <button
+              type="button"
+              :class="['group-row', { 'is-active': entry.index === selectedGroupIndex }]"
               @click="selectGroup(entry.index)"
             >
               <span class="material-symbols-outlined">category</span>
-            </UiIconButton>
-          </div>
-        </template>
-        <template v-else>
-          <div class="group-console__section">
-            <span class="group-console__label">操作台</span>
-            <div class="semantic-groups-sidebar-header">
-              <h3>语义组列表</h3>
-              <div class="sidebar-header-meta">
-                <UiBadge variant="outline">{{ filteredGroupEntries.length }}/{{ semanticGroups.length }} 组</UiBadge>
-                <UiIconButton
-                  class="console-rail-toggle"
-                  label="折叠操作台"
-                  title="折叠操作台"
-                  @click="toggleSidebar"
-                >
-                  <span class="material-symbols-outlined">left_panel_close</span>
-                </UiIconButton>
-              </div>
-            </div>
-          </div>
-
-          <div class="group-console__section">
-            <UiField label="搜索筛选" for-id="semantic-group-search-input" size="sm">
-              <div class="group-search-box">
-                <UiInput
-                  id="semantic-group-search-input"
-                  v-model="groupQuery"
-                  type="search"
-                  size="sm"
-                  placeholder="按语义组名称或关键词筛选..."
-                />
-                <UiButton
-                  v-if="groupQuery"
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  aria-label="清空筛选"
-                  @click="clearGroupQuery"
-                >
-                  清空
-                </UiButton>
-              </div>
-            </UiField>
-          </div>
-
-          <div class="group-console__section group-console__section--actions">
-            <UiButton type="button" size="sm" block @click="addSemanticGroup">
-              <span class="material-symbols-outlined">add</span>
-              添加新组
-            </UiButton>
-          </div>
-
-          <ul class="semantic-groups-list">
-            <li
-              v-for="entry in filteredGroupEntries"
-              :key="entry.group.localId"
-              class="group-list-item"
-            >
-              <button
-                type="button"
-                :class="['group-row', { 'is-active': entry.index === selectedGroupIndex }]"
-                @click="selectGroup(entry.index)"
-              >
+              <span class="group-row-copy">
                 <span class="group-row-name">{{ entry.group.name || `未命名组 #${entry.index + 1}` }}</span>
-                <span class="group-row-meta">{{ getKeywordCount(entry.group.keywords) }} 个关键词</span>
-              </button>
-            </li>
-            <li v-if="semanticGroups.length === 0">
-              <UiEmptyState title="暂无语义组" />
-            </li>
-            <li v-else-if="filteredGroupEntries.length === 0">
-              <UiEmptyState title="未找到匹配项" :description="`未找到匹配“${groupQuery}”的语义组`" />
-            </li>
-          </ul>
-        </template>
-      </UiCard>
+                <span class="group-row-meta">
+                  {{ getKeywordCount(entry.group.keywords) }} 个关键词 · 权重 {{ entry.group.weight }}
+                </span>
+              </span>
+            </button>
+          </li>
+          <li v-if="semanticGroups.length === 0">
+            <UiEmptyState title="暂无语义组" />
+          </li>
+          <li v-else-if="filteredGroupEntries.length === 0">
+            <UiEmptyState title="未找到匹配项" :description="`未找到匹配“${groupQuery}”的语义组`" />
+          </li>
+        </ul>
+      </aside>
 
       <UiSettingsCard
         v-if="selectedGroup"
-        class="semantic-group-detail semantic-groups-surface"
+        class="semantic-group-detail"
         title="编辑语义组"
         description="维护语义组名称、权重与关键词。"
         variant="subtle"
@@ -202,7 +155,7 @@
         </template>
       </UiSettingsCard>
 
-      <UiCard v-else class="semantic-group-detail-empty semantic-groups-surface" variant="subtle">
+      <UiCard v-else class="semantic-group-detail-empty" variant="subtle">
         <UiEmptyState title="请选择语义组" description="请选择左侧语义组进行编辑，或先添加新组。" />
       </UiCard>
     </div>
@@ -221,10 +174,10 @@ import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import UiField from "@/components/ui/UiField.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSettingsCard from "@/components/ui/UiSettingsCard.vue";
 import UiSettingsForm from "@/components/ui/UiSettingsForm.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
-import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
@@ -242,10 +195,6 @@ const statusMessage = ref("");
 const statusType = ref<"info" | "success" | "error">("info");
 const groupQuery = ref("");
 const isDirty = ref(false);
-
-const { collapsed: sidebarCollapsed, toggle: toggleSidebar } = useConsoleCollapse(
-  "semantic-groups"
-);
 
 const statusBadgeVariant = computed(() => {
   if (statusType.value === "success") return "success";
@@ -492,94 +441,42 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.semantic-groups-controls {
-  margin-bottom: var(--space-4);
+.semantic-groups-page {
+  --semantic-workspace-height: calc(var(--app-viewport-height, 100vh) - 150px);
+  --semantic-workspace-min-height: 520px;
 }
 
-.semantic-groups-surface {
-  --semantic-groups-surface-border: color-mix(in srgb, var(--border-color) 96%, transparent);
-  --semantic-groups-card-surface: color-mix(in srgb, var(--primary-text) 1.5%, transparent);
-}
-
-.semantic-groups-surface,
-:deep(.ui-card.semantic-groups-surface) {
-  border-color: var(--semantic-groups-surface-border);
-  background: var(--semantic-groups-card-surface);
-}
-
-.semantic-groups-surface :deep(.ui-card__header),
-:deep(.ui-card.semantic-groups-surface.ui-card--divided .ui-card__header) {
-  border-bottom-color: var(--semantic-groups-surface-border);
-}
-
-.semantic-groups-surface :deep(.ui-input),
-.semantic-groups-surface :deep(.ui-textarea) {
-  border-color: var(--semantic-groups-surface-border);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-bg) 42%, transparent);
-}
-
-.semantic-group-item {
-  margin-bottom: 0;
+.semantic-page-summary {
+  max-width: 430px;
+  margin: 0 var(--space-2) 0 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.35;
 }
 
 .semantic-groups-layout {
   display: grid;
-  grid-template-columns: minmax(260px, 320px) 1fr;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
   gap: var(--space-4);
-}
-
-.semantic-groups-layout.is-sidebar-collapsed {
-  grid-template-columns: 56px 1fr;
+  min-height: var(--semantic-workspace-min-height);
+  height: max(var(--semantic-workspace-height), var(--semantic-workspace-min-height));
 }
 
 .semantic-groups-sidebar {
-  --group-console-viewport-gap: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  position: sticky;
-  top: var(--group-console-viewport-gap);
-  align-self: start;
-  height: calc(100vh - (var(--group-console-viewport-gap) * 2));
-  max-height: calc(100vh - (var(--group-console-viewport-gap) * 2));
-  overflow: hidden;
-  padding: var(--space-5);
-  border-radius: var(--radius-xl);
-  transition: padding var(--transition-fast);
-}
-
-.semantic-groups-sidebar.is-collapsed {
-  padding: var(--space-3) 0;
-  gap: 0;
-  align-items: center;
-}
-
-.semantic-groups-sidebar :deep(.ui-card__content) {
-  display: flex;
+  min-width: 0;
   min-height: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.sidebar-header-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.group-console__section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  overflow: hidden;
+  padding: 0;
 }
 
 .group-console__label {
-  color: var(--highlight-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
+  color: color-mix(in srgb, var(--secondary-text) 72%, transparent);
+  font-size: 11px;
+  font-weight: 600;
   letter-spacing: 0.08em;
+  line-height: 1.25;
   text-transform: uppercase;
 }
 
@@ -588,33 +485,56 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+  min-height: 36px;
+  margin-bottom: var(--space-2);
 }
 
 .semantic-groups-sidebar-header h3 {
   margin: 0;
-  font-size: var(--font-size-lg);
   color: var(--primary-text);
+  font-size: var(--font-size-body);
+  font-weight: 650;
+  line-height: 1.25;
 }
 
 .group-search-box {
+  position: relative;
   display: flex;
-  gap: var(--space-2);
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+
+.group-search-box > .material-symbols-outlined {
+  position: absolute;
+  left: 10px;
+  color: var(--secondary-text);
+  font-size: 18px !important;
+  pointer-events: none;
 }
 
 .group-search-box :deep(.ui-input) {
-  flex: 1;
-  min-width: 0;
+  padding-left: 36px;
+  padding-right: 34px;
+}
+
+.group-search-box :deep(.ui-icon-button) {
+  position: absolute;
+  right: 4px;
+  width: 28px;
+  height: 28px;
 }
 
 .semantic-groups-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: flex;
+  flex: 1;
+  min-height: 0;
   flex-direction: column;
   gap: var(--space-2);
+  margin: 0;
+  padding: 0 var(--space-1) var(--space-2) 0;
   overflow-y: auto;
-  flex: 1;
+  list-style: none;
+  scrollbar-gutter: stable;
 }
 
 .group-list-item {
@@ -623,17 +543,21 @@ onUnmounted(() => {
 }
 
 .group-row {
-  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   width: 100%;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  justify-items: start;
-  gap: var(--space-1);
-  min-height: 44px;
+  min-height: 48px;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
   border-radius: var(--radius-md);
-  background: transparent;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--button-bg) 4%, transparent),
+      color-mix(in srgb, var(--primary-text) 0.7%, transparent)
+    );
   color: var(--primary-text);
   text-align: left;
   cursor: pointer;
@@ -644,12 +568,32 @@ onUnmounted(() => {
 }
 
 .group-row:hover {
-  background: var(--accent-bg);
+  border-color: color-mix(in srgb, var(--button-bg) 22%, var(--border-color));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--button-bg) 7%, transparent),
+      color-mix(in srgb, var(--primary-text) 1.6%, transparent)
+    );
 }
 
 .group-row.is-active {
-  border-color: color-mix(in srgb, var(--highlight-text) 52%, var(--border-color));
-  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
+  border-color: color-mix(in srgb, var(--button-bg) 42%, var(--border-color));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--button-bg) 11%, transparent),
+      color-mix(in srgb, var(--primary-text) 2%, transparent)
+    );
+}
+
+.group-row.is-active::before {
+  content: "";
+  position: absolute;
+  inset: 8px auto 8px 2px;
+  width: 2px;
+  border-radius: var(--radius-full);
+  background: var(--button-bg);
 }
 
 .group-row:focus-visible {
@@ -657,28 +601,60 @@ onUnmounted(() => {
   outline-offset: 2px;
 }
 
-.group-row-name {
-  font-weight: 600;
-  color: var(--primary-text);
-  line-height: 1.3;
+.group-row > .material-symbols-outlined {
+  flex: 0 0 auto;
+  color: var(--secondary-text);
+  font-size: 18px !important;
+}
+
+.group-row-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.group-row-name,
+.group-row-meta {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  width: 100%;
 }
 
-.group-row.is-active .group-row-name {
+.group-row-name {
   color: var(--primary-text);
+  font-size: var(--font-size-body);
+  font-weight: 650;
+  line-height: 1.25;
 }
 
 .group-row-meta {
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
+  line-height: 1.3;
 }
 
 .semantic-group-detail,
 .semantic-group-detail-empty {
-  min-height: 320px;
+  min-width: 0;
+  min-height: 0;
+  border-color: color-mix(in srgb, var(--border-color) 84%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+}
+
+.semantic-group-detail :deep(.ui-card__header),
+.semantic-group-detail-empty :deep(.ui-card__header) {
+  border-bottom-color: color-mix(in srgb, var(--border-color) 68%, transparent);
+}
+
+.semantic-group-detail :deep(.ui-card__content) {
+  min-height: 0;
+}
+
+.semantic-group-detail :deep(.ui-input),
+.semantic-group-detail :deep(.ui-textarea) {
+  border-color: color-mix(in srgb, var(--border-color) 84%, transparent);
+  background: color-mix(in srgb, var(--primary-bg) 38%, transparent);
 }
 
 .semantic-group-detail-empty {
@@ -719,36 +695,23 @@ onUnmounted(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .semantic-groups-sidebar,
   .group-row {
     transition: none;
   }
 }
 
 @media (max-width: 1024px) {
-  .semantic-groups-layout,
-  .semantic-groups-layout.is-sidebar-collapsed {
+  .semantic-groups-layout {
     grid-template-columns: 1fr;
-  }
-
-  .semantic-groups-sidebar {
-    position: static;
-    top: auto;
     height: auto;
-    max-height: none;
-    padding: var(--space-4);
-  }
-}
-
-@media (max-width: 768px) {
-  .group-search-box {
-    flex-direction: column;
   }
 
   .semantic-groups-list {
     max-height: 40vh;
   }
+}
 
+@media (max-width: 768px) {
   .detail-actions {
     justify-content: space-between;
   }
