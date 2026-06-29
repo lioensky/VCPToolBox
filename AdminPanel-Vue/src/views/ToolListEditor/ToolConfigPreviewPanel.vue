@@ -131,6 +131,7 @@
         <UiTextarea
           id="preview-output"
           readonly
+          class="preview-output"
           :model-value="previewContent"
           resize="none"
           placeholder="选择工具后将在此显示配置内容…"
@@ -225,6 +226,10 @@ const emit = defineEmits<{
   overflow: hidden;
 }
 
+.preview-section :deep(.ui-card__content) {
+  flex: 1;
+}
+
 .dirty-badge {
   flex-shrink: 0;
 }
@@ -299,15 +304,25 @@ const emit = defineEmits<{
   display: flex;
 }
 
-.preview-output-wrapper :deep(.ui-textarea) {
+.preview-output {
   flex: 1;
   width: 100%;
   height: 100%;
   min-height: 0;
   padding-right: 84px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   font-family: "Consolas", "Monaco", monospace;
   font-size: var(--font-size-helper);
   line-height: 1.55;
+}
+
+.preview-output:hover:not(:disabled),
+.preview-output:focus-visible {
+  border-color: transparent;
+  background: transparent;
+  outline: none;
 }
 
 .preview-copy-btn {

@@ -751,6 +751,7 @@ onBeforeRouteLeave(async () => {
   flex-shrink: 0;
   display: grid;
   gap: var(--space-1);
+  margin-bottom: var(--space-3);
 }
 
 .tool-list-editor-intro h2 {

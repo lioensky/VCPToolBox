@@ -1,31 +1,41 @@
 <template>
-  <section class="config-section active-section">
-    <p class="description">
-      管理 RAGDiaryPlugin 使用的元思考链。按住左侧手柄拖动时会实时预览插入位置，
-      释放后再提交最终顺序。
-    </p>
-
-    <div id="thinking-chains-editor-controls" class="form-actions">
-      <UiButton variant="primary" @click="saveThinkingChains">
-        保存所有更改
-      </UiButton>
-      <UiButton variant="outline" @click="addThinkingChain">
-        添加新主题
-      </UiButton>
-      <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
-        {{ statusMessage }}
-      </UiBadge>
-    </div>
+  <section class="config-section active-section thinking-chains-page">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <p class="thinking-page-summary">
+          管理 RAGDiaryPlugin 使用的元思考链，拖动模块可实时预览排序。
+        </p>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
+          {{ statusMessage }}
+        </UiBadge>
+        <UiButton variant="outline" size="lg" @click="addThinkingChain">
+          <template #leading>
+            <span class="material-symbols-outlined">add</span>
+          </template>
+          添加主题
+        </UiButton>
+        <UiButton variant="primary" size="lg" @click="saveThinkingChains">
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          保存更改
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
 
     <div id="thinking-chains-container" class="thinking-chains-layout">
-      <div class="thinking-chains-editor">
-        <h3>思考主题列表</h3>
+      <main class="thinking-chains-editor" aria-label="思考主题列表">
+        <header class="thinking-pane-header">
+          <div>
+            <h3>思考主题列表</h3>
+            <p>配置主题名称、思维模块顺序和每个模块的 K 值。</p>
+          </div>
+          <UiBadge variant="outline">{{ thinkingChains.length }} 个主题</UiBadge>
+        </header>
 
-        <UiCard
+        <article
           v-for="(chain, index) in thinkingChains"
           :key="chain.uiId"
-          size="sm"
-          variant="subtle"
           :class="[
             'thinking-chain-item',
             { 'thinking-chain-item--active': index === pickerChainIndex },
@@ -34,13 +44,16 @@
           <details open>
             <summary class="chain-header">
               <span class="theme-name">主题：{{ chain.theme || '未命名主题' }}</span>
-              <UiButton
-                variant="danger"
-                size="sm"
-                @click.stop.prevent="removeChain(index)"
-              >
-                删除
-              </UiButton>
+              <div class="chain-header-actions">
+                <UiBadge variant="outline">{{ getRenderedClusters(index).length }} 个模块</UiBadge>
+                <UiButton
+                  variant="danger"
+                  size="sm"
+                  @click.stop.prevent="removeChain(index)"
+                >
+                  删除
+                </UiButton>
+              </div>
             </summary>
 
             <div class="chain-content">
@@ -54,6 +67,7 @@
                   :id="`thinking-theme-${index}`"
                   v-model.trim="chain.theme"
                   type="text"
+                  size="sm"
                   placeholder="请输入主题名称"
                   @click.stop
                 />
@@ -110,6 +124,7 @@
                         type="number"
                         min="1"
                         max="20"
+                        size="sm"
                         class="cluster-k-input"
                         :value="getRenderedKValue(index, cluster)"
                         @input="handleKValueInput(index, cluster, $event)"
@@ -140,16 +155,17 @@
               </TransitionGroup>
             </div>
           </details>
-        </UiCard>
-      </div>
+        </article>
+      </main>
 
-      <UiCard
-        class="available-clusters-panel"
-        title="可用的思维簇模块"
-        description="将模块从这里拖拽到左侧的主题列表中。"
-        size="sm"
-        variant="subtle"
-      >
+      <aside class="available-clusters-panel" aria-label="可用的思维簇模块">
+        <header class="thinking-pane-header">
+          <div>
+            <h3>可用模块</h3>
+            <p>拖到左侧主题，或通过主题内的添加按钮批量选择。</p>
+          </div>
+          <UiBadge variant="outline">{{ availableClusters.length }} 个</UiBadge>
+        </header>
         <ul class="draggable-list available-clusters-list">
           <li
             v-for="cluster in availableClusters"
@@ -171,7 +187,7 @@
             未找到可用的思维簇模块
           </li>
         </ul>
-      </UiCard>
+      </aside>
     </div>
 
     <BaseModal
@@ -293,9 +309,9 @@ import BaseModal from "@/components/ui/BaseModal.vue";
 import DragHandle from "@/components/ui/DragHandle.vue";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
-import UiCard from "@/components/ui/UiCard.vue";
 import UiField from "@/components/ui/UiField.vue";
 import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 
 const {
   thinkingChains,
@@ -428,24 +444,59 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 </script>
 
 <style scoped>
+.thinking-chains-page {
+  min-height: 0;
+}
+
+.thinking-page-summary {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
 .thinking-chains-layout {
   display: grid;
-  grid-template-columns: 1fr 300px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
   gap: var(--space-4);
+  align-items: stretch;
+  min-height: 0;
 }
 
 .thinking-chains-editor {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
 }
 
-.thinking-chains-editor > h3 {
+.thinking-pane-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.thinking-pane-header h3 {
   margin: 0;
   color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.thinking-pane-header p {
+  margin: var(--space-1) 0 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.5;
 }
 
 .thinking-chain-item {
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 1.4%, transparent);
+  overflow: hidden;
   transition: border-color 0.2s ease, background 0.2s ease;
 }
 
@@ -463,20 +514,33 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   justify-content: space-between;
   align-items: center;
   gap: var(--space-3);
+  min-height: 44px;
+  padding: 0 var(--space-3);
   cursor: pointer;
   user-select: none;
+}
+
+.chain-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
 }
 
 .theme-name {
   font-weight: 600;
   font-size: var(--font-size-emphasis);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chain-content {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  margin-top: var(--space-3);
+  padding: 0 var(--space-3) var(--space-3);
 }
 
 .theme-editor {
@@ -498,12 +562,13 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 
 .draggable-list {
   list-style: none;
-  padding: var(--space-2);
+  padding: 0;
   margin: 0;
   min-height: 56px;
-  border: 1px dashed color-mix(in srgb, var(--border-color) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  background: transparent;
+  overflow: hidden;
 }
 
 .draggable-list--active-target {
@@ -516,13 +581,14 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  margin-bottom: var(--space-2);
+  margin-bottom: 0;
   min-height: 40px;
   background: transparent;
-  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
-  border-radius: var(--radius-md);
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: 0;
   will-change: transform;
   transition:
     border-color 0.2s ease,
@@ -532,7 +598,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .chain-item:last-child {
-  margin-bottom: 0;
+  border-bottom: 0;
 }
 
 .chain-item:hover {
@@ -576,6 +642,9 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 .cluster-name {
   min-width: 0;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cluster-k-control {
@@ -584,9 +653,9 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   gap: var(--space-2);
   padding: 0 var(--space-2);
   min-height: 28px;
-  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--input-bg) 62%, transparent);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   flex-shrink: 0;
 }
 
@@ -598,7 +667,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .cluster-k-input {
-  width: 56px;
+  width: 58px;
   text-align: center;
 }
 
@@ -618,11 +687,19 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .available-clusters-panel {
-  height: fit-content;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
 }
 
 .available-clusters-list .chain-item {
   cursor: grab;
+}
+
+.available-clusters-list {
+  overflow: auto;
 }
 
 .no-clusters {

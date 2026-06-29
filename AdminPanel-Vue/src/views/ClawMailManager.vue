@@ -2,46 +2,44 @@
   <section class="claw-mail-page">
     <Teleport to="#page-header-actions">
       <UiPageActions>
-        <UiButton type="button" variant="outline" :disabled="isLoadingState" :loading="isLoadingState" @click="loadState(true)">
-          <span class="material-symbols-outlined">sync</span>
-          <span>{{ isLoadingState ? "刷新中…" : "刷新邮箱缓存" }}</span>
+        <UiButton type="button" variant="outline" size="lg" :disabled="isLoadingState" :loading="isLoadingState" @click="loadState(true)">
+          <template #leading>
+            <span class="material-symbols-outlined">refresh</span>
+          </template>
+          {{ isLoadingState ? "刷新中…" : "刷新邮箱缓存" }}
         </UiButton>
       </UiPageActions>
     </Teleport>
 
-    <UiCard class="hero-card" variant="subtle">
-      <div>
-        <span class="eyebrow">VCPClawMail</span>
-        <h2>邮件总览与垃圾箱操作</h2>
-        <p>
-          在服务器面板中查看 VCPClawMail 已配置的公共邮箱与子邮箱邮件，支持读取正文，并将邮件安全移入垃圾箱。
-        </p>
+    <section class="mail-status-strip" aria-label="Agent 信箱状态">
+      <div class="status-copy">
+        <strong>邮件总览与垃圾箱操作</strong>
+        <span>查看 VCPClawMail 公共邮箱与子邮箱邮件，读取正文并安全移入垃圾箱。</span>
       </div>
-    </UiCard>
-
-    <UiCard class="status-card" variant="subtle">
-      <article class="stat-chip">
-        <span>SDK</span>
-        <UiBadge :variant="state?.sdkLoaded ? 'success' : 'danger'">
-          {{ state?.sdkLoaded ? "已加载" : "不可用" }}
-        </UiBadge>
-      </article>
-      <article class="stat-chip">
-        <span>邮箱数</span>
-        <strong>{{ state?.mailboxes.length ?? 0 }}</strong>
-      </article>
-      <article class="stat-chip">
-        <span>更新时间</span>
-        <strong>{{ state?.updatedAt || "未轮询" }}</strong>
-      </article>
-      <article v-if="state?.lastError" class="stat-chip warning">
-        <span>最近错误</span>
-        <UiBadge variant="danger">{{ state.lastError }}</UiBadge>
-      </article>
-    </UiCard>
+      <div class="status-metrics">
+        <article class="stat-chip">
+          <span>SDK</span>
+          <UiBadge :variant="state?.sdkLoaded ? 'success' : 'danger'">
+            {{ state?.sdkLoaded ? "已加载" : "不可用" }}
+          </UiBadge>
+        </article>
+        <article class="stat-chip">
+          <span>邮箱</span>
+          <strong>{{ state?.mailboxes.length ?? 0 }}</strong>
+        </article>
+        <article class="stat-chip">
+          <span>更新时间</span>
+          <strong>{{ state?.updatedAt || "未轮询" }}</strong>
+        </article>
+        <article v-if="state?.lastError" class="stat-chip stat-chip--error">
+          <span>最近错误</span>
+          <UiBadge variant="danger">{{ state.lastError }}</UiBadge>
+        </article>
+      </div>
+    </section>
 
     <section class="mail-layout">
-      <UiCard class="mailbox-panel" variant="subtle">
+      <aside class="mailbox-panel" aria-label="邮箱列表">
         <div class="panel-header">
           <h3>邮箱</h3>
         </div>
@@ -62,9 +60,9 @@
           </span>
         </button>
         <UiEmptyState v-if="!state?.mailboxes.length" title="暂无已配置邮箱" />
-      </UiCard>
+      </aside>
 
-      <UiCard class="message-panel" variant="subtle">
+      <main class="message-panel" aria-label="邮件列表">
         <div class="panel-header message-toolbar">
           <div>
             <h3>邮件列表</h3>
@@ -83,42 +81,48 @@
           </div>
         </div>
 
-        <UiEmptyState v-if="isLoadingMessages" title="正在加载邮件..." />
-        <UiEmptyState v-else-if="messages.length === 0" title="暂无邮件" description="请选择邮箱，或调整筛选条件后重新加载。" />
-        <div v-else class="message-list">
-          <article
-            v-for="message in messages"
-            :key="String(message.mailId || message.id)"
-            class="message-item"
-            :class="{ active: selectedMailId === String(message.mailId || message.id) }"
-          >
-            <button type="button" class="message-main" @click="openMessage(message)">
-              <span class="status-dot" :class="{ unread: message.unread }"></span>
-              <span class="message-content">
-                <strong>{{ message.subject || "(无主题)" }}</strong>
-                <small>{{ formatAddress(message.from) }} · {{ message.date || "未知时间" }}</small>
-                <span>{{ message.preview || "无预览" }}</span>
-              </span>
-            </button>
-            <UiButton type="button" variant="danger" size="sm" class="trash-btn" @click="trashMessage(message)">
-              <span class="material-symbols-outlined">delete</span>
-              <span>移入垃圾箱</span>
-            </UiButton>
-          </article>
+        <div class="message-list-shell">
+          <UiEmptyState v-if="isLoadingMessages" title="正在加载邮件..." />
+          <UiEmptyState v-else-if="messages.length === 0" title="暂无邮件" description="请选择邮箱，或调整筛选条件后重新加载。" />
+          <div v-else class="message-list">
+            <article
+              v-for="message in messages"
+              :key="String(message.mailId || message.id)"
+              class="message-item"
+              :class="{ active: selectedMailId === String(message.mailId || message.id) }"
+            >
+              <button type="button" class="message-main" @click="openMessage(message)">
+                <span class="status-dot" :class="{ unread: message.unread }"></span>
+                <span class="message-content">
+                  <strong>{{ message.subject || "(无主题)" }}</strong>
+                  <small>{{ formatAddress(message.from) }} · {{ message.date || "未知时间" }}</small>
+                  <span>{{ message.preview || "无预览" }}</span>
+                </span>
+              </button>
+              <UiButton type="button" variant="danger" size="sm" class="trash-btn" @click="trashMessage(message)">
+                <span class="material-symbols-outlined">delete</span>
+                <span>移入垃圾箱</span>
+              </UiButton>
+            </article>
+          </div>
         </div>
-      </UiCard>
-    </section>
+      </main>
 
-    <UiCard v-if="selectedMailMarkdown" class="detail-card" variant="subtle">
-      <div class="panel-header">
-        <h3>邮件详情</h3>
-        <UiButton type="button" variant="ghost" size="sm" @click="selectedMailMarkdown = ''">
-          <span class="material-symbols-outlined">close</span>
-          <span>关闭</span>
-        </UiButton>
-      </div>
-      <pre>{{ selectedMailMarkdown }}</pre>
-    </UiCard>
+      <aside class="mail-detail-panel" aria-label="邮件详情">
+        <div class="panel-header">
+          <div>
+            <h3>邮件详情</h3>
+            <p>{{ selectedMailId ? "当前邮件正文" : "选择一封邮件查看正文" }}</p>
+          </div>
+          <UiButton v-if="selectedMailMarkdown" type="button" variant="ghost" size="sm" @click="selectedMailMarkdown = ''">
+            <span class="material-symbols-outlined">close</span>
+            <span>关闭</span>
+          </UiButton>
+        </div>
+        <pre v-if="selectedMailMarkdown">{{ selectedMailMarkdown }}</pre>
+        <UiEmptyState v-else title="未选择邮件" description="从邮件列表中点击一封邮件后，正文会显示在这里。" />
+      </aside>
+    </section>
   </section>
 </template>
 
@@ -128,7 +132,6 @@ import { clawMailApi, type ClawMailMailbox, type ClawMailState, type ClawMailSum
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
 import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
-import UiCard from "@/components/ui/UiCard.vue";
 import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiPageActions from "@/components/ui/UiPageActions.vue";
@@ -269,76 +272,153 @@ onMounted(() => {
 
 <style scoped>
 .claw-mail-page {
+  --mail-workspace-height: calc(var(--app-viewport-height, 100vh) - 220px);
+  --mail-workspace-min-height: 520px;
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
-}
-
-.hero-card,
-.status-card,
-.mail-layout {
-  display: grid;
   gap: var(--space-4);
 }
 
-.hero-card {
-  grid-template-columns: minmax(0, 1fr) auto;
+.mail-status-strip {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 0 0 var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
 }
 
-.hero-card h2 {
-  font-size: var(--font-size-headline);
-  margin: var(--space-2) 0;
+.status-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 
-.hero-card p,
+.status-copy strong {
+  color: var(--primary-text);
+  font-size: var(--font-size-emphasis);
+  line-height: 1.25;
+}
+
+.status-copy span,
 .panel-header p {
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.45;
 }
 
-.status-card {
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+.status-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 .stat-chip {
   display: flex;
-  flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--border-color);
+  align-items: center;
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
 }
 
 .stat-chip span {
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
+  white-space: nowrap;
 }
 
 .stat-chip strong {
+  color: var(--primary-text);
+  font-size: var(--font-size-helper);
+  font-weight: 650;
   overflow-wrap: anywhere;
 }
 
+.stat-chip--error {
+  border-color: color-mix(in srgb, var(--danger-color) 34%, var(--border-color));
+}
+
 .mail-layout {
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-  align-items: start;
+  display: grid;
+  grid-template-areas:
+    "mailboxes messages"
+    "mailboxes detail";
+  grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
+  grid-template-rows: minmax(320px, 1fr) minmax(180px, 0.72fr);
+  gap: var(--space-4);
+  min-height: var(--mail-workspace-min-height);
+  height: max(var(--mail-workspace-height), var(--mail-workspace-min-height));
+}
+
+.mailbox-panel,
+.message-panel,
+.mail-detail-panel {
+  min-width: 0;
+  min-height: 0;
+}
+
+.mailbox-panel {
+  grid-area: mailboxes;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.message-panel,
+.mail-detail-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+}
+
+.message-panel {
+  grid-area: messages;
+}
+
+.mail-detail-panel {
+  grid-area: detail;
 }
 
 .panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
+  gap: var(--space-2);
+  min-height: 48px;
+  padding: var(--space-3);
+}
+
+.mailbox-panel > .panel-header {
+  min-height: 32px;
+  padding: 0 0 var(--space-2);
+}
+
+.panel-header h3 {
+  margin: 0;
+  color: var(--primary-text);
+  font-size: var(--font-size-body);
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.panel-header p {
+  margin: 2px 0 0;
 }
 
 .mailbox-item {
   width: 100%;
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
-  min-height: 44px;
-  padding: var(--space-3);
+  min-height: 42px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;
@@ -352,12 +432,17 @@ onMounted(() => {
 }
 
 .mailbox-item:hover {
-  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  background: var(--accent-bg);
 }
 
 .mailbox-item.active {
-  border-color: color-mix(in srgb, var(--button-bg) 36%, var(--border-color));
-  background: color-mix(in srgb, var(--button-bg) 8%, transparent);
+  border-color: color-mix(in srgb, var(--button-bg) 32%, var(--border-color));
+  background: color-mix(in srgb, var(--button-bg) 7%, transparent);
+}
+
+.mailbox-item > .material-symbols-outlined {
+  color: var(--secondary-text);
+  font-size: 18px !important;
 }
 
 .mailbox-copy {
@@ -375,16 +460,18 @@ onMounted(() => {
 
 .mailbox-copy small {
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
 }
 
 .message-toolbar {
   align-items: flex-start;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
 }
 
 .toolbar-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
   justify-content: flex-end;
 }
@@ -395,26 +482,39 @@ onMounted(() => {
   gap: var(--space-2);
   align-items: center;
   color: var(--secondary-text);
+  font-size: var(--font-size-helper);
 }
 
 .limit-input {
   width: 72px;
 }
 
+.message-list-shell {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
+
 .message-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 0;
+  height: 100%;
+  overflow-y: auto;
+  padding-right: var(--space-1);
+  scrollbar-gutter: stable;
 }
 
 .message-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
-  padding: var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
+  padding: var(--space-3) 0;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+  border-radius: 0;
   background: transparent;
   transition:
     background-color var(--transition-fast),
@@ -422,12 +522,11 @@ onMounted(() => {
 }
 
 .message-item:hover {
-  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 1.8%, transparent);
 }
 
 .message-item.active {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  background: color-mix(in srgb, var(--button-bg) 6%, transparent);
+  background: color-mix(in srgb, var(--button-bg) 5%, transparent);
 }
 
 .message-main {
@@ -442,8 +541,8 @@ onMounted(() => {
 }
 
 .status-dot {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   margin-top: 6px;
   border-radius: 999px;
   background: var(--border-color);
@@ -458,7 +557,7 @@ onMounted(() => {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 
 .message-content strong,
@@ -479,15 +578,24 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-.detail-card pre {
-  max-height: 70vh;
+.mail-detail-panel pre {
+  flex: 1;
+  min-height: 0;
+  margin: 0 var(--space-3) var(--space-3);
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  padding: var(--space-4);
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+  padding: var(--space-3) 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  background: transparent;
   color: var(--primary-text);
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: var(--font-size-helper);
+  line-height: 1.6;
+}
+
+.mail-detail-panel :deep(.empty-state) {
+  flex: 1;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -498,9 +606,23 @@ onMounted(() => {
 }
 
 @media (max-width: 1024px) {
-  .hero-card,
+  .mail-status-strip {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .status-metrics {
+    justify-content: flex-start;
+  }
+
   .mail-layout {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    grid-template-areas:
+      "mailboxes"
+      "messages"
+      "detail";
+    height: auto;
   }
 
   .toolbar-actions {
