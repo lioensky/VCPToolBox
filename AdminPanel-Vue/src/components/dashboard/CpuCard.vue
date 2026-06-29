@@ -61,6 +61,8 @@ const strokeDashoffset = computed(() => {
   min-height: 0;
   min-width: 0;
   gap: 20px;
+  /* 文字始终在圆环右边，保持横向布局 */
+  flex-direction: row;
 }
 
 .progress-circle {
@@ -106,8 +108,9 @@ const strokeDashoffset = computed(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  justify-content: flex-start;
-  padding-top: 10px;
+  justify-content: center;
+  padding-top: 0;
+  text-align: left;
 }
 
 .info-text {
@@ -127,14 +130,8 @@ const strokeDashoffset = computed(() => {
   opacity: 0.8;
 }
 
-/* 断点 1: ≥520px - 网格布局 */
+/* 断点 1: ≥520px - 放大圆环与字号 */
 @container dashboard-card (min-width: 520px) {
-  .status-card-content {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-  }
-
   .progress-circle {
     width: 128px;
     height: 128px;
@@ -149,44 +146,13 @@ const strokeDashoffset = computed(() => {
     font-size: var(--font-size-metric-primary);
   }
 
-  .info-section {
-    padding-top: 12px;
-  }
-
   .info-text-secondary {
     margin-top: 10px;
   }
 }
 
-/* 断点 2: ≤360px - 垂直堆叠 */
+/* 断点 2: ≤360px - 缩小圆环，保持横向 */
 @container dashboard-card (max-width: 360px) {
-  .status-card-content {
-    flex-direction: column;
-    align-items: flex-start;
-    text-align: left;
-  }
-
-  .progress-circle {
-    width: 108px;
-    height: 108px;
-  }
-
-  .progress-circle svg {
-    width: 108px;
-    height: 108px;
-  }
-
-  .progress-text {
-    font-size: var(--font-size-metric-secondary);
-  }
-
-  .info-section {
-    width: 100%;
-  }
-}
-
-/* 断点 3: ≤280px - 紧凑模式 */
-@container dashboard-card (max-width: 280px) {
   .status-card-content {
     gap: 14px;
   }
@@ -194,6 +160,7 @@ const strokeDashoffset = computed(() => {
   .progress-circle {
     width: 96px;
     height: 96px;
+    flex-shrink: 0;
   }
 
   .progress-circle svg {
@@ -202,7 +169,7 @@ const strokeDashoffset = computed(() => {
   }
 
   .progress-text {
-    font-size: var(--font-size-title);
+    font-size: var(--font-size-metric-secondary);
   }
 
   .info-text {
@@ -211,6 +178,37 @@ const strokeDashoffset = computed(() => {
 
   .info-text-secondary {
     font-size: var(--font-size-caption);
+    margin-top: 6px;
+  }
+}
+
+/* 断点 3: ≤280px - 极简模式，仍保持横向 */
+@container dashboard-card (max-width: 280px) {
+  .status-card-content {
+    gap: 10px;
+  }
+
+  .progress-circle {
+    width: 80px;
+    height: 80px;
+  }
+
+  .progress-circle svg {
+    width: 80px;
+    height: 80px;
+  }
+
+  .progress-text {
+    font-size: var(--font-size-title);
+  }
+
+  .info-text {
+    font-size: var(--font-size-caption);
+  }
+
+  .info-text-secondary {
+    font-size: var(--font-size-caption);
+    margin-top: 4px;
   }
 }
 </style>

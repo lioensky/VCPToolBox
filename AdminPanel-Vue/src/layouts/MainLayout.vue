@@ -63,7 +63,7 @@
 
         <!-- 返回顶部按钮 -->
         <button
-          v-show="showBackToTop"
+          v-show="showBackToTop && !isDashboardPage"
           type="button"
           @click="scrollToTop"
           class="back-to-top-btn"
@@ -127,6 +127,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { useRoute } from "vue-router";
 import FeedbackHost from "@/components/feedback/FeedbackHost.vue";
 import SolarSystemBg from "@/components/SolarSystemBg.vue";
 import GlobalCommandPalette from "@/components/layout/GlobalCommandPalette.vue";
@@ -137,6 +138,7 @@ import { useMainLayoutState } from "@/composables/useMainLayoutState";
 import { useAppStore } from "@/stores/app";
 import { useNotificationsStore } from "@/stores/notifications";
 
+const route = useRoute();
 const appStore = useAppStore();
 const notificationsStore = useNotificationsStore();
 const {
@@ -171,6 +173,7 @@ const {
 const navItems = computed(() => appStore.navItems);
 const plugins = computed(() => appStore.plugins);
 const pinnedPluginNames = computed(() => appStore.pinnedPluginNames);
+const isDashboardPage = computed(() => route.name === "Dashboard");
 const pageHeaderActionsRef = ref<HTMLElement | null>(null);
 const isPageHeaderActionsReady = ref(false);
 

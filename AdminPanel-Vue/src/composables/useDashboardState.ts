@@ -196,7 +196,10 @@ export function useDashboardState(
   const cpuArch = ref("");
   const memUsage = ref(0);
   const memInfo = ref("加载中…");
+  const memTotal = ref(0);
+  const memUsed = ref(0);
   const vcpMemUsage = ref(0);
+  const vcpMemBytes = ref(0);
   const pm2Processes = ref<Awaited<ReturnType<typeof systemApi.getPM2Processes>>>([]);
   const nodeInfo = ref<Partial<NodeProcessInfo>>({});
   const userAuthCode = ref("加载中…");
@@ -287,17 +290,22 @@ export function useDashboardState(
       memInfo.value = `已用：${usedGB.toFixed(2)} GB / 总共：${totalGB.toFixed(
         2
       )} GB`;
-
-      if (systemData.value.nodeProcess?.memory?.rss) {
-        vcpMemUsage.value =
-          (systemData.value.nodeProcess.memory.rss /
-            systemData.value.memory.total) *
-          100;
-      }
+      memTotal.value = systemData.value.memory.total;
+      memUsed.value = systemData.value.memory.used;
     }
 
     if (pm2Data.value) {
       pm2Processes.value = pm2Data.value;
+      // VCP 内存 = vcp-main + vcp-admin 两个 PM2 进程的内存总和
+      const vcpProcessNames = ["vcp-main", "vcp-admin"];
+      const vcpTotalBytes = pm2Data.value
+        .filter((proc) => vcpProcessNames.includes(proc.name))
+        .reduce((sum, proc) => sum + (proc.memory || 0), 0);
+      vcpMemBytes.value = vcpTotalBytes;
+      if (systemData.value?.memory?.total && vcpTotalBytes > 0) {
+        vcpMemUsage.value =
+          (vcpTotalBytes / systemData.value.memory.total) * 100;
+      }
     }
 
     if (systemData.value?.nodeProcess) {
@@ -859,7 +867,10 @@ export function useDashboardState(
     cpuArch,
     memUsage,
     memInfo,
+    memTotal,
+    memUsed,
     vcpMemUsage,
+    vcpMemBytes,
     pm2Processes,
     nodeInfo,
     userAuthCode,
