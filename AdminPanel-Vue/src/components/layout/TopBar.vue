@@ -52,6 +52,46 @@
 
       <!-- 右列：通知 + 系统菜单 + 用户菜单 -->
       <div class="header-actions">
+        <UiIconButton
+          class="external-link-trigger"
+          label="打开 VCPToolBox 官网"
+          title="VCPToolBox 官网"
+          @click="openExternalLink('https://www.vcptoolbox.com/')"
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">language</span>
+        </UiIconButton>
+
+        <UiIconButton
+          class="external-link-trigger"
+          label="打开 GitHub 仓库"
+          title="GitHub 仓库"
+          @click="openExternalLink('https://github.com/lioensky/VCPToolBox')"
+        >
+          <svg
+            class="github-icon"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path
+              fill="currentColor"
+              d="M12 2C6.48 2 2 6.58 2 12.24c0 4.52 2.87 8.35 6.84 9.71.5.1.68-.22.68-.49 0-.24-.01-1.05-.01-1.9-2.78.62-3.37-1.22-3.37-1.22-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.36 1.12 2.93.86.09-.67.35-1.12.63-1.38-2.22-.26-4.55-1.14-4.55-5.05 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.32 9.32 0 0 1 12 6.95c.85 0 1.7.12 2.5.35 1.9-1.33 2.74-1.05 2.74-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.92-2.34 4.79-4.57 5.04.36.32.68.94.68 1.9 0 1.38-.01 2.49-.01 2.83 0 .27.18.59.69.49A10.17 10.17 0 0 0 22 12.24C22 6.58 17.52 2 12 2Z"
+            />
+          </svg>
+        </UiIconButton>
+
+        <UiIconButton
+          class="theme-quick-trigger"
+          label="快捷外观"
+          title="快捷外观"
+          :active="isThemeQuickDrawerOpen"
+          aria-haspopup="dialog"
+          :aria-expanded="isThemeQuickDrawerOpen"
+          @click="openThemeQuickDrawer"
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">palette</span>
+        </UiIconButton>
+
         <!-- 通知图标（预留） -->
         <button
           class="icon-button notification-btn"
@@ -124,11 +164,12 @@
         </div>
       </div>
     </div>
+    <ThemeQuickDrawer :open="isThemeQuickDrawerOpen" @close="closeThemeQuickDrawer" />
   </header>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { systemApi } from "@/api";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
@@ -137,6 +178,7 @@ import { useAuthStore } from "@/stores/auth";
 import { showMessage, createLogger } from "@/utils";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import Breadcrumb from "@/components/layout/Breadcrumb.vue";
+import ThemeQuickDrawer from "@/components/layout/ThemeQuickDrawer.vue";
 import topbarLogoUrl from "@/assets/topbar-logo.png";
 
 interface Props {
@@ -165,6 +207,7 @@ const appStore = useAppStore();
 const authStore = useAuthStore();
 
 const theme = computed(() => appStore.theme);
+const isThemeQuickDrawerOpen = ref(false);
 const themeToggleIcon = computed(() => {
   if (theme.value === "dark") return "light_mode";
   return "dark_mode";
@@ -190,6 +233,20 @@ function toggleSystemMenu() {
 
 function toggleUserMenu() {
   emit("toggleUserMenu");
+}
+
+function openThemeQuickDrawer() {
+  isThemeQuickDrawerOpen.value = true;
+  emit("closeAllMenus");
+}
+
+function closeThemeQuickDrawer() {
+  isThemeQuickDrawerOpen.value = false;
+}
+
+function openExternalLink(url: string) {
+  window.open(url, "_blank", "noopener,noreferrer");
+  emit("closeAllMenus");
 }
 
 function toggleTheme() {
@@ -366,6 +423,18 @@ function goToDashboard() {
   min-width: 0;
   justify-self: end;
   height: 32px;
+}
+
+.theme-quick-trigger .material-symbols-outlined,
+.external-link-trigger .material-symbols-outlined {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.github-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
 }
 
 @media (max-width: 768px) {
@@ -595,12 +664,14 @@ function goToDashboard() {
   top: 100%;
   right: 0;
   margin-top: 4px;
-  background-color: var(--tertiary-bg);
-  border: 1px solid var(--border-color);
+  background-color: color-mix(in srgb, var(--primary-bg) 96%, var(--secondary-bg));
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   border-radius: 8px;
   min-width: 168px;
   padding: 4px;
   box-shadow: var(--shadow-overlay-soft);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   opacity: 0;
   visibility: hidden;
   transform: translateY(-4px) scale(0.98);

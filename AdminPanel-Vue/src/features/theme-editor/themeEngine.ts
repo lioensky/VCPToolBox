@@ -18,6 +18,7 @@ const STORAGE_KEY_CONTENT_LAYOUT = 'customThemeContentLayout'
 const STORAGE_KEY_SHELL_LAYOUT = 'customThemeShellLayout'
 const INJECTED_CSS_ID = 'vcp-custom-theme-css'
 const INJECTED_BG_ID = 'vcp-custom-theme-bg'
+export const THEME_SETTINGS_CHANGED_EVENT = 'vcp-theme-settings-changed'
 
 // ── 类型定义 ──
 
@@ -74,6 +75,15 @@ export interface ThemeSnapshot {
   customCss: string
   backgroundImage: string
   activePresetId: string | null
+  themeMode: ThemeMode
+  radius: ThemeRadius
+  scale: ThemeScale
+  font: ThemeFont
+  contentLayout: ThemeContentLayout
+  shellLayout: ThemeShellLayout
+}
+
+export interface ThemeQuickSettings {
   themeMode: ThemeMode
   radius: ThemeRadius
   scale: ThemeScale
@@ -141,6 +151,7 @@ export const FULL_PRESET_THEMES: FullPresetTheme[] = [
     icon: 'rocket_launch',
     colors: {},
     swatches: ['oklch(0.75 0.14 230)', 'oklch(0.68 0.16 230)', 'oklch(0.30 0.08 230)'],
+    defaultRadius: 'xl',
   },
   {
     id: 'midnight-purple',
@@ -149,6 +160,7 @@ export const FULL_PRESET_THEMES: FullPresetTheme[] = [
     icon: 'dark_mode',
     colors: hueColors(270),
     swatches: ['oklch(0.75 0.14 270)', 'oklch(0.68 0.16 270)', 'oklch(0.30 0.08 270)'],
+    defaultRadius: 'xl',
   },
   {
     id: 'aurora-green',
@@ -157,6 +169,7 @@ export const FULL_PRESET_THEMES: FullPresetTheme[] = [
     icon: 'forest',
     colors: hueColors(155),
     swatches: ['oklch(0.75 0.14 155)', 'oklch(0.68 0.16 155)', 'oklch(0.30 0.08 155)'],
+    defaultRadius: 'xl',
   },
   {
     id: 'sunset-orange',
@@ -165,6 +178,7 @@ export const FULL_PRESET_THEMES: FullPresetTheme[] = [
     icon: 'wb_twilight',
     colors: hueColors(30),
     swatches: ['oklch(0.75 0.14 30)', 'oklch(0.68 0.16 30)', 'oklch(0.30 0.08 30)'],
+    defaultRadius: 'xl',
   },
   {
     id: 'cherry-red',
@@ -173,6 +187,7 @@ export const FULL_PRESET_THEMES: FullPresetTheme[] = [
     icon: 'local_florist',
     colors: hueColors(0),
     swatches: ['oklch(0.75 0.14 0)', 'oklch(0.68 0.16 0)', 'oklch(0.30 0.08 0)'],
+    defaultRadius: 'xl',
   },
   {
     id: 'ocean-cyan',
@@ -181,6 +196,7 @@ export const FULL_PRESET_THEMES: FullPresetTheme[] = [
     icon: 'waves',
     colors: hueColors(190),
     swatches: ['oklch(0.75 0.14 190)', 'oklch(0.68 0.16 190)', 'oklch(0.30 0.08 190)'],
+    defaultRadius: 'xl',
   },
   {
     id: 'rose-pink',
@@ -189,6 +205,7 @@ export const FULL_PRESET_THEMES: FullPresetTheme[] = [
     icon: 'favorite',
     colors: hueColors(310),
     swatches: ['oklch(0.75 0.14 310)', 'oklch(0.68 0.16 310)', 'oklch(0.30 0.08 310)'],
+    defaultRadius: 'xl',
   },
   {
     id: 'golden-amber',
@@ -197,6 +214,7 @@ export const FULL_PRESET_THEMES: FullPresetTheme[] = [
     icon: 'diamond',
     colors: hueColors(60),
     swatches: ['oklch(0.75 0.14 60)', 'oklch(0.68 0.16 60)', 'oklch(0.30 0.08 60)'],
+    defaultRadius: 'xl',
   },
   {
     id: 'anthropic',
@@ -205,13 +223,13 @@ export const FULL_PRESET_THEMES: FullPresetTheme[] = [
     icon: 'auto_awesome',
     colors: {},
     swatches: ['oklch(0.984 0.005 95)', 'oklch(0.685 0.142 38)', 'oklch(0.92 0.03 72)'],
-    defaultRadius: 'lg',
+    defaultRadius: 'xl',
     defaultFont: 'serif',
   },
   {
     id: 'rose-garden',
-    label: 'Rose Garden',
-    description: '玫瑰花园般的红粉主题',
+    label: '蔷薇庭院',
+    description: '玫瑰粉与柔和浅红的花园主题',
     icon: 'local_florist',
     colors: {},
     swatches: ['oklch(0.5827 0.2418 12.23)', 'oklch(0.8131 0.1129 5.67)', 'oklch(0.93 0.04 12)'],
@@ -219,21 +237,57 @@ export const FULL_PRESET_THEMES: FullPresetTheme[] = [
   },
   {
     id: 'lake-view',
-    label: 'Lake View',
-    description: '湖水与薄雾青绿色调',
+    label: '湖畔薄雾',
+    description: '湖绿色与水蓝色的清透主题',
     icon: 'water',
     colors: {},
     swatches: ['oklch(0.765 0.177 163.22)', 'oklch(0.551 0.0899 200.52)', 'oklch(0.92 0.035 180)'],
-    defaultRadius: 'md',
+    defaultRadius: 'xl',
   },
   {
     id: 'ocean-breeze',
-    label: 'Ocean Breeze',
-    description: '蓝紫海风主题',
+    label: '海风蓝紫',
+    description: '高饱和蓝紫渐变主题',
     icon: 'sailing',
     colors: {},
     swatches: ['oklch(0.5461 0.2152 262.88)', 'oklch(0.5854 0.2041 277.12)', 'oklch(0.92 0.03 250)'],
-    defaultRadius: 'sm',
+    defaultRadius: 'xl',
+  },
+  {
+    id: 'underground',
+    label: '地下霓虹',
+    description: '青绿与洋红的夜间霓虹主题',
+    icon: 'subway',
+    colors: {},
+    swatches: ['oklch(0.5315 0.0694 156.19)', 'oklch(0.5748 0.0862 336.52)', 'oklch(0.20 0.03 210)'],
+    defaultRadius: 'xl',
+  },
+  {
+    id: 'sunset-glow',
+    label: '暮色余晖',
+    description: '朱红与琥珀色的夕阳主题',
+    icon: 'wb_twilight',
+    colors: {},
+    swatches: ['oklch(0.5591 0.1882 25.33)', 'oklch(0.7938 0.1248 42.42)', 'oklch(0.93 0.05 55)'],
+    defaultRadius: 'xl',
+  },
+  {
+    id: 'forest-whisper',
+    label: '森林低语',
+    description: '冷杉绿与灰蓝的安静主题',
+    icon: 'forest',
+    colors: {},
+    swatches: ['oklch(0.5276 0.1072 182.22)', 'oklch(0.5236 0.0505 250.18)', 'oklch(0.90 0.025 165)'],
+    defaultRadius: 'xl',
+  },
+  {
+    id: 'lavender-dream',
+    label: '薰衣草梦',
+    description: '紫粉与浅蓝的柔和主题',
+    icon: 'spa',
+    colors: {},
+    swatches: ['oklch(0.5709 0.1808 306.89)', 'oklch(0.811 0.0589 201.14)', 'oklch(0.94 0.035 300)'],
+    defaultRadius: 'xl',
   },
 ]
 
@@ -621,6 +675,31 @@ export function loadThemeShellLayout(): ThemeShellLayout {
 
 export function saveThemeShellLayout(layout: ThemeShellLayout): void {
   saveOption(STORAGE_KEY_SHELL_LAYOUT, layout, 'inset')
+}
+
+export function loadThemeQuickSettings(): ThemeQuickSettings {
+  return {
+    themeMode: loadThemeMode(),
+    radius: loadThemeRadius(),
+    scale: loadThemeScale(),
+    font: loadThemeFont(),
+    contentLayout: loadThemeContentLayout(),
+    shellLayout: loadThemeShellLayout(),
+  }
+}
+
+export function saveThemeQuickSettings(settings: ThemeQuickSettings): void {
+  saveThemeMode(settings.themeMode)
+  saveThemeRadius(settings.radius)
+  saveThemeScale(settings.scale)
+  saveThemeFont(settings.font)
+  saveThemeContentLayout(settings.contentLayout)
+  saveThemeShellLayout(settings.shellLayout)
+}
+
+export function notifyThemeSettingsChanged(): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(THEME_SETTINGS_CHANGED_EVENT))
 }
 
 // ── 用户自定义主题 ──

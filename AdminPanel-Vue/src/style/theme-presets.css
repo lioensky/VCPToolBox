@@ -112,6 +112,50 @@ html[data-theme-preset="ocean-breeze"] {
   --button-hover-bg-light: oklch(0.50 0.20 270);
 }
 
+html[data-theme-preset="underground"] {
+  --highlight-text-dark: oklch(0.64 0.12 156.19);
+  --highlight-text-light: oklch(0.45 0.12 156.19);
+  --accent-bg-dark: oklch(0.26 0.045 156.19);
+  --accent-bg-light: oklch(0.90 0.035 156.19);
+  --button-bg-dark: oklch(0.5748 0.0862 336.52);
+  --button-bg-light: oklch(0.5748 0.0862 336.52);
+  --button-hover-bg-dark: oklch(0.52 0.10 336.52);
+  --button-hover-bg-light: oklch(0.50 0.11 336.52);
+}
+
+html[data-theme-preset="sunset-glow"] {
+  --highlight-text-dark: oklch(0.72 0.16 25.33);
+  --highlight-text-light: oklch(0.50 0.17 25.33);
+  --accent-bg-dark: oklch(0.30 0.07 42.42);
+  --accent-bg-light: oklch(0.92 0.045 42.42);
+  --button-bg-dark: oklch(0.7938 0.1248 42.42);
+  --button-bg-light: oklch(0.66 0.15 35);
+  --button-hover-bg-dark: oklch(0.68 0.15 38);
+  --button-hover-bg-light: oklch(0.58 0.17 35);
+}
+
+html[data-theme-preset="forest-whisper"] {
+  --highlight-text-dark: oklch(0.68 0.10 182.22);
+  --highlight-text-light: oklch(0.44 0.10 182.22);
+  --accent-bg-dark: oklch(0.28 0.04 182.22);
+  --accent-bg-light: oklch(0.91 0.035 182.22);
+  --button-bg-dark: oklch(0.5236 0.0505 250.18);
+  --button-bg-light: oklch(0.49 0.07 250.18);
+  --button-hover-bg-dark: oklch(0.46 0.065 250.18);
+  --button-hover-bg-light: oklch(0.42 0.08 250.18);
+}
+
+html[data-theme-preset="lavender-dream"] {
+  --highlight-text-dark: oklch(0.70 0.15 306.89);
+  --highlight-text-light: oklch(0.48 0.16 306.89);
+  --accent-bg-dark: oklch(0.30 0.07 306.89);
+  --accent-bg-light: oklch(0.93 0.04 306.89);
+  --button-bg-dark: oklch(0.5709 0.1808 306.89);
+  --button-bg-light: oklch(0.57 0.17 306.89);
+  --button-hover-bg-dark: oklch(0.51 0.20 306.89);
+  --button-hover-bg-light: oklch(0.50 0.19 306.89);
+}
+
 html[data-theme-radius="none"] {
   --radius-sm: 0;
   --radius-md: 0;
