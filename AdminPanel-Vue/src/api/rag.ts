@@ -29,6 +29,22 @@ export interface RagParamThemeSaveResponse {
   theme?: RagParamTheme;
 }
 
+export interface ActiveFullTrainingResult {
+  taskId?: string;
+  queued?: boolean;
+  reason?: string;
+  resetPendingNewTags?: number;
+  threshold?: number;
+  error?: string;
+}
+
+export interface ActiveFullTrainingResponse {
+  success?: boolean;
+  message?: string;
+  result?: ActiveFullTrainingResult;
+  error?: string;
+}
+
 export interface SemanticGroupData {
   words?: string[];
   auto_learned?: string[];
@@ -74,6 +90,18 @@ export const ragApi = {
         url: "/admin_api/rag-params",
         method: "POST",
         body: params,
+      },
+      uiOptions
+    );
+  },
+
+  async triggerActiveFullTraining(
+    uiOptions: RequestUiOptions = {}
+  ): Promise<ActiveFullTrainingResponse> {
+    return requestWithUi(
+      {
+        url: "/admin_api/rag-active-full-training",
+        method: "POST",
       },
       uiOptions
     );

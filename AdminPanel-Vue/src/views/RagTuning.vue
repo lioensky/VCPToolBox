@@ -140,6 +140,23 @@
               </div>
             </div>
 
+            <div class="rag-console__section rag-console__section--training">
+              <span class="rag-console__label">主动自学习</span>
+              <div class="active-training-card">
+                <div class="active-training-card__copy">
+                  <strong>全量重训练</strong>
+                  <p>立即触发浪潮引擎原本由 1% 新标签阈值触发的全量训练，并重置阈值计数。</p>
+                </div>
+                <UiButton
+                  variant="secondary"
+                  :disabled="isActiveTraining"
+                  @click="triggerActiveFullTraining"
+                >
+                  {{ isActiveTraining ? "训练已排队…" : "触发全量自学习" }}
+                </UiButton>
+              </div>
+            </div>
+
             <div class="rag-console__section">
               <span class="rag-console__label">快速跳转</span>
               <div class="rag-console__jump-list">
@@ -805,6 +822,7 @@ const selectedThemeName = ref("");
 const newThemeName = ref("");
 const isThemeLoading = ref(false);
 const isThemeSaving = ref(false);
+const isActiveTraining = ref(false);
 
 function cloneParams(source: RagParams): RagParams {
   return JSON.parse(JSON.stringify(source));
@@ -1410,6 +1428,36 @@ async function applySelectedTheme(): Promise<void> {
     showMessage(statusMessage.value, "error");
   } finally {
     isThemeSaving.value = false;
+  }
+}
+
+async function triggerActiveFullTraining(): Promise<void> {
+  if (isActiveTraining.value) {
+    return;
+  }
+
+  isActiveTraining.value = true;
+
+  try {
+    const response = await ragApi.triggerActiveFullTraining({
+      loadingKey: "rag-tuning.active-full-training",
+    });
+    const result = response.result;
+    const resetCount = result?.resetPendingNewTags ?? 0;
+    const threshold = result?.threshold;
+
+    statusMessage.value = threshold
+      ? `已排队浪潮全量自学习任务，已重置 ${resetCount}/${threshold} 个阈值计数。`
+      : `已排队浪潮全量自学习任务，已重置 ${resetCount} 个阈值计数。`;
+    statusType.value = "success";
+    showMessage(statusMessage.value, "success");
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    statusMessage.value = `触发全量自学习失败：${errorMessage}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isActiveTraining.value = false;
   }
 }
 
@@ -2518,6 +2566,37 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 10px;
   padding-left: var(--space-4);
+}
+
+.active-training-card {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--warning-border) 58%, var(--border-color));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warning-bg) 54%, transparent);
+}
+
+.active-training-card__copy {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.active-training-card__copy strong {
+  font-size: var(--font-size-emphasis);
+}
+
+.active-training-card__copy p {
+  margin: 0;
+  color: var(--secondary-text);
+  line-height: 1.6;
+}
+
+.active-training-card :deep(.ui-button) {
+  justify-content: center;
+  width: 100%;
 }
 
 .semantic-sim-card {

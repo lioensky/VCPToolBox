@@ -1355,8 +1355,51 @@ class TagMemoEngine {
         }
     }
 
+    requestActiveFullTraining(options = {}) {
+        const reason = options.reason || 'admin-active-full-training';
+        const previousPendingNewTags = this._accumulatedNewTagIds.size;
+
+        if (this._matrixRebuildTimer) {
+            clearTimeout(this._matrixRebuildTimer);
+            this._matrixRebuildTimer = null;
+        }
+
+        // 主动训练相当于手动消费“1% 阈值窗口”：按钮使用后立即清零累计计数，
+        // 避免训练完成后又被旧的防抖窗口重复触发。
+        this._accumulatedNewTagIds.clear();
+        this._accumulatedTagChanges = 0;
+        this._matrixRebuildScheduleLogged = false;
+
+        const taskId = this._enqueueDerivedTask('active-full-training', async () => {
+            await this.doMatrixRebuild({
+                reason,
+                fullRebuildPairwise: true,
+                forceIntrinsicResiduals: true,
+                preservePendingOnFailure: false,
+                allowDuringStartupCooldown: true
+            });
+            return true;
+        }, { maxAttempts: options.maxAttempts ?? 1 });
+
+        console.log(
+            `[TagMemoEngine] 🧠 Active full self-training requested. ` +
+            `taskId=${taskId}, resetPendingNewTags=${previousPendingNewTags}, reason=${reason}`
+        );
+
+        return {
+            taskId,
+            queued: true,
+            reason,
+            resetPendingNewTags: previousPendingNewTags,
+            threshold: this._getMatrixRebuildThreshold()
+        };
+    }
+
     async doMatrixRebuild(options = {}) {
         const rebuildReason = options.reason || 'manual';
+        const preservePendingOnFailure = options.preservePendingOnFailure !== false;
+        const fullRebuildPairwise = options.fullRebuildPairwise === true;
+        const forceIntrinsicResiduals = options.forceIntrinsicResiduals === true;
         if (this._isMatrixRebuilding) {
             console.warn('[TagMemoEngine] Matrix rebuild already running; keeping accumulated new tags for next debounce window.');
             if (!this._matrixRebuildTimer && this._accumulatedNewTagIds.size > 0) {
@@ -1377,7 +1420,7 @@ class TagMemoEngine {
             const rebuilt = await this._withRustWriteLease('tagmemo:matrix-rebuild', async () => {
                 // 🌟 V8.2-γ: 先补齐底座，再构建矩阵
                 // 顺序：sim 预计算 → 屏障 → 加载 sim Map → 内生残差预计算/屏障/加载 → 构建 V8.2 双向矩阵
-                const pairResult = await this.recomputePairwiseSimilarities({ blocking: true, leaseAlreadyHeld: true });
+                const pairResult = await this.recomputePairwiseSimilarities({ blocking: true, leaseAlreadyHeld: true, fullRebuild: fullRebuildPairwise });
                 if (!pairResult) return false;
                 // 🛡️ P0: Rust 写后先 checkpoint + 健康屏障（含 suspect 重开），再用健康连接读取派生表，
                 // 避免跨连接 WAL/SHM 瞬态视图触发读端 malformed。屏障失败即中止本轮，不继续后续阶段。
@@ -1385,11 +1428,14 @@ class TagMemoEngine {
                 this.loadPairwiseSimilarities({ failOnCorruption: true });
 
                 const isThresholdRebuild = rebuildReason === 'threshold' || rebuildReason === 'follow-up-threshold';
-                const shouldRecomputeIntrinsicResiduals = this._isIntrinsicResidualRecomputeEnabled()
+                const shouldRecomputeIntrinsicResiduals = forceIntrinsicResiduals
+                    || this._isIntrinsicResidualRecomputeEnabled()
                     || (isThresholdRebuild && this._isIntrinsicResidualThresholdRecomputeEnabled());
 
                 if (shouldRecomputeIntrinsicResiduals) {
-                    if (isThresholdRebuild && !this._isIntrinsicResidualRecomputeEnabled()) {
+                    if (forceIntrinsicResiduals) {
+                        console.log('[TagMemoEngine] 🔁 Intrinsic residual recompute forced by active full training request.');
+                    } else if (isThresholdRebuild && !this._isIntrinsicResidualRecomputeEnabled()) {
                         console.log('[TagMemoEngine] 🔁 Intrinsic residual recompute enabled for threshold matrix rebuild: TAGMEMO_IR_RECOMPUTE_ON_THRESHOLD=true.');
                     }
                     const intrinsicResult = await this.recomputeIntrinsicResiduals({ leaseAlreadyHeld: true });
@@ -1406,20 +1452,30 @@ class TagMemoEngine {
 
                 this.buildDirectedCooccurrenceMatrix();
                 return true;
-            }, { pendingThreshold: 0 });
+            }, {
+                pendingThreshold: 0,
+                allowDuringStartupCooldown: options.allowDuringStartupCooldown === true
+            });
 
             if (!rebuilt) {
-                for (const id of newTagIdsAtStart) this._accumulatedNewTagIds.add(id);
-                this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
-                this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), rebuildReason);
+                if (preservePendingOnFailure) {
+                    for (const id of newTagIdsAtStart) this._accumulatedNewTagIds.add(id);
+                    this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
+                    this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), rebuildReason);
+                }
                 return;
             }
         } catch (e) {
-            console.error('[TagMemoEngine] ❌ Matrix rebuild failed; preserving accumulated changes and scheduling retry:', e.message || e);
+            console.error(
+                `[TagMemoEngine] ❌ Matrix rebuild failed${preservePendingOnFailure ? '; preserving accumulated changes and scheduling retry' : ''}:`,
+                e.message || e
+            );
             if (e.stack) console.error(e.stack);
-            for (const id of newTagIdsAtStart) this._accumulatedNewTagIds.add(id);
-            this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
-            this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), rebuildReason);
+            if (preservePendingOnFailure) {
+                for (const id of newTagIdsAtStart) this._accumulatedNewTagIds.add(id);
+                this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
+                this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), rebuildReason);
+            }
         } finally {
             this._isMatrixRebuilding = false;
             if (this._accumulatedNewTagIds.size > 0) {

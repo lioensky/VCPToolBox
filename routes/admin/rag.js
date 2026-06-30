@@ -206,5 +206,33 @@ module.exports = function(options) {
         } else res.status(503).json({ error: 'Unavailable' });
     });
 
+    router.post('/rag-active-full-training', (req, res) => {
+        try {
+            if (!vectorDBManager || typeof vectorDBManager.requestActiveFullTraining !== 'function') {
+                return res.status(503).json({ success: false, error: 'TagMemo active full training is unavailable' });
+            }
+
+            const result = vectorDBManager.requestActiveFullTraining({
+                reason: 'admin-panel-active-full-training'
+            });
+
+            if (!result || result.queued === false) {
+                return res.status(503).json({
+                    success: false,
+                    error: result?.error || 'Failed to queue active full training',
+                    result
+                });
+            }
+
+            res.json({
+                success: true,
+                message: 'Active full training queued',
+                result
+            });
+        } catch (error) {
+            res.status(500).json({ success: false, error: error.message || 'Failed' });
+        }
+    });
+
     return router;
 };

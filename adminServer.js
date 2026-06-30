@@ -312,6 +312,76 @@ for (const moduleName of localModules) {
 }
 
 // ============================================================
+// 🧠 关键覆盖：主动浪潮全量训练必须代理到主服务
+// 独立 adminServer 不持有 KnowledgeBaseManager 实例；本地 rag 模块会以 vectorDBManager=null 挂载。
+// 因此该运行态端点必须在 localAdminRouter 之前转发到主进程。
+// ============================================================
+app.post('/admin_api/rag-active-full-training', async (req, res) => {
+    console.log('[AdminServer] Active full training request received — forwarding to main process...');
+
+    const trainingReq = http.request(
+        `http://127.0.0.1:${MAIN_PORT}/admin_api/rag-active-full-training`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': req.headers.authorization || '',
+                'Cookie': req.headers.cookie || ''
+            },
+            timeout: 10000
+        },
+        (trainingRes) => {
+            let body = '';
+
+            trainingRes.on('data', chunk => {
+                body += chunk;
+            });
+
+            trainingRes.on('end', () => {
+                if (res.headersSent) return;
+
+                const contentType = trainingRes.headers['content-type'] || 'application/json';
+                res.status(trainingRes.statusCode || 202);
+                res.setHeader('Content-Type', contentType);
+
+                try {
+                    res.json(body ? JSON.parse(body) : {
+                        success: true,
+                        message: '主服务已收到浪潮全量自学习请求。'
+                    });
+                } catch (e) {
+                    res.send(body || '主服务已收到浪潮全量自学习请求。');
+                }
+            });
+        }
+    );
+
+    trainingReq.on('error', (err) => {
+        console.error(`[AdminServer] Failed to forward active full training request to main process: ${err.code || err.message}`);
+        if (!res.headersSent) {
+            res.status(502).json({
+                success: false,
+                error: '无法将浪潮全量自学习请求转发给主服务。',
+                details: err.message
+            });
+        }
+    });
+
+    trainingReq.on('timeout', () => {
+        trainingReq.destroy();
+        if (!res.headersSent) {
+            res.status(504).json({
+                success: false,
+                error: '主服务浪潮全量自学习接口响应超时。'
+            });
+        }
+    });
+
+    trainingReq.write(JSON.stringify(req.body || {}));
+    trainingReq.end();
+});
+
+// ============================================================
 // 🔑 关键覆盖：重启主服务（必须在本地路由之前挂载）
 // 本地 routes/admin/server.js 的 /server/restart 会 process.exit(1) 杀死当前进程
 // 在独立后台进程里，这个行为需要被重定向为"通知主进程重启"

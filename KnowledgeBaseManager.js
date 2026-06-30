@@ -542,7 +542,7 @@ class KnowledgeBaseManager {
         if (this.dbHealthState !== 'healthy') return { ok: false, reason: `database-${this.dbHealthState}` };
 
         const now = Date.now();
-        if (this.startupCompletedAt > 0) {
+        if (this.startupCompletedAt > 0 && options.allowDuringStartupCooldown !== true) {
             const sinceStartupReady = now - this.startupCompletedAt;
             if (sinceStartupReady < this.config.derivedStartupCooldownMs) {
                 return { ok: false, reason: `startup-cooldown:${this.config.derivedStartupCooldownMs - sinceStartupReady}ms` };
@@ -1241,6 +1241,22 @@ class KnowledgeBaseManager {
     applyTagBoost(vector, tagBoost, coreTags = [], coreBoostFactor = 1.33) {
         if (!this.tagMemoEngine) return { vector: vector instanceof Float32Array ? vector : new Float32Array(vector), info: null };
         return this.tagMemoEngine.applyTagBoost(vector, tagBoost, coreTags, coreBoostFactor);
+    }
+
+    /**
+     * 🧠 主动触发 TagMemo 全量自学习训练。
+     * 该入口会委托 TagMemoEngine 清空 1% 阈值累计计数，并进入派生任务队列异步执行。
+     */
+    requestActiveFullTraining(options = {}) {
+        if (!this.tagMemoEngine || typeof this.tagMemoEngine.requestActiveFullTraining !== 'function') {
+            return {
+                queued: false,
+                reason: options.reason || 'admin-active-full-training',
+                error: 'TagMemoEngine is not available'
+            };
+        }
+
+        return this.tagMemoEngine.requestActiveFullTraining(options);
     }
 
     /**
