@@ -1120,6 +1120,20 @@ class PluginManager extends EventEmitter {
             }
 
             // --- 通用结果处理 ---
+            // 兼容 direct/hybrid 插件主动返回 stdio 风格的 { status, result } 包装。
+            // stdio 插件会在上方被解包到 pluginOutput.result；direct 插件没有这一步，
+            // 因此这里补齐一次，使 direct 插件也能返回与 VSearch 相同的
+            // { status: "success", result: { content: [...] } } 形态。
+            if (
+                resultFromPlugin &&
+                typeof resultFromPlugin === 'object' &&
+                resultFromPlugin.status === 'success' &&
+                resultFromPlugin.result &&
+                typeof resultFromPlugin.result === 'object'
+            ) {
+                resultFromPlugin = resultFromPlugin.result;
+            }
+
             let finalResultObject = (typeof resultFromPlugin === 'object' && resultFromPlugin !== null) ? resultFromPlugin : { original_plugin_output: resultFromPlugin };
 
             if (maidNameFromArgs) {
