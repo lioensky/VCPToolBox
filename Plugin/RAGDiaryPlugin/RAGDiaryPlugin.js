@@ -692,7 +692,7 @@ class RAGDiaryPlugin {
             const vectorScore = queryVector && chunk.vector
                 ? this.cosineSimilarity(queryVector, chunk.vector)
                 : 0;
-            const hybridScore = (bm25Info.normalizedBM25Score * 0.65) + (vectorScore * 0.35);
+            const hybridScore = (bm25Info.normalizedBM25Score * 0.6) + (vectorScore * 0.4);
 
             return {
                 ...chunk,
@@ -2741,8 +2741,8 @@ class RAGDiaryPlugin {
 
         if (useTime && timeRanges && timeRanges.length > 0) {
             // --- 🌟 V5: 平衡双路召回 (Balanced Dual-Path Retrieval) ---
-            // 目标：语义召回占 60%，时间召回占 40%，且时间召回也进行相关性排序
-            const kSemantic = Math.max(1, Math.ceil(finalK * 0.6));
+            // 目标：语义召回占 80%，时间召回占 20%，且时间召回也进行相关性排序
+            const kSemantic = Math.max(1, Math.ceil(finalK * 0.8));
             const kTime = Math.max(1, finalK - kSemantic);
 
             // 1. 语义路召回 (多取一些用于后续衰减/重排)
@@ -2844,8 +2844,8 @@ class RAGDiaryPlugin {
 
         // 2. Rerank & Merge: 对处理后的结果进行最终精排与合并
         if (useTime && timeRanges && timeRanges.length > 0) {
-            // 🌟 V5.4: 在 Time 模式下，强制执行 60/40 分配，防止 TimeDecay 或高分语义结果导致时间轴逻辑失效
-            const kSemantic = Math.max(1, Math.ceil(finalK * 0.6));
+            // 🌟 V5.4: 在 Time 模式下，强制执行 80/20 分配，防止 TimeDecay 或高分语义结果导致时间轴逻辑失效
+            const kSemantic = Math.max(1, Math.ceil(finalK * 0.8));
             const kTime = Math.max(1, finalK - kSemantic);
 
             const semanticCandidates = candidates.filter(c => c.source === 'rag');
