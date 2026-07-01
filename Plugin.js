@@ -716,11 +716,16 @@ class PluginManager extends EventEmitter {
                         if (ragPluginModule && ragPluginModule.vectorDBManager && typeof ragPluginModule.getSingleEmbedding === 'function') {
                             dependencies.vectorDBManager = ragPluginModule.vectorDBManager;
                             dependencies.getSingleEmbedding = ragPluginModule.getSingleEmbedding.bind(ragPluginModule);
+                            if (typeof ragPluginModule.getBatchEmbeddingsCached === 'function') {
+                                dependencies.getBatchEmbeddings = ragPluginModule.getBatchEmbeddingsCached.bind(ragPluginModule);
+                            } else if (typeof ragPluginModule.getBatchEmbeddings === 'function') {
+                                dependencies.getBatchEmbeddings = ragPluginModule.getBatchEmbeddings.bind(ragPluginModule);
+                            }
                             // 同时注入 ContextBridge（如果 LightMemo 未在 manifest 中声明，也主动注入）
                             if (!dependencies.contextBridge && typeof ragPluginModule.getContextBridge === 'function') {
                                 dependencies.contextBridge = ragPluginModule.getContextBridge();
                             }
-                            if (this.debugMode) console.log(`[PluginManager] Injected VectorDBManager, getSingleEmbedding and ContextBridge into LightMemo.`);
+                            if (this.debugMode) console.log(`[PluginManager] Injected VectorDBManager, getSingleEmbedding, getBatchEmbeddings and ContextBridge into LightMemo.`);
                         } else {
                             console.error(`[PluginManager] Critical dependency failure: RAGDiaryPlugin or its components not available for LightMemo injection.`);
                         }

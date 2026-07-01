@@ -78,6 +78,7 @@ class LightMemoPlugin {
         this.vectorDBManager = null;
         this.tdbKnowledgeManager = null; // 冷知识库（TriviumDB）检索管理器
         this.getSingleEmbedding = null;
+        this.getBatchEmbeddings = null;
         this.projectBasePath = '';
         this.dailyNoteRootPath = '';
         this.rerankConfig = {};
@@ -113,6 +114,9 @@ class LightMemoPlugin {
         }
         if (dependencies.getSingleEmbedding) {
             this.getSingleEmbedding = dependencies.getSingleEmbedding;
+        }
+        if (dependencies.getBatchEmbeddings) {
+            this.getBatchEmbeddings = dependencies.getBatchEmbeddings;
         }
 
         this.loadConfig(); // Load config after dependencies are set
@@ -557,11 +561,13 @@ class LightMemoPlugin {
         if (targets.length === 0) {
             throw new Error("测绘模式需要提供目标参数 targets/target/b/goal/goals，可用逗号、中文逗号、顿号或 | 分隔多个目标。");
         }
-        if (!this.getSingleEmbedding) {
-            throw new Error("测绘模式无法执行：getSingleEmbedding 未注入。");
+        if (!this.getBatchEmbeddings && !this.getSingleEmbedding) {
+            throw new Error("测绘模式无法执行：Embedding 依赖未注入。");
         }
 
-        const startVector = await this.getSingleEmbedding(String(startText));
+        const mappingTexts = [String(startText), ...targets];
+        const mappingVectors = await this._getMappingEmbeddings(mappingTexts);
+        const startVector = mappingVectors[0];
         if (!startVector) {
             throw new Error("起点 A 向量化失败。");
         }
@@ -569,8 +575,9 @@ class LightMemoPlugin {
         const startBoost = this._applyMappingTagBoost(startVector, tagBoost, coreTags, coreBoostFactor);
         const rows = [];
 
-        for (const targetText of targets) {
-            const targetVector = await this.getSingleEmbedding(targetText);
+        for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
+            const targetText = targets[targetIndex];
+            const targetVector = mappingVectors[targetIndex + 1];
             if (!targetVector) {
                 rows.push({
                     target: targetText,
@@ -608,6 +615,30 @@ class LightMemoPlugin {
         });
 
         return this._buildAiFriendlyTextResult(reportText);
+    }
+
+    async _getMappingEmbeddings(texts) {
+        if (!Array.isArray(texts) || texts.length === 0) return [];
+        const normalizedTexts = texts.map(text => String(text || '').trim());
+
+        if (this.getBatchEmbeddings) {
+            console.log(`[LightMemo] Mapping batch embedding: ${normalizedTexts.length} texts in one batched pipeline.`);
+            const vectors = await this.getBatchEmbeddings(normalizedTexts);
+            if (Array.isArray(vectors) && vectors.length === normalizedTexts.length) {
+                return vectors;
+            }
+            console.warn(
+                `[LightMemo] Mapping batch embedding returned invalid length ` +
+                `(${Array.isArray(vectors) ? vectors.length : 'non-array'}), falling back to single embedding.`
+            );
+        }
+
+        console.warn('[LightMemo] Mapping batch embedding unavailable. Falling back to sequential single embedding.');
+        const vectors = [];
+        for (const text of normalizedTexts) {
+            vectors.push(text ? await this.getSingleEmbedding(text) : null);
+        }
+        return vectors;
     }
 
     _applyMappingTagBoost(vector, tagBoost, coreTags, coreBoostFactor) {
