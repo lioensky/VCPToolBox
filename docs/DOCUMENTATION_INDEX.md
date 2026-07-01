@@ -46,6 +46,7 @@
 | 文档 | 描述 | 优先级 |
 |------|------|--------|
 | [TECHNICAL_LITE.md](./TECHNICAL_LITE.md) | README 与完整文档之间的轻量技术地图，汇总核心系统与阅读路径 | ⭐⭐ |
+| [CPU_TEMPERATURE_MONITOR.md](./CPU_TEMPERATURE_MONITOR.md) | Windows 家庭服务器通过 LibreHardwareMonitor 获取 CPU 温度并在面板显示 | ⭐ |
 | [FILE_INVENTORY.md](./FILE_INVENTORY.md) | 所有重要文件的职责、入口、依赖关系 | ⭐ |
 | [FEATURE_MATRIX.md](./FEATURE_MATRIX.md) | 每项功能的入口、触发条件、处理流程、配置项 | ⭐ |
 | [OPERATIONS.md](./OPERATIONS.md) | 启动方式、依赖要求、Docker配置、故障排查 | ⭐ |
@@ -69,6 +70,7 @@
 | 部署分布式节点 | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) § 节点注册 |
 | 调试向量索引 | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) § 错误处理 |
 | 定制管理面板 | [FRONTEND_COMPONENTS.md](./FRONTEND_COMPONENTS.md) § AdminPanel |
+| 配置 CPU 温度显示 | [CPU_TEMPERATURE_MONITOR.md](./CPU_TEMPERATURE_MONITOR.md) |
 | 定位特定文件 | [FILE_INVENTORY.md](./FILE_INVENTORY.md) |
 | 查找功能实现 | [FEATURE_MATRIX.md](./FEATURE_MATRIX.md) |
 | 排查运行故障 | [OPERATIONS.md](./OPERATIONS.md) § 故障排查 |
@@ -213,6 +215,7 @@
 - **VCP技术Lite索引**：[TECHNICAL_LITE.md](./TECHNICAL_LITE.md)
 - **VCP记忆管理系统指南**：[VCP记忆管理系统.md](./VCP记忆管理系统.md)
 - **TagMemo算法深度解析**：[TagMemo_Wave_Algorithm_Deep_Dive.md](./TagMemo_Wave_Algorithm_Deep_Dive.md)
+- **CPU温度监控配置指南**：[CPU_TEMPERATURE_MONITOR.md](./CPU_TEMPERATURE_MONITOR.md)
 - **变更日志**：[ChangeLog.md](../ChangeLog.md)
 
 ### 外部参考

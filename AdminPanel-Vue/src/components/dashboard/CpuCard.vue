@@ -17,9 +17,12 @@
       </div>
       <div class="info-section">
         <p class="info-text">{{ info }}</p>
-        <p class="info-text-secondary" v-if="platform || arch">
-          平台：{{ platform }} <br />
-          架构：{{ arch }}
+        <p class="info-text-secondary">
+          <span v-if="temperatureText">温度：{{ temperatureText }} <br /></span>
+          <template v-if="platform || arch">
+            平台：{{ platform }} <br />
+            架构：{{ arch }}
+          </template>
         </p>
       </div>
     </div>
@@ -34,11 +37,27 @@ const props = defineProps<{
   info: string;
   platform?: string;
   arch?: string;
+  temperature?: {
+    value: number;
+    unit?: string;
+    source?: string;
+  } | null;
 }>();
 
 const circumference = 2 * Math.PI * 54;
 const strokeDashoffset = computed(() => {
   return circumference - (circumference * props.usage) / 100;
+});
+
+const temperatureText = computed(() => {
+  const temperature = props.temperature;
+  if (!temperature || !Number.isFinite(temperature.value)) {
+    return "";
+  }
+
+  const unit = temperature.unit || "°C";
+  const source = temperature.source ? ` · ${temperature.source}` : "";
+  return `${temperature.value.toFixed(1)} ${unit}${source}`;
 });
 </script>
 

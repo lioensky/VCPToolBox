@@ -8,6 +8,100 @@ const execAsync = util.promisify(exec);
 const pm2 = require('pm2');
 const { getAuthCode } = require('../../modules/captchaDecoder');
 
+const CPU_TEMPERATURE_URL = 'http://localhost:8085/data.json';
+const CPU_TEMPERATURE_TIMEOUT_MS = 800;
+const CPU_TEMPERATURE_PRIORITY = [
+    'CPU Package',
+    'Core Max',
+    'Core Average',
+    'CPU Core #1'
+];
+
+function parseTemperatureValue(value) {
+    if (!value || typeof value !== 'string') {
+        return null;
+    }
+
+    const matched = value.match(/-?\d+(?:\.\d+)?/);
+    if (!matched) {
+        return null;
+    }
+
+    const parsed = Number.parseFloat(matched[0]);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function collectCpuTemperatureSensors(node, output = []) {
+    if (!node || typeof node !== 'object') {
+        return output;
+    }
+
+    if (
+        node.Type === 'Temperature' &&
+        typeof node.SensorId === 'string' &&
+        node.SensorId.includes('/intelcpu/')
+    ) {
+        output.push(node);
+    }
+
+    if (Array.isArray(node.Children)) {
+        node.Children.forEach(child => collectCpuTemperatureSensors(child, output));
+    }
+
+    return output;
+}
+
+function pickCpuTemperatureSensor(sensors) {
+    for (const preferredName of CPU_TEMPERATURE_PRIORITY) {
+        const matched = sensors.find(sensor => sensor.Text === preferredName);
+        if (matched) {
+            return matched;
+        }
+    }
+
+    return sensors.find(sensor => !String(sensor.Text || '').includes('Distance to TjMax')) || null;
+}
+
+async function getCpuTemperature() {
+    if (typeof fetch !== 'function' || typeof AbortController !== 'function') {
+        return null;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), CPU_TEMPERATURE_TIMEOUT_MS);
+
+    try {
+        const response = await fetch(CPU_TEMPERATURE_URL, {
+            signal: controller.signal,
+            cache: 'no-store'
+        });
+
+        if (!response.ok) {
+            return null;
+        }
+
+        const data = await response.json();
+        const sensor = pickCpuTemperatureSensor(collectCpuTemperatureSensors(data));
+        const value = parseTemperatureValue(sensor?.Value || sensor?.RawValue);
+
+        if (value === null) {
+            return null;
+        }
+
+        return {
+            value,
+            unit: '°C',
+            source: sensor?.Text || '',
+            sensorId: sensor?.SensorId || '',
+            updatedAt: new Date().toISOString()
+        };
+    } catch (error) {
+        return null;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
 module.exports = function(options) {
     const router = express.Router();
     // const { DEBUG_MODE } = options; // Currently unused in this module but available
@@ -106,6 +200,11 @@ module.exports = function(options) {
                     systemInfo.cpu = { usage: 0 };
                 }
             }
+            const cpuTemperature = await getCpuTemperature();
+            if (cpuTemperature && systemInfo.cpu) {
+                systemInfo.cpu.temperature = cpuTemperature;
+            }
+
             systemInfo.nodeProcess = {
                 pid: process.pid,
                 memory: process.memoryUsage(),

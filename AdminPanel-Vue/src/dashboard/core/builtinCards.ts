@@ -83,6 +83,7 @@ export function getBuiltinDashboardCards(
           info: "",
           platform: state.cpuPlatform.value,
           arch: state.cpuArch.value,
+          temperature: state.cpuTemperature.value,
         }),
       },
     },

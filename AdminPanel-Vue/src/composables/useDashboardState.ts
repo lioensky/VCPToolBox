@@ -23,7 +23,7 @@ import { usePolling } from "@/composables/usePolling";
 import type { DashboardWeatherDisplay, NewsItem } from "@/dashboard/types";
 import { createLogger } from "@/utils/logger";
 import { sanitizeExternalUrl } from "@/utils/url";
-import type { NodeProcessInfo } from "@/types/api.system";
+import type { NodeProcessInfo, SystemCpuTemperatureInfo } from "@/types/api.system";
 
 interface PollingController {
   start: () => void;
@@ -194,6 +194,7 @@ export function useDashboardState(
   const cpuUsage = ref(0);
   const cpuPlatform = ref("");
   const cpuArch = ref("");
+  const cpuTemperature = ref<SystemCpuTemperatureInfo | null>(null);
   const memUsage = ref(0);
   const memInfo = ref("加载中…");
   const memTotal = ref(0);
@@ -278,6 +279,7 @@ export function useDashboardState(
       cpuUsage.value = systemData.value.cpu.usage;
       cpuPlatform.value = systemData.value.nodeProcess?.platform || "";
       cpuArch.value = systemData.value.nodeProcess?.arch || "";
+      cpuTemperature.value = systemData.value.cpu.temperature ?? null;
     }
 
     if (
@@ -865,6 +867,7 @@ export function useDashboardState(
     cpuUsage,
     cpuPlatform,
     cpuArch,
+    cpuTemperature,
     memUsage,
     memInfo,
     memTotal,

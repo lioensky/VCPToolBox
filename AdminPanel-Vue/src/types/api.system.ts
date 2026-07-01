@@ -1,7 +1,16 @@
+export interface SystemCpuTemperatureInfo {
+  value: number;
+  unit?: string;
+  source?: string;
+  sensorId?: string;
+  updatedAt?: string;
+}
+
 export interface SystemCpuInfo {
   usage: number;
   cores?: number;
   model?: string;
+  temperature?: SystemCpuTemperatureInfo | null;
 }
 
 export interface SystemMemorySnapshot {
