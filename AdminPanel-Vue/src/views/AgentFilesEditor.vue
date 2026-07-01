@@ -256,6 +256,7 @@
             <div
               v-if="editingFile"
               class="diary-syntax-scan-panel"
+              :class="{ collapsed: isDiarySyntaxScanCollapsed }"
               aria-label="检测到的日记本语法"
             >
               <div class="diary-syntax-scan-header">
@@ -263,11 +264,26 @@
                   <strong>日记本语法扫描</strong>
                   <span>检测到 {{ diarySyntaxMatches.length }} 个占位符</span>
                 </div>
-                <UiBadge :variant="diarySyntaxMatches.length > 0 ? 'info' : 'secondary'">
-                  {{ diarySyntaxMatches.length > 0 ? "可编辑" : "未检测到" }}
-                </UiBadge>
+                <div class="diary-syntax-scan-actions">
+                  <UiBadge :variant="diarySyntaxMatches.length > 0 ? 'info' : 'secondary'">
+                    {{ diarySyntaxMatches.length > 0 ? "可编辑" : "未检测到" }}
+                  </UiBadge>
+                  <UiIconButton
+                    class="diary-syntax-collapse-button"
+                    :label="isDiarySyntaxScanCollapsed ? '展开日记本语法扫描区' : '折叠日记本语法扫描区'"
+                    :title="isDiarySyntaxScanCollapsed ? '展开' : '折叠'"
+                    @click="isDiarySyntaxScanCollapsed = !isDiarySyntaxScanCollapsed"
+                  >
+                    <span class="material-symbols-outlined">
+                      {{ isDiarySyntaxScanCollapsed ? "keyboard_arrow_down" : "keyboard_arrow_up" }}
+                    </span>
+                  </UiIconButton>
+                </div>
               </div>
-              <div v-if="diarySyntaxMatches.length > 0" class="diary-syntax-chip-list">
+              <div
+                v-if="!isDiarySyntaxScanCollapsed && diarySyntaxMatches.length > 0"
+                class="diary-syntax-chip-list"
+              >
                 <article
                   v-for="match in diarySyntaxMatches"
                   :key="match.id"
@@ -293,7 +309,7 @@
                   </div>
                 </article>
               </div>
-              <p v-else class="diary-syntax-empty">
+              <p v-else-if="!isDiarySyntaxScanCollapsed" class="diary-syntax-empty">
                 当前文件内没有检测到 <code v-text="'{{...}}'"></code>、<code>[[...]]</code>、
                 <code><<...>></code> 或 <code>《《...》》</code> 日记本语法。
               </p>
@@ -522,6 +538,7 @@ const fileContentEditorRef = ref<InstanceType<typeof UiTextarea> | null>(null);
 const diarySyntaxEditorMode = ref<"insert" | "replace">("insert");
 const editingDiarySyntaxState = ref<DiarySyntaxEditorState | null>(null);
 const editingDiarySyntaxRange = ref<DiarySyntaxRange | null>(null);
+const isDiarySyntaxScanCollapsed = ref(false);
 
 const agentFilesDatalistId = "agent-file-options";
 const AGENT_FILE_EXTENSION_PATTERN = /\.(txt|md)$/i;
@@ -1483,12 +1500,22 @@ onBeforeRouteLeave(async () => {
   flex: 0 0 auto;
   flex-direction: column;
   gap: var(--space-2);
-  max-height: 180px;
-  padding: var(--space-3);
+  max-height: 320px;
+  padding: 10px var(--space-3);
   overflow-y: auto;
   border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--primary-text) 1.6%, transparent);
+  transition:
+    max-height 0.2s ease,
+    padding 0.2s ease;
+}
+
+.diary-syntax-scan-panel.collapsed {
+  max-height: 64px;
+  padding-top: 8.5px;
+  padding-bottom: 8px;
+  overflow: hidden;
 }
 
 .diary-syntax-scan-header {
@@ -1496,19 +1523,31 @@ onBeforeRouteLeave(async () => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+  min-height: 40px;
+}
+
+.diary-syntax-scan-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.diary-syntax-collapse-button .material-symbols-outlined {
+  font-size: 20px !important;
 }
 
 .diary-syntax-scan-header strong {
   display: block;
   color: var(--primary-text);
   font-size: var(--font-size-helper);
+  line-height: 1.25;
 }
 
 .diary-syntax-scan-header span,
 .diary-syntax-empty {
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
-  line-height: 1.45;
+  line-height: 1.3;
 }
 
 .diary-syntax-chip-list {
