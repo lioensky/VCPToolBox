@@ -20,6 +20,7 @@ const TextSanitizer = require('./TextSanitizer.js');
 const VectorMathUtils = require('./VectorMathUtils.js');
 const AttachmentMemoUtils = require('./AttachmentMemoUtils.js');
 const RAGResultFormatter = require('./RAGResultFormatter.js');
+const BM25QueryOptimizer = require('./BM25QueryOptimizer.js');
 const { chunkText } = require('../../TextChunker.js');
 const { getEmbeddingsBatch } = require('../../EmbeddingUtils.js');
 const {
@@ -94,6 +95,9 @@ class RAGDiaryPlugin {
             dailyNoteRootPath,
             logger: console
         });
+
+        // 🔎 BM25 查询优化器：实体词提升、AI 主题漂移门控、查询 token 限频
+        this.bm25QueryOptimizer = new BM25QueryOptimizer({ logger: console });
     }
 
     async loadConfig() {
@@ -625,26 +629,26 @@ class RAGDiaryPlugin {
     _buildWeightedBM25QueryText(userContent, aiContent) {
         const config = this.ragParams?.RAGDiaryPlugin || {};
         const weights = Array.isArray(config.mainSearchWeights) ? config.mainSearchWeights : [0.7, 0.3];
-        const userWeight = Number.isFinite(Number(weights[0])) ? Math.max(0, Number(weights[0])) : 0.7;
-        const aiWeight = Number.isFinite(Number(weights[1])) ? Math.max(0, Number(weights[1])) : 0.3;
-        const weightSum = userWeight + aiWeight;
 
-        const normalize = (text) => this.directDiaryTextProcessor.normalizeBM25QueryInput(String(text || ''));
-        const userText = normalize(userContent);
-        const aiText = normalize(aiContent);
+        const optimized = this.bm25QueryOptimizer.createQueryText({
+            userText: userContent,
+            aiText: aiContent,
+            baseWeights: weights,
+            normalize: (text) => this.directDiaryTextProcessor.normalizeBM25QueryInput(String(text || '')),
+            tokenize: (text) => this.directDiaryTextProcessor.tokenize(text),
+            options: config.bm25QueryOptimizer || {}
+        });
 
-        if (!userText && !aiText) return '';
+        if (optimized.queryText) {
+            console.log(
+                `[RAGDiaryPlugin] BM25 query optimized: ` +
+                `tokens=${optimized.queryTokens.length}, terms=${optimized.selectedTerms.length}, ` +
+                `userRatio=${optimized.userRatio.toFixed(2)}, aiRatio=${optimized.aiRatio.toFixed(2)}, ` +
+                `aiGate=${optimized.aiTopicGate.toFixed(2)}, overlap=${optimized.topicOverlap.toFixed(3)}`
+            );
+        }
 
-        const userRatio = weightSum > 0 ? userWeight / weightSum : 0.7;
-        const aiRatio = weightSum > 0 ? aiWeight / weightSum : 0.3;
-        const scale = this.ragParams?.RAGDiaryPlugin?.bm25QueryRepeatScale || 10;
-        const userRepeats = userText ? Math.max(1, Math.round(userRatio * scale)) : 0;
-        const aiRepeats = aiText ? Math.max(1, Math.round(aiRatio * scale)) : 0;
-
-        return [
-            ...new Array(userRepeats).fill(userText),
-            ...new Array(aiRepeats).fill(aiText)
-        ].filter(Boolean).join('\n');
+        return optimized.queryText;
     }
 
     async _getBM25RagCandidates(dbName, userContent, aiContent, limit, mode, queryVector, contextDiaryPrefixes = new Set(), requestCache = null, bm25Weight = 0.6) {

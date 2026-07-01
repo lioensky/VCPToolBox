@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
+const BM25QueryOptimizer = require('./BM25QueryOptimizer.js');
 
 let Jieba = null;
 let jiebaDict = null;
@@ -89,6 +90,9 @@ class DirectDiaryTextProcessor {
             this.logger.warn('[DirectDiaryTextProcessor] Jieba initialization failed, falling back to regex tokenizer:', error.message);
             this.jiebaInstance = null;
         }
+
+        // 🔎 纯文本 BM25 也复用同一查询优化器，避免整段用户输入直接污染稀疏召回。
+        this.bm25QueryOptimizer = new BM25QueryOptimizer({ logger: this.logger });
     }
 
     getDailyNoteSearcherExecutableCandidates() {
@@ -240,6 +244,137 @@ class DirectDiaryTextProcessor {
             req.write(body);
             req.end();
         });
+    }
+
+    getBM25PrefilterLimit() {
+        const parsed = parseInt(process.env.RAG_BM25_PREFILTER_LIMIT || process.env.BM25_PREFILTER_LIMIT || '300', 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : 300;
+    }
+
+    getBM25PrefilterMaxTerms() {
+        const parsed = parseInt(process.env.RAG_BM25_PREFILTER_MAX_TERMS || process.env.BM25_PREFILTER_MAX_TERMS || '24', 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : 24;
+    }
+
+    isStrongBM25PrefilterTerm(token) {
+        const value = String(token || '').toLowerCase().trim();
+        if (!value) return false;
+
+        const weakTerms = new Set([
+            '就是', '但是', '没有', '完全', '可能', '作为', '一个', '必须', '不能', '本来',
+            '晚上', '产品', '发布', '感觉', '理解', '错误', '大量', '基于', '始终', '实力',
+            '有没有', '一下手', '不至于', '上下文', '冷嘲热讽', '装模作样', '领会到',
+            'the', 'and', 'or', 'not', 'with', 'from', 'this', 'that', 'have', 'has'
+        ]);
+        if (weakTerms.has(value) || this.stopWords.has(value)) return false;
+
+        if (/^[a-z][a-z0-9_.:/@#-]{2,}$/i.test(value)) return true;
+        if (/[a-z]+\w*\d/i.test(value) || /\d+[a-z]\w*/i.test(value)) return true;
+        if (/^[\u4e00-\u9fff]{3,}$/.test(value)) return true;
+        if (/^[\u4e00-\u9fff]{2,}(?:ai|llm|rag|api)$/i.test(value)) return true;
+
+        return false;
+    }
+
+    selectBM25PrefilterTerms(queryTokens, maxTerms = this.getBM25PrefilterMaxTerms()) {
+        const seen = new Set();
+        const selected = [];
+
+        for (const token of queryTokens || []) {
+            const value = String(token || '').toLowerCase().trim();
+            if (!value || seen.has(value)) continue;
+            if (!this.isStrongBM25PrefilterTerm(value)) continue;
+
+            seen.add(value);
+            selected.push(value);
+            if (selected.length >= maxTerms) break;
+        }
+
+        return selected;
+    }
+
+    escapeRegexLiteral(text) {
+        return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    buildBM25PrefilterRegex(terms) {
+        const escapedTerms = (terms || [])
+            .map(term => this.escapeRegexLiteral(term))
+            .filter(Boolean);
+
+        if (escapedTerms.length === 0) return '';
+        return `(?:${escapedTerms.join('|')})`;
+    }
+
+    normalizeDailyNoteSearcherPrefilterOutput(parsed, characterName) {
+        if (!parsed || parsed.status !== 'success') return [];
+
+        const notes = Array.isArray(parsed.result?.notes)
+            ? parsed.result.notes
+            : (Array.isArray(parsed.notes) ? parsed.notes : []);
+        if (notes.length === 0) return [];
+
+        const metas = [];
+        for (const note of notes) {
+            const file = String(note?.name || '').trim();
+            if (!file) continue;
+
+            const folderName = String(note?.folder_name || characterName || '').trim();
+            const relativePath = folderName ? path.join(folderName, file) : path.join(characterName, file);
+            const filePath = path.join(this.dailyNoteRootPath, relativePath);
+            const modifiedTime = Date.parse(note?.last_modified || '');
+
+            metas.push({
+                file,
+                filePath,
+                relativePath,
+                timeMs: Number.isFinite(modifiedTime) ? modifiedTime : 0,
+                content: typeof note?.content === 'string' ? note.content : null,
+                acceleratedBy: 'rust-dailynote-searcher-or-prefilter'
+            });
+        }
+
+        return metas;
+    }
+
+    async tryDailyNoteSearcherKeywordPrefilterViaHttp(characterName, queryTokens, limit) {
+        const terms = this.selectBM25PrefilterTerms(queryTokens);
+        if (terms.length === 0) return null;
+
+        const queryRegex = this.buildBM25PrefilterRegex(terms);
+        if (!queryRegex) return null;
+
+        const host = String(process.env.DAILY_NOTE_SEARCHER_HOST || '127.0.0.1');
+        const port = parseInt(process.env.DAILY_NOTE_SEARCHER_PORT || '38765', 10) || 38765;
+        const timeoutMs = parseInt(process.env.DAILY_NOTE_SEARCHER_TIMEOUT || '60000', 10) || 60000;
+        const prefilterLimit = Math.max(1, parseInt(limit, 10) || this.getBM25PrefilterLimit());
+
+        const payload = {
+            query: queryRegex,
+            folder: characterName,
+            root_path: this.dailyNoteRootPath,
+            allowed_extensions: 'md,txt',
+            max_results: prefilterLimit,
+            case_sensitive: false,
+            whole_word: false,
+            is_regex: true,
+            context_lines: 0,
+            preview_length: 80
+        };
+
+        try {
+            const parsed = await this.postDailyNoteSearcherHttp(host, port, payload, timeoutMs);
+            const metas = this.normalizeDailyNoteSearcherPrefilterOutput(parsed, characterName);
+            if (metas.length > 0) {
+                this.logger.log(`[DirectDiaryTextProcessor] BM25 OR prefilter hit ${metas.length} files for "${characterName}" using terms: ${terms.join(', ')}`);
+            } else {
+                this.logger.log(`[DirectDiaryTextProcessor] BM25 OR prefilter found no files for "${characterName}" using terms: ${terms.join(', ')}`);
+            }
+            return metas;
+        } catch (error) {
+            this.logger.warn(`[DirectDiaryTextProcessor] BM25 OR prefilter failed, falling back to recent window: ${error.message}`);
+            return null;
+        }
     }
 
     runDailyNoteSearcherExecutable(executablePath, payload) {
@@ -403,6 +538,27 @@ class DirectDiaryTextProcessor {
 
     normalizeBM25QueryInput(text) {
         return this.sanitizeUserInputForBM25(text);
+    }
+
+    buildOptimizedBM25QueryText(userText, aiText = '', options = {}) {
+        const optimized = this.bm25QueryOptimizer.createQueryText({
+            userText,
+            aiText,
+            baseWeights: Array.isArray(options.baseWeights) ? options.baseWeights : [1, 0],
+            normalize: (text) => this.normalizeBM25QueryInput(text),
+            tokenize: (text) => this.tokenize(text),
+            options: options.optimizerOptions || {}
+        });
+
+        if (optimized.queryText) {
+            this.logger.log(
+                `[DirectDiaryTextProcessor] BM25 query optimized: ` +
+                `tokens=${optimized.queryTokens.length}, terms=${optimized.selectedTerms.length}, ` +
+                `userRatio=${optimized.userRatio.toFixed(2)}, aiRatio=${optimized.aiRatio.toFixed(2)}`
+            );
+        }
+
+        return optimized.queryText || this.normalizeBM25QueryInput(userText);
     }
 
     extractTagLine(content) {
@@ -581,36 +737,53 @@ class DirectDiaryTextProcessor {
         const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
         const normalizedMode = mode === 'body' ? 'body' : 'tag';
         const modeLabel = normalizedMode === 'body' ? '正文' : 'Tag 行';
-        const recentFiles = await this.getRecentDiaryFileMetas(characterName, safeLimit);
-
-        if (recentFiles.length === 0) {
-            return {
-                matched: false,
-                entries: [],
-                matchedCount: 0,
-                queryTokens: [],
-                fallbackFiles: recentFiles,
-                reason: 'empty'
-            };
-        }
-
         const queryTokens = this.tokenize(queryText);
+
+        let recentFiles = null;
+        const loadRecentFiles = async () => {
+            if (!recentFiles) {
+                recentFiles = await this.getRecentDiaryFileMetas(characterName, safeLimit);
+            }
+            return recentFiles;
+        };
+
         if (queryTokens.length === 0) {
+            const fallbackFiles = await loadRecentFiles();
             this.logger.warn(`[DirectDiaryTextProcessor] ::BM25${normalizedMode === 'body' ? '+' : ''} query tokens are empty after sanitization/blacklist. Fallback to ::Last${safeLimit}.`);
             return {
                 matched: false,
                 entries: [],
                 matchedCount: 0,
                 queryTokens,
-                fallbackFiles: recentFiles,
+                fallbackFiles,
                 reason: 'empty-query'
             };
         }
 
+        const prefilterLimit = Math.max(safeLimit, this.getBM25PrefilterLimit());
+        const prefilteredFiles = await this.tryDailyNoteSearcherKeywordPrefilterViaHttp(characterName, queryTokens, prefilterLimit);
+        const candidateFileMetas = Array.isArray(prefilteredFiles) && prefilteredFiles.length > 0
+            ? prefilteredFiles
+            : await loadRecentFiles();
+        const usedPrefilter = Array.isArray(prefilteredFiles) && prefilteredFiles.length > 0;
+
+        if (candidateFileMetas.length === 0) {
+            return {
+                matched: false,
+                entries: [],
+                matchedCount: 0,
+                queryTokens,
+                fallbackFiles: candidateFileMetas,
+                reason: 'empty'
+            };
+        }
+
         const candidates = await Promise.all(
-            recentFiles.map(async (meta) => {
+            candidateFileMetas.map(async (meta) => {
                 try {
-                    const content = await fs.readFile(meta.filePath, 'utf-8');
+                    const content = typeof meta.content === 'string'
+                        ? meta.content
+                        : await fs.readFile(meta.filePath, 'utf-8');
                     const matchText = normalizedMode === 'body'
                         ? this.extractBodyForBM25(content)
                         : this.extractTagLine(content);
@@ -633,13 +806,14 @@ class DirectDiaryTextProcessor {
 
         const docsWithTokens = candidates.filter(candidate => candidate.tokens.length > 0);
         if (docsWithTokens.length === 0) {
+            const fallbackFiles = usedPrefilter ? await loadRecentFiles() : candidateFileMetas;
             this.logger.warn(`[DirectDiaryTextProcessor] ::BM25${normalizedMode === 'body' ? '+' : ''} found no ${modeLabel} tokens in "${characterName}". Fallback to ::Last${safeLimit}.`);
             return {
                 matched: false,
                 entries: [],
                 matchedCount: 0,
                 queryTokens,
-                fallbackFiles: recentFiles,
+                fallbackFiles,
                 reason: 'empty-doc-tokens'
             };
         }
@@ -661,24 +835,27 @@ class DirectDiaryTextProcessor {
             });
 
         if (rankedCandidates.length === 0) {
+            const fallbackFiles = usedPrefilter ? await loadRecentFiles() : candidateFileMetas;
             this.logger.warn(`[DirectDiaryTextProcessor] ::BM25${normalizedMode === 'body' ? '+' : ''} no positive ${modeLabel} match for "${characterName}". Fallback to ::Last${safeLimit}.`);
             return {
                 matched: false,
                 entries: [],
                 matchedCount: 0,
                 queryTokens,
-                fallbackFiles: recentFiles,
+                fallbackFiles,
                 reason: 'no-positive-score'
             };
         }
 
+        const limitedRankedCandidates = rankedCandidates.slice(0, safeLimit);
+
         return {
             matched: true,
-            entries: rankedCandidates,
+            entries: limitedRankedCandidates,
             matchedCount: rankedCandidates.length,
             queryTokens,
-            fallbackFiles: recentFiles,
-            reason: 'matched'
+            fallbackFiles: usedPrefilter ? await loadRecentFiles() : candidateFileMetas,
+            reason: usedPrefilter ? 'matched-prefilter' : 'matched-recent'
         };
     }
 
@@ -824,7 +1001,8 @@ class DirectDiaryTextProcessor {
                 let bm25Result = null;
 
                 if (useBM25) {
-                    bm25Result = await this.getBM25DiaryContent(dbName, sanitizedUserInput, effectiveLastLimit || 10, bm25Mode);
+                    const optimizedBM25QueryText = this.buildOptimizedBM25QueryText(sanitizedUserInput);
+                    bm25Result = await this.getBM25DiaryContent(dbName, optimizedBM25QueryText, effectiveLastLimit || 10, bm25Mode);
                     diaryContent = bm25Result.content;
                 } else if (useRandom) {
                     diaryContent = await this.getRandomDiaryContent(dbName, requestedRandomLimit);

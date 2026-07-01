@@ -7,12 +7,14 @@
 //
 // 设计原则：
 //   1. 只做"占位符外壳 + TDB 专业检索管线"，不继承日记本的 TagMemo / Associate / Time 等热记忆语义。
-//   2. 仅支持 :K、::Rerank、::Rerank+0.7、::TruncateX、::Expand 五个后缀，其余修饰符静默忽略。
+//   2. 支持 :K、::Rerank、::Rerank+0.7、::TruncateX、::Expand、::BM25、::BM25+ 后缀，其余修饰符静默忽略。
+//      注意：冷知识库没有日记本 Tag 行语义，::BM25 / ::BM25+ 均只作用于 chunk 全文文本索引。
 //   3. VCPInfo 推送复用 RAGDiaryPlugin 的 RAG_RETRIEVAL_DETAILS 格式，做到前端二次兼容（无需前端二次开发）。
 //   4. 不复用 VCP_RAG_BLOCK_START 自描述块标记，避免被日记本的 RAG 记忆刷新逻辑（refreshRagBlock）误劫持。
 
 const path = require('path');
 const fs = require('fs').promises;
+const BM25QueryOptimizer = require('./BM25QueryOptimizer.js');
 
 const DEFAULT_TDB_THRESHOLD = 0.30; // 《《》》门控的默认相似度阈值（冷知识库通常比日记本更宽松）
 
@@ -27,6 +29,9 @@ class TDBPlaceholderProcessor {
         // 库名增强向量缓存：libraryName -> { nameVector, enhancedVector, threshold }
         this.libraryConfig = {};        // 从 tdb_tags.json 加载的 { 库名: { threshold, tags, description } }
         this.libraryVectorCache = new Map();
+
+        // 🔎 冷知识库 BM25 查询优化器：仅优化传给 TDB 文本索引的 chunk 全文查询，不引入日记本 Tag 语义。
+        this.bm25QueryOptimizer = new BM25QueryOptimizer({ logger: console });
     }
 
     /**
@@ -75,6 +80,8 @@ class TDBPlaceholderProcessor {
      *   ::Rerank+0.7  → RRF 融合（α=0.7）
      *   ::TruncateX   → 分数阈值过滤（如 ::Truncate0.35）
      *   ::Expand      → 父文档展开
+     *   ::BM25        → 优化 TDB 文本侧查询（chunk 全文）
+     *   ::BM25+       → 同 ::BM25；冷知识库无 Tag 行，仍只匹配 chunk 全文
      */
     _parseModifiers(modifiers, defaultK) {
         const mod = modifiers || '';
@@ -102,7 +109,12 @@ class TDBPlaceholderProcessor {
         // Expand
         const useExpand = /::Expand/.test(mod);
 
-        return { k, useRerank, useRerankPlus, rrfAlpha, truncateThreshold, useExpand };
+        // BM25：冷知识库没有 Tag 行，::BM25 / ::BM25+ 均只用于 chunk 全文文本索引查询优化。
+        const bm25Match = mod.match(/::BM25(\+)?(?:\d*\.?\d+)?(?=$|::|[^\d.])/i);
+        const useBM25 = !!bm25Match;
+        const useBM25Plus = !!(bm25Match && bm25Match[1]);
+
+        return { k, useRerank, useRerankPlus, rrfAlpha, truncateThreshold, useExpand, useBM25, useBM25Plus, bm25Mode: useBM25 ? 'body' : null };
     }
 
     /**
@@ -189,6 +201,78 @@ class TDBPlaceholderProcessor {
     // 核心检索
     // ────────────────────────────────────────────────────────────
 
+    _normalizeBM25QueryInput(text) {
+        const processor = this.host?.directDiaryTextProcessor;
+        if (processor && typeof processor.normalizeBM25QueryInput === 'function') {
+            return processor.normalizeBM25QueryInput(text);
+        }
+
+        return String(text || '')
+            .replace(/\{\{.*?\}\}/gs, ' ')
+            .replace(/\[\[.*?\]\]/gs, ' ')
+            .replace(/<<.*?>>/gs, ' ')
+            .replace(/《《.*?》》/gs, ' ')
+            .replace(/<<<\[TOOL_REQUEST\]>>>[\s\S]*?<<<\[END_TOOL_REQUEST\]>>>/g, ' ')
+            .replace(/「始」[\s\S]*?「末」/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    _tokenizeBM25Query(text) {
+        const processor = this.host?.directDiaryTextProcessor;
+        if (processor && typeof processor.tokenize === 'function') {
+            return processor.tokenize(text);
+        }
+
+        return String(text || '')
+            .toLowerCase()
+            .match(/[\u4e00-\u9fff]{2,}|[a-z_][a-z0-9_.:/@#-]{1,}|\d+(?:\.\d+)*/gi) || [];
+    }
+
+    _buildTdbBM25QueryText(queryText, opts) {
+        if (!opts.useBM25) {
+            return {
+                queryText,
+                queryTokens: [],
+                selectedTerms: [],
+                optimized: false
+            };
+        }
+
+        try {
+            const config = this.host?.ragParams?.RAGDiaryPlugin || {};
+            const optimized = this.bm25QueryOptimizer.createQueryText({
+                userText: queryText,
+                aiText: '',
+                baseWeights: [1, 0],
+                normalize: (text) => this._normalizeBM25QueryInput(text),
+                tokenize: (text) => this._tokenizeBM25Query(text),
+                options: config.bm25QueryOptimizer || {}
+            });
+
+            if (optimized.queryText) {
+                console.log(
+                    `[TDBPlaceholder] BM25 chunk query optimized: ` +
+                    `tokens=${optimized.queryTokens.length}, terms=${optimized.selectedTerms.length}, ` +
+                    `mode=body${opts.useBM25Plus ? '+' : ''}`
+                );
+                return {
+                    ...optimized,
+                    optimized: true
+                };
+            }
+        } catch (e) {
+            console.warn('[TDBPlaceholder] BM25 查询优化失败，使用原始 queryText:', e.message);
+        }
+
+        return {
+            queryText: this._normalizeBM25QueryInput(queryText) || queryText,
+            queryTokens: [],
+            selectedTerms: [],
+            optimized: false
+        };
+    }
+
     /**
      * 执行 TDB 检索 + 可选 Rerank + Truncate。返回 { results, opts }。
      */
@@ -200,7 +284,12 @@ class TDBPlaceholderProcessor {
             ? Math.max(k, Math.round(k * (this.host.rerankConfig?.multiplier || 2.0)))
             : k;
 
-        let hits = await this.tdbKnowledgeManager.searchWithVector(queryVector, queryText, {
+        const sparseQuery = this._buildTdbBM25QueryText(queryText, opts);
+        opts.bm25QueryTokens = sparseQuery.queryTokens || [];
+        opts.bm25OptimizedQuery = sparseQuery.queryText;
+        opts.useBM25Optimizer = !!sparseQuery.optimized;
+
+        let hits = await this.tdbKnowledgeManager.searchWithVector(queryVector, sparseQuery.queryText, {
             libraries: libraryNames,
             topK: fetchK,
             expandDepth: 1,
@@ -279,6 +368,11 @@ class TDBPlaceholderProcessor {
             useGeodesicRerank: false,
             useExpand: opts.useExpand,
             useAssociate: false,
+            useBM25: opts.useBM25,
+            bm25Mode: opts.bm25Mode,
+            bm25QueryTokens: opts.bm25QueryTokens,
+            bm25OptimizedQuery: opts.bm25OptimizedQuery,
+            useBM25Optimizer: opts.useBM25Optimizer,
             useTagMemo: false,
             tagWeight: null,
             coreTags: [],
