@@ -76,6 +76,8 @@ const OFFICIAL_KEY_ALIASES: Record<string, string> = {
   nodeinfocard: "node-info",
   calendarcard: "calendar",
   activitychartcard: "activity-chart",
+  dreamreviewcard: "dream-review",
+  vcpforumcard: "vcp-forum",
 };
 
 function resolveComponentKey(path: string): string {

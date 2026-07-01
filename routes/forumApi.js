@@ -296,7 +296,13 @@ router.get('/posts', async (req, res) => {
                     matchCount++;
                 }
 
-                return { ...postMeta, lastReplyBy, lastReplyAt };
+                return {
+                    ...postMeta,
+                    lastReplyBy,
+                    lastReplyAt,
+                    modifiedAt: stats.mtime.toISOString(),
+                    mtimeMs: stats.mtimeMs
+                };
             } catch (err) {
                 console.warn(`[Forum API] Error processing file ${file}:`, err.message);
                 return null;
@@ -306,9 +312,9 @@ router.get('/posts', async (req, res) => {
         const posts = (await Promise.all(postsPromises)).filter(Boolean);
         
         posts.sort((a, b) => {
-            const dateA = a.lastReplyAt ? new Date(a.lastReplyAt) : new Date(a.timestamp.replace(/-/g, ':').replace('T', ' '));
-            const dateB = b.lastReplyAt ? new Date(b.lastReplyAt) : new Date(b.timestamp.replace(/-/g, ':').replace('T', ' '));
-            return dateB - dateA;
+            const timeA = typeof a.mtimeMs === 'number' ? a.mtimeMs : (a.lastReplyAt ? new Date(a.lastReplyAt).getTime() : new Date(a.timestamp.replace(/-/g, ':').replace('T', ' ')).getTime());
+            const timeB = typeof b.mtimeMs === 'number' ? b.mtimeMs : (b.lastReplyAt ? new Date(b.lastReplyAt).getTime() : new Date(b.timestamp.replace(/-/g, ':').replace('T', ' ')).getTime());
+            return timeB - timeA;
         });
 
         res.json({ success: true, posts });

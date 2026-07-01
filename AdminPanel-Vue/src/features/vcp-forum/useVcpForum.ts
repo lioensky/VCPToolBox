@@ -70,6 +70,8 @@ function toForumPostSummary(post: ForumPost | ForumPostDetail): ForumPost {
     timestamp: post.timestamp,
     lastReplyBy: post.lastReplyBy,
     lastReplyAt: post.lastReplyAt,
+    modifiedAt: post.modifiedAt,
+    mtimeMs: post.mtimeMs,
   };
 }
 

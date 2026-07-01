@@ -39,25 +39,25 @@
         </UiCard>
         <UiCard
           class="add-schedule-form"
-          title="添加日程"
-          description="创建一条带时间的提醒事项。"
+          :title="editingScheduleId ? '编辑日程' : '添加日程'"
+          :description="editingScheduleId ? '修改已创建日程的时间和内容。' : '创建一条带时间的提醒事项。'"
           size="sm"
           variant="subtle"
           divided
         >
           <UiSettingsForm as="div" :columns="1" gap="sm">
-            <UiField label="时间" for-id="new-schedule-time" size="sm">
+            <UiField label="时间" for-id="schedule-time" size="sm">
               <UiInput
-                id="new-schedule-time"
-                v-model="newSchedule.time"
+                id="schedule-time"
+                v-model="scheduleDraft.time"
                 size="sm"
                 type="datetime-local"
               />
             </UiField>
-            <UiField label="内容" for-id="new-schedule-content" size="sm">
+            <UiField label="内容" for-id="schedule-content" size="sm">
               <UiTextarea
-                id="new-schedule-content"
-                v-model="newSchedule.content"
+                id="schedule-content"
+                v-model="scheduleDraft.content"
                 size="sm"
                 rows="3"
                 placeholder="描述日程内容…"
@@ -66,7 +66,18 @@
           </UiSettingsForm>
           <template #footer>
             <div class="card-footer-actions">
-              <UiButton size="sm" type="button" @click="addSchedule">添加</UiButton>
+              <UiButton
+                v-if="editingScheduleId"
+                size="sm"
+                type="button"
+                variant="ghost"
+                @click="cancelEdit"
+              >
+                取消编辑
+              </UiButton>
+              <UiButton size="sm" type="button" @click="saveSchedule">
+                {{ editingScheduleId ? "保存修改" : "添加" }}
+              </UiButton>
             </div>
           </template>
         </UiCard>
@@ -112,14 +123,24 @@
             >
               <div class="schedule-time">{{ formatScheduleTime(schedule.time) }}</div>
               <div class="schedule-content">{{ schedule.content }}</div>
-              <UiButton
-                type="button"
-                variant="danger"
-                size="sm"
-                @click="deleteSchedule(schedule.id)"
-              >
-                删除
-              </UiButton>
+              <div class="schedule-actions">
+                <UiButton
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  @click="startEdit(schedule)"
+                >
+                  编辑
+                </UiButton>
+                <UiButton
+                  type="button"
+                  variant="danger"
+                  size="sm"
+                  @click="deleteSchedule(schedule.id)"
+                >
+                  删除
+                </UiButton>
+              </div>
             </div>
           </div>
         </UiCard>
@@ -161,7 +182,8 @@ interface CalendarDay {
 const currentDate = ref(new Date());
 const selectedDate = ref<Date | null>(null);
 const schedules = ref<Schedule[]>([]);
-const newSchedule = ref({ time: "", content: "" });
+const scheduleDraft = ref({ time: "", content: "" });
+const editingScheduleId = ref<string | null>(null);
 const filterType = ref<"all" | "upcoming">("all");
 
 const currentMonthYear = computed(() =>
@@ -263,28 +285,73 @@ async function loadSchedules() {
   }
 }
 
-async function addSchedule() {
-  if (!newSchedule.value.time || !newSchedule.value.content.trim()) {
+function resetScheduleDraft() {
+  scheduleDraft.value = { time: "", content: "" };
+  editingScheduleId.value = null;
+}
+
+function startEdit(schedule: Schedule) {
+  editingScheduleId.value = schedule.id;
+  scheduleDraft.value = {
+    time: toDatetimeLocalValue(schedule.time),
+    content: schedule.content,
+  };
+}
+
+function cancelEdit() {
+  resetScheduleDraft();
+}
+
+function toDatetimeLocalValue(time: string): string {
+  const date = new Date(time);
+
+  if (Number.isNaN(date.getTime())) {
+    return time;
+  }
+
+  const timezoneOffset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - timezoneOffset).toISOString().slice(0, 16);
+}
+
+async function saveSchedule() {
+  if (!scheduleDraft.value.time || !scheduleDraft.value.content.trim()) {
     showMessage("请同时填写时间和内容。", "error");
     return;
   }
 
+  const payload = {
+    time: scheduleDraft.value.time,
+    content: scheduleDraft.value.content.trim(),
+  };
+
   try {
-    await scheduleApi.createSchedule(
-      {
-        time: newSchedule.value.time,
-        content: newSchedule.value.content.trim(),
-      },
-      {
-        loadingKey: "schedule.create",
-      }
-    );
-    showMessage("日程已添加。", "success");
-    newSchedule.value = { time: "", content: "" };
+    if (editingScheduleId.value) {
+      await scheduleApi.updateSchedule(
+        editingScheduleId.value,
+        payload,
+        {
+          loadingKey: "schedule.update",
+        }
+      );
+      showMessage("日程已更新。", "success");
+    } else {
+      await scheduleApi.createSchedule(
+        payload,
+        {
+          loadingKey: "schedule.create",
+        }
+      );
+      showMessage("日程已添加。", "success");
+    }
+
+    resetScheduleDraft();
     await loadSchedules();
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    showMessage(`添加日程失败：${errorMessage}`, "error");
+    showMessage(
+      `${editingScheduleId.value ? "更新" : "添加"}日程失败：${errorMessage}`,
+      "error"
+    );
   }
 }
 
@@ -414,6 +481,7 @@ onMounted(() => {
 .card-footer-actions {
   display: flex;
   width: 100%;
+  gap: var(--space-2);
   align-items: center;
   justify-content: flex-end;
 }
@@ -453,6 +521,13 @@ onMounted(() => {
 .schedule-content {
   flex: 1;
   font-size: var(--font-size-body);
+}
+
+.schedule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
 }
 
 @media (max-width: 1024px) {

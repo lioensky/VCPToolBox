@@ -83,6 +83,14 @@ function normalizePost(raw: unknown): ForumPost | null {
       typeof raw.lastReplyAt === "string" || raw.lastReplyAt === null
         ? raw.lastReplyAt
         : null,
+    modifiedAt:
+      typeof raw.modifiedAt === "string" || raw.modifiedAt === null
+        ? raw.modifiedAt
+        : null,
+    mtimeMs:
+      typeof raw.mtimeMs === "number" && Number.isFinite(raw.mtimeMs)
+        ? raw.mtimeMs
+        : null,
   };
 }
 

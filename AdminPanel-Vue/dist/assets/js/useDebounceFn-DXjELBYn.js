@@ -1,0 +1,1 @@
+import{nt as a,tt as i,z as r}from"./vue-vendor-di852egx.js";function f(u,t){const{delay:s}=t,e=a(null),n=a(!1),l=()=>{e.value&&(clearTimeout(e.value),e.value=null,n.value=!1)},o=(...c)=>{e.value&&clearTimeout(e.value),n.value=!0,e.value=setTimeout(()=>{u(...c),n.value=!1,e.value=null},s)};return r(()=>{l()}),Object.assign(o,{cancel:l,isPending:i(n)})}export{f as t};

@@ -48,6 +48,21 @@ export const scheduleApi = {
     );
   },
 
+  async updateSchedule(
+    id: string,
+    payload: Pick<Schedule, "time" | "content">,
+    uiOptions: RequestUiOptions = {}
+  ): Promise<void> {
+    await requestWithUi(
+      {
+        url: `/admin_api/schedules/${encodeURIComponent(id)}`,
+        method: "PUT",
+        body: payload,
+      },
+      uiOptions
+    );
+  },
+
   async deleteSchedule(
     id: string,
     uiOptions: RequestUiOptions = {}
