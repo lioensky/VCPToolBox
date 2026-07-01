@@ -349,8 +349,8 @@ class DirectDiaryTextProcessor {
 
     getBM25Mode(modifiers) {
         if (typeof modifiers !== 'string') return null;
-        if (/::BM25\+/i.test(modifiers)) return 'body';
-        if (/::BM25\b/i.test(modifiers)) return 'tag';
+        if (/::BM25\+(?:\d*\.?\d+)?(?=$|::|[^\d.])/i.test(modifiers)) return 'body';
+        if (/::BM25(?:\d*\.?\d+)?(?=$|::|[^\d.])/i.test(modifiers)) return 'tag';
         return null;
     }
 
