@@ -8,7 +8,7 @@
     "lWeight": 0.05,
     "sWeight": 0.05,
     "fuzzyEmbedding": {
-      "threshold": 0.96,
+      "threshold": 0.975,
       "minLength": 80,
       "maxScan": 200,
       "maxLengthDiffRatio": 0.02,
@@ -18,8 +18,8 @@
   "RAGDiaryPlugin": {
     "noise_penalty": 0.05,
     "tagWeightRange": [
-      0.05,
-      0.45
+      0.2,
+      0.65
     ],
     "tagTruncationBase": 0.6,
     "tagTruncationRange": [
@@ -48,8 +48,14 @@
   },
   "KnowledgeBaseManager": {
     "geodesicRerank": {
-      "alpha": 0.5,
-      "minGeoSamples": 4
+      "alpha": 0.45,
+      "minGeoSamples": 4,
+      "fallbackToKnnOnLowTrust": 1,
+      "minFieldTags": 4,
+      "minFieldEntropy": 0.12,
+      "minGeoCoverageRatio": 0.2,
+      "minMaxGeoScore": 0.01,
+      "minGeoScoreSpread": 0.03
     },
     "spikeRouting": {
       "maxSafeHops": 4,

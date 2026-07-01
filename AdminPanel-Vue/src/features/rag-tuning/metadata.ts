@@ -323,8 +323,8 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
     geodesicRerank: {
       label: "测地线重排(V8)",
       summary: "复用 Spike 距离场对 KNN 候选做基于 Tag 地形的二次重排。通过 ::TagMemo+ 修饰符激活。",
-      logic: "V8 核心引擎，让被语义山峰挡住的相关记忆通过 Tag 拓扑关联浮出。三层防御链保证最坏情况无改动。",
-      range: "包含 2 个子参数，见下方详细说明。",
+      logic: "V8 核心引擎，让被语义山峰挡住的相关记忆通过 Tag 拓扑关联浮出。新增地图可信度门控：当能量场过稀、采样覆盖不足或测地线分数没有区分度时，主动回归 KNN 保底。",
+      range: "包含 α、采样密度与低可信地图回退等 8 个子参数，见下方详细说明。",
       tone: "critical",
     },
     "geodesicRerank.alpha": {
@@ -339,6 +339,48 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       summary: "一个 chunk 在距离场上至少需要命中多少个 Tag 才有资格参与测地线评估。低于此值退化为纯 KNN。",
       logic: "调高：更严格，只有 Tag 密度高的 chunk 才会被测地线影响；调低：更宽松，但可能因采样不足导致估计不可靠。莱恩建议 4 作为基准。",
       range: "建议区间: 2 ~ 8 (整数，默认 4)",
+      tone: "sensitive",
+    },
+    "geodesicRerank.fallbackToKnnOnLowTrust": {
+      label: "低可信地图回归 KNN",
+      summary: "测地线地图可信度不足时是否直接回到原始 KNN 排序。1=开启，0=关闭。",
+      logic: "建议保持开启。关闭后即使 Tag 能量场稀疏、候选采样不足或测地线分数缺乏区分度，也会继续尝试测地线融合，误伤风险更高。",
+      range: "0 (关闭) / 1 (开启)，默认 1",
+      tone: "critical",
+    },
+    "geodesicRerank.minFieldTags": {
+      label: "地图最小激活 Tag 数",
+      summary: "查询级 Tag 能量场至少需要激活多少个正能量 Tag，才认为这张语义地图具备基本可信度。",
+      logic: "调高会更保守，低覆盖 query 更容易回归 KNN；调低会允许更稀疏的地图参与重排。",
+      range: "建议 2 ~ 12，默认 4",
+      tone: "sensitive",
+    },
+    "geodesicRerank.minFieldEntropy": {
+      label: "地图最小熵",
+      summary: "限制能量场不能过度集中在单个 Tag 上，避免单点幻觉把测地线重排带偏。",
+      logic: "调高会要求 Tag 能量更分散、更像一张地图；调低会允许强单峰地图参与重排。若频繁回退可略降到 0.08。",
+      range: "建议 0.05 ~ 0.30，默认 0.12",
+      tone: "sensitive",
+    },
+    "geodesicRerank.minGeoCoverageRatio": {
+      label: "候选最小测地线覆盖率",
+      summary: "参与测地线贡献的候选占总候选的最低比例。低于此值说明候选池对当前地图采样不足。",
+      logic: "调高会更保守，只有较多候选都能被 Tag 地图解释时才启用测地线；调低则更愿意使用局部地图。",
+      range: "建议 0.10 ~ 0.50，默认 0.20",
+      tone: "sensitive",
+    },
+    "geodesicRerank.minMaxGeoScore": {
+      label: "最大地形能量下限",
+      summary: "候选中最高测地线原始分数必须达到该值，否则认为整张地图对候选池太弱。",
+      logic: "用于防止所有候选都只吃到极弱能量还被归一化放大。一般保持很小即可。",
+      range: "建议 0.001 ~ 0.10，默认 0.01",
+      tone: "stable",
+    },
+    "geodesicRerank.minGeoScoreSpread": {
+      label: "地形分数最小区分度",
+      summary: "候选测地线分数的最大值与最小正值差距。差距过小说明地图没有排序分辨率。",
+      logic: "调高会要求测地线更有区分能力才参与融合；调低会允许平坦地形也参与重排。",
+      range: "建议 0.005 ~ 0.20，默认 0.03",
       tone: "sensitive",
     },
     orderedCooccurrence: {
@@ -634,7 +676,27 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
   if (key === "geodesicrerank.alpha") {
     return { min: 0, max: 1, step: 0.01 };
   }
-  
+
+  // 🛡️ V8: 测地线低可信地图回退开关
+  if (key === "geodesicrerank.fallbacktoknnonlowtrust") {
+    return { min: 0, max: 1, step: 1 };
+  }
+
+  // 🛡️ V8: 查询级地图最小激活 Tag 数
+  if (key === "geodesicrerank.minfieldtags") {
+    return { min: 1, max: 20, step: 1 };
+  }
+
+  // 🛡️ V8: 查询级地图熵与候选覆盖/区分度门槛
+  if (
+    key === "geodesicrerank.minfieldentropy"
+    || key === "geodesicrerank.mingeocoverageratio"
+    || key === "geodesicrerank.minmaxgeoscore"
+    || key === "geodesicrerank.mingeoscorespread"
+  ) {
+    return { min: 0, max: 1, step: 0.01 };
+  }
+
   // 🆕 V8: 最小采样密度门槛
   if (leafKey.includes('samples')) {
     return { min: 1, max: 20, step: 1 };
