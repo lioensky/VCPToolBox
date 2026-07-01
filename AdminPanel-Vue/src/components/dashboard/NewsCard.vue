@@ -107,23 +107,30 @@ function getStableItemId(item: NewsItem): string {
 
 .news-header {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 16px;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .news-header .dashboard-card-title {
+  min-width: 0;
   margin-bottom: 0;
+  padding-right: 8px;
 }
 
 .source-filter {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .source-select {
-  padding: 6px 28px 6px 12px;
+  max-width: 132px;
+  padding: 5px 26px 5px 10px;
   border: 1px solid var(--warning-border);
   border-radius: 8px;
   background: var(--warning-bg);
@@ -161,8 +168,8 @@ function getStableItemId(item: NewsItem): string {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border: 1px solid var(--warning-border);
   border-radius: 6px;
@@ -293,13 +300,13 @@ function getStableItemId(item: NewsItem): string {
 /* 断点 1: ≥520px - 宽松布局 */
 @container dashboard-card (min-width: 520px) {
   .news-header {
-    flex-direction: row;
     align-items: center;
-    justify-content: space-between;
+    margin-bottom: 12px;
   }
 
   .source-select {
     min-width: 120px;
+    max-width: 180px;
   }
 
   .news-scroller {
