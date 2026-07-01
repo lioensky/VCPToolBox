@@ -253,6 +253,51 @@
 
         <div class="agent-file-workspace">
           <div class="agent-file-editor">
+            <div
+              v-if="editingFile"
+              class="diary-syntax-scan-panel"
+              aria-label="检测到的日记本语法"
+            >
+              <div class="diary-syntax-scan-header">
+                <div>
+                  <strong>日记本语法扫描</strong>
+                  <span>检测到 {{ diarySyntaxMatches.length }} 个占位符</span>
+                </div>
+                <UiBadge :variant="diarySyntaxMatches.length > 0 ? 'info' : 'secondary'">
+                  {{ diarySyntaxMatches.length > 0 ? "可编辑" : "未检测到" }}
+                </UiBadge>
+              </div>
+              <div v-if="diarySyntaxMatches.length > 0" class="diary-syntax-chip-list">
+                <article
+                  v-for="match in diarySyntaxMatches"
+                  :key="match.id"
+                  class="diary-syntax-chip"
+                  :class="{ active: editingDiarySyntaxRange?.start === match.start }"
+                >
+                  <div class="diary-syntax-chip-main">
+                    <div class="diary-syntax-chip-meta">
+                      <UiBadge :variant="match.shell.includes('advanced') ? 'info' : 'success'">
+                        {{ getDiarySyntaxShellLabel(match.shell) }}
+                      </UiBadge>
+                      <span>第 {{ match.line }} 行，第 {{ match.column }} 列</span>
+                    </div>
+                    <code>{{ match.raw }}</code>
+                  </div>
+                  <div class="diary-syntax-chip-actions">
+                    <UiButton variant="outline" size="sm" @click="focusDiarySyntax(match)">
+                      定位
+                    </UiButton>
+                    <UiButton variant="primary" size="sm" @click="editDiarySyntax(match)">
+                      编辑
+                    </UiButton>
+                  </div>
+                </article>
+              </div>
+              <p v-else class="diary-syntax-empty">
+                当前文件内没有检测到 <code v-text="'{{...}}'"></code>、<code>[[...]]</code>、
+                <code><<...>></code> 或 <code>《《...》》</code> 日记本语法。
+              </p>
+            </div>
             <UiTextarea
               ref="fileContentEditorRef"
               v-model="fileContent"
@@ -366,7 +411,10 @@
 
     <DiarySyntaxEditorModal
       v-model="isDiarySyntaxEditorOpen"
+      :initial-state="editingDiarySyntaxState"
+      :mode="diarySyntaxEditorMode"
       @insert="insertDiarySyntax"
+      @replace="replaceDiarySyntax"
     />
 
     <UiBadge
@@ -393,6 +441,14 @@ import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import UiTextarea from "@/components/ui/UiTextarea.vue";
 import DiarySyntaxEditorModal from "./AgentFilesEditor/DiarySyntaxEditorModal.vue";
+import {
+  createDefaultDiarySyntaxState,
+  scanDiarySyntaxes,
+  type DiarySyntaxEditorState,
+  type DiarySyntaxMatch,
+  type DiarySyntaxRange,
+  type DiarySyntaxShell,
+} from "./AgentFilesEditor/diarySyntaxParser";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import type {
   AgentFilesStatusType,
@@ -463,6 +519,9 @@ const activePlaceholderSource = ref<QuickPlaceholderGroup["key"]>("toolbox");
 const toolboxPlaceholders = ref<QuickPlaceholderItem[]>([]);
 const envPlaceholders = ref<QuickPlaceholderItem[]>([]);
 const fileContentEditorRef = ref<InstanceType<typeof UiTextarea> | null>(null);
+const diarySyntaxEditorMode = ref<"insert" | "replace">("insert");
+const editingDiarySyntaxState = ref<DiarySyntaxEditorState | null>(null);
+const editingDiarySyntaxRange = ref<DiarySyntaxRange | null>(null);
 
 const agentFilesDatalistId = "agent-file-options";
 const AGENT_FILE_EXTENSION_PATTERN = /\.(txt|md)$/i;
@@ -499,6 +558,8 @@ const fileDirty = computed(() => {
 });
 
 const hasPendingChanges = computed(() => mapDirty.value || fileDirty.value);
+
+const diarySyntaxMatches = computed<DiarySyntaxMatch[]>(() => scanDiarySyntaxes(fileContent.value));
 
 function sanitizeAgentFileInput(fileName: string): string {
   return fileName.trim().replace(/\\/g, "/");
@@ -997,7 +1058,45 @@ async function selectAgentFile(fileName: string): Promise<void> {
 }
 
 function openDiarySyntaxEditor(): void {
+  diarySyntaxEditorMode.value = "insert";
+  editingDiarySyntaxState.value = createDefaultDiarySyntaxState();
+  editingDiarySyntaxRange.value = null;
   isDiarySyntaxEditorOpen.value = true;
+}
+
+async function focusDiarySyntax(match: DiarySyntaxMatch): Promise<void> {
+  const editor = fileContentEditorRef.value;
+  if (!editor) {
+    return;
+  }
+
+  await nextTick();
+  editor.focus({ preventScroll: true });
+  editor.setSelectionRange(match.start, match.end);
+  showMessage(`已定位到第 ${match.line} 行的日记本语法。`, "info");
+}
+
+function editDiarySyntax(match: DiarySyntaxMatch): void {
+  diarySyntaxEditorMode.value = "replace";
+  editingDiarySyntaxState.value = match.state;
+  editingDiarySyntaxRange.value = {
+    start: match.start,
+    end: match.end,
+  };
+  isDiarySyntaxEditorOpen.value = true;
+}
+
+function replaceDiarySyntax(syntax: string): void {
+  if (!syntax || !editingDiarySyntaxRange.value) {
+    return;
+  }
+
+  const { start, end } = editingDiarySyntaxRange.value;
+  fileContent.value = `${fileContent.value.slice(0, start)}${syntax}${fileContent.value.slice(end)}`;
+  editingDiarySyntaxRange.value = null;
+  editingDiarySyntaxState.value = null;
+  diarySyntaxEditorMode.value = "insert";
+  isDiarySyntaxEditorOpen.value = false;
 }
 
 function insertDiarySyntax(syntax: string): void {
@@ -1010,6 +1109,17 @@ function insertDiarySyntax(syntax: string): void {
   isDiarySyntaxEditorOpen.value = false;
 }
 
+function getDiarySyntaxShellLabel(shell: DiarySyntaxShell): string {
+  const labels: Record<DiarySyntaxShell, string> = {
+    advancedDynamic: "RAG 动态",
+    advancedFixed: "RAG 固定",
+    directDynamic: "直读动态",
+    directStatic: "直读固定",
+  };
+
+  return labels[shell];
+}
+ 
 async function saveAgentFile(): Promise<void> {
   if (!editingFile.value || isSavingFile.value) {
     return;
@@ -1363,8 +1473,94 @@ onBeforeRouteLeave(async () => {
   display: flex;
   flex-direction: column;
   flex: 1;
+  gap: var(--space-2);
   min-width: 0;
   min-height: 0;
+}
+
+.diary-syntax-scan-panel {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 180px;
+  padding: var(--space-3);
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 1.6%, transparent);
+}
+
+.diary-syntax-scan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.diary-syntax-scan-header strong {
+  display: block;
+  color: var(--primary-text);
+  font-size: var(--font-size-helper);
+}
+
+.diary-syntax-scan-header span,
+.diary-syntax-empty {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  line-height: 1.45;
+}
+
+.diary-syntax-chip-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.diary-syntax-chip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 34%, transparent);
+}
+
+.diary-syntax-chip.active {
+  border-color: color-mix(in srgb, var(--highlight-text) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
+}
+
+.diary-syntax-chip-main {
+  min-width: 0;
+}
+
+.diary-syntax-chip-meta,
+.diary-syntax-chip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.diary-syntax-chip-meta {
+  margin-bottom: 4px;
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.diary-syntax-chip code,
+.diary-syntax-empty code {
+  color: var(--highlight-text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}
+
+.diary-syntax-chip code {
+  display: block;
 }
 
 .file-content-editor {
@@ -1776,6 +1972,14 @@ onBeforeRouteLeave(async () => {
 
   .agent-file-editor {
     height: 100%;
+  }
+
+  .diary-syntax-chip {
+    grid-template-columns: 1fr;
+  }
+
+  .diary-syntax-chip-actions {
+    justify-content: flex-end;
   }
 
   .placeholder-sidebar {

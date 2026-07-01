@@ -115,11 +115,28 @@
                 <div class="syntax-option-head">
                   <div>
                     <strong>Time 时间感知检索</strong>
-                    <code>::Time</code>
+                    <code>::Time0.2</code>
                   </div>
                   <AppSwitch v-model="enabledSuffixes.time" />
                 </div>
-                <p>解析“上周、最近、三个月前”等自然语言时间线索，并融合时间范围召回。该语法还支持新建聊天时自动传递上一个聊天的记忆，无视任意前端。</p>
+                <p>
+                  解析“上周、最近、三个月前”等自然语言时间线索，并融合时间范围召回。可选数字表示时间路占比，
+                  例如 <code>::Time0.3</code> 表示时间召回约 30%、语义召回约 70%；留空使用默认 0.2。
+                  该语法还支持新建聊天时自动传递上一个聊天的记忆，无视任意前端。
+                </p>
+                <label class="inline-number">
+                  <span>时间路占比</span>
+                  <UiInput
+                    v-model="timeRatio"
+                    :disabled="!enabledSuffixes.time"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    placeholder="默认 0.2"
+                    @keydown.stop
+                  />
+                </label>
               </div>
 
               <div class="syntax-card syntax-option-card">
@@ -137,22 +154,54 @@
                 <div class="syntax-option-head">
                   <div>
                     <strong>BM25+ 日记全文匹配</strong>
-                    <code>::BM25+</code>
+                    <code>::BM25+0.7</code>
                   </div>
                   <AppSwitch v-model="enabledSuffixes.bm25Plus" />
                 </div>
-                <p>启用日记全文 BM25 关键词匹配，适合通过原文措辞、专有名词或精确短语补充向量召回。</p>
+                <p>
+                  启用日记全文 BM25 关键词匹配，适合通过原文措辞、专有名词或精确短语补充向量召回。
+                  可选数字表示 BM25 稀疏分融合权重，例如 <code>::BM25+0.7</code>；留空使用默认 0.6。
+                </p>
+                <label class="inline-number">
+                  <span>BM25 权重</span>
+                  <UiInput
+                    v-model="bm25PlusWeight"
+                    :disabled="!enabledSuffixes.bm25Plus"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    placeholder="默认 0.6"
+                    @keydown.stop
+                  />
+                </label>
               </div>
 
               <div class="syntax-card syntax-option-card">
                 <div class="syntax-option-head">
                   <div>
                     <strong>BM25 Tag / Keyword 匹配</strong>
-                    <code>::BM25</code>
+                    <code>::BM250.4</code>
                   </div>
                   <AppSwitch v-model="enabledSuffixes.bm25" />
                 </div>
-                <p>启用日记 tag / keyword 字段的 BM25 匹配，适合用标签、关键词和主题词快速命中相关记忆。</p>
+                <p>
+                  启用日记 tag / keyword 字段的 BM25 匹配，适合用标签、关键词和主题词快速命中相关记忆。
+                  可选数字表示 BM25 稀疏分融合权重，例如 <code>::BM250.4</code>；留空使用默认 0.6。
+                </p>
+                <label class="inline-number">
+                  <span>BM25 权重</span>
+                  <UiInput
+                    v-model="bm25Weight"
+                    :disabled="!enabledSuffixes.bm25"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    placeholder="默认 0.6"
+                    @keydown.stop
+                  />
+                </label>
               </div>
 
               <div class="syntax-card syntax-option-card">
@@ -794,7 +843,7 @@
                 <template #leading>
                   <span class="material-symbols-outlined">keyboard_return</span>
                 </template>
-                插入到编辑器
+                {{ mode === "replace" ? "替换原语法" : "插入到编辑器" }}
               </UiButton>
             </div>
           </footer>
@@ -805,34 +854,30 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import AppSwitch from "@/components/ui/AppSwitch.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import { showMessage } from "@/utils";
+import {
+  createDefaultDiarySyntaxState,
+  type DiaryAiMode,
+  type DiaryDirectRecallMode,
+  type DiaryDirectSyntaxMode,
+  type DiaryDslPage,
+  type DiarySuffixKey,
+  type DiarySyntaxEditorState,
+  type DiarySyntaxMode,
+} from "./diarySyntaxParser";
 
-type DslPage = "advanced" | "direct";
-type SyntaxMode = "dynamic" | "fixed";
-type DirectSyntaxMode = "static" | "dynamic";
-type DirectRecallMode = "none" | "random" | "randomN" | "lastN" | "bm25" | "bm25Plus";
-type AiMode = "none" | "aimemo" | "aimemoPlus";
-type SuffixKey =
-  | "time"
-  | "group"
-  | "bm25Plus"
-  | "bm25"
-  | "rerank"
-  | "timeDecay"
-  | "expand"
-  | "associate"
-  | "base64Memo"
-  | "tagMemo"
-  | "tagMemoPlus"
-  | "rerankPlus"
-  | "truncate"
-  | "roleValve";
+type DslPage = DiaryDslPage;
+type SyntaxMode = DiarySyntaxMode;
+type DirectSyntaxMode = DiaryDirectSyntaxMode;
+type DirectRecallMode = DiaryDirectRecallMode;
+type AiMode = DiaryAiMode;
+type SuffixKey = DiarySuffixKey;
 
 interface RoleValveDraft {
   role: "@User" | "@Assistant" | "@System";
@@ -840,58 +885,56 @@ interface RoleValveDraft {
   count: number;
 }
 
-defineProps<{
-  modelValue: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    modelValue: boolean;
+    initialState?: DiarySyntaxEditorState | null;
+    mode?: "insert" | "replace";
+  }>(),
+  {
+    initialState: null,
+    mode: "insert",
+  }
+);
 
 const emit = defineEmits<{
   (event: "update:modelValue", value: boolean): void;
   (event: "insert", value: string): void;
+  (event: "replace", value: string): void;
 }>();
 
-const notebookName = ref("小吉日记本");
-const dslPage = ref<DslPage>("advanced");
-const syntaxMode = ref<SyntaxMode>("dynamic");
-const directSyntaxMode = ref<DirectSyntaxMode>("static");
-const directRecallMode = ref<DirectRecallMode>("none");
-const directRandomCount = ref("5");
-const directLastCount = ref("10");
-const directRoleValveEnabled = ref(false);
-const useKMultiplier = ref(false);
-const kMultiplier = ref("1.5");
-const tagMemoWeight = ref("");
-const tagMemoPlusWeight = ref("");
-const rerankPlusAlpha = ref("");
-const timeDecayHalfLifeDays = ref("");
-const timeDecayMinScore = ref("");
-const timeDecayTargetTags = ref("");
-const truncateThreshold = ref("0.4");
-const aiMode = ref<AiMode>("none");
-const aiPreset = ref("");
-const roleValveJoiner = ref<"&" | "|">("&");
-const roleValveConditions = ref<string[]>([]);
+const defaultState = createDefaultDiarySyntaxState();
+const notebookName = ref(defaultState.notebookName);
+const dslPage = ref<DslPage>(defaultState.dslPage);
+const syntaxMode = ref<SyntaxMode>(defaultState.syntaxMode);
+const directSyntaxMode = ref<DirectSyntaxMode>(defaultState.directSyntaxMode);
+const directRecallMode = ref<DirectRecallMode>(defaultState.directRecallMode);
+const directRandomCount = ref(defaultState.directRandomCount);
+const directLastCount = ref(defaultState.directLastCount);
+const directRoleValveEnabled = ref(defaultState.directRoleValveEnabled);
+const useKMultiplier = ref(defaultState.useKMultiplier);
+const kMultiplier = ref(defaultState.kMultiplier);
+const timeRatio = ref(defaultState.timeRatio);
+const bm25Weight = ref(defaultState.bm25Weight);
+const bm25PlusWeight = ref(defaultState.bm25PlusWeight);
+const tagMemoWeight = ref(defaultState.tagMemoWeight);
+const tagMemoPlusWeight = ref(defaultState.tagMemoPlusWeight);
+const rerankPlusAlpha = ref(defaultState.rerankPlusAlpha);
+const timeDecayHalfLifeDays = ref(defaultState.timeDecayHalfLifeDays);
+const timeDecayMinScore = ref(defaultState.timeDecayMinScore);
+const timeDecayTargetTags = ref(defaultState.timeDecayTargetTags);
+const truncateThreshold = ref(defaultState.truncateThreshold);
+const aiMode = ref<AiMode>(defaultState.aiMode);
+const aiPreset = ref(defaultState.aiPreset);
+const roleValveJoiner = ref<"&" | "|">(defaultState.roleValveJoiner);
+const roleValveConditions = ref<string[]>([...defaultState.roleValveConditions]);
 const roleValveDraft = reactive<RoleValveDraft>({
   role: "@User",
   operator: ">",
   count: 3,
 });
 
-const enabledSuffixes = reactive<Record<SuffixKey, boolean>>({
-  time: false,
-  group: false,
-  bm25Plus: false,
-  bm25: false,
-  rerank: false,
-  timeDecay: false,
-  expand: false,
-  associate: false,
-  base64Memo: false,
-  tagMemo: false,
-  tagMemoPlus: false,
-  rerankPlus: false,
-  truncate: false,
-  roleValve: false,
-});
+const enabledSuffixes = reactive<Record<SuffixKey, boolean>>({ ...defaultState.enabledSuffixes });
 
 const generatedSyntax = computed(() => {
   const rawName = notebookName.value.trim() || "日记本";
@@ -902,10 +945,10 @@ const generatedSyntax = computed(() => {
 
   const suffixes: string[] = [];
 
-  if (enabledSuffixes.time) suffixes.push("::Time");
+  if (enabledSuffixes.time) suffixes.push(`::Time${sanitizeNumber(timeRatio.value)}`);
   if (enabledSuffixes.group) suffixes.push("::Group");
-  if (enabledSuffixes.bm25Plus) suffixes.push("::BM25+");
-  if (enabledSuffixes.bm25) suffixes.push("::BM25");
+  if (enabledSuffixes.bm25Plus) suffixes.push(`::BM25+${sanitizeNumber(bm25PlusWeight.value)}`);
+  if (enabledSuffixes.bm25) suffixes.push(`::BM25${sanitizeNumber(bm25Weight.value)}`);
   if (enabledSuffixes.tagMemo) suffixes.push(`::TagMemo${sanitizeNumber(tagMemoWeight.value)}`);
   if (enabledSuffixes.tagMemoPlus) suffixes.push(`::TagMemo+${sanitizeNumber(tagMemoPlusWeight.value)}`);
   if (enabledSuffixes.rerank) suffixes.push("::Rerank");
@@ -1070,9 +1113,56 @@ async function copySyntax(): Promise<void> {
 }
 
 function insertSyntax(): void {
+  if (props.mode === "replace") {
+    emit("replace", generatedSyntax.value);
+    showMessage("日记本语法已替换。", "success");
+    return;
+  }
+
   emit("insert", generatedSyntax.value);
   showMessage("日记本语法已插入到 Agent 文件编辑器。", "success");
 }
+
+function applyEditorState(state: DiarySyntaxEditorState): void {
+  notebookName.value = state.notebookName;
+  dslPage.value = state.dslPage;
+  syntaxMode.value = state.syntaxMode;
+  directSyntaxMode.value = state.directSyntaxMode;
+  directRecallMode.value = state.directRecallMode;
+  directRandomCount.value = state.directRandomCount;
+  directLastCount.value = state.directLastCount;
+  directRoleValveEnabled.value = state.directRoleValveEnabled;
+  useKMultiplier.value = state.useKMultiplier;
+  kMultiplier.value = state.kMultiplier;
+  timeRatio.value = state.timeRatio;
+  bm25Weight.value = state.bm25Weight;
+  bm25PlusWeight.value = state.bm25PlusWeight;
+  tagMemoWeight.value = state.tagMemoWeight;
+  tagMemoPlusWeight.value = state.tagMemoPlusWeight;
+  rerankPlusAlpha.value = state.rerankPlusAlpha;
+  timeDecayHalfLifeDays.value = state.timeDecayHalfLifeDays;
+  timeDecayMinScore.value = state.timeDecayMinScore;
+  timeDecayTargetTags.value = state.timeDecayTargetTags;
+  truncateThreshold.value = state.truncateThreshold;
+  aiMode.value = state.aiMode;
+  aiPreset.value = state.aiPreset;
+  roleValveJoiner.value = state.roleValveJoiner;
+  roleValveConditions.value = [...state.roleValveConditions];
+
+  Object.assign(enabledSuffixes, state.enabledSuffixes);
+}
+
+watch(
+  () => [props.modelValue, props.initialState] as const,
+  ([isOpen, initialState]) => {
+    if (!isOpen) {
+      return;
+    }
+
+    applyEditorState(initialState ?? createDefaultDiarySyntaxState());
+  },
+  { immediate: true }
+);
 
 function close(): void {
   emit("update:modelValue", false);
