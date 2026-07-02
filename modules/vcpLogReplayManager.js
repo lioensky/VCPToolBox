@@ -270,13 +270,19 @@ class VcpLogReplayManager {
     // ---------- 内部:补发与清理 ----------
 
     async _triggerReplay(state) {
+        const logPrefix = `[VcpLogReplay] device=${state.deviceKey} ip=${state.clientIp || 'N/A'} clientId=${state.currentClientId || 'N/A'}`;
+
         if (!state.online) {
+            console.log(`${logPrefix} 已检测到${this.config.onlineStabilityMs}ms稳定窗口结束，但设备已离线，跳过补发检查。`);
             if (this.config.debugMode) {
                 console.log(`[VcpLogReplay] _triggerReplay aborted: device ${state.deviceKey} went offline before stability window finished.`);
             }
             return;
         }
-        if (state.replayInFlight) return;
+        if (state.replayInFlight) {
+            console.log(`${logPrefix} 已检测到${this.config.onlineStabilityMs}ms稳定窗口结束，但已有补发任务进行中，跳过本次检查。`);
+            return;
+        }
 
         // 计算需要补发的条目
         const now = Date.now();
@@ -284,6 +290,8 @@ class VcpLogReplayManager {
             entry.expireAt > now &&
             !state.deliveredIds.has(entry.id)
         );
+
+        console.log(`${logPrefix} 已检测到${this.config.onlineStabilityMs}ms稳定，当前须补发通知${toReplay.length}条。`);
 
         if (toReplay.length === 0) {
             if (this.config.debugMode) {
@@ -293,6 +301,9 @@ class VcpLogReplayManager {
         }
 
         state.replayInFlight = true;
+        let replaySuccessCount = 0;
+        let replaySkippedCount = 0;
+        console.log(`${logPrefix} 须补发通知${toReplay.length}条，已开始补发。`);
         console.log(`[VcpLogReplay] Replaying ${toReplay.length} cached VCPLog entries to device=${state.deviceKey} (ip=${state.clientIp}).`);
 
         try {
@@ -304,7 +315,10 @@ class VcpLogReplayManager {
                     break;
                 }
                 // 二次确认条目未过期(逐条间隔期间可能过期)
-                if (entry.expireAt <= Date.now()) continue;
+                if (entry.expireAt <= Date.now()) {
+                    replaySkippedCount += 1;
+                    continue;
+                }
 
                 try {
                     // 用 payload 的浅克隆 + 加一个 replay 标记,方便客户端区分
@@ -318,6 +332,7 @@ class VcpLogReplayManager {
                         await ret;
                     }
                     state.deliveredIds.add(entry.id);
+                    replaySuccessCount += 1;
                 } catch (sendErr) {
                     console.error(`[VcpLogReplay] Failed to replay entry ${entry.id} to ${state.deviceKey}:`, sendErr.message);
                     // 一次失败即视为掉线,停止后续补发
@@ -331,6 +346,7 @@ class VcpLogReplayManager {
             }
         } finally {
             state.replayInFlight = false;
+            console.log(`${logPrefix} 补发结束，成功补发${replaySuccessCount}条${replaySkippedCount > 0 ? `，跳过过期${replaySkippedCount}条` : ''}。`);
         }
     }
 
