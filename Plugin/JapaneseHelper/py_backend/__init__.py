@@ -1,1 +1,0 @@
-"""Hybrid backend package for JapaneseHelper Rust migration."""
