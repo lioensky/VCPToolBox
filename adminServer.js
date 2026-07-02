@@ -254,6 +254,7 @@ const localModules = [
     'emojis',          // 表情包列表与 image 目录画廊
     'dailyNotes',      // 日记知识库文件管理
     'agentAssistant',  // Agent 助手配置（纯文件 I/O）
+    'aiChat',          // 后台 AI 代理（本地转发主服务 /v1/chat/completions，避免前端暴露 Key）
     'semanticRouter',  // 语义模型路由器配置（本地 JSON 读写 + 上游模型拉取）
 ];
 
