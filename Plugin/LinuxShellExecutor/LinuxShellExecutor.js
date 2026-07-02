@@ -345,7 +345,18 @@ class WhitelistValidator {
         this.commands = whitelist.commands || {};
         this.globalRestrictions = whitelist.globalRestrictions || {};
     }
-    
+
+    /**
+     * 检查命令是否在白名单中
+     * @returns {object} { inWhitelist: boolean, cmdConfig?: object, parsedCommand?: object }
+     */
+    check(command) {
+        const parsed = this.parseCommand(command);
+        const cmdConfig = this.commands[parsed.command];
+        if (!cmdConfig) return { inWhitelist: false };
+        return { inWhitelist: true, cmdConfig, parsedCommand: parsed };
+    }
+
     validate(command) {
         // 诊断日志：记录验证开始
         logDiagInfo(`[LinuxShellExecutor][DIAG] WhitelistValidator.validate() 被调用`);
@@ -425,7 +436,40 @@ class WhitelistValidator {
                 }
             }
         }
-        
+
+        // 子命令约束：如果 allowedArgs 包含非flag项（如 systemctl 的 status、docker 的 ps），
+        // 则第一个位置参数必须匹配，否则拒绝（降级到灰名单需验证码）
+        const subcommandArgs = (cmdConfig.allowedArgs || []).filter(a => !a.startsWith('-'));
+        if (subcommandArgs.length > 0 && parsed.paths.length > 0) {
+            const positionalStr = parsed.paths.join(' ');
+            const matchedSubcommand = subcommandArgs.some(sc => positionalStr === sc || positionalStr.startsWith(sc + ' '));
+            if (!matchedSubcommand) {
+                return {
+                    passed: false,
+                    reason: `子命令 "${parsed.paths[0]}" 不被允许用于 "${parsed.command}"`,
+                    layer: 'whitelist',
+                    severity: 'medium'
+                };
+            }
+        }
+
+        // 查询约束：如果配置了 allowedQueries（如 mysql -e），-e 内容必须匹配允许的查询
+        if (cmdConfig.allowedQueries && cmdConfig.allowedQueries.length > 0) {
+            const hasExecuteFlag = parsed.args.some(a => a.startsWith('-e'));
+            if (hasExecuteFlag) {
+                const commandUpper = command.toUpperCase();
+                const queryMatched = cmdConfig.allowedQueries.some(q => commandUpper.includes(q.toUpperCase()));
+                if (!queryMatched) {
+                    return {
+                        passed: false,
+                        reason: `查询不在允许的查询列表中`,
+                        layer: 'whitelist',
+                        severity: 'medium'
+                    };
+                }
+            }
+        }
+
         return { passed: true, parsedCommand: parsed };
     }
     
@@ -953,16 +997,17 @@ class SecurityLevelValidator {
     }
     
     /**
-     * 验证完整命令（包括管道和重定向）
+     * 检查特殊操作符（普适硬护栏，不可通过授权码绕过）
+     * 检查分号(semicolon)、后台执行(backgroundAmp)、子shell(subshell)
+     * 允许 && 和 ||
      */
-    validate(command) {
-        // ROB-02: 验证特殊操作符
+    checkSpecialOperators(command) {
         for (const [opName, opConfig] of Object.entries(this.specialOperators)) {
             if (opConfig.allowed === false) {
                 let pattern;
                 switch(opName) {
                     case 'semicolon': pattern = /;/; break;
-                    case 'backgroundAmp': pattern = /&(?![&>])/; break; // 排除 && 和重定向 &>
+                    case 'backgroundAmp': pattern = /(?<!&)&(?![&>])/; break;
                     case 'subshell': pattern = /\$\(|\`/; break;
                     default: continue;
                 }
@@ -970,11 +1015,23 @@ class SecurityLevelValidator {
                     return {
                         passed: false,
                         reason: `检测到禁止的特殊操作符: ${opName} (${opConfig.reason})`,
-                        layer: 'securityLevel', severity: 'critical'
+                        opName,
+                        layer: 'securityLevel',
+                        severity: 'critical'
                     };
                 }
             }
         }
+        return { passed: true };
+    }
+
+    /**
+     * 验证完整命令（包括管道和重定向）
+     */
+    validate(command) {
+        // ROB-02: 验证特殊操作符（委托给 checkSpecialOperators）
+        const specialOpResult = this.checkSpecialOperators(command);
+        if (!specialOpResult.passed) return specialOpResult;
 
         // Quote-aware pipe/redirect detection: ignore | and > inside quoted strings
         // e.g. grep "Error:|Warning:" file.log should NOT be treated as a pipeline
@@ -1795,7 +1852,7 @@ class LinuxShellExecutor {
         
         this.securityLevels = {
             basic: ['blacklist'],
-            standard: ['blacklist', 'whitelist', 'sandbox'],
+            standard: ['blacklist', 'whitelist', 'ast', 'sandbox'],
             high: ['blacklist', 'whitelist', 'ast', 'sandbox'],
             maximum: ['blacklist', 'whitelist', 'ast', 'sandbox', 'audit']
         };
@@ -2195,7 +2252,12 @@ class LinuxShellExecutor {
         const hostId = options.hostId;
         const logFollowCommand = this._classifyLogFollowCommand(command);
         const isLongRunning = options.isLongRunning === true || Boolean(logFollowCommand);
-        const bypassWhitelist = options.bypassWhitelist === true;
+        // 认证上下文：authCode=正确的验证码, requireAdmin=用户提交的验证码, doubleConfirm=二次确认标志
+        // bypassWhitelist 已废弃：灰名单现在在 execute() 内强制要求验证码，不再被授权跳过
+        const authCode = options.authCode || null;
+        const requireAdmin = options.requireAdmin;
+        const doubleConfirm = options.doubleConfirm === true;
+        const authOk = Boolean(authCode && requireAdmin && String(requireAdmin) === authCode);
 
         // v1.1.5: 自动应用静默化补丁
         const patchedCommand = this._patchCommandForNonInteractive(command);
@@ -2263,6 +2325,20 @@ class LinuxShellExecutor {
                 return this._buildPrivilegeEscalationResponse(command, privilegeEscalation);
             }
 
+            // 特殊操作符硬护栏（普适，不可通过授权码绕过）
+            const specialOpResult = this.securityLevelValidator.checkSpecialOperators(command);
+            auditEntry.layers.push({ name: 'specialOperators', result: specialOpResult });
+            if (!specialOpResult.passed) {
+                auditEntry.status = 'blocked';
+                auditEntry.reason = specialOpResult.reason;
+                auditEntry.layer = 'securityLevel';
+                auditEntry.severity = 'critical';
+                if (enabledLayers.includes('audit')) {
+                    await this.auditLogger.log(auditEntry);
+                }
+                throw new Error(`[安全分级] ${specialOpResult.reason}。该操作不可通过授权码绕过。`);
+            }
+
             // 第一层：黑名单过滤
             if (enabledLayers.includes('blacklist')) {
                 const blacklistResult = this.blacklistFilter.check(command);
@@ -2285,44 +2361,118 @@ class LinuxShellExecutor {
             logDiagInfo(`[LinuxShellExecutor][DIAG] enabledLayers: ${JSON.stringify(enabledLayers)}`);
             logDiagInfo(`[LinuxShellExecutor][DIAG] whitelist 层是否启用: ${enabledLayers.includes('whitelist')}`);
             
-            if (enabledLayers.includes('whitelist') && !isPresetCommand && !bypassWhitelist) {
-                // 预设命令或管理员授权逃逸跳过白名单验证
-                logDiagInfo(`[LinuxShellExecutor][DIAG] ${isPresetCommand ? '预设命令' : '授权逃逸'}，跳过白名单验证`);
-                
-                // 先检查是否在灰名单中（灰名单命令已在 main() 中验证过权限）
+            if (enabledLayers.includes('whitelist') && !isPresetCommand) {
+                // 列表驱动验证：白名单(免费放行) → 灰名单(需验证码) → 未知(需验证码逃逸)
+
+                // 先检查白名单（免费放行，仅验证参数/路径）
+                const whitelistCheck = this.whitelistValidator.check(command);
                 const graylistCheck = this.graylistValidator.check(command);
-                
-                if (graylistCheck.inGraylist) {
-                    // 灰名单命令：使用灰名单验证（验证参数和路径）
-                    logDiagInfo(`[LinuxShellExecutor][DIAG] 命令在灰名单中，使用灰名单验证...`);
-                    const graylistResult = this.graylistValidator.validate(command);
-                    logDiagInfo(`[LinuxShellExecutor][DIAG] 灰名单验证结果: ${JSON.stringify(graylistResult)}`);
-                    auditEntry.layers.push({ name: 'graylist', result: graylistResult });
-                    if (!graylistResult.passed) {
-                        auditEntry.status = 'blocked';
-                        auditEntry.reason = graylistResult.reason;
-                        auditEntry.layer = 'graylist';
-                        auditEntry.severity = graylistResult.severity;
-                        if (enabledLayers.includes('audit')) {
-                            await this.auditLogger.log(auditEntry);
-                        }
-                        throw new Error(`[灰名单] ${graylistResult.reason}`);
-                    }
-                } else {
-                    // 白名单命令：使用白名单验证
+
+                // 尝试白名单验证：通过则免费放行；失败则降级到灰名单/未知
+                let whitelistPassed = false;
+                let whitelistFailResult = null;
+
+                if (whitelistCheck.inWhitelist) {
+                    // 白名单命令：免费放行 + 参数/路径验证
                     logDiagInfo(`[LinuxShellExecutor][DIAG] 开始白名单验证...`);
                     const whitelistResult = this.whitelistValidator.validate(command);
                     logDiagInfo(`[LinuxShellExecutor][DIAG] 白名单验证结果: ${JSON.stringify(whitelistResult)}`);
                     auditEntry.layers.push({ name: 'whitelist', result: whitelistResult });
-                    if (!whitelistResult.passed) {
+                    if (whitelistResult.passed) {
+                        whitelistPassed = true;
+                    } else {
+                        whitelistFailResult = whitelistResult;
+                    }
+                }
+
+                if (!whitelistPassed) {
+                    if (graylistCheck.inGraylist) {
+                        // 灰名单命令：需要管理员验证码 + 参数/路径验证
+                        const riskLevel = graylistCheck.riskLevel;
+                        const riskLevelConfig = this.graylistValidator.riskLevels[riskLevel] || {};
+                        const needsDoubleConfirm = riskLevelConfig.doubleConfirm === true;
+
+                        if (!authOk) {
+                            auditEntry.layers.push({ name: 'graylist', result: { passed: false, reason: '需要管理员验证码' } });
+                            auditEntry.status = 'blocked';
+                            auditEntry.reason = `灰名单命令需要管理员验证码`;
+                            auditEntry.layer = 'graylist';
+                            auditEntry.severity = 'high';
+                            if (enabledLayers.includes('audit')) {
+                                await this.auditLogger.log(auditEntry);
+                            }
+                            let authMsg;
+                            if (!requireAdmin) {
+                                authMsg = `[灰名单] 命令 "${graylistCheck.parsedCommand.command}" 需要管理员验证码（风险级别: ${riskLevel}）。请提供 requireAdmin 参数（6位验证码）。`;
+                            } else if (!authCode) {
+                                authMsg = `无法获取管理员验证码。请确保主服务器配置正确。`;
+                            } else {
+                                authMsg = `管理员验证码错误。`;
+                            }
+                            throw new Error(authMsg);
+                        }
+
+                        logDiagInfo(`[LinuxShellExecutor][DIAG] 命令在灰名单中，使用灰名单验证...`);
+                        const graylistResult = this.graylistValidator.validate(command);
+                        logDiagInfo(`[LinuxShellExecutor][DIAG] 灰名单验证结果: ${JSON.stringify(graylistResult)}`);
+                        auditEntry.layers.push({ name: 'graylist', result: graylistResult });
+                        if (!graylistResult.passed) {
+                            auditEntry.status = 'blocked';
+                            auditEntry.reason = graylistResult.reason;
+                            auditEntry.layer = 'graylist';
+                            auditEntry.severity = graylistResult.severity;
+                            if (enabledLayers.includes('audit')) {
+                                await this.auditLogger.log(auditEntry);
+                            }
+                            throw new Error(`[灰名单] ${graylistResult.reason}`);
+                        }
+
+                        // critical 风险级别（reboot/shutdown/init）需要二次确认
+                        if (needsDoubleConfirm && !doubleConfirm) {
+                            auditEntry.layers.push({ name: 'graylist', result: { passed: false, reason: '需要二次确认' } });
+                            auditEntry.status = 'blocked';
+                            auditEntry.reason = `高危操作需要二次确认`;
+                            auditEntry.layer = 'graylist';
+                            auditEntry.severity = 'critical';
+                            if (enabledLayers.includes('audit')) {
+                                await this.auditLogger.log(auditEntry);
+                            }
+                            throw new Error(`[灰名单] 高危操作需要二次确认！请同时提供 doubleConfirm: true 参数。\n命令: ${command}\n风险级别: ${riskLevel}`);
+                        }
+                    } else if (whitelistCheck.inWhitelist) {
+                        // 在白名单中但操作不允许，且不在灰名单中（如 cat /etc/shadow）
+                        // 不可通过授权码逃逸
                         auditEntry.status = 'blocked';
-                        auditEntry.reason = whitelistResult.reason;
+                        auditEntry.reason = whitelistFailResult.reason;
                         auditEntry.layer = 'whitelist';
-                        auditEntry.severity = whitelistResult.severity;
+                        auditEntry.severity = whitelistFailResult.severity;
                         if (enabledLayers.includes('audit')) {
                             await this.auditLogger.log(auditEntry);
                         }
-                        throw new Error(`[白名单] ${whitelistResult.reason}`);
+                        throw new Error(`[白名单] ${whitelistFailResult.reason}`);
+                    } else {
+                        // 不在任何名单中（未知命令）：需要管理员验证码逃逸
+                        if (!authOk) {
+                            auditEntry.layers.push({ name: 'securityLevel', result: { passed: false, reason: '命令不在任何名单中' } });
+                            auditEntry.status = 'blocked';
+                            auditEntry.reason = `命令不在任何名单中`;
+                            auditEntry.layer = 'securityLevel';
+                            auditEntry.severity = 'medium';
+                            if (enabledLayers.includes('audit')) {
+                                await this.auditLogger.log(auditEntry);
+                            }
+                            let authMsg;
+                            if (!requireAdmin) {
+                                authMsg = `[安全分级] 命令 "${extractBaseCommand(command)}" 不在任何名单中，如需执行请提供正确的管理员验证码。`;
+                            } else if (!authCode) {
+                                authMsg = `无法获取管理员验证码。请确保主服务器配置正确。`;
+                            } else {
+                                authMsg = `管理员验证码错误。`;
+                            }
+                            throw new Error(authMsg);
+                        }
+                        logWarn(`[LinuxShellExecutor] 未知命令 "${extractBaseCommand(command)}" 通过授权码逃逸`);
+                        auditEntry.layers.push({ name: 'securityLevel', result: { passed: true, reason: '未知命令通过授权码逃逸' } });
                     }
                 }
             }
@@ -2611,61 +2761,6 @@ async function runToolCall(args = {}, options = {}) {
                 } else {
                     logDebug(`[LinuxShellExecutor] 预设 "${presetInfo.name}" 为 ${presetSecurityLevel} 级别，自动放行`);
                 }
-            } else {
-                for (const cmd of commandsToExecute) {
-                    const baseCommand = extractBaseCommand(cmd);
-                    logDebug(`[LinuxShellExecutor] 安全分级验证: "${baseCommand}"`);
-
-                    const levelValidation = executor.securityLevelValidator.validate(cmd);
-
-                    if (!levelValidation.passed) {
-                        const isExecuteCommand = baseCommand === 'execute';
-
-                        if ((levelValidation.isUnknown || isExecuteCommand) && args.requireAdmin && authCode && String(args.requireAdmin) === authCode) {
-                            const astResult = executor.astAnalyzer.analyze(cmd);
-                            if (!astResult.passed) {
-                                const reasons = astResult.risks.map(r => r.description).join('; ');
-                                logWarn(`[LinuxShellExecutor] 逃逸执行被 AST 拦截: ${reasons}`);
-                                throw new Error(`[安全底线] 即使使用授权码，也禁止执行高危模式指令: ${reasons}`);
-                            }
-
-                            logWarn(`[LinuxShellExecutor] 未知命令 "${baseCommand}" 通过授权码验证及 AST 扫描，允许逃逸执行`);
-                        } else {
-                            if (levelValidation.isUnknown || isExecuteCommand) {
-                                throw new Error(`[安全分级] ${levelValidation.reason}。如需强制执行，请提供正确的管理员验证码。`);
-                            }
-                            throw new Error(`[安全分级] ${levelValidation.reason}`);
-                        }
-                    }
-
-                    const { highestRiskLevel, requireConfirm } = levelValidation;
-                    logDebug(`[LinuxShellExecutor] 命令 "${baseCommand}" 安全级别: ${highestRiskLevel}, 需要确认: ${requireConfirm}`);
-
-                    if (requireConfirm) {
-                        const isDoubleConfirm = requireConfirm === 'double';
-
-                        if (!args.requireAdmin) {
-                            const confirmPrompt = executor.securityLevelValidator.generateConfirmPrompt(levelValidation, cmd);
-                            throw new Error(`${confirmPrompt.prompt}\n请提供 requireAdmin 参数（6位验证码）。`);
-                        }
-
-                        if (!authCode) {
-                            throw new Error('无法获取管理员验证码。请确保主服务器配置正确。');
-                        }
-
-                        if (String(args.requireAdmin) !== authCode) {
-                            throw new Error('管理员验证码错误。');
-                        }
-
-                        if (isDoubleConfirm && !args.doubleConfirm) {
-                            throw new Error(`高危操作需要二次确认！请同时提供 doubleConfirm: true 参数。\n命令: ${cmd}\n风险级别: ${highestRiskLevel}`);
-                        }
-
-                        logDebug(`[LinuxShellExecutor] ${highestRiskLevel} 级别命令验证成功`);
-                    } else {
-                        logDebug(`[LinuxShellExecutor] 命令 "${baseCommand}" 为 ${highestRiskLevel} 级别，自动放行`);
-                    }
-                }
             }
         }
 
@@ -2737,7 +2832,9 @@ async function runToolCall(args = {}, options = {}) {
                 disconnectOnCommandTimeout: args.disconnectOnCommandTimeout === undefined
                     ? undefined
                     : parseBooleanValue(args.disconnectOnCommandTimeout),
-                bypassWhitelist: Boolean(args.requireAdmin && authCode && String(args.requireAdmin) === authCode),
+                authCode: authCode,
+                requireAdmin: args.requireAdmin,
+                doubleConfirm: args.doubleConfirm,
                 signal: options.context?.signal
             };
             if (hasExplicitUsePool) {
