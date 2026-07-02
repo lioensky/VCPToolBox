@@ -97,6 +97,9 @@ export type * from './forum'
 export { forumAssistantApi } from './forum-assistant'
 export type * from './forum-assistant'
 
+export { tarotDivinationApi } from './tarotDivination'
+export type * from './tarotDivination'
+
 // 插件商店 API
 export { pluginStoreApi } from './pluginStore'
 export type * from './pluginStore'

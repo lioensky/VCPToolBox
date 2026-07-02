@@ -108,6 +108,7 @@ module.exports = function (
   mount("/", "bridgeProfiles"); // Handles /bridge-profiles/*
   mount("/", "multimodalConfig"); // Handles /multimodal-config (JSON 真相源 + 热更新)
   mount("/", "clawMail"); // Handles /claw-mail/*
+  mount("/", "tarotDivination"); // Handles /tarot-divination/*
 
   return adminApiRouter;
 };

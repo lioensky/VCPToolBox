@@ -9,6 +9,7 @@
     <a class="skip-link" href="#config-details-container">跳到主要内容</a>
 
     <SolarSystemBg />
+    <ImmersiveCelestialPanel />
 
     <!-- 顶栏组件（包裹在过渡容器中） -->
     <div class="immersive-fade immersive-fade--topbar">
@@ -129,6 +130,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import FeedbackHost from "@/components/feedback/FeedbackHost.vue";
+import ImmersiveCelestialPanel from "@/components/immersive/ImmersiveCelestialPanel.vue";
 import SolarSystemBg from "@/components/SolarSystemBg.vue";
 import GlobalCommandPalette from "@/components/layout/GlobalCommandPalette.vue";
 import TopBar from "@/components/layout/TopBar.vue";

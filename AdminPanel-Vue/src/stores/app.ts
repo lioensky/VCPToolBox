@@ -50,6 +50,11 @@ function parseThemeStorageValue(value: string): ThemeMode {
   return "dark";
 }
 
+export interface ImmersiveCelestialAngle {
+  planet: string;
+  angle: number;
+}
+
 export const useAppStore = defineStore("app", () => {
   const theme = useLocalStorage<ThemeMode>("theme", "dark", {
     parser: parseThemeStorageValue,
@@ -58,6 +63,7 @@ export const useAppStore = defineStore("app", () => {
   const resolvedTheme = ref<"dark" | "light">("dark");
   const animationsEnabled = useLocalStorage<boolean>("animationsEnabled", true);
   const isImmersiveMode = ref(false);
+  const immersiveCelestialAngles = ref<Record<string, number>>({});
   const pinnedPluginNames = useLocalStorage<string[]>(
     PINNED_PLUGINS_STORAGE_KEY,
     []
@@ -119,6 +125,12 @@ export const useAppStore = defineStore("app", () => {
   function exitImmersiveMode() {
     isImmersiveMode.value = false;
     document.body.style.overflow = "";
+  }
+
+  function setImmersiveCelestialAngles(angles: ImmersiveCelestialAngle[]) {
+    immersiveCelestialAngles.value = Object.fromEntries(
+      angles.map((item) => [item.planet, item.angle])
+    );
   }
 
   function loadPlugins(pluginList: PluginInfo[]) {
@@ -211,6 +223,7 @@ export const useAppStore = defineStore("app", () => {
     resolvedTheme,
     animationsEnabled,
     isImmersiveMode,
+    immersiveCelestialAngles,
     navItems,
     plugins,
     pluginsLoaded,
@@ -220,6 +233,7 @@ export const useAppStore = defineStore("app", () => {
     toggleAnimations,
     enterImmersiveMode,
     exitImmersiveMode,
+    setImmersiveCelestialAngles,
     loadPlugins,
     refreshPlugins,
     ensurePluginsLoaded,
