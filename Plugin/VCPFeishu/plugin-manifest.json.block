@@ -1,0 +1,84 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "VCPFeishu",
+  "displayName": "VCP 飞书桥接",
+  "version": "0.1.0",
+  "description": "混合服务插件：常驻飞书 WebSocket 长连接，收到消息后在绑定 Agent 下创建或复用 VCPChat 话题会话，并通过系统 settings 与 Agent 配置调用 VCP 后端生成回复。",
+  "author": "",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "index.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 358000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "FeishuSend",
+        "description": "[VCPFeishu 通讯工具] 向飞书用户或群聊主动推送文本消息。\n参数:\n- command: 固定为 FeishuSend。\n- content: 必填，消息内容。\n- target/chat_id/open_id/receive_id: 可选，飞书 open_id 或 chat_id。\n- receive_id_type: 可选，open_id 或 chat_id；未填写时按 target 前缀自动推断。\n- session/topic_id: 可选，用 VCPFeishu 创建的话题会话定位飞书目标。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPFeishu「末」,\ncommand:「始」FeishuSend「末」,\nsession:「始」feishu_oc_xxxxx「末」,\ncontent:「始」消息内容「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPFeishu「末」,\ncommand:「始」FeishuSend「末」,\nsession:「始」feishu_oc_xxxxx「末」,\ncontent:「始」这是一条来自 VCP 的主动推送消息。「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "FeishuListSessions",
+        "description": "列出当前绑定 Agent 下由 VCPFeishu 记录的飞书会话与话题元数据。可选参数: bindAgent/agent。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始「VCPFeishu「末」\ncommand:「始「FeishuListSessions「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "FeishuListGroups",
+        "description": "列出当前绑定 Agent 下由 VCPFeishu 记录的飞书群聊会话。可选参数: bindAgent/agent。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始「VCPFeishu「末」\ncommand:「始「FeishuListGroups「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ],
+    "services": [
+      {
+        "serviceName": "FeishuMessageBridge",
+        "description": "常驻飞书 WebSocket 长连接（@larksuiteoapi/node-sdk），收到消息后在 FeishuBindAgent 指定的 Agent 下创建或复用话题，写入 history.json，并使用系统 settings.json 与 Agent config.json 调用 VCP。"
+      }
+    ]
+  },
+  "configSchema": {
+    "FeishuAppId": {
+      "type": "string",
+      "description": "飞书开放平台自建应用的 App ID",
+      "required": true
+    },
+    "FeishuAppSecret": {
+      "type": "string",
+      "description": "飞书开放平台自建应用的 App Secret",
+      "required": true
+    },
+    "FeishuBindAgent": {
+      "type": "string",
+      "description": "收到消息后唤醒的 VCP Agent 名称、中文名或 ID",
+      "required": true
+    },
+    "FeishuStreamReply": {
+      "type": "boolean",
+      "description": "是否启用两段式流式回复（先发提示再发全文），默认 true"
+    },
+    "FeishuStreamHint": {
+      "type": "string",
+      "description": "流式回复中间提示语，默认 '正在思考中…'"
+    },
+    "FeishuAllowedUsers": {
+      "type": "string",
+      "description": "允许触发 agent 的用户 open_id 白名单，逗号分隔，留空则不限制"
+    },
+    "DebugMode": {
+      "type": "boolean",
+      "description": "调试模式，输出详细日志"
+    }
+  },
+  "configSchemaDescriptions": {
+    "FeishuAppId": "飞书开放平台自建应用的 App ID",
+    "FeishuAppSecret": "飞书开放平台自建应用的 App Secret",
+    "FeishuBindAgent": "Agent 配置目录或 config.json 里的 name/chineseName/id，如 '助手A'、'AssistantB'",
+    "FeishuStreamReply": "true = 收到消息先发'正在思考中'再发全文；false = 直接 sendMessage 一次性推送",
+    "FeishuStreamHint": "两段式流式的中间提示语，仅在 FeishuStreamReply=true 时生效",
+    "FeishuAllowedUsers": "open_id 白名单，逗号分隔；留空 = 不限制",
+    "DebugMode": "调试模式，输出详细日志"
+  }
+}
