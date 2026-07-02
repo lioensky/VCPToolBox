@@ -310,13 +310,15 @@ module.exports = function(options) {
             const proto = forwardedProto || (req.protocol === 'https' ? 'https' : 'http');
             const wsProto = proto === 'https' ? 'wss' : 'ws';
 
+            const deviceName = 'AdminPanel-Vue-Notifications';
             res.json({
                 success: true,
                 connection: {
                     vcpKey,
                     port,
                     hostname,
-                    wsUrl: `${wsProto}://${hostname}:${port}/VCPlog/VCP_Key=${encodeURIComponent(vcpKey)}`
+                    deviceName,
+                    wsUrl: `${wsProto}://${hostname}:${port}/VCPlog/VCP_Key=${encodeURIComponent(vcpKey)}?deviceName=${encodeURIComponent(deviceName)}`
                 }
             });
         } catch (error) {

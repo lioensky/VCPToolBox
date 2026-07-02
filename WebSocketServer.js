@@ -59,6 +59,19 @@ function generateClientId() {
     return `${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 9)}`;
 }
 
+function normalizeDeviceName(value) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    // deviceName 会进入 VCPLog 离线补发 deviceKey,限制字符集避免日志污染和异常 key。
+    const normalized = trimmed
+        .replace(/[^\w.\-:@()[\]\u4e00-\u9fa5]/g, '_')
+        .substring(0, 80);
+
+    return normalized || null;
+}
+
 async function writeLog(message) {
     // 实际项目中，这里可以对接更完善的日志系统
     // 为了简化，暂时只在 debugMode 开启时打印到控制台
@@ -221,12 +234,21 @@ function initialize(httpServer, config) {
             ? rawRemoteAddress.substring(7)
             : rawRemoteAddress;
 
+        // 通用设备名识别:前端可通过 ?deviceName=xxx 上报稳定设备名,用于 VCPLog 离线补发区分设备。
+        // 兼容 device_name / devicename,便于不同前端渐进接入。
+        const deviceName = normalizeDeviceName(
+            parsedUrl.query.deviceName ||
+            parsedUrl.query.device_name ||
+            parsedUrl.query.devicename
+        );
+
         if (isAuthenticated) {
             wssInstance.handleUpgrade(request, socket, head, (ws) => {
                 const clientId = generateClientId();
                 ws.clientId = clientId;
                 ws.clientType = clientType;
                 ws.clientIp = clientIp || null;
+                ws.deviceName = deviceName;
 
                 if (clientType === 'DistributedServer') {
                     const serverId = `dist-${clientId}`;
@@ -270,8 +292,12 @@ function initialize(httpServer, config) {
 
                     // VCPLog 类型客户端接入设备识别 + 离线补发管理器
                     if (clientType === 'VCPLog') {
-                        const deviceKey = ws.clientIp || `noip-${clientId}`;
+                        const deviceKey = ws.deviceName
+                            ? `deviceName:${ws.deviceName}`
+                            : (ws.clientIp || `noip-${clientId}`);
                         ws.vcpLogDeviceKey = deviceKey;
+                        ws.vcpLogDeviceName = ws.deviceName || null;
+                        console.log(`[WebSocketServer] VCPLog replay device resolved: deviceKey=${deviceKey}, deviceName=${ws.vcpLogDeviceName || 'N/A'}, ip=${ws.clientIp || 'N/A'}, clientId=${clientId}`);
                         try {
                             vcpLogReplayManager.registerOnline({
                                 deviceKey,
