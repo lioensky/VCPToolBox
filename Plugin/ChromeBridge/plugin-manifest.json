@@ -81,6 +81,11 @@
                 "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」get_page_info「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
+                "command": "wait",
+                "description": "串行指令集专用等待指令，用于在两个浏览器操作之间插入明确的时间缓冲，不会向 Chrome 扩展发送命令，也不会改变页面状态。适合等待 SPA/搜索结果/懒加载内容稳定后，再执行 `get_page_info` 或后续点击、查询。支持别名 `sleep` / `delay`。\n- `command`: 固定为 `wait`。\n- `waitMs`: 可选，等待毫秒数，默认 1000，最大 30000。\n- `durationMs`: 可选，等价于 `waitMs`。\n- `seconds`: 可选，等待秒数，例如 `2` 表示 2000ms。\n\n**串行调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand1: 「始」click「末」,\ntarget1: 「始」vcp-button-1「末」,\ncommand2: 「始」wait「末」,\nwaitMs2: 「始」2000「末」,\ncommand3: 「始」get_page_info「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "example": "**串行调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand1: 「始」open_url「末」,\nurl1: 「始」https://www.google.com「末」,\ncommand2: 「始」wait「末」,\nwaitMs2: 「始」2000「末」,\ncommand3: 「始」get_page_info「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
                 "command": "execute_script",
                 "description": "在当前页面上下文中执行自定义 JavaScript 代码，并获取返回值。\n- `command`: 固定为 `execute_script`。\n- `text`: 要执行的 JavaScript 代码字符串。\n\n**注意:** 该指令允许直接操作 DOM 或调用页面全局函数，执行结果将通过回调返回。",
                 "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」execute_script「末」,\ntext: 「始」return { width: window.innerWidth, title: document.title }「末」\n<<<[END_TOOL_REQUEST]>>>"

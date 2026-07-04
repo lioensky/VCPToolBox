@@ -289,7 +289,10 @@ function buildCommandFromParams(params, suffix = '') {
         snapshotId: params[`snapshotId${suffix}`],
         strict: params[`strict${suffix}`],
         wait_for_page_info: params[`wait_for_page_info${suffix}`],
-        pageInfoFallbackMs: params[`pageInfoFallbackMs${suffix}`]
+        pageInfoFallbackMs: params[`pageInfoFallbackMs${suffix}`],
+        waitMs: params[`waitMs${suffix}`],
+        durationMs: params[`durationMs${suffix}`],
+        seconds: params[`seconds${suffix}`]
     };
 
     Object.keys(cmd).forEach(key => cmd[key] === undefined && delete cmd[key]);
@@ -334,6 +337,23 @@ function authorizeChromeCommand(entry, command) {
 
 function getOpenClients() {
     return Array.from(connectedChromes.values()).filter(entry => isOpen(entry.ws));
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getWaitDurationMs(cmdParams = {}) {
+    const rawValue = cmdParams.waitMs ?? cmdParams.durationMs ?? cmdParams.seconds;
+    const parsed = Number.parseFloat(rawValue);
+    if (!Number.isFinite(parsed)) return 1000;
+
+    const durationMs = rawValue === cmdParams.seconds ? parsed * 1000 : parsed;
+    return Math.min(Math.max(Math.round(durationMs), 0), 30000);
+}
+
+function isWaitCommand(command) {
+    return ['wait', 'sleep', 'delay'].includes(String(command || '').trim().toLowerCase());
 }
 
 async function waitForManagedClient(timeoutMs = 10000) {
@@ -726,6 +746,20 @@ async function processToolCall(params) {
         const isLastCommand = (i === commands.length - 1);
 
         console.log(`[ChromeBridge] 执行命令 ${i + 1}/${commands.length}: ${cmd.command}`);
+
+        if (isWaitCommand(cmd.command)) {
+            const waitMs = getWaitDurationMs(cmd);
+            console.log(`[ChromeBridge] ⏱️ 串行等待 ${waitMs}ms 后继续执行后续指令`);
+            await sleep(waitMs);
+            if (isLastCommand) {
+                return {
+                    success: true,
+                    message: `已等待 ${waitMs}ms`,
+                    result: { waitMs }
+                };
+            }
+            continue;
+        }
 
         if (LIFECYCLE_COMMANDS.has(cmd.command)) {
             const lifecycleResult = await runLifecycleCommand(cmd.command, params);
