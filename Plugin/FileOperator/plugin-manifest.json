@@ -53,11 +53,11 @@
       },
       {
         "command": "ReadFile",
-        "description": "功能: 读取指定绝对路径下文件的内容。特别优化了对多种格式的支持：对于 .pdf, .docx, .xlsx, .xls, .csv 等文件，插件会自动解析并提取其纯文本内容返回给AI；对于其他文件类型，则按普通文本文件读取。\n参数:\n- filePath (字符串, 必需): 要读取的文件的绝对路径。\n- encoding (字符串, 可选, 默认'utf8'): 对于普通文本文件，可以指定编码格式 (例如: 'utf8', 'ascii')。对于自动解析的文件，此参数无效。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」ReadFile「末」,\nfilePath:「始」/path/to/your/document.pdf「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "功能: 读取指定绝对路径下文件的内容。特别优化了对多种格式的支持：对于 .pdf, .docx, .xlsx, .xls, .csv 等文件，插件会自动解析并提取其纯文本内容返回给AI；对于其他文件类型，则按普通文本文件读取。支持通过lines参数只返回部分文本行，适合读取大型文本、代码或已提取出的PDF/Word/表格文本。\n参数:\n- filePath (字符串, 必需): 要读取的文件的绝对路径。\n- encoding (字符串, 可选, 默认'utf8'): 对于普通文本文件，可以指定编码格式 (例如: 'utf8', 'ascii')。对于自动解析的文件，此参数无效。\n- lines (字符串或数字, 可选): 只返回指定行范围，行号从1开始，仅对文本内容生效；图片、音频、视频等data URI内容会忽略此参数。支持语法: 'head:N' 读取开头N行，例如 'head:50'；'tail:N' 读取末尾N行，例如 'tail:80'；'M-N' 或 'M:N' 读取第M到N行，例如 '120-180'；'N' 读取单独第N行。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」ReadFile「末」,\nfilePath:「始」/path/to/your/document.pdf「末」,\nlines:「始」head:50「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "command": "WebReadFile",
-        "description": "功能: 从一个URL地址读取文件。插件会先将文件下载到本地一个临时文件夹内，然后复用ReadFile的逻辑进行解析和内容提取，支持所有ReadFile支持的格式（如PDF, DOCX, 图片等）。成功后，会返回文件内容以及一个本地文件URL。\n参数:\n- url (字符串, 必需): 要读取的文件的完整URL地址 (支持http和https)。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」WebReadFile「末」,\nurl:「始」http://example.com/sample.jpg「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "功能: 从一个URL地址读取文件。插件会先将文件下载到本地一个临时文件夹内，然后复用ReadFile的逻辑进行解析和内容提取，支持所有ReadFile支持的格式（如PDF, DOCX, 图片等）。成功后，会返回文件内容以及一个本地文件URL。\n参数:\n- url (字符串, 必需): 要读取的文件的完整URL地址 (支持http和https)。\n- encoding (字符串, 可选, 默认'utf8'): 对于普通文本文件，可以指定编码格式。\n- lines (字符串或数字, 可选): 只返回指定行范围，语法同ReadFile，例如 'head:50'、'tail:80'、'120-180'、'120:180' 或 '120'。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」WebReadFile「末」,\nurl:「始」http://example.com/sample.txt「末」,\nlines:「始」tail:80「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "command": "WriteFile",

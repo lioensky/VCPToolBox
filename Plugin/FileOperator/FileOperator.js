@@ -289,6 +289,107 @@ function resolveAndNormalizePath(inputPath) {
   }
 }
 
+function parseLineSelection(lines) {
+  if (lines === undefined || lines === null || lines === '') {
+    return null;
+  }
+
+  if (typeof lines === 'number') {
+    if (!Number.isInteger(lines) || lines <= 0) {
+      throw new Error('Invalid lines parameter: numeric value must be a positive integer line number.');
+    }
+    return { mode: 'range', start: lines, end: lines, raw: String(lines) };
+  }
+
+  const raw = String(lines).trim();
+  if (!raw) {
+    return null;
+  }
+
+  const positiveIntPattern = '[1-9]\\d*';
+  const headMatch = raw.match(new RegExp(`^head\\s*[:=]\\s*(${positiveIntPattern})$`, 'i'));
+  if (headMatch) {
+    return { mode: 'head', count: Number(headMatch[1]), raw };
+  }
+
+  const tailMatch = raw.match(new RegExp(`^tail\\s*[:=]\\s*(${positiveIntPattern})$`, 'i'));
+  if (tailMatch) {
+    return { mode: 'tail', count: Number(tailMatch[1]), raw };
+  }
+
+  const rangeMatch = raw.match(new RegExp(`^(${positiveIntPattern})\\s*[-:]\\s*(${positiveIntPattern})$`));
+  if (rangeMatch) {
+    const start = Number(rangeMatch[1]);
+    const end = Number(rangeMatch[2]);
+    if (start > end) {
+      throw new Error(`Invalid lines parameter: range start (${start}) cannot be greater than end (${end}).`);
+    }
+    return { mode: 'range', start, end, raw };
+  }
+
+  const singleLineMatch = raw.match(new RegExp(`^(${positiveIntPattern})$`));
+  if (singleLineMatch) {
+    const line = Number(singleLineMatch[1]);
+    return { mode: 'range', start: line, end: line, raw };
+  }
+
+  throw new Error('Invalid lines parameter. Supported syntax: "head:N", "tail:N", "M-N", "M:N", or "N".');
+}
+
+function applyLineSelection(content, selection) {
+  if (!selection) {
+    return { content, metadata: null };
+  }
+
+  const lineEndingMatch = content.match(/\r\n|\n|\r/);
+  const lineEnding = lineEndingMatch ? lineEndingMatch[0] : '\n';
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const allLines = normalized.split('\n');
+  const totalLines = allLines.length;
+
+  let startLine;
+  let endLine;
+
+  if (selection.mode === 'head') {
+    startLine = 1;
+    endLine = Math.min(selection.count, totalLines);
+  } else if (selection.mode === 'tail') {
+    startLine = Math.max(totalLines - selection.count + 1, 1);
+    endLine = totalLines;
+  } else {
+    startLine = Math.min(selection.start, totalLines);
+    endLine = Math.min(selection.end, totalLines);
+    if (selection.start > totalLines) {
+      return {
+        content: '',
+        metadata: {
+          requested: selection.raw,
+          startLine: selection.start,
+          endLine: selection.end,
+          actualStartLine: null,
+          actualEndLine: null,
+          totalLines,
+          selectedLines: 0
+        }
+      };
+    }
+  }
+
+  const selectedLines = allLines.slice(startLine - 1, endLine);
+  return {
+    content: selectedLines.join(lineEnding),
+    metadata: {
+      requested: selection.raw,
+      startLine,
+      endLine,
+      actualStartLine: startLine,
+      actualEndLine: endLine,
+      totalLines,
+      selectedLines: selectedLines.length
+    }
+  };
+}
+
 // Helper function to run validation and attach results
 async function runValidationAndAttachResults(result, filePath, fileContent) {
   if (result.success && fileContent) {
@@ -307,7 +408,7 @@ async function runValidationAndAttachResults(result, filePath, fileContent) {
 }
 
 // File operation functions
-async function webReadFile(fileUrl) {
+async function webReadFile(fileUrl, options = {}) {
   try {
     const fileDir = WEB_FILE_DIR;
     await fs.mkdir(fileDir, { recursive: true }); // Ensure directory exists
@@ -334,7 +435,7 @@ async function webReadFile(fileUrl) {
     });
 
     debugLog('File downloaded successfully. Reading local file.', { localFilePath });
-    const result = await readFile(localFilePath);
+    const result = await readFile(localFilePath, options.encoding, options.lines);
 
     if (result.success) {
       result.data.localPath = localFilePath;
@@ -356,10 +457,11 @@ async function webReadFile(fileUrl) {
   }
 }
 
-async function readFile(filePath, encoding = 'utf8') {
+async function readFile(filePath, encoding = 'utf8', lines) {
   try {
     filePath = resolveAndNormalizePath(filePath);
-    debugLog('Reading file', { filePath, encoding });
+    const lineSelection = parseLineSelection(lines);
+    debugLog('Reading file', { filePath, encoding, lines });
 
     if (!isPathAllowed(filePath, 'ReadFile')) {
       throw new Error(`Access denied: Path '${filePath}' is not in allowed directories`);
@@ -426,16 +528,34 @@ async function readFile(filePath, encoding = 'utf8') {
       content = fileBuffer.toString(encoding);
     }
 
+    let lineSelectionMetadata = null;
+    const isDataUriContent = typeof content === 'string' && content.startsWith('data:');
+    if (lineSelection && typeof content === 'string' && !isDataUriContent) {
+      const lineSelectionResult = applyLineSelection(content, lineSelection);
+      content = lineSelectionResult.content;
+      lineSelectionMetadata = lineSelectionResult.metadata;
+    } else if (lineSelection && isDataUriContent) {
+      lineSelectionMetadata = {
+        requested: lineSelection.raw,
+        skipped: true,
+        reason: 'Line selection is only supported for text content.'
+      };
+    }
+
     const returnData = {
       size: stats.size,
       sizeFormatted: formatFileSize(stats.size),
       lastModified: stats.mtime.toISOString(),
       encoding: isExtracted ? 'utf8' : encoding,
       isExtracted: isExtracted,
-      fileName: path.basename(filePath)
+      fileName: path.basename(filePath),
+      lines: lineSelectionMetadata
     };
 
-    const headerText = `已读取文件 '${returnData.fileName}' (${returnData.sizeFormatted})。`;
+    const lineInfoText = lineSelectionMetadata && !lineSelectionMetadata.skipped
+      ? ` 行范围: ${lineSelectionMetadata.selectedLines > 0 ? `${lineSelectionMetadata.actualStartLine}-${lineSelectionMetadata.actualEndLine}` : '空结果'}/${lineSelectionMetadata.totalLines}。`
+      : (lineSelectionMetadata && lineSelectionMetadata.skipped ? ` 行范围参数已忽略: ${lineSelectionMetadata.reason}` : '');
+    const headerText = `已读取文件 '${returnData.fileName}' (${returnData.sizeFormatted})。${lineInfoText}`;
 
     if (isExtracted && content.startsWith('data:image')) {
       returnData.content = [
@@ -1438,7 +1558,9 @@ async function processBatchRequest(request) {
         case 'ReadFile':
         case 'WebReadFile':
           const filePath = getPathParameter(parameters, 'filePath') || parameters.url;
-          result = command === 'ReadFile' ? await readFile(filePath) : await webReadFile(filePath);
+          result = command === 'ReadFile'
+            ? await readFile(filePath, parameters.encoding, parameters.lines)
+            : await webReadFile(filePath, { encoding: parameters.encoding, lines: parameters.lines });
           if (result.success) {
             // Add a text header for the file content
             aggregatedContent.push({ type: 'text', text: `--- Content of ${result.data.fileName || filePath} ---` });
@@ -1579,9 +1701,9 @@ async function processRequest(request) {
     case 'ListAllowedDirectories':
       return await listAllowedDirectories();
     case 'ReadFile':
-      return await readFile(getPathParameter(parameters, 'filePath'), parameters.encoding);
+      return await readFile(getPathParameter(parameters, 'filePath'), parameters.encoding, parameters.lines);
     case 'WebReadFile':
-      return await webReadFile(parameters.url || getPathParameter(parameters, 'filePath'));
+      return await webReadFile(parameters.url || getPathParameter(parameters, 'filePath'), { encoding: parameters.encoding, lines: parameters.lines });
     case 'WriteFile':
       return await writeFile(getPathParameter(parameters, 'filePath'), parameters.content, parameters.encoding);
     case 'WriteEscapedFile':
