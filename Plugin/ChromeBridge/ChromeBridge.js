@@ -208,6 +208,9 @@ function handleClientMessage(clientId, message) {
             if (pendingCmd.waitForPageInfo && pendingCmd.commandExecuted) {
                 console.log(`[ChromeBridge] 🎉 命令 ${requestId} 收到页面信息，准备返回`);
                 clearTimeout(pendingCmd.timeout);
+                if (pendingCmd.fallbackTimer) {
+                    clearTimeout(pendingCmd.fallbackTimer);
+                }
                 pendingCmd.resolve({
                     success: true,
                     message: pendingCmd.executionMessage,
@@ -428,12 +431,14 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
         }
     };
 
-    // 发送命令到Chrome
-    entry.ws.send(JSON.stringify(commandMessage));
-
-    // 创建Promise等待响应
+    // 创建Promise等待响应。必须先注册监听和 pending，再发送命令；
+    // 否则扩展秒回 command_result 时，服务端会错过响应并最终超时。
     return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
+            const pending = pendingCommands.get(bridgeRequestId);
+            if (pending?.fallbackTimer) {
+                clearTimeout(pending.fallbackTimer);
+            }
             pendingCommands.delete(bridgeRequestId);
             entry.ws.removeListener('message', messageListener);
             reject(new Error(`命令执行超时 (${command})`));
@@ -447,7 +452,8 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
             waitForPageInfo: actualWaitForPageInfo,
             commandExecuted: false,
             executionMessage: null,
-            commandResult: null
+            commandResult: null,
+            fallbackTimer: null
         });
 
         // 监听命令执行结果
@@ -461,12 +467,18 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
 
                     if (msg.data.status === 'error') {
                         clearTimeout(pending.timeout);
+                        if (pending.fallbackTimer) {
+                            clearTimeout(pending.fallbackTimer);
+                        }
                         pendingCommands.delete(bridgeRequestId);
                         entry.ws.removeListener('message', messageListener);
                         reject(new Error(msg.data.error || '命令执行失败'));
                     } else if (!actualWaitForPageInfo) {
                         // 不需要等待页面信息，直接返回
                         clearTimeout(pending.timeout);
+                        if (pending.fallbackTimer) {
+                            clearTimeout(pending.fallbackTimer);
+                        }
                         pendingCommands.delete(bridgeRequestId);
                         entry.ws.removeListener('message', messageListener);
                         resolve({
@@ -475,12 +487,25 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
                             result: msg.data.result // 透传执行结果（如 HTML, JS 返回值, 网络日志等）
                         });
                     } else {
-                        // 命令执行成功，标记并等待页面信息
+                        // 命令执行成功，标记并短暂等待页面信息；若页面内容没有变化或站点阻断 content_script，不应拖到 30 秒超时
                         console.log(`[ChromeBridge] ✅ 命令执行成功，等待页面加载/刷新...`);
                         pending.commandExecuted = true;
                         pending.executionMessage = msg.data.message || '命令执行成功';
                         pending.commandResult = msg.data.result;
-                        // 不移除监听器，继续等待pageInfoUpdate
+                        pending.fallbackTimer = setTimeout(() => {
+                            const stillPending = pendingCommands.get(bridgeRequestId);
+                            if (!stillPending || !stillPending.commandExecuted) return;
+                            clearTimeout(stillPending.timeout);
+                            pendingCommands.delete(bridgeRequestId);
+                            entry.ws.removeListener('message', messageListener);
+                            resolve({
+                                success: true,
+                                message: stillPending.executionMessage,
+                                result: stillPending.commandResult,
+                                page_info: pluginManager.staticPlaceholderValues.get("{{VCPChromePageInfo}}") || null,
+                                page_info_fallback: true
+                            });
+                        }, Number.parseInt(cmdParams.pageInfoFallbackMs, 10) || 4000);
                     }
                 }
             } catch (e) {
@@ -489,6 +514,9 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
         };
 
         entry.ws.on('message', messageListener);
+
+        // 监听已经就绪后再发送命令，避免秒回竞态导致超时。
+        entry.ws.send(JSON.stringify(commandMessage));
     });
 }
 

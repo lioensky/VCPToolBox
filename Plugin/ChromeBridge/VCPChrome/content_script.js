@@ -816,7 +816,7 @@ function sendPageInfoUpdate(options = {}) {
     }
     
     const currentPageContent = pageToMarkdown();
-    if (currentPageContent && currentPageContent !== lastPageContent) {
+    if (currentPageContent && (isForcedUpdate || currentPageContent !== lastPageContent)) {
         lastPageContent = currentPageContent;
         console.log(`[VCP Content] 📤 发送${isForcedUpdate ? '强制' : '自动'}页面信息到background (活动标签页)`);
         chrome.runtime.sendMessage({
@@ -841,7 +841,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         isMonitoringEnabled = true;
         console.log('[VCP Content] 📍 收到更新请求，标记为活动标签页');
         isActiveTab = true;
-        sendPageInfoUpdate();
+        if (request.force === true) {
+            lastPageContent = '';
+        }
+        sendPageInfoUpdate({ force: request.force === true });
     } else if (request.type === 'MONITORING_STATUS_CHANGED') {
         isMonitoringEnabled = request.isMonitoringEnabled === true;
         if (!isMonitoringEnabled) {

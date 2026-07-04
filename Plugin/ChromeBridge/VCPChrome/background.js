@@ -285,7 +285,8 @@ function connect(options = {}) {
                                         // 等待一小段时间让页面内容稳定，然后请求页面信息
                                         setTimeout(() => {
                                             chrome.tabs.sendMessage(tab.id, {
-                                                type: 'REQUEST_PAGE_INFO_UPDATE'
+                                                type: 'REQUEST_PAGE_INFO_UPDATE',
+                                                force: true
                                             }).catch(e => {
                                                 console.log('[VCP Background] ⚠️ 请求新标签页信息失败:', e.message);
                                             });
@@ -447,7 +448,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (isMonitoringEnabled && currentActiveTabId) {
             chrome.tabs.sendMessage(currentActiveTabId, {
                 type: 'REQUEST_PAGE_INFO_UPDATE',
-                isMonitoringEnabled: true
+                isMonitoringEnabled: true,
+                force: true
             }).catch(e => {
                 if (!e.message.includes("Could not establish connection")) {
                     console.log("Error requesting page info:", e.message);
@@ -1121,7 +1123,7 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
     if (isMonitoringEnabled) {
         // 使用重试机制发送更新请求，因为content script可能还未完全准备好
         const sendUpdateRequest = (retryCount = 0) => {
-            chrome.tabs.sendMessage(activeInfo.tabId, { type: 'REQUEST_PAGE_INFO_UPDATE', isMonitoringEnabled: true }, (response) => {
+            chrome.tabs.sendMessage(activeInfo.tabId, { type: 'REQUEST_PAGE_INFO_UPDATE', isMonitoringEnabled: true, force: true }, (response) => {
                 if (chrome.runtime.lastError) {
                     if (retryCount < 2) { // 最多重试2次
                         console.log(`[VCP Background] ⚠️ 发送更新请求失败，${200 * (retryCount + 1)}ms后重试 (${retryCount + 1}/2)`);
@@ -1161,7 +1163,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
             // 页面加载完成后，稍微延迟一下再请求，让页面内容更稳定
             setTimeout(() => {
                 const sendUpdateRequest = (retryCount = 0) => {
-                    chrome.tabs.sendMessage(tabId, { type: 'REQUEST_PAGE_INFO_UPDATE', isMonitoringEnabled: true }, (response) => {
+                    chrome.tabs.sendMessage(tabId, { type: 'REQUEST_PAGE_INFO_UPDATE', isMonitoringEnabled: true, force: true }, (response) => {
                         if (chrome.runtime.lastError) {
                             if (retryCount < 3) { // 页面加载后可以多重试几次
                                 console.log(`[VCP Background] ⚠️ 页面加载完成后请求失败，${300 * (retryCount + 1)}ms后重试 (${retryCount + 1}/3)`);
