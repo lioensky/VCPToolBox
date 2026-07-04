@@ -10,7 +10,7 @@ let pluginConfig = {};
 let debugMode = false;
 
 // 存储连接的Chrome插件客户端
-// key: clientId, value: { clientId, ws, clientKind, remoteAddress, connectedAt, lastSeenAt, capabilities, permissionLevel, managedTokenValid, activeTabInfo, maxTabs }
+// key: clientId, value: { clientId, ws, clientKind, remoteAddress, connectedAt, lastSeenAt, capabilities, permissionLevel, managedTokenValid, activeTabInfo, maxTabs, lastPageInfo }
 const connectedChromes = new Map();
 
 // 存储等待响应的命令
@@ -140,6 +140,7 @@ function handleNewClient(ws) {
         permissionLevel: 'restricted',
         managedTokenValid: false,
         activeTabInfo: null,
+        lastPageInfo: null,
         extensionVersion: null,
         userAgent: null,
         platform: null,
@@ -183,15 +184,31 @@ function handleClientMessage(clientId, message) {
     }
 
     if (message.type === 'pageInfoUpdate') {
-        const markdown = message.data.markdown;
+        const data = message.data || {};
+        const markdown = data.markdown;
 
         if (entry) {
             const lines = String(markdown || '').split('\n');
-            const title = (lines[0] || '').replace(/^#\s*/, '').trim();
+            const title = data.title || (lines[0] || '').replace(/^#\s*/, '').trim();
             const urlLine = lines.find(line => /^URL:\s*/i.test(line));
+            const url = data.url || (urlLine ? urlLine.replace(/^URL:\s*/i, '').trim() : '');
             entry.activeTabInfo = {
                 title,
-                url: urlLine ? urlLine.replace(/^URL:\s*/i, '').trim() : '',
+                url,
+                snapshotId: data.snapshotId,
+                elementCount: data.elementCount,
+                generatedAt: data.generatedAt,
+                updatedAt: nowIso()
+            };
+            entry.lastPageInfo = {
+                markdown,
+                snapshotId: data.snapshotId,
+                generatedAt: data.generatedAt,
+                url,
+                title,
+                elementCount: data.elementCount,
+                elements: Array.isArray(data.elements) ? data.elements : [],
+                error: data.error || null,
                 updatedAt: nowIso()
             };
         }
@@ -215,7 +232,14 @@ function handleClientMessage(clientId, message) {
                     success: true,
                     message: pendingCmd.executionMessage,
                     result: pendingCmd.commandResult,
-                    page_info: markdown
+                    page_info: markdown,
+                    page_info_meta: entry?.lastPageInfo ? {
+                        snapshotId: entry.lastPageInfo.snapshotId,
+                        generatedAt: entry.lastPageInfo.generatedAt,
+                        url: entry.lastPageInfo.url,
+                        title: entry.lastPageInfo.title,
+                        elementCount: entry.lastPageInfo.elementCount
+                    } : null
                 });
                 pendingCommands.delete(requestId);
             }
@@ -261,7 +285,11 @@ function buildCommandFromParams(params, suffix = '') {
         mobile: params[`mobile${suffix}`],
         origin: params[`origin${suffix}`],
         storageTypes: params[`storageTypes${suffix}`],
-        cdpParams: params[`cdpParams${suffix}`]
+        cdpParams: params[`cdpParams${suffix}`],
+        snapshotId: params[`snapshotId${suffix}`],
+        strict: params[`strict${suffix}`],
+        wait_for_page_info: params[`wait_for_page_info${suffix}`],
+        pageInfoFallbackMs: params[`pageInfoFallbackMs${suffix}`]
     };
 
     Object.keys(cmd).forEach(key => cmd[key] === undefined && delete cmd[key]);
@@ -472,7 +500,10 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
                         }
                         pendingCommands.delete(bridgeRequestId);
                         entry.ws.removeListener('message', messageListener);
-                        reject(new Error(msg.data.error || '命令执行失败'));
+                        const error = new Error(msg.data.error || '命令执行失败');
+                        error.code = msg.data.code || 'CHROME_COMMAND_ERROR';
+                        error.details = msg.data.details || null;
+                        reject(error);
                     } else if (!actualWaitForPageInfo) {
                         // 不需要等待页面信息，直接返回
                         clearTimeout(pending.timeout);
@@ -484,7 +515,8 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
                         resolve({
                             success: true,
                             message: msg.data.message || '命令执行成功',
-                            result: msg.data.result // 透传执行结果（如 HTML, JS 返回值, 网络日志等）
+                            result: msg.data.result, // 透传执行结果（如 HTML, JS 返回值, 网络日志等）
+                            code: msg.data.code || null
                         });
                     } else {
                         // 命令执行成功，标记并短暂等待页面信息；若页面内容没有变化或站点阻断 content_script，不应拖到 30 秒超时
@@ -503,6 +535,13 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
                                 message: stillPending.executionMessage,
                                 result: stillPending.commandResult,
                                 page_info: pluginManager.staticPlaceholderValues.get("{{VCPChromePageInfo}}") || null,
+                                page_info_meta: entry.lastPageInfo ? {
+                                    snapshotId: entry.lastPageInfo.snapshotId,
+                                    generatedAt: entry.lastPageInfo.generatedAt,
+                                    url: entry.lastPageInfo.url,
+                                    title: entry.lastPageInfo.title,
+                                    elementCount: entry.lastPageInfo.elementCount
+                                } : null,
                                 page_info_fallback: true
                             });
                         }, Number.parseInt(cmdParams.pageInfoFallbackMs, 10) || 4000);

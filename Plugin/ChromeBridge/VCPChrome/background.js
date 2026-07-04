@@ -15,7 +15,7 @@ let runtimeIdentity = {
     managedRuntime: false,
     managedToken: null,
     maxTabs: 8,
-    capabilities: ['pageInfo', 'tabs', 'script', 'cdp', 'storage', 'networkBody']
+    capabilities: ['pageInfo', 'tabs', 'script', 'cdp', 'storage', 'networkBody', 'snapshotHandles', 'structuredErrors']
 };
 
 let runtimeConnectionConfig = {
@@ -282,15 +282,15 @@ function connect(options = {}) {
                                             }));
                                         }
                                         
-                                        // 等待一小段时间让页面内容稳定，然后请求页面信息
-                                        setTimeout(() => {
-                                            chrome.tabs.sendMessage(tab.id, {
-                                                type: 'REQUEST_PAGE_INFO_UPDATE',
-                                                force: true
-                                            }).catch(e => {
-                                                console.log('[VCP Background] ⚠️ 请求新标签页信息失败:', e.message);
-                                            });
-                                        }, 500);
+                                        // 搜索页/SPA 页面在 load complete 后仍会异步渲染结果，等待内容稳定后再请求页面信息。
+                                                                                setTimeout(() => {
+                                                                                    chrome.tabs.sendMessage(tab.id, {
+                                                                                        type: 'REQUEST_PAGE_INFO_UPDATE',
+                                                                                        force: true
+                                                                                    }).catch(e => {
+                                                                                        console.log('[VCP Background] ⚠️ 请求新标签页信息失败:', e.message);
+                                                                                    });
+                                                                                }, 2500);
                                     }
                                 };
                                 
@@ -495,7 +495,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 type: 'pageInfoUpdate',
-                data: { markdown: request.data.markdown }
+                data: {
+                    markdown: request.data.markdown,
+                    snapshotId: request.data.snapshotId,
+                    generatedAt: request.data.generatedAt,
+                    url: request.data.url,
+                    title: request.data.title,
+                    elementCount: request.data.elementCount,
+                    elements: request.data.elements,
+                    error: request.data.error
+                }
             }));
             
             // 新增：解析markdown获取标题和URL，并广播给popup
@@ -517,8 +526,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
             
             const pageInfo = {
-                title: title || '未知页面',
-                url: url || '未知URL',
+                title: request.data.title || title || '未知页面',
+                url: request.data.url || url || '未知URL',
+                snapshotId: request.data.snapshotId,
+                elementCount: request.data.elementCount,
+                generatedAt: request.data.generatedAt,
                 timestamp: Date.now()
             };
 
@@ -617,6 +629,68 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // 保持消息通道开放以进行异步响应
 });
 
+function waitForTabLoadComplete(tabId, timeoutMs = 10000) {
+    return new Promise((resolve) => {
+        let settled = false;
+        const cleanup = () => {
+            chrome.tabs.onUpdated.removeListener(listener);
+        };
+        const finish = (reason, tab = null) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve({ reason, tab });
+        };
+        const listener = (updatedTabId, changeInfo, tab) => {
+            if (updatedTabId !== tabId) return;
+            if (changeInfo.status === 'complete') {
+                finish('complete', tab);
+            }
+        };
+
+        chrome.tabs.onUpdated.addListener(listener);
+
+        chrome.tabs.get(tabId, (tab) => {
+            if (chrome.runtime.lastError) return;
+            if (tab && tab.status === 'complete') {
+                // 当前可能还没来得及进入 loading，给浏览器一个短窗口捕获随后发生的导航。
+                setTimeout(() => {
+                    if (!settled) finish('already_complete', tab);
+                }, 600);
+            }
+        });
+
+        setTimeout(() => finish('timeout'), timeoutMs);
+    });
+}
+
+function requestPageInfoWithRetry(tabId, retryCount = 0) {
+    chrome.tabs.sendMessage(tabId, {
+        type: 'REQUEST_PAGE_INFO_UPDATE',
+        force: true
+    }, () => {
+        if (chrome.runtime.lastError) {
+            if (retryCount < 5) {
+                setTimeout(() => requestPageInfoWithRetry(tabId, retryCount + 1), 300 * (retryCount + 1));
+            } else if (!chrome.runtime.lastError.message.includes("Could not establish connection")) {
+                console.log('[VCP Background] ❌ 导航后请求页面信息最终失败:', chrome.runtime.lastError.message);
+            }
+        } else {
+            console.log(`[VCP Background] ✅ 导航后页面信息请求已发送 [ID:${tabId}]`);
+        }
+    });
+}
+
+function isExpectedNavigationChannelClose(error) {
+    const message = String(error?.message || error || '');
+    return /back\/forward cache|message channel is closed|Extension context invalidated|Receiving end does not exist|Could not establish connection/i.test(message);
+}
+
+function shouldTreatChannelCloseAsNavigation(commandData, error) {
+    const navigationProneCommands = new Set(['click']);
+    return navigationProneCommands.has(commandData?.command) && isExpectedNavigationChannelClose(error);
+}
+
 async function handleIncomingCommand(commandData) {
     const { command, requestId, sourceClientId } = commandData;
     
@@ -642,7 +716,14 @@ async function handleIncomingCommand(commandData) {
         } catch (error) {
             sendResponseToWs({
                 type: 'command_result',
-                data: { requestId, sourceClientId, status: 'error', error: error.message }
+                data: {
+                    requestId,
+                    sourceClientId,
+                    status: 'error',
+                    code: error.code || 'BACKGROUND_COMMAND_ERROR',
+                    error: error.message,
+                    details: error.details || null
+                }
             });
         }
         return;
@@ -655,15 +736,54 @@ async function handleIncomingCommand(commandData) {
                 type: 'EXECUTE_COMMAND',
                 data: commandData
             }).catch(err => {
+                if (shouldTreatChannelCloseAsNavigation(commandData, err)) {
+                    console.log('[VCP Background] 🔄 点击触发导航导致 content script 通道关闭，等待标签页完成加载:', err.message);
+                    waitForTabLoadComplete(tabs[0].id, 12000).then((loadResult) => {
+                        sendResponseToWs({
+                            type: 'command_result',
+                            data: {
+                                requestId,
+                                sourceClientId,
+                                status: 'success',
+                                code: 'NAVIGATION_COMPLETED_OR_STABLE',
+                                message: `点击已触发页面导航，已等待标签页状态: ${loadResult.reason}，随后请求新页面信息。`,
+                                result: {
+                                    navigationInProgress: false,
+                                    navigationWaitReason: loadResult.reason,
+                                    tab: loadResult.tab ? {
+                                        id: loadResult.tab.id,
+                                        title: loadResult.tab.title,
+                                        url: loadResult.tab.url,
+                                        status: loadResult.tab.status
+                                    } : null,
+                                    originalChannelError: err.message
+                                }
+                            }
+                        });
+
+// 必须在 command_result 之后请求 page_info：
+                        // 服务端只有收到 command_result 后才会把 pending 标记为 commandExecuted。
+                        // Bing/Google 搜索结果页 load complete 后还会异步填充结果列表，过早抓取只会得到顶部导航。
+                        setTimeout(() => requestPageInfoWithRetry(tabs[0].id), 2500);
+                    });
+                    return;
+                }
+
                 sendResponseToWs({
                     type: 'command_result',
-                    data: { requestId, sourceClientId, status: 'error', error: '无法连接到页面脚本: ' + err.message }
+                    data: {
+                        requestId,
+                        sourceClientId,
+                        status: 'error',
+                        code: 'CONTENT_SCRIPT_CONTEXT_LOST',
+                        error: '无法连接到页面脚本: ' + err.message
+                    }
                 });
             });
         } else {
             sendResponseToWs({
                 type: 'command_result',
-                data: { requestId, sourceClientId, status: 'error', error: '没有活动的标签页' }
+                data: { requestId, sourceClientId, status: 'error', code: 'NO_ACTIVE_TAB', error: '没有活动的标签页' }
             });
         }
     });
@@ -1160,10 +1280,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         console.log(`[VCP Background] ✅ 活动标签页加载完成 [ID:${tab.id}] 标题:《${tab.title}》`);
         
         if (isMonitoringEnabled) {
-            // 页面加载完成后，稍微延迟一下再请求，让页面内容更稳定
-            setTimeout(() => {
-                const sendUpdateRequest = (retryCount = 0) => {
-                    chrome.tabs.sendMessage(tabId, { type: 'REQUEST_PAGE_INFO_UPDATE', isMonitoringEnabled: true, force: true }, (response) => {
+                        // 页面加载完成后，搜索结果/SPA 内容仍可能异步渲染；延迟请求，避免只抓到顶部导航。
+                        setTimeout(() => {
+                            const sendUpdateRequest = (retryCount = 0) => {
+                                chrome.tabs.sendMessage(tabId, { type: 'REQUEST_PAGE_INFO_UPDATE', isMonitoringEnabled: true, force: true }, (response) => {
                         if (chrome.runtime.lastError) {
                             if (retryCount < 3) { // 页面加载后可以多重试几次
                                 console.log(`[VCP Background] ⚠️ 页面加载完成后请求失败，${300 * (retryCount + 1)}ms后重试 (${retryCount + 1}/3)`);
@@ -1177,7 +1297,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
                     });
                 };
                 sendUpdateRequest();
-            }, 300); // 等待300ms让页面更稳定
+            }, 2500); // 等待搜索结果/动态内容稳定
         }
     }
 });

@@ -3,6 +3,554 @@ let vcpIdCounter = 0;
 let isActiveTab = false; // 标记当前标签页是否为活动标签页
 let isMonitoringEnabled = false; // 从 background/storage 同步的页面监控开关
 
+// Snapshot/Handle runtime: vcp-id 不再作为唯一真相，避免动态页面重排后漂移误操作。
+let currentSnapshotId = 0;
+let currentSnapshotMeta = null;
+let elementRegistry = new Map(); // handleId -> { element, signature, locatorHints, legacyId, label, kind, snapshotId }
+let legacyIdAliasMap = new Map(); // vcp-id-N -> handleId
+let commandInProgress = false;
+let suppressAutoSnapshotUntil = 0;
+let pendingSnapshotRefresh = false;
+const VCP_HANDLE_PREFIX = 'vcp-h-'; // 兼容旧快照句柄
+const VCP_KIND_ID_REGEX = /^vcp-(searchbox|input|textarea|button|link|select|option|checkbox|radio|tab|switch|menuitem|interactive)-(\d+)$/i;
+
+function makeStructuredError(code, message, details = {}) {
+    const error = new Error(message);
+    error.code = code;
+    error.details = details;
+    return error;
+}
+
+function normalizeAttribute(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function simpleHash(input) {
+    const text = String(input || '');
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+}
+
+function safeCssEscape(value) {
+    if (window.CSS && typeof CSS.escape === 'function') {
+        return CSS.escape(String(value));
+    }
+    return String(value).replace(/["\\]/g, '\\$&');
+}
+
+function getTextFromIdRefs(refs) {
+    return String(refs || '')
+        .split(/\s+/)
+        .map(id => document.getElementById(id))
+        .filter(Boolean)
+        .map(el => normalizeAttribute(el.innerText || el.textContent || el.getAttribute('aria-label') || el.title || ''))
+        .filter(Boolean)
+        .join(' ');
+}
+
+function getAccessibleName(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return '';
+    const labelledBy = getTextFromIdRefs(el.getAttribute('aria-labelledby'));
+    if (labelledBy) return labelledBy;
+    const describedBy = getTextFromIdRefs(el.getAttribute('aria-describedby'));
+    const ariaLabel = normalizeAttribute(el.getAttribute('aria-label'));
+    const label = findLabelForInput(el);
+    const placeholder = normalizeAttribute(el.getAttribute('placeholder'));
+    const title = normalizeAttribute(el.getAttribute('title'));
+    const name = normalizeAttribute(el.getAttribute('name'));
+    const id = normalizeAttribute(el.id);
+    return normalizeAttribute(ariaLabel || label || placeholder || title || name || id || describedBy);
+}
+
+function inferInputSemanticLabel(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return '';
+    const tagName = el.tagName.toLowerCase();
+    const role = el.getAttribute('role');
+    const type = (el.getAttribute('type') || el.type || '').toLowerCase();
+    const combined = [
+        getAccessibleName(el),
+        el.getAttribute('aria-label'),
+        getTextFromIdRefs(el.getAttribute('aria-labelledby')),
+        el.getAttribute('placeholder'),
+        el.getAttribute('name'),
+        el.id,
+        el.className,
+        el.getAttribute('autocomplete'),
+        el.getAttribute('aria-controls'),
+        el.getAttribute('aria-owns')
+    ].map(value => normalizeAttribute(value)).filter(Boolean).join(' ');
+
+    const searchHints = [
+        type === 'search',
+        role === 'searchbox',
+        /(^|[_\-\s])(q|query|search|keyword|wd|s)($|[_\-\s])/i.test(combined),
+        /搜索|搜尋|搜寻|search|query|keyword|关键词|關鍵詞|bing|google|baidu|duckduckgo/i.test(combined),
+        tagName === 'input' && el.closest('form') && /search|sb_form|搜索|搜尋/i.test((el.closest('form').id || '') + ' ' + (el.closest('form').className || '') + ' ' + (el.closest('form').getAttribute('role') || ''))
+    ];
+
+    if (searchHints.some(Boolean)) {
+        const accessibleName = getAccessibleName(el);
+        return accessibleName && !/^(q|wd|s)$/i.test(accessibleName) ? accessibleName : '搜索框';
+    }
+
+    return getAccessibleName(el);
+}
+
+function getElementTextForSignature(el) {
+    const tagName = el?.tagName?.toLowerCase?.() || '';
+    const role = el?.getAttribute?.('role') || '';
+    const isInputElement = tagName === 'input' || tagName === 'textarea' ||
+        ['combobox', 'searchbox', 'textbox'].includes(role) ||
+        el?.isContentEditable;
+    if (isInputElement) {
+        return normalizeAttribute(
+            inferInputSemanticLabel(el) ||
+            el.value ||
+            el.innerText ||
+            el.textContent ||
+            ''
+        );
+    }
+    return normalizeAttribute(
+        getAccessibleName(el) ||
+        el.innerText ||
+        el.textContent ||
+        el.value ||
+        el.placeholder ||
+        el.title ||
+        ''
+    );
+}
+
+function getDomPath(el) {
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === Node.ELEMENT_NODE && node !== document.body && node !== document.documentElement) {
+        const parent = node.parentElement;
+        if (!parent) break;
+        const sameTagSiblings = Array.from(parent.children).filter(child => child.tagName === node.tagName);
+        const index = sameTagSiblings.indexOf(node) + 1;
+        parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${Math.max(index, 1)})`);
+        node = parent;
+        if (parts.length >= 8) break;
+    }
+    return parts.length ? parts.join(' > ') : '';
+}
+
+function buildCssSelector(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return '';
+    if (el.id) return `#${safeCssEscape(el.id)}`;
+    const tagName = el.tagName.toLowerCase();
+    const name = el.getAttribute('name');
+    const ariaLabel = el.getAttribute('aria-label');
+    const placeholder = el.getAttribute('placeholder');
+    if (name) return `${tagName}[name="${safeCssEscape(name)}"]`;
+    if (ariaLabel) return `${tagName}[aria-label="${safeCssEscape(ariaLabel)}"]`;
+    if (placeholder) return `${tagName}[placeholder="${safeCssEscape(placeholder)}"]`;
+    const role = el.getAttribute('role');
+    if (role) return `${tagName}[role="${safeCssEscape(role)}"]`;
+    return getDomPath(el);
+}
+
+function createLocatorHints(el) {
+    const hints = [];
+    const tagName = el.tagName.toLowerCase();
+    const id = el.id;
+    const name = el.getAttribute('name');
+    const ariaLabel = el.getAttribute('aria-label');
+    const placeholder = el.getAttribute('placeholder');
+    const title = el.getAttribute('title');
+    const role = el.getAttribute('role');
+
+    if (id) hints.push({ type: 'id', selector: `#${safeCssEscape(id)}`, strong: true });
+    if (name) hints.push({ type: 'name', selector: `${tagName}[name="${safeCssEscape(name)}"]`, strong: true });
+    if (ariaLabel) hints.push({ type: 'aria-label', selector: `${tagName}[aria-label="${safeCssEscape(ariaLabel)}"]`, strong: true });
+    if (placeholder) hints.push({ type: 'placeholder', selector: `${tagName}[placeholder="${safeCssEscape(placeholder)}"]`, strong: true });
+    if (title) hints.push({ type: 'title', selector: `${tagName}[title="${safeCssEscape(title)}"]`, strong: false });
+    if (role) hints.push({ type: 'role', selector: `${tagName}[role="${safeCssEscape(role)}"]`, strong: false });
+
+    const cssSelector = buildCssSelector(el);
+    if (cssSelector) hints.push({ type: 'css-path', selector: cssSelector, strong: false });
+
+    return hints;
+}
+
+function isInputLikeElement(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    const tagName = el.tagName.toLowerCase();
+    const role = el.getAttribute('role');
+    if (tagName === 'textarea') return true;
+    if (tagName === 'input') {
+        return !['button', 'submit', 'reset', 'hidden', 'checkbox', 'radio', 'file', 'image', 'range', 'color'].includes((el.type || '').toLowerCase());
+    }
+    if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') return true;
+    return ['textbox', 'searchbox', 'combobox'].includes(role);
+}
+
+function isClickableLikeElement(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    const tagName = el.tagName.toLowerCase();
+    const role = el.getAttribute('role');
+    return ['a', 'button', 'summary', 'label', 'option', 'select'].includes(tagName) ||
+        ['button', 'link', 'checkbox', 'radio', 'menuitem', 'tab', 'switch', 'option', 'treeitem'].includes(role) ||
+        el.hasAttribute('onclick') ||
+        el.hasAttribute('tabindex') ||
+        window.getComputedStyle(el).cursor === 'pointer';
+}
+
+function createElementSignature(el) {
+    const rect = el.getBoundingClientRect();
+    const tagName = el.tagName.toLowerCase();
+    const signature = {
+        tagName,
+        type: normalizeAttribute(el.getAttribute('type') || el.type || ''),
+        role: normalizeAttribute(el.getAttribute('role')),
+        id: normalizeAttribute(el.id),
+        name: normalizeAttribute(el.getAttribute('name')),
+        ariaLabel: normalizeAttribute(el.getAttribute('aria-label')),
+        ariaLabelledBy: normalizeAttribute(el.getAttribute('aria-labelledby')),
+        accessibleName: getAccessibleName(el),
+        placeholder: normalizeAttribute(el.getAttribute('placeholder')),
+        title: normalizeAttribute(el.getAttribute('title')),
+        text: getElementTextForSignature(el).slice(0, 160),
+        href: normalizeAttribute(el.getAttribute('href')),
+        cssSelector: buildCssSelector(el),
+        domPath: getDomPath(el),
+        isInputLike: isInputLikeElement(el),
+        isClickableLike: isClickableLikeElement(el),
+        rect: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+        }
+    };
+    signature.hash = simpleHash([
+        signature.tagName,
+        signature.type,
+        signature.role,
+        signature.id,
+        signature.name,
+        signature.ariaLabel,
+        signature.ariaLabelledBy,
+        signature.accessibleName,
+        signature.placeholder,
+        signature.title,
+        signature.href,
+        signature.text
+    ].join('|')).slice(0, 8);
+    return signature;
+}
+
+function validateElementAgainstSignature(el, signature, options = {}) {
+    if (!el || !signature) {
+        return { valid: false, score: 0, reason: '缺少元素或签名' };
+    }
+    if (!el.isConnected) {
+        return { valid: false, score: 0, reason: '元素已脱离 DOM' };
+    }
+
+    const current = createElementSignature(el);
+    let score = 0;
+    let total = 0;
+    const add = (condition, weight) => {
+        total += weight;
+        if (condition) score += weight;
+    };
+
+    add(current.tagName === signature.tagName, 4);
+    add(!signature.type || current.type === signature.type, 1);
+    add(!signature.role || current.role === signature.role, 1);
+    add(!signature.id || current.id === signature.id, 4);
+    add(!signature.name || current.name === signature.name, 3);
+    add(!signature.ariaLabel || current.ariaLabel === signature.ariaLabel, 3);
+    add(!signature.ariaLabelledBy || current.ariaLabelledBy === signature.ariaLabelledBy, 2);
+    add(!signature.accessibleName || current.accessibleName === signature.accessibleName, 2);
+    add(!signature.placeholder || current.placeholder === signature.placeholder, 3);
+    add(!signature.title || current.title === signature.title, 1);
+    add(!signature.href || current.href === signature.href, 2);
+
+    if (signature.text) {
+        const currentText = normalizeText(current.text);
+        const expectedText = normalizeText(signature.text);
+        add(currentText === expectedText || currentText.includes(expectedText) || expectedText.includes(currentText), 1);
+    }
+
+    if (options.requireInputLike) {
+        add(current.isInputLike === true, 5);
+    }
+    if (options.requireClickableLike) {
+        add(current.isClickableLike === true || current.isInputLike === true, 3);
+    }
+
+    const ratio = total > 0 ? score / total : 0;
+    const valid = current.tagName === signature.tagName && ratio >= (options.minScore || 0.62);
+
+    return {
+        valid,
+        score: ratio,
+        reason: valid ? '签名匹配' : `元素签名不匹配，score=${ratio.toFixed(2)}`,
+        current
+    };
+}
+
+function normalizeElementKind(kind) {
+    const normalized = String(kind || '').trim().toLowerCase();
+    const aliases = {
+        '搜索框': 'searchbox',
+        '输入框': 'input',
+        '文本输入': 'textarea',
+        '按钮': 'button',
+        '链接': 'link',
+        '下拉选择': 'select',
+        '可交互元素': 'interactive'
+    };
+    return aliases[normalized] || normalized || 'interactive';
+}
+
+function getElementKind(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return 'interactive';
+    const tagName = el.tagName.toLowerCase();
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    const type = (el.getAttribute('type') || el.type || '').toLowerCase();
+
+    if ((tagName === 'input' && type === 'search') || role === 'searchbox' || (isInputLikeElement(el) && inferInputSemanticLabel(el) === '搜索框')) return 'searchbox';
+    if (tagName === 'textarea') return 'textarea';
+    if (tagName === 'input' && type === 'checkbox') return 'checkbox';
+    if (tagName === 'input' && type === 'radio') return 'radio';
+    if (tagName === 'input' && !['button', 'submit', 'reset', 'hidden', 'checkbox', 'radio', 'file', 'image'].includes(type)) return 'input';
+    if (tagName === 'button' || role === 'button' || (tagName === 'input' && ['button', 'submit', 'reset'].includes(type))) return 'button';
+    if (tagName === 'a' && el.href) return 'link';
+    if (tagName === 'select') return 'select';
+    if (tagName === 'option' || role === 'option') return 'option';
+    if (role === 'tab') return 'tab';
+    if (role === 'switch') return 'switch';
+    if (role === 'menuitem') return 'menuitem';
+    if (['textbox', 'combobox'].includes(role) || el.isContentEditable || el.getAttribute('contenteditable') === 'true') return 'input';
+    return 'interactive';
+}
+
+function createKindCounters() {
+    return {
+        searchbox: 0,
+        input: 0,
+        textarea: 0,
+        button: 0,
+        link: 0,
+        select: 0,
+        option: 0,
+        checkbox: 0,
+        radio: 0,
+        tab: 0,
+        switch: 0,
+        menuitem: 0,
+        interactive: 0
+    };
+}
+
+function getCurrentInteractiveElementsByKind(kind) {
+    const normalizedKind = normalizeElementKind(kind);
+    return Array.from(document.querySelectorAll(
+        'a, button, input, textarea, select, option, [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="tab"], [role="switch"], [role="option"], [role="treeitem"], [role="searchbox"], [role="textbox"], [role="combobox"], [contenteditable="true"], [onclick], [tabindex]'
+    )).filter(el => {
+        if (!isInteractive(el)) return false;
+        return getElementKind(el) === normalizedKind;
+    });
+}
+
+function resolveKindId(target, options = {}) {
+    const match = String(target || '').trim().match(VCP_KIND_ID_REGEX);
+    if (!match) return null;
+
+    const kind = normalizeElementKind(match[1]);
+    const index = Number.parseInt(match[2], 10);
+    if (!Number.isFinite(index) || index <= 0) {
+        throw makeStructuredError('INVALID_TARGET_ID', `无效的类型分组 ID: ${target}`, { target });
+    }
+
+    const byMarker = document.querySelector(`[data-vcp-kind-id="${safeCssEscape(target)}"]`);
+    if (byMarker && isInteractive(byMarker)) {
+        return {
+            element: byMarker,
+            entry: elementRegistry.get(target) || null,
+            handleId: target,
+            source: 'kind-id-marker',
+            signatureValid: null,
+            confidence: 0.98
+        };
+    }
+
+    const sameKindElements = getCurrentInteractiveElementsByKind(kind);
+    const element = sameKindElements[index - 1] || null;
+    if (!element) {
+        throw makeStructuredError('TARGET_NOT_FOUND', `未找到 ${kind} 类型的第 ${index} 个元素: ${target}`, {
+            target,
+            kind,
+            index,
+            available: sameKindElements.length
+        });
+    }
+
+    if (options.requireInputLike && !isInputLikeElement(element)) {
+        throw makeStructuredError('ELEMENT_NOT_INPUT_LIKE', `目标 ${target} 解析到的元素不是输入类元素: ${getElementDescriptor(element)}`, {
+            target,
+            descriptor: getElementDescriptor(element)
+        });
+    }
+
+    if (options.requireClickableLike && !isClickableLikeElement(element) && !isInputLikeElement(element)) {
+        throw makeStructuredError('ELEMENT_NOT_CLICKABLE', `目标 ${target} 解析到的元素不可点击: ${getElementDescriptor(element)}`, {
+            target,
+            descriptor: getElementDescriptor(element)
+        });
+    }
+
+    return {
+        element,
+        entry: elementRegistry.get(target) || null,
+        handleId: target,
+        source: 'kind-index-resolver',
+        signatureValid: null,
+        confidence: 0.92
+    };
+}
+
+function pruneElementRegistry() {
+    const minSnapshotId = Math.max(0, currentSnapshotId - 5);
+    for (const [handleId, entry] of elementRegistry.entries()) {
+        const tooOld = Number(entry.snapshotId || 0) < minSnapshotId;
+        const disconnected = entry.element && !entry.element.isConnected;
+        if (tooOld || disconnected) {
+            elementRegistry.delete(handleId);
+        }
+    }
+}
+
+function clearElementRegistry(reason = 'unknown') {
+    document.querySelectorAll('[data-vcp-handle],[vcp-id]').forEach(el => {
+        el.removeAttribute('data-vcp-handle');
+        el.removeAttribute('vcp-id');
+    });
+    // 不再清空 elementRegistry：Bing/Google 等页面会在 Agent 获取 page_info 后立刻触发自动快照刷新。
+    // 旧 vcp-h-* 在短期内必须仍可解析；真正执行时会通过 isConnected 与签名校验防漂移。
+    legacyIdAliasMap.clear();
+    currentSnapshotMeta = null;
+    pruneElementRegistry();
+    console.log(`[VCP Content] 🧹 已清理 DOM 标记并保留短期句柄注册表: ${reason}, registry=${elementRegistry.size}`);
+}
+
+function createSnapshotContext() {
+    currentSnapshotId += 1;
+    vcpIdCounter = 0;
+    clearElementRegistry(`new_snapshot_${currentSnapshotId}`);
+    return {
+        snapshotId: currentSnapshotId,
+        createdAt: Date.now(),
+        url: document.URL,
+        title: document.title,
+        elements: [],
+        kindCounters: createKindCounters()
+    };
+}
+
+function classifyInteractiveElement(el, labelText) {
+    const kind = getElementKind(el);
+    const displayNames = {
+        searchbox: '搜索框',
+        input: '输入框',
+        textarea: '输入框',
+        button: '按钮',
+        link: '链接',
+        select: '下拉选择',
+        option: '选项',
+        checkbox: '复选框',
+        radio: '单选框',
+        tab: '标签页',
+        switch: '开关',
+        menuitem: '菜单项',
+        interactive: '可交互元素'
+    };
+    return displayNames[kind] || (labelText ? '可交互元素' : '可交互元素');
+}
+
+function registerInteractiveElement(el, context) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE || el.hasAttribute('data-vcp-handle')) {
+        return null;
+    }
+
+    vcpIdCounter++;
+    const legacyId = `vcp-id-${vcpIdCounter}`;
+    const signature = createElementSignature(el);
+    const elementKind = getElementKind(el);
+    context.kindCounters[elementKind] = (context.kindCounters[elementKind] || 0) + 1;
+    const kindIndex = context.kindCounters[elementKind];
+    const handleId = `vcp-${elementKind}-${kindIndex}`;
+    const snapshotHandleId = `${VCP_HANDLE_PREFIX}${context.snapshotId}-${vcpIdCounter}-${signature.hash}`;
+    const tagName = el.tagName.toLowerCase();
+    const role = el.getAttribute('role');
+    const semanticLabel = isInputLikeElement(el) ? inferInputSemanticLabel(el) : '';
+    const label = semanticLabel || signature.accessibleName || findLabelForInput(el) || signature.text || el.name || el.id || signature.placeholder || signature.ariaLabel || '无标题元素';
+    let kind = classifyInteractiveElement(el, label);
+
+    if (tagName === 'textarea' && /搜索|search/i.test(label + ' ' + el.className)) {
+        kind = '搜索框';
+    }
+
+    el.setAttribute('data-vcp-handle', handleId);
+    el.setAttribute('data-vcp-kind-id', handleId);
+    el.setAttribute('data-vcp-snapshot-handle', snapshotHandleId);
+    el.setAttribute('vcp-id', legacyId);
+
+    const entry = {
+        element: el,
+        handleId,
+        snapshotHandleId,
+        legacyId,
+        elementKind,
+        kindIndex,
+        snapshotId: context.snapshotId,
+        signature,
+        locatorHints: createLocatorHints(el),
+        label,
+        kind
+    };
+
+    elementRegistry.set(handleId, entry);
+    elementRegistry.set(snapshotHandleId, entry);
+    legacyIdAliasMap.set(legacyId, handleId);
+    legacyIdAliasMap.set(snapshotHandleId, handleId);
+    pruneElementRegistry();
+    context.elements.push({
+        handleId,
+        snapshotHandleId,
+        legacyId,
+        elementKind,
+        kindIndex,
+        label,
+        kind,
+        signature: {
+            tagName: signature.tagName,
+            type: signature.type,
+            role: signature.role,
+            id: signature.id,
+            name: signature.name,
+            ariaLabel: signature.ariaLabel,
+            ariaLabelledBy: signature.ariaLabelledBy,
+            accessibleName: signature.accessibleName,
+            placeholder: signature.placeholder,
+            hash: signature.hash,
+            isInputLike: signature.isInputLike,
+            isClickableLike: signature.isClickableLike
+        }
+    });
+
+    return `[${kind}#${kindIndex}: ${label}](${handleId})`;
+}
+
 function isInteractive(node) {
     if (node.nodeType !== Node.ELEMENT_NODE) {
         return false;
@@ -54,20 +602,22 @@ function isInteractive(node) {
 
 function pageToMarkdown() {
     try {
-        // 为确保每次都是全新的抓取，先移除所有旧的vcp-id
-        document.querySelectorAll('[vcp-id]').forEach(el => el.removeAttribute('vcp-id'));
-        vcpIdCounter = 0; // 重置计数器
+        const snapshot = createSnapshotContext();
         const body = document.body;
         if (!body) {
-            return '';
+            return {
+                markdown: '',
+                snapshotId: snapshot.snapshotId,
+                elementCount: 0,
+                elements: []
+            };
         }
 
-        let markdown = `# ${document.title}\nURL: ${document.URL}\n\n`;
-        const ignoredTags = ['SCRIPT', 'STYLE', 'FOOTER', 'IFRAME', 'NOSCRIPT']; // 移除 'NAV' 和 'ASIDE'
-        const processedNodes = new WeakSet(); // 记录已处理过的节点，防止重复
+        let markdown = `# ${document.title}\nURL: ${document.URL}\nSnapshot: ${snapshot.snapshotId}\nGenerated-At: ${new Date(snapshot.createdAt).toISOString()}\n\n`;
+        const ignoredTags = ['SCRIPT', 'STYLE', 'FOOTER', 'IFRAME', 'NOSCRIPT'];
+        const processedNodes = new WeakSet();
 
         function processNode(node) {
-            // 1. 基本过滤条件
             if (!node || processedNodes.has(node)) return '';
 
             if (node.nodeType === Node.ELEMENT_NODE) {
@@ -80,52 +630,41 @@ function pageToMarkdown() {
                 }
             }
 
-            // 如果父元素已经被标记为可交互元素并处理过，则跳过此节点
-            if (node.parentElement && node.parentElement.closest('[vcp-id]')) {
+            if (node.parentElement && node.parentElement.closest('[data-vcp-handle]')) {
                 return '';
             }
 
-            // 2. 优先处理可交互元素
             if (isInteractive(node)) {
-                const interactiveMd = formatInteractiveElement(node);
+                const interactiveMd = registerInteractiveElement(node, snapshot);
                 if (interactiveMd) {
-                    // 标记此节点及其所有子孙节点为已处理
                     processedNodes.add(node);
                     node.querySelectorAll('*').forEach(child => processedNodes.add(child));
                     return interactiveMd + '\n';
                 }
             }
 
-            // 3. 处理文本节点
             if (node.nodeType === Node.TEXT_NODE) {
-                // 用正则表达式替换多个空白为一个空格
                 return node.textContent.replace(/\s+/g, ' ').trim() + ' ';
             }
 
-            // 4. 递归处理子节点 (包括 Shadow DOM)
             let childContent = '';
             if (node.shadowRoot) {
                 childContent += processNode(node.shadowRoot);
             }
-            
+
             node.childNodes.forEach(child => {
                 childContent += processNode(child);
             });
 
-            // 新增代码开始
             if (node.nodeType === Node.ELEMENT_NODE && childContent.trim()) {
                 const tagName = node.tagName.toLowerCase();
                 if (tagName === 'nav') {
-                    // 为导航区添加标题和代码块包裹
                     return '\n## 导航区\n```markdown\n' + childContent.trim() + '\n```\n\n';
                 } else if (tagName === 'aside') {
-                    // 为侧边栏添加标题和代码块包裹
                     return '\n## 侧边栏\n```markdown\n' + childContent.trim() + '\n```\n\n';
                 }
             }
-            // 新增代码结束
 
-            // 5. 为块级元素添加换行以保持结构
             if (node.nodeType === Node.ELEMENT_NODE && childContent.trim()) {
                 const style = window.getComputedStyle(node);
                 if (style.display === 'block' || style.display === 'flex' || style.display === 'grid') {
@@ -137,89 +676,39 @@ function pageToMarkdown() {
         }
 
         markdown += processNode(body);
-        
-        // 清理最终的Markdown文本
-        markdown = markdown.replace(/[ \t]+/g, ' '); // 合并多余空格
-        markdown = markdown.replace(/ (\n)/g, '\n'); // 清理行尾空格
-        markdown = markdown.replace(/(\n\s*){3,}/g, '\n\n'); // 合并多余空行
+        markdown = markdown.replace(/[ \t]+/g, ' ');
+        markdown = markdown.replace(/ (\n)/g, '\n');
+        markdown = markdown.replace(/(\n\s*){3,}/g, '\n\n');
         markdown = markdown.trim();
-        
-        return markdown;
+
+        currentSnapshotMeta = {
+            snapshotId: snapshot.snapshotId,
+            createdAt: snapshot.createdAt,
+            url: snapshot.url,
+            title: snapshot.title,
+            elementCount: snapshot.elements.length
+        };
+
+        return {
+            markdown,
+            snapshotId: snapshot.snapshotId,
+            generatedAt: snapshot.createdAt,
+            url: snapshot.url,
+            title: snapshot.title,
+            elementCount: snapshot.elements.length,
+            elements: snapshot.elements.slice(0, 80)
+        };
     } catch (e) {
-        return `# ${document.title}\n\n[处理页面时出错: ${e.message}]`;
+        return {
+            markdown: `# ${document.title}\nURL: ${document.URL}\n\n[处理页面时出错: ${e.message}]`,
+            snapshotId: currentSnapshotId,
+            generatedAt: Date.now(),
+            url: document.URL,
+            title: document.title,
+            elementCount: elementRegistry.size,
+            error: e.message
+        };
     }
-}
-
-
-function formatInteractiveElement(el) {
-    // 避免重复标记同一个元素
-    if (el.hasAttribute('vcp-id')) {
-        return '';
-    }
-
-    vcpIdCounter++;
-    const vcpId = `vcp-id-${vcpIdCounter}`;
-    el.setAttribute('vcp-id', vcpId);
-
-    const tagName = el.tagName.toLowerCase();
-    const role = el.getAttribute('role');
-    
-    // 对于输入类元素，使用专门的文本获取逻辑
-    const isInputElement = (tagName === 'input' || tagName === 'textarea' ||
-                           role === 'combobox' || role === 'searchbox' || role === 'textbox');
-    
-    let text;
-    if (isInputElement) {
-        // 输入元素：优先级 placeholder > aria-label > title > name > id > value
-        text = (el.placeholder || el.ariaLabel || el.title || el.name || el.id || el.value || '').trim().replace(/\s+/g, ' ');
-    } else {
-        // 非输入元素：保持原有逻辑
-        text = (el.innerText || el.value || el.placeholder || el.ariaLabel || el.title || '').trim().replace(/\s+/g, ' ');
-    }
-
-    if (role === 'combobox' || role === 'searchbox') {
-        const label = findLabelForInput(el);
-        return `[搜索框: ${label || text || '搜索'}](${vcpId})`;
-    }
-
-    if (tagName === 'a' && el.href) {
-        return `[链接: ${text || '无标题链接'}](${vcpId})`;
-    }
-
-    if (tagName === 'button' || role === 'button' || (tagName === 'input' && ['button', 'submit', 'reset'].includes(el.type))) {
-        return `[按钮: ${text || '无标题按钮'}](${vcpId})`;
-    }
-
-    if (tagName === 'input' && !['button', 'submit', 'reset', 'hidden'].includes(el.type)) {
-        const label = findLabelForInput(el);
-        // 根据input类型决定显示名称
-        const inputType = el.type || 'text';
-        const typeName = inputType === 'search' ? '搜索框' : '输入框';
-        return `[${typeName}: ${label || text || el.name || el.id || '无标题输入框'}](${vcpId})`;
-    }
-
-    if (tagName === 'textarea') {
-        const label = findLabelForInput(el);
-        // 检查是否可能是搜索框（通过 placeholder 或其他属性判断）
-        const isSearchBox = /搜索|search/i.test(text) || /搜索|search/i.test(el.className);
-        const typeName = isSearchBox ? '搜索框' : '输入框';
-        return `[${typeName}: ${label || text || el.name || el.id || '文本输入'}](${vcpId})`;
-    }
-
-    if (tagName === 'select') {
-        const label = findLabelForInput(el);
-        return `[下拉选择: ${label || text || el.name || el.id || '无标题下拉框'}](${vcpId})`;
-    }
-
-    // 为其他所有可交互元素（如可点击的div，带角色的span等）提供通用处理
-    if (text) {
-        return `[可交互元素: ${text}](${vcpId})`;
-    }
-
-    // 如果元素没有文本但仍然是可交互的（例如，一个图标按钮），我们仍然需要标记它
-    // 但我们不回退ID，而是将其标记为一个没有文本的元素
-    const type = el.type || role || tagName;
-    return `[可交互元素: 无文本 (${type})](${vcpId})`;
 }
 
 function findLabelForInput(inputElement) {
@@ -319,7 +808,7 @@ function findByFuzzyText(targetText) {
     
     // 优先查找可交互元素
     const interactiveElements = document.querySelectorAll(
-        'a, button, input, textarea, select, [role="button"], [role="link"], [onclick], [tabindex]'
+        'a, button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="searchbox"], [role="combobox"], [contenteditable="true"], [onclick], [tabindex]'
     );
 
     let bestMatch = null;
@@ -334,6 +823,10 @@ function findByFuzzyText(targetText) {
 
         // 获取元素的所有文本表示
         const texts = [
+            inferInputSemanticLabel(el),
+            getAccessibleName(el),
+            getTextFromIdRefs(el.getAttribute('aria-labelledby')),
+            getTextFromIdRefs(el.getAttribute('aria-describedby')),
             el.innerText,
             el.textContent,
             el.value,
@@ -341,8 +834,12 @@ function findByFuzzyText(targetText) {
             el.ariaLabel,
             el.title,
             el.alt,
+            el.name,
+            el.id,
+            el.className,
             el.getAttribute('aria-label'),
-            el.getAttribute('data-label')
+            el.getAttribute('data-label'),
+            el.getAttribute('type')
         ].filter(Boolean);
 
         for (const text of texts) {
@@ -444,38 +941,231 @@ function levenshteinDistance(str1, str2) {
  * @param {string} target
  * @returns {Element|null}
  */
-function findElementWithLogging(target) {
+function resolveRegisteredHandle(handleId, options = {}) {
+    const entry = elementRegistry.get(handleId);
+    if (!entry) {
+        throw makeStructuredError('ELEMENT_HANDLE_EXPIRED', `元素句柄已过期或不存在: ${handleId}`, {
+            target: handleId,
+            currentSnapshotId,
+            currentSnapshotMeta
+        });
+    }
+
+    const candidates = [];
+    if (entry.element && entry.element.isConnected) {
+        candidates.push({ element: entry.element, source: 'registry' });
+    }
+
+    for (const hint of entry.locatorHints || []) {
+        try {
+            if (!hint.selector) continue;
+            const found = document.querySelector(hint.selector);
+            if (found && !candidates.some(item => item.element === found)) {
+                candidates.push({ element: found, source: `locator:${hint.type}` });
+            }
+        } catch (error) {
+            console.warn('[VCP Content] locator hint failed:', hint, error);
+        }
+    }
+
+    for (const candidate of candidates) {
+        const validation = validateElementAgainstSignature(candidate.element, entry.signature, options);
+        if (validation.valid) {
+            entry.element = candidate.element;
+            return {
+                element: candidate.element,
+                entry,
+                handleId,
+                source: candidate.source,
+                signatureValid: true,
+                confidence: validation.score
+            };
+        }
+    }
+
+    const first = candidates[0];
+    const validation = first ? validateElementAgainstSignature(first.element, entry.signature, options) : null;
+    throw makeStructuredError('ELEMENT_SIGNATURE_MISMATCH', `元素句柄疑似漂移: ${handleId}，原目标为 ${entry.kind}: ${entry.label}`, {
+        target: handleId,
+        expected: entry.signature,
+        current: validation?.current || null,
+        currentSnapshotId,
+        source: first?.source || null
+    });
+}
+
+function resolveTargetElement(target, options = {}) {
+    if (!target) {
+        throw makeStructuredError('TARGET_NOT_FOUND', '缺少目标元素 target');
+    }
+
+    const normalizedTarget = String(target).trim();
+
+    const kindResolved = resolveKindId(normalizedTarget, options);
+    if (kindResolved) {
+        return kindResolved;
+    }
+
+    if (normalizedTarget.startsWith(VCP_HANDLE_PREFIX)) {
+        return resolveRegisteredHandle(normalizedTarget, options);
+    }
+
+    if (/^vcp-id-\d+$/i.test(normalizedTarget)) {
+        const handleId = legacyIdAliasMap.get(normalizedTarget);
+        if (!handleId) {
+            throw makeStructuredError('ELEMENT_HANDLE_EXPIRED', `旧版 vcp-id 已过期: ${normalizedTarget}。请重新获取 page_info 并使用 vcp-h-* 句柄。`, {
+                target: normalizedTarget,
+                currentSnapshotId,
+                currentSnapshotMeta
+            });
+        }
+        return resolveRegisteredHandle(handleId, options);
+    }
+
+    const searchInputBySemantic = () => {
+        const targetNorm = normalizeText(normalizedTarget);
+        const inputCandidates = Array.from(document.querySelectorAll(
+            'input:not([type="hidden"]), textarea, [role="textbox"], [role="searchbox"], [role="combobox"], [contenteditable="true"]'
+        )).filter(el => {
+            if (!isInputLikeElement(el)) return false;
+            const style = window.getComputedStyle(el);
+            return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+        });
+
+        if (options.requireInputLike && /搜索|搜尋|搜寻|search|搜索框|searchbox|query|q/i.test(normalizedTarget)) {
+            const searchCandidate = inputCandidates.find(el => classifyInteractiveElement(el, inferInputSemanticLabel(el)) === '搜索框');
+            if (searchCandidate) return searchCandidate;
+        }
+
+        let best = null;
+        let bestScore = 0;
+        for (const el of inputCandidates) {
+            const texts = [
+                inferInputSemanticLabel(el),
+                getAccessibleName(el),
+                getTextFromIdRefs(el.getAttribute('aria-labelledby')),
+                el.name,
+                el.id,
+                el.placeholder,
+                el.getAttribute('type')
+            ].filter(Boolean);
+            for (const text of texts) {
+                const score = calculateSimilarity(targetNorm, normalizeText(text));
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = el;
+                }
+            }
+        }
+        return bestScore >= 0.45 ? best : null;
+    };
+
     const strategies = [
-        { name: 'vcp-id', fn: () => document.querySelector(`[vcp-id="${target}"]`) },
-        { name: 'aria-label', fn: () => document.querySelector(`[aria-label="${target}"]`) },
-        { name: 'xpath', fn: () => (target.startsWith('/') || target.startsWith('//')) ? findByXPath(target) : null },
+        { name: 'semantic-input', fn: searchInputBySemantic },
+        { name: 'aria-label', fn: () => document.querySelector(`[aria-label="${safeCssEscape(normalizedTarget)}"]`) },
+        { name: 'xpath', fn: () => (normalizedTarget.startsWith('/') || normalizedTarget.startsWith('//')) ? findByXPath(normalizedTarget) : null },
         { name: 'css-selector', fn: () => {
-            if (target.includes('#') || target.includes('.') || target.includes('[')) {
-                try { return document.querySelector(target); } catch { return null; }
+            if (normalizedTarget.includes('#') || normalizedTarget.includes('.') || normalizedTarget.includes('[')) {
+                try { return document.querySelector(normalizedTarget); } catch { return null; }
             }
             return null;
         }},
-        { name: 'fuzzy-text', fn: () => findByFuzzyText(target) },
-        { name: 'name', fn: () => document.querySelector(`[name="${target}"]`) },
-        { name: 'id', fn: () => document.getElementById(target) },
-        { name: 'placeholder', fn: () => document.querySelector(`[placeholder="${target}"]`) },
-        { name: 'title', fn: () => document.querySelector(`[title="${target}"]`) },
+        { name: 'name', fn: () => document.querySelector(`[name="${safeCssEscape(normalizedTarget)}"]`) },
+        { name: 'id', fn: () => document.getElementById(normalizedTarget) },
+        { name: 'placeholder', fn: () => document.querySelector(`[placeholder="${safeCssEscape(normalizedTarget)}"]`) },
+        { name: 'title', fn: () => document.querySelector(`[title="${safeCssEscape(normalizedTarget)}"]`) },
+        { name: 'fuzzy-text', fn: () => findByFuzzyText(normalizedTarget) }
     ];
 
     for (const strategy of strategies) {
         try {
             const element = strategy.fn();
             if (element) {
+                if (options.requireInputLike && !isInputLikeElement(element)) {
+                    continue;
+                }
+                if (options.requireClickableLike && !isClickableLikeElement(element) && !isInputLikeElement(element)) {
+                    continue;
+                }
                 console.log(`✅ Found element using strategy: ${strategy.name}`, element);
-                return element;
+                return {
+                    element,
+                    entry: null,
+                    handleId: element.getAttribute('data-vcp-kind-id') || element.getAttribute('data-vcp-handle') || element.getAttribute('vcp-id') || null,
+                    source: strategy.name,
+                    signatureValid: null,
+                    confidence: strategy.name === 'fuzzy-text' ? 0.68 : 0.85
+                };
             }
         } catch (e) {
             console.warn(`⚠️ Strategy ${strategy.name} failed:`, e);
         }
     }
 
-    console.error(`❌ Could not find element: ${target}`);
-    return null;
+    throw makeStructuredError('TARGET_NOT_FOUND', `未能在页面上找到目标为 '${normalizedTarget}' 的元素。`, {
+        target: normalizedTarget,
+        currentSnapshotId,
+        currentSnapshotMeta
+    });
+}
+
+function findElementWithLogging(target) {
+    try {
+        return resolveTargetElement(target).element;
+    } catch (error) {
+        console.error(`❌ Could not find element: ${target}`, error);
+        return null;
+    }
+}
+
+function setNativeValue(element, value) {
+    const tagName = element.tagName.toLowerCase();
+    if (element.isContentEditable || element.getAttribute('contenteditable') === 'true') {
+        element.textContent = value;
+        element.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: value }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        return;
+    }
+
+    const prototype = tagName === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+    if (descriptor && descriptor.set) {
+        descriptor.set.call(element, value);
+    } else {
+        element.value = value;
+    }
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: value }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function typeIntoElement(element, text) {
+    if (!isInputLikeElement(element)) {
+        throw makeStructuredError('ELEMENT_NOT_INPUT_LIKE', `目标元素不是输入类元素: ${getElementDescriptor(element)}`, {
+            descriptor: getElementDescriptor(element)
+        });
+    }
+    element.focus();
+    setNativeValue(element, String(text ?? ''));
+}
+
+function clickElement(element) {
+    if (!element) throw makeStructuredError('TARGET_NOT_FOUND', '缺少点击目标元素');
+    element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    element.focus({ preventScroll: true });
+    const rect = element.getBoundingClientRect();
+    const eventInit = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: Math.floor(rect.left + rect.width / 2),
+        clientY: Math.floor(rect.top + rect.height / 2)
+    };
+    ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
+        const event = type.startsWith('pointer')
+            ? new PointerEvent(type, { ...eventInit, pointerId: 1, pointerType: 'mouse', isPrimary: true })
+            : new MouseEvent(type, eventInit);
+        element.dispatchEvent(event);
+    });
 }
 
 function parseBooleanParam(value, defaultValue = false) {
@@ -802,6 +1492,11 @@ function pageCodeSearch(params = {}) {
 function sendPageInfoUpdate(options = {}) {
     const isForcedUpdate = options.force === true;
 
+    if (!isForcedUpdate && (commandInProgress || Date.now() < suppressAutoSnapshotUntil)) {
+        pendingSnapshotRefresh = true;
+        return;
+    }
+
     // 监控关闭时静默跳过自动更新，避免控制台持续刷新 VCP Content 日志。
     if (!isMonitoringEnabled && !isForcedUpdate) {
         return;
@@ -815,13 +1510,17 @@ function sendPageInfoUpdate(options = {}) {
         return;
     }
     
-    const currentPageContent = pageToMarkdown();
+    const pageInfo = pageToMarkdown();
+    const currentPageContent = pageInfo?.markdown || '';
     if (currentPageContent && (isForcedUpdate || currentPageContent !== lastPageContent)) {
         lastPageContent = currentPageContent;
-        console.log(`[VCP Content] 📤 发送${isForcedUpdate ? '强制' : '自动'}页面信息到background (活动标签页)`);
+        console.log(`[VCP Content] 📤 发送${isForcedUpdate ? '强制' : '自动'}页面信息到background (活动标签页, snapshot=${pageInfo.snapshotId}, elements=${pageInfo.elementCount})`);
         chrome.runtime.sendMessage({
             type: 'PAGE_INFO_UPDATE',
-            data: { markdown: currentPageContent, force: isForcedUpdate }
+            data: {
+                ...pageInfo,
+                force: isForcedUpdate
+            }
         }, () => {
             if (chrome.runtime.lastError) {
                 // console.log("[VCP Content] Page info update failed, context likely invalidated.");
@@ -836,6 +1535,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'CLEAR_STATE') {
         lastPageContent = '';
         isActiveTab = false; // 重置活动状态
+        currentSnapshotId += 1;
+        clearElementRegistry('navigation_clear_state');
     } else if (request.type === 'REQUEST_PAGE_INFO_UPDATE') {
         // 收到请求说明这是活动标签页
         isMonitoringEnabled = true;
@@ -854,13 +1555,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // 新增：强制更新页面信息（手动刷新）
         console.log('[VCP Content] 🔄 收到强制更新请求');
         lastPageContent = ''; // 清除缓存，强制重新生成
-        const currentPageContent = pageToMarkdown();
+        const pageInfo = pageToMarkdown();
+        const currentPageContent = pageInfo?.markdown || '';
         if (currentPageContent) {
             lastPageContent = currentPageContent;
             console.log('[VCP Content] 📤 发送强制更新的页面信息');
             chrome.runtime.sendMessage({
                 type: 'PAGE_INFO_UPDATE',
-                data: { markdown: currentPageContent, force: true }
+                data: { ...pageInfo, force: true }
             }, () => {
                 if (chrome.runtime.lastError) {
                     console.log("[VCP Content] ❌ 强制更新失败:", chrome.runtime.lastError.message);
@@ -876,15 +1578,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         return true; // 保持消息通道开放
     } else if (request.type === 'EXECUTE_COMMAND') {
-        const { command, target, text, requestId, sourceClientId, query, scope, useRegex, caseSensitive, contextChars, maxResults, searchMode, direction, amount, x, y, behavior } = request.data;
+        const { command, target, text, requestId, sourceClientId, query, scope, useRegex, caseSensitive, contextChars, maxResults, searchMode, direction, amount, x, y, behavior, snapshotId, strict } = request.data;
         
         const handleCommand = async () => {
             let result = {};
+            commandInProgress = true;
+            suppressAutoSnapshotUntil = Date.now() + 1500;
             try {
+                if (snapshotId && strict === true && Number(snapshotId) !== currentSnapshotId) {
+                    throw makeStructuredError('ELEMENT_HANDLE_EXPIRED', `命令快照 ${snapshotId} 已过期，当前快照为 ${currentSnapshotId}，请重新获取 page_info。`, {
+                        requestedSnapshotId: Number(snapshotId),
+                        currentSnapshotId
+                    });
+                }
+
                 if (command === 'query_html') {
-                    const element = target ? findElementWithLogging(target) : document.body;
-                    if (!element) throw new Error(`未找到目标元素: ${target}`);
-                    result = { status: 'success', result: element.outerHTML };
+                    const resolved = target ? resolveTargetElement(target) : { element: document.body, source: 'body' };
+                    const element = resolved.element;
+                    if (!element) throw makeStructuredError('TARGET_NOT_FOUND', `未找到目标元素: ${target}`);
+                    result = { status: 'success', result: element.outerHTML, targetResolution: { source: resolved.source, handleId: resolved.handleId, confidence: resolved.confidence } };
                 } else if (command === 'query_js') {
                     const scripts = Array.from(document.scripts).map(s => ({
                         src: s.src || 'inline',
@@ -901,6 +1613,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                         maxResults,
                         searchMode
                     });
+                } else if (command === 'get_page_info') {
+                    lastPageContent = '';
+                    const pageInfo = pageToMarkdown();
+                    result = { status: 'success', message: '页面信息已刷新', result: pageInfo };
                 } else if (command === 'scroll') {
                     result = performScroll({
                         target,
@@ -913,27 +1629,56 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 } else if (command === 'execute_script') {
                     throw new Error('execute_script 已迁移到 background 的 chrome.scripting MAIN world 执行路径');
                 } else {
-                    let element = findElementWithLogging(target);
-                    if (!element) throw new Error(`未能在页面上找到目标为 '${target}' 的元素。`);
+                    const resolved = resolveTargetElement(target, {
+                        requireInputLike: command === 'type',
+                        requireClickableLike: command === 'click',
+                        minScore: command === 'type' ? 0.72 : 0.62
+                    });
+                    const element = resolved.element;
 
                     if (command === 'type') {
-                        if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
-                            element.value = text;
-                            result = { status: 'success', message: `成功在ID为 '${target}' 的元素中输入文本。` };
-                        } else {
-                            throw new Error(`ID为 '${target}' 的元素不是一个输入框。`);
-                        }
+                        typeIntoElement(element, text);
+                        result = {
+                            status: 'success',
+                            message: `成功在目标 '${target}' 中输入文本。`,
+                            result: {
+                                snapshotId: currentSnapshotId,
+                                targetResolution: {
+                                    source: resolved.source,
+                                    handleId: resolved.handleId,
+                                    confidence: resolved.confidence,
+                                    signatureValid: resolved.signatureValid
+                                }
+                            }
+                        };
                     } else if (command === 'click') {
-                        element.focus();
-                        const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                        element.dispatchEvent(clickEvent);
-                        result = { status: 'success', message: `成功点击了ID为 '${target}' 的元素。` };
+                        clickElement(element);
+                        result = {
+                            status: 'success',
+                            message: `成功点击了目标 '${target}'。`,
+                            result: {
+                                snapshotId: currentSnapshotId,
+                                targetResolution: {
+                                    source: resolved.source,
+                                    handleId: resolved.handleId,
+                                    confidence: resolved.confidence,
+                                    signatureValid: resolved.signatureValid
+                                }
+                            }
+                        };
                     } else {
                         throw new Error(`不支持的命令: ${command}`);
                     }
                 }
             } catch (error) {
-                result = { status: 'error', error: error.message };
+                result = {
+                    status: 'error',
+                    code: error.code || 'COMMAND_EXECUTION_ERROR',
+                    error: error.message,
+                    details: error.details || null
+                };
+            } finally {
+                commandInProgress = false;
             }
 
             chrome.runtime.sendMessage({
@@ -944,7 +1689,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     console.log("Could not send command result:", chrome.runtime.lastError.message);
                 }
             });
-            setTimeout(() => sendPageInfoUpdate({ force: true }), 500);
+            setTimeout(() => {
+                pendingSnapshotRefresh = false;
+                sendPageInfoUpdate({ force: true });
+            }, 500);
         };
 
         handleCommand();
@@ -955,6 +1703,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 const debouncedSendPageInfoUpdate = debounce(sendPageInfoUpdate, 500); // 降低延迟，提高响应速度
 
 const observer = new MutationObserver((mutations) => {
+    const hasStructuralMutation = mutations.some(mutation =>
+        mutation.type === 'childList' ||
+        (mutation.type === 'attributes' && ['role', 'aria-label', 'placeholder', 'name', 'id', 'type', 'href', 'style', 'class'].includes(mutation.attributeName))
+    );
+    if (!hasStructuralMutation && !isMonitoringEnabled) return;
     debouncedSendPageInfoUpdate();
 });
 observer.observe(document.body, {
