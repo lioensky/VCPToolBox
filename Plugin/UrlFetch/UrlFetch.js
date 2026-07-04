@@ -30,6 +30,18 @@ const JINA_READER_TIMEOUT_MS = Number(process.env.JINA_READER_TIMEOUT_MS || 2000
 const DIRECT_FETCH_TIMEOUT_MS = Number(process.env.DIRECT_FETCH_TIMEOUT_MS || 12000);
 const DIRECT_FETCH_MAX_BYTES = Number(process.env.DIRECT_FETCH_MAX_BYTES || 5 * 1024 * 1024);
 const KNOWLEDGE_BASE_DIR = path.resolve(PROJECT_BASE_PATH || process.cwd(), 'knowledge');
+const URLFETCH_PERSISTENT_PROFILE = String(process.env.URLFETCH_PERSISTENT_PROFILE || 'true').toLowerCase() !== 'false';
+const URLFETCH_PROFILE_DIR = process.env.URLFETCH_PROFILE_DIR || path.resolve(__dirname, 'browser-profiles');
+const URLFETCH_PROFILE_MODE = String(process.env.URLFETCH_PROFILE_MODE || 'domain').toLowerCase();
+const URLFETCH_BROWSER_FIRST = String(process.env.URLFETCH_BROWSER_FIRST || 'false').toLowerCase() === 'true';
+const URLFETCH_HEADLESS = String(process.env.URLFETCH_HEADLESS || 'true').toLowerCase();
+const URLFETCH_HIGH_RISK_DOMAINS = String(
+    process.env.URLFETCH_HIGH_RISK_DOMAINS ||
+    'mp.weixin.qq.com,zhihu.com,x.com,twitter.com,bilibili.com,weibo.com'
+)
+    .split(',')
+    .map(domain => domain.trim().toLowerCase())
+    .filter(Boolean);
 
 puppeteer.use(StealthPlugin());
 puppeteer.use(AnonymizeUAPlugin());
@@ -63,23 +75,43 @@ function looksLikeCjk(text) {
     return /[\u3400-\u9fff]/.test(text || '');
 }
 
+function protectUrls(text, transform) {
+    const urlTokens = [];
+    const protectedText = String(text || '').replace(/https?:\/\/[^\s<>"'`，。！？；：、）)\]}]+/g, (url) => {
+        const token = `__URLFETCH_URL_TOKEN_${urlTokens.length}__`;
+        urlTokens.push(url);
+        return token;
+    });
+
+    const transformedText = transform(protectedText);
+    return urlTokens.reduce((result, url, index) => {
+        return result.replaceAll(`__URLFETCH_URL_TOKEN_${index}__`, url);
+    }, transformedText);
+}
+
+function repairBrokenUrls(text) {
+    return String(text || '')
+        .replace(/(https?:\/\/[^\s<>"'`，。！？；：、）)\]}]+[?&])\s*\n+\s*([A-Za-z0-9_%.-]+=[^\s<>"'`，。！？；：、）)\]}]*)/g, '$1$2')
+        .replace(/(https?:\/\/[^\s<>"'`，。！？；：、）)\]}]+[?&])\s*\n+\s*([A-Za-z0-9_%.-]+)/g, '$1$2');
+}
+
 function splitDenseCjkTextIntoParagraphs(text) {
-    const normalized = String(text || '').trim();
+    const normalized = repairBrokenUrls(String(text || '').trim());
     if (!normalized || !looksLikeCjk(normalized)) return normalized;
 
     // 部分站点（尤其微信公众号）在 DOM 中把整篇正文压成单个文本节点。
     // Readability 的 textContent 也会丢弃这些隐式段落边界，因此这里按中文句末标点、
-    // 问答说话人、编号观点等特征恢复可读段落。
-    return normalized
+    // 问答说话人、编号观点等特征恢复可读段落。URL 需先保护，避免 watch?v= 里的 ? 被误判为句末。
+    return protectUrls(normalized, protectedText => protectedText
         .replace(/([。！？!?])(?=(?:[A-Z][A-Za-z]+\s+[A-Z][A-Za-z]+|[\u4e00-\u9fff]{2,10})[：:])/g, '$1\n\n')
         .replace(/([。！？!?])(?=(?:\d{1,2}[.．、]\s*)?[\u4e00-\u9fffA-Za-z])/g, '$1\n\n')
         .replace(/([；;])(?=\d{1,2}[.．、]\s*[\u4e00-\u9fffA-Za-z])/g, '$1\n\n')
         .replace(/([：:])(?=\d{1,2}[.．、]\s*[\u4e00-\u9fffA-Za-z])/g, '$1\n\n')
-        .replace(/\n{3,}/g, '\n\n');
+        .replace(/\n{3,}/g, '\n\n'));
 }
 
 function normalizeExtractedText(rawText) {
-    return String(rawText || '')
+    return repairBrokenUrls(String(rawText || '')
         .replace(/\u00a0/g, ' ')
         .replace(/[ \t]+\n/g, '\n')
         .replace(/\n[ \t]+/g, '\n')
@@ -88,7 +120,7 @@ function normalizeExtractedText(rawText) {
         .split('\n')
         .map(line => splitDenseCjkTextIntoParagraphs(line.trimEnd()))
         .join('\n')
-        .replace(/\n{3,}/g, '\n\n')
+        .replace(/\n{3,}/g, '\n\n'))
         .trim();
 }
 
@@ -268,6 +300,51 @@ function isImageUrl(url) {
     } catch {
         return false;
     }
+}
+
+function sanitizeProfileSegment(segment) {
+    return String(segment || 'default')
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, '_')
+        .replace(/^\.+|\.+$/g, '')
+        .slice(0, 80) || 'default';
+}
+
+function isHighRiskDomain(url) {
+    try {
+        const hostname = new URL(url).hostname.toLowerCase();
+        return URLFETCH_HIGH_RISK_DOMAINS.some(domain => hostname === domain || hostname.endsWith(`.${domain}`));
+    } catch {
+        return false;
+    }
+}
+
+function shouldUseBrowserFirst(url, mode) {
+    return mode === 'text' && (URLFETCH_BROWSER_FIRST || isHighRiskDomain(url));
+}
+
+function getPersistentProfilePath(url, proxyPort = null) {
+    if (!URLFETCH_PERSISTENT_PROFILE) return null;
+
+    let urlObj;
+    try {
+        urlObj = new URL(url);
+    } catch {
+        return path.resolve(URLFETCH_PROFILE_DIR, 'default');
+    }
+
+    const hostname = sanitizeProfileSegment(urlObj.hostname);
+    const proxySegment = proxyPort ? `proxy_${sanitizeProfileSegment(proxyPort)}` : 'direct';
+
+    if (URLFETCH_PROFILE_MODE === 'default') {
+        return path.resolve(URLFETCH_PROFILE_DIR, proxySegment, 'default');
+    }
+
+    if (URLFETCH_PROFILE_MODE === 'proxy-aware') {
+        return path.resolve(URLFETCH_PROFILE_DIR, proxySegment, hostname);
+    }
+
+    return path.resolve(URLFETCH_PROFILE_DIR, hostname, proxySegment);
 }
 
 function sanitizeKnowledgeSubfolderName(folderName) {
@@ -594,10 +671,16 @@ async function fetchWithDirectHttp(url) {
 async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
     let browser;
     try {
+        const userDataDir = getPersistentProfilePath(url, proxyPort);
         const launchOptions = {
-            headless: true,
+            headless: URLFETCH_HEADLESS === 'false' ? false : (URLFETCH_HEADLESS === 'new' ? 'new' : true),
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         };
+
+        if (userDataDir) {
+            await fs.mkdir(userDataDir, { recursive: true });
+            launchOptions.userDataDir = userDataDir;
+        }
 
         if (proxyPort) {
             launchOptions.args.push(`--proxy-server=http://127.0.0.1:${proxyPort}`);
@@ -1024,11 +1107,16 @@ async function main() {
                     } else if (mode === 'jina') {
                         fetchedData = await fetchWithJinaReader(url);
                     } else if (mode === 'text') {
-                        try {
-                            fetchedData = await fetchWithDirectHttp(url);
-                        } catch (directError) {
-                            console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
+                        if (shouldUseBrowserFirst(url, mode)) {
+                            console.error(`检测到浏览器优先策略，使用 Puppeteer 持久化 Profile: ${url}`);
                             fetchedData = await fetchWithPuppeteer(url, mode);
+                        } else {
+                            try {
+                                fetchedData = await fetchWithDirectHttp(url);
+                            } catch (directError) {
+                                console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
+                                fetchedData = await fetchWithPuppeteer(url, mode);
+                            }
                         }
                     } else {
                         fetchedData = await fetchWithPuppeteer(url, mode);
