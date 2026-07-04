@@ -59,6 +59,39 @@ function normalizeInlineText(text) {
         .trim();
 }
 
+function looksLikeCjk(text) {
+    return /[\u3400-\u9fff]/.test(text || '');
+}
+
+function splitDenseCjkTextIntoParagraphs(text) {
+    const normalized = String(text || '').trim();
+    if (!normalized || !looksLikeCjk(normalized)) return normalized;
+
+    // 部分站点（尤其微信公众号）在 DOM 中把整篇正文压成单个文本节点。
+    // Readability 的 textContent 也会丢弃这些隐式段落边界，因此这里按中文句末标点、
+    // 问答说话人、编号观点等特征恢复可读段落。
+    return normalized
+        .replace(/([。！？!?])(?=(?:[A-Z][A-Za-z]+\s+[A-Z][A-Za-z]+|[\u4e00-\u9fff]{2,10})[：:])/g, '$1\n\n')
+        .replace(/([。！？!?])(?=(?:\d{1,2}[.．、]\s*)?[\u4e00-\u9fffA-Za-z])/g, '$1\n\n')
+        .replace(/([；;])(?=\d{1,2}[.．、]\s*[\u4e00-\u9fffA-Za-z])/g, '$1\n\n')
+        .replace(/([：:])(?=\d{1,2}[.．、]\s*[\u4e00-\u9fffA-Za-z])/g, '$1\n\n')
+        .replace(/\n{3,}/g, '\n\n');
+}
+
+function normalizeExtractedText(rawText) {
+    return String(rawText || '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n[ \t]+/g, '\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .split('\n')
+        .map(line => splitDenseCjkTextIntoParagraphs(line.trimEnd()))
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 function getListDepth(element) {
     let depth = 0;
     let current = element.parentElement;
@@ -150,16 +183,7 @@ function formatExtractedArticleContent(article) {
         rawText = article.textContent;
     }
 
-    return rawText
-        .replace(/\u00a0/g, ' ')
-        .replace(/[ \t]+\n/g, '\n')
-        .replace(/\n[ \t]+/g, '\n')
-        .replace(/[ \t]{2,}/g, ' ')
-        .replace(/\n{3,}/g, '\n\n')
-        .split('\n')
-        .map(line => line.trimEnd())
-        .join('\n')
-        .trim();
+    return normalizeExtractedText(rawText);
 }
 
 // A more robust auto-scroll function to handle lazy-loading content
@@ -559,7 +583,7 @@ async function fetchWithDirectHttp(url) {
         }
     }
 
-    const fallbackText = normalizeInlineText(doc.window.document.body?.textContent || '');
+    const fallbackText = normalizeExtractedText(doc.window.document.body?.innerText || doc.window.document.body?.textContent || '');
     if (fallbackText.length >= 80) {
         return `标题: ${doc.window.document.title || finalUrl}\n\n${fallbackText}`;
     }
@@ -891,7 +915,10 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
 
             if (article && (article.content || article.textContent)) {
                 // Format the output with title and content while preserving paragraph/list/heading boundaries.
-                const formattedContent = formatExtractedArticleContent(article);
+                let formattedContent = formatExtractedArticleContent(article);
+                if (!formattedContent && article.textContent) {
+                    formattedContent = normalizeExtractedText(article.textContent);
+                }
                 const result = `标题: ${article.title}\n\n${formattedContent}`;
                 return result;
             } else {
