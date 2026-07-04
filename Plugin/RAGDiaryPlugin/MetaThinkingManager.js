@@ -77,7 +77,9 @@ class MetaThinkingManager {
                 continue;
             }
 
-            const themeVector = await this.ragPlugin.getSingleEmbeddingCached(chainName);
+            const chainConfig = this.metaThinkingChains.chains[chainName];
+            const embeddingText = (typeof chainConfig === 'object' && chainConfig?.description) || chainName;
+            const themeVector = await this.ragPlugin.getSingleEmbeddingCached(embeddingText);
             if (themeVector) {
                 this.metaChainThemeVectors[chainName] = themeVector;
                 console.log(`[MetaThinkingManager] -> 已为元思考主题 "${chainName}" 成功获取向量。`);

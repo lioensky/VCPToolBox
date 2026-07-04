@@ -73,6 +73,22 @@
                 />
               </UiField>
 
+              <UiField
+                class="theme-description-editor"
+                label="Auto模式描述"
+                :for-id="`thinking-desc-${index}`"
+                size="sm"
+              >
+                <UiInput
+                  :id="`thinking-desc-${index}`"
+                  v-model.trim="chain.description"
+                  type="text"
+                  size="sm"
+                  placeholder="关键词描述，用于Auto选链向量化（留空则用主题名）"
+                  @click.stop
+                />
+              </UiField>
+
               <div class="cluster-picker-entry">
                 <UiButton
                   variant="outline"
