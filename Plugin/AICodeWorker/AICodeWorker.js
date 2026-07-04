@@ -55,6 +55,9 @@ function loadConfig() {
         redactSecrets:    (raw.REDACT_SECRETS    || "true")  !== "false",
         projectContext:   raw.PROJECT_CONTEXT ? raw.PROJECT_CONTEXT.replace(/\\n/g, "\n") : "",
         fileSizeWarnKB:   parseInt(raw.FILE_SIZE_WARN_KB || "200", 10),
+        // 2026-06-27崩服务器事故后加的硬保险：opencode/antigravity 共用同一并发上限(不是各自1个)，
+        // 默认1=任何时刻全服务器只允许1个 worker 实例在跑。之前只在文档写"严禁并发"靠自觉，没有代码强制。
+        maxConcurrentJobs: parseInt(raw.MAX_CONCURRENT_JOBS || "1", 10),
     };
 }
 
@@ -100,6 +103,46 @@ function saveMeta(jobId, meta) {
 function isProcessRunning(pid) {
     if (!pid) return false;
     try { process.kill(Number(pid), 0); return true; } catch { return false; }
+}
+
+/** 启动前强制清理残留 opencode 进程，防止僵尸堆积 */
+function killResidualOpencode() {
+    try {
+        const { execSync } = require("child_process");
+        const out = execSync("pgrep -x opencode 2>/dev/null || true", { encoding: "utf8" });
+        for (const line of out.split("\n")) {
+            const pid = line.trim();
+            if (!pid) continue;
+            try { process.kill(Number(pid), "SIGKILL"); } catch {}
+        }
+    } catch {}
+}
+
+/** 原子文件锁：防止并发竞态导致双开 opencode
+ *  修复：锁文件写入时间戳，超龄(>defaultTimeout+60s)自动清理，防止进程崩溃后死锁 */
+const LOCK_FILE = path.join(CFG.jobRoot, ".job_lock");
+function acquireJobLock() {
+    // 先检查锁文件是否超龄（进程崩溃后未释放的残留锁）
+    try {
+        if (fs.existsSync(LOCK_FILE)) {
+            const content = fs.readFileSync(LOCK_FILE, "utf8").trim();
+            const [, tsStr] = content.split(":");
+            const lockAge = (Date.now() - Number(tsStr)) / 1000;
+            const maxLockAge = CFG.defaultTimeout + 60;
+            if (lockAge > maxLockAge) {
+                fs.unlinkSync(LOCK_FILE); // 超龄锁，强制清理
+            }
+        }
+    } catch {}
+    try {
+        const fd = fs.openSync(LOCK_FILE, "wx");
+        fs.writeSync(fd, `${process.pid}:${Date.now()}`); // 写 PID + 时间戳
+        fs.closeSync(fd);
+        return true;
+    } catch { return false; }
+}
+function releaseJobLock() {
+    try { fs.unlinkSync(LOCK_FILE); } catch {}
 }
 
 // ─── 密钥脱敏 ─────────────────────────────────────────────────────────────────
@@ -469,12 +512,69 @@ function buildResult(jobId, meta) {
 
 function checkAndMarkDead(meta, jobId, source) {
     if (meta.state === "running" && meta.pid && !isProcessRunning(meta.pid)) {
+        // runner 已死，检查 opencode 是否还活着（孤儿进程）
+        if (meta.opencodePid && isProcessRunning(meta.opencodePid)) {
+            try { process.kill(Number(meta.opencodePid), "SIGKILL"); } catch {}
+        }
         meta.state = "failed";
         meta.completedAt = new Date().toISOString();
         meta.exitReason = `runner 进程意外退出（${source} 检测）`;
         saveMeta(jobId, meta);
     }
     return meta;
+}
+
+/** 全局并发闸门：统计当前真正在跑的任务数，opencode/antigravity共用同一上限(不是各自算)。
+ *  优化：只扫最近 100 个文件（按文件名倒序），已完成的旧job不可能再变 running，无需全量扫。
+ *  2026-06-27崩服务器事故后加的硬保险——之前只在文档写"严禁并发"靠自觉，没有代码强制。 */
+function countActiveJobs() {
+    ensureJobDirs();
+    const metaDir = path.join(CFG.jobRoot, "meta");
+    let files = [];
+    try {
+        files = fs.readdirSync(metaDir)
+            .filter(f => f.endsWith(".json") && !f.endsWith(".args.json"))
+            .sort().reverse()
+            .slice(0, 100); // 只看最近100条，避免历史堆积后越来越慢
+    }
+    catch { return 0; }
+    let count = 0;
+    for (const file of files) {
+        try {
+            let m = JSON.parse(fs.readFileSync(path.join(metaDir, file), "utf8"));
+            m = checkAndMarkDead(m, m.jobId, "concurrencyGuard");
+            if (m.state === "running") count++;
+        } catch {}
+    }
+    return count;
+}
+
+/** 清理旧 job 文件：删除超过 retainDays 天且状态非 running 的全部文件。
+ *  在 listJobs 和 run 时触发，每次最多清理 50 个，避免阻塞主流程。 */
+function cleanupOldJobs(retainDays = 7) {
+    const metaDir = path.join(CFG.jobRoot, "meta");
+    let files = [];
+    try { files = fs.readdirSync(metaDir).filter(f => f.endsWith(".json") && !f.endsWith(".args.json")); }
+    catch { return; }
+    const cutoff = Date.now() - retainDays * 86400 * 1000;
+    let cleaned = 0;
+    for (const file of files) {
+        if (cleaned >= 50) break;
+        const metaPath = path.join(metaDir, file);
+        try {
+            const m = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+            if (m.state === "running") continue; // 跑着的绝不清
+            // 优先用 meta.startedAt（不受 rsync/cp 刷新 mtime），回落到文件 mtime
+            const jobTime = m.startedAt ? new Date(m.startedAt).getTime() : fs.statSync(metaPath).mtimeMs;
+            if (jobTime > cutoff) continue;
+            // 删 meta、args、output、log、patch 五个关联文件
+            const p = jobPaths(m.jobId);
+            for (const fp of [metaPath, p.args, p.output, p.log, p.patch]) {
+                try { if (fp && fs.existsSync(fp)) fs.unlinkSync(fp); } catch {}
+            }
+            cleaned++;
+        } catch {}
+    }
 }
 
 // ─── 探活缓存 ─────────────────────────────────────────────────────────────────
@@ -527,10 +627,8 @@ async function cmdCapabilities() {
                 version: ocOk.ver || "unknown",
                 supportsRun: true, supportsJson: true,
                 supportsSession: true, supportsAttachments: true,
-                dangerousSkipEnabled: CFG.allowDangerSkip,
-                note: CFG.allowDangerSkip
-                    ? "auto-approve 已启用，opencode 不会等待权限提示"
-                    : "auto-approve 未启用，若 opencode 出现权限提示可能阻塞直到超时"
+                dangerousSkipEnabled: true,
+                note: "auto-approve 恒启用(三种模式都加--dangerously-skip-permissions)：AICodeWorker是无人值守后台进程，没有交互通道，不加此参数遇到权限提示会卡死到超时。安全边界靠mode=write门槛+ALLOWED_PROJECT_ROOTS白名单把住，与此参数无关。"
             },
             {
                 name: "antigravity",
@@ -568,20 +666,46 @@ async function cmdRun(input) {
     if (normWorker !== "opencode" && normWorker !== "antigravity")
         return { status: "error", error: `worker "${worker}" 不支持。可用: opencode, antigravity` };
 
+    // 启动前清理残留：防止上次崩溃遗留的 opencode 继续吃内存
+    killResidualOpencode();
+    // 顺手清理超龄 job 文件（非阻塞，最多清50条）
+    cleanupOldJobs();
+
+    // 原子文件锁：防止并发竞态（两请求同时读到 0 → 双开）
+    if (!acquireJobLock()) {
+        return { status: "error", error: "系统正忙，另一任务正在启动中。请稍后再试。" };
+    }
+
+    // 并发硬闸门：在创建任何job文件/spawn任何进程之前拒绝，零资源开销。
+    // opencode 和 antigravity 共用同一计数(谁先到占住名额，不是各自1个)。
+    const activeCount = countActiveJobs();
+    if (activeCount >= CFG.maxConcurrentJobs) {
+        releaseJobLock();
+        return { status: "error", error: `已有 ${activeCount} 个任务在运行(上限 ${CFG.maxConcurrentJobs})。本服务器内存有限，严禁同时跑多个 opencode/antigravity 实例——2026-06-27 曾因并发任务堆积僵尸进程拖垮整机。请用 listJobs 查看进度，等当前任务完成(或先 cancel)后再提交新任务。` };
+    }
+
     ensureJobDirs();
     const jobId = generateJobId();
     const p = jobPaths(jobId);
     const finalTask = wrapTask(task, mode);
-    const wantSkip = (mode === "write" || CFG.allowDangerSkip);
+    // 三种模式恒为 true：AICodeWorker 是无人值守后台进程(stdio stdin=ignore，没有交互通道)，
+    // opencode/agy 遇到工具调用确认时若不加 --dangerously-skip-permissions 会卡死等输入直到超时
+    // （实测：不加参数时 timeout+日志0字节；这不是analyze模式"更安全"，是直接卡死，没有中间态）。
+    // 安全边界仍由 mode=write 门槛 + ALLOWED_PROJECT_ROOTS 白名单 + 任务约束词三层把住，与此参数无关。
+    const wantSkip = true;
     const timeoutS = Number(timeoutSec) || CFG.defaultTimeout;
 
     let runnerArgs;
     if (normWorker === "opencode") {
-        if (!CFG.enableOpencode)
+        if (!CFG.enableOpencode) {
+            releaseJobLock();
             return { status: "error", error: "opencode 已被禁用（ENABLE_OPENCODE=false）。" };
+        }
         const ocOk = await checkOcVersion();
-        if (!ocOk.ok)
+        if (!ocOk.ok) {
+            releaseJobLock();
             return { status: "error", error: `找不到 opencode（OPENCODE_BIN=${CFG.opencodeBin}），请确认已安装。` };
+        }
         const ocArgs = ["run", "--format", "json"];
         if (CFG.opencodeModel)  ocArgs.push("-m", CFG.opencodeModel);
         if (sessionId)          ocArgs.push("--session", String(sessionId));
@@ -599,11 +723,15 @@ async function cmdRun(input) {
             redactSecrets: CFG.redactSecrets,
         };
     } else {
-        if (!CFG.enableAntigravity)
+        if (!CFG.enableAntigravity) {
+            releaseJobLock();
             return { status: "error", error: "Antigravity 未启用（ENABLE_ANTIGRAVITY=false）。请用 worker=opencode 或在 config.env 开启。" };
+        }
         const agyOk = await checkAgyVersion();
-        if (!agyOk.ok)
+        if (!agyOk.ok) {
+            releaseJobLock();
             return { status: "error", error: `找不到 agy（AGY_BIN=${CFG.agyBin}），请确认 Antigravity CLI 已安装。` };
+        }
         const agyModel = (typeof model === "string" && model.trim()) ? model.trim() : CFG.agyModel;
         const agyArgs = ["--print", finalTask, "--print-timeout", `${timeoutS}s`];
         if (agyModel) agyArgs.push("--model", agyModel);
@@ -651,6 +779,7 @@ async function cmdRun(input) {
     saveMeta(jobId, meta);
     runner.unref();
 
+    releaseJobLock();
     return {
         status: "success", jobId, state: "running", pid: runner.pid,
         warnings, outputFile: p.output, logFile: p.log, patchFile: p.patch,
@@ -675,12 +804,15 @@ async function cmdRunAndWait(input) {
         }
     }
 
-    const meta = readMeta(jobId);
+    // 修复：超时后自动取消任务，防止 opencode 进程继续在后台吃内存
+    // 旧逻辑：只返回 state=running 提示，Agent 以为失败重新提交 → 旧进程还在跑 → 内存堆积
+    const cancelResult = await cmdCancel({ jobId });
+    const meta2 = readMeta(jobId);
     return {
-        status: "success", jobId, state: "running",
-        warnings: meta?.warnings || [],
-        startedAt: meta?.startedAt, suggestedWaitSec: 0,
-        hint: "任务超过 7 分钟仍在运行，请立即调用一次 query（query 内部同样会等待约 7 分钟，无需频繁调用）"
+        status: "success", jobId, state: "timeout",
+        warnings: meta2?.warnings || [],
+        startedAt: meta2?.startedAt,
+        hint: `任务已超过内置等待时长，已自动取消（${cancelResult.status === "success" ? "进程已终止" : "取消时发生错误: " + cancelResult.error}）。如需重试请重新提交 run。`
     };
 }
 
@@ -714,6 +846,7 @@ async function cmdQuery(input) {
 
 async function cmdListJobs(input) {
     ensureJobDirs();
+    cleanupOldJobs(); // 顺手清理超龄任务文件，防止 jobs 目录无限膨胀
     const metaDir = path.join(CFG.jobRoot, "meta");
     const limit = Math.min(parseInt(input.limit || "10", 10), 50);
     const files = fs.readdirSync(metaDir)
@@ -743,15 +876,44 @@ async function cmdCancel(input) {
         return { status: "error", error: `Job "${jobId}" 状态为 "${meta.state}"，不是运行中。` };
     if (!meta.pid)
         return { status: "error", error: `Job "${jobId}" 无 PID 记录，无法取消。` };
+    // 杀进程组(连子孙)：opencode 在 runner 里以 detached 启动，自成进程组，杀负 pid 才能整组清掉。
+    // 旧代码只 SIGTERM meta.pid(runner进程)，runner一死它spawn的opencode立刻变孤儿继续跑 → 僵尸堆积。
+    const killGroup = (pid, sig) => {
+        if (!pid) return;
+        try { process.kill(-Number(pid), sig); }
+        catch { try { process.kill(Number(pid), sig); } catch {} } // 组杀失败兜底杀单进程
+    };
+    // 兜底：若 opencodePid 未记录，尝试通过 runner.pid 找到其子进程
+    if (!meta.opencodePid) {
+        try {
+            const { execSync } = require("child_process");
+            const childPids = execSync(`pgrep -P ${meta.pid} 2>/dev/null || true`, { encoding: "utf8" }).trim();
+            if (childPids) {
+                for (const cpid of childPids.split("\n")) {
+                    const pidNum = Number(cpid.trim());
+                    if (pidNum) {
+                        try { process.kill(-pidNum, "SIGKILL"); } catch {}
+                        try { process.kill(pidNum, "SIGKILL"); } catch {}
+                    }
+                }
+            }
+        } catch {}
+    }
     try {
-        process.kill(Number(meta.pid), "SIGTERM");
+        // 先杀 opencode 进程组(真正吃资源的)，再杀 runner，确保整条链路清空
+        killGroup(meta.opencodePid, "SIGTERM");
+        killGroup(meta.pid, "SIGTERM");
+        // 同步等 1.5 秒后 SIGKILL 兜底(AICodeWorker是一次性stdio进程，不能用异步setTimeout——返回前进程就退出了，定时器不触发)
+        try { require("child_process").spawnSync("sleep", ["1.5"]); } catch {}
+        killGroup(meta.opencodePid, "SIGKILL");
+        killGroup(meta.pid, "SIGKILL");
         meta.state = "cancelled";
         meta.completedAt = new Date().toISOString();
         saveMeta(jobId, meta);
         try { fs.appendFileSync(jobPaths(jobId).output, `\n=== 任务已手动取消 (${meta.completedAt}) ===\n`); } catch {}
-        return { status: "success", jobId, message: `Job "${jobId}" 已发送 SIGTERM。` };
+        return { status: "success", jobId, message: `Job "${jobId}" 已终止(opencode进程组+runner已清，含子进程)。` };
     } catch (err) {
-        return { status: "error", error: `终止 PID ${meta.pid} 失败: ${err.message}` };
+        return { status: "error", error: `终止 Job "${jobId}" 失败: ${err.message}` };
     }
 }
 

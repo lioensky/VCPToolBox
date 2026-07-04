@@ -104,7 +104,8 @@ async function run() {
     const child = spawn(spawnBin, spawnArgs, {
         cwd:   projectPath,
         env:   spawnEnv,
-        stdio: ["ignore", outFd, logFd]
+        stdio: ["ignore", outFd, logFd],
+        detached: true   // 自成进程组(pgid===pid)，超时时可用 process.kill(-pid) 连子带孙整组清掉
     });
 
     // 更新 meta 中的 PID（可能已被 AICodeWorker 写入 runner 的 PID，这里改为 opencode 的 PID）
@@ -114,14 +115,24 @@ async function run() {
         fs.writeFileSync(metaPath, JSON.stringify(m, null, 2), "utf8");
     } catch {}
 
-    // 超时处理
+    // 杀整个进程组：detached:true 下 opencode 自成进程组，杀负 pid 才能连它 fork 的子/孙进程一起清。
+    // 旧代码只 child.kill("SIGTERM") 杀主进程，opencode 的子进程变孤儿继续跑 → 僵尸堆积 → 拖垮服务器(2026-06-27事故)。
+    const killTree = (sig) => {
+        try { process.kill(-child.pid, sig); }
+        catch { try { process.kill(child.pid, sig); } catch {} } // 组杀失败兜底杀单进程
+    };
+
+    // 超时处理：先 SIGTERM 整组优雅退出，5 秒不死再 SIGKILL 整组强杀(opencode卡死时不响应SIGTERM)
+    let killTimer = null;
     const timeoutHandle = setTimeout(() => {
         timedOut = true;
-        try { child.kill("SIGTERM"); } catch {}
+        killTree("SIGTERM");
+        killTimer = setTimeout(() => killTree("SIGKILL"), 5000);
     }, (timeoutSec || 600) * 1000);
 
     await new Promise(resolve => child.on("close", resolve));
     clearTimeout(timeoutHandle);
+    if (killTimer) clearTimeout(killTimer);
 
     fs.closeSync(outFd);
     fs.closeSync(logFd);
