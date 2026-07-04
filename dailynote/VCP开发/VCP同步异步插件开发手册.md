@@ -319,7 +319,112 @@ console.log(JSON.stringify({ status: "success", result: result }));
 2.  **`image_url` 段可选**：通过 `showbase64` 开关让用户决定是否内联 base64（base64 图片会消耗大量 token，默认关闭可降低成本）。
 3.  **`details` 旁路字段**：在 `content` 之外另设 `details` 对象，承载结构化元数据（文件名、seed、URL），供前端或日志系统使用，不污染 AI 的视觉上下文。
 
-#### 3.3.6 实施建议
+#### 3.3.6 重要概念：将生成内容转化为内网 URL（imageUrl / fileUrl）
+
+当插件生成了图片、PDF、Markdown、音频、视频或其他文件时，**不要只返回本地磁盘路径**，也不要默认把大文件全部塞进 Base64。推荐做法是：
+
+1.  将生成结果保存到 VCP 的公开资源目录：
+    *   图片类资源保存到 `PROJECT_BASE_PATH/image/<插件子目录>/...`
+    *   普通文件类资源保存到 `PROJECT_BASE_PATH/file/<插件子目录>/...`
+2.  通过 [`ImageFileServer`](Plugin/ImageFileServer/image-file-server.js:433) 暴露的安全路由，把本地文件路径转换为带访问密钥的内网 URL：
+    *   图片 URL：`{VarHttpUrl}:{SERVER_PORT}/pw={IMAGESERVER_IMAGE_KEY}/images/<相对路径>`
+    *   文件 URL：`{VarHttpUrl}:{SERVER_PORT}/pw={IMAGESERVER_FILE_KEY}/files/<相对路径>`
+3.  在 `result.content` 的 `text` 段里明确给出可访问 URL，并在 `details` 中额外保留 `imageUrl` / `fileUrl`、`serverPath`、`fileName` 等结构化字段。
+
+> 这里的"内网 URL"是指由 VCP 自身的 Image/File Server 提供的受控访问地址，不是外部 API 临时 URL，也不是 `file://` 本地路径。这样前端、OpenWebUI 脚本、其他 Agent 或后续工具都能稳定访问生成内容。
+
+**ImageFileServer 路由规则**
+
+[`Plugin/ImageFileServer/image-file-server.js`](Plugin/ImageFileServer/image-file-server.js:473) 会将以下目录暴露为带密钥访问的静态资源服务：
+
+| 资源类型 | 本地根目录 | URL 路径 | 鉴权环境变量 | 插件侧注入变量 |
+|----------|------------|----------|--------------|----------------|
+| 图片 | `PROJECT_BASE_PATH/image` | `/pw=<Image_Key>/images/...` | `Image_Key` | `IMAGESERVER_IMAGE_KEY` |
+| 文件 | `PROJECT_BASE_PATH/file` | `/pw=<File_Key>/files/...` | `File_Key` | `IMAGESERVER_FILE_KEY` |
+
+插件通常不直接读取 `Image_Key` / `File_Key`，而是读取由 [`Plugin.js`](Plugin.js:1221) 注入到插件进程环境变量中的 `IMAGESERVER_IMAGE_KEY` / `IMAGESERVER_FILE_KEY`。主机、端口和项目根目录则来自 `VarHttpUrl`、`SERVER_PORT`、`PROJECT_BASE_PATH`。
+
+**图像生成插件示例（imageUrl）**
+
+参考 [`Plugin/DMXDoubaoGen/DoubaoGen.js`](Plugin/DMXDoubaoGen/DoubaoGen.js:434) 的核心流程：先把外部 API 返回的图片下载或解码为 Buffer，写入 `image/doubaogen`，再拼出可访问的 `imageUrl`。
+
+```javascript
+const generatedFileName = `${uuidv4()}.${imageExtension}`;
+const imageDir = path.join(PROJECT_BASE_PATH, 'image', 'doubaogen');
+const localImagePath = path.join(imageDir, generatedFileName);
+
+await fs.mkdir(imageDir, { recursive: true });
+await fs.writeFile(localImagePath, imageBuffer);
+
+const relativePathForUrl = path.join('doubaogen', generatedFileName).replace(/\\/g, '/');
+const imageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+
+const result = {
+    content: [
+        {
+            type: 'text',
+            text: `图片已成功生成！\n- 可访问URL: ${imageUrl}\n请将生成好的图片转发给用户哦。`
+        }
+    ],
+    details: {
+        serverPath: `image/doubaogen/${generatedFileName}`,
+        fileName: generatedFileName,
+        imageUrl
+    }
+};
+
+console.log(JSON.stringify({ status: 'success', result }));
+```
+
+**普通文件生成插件示例（fileUrl）**
+
+如果插件生成的是 PDF、Markdown、CSV、视频等普通文件，应写入 `PROJECT_BASE_PATH/file/<插件子目录>`，并使用 `/files/` 路由和 `IMAGESERVER_FILE_KEY`：
+
+```javascript
+const generatedFileName = `${crypto.randomUUID()}.pdf`;
+const fileDir = path.join(PROJECT_BASE_PATH, 'file', 'reporter');
+const localFilePath = path.join(fileDir, generatedFileName);
+
+await fs.mkdir(fileDir, { recursive: true });
+await fs.writeFile(localFilePath, pdfBuffer);
+
+const relativePathForUrl = path.join('reporter', generatedFileName).replace(/\\/g, '/');
+const fileUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_FILE_KEY}/files/${relativePathForUrl}`;
+
+const result = {
+    content: [
+        {
+            type: 'text',
+            text: `报告已生成：${fileUrl}`
+        }
+    ],
+    details: {
+        serverPath: `file/reporter/${generatedFileName}`,
+        fileName: generatedFileName,
+        fileUrl
+    }
+};
+```
+
+**从内容中的 `file://` 转换为 URL**
+
+有些插件不是自己生成二进制文件，而是接收或生成 Markdown 内容，其中包含本地 `file://` 链接。这种情况下可参考 [`DailyNote`](Plugin/DailyNote/dailynote.js:327) 的做法：
+
+*   `![alt](file://...)`：读取本地图片，复制到 `PROJECT_BASE_PATH/image/dailynote`，替换为 `![alt](http://.../images/dailynote/...)`。
+*   `[text](file://...)`：读取本地普通文件，复制到 `PROJECT_BASE_PATH/file/dailynote`，替换为 `[text](http://.../files/dailynote/...)`。
+
+这种转换让最终保存的 Markdown / 日记内容不再依赖本机绝对路径，而是通过 VCP 内网 URL 可被前端或其他客户端访问。
+
+**实践建议**
+
+*   **生成物优先返回 URL，Base64 只作为可选项**：图片可像 [`DoubaoGen.js`](Plugin/DMXDoubaoGen/DoubaoGen.js:473) 一样通过 `showbase64` 参数控制是否额外返回 Data URI。
+*   **URL 放在 `content.text`，元数据放在 `details`**：AI 能直接看到链接，程序也能稳定读取 `details.imageUrl` / `details.fileUrl`。
+*   **按资源类型选择目录和路由**：图片走 `image/...` + `/images/...`；普通文件走 `file/...` + `/files/...`。
+*   **不要暴露裸本地路径给用户**：`H:\...`、`/home/...`、`file://...` 对远端客户端通常不可访问，也可能泄露服务器目录结构。
+*   **注意文件类型白名单**：[`ImageFileServer`](Plugin/ImageFileServer/image-file-server.js:12) 对图片和普通文件都有扩展名白名单；新增文件类型时要确认服务端允许访问。
+*   **注意访问密钥**：URL 中的 `/pw=...` 是访问控制的一部分，日志和公开回复中应按业务场景谨慎暴露。
+
+#### 3.3.7 实施建议
 
 *   **新插件优先采用 content 数组格式**，即使只返回纯文本。
 *   **存量插件**：当返回内容超过约 500 字符、包含 Markdown/URL/代码块、或涉及多模态时，建议改造为 content 数组格式。
