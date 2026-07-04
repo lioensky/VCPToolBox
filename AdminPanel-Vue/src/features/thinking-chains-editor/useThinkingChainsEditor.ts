@@ -16,11 +16,13 @@ interface ThinkingChain {
   theme: string
   clusters: string[]
   kSequence: number[]
+  description: string
 }
 
 interface ThinkingChainRecord {
   clusters?: string[]
   kSequence?: number[]
+  description?: string
 }
 
 type ThinkingChainConfig = string[] | ThinkingChainRecord
@@ -94,6 +96,7 @@ function normalizeThinkingChain(
     theme,
     clusters,
     kSequence: buildNormalizedKSequence(clusters, sourceKSequence),
+    description: Array.isArray(config) ? '' : (config?.description ?? ''),
   }
 }
 
@@ -158,6 +161,7 @@ export function useThinkingChainsEditor() {
         chainsObj[normalizedTheme] = {
           clusters: [...chain.clusters],
           kSequence: [...normalizedKSequence],
+          ...(chain.description ? { description: chain.description } : {}),
         }
       })
 
@@ -184,6 +188,7 @@ export function useThinkingChainsEditor() {
       theme: '新主题',
       clusters: [],
       kSequence: [],
+      description: '',
     })
   }
 
