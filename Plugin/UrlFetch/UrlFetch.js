@@ -11,6 +11,7 @@ const { Readability } = require('@mozilla/readability');
 const { JSDOM } = require('jsdom');
 const https = require('https');
 const http = require('http');
+const browserRuntimeManager = require('../../modules/browserRuntimeManager.js');
 
 // 图片扩展名常量
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif'];
@@ -35,6 +36,11 @@ const URLFETCH_PROFILE_DIR = process.env.URLFETCH_PROFILE_DIR || path.resolve(__
 const URLFETCH_PROFILE_MODE = String(process.env.URLFETCH_PROFILE_MODE || 'domain').toLowerCase();
 const URLFETCH_BROWSER_FIRST = String(process.env.URLFETCH_BROWSER_FIRST || 'false').toLowerCase() === 'true';
 const URLFETCH_HEADLESS = String(process.env.URLFETCH_HEADLESS || 'true').toLowerCase();
+const URLFETCH_BROWSER_BACKEND = String(process.env.URLFETCH_BROWSER_BACKEND || 'auto').toLowerCase();
+const URLFETCH_USE_MANAGED_CHROME = String(process.env.URLFETCH_USE_MANAGED_CHROME || 'false').toLowerCase() === 'true';
+const URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY = String(process.env.URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY || 'true').toLowerCase() !== 'false';
+const URLFETCH_MANAGED_CHROME_AUTO_CLOSE = String(process.env.URLFETCH_MANAGED_CHROME_AUTO_CLOSE || process.env.VCP_BROWSER_AUTO_CLOSE_AFTER_URLFETCH || 'true').toLowerCase() === 'true';
+const URLFETCH_MANAGED_CHROME_CLOSE_TAB = String(process.env.URLFETCH_MANAGED_CHROME_CLOSE_TAB || 'true').toLowerCase() !== 'false';
 const URLFETCH_HIGH_RISK_DOMAINS = String(
     process.env.URLFETCH_HIGH_RISK_DOMAINS ||
     'mp.weixin.qq.com,zhihu.com,x.com,twitter.com,bilibili.com,weibo.com'
@@ -668,6 +674,80 @@ async function fetchWithDirectHttp(url) {
     throw new Error('直接读取失败: 无法提取有效正文');
 }
 
+function shouldUseManagedChrome(url, mode) {
+    if (!URLFETCH_USE_MANAGED_CHROME) return false;
+    if (mode !== 'text') return false;
+    if (URLFETCH_BROWSER_BACKEND === 'puppeteer' || URLFETCH_BROWSER_BACKEND === 'direct' || URLFETCH_BROWSER_BACKEND === 'jina') return false;
+    if (URLFETCH_BROWSER_BACKEND === 'managed') return true;
+    return !URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY || isHighRiskDomain(url) || URLFETCH_BROWSER_FIRST;
+}
+
+async function fetchWithManagedChrome(url, mode = 'text') {
+    if (mode !== 'text') {
+        throw new Error('managed Chrome backend 当前仅支持 text 模式');
+    }
+
+    let browser;
+    let page;
+    try {
+        await browserRuntimeManager.ensureManagedBrowser();
+        const browserWSEndpoint = await browserRuntimeManager.getManagedBrowserWebSocketEndpoint();
+        if (!browserWSEndpoint) {
+            throw new Error('无法获取 managed Chrome DevTools WebSocket 端点');
+        }
+
+        browser = await puppeteer.connect({ browserWSEndpoint });
+        page = await browser.newPage();
+        await page.setViewport({ width: 1280, height: 900 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        await autoScroll(page, mode);
+
+        const pageContent = await page.content();
+        const doc = new JSDOM(pageContent, { url });
+        const reader = new Readability(doc.window.document);
+        const article = reader.parse();
+
+        if (article && (article.content || article.textContent)) {
+            const formattedContent = formatExtractedArticleContent(article) || normalizeExtractedText(article.textContent || '');
+            if (formattedContent && formattedContent.length >= 80) {
+                return `标题: ${article.title || await page.title() || url}\n\n${formattedContent}`;
+            }
+        }
+
+        const renderedText = await page.evaluate(() => document.body ? document.body.innerText : '');
+        const normalized = normalizeExtractedText(renderedText);
+        if (normalized && normalized.length >= 80) {
+            return `标题: ${await page.title() || url}\n\n${normalized}`;
+        }
+
+        throw new Error('managed Chrome backend 未提取到有效正文');
+    } finally {
+        if (URLFETCH_MANAGED_CHROME_CLOSE_TAB && page) {
+            try {
+                await page.close();
+            } catch (_) {
+                // ignore
+            }
+        }
+        if (browser) {
+            await browser.disconnect();
+        }
+        if (URLFETCH_MANAGED_CHROME_AUTO_CLOSE) {
+            try {
+                await browserRuntimeManager.closeManagedBrowser('urlfetch_auto_close');
+            } catch (error) {
+                console.error(`managed Chrome 自动关闭失败: ${error.message}`);
+            }
+        } else {
+            try {
+                browserRuntimeManager.touchManagedBrowser();
+            } catch (_) {
+                // ignore
+            }
+        }
+    }
+}
+
 async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
     let browser;
     try {
@@ -1075,16 +1155,34 @@ async function main() {
                                 try {
                                     fetchedData = await fetchWithDirectHttp(url);
                                 } catch (directError) {
-                                    console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
-                                    fetchedData = await fetchWithPuppeteer(url, 'text');
+                                    console.error(`直接读取快速路径失败，回退浏览器: ${directError.message}`);
+                                    if (shouldUseManagedChrome(url, 'text')) {
+                                        try {
+                                            fetchedData = await fetchWithManagedChrome(url, 'text');
+                                        } catch (managedError) {
+                                            console.error(`managed Chrome 路径失败，回退 Puppeteer: ${managedError.message}`);
+                                            fetchedData = await fetchWithPuppeteer(url, 'text');
+                                        }
+                                    } else {
+                                        fetchedData = await fetchWithPuppeteer(url, 'text');
+                                    }
                                 }
                             }
                         } else {
                             try {
                                 fetchedData = await fetchWithDirectHttp(url);
                             } catch (directError) {
-                                console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
-                                fetchedData = await fetchWithPuppeteer(url, 'text');
+                                console.error(`直接读取快速路径失败，回退浏览器: ${directError.message}`);
+                                if (shouldUseManagedChrome(url, 'text')) {
+                                    try {
+                                        fetchedData = await fetchWithManagedChrome(url, 'text');
+                                    } catch (managedError) {
+                                        console.error(`managed Chrome 路径失败，回退 Puppeteer: ${managedError.message}`);
+                                        fetchedData = await fetchWithPuppeteer(url, 'text');
+                                    }
+                                } else {
+                                    fetchedData = await fetchWithPuppeteer(url, 'text');
+                                }
                             }
                         }
 
@@ -1107,15 +1205,32 @@ async function main() {
                     } else if (mode === 'jina') {
                         fetchedData = await fetchWithJinaReader(url);
                     } else if (mode === 'text') {
-                        if (shouldUseBrowserFirst(url, mode)) {
+                        if (shouldUseManagedChrome(url, mode)) {
+                            console.error(`检测到 managed Chrome 策略，使用托管浏览器 Profile: ${url}`);
+                            try {
+                                fetchedData = await fetchWithManagedChrome(url, mode);
+                            } catch (managedError) {
+                                console.error(`managed Chrome 路径失败，回退 Puppeteer: ${managedError.message}`);
+                                fetchedData = await fetchWithPuppeteer(url, mode);
+                            }
+                        } else if (shouldUseBrowserFirst(url, mode)) {
                             console.error(`检测到浏览器优先策略，使用 Puppeteer 持久化 Profile: ${url}`);
                             fetchedData = await fetchWithPuppeteer(url, mode);
                         } else {
                             try {
                                 fetchedData = await fetchWithDirectHttp(url);
                             } catch (directError) {
-                                console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
-                                fetchedData = await fetchWithPuppeteer(url, mode);
+                                console.error(`直接读取快速路径失败，回退浏览器: ${directError.message}`);
+                                if (shouldUseManagedChrome(url, mode)) {
+                                    try {
+                                        fetchedData = await fetchWithManagedChrome(url, mode);
+                                    } catch (managedError) {
+                                        console.error(`managed Chrome 路径失败，回退 Puppeteer: ${managedError.message}`);
+                                        fetchedData = await fetchWithPuppeteer(url, mode);
+                                    }
+                                } else {
+                                    fetchedData = await fetchWithPuppeteer(url, mode);
+                                }
                             }
                         }
                     } else {

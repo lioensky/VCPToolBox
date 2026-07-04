@@ -21,6 +21,31 @@
         ],
         "invocationCommands": [
             {
+                "command": "open_chrome",
+                "description": "启动或确认 VCP 托管 managed Chrome 已运行并连接。该浏览器使用独立 Profile，并受根配置 `VCP_BROWSER_MAX_TABS` 标签页上限保护。\n- `command`: 固定为 `open_chrome`。\n- `timeoutMs`: 可选，等待扩展连接的毫秒数，默认 10000。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」open_chrome「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」open_chrome「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "close_chrome",
+                "description": "关闭 VCP 托管 managed Chrome，释放 Chromium 内存；不会关闭用户自己的 Chrome。\n- `command`: 固定为 `close_chrome`。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」close_chrome「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」close_chrome「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "browser_status",
+                "description": "查询 ChromeBridge 连接池、managed Chrome 进程、Profile、idle timer、权限等级和最大标签页上限状态。\n- `command`: 固定为 `browser_status`。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」browser_status「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」browser_status「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "keep_chrome_alive",
+                "description": "刷新 managed Chrome 的空闲计时器，延长托管浏览器生命周期。\n- `command`: 固定为 `keep_chrome_alive`。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」keep_chrome_alive「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」keep_chrome_alive「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "close_managed_tabs",
+                "description": "关闭 managed Chrome 当前活动标签页，用于释放由 AI 打开的页面资源；不会关闭用户 Chrome 标签页。\n- `command`: 固定为 `close_managed_tabs`。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」close_managed_tabs「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」close_managed_tabs「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
                 "command": "type",
                 "description": "在指定的输入框中输入文本，并等待页面刷新后返回新的页面内容。\n- `command`: 固定为 `type`。\n- `target`: 输入框的标题或标识符 (例如, '搜索框', 'username')。\n- `text`: 要输入的文本内容。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」type「末」,\ntarget: 「始」搜索框「末」,\ntext: 「始」VCP Agent是什么「末」\n<<<[END_TOOL_REQUEST]>>>",
                 "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」type「末」,\ntarget: 「始」搜索框「末」,\ntext: 「始」VCP Agent是什么「末」\n<<<[END_TOOL_REQUEST]>>>"
@@ -32,7 +57,7 @@
             },
             {
                 "command": "open_url",
-                "description": "在新的标签页中打开指定的URL，并等待页面加载完成后返回页面内容。\n- `command`: 固定为 `open_url`。\n- `url`: 要打开的完整URL地址。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」open_url「末」,\nurl: 「始」https://www.google.com「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "description": "在新的标签页中打开指定的URL，并等待页面加载完成后返回页面内容。默认优先使用 managed Chrome，并受根配置 `VCP_BROWSER_MAX_TABS` 标签页上限保护。\n- `command`: 固定为 `open_url`。\n- `url`: 要打开的完整URL地址。\n- `browserTarget`: 可选，`managed` / `user` / `distributed`。未指定时默认按 `managed,user,distributed` 优先级选择。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」open_url「末」,\nurl: 「始」https://www.google.com「末」\n<<<[END_TOOL_REQUEST]>>>",
                 "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」open_url「末」,\nurl: 「始」https://www.google.com「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {

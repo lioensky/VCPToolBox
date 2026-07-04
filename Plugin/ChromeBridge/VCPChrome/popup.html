@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>VCP Chrome Control</title>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            font-family: sans-serif;
+            width: 300px;
+            padding: 10px;
+            text-align: center;
+        }
+        .status-item {
+            margin-top: 10px;
+            padding: 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .status-label {
+            font-size: 14px;
+        }
+        .status-badge {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .badge-on {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .badge-off {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        button {
+            padding: 8px 15px;
+            font-size: 14px;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            background-color: #fff;
+        }
+        button:hover {
+            background-color: #f0f0f0;
+        }
+        button:active {
+            background-color: #e0e0e0;
+        }
+        .button-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .button-group button {
+            flex: 1;
+            margin: 0;
+        }
+        #settings {
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px solid #ccc;
+            display: none;
+        }
+        .input-group {
+            margin-bottom: 10px;
+            text-align: left;
+        }
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+        .input-group input {
+            width: 95%;
+            padding: 5px;
+            font-size: 12px;
+        }
+        #settings-toggle {
+            font-size: 12px;
+            background: none;
+            border: none;
+            color: #007bff;
+            cursor: pointer;
+            text-decoration: underline;
+            padding: 0;
+            margin-top: 5px;
+        }
+        #page-info {
+            margin-top: 10px;
+            padding: 8px;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+            text-align: left;
+        }
+        #page-title {
+            margin-top: 5px;
+            font-size: 12px;
+            word-break: break-all;
+            color: #333;
+        }
+        #page-url {
+            margin-top: 3px;
+            font-size: 11px;
+            color: #666;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <h3>VCP Chrome Control</h3>
+    
+    <!-- 状态显示区 -->
+    <div class="status-item" style="background-color: #e7f3ff;">
+        <span class="status-label">📡 页面监控</span>
+        <span id="monitor-status" class="status-badge badge-off">关闭</span>
+    </div>
+    
+    <div class="status-item" style="background-color: #fff3cd;">
+        <span class="status-label">🔌 VCP连接</span>
+        <span id="vcp-status" class="status-badge badge-off">未连接</span>
+    </div>
+
+    <div class="status-item" style="background-color: #f3e7ff;">
+        <span class="status-label">🤖 客户端模式</span>
+        <span id="client-mode-status" class="status-badge badge-off">User</span>
+    </div>
+
+    <!-- 控制按钮区 -->
+    <div class="button-group">
+        <button id="toggleMonitor">开启监控</button>
+        <button id="toggleVCP">连接VCP</button>
+    </div>
+    
+    <div class="button-group">
+        <button id="toggleClientMode" style="width: 100%;">切换为 Agent 模式</button>
+    </div>
+
+    <div class="button-group">
+        <button id="refreshPage" style="width: 100%;">🔄 手动刷新</button>
+    </div>
+
+    <!-- 显示最新页面信息 -->
+    <div id="page-info">
+        <strong>当前页面：</strong>
+        <div id="page-title" style="color: #999;">等待监控...</div>
+        <div id="page-url"></div>
+    </div>
+    
+    <button id="settings-toggle">⚙️ 设置</button>
+
+    <div id="settings">
+        <div class="input-group">
+            <label for="serverUrl">服务器地址 (WebSocket URL):</label>
+            <input type="text" id="serverUrl" placeholder="ws://localhost:8088">
+        </div>
+        <div class="input-group">
+            <label for="vcpKey">VCP 密钥:</label>
+            <input type="text" id="vcpKey" placeholder="your_secret_key">
+        </div>
+        <button id="saveSettings">保存设置</button>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>
