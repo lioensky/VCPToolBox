@@ -751,6 +751,101 @@ function stringifyForMarkdown(value) {
     }
 }
 
+function formatPrimitiveForMarkdown(value) {
+    if (value === null) return '`null`';
+    if (value === undefined) return '`undefined`';
+    if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'bigint') {
+        return `\`${String(value)}\``;
+    }
+    const text = String(value);
+    if (text === '') return '（空）';
+    if (text.includes('\n')) {
+        return `\n\n${text}`;
+    }
+    return text;
+}
+
+function formatObjectAsMarkdown(value, options = {}) {
+    const {
+        level = 0,
+        maxDepth = 5,
+        maxArrayItems = 50,
+        keyLabel = null
+    } = options;
+
+    const indent = '  '.repeat(level);
+    const nestedIndent = '  '.repeat(level + 1);
+
+    if (value === null || value === undefined || typeof value !== 'object') {
+        const prefix = keyLabel ? `${indent}- ${keyLabel}: ` : '';
+        return `${prefix}${formatPrimitiveForMarkdown(value)}`;
+    }
+
+    if (level >= maxDepth) {
+        const compact = stringifyForMarkdown(value).replace(/\s+/g, ' ').trim();
+        const prefix = keyLabel ? `${indent}- ${keyLabel}: ` : '';
+        return `${prefix}${compact || '（空对象）'}`;
+    }
+
+    if (Array.isArray(value)) {
+        const lines = [];
+        if (keyLabel) {
+            lines.push(`${indent}- ${keyLabel}:`);
+        }
+        if (value.length === 0) {
+            lines.push(`${keyLabel ? nestedIndent : indent}- （空数组）`);
+            return lines.join('\n');
+        }
+
+        value.slice(0, maxArrayItems).forEach((item, index) => {
+            const itemLabel = `#${index + 1}`;
+            if (item && typeof item === 'object') {
+                lines.push(formatObjectAsMarkdown(item, {
+                    level: keyLabel ? level + 1 : level,
+                    maxDepth,
+                    maxArrayItems,
+                    keyLabel: itemLabel
+                }));
+            } else {
+                lines.push(`${keyLabel ? nestedIndent : indent}- ${itemLabel}: ${formatPrimitiveForMarkdown(item)}`);
+            }
+        });
+
+        if (value.length > maxArrayItems) {
+            lines.push(`${keyLabel ? nestedIndent : indent}- ……已省略 ${value.length - maxArrayItems} 项`);
+        }
+        return lines.join('\n');
+    }
+
+    const entries = Object.entries(value);
+    const lines = [];
+    if (keyLabel) {
+        lines.push(`${indent}- ${keyLabel}:`);
+    }
+    if (entries.length === 0) {
+        lines.push(`${keyLabel ? nestedIndent : indent}- （空对象）`);
+        return lines.join('\n');
+    }
+
+    for (const [key, item] of entries) {
+        const currentLevel = keyLabel ? level + 1 : level;
+        const currentIndent = '  '.repeat(currentLevel);
+
+        if (item && typeof item === 'object') {
+            lines.push(formatObjectAsMarkdown(item, {
+                level: currentLevel,
+                maxDepth,
+                maxArrayItems,
+                keyLabel: key
+            }));
+        } else {
+            lines.push(`${currentIndent}- ${key}: ${formatPrimitiveForMarkdown(item)}`);
+        }
+    }
+
+    return lines.join('\n');
+}
+
 function getScreenshotDataUrl(commandResult = {}) {
     const result = commandResult?.result || commandResult;
     const dataUrl = result?.dataUrl || result?.imageUrl || result?.url;
@@ -799,18 +894,14 @@ function formatCommandResultAsMarkdown(commandResult = {}) {
         lines.push('');
         lines.push('## Result');
         lines.push('');
-        lines.push('```json');
-        lines.push(stringifyForMarkdown(details));
-        lines.push('```');
+        lines.push(formatObjectAsMarkdown(details));
     }
 
     if (commandResult.page_info_meta) {
         lines.push('');
         lines.push('## Page Info Meta');
         lines.push('');
-        lines.push('```json');
-        lines.push(stringifyForMarkdown(commandResult.page_info_meta));
-        lines.push('```');
+        lines.push(formatObjectAsMarkdown(commandResult.page_info_meta));
     }
 
     return lines.join('\n');
