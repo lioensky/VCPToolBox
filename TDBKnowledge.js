@@ -79,6 +79,9 @@ class TDBKnowledgeManager {
         this.watcherType = null;
         this.safetyWatcher = null;
         this.idleEvictor = null;
+        this.libraryQueues = new Map();
+        this.fileEventVersions = new Map();
+        this.pendingFileVersions = new Map();
     }
 
     async initialize() {
@@ -197,7 +200,43 @@ class TDBKnowledgeManager {
         handle.lastUsedAt = Date.now();
     }
 
+    _withLibraryQueue(library, task) {
+        const safeName = safeLibraryName(library);
+        const previous = this.libraryQueues.get(safeName) || Promise.resolve();
+        const run = previous.catch(() => undefined).then(task);
+        this.libraryQueues.set(safeName, run.catch(() => undefined));
+        return run.finally(() => {
+            if (this.libraryQueues.get(safeName) === run) {
+                this.libraryQueues.delete(safeName);
+            }
+        });
+    }
+
+    _getFileEventKey(filePath) {
+        return this._normalizeFilePath(filePath);
+    }
+
+    _bumpFileEventVersion(filePath) {
+        const key = this._getFileEventKey(filePath);
+        const version = (this.fileEventVersions.get(key) || 0) + 1;
+        this.fileEventVersions.set(key, version);
+        return version;
+    }
+
+    _getFileEventVersion(filePath) {
+        return this.fileEventVersions.get(this._getFileEventKey(filePath)) || 0;
+    }
+
+    _isCurrentFileEvent(filePath, eventVersion) {
+        return !eventVersion || this._getFileEventVersion(filePath) === eventVersion;
+    }
+
     async closeLibrary(library, options = {}) {
+        const safeName = safeLibraryName(library);
+        return this._withLibraryQueue(safeName, async () => this._closeLibraryUnlocked(safeName, options));
+    }
+
+    async _closeLibraryUnlocked(library, options = {}) {
         const safeName = safeLibraryName(library);
         const handle = this.libs.get(safeName);
         if (!handle) return false;
@@ -254,10 +293,13 @@ class TDBKnowledgeManager {
         return path.resolve(String(filePath || ''));
     }
 
-    _queueFile(filePath) {
+    _queueFile(filePath, eventVersion = null) {
         const normalizedPath = this._normalizeFilePath(filePath);
         if (!this._isIndexable(normalizedPath)) return;
+        const version = eventVersion || this._bumpFileEventVersion(normalizedPath);
+        if (!this._isCurrentFileEvent(normalizedPath, version)) return;
         this.pendingFiles.add(normalizedPath);
+        this.pendingFileVersions.set(normalizedPath, version);
         if (this.pendingFiles.size >= this.config.maxBatchSize) {
             this._flushBatch();
         } else {
@@ -275,20 +317,28 @@ class TDBKnowledgeManager {
         if (this.isProcessing || this.pendingFiles.size === 0) return;
         this.isProcessing = true;
         const batchFiles = Array.from(this.pendingFiles).slice(0, this.config.maxBatchSize);
+        const batchVersions = new Map(batchFiles.map(filePath => [filePath, this.pendingFileVersions.get(filePath) || this._getFileEventVersion(filePath)]));
         if (this.batchTimer) clearTimeout(this.batchTimer);
 
         try {
             for (const filePath of batchFiles) {
+                const eventVersion = batchVersions.get(filePath);
                 try {
-                    await this.upsertFile(filePath);
-                    this.pendingFiles.delete(filePath);
-                    this.fileRetryCount.delete(filePath);
+                    await this.upsertFile(filePath, { eventVersion });
+                    if (this.pendingFileVersions.get(filePath) === eventVersion) {
+                        this.pendingFiles.delete(filePath);
+                        this.pendingFileVersions.delete(filePath);
+                        this.fileRetryCount.delete(filePath);
+                    }
                 } catch (e) {
                     const count = (this.fileRetryCount.get(filePath) || 0) + 1;
                     if (count >= 3) {
                         console.error(`[TDBKnowledge] ⛔ Failed 3 times, dropping file from queue: ${filePath}`, e.message);
-                        this.pendingFiles.delete(filePath);
-                        this.fileRetryCount.delete(filePath);
+                        if (this.pendingFileVersions.get(filePath) === eventVersion) {
+                            this.pendingFiles.delete(filePath);
+                            this.pendingFileVersions.delete(filePath);
+                            this.fileRetryCount.delete(filePath);
+                        }
                     } else {
                         this.fileRetryCount.set(filePath, count);
                         console.warn(`[TDBKnowledge] ⚠️ File retry ${count}/3: ${filePath}`, e.message);
@@ -301,13 +351,26 @@ class TDBKnowledgeManager {
         }
     }
 
-    async upsertFile(filePath) {
+    async upsertFile(filePath, options = {}) {
         if (!this._isIndexable(filePath)) return;
         const normalizedPath = this._normalizeFilePath(filePath);
+        const { library } = this._resolveLibrary(normalizedPath);
+        const eventVersion = options.eventVersion || this._getFileEventVersion(normalizedPath) || this._bumpFileEventVersion(normalizedPath);
+        return this._withLibraryQueue(library, async () => this._upsertFileUnlocked(normalizedPath, { eventVersion }));
+    }
+
+    async _upsertFileUnlocked(filePath, options = {}) {
+        if (!this._isIndexable(filePath)) return;
+        const normalizedPath = this._normalizeFilePath(filePath);
+        const eventVersion = options.eventVersion || this._getFileEventVersion(normalizedPath);
+        if (!this._isCurrentFileEvent(normalizedPath, eventVersion)) return;
+
         const stats = await fs.stat(normalizedPath);
         const { library, relPath } = this._resolveLibrary(normalizedPath);
         const content = await fs.readFile(normalizedPath, 'utf-8');
         const checksum = crypto.createHash('sha256').update(content).digest('hex');
+
+        if (!this._isCurrentFileEvent(normalizedPath, eventVersion)) return;
 
         const old = this.metaDb.prepare('SELECT checksum, mtime, size FROM files WHERE library = ? AND path = ?').get(library, relPath);
         // 内容去重：checksum + size 一致即认为文件未改变，跳过昂贵的重新 Embedding。
@@ -336,6 +399,21 @@ class TDBKnowledgeManager {
             apiUrl: this.config.apiUrl,
             model: this.config.model
         });
+
+            if (!this._isCurrentFileEvent(normalizedPath, eventVersion)) return;
+
+            const latestStats = await fs.stat(normalizedPath);
+            const latestContent = await fs.readFile(normalizedPath, 'utf-8');
+            const latestChecksum = crypto.createHash('sha256').update(latestContent).digest('hex');
+            if (
+                latestStats.size !== stats.size ||
+                latestStats.mtimeMs !== stats.mtimeMs ||
+                latestChecksum !== checksum
+            ) {
+                const latestVersion = this._bumpFileEventVersion(normalizedPath);
+                this._queueFile(normalizedPath, latestVersion);
+                return;
+            }
 
         const docVector = vectors[0];
         const chunkVectors = vectors.slice(1);
@@ -427,9 +505,23 @@ class TDBKnowledgeManager {
         this.metaDb.prepare('DELETE FROM files WHERE library = ? AND path = ?').run(library, relPath);
     }
 
-    async deleteFile(filePath) {
+    async deleteFile(filePath, options = {}) {
         const normalizedPath = this._normalizeFilePath(filePath);
         if (!this._isIndexable(normalizedPath)) return;
+        const { library } = this._resolveLibrary(normalizedPath);
+        const eventVersion = options.eventVersion || this._bumpFileEventVersion(normalizedPath);
+        this.pendingFiles.delete(normalizedPath);
+        this.pendingFileVersions.delete(normalizedPath);
+        this.fileRetryCount.delete(normalizedPath);
+        return this._withLibraryQueue(library, async () => this._deleteFileUnlocked(normalizedPath, { eventVersion }));
+    }
+
+    async _deleteFileUnlocked(filePath, options = {}) {
+        const normalizedPath = this._normalizeFilePath(filePath);
+        if (!this._isIndexable(normalizedPath)) return;
+        const eventVersion = options.eventVersion || this._getFileEventVersion(normalizedPath);
+        if (!this._isCurrentFileEvent(normalizedPath, eventVersion)) return;
+
         const { library, relPath } = this._resolveLibrary(normalizedPath);
         const handle = this.getOrOpenLibrary(library);
         this._beginLibraryUse(handle);
@@ -563,6 +655,11 @@ class TDBKnowledgeManager {
     }
 
     async searchLibrary(library, queryText, queryVector, options = {}) {
+        const safeName = safeLibraryName(library);
+        return this._withLibraryQueue(safeName, async () => this._searchLibraryUnlocked(safeName, queryText, queryVector, options));
+    }
+
+    async _searchLibraryUnlocked(library, queryText, queryVector, options = {}) {
         const handle = this.getOrOpenLibrary(library);
         this._beginLibraryUse(handle);
 
@@ -688,8 +785,7 @@ class TDBKnowledgeManager {
                 if (!jsonPayload) return;
                 const { event, path: filePath } = JSON.parse(jsonPayload);
                 const normalizedPath = this._normalizeFilePath(filePath);
-                if (event === 'unlink') this.deleteFile(normalizedPath);
-                else this._queueStableFile(normalizedPath);
+                this._handleWatcherEvent(event, normalizedPath);
             } catch (e) {
                 console.error('[TDBKnowledge] Failed to parse watcher event:', e.message);
             }
@@ -737,9 +833,9 @@ class TDBKnowledgeManager {
             }
         });
         this.watcher
-            .on('add', fp => this._queueStableFile(this._normalizeFilePath(fp)))
-            .on('change', fp => this._queueStableFile(this._normalizeFilePath(fp)))
-            .on('unlink', fp => this.deleteFile(this._normalizeFilePath(fp)));
+            .on('add', fp => this._handleWatcherEvent('add', this._normalizeFilePath(fp)))
+            .on('change', fp => this._handleWatcherEvent('change', this._normalizeFilePath(fp)))
+            .on('unlink', fp => this._handleWatcherEvent('unlink', this._normalizeFilePath(fp)));
         this.watcherType = 'chokidar';
         console.log('[TDBKnowledge] 🔄 Using Chokidar watcher fallback.');
     }
@@ -765,23 +861,43 @@ class TDBKnowledgeManager {
         });
 
         this.safetyWatcher
-            .on('add', fp => this._queueStableFile(this._normalizeFilePath(fp)))
-            .on('change', fp => this._queueStableFile(this._normalizeFilePath(fp)))
-            .on('unlink', fp => this.deleteFile(this._normalizeFilePath(fp)));
+            .on('add', fp => this._handleWatcherEvent('add', this._normalizeFilePath(fp)))
+            .on('change', fp => this._handleWatcherEvent('change', this._normalizeFilePath(fp)))
+            .on('unlink', fp => this._handleWatcherEvent('unlink', this._normalizeFilePath(fp)));
 
         console.log('[TDBKnowledge] 🛡️ Chokidar safety watcher enabled for cold knowledge files.');
     }
 
-    async _queueStableFile(filePath) {
+    _handleWatcherEvent(event, filePath) {
         const normalizedPath = this._normalizeFilePath(filePath);
+        if (!this._isIndexable(normalizedPath)) return;
+
+        const eventVersion = this._bumpFileEventVersion(normalizedPath);
+        if (event === 'unlink') {
+            this.deleteFile(normalizedPath, { eventVersion }).catch(e => {
+                console.warn(`[TDBKnowledge] Delete event failed for "${normalizedPath}":`, e.message);
+            });
+            return;
+        }
+
+        this._queueStableFile(normalizedPath, eventVersion);
+    }
+
+    async _queueStableFile(filePath, eventVersion = null) {
+        const normalizedPath = this._normalizeFilePath(filePath);
+        const version = eventVersion || this._getFileEventVersion(normalizedPath) || this._bumpFileEventVersion(normalizedPath);
         try {
             const stat1 = await fs.stat(normalizedPath);
             await new Promise(resolve => setTimeout(resolve, 500));
+            if (!this._isCurrentFileEvent(normalizedPath, version)) return;
+
             const stat2 = await fs.stat(normalizedPath);
+            if (!this._isCurrentFileEvent(normalizedPath, version)) return;
+
             if (stat1.size === stat2.size && stat1.mtimeMs === stat2.mtimeMs) {
-                this._queueFile(normalizedPath);
+                this._queueFile(normalizedPath, version);
             } else {
-                setTimeout(() => this._queueStableFile(normalizedPath), 1000);
+                setTimeout(() => this._queueStableFile(normalizedPath, version), 1000);
             }
         } catch (e) {
             if (e.code !== 'ENOENT') console.warn('[TDBKnowledge] Stability check failed:', e.message);
@@ -815,6 +931,9 @@ class TDBKnowledgeManager {
             await this.closeLibrary(name, { flush: true });
         }
         this.libs.clear();
+        this.libraryQueues.clear();
+        this.fileEventVersions.clear();
+        this.pendingFileVersions.clear();
 
         if (this.metaDb) {
             this.metaDb.close();
