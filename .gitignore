@@ -193,6 +193,10 @@ Plugin/WeatherReporter/weather_cache.txt
 Plugin/WeatherReporter/city_cache.txt
 ToolConfigs/dynamic_tool_catalog.json
 ToolConfigs/dynamic_tool_categories.json
+Plugin/UrlFetch/browser-profiles
+Plugin/ChromeBridge/ChromeScripts
+Plugin/ChromeBridge/managed-extension-stage
+Plugin/ChromeBridge/managed-profile
 
 # ===== 图片 / 媒体 =====
 # 忽略通用表情包目录下的所有内容...
