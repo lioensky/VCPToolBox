@@ -20,6 +20,9 @@ const pendingCommands = new Map();
 const HIGH_PRIVILEGE_COMMANDS = new Set([
     'execute_script',
     'execute_saved_script',
+    'capture_screenshot',
+    'get_screenshot',
+    'screenshot',
     'cdp_network_query',
     'cdp_get_response_body',
     'cdp_clear_network',
@@ -254,6 +257,9 @@ function buildCommandFromParams(params, suffix = '') {
         target: params[`target${suffix}`],
         text: params[`text${suffix}`],
         url: params[`url${suffix}`],
+        format: params[`format${suffix}`],
+        imageFormat: params[`imageFormat${suffix}`],
+        quality: params[`quality${suffix}`],
         urlIncludes: params[`urlIncludes${suffix}`],
         cdpRequestId: params[`requestId${suffix}`] || params[`cdpRequestId${suffix}`],
         query: params[`query${suffix}`],
@@ -323,7 +329,7 @@ function authorizeChromeCommand(entry, command) {
     }
 
     if (entry.clientKind === 'distributed') {
-        const distributedAllowed = new Set(['open_url', 'click', 'type', 'scroll', 'query_html', 'query_js', 'list_tabs', 'switch_tab']);
+        const distributedAllowed = new Set(['open_url', 'click', 'type', 'scroll', 'query_html', 'query_js', 'get_page_info', 'list_tabs', 'switch_tab']);
         if (!distributedAllowed.has(command)) {
             return {
                 allowed: false,
@@ -710,6 +716,164 @@ async function normalizeScriptCommand(cmd) {
     }
 }
 
+function buildAiFriendlyTextResult(markdownText, details = null, extraContent = []) {
+    const content = [
+        { type: 'text', text: String(markdownText || '') }
+    ];
+
+    for (const item of extraContent) {
+        if (item && typeof item === 'object') {
+            content.push(item);
+        }
+    }
+
+    const result = { content };
+    if (details !== null && details !== undefined) {
+        result.details = details;
+    }
+
+    // hybridservice/direct 插件会被 Plugin.js 解开 { status, result }。
+    // 这里保持 result 为 { content: [...] }，让最终工具结果拥有 content 字段；
+    // 不要让 result 直接等于数组，否则外层会把整个数组再次序列化进 text。
+    return {
+        status: 'success',
+        result
+    };
+}
+
+function stringifyForMarkdown(value) {
+    if (value === undefined || value === null) return '';
+    if (typeof value === 'string') return value;
+    try {
+        return JSON.stringify(value, null, 2);
+    } catch {
+        return String(value);
+    }
+}
+
+function getScreenshotDataUrl(commandResult = {}) {
+    const result = commandResult?.result || commandResult;
+    const dataUrl = result?.dataUrl || result?.imageUrl || result?.url;
+    if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')) {
+        return dataUrl;
+    }
+    return null;
+}
+
+function formatCommandResultAsMarkdown(commandResult = {}) {
+    const lines = [];
+    const success = commandResult.success !== false;
+
+    lines.push(`## ChromeBridge 执行结果`);
+    lines.push('');
+    lines.push(`- 状态: ${success ? 'success' : 'error'}`);
+
+    if (commandResult.message) {
+        lines.push(`- 消息: ${commandResult.message}`);
+    }
+
+    if (commandResult.code) {
+        lines.push(`- Code: ${commandResult.code}`);
+    }
+
+    if (commandResult.page_info) {
+        lines.push('');
+        lines.push('## 当前页面 Markdown');
+        lines.push('');
+        lines.push(String(commandResult.page_info));
+    } else if (commandResult.result?.markdown) {
+        lines.push('');
+        lines.push('## 当前页面 Markdown');
+        lines.push('');
+        lines.push(String(commandResult.result.markdown));
+    } else if (typeof commandResult.result === 'string') {
+        lines.push('');
+        lines.push('## Result');
+        lines.push('');
+        lines.push(commandResult.result);
+    } else if (commandResult.result !== undefined) {
+        const screenshotDataUrl = getScreenshotDataUrl(commandResult);
+        const details = screenshotDataUrl
+            ? { ...commandResult.result, dataUrl: '[omitted:data-image-url]' }
+            : commandResult.result;
+        lines.push('');
+        lines.push('## Result');
+        lines.push('');
+        lines.push('```json');
+        lines.push(stringifyForMarkdown(details));
+        lines.push('```');
+    }
+
+    if (commandResult.page_info_meta) {
+        lines.push('');
+        lines.push('## Page Info Meta');
+        lines.push('');
+        lines.push('```json');
+        lines.push(stringifyForMarkdown(commandResult.page_info_meta));
+        lines.push('```');
+    }
+
+    return lines.join('\n');
+}
+
+function normalizeToolResultForAi(commandResult) {
+    if (
+        commandResult &&
+        typeof commandResult === 'object' &&
+        commandResult.status === 'success' &&
+        Array.isArray(commandResult.result)
+    ) {
+        return {
+            status: 'success',
+            result: { content: commandResult.result }
+        };
+    }
+
+    if (
+        commandResult &&
+        typeof commandResult === 'object' &&
+        commandResult.status === 'success' &&
+        commandResult.result &&
+        typeof commandResult.result === 'object' &&
+        Array.isArray(commandResult.result.content)
+    ) {
+        return commandResult;
+    }
+
+    if (
+        commandResult &&
+        typeof commandResult === 'object' &&
+        Array.isArray(commandResult.content)
+    ) {
+        return {
+            status: 'success',
+            result: commandResult
+        };
+    }
+
+    const screenshotDataUrl = getScreenshotDataUrl(commandResult);
+    const extraContent = screenshotDataUrl
+        ? [{
+            type: 'image_url',
+            image_url: {
+                url: screenshotDataUrl
+            }
+        }]
+        : [];
+
+    const details = screenshotDataUrl && commandResult?.result
+        ? {
+            ...commandResult,
+            result: {
+                ...commandResult.result,
+                dataUrl: '[omitted:data-image-url]'
+            }
+        }
+        : commandResult;
+
+    return buildAiFriendlyTextResult(formatCommandResultAsMarkdown(commandResult), details, extraContent);
+}
+
 // Direct调用接口（hybridservice 使用 processToolCall）
 async function processToolCall(params) {
     // 提取所有命令参数
@@ -732,7 +896,7 @@ async function processToolCall(params) {
     }
 
     if (commands.length === 1 && LIFECYCLE_COMMANDS.has(commands[0].command)) {
-        return runLifecycleCommand(commands[0].command, params);
+        return normalizeToolResultForAi(await runLifecycleCommand(commands[0].command, params));
     }
 
     console.log(`[ChromeBridge] 📋 收到 ${commands.length} 个命令，准备串行执行`);
@@ -752,18 +916,18 @@ async function processToolCall(params) {
             console.log(`[ChromeBridge] ⏱️ 串行等待 ${waitMs}ms 后继续执行后续指令`);
             await sleep(waitMs);
             if (isLastCommand) {
-                return {
+                return normalizeToolResultForAi({
                     success: true,
                     message: `已等待 ${waitMs}ms`,
                     result: { waitMs }
-                };
+                });
             }
             continue;
         }
 
         if (LIFECYCLE_COMMANDS.has(cmd.command)) {
             const lifecycleResult = await runLifecycleCommand(cmd.command, params);
-            if (isLastCommand) return lifecycleResult;
+            if (isLastCommand) return normalizeToolResultForAi(lifecycleResult);
             continue;
         }
 
@@ -790,7 +954,7 @@ async function processToolCall(params) {
 
         // 如果是最后一个命令，它的 Promise 已经 resolve 并返回结果
         if (isLastCommand) {
-            return result;
+            return normalizeToolResultForAi(result);
         }
     }
 }

@@ -161,6 +161,18 @@ class LightMemoPlugin {
             result &&
             typeof result === 'object' &&
             result.status === 'success' &&
+            Array.isArray(result.result)
+        ) {
+            return {
+                status: 'success',
+                result: { content: result.result }
+            };
+        }
+
+        if (
+            result &&
+            typeof result === 'object' &&
+            result.status === 'success' &&
             result.result &&
             typeof result.result === 'object' &&
             Array.isArray(result.result.content)
@@ -692,6 +704,9 @@ class LightMemoPlugin {
     }
 
     _buildAiFriendlyTextResult(reportText) {
+        // hybridservice/direct 插件会被 Plugin.js 解开 { status, result }。
+        // 这里保持 result 为 { content: [...] }，让最终工具结果拥有 content 字段；
+        // 不要让 result 直接等于数组，否则外层会把整个数组再次序列化进 text。
         return {
             status: 'success',
             result: {

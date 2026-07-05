@@ -81,6 +81,11 @@
                 "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」get_page_info「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
+                "command": "capture_screenshot",
+                "description": "获取当前活动标签页的可视区域截图，返回 AI 友好的多模态 content 数组：第一段为 Markdown 文本摘要，第二段为 `image_url`（data:image/...;base64）。适合在 DOM/page_info 不足时让多模态模型直接观察网页视觉状态。\n- `command`: 固定为 `capture_screenshot`。兼容别名 `get_screenshot` / `screenshot`。\n- `format` 或 `imageFormat`: 可选，`png` / `jpeg`，默认 `png`。\n- `quality`: 可选，仅 JPEG 生效，1-100，默认 90。\n- `browserTarget`: 可选，默认优先 managed Chrome；截图属于高权限指令，默认只允许 managed/agent。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」capture_screenshot「末」,\nformat: 「始」png「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」capture_screenshot「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
                 "command": "wait",
                 "description": "串行指令集专用等待指令，用于在两个浏览器操作之间插入明确的时间缓冲，不会向 Chrome 扩展发送命令，也不会改变页面状态。适合等待 SPA/搜索结果/懒加载内容稳定后，再执行 `get_page_info` 或后续点击、查询。支持别名 `sleep` / `delay`。\n- `command`: 固定为 `wait`。\n- `waitMs`: 可选，等待毫秒数，默认 1000，最大 30000。\n- `durationMs`: 可选，等价于 `waitMs`。\n- `seconds`: 可选，等待秒数，例如 `2` 表示 2000ms。\n\n**串行调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand1: 「始」click「末」,\ntarget1: 「始」vcp-button-1「末」,\ncommand2: 「始」wait「末」,\nwaitMs2: 「始」2000「末」,\ncommand3: 「始」get_page_info「末」\n<<<[END_TOOL_REQUEST]>>>",
                 "example": "**串行调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand1: 「始」open_url「末」,\nurl1: 「始」https://www.google.com「末」,\ncommand2: 「始」wait「末」,\nwaitMs2: 「始」2000「末」,\ncommand3: 「始」get_page_info「末」\n<<<[END_TOOL_REQUEST]>>>"

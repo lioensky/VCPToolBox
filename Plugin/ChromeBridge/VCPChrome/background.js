@@ -15,7 +15,7 @@ let runtimeIdentity = {
     managedRuntime: false,
     managedToken: null,
     maxTabs: 8,
-    capabilities: ['pageInfo', 'tabs', 'script', 'cdp', 'storage', 'networkBody', 'snapshotHandles', 'structuredErrors']
+    capabilities: ['pageInfo', 'tabs', 'script', 'cdp', 'storage', 'networkBody', 'snapshotHandles', 'structuredErrors', 'screenshot']
 };
 
 let runtimeConnectionConfig = {
@@ -694,8 +694,8 @@ function shouldTreatChannelCloseAsNavigation(commandData, error) {
 async function handleIncomingCommand(commandData) {
     const { command, requestId, sourceClientId } = commandData;
     
-    // 某些指令由 background 直接处理 (CDP 相关 / 主世界脚本执行 / 标签页管理)
-    if (command.startsWith('cdp_') || command === 'execute_script' || command === 'list_tabs' || command === 'switch_tab' || command === 'close_tab') {
+    // 某些指令由 background 直接处理 (CDP 相关 / 主世界脚本执行 / 标签页管理 / 截图)
+    if (command.startsWith('cdp_') || command === 'execute_script' || command === 'list_tabs' || command === 'switch_tab' || command === 'close_tab' || isScreenshotCommand(command)) {
         try {
             let result;
             if (command === 'execute_script') {
@@ -706,6 +706,8 @@ async function handleIncomingCommand(commandData) {
                 result = await switchTab(commandData);
             } else if (command === 'close_tab') {
                 result = await closeTab(commandData);
+            } else if (isScreenshotCommand(command)) {
+                result = await captureScreenshot(commandData);
             } else {
                 result = await processCdpCommand(commandData);
             }
@@ -838,6 +840,73 @@ function sendCdpCommand(tabId, method, params = {}) {
             else resolve(result || {});
         });
     });
+}
+
+function isScreenshotCommand(command) {
+    return ['capture_screenshot', 'get_screenshot', 'screenshot'].includes(String(command || '').trim().toLowerCase());
+}
+
+function normalizeScreenshotFormat(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized === 'jpeg' || normalized === 'jpg' ? 'jpeg' : 'png';
+}
+
+function captureVisibleTab(windowId, options) {
+    return new Promise((resolve, reject) => {
+        chrome.tabs.captureVisibleTab(windowId, options, (dataUrl) => {
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+            }
+            if (!dataUrl) {
+                reject(new Error('截图失败：Chrome 未返回图像数据'));
+                return;
+            }
+            resolve(dataUrl);
+        });
+    });
+}
+
+async function captureScreenshot(commandData = {}) {
+    const tabId = currentActiveTabId;
+    if (!tabId) throw new Error('没有活动的标签页');
+
+    const tab = await new Promise((resolve, reject) => {
+        chrome.tabs.get(tabId, (activeTab) => {
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+            }
+            resolve(activeTab);
+        });
+    });
+
+    const imageFormat = normalizeScreenshotFormat(commandData.imageFormat || commandData.format);
+    const quality = parseNumberParam(commandData.quality, 90, 1, 100);
+    const captureOptions = imageFormat === 'jpeg'
+        ? { format: 'jpeg', quality }
+        : { format: 'png' };
+
+    const dataUrl = await captureVisibleTab(tab.windowId, captureOptions);
+    const byteLength = Math.round((dataUrl.length - dataUrl.indexOf(',') - 1) * 0.75);
+
+    return {
+        message: `当前活动标签页截图获取成功 (${imageFormat})`,
+        result: {
+            dataUrl,
+            mimeType: `image/${imageFormat}`,
+            format: imageFormat,
+            byteLength,
+            capturedAt: new Date().toISOString(),
+            tab: {
+                id: tab.id,
+                title: tab.title,
+                url: tab.url,
+                width: tab.width,
+                height: tab.height
+            }
+        }
+    };
 }
 
 async function executeScriptInMainWorld(commandData) {
