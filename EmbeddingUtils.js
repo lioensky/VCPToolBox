@@ -5,7 +5,7 @@ const encoding = get_encoding("cl100k_base");
 // 配置
 const embeddingMaxToken = parseInt(process.env.WhitelistEmbeddingModelMaxToken, 10) || 8000;
 const safeMaxTokens = Math.floor(embeddingMaxToken * 0.85);
-const MAX_BATCH_ITEMS = 100; // Gemini/OpenAI 限制
+const MAX_BATCH_ITEMS = parseInt(process.env.EMBEDDING_MAX_BATCH_ITEMS, 10) || 32; // Embedding 单批最大条数，可通过 env 控制
 const DEFAULT_CONCURRENCY = parseInt(process.env.TAG_VECTORIZE_CONCURRENCY) || 5; // 🌟 读取并发配置
 
 function _splitModelList(value) {
