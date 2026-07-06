@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { getEmbeddingsBatch, cosineSimilarity } = require('../../EmbeddingUtils');
+const toolCallRecordStore = require('../toolCallRecordStore');
 
 const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, '..', '..', 'VCPTimedContacts');
 
@@ -318,34 +319,74 @@ class ToolExecutor {
       }
     }
 
+    const recordHandle = toolCallRecordStore.beginRecord({
+      toolName: name,
+      args,
+      requestIp: clientIp,
+      sourceNode: 'post'
+    });
+
     // 通用未来任务拦截：
     // 任意工具只要携带 timely_contact，就先写入 VCPTimedContacts 由任务调度器到点执行。
     // 到点执行时由 TaskScheduler 注入 __vcp_timed_call 标准元信息；
     // 插件可基于该字段判断原始发起时间、计划触发时间与实际触发时间。
     if (args && Object.prototype.hasOwnProperty.call(args, 'timely_contact')) {
-      return await this._scheduleTimedToolCall(toolCall);
+      const scheduledResult = await this._scheduleTimedToolCall(toolCall);
+      toolCallRecordStore.finishRecord(recordHandle, {
+        success: scheduledResult.success,
+        result: scheduledResult.raw || scheduledResult.content,
+        error: scheduledResult.success ? null : scheduledResult.error
+      });
+      return this._attachRecordIdToResult(scheduledResult, recordHandle);
     }
 
     // 验证码校验
     if (this.vcpToolCode) {
       const authResult = await this._verifyAuth(args);
       if (!authResult.valid) {
-        return this._createErrorResult(name, authResult.message);
+        const errorResult = this._createErrorResult(name, authResult.message);
+        toolCallRecordStore.finishRecord(recordHandle, {
+          success: false,
+          result: errorResult.content,
+          error: authResult.message
+        });
+        return this._attachRecordIdToResult(errorResult, recordHandle);
       }
     }
 
     // 检查插件是否存在
     if (!this.pluginManager.getPlugin(name)) {
-      return this._createErrorResult(name, `未找到名为 "${name}" 的插件`);
+      const message = `未找到名为 "${name}" 的插件`;
+      const errorResult = this._createErrorResult(name, message);
+      toolCallRecordStore.finishRecord(recordHandle, {
+        success: false,
+        result: errorResult.content,
+        error: message
+      });
+      return this._attachRecordIdToResult(errorResult, recordHandle);
     }
 
     // 执行插件
     try {
       if (this.debugMode) console.log(`[ToolExecutor] Calling processToolCall for ${name} with args keys: ${Object.keys(args).join(', ')}`);
-      const result = await this.pluginManager.processToolCall(name, args, clientIp, 'post', { archeryNoReply: !!archeryNoReply });
-      return this._processResult(name, result);
+      const result = await this.pluginManager.processToolCall(name, args, clientIp, 'post', {
+        archeryNoReply: !!archeryNoReply,
+        toolCallRecordHandle: recordHandle
+      });
+      const processedResult = this._processResult(name, result);
+      toolCallRecordStore.finishRecord(recordHandle, {
+        success: true,
+        result
+      });
+      return this._attachRecordIdToResult(processedResult, recordHandle);
     } catch (error) {
-      return this._createErrorResult(name, `执行错误: ${error.message}`);
+      const errorResult = this._createErrorResult(name, `执行错误: ${error.message}`);
+      toolCallRecordStore.finishRecord(recordHandle, {
+        success: false,
+        result: errorResult.content,
+        error
+      });
+      return this._attachRecordIdToResult(errorResult, recordHandle);
     }
   }
 
@@ -356,6 +397,17 @@ class ToolExecutor {
     return Promise.all(
       toolCalls.map(tc => this.execute(tc, clientIp, contextMessages))
     );
+  }
+
+  _attachRecordIdToResult(result, recordHandle) {
+    if (!recordHandle || !recordHandle.id || !result || typeof result !== 'object') {
+      return result;
+    }
+    result.recordId = recordHandle.id;
+    if (result.raw && typeof result.raw === 'object' && !result.raw.tool_call_record_id) {
+      result.raw.tool_call_record_id = recordHandle.id;
+    }
+    return result;
   }
 
   _processResult(toolName, result) {

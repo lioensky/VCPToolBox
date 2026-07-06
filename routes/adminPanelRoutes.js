@@ -110,6 +110,7 @@ module.exports = function (
   mount("/", "multimodalConfig"); // Handles /multimodal-config (JSON 真相源 + 热更新)
   mount("/", "clawMail"); // Handles /claw-mail/*
   mount("/", "tarotDivination"); // Handles /tarot-divination/*
+  mount("/", "toolCallRecords"); // Handles /tool-call-records/*
 
   return adminApiRouter;
 };

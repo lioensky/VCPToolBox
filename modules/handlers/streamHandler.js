@@ -369,7 +369,7 @@ class StreamHandler {
           const isError = !result.success || (result.raw && this.context.isToolResultError(result.raw));
 
           if (isError) {
-            archeryStatusSummaryItems.push(`${toolCall.name} 调用失败`);
+            archeryStatusSummaryItems.push(`${toolCall.name} 调用失败${result.recordId ? ` (记录ID: ${result.recordId})` : ''}`);
             archeryErrorContents.push({
               type: 'text',
               text: `[异步工具 "${toolCall.name}" 返回了错误，请注意]:\n${result.content[0].text}`
@@ -512,7 +512,7 @@ class StreamHandler {
         );
         const isTimeout = isError && !isRejected && /超时|timeout|timed\s*out|DIRECT_TOOL_TIMEOUT|TIMEOUT/i.test(errorText);
         const statusText = isRejected ? '调用拒绝' : (isTimeout ? '调用超时' : (isError ? '调用失败' : '调用成功'));
-        toolStatusSummaryItems.push(`${toolCall.name} ${statusText}`);
+        toolStatusSummaryItems.push(`${toolCall.name} ${statusText}${result?.recordId ? ` (记录ID: ${result.recordId})` : ''}`);
 
         if ((shouldShowVCP || forceThisOne) && !res.writableEnded && !res.destroyed) {
           if (!hasStartedUserBlock && enableRoleDivider) {

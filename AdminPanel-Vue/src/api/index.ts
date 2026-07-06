@@ -82,6 +82,9 @@ export type * from './tvs'
 export { toolListApi } from './toolList'
 export type * from './toolList'
 
+export { toolCallRecordsApi } from './toolCallRecords'
+export type * from './toolCallRecords'
+
 export { dynamicToolsApi } from './dynamicTools'
 export type * from './dynamicTools'
 

@@ -12,6 +12,7 @@ const { getAuthCode } = require('./modules/captchaDecoder'); // 导入统一的�
 const ToolApprovalManager = require('./modules/toolApprovalManager');
 const { hasFoldMarkers, buildDynamicFoldObject } = require('./modules/foldProtocol');
 const { sanitizeToolResult } = require('./modules/toolResultPrivacyGuard');
+const toolCallRecordStore = require('./modules/toolCallRecordStore');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -880,9 +881,20 @@ class PluginManager extends EventEmitter {
     }
 
     async processToolCall(toolName, toolArgs, requestIp = null, sourceNode = null, executionOptions = {}) {
+        const shouldManageToolCallRecord = !executionOptions?.toolCallRecordHandle;
+        const managedToolCallRecord = shouldManageToolCallRecord
+            ? toolCallRecordStore.beginRecord({ toolName, args: toolArgs || {}, requestIp, sourceNode })
+            : null;
+
         const plugin = this.plugins.get(toolName);
         if (!plugin) {
-            throw new Error(`[PluginManager] Plugin "${toolName}" not found for tool call.`);
+            const notFoundError = new Error(`[PluginManager] Plugin "${toolName}" not found for tool call.`);
+            toolCallRecordStore.finishRecord(managedToolCallRecord, {
+                success: false,
+                result: { plugin_execution_error: notFoundError.message },
+                error: notFoundError
+            });
+            throw notFoundError;
         }
 
         // Helper function to generate a timestamp string
@@ -1017,6 +1029,19 @@ class PluginManager extends EventEmitter {
                     if (this.debugMode) {
                         console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) was rejected silently. Returning empty result to AI.`);
                     }
+                    const silentRejectionRecord = {
+                        status: 'rejected',
+                        success: false,
+                        silentRejected: true,
+                        error_type: 'approval_rejected',
+                        rejected_by_user: true,
+                        message: `Tool call "${toolName}" was rejected silently by manual approval.`
+                    };
+                    toolCallRecordStore.finishRecord(managedToolCallRecord, {
+                        success: false,
+                        result: silentRejectionRecord,
+                        error: silentRejectionRecord.message
+                    });
                     return undefined;
                 }
                 if (this.debugMode) console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) approved.`);
@@ -1096,6 +1121,13 @@ class PluginManager extends EventEmitter {
                 const pluginOutput = await this.executePlugin(toolName, executionParam, requestIp, executionOptions); // Returns {status, result/error}
 
                 if (pluginOutput.__vcpArcheryNoReplySilent) {
+                    toolCallRecordStore.finishRecord(managedToolCallRecord, {
+                        success: true,
+                        result: pluginOutput.result
+                    });
+                    if (managedToolCallRecord?.id && pluginOutput.result && typeof pluginOutput.result === 'object' && !pluginOutput.result.tool_call_record_id) {
+                        pluginOutput.result.tool_call_record_id = managedToolCallRecord.id;
+                    }
                     return pluginOutput.result;
                 }
 
@@ -1147,7 +1179,15 @@ class PluginManager extends EventEmitter {
             finalResultObject.timestamp = _getFormattedLocalTimestamp();
             _filterFuzzyDiff(finalResultObject, _getFormattedLocalTimestamp());
 
-            return this._sanitizeToolResultForAi(finalResultObject);
+            const sanitizedResult = this._sanitizeToolResultForAi(finalResultObject);
+            toolCallRecordStore.finishRecord(managedToolCallRecord, {
+                success: true,
+                result: sanitizedResult
+            });
+            if (managedToolCallRecord?.id && sanitizedResult && typeof sanitizedResult === 'object' && !sanitizedResult.tool_call_record_id) {
+                sanitizedResult.tool_call_record_id = managedToolCallRecord.id;
+            }
+            return sanitizedResult;
 
         } catch (e) {
             console.error(`[PluginManager processToolCall] Error during execution for plugin ${toolName}:`, e.message);
@@ -1165,7 +1205,16 @@ class PluginManager extends EventEmitter {
                 errorObject.timestamp = _getFormattedLocalTimestamp();
             }
             _filterFuzzyDiff(errorObject, _getFormattedLocalTimestamp());
-            throw new Error(JSON.stringify(this._sanitizeToolResultForAi(errorObject)));
+            const sanitizedErrorObject = this._sanitizeToolResultForAi(errorObject);
+            toolCallRecordStore.finishRecord(managedToolCallRecord, {
+                success: false,
+                result: sanitizedErrorObject,
+                error: e
+            });
+            if (managedToolCallRecord?.id && sanitizedErrorObject && typeof sanitizedErrorObject === 'object' && !sanitizedErrorObject.tool_call_record_id) {
+                sanitizedErrorObject.tool_call_record_id = managedToolCallRecord.id;
+            }
+            throw new Error(JSON.stringify(sanitizedErrorObject));
         }
     }
 

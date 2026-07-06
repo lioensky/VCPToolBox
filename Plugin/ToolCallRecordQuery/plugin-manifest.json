@@ -1,0 +1,26 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ToolCallRecordQuery",
+  "displayName": "工具调用记录查询器",
+  "pluginType": "synchronous",
+  "version": "1.0.0",
+  "description": "查询工具调用记录。支持按记录ID、时间范围、调用者署名(maid/valet)、工具名、成功失败状态和全文字段搜索。",
+  "author": "VCPToolBox",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node ToolCallRecordQuery.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "configSchema": {},
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "ToolCallRecordQuery",
+        "description": "查询 VCP 工具调用记录。仅当工具调用记录系统开启并存在记录时有结果。默认返回 AI 友好的 Markdown 报告，会摘要嵌套 JSON，并把 data:image/...;base64,... 多模态图片迁移为可访问图片 URL，避免上下文膨胀。\n参数:\n- id / recordId (字符串, 可选): 精确查询记录ID。若 detail 为 true 或 mode 为 detail，则返回单条详情报告。\n- from / startTime (字符串, 可选): 起始时间，ISO 时间或可被 Date 解析的时间。\n- to / endTime (字符串, 可选): 结束时间，ISO 时间或可被 Date 解析的时间。\n- caller / callerSignature / maid / valet (字符串, 可选): 按调用者署名模糊查询。\n- callerType (字符串, 可选): maid 或 valet。\n- toolName / tool (字符串, 可选): 按工具名模糊查询。\n- success (布尔或字符串, 可选): true/false，成功或失败。\n- status (字符串, 可选): running / success / failure。\n- search / keyword / q (字符串, 可选): 在 id、工具名、署名、调用内容、返回内容、错误文本中全文模糊搜索。\n- limit (数字, 可选): 返回条数。\n- offset (数字, 可选): 分页偏移。\n- order (字符串, 可选): desc 或 asc，默认 desc。\n- detail (布尔, 可选): true 时返回单条完整详情报告；false 时返回列表报告。\n- format / output (字符串, 可选): markdown 或 json。默认 markdown；设为 json 时返回原始结构，适合调试但可能包含较大字段。\n- migrateMultimodal / migrate_multimodal (布尔, 可选): 是否把 base64 图片迁移为图片 URL，默认 true。\n- includeRaw / include_raw (布尔, 可选): 是否在 Markdown 报告末尾附带原始结构摘要，默认 false。\n- maxTextChars / max_text_chars (数字, 可选): Markdown 文本摘要最大长度。\n- maxJsonChars / max_json_chars (数字, 可选): 原始结构摘要最大长度。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ToolCallRecordQuery「末」,\ncaller:「始」Nova「末」,\ntoolName:「始」DMXDoubaoGen「末」,\nfrom:「始」2026-07-06T00:00:00+08:00「末」,\nto:「始」2026-07-06T23:59:59+08:00「末」,\nsearch:「始」关键词「末」,\nlimit:「始」20「末」,\nmigrateMultimodal:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

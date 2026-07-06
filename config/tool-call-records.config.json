@@ -1,0 +1,26 @@
+{
+  "enabled": false,
+  "retentionDays": 30,
+  "autoCleanupEnabled": true,
+  "cleanupIntervalMinutes": 1440,
+  "maxQueryLimit": 100,
+  "defaultQueryLimit": 20,
+  "captureMultimodal": true,
+  "summarizeLargePayloadsInList": true,
+  "listPayloadPreviewChars": 1200,
+  "excludeTools": [
+    "ToolCallRecordQuery"
+  ],
+  "__description": {
+    "enabled": "工具调用记录总开关。开启后会记录工具名、调用者署名、发起/返回时间、调用内容、返回内容、成功失败与记录ID。",
+    "retentionDays": "记录保留天数。<=0 表示不按时间过期。",
+    "autoCleanupEnabled": "是否按 cleanupIntervalMinutes 自动清理过期记录。",
+    "cleanupIntervalMinutes": "自动清理周期，单位分钟。",
+    "maxQueryLimit": "查询接口允许的最大返回条数。",
+    "defaultQueryLimit": "查询未指定 limit 时的默认返回条数。",
+    "captureMultimodal": "是否保存包含 image_url/data URI 等多模态返回内容。关闭后会保存脱敏摘要。",
+    "summarizeLargePayloadsInList": "列表查询时是否对调用内容/返回内容做预览截断，详情查询不截断。",
+    "listPayloadPreviewChars": "列表查询预览截断字符数。",
+    "excludeTools": "不记录的工具名列表，默认避免查询器自查询污染记录。"
+  }
+}

@@ -159,6 +159,9 @@ multimodal-config.json
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
 *.db
 DebugLog/
 dailynote/*

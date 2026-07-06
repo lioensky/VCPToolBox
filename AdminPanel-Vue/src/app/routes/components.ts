@@ -23,6 +23,7 @@ export const APP_ROUTE_COMPONENTS = {
   "preprocessor-order-manager": () =>
     import("@/views/PreprocessorOrderManager.vue"),
   "tool-approval-manager": () => import("@/views/ToolApprovalManager.vue"),
+  "tool-call-records-manager": () => import("@/views/ToolCallRecordsManager.vue"),
   "thinking-chains-editor": () => import("@/views/ThinkingChainsEditor.vue"),
   "rag-tuning": () => import("@/views/RagTuning.vue"),
   "schedule-manager": () => import("@/views/ScheduleManager.vue"),

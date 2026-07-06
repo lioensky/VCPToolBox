@@ -118,6 +118,7 @@ const taskScheduler = require('./routes/taskScheduler.js');
 const webSocketServer = require('./WebSocketServer.js'); // 新增 WebSocketServer 引入
 const FileFetcherServer = require('./FileFetcherServer.js'); // 引入新的 FileFetcherServer 模块
 const vcpInfoHandler = require('./vcpInfoHandler.js'); // 引入新的 VCP 信息处理器
+const toolCallRecordStore = require('./modules/toolCallRecordStore.js'); // 工具调用记录独立 SQLite 存储
 const basicAuth = require('basic-auth');
 const cors = require('cors'); // 引入 cors 模块
 
@@ -1502,6 +1503,10 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
 
 
 async function initialize() {
+    console.log('开始初始化工具调用记录存储...');
+    toolCallRecordStore.initialize();
+    console.log('工具调用记录存储初始化完成。');
+
     console.log('开始初始化向量数据库...');
     await knowledgeBaseManager.initialize(); // 在加载插件之前启动，确保服务就绪
     console.log('向量数据库初始化完成。');
@@ -1787,6 +1792,12 @@ async function gracefulShutdown(exitCode = 0, reason = 'signal') {
                 console.log(`[Server][ShutdownTrace] Phase 8/10 - pluginManager.shutdownAllPlugins done`);
             } else {
                 console.log(`[Server][ShutdownTrace] Phase 8/10 - pluginManager shutdown skipped`);
+            }
+
+            if (toolCallRecordStore) {
+                console.log(`[Server][ShutdownTrace] Phase 8/10 - toolCallRecordStore.shutdown start`);
+                toolCallRecordStore.shutdown();
+                console.log(`[Server][ShutdownTrace] Phase 8/10 - toolCallRecordStore.shutdown done`);
             }
 
             if (tdbKnowledgeManager) {
