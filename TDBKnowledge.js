@@ -58,6 +58,12 @@ class TDBKnowledgeManager {
             fullScanOnStartup: (process.env.TDB_KNOWLEDGE_FULL_SCAN_ON_STARTUP || 'true').toLowerCase() === 'true',
             batchWindow: parseInt(process.env.TDB_KNOWLEDGE_BATCH_WINDOW_MS, 10) || 3000,
             maxBatchSize: parseInt(process.env.TDB_KNOWLEDGE_MAX_BATCH_SIZE, 10) || 20,
+            queuePollIntervalMs: parseInt(process.env.TDB_KNOWLEDGE_QUEUE_POLL_INTERVAL_MS, 10) || 2000,
+            queueLeaseMs: parseInt(process.env.TDB_KNOWLEDGE_QUEUE_LEASE_MS, 10) || 10 * 60 * 1000,
+            queueMaxRetries: parseInt(process.env.TDB_KNOWLEDGE_QUEUE_MAX_RETRIES, 10) || 5,
+            embeddingBatchSize: parseInt(process.env.TDB_KNOWLEDGE_EMBEDDING_BATCH_SIZE, 10) || 16,
+            flushEveryFiles: parseInt(process.env.TDB_KNOWLEDGE_FLUSH_EVERY_FILES, 10) || 10,
+            buildTextIndexEveryFiles: parseInt(process.env.TDB_KNOWLEDGE_BUILD_TEXT_INDEX_EVERY_FILES, 10) || 25,
             extensions: splitList(process.env.TDB_KNOWLEDGE_EXTENSIONS, ['.md', '.txt', '.json', '.html']).map(normalizeExt).filter(Boolean),
             excludeFolders: splitList(process.env.TDB_KNOWLEDGE_EXCLUDE_FOLDERS, ['TDBdocs']),
             ignorePrefixes: splitList(process.env.TDB_KNOWLEDGE_IGNORE_PREFIXES, []),
@@ -71,10 +77,14 @@ class TDBKnowledgeManager {
         this.initialized = false;
         this.metaDb = null;
         this.libs = new Map();
-        this.pendingFiles = new Set();
-        this.fileRetryCount = new Map();
+        this.pendingFiles = new Set(); // 兼容旧字段：可靠队列启用后不再承载大规模扫描任务
+        this.fileRetryCount = new Map(); // 兼容旧字段：重试状态已迁移到 ingest_queue
         this.batchTimer = null;
+        this.queueTimer = null;
         this.isProcessing = false;
+        this.isQueueWorkerRunning = false;
+        this.processedSinceFlush = 0;
+        this.processedSinceTextIndexBuild = 0;
         this.watcher = null;
         this.watcherType = null;
         this.safetyWatcher = null;
@@ -103,9 +113,11 @@ class TDBKnowledgeManager {
         this.metaDb.pragma('journal_mode = WAL');
         this.metaDb.pragma('synchronous = NORMAL');
         this._initSchema();
+        this._recoverStaleQueueJobs();
 
         this._startWatcher();
         if (this.config.fullScanOnStartup) this._scanInitialFiles();
+        this._startQueueWorker();
         this._startIdleEvictor();
 
         this.initialized = true;
@@ -134,10 +146,45 @@ class TDBKnowledgeManager {
                 checksum TEXT NOT NULL,
                 UNIQUE(library, path, chunk_index)
             );
+            CREATE TABLE IF NOT EXISTS ingest_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL DEFAULT 'upsert',
+                library TEXT NOT NULL,
+                path TEXT NOT NULL,
+                abs_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                priority INTEGER NOT NULL DEFAULT 0,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                locked_at INTEGER,
+                next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(action, library, path)
+            );
             CREATE INDEX IF NOT EXISTS idx_tdb_files_library ON files(library);
             CREATE INDEX IF NOT EXISTS idx_tdb_chunks_file ON chunks(library, path);
             CREATE INDEX IF NOT EXISTS idx_tdb_chunks_node ON chunks(node_id);
+            CREATE INDEX IF NOT EXISTS idx_tdb_ingest_queue_status ON ingest_queue(status, next_attempt_at, priority, id);
+            CREATE INDEX IF NOT EXISTS idx_tdb_ingest_queue_file ON ingest_queue(library, path);
         `);
+    }
+
+    _recoverStaleQueueJobs() {
+        const now = Date.now();
+        const staleBefore = now - this.config.queueLeaseMs;
+        const result = this.metaDb.prepare(`
+            UPDATE ingest_queue
+            SET status = 'pending',
+                locked_at = NULL,
+                next_attempt_at = ?,
+                updated_at = ?
+            WHERE status = 'processing'
+              AND (locked_at IS NULL OR locked_at < ?)
+        `).run(now, now, staleBefore);
+        if (result.changes > 0) {
+            console.warn(`[TDBKnowledge] ♻️ Recovered ${result.changes} stale ingest job(s).`);
+        }
     }
 
     _resolveLibrary(absPath) {
@@ -266,6 +313,17 @@ class TDBKnowledgeManager {
     }
 
     _openTriviumDb(dbPath) {
+        const lockPath = dbPath + '.lock';
+        if (fsSync.existsSync(lockPath)) {
+            console.warn(`[TDBKnowledge] ⚠️ Found TriviumDB lock, trying cleanup: ${lockPath}`);
+            try {
+                fsSync.unlinkSync(lockPath);
+                console.log('[TDBKnowledge] 🧹 TriviumDB lock removed.');
+            } catch (e) {
+                console.warn(`[TDBKnowledge] Lock cleanup skipped: ${e.message}`);
+            }
+        }
+
         try {
             return new TriviumDB(dbPath, this.config.dimension, 'f32', this.config.syncMode);
         } catch (e1) {
@@ -280,7 +338,6 @@ class TDBKnowledgeManager {
             }
         }
     }
-
     _callDb(db, methodNames, args = [], fallback = undefined) {
         for (const name of methodNames) {
             if (typeof db[name] === 'function') return db[name](...args);
@@ -296,58 +353,204 @@ class TDBKnowledgeManager {
     _queueFile(filePath, eventVersion = null) {
         const normalizedPath = this._normalizeFilePath(filePath);
         if (!this._isIndexable(normalizedPath)) return;
-        const version = eventVersion || this._bumpFileEventVersion(normalizedPath);
-        if (!this._isCurrentFileEvent(normalizedPath, version)) return;
-        this.pendingFiles.add(normalizedPath);
-        this.pendingFileVersions.set(normalizedPath, version);
-        if (this.pendingFiles.size >= this.config.maxBatchSize) {
-            this._flushBatch();
-        } else {
-            this._scheduleBatch();
-        }
+        if (eventVersion && !this._isCurrentFileEvent(normalizedPath, eventVersion)) return;
+        this._enqueueIngestJob('upsert', normalizedPath);
     }
 
-    _scheduleBatch() {
+    _queueDeleteFile(filePath, eventVersion = null) {
+        const normalizedPath = this._normalizeFilePath(filePath);
+        if (!this._isIndexable(normalizedPath)) return;
+        if (eventVersion && !this._isCurrentFileEvent(normalizedPath, eventVersion)) return;
+        this._enqueueIngestJob('delete', normalizedPath, { priority: 10 });
+    }
+
+    _enqueueIngestJob(action, filePath, options = {}) {
+        if (!this.metaDb) return;
+        const normalizedPath = this._normalizeFilePath(filePath);
+        const { library, relPath } = this._resolveLibrary(normalizedPath);
+        const now = Date.now();
+        const priority = Number.isFinite(options.priority) ? options.priority : 0;
+
+        this.metaDb.prepare(`
+            INSERT INTO ingest_queue (
+                action, library, path, abs_path, status, priority, retry_count,
+                last_error, locked_at, next_attempt_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'pending', ?, 0, NULL, NULL, ?, ?, ?)
+            ON CONFLICT(action, library, path) DO UPDATE SET
+                abs_path = excluded.abs_path,
+                status = 'pending',
+                priority = MAX(priority, excluded.priority),
+                last_error = NULL,
+                locked_at = NULL,
+                next_attempt_at = excluded.next_attempt_at,
+                updated_at = excluded.updated_at
+        `).run(action, library, relPath, normalizedPath, priority, now, now, now);
+
+        this._scheduleBatch();
+    }
+
+    _scheduleBatch(delayMs = this.config.batchWindow) {
         if (this.batchTimer) clearTimeout(this.batchTimer);
-        this.batchTimer = setTimeout(() => this._flushBatch(), this.config.batchWindow);
+        this.batchTimer = setTimeout(() => this._flushBatch(), Math.max(0, delayMs));
         if (this.batchTimer.unref) this.batchTimer.unref();
     }
 
     async _flushBatch() {
-        if (this.isProcessing || this.pendingFiles.size === 0) return;
+        return this._runQueueWorker();
+    }
+
+    _startQueueWorker() {
+        if (this.queueTimer) return;
+        this.queueTimer = setInterval(() => {
+            this._runQueueWorker().catch(e => {
+                console.warn('[TDBKnowledge] Queue worker tick failed:', e.message);
+            });
+        }, Math.max(500, this.config.queuePollIntervalMs));
+        if (typeof this.queueTimer.unref === 'function') this.queueTimer.unref();
+        this._scheduleBatch(0);
+        console.log(`[TDBKnowledge] 📦 Reliable ingest queue enabled. batch=${this.config.maxBatchSize}, poll=${this.config.queuePollIntervalMs}ms`);
+    }
+
+    _claimQueueJobs() {
+        const now = Date.now();
+        const staleBefore = now - this.config.queueLeaseMs;
+        return this.metaDb.transaction(() => {
+            this.metaDb.prepare(`
+                UPDATE ingest_queue
+                SET status = 'pending',
+                    locked_at = NULL,
+                    next_attempt_at = ?,
+                    updated_at = ?
+                WHERE status = 'processing'
+                  AND (locked_at IS NULL OR locked_at < ?)
+            `).run(now, now, staleBefore);
+
+            const jobs = this.metaDb.prepare(`
+                SELECT *
+                FROM ingest_queue
+                WHERE (status = 'pending' OR status = 'retry')
+                  AND next_attempt_at <= ?
+                ORDER BY priority DESC, updated_at ASC, id ASC
+                LIMIT ?
+            `).all(now, this.config.maxBatchSize);
+
+            const mark = this.metaDb.prepare(`
+                UPDATE ingest_queue
+                SET status = 'processing',
+                    locked_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+            `);
+            for (const job of jobs) mark.run(now, now, job.id);
+            return jobs;
+        })();
+    }
+
+    _completeQueueJob(job) {
+        this.metaDb.prepare('DELETE FROM ingest_queue WHERE id = ?').run(job.id);
+    }
+
+    _failQueueJob(job, error) {
+        const retryCount = (job.retry_count || 0) + 1;
+        const now = Date.now();
+        const message = String(error?.message || error || 'Unknown error').slice(0, 1000);
+        if (retryCount >= this.config.queueMaxRetries) {
+            this.metaDb.prepare(`
+                UPDATE ingest_queue
+                SET status = 'failed',
+                    retry_count = ?,
+                    last_error = ?,
+                    locked_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+            `).run(retryCount, message, now, job.id);
+            console.error(`[TDBKnowledge] ⛔ Ingest job failed permanently (${job.action} ${job.path}): ${message}`);
+            return;
+        }
+
+        const delay = Math.min(60 * 60 * 1000, 1000 * Math.pow(2, retryCount));
+        this.metaDb.prepare(`
+            UPDATE ingest_queue
+            SET status = 'retry',
+                retry_count = ?,
+                last_error = ?,
+                locked_at = NULL,
+                next_attempt_at = ?,
+                updated_at = ?
+            WHERE id = ?
+        `).run(retryCount, message, now + delay, now, job.id);
+        console.warn(`[TDBKnowledge] ⚠️ Ingest job retry ${retryCount}/${this.config.queueMaxRetries}: ${job.action} ${job.path} (${message})`);
+    }
+
+    async _runQueueWorker() {
+        if (!this.metaDb || this.isQueueWorkerRunning) return;
+        this.isQueueWorkerRunning = true;
         this.isProcessing = true;
-        const batchFiles = Array.from(this.pendingFiles).slice(0, this.config.maxBatchSize);
-        const batchVersions = new Map(batchFiles.map(filePath => [filePath, this.pendingFileVersions.get(filePath) || this._getFileEventVersion(filePath)]));
-        if (this.batchTimer) clearTimeout(this.batchTimer);
+        if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+        }
 
         try {
-            for (const filePath of batchFiles) {
-                const eventVersion = batchVersions.get(filePath);
-                try {
-                    await this.upsertFile(filePath, { eventVersion });
-                    if (this.pendingFileVersions.get(filePath) === eventVersion) {
-                        this.pendingFiles.delete(filePath);
-                        this.pendingFileVersions.delete(filePath);
-                        this.fileRetryCount.delete(filePath);
-                    }
-                } catch (e) {
-                    const count = (this.fileRetryCount.get(filePath) || 0) + 1;
-                    if (count >= 3) {
-                        console.error(`[TDBKnowledge] ⛔ Failed 3 times, dropping file from queue: ${filePath}`, e.message);
-                        if (this.pendingFileVersions.get(filePath) === eventVersion) {
-                            this.pendingFiles.delete(filePath);
-                            this.pendingFileVersions.delete(filePath);
-                            this.fileRetryCount.delete(filePath);
+            while (true) {
+                const jobs = this._claimQueueJobs();
+                if (jobs.length === 0) break;
+
+                for (const job of jobs) {
+                    try {
+                        if (job.action === 'delete') {
+                            await this._processDeleteJob(job);
+                        } else {
+                            await this._processUpsertJob(job);
                         }
-                    } else {
-                        this.fileRetryCount.set(filePath, count);
-                        console.warn(`[TDBKnowledge] ⚠️ File retry ${count}/3: ${filePath}`, e.message);
+                        this._completeQueueJob(job);
+                    } catch (e) {
+                        this._failQueueJob(job, e);
                     }
                 }
+
+                if (jobs.length < this.config.maxBatchSize) break;
             }
         } finally {
             this.isProcessing = false;
-            if (this.pendingFiles.size > 0) setImmediate(() => this._flushBatch());
+            this.isQueueWorkerRunning = false;
+        }
+    }
+
+    async _processUpsertJob(job) {
+        const normalizedPath = this._normalizeFilePath(job.abs_path);
+        try {
+            await fs.access(normalizedPath);
+        } catch (e) {
+            await this._deleteFileUnlocked(normalizedPath);
+            return;
+        }
+        await this.upsertFile(normalizedPath);
+        this._afterSuccessfulIngest(job.library);
+    }
+
+    async _processDeleteJob(job) {
+        await this._deleteFileUnlocked(this._normalizeFilePath(job.abs_path));
+        this._afterSuccessfulIngest(job.library);
+    }
+
+    _afterSuccessfulIngest(library) {
+        const safeName = safeLibraryName(library);
+        const handle = this.libs.get(safeName);
+        if (!handle) return;
+
+        this.processedSinceFlush++;
+        this.processedSinceTextIndexBuild++;
+
+        if (this.config.buildTextIndexEveryFiles > 0 && this.processedSinceTextIndexBuild >= this.config.buildTextIndexEveryFiles) {
+            this._safeBuildTextIndex(handle.db);
+            this.processedSinceTextIndexBuild = 0;
+        }
+
+        if (this.config.flushEveryFiles > 0 && this.processedSinceFlush >= this.config.flushEveryFiles) {
+            this._safeFlush(handle.db);
+            this.processedSinceFlush = 0;
         }
     }
 
@@ -393,12 +596,12 @@ class TDBKnowledgeManager {
             const chunks = chunkText(content).filter(Boolean);
             if (chunks.length === 0) return;
 
-        const textsForEmbedding = [path.basename(relPath), ...chunks];
-        const vectors = await getEmbeddingsBatch(textsForEmbedding, {
-            apiKey: this.config.apiKey,
-            apiUrl: this.config.apiUrl,
-            model: this.config.model
-        });
+            const now = Math.floor(Date.now() / 1000);
+            const [docVector] = await getEmbeddingsBatch([path.basename(relPath)], {
+                apiKey: this.config.apiKey,
+                apiUrl: this.config.apiUrl,
+                model: this.config.model
+            });
 
             if (!this._isCurrentFileEvent(normalizedPath, eventVersion)) return;
 
@@ -415,55 +618,60 @@ class TDBKnowledgeManager {
                 return;
             }
 
-        const docVector = vectors[0];
-        const chunkVectors = vectors.slice(1);
-        const now = Math.floor(Date.now() / 1000);
-
-        let docNodeId = null;
-        if (docVector) {
-            docNodeId = this._insertNode(handle.db, docVector, {
-                type: 'document',
-                library,
-                source_path: relPath,
-                title: path.basename(relPath),
-                checksum,
-                chunk_count: chunks.length,
-                mtime: stats.mtimeMs,
-                size: stats.size,
-                updated_at: now
-            });
-        }
-
-            const chunkRows = [];
-            for (let i = 0; i < chunks.length; i++) {
-                const vector = chunkVectors[i];
-                if (!vector) continue;
-
-                const text = chunks[i];
-                const nodeId = this._insertNode(handle.db, vector, {
-                    type: 'chunk',
+            let docNodeId = null;
+            if (docVector) {
+                docNodeId = this._insertNode(handle.db, docVector, {
+                    type: 'document',
                     library,
                     source_path: relPath,
-                    chunk_index: i,
-                    text_preview: text.slice(0, 500),
-                    checksum: crypto.createHash('sha256').update(text).digest('hex'),
+                    title: path.basename(relPath),
+                    checksum,
+                    chunk_count: chunks.length,
+                    mtime: stats.mtimeMs,
+                    size: stats.size,
                     updated_at: now
                 });
-
-                chunkRows.push({ index: i, nodeId, checksum: crypto.createHash('sha256').update(text).digest('hex') });
-
-                if (docNodeId != null) this._safeLink(handle.db, docNodeId, nodeId, 'contains', 1.0);
-                if (chunkRows.length > 1) {
-                    const prev = chunkRows[chunkRows.length - 2];
-                    this._safeLink(handle.db, prev.nodeId, nodeId, 'next', 0.7);
-                    this._safeLink(handle.db, nodeId, prev.nodeId, 'prev', 0.7);
-                }
-
-                this._safeIndexText(handle.db, nodeId, text);
             }
 
-            this._safeBuildTextIndex(handle.db);
-            this._safeFlush(handle.db);
+            const chunkRows = [];
+            const embeddingBatchSize = Math.max(1, this.config.embeddingBatchSize);
+            for (let start = 0; start < chunks.length; start += embeddingBatchSize) {
+                const batchChunks = chunks.slice(start, start + embeddingBatchSize);
+                const vectors = await getEmbeddingsBatch(batchChunks, {
+                    apiKey: this.config.apiKey,
+                    apiUrl: this.config.apiUrl,
+                    model: this.config.model
+                });
+
+                for (let offset = 0; offset < batchChunks.length; offset++) {
+                    const i = start + offset;
+                    const vector = vectors[offset];
+                    if (!vector) continue;
+
+                    const text = chunks[i];
+                    const chunkChecksum = crypto.createHash('sha256').update(text).digest('hex');
+                    const nodeId = this._insertNode(handle.db, vector, {
+                        type: 'chunk',
+                        library,
+                        source_path: relPath,
+                        chunk_index: i,
+                        text_preview: text.slice(0, 500),
+                        checksum: chunkChecksum,
+                        updated_at: now
+                    });
+
+                    chunkRows.push({ index: i, nodeId, checksum: chunkChecksum });
+
+                    if (docNodeId != null) this._safeLink(handle.db, docNodeId, nodeId, 'contains', 1.0);
+                    if (chunkRows.length > 1) {
+                        const prev = chunkRows[chunkRows.length - 2];
+                        this._safeLink(handle.db, prev.nodeId, nodeId, 'next', 0.7);
+                        this._safeLink(handle.db, nodeId, prev.nodeId, 'prev', 0.7);
+                    }
+
+                    this._safeIndexText(handle.db, nodeId, text);
+                }
+            }
 
             const tx = this.metaDb.transaction(() => {
                 this.metaDb.prepare(`
@@ -510,9 +718,6 @@ class TDBKnowledgeManager {
         if (!this._isIndexable(normalizedPath)) return;
         const { library } = this._resolveLibrary(normalizedPath);
         const eventVersion = options.eventVersion || this._bumpFileEventVersion(normalizedPath);
-        this.pendingFiles.delete(normalizedPath);
-        this.pendingFileVersions.delete(normalizedPath);
-        this.fileRetryCount.delete(normalizedPath);
         return this._withLibraryQueue(library, async () => this._deleteFileUnlocked(normalizedPath, { eventVersion }));
     }
 
@@ -874,9 +1079,7 @@ class TDBKnowledgeManager {
 
         const eventVersion = this._bumpFileEventVersion(normalizedPath);
         if (event === 'unlink') {
-            this.deleteFile(normalizedPath, { eventVersion }).catch(e => {
-                console.warn(`[TDBKnowledge] Delete event failed for "${normalizedPath}":`, e.message);
-            });
+            this._queueDeleteFile(normalizedPath, eventVersion);
             return;
         }
 
@@ -907,6 +1110,10 @@ class TDBKnowledgeManager {
     async shutdown() {
         console.log('[TDBKnowledge] shutting down...');
         if (this.batchTimer) clearTimeout(this.batchTimer);
+        if (this.queueTimer) {
+            clearInterval(this.queueTimer);
+            this.queueTimer = null;
+        }
         if (this.idleEvictor) {
             clearInterval(this.idleEvictor);
             this.idleEvictor = null;
