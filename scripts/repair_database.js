@@ -24,7 +24,7 @@ try {
 // This function must be an exact copy of the one in KnowledgeBaseManager.js
 function _prepareTextForEmbedding(text) {
     const decorativeEmojis = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu;
-    let cleaned = text.replace(decorativeEmojis, ' ').replace(/\s+/g, ' ').trim();
+    let cleaned = text.replace(decorativeEmojis, ' ').replace(/<\|([^|]+)\|>/g, '$1').replace(/\s+/g, ' ').trim();
     return cleaned.length === 0 ? '[EMPTY_CONTENT]' : cleaned;
 }
 
