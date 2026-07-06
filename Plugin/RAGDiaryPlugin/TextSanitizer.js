@@ -174,6 +174,7 @@ function sanitizeForEmbedding(content, role) {
     processed = stripHtml(processed);
     processed = stripEmoji(processed);
     processed = stripToolMarkers(processed);
+    processed = processed.replace(/<\|([^|]+)\|>/g, '$1'); // Strip LLM special token delimiters (<|...|>) to prevent embedding API rejection
 
     return processed.trim();
 }

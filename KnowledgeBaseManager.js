@@ -2285,6 +2285,7 @@ class KnowledgeBaseManager {
         const decorativeEmojis = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu;
         // 1. 移除表情符号, 2. 合并水平空格, 3. 移除换行符周围的空格, 4. 合并多个换行符, 5. 清理首尾
         let cleaned = text.replace(decorativeEmojis, ' ')
+            .replace(/<\|([^|]+)\|>/g, '$1')
             .replace(/[ \t]+/g, ' ')
             .replace(/ *\n */g, '\n')
             .replace(/\n{2,}/g, '\n')
