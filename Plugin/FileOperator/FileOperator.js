@@ -3,7 +3,7 @@ const fsSync = require('fs');
 const path = require('path');
 const glob = require('glob');
 const { minimatch } = require('minimatch');
-const pdf = require('pdf-parse');
+const { PDFParse } = require('pdf-parse');
 const mammoth = require('mammoth');
 const ExcelJS = require('exceljs');
 const axios = require('axios');
@@ -486,9 +486,14 @@ async function readFile(filePath, encoding = 'utf8', lines) {
     const videoExtensions = ['.mp4', '.webm', '.mov'];
 
     if (extension === '.pdf') {
-      const data = await pdf(fileBuffer);
-      content = data.text;
-      isExtracted = true;
+      const parser = new PDFParse({ data: fileBuffer });
+      try {
+        const data = await parser.getText();
+        content = data.text;
+        isExtracted = true;
+      } finally {
+        await parser.destroy();
+      }
     } else if (extension === '.docx') {
       const { value } = await mammoth.extractRawText({ buffer: fileBuffer });
       content = value;
