@@ -381,6 +381,7 @@ class TDBKnowledgeManager {
                 abs_path = excluded.abs_path,
                 status = 'pending',
                 priority = MAX(priority, excluded.priority),
+                retry_count = 0,
                 last_error = NULL,
                 locked_at = NULL,
                 next_attempt_at = excluded.next_attempt_at,
