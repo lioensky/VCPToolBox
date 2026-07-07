@@ -130,6 +130,25 @@ async function ensureServiceStarted() {
     }
 
     serviceReadyPromise = (async () => {
+
+        // Pre-probe: check if an existing service from a previous instance is already running.
+        // This handles orphaned Rust binaries left behind when PM2 force-kills Node.js
+        // before gracefulShutdown() can call our shutdown() method.
+        try {
+            const existing = await postJson({
+                query: '__daily_note_searcher_healthcheck__',
+                root_path: '.',
+                allowed_extensions: 'unlikely_ext',
+                max_results: 1
+            }, 2000);
+            if (existing && (existing.status === 'success' || existing.status === 'error')) {
+                console.log(`[DailyNoteSearcher Service] Reusing existing service on port ${serviceConfig.port}`);
+                return;
+            }
+        } catch (_) {
+            // No existing service found, proceed to spawn a new one
+        }
+
         serviceConfig.executablePath = serviceConfig.executablePath || await findExecutable();
 
         const env = {
