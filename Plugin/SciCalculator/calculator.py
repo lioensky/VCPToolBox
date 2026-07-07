@@ -582,8 +582,12 @@ def main():
             expressions = split_expressions(expression_input)
             original_expressions = list(expressions)
 
-        # Clean expressions for evaluation (e.g., remove "1. " prefixes)
-        cleaned_expressions = [re.sub(r'^\s*\d+[\.\)]\s*', '', expr).strip() for expr in expressions]
+        # Clean numbering prefixes only for multi-expression inputs (e.g., "1. 2+3, 2. 4*5").
+        # Single expressions are kept intact to avoid silently rewriting valid math like "3.9 / 500 * 1000".
+        if len(expressions) > 1:
+            cleaned_expressions = [re.sub(r'^\s*\d+[\.\)]\s+', '', expr).strip() for expr in expressions]
+        else:
+            cleaned_expressions = [expr.strip() for expr in expressions]
         
         # Evaluate each non-empty expression
         results = [evaluate(expr) for expr in cleaned_expressions if expr]

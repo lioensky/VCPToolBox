@@ -1,7 +1,7 @@
 {
   "manifestVersion": "1.0.0",
   "name": "SciCalculator",
-  "version": "1.1.1", 
+  "version": "1.1.4", 
   "displayName": "科学计算器",
   "description": "执行数学表达式计算。AI应使用特定格式请求此工具。",
   "author": "UserProvided (Adapted by Roo)",
