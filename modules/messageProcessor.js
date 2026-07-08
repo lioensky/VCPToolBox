@@ -616,7 +616,7 @@ async function replaceOtherVariables(text, model, role, context) {
         for (const placeholder of uniquePlaceholders) {
             // 从 {{SarPrompt4}} 中提取 SarPrompt4
             const promptKey = placeholder.substring(2, placeholder.length - 2);
-            
+
             // 从 sarPromptManager 中查找匹配的 promptKey
             const prompts = sarPromptManager.getAllPrompts();
             const group = prompts.find(g => g.promptKey === promptKey);
@@ -624,8 +624,9 @@ async function replaceOtherVariables(text, model, role, context) {
 
             if (group && group.models && group.content) {
                 const modelList = group.models.map(m => m.trim().toLowerCase());
-                // 检查当前模型是否在列表中
-                if (model && modelList.includes(model.toLowerCase())) {
+                const matchMode = group.matchMode || 'exact';
+                // 检查当前模型是否匹配（支持exact/includes两种模式）
+                if (model && sarPromptManager.isModelMatch(modelList, model.toLowerCase(), matchMode)) {
                     let promptValue = group.content;
                     // 模型匹配，准备注入的文本
                     if (typeof promptValue === 'string' && promptValue.toLowerCase().endsWith('.txt')) {
@@ -644,6 +645,35 @@ async function replaceOtherVariables(text, model, role, context) {
             // 对当前文本中所有匹配的占位符进行替换
             const placeholderRegExp = new RegExp(placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g');
             processedText = processedText.replace(placeholderRegExp, replacementText);
+        }
+
+        // === {{SarPromptAll}} 批量模型匹配注入 ===
+        if (processedText.includes('{{SarPromptAll}}')) {
+            const allPrompts = sarPromptManager.getAllPrompts();
+            const matchedContents = [];
+
+            for (const group of allPrompts) {
+                if (!group.models || !group.content) continue;
+                const modelList = group.models.map(m => m.trim().toLowerCase());
+                const matchMode = group.matchMode || 'exact';
+
+                if (model && sarPromptManager.isModelMatch(modelList, model.toLowerCase(), matchMode)) {
+                    let promptValue = group.content;
+                    // .txt 文件引用支持（复用现有模式）
+                    if (typeof promptValue === 'string' && promptValue.toLowerCase().endsWith('.txt')) {
+                        const fileContent = await tvsManager.getContent(promptValue);
+                        if (fileContent.startsWith('[变量文件') || fileContent.startsWith('[处理变量文件')) {
+                            promptValue = fileContent;
+                        } else {
+                            promptValue = await replaceOtherVariables(fileContent, model, role, context);
+                        }
+                    }
+                    matchedContents.push(promptValue);
+                }
+            }
+
+            const sarAllText = matchedContents.join('\n');
+            processedText = processedText.replace(/\{\{SarPromptAll\}\}/g, sarAllText);
         }
     }
 
