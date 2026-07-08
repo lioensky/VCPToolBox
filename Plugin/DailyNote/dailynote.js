@@ -94,6 +94,166 @@ function isPathWithinBase(targetPath, basePath) {
         resolvedTarget.startsWith(resolvedBase + path.sep);
 }
 
+// --- Folder Resolution Helpers ---
+const FOLDER_NOISE_WORDS = [
+    '日记本'
+];
+
+function normalizeDiaryFolderAlias(name) {
+    if (!name || typeof name !== 'string') {
+        return '';
+    }
+
+    let normalized = name.trim();
+    for (const word of FOLDER_NOISE_WORDS) {
+        normalized = normalized.split(word).join('');
+    }
+
+    normalized = normalized
+        .replace(/[\\/:*?"<>|]/g, '')
+        .replace(/[\x00-\x1f\x7f]/g, '')
+        .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
+        .replace(/[\u200b-\u200d\ufeff]/g, '')
+        .replace(/\s+/g, '')
+        .replace(/[._]+$/g, '')
+        .trim();
+
+    return normalized;
+}
+
+function calculateFolderMatchScore(requestedAlias, existingAlias) {
+    if (!requestedAlias || !existingAlias) {
+        return 0;
+    }
+
+    if (requestedAlias === existingAlias) {
+        return 100000 + existingAlias.length;
+    }
+
+    if (requestedAlias.includes(existingAlias)) {
+        return 50000 + existingAlias.length;
+    }
+
+    if (existingAlias.includes(requestedAlias)) {
+        return 40000 + requestedAlias.length;
+    }
+
+    return 0;
+}
+
+function isPublicFolderAlias(alias) {
+    return alias === '公共' || alias.startsWith('公共的') || alias.startsWith('公共_');
+}
+
+function isFolderMatchAllowedByOwner(requestedAlias, existingAlias, ownerAlias) {
+    if (!ownerAlias) {
+        return true;
+    }
+
+    const requestedIsPublic = isPublicFolderAlias(requestedAlias);
+    const existingIsPublic = isPublicFolderAlias(existingAlias);
+
+    if (requestedIsPublic || existingIsPublic) {
+        return requestedIsPublic && existingIsPublic;
+    }
+
+    return existingAlias === ownerAlias || existingAlias.startsWith(ownerAlias + '的');
+}
+
+async function resolveDiaryFolderName(folderName, options = {}) {
+    const {
+        allowFuzzyExisting = true,
+        fallbackName = 'Untitled',
+        logContext = 'folder',
+        ownerName = ''
+    } = options;
+
+    const rawName = typeof folderName === 'string' ? folderName.trim() : '';
+    const aliasName = normalizeDiaryFolderAlias(rawName);
+    const ownerAlias = normalizeDiaryFolderAlias(ownerName);
+    const candidateName = aliasName || rawName || fallbackName;
+    const sanitizedCandidate = sanitizePathComponent(candidateName);
+
+    if (!allowFuzzyExisting) {
+        return {
+            folderName: sanitizedCandidate,
+            matchedExisting: false,
+            requestedName: rawName,
+            normalizedAlias: aliasName
+        };
+    }
+
+    let allDirEntries = [];
+    try {
+        allDirEntries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            debugLog(`resolveDiaryFolderName: root does not exist yet, using sanitized ${logContext}: ${sanitizedCandidate}`);
+            return {
+                folderName: sanitizedCandidate,
+                matchedExisting: false,
+                requestedName: rawName,
+                normalizedAlias: aliasName
+            };
+        }
+        throw error;
+    }
+
+    let bestMatch = null;
+    for (const dirEntry of allDirEntries) {
+        if (!dirEntry.isDirectory() || IGNORED_FOLDERS.includes(dirEntry.name)) {
+            continue;
+        }
+
+        const dirPath = path.join(dailyNoteRootPath, dirEntry.name);
+        if (!isPathWithinBase(dirPath, dailyNoteRootPath)) {
+            debugLog(`resolveDiaryFolderName: skipping unsafe directory: ${dirPath}`);
+            continue;
+        }
+
+        const existingAlias = normalizeDiaryFolderAlias(dirEntry.name);
+        if (!isFolderMatchAllowedByOwner(aliasName, existingAlias, ownerAlias)) {
+            debugLog(`resolveDiaryFolderName: owner guard skipped folder "${dirEntry.name}" for requested "${rawName}" and owner "${ownerName}"`);
+            continue;
+        }
+
+        const score = calculateFolderMatchScore(aliasName, existingAlias);
+        if (
+            score > 0 &&
+            (!bestMatch ||
+                score > bestMatch.score ||
+                (score === bestMatch.score && dirEntry.name.length < bestMatch.name.length))
+        ) {
+            bestMatch = {
+                name: dirEntry.name,
+                score,
+                alias: existingAlias
+            };
+        }
+    }
+
+    if (bestMatch) {
+        debugLog(
+            `Resolved ${logContext} "${rawName}" (alias: "${aliasName}") to existing folder "${bestMatch.name}" (alias: "${bestMatch.alias}", score: ${bestMatch.score})`
+        );
+        return {
+            folderName: bestMatch.name,
+            matchedExisting: true,
+            requestedName: rawName,
+            normalizedAlias: aliasName,
+            matchedAlias: bestMatch.alias
+        };
+    }
+
+    debugLog(`No existing folder matched ${logContext} "${rawName}" (alias: "${aliasName}"), using new folder "${sanitizedCandidate}"`);
+    return {
+        folderName: sanitizedCandidate,
+        matchedExisting: false,
+        requestedName: rawName,
+        normalizedAlias: aliasName
+    };
+}
+
 // --- Tag Processing Functions (for 'create' command) ---
 
 function detectTagLine(content) {
@@ -459,9 +619,15 @@ async function handleCreateCommand(args) {
             debugLog(`No tag detected. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
         }
 
-        const sanitizedFolderName = sanitizePathComponent(folderName);
+        const folderResolution = await resolveDiaryFolderName(folderName, {
+            allowFuzzyExisting: true,
+            fallbackName: actualMaidName || 'Untitled',
+            logContext: 'create folder',
+            ownerName: actualMaidName
+        });
+        const sanitizedFolderName = folderResolution.folderName;
         if (folderName !== sanitizedFolderName) {
-            debugLog(`Sanitized folder name from "${folderName}" to "${sanitizedFolderName}"`);
+            debugLog(`Resolved folder name from "${folderName}" to "${sanitizedFolderName}"`);
         }
 
         // 检查是否尝试写入被忽略的文件夹
@@ -541,34 +707,78 @@ async function handleCreateCommand(args) {
 
 // --- Fuzzy Diff Utilities (for 'update' command failure diagnostics) ---
 
+function normalizeLooseMatchChar(char) {
+    switch (char) {
+        case '\u201c': // “
+        case '\u201d': // ”
+        case '\u201e': // „
+        case '\u201f': // ‟
+        case '\uff02': // ＂
+            return '"';
+        case '\u2018': // ‘
+        case '\u2019': // ’
+        case '\u201a': // ‚
+        case '\u201b': // ‛
+        case '\uff07': // ＇
+            return "'";
+        case '\uff08': // （
+            return '(';
+        case '\uff09': // ）
+            return ')';
+        case '\uff0c': // ，
+            return ',';
+        case '\u3001': // 、
+            return ',';
+        case '\uff1a': // ：
+            return ':';
+        case '\uff1b': // ；
+            return ';';
+        case '\uff01': // ！
+            return '!';
+        case '\uff1f': // ？
+            return '?';
+        case '\u3002': // 。
+            return '.';
+        case '\uff0e': // ．
+            return '.';
+        case '\u2026': // …
+            return '...';
+        case '\u2014': // —
+        case '\u2013': // –
+            return '-';
+        default:
+            return char.toLowerCase();
+    }
+}
+
+function shouldRemoveForLooseMatch(char) {
+    return /\s/.test(char) || char === '\\';
+}
+
 function dehydrate(text) {
-    return text
-        .replace(/\s+/g, '')
-        .replace(/\\/g, '')
-        .replace(/\uff08/g, '(')
-        .replace(/\uff09/g, ')')
-        .toLowerCase();
+    let normalized = '';
+    for (const char of text) {
+        if (shouldRemoveForLooseMatch(char)) {
+            continue;
+        }
+        normalized += normalizeLooseMatchChar(char);
+    }
+    return normalized;
 }
 
 function mapDehydratedIndexToOriginal(content, dehydratedIndex) {
-    const lowerContent = content.toLowerCase();
     let originalIndex = 0;
     let count = 0;
-    while (originalIndex < lowerContent.length) {
-        const char = lowerContent[originalIndex];
-        if (
-            /\s/.test(char) ||
-            char === '\\' ||
-            char === '\uff08' ||
-            char === '\uff09'
-        ) {
+    while (originalIndex < content.length) {
+        const char = content[originalIndex];
+        if (shouldRemoveForLooseMatch(char)) {
             originalIndex++;
             continue;
         }
         if (count === dehydratedIndex) {
             return originalIndex;
         }
-        count++;
+        count += normalizeLooseMatchChar(char).length;
         originalIndex++;
     }
     return originalIndex;
@@ -891,11 +1101,13 @@ async function handleUpdateCommand(args) {
 
         if (folder && typeof folder === 'string' && folder.trim()) {
             // 显式 folder 优先级最高：格式如 folder: 小克的知识, maid: 小克
-            const priorityFolder = sanitizePathComponent(folder.trim());
+            const requestedFolderAlias = normalizeDiaryFolderAlias(folder.trim());
+            const maidOwnerAlias = normalizeDiaryFolderAlias(maid);
             debugLog(
-                `Explicit folder specified for update (sanitized): '${priorityFolder}'`
+                `Explicit folder specified for update. Requested: '${folder.trim()}', alias: '${requestedFolderAlias}', maid owner alias: '${maidOwnerAlias}'`
             );
 
+            let bestFolderMatch = null;
             for (const dirEntry of allDirs) {
                 const dirPath = path.join(dailyNoteRootPath, dirEntry.name);
 
@@ -905,16 +1117,43 @@ async function handleUpdateCommand(args) {
                     continue;
                 }
 
-                if (sanitizePathComponent(dirEntry.name) === priorityFolder) {
-                    priorityDirs.push({ name: dirEntry.name, path: dirPath });
-                } else {
+                const existingAlias = normalizeDiaryFolderAlias(dirEntry.name);
+                if (!isFolderMatchAllowedByOwner(requestedFolderAlias, existingAlias, maidOwnerAlias)) {
+                    debugLog(`Owner guard skipped update folder "${dirEntry.name}" for requested "${folder}" and maid "${maid || ''}"`);
                     otherDirs.push({ name: dirEntry.name, path: dirPath });
+                    continue;
                 }
+
+                const score = calculateFolderMatchScore(requestedFolderAlias, existingAlias);
+                if (
+                    score > 0 &&
+                    (!bestFolderMatch ||
+                        score > bestFolderMatch.score ||
+                        (score === bestFolderMatch.score && dirEntry.name.length < bestFolderMatch.name.length))
+                ) {
+                    bestFolderMatch = {
+                        name: dirEntry.name,
+                        path: dirPath,
+                        score,
+                        alias: existingAlias
+                    };
+                }
+
+                otherDirs.push({ name: dirEntry.name, path: dirPath });
             }
 
-            if (priorityDirs.length === 0) {
+            if (bestFolderMatch) {
+                priorityDirs.push({ name: bestFolderMatch.name, path: bestFolderMatch.path });
+                const duplicateIndex = otherDirs.findIndex((dir) => dir.name === bestFolderMatch.name);
+                if (duplicateIndex !== -1) {
+                    otherDirs.splice(duplicateIndex, 1);
+                }
                 debugLog(
-                    `Explicit folder '${priorityFolder}' not found, will search all folders.`
+                    `Explicit folder '${folder}' resolved to existing folder '${bestFolderMatch.name}' (alias: '${bestFolderMatch.alias}', score: ${bestFolderMatch.score}).`
+                );
+            } else {
+                debugLog(
+                    `Explicit folder '${folder}' did not match existing folders, will search all folders.`
                 );
             }
         } else if (maid) {
@@ -923,11 +1162,14 @@ async function handleUpdateCommand(args) {
 
             if (match) {
                 // 格式: [小克的知识]小克 -> 优先在 '小克的知识' 文件夹找
-                const priorityFolder = sanitizePathComponent(match[1]);
+                const requestedFolderAlias = normalizeDiaryFolderAlias(match[1]);
+                const maidOwnerName = maid.replace(/^\[(.+?)\]/, '').trim();
+                const maidOwnerAlias = normalizeDiaryFolderAlias(maidOwnerName);
                 debugLog(
-                    `Maid specifies priority folder (sanitized): '${priorityFolder}'`
+                    `Maid specifies priority folder. Requested: '${match[1]}', alias: '${requestedFolderAlias}', maid owner alias: '${maidOwnerAlias}'`
                 );
 
+                let bestFolderMatch = null;
                 for (const dirEntry of allDirs) {
                     const dirPath = path.join(dailyNoteRootPath, dirEntry.name);
 
@@ -937,23 +1179,50 @@ async function handleUpdateCommand(args) {
                         continue;
                     }
 
-                    if (sanitizePathComponent(dirEntry.name) === priorityFolder) {
-                        priorityDirs.push({ name: dirEntry.name, path: dirPath });
-                    } else {
+                    const existingAlias = normalizeDiaryFolderAlias(dirEntry.name);
+                    if (!isFolderMatchAllowedByOwner(requestedFolderAlias, existingAlias, maidOwnerAlias)) {
+                        debugLog(`Owner guard skipped maid priority folder "${dirEntry.name}" for requested "${match[1]}" and maid "${maidOwnerName}"`);
                         otherDirs.push({ name: dirEntry.name, path: dirPath });
+                        continue;
                     }
+
+                    const score = calculateFolderMatchScore(requestedFolderAlias, existingAlias);
+                    if (
+                        score > 0 &&
+                        (!bestFolderMatch ||
+                            score > bestFolderMatch.score ||
+                            (score === bestFolderMatch.score && dirEntry.name.length < bestFolderMatch.name.length))
+                    ) {
+                        bestFolderMatch = {
+                            name: dirEntry.name,
+                            path: dirPath,
+                            score,
+                            alias: existingAlias
+                        };
+                    }
+
+                    otherDirs.push({ name: dirEntry.name, path: dirPath });
                 }
 
-                if (priorityDirs.length === 0) {
+                if (bestFolderMatch) {
+                    priorityDirs.push({ name: bestFolderMatch.name, path: bestFolderMatch.path });
+                    const duplicateIndex = otherDirs.findIndex((dir) => dir.name === bestFolderMatch.name);
+                    if (duplicateIndex !== -1) {
+                        otherDirs.splice(duplicateIndex, 1);
+                    }
                     debugLog(
-                        `Priority folder '${priorityFolder}' not found, will search all folders.`
+                        `Maid priority folder '${match[1]}' resolved to existing folder '${bestFolderMatch.name}' (alias: '${bestFolderMatch.alias}', score: ${bestFolderMatch.score}).`
+                    );
+                } else {
+                    debugLog(
+                        `Maid priority folder '${match[1]}' did not match existing folders, will search all folders.`
                     );
                 }
             } else {
                 // 格式: 小克 -> 优先在以 '小克' 开头的文件夹找
-                const sanitizedMaid = sanitizePathComponent(maid);
+                const maidAlias = normalizeDiaryFolderAlias(maid);
                 debugLog(
-                    `Maid specified: '${maid}' (sanitized: '${sanitizedMaid}'). Prioritizing directories starting with this name.`
+                    `Maid specified: '${maid}' (alias: '${maidAlias}'). Prioritizing directories starting with this alias.`
                 );
 
                 for (const dirEntry of allDirs) {
@@ -965,7 +1234,7 @@ async function handleUpdateCommand(args) {
                         continue;
                     }
 
-                    if (sanitizePathComponent(dirEntry.name).startsWith(sanitizedMaid)) {
+                    if (normalizeDiaryFolderAlias(dirEntry.name).startsWith(maidAlias)) {
                         priorityDirs.push({ name: dirEntry.name, path: dirPath });
                     } else {
                         otherDirs.push({ name: dirEntry.name, path: dirPath });
