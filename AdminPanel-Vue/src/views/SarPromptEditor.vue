@@ -105,6 +105,19 @@
             />
           </UiField>
           <UiField
+            label="匹配模式"
+            description="exact: 模型名必须完全一致 | includes: 模型名包含关键词即命中"
+            size="sm"
+          >
+            <select
+              v-model="group.matchMode"
+              style="width: 100%; padding: 6px 10px; border-radius: var(--radius-md); border: 1px solid var(--sarprompt-surface-border); background: color-mix(in srgb, var(--primary-bg) 42%, transparent); color: var(--primary-text); font-size: var(--font-size-body);"
+            >
+              <option value="exact">精确匹配 (exact)</option>
+              <option value="includes">子串包含 (includes)</option>
+            </select>
+          </UiField>
+          <UiField
             label="注入内容"
             description="可直接输入提示词，或填写 TVStxt 目录下的 .txt 文件名。"
             size="sm"
@@ -146,6 +159,7 @@ const fetchSarPrompts = async () => {
     sarPrompts.value = data.map((p) => ({
       ...p,
       modelsInput: p.models.join(", "),
+      matchMode: p.matchMode || "exact",
     }));
   } catch (error) {
     console.error("Failed to fetch SarPrompts:", error);
@@ -160,6 +174,7 @@ const addSarGroup = () => {
     models: [],
     modelsInput: "",
     content: "",
+    matchMode: "exact",
   });
 };
 
@@ -181,10 +196,11 @@ const saveSarPrompts = async () => {
     // Sync all before saving
     sarPrompts.value.forEach((_, i) => syncModelsArray(i));
 
-    const payload = sarPrompts.value.map(({ promptKey, models, content }) => ({
+    const payload = sarPrompts.value.map(({ promptKey, models, content, matchMode }) => ({
       promptKey,
       models,
       content,
+      matchMode: matchMode || "exact",
     }));
     await sarPromptApi.savePrompts(payload);
   } catch (error) {

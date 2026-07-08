@@ -10,6 +10,7 @@ export interface SarPrompt {
   promptKey: string;
   models: string[];
   content: string;
+  matchMode?: 'exact' | 'includes';
 }
 
 export const sarPromptApi = {

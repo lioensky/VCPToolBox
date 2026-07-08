@@ -8,7 +8,7 @@ const SARPROMPT_FILE = path.join(__dirname, '..', 'sarprompt.json');
 
 class SarPromptManager {
     constructor() {
-        this.prompts = []; // Array<{ promptKey: string, models: string[], content: string }>
+        this.prompts = []; // Array<{ promptKey: string, models: string[], content: string, matchMode?: string }>
         this.debugMode = false;
     }
 
@@ -28,16 +28,16 @@ class SarPromptManager {
     async migrateFromEnv() {
         console.log('[SarPromptManager] sarprompt.json not found. Migrating from .env...');
         const migratedPrompts = [];
-        
+
         // Scan for SarPrompt1, SarPrompt2, ...
         // We look up to 100 as a reasonable limit for legacy migration
         for (let i = 1; i <= 100; i++) {
             const promptKey = `SarPrompt${i}`;
             const modelKey = `SarModel${i}`;
-            
+
             const promptValue = process.env[promptKey];
             const modelsValue = process.env[modelKey];
-            
+
             if (promptValue && modelsValue) {
                 const models = modelsValue.split(',').map(m => m.trim()).filter(m => m !== '');
                 migratedPrompts.push({
@@ -105,13 +105,31 @@ class SarPromptManager {
         }
     }
 
+    /**
+     * 模型匹配辅助函数
+     * @param {string[]} modelList - 已toLowerCase的模型名数组
+     * @param {string} normalizedModel - 已toLowerCase的当前模型名
+     * @param {string} matchMode - 'exact'(默认) | 'includes'(子串包含)
+     * @returns {boolean}
+     */
+    isModelMatch(modelList, normalizedModel, matchMode = 'exact') {
+        const filtered = modelList.filter(m => m.length > 0); // 过滤空字符串
+        if (matchMode === 'includes') {
+            return modelList.some(m => normalizedModel.includes(m));
+        }
+        // 默认精确匹配（含未知matchMode值的fallback）
+        return modelList.includes(normalizedModel);
+    }
+
     getSarPrompt(modelName) {
         if (!modelName) return null;
         const normalizedModel = modelName.toLowerCase();
-        
+
         for (const group of this.prompts) {
-            const modelList = group.models.map(m => m.toLowerCase());
-            if (modelList.includes(normalizedModel)) {
+            if (!group.models || group.models.length === 0) continue;
+            const modelList = group.models.map(m => m.trim().toLowerCase());
+            const matchMode = group.matchMode || 'exact';
+            if (this.isModelMatch(modelList, normalizedModel, matchMode)) {
                 return group;
             }
         }
