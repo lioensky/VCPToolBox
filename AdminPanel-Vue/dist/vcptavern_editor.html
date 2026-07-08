@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VCPTavern 上下文注入器</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="vcptavern_editor.css">
+    <script>
+        // 监听来自父窗口的主题变化消息
+        window.addEventListener('message', (event) => {
+            if (event.data && event.data.type === 'themeChange') {
+                const theme = event.data.theme;
+                document.documentElement.setAttribute('data-theme', theme);
+            }
+        });
+
+        // 页面加载时，向父窗口请求当前主题
+        window.addEventListener('DOMContentLoaded', () => {
+            if (window.parent && window.parent !== window) {
+                 window.parent.postMessage({ type: 'requestTheme', for: 'vcptavern' }, '*');
+            } else {
+                // 如果是独立打开，则应用本地存储的主题或默认主题
+                const storedTheme = localStorage.getItem('theme');
+                const prefersDarkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+                if (storedTheme) {
+                    document.documentElement.setAttribute('data-theme', storedTheme);
+                } else {
+                    document.documentElement.setAttribute('data-theme', prefersDarkScheme.matches ? 'dark' : 'light');
+                }
+            }
+        });
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>VCPTavern 上下文注入器</h1>
+        <div class="preset-manager">
+            <label for="preset-select">选择预设:</label>
+            <select id="preset-select"></select>
+            <button id="load-preset">加载</button>
+            <button id="new-preset">新建</button>
+            <button id="delete-preset">删除</button>
+        </div>
+        <div id="editor-container" class="hidden">
+            <div class="preset-meta">
+                <input type="text" id="preset-name" placeholder="预设名称 (文件名, 仅限英文和数字)">
+                <textarea id="preset-description" placeholder="预设描述"></textarea>
+            </div>
+            <h2>注入规则</h2>
+            <div id="rules-list">
+                <!-- Rules will be dynamically added here -->
+            </div>
+            <button id="add-rule">添加规则</button>
+            <button id="save-preset">保存预设</button>
+        </div>
+    </div>
+    <script src="vcptavern_editor.js"></script>
+</body>
+</html>
