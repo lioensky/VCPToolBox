@@ -104,7 +104,7 @@ async function getCpuTemperature() {
 
 module.exports = function(options) {
     const router = express.Router();
-    // const { DEBUG_MODE } = options; // Currently unused in this module but available
+    const { vectorDBManager, tdbKnowledgeManager } = options;
 
     // 获取PM2进程列表和资源使用情况
     router.get('/system-monitor/pm2/processes', (req, res) => {
@@ -220,6 +220,36 @@ module.exports = function(options) {
         }
     });
 
+    // 获取记忆库内存剖面（估算）：热记忆 KnowledgeBase + 冷知识库 TDB
+    router.get('/system-monitor/memory/profile', (req, res) => {
+        try {
+            const processMemory = process.memoryUsage();
+            const knowledgeBase = vectorDBManager && typeof vectorDBManager.getMemoryProfile === 'function'
+                ? vectorDBManager.getMemoryProfile()
+                : { available: false, error: 'KnowledgeBaseManager profile unavailable', estimatedBytes: 0 };
+            const tdbKnowledge = tdbKnowledgeManager && typeof tdbKnowledgeManager.getMemoryProfile === 'function'
+                ? tdbKnowledgeManager.getMemoryProfile()
+                : { available: false, error: 'TDBKnowledge profile unavailable', estimatedBytes: 0 };
+
+            const estimatedBytes = (knowledgeBase.estimatedBytes || 0) + (tdbKnowledge.estimatedBytes || 0);
+
+            res.json({
+                success: true,
+                profile: {
+                    estimatedBytes,
+                    processMemory,
+                    knowledgeBase,
+                    tdbKnowledge,
+                    note: 'estimatedBytes 为诊断级估算；Rust/N-API/SQLite/TriviumDB 原生分配的真实 RSS 不能被 Node.js 按模块精确归因。',
+                    generatedAt: new Date().toISOString()
+                }
+            });
+        } catch (error) {
+            console.error('[SystemMonitor] Error getting memory profile:', error);
+            res.status(500).json({ success: false, error: 'Failed to get memory profile', details: error.message });
+        }
+    });
+ 
     // 获取 UserAuth 认证码
     router.get('/user-auth-code', async (req, res) => {
         const authCodePath = path.join(__dirname, '..', '..', 'Plugin', 'UserAuth', 'code.bin');

@@ -23,7 +23,7 @@ import { usePolling } from "@/composables/usePolling";
 import type { DashboardWeatherDisplay, NewsItem } from "@/dashboard/types";
 import { createLogger } from "@/utils/logger";
 import { sanitizeExternalUrl } from "@/utils/url";
-import type { NodeProcessInfo, SystemCpuTemperatureInfo } from "@/types/api.system";
+import type { MemoryProfile, NodeProcessInfo, SystemCpuTemperatureInfo } from "@/types/api.system";
 
 interface PollingController {
   start: () => void;
@@ -42,7 +42,7 @@ const LOG_RETRY_POLICY = {
   maxRetries: 2,
   retryDelayMs: 500,
 } as const;
-const SYSTEM_MONITOR_COMPONENT_KEYS = ["cpu", "memory", "process", "node-info"] as const;
+const SYSTEM_MONITOR_COMPONENT_KEYS = ["cpu", "memory", "process", "node-info", "memory-profile"] as const;
 const AUTH_CODE_COMPONENT_KEYS = ["process"] as const;
 const WEATHER_COMPONENT_KEYS = ["weather"] as const;
 const NEWS_COMPONENT_KEYS = ["news"] as const;
@@ -176,6 +176,21 @@ export function useDashboardState(
     }
   );
 
+  const { data: memoryProfileData, execute: fetchMemoryProfile } =
+    useRequest<Awaited<ReturnType<typeof systemApi.getMemoryProfile>>>(
+      (context) =>
+        systemApi.getMemoryProfile(
+          {
+            signal: context?.signal,
+            timeoutMs: 10000,
+          },
+          { showLoader: false }
+        ),
+      {
+        globalLoadingKey: "dashboard.memory-profile",
+      }
+    );
+
   const { data: authCodeData, execute: fetchAuthCode } =
     useRequest<Awaited<ReturnType<typeof systemApi.getUserAuthCode>>>(
       (context) =>
@@ -203,6 +218,7 @@ export function useDashboardState(
   const vcpMemBytes = ref(0);
   const pm2Processes = ref<Awaited<ReturnType<typeof systemApi.getPM2Processes>>>([]);
   const nodeInfo = ref<Partial<NodeProcessInfo>>({});
+  const memoryProfile = ref<MemoryProfile | null>(null);
   const userAuthCode = ref("加载中…");
   const weather = ref<DashboardWeatherDisplay>({
     icon: "--",
@@ -273,7 +289,7 @@ export function useDashboardState(
   let authCodeLoadPromise: Promise<void> | null = null;
 
   async function monitorSystemResources() {
-    await Promise.all([fetchSystemData(), fetchPM2Data()]);
+    await Promise.all([fetchSystemData(), fetchPM2Data(), fetchMemoryProfile()]);
 
     if (systemData.value?.cpu?.usage !== undefined) {
       cpuUsage.value = systemData.value.cpu.usage;
@@ -317,6 +333,10 @@ export function useDashboardState(
         memory: systemData.value.nodeProcess.memory,
         uptime: systemData.value.nodeProcess.uptime,
       };
+    }
+
+    if (memoryProfileData.value) {
+      memoryProfile.value = memoryProfileData.value;
     }
   }
 
@@ -876,6 +896,7 @@ export function useDashboardState(
     vcpMemBytes,
     pm2Processes,
     nodeInfo,
+    memoryProfile,
     userAuthCode,
     weather,
     newsItems,

@@ -20,7 +20,8 @@ module.exports = function (
   semanticModelRouter,
   modelRedirectHandler,
   apiUrl,
-  apiKey
+  apiKey,
+  tdbKnowledgeManager
 ) {
   if (!agentDirPath || typeof agentDirPath !== "string") {
     throw new Error(
@@ -54,6 +55,7 @@ module.exports = function (
     modelRedirectHandler,
     apiUrl,
     apiKey,
+    tdbKnowledgeManager,
   };
 
   /**

@@ -1108,6 +1108,121 @@ class TDBKnowledgeManager {
         }
     }
 
+    _estimateOpenLibraryBytes(handle) {
+        if (!handle) return 0;
+
+        let diskSize = 0;
+        try {
+            if (handle.path && fsSync.existsSync(handle.path)) {
+                const stat = fsSync.statSync(handle.path);
+                diskSize = stat.size || 0;
+            }
+        } catch (_) { }
+
+        // TriviumDB 原生句柄的常驻内存没有统一 JS API；用磁盘库大小的活跃窗口 + 基础句柄开销做诊断级估算。
+        const activeWindowBytes = Math.min(diskSize, 256 * 1024 * 1024) * 0.25;
+        return Math.round((16 * 1024 * 1024) + activeWindowBytes);
+    }
+
+    _safeLibraryStats(handle) {
+        if (!handle?.db) return null;
+
+        for (const methodName of ['stats', 'getStats', 'memoryUsage', 'memory_usage']) {
+            if (typeof handle.db[methodName] !== 'function') continue;
+            try {
+                return {
+                    method: methodName,
+                    value: handle.db[methodName]()
+                };
+            } catch (e) {
+                return {
+                    method: methodName,
+                    error: e.message || String(e)
+                };
+            }
+        }
+
+        return null;
+    }
+
+    getMemoryProfile() {
+        const profileStartedAt = Date.now();
+        const libraries = Array.from(this.libs.values()).map((handle) => {
+            const estimatedBytes = this._estimateOpenLibraryBytes(handle);
+            let diskSize = 0;
+            try {
+                if (handle.path && fsSync.existsSync(handle.path)) {
+                    diskSize = fsSync.statSync(handle.path).size || 0;
+                }
+            } catch (_) { }
+
+            return {
+                name: handle.name,
+                path: handle.path,
+                openedAt: handle.openedAt || null,
+                lastUsedAt: handle.lastUsedAt || null,
+                idleMs: handle.lastUsedAt ? Date.now() - handle.lastUsedAt : null,
+                busyCount: handle.busyCount || 0,
+                diskSize,
+                estimatedBytes,
+                stats: this._safeLibraryStats(handle)
+            };
+        }).sort((left, right) => right.estimatedBytes - left.estimatedBytes);
+
+        let queueStats = {
+            pending: 0,
+            retry: 0,
+            processing: 0,
+            failed: 0
+        };
+
+        try {
+            if (this.metaDb) {
+                const rows = this.metaDb.prepare('SELECT status, COUNT(*) as count FROM ingest_queue GROUP BY status').all();
+                queueStats = rows.reduce((acc, row) => {
+                    acc[row.status] = row.count;
+                    return acc;
+                }, queueStats);
+            }
+        } catch (_) { }
+
+        const openedLibrariesEstimatedBytes = libraries.reduce((sum, item) => sum + item.estimatedBytes, 0);
+        const eventStateEstimatedBytes = (this.libraryQueues.size + this.fileEventVersions.size + this.pendingFileVersions.size) * 256;
+        const metaDbEstimatedBytes = this.metaDb ? 8 * 1024 * 1024 : 0;
+        const estimatedBytes = openedLibrariesEstimatedBytes + eventStateEstimatedBytes + metaDbEstimatedBytes;
+
+        return {
+            module: 'TDBKnowledge',
+            enabled: this.config.enabled,
+            initialized: this.initialized,
+            dimension: this.config.dimension,
+            rootPath: this.config.rootPath,
+            storePath: this.config.storePath,
+            syncMode: this.config.syncMode,
+            idleUnloadHours: this.config.idleUnloadHours,
+            queues: {
+                ...queueStats,
+                isProcessing: this.isProcessing,
+                isQueueWorkerRunning: this.isQueueWorkerRunning,
+                libraryQueues: this.libraryQueues.size,
+                fileEventVersions: this.fileEventVersions.size,
+                pendingFileVersions: this.pendingFileVersions.size
+            },
+            libraries: {
+                openedCount: this.libs.size,
+                estimatedBytes: openedLibrariesEstimatedBytes,
+                items: libraries
+            },
+            metaDb: {
+                open: !!this.metaDb,
+                estimatedBytes: metaDbEstimatedBytes
+            },
+            estimatedBytes,
+            generatedAt: new Date().toISOString(),
+            elapsedMs: Date.now() - profileStartedAt
+        };
+    }
+
     async shutdown() {
         console.log('[TDBKnowledge] shutting down...');
         if (this.batchTimer) clearTimeout(this.batchTimer);

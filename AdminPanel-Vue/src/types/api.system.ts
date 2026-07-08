@@ -80,6 +80,133 @@ export interface PM2ProcessesResponse {
   processes?: PM2Process[];
 }
 
+export interface IndexStatsInfo {
+  available?: boolean;
+  totalVectors: number;
+  [key: string]: unknown;
+}
+
+export interface KnowledgeBaseDiaryIndexMemoryItem {
+  name: string;
+  stats: IndexStatsInfo;
+  estimatedBytes: number;
+  lastUsedAt: number | null;
+  idleMs: number | null;
+  dateIndexItems: number;
+}
+
+export interface KnowledgeBaseMemoryProfile {
+  module: string;
+  initialized: boolean;
+  dimension: number;
+  rootPath: string;
+  storePath: string;
+  dbHealthState: string;
+  databaseCorruptionDetected: boolean;
+  queues: {
+    pendingFiles: number;
+    pendingDeletes: number;
+    saveTimers: number;
+    isProcessing: boolean;
+    isProcessingDeletes: boolean;
+  };
+  tagIndex: {
+    stats: IndexStatsInfo;
+    estimatedBytes: number;
+  };
+  diaryIndices: {
+    loadedCount: number;
+    trackedCount: number;
+    idleTtlMs: number;
+    estimatedBytes: number;
+    items: KnowledgeBaseDiaryIndexMemoryItem[];
+  };
+  caches: {
+    diaryNameVectorCount: number;
+    diaryNameVectorEstimatedBytes: number;
+    diaryDateIndexCount: number;
+    diaryDateIndexEstimatedBytes: number;
+  };
+  tagMemo: {
+    available: boolean;
+    modelSig?: string | null;
+    pairwiseSimilarities?: number;
+    pairwiseEstimatedBytes?: number;
+    cooccurrenceSources?: number;
+    cooccurrenceEdges?: number;
+    cooccurrenceEstimatedBytes?: number;
+    intrinsicResiduals?: number;
+    intrinsicEstimatedBytes?: number;
+    matrixRebuilding?: boolean;
+    derivedQueueLength?: number;
+    estimatedBytes: number;
+  };
+  estimatedBytes: number;
+  generatedAt: string;
+  elapsedMs: number;
+}
+
+export interface TdbKnowledgeLibraryMemoryItem {
+  name: string;
+  path: string;
+  openedAt: number | null;
+  lastUsedAt: number | null;
+  idleMs: number | null;
+  busyCount: number;
+  diskSize: number;
+  estimatedBytes: number;
+  stats?: unknown;
+}
+
+export interface TdbKnowledgeMemoryProfile {
+  module: string;
+  enabled: boolean;
+  initialized: boolean;
+  dimension: number;
+  rootPath: string;
+  storePath: string;
+  syncMode: string;
+  idleUnloadHours: number;
+  queues: {
+    pending: number;
+    retry: number;
+    processing: number;
+    failed: number;
+    isProcessing: boolean;
+    isQueueWorkerRunning: boolean;
+    libraryQueues: number;
+    fileEventVersions: number;
+    pendingFileVersions: number;
+    [key: string]: number | boolean;
+  };
+  libraries: {
+    openedCount: number;
+    estimatedBytes: number;
+    items: TdbKnowledgeLibraryMemoryItem[];
+  };
+  metaDb: {
+    open: boolean;
+    estimatedBytes: number;
+  };
+  estimatedBytes: number;
+  generatedAt: string;
+  elapsedMs: number;
+}
+
+export interface MemoryProfile {
+  estimatedBytes: number;
+  processMemory: NodeProcessMemoryInfo;
+  knowledgeBase: KnowledgeBaseMemoryProfile;
+  tdbKnowledge: TdbKnowledgeMemoryProfile;
+  note: string;
+  generatedAt: string;
+}
+
+export interface MemoryProfileResponse {
+  success?: boolean;
+  profile: MemoryProfile;
+}
+
 export interface ServerLogResponse {
   content?: string;
   offset?: number;

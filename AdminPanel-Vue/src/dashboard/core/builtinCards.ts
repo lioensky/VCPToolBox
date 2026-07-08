@@ -112,6 +112,25 @@ export function getBuiltinDashboardCards(
       },
     },
     {
+      typeId: "builtin.memory-profile",
+      title: "记忆库内存",
+      description: "显示热记忆、TagMemo 矩阵与冷知识库索引的估算内存。",
+      source: "builtin",
+      singleton: true,
+      defaultEnabled: true,
+      legacyId: null,
+      defaultSize: { desktopCols: 6, tabletCols: 6, rows: 16 },
+      minSize: { desktopCols: 4, tabletCols: 3, rows: 10 },
+      maxSize: { desktopCols: 12, tabletCols: 6, rows: 24 },
+      renderer: {
+        kind: "builtin",
+        componentKey: "memory-profile",
+        buildProps: () => ({
+          profile: state.memoryProfile.value,
+        }),
+      },
+    },
+    {
       typeId: "builtin.process",
       title: "PM2 进程",
       description: "显示 PM2 进程状态。",

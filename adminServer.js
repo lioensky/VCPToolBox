@@ -313,6 +313,74 @@ for (const moduleName of localModules) {
 }
 
 // ============================================================
+// 🧠 关键覆盖：记忆库内存剖面必须代理到主服务
+// 独立 adminServer 本地 system 模块没有 KnowledgeBaseManager / TDBKnowledge 运行态，
+// 若由本地 routes/admin/system.js 处理会只能返回空 profile；必须在 localAdminRouter 前转发。
+// ============================================================
+app.get('/admin_api/system-monitor/memory/profile', async (req, res) => {
+    if (DEBUG_MODE) console.log('[AdminServer] Memory profile request received — forwarding to main process...');
+
+    const profileReq = http.request(
+        `http://127.0.0.1:${MAIN_PORT}/admin_api/system-monitor/memory/profile`,
+        {
+            method: 'GET',
+            headers: {
+                'Authorization': req.headers.authorization || '',
+                'Cookie': req.headers.cookie || ''
+            },
+            timeout: 10000
+        },
+        (profileRes) => {
+            let body = '';
+
+            profileRes.on('data', chunk => {
+                body += chunk;
+            });
+
+            profileRes.on('end', () => {
+                if (res.headersSent) return;
+
+                const contentType = profileRes.headers['content-type'] || 'application/json';
+                res.status(profileRes.statusCode || 200);
+                res.setHeader('Content-Type', contentType);
+
+                try {
+                    res.json(body ? JSON.parse(body) : {
+                        success: false,
+                        error: '主服务返回了空的记忆库内存剖面响应。'
+                    });
+                } catch (e) {
+                    res.send(body || '');
+                }
+            });
+        }
+    );
+
+    profileReq.on('error', (err) => {
+        console.error(`[AdminServer] Failed to forward memory profile request to main process: ${err.code || err.message}`);
+        if (!res.headersSent) {
+            res.status(502).json({
+                success: false,
+                error: '无法将记忆库内存剖面请求转发给主服务。',
+                details: err.message
+            });
+        }
+    });
+
+    profileReq.on('timeout', () => {
+        profileReq.destroy();
+        if (!res.headersSent) {
+            res.status(504).json({
+                success: false,
+                error: '主服务记忆库内存剖面接口响应超时。'
+            });
+        }
+    });
+
+    profileReq.end();
+});
+
+// ============================================================
 // 🧠 关键覆盖：主动浪潮全量训练必须代理到主服务
 // 独立 adminServer 不持有 KnowledgeBaseManager 实例；本地 rag 模块会以 vectorDBManager=null 挂载。
 // 因此该运行态端点必须在 localAdminRouter 之前转发到主进程。

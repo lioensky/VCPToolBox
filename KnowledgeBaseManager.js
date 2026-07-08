@@ -2623,6 +2623,143 @@ class KnowledgeBaseManager {
         }
     }
 
+    _estimateVexusIndexBytes(totalVectors = 0) {
+        const vectorBytes = Math.max(0, Number(totalVectors) || 0) * this.config.dimension * Float32Array.BYTES_PER_ELEMENT;
+        // Vexus/USearch 原生索引除向量主体外还包含图结构、ID 映射和分配器碎片；这里只做保守估算。
+        return Math.round(vectorBytes * 1.6);
+    }
+
+    _safeIndexStats(index) {
+        if (!index || typeof index.stats !== 'function') {
+            return { available: false, totalVectors: 0 };
+        }
+
+        try {
+            const stats = index.stats() || {};
+            return {
+                available: true,
+                ...stats,
+                totalVectors: Number(stats.totalVectors ?? stats.size ?? stats.vectors ?? 0) || 0
+            };
+        } catch (e) {
+            return {
+                available: false,
+                totalVectors: 0,
+                error: e.message || String(e)
+            };
+        }
+    }
+
+    getMemoryProfile() {
+        const profileStartedAt = Date.now();
+        const dimension = this.config.dimension;
+        const loadedDiaryIndices = [];
+
+        for (const [diaryName, index] of this.diaryIndices.entries()) {
+            const stats = this._safeIndexStats(index);
+            const estimatedBytes = this._estimateVexusIndexBytes(stats.totalVectors);
+            loadedDiaryIndices.push({
+                name: diaryName,
+                stats,
+                estimatedBytes,
+                lastUsedAt: this.diaryIndexLastUsed.get(diaryName) || null,
+                idleMs: this.diaryIndexLastUsed.has(diaryName) ? Date.now() - this.diaryIndexLastUsed.get(diaryName) : null,
+                dateIndexItems: this.diaryDateIndexCache.get(diaryName)?.length || 0
+            });
+        }
+
+        loadedDiaryIndices.sort((left, right) => right.estimatedBytes - left.estimatedBytes);
+
+        const tagIndexStats = this._safeIndexStats(this.tagIndex);
+        const tagIndexEstimatedBytes = this._estimateVexusIndexBytes(tagIndexStats.totalVectors);
+
+        const tagMemo = this.tagMemoEngine ? (() => {
+            const cooccurrenceSources = this.tagMemoEngine.tagCooccurrenceMatrix instanceof Map
+                ? this.tagMemoEngine.tagCooccurrenceMatrix.size
+                : 0;
+            let cooccurrenceEdges = 0;
+            if (this.tagMemoEngine.tagCooccurrenceMatrix instanceof Map) {
+                for (const edges of this.tagMemoEngine.tagCooccurrenceMatrix.values()) {
+                    if (edges instanceof Map) cooccurrenceEdges += edges.size;
+                }
+            }
+
+            const pairwiseSimilarities = this.tagMemoEngine.tagPairSimilarities instanceof Map
+                ? this.tagMemoEngine.tagPairSimilarities.size
+                : 0;
+            const intrinsicResiduals = this.tagMemoEngine.tagIntrinsicResiduals instanceof Map
+                ? this.tagMemoEngine.tagIntrinsicResiduals.size
+                : 0;
+
+            // JS Map 条目实际开销受 V8 版本影响很大；按 key/value/桶结构给诊断级估算。
+            const pairwiseEstimatedBytes = pairwiseSimilarities * 80;
+            const cooccurrenceEstimatedBytes = cooccurrenceSources * 96 + cooccurrenceEdges * 64;
+            const intrinsicEstimatedBytes = intrinsicResiduals * 32;
+
+            return {
+                available: true,
+                modelSig: this.tagMemoEngine.modelSig || null,
+                pairwiseSimilarities,
+                pairwiseEstimatedBytes,
+                cooccurrenceSources,
+                cooccurrenceEdges,
+                cooccurrenceEstimatedBytes,
+                intrinsicResiduals,
+                intrinsicEstimatedBytes,
+                matrixRebuilding: !!this.tagMemoEngine._isMatrixRebuilding,
+                derivedQueueLength: Array.isArray(this.tagMemoEngine._derivedTaskQueue) ? this.tagMemoEngine._derivedTaskQueue.length : 0,
+                estimatedBytes: pairwiseEstimatedBytes + cooccurrenceEstimatedBytes + intrinsicEstimatedBytes
+            };
+        })() : {
+            available: false,
+            estimatedBytes: 0
+        };
+
+        const diaryNameVectorEstimatedBytes = this.diaryNameVectorCache.size * dimension * 8;
+        const diaryDateIndexEstimatedBytes = Array.from(this.diaryDateIndexCache.values())
+            .reduce((sum, items) => sum + (Array.isArray(items) ? items.length * 160 : 0), 0);
+        const loadedDiaryEstimatedBytes = loadedDiaryIndices.reduce((sum, item) => sum + item.estimatedBytes, 0);
+        const estimatedBytes = tagIndexEstimatedBytes + loadedDiaryEstimatedBytes + tagMemo.estimatedBytes + diaryNameVectorEstimatedBytes + diaryDateIndexEstimatedBytes;
+
+        return {
+            module: 'KnowledgeBaseManager',
+            initialized: this.initialized,
+            dimension,
+            rootPath: this.config.rootPath,
+            storePath: this.config.storePath,
+            dbHealthState: this.dbHealthState,
+            databaseCorruptionDetected: this.databaseCorruptionDetected,
+            queues: {
+                pendingFiles: this.pendingFiles.size,
+                pendingDeletes: this.pendingDeletes.size,
+                saveTimers: this.saveTimers.size,
+                isProcessing: this.isProcessing,
+                isProcessingDeletes: this.isProcessingDeletes
+            },
+            tagIndex: {
+                stats: tagIndexStats,
+                estimatedBytes: tagIndexEstimatedBytes
+            },
+            diaryIndices: {
+                loadedCount: this.diaryIndices.size,
+                trackedCount: this.diaryIndexLastUsed.size,
+                idleTtlMs: this.config.indexIdleTTL,
+                estimatedBytes: loadedDiaryEstimatedBytes,
+                items: loadedDiaryIndices
+            },
+            caches: {
+                diaryNameVectorCount: this.diaryNameVectorCache.size,
+                diaryNameVectorEstimatedBytes,
+                diaryDateIndexCount: this.diaryDateIndexCache.size,
+                diaryDateIndexEstimatedBytes
+            },
+            tagMemo,
+            estimatedBytes,
+            generatedAt: new Date().toISOString(),
+            elapsedMs: Date.now() - profileStartedAt
+        };
+    }
+
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
         if (this.watcher) {

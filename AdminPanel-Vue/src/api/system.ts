@@ -23,6 +23,8 @@ import type {
   OneRingConfig,
   OneRingConfigResponse,
   OneRingConfigSaveResponse,
+  MemoryProfile,
+  MemoryProfileResponse,
   PM2Process,
   PM2ProcessesResponse,
   RawSystemResourcesResponse,
@@ -114,6 +116,20 @@ export const systemApi = {
       uiOptions
     );
     return response.processes ?? [];
+  },
+
+  async getMemoryProfile(
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<MemoryProfile> {
+    const response = await requestWithUi<MemoryProfileResponse>(
+      {
+        url: "/admin_api/system-monitor/memory/profile",
+        ...requestContext,
+      },
+      uiOptions
+    );
+    return response.profile;
   },
 
   async getUserAuthCode(
