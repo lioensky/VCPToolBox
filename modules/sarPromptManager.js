@@ -115,10 +115,10 @@ class SarPromptManager {
     isModelMatch(modelList, normalizedModel, matchMode = 'exact') {
         const filtered = modelList.filter(m => m.length > 0); // 过滤空字符串
         if (matchMode === 'includes') {
-            return modelList.some(m => normalizedModel.includes(m));
+            return filtered.some(m => normalizedModel.includes(m));
         }
         // 默认精确匹配（含未知matchMode值的fallback）
-        return modelList.includes(normalizedModel);
+        return filtered.includes(normalizedModel);
     }
 
     getSarPrompt(modelName) {
