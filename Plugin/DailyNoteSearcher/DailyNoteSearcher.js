@@ -217,6 +217,15 @@ function getServiceEndpoint() {
     return `http://${serviceConfig.host}:${serviceConfig.port}/search`;
 }
 
+// When PM2 sends SIGTERM, server.js gracefulShutdown() may take longer than
+// PM2's kill_timeout (15s) to reach Phase 8 (plugin shutdown). Register an
+// early SIGTERM listener to kill the child process before Node.js is force-killed.
+process.on('SIGTERM', () => {
+    if (serviceProcess && !serviceProcess.killed) {
+        serviceProcess.kill();
+    }
+});
+
 module.exports = {
     initialize,
     processToolCall,
