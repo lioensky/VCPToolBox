@@ -1,0 +1,29 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "YoucomSearch",
+  "displayName": "You.com 搜索插件",
+  "version": "0.1.0",
+  "description": "使用 You.com API 进行网络搜索。AI可以指定搜索查询、返回结果数量、时效范围、国家及语言，获取网页与新闻结果。支持使用 || 分隔多个关键词进行并发搜索，所有结果同时返回。",
+  "author": "Emos21",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node YoucomSearch.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "configSchema": {
+      "YoucomKey": "string"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "YoucomSearch",
+        "description": "调用此工具使用 You.com API 进行网络搜索，返回网页及新闻结果。重要提示：请优先使用中文词作为检索词，并带上即时信息（如当前年份、月份等）进行检索，以获得更准确的结果。请在您的回复中，使用以下精确格式来请求搜索，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」YoucomSearch「末」,\nquery:「始」(必需) 搜索的关键词或问题，支持使用 || 分隔多个关键词进行并发搜索「末」,\ncount:「始」(可选, 默认为 10) 返回的最大结果数量，范围 1-20，超出上限将自动截断为 20。「末」,\nfreshness:「始」(可选) 限定结果的时效范围，只允许 'day'（一天内）、'week'（一周内）、'month'（一月内）、'year'（一年内）之一。「末」,\ncountry:「始」(可选) 搜索结果的国家来源，使用 ISO 国家代码，例如 'CN'（中国）、'US'（美国）。「末」,\nlanguage:「始」(可选) 搜索结果的语言，使用 ISO 语言代码，例如 'zh-Hans'、'en'。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含搜索结果的JSON对象。请基于这些结果回答用户的问题或完成相关任务。\n请优先使用中文词作为检索词，并带上即时信息（如当前年份、月份等）进行检索，以获得更准确的结果。",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」YoucomSearch「末」,\nquery:「始」最近一周的AI技术进展「末」,\ncount:「始」5「末」,\nfreshness:「始」week「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}
