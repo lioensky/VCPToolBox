@@ -1192,6 +1192,7 @@ const chatCompletionHandler = new ChatCompletionHandler({
     maxVCPLoopNonStream: parseInt(process.env.MaxVCPLoopNonStream),
     apiRetries: parseInt(process.env.ApiRetries) || 3, // 新增：API重试次数
     apiRetryDelay: parseInt(process.env.ApiRetryDelay) || 1000, // 新增：API重试延迟
+    apiConnectionTimeoutMs: parseInt(process.env.ApiConnectionTimeoutMs) || 900000, // 单次上游连接/首包超时，默认15分钟
     cachedEmojiLists,
     detectors,
     superDetectors,

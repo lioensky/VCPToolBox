@@ -148,6 +148,7 @@ class NonStreamHandler {
       _refreshRagBlocksIfNeeded,
       fetchWithRetry,
       vcpToolUseForbidden,
+      apiConnectionTimeoutMs,
       semanticModelFallbackCandidates,
       oneRingResponseMeta,
       shouldProcessMedia,
@@ -216,7 +217,7 @@ class NonStreamHandler {
         body: JSON.stringify(body),
         signal: abortController.signal,
       },
-      { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, modelFallbackCandidates: semanticModelFallbackCandidates }
+      { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates }
     );
 
     const firstReadResult = await readNonStreamResponseWithSemanticRetry({
