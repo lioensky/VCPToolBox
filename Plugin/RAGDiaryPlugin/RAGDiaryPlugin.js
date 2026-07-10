@@ -652,6 +652,37 @@ class RAGDiaryPlugin {
     }
 
     async _getBM25RagCandidates(dbName, userContent, aiContent, limit, mode, queryVector, contextDiaryPrefixes = new Set(), requestCache = null, bm25Weight = 0.6) {
+        // 虚拟联合索引的稀疏召回：各成员按自身语料统计归一化 BM25，
+        // 再合并为一个候选池。最终 K、Rerank、Truncate 仍只在上层执行一次。
+        if (Array.isArray(dbName)) {
+            const diaryNames = [...new Set(dbName.map(name => String(name || '').trim()).filter(Boolean))];
+            const perDiaryResults = await Promise.all(diaryNames.map(name =>
+                this._getBM25RagCandidates(
+                    name, userContent, aiContent, limit, mode, queryVector,
+                    contextDiaryPrefixes, requestCache, bm25Weight
+                )
+            ));
+            const merged = perDiaryResults.flatMap(result => result.results || []);
+            const byChunk = new Map();
+            for (const result of merged) {
+                const key = result.chunkId || `${result.fullPath || result.sourceFile || ''}|${result.text || ''}`;
+                const existing = byChunk.get(key);
+                if (!existing || (result.score || 0) > (existing.score || 0)) byChunk.set(key, result);
+            }
+            const results = Array.from(byChunk.values())
+                .sort((a, b) => (b.score || 0) - (a.score || 0))
+                .slice(0, Math.max(1, parseInt(limit, 10) || 10));
+            return {
+                matched: results.length > 0,
+                results,
+                queryTokens: [...new Set(perDiaryResults.flatMap(result => result.queryTokens || []))],
+                matchedCount: perDiaryResults.reduce((sum, result) => sum + (result.matchedCount || 0), 0),
+                weightedQueryText: perDiaryResults[0]?.weightedQueryText || '',
+                bm25Weight: Math.max(0, Math.min(1, Number(bm25Weight) || 0.6)),
+                vectorWeight: 1 - Math.max(0, Math.min(1, Number(bm25Weight) || 0.6))
+            };
+        }
+
         const weightedQueryText = this._buildWeightedBM25QueryText(userContent, aiContent);
         const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
         const sparseWeight = Math.max(0, Math.min(1, Number.isFinite(Number(bm25Weight)) ? Number(bm25Weight) : 0.6));
@@ -2312,11 +2343,8 @@ class RAGDiaryPlugin {
 
     /**
      * 🌟 聚合检索核心调度器
-     * 根据上下文向量与各日记本向量的余弦相似度，通过 Softmax 归一化动态分配 K 值，
-     * 然后并行调用各子日记本的 _processRAGPlaceholder，最后聚合结果。
-     *
-     * @param {object} options - 包含所有必要参数
-     * @returns {Promise<string>} 聚合后的检索结果
+     * 多个物理日记本在请求期被视作一个虚拟联合索引：共享一个全局 K 和一条完整后处理管线。
+     * 子索引不再按名称向量 Softmax 分配配额，信息可以自然集中于任意成员索引。
      */
     async _processAggregateRetrieval(options) {
         const {
@@ -2333,133 +2361,60 @@ class RAGDiaryPlugin {
             tagTruncationRatio,
             metrics,
             historySegments,
-            processedDiaries, // 🛡️ 循环引用检测
-            contextDiaryPrefixes = new Set(), // 🌟 V4.1: 上下文日记去重前缀
-            ghostTags = [], // 🌟 修复 4.1：接收幽灵节点
-            collectedAttachments = [], // 🌟 V7
-            isFreshTimeConversationStart = false, // 🌟 Time 新对话补充召回
+            processedDiaries,
+            contextDiaryPrefixes = new Set(),
+            ghostTags = [],
+            collectedAttachments = [],
+            isFreshTimeConversationStart = false,
             requestCache = null
         } = options;
 
+        const selectedDiaries = [...new Set(
+            (diaryNames || []).map(name => String(name || '').trim()).filter(Boolean)
+        )].filter(name => !processedDiaries?.has(name));
+
+        if (selectedDiaries.length === 0) {
+            console.warn('[RAGDiaryPlugin] 虚拟联合索引: 没有未处理的有效日记本。');
+            return '';
+        }
+
+        for (const name of selectedDiaries) processedDiaries?.add(name);
+
         const totalK = Math.max(1, Math.round(dynamicK * kMultiplier));
-        const config = this.ragParams?.RAGDiaryPlugin || {};
-        const temperature = config.aggregateTemperature ?? 3.0;
-        const minKPerDiary = config.aggregateMinK ?? 1;
-
-        // 🌟 解析 Truncate 阈值
-        const truncateThreshold = this._extractTruncateThreshold(modifiers);
-
-        console.log(`[RAGDiaryPlugin] 🌟 聚合检索启动: ${diaryNames.length} 个日记本, 总K=${totalK}, 温度=${temperature}${truncateThreshold > 0 ? `, Truncate=${truncateThreshold}` : ''}`);
-
-        // --- Step 1: 获取各日记本的代表向量并计算相似度 ---
-        const diaryScores = [];
-        for (const name of diaryNames) {
-            // 循环引用检测
-            if (processedDiaries && processedDiaries.has(name)) {
-                console.warn(`[RAGDiaryPlugin] 聚合模式: 检测到循环引用 "${name}"，跳过`);
-                continue;
-            }
-
-            try {
-                const diarySimilarity = await this._getDiarySimilarityCached(name, queryVector, requestCache);
-                if (!diarySimilarity) {
-                    console.warn(`[RAGDiaryPlugin] 聚合模式: 无法获取 "${name}" 的向量，跳过`);
-                    continue;
-                }
-
-                diaryScores.push({ name, similarity: diarySimilarity.finalSimilarity });
-            } catch (e) {
-                console.error(`[RAGDiaryPlugin] 聚合模式: 获取 "${name}" 向量时出错:`, e.message);
-                // 不崩溃，继续处理其他日记本
-            }
-        }
-
-        // 🛡️ 如果没有任何有效的日记本，返回空
-        if (diaryScores.length === 0) {
-            console.warn('[RAGDiaryPlugin] 聚合检索: 没有有效的日记本可供检索。');
-            return '';
-        }
-
-        // --- Step 2: Softmax 归一化分配 K 值 ---
-        // 计算 exp(sim * temperature) 用于 softmax
-        const expScores = diaryScores.map(d => Math.exp(d.similarity * temperature));
-        const expSum = expScores.reduce((sum, v) => sum + v, 0);
-        const weights = expScores.map(v => v / expSum);
-
-        // 分配 K 值，确保每个日记本至少获得 minKPerDiary
-        const reservedK = minKPerDiary * diaryScores.length;
-        const distributableK = Math.max(0, totalK - reservedK);
-
-        const kAllocations = weights.map((w, i) => {
-            const allocated = minKPerDiary + Math.round(distributableK * w);
-            return {
-                name: diaryScores[i].name,
-                similarity: diaryScores[i].similarity,
-                weight: w,
-                k: Math.max(minKPerDiary, allocated)
-            };
-        });
-
-        // 日志输出分配结果（简化）
-        console.log(`[RAGDiaryPlugin] K分配: ${kAllocations.map(a => `"${a.name}"(k=${a.k})`).join(', ')}`);
-
-
-        // --- Step 3: 并行调用各日记本的检索 ---
-        // 🛡️ 去除 modifiers 中的 kMultiplier，防止 _processRAGPlaceholder 内部再次乘以 kMultiplier
+        // 聚合倍率已在此处作用于唯一的全局 K，移除前导倍率，防止底层再次相乘。
         const cleanedModifiers = modifiers.replace(/^:\d+\.?\d*/, '');
+        console.log(
+            `[RAGDiaryPlugin] 🔗 虚拟联合索引启动: [${selectedDiaries.join(', ')}], ` +
+            `globalK=${totalK}, suffixes=${cleanedModifiers || '(default)'}`
+        );
 
-        const retrievalPromises = kAllocations.map(async (allocation) => {
-            // 标记为已处理，防止循环引用
-            if (processedDiaries) processedDiaries.add(allocation.name);
-
-            try {
-                const content = await this._processRAGPlaceholder({
-                    dbName: allocation.name,
-                    modifiers: cleanedModifiers,
-                    queryVector,
-                    userContent,
-                    aiContent,
-                    combinedQueryForDisplay,
-                    dynamicK: allocation.k, // 🌟 使用分配后的 K 值（直接作为 dynamicK，kMultiplier 在聚合层已经处理）
-                    timeRanges,
-                    allowTimeAndGroup: true,
-                    defaultTagWeight,
-                    tagTruncationRatio,
-                    metrics,
-                    historySegments,
-                    contextDiaryPrefixes, // 🌟 V4.1: 透传上下文日记去重前缀
-                    ghostTags, // 🌟 修复 4.2：透传给底层具体执行的日记本！
-                    collectedAttachments, // 🌟 V7
-                    associateDiaries: diaryNames, // 🌟 V10: 聚合模式下传入所有日记本名，实现跨索引联想共现
-                    isFreshTimeConversationStart, // 🌟 Time 新对话补充召回
-                    requestCache
-                });
-                return { name: allocation.name, content, k: allocation.k, success: true };
-            } catch (e) {
-                console.error(`[RAGDiaryPlugin] 聚合模式: "${allocation.name}" 检索失败:`, e.message);
-                return { name: allocation.name, content: '', k: allocation.k, success: false };
-            }
+        const content = await this._processRAGPlaceholder({
+            dbName: selectedDiaries,
+            modifiers: cleanedModifiers,
+            queryVector,
+            userContent,
+            aiContent,
+            combinedQueryForDisplay,
+            dynamicK: totalK,
+            timeRanges,
+            allowTimeAndGroup: true,
+            defaultTagWeight,
+            tagTruncationRatio,
+            metrics,
+            historySegments,
+            contextDiaryPrefixes,
+            ghostTags,
+            collectedAttachments,
+            associateDiaries: selectedDiaries,
+            isFreshTimeConversationStart,
+            requestCache
         });
 
-        const results = await Promise.all(retrievalPromises);
-
-        // --- Step 4: 聚合各日记本的检索结果 ---
-        // 保持与现有多日记本显示格式一致：每个日记本独立展示
-        const aggregatedContent = results
-            .filter(r => r.content && r.content.trim().length > 0)
-            .map(r => r.content)
-            .join('\n');
-
-        if (!aggregatedContent) {
-            console.log('[RAGDiaryPlugin] 聚合检索: 所有日记本均未返回结果。');
-            return '';
-        }
-
-        // 🛡️ 再一次全局截断检查（如果聚合结果的分数在底层已经被过滤，这里 aggregatedContent 已经会受影响）
-        // 但聚合结果是由多个单日记本检索组成的，单日记本内部已经应用了 Truncate
-
-        console.log(`[RAGDiaryPlugin] 🌟 聚合检索完成: ${results.filter(r => r.success && r.content).length}/${diaryNames.length} 个日记本返回了结果`);
-        return aggregatedContent;
+        console.log(
+            `[RAGDiaryPlugin] 🔗 虚拟联合索引完成: members=${selectedDiaries.length}, ` +
+            `globalK=${totalK}, contentLength=${content?.length || 0}`
+        );
+        return content || '';
     }
 
     /**
@@ -2545,9 +2500,15 @@ class RAGDiaryPlugin {
         // 4. 准备用于日志记录和时间解析的组合文本
         const combinedSanitizedContext = `[User]: ${sanitizedUserContent}\n[AI]: ${sanitizedAiContent}\n[Tool]: ${sanitizedToolContent}`;
 
-        // 5. 复用 _processRAGPlaceholder 的逻辑来获取刷新后的内容
+        // 5. 复用 _processRAGPlaceholder 的逻辑来获取刷新后的内容。
+        // 联合索引区块优先使用结构化 diaryNames；兼容旧元数据时再从 dbName 的 | 语法恢复。
+        const refreshDbScope = Array.isArray(metadata.diaryNames) && metadata.diaryNames.length > 0
+            ? metadata.diaryNames
+            : (metadata.virtualIndex && typeof metadata.dbName === 'string'
+                ? metadata.dbName.split('|').map(name => name.trim()).filter(Boolean)
+                : metadata.dbName);
         const refreshedContent = await this._processRAGPlaceholder({
-            dbName: metadata.dbName,
+            dbName: refreshDbScope,
             modifiers: metadata.modifiers,
             queryVector: queryVector, // ✅ 使用加权后的向量
             userContent: combinedSanitizedContext, // ✅ 使用组合后的上下文进行内容处理
@@ -2585,11 +2546,18 @@ class RAGDiaryPlugin {
             requestCache = null
         } = options;
 
+        const diaryNames = Array.isArray(dbName)
+            ? [...new Set(dbName.map(name => String(name || '').trim()).filter(Boolean))]
+            : [String(dbName || '').trim()].filter(Boolean);
+        if (diaryNames.length === 0) return returnRawResults ? [] : '';
+        const isVirtualIndex = diaryNames.length > 1;
+        const dbScopeKey = diaryNames.join('|');
+
         // 1️⃣ 生成缓存键
         const cacheKey = this._generateCacheKey({
             userContent,
             aiContent: aiContent || '',
-            dbName,
+            dbName: dbScopeKey,
             modifiers,
             dynamicK,
             ghostTags, // 🌟 修复 2.4：将外部的 ghostTags 传入生成器
@@ -2668,7 +2636,9 @@ class RAGDiaryPlugin {
 
         // TagMemo修饰符检测（静默）
 
-        const displayName = dbName + '日记本';
+        const displayName = isVirtualIndex
+            ? `${diaryNames.join('|')}联合日记本`
+            : `${diaryNames[0]}日记本`;
         const finalK = Math.max(1, Math.round(dynamicK * kMultiplier));
         // 🧹 V4.1: 多取 contextDiaryPrefixes.size 条作为去重补偿缓冲
         const dedupBuffer = contextDiaryPrefixes.size;
@@ -2678,7 +2648,9 @@ class RAGDiaryPlugin {
 
         // 准备元数据用于生成自描述区块
         const metadata = {
-            dbName: dbName,
+            dbName: dbScopeKey,
+            diaryNames: isVirtualIndex ? diaryNames : undefined,
+            virtualIndex: isVirtualIndex || undefined,
             modifiers: modifiers,
             k: finalK,
             bm25: useBM25 ? bm25Mode : undefined,
@@ -2743,7 +2715,7 @@ class RAGDiaryPlugin {
         // 🌟 Time 连续性补充准备：只要启用 ::Time 且命中新对话判定，就预先准备最近 3 条
         // 注意：不依赖 timeRanges 是否解析成功，最终仍在主召回完成后做 K 外追加
         if (useTime && isFreshTimeConversationStart) {
-            extraContinuityResults = await this._getRecentDiaryChunks(dbName, 3, finalQueryVector, contextDiaryPrefixes, requestCache);
+            extraContinuityResults = await this._getRecentDiaryChunks(diaryNames, 3, finalQueryVector, contextDiaryPrefixes, requestCache);
             if (extraContinuityResults.length > 0) {
                 console.log(`[RAGDiaryPlugin] Time continuity recall: Prepared ${extraContinuityResults.length} extra recent chunks for fresh conversation start.`);
             } else {
@@ -2754,7 +2726,7 @@ class RAGDiaryPlugin {
         if (useBM25) {
             const bm25Limit = Math.max(kForSearch, finalK * (useRerank ? 5 : 3));
             bm25InfoForBroadcast = await this._getBM25RagCandidates(
-                dbName,
+                diaryNames,
                 userContent,
                 aiContent,
                 bm25Limit,
@@ -2781,15 +2753,17 @@ class RAGDiaryPlugin {
 
             // 1. 语义路召回 (多取一些用于后续衰减/重排)
             const searchK = useRerank ? Math.max(kSemantic * 2, 20) : kSemantic + 10;
-            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, searchK + dedupBuffer, tagWeight, coreTagsForSearch, undefined, searchOptions);
+            let ragResults = await this.vectorDBManager.search(diaryNames, finalQueryVector, searchK + dedupBuffer, tagWeight, coreTagsForSearch, undefined, searchOptions);
             ragResults = this._filterContextDuplicates(ragResults, contextDiaryPrefixes);
             ragResults = ragResults.map(r => ({ ...r, source: 'rag' }));
 
             // 2. 时间路召回 (带相关性排序)
             let timeFilePaths = [];
             for (const timeRange of timeRanges) {
-                const files = await this._getTimeRangeFilePathsCached(dbName, timeRange, requestCache);
-                timeFilePaths.push(...files);
+                for (const diaryName of diaryNames) {
+                    const files = await this._getTimeRangeFilePathsCached(diaryName, timeRange, requestCache);
+                    timeFilePaths.push(...files);
+                }
             }
             timeFilePaths = [...new Set(timeFilePaths)];
 
@@ -2848,7 +2822,7 @@ class RAGDiaryPlugin {
                 try {
                     const k = qv.type === 'current' ? kForSearch : Math.max(2, Math.round(kForSearch / 2));
                     const perVectorSearchOptions = qv.type === 'current' ? searchOptions : geoOptions;
-                    let results = await this.vectorDBManager.search(dbName, qv.vector, k, tagWeight, coreTagsForSearch, undefined, perVectorSearchOptions);
+                    let results = await this.vectorDBManager.search(diaryNames, qv.vector, k, tagWeight, coreTagsForSearch, undefined, perVectorSearchOptions);
                     if (qv.weight !== 1.0) {
                         results = results.map(r => ({ ...r, score: r.score * qv.weight, original_score: r.score }));
                     }
@@ -2941,9 +2915,9 @@ class RAGDiaryPlugin {
             }
         }
 
-        // 🌟 V10: 联想共现发现 - 每个已召回 chunk 作为种子，跨目标索引搜索，提取共现结果（额外追加，不影响原始 K）
+        // 🌟 V10: 联想共现发现 - 每个已召回 chunk 作为种子，在同一虚拟索引范围内搜索并提取共现结果
         if (useAssociate && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
-            const targetDiaries = associateDiaries.length > 0 ? associateDiaries : [dbName];
+            const targetDiaries = associateDiaries.length > 0 ? associateDiaries : diaryNames;
             const associateResults = await this._applyAssociativeDiscovery(
                 finalResultsForBroadcast, targetDiaries, finalK, tagWeight ?? defaultTagWeight
             );
@@ -2954,11 +2928,11 @@ class RAGDiaryPlugin {
 
         // 🌟 V9: 父文档展开 - 将命中的 chunk 展开为完整日记文件（按文件去重）— 始终在最后执行
         if (useExpand && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
-            finalResultsForBroadcast = await this._expandChunksToFullDocuments(finalResultsForBroadcast, dbName, requestCache);
+            finalResultsForBroadcast = await this._expandChunksToFullDocuments(finalResultsForBroadcast, dbScopeKey, requestCache);
         }
 
         if (useTime && timeRanges && timeRanges.length > 0) {
-            retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbName, metadata);
+            retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbScopeKey, metadata);
         } else if (useGroup) {
             retrievedContent = this.formatGroupRAGResults(finalResultsForBroadcast, displayName, activatedGroups, metadata);
         } else {
@@ -2980,6 +2954,8 @@ class RAGDiaryPlugin {
                 // 如果过滤后变为空，且原本有内容，需要重新生成内容
                 if (afterCount === 0) {
                     retrievedContent = '';
+                } else if (useTime && timeRanges && timeRanges.length > 0) {
+                    retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbScopeKey, metadata);
                 } else if (useGroup) {
                     retrievedContent = this.formatGroupRAGResults(finalResultsForBroadcast, displayName, activatedGroups, metadata);
                 } else {
@@ -3017,7 +2993,9 @@ class RAGDiaryPlugin {
                 const cleanedResults = this._cleanResultsForBroadcast(finalResultsForBroadcast);
                 vcpInfoData = {
                     type: 'RAG_RETRIEVAL_DETAILS',
-                    dbName: dbName,
+                    dbName: dbScopeKey,
+                    diaryNames: isVirtualIndex ? diaryNames : undefined,
+                    virtualIndex: isVirtualIndex,
                     query: combinedQueryForDisplay,
                     k: finalK,
                     useTime: useTime,
@@ -3065,7 +3043,7 @@ class RAGDiaryPlugin {
                     try {
                         this.pushVcpInfo({
                             type: 'RAG_RETRIEVAL_DETAILS',
-                            dbName: dbName,
+                            dbName: dbScopeKey,
                             error: 'Detailed stats broadcast failed: ' + (innerError.message || 'Unknown error')
                         });
                     } catch (e) { }
@@ -3247,24 +3225,27 @@ class RAGDiaryPlugin {
         const originalTextSet = new Set(seedResults.map(r => r.text?.trim()).filter(Boolean));
         const originalPathSet = new Set(seedResults.map(r => r.fullPath).filter(Boolean));
 
-        // 3. 每个种子跨所有目标索引执行纯语义搜索（无 TagMemo 偏置）
+        // 3. 每个种子在同一个虚拟联合索引范围内执行搜索。
+        // KnowledgeBaseManager 会统一增强查询、合并物理索引候选并全局 Top-K，
+        // 这里不再自行遍历成员索引，避免重新引入按库候选配额。
+        const selectedDiaries = [...new Set(
+            targetDiaries.map(name => String(name || '').trim()).filter(Boolean)
+        )];
         const coOccurrenceMap = new Map(); // textKey → { count, bestScore, result }
 
         for (let seedIdx = 0; seedIdx < seedChunks.length; seedIdx++) {
             const seed = seedChunks[seedIdx];
             const thisGroupHits = new Set(); // 本组去重：同一种子不重复计数同一结果
 
-            const searchPromises = targetDiaries.map(async (diaryName) => {
-                try {
-                    // 🌟 V10.2: 使用动态计算的 TagMemo 权重参与联想发现（替代硬编码 0.33）
-                    return await this.vectorDBManager.search(diaryName, seed.vector, dynamicK, associateTagWeight);
-                } catch (e) {
-                    return [];
-                }
-            });
-
-            const resultsPerDiary = await Promise.all(searchPromises);
-            const allResults = resultsPerDiary.flat();
+            let allResults = [];
+            try {
+                // 🌟 V10.2: 使用动态计算的 TagMemo 权重参与联想发现
+                allResults = await this.vectorDBManager.search(
+                    selectedDiaries, seed.vector, dynamicK, associateTagWeight
+                );
+            } catch (e) {
+                allResults = [];
+            }
 
             for (const r of allResults) {
                 const key = r.text?.trim();
@@ -3310,7 +3291,7 @@ class RAGDiaryPlugin {
             return (b.score || 0) - (a.score || 0);
         });
 
-        console.log(`[RAGDiaryPlugin] 🌟 Associate: ${seedChunks.length} 种子 × ${targetDiaries.length} 索引 → ${coOccurrenceMap.size} 候选 → ${associateResults.length} 共现命中 (tagWeight=${associateTagWeight?.toFixed(3) ?? 'null'})`);
+        console.log(`[RAGDiaryPlugin] 🌟 Associate: ${seedChunks.length} 种子 × ${selectedDiaries.length} 索引（联合搜索）→ ${coOccurrenceMap.size} 候选 → ${associateResults.length} 共现命中 (tagWeight=${associateTagWeight?.toFixed(3) ?? 'null'})`);
 
         return associateResults;
     }
@@ -3331,7 +3312,11 @@ class RAGDiaryPlugin {
     async _getRecentDiaryChunks(dbName, limit = 3, queryVector = null, contextDiaryPrefixes = new Set(), requestCache = null) {
         if (!dbName || limit <= 0) return [];
 
-        const fileMetas = await this._getDiaryDateIndexCached(dbName, requestCache);
+        const diaryNames = Array.isArray(dbName) ? dbName : [dbName];
+        const metaGroups = await Promise.all(
+            diaryNames.map(name => this._getDiaryDateIndexCached(name, requestCache))
+        );
+        const fileMetas = metaGroups.flat();
 
         if (fileMetas.length === 0) return [];
         const recentFilePaths = fileMetas.map(meta => meta.relativePath);
@@ -3368,7 +3353,7 @@ class RAGDiaryPlugin {
 
             return recentResults.slice(0, limit);
         } catch (e) {
-            console.error(`[RAGDiaryPlugin] Recent chunk recall failed for "${dbName}":`, e.message);
+            console.error(`[RAGDiaryPlugin] Recent chunk recall failed for "${diaryNames.join('|')}":`, e.message);
             return [];
         }
     }
