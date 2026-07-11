@@ -1,0 +1,20 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "VCPTimeLine",
+  "displayName": "VCP Agent 时间线",
+  "version": "1.0.0",
+  "description": "为 Agent 生成按月时间线和一句话摘要，并通过 [[VCPTimeLine::Agent]] 或 [[VCPTimeLine::Agent:K:Threshold]] 注入全量月摘要及语义相关的完整月度时间线。",
+  "author": "VCPToolBox",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "VCPTimeLine.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 300000
+  },
+  "requiresContextBridge": true,
+  "hasApiRoutes": false,
+  "configSchema": {}
+}

@@ -39,6 +39,9 @@ export type * from './plugin'
 export { clawMailApi } from './clawMail'
 export type * from './clawMail'
 
+export { vcpTimelineApi } from './vcpTimeline'
+export type * from './vcpTimeline'
+
 // Agent 管理 API
 export { agentApi } from './agent'
 export type * from './agent'

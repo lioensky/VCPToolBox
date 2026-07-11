@@ -4551,6 +4551,26 @@ class RAGDiaryPlugin {
                 return self._findFuzzyEmbeddingFromCache(text, options);
             },
 
+            /**
+             * 在指定 dailynote 索引中执行只读向量检索。
+             * 供需要复用现有知识库向量、且不得重复向量化文档的插件使用。
+             * @param {string|string[]} diaryNames - 日记本/索引名称
+             * @param {Array|Float32Array} queryVector - 已生成的查询向量
+             * @param {number} [k=10] - 最大 chunk 数
+             * @returns {Promise<Array>} KnowledgeBaseManager 搜索结果
+             */
+            async searchDiary(diaryNames, queryVector, k = 10) {
+                if (!queryVector || !self.vectorDBManager || typeof self.vectorDBManager.search !== 'function') {
+                    return [];
+                }
+                const names = Array.isArray(diaryNames)
+                    ? diaryNames.map(name => String(name || '').trim()).filter(Boolean)
+                    : String(diaryNames || '').trim();
+                if ((Array.isArray(names) && names.length === 0) || !names) return [];
+                const safeK = Math.max(1, Math.min(1000, Math.floor(Number(k) || 10)));
+                return self.vectorDBManager.search(names, queryVector, safeK);
+            },
+
             // ═══════════════════════════════════════════════════
             // 文本处理工具
             // ═══════════════════════════════════════════════════

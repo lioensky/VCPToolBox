@@ -23,6 +23,7 @@ export type AppRouteId =
   | "agent-files-editor"
   | "agent-assistant-config"
   | "onering-manager"
+  | "agent-timeline-manager"
   | "claw-mail-manager"
   | "agent-emotion-manager"
   | "forum-assistant-config"
@@ -182,6 +183,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     path: "/onering-manager",
     title: "OneRing 管理",
     icon: "all_inclusive",
+    requiresAuth: true,
+    navGroup: "agentContent",
+    showInSidebar: true,
+  },
+  {
+    id: "agent-timeline-manager",
+    routeName: "AgentTimeLineManager",
+    path: "/agent-timeline-manager",
+    title: "Agent TimeLine",
+    icon: "timeline",
     requiresAuth: true,
     navGroup: "agentContent",
     showInSidebar: true,

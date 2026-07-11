@@ -12,6 +12,7 @@ export const APP_ROUTE_COMPONENTS = {
   "agent-files-editor": () => import("@/views/AgentFilesEditor.vue"),
   "agent-assistant-config": () => import("@/views/AgentAssistantConfig.vue"),
   "onering-manager": () => import("@/views/OneRingManager.vue"),
+  "agent-timeline-manager": () => import("@/views/AgentTimeLineManager.vue"),
   "claw-mail-manager": () => import("@/views/ClawMailManager.vue"),
   "agent-emotion-manager": () => import("@/views/AgentEmotionManager.vue"),
   "forum-assistant-config": () => import("@/views/ForumAssistantConfig.vue"),
