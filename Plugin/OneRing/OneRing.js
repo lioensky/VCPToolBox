@@ -16,8 +16,12 @@ const { ServerInferredTimelineStrategy } = require('./OneRingServerInferredTimel
 const oneRingMemo = require('./OneRingMemo.js');
 
 // ─── 触发语法解析 ────────────────────────────────────────────────────────────
-const TRIGGER_REGEX = /\[\[OneRing::([^:]+?)::([^:\]]+?)(?:::([^\]]+?))?\]\]/;
-const TRIGGER_GLOBAL_REGEX = /\[\[OneRing::([^:]+?)::([^:\]]+?)(?:::([^\]]+?))?\]\]/g;
+// 每个字段都必须被限制在同一个 [[...]] 内，尤其不能吞入右方括号或换行。
+// 否则独立的 [[OneRing::Only]] 会从 “Only]]” 开始跨行回溯，错误地借用后续
+// [[Flowlock::Start]] 等标记中的 “::”，把中间整段系统提示词识别成 OneRing 触发串。
+const ONERING_TRIGGER_PATTERN = String.raw`\[\[OneRing::([^:\]\r\n]+)::([^:\]\r\n]+)(?:::([^:\]\r\n]+))?\]\]`;
+const TRIGGER_REGEX = new RegExp(ONERING_TRIGGER_PATTERN);
+const TRIGGER_GLOBAL_REGEX = new RegExp(ONERING_TRIGGER_PATTERN, 'g');
 const ONLY_TRIGGER_GLOBAL_REGEX = /\[\[OneRing::Only\]\]/gi;
 const VCP_RAG_BLOCK_REGEX = /<!--\s*VCP_RAG_BLOCK_START\b[\s\S]*?<!--\s*VCP_RAG_BLOCK_END\s*-->/gi;
 
