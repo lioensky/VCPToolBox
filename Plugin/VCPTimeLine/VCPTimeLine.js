@@ -309,35 +309,48 @@ class VCPTimeLine {
 
     async processMessages(messages) {
         if (!this.config.enabled || !Array.isArray(messages)) return messages;
-        const declarations = [];
-        messages.forEach((message, index) => {
-            if (message?.role !== 'system' && message?.role !== 'user') return;
-            const text = this.extractText(message.content);
-            for (const match of text.matchAll(new RegExp(PLACEHOLDER_REGEX.source, PLACEHOLDER_REGEX.flags))) {
-                declarations.push({ index, ...this.parsePlaceholder(match) });
-            }
-        });
-        if (declarations.length === 0) return messages;
 
-        const queryContext = await this.buildQueryContext(messages);
-        const replacements = await Promise.all(declarations.map(async declaration => ({
-            ...declaration,
-            content: await this.buildInjection(
+        // 整个上下文只接受第一个可信声明：system，或正文以“[系统”开头的 user。
+        // 先确定唯一声明，再以单次正则替换清除其余声明，避免注入内容被递归展开。
+        let declaration = null;
+        for (let index = 0; index < messages.length && !declaration; index++) {
+            const message = messages[index];
+            const text = this.extractText(message?.content);
+            const trusted = message?.role === 'system'
+                || (message?.role === 'user' && /^\s*\[系统/.test(text));
+            if (!trusted) continue;
+
+            const match = new RegExp(PLACEHOLDER_REGEX.source).exec(text);
+            if (match) declaration = { index, ...this.parsePlaceholder(match) };
+        }
+
+        let injection = '';
+        if (declaration) {
+            const queryContext = await this.buildQueryContext(messages);
+            injection = await this.buildInjection(
                 this.safeAgentName(declaration.agentName),
                 queryContext,
                 declaration.k,
                 declaration.threshold
-            )
-        })));
-
-        const result = messages.map(message => ({ ...message }));
-        for (const replacement of replacements) {
-            result[replacement.index].content = this.replaceText(
-                result[replacement.index].content,
-                text => text.replace(replacement.placeholder, replacement.content)
             );
         }
-        return result;
+
+        let accepted = false;
+        return messages.map((message, index) => ({
+            ...message,
+            content: this.replaceText(message.content, text =>
+                text.replace(
+                    new RegExp(PLACEHOLDER_REGEX.source, PLACEHOLDER_REGEX.flags),
+                    (...args) => {
+                        if (!accepted && declaration && index === declaration.index && args[0] === declaration.placeholder) {
+                            accepted = true;
+                            return injection;
+                        }
+                        return '';
+                    }
+                )
+            )
+        }));
     }
 
     parseMemoryHeader(content) {
