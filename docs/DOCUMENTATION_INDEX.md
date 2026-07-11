@@ -26,6 +26,7 @@
 |------|------|--------|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 系统架构、启动序列、模块依赖图、核心组件关系 | ⭐⭐⭐ |
 | [PLUGIN_ECOSYSTEM.md](./PLUGIN_ECOSYSTEM.md) | 插件类型、manifest schema、执行模式、配置机制 | ⭐⭐⭐ |
+| [VCP_TOOL_RESULT_PIPELINE_REFACTOR_SPEC.md](./VCP_TOOL_RESULT_PIPELINE_REFACTOR_SPEC.md) | 工具返回管线理想最终版开发书：统一结果协议、资源/错误/异步模型、多消费者投影与全插件迁移验收规范 | ⭐⭐⭐ |
 | [CONFIGURATION.md](./CONFIGURATION.md) | 所有配置参数、优先级规则、影响范围、风险警告 | ⭐⭐⭐ |
 | [API_ROUTES.md](./API_ROUTES.md) | HTTP端点、认证要求、参数规范、处理逻辑 | ⭐⭐⭐ |
 
@@ -61,6 +62,7 @@
 |------|----------|
 | 理解系统启动流程 | [ARCHITECTURE.md](./ARCHITECTURE.md) § 启动序列 |
 | 开发新插件 | [PLUGIN_ECOSYSTEM.md](./PLUGIN_ECOSYSTEM.md) § Manifest Schema |
+| 重构工具返回协议或迁移插件输出 | [VCP_TOOL_RESULT_PIPELINE_REFACTOR_SPEC.md](./VCP_TOOL_RESULT_PIPELINE_REFACTOR_SPEC.md) |
 | 插件间共享向量能力 | [CONTEXT_BRIDGE.md](./CONTEXT_BRIDGE.md) § 快速接入指南 |
 | 修改配置参数 | [CONFIGURATION.md](./CONFIGURATION.md) § 配置语义总表 |
 | 添加新API端点 | [API_ROUTES.md](./API_ROUTES.md) § 路由挂载流程 |
@@ -81,6 +83,7 @@
 |------|----------|----------|
 | 服务器启动 | `server.js` | [ARCHITECTURE.md](./ARCHITECTURE.md) § 启动序列 |
 | 插件管理 | `Plugin.js` | [PLUGIN_ECOSYSTEM.md](./PLUGIN_ECOSYSTEM.md) § 生命周期 |
+| 工具返回运行时（规划最终态） | `modules/tool-runtime/` | [VCP_TOOL_RESULT_PIPELINE_REFACTOR_SPEC.md](./VCP_TOOL_RESULT_PIPELINE_REFACTOR_SPEC.md) |
 | WebSocket | `WebSocketServer.js` | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) § 协议 |
 | 知识库 | `KnowledgeBaseManager.js` | [MEMORY_SYSTEM.md](./MEMORY_SYSTEM.md) § 架构 |
 | 向量引擎 | `rust-vexus-lite/` | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) |
