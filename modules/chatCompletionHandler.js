@@ -1121,7 +1121,6 @@ class ChatCompletionHandler {
       }
 
       // 经过改造后，processedMessages 已经是最终版本，无需再调用 replaceOtherVariables
-
       originalBody.messages = processedMessages;
 
       let oneRingResponseMeta = null;

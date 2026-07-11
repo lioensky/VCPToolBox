@@ -317,11 +317,89 @@ export interface MultiModalConfigResponse {
   message?: string;
 }
 
+export interface OneRingMemoConfig {
+  enabled: boolean;
+  autoGenerate: boolean;
+  updateIntervalMinutes: number;
+  timelineDays: number;
+  fallbackMessageCount: number;
+  model: string;
+  maxContextTokens: number;
+  maxOutputTokens: number;
+}
+
 export interface OneRingConfig {
   enabled: boolean;
   tailTagPlacement: 'inline' | 'system_user_block';
   maxContextBlocks: number;
   timeInsert: boolean;
+  timeInsertPrepend: boolean;
+  timeInsertMiddle: boolean;
+  asyncOnlyMode: boolean;
+  memo: OneRingMemoConfig;
+}
+
+export interface OneRingMemo {
+  agentName: string;
+  summary: string;
+  generatedAt?: string | null;
+  editedAt?: string | null;
+  source?: string;
+  model?: string;
+  timelineDays?: number;
+  fallbackMessageCount?: number;
+  sourceMessageCount?: number;
+  sourceFirstTimestamp?: string | null;
+  sourceLastTimestamp?: string | null;
+}
+
+export type OneRingMemoGenerationPhase =
+  | 'idle'
+  | 'preparing'
+  | 'summarizing'
+  | 'merging'
+  | 'writing'
+  | 'completed'
+  | 'failed';
+
+export interface OneRingMemoGenerationStatus {
+  agentName: string;
+  running: boolean;
+  phase: OneRingMemoGenerationPhase;
+  phaseLabel: string;
+  completed: number;
+  total: number;
+  mergeRound: number;
+  reason?: string | null;
+  startedAt?: string | null;
+  updatedAt?: string | null;
+  finishedAt?: string | null;
+  error?: string | null;
+}
+
+export interface OneRingMemoAgent {
+  agentName: string;
+  memo: OneRingMemo | null;
+}
+
+export interface OneRingMemoListResponse {
+  success?: boolean;
+  agents: OneRingMemoAgent[];
+}
+
+export interface OneRingMemoResponse {
+  success?: boolean;
+  agentName: string;
+  memo: OneRingMemo | null;
+  status?: OneRingMemoGenerationStatus;
+  message?: string;
+}
+
+export interface OneRingMemoStatusResponse {
+  success?: boolean;
+  agentName: string;
+  memo: OneRingMemo | null;
+  status: OneRingMemoGenerationStatus;
 }
 
 export interface BridgeHijackConfig {

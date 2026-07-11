@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
 const finalContextStore = require('../../modules/finalContextStore.js');
+const oneRingMemo = require('../../Plugin/OneRing/OneRingMemo.js');
 const {
     CONFIG_PATH: BRIDGE_CONFIG_PATH,
     DESCRIPTION: BRIDGE_CONFIG_DESCRIPTION,
@@ -14,7 +15,11 @@ const DEFAULT_ONERING_CONFIG = Object.freeze({
     enabled: true,
     tailTagPlacement: 'inline',
     maxContextBlocks: 10,
-    timeInsert: true
+    timeInsert: true,
+    timeInsertPrepend: true,
+    timeInsertMiddle: true,
+    asyncOnlyMode: true,
+    memo: { ...oneRingMemo.DEFAULT_CONFIG }
 });
 
 function normalizeBoolean(value, defaultValue) {
@@ -46,8 +51,21 @@ function normalizeOneRingConfig(raw = {}) {
         enabled: normalizeBoolean(raw.enabled, DEFAULT_ONERING_CONFIG.enabled),
         tailTagPlacement: normalizeTailTagPlacement(raw.tailTagPlacement),
         maxContextBlocks: normalizePositiveInteger(raw.maxContextBlocks, DEFAULT_ONERING_CONFIG.maxContextBlocks),
-        timeInsert: normalizeBoolean(raw.timeInsert, DEFAULT_ONERING_CONFIG.timeInsert)
+        timeInsert: normalizeBoolean(raw.timeInsert, DEFAULT_ONERING_CONFIG.timeInsert),
+        timeInsertPrepend: normalizeBoolean(raw.timeInsertPrepend, DEFAULT_ONERING_CONFIG.timeInsertPrepend),
+        timeInsertMiddle: normalizeBoolean(raw.timeInsertMiddle, DEFAULT_ONERING_CONFIG.timeInsertMiddle),
+        asyncOnlyMode: normalizeBoolean(raw.asyncOnlyMode, DEFAULT_ONERING_CONFIG.asyncOnlyMode),
+        memo: oneRingMemo.normalizeConfig(raw.memo)
     };
+}
+
+async function readOneRingConfig() {
+    try {
+        return normalizeOneRingConfig(JSON.parse(await fs.readFile(getOneRingConfigPath(), 'utf8')));
+    } catch (error) {
+        if (error.code === 'ENOENT') return normalizeOneRingConfig(DEFAULT_ONERING_CONFIG);
+        throw error;
+    }
 }
 
 function getOneRingConfigPath() {
@@ -139,7 +157,8 @@ module.exports = function() {
                     enabled: 'OneRing 热开关。false 时插件直接透传 messages，不再读取 ONERING_ENABLED 环境开关。',
                     tailTagPlacement: 'OneRing 来源标记输出位置。inline=继续追加到原 user/assistant 块内部；system_user_block=从原块剥离后追加独立 user 伪系统提示块，降低 assistant 块内部来源标记导致的 AI 幻觉风险。',
                     maxContextBlocks: '最大补充后上下文 block 数。block 指 role=user 或 role=assistant 的消息块；若当前 post 已经接近或超过该数量，OneRing 不再继续插入补充消息。',
-                    timeInsert: '是否允许基于时间戳顺序进行 Post 内插入。true=按时间线合并补入消息；false=不做时间线内插入。'
+                    timeInsert: '是否允许基于时间戳顺序进行 Post 内插入。true=按时间线合并补入消息；false=不做时间线内插入。',
+                    memo: 'OneRingMemo 独立短期时间线摘要配置。摘要生成与请求注入异步解耦。'
                 }
             };
             await fs.writeFile(configPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
@@ -152,6 +171,84 @@ module.exports = function() {
         } catch (error) {
             console.error('[FinalContext] Failed to save OneRing config:', error);
             res.status(500).json({ success: false, error: '保存 OneRingConfig.json 失败', details: error.message });
+        }
+    });
+
+    router.get('/onering-memos', async (req, res) => {
+        try {
+            const agents = oneRingMemo.listAgentNames().map(agentName => ({
+                agentName,
+                memo: oneRingMemo.readMemo(agentName)
+            }));
+            res.json({ success: true, agents });
+        } catch (error) {
+            res.status(500).json({ success: false, error: '读取 OneRingMemo 列表失败', details: error.message });
+        }
+    });
+
+    router.get('/onering-memos/:agentName/status', async (req, res) => {
+        const agentName = String(req.params.agentName || '').trim();
+        if (!agentName) return res.status(400).json({ success: false, error: 'agentName 不能为空' });
+        res.json({
+            success: true,
+            agentName,
+            status: oneRingMemo.getGenerationStatus(agentName),
+            memo: oneRingMemo.readMemo(agentName)
+        });
+    });
+
+    router.get('/onering-memos/:agentName', async (req, res) => {
+        const agentName = String(req.params.agentName || '').trim();
+        if (!agentName) return res.status(400).json({ success: false, error: 'agentName 不能为空' });
+        res.json({
+            success: true,
+            agentName,
+            memo: oneRingMemo.readMemo(agentName),
+            status: oneRingMemo.getGenerationStatus(agentName)
+        });
+    });
+
+    router.put('/onering-memos/:agentName', async (req, res) => {
+        const agentName = String(req.params.agentName || '').trim();
+        if (!agentName) return res.status(400).json({ success: false, error: 'agentName 不能为空' });
+        try {
+            const memo = oneRingMemo.updateMemoText(agentName, req.body?.summary || '');
+            res.json({ success: true, agentName, memo, message: 'OneRingMemo 摘要已保存。' });
+        } catch (error) {
+            const conflict = error.code === 'MEMO_GENERATION_IN_PROGRESS';
+            res.status(conflict ? 409 : 500).json({
+                success: false,
+                error: conflict ? '摘要生成中，暂时禁止人工覆写' : '保存 OneRingMemo 摘要失败',
+                details: error.message,
+                status: oneRingMemo.getGenerationStatus(agentName)
+            });
+        }
+    });
+
+    router.post('/onering-memos/:agentName/generate', async (req, res) => {
+        const agentName = String(req.params.agentName || '').trim();
+        if (!agentName) return res.status(400).json({ success: false, error: 'agentName 不能为空' });
+        try {
+            const config = await readOneRingConfig();
+            const started = oneRingMemo.startGeneration(agentName, config.memo, 'manual');
+            if (!started.accepted) {
+                return res.status(409).json({
+                    success: false,
+                    agentName,
+                    status: started.status,
+                    error: '该 Agent 的摘要生成任务已在运行，请等待当前任务完成。'
+                });
+            }
+            res.status(202).json({
+                success: true,
+                agentName,
+                status: started.status,
+                memo: oneRingMemo.readMemo(agentName),
+                message: 'OneRingMemo 摘要任务已启动。'
+            });
+        } catch (error) {
+            console.error(`[OneRingMemo] Manual generation start failed for "${agentName}":`, error);
+            res.status(500).json({ success: false, error: '启动 OneRingMemo 摘要任务失败', details: error.message });
         }
     });
 

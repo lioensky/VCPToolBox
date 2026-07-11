@@ -2,12 +2,6 @@
   <section class="config-section active-section final-context-page">
     <Teleport to="#page-header-actions">
       <UiPageActions>
-        <UiButton variant="outline" @click="openOneRingConfigModal" :disabled="isOneRingConfigLoading">
-          <template #leading>
-            <span class="material-symbols-outlined" :class="{ spinning: isOneRingConfigLoading }">settings</span>
-          </template>
-          ORing配置
-        </UiButton>
         <UiButton variant="outline" @click="refreshList" :disabled="isLoading">
           <template #leading>
             <span class="material-symbols-outlined" :class="{ spinning: isLoading }">sync</span>
@@ -480,64 +474,6 @@
       </div>
     </Teleport>
 
-    <Teleport to="body">
-      <div v-if="showOneRingConfigModal" class="modal-backdrop" @click.self="closeOneRingConfigModal">
-        <section class="onering-modal" role="dialog" aria-modal="true" aria-labelledby="onering-config-title">
-          <header class="modal-header">
-          <div>
-            <h3 id="onering-config-title">OneRing 热配置</h3>
-            <p>保存后会写入 Plugin/OneRing/OneRingConfig.json，运行中的 OneRing 会通过 chokidar 自动热加载。</p>
-          </div>
-          <UiIconButton label="关闭" title="关闭" @click="closeOneRingConfigModal">
-            <span class="material-symbols-outlined">close</span>
-          </UiIconButton>
-        </header>
-
-        <div class="modal-body">
-          <div class="config-toggle-row">
-            <AppCheckbox v-model="oneRingConfigDraft.enabled" aria-label="启用 OneRing" />
-            <span>
-              <strong>启用 OneRing</strong>
-              <small>false 时插件直接透传 messages。</small>
-            </span>
-          </div>
-
-          <label class="config-field">
-            <span>来源标记输出位置</span>
-            <UiSelect v-model="oneRingConfigDraft.tailTagPlacement">
-              <option value="inline">inline：追加到原 user/assistant 块内部</option>
-              <option value="system_user_block">system_user_block：拆成独立 user 伪系统提示块</option>
-            </UiSelect>
-          </label>
-
-          <label class="config-field">
-            <span>最大补充后上下文 block 数</span>
-            <UiInput v-model.number="oneRingConfigDraft.maxContextBlocks" type="number" min="1" step="1" />
-          </label>
-
-          <div class="config-toggle-row">
-            <AppCheckbox v-model="oneRingConfigDraft.timeInsert" aria-label="允许时间线内插入" />
-            <span>
-              <strong>允许时间线内插入</strong>
-              <small>true 时按 OneRing 时间戳合并补入消息；false 时不做时间线内插入。</small>
-            </span>
-          </div>
-        </div>
-
-        <footer class="modal-actions">
-          <UiButton variant="outline" @click="closeOneRingConfigModal" :disabled="isOneRingConfigSaving">
-            取消
-          </UiButton>
-          <UiButton variant="primary" @click="saveOneRingConfig" :disabled="isOneRingConfigSaving">
-            <template v-if="isOneRingConfigSaving" #leading>
-              <span class="material-symbols-outlined spinning">sync</span>
-            </template>
-            保存
-          </UiButton>
-        </footer>
-        </section>
-      </div>
-    </Teleport>
   </section>
 </template>
 
@@ -552,7 +488,7 @@ import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
 import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiSelect from '@/components/ui/UiSelect.vue'
-import type { FinalContextBlockSummary, FinalContextListItem, FinalContextSnapshot, OneRingConfig } from '@/types/api.system'
+import type { FinalContextBlockSummary, FinalContextListItem, FinalContextSnapshot } from '@/types/api.system'
 import { copyToClipboard, showMessage } from '@/utils'
 import {
   getDefaultMoonlightOptions,
@@ -574,17 +510,6 @@ const snapshotList = ref<FinalContextListItem[]>([])
 const selectedSnapshotId = ref<number | null>(null)
 const maxSnapshots = ref(5)
 
-const defaultOneRingConfig: OneRingConfig = {
-  enabled: true,
-  tailTagPlacement: 'inline',
-  maxContextBlocks: 10,
-  timeInsert: true,
-}
-
-const showOneRingConfigModal = ref(false)
-const isOneRingConfigLoading = ref(false)
-const isOneRingConfigSaving = ref(false)
-const oneRingConfigDraft = ref<OneRingConfig>({ ...defaultOneRingConfig })
 const moonlightOptions = reactive(getDefaultMoonlightOptions())
 const moonlightReport = ref<MoonlightReport | null>(null)
 const showMoonlightModal = ref(false)
@@ -1210,58 +1135,6 @@ function jumpMatch(direction: 1 | -1) {
       : (currentMatchPosition + direction + matches.length) % matches.length
 
   scrollToBlock(matches[nextPosition].index)
-}
-
-async function openOneRingConfigModal() {
-  showOneRingConfigModal.value = true
-  isOneRingConfigLoading.value = true
-  try {
-    const response = await systemApi.getOneRingConfig(
-      {},
-      {
-        showLoader: false,
-        suppressErrorMessage: true,
-      }
-    )
-    oneRingConfigDraft.value = {
-      enabled: response.config.enabled,
-      tailTagPlacement: response.config.tailTagPlacement,
-      maxContextBlocks: response.config.maxContextBlocks,
-      timeInsert: response.config.timeInsert,
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    showMessage(`加载 OneRing 配置失败：${message}`, 'error')
-  } finally {
-    isOneRingConfigLoading.value = false
-  }
-}
-
-function closeOneRingConfigModal() {
-  if (isOneRingConfigSaving.value) return
-  showOneRingConfigModal.value = false
-}
-
-async function saveOneRingConfig() {
-  const normalizedConfig: OneRingConfig = {
-    enabled: Boolean(oneRingConfigDraft.value.enabled),
-    tailTagPlacement: oneRingConfigDraft.value.tailTagPlacement === 'system_user_block' ? 'system_user_block' : 'inline',
-    maxContextBlocks: Math.max(1, Math.floor(Number(oneRingConfigDraft.value.maxContextBlocks) || defaultOneRingConfig.maxContextBlocks)),
-    timeInsert: Boolean(oneRingConfigDraft.value.timeInsert),
-  }
-
-  isOneRingConfigSaving.value = true
-  try {
-    const response = await systemApi.saveOneRingConfig(normalizedConfig, {}, { showLoader: false })
-    oneRingConfigDraft.value = { ...response.config }
-    showOneRingConfigModal.value = false
-    showMessage(response.message || 'OneRing 配置已保存', 'success')
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    showMessage(`保存 OneRing 配置失败：${message}`, 'error')
-  } finally {
-    isOneRingConfigSaving.value = false
-  }
 }
 
 async function copyVisibleText() {
