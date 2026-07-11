@@ -4429,7 +4429,7 @@ class RAGDiaryPlugin {
      */
     getContextBridge() {
         const self = this;
-        const BRIDGE_VERSION = '1.0';
+        const BRIDGE_VERSION = '1.1';
 
         return Object.freeze({
             /** 接口版本号，用于未来兼容性检查 */
@@ -4569,6 +4569,126 @@ class RAGDiaryPlugin {
                 if ((Array.isArray(names) && names.length === 0) || !names) return [];
                 const safeK = Math.max(1, Math.min(1000, Math.floor(Number(k) || 10)));
                 return self.vectorDBManager.search(names, queryVector, safeK);
+            },
+
+            /**
+             * 执行结构化日记检索，可选择复用 TagMemo 浪潮增强与测地线重排。
+             * 此接口只返回候选及检索元数据，不生成展示文本，也不重新向量化日记文档。
+             * TagBoost 在桥内只计算一次，并通过 preparedBoostResult 传入 KnowledgeBaseManager，
+             * 避免感应阶段和实际搜索阶段重复运行浪潮管线。
+             *
+             * @param {object} options
+             * @param {string|string[]} options.diaryNames - 日记本/索引名称
+             * @param {Array|Float32Array} options.queryVector - 已生成的查询向量
+             * @param {number} [options.k=10] - 最大候选 chunk 数
+             * @param {boolean} [options.tagMemo=false] - 是否启用 TagMemo 浪潮增强
+             * @param {number} [options.tagWeight] - 显式 Tag 权重；省略时使用动态权重
+             * @param {boolean} [options.geodesicRerank=false] - 是否启用查询级测地线重排
+             * @param {boolean} [options.deduplicate=false] - 是否执行智能语义去重
+             * @param {string} [options.userText=''] - 动态参数计算使用的用户文本
+             * @param {string} [options.aiText=''] - 动态参数计算使用的 AI 文本
+             * @param {Array} [options.coreTags=[]] - 显式核心 Tag 或幽灵节点
+             * @returns {Promise<{results:Array, meta:object}>}
+             */
+            async retrieveDiary(options = {}) {
+                const {
+                    diaryNames,
+                    queryVector,
+                    k = 10,
+                    tagMemo = false,
+                    tagWeight,
+                    geodesicRerank = false,
+                    deduplicate = false,
+                    userText = '',
+                    aiText = '',
+                    coreTags = []
+                } = options || {};
+
+                if (!queryVector || !self.vectorDBManager || typeof self.vectorDBManager.search !== 'function') {
+                    return { results: [], meta: { tagMemoUsed: false, fallbackReason: 'search-unavailable' } };
+                }
+
+                const names = Array.isArray(diaryNames)
+                    ? [...new Set(diaryNames.map(name => String(name || '').trim()).filter(Boolean))]
+                    : String(diaryNames || '').trim();
+                if ((Array.isArray(names) && names.length === 0) || !names) {
+                    return { results: [], meta: { tagMemoUsed: false, fallbackReason: 'empty-diary-scope' } };
+                }
+
+                const safeK = Math.max(1, Math.min(1000, Math.floor(Number(k) || 10)));
+                let effectiveTagWeight = null;
+                let preparedBoostResult = null;
+                let matchedTags = [];
+                let dynamicMetrics = null;
+                let fallbackReason = null;
+
+                if (tagMemo && typeof self.vectorDBManager.applyTagBoost === 'function') {
+                    try {
+                        if (Number.isFinite(Number(tagWeight))) {
+                            effectiveTagWeight = Math.max(0.01, Math.min(1, Number(tagWeight)));
+                        } else {
+                            const dynamicParams = await self._calculateDynamicParams(
+                                queryVector,
+                                String(userText || ''),
+                                String(aiText || '')
+                            );
+                            effectiveTagWeight = dynamicParams.tagWeight;
+                            dynamicMetrics = dynamicParams.metrics;
+                        }
+
+                        preparedBoostResult = self.vectorDBManager.applyTagBoost(
+                            new Float32Array(queryVector),
+                            effectiveTagWeight,
+                            Array.isArray(coreTags) ? coreTags : []
+                        );
+                        matchedTags = preparedBoostResult?.info?.matchedTags || [];
+                    } catch (error) {
+                        effectiveTagWeight = null;
+                        preparedBoostResult = null;
+                        fallbackReason = `tagmemo-failed: ${error.message}`;
+                        console.warn('[RAGDiaryPlugin] ContextBridge retrieveDiary TagMemo fallback:', error.message);
+                    }
+                } else if (tagMemo) {
+                    fallbackReason = 'tagmemo-unavailable';
+                }
+
+                const searchOptions = preparedBoostResult ? {
+                    preparedBoostResult,
+                    geodesicRerank: geodesicRerank === true
+                } : undefined;
+
+                let results = await self.vectorDBManager.search(
+                    names,
+                    queryVector,
+                    safeK,
+                    preparedBoostResult ? effectiveTagWeight : 0,
+                    matchedTags,
+                    undefined,
+                    searchOptions
+                );
+
+                if (
+                    deduplicate === true &&
+                    Array.isArray(results) &&
+                    results.length > 1 &&
+                    typeof self.vectorDBManager.deduplicateResults === 'function'
+                ) {
+                    results = await self.vectorDBManager.deduplicateResults(results, queryVector);
+                    results = results.slice(0, safeK);
+                }
+
+                return {
+                    results: Array.isArray(results) ? results : [],
+                    meta: {
+                        tagMemoUsed: !!preparedBoostResult,
+                        tagWeight: preparedBoostResult ? effectiveTagWeight : null,
+                        geodesicRerankUsed: !!preparedBoostResult && geodesicRerank === true,
+                        deduplicated: deduplicate === true,
+                        matchedTags,
+                        metrics: dynamicMetrics,
+                        fallbackReason
+                    }
+                };
             },
 
             // ═══════════════════════════════════════════════════

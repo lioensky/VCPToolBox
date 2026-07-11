@@ -194,15 +194,19 @@ class VCPTimeLine {
         return '';
     }
 
-    async buildQueryVector(messages) {
-        if (!this.contextBridge) return null;
+    async buildQueryContext(messages) {
+        if (!this.contextBridge) return { queryVector: null, userText: '', aiText: '' };
         const userText = this.contextBridge.sanitize(this.findLatestRealMessage(messages, 'user'), 'user');
         const aiText = this.contextBridge.sanitize(this.findLatestRealMessage(messages, 'assistant'), 'assistant');
         const [userVector, aiVector] = await Promise.all([
             userText ? this.contextBridge.embedText(userText) : null,
             aiText ? this.contextBridge.embedText(aiText) : null
         ]);
-        return this.contextBridge.weightedAverage([userVector, aiVector], [0.7, 0.3]);
+        return {
+            queryVector: this.contextBridge.weightedAverage([userVector, aiVector], [0.7, 0.3]),
+            userText,
+            aiText
+        };
     }
 
     async listTimelineFiles(agentName) {
@@ -222,7 +226,8 @@ class VCPTimeLine {
         }
     }
 
-    async buildInjection(agentName, queryVector, k, threshold) {
+    async buildInjection(agentName, queryContext, k, threshold) {
+        const { queryVector, userText = '', aiText = '' } = queryContext || {};
         const [store, files] = await Promise.all([this.readSummaryStore(), this.listTimelineFiles(agentName)]);
         const agentSummaries = store[agentName] || {};
         const summaryLines = Object.keys(agentSummaries).sort().map(month => `- ${month}：${agentSummaries[month]}`).filter(Boolean);
@@ -246,7 +251,27 @@ class VCPTimeLine {
         // 索引名称必须与服务器上的真实目录名完全一致（Linux 大小写敏感）。
         const indexName = path.basename(this.getTimelineDir(agentName, false));
         const candidateK = Math.max(k * 8, 20);
-        const chunks = await this.contextBridge.searchDiary(indexName, queryVector, candidateK);
+        let chunks = [];
+        let retrievalMeta = null;
+
+        if (typeof this.contextBridge.retrieveDiary === 'function') {
+            const retrieval = await this.contextBridge.retrieveDiary({
+                diaryNames: indexName,
+                queryVector,
+                k: candidateK,
+                tagMemo: true,
+                geodesicRerank: true,
+                deduplicate: false,
+                userText,
+                aiText
+            });
+            chunks = retrieval?.results || [];
+            retrievalMeta = retrieval?.meta || null;
+        } else {
+            // 兼容 ContextBridge 1.0：桥接层未升级时退化为普通 KNN。
+            chunks = await this.contextBridge.searchDiary(indexName, queryVector, candidateK);
+        }
+
         const fileByMonth = new Map(files.map(file => [file.month, file]));
         const bestScoreByMonth = new Map();
 
@@ -271,8 +296,11 @@ class VCPTimeLine {
             .slice(0, k);
 
         if (expanded.length > 0) {
+            const retrievalMode = retrievalMeta?.tagMemoUsed
+                ? `TagMemo 浪潮${retrievalMeta.geodesicRerankUsed ? ' + 测地线重排' : ''}`
+                : '向量检索';
             sections.push([
-                `## 与当前对话相关的完整月度时间线（Top ${expanded.length}，阈值 ${threshold}）`,
+                `## 与当前对话相关的完整月度时间线（Top ${expanded.length}，阈值 ${threshold}，${retrievalMode}）`,
                 ...expanded.map(file => `### ${file.month}（相关度 ${file.score.toFixed(4)}）\n${file.content.trim()}`)
             ].join('\n\n'));
         }
@@ -291,12 +319,12 @@ class VCPTimeLine {
         });
         if (declarations.length === 0) return messages;
 
-        const queryVector = await this.buildQueryVector(messages);
+        const queryContext = await this.buildQueryContext(messages);
         const replacements = await Promise.all(declarations.map(async declaration => ({
             ...declaration,
             content: await this.buildInjection(
                 this.safeAgentName(declaration.agentName),
-                queryVector,
+                queryContext,
                 declaration.k,
                 declaration.threshold
             )
