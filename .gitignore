@@ -196,6 +196,14 @@ Plugin/WeatherReporter/weather_cache.txt
 Plugin/WeatherReporter/city_cache.txt
 ToolConfigs/dynamic_tool_catalog.json
 ToolConfigs/dynamic_tool_categories.json
+ToolConfigs/*.tmp
+Plugin/VCPClawMail/data/
+Plugin/VCPTaskAssistant/task-center-data.json
+Plugin/VCPTavern/access_logs.json
+Plugin/VCPTimeLine/timeline_summaries.json
+Plugin/OneRing/memo/
+VCPAsyncResults/
+file/document/AgentTask/
 Plugin/UrlFetch/browser-profiles
 Plugin/ChromeBridge/ChromeScripts
 Plugin/ChromeBridge/managed-extension-stage
@@ -208,8 +216,11 @@ image/通用表情包/*
 !image/通用表情包/阿库娅-一脸智障.jpg
 !image/通用表情包/阿库娅-智慧的眼神.jpg
 
-# 忽略 FluxGen 生成的图片
+# 忽略图片生成插件的输出
 image/fluxgen/
+image/gptimagegen/
+image/agnesgen/
+image/zimageturbogen/
 # 忽略 B站截图的图片
 image/bilibili/
 
