@@ -11,6 +11,8 @@ export interface VcpTimelineConfig {
   publicFolderPrefixes: string[]
   ignoreFolders: string[]
   summaryPrompt: string
+  aliases: Record<string, string[]>
+  agentFolders: Record<string, string[]>
 }
 
 export interface VcpTimelineStatus {
@@ -40,6 +42,11 @@ export interface VcpTimelineAgentDetail {
   status: VcpTimelineStatus
 }
 
+export interface VcpTimelineFolderInfo {
+  name: string
+  included: boolean
+}
+
 interface ConfigResponse {
   success: boolean
   config: VcpTimelineConfig
@@ -65,6 +72,16 @@ interface TaskResponse {
   success: boolean
   accepted: boolean
   status: VcpTimelineStatus
+}
+
+interface DiscoverAliasesResponse {
+  success: boolean
+  suggestions: string[]
+}
+
+interface FoldersResponse {
+  success: boolean
+  folders: VcpTimelineFolderInfo[]
 }
 
 const quiet: RequestUiOptions = { showLoader: false }
@@ -133,6 +150,20 @@ export const vcpTimelineApi = {
       url: `/admin_api/vcp-timeline/agents/${encodeURIComponent(agentName)}/generate-summaries`,
       method: 'POST',
       body: options,
+      ...context,
+    }, ui)
+  },
+
+  discoverAliases(agentName: string, context: HttpRequestContext = {}, ui: RequestUiOptions = quiet) {
+    return requestWithUi<DiscoverAliasesResponse>({
+      url: `/admin_api/vcp-timeline/agents/${encodeURIComponent(agentName)}/discover-aliases`,
+      ...context,
+    }, ui)
+  },
+
+  getAgentFolders(agentName: string, context: HttpRequestContext = {}, ui: RequestUiOptions = quiet) {
+    return requestWithUi<FoldersResponse>({
+      url: `/admin_api/vcp-timeline/agents/${encodeURIComponent(agentName)}/folders`,
       ...context,
     }, ui)
   },

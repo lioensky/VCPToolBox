@@ -111,6 +111,55 @@
         </span>
       </div>
 
+            <!-- 关联昵称 -->
+      <div v-if="selectedAgent" class="aliases-section">
+        <div class="aliases-header">
+          <h4>关联昵称（Aliases）</h4>
+          <UiButton variant="outline" :disabled="discoveringAliases || running" @click="discoverAliases">
+            <template #leading><span class="material-symbols-outlined" :class="{ spinning: discoveringAliases }">search</span></template>
+            自动发现
+          </UiButton>
+        </div>
+        <p class="aliases-desc">配置该 Agent 的历史名字，让 TimeLine 生成时也能匹配旧日记签名。</p>
+        <div class="aliases-tags">
+          <span v-for="(alias, idx) in currentAliases" :key="idx" class="alias-tag">
+            {{ alias }}
+            <button class="alias-remove" @click="removeAlias(idx)">&times;</button>
+          </span>
+          <span v-if="!currentAliases.length" class="alias-empty">暂无关联昵称</span>
+        </div>
+        <div v-if="aliasSuggestions.length" class="aliases-suggestions">
+          <small>发现的历史签名：</small>
+          <span v-for="s in aliasSuggestions" :key="s" class="alias-suggestion" @click="addAliasSuggestion(s)">+ {{ s }}</span>
+        </div>
+        <div class="aliases-input-row">
+          <UiInput v-model.trim="newAliasInput" placeholder="手动输入别名" @keyup.enter="addManualAlias" />
+          <UiButton variant="outline" :disabled="!newAliasInput" @click="addManualAlias">添加</UiButton>
+        </div>
+      </div>
+
+      <!-- 自定义文件夹 -->
+      <div v-if="selectedAgent" class="folders-section">
+        <div class="folders-header">
+          <h4>自定义文件夹</h4>
+          <UiButton variant="outline" :disabled="loadingFolders || running" @click="loadFolders">
+            <template #leading><span class="material-symbols-outlined" :class="{ spinning: loadingFolders }">refresh</span></template>
+            刷新列表
+          </UiButton>
+          <UiButton v-if="foldersCustomized" variant="outline" @click="resetFolders">
+            恢复默认（前缀模式）
+          </UiButton>
+        </div>
+        <p class="folders-desc">勾选参与 TimeLine 统计的日记文件夹。未手动配置时自动按前缀规则推导。</p>
+        <div v-if="foldersList.length" class="folders-list">
+          <label v-for="folder in foldersList" :key="folder.name" class="folder-item">
+            <AppCheckbox :model-value="folder.included" @update:model-value="toggleFolder(folder.name, $event)" />
+            <span>{{ folder.name }}</span>
+          </label>
+        </div>
+        <div v-else class="alias-empty">{{ loadingFolders ? '加载中...' : '暂无文件夹数据，请点击刷新列表' }}</div>
+      </div>
+
       <div class="actions task-actions">
         <UiButton variant="primary" :disabled="!selectedAgent || running" @click="startTimelineGeneration">
           <template #leading><span class="material-symbols-outlined">auto_awesome</span></template>
@@ -174,7 +223,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { vcpTimelineApi, type VcpTimelineAgentDetail, type VcpTimelineConfig, type VcpTimelineStatus } from '@/api/vcpTimeline'
+import { vcpTimelineApi, type VcpTimelineAgentDetail, type VcpTimelineConfig, type VcpTimelineFolderInfo, type VcpTimelineStatus } from '@/api/vcpTimeline'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiField from '@/components/ui/UiField.vue'
@@ -195,6 +244,8 @@ const defaults: VcpTimelineConfig = {
   publicFolderPrefixes: ['公共'],
   ignoreFolders: ['node_modules', '.git'],
   summaryPrompt: '',
+  aliases: {},
+  agentFolders: {},
 }
 
 const config = ref<VcpTimelineConfig>(structuredClone(defaults))
@@ -218,6 +269,18 @@ const savingSummary = ref(false)
 const status = ref<VcpTimelineStatus | null>(null)
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 
+// Aliases state
+const currentAliases = ref<string[]>([])
+const aliasSuggestions = ref<string[]>([])
+const newAliasInput = ref('')
+const discoveringAliases = ref(false)
+
+// Folders state
+const foldersList = ref<VcpTimelineFolderInfo[]>([])
+const loadingFolders = ref(false)
+const foldersCustomized = ref(false)
+
+
 const running = computed(() => Boolean(status.value?.running))
 const availableMonths = computed(() => {
   const months = new Set<string>(Object.keys(detail.value?.summaries || {}))
@@ -234,13 +297,21 @@ watch(selectedAgent, async agentName => {
   detail.value = null
   selectedMonth.value = ''
   status.value = null
+  currentAliases.value = []
+  aliasSuggestions.value = []
+  foldersList.value = []
+  foldersCustomized.value = false
   if (!agentName) return
   try {
     await loadAgent(agentName)
+    currentAliases.value = [...(config.value.aliases?.[agentName] || [])]
+    foldersCustomized.value = Array.isArray(config.value.agentFolders?.[agentName]) && config.value.agentFolders[agentName].length > 0
+    await loadFolders()
   } catch (error) {
     showMessage(`加载 Agent「${agentName}」失败：${error instanceof Error ? error.message : String(error)}`, 'error')
   }
 })
+
 
 watch(selectedMonth, month => {
   summaryDraft.value = detail.value?.summaries[month] || ''
@@ -252,6 +323,27 @@ function commaList(value: string) {
 }
 
 function normalizedConfig(): VcpTimelineConfig {
+  const aliasesMap: Record<string, string[]> = { ...config.value.aliases }
+  if (selectedAgent.value) {
+    if (currentAliases.value.length > 0) {
+      aliasesMap[selectedAgent.value] = [...currentAliases.value]
+    } else {
+      delete aliasesMap[selectedAgent.value]
+    }
+  }
+
+  const agentFoldersMap: Record<string, string[]> = { ...config.value.agentFolders }
+  if (selectedAgent.value && foldersCustomized.value) {
+    const included = foldersList.value.filter(f => f.included).map(f => f.name)
+    if (included.length > 0) {
+      agentFoldersMap[selectedAgent.value] = included
+    } else {
+      delete agentFoldersMap[selectedAgent.value]
+    }
+  } else if (selectedAgent.value && !foldersCustomized.value) {
+    delete agentFoldersMap[selectedAgent.value]
+  }
+
   return {
     ...config.value,
     enabled: Boolean(config.value.enabled),
@@ -264,7 +356,72 @@ function normalizedConfig(): VcpTimelineConfig {
     ignoreFolders: commaList(ignoreFolders.value),
     model: String(config.value.model || '').trim(),
     summaryPrompt: String(config.value.summaryPrompt || '').trim(),
+    aliases: aliasesMap,
+    agentFolders: agentFoldersMap,
   }
+}
+
+// === Aliases methods ===
+async function discoverAliases() {
+  if (!selectedAgent.value) return
+  discoveringAliases.value = true
+  try {
+    const response = await vcpTimelineApi.discoverAliases(selectedAgent.value)
+    aliasSuggestions.value = response.suggestions.filter(s => !currentAliases.value.includes(s))
+    if (!aliasSuggestions.value.length) {
+      showMessage('未发现新的历史签名', 'info')
+    }
+  } catch (error) {
+    showMessage(`自动发现失败：${error instanceof Error ? error.message : String(error)}`, 'error')
+  } finally {
+    discoveringAliases.value = false
+  }
+}
+
+function addAliasSuggestion(alias: string) {
+  if (!currentAliases.value.includes(alias)) {
+    currentAliases.value.push(alias)
+  }
+  aliasSuggestions.value = aliasSuggestions.value.filter(s => s !== alias)
+}
+
+function addManualAlias() {
+  const val = newAliasInput.value.trim()
+  if (val && !currentAliases.value.includes(val)) {
+    currentAliases.value.push(val)
+  }
+  newAliasInput.value = ''
+}
+
+function removeAlias(idx: number) {
+  currentAliases.value.splice(idx, 1)
+}
+
+// === Folders methods ===
+async function loadFolders() {
+  if (!selectedAgent.value) return
+  loadingFolders.value = true
+  try {
+    const response = await vcpTimelineApi.getAgentFolders(selectedAgent.value)
+    foldersList.value = response.folders
+  } catch (error) {
+    showMessage(`加载文件夹列表失败：${error instanceof Error ? error.message : String(error)}`, 'error')
+  } finally {
+    loadingFolders.value = false
+  }
+}
+
+function toggleFolder(name: string, included: boolean) {
+  const folder = foldersList.value.find(f => f.name === name)
+  if (folder) {
+    folder.included = included
+    foldersCustomized.value = true
+  }
+}
+
+function resetFolders() {
+  foldersCustomized.value = false
+  loadFolders()
 }
 
 async function loadAll() {
@@ -292,6 +449,10 @@ async function saveConfig() {
   try {
     const response = await vcpTimelineApi.saveConfig(normalizedConfig())
     config.value = structuredClone(response.config)
+      if (selectedAgent.value) {
+        currentAliases.value = [...(config.value.aliases?.[selectedAgent.value] || [])]
+        foldersCustomized.value = Array.isArray(config.value.agentFolders?.[selectedAgent.value]) && config.value.agentFolders[selectedAgent.value].length > 0
+      }
     showMessage(response.message || '配置已保存', 'success')
   } catch (error) {
     showMessage(`保存配置失败：${error instanceof Error ? error.message : String(error)}`, 'error')
@@ -455,6 +616,22 @@ onUnmounted(stopPolling)
 code { color: var(--highlight-text); }
 .spinning { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.aliases-section, .folders-section { margin-top: var(--space-4); padding: var(--space-3); border: 1px solid var(--border-color); border-radius: var(--radius-md); }
+.aliases-header, .folders-header { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.aliases-header h4, .folders-header h4 { margin: 0; flex: 1; }
+.aliases-desc, .folders-desc { margin: 6px 0 10px; color: var(--secondary-text); font-size: 13px; }
+.aliases-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.alias-tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid var(--highlight-text); border-radius: var(--radius-full); font-size: 13px; color: var(--highlight-text); }
+.alias-remove { background: none; border: none; color: var(--secondary-text); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+.alias-remove:hover { color: var(--danger-color); }
+.alias-empty { color: var(--secondary-text); font-size: 13px; font-style: italic; }
+.aliases-suggestions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
+.alias-suggestion { padding: 3px 8px; border: 1px dashed var(--highlight-text); border-radius: var(--radius-sm); font-size: 12px; color: var(--highlight-text); cursor: pointer; transition: background 0.15s; }
+.alias-suggestion:hover { background: color-mix(in srgb, var(--highlight-text) 15%, transparent); }
+.aliases-input-row { display: flex; gap: var(--space-2); align-items: center; }
+.aliases-input-row :deep(input) { max-width: 200px; }
+.folders-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px; max-height: 300px; overflow-y: auto; }
+.folder-item { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); font-size: 13px; }
 @media (max-width: 1000px) {
   .config-grid, .generator-grid { grid-template-columns: 1fr; }
   .section-header { flex-direction: column; }
