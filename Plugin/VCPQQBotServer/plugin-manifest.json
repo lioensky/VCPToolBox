@@ -1,0 +1,156 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "VCPQQBotServer",
+  "displayName": "VCP QQBot 单聊/群聊桥接服务",
+  "version": "0.1.0",
+  "description": "常驻连接腾讯 QQBot Gateway，接收 QQ 单聊与群聊 @ 消息后转发到 VCP 主服务器 /v1/chat/completions，并将非流式 AI 回复拆分为 QQ 文本与真正的 QQ 图片消息发回用户。",
+  "author": "VCPToolBox",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "VCPQQBotServer.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 120000
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{VCPQQBotStatus}}",
+        "description": "QQBot Gateway 连接状态、最近错误、会话与心跳信息。",
+        "isDynamic": true
+      },
+      {
+        "placeholder": "{{VCPQQRecentMessages}}",
+        "description": "最近收到与发送的 QQ 单聊消息摘要。",
+        "isDynamic": true
+      }
+    ],
+    "invocationCommands": [
+      {
+        "command": "status",
+        "description": "查看 VCPQQBotServer 连接状态、最近消息与配置摘要。仅用于排障，不用于正常聊天回复。注意：QQ 单聊/群聊回复都不需要工具调用，AI 只需正常输出自然语言；插件会自动把非流式回复拆分为 QQ 文本与图片消息发回用户。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPQQBotServer「末」,\ncommand:「始」status「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "broadcast_to_groups",
+        "description": "主动向 QQ 群发消息（不是回复用户，是 AI 自己发起，如早报/提醒/通知）。\n- content(必需): 消息内容，纯文本\n推送目标：默认发给所有“自动注册的群”(bot收到过消息的群会被自动记录)；也可在 config.env 的 QQBotBroadcastGroups 指定固定群 openid 列表(逗号分隔)，配置了就只发给这些群。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPQQBotServer「末」,\ncommand:「始」broadcast_to_groups「末」,\ncontent:「始」早上好！今天是2026年6月27日，祝大家工作顺利～「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "broadcast_draft_file",
+        "description": "读取固定草稿文件（绝对路径 <VCP根目录>/Plugin/VCPQQBotServer/draft_morning_brief.txt）的内容，发送到所有已注册QQ群。无需任何参数，用于两步式早报流程的第二步（发送）——第一步要先用别的工具（如 ServerFileOperator/DevFileOperator 的 WriteFile）把早报文案写入该绝对路径文件，这一步只管发送，不管撰写。\n⚠️ 两步必须分在【不同的两轮AI消息】里：第一轮只调用WriteFile、等结果真正返回；第二轮再调用broadcast_draft_file。绝对不能在同一轮消息里把WriteFile和broadcast_draft_file一起发出——VCP对同一轮内的多个工具调用是并发执行的(Promise.all)，写文件和读文件会赛跑，读可能先于写完成而报ENOENT找不到文件。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPQQBotServer「末」,\ncommand:「始」broadcast_draft_file「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ],
+    "services": [
+      {
+        "serviceName": "QQBotGatewayC2C",
+        "description": "常驻连接 QQBot WebSocket Gateway，监听 C2C_MESSAGE_CREATE 单聊事件。"
+      },
+      {
+        "serviceName": "QQBotVCPChatBridge",
+        "description": "将 QQ 单聊消息作为用户输入发送到 VCP 主服务器非流聊天入口，并把回复转换成 QQ 文本/图片消息。"
+      }
+    ]
+  },
+  "configSchema": {
+    "QQAppID": {
+      "type": "string",
+      "description": "QQBot AppID",
+      "required": true
+    },
+    "QQAppSecret": {
+      "type": "string",
+      "description": "QQBot Secret/Token。默认按 Bot appID.secret 方式鉴权。",
+      "required": true
+    },
+    "QQBotToken": {
+      "type": "string",
+      "description": "可选：显式 QQBot Token；不填时使用 QQAppSecret。"
+    },
+    "QQBotAuthMode": {
+      "type": "string",
+      "description": "鉴权模式：bot_app_token 使用 Bot appID.token；access_token 使用 QQBot access token。",
+      "default": "bot_app_token"
+    },
+    "QQBotSandbox": {
+      "type": "boolean",
+      "description": "是否使用沙箱环境。",
+      "default": false
+    },
+    "QQBotIntents": {
+      "type": "string",
+      "description": "逗号分隔 intents，单聊至少需要 GROUP_AND_C2C_EVENT。",
+      "default": "GROUP_AND_C2C_EVENT"
+    },
+    "QQBotModel": {
+      "type": "string",
+      "description": "转发到 VCP 主服务器的模型名；为空时使用 QQBotSystemPrompt 中指定上下文，模型由上游默认策略决定。"
+    },
+    "QQBotSystemPrompt": {
+      "type": "string",
+      "description": "QQ 单聊入口系统提示词。"
+    },
+    "QQBotAllowList": {
+      "type": "string",
+      "description": "允许自动聊天的用户 openid，逗号分隔；为空表示允许全部。"
+    },
+    "QQBotHistoryTurns": {
+      "type": "integer",
+      "description": "每个 QQ 单聊会话保留最近多少轮 user/assistant 历史。",
+      "default": 8
+    },
+    "QQBotMaxReplyChars": {
+      "type": "integer",
+      "description": "QQ 文本消息分段最大字符数。",
+      "default": 1200
+    },
+    "QQBotSendDelayMs": {
+      "type": "integer",
+      "description": "连续发送 QQ 消息的间隔毫秒，避免频控。",
+      "default": 800
+    },
+    "QQBotRequestTimeoutMs": {
+      "type": "integer",
+      "description": "调用 VCP 主服务器非流聊天超时毫秒。",
+      "default": 300000
+    },
+    "QQBotImageMode": {
+      "type": "string",
+      "description": "AI 回复图片 URL 处理模式：upload 优先转真正的 QQ 图片消息（本地图 file_data 直传、sharp 压缩兜底、URL 上传兜底，最终失败静默）；text 仅发送 URL 文本，仅建议调试使用。",
+      "default": "upload"
+    },
+    "DebugMode": "boolean",
+    "QQBotGroupEngageWindow": {
+      "type": "string",
+      "default": "0",
+      "description": "bot 在回复 @mention 后继续参与的消息条数，0=关闭"
+    },
+    "QQBotUploadImages": {
+      "type": "string",
+      "default": "true",
+      "description": "是否启用图片上传链路。当前实现使用 QQ /files 的 file_data(base64) 与 url 字段，不使用 multipart/form-data。"
+    },
+    "QQBotBroadcastGroups": {
+      "type": "string",
+      "default": "",
+      "description": "定时推送目标群 openid，逗号分隔。留空则用自动注册的群。"
+    },
+    "QQBotPublicBaseUrl": {
+      "type": "string",
+      "default": "",
+      "description": "表情包公开访问基础 URL（如 https://your-domain.com），仅用于 URL 上传兜底时把内部鉴权 URL 转为 /stickers/ 公开路径。file_data 本地直传不依赖它。留空=不转换。"
+    },
+    "QQBotDisplayName": {
+      "type": "string",
+      "default": "",
+      "description": "机器人在QQ群里显示的昵称（用于识别其他机器人@提到本机器人但未生成结构化mention的情况，如Q群管家欢迎语里的纯文本@）。"
+    }
+  },
+  "configSchemaDescriptions": {
+    "QQBotSystemPrompt": "例如：你是接入 QQ 单聊的 VCPQQBot。你可以自然聊天，也可以使用 VCP 工具协议完成任务。若回复中包含图片 URL，系统会自动转成 QQ 图片发送。",
+    "QQBotAllowList": "留空表示任何单聊用户都可触发 VCP 聊天；生产环境建议填写允许的 openid。"
+  }
+}
