@@ -311,30 +311,40 @@ class ContextVectorManager {
 
     /**
      * 计算语义宽度指数 S
-     * 核心思想：L2归一化后 Σv_i² = 1，v_i² 构成概率分布，
+     * 核心思想：将各维平方能量按总能量归一化为概率分布，
      * 用归一化熵衡量能量的分散程度。
      * S ≈ 1 → 能量均匀分布，语义宽泛
      * S ≈ 0 → 能量集中少数维度，语义精准
      *
-     * @param {Array|Float32Array} vector - L2归一化向量
+     * @param {Array|Float32Array} vector - 任意非零向量（无需预先 L2 归一化）
      * @returns {number} S ∈ [0, 1]
      */
     computeSemanticWidth(vector) {
-        if (!vector) return 0;
+        if (!vector || vector.length <= 1) return 0;
         const dim = vector.length;
+        let totalEnergy = 0;
 
-        // v_i^2 构成概率分布 (L2归一化 => Σv_i² = 1)
+        for (let i = 0; i < dim; i++) {
+            const value = Number(vector[i]);
+            if (!Number.isFinite(value)) return 0;
+            totalEnergy += value * value;
+        }
+
+        if (!Number.isFinite(totalEnergy) || totalEnergy < 1e-12) return 0;
+
+        // p_i = v_i² / Σv_j²，避免依赖模型输出或聚合向量已经 L2 归一化。
         let entropy = 0;
         for (let i = 0; i < dim; i++) {
-            const p = vector[i] * vector[i];
+            const value = Number(vector[i]);
+            const p = (value * value) / totalEnergy;
             if (p > 1e-12) {
                 entropy -= p * Math.log(p);
             }
         }
 
-        // 归一化到 [0, 1]：均匀分布时熵最大 = log(dim)
-        const maxEntropy = Math.log(dim);
-        return maxEntropy > 0 ? entropy / maxEntropy : 0;
+        // 均匀分布时熵最大为 log(dim)，并钳制浮点误差导致的轻微越界。
+        const semanticWidth = entropy / Math.log(dim);
+        return Math.max(0, Math.min(1, semanticWidth));
     }
 
     /**
