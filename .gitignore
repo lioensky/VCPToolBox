@@ -163,6 +163,9 @@ multimodal-config.json
 *.sqlite3-shm
 *.sqlite3-wal
 *.db
+# SQLite sidecar：主库运行期间产生的 WAL / shared memory
+*.db-shm
+*.db-wal
 DebugLog/
 dailynote/*
 !dailynote/VCP桌面知识/
@@ -171,6 +174,7 @@ dailynote/*
 !dailynote/VCP开发/**
 ip_blacklist.json
 /VectorStore
+/VectorStoreTDB/
 
 # 插件缓存文件
 Plugin/ArtistMatcher/artist_cache.json
@@ -208,6 +212,15 @@ Plugin/UrlFetch/browser-profiles
 Plugin/ChromeBridge/ChromeScripts
 Plugin/ChromeBridge/managed-extension-stage
 Plugin/ChromeBridge/managed-profile
+Plugin/VCPTimeLine/config.json
+
+# Agent 插件执行态
+Plugin/AgentAssistant/agent_scores.json
+Plugin/AgentDream/dream_logs/
+Plugin/AgentDream/dream_schedule_state.json
+
+# ChromeBridge 单次运行令牌
+Plugin/ChromeBridge/managed-runtime-token.json
 
 # ===== 图片 / 媒体 =====
 # 忽略通用表情包目录下的所有内容...
@@ -221,6 +234,20 @@ image/fluxgen/
 image/gptimagegen/
 image/agnesgen/
 image/zimageturbogen/
+image/comfycloud/
+image/comfyuigen/
+image/doubaogen/
+image/geminiimagegen/
+image/nanobananagen/
+image/novelaigen/
+image/qwenimagegen/
+image/sensegen/
+image/webuigen/
+image/zimagegen/
+
+# 网络抓取图片输出
+image/urlfetch/
+
 # 忽略 B站截图的图片
 image/bilibili/
 
