@@ -2829,6 +2829,12 @@ struct WatchFileSnapshot {
     modified_ms: u128,
 }
 
+#[derive(Clone, Copy)]
+struct WatchPendingPath {
+    generation: u64,
+    observed_as_create: bool,
+}
+
 fn watch_file_snapshot(path: &Path) -> Option<WatchFileSnapshot> {
     let metadata = std::fs::metadata(path).ok()?;
     if !metadata.is_file() {
@@ -2898,7 +2904,8 @@ fn watcher_path_allowed(
 #[napi]
 pub struct VexusWatcher {
     watcher: Arc<Mutex<Option<notify::RecommendedWatcher>>>,
-    path_generations: Arc<Mutex<HashMap<PathBuf, u64>>>,
+    // 同一路径只保留一个可重置状态和一个 worker；重复 notify 事件仅刷新 generation。
+    path_generations: Arc<Mutex<HashMap<PathBuf, WatchPendingPath>>>,
     generation_counter: Arc<AtomicU64>,
     running: Arc<AtomicBool>,
 }
@@ -2977,9 +2984,23 @@ impl VexusWatcher {
                         }
 
                         let generation = generation_counter.fetch_add(1, Ordering::AcqRel) + 1;
-                        if let Ok(mut generations) = path_generations.lock() {
-                            generations.insert(path.clone(), generation);
+                        let observed_as_create = matches!(event.kind, EventKind::Create(_));
+                        let should_spawn = if let Ok(mut generations) = path_generations.lock() {
+                            let should_spawn = !generations.contains_key(&path);
+                            generations.insert(
+                                path.clone(),
+                                WatchPendingPath {
+                                    generation,
+                                    observed_as_create,
+                                },
+                            );
+                            should_spawn
                         } else {
+                            continue;
+                        };
+
+                        // 乐观防御：同一路径已有 worker 时只刷新其状态，不再创建额外线程。
+                        if !should_spawn {
                             continue;
                         }
 
@@ -2987,95 +3008,145 @@ impl VexusWatcher {
                         let pending = path_generations.clone();
                         let task_running = running.clone();
                         let task_path = path.clone();
-                        let observed_as_create = matches!(event.kind, EventKind::Create(_));
+                        let cleanup_path = path.clone();
+                        let cleanup_pending = path_generations.clone();
 
-                        std::thread::spawn(move || {
-                            std::thread::sleep(Duration::from_millis(debounce_ms));
-                            if !task_running.load(Ordering::Acquire) {
-                                return;
-                            }
+                        let spawn_result = std::thread::Builder::new()
+                            .name("vexus-watch-path".to_string())
+                            .spawn(move || {
+                                'generation: loop {
+                                    if !task_running.load(Ordering::Acquire) {
+                                        return;
+                                    }
+                                    let current = match pending
+                                        .lock()
+                                        .ok()
+                                        .and_then(|generations| generations.get(&task_path).copied())
+                                    {
+                                        Some(value) => value,
+                                        None => return,
+                                    };
+                                    let generation = current.generation;
 
-                            let is_current = pending
-                                .lock()
-                                .ok()
-                                .and_then(|generations| generations.get(&task_path).copied())
-                                == Some(generation);
-                            if !is_current {
-                                return;
-                            }
+                                    std::thread::sleep(Duration::from_millis(debounce_ms));
+                                    if !task_running.load(Ordering::Acquire) {
+                                        return;
+                                    }
 
-                            // 文件存在时要求连续两次 metadata 完全一致。
-                            // 同一 generation 内有限重采样，防止某些文件系统只发一次 notify、
-                            // 首轮采样仍在变化而后续没有新事件时永久漏入库。
-                            let mut previous_snapshot = watch_file_snapshot(&task_path);
-                            let mut final_snapshot = None;
-                            let mut stable = false;
+                                    // 静默窗口内若收到新事件，当前 worker 继续存活并为最新代际重启窗口。
+                                    let after_debounce = pending
+                                        .lock()
+                                        .ok()
+                                        .and_then(|generations| generations.get(&task_path).copied());
+                                    if after_debounce.map(|value| value.generation) != Some(generation) {
+                                        continue 'generation;
+                                    }
 
-                            for _ in 0..stability_retries {
-                                std::thread::sleep(Duration::from_millis(stability_ms));
-                                if !task_running.load(Ordering::Acquire) {
+                                    // 文件存在时要求连续两次 metadata 完全一致。
+                                    // 同一 generation 内有限重采样，防止某些文件系统只发一次 notify、
+                                    // 首轮采样仍在变化而后续没有新事件时永久漏入库。
+                                    let mut previous_snapshot = watch_file_snapshot(&task_path);
+                                    let mut final_snapshot = None;
+                                    let mut stable = false;
+
+                                    for _ in 0..stability_retries {
+                                        std::thread::sleep(Duration::from_millis(stability_ms));
+                                        if !task_running.load(Ordering::Acquire) {
+                                            return;
+                                        }
+                                        let latest = pending
+                                            .lock()
+                                            .ok()
+                                            .and_then(|generations| generations.get(&task_path).copied());
+                                        if latest.map(|value| value.generation) != Some(generation) {
+                                            continue 'generation;
+                                        }
+
+                                        let next_snapshot = watch_file_snapshot(&task_path);
+                                        if next_snapshot == previous_snapshot {
+                                            stable = true;
+                                            final_snapshot = next_snapshot;
+                                            break;
+                                        }
+                                        previous_snapshot = next_snapshot;
+                                    }
+
+                                    if !stable {
+                                        // 本代际明确结束，避免留下无法自行恢复的 generation 状态。
+                                        if let Ok(mut generations) = pending.lock() {
+                                            if generations
+                                                .get(&task_path)
+                                                .map(|value| value.generation)
+                                                == Some(generation)
+                                            {
+                                                generations.remove(&task_path);
+                                            } else {
+                                                continue 'generation;
+                                            }
+                                        }
+                                        eprintln!(
+                                            "[VexusWatcher] ⚠️ Path did not stabilize after {} samples; generation {} dropped: {}",
+                                            stability_retries,
+                                            generation,
+                                            task_path.to_string_lossy()
+                                        );
+                                        return;
+                                    }
+
+                                    let observed_as_create = if let Ok(mut generations) = pending.lock() {
+                                        match generations.get(&task_path).copied() {
+                                            Some(value) if value.generation == generation => {
+                                                generations.remove(&task_path);
+                                                value.observed_as_create
+                                            }
+                                            Some(_) => continue 'generation,
+                                            None => return,
+                                        }
+                                    } else {
+                                        return;
+                                    };
+
+                                    let (event_type, size, modified_ms) = match final_snapshot {
+                                        Some(snapshot) => (
+                                            if observed_as_create { "add" } else { "change" },
+                                            snapshot.size,
+                                            snapshot.modified_ms,
+                                        ),
+                                        None => ("unlink", 0, 0),
+                                    };
+                                    let emitted_at = SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .map(|value| value.as_millis())
+                                        .unwrap_or(0);
+                                    let payload = format!(
+                                        r#"{{"event":"{}","path":"{}","generation":{},"stable":true,"size":{},"mtimeMs":{},"emittedAt":{}}}"#,
+                                        json_escape(event_type),
+                                        json_escape(&task_path.to_string_lossy().replace('\\', "/")),
+                                        generation,
+                                        size,
+                                        modified_ms,
+                                        emitted_at
+                                    );
+                                    callback.call(
+                                        Ok(payload),
+                                        ThreadsafeFunctionCallMode::NonBlocking,
+                                    );
                                     return;
                                 }
-                                let still_current = pending
-                                    .lock()
-                                    .ok()
-                                    .and_then(|generations| generations.get(&task_path).copied())
-                                    == Some(generation);
-                                if !still_current {
-                                    return;
-                                }
+                            });
 
-                                let next_snapshot = watch_file_snapshot(&task_path);
-                                if next_snapshot == previous_snapshot {
-                                    stable = true;
-                                    final_snapshot = next_snapshot;
-                                    break;
-                                }
-                                previous_snapshot = next_snapshot;
+                        if let Err(error) = spawn_result {
+                            // spawn 已明确失败，此路径不可能存在活跃 worker；无条件清理，
+                            // 避免并发刷新的新 generation 留下“有状态、无执行者”的孤儿项。
+                            if let Ok(mut generations) = cleanup_pending.lock() {
+                                generations.remove(&cleanup_path);
                             }
-
-                            if !stable {
-                                eprintln!(
-                                    "[VexusWatcher] ⚠️ Path did not stabilize after {} samples; generation {} deferred: {}",
-                                    stability_retries,
-                                    generation,
-                                    task_path.to_string_lossy()
-                                );
-                                return;
-                            }
-
-                            if let Ok(mut generations) = pending.lock() {
-                                if generations.get(&task_path).copied() != Some(generation) {
-                                    return;
-                                }
-                                generations.remove(&task_path);
-                            } else {
-                                return;
-                            }
-
-                            let (event_type, size, modified_ms) = match final_snapshot {
-                                Some(snapshot) => (
-                                    if observed_as_create { "add" } else { "change" },
-                                    snapshot.size,
-                                    snapshot.modified_ms,
-                                ),
-                                None => ("unlink", 0, 0),
-                            };
-                            let emitted_at = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .map(|value| value.as_millis())
-                                .unwrap_or(0);
-                            let payload = format!(
-                                r#"{{"event":"{}","path":"{}","generation":{},"stable":true,"size":{},"mtimeMs":{},"emittedAt":{}}}"#,
-                                json_escape(event_type),
-                                json_escape(&task_path.to_string_lossy().replace('\\', "/")),
-                                generation,
-                                size,
-                                modified_ms,
-                                emitted_at
+                            eprintln!(
+                                "[VexusWatcher] ❌ Failed to spawn path worker for {}: {}",
+                                cleanup_path.to_string_lossy(),
+                                error
                             );
-                            callback.call(Ok(payload), ThreadsafeFunctionCallMode::NonBlocking);
-                        });
+                        }
                     }
                 }
                 Err(e) => {

@@ -989,9 +989,21 @@ class TDBKnowledgeManager {
             try {
                 const jsonPayload = args.find(arg => typeof arg === 'string');
                 if (!jsonPayload) return;
-                const { event, path: filePath } = JSON.parse(jsonPayload);
+                const payload = JSON.parse(jsonPayload);
+                const { event, path: filePath } = payload;
+                if (!filePath || typeof filePath !== 'string') return;
+
+                const generation = Number(payload.generation);
+                const hasStableProtocol =
+                    payload.stable === true &&
+                    Number.isSafeInteger(generation) &&
+                    generation > 0;
                 const normalizedPath = this._normalizeFilePath(filePath);
-                this._handleWatcherEvent(event, normalizedPath);
+                this._handleWatcherEvent(event, normalizedPath, {
+                    stable: hasStableProtocol,
+                    generation: hasStableProtocol ? generation : null,
+                    source: 'rust'
+                });
             } catch (e) {
                 console.error('[TDBKnowledge] Failed to parse watcher event:', e.message);
             }
@@ -1074,13 +1086,22 @@ class TDBKnowledgeManager {
         console.log('[TDBKnowledge] 🛡️ Chokidar safety watcher enabled for cold knowledge files.');
     }
 
-    _handleWatcherEvent(event, filePath) {
+    _handleWatcherEvent(event, filePath, options = {}) {
         const normalizedPath = this._normalizeFilePath(filePath);
         if (!this._isIndexable(normalizedPath)) return;
 
         const eventVersion = this._bumpFileEventVersion(normalizedPath);
         if (event === 'unlink') {
             this._queueDeleteFile(normalizedPath, eventVersion);
+            return;
+        }
+
+        if (event !== 'add' && event !== 'change') return;
+
+        // 新版 Rust watcher 已完成 debounce 和 metadata 稳定确认，可直接进入持久化可靠队列。
+        // Chokidar、Safety Watcher 与旧版原生二进制仍保留 JS 侧二次稳定检查。
+        if (options.stable === true && options.source === 'rust') {
+            this._queueFile(normalizedPath, eventVersion);
             return;
         }
 
