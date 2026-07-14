@@ -10,6 +10,7 @@ let debugMode = false;
 let dailyNoteRootPath = '';
 let configuredExtension = 'txt';
 let associativeDiscovery = null;
+let knowledgeBaseManager = null;
 
 // --- 写入队列：串行化 organize 操作，防止并发同名文件冲突 ---
 let _writeQueue = Promise.resolve();
@@ -249,8 +250,19 @@ async function handleOrganizeCommand(args) {
 
     debugLog(`Processing 'organize' command (queued) - folder: ${folder || 'Not specified'}, maid: ${maid || 'Not specified'}`);
 
-    // 通过写入队列串行化，确保并发调用获得不同时间戳
-    return withWriteLock(() => _handleOrganizeInternal(args));
+    // 本地队列维持插件内部文件操作顺序；文件整理完成后即可向 AI 返回，
+    // KBD 协调器继续在内部 FIFO 中完成旧索引删除、新文件向量化及 SQLite/Vexus 更新。
+    return withWriteLock(() => {
+        const operation = () => _handleOrganizeInternal(args);
+        if (knowledgeBaseManager && typeof knowledgeBaseManager.runExternalFileMutation === 'function') {
+            return knowledgeBaseManager.runExternalFileMutation(
+                `DailyNoteManager:organize:${Date.now()}`,
+                operation,
+                { waitForIndex: false }
+            );
+        }
+        return operation();
+    });
 }
 
 async function _handleOrganizeInternal(args) {
@@ -395,13 +407,25 @@ async function _handleOrganizeInternal(args) {
 
         try {
             await fs.rename(sourcePath, destPath);
-            moveResults.push({ url, status: 'success', message: `已归档到 ${ARCHIVE_FOLDER}/` });
+            moveResults.push({
+                url,
+                status: 'success',
+                message: `已归档到 ${ARCHIVE_FOLDER}/`,
+                sourcePath,
+                destinationPath: destPath
+            });
             debugLog(`已移动: ${sourcePath} -> ${destPath}`);
         } catch {
             try {
                 await fs.copyFile(sourcePath, destPath);
                 await fs.unlink(sourcePath);
-                moveResults.push({ url, status: 'success', message: `已归档到 ${ARCHIVE_FOLDER}/` });
+                moveResults.push({
+                    url,
+                    status: 'success',
+                    message: `已归档到 ${ARCHIVE_FOLDER}/`,
+                    sourcePath,
+                    destinationPath: destPath
+                });
             } catch (copyErr) {
                 moveResults.push({ url, status: 'error', message: `归档失败: ${copyErr.message}` });
             }
@@ -410,6 +434,9 @@ async function _handleOrganizeInternal(args) {
 
     const successCount = moveResults.filter(r => r.status === 'success').length;
     const failCount = moveResults.filter(r => r.status === 'error').length;
+    const deletedSourcePaths = moveResults
+        .filter(result => result.status === 'success' && result.sourcePath)
+        .map(result => result.sourcePath);
 
     let summaryMessage = `日记整理完成！\n`;
     summaryMessage += `✅ 新日记已保存: ${newFilePath}\n`;
@@ -423,7 +450,17 @@ async function _handleOrganizeInternal(args) {
         summaryMessage += `\n失败详情:\n${failDetails}`;
     }
 
-    return { status: failCount > 0 ? "partial" : "success", result: summaryMessage };
+    summaryMessage += `\n🧠 知识库索引将在后台更新。`;
+
+    return {
+        status: failCount > 0 ? "partial" : "success",
+        result: summaryMessage,
+        indexStatus: "queued",
+        mutationPaths: {
+            upserts: [newFilePath],
+            deletes: deletedSourcePaths
+        }
+    };
 }
 
 // ============================================================
@@ -577,9 +614,13 @@ async function handleAssociateCommand(args) {
 // ============================================================
 // hybridservice Interface
 // ============================================================
-function initialize(config, dependencies) {
+function initialize(config, dependencies = {}) {
     pluginConfig = config;
     debugMode = config.DebugMode || false;
+    knowledgeBaseManager =
+        dependencies.knowledgeBaseManager ||
+        dependencies.vectorDBManager ||
+        knowledgeBaseManager;
 
     // 从环境变量或 config 获取路径
     dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH ||
@@ -597,7 +638,17 @@ function initialize(config, dependencies) {
         console.error('[DailyNoteManager] The "associate" command will be unavailable.');
     }
 
-    console.log(`[DailyNoteManager] ✅ Initialized (hybridservice). Root: ${dailyNoteRootPath}`);
+    console.log(
+        `[DailyNoteManager] ✅ Initialized (hybridservice). Root: ${dailyNoteRootPath}, ` +
+        `KBD coordinator: ${knowledgeBaseManager ? 'connected' : 'unavailable'}`
+    );
+}
+
+function setDependencies(dependencies = {}) {
+    knowledgeBaseManager =
+        dependencies.knowledgeBaseManager ||
+        dependencies.vectorDBManager ||
+        knowledgeBaseManager;
 }
 
 async function processToolCall(args) {
@@ -620,13 +671,16 @@ async function processToolCall(args) {
     }
 }
 
-function shutdown() {
+async function shutdown() {
     debugLog('Shutting down DailyNoteManager...');
+    await _writeQueue;
     associativeDiscovery = null;
+    knowledgeBaseManager = null;
 }
 
 module.exports = {
     initialize,
+    setDependencies,
     processToolCall,
     shutdown
 };

@@ -37,6 +37,9 @@ export interface IntrinsicResidualResult {
   computedCount: number
   skippedCount: number
   elapsedMs: number
+  algorithmVersion: string
+  artifactSig: string
+  effectiveConfig: string
 }
 /** 🌟 EPA Rust 基底重算结果 */
 export interface EpaBasisResult {
@@ -75,6 +78,12 @@ export interface WatcherConfig {
   ignoreSuffixes: Array<string>
   /** 可选扩展名白名单。为空时保持旧行为：仅监听 .md / .txt。 */
   extensions?: Array<string>
+  /** 路径事件静默窗口。窗口内的新事件会使旧 generation 自动失效。 */
+  debounceMs?: number
+  /** 两次文件元数据采样之间的稳定确认间隔。 */
+  stabilityMs?: number
+  /** 同一 generation 内最多执行的稳定采样次数。 */
+  stabilityRetries?: number
 }
 /** 核心索引结构 (无状态，只存向量) */
 export declare class VexusIndex {
@@ -129,7 +138,7 @@ export declare class VexusIndex {
    */
   publishEpaBasisCache(dbPath: string): EpaBasisResult
   /** 预计算任务：矩阵内生残差 (TagMemo V7) */
-  computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null, modelSig?: string | undefined | null): Promise<unknown>
+  computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null, modelSig?: string | undefined | null, effectiveConfigJson?: string | undefined | null): Promise<unknown>
   /**
    * 🌟 TagMemo V8.2: 预计算 Tag 对的语义距离（成对余弦相似度）
    *

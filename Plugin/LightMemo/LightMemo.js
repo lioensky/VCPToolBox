@@ -77,6 +77,7 @@ class LightMemoPlugin {
         this.name = 'LightMemo';
         this.vectorDBManager = null;
         this.tdbKnowledgeManager = null; // 冷知识库（TriviumDB）检索管理器
+        this.aiMemoBridge = null; // RAGDiaryPlugin 共享的 AI 记忆总结桥
         this.getSingleEmbedding = null;
         this.getBatchEmbeddings = null;
         this.projectBasePath = '';
@@ -112,6 +113,10 @@ class LightMemoPlugin {
             this.tdbKnowledgeManager = dependencies.tdbKnowledgeManager;
             console.log('[LightMemo] TDBKnowledgeManager injected. Cold knowledge base search enabled.');
         }
+        if (dependencies.aiMemoBridge) {
+            this.aiMemoBridge = dependencies.aiMemoBridge;
+            console.log('[LightMemo] AIMemoBridge injected. Optional AI memory summarization enabled.');
+        }
         if (dependencies.getSingleEmbedding) {
             this.getSingleEmbedding = dependencies.getSingleEmbedding;
         }
@@ -140,9 +145,11 @@ class LightMemoPlugin {
 
     async processToolCall(args) {
         try {
-            const result = this._isMappingRequest(args)
-                ? await this.handleMapping(args)
-                : await this.handleSearch(args);
+            const result = this._isTagMemoABRequest(args)
+                ? await this.handleTagMemoAB(args)
+                : this._isMappingRequest(args)
+                    ? await this.handleMapping(args)
+                    : await this.handleSearch(args);
 
             return this._normalizeToolResult(result);
         } catch (error) {
@@ -199,10 +206,14 @@ class LightMemoPlugin {
             core_tags = [],
             core_boost_factor = 1.33,
             knowledge_base = null,
+            aimemo: rawAIMemo = false,
+            aimemo_preset: rawAIMemoPreset = null,
             BM25: rawBM25Upper,
             bm25: rawBM25Lower,
             use_bm25: rawUseBM25
         } = args;
+
+        const aiMemoOptions = this._parseAIMemoOptions(rawAIMemo, rawAIMemoPreset);
 
         const useBM25 = this._parseBooleanAlias(
             [
@@ -228,9 +239,9 @@ class LightMemoPlugin {
             });
         }
 
-        // 🌟 Wave v8: 解析 tag_boost 的 "+" 后缀
-        // tag_boost:「始」0.6「末」  → 正常浪潮 (tagBoost=0.6, geodesic=false)
-        // tag_boost:「始」0.6+「末」 → 浪潮v8 (tagBoost=0.6, geodesic=true)
+        // 🌟 V9.1: 解析 tag_boost 的 "+" 后缀
+        // tag_boost:「始」0.6「末」  → V9.1 向量增强
+        // tag_boost:「始」0.6+「末」 → V9.1 向量增强 + 势能场重排
         let useGeodesicRerank = false;
         let tag_boost = rawTagBoost;
         if (typeof rawTagBoost === 'string') {
@@ -386,7 +397,7 @@ class LightMemoPlugin {
         // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的功能来增强向量
         if (tag_boost > 0 && this.vectorDBManager && typeof this.vectorDBManager.applyTagBoost === 'function') {
             const hasCore = normalizedCoreTags.length > 0;
-            const waveLabel = useGeodesicRerank ? 'TagMemo+ (Wave v8)' : 'TagMemo V6';
+            const waveLabel = useGeodesicRerank ? 'TagMemo V9.1 + Potential Field' : 'TagMemo V9.1';
             console.log(`[LightMemo] Applying ${waveLabel} boost (Factor: ${tag_boost}${hasCore ? `, CoreTags: ${core_tags.length}` : ''})`);
 
             // 即使 core_tags 为空，KBM 内部也会处理好默认逻辑
@@ -406,10 +417,10 @@ class LightMemoPlugin {
                     const matched = tagBoostInfo.matchedTags || [];
                     const coreMatched = tagBoostInfo.coreTagsMatched || [];
                     if (coreMatched.length > 0) {
-                        console.log(`[LightMemo] TagMemo V6 Spotlight: [${coreMatched.join(', ')}]`);
+                        console.log(`[LightMemo] TagMemo V9.1 Spotlight: [${coreMatched.join(', ')}]`);
                     }
                     if (matched.length > 0) {
-                        console.log(`[LightMemo] TagMemo V6 Matched: [${matched.slice(0, 5).join(', ')}]`);
+                        console.log(`[LightMemo] TagMemo V9.1 Matched: [${matched.slice(0, 5).join(', ')}]`);
                     }
                 }
             }
@@ -446,10 +457,10 @@ class LightMemoPlugin {
             };
         }).sort((a, b) => b.hybridScore - a.hybridScore);
 
-        // 🌟 Wave v8: 测地线重排 (Geodesic Rerank)
+        // 🌟 V9.1: 查询级势能场重排
         let rankedCandidates = hybridScored;
         if (useGeodesicRerank && tag_boost > 0 && tagBoostInfo && this.vectorDBManager && this.vectorDBManager.geodesicRerank) {
-            console.log(`[LightMemo] 🌟 Wave v8: Applying geodesic rerank to ${hybridScored.length} candidates...`);
+            console.log(`[LightMemo] 🌟 V9.1: Applying potential-field rerank to ${hybridScored.length} candidates...`);
 
             // geodesicRerank expects candidates with `id` (chunk ID) and `score` fields
             const geoInput = hybridScored.map(c => ({
@@ -470,11 +481,11 @@ class LightMemoPlugin {
                 ...r,
                 hybridScore: r.score,
                 tagBoostInfo: tagBoostInfo,
-                waveV8: r.geo_score > 0
+                potentialFieldV91: r.geo_score > 0
             }));
 
-            const geoCount = rankedCandidates.filter(r => r.waveV8).length;
-            console.log(`[LightMemo] 🌟 Wave v8: Geodesic rerank complete. ${geoCount}/${rankedCandidates.length} candidates with geo contribution.`);
+            const geoCount = rankedCandidates.filter(r => r.potentialFieldV91).length;
+            console.log(`[LightMemo] 🌟 V9.1: Potential-field rerank complete. ${geoCount}/${rankedCandidates.length} candidates with field contribution.`);
         }
 
         // 取top K
@@ -526,7 +537,418 @@ class LightMemoPlugin {
             finalResults = await this._rerankDocuments(actualQuery, finalResults, normalizedK, rrfOptions);
         }
 
+        if (aiMemoOptions.enabled && finalResults.length > 0) {
+            const aiMemoResult = await this._summarizeWithAIMemo({
+                results: finalResults,
+                query: actualQuery,
+                presetName: aiMemoOptions.presetName,
+                cacheSalt: JSON.stringify({
+                    maid: effectiveMaid,
+                    folder: effectiveFolder,
+                    searchAll: effectiveSearchAll,
+                    k: normalizedK,
+                    rerank,
+                    useBM25,
+                    tagBoost: tag_boost,
+                    geodesic: useGeodesicRerank,
+                    coreTags: normalizedCoreTags
+                })
+            });
+            if (aiMemoResult) return aiMemoResult;
+        }
+
         return this.formatResults(finalResults, query);
+    }
+
+    _isTagMemoABRequest(args = {}) {
+        const command = String(args.command || args.action || '').trim().toLowerCase();
+        const mode = String(args.ab_mode || args.abMode || '').trim().toLowerCase();
+        return [
+            'tagmemo_ab', 'tagmemo-ab', 'memory_address_ab',
+            'memory-address-ab', '双轨寻址', '双轨测绘',
+            'tagmemo_compare', 'tagmemo-compare', 'v91_compare'
+        ].includes(command) || ['a', 'b', 'mode_a', 'mode_b', 'kernel', 'product'].includes(mode);
+    }
+
+    /**
+     * TagMemo V9.1 单轨寻址对照。
+     * 模式 A：固定对称候选超集比较 KNN / V9.1 / 独立 Rerank。
+     * 模式 B：比较原始 KNN 与 V9.1 端到端 Top-K，并可加入独立 Rerank。
+     * 保留旧 TagMemoAB 命令和模式名，仅作为工具协议兼容入口，不再加载 V8.3 资产。
+     */
+    async handleTagMemoAB(args = {}) {
+        if (!this.vectorDBManager || typeof this.vectorDBManager.applyTagBoost !== 'function') {
+            throw new Error('TagMemo V9.1 对照无法执行：KnowledgeBaseManager 未注入或版本接口不可用。');
+        }
+
+        const query = String(args.query || args.start || '').trim();
+        if (!query) throw new Error('TagMemo V9.1 对照需要 query 参数。');
+
+        const parsedMaidScope = this._parseMaidScopedFolder(args.maid);
+        const maid = parsedMaidScope.maid;
+        const folder = this._mergeFolderScopes(args.folder, parsedMaidScope.folder);
+        const searchAll = this._parseBoolean(args.search_all_knowledge_bases, false);
+        if (!searchAll && !maid && !folder) {
+            throw new Error('TagMemo V9.1 对照必须提供 maid/folder，或开启 search_all_knowledge_bases。');
+        }
+
+        const rawMode = String(args.ab_mode || args.abMode || args.mode || 'A').trim().toLowerCase();
+        const abMode = ['b', 'mode_b', 'product', 'end_to_end'].includes(rawMode) ? 'B' : 'A';
+        const k = Math.max(1, Math.floor(this._parseNumber(args.k, 5)));
+        const topL = Math.max(k, Math.floor(this._parseNumber(args.top_l ?? args.topL, Math.max(20, k * 4))));
+        const tagBoost = Math.max(0, Math.min(1, this._parseNumber(
+            typeof args.tag_boost === 'string' ? args.tag_boost.replace(/\+$/, '') : args.tag_boost,
+            0.6
+        )));
+        const coreTags = this._parseStringArray(args.core_tags || args.coreTags);
+        const coreBoostFactor = this._parseNumber(args.core_boost_factor, 1.33);
+        const usePotentialField = this._parseBoolean(args.potential_field ?? args.use_potential_field, true);
+        const useBM25 = this._parseBooleanAlias(
+            [['BM25', args.BM25], ['bm25', args.bm25], ['use_bm25', args.use_bm25]],
+            true,
+            'TagMemo V9.1 comparison BM25'
+        );
+        const compareRerank = this._parseBooleanAlias(
+            [
+                ['compare_rerank', args.compare_rerank],
+                ['compareRerank', args.compareRerank],
+                ['rerank_compare', args.rerank_compare]
+            ],
+            false,
+            'TagMemo V9.1 Rerank comparison'
+        );
+
+        const candidates = await this._gatherCandidateChunks({
+            maid,
+            folder,
+            searchAll,
+            ignoreExcludedFolders: false,
+            timeRange: null
+        });
+        if (candidates.length === 0) {
+            return this._buildAiFriendlyTextResult('TagMemo V9.1 对照：指定作用域内没有可用记忆。');
+        }
+
+        const queryVector = await this.getSingleEmbedding(query);
+        if (!queryVector) throw new Error('TagMemo V9.1 对照查询向量化失败。');
+
+        const snapshot = this.vectorDBManager.getTagMemoArtifactSnapshot('v9', {
+            strictVersion: true
+        });
+        if (!snapshot?.bundle) {
+            throw new Error('TagMemo V9.1 对照无法执行：V9.1 ArtifactBundle 不可用。');
+        }
+
+        const knnRanked = (await this._scoreByVectorSimilarity(candidates, queryVector))
+            .map(item => ({
+                ...item,
+                id: item.label,
+                score: item.vectorScore || 0
+            }))
+            .sort((a, b) => b.score - a.score);
+
+        const boost = this.vectorDBManager.applyTagBoost(
+            new Float32Array(queryVector),
+            tagBoost,
+            coreTags,
+            coreBoostFactor,
+            {
+                tagMemoVersion: 'v9',
+                strictVersion: true,
+                artifactBundle: snapshot.bundle
+            }
+        );
+        const v91VectorRanked = (await this._scoreByVectorSimilarity(candidates, boost.vector))
+            .map(item => ({
+                ...item,
+                id: item.label,
+                score: item.vectorScore || 0
+            }))
+            .sort((a, b) => b.score - a.score);
+        const v91Ranked = usePotentialField && boost.energyField
+            ? this.vectorDBManager.geodesicRerank(v91VectorRanked, {
+                artifactBundle: snapshot.bundle,
+                tagMemoVersion: 'v9',
+                energyField: boost.energyField
+            })
+            : v91VectorRanked;
+
+        const runs = {
+            knn: {
+                ranked: knnRanked,
+                top: knnRanked.slice(0, abMode === 'A' ? topL : k)
+            },
+            v9: {
+                snapshot,
+                boost,
+                vectorRanked: v91VectorRanked,
+                ranked: v91Ranked,
+                top: v91Ranked.slice(0, abMode === 'A' ? topL : k)
+            }
+        };
+
+        const rerankRun = compareRerank
+            ? await this._buildTagMemoABRerankRun({
+                query,
+                candidates,
+                runs,
+                abMode,
+                topL,
+                k,
+                useBM25
+            })
+            : null;
+
+        if (abMode === 'A') {
+            return this._buildAiFriendlyTextResult(this._formatTagMemoKernelAB({
+                query,
+                candidates,
+                runs,
+                topL,
+                k,
+                tagBoost,
+                useBM25,
+                rerankRun
+            }));
+        }
+
+        return this._buildAiFriendlyTextResult(this._formatTagMemoProductAB({
+            query,
+            runs,
+            k,
+            tagBoost,
+            usePotentialField,
+            rerankRun
+        }));
+    }
+
+    async _buildTagMemoABRerankRun({ query, candidates, runs, abMode, topL, k, useBM25 }) {
+        const configured = Boolean(
+            this.rerankConfig.url &&
+            this.rerankConfig.apiKey &&
+            this.rerankConfig.model
+        );
+        if (!configured) {
+            console.warn('[LightMemo] TagMemo V9.1 Rerank comparison requested, but Rerank is not configured.');
+            return {
+                requested: true,
+                available: false,
+                error: 'Rerank 未配置（需要 RerankUrl、RerankApi、RerankModel）',
+                ranked: []
+            };
+        }
+
+        const poolById = new Map();
+        const candidateById = new Map(
+            candidates.map(candidate => [Number(candidate.label), candidate])
+        );
+        const addToPool = (items, limit = items.length) => {
+            items.slice(0, limit).forEach((item, index) => {
+                const id = Number(item.id ?? item.label);
+                if (!Number.isFinite(id)) return;
+                const canonical = candidateById.get(id) || {};
+                const existing = poolById.get(id);
+                const retrievalRank = index + 1;
+                if (!existing || retrievalRank < existing.retrieval_rank) {
+                    poolById.set(id, {
+                        ...canonical,
+                        ...(existing || {}),
+                        ...item,
+                        id,
+                        label: item.label ?? canonical.label ?? id,
+                        text: String(item.text ?? existing?.text ?? canonical.text ?? '').trim(),
+                        retrieval_rank: retrievalRank
+                    });
+                }
+            });
+        };
+
+        if (abMode === 'A') {
+            addToPool(runs.knn.ranked, topL);
+            addToPool(runs.v9.ranked, topL);
+            if (useBM25) addToPool(this._buildBm25TopIds(query, candidates, topL), topL);
+        } else {
+            addToPool(runs.knn.top, k);
+            addToPool(runs.v9.top, k);
+        }
+
+        const pool = [...poolById.values()].filter(item => item.text);
+        const droppedCount = poolById.size - pool.length;
+        if (droppedCount > 0) {
+            console.warn(`[LightMemo] TagMemo V9.1 comparison: dropped ${droppedCount} Rerank candidates without text.`);
+        }
+        if (pool.length === 0) {
+            return {
+                requested: true,
+                available: false,
+                error: '没有可供 Rerank 横向比较的候选',
+                ranked: []
+            };
+        }
+
+        console.log(`[LightMemo] TagMemo V9.1 comparison: reranking ${pool.length} symmetric candidates.`);
+        const outputLimit = abMode === 'A' ? pool.length : Math.min(k, pool.length);
+        const reranked = await this._rerankDocuments(query, pool, outputLimit);
+        const failedCount = reranked.filter(item => item.rerank_failed).length;
+        const ranked = reranked.map(item => ({
+            ...item,
+            id: item.id ?? item.label,
+            score: Number(item.rerank_score) || 0
+        }));
+
+        return {
+            requested: true,
+            available: failedCount < reranked.length,
+            partialFailure: failedCount > 0 && failedCount < reranked.length,
+            error: failedCount === reranked.length ? 'Rerank API 调用全部失败，未生成有效对比' : null,
+            candidateCount: pool.length,
+            ranked
+        };
+    }
+
+    _buildBm25TopIds(query, candidates, limit) {
+        const queryTokens = this._tokenize(query);
+        const expanded = this._expandQueryTokens(queryTokens);
+        const allQueryTokens = [...new Set([...queryTokens, ...expanded])];
+        const ranker = new BM25Ranker();
+        const allDocs = candidates.map(candidate => candidate.tokens || []);
+        if (allDocs.length === 0) return [];
+        const idf = ranker.calculateIDF(allDocs);
+        const avgLength = allDocs.reduce((sum, doc) => sum + doc.length, 0) / allDocs.length || 1;
+        return candidates
+            .map(candidate => ({
+                id: candidate.label,
+                score: ranker.score(allQueryTokens, candidate.tokens || [], avgLength, idf)
+            }))
+            .filter(item => item.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, limit);
+    }
+
+    _rankMap(items) {
+        return new Map(items.map((item, index) => [
+            Number(item.id ?? item.label),
+            { rank: index + 1, score: Number(item.score ?? item.vectorScore) || 0, item }
+        ]));
+    }
+
+    _shortMemoryText(text, maxLength = 84) {
+        const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+        return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
+    }
+
+    _formatTagMemoKernelAB({ query, candidates, runs, topL, k, tagBoost, useBM25, rerankRun }) {
+        const bm25Top = useBM25 ? this._buildBm25TopIds(query, candidates, topL) : [];
+        const sources = new Map();
+        const add = (items, source) => items.slice(0, topL).forEach(item => {
+            const id = Number(item.id ?? item.label);
+            if (!sources.has(id)) sources.set(id, new Set());
+            sources.get(id).add(source);
+        });
+        add(runs.knn.ranked, 'KNN');
+        add(runs.v9.ranked, 'V9.1');
+        add(bm25Top, 'BM25');
+
+        const knnMap = this._rankMap(runs.knn.ranked);
+        const v91Map = this._rankMap(runs.v9.ranked);
+        const rerankMap = rerankRun?.available ? this._rankMap(rerankRun.ranked) : new Map();
+        const byId = new Map(candidates.map(item => [Number(item.label), item]));
+        const ids = [...sources.keys()].sort((a, b) => {
+            const bestA = Math.min(knnMap.get(a)?.rank || Infinity, v91Map.get(a)?.rank || Infinity);
+            const bestB = Math.min(knnMap.get(b)?.rank || Infinity, v91Map.get(b)?.rank || Infinity);
+            return bestA - bestB;
+        });
+
+        let text = `\n[--- TagMemo V9.1 对照模式 A：固定对称候选超集 ---]\n`;
+        text += `查询: ${query}\n参数: topL=${topL}, displayK=${k}, tag_boost=${tagBoost}, BM25=${useBM25}, compare_rerank=${Boolean(rerankRun)}\n`;
+        text += `V9.1资产: ${runs.v9.snapshot.bundle.artifactSig}\n`;
+        text += `对称超集: ${ids.length} 个唯一 chunk（KNN ∪ V9.1${useBM25 ? ' ∪ BM25' : ''}）\n`;
+        if (rerankRun) {
+            text += rerankRun.available
+                ? `Rerank横向基线: ${rerankRun.candidateCount} 个对称候选${rerankRun.partialFailure ? '（部分批次失败）' : ''}\n\n`
+                : `Rerank横向基线: 不可用（${rerankRun.error}）\n\n`;
+        } else {
+            text += '\n';
+        }
+        text += `| # | 候选记忆 | 进入路径 | KNN排名/分数 | V9.1排名/分数 | ΔRank(V9.1-KNN) |${rerankRun ? ' Rerank排名/分数 | ΔRank(V9.1-Rerank) |' : ''}\n`;
+        text += `|---:|---|---|---:|---:|---:|${rerankRun ? '---:|---:|' : ''}\n`;
+        ids.slice(0, Math.max(k, 30)).forEach((id, index) => {
+            const candidate = byId.get(id);
+            const knn = knnMap.get(id);
+            const v91 = v91Map.get(id);
+            const reranked = rerankMap.get(id);
+            const delta = knn && v91 ? knn.rank - v91.rank : null;
+            const rerankDelta = reranked && v91 ? reranked.rank - v91.rank : null;
+            const fmt = value => value ? `${value.rank}/${value.score.toFixed(4)}` : '—';
+            const rerankCells = rerankRun
+                ? ` ${fmt(reranked)} | ${rerankDelta === null ? '—' : rerankDelta > 0 ? `+${rerankDelta}` : rerankDelta} |`
+                : '';
+            text += `| ${index + 1} | ${this._escapeMarkdownCell(this._shortMemoryText(candidate?.text))} | ${[...sources.get(id)].join('+')} | ${fmt(knn)} | ${fmt(v91)} | ${delta === null ? '—' : delta > 0 ? `+${delta}` : delta} |${rerankCells}\n`;
+        });
+        text += `\n说明: 正 ΔRank 表示 V9.1 相对基线将候选前移。Rerank（开启时）只重排同一候选池，不扩展召回集合。本模式用于观察 V9.1 增强与势能场对原始 KNN 排序的影响。\n`;
+        text += `[--- 模式 A 结束 ---]\n`;
+        return text;
+    }
+
+    _formatTagMemoProductAB({ query, runs, k, tagBoost, usePotentialField, rerankRun }) {
+        const knnTop = runs.knn.top;
+        const v91Top = runs.v9.top;
+        const knnIds = new Set(knnTop.map(item => Number(item.id ?? item.label)));
+        const v91Ids = new Set(v91Top.map(item => Number(item.id ?? item.label)));
+        const overlap = [...knnIds].filter(id => v91Ids.has(id));
+        const knnOnly = [...knnIds].filter(id => !v91Ids.has(id));
+        const v91Only = [...v91Ids].filter(id => !knnIds.has(id));
+        const knnMap = this._rankMap(knnTop);
+        const v91Map = this._rankMap(v91Top);
+        const rerankMap = rerankRun?.available ? this._rankMap(rerankRun.ranked) : new Map();
+        const rerankIds = new Set(rerankRun?.available ? rerankRun.ranked.map(item => Number(item.id ?? item.label)) : []);
+        const rerankKnnOverlap = [...rerankIds].filter(id => knnIds.has(id)).length;
+        const rerankV91Overlap = [...rerankIds].filter(id => v91Ids.has(id)).length;
+        const items = new Map();
+        [...knnTop, ...v91Top, ...(rerankRun?.ranked || [])]
+            .forEach(item => items.set(Number(item.id ?? item.label), item));
+        const union = [...new Set([...v91Ids, ...knnIds, ...rerankIds])];
+
+        let text = `\n[--- TagMemo V9.1 对照模式 B：端到端寻址 ---]\n`;
+        text += `查询: ${query}\n参数: k=${k}, tag_boost=${tagBoost}, potential_field=${usePotentialField}, compare_rerank=${Boolean(rerankRun)}\n`;
+        text += `V9.1资产: ${runs.v9.snapshot.bundle.artifactSig}\n`;
+        text += `重合=${overlap.length}/${k} (${(overlap.length / k * 100).toFixed(1)}%) | KNN独占=${knnOnly.length} | V9.1独占=${v91Only.length}\n`;
+        if (rerankRun) {
+            text += rerankRun.available
+                ? `Rerank Top-${rerankRun.ranked.length}: 与KNN重合=${rerankKnnOverlap} | 与V9.1重合=${rerankV91Overlap}${rerankRun.partialFailure ? ' | 部分批次失败' : ''}\n\n`
+                : `Rerank横向基线: 不可用（${rerankRun.error}）\n\n`;
+        } else {
+            text += '\n';
+        }
+        text += `| 记忆片段 | KNN排名/分数 | V9.1排名/分数 |${rerankRun ? ' Rerank排名/分数 |' : ''} 归属 |\n`;
+        text += `|---|---:|---:|${rerankRun ? '---:|' : ''}---|\n`;
+        union.forEach(id => {
+            const knnItem = knnMap.get(id);
+            const v91Item = v91Map.get(id);
+            const reranked = rerankMap.get(id);
+            const owners = [];
+            if (knnItem) owners.push('KNN');
+            if (v91Item) owners.push('V9.1');
+            if (reranked) owners.push('Rerank');
+            const fmt = value => value ? `${value.rank}/${value.score.toFixed(4)}` : '—';
+            text += `| ${this._escapeMarkdownCell(this._shortMemoryText(items.get(id)?.text, 100))} | ${fmt(knnItem)} | ${fmt(v91Item)} |${rerankRun ? ` ${fmt(reranked)} |` : ''} ${owners.join('+') || '—'} |\n`;
+        });
+        text += `\nV9.1 独占项用于人工判断拓扑增强是否抵达原始 KNN 未命中的有效记忆；KNN 独占项用于检查 V9.1 是否发生召回损失或主题漂移。Rerank（开启时）在两路 Top-K 并集上建立独立横向基线。\n`;
+        text += `[--- 模式 B 结束 ---]\n`;
+        return text;
+    }
+
+    _getChunkVector(chunkId) {
+        const db = this.vectorDBManager?.db;
+        const dim = this.vectorDBManager?.config?.dimension;
+        if (!db || !dim) return null;
+        const row = db.prepare('SELECT vector FROM chunks WHERE id = ?').get(chunkId);
+        if (!row?.vector || row.vector.length !== dim * 4) return null;
+        if (row.vector.byteOffset % 4 === 0) {
+            return new Float32Array(row.vector.buffer, row.vector.byteOffset, dim);
+        }
+        const copied = Buffer.from(row.vector);
+        return new Float32Array(copied.buffer, copied.byteOffset, dim);
     }
 
     /**
@@ -554,8 +976,8 @@ class LightMemoPlugin {
     /**
      * 🧭 LightMemo 开发测绘：比较起点 A 到一个或多个目标的三类距离。
      * - 纯 KNN 距离: 1 - cos(A, B)
-     * - 浪潮 TagMemo 距离: 1 - cos(TagBoost(A), TagBoost(B))
-     * - 测地线 v8 加权距离: (1 - alpha) * 纯KNN + alpha * Tag 能量场距离
+     * - V9.1 TagMemo 距离: 1 - cos(TagBoost(A), TagBoost(B))
+     * - V9.1 势能场加权距离: (1 - alpha) * 纯KNN + alpha * Tag 能量场距离
      */
     async handleMapping(args = {}) {
         const startText = args.start || args.origin || args.a || args.start_query || args.query;
@@ -726,7 +1148,7 @@ class LightMemoPlugin {
         let content = `\n[--- LightMemo 开发测绘 / TagMemo Geodesic Map ---]\n`;
         content += `起点 A: ${startText}\n`;
         content += `参数: tag_boost=${tagBoost}, geodesic_alpha=${alpha}${coreTags.length > 0 ? `, core_tags=${coreTags.join(', ')}` : ''}\n\n`;
-        content += `| # | 目标 | 纯KNN距离 | 纯KNN相似度 | 浪潮TagMemo距离 | 浪潮TagMemo相似度 | 测地线v8加权距离 | 测地线v8加权相似度 | Tag能量场相似度 | A命中Tag | 目标命中Tag |\n`;
+        content += `| # | 目标 | 纯KNN距离 | 纯KNN相似度 | V9.1 TagMemo距离 | V9.1 TagMemo相似度 | V9.1势能场加权距离 | V9.1势能场加权相似度 | Tag能量场相似度 | A命中Tag | 目标命中Tag |\n`;
         content += `|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|\n`;
 
         rows.forEach((row, index) => {
@@ -738,7 +1160,7 @@ class LightMemoPlugin {
             content += `| ${index + 1} | ${this._escapeMarkdownCell(row.target)} | ${fmt(row.pureKnnDistance)} | ${fmt(row.pureKnnSim)} | ${fmt(row.waveDistance)} | ${fmt(row.waveSim)} | ${fmt(row.weightedGeoDistance)} | ${fmt(row.weightedGeoSim)} | ${fmt(row.geoFieldSim)} | ${this._escapeMarkdownCell(fmtTags(row.startTags))} | ${this._escapeMarkdownCell(fmtTags(row.targetTags))} |\n`;
         });
 
-        content += `\n说明: 距离越小表示越近；纯KNN为原始向量余弦距离，浪潮TagMemo为两端都经过TagMemo增强后的向量距离，测地线v8加权距离使用 A/B 的Tag能量场余弦相似度与纯KNN按 alpha 融合，便于开发时观察语义拓扑与原始向量空间的偏差。\n`;
+        content += `\n说明: 距离越小表示越近；纯KNN为原始向量余弦距离，V9.1 TagMemo为两端都经过增强后的向量距离，势能场加权距离使用 A/B 的Tag能量场余弦相似度与纯KNN按 alpha 融合，便于开发时观察语义拓扑与原始向量空间的偏差。\n`;
         content += `[--- 测绘结束 ---]\n`;
         return content;
     }
@@ -952,8 +1374,7 @@ class LightMemoPlugin {
                 // 使用解构默认值，确保即使 tagBoostInfo 结构不完整也能安全运行
                 const { matchedTags = [], coreTagsMatched = [] } = r.tagBoostInfo;
                 if (matchedTags.length > 0 || coreTagsMatched.length > 0) {
-                    // 🌟 Wave v8: 根据是否有测地线贡献显示不同标签
-                    const memoLabel = r.waveV8 ? 'TagMemo+ v8' : 'TagMemo';
+                    const memoLabel = r.potentialFieldV91 ? 'TagMemo V9.1 + 势能场' : 'TagMemo V9.1';
                     let boostLine = `    [${memoLabel} 增强: `;
                     // 只有当确实命中了核心标签时，才显示 🌟 标志
                     if (coreTagsMatched.length > 0) {
@@ -985,7 +1406,30 @@ class LightMemoPlugin {
             console.warn('[LightMemo] Rerank not configured. Skipping.');
             return documents.slice(0, originalK);
         }
-        console.log(`[LightMemo] Starting rerank for ${documents.length} documents.`);
+
+        // Rerank API 要求 query/documents 均为非空字符串；undefined 数组项会被
+        // JSON.stringify 转成 null，部分服务会以 “input cannot be null” 拒绝整批。
+        const normalizedQuery = String(query ?? '').trim();
+        if (!normalizedQuery) {
+            console.warn('[LightMemo] Rerank skipped because query is empty.');
+            return documents.slice(0, originalK);
+        }
+        const validDocuments = documents
+            .map(doc => ({
+                ...doc,
+                text: String(doc?.text ?? '').trim()
+            }))
+            .filter(doc => doc.text);
+        const droppedCount = documents.length - validDocuments.length;
+        if (droppedCount > 0) {
+            console.warn(`[LightMemo] Dropped ${droppedCount} documents without valid text before reranking.`);
+        }
+        if (validDocuments.length === 0) {
+            console.warn('[LightMemo] Rerank skipped because no document contains valid text.');
+            return [];
+        }
+
+        console.log(`[LightMemo] Starting rerank for ${validDocuments.length} documents.`);
 
         const rerankUrl = new URL('v1/rerank', this.rerankConfig.url).toString();
         const headers = {
@@ -993,13 +1437,13 @@ class LightMemoPlugin {
             'Content-Type': 'application/json',
         };
         const maxTokens = this.rerankConfig.maxTokens;
-        const queryTokens = this._estimateTokens(query);
+        const queryTokens = this._estimateTokens(normalizedQuery);
 
         let batches = [];
         let currentBatch = [];
         let currentTokens = queryTokens;
 
-        for (const doc of documents) {
+        for (const doc of validDocuments) {
             const docTokens = this._estimateTokens(doc.text);
             if (currentTokens + docTokens > maxTokens && currentBatch.length > 0) {
                 batches.push(currentBatch);
@@ -1024,7 +1468,7 @@ class LightMemoPlugin {
             try {
                 const body = {
                     model: this.rerankConfig.model,
-                    query: query,
+                    query: normalizedQuery,
                     documents: docTexts,
                     top_n: docTexts.length
                 };
@@ -1123,6 +1567,89 @@ class LightMemoPlugin {
                 finalDocs.map(d => (d.rerank_score || 0).toFixed(3)).join(', '));
 
             return finalDocs;
+        }
+    }
+
+    /**
+     * 解析 LightMemo 的 AIMemo+ 开关。
+     * - false/未传：关闭
+     * - true、aimemo、aimemo+、true+：使用默认配置
+     * - 其他非布尔字符串：作为 RAGDiaryPlugin 的 AIMemo 预设名
+     * - aimemo_preset 显式值优先作为预设名，并自动开启
+     */
+    _parseAIMemoOptions(value, explicitPreset = null) {
+        const preset = typeof explicitPreset === 'string' ? explicitPreset.trim() : '';
+        if (preset) {
+            return { enabled: true, presetName: preset };
+        }
+
+        if (typeof value === 'boolean') {
+            return { enabled: value, presetName: null };
+        }
+        if (typeof value === 'number') {
+            return { enabled: value !== 0, presetName: null };
+        }
+        if (typeof value !== 'string') {
+            return { enabled: false, presetName: null };
+        }
+
+        const normalized = value.trim();
+        const lower = normalized.toLowerCase();
+        if (!normalized || ['false', '0', 'no', 'off', 'disable', 'disabled', '关闭', '禁用', '否'].includes(lower)) {
+            return { enabled: false, presetName: null };
+        }
+        if (['true', '1', 'yes', 'on', 'enable', 'enabled', 'aimemo', 'aimemo+', 'true+', '开启', '启用', '是'].includes(lower)) {
+            return { enabled: true, presetName: null };
+        }
+
+        return { enabled: true, presetName: normalized };
+    }
+
+    /**
+     * 将 LightMemo 最终候选提交给 RAGDiaryPlugin 唯一持有的 AIMemoHandler。
+     * 返回 null 表示桥不可用、未配置或总结失败，调用方应保留原始检索结果。
+     */
+    async _summarizeWithAIMemo({ results, query, presetName = null, cacheSalt = '' }) {
+        if (!this.aiMemoBridge || typeof this.aiMemoBridge.summarizeCandidates !== 'function') {
+            console.warn('[LightMemo] AIMemo requested, but AIMemoBridge is unavailable. Falling back to raw memories.');
+            return null;
+        }
+
+        if (
+            !presetName &&
+            typeof this.aiMemoBridge.isConfigured === 'function' &&
+            !this.aiMemoBridge.isConfigured()
+        ) {
+            console.warn('[LightMemo] AIMemo requested, but default AIMemo configuration is incomplete. Falling back to raw memories.');
+            return null;
+        }
+
+        const diaryNames = [...new Set(
+            results.map(result => String(result?.dbName || '').trim()).filter(Boolean)
+        )];
+
+        try {
+            const summary = await this.aiMemoBridge.summarizeCandidates({
+                candidates: results,
+                diaryNames,
+                userContent: String(query || '').trim(),
+                displayQuery: String(query || '').trim(),
+                presetName,
+                cacheSalt
+            });
+            const normalized = typeof summary === 'string' ? summary.trim() : '';
+            if (
+                !normalized ||
+                /^\[(?:AIMemo功能未配置|AIMemo\+?处理失败|AIMemo聚合处理失败|AI模型调用失败)/.test(normalized)
+            ) {
+                console.warn(`[LightMemo] AIMemo returned an unusable result: ${normalized || '(empty)'}. Falling back to raw memories.`);
+                return null;
+            }
+
+            return `\n[--- LightMemo AIMemo+ AI总结 ---]\n${normalized}\n[--- AI总结结束 ---]\n`;
+        } catch (error) {
+            console.error('[LightMemo] AIMemo summarization failed. Falling back to raw memories:', error.message);
+            return null;
         }
     }
 

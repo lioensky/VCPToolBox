@@ -1,591 +1,1153 @@
-# TagMemo “浪潮”算法 V8.3 深度技术文档
+# TagMemo “浪潮”算法 V9.1 深度技术文档
 
-## 1. 算法概述
-TagMemo “浪潮”算法（TagMemo Wave Algorithm）是 VCP 系统中用于 RAG（检索增强生成）的核心优化方案。
-V4 版本引入了**语义分段 (Semantic Segmentation)**、**霰弹枪查询 (Shotgun Query)** 和 **SVD智能去重 (Latent Topic Deduplication)**，进一步解决了长上下文中的"语义稀释"问题，实现了对复杂对话流的多点精准召回。
-V6 版本在此基础上引入了 **LIF 脉冲扩散 (Spike Propagation)**、**动态核心加权 (Dynamic Core Boost)**、**语言置信度门控 (Language Confidence Gating)** 和 **语义去重 (Semantic Deduplication)**，将标签网络从静态查询跃升为**认知拓扑涌现**。
+> 当前生产版本：V9.1  
+> 对外版本标识：`v9`  
+> 运行模式：单轨生产  
+> 文档更新时间：2026-07-14  
+> 正式发布结论见 [TagMemo V9.1 正式版更新说明](TAGMEMO_V9_1正式版更新说明_2026-07-14.md)
 
-## 2. 核心哲学：语义引力与向量重塑
-在浪潮算法的视角下，向量空间并非平坦的，而是充满了语义引力。
-*   **语义锚点**：标签（Tags）被视为空间中的引力源。
-*   **向量重塑**：算法不直接使用原始查询向量，而是根据感应到的标签引力，将向量向核心语义点进行“拉扯”和“扭曲”，从而在检索时能够穿透表层文字，直达语义核心。
+---
 
-### 2.1 语义动力学假设（V6 根基）
-V6 建立在一个严格的核心假设之上：
+## 1. 系统定位
 
-> **AI 在撰写日记时最终生成的标签序列，具有严格紧密的逻辑意义——无论是标签的顺序、每个标签之间的能量差，还是这些标签为何共同出现——都蕴含着不可忽视的语义结构信息。**
+TagMemo Wave Algorithm 是 VCP 记忆系统中位于向量召回之前与候选重排阶段之间的结构检索引擎。
 
-这意味着：
-*   **共现即关联**：两个标签频繁在同一篇日记中共现，说明它们之间存在深层的认知联系。
-*   **频次即突触强度**：共现次数越高，两个概念之间的"突触连接"越强。
-*   **标签网络即认知拓扑**：所有日记标签的共现关系，天然构成一张**加权无向图**——这就是 V6 脉冲扩散的神经网络基底。
+它不替代 embedding，也不把向量数据库改造成另一种语言模型。它解决的是纯 KNN 难以完整表达的问题：
 
-这张共现拓扑图通过 `_buildCooccurrenceMatrix()` 在系统启动时构建，数据源为 `file_tags` 表的自连接：
-```sql
-SELECT ft1.tag_id as tag1, ft2.tag_id as tag2, COUNT(ft1.file_id) as weight
-FROM file_tags ft1
-JOIN file_tags ft2 ON ft1.file_id = ft2.file_id AND ft1.tag_id < ft2.tag_id
-GROUP BY ft1.tag_id, ft2.tag_id
-```
-结果为对称填充的 `Map<tagId, Map<neighborId, weight>>`，是 V6 脉冲扩散的拓扑骨架。
+- 哪些概念在长期记忆中共同出现；
+- 标签出现顺序是否携带叙事方向；
+- 当前概念更可能沿哪条局部关系继续展开；
+- 哪些低频概念虽然向量距离较远，却拥有可靠的结构支持；
+- 哪些候选只是高频枢纽、同义复读或短周期回流产生的噪声；
+- 如何把图传播产生的查询级能量场重新用于候选排序。
 
-## 3. 核心模块架构
+V9.1 的生产链可以概括为：
 
-### 3.1 EPA 模块 (Embedding Projection Analysis)
-[`EPAModule.js`](EPAModule.js) 负责语义空间的初步定位；V8.3 起，EPA 基底重算主路径已经下沉到 [`rust-vexus-lite/src/lib.rs`](rust-vexus-lite/src/lib.rs)，采用 **density-residual-sampling** 新算法。
-*   **逻辑深度 (Logic Depth)**：通过计算投影熵值，判断用户意图的聚焦程度。
-*   **世界观门控 (Worldview Gating)**：识别当前对话所处的语义维度（如技术、情感、社会等）。
-*   **跨域共振 (Resonance)**：检测用户是否同时触及了多个正交的语义轴，决定检索的广度。
-*   **Rust 只读长计算 + 短租约发布**：EPA 长耗时计算不再持有 SQLite 写租约；Rust 只读计算完成后，再通过短写租约发布 `kv_store.epa_basis_cache`。
-*   **密度残差采样**：用随机投影密度桶、残差代表样本、多样性衰减锚点选择替代旧 JS 全量 K-Means，大幅减少进入 SVD 的行数。
-
-### 3.2 残差金字塔 (Residual Pyramid)
-[`ResidualPyramid.js`](ResidualPyramid.js) 是算法的“数学心脏”，负责语义能量的精细拆解。
-*   **多级剥离**：利用 **Gram-Schmidt 正交化投影**，将查询向量分解为“已解释能量”和“残差能量”。
-*   **微弱信号捕获**：通过对残差向量的递归搜索，捕捉那些被宏观概念掩盖的微弱语义信号。
-*   **相干性分析 (Coherence)**：评估召回标签之间的逻辑一致性，决定“浪潮”的激活强度。
-
-### 3.3 知识库管理器 (KnowledgeBaseManager)
-[`KnowledgeBaseManager.js`](KnowledgeBaseManager.js) 负责标签的召回与向量合成。
-*   **核心标签 (CoreTags)**：拥有“虚拟召回”和“权重豁免”特权，作为语义的绝对锚点。
-*   **逻辑拉回 (Logic Pull-back)**：利用标签共现矩阵，自动联想并拉回与当前主题强相关的逻辑词。
-*   **语义去重**：消除冗余标签，确保召回信息的多样性。
-
-### 3.4 偏振语义舵 (Polarization Semantic Rudder, PSR)
-[`RAGDiaryPlugin.js`](Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js) 中的核心工程化函数。
-*   **犹豫度检测 (Hesitation Detection)**：利用 NLP 解析识别输入输出中的转折与摇摆成分。
-*   **动态偏振算法 (Dynamic Polarization)**：物理动态化语义向量在投影上的摆动程度。
-*   **辩证对冲**：在召回阶段引入“同类知识”的“负向对冲知识”，构建辩证认知。
-
-### 3.5 结果去重器 (ResultDeduplicator)
-[`ResultDeduplicator.js`](ResultDeduplicator.js) 是 V4 新增的"智能过滤器"。
-*   **SVD 主题建模**：对"霰弹枪"检索回来的海量结果进行 SVD 分解，识别出本次检索的 n 个潜在主题 (Latent Topics)。
-*   **残差选择 (Residual Selection)**：使用 Gram-Schmidt 正交化，迭代选择能解释"未覆盖主题能量"的最佳结果。该机制确保了检索结果的多样性，既能覆盖主要意图，又能保留那些微弱但独特的重要信息 (Weak Links)，同时彻底消除语义重复的冗余条目。
-
-## 4. 详细工作流
-
-### 阶段一：感应 (Sensing)
-1.  **净化处理**：移除 HTML标签、json结构化转md、Emoji 及工具调用标记（Tool Markers），消除技术噪音。
-2.  **EPA 投影**：计算原始向量的逻辑深度和共振值，确定初始语义坐标。
-
-### 阶段二：分段与分解 (Segmentation & Decomposition)
-1.  **语义分段**：`ContextVectorManager` 扫描历史上下文，基于向量相似度（阈值 0.70）将连续对话流切割为独立的语义段落 (Topics)。
-2.  **首轮感应**：使用当前查询向量投射 Tag 向量海，获取最强匹配标签 (CoreTag)。
-3.  **金字塔迭代**：对当前向量进行残差分解，挖掘深层标签。
-
-### 阶段三：扩张与召回 (Expansion & Recall)
-1.  **核心标签补全**：若显式指定的核心标签未被搜到，强行从数据库捞取其向量。
-2.  **关联词拉回**：根据共现矩阵，从高权重标签扩展出关联语义。
-3.  **特权过滤**：核心标签无条件保留，普通标签需通过世界观门控筛选。
-
-### 阶段四：重塑与检索 (Reshaping & Retrieval)
-1.  **动态参数计算**：
-    *   **Beta (TagWeight)**：根据逻辑深度和共振值动态决定标签增强的比例。
-    *   **K 值调整**：根据信息量动态决定检索片段的数量。
-2.  **向量融合**：将原始向量与增强标签向量按动态比例混合，实现“语义坍缩”。
-3.  **偏振修正 (PSR Correction)**：
-    *   检测上下文中的语义偏振信号。
-    *   若触发犹豫机制，计算偏振向量投影。
-    *   根据偏振强度，计算对冲检索参数。
-4.  **霰弹枪检索与相控阵去重 (Shotgun & Deduplication)**：
-    *   **霰弹枪发射**：并行执行 N+1 次检索（1次当前向量 + N次历史分段向量），最大限度覆盖长上下文中的所有潜在关注点。
-    *   **SVD 建模**：对汇聚的数百条候选结果进行 SVD 分析，提取潜在主题。
-    *   **残差去重**：迭代选择最具信息增量的结果，形成最终的精简结果集（通常为 Top K）。
-    *   **对冲召回**：若偏振触发，同步混入对冲检索结果。
-
-## 5. 工程原理亮点
-
-### 5.1 核心标签 vs. 普通标签
-| 特性 | 核心标签 (Core Tags) | 普通标签 (Other Tags) |
-| :--- | :--- | :--- |
-| **产生方式** | 显式指定或首轮强感应 | 残差金字塔逐层剥离 |
-| **缺失处理** | **虚拟补全**（强行捞取） | 自动忽略 |
-| **权重待遇** | **Core Boost** (1.2x-1.4x) | 原始贡献权重 |
-| **噪音过滤** | **完全豁免** | 严格门控筛选 |
-
-### 5.2 动态 Beta 公式
-[`RAGDiaryPlugin.js`](Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js) 中算法通过以下公式实现能量平衡：
-`β = σ(L · log(1 + R) - S · noise_penalty)`
-该公式确保了：当用户意图明确（L高）且逻辑清晰（R高）时，算法会加大标签增强力度；当噪音较多（S高）时，则收紧增强，回归稳健检索。
-
-### 5.3 噪音净化器 (Sanitizer)
-为了防止 AI 的技术标记干扰向量搜索，算法实现了专门的工具调用净化逻辑，确保向量化的是纯粹的“人类语义”，而非“机器指令”。
-
-### 5.4 辩证认知器 (Dialectical Cognitizer)
-V4 版本引入的 PSR 机制本质上是一个可量化、可控制的辩证认知器。它不再盲目追求语义的绝对一致性，而是通过捕捉人类思维中的“犹豫”与“摇摆”，主动提供对冲信息，从而打破 AI 的“回声壁垒”，实现更深层次的逻辑闭环。
-
-## 6. V6 新特性：认知拓扑涌现 (`_applyTagBoostV6`)
-V6 带来了系统化的大规模重构，在保留 V4 优势的基础上，围绕"语义动力学"引入了多项核爆级更新。其核心代码主要集中在 `KnowledgeBaseManager.js` 中的 `_applyTagBoostV6` 方法内。
-
-### 6.1 七步执行管线
-V6 的单次向量增强流水线被扩展为 7 个严密的阶段：
-1.  **EPA 定位**：计算"逻辑深度" (Logic Depth) 与跨域"共振" (Resonance)，确定当前所处的"世界" (Query World)。
-2.  **残差金字塔拆解**：获取新颖度 (Novelty) 与覆盖率 (Coverage)。
-3.  **动态基准调优 (Dynamic Boost & Core Boost)**：基于前两步特征，动态计算全局激增因子与**核心标签专门放大因子**（范围通常在 1.20 - 1.40）。
-4.  **世界观与语言门控 (Language Compensation)**：所有候选 Tag 在进入脑网前，必须先经过过滤：若英文技术词汇脱离了技术语境（进入如政治、社会语境），其权重将被严格压制（软化惩罚）。
-5.  **LIF 脉冲扩散 (Spike Propagation)**：🌟 V6 最核心的突破，通过突触关联矩阵让高能标签在拓扑图上发生电波传导。
-6.  **语义去重 (Semantic Deduplication)**：对所有涌现及召回的标签计算相似度，融合高度冗余语义（如"委内瑞拉局势"与"委内瑞拉危机"），为特征多样性腾出空间。
-7.  **最终融合 (Vector Fusion)**：防止超量重塑，使用 Clamp 和归一化处理最终输出向量。
-
-### 6.2 LIF 脉冲扩散 (Spike Propagation)
-传统 RAG 中，标签是被孤立搜索的。V6 引入了类神经元 (Leaky Integrate-and-Fire, LIF) 的放电网络：
-1. **初始注入**：查询命中的种子 Tags 作为初始激活节点，其能量等于它原本的命中权重。
-2. **突触传导**：只要一个节点的能量超过极高的触发门槛（`FIRING_THRESHOLD = 0.10`），它就可以沿着 `tagCooccurrenceMatrix` 向相邻节点**放电**。
-3. **电位衰减**：传导电流遵循 `injectedCurrent = energy * coocWeight * DECAY_FACTOR`，强衰减机制防止能量无限放大。
-4. **认知涌现**：经历 `MAX_HOPS = 2` 跳的狂暴扩散后，即使某些概念从未在字面上被提及，由于其在长期记忆里与活跃标签紧密相连，电位也会瞬间突破阈值被"涌现"出来（被标记为 `isPullback: true`）。
-*为了工程鲁棒性，涌现节点总数被硬性截断（`MAX_EMERGENT_NODES = 50`），且微电流 (<0.01) 不参与计算。*
-
-### 6.3 动态参数调控 (`rag_params.json` 热更新)
-为了终结写死参数的历史，V6 将大量控制杆提取为外部热更新配置：
-*   `activationMultiplier` / `dynamicBoostRange` / `coreBoostRange`
-*   `languageCompensator` (惩罚阈值)
-*   `deduplicationThreshold` (去重相似度门槛，如 0.88)
-*   `techTagThreshold` / `normalTagThreshold` (召回纯净度过滤)
-
-## 7. 结论
-TagMemo 浪潮算法不仅解决检索问题，更是从系统底层试图模拟人类思考时的"隐性连接"与"直觉联想"。
-*   **V4** 通过**偏振语义舵**实现了从单一线性检索到多角度辩证召回的跨越。
-*   **V6** 则在**语义动力学**的严格假设上，通过构建共现拓扑并结合 **LIF 脉冲扩散**，让系统真正具备了**直觉涌现**的能力；配合**语言门控**与**核心加权**，做到了在海量信息噪音中"形散而神不散"。
-它是整个 VCP 知识库在深层语义操纵上的王冠。
-
-## 8. V7 进化：有向联想与内生残差 (OrdinalSpike)
-2026年3月推出的 V7 版本（代号：**OrdinalSpike / 序位脉冲**）是对浪潮算法的一次底层重构，将标签网络从“无向加权图”进化为“有向序位拓扑”，并引入了基于 SVD 的信息增益控制。
-
-### 8.1 核心突破：有向序位拓扑
-V7 实现了 V2时代 提出对“对称共现”质疑，引入了**序位势能 (Ordinal Potential)**：
-*   **有向连接**：建立了 `Source → Target` 的有向边。人类联想是具有方向性的（例如：看到“壁炉”容易想到“猫”，但看到“猫”不一定想到“壁炉”）。
-*   **势能衰减**：日记中排在前面的标签拥有更高的“势能” ($\Phi \in [0.9, 0.5]$)。共现权重不再仅是次数叠加，而是势能的积 $W = \Phi_{source} \times \Phi_{target}$。这反映了作者在打标签时的心理优先级。
-
-### 8.2 数学心脏：内生残差 (Intrinsic Residual / 语义残差能量)
-V7 引入了一个革命性的概念——**内生残差**，用于衡量一个概念在局部联想网络中的“信息密度”或“不可替代性”。
-1.  **旧计算原理**：在 `rust-vexus-lite` 核心中，利用截断 SVD 对每个 Tag 的有向邻居子空间进行分解。
-2.  **残差能量**：计算该 Tag 向量在其邻居子空间投影后的残差模长。
-    *   **低残差**：该 Tag 的语义可以被其邻居完全解释（平庸、从属概念）。
-    *   **高残差**：该 Tag 带有邻居不具备的独特语义（核心、独特信息源）。
-3.  **增益控制**：在脉冲扩散阶段，残差能量作为 **Node Residual Gain** 直接作用于放电强度。高残差节点（信息枢纽）具有更强的电波传导能力。
-4.  **V8.4 新计算原理**：旧式“每 Tag 一次局部 SVD”已经被三档 IR 后端替代，默认使用 `anchored_gs`，在保持残差锚语义的同时，实测获得约 **42 倍**速度提升。
-
-### 8.3 工程优化：防抖与阈值触发 (V7.1/V7.2)
-由于 Rust SVD 计算较为昂贵，V7 实现了精细化的重构调度：
-*   **1% 变动阈值**：只有当 `file_tags` 实际写入量达到总标签数的 1% 时，才会触发全量矩阵重建。
-*   **静默防抖**：对小规模变动开启 120 秒防抖计时，确保在批量导入或高频写作时系统负载平稳。
-
-### 8.4 动态精准虫洞路由 (Wormhole Routing / Variable Hops)
-在 V7 的最终迭代中，为了解决“稠密陷阱”（脉冲在同质化、高聚集的标签区内空耗算力打转）的问题，引入了基于张力的虫洞逻辑：
-1. **动量机制 (Momentum/TTL)**：废除全局死板的固定跳数（两跳限制），为每个初始脉冲赋予动量。普通稠密区的传播会迅速扣除动量并遭遇强衰减（`baseDecay`），确保“引力底座（涨潮）”阶段精准收敛，牢牢锁定核心意图。
-2. **逻辑张力探测 (Logical Tension)**：在脉冲撞击目标节点时，实时探测其逻辑张力（`Tension = coocWeight * neighborResidual`）。只有当残差极高（跨域新颖度大）且共现强关联的边缘节点被击中时，才能触发“虫洞”。
-3. **引力弹弓效应 (Slingshot Effect)**：进入虫洞的脉冲获得特权（免消耗动量，极低衰减 `wormholeDecay`），从而将稠密区聚集的庞大势能瞬间喷射向长尾、稀疏但致命相关的远端知识点（跨域非线性涌现）。
-
-## 10. V8 进化：测地线重排 (Geodesic Rerank)
-2026年4月推出的 V8 版本（代号：**GeodesicRerank / 测地线重排**）发现了一个被忽视的宝藏：Spike Propagation 计算过的 `accumulatedEnergy` 距离场在搜索完成后被丢弃了。V8 把它捡回来，用于对 KNN 候选做基于"地形贴地距离"的二次重排。
-
-### 10.1 核心洞察：贴地线是直线的超集
-KNN 余弦距离等价于在高维空间画一条"穿山直线"。但 embedding 空间并非平坦——标签共现矩阵在语义空间中构成了"地形"。
-
-```
-情况 A：平坦区域（日常对话）
-  Q ─────────── Chunk1    KNN 和测地线一致 → 零风险
-
-情况 B：存在语义山峰（跨域/多义词）
-  Q ─── ╱╲ ─── Chunk2    KNN 穿山（余弦近但语义远）
-       │  └──── Chunk3    测地线绕山（余弦远但Tag拓扑近）
-                          → 重排把 Chunk3 提上来！
+```text
+查询向量
+→ EPA 语义状态分析
+→ Residual Pyramid 多层标签感应
+→ Core Tag / Ghost Tag 补全
+→ V9.1 有界图传播
+→ 标签上下文向量融合
+→ Vexus KNN 候选召回
+→ 查询级 Potential Field 重排
+→ 后续时间、BM25、Rerank 与结果去重管线
 ```
 
-**激活方式**：`::TagMemo+` 修饰符（`::TagMemo` 的超集，同时激活标签增强 + 测地线重排）
+TagMemo 的目标不是“猜一个更像查询的向量”，而是：
 
-### 10.2 算法实现：零额外计算的距离场复用
-1. **距离场缓存**：`applyTagBoost()` 内部的 Spike Propagation 结束后，将 `accumulatedEnergy`（`Map<tagId, energy>`）缓存到 `TagMemoEngine.lastEnergyField`。成本：1 行赋值，零拷贝。
-2. **`geodesicRerank(candidates, options)`**：
-   - 批量查询 `chunk_id → file_id → tag_id[]` 映射（2 次 SQL）
-   - 对每个候选：遍历其关联 Tag，在距离场中查找命中能量
-   - `geoScore = totalEnergy / hitCount`（命中 Tag 的平均能量）
-   - 归一化后混合：`finalScore = (1-α) * knnScore + α * normalizedGeoScore`
-   - 按 finalScore 降序排列，**只重排不截断**
+> 利用知识库内部已经形成的关系，恢复一条能够继续推理的记忆路径。
 
-### 10.3 三层防御链
-| 层级 | 条件 | 行为 |
+---
+
+## 2. 已验证的核心假设
+
+TagMemo 建立在一个可检验的工程假设上：
+
+> AI 在写入记忆时产生的标签集合、标签顺序与重复共现，包含向量距离之外的叙事结构信息。
+
+该假设拆分为四个层次。
+
+### 2.1 共现是局部关系证据
+
+两个标签出现在同一篇记忆中，不代表它们必然同义，但说明它们在该记忆事件中存在关系。
+
+重复共现会提高证据可信度，但 V9.1 不再允许累计次数线性垄断传播权限。
+
+### 2.2 顺序是有噪声的叙事方向
+
+标签顺序可能反映：
+
+- 原因在结果之前；
+- 主体在属性之前；
+- 问题在解决方案之前；
+- 背景在结论之前；
+- 高优先级概念被更早写出。
+
+顺序不是绝对因果证明，因此图保持双向可达；顺流和逆流只具有不同阻尼。
+
+### 2.3 向量是边与节点的语义质量，而非完整拓扑
+
+embedding 适合回答“两个表达有多接近”，但不完整回答：
+
+- 它们是否在私有知识体系中存在关系；
+- 哪个方向更符合长期记忆叙事；
+- 某概念是否是局部不可替代的信息锚；
+- 某条远距离边是否是稀有但真实的跨域桥。
+
+所以 V9.1 把向量相似度、共现拓扑和叙事方向作为不同物理量处理。
+
+### 2.4 图传播必须守恒并有边界
+
+历史 V8.3 已证明共现传播方向有效，但累计边权、枢纽吸积和循环回流会污染候选边界。
+
+V9.1 的基本纪律是：
+
+- 累计证据先压缩；
+- 每个节点的总出流受固定预算约束；
+- 虫洞只能在预算内竞争；
+- 通用枢纽按全图入流温和抑制；
+- 立即回流被软抑制；
+- 传播只在有限跳与有限状态中进行；
+- 不求全局稳态；
+- 不允许传播过程创造无限能量。
+
+---
+
+## 3. 当前模块架构
+
+### 3.1 KnowledgeBaseManager
+
+[`KnowledgeBaseManager.js`](../KnowledgeBaseManager.js) 是知识库总控，负责：
+
+- SQLite schema 与附加式迁移；
+- 文件、chunk、Tag 和关系写入；
+- Vexus 多日记本索引生命周期；
+- TagMemo 引擎初始化；
+- 请求级增强向量和能量场传递；
+- 单日记本与虚拟联合索引搜索；
+- Rust SQLite 写租约；
+- DailyNote 外部写入协调；
+- 数据库健康检查与恢复；
+- 派生任务和主写入之间的时序隔离。
+
+它不直接实现传播数学，而是保证传播资产、查询和数据库处于一致状态。
+
+### 3.2 TagMemoEngine
+
+[`TagMemoEngine.js`](../TagMemoEngine.js) 是 V9.1 运行时核心，负责：
+
+- EPA 与 Residual Pyramid 编排；
+- 有序双向事实矩阵构建；
+- V9.1 有界传播核构建；
+- 入流枢纽校正；
+- 软非回溯有限时域传播；
+- Core Tag 与 Ghost Tag 注入；
+- 标签级语义去重；
+- 查询向量融合；
+- Potential Field 候选重排；
+- V9.1 ArtifactBundle 原子发布；
+- Pairwise 与 Intrinsic Residual 派生任务调度。
+
+### 3.3 Rust Vexus-Lite
+
+[`rust-vexus-lite/src/lib.rs`](../rust-vexus-lite/src/lib.rs) 提供：
+
+- USearch 向量索引；
+- SQLite 向量恢复；
+- Pairwise cosine 预计算；
+- Intrinsic Residual 预计算；
+- EPA 密度残差采样与 SVD；
+- 原生稳定文件 watcher；
+- N-API 异步任务接口。
+
+Rust 负责重型数值计算和原生索引，JS 负责配置快照、资产发布与数据库协调。
+
+### 3.4 EPA
+
+EPA（Embedding Projection Analysis）用于描述查询当前所处的全局语义状态：
+
+- `logicDepth`：投影能量是否集中；
+- `entropy`：语义是否分散；
+- `dominantAxes`：主要语义轴；
+- `resonance`：是否同时触及多个语义域。
+
+EPA 不直接决定最终结果，而是调节 TagMemo 激活强度和核心标签权重。
+
+当前 EPA 基底训练采用 Rust density-residual-sampling：
+
+```text
+加载 Tag 向量
+→ 全局均值
+→ 随机投影密度桶
+→ 桶质心与高残差代表
+→ 密度/残差联合评分
+→ 多样性衰减选锚
+→ 小矩阵 Weighted SVD
+→ Rust 内存暂存
+→ 短租约发布到 SQLite
+```
+
+长计算只读，最终发布短写，这是当前派生任务的重要工程原则。
+
+### 3.5 Residual Pyramid
+
+[`ResidualPyramid.js`](../ResidualPyramid.js) 对查询进行多层残差分解。
+
+每一层尝试用已召回 Tag 解释当前向量，并继续搜索未解释残差。其作用是避免宏观主题吞没弱信号。
+
+输出包括：
+
+- 多层 Tag 候选；
+- coverage；
+- novelty；
+- depth；
+- TagMemo activation。
+
+Residual Pyramid 处理的是查询级语义分解；Intrinsic Residual 处理的是标签节点相对于局部图邻域的不可解释性。两者不能混为一谈。
+
+### 3.6 ResultDeduplicator
+
+[`ResultDeduplicator.js`](../ResultDeduplicator.js) 位于候选结果阶段，使用 SVD 与残差选择减少重复信息。
+
+它与 TagMemo 内部的标签去重不同：
+
+- 标签去重避免多个同义 Tag 重复塑造查询向量；
+- 结果去重避免多个 chunk 重复占据最终上下文。
+
+### 3.7 TagMemo 与 Rerank：记忆寻址和知识判别的不同目标
+
+TagMemo 与 Rerank 并不互斥。生产管线可以先用 TagMemo 校准查询和恢复结构候选，再让 Rerank 对候选进行语言级相关性判断。
+
+但两者的底层设计哲学不同。
+
+如果把通用 Rerank 理解为对 KNN 候选的一次语义重排，那么 TagMemo 更接近对向量空间的一次手术刀式校准：
+
+- Rerank 接收已经召回的“问题—文本”对，判断候选是否直接回答当前问题；
+- TagMemo 在召回前重塑查询方向，并在召回后读取长期记忆图产生的查询级能量场；
+- Rerank 主要优化当前候选“是什么、是否相关、能否直接作答”；
+- TagMemo 主要恢复“为何发生、如何演变、从哪里开始、下一步关联到哪里”；
+- Rerank 更擅长静态知识判别；
+- TagMemo 面向运动、连续和流动的记忆过程。
+
+可将二者的典型目标概括为：
+
+| 维度 | 通用 Rerank | TagMemo |
 |:--|:--|:--|
-| L0 | `lastEnergyField` 为空 | 整个 geodesicRerank 退化，返回原数组 |
-| L1 | chunk 的 `hitCount < minGeoSamples` | 该 chunk 的 geoScore = 0（采样密度不足） |
-| L2 | 所有 chunk 的 maxGeo = 0 | 归一化跳过，全部走纯 KNN 排序 |
+| 主要输入 | 查询与候选文本 | 查询向量、Tag 感应、长期关系图 |
+| 主要问题 | “这段内容是不是当前问题的直接答案？” | “哪段记忆属于当前叙事链，且最有助于继续理解？” |
+| 强项 | 定义、事实、显式答案、概念可解释性 | 前因、演变、私有关系、跨段联想、连续认知 |
+| 候选边界 | 通常只能重排已进入候选池的内容 | 可在 KNN 前改变寻址方向，并通过图传播引出结构候选 |
+| 主要风险 | 把不直接作答但重要的个体记忆降权 | 图噪声、枢纽吸积与回流；V9.1 通过守恒和门控抑制 |
+| 对记忆主体性的态度 | 容易偏向通用、客观、答案化表达 | 有意保留主体观点、认知路径、感悟与偏见 |
 
-**最坏情况 = 不改动**（纯 KNN 排序结果原样返回）。
+#### “是什么”与“为何、怎么、从哪”
 
-### 10.4 最小采样密度门槛 (MIN_GEO_SAMPLES)
-莱恩在设计评审中提出的关键补充：如果一个 chunk 在距离场上只"踩到"了 1~3 个 Tag，统计上无法可靠估计测地线距离。设定门槛为 4，同时自然消除了"万能 Tag 误拉"问题（只命中 1 个高频 Tag 的 chunk 被动过滤）。
+知识问答通常偏向静态对象：
 
-### 10.5 热调参
-```json
-"KnowledgeBaseManager": {
-    "geodesicRerank": {
-        "alpha": 0.3,        // 测地线混合权重 (0=纯KNN, 1=纯测地线)
-        "minGeoSamples": 4   // 最小采样密度门槛
-    }
-}
-```
+> 这是什么？定义是什么？哪段文字最直接包含答案？
 
-### 10.6 与后续管线的协作
-```
-KNN 搜索 → TagBoost 向量增强 → [V8] 测地线重排 → TimeDecay → Rerank/Rerank+ → 最终截断
-```
-测地线重排位于 Rerank 之前，候选池不被截断，确保交叉编码器精排拥有完整的候选空间。
+但记忆不是静态词典条目。记忆包含时间、经历和主体状态：
 
-## 11. V8.2 进化：有序双向势能流形 (Ordered Bidirectional Potential Manifold)
-2026 年 5 月推出的 V8.2 版本（代号：**OrderedBidirectional / 有序双向势能流形**）不是普通"优化"，而是对 V7 一处底层不自洽的**修正**——让 JS 侧 Spike Propagation 走的传播图与 Rust 侧 `compute_intrinsic_residuals` 用的预计算图（`i != j` 双向邻接）回到同一个度规上。
+> 为什么当时形成这个判断？
+> 它从哪段经历开始？
+> 中间发生了什么变化？
+> 当前观点继承了哪些旧约束？
 
-### 11.1 哲学起点：时序不是拓扑
-V7 出于"叙事方向"考虑，把两件事焊死在一根边里：
-- **拓扑邻接（形）**：A 和 B 在同一篇日记里出现 → 是否邻接
-- **叙事方向（色）**：A 在 B 之前被写下 → 顺序
+因此，直接定义并不总是最重要的第一条记忆。V9.1 测试中反复出现的“因 → 果”排序倾向，正体现了这种差异：TagMemo 有时会把形成某个概念的前因排在概念解释之前。对百科问答，这可能不是最短答案；对 Agent 连续记忆，它往往是更有价值的上下文。
 
-把它们焊死的代价是：B → A 的回溯联想被硬切。但记忆不是单向 DAG——查询"逻辑主权"应该能溯源到"VCP 架构 / 上下文折叠 / 引力场 RAG"。
+#### 为什么通用 Rerank 可能抹平记忆主体性
 
-V8.2 把两轴重新解开，并显化了第三轴：
-| 轴 | 模型 | 作用 |
-|:--|:--|:--|
-| 拓扑层（形） | 双向共现 | 是否邻接，对称 |
-| 方向层（色） | 顺/逆流阻尼 | 叙事方向，不对称 |
-| 语义层（质） | 向量距离调制 | 语义邻近度，对称 |
+通用 Rerank 通常奖励：
 
-> "V7 是叙事箭头，V8.2 是叙事流体力学。河道有主流也有回流，有深浅也有摩擦。但不再有人工硬墙。"
+- 与查询词面或命题直接对应；
+- 信息完整；
+- 事实明确；
+- 可独立回答；
+- 语言客观、结论清晰。
 
-### 11.2 三层正交存储结构
-V8.2 第一次让 TagMemo 拥有完整的"语义流形度规"：
-```
-┌─────────────────────────────────────────────┐
-│  SQLite 持久化层 (跨重启稳定)                 │
-│  ├─ tags                                    │
-│  ├─ file_tags                               │
-│  ├─ tag_intrinsic_residuals      节点质量    │
-│  └─ tag_pair_similarity      ◀ 新增,边距离  │
-├─────────────────────────────────────────────┤
-│  Rust SIMD 计算层                            │
-│  ├─ recoverFromSqlite                       │
-│  ├─ computeIntrinsicResiduals               │
-│  └─ computePairwiseSimilarities  ◀ 新增     │
-├─────────────────────────────────────────────┤
-│  JS 内存运行时层 (会话临时态)                 │
-│  ├─ tagCooccurrenceMatrix       (有序双向)  │
-│  ├─ tagIntrinsicResiduals       Map         │
-│  ├─ tagPairSimilarities         Map ◀ 新增  │
-│  └─ lastEnergyField             距离场       │
-└─────────────────────────────────────────────┘
-```
-节点质量（`tag_intrinsic_residuals`）+ 边距离（`tag_pair_similarity`）+ 临时拓扑（内存矩阵）= 完整的语义流形度量。Rust 算物理量，SQLite 存物理量，JS 用物理量，各司其职。
+而 Agent 记忆中最具主体性的内容可能恰恰是：
 
-### 11.3 算法核心：双向阻尼 + 残差锚 + 钟形语义增益
-对每对共现 Tag (t1, t2)，构建两条边：
-```
-forwardWeight  = baseWeight × FORWARD_GAIN     × semanticGain(sim)
-backwardWeight = baseWeight × dynamicReverseGain × semanticGain(sim)
-backwardWeight = min(backwardWeight, forwardWeight × 0.95)   // 反转守卫
-```
-其中：
-- `baseWeight = phi1 * phi2 * exp(-distanceDecay * (delta - 1))` —— 序位势能（V7 沿用）+ 序位距离衰减（V8.2 新增，默认关闭）
-- `dynamicReverseGain = reverseGain × min(REVERSE_ANCHOR_MAX, anchorMass)` —— 概念锚 boost：高内生残差的源头节点更适合作为逆流目标
-- `semanticGain(sim)` —— 钟形函数（见 11.4），对称项
+- 尚未形成结论的感悟；
+- 带情绪和立场的个人观点；
+- 后来被修正的旧认知；
+- 看似偏离问题、却解释行为动机的经历；
+- 偏见、误判与犹豫留下的认知轨迹。
 
-### 11.4 钟形语义增益：黄金区放大 + 同义词抑制
-朴素直觉是 "sim 越高 gain 越高"，但实际上**同义词冗余**会污染传播：
-```
-sim → 1   : 同义复读 → 传播了寂寞
-sim → 0.7 : 概念邻接 → 真正的联想黄金区
-sim → 0   : 偶然共现 → 噪声
-```
-所以采用钟形函数：
-```js
-function semanticGain(sim) {
-    if (sim < 0.15) return 0.4 + sim * 1.0;        // 软底 0.40 ~ 0.55（噪声边沉到地形低洼）
-    return 0.5 + 0.8 * exp(-((sim - peak)² / (2σ²)));  // 中段高斯钟形
-}
-```
-形状特性：
-- 低 sim 区：噪声边自然弱化但不切断
-- 中段 peak（默认 0.65）：概念邻接黄金区放大
-- 高 sim 区：钟形右侧自然衰减，抑制同义词回音壁
+这些内容不一定是当前问题最标准的“答案”，但它们决定了 Agent 为什么成为现在的 Agent。若只按直接可回答性排序，系统可能持续保留客观定义，却系统性压低观点、认知、感悟和偏见，最终把人格记忆清洗成一套无主体百科。
 
-### 11.5 持久化语义距离表 (`tag_pair_similarity`)
-SQLite 新增表：
-```sql
-CREATE TABLE tag_pair_similarity (
-    tag_a INTEGER NOT NULL,
-    tag_b INTEGER NOT NULL,           -- 约定 tag_a < tag_b
-    similarity REAL NOT NULL,         -- [-1, 1] 余弦，不预归一化
-    model_sig TEXT NOT NULL,          -- 模型签名 (含维度)，跨模型自动失效
-    computed_at INTEGER NOT NULL,
-    PRIMARY KEY (tag_a, tag_b),
-    FOREIGN KEY (tag_a) REFERENCES tags(id) ON DELETE CASCADE,
-    FOREIGN KEY (tag_b) REFERENCES tags(id) ON DELETE CASCADE
-);
-```
-关键决策：
-- **FK + CASCADE**：Tag 删除自动清理 sim，不留孤儿
-- **model_sig 含 dimension**：使用 `sha256(model:dim).slice(0, 16)`，防止 `VECTORDB_DIMENSION` 切换后读到维度错位的 BLOB
-- **不存低 sim**：Rust 侧设阈值 `min_similarity = 0.05`，把表大小从 1250 万压到 5~10 万
-- **不预归一化**：原始余弦存表，钟形函数留在 JS 侧调形
+因此，TagMemo 不把所有偏见都视为正确事实，也不要求回答采纳旧观点；它保留的是：
 
-### 11.6 Rust 异步预计算：computePairwiseSimilarities
-```rust
-#[napi]
-pub fn compute_pairwise_similarities(
-    &self,
-    db_path: String,
-    model_sig: String,
-    min_similarity: Option<f64>,
-    full_rebuild: Option<bool>,
-) -> AsyncTask<PairwiseSimTask>
-```
-执行流程：
-1. 加载 Tag 向量到 `HashMap<i64, Vec<f32>>`
-2. 在 Rust 侧聚合 `file_tags`，构建实际共现的 `(a, b)` pair 集合（单文件 ≤100 守恒）
-3. 增量模式：跳过 `model_sig` 一致的已缓存 pair
-4. 遍历待计算 pair，余弦计算，sim < `min_similarity` 丢弃
-5. 事务批量 INSERT OR REPLACE（chunks(1000) 分批 commit）
+> 该观点曾经存在、为何形成、如何影响后续记忆，以及它后来是否被修正。
 
-性能：5000 tags × 5~10 万对实际共现 < 5 秒（Release 构建）
+事实裁决与记忆保存是两个不同任务。Rerank 可以帮助判断哪段材料更适合回答；TagMemo 负责避免主体经历在进入裁决前就从候选空间消失。
 
-### 11.7 七条工程纪律
-| # | 纪律 | 落点 |
-|:--|:--|:--|
-| 1 | 反转守卫 `backwardWeight ≤ forwardWeight × 0.95` | 保叙事方向公理 |
-| 2 | 冷启动阻塞：首次 sim 表为空时必须 await | 防 getSim 全 0 压平整张矩阵 |
-| 3 | model_sig 必须含 dimension | 防 `VECTORDB_DIMENSION` 切换后维度错位 |
-| 4 | sim 预计算与矩阵重建共用 `_isMatrixRebuilding` 锁 | 防嵌合矩阵 |
-| 5 | 低 sim fallback = 0.1 而非 0 | 与"刚好被丢"语义解耦 |
-| 6 | Gemini 分布右移压缩，peak 不能照搬 OpenAI | 必须先扫真实分布直方图 |
-| 7 | `tags.vector` 重写时 DELETE 涉及该 tag 的 sim 行 | 防陈旧缓存污染 |
+#### 当前生产观测与适用边界
 
-## 12. V8.3 进化：Rust EPA 密度残差采样与短租约发布
-2026 年 6 月，EPA 模块完成一次关键下沉：从 JS 主线程 K-Means / Weighted PCA，升级为 Rust 侧 **density-residual-sampling / 密度残差采样**。
+现有用户反馈、多轮固定测试和 Zero-shot 私有概念测试显示，TagMemo 相对纯 KNN 几乎总是正收益；其本地内存图传播没有新增远程模型调用，在当前测试环境中未产生可感知的交互延迟。
 
-### 12.1 旧 EPA 的瓶颈
-旧 EPA 后台刷新会在 JS 中执行：
+这是一项有明确边界的生产观测，而不是对任意知识库、参数和硬件的无条件保证。V9.1 仍通过以下机制控制负收益：
+
+- 固定出流预算；
+- 入流枢纽校正；
+- 软非回溯；
+- 有限时域场；
+- 最大状态与涌现节点上限；
+- Potential Field 低可信地图回退。
+
+推荐的职责分工不是“TagMemo 或 Rerank 二选一”，而是：
+
 ```text
-load all tag vectors
-→ K-Means assignment: tags × clusters × dim × iterations
-→ weighted PCA / power iteration
-→ 写入 kv_store.epa_basis_cache
+TagMemo：先保护并恢复连续记忆链
+→ KNN：形成向量候选
+→ Potential Field：注入查询级结构证据
+→ Rerank：在不丢失候选多样性的前提下判断直接相关性
+→ 回答层：区分事实、观点、旧认知与当前结论
 ```
-在 2~3 万 Tag、3072 维 embedding 下，这条路径会长时间占满 Node.js 主线程，表现为：
-- HTTP 响应停顿；
-- 日志停顿；
-- watcher / timer 停顿；
-- full scan 与派生任务互相挤压。
 
-### 12.2 新 EPA：density-residual-sampling
-Rust EPA 新算法将全量 Tag 向量压缩为少量高信息锚点：
+其中 Rerank 不应过早截断候选池，也不应把“非客观表达”直接等同于“无关内容”。对于 Agent 私有记忆，理想的精排器必须知道自己面对的不只是知识片段，也是一条主体连续性记录。
+
+---
+
+## 4. 偏振语义舵：删除原因与思想继承
+
+### 4.1 历史目标
+
+偏振语义舵（Polarization Semantic Rudder，PSR）曾试图在向量召回阶段识别观点 A 与观点 B 的对冲关系，并自动召回反向材料。
+
+其目标是正确的：
+
+- 打破单一观点回声壁垒；
+- 在犹豫、争议和价值判断中补充反方证据；
+- 提升 Agent 的辩证能力；
+- 避免“相似即正确”的单向确认偏误。
+
+但该向量模块现已从 TagMemo 生产链删除。
+
+### 4.2 为什么不能用简单向量数学可靠识别对冲关系
+
+在 embedding 空间中，A 与反对 A 的表达经常同时靠近同一主题锚点。
+
+例如：
+
 ```text
-load tag vectors (readonly)
-→ compute global mean
-→ random projection bits → density buckets
-→ bucket centroid + max residual representative
-→ density^0.65 × residual^0.35 scoring
-→ diversity decay anchor selection
-→ weighted SVD over anchor centroids
-→ pending cache in Rust memory
-→ short lease publish to kv_store
+锚点：某项政策
+A：该政策能提高效率
+B：该政策不能提高效率
 ```
 
-核心性质：
-- **密度桶**：保留主流语义地形；
-- **残差代表样本**：保留偏离主流的高信息方向；
-- **多样性衰减**：防止锚点全挤在一个语义团簇；
-- **小矩阵 SVD**：SVD 行数从“所有 Tag / JS 聚类产物”收敛为有限 anchors；
-- **只读长计算**：Rust compute 阶段不持写租约；
-- **短发布**：只有 `publish_epa_basis_cache` 阶段短暂写入 SQLite。
+A 与 B 都包含相同主体、对象和语义域。embedding 首先编码的是“它们在谈同一件事”，而赞成或反对往往只体现为高维空间中的细小方向差异。
 
-### 12.3 典型运行形态
-一次 25854 Tag 的 Rust EPA 日志摘要：
+因此常见现象是：
+
+\[
+\cos(A, Anchor)\approx\cos(B, Anchor)
+\]
+
+同时：
+
+\[
+\cos(A,B)
+\]
+
+仍可能很高。
+
+简单余弦、向量减法、锚点投影或少量人工方向轴，很难稳定区分：
+
+- 否定；
+- 反事实；
+- 条件性反对；
+- 讽刺；
+- 引述他人观点；
+- “先赞成后转折”；
+- 同一结论但不同原因；
+- 不同结论但共享事实前提。
+
+为了在纯向量空间中恢复这些方向，通常需要：
+
+- 大量领域相关对冲样本；
+- 稳定的极性标注；
+- 多锚点校准；
+- 专门的分类器或交叉编码器；
+- 对语言、领域和写作风格分别调参。
+
+这已经不再是“简单数学、低成本增强”。如果仍用简单投影强行裁决，就会产生三个问题：
+
+1. **区分成本极高**：需要构造和维护大量极性轴；
+2. **幻觉明显**：主题相同容易被误判为立场相反，立场相反也可能因措辞不同而漏判；
+3. **单元测试不稳定**：换 embedding 模型、语言或领域后，方向轴很容易漂移。
+
+所以删除 PSR 不是因为“辩证对冲”方向错误，而是因为：
+
+> 在通用 embedding 空间中，用低阶静态数学从主题邻近中分离观点方向，缺乏足够可靠的工程可辨识性。
+
+### 4.3 为什么 TagMemo 的叙事方向仍然成立
+
+PSR 的失败不否定 TagMemo 的有向传播。
+
+二者依赖的证据不同：
+
+- PSR 尝试仅从一次向量几何中推断“赞成还是反对”；
+- TagMemo 使用长期写入形成的共现、顺序、重复关系和局部图结构；
+- PSR 试图判断命题极性；
+- TagMemo 判断记忆网络中哪条关联路径更值得继续；
+- PSR 要求从向量直接恢复逻辑符号；
+- TagMemo 只要求传播统计在宏观上稳定改善寻址。
+
+TagMemo 不声称某条边等于形式逻辑中的因果或否定。它只把叙事顺序作为带噪声但可累计的方向证据，并始终允许逆流。
+
+### 4.4 思想迁移：动态提示词驱动的主动对冲搜索
+
+PSR 的目标已经迁移到动态提示词工程。
+
+现在由具备语言理解能力的模型在以下时机主动生成对冲检索：
+
+- 检索网络信息；
+- 主动查阅知识库；
+- 处理争议性事实；
+- 形成决策建议；
+- 发现证据只支持单一立场；
+- 用户明确要求比较、审视或反驳。
+
+模型可以根据当前命题动态生成：
+
+- 支持该命题的检索式；
+- 反对该命题的检索式；
+- 使结论失效的条件；
+- 替代解释；
+- 反事实场景；
+- 利益相关方不同视角；
+- 可证伪证据；
+- 与主结论冲突的历史案例。
+
+示意流程：
+
 ```text
-algorithm=density-residual-sampling
-tags=25854
-buckets=4035
-anchors=64
-representative_tags=1054
-svd_rows=64
-basis=52
-compute≈48s
-publish≈15ms
+原始问题
+→ 模型识别核心命题与隐含前提
+→ 生成正向检索
+→ 生成反向/对冲检索
+→ 分别进入网络或知识库
+→ 对齐证据来源、时间与可信度
+→ 在回答阶段综合，而非在向量层伪造极性
 ```
 
-解释：
-- 25854 个 Tag 不再全部进入主分解；
-- 4035 个密度桶描述全局地形；
-- 64 个 anchor centroid 进入 SVD；
-- 1054 个代表样本用于保留标签覆盖与可观测性；
-- 真正写库发布只有十几毫秒级。
+这种方案的优势是：
 
-### 12.4 一致性语义
-EPA 现在遵守新的数据库写入纪律：
+- 不要求 embedding 自己理解逻辑否定；
+- 对冲方向随上下文动态变化；
+- 可显式审计生成了哪些反向问题；
+- 可针对领域和任务改变辩证策略；
+- 成本远低于训练专用极性模型；
+- 在实际使用中仍能稳定提升 AI 的辩证能力。
+
+因此，偏振语义舵的正式结论是：
+
+> 向量极性模块被删除，但“主动寻找反证”的认知目标被保留，并迁移到更适合处理命题、否定与条件逻辑的动态提示词层。
+
+---
+
+## 5. 从事实矩阵到 V9.1 传播核
+
+### 5.1 有序双向事实矩阵
+
+对同一文件中的标签 \(t_i,t_j\)，系统依据位置构造顺流与逆流事实边。
+
+序位势能近似位于：
+
+\[
+\Phi\in[0.5,0.9]
+\]
+
+基础权重结合：
+
+- 标签序位势能；
+- 位置距离衰减；
+- 顺流或逆流阻尼；
+- Pairwise cosine 的钟形语义增益；
+- Intrinsic Residual 概念锚；
+- 逆流不超过顺流一定比例的反转守卫。
+
+这一矩阵仍是累计事实层，不直接作为最终传播概率。
+
+### 5.2 Pairwise cosine
+
+系统只计算实际共现的 Tag pair，避免全量 \(N^2\) 爆炸。
+
+正值写入 `tag_pair_similarity`，处理状态写入 `tag_pair_similarity_status`。
+
+状态包括：
+
+- `computed`；
+- `below_threshold`；
+- `missing_vector`。
+
+低于阈值的 pair 不进入正值表，但会形成负缓存，避免每次增量训练重复计算同一噪声边。
+
+Pairwise artifact 绑定：
+
+- embedding 模型签名；
+- 向量维度；
+- 图代际；
+- 算法版本；
+- 最小相似度；
+- 实际配置哈希。
+
+### 5.3 累计证据压缩
+
+V9.1 先把事实边转换为未归一化证据：
+
+\[
+e_{ij}=\log(1+\lambda W_{ij})
+\]
+
+对数压缩保留“重复共现更可信”，但降低高频边的线性统治力。
+
+### 5.4 残差张力与预算内虫洞
+
+目标节点的 V9.1 锚增益记为 \(r_j\)。边张力近似为：
+
+\[
+T_{ij}=e_{ij}r_j
+\]
+
+达到阈值的边获得虫洞增益：
+
+\[
+g_{ij}=e_{ij}G_{\text{wormhole}}
+\]
+
+但虫洞增益发生在归一化之前，所以它只能争夺更多固定预算，不能凭空增加节点总出流。
+
+### 5.5 入流枢纽校正
+
+统计每个目标节点的全图未归一化入流：
+
+\[
+s_j^{in}=\sum_i g_{ij}
+\]
+
+以正入流中位数为尺度，计算夹逼后的幂律校正：
+
+\[
+h_j=
+\operatorname{clip}
+\left(
+\left(
+\frac{s_j^{in}}
+{\operatorname{median}(s^{in})+\epsilon}
+\right)^{-\eta},
+h_{\min},
+h_{\max}
+\right)
+\]
+
+调整传导率：
+
+\[
+\tilde g_{ij}=g_{ij}h_j
+\]
+
+高入流通用节点受到温和抑制，低频节点获得有限补偿。上下界防止真实核心概念被过度压低，也防止罕见节点被无限奖励。
+
+### 5.6 固定出流预算
+
+每个源节点的传播核归一化为：
+
+\[
+P_{ij}
+=
+m_{\text{out}}
+\frac{\tilde g_{ij}}
+{\sum_k\tilde g_{ik}}
+\]
+
+并满足：
+
+\[
+\sum_jP_{ij}\leq m_{\text{out}}\leq1
+\]
+
+若存在虫洞边，可从同一总预算中预留 association reserve；预留质量仍包含在 `outboundMass` 中，不产生额外能量。
+
+这一步把“全库累计流量”转换为“当前节点有限预算下的局部选择”。
+
+---
+
+## 6. V9.1 软非回溯有限时域传播
+
+### 6.1 种子节点
+
+Residual Pyramid 感应到的 Tag 作为种子，其初始能量来自：
+
+- 层级贡献；
+- 层级衰减；
+- Core Boost；
+- 语言置信度门控；
+- EPA 动态激活。
+
+### 6.2 前驱状态
+
+V9.1 的传播状态不是单个节点，而是：
+
 ```text
-Rust compute_epa_basis:
-  readonly SQLite
-  no write lease
-  no kv_store write
-
-Rust publish_epa_basis_cache:
-  requires JS write lease
-  short SQLite transaction
+(previousNodeId, nodeId, energy, momentum)
 ```
-这对应“长计算离库，短发布入库”的大库派生原则。
 
-## 13. V8.3 进化：IR 内生残差三档算法与 42 倍提速
-V8.3 对 IR（Intrinsic Residual）进行了彻底重构。旧算法把每个 Tag 的邻居集合做局部 SVD，精确但昂贵；新算法把 IR 改造成可调档的 Rust 图计算后端，默认 `anchored_gs`，实测约 **42 倍**提速。
+同一个节点从不同前驱到达时保留不同状态，以识别立即回流。
 
-### 13.1 旧 IR：每节点局部 SVD
-旧 IR 近似流程：
+### 6.3 软非回溯
+
+若发生：
+
+\[
+u\rightarrow i\rightarrow u
+\]
+
+回流质量乘以默认系数：
+
+\[
+\rho_{\text{return}}=0.15
+\]
+
+系统没有彻底禁止回流，因为真实记忆允许回溯；它只抑制最容易形成二节点振荡的立即返回。
+
+虫洞可以免除普通动量成本，但不能免除立即回流抑制。
+
+### 6.4 动量、阈值与状态上限
+
+每个传播状态还受以下约束：
+
+- 最大安全跳数；
+- firing threshold；
+- 普通边衰减；
+- 虫洞边衰减；
+- 普通边动量消耗；
+- 每节点最大邻居数；
+- 最大传播状态数；
+- 最终涌现节点数上限。
+
+状态超过上限时仅保留能量最高者，避免高分支图指数增长。
+
+### 6.5 归一化有限脉冲响应
+
+每一跳的场权重为：
+
+\[
+w_t=
+\frac{\gamma^t}
+{\sum_{r=0}^{T}\gamma^r}
+\]
+
+查询级能量场为：
+
+\[
+E=\sum_{t=0}^{T}w_th^{(t)}
+\]
+
+默认 \(\gamma=0.60\)。
+
+该场强调近跳结构，保留有限远端联想，但不把每一跳残余能量无权相加。
+
+---
+
+## 7. Intrinsic Residual：稳定节点测量
+
+### 7.1 定义
+
+对单位化标签向量 \(v_i\)，构造局部邻域基底 \(U_i\)，原始残差比例为：
+
+\[
+r_i=
+\left\|
+(I-U_iU_i^\top)v_i
+\right\|_2
+\]
+
+单位化输入下：
+
+\[
+0\leq r_i\leq1
+\]
+
+高残差表示该标签不能被局部邻居充分解释，更适合作为独立概念锚。
+
+### 7.2 Anchored Gram-Schmidt
+
+生产默认方法为 `anchored_gs`。
+
+它不对每个节点执行完整局部 SVD，而是迭代选择最能解释当前残差的邻居方向：
+
 ```text
-for each tag:
-  collect co-occurrence neighbors
-  cap neighbors to 100
-  build N × D matrix
-  DMatrix::svd(false, true)
-  project tag vector to top-k neighbor subspace
-  residual = tag - projection
-```
-
-理论成本近似：
-```text
-O(tags × N² × D)
-```
-当 `N=100, D=3072` 时，单个 Tag 的局部矩阵分解成本非常高。
-
-### 13.2 新 IR：带权邻接 + 语义门控 + Top-K
-新 IR 先构建带权邻接图：
-```text
-HashMap<tag_id, HashMap<neighbor_id, weight>>
-```
-权重来自：
-- 同文件共现次数；
-- `file_tags.position` 序位距离衰减；
-- 重复共现累加。
-
-然后加载 `tag_pair_similarity` 作为边语义质量，使用 Bell/Floor 语义门控：
-```text
-effective_score = topology_weight × semantic_gate(sim)
-```
-每个 Tag 只保留 Top-K 邻居，默认：
-```env
-TAGMEMO_IR_MAX_NEIGHBORS=48
-```
-
-### 13.3 三档 IR 后端
-| 档位 | 说明 | 适用场景 | 相对旧算法算力 |
-|:--|:--|:--|--:|
-| `anchored_gs` | Residual-Greedy Anchored Gram-Schmidt，默认推荐 | 生产默认，质量/速度平衡 | 约 5%~10%，实测约 42 倍提速 |
-| `centroid` | 带权邻居质心投影 | 极大库、低功耗、快速刷新 | 约 1%~3% |
-| `svd` | 保留 SVD 基准，但先 Top-K | 对照实验、质量校准 | 约 20%~30% |
-
-### 13.4 Anchored-GS 的核心直觉
-`anchored_gs` 不再问“邻居整体 SVD 的主轴是什么”，而是问：
-
-> 哪几个邻居方向能最大解释当前 Tag？解释不了的部分，就是这个 Tag 的内生残差。
-
-流程：
-```text
-residual = tag vector
+residual = tag
 basis = []
 
-repeat maxBasis times:
-  candidate = neighbor vector
-  candidate -= projection onto existing basis
-  gain = abs(dot(residual, candidate)) × topology × semantic
-  choose best candidate
-  residual -= projection onto chosen candidate
+重复最多 maxBasis 次：
+  对每个候选邻居做正交化
+  计算 explainGain × topology × semantic
+  选择最佳方向
+  从 residual 中消去该方向
 ```
 
-默认参数：
-```env
-TAGMEMO_IR_METHOD=anchored_gs
-TAGMEMO_IR_MAX_NEIGHBORS=48
-TAGMEMO_IR_MAX_BASIS=4
-TAGMEMO_IR_MIN_GAIN=0.015
-```
+备选方法还包括：
 
-这将复杂度从旧式近似：
+- `centroid`：低成本邻居质心；
+- `svd`：对照和校准路径。
+
+### 7.3 固定锚增益映射
+
+V9.1 不再用全库 Min-Max、median 或 MAD 重标定所有节点。
+
+锚增益采用数据库无关的固定单调映射：
+
+\[
+a(r)=
+\operatorname{clip}
+\left(
+a_0+kr^\gamma,
+a_{\min},
+a_{\max}
+\right)
+\]
+
+这样新增离群标签不会改变其他历史节点的尺度。
+
+### 7.4 数值与处理状态分离
+
+数值表只保存成功计算的 residual；状态表同时记录：
+
+- `computed`；
+- `insufficient_neighbors`；
+- `failed`。
+
+邻居不足也是已处理状态。缓存完整性不再因为“没有数值可写”而永久为假。
+
+---
+
+## 8. 查询向量融合
+
+传播完成后，系统合并：
+
+- 原始感应 Tag；
+- 图传播涌现 Tag；
+- 显式 Core Tag；
+- 带向量的 Ghost Tag。
+
+### 8.1 Core Tag
+
+字符串 Core Tag 如果未被向量感应命中，可从 SQLite 补全。
+
+Core Tag 是最终融合锚点，不再作为扩大拓扑传播范围的隐式种子。
+
+### 8.2 Ghost Tag
+
+调用方可提供尚未进入 Tag 数据库、但拥有向量的临时概念。
+
+Ghost Tag 使用负 ID，只参与本轮向量融合，不向持久图写入虚构节点或边。
+
+### 8.3 标签级语义去重
+
+Tag 按权重降序处理。若两个 Tag 的余弦超过阈值：
+
+- 保留高权重代表；
+- 将少量能量合并给代表；
+- 保留 Core 属性；
+- 避免同义词重复占用融合预算。
+
+### 8.4 最终融合
+
+Tag 上下文向量先加权平均并单位化，再与原查询向量混合：
+
+\[
+q'=(1-\alpha)q+\alpha c
+\]
+
+其中 \(\alpha\) 被夹逼到 \([0,1]\)，防止过量 boost 导致原向量反向外推。
+
+最终向量再次单位化后进入 Vexus 搜索。
+
+---
+
+## 9. Potential Field 候选重排
+
+### 9.1 查询级能量场
+
+V9.1 的搜索链必须显式传递本次请求的 `energyField`。
+
+全局最近能量场只保留兼容和诊断用途，不允许作为并发生产查询的默认数据源。否则一个请求在等待索引时，可能被另一个请求覆盖能量场。
+
+### 9.2 候选评分
+
+对候选 chunk，读取其文件 Tag，并在查询能量场中采样：
+
+\[
+geoScore(c)=
+\frac{
+\sum_{t\in Tags(c)\cap E}E_t
+}{
+|Tags(c)\cap E|
+}
+\]
+
+仅当命中 Tag 数达到 `minGeoSamples` 时才接受该分数。
+
+归一化后与 KNN 混合：
+
+\[
+score(c)=
+(1-\alpha)score_{knn}(c)
++
+\alpha\widehat{geoScore}(c)
+\]
+
+该阶段只重排，不截断。
+
+### 9.3 低可信地图回退
+
+V9.1 增加查询场和候选采样的整体可信度门控，包括：
+
+- 最小激活 Tag 数；
+- 最小场熵；
+- 最小候选覆盖率；
+- 最小最大 geo score；
+- 最小 geo score spread；
+- 最小单候选采样数。
+
+任一关键指标不足时，整轮回退到原 KNN 顺序，而不是让少量不可靠地形信号污染排序。
+
+---
+
+## 10. 单日记本与虚拟联合索引
+
+多个日记本搜索不是简单地让每个物理索引独立完成全套 TagMemo。
+
+V9.1 将指定日记本集合视为请求级虚拟索引：
+
+1. 只执行一次 TagMemo 增强；
+2. 所有物理 Vexus 索引使用同一增强向量；
+3. 合并各索引候选；
+4. 在合并后使用同一 energy field 重排；
+5. 执行统一全局 Top-K；
+6. 批量从 SQLite hydrate 文本与真实标签。
+
+这样可避免：
+
+- 同一查询重复运行 TagMemo；
+- 不同日记本使用不同资产代际；
+- 每个索引先截断造成全局候选偏差；
+- 多占位符调用重复计算同一增强向量。
+
+---
+
+## 11. V9.1 原子资产包
+
+### 11.1 为什么需要资产包
+
+传播依赖的不只是一个版本字符串，还包括：
+
+- residual map；
+- propagation kernel；
+- pairwise view；
+- Potential Field 配置；
+- 实际生效配置；
+- 模型签名；
+- 图代际；
+- 算法版本。
+
+如果这些对象分别热更新，一个请求可能读到“旧 residual + 新 kernel + 新配置”的嵌合状态。
+
+### 11.2 RCU 风格发布
+
+V9.1 重建时创建全新 Map 和配置快照，完成校验后一次性替换活动指针。
+
+旧请求继续持有旧 bundle，新请求获取新 bundle。
+
+发布后的 bundle 包含：
+
+- `version`；
+- `artifactSig`；
+- `graphGeneration`；
+- `modelSig`；
+- `effectiveConfig`；
+- `residualMap`；
+- `propagationKernel`；
+- `pairwiseView`；
+- `potentialFieldConfig`；
+- `wormholeEdges`；
+- `kernelDiagnostics`；
+- `algorithmVersion`；
+- `generation`；
+- `publishedAt`。
+
+### 11.3 单轨版本纪律
+
+当前唯一生产版本是 V9.1，对外仍标识为 `v9`。
+
+显式请求退休版本时抛出 `TAGMEMO_VERSION_RETIRED`，不允许执行 V9.1 后把结果标记成旧版本，也不允许实验身份静默回退。
+
+---
+
+## 12. 派生训练与数据库协调
+
+### 12.1 派生链
+
+完整训练顺序为：
+
 ```text
-N²D
+获取 Rust 写租约
+→ Pairwise cosine 预计算
+→ JS checkpoint 与数据库健康屏障
+→ 加载 Pairwise artifact
+→ Intrinsic Residual 预计算
+→ JS checkpoint 与数据库健康屏障
+→ 加载 Residual artifact
+→ 构建事实矩阵
+→ 构建 V9.1 kernel
+→ 原子发布 bundle
+→ 清理退休 V8.3 派生资产
+→ 释放租约
 ```
-降为：
+
+任一阶段失败，不继续发布不完整资产。
+
+### 12.2 增量触发
+
+矩阵重建使用“唯一新增 Tag ID”累计，而不是 `file_tags` 关系写入次数。
+
+阈值约为当前 Tag 总量的 1%，并夹逼在安全范围内。达到阈值后进入静默期，避免批量写入期间反复训练。
+
+管理端也可主动发起完整训练。主动训练会：
+
+- 清空旧阈值累计；
+- 强制完整 Pairwise 重建；
+- 强制 IR 重建；
+- 发布最新 V9.1 bundle；
+- 清理退休状态。
+
+### 12.3 Rust 写租约
+
+Rust 派生任务写 SQLite 前必须向 KnowledgeBaseManager 申请租约。
+
+租约不会在以下状态授予：
+
+- JS 文件批处理；
+- JS 删除批处理；
+- 外部 DailyNote mutation；
+- 待处理文件或删除超过阈值；
+- 索引恢复；
+- 数据库 suspect/recovering/corrupt；
+- 上一次 JS 或 Rust 写入仍处于冷却期。
+
+### 12.4 二阶段健康检查
+
+跨 `better-sqlite3` 与 `rusqlite` 连接交接后，单次 malformed 可能是瞬态 WAL/SHM 视图。
+
+系统先标记 suspect：
+
 ```text
-M × B² × D
+第一次 quick_check/checkpoint 失败
+→ 关闭旧连接
+→ 重开 SQLite
+→ 再次 checkpoint + quick_check
+→ 通过：恢复 healthy
+→ 失败：确认 corrupt
 ```
-默认 `M=48, B=4`，计算量骤降，同时仍保留“局部不可解释性”的核心物理意义。
 
-### 13.5 42 倍提速的工程意义
-42 倍提速不是单纯“跑得快”，而是改变了 TagMemo 的可用边界：
-- 3 万 Tag 规模下，IR 不再是阻塞数十分钟的重任务；
-- post-startup 派生刷新可接受；
-- 更频繁的矩阵重建成为可能；
-- reverseAnchorBoost / Wormhole Routing 的节点张力能更及时更新；
-- 大库不再必须牺牲 IR 才能保持系统响应。
+只有二阶段失败才升级为真正损坏。
 
-### 13.6 新配置优先级
-IR 当前事实配置优先级为：
+### 12.5 统一 DailyNote 写入
+
+外部 Agent 写入 DailyNote 必须通过统一 mutation 协调入口。
+
+它保证：
+
+- 多 Agent 写入 FIFO 串行；
+- 写前等待数据库协调器空闲；
+- 写后主动送入索引队列；
+- 可等待 SQLite 与 Vexus 更新完成；
+- move/rename 先删除旧路径，再提交新路径；
+- Rust 派生任务不能抢占外部写入窗口；
+- 前台提前返回时，后台入库仍保持内部有序。
+
+这解决了“查询记忆、写入记忆、watcher 入库、Rust 训练”互相争抢数据库线程的问题。
+
+---
+
+## 13. 原生稳定文件监听
+
+Rust watcher 对每个路径维护严格递增 generation。
+
+文件事件流程为：
+
 ```text
-config.env 环境变量 > rag_params.json 部分参数 > 代码默认值
+notify 原始事件
+→ 路径过滤
+→ generation 更新
+→ debounce
+→ 连续 metadata 稳定采样
+→ 再检查 generation
+→ 根据最终文件真相裁决 add/change/unlink
+→ 向 JS 提交 stable event
 ```
 
-推荐生产配置：
-```env
-TAGMEMO_IR_METHOD=anchored_gs
-TAGMEMO_IR_MAX_NEIGHBORS=48
-TAGMEMO_IR_MAX_BASIS=4
-TAGMEMO_IR_MIN_NEIGHBORS=3
-TAGMEMO_IR_SEMANTIC_GATE_ENABLED=true
-TAGMEMO_IR_SEMANTIC_HARD_FLOOR=-1.0
-```
+JS 只接受比当前记录更新的 generation，并丢弃陈旧事件。
 
-## 14. V8.4 工程化：SQLite 租约、一致性屏障与派生队列
-EPA 与 IR 的算法升级同时伴随底层工程纪律升级：Rust 派生写入现在必须服从 JS 侧 SQLite write lease。
+rename 同时遍历旧路径和新路径：
 
-### 14.1 新派生刷新链
-```text
-System Ready
-→ startup cooldown
-→ derived queue: epa-basis
-→ Rust EPA readonly compute
-→ short lease publish
-→ derived queue: matrix-rebuild
-→ Rust pairwise
-→ JS checkpoint + health barrier
-→ load pairwise
-→ Rust IR
-→ JS checkpoint + health barrier
-→ load intrinsic residuals
-→ build ordered-bidirectional matrix
-```
+- 旧路径最终不存在，裁决为 `unlink`；
+- 新路径最终存在，裁决为 `add` 或 `change`。
 
-### 14.2 二阶段健康检查
-SQLite `malformed` 不再直接判死库：
-```text
-quick_check fail
-→ suspect
-→ close/reopen DB connection
-→ checkpoint + quick_check again
-→ pass: healthy
-→ fail: corrupt
-```
+---
 
-### 14.3 派生任务 fail-fast
-pairwise / IR / matrix 严格串联：
-- pairwise 失败，不继续 IR；
-- IR 失败，不继续 matrix；
-- load 派生表失败，触发健康屏障；
-- health barrier 失败，当前任务进入重试/延迟。
+## 14. Zero-shot 原创概念验证
 
-## 15. 总结
-从 V4 的线性检索，到 V6 的无向扩散，V7 的有向势能与虫洞路由，到 V8 的测地线重排，再到 V8.2 的有序双向势能流形，TagMemo 算法不断逼近人类大脑的认知与联想本质。V8.3/V8.4 则把这套认知模型真正推进到“大库可长期运行”的工程现实。
+V9.1 首次加入完全自造词、原创概念和私有知识体系测试。
 
-每一代的工程哲学都不一样：
-- **V4** 通过偏振语义舵实现了从单一线性检索到多角度辩证召回的跨越
-- **V6** 在严格的语义动力学假设上，通过 LIF 脉冲扩散让系统具备了"直觉涌现"
-- **V7** 用有向势能 + 虫洞路由解决了"稠密陷阱"，让脉冲精准穿透同质化区域
-- **V8** 证明了"最好的优化不是引入新计算，而是发现已有计算中被丢弃的宝藏"——Spike Propagation 的距离场就是一张语义等高线图
-- **V8.2** 修正了 V7 的底层不对称（JS 单向 vs Rust 双向），把"形 / 色 / 质"三轴正交化，让叙事不再是箭头而是流体——河道可以逆流，但要付能量代价
-- **V8.3** 把 EPA 从 JS 主线程长计算下沉到 Rust 密度残差采样，让世界观基底训练摆脱主线程冻结
-- **V8.4** 把 IR 从每节点局部 SVD 重构为三档低算力残差引擎，默认 `anchored_gs` 实测约 42 倍提速
-- **V8.4** 用 Rust 写租约、二阶段健康检查和派生任务队列，把算法灵气固定在可恢复的一致性工程底座上
+这些概念不存在于公共语料，对模型预训练知识近似零命中。
 
-V8.2 之后，TagMemo 第一次真正配得上"流形"两个字；V8.4 之后，它开始配得上"生产级认知流形"。
+实测表现表明：
+
+- 纯 KNN 在缺乏词面和预训练支点时明显退化；
+- 常规 rerank 无法补回未进入候选池的结构记忆；
+- TagMemo 可沿私有知识体系内部的共现与叙事路径恢复关键上下文；
+- 浪潮结果反复表现出“因 → 果”的排序偏好；
+- 对连续记忆而言，前因往往比孤立名词定义更有价值。
+
+该结果证明 TagMemo 使用了向量近邻之外的结构信号。
+
+但应保持科学边界：
+
+- 它不证明人类认知在微观上等价于流体力学；
+- 它不证明当前方程是逻辑联想的唯一模型；
+- 它证明的是宏观上可测试、可消融、可重复的寻址收益。
+
+---
+
+## 15. 版本演进与当前保留项
+
+### V4：多点召回与结果多样性
+
+历史贡献：
+
+- Semantic Segmentation；
+- Shotgun Query；
+- SVD/Residual 结果去重；
+- 偏振语义舵实验。
+
+当前状态：
+
+- 多点召回和结果去重思想继续保留；
+- PSR 向量模块已删除；
+- 对冲检索目标迁移到动态提示词工程。
+
+### V6：无向脉冲扩散
+
+历史贡献：
+
+- EPA 动态激活；
+- Residual Pyramid；
+- LIF 风格传播；
+- Core Boost；
+- 语言门控；
+- 标签语义去重。
+
+当前状态：
+
+- 作为 V9.1 查询感应与融合底座继续存在；
+- 原始无向累计传播已被替换。
+
+### V7：有向序位与虫洞
+
+历史贡献：
+
+- Tag 顺序位置；
+- 顺流叙事；
+- Intrinsic Residual；
+- 动量；
+- 残差张力虫洞。
+
+当前状态：
+
+- 顺序、残差、动量和虫洞保留；
+- 单向硬切被双向阻尼替换；
+- 虫洞改为固定预算内竞争。
+
+### V8/V8.2：Potential Field 与有序双向图
+
+历史贡献：
+
+- 复用传播能量场重排 KNN 候选；
+- 拓扑、方向和语义三轴解耦；
+- Pairwise cosine 持久化；
+- 顺逆流阻尼与反转守卫。
+
+当前状态：
+
+- Potential Field 继续保留，但必须使用查询级 energy field；
+- 增加低可信地图整体回退；
+- 有序双向事实矩阵成为 V9.1 kernel 的输入，不再直接作为无界传播权重。
+
+### V8.3：工程性能与一致性
+
+历史贡献：
+
+- Rust EPA 密度残差采样；
+- Anchored-GS IR；
+- Rust 写租约；
+- 派生任务队列；
+- 数据库二阶段健康检查。
+
+当前状态：
+
+- 全部纳入 V9.1 工程底座；
+- V8.3 活动算法轨道已退休。
+
+### V9/V9.1：有界局部选择
+
+正式贡献：
+
+- 对数证据压缩；
+- 固定节点出流预算；
+- 预算内虫洞；
+- 入流枢纽校正；
+- 软非回溯；
+- 归一化有限时域场；
+- 稳定 residual ratio；
+- 固定锚增益；
+- 正负派生状态缓存；
+- 单轨原子 ArtifactBundle；
+- 请求级并发隔离；
+- 统一 DailyNote 写入协调。
+
+---
+
+## 16. 当前最重要的工程纪律
+
+1. embedding 模型签名必须包含语义空间与维度；
+2. Tag 向量变化时必须同时失效 Pairwise 正值、负缓存和 IR 状态；
+3. Pairwise 低于阈值也是“已处理”，不能无限重算；
+4. IR 邻居不足也是“已处理”，不能破坏缓存完整性；
+5. Rust 实际配置必须回传并由 JS 验证；
+6. residual、kernel、pairwise 和配置必须原子发布；
+7. 查询必须持有固定 bundle；
+8. Potential Field 必须使用查询级 energy field；
+9. 多索引候选必须合并后再全局重排和截断；
+10. Rust 写入必须持有统一租约；
+11. checkpoint 与健康裁决必须由 JS coordinator 统一执行；
+12. 外部 DailyNote 写入必须进入统一 mutation 队列；
+13. 显式退休版本必须失败，不能身份伪装式回退；
+14. 图传播必须受预算、跳数、状态数和涌现数共同约束；
+15. 宏观有效性可以作为工程证据，但不能伪装成微观认知理论证明。
+
+---
+
+## 17. 总结
+
+TagMemo 的演进不是不断堆叠比喻，而是不断把曾经有效但不稳定的机制改造成可测量、可消融和可恢复的工程系统。
+
+V8.3 证明了方向：
+
+- 共现关系有价值；
+- 标签顺序有价值；
+- 局部不可解释性有价值；
+- 图传播能找回 KNN 遗漏的结构记忆；
+- 查询能量场能改善候选排序。
+
+V9.1 完成了收敛：
+
+- 高频证据不再线性垄断；
+- 节点不能创造额外传播质量；
+- 枢纽不能无限吸积；
+- 短周期回流受到抑制；
+- 远跳场受到有限时域约束；
+- 派生资产拥有稳定语义与原子代际；
+- 查询、训练和写入共享统一协调底座。
+
+偏振语义舵的删除也体现了同一原则：
+
+> 正确目标不意味着任意实现都应被保留。无法被通用向量几何可靠识别的命题极性，应交给能够理解语言、条件和否定的提示词推理层；能够被长期共现与叙事顺序稳定测量的关系结构，则继续交给 TagMemo 动力学。
+
+TagMemo V9.1 不宣称已经解释认知本身。它更克制也更实际地证明：
+
+> 在长期私有记忆中，有限预算的有向结构传播可以补足纯向量近邻，并以可重复的方式恢复更适合继续推理的记忆链。

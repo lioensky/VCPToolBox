@@ -5,7 +5,8 @@ import {
 
 const DEFAULT_READ_UI_OPTIONS: RequestUiOptions = { showLoader: false };
 
-export type ParamValue = number | number[] | Record<string, number>;
+export type ParamPrimitive = string | number | boolean | null;
+export type ParamValue = ParamPrimitive | ParamValue[] | { [key: string]: ParamValue };
 export type ParamGroup = Record<string, ParamValue>;
 export type RagParams = Record<string, ParamGroup>;
 

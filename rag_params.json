@@ -47,6 +47,44 @@
     ]
   },
   "KnowledgeBaseManager": {
+    "tagMemoVersioning": {
+      "activeVersion": "v9",
+      "availableVersions": [
+        "v9"
+      ],
+      "singleTrack": true,
+      "strictExplicitVersion": true
+    },
+    "v9": {
+      "algorithmVersion": "v9.1",
+      "outboundMass": 0.95,
+      "evidenceCompression": 1,
+      "wormholeGain": 1.35,
+      "tensionThreshold": 1,
+      "associationReserveMass": 0.05,
+      "hubPenaltyExponent": 0.3,
+      "hubPenaltyFloor": 0.55,
+      "hubPenaltyCeiling": 1.8,
+      "hubSmoothingRatio": 0.1
+    },
+    "intrinsicResidual": {
+      "method": "anchored_gs",
+      "maxNeighbors": 48,
+      "maxBasis": 4,
+      "minNeighbors": 3,
+      "semanticEnabled": true,
+      "semanticPeak": 0.65,
+      "semanticSigma": 0.25,
+      "semanticFloor": 0.35,
+      "semanticHardFloor": -1,
+      "minGain": 0.015,
+      "positionDecay": 0.15,
+      "v9AnchorBase": 0.75,
+      "v9AnchorScale": 1.25,
+      "v9AnchorGamma": 1,
+      "v9AnchorMin": 0.5,
+      "v9AnchorMax": 2
+    },
     "geodesicRerank": {
       "alpha": 0.45,
       "minGeoSamples": 4,
@@ -65,7 +103,10 @@
       "wormholeDecay": 0.7,
       "tensionThreshold": 1,
       "maxEmergentNodes": 50,
-      "maxNeighborsPerNode": 20
+      "maxNeighborsPerNode": 20,
+      "v91ReturnFlowFactor": 0.15,
+      "v91FirGamma": 0.6,
+      "v91MaxPropagationStates": 2000
     },
     "orderedCooccurrence": {
       "forwardGain": 1,

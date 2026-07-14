@@ -502,16 +502,9 @@ class PluginManager extends EventEmitter {
     async shutdownAllPlugins() {
         console.log('[PluginManager] Shutting down all plugins...'); // Keep
 
-        // --- Shutdown VectorDBManager first to stop background processing ---
-        if (this.vectorDBManager && typeof this.vectorDBManager.shutdown === 'function') {
-            try {
-                if (this.debugMode) console.log('[PluginManager] Calling shutdown for VectorDBManager...');
-                await this.vectorDBManager.shutdown();
-            } catch (error) {
-                console.error('[PluginManager] Error during shutdown of VectorDBManager:', error);
-            }
-        }
-
+        // VectorDBManager 是 server.js 注入并持有生命周期的外部依赖。
+        // 必须先让 DailyNote 等常驻服务排空自身队列，再由 server.js 统一关闭 KBD；
+        // 禁止在此提前/重复 shutdown 数据库。
         for (const [name, pluginModuleData] of this.messagePreprocessors) {
             const pluginModule = pluginModuleData.module || pluginModuleData;
             if (pluginModule && typeof pluginModule.shutdown === 'function') {
@@ -690,8 +683,15 @@ class PluginManager extends EventEmitter {
                     };
 
                     // --- 注入 VectorDBManager ---
-                    if (manifest.name === 'RAGDiaryPlugin') {
+                    if (
+                        manifest.name === 'RAGDiaryPlugin' ||
+                        manifest.name === 'DailyNote' ||
+                        manifest.name === 'DailyNoteManager'
+                    ) {
                         dependencies.vectorDBManager = this.vectorDBManager;
+                        dependencies.knowledgeBaseManager = this.vectorDBManager;
+                    }
+                    if (manifest.name === 'RAGDiaryPlugin') {
                         // 🧊 注入冷知识库管理器，供 [[xx知识库]] / 《《xx知识库》》 占位符使用
                         if (this.tdbKnowledgeManager) {
                             dependencies.tdbKnowledgeManager = this.tdbKnowledgeManager;
@@ -726,7 +726,12 @@ class PluginManager extends EventEmitter {
                             if (!dependencies.contextBridge && typeof ragPluginModule.getContextBridge === 'function') {
                                 dependencies.contextBridge = ragPluginModule.getContextBridge();
                             }
-                            if (this.debugMode) console.log(`[PluginManager] Injected VectorDBManager, getSingleEmbedding, getBatchEmbeddings and ContextBridge into LightMemo.`);
+                            // AIMemoBridge 由 RAGDiaryPlugin 唯一持有配置、预设和缓存。
+                            // LightMemo 只提交自身召回候选，避免重复实例化 AIMemoHandler。
+                            if (typeof ragPluginModule.getAIMemoBridge === 'function') {
+                                dependencies.aiMemoBridge = ragPluginModule.getAIMemoBridge();
+                            }
+                            if (this.debugMode) console.log(`[PluginManager] Injected VectorDBManager, embeddings, ContextBridge and AIMemoBridge into LightMemo.`);
                         } else {
                             console.error(`[PluginManager] Critical dependency failure: RAGDiaryPlugin or its components not available for LightMemo injection.`);
                         }

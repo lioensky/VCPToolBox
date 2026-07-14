@@ -18,7 +18,16 @@ class TagMemoEngine {
         this.epa = null;
         this.residualPyramid = null;
         this.tagCooccurrenceMatrix = null;
+        // V9.1 单轨锚增益与数据库无关的原始残差比例。
         this.tagIntrinsicResiduals = null;
+        this.tagRawResidualRatios = null;
+        this.intrinsicResidualArtifact = null;
+
+        // TagMemo V9.1: RCU 风格单轨活动资产包。
+        // 发布后对象及其 Map 只读；重建始终创建全新的 Map，再一次性替换此指针。
+        this._activeArtifactBundle = null;
+        this._artifactBundlesByVersion = Object.freeze({});
+        this._artifactBundleGeneration = 0;
 
         // 🌟 TagMemo V7.1: 矩阵计算防抖系统
         // V8.3: 阈值触发改为“唯一新增 tag”Set 累积，而不是 file_tags 关系数累加。
@@ -143,6 +152,275 @@ class TagMemoEngine {
         return rows;
     }
 
+    _deepFreezeConfig(value) {
+        if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+        for (const child of Object.values(value)) this._deepFreezeConfig(child);
+        return Object.freeze(value);
+    }
+
+    _computeGraphGeneration(matrix, pairwiseView, residualMap) {
+        let edgeCount = 0;
+        let edgeMass = 0;
+        if (matrix instanceof Map) {
+            for (const edges of matrix.values()) {
+                if (!(edges instanceof Map)) continue;
+                edgeCount += edges.size;
+                for (const weight of edges.values()) edgeMass += Number(weight) || 0;
+            }
+        }
+        return [
+            `sources:${matrix instanceof Map ? matrix.size : 0}`,
+            `edges:${edgeCount}`,
+            `edgeMass:${edgeMass.toFixed(8)}`,
+            `pairs:${pairwiseView instanceof Map ? pairwiseView.size : 0}`,
+            `residuals:${residualMap instanceof Map ? residualMap.size : 0}`
+        ].join('|');
+    }
+
+    _validateArtifactBundle(bundle) {
+        if (!bundle || bundle.version !== 'v9') {
+            throw new Error('ArtifactBundle must be the V9.1 production asset');
+        }
+        if (!bundle.artifactSig || !bundle.graphGeneration) {
+            throw new Error('ArtifactBundle is missing signature/generation');
+        }
+        if (!(bundle.residualMap instanceof Map) || !(bundle.propagationKernel instanceof Map)) {
+            throw new Error('ArtifactBundle is missing residual/kernel Map');
+        }
+        if (!(bundle.pairwiseView instanceof Map)) {
+            throw new Error('ArtifactBundle is missing pairwise Map');
+        }
+        for (const [source, edges] of bundle.propagationKernel.entries()) {
+            if (!(edges instanceof Map)) {
+                throw new Error(`ArtifactBundle kernel source ${source} is not a Map`);
+            }
+            for (const [target, weight] of edges.entries()) {
+                if (!Number.isFinite(Number(weight)) || Number(weight) < 0) {
+                    throw new Error(`ArtifactBundle kernel has invalid edge ${source}->${target}`);
+                }
+            }
+        }
+        return true;
+    }
+
+    _preparePublishedBundle(staging, generation, publishedAt) {
+        this._validateArtifactBundle(staging);
+        return Object.freeze({
+            ...staging,
+            effectiveConfig: this._deepFreezeConfig(staging.effectiveConfig),
+            potentialFieldConfig: this._deepFreezeConfig(staging.potentialFieldConfig),
+            publishedAt,
+            generation
+        });
+    }
+
+    _publishArtifactBundle(staging) {
+        const generation = ++this._artifactBundleGeneration;
+        const publishedAt = Date.now();
+        const bundle = this._preparePublishedBundle(staging, generation, publishedAt);
+
+        // 单次引用替换发布完整 V9.1 资产，杜绝 residual/kernel/config 分别换代。
+        const registry = Object.freeze({
+            generation,
+            publishedAt,
+            activeVersion: 'v9',
+            bundles: Object.freeze({ v9: bundle })
+        });
+        this._artifactBundlesByVersion = registry;
+        this._activeArtifactBundle = bundle;
+        this.tagCooccurrenceMatrix = bundle.propagationKernel;
+        this.tagIntrinsicResiduals = bundle.residualMap;
+        this.tagPairSimilarities = bundle.pairwiseView;
+
+        console.log(
+            `[TagMemoEngine] 📦 V9.1 production artifact published atomically: ` +
+            `generation=${generation}, artifact=${bundle.artifactSig}`
+        );
+        return registry;
+    }
+
+    getArtifactBundleSnapshot(version = null) {
+        const requestedVersion = version || 'v9';
+        if (requestedVersion !== 'v9') return null;
+        return this._artifactBundlesByVersion?.bundles?.v9 || this._activeArtifactBundle;
+    }
+
+    resolveArtifactBundle(options = {}) {
+        const requestedVersion = options.version || 'v9';
+        if (requestedVersion !== 'v9') {
+            const error = new Error(
+                `TagMemo artifact version "${requestedVersion}" was retired; V9.1 is the only supported production version`
+            );
+            error.code = 'TAGMEMO_VERSION_RETIRED';
+            error.requestedVersion = requestedVersion;
+            throw error;
+        }
+
+        const bundle = this.getArtifactBundleSnapshot('v9');
+        if (!bundle) {
+            const error = new Error('V9.1 TagMemo artifact bundle is unavailable');
+            error.code = 'TAGMEMO_ARTIFACT_UNAVAILABLE';
+            throw error;
+        }
+
+        return {
+            bundle,
+            requestedVersion: 'v9',
+            effectiveVersion: 'v9',
+            fallbackUsed: false,
+            fallbackReason: null,
+            explicitVersion: options.version !== undefined && options.version !== null,
+            strictVersion: true
+        };
+    }
+
+    _buildV9PropagationKernel(factMatrix, residualMap, v9Config = {}) {
+        const kernel = new Map();
+        const wormholeEdges = new Set();
+        const outboundMass = Math.max(0.01, Math.min(1, Number(v9Config.outboundMass ?? 0.95)));
+        // V9.1 仍让虫洞在总预算内竞争；association reserve 不产生额外能量。
+        const associationReserveMass = Math.min(
+            Math.max(0, Number(v9Config.associationReserveMass ?? 0.05)),
+            outboundMass
+        );
+        const evidenceCompression = Math.max(0.01, Number(v9Config.evidenceCompression ?? 1));
+        const wormholeGain = Math.max(1, Number(v9Config.wormholeGain ?? 1.35));
+        const tensionThreshold = Math.max(0, Number(v9Config.tensionThreshold ?? 1));
+        const hubPenaltyExponent = Math.max(0, Math.min(1, Number(v9Config.hubPenaltyExponent ?? 0.3)));
+        const hubPenaltyFloor = Math.max(0.05, Math.min(1, Number(v9Config.hubPenaltyFloor ?? 0.55)));
+        const hubPenaltyCeiling = Math.max(1, Math.min(4, Number(v9Config.hubPenaltyCeiling ?? 1.8)));
+        const hubSmoothingRatio = Math.max(0.01, Math.min(2, Number(v9Config.hubSmoothingRatio ?? 0.1)));
+
+        // 第一遍：保留每条边的未归一化证据，并统计目标节点吸收的全图入流。
+        // 入流统计必须发生在行归一化之前，否则无法识别“从许多来源吸积少量质量”的通用枢纽。
+        const rawRows = new Map();
+        const targetInflows = new Map();
+        for (const [sourceId, edges] of factMatrix.entries()) {
+            if (!(edges instanceof Map) || edges.size === 0) continue;
+            const rawEdges = [];
+            for (const [targetId, compatWeight] of edges.entries()) {
+                const evidence = Math.log1p(Math.max(0, Number(compatWeight) || 0) * evidenceCompression);
+                const residual = residualMap?.get(targetId) ?? 1;
+                const isWormhole = evidence * residual >= tensionThreshold;
+                const rawConductance = evidence * (isWormhole ? wormholeGain : 1);
+                if (!Number.isFinite(rawConductance) || rawConductance <= 0) continue;
+                rawEdges.push([targetId, rawConductance, isWormhole]);
+                targetInflows.set(targetId, (targetInflows.get(targetId) || 0) + rawConductance);
+            }
+            if (rawEdges.length > 0) rawRows.set(sourceId, rawEdges);
+        }
+
+        const positiveInflows = [...targetInflows.values()]
+            .filter(value => Number.isFinite(value) && value > 0)
+            .sort((a, b) => a - b);
+        const medianInflow = positiveInflows.length > 0
+            ? positiveInflows[Math.floor(positiveInflows.length / 2)]
+            : 1;
+        const smoothing = Math.max(1e-9, medianInflow * hubSmoothingRatio);
+
+        // 第二遍：按“相对中位入流”温和抑制枢纽，再统一归一化到固定行预算。
+        // 夹逼防止罕见节点被无限奖励，也防止真实核心概念被过度压低。
+        for (const [sourceId, rawEdges] of rawRows.entries()) {
+            const adjustedEdges = [];
+            let adjustedSum = 0;
+            let wormholeAdjustedSum = 0;
+
+            for (const [targetId, rawConductance, isWormhole] of rawEdges) {
+                const relativeInflow = (targetInflows.get(targetId) || 0) / (medianInflow + smoothing);
+                const rawPenalty = hubPenaltyExponent > 0
+                    ? Math.pow(Math.max(1e-9, relativeInflow), -hubPenaltyExponent)
+                    : 1;
+                const hubPenalty = Math.max(hubPenaltyFloor, Math.min(hubPenaltyCeiling, rawPenalty));
+                const adjustedConductance = rawConductance * hubPenalty;
+                if (!Number.isFinite(adjustedConductance) || adjustedConductance <= 0) continue;
+                adjustedEdges.push([targetId, adjustedConductance, isWormhole]);
+                adjustedSum += adjustedConductance;
+                if (isWormhole) wormholeAdjustedSum += adjustedConductance;
+            }
+
+            if (adjustedSum <= 0) continue;
+            const normalizedEdges = new Map();
+            const reserveMass = wormholeAdjustedSum > 0 ? associationReserveMass : 0;
+            const mainMass = outboundMass - reserveMass;
+            for (const [targetId, adjustedConductance, isWormhole] of adjustedEdges) {
+                const mainConductance = mainMass * adjustedConductance / adjustedSum;
+                const associationConductance = isWormhole && wormholeAdjustedSum > 0
+                    ? reserveMass * adjustedConductance / wormholeAdjustedSum
+                    : 0;
+                normalizedEdges.set(targetId, mainConductance + associationConductance);
+                if (isWormhole) wormholeEdges.add(`${sourceId}:${targetId}`);
+            }
+            kernel.set(sourceId, normalizedEdges);
+        }
+
+        return {
+            kernel,
+            wormholeEdges,
+            outboundMass,
+            kernelDiagnostics: Object.freeze({
+                algorithmVersion: 'v9.1-hub-aware',
+                medianInflow,
+                targetCount: targetInflows.size,
+                hubPenaltyExponent,
+                hubPenaltyFloor,
+                hubPenaltyCeiling
+            })
+        };
+    }
+
+    _stageAndPublishV91Bundle(factMatrix) {
+        const pairwiseView = this.tagPairSimilarities instanceof Map
+            ? this.tagPairSimilarities
+            : new Map();
+        const residualMap = this.tagIntrinsicResiduals instanceof Map
+            ? this.tagIntrinsicResiduals
+            : new Map();
+        const kbConfig = JSON.parse(JSON.stringify(
+            this.ragParams?.KnowledgeBaseManager || {}
+        ));
+        const v9Config = kbConfig.v9 || {};
+        const potentialFieldConfig = kbConfig.potentialFieldRerank
+            || kbConfig.geodesicRerank
+            || {};
+        const build = this._buildV9PropagationKernel(factMatrix, residualMap, v9Config);
+        const graphGeneration = this._computeGraphGeneration(
+            build.kernel,
+            pairwiseView,
+            residualMap
+        );
+        const effectiveConfig = JSON.parse(JSON.stringify(kbConfig));
+        const artifactSig = crypto.createHash('sha256')
+            .update(JSON.stringify({
+                version: 'v9',
+                algorithmVersion: 'v9.1',
+                modelSig: this.modelSig,
+                graphGeneration,
+                residualArtifact: this.intrinsicResidualArtifact?.artifactSig || 'legacy',
+                effectiveConfig
+            }))
+            .digest('hex')
+            .slice(0, 24);
+
+        return this._publishArtifactBundle({
+            version: 'v9',
+            artifactSig,
+            graphGeneration,
+            modelSig: this.modelSig,
+            effectiveConfig,
+            residualMap,
+            propagationKernel: build.kernel,
+            pairwiseView,
+            potentialFieldConfig: JSON.parse(JSON.stringify(potentialFieldConfig)),
+            residualArtifact: this.intrinsicResidualArtifact
+                ? Object.freeze({ ...this.intrinsicResidualArtifact })
+                : null,
+            wormholeEdges: build.wormholeEdges,
+            outboundMass: build.outboundMass,
+            kernelDiagnostics: build.kernelDiagnostics,
+            algorithmVersion: 'v9.1'
+        });
+    }
+
     async initialize() {
         // 初始化 EPA 和残差金字塔模块
         this.epa = new EPAModule(this.db, {
@@ -193,16 +471,163 @@ class TagMemoEngine {
         }
     }
 
+    _propagateSpikes(initialTags, queryMatrix, queryResiduals, queryWormholeEdges, srConfig = {}) {
+        const MAX_SAFE_HOPS = srConfig.maxSafeHops ?? 4;
+        const BASE_MOMENTUM = srConfig.baseMomentum ?? 2.0;
+        const FIRING_THRESHOLD = srConfig.firingThreshold ?? 0.10;
+        const BASE_DECAY = srConfig.baseDecay ?? 0.25;
+        const WORMHOLE_DECAY = srConfig.wormholeDecay ?? 0.70;
+        const TENSION_THRESHOLD = srConfig.tensionThreshold ?? 1.0;
+        const MAX_NEIGHBORS_PER_NODE = srConfig.maxNeighborsPerNode ?? 20;
+
+        // V9.1 使用有前驱记忆的传播状态，精确识别 i→j→i 的立即回流。
+        // 状态数量设硬上限，防止边状态在高分支图中指数增长。
+        const returnFlowFactor = Math.max(0, Math.min(1, Number(srConfig.v91ReturnFlowFactor ?? 0.15)));
+        const firGamma = Math.max(0.05, Math.min(0.95, Number(srConfig.v91FirGamma ?? 0.6)));
+        const maxPropagationStates = Math.max(100, Math.floor(Number(srConfig.v91MaxPropagationStates ?? 2000)));
+        const firWeights = [];
+        let firWeightSum = 0;
+        for (let hop = 0; hop <= MAX_SAFE_HOPS; hop++) {
+            const weight = Math.pow(firGamma, hop);
+            firWeights.push(weight);
+            firWeightSum += weight;
+        }
+        if (firWeightSum > 0) {
+            for (let hop = 0; hop < firWeights.length; hop++) firWeights[hop] /= firWeightSum;
+        }
+
+        // key 为 prev:node，V9.1 使用前驱边状态抑制立即回流。
+        let activeSpikes = new Map();
+        const accumulatedEnergy = new Map();
+        for (const tag of initialTags) {
+            const key = `seed:${tag.id}`;
+            activeSpikes.set(key, {
+                nodeId: tag.id,
+                previousNodeId: null,
+                energy: tag.adjustedWeight,
+                momentum: BASE_MOMENTUM
+            });
+            accumulatedEnergy.set(tag.id, tag.adjustedWeight * firWeights[0]);
+        }
+
+        const diagnostics = {
+            algorithmVersion: 'v9.1-soft-nonbacktracking-fir',
+            returnFlowSuppressedMass: 0,
+            stateTruncations: 0,
+            hopInFlightMass: []
+        };
+
+        for (let hop = 0; hop < MAX_SAFE_HOPS; hop++) {
+            const nextSpikes = new Map();
+            let propagated = false;
+            let inFlightMass = 0;
+
+            for (const spike of activeSpikes.values()) {
+                if (spike.energy < FIRING_THRESHOLD || spike.momentum < 0) continue;
+                const synapses = queryMatrix.get(spike.nodeId);
+                if (!synapses) continue;
+
+                const sortedSynapses = Array.from(synapses.entries())
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, MAX_NEIGHBORS_PER_NODE);
+
+                for (const [neighborId, coocWeight] of sortedSynapses) {
+                    const neighborResidual = queryResiduals?.get(neighborId) ?? 1.0;
+                    const tension = coocWeight * neighborResidual;
+                    const isWormhole = queryWormholeEdges instanceof Set
+                        ? queryWormholeEdges.has(`${spike.nodeId}:${neighborId}`)
+                        : tension >= TENSION_THRESHOLD;
+                    const decayFactor = isWormhole ? WORMHOLE_DECAY : BASE_DECAY;
+                    const momentumCost = isWormhole ? 0 : 1.0;
+                    const isImmediateReturn = spike.previousNodeId !== null
+                        && neighborId === spike.previousNodeId;
+                    const flowFactor = isImmediateReturn ? returnFlowFactor : 1;
+                    const unpenalizedCurrent = spike.energy * coocWeight * decayFactor;
+                    const injectedCurrent = unpenalizedCurrent * flowFactor;
+                    if (isImmediateReturn) {
+                        diagnostics.returnFlowSuppressedMass += unpenalizedCurrent - injectedCurrent;
+                    }
+                    if (injectedCurrent < 0.01) continue;
+
+                    const nextMomentum = spike.momentum - momentumCost;
+                    if (nextMomentum < 0 && !isWormhole) continue;
+
+                    const stateKey = `${spike.nodeId}:${neighborId}`;
+                    const existing = nextSpikes.get(stateKey);
+                    if (existing) {
+                        existing.energy += injectedCurrent;
+                        existing.momentum = Math.max(existing.momentum, nextMomentum);
+                    } else {
+                        nextSpikes.set(stateKey, {
+                            nodeId: neighborId,
+                            previousNodeId: spike.nodeId,
+                            energy: injectedCurrent,
+                            momentum: nextMomentum
+                        });
+                    }
+                }
+            }
+
+            if (nextSpikes.size > maxPropagationStates) {
+                const retained = [...nextSpikes.entries()]
+                    .sort((a, b) => b[1].energy - a[1].energy)
+                    .slice(0, maxPropagationStates);
+                diagnostics.stateTruncations += nextSpikes.size - retained.length;
+                nextSpikes.clear();
+                for (const [key, value] of retained) nextSpikes.set(key, value);
+            }
+
+            const nodeEnergyThisHop = new Map();
+            for (const newSpike of nextSpikes.values()) {
+                nodeEnergyThisHop.set(
+                    newSpike.nodeId,
+                    (nodeEnergyThisHop.get(newSpike.nodeId) || 0) + newSpike.energy
+                );
+                inFlightMass += newSpike.energy;
+            }
+            diagnostics.hopInFlightMass.push(inFlightMass);
+
+            const fieldWeight = firWeights[hop + 1];
+            for (const [nodeId, energy] of nodeEnergyThisHop.entries()) {
+                accumulatedEnergy.set(
+                    nodeId,
+                    (accumulatedEnergy.get(nodeId) || 0) + energy * fieldWeight
+                );
+                if (energy > 0.01) propagated = true;
+            }
+
+            if (!propagated) break;
+            activeSpikes = nextSpikes;
+        }
+
+        return { accumulatedEnergy, diagnostics };
+    }
+
     /**
      * 🌟 TagMemo 浪潮 + EPA + Residual Pyramid + Worldview Gating + LIF Spike Propagation (V6)
      *
      * 返回值中的 energyField 是查询级距离场。不要依赖 lastEnergyField 参与搜索重排：
      * lastEnergyField 只是兼容/诊断缓存，在全局搜索 await 间隙会被其他并发查询覆盖。
      */
-    applyTagBoost(vector, baseTagBoost, coreTags = [], coreBoostFactor = 1.33) {
+    applyTagBoost(vector, baseTagBoost, coreTags = [], coreBoostFactor = 1.33, options = {}) {
         const debug = false;
         const originalFloat32 = vector instanceof Float32Array ? vector : new Float32Array(vector);
         const dim = originalFloat32.length;
+        // 请求开始时只解析一次活动指针；后续后台发布不会改变本次查询持有的对象。
+        const resolution = options.artifactBundle
+            ? {
+                bundle: options.artifactBundle,
+                requestedVersion: options.version || options.artifactBundle.version,
+                effectiveVersion: options.artifactBundle.version,
+                fallbackUsed: false,
+                fallbackReason: null
+            }
+            : this.resolveArtifactBundle(options);
+        const artifactBundle = resolution.bundle;
+        const queryMatrix = artifactBundle?.propagationKernel || this.tagCooccurrenceMatrix;
+        const queryResiduals = artifactBundle?.residualMap || this.tagIntrinsicResiduals;
+        const queryVersion = 'v9';
+        const queryWormholeEdges = artifactBundle?.wormholeEdges;
 
         try {
             // 🌟 V8: 清空旧距离场，防止跨调用数据泄露
@@ -218,7 +643,8 @@ class TagMemoEngine {
             const features = pyramid.features;
 
             // [3] 动态调整策略
-            const config = this.ragParams?.KnowledgeBaseManager || {};
+            // 配置与核/残差属于同一不可变资产包，禁止在请求中途读取热更新后的 ragParams。
+            const config = artifactBundle?.effectiveConfig || this.ragParams?.KnowledgeBaseManager || {};
             const logicDepth = epaResult.logicDepth;        // 0~1, 高=逻辑聚焦
             const entropyPenalty = epaResult.entropy;       // 0~1, 高=信息散乱
             const resonanceBoost = Math.log(1 + resonance.resonance);
@@ -324,86 +750,22 @@ class TagMemoEngine {
 
             // [4.5] 仿脑认知扩散 (Spike Propagation / Lif-Router)
             // 🔧 重构 V7：动量与残差张力驱动的虫洞跃迁 (Wormhole Routing)
-            if (allTags.length > 0 && this.tagCooccurrenceMatrix) {
+            let propagationDiagnostics = null;
+            if (allTags.length > 0 && queryMatrix) {
                 const srConfig = config.spikeRouting || {};
-                const MAX_SAFE_HOPS = srConfig.maxSafeHops ?? 4;
-                const BASE_MOMENTUM = srConfig.baseMomentum ?? 2.0;
-                const FIRING_THRESHOLD = srConfig.firingThreshold ?? 0.10;
-                const BASE_DECAY = srConfig.baseDecay ?? 0.25;
-                const WORMHOLE_DECAY = srConfig.wormholeDecay ?? 0.70;
-                const TENSION_THRESHOLD = srConfig.tensionThreshold ?? 1.0;
                 const MAX_EMERGENT_NODES = srConfig.maxEmergentNodes ?? 50;
-                const MAX_NEIGHBORS_PER_NODE = srConfig.maxNeighborsPerNode ?? 20;
 
-                // 1. 初始注入：带有“动量(TTL)”的脉冲发射器
-                let activeSpikes = new Map();      // id -> { energy, momentum }
-                const accumulatedEnergy = new Map(); // id -> energySum 全局能量累加器
-                
-                allTags.forEach(t => {
-                    activeSpikes.set(t.id, { energy: t.adjustedWeight, momentum: BASE_MOMENTUM });
-                    accumulatedEnergy.set(t.id, t.adjustedWeight);
-                });
+                const propagation = this._propagateSpikes(
+                    allTags,
+                    queryMatrix,
+                    queryResiduals,
+                    queryWormholeEdges,
+                    srConfig
+                );
+                const accumulatedEnergy = propagation.accumulatedEnergy;
+                propagationDiagnostics = propagation.diagnostics;
 
-                // 2. 迭代扩散网络 (基于动量与张力驱动)
-                for (let hop = 0; hop < MAX_SAFE_HOPS; hop++) {
-                    const nextSpikes = new Map();
-                    let propagated = false;
-
-                    for (const [nodeId, spike] of activeSpikes.entries()) {
-                        if (spike.energy < FIRING_THRESHOLD || spike.momentum < 0) continue;
-
-                        const synapses = this.tagCooccurrenceMatrix.get(nodeId);
-                        if (!synapses) continue;
-
-                        const sortedSynapses = Array.from(synapses.entries())
-                            .sort((a, b) => b[1] - a[1])
-                            .slice(0, MAX_NEIGHBORS_PER_NODE);
-
-                        for (const [neighborId, coocWeight] of sortedSynapses) {
-                            // TagMemo V7: Wormhole Routing
-                            // 张力 = 目标节点的残差新颖度 * 边权重
-                            const neighborResidual = this.tagIntrinsicResiduals?.get(neighborId) ?? 1.0;
-                            const tension = coocWeight * neighborResidual;
-                            
-                            // 虫洞判定
-                            const isWormhole = tension >= TENSION_THRESHOLD;
-                            
-                            // 能量衰减与动量消耗策略
-                            const decayFactor = isWormhole ? WORMHOLE_DECAY : BASE_DECAY;
-                            const momentumCost = isWormhole ? 0 : 1.0; // 穿越虫洞豁免动量消耗
-
-                            const injectedCurrent = spike.energy * coocWeight * decayFactor;
-                            
-                            if (injectedCurrent < 0.01) continue;
-                            
-                            const nextMomentum = spike.momentum - momentumCost;
-                            if (nextMomentum < 0 && !isWormhole) continue; // 动量耗尽且非虫洞，则停止传播
-
-                            // 聚合到达同一节点的脉冲
-                            const existing = nextSpikes.get(neighborId);
-                            if (existing) {
-                                existing.energy += injectedCurrent;
-                                existing.momentum = Math.max(existing.momentum, nextMomentum); // 继承最优动量
-                            } else {
-                                nextSpikes.set(neighborId, { energy: injectedCurrent, momentum: nextMomentum });
-                            }
-                        }
-                    }
-
-                    // 3. 将新一波激发的电流叠加到全局激活总图中
-                    for (const [nid, newSpike] of nextSpikes.entries()) {
-                        const currentSum = accumulatedEnergy.get(nid) || 0;
-                        accumulatedEnergy.set(nid, currentSum + newSpike.energy);
-                        if (newSpike.energy > 0.01) propagated = true;
-                    }
-
-                    if (!propagated) break;
-                    
-                    // 下一跳的火种
-                    activeSpikes = nextSpikes;
-                }
-
-                // 🌟 V8: 缓存距离场（供 geodesicRerank 使用）
+                // 查询级缓存仅用于返回；并发搜索必须继续显式传递 energyField。
                 this.lastEnergyField = accumulatedEnergy;
 
                 // 4. 将涌现出来的高电位节点，重新塞回到 allTags
@@ -639,8 +1001,17 @@ class TagMemoEngine {
                         }).map(t => t.name).filter(Boolean);
                     })(),
                     boostFactor: effectiveTagBoost,
+                    requestedVersion: resolution.requestedVersion,
+                    effectiveVersion: resolution.effectiveVersion,
+                    versionFallbackUsed: resolution.fallbackUsed,
+                    versionFallbackReason: resolution.fallbackReason,
+                    artifactSig: artifactBundle?.artifactSig || null,
+                    graphGeneration: artifactBundle?.graphGeneration || null,
+                    artifactGeneration: artifactBundle?.generation || null,
                     epa: { logicDepth, entropy: entropyPenalty, resonance: resonance.resonance },
-                    pyramid: { coverage: features.coverage, novelty: features.novelty, depth: features.depth }
+                    pyramid: { coverage: features.coverage, novelty: features.novelty, depth: features.depth },
+                    propagation: propagationDiagnostics,
+                    algorithmVersion: artifactBundle?.algorithmVersion || queryVersion
                 }
             };
 
@@ -700,7 +1071,10 @@ class TagMemoEngine {
             return candidates;
         }
 
-        const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
+        const geoConfig = options.config
+            || this.ragParams?.KnowledgeBaseManager?.potentialFieldRerank
+            || this.ragParams?.KnowledgeBaseManager?.geodesicRerank
+            || {};
         const rawAlpha = options.alpha ?? geoConfig.alpha;
         const rawMinGeoSamples = options.minGeoSamples ?? geoConfig.minGeoSamples;
 
@@ -1167,7 +1541,8 @@ class TagMemoEngine {
             }
             if (legacyTags.length > 0) processLegacyFileGroup(legacyTags);
 
-            this.tagCooccurrenceMatrix = matrix;
+            // V9.1 staging 资产完整构建结束后才一次性发布；旧请求继续持有旧 bundle。
+            this._stageAndPublishV91Bundle(matrix);
 
             console.log(
                 `[TagMemoEngine] ✅ V8.2 Ordered-bidirectional matrix built. ` +
@@ -1339,30 +1714,78 @@ class TagMemoEngine {
         return await this._withRustWriteLease('tagmemo:pairwise-sim', run, { pendingThreshold: 0 });
     }
 
-    // 🌟 TagMemo V7: 加载内生残差
+    // 🌟 TagMemo V7/V9: 加载双语义内生残差
     loadIntrinsicResiduals(options = {}) {
         const { failOnCorruption = false } = options;
 
         const doLoad = () => {
-            const rows = this.db.prepare(
-                'SELECT tag_id, residual_energy FROM tag_intrinsic_residuals'
-            ).all();
+            const rows = this.db.prepare(`
+                SELECT
+                    tag_id,
+                    residual_energy,
+                    raw_residual_ratio,
+                    v9_anchor_gain,
+                    model_sig,
+                    artifact_sig,
+                    algorithm_version,
+                    config_hash
+                FROM tag_intrinsic_residuals
+            `).all();
 
             this.tagIntrinsicResiduals = new Map();
+            this.tagRawResidualRatios = new Map();
+            this.intrinsicResidualArtifact = null;
+
             for (const row of rows) {
-                // 归一化到 [0.5, 2.0] 范围，避免极端值
-                const clamped = Math.max(0.5, Math.min(2.0, row.residual_energy));
-                this.tagIntrinsicResiduals.set(row.tag_id, clamped);
+                // Number(null) === 0，所有 nullable 派生列必须先检查非空，再做数值转换。
+                const hasFiniteValue = value =>
+                    value !== null && value !== undefined && Number.isFinite(Number(value));
+
+                // 老数据库在首次 V9.1 全量重建前可能尚无 v9_anchor_gain；
+                // residual_energy 仅作为一次性启动兼容值，重建后会被 V9.1 数值覆盖。
+                const anchorValue = hasFiniteValue(row.v9_anchor_gain)
+                    ? Number(row.v9_anchor_gain)
+                    : Number(row.residual_energy);
+                this.tagIntrinsicResiduals.set(
+                    row.tag_id,
+                    Math.max(0.5, Math.min(2.0, Number.isFinite(anchorValue) ? anchorValue : 1.0))
+                );
+
+                if (hasFiniteValue(row.raw_residual_ratio)) {
+                    this.tagRawResidualRatios.set(
+                        row.tag_id,
+                        Math.max(0, Math.min(1, Number(row.raw_residual_ratio)))
+                    );
+                }
+
+                if (!this.intrinsicResidualArtifact && row.artifact_sig) {
+                    this.intrinsicResidualArtifact = {
+                        artifactSig: row.artifact_sig,
+                        modelSig: row.model_sig || this.modelSig,
+                        algorithmVersion: row.algorithm_version || null,
+                        configHash: row.config_hash || null
+                    };
+                }
             }
-            return this.tagIntrinsicResiduals.size;
+
+            return {
+                v9Count: this.tagIntrinsicResiduals.size,
+                rawCount: this.tagRawResidualRatios.size
+            };
         };
 
         try {
-            const count = doLoad();
-            console.log(`[TagMemoEngine] ✅ Loaded ${count} intrinsic residuals`);
+            const counts = doLoad();
+            console.log(
+                `[TagMemoEngine] ✅ Loaded V9.1 intrinsic residuals: ` +
+                `anchors=${counts.v9Count}, raw=${counts.rawCount}, ` +
+                `artifact=${this.intrinsicResidualArtifact?.artifactSig || 'legacy'}`
+            );
             return true;
         } catch (e) {
             this.tagIntrinsicResiduals = null;
+            this.tagRawResidualRatios = null;
+            this.intrinsicResidualArtifact = null;
             const isCorruption = this.knowledgeBaseManager?._isSqliteCorruptionError?.(e);
 
             if (failOnCorruption && isCorruption) {
@@ -1376,6 +1799,8 @@ class TagMemoEngine {
                     } catch (retryErr) {
                         console.error('[TagMemoEngine] ❌ Intrinsic residual reload still failed after suspect recovery:', retryErr.message || retryErr);
                         this.tagIntrinsicResiduals = null;
+                        this.tagRawResidualRatios = null;
+                        this.intrinsicResidualArtifact = null;
                         throw retryErr;
                     }
                 }
@@ -1450,8 +1875,80 @@ class TagMemoEngine {
     // 🌟 Legacy 兼容入口：旧的 file_tags 关系数不再驱动 1% 阈值。
     scheduleMatrixRebuild(changeCount = 1) {
         if (changeCount > 0) {
-            console.log(`[TagMemoEngine] 🛡️ Ignored legacy relation-count matrix rebuild signal (${changeCount}); V8.3 threshold uses unique new tag ids.`);
+            console.log(`[TagMemoEngine] 🛡️ Ignored legacy relation-count matrix rebuild signal (${changeCount}); V9.1 threshold uses unique new tag ids.`);
         }
+    }
+
+    /**
+     * 全量训练成功后的单轨收尾。
+     *
+     * 物理列保留以兼容旧 SQLite 文件，但清空 V8.3 数值，并只保留当前模型最新的
+     * V9.1 intrinsic/pairwise artifact 与对应状态。调用方必须已持有 Rust 写租约。
+     */
+    _cleanupRetiredV83DerivedAssets() {
+        const currentIntrinsicSig = this.intrinsicResidualArtifact?.artifactSig || null;
+        const latestPairwise = this.db.prepare(`
+            SELECT artifact_sig
+            FROM tagmemo_artifacts
+            WHERE asset_type = 'pairwise_similarity'
+              AND model_sig = ?
+              AND status = 'ready'
+            ORDER BY updated_at DESC
+            LIMIT 1
+        `).get(this.modelSig);
+        const currentPairwiseSig = latestPairwise?.artifact_sig || null;
+
+        const cleanup = this.db.transaction(() => {
+            let intrinsicStatuses = 0;
+            let pairwiseStatuses = 0;
+            let artifacts = 0;
+
+            if (currentIntrinsicSig) {
+                intrinsicStatuses = this.db.prepare(
+                    'DELETE FROM tag_intrinsic_residual_status WHERE artifact_sig != ?'
+                ).run(currentIntrinsicSig).changes;
+            } else {
+                intrinsicStatuses = this.db.prepare(
+                    'DELETE FROM tag_intrinsic_residual_status'
+                ).run().changes;
+            }
+
+            if (currentPairwiseSig) {
+                pairwiseStatuses = this.db.prepare(
+                    'DELETE FROM tag_pair_similarity_status WHERE artifact_sig != ?'
+                ).run(currentPairwiseSig).changes;
+            } else {
+                pairwiseStatuses = this.db.prepare(
+                    'DELETE FROM tag_pair_similarity_status'
+                ).run().changes;
+            }
+
+            const retained = [currentIntrinsicSig, currentPairwiseSig].filter(Boolean);
+            if (retained.length > 0) {
+                const placeholders = retained.map(() => '?').join(',');
+                artifacts = this.db.prepare(
+                    `DELETE FROM tagmemo_artifacts WHERE artifact_sig NOT IN (${placeholders})`
+                ).run(...retained).changes;
+            } else {
+                artifacts = this.db.prepare('DELETE FROM tagmemo_artifacts').run().changes;
+            }
+
+            const compatValues = this.db.prepare(`
+                UPDATE tag_intrinsic_residuals
+                SET v8_3_compat_gain = NULL
+                WHERE v8_3_compat_gain IS NOT NULL
+            `).run().changes;
+
+            return { intrinsicStatuses, pairwiseStatuses, artifacts, compatValues };
+        });
+
+        const result = cleanup();
+        console.log(
+            `[TagMemoEngine] 🧹 V9.1 single-track cleanup complete: ` +
+            `retiredArtifacts=${result.artifacts}, intrinsicStatuses=${result.intrinsicStatuses}, ` +
+            `pairwiseStatuses=${result.pairwiseStatuses}, v8.3CompatValues=${result.compatValues}.`
+        );
+        return result;
     }
 
     requestActiveFullTraining(options = {}) {
@@ -1499,6 +1996,8 @@ class TagMemoEngine {
         const preservePendingOnFailure = options.preservePendingOnFailure !== false;
         const fullRebuildPairwise = options.fullRebuildPairwise === true;
         const forceIntrinsicResiduals = options.forceIntrinsicResiduals === true;
+        const cleanupRetiredV83Assets = options.cleanupRetiredV83Assets === true
+            || (fullRebuildPairwise && forceIntrinsicResiduals);
         if (this._isMatrixRebuilding) {
             console.warn('[TagMemoEngine] Matrix rebuild already running; keeping accumulated new tags for next debounce window.');
             if (!this._matrixRebuildTimer && this._accumulatedNewTagIds.size > 0) {
@@ -1517,8 +2016,8 @@ class TagMemoEngine {
 
         try {
             const rebuilt = await this._withRustWriteLease('tagmemo:matrix-rebuild', async () => {
-                // 🌟 V8.2-γ: 先补齐底座，再构建矩阵
-                // 顺序：sim 预计算 → 屏障 → 加载 sim Map → 内生残差预计算/屏障/加载 → 构建 V8.2 双向矩阵
+                // V9.1 单轨顺序：sim 预计算 → 健康屏障/加载 → intrinsic residual
+                // 预计算/屏障/加载 → 构建并原子发布 V9.1 kernel → 清理退休资产。
                 const pairResult = await this.recomputePairwiseSimilarities({ blocking: true, leaseAlreadyHeld: true, fullRebuild: fullRebuildPairwise });
                 if (!pairResult) return false;
                 // 🛡️ P0: Rust 写后先 checkpoint + 健康屏障（含 suspect 重开），再用健康连接读取派生表，
@@ -1550,6 +2049,9 @@ class TagMemoEngine {
                 }
 
                 this.buildDirectedCooccurrenceMatrix();
+                if (cleanupRetiredV83Assets) {
+                    this._cleanupRetiredV83DerivedAssets();
+                }
                 return true;
             }, {
                 pendingThreshold: 0,
@@ -1602,7 +2104,81 @@ class TagMemoEngine {
         if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
     }
 
-    // 🌟 TagMemo V7: 触发 Rust 预计算内生残差
+    _buildIntrinsicResidualConfigSnapshot() {
+        const raw = this.ragParams?.KnowledgeBaseManager?.intrinsicResidual || {};
+        const finiteOr = (value, fallback, min, max) => {
+            if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+                return fallback;
+            }
+            return Math.max(min, Math.min(max, Number(value)));
+        };
+        const integerOr = (value, fallback, min, max) =>
+            Math.floor(finiteOr(value, fallback, min, max));
+        const boolOr = (value, fallback) => {
+            if (value === null || value === undefined) return fallback;
+            if (typeof value === 'boolean') return value;
+            if (typeof value === 'number') return value !== 0;
+            const normalized = String(value).trim().toLowerCase();
+            if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+            if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+            return fallback;
+        };
+
+        const methodRaw = String(raw.method ?? 'anchored_gs').trim().toLowerCase();
+        const method = ['anchored_gs', 'centroid', 'svd'].includes(methodRaw)
+            ? methodRaw
+            : 'anchored_gs';
+
+        return {
+            method,
+            maxNeighbors: integerOr(raw.maxNeighbors, 48, 4, 256),
+            maxBasis: integerOr(raw.maxBasis, 4, 1, 32),
+            minNeighbors: integerOr(raw.minNeighbors, 3, 1, 64),
+            semanticEnabled: boolOr(raw.semanticEnabled, true),
+            semanticPeak: finiteOr(raw.semanticPeak, 0.65, -1, 1),
+            semanticSigma: finiteOr(raw.semanticSigma, 0.25, 0.02, 2),
+            semanticFloor: finiteOr(raw.semanticFloor, 0.35, 0, 1),
+            semanticHardFloor: finiteOr(raw.semanticHardFloor, -1, -1, 1),
+            minGain: finiteOr(raw.minGain, 0.015, 0, 1),
+            positionDecay: finiteOr(raw.positionDecay, 0.15, 0, 4),
+            v9AnchorBase: finiteOr(raw.v9AnchorBase, 0.75, 0, 4),
+            v9AnchorScale: finiteOr(raw.v9AnchorScale, 1.25, 0, 4),
+            v9AnchorGamma: finiteOr(raw.v9AnchorGamma, 1.0, 0.1, 8),
+            v9AnchorMin: finiteOr(raw.v9AnchorMin, 0.5, 0, 4),
+            v9AnchorMax: finiteOr(raw.v9AnchorMax, 2.0, 0, 8)
+        };
+    }
+
+    _validateIntrinsicResidualEffectiveConfig(expected, result) {
+        if (!result?.effectiveConfig) {
+            console.warn('[TagMemoEngine] ⚠️ Rust residual result did not return effectiveConfig; native binary may be stale.');
+            return false;
+        }
+
+        try {
+            const actual = JSON.parse(result.effectiveConfig);
+            const keys = [
+                'method', 'maxNeighbors', 'maxBasis', 'minNeighbors',
+                'semanticEnabled', 'semanticPeak', 'semanticSigma',
+                'semanticFloor', 'semanticHardFloor', 'minGain',
+                'positionDecay', 'v9AnchorBase', 'v9AnchorScale',
+                'v9AnchorGamma', 'v9AnchorMin', 'v9AnchorMax'
+            ];
+            const mismatches = keys.filter(key => actual[key] !== expected[key]);
+            if (mismatches.length > 0) {
+                console.error(
+                    `[TagMemoEngine] ❌ Rust residual effective config mismatch: ${mismatches.join(', ')}`
+                );
+                return false;
+            }
+            return true;
+        } catch (e) {
+            console.error('[TagMemoEngine] ❌ Failed to parse Rust residual effectiveConfig:', e.message);
+            return false;
+        }
+    }
+
+    // 🌟 TagMemo V7/V9: 触发 Rust 预计算内生残差
     async recomputeIntrinsicResiduals(opts = {}) {
         const { leaseAlreadyHeld = false } = opts;
         if (!this.tagIndex || !this.tagIndex.computeIntrinsicResiduals) {
@@ -1611,28 +2187,33 @@ class TagMemoEngine {
         }
 
         const run = async () => {
-            const irConfig = this.ragParams?.KnowledgeBaseManager?.intrinsicResidual || {};
-            const maxBasis = Number.isFinite(Number(irConfig.maxBasis))
-                ? Math.max(1, Math.floor(Number(irConfig.maxBasis)))
-                : 4;
-            const minNeighbors = Number.isFinite(Number(irConfig.minNeighbors))
-                ? Math.max(1, Math.floor(Number(irConfig.minNeighbors)))
-                : 3;
-            const method = process.env.TAGMEMO_IR_METHOD || irConfig.method || 'anchored_gs';
+            const effectiveConfig = this._buildIntrinsicResidualConfigSnapshot();
+            const effectiveConfigJson = JSON.stringify(effectiveConfig);
             console.log(
                 `[TagMemoEngine] ⚡ Triggering Rust intrinsic residual precomputation ` +
-                `(method=${method}, maxBasis=${maxBasis}, minNeighbors=${minNeighbors}, model_sig=${this.modelSig})...`
+                `(config=${effectiveConfigJson}, model_sig=${this.modelSig})...`
             );
             try {
                 const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
                 const result = await this.tagIndex.computeIntrinsicResiduals(
                     dbPath,
-                    maxBasis,
-                    minNeighbors,
-                    this.modelSig
+                    effectiveConfig.maxBasis,
+                    effectiveConfig.minNeighbors,
+                    this.modelSig,
+                    effectiveConfigJson
                 );
                 if (!result) return null;
-                console.log(`[TagMemoEngine] ✅ Rust precomputation complete: ${result.computedCount} computed, ${result.skippedCount} skipped in ${result.elapsedMs.toFixed(2)}ms`);
+                const configVerified = this._validateIntrinsicResidualEffectiveConfig(effectiveConfig, result);
+                if (!configVerified) {
+                    console.error('[TagMemoEngine] ❌ Refusing residual artifact with unverified effective configuration.');
+                    return null;
+                }
+                console.log(
+                    `[TagMemoEngine] ✅ Rust precomputation complete: ` +
+                    `${result.computedCount} computed, ${result.skippedCount} skipped, ` +
+                    `algorithm=${result.algorithmVersion}, artifact=${result.artifactSig}, ` +
+                    `elapsed=${result.elapsedMs.toFixed(2)}ms`
+                );
 
                 // 🛡️ P0: Rust 写后先 checkpoint + 健康屏障，再读取，避免读端瞬态 malformed。
                 if (!this._assertHealthyAfterRustWrite('intrinsic-residuals load barrier')) return null;

@@ -453,18 +453,18 @@
 <div id="app">
   <div id="scene">
     <div id="hud">
-      <div class="title">VCP Semantic Terrain / 浪潮语义地形沙盘</div>
+      <div class="title">VCP Semantic Terrain V9.1 / 浪潮语义地形沙盘</div>
       <div class="subtitle">
-        残差能量塑造山峰，tag 共现形成河流。查询向量先像传统 KNN 一样随机击中若干最相似支点，
-        然后触发 LIF 脉冲扩散、逆流回溯、虫洞跃迁与测地线能量场。
+        原始残差塑造概念锚，共现与序位形成事实河道；V9.1 再执行证据压缩、入流枢纽校正和固定出流预算。
+        查询击中支点后，以软非回溯边状态传播，并通过归一化有限时域响应形成查询级能量场。
       </div>
       <div id="legend">
-        <span class="chip">金色：coreTag / 初始击中</span>
-        <span class="chip">青色：顺流脉冲</span>
-        <span class="chip">紫色：逆流</span>
-        <span class="chip">洋红：虫洞跃迁</span>
-        <span class="chip">地形：深蓝低地 → 土黄/橙红山峰</span>
-        <span class="chip">能量场：黄 → 橙 → 红热力</span>
+        <span class="chip">金色：Core Tag / 初始击中</span>
+        <span class="chip">青色：预算内顺流</span>
+        <span class="chip">紫色：受阻尼逆流</span>
+        <span class="chip">洋红：预算内虫洞</span>
+        <span class="chip">河宽：V9.1 归一化传导率</span>
+        <span class="chip">能量场：归一化 FIR 黄 → 红</span>
       </div>
     </div>
 
@@ -476,10 +476,10 @@
   </div>
 
   <aside id="panel">
-    <div class="panel-title">浪潮调参演示台</div>
+    <div class="panel-title">V9.1 浪潮调参演示台</div>
     <div class="panel-desc">
-      这里是前端轻量复刻版，不连数据库。参数映射基本对齐 TagMemoEngine.js：
-      有序双向共现矩阵、钟形语义增益、脉冲传播、虫洞张力。
+      这里是前端轻量复刻版，不连接真实数据库。参数与 TagMemoEngine.js 的 V9.1 单轨实现对齐：
+      有序双向事实矩阵先生成有界传播核，再执行枢纽校正、软非回溯和有限时域传播。
       <span id="syncStatus" class="sync-pill">等待调参工作台同步参数</span>
     </div>
 
@@ -571,7 +571,74 @@
     </div>
 
     <div class="section">
-      <h3>Spike Routing / LIF 脉冲扩散</h3>
+      <h3>V9.1 Bounded Kernel / 有界传播核</h3>
+
+      <div class="control" data-param="outboundMass">
+        <div class="control-head">
+          <span class="control-name">outboundMass 节点总出流预算</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.1" max="1" step="0.01" />
+        <div class="hint">每个源节点全部出边共享的总质量上限；新增河道只能竞争预算，不能创造能量。</div>
+      </div>
+
+      <div class="control" data-param="evidenceCompression">
+        <div class="control-head">
+          <span class="control-name">evidenceCompression 证据压缩</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.1" max="3" step="0.05" />
+        <div class="hint">事实边先经过 log1p 压缩，防止高频共现按线性数量级垄断传播。</div>
+      </div>
+
+      <div class="control" data-param="wormholeGain">
+        <div class="control-head">
+          <span class="control-name">wormholeGain 虫洞竞争增益</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="1" max="3" step="0.05" />
+        <div class="hint">虫洞在归一化前争取更多份额，但仍受 outboundMass 总预算约束。</div>
+      </div>
+
+      <div class="control" data-param="associationReserveMass">
+        <div class="control-head">
+          <span class="control-name">associationReserveMass 虫洞预留质量</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0" max="0.4" step="0.01" />
+        <div class="hint">存在虫洞时，从同一总预算中预留关联通道质量，不是额外能量。</div>
+      </div>
+
+      <div class="control" data-param="hubPenaltyExponent">
+        <div class="control-head">
+          <span class="control-name">hubPenaltyExponent 枢纽抑制指数</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0" max="1" step="0.01" />
+        <div class="hint">按目标节点相对中位入流抑制通用枢纽；0 表示关闭校正。</div>
+      </div>
+
+      <div class="control" data-param="hubPenaltyFloor">
+        <div class="control-head">
+          <span class="control-name">hubPenaltyFloor 枢纽惩罚下限</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.05" max="1" step="0.01" />
+        <div class="hint">防止真实核心概念被高入流统计过度压低。</div>
+      </div>
+
+      <div class="control" data-param="hubPenaltyCeiling">
+        <div class="control-head">
+          <span class="control-name">hubPenaltyCeiling 长尾补偿上限</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="1" max="4" step="0.05" />
+        <div class="hint">限制低入流节点的最大补偿，避免罕见节点被无限奖励。</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>V9.1 Spike Routing / 软非回溯传播</h3>
 
       <div class="control" data-param="maxSafeHops">
         <div class="control-head">
@@ -615,7 +682,7 @@
           <span class="control-value"></span>
         </div>
         <input type="range" min="0.2" max="1.25" step="0.01" />
-        <div class="hint">虫洞跃迁时保留多少能量。虫洞不消耗动量。</div>
+        <div class="hint">虫洞跃迁时保留多少能量。虫洞不消耗普通动量，但不豁免立即回流抑制。</div>
       </div>
 
       <div class="control" data-param="tensionThreshold">
@@ -624,7 +691,34 @@
           <span class="control-value"></span>
         </div>
         <input type="range" min="0.25" max="2.2" step="0.01" />
-        <div class="hint">coocWeight × neighborResidual 超过该值触发虫洞。越低，跨域飞溅越多。</div>
+        <div class="hint">压缩证据 × 目标锚增益超过该值时，边在固定预算竞争中获得虫洞增益。</div>
+      </div>
+
+      <div class="control" data-param="v91ReturnFlowFactor">
+        <div class="control-head">
+          <span class="control-name">v91ReturnFlowFactor 立即回流系数</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0" max="1" step="0.01" />
+        <div class="hint">控制 u → i → u 的短周期回流质量；仅抑制立即返回，不禁止正常回溯。</div>
+      </div>
+
+      <div class="control" data-param="v91FirGamma">
+        <div class="control-head">
+          <span class="control-name">v91FirGamma 有限时域衰减</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.05" max="0.95" step="0.01" />
+        <div class="hint">每跳场权重按几何序列归一化，越低越强调近因，越高越保留远跳。</div>
+      </div>
+
+      <div class="control" data-param="v91MaxPropagationStates">
+        <div class="control-head">
+          <span class="control-name">v91MaxPropagationStates 状态上限</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="100" max="4000" step="100" />
+        <div class="hint">边状态超过上限时只保留能量最高者，避免高分支图状态爆炸。</div>
       </div>
 
       <div class="control" data-param="maxNeighborsPerNode">
@@ -840,22 +934,34 @@ function e(from, to, sim, fw, rw, delta, wormholeCandidate=false) {
 
 const params = {
   forwardGain: 1.0,
-  reverseGain: 0.42,
-  distanceDecay: 0.16,
+  reverseGain: 0.35,
+  distanceDecay: 0.08,
   semanticGainEnabled: true,
   semanticGainPeak: 0.65,
   semanticGainSigma: 0.25,
   reverseAnchorBoost: true,
-  reverseAnchorMax: 1.5,
-  reverseInversionGuard: 0.95,
+  reverseAnchorMax: 1.35,
+  reverseInversionGuard: 0.90,
+
+  outboundMass: 0.95,
+  evidenceCompression: 1.0,
+  wormholeGain: 1.35,
+  associationReserveMass: 0.05,
+  hubPenaltyExponent: 0.30,
+  hubPenaltyFloor: 0.55,
+  hubPenaltyCeiling: 1.80,
+  hubSmoothingRatio: 0.10,
 
   maxSafeHops: 4,
-  baseMomentum: 2.2,
+  baseMomentum: 2.0,
   firingThreshold: 0.10,
   baseDecay: 0.25,
   wormholeDecay: 0.70,
   tensionThreshold: 1.0,
-  maxNeighborsPerNode: 12
+  maxNeighborsPerNode: 20,
+  v91ReturnFlowFactor: 0.15,
+  v91FirGamma: 0.60,
+  v91MaxPropagationStates: 2000
 };
 
 function semanticGain(sim, p) {
@@ -889,6 +995,113 @@ function computeEdgeWeight(edge, p, direction = "forward", tagMap = null) {
 
   const cap = forward * p.reverseInversionGuard;
   return Math.min(reverse, cap);
+}
+
+function buildV91Kernel(p, tagMap) {
+  const rawRows = new Map();
+  const targetInflows = new Map();
+  const wormholeEdges = new Set();
+  const outboundMass = Math.max(0.01, Math.min(1, Number(p.outboundMass ?? 0.95)));
+  const reserveMassLimit = Math.min(
+    Math.max(0, Number(p.associationReserveMass ?? 0.05)),
+    outboundMass
+  );
+
+  const addRawEdge = (edge, reverse) => {
+    const sourceId = reverse ? edge.to : edge.from;
+    const targetId = reverse ? edge.from : edge.to;
+    const factWeight = computeEdgeWeight(
+      edge,
+      p,
+      reverse ? "reverse" : "forward",
+      tagMap
+    );
+    const evidence = Math.log1p(
+      Math.max(0, factWeight) * Math.max(0.01, Number(p.evidenceCompression ?? 1))
+    );
+    const targetAnchor = tagMap.get(targetId)?.residual ?? 1;
+    const isWormhole = evidence * targetAnchor >= Number(p.tensionThreshold ?? 1);
+    const rawConductance = evidence * (isWormhole ? Math.max(1, Number(p.wormholeGain ?? 1.35)) : 1);
+    if (!Number.isFinite(rawConductance) || rawConductance <= 0) return;
+
+    if (!rawRows.has(sourceId)) rawRows.set(sourceId, []);
+    rawRows.get(sourceId).push({
+      edge,
+      sourceId,
+      targetId,
+      reverse,
+      isWormhole,
+      evidence,
+      rawConductance
+    });
+    targetInflows.set(targetId, (targetInflows.get(targetId) || 0) + rawConductance);
+  };
+
+  for (const edge of EDGES) {
+    addRawEdge(edge, false);
+    addRawEdge(edge, true);
+  }
+
+  const inflows = [...targetInflows.values()]
+    .filter(value => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  const medianInflow = inflows.length
+    ? inflows[Math.floor(inflows.length / 2)]
+    : 1;
+  const smoothing = Math.max(
+    1e-9,
+    medianInflow * Math.max(0.01, Math.min(2, Number(p.hubSmoothingRatio ?? 0.1)))
+  );
+  const exponent = Math.max(0, Math.min(1, Number(p.hubPenaltyExponent ?? 0.3)));
+  const floor = Math.max(0.05, Math.min(1, Number(p.hubPenaltyFloor ?? 0.55)));
+  const ceiling = Math.max(1, Math.min(4, Number(p.hubPenaltyCeiling ?? 1.8)));
+  const kernel = new Map();
+
+  for (const [sourceId, rawEdges] of rawRows.entries()) {
+    const adjusted = [];
+    let adjustedSum = 0;
+    let wormholeSum = 0;
+
+    for (const item of rawEdges) {
+      const relativeInflow = (targetInflows.get(item.targetId) || 0) / (medianInflow + smoothing);
+      const rawPenalty = exponent > 0
+        ? Math.pow(Math.max(1e-9, relativeInflow), -exponent)
+        : 1;
+      const hubPenalty = Math.max(floor, Math.min(ceiling, rawPenalty));
+      const conductance = item.rawConductance * hubPenalty;
+      if (!Number.isFinite(conductance) || conductance <= 0) continue;
+      adjusted.push({ ...item, hubPenalty, conductance });
+      adjustedSum += conductance;
+      if (item.isWormhole) wormholeSum += conductance;
+    }
+
+    if (adjustedSum <= 0) continue;
+    const reserveMass = wormholeSum > 0 ? reserveMassLimit : 0;
+    const mainMass = outboundMass - reserveMass;
+    const row = [];
+
+    for (const item of adjusted) {
+      const main = mainMass * item.conductance / adjustedSum;
+      const reserved = item.isWormhole && wormholeSum > 0
+        ? reserveMass * item.conductance / wormholeSum
+        : 0;
+      const weight = main + reserved;
+      row.push({ ...item, weight });
+      if (item.isWormhole) wormholeEdges.add(`${sourceId}:${item.targetId}`);
+    }
+    kernel.set(sourceId, row);
+  }
+
+  return {
+    kernel,
+    wormholeEdges,
+    diagnostics: {
+      algorithmVersion: "v9.1-hub-aware",
+      outboundMass,
+      medianInflow,
+      targetCount: targetInflows.size
+    }
+  };
 }
 
 /* ============================================================
@@ -961,115 +1174,143 @@ function knnInitialTags(query, k = 5) {
 }
 
 /* ============================================================
-   4. Spike Routing
+   4. V9.1 Spike Routing：软非回溯 + 归一化有限时域场
    ============================================================ */
 
 function simulateSpikeRouting(coreHits) {
   const tagMap = new Map(TAGS.map(t => [t.id, t]));
-  const adjacency = new Map();
+  const kernelBuild = buildV91Kernel(params, tagMap);
+  const firWeights = [];
+  let firWeightSum = 0;
 
-  for (const edge of EDGES) {
-    if (!adjacency.has(edge.from)) adjacency.set(edge.from, []);
-    adjacency.get(edge.from).push({ ...edge, isReverse: false });
-
-    if (!adjacency.has(edge.to)) adjacency.set(edge.to, []);
-    adjacency.get(edge.to).push({
-      ...edge,
-      from: edge.to,
-      to: edge.from,
-      isReverse: true
-    });
+  for (let hop = 0; hop <= params.maxSafeHops; hop++) {
+    const weight = Math.pow(
+      Math.max(0.05, Math.min(0.95, params.v91FirGamma)),
+      hop
+    );
+    firWeights.push(weight);
+    firWeightSum += weight;
+  }
+  for (let hop = 0; hop < firWeights.length; hop++) {
+    firWeights[hop] /= firWeightSum;
   }
 
   let activeSpikes = new Map();
   const accumulatedEnergy = new Map();
   const events = [];
-
+  const diagnostics = {
+    algorithmVersion: "v9.1-soft-nonbacktracking-fir",
+    returnFlowSuppressedMass: 0,
+    stateTruncations: 0,
+    hopInFlightMass: [],
+    ...kernelBuild.diagnostics
+  };
   const maxScore = Math.max(...coreHits.map(h => h.score), 1);
 
   for (const h of coreHits) {
     const energy = 0.62 + 0.55 * (h.score / maxScore);
-    activeSpikes.set(h.id, { energy, momentum: params.baseMomentum });
-    accumulatedEnergy.set(h.id, energy);
+    activeSpikes.set(`seed:${h.id}`, {
+      nodeId: h.id,
+      previousNodeId: null,
+      energy,
+      momentum: params.baseMomentum
+    });
+    accumulatedEnergy.set(h.id, energy * firWeights[0]);
     events.push({ type: "core", tagId: h.id, energy, hop: 0 });
   }
 
   for (let hop = 0; hop < params.maxSafeHops; hop++) {
     const nextSpikes = new Map();
 
-    for (const [nodeId, spike] of activeSpikes.entries()) {
+    for (const spike of activeSpikes.values()) {
       if (spike.energy < params.firingThreshold || spike.momentum < 0) continue;
-
-      const synapses = adjacency.get(nodeId) || [];
-
-      const sorted = synapses
-        .map(edge => {
-          const weight = computeEdgeWeight(
-            edge,
-            params,
-            edge.isReverse ? "reverse" : "forward",
-            tagMap
-          );
-          return { edge, weight };
-        })
-        .filter(x => x.weight > 0.01)
-        .sort((a,b) => b.weight - a.weight)
+      const synapses = (kernelBuild.kernel.get(spike.nodeId) || [])
+        .slice()
+        .sort((a, b) => b.weight - a.weight)
         .slice(0, params.maxNeighborsPerNode);
 
-      for (const { edge, weight } of sorted) {
-        const neighbor = tagMap.get(edge.to);
-        if (!neighbor) continue;
+      for (const synapse of synapses) {
+        const isImmediateReturn = spike.previousNodeId !== null
+          && synapse.targetId === spike.previousNodeId;
+        const flowFactor = isImmediateReturn
+          ? Math.max(0, Math.min(1, params.v91ReturnFlowFactor))
+          : 1;
+        const decayFactor = synapse.isWormhole
+          ? params.wormholeDecay
+          : params.baseDecay;
+        const unpenalizedCurrent = spike.energy * synapse.weight * decayFactor;
+        const injectedCurrent = unpenalizedCurrent * flowFactor;
 
-        const tension = weight * neighbor.residual;
-        const isWormhole = tension >= params.tensionThreshold || edge.wormholeCandidate && tension >= params.tensionThreshold * 0.72;
+        if (isImmediateReturn) {
+          diagnostics.returnFlowSuppressedMass += unpenalizedCurrent - injectedCurrent;
+        }
+        if (injectedCurrent < 0.01) continue;
 
-        const decayFactor = isWormhole ? params.wormholeDecay : params.baseDecay;
-        const momentumCost = isWormhole ? 0 : 1.0;
+        const nextMomentum = spike.momentum - (synapse.isWormhole ? 0 : 1);
+        if (nextMomentum < 0 && !synapse.isWormhole) continue;
 
-        let injectedCurrent = spike.energy * weight * decayFactor;
-
-        // 逆流视觉上保留，但传播稍微软一点
-        if (edge.isReverse) injectedCurrent *= 0.78;
-
-        if (injectedCurrent < 0.012) continue;
-
-        const nextMomentum = spike.momentum - momentumCost;
-        if (nextMomentum < 0 && !isWormhole) continue;
-
-        const old = nextSpikes.get(edge.to);
+        const stateKey = `${spike.nodeId}:${synapse.targetId}`;
+        const old = nextSpikes.get(stateKey);
         if (old) {
           old.energy += injectedCurrent;
           old.momentum = Math.max(old.momentum, nextMomentum);
         } else {
-          nextSpikes.set(edge.to, {
+          nextSpikes.set(stateKey, {
+            nodeId: synapse.targetId,
+            previousNodeId: spike.nodeId,
             energy: injectedCurrent,
             momentum: nextMomentum
           });
         }
 
-        accumulatedEnergy.set(
-          edge.to,
-          (accumulatedEnergy.get(edge.to) || 0) + injectedCurrent
-        );
-
         events.push({
-          type: isWormhole ? "wormhole" : "spike",
-          from: edge.from,
-          to: edge.to,
+          type: synapse.isWormhole ? "wormhole" : "spike",
+          from: spike.nodeId,
+          to: synapse.targetId,
           energy: injectedCurrent,
-          weight,
-          tension,
-          reverse: !!edge.isReverse,
+          weight: synapse.weight,
+          tension: synapse.evidence * (tagMap.get(synapse.targetId)?.residual ?? 1),
+          reverse: synapse.reverse,
+          immediateReturn: isImmediateReturn,
+          hubPenalty: synapse.hubPenalty,
           hop: hop + 1
         });
       }
+    }
+
+    if (nextSpikes.size > params.v91MaxPropagationStates) {
+      const retained = [...nextSpikes.entries()]
+        .sort((a, b) => b[1].energy - a[1].energy)
+        .slice(0, params.v91MaxPropagationStates);
+      diagnostics.stateTruncations += nextSpikes.size - retained.length;
+      nextSpikes.clear();
+      for (const [key, value] of retained) nextSpikes.set(key, value);
+    }
+
+    const nodeEnergyThisHop = new Map();
+    let inFlightMass = 0;
+    for (const spike of nextSpikes.values()) {
+      nodeEnergyThisHop.set(
+        spike.nodeId,
+        (nodeEnergyThisHop.get(spike.nodeId) || 0) + spike.energy
+      );
+      inFlightMass += spike.energy;
+    }
+    diagnostics.hopInFlightMass.push(inFlightMass);
+
+    const fieldWeight = firWeights[hop + 1];
+    for (const [nodeId, energy] of nodeEnergyThisHop.entries()) {
+      accumulatedEnergy.set(
+        nodeId,
+        (accumulatedEnergy.get(nodeId) || 0) + energy * fieldWeight
+      );
     }
 
     if (nextSpikes.size === 0) break;
     activeSpikes = nextSpikes;
   }
 
-  return { accumulatedEnergy, events };
+  return { accumulatedEnergy, events, diagnostics, kernelBuild };
 }
 
 /* ============================================================
@@ -1395,6 +1636,7 @@ class SemanticTerrainScene {
 
   rebuildEdges() {
     this.clearEdges();
+    this.currentKernel = buildV91Kernel(params, this.tagMap);
 
     for (const edge of EDGES) {
       this.createEdge(edge, false);
@@ -1420,7 +1662,9 @@ class SemanticTerrainScene {
     mid.z += Math.cos((fromId - toId) * 1.3) * (0.18 + dist * 0.018);
 
     const curve = new THREE.CatmullRomCurve3([start, mid, end]);
-    const weight = computeEdgeWeight(edge, params, reverse ? "reverse" : "forward", this.tagMap);
+    const weight = this.currentKernel?.kernel
+      .get(fromId)
+      ?.find(item => item.targetId === toId)?.weight || 0;
 
     const radius = reverse
       ? 0.004 + weight * 0.008
@@ -1570,7 +1814,7 @@ class SemanticTerrainScene {
       }
     });
 
-    phaseText.textContent = "Query Vector 坠入语义地形，执行 noisy KNN 初始支点命中";
+    phaseText.textContent = "Query Vector 坠入语义地形，执行 KNN 初始支点命中与 V9.1 有界核装载";
 
     const schedule = (delay, fn) => {
       const timer = setTimeout(() => {
@@ -1602,8 +1846,8 @@ class SemanticTerrainScene {
 
       schedule(at, () => {
         phaseText.textContent = ev.type === "wormhole"
-          ? `Hop ${ev.hop}: 张力 ${ev.tension.toFixed(2)} 触发虫洞跃迁`
-          : `Hop ${ev.hop}: ${ev.reverse ? "逆流回溯" : "顺流传播"} energy=${ev.energy.toFixed(3)}`;
+          ? `Hop ${ev.hop}: 预算内虫洞跃迁 · tension=${ev.tension.toFixed(2)}`
+          : `Hop ${ev.hop}: ${ev.reverse ? "逆流" : "顺流"}${ev.immediateReturn ? " · 立即回流已抑制" : ""} · FIR energy=${ev.energy.toFixed(3)}`;
 
         if (ev.type === "wormhole") {
           this.animateWormhole(ev.from, ev.to, ev.energy, () => {
@@ -1630,7 +1874,7 @@ class SemanticTerrainScene {
     }
 
     schedule(lastEventAt + 980, () => {
-      phaseText.textContent = "最终 accumulatedEnergy 形成测地线能量场";
+      phaseText.textContent = "归一化有限时域 accumulatedEnergy 形成查询级 Potential Field";
       this.showEnergyField(result.accumulatedEnergy);
     });
 
@@ -2105,13 +2349,24 @@ const TUNING_PARAM_KEYS = [
   "semanticGainSigma",
   "reverseAnchorMax",
   "reverseInversionGuard",
+  "outboundMass",
+  "evidenceCompression",
+  "wormholeGain",
+  "associationReserveMass",
+  "hubPenaltyExponent",
+  "hubPenaltyFloor",
+  "hubPenaltyCeiling",
+  "hubSmoothingRatio",
   "maxSafeHops",
   "baseMomentum",
   "firingThreshold",
   "baseDecay",
   "wormholeDecay",
   "tensionThreshold",
-  "maxNeighborsPerNode"
+  "maxNeighborsPerNode",
+  "v91ReturnFlowFactor",
+  "v91FirGamma",
+  "v91MaxPropagationStates"
 ];
 
 const EDGE_REBUILD_PARAM_KEYS = new Set([
@@ -2121,7 +2376,16 @@ const EDGE_REBUILD_PARAM_KEYS = new Set([
   "semanticGainPeak",
   "semanticGainSigma",
   "reverseAnchorMax",
-  "reverseInversionGuard"
+  "reverseInversionGuard",
+  "outboundMass",
+  "evidenceCompression",
+  "wormholeGain",
+  "associationReserveMass",
+  "hubPenaltyExponent",
+  "hubPenaltyFloor",
+  "hubPenaltyCeiling",
+  "hubSmoothingRatio",
+  "tensionThreshold"
 ]);
 
 function applyExternalParams(nextParams = {}) {
@@ -2256,15 +2520,7 @@ function bindControls() {
       params[key] = Number.isInteger(params[key]) ? Math.round(raw) : raw;
       value.textContent = formatParam(params[key]);
 
-      if ([
-        "forwardGain",
-        "reverseGain",
-        "distanceDecay",
-        "semanticGainPeak",
-        "semanticGainSigma",
-        "reverseAnchorMax",
-        "reverseInversionGuard"
-      ].includes(key)) {
+      if (EDGE_REBUILD_PARAM_KEYS.has(key)) {
         terrainScene.updateParams();
       }
 
@@ -2317,16 +2573,24 @@ function runQuery() {
   const reverse = result.events.filter(ev => ev.reverse).length;
 
   readout.textContent =
-`KNN 初始击中 coreTags:
+`V9.1 · KNN 初始击中 Core Tags:
 ${hits.map(h => `  - ${h.name}  score=${h.score.toFixed(2)}`).join("\n")}
 
-传播统计:
+有界核:
+  outboundMass=${result.diagnostics.outboundMass.toFixed(2)}
+  medianInflow=${result.diagnostics.medianInflow.toFixed(3)}
+  targetCount=${result.diagnostics.targetCount}
+
+软非回溯 / FIR:
   events=${result.events.length}
   wormholes=${wormholes}
   reverseFlow=${reverse}
+  returnFlowSuppressed=${result.diagnostics.returnFlowSuppressedMass.toFixed(3)}
+  stateTruncations=${result.diagnostics.stateTruncations}
   activatedTags=${result.accumulatedEnergy.size}
+  hopInFlightMass=[${result.diagnostics.hopInFlightMass.map(v => v.toFixed(3)).join(", ")}]
 
-Top Energy Field:
+Top Query-scoped Energy Field:
 ${activated.map(x => `  - ${x.name}  energy=${x.energy.toFixed(3)}`).join("\n")}`;
 }
 

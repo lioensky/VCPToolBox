@@ -1,18 +1,18 @@
 {
   "manifestVersion": "1.0.0",
   "name": "DailyNote",
-  "version": "2.0.0",
-  "displayName": "日记系统 (创建与更新)",
-  "description": "一个多功能日记插件，提供创建(create)和更新(update)日记的功能。",
+  "version": "3.0.0",
+  "displayName": "日记系统 (常驻队列服务)",
+  "description": "常驻内存的日记创建与更新服务。所有文件变更通过单一 FIFO 队列执行，并与 KnowledgeBaseManager 的 SQLite/Rust 索引队列协调，避免多 Agent 并发写入和回忆时产生数据库竞争。",
   "author": "Roo",
-  "pluginType": "synchronous",
+  "pluginType": "hybridservice",
   "entryPoint": {
     "type": "nodejs",
-    "command": "node dailynote.js"
+    "script": "dailynote.js"
   },
   "communication": {
-    "protocol": "stdio",
-    "timeout": 30000
+    "protocol": "direct",
+    "timeout": 1800000
   },
   "capabilities": {
     "invocationCommands": [

@@ -131,8 +131,8 @@
               <span class="rag-console__label">语义沙盘</span>
               <div class="semantic-sim-card">
                 <div class="semantic-sim-card__copy">
-                  <strong>浪潮语义地形模拟器</strong>
-                  <p>预览 KNN 击中、顺逆流、虫洞跃迁与测地线能量场。</p>
+                  <strong>浪潮语义地形模拟器 · V9.1</strong>
+                  <p>预览有界传播核、枢纽校正、软非回溯、预算内虫洞与有限时域能量场。</p>
                 </div>
                 <UiButton @click="openSemanticSimulation">
                   打开沙盘
@@ -144,15 +144,15 @@
               <span class="rag-console__label">主动自学习</span>
               <div class="active-training-card">
                 <div class="active-training-card__copy">
-                  <strong>全量重训练</strong>
-                  <p>立即触发浪潮引擎原本由 1% 新标签阈值触发的全量训练，并重置阈值计数。</p>
+                  <strong>V9.1 全量重训练</strong>
+                  <p>重建 V9.1 Pairwise、内生残差与传播核；发布成功后清理退休 V8.3 预计算，并重置 1% 新标签阈值计数。</p>
                 </div>
                 <UiButton
                   variant="secondary"
                   :disabled="isActiveTraining"
                   @click="triggerActiveFullTraining"
                 >
-                  {{ isActiveTraining ? "训练已排队…" : "触发全量自学习" }}
+                  {{ isActiveTraining ? "训练已排队…" : "重建 V9.1 资产" }}
                 </UiButton>
               </div>
             </div>
@@ -211,6 +211,11 @@
             </div>
           </div>
         </header>
+
+        <TagMemoV9ControlPanel
+          v-if="knowledgeBaseParams"
+          v-model="knowledgeBaseParams"
+        />
 
         <article
           v-for="section in groupSections"
@@ -329,7 +334,7 @@
                       <div class="param-row__title-block">
                         <h4>{{ entry.meta.label }}</h4>
                         <details v-if="entry.meta.logic" class="param-row__details param-row__details--inline">
-                          <summary>展开 V8.2 调优逻辑</summary>
+                          <summary>展开有序事实矩阵逻辑</summary>
                           <div class="param-row__details-body">
                             <p>{{ entry.meta.logic }}</p>
                           </div>
@@ -384,7 +389,7 @@
 
                     <div class="wormhole-launchpad__footer">
                       <UiButton @click="openOrderedCooccurrenceModal">
-                        打开 V8.2 流形舱
+                        打开事实矩阵控制舱
                       </UiButton>
                     </div>
                   </div>
@@ -689,10 +694,11 @@
         <section class="semantic-sim-modal__panel">
           <header class="semantic-sim-modal__header">
             <div>
-              <span class="semantic-sim-modal__eyebrow">TagMemo Terrain Sandbox</span>
-              <h3 id="semantic-sim-modal-title">浪潮语义地形沙盘</h3>
+              <span class="semantic-sim-modal__eyebrow">TagMemo V9.1 Terrain Sandbox</span>
+              <h3 id="semantic-sim-modal-title">浪潮语义地形沙盘 · V9.1</h3>
               <p>
-                当前沙盘会接收此页面尚未保存的有序共现与虫洞脉冲参数，用于快速观察调参方向的视觉影响。
+                沙盘会接收尚未保存的有序事实矩阵、V9.1 有界核与软非回溯参数，模拟固定出流预算、
+                入流枢纽校正、预算内虫洞和归一化有限时域场。它是前端教学近似，不读取真实数据库资产。
               </p>
             </div>
             <div class="semantic-sim-modal__actions">
@@ -734,6 +740,7 @@ import UiInput from "@/components/ui/UiInput.vue";
 import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import OrderedCooccurrenceModal from "@/features/rag-tuning/OrderedCooccurrenceModal.vue";
+import TagMemoV9ControlPanel from "@/features/rag-tuning/TagMemoV9ControlPanel.vue";
 import WormholeRoutingModal from "@/features/rag-tuning/WormholeRoutingModal.vue";
 import {
   GROUP_ORDER,
@@ -795,6 +802,12 @@ interface GroupSection {
 }
 
 const WORMHOLE_GROUP_NAME = "KnowledgeBaseManager";
+const V9_KERNEL_PARAM_KEY = "v9";
+const TAGMEMO_V9_DEDICATED_KEYS = new Set([
+  "tagMemoVersioning",
+  "v9",
+  "intrinsicResidual",
+]);
 const WORMHOLE_PARAM_KEY = "spikeRouting";
 const GEODESIC_GROUP_NAME = "KnowledgeBaseManager";
 const GEODESIC_PARAM_KEY = "geodesicRerank";
@@ -828,17 +841,25 @@ function cloneParams(source: RagParams): RagParams {
   return JSON.parse(JSON.stringify(source));
 }
 
-function isNumericRecord(value: ParamValue | undefined): value is NumericRecord {
+function isParamRecord(value: ParamValue | undefined): value is Record<string, ParamValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNumericRecord(value: ParamValue | undefined): value is NumericRecord {
+  return isParamRecord(value)
+    && Object.values(value).every((item) => typeof item === "number" && Number.isFinite(item));
 }
 
 function countLeafValues(value: ParamValue): number {
   if (Array.isArray(value)) {
-    return value.length;
+    return value.reduce<number>((total, item) => total + countLeafValues(item), 0);
   }
 
-  if (isNumericRecord(value)) {
-    return Object.keys(value).length;
+  if (isParamRecord(value)) {
+    return Object.values(value).reduce<number>(
+      (total, item) => total + countLeafValues(item),
+      0
+    );
   }
 
   return 1;
@@ -852,26 +873,26 @@ function countChangedLeaves(current: ParamValue, original?: ParamValue): number 
   if (Array.isArray(current) && Array.isArray(original)) {
     const maxLength = Math.max(current.length, original.length);
     let changedCount = 0;
-
     for (let index = 0; index < maxLength; index += 1) {
-      if (current[index] !== original[index]) {
-        changedCount += 1;
-      }
+      const currentItem = current[index];
+      const originalItem = original[index];
+      if (currentItem === undefined) changedCount += countLeafValues(originalItem);
+      else if (originalItem === undefined) changedCount += countLeafValues(currentItem);
+      else changedCount += countChangedLeaves(currentItem, originalItem);
     }
-
     return changedCount;
   }
 
-  if (isNumericRecord(current) && isNumericRecord(original)) {
+  if (isParamRecord(current) && isParamRecord(original)) {
     const keys = new Set([...Object.keys(current), ...Object.keys(original)]);
     let changedCount = 0;
-
     keys.forEach((key) => {
-      if (current[key] !== original[key]) {
-        changedCount += 1;
-      }
+      const currentItem = current[key];
+      const originalItem = original[key];
+      if (currentItem === undefined) changedCount += countLeafValues(originalItem);
+      else if (originalItem === undefined) changedCount += countLeafValues(currentItem);
+      else changedCount += countChangedLeaves(currentItem, originalItem);
     });
-
     return changedCount;
   }
 
@@ -915,7 +936,7 @@ function buildEntry(
   paramKey: string,
   value: ParamValue,
   original: ParamValue | undefined
-): ParamEntry {
+): ParamEntry | null {
   const base = {
     key: paramKey,
     fieldId: createFieldId(groupName, paramKey),
@@ -924,24 +945,33 @@ function buildEntry(
     totalLeaves: countLeafValues(value),
   };
 
-  if (Array.isArray(value)) {
-    return { ...base, kind: "tuple", value };
+  if (Array.isArray(value) && value.every((item) => typeof item === "number")) {
+    return { ...base, kind: "tuple", value: value as number[] };
   }
 
   if (isNumericRecord(value)) {
     return { ...base, kind: "nested", value };
   }
 
-  return { ...base, kind: "number", value };
+  if (typeof value === "number") {
+    return { ...base, kind: "number", value };
+  }
+
+  return null;
 }
 
 const groupSections = computed<GroupSection[]>(() =>
   Object.entries(params.value)
     .sort(([left], [right]) => compareGroupOrder(left, right))
     .map(([groupName, groupParams]) => {
-      const entries = Object.entries(groupParams).map(([paramKey, value]) =>
-        buildEntry(groupName, paramKey, value, originalParams.value[groupName]?.[paramKey])
-      );
+      const entries = Object.entries(groupParams)
+        .filter(([paramKey]) =>
+          groupName !== "KnowledgeBaseManager" || !TAGMEMO_V9_DEDICATED_KEYS.has(paramKey)
+        )
+        .map(([paramKey, value]) =>
+          buildEntry(groupName, paramKey, value, originalParams.value[groupName]?.[paramKey])
+        )
+        .filter((entry): entry is ParamEntry => entry !== null);
 
       return {
         name: groupName,
@@ -955,12 +985,39 @@ const groupSections = computed<GroupSection[]>(() =>
     })
 );
 
+const knowledgeBaseParams = computed<ParamGroup>({
+  get: () => params.value.KnowledgeBaseManager || {},
+  set: (value) => {
+    params.value.KnowledgeBaseManager = value;
+  },
+});
+
+const dedicatedLeafCount = computed(() => {
+  const current = params.value.KnowledgeBaseManager || {};
+  return [...TAGMEMO_V9_DEDICATED_KEYS].reduce((total, key) => {
+    const value = current[key];
+    return total + (value === undefined ? 0 : countLeafValues(value));
+  }, 0);
+});
+
+const dedicatedChangedLeafCount = computed(() => {
+  const current = params.value.KnowledgeBaseManager || {};
+  const original = originalParams.value.KnowledgeBaseManager || {};
+  return [...TAGMEMO_V9_DEDICATED_KEYS].reduce((total, key) => {
+    const value = current[key];
+    if (value === undefined) return total;
+    return total + countChangedLeaves(value, original[key]);
+  }, 0);
+});
+
 const totalLeafCount = computed(() =>
   groupSections.value.reduce((total, section) => total + section.totalLeaves, 0)
+  + dedicatedLeafCount.value
 );
 
 const changedLeafCount = computed(() =>
   groupSections.value.reduce((total, section) => total + section.changedLeaves, 0)
+  + dedicatedChangedLeafCount.value
 );
 
 const isDirty = computed(() => changedLeafCount.value > 0);
@@ -1007,9 +1064,22 @@ const orderedCooccurrenceOriginalValues = computed<NumericRecord>(() => {
   return isNumericRecord(raw) ? raw : {};
 });
 
+const v9KernelCurrentValues = computed<NumericRecord>(() => {
+  const raw = params.value[WORMHOLE_GROUP_NAME]?.[V9_KERNEL_PARAM_KEY];
+  if (!isParamRecord(raw)) return {};
+
+  return Object.fromEntries(
+    Object.entries(raw).filter(
+      (entry): entry is [string, number] =>
+        typeof entry[1] === "number" && Number.isFinite(entry[1])
+    )
+  );
+});
+
 const semanticSimulationParams = computed<NumericRecord>(() => ({
   ...orderedCooccurrenceCurrentValues.value,
   ...wormholeCurrentValues.value,
+  ...v9KernelCurrentValues.value,
 }));
 
 function isWormholeNestedEntry(entry: ParamEntry): entry is NestedParamEntry {
@@ -1178,6 +1248,11 @@ function closeWormholeModal(): void {
 }
 
 function updateSimulationField(subKey: string, value: number): void {
+  if (subKey in v9KernelCurrentValues.value) {
+    updateV9KernelField(subKey, value);
+    return;
+  }
+
   if (subKey in orderedCooccurrenceCurrentValues.value) {
     updateOrderedCooccurrenceField(subKey, value);
     return;
@@ -1185,6 +1260,13 @@ function updateSimulationField(subKey: string, value: number): void {
 
   if (subKey in wormholeCurrentValues.value) {
     updateWormholeField(subKey, value);
+  }
+}
+
+function updateV9KernelField(subKey: string, value: number): void {
+  const raw = params.value[WORMHOLE_GROUP_NAME]?.[V9_KERNEL_PARAM_KEY];
+  if (isParamRecord(raw) && typeof raw[subKey] === "number") {
+    raw[subKey] = value;
   }
 }
 
@@ -1249,7 +1331,7 @@ function resetOrderedCooccurrenceParams(): void {
   params.value[ORDERED_COOCCURRENCE_GROUP_NAME][ORDERED_COOCCURRENCE_PARAM_KEY] = {
     ...original,
   };
-  statusMessage.value = "已恢复 V8.2 有序双向势能流形的未保存修改。";
+  statusMessage.value = "已恢复有序双向事实矩阵的未保存修改。";
   statusType.value = "info";
 }
 
@@ -1276,7 +1358,7 @@ function handleSemanticSimulationMessage(event: MessageEvent): void {
     updateSimulationField(subKey, rawValue);
   });
 
-  statusMessage.value = "已从浪潮语义沙盘同步未保存参数。";
+  statusMessage.value = "已从 V9.1 浪潮语义沙盘同步未保存参数。";
   statusType.value = "info";
 }
 
@@ -1447,8 +1529,8 @@ async function triggerActiveFullTraining(): Promise<void> {
     const threshold = result?.threshold;
 
     statusMessage.value = threshold
-      ? `已排队浪潮全量自学习任务，已重置 ${resetCount}/${threshold} 个阈值计数。`
-      : `已排队浪潮全量自学习任务，已重置 ${resetCount} 个阈值计数。`;
+      ? `已排队 V9.1 全量重建与退休资产清理任务，已重置 ${resetCount}/${threshold} 个阈值计数。`
+      : `已排队 V9.1 全量重建与退休资产清理任务，已重置 ${resetCount} 个阈值计数。`;
     statusType.value = "success";
     showMessage(statusMessage.value, "success");
   } catch (error: unknown) {

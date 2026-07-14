@@ -38,6 +38,16 @@ const UPDATE_FAILURE_HINT = "请检查字段或标点符号是否与原文一致
 // 忽略的文件夹列表
 const IGNORED_FOLDERS = ['MusicDiary'];
 
+// --- Resident Service State ---
+// DailyNote 升级为 direct 常驻服务后，所有 create/update 都通过同一条进程内队列执行。
+// 文件落盘后即可向 AI 返回；SQLite/Rust 向量入库仍由
+// KnowledgeBaseManager.runExternalFileMutation() 的内部 FIFO 队列托管并在后台完成。
+let knowledgeBaseManager = null;
+let residentQueue = Promise.resolve();
+let residentAcceptingRequests = true;
+let residentPendingCount = 0;
+let residentInitialized = false;
+
 
 // --- Debug Logging (to stderr) ---
 function debugLog(message, ...args) {
@@ -669,33 +679,40 @@ async function handleCreateCommand(args) {
 
         await fs.mkdir(dirPath, { recursive: true });
 
-        // 循环检查文件名冲突
-        while (true) {
-            try {
-                await fs.access(filePath);
-                // 如果文件已存在，增加计数器并重试
-                counter++;
-                finalFileName = `${baseFileNameWithoutExt}(${counter})${fileExtension}`;
-                filePath = path.join(dirPath, finalFileName);
-            } catch (err) {
-                // 文件不存在，可以使用此路径
-                break;
-            }
-        }
-
-        debugLog(`Target file path: ${filePath}`);
         const timeStringForContent = `${hours}:${minutes}`;
         const fileContent = contentStartsWithAiTimePrefix(processedContent)
             ? `[${datePart}] - ${actualMaidName}\n${processedContent}`
             : `[${datePart}] - ${actualMaidName}\n[${timeStringForContent}]\n${processedContent}`;
-        await fs.writeFile(filePath, fileContent);
+
+        // 使用 wx 原子排他创建，避免多个调用方在 access 与 writeFile 之间同时抢到同一路径。
+        const maxFileNameAttempts = 1000;
+        while (counter <= maxFileNameAttempts) {
+            try {
+                debugLog(`Attempting atomic create: ${filePath}`);
+                await fs.writeFile(filePath, fileContent, { encoding: 'utf-8', flag: 'wx' });
+                break;
+            } catch (err) {
+                if (err.code !== 'EEXIST') {
+                    throw err;
+                }
+                counter++;
+                finalFileName = `${baseFileNameWithoutExt}(${counter})${fileExtension}`;
+                filePath = path.join(dirPath, finalFileName);
+            }
+        }
+
+        if (counter > maxFileNameAttempts) {
+            throw new Error(`Unable to allocate a unique diary filename after ${maxFileNameAttempts} attempts.`);
+        }
+
         debugLog(`Successfully wrote file (length: ${fileContent.length})`);
         return {
             status: "success",
             result: {
-                message: `${actualMaidName} 的日记已保存到 ${sanitizedFolderName} 文件夹 (${finalFileName})`,
+                message: `${actualMaidName} 的日记已保存到 ${sanitizedFolderName} 文件夹 (${finalFileName})，知识库索引将在后台更新`,
                 folder: sanitizedFolderName,
-                fileName: finalFileName
+                fileName: finalFileName,
+                indexStatus: "queued"
             }
         };
     } catch (error) {
@@ -1046,6 +1063,56 @@ function generateDiff(oldText, newText, oldLabel, newLabel) {
 }
 
 // --- 'update' Command Logic ---
+async function atomicReplaceIfUnchanged(filePath, content, expectedStats) {
+    const currentStats = await fs.stat(filePath);
+    if (
+        !expectedStats ||
+        currentStats.size !== expectedStats.size ||
+        currentStats.mtimeMs !== expectedStats.mtimeMs
+    ) {
+        const conflict = new Error(
+            `Diary file changed concurrently before update commit: ${filePath}. ` +
+            'Please read the latest content and retry.'
+        );
+        conflict.code = 'DAILY_NOTE_WRITE_CONFLICT';
+        throw conflict;
+    }
+
+    const tempPath = path.join(
+        path.dirname(filePath),
+        `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`
+    );
+
+    try {
+        await fs.writeFile(tempPath, content, { encoding: 'utf-8', flag: 'wx' });
+
+        // 临时文件写完后再做一次版本校验，缩小外部写入者抢占提交窗口的概率。
+        const beforeCommitStats = await fs.stat(filePath);
+        if (
+            beforeCommitStats.size !== expectedStats.size ||
+            beforeCommitStats.mtimeMs !== expectedStats.mtimeMs
+        ) {
+            const conflict = new Error(
+                `Diary file changed concurrently during update commit: ${filePath}. ` +
+                'Please read the latest content and retry.'
+            );
+            conflict.code = 'DAILY_NOTE_WRITE_CONFLICT';
+            throw conflict;
+        }
+
+        await fs.rename(tempPath, filePath);
+    } catch (error) {
+        try {
+            await fs.unlink(tempPath);
+        } catch (cleanupError) {
+            if (cleanupError.code !== 'ENOENT') {
+                console.warn(`[DailyNote] Failed to remove update temp file "${tempPath}": ${cleanupError.message}`);
+            }
+        }
+        throw error;
+    }
+}
+
 async function handleUpdateCommand(args) {
     debugLog("Processing 'update' command with args:", args);
 
@@ -1289,8 +1356,19 @@ async function handleUpdateCommand(args) {
                     const filePath = path.join(dir.path, file);
                     debugLog(`Reading file: ${filePath}`);
                     let content;
+                    let readVersion;
                     try {
+                        const statsBeforeRead = await fs.stat(filePath);
                         content = await fs.readFile(filePath, 'utf-8');
+                        const statsAfterRead = await fs.stat(filePath);
+                        if (
+                            statsBeforeRead.size !== statsAfterRead.size ||
+                            statsBeforeRead.mtimeMs !== statsAfterRead.mtimeMs
+                        ) {
+                            debugLog(`Skipping concurrently changing diary file: ${filePath}`);
+                            continue;
+                        }
+                        readVersion = statsAfterRead;
                     } catch (readErr) {
                         console.error(
                             `[DailyNote] Error reading diary file ${filePath}:`,
@@ -1319,7 +1397,7 @@ async function handleUpdateCommand(args) {
                             replace +
                             content.substring(index + target.length);
                         try {
-                            await fs.writeFile(filePath, newContent, 'utf-8');
+                            await atomicReplaceIfUnchanged(filePath, newContent, readVersion);
                             modificationDone = true;
                             modifiedFilePath = filePath;
                             debugLog(`Successfully modified file: ${filePath}`);
@@ -1329,6 +1407,13 @@ async function handleUpdateCommand(args) {
                                 `[DailyNote] Error writing to diary file ${filePath}:`,
                                 writeErr.message
                             );
+                            if (writeErr.code === 'DAILY_NOTE_WRITE_CONFLICT') {
+                                return {
+                                    status: 'error',
+                                    error: writeErr.message,
+                                    code: writeErr.code
+                                };
+                            }
                             break;
                         }
                     } else if (FUZZY_DIFF_ENABLED && probes.length > 0) {
@@ -1376,10 +1461,11 @@ async function handleUpdateCommand(args) {
                 status: 'success',
                 result: {
                     result: `Successfully edited diary file: ${modifiedFilePath}`,
-                    message: `${maid || 'AI'} 已成功更新 ${folderName} 文件夹中的日记文件 (${finalFileName})`,
+                    message: `${maid || 'AI'} 已成功更新 ${folderName} 文件夹中的日记文件 (${finalFileName})，知识库索引将在后台更新`,
                     targetFile: modifiedFilePath,
                     folder: folderName,
-                    fileName: finalFileName
+                    fileName: finalFileName,
+                    indexStatus: 'queued'
                 }
             };
         } else {
@@ -1457,7 +1543,128 @@ async function handleUpdateCommand(args) {
     }
 }
 
-// --- Main Execution ---
+// --- Shared Command Dispatcher ---
+async function dispatchCommand(args) {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        return { status: 'error', error: 'DailyNote request must be a JSON object.' };
+    }
+
+    const { command, ...parameters } = args;
+
+    // 鲁棒性兼容：AI 有时会遗漏 command，或把 command 拼错。
+    const rawCommand = typeof command === 'string' ? command.trim().toLowerCase() : command;
+    const hasCreateContent =
+        typeof parameters.contentText === 'string' ||
+        typeof parameters.Content === 'string' ||
+        typeof parameters.content === 'string';
+    const hasUpdateTargetReplace =
+        typeof parameters.target === 'string' &&
+        typeof parameters.replace === 'string';
+
+    let normalizedCommand = rawCommand;
+    if (rawCommand !== 'create' && rawCommand !== 'update') {
+        if (hasUpdateTargetReplace) {
+            normalizedCommand = 'update';
+            debugLog(`Command '${command || ''}' is missing or invalid; inferred 'update' from target/replace arguments.`);
+        } else if (hasCreateContent) {
+            normalizedCommand = 'create';
+            debugLog(`Command '${command || ''}' is missing or invalid; inferred 'create' from content arguments.`);
+        }
+    }
+
+    switch (normalizedCommand) {
+        case 'create':
+            return handleCreateCommand(parameters);
+        case 'update':
+            return handleUpdateCommand(parameters);
+        default:
+            return { status: 'error', error: `Unknown command: '${normalizedCommand}'. Use 'create' or 'update'.` };
+    }
+}
+
+function enqueueResidentRequest(args, context = {}) {
+    if (!residentAcceptingRequests) {
+        return Promise.resolve({
+            status: 'error',
+            error: 'DailyNote service is shutting down and no longer accepts new requests.'
+        });
+    }
+
+    residentPendingCount++;
+    const owner = `DailyNote:${args?.command || 'inferred'}:${Date.now()}:${residentPendingCount}`;
+
+    const execute = async () => {
+        if (context.signal?.aborted) {
+            return { status: 'error', error: 'DailyNote request was aborted before execution.' };
+        }
+
+        const operation = () => dispatchCommand(args);
+        if (
+            knowledgeBaseManager &&
+            typeof knowledgeBaseManager.runExternalFileMutation === 'function'
+        ) {
+            return knowledgeBaseManager.runExternalFileMutation(owner, operation, {
+                signal: context.signal,
+                // AI 只等待文件系统提交；Embedding、SQLite 与 Vexus 更新由 KBD 后台队列继续完成。
+                waitForIndex: false
+            });
+        }
+        return operation();
+    };
+
+    const requestPromise = residentQueue.then(execute);
+    // 队列尾必须吞掉前一任务的异常，否则一次失败会永久毒化后续请求。
+    residentQueue = requestPromise.catch(error => {
+        console.error('[DailyNote] Resident queue task failed:', error);
+    }).finally(() => {
+        residentPendingCount = Math.max(0, residentPendingCount - 1);
+    });
+
+    return requestPromise;
+}
+
+function initialize(config = {}, dependencies = {}) {
+    knowledgeBaseManager =
+        dependencies.knowledgeBaseManager ||
+        dependencies.vectorDBManager ||
+        knowledgeBaseManager;
+    residentAcceptingRequests = true;
+    residentInitialized = true;
+    console.log(
+        `[DailyNote] ✅ Resident service initialized. Root: ${dailyNoteRootPath}, ` +
+        `KBD coordinator: ${knowledgeBaseManager ? 'connected' : 'unavailable'}`
+    );
+}
+
+function setDependencies(dependencies = {}) {
+    knowledgeBaseManager =
+        dependencies.knowledgeBaseManager ||
+        dependencies.vectorDBManager ||
+        knowledgeBaseManager;
+    if (knowledgeBaseManager) {
+        console.log('[DailyNote] 🔗 KnowledgeBaseManager coordinator connected.');
+    }
+}
+
+async function processToolCall(args, context = {}) {
+    if (!residentInitialized) {
+        return {
+            status: 'error',
+            error: 'DailyNote resident service has not been initialized.'
+        };
+    }
+    return enqueueResidentRequest(args, context);
+}
+
+async function shutdown() {
+    residentAcceptingRequests = false;
+    await residentQueue;
+    knowledgeBaseManager = null;
+    residentInitialized = false;
+    console.log('[DailyNote] Resident service shutdown complete.');
+}
+
+// --- Legacy CLI/stdin Execution ---
 async function main() {
     let inputData = '';
     process.stdin.setEncoding('utf8');
@@ -1476,44 +1683,7 @@ async function main() {
             if (!inputData) {
                 throw new Error("No input data received via stdin.");
             }
-            const args = JSON.parse(inputData);
-            const { command, ...parameters } = args;
-
-            // 鲁棒性兼容：AI 有时会遗漏 command，或把 command 拼错。
-            // 参数形态足够明确时，优先按参数形态纠正：
-            // - 含 target + replace 时，视为 update
-            // - 含 content/contentText/Content 时，视为 create
-            // 显式且正确的 command 保持原样；显式但未知的 command 允许被参数形态覆盖。
-            const rawCommand = typeof command === 'string' ? command.trim().toLowerCase() : command;
-            const hasCreateContent =
-                typeof parameters.contentText === 'string' ||
-                typeof parameters.Content === 'string' ||
-                typeof parameters.content === 'string';
-            const hasUpdateTargetReplace =
-                typeof parameters.target === 'string' &&
-                typeof parameters.replace === 'string';
-
-            let normalizedCommand = rawCommand;
-            if (rawCommand !== 'create' && rawCommand !== 'update') {
-                if (hasUpdateTargetReplace) {
-                    normalizedCommand = 'update';
-                    debugLog(`Command '${command || ''}' is missing or invalid; inferred 'update' from target/replace arguments.`);
-                } else if (hasCreateContent) {
-                    normalizedCommand = 'create';
-                    debugLog(`Command '${command || ''}' is missing or invalid; inferred 'create' from content arguments.`);
-                }
-            }
-
-            switch (normalizedCommand) {
-                case 'create':
-                    result = await handleCreateCommand(parameters);
-                    break;
-                case 'update':
-                    result = await handleUpdateCommand(parameters);
-                    break;
-                default:
-                    result = { status: "error", error: `Unknown command: '${normalizedCommand}'. Use 'create' or 'update'.` };
-            }
+            result = await dispatchCommand(JSON.parse(inputData));
         } catch (error) {
             console.error("[DailyNote] Error processing request:", error.message);
             result = { status: "error", error: error.message || "An unknown error occurred." };
@@ -1530,4 +1700,16 @@ async function main() {
     });
 }
 
-main();
+if (require.main === module) {
+    main();
+}
+
+module.exports = {
+    initialize,
+    setDependencies,
+    processToolCall,
+    shutdown,
+    dispatchCommand,
+    handleCreateCommand,
+    handleUpdateCommand
+};
