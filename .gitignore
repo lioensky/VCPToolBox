@@ -251,6 +251,20 @@ image/urlfetch/
 # 忽略 B站截图的图片
 image/bilibili/
 
+# ===== 本地知识库 =====
+# knowledge 默认为本地私有数据，不进入 Git
+/knowledge/*
+
+# 上游官方维护的知识目录
+!/knowledge/TDBdocs/
+!/knowledge/TDBdocs/**
+
+!/knowledge/VCP百科全书/
+!/knowledge/VCP百科全书/**
+
+!/knowledge/VCP知识/
+!/knowledge/VCP知识/**
+
 # ===== IDE / OS 文件 =====
 .vscode/
 .DS_Store
