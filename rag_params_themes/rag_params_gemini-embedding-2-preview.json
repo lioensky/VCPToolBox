@@ -49,7 +49,27 @@
   "KnowledgeBaseManager": {
     "geodesicRerank": {
       "alpha": 0.5,
-      "minGeoSamples": 4
+      "minGeoSamples": 4,
+      "geometryAuxiliary": {
+        "enabled": true,
+        "maxAuxBonus": 0.018,
+        "directFloorCap": 0.018,
+        "structuralFloorCap": 0.012,
+        "thematicFloorCap": 0.006,
+        "minFusedScore": 0.12,
+        "minClosureScore": 0.55,
+        "minClassEvidence": 0.1,
+        "floorExponent": 1.5,
+        "identityAnchor": {
+          "enabled": true,
+          "minPotential": 0.8,
+          "minSpecificity": 0.55,
+          "minTagChunkClosure": 0.35,
+          "minStrength": 0.55,
+          "floorCap": 0.018,
+          "floorExponent": 1.25
+        }
+      }
     },
     "spikeRouting": {
       "maxSafeHops": 4,

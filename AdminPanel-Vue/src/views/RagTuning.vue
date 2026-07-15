@@ -841,6 +841,10 @@ function cloneParams(source: RagParams): RagParams {
   return JSON.parse(JSON.stringify(source));
 }
 
+function cloneParamValue<T extends ParamValue>(source: T): T {
+  return JSON.parse(JSON.stringify(source));
+}
+
 function isParamRecord(value: ParamValue | undefined): value is Record<string, ParamValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -951,6 +955,23 @@ function buildEntry(
 
   if (isNumericRecord(value)) {
     return { ...base, kind: "nested", value };
+  }
+
+  // geodesicRerank 允许包含 geometryAuxiliary 等深层配置。
+  // 主测地面板只渲染直属数值叶子，深层几何参数由 TagMemoV9ControlPanel 专门管理；
+  // base 的叶子统计仍基于完整 value，因此未保存计数不会遗漏深层修改。
+  if (
+    groupName === GEODESIC_GROUP_NAME
+    && paramKey === GEODESIC_PARAM_KEY
+    && isParamRecord(value)
+  ) {
+    const numericLeaves = Object.fromEntries(
+      Object.entries(value).filter(
+        (entry): entry is [string, number] =>
+          typeof entry[1] === "number" && Number.isFinite(entry[1])
+      )
+    );
+    return { ...base, kind: "nested", value: numericLeaves };
   }
 
   if (typeof value === "number") {
@@ -1293,11 +1314,11 @@ function resetWormholeParams(): void {
 function resetGeodesicParams(): void {
   const original = originalParams.value[GEODESIC_GROUP_NAME]?.[GEODESIC_PARAM_KEY];
 
-  if (!params.value[GEODESIC_GROUP_NAME] || !isNumericRecord(original)) {
+  if (!params.value[GEODESIC_GROUP_NAME] || !isParamRecord(original)) {
     return;
   }
 
-  params.value[GEODESIC_GROUP_NAME][GEODESIC_PARAM_KEY] = { ...original };
+  params.value[GEODESIC_GROUP_NAME][GEODESIC_PARAM_KEY] = cloneParamValue(original);
   statusMessage.value = "已恢复测地线重排的未保存修改。";
   statusType.value = "info";
 }

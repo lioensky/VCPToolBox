@@ -1091,7 +1091,82 @@ score(c)=score_{v9}(c)
 
 直锚平均势能形成独立强度，并可设置保守的奖励置信度下限，以避免长文件的低覆盖率稀释多个明确实体锚点。单个弱近义词不能触发该升级。
 
-### 9.9 低可信守卫
+### 9.9 四层几何影子与受限辅助奖励
+
+直接提高 Tag 命中权重虽然能快速改善特定样本，但容易把测地读出退化为“标签越像、奖励越高”。为保留测地线对**逻辑拟似路径**而非单点语义拟似性的度量，当前实现并行计算一个四层几何读出：
+
+- \(D\)（direct）：查询 `core/seed` 的精确或多点强语义接触；
+- \(S\)（structural）：连续性、低作用量、顺向导通、非孤立走廊与传播节点支持；
+- \(T\)（thematic）：查询势场对候选自身质量的覆盖和主题共振；
+- \(C_4\)（closure）：原查询、V9.1 增强查询与候选 chunk 的闭合一致性。
+
+EPA 与 Residual Pyramid 只决定本次查询对 \(D/S/T\) 三个通道的动态读取权重 \(w_D,w_S,w_T\)。四层融合采用有界并集后再由闭合层收束：
+
+\[
+F(c)=
+\operatorname{clip}_{[0,1]}
+\left(
+\left[
+1-(1-w_DD)(1-w_SS)(1-w_TT)
+\right]C_4
+\right)
+\]
+
+其中结构层显式读取候选有序 Tag 段的正向与反向传播核。方向一致性近似为：
+
+\[
+Dir(c)=
+\frac{\sum_e \omega_e
+\frac{P_e^{\rightarrow}}
+{P_e^{\rightarrow}+P_e^{\leftarrow}}}
+{\sum_e\omega_e}
+\]
+
+因此，一个候选不能只凭相似 Tag 获得高结构分；它还需要连续接触、合理弧长、较低孤立率以及与候选 Tag 顺序一致的图导通。\(C_4\) 与增强向量提升 `Lift` 只验证路径是否回到候选主题，不能独立创造奖励。
+
+四层读出最初作为影子诊断保留；当前生产仅使用其经过严格门控后的**奖励地板补差**。只有候选已经通过节点场守卫、原有证据资格、类别证据、融合分和闭合分阈值时，才计算几何可靠度：
+
+\[
+R_{\text{geo}}=
+\sqrt[3]{
+R_F\cdot R_{\text{class}}\cdot R_{C_4}
+}
+\]
+
+对应类别的辅助目标地板为：
+
+\[
+L_{\text{geo}}=
+C_{\operatorname{class}(c)}
+R_{\text{geo}}^{\gamma}
+\]
+
+系统还为高势能、非公共枢纽、与 chunk 闭合良好的查询 `core/seed` 精确接触保留一个严格身份锚地板 \(L_{\text{id}}\)。两个地板取最大值而不是相加，最终辅助量只补足主轨尚未达到的差额：
+
+\[
+Bonus_{\text{aux}}=
+\min
+\left(
+B_{\text{aux}}^{\max},
+\left[
+\min(B_{\operatorname{class}(c)},\max(L_{\text{geo}},L_{\text{id}}))
+-Bonus_{\text{base}}
+\right]_+
+\right)
+\]
+
+\[
+Bonus_{\text{final}}=
+\min
+\left(
+B_{\operatorname{class}(c)},
+Bonus_{\text{base}}+Bonus_{\text{aux}}
+\right)
+\]
+
+这意味着辅助轨不会替换原有曲线分、不会绕过 `direct/structural/thematic` 等级上限，也不会让节点场守卫候选因 KNN 闭合度较高而获奖。它的作用仅是保护“图结构、方向和闭合均成立，但旧标量曲线分偏保守”的候选，避免通过直接放大 Tag 权重制造表面收益。实现位于 [`TagMemoEngine.geodesicRerank()`](../TagMemoEngine.js:1157)，诊断字段由 [`KnowledgeBaseManager.geodesicRerank()`](../KnowledgeBaseManager.js:1846) 向外透传。
+
+### 9.10 低可信守卫
 
 守卫分为两类。
 
@@ -1116,7 +1191,7 @@ score(c)=score_{v9}(c)
 
 候选覆盖率不再单独触发整批回退。稀有但精准的查询场只接触少数候选时，低覆盖可能代表高区分力，而不是地图失效。
 
-### 9.10 当前热调参数
+### 9.11 当前热调参数
 
 [`rag_params.json`](../rag_params.json) 的 `KnowledgeBaseManager.geodesicRerank` 当前包含：
 
@@ -1132,7 +1207,14 @@ score(c)=score_{v9}(c)
 | `directSemanticMinPotential` | 语义直锚最低势能 |
 | `directSemanticMinContacts` | 升级为语义直锚所需的最少独立接触 |
 | `directConfidenceFloor` | 多语义直锚候选的奖励置信度下限 |
+| `geometryAuxiliary.enabled` | 是否启用四层几何的受限奖励地板补差 |
+| `geometryAuxiliary.maxAuxBonus` | 单候选辅助补差的独立硬上限 |
+| `geometryAuxiliary.directFloorCap` / `structuralFloorCap` / `thematicFloorCap` | 三类证据的辅助地板上限 |
+| `geometryAuxiliary.minFusedScore` / `minClosureScore` / `minClassEvidence` | 几何辅助可靠度的三重门槛 |
+| `geometryAuxiliary.identityAnchor.*` | 严格精确身份锚的势能、特异性、闭合度、强度与地板配置 |
 | `fallbackToKnnOnLowTrust` | 是否启用联合低可信回退 |
+
+当前主配置中辅助补差硬上限为 `0.018`，结构与主题地板上限分别为 `0.012` 和 `0.006`。这些值仍受原有证据等级上限二次约束，不应被理解为新的无条件 Tag 奖励。
 
 代码还支持未显式写入配置时使用默认值的细粒度参数：
 

@@ -410,6 +410,10 @@ class LightMemoPlugin {
         if (!queryVector) {
             throw new Error("查询内容向量化失败。");
         }
+        // 保留原始查询坐标；TagMemo 增强后 queryVector 会被替换，四层影子读出需要同时观察 q 与 q'。
+        const originalQueryVector = queryVector instanceof Float32Array
+            ? new Float32Array(queryVector)
+            : new Float32Array(queryVector);
 
         let tagBoostInfo = null;
         let tagBoostEnergyField = null;
@@ -497,6 +501,12 @@ class LightMemoPlugin {
                 minGeoSamples: potentialFieldConfig.minGeoSamples,
                 energyField: tagBoostEnergyField,
                 energyFieldProvenance: tagBoostEnergyFieldProvenance,
+                originalQueryVector,
+                enhancedQueryVector: queryVector,
+                queryGeometryState: {
+                    epa: tagBoostInfo?.epa || null,
+                    pyramid: tagBoostInfo?.pyramid || null
+                },
                 artifactBundle: tagBoostArtifactBundle
             });
 
@@ -700,7 +710,13 @@ class LightMemoPlugin {
                 artifactBundle: snapshot.bundle,
                 tagMemoVersion: 'v9',
                 energyField: boost.energyField,
-                energyFieldProvenance: boost.energyFieldProvenance
+                energyFieldProvenance: boost.energyFieldProvenance,
+                originalQueryVector: queryVector,
+                enhancedQueryVector: boost.vector,
+                queryGeometryState: {
+                    epa: boost.info?.epa || null,
+                    pyramid: boost.info?.pyramid || null
+                }
             })
             : v91VectorRanked;
 
@@ -873,6 +889,32 @@ class LightMemoPlugin {
         return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
     }
 
+    _formatGeometryShadow(item) {
+        const shadow = item?.geo_geometry_shadow;
+        if (!shadow || typeof shadow !== 'object') return '';
+        const fmt = value => Number(value || 0).toFixed(3);
+        const weights = shadow.queryWeights || {};
+        const direction = Number(shadow.directionConsistency || 0);
+        const lift = Number(shadow.vectorLift || 0);
+        const guarded = shadow.nodeFieldGuarded === true ? ' 节点场守卫' : '';
+        return `D/S/T/C4/F=${fmt(shadow.directScore)}/${fmt(shadow.structuralScore)}/` +
+            `${fmt(shadow.thematicScore)}/${fmt(shadow.closureScore)}/${fmt(shadow.fusedScore)}` +
+            ` W=${fmt(weights.direct)}/${fmt(weights.structural)}/${fmt(weights.thematic)}` +
+            ` Dir=${fmt(direction)} Lift=${lift >= 0 ? '+' : ''}${lift.toFixed(4)}${guarded}`;
+    }
+
+    _formatGeometryAuxiliary(item) {
+        if (!item || item.geo_aux_enabled !== true) return '辅助=关闭';
+        const fmt = value => Number(value || 0).toFixed(4);
+        const reliability = Number(item.geo_aux_reliability || 0).toFixed(3);
+        const identity = Number(item.geo_identity_anchor_strength || 0).toFixed(3);
+        const identityMark = item.geo_identity_anchor_eligible === true ? '✓' : '×';
+        return `主轨=${fmt(item.geo_base_bonus)} 辅助=${fmt(item.geo_aux_bonus)} ` +
+            `地板=${fmt(item.geo_aux_target_floor)}(几何${fmt(item.geo_aux_geometry_floor)}` +
+            `/身份${fmt(item.geo_aux_identity_floor)}) 可靠=${reliability} ` +
+            `身份锚=${identityMark}${identity} 原因=${item.geo_aux_reason || 'unknown'}`;
+    }
+
     _formatTagMemoKernelAB({ query, candidates, runs, topL, k, tagBoost, useBM25, rerankRun }) {
         const bm25Top = useBM25 ? this._buildBm25TopIds(query, candidates, topL) : [];
         const sources = new Map();
@@ -930,7 +972,9 @@ class LightMemoPlugin {
                     return `${marker}${contact.name || contact.id}:${Number(contact.potential || 0).toFixed(2)}${source}`;
                 }).join(', ')
                 : '';
-            const diagnostics = geoItem && Number(geoItem.geo_score) > 0
+            const geometryShadow = this._formatGeometryShadow(geoItem);
+            const geometryAuxiliary = this._formatGeometryAuxiliary(geoItem);
+            const diagnostics = (geoItem && Number(geoItem.geo_score) > 0
                 ? `${geoItem.geo_evidence_class || 'unknown'} ` +
                     `${Number(geoItem.geo_score).toFixed(4)}/${Number(geoItem.geo_confidence || 0).toFixed(3)} ` +
                     `+${Number(geoItem.geo_bonus || 0).toFixed(4)}≤${Number(geoItem.geo_bonus_cap || 0).toFixed(3)}` +
@@ -940,10 +984,12 @@ class LightMemoPlugin {
                             `/奖信${Number(geoItem.geo_reward_confidence || 0).toFixed(2)}`
                         : ''}` +
                     `${contactTags ? `<br>${this._escapeMarkdownCell(contactTags)}` : ''}`
-                : `守卫/0${geoItem?.geo_guard_reason ? `<br>${this._escapeMarkdownCell(geoItem.geo_guard_reason)}` : ''}`;
+                : `守卫/0${geoItem?.geo_guard_reason ? `<br>${this._escapeMarkdownCell(geoItem.geo_guard_reason)}` : ''}`) +
+                `${geometryShadow ? `<br>${this._escapeMarkdownCell(geometryShadow)}` : ''}` +
+                `${geometryAuxiliary ? `<br>${this._escapeMarkdownCell(geometryAuxiliary)}` : ''}`;
             text += `| ${index + 1} | ${this._escapeMarkdownCell(this._shortMemoryText(candidate?.text))} | ${[...sources.get(id)].join('+')} | ${fmt(knn)} | ${fmt(v91)} | ${fmt(geo)} | ${delta === null ? '—' : delta > 0 ? `+${delta}` : delta} | ${diagnostics} |${rerankRun ? ` ${fmt(reranked)} |` : ''}\n`;
         });
-        text += `\n说明: 正 ΔRank 表示开启测地线后相对同一 V9.1 向量基线前移；诊断依次显示证据等级、曲线分/置信度、实际奖励≤等级上限。direct/structural/thematic 的排序权限逐级降低；@seed/@core/@emergent:n 表示接触场节点的来源。守卫候选保留无测地线分数。Rerank 只重排同一对称候选池。\n`;
+        text += `\n说明: 正 ΔRank 表示开启测地线后相对同一 V9.1 向量基线前移；诊断依次显示证据等级、曲线分/置信度、最终奖励≤等级上限。direct/structural/thematic 的排序权限逐级降低；@seed/@core/@emergent:n 表示接触场节点来源。D/S/T/C4/F 分别表示直接层、结构层、主题层、查询—候选闭合层和有界融合分；W 为查询动态权重，Dir 为候选顺序正向导通一致性，Lift 为增强查询相对原查询的余弦提升。辅助生产轨不替换主轨，只在节点场证据、类别证据、融合分与闭合度同时过门时补足保守奖励地板；几何地板与严格身份锚地板取最大值而不叠加。C4/Lift 不可独立发奖，节点场守卫候选保持无测地线分数。Rerank 只重排同一对称候选池。\n`;
         text += `[--- 模式 A 结束 ---]\n`;
         return text;
     }
@@ -1004,7 +1050,9 @@ class LightMemoPlugin {
                     return `${marker}${contact.name || contact.id}:${Number(contact.potential || 0).toFixed(2)}${source}`;
                 }).join(', ')
                 : '';
-            const diagnostics = geoData && Number(geoData.geo_score) > 0
+            const geometryShadow = this._formatGeometryShadow(geoData);
+            const geometryAuxiliary = this._formatGeometryAuxiliary(geoData);
+            const diagnostics = (geoData && Number(geoData.geo_score) > 0
                 ? `${geoData.geo_evidence_class || 'unknown'} ` +
                     `${Number(geoData.geo_score).toFixed(4)}/${Number(geoData.geo_confidence || 0).toFixed(3)} ` +
                     `+${Number(geoData.geo_bonus || 0).toFixed(4)}≤${Number(geoData.geo_bonus_cap || 0).toFixed(3)}` +
@@ -1014,10 +1062,12 @@ class LightMemoPlugin {
                             `/奖信${Number(geoData.geo_reward_confidence || 0).toFixed(2)}`
                         : ''}` +
                     `${contactTags ? `<br>${this._escapeMarkdownCell(contactTags)}` : ''}`
-                : `守卫/0${geoData?.geo_guard_reason ? `<br>${this._escapeMarkdownCell(geoData.geo_guard_reason)}` : ''}`;
+                : `守卫/0${geoData?.geo_guard_reason ? `<br>${this._escapeMarkdownCell(geoData.geo_guard_reason)}` : ''}`) +
+                `${geometryShadow ? `<br>${this._escapeMarkdownCell(geometryShadow)}` : ''}` +
+                `${geometryAuxiliary ? `<br>${this._escapeMarkdownCell(geometryAuxiliary)}` : ''}`;
             text += `| ${this._escapeMarkdownCell(this._shortMemoryText(items.get(id)?.text, 100))} | ${fmt(knnItem)} | ${fmt(v91Item)} | ${fmt(geoItem)} | ${diagnostics} |${rerankRun ? ` ${fmt(reranked)} |` : ''} ${owners.join('+') || '—'} |\n`;
         });
-        text += `\n测地线独占项用于判断新曲线算法是否抵达无测地线 V9.1 未命中的有效记忆；无测地线独占项用于检查曲线重排的召回损失。两路始终共享同一增强向量、能量场和候选全集。\n`;
+        text += `\n测地线独占项用于判断曲线算法是否抵达无测地线 V9.1 未命中的有效记忆；无测地线独占项用于检查曲线重排的召回损失。两路始终共享同一增强向量、能量场和候选全集。D/S/T/C4/F、W、Dir、Lift 保留完整几何诊断；生产辅助只读取通过可靠度门控后的保守地板差额，C4/Lift 不独立发奖，节点场守卫保持零辅助。\n`;
         text += `[--- 模式 B 结束 ---]\n`;
         return text;
     }

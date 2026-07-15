@@ -1232,9 +1232,119 @@ class TagMemoEngine {
             0,
             Math.min(1, Number(geoConfig.directConfidenceFloor ?? 0.35))
         );
+
+        // 四层几何生产辅助：旧测地奖励仍是主轨，辅助轨只提供有界“奖励地板补差”。
+        // 默认关闭并由热配置显式启用；C4/Lift 只能验证闭合，不能独立创造奖励。
+        const geometryAuxConfig = geoConfig.geometryAuxiliary || {};
+        const geometryAuxEnabled = geometryAuxConfig.enabled === true
+            || geometryAuxConfig.enabled === 1;
+        const geometryAuxMaxBonus = Math.max(
+            0,
+            Math.min(0.05, Number(geometryAuxConfig.maxAuxBonus ?? 0.018))
+        );
+        const geometryAuxDirectCap = Math.max(
+            0,
+            Math.min(geometryAuxMaxBonus, Number(geometryAuxConfig.directFloorCap ?? geometryAuxMaxBonus))
+        );
+        const geometryAuxStructuralCap = Math.max(
+            0,
+            Math.min(geometryAuxDirectCap, Number(geometryAuxConfig.structuralFloorCap ?? 0.012))
+        );
+        const geometryAuxThematicCap = Math.max(
+            0,
+            Math.min(geometryAuxStructuralCap, Number(geometryAuxConfig.thematicFloorCap ?? 0.006))
+        );
+        const geometryAuxMinFused = Math.max(
+            0,
+            Math.min(1, Number(geometryAuxConfig.minFusedScore ?? 0.12))
+        );
+        const geometryAuxMinClosure = Math.max(
+            0,
+            Math.min(1, Number(geometryAuxConfig.minClosureScore ?? 0.55))
+        );
+        const geometryAuxMinClassEvidence = Math.max(
+            0,
+            Math.min(1, Number(geometryAuxConfig.minClassEvidence ?? 0.10))
+        );
+        const geometryAuxExponent = Math.max(
+            0.5,
+            Math.min(4, Number(geometryAuxConfig.floorExponent ?? 1.5))
+        );
+
+        // Exact Identity Anchor：仅保护高势能 query seed/core 精确接触。
+        // 还必须同时满足 Tag 特异性与 Tag→chunk 闭合，公共 Tag 和 emergent 节点不能触发。
+        const identityConfig = geometryAuxConfig.identityAnchor || {};
+        const identityAnchorEnabled = geometryAuxEnabled
+            && (identityConfig.enabled === true || identityConfig.enabled === 1);
+        const identityAnchorMinPotential = Math.max(
+            0,
+            Math.min(1, Number(identityConfig.minPotential ?? 0.80))
+        );
+        const identityAnchorMinSpecificity = Math.max(
+            0,
+            Math.min(1, Number(identityConfig.minSpecificity ?? 0.55))
+        );
+        const identityAnchorMinClosure = Math.max(
+            0,
+            Math.min(1, Number(identityConfig.minTagChunkClosure ?? 0.35))
+        );
+        const identityAnchorMinStrength = Math.max(
+            0,
+            Math.min(1, Number(identityConfig.minStrength ?? 0.55))
+        );
+        const identityAnchorFloorCap = Math.max(
+            0,
+            Math.min(
+                Math.min(directBonusCap, geometryAuxMaxBonus),
+                Number(identityConfig.floorCap ?? 0.018)
+            )
+        );
+        const identityAnchorExponent = Math.max(
+            0.5,
+            Math.min(4, Number(identityConfig.floorExponent ?? 1.25))
+        );
+
         const energyFieldProvenance = requestedFieldProvenance instanceof Map
             ? requestedFieldProvenance
             : new Map();
+
+        // V9.2 四层几何影子读出：只产生诊断，不参与当前排序。
+        // EPA/Pyramid 描述查询希望从 direct/structural/thematic 三层读取多少信息；
+        // 后续候选观测再描述每层实际提供了多少证据。
+        const queryGeometryState = options.queryGeometryState || options.queryState || {};
+        const queryEpa = queryGeometryState.epa || {};
+        const queryPyramid = queryGeometryState.pyramid || {};
+        const finite01 = (value, fallback = 0.5) => {
+            const numeric = Number(value);
+            return Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : fallback;
+        };
+        const logicDepth = finite01(queryEpa.logicDepth);
+        const queryEntropy = finite01(queryEpa.entropy);
+        const queryResonance = finite01(queryEpa.resonance, 0);
+        const pyramidCoverage = finite01(queryPyramid.coverage);
+        const pyramidNovelty = finite01(queryPyramid.novelty);
+        const pyramidDepth = finite01(queryPyramid.depth);
+        const rawGeometryWeights = {
+            direct: 0.45 + 0.35 * logicDepth + 0.20 * pyramidCoverage,
+            structural: 0.35 + 0.30 * pyramidDepth + 0.25 * pyramidNovelty + 0.10 * queryResonance,
+            thematic: 0.20 + 0.35 * queryEntropy + 0.30 * queryResonance + 0.15 * (1 - logicDepth)
+        };
+        const geometryWeightSum = Object.values(rawGeometryWeights).reduce((sum, value) => sum + value, 0) || 1;
+        const queryGeometryWeights = Object.freeze({
+            direct: rawGeometryWeights.direct / geometryWeightSum,
+            structural: rawGeometryWeights.structural / geometryWeightSum,
+            thematic: rawGeometryWeights.thematic / geometryWeightSum
+        });
+        const originalQueryVector = options.originalQueryVector
+            ? (options.originalQueryVector instanceof Float32Array
+                ? options.originalQueryVector
+                : new Float32Array(options.originalQueryVector))
+            : null;
+        const enhancedQueryVector = options.enhancedQueryVector
+            ? (options.enhancedQueryVector instanceof Float32Array
+                ? options.enhancedQueryVector
+                : new Float32Array(options.enhancedQueryVector))
+            : null;
 
         const fallback = (reason, extra = {}) => {
             if (fallbackEnabled) {
@@ -1464,6 +1574,10 @@ class TagMemoEngine {
                 let weightedPotential = 0;
                 let exactHits = 0;
                 let directExactHits = 0;
+                let directExactMaxPotential = 0;
+                let directExactBestSpecificity = 0;
+                let directExactBestClosure = 0;
+                let identityAnchorStrength = 0;
                 let emergentExactHits = 0;
                 let directSemanticHits = 0;
                 let directSemanticPotentialSum = 0;
@@ -1499,6 +1613,20 @@ class TagMemoEngine {
                         exactHits++;
                         if (fieldSample.exactSourceType === 'core' || fieldSample.exactSourceType === 'seed') {
                             directExactHits++;
+                            directExactMaxPotential = Math.max(
+                                directExactMaxPotential,
+                                fieldSample.potential
+                            );
+                            const exactIdentityStrength = clamp01(
+                                fieldSample.potential
+                                * specificity
+                                * Math.sqrt(Math.max(0, closure))
+                            );
+                            if (exactIdentityStrength > identityAnchorStrength) {
+                                identityAnchorStrength = exactIdentityStrength;
+                                directExactBestSpecificity = specificity;
+                                directExactBestClosure = closure;
+                            }
                         } else {
                             emergentExactHits++;
                         }
@@ -1537,6 +1665,23 @@ class TagMemoEngine {
                 }
 
                 if (samples.length === 0 || totalCandidateMass <= 0 || weakHits === 0) {
+                    // 节点场守卫不应抹掉第四层观测：即使 D/S/T 暂无可信接触，
+                    // 仍记录原查询→候选、增强查询→候选及 V9.1 向量提升，供跨层诊断。
+                    const originalQueryClosure = originalQueryVector
+                        ? clamp01((cosine(originalQueryVector, chunkVector) + 1) / 2)
+                        : 0;
+                    const enhancedQueryClosure = enhancedQueryVector
+                        ? clamp01((cosine(enhancedQueryVector, chunkVector) + 1) / 2)
+                        : 0;
+                    const vectorLift = originalQueryVector && enhancedQueryVector
+                        ? enhancedQueryClosure - originalQueryClosure
+                        : 0;
+                    const vectorLiftConsistency = clamp01(0.5 + vectorLift * 5);
+                    const closureScore = clamp01(
+                        0.35 * originalQueryClosure
+                        + 0.45 * enhancedQueryClosure
+                        + 0.20 * vectorLiftConsistency
+                    );
                     return {
                         candidate,
                         originalIndex,
@@ -1546,11 +1691,33 @@ class TagMemoEngine {
                         sampleCount: samples.length,
                         exactHits,
                         directExactHits,
+                        directExactMaxPotential,
+                        directExactBestSpecificity,
+                        directExactBestClosure,
+                        identityAnchorStrength,
                         emergentExactHits,
                         directSemanticHits,
                         directSemanticStrength: 0,
                         strongHits,
-                        weakHits
+                        weakHits,
+                        geometryShadow: {
+                            version: 'four-layer-shadow-v1',
+                            directScore: 0,
+                            structuralScore: 0,
+                            thematicScore: 0,
+                            closureScore,
+                            fusedScore: 0,
+                            queryWeights: queryGeometryWeights,
+                            directionConsistency: 0,
+                            meanForwardConductance: 0,
+                            meanReverseConductance: 0,
+                            supportedSegments: 0,
+                            originalQueryClosure,
+                            enhancedQueryClosure,
+                            vectorLift,
+                            vectorLiftConsistency,
+                            nodeFieldGuarded: true
+                        }
                     };
                 }
 
@@ -1564,6 +1731,11 @@ class TagMemoEngine {
                 let weightedSemanticArc = 0;
                 let weightedAction = 0;
                 let isolatedMass = 0;
+                let directedSupportWeight = 0;
+                let directionConsistencyMass = 0;
+                let forwardConductanceMass = 0;
+                let reverseConductanceMass = 0;
+                let supportedSegments = 0;
                 for (let index = 0; index < samples.length; index++) {
                     const current = samples[index];
                     const leftActive = index > 0 && samples[index - 1].potential >= weakContactThreshold;
@@ -1588,6 +1760,16 @@ class TagMemoEngine {
                     const segmentPotential = Math.sqrt(current.potential * next.potential);
                     const segmentMass = Math.sqrt(current.candidateMass * next.candidateMass);
                     const segmentTrust = segmentPotential * (0.65 + 0.35 * topology);
+                    const directionalTotal = directConductance + reverseConductance;
+                    const directionalWeight = segmentMass * Math.max(segmentPotential, 0.05);
+                    if (directionalTotal > 0) {
+                        const directionRatio = directConductance / directionalTotal;
+                        directedSupportWeight += directionalWeight;
+                        directionConsistencyMass += directionalWeight * directionRatio;
+                        forwardConductanceMass += directionalWeight * directConductance;
+                        reverseConductanceMass += directionalWeight * reverseConductance;
+                        supportedSegments++;
+                    }
 
                     transitionWeight += segmentMass;
                     continuityMass += segmentMass * segmentTrust;
@@ -1609,6 +1791,15 @@ class TagMemoEngine {
                     (sum, sample) => sum + sample.closure * sample.candidateMass,
                     0
                 ) / totalCandidateMass;
+                const directionConsistency = directedSupportWeight > 0
+                    ? clamp01(directionConsistencyMass / directedSupportWeight)
+                    : 0;
+                const meanForwardConductance = directedSupportWeight > 0
+                    ? Math.max(0, forwardConductanceMass / directedSupportWeight)
+                    : 0;
+                const meanReverseConductance = directedSupportWeight > 0
+                    ? Math.max(0, reverseConductanceMass / directedSupportWeight)
+                    : 0;
 
                 // 不以绝对 Tag 数裁决。sampleScale 只控制“证据饱和速度”：
                 // 短 Tag 链的核心锚点仍可成立，长链的孤立弱命中不会因数量膨胀获利。
@@ -1638,6 +1829,60 @@ class TagMemoEngine {
                         / (directSemanticSaturation - directSemanticMinPotential)
                     )
                     : 0;
+
+                // 四层几何影子读出。D/S/T 是同时存在的连续通道，而 legacy evidenceClass
+                // 继续承担现有生产奖励限幅，不受本段计算影响。
+                const directContactSaturation = clamp01(
+                    (directExactHits + directSemanticHits)
+                    / Math.max(1, directSemanticMinContacts + 1)
+                );
+                const directScore = clamp01(
+                    0.45 * Math.max(directSemanticStrength, directExactHits > 0 ? 1 : 0)
+                    + 0.25 * maxPotential
+                    + 0.20 * meanPotential
+                    + 0.10 * directContactSaturation
+                );
+                const structuralContact = clamp01(
+                    (emergentExactHits + Math.min(strongHits, adaptiveTarget))
+                    / Math.max(1, adaptiveTarget + 1)
+                );
+                const structuralScore = clamp01(
+                    0.25 * continuity
+                    + 0.20 * actionQuality
+                    + 0.15 * closureQuality
+                    + 0.15 * (1 - isolatedRatio)
+                    + 0.15 * directionConsistency
+                    + 0.10 * structuralContact
+                );
+                const thematicScore = clamp01(
+                    0.35 * weightedCoverage
+                    + 0.30 * meanPotential
+                    + 0.20 * (1 - isolatedRatio)
+                    + 0.15 * closureQuality
+                );
+                const originalQueryClosure = originalQueryVector
+                    ? clamp01((cosine(originalQueryVector, chunkVector) + 1) / 2)
+                    : 0;
+                const enhancedQueryClosure = enhancedQueryVector
+                    ? clamp01((cosine(enhancedQueryVector, chunkVector) + 1) / 2)
+                    : 0;
+                const vectorLift = originalQueryVector && enhancedQueryVector
+                    ? enhancedQueryClosure - originalQueryClosure
+                    : 0;
+                const vectorLiftConsistency = clamp01(0.5 + vectorLift * 5);
+                const closureScore = clamp01(
+                    0.25 * originalQueryClosure
+                    + 0.35 * enhancedQueryClosure
+                    + 0.30 * closureQuality
+                    + 0.10 * vectorLiftConsistency
+                );
+                const weightedDirect = queryGeometryWeights.direct * directScore;
+                const weightedStructural = queryGeometryWeights.structural * structuralScore;
+                const weightedThematic = queryGeometryWeights.thematic * thematicScore;
+                const fusedGeometryScore = clamp01(
+                    (1 - (1 - weightedDirect) * (1 - weightedStructural) * (1 - weightedThematic))
+                    * closureScore
+                );
 
                 let evidenceClass = 'thematic';
                 let evidenceReason = 'interpolated-theme-contact';
@@ -1678,6 +1923,10 @@ class TagMemoEngine {
                     rewardEligible,
                     exactHits,
                     directExactHits,
+                    directExactMaxPotential,
+                    directExactBestSpecificity,
+                    directExactBestClosure,
+                    identityAnchorStrength,
                     emergentExactHits,
                     directSemanticHits,
                     directSemanticStrength,
@@ -1694,6 +1943,23 @@ class TagMemoEngine {
                     actionQuality,
                     closureQuality,
                     semanticArc,
+                    geometryShadow: {
+                        version: 'four-layer-shadow-v1',
+                        directScore,
+                        structuralScore,
+                        thematicScore,
+                        closureScore,
+                        fusedScore: fusedGeometryScore,
+                        queryWeights: queryGeometryWeights,
+                        directionConsistency,
+                        meanForwardConductance,
+                        meanReverseConductance,
+                        supportedSegments,
+                        originalQueryClosure,
+                        enhancedQueryClosure,
+                        vectorLift,
+                        vectorLiftConsistency
+                    },
                     reason: geoScore > 0 ? null : 'curve-confidence-zero',
                     contactTags: samples
                         .filter(sample => sample.potential >= weakContactThreshold)
@@ -1788,9 +2054,101 @@ class TagMemoEngine {
                 const requestedBonus = item.rewardEligible
                     ? mixAlpha * rewardConfidence * rewardStrength
                     : 0;
-                const geoBonus = Math.min(bonusCap, Math.max(0, requestedBonus));
+                const baseGeoBonus = Math.min(bonusCap, Math.max(0, requestedBonus));
+
+                // 辅助轨必须已经拥有可信节点场证据。闭合层和向量提升只参与门控，
+                // 不允许节点场守卫候选或单纯 KNN 相似候选凭 C4/Lift 获得奖励。
+                const shadow = item.geometryShadow || null;
+                const classEvidence = item.evidenceClass === 'direct'
+                    ? Number(shadow?.directScore || 0)
+                    : item.evidenceClass === 'structural'
+                        ? Number(shadow?.structuralScore || 0)
+                        : Number(shadow?.thematicScore || 0);
+                const classFloorCap = item.evidenceClass === 'direct'
+                    ? geometryAuxDirectCap
+                    : item.evidenceClass === 'structural'
+                        ? geometryAuxStructuralCap
+                        : geometryAuxThematicCap;
+                const fusedShadow = Math.max(0, Number(shadow?.fusedScore) || 0);
+                const closureShadow = Math.max(0, Number(shadow?.closureScore) || 0);
+                const geometryAuxEligible = geometryAuxEnabled
+                    && item.rewardEligible === true
+                    && shadow
+                    && shadow.nodeFieldGuarded !== true
+                    && classEvidence >= geometryAuxMinClassEvidence
+                    && fusedShadow >= geometryAuxMinFused
+                    && closureShadow >= geometryAuxMinClosure;
+                const fusedReliability = geometryAuxEligible
+                    ? clamp01(
+                        (fusedShadow - geometryAuxMinFused)
+                        / Math.max(1e-6, 1 - geometryAuxMinFused)
+                    )
+                    : 0;
+                const classReliability = geometryAuxEligible
+                    ? clamp01(
+                        (classEvidence - geometryAuxMinClassEvidence)
+                        / Math.max(1e-6, 1 - geometryAuxMinClassEvidence)
+                    )
+                    : 0;
+                const closureReliability = geometryAuxEligible
+                    ? clamp01(
+                        (closureShadow - geometryAuxMinClosure)
+                        / Math.max(1e-6, 1 - geometryAuxMinClosure)
+                    )
+                    : 0;
+                const geometryAuxReliability = geometryAuxEligible
+                    ? Math.cbrt(fusedReliability * classReliability * closureReliability)
+                    : 0;
+                const geometryAuxTargetFloor = geometryAuxEligible
+                    ? classFloorCap * Math.pow(geometryAuxReliability, geometryAuxExponent)
+                    : 0;
+
+                const identityAnchorEligible = identityAnchorEnabled
+                    && item.evidenceClass === 'direct'
+                    && item.rewardEligible === true
+                    && shadow?.nodeFieldGuarded !== true
+                    && (item.directExactHits || 0) > 0
+                    && (item.directExactMaxPotential || 0) >= identityAnchorMinPotential
+                    && (item.directExactBestSpecificity || 0) >= identityAnchorMinSpecificity
+                    && (item.directExactBestClosure || 0) >= identityAnchorMinClosure
+                    && (item.identityAnchorStrength || 0) >= identityAnchorMinStrength;
+                const identityAnchorReliability = identityAnchorEligible
+                    ? clamp01(
+                        (item.identityAnchorStrength - identityAnchorMinStrength)
+                        / Math.max(1e-6, 1 - identityAnchorMinStrength)
+                    )
+                    : 0;
+                const identityAnchorTargetFloor = identityAnchorEligible
+                    ? identityAnchorFloorCap
+                        * Math.pow(identityAnchorReliability, identityAnchorExponent)
+                    : 0;
+
+                // 生产公式：辅助目标不是额外线性奖励，只补足旧奖励未达到的最低权限。
+                // 两个辅助来源取 max 而非相加，进一步避免同一 direct 证据被重复计算。
+                const auxiliaryTargetFloor = Math.min(
+                    bonusCap,
+                    Math.max(geometryAuxTargetFloor, identityAnchorTargetFloor)
+                );
+                const geometryAuxBonus = geometryAuxEnabled
+                    ? Math.min(
+                        geometryAuxMaxBonus,
+                        Math.max(0, auxiliaryTargetFloor - baseGeoBonus)
+                    )
+                    : 0;
+                const geoBonus = Math.min(bonusCap, baseGeoBonus + geometryAuxBonus);
                 const finalScore = knnScore + geoBonus;
                 const geoEffect = geoBonus > 0 ? 'boost' : 'neutral';
+                const geometryAuxReason = !geometryAuxEnabled
+                    ? 'disabled'
+                    : shadow?.nodeFieldGuarded === true
+                        ? 'node-field-guarded'
+                        : geometryAuxBonus > 0
+                            ? (identityAnchorTargetFloor >= geometryAuxTargetFloor
+                                ? 'identity-floor-gap'
+                                : 'geometry-floor-gap')
+                            : auxiliaryTargetFloor > 0
+                                ? 'base-bonus-already-satisfies-floor'
+                                : 'reliability-gate-not-met';
 
                 return {
                     ...item.candidate,
@@ -1799,6 +2157,21 @@ class TagMemoEngine {
                     geo_score: item.geoScore,
                     normalized_geo: normalizedGeo,
                     geo_bonus: geoBonus,
+                    geo_base_bonus: baseGeoBonus,
+                    geo_aux_bonus: geometryAuxBonus,
+                    geo_aux_target_floor: auxiliaryTargetFloor,
+                    geo_aux_geometry_floor: geometryAuxTargetFloor,
+                    geo_aux_identity_floor: identityAnchorTargetFloor,
+                    geo_aux_enabled: geometryAuxEnabled,
+                    geo_aux_eligible: geometryAuxEligible,
+                    geo_aux_reliability: geometryAuxReliability,
+                    geo_aux_reason: geometryAuxReason,
+                    geo_identity_anchor_eligible: identityAnchorEligible,
+                    geo_identity_anchor_strength: item.identityAnchorStrength || 0,
+                    geo_identity_anchor_reliability: identityAnchorReliability,
+                    geo_direct_exact_max_potential: item.directExactMaxPotential || 0,
+                    geo_direct_exact_best_specificity: item.directExactBestSpecificity || 0,
+                    geo_direct_exact_best_closure: item.directExactBestClosure || 0,
                     geo_bonus_cap: bonusCap,
                     geo_effect: geoEffect,
                     geo_evidence_class: item.evidenceClass || 'neutral',
@@ -1823,7 +2196,16 @@ class TagMemoEngine {
                     geo_action_quality: item.actionQuality || 0,
                     geo_closure_quality: item.closureQuality || 0,
                     geo_contact_tags: item.contactTags || [],
-                    geo_guard_reason: item.reason || null
+                    geo_guard_reason: item.reason || null,
+                    // 四层几何仍保留完整诊断；生产只读取受严格门控和独立上限约束的奖励地板。
+                    geo_geometry_shadow: item.geometryShadow || null,
+                    geo_direct_score: item.geometryShadow?.directScore || 0,
+                    geo_structural_score: item.geometryShadow?.structuralScore || 0,
+                    geo_thematic_score: item.geometryShadow?.thematicScore || 0,
+                    geo_closure_score: item.geometryShadow?.closureScore || 0,
+                    geo_fused_shadow_score: item.geometryShadow?.fusedScore || 0,
+                    geo_direction_consistency: item.geometryShadow?.directionConsistency || 0,
+                    geo_vector_lift: item.geometryShadow?.vectorLift || 0
                 };
             });
 
@@ -1838,10 +2220,13 @@ class TagMemoEngine {
                 counts[key] = (counts[key] || 0) + 1;
                 return counts;
             }, {});
+            const auxiliaryBoosted = reranked.filter(item => (item.geo_aux_bonus || 0) > 0);
+            const identityProtected = reranked.filter(item => item.geo_aux_reason === 'identity-floor-gap');
             console.log(
                 `[TagMemo-V9.2 GeodesicCurve] α=${mixAlpha.toFixed(3)}, candidates=${candidates.length}, ` +
                 `contributors=${contributors.length}, fieldTags=${fieldNodes.length}, ` +
                 `evidence=direct:${evidenceCounts.direct || 0}/structural:${evidenceCounts.structural || 0}/thematic:${evidenceCounts.thematic || 0}, ` +
+                `aux=${geometryAuxEnabled ? 'on' : 'off'}:${auxiliaryBoosted.length}, identityProtected=${identityProtected.length}, ` +
                 `curveRange=${minPositiveGeo.toFixed(4)}..${maxGeo.toFixed(4)}, ` +
                 `leaderChunk=${Number(leader?.candidate?.id)}, leaderCoverage=${(leader?.weightedCoverage || 0).toFixed(3)}, ` +
                 `leaderContinuity=${(leader?.continuity || 0).toFixed(3)}, leaderContacts=${leader?.weakHits || 0}`
