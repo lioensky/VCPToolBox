@@ -1323,6 +1323,25 @@ class KnowledgeBaseManager {
         });
     }
 
+    _resolveGeodesicCandidateK(k, options = null) {
+        const requestedK = Math.max(1, Math.round(Number(k) || 1));
+        if (!options?.geodesicRerank) {
+            return { requestedK, candidateK: requestedK, multiplier: 1 };
+        }
+
+        const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
+        const rawMultiplier = options.geoCandidateMultiplier
+            ?? options.candidateMultiplier
+            ?? geoConfig.candidateKMultiplier
+            ?? 2;
+        const multiplier = Math.max(1, Math.min(10, Number(rawMultiplier) || 2));
+        return {
+            requestedK,
+            candidateK: Math.max(requestedK, Math.ceil(requestedK * multiplier)),
+            multiplier
+        };
+    }
+
     async _searchSpecificIndex(diaryName, vector, k, tagBoost, coreTags = [], coreBoostFactor = 1.33, options = null) {
         const idx = await this._getOrLoadDiaryIndex(diaryName);
 
@@ -1337,6 +1356,7 @@ class KnowledgeBaseManager {
         let searchVecFloat;
         let tagInfo = null;
         let energyField = null;
+        let artifactBundle = null;
 
         try {
             if (tagBoost > 0 && this.tagMemoEngine) {
@@ -1344,6 +1364,7 @@ class KnowledgeBaseManager {
                 const artifactResolution = preparedBoostResult?.artifactBundle
                     ? null
                     : this._resolveTagMemoRequest(options);
+                artifactBundle = preparedBoostResult?.artifactBundle || artifactResolution?.bundle || null;
                 if (preparedBoostResult?.vector) {
                     // 🌟 请求级 TagBoost 复用：调用方已经对同一 queryVector/tagWeight/coreTags 完成感应，
                     // 搜索层直接使用增强后的向量与 energyField，避免同一轮多占位符/多日记本重复跑 TagMemo。
@@ -1383,9 +1404,10 @@ class KnowledgeBaseManager {
             return [];
         }
 
+        const geoCandidatePlan = this._resolveGeodesicCandidateK(k, options);
         let results = [];
         try {
-            results = idx.search(searchVecFloat, k);
+            results = idx.search(searchVecFloat, geoCandidatePlan.candidateK);
         } catch (e) {
             // 🛠️ 修复 2: 详细的错误日志
             console.error(`[KnowledgeBase] Vexus search failed for "${diaryName}":`, e.message || e);
@@ -1409,8 +1431,18 @@ class KnowledgeBaseManager {
                 minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
                 energyField,
                 config: geoConfig,
-                version: tagInfo?.effectiveVersion
+                version: tagInfo?.effectiveVersion,
+                artifactBundle
             });
+        }
+        // 候选池可放大，但公共 search 契约仍只返回调用方请求的 K。
+        results = results.slice(0, geoCandidatePlan.requestedK);
+        if (geoCandidatePlan.multiplier > 1) {
+            console.log(
+                `[KnowledgeBase] 🌊 Geodesic candidate expansion: diary="${diaryName}", ` +
+                `requestedK=${geoCandidatePlan.requestedK}, candidateK=${geoCandidatePlan.candidateK}, ` +
+                `multiplier=${geoCandidatePlan.multiplier}.`
+            );
         }
 
         // Hydrate results（批量回填，避免每个候选一次同步 SQLite 往返）
@@ -1444,6 +1476,19 @@ class KnowledgeBaseManager {
                 geo_score: res.geo_score,
                 normalized_geo: res.normalized_geo,
                 geo_hit_count: res.geo_hit_count,
+                geo_confidence: res.geo_confidence,
+                geo_curve_samples: res.geo_curve_samples,
+                geo_exact_hits: res.geo_exact_hits,
+                geo_strong_hits: res.geo_strong_hits,
+                geo_weighted_coverage: res.geo_weighted_coverage,
+                geo_mean_potential: res.geo_mean_potential,
+                geo_max_potential: res.geo_max_potential,
+                geo_continuity: res.geo_continuity,
+                geo_isolated_ratio: res.geo_isolated_ratio,
+                geo_action_quality: res.geo_action_quality,
+                geo_closure_quality: res.geo_closure_quality,
+                geo_contact_tags: res.geo_contact_tags,
+                geo_guard_reason: res.geo_guard_reason,
                 sourceFile: path.basename(row.sourceFile),
                 fullPath: row.sourceFile,
                 // 🌟 V8.1: 查询级元数据保持不变
@@ -1523,12 +1568,14 @@ class KnowledgeBaseManager {
         let searchVecFloat;
         let tagInfo = null;
         let energyField = null;
+        let artifactBundle = null;
 
         if (tagBoost > 0 && this.tagMemoEngine) {
             const preparedBoostResult = options?.preparedBoostResult || options?.boostResult || null;
             const artifactResolution = preparedBoostResult?.artifactBundle
                 ? null
                 : this._resolveTagMemoRequest(options);
+            artifactBundle = preparedBoostResult?.artifactBundle || artifactResolution?.bundle || null;
             if (preparedBoostResult?.vector) {
                 searchVecFloat = preparedBoostResult.vector instanceof Float32Array
                     ? preparedBoostResult.vector
@@ -1560,11 +1607,15 @@ class KnowledgeBaseManager {
             return [];
         }
 
+        const geoCandidatePlan = this._resolveGeodesicCandidateK(
+            options?.globalK ?? k,
+            options
+        );
         const perIndexK = Math.max(
-            Math.max(1, Math.round(Number(k) || 1)),
+            geoCandidatePlan.candidateK,
             Math.max(1, Math.round(Number(options?.perIndexK) || 0))
         );
-        const globalK = Math.max(1, Math.round(Number(options?.globalK) || Number(k) || 1));
+        const globalK = geoCandidatePlan.requestedK;
 
         const searchPromises = selectedDiaries.map(async diaryName => {
             try {
@@ -1597,7 +1648,8 @@ class KnowledgeBaseManager {
                 minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
                 energyField,
                 config: geoConfig,
-                version: tagInfo?.effectiveVersion
+                version: tagInfo?.effectiveVersion,
+                artifactBundle
             });
         }
 
@@ -1623,6 +1675,19 @@ class KnowledgeBaseManager {
                 geo_score: res.geo_score,
                 normalized_geo: res.normalized_geo,
                 geo_hit_count: res.geo_hit_count,
+                geo_confidence: res.geo_confidence,
+                geo_curve_samples: res.geo_curve_samples,
+                geo_exact_hits: res.geo_exact_hits,
+                geo_strong_hits: res.geo_strong_hits,
+                geo_weighted_coverage: res.geo_weighted_coverage,
+                geo_mean_potential: res.geo_mean_potential,
+                geo_max_potential: res.geo_max_potential,
+                geo_continuity: res.geo_continuity,
+                geo_isolated_ratio: res.geo_isolated_ratio,
+                geo_action_quality: res.geo_action_quality,
+                geo_closure_quality: res.geo_closure_quality,
+                geo_contact_tags: res.geo_contact_tags,
+                geo_guard_reason: res.geo_guard_reason,
                 sourceFile: path.basename(row.sourceFile),
                 fullPath: row.sourceFile,
                 boostFactor: tagInfo ? tagInfo.boostFactor : 0,
@@ -1662,7 +1727,8 @@ class KnowledgeBaseManager {
         for (const result of hydratedResults) delete result._fileId;
         console.log(
             `[KnowledgeBase] 🔗 Virtual index search: ${selectedDiaries.length} indices, ` +
-            `perIndexK=${perIndexK}, globalK=${globalK}, candidates=${allResults.length}, returned=${hydratedResults.length}`
+            `perIndexK=${perIndexK}, globalK=${globalK}, geoMultiplier=${geoCandidatePlan.multiplier}, ` +
+            `candidates=${allResults.length}, returned=${hydratedResults.length}`
         );
         return hydratedResults;
     }
@@ -1760,7 +1826,8 @@ class KnowledgeBaseManager {
             minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
             energyField: options.energyField,
             config: geoConfig,
-            version: bundle?.version
+            version: bundle?.version,
+            artifactBundle: bundle
         });
     }
 

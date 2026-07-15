@@ -267,6 +267,11 @@ class LightMemoPlugin {
         }
 
         const normalizedK = Math.max(1, Math.floor(this._parseNumber(k, 5)));
+        const potentialFieldConfig = this.vectorDBManager?.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
+        const geoCandidateMultiplier = useGeodesicRerank
+            ? Math.max(1, Math.min(10, Number(potentialFieldConfig.candidateKMultiplier) || 2))
+            : 1;
+        const geoCandidateK = Math.max(normalizedK, Math.ceil(normalizedK * geoCandidateMultiplier));
         const normalizedCoreTags = this._parseStringArray(core_tags);
         const normalizedCoreBoostFactor = this._parseNumber(core_boost_factor, 1.33);
 
@@ -378,18 +383,22 @@ class LightMemoPlugin {
             });
 
             // 🚀 优化：放宽 BM25 限制。如果 BM25 没搜到，可能是分词太碎或太死板，此时允许向量检索兜底。
+            const bm25PoolK = Math.max(normalizedK * 5, geoCandidateK);
             topByKeyword = scoredCandidates
                 .filter(c => c.bm25Score > 0)
                 .sort((a, b) => b.bm25Score - a.bm25Score)
-                .slice(0, normalizedK * 5); // 增加候选数量
+                .slice(0, bm25PoolK);
 
-            // 如果关键词匹配太少，补充一些向量相似度高的（这里先取前 N 个作为兜底候选）
-            if (topByKeyword.length < normalizedK) {
-                console.log(`[LightMemo] BM25 results insufficient (${topByKeyword.length}), adding fallback candidates.`);
+            // 测地线需要独立候选预算；BM25 命中不足时补齐到专属候选 K。
+            if (topByKeyword.length < geoCandidateK) {
+                console.log(
+                    `[LightMemo] BM25 results insufficient for candidate pool ` +
+                    `(${topByKeyword.length}/${geoCandidateK}), adding fallback candidates.`
+                );
                 const existingIds = new Set(topByKeyword.map(c => c.label));
                 const fallbacks = scoredCandidates
                     .filter(c => !existingIds.has(c.label))
-                    .slice(0, normalizedK * 2);
+                    .slice(0, geoCandidateK - topByKeyword.length);
                 topByKeyword = [...topByKeyword, ...fallbacks];
             }
         }
@@ -404,6 +413,7 @@ class LightMemoPlugin {
 
         let tagBoostInfo = null;
         let tagBoostEnergyField = null;
+        let tagBoostArtifactBundle = null;
         // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的功能来增强向量
         if (tag_boost > 0 && this.vectorDBManager && typeof this.vectorDBManager.applyTagBoost === 'function') {
             const hasCore = normalizedCoreTags.length > 0;
@@ -422,6 +432,7 @@ class LightMemoPlugin {
                 queryVector = boostResult.vector;
                 tagBoostInfo = boostResult.info;
                 tagBoostEnergyField = boostResult.energyField || null;
+                tagBoostArtifactBundle = boostResult.artifactBundle || null;
 
                 if (tagBoostInfo) {
                     const matched = tagBoostInfo.matchedTags || [];
@@ -479,11 +490,11 @@ class LightMemoPlugin {
                 score: c.hybridScore || c.vectorScore || 0
             }));
 
-            const geoConfig = this.vectorDBManager.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
             const reranked = this.vectorDBManager.geodesicRerank(geoInput, {
-                alpha: geoConfig.alpha,
-                minGeoSamples: geoConfig.minGeoSamples,
-                energyField: tagBoostEnergyField
+                alpha: potentialFieldConfig.alpha,
+                minGeoSamples: potentialFieldConfig.minGeoSamples,
+                energyField: tagBoostEnergyField,
+                artifactBundle: tagBoostArtifactBundle
             });
 
             // Map results back with geodesic metadata
@@ -495,7 +506,11 @@ class LightMemoPlugin {
             }));
 
             const geoCount = rankedCandidates.filter(r => r.potentialFieldV91).length;
-            console.log(`[LightMemo] 🌟 V9.1: Potential-field rerank complete. ${geoCount}/${rankedCandidates.length} candidates with field contribution.`);
+            console.log(
+                `[LightMemo] 🌟 V9.1: Potential-field rerank complete. ` +
+                `${geoCount}/${rankedCandidates.length} candidates with field contribution ` +
+                `(requestedK=${normalizedK}, candidateK=${geoCandidateK}, multiplier=${geoCandidateMultiplier}).`
+            );
         }
 
         // 取top K

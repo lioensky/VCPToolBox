@@ -184,8 +184,14 @@ class TagMemoEngine {
         if (!bundle.artifactSig || !bundle.graphGeneration) {
             throw new Error('ArtifactBundle is missing signature/generation');
         }
-        if (!(bundle.residualMap instanceof Map) || !(bundle.propagationKernel instanceof Map)) {
-            throw new Error('ArtifactBundle is missing residual/kernel Map');
+        if (!(bundle.anchorGainMap instanceof Map) || !(bundle.propagationKernel instanceof Map)) {
+            throw new Error('ArtifactBundle is missing anchor-gain/kernel Map');
+        }
+        if (!(bundle.rawResidualRatioMap instanceof Map)) {
+            throw new Error('ArtifactBundle is missing raw residual ratio Map');
+        }
+        if (!(bundle.inboundMassMap instanceof Map) || !(bundle.hubSpecificityBaseMap instanceof Map)) {
+            throw new Error('ArtifactBundle is missing precomputed inbound/hub-specificity Map');
         }
         if (!(bundle.pairwiseView instanceof Map)) {
             throw new Error('ArtifactBundle is missing pairwise Map');
@@ -229,7 +235,8 @@ class TagMemoEngine {
         this._artifactBundlesByVersion = registry;
         this._activeArtifactBundle = bundle;
         this.tagCooccurrenceMatrix = bundle.propagationKernel;
-        this.tagIntrinsicResiduals = bundle.residualMap;
+        this.tagIntrinsicResiduals = bundle.anchorGainMap;
+        this.tagRawResidualRatios = bundle.rawResidualRatioMap;
         this.tagPairSimilarities = bundle.pairwiseView;
 
         console.log(
@@ -368,12 +375,43 @@ class TagMemoEngine {
         };
     }
 
+    _buildInboundArtifacts(kernel) {
+        const inboundMassMap = new Map();
+        let maxInbound = 0;
+
+        if (kernel instanceof Map) {
+            for (const edges of kernel.values()) {
+                if (!(edges instanceof Map)) continue;
+                for (const [rawTargetId, rawConductance] of edges.entries()) {
+                    const targetId = Number(rawTargetId);
+                    const conductance = Math.max(0, Number(rawConductance) || 0);
+                    if (!Number.isFinite(targetId) || conductance <= 0) continue;
+                    const next = (inboundMassMap.get(targetId) || 0) + conductance;
+                    inboundMassMap.set(targetId, next);
+                    if (next > maxInbound) maxInbound = next;
+                }
+            }
+        }
+
+        // 不带 publicHubFloor 的基础 specificity，只依赖图资产；查询热参数可在 O(1) 读取后施加 floor。
+        const hubSpecificityBaseMap = new Map();
+        for (const [tagId, inboundMass] of inboundMassMap.entries()) {
+            const ratio = maxInbound > 0 ? Math.max(0, Math.min(1, inboundMass / maxInbound)) : 0;
+            hubSpecificityBaseMap.set(tagId, 1 - Math.sqrt(ratio));
+        }
+
+        return { inboundMassMap, maxInbound, hubSpecificityBaseMap };
+    }
+
     _stageAndPublishV91Bundle(factMatrix) {
         const pairwiseView = this.tagPairSimilarities instanceof Map
             ? this.tagPairSimilarities
             : new Map();
-        const residualMap = this.tagIntrinsicResiduals instanceof Map
+        const anchorGainMap = this.tagIntrinsicResiduals instanceof Map
             ? this.tagIntrinsicResiduals
+            : new Map();
+        const rawResidualRatioMap = this.tagRawResidualRatios instanceof Map
+            ? this.tagRawResidualRatios
             : new Map();
         const kbConfig = JSON.parse(JSON.stringify(
             this.ragParams?.KnowledgeBaseManager || {}
@@ -382,11 +420,12 @@ class TagMemoEngine {
         const potentialFieldConfig = kbConfig.potentialFieldRerank
             || kbConfig.geodesicRerank
             || {};
-        const build = this._buildV9PropagationKernel(factMatrix, residualMap, v9Config);
+        const build = this._buildV9PropagationKernel(factMatrix, anchorGainMap, v9Config);
+        const inboundArtifacts = this._buildInboundArtifacts(build.kernel);
         const graphGeneration = this._computeGraphGeneration(
             build.kernel,
             pairwiseView,
-            residualMap
+            anchorGainMap
         );
         const effectiveConfig = JSON.parse(JSON.stringify(kbConfig));
         const artifactSig = crypto.createHash('sha256')
@@ -407,8 +446,14 @@ class TagMemoEngine {
             graphGeneration,
             modelSig: this.modelSig,
             effectiveConfig,
-            residualMap,
+            // 明确物理量语义；residualMap 仅保留为旧调用兼容别名。
+            anchorGainMap,
+            rawResidualRatioMap,
+            residualMap: anchorGainMap,
             propagationKernel: build.kernel,
+            inboundMassMap: inboundArtifacts.inboundMassMap,
+            maxInbound: inboundArtifacts.maxInbound,
+            hubSpecificityBaseMap: inboundArtifacts.hubSpecificityBaseMap,
             pairwiseView,
             potentialFieldConfig: JSON.parse(JSON.stringify(potentialFieldConfig)),
             residualArtifact: this.intrinsicResidualArtifact
@@ -625,7 +670,7 @@ class TagMemoEngine {
             : this.resolveArtifactBundle(options);
         const artifactBundle = resolution.bundle;
         const queryMatrix = artifactBundle?.propagationKernel || this.tagCooccurrenceMatrix;
-        const queryResiduals = artifactBundle?.residualMap || this.tagIntrinsicResiduals;
+        const queryResiduals = artifactBundle?.anchorGainMap || artifactBundle?.residualMap || this.tagIntrinsicResiduals;
         const queryVersion = 'v9';
         const queryWormholeEdges = artifactBundle?.wormholeEdges;
 
@@ -877,7 +922,9 @@ class TagMemoEngine {
             injectGhosts(hardGhostObjects, true);
             injectGhosts(softGhostObjects, false);
 
-            if (allTags.length === 0) return { vector: originalFloat32, info: null, energyField: this.lastEnergyField };
+            if (allTags.length === 0) {
+                return { vector: originalFloat32, info: null, energyField: this.lastEnergyField, artifactBundle };
+            }
 
             // [5] 批量获取向量与名称（chunked IN，避免 SQLite 参数数量上限）
             const dbTagIds = allTags.filter(t => t.id > 0).map(t => t.id);
@@ -960,7 +1007,7 @@ class TagMemoEngine {
                 mag = Math.sqrt(mag);
                 if (mag > 1e-9) for (let d = 0; d < dim; d++) contextVec[d] /= mag;
             } else {
-                return { vector: originalFloat32, info: null, energyField: this.lastEnergyField };
+                return { vector: originalFloat32, info: null, energyField: this.lastEnergyField, artifactBundle };
             }
 
             // [6] 最终融合 (clamp 防止外推：boost > 1 时原向量会被反向叠加)
@@ -978,6 +1025,8 @@ class TagMemoEngine {
             return {
                 vector: fused,
                 energyField: this.lastEnergyField,
+                // 调用方必须把生成 energyField 的同一代资产传给读出层。
+                artifactBundle,
                 info: {
                     // 🌟 标记核心 Tag 召回情况 (安全映射)
                     coreTagsMatched: deduplicatedTags.filter(t => t.isCore && t.name).map(t => t.name),
@@ -1017,7 +1066,7 @@ class TagMemoEngine {
 
         } catch (e) {
             console.error('[TagMemoEngine] TagMemo V6 CRITICAL FAIL:', e);
-            return { vector: originalFloat32, info: null, energyField: null };
+            return { vector: originalFloat32, info: null, energyField: null, artifactBundle };
         }
     }
 
@@ -1087,6 +1136,10 @@ class TagMemoEngine {
         const minGeoScore = Math.max(0, Number(geoConfig.minMaxGeoScore ?? 0.01));
         const minGeoSpread = Math.max(0, Number(geoConfig.minGeoScoreSpread ?? 0.03));
 
+        const maxFieldNodes = Math.max(minFieldTags, Math.floor(Number(geoConfig.maxFieldNodes ?? 48)));
+        const fieldEnergyMassRatio = Math.max(0.5, Math.min(1, Number(geoConfig.fieldEnergyMassRatio ?? 0.95)));
+        const minStrongEvidence = Math.max(0, Number(geoConfig.minStrongEvidence ?? 1));
+
         // 连续场与曲线参数均提供内置默认值，现有配置无需迁移即可运行。
         const fieldSimilarityThreshold = Math.max(-1, Math.min(1, Number(geoConfig.fieldSimilarityThreshold ?? 0.50)));
         const strongContactThreshold = Math.max(0, Math.min(1, Number(geoConfig.strongContactThreshold ?? 0.16)));
@@ -1107,13 +1160,19 @@ class TagMemoEngine {
             return candidates;
         };
 
-        const positiveField = [];
-        let fieldEnergySum = 0;
-        let maxFieldEnergy = 0;
+        const normalizedField = new Map();
         for (const [rawId, rawEnergy] of energyField.entries()) {
             const id = Number(rawId);
             const energy = Math.max(0, Number(rawEnergy) || 0);
             if (!Number.isFinite(id) || id <= 0 || energy <= 0) continue;
+            // 不同 key 类型归一化后可能合并，保留较强的查询场值。
+            normalizedField.set(id, Math.max(normalizedField.get(id) || 0, energy));
+        }
+
+        const positiveField = [];
+        let fieldEnergySum = 0;
+        let maxFieldEnergy = 0;
+        for (const [id, energy] of normalizedField.entries()) {
             positiveField.push({ id, energy });
             fieldEnergySum += energy;
             if (energy > maxFieldEnergy) maxFieldEnergy = energy;
@@ -1131,9 +1190,24 @@ class TagMemoEngine {
             entropy -= p * Math.log(p);
             item.normalizedEnergy = item.energy / maxFieldEnergy;
         }
+        positiveField.sort((a, b) => b.energy - a.energy);
         const normalizedEntropy = positiveField.length > 1 ? entropy / Math.log(positiveField.length) : 0;
         if (fallbackEnabled && normalizedEntropy < minFieldEntropy) {
             return fallback('query energy field entropy too low', { entropy: normalizedEntropy, minFieldEntropy });
+        }
+
+        // 先按累计能量质量截断，再查询向量，避免完整场节点进入 SQLite 与高维余弦热循环。
+        const retainedField = [];
+        let retainedEnergy = 0;
+        for (const item of positiveField) {
+            if (
+                retainedField.length >= maxFieldNodes
+                || (retainedField.length >= minFieldTags && retainedEnergy / fieldEnergySum >= fieldEnergyMassRatio)
+            ) {
+                break;
+            }
+            retainedField.push(item);
+            retainedEnergy += item.energy;
         }
 
         const cosine = (left, right) => {
@@ -1188,7 +1262,7 @@ class TagMemoEngine {
             }
 
             const allTagIds = [...new Set([
-                ...positiveField.map(item => item.id),
+                ...retainedField.map(item => item.id),
                 ...candidateTagIds
             ])];
             const tagRows = this._queryByChunks(
@@ -1201,7 +1275,7 @@ class TagMemoEngine {
                 if (vector) tagById.set(Number(row.id), { id: Number(row.id), name: row.name, vector });
             }
 
-            const fieldNodes = positiveField
+            const fieldNodes = retainedField
                 .map(item => {
                     const tag = tagById.get(item.id);
                     return tag ? { ...item, ...tag } : null;
@@ -1214,33 +1288,25 @@ class TagMemoEngine {
                 });
             }
 
-            // 用全图传播核的入流近似公共枢纽度；查询内只扫描一次活动资产。
-            const bundle = this.getArtifactBundleSnapshot(options.version || 'v9');
+            // 必须读取生成 energyField 的同一代资产；入流与 hub 基值已在发布阶段预计算。
+            const bundle = options.artifactBundle
+                || this.getArtifactBundleSnapshot(options.version || 'v9');
             const kernel = bundle?.propagationKernel || this.tagCooccurrenceMatrix || new Map();
-            const residuals = bundle?.residualMap || this.tagIntrinsicResiduals || new Map();
-            const inbound = new Map();
-            let maxInbound = 0;
-            if (kernel instanceof Map) {
-                for (const edges of kernel.values()) {
-                    if (!(edges instanceof Map)) continue;
-                    for (const [targetId, conductance] of edges.entries()) {
-                        const next = (inbound.get(Number(targetId)) || 0) + Math.max(0, Number(conductance) || 0);
-                        inbound.set(Number(targetId), next);
-                        if (next > maxInbound) maxInbound = next;
-                    }
-                }
-            }
+            const anchorGainMap = bundle?.anchorGainMap || bundle?.residualMap || this.tagIntrinsicResiduals || new Map();
+            const hubSpecificityBaseMap = bundle?.hubSpecificityBaseMap || new Map();
 
             const hubSpecificity = tagId => {
-                if (maxInbound <= 0) return 1;
-                const ratio = (inbound.get(tagId) || 0) / maxInbound;
-                return Math.max(publicHubFloor, 1 - Math.sqrt(clamp01(ratio)));
+                const base = hubSpecificityBaseMap.get(Number(tagId));
+                return Number.isFinite(base) ? Math.max(publicHubFloor, clamp01(base)) : 1;
             };
 
-            // 对任意候选 Tag 向量采样查询连续势场。精确 ID 接触保留确定性；
-            // 非精确接触只接受局部高相似邻域，避免全局语义背景铺满所有候选。
+            // 对任意候选 Tag 向量采样查询连续势场。相同 Tag 跨文件只计算一次。
+            const sampledPotentialCache = new Map();
             const samplePotential = tag => {
-                const exact = energyField.get(tag.id);
+                const cached = sampledPotentialCache.get(tag.id);
+                if (cached) return cached;
+
+                const exact = normalizedField.get(Number(tag.id));
                 const exactPotential = exact === undefined
                     ? 0
                     : clamp01((Number(exact) || 0) / maxFieldEnergy);
@@ -1266,11 +1332,13 @@ class TagMemoEngine {
                         / Math.sqrt(selected.length)
                     : 0;
 
-                return {
+                const result = {
                     potential: clamp01(Math.max(exactPotential, interpolated)),
                     exact: exactPotential > 0,
                     nearestSimilarity: selected[0]?.similarity || 0
                 };
+                sampledPotentialCache.set(tag.id, result);
+                return result;
             };
 
             const geoData = candidates.map((candidate, originalIndex) => {
@@ -1309,10 +1377,10 @@ class TagMemoEngine {
                         (cosine(tag.vector, chunkVector) - minClosureSimilarity)
                         / Math.max(1e-6, 1 - minClosureSimilarity)
                     );
-                    const residual = Math.max(0.5, Math.min(2, Number(residuals?.get(tag.id)) || 1));
+                    const anchorGain = Math.max(0.5, Math.min(2, Number(anchorGainMap?.get(tag.id)) || 1));
                     const positional = Math.exp(-positionDecay * Math.max(0, chainNode.position - 1));
                     const specificity = hubSpecificity(tag.id);
-                    const candidateMass = Math.max(0.02, closure * residual * positional * specificity);
+                    const candidateMass = Math.max(0.02, closure * anchorGain * positional * specificity);
                     const fieldSample = samplePotential(tag);
                     const contacted = fieldSample.potential >= weakContactThreshold;
 
@@ -1360,6 +1428,7 @@ class TagMemoEngine {
                 let transitionWeight = 0;
                 let continuityMass = 0;
                 let semanticArc = 0;
+                let weightedSemanticArc = 0;
                 let weightedAction = 0;
                 let isolatedMass = 0;
                 for (let index = 0; index < samples.length; index++) {
@@ -1390,6 +1459,7 @@ class TagMemoEngine {
                     transitionWeight += segmentMass;
                     continuityMass += segmentMass * segmentTrust;
                     semanticArc += arc;
+                    weightedSemanticArc += arc * segmentMass;
                     weightedAction += arc * segmentMass / Math.max(0.08, segmentPotential + 0.25 * topology);
                 }
 
@@ -1399,8 +1469,8 @@ class TagMemoEngine {
                 const isolatedRatio = weightedPotential > 0
                     ? clamp01(isolatedMass / weightedPotential)
                     : 1;
-                const actionQuality = semanticArc > 0
-                    ? clamp01(Math.exp(-weightedAction / Math.max(0.15, semanticArc)))
+                const actionQuality = weightedSemanticArc > 0
+                    ? clamp01(Math.exp(-weightedAction / Math.max(0.15, weightedSemanticArc)))
                     : clamp01(maxPotential * 0.5);
                 const closureQuality = samples.reduce(
                     (sum, sample) => sum + sample.closure * sample.candidateMass,
@@ -1474,32 +1544,51 @@ class TagMemoEngine {
             }
             const coverageRatio = contributors.length / candidates.length;
             const spread = maxGeo - minPositiveGeo;
+            const strongEvidence = contributors.reduce(
+                (sum, item) => sum + (item.strongHits || 0) + (item.exactHits || 0) * 0.75,
+                0
+            );
 
-            if (fallbackEnabled && coverageRatio < minCandidateCoverage) {
-                return fallback('candidate curve coverage too low', {
+            // 稀有但精准的场接触不应因低覆盖单独被拒绝；仅联合低覆盖、低曲线分和弱证据时回退。
+            if (
+                fallbackEnabled
+                && coverageRatio < minCandidateCoverage
+                && maxGeo < minGeoScore
+                && strongEvidence < minStrongEvidence
+            ) {
+                return fallback('candidate curve readout jointly low-trust', {
                     coverage: coverageRatio,
-                    minCandidateCoverage,
-                    contributors: contributors.length
+                    maxGeo,
+                    strongEvidence
                 });
             }
-            if (fallbackEnabled && maxGeo < minGeoScore) {
-                return fallback('maximum curve score too low', { maxGeo, minGeoScore });
-            }
-            if (fallbackEnabled && contributors.length > 1 && spread < minGeoSpread) {
-                return fallback('candidate curve scores lack discrimination', { spread, minGeoSpread });
+            if (
+                fallbackEnabled
+                && contributors.length > 1
+                && spread < minGeoSpread
+                && maxGeo < minGeoScore
+                && strongEvidence < minStrongEvidence
+            ) {
+                return fallback('candidate curve scores jointly lack discrimination', {
+                    spread,
+                    maxGeo,
+                    strongEvidence
+                });
             }
 
-            const denominator = Math.max(1e-9, maxGeo - minPositiveGeo);
             const reranked = geoData.map(item => {
                 const knnScore = Number(item.candidate.score) || 0;
                 const normalizedGeo = item.geoScore > 0
-                    ? (contributors.length === 1 ? 1 : clamp01((item.geoScore - minPositiveGeo) / denominator))
+                    ? clamp01(item.geoScore / Math.max(1e-9, maxGeo))
                     : 0;
-                // 无贡献候选保留原分；有贡献候选向曲线分靠拢，置信度决定实际修正量。
-                const effectiveAlpha = mixAlpha * item.confidence;
-                const finalScore = item.geoScore > 0
-                    ? knnScore + effectiveAlpha * (normalizedGeo - knnScore)
-                    : knnScore;
+                // 第一阶段只奖励，不以 batch min-max 的最低点惩罚弱正证据。
+                // maxGeo 低于可信基准时按比例收缩整批奖励，避免微弱场被归一化成满分。
+                const batchTrust = minGeoScore > 0 ? clamp01(maxGeo / minGeoScore) : 1;
+                const effectiveAlpha = mixAlpha * item.confidence * batchTrust;
+                const geoBonus = item.geoScore > 0
+                    ? effectiveAlpha * normalizedGeo * Math.max(0, 1 - knnScore)
+                    : 0;
+                const finalScore = knnScore + geoBonus;
 
                 return {
                     ...item.candidate,

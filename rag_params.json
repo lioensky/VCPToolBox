@@ -87,13 +87,22 @@
     },
     "geodesicRerank": {
       "alpha": 0.6,
+      "candidateKMultiplier": 2,
       "minGeoSamples": 4,
       "fallbackToKnnOnLowTrust": 1,
       "minFieldTags": 4,
       "minFieldEntropy": 0.12,
+      "maxFieldNodes": 48,
+      "fieldEnergyMassRatio": 0.95,
+      "fieldSimilarityThreshold": 0.5,
+      "weakContactThreshold": 0.04,
+      "strongContactThreshold": 0.14,
+      "maxFieldNeighbors": 4,
+      "fieldKernelExponent": 2,
       "minGeoCoverageRatio": 0.05,
       "minMaxGeoScore": 0.01,
-      "minGeoScoreSpread": 0.03
+      "minGeoScoreSpread": 0.03,
+      "minStrongEvidence": 1
     },
     "spikeRouting": {
       "maxSafeHops": 4,
