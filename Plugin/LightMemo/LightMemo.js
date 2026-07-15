@@ -1335,7 +1335,8 @@ class LightMemoPlugin {
             if (r.sourceFile) {
                 content += `    [路径: ${r.sourceFile}]\n`;
             }
-            content += `${(r.text || '').trim()}\n`;
+            // 每条召回内容后保留一个空行，避免多个知识片段视觉上粘连。
+            content += `${(r.text || '').trim()}\n\n`;
         });
 
         content += `\n[--- 知识库检索结束 ---]\n`;
@@ -1398,7 +1399,8 @@ class LightMemoPlugin {
                     content += boostLine + `]\n`;
                 }
             }
-            content += `${r.text.trim()}\n`;
+            // 每条召回内容后保留一个空行，避免多个记忆片段视觉上粘连。
+            content += `${r.text.trim()}\n\n`;
         });
 
         content += `\n[--- 回忆结束 ---]\n`;
