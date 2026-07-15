@@ -321,10 +321,10 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
   },
   KnowledgeBaseManager: {
     geodesicRerank: {
-      label: "查询势场曲线重排 (V9.1)",
-      summary: "让候选有序 Tag 曲线采样查询诱导连续势场，并按接触强度、连续性、拓扑导通、作用量与 Chunk 闭合度提供正向排序奖励。通过 ::TagMemo+ 激活。",
-      logic: "V9.1 先按专属 K 倍率扩大向量候选池，再做连续场读出。查询场会按累计能量质量和节点上限截断；低覆盖不再单独触发回退，只有覆盖、最大曲线分与强证据同时不足时才回归 KNN。",
-      range: "包含候选扩池、连续场核、证据阈值和联合可信守卫等参数；建议先调 candidateKMultiplier，再观察接触率。",
+      label: "查询势场曲线重排 (V9.2)",
+      summary: "让候选有序 Tag 曲线采样查询诱导连续势场，并将证据分为 direct、structural、thematic 三档，以不同奖励上限修正排序。通过 ::TagMemo+ 激活。",
+      logic: "V9.2 保留候选扩池与连续场读出，但不再把批内冠军强制归一化为满分。曲线分按固定绝对区间映射，直接锚点、结构走廊和主题晕轮分别获得递减的排序权限。",
+      range: "包含候选扩池、连续场核、绝对奖励标度、证据等级上限和联合可信守卫；建议先观察 A/B 表中的证据等级与实际奖励。",
       tone: "critical",
     },
     "geodesicRerank.alpha": {
@@ -402,6 +402,90 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       summary: "控制相似度超过接触阈值后势能上升的陡峭程度。",
       logic: "指数越大，只有非常相近的邻居才能保留明显势能；指数越小，场扩散更平缓、更宽。",
       range: "建议 1 ~ 4，默认 2",
+      tone: "sensitive",
+    },
+    "geodesicRerank.geoRewardFloor": {
+      label: "曲线奖励起点",
+      summary: "候选曲线分必须超过该绝对值，才开始获得排序奖励。",
+      logic: "它是跨查询固定标尺，不依赖当前批次的最高分。调高会过滤弱场响应，调低会让微弱主题接触也获得少量奖励。",
+      range: "建议 0.005 ~ 0.05，默认 0.015",
+      tone: "critical",
+    },
+    "geodesicRerank.geoRewardSaturation": {
+      label: "曲线奖励饱和点",
+      summary: "曲线分达到该绝对值时，绝对强度映射视为饱和；最终仍受证据等级奖励上限约束。",
+      logic: "调低会让中等曲线更快吃满等级预算；调高则要求更强的场响应。必须高于奖励起点。",
+      range: "建议 0.10 ~ 0.50，默认 0.25",
+      tone: "critical",
+    },
+    "geodesicRerank.directBonusCap": {
+      label: "直接证据奖励上限",
+      summary: "候选精确接触查询 seed/core 场节点时，最多可增加的绝对排序分。",
+      logic: "直接事实背景拥有最高排序权限。调高会加强实体与核心锚点召回，但过高仍可能造成大幅跨位。",
+      range: "建议 0.08 ~ 0.25，默认 0.18",
+      tone: "critical",
+    },
+    "geodesicRerank.structuralBonusCap": {
+      label: "结构证据奖励上限",
+      summary: "传播节点精确接触或形成多点连续走廊时，最多可增加的绝对排序分。",
+      logic: "用于叙事结构和关联链，默认应低于直接证据、明显高于纯主题晕轮。",
+      range: "建议 0.04 ~ 0.16，默认 0.10",
+      tone: "critical",
+    },
+    "geodesicRerank.thematicBonusCap": {
+      label: "主题证据奖励上限",
+      summary: "仅依赖连续核插值得到的泛主题共振，最多可增加的绝对排序分。",
+      logic: "这是防止“有关联但不是直接背景”的候选越权冲顶的关键上限。建议保持明显低于结构证据。",
+      range: "建议 0.01 ~ 0.06，默认 0.035",
+      tone: "critical",
+    },
+    "geodesicRerank.structuralContinuityMin": {
+      label: "结构走廊连续性门槛",
+      summary: "没有精确命中时，多个强接触要达到该连续性才能升级为 structural 证据。",
+      logic: "调高更严格，减少离散主题点伪装成结构；调低更容易承认松散叙事同构。",
+      range: "建议 0.03 ~ 0.25，默认 0.08",
+      tone: "sensitive",
+    },
+    "geodesicRerank.thematicMinPotential": {
+      label: "主题奖励最低峰值",
+      summary: "纯 thematic 候选的最大势能至少达到该值，才具备奖励资格。",
+      logic: "低于门槛仍保留曲线诊断，但不改变 KNN 排序。",
+      range: "建议 0.04 ~ 0.20，默认 0.08",
+      tone: "sensitive",
+    },
+    "geodesicRerank.thematicMaxIsolatedRatio": {
+      label: "主题奖励最大孤立率",
+      summary: "纯 thematic 接触的孤立程度不得超过该比例，否则不给排序奖励。",
+      logic: "调低要求更连续的主题走廊；调高允许单点语义共振参与排序。",
+      range: "建议 0.35 ~ 0.80，默认 0.65",
+      tone: "sensitive",
+    },
+    "geodesicRerank.directSemanticMinPotential": {
+      label: "语义直锚最低势能",
+      summary: "非精确 Tag 若直接采样到查询 seed/core，势能达到该值后才计入语义直锚。",
+      logic: "用于识别 GPT-5.6/Grok 4.5 等 ID 不同但实体语义直接对应的候选。该值同时不低于强接触阈值，避免弱主题近义词升级。",
+      range: "建议 0.12 ~ 0.30，默认 0.16",
+      tone: "critical",
+    },
+    "geodesicRerank.directSemanticSaturation": {
+      label: "语义直锚饱和势能",
+      summary: "多个语义直锚的平均势能达到该值时，直锚奖励强度视为饱和。",
+      logic: "调低会让强实体近义锚更快获得完整直接证据预算；必须高于语义直锚最低势能。",
+      range: "建议 0.25 ~ 0.60，默认 0.35",
+      tone: "critical",
+    },
+    "geodesicRerank.directSemanticMinContacts": {
+      label: "语义直锚最少接触数",
+      summary: "至少需要多少个候选 Tag 高强度采样到查询 seed/core，才能从 thematic 升级为 direct。",
+      logic: "默认 2，防止单个宽泛近义词越权。实体丰富的直接背景通常会同时命中多个查询锚点。",
+      range: "建议 2 ~ 4，默认 2",
+      tone: "critical",
+    },
+    "geodesicRerank.directConfidenceFloor": {
+      label: "语义直锚置信度下限",
+      summary: "通过多直锚判定后，排序奖励使用的最低置信度。",
+      logic: "文件级 Tag 较多时 weighted coverage 会稀释直接实体证据；该下限避免多个强直锚仍因长 Tag 链而奖励过弱。",
+      range: "建议 0.20 ~ 0.55，默认 0.35",
       tone: "sensitive",
     },
     "geodesicRerank.minFieldTags": {
@@ -767,6 +851,26 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
 
   if (key === "geodesicrerank.minstrongevidence") {
     return { min: 0, max: 10, step: 0.25 };
+  }
+
+  if (
+    key === "geodesicrerank.georewardfloor"
+    || key === "geodesicrerank.georewardsaturation"
+    || key === "geodesicrerank.directbonuscap"
+    || key === "geodesicrerank.structuralbonuscap"
+    || key === "geodesicrerank.thematicbonuscap"
+    || key === "geodesicrerank.structuralcontinuitymin"
+    || key === "geodesicrerank.thematicminpotential"
+    || key === "geodesicrerank.thematicmaxisolatedratio"
+    || key === "geodesicrerank.directsemanticminpotential"
+    || key === "geodesicrerank.directsemanticsaturation"
+    || key === "geodesicrerank.directconfidencefloor"
+  ) {
+    return { min: 0, max: 1, step: 0.005 };
+  }
+
+  if (key === "geodesicrerank.directsemanticmincontacts") {
+    return { min: 1, max: 8, step: 1 };
   }
 
   // 🛡️ V8: 测地线低可信地图回退开关

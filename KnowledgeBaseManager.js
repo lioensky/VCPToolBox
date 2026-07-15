@@ -1356,6 +1356,7 @@ class KnowledgeBaseManager {
         let searchVecFloat;
         let tagInfo = null;
         let energyField = null;
+        let energyFieldProvenance = null;
         let artifactBundle = null;
 
         try {
@@ -1373,6 +1374,7 @@ class KnowledgeBaseManager {
                         : new Float32Array(preparedBoostResult.vector);
                     tagInfo = preparedBoostResult.info || null;
                     energyField = preparedBoostResult.energyField || null;
+                    energyFieldProvenance = preparedBoostResult.energyFieldProvenance || null;
                 } else {
                     // 请求级固定资产包：增强与后续重排共享同一代际。
                     const boostResult = this.tagMemoEngine.applyTagBoost(
@@ -1389,6 +1391,8 @@ class KnowledgeBaseManager {
                     searchVecFloat = boostResult.vector;
                     tagInfo = boostResult.info;
                     energyField = boostResult.energyField || null;
+                    energyFieldProvenance = boostResult.energyFieldProvenance || null;
+                    artifactBundle = boostResult.artifactBundle || artifactBundle;
                 }
             } else {
                 searchVecFloat = vector instanceof Float32Array ? vector : new Float32Array(vector);
@@ -1430,6 +1434,7 @@ class KnowledgeBaseManager {
                 alpha: options.geoAlpha ?? options.alpha ?? geoConfig.alpha,
                 minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
                 energyField,
+                energyFieldProvenance,
                 config: geoConfig,
                 version: tagInfo?.effectiveVersion,
                 artifactBundle
@@ -1475,10 +1480,22 @@ class KnowledgeBaseManager {
                 original_knn_score: res.original_knn_score,
                 geo_score: res.geo_score,
                 normalized_geo: res.normalized_geo,
+                geo_bonus: res.geo_bonus,
+                geo_bonus_cap: res.geo_bonus_cap,
+                geo_effect: res.geo_effect,
+                geo_evidence_class: res.geo_evidence_class,
+                geo_evidence_reason: res.geo_evidence_reason,
+                geo_reward_eligible: res.geo_reward_eligible,
                 geo_hit_count: res.geo_hit_count,
                 geo_confidence: res.geo_confidence,
                 geo_curve_samples: res.geo_curve_samples,
                 geo_exact_hits: res.geo_exact_hits,
+                geo_direct_exact_hits: res.geo_direct_exact_hits,
+                geo_emergent_exact_hits: res.geo_emergent_exact_hits,
+                geo_direct_semantic_hits: res.geo_direct_semantic_hits,
+                geo_direct_semantic_strength: res.geo_direct_semantic_strength,
+                geo_reward_strength: res.geo_reward_strength,
+                geo_reward_confidence: res.geo_reward_confidence,
                 geo_strong_hits: res.geo_strong_hits,
                 geo_weighted_coverage: res.geo_weighted_coverage,
                 geo_mean_potential: res.geo_mean_potential,
@@ -1568,6 +1585,7 @@ class KnowledgeBaseManager {
         let searchVecFloat;
         let tagInfo = null;
         let energyField = null;
+        let energyFieldProvenance = null;
         let artifactBundle = null;
 
         if (tagBoost > 0 && this.tagMemoEngine) {
@@ -1582,6 +1600,7 @@ class KnowledgeBaseManager {
                     : new Float32Array(preparedBoostResult.vector);
                 tagInfo = preparedBoostResult.info || null;
                 energyField = preparedBoostResult.energyField || null;
+                energyFieldProvenance = preparedBoostResult.energyFieldProvenance || null;
             } else {
                 const boostResult = this.tagMemoEngine.applyTagBoost(
                     new Float32Array(vector),
@@ -1597,6 +1616,8 @@ class KnowledgeBaseManager {
                 searchVecFloat = boostResult.vector;
                 tagInfo = boostResult.info;
                 energyField = boostResult.energyField || null;
+                energyFieldProvenance = boostResult.energyFieldProvenance || null;
+                artifactBundle = boostResult.artifactBundle || artifactBundle;
             }
         } else {
             searchVecFloat = vector instanceof Float32Array ? vector : new Float32Array(vector);
@@ -1647,6 +1668,7 @@ class KnowledgeBaseManager {
                 alpha: options.geoAlpha ?? options.alpha ?? geoConfig.alpha,
                 minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
                 energyField,
+                energyFieldProvenance,
                 config: geoConfig,
                 version: tagInfo?.effectiveVersion,
                 artifactBundle
@@ -1674,10 +1696,22 @@ class KnowledgeBaseManager {
                 original_knn_score: res.original_knn_score,
                 geo_score: res.geo_score,
                 normalized_geo: res.normalized_geo,
+                geo_bonus: res.geo_bonus,
+                geo_bonus_cap: res.geo_bonus_cap,
+                geo_effect: res.geo_effect,
+                geo_evidence_class: res.geo_evidence_class,
+                geo_evidence_reason: res.geo_evidence_reason,
+                geo_reward_eligible: res.geo_reward_eligible,
                 geo_hit_count: res.geo_hit_count,
                 geo_confidence: res.geo_confidence,
                 geo_curve_samples: res.geo_curve_samples,
                 geo_exact_hits: res.geo_exact_hits,
+                geo_direct_exact_hits: res.geo_direct_exact_hits,
+                geo_emergent_exact_hits: res.geo_emergent_exact_hits,
+                geo_direct_semantic_hits: res.geo_direct_semantic_hits,
+                geo_direct_semantic_strength: res.geo_direct_semantic_strength,
+                geo_reward_strength: res.geo_reward_strength,
+                geo_reward_confidence: res.geo_reward_confidence,
                 geo_strong_hits: res.geo_strong_hits,
                 geo_weighted_coverage: res.geo_weighted_coverage,
                 geo_mean_potential: res.geo_mean_potential,
@@ -1747,7 +1781,9 @@ class KnowledgeBaseManager {
             return {
                 vector: vector instanceof Float32Array ? vector : new Float32Array(vector),
                 info: null,
-                energyField: null
+                energyField: null,
+                energyFieldProvenance: null,
+                artifactBundle: null
             };
         }
         const resolution = options.artifactBundle
@@ -1825,6 +1861,7 @@ class KnowledgeBaseManager {
             alpha: options.alpha ?? options.geoAlpha ?? geoConfig.alpha,
             minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
             energyField: options.energyField,
+            energyFieldProvenance: options.energyFieldProvenance,
             config: geoConfig,
             version: bundle?.version,
             artifactBundle: bundle

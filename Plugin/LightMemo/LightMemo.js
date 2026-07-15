@@ -413,6 +413,7 @@ class LightMemoPlugin {
 
         let tagBoostInfo = null;
         let tagBoostEnergyField = null;
+        let tagBoostEnergyFieldProvenance = null;
         let tagBoostArtifactBundle = null;
         // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的功能来增强向量
         if (tag_boost > 0 && this.vectorDBManager && typeof this.vectorDBManager.applyTagBoost === 'function') {
@@ -432,6 +433,7 @@ class LightMemoPlugin {
                 queryVector = boostResult.vector;
                 tagBoostInfo = boostResult.info;
                 tagBoostEnergyField = boostResult.energyField || null;
+                tagBoostEnergyFieldProvenance = boostResult.energyFieldProvenance || null;
                 tagBoostArtifactBundle = boostResult.artifactBundle || null;
 
                 if (tagBoostInfo) {
@@ -494,6 +496,7 @@ class LightMemoPlugin {
                 alpha: potentialFieldConfig.alpha,
                 minGeoSamples: potentialFieldConfig.minGeoSamples,
                 energyField: tagBoostEnergyField,
+                energyFieldProvenance: tagBoostEnergyFieldProvenance,
                 artifactBundle: tagBoostArtifactBundle
             });
 
@@ -696,7 +699,8 @@ class LightMemoPlugin {
             ? this.vectorDBManager.geodesicRerank(v91VectorRanked, {
                 artifactBundle: snapshot.bundle,
                 tagMemoVersion: 'v9',
-                energyField: boost.energyField
+                energyField: boost.energyField,
+                energyFieldProvenance: boost.energyFieldProvenance
             })
             : v91VectorRanked;
 
@@ -920,15 +924,26 @@ class LightMemoPlugin {
             const contactTags = Array.isArray(geoItem?.geo_contact_tags)
                 ? geoItem.geo_contact_tags.slice(0, 4).map(contact => {
                     const marker = contact.exact ? '=' : '~';
-                    return `${marker}${contact.name || contact.id}:${Number(contact.potential || 0).toFixed(2)}`;
+                    const source = contact.sourceType
+                        ? `@${contact.sourceType}${Number.isFinite(contact.hop) ? `:${contact.hop}` : ''}`
+                        : '';
+                    return `${marker}${contact.name || contact.id}:${Number(contact.potential || 0).toFixed(2)}${source}`;
                 }).join(', ')
                 : '';
             const diagnostics = geoItem && Number(geoItem.geo_score) > 0
-                ? `${Number(geoItem.geo_score).toFixed(4)}/${Number(geoItem.geo_confidence || 0).toFixed(3)}${contactTags ? `<br>${this._escapeMarkdownCell(contactTags)}` : ''}`
+                ? `${geoItem.geo_evidence_class || 'unknown'} ` +
+                    `${Number(geoItem.geo_score).toFixed(4)}/${Number(geoItem.geo_confidence || 0).toFixed(3)} ` +
+                    `+${Number(geoItem.geo_bonus || 0).toFixed(4)}≤${Number(geoItem.geo_bonus_cap || 0).toFixed(3)}` +
+                    `${Number(geoItem.geo_direct_semantic_hits || 0) > 0
+                        ? ` 直锚=${Number(geoItem.geo_direct_semantic_hits)}` +
+                            `/强${Number(geoItem.geo_direct_semantic_strength || 0).toFixed(2)}` +
+                            `/奖信${Number(geoItem.geo_reward_confidence || 0).toFixed(2)}`
+                        : ''}` +
+                    `${contactTags ? `<br>${this._escapeMarkdownCell(contactTags)}` : ''}`
                 : `守卫/0${geoItem?.geo_guard_reason ? `<br>${this._escapeMarkdownCell(geoItem.geo_guard_reason)}` : ''}`;
             text += `| ${index + 1} | ${this._escapeMarkdownCell(this._shortMemoryText(candidate?.text))} | ${[...sources.get(id)].join('+')} | ${fmt(knn)} | ${fmt(v91)} | ${fmt(geo)} | ${delta === null ? '—' : delta > 0 ? `+${delta}` : delta} | ${diagnostics} |${rerankRun ? ` ${fmt(reranked)} |` : ''}\n`;
         });
-        text += `\n说明: 正 ΔRank 表示开启测地线后相对同一 V9.1 向量基线前移；曲线分/置信度直接来自候选有序 Tag 曲线评估。守卫候选保留无测地线分数。Rerank 只重排同一对称候选池。\n`;
+        text += `\n说明: 正 ΔRank 表示开启测地线后相对同一 V9.1 向量基线前移；诊断依次显示证据等级、曲线分/置信度、实际奖励≤等级上限。direct/structural/thematic 的排序权限逐级降低；@seed/@core/@emergent:n 表示接触场节点的来源。守卫候选保留无测地线分数。Rerank 只重排同一对称候选池。\n`;
         text += `[--- 模式 A 结束 ---]\n`;
         return text;
     }
@@ -983,11 +998,22 @@ class LightMemoPlugin {
             const contactTags = Array.isArray(geoData?.geo_contact_tags)
                 ? geoData.geo_contact_tags.slice(0, 4).map(contact => {
                     const marker = contact.exact ? '=' : '~';
-                    return `${marker}${contact.name || contact.id}:${Number(contact.potential || 0).toFixed(2)}`;
+                    const source = contact.sourceType
+                        ? `@${contact.sourceType}${Number.isFinite(contact.hop) ? `:${contact.hop}` : ''}`
+                        : '';
+                    return `${marker}${contact.name || contact.id}:${Number(contact.potential || 0).toFixed(2)}${source}`;
                 }).join(', ')
                 : '';
             const diagnostics = geoData && Number(geoData.geo_score) > 0
-                ? `${Number(geoData.geo_score).toFixed(4)}/${Number(geoData.geo_confidence || 0).toFixed(3)}${contactTags ? `<br>${this._escapeMarkdownCell(contactTags)}` : ''}`
+                ? `${geoData.geo_evidence_class || 'unknown'} ` +
+                    `${Number(geoData.geo_score).toFixed(4)}/${Number(geoData.geo_confidence || 0).toFixed(3)} ` +
+                    `+${Number(geoData.geo_bonus || 0).toFixed(4)}≤${Number(geoData.geo_bonus_cap || 0).toFixed(3)}` +
+                    `${Number(geoData.geo_direct_semantic_hits || 0) > 0
+                        ? ` 直锚=${Number(geoData.geo_direct_semantic_hits)}` +
+                            `/强${Number(geoData.geo_direct_semantic_strength || 0).toFixed(2)}` +
+                            `/奖信${Number(geoData.geo_reward_confidence || 0).toFixed(2)}`
+                        : ''}` +
+                    `${contactTags ? `<br>${this._escapeMarkdownCell(contactTags)}` : ''}`
                 : `守卫/0${geoData?.geo_guard_reason ? `<br>${this._escapeMarkdownCell(geoData.geo_guard_reason)}` : ''}`;
             text += `| ${this._escapeMarkdownCell(this._shortMemoryText(items.get(id)?.text, 100))} | ${fmt(knnItem)} | ${fmt(v91Item)} | ${fmt(geoItem)} | ${diagnostics} |${rerankRun ? ` ${fmt(reranked)} |` : ''} ${owners.join('+') || '—'} |\n`;
         });
@@ -1147,12 +1173,20 @@ class LightMemoPlugin {
                 return {
                     vector: boostResult.vector instanceof Float32Array ? boostResult.vector : new Float32Array(boostResult.vector),
                     info: boostResult.info || null,
-                    energyField: boostResult.energyField || null
+                    energyField: boostResult.energyField || null,
+                    energyFieldProvenance: boostResult.energyFieldProvenance || null,
+                    artifactBundle: boostResult.artifactBundle || null
                 };
             }
         }
 
-        return { vector: baseVector, info: null, energyField: null };
+        return {
+            vector: baseVector,
+            info: null,
+            energyField: null,
+            energyFieldProvenance: null,
+            artifactBundle: null
+        };
     }
 
     _energyFieldSimilarity(fieldA, fieldB) {

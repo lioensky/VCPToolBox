@@ -39,6 +39,7 @@ class TagMemoEngine {
         this._isMatrixRebuilding = false;
         // 🌟 V8: 最近一次距离场缓存（仅保留兼容/诊断用途；搜索链路必须使用查询级 energyField，避免 await 并发污染）
         this.lastEnergyField = null;
+        this.lastEnergyFieldProvenance = null;
 
         // 🌟 V8.2-γ: 持久化的 Tag 对语义距离 (内存 Map: "a:b" → cosineSim)
         // 边视角的语义邻近度，与 tagIntrinsicResiduals (节点视角) 正交。
@@ -542,17 +543,28 @@ class TagMemoEngine {
         }
 
         // key 为 prev:node，V9.1 使用前驱边状态抑制立即回流。
+        // provenance 记录查询场节点来自显式核心、原始种子还是第几跳涌现，
+        // 让读出层区分“直接事实证据”和“传播后的主题共振”。
         let activeSpikes = new Map();
         const accumulatedEnergy = new Map();
+        const fieldProvenance = new Map();
         for (const tag of initialTags) {
             const key = `seed:${tag.id}`;
+            const sourceType = tag.isCore ? 'core' : 'seed';
             activeSpikes.set(key, {
                 nodeId: tag.id,
                 previousNodeId: null,
                 energy: tag.adjustedWeight,
-                momentum: BASE_MOMENTUM
+                momentum: BASE_MOMENTUM,
+                sourceType,
+                hop: 0
             });
             accumulatedEnergy.set(tag.id, tag.adjustedWeight * firWeights[0]);
+            fieldProvenance.set(Number(tag.id), {
+                sourceType,
+                hop: 0,
+                seedId: Number(tag.id)
+            });
         }
 
         const diagnostics = {
@@ -602,12 +614,18 @@ class TagMemoEngine {
                     if (existing) {
                         existing.energy += injectedCurrent;
                         existing.momentum = Math.max(existing.momentum, nextMomentum);
+                        if (spike.hop + 1 < existing.hop) {
+                            existing.hop = spike.hop + 1;
+                            existing.sourceType = spike.sourceType;
+                        }
                     } else {
                         nextSpikes.set(stateKey, {
                             nodeId: neighborId,
                             previousNodeId: spike.nodeId,
                             energy: injectedCurrent,
-                            momentum: nextMomentum
+                            momentum: nextMomentum,
+                            sourceType: spike.sourceType,
+                            hop: spike.hop + 1
                         });
                     }
                 }
@@ -628,6 +646,15 @@ class TagMemoEngine {
                     newSpike.nodeId,
                     (nodeEnergyThisHop.get(newSpike.nodeId) || 0) + newSpike.energy
                 );
+                const numericNodeId = Number(newSpike.nodeId);
+                const previousProvenance = fieldProvenance.get(numericNodeId);
+                if (!previousProvenance || newSpike.hop < previousProvenance.hop) {
+                    fieldProvenance.set(numericNodeId, {
+                        sourceType: 'emergent',
+                        originType: newSpike.sourceType,
+                        hop: newSpike.hop
+                    });
+                }
                 inFlightMass += newSpike.energy;
             }
             diagnostics.hopInFlightMass.push(inFlightMass);
@@ -645,7 +672,7 @@ class TagMemoEngine {
             activeSpikes = nextSpikes;
         }
 
-        return { accumulatedEnergy, diagnostics };
+        return { accumulatedEnergy, fieldProvenance, diagnostics };
     }
 
     /**
@@ -677,6 +704,7 @@ class TagMemoEngine {
         try {
             // 🌟 V8: 清空旧距离场，防止跨调用数据泄露
             this.lastEnergyField = null;
+            this.lastEnergyFieldProvenance = null;
 
             // [1] EPA 分析 (逻辑深度与共振) - 识别"你在哪个世界"
             const epaResult = this.epa.project(originalFloat32);
@@ -808,10 +836,12 @@ class TagMemoEngine {
                     srConfig
                 );
                 const accumulatedEnergy = propagation.accumulatedEnergy;
+                const fieldProvenance = propagation.fieldProvenance;
                 propagationDiagnostics = propagation.diagnostics;
 
-                // 查询级缓存仅用于返回；并发搜索必须继续显式传递 energyField。
+                // 查询级缓存仅用于返回；并发搜索必须继续显式传递 energyField 与 provenance。
                 this.lastEnergyField = accumulatedEnergy;
+                this.lastEnergyFieldProvenance = fieldProvenance;
 
                 // 4. 将涌现出来的高电位节点，重新塞回到 allTags
                 const allTagsMap = new Map();
@@ -923,7 +953,13 @@ class TagMemoEngine {
             injectGhosts(softGhostObjects, false);
 
             if (allTags.length === 0) {
-                return { vector: originalFloat32, info: null, energyField: this.lastEnergyField, artifactBundle };
+                return {
+                    vector: originalFloat32,
+                    info: null,
+                    energyField: this.lastEnergyField,
+                    energyFieldProvenance: this.lastEnergyFieldProvenance,
+                    artifactBundle
+                };
             }
 
             // [5] 批量获取向量与名称（chunked IN，避免 SQLite 参数数量上限）
@@ -1007,7 +1043,13 @@ class TagMemoEngine {
                 mag = Math.sqrt(mag);
                 if (mag > 1e-9) for (let d = 0; d < dim; d++) contextVec[d] /= mag;
             } else {
-                return { vector: originalFloat32, info: null, energyField: this.lastEnergyField, artifactBundle };
+                return {
+                    vector: originalFloat32,
+                    info: null,
+                    energyField: this.lastEnergyField,
+                    energyFieldProvenance: this.lastEnergyFieldProvenance,
+                    artifactBundle
+                };
             }
 
             // [6] 最终融合 (clamp 防止外推：boost > 1 时原向量会被反向叠加)
@@ -1025,6 +1067,7 @@ class TagMemoEngine {
             return {
                 vector: fused,
                 energyField: this.lastEnergyField,
+                energyFieldProvenance: this.lastEnergyFieldProvenance,
                 // 调用方必须把生成 energyField 的同一代资产传给读出层。
                 artifactBundle,
                 info: {
@@ -1066,7 +1109,13 @@ class TagMemoEngine {
 
         } catch (e) {
             console.error('[TagMemoEngine] TagMemo V6 CRITICAL FAIL:', e);
-            return { vector: originalFloat32, info: null, energyField: null, artifactBundle };
+            return {
+                vector: originalFloat32,
+                info: null,
+                energyField: null,
+                energyFieldProvenance: null,
+                artifactBundle
+            };
         }
     }
 
@@ -1107,8 +1156,10 @@ class TagMemoEngine {
      */
     geodesicRerank(candidates, options = {}) {
         let energyField = options.energyField;
+        let requestedFieldProvenance = options.energyFieldProvenance;
         if (!energyField && options.allowLastEnergyFieldFallback === true) {
             energyField = this.lastEnergyField;
+            requestedFieldProvenance = this.lastEnergyFieldProvenance;
             console.warn('[TagMemoEngine] ⚠️ geodesicRerank using lastEnergyField fallback by explicit opt-in; prefer query-scoped options.energyField.');
         }
         if (!(energyField instanceof Map) || energyField.size === 0 || !Array.isArray(candidates) || candidates.length === 0) {
@@ -1141,6 +1192,7 @@ class TagMemoEngine {
         const minStrongEvidence = Math.max(0, Number(geoConfig.minStrongEvidence ?? 1));
 
         // 连续场与曲线参数均提供内置默认值，现有配置无需迁移即可运行。
+        // 接触阈值必须先初始化，后续语义直锚门槛会以 strongContactThreshold 为安全下限。
         const fieldSimilarityThreshold = Math.max(-1, Math.min(1, Number(geoConfig.fieldSimilarityThreshold ?? 0.50)));
         const strongContactThreshold = Math.max(0, Math.min(1, Number(geoConfig.strongContactThreshold ?? 0.16)));
         const weakContactThreshold = Math.max(0, Math.min(strongContactThreshold, Number(geoConfig.weakContactThreshold ?? 0.06)));
@@ -1149,6 +1201,40 @@ class TagMemoEngine {
         const positionDecay = Math.max(0, Number(geoConfig.candidatePositionDecay ?? 0.035));
         const publicHubFloor = Math.max(0.05, Math.min(1, Number(geoConfig.publicHubFloor ?? 0.35)));
         const minClosureSimilarity = Math.max(-1, Math.min(1, Number(geoConfig.minClosureSimilarity ?? 0.20)));
+
+        // V9.2 读出校准：分数使用绝对标度映射，并按证据等级限制最大排序权限。
+        const geoRewardFloor = Math.max(0, Math.min(1, Number(geoConfig.geoRewardFloor ?? 0.015)));
+        const geoRewardSaturation = Math.max(
+            geoRewardFloor + 1e-6,
+            Math.min(1, Number(geoConfig.geoRewardSaturation ?? 0.25))
+        );
+        const directBonusCap = Math.max(0, Math.min(1, Number(geoConfig.directBonusCap ?? 0.18)));
+        const structuralBonusCap = Math.max(0, Math.min(directBonusCap, Number(geoConfig.structuralBonusCap ?? 0.10)));
+        const thematicBonusCap = Math.max(0, Math.min(structuralBonusCap, Number(geoConfig.thematicBonusCap ?? 0.035)));
+        const structuralContinuityMin = Math.max(0, Math.min(1, Number(geoConfig.structuralContinuityMin ?? 0.08)));
+        const thematicMinPotential = Math.max(0, Math.min(1, Number(geoConfig.thematicMinPotential ?? 0.08)));
+        const thematicMaxIsolatedRatio = Math.max(0, Math.min(1, Number(geoConfig.thematicMaxIsolatedRatio ?? 0.65)));
+        // 非精确 ID 也可以构成直接事实锚点，但必须同时满足“来自查询 seed/core、
+        // 势能足够高、至少多个独立接触”，避免单个宽泛近义词把主题共振抬成直接证据。
+        const directSemanticMinPotential = Math.max(
+            strongContactThreshold,
+            Math.min(1, Number(geoConfig.directSemanticMinPotential ?? 0.16))
+        );
+        const directSemanticSaturation = Math.max(
+            directSemanticMinPotential + 1e-6,
+            Math.min(1, Number(geoConfig.directSemanticSaturation ?? 0.35))
+        );
+        const directSemanticMinContacts = Math.max(
+            1,
+            Math.floor(Number(geoConfig.directSemanticMinContacts ?? 2))
+        );
+        const directConfidenceFloor = Math.max(
+            0,
+            Math.min(1, Number(geoConfig.directConfidenceFloor ?? 0.35))
+        );
+        const energyFieldProvenance = requestedFieldProvenance instanceof Map
+            ? requestedFieldProvenance
+            : new Map();
 
         const fallback = (reason, extra = {}) => {
             if (fallbackEnabled) {
@@ -1278,7 +1364,11 @@ class TagMemoEngine {
             const fieldNodes = retainedField
                 .map(item => {
                     const tag = tagById.get(item.id);
-                    return tag ? { ...item, ...tag } : null;
+                    const provenance = energyFieldProvenance.get(Number(item.id)) || {
+                        sourceType: 'unknown',
+                        hop: null
+                    };
+                    return tag ? { ...item, ...tag, provenance } : null;
                 })
                 .filter(Boolean);
             if (fieldNodes.length < minFieldTags) {
@@ -1320,6 +1410,7 @@ class TagMemoEngine {
                         / Math.max(1e-6, 1 - fieldSimilarityThreshold);
                     neighbors.push({
                         similarity,
+                        fieldNode,
                         potential: fieldNode.normalizedEnergy
                             * Math.pow(clamp01(local), fieldKernelExponent)
                             * hubSpecificity(fieldNode.id)
@@ -1331,11 +1422,19 @@ class TagMemoEngine {
                     ? selected.reduce((sum, item) => sum + item.potential, 0)
                         / Math.sqrt(selected.length)
                     : 0;
+                const exactProvenance = energyFieldProvenance.get(Number(tag.id)) || null;
+                const nearestFieldNode = selected[0]?.fieldNode || null;
 
                 const result = {
                     potential: clamp01(Math.max(exactPotential, interpolated)),
                     exact: exactPotential > 0,
-                    nearestSimilarity: selected[0]?.similarity || 0
+                    exactSourceType: exactProvenance?.sourceType || null,
+                    exactHop: Number.isFinite(exactProvenance?.hop) ? exactProvenance.hop : null,
+                    nearestSimilarity: selected[0]?.similarity || 0,
+                    nearestSourceType: nearestFieldNode?.provenance?.sourceType || null,
+                    nearestHop: Number.isFinite(nearestFieldNode?.provenance?.hop)
+                        ? nearestFieldNode.provenance.hop
+                        : null
                 };
                 sampledPotentialCache.set(tag.id, result);
                 return result;
@@ -1364,6 +1463,11 @@ class TagMemoEngine {
                 let contactedMass = 0;
                 let weightedPotential = 0;
                 let exactHits = 0;
+                let directExactHits = 0;
+                let emergentExactHits = 0;
+                let directSemanticHits = 0;
+                let directSemanticPotentialSum = 0;
+                let directSemanticMaxPotential = 0;
                 let strongHits = 0;
                 let weakHits = 0;
                 let maxPotential = 0;
@@ -1391,7 +1495,28 @@ class TagMemoEngine {
                         weakHits++;
                     }
                     if (fieldSample.potential >= strongContactThreshold) strongHits++;
-                    if (fieldSample.exact) exactHits++;
+                    if (fieldSample.exact) {
+                        exactHits++;
+                        if (fieldSample.exactSourceType === 'core' || fieldSample.exactSourceType === 'seed') {
+                            directExactHits++;
+                        } else {
+                            emergentExactHits++;
+                        }
+                    }
+                    const semanticSourceIsDirect = !fieldSample.exact
+                        && (
+                            fieldSample.nearestSourceType === 'core'
+                            || fieldSample.nearestSourceType === 'seed'
+                        )
+                        && fieldSample.potential >= directSemanticMinPotential;
+                    if (semanticSourceIsDirect) {
+                        directSemanticHits++;
+                        directSemanticPotentialSum += fieldSample.potential;
+                        directSemanticMaxPotential = Math.max(
+                            directSemanticMaxPotential,
+                            fieldSample.potential
+                        );
+                    }
                     if (fieldSample.potential > maxPotential) maxPotential = fieldSample.potential;
 
                     samples.push({
@@ -1403,7 +1528,11 @@ class TagMemoEngine {
                         closure,
                         potential: fieldSample.potential,
                         exact: fieldSample.exact,
-                        nearestSimilarity: fieldSample.nearestSimilarity
+                        exactSourceType: fieldSample.exactSourceType,
+                        exactHop: fieldSample.exactHop,
+                        nearestSimilarity: fieldSample.nearestSimilarity,
+                        nearestSourceType: fieldSample.nearestSourceType,
+                        nearestHop: fieldSample.nearestHop
                     });
                 }
 
@@ -1416,6 +1545,10 @@ class TagMemoEngine {
                         reason: 'no-trusted-field-contact',
                         sampleCount: samples.length,
                         exactHits,
+                        directExactHits,
+                        emergentExactHits,
+                        directSemanticHits,
+                        directSemanticStrength: 0,
                         strongHits,
                         weakHits
                     };
@@ -1496,12 +1629,60 @@ class TagMemoEngine {
                     + 0.15 * closureQuality
                 );
 
+                const directSemanticMeanPotential = directSemanticHits > 0
+                    ? directSemanticPotentialSum / directSemanticHits
+                    : 0;
+                const directSemanticStrength = directSemanticHits >= directSemanticMinContacts
+                    ? clamp01(
+                        (directSemanticMeanPotential - directSemanticMinPotential)
+                        / (directSemanticSaturation - directSemanticMinPotential)
+                    )
+                    : 0;
+
+                let evidenceClass = 'thematic';
+                let evidenceReason = 'interpolated-theme-contact';
+                if (directExactHits > 0) {
+                    evidenceClass = 'direct';
+                    evidenceReason = 'query-seed-or-core-exact-contact';
+                } else if (directSemanticHits >= directSemanticMinContacts) {
+                    evidenceClass = 'direct';
+                    evidenceReason = 'multi-query-anchor-semantic-contact';
+                } else if (
+                    exactHits > 0
+                    || (
+                        strongHits >= 2
+                        && continuity >= structuralContinuityMin
+                        && isolatedRatio <= thematicMaxIsolatedRatio
+                    )
+                ) {
+                    evidenceClass = 'structural';
+                    evidenceReason = exactHits > 0
+                        ? 'propagated-exact-contact'
+                        : 'multi-contact-continuous-corridor';
+                }
+
+                // 纯主题晕轮必须至少具备可解释的势能与非孤立接触，否则只保留诊断，不授予排序权。
+                const rewardEligible = evidenceClass !== 'thematic'
+                    || (
+                        maxPotential >= thematicMinPotential
+                        && isolatedRatio <= thematicMaxIsolatedRatio
+                    );
+
                 return {
                     candidate,
                     originalIndex,
                     geoScore,
                     confidence: contactConfidence,
+                    evidenceClass,
+                    evidenceReason,
+                    rewardEligible,
                     exactHits,
+                    directExactHits,
+                    emergentExactHits,
+                    directSemanticHits,
+                    directSemanticStrength,
+                    directSemanticMeanPotential,
+                    directSemanticMaxPotential,
                     strongHits,
                     weakHits,
                     sampleCount: samples.length,
@@ -1523,7 +1704,13 @@ class TagMemoEngine {
                             name: sample.name,
                             potential: sample.potential,
                             exact: sample.exact,
-                            position: sample.position
+                            position: sample.position,
+                            sourceType: sample.exact
+                                ? sample.exactSourceType
+                                : sample.nearestSourceType,
+                            hop: sample.exact
+                                ? sample.exactHop
+                                : sample.nearestHop
                         }))
                 };
             });
@@ -1578,17 +1765,32 @@ class TagMemoEngine {
 
             const reranked = geoData.map(item => {
                 const knnScore = Number(item.candidate.score) || 0;
+                // 不再把批内冠军强制归一化为 1；相同绝对曲线分跨查询获得相同读出强度。
                 const normalizedGeo = item.geoScore > 0
-                    ? clamp01(item.geoScore / Math.max(1e-9, maxGeo))
+                    ? clamp01(
+                        (item.geoScore - geoRewardFloor)
+                        / (geoRewardSaturation - geoRewardFloor)
+                    )
                     : 0;
-                // 第一阶段只奖励，不以 batch min-max 的最低点惩罚弱正证据。
-                // maxGeo 低于可信基准时按比例收缩整批奖励，避免微弱场被归一化成满分。
-                const batchTrust = minGeoScore > 0 ? clamp01(maxGeo / minGeoScore) : 1;
-                const effectiveAlpha = mixAlpha * item.confidence * batchTrust;
-                const geoBonus = item.geoScore > 0
-                    ? effectiveAlpha * normalizedGeo * Math.max(0, 1 - knnScore)
+                const bonusCap = item.evidenceClass === 'direct'
+                    ? directBonusCap
+                    : item.evidenceClass === 'structural'
+                        ? structuralBonusCap
+                        : thematicBonusCap;
+                const directSemanticQualified = item.evidenceClass === 'direct'
+                    && (item.directSemanticHits || 0) >= directSemanticMinContacts;
+                const rewardStrength = directSemanticQualified
+                    ? Math.max(normalizedGeo, item.directSemanticStrength || 0)
+                    : normalizedGeo;
+                const rewardConfidence = directSemanticQualified
+                    ? Math.max(item.confidence || 0, directConfidenceFloor)
+                    : item.confidence;
+                const requestedBonus = item.rewardEligible
+                    ? mixAlpha * rewardConfidence * rewardStrength
                     : 0;
+                const geoBonus = Math.min(bonusCap, Math.max(0, requestedBonus));
                 const finalScore = knnScore + geoBonus;
+                const geoEffect = geoBonus > 0 ? 'boost' : 'neutral';
 
                 return {
                     ...item.candidate,
@@ -1596,10 +1798,22 @@ class TagMemoEngine {
                     original_knn_score: knnScore,
                     geo_score: item.geoScore,
                     normalized_geo: normalizedGeo,
+                    geo_bonus: geoBonus,
+                    geo_bonus_cap: bonusCap,
+                    geo_effect: geoEffect,
+                    geo_evidence_class: item.evidenceClass || 'neutral',
+                    geo_evidence_reason: item.evidenceReason || item.reason || null,
+                    geo_reward_eligible: item.rewardEligible === true,
                     geo_hit_count: item.weakHits || 0,
                     geo_confidence: item.confidence,
                     geo_curve_samples: item.sampleCount || 0,
                     geo_exact_hits: item.exactHits || 0,
+                    geo_direct_exact_hits: item.directExactHits || 0,
+                    geo_emergent_exact_hits: item.emergentExactHits || 0,
+                    geo_direct_semantic_hits: item.directSemanticHits || 0,
+                    geo_direct_semantic_strength: item.directSemanticStrength || 0,
+                    geo_reward_strength: rewardStrength,
+                    geo_reward_confidence: rewardConfidence || 0,
                     geo_strong_hits: item.strongHits || 0,
                     geo_weighted_coverage: item.weightedCoverage || 0,
                     geo_mean_potential: item.meanPotential || 0,
@@ -1619,9 +1833,15 @@ class TagMemoEngine {
             );
 
             const leader = [...contributors].sort((a, b) => b.geoScore - a.geoScore)[0];
+            const evidenceCounts = geoData.reduce((counts, item) => {
+                const key = item.evidenceClass || 'neutral';
+                counts[key] = (counts[key] || 0) + 1;
+                return counts;
+            }, {});
             console.log(
-                `[TagMemo-V9.1 GeodesicCurve] α=${mixAlpha.toFixed(3)}, candidates=${candidates.length}, ` +
+                `[TagMemo-V9.2 GeodesicCurve] α=${mixAlpha.toFixed(3)}, candidates=${candidates.length}, ` +
                 `contributors=${contributors.length}, fieldTags=${fieldNodes.length}, ` +
+                `evidence=direct:${evidenceCounts.direct || 0}/structural:${evidenceCounts.structural || 0}/thematic:${evidenceCounts.thematic || 0}, ` +
                 `curveRange=${minPositiveGeo.toFixed(4)}..${maxGeo.toFixed(4)}, ` +
                 `leaderChunk=${Number(leader?.candidate?.id)}, leaderCoverage=${(leader?.weightedCoverage || 0).toFixed(3)}, ` +
                 `leaderContinuity=${(leader?.continuity || 0).toFixed(3)}, leaderContacts=${leader?.weakHits || 0}`
