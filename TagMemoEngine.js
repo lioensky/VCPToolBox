@@ -1040,34 +1040,29 @@ class TagMemoEngine {
     }
 
     /**
-     * 🌟 V8: 测地线重排 (Geodesic Rerank)
-     * 复用 Spike Propagation 已计算的 accumulatedEnergy 距离场，
-     * 对 KNN 候选 chunk 做基于"地形贴地距离"的二次重排。
+     * V9.1 查询诱导式曲线测地重排。
      *
-     * 四层防御链：
-     *   L-1: Tag 能量场/候选采样可信度不足 → 整体退化（返回原数组）
-     *   L0: lastEnergyField 为空 → 整体退化（返回原数组）
-     *   L1: chunk 的 hitCount < minGeoSamples → 该 chunk 的 geoScore = 0
-     *   L2: 所有 chunk 的 maxGeo = 0 → 归一化跳过，全部走纯 KNN
+     * 不再把“候选 Tag ID 与离散 energyField 的交集数量”当作距离。每篇候选文件的
+     * 有序 Tag 链是一条待检验曲线；查询能量场通过 Tag 向量局部核插值到这条曲线上，
+     * 再联合候选自身的 Tag 质量、连续性、拓扑导通、语义弧长与 Chunk 闭合度计算分数。
      *
-     * @param {Array<{id: BigInt|Number, score: Number}>} candidates - 原始 KNN 搜索结果
-     * @param {object} options - 配置项
-     * @param {number} [options.alpha] - 测地线分数混合权重 (0=纯KNN, 1=纯测地线)，默认读取 rag_params.json: KnowledgeBaseManager.geodesicRerank.alpha
-     * @param {number} [options.minGeoSamples] - 最小采样密度门槛，默认读取 rag_params.json: KnowledgeBaseManager.geodesicRerank.minGeoSamples
+     * 守卫原则：
+     *   - 查询场本身不可信时整批回退；
+     *   - 候选既无精确接触也无可信连续场接触时不获得测地贡献；
+     *   - 全批无贡献或缺乏区分度时保持原始顺序；
+     *   - 无贡献候选保留原 KNN 分数，不被测地混合无差别压低。
+     *
+     * @param {Array<{id: BigInt|Number, score: Number}>} candidates 原始候选
+     * @param {object} options 查询级 energyField 与热配置
      * @returns {Array} 重排后的完整数组（不截断）
      */
     geodesicRerank(candidates, options = {}) {
         let energyField = options.energyField;
         if (!energyField && options.allowLastEnergyFieldFallback === true) {
             energyField = this.lastEnergyField;
-            console.warn('[TagMemoEngine] ⚠️ geodesicRerank using lastEnergyField fallback by explicit opt-in; prefer query-scoped options.energyField to avoid cross-query contamination.');
+            console.warn('[TagMemoEngine] ⚠️ geodesicRerank using lastEnergyField fallback by explicit opt-in; prefer query-scoped options.energyField.');
         }
-
-        // L0: 距离场为空 → 整体退化
-        if (!energyField || energyField.size === 0) {
-            return candidates;
-        }
-        if (!candidates || candidates.length === 0) {
+        if (!(energyField instanceof Map) || energyField.size === 0 || !Array.isArray(candidates) || candidates.length === 0) {
             return candidates;
         }
 
@@ -1075,200 +1070,476 @@ class TagMemoEngine {
             || this.ragParams?.KnowledgeBaseManager?.potentialFieldRerank
             || this.ragParams?.KnowledgeBaseManager?.geodesicRerank
             || {};
-        const rawAlpha = options.alpha ?? geoConfig.alpha;
-        const rawMinGeoSamples = options.minGeoSamples ?? geoConfig.minGeoSamples;
-
-        if (!Number.isFinite(Number(rawAlpha)) || !Number.isFinite(Number(rawMinGeoSamples))) {
+        const alpha = Number(options.alpha ?? geoConfig.alpha);
+        const minGeoSamples = Number(options.minGeoSamples ?? geoConfig.minGeoSamples);
+        if (!Number.isFinite(alpha) || !Number.isFinite(minGeoSamples)) {
             console.warn('[TagMemoEngine] geodesicRerank missing valid alpha/minGeoSamples config; falling back to original order.');
             return candidates;
         }
 
-        const alpha = Math.max(0, Math.min(1, Number(rawAlpha)));
-        const minGeoSamples = Math.max(1, Math.floor(Number(rawMinGeoSamples)));
-
-        const fallbackToKnnOnLowTrust = geoConfig.fallbackToKnnOnLowTrust !== false
+        const mixAlpha = Math.max(0, Math.min(1, alpha));
+        const sampleScale = Math.max(1, Math.floor(minGeoSamples));
+        const fallbackEnabled = geoConfig.fallbackToKnnOnLowTrust !== false
             && geoConfig.fallbackToKnnOnLowTrust !== 0;
-        const minFieldTags = Math.max(1, Math.floor(Number(geoConfig.minFieldTags ?? minGeoSamples)));
+        const minFieldTags = Math.max(1, Math.floor(Number(geoConfig.minFieldTags ?? sampleScale)));
         const minFieldEntropy = Math.max(0, Math.min(1, Number(geoConfig.minFieldEntropy ?? 0.12)));
-        const minGeoCoverageRatio = Math.max(0, Math.min(1, Number(geoConfig.minGeoCoverageRatio ?? 0.2)));
-        const minMaxGeoScore = Math.max(0, Number(geoConfig.minMaxGeoScore ?? 0.01));
-        const minGeoScoreSpread = Math.max(0, Number(geoConfig.minGeoScoreSpread ?? 0.03));
+        const minCandidateCoverage = Math.max(0, Math.min(1, Number(geoConfig.minGeoCoverageRatio ?? 0.2)));
+        const minGeoScore = Math.max(0, Number(geoConfig.minMaxGeoScore ?? 0.01));
+        const minGeoSpread = Math.max(0, Number(geoConfig.minGeoScoreSpread ?? 0.03));
 
-        const fallbackToKnn = (reason, extra = {}) => {
-            if (fallbackToKnnOnLowTrust) {
-                const extraText = Object.entries(extra)
+        // 连续场与曲线参数均提供内置默认值，现有配置无需迁移即可运行。
+        const fieldSimilarityThreshold = Math.max(-1, Math.min(1, Number(geoConfig.fieldSimilarityThreshold ?? 0.50)));
+        const strongContactThreshold = Math.max(0, Math.min(1, Number(geoConfig.strongContactThreshold ?? 0.16)));
+        const weakContactThreshold = Math.max(0, Math.min(strongContactThreshold, Number(geoConfig.weakContactThreshold ?? 0.06)));
+        const fieldKernelExponent = Math.max(0.25, Number(geoConfig.fieldKernelExponent ?? 2.0));
+        const maxFieldNeighbors = Math.max(1, Math.floor(Number(geoConfig.maxFieldNeighbors ?? 4)));
+        const positionDecay = Math.max(0, Number(geoConfig.candidatePositionDecay ?? 0.035));
+        const publicHubFloor = Math.max(0.05, Math.min(1, Number(geoConfig.publicHubFloor ?? 0.35)));
+        const minClosureSimilarity = Math.max(-1, Math.min(1, Number(geoConfig.minClosureSimilarity ?? 0.20)));
+
+        const fallback = (reason, extra = {}) => {
+            if (fallbackEnabled) {
+                const details = Object.entries(extra)
                     .map(([key, value]) => `${key}=${typeof value === 'number' ? value.toFixed(4) : value}`)
                     .join(', ');
-                console.log(`[TagMemo-V8 Geodesic] 🛡️ Low-trust map fallback to KNN: ${reason}${extraText ? ` (${extraText})` : ''}`);
-                return candidates;
+                console.warn(`[TagMemo-V9.1 GeodesicCurve] 🛡️ Fallback to original order: ${reason}${details ? ` (${details})` : ''}.`);
             }
-            return null;
+            return candidates;
         };
 
-        // L-1a: 查询级 Tag 能量场太稀疏或熵过低时，视为地图可信度不足。
-        if (fallbackToKnnOnLowTrust) {
-            if (energyField.size < minFieldTags) {
-                return fallbackToKnn('energy field has too few activated tags', {
-                    fieldTags: energyField.size,
-                    minFieldTags
-                });
-            }
-
-            let fieldEnergySum = 0;
-            const fieldEnergies = [];
-            for (const value of energyField.values()) {
-                const energy = Math.max(0, Number(value) || 0);
-                if (energy <= 0) continue;
-                fieldEnergies.push(energy);
-                fieldEnergySum += energy;
-            }
-
-            if (fieldEnergySum <= 0 || fieldEnergies.length < minFieldTags) {
-                return fallbackToKnn('energy field has insufficient positive mass', {
-                    positiveTags: fieldEnergies.length,
-                    minFieldTags
-                });
-            }
-
-            let entropy = 0;
-            for (const energy of fieldEnergies) {
-                const p = energy / fieldEnergySum;
-                entropy -= p * Math.log(p);
-            }
-            const normalizedEntropy = fieldEnergies.length > 1
-                ? entropy / Math.log(fieldEnergies.length)
-                : 0;
-
-            if (normalizedEntropy < minFieldEntropy) {
-                return fallbackToKnn('energy field entropy too low', {
-                    entropy: normalizedEntropy,
-                    minFieldEntropy
-                });
-            }
+        const positiveField = [];
+        let fieldEnergySum = 0;
+        let maxFieldEnergy = 0;
+        for (const [rawId, rawEnergy] of energyField.entries()) {
+            const id = Number(rawId);
+            const energy = Math.max(0, Number(rawEnergy) || 0);
+            if (!Number.isFinite(id) || id <= 0 || energy <= 0) continue;
+            positiveField.push({ id, energy });
+            fieldEnergySum += energy;
+            if (energy > maxFieldEnergy) maxFieldEnergy = energy;
+        }
+        if (positiveField.length < minFieldTags || fieldEnergySum <= 0 || maxFieldEnergy <= 0) {
+            return fallback('query energy field has insufficient positive support', {
+                positiveTags: positiveField.length,
+                minFieldTags
+            });
         }
 
+        let entropy = 0;
+        for (const item of positiveField) {
+            const p = item.energy / fieldEnergySum;
+            entropy -= p * Math.log(p);
+            item.normalizedEnergy = item.energy / maxFieldEnergy;
+        }
+        const normalizedEntropy = positiveField.length > 1 ? entropy / Math.log(positiveField.length) : 0;
+        if (fallbackEnabled && normalizedEntropy < minFieldEntropy) {
+            return fallback('query energy field entropy too low', { entropy: normalizedEntropy, minFieldEntropy });
+        }
+
+        const cosine = (left, right) => {
+            if (!left || !right || left.length !== right.length) return 0;
+            let dot = 0;
+            let normLeft = 0;
+            let normRight = 0;
+            for (let i = 0; i < left.length; i++) {
+                dot += left[i] * right[i];
+                normLeft += left[i] * left[i];
+                normRight += right[i] * right[i];
+            }
+            return normLeft > 1e-12 && normRight > 1e-12
+                ? dot / (Math.sqrt(normLeft) * Math.sqrt(normRight))
+                : 0;
+        };
+        const clamp01 = value => Math.max(0, Math.min(1, Number(value) || 0));
+
         try {
-            // Step 1: 批量查询 chunk_id → file_id 映射（chunked IN，避免 SQLite 参数数量上限）
-            const chunkIds = candidates.map(c => Number(c.id)).filter(Number.isFinite);
-            const chunkFileRows = this._queryByChunks('SELECT id, file_id FROM chunks WHERE id', chunkIds);
-            const chunkFileMap = new Map(chunkFileRows.map(r => [r.id, r.file_id]));
+            const dimension = Number(this.config?.dimension) || 0;
+            if (dimension <= 0) return fallback('invalid vector dimension', { dimension });
 
-            // Step 2: 收集所有需要查询的 file_ids，批量查询 file_id → tag_id[] 映射
-            const uniqueFileIds = [...new Set(chunkFileRows.map(r => r.file_id))];
-            const fileTagsMap = new Map(); // file_id → [tag_id, ...]
+            // 一次性取得候选 Chunk、文件归属和终点向量。
+            const chunkIds = [...new Set(candidates.map(item => Number(item.id)).filter(Number.isFinite))];
+            const chunkRows = this._queryByChunks(
+                'SELECT id, file_id, vector FROM chunks WHERE id',
+                chunkIds
+            );
+            const chunkById = new Map(chunkRows.map(row => [Number(row.id), row]));
+            const fileIds = [...new Set(chunkRows.map(row => Number(row.file_id)).filter(Number.isFinite))];
 
-            if (uniqueFileIds.length > 0) {
-                const fileTagRows = this._queryByChunks(
-                    'SELECT file_id, tag_id FROM file_tags WHERE file_id',
-                    uniqueFileIds
-                );
+            // position 是候选曲线的方向；旧 position=0 数据按 tag_id 稳定排序但降低方向可信度。
+            const fileTagRows = fileIds.length > 0
+                ? this._queryByChunks(
+                    'SELECT file_id, tag_id, position FROM file_tags WHERE file_id',
+                    fileIds,
+                    ' ORDER BY file_id, position ASC, tag_id ASC'
+                )
+                : [];
+            const chainsByFile = new Map();
+            const candidateTagIds = new Set();
+            for (const row of fileTagRows) {
+                const fileId = Number(row.file_id);
+                const tagId = Number(row.tag_id);
+                if (!Number.isFinite(fileId) || !Number.isFinite(tagId)) continue;
+                if (!chainsByFile.has(fileId)) chainsByFile.set(fileId, []);
+                chainsByFile.get(fileId).push({
+                    id: tagId,
+                    position: Math.max(0, Number(row.position) || 0)
+                });
+                candidateTagIds.add(tagId);
+            }
 
-                for (const row of fileTagRows) {
-                    if (!fileTagsMap.has(row.file_id)) {
-                        fileTagsMap.set(row.file_id, []);
+            const allTagIds = [...new Set([
+                ...positiveField.map(item => item.id),
+                ...candidateTagIds
+            ])];
+            const tagRows = this._queryByChunks(
+                'SELECT id, name, vector FROM tags WHERE id',
+                allTagIds
+            );
+            const tagById = new Map();
+            for (const row of tagRows) {
+                const vector = this._decodeVectorBlob(row.vector, dimension, `geodesic-tag:${row.id}`);
+                if (vector) tagById.set(Number(row.id), { id: Number(row.id), name: row.name, vector });
+            }
+
+            const fieldNodes = positiveField
+                .map(item => {
+                    const tag = tagById.get(item.id);
+                    return tag ? { ...item, ...tag } : null;
+                })
+                .filter(Boolean);
+            if (fieldNodes.length < minFieldTags) {
+                return fallback('query field vectors unavailable', {
+                    fieldVectors: fieldNodes.length,
+                    minFieldTags
+                });
+            }
+
+            // 用全图传播核的入流近似公共枢纽度；查询内只扫描一次活动资产。
+            const bundle = this.getArtifactBundleSnapshot(options.version || 'v9');
+            const kernel = bundle?.propagationKernel || this.tagCooccurrenceMatrix || new Map();
+            const residuals = bundle?.residualMap || this.tagIntrinsicResiduals || new Map();
+            const inbound = new Map();
+            let maxInbound = 0;
+            if (kernel instanceof Map) {
+                for (const edges of kernel.values()) {
+                    if (!(edges instanceof Map)) continue;
+                    for (const [targetId, conductance] of edges.entries()) {
+                        const next = (inbound.get(Number(targetId)) || 0) + Math.max(0, Number(conductance) || 0);
+                        inbound.set(Number(targetId), next);
+                        if (next > maxInbound) maxInbound = next;
                     }
-                    fileTagsMap.get(row.file_id).push(row.tag_id);
                 }
             }
 
-            // Step 3: 对每个候选计算 geoScore
-            let maxGeo = 0;
-            let minPositiveGeo = Infinity;
-            let geoContributionCount = 0;
-            let geoHitCountSum = 0;
-            const geoData = candidates.map(c => {
-                const chunkId = Number(c.id);
-                const fileId = chunkFileMap.get(chunkId);
-                if (fileId === undefined) {
-                    return { candidate: c, geoScore: 0, hitCount: 0, totalEnergy: 0 };
-                }
+            const hubSpecificity = tagId => {
+                if (maxInbound <= 0) return 1;
+                const ratio = (inbound.get(tagId) || 0) / maxInbound;
+                return Math.max(publicHubFloor, 1 - Math.sqrt(clamp01(ratio)));
+            };
 
-                const tagIds = fileTagsMap.get(fileId) || [];
-                let totalEnergy = 0;
-                let hitCount = 0;
+            // 对任意候选 Tag 向量采样查询连续势场。精确 ID 接触保留确定性；
+            // 非精确接触只接受局部高相似邻域，避免全局语义背景铺满所有候选。
+            const samplePotential = tag => {
+                const exact = energyField.get(tag.id);
+                const exactPotential = exact === undefined
+                    ? 0
+                    : clamp01((Number(exact) || 0) / maxFieldEnergy);
 
-                for (const tid of tagIds) {
-                    const energy = energyField.get(tid);
-                    if (energy !== undefined) {
-                        totalEnergy += energy;
-                        hitCount++;
-                    }
-                }
-
-                // L1: 最小采样密度门槛
-                const geoScore = hitCount >= minGeoSamples
-                    ? totalEnergy / hitCount
-                    : 0; // 密度不足 → 放弃测地线评估，退化为纯 KNN
-
-                if (geoScore > 0) {
-                    geoContributionCount++;
-                    geoHitCountSum += hitCount;
-                    if (geoScore > maxGeo) maxGeo = geoScore;
-                    if (geoScore < minPositiveGeo) minPositiveGeo = geoScore;
-                }
-
-                return { candidate: c, geoScore, hitCount, totalEnergy };
-            });
-
-            // L2: 所有 chunk 的 maxGeo = 0 → 归一化跳过，全部走纯 KNN 排序
-            if (maxGeo === 0) {
-                return candidates;
-            }
-
-            // L-1b: 候选采样视角的地图可信度门控。覆盖率/强度/区分度不足时，回归 KNN。
-            if (fallbackToKnnOnLowTrust) {
-                const geoCoverageRatio = geoContributionCount / candidates.length;
-                const avgGeoHitCount = geoContributionCount > 0 ? geoHitCountSum / geoContributionCount : 0;
-                const geoScoreSpread = Number.isFinite(minPositiveGeo) ? maxGeo - minPositiveGeo : 0;
-
-                if (geoCoverageRatio < minGeoCoverageRatio) {
-                    return fallbackToKnn('candidate geo coverage too low', {
-                        coverage: geoCoverageRatio,
-                        minGeoCoverageRatio,
-                        avgGeoHitCount
+                const neighbors = [];
+                for (const fieldNode of fieldNodes) {
+                    if (fieldNode.id === tag.id) continue;
+                    const similarity = cosine(tag.vector, fieldNode.vector);
+                    if (similarity < fieldSimilarityThreshold) continue;
+                    const local = (similarity - fieldSimilarityThreshold)
+                        / Math.max(1e-6, 1 - fieldSimilarityThreshold);
+                    neighbors.push({
+                        similarity,
+                        potential: fieldNode.normalizedEnergy
+                            * Math.pow(clamp01(local), fieldKernelExponent)
+                            * hubSpecificity(fieldNode.id)
                     });
                 }
-
-                if (maxGeo < minMaxGeoScore) {
-                    return fallbackToKnn('max geo score too low', {
-                        maxGeo,
-                        minMaxGeoScore
-                    });
-                }
-
-                if (geoScoreSpread < minGeoScoreSpread) {
-                    return fallbackToKnn('geo score spread too low', {
-                        spread: geoScoreSpread,
-                        minGeoScoreSpread
-                    });
-                }
-            }
-
-            // Step 4: 归一化并混合分数
-            const reranked = geoData.map(d => {
-                const normalizedGeo = d.geoScore / maxGeo; // [0, 1]
-                const knnScore = d.candidate.score || 0;
-                const finalScore = (1 - alpha) * knnScore + alpha * normalizedGeo;
+                neighbors.sort((a, b) => b.potential - a.potential);
+                const selected = neighbors.slice(0, maxFieldNeighbors);
+                const interpolated = selected.length > 0
+                    ? selected.reduce((sum, item) => sum + item.potential, 0)
+                        / Math.sqrt(selected.length)
+                    : 0;
 
                 return {
-                    ...d.candidate,
-                    score: finalScore,
-                    original_knn_score: knnScore,
-                    geo_score: d.geoScore,
-                    normalized_geo: normalizedGeo,
-                    geo_hit_count: d.hitCount
+                    potential: clamp01(Math.max(exactPotential, interpolated)),
+                    exact: exactPotential > 0,
+                    nearestSimilarity: selected[0]?.similarity || 0
+                };
+            };
+
+            const geoData = candidates.map((candidate, originalIndex) => {
+                const chunkId = Number(candidate.id);
+                const chunkRow = chunkById.get(chunkId);
+                const chain = chunkRow ? (chainsByFile.get(Number(chunkRow.file_id)) || []) : [];
+                const chunkVector = chunkRow
+                    ? this._decodeVectorBlob(chunkRow.vector, dimension, `geodesic-chunk:${chunkId}`)
+                    : null;
+
+                if (!chunkRow || !chunkVector || chain.length === 0) {
+                    return {
+                        candidate,
+                        originalIndex,
+                        geoScore: 0,
+                        confidence: 0,
+                        reason: 'missing-chunk-vector-or-tag-chain'
+                    };
+                }
+
+                const samples = [];
+                let totalCandidateMass = 0;
+                let contactedMass = 0;
+                let weightedPotential = 0;
+                let exactHits = 0;
+                let strongHits = 0;
+                let weakHits = 0;
+                let maxPotential = 0;
+
+                for (let index = 0; index < chain.length; index++) {
+                    const chainNode = chain[index];
+                    const tag = tagById.get(chainNode.id);
+                    if (!tag) continue;
+
+                    const closure = clamp01(
+                        (cosine(tag.vector, chunkVector) - minClosureSimilarity)
+                        / Math.max(1e-6, 1 - minClosureSimilarity)
+                    );
+                    const residual = Math.max(0.5, Math.min(2, Number(residuals?.get(tag.id)) || 1));
+                    const positional = Math.exp(-positionDecay * Math.max(0, chainNode.position - 1));
+                    const specificity = hubSpecificity(tag.id);
+                    const candidateMass = Math.max(0.02, closure * residual * positional * specificity);
+                    const fieldSample = samplePotential(tag);
+                    const contacted = fieldSample.potential >= weakContactThreshold;
+
+                    totalCandidateMass += candidateMass;
+                    if (contacted) {
+                        contactedMass += candidateMass;
+                        weightedPotential += candidateMass * fieldSample.potential;
+                        weakHits++;
+                    }
+                    if (fieldSample.potential >= strongContactThreshold) strongHits++;
+                    if (fieldSample.exact) exactHits++;
+                    if (fieldSample.potential > maxPotential) maxPotential = fieldSample.potential;
+
+                    samples.push({
+                        id: tag.id,
+                        name: tag.name,
+                        vector: tag.vector,
+                        position: chainNode.position || index + 1,
+                        candidateMass,
+                        closure,
+                        potential: fieldSample.potential,
+                        exact: fieldSample.exact,
+                        nearestSimilarity: fieldSample.nearestSimilarity
+                    });
+                }
+
+                if (samples.length === 0 || totalCandidateMass <= 0 || weakHits === 0) {
+                    return {
+                        candidate,
+                        originalIndex,
+                        geoScore: 0,
+                        confidence: 0,
+                        reason: 'no-trusted-field-contact',
+                        sampleCount: samples.length,
+                        exactHits,
+                        strongHits,
+                        weakHits
+                    };
+                }
+
+                const weightedCoverage = clamp01(contactedMass / totalCandidateMass);
+                const meanPotential = contactedMass > 0 ? clamp01(weightedPotential / contactedMass) : 0;
+
+                // 连续性：奖励相邻高势能走廊，允许有限低谷；单点接触不会伪装成长链。
+                let transitionWeight = 0;
+                let continuityMass = 0;
+                let semanticArc = 0;
+                let weightedAction = 0;
+                let isolatedMass = 0;
+                for (let index = 0; index < samples.length; index++) {
+                    const current = samples[index];
+                    const leftActive = index > 0 && samples[index - 1].potential >= weakContactThreshold;
+                    const rightActive = index + 1 < samples.length && samples[index + 1].potential >= weakContactThreshold;
+                    if (current.potential >= weakContactThreshold && !leftActive && !rightActive) {
+                        isolatedMass += current.candidateMass * current.potential;
+                    }
+                    if (index + 1 >= samples.length) continue;
+
+                    const next = samples[index + 1];
+                    const similarity = Math.max(-1, Math.min(1, cosine(current.vector, next.vector)));
+                    const arc = Math.acos(similarity) / Math.PI;
+                    const directConductance = Math.max(
+                        0,
+                        Number(kernel?.get(current.id)?.get(next.id)) || 0
+                    );
+                    const reverseConductance = Math.max(
+                        0,
+                        Number(kernel?.get(next.id)?.get(current.id)) || 0
+                    );
+                    const topology = clamp01(Math.sqrt(Math.max(directConductance, reverseConductance)));
+                    const segmentPotential = Math.sqrt(current.potential * next.potential);
+                    const segmentMass = Math.sqrt(current.candidateMass * next.candidateMass);
+                    const segmentTrust = segmentPotential * (0.65 + 0.35 * topology);
+
+                    transitionWeight += segmentMass;
+                    continuityMass += segmentMass * segmentTrust;
+                    semanticArc += arc;
+                    weightedAction += arc * segmentMass / Math.max(0.08, segmentPotential + 0.25 * topology);
+                }
+
+                const continuity = transitionWeight > 0
+                    ? clamp01(continuityMass / transitionWeight)
+                    : clamp01(maxPotential * 0.35);
+                const isolatedRatio = weightedPotential > 0
+                    ? clamp01(isolatedMass / weightedPotential)
+                    : 1;
+                const actionQuality = semanticArc > 0
+                    ? clamp01(Math.exp(-weightedAction / Math.max(0.15, semanticArc)))
+                    : clamp01(maxPotential * 0.5);
+                const closureQuality = samples.reduce(
+                    (sum, sample) => sum + sample.closure * sample.candidateMass,
+                    0
+                ) / totalCandidateMass;
+
+                // 不以绝对 Tag 数裁决。sampleScale 只控制“证据饱和速度”：
+                // 短 Tag 链的核心锚点仍可成立，长链的孤立弱命中不会因数量膨胀获利。
+                const effectiveEvidence = strongHits + exactHits * 0.75;
+                const adaptiveTarget = Math.max(1, Math.min(sampleScale, Math.ceil(Math.sqrt(samples.length))));
+                const evidenceConfidence = clamp01(effectiveEvidence / adaptiveTarget);
+                const contactConfidence = clamp01(
+                    weightedCoverage
+                    * (0.55 + 0.45 * evidenceConfidence)
+                    * (1 - 0.65 * isolatedRatio)
+                );
+
+                const geoScore = contactConfidence * clamp01(
+                    0.30 * meanPotential
+                    + 0.20 * maxPotential
+                    + 0.20 * continuity
+                    + 0.15 * actionQuality
+                    + 0.15 * closureQuality
+                );
+
+                return {
+                    candidate,
+                    originalIndex,
+                    geoScore,
+                    confidence: contactConfidence,
+                    exactHits,
+                    strongHits,
+                    weakHits,
+                    sampleCount: samples.length,
+                    weightedCoverage,
+                    meanPotential,
+                    maxPotential,
+                    continuity,
+                    isolatedRatio,
+                    actionQuality,
+                    closureQuality,
+                    semanticArc,
+                    reason: geoScore > 0 ? null : 'curve-confidence-zero',
+                    contactTags: samples
+                        .filter(sample => sample.potential >= weakContactThreshold)
+                        .sort((a, b) => b.potential - a.potential)
+                        .slice(0, 8)
+                        .map(sample => ({
+                            id: sample.id,
+                            name: sample.name,
+                            potential: sample.potential,
+                            exact: sample.exact,
+                            position: sample.position
+                        }))
                 };
             });
 
-            // Step 5: 按 finalScore 降序排列（只重排，不截断）
-            reranked.sort((a, b) => b.score - a.score);
+            const contributors = geoData.filter(item => item.geoScore > 0);
+            if (contributors.length === 0) {
+                return fallback('no candidate curve contacted the query field', {
+                    candidates: candidates.length,
+                    fieldTags: fieldNodes.length
+                });
+            }
 
-            console.log(`[TagMemo-V8 Geodesic] α=${alpha}, minSamples=${minGeoSamples}, candidates=${candidates.length}, maxGeo=${maxGeo.toFixed(4)}, coverage=${(geoContributionCount / candidates.length).toFixed(3)}, reranked=${reranked.filter(r => r.geo_score > 0).length} with geo contribution`);
+            let minPositiveGeo = Infinity;
+            let maxGeo = 0;
+            for (const item of contributors) {
+                minPositiveGeo = Math.min(minPositiveGeo, item.geoScore);
+                maxGeo = Math.max(maxGeo, item.geoScore);
+            }
+            const coverageRatio = contributors.length / candidates.length;
+            const spread = maxGeo - minPositiveGeo;
 
+            if (fallbackEnabled && coverageRatio < minCandidateCoverage) {
+                return fallback('candidate curve coverage too low', {
+                    coverage: coverageRatio,
+                    minCandidateCoverage,
+                    contributors: contributors.length
+                });
+            }
+            if (fallbackEnabled && maxGeo < minGeoScore) {
+                return fallback('maximum curve score too low', { maxGeo, minGeoScore });
+            }
+            if (fallbackEnabled && contributors.length > 1 && spread < minGeoSpread) {
+                return fallback('candidate curve scores lack discrimination', { spread, minGeoSpread });
+            }
+
+            const denominator = Math.max(1e-9, maxGeo - minPositiveGeo);
+            const reranked = geoData.map(item => {
+                const knnScore = Number(item.candidate.score) || 0;
+                const normalizedGeo = item.geoScore > 0
+                    ? (contributors.length === 1 ? 1 : clamp01((item.geoScore - minPositiveGeo) / denominator))
+                    : 0;
+                // 无贡献候选保留原分；有贡献候选向曲线分靠拢，置信度决定实际修正量。
+                const effectiveAlpha = mixAlpha * item.confidence;
+                const finalScore = item.geoScore > 0
+                    ? knnScore + effectiveAlpha * (normalizedGeo - knnScore)
+                    : knnScore;
+
+                return {
+                    ...item.candidate,
+                    score: finalScore,
+                    original_knn_score: knnScore,
+                    geo_score: item.geoScore,
+                    normalized_geo: normalizedGeo,
+                    geo_hit_count: item.weakHits || 0,
+                    geo_confidence: item.confidence,
+                    geo_curve_samples: item.sampleCount || 0,
+                    geo_exact_hits: item.exactHits || 0,
+                    geo_strong_hits: item.strongHits || 0,
+                    geo_weighted_coverage: item.weightedCoverage || 0,
+                    geo_mean_potential: item.meanPotential || 0,
+                    geo_max_potential: item.maxPotential || 0,
+                    geo_continuity: item.continuity || 0,
+                    geo_isolated_ratio: item.isolatedRatio ?? 1,
+                    geo_action_quality: item.actionQuality || 0,
+                    geo_closure_quality: item.closureQuality || 0,
+                    geo_contact_tags: item.contactTags || [],
+                    geo_guard_reason: item.reason || null
+                };
+            });
+
+            reranked.sort((left, right) =>
+                (right.score - left.score)
+                || ((right.original_knn_score || 0) - (left.original_knn_score || 0))
+            );
+
+            const leader = [...contributors].sort((a, b) => b.geoScore - a.geoScore)[0];
+            console.log(
+                `[TagMemo-V9.1 GeodesicCurve] α=${mixAlpha.toFixed(3)}, candidates=${candidates.length}, ` +
+                `contributors=${contributors.length}, fieldTags=${fieldNodes.length}, ` +
+                `curveRange=${minPositiveGeo.toFixed(4)}..${maxGeo.toFixed(4)}, ` +
+                `leaderChunk=${Number(leader?.candidate?.id)}, leaderCoverage=${(leader?.weightedCoverage || 0).toFixed(3)}, ` +
+                `leaderContinuity=${(leader?.continuity || 0).toFixed(3)}, leaderContacts=${leader?.weakHits || 0}`
+            );
             return reranked;
-
-        } catch (e) {
-            console.error('[TagMemoEngine] geodesicRerank failed, falling back to original order:', e.message);
+        } catch (error) {
+            console.error('[TagMemoEngine] geodesicRerank curve evaluation failed, falling back to original order:', error.message);
             return candidates;
         }
     }

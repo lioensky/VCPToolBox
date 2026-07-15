@@ -1395,9 +1395,15 @@ class KnowledgeBaseManager {
         // V9.1 势能场重排（只重排，不截断）— 在 hydrate 之前执行
         // 使用查询级 energyField，避免全局 lastEnergyField 在 await 间隙被并发搜索覆盖。
         if (options?.geodesicRerank && energyField) {
-            const geoConfig = tagInfo?.artifactSig
+            // 测地线评估参数属于热调控面，优先使用实时 ragParams；
+            // ArtifactBundle 只固定图、残差与传播核，旧快照配置仅作缺省兜底。
+            const bundleGeoConfig = tagInfo?.artifactSig
                 ? (this.tagMemoEngine.getArtifactBundleSnapshot(tagInfo.effectiveVersion)?.potentialFieldConfig || {})
-                : (this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {});
+                : {};
+            const geoConfig = {
+                ...bundleGeoConfig,
+                ...(this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {})
+            };
             results = this.tagMemoEngine.geodesicRerank(results, {
                 alpha: options.geoAlpha ?? options.alpha ?? geoConfig.alpha,
                 minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
@@ -1578,9 +1584,14 @@ class KnowledgeBaseManager {
 
         // 测地线必须在物理索引结果合并后执行，确保所有成员共享同一能量场和排序口径。
         if (options?.geodesicRerank && energyField) {
-            const geoConfig = tagInfo?.artifactSig
+            // 虚拟联合索引与单索引保持同一热参数优先级。
+            const bundleGeoConfig = tagInfo?.artifactSig
                 ? (this.tagMemoEngine.getArtifactBundleSnapshot(tagInfo.effectiveVersion)?.potentialFieldConfig || {})
-                : (this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {});
+                : {};
+            const geoConfig = {
+                ...bundleGeoConfig,
+                ...(this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {})
+            };
             allResults = this.tagMemoEngine.geodesicRerank(allResults, {
                 alpha: options.geoAlpha ?? options.alpha ?? geoConfig.alpha,
                 minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
@@ -1737,10 +1748,13 @@ class KnowledgeBaseManager {
                 version: options.tagMemoVersion || options.version || null,
                 strictVersion: true
             }).bundle;
-        const geoConfig = options.config
-            || bundle?.potentialFieldConfig
-            || this.ragParams?.KnowledgeBaseManager?.geodesicRerank
-            || {};
+        // 显式请求配置最高；实时热参数覆盖 Bundle 创建时固化的旧值。
+        // Bundle 配置仅提供热参数文件尚未声明的新字段默认值。
+        const geoConfig = {
+            ...(bundle?.potentialFieldConfig || {}),
+            ...(this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {}),
+            ...(options.config || {})
+        };
         return this.tagMemoEngine.geodesicRerank(candidates, {
             alpha: options.alpha ?? options.geoAlpha ?? geoConfig.alpha,
             minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,

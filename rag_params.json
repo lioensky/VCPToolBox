@@ -86,12 +86,12 @@
       "v9AnchorMax": 2
     },
     "geodesicRerank": {
-      "alpha": 0.45,
+      "alpha": 0.6,
       "minGeoSamples": 4,
       "fallbackToKnnOnLowTrust": 1,
       "minFieldTags": 4,
       "minFieldEntropy": 0.12,
-      "minGeoCoverageRatio": 0.2,
+      "minGeoCoverageRatio": 0.05,
       "minMaxGeoScore": 0.01,
       "minGeoScoreSpread": 0.03
     },
