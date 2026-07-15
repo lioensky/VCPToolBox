@@ -134,12 +134,22 @@ class LightMemoPlugin {
         const excluded = process.env.EXCLUDED_FOLDERS || "已整理,夜伽,MusicDiary";
         this.excludedFolders = excluded.split(',').map(f => f.trim()).filter(Boolean);
 
+        const configuredMaxDocuments = parseInt(process.env.RerankMaxDocumentsPerRequest, 10);
+        const configuredConcurrency = parseInt(process.env.RerankMaxConcurrentRequests, 10);
         this.rerankConfig = {
             url: process.env.RerankUrl || '',
             apiKey: process.env.RerankApi || '',
             model: process.env.RerankModel || '',
             maxTokens: parseInt(process.env.RerankMaxTokensPerBatch) || 30000,
-            multiplier: 2.0
+            // 单次最多 25 个 documents，避免误入服务商按 Token 计费的大批量档。
+            maxDocumentsPerRequest: Number.isFinite(configuredMaxDocuments)
+                ? Math.max(1, Math.min(25, configuredMaxDocuments))
+                : 25,
+            // 小批量请求采用有界并发，避免无上限并发压垮服务商。
+            maxConcurrentRequests: Number.isFinite(configuredConcurrency)
+                ? Math.max(1, Math.min(10, configuredConcurrency))
+                : 3,
+            multiplier: parseFloat(process.env.RerankMultiplier) || 2.0
         };
     }
 
@@ -1438,6 +1448,14 @@ class LightMemoPlugin {
         };
         const maxTokens = this.rerankConfig.maxTokens;
         const queryTokens = this._estimateTokens(normalizedQuery);
+        const maxDocumentsPerRequest = Math.max(
+            1,
+            Math.min(25, parseInt(this.rerankConfig.maxDocumentsPerRequest, 10) || 25)
+        );
+        const maxConcurrentRequests = Math.max(
+            1,
+            Math.min(10, parseInt(this.rerankConfig.maxConcurrentRequests, 10) || 3)
+        );
 
         let batches = [];
         let currentBatch = [];
@@ -1445,7 +1463,9 @@ class LightMemoPlugin {
 
         for (const doc of validDocuments) {
             const docTokens = this._estimateTokens(doc.text);
-            if (currentTokens + docTokens > maxTokens && currentBatch.length > 0) {
+            const exceedsDocumentLimit = currentBatch.length >= maxDocumentsPerRequest;
+            const exceedsTokenLimit = currentTokens + docTokens > maxTokens;
+            if ((exceedsDocumentLimit || exceedsTokenLimit) && currentBatch.length > 0) {
                 batches.push(currentBatch);
                 currentBatch = [doc];
                 currentTokens = queryTokens + docTokens;
@@ -1458,11 +1478,16 @@ class LightMemoPlugin {
             batches.push(currentBatch);
         }
 
-        console.log(`[LightMemo] Split into ${batches.length} batches for reranking.`);
+        console.log(
+            `[LightMemo] Split into ${batches.length} free-tier batches ` +
+            `(max ${maxDocumentsPerRequest} documents/request, concurrency ` +
+            `${Math.min(maxConcurrentRequests, batches.length)}).`
+        );
 
-        let allRerankedDocs = [];
-        for (let i = 0; i < batches.length; i++) {
-            const batch = batches[i];
+        const batchResults = new Array(batches.length);
+        let nextBatchIndex = 0;
+
+        const rerankBatch = async (batch, batchIndex) => {
             const docTexts = batch.map(d => d.text);
 
             try {
@@ -1473,10 +1498,10 @@ class LightMemoPlugin {
                     top_n: docTexts.length
                 };
 
-                console.log(`[LightMemo] Reranking batch ${i + 1}/${batches.length} (${docTexts.length} docs).`);
+                console.log(`[LightMemo] Reranking batch ${batchIndex + 1}/${batches.length} (${docTexts.length} docs).`);
                 const response = await axios.post(rerankUrl, body, {
                     headers,
-                    timeout: 30000  // 👈 添加超时
+                    timeout: 30000
                 });
 
                 let responseData = response.data;
@@ -1491,10 +1516,10 @@ class LightMemoPlugin {
 
                 if (responseData && Array.isArray(responseData.results)) {
                     const rerankedResults = responseData.results;
-                    console.log(`[LightMemo] Batch ${i + 1} rerank scores:`,
+                    console.log(`[LightMemo] Batch ${batchIndex + 1} rerank scores:`,
                         rerankedResults.map(r => r.relevance_score.toFixed(3)).join(', '));
 
-                    const orderedBatch = rerankedResults
+                    return rerankedResults
                         .map(result => {
                             const originalDoc = batch[result.index];
                             if (!originalDoc) return null;
@@ -1504,27 +1529,35 @@ class LightMemoPlugin {
                             };
                         })
                         .filter(Boolean);
-
-                    allRerankedDocs.push(...orderedBatch);
-                } else {
-                    throw new Error('Invalid response format');
                 }
+
+                throw new Error('Invalid response format');
             } catch (error) {
-                console.error(`[LightMemo] Rerank failed for batch ${i + 1}:`, error.message);
+                console.error(`[LightMemo] Rerank failed for batch ${batchIndex + 1}:`, error.message);
                 if (error.response) {
                     console.error(`[LightMemo] API Error - Status: ${error.response.status}, Data:`,
                         JSON.stringify(error.response.data).slice(0, 200));
                 }
 
-                // ⚠️ 关键修复：保留原有分数
-                const fallbackBatch = batch.map(doc => ({
+                return batch.map(doc => ({
                     ...doc,
                     rerank_score: doc.hybridScore || doc.vectorScore || doc.bm25Score || 0,
-                    rerank_failed: true  // 标记rerank失败
+                    rerank_failed: true
                 }));
-                allRerankedDocs.push(...fallbackBatch);
             }
-        }
+        };
+
+        // 有界 worker pool：并发处理免费小批量请求，结果按原批次顺序合并。
+        const workerCount = Math.min(maxConcurrentRequests, batches.length);
+        const workers = Array.from({ length: workerCount }, async () => {
+            while (true) {
+                const batchIndex = nextBatchIndex++;
+                if (batchIndex >= batches.length) return;
+                batchResults[batchIndex] = await rerankBatch(batches[batchIndex], batchIndex);
+            }
+        });
+        await Promise.all(workers);
+        const allRerankedDocs = batchResults.flatMap(result => result || []);
 
         // 🌟 Rerank+ (RRF Fusion) 或标准 Rerank 排序
         if (rrfOptions) {

@@ -127,12 +127,24 @@ class RAGDiaryPlugin {
         });
 
         // --- 加载 Rerank 配置 ---
+        // 单次最多 25 个 documents 可保持在服务商的小批量免费档。
+        // 环境变量允许进一步调低，但硬上限固定为 25，避免误配置进入按 Token 计费的大批量档。
+        const configuredRerankMaxDocuments = parseInt(process.env.RerankMaxDocumentsPerRequest, 10);
+        const rerankMaxDocuments = Number.isFinite(configuredRerankMaxDocuments)
+            ? Math.max(1, Math.min(25, configuredRerankMaxDocuments))
+            : 25;
+        const configuredRerankConcurrency = parseInt(process.env.RerankMaxConcurrentRequests, 10);
+        const rerankMaxConcurrentRequests = Number.isFinite(configuredRerankConcurrency)
+            ? Math.max(1, Math.min(10, configuredRerankConcurrency))
+            : 3;
         this.rerankConfig = {
             url: process.env.RerankUrl || '',
             apiKey: process.env.RerankApi || '',
             model: process.env.RerankModel || '',
             multiplier: parseFloat(process.env.RerankMultiplier) || 2.0,
-            maxTokens: parseInt(process.env.RerankMaxTokensPerBatch) || 30000
+            maxTokens: parseInt(process.env.RerankMaxTokensPerBatch) || 30000,
+            maxDocumentsPerRequest: rerankMaxDocuments,
+            maxConcurrentRequests: rerankMaxConcurrentRequests
         };
         // 移除启动时检查，改为在调用时实时检查
         if (this.rerankConfig.url && this.rerankConfig.apiKey && this.rerankConfig.model) {
@@ -3833,8 +3845,18 @@ class RAGDiaryPlugin {
             'Content-Type': 'application/json',
         };
         const maxTokens = this.rerankConfig.maxTokens;
+        const maxDocumentsPerRequest = Math.max(
+            1,
+            Math.min(25, parseInt(this.rerankConfig.maxDocumentsPerRequest, 10) || 25)
+        );
+        const maxConcurrentRequests = Math.max(
+            1,
+            Math.min(10, parseInt(this.rerankConfig.maxConcurrentRequests, 10) || 3)
+        );
 
-        // ✅ 优化批次处理逻辑
+        // ✅ 双重批次限制：
+        // 1. documents 数量不超过 25，保持服务商的小批量免费档；
+        // 2. 同时遵守 Token 上限，避免超长文档导致请求失败。
         let batches = [];
         let currentBatch = [];
         let currentTokens = queryTokens;
@@ -3850,7 +3872,9 @@ class RAGDiaryPlugin {
                 continue;
             }
 
-            if (currentTokens + docTokens > maxBatchTokens && currentBatch.length >= minBatchSize) {
+            const exceedsDocumentLimit = currentBatch.length >= maxDocumentsPerRequest;
+            const exceedsTokenLimit = currentTokens + docTokens > maxBatchTokens;
+            if ((exceedsDocumentLimit || exceedsTokenLimit) && currentBatch.length >= minBatchSize) {
                 // Current batch is full, push it and start a new one
                 batches.push(currentBatch);
                 currentBatch = [doc];
@@ -3867,6 +3891,12 @@ class RAGDiaryPlugin {
             batches.push(currentBatch);
         }
 
+        console.log(
+            `[RAGDiaryPlugin] Rerank split into ${batches.length} free-tier batches ` +
+            `(max ${maxDocumentsPerRequest} documents/request, token limit ${maxTokens}, ` +
+            `concurrency ${Math.min(maxConcurrentRequests, batches.length)}).`
+        );
+
         // 如果没有有效批次，直接返回原始文档
         if (batches.length === 0) {
             console.warn('[RAGDiaryPlugin] No valid batches for reranking, returning original documents');
@@ -3874,11 +3904,11 @@ class RAGDiaryPlugin {
         }
 
 
-        let allRerankedDocs = [];
+        const batchResults = new Array(batches.length);
         let failedBatches = 0;
+        let nextBatchIndex = 0;
 
-        for (let i = 0; i < batches.length; i++) {
-            const batch = batches[i];
+        const rerankBatch = async (batch, batchIndex) => {
             const docTexts = batch.map(d => d.text);
 
             try {
@@ -3889,7 +3919,6 @@ class RAGDiaryPlugin {
                     top_n: docTexts.length // Rerank all documents within the batch
                 };
 
-                // ✅ 添加请求超时和重试机制
                 const response = await axios.post(rerankUrl, body, {
                     headers,
                     timeout: 30000, // 30秒超时
@@ -3897,24 +3926,22 @@ class RAGDiaryPlugin {
                 });
 
                 if (response.data && Array.isArray(response.data.results)) {
-                    const rerankedResults = response.data.results;
-                    const orderedBatch = rerankedResults
+                    return response.data.results
                         .map(result => {
                             const originalDoc = batch[result.index];
-                            // 关键：将 rerank score 赋给原始文档
-                            return { ...originalDoc, rerank_score: result.relevance_score };
+                            return originalDoc
+                                ? { ...originalDoc, rerank_score: result.relevance_score }
+                                : null;
                         })
                         .filter(Boolean);
-
-                    allRerankedDocs.push(...orderedBatch);
-                } else {
-                    console.warn(`[RAGDiaryPlugin] Rerank for batch ${i + 1} returned invalid data. Appending original batch documents.`);
-                    allRerankedDocs.push(...batch); // Fallback: use original order for this batch
-                    failedBatches++;
                 }
+
+                failedBatches++;
+                console.warn(`[RAGDiaryPlugin] Rerank for batch ${batchIndex + 1} returned invalid data. Appending original batch documents.`);
+                return batch;
             } catch (error) {
                 failedBatches++;
-                console.error(`[RAGDiaryPlugin] Rerank API call failed for batch ${i + 1}. Appending original batch documents.`);
+                console.error(`[RAGDiaryPlugin] Rerank API call failed for batch ${batchIndex + 1}. Appending original batch documents.`);
 
                 // ✅ 详细错误分析和断路器触发
                 if (error.response) {
@@ -3922,35 +3949,37 @@ class RAGDiaryPlugin {
                     const errorData = error.response.data;
                     console.error(`[RAGDiaryPlugin] Rerank API Error - Status: ${status}, Data: ${JSON.stringify(errorData)}`);
 
-                    // 特定错误处理
                     if (status === 400 && errorData?.error?.message?.includes('Query is too long')) {
                         console.error('[RAGDiaryPlugin] Query still too long after truncation, adding to circuit breaker');
-                        this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
+                        this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${batchIndex}`, now);
                     } else if (status >= 500) {
-                        // 服务器错误，添加到断路器
-                        this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
+                        this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${batchIndex}`, now);
                     }
                 } else if (error.code === 'ECONNABORTED') {
                     console.error('[RAGDiaryPlugin] Rerank API timeout');
-                    this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
+                    this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${batchIndex}`, now);
                 } else {
                     console.error('[RAGDiaryPlugin] Rerank API Error - Message:', error.message);
-                    this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
+                    this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${batchIndex}`, now);
                 }
 
-                allRerankedDocs.push(...batch); // Fallback: use original order for this batch
-
-                // ✅ 如果失败率过高，提前终止
-                if (failedBatches / (i + 1) > 0.5 && i > 2) {
-                    console.warn('[RAGDiaryPlugin] Too many rerank failures, terminating early');
-                    // 添加剩余批次的原始文档
-                    for (let j = i + 1; j < batches.length; j++) {
-                        allRerankedDocs.push(...batches[j]);
-                    }
-                    break;
-                }
+                return batch;
             }
-        }
+        };
+
+        // 有界 worker pool：并发发送小批量请求，避免无上限 Promise.all 压垮服务商。
+        const workerCount = Math.min(maxConcurrentRequests, batches.length);
+        const workers = Array.from({ length: workerCount }, async () => {
+            while (true) {
+                const batchIndex = nextBatchIndex++;
+                if (batchIndex >= batches.length) return;
+                batchResults[batchIndex] = await rerankBatch(batches[batchIndex], batchIndex);
+            }
+        });
+        await Promise.all(workers);
+
+        // 始终按原批次序合并，保证并发完成时序不会影响后续稳定排序。
+        const allRerankedDocs = batchResults.flatMap(result => result || []);
 
         // ✅ 清理过期的断路器记录
         for (const [key, timestamp] of this.rerankCircuitBreaker.entries()) {
