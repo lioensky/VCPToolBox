@@ -53,6 +53,7 @@ class TagMemoEngine {
         this._derivedTaskRunning = false;
         this._derivedTaskTimer = null;
         this._derivedTaskSeq = 0;
+        this._shutdownRequested = false;
     }
 
     _envFlag(name, defaultValue = false) {
@@ -2507,7 +2508,7 @@ class TagMemoEngine {
             if (legacyTags.length > 0) processLegacyFileGroup(legacyTags);
 
             // V9.1 staging 资产完整构建结束后才一次性发布；旧请求继续持有旧 bundle。
-            this._stageAndPublishV91Bundle(matrix);
+            const publishedRegistry = this._stageAndPublishV91Bundle(matrix);
 
             console.log(
                 `[TagMemoEngine] ✅ V8.2 Ordered-bidirectional matrix built. ` +
@@ -2520,9 +2521,11 @@ class TagMemoEngine {
                 `legacyFiles=${legacyProcessedFiles}, legacySkippedFiles=${legacySkippedFiles}, legacyPairOps≈${Math.round(legacyPairOps)}, ` +
                 `simCacheSize=${this.tagPairSimilarities.size}, elapsed=${Date.now() - matrixBuildStartedAt}ms`
             );
+            return publishedRegistry;
         } catch (e) {
-            console.error('[TagMemoEngine] ❌ Failed to build V8.2 ordered-bidirectional matrix:', e);
-            this.tagCooccurrenceMatrix = new Map();
+            // 构建全程使用 staging Map；失败时必须保留上一代活动 Bundle 及所有兼容别名。
+            console.error('[TagMemoEngine] ❌ Failed to build V8.2 ordered-bidirectional matrix; keeping previous active artifact:', e);
+            throw e;
         }
     }
 
@@ -2787,6 +2790,7 @@ class TagMemoEngine {
     }
 
     _scheduleThresholdMatrixRebuild(threshold, delayMs = this._getMatrixRebuildQuietMs(), reason = 'threshold') {
+        if (this._shutdownRequested) return false;
         if (this._matrixRebuildTimer) {
             clearTimeout(this._matrixRebuildTimer);
         }
@@ -2804,6 +2808,7 @@ class TagMemoEngine {
             console.log(`[TagMemoEngine] 🛡️ Matrix rebuild ${reason}: newUniqueTags=${this._accumulatedNewTagIds.size} >= ${threshold}. Scheduled after ${Math.round(delayMs / 1000)}s of quiescence.`);
             this._matrixRebuildScheduleLogged = true;
         }
+        return true;
     }
 
     _ensureMatrixRebuildScheduledIfThreshold(reason = 'threshold') {
@@ -2932,15 +2937,25 @@ class TagMemoEngine {
         this._matrixRebuildScheduleLogged = false;
 
         const taskId = this._enqueueDerivedTask('active-full-training', async () => {
-            await this.doMatrixRebuild({
+            return await this.doMatrixRebuild({
                 reason,
                 fullRebuildPairwise: true,
                 forceIntrinsicResiduals: true,
                 preservePendingOnFailure: false,
                 allowDuringStartupCooldown: true
             });
-            return true;
         }, { maxAttempts: options.maxAttempts ?? 1 });
+
+        if (!taskId) {
+            return {
+                taskId: null,
+                queued: false,
+                reason,
+                resetPendingNewTags: previousPendingNewTags,
+                threshold: this._getMatrixRebuildThreshold(),
+                error: 'TagMemoEngine is shutting down'
+            };
+        }
 
         console.log(
             `[TagMemoEngine] 🧠 Active full self-training requested. ` +
@@ -2963,12 +2978,16 @@ class TagMemoEngine {
         const forceIntrinsicResiduals = options.forceIntrinsicResiduals === true;
         const cleanupRetiredV83Assets = options.cleanupRetiredV83Assets === true
             || (fullRebuildPairwise && forceIntrinsicResiduals);
+        if (this._shutdownRequested) {
+            console.warn('[TagMemoEngine] Matrix rebuild refused because shutdown is in progress.');
+            return false;
+        }
         if (this._isMatrixRebuilding) {
             console.warn('[TagMemoEngine] Matrix rebuild already running; keeping accumulated new tags for next debounce window.');
             if (!this._matrixRebuildTimer && this._accumulatedNewTagIds.size > 0) {
                 this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), 'follow-up-threshold');
             }
-            return;
+            return false;
         }
 
         const newTagIdsAtStart = new Set(this._accumulatedNewTagIds);
@@ -3013,7 +3032,8 @@ class TagMemoEngine {
                     this.loadIntrinsicResiduals({ failOnCorruption: true });
                 }
 
-                this.buildDirectedCooccurrenceMatrix();
+                const publishedRegistry = this.buildDirectedCooccurrenceMatrix();
+                if (!publishedRegistry?.bundles?.v9) return false;
                 if (cleanupRetiredV83Assets) {
                     this._cleanupRetiredV83DerivedAssets();
                 }
@@ -3029,8 +3049,9 @@ class TagMemoEngine {
                     this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
                     this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), rebuildReason);
                 }
-                return;
+                return false;
             }
+            return true;
         } catch (e) {
             console.error(
                 `[TagMemoEngine] ❌ Matrix rebuild failed${preservePendingOnFailure ? '; preserving accumulated changes and scheduling retry' : ''}:`,
@@ -3042,9 +3063,10 @@ class TagMemoEngine {
                 this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
                 this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), rebuildReason);
             }
+            return false;
         } finally {
             this._isMatrixRebuilding = false;
-            if (this._accumulatedNewTagIds.size > 0) {
+            if (!this._shutdownRequested && this._accumulatedNewTagIds.size > 0) {
                 this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
                 console.log(`[TagMemoEngine] 🔁 ${this._accumulatedNewTagIds.size} new unique tag(s) pending after rebuild attempt; scheduling follow-up debounce.`);
                 this._scheduleMatrixRebuildTimer(this._getMatrixRebuildQuietMs(), 'follow-up-threshold');
@@ -3054,6 +3076,7 @@ class TagMemoEngine {
     }
 
     _scheduleMatrixRebuildTimer(delayMs, reason = 'follow-up-threshold') {
+        if (this._shutdownRequested) return false;
         if (this._matrixRebuildTimer) {
             clearTimeout(this._matrixRebuildTimer);
         }
@@ -3067,6 +3090,7 @@ class TagMemoEngine {
         }, delayMs);
 
         if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
+        return true;
     }
 
     _buildIntrinsicResidualConfigSnapshot() {
@@ -3197,6 +3221,7 @@ class TagMemoEngine {
     }
 
     schedulePostStartupDerivedRefresh(delayMs = 300000) {
+        if (this._shutdownRequested) return false;
         if (this._postStartupDerivedRefreshTimer) {
             clearTimeout(this._postStartupDerivedRefreshTimer);
         }
@@ -3241,8 +3266,9 @@ class TagMemoEngine {
                     );
                 }
                 this._enqueueDerivedTask('matrix-rebuild', async () => {
-                    await this.doMatrixRebuild({ reason: forceFullDerivedRefresh ? 'startup-full-derived-refresh' : 'startup-bootstrap' });
-                    return true;
+                    return await this.doMatrixRebuild({
+                        reason: forceFullDerivedRefresh ? 'startup-full-derived-refresh' : 'startup-bootstrap'
+                    });
                 });
             } else if (this._accumulatedNewTagIds.size > 0) {
                 const scheduled = this._ensureMatrixRebuildScheduledIfThreshold('post-startup accumulated new unique tags');
@@ -3258,9 +3284,14 @@ class TagMemoEngine {
 
         if (this._postStartupDerivedRefreshTimer.unref) this._postStartupDerivedRefreshTimer.unref();
         console.log(`[TagMemoEngine] 🕒 Post-startup derived refresh scheduled after ${Math.round(delayMs / 1000)}s.`);
+        return true;
     }
 
     _enqueueDerivedTask(type, run, options = {}) {
+        if (this._shutdownRequested) {
+            console.warn(`[TagMemoEngine] Ignored derived task "${type}" because shutdown is in progress.`);
+            return null;
+        }
         const existing = this._derivedTaskQueue.find(task => task.type === type && task.status === 'queued');
         if (existing) {
             existing.run = run;
@@ -3275,6 +3306,7 @@ class TagMemoEngine {
             status: 'queued',
             attempts: 0,
             maxAttempts: options.maxAttempts ?? 3,
+            nextAttemptAt: 0,
             createdAt: Date.now(),
             updatedAt: Date.now()
         };
@@ -3284,10 +3316,11 @@ class TagMemoEngine {
     }
 
     _scheduleDerivedTaskPump(delayMs = 1000) {
+        if (this._shutdownRequested) return;
         if (this._derivedTaskTimer) clearTimeout(this._derivedTaskTimer);
         this._derivedTaskTimer = setTimeout(() => {
             this._derivedTaskTimer = null;
-            this._processDerivedTaskQueue();
+            if (!this._shutdownRequested) this._processDerivedTaskQueue();
         }, Math.max(0, delayMs));
         if (this._derivedTaskTimer.unref) this._derivedTaskTimer.unref();
     }
@@ -3306,9 +3339,17 @@ class TagMemoEngine {
     }
 
     async _processDerivedTaskQueue() {
-        if (this._derivedTaskRunning) return;
-        const task = this._derivedTaskQueue.find(item => item.status === 'queued');
-        if (!task) return;
+        if (this._shutdownRequested || this._derivedTaskRunning) return;
+        const now = Date.now();
+        const queuedTasks = this._derivedTaskQueue.filter(item => item.status === 'queued');
+        if (queuedTasks.length === 0) return;
+
+        const task = queuedTasks.find(item => (item.nextAttemptAt || 0) <= now);
+        if (!task) {
+            const nextAttemptAt = Math.min(...queuedTasks.map(item => item.nextAttemptAt || now));
+            this._scheduleDerivedTaskPump(Math.max(1, nextAttemptAt - now));
+            return;
+        }
 
         const blockReason = this._getDerivedTaskBlockReason();
         if (blockReason) {
@@ -3320,6 +3361,7 @@ class TagMemoEngine {
         this._derivedTaskRunning = true;
         task.status = 'running';
         task.attempts++;
+        task.nextAttemptAt = 0;
         task.updatedAt = Date.now();
 
         try {
@@ -3341,14 +3383,48 @@ class TagMemoEngine {
             } else {
                 task.status = 'queued';
                 const backoffMs = Math.min(15 * 60 * 1000, 60000 * task.attempts);
+                task.nextAttemptAt = Date.now() + backoffMs;
                 console.warn(`[TagMemoEngine] ⚠️ Derived task failed, will retry in ${Math.round(backoffMs / 1000)}s: ${task.type} (${task.id}): ${e.message || e}`);
-                this._scheduleDerivedTaskPump(backoffMs);
             }
         } finally {
             this._derivedTaskRunning = false;
-            if (this._derivedTaskQueue.some(item => item.status === 'queued')) {
-                this._scheduleDerivedTaskPump(this._derivedTaskTimer ? 30000 : 1000);
+            if (!this._shutdownRequested) {
+                const queued = this._derivedTaskQueue.filter(item => item.status === 'queued');
+                if (queued.length > 0) {
+                    const now = Date.now();
+                    const nextAttemptAt = Math.min(...queued.map(item => item.nextAttemptAt || now + 1000));
+                    this._scheduleDerivedTaskPump(Math.max(1, nextAttemptAt - now));
+                }
             }
+        }
+    }
+
+    async shutdown(options = {}) {
+        if (this._shutdownRequested) return;
+        this._shutdownRequested = true;
+
+        for (const timerName of [
+            '_matrixRebuildTimer',
+            '_postStartupDerivedRefreshTimer',
+            '_derivedTaskTimer'
+        ]) {
+            if (this[timerName]) {
+                clearTimeout(this[timerName]);
+                this[timerName] = null;
+            }
+        }
+
+        // queued 任务尚未持有任何资源，关闭时直接取消；running 任务等待其安全释放租约。
+        this._derivedTaskQueue = this._derivedTaskQueue.filter(task => task.status === 'running');
+        const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 30 * 60 * 1000);
+        const startedAt = Date.now();
+        while (this._derivedTaskRunning && Date.now() - startedAt < timeoutMs) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        if (this._derivedTaskRunning) {
+            console.warn(`[TagMemoEngine] ⚠️ Shutdown timed out after ${timeoutMs}ms while a derived task was still running.`);
+        } else {
+            this._derivedTaskQueue = [];
         }
     }
 }

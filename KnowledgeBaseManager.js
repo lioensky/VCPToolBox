@@ -214,12 +214,33 @@ class KnowledgeBaseManager {
         const paramsPath = path.join(__dirname, 'rag_params.json');
         try {
             const data = await fs.readFile(paramsPath, 'utf-8');
-            this.ragParams = JSON.parse(data);
+            const parsed = JSON.parse(data);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                throw new TypeError('rag_params.json root must be a JSON object');
+            }
+            if (
+                parsed.KnowledgeBaseManager !== undefined
+                && (
+                    !parsed.KnowledgeBaseManager
+                    || typeof parsed.KnowledgeBaseManager !== 'object'
+                    || Array.isArray(parsed.KnowledgeBaseManager)
+                )
+            ) {
+                throw new TypeError('rag_params.json KnowledgeBaseManager must be an object');
+            }
+
+            // 解析和基础结构校验全部通过后再一次性发布，避免编辑中的短暂坏 JSON
+            // 覆盖仍在工作的最后健康配置。
+            this.ragParams = parsed;
             console.log('[KnowledgeBase] ✅ RAG 热调控参数已加载');
-            if (this.tagMemoEngine) this.tagMemoEngine.updateRagParams(this.ragParams);
+            if (this.tagMemoEngine) this.tagMemoEngine.updateRagParams(parsed);
+            return true;
         } catch (e) {
-            console.error('[KnowledgeBase] ❌ 加载 rag_params.json 失败:', e.message);
-            this.ragParams = { KnowledgeBaseManager: {} };
+            console.error('[KnowledgeBase] ❌ 加载 rag_params.json 失败，继续使用最后健康配置:', e.message);
+            if (!this.ragParams || typeof this.ragParams !== 'object') {
+                this.ragParams = { KnowledgeBaseManager: {} };
+            }
+            return false;
         }
     }
 
@@ -507,6 +528,9 @@ class KnowledgeBaseManager {
             try { oldDb?.close(); } catch (closeErr) {
                 console.warn(`[KnowledgeBase] ⚠️ Failed to close suspect SQLite connection cleanly: ${closeErr.message}`);
             }
+            // 旧连接一旦关闭就不能继续作为公开活动引用。恢复成功后再通过
+            // _rebindDatabaseConnection() 原子发布新连接；失败时所有入口看到 null。
+            if (this.db === oldDb) this.db = null;
 
             const reopened = new Database(this.dbPath);
             this._configureDatabaseConnection(reopened);
@@ -521,6 +545,7 @@ class KnowledgeBaseManager {
         } catch (secondError) {
             console.error(`[KnowledgeBase] 🚨 SQLite second-stage verification failed after ${reason}: ${secondError.message || secondError}`);
             console.error(`[KnowledgeBase] First-stage failure was: ${firstError?.message || firstError}`);
+            this.db = null;
             this.dbHealthState = 'corrupt';
             this.databaseCorruptionDetected = true;
             return false;
@@ -3486,6 +3511,15 @@ class KnowledgeBaseManager {
 
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
+
+        // 先停止 TagMemo 新任务/计时器，并等待正在运行的派生任务释放 Rust 写租约；
+        // 数据库连接必须在它结束后才能关闭。
+        if (this.tagMemoEngine && typeof this.tagMemoEngine.shutdown === 'function') {
+            await this.tagMemoEngine.shutdown({
+                timeoutMs: this.config.rustWriteLeaseMaxWaitMs
+            });
+        }
+
         await this._externalMutationTail;
         await this._indexRecoveryTail;
         if (this.watcher) {
@@ -3503,6 +3537,10 @@ class KnowledgeBaseManager {
         if (this.ragParamsWatcher) {
             this.ragParamsWatcher.close();
             this.ragParamsWatcher = null;
+        }
+        if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
         }
         if (this.deleteBatchTimer) {
             clearTimeout(this.deleteBatchTimer);
