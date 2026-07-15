@@ -869,10 +869,11 @@ class LightMemoPlugin {
             return bestA - bestB;
         });
 
+        const displayedIds = ids.slice(0, topL);
         let text = `\n[--- TagMemo V9.1 对照模式 A：固定对称候选超集 ---]\n`;
         text += `查询: ${query}\n参数: topL=${topL}, displayK=${k}, tag_boost=${tagBoost}, BM25=${useBM25}, compare_rerank=${Boolean(rerankRun)}\n`;
         text += `V9.1资产: ${runs.v9.snapshot.bundle.artifactSig}\n`;
-        text += `对称超集: ${ids.length} 个唯一 chunk（KNN ∪ V9.1${useBM25 ? ' ∪ BM25' : ''}）\n`;
+        text += `对称超集: ${ids.length} 个唯一 chunk（KNN ∪ V9.1${useBM25 ? ' ∪ BM25' : ''}），表格展示 ${displayedIds.length} 条\n`;
         if (rerankRun) {
             text += rerankRun.available
                 ? `Rerank横向基线: ${rerankRun.candidateCount} 个对称候选${rerankRun.partialFailure ? '（部分批次失败）' : ''}\n\n`
@@ -882,7 +883,7 @@ class LightMemoPlugin {
         }
         text += `| # | 候选记忆 | 进入路径 | KNN排名/分数 | V9.1排名/分数 | ΔRank(V9.1-KNN) |${rerankRun ? ' Rerank排名/分数 | ΔRank(V9.1-Rerank) |' : ''}\n`;
         text += `|---:|---|---|---:|---:|---:|${rerankRun ? '---:|---:|' : ''}\n`;
-        ids.slice(0, Math.max(k, 30)).forEach((id, index) => {
+        displayedIds.forEach((id, index) => {
             const candidate = byId.get(id);
             const knn = knnMap.get(id);
             const v91 = v91Map.get(id);
