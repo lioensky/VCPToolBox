@@ -118,6 +118,21 @@ class TDBPlaceholderProcessor {
     }
 
     /**
+     * 判断“知识库”正则是否误吞了一个日记本占位符。
+     *
+     * 例如 [[vcp知识库日记本]]：
+     *   rawName = "vcp"
+     *   modifiers = "日记本"
+     *
+     * 该语法的完整日记本名是“vcp知识库”，应读取 dailynote/vcp知识库，
+     * 而不是把“vcp”解释成 knowledge 下的冷知识库。
+     */
+    isDiaryPlaceholderAmbiguity(rawName, modifiers) {
+        const suffix = String(modifiers || '').trimStart();
+        return /^日记本(?=$|:)/.test(suffix);
+    }
+
+    /**
      * 解析库名：支持 | 聚合多库。
      * "VCP知识" -> ["VCP知识"]
      * "VCP知识|插件规范" -> ["VCP知识", "插件规范"]
@@ -452,6 +467,11 @@ class TDBPlaceholderProcessor {
      * @returns {Promise<string>} 替换内容
      */
     async processDirect(rawName, modifiers, queryVector, queryForDisplay, defaultK) {
+        if (this.isDiaryPlaceholderAmbiguity(rawName, modifiers)) {
+            console.warn(`[TDBPlaceholder] 已拒绝歧义冷知识库解析：“${rawName}知识库${modifiers || ''}”属于日记本占位符。`);
+            return '';
+        }
+
         if (!this.isEnabled()) {
             console.warn('[TDBPlaceholder] TDB 冷知识库未启用，跳过 [[知识库]] 检索。');
             return '';
@@ -477,6 +497,11 @@ class TDBPlaceholderProcessor {
      * @returns {Promise<string>} 替换内容（不相关则为空字符串）
      */
     async processHybrid(rawName, modifiers, queryVector, queryForDisplay, defaultK) {
+        if (this.isDiaryPlaceholderAmbiguity(rawName, modifiers)) {
+            console.warn(`[TDBPlaceholder] 已拒绝歧义冷知识库解析：“${rawName}知识库${modifiers || ''}”属于日记本占位符。`);
+            return '';
+        }
+
         if (!this.isEnabled()) {
             console.warn('[TDBPlaceholder] TDB 冷知识库未启用，跳过 《《知识库》》 检索。');
             return '';
