@@ -397,103 +397,137 @@
               </template>
 
               <template v-else-if="isGeodesicEntry(section.name, entry)">
-                <div class="geodesic-launchpad__copy">
-                  <div class="param-row__heading">
-                    <div class="param-row__title-block">
-                      <h4>{{ entry.meta.label }}</h4>
-                      <details v-if="entry.meta.logic" class="param-row__details param-row__details--inline">
-                        <summary>展开测地线融合逻辑</summary>
-                        <div class="param-row__details-body">
-                          <p>{{ entry.meta.logic }}</p>
+                <div class="geodesic-workbench">
+                  <header class="geodesic-workbench__hero">
+                    <div>
+                      <div class="param-row__heading">
+                        <div class="param-row__title-block">
+                          <h4>{{ entry.meta.label }}</h4>
+                          <p class="param-row__key">{{ entry.key }}</p>
                         </div>
-                      </details>
-                      <p class="param-row__key">{{ entry.key }}</p>
+                        <div class="param-row__pills">
+                          <UiBadge :variant="getToneBadgeVariant(entry.meta.tone)">
+                            {{ getToneLabel(entry.meta.tone) }}
+                          </UiBadge>
+                          <UiBadge v-if="entry.changedLeaves > 0" variant="info">
+                            已修改 {{ entry.changedLeaves }}
+                          </UiBadge>
+                        </div>
+                      </div>
+                      <p class="param-row__summary">{{ entry.meta.summary }}</p>
                     </div>
 
-                    <div class="param-row__pills">
-                      <UiBadge :variant="getToneBadgeVariant(entry.meta.tone)">
-                        {{ getToneLabel(entry.meta.tone) }}
-                      </UiBadge>
-                      <UiBadge
-                        v-if="entry.changedLeaves > 0"
-                        variant="info"
-                      >
-                        已修改 {{ entry.changedLeaves }}
-                      </UiBadge>
-                    </div>
-                  </div>
-
-                  <p class="param-row__summary">{{ entry.meta.summary }}</p>
-
-                  <p v-if="entry.meta.range" class="param-row__range">
-                    <span class="material-symbols-outlined">route</span>
-                    {{ entry.meta.range }}
-                  </p>
-
-                </div>
-
-                <div class="geodesic-launchpad__control">
-                  <div class="geodesic-meter">
-                    <div class="geodesic-meter__label-row">
-                      <span>KNN 置信度</span>
-                      <strong>{{ formatNumber(1 - getGeodesicAlpha(entry)) }}</strong>
-                    </div>
-                    <div class="geodesic-meter__bar">
-                      <span
-                        class="geodesic-meter__fill"
-                        :style="{ width: `${getGeodesicAlpha(entry) * 100}%` }"
-                      ></span>
-                    </div>
-                    <div class="geodesic-meter__label-row">
-                      <span>测地线置信度 α</span>
+                    <div class="geodesic-balance" aria-label="测地奖励授权强度">
+                      <span>奖励授权强度 α</span>
                       <strong>{{ formatNumber(getGeodesicAlpha(entry)) }}</strong>
+                      <div class="geodesic-balance__track">
+                        <i :style="{ width: `${getGeodesicAlpha(entry) * 100}%` }"></i>
+                      </div>
+                      <small>它不是“KNN 与测地线二选一”，而是控制可信曲线最多能申请多少正向奖励。</small>
                     </div>
-                  </div>
+                  </header>
 
-                  <div
-                    v-for="subKey in Object.keys(entry.value)"
-                    :key="`${entry.key}-${subKey}`"
-                    class="geodesic-field"
-                  >
-                    <div class="geodesic-field__copy">
-                      <h5>{{ getNestedMeta(section.name, entry.key, subKey).label }}</h5>
-                      <p>{{ getNestedMeta(section.name, entry.key, subKey).summary }}</p>
-                      <span v-if="getNestedMeta(section.name, entry.key, subKey).range">
-                        {{ getNestedMeta(section.name, entry.key, subKey).range }}
+                  <div class="geodesic-story" aria-label="V9.2 曲线重排处理流程">
+                    <button
+                      v-for="(panel, panelIndex) in GEODESIC_RERANK_PANELS"
+                      :key="panel.id"
+                      type="button"
+                      :class="[
+                        'geodesic-story__step',
+                        { 'geodesic-story__step--active': activeGeodesicPanelId === panel.id },
+                      ]"
+                      @click="activeGeodesicPanelId = panel.id"
+                    >
+                      <span class="geodesic-story__index">0{{ panelIndex + 1 }}</span>
+                      <span class="material-symbols-outlined">{{ panel.icon }}</span>
+                      <span>
+                        <strong>{{ panel.title }}</strong>
+                        <small>{{ panel.plainTitle }}</small>
                       </span>
-                    </div>
-
-                    <div class="geodesic-field__control">
-                      <input
-                        v-model.number="
-                          (section.raw[entry.key] as Record<string, number>)[subKey]
-                        "
-                        type="range"
-                        :aria-label="`${getNestedMeta(section.name, entry.key, subKey).label} 滑杆`"
-                        :min="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).min"
-                        :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
-                        :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
-                      />
-                      <UiInput
-                        v-model.number="
-                          (section.raw[entry.key] as Record<string, number>)[subKey]
-                        "
-                        type="number"
-                        :aria-label="`${getNestedMeta(section.name, entry.key, subKey).label} 数值输入`"
-                        :min="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).min"
-                        :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
-                        :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
-                      />
-                    </div>
+                    </button>
                   </div>
 
-                  <UiButton
-                    variant="secondary"
-                    :disabled="entry.changedLeaves === 0"
-                    @click="resetGeodesicParams"
-                  >
-                    恢复测地线参数
-                  </UiButton>
+                  <section :key="activeGeodesicPanelId" class="geodesic-stage">
+                    <header class="geodesic-stage__header">
+                      <div class="geodesic-stage__icon">
+                        <span class="material-symbols-outlined">{{ activeGeodesicPanel.icon }}</span>
+                      </div>
+                      <div>
+                        <span class="geodesic-stage__eyebrow">当前阶段 · {{ activeGeodesicPanel.title }}</span>
+                        <h5>{{ activeGeodesicPanel.plainTitle }}</h5>
+                        <p>{{ activeGeodesicPanel.summary }}</p>
+                      </div>
+                      <div class="geodesic-stage__metaphor">
+                        <span class="material-symbols-outlined">lightbulb</span>
+                        <p><strong>通俗理解：</strong>{{ activeGeodesicPanel.metaphor }}</p>
+                      </div>
+                    </header>
+
+                    <div class="geodesic-stage__grid">
+                      <article
+                        v-for="subKey in activeGeodesicKeys(entry)"
+                        :key="`${entry.key}-${subKey}`"
+                        class="geodesic-control"
+                      >
+                        <div class="geodesic-control__heading">
+                          <div>
+                            <h6>{{ getNestedMeta(section.name, entry.key, subKey).label }}</h6>
+                            <code>{{ subKey }}</code>
+                          </div>
+                          <UiBadge
+                            :variant="getToneBadgeVariant(getNestedMeta(section.name, entry.key, subKey).tone)"
+                          >
+                            {{ getToneLabel(getNestedMeta(section.name, entry.key, subKey).tone) }}
+                          </UiBadge>
+                        </div>
+
+                        <p>{{ getNestedMeta(section.name, entry.key, subKey).summary }}</p>
+                        <small v-if="getNestedMeta(section.name, entry.key, subKey).range">
+                          {{ getNestedMeta(section.name, entry.key, subKey).range }}
+                        </small>
+
+                        <div class="geodesic-control__input">
+                          <input
+                            :value="(section.raw[entry.key] as Record<string, number>)[subKey]"
+                            type="range"
+                            :aria-label="`${getNestedMeta(section.name, entry.key, subKey).label} 滑杆`"
+                            :min="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).min"
+                            :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
+                            :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
+                            @input="updateGeodesicField(section.raw, entry.key, subKey, $event)"
+                          />
+                          <UiInput
+                            :model-value="(section.raw[entry.key] as Record<string, number>)[subKey]"
+                            type="number"
+                            :aria-label="`${getNestedMeta(section.name, entry.key, subKey).label} 数值输入`"
+                            :min="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).min"
+                            :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
+                            :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
+                            @update:model-value="updateGeodesicField(section.raw, entry.key, subKey, $event)"
+                          />
+                        </div>
+
+                        <details v-if="getNestedMeta(section.name, entry.key, subKey).logic">
+                          <summary>为什么这样调？</summary>
+                          <p>{{ getNestedMeta(section.name, entry.key, subKey).logic }}</p>
+                        </details>
+                      </article>
+                    </div>
+
+                    <footer class="geodesic-stage__footer">
+                      <span>
+                        本阶段 {{ activeGeodesicKeys(entry).length }} 项 ·
+                        全部直属参数 {{ Object.keys(entry.value).length }} 项
+                      </span>
+                      <UiButton
+                        variant="secondary"
+                        :disabled="entry.changedLeaves === 0"
+                        @click="resetGeodesicParams"
+                      >
+                        恢复曲线重排参数
+                      </UiButton>
+                    </footer>
+                  </section>
                 </div>
               </template>
 
@@ -743,6 +777,7 @@ import OrderedCooccurrenceModal from "@/features/rag-tuning/OrderedCooccurrenceM
 import TagMemoV9ControlPanel from "@/features/rag-tuning/TagMemoV9ControlPanel.vue";
 import WormholeRoutingModal from "@/features/rag-tuning/WormholeRoutingModal.vue";
 import {
+  GEODESIC_RERANK_PANELS,
   GROUP_ORDER,
   ORDERED_COOCCURRENCE_PANELS,
   ORDERED_COOCCURRENCE_PRIMARY_KEYS,
@@ -752,6 +787,7 @@ import {
   getSubParamRange,
   getToneLabel,
   getTupleLabel,
+  type GeodesicRerankPanelId,
   type GroupMeta,
   type ParamMeta,
   type ParamTone,
@@ -828,6 +864,7 @@ const statusMessage = ref("");
 const statusType = ref<StatusType>("info");
 const wormholeModalOpen = ref(false);
 const orderedCooccurrenceModalOpen = ref(false);
+const activeGeodesicPanelId = ref<GeodesicRerankPanelId>("prepare");
 const semanticSimulationOpen = ref(false);
 const semanticSimulationFrame = ref<HTMLIFrameElement | null>(null);
 const ragParamThemes = ref<RagParamTheme[]>([]);
@@ -1181,6 +1218,43 @@ function getTupleFieldLabel(entry: TupleParamEntry, index: number): string {
 
 function getNestedMeta(groupName: string, paramKey: string, subKey: string): ParamMeta {
   return getParamMeta(groupName, `${paramKey}.${subKey}`);
+}
+
+const activeGeodesicPanel = computed(
+  () =>
+    GEODESIC_RERANK_PANELS.find((panel) => panel.id === activeGeodesicPanelId.value)
+    ?? GEODESIC_RERANK_PANELS[0]
+);
+
+function activeGeodesicKeys(entry: ParamEntry): string[] {
+  if (!isGeodesicNestedEntry(entry)) return [];
+  const available = new Set(Object.keys(entry.value));
+  return activeGeodesicPanel.value.keys.filter((key) => available.has(key));
+}
+
+function normalizeToStep(value: number, min: number, max: number, step: number): number {
+  const clamped = Math.min(max, Math.max(min, value));
+  const stepPrecision = Math.max(0, (String(step).split(".")[1] || "").length);
+  const quantized = min + Math.round((clamped - min) / step) * step;
+  return Number(quantized.toFixed(stepPrecision));
+}
+
+function updateGeodesicField(
+  group: ParamGroup,
+  paramKey: string,
+  subKey: string,
+  rawValue: string | number | Event
+): void {
+  const value = rawValue instanceof Event
+    ? Number((rawValue.target as HTMLInputElement).value)
+    : Number(rawValue);
+  if (!Number.isFinite(value)) return;
+
+  const target = group[paramKey];
+  if (!isParamRecord(target) || typeof target[subKey] !== "number") return;
+
+  const range = getSubParamRange(`${paramKey}.${subKey}`, target[subKey]);
+  target[subKey] = normalizeToStep(value, range.min, range.max, range.step);
 }
 
 function getGeodesicAlpha(entry: ParamEntry): number {
@@ -2422,114 +2496,314 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.geodesic-launchpad__copy {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.geodesic-launchpad__control {
+.geodesic-workbench {
   display: grid;
   gap: var(--space-4);
   width: 100%;
+}
+
+.geodesic-workbench__hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 0.34fr);
+  gap: var(--space-5);
+  align-items: center;
+}
+
+.geodesic-balance {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 20%, var(--border-color));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--highlight-text) 4%, transparent);
+}
+
+.geodesic-balance > span,
+.geodesic-balance > small {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.geodesic-balance > strong {
+  color: var(--highlight-text);
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+.geodesic-balance > small,
+.geodesic-balance__track {
+  grid-column: 1 / -1;
+}
+
+.geodesic-balance__track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--secondary-text) 18%, transparent);
+}
+
+.geodesic-balance__track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--highlight-text), var(--warning-color));
+  transition: width 280ms ease;
+}
+
+.geodesic-story {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.geodesic-story::before {
+  position: absolute;
+  top: 50%;
+  right: 4%;
+  left: 4%;
+  height: 1px;
+  background: color-mix(in srgb, var(--highlight-text) 24%, var(--border-color));
+  content: "";
+}
+
+.geodesic-story__step {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+  min-height: 64px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--primary-bg);
+  color: var(--primary-text);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 180ms ease, background 180ms ease, transform 180ms ease;
+}
+
+.geodesic-story__step:hover,
+.geodesic-story__step--active {
+  border-color: color-mix(in srgb, var(--highlight-text) 55%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 7%, var(--primary-bg));
+  transform: translateY(-2px);
+}
+
+.geodesic-story__step--active {
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--highlight-text) 10%, transparent);
+}
+
+.geodesic-story__step > .material-symbols-outlined {
+  color: var(--highlight-text);
+  font-size: 20px;
+}
+
+.geodesic-story__step > span:last-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.geodesic-story__step strong,
+.geodesic-story__step small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.geodesic-story__step small,
+.geodesic-story__index {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.geodesic-stage {
+  display: grid;
+  gap: var(--space-3);
   padding: var(--space-4);
-  border: 1px solid color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 22%, var(--border-color));
   border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--highlight-text) 4%, transparent), transparent 42%),
-    color-mix(in srgb, var(--primary-text) 2%, transparent);
+    radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--highlight-text) 6%, transparent), transparent 34%),
+    color-mix(in srgb, var(--primary-text) 1.5%, transparent);
 }
 
-.geodesic-meter {
+.geodesic-stage__header {
   display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(260px, 0.46fr);
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.geodesic-stage__icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--highlight-text) 12%, transparent);
+  color: var(--highlight-text);
+}
+
+.geodesic-stage__header h5,
+.geodesic-stage__header p,
+.geodesic-control h6,
+.geodesic-control p {
+  margin: 0;
+}
+
+.geodesic-stage__header h5 {
+  margin: 3px 0 5px;
+  font-size: var(--font-size-title);
+}
+
+.geodesic-stage__header p,
+.geodesic-control p {
+  color: var(--secondary-text);
+  line-height: 1.5;
+}
+
+.geodesic-stage__eyebrow {
+  color: var(--highlight-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.geodesic-stage__metaphor {
+  display: flex;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
   border-radius: var(--radius-md);
-  background: transparent;
+  background: color-mix(in srgb, var(--warning-bg) 55%, transparent);
 }
 
-.geodesic-meter__label-row {
+.geodesic-stage__metaphor .material-symbols-outlined {
+  color: var(--warning-color);
+  font-size: 20px;
+}
+
+.geodesic-stage__metaphor p {
+  font-size: var(--font-size-helper);
+}
+
+.geodesic-stage__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.geodesic-control {
+  display: grid;
+  grid-template-rows: auto auto auto auto;
+  gap: 7px;
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 55%, transparent);
+}
+
+.geodesic-control__heading {
   display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  align-items: start;
+}
+
+.geodesic-control h6 {
+  font-size: var(--font-size-body);
+}
+
+.geodesic-control code,
+.geodesic-control > small {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.geodesic-control code {
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+.geodesic-control > p {
+  min-height: 2.9em;
+  font-size: var(--font-size-helper);
+}
+
+.geodesic-control__input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px;
+  gap: var(--space-3);
+  align-items: center;
+  margin-top: 2px;
+}
+
+.geodesic-control__input input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--highlight-text);
+}
+
+.geodesic-control__input :deep(.ui-input) {
+  min-height: 30px;
+  padding-inline: var(--space-2);
+  font-family: "Consolas", "Monaco", monospace;
+  text-align: right;
+}
+
+.geodesic-control details {
+  border-top: 1px dashed color-mix(in srgb, var(--border-color) 70%, transparent);
+  padding-top: 6px;
+}
+
+.geodesic-control summary {
+  color: var(--highlight-text);
+  cursor: pointer;
+  font-size: var(--font-size-caption);
+}
+
+.geodesic-control details p {
+  margin-top: 6px;
+  font-size: var(--font-size-helper);
+}
+
+.geodesic-stage__footer {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
 }
 
-.geodesic-meter__label-row strong {
-  color: var(--primary-text);
-  font-family: "Consolas", "Monaco", monospace;
+@media (prefers-reduced-motion: no-preference) {
+  .geodesic-stage {
+    animation: geodesic-stage-enter 240ms ease both;
+  }
+
+  .geodesic-story__step--active .material-symbols-outlined {
+    animation: geodesic-pulse 1.8s ease-in-out infinite;
+  }
 }
 
-.geodesic-meter__bar {
-  position: relative;
-  height: 10px;
-  overflow: hidden;
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--secondary-text) 20%, transparent);
+@keyframes geodesic-stage-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.geodesic-meter__fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--highlight-text), color-mix(in srgb, var(--highlight-text) 62%, white));
-}
-
-.geodesic-field {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 170px;
-  gap: var(--space-3);
-  align-items: center;
-  padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
-  border-radius: var(--radius-md);
-  background: transparent;
-}
-
-.geodesic-field__copy {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.geodesic-field__copy h5,
-.geodesic-field__copy p {
-  margin: 0;
-}
-
-.geodesic-field__copy p,
-.geodesic-field__copy span {
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-  line-height: 1.6;
-}
-
-.geodesic-field__copy span {
-  font-size: var(--font-size-caption);
-}
-
-.geodesic-field__control {
-  display: grid;
-  gap: 10px;
-}
-
-.geodesic-field__control input[type="range"] {
-  width: 100%;
-  margin: 0;
-  accent-color: var(--highlight-text);
-}
-
-.geodesic-field__control input[type="number"] {
-  width: 100%;
-  height: 32px;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  font-family: "Consolas", "Monaco", monospace;
-  text-align: right;
+@keyframes geodesic-pulse {
+  0%, 100% { filter: drop-shadow(0 0 0 transparent); }
+  50% { filter: drop-shadow(0 0 5px color-mix(in srgb, var(--highlight-text) 65%, transparent)); }
 }
 
 .rag-lab__aside {
@@ -2860,6 +3134,27 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 960px) {
+  .geodesic-workbench__hero,
+  .geodesic-stage__header {
+    grid-template-columns: 1fr;
+  }
+
+  .geodesic-stage__icon {
+    display: none;
+  }
+
+  .geodesic-story {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .geodesic-story::before {
+    display: none;
+  }
+
+  .geodesic-stage__grid {
+    grid-template-columns: 1fr;
+  }
+
   .group-panel__list {
     grid-template-columns: 1fr;
   }
@@ -2867,8 +3162,7 @@ onBeforeUnmount(() => {
   .group-panel__header,
   .param-row,
   .wormhole-launchpad,
-  .nested-item,
-  .geodesic-field {
+  .nested-item {
     grid-template-columns: 1fr;
   }
 
@@ -2888,6 +3182,23 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 640px) {
+  .geodesic-story {
+    grid-template-columns: 1fr;
+  }
+
+  .geodesic-stage {
+    padding: var(--space-3);
+  }
+
+  .geodesic-stage__footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .geodesic-control__input {
+    grid-template-columns: 1fr 96px;
+  }
+
   .rag-lab__summary {
     padding: var(--space-4);
   }

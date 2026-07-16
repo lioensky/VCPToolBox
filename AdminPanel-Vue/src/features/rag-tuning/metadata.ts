@@ -36,6 +36,18 @@ export interface WormholeRoutingPanel {
   keys: readonly string[];
 }
 
+export type GeodesicRerankPanelId = "prepare" | "field" | "evidence" | "reward" | "guard";
+
+export interface GeodesicRerankPanel {
+  id: GeodesicRerankPanelId;
+  title: string;
+  plainTitle: string;
+  summary: string;
+  metaphor: string;
+  icon: string;
+  keys: readonly string[];
+}
+
 export type OrderedCooccurrencePanelId = "topology" | "direction" | "semantic" | "guard";
 
 export interface OrderedCooccurrencePanel {
@@ -68,6 +80,68 @@ export const WORMHOLE_ROUTING_PANELS: readonly WormholeRoutingPanel[] = [
     summary: "控制常规传播与虫洞传播的能量保留，决定探索能走多远也决定噪声会不会放大。",
     icon: "vital_signs",
     keys: ["baseDecay", "wormholeDecay"],
+  },
+] as const;
+
+export const GEODESIC_RERANK_PANELS: readonly GeodesicRerankPanel[] = [
+  {
+    id: "prepare",
+    title: "候选准备",
+    plainTitle: "先把可能的路找出来",
+    summary: "决定向量召回先捞多大的候选池，以及一条候选 Tag 路需要多少证据才能建立稳定判断。",
+    metaphor: "像规划导航前先多看几条备选路线：池子太小可能错过好路，太大则会增加计算量。",
+    icon: "travel_explore",
+    keys: ["candidateKMultiplier", "minGeoSamples", "candidatePositionDecay", "minClosureSimilarity"],
+  },
+  {
+    id: "field",
+    title: "连续势场采样",
+    plainTitle: "把离散地标铺成一张地形图",
+    summary: "控制查询场保留多少节点、语义接触多宽，以及候选 Tag 如何从附近场节点采样势能。",
+    metaphor: "阈值决定地图上的灯能照多远；核指数决定灯光边缘是柔和扩散还是迅速变暗。",
+    icon: "landscape",
+    keys: [
+      "maxFieldNodes", "fieldEnergyMassRatio", "fieldSimilarityThreshold",
+      "weakContactThreshold", "strongContactThreshold", "maxFieldNeighbors",
+      "fieldKernelExponent", "publicHubFloor",
+    ],
+  },
+  {
+    id: "evidence",
+    title: "证据判级",
+    plainTitle: "判断是亲眼看见、沿路推断，还是只像同一主题",
+    summary: "把候选分为 direct、structural、thematic，并限制弱近义词升级为直接证据。",
+    metaphor: "直接证据像门牌号一致；结构证据像沿着连续脚印找到；主题证据只是出现在同一片街区。",
+    icon: "fact_check",
+    keys: [
+      "structuralContinuityMin", "thematicMinPotential", "thematicMaxIsolatedRatio",
+      "directSemanticMinPotential", "directSemanticSaturation",
+      "directSemanticMinContacts", "directConfidenceFloor",
+    ],
+  },
+  {
+    id: "reward",
+    title: "奖励授权",
+    plainTitle: "证据够硬，才允许往前排",
+    summary: "将绝对曲线分映射为正向奖励，并为三类证据设置逐级递减的排序权限。",
+    metaphor: "不是发现关联就立刻加满分：先过奖励起点，再按证据等级领取不同额度的加分券。",
+    icon: "workspace_premium",
+    keys: [
+      "alpha", "geoRewardFloor", "geoRewardSaturation",
+      "directBonusCap", "structuralBonusCap", "thematicBonusCap",
+    ],
+  },
+  {
+    id: "guard",
+    title: "安全回退",
+    plainTitle: "地图不靠谱时，老老实实回到 KNN",
+    summary: "联合检查查询场、候选覆盖、曲线强度和区分度；低可信时保持原始向量排序。",
+    metaphor: "像导航发现 GPS 漂移：不凭一条异常信号强行改道，而是退回可靠的主干路线。",
+    icon: "shield",
+    keys: [
+      "fallbackToKnnOnLowTrust", "minFieldTags", "minFieldEntropy",
+      "minGeoCoverageRatio", "minMaxGeoScore", "minGeoScoreSpread", "minStrongEvidence",
+    ],
   },
 ] as const;
 
@@ -523,6 +597,27 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       range: "建议 0.005 ~ 0.10，默认 0.03",
       tone: "stable",
     },
+    "geodesicRerank.candidatePositionDecay": {
+      label: "候选序位衰减",
+      summary: "候选文件中越靠后的 Tag，其候选质量会按指数逐步衰减。",
+      logic: "通俗地说，它决定系统有多重视标签书写顺序。调高后更相信前几个 Tag 是叙事主干；调低后前后 Tag 更平等。0 表示完全忽略序位。",
+      range: "建议 0.01 ~ 0.08，默认 0.035",
+      tone: "sensitive",
+    },
+    "geodesicRerank.publicHubFloor": {
+      label: "公共枢纽特异性下限",
+      summary: "高入流公共 Tag 被降权时仍保留的最低候选质量倍率。",
+      logic: "像给“AI、技术、模型”等公共路口设置最低通行权。调低可更强地压制万金油标签；调高则避免真正的核心公共概念被误伤。",
+      range: "建议 0.20 ~ 0.55，默认 0.35",
+      tone: "sensitive",
+    },
+    "geodesicRerank.minClosureSimilarity": {
+      label: "Tag→正文闭合起点",
+      summary: "Tag 与候选 Chunk 的余弦相似度超过该值后，才开始贡献闭合质量。",
+      logic: "它检查路标是否真的属于这篇正文。调高会排除贴错或过泛的标签；调低更宽容，但可能让与正文关系薄弱的 Tag 参与曲线评分。",
+      range: "建议 0.10 ~ 0.40，默认 0.20",
+      tone: "critical",
+    },
     "geodesicRerank.minStrongEvidence": {
       label: "联合守卫强证据下限",
       summary: "候选池累计强接触与折算精确命中的最低证据量，用于覆盖率、最大分和区分度的联合回退判断。",
@@ -845,6 +940,17 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
     || key === "geodesicrerank.fieldsimilaritythreshold"
     || key === "geodesicrerank.weakcontactthreshold"
     || key === "geodesicrerank.strongcontactthreshold"
+  ) {
+    return { min: 0, max: 1, step: 0.01 };
+  }
+
+  if (key === "geodesicrerank.candidatepositiondecay") {
+    return { min: 0, max: 0.2, step: 0.005 };
+  }
+
+  if (
+    key === "geodesicrerank.publichubfloor"
+    || key === "geodesicrerank.minclosuresimilarity"
   ) {
     return { min: 0, max: 1, step: 0.01 };
   }

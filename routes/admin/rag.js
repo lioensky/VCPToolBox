@@ -18,12 +18,52 @@ module.exports = function(options) {
         }
     };
 
+    const assertJsonValue = (value, pathLabel = 'body') => {
+        if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+        if (typeof value === 'number') {
+            if (Number.isFinite(value)) return;
+            const err = new Error(`Invalid non-finite number at ${pathLabel}`);
+            err.statusCode = 400;
+            throw err;
+        }
+        if (Array.isArray(value)) {
+            value.forEach((item, index) => assertJsonValue(item, `${pathLabel}[${index}]`));
+            return;
+        }
+        if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+            Object.entries(value).forEach(([key, item]) => {
+                assertJsonValue(item, `${pathLabel}.${key}`);
+            });
+            return;
+        }
+        const err = new Error(`Invalid JSON value at ${pathLabel}`);
+        err.statusCode = 400;
+        throw err;
+    };
+
     const assertPlainObject = (body) => {
-        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.getPrototypeOf(body) !== Object.prototype) {
             const err = new Error('Invalid request body');
             err.statusCode = 400;
             throw err;
         }
+        assertJsonValue(body);
+    };
+
+    const mergeRagParams = (base, override) => {
+        if (
+            base && override
+            && typeof base === 'object' && !Array.isArray(base)
+            && typeof override === 'object' && !Array.isArray(override)
+        ) {
+            const merged = { ...base };
+            for (const [key, value] of Object.entries(override)) {
+                merged[key] = key in base ? mergeRagParams(base[key], value) : value;
+            }
+            return merged;
+        }
+        // 数组、布尔、字符串与数值都是完整叶子；主题值必须整体覆盖。
+        return override;
     };
 
     const writeJsonFileAtomic = async (filePath, body) => {
@@ -137,7 +177,11 @@ module.exports = function(options) {
     router.get('/rag-param-themes/:themeName', async (req, res) => {
         try {
             const themePath = getThemeFilePath(req.params.themeName);
-            res.json(await readJsonFile(themePath, {}));
+            const [baseParams, themePatch] = await Promise.all([
+                readJsonFile(ragParamsPath, {}),
+                readJsonFile(themePath, {})
+            ]);
+            res.json(mergeRagParams(baseParams, themePatch));
         } catch (error) { res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Failed' }); }
     });
 
@@ -154,7 +198,11 @@ module.exports = function(options) {
     router.post('/rag-param-themes/:themeName/apply', async (req, res) => {
         try {
             const themeName = normalizeThemeName(req.params.themeName);
-            const themeParams = await readJsonFile(getThemeFilePath(themeName));
+            const [baseParams, themePatch] = await Promise.all([
+                readJsonFile(ragParamsPath, {}),
+                readJsonFile(getThemeFilePath(themeName))
+            ]);
+            const themeParams = mergeRagParams(baseParams, themePatch);
             await writeJsonFile(ragParamsPath, themeParams);
             res.json({ message: 'Applied', theme: { name: themeName, fileName: getThemeFileName(themeName) }, params: themeParams });
         } catch (error) { res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Failed' }); }
