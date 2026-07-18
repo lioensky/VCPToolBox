@@ -528,10 +528,37 @@ def fetch_pbp(cid: str, aid: str = None, bvid: str = None) -> str:
         logging.error(f"Error fetching PBP: {e}")
         return ""
 
-def sanitize_filename(name: str) -> str:
-    """Sanitizes a string to be used as a filename/directory name."""
-    # Replace invalid characters with underscores
-    return re.sub(r'[\\/*?:"<>|]', '_', name).strip()
+def sanitize_filename(name: str, max_length: int = 80) -> str:
+    """
+    将外部文本清洗为安全的 Windows 文件名/目录名。
+
+    除 Windows 禁用字符外，同时移除控制字符、替换所有空白，并规避
+    尾随点/空格、保留设备名和过长路径段。截断时附加摘要以降低重名风险。
+    """
+    original = str(name or "")
+    # Windows 禁止 ASCII 控制字符及 \ / : * ? " < > |。
+    safe_name = re.sub(r'[\x00-\x1f\\/:*?"<>|]', '_', original)
+    # 不让标题中的普通空格、制表符或换行进入目录名。
+    safe_name = re.sub(r'\s+', '_', safe_name)
+    safe_name = re.sub(r'_+', '_', safe_name).strip(' ._')
+
+    # Windows 设备名即使带扩展名也不可作为文件或目录名。
+    reserved_names = {
+        'CON', 'PRN', 'AUX', 'NUL',
+        *(f'COM{i}' for i in range(1, 10)),
+        *(f'LPT{i}' for i in range(1, 10)),
+    }
+    if not safe_name or safe_name in {'.', '..'}:
+        safe_name = 'untitled'
+    if safe_name.split('.', 1)[0].upper() in reserved_names:
+        safe_name = f'_{safe_name}'
+
+    max_length = max(16, min(int(max_length), 120))
+    if len(safe_name) > max_length:
+        digest = md5(original.encode('utf-8', errors='replace')).hexdigest()[:10]
+        safe_name = f"{safe_name[:max_length - len(digest) - 1].rstrip(' ._')}_{digest}"
+
+    return safe_name.rstrip(' .') or 'untitled'
 
 def get_accessible_url(local_path: str) -> str:
     """Constructs an accessible URL for the image server."""
@@ -544,20 +571,26 @@ def get_accessible_url(local_path: str) -> str:
     if all([var_http_url, server_port, image_key, project_base_path]):
         # Calculate relative path from PROJECT_BASE_PATH/image/
         try:
-            # Ensure the path separator is consistent for relpath
-            norm_local = os.path.normpath(local_path)
-            norm_base = os.path.normpath(os.path.join(project_base_path, 'image'))
-            
-            rel_path = os.path.relpath(norm_local, norm_base)
-            rel_path = rel_path.replace('\\', '/')
-            
-            # Construct the final URL with password key
-            return f"{var_http_url}:{server_port}/pw={image_key}/images/{rel_path}"
+            norm_local = os.path.abspath(os.path.normpath(local_path))
+            norm_base = os.path.abspath(os.path.normpath(os.path.join(project_base_path, 'image')))
+
+            # 防止异常路径通过 ".." 逃逸图片根目录。
+            if os.path.commonpath([norm_local, norm_base]) != norm_base:
+                raise ValueError(f"Image path is outside image root: {norm_local}")
+
+            rel_path = os.path.relpath(norm_local, norm_base).replace('\\', '/')
+            # URL 路径必须按 UTF-8 百分号编码；仅保留目录分隔符。
+            encoded_rel_path = urllib.parse.quote(rel_path, safe='/')
+            encoded_image_key = urllib.parse.quote(str(image_key), safe='')
+            base_url = str(var_http_url).rstrip('/')
+
+            return f"{base_url}:{server_port}/pw={encoded_image_key}/images/{encoded_rel_path}"
         except Exception as e:
             logging.error(f"Error calculating relative path for URL: {e}")
-    
-    # Fallback to file URI if env vars are missing or error occurs
-    return "file:///" + local_path.replace("\\", "/")
+
+    # Fallback URI 同样需要编码空格、Unicode 和 URL 保留字符。
+    file_path = os.path.abspath(local_path).replace("\\", "/")
+    return "file:///" + urllib.parse.quote(file_path, safe='/:')
 
 def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, danmaku_num: int = 0, comment_num: int = 0, snapshot_at_times: list | None = None, need_subs: bool = True, need_pbp: bool = True, hd_snapshot: bool = False) -> dict:
     """
@@ -652,10 +685,21 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
             # Prepare image directory in PROJECT_BASE_PATH
             project_base_path = os.environ.get('PROJECT_BASE_PATH', os.getcwd())
             
-            # Sub-directory based on video title for better organization
+            # 标题来自远端，不可直接作为路径；BV 号后缀还可避免清洗后的标题碰撞。
             safe_title = sanitize_filename(video_title) if video_title else bvid
-            img_dir = os.path.join(project_base_path, "image", "bilibili", safe_title)
-            
+            safe_directory = sanitize_filename(f"{safe_title}_{bvid}", max_length=100)
+
+            # 纵深防御：即使未来清洗规则被修改，最终路径也不得逃逸 bilibili 根目录。
+            bilibili_root = os.path.abspath(
+                os.path.join(project_base_path, "image", "bilibili")
+            )
+            img_dir = os.path.abspath(os.path.join(bilibili_root, safe_directory))
+            if os.path.commonpath([img_dir, bilibili_root]) != bilibili_root:
+                logging.error(
+                    f"Rejected unsafe snapshot directory derived from title: {video_title!r}"
+                )
+                img_dir = os.path.join(bilibili_root, bvid)
+
             try:
                 if not os.path.exists(img_dir):
                     os.makedirs(img_dir)
