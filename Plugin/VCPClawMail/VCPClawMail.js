@@ -54,6 +54,8 @@ const MIN_FALLBACK_POLL_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_POLL_LIMIT = 20;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const WS_RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
+const WS_STABLE_CONNECTION_MS = 20_000;
+const WS_RECONNECT_JITTER_MIN_RATIO = 0.8;
 const INJECTED_PROMPT_START = '<<<[VCP_CLAWMAIL_INJECTED_PROMPT]>>>';
 const INJECTED_PROMPT_END = '<<<[END_VCP_CLAWMAIL_INJECTED_PROMPT]>>>';
 const MAIL_CONTENT_START = '<<<[VCP_CLAWMAIL_MAIL_CONTENT]>>>';
@@ -1585,6 +1587,7 @@ function getWsState(user) {
       retries: 0,
       lastConnectedAt: null,
       lastDisconnectedAt: null,
+      connectedAtMs: null,
       lastError: null,
       lastMailAt: null,
       lastMailId: null
@@ -1597,9 +1600,20 @@ function scheduleWsReconnect(user, reason = 'unknown') {
   const state = getWsState(user);
   if (state.stopped) return;
   if (wsReconnectTimers.has(user)) return;
-  const delay = WS_RECONNECT_BACKOFF_MS[Math.min(state.retries, WS_RECONNECT_BACKOFF_MS.length - 1)];
+
+  const baseDelay = WS_RECONNECT_BACKOFF_MS[
+    Math.min(state.retries, WS_RECONNECT_BACKOFF_MS.length - 1)
+  ];
+  const delay = Math.round(
+    baseDelay * (
+      WS_RECONNECT_JITTER_MIN_RATIO
+      + Math.random() * (1 - WS_RECONNECT_JITTER_MIN_RATIO)
+    )
+  );
+
   state.retries += 1;
   console.warn(`[VCPClawMail] WebSocket 将在 ${delay}ms 后重连: user=${user}, reason=${reason}`);
+
   const timer = setTimeout(() => {
     wsReconnectTimers.delete(user);
     connectWsForUser(user).catch(error => {
@@ -1610,6 +1624,7 @@ function scheduleWsReconnect(user, reason = 'unknown') {
       scheduleWsReconnect(user, error.message);
     });
   }, delay);
+
   if (timer.unref) timer.unref();
   wsReconnectTimers.set(user, timer);
 }
@@ -1811,6 +1826,7 @@ async function refreshAfterMailPush(user, mailId) {
 async function connectWsForUser(user) {
   const state = getWsState(user);
   if (state.stopped || state.connecting || state.connected) return;
+
   const client = getClient(user);
   if (!client.ws || typeof client.ws.connect !== 'function') {
     state.lastError = '当前 SDK 未暴露 client.ws.connect。';
@@ -1819,6 +1835,7 @@ async function connectWsForUser(user) {
   }
 
   state.connecting = true;
+
   try {
     client.ws.onMessage(({ mailId } = {}) => {
       state.lastMailAt = new Date().toISOString();
@@ -1829,24 +1846,43 @@ async function connectWsForUser(user) {
     });
 
     client.ws.onDisconnect((reason) => {
+      const disconnectedAtMs = Date.now();
+      const uptimeMs = state.connectedAtMs
+        ? disconnectedAtMs - state.connectedAtMs
+        : 0;
+
+      if (uptimeMs >= WS_STABLE_CONNECTION_MS) {
+        state.retries = 0;
+      }
+
       state.connected = false;
       state.connecting = false;
-      state.lastDisconnectedAt = new Date().toISOString();
+      state.connectedAtMs = null;
+      state.lastDisconnectedAt = new Date(disconnectedAtMs).toISOString();
       state.lastError = reason || null;
-      console.warn(`[VCPClawMail] WebSocket 已断开: user=${user}, reason=${reason || 'unknown'}`);
+
+      console.warn(
+        `[VCPClawMail] WebSocket 已断开: user=${user}, `
+        + `reason=${reason || 'unknown'}, uptimeMs=${uptimeMs}`
+      );
+
       scheduleWsReconnect(user, reason || 'disconnect');
     });
 
     await client.ws.connect();
+
+    const connectedAtMs = Date.now();
     state.connected = true;
     state.connecting = false;
-    state.retries = 0;
-    state.lastConnectedAt = new Date().toISOString();
+    state.connectedAtMs = connectedAtMs;
+    state.lastConnectedAt = new Date(connectedAtMs).toISOString();
     state.lastError = null;
+
     log(`WebSocket 即达监听已连接: user=${user}`);
   } catch (error) {
     state.connected = false;
     state.connecting = false;
+    state.connectedAtMs = null;
     state.lastError = error.message;
     throw error;
   }
@@ -1887,6 +1923,8 @@ function stopWsListeners() {
     state.stopped = true;
     state.connected = false;
     state.connecting = false;
+    state.connectedAtMs = null;
+
     try {
       const client = clients.get(user);
       if (client?.ws && typeof client.ws.disconnect === 'function') {

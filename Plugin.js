@@ -684,6 +684,7 @@ class PluginManager extends EventEmitter {
 
                     // --- 注入 VectorDBManager ---
                     if (
+                        manifest.requiresKnowledgeBaseManager === true ||
                         manifest.name === 'RAGDiaryPlugin' ||
                         manifest.name === 'DailyNote' ||
                         manifest.name === 'DailyNoteManager'
