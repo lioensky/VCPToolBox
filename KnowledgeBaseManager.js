@@ -56,7 +56,7 @@ class KnowledgeBaseManager {
             // ⚠️ 务必确认环境变量 VECTORDB_DIMENSION 与模型一致 (3-small通常为1536)
             dimension: parseInt(process.env.VECTORDB_DIMENSION) || 3072,
 
-            batchWindow: parseInt(process.env.KNOWLEDGEBASE_BATCH_WINDOW_MS, 10) || 2000,
+            batchWindow: parseInt(process.env.KNOWLEDGEBASE_BATCH_WINDOW_MS, 10) || 1000,
             maxBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_BATCH_SIZE, 10) || 50,
             indexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_INDEX_SAVE_DELAY, 10) || 120000,
             tagIndexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY, 10) || 300000,
@@ -144,6 +144,10 @@ class KnowledgeBaseManager {
         this.externalMutationActive = false;
         this.externalMutationOwner = null;
         this.externalMutationQueueLength = 0;
+        // 索引收集窗口在长耗时外部变更期间到期时，只设置闩锁；
+        // 变更提交后立即补刷，避免复用 Rust 冷却时间或创建重复定时器。
+        this.externalMutationBatchDeferred = false;
+        this.externalMutationDeleteBatchDeferred = false;
         this._externalMutationTail = Promise.resolve();
 
         // 🛡️ 同一时刻只允许一个 Rust recoverFromSqlite 打开知识库。

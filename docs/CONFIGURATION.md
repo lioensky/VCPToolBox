@@ -205,7 +205,7 @@ API_URL=https://api.openai.com
 | `VECTORDB_DIMENSION` | number | 3072 | 向量维度（必须与嵌入模型匹配） |
 | `KNOWLEDGEBASE_FULL_SCAN_ON_STARTUP` | boolean | true | 启动时全量扫描 |
 | `KNOWLEDGEBASE_MAX_BATCH_SIZE` | number | 50 | 批量处理最大文件数 |
-| `KNOWLEDGEBASE_BATCH_WINDOW_MS` | number | 2000 | 批处理等待窗口（毫秒） |
+| `KNOWLEDGEBASE_BATCH_WINDOW_MS` | number | 1000 | 首个文件触发的固定批处理收集窗口（毫秒，后续文件不重置截止时间） |
 | `KNOWLEDGEBASE_INDEX_SAVE_DELAY` | number | 120000 | 索引保存延迟（毫秒） |
 | `KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY` | number | 300000 | Tag 索引保存延迟（毫秒） |
 | `RAGMemoRefresh` | boolean | true | 启用流内记忆刷新器 |

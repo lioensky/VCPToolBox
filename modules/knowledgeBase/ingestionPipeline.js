@@ -53,7 +53,11 @@ _scheduleDeleteBatch() {
 
 async _flushDeleteBatch() {
         if (this.isProcessingDeletes || this.pendingDeletes.size === 0 || this.databaseCorruptionDetected) return;
-        if (this.rustWriteLease || this.externalMutationActive || this.indexRecoveryActive) {
+        if (this.externalMutationActive) {
+            this.externalMutationDeleteBatchDeferred = true;
+            return;
+        }
+        if (this.rustWriteLease || this.indexRecoveryActive) {
             this._deferBatchForRustLease('delete');
             return;
         }
@@ -83,13 +87,22 @@ async _flushDeleteBatch() {
     },
 
 _scheduleBatch() {
-        if (this.batchTimer) clearTimeout(this.batchTimer);
-        this.batchTimer = setTimeout(() => this._flushBatch(), this.config.batchWindow);
+        // 固定收集窗口：首个文件启动计时，后续文件只加入 pendingFiles，
+        // 不重置截止时间，避免持续写入导致索引任务无限延期。
+        if (this.batchTimer) return;
+        this.batchTimer = setTimeout(() => {
+            this.batchTimer = null;
+            this._flushBatch();
+        }, this.config.batchWindow);
     },
 
 async _flushBatch() {
         if (this.isProcessing || this.pendingFiles.size === 0) return;
-        if (this.rustWriteLease || this.externalMutationActive || this.indexRecoveryActive) {
+        if (this.externalMutationActive) {
+            this.externalMutationBatchDeferred = true;
+            return;
+        }
+        if (this.rustWriteLease || this.indexRecoveryActive) {
             this._deferBatchForRustLease('batch');
             return;
         }
@@ -97,7 +110,10 @@ async _flushBatch() {
 
         // 1. 📋 准备批次：先从队列中取出，但不立即永久删除
         const batchFiles = Array.from(this.pendingFiles).slice(0, this.config.maxBatchSize);
-        if (this.batchTimer) clearTimeout(this.batchTimer);
+        if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+        }
 
         console.log(`[KnowledgeBase] 🚌 Processing ${batchFiles.length} files...`);
 

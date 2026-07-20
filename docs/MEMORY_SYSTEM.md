@@ -914,7 +914,7 @@ $$\text{Coverage} = \frac{E_{projection}}{E_{original}}$$
 | 参数名 | 环境变量 | 默认值 | 说明 |
 |--------|----------|--------|------|
 | 向量维度 | `VECTORDB_DIMENSION` | 3072 | 与 Embedding 模型匹配 |
-| 批处理窗口 | `KNOWLEDGEBASE_BATCH_WINDOW_MS` | 2000 | 毫秒 |
+| 批处理固定收集窗口 | `KNOWLEDGEBASE_BATCH_WINDOW_MS` | 1000 | 毫秒；后续文件不重置截止时间 |
 | 最大批大小 | `KNOWLEDGEBASE_MAX_BATCH_SIZE` | 50 | 文件数 |
 | 索引保存延迟 | `KNOWLEDGEBASE_INDEX_SAVE_DELAY` | 120000 | 毫秒 |
 | 标签索引保存延迟 | `KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY` | 300000 | 毫秒 |

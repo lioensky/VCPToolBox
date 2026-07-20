@@ -225,22 +225,6 @@ class DatabaseCoordinator {
         }
 
         const waitForIndex = options.waitForIndex !== false;
-        let resolveFileCommit;
-        let rejectFileCommit;
-        let fileCommitSettled = false;
-        const fileCommitPromise = waitForIndex
-            ? null
-            : new Promise((resolve, reject) => {
-                resolveFileCommit = resolve;
-                rejectFileCommit = reject;
-            });
-
-        const settleFileCommit = (type, value) => {
-            if (waitForIndex || fileCommitSettled) return;
-            fileCommitSettled = true;
-            if (type === 'resolve') resolveFileCommit(value);
-            else rejectFileCommit(value);
-        };
 
         owner.externalMutationQueueLength++;
         const execute = async () => {
@@ -259,27 +243,42 @@ class DatabaseCoordinator {
                     owner.externalMutationOwner = null;
                 }
 
-                settleFileCommit('resolve', result);
                 if (
                     result?.status === 'success'
                     || result?.status === 'partial'
                 ) {
                     const mutationPaths = this.extractMutationPaths(result);
-                    const indexingOptions = waitForIndex
-                        ? options
-                        : { ...options, signal: undefined };
-                    await this.awaitDeletedFilePaths(
-                        mutationPaths.deletes,
-                        indexingOptions
-                    );
-                    await this.awaitIndexedFilePaths(
-                        mutationPaths.upserts,
-                        indexingOptions
-                    );
+                    if (waitForIndex) {
+                        await this.awaitDeletedFilePaths(
+                            mutationPaths.deletes,
+                            options
+                        );
+                        await this.awaitIndexedFilePaths(
+                            mutationPaths.upserts,
+                            options
+                        );
+                    } else {
+                        // 最终一致模式只负责把路径交给现有批处理器，不在外部变更
+                        // FIFO 中等待 Embedding/SQLite/Vexus。这样后续日记可以继续
+                        // 落盘，并在同一个收集窗口内合并为批量索引任务。
+                        for (const filePath of mutationPaths.deletes) {
+                            owner.pendingFiles.delete(filePath);
+                            owner.pendingDeletes.add(filePath);
+                        }
+                        for (const filePath of mutationPaths.upserts) {
+                            owner.pendingDeletes.delete(filePath);
+                            owner.pendingFiles.add(filePath);
+                        }
+                        if (mutationPaths.deletes.length > 0) {
+                            owner._scheduleDeleteBatch();
+                        }
+                        if (mutationPaths.upserts.length > 0) {
+                            owner._scheduleBatch();
+                        }
+                    }
                 }
                 return result;
             } catch (error) {
-                settleFileCommit('reject', error);
                 throw error;
             }
         };
@@ -297,8 +296,29 @@ class DatabaseCoordinator {
                     0,
                     owner.externalMutationQueueLength - 1
                 );
+
+                // 收集窗口可能在长耗时 update/organize 执行期间到期。
+                // 等当前已排队的外部文件操作全部提交后只补刷一次，既不会
+                // 丢失索引任务，也不会让索引插到同一轮多文件写入之间。
+                if (owner.externalMutationQueueLength === 0) {
+                    const flushDeletes = owner.externalMutationDeleteBatchDeferred;
+                    const flushUpserts = owner.externalMutationBatchDeferred;
+                    owner.externalMutationDeleteBatchDeferred = false;
+                    owner.externalMutationBatchDeferred = false;
+
+                    if (flushDeletes || flushUpserts) {
+                        setImmediate(() => {
+                            if (flushDeletes && owner.pendingDeletes.size > 0) {
+                                owner._flushDeleteBatch();
+                            }
+                            if (flushUpserts && owner.pendingFiles.size > 0) {
+                                owner._flushBatch();
+                            }
+                        });
+                    }
+                }
             });
-        return waitForIndex ? task : fileCommitPromise;
+        return task;
     }
 
     isRustWriteLeaseExpired(now = Date.now()) {
