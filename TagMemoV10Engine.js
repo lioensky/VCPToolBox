@@ -6,6 +6,9 @@ const {
     immutableSnapshot,
     createReadonlyCsr
 } = require('./modules/tagmemoV10/immutable');
+const { buildProvenanceView } = require('./modules/tagmemoV10/provenance');
+const { createConditionedOperator } = require('./modules/tagmemoV10/agentConditioner');
+const { solveDualScaledFields } = require('./modules/tagmemoV10/scaledFieldSolver');
 
 const VERSION = 'v10_alpha';
 const ALGORITHM_VERSION = 'v10.alpha.1';
@@ -125,7 +128,11 @@ class TagMemoV10Engine {
         const databaseGeneration = this._computeDatabaseGeneration();
         const graphGeneration = sharedTransport.contentSig;
         const modelSig = sourceBundle.modelSig || this.v9Engine?.modelSig || 'unknown-model';
-        const provenanceGeneration = this._computeProvenanceGeneration();
+        const provenanceView = buildProvenanceView(this.db, {
+            maxTagsPerFile: 100,
+            direction: this.ragParams?.KnowledgeBaseManager?.orderedCooccurrence || {}
+        });
+        const provenanceGeneration = provenanceView.generation;
         const artifactSig = hashStable({
             schema: ARTIFACT_SCHEMA,
             version: VERSION,
@@ -169,6 +176,7 @@ class TagMemoV10Engine {
             wormholeView: immutableSnapshot(
                 sourceBundle.wormholeEdges || new Set()
             ),
+            provenanceView,
             effectiveConfig,
             publishedAt
         });
@@ -244,6 +252,78 @@ class TagMemoV10Engine {
         });
     }
 
+    solveQueryState(queryState, options = {}) {
+        const artifact = options.artifact || this.getArtifactSnapshot();
+        const replay = this.assertReplayCompatible(queryState, artifact);
+        if (!replay.compatible) {
+            const error = new Error(
+                `V10 query state is not replay-compatible: ${replay.mismatches.join(', ')}`
+            );
+            error.code = 'TAGMEMO_V10_REPLAY_MISMATCH';
+            error.mismatches = replay.mismatches;
+            throw error;
+        }
+
+        const agentContext = {
+            ...queryState.agentContext,
+            publicDiaryNames: options.publicDiaryNames || []
+        };
+        const conditioningConfig = artifact.effectiveConfig.agentConditioning || {};
+        const nodeVisibility = typeof options.nodeVisibility === 'function'
+            ? options.nodeVisibility
+            : () => true;
+        const identityEligibility = typeof options.identityEligibility === 'function'
+            ? options.identityEligibility
+            : () => false;
+        const rankingEligibility = typeof options.rankingEligibility === 'function'
+            ? options.rankingEligibility
+            : () => true;
+        const edgeProvenance = (sourceId, targetId, context) =>
+            artifact.provenanceView.getEdgeMass(sourceId, targetId, context);
+        const common = {
+            ...conditioningConfig,
+            scopeHash: queryState.scopeHash,
+            failClosed: artifact.effectiveConfig.safety?.failClosed !== false,
+            nodeVisibility,
+            identityEligibility,
+            rankingEligibility,
+            edgeProvenance,
+            queryGate: options.queryGate,
+            affinityGate: options.affinityGate
+        };
+        const localOperator = createConditionedOperator(
+            artifact.sharedTransport,
+            agentContext,
+            { ...common, scale: 'local' }
+        );
+        const transferOperator = createConditionedOperator(
+            artifact.sharedTransport,
+            agentContext,
+            { ...common, scale: 'transfer' }
+        );
+        const solved = solveDualScaledFields({
+            localOperator,
+            transferOperator,
+            sourceField: queryState.sourceField,
+            local: queryState.solver.local,
+            transfer: queryState.solver.transfer,
+            support: artifact.effectiveConfig.effectiveSupport
+        });
+
+        return Object.freeze({
+            ...queryState,
+            conditionedTransportView: Object.freeze({
+                local: localOperator,
+                transfer: transferOperator
+            }),
+            localField: solved.localField,
+            transferField: solved.transferField,
+            localDomain: solved.localDomain,
+            transferDomain: solved.transferDomain,
+            fieldDiagnostics: solved.diagnostics
+        });
+    }
+
     assertReplayCompatible(queryState, artifact = null) {
         const snapshot = artifact || this.getArtifactSnapshot({ buildIfMissing: false });
         if (!queryState || queryState.schema !== QUERY_TRACE_SCHEMA) {
@@ -306,6 +386,14 @@ class TagMemoV10Engine {
         return Object.freeze({
             agentId: String(agentContext.agentId || agentContext.maid || '').trim() || null,
             diaryNames,
+            publicDiaryNames: Object.freeze(
+                [...new Set((Array.isArray(agentContext.publicDiaryNames)
+                    ? agentContext.publicDiaryNames
+                    : [])
+                    .map(value => String(value).trim())
+                    .filter(Boolean))]
+                    .sort()
+            ),
             allowedFileIds: normalizeIds(agentContext.allowedFileIds),
             deniedFileIds: normalizeIds(agentContext.deniedFileIds),
             visibilityMode: String(agentContext.visibilityMode || 'scope_only'),
