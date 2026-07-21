@@ -169,6 +169,7 @@ function fieldToEntries(vector, operator) {
 function solveDualScaledFields(options = {}) {
     const localOperator = options.localOperator || options.operator;
     const transferOperator = options.transferOperator || options.operator || localOperator;
+    const dualOperator = options.dualOperator || null;
     if (!localOperator || !transferOperator) {
         throw new TypeError('solveDualScaledFields requires conditioned operators');
     }
@@ -212,20 +213,57 @@ function solveDualScaledFields(options = {}) {
         iterations = iteration;
         const localApplyDiagnostics = {};
         const transferApplyDiagnostics = {};
-        localOperator.apply(local, propagatedLocal, localApplyDiagnostics);
-        transferOperator.apply(transfer, propagatedTransfer, transferApplyDiagnostics);
 
-        for (let index = 0; index < source.length; index++) {
-            nextLocal[index] = (1 - alphaLocal) * source[index]
-                + alphaLocal * propagatedLocal[index];
-            nextTransfer[index] = (1 - alphaTransfer) * source[index]
-                + alphaTransfer * propagatedTransfer[index];
+        if (
+            dualOperator
+            && typeof dualOperator.applyDual === 'function'
+            && !localConverged
+            && !transferConverged
+        ) {
+            dualOperator.applyDual(
+                local,
+                transfer,
+                propagatedLocal,
+                propagatedTransfer,
+                localApplyDiagnostics,
+                transferApplyDiagnostics
+            );
+        } else {
+            if (!localConverged) {
+                localOperator.apply(local, propagatedLocal, localApplyDiagnostics);
+            }
+            if (!transferConverged) {
+                transferOperator.apply(
+                    transfer,
+                    propagatedTransfer,
+                    transferApplyDiagnostics
+                );
+            }
         }
 
-        localResidual = l1Distance(nextLocal, local);
-        transferResidual = l1Distance(nextTransfer, transfer);
-        localConverged = localResidual <= localTolerance;
-        transferConverged = transferResidual <= transferTolerance;
+        if (!localConverged) {
+            for (let index = 0; index < source.length; index++) {
+                nextLocal[index] = (1 - alphaLocal) * source[index]
+                    + alphaLocal * propagatedLocal[index];
+            }
+            localResidual = l1Distance(nextLocal, local);
+            localConverged = localResidual <= localTolerance;
+        } else {
+            nextLocal.set(local);
+            localResidual = 0;
+        }
+
+        if (!transferConverged) {
+            for (let index = 0; index < source.length; index++) {
+                nextTransfer[index] = (1 - alphaTransfer) * source[index]
+                    + alphaTransfer * propagatedTransfer[index];
+            }
+            transferResidual = l1Distance(nextTransfer, transfer);
+            transferConverged = transferResidual <= transferTolerance;
+        } else {
+            nextTransfer.set(transfer);
+            transferResidual = 0;
+        }
 
         for (const [key, value] of Object.entries(localApplyDiagnostics)) {
             aggregateDiagnostics.local[key] += Number(value) || 0;
@@ -288,6 +326,9 @@ function solveDualScaledFields(options = {}) {
         localOperatorSig: localOperator.operatorSig || null,
         transferOperatorSig: transferOperator.operatorSig || null,
         operatorShared: localOperator === transferOperator,
+        packedDualApply: Boolean(
+            dualOperator && typeof dualOperator.applyDual === 'function'
+        ),
         localApply: Object.freeze({ ...aggregateDiagnostics.local }),
         transferApply: Object.freeze({ ...aggregateDiagnostics.transfer }),
         iterationTrace: Object.freeze(iterationTrace)

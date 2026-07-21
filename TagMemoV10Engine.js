@@ -7,7 +7,9 @@ const {
     createReadonlyCsr
 } = require('./modules/tagmemoV10/immutable');
 const { buildProvenanceView } = require('./modules/tagmemoV10/provenance');
-const { createConditionedOperator } = require('./modules/tagmemoV10/agentConditioner');
+const {
+    createDualConditionedOperators
+} = require('./modules/tagmemoV10/agentConditioner');
 const { solveDualScaledFields } = require('./modules/tagmemoV10/scaledFieldSolver');
 const { buildCandidateSuperset } = require('./modules/tagmemoV10/candidateSuperset');
 const { projectCandidateCurves } = require('./modules/tagmemoV10/curveProjector');
@@ -467,8 +469,15 @@ class TagMemoV10Engine {
         const rankingEligibility = typeof options.rankingEligibility === 'function'
             ? options.rankingEligibility
             : () => true;
-        const edgeProvenance = (sourceId, targetId, context) =>
-            artifact.provenanceView.getEdgeMass(sourceId, targetId, context);
+        const provenanceClassifier =
+            typeof artifact.provenanceView.createContextClassifier === 'function'
+                ? artifact.provenanceView.createContextClassifier(agentContext)
+                : null;
+        const edgeProvenance = provenanceClassifier
+            ? (sourceId, targetId) =>
+                provenanceClassifier.getEdgeMass(sourceId, targetId)
+            : (sourceId, targetId, context) =>
+                artifact.provenanceView.getEdgeMass(sourceId, targetId, context);
         const common = {
             ...conditioningConfig,
             scopeHash: queryState.scopeHash,
@@ -480,19 +489,17 @@ class TagMemoV10Engine {
             queryGate: options.queryGate,
             affinityGate: options.affinityGate
         };
-        const localOperator = createConditionedOperator(
+        const dualOperator = createDualConditionedOperators(
             artifact.sharedTransport,
             agentContext,
-            { ...common, scale: 'local' }
+            common
         );
-        const transferOperator = createConditionedOperator(
-            artifact.sharedTransport,
-            agentContext,
-            { ...common, scale: 'transfer' }
-        );
+        const localOperator = dualOperator.localOperator;
+        const transferOperator = dualOperator.transferOperator;
         const solved = solveDualScaledFields({
             localOperator,
             transferOperator,
+            dualOperator,
             sourceField: queryState.sourceField,
             local: queryState.solver.local,
             transfer: queryState.solver.transfer,
@@ -502,6 +509,11 @@ class TagMemoV10Engine {
         return Object.freeze({
             ...queryState,
             conditionedTransportView: Object.freeze({
+                schema: dualOperator.schema,
+                pairSig: dualOperator.pairSig,
+                edgeCount: dualOperator.edgeCount,
+                permittedEdges: dualOperator.permittedEdges,
+                forbiddenEdgeMass: dualOperator.forbiddenEdgeMass,
                 local: localOperator,
                 transfer: transferOperator
             }),

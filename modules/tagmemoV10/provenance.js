@@ -167,7 +167,9 @@ function buildProvenanceView(db, options = {}) {
         edges: digestRows
     }, 40);
 
-    const classify = (contributions, context = {}) => {
+    const createContextClassifier = (context = {}) => {
+        // 查询上下文集合只编译一次。旧实现每分类一条边都重建四个 Set，
+        // 在大图双尺度迭代中会制造数千万个短命对象和严重 GC 压力。
         const allowedFileIds = new Set(
             Array.isArray(context.allowedFileIds) ? context.allowedFileIds.map(Number) : []
         );
@@ -183,41 +185,47 @@ function buildProvenanceView(db, options = {}) {
             Array.isArray(context.diaryNames) ? context.diaryNames.map(String) : []
         );
         const agentId = String(context.agentId || '').trim();
-        const mass = {
-            public: 0,
-            agent_own: 0,
-            authorized: 0,
-            other_agent_public: 0,
-            private_forbidden: 0,
-            unknown: 0
-        };
 
-        for (const item of contributions) {
-            if (deniedFileIds.has(item.fileId)) {
-                mass.private_forbidden += item.mass;
-                continue;
+        return contributions => {
+            const mass = {
+                public: 0,
+                agent_own: 0,
+                authorized: 0,
+                other_agent_public: 0,
+                private_forbidden: 0,
+                unknown: 0
+            };
+
+            for (const item of contributions) {
+                if (deniedFileIds.has(item.fileId)) {
+                    mass.private_forbidden += item.mass;
+                    continue;
+                }
+                if (allowedFileIds.has(item.fileId)) {
+                    mass.authorized += item.mass;
+                    continue;
+                }
+                if (publicDiaryNames.has(item.diaryName)) {
+                    mass.public += item.mass;
+                    continue;
+                }
+                if (agentId && item.diaryName.includes(agentId)) {
+                    mass.agent_own += item.mass;
+                    continue;
+                }
+                if (authorizedDiaryNames.has(item.diaryName)) {
+                    mass.authorized += item.mass;
+                    continue;
+                }
+                // 没有显式公开/授权信息时绝不推断为 public。
+                mass.unknown += item.mass;
             }
-            if (allowedFileIds.has(item.fileId)) {
-                mass.authorized += item.mass;
-                continue;
-            }
-            if (publicDiaryNames.has(item.diaryName)) {
-                mass.public += item.mass;
-                continue;
-            }
-            if (agentId && item.diaryName.includes(agentId)) {
-                mass.agent_own += item.mass;
-                continue;
-            }
-            if (authorizedDiaryNames.has(item.diaryName)) {
-                mass.authorized += item.mass;
-                continue;
-            }
-            // 没有显式公开/授权信息时绝不推断为 public。
-            mass.unknown += item.mass;
-        }
-        return Object.freeze(mass);
+            return mass;
+        };
     };
+
+    const classify = (contributions, context = {}) =>
+        createContextClassifier(context)(contributions);
 
     return Object.freeze({
         schema: 'tagmemo-v10-alpha-provenance-v1',
@@ -229,7 +237,19 @@ function buildProvenanceView(db, options = {}) {
             if (!contributions || contributions.length === 0) {
                 return Object.freeze({ unknown: 1 });
             }
-            return classify(contributions, context);
+            return Object.freeze(classify(contributions, context));
+        },
+        createContextClassifier(context = {}) {
+            const classifyForContext = createContextClassifier(context);
+            return Object.freeze({
+                getEdgeMass(sourceId, targetId) {
+                    const contributions = compactEdges.get(edgeKey(sourceId, targetId));
+                    if (!contributions || contributions.length === 0) {
+                        return { unknown: 1 };
+                    }
+                    return classifyForContext(contributions);
+                }
+            });
         },
         inspectEdge(sourceId, targetId) {
             const contributions = compactEdges.get(edgeKey(sourceId, targetId))

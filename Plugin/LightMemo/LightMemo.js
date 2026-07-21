@@ -610,9 +610,14 @@ class LightMemoPlugin {
             'tagmemo-v10',
             'tagmemo_v10_alpha',
             'tagmemo-v10-alpha',
+            'tagmemo_v10_ab',
+            'tagmemo-v10-ab',
+            'tagmemo_unified_ab',
+            'tagmemo-unified-ab',
             'v10_alpha',
             'v10-alpha',
-            '统一认知几何'
+            '统一认知几何',
+            '统一寻址对照'
         ].includes(command) || ['v10', 'v10_alpha', 'v10.alpha.1'].includes(version);
     }
 
@@ -632,6 +637,21 @@ class LightMemoPlugin {
      * 并用 disabled_observables=direct,structural,thematic,closure 做逐项消融。
      */
     async handleTagMemoV10(args = {}) {
+        const requestStartedAt = performance.now();
+        const timing = {};
+        const measureSync = (name, operation) => {
+            const startedAt = performance.now();
+            const result = operation();
+            timing[name] = performance.now() - startedAt;
+            return result;
+        };
+        const measureAsync = async (name, operation) => {
+            const startedAt = performance.now();
+            const result = await operation();
+            timing[name] = performance.now() - startedAt;
+            return result;
+        };
+
         const required = [
             'getTagMemoV10ArtifactSnapshot',
             'prepareTagMemoV10Query',
@@ -649,6 +669,23 @@ class LightMemoPlugin {
             );
         }
 
+        const command = String(args.command || args.action || '').trim().toLowerCase();
+        const abRequested = [
+            'tagmemo_v10_ab',
+            'tagmemo-v10-ab',
+            'tagmemo_unified_ab',
+            'tagmemo-unified-ab',
+            '统一寻址对照'
+        ].includes(command);
+        const compareRerank = abRequested && this._parseBooleanAlias(
+            [
+                ['compare_rerank', args.compare_rerank],
+                ['compareRerank', args.compareRerank],
+                ['rerank_compare', args.rerank_compare]
+            ],
+            false,
+            'TagMemo unified A/B Rerank comparison'
+        );
         const query = String(args.query || args.start || '').trim();
         if (!query) throw new Error('TagMemo V10 Alpha 需要 query 参数。');
         const parsedMaidScope = this._parseMaidScopedFolder(args.maid);
@@ -672,9 +709,12 @@ class LightMemoPlugin {
             1,
             Math.floor(this._parseNumber(args.source_k ?? args.sourceK, 16))
         );
-        const arm = String(
-            args.experiment_arm || args.experimentArm || args.arm || 'all'
-        ).trim().toLowerCase();
+        // 统一 A/B 必须同时计算三臂，确保评审文档来自同一 Query State 与候选池。
+        const arm = abRequested
+            ? 'all'
+            : String(
+                args.experiment_arm || args.experimentArm || args.arm || 'all'
+            ).trim().toLowerCase();
         if (!['pure', 'gated', 'observed', 'all'].includes(arm)) {
             throw new Error(
                 'experiment_arm 仅支持 pure、gated、observed 或 all。'
@@ -697,13 +737,16 @@ class LightMemoPlugin {
             false
         );
 
-        const candidates = await this._gatherCandidateChunks({
-            maid,
-            folder,
-            searchAll,
-            ignoreExcludedFolders: false,
-            timeRange: null
-        });
+        const candidates = await measureAsync(
+            'gatherCandidatesMs',
+            () => this._gatherCandidateChunks({
+                maid,
+                folder,
+                searchAll,
+                ignoreExcludedFolders: false,
+                timeRange: null
+            })
+        );
         if (candidates.length === 0) {
             return this._buildAiFriendlyTextResult(
                 JSON.stringify({
@@ -715,16 +758,22 @@ class LightMemoPlugin {
             );
         }
 
-        const queryVectorRaw = await this.getSingleEmbedding(query);
+        const queryVectorRaw = await measureAsync(
+            'embeddingMs',
+            () => this.getSingleEmbedding(query)
+        );
         if (!queryVectorRaw) {
             throw new Error('TagMemo V10 Alpha 查询向量化失败。');
         }
         const queryVector = queryVectorRaw instanceof Float32Array
             ? queryVectorRaw
             : new Float32Array(queryVectorRaw);
-        const snapshot = this.vectorDBManager.getTagMemoV10ArtifactSnapshot({
-            forceRebuild: forceArtifactRebuild
-        });
+        const snapshot = measureSync(
+            'artifactSnapshotMs',
+            () => this.vectorDBManager.getTagMemoV10ArtifactSnapshot({
+                forceRebuild: forceArtifactRebuild
+            })
+        );
         if (!snapshot?.bundle) {
             throw new Error('TagMemo V10 Alpha Artifact 不可用。');
         }
@@ -739,37 +788,49 @@ class LightMemoPlugin {
             candidates.map(candidate => String(candidate.dbName || ''))
                 .filter(Boolean)
         )];
-        const prepared = this.vectorDBManager.prepareTagMemoV10Query(
-            { text: query, vector: queryVector },
-            {
-                agentId: maid || null,
-                diaryNames,
-                allowedFileIds,
-                deniedFileIds: [],
-                visibilityMode: 'explicit_sql_scope',
-                permissions: {
-                    allowPublic: false,
-                    allowOwn: true,
-                    allowAuthorized: true,
-                    allowOtherAgentPublic: false,
-                    allowUnknownProvenance: false
+        const prepared = measureSync(
+            'prepareAndSolveQueryMs',
+            () => this.vectorDBManager.prepareTagMemoV10Query(
+                { text: query, vector: queryVector },
+                {
+                    agentId: maid || null,
+                    diaryNames,
+                    allowedFileIds,
+                    deniedFileIds: [],
+                    visibilityMode: 'explicit_sql_scope',
+                    permissions: {
+                        allowPublic: false,
+                        allowOwn: true,
+                        allowAuthorized: true,
+                        allowOtherAgentPublic: false,
+                        allowUnknownProvenance: false
+                    }
+                },
+                {
+                    artifact: snapshot.bundle,
+                    sourceObservation: { sourceK }
                 }
-            },
-            {
-                artifact: snapshot.bundle,
-                sourceObservation: { sourceK }
-            }
+            )
         );
         const queryState = prepared.queryState;
         if (!prepared.localVector || !prepared.transferVector) {
             throw new Error('TagMemo V10 Alpha 双尺度场无法回投影。');
         }
 
-        const [queryRanked, localRanked, transferRanked] = await Promise.all([
-            this._scoreByVectorSimilarity(candidates, queryVector),
-            this._scoreByVectorSimilarity(candidates, prepared.localVector),
-            this._scoreByVectorSimilarity(candidates, prepared.transferVector)
-        ]);
+        // _scoreByVectorSimilarity 当前是同步 SQLite + CPU 热循环包装成 async。
+        // 分别计时而非 Promise.all，避免三个同步阶段被错误显示成同一个并发耗时。
+        const queryRanked = await measureAsync(
+            'queryVectorScoreMs',
+            () => this._scoreByVectorSimilarity(candidates, queryVector)
+        );
+        const localRanked = await measureAsync(
+            'localVectorScoreMs',
+            () => this._scoreByVectorSimilarity(candidates, prepared.localVector)
+        );
+        const transferRanked = await measureAsync(
+            'transferVectorScoreMs',
+            () => this._scoreByVectorSimilarity(candidates, prepared.transferVector)
+        );
         const queryScoreById = new Map(
             queryRanked.map(item => [Number(item.label), item.vectorScore])
         );
@@ -780,15 +841,18 @@ class LightMemoPlugin {
             transferRanked.map(item => [Number(item.label), item.vectorScore])
         );
 
-        const bm25Ranked = useBM25
-            ? this._buildBm25TopIds(
-                query,
-                candidates,
-                Math.max(k, Number(
-                    snapshot.bundle.effectiveConfig?.candidateSuperset?.bm25K
-                ) || 50)
-            )
-            : [];
+        const bm25Ranked = measureSync(
+            'bm25Ms',
+            () => useBM25
+                ? this._buildBm25TopIds(
+                    query,
+                    candidates,
+                    Math.max(k, Number(
+                        snapshot.bundle.effectiveConfig?.candidateSuperset?.bm25K
+                    ) || 50)
+                )
+                : []
+        );
         const bm25ScoreById = new Map(
             bm25Ranked.map(item => [Number(item.id), Number(item.score) || 0])
         );
@@ -798,31 +862,34 @@ class LightMemoPlugin {
             ? queryState.localDomain.ids.map(Number).filter(Number.isFinite)
             : [];
         const anchorScoreByChunkId = new Map();
-        if (localDomainIds.length > 0 && allowedFileIds.length > 0) {
-            const db = this.vectorDBManager.db;
-            const tagPlaceholders = localDomainIds.map(() => '?').join(',');
-            const filePlaceholders = allowedFileIds.map(() => '?').join(',');
-            const anchorRows = db.prepare(`
-                SELECT c.id AS chunk_id, COUNT(DISTINCT ft.tag_id) AS hits
-                FROM chunks c
-                JOIN file_tags ft ON ft.file_id = c.file_id
-                WHERE ft.tag_id IN (${tagPlaceholders})
-                  AND c.file_id IN (${filePlaceholders})
-                GROUP BY c.id
-                ORDER BY hits DESC, c.id ASC
-            `).all(...localDomainIds, ...allowedFileIds);
-            const maximumHits = Math.max(
-                1,
-                ...anchorRows.map(row => Number(row.hits) || 0)
-            );
-            for (const row of anchorRows) {
-                anchorScoreByChunkId.set(
-                    Number(row.chunk_id),
-                    (Number(row.hits) || 0) / maximumHits
+        measureSync('anchorDirectMs', () => {
+            if (localDomainIds.length > 0 && allowedFileIds.length > 0) {
+                const db = this.vectorDBManager.db;
+                const tagPlaceholders = localDomainIds.map(() => '?').join(',');
+                const filePlaceholders = allowedFileIds.map(() => '?').join(',');
+                const anchorRows = db.prepare(`
+                    SELECT c.id AS chunk_id, COUNT(DISTINCT ft.tag_id) AS hits
+                    FROM chunks c
+                    JOIN file_tags ft ON ft.file_id = c.file_id
+                    WHERE ft.tag_id IN (${tagPlaceholders})
+                      AND c.file_id IN (${filePlaceholders})
+                    GROUP BY c.id
+                    ORDER BY hits DESC, c.id ASC
+                `).all(...localDomainIds, ...allowedFileIds);
+                const maximumHits = Math.max(
+                    1,
+                    ...anchorRows.map(row => Number(row.hits) || 0)
                 );
+                for (const row of anchorRows) {
+                    anchorScoreByChunkId.set(
+                        Number(row.chunk_id),
+                        (Number(row.hits) || 0) / maximumHits
+                    );
+                }
             }
-        }
+        });
 
+        const candidateAssemblyStartedAt = performance.now();
         const enrichedById = new Map(candidates.map(candidate => {
             const id = Number(candidate.label);
             return [id, {
@@ -877,51 +944,211 @@ class LightMemoPlugin {
                 'anchorScore'
             )
         };
+        timing.candidateAssemblyMs = performance.now() - candidateAssemblyStartedAt;
 
-        const superset = this.vectorDBManager
-            .buildTagMemoV10CandidateSuperset(sourceCandidates, {
-                artifact: snapshot.bundle
-            });
-        const projected = this.vectorDBManager
-            .projectTagMemoV10CandidateCurves(superset.candidates);
-        const pathBatch = this.vectorDBManager
-            .evaluateTagMemoV10CandidateCurves(
-                projected.curves,
+        const superset = measureSync(
+            'candidateSupersetMs',
+            () => this.vectorDBManager
+                .buildTagMemoV10CandidateSuperset(sourceCandidates, {
+                    artifact: snapshot.bundle
+                })
+        );
+        const projected = measureSync(
+            'curveProjectionMs',
+            () => this.vectorDBManager
+                .projectTagMemoV10CandidateCurves(superset.candidates)
+        );
+        const pathBatch = measureSync(
+            'pathGeometryMs',
+            () => this.vectorDBManager
+                .evaluateTagMemoV10CandidateCurves(
+                    projected.curves,
+                    queryState,
+                    { artifact: snapshot.bundle }
+                )
+        );
+        const allowedFileIdSet = new Set(allowedFileIds);
+        const dstcBatch = measureSync(
+            'dstcMs',
+            () => this.vectorDBManager.computeTagMemoV10Dstc(
+                pathBatch,
                 queryState,
-                { artifact: snapshot.bundle }
-            );
-        const dstcBatch = this.vectorDBManager.computeTagMemoV10Dstc(
-            pathBatch,
-            queryState,
-            {
-                artifact: snapshot.bundle,
-                disabledObservables,
-                identityEligibility: curve =>
-                    Boolean(maid && String(curve.diaryName || '').includes(maid)),
-                visibilityEligibility: curve =>
-                    allowedFileIds.includes(Number(curve.fileId))
-            }
+                {
+                    artifact: snapshot.bundle,
+                    disabledObservables,
+                    identityEligibility: curve =>
+                        Boolean(maid && String(curve.diaryName || '').includes(maid)),
+                    visibilityEligibility: curve =>
+                        allowedFileIdSet.has(Number(curve.fileId))
+                }
+            )
         );
         const armOptions = {
             artifact: snapshot.bundle,
             disabledObservables
         };
-        const armRun = arm === 'all'
-            ? this.vectorDBManager.runTagMemoV10ExperimentArms(
-                dstcBatch,
-                armOptions
-            )
-            : {
-                schema: 'tagmemo-v10-alpha-three-arm-run-v1',
-                candidateCount: dstcBatch.results.length,
-                arms: {
-                    [arm]: this.vectorDBManager.scoreTagMemoV10ExperimentArm(
-                        dstcBatch,
-                        arm,
-                        armOptions
-                    )
+        const armRun = measureSync(
+            'experimentArmsMs',
+            () => arm === 'all'
+                ? this.vectorDBManager.runTagMemoV10ExperimentArms(
+                    dstcBatch,
+                    armOptions
+                )
+                : {
+                    schema: 'tagmemo-v10-alpha-three-arm-run-v1',
+                    candidateCount: dstcBatch.results.length,
+                    arms: {
+                        [arm]: this.vectorDBManager.scoreTagMemoV10ExperimentArm(
+                            dstcBatch,
+                            arm,
+                            armOptions
+                        )
+                    }
+                }
+        );
+
+        if (abRequested) {
+            const baselineStartedAt = performance.now();
+            const v9Snapshot = this.vectorDBManager.getTagMemoArtifactSnapshot('v9', {
+                strictVersion: true
+            });
+            if (!v9Snapshot?.bundle) {
+                throw new Error('统一 A/B 无法执行：V9 Production ArtifactBundle 不可用。');
+            }
+
+            const tagBoost = Math.max(0, Math.min(1, this._parseNumber(
+                typeof args.tag_boost === 'string'
+                    ? args.tag_boost.replace(/\+$/, '')
+                    : args.tag_boost,
+                0.6
+            )));
+            const coreTags = this._parseStringArray(args.core_tags || args.coreTags);
+            const coreBoostFactor = this._parseNumber(args.core_boost_factor, 1.33);
+            const v9Boost = this.vectorDBManager.applyTagBoost(
+                new Float32Array(queryVector),
+                tagBoost,
+                coreTags,
+                coreBoostFactor,
+                {
+                    tagMemoVersion: 'v9',
+                    strictVersion: true,
+                    artifactBundle: v9Snapshot.bundle
+                }
+            );
+            const v9VectorRanked = (await this._scoreByVectorSimilarity(
+                candidates,
+                v9Boost.vector
+            )).map(item => ({
+                ...item,
+                id: Number(item.label),
+                score: Number(item.vectorScore) || 0
+            })).sort((left, right) => right.score - left.score);
+            const v9Ranked = v9Boost.energyField
+                ? this.vectorDBManager.geodesicRerank(v9VectorRanked, {
+                    artifactBundle: v9Snapshot.bundle,
+                    tagMemoVersion: 'v9',
+                    energyField: v9Boost.energyField,
+                    energyFieldProvenance: v9Boost.energyFieldProvenance,
+                    originalQueryVector: queryVector,
+                    enhancedQueryVector: v9Boost.vector,
+                    queryGeometryState: {
+                        epa: v9Boost.info?.epa || null,
+                        pyramid: v9Boost.info?.pyramid || null
+                    }
+                })
+                : v9VectorRanked;
+            timing.v9ProductionMs = performance.now() - baselineStartedAt;
+
+            const knnRanked = queryRanked.map(item => ({
+                ...item,
+                id: Number(item.label),
+                score: Number(item.vectorScore) || 0
+            })).sort((left, right) => right.score - left.score);
+            const tracks = {
+                knn: { label: 'KNN', results: knnRanked },
+                v9: {
+                    label: `V9 Production (${v9Snapshot.bundle.algorithmVersion || 'v9'})`,
+                    results: v9Ranked
+                },
+                pure: {
+                    label: 'V10 Unified-Pure',
+                    results: armRun.arms.pure.results
+                },
+                gated: {
+                    label: 'V10 Unified-Gated',
+                    results: armRun.arms.gated.results
+                },
+                observed: {
+                    label: 'V10 Unified-Observed',
+                    results: armRun.arms.observed.results
                 }
             };
+
+            let rerankTrack = null;
+            if (compareRerank) {
+                const rerankPool = [];
+                const seen = new Set();
+                const appendTrack = items => {
+                    for (const item of items.slice(0, Math.max(k * 3, 20))) {
+                        const id = Number(
+                            item.id ?? item.label ?? item.curve?.chunkId
+                        );
+                        if (!Number.isFinite(id) || seen.has(id)) continue;
+                        const candidate = enrichedById.get(id);
+                        if (!candidate?.text) continue;
+                        seen.add(id);
+                        rerankPool.push({
+                            ...candidate,
+                            id,
+                            retrieval_rank: rerankPool.length + 1
+                        });
+                    }
+                };
+                appendTrack(knnRanked);
+                appendTrack(v9Ranked);
+                appendTrack(armRun.arms.pure.results);
+                appendTrack(armRun.arms.gated.results);
+                appendTrack(armRun.arms.observed.results);
+
+                const rerankStartedAt = performance.now();
+                const reranked = await this._rerankDocuments(
+                    query,
+                    rerankPool,
+                    Math.min(k, rerankPool.length)
+                );
+                timing.rerankMs = performance.now() - rerankStartedAt;
+                rerankTrack = {
+                    label: 'Rerank',
+                    configured: Boolean(
+                        this.rerankConfig.url
+                        && this.rerankConfig.apiKey
+                        && this.rerankConfig.model
+                    ),
+                    results: reranked.map(item => ({
+                        ...item,
+                        id: Number(item.id ?? item.label),
+                        score: Number(item.rerank_score) || 0
+                    }))
+                };
+                tracks.rerank = rerankTrack;
+            }
+
+            timing.totalBeforeMarkdownMs = performance.now() - requestStartedAt;
+            const markdown = this._formatTagMemoUnifiedABMarkdown({
+                query,
+                k,
+                tracks,
+                artifact: snapshot.bundle,
+                v9Artifact: v9Snapshot.bundle,
+                queryState,
+                disabledObservables,
+                candidateDiagnostics: superset.diagnostics,
+                timing,
+                compareRerank,
+                rerankTrack
+            });
+            return this._buildAiFriendlyTextResult(markdown);
+        }
 
         const serializeArm = run => ({
             arm: run.arm,
@@ -945,6 +1172,7 @@ class LightMemoPlugin {
                 dstc: item.observables
             }))
         });
+        const reportAssemblyStartedAt = performance.now();
         const report = {
             schema: 'tagmemo-v10-alpha-lightmemo-result-v1',
             version: 'v10_alpha',
@@ -971,6 +1199,7 @@ class LightMemoPlugin {
             candidateDiagnostics: superset.diagnostics,
             curveDiagnostics: projected.diagnostics,
             pathDiagnostics: pathBatch.diagnostics,
+            timing,
             arms: Object.fromEntries(
                 Object.entries(armRun.arms).map(([name, run]) => [
                     name,
@@ -978,10 +1207,41 @@ class LightMemoPlugin {
                 ])
             )
         };
+        timing.reportAssemblyMs = performance.now() - reportAssemblyStartedAt;
 
-        return this._buildAiFriendlyTextResult(
-            JSON.stringify(report)
+        // 先执行一次与最终结构等价的序列化以测量 JSON 成本，再把测量值写入最终输出。
+        const serializationStartedAt = performance.now();
+        const serializationProbe = JSON.stringify(report);
+        timing.serializationMs = performance.now() - serializationStartedAt;
+        timing.serializedBytes = Buffer.byteLength(serializationProbe, 'utf8');
+        timing.totalBeforeFinalSerializationMs = performance.now() - requestStartedAt;
+
+        const roundedTiming = {};
+        for (const [name, value] of Object.entries(timing)) {
+            roundedTiming[name] = name === 'serializedBytes'
+                ? value
+                : Number(value.toFixed(3));
+        }
+        report.timing = roundedTiming;
+        const finalPayload = JSON.stringify(report);
+
+        console.log(
+            `[LightMemo][TagMemo-V10 Timing] total=${roundedTiming.totalBeforeFinalSerializationMs}ms, ` +
+            `artifact=${roundedTiming.artifactSnapshotMs}ms, ` +
+            `prepare+solve=${roundedTiming.prepareAndSolveQueryMs}ms, ` +
+            `vectors=${Number((
+                roundedTiming.queryVectorScoreMs
+                + roundedTiming.localVectorScoreMs
+                + roundedTiming.transferVectorScoreMs
+            ).toFixed(3))}ms, ` +
+            `curve=${roundedTiming.curveProjectionMs}ms, ` +
+            `geometry=${roundedTiming.pathGeometryMs}ms, ` +
+            `dstc=${roundedTiming.dstcMs}ms, ` +
+            `arms=${roundedTiming.experimentArmsMs}ms, ` +
+            `json=${roundedTiming.serializationMs}ms/${roundedTiming.serializedBytes}B`
         );
+
+        return this._buildAiFriendlyTextResult(finalPayload);
     }
 
     /**
@@ -1146,6 +1406,168 @@ class LightMemoPlugin {
             tagBoost,
             rerankRun
         }));
+    }
+
+    _formatTagMemoUnifiedABMarkdown({
+        query,
+        k,
+        tracks,
+        artifact,
+        v9Artifact,
+        queryState,
+        disabledObservables,
+        candidateDiagnostics,
+        timing,
+        compareRerank,
+        rerankTrack
+    }) {
+        const fmt = (value, digits = 4) => Number.isFinite(Number(value))
+            ? Number(value).toFixed(digits)
+            : '—';
+        const itemId = item => Number(
+            item?.id ?? item?.label ?? item?.curve?.chunkId
+        );
+        const itemScore = item => Number(
+            item?.armResult?.score ?? item?.score ?? item?.vectorScore
+        ) || 0;
+        const itemText = item => String(
+            item?.curve?.text ?? item?.text ?? ''
+        ).trim();
+        const itemDiary = item => String(
+            item?.curve?.diaryName ?? item?.dbName ?? ''
+        ).trim();
+        const itemPath = item => String(
+            item?.curve?.path ?? item?.sourceFile ?? ''
+        ).trim();
+        const topByTrack = Object.fromEntries(
+            Object.entries(tracks).map(([name, track]) => [
+                name,
+                (track.results || []).slice(0, k)
+            ])
+        );
+        const rankMaps = Object.fromEntries(
+            Object.entries(topByTrack).map(([name, items]) => [
+                name,
+                new Map(items.map((item, index) => [
+                    itemId(item),
+                    { rank: index + 1, score: itemScore(item) }
+                ]))
+            ])
+        );
+        const trackOrder = ['knn', 'v9', 'pure', 'gated', 'observed'];
+        if (tracks.rerank) trackOrder.push('rerank');
+        const trackLabel = name => tracks[name]?.label || name;
+        const allIds = [];
+        const seenIds = new Set();
+        const canonicalById = new Map();
+        for (const name of trackOrder) {
+            for (const item of topByTrack[name] || []) {
+                const id = itemId(item);
+                if (!canonicalById.has(id)) canonicalById.set(id, item);
+                if (!Number.isFinite(id) || seenIds.has(id)) continue;
+                seenIds.add(id);
+                allIds.push(id);
+            }
+        }
+
+        const pureIds = new Set((topByTrack.pure || []).map(itemId));
+        const overlapWithPure = name => {
+            const ids = new Set((topByTrack[name] || []).map(itemId));
+            return [...ids].filter(id => pureIds.has(id)).length;
+        };
+
+        let md = '# TagMemo 统一寻址 A/B 评审文档\n\n';
+        md += '> 本报告使用具名轨道，供人类或隔离 AI 打分员直接评估。  \n';
+        md += `> 查询：**${this._escapeMarkdownCell(query)}**  \n`;
+        md += `> Top-K：${k}  \n`;
+        md += `> 生成时间：${new Date().toISOString()}  \n\n`;
+
+        md += '## 1. 实验身份与公平条件\n\n';
+        md += '- **KNN**：原始查询向量余弦排序。\n';
+        md += `- **V9 Production**：当前生产 Artifact 与生产测地重排；实际算法版本 \`${v9Artifact.algorithmVersion || 'v9'}\`。\n`;
+        md += '- **V10 Unified-Pure / Gated / Observed**：共享同一 V10 Artifact、Query State、双尺度场、候选超集和候选曲线。\n';
+        md += `- **Rerank**：${compareRerank
+            ? (rerankTrack?.configured
+                ? '已启用独立外部精排。'
+                : '已请求但服务未配置，轨道为明确标记的降级输出。')
+            : '未请求。'}\n`;
+        md += `- V10 Artifact：\`${artifact.artifactSig}\`\n`;
+        md += `- V9 Artifact：\`${v9Artifact.artifactSig}\`\n`;
+        md += `- Query ID：\`${queryState.queryId}\`\n`;
+        md += `- D/S/T/C 消融：${disabledObservables.length > 0
+            ? disabledObservables.map(value => `\`${value}\``).join(', ')
+            : '无'}\n\n`;
+
+        md += '## 2. Top-K 重合概览\n\n';
+        for (const name of trackOrder.filter(name => name !== 'pure')) {
+            md += `- ${trackLabel(name)} ↔ V10 Unified-Pure：${overlapWithPure(name)}/${k}\n`;
+        }
+        md += `- 候选超集保留：${candidateDiagnostics?.retainedCandidates
+            ?? candidateDiagnostics?.candidateCount
+            ?? '—'}；并集上限淘汰：${candidateDiagnostics?.droppedByUnionCap ?? '—'}。\n\n`;
+
+        md += '## 3. 统一排名总表\n\n';
+        md += `| Chunk | 记忆摘要 | ${trackOrder.map(trackLabel).join(' | ')} |\n`;
+        md += `|---:|---|${trackOrder.map(() => '---:').join('|')}|\n`;
+        for (const id of allIds) {
+            const summary = this._escapeMarkdownCell(
+                this._shortMemoryText(itemText(canonicalById.get(id)), 100)
+            );
+            const cells = trackOrder.map(name => {
+                const ranked = rankMaps[name]?.get(id);
+                return ranked ? `#${ranked.rank} / ${fmt(ranked.score)}` : '—';
+            });
+            md += `| ${id} | ${summary} | ${cells.join(' | ')} |\n`;
+        }
+
+        md += '\n## 4. 各具名轨道完整候选\n\n';
+        for (const name of trackOrder) {
+            md += `### ${trackLabel(name)}\n\n`;
+            const items = topByTrack[name] || [];
+            if (items.length === 0) {
+                md += '无可用结果。\n\n';
+                continue;
+            }
+            items.forEach((item, index) => {
+                md += `#### ${index + 1}. Chunk ${itemId(item)} · 分数 ${fmt(itemScore(item), 6)}\n\n`;
+                md += `- 日记本：${this._escapeMarkdownCell(itemDiary(item) || '—')}\n`;
+                md += `- 路径：${this._escapeMarkdownCell(itemPath(item) || '—')}\n`;
+                if (item.armResult) {
+                    const values = item.observables?.values || {};
+                    md += `- V10 基础分：${fmt(item.armResult.baseScore, 6)}；门控倍率：${fmt(item.armResult.gateMultiplier)}；Observed 增益：${fmt(item.armResult.observedBonus, 6)}\n`;
+                    md += `- D/S/T/C：${fmt(values.direct)}/${fmt(values.structural)}/${fmt(values.thematic)}/${fmt(values.closure)}\n`;
+                    md += `- 路径质量：${fmt(item.geometry?.pathQuality)}；拒判：${item.armResult.rejected ? '是' : '否'}${item.armResult.rejectionReasons?.length
+                        ? `（${item.armResult.rejectionReasons.join(', ')}）`
+                        : ''}\n`;
+                } else if (name === 'v9') {
+                    md += `- V9 曲线分：${fmt(item.geo_score)}；奖励：${fmt(item.geo_bonus)}；证据级别：${item.geo_evidence_class || '—'}\n`;
+                }
+                md += `\n${itemText(item) || '（空正文）'}\n\n`;
+            });
+        }
+
+        md += '## 5. 性能计时\n\n';
+        md += '| 阶段 | 耗时 ms |\n|---|---:|\n';
+        for (const [name, value] of Object.entries(timing)) {
+            if (name.endsWith('Ms')) md += `| ${name} | ${fmt(value, 3)} |\n`;
+        }
+
+        md += '\n## 6. 评审员裁决区\n\n';
+        md += '请独立评价每条轨道，不要只依据算法内部评分。\n\n';
+        md += '| 轨道 | 相关性(1-5) | 前因/链条完整性(1-5) | 有价值惊喜(1-5) | 漂移风险(1-5，低为好) | 身份/权限正确 | 总体名次 |\n';
+        md += '|---|---:|---:|---:|---:|---|---:|\n';
+        for (const name of trackOrder) {
+            md += `| ${trackLabel(name)} |  |  |  |  |  |  |\n`;
+        }
+        md += '\n### 最终裁决\n\n';
+        md += '- 最佳轨道：\n';
+        md += '- 最差轨道：\n';
+        md += '- V10 独占有效召回：\n';
+        md += '- 漂亮但错误的联想：\n';
+        md += '- 权限或身份问题：\n';
+        md += '- 评审理由：\n';
+
+        return md;
     }
 
     async _buildTagMemoABRerankRun({ query, candidates, runs, abMode, topL, k, useBM25 }) {
