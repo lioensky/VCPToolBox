@@ -96,6 +96,58 @@ class SqliteHealthManager {
         }
     }
 
+    /**
+     * Rust 使用独立 SQLite 运行时提交派生写后，长期存活的 better-sqlite3
+     * 连接可能仍持有旧 pager/WAL/SHM read mark。先主动重开连接，再由新连接
+     * checkpoint + quick_check，避免在已可疑的旧视图上执行 TRUNCATE。
+     *
+     * 该路径只用于低频 Rust 派生写屏障；普通 JS 写和手工健康检查仍复用现有连接。
+     */
+    reopenAndAssertHealthy(reason = 'rust-write-barrier') {
+        if (!this.dbPath || this.recovering) return false;
+
+        this.recovering = true;
+        this.state = 'recovering';
+        const oldDb = this.db;
+        this.db = null;
+
+        try {
+            try {
+                oldDb?.close();
+            } catch (closeError) {
+                console.warn(
+                    `[${this.logPrefix}] ⚠️ Failed to close pre-Rust-write SQLite connection cleanly: ` +
+                    closeError.message
+                );
+            }
+
+            const reopened = new this.Database(this.dbPath);
+            try {
+                this.configureConnection(reopened);
+                reopened.pragma('wal_checkpoint(TRUNCATE)');
+                this.assertIntegrity(reopened);
+            } catch (error) {
+                try { reopened.close(); } catch (_) {}
+                throw error;
+            }
+
+            this._publishConnection(reopened);
+            this.state = 'healthy';
+            this.corruptionDetected = false;
+            return true;
+        } catch (error) {
+            console.warn(
+                `[${this.logPrefix}] 🩺 Fresh SQLite connection verification failed after ${reason}: ` +
+                `${error.message || error}. Retrying with second-stage reopen...`
+            );
+            this.state = 'suspect';
+            this.recovering = false;
+            return this.recoverSuspectConnection(reason, error);
+        } finally {
+            this.recovering = false;
+        }
+    }
+
     recoverSuspectConnection(reason, firstError) {
         if (!this.dbPath || this.recovering) return false;
 

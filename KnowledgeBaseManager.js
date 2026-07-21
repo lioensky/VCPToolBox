@@ -359,6 +359,18 @@ class KnowledgeBaseManager {
         return healthy;
     }
 
+    /**
+     * Rust/rusqlite 派生写完成后的专用屏障。
+     * 先淘汰长期存活的 better-sqlite3 连接及其 pager/WAL/SHM 视图，
+     * 再由新连接执行 checkpoint + quick_check；普通 JS 写不走此低频路径。
+     */
+    reopenAndAssertDatabaseHealthy(reason = 'rust-write-barrier') {
+        this.sqliteHealthManager.syncFromOwner(this);
+        const healthy = this.sqliteHealthManager.reopenAndAssertHealthy(reason);
+        this.sqliteHealthManager.syncToOwner(this);
+        return healthy;
+    }
+
     _rebindDatabaseConnection(db) {
         this.db = db;
 

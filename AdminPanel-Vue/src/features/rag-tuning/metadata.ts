@@ -115,6 +115,10 @@ export const GEODESIC_RERANK_PANELS: readonly GeodesicRerankPanel[] = [
     icon: "fact_check",
     keys: [
       "structuralContinuityMin", "thematicMinPotential", "thematicMaxIsolatedRatio",
+      "sparseAssociationEnabled", "sparseAssociationMinContacts",
+      "sparseAssociationMinConductance", "sparseAssociationMinSimilarity",
+      "sparseAssociationMinPotential", "sparseAssociationMinClosure",
+      "sparseAssociationPairSaturation", "sparseAssociationMaxRelief",
       "directSemanticMinPotential", "directSemanticSaturation",
       "directSemanticMinContacts", "directConfidenceFloor",
     ],
@@ -528,11 +532,67 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       tone: "sensitive",
     },
     "geodesicRerank.thematicMaxIsolatedRatio": {
-      label: "主题奖励最大孤立率",
-      summary: "纯 thematic 接触的孤立程度不得超过该比例，否则不给排序奖励。",
-      logic: "调低要求更连续的主题走廊；调高允许单点语义共振参与排序。",
+      label: "主题奖励最大有效孤立率",
+      summary: "纯 thematic 接触经过稀疏交叉联想证明修正后，有效孤立程度不得超过该比例，否则不给排序奖励。",
+      logic: "调低要求更连续的主题走廊；调高允许更多离散主题接触参与排序。原始序列孤立率不会被抹除，最多按交叉联想置信度获得有限减免。",
       range: "建议 0.35 ~ 0.80，默认 0.65",
       tone: "sensitive",
+    },
+    "geodesicRerank.sparseAssociationEnabled": {
+      label: "稀疏交叉联想证明",
+      summary: "允许位置不相邻的高势能 Tag 在命中子图中证明彼此连贯，从而有限减免孤立率。关闭后完全沿用原始序列孤立判定。",
+      logic: "建议开启。它不会直接取消孤立惩罚：候选必须同时通过非局部拓扑、Tag 语义、查询势能与正文闭合四重审查。",
+      range: "布尔开关，默认开启",
+      tone: "sensitive",
+    },
+    "geodesicRerank.sparseAssociationMinContacts": {
+      label: "交叉联想最少孤立接触数",
+      summary: "至少出现多少个位置孤立且可信的查询场接触，才启动命中子图联想证明。",
+      logic: "默认 3 可阻止单个或一对偶然碰撞自行豁免。调高更保守，但可能漏掉较短的跨段联想链。",
+      range: "建议 3 ~ 6 个，默认 3",
+      tone: "critical",
+    },
+    "geodesicRerank.sparseAssociationMinConductance": {
+      label: "非局部图导通门槛",
+      summary: "两个孤立命中之间至少需要达到的单向或反向传播核导通强度。",
+      logic: "调低会承认更多弱共现边，增加随机跳跃伪装风险；调高只接受图结构中更稳定的跨段联系。",
+      range: "建议 0.005 ~ 0.08，默认 0.015",
+      tone: "critical",
+    },
+    "geodesicRerank.sparseAssociationMinSimilarity": {
+      label: "非局部语义相似门槛",
+      summary: "两个位置孤立命中的 Tag 向量至少达到该余弦相似度，才可能构成交叉联想边。",
+      logic: "它与图导通门槛必须同时通过。调低鼓励跨域联想，调高偏向同一概念簇；过高可能只剩近义词回音。",
+      range: "建议 0.35 ~ 0.75，默认 0.48",
+      tone: "critical",
+    },
+    "geodesicRerank.sparseAssociationMinPotential": {
+      label: "联想节点最低势能",
+      summary: "位置孤立的 Tag 至少采样到该查询势能，才允许进入交叉联想子图。",
+      logic: "该值不会低于弱接触阈值。调高只让靠近查询场峰的节点参与证明，调低则更容易吸收主题晕轮。",
+      range: "建议 0.05 ~ 0.20，默认 0.08",
+      tone: "sensitive",
+    },
+    "geodesicRerank.sparseAssociationMinClosure": {
+      label: "联想节点正文闭合门槛",
+      summary: "孤立 Tag 与候选 Chunk 的闭合质量至少达到该值，避免贴错或过泛标签组成虚假联想链。",
+      logic: "调高更相信正文内容而非文件标签表；调低对抽象标签更宽容，但误证明风险会上升。",
+      range: "建议 0.10 ~ 0.45，默认 0.20",
+      tone: "critical",
+    },
+    "geodesicRerank.sparseAssociationPairSaturation": {
+      label: "可信联想边饱和数",
+      summary: "命中子图中需要多少条通过四重审查的非局部边，联想边数量置信度才达到饱和。",
+      logic: "默认 3。调高要求更完整的联想网络，调低则少数强边即可获得较明显的孤立率减免。",
+      range: "建议 2 ~ 8 条，默认 3",
+      tone: "sensitive",
+    },
+    "geodesicRerank.sparseAssociationMaxRelief": {
+      label: "孤立率最大减免比例",
+      summary: "即使命中子图证明完全可信，最多允许减免多少原始序列孤立率。",
+      logic: "默认 0.55，意味着仍保留至少 45% 原始孤立惩罚。调高会增强跨段联想召回，但不建议超过 0.70。",
+      range: "建议 0.25 ~ 0.70，默认 0.55；代码硬上限 0.80",
+      tone: "critical",
     },
     "geodesicRerank.directSemanticMinPotential": {
       label: "语义直锚最低势能",
@@ -968,6 +1028,10 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
     || key === "geodesicrerank.structuralcontinuitymin"
     || key === "geodesicrerank.thematicminpotential"
     || key === "geodesicrerank.thematicmaxisolatedratio"
+    || key === "geodesicrerank.sparseassociationminconductance"
+    || key === "geodesicrerank.sparseassociationminpotential"
+    || key === "geodesicrerank.sparseassociationminclosure"
+    || key === "geodesicrerank.sparseassociationmaxrelief"
     || key === "geodesicrerank.directsemanticminpotential"
     || key === "geodesicrerank.directsemanticsaturation"
     || key === "geodesicrerank.directconfidencefloor"
@@ -975,8 +1039,16 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
     return { min: 0, max: 1, step: 0.005 };
   }
 
-  if (key === "geodesicrerank.directsemanticmincontacts") {
-    return { min: 1, max: 8, step: 1 };
+  if (key === "geodesicrerank.sparseassociationminsimilarity") {
+    return { min: -1, max: 1, step: 0.01 };
+  }
+
+  if (
+    key === "geodesicrerank.directsemanticmincontacts"
+    || key === "geodesicrerank.sparseassociationmincontacts"
+    || key === "geodesicrerank.sparseassociationpairsaturation"
+  ) {
+    return { min: 1, max: 12, step: 1 };
   }
 
   // 🛡️ V8: 测地线低可信地图回退开关

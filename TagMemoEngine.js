@@ -1215,6 +1215,40 @@ class TagMemoEngine {
         const structuralContinuityMin = Math.max(0, Math.min(1, Number(geoConfig.structuralContinuityMin ?? 0.08)));
         const thematicMinPotential = Math.max(0, Math.min(1, Number(geoConfig.thematicMinPotential ?? 0.08)));
         const thematicMaxIsolatedRatio = Math.max(0, Math.min(1, Number(geoConfig.thematicMaxIsolatedRatio ?? 0.65)));
+
+        // 稀疏交叉联想守卫：位置上孤立的命中，只有在“命中子图”中同时具备
+        // 非局部拓扑边、语义相似、查询势能和 Chunk 闭合时，才可减免部分孤立比例。
+        // 这不是取消随机跳跃惩罚，而是把“序列不相邻”和“语义不连贯”分开裁决。
+        const sparseAssociationEnabled = geoConfig.sparseAssociationEnabled !== false
+            && geoConfig.sparseAssociationEnabled !== 0;
+        const sparseAssociationMinContacts = Math.max(
+            2,
+            Math.floor(Number(geoConfig.sparseAssociationMinContacts ?? 3))
+        );
+        const sparseAssociationMinConductance = Math.max(
+            0,
+            Math.min(1, Number(geoConfig.sparseAssociationMinConductance ?? 0.015))
+        );
+        const sparseAssociationMinSimilarity = Math.max(
+            -1,
+            Math.min(1, Number(geoConfig.sparseAssociationMinSimilarity ?? 0.48))
+        );
+        const sparseAssociationMinPotential = Math.max(
+            weakContactThreshold,
+            Math.min(1, Number(geoConfig.sparseAssociationMinPotential ?? 0.08))
+        );
+        const sparseAssociationMinClosure = Math.max(
+            0,
+            Math.min(1, Number(geoConfig.sparseAssociationMinClosure ?? 0.20))
+        );
+        const sparseAssociationPairSaturation = Math.max(
+            1,
+            Math.floor(Number(geoConfig.sparseAssociationPairSaturation ?? 3))
+        );
+        const sparseAssociationMaxRelief = Math.max(
+            0,
+            Math.min(0.8, Number(geoConfig.sparseAssociationMaxRelief ?? 0.55))
+        );
         // 非精确 ID 也可以构成直接事实锚点，但必须同时满足“来自查询 seed/core、
         // 势能足够高、至少多个独立接触”，避免单个宽泛近义词把主题共振抬成直接证据。
         const directSemanticMinPotential = Math.max(
@@ -1732,6 +1766,7 @@ class TagMemoEngine {
                 let weightedSemanticArc = 0;
                 let weightedAction = 0;
                 let isolatedMass = 0;
+                const isolatedSamples = [];
                 let directedSupportWeight = 0;
                 let directionConsistencyMass = 0;
                 let forwardConductanceMass = 0;
@@ -1742,7 +1777,13 @@ class TagMemoEngine {
                     const leftActive = index > 0 && samples[index - 1].potential >= weakContactThreshold;
                     const rightActive = index + 1 < samples.length && samples[index + 1].potential >= weakContactThreshold;
                     if (current.potential >= weakContactThreshold && !leftActive && !rightActive) {
-                        isolatedMass += current.candidateMass * current.potential;
+                        const isolatedNodeMass = current.candidateMass * current.potential;
+                        isolatedMass += isolatedNodeMass;
+                        isolatedSamples.push({
+                            ...current,
+                            sampleIndex: index,
+                            isolatedNodeMass
+                        });
                     }
                     if (index + 1 >= samples.length) continue;
 
@@ -1782,9 +1823,116 @@ class TagMemoEngine {
                 const continuity = transitionWeight > 0
                     ? clamp01(continuityMass / transitionWeight)
                     : clamp01(maxPotential * 0.35);
-                const isolatedRatio = weightedPotential > 0
+                const rawIsolatedRatio = weightedPotential > 0
                     ? clamp01(isolatedMass / weightedPotential)
                     : 1;
+
+                // 对位置孤立命中构造非局部子图。只有一对节点同时通过拓扑、语义、
+                // 势能和闭合四重门槛，才记作可信交叉联想边。
+                let sparseAssociationPairs = 0;
+                let sparseAssociationQualityMass = 0;
+                let sparseAssociationConnectedMass = 0;
+                let sparseAssociationConfidence = 0;
+                const sparseAssociationConnectedIds = new Set();
+                if (
+                    sparseAssociationEnabled
+                    && isolatedSamples.length >= sparseAssociationMinContacts
+                    && isolatedMass > 0
+                ) {
+                    for (let leftIndex = 0; leftIndex < isolatedSamples.length; leftIndex++) {
+                        const left = isolatedSamples[leftIndex];
+                        if (
+                            left.potential < sparseAssociationMinPotential
+                            || left.closure < sparseAssociationMinClosure
+                        ) {
+                            continue;
+                        }
+
+                        for (let rightIndex = leftIndex + 1; rightIndex < isolatedSamples.length; rightIndex++) {
+                            const right = isolatedSamples[rightIndex];
+                            if (
+                                right.potential < sparseAssociationMinPotential
+                                || right.closure < sparseAssociationMinClosure
+                            ) {
+                                continue;
+                            }
+
+                            // 相邻采样点已由普通 continuity 负责；这里只证明真正的跨段联想。
+                            if (Math.abs(right.sampleIndex - left.sampleIndex) <= 1) continue;
+
+                            const forward = Math.max(
+                                0,
+                                Number(kernel?.get(left.id)?.get(right.id)) || 0
+                            );
+                            const reverse = Math.max(
+                                0,
+                                Number(kernel?.get(right.id)?.get(left.id)) || 0
+                            );
+                            const conductance = Math.max(forward, reverse);
+                            if (conductance < sparseAssociationMinConductance) continue;
+
+                            const similarity = Math.max(
+                                -1,
+                                Math.min(1, cosine(left.vector, right.vector))
+                            );
+                            if (similarity < sparseAssociationMinSimilarity) continue;
+
+                            const topologyQuality = clamp01(
+                                (conductance - sparseAssociationMinConductance)
+                                / Math.max(1e-6, 1 - sparseAssociationMinConductance)
+                            );
+                            const semanticQuality = clamp01(
+                                (similarity - sparseAssociationMinSimilarity)
+                                / Math.max(1e-6, 1 - sparseAssociationMinSimilarity)
+                            );
+                            const potentialQuality = Math.sqrt(left.potential * right.potential);
+                            const closurePairQuality = Math.sqrt(left.closure * right.closure);
+                            const relationQuality = Math.pow(
+                                Math.max(
+                                    0,
+                                    topologyQuality
+                                    * semanticQuality
+                                    * potentialQuality
+                                    * closurePairQuality
+                                ),
+                                0.25
+                            );
+                            if (relationQuality <= 0) continue;
+
+                            sparseAssociationPairs++;
+                            sparseAssociationQualityMass += relationQuality;
+                            sparseAssociationConnectedIds.add(left.id);
+                            sparseAssociationConnectedIds.add(right.id);
+                        }
+                    }
+
+                    for (const sample of isolatedSamples) {
+                        if (sparseAssociationConnectedIds.has(sample.id)) {
+                            sparseAssociationConnectedMass += sample.isolatedNodeMass;
+                        }
+                    }
+
+                    const connectedMassRatio = clamp01(
+                        sparseAssociationConnectedMass / isolatedMass
+                    );
+                    const pairSaturation = clamp01(
+                        sparseAssociationPairs / sparseAssociationPairSaturation
+                    );
+                    const meanRelationQuality = sparseAssociationPairs > 0
+                        ? clamp01(sparseAssociationQualityMass / sparseAssociationPairs)
+                        : 0;
+                    sparseAssociationConfidence = clamp01(
+                        connectedMassRatio
+                        * pairSaturation
+                        * meanRelationQuality
+                    );
+                }
+
+                // 最多只减免一部分孤立量；即使关联子图很强，仍保留剩余随机跳跃守卫。
+                const isolatedRatio = clamp01(
+                    rawIsolatedRatio
+                    * (1 - sparseAssociationMaxRelief * sparseAssociationConfidence)
+                );
                 const actionQuality = weightedSemanticArc > 0
                     ? clamp01(Math.exp(-weightedAction / Math.max(0.15, weightedSemanticArc)))
                     : clamp01(maxPotential * 0.5);
@@ -1941,6 +2089,10 @@ class TagMemoEngine {
                     maxPotential,
                     continuity,
                     isolatedRatio,
+                    rawIsolatedRatio,
+                    sparseAssociationConfidence,
+                    sparseAssociationPairs,
+                    sparseAssociationConnectedNodes: sparseAssociationConnectedIds.size,
                     actionQuality,
                     closureQuality,
                     semanticArc,
@@ -2193,7 +2345,12 @@ class TagMemoEngine {
                     geo_mean_potential: item.meanPotential || 0,
                     geo_max_potential: item.maxPotential || 0,
                     geo_continuity: item.continuity || 0,
+                    // isolated_ratio 是参与生产裁决的有效值；raw 值保留原始序列孤立观测。
                     geo_isolated_ratio: item.isolatedRatio ?? 1,
+                    geo_raw_isolated_ratio: item.rawIsolatedRatio ?? item.isolatedRatio ?? 1,
+                    geo_sparse_association_confidence: item.sparseAssociationConfidence || 0,
+                    geo_sparse_association_pairs: item.sparseAssociationPairs || 0,
+                    geo_sparse_association_connected_nodes: item.sparseAssociationConnectedNodes || 0,
                     geo_action_quality: item.actionQuality || 0,
                     geo_closure_quality: item.closureQuality || 0,
                     geo_contact_tags: item.contactTags || [],
@@ -2601,7 +2758,17 @@ class TagMemoEngine {
 
     _assertHealthyAfterRustWrite(tag) {
         const reason = `Rust write "${tag}"`;
-        if (this.knowledgeBaseManager && typeof this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy === 'function') {
+        if (
+            this.knowledgeBaseManager
+            && typeof this.knowledgeBaseManager.reopenAndAssertDatabaseHealthy === 'function'
+        ) {
+            return this.knowledgeBaseManager.reopenAndAssertDatabaseHealthy(reason);
+        }
+        // 兼容尚未实现专用 Rust 屏障的测试桩/降级 coordinator。
+        if (
+            this.knowledgeBaseManager
+            && typeof this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy === 'function'
+        ) {
             return this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy(reason);
         }
         // 无 KnowledgeBaseManager coordinator 的测试/降级环境中，不能递归调用自身；
@@ -2622,10 +2789,14 @@ class TagMemoEngine {
 
         try {
             const result = await fn();
-            const healthy = this._assertHealthyAfterRustWrite(owner);
-            if (!healthy) {
-                console.error(`[TagMemoEngine] 🚨 Database health check failed before releasing Rust write lease "${owner}".`);
-                return null;
+            // 复合流水线可在每次 Rust 写后自行执行屏障，避免租约尾部再次
+            // 重开连接并重复 TRUNCATE + quick_check。
+            if (options.skipFinalHealthCheck !== true) {
+                const healthy = this._assertHealthyAfterRustWrite(owner);
+                if (!healthy) {
+                    console.error(`[TagMemoEngine] 🚨 Database health check failed before releasing Rust write lease "${owner}".`);
+                    return null;
+                }
             }
             return result;
         } finally {
@@ -3040,7 +3211,9 @@ class TagMemoEngine {
                 return true;
             }, {
                 pendingThreshold: 0,
-                allowDuringStartupCooldown: options.allowDuringStartupCooldown === true
+                allowDuringStartupCooldown: options.allowDuringStartupCooldown === true,
+                // pairwise 与 intrinsic 阶段已各自在读取前完成专用 Rust 写后屏障。
+                skipFinalHealthCheck: true
             });
 
             if (!rebuilt) {
@@ -3204,10 +3377,6 @@ class TagMemoEngine {
                     `elapsed=${result.elapsedMs.toFixed(2)}ms`
                 );
 
-                // 🛡️ P0: Rust 写后先 checkpoint + 健康屏障，再读取，避免读端瞬态 malformed。
-                if (!this._assertHealthyAfterRustWrite('intrinsic-residuals load barrier')) return null;
-                // 重新加载结果
-                this.loadIntrinsicResiduals({ failOnCorruption: true });
                 return result;
             } catch (e) {
                 console.error('[TagMemoEngine] ❌ Rust precomputation failed:', e.message || e);
@@ -3217,7 +3386,19 @@ class TagMemoEngine {
         };
 
         if (leaseAlreadyHeld) return await run();
-        return await this._withRustWriteLease('tagmemo:intrinsic-residuals', run, { pendingThreshold: 0 });
+
+        // 独立调用仍完整执行“Rust 计算 → 新连接健康屏障 → 单次加载”；
+        // 复合矩阵流水线则由调用方在阶段边界执行同一序列。
+        return await this._withRustWriteLease('tagmemo:intrinsic-residuals', async () => {
+            const result = await run();
+            if (!result) return null;
+            if (!this._assertHealthyAfterRustWrite('intrinsic-residuals load barrier')) return null;
+            this.loadIntrinsicResiduals({ failOnCorruption: true });
+            return result;
+        }, {
+            pendingThreshold: 0,
+            skipFinalHealthCheck: true
+        });
     }
 
     schedulePostStartupDerivedRefresh(delayMs = 300000) {
