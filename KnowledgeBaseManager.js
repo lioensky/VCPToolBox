@@ -85,6 +85,10 @@ class KnowledgeBaseManager {
 
             tagBlacklist: new Set((process.env.TAG_BLACKLIST || '').split(',').map(t => t.trim()).filter(Boolean)),
             tagBlacklistSuper: (process.env.TAG_BLACKLIST_SUPER || '').split(',').map(t => t.trim()).filter(Boolean),
+            maxTagsPerFile: (() => {
+                const value = parseInt(process.env.KNOWLEDGEBASE_MAX_TAGS_PER_FILE, 10);
+                return Number.isFinite(value) && value > 0 ? value : 50;
+            })(),
             tagExpandMaxCount: parseInt(process.env.TAG_EXPAND_MAX_COUNT, 10) || 30,
             fullScanOnStartup: (process.env.KNOWLEDGEBASE_FULL_SCAN_ON_STARTUP || 'true').toLowerCase() === 'true',
             // 语言置信度补偿配置
@@ -1008,7 +1012,9 @@ class KnowledgeBaseManager {
     }
 
     _extractTags(content) {
-        return extractTags(content, this.config);
+        return extractTags(content, this.config, {
+            maxTags: this.config.maxTagsPerFile
+        });
     }
 
     /**

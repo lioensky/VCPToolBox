@@ -152,6 +152,7 @@ class TagConsistencyService {
             ignoreSuffixes: config.ignoreSuffixes,
             tagBlacklist: [...config.tagBlacklist].sort(),
             tagBlacklistSuper: config.tagBlacklistSuper,
+            maxTagsPerFile: config.maxTagsPerFile,
             dimension: config.dimension,
             modelSig: config.modelSig
         })).digest('hex').slice(0, 24);
