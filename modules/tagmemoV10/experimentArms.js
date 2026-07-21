@@ -28,10 +28,16 @@ function buildUnifiedBase(item, options = {}) {
     const observables = item.observables || {};
     const thematic = observables.thematic || {};
     const weights = normalizedWeights(options.pureWeights);
+    const semanticScoreMode = String(
+        options.semanticScoreMode || 'positive'
+    ).trim().toLowerCase();
+    const semanticScore = value => semanticScoreMode === 'shifted'
+        ? clamp01(((Number(value) || 0) + 1) / 2)
+        : clamp01(Number(value) || 0);
     const components = Object.freeze({
-        query: clamp01(((Number(curve.queryScore) || 0) + 1) / 2),
-        local: clamp01(((Number(curve.localFieldScore) || 0) + 1) / 2),
-        transfer: clamp01(((Number(curve.transferFieldScore) || 0) + 1) / 2),
+        query: semanticScore(curve.queryScore),
+        local: semanticScore(curve.localFieldScore),
+        transfer: semanticScore(curve.transferFieldScore),
         path: clamp01(geometry.pathQuality),
         occupancy: clamp01(
             0.35 * (Number(thematic.localCoverage) || 0)
@@ -47,7 +53,12 @@ function buildUnifiedBase(item, options = {}) {
         + weights.path * components.path
         + weights.occupancy * components.occupancy
     );
-    return Object.freeze({ score, weights, components });
+    return Object.freeze({
+        score,
+        weights,
+        components,
+        semanticScoreMode
+    });
 }
 
 function scorePure(item, options = {}) {
@@ -62,6 +73,7 @@ function scorePure(item, options = {}) {
         rejectionReasons: Object.freeze([]),
         components: base.components,
         weights: base.weights,
+        semanticScoreMode: base.semanticScoreMode,
         marginalContributions: Object.freeze({
             direct: 0,
             structural: 0,

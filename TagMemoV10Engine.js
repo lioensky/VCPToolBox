@@ -94,12 +94,19 @@ class TagMemoV10Engine {
                 localWeight: 0.6,
                 transferWeight: 0.4,
                 directionFloor: 0.05,
+                supportMode: 'effective_domain',
+                minimumSupportedPotential: 0,
                 ...(configured.pathGeometry || {})
             },
             dstc: {
                 compute: true,
                 arm: configured.experimentArm || 'pure',
                 observedRewardCap: 0.12,
+                semanticScoreMode: 'positive',
+                semanticSimilarityMode: 'positive',
+                closureMode: 'query_weighted',
+                queryClosureWeight: 0.65,
+                tagClosureWeight: 0.35,
                 ...(configured.dstc || {})
             },
             safety: {

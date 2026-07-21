@@ -117,12 +117,19 @@
         "localWeight": 0.6,
         "transferWeight": 0.4,
         "directionFloor": 0.05,
-        "closureFloor": 0
+        "closureFloor": 0,
+        "supportMode": "effective_domain",
+        "minimumSupportedPotential": 0
       },
       "dstc": {
         "compute": true,
         "arm": "pure",
         "observedRewardCap": 0.12,
+        "semanticScoreMode": "positive",
+        "semanticSimilarityMode": "positive",
+        "closureMode": "query_weighted",
+        "queryClosureWeight": 0.65,
+        "tagClosureWeight": 0.35,
         "gated": {
           "requireVisibility": true,
           "minimumClosure": 0,

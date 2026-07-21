@@ -705,6 +705,13 @@ class LightMemoPlugin {
         }
 
         const k = Math.max(1, Math.floor(this._parseNumber(args.k, 5)));
+        const mapExperimentK = Math.max(
+            k,
+            Math.floor(this._parseNumber(
+                args.map_k ?? args.mapK,
+                Math.max(20, k * 4)
+            ))
+        );
         const sourceK = Math.max(
             1,
             Math.floor(this._parseNumber(args.source_k ?? args.sourceK, 16))
@@ -1064,6 +1071,175 @@ class LightMemoPlugin {
                 id: Number(item.label),
                 score: Number(item.vectorScore) || 0
             })).sort((left, right) => right.score - left.score);
+            const normalizedLocalRanked = localRanked.map(item => ({
+                ...item,
+                id: Number(item.label),
+                score: Number(item.vectorScore) || 0
+            })).sort((left, right) => right.score - left.score);
+            const normalizedTransferRanked = transferRanked.map(item => ({
+                ...item,
+                id: Number(item.label),
+                score: Number(item.vectorScore) || 0
+            })).sort((left, right) => right.score - left.score);
+
+            const mapDiagnostics = this._buildTagMemoMapDiagnostics({
+                k,
+                rawKnn: knnRanked,
+                v9PrivateKnn: v9VectorRanked,
+                v10Local: normalizedLocalRanked,
+                v10Transfer: normalizedTransferRanked
+            });
+
+            const orthogonalStartedAt = performance.now();
+            const orthogonalMaps = {
+                raw: {
+                    label: 'Raw KNN Map',
+                    ranked: knnRanked.slice(0, mapExperimentK)
+                },
+                v9Private: {
+                    label: 'V9 Private KNN Map',
+                    ranked: v9VectorRanked.slice(0, mapExperimentK)
+                },
+                v10Local: {
+                    label: 'V10 Local Map',
+                    ranked: normalizedLocalRanked.slice(0, mapExperimentK)
+                },
+                v10Transfer: {
+                    label: 'V10 Transfer Map',
+                    ranked: normalizedTransferRanked.slice(0, mapExperimentK)
+                }
+            };
+            const orthogonalCandidateById = new Map();
+            for (const map of Object.values(orthogonalMaps)) {
+                for (const item of map.ranked) {
+                    const id = Number(item.id ?? item.label);
+                    const candidate = enrichedById.get(id);
+                    if (!candidate || orthogonalCandidateById.has(id)) continue;
+                    orthogonalCandidateById.set(id, {
+                        ...candidate,
+                        id,
+                        chunkId: id,
+                        score: Number(item.score ?? item.vectorScore) || 0,
+                        candidateSources: [{
+                            source: 'orthogonal_map_union',
+                            rank: 0,
+                            rawScore: Number(item.score ?? item.vectorScore) || 0,
+                            normalizedScore: 0
+                        }]
+                    });
+                }
+            }
+            const orthogonalProjected = this.vectorDBManager
+                .projectTagMemoV10CandidateCurves(
+                    [...orthogonalCandidateById.values()]
+                );
+            const orthogonalPathBatch = this.vectorDBManager
+                .evaluateTagMemoV10CandidateCurves(
+                    orthogonalProjected.curves,
+                    queryState,
+                    { artifact: snapshot.bundle }
+                );
+            const orthogonalDstcBatch = this.vectorDBManager.computeTagMemoV10Dstc(
+                orthogonalPathBatch,
+                queryState,
+                {
+                    artifact: snapshot.bundle,
+                    disabledObservables,
+                    identityEligibility: curve =>
+                        Boolean(maid && String(curve.diaryName || '').includes(maid)),
+                    visibilityEligibility: curve =>
+                        allowedFileIdSet.has(Number(curve.fileId))
+                }
+            );
+            const orthogonalDstcById = new Map(
+                orthogonalDstcBatch.results.map(item => [
+                    Number(item.curve?.chunkId ?? item.curve?.id),
+                    item
+                ])
+            );
+            const orthogonalRuns = {};
+            const runV9Kernel = ranked => {
+                const input = ranked.map(item => ({
+                    ...item,
+                    id: Number(item.id ?? item.label),
+                    score: Number(item.score ?? item.vectorScore) || 0
+                }));
+                return v9Boost.energyField
+                    ? this.vectorDBManager.geodesicRerank(input, {
+                        artifactBundle: v9Snapshot.bundle,
+                        tagMemoVersion: 'v9',
+                        energyField: v9Boost.energyField,
+                        energyFieldProvenance: v9Boost.energyFieldProvenance,
+                        originalQueryVector: queryVector,
+                        enhancedQueryVector: v9Boost.vector,
+                        queryGeometryState: {
+                            epa: v9Boost.info?.epa || null,
+                            pyramid: v9Boost.info?.pyramid || null
+                        }
+                    })
+                    : input;
+            };
+            for (const [mapName, map] of Object.entries(orthogonalMaps)) {
+                const mapIds = new Set(map.ranked.map(item =>
+                    Number(item.id ?? item.label)
+                ));
+                const mapDstcBatch = {
+                    schema: orthogonalDstcBatch.schema,
+                    results: orthogonalDstcBatch.results.filter(item =>
+                        mapIds.has(Number(item.curve?.chunkId ?? item.curve?.id))
+                    )
+                };
+                const v10Kernel = this.vectorDBManager
+                    .scoreTagMemoV10ExperimentArm(
+                        mapDstcBatch,
+                        'pure',
+                        armOptions
+                    );
+                const v9Kernel = runV9Kernel(map.ranked);
+                const sourceRankById = new Map(map.ranked.map((item, index) => [
+                    Number(item.id ?? item.label),
+                    index + 1
+                ]));
+                const v9RankById = new Map(v9Kernel.map((item, index) => [
+                    Number(item.id ?? item.label),
+                    index + 1
+                ]));
+                const v10RankById = new Map(v10Kernel.results.map((item, index) => [
+                    Number(item.curve?.chunkId ?? item.curve?.id),
+                    index + 1
+                ]));
+                orthogonalRuns[mapName] = {
+                    label: map.label,
+                    offered: map.ranked.length,
+                    evaluatedByV10: mapDstcBatch.results.length,
+                    missingFromProjection: [...mapIds].filter(id =>
+                        !orthogonalDstcById.has(id)
+                    ),
+                    source: map.ranked,
+                    v9Kernel,
+                    v10Kernel: v10Kernel.results,
+                    rankMovements: map.ranked.map(item => {
+                        const id = Number(item.id ?? item.label);
+                        const sourceRank = sourceRankById.get(id);
+                        const v9Rank = v9RankById.get(id) ?? null;
+                        const v10Rank = v10RankById.get(id) ?? null;
+                        return {
+                            id,
+                            sourceRank,
+                            v9Rank,
+                            v10Rank,
+                            v9Delta: v9Rank === null
+                                ? null
+                                : sourceRank - v9Rank,
+                            v10Delta: v10Rank === null
+                                ? null
+                                : sourceRank - v10Rank
+                        };
+                    })
+                };
+            }
+            timing.orthogonalMapKernelMs =
+                performance.now() - orthogonalStartedAt;
             const tracks = {
                 knn: { label: 'KNN', results: knnRanked },
                 v9: {
@@ -1143,6 +1319,9 @@ class LightMemoPlugin {
                 queryState,
                 disabledObservables,
                 candidateDiagnostics: superset.diagnostics,
+                mapDiagnostics,
+                orthogonalRuns,
+                mapExperimentK,
                 timing,
                 compareRerank,
                 rerankTrack
@@ -1408,6 +1587,89 @@ class LightMemoPlugin {
         }));
     }
 
+    _buildTagMemoMapDiagnostics({
+        k,
+        rawKnn,
+        v9PrivateKnn,
+        v10Local,
+        v10Transfer
+    }) {
+        const normalizedK = Math.max(1, Math.floor(Number(k) || 1));
+        const itemId = item => Number(item?.id ?? item?.label ?? item?.chunkId);
+        const buildMap = (name, label, items) => {
+            const ranked = (Array.isArray(items) ? items : [])
+                .map((item, index) => ({
+                    id: itemId(item),
+                    rank: index + 1,
+                    score: Number(item?.score ?? item?.vectorScore) || 0
+                }))
+                .filter(item => Number.isFinite(item.id))
+                .slice(0, normalizedK);
+            return {
+                name,
+                label,
+                ranked,
+                ids: new Set(ranked.map(item => item.id))
+            };
+        };
+        const maps = {
+            raw: buildMap('raw', 'Raw KNN Map', rawKnn),
+            v9Private: buildMap(
+                'v9Private',
+                'V9 Private KNN Map',
+                v9PrivateKnn
+            ),
+            v10Local: buildMap('v10Local', 'V10 Local Map', v10Local),
+            v10Transfer: buildMap(
+                'v10Transfer',
+                'V10 Transfer Map',
+                v10Transfer
+            )
+        };
+        const pair = (leftName, rightName) => {
+            const left = maps[leftName];
+            const right = maps[rightName];
+            const intersectionIds = [...left.ids].filter(id => right.ids.has(id));
+            const unionIds = new Set([...left.ids, ...right.ids]);
+            const leftOnlyIds = [...left.ids].filter(id => !right.ids.has(id));
+            const rightOnlyIds = [...right.ids].filter(id => !left.ids.has(id));
+            return {
+                left: leftName,
+                right: rightName,
+                intersection: intersectionIds.length,
+                union: unionIds.size,
+                jaccard: unionIds.size > 0
+                    ? intersectionIds.length / unionIds.size
+                    : 0,
+                leftOnly: leftOnlyIds.length,
+                rightOnly: rightOnlyIds.length,
+                leftOnlyIds,
+                rightOnlyIds
+            };
+        };
+
+        return {
+            k: normalizedK,
+            maps: Object.fromEntries(
+                Object.entries(maps).map(([name, map]) => [
+                    name,
+                    {
+                        name: map.name,
+                        label: map.label,
+                        ranked: map.ranked
+                    }
+                ])
+            ),
+            pairs: [
+                pair('raw', 'v9Private'),
+                pair('v9Private', 'v10Local'),
+                pair('v10Local', 'v10Transfer'),
+                pair('raw', 'v10Local'),
+                pair('raw', 'v10Transfer')
+            ]
+        };
+    }
+
     _formatTagMemoUnifiedABMarkdown({
         query,
         k,
@@ -1417,6 +1679,9 @@ class LightMemoPlugin {
         queryState,
         disabledObservables,
         candidateDiagnostics,
+        mapDiagnostics,
+        orthogonalRuns,
+        mapExperimentK,
         timing,
         compareRerank,
         rerankTrack
@@ -1498,15 +1763,100 @@ class LightMemoPlugin {
             ? disabledObservables.map(value => `\`${value}\``).join(', ')
             : '无'}\n\n`;
 
-        md += '## 2. Top-K 重合概览\n\n';
+        md += '## 2. 私有地图位移诊断\n\n';
+        md += '> 本节比较候选生成地图，不混入最终产品内核。V9 Private KNN 是浪潮增强向量形成的私有坐标；V10 Local/Transfer 是双尺度场回投影形成的两张地图。\n\n';
+        md += '| 地图对 | 交集 | 并集 | Jaccard | 左侧独占 | 右侧独占 |\n';
+        md += '|---|---:|---:|---:|---:|---:|\n';
+        for (const pair of mapDiagnostics?.pairs || []) {
+            const left = mapDiagnostics.maps[pair.left]?.label || pair.left;
+            const right = mapDiagnostics.maps[pair.right]?.label || pair.right;
+            md += `| ${left} ↔ ${right} | ${pair.intersection} | ${pair.union} | ${fmt(pair.jaccard)} | ${pair.leftOnly} | ${pair.rightOnly} |\n`;
+        }
+        md += '\n### 地图 Top-K 明细\n\n';
+        for (const map of Object.values(mapDiagnostics?.maps || {})) {
+            md += `- **${map.label}**：${map.ranked.map(item =>
+                `${item.rank}.#${item.id}(${fmt(item.score)})`
+            ).join('；') || '无'}\n`;
+        }
+
+        md += `\n## 3. 地图 × 排序内核正交交换（Map-K=${mapExperimentK}）\n\n`;
+        md += '> 每行固定候选地图，只交换 V9 Production Kernel 与 V10 Unified-Pure Kernel。V10 对四张地图的并集仅做一次曲线投影与观测计算，不重复求场。\n\n';
+        md += '| 候选地图 | 地图候选数 | V10可评估 | V9 Kernel Top-K | V10 Kernel Top-K | 内核Top-K重合 | Jaccard |\n';
+        md += '|---|---:|---:|---|---|---:|---:|\n';
+        for (const run of Object.values(orthogonalRuns || {})) {
+            const v9Top = (run.v9Kernel || []).slice(0, k);
+            const v10Top = (run.v10Kernel || []).slice(0, k);
+            const v9Ids = new Set(v9Top.map(itemId));
+            const v10Ids = new Set(v10Top.map(itemId));
+            const intersection = [...v9Ids].filter(id => v10Ids.has(id)).length;
+            const union = new Set([...v9Ids, ...v10Ids]).size;
+            const topList = items => items.map((item, index) =>
+                `${index + 1}.#${itemId(item)}(${fmt(itemScore(item))})`
+            ).join('；') || '无';
+            md += `| ${run.label} | ${run.offered} | ${run.evaluatedByV10} | ${topList(v9Top)} | ${topList(v10Top)} | ${intersection} | ${fmt(union > 0 ? intersection / union : 0)} |\n`;
+            if (run.missingFromProjection?.length > 0) {
+                md += `\n- ${run.label} 未能进入 V10 曲线投影的 Chunk：${run.missingFromProjection.map(id => `#${id}`).join('、')}\n`;
+            }
+        }
+
+        md += '\n### 固定地图内核排名跨越\n\n';
+        md += '> 正 ΔRank 表示内核把候选向前提升；负值表示向后移动。该表只展示每张地图经 V10 Pure 后的 Top-K。\n\n';
+        for (const run of Object.values(orthogonalRuns || {})) {
+            const movementById = new Map(
+                (run.rankMovements || []).map(item => [item.id, item])
+            );
+            md += `#### ${run.label}\n\n`;
+            md += '| Chunk | 地图原排名 | V9 Kernel 排名/Δ | V10 Kernel 排名/Δ | Query | Local | Transfer | Path | Occupancy |\n';
+            md += '|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n';
+            for (const item of (run.v10Kernel || []).slice(0, k)) {
+                const id = itemId(item);
+                const movement = movementById.get(id) || {};
+                const components = item.armResult?.components || {};
+                const rankDelta = (rank, delta) => rank == null
+                    ? '—'
+                    : `#${rank} / ${delta > 0 ? '+' : ''}${delta}`;
+                md += `| ${id} | #${movement.sourceRank ?? '—'} | ${rankDelta(movement.v9Rank, movement.v9Delta)} | ${rankDelta(movement.v10Rank, movement.v10Delta)} | ${fmt(components.query)} | ${fmt(components.local)} | ${fmt(components.transfer)} | ${fmt(components.path)} | ${fmt(components.occupancy)} |\n`;
+            }
+            md += '\n';
+        }
+
+        md += '## 4. 产品 Top-K 重合与区间推动\n\n';
         for (const name of trackOrder.filter(name => name !== 'pure')) {
             md += `- ${trackLabel(name)} ↔ V10 Unified-Pure：${overlapWithPure(name)}/${k}\n`;
         }
-        md += `- 候选超集保留：${candidateDiagnostics?.retainedCandidates
-            ?? candidateDiagnostics?.candidateCount
-            ?? '—'}；并集上限淘汰：${candidateDiagnostics?.droppedByUnionCap ?? '—'}。\n\n`;
+        const droppedByUnionCap = Array.isArray(candidateDiagnostics?.droppedByUnionCap)
+            ? candidateDiagnostics.droppedByUnionCap.length
+            : Number(candidateDiagnostics?.droppedByUnionCap) || 0;
+        md += `- 候选超集：提供 ${candidateDiagnostics?.offeredUnique ?? '—'} 个唯一候选，` +
+            `保留 ${candidateDiagnostics?.selectedUnique ?? '—'} 个，` +
+            `并集上限淘汰 ${droppedByUnionCap} 个，` +
+            `多来源入选 ${candidateDiagnostics?.multiSourceSelected ?? '—'} 个。\n\n`;
 
-        md += '## 3. 统一排名总表\n\n';
+        const fullKnnRank = new Map(
+            (tracks.knn?.results || []).map((item, index) => [
+                itemId(item),
+                index + 1
+            ])
+        );
+        md += '### V10 Pure Top-K 相对 Raw KNN 的跨越\n\n';
+        md += '| V10排名 | Chunk | Raw KNN排名 | ΔRank | 候选来源 | Query | Local | Transfer | Path | Occupancy |\n';
+        md += '|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|\n';
+        (topByTrack.pure || []).forEach((item, index) => {
+            const id = itemId(item);
+            const rawRank = fullKnnRank.get(id) ?? null;
+            const pureRank = index + 1;
+            const delta = rawRank === null ? null : rawRank - pureRank;
+            const sources = Array.isArray(item.curve?.candidateSources)
+                ? item.curve.candidateSources
+                    .map(source => source.source || String(source))
+                    .join('+')
+                : '—';
+            const components = item.armResult?.components || {};
+            md += `| ${pureRank} | ${id} | ${rawRank === null ? '—' : rawRank} | ${delta === null ? '新候选' : `${delta > 0 ? '+' : ''}${delta}`} | ${sources || '—'} | ${fmt(components.query)} | ${fmt(components.local)} | ${fmt(components.transfer)} | ${fmt(components.path)} | ${fmt(components.occupancy)} |\n`;
+        });
+        md += '\n';
+
+        md += '## 5. 统一排名总表\n\n';
         md += `| Chunk | 记忆摘要 | ${trackOrder.map(trackLabel).join(' | ')} |\n`;
         md += `|---:|---|${trackOrder.map(() => '---:').join('|')}|\n`;
         for (const id of allIds) {
@@ -1520,7 +1870,7 @@ class LightMemoPlugin {
             md += `| ${id} | ${summary} | ${cells.join(' | ')} |\n`;
         }
 
-        md += '\n## 4. 各具名轨道完整候选\n\n';
+        md += '\n## 6. 各具名轨道完整候选\n\n';
         for (const name of trackOrder) {
             md += `### ${trackLabel(name)}\n\n`;
             const items = topByTrack[name] || [];
@@ -1534,7 +1884,15 @@ class LightMemoPlugin {
                 md += `- 路径：${this._escapeMarkdownCell(itemPath(item) || '—')}\n`;
                 if (item.armResult) {
                     const values = item.observables?.values || {};
+                    const components = item.armResult.components || {};
+                    const sources = Array.isArray(item.curve?.candidateSources)
+                        ? item.curve.candidateSources
+                            .map(source => source.source || String(source))
+                            .join('+')
+                        : '';
+                    md += `- 候选来源：${sources || '—'}\n`;
                     md += `- V10 基础分：${fmt(item.armResult.baseScore, 6)}；门控倍率：${fmt(item.armResult.gateMultiplier)}；Observed 增益：${fmt(item.armResult.observedBonus, 6)}\n`;
+                    md += `- 五分量 Q/L/X/G/O：${fmt(components.query)}/${fmt(components.local)}/${fmt(components.transfer)}/${fmt(components.path)}/${fmt(components.occupancy)}\n`;
                     md += `- D/S/T/C：${fmt(values.direct)}/${fmt(values.structural)}/${fmt(values.thematic)}/${fmt(values.closure)}\n`;
                     md += `- 路径质量：${fmt(item.geometry?.pathQuality)}；拒判：${item.armResult.rejected ? '是' : '否'}${item.armResult.rejectionReasons?.length
                         ? `（${item.armResult.rejectionReasons.join(', ')}）`
@@ -1546,13 +1904,13 @@ class LightMemoPlugin {
             });
         }
 
-        md += '## 5. 性能计时\n\n';
+        md += '## 7. 性能计时\n\n';
         md += '| 阶段 | 耗时 ms |\n|---|---:|\n';
         for (const [name, value] of Object.entries(timing)) {
             if (name.endsWith('Ms')) md += `| ${name} | ${fmt(value, 3)} |\n`;
         }
 
-        md += '\n## 6. 评审员裁决区\n\n';
+        md += '\n## 8. 评审员裁决区\n\n';
         md += '请独立评价每条轨道，不要只依据算法内部评分。\n\n';
         md += '| 轨道 | 相关性(1-5) | 前因/链条完整性(1-5) | 有价值惊喜(1-5) | 漂移风险(1-5，低为好) | 身份/权限正确 | 总体名次 |\n';
         md += '|---|---:|---:|---:|---:|---|---:|\n';

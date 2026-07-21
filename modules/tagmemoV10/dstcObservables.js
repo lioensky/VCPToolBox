@@ -21,6 +21,13 @@ function toFieldMap(entries) {
     );
 }
 
+function semanticSimilarity(left, right, mode = 'positive') {
+    const value = cosine(left, right);
+    return String(mode).toLowerCase() === 'shifted'
+        ? clamp01((value + 1) / 2)
+        : clamp01(value);
+}
+
 function normalizedField(field) {
     let maximum = 0;
     for (const value of field.values()) maximum = Math.max(maximum, value);
@@ -89,7 +96,11 @@ function vectorWeightedClosure(curve, local, transfer, options = {}) {
         aggregate[index] /= totalWeight;
     }
     return Object.freeze({
-        score: clamp01((cosine(aggregate, chunkVector) + 1) / 2),
+        score: semanticSimilarity(
+            aggregate,
+            chunkVector,
+            options.semanticSimilarityMode
+        ),
         weightedTagCount,
         vectorAvailable: true
     });
@@ -161,14 +172,43 @@ function computeDstcObservables(curve, geometry, queryState, options = {}) {
         + 0.15 * clamp01(transferMeanPotential)
         + 0.2 * dualScaleAgreement
     ) * (1 - 0.5 * clamp01(tailOnlyRatio));
-    const closure = vectorWeightedClosure(curve, local, transfer, options);
+    const tagClosure = vectorWeightedClosure(curve, local, transfer, options);
+    const queryVector = queryState?.query?.vector;
+    const queryChunkAvailable = Boolean(
+        queryVector
+        && curve?.chunkVector
+        && queryVector.length === curve.chunkVector.length
+    );
+    const queryChunkScore = queryChunkAvailable
+        ? semanticSimilarity(
+            queryVector,
+            curve.chunkVector,
+            options.semanticSimilarityMode
+        )
+        : 0;
+    const closureMode = String(options.closureMode || 'query_weighted')
+        .trim()
+        .toLowerCase();
+    const queryClosureWeight = clamp01(options.queryClosureWeight ?? 0.65);
+    const tagClosureWeight = clamp01(options.tagClosureWeight ?? 0.35);
+    const closureWeightTotal = queryClosureWeight + tagClosureWeight || 1;
+    const closureScore = closureMode === 'tag_only'
+        ? tagClosure.score
+        : queryChunkAvailable
+            ? clamp01(
+                (
+                    queryClosureWeight * queryChunkScore
+                    + tagClosureWeight * tagClosure.score
+                ) / closureWeightTotal
+            )
+            : tagClosure.score;
     const structuralScore = clamp01(geometry?.pathQuality);
 
     const values = {
         direct: disabled.has('direct') ? 0 : directScore,
         structural: disabled.has('structural') ? 0 : structuralScore,
         thematic: disabled.has('thematic') ? 0 : thematicScore,
-        closure: disabled.has('closure') ? 0 : closure.score
+        closure: disabled.has('closure') ? 0 : closureScore
     };
 
     return Object.freeze({
@@ -203,8 +243,17 @@ function computeDstcObservables(curve, geometry, queryState, options = {}) {
         }),
         closure: Object.freeze({
             score: values.closure,
-            weightedTagCount: closure.weightedTagCount,
-            vectorAvailable: closure.vectorAvailable
+            mode: closureMode,
+            semanticSimilarityMode: String(
+                options.semanticSimilarityMode || 'positive'
+            ),
+            queryChunkScore,
+            tagChunkScore: tagClosure.score,
+            queryClosureWeight,
+            tagClosureWeight,
+            queryVectorAvailable: queryChunkAvailable,
+            weightedTagCount: tagClosure.weightedTagCount,
+            vectorAvailable: tagClosure.vectorAvailable
         })
     });
 }
@@ -243,6 +292,7 @@ function computeDstcBatch(pathBatch, queryState, options = {}) {
 
 module.exports = {
     OBSERVABLE_NAMES,
+    semanticSimilarity,
     computeDstcObservables,
     computeDstcBatch
 };

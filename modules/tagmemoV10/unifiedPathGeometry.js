@@ -36,10 +36,27 @@ function normalizeField(field) {
     return new Map([...field.entries()].map(([id, value]) => [id, value / maximum]));
 }
 
+function domainSet(domain) {
+    return new Set(
+        Array.isArray(domain?.ids)
+            ? domain.ids.map(Number).filter(Number.isFinite)
+            : []
+    );
+}
+
 function evaluateUnifiedPath(curve, queryState, options = {}) {
     const chain = Array.isArray(curve?.tagCurve) ? curve.tagCurve : [];
     const local = normalizeField(fieldMap(queryState?.localField));
     const transfer = normalizeField(fieldMap(queryState?.transferField));
+    const localDomain = domainSet(queryState?.localDomain);
+    const transferDomain = domainSet(queryState?.transferDomain);
+    const supportMode = String(
+        options.supportMode || 'effective_domain'
+    ).trim().toLowerCase();
+    const minimumSupportedPotential = Math.max(
+        0,
+        Number(options.minimumSupportedPotential) || 0
+    );
     const localOperator = queryState?.conditionedTransportView?.local;
     const transferOperator = queryState?.conditionedTransportView?.transfer || localOperator;
     const localWeight = clamp01(options.localWeight ?? 0.6);
@@ -128,17 +145,34 @@ function evaluateUnifiedPath(curve, queryState, options = {}) {
         const continuity = clamp01(
             0.5 * semanticContinuity + 0.5 * fieldContinuity
         );
-        const isTransfer = transferPotential > localPotential;
+        const currentId = Number(current.id);
+        const nextId = Number(next.id);
+        const localDomainSupported = localDomain.has(currentId)
+            && localDomain.has(nextId);
+        const transferDomainSupported = transferDomain.has(currentId)
+            && transferDomain.has(nextId);
+        const isTransfer = transferDomainSupported
+            && (!localDomainSupported || transferPotential > localPotential);
         const potential = (
             localWeight * localPotential
             + transferWeight * transferPotential
         ) / weightTotal;
-        const quality = clamp01(
-            potential
-            * Math.sqrt(Math.max(directionFloor, direction))
-            * Math.sqrt(Math.max(0, continuity))
-        );
-        const supported = potential > 0 && (forward > 0 || reverse > 0);
+        const domainSupported = localDomainSupported
+            || transferDomainSupported;
+        const supported = supportMode === 'positive_tail'
+            ? potential > minimumSupportedPotential
+                && (forward > 0 || reverse > 0)
+            : domainSupported
+                && potential > minimumSupportedPotential
+                && (forward > 0 || reverse > 0);
+        // 未进入有效支持域的尾部边保留诊断，但不得贡献路径主质量。
+        const quality = supported
+            ? clamp01(
+                potential
+                * Math.sqrt(Math.max(directionFloor, direction))
+                * Math.sqrt(Math.max(0, continuity))
+            )
+            : 0;
 
         if (supported) supportedSegments++;
         if (isTransfer && supported) transferSegments++;
@@ -158,6 +192,9 @@ function evaluateUnifiedPath(curve, queryState, options = {}) {
             reverseConductance: reverse,
             continuity,
             semanticContinuity,
+            localDomainSupported,
+            transferDomainSupported,
+            supportMode,
             isTransfer,
             supported,
             quality
@@ -198,6 +235,8 @@ function evaluateUnifiedPath(curve, queryState, options = {}) {
         action,
         pathCore,
         tagClosure,
+        supportMode,
+        minimumSupportedPotential,
         supportCoverage,
         segmentCount,
         supportedSegments,
@@ -241,6 +280,7 @@ function evaluateCandidateCurves(curves, queryState, options = {}) {
 
 module.exports = {
     cosine,
+    domainSet,
     evaluateUnifiedPath,
     evaluateCandidateCurves
 };
