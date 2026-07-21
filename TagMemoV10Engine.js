@@ -10,6 +10,8 @@ const { buildProvenanceView } = require('./modules/tagmemoV10/provenance');
 const { createConditionedOperator } = require('./modules/tagmemoV10/agentConditioner');
 const { solveDualScaledFields } = require('./modules/tagmemoV10/scaledFieldSolver');
 const { buildCandidateSuperset } = require('./modules/tagmemoV10/candidateSuperset');
+const { projectCandidateCurves } = require('./modules/tagmemoV10/curveProjector');
+const { evaluateCandidateCurves } = require('./modules/tagmemoV10/unifiedPathGeometry');
 
 const VERSION = 'v10_alpha';
 const ALGORITHM_VERSION = 'v10.alpha.1';
@@ -259,6 +261,29 @@ class TagMemoV10Engine {
             sourceCandidates,
             {
                 ...artifact.effectiveConfig.candidateSuperset,
+                ...(options.config || {})
+            }
+        );
+    }
+
+    projectCandidateCurves(candidates, options = {}) {
+        return projectCandidateCurves(
+            this.db,
+            candidates,
+            {
+                dimension: this.config.dimension,
+                ...options
+            }
+        );
+    }
+
+    evaluateCandidateCurves(curves, queryState, options = {}) {
+        const artifact = options.artifact || this.getArtifactSnapshot();
+        return evaluateCandidateCurves(
+            curves,
+            queryState,
+            {
+                ...artifact.effectiveConfig.pathGeometry,
                 ...(options.config || {})
             }
         );
