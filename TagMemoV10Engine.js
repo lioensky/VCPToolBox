@@ -12,6 +12,11 @@ const { solveDualScaledFields } = require('./modules/tagmemoV10/scaledFieldSolve
 const { buildCandidateSuperset } = require('./modules/tagmemoV10/candidateSuperset');
 const { projectCandidateCurves } = require('./modules/tagmemoV10/curveProjector');
 const { evaluateCandidateCurves } = require('./modules/tagmemoV10/unifiedPathGeometry');
+const { computeDstcBatch } = require('./modules/tagmemoV10/dstcObservables');
+const {
+    scoreExperimentArm,
+    runExperimentArms
+} = require('./modules/tagmemoV10/experimentArms');
 
 const VERSION = 'v10_alpha';
 const ALGORITHM_VERSION = 'v10.alpha.1';
@@ -285,6 +290,42 @@ class TagMemoV10Engine {
             {
                 ...artifact.effectiveConfig.pathGeometry,
                 ...(options.config || {})
+            }
+        );
+    }
+
+    computeDstcObservables(pathBatch, queryState, options = {}) {
+        const artifact = options.artifact || this.getArtifactSnapshot();
+        return computeDstcBatch(
+            pathBatch,
+            queryState,
+            {
+                ...artifact.effectiveConfig.pathGeometry,
+                ...artifact.effectiveConfig.dstc,
+                ...options
+            }
+        );
+    }
+
+    scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
+        const artifact = options.artifact || this.getArtifactSnapshot();
+        return scoreExperimentArm(
+            dstcBatch,
+            arm,
+            {
+                ...artifact.effectiveConfig.dstc,
+                ...options
+            }
+        );
+    }
+
+    runExperimentArms(dstcBatch, options = {}) {
+        const artifact = options.artifact || this.getArtifactSnapshot();
+        return runExperimentArms(
+            dstcBatch,
+            {
+                ...artifact.effectiveConfig.dstc,
+                ...options
             }
         );
     }
