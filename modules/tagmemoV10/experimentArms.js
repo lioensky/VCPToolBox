@@ -1,6 +1,6 @@
 'use strict';
 
-const ARM_NAMES = Object.freeze(['pure', 'gated', 'observed']);
+const ARM_NAMES = Object.freeze(['pure', 'gated', 'observed', 'topology']);
 
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
@@ -293,10 +293,107 @@ function scoreObserved(item, options = {}) {
     });
 }
 
+function scoreTopology(item, options = {}) {
+    const pure = scorePure(item, options);
+    const components = pure.components;
+    const closureReliability = pure.closureReliability;
+    const localGain = Math.max(0, components.local - components.query);
+    const transferReference = Math.max(components.query, components.local);
+    const transferGain = Math.max(0, components.transfer - transferReference);
+
+    const direct = item.observables?.direct || {};
+    const boundaryScore = clamp01(direct.semanticBoundaryScore);
+    const boundaryGain = Math.max(0, boundaryScore - components.query);
+    const localGainCap = clamp01(options.topologyLocalGainCap ?? 0.12);
+    const transferGainCap = clamp01(options.topologyTransferGainCap ?? 0.08);
+    const boundaryGainCap = clamp01(options.topologyBoundaryGainCap ?? 0.12);
+    const pathGainCap = clamp01(options.topologyPathGainCap ?? 0.08);
+    // Local 回投影本身就是 Query→Field→Candidate 的连续几何观测。
+    // 不能再要求候选离散 Tag 链命中 Local Effective Support，否则严格支持域下
+    // 大量真实的 Local 向量增量会被归零，使 Topology 退化成原始 KNN。
+    // Query→Chunk Closure 负责确认这段位移确实回到候选正文。
+    const localReliability = Math.sqrt(closureReliability);
+    const transferReliability = Math.sqrt(
+        closureReliability
+        * clamp01(item.observables?.thematic?.transferCoverage ?? 0)
+        * clamp01(pure.pathReliability)
+    );
+    const boundaryReliability = Math.sqrt(
+        closureReliability
+        * clamp01(
+            0.8 + 0.2 * (Number(direct.semanticBoundarySaturation) || 0)
+        )
+    );
+    const localGainAward = Math.min(
+        localGainCap,
+        localGain * localReliability
+    );
+    const transferGainAward = Math.min(
+        transferGainCap,
+        transferGain * transferReliability
+    );
+    const boundaryGainAward = Math.min(
+        boundaryGainCap,
+        boundaryGain * boundaryReliability
+    );
+    const pathGainAward = Math.min(
+        pathGainCap,
+        pathGainCap * pure.topologyRaw * pure.topologyReliability
+    );
+    const score = clamp01(
+        components.query
+        + localGainAward
+        + transferGainAward
+        + boundaryGainAward
+        + pathGainAward
+    );
+
+    return Object.freeze({
+        ...pure,
+        arm: 'topology',
+        score,
+        baseScore: components.query,
+        topologyRelativeGeometry: Object.freeze({
+            queryBase: components.query,
+            localScore: components.local,
+            transferScore: components.transfer,
+            localGain,
+            transferReference,
+            transferGain,
+            localReliability,
+            transferReliability,
+            closureReliability,
+            pathReliability: pure.pathReliability,
+            boundaryScore,
+            boundaryGain,
+            boundaryReliability,
+            strongestBoundary: direct.strongestBoundary || null,
+            secondBoundary: direct.secondBoundary || null,
+            boundaryHits: Number(direct.semanticBoundaryHits) || 0,
+            boundarySaturation: clamp01(
+                direct.semanticBoundarySaturation
+            ),
+            localGainCap,
+            transferGainCap,
+            boundaryGainCap,
+            pathGainCap,
+            localGainAward,
+            transferGainAward,
+            boundaryGainAward,
+            pathGainAward,
+            totalGeometryGain: localGainAward
+                + transferGainAward
+                + boundaryGainAward
+                + pathGainAward
+        })
+    });
+}
+
 const ARM_SCORERS = Object.freeze({
     pure: scorePure,
     gated: scoreGated,
-    observed: scoreObserved
+    observed: scoreObserved,
+    topology: scoreTopology
 });
 
 function scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
@@ -357,7 +454,7 @@ function runExperimentArms(dstcBatch, options = {}) {
         );
     }
     return Object.freeze({
-        schema: 'tagmemo-v10-alpha-three-arm-run-v1',
+        schema: 'tagmemo-v10-alpha-experiment-arms-v1',
         candidateCount: Array.isArray(dstcBatch?.results)
             ? dstcBatch.results.length
             : 0,
@@ -371,6 +468,7 @@ module.exports = {
     scorePure,
     scoreGated,
     scoreObserved,
+    scoreTopology,
     scoreExperimentArm,
     runExperimentArms
 };

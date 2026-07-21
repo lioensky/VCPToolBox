@@ -633,7 +633,7 @@ class LightMemoPlugin {
 
     /**
      * TagMemo V10 Alpha 独立实验入口。
-     * 服务端批量脚本可传 experiment_arm=pure|gated|observed|all，
+     * 服务端批量脚本可传 experiment_arm=pure|gated|observed|topology|all，
      * 并用 disabled_observables=direct,structural,thematic,closure 做逐项消融。
      */
     async handleTagMemoV10(args = {}) {
@@ -722,9 +722,9 @@ class LightMemoPlugin {
             : String(
                 args.experiment_arm || args.experimentArm || args.arm || 'all'
             ).trim().toLowerCase();
-        if (!['pure', 'gated', 'observed', 'all'].includes(arm)) {
+        if (!['pure', 'gated', 'observed', 'topology', 'all'].includes(arm)) {
             throw new Error(
-                'experiment_arm 仅支持 pure、gated、observed 或 all。'
+                'experiment_arm 仅支持 pure、gated、observed、topology 或 all。'
             );
         }
         const disabledObservables = this._parseStringArray(
@@ -1002,7 +1002,7 @@ class LightMemoPlugin {
                     armOptions
                 )
                 : {
-                    schema: 'tagmemo-v10-alpha-three-arm-run-v1',
+                    schema: 'tagmemo-v10-alpha-experiment-arms-v1',
                     candidateCount: dstcBatch.results.length,
                     arms: {
                         [arm]: this.vectorDBManager.scoreTagMemoV10ExperimentArm(
@@ -1250,6 +1250,10 @@ class LightMemoPlugin {
                     label: 'V10 Unified-Pure',
                     results: armRun.arms.pure.results
                 },
+                topology: {
+                    label: 'V10-Topology',
+                    results: armRun.arms.topology.results
+                },
                 gated: {
                     label: 'V10 Unified-Gated',
                     results: armRun.arms.gated.results
@@ -1283,6 +1287,7 @@ class LightMemoPlugin {
                 appendTrack(knnRanked);
                 appendTrack(v9Ranked);
                 appendTrack(armRun.arms.pure.results);
+                appendTrack(armRun.arms.topology.results);
                 appendTrack(armRun.arms.gated.results);
                 appendTrack(armRun.arms.observed.results);
 
@@ -1719,7 +1724,14 @@ class LightMemoPlugin {
                 ]))
             ])
         );
-        const trackOrder = ['knn', 'v9', 'pure', 'gated', 'observed'];
+        const trackOrder = [
+            'knn',
+            'v9',
+            'pure',
+            'topology',
+            'gated',
+            'observed'
+        ];
         if (tracks.rerank) trackOrder.push('rerank');
         const trackLabel = name => tracks[name]?.label || name;
         const allIds = [];
@@ -1750,7 +1762,8 @@ class LightMemoPlugin {
         md += '## 1. 实验身份与公平条件\n\n';
         md += '- **KNN**：原始查询向量余弦排序。\n';
         md += `- **V9 Production**：当前生产 Artifact 与生产测地重排；实际算法版本 \`${v9Artifact.algorithmVersion || 'v9'}\`。\n`;
-        md += '- **V10 Unified-Pure / Gated / Observed**：共享同一 V10 Artifact、Query State、双尺度场、候选超集和候选曲线。\n';
+        md += '- **V10 Unified-Pure / Gated / Observed / V10-Topology**：共享同一 V10 Artifact、Query State、双尺度场、候选超集和候选曲线。\n';
+        md += '- **V10-Topology**：以 Query 相似度为零跳底座，只奖励 Local/Transfer 相对增量与可靠路径增益，不修改 Unified-Pure。\n';
         md += `- **Rerank**：${compareRerank
             ? (rerankTrack?.configured
                 ? '已启用独立外部精排。'
@@ -1894,6 +1907,16 @@ class LightMemoPlugin {
                     md += `- V10 基础分：${fmt(item.armResult.baseScore, 6)}；门控倍率：${fmt(item.armResult.gateMultiplier)}；Observed 增益：${fmt(item.armResult.observedBonus, 6)}\n`;
                     md += `- 五分量 Q/L/X/G/O：${fmt(components.query)}/${fmt(components.local)}/${fmt(components.transfer)}/${fmt(components.path)}/${fmt(components.occupancy)}\n`;
                     md += `- 权限校准：模式=${item.armResult.pureScoreMode || '—'}；语义底座=${fmt(item.armResult.semanticBase)}；拓扑原量=${fmt(item.armResult.topologyRaw)}；可靠度=${fmt(item.armResult.topologyReliability)}；拓扑增益=${fmt(item.armResult.topologyBonus)}≤${fmt(item.armResult.topologyBonusCap)}\n`;
+                    if (item.armResult.topologyRelativeGeometry) {
+                        const relative = item.armResult.topologyRelativeGeometry;
+                        md += `- 三层相对几何：Q=${fmt(relative.queryBase)}；ΔL=${fmt(relative.localGain)}×${fmt(relative.localReliability)}→${fmt(relative.localGainAward)}；ΔX=${fmt(relative.transferGain)}×${fmt(relative.transferReliability)}→${fmt(relative.transferGainAward)}；ΔB=${fmt(relative.boundaryGain)}×${fmt(relative.boundaryReliability)}→${fmt(relative.boundaryGainAward)}；Path→${fmt(relative.pathGainAward)}；总几何增益=${fmt(relative.totalGeometryGain)}\n`;
+                        if (relative.strongestBoundary) {
+                            const boundary = relative.strongestBoundary;
+                            md += `- 一跳边界路径：Tag=${this._escapeMarkdownCell(boundary.tagName || boundary.tagId || '—')}；Q→Tag=${fmt(boundary.queryTagScore)}；Tag→Chunk=${fmt(boundary.tagChunkScore)}；B=${fmt(boundary.boundaryPathQuality)}；命中=${relative.boundaryHits}；饱和=${fmt(relative.boundarySaturation)}\n`;
+                        } else {
+                            md += '- 一跳边界路径：无可信边界接触\n';
+                        }
+                    }
                     md += `- D/S/T/C：${fmt(values.direct)}/${fmt(values.structural)}/${fmt(values.thematic)}/${fmt(values.closure)}\n`;
                     md += `- 路径质量：${fmt(item.geometry?.pathQuality)}；拒判：${item.armResult.rejected ? '是' : '否'}${item.armResult.rejectionReasons?.length
                         ? `（${item.armResult.rejectionReasons.join(', ')}）`

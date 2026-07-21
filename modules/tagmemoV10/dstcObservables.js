@@ -152,9 +152,69 @@ function computeDstcObservables(curve, geometry, queryState, options = {}) {
     const chainSize = Math.max(1, chain.length);
     const identityEligible = options.identityEligible === true;
     const visibilityEligible = options.visibilityEligible !== false;
+    const queryVector = queryState?.query?.vector;
+    const chunkVector = curve?.chunkVector;
+    const semanticBoundaryContacts = [];
+    if (
+        queryVector
+        && chunkVector
+        && queryVector.length === chunkVector.length
+    ) {
+        for (const tag of chain) {
+            if (!tag.vector || tag.vector.length !== queryVector.length) continue;
+            const queryTagScore = semanticSimilarity(
+                queryVector,
+                tag.vector,
+                options.semanticSimilarityMode
+            );
+            const tagChunkScore = semanticSimilarity(
+                tag.vector,
+                chunkVector,
+                options.semanticSimilarityMode
+            );
+            const boundaryPathQuality = Math.sqrt(
+                queryTagScore * tagChunkScore
+            );
+            semanticBoundaryContacts.push(Object.freeze({
+                tagId: Number(tag.id),
+                tagName: tag.name || null,
+                queryTagScore,
+                tagChunkScore,
+                boundaryPathQuality
+            }));
+        }
+        semanticBoundaryContacts.sort(
+            (left, right) =>
+                right.boundaryPathQuality - left.boundaryPathQuality
+        );
+    }
+    const strongestBoundary = semanticBoundaryContacts[0] || null;
+    const secondBoundary = semanticBoundaryContacts[1] || null;
+    const semanticBoundaryThreshold = clamp01(
+        options.semanticBoundaryThreshold ?? 0.55
+    );
+    const semanticBoundaryHits = semanticBoundaryContacts.filter(
+        contact => contact.boundaryPathQuality >= semanticBoundaryThreshold
+    ).length;
+    const semanticBoundarySaturation = clamp01(
+        semanticBoundaryHits / Math.max(
+            1,
+            Number(options.semanticBoundaryContactSaturation) || 2
+        )
+    );
+    const semanticBoundaryScore = strongestBoundary
+        && strongestBoundary.boundaryPathQuality >= semanticBoundaryThreshold
+        ? clamp01(
+            strongestBoundary.boundaryPathQuality
+            * (0.8 + 0.2 * semanticBoundarySaturation)
+        )
+        : 0;
     const directContact = clamp01(exactSeedHits / Math.max(1, seeds.size));
     const directScore = visibilityEligible
-        ? clamp01(0.75 * directContact + 0.25 * (identityEligible ? 1 : 0))
+        ? clamp01(Math.max(
+            0.75 * directContact + 0.25 * (identityEligible ? 1 : 0),
+            semanticBoundaryScore
+        ))
         : 0;
     const localCoverage = localContacts / chainSize;
     const transferCoverage = transferContacts / chainSize;
@@ -173,7 +233,6 @@ function computeDstcObservables(curve, geometry, queryState, options = {}) {
         + 0.2 * dualScaleAgreement
     ) * (1 - 0.5 * clamp01(tailOnlyRatio));
     const tagClosure = vectorWeightedClosure(curve, local, transfer, options);
-    const queryVector = queryState?.query?.vector;
     const queryChunkAvailable = Boolean(
         queryVector
         && curve?.chunkVector
@@ -221,7 +280,16 @@ function computeDstcObservables(curve, geometry, queryState, options = {}) {
             exactSeedHits,
             identityEligible,
             visibilityEligible,
-            legal: visibilityEligible
+            legal: visibilityEligible,
+            semanticBoundaryScore,
+            semanticBoundaryThreshold,
+            semanticBoundaryHits,
+            semanticBoundarySaturation,
+            strongestBoundary,
+            secondBoundary,
+            boundaryContacts: Object.freeze(
+                semanticBoundaryContacts.slice(0, 8)
+            )
         }),
         structural: Object.freeze({
             score: values.structural,
