@@ -219,6 +219,26 @@ class SecurityManager {
 const securityManager = new SecurityManager();
 
 /**
+ * 判断请求路径是否包含父目录段。
+ * 只有完整路径段等于 ".." 才属于目录遍历；文件名或目录名中的连续句点是合法内容。
+ * 同时检查一次 URL 解码后的路径，以覆盖 %2e.、.%2e 等混合编码形式。
+ */
+function containsParentDirectorySegment(requestedPath) {
+    const hasParentSegment = candidate => /(?:^|\/)\.\.(?:\/|$)/.test(candidate);
+
+    if (hasParentSegment(requestedPath)) {
+        return true;
+    }
+
+    try {
+        return hasParentSegment(decodeURIComponent(requestedPath));
+    } catch (error) {
+        // 非法百分号编码不是有效静态资源路径，按危险路径处理。
+        return true;
+    }
+}
+
+/**
  * 安全路径验证中间件
  * 防止路径遍历攻击
  */
@@ -226,23 +246,21 @@ function createPathSecurityMiddleware(serviceType) {
     return (req, res, next) => {
         const requestedPath = req.path;
         
-        // 检查路径中是否包含危险字符
+        // 父目录遍历必须按完整路径段判断，避免误伤标题中的“......”。
+        // 其余模式继续阻止分隔符编码、反斜杠、空字节及 Windows 非法字符。
+        const hasDangerousPath = containsParentDirectorySegment(requestedPath);
         const dangerousPatterns = [
-            /\.\./,           // 父目录遍历
             /\/\//,           // 双斜杠
             /\\/,             // 反斜杠
-            /%2e%2e/i,        // URL编码的..
             /%2f/i,           // URL编码的/
             /%5c/i,           // URL编码的\
             /\0/,             // 空字节
             /[<>:"|?*]/       // Windows文件名非法字符
         ];
 
-        for (const pattern of dangerousPatterns) {
-            if (pattern.test(requestedPath)) {
-                console.warn(`[PathSecurity] 🚨 检测到路径遍历攻击尝试: ${requestedPath} from IP: ${req.ip}`);
-                return res.status(400).type('text/plain').send('Bad Request: Invalid path format detected.');
-            }
+        if (hasDangerousPath || dangerousPatterns.some(pattern => pattern.test(requestedPath))) {
+            console.warn(`[PathSecurity] 🚨 检测到路径遍历攻击尝试: ${requestedPath} from IP: ${req.ip}`);
+            return res.status(400).type('text/plain').send('Bad Request: Invalid path format detected.');
         }
 
         // 验证文件扩展名
@@ -349,11 +367,16 @@ function createSecureStaticMiddleware(rootDir, serviceType) {
         const requestedFile = req.path;
         const fullPath = path.join(rootDir, requestedFile);
         
-        // 确保请求的文件在允许的目录内
+        // 确保请求的文件在允许的目录内。使用 path.relative 做目录边界判断，
+        // 避免字符串 startsWith 将 "image-evil" 误认为 "image" 的子目录。
         const normalizedRoot = path.resolve(rootDir);
         const normalizedPath = path.resolve(fullPath);
+        const relativePath = path.relative(normalizedRoot, normalizedPath);
+        const isOutsideRoot = relativePath === '..'
+            || relativePath.startsWith(`..${path.sep}`)
+            || path.isAbsolute(relativePath);
         
-        if (!normalizedPath.startsWith(normalizedRoot)) {
+        if (isOutsideRoot) {
             console.warn(`[SecureStatic] 🚨 路径遍历攻击被阻止: ${requestedFile} -> ${normalizedPath} from IP: ${req.ip}`);
             return res.status(403).type('text/plain').send('Forbidden: Access denied.');
         }
@@ -385,7 +408,11 @@ function createSecureStaticMiddleware(rootDir, serviceType) {
                 const tryPath = path.join(rootDir, baseName + tryExt);
                 const normalizedTry = path.resolve(tryPath);
                 // 安全检查：确保回退路径仍在允许目录内
-                if (!normalizedTry.startsWith(normalizedRoot)) continue;
+                const relativeTryPath = path.relative(normalizedRoot, normalizedTry);
+                const isTryOutsideRoot = relativeTryPath === '..'
+                    || relativeTryPath.startsWith(`..${path.sep}`)
+                    || path.isAbsolute(relativeTryPath);
+                if (isTryOutsideRoot) continue;
                 if (fs.existsSync(tryPath)) {
                     if (pluginDebugMode) {
                         console.log(`[SecureStatic] 🔄 格式回退: ${decodedPath} -> ${baseName + tryExt}`);
@@ -555,6 +582,10 @@ process.on('SIGTERM', () => {
 
 module.exports = {
     registerRoutes,
+    // 导出纯路径判定函数，供安全回归测试复用
+    containsParentDirectorySegment,
+    // 供测试或宿主优雅卸载时停止定时器，避免模块句柄阻止进程退出
+    stopSecurityManager: () => securityManager.stopCleanupTimer(),
     // 导出安全管理器供外部查询（可选）
     getSecurityStats: () => securityManager.getAccessStats(),
     // 手动触发锁定（紧急情况下使用）
