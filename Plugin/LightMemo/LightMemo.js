@@ -155,11 +155,13 @@ class LightMemoPlugin {
 
     async processToolCall(args) {
         try {
-            const result = this._isTagMemoABRequest(args)
-                ? await this.handleTagMemoAB(args)
-                : this._isMappingRequest(args)
-                    ? await this.handleMapping(args)
-                    : await this.handleSearch(args);
+            const result = this._isTagMemoV10Request(args)
+                ? await this.handleTagMemoV10(args)
+                : this._isTagMemoABRequest(args)
+                    ? await this.handleTagMemoAB(args)
+                    : this._isMappingRequest(args)
+                        ? await this.handleMapping(args)
+                        : await this.handleSearch(args);
 
             return this._normalizeToolResult(result);
         } catch (error) {
@@ -598,6 +600,22 @@ class LightMemoPlugin {
         return this.formatResults(finalResults, query);
     }
 
+    _isTagMemoV10Request(args = {}) {
+        const command = String(args.command || args.action || '').trim().toLowerCase();
+        const version = String(
+            args.tagmemo_version || args.tagMemoVersion || args.version || ''
+        ).trim().toLowerCase();
+        return [
+            'tagmemo_v10',
+            'tagmemo-v10',
+            'tagmemo_v10_alpha',
+            'tagmemo-v10-alpha',
+            'v10_alpha',
+            'v10-alpha',
+            '统一认知几何'
+        ].includes(command) || ['v10', 'v10_alpha', 'v10.alpha.1'].includes(version);
+    }
+
     _isTagMemoABRequest(args = {}) {
         const command = String(args.command || args.action || '').trim().toLowerCase();
         const mode = String(args.ab_mode || args.abMode || '').trim().toLowerCase();
@@ -606,6 +624,364 @@ class LightMemoPlugin {
             'memory-address-ab', '双轨寻址', '双轨测绘',
             'tagmemo_compare', 'tagmemo-compare', 'v91_compare'
         ].includes(command) || ['a', 'b', 'mode_a', 'mode_b', 'kernel', 'product'].includes(mode);
+    }
+
+    /**
+     * TagMemo V10 Alpha 独立实验入口。
+     * 服务端批量脚本可传 experiment_arm=pure|gated|observed|all，
+     * 并用 disabled_observables=direct,structural,thematic,closure 做逐项消融。
+     */
+    async handleTagMemoV10(args = {}) {
+        const required = [
+            'getTagMemoV10ArtifactSnapshot',
+            'prepareTagMemoV10Query',
+            'buildTagMemoV10CandidateSuperset',
+            'projectTagMemoV10CandidateCurves',
+            'evaluateTagMemoV10CandidateCurves',
+            'computeTagMemoV10Dstc'
+        ];
+        const missing = required.filter(name =>
+            typeof this.vectorDBManager?.[name] !== 'function'
+        );
+        if (missing.length > 0) {
+            throw new Error(
+                `TagMemo V10 Alpha 接口不可用：${missing.join(', ')}`
+            );
+        }
+
+        const query = String(args.query || args.start || '').trim();
+        if (!query) throw new Error('TagMemo V10 Alpha 需要 query 参数。');
+        const parsedMaidScope = this._parseMaidScopedFolder(args.maid);
+        const maid = parsedMaidScope.maid;
+        const folder = this._mergeFolderScopes(
+            args.folder,
+            parsedMaidScope.folder
+        );
+        const searchAll = this._parseBoolean(
+            args.search_all_knowledge_bases,
+            false
+        );
+        if (!searchAll && !maid && !folder) {
+            throw new Error(
+                'TagMemo V10 Alpha 必须提供 maid/folder，或开启 search_all_knowledge_bases。'
+            );
+        }
+
+        const k = Math.max(1, Math.floor(this._parseNumber(args.k, 5)));
+        const sourceK = Math.max(
+            1,
+            Math.floor(this._parseNumber(args.source_k ?? args.sourceK, 16))
+        );
+        const arm = String(
+            args.experiment_arm || args.experimentArm || args.arm || 'all'
+        ).trim().toLowerCase();
+        if (!['pure', 'gated', 'observed', 'all'].includes(arm)) {
+            throw new Error(
+                'experiment_arm 仅支持 pure、gated、observed 或 all。'
+            );
+        }
+        const disabledObservables = this._parseStringArray(
+            args.disabled_observables || args.disabledObservables
+        ).map(value => value.toLowerCase());
+        const useBM25 = this._parseBooleanAlias(
+            [
+                ['BM25', args.BM25],
+                ['bm25', args.bm25],
+                ['use_bm25', args.use_bm25]
+            ],
+            true,
+            'TagMemo V10 BM25'
+        );
+        const forceArtifactRebuild = this._parseBoolean(
+            args.force_artifact_rebuild,
+            false
+        );
+
+        const candidates = await this._gatherCandidateChunks({
+            maid,
+            folder,
+            searchAll,
+            ignoreExcludedFolders: false,
+            timeRange: null
+        });
+        if (candidates.length === 0) {
+            return this._buildAiFriendlyTextResult(
+                JSON.stringify({
+                    schema: 'tagmemo-v10-alpha-lightmemo-result-v1',
+                    version: 'v10_alpha',
+                    query,
+                    error: 'no-candidates-in-scope'
+                })
+            );
+        }
+
+        const queryVectorRaw = await this.getSingleEmbedding(query);
+        if (!queryVectorRaw) {
+            throw new Error('TagMemo V10 Alpha 查询向量化失败。');
+        }
+        const queryVector = queryVectorRaw instanceof Float32Array
+            ? queryVectorRaw
+            : new Float32Array(queryVectorRaw);
+        const snapshot = this.vectorDBManager.getTagMemoV10ArtifactSnapshot({
+            forceRebuild: forceArtifactRebuild
+        });
+        if (!snapshot?.bundle) {
+            throw new Error('TagMemo V10 Alpha Artifact 不可用。');
+        }
+
+        // _gatherCandidateChunks 已经执行当前请求的 SQL 作用域与署名过滤。
+        // 将这些 file_id 显式声明为 authorized，禁止 provenance 层自行猜测公开权限。
+        const allowedFileIds = [...new Set(
+            candidates.map(candidate => Number(candidate.fileId))
+                .filter(Number.isFinite)
+        )];
+        const diaryNames = [...new Set(
+            candidates.map(candidate => String(candidate.dbName || ''))
+                .filter(Boolean)
+        )];
+        const prepared = this.vectorDBManager.prepareTagMemoV10Query(
+            { text: query, vector: queryVector },
+            {
+                agentId: maid || null,
+                diaryNames,
+                allowedFileIds,
+                deniedFileIds: [],
+                visibilityMode: 'explicit_sql_scope',
+                permissions: {
+                    allowPublic: false,
+                    allowOwn: true,
+                    allowAuthorized: true,
+                    allowOtherAgentPublic: false,
+                    allowUnknownProvenance: false
+                }
+            },
+            {
+                artifact: snapshot.bundle,
+                sourceObservation: { sourceK }
+            }
+        );
+        const queryState = prepared.queryState;
+        if (!prepared.localVector || !prepared.transferVector) {
+            throw new Error('TagMemo V10 Alpha 双尺度场无法回投影。');
+        }
+
+        const [queryRanked, localRanked, transferRanked] = await Promise.all([
+            this._scoreByVectorSimilarity(candidates, queryVector),
+            this._scoreByVectorSimilarity(candidates, prepared.localVector),
+            this._scoreByVectorSimilarity(candidates, prepared.transferVector)
+        ]);
+        const queryScoreById = new Map(
+            queryRanked.map(item => [Number(item.label), item.vectorScore])
+        );
+        const localScoreById = new Map(
+            localRanked.map(item => [Number(item.label), item.vectorScore])
+        );
+        const transferScoreById = new Map(
+            transferRanked.map(item => [Number(item.label), item.vectorScore])
+        );
+
+        const bm25Ranked = useBM25
+            ? this._buildBm25TopIds(
+                query,
+                candidates,
+                Math.max(k, Number(
+                    snapshot.bundle.effectiveConfig?.candidateSuperset?.bm25K
+                ) || 50)
+            )
+            : [];
+        const bm25ScoreById = new Map(
+            bm25Ranked.map(item => [Number(item.id), Number(item.score) || 0])
+        );
+
+        // Anchor 路只从 Local 有效域直达 file_tags，不从 Transfer 获得身份资格。
+        const localDomainIds = Array.isArray(queryState.localDomain?.ids)
+            ? queryState.localDomain.ids.map(Number).filter(Number.isFinite)
+            : [];
+        const anchorScoreByChunkId = new Map();
+        if (localDomainIds.length > 0 && allowedFileIds.length > 0) {
+            const db = this.vectorDBManager.db;
+            const tagPlaceholders = localDomainIds.map(() => '?').join(',');
+            const filePlaceholders = allowedFileIds.map(() => '?').join(',');
+            const anchorRows = db.prepare(`
+                SELECT c.id AS chunk_id, COUNT(DISTINCT ft.tag_id) AS hits
+                FROM chunks c
+                JOIN file_tags ft ON ft.file_id = c.file_id
+                WHERE ft.tag_id IN (${tagPlaceholders})
+                  AND c.file_id IN (${filePlaceholders})
+                GROUP BY c.id
+                ORDER BY hits DESC, c.id ASC
+            `).all(...localDomainIds, ...allowedFileIds);
+            const maximumHits = Math.max(
+                1,
+                ...anchorRows.map(row => Number(row.hits) || 0)
+            );
+            for (const row of anchorRows) {
+                anchorScoreByChunkId.set(
+                    Number(row.chunk_id),
+                    (Number(row.hits) || 0) / maximumHits
+                );
+            }
+        }
+
+        const enrichedById = new Map(candidates.map(candidate => {
+            const id = Number(candidate.label);
+            return [id, {
+                ...candidate,
+                id,
+                chunkId: id,
+                queryScore: queryScoreById.get(id) || 0,
+                localFieldScore: localScoreById.get(id) || 0,
+                transferFieldScore: transferScoreById.get(id) || 0,
+                bm25Score: bm25ScoreById.get(id) || 0,
+                anchorScore: anchorScoreByChunkId.get(id) || 0
+            }];
+        }));
+        const rank = (scoreMap, limit, scoreField) =>
+            [...enrichedById.values()]
+                .filter(item => (scoreMap.get(item.id) || 0) > 0)
+                .sort((left, right) =>
+                    (scoreMap.get(right.id) || 0)
+                    - (scoreMap.get(left.id) || 0)
+                )
+                .slice(0, limit)
+                .map(item => ({
+                    ...item,
+                    score: item[scoreField]
+                }));
+        const candidateConfig = snapshot.bundle.effectiveConfig
+            ?.candidateSuperset || {};
+        const sourceCandidates = {
+            query_knn: rank(
+                queryScoreById,
+                Number(candidateConfig.queryK) || 100,
+                'queryScore'
+            ),
+            local_field_knn: rank(
+                localScoreById,
+                Number(candidateConfig.localFieldK) || 100,
+                'localFieldScore'
+            ),
+            transfer_field_knn: rank(
+                transferScoreById,
+                Number(candidateConfig.transferFieldK) || 100,
+                'transferFieldScore'
+            ),
+            bm25: rank(
+                bm25ScoreById,
+                Number(candidateConfig.bm25K) || 50,
+                'bm25Score'
+            ),
+            anchor_direct: rank(
+                anchorScoreByChunkId,
+                Number(candidateConfig.anchorK) || 50,
+                'anchorScore'
+            )
+        };
+
+        const superset = this.vectorDBManager
+            .buildTagMemoV10CandidateSuperset(sourceCandidates, {
+                artifact: snapshot.bundle
+            });
+        const projected = this.vectorDBManager
+            .projectTagMemoV10CandidateCurves(superset.candidates);
+        const pathBatch = this.vectorDBManager
+            .evaluateTagMemoV10CandidateCurves(
+                projected.curves,
+                queryState,
+                { artifact: snapshot.bundle }
+            );
+        const dstcBatch = this.vectorDBManager.computeTagMemoV10Dstc(
+            pathBatch,
+            queryState,
+            {
+                artifact: snapshot.bundle,
+                disabledObservables,
+                identityEligibility: curve =>
+                    Boolean(maid && String(curve.diaryName || '').includes(maid)),
+                visibilityEligibility: curve =>
+                    allowedFileIds.includes(Number(curve.fileId))
+            }
+        );
+        const armOptions = {
+            artifact: snapshot.bundle,
+            disabledObservables
+        };
+        const armRun = arm === 'all'
+            ? this.vectorDBManager.runTagMemoV10ExperimentArms(
+                dstcBatch,
+                armOptions
+            )
+            : {
+                schema: 'tagmemo-v10-alpha-three-arm-run-v1',
+                candidateCount: dstcBatch.results.length,
+                arms: {
+                    [arm]: this.vectorDBManager.scoreTagMemoV10ExperimentArm(
+                        dstcBatch,
+                        arm,
+                        armOptions
+                    )
+                }
+            };
+
+        const serializeArm = run => ({
+            arm: run.arm,
+            diagnostics: run.diagnostics,
+            top: run.results.slice(0, k).map((item, index) => ({
+                rank: index + 1,
+                chunkId: item.curve.chunkId,
+                diaryName: item.curve.diaryName,
+                path: item.curve.path,
+                text: item.curve.text,
+                score: item.armResult.score,
+                baseScore: item.armResult.baseScore,
+                gateMultiplier: item.armResult.gateMultiplier,
+                observedBonus: item.armResult.observedBonus,
+                marginalContributions:
+                    item.armResult.marginalContributions,
+                rejected: item.armResult.rejected,
+                rejectionReasons: item.armResult.rejectionReasons,
+                candidateSources: item.curve.candidateSources,
+                geometry: item.geometry,
+                dstc: item.observables
+            }))
+        });
+        const report = {
+            schema: 'tagmemo-v10-alpha-lightmemo-result-v1',
+            version: 'v10_alpha',
+            algorithmVersion: 'v10.alpha.1',
+            query,
+            requestedArm: arm,
+            disabledObservables,
+            artifact: {
+                artifactSig: snapshot.bundle.artifactSig,
+                configHash: snapshot.bundle.configHash,
+                databaseGeneration: snapshot.bundle.databaseGeneration,
+                provenanceGeneration: snapshot.bundle.provenanceGeneration,
+                graphGeneration: snapshot.bundle.graphGeneration
+            },
+            queryTrace: {
+                queryId: queryState.queryId,
+                artifactSig: queryState.artifactSig,
+                scopeHash: queryState.scopeHash,
+                solver: queryState.solver,
+                fieldDiagnostics: queryState.fieldDiagnostics,
+                localDomain: queryState.localDomain,
+                transferDomain: queryState.transferDomain
+            },
+            candidateDiagnostics: superset.diagnostics,
+            curveDiagnostics: projected.diagnostics,
+            pathDiagnostics: pathBatch.diagnostics,
+            arms: Object.fromEntries(
+                Object.entries(armRun.arms).map(([name, run]) => [
+                    name,
+                    serializeArm(run)
+                ])
+            )
+        };
+
+        return this._buildAiFriendlyTextResult(
+            JSON.stringify(report)
+        );
     }
 
     /**
@@ -2006,7 +2382,7 @@ class LightMemoPlugin {
         try {
             // 🚀 优化：使用 SQL 过滤减少 JS 端的处理压力
             let sql = `
-                SELECT c.id, c.content, f.diary_name, f.path
+                SELECT c.id, c.file_id, c.content, f.diary_name, f.path
                 FROM chunks c
                 JOIN files f ON c.file_id = f.id
                 WHERE 1=1
@@ -2072,6 +2448,7 @@ class LightMemoPlugin {
                 candidates.push({
                     dbName: row.diary_name,
                     label: row.id,
+                    fileId: row.file_id,
                     text: text,
                     tokens: tokens,
                     sourceFile: row.path

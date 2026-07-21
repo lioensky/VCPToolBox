@@ -67,6 +67,77 @@
       "hubPenaltyCeiling": 1.8,
       "hubSmoothingRatio": 0.1
     },
+    "tagMemoV10Alpha": {
+      "enabled": false,
+      "mode": "shadow",
+      "experimentArm": "pure",
+      "strictVersion": true,
+      "traceEnabled": true,
+      "localField": {
+        "solver": "scaled_resolvent",
+        "alpha": 0.15,
+        "maxIterations": 80,
+        "tolerance": 1e-9
+      },
+      "transferField": {
+        "solver": "scaled_resolvent",
+        "alpha": 0.55,
+        "maxIterations": 80,
+        "tolerance": 1e-9
+      },
+      "effectiveSupport": {
+        "method": "mass_ratio",
+        "localMassRatio": 0.8,
+        "transferMassRatio": 0.9
+      },
+      "agentConditioning": {
+        "enabled": true,
+        "localAffinityMin": 0.75,
+        "localAffinityMax": 1.25,
+        "transferAffinityMin": 0.9,
+        "transferAffinityMax": 1.1
+      },
+      "candidateSuperset": {
+        "queryK": 100,
+        "localFieldK": 100,
+        "transferFieldK": 100,
+        "bm25K": 50,
+        "anchorK": 50,
+        "maxUnionCandidates": 300,
+        "minimumGeometryCoverage": 0.5,
+        "minimumQuota": {
+          "query_knn": 20,
+          "local_field_knn": 20,
+          "transfer_field_knn": 20,
+          "bm25": 10,
+          "anchor_direct": 10
+        }
+      },
+      "pathGeometry": {
+        "localWeight": 0.6,
+        "transferWeight": 0.4,
+        "directionFloor": 0.05,
+        "closureFloor": 0
+      },
+      "dstc": {
+        "compute": true,
+        "arm": "pure",
+        "observedRewardCap": 0.12,
+        "gated": {
+          "requireVisibility": true,
+          "minimumClosure": 0,
+          "maximumTailOnlyRatio": 0.8,
+          "maximumTransferDominance": 0.8
+        }
+      },
+      "safety": {
+        "permissionViolationTolerance": 0,
+        "failClosed": true
+      },
+      "benchmark": {
+        "traceCandidates": true
+      }
+    },
     "intrinsicResidual": {
       "method": "anchored_gs",
       "maxNeighbors": 48,

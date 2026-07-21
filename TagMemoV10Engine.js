@@ -205,6 +205,117 @@ class TagMemoV10Engine {
         return this._activeArtifact;
     }
 
+    createSourceFieldFromVector(vector, options = {}) {
+        if (!this.tagIndex || typeof this.tagIndex.search !== 'function') {
+            const error = new Error('V10 source observation requires the global Tag index');
+            error.code = 'TAGMEMO_V10_TAG_INDEX_UNAVAILABLE';
+            throw error;
+        }
+        const input = vector instanceof Float32Array
+            ? vector
+            : new Float32Array(vector || []);
+        if (input.length !== Number(this.config.dimension)) {
+            throw new RangeError(
+                `V10 query vector dimension must be ${this.config.dimension}, got ${input.length}`
+            );
+        }
+        const sourceK = Math.max(1, Math.floor(Number(options.sourceK) || 16));
+        const minimumScore = Math.max(-1, Math.min(1, Number(options.minimumScore) || 0));
+        const results = this.tagIndex.search(input, sourceK);
+        const positive = results
+            .map(item => [
+                Number(item.id),
+                Math.max(0, (Number(item.score) || 0) - minimumScore)
+            ])
+            .filter(([id, mass]) => Number.isFinite(id) && id > 0 && mass > 0);
+        const total = positive.reduce((sum, entry) => sum + entry[1], 0);
+        if (total <= 0) {
+            const error = new Error('V10 query did not activate any Tag source');
+            error.code = 'TAGMEMO_V10_EMPTY_SOURCE';
+            throw error;
+        }
+        return Object.freeze(
+            positive.map(([id, mass]) => Object.freeze([id, mass / total]))
+        );
+    }
+
+    projectFieldVector(fieldEntries, options = {}) {
+        const dimension = Math.max(1, Number(this.config.dimension) || 0);
+        const entries = Array.isArray(fieldEntries) ? fieldEntries : [];
+        const ids = entries.map(entry => Number(entry[0])).filter(Number.isFinite);
+        if (ids.length === 0 || !this.db?.prepare) return null;
+
+        const rows = [];
+        for (let offset = 0; offset < ids.length; offset += 500) {
+            const batch = ids.slice(offset, offset + 500);
+            const placeholders = batch.map(() => '?').join(',');
+            rows.push(...this.db.prepare(
+                `SELECT id, vector FROM tags WHERE id IN (${placeholders})`
+            ).all(...batch));
+        }
+        const rowById = new Map(rows.map(row => [Number(row.id), row]));
+        const output = new Float64Array(dimension);
+        let totalWeight = 0;
+        for (const [rawId, rawMass] of entries) {
+            const row = rowById.get(Number(rawId));
+            const mass = Math.max(0, Number(rawMass) || 0);
+            if (!row?.vector || row.vector.length !== dimension * 4 || mass <= 0) continue;
+            const aligned = row.vector.byteOffset % 4 === 0
+                ? row.vector
+                : Buffer.from(row.vector);
+            const tagVector = new Float32Array(
+                aligned.buffer,
+                aligned.byteOffset,
+                dimension
+            );
+            for (let index = 0; index < dimension; index++) {
+                output[index] += tagVector[index] * mass;
+            }
+            totalWeight += mass;
+        }
+        if (totalWeight <= 0) return null;
+
+        let norm = 0;
+        for (let index = 0; index < dimension; index++) {
+            output[index] /= totalWeight;
+            norm += output[index] * output[index];
+        }
+        norm = Math.sqrt(norm);
+        if (norm <= 1e-12) return null;
+        const projected = new Float32Array(dimension);
+        for (let index = 0; index < dimension; index++) {
+            projected[index] = output[index] / norm;
+        }
+        return projected;
+    }
+
+    prepareQuery(query, agentContext = {}, options = {}) {
+        const artifact = options.artifact || this.getArtifactSnapshot();
+        const queryVector = query?.vector || options.vector;
+        const sourceField = options.sourceField || this.createSourceFieldFromVector(
+            queryVector,
+            options.sourceObservation || {}
+        );
+        const initial = this.createQueryState(
+            query,
+            agentContext,
+            artifact,
+            {
+                ...options,
+                sourceField
+            }
+        );
+        const solved = this.solveQueryState(initial, {
+            ...options,
+            artifact
+        });
+        return Object.freeze({
+            queryState: solved,
+            localVector: this.projectFieldVector(solved.localField),
+            transferVector: this.projectFieldVector(solved.transferField)
+        });
+    }
+
     createQueryState(query, agentContext = {}, artifact = null, options = {}) {
         const snapshot = artifact || this.getArtifactSnapshot();
         if (!snapshot || snapshot.version !== VERSION) {

@@ -9,6 +9,7 @@ const chokidar = require('chokidar');
 const { getEmbeddingsBatch } = require('./EmbeddingUtils');
 const ResultDeduplicator = require('./ResultDeduplicator'); // ✅ Tagmemo v4 requirement
 const TagMemoEngine = require('./TagMemoEngine');
+const TagMemoV10Engine = require('./TagMemoV10Engine');
 const { decodeVectorBlob } = require('./modules/knowledgeBase/vectorCodec');
 const { queryByChunks } = require('./modules/knowledgeBase/sqliteQueryUtils');
 const {
@@ -134,6 +135,7 @@ class KnowledgeBaseManager {
         this.deleteBatchTimer = null;
         this.isProcessingDeletes = false;
         this.tagMemoEngine = null;
+        this.tagMemoV10Engine = null;
         this.resultDeduplicator = null; // ✅ Tagmemo v4
         this.ragParams = {}; // ✅ 新增：用于存储热调控参数
         this.ragParamsWatcher = null;
@@ -270,9 +272,23 @@ class KnowledgeBaseManager {
 
         await this.loadRagParams();
 
-        // 初始化浪潮引擎
+        // 初始化生产 V9.2 浪潮引擎。
         this.tagMemoEngine = new TagMemoEngine(this.db, this.tagIndex, this.config, this.ragParams, this);
         await this.tagMemoEngine.initialize();
+
+        // V10 Alpha 是独立实验内核：从已发布 V9.2 事实资产复制构建只读 CSR，
+        // 不进入 V9 内部兜底，也不改变现有 search/applyTagBoost 契约。
+        this.tagMemoV10Engine = new TagMemoV10Engine(
+            this.db,
+            this.tagIndex,
+            this.config,
+            this.ragParams,
+            { v9Engine: this.tagMemoEngine }
+        );
+        const v10Config = this.ragParams?.KnowledgeBaseManager?.tagMemoV10Alpha || {};
+        if (v10Config.enabled === true || v10Config.enabled === 1) {
+            this.tagMemoV10Engine.buildAndPublishArtifact();
+        }
         this._cleanupStalePairwiseSimilarityModels();
 
         this._startWatcher();
@@ -316,6 +332,7 @@ class KnowledgeBaseManager {
             this.ragParams = parsed;
             console.log('[KnowledgeBase] ✅ RAG 热调控参数已加载');
             if (this.tagMemoEngine) this.tagMemoEngine.updateRagParams(parsed);
+            if (this.tagMemoV10Engine) this.tagMemoV10Engine.updateRagParams(parsed);
             return true;
         } catch (e) {
             console.error('[KnowledgeBase] ❌ 加载 rag_params.json 失败，继续使用最后健康配置:', e.message);
@@ -386,6 +403,9 @@ class KnowledgeBaseManager {
             this.tagMemoEngine.db = db;
             if (this.tagMemoEngine.epa) this.tagMemoEngine.epa.db = db;
             if (this.tagMemoEngine.residualPyramid) this.tagMemoEngine.residualPyramid.db = db;
+        }
+        if (this.tagMemoV10Engine) {
+            this.tagMemoV10Engine.rebindDatabase(db);
         }
 
         if (this.resultDeduplicator) {
@@ -741,6 +761,84 @@ class KnowledgeBaseManager {
         };
     }
 
+    getTagMemoV10ArtifactSnapshot(options = {}) {
+        if (!this.tagMemoV10Engine) return null;
+        const forceRebuild = options.forceRebuild === true;
+        const bundle = forceRebuild
+            ? this.tagMemoV10Engine.buildAndPublishArtifact(options)
+            : this.tagMemoV10Engine.getArtifactSnapshot(options);
+        return {
+            bundle,
+            requestedVersion: 'v10_alpha',
+            effectiveVersion: 'v10_alpha',
+            fallbackUsed: false,
+            fallbackReason: null
+        };
+    }
+
+    prepareTagMemoV10Query(query, agentContext = {}, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            const error = new Error('TagMemo V10 Alpha engine is not available');
+            error.code = 'TAGMEMO_V10_ARTIFACT_UNAVAILABLE';
+            throw error;
+        }
+        return this.tagMemoV10Engine.prepareQuery(query, agentContext, options);
+    }
+
+    buildTagMemoV10CandidateSuperset(sourceCandidates, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.buildCandidateSuperset(sourceCandidates, options);
+    }
+
+    projectTagMemoV10CandidateCurves(candidates, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.projectCandidateCurves(candidates, options);
+    }
+
+    evaluateTagMemoV10CandidateCurves(curves, queryState, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.evaluateCandidateCurves(
+            curves,
+            queryState,
+            options
+        );
+    }
+
+    computeTagMemoV10Dstc(pathBatch, queryState, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.computeDstcObservables(
+            pathBatch,
+            queryState,
+            options
+        );
+    }
+
+    runTagMemoV10ExperimentArms(dstcBatch, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.runExperimentArms(dstcBatch, options);
+    }
+
+    scoreTagMemoV10ExperimentArm(dstcBatch, arm, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.scoreExperimentArm(
+            dstcBatch,
+            arm,
+            options
+        );
+    }
+
     /**
      * 使用当前文件过滤与 Tag 清洗规则生成只读一致性快照。
      * 此阶段不请求 Embedding，也不修改 SQLite / Vexus 索引。
@@ -1087,6 +1185,9 @@ class KnowledgeBaseManager {
 
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
+
+        // V10 当前无后台写任务，只持有不可变内存快照；先释放引用。
+        this.tagMemoV10Engine = null;
 
         // 先停止 TagMemo 新任务/计时器，并等待正在运行的派生任务释放 Rust 写租约；
         // 数据库连接必须在它结束后才能关闭。
