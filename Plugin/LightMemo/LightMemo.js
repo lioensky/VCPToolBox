@@ -1806,8 +1806,8 @@ class LightMemoPlugin {
                 (run.rankMovements || []).map(item => [item.id, item])
             );
             md += `#### ${run.label}\n\n`;
-            md += '| Chunk | 地图原排名 | V9 Kernel 排名/Δ | V10 Kernel 排名/Δ | Query | Local | Transfer | Path | Occupancy |\n';
-            md += '|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n';
+            md += '| Chunk | 地图原排名 | V9 Kernel 排名/Δ | V10 Kernel 排名/Δ | Query | Local | Transfer | Path | Occupancy | 语义底座 | 拓扑原量 | 可靠度 | 拓扑增益 |\n';
+            md += '|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n';
             for (const item of (run.v10Kernel || []).slice(0, k)) {
                 const id = itemId(item);
                 const movement = movementById.get(id) || {};
@@ -1815,7 +1815,7 @@ class LightMemoPlugin {
                 const rankDelta = (rank, delta) => rank == null
                     ? '—'
                     : `#${rank} / ${delta > 0 ? '+' : ''}${delta}`;
-                md += `| ${id} | #${movement.sourceRank ?? '—'} | ${rankDelta(movement.v9Rank, movement.v9Delta)} | ${rankDelta(movement.v10Rank, movement.v10Delta)} | ${fmt(components.query)} | ${fmt(components.local)} | ${fmt(components.transfer)} | ${fmt(components.path)} | ${fmt(components.occupancy)} |\n`;
+                md += `| ${id} | #${movement.sourceRank ?? '—'} | ${rankDelta(movement.v9Rank, movement.v9Delta)} | ${rankDelta(movement.v10Rank, movement.v10Delta)} | ${fmt(components.query)} | ${fmt(components.local)} | ${fmt(components.transfer)} | ${fmt(components.path)} | ${fmt(components.occupancy)} | ${fmt(item.armResult?.semanticBase)} | ${fmt(item.armResult?.topologyRaw)} | ${fmt(item.armResult?.topologyReliability)} | ${fmt(item.armResult?.topologyBonus)} |\n`;
             }
             md += '\n';
         }
@@ -1839,8 +1839,8 @@ class LightMemoPlugin {
             ])
         );
         md += '### V10 Pure Top-K 相对 Raw KNN 的跨越\n\n';
-        md += '| V10排名 | Chunk | Raw KNN排名 | ΔRank | 候选来源 | Query | Local | Transfer | Path | Occupancy |\n';
-        md += '|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|\n';
+        md += '| V10排名 | Chunk | Raw KNN排名 | ΔRank | 候选来源 | Query | Local | Transfer | Path | Occupancy | 语义底座 | 拓扑原量 | 可靠度 | 拓扑增益 |\n';
+        md += '|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n';
         (topByTrack.pure || []).forEach((item, index) => {
             const id = itemId(item);
             const rawRank = fullKnnRank.get(id) ?? null;
@@ -1852,7 +1852,7 @@ class LightMemoPlugin {
                     .join('+')
                 : '—';
             const components = item.armResult?.components || {};
-            md += `| ${pureRank} | ${id} | ${rawRank === null ? '—' : rawRank} | ${delta === null ? '新候选' : `${delta > 0 ? '+' : ''}${delta}`} | ${sources || '—'} | ${fmt(components.query)} | ${fmt(components.local)} | ${fmt(components.transfer)} | ${fmt(components.path)} | ${fmt(components.occupancy)} |\n`;
+            md += `| ${pureRank} | ${id} | ${rawRank === null ? '—' : rawRank} | ${delta === null ? '新候选' : `${delta > 0 ? '+' : ''}${delta}`} | ${sources || '—'} | ${fmt(components.query)} | ${fmt(components.local)} | ${fmt(components.transfer)} | ${fmt(components.path)} | ${fmt(components.occupancy)} | ${fmt(item.armResult?.semanticBase)} | ${fmt(item.armResult?.topologyRaw)} | ${fmt(item.armResult?.topologyReliability)} | ${fmt(item.armResult?.topologyBonus)} |\n`;
         });
         md += '\n';
 
@@ -1893,6 +1893,7 @@ class LightMemoPlugin {
                     md += `- 候选来源：${sources || '—'}\n`;
                     md += `- V10 基础分：${fmt(item.armResult.baseScore, 6)}；门控倍率：${fmt(item.armResult.gateMultiplier)}；Observed 增益：${fmt(item.armResult.observedBonus, 6)}\n`;
                     md += `- 五分量 Q/L/X/G/O：${fmt(components.query)}/${fmt(components.local)}/${fmt(components.transfer)}/${fmt(components.path)}/${fmt(components.occupancy)}\n`;
+                    md += `- 权限校准：模式=${item.armResult.pureScoreMode || '—'}；语义底座=${fmt(item.armResult.semanticBase)}；拓扑原量=${fmt(item.armResult.topologyRaw)}；可靠度=${fmt(item.armResult.topologyReliability)}；拓扑增益=${fmt(item.armResult.topologyBonus)}≤${fmt(item.armResult.topologyBonusCap)}\n`;
                     md += `- D/S/T/C：${fmt(values.direct)}/${fmt(values.structural)}/${fmt(values.thematic)}/${fmt(values.closure)}\n`;
                     md += `- 路径质量：${fmt(item.geometry?.pathQuality)}；拒判：${item.armResult.rejected ? '是' : '否'}${item.armResult.rejectionReasons?.length
                         ? `（${item.armResult.rejectionReasons.join(', ')}）`

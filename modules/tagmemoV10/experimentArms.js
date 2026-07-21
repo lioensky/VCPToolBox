@@ -6,6 +6,25 @@ function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
 }
 
+function normalizeWeightGroup(raw, names) {
+    const values = Object.fromEntries(names.map(name => [
+        name,
+        Math.max(0, Number(raw[name]) || 0)
+    ]));
+    const total = Object.values(values).reduce(
+        (sum, value) => sum + value,
+        0
+    ) || 1;
+    return Object.freeze(
+        Object.fromEntries(
+            Object.entries(values).map(([name, value]) => [
+                name,
+                value / total
+            ])
+        )
+    );
+}
+
 function normalizedWeights(raw = {}) {
     const weights = {
         query: Math.max(0, Number(raw.query) || 0.25),
@@ -46,18 +65,79 @@ function buildUnifiedBase(item, options = {}) {
             + 0.15 * clamp01(thematic.transferPotential)
         )
     });
-    const score = clamp01(
+    const pureScoreMode = String(
+        options.pureScoreMode || 'topology_limited'
+    ).trim().toLowerCase();
+    const legacyLinearScore = clamp01(
         weights.query * components.query
         + weights.local * components.local
         + weights.transfer * components.transfer
         + weights.path * components.path
         + weights.occupancy * components.occupancy
     );
+    const semanticWeights = normalizeWeightGroup(weights, [
+        'query',
+        'local',
+        'transfer'
+    ]);
+    const topologyWeights = normalizeWeightGroup(weights, [
+        'path',
+        'occupancy'
+    ]);
+    const semanticBase = clamp01(
+        semanticWeights.query * components.query
+        + semanticWeights.local * components.local
+        + semanticWeights.transfer * components.transfer
+    );
+    const topologyRaw = clamp01(
+        topologyWeights.path * components.path
+        + topologyWeights.occupancy * components.occupancy
+    );
+    const topologyPathSaturation = Math.max(
+        1e-6,
+        Number(options.topologyPathSaturation) || 0.15
+    );
+    const pathReliability = clamp01(
+        components.path / topologyPathSaturation
+    );
+    const closureReliability = clamp01(
+        observables.closure?.queryChunkScore
+        ?? observables.values?.closure
+        ?? 0
+    );
+    const topologyReliabilityMode = String(
+        options.topologyReliabilityMode || 'path_closure'
+    ).trim().toLowerCase();
+    const topologyReliability = topologyReliabilityMode === 'path_only'
+        ? pathReliability
+        : Math.sqrt(pathReliability * closureReliability);
+    const topologyBonusCap = clamp01(
+        options.topologyBonusCap ?? 0.08
+    );
+    const topologyBonus = Math.min(
+        topologyBonusCap,
+        topologyBonusCap * topologyRaw * topologyReliability
+    );
+    const score = pureScoreMode === 'legacy_linear'
+        ? legacyLinearScore
+        : clamp01(semanticBase + topologyBonus);
     return Object.freeze({
         score,
         weights,
         components,
-        semanticScoreMode
+        semanticScoreMode,
+        pureScoreMode,
+        legacyLinearScore,
+        semanticWeights,
+        topologyWeights,
+        semanticBase,
+        topologyRaw,
+        pathReliability,
+        closureReliability,
+        topologyReliabilityMode,
+        topologyReliability,
+        topologyBonusCap,
+        topologyBonus
     });
 }
 
@@ -74,6 +154,16 @@ function scorePure(item, options = {}) {
         components: base.components,
         weights: base.weights,
         semanticScoreMode: base.semanticScoreMode,
+        pureScoreMode: base.pureScoreMode,
+        legacyLinearScore: base.legacyLinearScore,
+        semanticBase: base.semanticBase,
+        topologyRaw: base.topologyRaw,
+        pathReliability: base.pathReliability,
+        closureReliability: base.closureReliability,
+        topologyReliabilityMode: base.topologyReliabilityMode,
+        topologyReliability: base.topologyReliability,
+        topologyBonusCap: base.topologyBonusCap,
+        topologyBonus: base.topologyBonus,
         marginalContributions: Object.freeze({
             direct: 0,
             structural: 0,
