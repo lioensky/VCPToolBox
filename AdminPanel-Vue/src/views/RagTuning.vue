@@ -140,6 +140,105 @@
               </div>
             </div>
 
+            <div class="rag-console__section rag-console__section--consistency">
+              <span class="rag-console__label">Tag 一致性维护</span>
+              <div class="tag-consistency-card">
+                <div class="tag-consistency-card__copy">
+                  <strong>按当前规则核对旧 Tag 库</strong>
+                  <p>预检只读取文件与数据库，不请求向量、不写入数据。确认后只向量化差分 Tag。</p>
+                </div>
+
+                <UiButton
+                  variant="secondary"
+                  :disabled="isTagConsistencyScanning || isTagConsistencyApplying"
+                  block
+                  @click="previewTagConsistency"
+                >
+                  {{ isTagConsistencyScanning ? "正在扫描…" : "扫描 Tag 一致性" }}
+                </UiButton>
+
+                <template v-if="tagConsistencyPreview">
+                  <div class="tag-consistency-stats">
+                    <article class="tag-consistency-stat tag-consistency-stat--add">
+                      <span>待新增 / 补向量</span>
+                      <strong>{{ tagConsistencyPreview.summary.vectorsToCreate }}</strong>
+                    </article>
+                    <article class="tag-consistency-stat tag-consistency-stat--remove">
+                      <span>待移除向量</span>
+                      <strong>{{ tagConsistencyPreview.summary.vectorsToRemove }}</strong>
+                    </article>
+                    <article>
+                      <span>新增关系</span>
+                      <strong>{{ tagConsistencyPreview.summary.relationsToAdd }}</strong>
+                    </article>
+                    <article>
+                      <span>移除关系</span>
+                      <strong>{{ tagConsistencyPreview.summary.relationsToRemove }}</strong>
+                    </article>
+                    <article>
+                      <span>序位修正</span>
+                      <strong>{{ tagConsistencyPreview.summary.positionsToUpdate }}</strong>
+                    </article>
+                    <article>
+                      <span>受影响文件</span>
+                      <strong>{{ tagConsistencyPreview.summary.affectedFiles }}</strong>
+                    </article>
+                  </div>
+
+                  <details
+                    v-if="tagConsistencyPreview.additions.length > 0"
+                    class="tag-consistency-details"
+                  >
+                    <summary>查看待向量化 Tag（{{ tagConsistencyPreview.summary.vectorsToCreate }}）</summary>
+                    <div class="tag-consistency-tags tag-consistency-tags--add">
+                      <code v-for="tag in tagConsistencyPreview.additions" :key="`add-${tag}`">
+                        {{ tag }}
+                      </code>
+                    </div>
+                  </details>
+
+                  <details
+                    v-if="tagConsistencyPreview.removals.length > 0"
+                    class="tag-consistency-details"
+                  >
+                    <summary>查看待移除 Tag（{{ tagConsistencyPreview.summary.orphanTagsToRemove }}）</summary>
+                    <div class="tag-consistency-tags tag-consistency-tags--remove">
+                      <code v-for="tag in tagConsistencyPreview.removals" :key="`remove-${tag}`">
+                        {{ tag }}
+                      </code>
+                    </div>
+                  </details>
+
+                  <p v-if="tagConsistencyPreview.detailTruncated" class="tag-consistency-note">
+                    名单较长，面板仅展示前 200 项；上方统计是完整精确数量。
+                  </p>
+                  <p class="tag-consistency-note">
+                    快照有效至 {{ formatConsistencyExpiry(tagConsistencyPreview.expiresAt) }}。
+                  </p>
+
+                  <UiButton
+                    v-if="tagConsistencyPreview.requiresConfirmation"
+                    :disabled="isTagConsistencyApplying || isTagConsistencyScanning"
+                    block
+                    @click="applyTagConsistency"
+                  >
+                    {{ isTagConsistencyApplying ? "正在向量化并修复…" : "确认向量化并应用差分" }}
+                  </UiButton>
+                  <UiBadge v-else variant="success">
+                    当前 Tag 库与最新规则一致，无需修复
+                  </UiBadge>
+                </template>
+
+                <div v-if="tagMemoAssetsStale" class="tag-consistency-warning" role="alert">
+                  <span class="material-symbols-outlined">warning</span>
+                  <p>
+                    Tag 真相层已更新。Pairwise、内生残差、传播核与浪潮矩阵仍是旧资产，
+                    请在下方执行“重建 V9.1 资产”。
+                  </p>
+                </div>
+              </div>
+            </div>
+
             <div class="rag-console__section rag-console__section--training">
               <span class="rag-console__label">主动自学习</span>
               <div class="active-training-card">
@@ -762,6 +861,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import {
   ragApi,
   type ParamGroup,
+  type TagConsistencyPreview,
   type ParamValue,
   type RagParamTheme,
   type RagParams,
@@ -873,6 +973,10 @@ const newThemeName = ref("");
 const isThemeLoading = ref(false);
 const isThemeSaving = ref(false);
 const isActiveTraining = ref(false);
+const isTagConsistencyScanning = ref(false);
+const isTagConsistencyApplying = ref(false);
+const tagConsistencyPreview = ref<TagConsistencyPreview | null>(null);
+const tagMemoAssetsStale = ref(false);
 
 function cloneParams(source: RagParams): RagParams {
   return JSON.parse(JSON.stringify(source));
@@ -1608,6 +1712,87 @@ async function applySelectedTheme(): Promise<void> {
   }
 }
 
+function formatConsistencyExpiry(timestamp: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+async function previewTagConsistency(): Promise<void> {
+  if (isTagConsistencyScanning.value || isTagConsistencyApplying.value) {
+    return;
+  }
+
+  isTagConsistencyScanning.value = true;
+  tagConsistencyPreview.value = null;
+
+  try {
+    const response = await ragApi.previewTagConsistency({
+      loadingKey: "rag-tuning.tag-consistency.preview",
+    });
+    if (!response.preview) {
+      throw new Error(response.error || "主服务未返回一致性预检结果");
+    }
+
+    tagConsistencyPreview.value = response.preview;
+    const summary = response.preview.summary;
+    statusMessage.value = response.preview.requiresConfirmation
+      ? `Tag 预检完成：需新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量。请核对后确认执行。`
+      : "Tag 预检完成：当前数据库与最新清洗、屏蔽规则一致。";
+    statusType.value = response.preview.requiresConfirmation ? "info" : "success";
+    showMessage(statusMessage.value, statusType.value);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    statusMessage.value = `Tag 一致性预检失败：${errorMessage}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isTagConsistencyScanning.value = false;
+  }
+}
+
+async function applyTagConsistency(): Promise<void> {
+  const preview = tagConsistencyPreview.value;
+  if (
+    !preview
+    || !preview.requiresConfirmation
+    || isTagConsistencyApplying.value
+    || isTagConsistencyScanning.value
+  ) {
+    return;
+  }
+
+  isTagConsistencyApplying.value = true;
+
+  try {
+    const response = await ragApi.applyTagConsistency(preview.token, {
+      loadingKey: "rag-tuning.tag-consistency.apply",
+    });
+    if (!response.result?.applied) {
+      throw new Error(response.error || "主服务未确认 Tag 差分修复成功");
+    }
+
+    const summary = response.result.summary;
+    tagMemoAssetsStale.value = response.result.waveAssetsStale;
+    tagConsistencyPreview.value = null;
+    statusMessage.value =
+      `Tag 修复完成：新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量；`
+      + "全局 Tag 内存索引已重建，请继续重建 V9.1 浪潮资产。";
+    statusType.value = "success";
+    showMessage(statusMessage.value, "success");
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    tagConsistencyPreview.value = null;
+    statusMessage.value = `Tag 差分修复失败：${errorMessage}。请重新扫描后再确认。`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isTagConsistencyApplying.value = false;
+  }
+}
+
 async function triggerActiveFullTraining(): Promise<void> {
   if (isActiveTraining.value) {
     return;
@@ -1627,6 +1812,7 @@ async function triggerActiveFullTraining(): Promise<void> {
       ? `已排队 V9.1 全量重建与退休资产清理任务，已重置 ${resetCount}/${threshold} 个阈值计数。`
       : `已排队 V9.1 全量重建与退休资产清理任务，已重置 ${resetCount} 个阈值计数。`;
     statusType.value = "success";
+    tagMemoAssetsStale.value = false;
     showMessage(statusMessage.value, "success");
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -2943,6 +3129,118 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 10px;
   padding-left: var(--space-4);
+}
+
+.tag-consistency-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 25%, var(--border-color));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--highlight-text) 3%, transparent);
+}
+
+.tag-consistency-card__copy {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.tag-consistency-card__copy p,
+.tag-consistency-note,
+.tag-consistency-warning p {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
+}
+
+.tag-consistency-card :deep(.ui-button) {
+  justify-content: center;
+  width: 100%;
+}
+
+.tag-consistency-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.tag-consistency-stats article {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.tag-consistency-stats span {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.tag-consistency-stats strong {
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: var(--font-size-title);
+}
+
+.tag-consistency-stat--add strong {
+  color: var(--success-color);
+}
+
+.tag-consistency-stat--remove strong {
+  color: var(--danger-color);
+}
+
+.tag-consistency-details {
+  min-width: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 65%, transparent);
+  padding-top: var(--space-2);
+}
+
+.tag-consistency-details summary {
+  color: var(--highlight-text);
+  cursor: pointer;
+  font-size: var(--font-size-helper);
+}
+
+.tag-consistency-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-height: 150px;
+  margin-top: var(--space-2);
+  overflow: auto;
+}
+
+.tag-consistency-tags code {
+  max-width: 100%;
+  padding: 3px 6px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-consistency-tags--remove code {
+  background: color-mix(in srgb, var(--danger-bg) 72%, transparent);
+}
+
+.tag-consistency-warning {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+}
+
+.tag-consistency-warning .material-symbols-outlined {
+  flex: 0 0 auto;
+  color: var(--warning-color);
+  font-size: 20px;
 }
 
 .active-training-card {

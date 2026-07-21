@@ -254,6 +254,55 @@ module.exports = function(options) {
         } else res.status(503).json({ error: 'Unavailable' });
     });
 
+    router.post('/rag-tag-consistency/preview', async (req, res) => {
+        try {
+            if (!vectorDBManager || typeof vectorDBManager.previewTagConsistency !== 'function') {
+                return res.status(503).json({
+                    success: false,
+                    error: 'Tag consistency preview is unavailable'
+                });
+            }
+
+            const preview = await vectorDBManager.previewTagConsistency();
+            res.json({ success: true, preview });
+        } catch (error) {
+            res.status(error.statusCode || 500).json({
+                success: false,
+                code: error.code,
+                error: error.message || 'Failed to preview Tag consistency'
+            });
+        }
+    });
+
+    router.post('/rag-tag-consistency/apply', async (req, res) => {
+        try {
+            if (!vectorDBManager || typeof vectorDBManager.applyTagConsistencyPreview !== 'function') {
+                return res.status(503).json({
+                    success: false,
+                    error: 'Tag consistency reconciliation is unavailable'
+                });
+            }
+
+            const token = String(req.body?.token || '').trim();
+            if (!token || !/^[a-f0-9]{48}$/i.test(token)) {
+                return res.status(400).json({
+                    success: false,
+                    code: 'TAG_CONSISTENCY_INVALID_TOKEN',
+                    error: 'A valid preview token is required'
+                });
+            }
+
+            const result = await vectorDBManager.applyTagConsistencyPreview(token);
+            res.json({ success: true, result });
+        } catch (error) {
+            res.status(error.statusCode || 500).json({
+                success: false,
+                code: error.code,
+                error: error.message || 'Failed to apply Tag consistency reconciliation'
+            });
+        }
+    });
+
     router.post('/rag-active-full-training', (req, res) => {
         try {
             if (!vectorDBManager || typeof vectorDBManager.requestActiveFullTraining !== 'function') {

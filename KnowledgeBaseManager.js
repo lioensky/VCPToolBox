@@ -31,6 +31,7 @@ const DatabaseCoordinator = require('./modules/knowledgeBase/databaseCoordinator
 const KnowledgeBaseFileWatcher = require('./modules/knowledgeBase/fileWatcher');
 const IngestionPipeline = require('./modules/knowledgeBase/ingestionPipeline');
 const SearchService = require('./modules/knowledgeBase/searchService');
+const TagConsistencyService = require('./modules/knowledgeBase/tagConsistencyService');
 
 // 尝试加载 Rust Vexus 引擎
 let VexusIndex = null;
@@ -204,6 +205,9 @@ class KnowledgeBaseManager {
         });
         this.ingestionPipeline = new IngestionPipeline(this);
         this.searchService = new SearchService(this);
+        this.tagConsistencyService = new TagConsistencyService(this, {
+            VexusIndex
+        });
     }
 
     async initialize() {
@@ -731,6 +735,22 @@ class KnowledgeBaseManager {
             fallbackUsed: resolution.fallbackUsed,
             fallbackReason: resolution.fallbackReason
         };
+    }
+
+    /**
+     * 使用当前文件过滤与 Tag 清洗规则生成只读一致性快照。
+     * 此阶段不请求 Embedding，也不修改 SQLite / Vexus 索引。
+     */
+    async previewTagConsistency() {
+        return await this.tagConsistencyService.createPreview();
+    }
+
+    /**
+     * 确认并应用先前的 Tag 一致性快照。
+     * 执行前会在排他维护窗口内重算摘要；快照过期或真相变化时拒绝执行。
+     */
+    async applyTagConsistencyPreview(token) {
+        return await this.tagConsistencyService.applyPreview(token);
     }
 
     /**

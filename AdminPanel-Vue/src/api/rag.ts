@@ -46,6 +46,64 @@ export interface ActiveFullTrainingResponse {
   error?: string;
 }
 
+export interface TagConsistencySummary {
+  totalDatabaseFiles: number;
+  scannedFiles: number;
+  ignoredFiles: number;
+  missingFiles: number;
+  affectedFiles: number;
+  relationsToAdd: number;
+  relationsToRemove: number;
+  positionsToUpdate: number;
+  vectorsToCreate: number;
+  vectorsToRemove: number;
+  orphanTagsToRemove: number;
+  finalTagCount: number;
+}
+
+export interface TagConsistencyFileDetail {
+  path: string;
+  status: "scanned" | "ignored" | "missing" | "outside-root";
+  added: string[];
+  removed: string[];
+  positionUpdates: number;
+}
+
+export interface TagConsistencyPreview {
+  token: string;
+  digest: string;
+  createdAt: number;
+  expiresAt: number;
+  summary: TagConsistencySummary;
+  additions: string[];
+  removals: string[];
+  affectedFileDetails: TagConsistencyFileDetail[];
+  detailTruncated: boolean;
+  requiresConfirmation: boolean;
+}
+
+export interface TagConsistencyPreviewResponse {
+  success?: boolean;
+  preview?: TagConsistencyPreview;
+  code?: string;
+  error?: string;
+}
+
+export interface TagConsistencyApplyResult {
+  applied: boolean;
+  summary: TagConsistencySummary;
+  waveAssetsStale: boolean;
+  recommendedAction: "active-full-training";
+  message: string;
+}
+
+export interface TagConsistencyApplyResponse {
+  success?: boolean;
+  result?: TagConsistencyApplyResult;
+  code?: string;
+  error?: string;
+}
+
 export interface SemanticGroupData {
   words?: string[];
   auto_learned?: string[];
@@ -91,6 +149,32 @@ export const ragApi = {
         url: "/admin_api/rag-params",
         method: "POST",
         body: params,
+      },
+      uiOptions
+    );
+  },
+
+  async previewTagConsistency(
+    uiOptions: RequestUiOptions = {}
+  ): Promise<TagConsistencyPreviewResponse> {
+    return requestWithUi(
+      {
+        url: "/admin_api/rag-tag-consistency/preview",
+        method: "POST",
+      },
+      uiOptions
+    );
+  },
+
+  async applyTagConsistency(
+    token: string,
+    uiOptions: RequestUiOptions = {}
+  ): Promise<TagConsistencyApplyResponse> {
+    return requestWithUi(
+      {
+        url: "/admin_api/rag-tag-consistency/apply",
+        method: "POST",
+        body: { token },
       },
       uiOptions
     );

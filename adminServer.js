@@ -383,6 +383,91 @@ app.get('/admin_api/system-monitor/memory/profile', async (req, res) => {
 });
 
 // ============================================================
+// 🧹 Tag 一致性预检/执行必须代理到持有 KnowledgeBaseManager 的主服务。
+// ============================================================
+function proxyTagConsistencyRequest(req, res, endpoint, timeoutMs) {
+    const targetPath = `/admin_api/${endpoint}`;
+    console.log(`[AdminServer] Tag consistency request received — forwarding ${targetPath} to main process...`);
+
+    const proxyReq = http.request(
+        `http://127.0.0.1:${MAIN_PORT}${targetPath}`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': req.headers.authorization || '',
+                'Cookie': req.headers.cookie || ''
+            },
+            timeout: timeoutMs
+        },
+        (proxyRes) => {
+            let body = '';
+            proxyRes.on('data', chunk => {
+                body += chunk;
+            });
+            proxyRes.on('end', () => {
+                if (res.headersSent) return;
+                res.status(proxyRes.statusCode || 200);
+                res.setHeader(
+                    'Content-Type',
+                    proxyRes.headers['content-type'] || 'application/json'
+                );
+                try {
+                    res.json(body ? JSON.parse(body) : {
+                        success: false,
+                        error: '主服务返回了空响应。'
+                    });
+                } catch (_) {
+                    res.send(body || '');
+                }
+            });
+        }
+    );
+
+    proxyReq.on('error', (error) => {
+        console.error(
+            `[AdminServer] Failed to forward ${targetPath}: ${error.code || error.message}`
+        );
+        if (!res.headersSent) {
+            res.status(502).json({
+                success: false,
+                error: '无法将 Tag 一致性请求转发给主服务。',
+                details: error.message
+            });
+        }
+    });
+    proxyReq.on('timeout', () => {
+        proxyReq.destroy();
+        if (!res.headersSent) {
+            res.status(504).json({
+                success: false,
+                error: '主服务 Tag 一致性接口响应超时。'
+            });
+        }
+    });
+    proxyReq.write(JSON.stringify(req.body || {}));
+    proxyReq.end();
+}
+
+app.post('/admin_api/rag-tag-consistency/preview', (req, res) => {
+    proxyTagConsistencyRequest(
+        req,
+        res,
+        'rag-tag-consistency/preview',
+        10 * 60 * 1000
+    );
+});
+
+app.post('/admin_api/rag-tag-consistency/apply', (req, res) => {
+    proxyTagConsistencyRequest(
+        req,
+        res,
+        'rag-tag-consistency/apply',
+        30 * 60 * 1000
+    );
+});
+
+// ============================================================
 // 🧠 关键覆盖：主动浪潮全量训练必须代理到主服务
 // 独立 adminServer 不持有 KnowledgeBaseManager 实例；本地 rag 模块会以 vectorDBManager=null 挂载。
 // 因此该运行态端点必须在 localAdminRouter 之前转发到主进程。

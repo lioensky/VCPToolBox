@@ -47,8 +47,12 @@ call pm2 delete server 2>nul
 echo.
 REM 2. Start Main Service
 echo [1/2] Starting Main chat service (vcp-main)...
-REM --kill-timeout 15000: Give 15s to save vector DB indices
-call pm2 start server.js --name "vcp-main" --watch false --max-memory-restart 1500M --kill-timeout 15000
+REM --kill-timeout 15000: Give 15s to save vector DB indices.
+REM Do NOT set --max-memory-restart here. Global Tag index staging, Pairwise assets,
+REM EPA/IR and TagMemo rebuilds have legitimate temporary memory peaks above 1500 MB.
+REM A low PM2 RSS limit can restart the main process in the middle of a maintenance
+REM transaction and overlap two cold-start index recoveries against the same SQLite.
+call pm2 start server.js --name "vcp-main" --watch false --kill-timeout 15000
 
 echo.
 echo Waiting 8 seconds for main service to initialize...
@@ -56,7 +60,9 @@ ping -n 9 127.0.0.1 >nul
 
 REM 3. Start Admin Panel
 echo [2/2] Starting Admin Panel (vcp-admin)...
-call pm2 start adminServer.js --name "vcp-admin" --watch false --max-memory-restart 512M --kill-timeout 5000
+REM Keep PM2 memory restart limits disabled for both processes while diagnosing
+REM legitimate maintenance/build memory peaks and unexpected overlapping restarts.
+call pm2 start adminServer.js --name "vcp-admin" --watch false --kill-timeout 5000
 
 echo.
 echo ============================================
