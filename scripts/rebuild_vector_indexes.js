@@ -11,7 +11,7 @@ const Database = require('better-sqlite3');
 // 尝试加载 Rust Vexus 引擎
 let VexusIndex;
 try {
-    const vexusModule = require('./rust-vexus-lite');
+    const vexusModule = require('../rust-vexus-lite');
     VexusIndex = vexusModule.VexusIndex;
     console.log('[RepairScript] 🦀 Vexus-Lite Rust engine loaded');
 } catch (e) {
@@ -20,7 +20,7 @@ try {
 }
 
 const config = {
-    storePath: path.join(__dirname, 'VectorStore'),
+    storePath: path.join(__dirname, '..', 'VectorStore'),
     dbName: 'knowledge_base.sqlite',
     // ⚠️ 确保这个维度与您的模型和配置一致
     dimension: parseInt(process.env.VECTORDB_DIMENSION) || 3072,
