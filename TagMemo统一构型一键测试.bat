@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 chcp 65001 >nul
-title TagMemo Unified Geometry Probe V2
+title TagMemo Unified Geometry Probe V3.1
 
 set "ROOT=%~dp0"
 set "PROBE=%ROOT%scripts\tagmemo_unified_geometry_probe.js"
@@ -20,7 +20,7 @@ if "%~1"=="" (
 
 echo.
 echo ============================================================
-echo  TagMemo 统一几何构型只读探针 V2
+echo  TagMemo 统一几何构型只读探针 V3.1
 echo ============================================================
 echo  数据库: %DB%
 echo  配置:   %CONFIG%
@@ -64,15 +64,30 @@ if errorlevel 1 (
 for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "STAMP=%%I"
 if not defined STAMP set "STAMP=manual"
 
-set "MD_REPORT=%REPORT_DIR%\tagmemo_unified_geometry_v2_%STAMP%.md"
-set "JSON_REPORT=%REPORT_DIR%\tagmemo_unified_geometry_v2_%STAMP%.json"
+set "MD_REPORT=%REPORT_DIR%\tagmemo_unified_geometry_v3_1_%STAMP%.md"
+set "JSON_REPORT=%REPORT_DIR%\tagmemo_unified_geometry_v3_1_%STAMP%.json"
 
-echo [开始] 正在读取数据库并执行 V2 数学探针。
-echo [修正] 去源域、Top-k 域、平均并列秩、同泛函曲线二乘二对照。
-echo [提示] 大型知识库可能需要数分钟，请勿关闭窗口。
+echo [开始] 正在读取数据库并执行 V3.1 尺度化场族探针。
+echo [动力学] 严格去源场、等长核心域、尾部质量与支持扩张。
+echo [尺度] alpha=0.05 至 1.00 低尺度加密；hops=1,2,4。
+echo [几何] 软域有界路径质量、不可定义样本过滤及每查询 100 次随机消融。
+echo [提示] V3.1 计算量高于 V2，大型知识库可能需要数分钟，请勿关闭窗口。
 echo.
 
-node "%PROBE%" --db "%DB%" --config "%CONFIG%" --probes 12 --max-files 20000 --max-nodes 6000 --curve-files 1500 --steps 80 --domain-mass 0.80 --md "%MD_REPORT%" --json "%JSON_REPORT%"
+node "%PROBE%" ^
+  --db "%DB%" ^
+  --config "%CONFIG%" ^
+  --probes 12 ^
+  --max-files 20000 ^
+  --max-nodes 6000 ^
+  --curve-files 1500 ^
+  --steps 80 ^
+  --domain-mass 0.80 ^
+  --alpha-scales 0.05,0.10,0.15,0.20,0.25,0.30,0.40,0.55,0.70,0.85,1.00 ^
+  --hop-scales 1,2,4 ^
+  --randomizations 100 ^
+  --md "%MD_REPORT%" ^
+  --json "%JSON_REPORT%"
 
 if errorlevel 1 (
     echo.
@@ -91,7 +106,7 @@ echo  JSON 原始数据:
 echo  %JSON_REPORT%
 echo ============================================================
 echo.
-echo 请将 Markdown 报告发回分析；如需复核数值，可同时附上 JSON。
+echo 请优先将 JSON 原始数据发回分析；Markdown 用于快速浏览。
 echo.
 pause
 exit /b 0

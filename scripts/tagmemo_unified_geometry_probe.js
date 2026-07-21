@@ -20,6 +20,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -44,6 +45,9 @@ function parseArgs(argv) {
         resolventSteps: 80,
         tolerance: 1e-9,
         domainMass: 0.80,
+        alphaScales: [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.55, 0.70, 0.85, 1.00],
+        hopScales: [1, 2, 4],
+        randomizations: 100,
         seed: 7331
     };
     for (let i = 0; i < argv.length; i++) {
@@ -67,6 +71,19 @@ function parseArgs(argv) {
         else if (key === '--domain-mass' && value) {
             out.domainMass = clamp(positiveNumber(value, out.domainMass), 0.5, 0.99);
             i++;
+        } else if (key === '--alpha-scales' && value) {
+            out.alphaScales = parseNumberList(value, out.alphaScales)
+                .map(item => clamp(item, 0.01, 1));
+            i++;
+        } else if (key === '--hop-scales' && value) {
+            out.hopScales = [...new Set(
+                parseNumberList(value, out.hopScales)
+                    .map(item => Math.max(1, Math.floor(item)))
+            )].sort((a, b) => a - b);
+            i++;
+        } else if (key === '--randomizations' && value) {
+            out.randomizations = positiveInt(value, out.randomizations);
+            i++;
         } else if (key === '--random-seed' && value) { out.seed = positiveInt(value, out.seed); i++; }
         else if (key.startsWith('-')) throw new Error(`未知参数: ${key}`);
     }
@@ -81,6 +98,14 @@ function positiveInt(value, fallback) {
 function positiveNumber(value, fallback) {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNumberList(value, fallback) {
+    const parsed = String(value)
+        .split(',')
+        .map(item => Number(item.trim()))
+        .filter(Number.isFinite);
+    return parsed.length ? parsed : [...fallback];
 }
 
 function clamp(value, min, max) {
@@ -103,6 +128,9 @@ TagMemo 统一几何构型离线探针
   --steps N             Resolvent 最大迭代次数，默认 80
   --tolerance X         固定点收敛阈值，默认 1e-9
   --domain-mass X       软域累计场质量，默认 0.80
+  --alpha-scales LIST   Resolvent 尺度列表，默认 0.05 至 1.00 的低尺度加密网格
+  --hop-scales LIST     有限阶场跳数列表，默认 1,2,4
+  --randomizations N    每查询随机场消融次数，默认 100
   --random-seed N       可复现随机种子
   --json PATH           写出 JSON 原始报告
   --md PATH             写出可直接分享的 Markdown 报告
@@ -425,7 +453,10 @@ function finiteSpikeField(seedId, transport, config, hops) {
     return normalizeField(field);
 }
 
-function nodeResolvent(seedId, transport, options) {
+function nodeResolvent(seedId, transport, options, alpha = 1) {
+    const scale = clamp(alpha, 0.01, 1);
+    // 归一化后的场形状不受统一源项系数影响，因此固定源质量为 1；
+    // alpha 只控制每次输运的有效扩散尺度。
     const source = new Map([[seedId, 1]]);
     let field = new Map(source);
     let residual = Infinity;
@@ -435,13 +466,20 @@ function nodeResolvent(seedId, transport, options) {
         for (const [node, energy] of field) {
             const row = transport.get(node);
             if (!row) continue;
-            for (const [target, weight] of row) addTo(next, target, energy * weight);
+            for (const [target, weight] of row) {
+                addTo(next, target, energy * weight * scale);
+            }
         }
         residual = l1Distance(field, next);
         field = next;
         if (residual <= options.tolerance) break;
     }
-    return { field: normalizeField(field), residual, iterations: iterations + 1 };
+    return {
+        field: normalizeField(field),
+        residual,
+        iterations: iterations + 1,
+        alpha: scale
+    };
 }
 
 function edgeResolvent(seedId, transport, options, returnFactor) {
@@ -544,6 +582,14 @@ function spearmanMaps(left, right, limit = 200, explicitIds = null) {
     );
 }
 
+function safeSpearmanMaps(left, right, limit = 200, explicitIds = null) {
+    const ids = explicitIds
+        ? new Set(explicitIds)
+        : new Set([...left.keys(), ...right.keys()]);
+    if (ids.size < 3) return null;
+    return spearmanMaps(left, right, limit, ids);
+}
+
 function pearson(xs, ys) {
     const n = Math.min(xs.length, ys.length);
     if (n < 2) return 0;
@@ -612,16 +658,122 @@ function weightedJaccard(left, right, excludedIds = new Set()) {
     return union > 0 ? intersection / union : 1;
 }
 
+function setOverlap(left, right) {
+    let intersection = 0;
+    for (const id of left) if (right.has(id)) intersection++;
+    return {
+        leftSize: left.size,
+        rightSize: right.size,
+        intersection,
+        precision: right.size ? intersection / right.size : 1,
+        recall: left.size ? intersection / left.size : 1,
+        jaccard: jaccard(left, right)
+    };
+}
+
+function fieldMassOnSet(field, ids) {
+    let mass = 0;
+    for (const id of ids) mass += Math.max(0, Number(field.get(id)) || 0);
+    return mass;
+}
+
+function effectiveSupportSize(field, method = 'shannon') {
+    const normalized = normalizeField(field);
+    if (!normalized.size) return 0;
+    if (method === 'participation') {
+        let squared = 0;
+        for (const value of normalized.values()) squared += value * value;
+        return squared > 0 ? 1 / squared : 0;
+    }
+    let entropy = 0;
+    for (const value of normalized.values()) {
+        if (value > 0) entropy -= value * Math.log(value);
+    }
+    return Math.exp(entropy);
+}
+
+function spectralGapDomain(field, maxNodes = 200) {
+    const sorted = [...normalizeField(field).entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, maxNodes);
+    if (sorted.length <= 1) return new Set(sorted.map(item => item[0]));
+    let bestIndex = 1;
+    let bestRatio = 1;
+    for (let i = 0; i + 1 < sorted.length; i++) {
+        const ratio = sorted[i][1] / Math.max(1e-15, sorted[i + 1][1]);
+        if (ratio > bestRatio) {
+            bestRatio = ratio;
+            bestIndex = i + 1;
+        }
+    }
+    return new Set(sorted.slice(0, bestIndex).map(item => item[0]));
+}
+
+function adaptiveDomains(field) {
+    const shannonSize = Math.max(1, Math.round(effectiveSupportSize(field, 'shannon')));
+    const participationSize = Math.max(1, Math.round(effectiveSupportSize(field, 'participation')));
+    return {
+        shannon: topKDomain(field, shannonSize),
+        participation: topKDomain(field, participationSize),
+        spectralGap: spectralGapDomain(field),
+        mass80: massDomain(field, 0.80),
+        mass90: massDomain(field, 0.90)
+    };
+}
+
+function compareAdaptiveDomains(reference, candidate) {
+    const left = adaptiveDomains(reference);
+    const right = adaptiveDomains(candidate);
+    const result = {};
+    for (const key of Object.keys(left)) {
+        result[key] = setOverlap(left[key], right[key]);
+    }
+    return result;
+}
+
+function strictFieldDiagnostics(reference, candidate, seedIds) {
+    const left = withoutSeeds(reference, seedIds);
+    const right = withoutSeeds(candidate, seedIds);
+    const equalK = Math.min(left.size, right.size, 20);
+    const leftTop = topKDomain(left, equalK);
+    const rightTop = topKDomain(right, equalK);
+    const unionTop = new Set([...leftTop, ...rightTop]);
+    const common = new Set([...left.keys()].filter(id => right.has(id)));
+    const referenceSupport = new Set(left.keys());
+    return {
+        referenceSupport: left.size,
+        candidateSupport: right.size,
+        supportExpansion: left.size ? right.size / left.size : 0,
+        seedlessCosine: cosineMaps(left, right),
+        seedlessWeightedJaccard: weightedJaccard(left, right),
+        commonSupportSpearman: common.size >= 3
+            ? spearmanMaps(left, right, 200, common)
+            : 0,
+        equalTopK: {
+            k: equalK,
+            ...setOverlap(leftTop, rightTop),
+            spearman: unionTop.size >= 3
+                ? spearmanMaps(left, right, equalK, unionTop)
+                : 0
+        },
+        candidateMassOnReferenceSupport: fieldMassOnSet(right, referenceSupport),
+        candidateTailMass: Math.max(0, 1 - fieldMassOnSet(right, referenceSupport)),
+        adaptiveDomains: compareAdaptiveDomains(left, right)
+    };
+}
+
 function curveScores(chains, field, transport, mode) {
     const scores = new Map();
     const contacted = new Set();
     for (const [fileId, chain] of chains) {
         let potential = 0;
         let continuity = 0;
+        let softPathQuality = 0;
         let action = 0;
         let topology = 0;
         let contacts = 0;
         let segments = 0;
+        let supportedSegments = 0;
         for (let i = 0; i < chain.length; i++) {
             const u = field.get(chain[i].id) || 0;
             potential += u;
@@ -631,8 +783,17 @@ function curveScores(chains, field, transport, mode) {
             const forward = transport.get(chain[i].id)?.get(chain[i + 1].id) || 0;
             const reverse = transport.get(chain[i + 1].id)?.get(chain[i].id) || 0;
             const conductance = Math.max(forward, reverse);
+            const conductanceGain = 0.65 + 0.35 * Math.sqrt(conductance);
             const segmentPotential = Math.sqrt(u * v);
-            continuity += segmentPotential * (0.65 + 0.35 * Math.sqrt(conductance));
+            continuity += segmentPotential * conductanceGain;
+            if (u > 0 && v > 0) {
+                softPathQuality += segmentPotential * conductanceGain;
+                supportedSegments++;
+            } else if (u > 0 || v > 0) {
+                // 单点接触不是完整连续路径，但应保留受局部导通支持的低权重证据。
+                softPathQuality += 0.20 * Math.max(u, v) * conductanceGain;
+                supportedSegments++;
+            }
             if (u > 0 || v > 0) {
                 action += 1 / Math.max(1e-6, segmentPotential + 0.25 * conductance);
             }
@@ -642,6 +803,8 @@ function curveScores(chains, field, transport, mode) {
         if (contacts > 0) contacted.add(fileId);
         const meanPotential = potential / Math.max(1, chain.length);
         const meanContinuity = continuity / Math.max(1, segments);
+        const meanSoftPath = softPathQuality / Math.max(1, supportedSegments);
+        const contactCoverage = contacts / Math.max(1, chain.length);
         const meanTopology = topology / Math.max(1, segments);
         let score;
         if (mode === 'topology') score = meanTopology;
@@ -649,6 +812,15 @@ function curveScores(chains, field, transport, mode) {
             score = contacts > 0
                 ? Math.exp(-action / Math.max(1, segments)) * (1 - Math.exp(-contacts))
                 : 0;
+        } else if (mode === 'boundedPath') {
+            // 软域、长度归一化路径质量：允许单点接触，但完整连续片段权重更高。
+            // 所有分量均有界，避免无限稳态长尾触发无界倒数惩罚。
+            score = Math.max(0, Math.min(
+                1,
+                0.35 * meanPotential
+                + 0.50 * meanSoftPath
+                + 0.15 * contactCoverage
+            ));
         } else {
             score = 0.65 * meanPotential + 0.35 * meanContinuity;
         }
@@ -692,6 +864,43 @@ function mean(values) {
 
 function median(values) {
     return quantile(values, 0.5);
+}
+
+function medianFinite(values) {
+    return median(values.filter(Number.isFinite));
+}
+
+function summarizeDistribution(values, observed = null) {
+    const finite = values.filter(Number.isFinite);
+    const summary = {
+        samples: finite.length,
+        mean: mean(finite),
+        median: median(finite),
+        standardDeviation: 0,
+        p025: quantile(finite, 0.025),
+        p975: quantile(finite, 0.975)
+    };
+    if (finite.length) {
+        summary.standardDeviation = Math.sqrt(
+            mean(finite.map(value => (value - summary.mean) ** 2))
+        );
+    }
+    if (Number.isFinite(observed)) {
+        summary.observed = observed;
+        summary.observedPercentile = finite.length
+            ? mean(finite.map(value => observed >= value ? 1 : 0))
+            : 0;
+        summary.empiricalPUpper = (1 + finite.filter(value => value >= observed).length)
+            / (finite.length + 1);
+    }
+    return summary;
+}
+
+function shortHash(value) {
+    return crypto.createHash('sha256')
+        .update(JSON.stringify(value))
+        .digest('hex')
+        .slice(0, 16);
 }
 
 function chooseSeeds(options, graphData, facts) {
@@ -811,17 +1020,25 @@ function runProbe(seedId, context) {
     const top10Edge = topKDomain(seedlessEdge, 10);
     const top20Spike = topKDomain(seedlessSpike, 20);
     const top20Edge = topKDomain(seedlessEdge, 20);
+    const strictInfinite = strictFieldDiagnostics(trustedSpike, trustedEdge, seedIds);
+    const spikeAdaptive = adaptiveDomains(seedlessSpike);
 
     // 严格二乘二设计：两种场分别进入完全相同的 reward 与 action 泛函。
     const spikeReward = curveScores(graphData.chains, trustedSpike, transportData.transport, 'reward');
     const edgeReward = curveScores(graphData.chains, trustedEdge, transportData.transport, 'reward');
     const spikeAction = curveScores(graphData.chains, trustedSpike, transportData.transport, 'action');
     const edgeAction = curveScores(graphData.chains, trustedEdge, transportData.transport, 'action');
-    const randomReward = curveScores(
+    const spikeBounded = curveScores(
         graphData.chains,
-        shuffledField(trustedEdge, random),
+        trustedSpike,
         transportData.transport,
-        'reward'
+        'boundedPath'
+    );
+    const edgeBounded = curveScores(
+        graphData.chains,
+        trustedEdge,
+        transportData.transport,
+        'boundedPath'
     );
     const topologyCurve = curveScores(
         graphData.chains,
@@ -865,13 +1082,110 @@ function runProbe(seedId, context) {
         300,
         trustedCandidates
     );
-    const randomAgreement = spearmanMaps(
-        spikeReward.scores,
-        randomReward.scores,
+    const boundedCandidates = new Set([
+        ...spikeBounded.contacted,
+        ...edgeBounded.contacted
+    ]);
+    const boundedPathGeometry = safeSpearmanMaps(
+        spikeBounded.scores,
+        edgeBounded.scores,
         300,
-        trustedCandidates
+        boundedCandidates
     );
+
+    const randomAgreements = [];
+    for (let index = 0; index < options.randomizations; index++) {
+        const randomReward = curveScores(
+            graphData.chains,
+            shuffledField(trustedEdge, random),
+            transportData.transport,
+            'reward'
+        );
+        randomAgreements.push(spearmanMaps(
+            spikeReward.scores,
+            randomReward.scores,
+            300,
+            trustedCandidates
+        ));
+    }
+    const randomNull = summarizeDistribution(randomAgreements, rewardGeometry);
+    const randomAgreement = randomNull.median;
     const ablationMargin = rewardGeometry - Math.max(topologyAgreement, randomAgreement);
+
+    const alphaScan = options.alphaScales.map(alpha => {
+        const scaled = nodeResolvent(seedId, transportData.transport, options, alpha);
+        const trusted = retainTrustedField(scaled.field);
+        const diagnostics = strictFieldDiagnostics(trustedSpike, trusted, seedIds);
+        const seedless = withoutSeeds(trusted, seedIds);
+        const scaledReward = curveScores(
+            graphData.chains,
+            trusted,
+            transportData.transport,
+            'reward'
+        );
+        const scaledBounded = curveScores(
+            graphData.chains,
+            trusted,
+            transportData.transport,
+            'boundedPath'
+        );
+        const rewardCandidates = new Set([
+            ...spikeReward.contacted,
+            ...scaledReward.contacted
+        ]);
+        const pathCandidates = new Set([
+            ...spikeBounded.contacted,
+            ...scaledBounded.contacted
+        ]);
+        return {
+            alpha,
+            converged: scaled.residual <= options.tolerance,
+            residual: scaled.residual,
+            iterations: scaled.iterations,
+            trustedNodes: trusted.size,
+            diagnostics,
+            baselineCandidateCount: trustedCandidates.size,
+            rewardCandidateCount: rewardCandidates.size,
+            boundedPathCandidateCount: pathCandidates.size,
+            rewardCandidateCoverage: trustedCandidates.size
+                ? rewardCandidates.size / trustedCandidates.size
+                : null,
+            boundedPathCandidateCoverage: trustedCandidates.size
+                ? pathCandidates.size / trustedCandidates.size
+                : null,
+            rewardGeometrySpearman: safeSpearmanMaps(
+                spikeReward.scores,
+                scaledReward.scores,
+                300,
+                rewardCandidates
+            ),
+            boundedPathGeometrySpearman: safeSpearmanMaps(
+                spikeBounded.scores,
+                scaledBounded.scores,
+                300,
+                pathCandidates
+            )
+        };
+    });
+
+    const hopScan = options.hopScales.map(hops => {
+        const finite = finiteSpikeField(
+            seedId,
+            transportData.transport,
+            config.spike,
+            hops
+        );
+        const trusted = retainTrustedField(finite);
+        return {
+            hops,
+            trustedNodes: trusted.size,
+            diagnosticsVsInfinite: strictFieldDiagnostics(
+                trusted,
+                trustedEdge,
+                seedIds
+            )
+        };
+    });
 
     return {
         seedId,
@@ -898,7 +1212,8 @@ function runProbe(seedId, context) {
             spikeVsEdgeCosine: cosineMaps(spike, edge.field),
             trustedSpikeVsEdgeSpearman: spearmanMaps(trustedSpike, trustedEdge),
             spikeVsEdgeWeightedJaccard: weightedJaccard(trustedSpike, trustedEdge),
-            nodeVsEdgeSpearman: spearmanMaps(node.field, edge.field)
+            nodeVsEdgeSpearman: spearmanMaps(node.field, edge.field),
+            strictInfinite
         },
         domain: {
             seedlessSpikeSize: spikeDomain.size,
@@ -912,14 +1227,137 @@ function runProbe(seedId, context) {
         geometry: {
             rewardSameFunctionalSpearman: rewardGeometry,
             actionSameFunctionalSpearman: actionGeometry,
+            boundedPathCandidateCount: boundedCandidates.size,
+            boundedPathSameFunctionalSpearman: boundedPathGeometry,
             rewardVsActionSpikeSpearman: functionalAgreementSpike,
             rewardVsActionEdgeSpearman: functionalAgreementEdge,
             rewardVsTopologySpearman: topologyAgreement,
             rewardVsRandomFieldSpearman: randomAgreement,
+            randomNull,
             ablationMargin
+        },
+        scaleFamily: {
+            alphaScan,
+            hopScan
         }
     };
 }
+function summarizeScaleFamily(probes, key, scaleKey) {
+    const scales = probes[0]?.scaleFamily?.[key]?.map(item => item[scaleKey]) || [];
+    return scales.map(scale => {
+        const records = probes.map(probe =>
+            probe.scaleFamily[key].find(item => item[scaleKey] === scale)
+        ).filter(Boolean);
+        const diagnosticsKey = key === 'alphaScan' ? 'diagnostics' : 'diagnosticsVsInfinite';
+        return {
+            [scaleKey]: scale,
+            probes: records.length,
+            convergenceRate: key === 'alphaScan'
+                ? mean(records.map(item => item.converged ? 1 : 0))
+                : undefined,
+            medianSeedlessCosine: median(records.map(
+                item => item[diagnosticsKey].seedlessCosine
+            )),
+            medianEqualTopKJaccard: median(records.map(
+                item => item[diagnosticsKey].equalTopK.jaccard
+            )),
+            medianEqualTopKSpearman: median(records.map(
+                item => item[diagnosticsKey].equalTopK.spearman
+            )),
+            medianTailMass: median(records.map(
+                item => item[diagnosticsKey].candidateTailMass
+            )),
+            medianSupportExpansion: median(records.map(
+                item => item[diagnosticsKey].supportExpansion
+            )),
+            medianRewardGeometrySpearman: key === 'alphaScan'
+                ? medianFinite(records.map(item => item.rewardGeometrySpearman))
+                : undefined,
+            medianBoundedPathGeometrySpearman: key === 'alphaScan'
+                ? medianFinite(records.map(item => item.boundedPathGeometrySpearman))
+                : undefined,
+            medianRewardCandidateCoverage: key === 'alphaScan'
+                ? medianFinite(records.map(item => item.rewardCandidateCoverage))
+                : undefined,
+            medianBoundedPathCandidateCoverage: key === 'alphaScan'
+                ? medianFinite(records.map(item => item.boundedPathCandidateCoverage))
+                : undefined,
+            validRewardProbes: key === 'alphaScan'
+                ? records.filter(item => Number.isFinite(item.rewardGeometrySpearman)).length
+                : undefined,
+            validBoundedPathProbes: key === 'alphaScan'
+                ? records.filter(item => Number.isFinite(item.boundedPathGeometrySpearman)).length
+                : undefined
+        };
+    });
+}
+
+function v3Verdict(summary, scaleSummary) {
+    const alphaCandidates = scaleSummary.alphaScan.filter(item =>
+        item.convergenceRate >= 0.9
+    );
+    const bestDynamics = [...alphaCandidates].sort((left, right) =>
+        (right.medianSeedlessCosine + right.medianEqualTopKJaccard)
+        - (left.medianSeedlessCosine + left.medianEqualTopKJaccard)
+    )[0] || null;
+
+    // 防止极小 alpha 通过只覆盖少量候选获得虚高秩相关。
+    // 几何尺度必须覆盖至少一半基线候选，且至少 75% 查询具有可定义相关。
+    const minimumValidGeometryProbes = Math.ceil(summary.probes * 0.75);
+    const geometryCandidates = alphaCandidates.filter(item =>
+        item.medianBoundedPathCandidateCoverage >= 0.50
+        && item.validBoundedPathProbes >= minimumValidGeometryProbes
+    );
+    const bestGeometry = [...geometryCandidates].sort((left, right) =>
+        right.medianBoundedPathGeometrySpearman
+        - left.medianBoundedPathGeometrySpearman
+    )[0] || null;
+
+    const stability = summary.convergenceRate >= 0.9 ? 'strong' : 'unsupported';
+    const dynamics = bestDynamics
+        && bestDynamics.medianSeedlessCosine >= 0.90
+        && bestDynamics.medianEqualTopKJaccard >= 0.65
+        ? 'strong'
+        : bestDynamics
+            && bestDynamics.medianSeedlessCosine >= 0.75
+            && bestDynamics.medianEqualTopKJaccard >= 0.45
+            ? 'partial'
+            : 'unsupported';
+    const domain = bestDynamics
+        && bestDynamics.medianTailMass <= 0.35
+        && bestDynamics.medianSupportExpansion <= 3
+        ? 'strong'
+        : bestDynamics
+            && bestDynamics.medianTailMass <= 0.60
+            ? 'partial'
+            : 'unsupported';
+    const geometry = bestGeometry
+        && bestGeometry.medianBoundedPathGeometrySpearman >= 0.70
+        ? 'strong'
+        : bestGeometry
+            && bestGeometry.medianBoundedPathGeometrySpearman >= 0.45
+            ? 'partial'
+            : 'unsupported';
+
+    return {
+        level: stability === 'strong' && dynamics === 'strong'
+            ? geometry === 'strong'
+                ? 'v3-scaled-field-full-unification-supported'
+                : 'v3-scaled-dynamics-supported-geometry-inconclusive'
+            : dynamics === 'partial'
+                ? 'v3-partial-scaled-dynamics'
+                : 'v3-unification-not-supported',
+        layers: { stability, dynamics, domain, geometry },
+        bestDynamicsAlpha: bestDynamics?.alpha ?? null,
+        bestGeometryAlpha: bestGeometry?.alpha ?? null,
+        bestGeometryCandidateCoverage:
+            bestGeometry?.medianBoundedPathCandidateCoverage ?? null,
+        geometryCoverageThreshold: 0.50,
+        minimumValidGeometryProbes,
+        note: 'V3.1 判决将算子稳定、去源动力学、支持域和有界曲线几何分层；几何尺度必须满足候选覆盖率与有效查询数门槛。'
+    };
+}
+
 function buildReport(options, config, facts, graphData, kernelData, transportData, probes) {
     const summary = {
         probes: probes.length,
@@ -940,15 +1378,52 @@ function buildReport(options, config, facts, graphData, kernelData, transportDat
         medianTopologyAgreement: median(probes.map(item => item.geometry.rewardVsTopologySpearman)),
         medianRandomAgreement: median(probes.map(item => item.geometry.rewardVsRandomFieldSpearman)),
         medianAblationMargin: median(probes.map(item => item.geometry.ablationMargin)),
+        medianStrictSeedlessCosine: median(probes.map(
+            item => item.field.strictInfinite.seedlessCosine
+        )),
+        medianStrictEqualTopKJaccard: median(probes.map(
+            item => item.field.strictInfinite.equalTopK.jaccard
+        )),
+        medianStrictTailMass: median(probes.map(
+            item => item.field.strictInfinite.candidateTailMass
+        )),
+        medianStrictSupportExpansion: median(probes.map(
+            item => item.field.strictInfinite.supportExpansion
+        )),
+        medianBoundedPathGeometrySpearman: medianFinite(probes.map(
+            item => item.geometry.boundedPathSameFunctionalSpearman
+        )),
+        medianRandomEmpiricalP: median(probes.map(
+            item => item.geometry.randomNull.empiricalPUpper
+        )),
         p25TrustedFieldSpearman: quantile(probes.map(item => item.field.trustedSpikeVsEdgeSpearman), 0.25),
         p25RewardGeometrySpearman: quantile(probes.map(item => item.geometry.rewardSameFunctionalSpearman), 0.25)
     };
+    const scaleSummary = {
+        alphaScan: summarizeScaleFamily(probes, 'alphaScan', 'alpha'),
+        hopScan: summarizeScaleFamily(probes, 'hopScan', 'hops')
+    };
     return {
-        schemaVersion: 'tagmemo-unified-geometry-probe-v2',
+        schemaVersion: 'tagmemo-unified-geometry-probe-v3.1',
         generatedAt: new Date().toISOString(),
         readonly: true,
         database: options.db,
         config: options.config,
+        reproducibility: {
+            configHash: shortHash(config),
+            probeOptions: {
+                probes: options.probes,
+                maxFiles: options.maxFiles,
+                maxNodes: options.maxNodes,
+                maxNeighbors: options.maxNeighbors,
+                maxCurveFiles: options.maxCurveFiles,
+                hops: options.hops,
+                alphaScales: options.alphaScales,
+                hopScales: options.hopScales,
+                randomizations: options.randomizations,
+                randomSeed: options.seed
+            }
+        },
         dataset: {
             modelSig: facts.modelSig,
             tagsWithVectors: facts.tagNames.size,
@@ -975,14 +1450,16 @@ function buildReport(options, config, facts, graphData, kernelData, transportDat
             geometryPartial: { rewardSpearman: 0.50, actionSpearman: 0.45, ablationMargin: 0.05 }
         },
         summary,
-        verdict: verdict(summary),
+        scaleSummary,
+        legacyVerdict: verdict(summary),
+        verdict: v3Verdict(summary, scaleSummary),
         probes
     };
 }
 
 function printReport(report) {
     const s = report.summary;
-    console.log('\n=== TagMemo 统一几何构型探针 V2 ===');
+    console.log('\n=== TagMemo 统一几何构型探针 V3 ===');
     console.log(`只读模式:               ${report.readonly ? '是' : '否'}`);
     console.log(`采样文件 / 节点:        ${report.dataset.sampledFiles} / ${report.dataset.retainedNodes}`);
     console.log(`最大输运行质量:         ${report.dataset.maxTransportRowMass.toFixed(6)}`);
@@ -990,13 +1467,24 @@ function printReport(report) {
     console.log(`场 cosine 中位数:       ${s.medianFieldCosine.toFixed(4)}`);
     console.log(`可信场 Spearman:         ${s.medianTrustedFieldSpearman.toFixed(4)}`);
     console.log(`去源加权 Jaccard:        ${s.medianSeedlessWeightedJaccard.toFixed(4)}`);
+    console.log(`严格去源 cosine:         ${s.medianStrictSeedlessCosine.toFixed(4)}`);
+    console.log(`严格等长 Top-K Jaccard:  ${s.medianStrictEqualTopKJaccard.toFixed(4)}`);
+    console.log(`无限场尾部质量:         ${s.medianStrictTailMass.toFixed(4)}`);
     console.log(`Top-10 域 Jaccard:       ${s.medianTop10Jaccard.toFixed(4)}`);
     console.log(`同 reward 曲线相关:      ${s.medianRewardGeometrySpearman.toFixed(4)}`);
-    console.log(`同 action 曲线相关:      ${s.medianActionGeometrySpearman.toFixed(4)}`);
-    console.log(`消融优势中位数:         ${s.medianAblationMargin.toFixed(4)}`);
+    console.log(`有界路径曲线相关:       ${s.medianBoundedPathGeometrySpearman.toFixed(4)}`);
+    console.log(`随机消融经验 p 中位数:  ${s.medianRandomEmpiricalP.toFixed(4)}`);
     console.log(`\n判决: ${report.verdict.level}`);
-    console.log(`分层: dynamics=${report.verdict.layers.dynamics}, domain=${report.verdict.layers.domain}, geometry=${report.verdict.layers.geometry}`);
-    console.log(report.verdict.text);
+    console.log(
+        `分层: stability=${report.verdict.layers.stability}, ` +
+        `dynamics=${report.verdict.layers.dynamics}, domain=${report.verdict.layers.domain}, ` +
+        `geometry=${report.verdict.layers.geometry}`
+    );
+    console.log(
+        `最佳动力学 alpha=${report.verdict.bestDynamicsAlpha}, ` +
+        `最佳几何 alpha=${report.verdict.bestGeometryAlpha}`
+    );
+    console.log(report.verdict.note);
 }
 
 function markdownNumber(value, digits = 4) {
