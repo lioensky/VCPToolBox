@@ -340,7 +340,7 @@ function scoreTopology(item, options = {}) {
         pathGainCap,
         pathGainCap * pure.topologyRaw * pure.topologyReliability
     );
-    const score = clamp01(
+    const legacyRelativeScore = clamp01(
         components.query
         + localGainAward
         + transferGainAward
@@ -348,11 +348,91 @@ function scoreTopology(item, options = {}) {
         + pathGainAward
     );
 
+    const topologyScoreMode = String(
+        options.topologyScoreMode || 'relative_graph_dual_readout'
+    ).trim().toLowerCase();
+    const graph = item.relativeTopology || {};
+    const fieldMode = String(
+        options.topologyFieldScore || 'denoised'
+    ).trim().toLowerCase();
+    const denoisedScore = clamp01(
+        item.curve?.denoisedFieldScore
+        ?? item.curve?.v9DenoisedScore
+        ?? components.local
+    );
+    const fieldScore = fieldMode === 'query'
+        ? components.query
+        : fieldMode === 'local'
+            ? components.local
+            : fieldMode === 'transfer'
+                ? components.transfer
+                : denoisedScore;
+    const graphScore = clamp01(graph.score);
+    const graphReliability = clamp01(graph.reliability);
+    const graphWeightMaximum = clamp01(
+        options.topologyGraphWeightMax ?? 0.55
+    );
+    const graphWeightFloor = Math.min(
+        graphWeightMaximum,
+        clamp01(options.topologyGraphWeightFloor ?? 0)
+    );
+    const graphWeight = graphScore > 0
+        ? graphWeightFloor
+            + (graphWeightMaximum - graphWeightFloor)
+                * graphReliability
+        : 0;
+    const dualReadoutScore = clamp01(
+        (1 - graphWeight) * fieldScore
+        + graphWeight * graphScore
+    );
+    const score = topologyScoreMode === 'legacy_relative_bonus'
+        ? legacyRelativeScore
+        : dualReadoutScore;
+
     return Object.freeze({
         ...pure,
         arm: 'topology',
         score,
-        baseScore: components.query,
+        baseScore: fieldScore,
+        topologyScoreMode,
+        topologyDualReadout: Object.freeze({
+            fieldMode,
+            fieldScore,
+            denoisedScore,
+            graphScore,
+            graphReliability,
+            graphReliabilityMode: graph.reliabilityMode || 'unavailable',
+            graphEdgeReliability: clamp01(graph.edgeReliability),
+            graphNodeOnlyReliability: clamp01(
+                graph.nodeOnlyReliability
+            ),
+            graphNodeOnlyReliabilityCap: clamp01(
+                graph.nodeOnlyReliabilityCap
+            ),
+            graphWeight,
+            graphWeightFloor,
+            graphWeightMaximum,
+            dualReadoutScore,
+            legacyRelativeScore,
+            matchedNodeCoverage:
+                clamp01(graph.matchedNodeCoverage),
+            matchedEdgeCoverage:
+                clamp01(graph.matchedEdgeCoverage),
+            nodeAlignmentScore:
+                clamp01(graph.nodeAlignmentScore),
+            edgeGraphScore: clamp01(graph.edgeGraphScore),
+            nodeGraphScore: clamp01(graph.nodeGraphScore),
+            relativeDistanceScore:
+                clamp01(graph.relativeDistanceScore),
+            directionScore: clamp01(graph.directionScore),
+            edgeTopologyScore:
+                clamp01(graph.edgeTopologyScore),
+            motifScore: clamp01(graph.motifScore),
+            meanClosure: clamp01(graph.meanClosure),
+            matchedNodes: Number(graph.matchedNodes) || 0,
+            matchedEdges: Number(graph.matchedEdges) || 0,
+            reason: graph.reason || null
+        }),
         topologyRelativeGeometry: Object.freeze({
             queryBase: components.query,
             localScore: components.local,

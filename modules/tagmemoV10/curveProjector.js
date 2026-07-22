@@ -117,6 +117,7 @@ function projectCandidateCurves(db, candidates, options = {}) {
             candidateUnionScore: Number(candidate.candidateUnionScore) || 0,
             candidateUnionRank: Number(candidate.candidateUnionRank) || 0,
             queryScore: Number(candidate.queryScore ?? candidate.score ?? candidate.vectorScore) || 0,
+            denoisedFieldScore: Number(candidate.denoisedFieldScore) || 0,
             localFieldScore: Number(candidate.localFieldScore) || 0,
             transferFieldScore: Number(candidate.transferFieldScore) || 0,
             bm25Score: Number(candidate.bm25Score) || 0,

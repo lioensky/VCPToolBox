@@ -815,20 +815,33 @@ class LightMemoPlugin {
                 },
                 {
                     artifact: snapshot.bundle,
-                    sourceObservation: { sourceK }
+                    sourceObservationConfig: { sourceK }
                 }
             )
         );
         const queryState = prepared.queryState;
-        if (!prepared.localVector || !prepared.transferVector) {
-            throw new Error('TagMemo V10 Alpha 双尺度场无法回投影。');
+        if (
+            !prepared.denoisedVector
+            || !prepared.localVector
+            || !prepared.transferVector
+        ) {
+            throw new Error(
+                'TagMemo V10 Alpha 降噪源或双尺度场无法回投影。'
+            );
         }
 
         // _scoreByVectorSimilarity 当前是同步 SQLite + CPU 热循环包装成 async。
-        // 分别计时而非 Promise.all，避免三个同步阶段被错误显示成同一个并发耗时。
+        // 分别计时而非 Promise.all，避免四个同步阶段被错误显示成同一个并发耗时。
         const queryRanked = await measureAsync(
             'queryVectorScoreMs',
             () => this._scoreByVectorSimilarity(candidates, queryVector)
+        );
+        const denoisedRanked = await measureAsync(
+            'denoisedVectorScoreMs',
+            () => this._scoreByVectorSimilarity(
+                candidates,
+                prepared.denoisedVector
+            )
         );
         const localRanked = await measureAsync(
             'localVectorScoreMs',
@@ -840,6 +853,12 @@ class LightMemoPlugin {
         );
         const queryScoreById = new Map(
             queryRanked.map(item => [Number(item.label), item.vectorScore])
+        );
+        const denoisedScoreById = new Map(
+            denoisedRanked.map(item => [
+                Number(item.label),
+                item.vectorScore
+            ])
         );
         const localScoreById = new Map(
             localRanked.map(item => [Number(item.label), item.vectorScore])
@@ -904,6 +923,7 @@ class LightMemoPlugin {
                 id,
                 chunkId: id,
                 queryScore: queryScoreById.get(id) || 0,
+                denoisedFieldScore: denoisedScoreById.get(id) || 0,
                 localFieldScore: localScoreById.get(id) || 0,
                 transferFieldScore: transferScoreById.get(id) || 0,
                 bm25Score: bm25ScoreById.get(id) || 0,
@@ -929,6 +949,13 @@ class LightMemoPlugin {
                 queryScoreById,
                 Number(candidateConfig.queryK) || 100,
                 'queryScore'
+            ),
+            denoised_field_knn: rank(
+                denoisedScoreById,
+                Number(candidateConfig.denoisedK)
+                    || Number(candidateConfig.queryK)
+                    || 100,
+                'denoisedFieldScore'
             ),
             local_field_knn: rank(
                 localScoreById,
@@ -1071,6 +1098,11 @@ class LightMemoPlugin {
                 id: Number(item.label),
                 score: Number(item.vectorScore) || 0
             })).sort((left, right) => right.score - left.score);
+            const normalizedDenoisedRanked = denoisedRanked.map(item => ({
+                ...item,
+                id: Number(item.label),
+                score: Number(item.vectorScore) || 0
+            })).sort((left, right) => right.score - left.score);
             const normalizedLocalRanked = localRanked.map(item => ({
                 ...item,
                 id: Number(item.label),
@@ -1086,6 +1118,7 @@ class LightMemoPlugin {
                 k,
                 rawKnn: knnRanked,
                 v9PrivateKnn: v9VectorRanked,
+                v10Denoised: normalizedDenoisedRanked,
                 v10Local: normalizedLocalRanked,
                 v10Transfer: normalizedTransferRanked
             });
@@ -1099,6 +1132,13 @@ class LightMemoPlugin {
                 v9Private: {
                     label: 'V9 Private KNN Map',
                     ranked: v9VectorRanked.slice(0, mapExperimentK)
+                },
+                v10Denoised: {
+                    label: 'V10 Denoised Spike Map',
+                    ranked: normalizedDenoisedRanked.slice(
+                        0,
+                        mapExperimentK
+                    )
                 },
                 v10Local: {
                     label: 'V10 Local Map',
@@ -1352,6 +1392,10 @@ class LightMemoPlugin {
                 rejected: item.armResult.rejected,
                 rejectionReasons: item.armResult.rejectionReasons,
                 candidateSources: item.curve.candidateSources,
+                denoisedFieldScore: item.curve.denoisedFieldScore,
+                topologyScoreMode: item.armResult.topologyScoreMode,
+                topologyDualReadout: item.armResult.topologyDualReadout,
+                relativeTopology: item.relativeTopology,
                 geometry: item.geometry,
                 dstc: item.observables
             }))
@@ -1375,6 +1419,8 @@ class LightMemoPlugin {
                 queryId: queryState.queryId,
                 artifactSig: queryState.artifactSig,
                 scopeHash: queryState.scopeHash,
+                sourceObservation: queryState.sourceObservation,
+                queryRiverGraph: queryState.queryRiverGraph,
                 solver: queryState.solver,
                 fieldDiagnostics: queryState.fieldDiagnostics,
                 localDomain: queryState.localDomain,
@@ -1415,6 +1461,7 @@ class LightMemoPlugin {
             `prepare+solve=${roundedTiming.prepareAndSolveQueryMs}ms, ` +
             `vectors=${Number((
                 roundedTiming.queryVectorScoreMs
+                + roundedTiming.denoisedVectorScoreMs
                 + roundedTiming.localVectorScoreMs
                 + roundedTiming.transferVectorScoreMs
             ).toFixed(3))}ms, ` +
@@ -1596,6 +1643,7 @@ class LightMemoPlugin {
         k,
         rawKnn,
         v9PrivateKnn,
+        v10Denoised,
         v10Local,
         v10Transfer
     }) {
@@ -1623,6 +1671,11 @@ class LightMemoPlugin {
                 'v9Private',
                 'V9 Private KNN Map',
                 v9PrivateKnn
+            ),
+            v10Denoised: buildMap(
+                'v10Denoised',
+                'V10 Denoised Spike Map',
+                v10Denoised
             ),
             v10Local: buildMap('v10Local', 'V10 Local Map', v10Local),
             v10Transfer: buildMap(
@@ -1667,7 +1720,9 @@ class LightMemoPlugin {
             ),
             pairs: [
                 pair('raw', 'v9Private'),
-                pair('v9Private', 'v10Local'),
+                pair('raw', 'v10Denoised'),
+                pair('v9Private', 'v10Denoised'),
+                pair('v10Denoised', 'v10Local'),
                 pair('v10Local', 'v10Transfer'),
                 pair('raw', 'v10Local'),
                 pair('raw', 'v10Transfer')
@@ -1762,8 +1817,8 @@ class LightMemoPlugin {
         md += '## 1. 实验身份与公平条件\n\n';
         md += '- **KNN**：原始查询向量余弦排序。\n';
         md += `- **V9 Production**：当前生产 Artifact 与生产测地重排；实际算法版本 \`${v9Artifact.algorithmVersion || 'v9'}\`。\n`;
-        md += '- **V10 Unified-Pure / Gated / Observed / V10-Topology**：共享同一 V10 Artifact、Query State、双尺度场、候选超集和候选曲线。\n';
-        md += '- **V10-Topology**：以 Query 相似度为零跳底座，只奖励 Local/Transfer 相对增量与可靠路径增益，不修改 Unified-Pure。\n';
+        md += '- **V10 Unified-Pure / Gated / Observed / V10-Topology**：共享同一 V10 Artifact、Query State、EPA/Pyramid/Spike 降噪源、双尺度场、候选超集和候选曲线。\n';
+        md += '- **V10-Topology**：第一主读出是降噪 Spike 修正向量与 Chunk 的相似度；第二主读出比较查询临时有向河网与候选原生有序 Tag 构型，并按图可靠度动态竞争解释权。旧相对增量公式仅由 `legacy_relative_bonus` 回放。\n';
         md += `- **Rerank**：${compareRerank
             ? (rerankTrack?.configured
                 ? '已启用独立外部精排。'
@@ -1772,12 +1827,17 @@ class LightMemoPlugin {
         md += `- V10 Artifact：\`${artifact.artifactSig}\`\n`;
         md += `- V9 Artifact：\`${v9Artifact.artifactSig}\`\n`;
         md += `- Query ID：\`${queryState.queryId}\`\n`;
+        md += `- V10 查询源：\`${queryState.sourceObservation?.sourceMode || 'unknown'}\`；V9 观测资产：\`${queryState.sourceObservation?.v9ArtifactSig || '—'}\`\n`;
+        const sourceDiagnostics = queryState.sourceObservation?.diagnostics || {};
+        const riverDiagnostics = queryState.queryRiverGraph?.diagnostics || {};
+        md += `- 降噪观测：完整=${sourceDiagnostics.completeObservation === true ? '是' : '否'}；向量已变化=${sourceDiagnostics.vectorChanged === true ? '是' : '否'}；ΔL2=${fmt(sourceDiagnostics.vectorDeltaL2, 8)}；源↔增强余弦=${fmt(sourceDiagnostics.sourceEnhancedCosine, 8)}；源节点=${sourceDiagnostics.normalizedSourceNodes ?? sourceDiagnostics.sourceNodes ?? '—'}；EPA深度=${queryState.sourceObservation?.epa?.logicDepth ?? '—'}；Pyramid层数=${queryState.sourceObservation?.pyramid?.levels?.length ?? queryState.sourceObservation?.pyramid?.depth ?? '—'}${sourceDiagnostics.fallbackReason ? `；退化原因=${sourceDiagnostics.fallbackReason}` : ''}\n`;
+        md += `- Spike 临时河网：节点=${riverDiagnostics.reachedNodes ?? queryState.queryRiverGraph?.nodes?.length ?? 0}；边=${riverDiagnostics.activeEdges ?? queryState.queryRiverGraph?.edges?.length ?? 0}；种子=${riverDiagnostics.seedNodes ?? '—'}\n`;
         md += `- D/S/T/C 消融：${disabledObservables.length > 0
             ? disabledObservables.map(value => `\`${value}\``).join(', ')
             : '无'}\n\n`;
 
         md += '## 2. 私有地图位移诊断\n\n';
-        md += '> 本节比较候选生成地图，不混入最终产品内核。V9 Private KNN 是浪潮增强向量形成的私有坐标；V10 Local/Transfer 是双尺度场回投影形成的两张地图。\n\n';
+        md += '> 本节只比较候选生成坐标，不混入最终排序内核。V10 Denoised Spike Map 是 EPA/Pyramid/Spike 完整降噪后形成的第一主读出地图；Local/Transfer 是在同一降噪源上经权限条件化双尺度场回投影形成的地图。\n\n';
         md += '| 地图对 | 交集 | 并集 | Jaccard | 左侧独占 | 右侧独占 |\n';
         md += '|---|---:|---:|---:|---:|---:|\n';
         for (const pair of mapDiagnostics?.pairs || []) {
@@ -1793,7 +1853,7 @@ class LightMemoPlugin {
         }
 
         md += `\n## 3. 地图 × 排序内核正交交换（Map-K=${mapExperimentK}）\n\n`;
-        md += '> 每行固定候选地图，只交换 V9 Production Kernel 与 V10 Unified-Pure Kernel。V10 对四张地图的并集仅做一次曲线投影与观测计算，不重复求场。\n\n';
+        md += '> 每行固定候选地图，只交换 V9 Production Kernel 与 V10 Unified-Pure Kernel。V10 对五张地图的并集仅做一次曲线投影与观测计算，不重复求场。\n\n';
         md += '| 候选地图 | 地图候选数 | V10可评估 | V9 Kernel Top-K | V10 Kernel Top-K | 内核Top-K重合 | Jaccard |\n';
         md += '|---|---:|---:|---|---|---:|---:|\n';
         for (const run of Object.values(orthogonalRuns || {})) {
@@ -1905,8 +1965,24 @@ class LightMemoPlugin {
                         : '';
                     md += `- 候选来源：${sources || '—'}\n`;
                     md += `- V10 基础分：${fmt(item.armResult.baseScore, 6)}；门控倍率：${fmt(item.armResult.gateMultiplier)}；Observed 增益：${fmt(item.armResult.observedBonus, 6)}\n`;
-                    md += `- 五分量 Q/L/X/G/O：${fmt(components.query)}/${fmt(components.local)}/${fmt(components.transfer)}/${fmt(components.path)}/${fmt(components.occupancy)}\n`;
+                    md += `- 六分量 Q/D/L/X/G/O：${fmt(components.query)}/${fmt(item.curve?.denoisedFieldScore)}/${fmt(components.local)}/${fmt(components.transfer)}/${fmt(components.path)}/${fmt(components.occupancy)}\n`;
                     md += `- 权限校准：模式=${item.armResult.pureScoreMode || '—'}；语义底座=${fmt(item.armResult.semanticBase)}；拓扑原量=${fmt(item.armResult.topologyRaw)}；可靠度=${fmt(item.armResult.topologyReliability)}；拓扑增益=${fmt(item.armResult.topologyBonus)}≤${fmt(item.armResult.topologyBonusCap)}\n`;
+                    if (item.armResult.topologyDualReadout) {
+                        const dual = item.armResult.topologyDualReadout;
+                        md += `- Topology 双主读出：模式=${item.armResult.topologyScoreMode || '—'}；Field=${fmt(dual.fieldScore)}；Graph=${fmt(dual.graphScore)}；可靠度模式=${dual.graphReliabilityMode || '—'}；图可靠度=${fmt(dual.graphReliability)}（边=${fmt(dual.graphEdgeReliability)}/节点退化=${fmt(dual.graphNodeOnlyReliability)}≤${fmt(dual.graphNodeOnlyReliabilityCap)}）；图权重=${fmt(dual.graphWeight)}；合成=${fmt(dual.dualReadoutScore)}\n`;
+                        md += `- 相对河网：节点覆盖=${fmt(dual.matchedNodeCoverage)}；边覆盖=${fmt(dual.matchedEdgeCoverage)}；节点对齐=${fmt(dual.nodeAlignmentScore)}；节点图分=${fmt(dual.nodeGraphScore)}；完整边图分=${fmt(dual.edgeGraphScore)}；相对距离=${fmt(dual.relativeDistanceScore)}；方向=${fmt(dual.directionScore)}；边拓扑=${fmt(dual.edgeTopologyScore)}；Motif=${fmt(dual.motifScore)}；正文闭合=${fmt(dual.meanClosure)}\n`;
+                        const strongestEdges = Array.isArray(item.relativeTopology?.edgeAlignments)
+                            ? item.relativeTopology.edgeAlignments.slice(0, 3)
+                            : [];
+                        if (strongestEdges.length > 0) {
+                            md += `- 最强河道对应：${strongestEdges.map(edge =>
+                                `${edge.sourceId}→${edge.targetId} ≈ ${edge.candidateSourceId}→${edge.candidateTargetId}` +
+                                `(距${fmt(edge.distanceSimilarity, 3)}/向${fmt(edge.directionSimilarity, 3)}/独立${fmt(edge.independentFraction, 3)}/质${fmt(edge.edgeQuality, 3)})`
+                            ).join('；')}\n`;
+                        } else {
+                            md += `- 最强河道对应：无（${dual.reason || '未形成可信边对应'}）\n`;
+                        }
+                    }
                     if (item.armResult.topologyRelativeGeometry) {
                         const relative = item.armResult.topologyRelativeGeometry;
                         md += `- 三层相对几何：Q=${fmt(relative.queryBase)}；ΔL=${fmt(relative.localGain)}×${fmt(relative.localReliability)}→${fmt(relative.localGainAward)}；ΔX=${fmt(relative.transferGain)}×${fmt(relative.transferReliability)}→${fmt(relative.transferGainAward)}；ΔB=${fmt(relative.boundaryGain)}×${fmt(relative.boundaryReliability)}→${fmt(relative.boundaryGainAward)}；Path→${fmt(relative.pathGainAward)}；总几何增益=${fmt(relative.totalGeometryGain)}\n`;

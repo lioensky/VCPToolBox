@@ -331,6 +331,7 @@ function computeDstcBatch(pathBatch, queryState, options = {}) {
         .map(item => Object.freeze({
             curve: item.curve,
             geometry: item.geometry,
+            relativeTopology: item.relativeTopology || null,
             observables: computeDstcObservables(
                 item.curve,
                 item.geometry,

@@ -73,6 +73,13 @@
       "experimentArm": "pure",
       "strictVersion": true,
       "traceEnabled": true,
+      "sourceObservation": {
+        "mode": "v9_epa_pyramid_spike",
+        "baseTagBoost": 0.6,
+        "coreBoostFactor": 1.33,
+        "allowKnnFallback": false,
+        "fallbackSourceK": 16
+      },
       "localField": {
         "solver": "scaled_resolvent",
         "alpha": 0.15,
@@ -99,6 +106,7 @@
       },
       "candidateSuperset": {
         "queryK": 100,
+        "denoisedK": 100,
         "localFieldK": 100,
         "transferFieldK": 100,
         "bm25K": 50,
@@ -107,6 +115,7 @@
         "minimumGeometryCoverage": 0.5,
         "minimumQuota": {
           "query_knn": 20,
+          "denoised_field_knn": 20,
           "local_field_knn": 20,
           "transfer_field_knn": 20,
           "bm25": 10,
@@ -121,6 +130,17 @@
         "supportMode": "effective_domain",
         "minimumSupportedPotential": 0
       },
+      "relativeTopology": {
+        "enabled": true,
+        "semanticNodeThreshold": 0.48,
+        "relativeDistanceTemperature": 0.35,
+        "reverseDirectionCredit": 0.25,
+        "selfEvidenceFloor": 0.15,
+        "nodeOnlyReliabilityCap": 0.2,
+        "minimumRiverEdgeFlow": 0.015,
+        "maximumRiverEdges": 96,
+        "traceEdgeLimit": 24
+      },
       "dstc": {
         "compute": true,
         "arm": "pure",
@@ -130,6 +150,10 @@
         "topologyBonusCap": 0.08,
         "topologyPathSaturation": 0.15,
         "topologyReliabilityMode": "path_closure",
+        "topologyScoreMode": "relative_graph_dual_readout",
+        "topologyGraphWeightMax": 0.55,
+        "topologyGraphWeightFloor": 0,
+        "topologyFieldScore": "denoised",
         "semanticSimilarityMode": "positive",
         "closureMode": "query_weighted",
         "queryClosureWeight": 0.65,

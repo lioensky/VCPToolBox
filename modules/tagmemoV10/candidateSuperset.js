@@ -2,6 +2,7 @@
 
 const SOURCE_ORDER = Object.freeze([
     'query_knn',
+    'denoised_field_knn',
     'local_field_knn',
     'transfer_field_knn',
     'bm25',

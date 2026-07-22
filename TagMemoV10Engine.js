@@ -14,6 +14,9 @@ const { solveDualScaledFields } = require('./modules/tagmemoV10/scaledFieldSolve
 const { buildCandidateSuperset } = require('./modules/tagmemoV10/candidateSuperset');
 const { projectCandidateCurves } = require('./modules/tagmemoV10/curveProjector');
 const { evaluateCandidateCurves } = require('./modules/tagmemoV10/unifiedPathGeometry');
+const {
+    evaluateRelativeTopologyBatch
+} = require('./modules/tagmemoV10/relativeTopologyMatcher');
 const { computeDstcBatch } = require('./modules/tagmemoV10/dstcObservables');
 const {
     scoreExperimentArm,
@@ -52,6 +55,14 @@ class TagMemoV10Engine {
             experimentArm: configured.experimentArm || 'pure',
             strictVersion: configured.strictVersion !== false,
             traceEnabled: configured.traceEnabled !== false,
+            sourceObservation: {
+                mode: 'v9_epa_pyramid_spike',
+                baseTagBoost: 0.6,
+                coreBoostFactor: 1.33,
+                allowKnnFallback: false,
+                fallbackSourceK: 16,
+                ...(configured.sourceObservation || {})
+            },
             localField: {
                 solver: 'scaled_resolvent',
                 alpha: 0.15,
@@ -98,6 +109,18 @@ class TagMemoV10Engine {
                 minimumSupportedPotential: 0,
                 ...(configured.pathGeometry || {})
             },
+            relativeTopology: {
+                enabled: true,
+                semanticNodeThreshold: 0.48,
+                relativeDistanceTemperature: 0.35,
+                reverseDirectionCredit: 0.25,
+                selfEvidenceFloor: 0.15,
+                nodeOnlyReliabilityCap: 0.2,
+                minimumRiverEdgeFlow: 0.015,
+                maximumRiverEdges: 96,
+                traceEdgeLimit: 24,
+                ...(configured.relativeTopology || {})
+            },
             dstc: {
                 compute: true,
                 arm: configured.experimentArm || 'pure',
@@ -107,6 +130,10 @@ class TagMemoV10Engine {
                 topologyBonusCap: 0.08,
                 topologyPathSaturation: 0.15,
                 topologyReliabilityMode: 'path_closure',
+                topologyScoreMode: 'relative_graph_dual_readout',
+                topologyGraphWeightMax: 0.55,
+                topologyGraphWeightFloor: 0,
+                topologyFieldScore: 'denoised',
                 semanticSimilarityMode: 'positive',
                 closureMode: 'query_weighted',
                 queryClosureWeight: 0.65,
@@ -304,26 +331,103 @@ class TagMemoV10Engine {
 
     prepareQuery(query, agentContext = {}, options = {}) {
         const artifact = options.artifact || this.getArtifactSnapshot();
-        const queryVector = query?.vector || options.vector;
-        const sourceField = options.sourceField || this.createSourceFieldFromVector(
-            queryVector,
-            options.sourceObservation || {}
-        );
+        const queryVectorRaw = query?.vector || options.vector;
+        const queryVector = queryVectorRaw instanceof Float32Array
+            ? queryVectorRaw
+            : new Float32Array(queryVectorRaw || []);
+        const configuredObservation = {
+            ...(artifact.effectiveConfig.sourceObservation || {}),
+            // sourceObservation 曾被早期调用方用于配置覆盖；保留兼容，
+            // 新调用统一使用 sourceObservationConfig，避免与观测结果混淆。
+            ...(options.sourceObservation || {}),
+            ...(options.sourceObservationConfig || {})
+        };
+
+        let sourceObservation = options.sourceObservationResult || null;
+        let sourceField = options.sourceField || null;
+        if (!sourceField && !sourceObservation) {
+            const mode = String(
+                configuredObservation.mode || 'v9_epa_pyramid_spike'
+            ).trim().toLowerCase();
+            if (
+                mode === 'v9_epa_pyramid_spike'
+                && typeof this.v9Engine?.observeQueryForV10 === 'function'
+            ) {
+                sourceObservation = this.v9Engine.observeQueryForV10(
+                    queryVector,
+                    {
+                        artifactBundle: this.v9Engine
+                            .getArtifactBundleSnapshot?.('v9'),
+                        baseTagBoost: configuredObservation.baseTagBoost,
+                        coreBoostFactor:
+                            configuredObservation.coreBoostFactor,
+                        coreTags: options.coreTags || []
+                    }
+                );
+                if (
+                    sourceObservation?.sourceMode
+                    === 'v9_epa_pyramid_spike'
+                    && Array.isArray(sourceObservation.sourceField)
+                    && sourceObservation.sourceField.length > 0
+                ) {
+                    sourceField = sourceObservation.sourceField;
+                }
+            }
+        }
+
+        if (!sourceField) {
+            if (configuredObservation.allowKnnFallback !== true) {
+                const error = new Error(
+                    'V10 denoised source observation is unavailable and KNN fallback is disabled'
+                );
+                error.code = 'TAGMEMO_V10_DENOISED_SOURCE_UNAVAILABLE';
+                throw error;
+            }
+            sourceField = this.createSourceFieldFromVector(
+                queryVector,
+                {
+                    sourceK: configuredObservation.fallbackSourceK
+                        ?? configuredObservation.sourceK
+                        ?? 16,
+                    minimumScore: configuredObservation.minimumScore
+                }
+            );
+            sourceObservation = Object.freeze({
+                schema: 'tagmemo-v10-source-observation-fallback-v1',
+                sourceMode: 'tag_knn_fallback',
+                sourceField,
+                enhancedVector: null,
+                queryRiverGraph: null,
+                epa: Object.freeze({}),
+                pyramid: Object.freeze({}),
+                propagation: Object.freeze({}),
+                diagnostics: Object.freeze({
+                    sourceNodes: sourceField.length,
+                    fallback: true
+                })
+            });
+        }
+
         const initial = this.createQueryState(
             query,
             agentContext,
             artifact,
             {
                 ...options,
-                sourceField
+                sourceField,
+                sourceObservation
             }
         );
         const solved = this.solveQueryState(initial, {
             ...options,
             artifact
         });
+        const denoisedVector = sourceObservation?.enhancedVector
+            ? new Float32Array(sourceObservation.enhancedVector)
+            : this.projectFieldVector(solved.sourceField);
         return Object.freeze({
             queryState: solved,
+            denoisedVector,
             localVector: this.projectFieldVector(solved.localField),
             transferVector: this.projectFieldVector(solved.transferField)
         });
@@ -340,6 +444,10 @@ class TagMemoV10Engine {
         const normalizedQuery = this._normalizeQuery(query);
         const normalizedAgentContext = this._normalizeAgentContext(agentContext);
         const sourceField = this._normalizeSourceField(options.sourceField);
+        const sourceObservation = this._normalizeSourceObservation(
+            options.sourceObservation,
+            sourceField
+        );
         const solver = immutableSnapshot({
             local: {
                 ...snapshot.effectiveConfig.localField,
@@ -373,6 +481,8 @@ class TagMemoV10Engine {
             query: normalizedQuery,
             agentContext: normalizedAgentContext,
             sourceField,
+            sourceObservation,
+            queryRiverGraph: sourceObservation.queryRiverGraph,
             solver,
             conditionedTransportView: null,
             localField: null,
@@ -408,12 +518,26 @@ class TagMemoV10Engine {
 
     evaluateCandidateCurves(curves, queryState, options = {}) {
         const artifact = options.artifact || this.getArtifactSnapshot();
-        return evaluateCandidateCurves(
+        const pathBatch = evaluateCandidateCurves(
             curves,
             queryState,
             {
                 ...artifact.effectiveConfig.pathGeometry,
                 ...(options.config || {})
+            }
+        );
+        const relativeConfig = {
+            ...artifact.effectiveConfig.relativeTopology,
+            ...(options.relativeTopology || {})
+        };
+        if (relativeConfig.enabled === false) return pathBatch;
+        return evaluateRelativeTopologyBatch(
+            pathBatch,
+            queryState,
+            {
+                ...relativeConfig,
+                pairwiseView: artifact.pairwiseView,
+                provenanceView: artifact.provenanceView
             }
         );
     }
@@ -611,6 +735,49 @@ class TagMemoV10Engine {
             visibilityMode: String(agentContext.visibilityMode || 'scope_only'),
             permissions: immutableSnapshot(agentContext.permissions || {}),
             affinity: immutableSnapshot(agentContext.affinity || {})
+        });
+    }
+
+    _normalizeSourceObservation(observation, sourceField) {
+        const input = observation && typeof observation === 'object'
+            ? observation
+            : {};
+        const river = input.queryRiverGraph
+            && typeof input.queryRiverGraph === 'object'
+            ? input.queryRiverGraph
+            : null;
+        return immutableSnapshot({
+            schema: input.schema
+                || 'tagmemo-v10-source-observation-v1',
+            sourceMode: input.sourceMode || 'explicit_source_field',
+            v9ArtifactSig: input.v9ArtifactSig || null,
+            epa: input.epa || {},
+            pyramid: input.pyramid || {},
+            propagation: input.propagation || {},
+            matchedTags: Array.isArray(input.matchedTags)
+                ? input.matchedTags
+                : [],
+            coreTagsMatched: Array.isArray(input.coreTagsMatched)
+                ? input.coreTagsMatched
+                : [],
+            fieldProvenance: Array.isArray(input.fieldProvenance)
+                ? input.fieldProvenance
+                : [],
+            queryRiverGraph: river,
+            diagnostics: {
+                ...(input.diagnostics || {}),
+                normalizedSourceNodes: sourceField.length,
+                completeObservation:
+                    input.diagnostics?.completeObservation === true,
+                vectorChanged:
+                    input.diagnostics?.vectorChanged === true,
+                vectorDeltaL2:
+                    Number(input.diagnostics?.vectorDeltaL2) || 0,
+                sourceEnhancedCosine:
+                    Number(input.diagnostics?.sourceEnhancedCosine) || 0,
+                fallbackReason:
+                    input.diagnostics?.fallbackReason || null
+            }
         });
     }
 
