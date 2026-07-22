@@ -1,6 +1,12 @@
 'use strict';
 
-const ARM_NAMES = Object.freeze(['pure', 'gated', 'observed', 'topology']);
+const ARM_NAMES = Object.freeze([
+    'pure',
+    'gated',
+    'observed',
+    'topology',
+    'topology_v2'
+]);
 
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
@@ -469,11 +475,606 @@ function scoreTopology(item, options = {}) {
     });
 }
 
+/**
+ * 识别当前查询对离散结构的预期形态。原子概念天然可以只有节点而没有边，
+ * 命题与叙事查询才逐级要求关系边、方向和 Motif，避免“边少即低可信”。
+ */
+function classifyTopologyV2Query(dstcBatch, options = {}) {
+    const queryState = options.queryState || {};
+    const text = String(queryState.query?.text || options.queryText || '').trim();
+    const river = queryState.queryRiverGraph || {};
+    const nodes = Array.isArray(river.nodes) ? river.nodes : [];
+    const edges = Array.isArray(river.edges) ? river.edges : [];
+    const diagnostics = river.diagnostics || {};
+    const relationMatches = text.match(
+        /导致|造成|因为|所以|通过|依赖|属于|定义|源于|来自|用于|影响|支持|反对|转化|蒸馏|击败|损失|赔款|前提|机制|关系|→|->/g
+    ) || [];
+    const narrativeMatches = text.match(
+        /随后|之后|此前|最终|阶段|过程|历史|战争|事件|先是|然后|同时|但是|然而|结果|演变/g
+    ) || [];
+    const clauseCount = text
+        ? text.split(/[，,。；;！？!?\n]+/).filter(Boolean).length
+        : 0;
+
+    let mode = 'propositional';
+    if (
+        text.length <= 28
+        && clauseCount <= 1
+        && relationMatches.length === 0
+    ) {
+        mode = 'atomic';
+    } else if (
+        text.length >= 90
+        || clauseCount >= 4
+        || narrativeMatches.length >= 2
+        || relationMatches.length >= 3
+    ) {
+        mode = 'narrative';
+    }
+
+    const seedNodes = Math.max(
+        0,
+        Number(diagnostics.seedNodes)
+        || nodes.filter(node =>
+            String(node.sourceType || node.provenance || '')
+                .toLowerCase()
+                .includes('seed')
+        ).length
+    );
+    const nonSeedRatio = nodes.length > 0
+        ? clamp01((nodes.length - seedNodes) / nodes.length)
+        : 0;
+    const completeObservation =
+        queryState.sourceObservation?.diagnostics?.completeObservation === true;
+
+    // 场相干性描述“第一步感应是否已经形成统一逻辑核”。它与边数量正交：
+    // 私有原子概念可以没有传播边，却拥有高集中 Seed 场、高 EPA 逻辑深度
+    // 和高 Pyramid coherence；这正是全库零样本仍可可靠寻源的情况。
+    const positiveEnergies = nodes
+        .map(node => Math.max(
+            0,
+            Number(node.energy ?? node.normalizedEnergy) || 0
+        ))
+        .filter(value => value > 0);
+    const totalEnergy = positiveEnergies.reduce(
+        (sum, value) => sum + value,
+        0
+    );
+    let energyEntropy = 0;
+    if (totalEnergy > 0) {
+        for (const energy of positiveEnergies) {
+            const probability = energy / totalEnergy;
+            energyEntropy -= probability * Math.log(probability);
+        }
+    }
+    const normalizedEnergyEntropy = positiveEnergies.length > 1
+        ? clamp01(energyEntropy / Math.log(positiveEnergies.length))
+        : 0;
+    const energyConcentration = clamp01(1 - normalizedEnergyEntropy);
+    const epaLogicDepth = clamp01(
+        queryState.sourceObservation?.epa?.logicDepth
+    );
+    const pyramidCoherence = clamp01(
+        queryState.sourceObservation?.pyramid?.coherence
+    );
+    const fieldCoherence = clamp01(
+        0.4 * energyConcentration
+        + 0.3 * epaLogicDepth
+        + 0.3 * pyramidCoherence
+    );
+
+    // 当前候选池是“查询 × 知识域”的实际探针。地缘政治完整河网会表现为
+    // 大量边级可观测对应；小克式跨学科离散河道会在这里诚实降置信；
+    // 原子概念则读取节点对应与正文闭合，不要求虚构关系边。
+    const batchItems = Array.isArray(dstcBatch?.results)
+        ? dstcBatch.results
+        : [];
+    const observabilityValues = batchItems.map(item => {
+        const graph = item.relativeTopology || {};
+        const closure = clamp01(
+            item.observables?.closure?.queryChunkScore
+            ?? item.observables?.values?.closure
+        );
+        if (mode === 'atomic') {
+            return Math.cbrt(
+                clamp01(graph.matchedNodeCoverage)
+                * clamp01(graph.nodeAlignmentScore)
+                * closure
+            );
+        }
+        return Math.pow(
+            clamp01(graph.matchedEdgeCoverage)
+            * clamp01(graph.edgeReliability)
+            * clamp01(graph.meanClosure ?? closure),
+            1 / 3
+        );
+    });
+    const observableValues = observabilityValues
+        .filter(value => value > 0)
+        .sort((left, right) => right - left);
+    // 用头部有效候选而非全池均值衡量“该域是否存在完整河道”，避免大量
+    // 正常负例把少量但高度统一的零样本逻辑链稀释掉。
+    const observabilityHeadK = Math.max(
+        1,
+        Math.min(
+            observableValues.length,
+            Math.ceil(Math.sqrt(Math.max(1, batchItems.length)))
+        )
+    );
+    const domainObservability = observabilityHeadK > 0
+        ? clamp01(
+            observableValues.slice(0, observabilityHeadK).reduce(
+                (sum, value) => sum + value,
+                0
+            ) / observabilityHeadK
+        )
+        : 0;
+
+    const expected = mode === 'atomic'
+        ? { nodes: 2, edges: 0, nonSeedRatio: 0 }
+        : mode === 'narrative'
+            ? { nodes: 8, edges: 4, nonSeedRatio: 0.2 }
+            : { nodes: 4, edges: 2, nonSeedRatio: 0.1 };
+    const nodeAdequacy = clamp01(nodes.length / expected.nodes);
+    const edgeAdequacy = expected.edges === 0
+        ? 1
+        : clamp01(edges.length / expected.edges);
+    const emergenceAdequacy = expected.nonSeedRatio === 0
+        ? 1
+        : clamp01(nonSeedRatio / expected.nonSeedRatio);
+    const structuralAdequacy = mode === 'atomic'
+        ? nodeAdequacy
+        : mode === 'narrative'
+            ? 0.25 * nodeAdequacy
+                + 0.55 * edgeAdequacy
+                + 0.2 * emergenceAdequacy
+            : 0.35 * nodeAdequacy
+                + 0.5 * edgeAdequacy
+                + 0.15 * emergenceAdequacy;
+    const dynamicAdequacy = mode === 'atomic'
+        ? clamp01(
+            0.35 * structuralAdequacy
+            + 0.35 * fieldCoherence
+            + 0.3 * domainObservability
+        )
+        : mode === 'narrative'
+            ? clamp01(
+                0.35 * structuralAdequacy
+                + 0.15 * fieldCoherence
+                + 0.5 * domainObservability
+            )
+            : clamp01(
+                0.3 * structuralAdequacy
+                + 0.2 * fieldCoherence
+                + 0.5 * domainObservability
+            );
+    const observationFactor = completeObservation ? 1 : 0.5;
+    const confidenceFloor = clamp01(
+        options.topologyV2QueryConfidenceFloor ?? 0.2
+    );
+    const confidence = clamp01(
+        observationFactor
+        * (
+            confidenceFloor
+            + (1 - confidenceFloor) * dynamicAdequacy
+        )
+    );
+
+    return Object.freeze({
+        mode,
+        confidence,
+        textLength: text.length,
+        clauseCount,
+        relationSignals: relationMatches.length,
+        narrativeSignals: narrativeMatches.length,
+        nodes: nodes.length,
+        edges: edges.length,
+        seedNodes,
+        nonSeedRatio,
+        nodeAdequacy,
+        edgeAdequacy,
+        emergenceAdequacy,
+        structuralAdequacy,
+        dynamicAdequacy,
+        energyConcentration,
+        normalizedEnergyEntropy,
+        epaLogicDepth,
+        pyramidCoherence,
+        fieldCoherence,
+        domainObservability,
+        observabilityHeadK,
+        completeObservation,
+        expected: Object.freeze(expected)
+    });
+}
+
+function buildTopologyV2BatchContext(dstcBatch, options = {}) {
+    const items = Array.isArray(dstcBatch?.results) ? dstcBatch.results : [];
+    const queryProfile = classifyTopologyV2Query(dstcBatch, options);
+    const samples = items.map((item, index) => {
+        const pure = scorePure(item, options);
+        const graph = item.relativeTopology || {};
+        const direct = item.observables?.direct || {};
+        const closure = clamp01(
+            item.observables?.closure?.queryChunkScore
+            ?? pure.closureReliability
+        );
+        const directEvidence = clamp01(Math.max(
+            direct.semanticBoundaryScore,
+            item.observables?.values?.direct
+        ));
+        const nodeScore = clamp01(
+            graph.nodeGraphScore
+            ?? graph.nodeAlignmentScore
+            ?? graph.score
+        );
+        const edgeScore = clamp01(
+            graph.edgeGraphScore
+            ?? graph.edgeTopologyScore
+            ?? 0
+        );
+        const graphScore = queryProfile.mode === 'atomic'
+            ? clamp01(0.75 * nodeScore + 0.25 * edgeScore)
+            : queryProfile.mode === 'narrative'
+                ? clamp01(0.15 * nodeScore + 0.85 * edgeScore)
+                : clamp01(0.25 * nodeScore + 0.75 * edgeScore);
+        return {
+            index,
+            item,
+            pure,
+            graph,
+            closure,
+            directEvidence,
+            graphScore,
+            nodeScore,
+            edgeScore
+        };
+    });
+    const maximumPure = Math.max(0, ...samples.map(sample => sample.pure.score));
+    const directThreshold = clamp01(
+        options.topologyV2DirectEvidenceThreshold ?? 0.55
+    );
+    const directFrontierMargin = clamp01(
+        options.topologyV2DirectFrontierMargin ?? 0.03
+    );
+
+    for (const sample of samples) {
+        const nearPureFrontier =
+            sample.pure.score >= maximumPure - directFrontierMargin;
+        const directAnswer = queryProfile.mode !== 'atomic'
+            && sample.closure >= 0.55
+            && (
+                sample.directEvidence >= directThreshold
+                || (
+                    nearPureFrontier
+                    && sample.pure.components.query >= 0.55
+                )
+            );
+        const structuralEvidence = Math.cbrt(
+            clamp01(sample.graph.matchedEdgeCoverage)
+            * clamp01(sample.graph.edgeReliability)
+            * sample.closure
+        );
+        sample.role = queryProfile.mode === 'atomic'
+            ? 'atomic_concept'
+            : directAnswer
+                ? 'direct_answer'
+                : structuralEvidence >= 0.35
+                    ? 'structural_explanation'
+                    : 'thematic_neighbor';
+        sample.structuralEvidence = structuralEvidence;
+    }
+
+    const directFrontierScore = Math.max(
+        0,
+        ...samples
+            .filter(sample => sample.role === 'direct_answer')
+            .map(sample => sample.pure.score)
+    );
+    const bandwidth = Math.max(
+        1e-4,
+        Number(options.topologyV2ConditionalBandwidth) || 0.04
+    );
+    const closureBandwidth = Math.max(
+        1e-4,
+        Number(options.topologyV2ClosureBandwidth) || 0.1
+    );
+    const directBandwidth = Math.max(
+        1e-4,
+        Number(options.topologyV2DirectBandwidth) || 0.12
+    );
+    const minimumPeers = Math.max(
+        1,
+        Math.floor(Number(options.topologyV2MinimumPeers) || 3)
+    );
+    const minimumEffectivePeers = Math.max(
+        1,
+        Number(options.topologyV2MinimumEffectivePeers) || 2.5
+    );
+    const confidenceZ = Math.max(
+        0,
+        Number(options.topologyV2InnovationConfidenceZ) || 1
+    );
+
+    for (const sample of samples) {
+        const neighbors = samples
+            .filter(peer => peer.index !== sample.index)
+            .map(peer => {
+                const pureDelta = (
+                    peer.pure.score - sample.pure.score
+                ) / bandwidth;
+                const closureDelta = (
+                    peer.closure - sample.closure
+                ) / closureBandwidth;
+                const directDelta = (
+                    peer.directEvidence - sample.directEvidence
+                ) / directBandwidth;
+                const roleWeight = peer.role === sample.role ? 1 : 0.35;
+                return {
+                    peer,
+                    weight: roleWeight * Math.exp(
+                        -0.5 * (
+                            pureDelta * pureDelta
+                            + closureDelta * closureDelta
+                            + directDelta * directDelta
+                        )
+                    )
+                };
+            })
+            .sort((left, right) =>
+                (right.weight - left.weight)
+                || (left.peer.index - right.peer.index)
+            );
+        const selected = neighbors.filter(entry => entry.weight >= 1e-4);
+        if (selected.length < minimumPeers) {
+            for (const entry of neighbors.slice(0, minimumPeers)) {
+                if (!selected.includes(entry)) selected.push(entry);
+            }
+        }
+        const totalWeight = selected.reduce(
+            (sum, entry) => sum + entry.weight,
+            0
+        );
+        const squaredWeightMass = selected.reduce(
+            (sum, entry) => sum + entry.weight * entry.weight,
+            0
+        );
+        const expected = totalWeight > 1e-12
+            ? selected.reduce(
+                (sum, entry) =>
+                    sum + entry.weight * entry.peer.graphScore,
+                0
+            ) / totalWeight
+            : sample.graphScore;
+        const variance = totalWeight > 1e-12
+            ? selected.reduce(
+                (sum, entry) => sum + entry.weight
+                    * Math.pow(entry.peer.graphScore - expected, 2),
+                0
+            ) / totalWeight
+            : 0;
+        const effectivePeerCount = squaredWeightMass > 1e-12
+            ? totalWeight * totalWeight / squaredWeightMass
+            : 0;
+        const predictionUncertainty = Math.sqrt(
+            Math.max(0, variance)
+            * (1 + 1 / Math.max(1, effectivePeerCount))
+        );
+
+        sample.conditionalExpectedGraph = expected;
+        sample.conditionalVariance = variance;
+        sample.conditionalStdDev = Math.sqrt(Math.max(0, variance));
+        sample.conditionalPredictionUncertainty = predictionUncertainty;
+        sample.conditionalEffectivePeerCount = effectivePeerCount;
+        sample.conditionalSampleReliability = clamp01(
+            effectivePeerCount / minimumEffectivePeers
+        );
+        sample.conditionalInnovationLowerBound =
+            sample.graphScore - expected - confidenceZ * predictionUncertainty;
+        sample.conditionalPeerCount = selected.length;
+        sample.conditionalWeightMass = totalWeight;
+    }
+
+    return Object.freeze({
+        queryProfile,
+        bandwidth,
+        closureBandwidth,
+        directBandwidth,
+        minimumPeers,
+        minimumEffectivePeers,
+        confidenceZ,
+        maximumPure,
+        directFrontierScore,
+        directFrontierMargin,
+        samples: Object.freeze(samples.map(Object.freeze))
+    });
+}
+
+function scoreTopologyV2(item, options = {}, batchContext = null, index = 0) {
+    const context = batchContext
+        || buildTopologyV2BatchContext({ results: [item] }, options);
+    const sample = context.samples[index] || context.samples[0];
+    const pure = sample?.pure || scorePure(item, options);
+    const graph = sample?.graph || item.relativeTopology || {};
+    const queryProfile = context.queryProfile;
+    const closure = clamp01(sample?.closure);
+    const nodeCoverage = clamp01(graph.matchedNodeCoverage);
+    const edgeCoverage = clamp01(graph.matchedEdgeCoverage);
+    const nodeAlignment = clamp01(graph.nodeAlignmentScore);
+    const edgeReliability = clamp01(graph.edgeReliability);
+    const nodeReliability = clamp01(
+        graph.nodeOnlyReliability
+        ?? graph.reliability
+    );
+    const candidateConfidence = queryProfile.mode === 'atomic'
+        ? Math.sqrt(
+            closure
+            * clamp01(0.55 * nodeCoverage + 0.45 * nodeAlignment)
+        )
+        : queryProfile.mode === 'narrative'
+            ? Math.pow(
+                closure
+                * edgeCoverage
+                * clamp01(0.65 * edgeReliability + 0.35 * nodeAlignment),
+                1 / 3
+            )
+            : Math.pow(
+                closure
+                * clamp01(0.75 * edgeCoverage + 0.25 * nodeCoverage)
+                * clamp01(0.7 * edgeReliability + 0.3 * nodeAlignment),
+                1 / 3
+            );
+    const statisticalReliability = clamp01(
+        sample?.conditionalSampleReliability
+    );
+    const combinedConfidence = clamp01(
+        queryProfile.confidence
+        * candidateConfidence
+        * statisticalReliability
+    );
+    const graphScore = clamp01(sample?.graphScore);
+    const conditionalExpectedGraph = clamp01(
+        sample?.conditionalExpectedGraph
+    );
+    const graphInnovationRaw = graphScore - conditionalExpectedGraph;
+    const graphInnovationLowerBound = Number(
+        sample?.conditionalInnovationLowerBound
+    ) || 0;
+    const graphInnovationPositive = Math.max(
+        0,
+        graphInnovationLowerBound
+    );
+    const globalBonusCap = clamp01(options.topologyV2BonusCap ?? 0.08);
+    const role = sample?.role || 'thematic_neighbor';
+    const roleCapDefaults = {
+        atomic_concept: globalBonusCap,
+        direct_answer: 0.02,
+        structural_explanation: 0.045,
+        thematic_neighbor: 0.008
+    };
+    const configuredRoleCap = options.topologyV2RoleCaps?.[role];
+    const roleBonusCap = Math.min(
+        globalBonusCap,
+        clamp01(configuredRoleCap ?? roleCapDefaults[role] ?? 0)
+    );
+    const roleMultiplierDefaults = {
+        atomic_concept: 1,
+        direct_answer: 0.35,
+        structural_explanation: 0.7,
+        thematic_neighbor: 0.15
+    };
+    const roleMultiplier = clamp01(
+        options.topologyV2RoleMultipliers?.[role]
+        ?? roleMultiplierDefaults[role]
+        ?? 0
+    );
+    const innovationScale = Math.max(
+        0,
+        Number(options.topologyV2InnovationScale) || 0.5
+    );
+    const requestedBonus = graphInnovationPositive
+        * combinedConfidence
+        * innovationScale
+        * roleMultiplier;
+    const confidenceLimitedBonus = Math.min(
+        roleBonusCap,
+        requestedBonus
+    );
+
+    // 非直接答案不得仅凭宏观结构创新越过当前直接答案前沿。
+    // 这不是给 Direct 固定奖金，而是保护已经由连续场与正文闭合共同确认的答案。
+    const frontierProtectionMargin = clamp01(
+        options.topologyV2FrontierProtectionMargin ?? 0.005
+    );
+    const frontierBonusBudget =
+        context.directFrontierScore > 0
+        && role !== 'direct_answer'
+        && queryProfile.mode !== 'atomic'
+            ? Math.max(
+                0,
+                context.directFrontierScore
+                    - frontierProtectionMargin
+                    - pure.score
+            )
+            : Infinity;
+    const bonus = Math.min(
+        confidenceLimitedBonus,
+        frontierBonusBudget
+    );
+    const score = clamp01(pure.score + bonus);
+
+    return Object.freeze({
+        ...pure,
+        arm: 'topology_v2',
+        score,
+        baseScore: pure.score,
+        topologyV2: Object.freeze({
+            mode: 'role_aware_conservative_innovation',
+            queryMode: queryProfile.mode,
+            queryConfidence: queryProfile.confidence,
+            queryProfile,
+            role,
+            directEvidence: clamp01(sample?.directEvidence),
+            structuralEvidence: clamp01(sample?.structuralEvidence),
+            candidateConfidence,
+            statisticalReliability,
+            combinedConfidence,
+            graphScore,
+            graphNodeScore: clamp01(sample?.nodeScore),
+            graphEdgeScore: clamp01(sample?.edgeScore),
+            graphReliabilityMode: graph.reliabilityMode || 'unavailable',
+            closure,
+            nodeCoverage,
+            edgeCoverage,
+            nodeAlignment,
+            edgeReliability,
+            nodeReliability,
+            conditionalExpectedGraph,
+            conditionalVariance:
+                Number(sample?.conditionalVariance) || 0,
+            conditionalStdDev:
+                Number(sample?.conditionalStdDev) || 0,
+            conditionalPredictionUncertainty:
+                Number(sample?.conditionalPredictionUncertainty) || 0,
+            conditionalEffectivePeerCount:
+                Number(sample?.conditionalEffectivePeerCount) || 0,
+            conditionalBandwidth: context.bandwidth,
+            conditionalClosureBandwidth: context.closureBandwidth,
+            conditionalDirectBandwidth: context.directBandwidth,
+            conditionalPeerCount: sample?.conditionalPeerCount || 0,
+            conditionalWeightMass:
+                Number(sample?.conditionalWeightMass) || 0,
+            innovationConfidenceZ: context.confidenceZ,
+            graphInnovationRaw,
+            graphInnovationLowerBound,
+            graphInnovationPositive,
+            innovationScale,
+            roleMultiplier,
+            globalBonusCap,
+            roleBonusCap,
+            requestedBonus,
+            confidenceLimitedBonus,
+            directFrontierScore: context.directFrontierScore,
+            frontierProtectionMargin,
+            frontierBonusBudget: Number.isFinite(frontierBonusBudget)
+                ? frontierBonusBudget
+                : null,
+            frontierLimited: bonus < confidenceLimitedBonus,
+            bonusCap: roleBonusCap,
+            bonus,
+            pureScore: pure.score,
+            finalScore: score,
+            noNegativePenalty: true
+        })
+    });
+}
+
 const ARM_SCORERS = Object.freeze({
     pure: scorePure,
     gated: scoreGated,
     observed: scoreObserved,
-    topology: scoreTopology
+    topology: scoreTopology,
+    topology_v2: scoreTopologyV2
 });
 
 function scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
@@ -485,10 +1086,19 @@ function scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
         );
     }
 
-    const scored = (Array.isArray(dstcBatch?.results) ? dstcBatch.results : [])
+    const input = Array.isArray(dstcBatch?.results) ? dstcBatch.results : [];
+    const batchContext = normalizedArm === 'topology_v2'
+        ? buildTopologyV2BatchContext(dstcBatch, options)
+        : null;
+    const scored = input
         .map((item, originalIndex) => Object.freeze({
             ...item,
-            armResult: scorer(item, options),
+            armResult: scorer(
+                item,
+                options,
+                batchContext,
+                originalIndex
+            ),
             originalIndex
         }))
         .sort((left, right) =>
@@ -507,6 +1117,12 @@ function scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
         diagnostics: Object.freeze({
             candidates: scored.length,
             rejected: scored.filter(item => item.armResult.rejected).length,
+            queryProfile: batchContext?.queryProfile || null,
+            totalTopologyV2Bonus: scored.reduce(
+                (sum, item) =>
+                    sum + (Number(item.armResult.topologyV2?.bonus) || 0),
+                0
+            ),
             totalObservedBonus: scored.reduce(
                 (sum, item) => sum + item.armResult.observedBonus,
                 0
@@ -549,6 +1165,9 @@ module.exports = {
     scoreGated,
     scoreObserved,
     scoreTopology,
+    scoreTopologyV2,
+    classifyTopologyV2Query,
+    buildTopologyV2BatchContext,
     scoreExperimentArm,
     runExperimentArms
 };
