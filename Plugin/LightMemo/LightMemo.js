@@ -1280,6 +1280,82 @@ class LightMemoPlugin {
             }
             timing.orthogonalMapKernelMs =
                 performance.now() - orthogonalStartedAt;
+            // Pure 与 Topology 的绝对分不处于同一物理标尺，使用完整同池
+            // 排名做 Reciprocal Rank Fusion。并列保留 1:1 与 Pure 优先的
+            // 2:1 两条评审轨；它们不修改任一 V10 实验臂的内核分数。
+            const pureTopologyRrfK = 60;
+            const pureResults = armRun.arms.pure.results;
+            const topologyResults = armRun.arms.topology.results;
+            const topologyRankById = new Map(
+                topologyResults.map((item, index) => [
+                    Number(item.curve?.chunkId ?? item.curve?.id),
+                    index + 1
+                ])
+            );
+            const buildPureTopologyRrf = (armName, rawWeights) => {
+                const weightTotal =
+                    Number(rawWeights.pure) + Number(rawWeights.topology);
+                if (!Number.isFinite(weightTotal) || weightTotal <= 0) {
+                    throw new Error(`无效的 Pure × Topology RRF 权重：${armName}`);
+                }
+                const weights = Object.freeze({
+                    pure: Number(rawWeights.pure) / weightTotal,
+                    topology: Number(rawWeights.topology) / weightTotal
+                });
+                return pureResults
+                    .map((item, index) => {
+                        const id = Number(
+                            item.curve?.chunkId ?? item.curve?.id
+                        );
+                        const pureRank = index + 1;
+                        const topologyRank = topologyRankById.get(id);
+                        const pureContribution = weights.pure
+                            / (pureTopologyRrfK + pureRank);
+                        const topologyContribution =
+                            Number.isFinite(topologyRank)
+                                ? weights.topology
+                                    / (pureTopologyRrfK + topologyRank)
+                                : 0;
+                        const fusionScore =
+                            pureContribution + topologyContribution;
+                        return {
+                            ...item,
+                            armResult: Object.freeze({
+                                ...item.armResult,
+                                arm: armName,
+                                score: fusionScore,
+                                baseScore: fusionScore,
+                                fusion: Object.freeze({
+                                    mode: 'rrf',
+                                    k: pureTopologyRrfK,
+                                    weights,
+                                    pureRank,
+                                    topologyRank:
+                                        Number.isFinite(topologyRank)
+                                            ? topologyRank
+                                            : null,
+                                    pureContribution,
+                                    topologyContribution
+                                })
+                            })
+                        };
+                    })
+                    .sort((left, right) =>
+                        (right.armResult.score - left.armResult.score)
+                        || (
+                            left.armResult.fusion.pureRank
+                            - right.armResult.fusion.pureRank
+                        )
+                    );
+            };
+            const pureTopologyRrfEqualResults = buildPureTopologyRrf(
+                'pure_topology_rrf_1_1',
+                { pure: 1, topology: 1 }
+            );
+            const pureTopologyRrfPureFirstResults = buildPureTopologyRrf(
+                'pure_topology_rrf_2_1',
+                { pure: 2, topology: 1 }
+            );
             const tracks = {
                 knn: { label: 'KNN', results: knnRanked },
                 v9: {
@@ -1288,11 +1364,29 @@ class LightMemoPlugin {
                 },
                 pure: {
                     label: 'V10 Unified-Pure',
-                    results: armRun.arms.pure.results
+                    results: pureResults
                 },
                 topology: {
                     label: 'V10-Topology',
-                    results: armRun.arms.topology.results
+                    results: topologyResults
+                },
+                pureTopologyRrfEqual: {
+                    label: 'V10 Pure × Topology RRF 1:1',
+                    results: pureTopologyRrfEqualResults,
+                    fusion: {
+                        mode: 'rrf',
+                        k: pureTopologyRrfK,
+                        weights: { pure: 0.5, topology: 0.5 }
+                    }
+                },
+                pureTopologyRrfPureFirst: {
+                    label: 'V10 Pure × Topology RRF 2:1',
+                    results: pureTopologyRrfPureFirstResults,
+                    fusion: {
+                        mode: 'rrf',
+                        k: pureTopologyRrfK,
+                        weights: { pure: 2 / 3, topology: 1 / 3 }
+                    }
                 },
                 gated: {
                     label: 'V10 Unified-Gated',
@@ -1328,6 +1422,8 @@ class LightMemoPlugin {
                 appendTrack(v9Ranked);
                 appendTrack(armRun.arms.pure.results);
                 appendTrack(armRun.arms.topology.results);
+                appendTrack(pureTopologyRrfEqualResults);
+                appendTrack(pureTopologyRrfPureFirstResults);
                 appendTrack(armRun.arms.gated.results);
                 appendTrack(armRun.arms.observed.results);
 
@@ -1784,6 +1880,8 @@ class LightMemoPlugin {
             'v9',
             'pure',
             'topology',
+            'pureTopologyRrfEqual',
+            'pureTopologyRrfPureFirst',
             'gated',
             'observed'
         ];
@@ -1819,6 +1917,8 @@ class LightMemoPlugin {
         md += `- **V9 Production**：当前生产 Artifact 与生产测地重排；实际算法版本 \`${v9Artifact.algorithmVersion || 'v9'}\`。\n`;
         md += '- **V10 Unified-Pure / Gated / Observed / V10-Topology**：共享同一 V10 Artifact、Query State、EPA/Pyramid/Spike 降噪源、双尺度场、候选超集和候选曲线。\n';
         md += '- **V10-Topology**：第一主读出是降噪 Spike 修正向量与 Chunk 的相似度；第二主读出比较查询临时有向河网与候选原生有序 Tag 构型，并按图可靠度动态竞争解释权。旧相对增量公式仅由 `legacy_relative_bonus` 回放。\n';
+        md += '- **V10 Pure × Topology RRF 1:1**：在完整同池排名上按 `0.5/(60+PureRank) + 0.5/(60+TopologyRank)` 融合，作为两路同权对照。\n';
+        md += '- **V10 Pure × Topology RRF 2:1**：按 `(2/3)/(60+PureRank) + (1/3)/(60+TopologyRank)` 融合，优先保护 Pure 识别的直接答案与高价值前因链，同时保留 Topology 的结构召回。两条 RRF 均不混合异标度绝对分，也不修改底层内核。\n';
         md += `- **Rerank**：${compareRerank
             ? (rerankTrack?.configured
                 ? '已启用独立外部精排。'
@@ -1965,6 +2065,10 @@ class LightMemoPlugin {
                         : '';
                     md += `- 候选来源：${sources || '—'}\n`;
                     md += `- V10 基础分：${fmt(item.armResult.baseScore, 6)}；门控倍率：${fmt(item.armResult.gateMultiplier)}；Observed 增益：${fmt(item.armResult.observedBonus, 6)}\n`;
+                    if (item.armResult.fusion) {
+                        const fusion = item.armResult.fusion;
+                        md += `- Pure × Topology RRF：权重=${fmt(fusion.weights?.pure, 4)}:${fmt(fusion.weights?.topology, 4)}；Pure=#${fusion.pureRank ?? '—'} / ${fmt(fusion.pureContribution, 8)}；Topology=#${fusion.topologyRank ?? '—'} / ${fmt(fusion.topologyContribution, 8)}；k=${fusion.k}；融合分=${fmt(item.armResult.score, 8)}\n`;
+                    }
                     md += `- 六分量 Q/D/L/X/G/O：${fmt(components.query)}/${fmt(item.curve?.denoisedFieldScore)}/${fmt(components.local)}/${fmt(components.transfer)}/${fmt(components.path)}/${fmt(components.occupancy)}\n`;
                     md += `- 权限校准：模式=${item.armResult.pureScoreMode || '—'}；语义底座=${fmt(item.armResult.semanticBase)}；拓扑原量=${fmt(item.armResult.topologyRaw)}；可靠度=${fmt(item.armResult.topologyReliability)}；拓扑增益=${fmt(item.armResult.topologyBonus)}≤${fmt(item.armResult.topologyBonusCap)}\n`;
                     if (item.armResult.topologyDualReadout) {

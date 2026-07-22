@@ -64,6 +64,9 @@ function bestNodeAlignment(riverNode, candidate, pairwiseView, options = {}) {
         -1,
         Math.min(1, Number(options.semanticNodeThreshold ?? 0.48))
     );
+    const queryTagVector = options.queryTagVectorById?.get?.(
+        Number(riverNode.id)
+    ) || null;
     const exact = candidate.ordered.find(item => item.id === Number(riverNode.id));
     if (exact) {
         return Object.freeze({
@@ -80,11 +83,18 @@ function bestNodeAlignment(riverNode, candidate, pairwiseView, options = {}) {
 
     let best = null;
     for (const item of candidate.ordered) {
-        const similarity = pairSimilarity(
+        const cachedSimilarity = pairSimilarity(
             pairwiseView,
             Number(riverNode.id),
             item.id
         );
+        // Pairwise 资产只覆盖预计算过的 Tag 对，不是全矩阵。缓存未命中时
+        // 必须读取查询河网节点与候选 Tag 的真实向量余弦，否则所有非同 ID
+        // 的语义同构节点都会被误判为无对应，整条 Graph 通道静默归零。
+        const vectorSimilarity = queryTagVector && item.tag?.vector
+            ? positiveCosine(queryTagVector, item.tag.vector)
+            : 0;
+        const similarity = Math.max(cachedSimilarity, vectorSimilarity);
         if (similarity < semanticThreshold) continue;
         const normalizedSemantic = clamp01(
             (similarity - semanticThreshold)
@@ -106,6 +116,9 @@ function bestNodeAlignment(riverNode, candidate, pairwiseView, options = {}) {
                 candidatePosition: item.position,
                 exact: false,
                 semanticSimilarity: similarity,
+                semanticSource: vectorSimilarity >= cachedSimilarity
+                    ? 'query_tag_vector'
+                    : 'pairwise_cache',
                 closure: item.closure,
                 alignmentQuality: quality
             };

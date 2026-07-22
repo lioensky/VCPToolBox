@@ -531,13 +531,49 @@ class TagMemoV10Engine {
             ...(options.relativeTopology || {})
         };
         if (relativeConfig.enabled === false) return pathBatch;
+
+        // Pairwise 缓存不是完整 Tag×Tag 矩阵。一次性读取查询河网节点向量，
+        // 供匹配器在缓存未命中时执行真实语义对应；禁止在逐候选循环中查库。
+        const riverNodeIds = [...new Set(
+            (Array.isArray(queryState?.queryRiverGraph?.nodes)
+                ? queryState.queryRiverGraph.nodes
+                : []
+            )
+                .map(node => Number(node.id))
+                .filter(id => Number.isFinite(id) && id > 0)
+        )];
+        const queryTagVectorById = new Map();
+        const dimension = Math.max(1, Number(this.config.dimension) || 0);
+        for (let offset = 0; offset < riverNodeIds.length; offset += 500) {
+            const batch = riverNodeIds.slice(offset, offset + 500);
+            const placeholders = batch.map(() => '?').join(',');
+            const rows = this.db.prepare(
+                `SELECT id, vector FROM tags WHERE id IN (${placeholders})`
+            ).all(...batch);
+            for (const row of rows) {
+                if (!row.vector || row.vector.length !== dimension * 4) continue;
+                const aligned = row.vector.byteOffset % 4 === 0
+                    ? row.vector
+                    : Buffer.from(row.vector);
+                queryTagVectorById.set(
+                    Number(row.id),
+                    new Float32Array(
+                        aligned.buffer,
+                        aligned.byteOffset,
+                        dimension
+                    )
+                );
+            }
+        }
+
         return evaluateRelativeTopologyBatch(
             pathBatch,
             queryState,
             {
                 ...relativeConfig,
                 pairwiseView: artifact.pairwiseView,
-                provenanceView: artifact.provenanceView
+                provenanceView: artifact.provenanceView,
+                queryTagVectorById
             }
         );
     }
