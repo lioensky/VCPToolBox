@@ -687,6 +687,7 @@ class LightMemoPlugin {
             false,
             'TagMemo unified A/B Rerank comparison'
         );
+        const includeDetails = abRequested && this._parseABIncludeDetails(args);
         const query = String(args.query || args.start || '').trim();
         if (!query) throw new Error('TagMemo V10 Alpha 需要 query 参数。');
         const parsedMaidScope = this._parseMaidScopedFolder(args.maid);
@@ -1481,7 +1482,8 @@ class LightMemoPlugin {
                 mapExperimentK,
                 timing,
                 compareRerank,
-                rerankTrack
+                rerankTrack,
+                includeDetails
             });
             return this._buildAiFriendlyTextResult(markdown);
         }
@@ -1634,6 +1636,7 @@ class LightMemoPlugin {
             false,
             'TagMemo V9.1 Rerank comparison'
         );
+        const includeDetails = this._parseABIncludeDetails(args);
 
         const candidates = await this._gatherCandidateChunks({
             maid,
@@ -1739,7 +1742,8 @@ class LightMemoPlugin {
                 k,
                 tagBoost,
                 useBM25,
-                rerankRun
+                rerankRun,
+                includeDetails
             }));
         }
 
@@ -1748,7 +1752,8 @@ class LightMemoPlugin {
             runs,
             k,
             tagBoost,
-            rerankRun
+            rerankRun,
+            includeDetails
         }));
     }
 
@@ -1857,7 +1862,8 @@ class LightMemoPlugin {
         mapExperimentK,
         timing,
         compareRerank,
-        rerankTrack
+        rerankTrack,
+        includeDetails = false
     }) {
         const fmt = (value, digits = 4) => Number.isFinite(Number(value))
             ? Number(value).toFixed(digits)
@@ -2060,6 +2066,11 @@ class LightMemoPlugin {
                 return ranked ? `#${ranked.rank} / ${fmt(ranked.score)}` : '—';
             });
             md += `| ${id} | ${summary} | ${cells.join(' | ')} |\n`;
+        }
+
+        if (!includeDetails) {
+            md += '\n> 后续完整候选正文、诊断、性能计时与评审区已默认省略；显式传入 `include_details: true` 可返回。\n';
+            return md;
         }
 
         md += '\n## 6. 各具名轨道完整候选\n\n';
@@ -2303,7 +2314,17 @@ class LightMemoPlugin {
             `身份锚=${identityMark}${identity} 原因=${item.geo_aux_reason || 'unknown'}`;
     }
 
-    _formatTagMemoKernelAB({ query, candidates, runs, topL, k, tagBoost, useBM25, rerankRun }) {
+    _formatTagMemoKernelAB({
+        query,
+        candidates,
+        runs,
+        topL,
+        k,
+        tagBoost,
+        useBM25,
+        rerankRun,
+        includeDetails = false
+    }) {
         const bm25Top = useBM25 ? this._buildBm25TopIds(query, candidates, topL) : [];
         const sources = new Map();
         const add = (items, source) => items.slice(0, topL).forEach(item => {
@@ -2377,12 +2398,23 @@ class LightMemoPlugin {
                 `${geometryAuxiliary ? `<br>${this._escapeMarkdownCell(geometryAuxiliary)}` : ''}`;
             text += `| ${index + 1} | ${this._escapeMarkdownCell(this._shortMemoryText(candidate?.text))} | ${[...sources.get(id)].join('+')} | ${fmt(knn)} | ${fmt(v91)} | ${fmt(geo)} | ${delta === null ? '—' : delta > 0 ? `+${delta}` : delta} | ${diagnostics} |${rerankRun ? ` ${fmt(reranked)} |` : ''}\n`;
         });
+        if (!includeDetails) {
+            text += `\n后续说明已默认省略；显式传入 include_details: true 可返回。\n`;
+            return text;
+        }
         text += `\n说明: 正 ΔRank 表示开启测地线后相对同一 V9.1 向量基线前移；诊断依次显示证据等级、曲线分/置信度、最终奖励≤等级上限。direct/structural/thematic 的排序权限逐级降低；@seed/@core/@emergent:n 表示接触场节点来源。D/S/T/C4/F 分别表示直接层、结构层、主题层、查询—候选闭合层和有界融合分；W 为查询动态权重，Dir 为候选顺序正向导通一致性，Lift 为增强查询相对原查询的余弦提升。辅助生产轨不替换主轨，只在节点场证据、类别证据、融合分与闭合度同时过门时补足保守奖励地板；几何地板与严格身份锚地板取最大值而不叠加。C4/Lift 不可独立发奖，节点场守卫候选保持无测地线分数。Rerank 只重排同一对称候选池。\n`;
         text += `[--- 模式 A 结束 ---]\n`;
         return text;
     }
 
-    _formatTagMemoProductAB({ query, runs, k, tagBoost, rerankRun }) {
+    _formatTagMemoProductAB({
+        query,
+        runs,
+        k,
+        tagBoost,
+        rerankRun,
+        includeDetails = false
+    }) {
         const knnTop = runs.knn.top;
         const v91Top = runs.v9.top;
         const geoTop = runs.geodesic.top;
@@ -2455,6 +2487,10 @@ class LightMemoPlugin {
                 `${geometryAuxiliary ? `<br>${this._escapeMarkdownCell(geometryAuxiliary)}` : ''}`;
             text += `| ${this._escapeMarkdownCell(this._shortMemoryText(items.get(id)?.text, 100))} | ${fmt(knnItem)} | ${fmt(v91Item)} | ${fmt(geoItem)} | ${diagnostics} |${rerankRun ? ` ${fmt(reranked)} |` : ''} ${owners.join('+') || '—'} |\n`;
         });
+        if (!includeDetails) {
+            text += `\n后续说明已默认省略；显式传入 include_details: true 可返回。\n`;
+            return text;
+        }
         text += `\n测地线独占项用于判断曲线算法是否抵达无测地线 V9.1 未命中的有效记忆；无测地线独占项用于检查曲线重排的召回损失。两路始终共享同一增强向量、能量场和候选全集。D/S/T/C4/F、W、Dir、Lift 保留完整几何诊断；生产辅助只读取通过可靠度门控后的保守地板差额，C4/Lift 不独立发奖，节点场守卫保持零辅助。\n`;
         text += `[--- 模式 B 结束 ---]\n`;
         return text;
@@ -3206,6 +3242,23 @@ class LightMemoPlugin {
             console.error('[LightMemo] AIMemo summarization failed. Falling back to raw memories:', error.message);
             return null;
         }
+    }
+
+    /**
+     * 解析 A/B 报告的后续详情开关。默认仅返回排行表及其之前的内容，
+     * 只有调用方显式请求时才附加完整正文、诊断和评审数据。
+     */
+    _parseABIncludeDetails(args = {}) {
+        return this._parseBooleanAlias(
+            [
+                ['include_details', args.include_details],
+                ['includeDetails', args.includeDetails],
+                ['include_followup_data', args.include_followup_data],
+                ['full_report', args.full_report]
+            ],
+            false,
+            'TagMemo A/B follow-up details'
+        );
     }
 
     /**
