@@ -17,6 +17,11 @@ function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
 }
 
+function smoothstep01(value) {
+    const normalized = clamp01(value);
+    return normalized * normalized * (3 - 2 * normalized);
+}
+
 function normalizeWeightGroup(raw, names) {
     const values = Object.fromEntries(names.map(name => [
         name,
@@ -1085,39 +1090,97 @@ function buildTopologyV3BatchContext(dstcBatch, options = {}) {
     const anchorResults = Array.isArray(options.anchorBatch?.results)
         ? options.anchorBatch.results
         : [];
-    const anchorFrontierThreshold = clamp01(
-        options.topologyV3AnchorFrontierThreshold ?? 0.45
-    );
     const structRoleMinOmega = clamp01(
         options.topologyV3StructRoleMinOmega ?? 0.12
     );
     const anchorBonusCap = clamp01(
-        options.topologyV3AnchorBonusCap ?? 0.06
+        options.topologyV3AnchorBonusCap ?? 0.1
     );
-    const anchorBonusScale = Math.max(
+    const anchorActivationZ = Math.max(
         0,
-        Number(options.topologyV3AnchorBonusScale) || 0.08
+        Number(options.topologyV3AnchorActivationZ) || 2
     );
+    const anchorActivationFloor = clamp01(
+        options.topologyV3AnchorActivationFloor ?? 0.05
+    );
+    const anchorSaturation = clamp01(
+        options.topologyV3AnchorSaturation ?? 0.2
+    );
+    const anchorFrontierContrast = Math.max(
+        1,
+        Number(options.topologyV3AnchorFrontierContrast) || 2
+    );
+    const anchorFrontierAbsFloor = clamp01(
+        options.topologyV3AnchorFrontierAbsFloor ?? 0.1
+    );
+    const anchorStrengths = v2Context.samples.map((sample, index) => {
+        const anchor = anchorResults[index] || {};
+        return clamp01(
+            clamp01(anchor.anchorScore)
+            * clamp01(anchor.anchorReliability)
+        );
+    });
+    const anchorBatchMean = anchorStrengths.length > 0
+        ? anchorStrengths.reduce((sum, value) => sum + value, 0)
+            / anchorStrengths.length
+        : 0;
+    const anchorBatchVariance = anchorStrengths.length > 0
+        ? anchorStrengths.reduce(
+            (sum, value) =>
+                sum + Math.pow(value - anchorBatchMean, 2),
+            0
+        ) / anchorStrengths.length
+        : 0;
+    const anchorBatchStdDev = Math.sqrt(
+        Math.max(0, anchorBatchVariance)
+    );
+    const anchorActivationThreshold = clamp01(Math.max(
+        anchorActivationFloor,
+        anchorBatchMean + anchorActivationZ * anchorBatchStdDev
+    ));
+    const rankedAnchorStrengths = anchorStrengths
+        .map((strength, index) => ({ strength, index }))
+        .sort((left, right) =>
+            (right.strength - left.strength)
+            || (left.index - right.index)
+        );
+    const strongestAnchorIndex = rankedAnchorStrengths[0]?.index ?? null;
+    const strongestAnchorStrength =
+        rankedAnchorStrengths[0]?.strength || 0;
+    const secondAnchorStrength = rankedAnchorStrengths[1]?.strength || 0;
+    const anchorFrontierPromoted = strongestAnchorIndex !== null
+        && strongestAnchorStrength >= anchorFrontierAbsFloor
+        && strongestAnchorStrength >= (
+            anchorFrontierContrast * secondAnchorStrength
+        );
 
     const samples = v2Context.samples.map((sample, index) => {
         const anchor = anchorResults[index] || {};
         const anchorScore = clamp01(anchor.anchorScore);
         const anchorReliability = clamp01(anchor.anchorReliability);
-        const anchorStrength = clamp01(anchorScore * anchorReliability);
-        const anchorBonus = Math.min(
-            anchorBonusCap,
-            anchorStrength * anchorBonusScale
-        );
+        const anchorStrength = anchorStrengths[index] || 0;
+        const activationDenominator =
+            anchorSaturation - anchorActivationThreshold;
+        const anchorActivation = anchorStrength
+            <= anchorActivationThreshold
+            ? 0
+            : activationDenominator > 1e-12
+                ? smoothstep01(
+                    (anchorStrength - anchorActivationThreshold)
+                    / activationDenominator
+                )
+                : 1;
+        const anchorBonus = anchorBonusCap * anchorActivation;
         const originalRole = sample.role;
         let role = originalRole;
         let roleReclassified = false;
         let roleReclassificationReason = null;
 
-        if (anchorStrength >= anchorFrontierThreshold) {
+        if (anchorFrontierPromoted && index === strongestAnchorIndex) {
             role = 'direct_answer';
             roleReclassified = role !== originalRole;
             roleReclassificationReason = roleReclassified
-                ? 'strong-direct-anchor'
+                ? 'strong-direct-anchor-contrast'
                 : null;
         } else if (
             riverObservability.omega < structRoleMinOmega
@@ -1139,20 +1202,17 @@ function buildTopologyV3BatchContext(dstcBatch, options = {}) {
                 anchorScore,
                 anchorReliability,
                 anchorStrength,
+                anchorActivation,
                 anchorBonus
             })
         });
     });
 
     const v2DirectFrontierScore = v2Context.directFrontierScore;
-    const anchorDirectFrontierScore = Math.max(
-        0,
-        ...samples
-            .filter(sample =>
-                sample.anchor.anchorStrength >= anchorFrontierThreshold
-            )
-            .map(sample => sample.pure.score + sample.anchor.anchorBonus)
-    );
+    const anchorDirectFrontierScore = anchorFrontierPromoted
+        ? samples[strongestAnchorIndex].pure.score
+            + samples[strongestAnchorIndex].anchor.anchorBonus
+        : 0;
     const directFrontierScore = Math.max(
         v2DirectFrontierScore,
         anchorDirectFrontierScore
@@ -1170,10 +1230,24 @@ function buildTopologyV3BatchContext(dstcBatch, options = {}) {
         anchorBatchDiagnostics: options.anchorBatch?.diagnostics || null,
         anchorMassNormalization:
             options.anchorBatch?.massNormalization || null,
-        anchorFrontierThreshold,
         structRoleMinOmega,
         anchorBonusCap,
-        anchorBonusScale,
+        anchorActivationZ,
+        anchorActivationFloor,
+        anchorSaturation,
+        anchorBatchMean,
+        anchorBatchVariance,
+        anchorBatchStdDev,
+        anchorActivationThreshold,
+        anchorFrontierContrast,
+        anchorFrontierAbsFloor,
+        strongestAnchorIndex,
+        strongestAnchorStrength,
+        secondAnchorStrength,
+        anchorFrontierPromoted,
+        anchorAwardedCount: samples.filter(
+            sample => sample.anchor.anchorBonus > 0
+        ).length,
         v2DirectFrontierScore,
         anchorDirectFrontierScore,
         frontierSource
@@ -1222,9 +1296,23 @@ function scoreTopologyV3(item, options = {}, batchContext = null, index = 0) {
             anchorScore: clamp01(anchor.anchorScore),
             anchorReliability: clamp01(anchor.anchorReliability),
             anchorStrength: clamp01(anchor.anchorStrength),
+            anchorActivation: clamp01(anchor.anchorActivation),
             anchorBonus,
             anchorBonusCap: context.anchorBonusCap,
-            anchorBonusScale: context.anchorBonusScale,
+            anchorActivationZ: context.anchorActivationZ,
+            anchorActivationFloor: context.anchorActivationFloor,
+            anchorSaturation: context.anchorSaturation,
+            anchorBatchMean: context.anchorBatchMean,
+            anchorBatchVariance: context.anchorBatchVariance,
+            anchorBatchStdDev: context.anchorBatchStdDev,
+            anchorActivationThreshold:
+                context.anchorActivationThreshold,
+            anchorFrontierContrast: context.anchorFrontierContrast,
+            anchorFrontierAbsFloor: context.anchorFrontierAbsFloor,
+            strongestAnchorStrength: context.strongestAnchorStrength,
+            secondAnchorStrength: context.secondAnchorStrength,
+            anchorFrontierPromoted: context.anchorFrontierPromoted,
+            anchorAwardedCount: context.anchorAwardedCount,
             contactedSeeds: Number(anchor.contactedSeeds) || 0,
             exactContacts: Number(anchor.exactContacts) || 0,
             semanticContacts: Number(anchor.semanticContacts) || 0,
@@ -1238,7 +1326,6 @@ function scoreTopologyV3(item, options = {}, batchContext = null, index = 0) {
             roleReclassificationReason:
                 sample?.roleReclassificationReason || null,
             structRoleMinOmega: context.structRoleMinOmega,
-            anchorFrontierThreshold: context.anchorFrontierThreshold,
             directFrontierScore: context.directFrontierScore,
             v2DirectFrontierScore: context.v2DirectFrontierScore,
             anchorDirectFrontierScore:
@@ -1311,6 +1398,20 @@ function scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
                 batchContext?.anchorBatchDiagnostics || null,
             anchorMassNormalization:
                 batchContext?.anchorMassNormalization || null,
+            anchorBatchMean:
+                batchContext?.anchorBatchMean ?? null,
+            anchorBatchStdDev:
+                batchContext?.anchorBatchStdDev ?? null,
+            anchorActivationThreshold:
+                batchContext?.anchorActivationThreshold ?? null,
+            strongestAnchorStrength:
+                batchContext?.strongestAnchorStrength ?? null,
+            secondAnchorStrength:
+                batchContext?.secondAnchorStrength ?? null,
+            anchorFrontierPromoted:
+                batchContext?.anchorFrontierPromoted ?? null,
+            anchorAwardedCount:
+                batchContext?.anchorAwardedCount ?? null,
             totalTopologyV2Bonus: scored.reduce(
                 (sum, item) =>
                     sum + (Number(item.armResult.topologyV2?.bonus) || 0),
