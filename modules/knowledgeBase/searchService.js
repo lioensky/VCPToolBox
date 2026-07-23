@@ -125,44 +125,38 @@ async _searchSpecificIndex(diaryName, vector, k, tagBoost, coreTags = [], coreBo
         // 🛠️ 修复 1: 安全的 Float32Array 转换
         let searchVecFloat;
         let tagInfo = null;
-        let energyField = null;
-        let energyFieldProvenance = null;
-        let artifactBundle = null;
+        let preparedMemoObservation = null;
 
         try {
             if (tagBoost > 0 && this.tagMemoEngine) {
-                const preparedBoostResult = options?.preparedBoostResult || options?.boostResult || null;
-                const artifactResolution = preparedBoostResult?.artifactBundle
-                    ? null
-                    : this._resolveTagMemoRequest(options);
-                artifactBundle = preparedBoostResult?.artifactBundle || artifactResolution?.bundle || null;
+                const preparedBoostResult =
+                    options?.preparedBoostResult
+                    || options?.boostResult
+                    || null;
                 if (preparedBoostResult?.vector) {
-                    // 🌟 请求级 TagBoost 复用：调用方已经对同一 queryVector/tagWeight/coreTags 完成感应，
-                    // 搜索层直接使用增强后的向量与 energyField，避免同一轮多占位符/多日记本重复跑 TagMemo。
+                    // 调用方可继续传入旧 BoostResult；若它携带统一原生观测，
+                    // 后续 DTSC 将直接复用，不会执行第二次 Spike 感应。
                     searchVecFloat = preparedBoostResult.vector instanceof Float32Array
                         ? preparedBoostResult.vector
                         : new Float32Array(preparedBoostResult.vector);
                     tagInfo = preparedBoostResult.info || null;
-                    energyField = preparedBoostResult.energyField || null;
-                    energyFieldProvenance = preparedBoostResult.energyFieldProvenance || null;
+                    preparedMemoObservation =
+                        preparedBoostResult.preparedMemoObservation || null;
                 } else {
-                    // 请求级固定资产包：增强与后续重排共享同一代际。
-                    const boostResult = this.tagMemoEngine.applyTagBoost(
+                    const boostResult = await this.applyTagBoostAsync(
                         new Float32Array(vector),
                         tagBoost,
                         coreTags,
                         coreBoostFactor,
                         {
-                            artifactBundle: artifactResolution?.bundle,
-                            version: artifactResolution?.requestedVersion,
-                            strictVersion: options?.strictVersion === true
+                            ...options,
+                            queryText: options?.queryText || ''
                         }
                     );
                     searchVecFloat = boostResult.vector;
                     tagInfo = boostResult.info;
-                    energyField = boostResult.energyField || null;
-                    energyFieldProvenance = boostResult.energyFieldProvenance || null;
-                    artifactBundle = boostResult.artifactBundle || artifactBundle;
+                    preparedMemoObservation =
+                        boostResult.preparedMemoObservation || null;
                 }
             } else {
                 searchVecFloat = vector instanceof Float32Array ? vector : new Float32Array(vector);
@@ -188,33 +182,32 @@ async _searchSpecificIndex(diaryName, vector, k, tagBoost, coreTags = [], coreBo
             return [];
         }
 
-        // V9.1 势能场重排（只重排，不截断）— 在 hydrate 之前执行
-        // 使用查询级 energyField，避免全局 lastEnergyField 在 await 间隙被并发搜索覆盖。
-        if (options?.geodesicRerank && energyField) {
-            // 测地线评估参数属于热调控面，优先使用实时 ragParams；
-            // ArtifactBundle 只固定图、残差与传播核，旧快照配置仅作缺省兜底。
-            const bundleGeoConfig = tagInfo?.artifactSig
-                ? (this.tagMemoEngine.getArtifactBundleSnapshot(tagInfo.effectiveVersion)?.potentialFieldConfig || {})
-                : {};
-            const geoConfig = {
-                ...bundleGeoConfig,
-                ...(this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {})
-            };
-            results = this.tagMemoEngine.geodesicRerank(results, {
-                alpha: options.geoAlpha ?? options.alpha ?? geoConfig.alpha,
-                minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
-                energyField,
-                energyFieldProvenance,
-                originalQueryVector: vector,
-                enhancedQueryVector: searchVecFloat,
-                queryGeometryState: {
-                    epa: tagInfo?.epa || null,
-                    pyramid: tagInfo?.pyramid || null
+        // DTSC 在统一 Rust MemoRuntime 上消费与增强阶段相同的 QueryObservation。
+        // 不再把 JS energyField/Map 作为生产计算输入；这些字段仅保留旧返回兼容。
+        if (options?.geodesicRerank) {
+            const geoConfig =
+                this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
+            const reranked = await this.rerankWithTagMemoAsync(
+                {
+                    text: String(options?.queryText || ''),
+                    vector: vector instanceof Float32Array
+                        ? vector
+                        : new Float32Array(vector)
                 },
-                config: geoConfig,
-                version: tagInfo?.effectiveVersion,
-                artifactBundle
-            });
+                results,
+                { diaryNames: [diaryName] },
+                {
+                    ...options,
+                    topK: geoCandidatePlan.candidateK,
+                    ...(preparedMemoObservation
+                        ? { preparedMemoObservation }
+                        : {}),
+                    config: geoConfig
+                }
+            );
+            results = Array.isArray(reranked?.results)
+                ? reranked.results
+                : results;
         }
         // 候选池可放大，但公共 search 契约仍只返回调用方请求的 K。
         results = results.slice(0, geoCandidatePlan.requestedK);
@@ -382,40 +375,35 @@ async _searchSelectedIndices(diaryNames, vector, k, tagBoost, coreTags = [], cor
 
         let searchVecFloat;
         let tagInfo = null;
-        let energyField = null;
-        let energyFieldProvenance = null;
-        let artifactBundle = null;
+        let preparedMemoObservation = null;
 
         if (tagBoost > 0 && this.tagMemoEngine) {
-            const preparedBoostResult = options?.preparedBoostResult || options?.boostResult || null;
-            const artifactResolution = preparedBoostResult?.artifactBundle
-                ? null
-                : this._resolveTagMemoRequest(options);
-            artifactBundle = preparedBoostResult?.artifactBundle || artifactResolution?.bundle || null;
+            const preparedBoostResult =
+                options?.preparedBoostResult
+                || options?.boostResult
+                || null;
             if (preparedBoostResult?.vector) {
                 searchVecFloat = preparedBoostResult.vector instanceof Float32Array
                     ? preparedBoostResult.vector
                     : new Float32Array(preparedBoostResult.vector);
                 tagInfo = preparedBoostResult.info || null;
-                energyField = preparedBoostResult.energyField || null;
-                energyFieldProvenance = preparedBoostResult.energyFieldProvenance || null;
+                preparedMemoObservation =
+                    preparedBoostResult.preparedMemoObservation || null;
             } else {
-                const boostResult = this.tagMemoEngine.applyTagBoost(
+                const boostResult = await this.applyTagBoostAsync(
                     new Float32Array(vector),
                     tagBoost,
                     coreTags,
                     coreBoostFactor,
                     {
-                        artifactBundle: artifactResolution?.bundle,
-                        version: artifactResolution?.requestedVersion,
-                        strictVersion: options?.strictVersion === true
+                        ...options,
+                        queryText: options?.queryText || ''
                     }
                 );
                 searchVecFloat = boostResult.vector;
                 tagInfo = boostResult.info;
-                energyField = boostResult.energyField || null;
-                energyFieldProvenance = boostResult.energyFieldProvenance || null;
-                artifactBundle = boostResult.artifactBundle || artifactBundle;
+                preparedMemoObservation =
+                    boostResult.preparedMemoObservation || null;
             }
         } else {
             searchVecFloat = vector instanceof Float32Array ? vector : new Float32Array(vector);
@@ -452,31 +440,32 @@ async _searchSelectedIndices(diaryNames, vector, k, tagBoost, coreTags = [], cor
         let allResults = resultsPerIndex.flat();
         allResults.sort((a, b) => (b.score || 0) - (a.score || 0));
 
-        // 测地线必须在物理索引结果合并后执行，确保所有成员共享同一能量场和排序口径。
-        if (options?.geodesicRerank && energyField) {
-            // 虚拟联合索引与单索引保持同一热参数优先级。
-            const bundleGeoConfig = tagInfo?.artifactSig
-                ? (this.tagMemoEngine.getArtifactBundleSnapshot(tagInfo.effectiveVersion)?.potentialFieldConfig || {})
-                : {};
-            const geoConfig = {
-                ...bundleGeoConfig,
-                ...(this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {})
-            };
-            allResults = this.tagMemoEngine.geodesicRerank(allResults, {
-                alpha: options.geoAlpha ?? options.alpha ?? geoConfig.alpha,
-                minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
-                energyField,
-                energyFieldProvenance,
-                originalQueryVector: vector,
-                enhancedQueryVector: searchVecFloat,
-                queryGeometryState: {
-                    epa: tagInfo?.epa || null,
-                    pyramid: tagInfo?.pyramid || null
+        // 测地读出只在物理索引结果合并后执行一次，并复用增强阶段的
+        // 原生 QueryObservation，确保所有成员共享同一图代际和排序口径。
+        if (options?.geodesicRerank) {
+            const geoConfig =
+                this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
+            const reranked = await this.rerankWithTagMemoAsync(
+                {
+                    text: String(options?.queryText || ''),
+                    vector: vector instanceof Float32Array
+                        ? vector
+                        : new Float32Array(vector)
                 },
-                config: geoConfig,
-                version: tagInfo?.effectiveVersion,
-                artifactBundle
-            });
+                allResults,
+                { diaryNames: selectedDiaries },
+                {
+                    ...options,
+                    topK: allResults.length,
+                    ...(preparedMemoObservation
+                        ? { preparedMemoObservation }
+                        : {}),
+                    config: geoConfig
+                }
+            );
+            allResults = Array.isArray(reranked?.results)
+                ? reranked.results
+                : allResults;
         }
 
         const topK = allResults.slice(0, globalK);

@@ -2721,9 +2721,9 @@ class RAGDiaryPlugin {
         // 而是直接调用 V6 (Spike) 引擎的 applyTagBoost，让残差金字塔（ResidualPyramid）从向量中感应出最匹配的标签。
         // 这才是 LightMemo 能够返回“完美标签”的真正原因。
         let coreTagsForSearch = [];
-        if (tagWeight !== null && this.vectorDBManager.applyTagBoost) {
+        if (tagWeight !== null && this.vectorDBManager.applyTagBoostAsync) {
             try {
-                const preparedTagBoost = this._getPreparedTagBoostCached({
+                const preparedTagBoost = await this._getPreparedTagBoostCached({
                     queryVector: finalQueryVector,
                     tagWeight,
                     ghostTags,
@@ -3611,7 +3611,7 @@ class RAGDiaryPlugin {
         return `${dim}:${sample.join(',')}`;
     }
 
-    _getPreparedTagBoostCached({ queryVector, tagWeight, ghostTags = [], tagTruncationRatio = 0.5, metrics = {}, requestCache = null }) {
+    async _getPreparedTagBoostCached({ queryVector, tagWeight, ghostTags = [], tagTruncationRatio = 0.5, metrics = {}, requestCache = null }) {
         const initialCoreTags = ghostTags.length > 0 ? [...ghostTags] : [];
         const ghostKey = ghostTags
             .map(tag => `${tag.isCore ? '!' : ''}${tag.name || String(tag)}`)
@@ -3632,7 +3632,11 @@ class RAGDiaryPlugin {
             console.log(`[RAGDiaryPlugin] 注入幽灵节点: ${ghostTags.length} 个`);
         }
 
-        const boostResult = this.vectorDBManager.applyTagBoost(new Float32Array(queryVector), tagWeight, initialCoreTags);
+        const boostResult = await this.vectorDBManager.applyTagBoostAsync(
+            new Float32Array(queryVector),
+            tagWeight,
+            initialCoreTags
+        );
         let coreTagsForSearch = [];
 
         if (boostResult && boostResult.info && boostResult.info.matchedTags) {
@@ -4985,7 +4989,7 @@ class RAGDiaryPlugin {
                 let dynamicMetrics = null;
                 let fallbackReason = null;
 
-                if (tagMemo && typeof self.vectorDBManager.applyTagBoost === 'function') {
+                if (tagMemo && typeof self.vectorDBManager.applyTagBoostAsync === 'function') {
                     try {
                         if (Number.isFinite(Number(tagWeight))) {
                             effectiveTagWeight = Math.max(0.01, Math.min(1, Number(tagWeight)));
@@ -4999,7 +5003,7 @@ class RAGDiaryPlugin {
                             dynamicMetrics = dynamicParams.metrics;
                         }
 
-                        preparedBoostResult = self.vectorDBManager.applyTagBoost(
+                        preparedBoostResult = await self.vectorDBManager.applyTagBoostAsync(
                             new Float32Array(queryVector),
                             effectiveTagWeight,
                             Array.isArray(coreTags) ? coreTags : []

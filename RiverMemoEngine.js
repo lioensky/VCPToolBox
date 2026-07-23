@@ -4,10 +4,10 @@ const {
     computeRiverObservability
 } = require('./modules/tagmemoV10/riverObservability');
 
-let nativeTopologyV3 = null;
+let legacyNativeTopologyV3 = null;
 
-function getNativeTopologyV3() {
-    if (nativeTopologyV3) return nativeTopologyV3;
+function getLegacyNativeTopologyV3() {
+    if (legacyNativeTopologyV3) return legacyNativeTopologyV3;
     const native = require('./rust-vexus-lite');
     if (typeof native.rerankRivermemoTopologyV3 !== 'function') {
         const error = new Error(
@@ -16,8 +16,8 @@ function getNativeTopologyV3() {
         error.code = 'RIVERMEMO_NATIVE_TOPOLOGY_V3_UNAVAILABLE';
         throw error;
     }
-    nativeTopologyV3 = native.rerankRivermemoTopologyV3;
-    return nativeTopologyV3;
+    legacyNativeTopologyV3 = native.rerankRivermemoTopologyV3;
+    return legacyNativeTopologyV3;
 }
 
 const VERSION = 'rivermemo_v1';
@@ -254,7 +254,12 @@ class RiverMemoEngine {
             throw error;
         }
 
+        const observationHandle = typeof options.observationHandle === 'string'
+            && options.observationHandle
+            ? options.observationHandle
+            : null;
         const payload = {
+            observationHandle,
             dimension: Number(this.runtime.config.dimension),
             topK: Math.max(
                 1,
@@ -263,9 +268,13 @@ class RiverMemoEngine {
             includeTrace: options.includeTrace === true,
             query: {
                 text: String(query?.text || ''),
-                vector: Array.from(query?.vector || options.vector || [])
+                vector: observationHandle
+                    ? []
+                    : Array.from(query?.vector || options.vector || [])
             },
-            denoisedVector: Array.from(prepared.denoisedVector),
+            denoisedVector: observationHandle
+                ? []
+                : Array.from(prepared.denoisedVector),
             localVector: Array.from(prepared.localVector),
             transferVector: Array.from(prepared.transferVector),
             candidates: inputCandidates.map(candidate => ({
@@ -278,16 +287,23 @@ class RiverMemoEngine {
             })).filter(candidate => candidate.id !== null),
             queryState: {
                 queryId: queryState.queryId,
-                sourceField: queryState.sourceField || [],
+                sourceField: observationHandle
+                    ? []
+                    : (queryState.sourceField || []),
                 localField: queryState.localField || [],
                 transferField: queryState.transferField || [],
                 localDomainIds: queryState.localDomain?.ids || [],
                 transferDomainIds: queryState.transferDomain?.ids || [],
-                riverNodes: Array.isArray(river.nodes) ? river.nodes : [],
-                riverEdges: Array.isArray(river.edges) ? river.edges : [],
-                fieldProvenance,
-                completeObservation:
-                    queryState.sourceObservation?.diagnostics
+                riverNodes: observationHandle
+                    ? []
+                    : (Array.isArray(river.nodes) ? river.nodes : []),
+                riverEdges: observationHandle
+                    ? []
+                    : (Array.isArray(river.edges) ? river.edges : []),
+                fieldProvenance: observationHandle ? [] : fieldProvenance,
+                completeObservation: observationHandle
+                    ? true
+                    : queryState.sourceObservation?.diagnostics
                         ?.completeObservation === true
             },
             allowedFileIds: Array.isArray(agentContext.allowedFileIds)
@@ -296,12 +312,26 @@ class RiverMemoEngine {
             config: this._nativeConfig(artifact, options)
         };
         const nativeStartedAt = Date.now();
-        const nativePayload = await getNativeTopologyV3()(
-            dbPath,
-            artifact.artifactSig,
-            JSON.stringify(payload)
-        );
+        const inputJson = JSON.stringify(payload);
+        const tagIndex = this.runtime.tagIndex;
+        const usesUnifiedMemoRuntime =
+            typeof tagIndex?.rerankRivermemoTopologyV3 === 'function';
+        const nativePayload = usesUnifiedMemoRuntime
+            ? await tagIndex.rerankRivermemoTopologyV3(
+                dbPath,
+                artifact.artifactSig,
+                inputJson
+            )
+            : await getLegacyNativeTopologyV3()(
+                dbPath,
+                artifact.artifactSig,
+                inputJson
+            );
         const nativeResult = JSON.parse(nativePayload);
+        const memoRuntimeStats = usesUnifiedMemoRuntime
+            && typeof tagIndex?.memoRuntimeStats === 'function'
+            ? tagIndex.memoRuntimeStats()
+            : null;
         this._nativeArtifactCacheObserved = true;
         this._nativeArtifactSigObserved = artifact.artifactSig;
         const inputById = new Map(
@@ -412,7 +442,13 @@ class RiverMemoEngine {
                 returnedCandidates: results.length,
                 nativeTopologyV3: Object.freeze({
                     ...(nativeResult.diagnostics || {}),
-                    ffiTotalMs: Date.now() - nativeStartedAt
+                    ffiTotalMs: Date.now() - nativeStartedAt,
+                    runtimeOwnership: usesUnifiedMemoRuntime
+                        ? 'vexus-index-instance'
+                        : 'legacy-module-cache',
+                    memoRuntime: memoRuntimeStats
+                        ? Object.freeze({ ...memoRuntimeStats })
+                        : null
                 }),
                 exactDerivedAssets:
                     this.runtime.getDerivedAssetDiagnostics?.() || null,
@@ -472,14 +508,17 @@ class RiverMemoEngine {
             );
         }
 
-        const prepared = this.runtime.prepareQuery(
-            query,
-            agentContext,
-            {
-                ...options,
-                artifact
-            }
-        );
+        // 生产统一管线已经在 Rust MemoRuntime 内完成 Local/Transfer
+        // scaled-resolvent、有效支持域和向量投影。禁止再次调用 JS
+        // prepareQuery()/solveQueryState() 持有并遍历第二份 CSR。
+        const prepared = options.nativePreparedQuery || null;
+        if (!prepared) {
+            const error = new Error(
+                'RiverMemo requires Rust-native prepared dual fields'
+            );
+            error.code = 'RIVERMEMO_NATIVE_DUAL_FIELDS_UNAVAILABLE';
+            throw error;
+        }
         markStage('prepareQueryMs');
         if (
             !prepared?.queryState

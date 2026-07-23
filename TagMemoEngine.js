@@ -222,6 +222,63 @@ class TagMemoEngine {
         });
     }
 
+    releaseNativeOwnedArtifactAssets(expectedArtifactSig = null) {
+        const active = this._activeArtifactBundle;
+        if (!active) return false;
+        if (
+            expectedArtifactSig
+            && active.artifactSig !== expectedArtifactSig
+        ) {
+            return false;
+        }
+        if (active.storageMode === 'rust-memo-runtime') return true;
+
+        const lightweight = Object.freeze({
+            version: active.version,
+            artifactSig: active.artifactSig,
+            graphGeneration: active.graphGeneration,
+            modelSig: active.modelSig,
+            effectiveConfig: active.effectiveConfig,
+            potentialFieldConfig: active.potentialFieldConfig,
+            residualArtifact: active.residualArtifact,
+            algorithmVersion: active.algorithmVersion,
+            generation: active.generation,
+            publishedAt: active.publishedAt,
+            storageMode: 'rust-memo-runtime'
+        });
+        this._activeArtifactBundle = lightweight;
+        this._artifactBundlesByVersion = Object.freeze({
+            generation: lightweight.generation,
+            publishedAt: lightweight.publishedAt,
+            activeVersion: 'v9',
+            bundles: Object.freeze({ v9: lightweight })
+        });
+
+        // 断开所有兼容别名，确保 V9 Map、pairwise 和 residual 可被 GC。
+        this.tagCooccurrenceMatrix = null;
+        this.tagIntrinsicResiduals = null;
+        this.tagRawResidualRatios = null;
+        this.tagPairSimilarities = new Map();
+        this.lastEnergyField = null;
+        this.lastEnergyFieldProvenance = null;
+
+        console.log(
+            `[TagMemoEngine] 🦀 JS graph assets released; Rust MemoRuntime owns ` +
+            `artifact=${lightweight.artifactSig}, generation=${lightweight.generation}.`
+        );
+        return true;
+    }
+
+    _assertJsGraphRuntimeAvailable(operation) {
+        if (this._activeArtifactBundle?.storageMode === 'rust-memo-runtime') {
+            const error = new Error(
+                `${operation} uses the retired JS graph runtime; use the asynchronous unified Rust Memo API`
+            );
+            error.code = 'TAGMEMO_JS_GRAPH_RUNTIME_RETIRED';
+            throw error;
+        }
+    }
+
     _publishArtifactBundle(staging) {
         const generation = ++this._artifactBundleGeneration;
         const publishedAt = Date.now();
@@ -254,10 +311,14 @@ class TagMemoEngine {
                 .onTagMemoArtifactPublished === 'function'
         ) {
             try {
-                this.knowledgeBaseManager.onTagMemoArtifactPublished(
-                    bundle,
-                    registry
-                );
+                const companion =
+                    this.knowledgeBaseManager.onTagMemoArtifactPublished(
+                        bundle,
+                        registry
+                    );
+                if (companion?.artifactSig) {
+                    this.releaseNativeOwnedArtifactAssets(bundle.artifactSig);
+                }
             } catch (error) {
                 console.error(
                     '[TagMemoEngine] ⚠️ RiverMemo companion build failed after V9 publish; V9 remains active:',
@@ -818,6 +879,7 @@ class TagMemoEngine {
      * lastEnergyField 只是兼容/诊断缓存，在全局搜索 await 间隙会被其他并发查询覆盖。
      */
     applyTagBoost(vector, baseTagBoost, coreTags = [], coreBoostFactor = 1.33, options = {}) {
+        this._assertJsGraphRuntimeAvailable('TagMemoEngine.applyTagBoost()');
         const debug = false;
         const originalFloat32 = vector instanceof Float32Array ? vector : new Float32Array(vector);
         const dim = originalFloat32.length;
@@ -1456,6 +1518,7 @@ class TagMemoEngine {
      * @returns {Array} 重排后的完整数组（不截断）
      */
     geodesicRerank(candidates, options = {}) {
+        this._assertJsGraphRuntimeAvailable('TagMemoEngine.geodesicRerank()');
         let energyField = options.energyField;
         let requestedFieldProvenance = options.energyFieldProvenance;
         if (!energyField && options.allowLastEnergyFieldFallback === true) {

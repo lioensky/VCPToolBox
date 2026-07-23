@@ -1,6 +1,11 @@
 #![deny(clippy::all)]
 
+mod memo_dtsc;
+mod memo_pipeline;
+mod memo_sensing;
 mod rivermemo_topology_v3;
+
+use rivermemo_topology_v3::MemoRuntime;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -59,6 +64,17 @@ pub struct DualWeightedProjectionResult {
 }
 
 #[napi(object)]
+pub struct MemoFusionResult {
+    pub vector: Vec<f64>,
+    pub selected_tag_ids: Vec<i64>,
+    pub requested_count: u32,
+    pub found_count: u32,
+    pub deduplicated_count: u32,
+    pub total_weight: f64,
+    pub elapsed_ms: f64,
+}
+
+#[napi(object)]
 pub struct IntrinsicResidualResult {
     pub tag_count: u32,
     pub computed_count: u32,
@@ -105,12 +121,25 @@ pub struct VexusStats {
     pub memory_usage: f64,
 }
 
+/// VexusIndex 内部统一 Memo 运行时诊断。
+#[napi(object)]
+pub struct MemoRuntimeStats {
+    pub active_artifact_sig: Option<String>,
+    pub generation: i64,
+    pub node_count: u32,
+    pub edge_count: u32,
+    pub resident: bool,
+}
+
 /// 核心索引结构 (无状态，只存向量)
 #[napi]
 pub struct VexusIndex {
     index: Arc<RwLock<Index>>,
     dimensions: u32,
     epa_pending_cache: Arc<std::sync::Mutex<Option<EpaPendingCache>>>,
+    /// TagMemo 与 RiverMemo 共用的原生图资产运行时。
+    /// 与本 VexusIndex 实例同生命周期，禁止使用进程全局生产缓存。
+    memo_runtime: Arc<MemoRuntime>,
 }
 
 #[napi]
@@ -137,6 +166,7 @@ impl VexusIndex {
             index: Arc::new(RwLock::new(index)),
             dimensions: dim,
             epa_pending_cache: Arc::new(std::sync::Mutex::new(None)),
+            memo_runtime: Arc::new(MemoRuntime::new()),
         })
     }
 
@@ -182,6 +212,7 @@ impl VexusIndex {
             index: Arc::new(RwLock::new(index)),
             dimensions: dim,
             epa_pending_cache: Arc::new(std::sync::Mutex::new(None)),
+            memo_runtime: Arc::new(MemoRuntime::new()),
         })
     }
 
@@ -435,6 +466,254 @@ impl VexusIndex {
             local_total_weight,
             transfer_total_weight,
             elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    /// 使用当前 VexusIndex 唯一 Tag 向量空间完成 TagMemo 上下文融合。
+    ///
+    /// 只在批量读取请求涉及的 Tag 向量时短持 usearch 读锁；语义去重、
+    /// 上下文加权和最终融合均在释放索引锁后执行，不维护第二份全库向量。
+    #[napi]
+    pub fn fuse_memo_context(
+        &self,
+        original: Float32Array,
+        tag_ids: Vec<i64>,
+        tag_weights: Float64Array,
+        alpha: f64,
+        dedup_threshold: Option<f64>,
+        max_tags: Option<u32>,
+    ) -> Result<MemoFusionResult> {
+        let started_at = std::time::Instant::now();
+        let dim = self.dimensions as usize;
+        let source: &[f32] = &original;
+        let weights: &[f64] = &tag_weights;
+        if source.len() != dim {
+            return Err(Error::from_reason(format!(
+                "Memo fusion dimension mismatch: expected {}, got {}",
+                dim,
+                source.len()
+            )));
+        }
+        if tag_ids.len() != weights.len() {
+            return Err(Error::from_reason(format!(
+                "Memo fusion input mismatch: ids={}, weights={}",
+                tag_ids.len(),
+                weights.len()
+            )));
+        }
+
+        let requested_count = tag_ids.len();
+        let mut requested: Vec<(i64, f64)> = tag_ids
+            .into_iter()
+            .zip(weights.iter().copied())
+            .filter_map(|(id, weight)| {
+                let weight = if weight.is_finite() {
+                    weight.max(0.0)
+                } else {
+                    0.0
+                };
+                (id > 0 && weight > 0.0).then_some((id, weight))
+            })
+            .collect();
+        requested.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        requested.truncate(max_tags.unwrap_or(128).clamp(1, 1024) as usize);
+
+        let mut vectors: Vec<(i64, f64, Vec<f32>, f64)> = Vec::with_capacity(requested.len());
+        {
+            let index = self.index.read().map_err(|error| {
+                Error::from_reason(format!("Memo fusion index lock failed: {}", error))
+            })?;
+            let mut buffer = vec![0.0f32; dim];
+            for (id, weight) in requested {
+                let matches = index.get(id as u64, &mut buffer).map_err(|error| {
+                    Error::from_reason(format!(
+                        "Memo fusion failed to read Tag vector {}: {:?}",
+                        id, error
+                    ))
+                })?;
+                if matches == 0 {
+                    continue;
+                }
+                let norm = buffer
+                    .iter()
+                    .map(|value| (*value as f64) * (*value as f64))
+                    .sum::<f64>()
+                    .sqrt();
+                if norm <= 1e-12 {
+                    continue;
+                }
+                vectors.push((id, weight, buffer.clone(), norm));
+            }
+        }
+
+        let found_count = vectors.len();
+        let threshold = dedup_threshold.unwrap_or(0.88).clamp(-1.0, 1.0);
+        let mut selected: Vec<(i64, f64, Vec<f32>, f64)> = Vec::new();
+        for (id, weight, vector, norm) in vectors {
+            let redundant = selected.iter().any(|(_, _, existing, existing_norm)| {
+                let dot = vector
+                    .iter()
+                    .zip(existing.iter())
+                    .map(|(left, right)| (*left as f64) * (*right as f64))
+                    .sum::<f64>();
+                dot / (norm * *existing_norm) > threshold
+            });
+            if !redundant {
+                selected.push((id, weight, vector, norm));
+            }
+        }
+
+        let mut context = vec![0.0f64; dim];
+        let total_weight: f64 = selected.iter().map(|entry| entry.1).sum();
+        if total_weight > 0.0 {
+            for (_, weight, vector, _) in &selected {
+                for dimension in 0..dim {
+                    context[dimension] += vector[dimension] as f64 * *weight;
+                }
+            }
+            for value in &mut context {
+                *value /= total_weight;
+            }
+            let context_norm = context
+                .iter()
+                .map(|value| value * value)
+                .sum::<f64>()
+                .sqrt();
+            if context_norm > 1e-12 {
+                for value in &mut context {
+                    *value /= context_norm;
+                }
+            }
+        }
+
+        let mix = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let mut fused: Vec<f64> = source
+            .iter()
+            .zip(context.iter())
+            .map(|(source_value, context_value)| {
+                (1.0 - mix) * (*source_value as f64) + mix * *context_value
+            })
+            .collect();
+        let fused_norm = fused.iter().map(|value| value * value).sum::<f64>().sqrt();
+        if fused_norm > 1e-12 {
+            for value in &mut fused {
+                *value /= fused_norm;
+            }
+        }
+
+        Ok(MemoFusionResult {
+            vector: fused,
+            selected_tag_ids: selected.iter().map(|entry| entry.0).collect(),
+            requested_count: requested_count as u32,
+            found_count: found_count as u32,
+            deduplicated_count: selected.len() as u32,
+            total_weight,
+            elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    /// 在本 Tag 向量索引与 MemoRuntime 上执行统一查询数学管线。
+    ///
+    /// EPA、Residual Pyramid、Core/语言/层级门控、Spike 与向量融合全部在
+    /// 同一 Rust 后台任务中完成；返回值同时供 DTSC 和 Topology V3 读出复用。
+    #[napi]
+    pub fn run_memo_pipeline(
+        &self,
+        db_path: String,
+        artifact_sig: String,
+        input_json: String,
+    ) -> AsyncTask<memo_pipeline::MemoPipelineTask> {
+        memo_pipeline::run_with_runtime(
+            self.index.clone(),
+            self.memo_runtime.clone(),
+            db_path,
+            artifact_sig,
+            self.dimensions as usize,
+            input_json,
+        )
+    }
+
+    /// 在本 Tag 向量索引拥有的统一 MemoRuntime 上执行共同 Spike 感应。
+    ///
+    /// 输入只包含 EPA/Pyramid 门控后的初始 Tag 种子与传播参数；输出的
+    /// QueryObservation 同时供 DTSC 和 RiverMemo Topology V3 两个读出头消费。
+    #[napi]
+    pub fn sense_memo_query(
+        &self,
+        db_path: String,
+        artifact_sig: String,
+        input_json: String,
+    ) -> AsyncTask<memo_sensing::MemoSensingTask> {
+        memo_sensing::sense_with_runtime(
+            self.memo_runtime.clone(),
+            db_path,
+            artifact_sig,
+            input_json,
+        )
+    }
+
+    /// 在统一 QueryObservation 上执行 DTSC 测地曲线读出。
+    ///
+    /// 与 RiverMemo Topology V3 读取同一个 MemoRuntime 活动图快照；
+    /// 差异只存在于读出方程，不再拥有独立图资产。
+    #[napi]
+    pub fn rerank_memo_dtsc(
+        &self,
+        db_path: String,
+        artifact_sig: String,
+        input_json: String,
+    ) -> AsyncTask<memo_dtsc::MemoDtscTask> {
+        memo_dtsc::rerank_with_runtime(self.memo_runtime.clone(), db_path, artifact_sig, input_json)
+    }
+
+    /// 在本 Tag 向量索引拥有的统一 MemoRuntime 上执行 RiverMemo Topology V3。
+    ///
+    /// 首次请求从持久化资产恢复 CSR，随后由本 VexusIndex 实例持有活动 Arc 快照；
+    /// 查询只克隆快照，不再访问进程全局生产缓存。
+    #[napi]
+    pub fn rerank_rivermemo_topology_v3(
+        &self,
+        db_path: String,
+        artifact_sig: String,
+        input_json: String,
+    ) -> AsyncTask<rivermemo_topology_v3::RiverMemoTopologyV3Task> {
+        rivermemo_topology_v3::rerank_with_runtime(
+            self.memo_runtime.clone(),
+            db_path,
+            artifact_sig,
+            input_json,
+        )
+    }
+
+    /// 释放本索引持有的统一 Memo 图快照。
+    #[napi]
+    pub fn clear_memo_runtime(&self) -> Result<()> {
+        self.memo_runtime.clear().map_err(Error::from_reason)
+    }
+
+    /// 获取统一 Memo 图快照的常驻诊断。
+    #[napi]
+    pub fn memo_runtime_stats(&self) -> Result<MemoRuntimeStats> {
+        let (signature, generation, node_count, edge_count) = self
+            .memo_runtime
+            .diagnostics()
+            .map_err(Error::from_reason)?;
+        Ok(MemoRuntimeStats {
+            resident: signature.is_some(),
+            active_artifact_sig: signature,
+            generation: generation as i64,
+            node_count: node_count as u32,
+            edge_count: edge_count as u32,
         })
     }
 

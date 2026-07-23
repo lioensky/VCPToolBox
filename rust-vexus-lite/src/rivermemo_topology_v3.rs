@@ -6,10 +6,13 @@ use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::memo_sensing::SenseOutput;
 
 const RESULT_SCHEMA: &str = "rivermemo-topology-v3-native-result-v1";
 const ALGORITHM_VERSION: &str = "rivermemo.topology-v3.1-rust";
@@ -78,6 +81,8 @@ fn default_true() -> bool {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeInput {
+    #[serde(default)]
+    observation_handle: Option<String>,
     #[serde(default = "default_dimension")]
     dimension: usize,
     #[serde(default = "default_top_k")]
@@ -85,6 +90,7 @@ struct NativeInput {
     #[serde(default)]
     include_trace: bool,
     query: QueryInput,
+    #[serde(default)]
     denoised_vector: Vec<f32>,
     local_vector: Vec<f32>,
     transfer_vector: Vec<f32>,
@@ -287,20 +293,21 @@ impl Default for NativeConfig {
         }
     }
 }
-
-struct NativeArtifact {
-    node_ids: Vec<i64>,
-    node_index: HashMap<i64, usize>,
-    row_offsets: Vec<usize>,
-    targets: Vec<usize>,
-    weights: Vec<f64>,
-    inbound: HashMap<i64, f64>,
-    max_inbound: f64,
-    provenance: HashMap<(i64, i64), Vec<(i64, f64)>>,
+pub(crate) struct NativeArtifact {
+    pub(crate) node_ids: Vec<i64>,
+    pub(crate) node_index: HashMap<i64, usize>,
+    pub(crate) row_offsets: Vec<usize>,
+    pub(crate) targets: Vec<usize>,
+    pub(crate) weights: Vec<f64>,
+    pub(crate) inbound: HashMap<i64, f64>,
+    pub(crate) max_inbound: f64,
+    pub(crate) anchor_gain: HashMap<i64, f64>,
+    pub(crate) wormhole_edges: HashSet<(i64, i64)>,
+    pub(crate) provenance: HashMap<(i64, i64), Vec<(i64, f64)>>,
 }
 
 impl NativeArtifact {
-    fn edge_weight(&self, source_id: i64, target_id: i64) -> f64 {
+    pub(crate) fn edge_weight(&self, source_id: i64, target_id: i64) -> f64 {
         let Some(&source) = self.node_index.get(&source_id) else {
             return 0.0;
         };
@@ -317,7 +324,7 @@ impl NativeArtifact {
         0.0
     }
 
-    fn independent_fraction(&self, source: i64, target: i64, file_id: i64) -> f64 {
+    pub(crate) fn independent_fraction(&self, source: i64, target: i64, file_id: i64) -> f64 {
         let Some(contributions) = self.provenance.get(&(source, target)) else {
             return 1.0;
         };
@@ -334,10 +341,250 @@ impl NativeArtifact {
     }
 }
 
-static ARTIFACT_CACHE: OnceLock<Mutex<HashMap<String, Arc<NativeArtifact>>>> = OnceLock::new();
+/// 统一管线留在原生侧、供候选阶段两个读出头复用的请求级观测。
+///
+/// 该对象只包含请求相关的小型河网和两条查询向量，不复制全库图或 Tag 向量。
+pub(crate) struct MemoQueryObservation {
+    pub(crate) artifact_sig: String,
+    pub(crate) artifact_generation: u64,
+    pub(crate) observation: Arc<SenseOutput>,
+    pub(crate) original_query_vector: Arc<Vec<f32>>,
+    pub(crate) enhanced_query_vector: Arc<Vec<f32>>,
+    pub(crate) local_vector: Arc<Vec<f32>>,
+    pub(crate) transfer_vector: Arc<Vec<f32>>,
+    pub(crate) local_field: Arc<Vec<(i64, f64)>>,
+    pub(crate) transfer_field: Arc<Vec<(i64, f64)>>,
+    pub(crate) local_domain_ids: Arc<Vec<i64>>,
+    pub(crate) transfer_domain_ids: Arc<Vec<i64>>,
+}
 
-fn artifact_cache() -> &'static Mutex<HashMap<String, Arc<NativeArtifact>>> {
-    ARTIFACT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+struct MemoQueryCacheEntry {
+    value: Arc<MemoQueryObservation>,
+    inserted_at: Instant,
+}
+
+/// VexusIndex 实例拥有的统一 Memo 原生运行时。
+///
+/// 活动资产使用 Arc 快照：查询开始时克隆一次 Arc，后续发布不会改变本次查询；
+/// 旧代资产在最后一个查询释放后自动回收。请求观测缓存与活动资产代际绑定，
+/// 让 DTSC 与 Topology V3 直接复用统一管线产物，避免河网经 JS JSON 往返。
+pub(crate) struct MemoRuntime {
+    active_artifact: RwLock<Option<(String, u64, Arc<NativeArtifact>)>>,
+    generation: AtomicU64,
+    query_sequence: AtomicU64,
+    query_cache: Mutex<HashMap<String, MemoQueryCacheEntry>>,
+    query_cache_order: Mutex<VecDeque<String>>,
+    query_cache_capacity: usize,
+    query_cache_ttl: Duration,
+}
+
+impl MemoRuntime {
+    pub(crate) fn new() -> Self {
+        Self {
+            active_artifact: RwLock::new(None),
+            generation: AtomicU64::new(0),
+            query_sequence: AtomicU64::new(0),
+            query_cache: Mutex::new(HashMap::new()),
+            query_cache_order: Mutex::new(VecDeque::new()),
+            query_cache_capacity: 256,
+            query_cache_ttl: Duration::from_secs(5 * 60),
+        }
+    }
+
+    fn get(&self, artifact_sig: &str) -> std::result::Result<Option<Arc<NativeArtifact>>, String> {
+        let guard = self
+            .active_artifact
+            .read()
+            .map_err(|error| format!("memo runtime read lock failed: {}", error))?;
+        Ok(guard
+            .as_ref()
+            .filter(|(signature, _, _)| signature == artifact_sig)
+            .map(|(_, _, artifact)| artifact.clone()))
+    }
+
+    fn publish(
+        &self,
+        artifact_sig: &str,
+        artifact: Arc<NativeArtifact>,
+    ) -> std::result::Result<u64, String> {
+        let generation = self.generation.fetch_add(1, AtomicOrdering::AcqRel) + 1;
+        let mut guard = self
+            .active_artifact
+            .write()
+            .map_err(|error| format!("memo runtime publish lock failed: {}", error))?;
+        *guard = Some((artifact_sig.to_string(), generation, artifact));
+        drop(guard);
+        self.clear_query_cache()?;
+        Ok(generation)
+    }
+
+    fn active_generation(&self, artifact_sig: &str) -> std::result::Result<u64, String> {
+        let guard = self
+            .active_artifact
+            .read()
+            .map_err(|error| format!("memo runtime generation lock failed: {}", error))?;
+        guard
+            .as_ref()
+            .filter(|(signature, _, _)| signature == artifact_sig)
+            .map(|(_, generation, _)| *generation)
+            .ok_or_else(|| {
+                format!(
+                    "memo runtime artifact {} is not the active generation",
+                    artifact_sig
+                )
+            })
+    }
+
+    fn clear_query_cache(&self) -> std::result::Result<(), String> {
+        self.query_cache
+            .lock()
+            .map_err(|error| format!("memo query cache lock failed: {}", error))?
+            .clear();
+        self.query_cache_order
+            .lock()
+            .map_err(|error| format!("memo query cache order lock failed: {}", error))?
+            .clear();
+        Ok(())
+    }
+
+    pub(crate) fn store_query_observation(
+        &self,
+        artifact_sig: &str,
+        observation: SenseOutput,
+        original_query_vector: Vec<f32>,
+        enhanced_query_vector: Vec<f32>,
+        local_vector: Vec<f32>,
+        transfer_vector: Vec<f32>,
+        local_field: Vec<(i64, f64)>,
+        transfer_field: Vec<(i64, f64)>,
+        local_domain_ids: Vec<i64>,
+        transfer_domain_ids: Vec<i64>,
+    ) -> std::result::Result<String, String> {
+        let artifact_generation = self.active_generation(artifact_sig)?;
+        let sequence = self.query_sequence.fetch_add(1, AtomicOrdering::AcqRel) + 1;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or(0);
+        let handle = format!(
+            "memoq-{:016x}-{:016x}-{:016x}",
+            artifact_generation,
+            sequence,
+            (timestamp as u64) ^ sequence.rotate_left(17)
+        );
+        let value = Arc::new(MemoQueryObservation {
+            artifact_sig: artifact_sig.to_string(),
+            artifact_generation,
+            observation: Arc::new(observation),
+            original_query_vector: Arc::new(original_query_vector),
+            enhanced_query_vector: Arc::new(enhanced_query_vector),
+            local_vector: Arc::new(local_vector),
+            transfer_vector: Arc::new(transfer_vector),
+            local_field: Arc::new(local_field),
+            transfer_field: Arc::new(transfer_field),
+            local_domain_ids: Arc::new(local_domain_ids),
+            transfer_domain_ids: Arc::new(transfer_domain_ids),
+        });
+
+        let now = Instant::now();
+        let mut cache = self
+            .query_cache
+            .lock()
+            .map_err(|error| format!("memo query cache lock failed: {}", error))?;
+        let mut order = self
+            .query_cache_order
+            .lock()
+            .map_err(|error| format!("memo query cache order lock failed: {}", error))?;
+        while let Some(front) = order.front().cloned() {
+            let expired = cache
+                .get(&front)
+                .map(|entry| now.duration_since(entry.inserted_at) > self.query_cache_ttl)
+                .unwrap_or(true);
+            if !expired && cache.len() < self.query_cache_capacity {
+                break;
+            }
+            order.pop_front();
+            cache.remove(&front);
+        }
+        while cache.len() >= self.query_cache_capacity {
+            let Some(oldest) = order.pop_front() else {
+                break;
+            };
+            cache.remove(&oldest);
+        }
+        cache.insert(
+            handle.clone(),
+            MemoQueryCacheEntry {
+                value,
+                inserted_at: now,
+            },
+        );
+        order.push_back(handle.clone());
+        Ok(handle)
+    }
+
+    pub(crate) fn get_query_observation(
+        &self,
+        handle: &str,
+        artifact_sig: &str,
+    ) -> std::result::Result<Arc<MemoQueryObservation>, String> {
+        let active_generation = self.active_generation(artifact_sig)?;
+        let now = Instant::now();
+        let mut cache = self
+            .query_cache
+            .lock()
+            .map_err(|error| format!("memo query cache lock failed: {}", error))?;
+        let entry = cache
+            .get(handle)
+            .ok_or_else(|| format!("memo query observation handle {} is unavailable", handle))?;
+        if now.duration_since(entry.inserted_at) > self.query_cache_ttl {
+            cache.remove(handle);
+            return Err(format!("memo query observation handle {} expired", handle));
+        }
+        if entry.value.artifact_sig != artifact_sig
+            || entry.value.artifact_generation != active_generation
+        {
+            return Err("memo query observation artifact generation mismatch".to_string());
+        }
+        Ok(entry.value.clone())
+    }
+
+    pub(crate) fn clear(&self) -> std::result::Result<(), String> {
+        let mut guard = self
+            .active_artifact
+            .write()
+            .map_err(|error| format!("memo runtime clear lock failed: {}", error))?;
+        *guard = None;
+        drop(guard);
+        self.clear_query_cache()
+    }
+
+    pub(crate) fn diagnostics(
+        &self,
+    ) -> std::result::Result<(Option<String>, u64, usize, usize), String> {
+        let guard = self
+            .active_artifact
+            .read()
+            .map_err(|error| format!("memo runtime diagnostics lock failed: {}", error))?;
+        Ok(match guard.as_ref() {
+            Some((signature, generation, artifact)) => (
+                Some(signature.clone()),
+                *generation,
+                artifact.node_ids.len(),
+                artifact.targets.len(),
+            ),
+            None => (None, self.generation.load(AtomicOrdering::Acquire), 0, 0),
+        })
+    }
+}
+
+/// 旧模块级 N-API ABI 的兼容缓存。生产路径改由 VexusIndex.memo_runtime 持有，
+/// 只有尚未升级的外部调用方才会进入这里。
+static LEGACY_ARTIFACT_CACHE: OnceLock<Mutex<HashMap<String, Arc<NativeArtifact>>>> =
+    OnceLock::new();
+
+fn legacy_artifact_cache() -> &'static Mutex<HashMap<String, Arc<NativeArtifact>>> {
+    LEGACY_ARTIFACT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn open_readonly(path: &str) -> std::result::Result<Connection, String> {
@@ -352,16 +599,10 @@ fn open_readonly(path: &str) -> std::result::Result<Connection, String> {
     Ok(connection)
 }
 
-fn load_artifact(db_path: &str, artifact_sig: &str) -> std::result::Result<Arc<NativeArtifact>, String> {
-    if let Some(cached) = artifact_cache()
-        .lock()
-        .map_err(|error| format!("artifact cache lock failed: {}", error))?
-        .get(artifact_sig)
-        .cloned()
-    {
-        return Ok(cached);
-    }
-
+fn decode_artifact(
+    db_path: &str,
+    artifact_sig: &str,
+) -> std::result::Result<Arc<NativeArtifact>, String> {
     let connection = open_readonly(db_path)?;
     let (codec, compressed): (String, Vec<u8>) = connection
         .query_row(
@@ -387,7 +628,10 @@ fn load_artifact(db_path: &str, artifact_sig: &str) -> std::result::Result<Arc<N
         .get("sharedTransport")
         .ok_or_else(|| "RiverMemo artifact has no sharedTransport".to_string())?;
     let node_ids: Vec<i64> = serde_json::from_value(
-        transport.get("nodeIds").cloned().unwrap_or(Value::Array(Vec::new())),
+        transport
+            .get("nodeIds")
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new())),
     )
     .map_err(|error| format!("decode transport nodeIds failed: {}", error))?;
     let row_offsets_u64: Vec<u64> = serde_json::from_value(
@@ -405,7 +649,10 @@ fn load_artifact(db_path: &str, artifact_sig: &str) -> std::result::Result<Arc<N
     )
     .map_err(|error| format!("decode transport targets failed: {}", error))?;
     let weights: Vec<f64> = serde_json::from_value(
-        transport.get("weights").cloned().unwrap_or(Value::Array(Vec::new())),
+        transport
+            .get("weights")
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new())),
     )
     .map_err(|error| format!("decode transport weights failed: {}", error))?;
 
@@ -414,8 +661,14 @@ fn load_artifact(db_path: &str, artifact_sig: &str) -> std::result::Result<Arc<N
         .enumerate()
         .map(|(index, id)| (*id, index))
         .collect();
-    let row_offsets = row_offsets_u64.into_iter().map(|value| value as usize).collect();
-    let targets = targets_u64.into_iter().map(|value| value as usize).collect();
+    let row_offsets = row_offsets_u64
+        .into_iter()
+        .map(|value| value as usize)
+        .collect();
+    let targets = targets_u64
+        .into_iter()
+        .map(|value| value as usize)
+        .collect();
 
     let mut inbound = HashMap::new();
     if let Some(entries) = payload.get("inboundMassView").and_then(Value::as_array) {
@@ -434,6 +687,37 @@ fn load_artifact(db_path: &str, artifact_sig: &str) -> std::result::Result<Arc<N
         .and_then(|value| value.get("maxInbound"))
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
+
+    let mut anchor_gain = HashMap::new();
+    if let Some(entries) = payload.get("anchorGainView").and_then(Value::as_array) {
+        for entry in entries {
+            let Some(parts) = entry.as_array() else {
+                continue;
+            };
+            if parts.len() < 2 {
+                continue;
+            }
+            if let (Some(id), Some(value)) = (parts[0].as_i64(), parts[1].as_f64()) {
+                anchor_gain.insert(id, positive(value));
+            }
+        }
+    }
+
+    let mut wormhole_edges = HashSet::new();
+    if let Some(entries) = payload.get("wormholeView").and_then(Value::as_array) {
+        for entry in entries {
+            let Some(key) = entry.as_str() else {
+                continue;
+            };
+            let ids: Vec<i64> = key
+                .split(':')
+                .filter_map(|value| value.parse::<i64>().ok())
+                .collect();
+            if ids.len() == 2 {
+                wormhole_edges.insert((ids[0], ids[1]));
+            }
+        }
+    }
 
     let mut provenance = HashMap::new();
     if let Some(edges) = payload
@@ -477,7 +761,7 @@ fn load_artifact(db_path: &str, artifact_sig: &str) -> std::result::Result<Arc<N
         }
     }
 
-    let artifact = Arc::new(NativeArtifact {
+    Ok(Arc::new(NativeArtifact {
         node_ids,
         node_index,
         row_offsets,
@@ -485,14 +769,47 @@ fn load_artifact(db_path: &str, artifact_sig: &str) -> std::result::Result<Arc<N
         weights,
         inbound,
         max_inbound,
+        anchor_gain,
+        wormhole_edges,
         provenance,
-    });
-    let mut cache = artifact_cache()
+    }))
+}
+
+fn load_artifact_legacy(
+    db_path: &str,
+    artifact_sig: &str,
+) -> std::result::Result<Arc<NativeArtifact>, String> {
+    if let Some(cached) = legacy_artifact_cache()
         .lock()
-        .map_err(|error| format!("artifact cache lock failed: {}", error))?;
+        .map_err(|error| format!("legacy artifact cache lock failed: {}", error))?
+        .get(artifact_sig)
+        .cloned()
+    {
+        return Ok(cached);
+    }
+
+    let artifact = decode_artifact(db_path, artifact_sig)?;
+    let mut cache = legacy_artifact_cache()
+        .lock()
+        .map_err(|error| format!("legacy artifact cache lock failed: {}", error))?;
     cache.clear();
     cache.insert(artifact_sig.to_string(), artifact.clone());
     Ok(artifact)
+}
+
+pub(crate) fn load_artifact_from_runtime(
+    runtime: &MemoRuntime,
+    db_path: &str,
+    artifact_sig: &str,
+) -> std::result::Result<Arc<NativeArtifact>, String> {
+    if let Some(artifact) = runtime.get(artifact_sig)? {
+        return Ok(artifact);
+    }
+
+    // 解码和校验在写锁外完成；发布临界区只替换 Arc。
+    let staging = decode_artifact(db_path, artifact_sig)?;
+    runtime.publish(artifact_sig, staging.clone())?;
+    Ok(staging)
 }
 
 #[derive(Clone)]
@@ -646,7 +963,10 @@ fn source_top(curves: &[Curve], field: fn(&Curve) -> f64, limit: usize) -> Vec<(
 
 fn select_superset(curves: Vec<Curve>, config: &NativeConfig) -> Vec<Curve> {
     let sources = vec![
-        ("query_knn", source_top(&curves, |curve| curve.query_score, config.query_k)),
+        (
+            "query_knn",
+            source_top(&curves, |curve| curve.query_score, config.query_k),
+        ),
         (
             "denoised_field_knn",
             source_top(&curves, |curve| curve.denoised_score, config.denoised_k),
@@ -657,9 +977,16 @@ fn select_superset(curves: Vec<Curve>, config: &NativeConfig) -> Vec<Curve> {
         ),
         (
             "transfer_field_knn",
-            source_top(&curves, |curve| curve.transfer_score, config.transfer_field_k),
+            source_top(
+                &curves,
+                |curve| curve.transfer_score,
+                config.transfer_field_k,
+            ),
         ),
-        ("bm25", source_top(&curves, |curve| curve.bm25_score, config.bm25_k)),
+        (
+            "bm25",
+            source_top(&curves, |curve| curve.bm25_score, config.bm25_k),
+        ),
         (
             "anchor_direct",
             source_top(&curves, |curve| curve.anchor_score, config.anchor_k),
@@ -671,8 +998,14 @@ fn select_superset(curves: Vec<Curve>, config: &NativeConfig) -> Vec<Curve> {
         if ranked.is_empty() {
             continue;
         }
-        let minimum = ranked.iter().map(|entry| entry.1).fold(f64::INFINITY, f64::min);
-        let maximum = ranked.iter().map(|entry| entry.1).fold(f64::NEG_INFINITY, f64::max);
+        let minimum = ranked
+            .iter()
+            .map(|entry| entry.1)
+            .fold(f64::INFINITY, f64::min);
+        let maximum = ranked
+            .iter()
+            .map(|entry| entry.1)
+            .fold(f64::NEG_INFINITY, f64::max);
         let spread = maximum - minimum;
         for (id, raw_score, rank) in ranked {
             let normalized = if spread > 1e-12 {
@@ -698,8 +1031,9 @@ fn select_superset(curves: Vec<Curve>, config: &NativeConfig) -> Vec<Curve> {
                 .map(|entry| 1.0 / (60.0 + entry.2 as f64))
                 .sum::<f64>();
             let multi_bonus = (0.05 * entries.len().saturating_sub(1) as f64).min(0.2);
-            curve.union_score =
-                clamp01(0.5 * maximum + 0.25 * mean + 0.25 * clamp01(reciprocal * 20.0) + multi_bonus);
+            curve.union_score = clamp01(
+                0.5 * maximum + 0.25 * mean + 0.25 * clamp01(reciprocal * 20.0) + multi_bonus,
+            );
             curve.sources = entries.iter().map(|entry| entry.0.clone()).collect();
             Some(curve)
         })
@@ -734,13 +1068,23 @@ struct FieldWorkspace {
 }
 
 fn normalize_field(entries: &[(i64, f64)]) -> HashMap<i64, f64> {
-    let maximum = entries.iter().map(|entry| positive(entry.1)).fold(0.0, f64::max);
+    let maximum = entries
+        .iter()
+        .map(|entry| positive(entry.1))
+        .fold(0.0, f64::max);
     entries
         .iter()
         .filter_map(|entry| {
             let value = positive(entry.1);
             if entry.0 > 0 && value > 0.0 {
-                Some((entry.0, if maximum > 0.0 { value / maximum } else { value }))
+                Some((
+                    entry.0,
+                    if maximum > 0.0 {
+                        value / maximum
+                    } else {
+                        value
+                    },
+                ))
             } else {
                 None
             }
@@ -778,11 +1122,7 @@ fn evaluate_path(
         let local_potential = (workspace.local.get(&current.id).copied().unwrap_or(0.0)
             * workspace.local.get(&next.id).copied().unwrap_or(0.0))
         .sqrt();
-        let transfer_potential = (workspace
-            .transfer
-            .get(&current.id)
-            .copied()
-            .unwrap_or(0.0)
+        let transfer_potential = (workspace.transfer.get(&current.id).copied().unwrap_or(0.0)
             * workspace.transfer.get(&next.id).copied().unwrap_or(0.0))
         .sqrt();
         let forward = artifact.edge_weight(current.id, next.id);
@@ -802,8 +1142,8 @@ fn evaluate_path(
                 .max(workspace.transfer.get(&next.id).copied().unwrap_or(0.0)))
         .sqrt();
         let continuity = clamp01(0.5 * semantic_continuity + 0.5 * field_continuity);
-        let local_supported =
-            workspace.local_domain.contains(&current.id) && workspace.local_domain.contains(&next.id);
+        let local_supported = workspace.local_domain.contains(&current.id)
+            && workspace.local_domain.contains(&next.id);
         let transfer_supported = workspace.transfer_domain.contains(&current.id)
             && workspace.transfer_domain.contains(&next.id);
         let supported = (local_supported || transfer_supported) && (forward > 0.0 || reverse > 0.0);
@@ -822,8 +1162,11 @@ fn evaluate_path(
         };
         output.segment_count += 1;
         output.supported_segments += usize::from(supported);
-        output.transfer_segments +=
-            usize::from(supported && transfer_supported && (!local_supported || transfer_potential > local_potential));
+        output.transfer_segments += usize::from(
+            supported
+                && transfer_supported
+                && (!local_supported || transfer_potential > local_potential),
+        );
         output.mean_direction += direction;
         output.mean_continuity += continuity;
         output.mean_local_potential += local_potential;
@@ -925,7 +1268,11 @@ fn evaluate_topology(
         })
         .max(1e-9);
         total_node_weight += weight;
-        let exact = curve.tags.iter().enumerate().find(|item| item.1.id == node.id);
+        let exact = curve
+            .tags
+            .iter()
+            .enumerate()
+            .find(|item| item.1.id == node.id);
         let alignment = if let Some((index, tag)) = exact {
             Some(Alignment {
                 candidate_index: index,
@@ -1005,7 +1352,11 @@ fn evaluate_topology(
         .map(|node| (node.id, node))
         .collect();
     let minimum_position = curve.tags.first().map(|tag| tag.position).unwrap_or(0);
-    let maximum_position = curve.tags.last().map(|tag| tag.position).unwrap_or(minimum_position);
+    let maximum_position = curve
+        .tags
+        .last()
+        .map(|tag| tag.position)
+        .unwrap_or(minimum_position);
     let candidate_span = (maximum_position - minimum_position).max(1) as f64;
     let retained_edges: Vec<&RiverEdge> = input
         .query_state
@@ -1064,11 +1415,8 @@ fn evaluate_topology(
         } else {
             clamp01(input.config.reverse_direction_credit)
         };
-        let independent = artifact.independent_fraction(
-            edge.source_id,
-            edge.target_id,
-            curve.file_id,
-        );
+        let independent =
+            artifact.independent_fraction(edge.source_id, edge.target_id, curve.file_id);
         let endpoint = (source.quality * target.quality).sqrt();
         let edge_quality =
             clamp01(endpoint * distance_similarity * direction_similarity * independent);
@@ -1097,14 +1445,11 @@ fn evaluate_topology(
             + 0.28 * output.edge_topology_score
             + 0.14 * output.motif_score,
     );
-    output.node_graph_score =
-        clamp01((output.node_alignment_score * output.mean_closure).sqrt());
+    output.node_graph_score = clamp01((output.node_alignment_score * output.mean_closure).sqrt());
     if output.matched_edges > 0 {
         output.score = output.edge_graph_score;
         output.reliability = clamp01(
-            (output.matched_node_coverage
-                * output.matched_edge_coverage
-                * output.mean_closure)
+            (output.matched_node_coverage * output.matched_edge_coverage * output.mean_closure)
                 .cbrt(),
         );
         output.reliability_mode = "edge_topology".to_string();
@@ -1165,9 +1510,8 @@ fn evaluate_observables(
                 && !workspace.local_domain.contains(&tag.id)
                 && !workspace.transfer_domain.contains(&tag.id),
         );
-        boundary = boundary.max(
-            (clamp01(cosine(&input.query.vector, &tag.vector)) * tag.chunk_cosine).sqrt(),
-        );
+        boundary = boundary
+            .max((clamp01(cosine(&input.query.vector, &tag.vector)) * tag.chunk_cosine).sqrt());
     }
 
     let local_coverage = local_contacts as f64 / chain_size;
@@ -1184,8 +1528,7 @@ fn evaluate_observables(
             + 0.2 * dual_agreement,
     ) * (1.0 - 0.5 * clamp01(tail_ratio));
     let query_chunk = clamp01(cosine(&input.query.vector, &curve.chunk_vector));
-    let direct_contact =
-        clamp01(exact_seed_hits as f64 / workspace.source_ids.len().max(1) as f64);
+    let direct_contact = clamp01(exact_seed_hits as f64 / workspace.source_ids.len().max(1) as f64);
     let semantic_boundary_score = if boundary >= 0.55 { boundary } else { 0.0 };
     let direct = if visible {
         clamp01((0.75 * direct_contact).max(semantic_boundary_score))
@@ -1241,14 +1584,7 @@ fn anchor_contacts(
             .filter(|item| item.1 >= config.semantic_anchor_threshold)
             .max_by(|left, right| left.1.partial_cmp(&right.1).unwrap_or(Ordering::Equal))
         {
-            contacts.push((
-                *seed_id,
-                tag.id,
-                false,
-                similarity,
-                *mass,
-                tag.chunk_cosine,
-            ));
+            contacts.push((*seed_id, tag.id, false, similarity, *mass, tag.chunk_cosine));
         }
     }
     contacts
@@ -1272,7 +1608,10 @@ fn compute_anchors(
             *pool_counts.entry(contact.0).or_default() += 1;
         }
     }
-    let max_seed_mass = seeds.iter().map(|seed| positive(seed.1)).fold(0.0, f64::max);
+    let max_seed_mass = seeds
+        .iter()
+        .map(|seed| positive(seed.1))
+        .fold(0.0, f64::max);
     contacts
         .into_par_iter()
         .map(|candidate_contacts| {
@@ -1282,9 +1621,9 @@ fn compute_anchors(
             for contact in &candidate_contacts {
                 let inbound = artifact.inbound.get(&contact.1).copied().unwrap_or(0.0);
                 let specificity = if artifact.max_inbound > 0.0 {
-                    config.specificity_floor.max(
-                        1.0 - clamp01(inbound / artifact.max_inbound).sqrt(),
-                    )
+                    config
+                        .specificity_floor
+                        .max(1.0 - clamp01(inbound / artifact.max_inbound).sqrt())
                 } else {
                     1.0
                 };
@@ -1303,9 +1642,8 @@ fn compute_anchors(
                 } else {
                     config.semantic_anchor_discount
                 };
-                let contribution = clamp01(
-                    normalized_mass * specificity * contact.5 * rarity * match_weight,
-                );
+                let contribution =
+                    clamp01(normalized_mass * specificity * contact.5 * rarity * match_weight);
                 no_contact_probability *= 1.0 - contribution;
                 closure_sum += contact.5;
             }
@@ -1356,8 +1694,7 @@ struct ScoredWork {
 
 fn query_mode(text: &str) -> &'static str {
     let relation_signals = [
-        "导致", "造成", "因为", "所以", "通过", "依赖", "属于", "定义", "源于", "关系",
-        "->", "→",
+        "导致", "造成", "因为", "所以", "通过", "依赖", "属于", "定义", "源于", "关系", "->", "→",
     ]
     .iter()
     .filter(|token| text.contains(**token))
@@ -1412,8 +1749,7 @@ fn compute_omega(input: &NativeInput) -> OmegaOutput {
     let emergent_nodes = reached_nodes.saturating_sub(seed_nodes);
     let safe_seed = seed_nodes.max(1) as f64;
     let omega_edge = clamp01(active_edges as f64 / (input.config.kappa_edge * safe_seed));
-    let omega_emerge =
-        clamp01(emergent_nodes as f64 / (input.config.kappa_ratio * safe_seed));
+    let omega_emerge = clamp01(emergent_nodes as f64 / (input.config.kappa_ratio * safe_seed));
     let flows: Vec<f64> = input
         .query_state
         .river_edges
@@ -1467,14 +1803,18 @@ fn compute_omega(input: &NativeInput) -> OmegaOutput {
     }
 }
 
-fn assign_v3_scores(work: &mut [ScoredWork], mode: &str, omega: &OmegaOutput, config: &NativeConfig) {
+fn assign_v3_scores(
+    work: &mut [ScoredWork],
+    mode: &str,
+    omega: &OmegaOutput,
+    config: &NativeConfig,
+) {
     let maximum_pure = work.iter().map(|item| item.pure_score).fold(0.0, f64::max);
     for item in work.iter_mut() {
         let near_frontier = item.pure_score >= maximum_pure - 0.03;
         let direct_answer = mode != "atomic"
             && item.observables.closure >= 0.55
-            && (item.direct_evidence >= 0.55
-                || (near_frontier && item.curve.query_score >= 0.55));
+            && (item.direct_evidence >= 0.55 || (near_frontier && item.curve.query_score >= 0.55));
         let structural = (item.topology.matched_edge_coverage
             * item.topology.reliability
             * item.observables.closure)
@@ -1501,14 +1841,13 @@ fn assign_v3_scores(work: &mut [ScoredWork], mode: &str, omega: &OmegaOutput, co
         let mut peers: Vec<(usize, f64)> = (0..work.len())
             .filter(|peer| *peer != index)
             .map(|peer| {
-                let pure_delta =
-                    (work[peer].pure_score - work[index].pure_score) / config.conditional_bandwidth.max(1e-4);
+                let pure_delta = (work[peer].pure_score - work[index].pure_score)
+                    / config.conditional_bandwidth.max(1e-4);
                 let closure_delta = (work[peer].observables.closure
                     - work[index].observables.closure)
                     / config.conditional_closure_bandwidth.max(1e-4);
-                let direct_delta =
-                    (work[peer].direct_evidence - work[index].direct_evidence)
-                        / config.conditional_direct_bandwidth.max(1e-4);
+                let direct_delta = (work[peer].direct_evidence - work[index].direct_evidence)
+                    / config.conditional_direct_bandwidth.max(1e-4);
                 let role_weight = if work[peer].role == work[index].role {
                     1.0
                 } else {
@@ -1563,9 +1902,7 @@ fn assign_v3_scores(work: &mut [ScoredWork], mode: &str, omega: &OmegaOutput, co
         };
         let uncertainty = (variance * (1.0 + 1.0 / effective_peers.max(1.0))).sqrt();
         let innovation = positive(
-            work[index].graph_score
-                - expected
-                - config.innovation_confidence_z * uncertainty,
+            work[index].graph_score - expected - config.innovation_confidence_z * uncertainty,
         );
         let candidate_confidence = if mode == "atomic" {
             (work[index].observables.closure
@@ -1594,16 +1931,10 @@ fn assign_v3_scores(work: &mut [ScoredWork], mode: &str, omega: &OmegaOutput, co
             "structural_explanation" => (0.045, 0.7),
             _ => (0.008, 0.15),
         };
-        let requested =
-            innovation * combined_confidence * config.innovation_scale * multiplier;
+        let requested = innovation * combined_confidence * config.innovation_scale * multiplier;
         let mut bonus = requested.min(role_cap).min(config.topology_bonus_cap);
-        if direct_frontier > 0.0
-            && work[index].role != "direct_answer"
-            && mode != "atomic"
-        {
-            bonus = bonus.min(positive(
-                direct_frontier - 0.005 - work[index].pure_score,
-            ));
+        if direct_frontier > 0.0 && work[index].role != "direct_answer" && mode != "atomic" {
+            bonus = bonus.min(positive(direct_frontier - 0.005 - work[index].pure_score));
         }
         work[index].v2_bonus = clamp01(bonus);
     }
@@ -1648,8 +1979,7 @@ fn assign_v3_scores(work: &mut [ScoredWork], mode: &str, omega: &OmegaOutput, co
             0.0
         } else if config.anchor_saturation - threshold > 1e-12 {
             let normalized = clamp01(
-                (item.anchor.strength - threshold)
-                    / (config.anchor_saturation - threshold),
+                (item.anchor.strength - threshold) / (config.anchor_saturation - threshold),
             );
             normalized * normalized * (3.0 - 2.0 * normalized)
         } else {
@@ -1664,8 +1994,7 @@ fn assign_v3_scores(work: &mut [ScoredWork], mode: &str, omega: &OmegaOutput, co
             item.role = "thematic_neighbor".to_string();
         }
         item.gated_bonus = item.v2_bonus * graph_gate;
-        item.final_score =
-            clamp01(item.pure_score + item.gated_bonus + item.anchor_bonus);
+        item.final_score = clamp01(item.pure_score + item.gated_bonus + item.anchor_bonus);
     }
 }
 
@@ -1727,13 +2056,62 @@ struct NativeOutput {
 }
 
 fn run_native(
+    runtime: Option<&MemoRuntime>,
     db_path: &str,
     artifact_sig: &str,
     input_json: &str,
 ) -> std::result::Result<String, String> {
     let total_started = Instant::now();
-    let input: NativeInput = serde_json::from_str(input_json)
+    let mut input: NativeInput = serde_json::from_str(input_json)
         .map_err(|error| format!("invalid RiverMemo native input JSON: {}", error))?;
+    if let (Some(runtime), Some(handle)) = (runtime, input.observation_handle.as_deref()) {
+        let cached = runtime.get_query_observation(handle, artifact_sig)?;
+        input.query.vector = cached.original_query_vector.as_ref().clone();
+        input.denoised_vector = cached.enhanced_query_vector.as_ref().clone();
+        input.local_vector = cached.local_vector.as_ref().clone();
+        input.transfer_vector = cached.transfer_vector.as_ref().clone();
+        input.query_state.source_field = cached.observation.source_field.clone();
+        input.query_state.local_field = cached.local_field.as_ref().clone();
+        input.query_state.transfer_field = cached.transfer_field.as_ref().clone();
+        input.query_state.local_domain_ids = cached.local_domain_ids.as_ref().clone();
+        input.query_state.transfer_domain_ids = cached.transfer_domain_ids.as_ref().clone();
+        input.query_state.river_nodes = cached
+            .observation
+            .nodes
+            .iter()
+            .map(|node| RiverNode {
+                id: node.id,
+                energy: node.energy,
+                normalized_energy: node.normalized_energy,
+                hop: node.hop as i64,
+            })
+            .collect();
+        input.query_state.river_edges = cached
+            .observation
+            .edges
+            .iter()
+            .map(|edge| RiverEdge {
+                source_id: edge.source_id,
+                target_id: edge.target_id,
+                flow: edge.flow,
+                normalized_flow: edge.normalized_flow,
+            })
+            .collect();
+        input.query_state.field_provenance = cached
+            .observation
+            .nodes
+            .iter()
+            .map(|node| SourceProvenance {
+                id: node.id,
+                hop: node.hop as i64,
+                source_type: node.source_type.clone(),
+            })
+            .collect();
+        input.query_state.complete_observation = !cached.observation.source_field.is_empty();
+        if input.query_state.query_id.is_none() {
+            input.query_state.query_id = cached.observation.query_id.clone();
+        }
+    }
     let dimension = input.dimension;
     if input.query.vector.len() != dimension
         || input.denoised_vector.len() != dimension
@@ -1747,7 +2125,10 @@ fn run_native(
     }
 
     let load_started = Instant::now();
-    let artifact = load_artifact(db_path, artifact_sig)?;
+    let artifact = match runtime {
+        Some(runtime) => load_artifact_from_runtime(runtime, db_path, artifact_sig)?,
+        None => load_artifact_legacy(db_path, artifact_sig)?,
+    };
     let mut curves = load_curves(db_path, &input.candidates, dimension)?;
     let original_score_by_id: HashMap<i64, f64> = input
         .candidates
@@ -1765,8 +2146,7 @@ fn run_native(
             )
         })
         .collect();
-    let local_domain: HashSet<i64> =
-        input.query_state.local_domain_ids.iter().copied().collect();
+    let local_domain: HashSet<i64> = input.query_state.local_domain_ids.iter().copied().collect();
     compute_anchor_scores(&mut curves, &local_domain);
     curves.par_iter_mut().for_each(|curve| {
         curve.query_score = cosine(&input.query.vector, &curve.chunk_vector);
@@ -1788,7 +2168,12 @@ fn run_native(
             .iter()
             .copied()
             .collect(),
-        source_ids: input.query_state.source_field.iter().map(|entry| entry.0).collect(),
+        source_ids: input
+            .query_state
+            .source_field
+            .iter()
+            .map(|entry| entry.0)
+            .collect(),
     };
     let connection = open_readonly(db_path)?;
     let river_ids: Vec<i64> = input
@@ -1864,11 +2249,9 @@ fn run_native(
         .par_iter()
         .map(|curve| {
             let geometry = evaluate_path(curve, &workspace, &artifact, &input.config);
-            let topology =
-                evaluate_topology(curve, &input, &artifact, &query_tag_vectors);
+            let topology = evaluate_topology(curve, &input, &artifact, &query_tag_vectors);
             let visible = !explicit_scope || allowed.contains(&curve.file_id);
-            let observables =
-                evaluate_observables(curve, &geometry, &input, &workspace, visible);
+            let observables = evaluate_observables(curve, &geometry, &input, &workspace, visible);
             let semantic_total = (input.config.pure_query_weight
                 + input.config.pure_local_weight
                 + input.config.pure_transfer_weight)
@@ -1889,15 +2272,13 @@ fn run_native(
                                 + 0.15 * clamp01(observables.transfer_potential),
                         ),
             );
-            let path_reliability = clamp01(
-                geometry.path_quality / input.config.topology_path_saturation.max(1e-6),
-            );
-            let topology_reliability =
-                (path_reliability * observables.query_chunk_score).sqrt();
-            let topology_bonus = input.config.topology_bonus_cap
-                * topology_raw
-                * topology_reliability;
-            let pure_score = clamp01(semantic_base + topology_bonus.min(input.config.topology_bonus_cap));
+            let path_reliability =
+                clamp01(geometry.path_quality / input.config.topology_path_saturation.max(1e-6));
+            let topology_reliability = (path_reliability * observables.query_chunk_score).sqrt();
+            let topology_bonus =
+                input.config.topology_bonus_cap * topology_raw * topology_reliability;
+            let pure_score =
+                clamp01(semantic_base + topology_bonus.min(input.config.topology_bonus_cap));
             let mode = query_mode(&input.query.text);
             let graph_score = if mode == "atomic" {
                 clamp01(0.75 * topology.node_graph_score + 0.25 * topology.edge_graph_score)
@@ -2069,6 +2450,7 @@ fn run_native(
 }
 
 pub struct RiverMemoTopologyV3Task {
+    runtime: Option<Arc<MemoRuntime>>,
     db_path: String,
     artifact_sig: String,
     input_json: String,
@@ -2079,8 +2461,13 @@ impl Task for RiverMemoTopologyV3Task {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        run_native(&self.db_path, &self.artifact_sig, &self.input_json)
-            .map_err(Error::from_reason)
+        run_native(
+            self.runtime.as_deref(),
+            &self.db_path,
+            &self.artifact_sig,
+            &self.input_json,
+        )
+        .map_err(Error::from_reason)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -2099,6 +2486,21 @@ pub fn rerank_rivermemo_topology_v3(
     input_json: String,
 ) -> AsyncTask<RiverMemoTopologyV3Task> {
     AsyncTask::new(RiverMemoTopologyV3Task {
+        runtime: None,
+        db_path,
+        artifact_sig,
+        input_json,
+    })
+}
+
+pub(crate) fn rerank_with_runtime(
+    runtime: Arc<MemoRuntime>,
+    db_path: String,
+    artifact_sig: String,
+    input_json: String,
+) -> AsyncTask<RiverMemoTopologyV3Task> {
+    AsyncTask::new(RiverMemoTopologyV3Task {
+        runtime: Some(runtime),
         db_path,
         artifact_sig,
         input_json,
@@ -2107,9 +2509,11 @@ pub fn rerank_rivermemo_topology_v3(
 
 #[napi]
 pub fn clear_rivermemo_topology_v3_cache() -> Result<()> {
-    artifact_cache()
+    legacy_artifact_cache()
         .lock()
-        .map_err(|error| Error::from_reason(format!("artifact cache lock failed: {}", error)))?
+        .map_err(|error| {
+            Error::from_reason(format!("legacy artifact cache lock failed: {}", error))
+        })?
         .clear();
     Ok(())
 }

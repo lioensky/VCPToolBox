@@ -459,23 +459,25 @@ class LightMemoPlugin {
         let tagBoostEnergyField = null;
         let tagBoostEnergyFieldProvenance = null;
         let tagBoostArtifactBundle = null;
-        // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的功能来增强向量
+        let preparedMemoObservation = null;
+        // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的 Rust 统一管线增强向量
         if (
             engineMode === 'tagmemo'
             && tag_boost > 0
             && this.vectorDBManager
-            && typeof this.vectorDBManager.applyTagBoost === 'function'
+            && typeof this.vectorDBManager.applyTagBoostAsync === 'function'
         ) {
             const hasCore = normalizedCoreTags.length > 0;
             const waveLabel = useGeodesicRerank ? 'TagMemo V9.1 + Potential Field' : 'TagMemo V9.1';
             console.log(`[LightMemo] Applying ${waveLabel} boost (Factor: ${tag_boost}${hasCore ? `, CoreTags: ${core_tags.length}` : ''})`);
 
             // 即使 core_tags 为空，KBM 内部也会处理好默认逻辑
-            const boostResult = this.vectorDBManager.applyTagBoost(
+            const boostResult = await this.vectorDBManager.applyTagBoostAsync(
                 new Float32Array(queryVector),
                 tag_boost,
                 normalizedCoreTags,
-                normalizedCoreBoostFactor
+                normalizedCoreBoostFactor,
+                { queryText: actualQuery }
             );
 
             if (boostResult && boostResult.vector) {
@@ -484,6 +486,7 @@ class LightMemoPlugin {
                 tagBoostEnergyField = boostResult.energyField || null;
                 tagBoostEnergyFieldProvenance = boostResult.energyFieldProvenance || null;
                 tagBoostArtifactBundle = boostResult.artifactBundle || null;
+                preparedMemoObservation = boostResult.preparedMemoObservation || null;
 
                 if (tagBoostInfo) {
                     const matched = tagBoostInfo.matchedTags || [];
@@ -531,7 +534,7 @@ class LightMemoPlugin {
 
         // 🌟 V9.1: 查询级势能场重排
         let rankedCandidates = hybridScored;
-        if (useGeodesicRerank && tag_boost > 0 && tagBoostInfo && this.vectorDBManager && this.vectorDBManager.geodesicRerank) {
+        if (useGeodesicRerank && tag_boost > 0 && tagBoostInfo && this.vectorDBManager && this.vectorDBManager.rerankWithTagMemoAsync) {
             console.log(`[LightMemo] 🌟 V9.1: Applying potential-field rerank to ${hybridScored.length} candidates...`);
 
             // geodesicRerank expects candidates with `id` (chunk ID) and `score` fields
@@ -541,19 +544,20 @@ class LightMemoPlugin {
                 score: c.hybridScore || c.vectorScore || 0
             }));
 
-            const reranked = this.vectorDBManager.geodesicRerank(geoInput, {
-                alpha: potentialFieldConfig.alpha,
-                minGeoSamples: potentialFieldConfig.minGeoSamples,
-                energyField: tagBoostEnergyField,
-                energyFieldProvenance: tagBoostEnergyFieldProvenance,
-                originalQueryVector,
-                enhancedQueryVector: queryVector,
-                queryGeometryState: {
-                    epa: tagBoostInfo?.epa || null,
-                    pyramid: tagBoostInfo?.pyramid || null
-                },
-                artifactBundle: tagBoostArtifactBundle
-            });
+            const rerankResult = await this.vectorDBManager.rerankWithTagMemoAsync(
+                { text: actualQuery, vector: originalQueryVector },
+                geoInput,
+                {},
+                {
+                    alpha: potentialFieldConfig.alpha,
+                    minGeoSamples: potentialFieldConfig.minGeoSamples,
+                    topK: geoInput.length,
+                    preparedMemoObservation
+                }
+            );
+            const reranked = Array.isArray(rerankResult?.results)
+                ? rerankResult.results
+                : geoInput;
 
             // Map results back with geodesic metadata
             rankedCandidates = reranked.map(r => ({
@@ -1019,8 +1023,8 @@ class LightMemoPlugin {
 
         if (
             !this.vectorDBManager
-            || typeof this.vectorDBManager.applyTagBoost !== 'function'
-            || typeof this.vectorDBManager.getTagMemoArtifactSnapshot !== 'function'
+            || typeof this.vectorDBManager.applyTagBoostAsync !== 'function'
+            || typeof this.vectorDBManager.rerankWithTagMemoAsync !== 'function'
         ) {
             throw new Error('TagMemo V9 生产接口不可用。');
         }
@@ -1031,15 +1035,15 @@ class LightMemoPlugin {
         if (!v9Snapshot?.bundle) {
             throw new Error('TagMemo V9 ArtifactBundle 不可用。');
         }
-        const v9Boost = this.vectorDBManager.applyTagBoost(
+        const v9Boost = await this.vectorDBManager.applyTagBoostAsync(
             new Float32Array(queryVector),
             tagBoost,
             coreTags,
             coreBoostFactor,
             {
+                queryText: query,
                 tagMemoVersion: 'v9',
-                strictVersion: true,
-                artifactBundle: v9Snapshot.bundle
+                strictVersion: true
             }
         );
         if (!v9Boost?.vector) {
@@ -1050,26 +1054,23 @@ class LightMemoPlugin {
             await this._scoreByVectorSimilarity(candidates, v9Boost.vector)
         );
         const v9Input = v9VectorRanked.slice(0, candidateK);
-        const v9Ranked = (
-            v9Boost.energyField
-            && typeof this.vectorDBManager.geodesicRerank === 'function'
-        )
-            ? normalizeRanked(
-                this.vectorDBManager.geodesicRerank(v9Input, {
-                    tagMemoVersion: 'v9',
-                    artifactBundle: v9Snapshot.bundle,
-                    energyField: v9Boost.energyField,
-                    energyFieldProvenance: v9Boost.energyFieldProvenance,
-                    originalQueryVector: queryVector,
-                    enhancedQueryVector: v9Boost.vector,
-                    queryGeometryState: {
-                        epa: v9Boost.info?.epa || null,
-                        pyramid: v9Boost.info?.pyramid || null
-                    }
-                }),
-                'score'
+        const v9RerankResult = v9Boost.preparedMemoObservation
+            ? await this.vectorDBManager.rerankWithTagMemoAsync(
+                { text: query, vector: queryVector },
+                v9Input,
+                {},
+                {
+                    topK: candidateK,
+                    preparedMemoObservation: v9Boost.preparedMemoObservation
+                }
             )
-            : v9Input;
+            : null;
+        const v9Ranked = normalizeRanked(
+            Array.isArray(v9RerankResult?.results)
+                ? v9RerankResult.results
+                : v9Input,
+            'score'
+        );
 
         const rustV3Ranked = await this._handleRiverMemoSearch({
             query,

@@ -667,28 +667,47 @@ class TagMemoV10Engine {
         ) {
             throw new TypeError('Invalid V10 artifact staging object');
         }
-        if (
-            this._activeArtifact
-            && this._activeArtifact.artifactSig !== staging.artifactSig
-        ) {
-            this._clearConditionedOperatorCache('artifact-republished');
-        }
+        this._clearConditionedOperatorCache('native-runtime-owns-graph');
         const generation = ++this._artifactGeneration;
         const publishedAt = Number(options.publishedAt) || Date.now();
+        const nodeCount = Math.max(
+            0,
+            Number(staging.sharedTransport?.nodeCount) || 0
+        );
+        const edgeCount = Math.max(
+            0,
+            Number(staging.sharedTransport?.edgeCount) || 0
+        );
+
+        // Rust MemoRuntime 是生产图资产的唯一常驻所有者。JS 发布对象只保留
+        // 路由所需的签名、配置和诊断摘要，不保留 CSR、provenance 或 V9 借用视图。
         const artifact = Object.freeze({
-            ...staging,
+            schema: staging.schema,
+            version: staging.version,
+            algorithmVersion: staging.algorithmVersion,
+            artifactSig: staging.artifactSig,
             generation,
+            graphGeneration: staging.graphGeneration,
+            databaseGeneration: staging.databaseGeneration,
+            provenanceGeneration: staging.provenanceGeneration,
+            modelSig: staging.modelSig,
+            configHash: staging.configHash,
+            sourceArtifactSig: staging.sourceArtifactSig,
+            sourceGraphGeneration: staging.sourceGraphGeneration || '',
+            maxInbound: Math.max(0, Number(staging.maxInbound) || 0),
+            effectiveConfig: staging.effectiveConfig,
+            nodeCount,
+            edgeCount,
+            storageMode: 'rust-memo-runtime',
             publishedAt
         });
         this._activeArtifact = artifact;
         console.log(
-            `[TagMemo-V10] 📦 Artifact published: generation=${generation}, ` +
-            `artifact=${artifact.artifactSig}, nodes=${artifact.sharedTransport.nodeCount}, ` +
-            `edges=${artifact.sharedTransport.edgeCount}, sourceV9=${artifact.sourceArtifactSig}`
+            `[TagMemo-V10] 📦 Native-owned artifact handle published: ` +
+            `generation=${generation}, artifact=${artifact.artifactSig}, ` +
+            `nodes=${nodeCount}, edges=${edgeCount}, ` +
+            `sourceV9=${artifact.sourceArtifactSig}`
         );
-        // 发布是唯一预热点：无论冷启动恢复还是资产重建，服务器进入 Ready
-        // 之前都已经持有本代全局算子，首个查询不会承担 45 万边编译。
-        this.warmGlobalConditionedOperator(artifact);
         return artifact;
     }
 
@@ -993,6 +1012,13 @@ class TagMemoV10Engine {
     }
 
     prepareQuery(query, agentContext = {}, options = {}) {
+        if (this._activeArtifact?.storageMode === 'rust-memo-runtime') {
+            const error = new Error(
+                'JS V10 query solving is retired; use KnowledgeBaseManager.prepareUnifiedMemoObservation()'
+            );
+            error.code = 'TAGMEMO_JS_GRAPH_RUNTIME_RETIRED';
+            throw error;
+        }
         const prepareStartedAt = performance.now();
         const preparationTimings = {};
         let stageStartedAt = prepareStartedAt;
@@ -1385,6 +1411,13 @@ class TagMemoV10Engine {
     }
 
     solveQueryState(queryState, options = {}) {
+        if (this._activeArtifact?.storageMode === 'rust-memo-runtime') {
+            const error = new Error(
+                'JS scaled-resolvent runtime is retired; dual fields are owned by Rust MemoRuntime'
+            );
+            error.code = 'TAGMEMO_JS_GRAPH_RUNTIME_RETIRED';
+            throw error;
+        }
         const artifact = options.artifact || this.getArtifactSnapshot();
         const replay = this.assertReplayCompatible(queryState, artifact);
         if (!replay.compatible) {

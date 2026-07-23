@@ -50,6 +50,15 @@ export interface DualWeightedProjectionResult {
   transferTotalWeight: number
   elapsedMs: number
 }
+export interface MemoFusionResult {
+  vector: Array<number>
+  selectedTagIds: Array<number>
+  requestedCount: number
+  foundCount: number
+  deduplicatedCount: number
+  totalWeight: number
+  elapsedMs: number
+}
 export interface IntrinsicResidualResult {
   tagCount: number
   computedCount: number
@@ -88,6 +97,14 @@ export interface VexusStats {
   dimensions: number
   capacity: number
   memoryUsage: number
+}
+/** VexusIndex 内部统一 Memo 运行时诊断。 */
+export interface MemoRuntimeStats {
+  activeArtifactSig?: string
+  generation: number
+  nodeCount: number
+  edgeCount: number
+  resident: boolean
 }
 export interface WatcherConfig {
   rootPath: string
@@ -131,6 +148,45 @@ export declare class VexusIndex {
    * dimension 大小的临时缓冲区，不维护第二份全库向量矩阵。
    */
   projectDualWeighted(tagIds: Array<number>, localMasses: Float64Array, transferMasses: Float64Array): DualWeightedProjectionResult
+  /**
+   * 使用当前 VexusIndex 唯一 Tag 向量空间完成 TagMemo 上下文融合。
+   *
+   * 只在批量读取请求涉及的 Tag 向量时短持 usearch 读锁；语义去重、
+   * 上下文加权和最终融合均在释放索引锁后执行，不维护第二份全库向量。
+   */
+  fuseMemoContext(original: Float32Array, tagIds: Array<number>, tagWeights: Float64Array, alpha: number, dedupThreshold?: number | undefined | null, maxTags?: number | undefined | null): MemoFusionResult
+  /**
+   * 在本 Tag 向量索引与 MemoRuntime 上执行统一查询数学管线。
+   *
+   * EPA、Residual Pyramid、Core/语言/层级门控、Spike 与向量融合全部在
+   * 同一 Rust 后台任务中完成；返回值同时供 DTSC 和 Topology V3 读出复用。
+   */
+  runMemoPipeline(dbPath: string, artifactSig: string, inputJson: string): Promise<unknown>
+  /**
+   * 在本 Tag 向量索引拥有的统一 MemoRuntime 上执行共同 Spike 感应。
+   *
+   * 输入只包含 EPA/Pyramid 门控后的初始 Tag 种子与传播参数；输出的
+   * QueryObservation 同时供 DTSC 和 RiverMemo Topology V3 两个读出头消费。
+   */
+  senseMemoQuery(dbPath: string, artifactSig: string, inputJson: string): Promise<unknown>
+  /**
+   * 在统一 QueryObservation 上执行 DTSC 测地曲线读出。
+   *
+   * 与 RiverMemo Topology V3 读取同一个 MemoRuntime 活动图快照；
+   * 差异只存在于读出方程，不再拥有独立图资产。
+   */
+  rerankMemoDtsc(dbPath: string, artifactSig: string, inputJson: string): Promise<unknown>
+  /**
+   * 在本 Tag 向量索引拥有的统一 MemoRuntime 上执行 RiverMemo Topology V3。
+   *
+   * 首次请求从持久化资产恢复 CSR，随后由本 VexusIndex 实例持有活动 Arc 快照；
+   * 查询只克隆快照，不再访问进程全局生产缓存。
+   */
+  rerankRivermemoTopologyV3(dbPath: string, artifactSig: string, inputJson: string): Promise<unknown>
+  /** 释放本索引持有的统一 Memo 图快照。 */
+  clearMemoRuntime(): void
+  /** 获取统一 Memo 图快照的常驻诊断。 */
+  memoRuntimeStats(): MemoRuntimeStats
   /** 删除 (按 ID) */
   remove(id: number): void
   /** 获取当前索引状态 */
