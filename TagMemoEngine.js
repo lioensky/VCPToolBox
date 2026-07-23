@@ -245,6 +245,26 @@ class TagMemoEngine {
             `[TagMemoEngine] 📦 V9.1 production artifact published atomically: ` +
             `generation=${generation}, artifact=${bundle.artifactSig}`
         );
+
+        // RiverMemo 是 V9 的伴生派生资产。V9 必须先独立原子发布；
+        // 伴生编译/落库失败只影响 RiverMemo，不得回滚已经健康的 V9。
+        if (
+            this.knowledgeBaseManager
+            && typeof this.knowledgeBaseManager
+                .onTagMemoArtifactPublished === 'function'
+        ) {
+            try {
+                this.knowledgeBaseManager.onTagMemoArtifactPublished(
+                    bundle,
+                    registry
+                );
+            } catch (error) {
+                console.error(
+                    '[TagMemoEngine] ⚠️ RiverMemo companion build failed after V9 publish; V9 remains active:',
+                    error.message || error
+                );
+            }
+        }
         return registry;
     }
 

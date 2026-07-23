@@ -4,9 +4,16 @@ const crypto = require('crypto');
 const {
     hashStable,
     immutableSnapshot,
-    createReadonlyCsr
+    createReadonlyCsr,
+    createReadonlyCsrFromArrays
 } = require('./modules/tagmemoV10/immutable');
-const { buildProvenanceView } = require('./modules/tagmemoV10/provenance');
+const {
+    buildProvenanceView,
+    createProvenanceViewFromSnapshot
+} = require('./modules/tagmemoV10/provenance');
+const RiverMemoArtifactRepository = require(
+    './modules/tagmemoV10/riverMemoArtifactRepository'
+);
 const {
     createDualConditionedOperators
 } = require('./modules/tagmemoV10/agentConditioner');
@@ -43,6 +50,11 @@ class TagMemoV10Engine {
         this.v9Engine = options.v9Engine || null;
         this._activeArtifact = null;
         this._artifactGeneration = 0;
+        this.artifactRepository = options.artifactRepository
+            || new RiverMemoArtifactRepository({
+                getDb: () => this.db,
+                retainedReadyArtifacts: options.retainedReadyArtifacts
+            });
     }
 
     updateRagParams(ragParams) {
@@ -53,8 +65,36 @@ class TagMemoV10Engine {
         this.db = db;
     }
 
+    invalidateArtifact(reason = 'source-artifact-changed') {
+        const previous = this._activeArtifact;
+        this._activeArtifact = null;
+        if (previous) {
+            console.warn(
+                `[TagMemo-V10] 🧹 Active artifact invalidated: reason=${reason}, ` +
+                `artifact=${previous.artifactSig}, sourceV9=${previous.sourceArtifactSig}`
+            );
+        }
+        return previous;
+    }
+
+    _isArtifactCompatibleWithActiveV9(artifact) {
+        if (!artifact) return false;
+        const activeV9 = this.v9Engine?.getArtifactBundleSnapshot?.('v9');
+        return Boolean(
+            activeV9?.artifactSig
+            && artifact.sourceArtifactSig === activeV9.artifactSig
+        );
+    }
+
     getEffectiveConfig(overrides = {}) {
-        const configured = this.ragParams?.KnowledgeBaseManager?.tagMemoV10Alpha || {};
+        // 实验室配置保留兼容；RiverMemo 是固定 Topology V3 的生产配置面，
+        // 同名字段以 RiverMemo 为准。未公开的旧实验臂参数继续使用下方代码默认值。
+        const laboratory = this.ragParams?.KnowledgeBaseManager?.tagMemoV10Alpha || {};
+        const riverMemo = this.ragParams?.KnowledgeBaseManager?.riverMemo || {};
+        const configured = {
+            ...laboratory,
+            ...riverMemo
+        };
         return immutableSnapshot({
             enabled: configured.enabled === true || configured.enabled === 1,
             mode: configured.mode || 'shadow',
@@ -209,18 +249,35 @@ class TagMemoV10Engine {
         });
     }
 
-    buildAndPublishArtifact(options = {}) {
+    _resolveArtifactBuildContext(options = {}) {
         const sourceBundle = options.sourceBundle
             || this.v9Engine?.getArtifactBundleSnapshot?.('v9');
         if (!sourceBundle?.propagationKernel) {
-            const error = new Error('V10 Alpha requires an available V9.2 fact transport snapshot');
+            const error = new Error(
+                'V10 Alpha requires an available V9.2 fact transport snapshot'
+            );
             error.code = 'TAGMEMO_V10_SOURCE_ARTIFACT_UNAVAILABLE';
             throw error;
         }
-
         const effectiveConfig = this.getEffectiveConfig(options.config || {});
-        const configHash = hashStable(effectiveConfig, 32);
-        const sharedTransport = createReadonlyCsr(sourceBundle.propagationKernel);
+        return Object.freeze({
+            sourceBundle,
+            effectiveConfig,
+            configHash: hashStable(effectiveConfig, 32),
+            databaseGeneration: this._computeDatabaseGeneration(),
+            modelSig: sourceBundle.modelSig
+                || this.v9Engine?.modelSig
+                || 'unknown-model'
+        });
+    }
+
+    buildArtifact(options = {}) {
+        const context = options.context
+            || this._resolveArtifactBuildContext(options);
+        const sourceBundle = context.sourceBundle;
+        const sharedTransport = createReadonlyCsr(
+            sourceBundle.propagationKernel
+        );
         if (sharedTransport.maxRowMass >= 1) {
             const error = new Error(
                 `V10 transport violates convergence budget: maxRowMass=${sharedTransport.maxRowMass}`
@@ -229,41 +286,40 @@ class TagMemoV10Engine {
             throw error;
         }
 
-        const databaseGeneration = this._computeDatabaseGeneration();
-        const graphGeneration = sharedTransport.contentSig;
-        const modelSig = sourceBundle.modelSig || this.v9Engine?.modelSig || 'unknown-model';
         const provenanceView = buildProvenanceView(this.db, {
             maxTagsPerFile: 100,
-            direction: this.ragParams?.KnowledgeBaseManager?.orderedCooccurrence || {}
+            direction:
+                this.ragParams?.KnowledgeBaseManager?.orderedCooccurrence || {}
         });
+        const graphGeneration = sharedTransport.contentSig;
         const provenanceGeneration = provenanceView.generation;
         const artifactSig = hashStable({
             schema: ARTIFACT_SCHEMA,
             version: VERSION,
             algorithmVersion: ALGORITHM_VERSION,
             graphGeneration,
-            databaseGeneration,
+            databaseGeneration: context.databaseGeneration,
             provenanceGeneration,
-            modelSig,
-            configHash,
+            modelSig: context.modelSig,
+            configHash: context.configHash,
             sourceArtifactSig: sourceBundle.artifactSig || null,
-            residualArtifactSig: sourceBundle.residualArtifact?.artifactSig || null
+            residualArtifactSig:
+                sourceBundle.residualArtifact?.artifactSig || null
         }, 48);
 
-        const generation = ++this._artifactGeneration;
-        const publishedAt = Date.now();
-        const artifact = Object.freeze({
+        return Object.freeze({
             schema: ARTIFACT_SCHEMA,
             version: VERSION,
             algorithmVersion: ALGORITHM_VERSION,
             artifactSig,
-            generation,
+            generation: null,
             graphGeneration,
-            databaseGeneration,
+            databaseGeneration: context.databaseGeneration,
             provenanceGeneration,
-            modelSig,
-            configHash,
+            modelSig: context.modelSig,
+            configHash: context.configHash,
             sourceArtifactSig: sourceBundle.artifactSig || null,
+            sourceGraphGeneration: sourceBundle.graphGeneration || '',
             sharedTransport,
             rawResidualRatioView: immutableSnapshot(
                 sourceBundle.rawResidualRatioMap || new Map()
@@ -285,22 +341,256 @@ class TagMemoV10Engine {
                 sourceBundle.wormholeEdges || new Set()
             ),
             provenanceView,
-            effectiveConfig,
+            effectiveConfig: context.effectiveConfig,
+            publishedAt: null
+        });
+    }
+
+    _viewToArray(view) {
+        if (!view) return [];
+        if (typeof view.toArray === 'function') return view.toArray();
+        if (view instanceof Map || view instanceof Set) return [...view];
+        return Array.isArray(view) ? view.slice() : [];
+    }
+
+    exportArtifactPayload(artifact) {
+        if (
+            !artifact
+            || artifact.schema !== ARTIFACT_SCHEMA
+            || typeof artifact.sharedTransport?.exportSnapshot !== 'function'
+            || typeof artifact.provenanceView?.exportSnapshot !== 'function'
+        ) {
+            throw new TypeError('Cannot persist an invalid V10/RiverMemo artifact');
+        }
+        return {
+            schema: RiverMemoArtifactRepository.PAYLOAD_SCHEMA,
+            artifact: {
+                schema: artifact.schema,
+                version: artifact.version,
+                algorithmVersion: artifact.algorithmVersion,
+                artifactSig: artifact.artifactSig,
+                graphGeneration: artifact.graphGeneration,
+                databaseGeneration: artifact.databaseGeneration,
+                provenanceGeneration: artifact.provenanceGeneration,
+                modelSig: artifact.modelSig,
+                configHash: artifact.configHash,
+                sourceArtifactSig: artifact.sourceArtifactSig,
+                sourceGraphGeneration: artifact.sourceGraphGeneration || '',
+                maxInbound: artifact.maxInbound,
+                effectiveConfig: artifact.effectiveConfig
+            },
+            sharedTransport: artifact.sharedTransport.exportSnapshot(),
+            provenanceView: artifact.provenanceView.exportSnapshot(),
+            rawResidualRatioView: this._viewToArray(
+                artifact.rawResidualRatioView
+            ),
+            anchorGainView: this._viewToArray(artifact.anchorGainView),
+            pairwiseView: this._viewToArray(artifact.pairwiseView),
+            inboundMassView: this._viewToArray(artifact.inboundMassView),
+            wormholeView: this._viewToArray(artifact.wormholeView)
+        };
+    }
+
+    _restoreMapView(entries) {
+        return immutableSnapshot(new Map(
+            (Array.isArray(entries) ? entries : []).map(entry => [
+                entry?.[0],
+                entry?.[1]
+            ])
+        ));
+    }
+
+    restoreArtifact(payload, options = {}) {
+        if (payload?.schema !== RiverMemoArtifactRepository.PAYLOAD_SCHEMA) {
+            throw new TypeError('Invalid persisted RiverMemo artifact payload');
+        }
+        const metadata = payload.artifact || {};
+        const sharedTransport = createReadonlyCsrFromArrays(
+            payload.sharedTransport
+        );
+        const provenanceView = createProvenanceViewFromSnapshot(
+            payload.provenanceView
+        );
+        if (
+            sharedTransport.contentSig !== metadata.graphGeneration
+            || provenanceView.generation !== metadata.provenanceGeneration
+        ) {
+            throw new Error('Persisted RiverMemo artifact generation mismatch');
+        }
+        return Object.freeze({
+            schema: metadata.schema,
+            version: metadata.version,
+            algorithmVersion: metadata.algorithmVersion,
+            artifactSig: metadata.artifactSig,
+            generation: null,
+            graphGeneration: metadata.graphGeneration,
+            databaseGeneration: metadata.databaseGeneration,
+            provenanceGeneration: metadata.provenanceGeneration,
+            modelSig: metadata.modelSig,
+            configHash: metadata.configHash,
+            sourceArtifactSig: metadata.sourceArtifactSig,
+            sourceGraphGeneration: metadata.sourceGraphGeneration || '',
+            sharedTransport,
+            rawResidualRatioView: this._restoreMapView(
+                payload.rawResidualRatioView
+            ),
+            anchorGainView: this._restoreMapView(payload.anchorGainView),
+            pairwiseView: this._restoreMapView(payload.pairwiseView),
+            inboundMassView: this._restoreMapView(payload.inboundMassView),
+            maxInbound: Math.max(0, Number(metadata.maxInbound) || 0),
+            wormholeView: immutableSnapshot(
+                new Set(
+                    Array.isArray(payload.wormholeView)
+                        ? payload.wormholeView
+                        : []
+                )
+            ),
+            provenanceView,
+            effectiveConfig: immutableSnapshot(
+                metadata.effectiveConfig || {}
+            ),
+            publishedAt: Number(options.publishedAt) || null
+        });
+    }
+
+    _artifactManifest(artifact, overrides = {}) {
+        return {
+            artifactSig: artifact.artifactSig,
+            schemaVersion:
+                RiverMemoArtifactRepository.PAYLOAD_SCHEMA,
+            algorithmVersion: artifact.algorithmVersion,
+            sourceV9ArtifactSig: artifact.sourceArtifactSig,
+            sourceGraphGeneration:
+                artifact.sourceGraphGeneration || '',
+            modelSig: artifact.modelSig,
+            configHash: artifact.configHash,
+            databaseGeneration: artifact.databaseGeneration,
+            provenanceGeneration: artifact.provenanceGeneration,
+            nodeCount: artifact.sharedTransport?.nodeCount || 0,
+            edgeCount: artifact.sharedTransport?.edgeCount || 0,
+            createdAt: Date.now(),
+            ...overrides
+        };
+    }
+
+    publishArtifact(staging, options = {}) {
+        if (
+            !staging
+            || staging.schema !== ARTIFACT_SCHEMA
+            || staging.version !== VERSION
+        ) {
+            throw new TypeError('Invalid V10 artifact staging object');
+        }
+        const generation = ++this._artifactGeneration;
+        const publishedAt = Number(options.publishedAt) || Date.now();
+        const artifact = Object.freeze({
+            ...staging,
+            generation,
             publishedAt
         });
-
         this._activeArtifact = artifact;
         console.log(
-            `[TagMemo-V10] 📦 Alpha artifact published: generation=${generation}, ` +
-            `artifact=${artifactSig}, nodes=${sharedTransport.nodeCount}, ` +
-            `edges=${sharedTransport.edgeCount}, maxRowMass=${sharedTransport.maxRowMass.toFixed(6)}`
+            `[TagMemo-V10] 📦 Artifact published: generation=${generation}, ` +
+            `artifact=${artifact.artifactSig}, nodes=${artifact.sharedTransport.nodeCount}, ` +
+            `edges=${artifact.sharedTransport.edgeCount}, sourceV9=${artifact.sourceArtifactSig}`
         );
         return artifact;
     }
 
+    buildPersistAndPublishArtifact(options = {}) {
+        let staging = null;
+        let manifest = null;
+        try {
+            staging = this.buildArtifact(options);
+            manifest = this._artifactManifest(staging);
+            const persisted = this.artifactRepository.persistReady(
+                manifest,
+                this.exportArtifactPayload(staging)
+            );
+            const published = this.publishArtifact(staging, {
+                publishedAt: persisted.publishedAt
+            });
+            this.artifactRepository.prune();
+            return published;
+        } catch (error) {
+            if (manifest) {
+                try {
+                    this.artifactRepository.recordFailure(manifest, error);
+                } catch (recordError) {
+                    console.error(
+                        '[TagMemo-V10] Failed to record RiverMemo companion failure:',
+                        recordError.message
+                    );
+                }
+            }
+            throw error;
+        }
+    }
+
+    loadCompatiblePersistedArtifact(options = {}) {
+        const context = options.context
+            || this._resolveArtifactBuildContext(options);
+        const criteria = {
+            sourceV9ArtifactSig:
+                context.sourceBundle.artifactSig || '',
+            modelSig: context.modelSig,
+            configHash: context.configHash,
+            databaseGeneration: context.databaseGeneration,
+            algorithmVersion: ALGORITHM_VERSION
+        };
+        const persisted = this.artifactRepository.loadCompatible(criteria);
+        if (!persisted) return null;
+        const staging = this.restoreArtifact(persisted.payload, {
+            publishedAt: persisted.row.published_at
+        });
+        if (
+            staging.sourceArtifactSig !== criteria.sourceV9ArtifactSig
+            || staging.modelSig !== criteria.modelSig
+            || staging.configHash !== criteria.configHash
+            || staging.databaseGeneration !== criteria.databaseGeneration
+        ) {
+            throw new Error('Persisted RiverMemo compatibility validation failed');
+        }
+        return this.publishArtifact(staging, {
+            publishedAt: persisted.row.published_at
+        });
+    }
+
+    restoreOrBuildArtifact(options = {}) {
+        if (options.forceRebuild !== true) {
+            try {
+                const restored = this.loadCompatiblePersistedArtifact(options);
+                if (restored) {
+                    console.log(
+                        `[TagMemo-V10] ♻️ Restored compatible RiverMemo artifact ${restored.artifactSig}.`
+                    );
+                    return restored;
+                }
+            } catch (error) {
+                console.warn(
+                    '[TagMemo-V10] Persisted RiverMemo artifact rejected; rebuilding:',
+                    error.message
+                );
+            }
+        }
+        return this.buildPersistAndPublishArtifact(options);
+    }
+
+    buildAndPublishArtifact(options = {}) {
+        return options.persist === false
+            ? this.publishArtifact(this.buildArtifact(options))
+            : this.buildPersistAndPublishArtifact(options);
+    }
+
     getArtifactSnapshot(options = {}) {
+        if (
+            this._activeArtifact
+            && !this._isArtifactCompatibleWithActiveV9(this._activeArtifact)
+        ) {
+            this.invalidateArtifact('active-v9-signature-mismatch');
+        }
         if (!this._activeArtifact && options.buildIfMissing !== false) {
-            return this.buildAndPublishArtifact(options);
+            return this.restoreOrBuildArtifact(options);
         }
         return this._activeArtifact;
     }
@@ -391,6 +681,13 @@ class TagMemoV10Engine {
 
     prepareQuery(query, agentContext = {}, options = {}) {
         const artifact = options.artifact || this.getArtifactSnapshot();
+        if (!this._isArtifactCompatibleWithActiveV9(artifact)) {
+            const error = new Error(
+                'V10/RiverMemo artifact does not match the active V9 source artifact'
+            );
+            error.code = 'TAGMEMO_V10_SOURCE_GENERATION_MISMATCH';
+            throw error;
+        }
         const queryVectorRaw = query?.vector || options.vector;
         const queryVector = queryVectorRaw instanceof Float32Array
             ? queryVectorRaw

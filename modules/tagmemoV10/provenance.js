@@ -6,6 +6,155 @@ function edgeKey(sourceId, targetId) {
     return `${Number(sourceId)}:${Number(targetId)}`;
 }
 
+function createProvenanceViewFromSnapshot(snapshot = {}) {
+    const rawEdges = Array.isArray(snapshot.edges) ? snapshot.edges : [];
+    const compactEdges = new Map();
+    const sourceIds = new Set();
+    for (const entry of rawEdges) {
+        const key = String(entry?.[0] || '');
+        if (!/^-?\d+:-?\d+$/.test(key)) {
+            throw new TypeError(`Invalid TagMemo provenance edge key: ${key}`);
+        }
+        const sourceId = Number(key.split(':')[0]);
+        const contributions = Object.freeze(
+            (Array.isArray(entry?.[1]) ? entry[1] : [])
+                .map(item => Object.freeze({
+                    fileId: Number(item?.[0]),
+                    diaryName: String(item?.[1] || ''),
+                    path: String(item?.[2] || ''),
+                    mass: Number(item?.[3])
+                }))
+                .filter(item =>
+                    Number.isFinite(item.fileId)
+                    && Number.isFinite(item.mass)
+                    && item.mass > 0
+                )
+        );
+        compactEdges.set(key, contributions);
+        sourceIds.add(sourceId);
+    }
+
+    const digestRows = [...compactEdges.entries()]
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map(([key, contributions]) => [
+            key,
+            contributions.map(item => [
+                item.fileId,
+                item.diaryName,
+                item.path,
+                Number(item.mass.toFixed(12))
+            ])
+        ]);
+    const generation = hashStable({
+        schema: 'tagmemo-v10-alpha-provenance-v1',
+        edges: digestRows
+    }, 40);
+    if (snapshot.generation && snapshot.generation !== generation) {
+        throw new Error('TagMemo provenance snapshot checksum mismatch');
+    }
+
+    const createContextClassifier = (context = {}) => {
+        const allowedFileIds = new Set(
+            Array.isArray(context.allowedFileIds) ? context.allowedFileIds.map(Number) : []
+        );
+        const deniedFileIds = new Set(
+            Array.isArray(context.deniedFileIds) ? context.deniedFileIds.map(Number) : []
+        );
+        const publicDiaryNames = new Set(
+            Array.isArray(context.publicDiaryNames)
+                ? context.publicDiaryNames.map(String)
+                : []
+        );
+        const authorizedDiaryNames = new Set(
+            Array.isArray(context.diaryNames) ? context.diaryNames.map(String) : []
+        );
+        const agentId = String(context.agentId || '').trim();
+
+        return contributions => {
+            const mass = {
+                public: 0,
+                agent_own: 0,
+                authorized: 0,
+                other_agent_public: 0,
+                private_forbidden: 0,
+                unknown: 0
+            };
+            for (const item of contributions) {
+                if (deniedFileIds.has(item.fileId)) {
+                    mass.private_forbidden += item.mass;
+                } else if (allowedFileIds.has(item.fileId)) {
+                    mass.authorized += item.mass;
+                } else if (publicDiaryNames.has(item.diaryName)) {
+                    mass.public += item.mass;
+                } else if (agentId && item.diaryName.includes(agentId)) {
+                    mass.agent_own += item.mass;
+                } else if (authorizedDiaryNames.has(item.diaryName)) {
+                    mass.authorized += item.mass;
+                } else {
+                    mass.unknown += item.mass;
+                }
+            }
+            return mass;
+        };
+    };
+
+    const classify = (contributions, context = {}) =>
+        createContextClassifier(context)(contributions);
+
+    return Object.freeze({
+        schema: 'tagmemo-v10-alpha-provenance-v1',
+        generation,
+        edgeCount: compactEdges.size,
+        sourceCount: sourceIds.size,
+        getEdgeMass(sourceId, targetId, context = {}) {
+            const contributions = compactEdges.get(edgeKey(sourceId, targetId));
+            if (!contributions || contributions.length === 0) {
+                return Object.freeze({ unknown: 1 });
+            }
+            return Object.freeze(classify(contributions, context));
+        },
+        createContextClassifier(context = {}) {
+            const classifyForContext = createContextClassifier(context);
+            return Object.freeze({
+                getEdgeMass(sourceId, targetId) {
+                    const contributions = compactEdges.get(edgeKey(sourceId, targetId));
+                    if (!contributions || contributions.length === 0) {
+                        return { unknown: 1 };
+                    }
+                    return classifyForContext(contributions);
+                }
+            });
+        },
+        inspectEdge(sourceId, targetId) {
+            const contributions = compactEdges.get(edgeKey(sourceId, targetId))
+                || Object.freeze([]);
+            return Object.freeze({
+                totalMass: contributions.reduce((sum, item) => sum + item.mass, 0),
+                contributions,
+                unknown: contributions.length === 0
+            });
+        },
+        exportSnapshot() {
+            return Object.freeze({
+                schema: 'tagmemo-v10-alpha-provenance-snapshot-v1',
+                generation,
+                edges: Object.freeze(
+                    digestRows.map(([key, contributions]) =>
+                        Object.freeze([
+                            key,
+                            Object.freeze(
+                                contributions.map(item =>
+                                    Object.freeze(item.slice())
+                                )
+                            )
+                        ])
+                    )
+                )
+            });
+        }
+    });
+}
+
 function createEmptyProvenanceView(reason = null) {
     return Object.freeze({
         schema: 'tagmemo-v10-alpha-provenance-v1',
@@ -151,9 +300,8 @@ function buildProvenanceView(db, options = {}) {
         );
     }
 
-    const digestRows = [...compactEdges.entries()]
-        .sort((left, right) => left[0].localeCompare(right[0]))
-        .map(([key, contributions]) => [
+    return createProvenanceViewFromSnapshot({
+        edges: [...compactEdges.entries()].map(([key, contributions]) => [
             key,
             contributions.map(item => [
                 item.fileId,
@@ -161,110 +309,13 @@ function buildProvenanceView(db, options = {}) {
                 item.path,
                 Number(item.mass.toFixed(12))
             ])
-        ]);
-    const generation = hashStable({
-        schema: 'tagmemo-v10-alpha-provenance-v1',
-        edges: digestRows
-    }, 40);
-
-    const createContextClassifier = (context = {}) => {
-        // 查询上下文集合只编译一次。旧实现每分类一条边都重建四个 Set，
-        // 在大图双尺度迭代中会制造数千万个短命对象和严重 GC 压力。
-        const allowedFileIds = new Set(
-            Array.isArray(context.allowedFileIds) ? context.allowedFileIds.map(Number) : []
-        );
-        const deniedFileIds = new Set(
-            Array.isArray(context.deniedFileIds) ? context.deniedFileIds.map(Number) : []
-        );
-        const publicDiaryNames = new Set(
-            Array.isArray(context.publicDiaryNames)
-                ? context.publicDiaryNames.map(String)
-                : []
-        );
-        const authorizedDiaryNames = new Set(
-            Array.isArray(context.diaryNames) ? context.diaryNames.map(String) : []
-        );
-        const agentId = String(context.agentId || '').trim();
-
-        return contributions => {
-            const mass = {
-                public: 0,
-                agent_own: 0,
-                authorized: 0,
-                other_agent_public: 0,
-                private_forbidden: 0,
-                unknown: 0
-            };
-
-            for (const item of contributions) {
-                if (deniedFileIds.has(item.fileId)) {
-                    mass.private_forbidden += item.mass;
-                    continue;
-                }
-                if (allowedFileIds.has(item.fileId)) {
-                    mass.authorized += item.mass;
-                    continue;
-                }
-                if (publicDiaryNames.has(item.diaryName)) {
-                    mass.public += item.mass;
-                    continue;
-                }
-                if (agentId && item.diaryName.includes(agentId)) {
-                    mass.agent_own += item.mass;
-                    continue;
-                }
-                if (authorizedDiaryNames.has(item.diaryName)) {
-                    mass.authorized += item.mass;
-                    continue;
-                }
-                // 没有显式公开/授权信息时绝不推断为 public。
-                mass.unknown += item.mass;
-            }
-            return mass;
-        };
-    };
-
-    const classify = (contributions, context = {}) =>
-        createContextClassifier(context)(contributions);
-
-    return Object.freeze({
-        schema: 'tagmemo-v10-alpha-provenance-v1',
-        generation,
-        edgeCount: compactEdges.size,
-        sourceCount: sourceIds.size,
-        getEdgeMass(sourceId, targetId, context = {}) {
-            const contributions = compactEdges.get(edgeKey(sourceId, targetId));
-            if (!contributions || contributions.length === 0) {
-                return Object.freeze({ unknown: 1 });
-            }
-            return Object.freeze(classify(contributions, context));
-        },
-        createContextClassifier(context = {}) {
-            const classifyForContext = createContextClassifier(context);
-            return Object.freeze({
-                getEdgeMass(sourceId, targetId) {
-                    const contributions = compactEdges.get(edgeKey(sourceId, targetId));
-                    if (!contributions || contributions.length === 0) {
-                        return { unknown: 1 };
-                    }
-                    return classifyForContext(contributions);
-                }
-            });
-        },
-        inspectEdge(sourceId, targetId) {
-            const contributions = compactEdges.get(edgeKey(sourceId, targetId))
-                || Object.freeze([]);
-            return Object.freeze({
-                totalMass: contributions.reduce((sum, item) => sum + item.mass, 0),
-                contributions,
-                unknown: contributions.length === 0
-            });
-        }
+        ])
     });
 }
 
 module.exports = {
     edgeKey,
     createEmptyProvenanceView,
+    createProvenanceViewFromSnapshot,
     buildProvenanceView
 };

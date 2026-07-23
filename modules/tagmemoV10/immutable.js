@@ -133,6 +133,148 @@ function createReadonlyMapView(inputEntries = []) {
     });
 }
 
+function createReadonlyCsrFromArrays(input = {}) {
+    const orderedNodeIds = Array.from(
+        input.nodeIds || [],
+        value => Number(value)
+    );
+    const rowOffsets = Uint32Array.from(input.rowOffsets || []);
+    const targetArray = Uint32Array.from(input.targetIndices || []);
+    const weightArray = Float64Array.from(input.weights || []);
+    if (
+        rowOffsets.length !== orderedNodeIds.length + 1
+        || targetArray.length !== weightArray.length
+        || rowOffsets[rowOffsets.length - 1] !== targetArray.length
+    ) {
+        throw new TypeError('Invalid TagMemo CSR snapshot dimensions');
+    }
+    for (let index = 0; index < orderedNodeIds.length; index++) {
+        if (!Number.isFinite(orderedNodeIds[index])) {
+            throw new TypeError(`Invalid TagMemo CSR node id at index ${index}`);
+        }
+        if (index > 0 && orderedNodeIds[index] <= orderedNodeIds[index - 1]) {
+            throw new TypeError('TagMemo CSR node ids must be strictly increasing');
+        }
+        if (rowOffsets[index + 1] < rowOffsets[index]) {
+            throw new TypeError('TagMemo CSR row offsets must be monotonic');
+        }
+    }
+    let maxRowMass = 0;
+    for (let rowIndex = 0; rowIndex < orderedNodeIds.length; rowIndex++) {
+        let rowMass = 0;
+        for (
+            let cursor = rowOffsets[rowIndex];
+            cursor < rowOffsets[rowIndex + 1];
+            cursor++
+        ) {
+            if (
+                targetArray[cursor] >= orderedNodeIds.length
+                || !Number.isFinite(weightArray[cursor])
+                || weightArray[cursor] <= 0
+            ) {
+                throw new TypeError(`Invalid TagMemo CSR edge at cursor ${cursor}`);
+            }
+            rowMass += weightArray[cursor];
+        }
+        maxRowMass = Math.max(maxRowMass, rowMass);
+    }
+
+    const contentSig = hashStable({
+        nodeIds: orderedNodeIds,
+        rowOffsets,
+        targetIndices: targetArray,
+        weights: weightArray
+    }, 48);
+    if (input.contentSig && input.contentSig !== contentSig) {
+        throw new Error('TagMemo CSR snapshot checksum mismatch');
+    }
+
+    const indexById = new Map(
+        orderedNodeIds.map((id, index) => [id, index])
+    );
+    const nodeIdAt = index => orderedNodeIds[index];
+    const nodeIndexOf = id => indexById.get(Number(id));
+
+    return Object.freeze({
+        schema: 'tagmemo-v10-alpha-csr-v1',
+        nodeCount: orderedNodeIds.length,
+        edgeCount: targetArray.length,
+        maxRowMass,
+        contentSig,
+        nodeIdAt,
+        nodeIndexOf,
+        hasNode(id) {
+            return indexById.has(Number(id));
+        },
+        rowMass(sourceId) {
+            const rowIndex = nodeIndexOf(sourceId);
+            if (rowIndex === undefined) return 0;
+            let mass = 0;
+            for (let cursor = rowOffsets[rowIndex]; cursor < rowOffsets[rowIndex + 1]; cursor++) {
+                mass += weightArray[cursor];
+            }
+            return mass;
+        },
+        edgeWeight(sourceId, targetId) {
+            const rowIndex = nodeIndexOf(sourceId);
+            const wantedTarget = nodeIndexOf(targetId);
+            if (rowIndex === undefined || wantedTarget === undefined) return 0;
+            for (let cursor = rowOffsets[rowIndex]; cursor < rowOffsets[rowIndex + 1]; cursor++) {
+                if (targetArray[cursor] === wantedTarget) return weightArray[cursor];
+            }
+            return 0;
+        },
+        forEachEdge(sourceId, callback) {
+            const rowIndex = nodeIndexOf(sourceId);
+            if (rowIndex === undefined) return;
+            for (let cursor = rowOffsets[rowIndex]; cursor < rowOffsets[rowIndex + 1]; cursor++) {
+                callback(nodeIdAt(targetArray[cursor]), weightArray[cursor], cursor);
+            }
+        },
+        forEachRow(callback) {
+            for (let rowIndex = 0; rowIndex < orderedNodeIds.length; rowIndex++) {
+                callback(orderedNodeIds[rowIndex], rowIndex);
+            }
+        },
+        apply(inputVector, output = new Float64Array(orderedNodeIds.length)) {
+            if (!inputVector || inputVector.length !== orderedNodeIds.length) {
+                throw new RangeError(`CSR input length must be ${orderedNodeIds.length}`);
+            }
+            if (!output || output.length !== orderedNodeIds.length) {
+                throw new RangeError(`CSR output length must be ${orderedNodeIds.length}`);
+            }
+            output.fill(0);
+            for (let rowIndex = 0; rowIndex < orderedNodeIds.length; rowIndex++) {
+                const sourceMass = Number(inputVector[rowIndex]) || 0;
+                if (sourceMass === 0) continue;
+                for (let cursor = rowOffsets[rowIndex]; cursor < rowOffsets[rowIndex + 1]; cursor++) {
+                    output[targetArray[cursor]] += sourceMass * weightArray[cursor];
+                }
+            }
+            return output;
+        },
+        exportSnapshot() {
+            return Object.freeze({
+                schema: 'tagmemo-v10-alpha-csr-snapshot-v1',
+                contentSig,
+                nodeIds: Object.freeze(orderedNodeIds.slice()),
+                rowOffsets: Object.freeze(Array.from(rowOffsets)),
+                targetIndices: Object.freeze(Array.from(targetArray)),
+                weights: Object.freeze(Array.from(weightArray))
+            });
+        },
+        exportDigest() {
+            return Object.freeze({
+                schema: 'tagmemo-v10-alpha-csr-v1',
+                nodeCount: orderedNodeIds.length,
+                edgeCount: targetArray.length,
+                maxRowMass,
+                contentSig
+            });
+        }
+    });
+}
+
 function createReadonlyCsr(sourceMatrix) {
     const sourceIds = [...sourceMatrix.keys()]
         .map(Number)
@@ -186,76 +328,12 @@ function createReadonlyCsr(sourceMatrix) {
         weights: weightArray
     }, 48);
 
-    const nodeIdAt = index => orderedNodeIds[index];
-    const nodeIndexOf = id => indexById.get(Number(id));
-
-    return Object.freeze({
-        schema: 'tagmemo-v10-alpha-csr-v1',
-        nodeCount: orderedNodeIds.length,
-        edgeCount: targetArray.length,
-        maxRowMass,
-        contentSig,
-        nodeIdAt,
-        nodeIndexOf,
-        hasNode(id) {
-            return indexById.has(Number(id));
-        },
-        rowMass(sourceId) {
-            const rowIndex = nodeIndexOf(sourceId);
-            if (rowIndex === undefined) return 0;
-            let mass = 0;
-            for (let cursor = rowOffsets[rowIndex]; cursor < rowOffsets[rowIndex + 1]; cursor++) {
-                mass += weightArray[cursor];
-            }
-            return mass;
-        },
-        edgeWeight(sourceId, targetId) {
-            const rowIndex = nodeIndexOf(sourceId);
-            const wantedTarget = nodeIndexOf(targetId);
-            if (rowIndex === undefined || wantedTarget === undefined) return 0;
-            for (let cursor = rowOffsets[rowIndex]; cursor < rowOffsets[rowIndex + 1]; cursor++) {
-                if (targetArray[cursor] === wantedTarget) return weightArray[cursor];
-            }
-            return 0;
-        },
-        forEachEdge(sourceId, callback) {
-            const rowIndex = nodeIndexOf(sourceId);
-            if (rowIndex === undefined) return;
-            for (let cursor = rowOffsets[rowIndex]; cursor < rowOffsets[rowIndex + 1]; cursor++) {
-                callback(nodeIdAt(targetArray[cursor]), weightArray[cursor], cursor);
-            }
-        },
-        forEachRow(callback) {
-            for (let rowIndex = 0; rowIndex < orderedNodeIds.length; rowIndex++) {
-                callback(orderedNodeIds[rowIndex], rowIndex);
-            }
-        },
-        apply(input, output = new Float64Array(orderedNodeIds.length)) {
-            if (!input || input.length !== orderedNodeIds.length) {
-                throw new RangeError(`CSR input length must be ${orderedNodeIds.length}`);
-            }
-            if (!output || output.length !== orderedNodeIds.length) {
-                throw new RangeError(`CSR output length must be ${orderedNodeIds.length}`);
-            }
-            output.fill(0);
-            for (let rowIndex = 0; rowIndex < orderedNodeIds.length; rowIndex++) {
-                const sourceMass = Number(input[rowIndex]) || 0;
-                if (sourceMass === 0) continue;
-                for (let cursor = rowOffsets[rowIndex]; cursor < rowOffsets[rowIndex + 1]; cursor++) {
-                    output[targetArray[cursor]] += sourceMass * weightArray[cursor];
-                }
-            }
-            return output;
-        },
-        exportDigest() {
-            return Object.freeze({
-                schema: 'tagmemo-v10-alpha-csr-v1',
-                nodeCount: orderedNodeIds.length,
-                edgeCount: targetArray.length,
-                maxRowMass,
-                contentSig
-            });
-        }
+    return createReadonlyCsrFromArrays({
+        nodeIds: orderedNodeIds,
+        rowOffsets,
+        targetIndices: targetArray,
+        weights: weightArray,
+        contentSig
     });
 }
 
@@ -264,5 +342,6 @@ module.exports = {
     hashStable,
     immutableSnapshot,
     createReadonlyMapView,
-    createReadonlyCsr
+    createReadonlyCsr,
+    createReadonlyCsrFromArrays
 };

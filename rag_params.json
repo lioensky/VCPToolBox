@@ -67,12 +67,8 @@
       "hubPenaltyCeiling": 1.8,
       "hubSmoothingRatio": 0.1
     },
-    "tagMemoV10Alpha": {
+    "riverMemo": {
       "enabled": false,
-      "mode": "shadow",
-      "experimentArm": "pure",
-      "strictVersion": true,
-      "traceEnabled": true,
       "sourceObservation": {
         "mode": "v9_epa_pyramid_spike",
         "baseTagBoost": 0.6,
@@ -141,19 +137,28 @@
         "maximumRiverEdges": 96,
         "traceEdgeLimit": 24
       },
+      "riverObservability": {
+        "kappaEdge": 0.5,
+        "kappaRatio": 0.3,
+        "epsilon": 0.02,
+        "collapsedThreshold": 0.12,
+        "sparseThreshold": 0.45
+      },
+      "directAnchor": {
+        "semanticThreshold": 0.8,
+        "semanticDiscount": 0.7,
+        "specificityFloor": 0.35,
+        "rarityFloor": 0.15,
+        "reliabilitySeedSaturation": 2,
+        "fallbackReliabilityCap": 0.5,
+        "traceLimit": 8
+      },
       "dstc": {
-        "compute": true,
-        "arm": "pure",
-        "observedRewardCap": 0.12,
         "semanticScoreMode": "positive",
         "pureScoreMode": "topology_limited",
         "topologyBonusCap": 0.08,
         "topologyPathSaturation": 0.15,
         "topologyReliabilityMode": "path_closure",
-        "topologyScoreMode": "relative_graph_dual_readout",
-        "topologyGraphWeightMax": 0.55,
-        "topologyGraphWeightFloor": 0,
-        "topologyFieldScore": "denoised",
         "topologyV2BonusCap": 0.08,
         "topologyV2InnovationScale": 0.5,
         "topologyV2ConditionalBandwidth": 0.04,
@@ -166,6 +171,14 @@
         "topologyV2DirectEvidenceThreshold": 0.55,
         "topologyV2DirectFrontierMargin": 0.03,
         "topologyV2FrontierProtectionMargin": 0.005,
+        "topologyV3OmegaGamma": 1,
+        "topologyV3StructRoleMinOmega": 0.12,
+        "topologyV3AnchorBonusCap": 0.1,
+        "topologyV3AnchorActivationZ": 2,
+        "topologyV3AnchorActivationFloor": 0.05,
+        "topologyV3AnchorSaturation": 0.2,
+        "topologyV3AnchorFrontierContrast": 2,
+        "topologyV3AnchorFrontierAbsFloor": 0.1,
         "topologyV2RoleCaps": {
           "atomic_concept": 0.08,
           "direct_answer": 0.02,
@@ -181,20 +194,11 @@
         "semanticSimilarityMode": "positive",
         "closureMode": "query_weighted",
         "queryClosureWeight": 0.65,
-        "tagClosureWeight": 0.35,
-        "gated": {
-          "requireVisibility": true,
-          "minimumClosure": 0,
-          "maximumTailOnlyRatio": 0.8,
-          "maximumTransferDominance": 0.8
-        }
+        "tagClosureWeight": 0.35
       },
       "safety": {
         "permissionViolationTolerance": 0,
         "failClosed": true
-      },
-      "benchmark": {
-        "traceCandidates": true
       }
     },
     "intrinsicResidual": {

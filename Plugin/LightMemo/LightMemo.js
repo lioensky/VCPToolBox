@@ -222,7 +222,12 @@ class LightMemoPlugin {
             aimemo_preset: rawAIMemoPreset = null,
             BM25: rawBM25Upper,
             bm25: rawBM25Lower,
-            use_bm25: rawUseBM25
+            use_bm25: rawUseBM25,
+            enginemode: rawEngineMode,
+            engineMode: rawEngineModeAlias,
+            // 兼容首版 RiverMemo 接口；新调用统一使用 enginemode。
+            memory_engine: legacyMemoryEngine,
+            memoryEngine: legacyMemoryEngineAlias
         } = args;
 
         const aiMemoOptions = this._parseAIMemoOptions(rawAIMemo, rawAIMemoPreset);
@@ -269,6 +274,14 @@ class LightMemoPlugin {
         }
 
         const normalizedK = Math.max(1, Math.floor(this._parseNumber(k, 5)));
+        const engineMode = this._parseEngineMode(
+            rawEngineModeAlias
+            ?? rawEngineMode
+            ?? legacyMemoryEngineAlias
+            ?? legacyMemoryEngine
+        );
+        // “+”只属于 TagMemo V9 势能场语法；KNN 与 RiverMemo 均不读取它。
+        useGeodesicRerank = engineMode === 'tagmemo' && useGeodesicRerank;
         const potentialFieldConfig = this.vectorDBManager?.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
         const geoCandidateMultiplier = useGeodesicRerank
             ? Math.max(1, Math.min(10, Number(potentialFieldConfig.candidateKMultiplier) || 2))
@@ -417,12 +430,36 @@ class LightMemoPlugin {
             ? new Float32Array(queryVector)
             : new Float32Array(queryVector);
 
+        if (engineMode === 'rivermemo') {
+            return await this._handleRiverMemoSearch({
+                query,
+                actualQuery,
+                queryVector: originalQueryVector,
+                candidates,
+                maid: effectiveMaid,
+                folder: effectiveFolder,
+                searchAll: effectiveSearchAll,
+                k: normalizedK,
+                rerank,
+                useBM25,
+                tagBoost: tag_boost,
+                coreTags: normalizedCoreTags,
+                coreBoostFactor: normalizedCoreBoostFactor,
+                aiMemoOptions
+            });
+        }
+
         let tagBoostInfo = null;
         let tagBoostEnergyField = null;
         let tagBoostEnergyFieldProvenance = null;
         let tagBoostArtifactBundle = null;
         // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的功能来增强向量
-        if (tag_boost > 0 && this.vectorDBManager && typeof this.vectorDBManager.applyTagBoost === 'function') {
+        if (
+            engineMode === 'tagmemo'
+            && tag_boost > 0
+            && this.vectorDBManager
+            && typeof this.vectorDBManager.applyTagBoost === 'function'
+        ) {
             const hasCore = normalizedCoreTags.length > 0;
             const waveLabel = useGeodesicRerank ? 'TagMemo V9.1 + Potential Field' : 'TagMemo V9.1';
             console.log(`[LightMemo] Applying ${waveLabel} boost (Factor: ${tag_boost}${hasCore ? `, CoreTags: ${core_tags.length}` : ''})`);
@@ -592,6 +629,252 @@ class LightMemoPlugin {
                     tagBoost: tag_boost,
                     geodesic: useGeodesicRerank,
                     coreTags: normalizedCoreTags
+                })
+            });
+            if (aiMemoResult) return aiMemoResult;
+        }
+
+        return this.formatResults(finalResults, query);
+    }
+
+    _parseEngineMode(value) {
+        const normalized = String(value || 'rivermemo').trim().toLowerCase();
+        if ([
+            'rivermemo',
+            'river_memo',
+            'river-memo',
+            'topology_v3',
+            'topology-v3',
+            'river',
+            '浪潮河流',
+            '河流记忆'
+        ].includes(normalized)) {
+            return 'rivermemo';
+        }
+        if ([
+            'tagmemo',
+            'tagmemo_v9',
+            'tagmemo-v9',
+            'v9'
+        ].includes(normalized)) {
+            return 'tagmemo';
+        }
+        if ([
+            'knn',
+            'vector',
+            'vector_knn',
+            'vector-knn',
+            '向量'
+        ].includes(normalized)) {
+            return 'knn';
+        }
+        throw new RangeError(
+            `enginemode 仅支持 rivermemo、tagmemo 或 knn，收到 "${value}"`
+        );
+    }
+
+    // 兼容已经使用首版 memory_engine 的内部调用与测试。
+    _parseMemoryEngine(value) {
+        return this._parseEngineMode(value);
+    }
+
+    _parseRerankOptions(rerank) {
+        if (rerank === true) return { enabled: true, rrfOptions: null };
+        if (typeof rerank === 'number' && rerank > 0 && rerank <= 1) {
+            return { enabled: true, rrfOptions: { alpha: rerank } };
+        }
+        if (typeof rerank !== 'string') {
+            return { enabled: false, rrfOptions: null };
+        }
+
+        const normalized = rerank.toLowerCase().trim();
+        if (normalized.startsWith('rrf')) {
+            const alphaMatch = normalized.match(/rrf(\d+\.?\d*)/);
+            return {
+                enabled: true,
+                rrfOptions: {
+                    alpha: alphaMatch
+                        ? Math.min(1, Math.max(0, parseFloat(alphaMatch[1])))
+                        : 0.5
+                }
+            };
+        }
+        const numericAlpha = parseFloat(normalized);
+        if (
+            Number.isFinite(numericAlpha)
+            && numericAlpha > 0
+            && numericAlpha <= 1
+        ) {
+            return {
+                enabled: true,
+                rrfOptions: { alpha: numericAlpha }
+            };
+        }
+        return {
+            enabled: normalized === 'true',
+            rrfOptions: null
+        };
+    }
+
+    async _handleRiverMemoSearch({
+        query,
+        actualQuery,
+        queryVector,
+        candidates,
+        maid,
+        folder,
+        searchAll,
+        k,
+        rerank,
+        useBM25,
+        tagBoost,
+        coreTags,
+        coreBoostFactor,
+        aiMemoOptions
+    }) {
+        if (
+            !this.vectorDBManager
+            || typeof this.vectorDBManager.rerankWithRiverMemo !== 'function'
+        ) {
+            const error = new Error(
+                'RiverMemo 生产接口不可用；请求未回退到其他记忆引擎'
+            );
+            error.code = 'RIVERMEMO_INTERFACE_UNAVAILABLE';
+            throw error;
+        }
+
+        const riverConfig =
+            this.vectorDBManager.ragParams?.KnowledgeBaseManager?.riverMemo || {};
+        const candidateConfig = riverConfig.candidateSuperset || {};
+        const bm25Limit = Math.max(
+            k,
+            Math.floor(Number(candidateConfig.bm25K) || 50)
+        );
+        const bm25Scores = new Map(
+            useBM25
+                ? this._buildBm25TopIds(
+                    actualQuery,
+                    candidates,
+                    bm25Limit
+                ).map(item => [Number(item.id), Number(item.score) || 0])
+                : []
+        );
+        const offeredCandidates = candidates.map(candidate => ({
+            ...candidate,
+            id: Number(candidate.label),
+            chunkId: Number(candidate.label),
+            bm25Score: bm25Scores.get(Number(candidate.label)) || 0
+        }));
+        const allowedFileIds = [...new Set(
+            candidates
+                .map(candidate => Number(candidate.fileId))
+                .filter(Number.isFinite)
+        )];
+        const diaryNames = [...new Set(
+            candidates
+                .map(candidate => String(candidate.dbName || '').trim())
+                .filter(Boolean)
+        )];
+        const agentContext = {
+            agentId: maid || null,
+            diaryNames,
+            allowedFileIds,
+            deniedFileIds: [],
+            visibilityMode: 'explicit_sql_scope',
+            permissions: {
+                allowPublic: false,
+                allowOwn: true,
+                allowAuthorized: true,
+                allowOtherAgentPublic: false,
+                allowUnknownProvenance: false
+            }
+        };
+        const rerankOptions = this._parseRerankOptions(rerank);
+        // 与既有 LightMemo 行为一致：外部 Rerank 只消费最终检索窗口。
+        // RiverMemo 自身先在完整 SQL 授权候选域上建立六路候选超集。
+        const riverResult = this.vectorDBManager.rerankWithRiverMemo(
+            {
+                text: actualQuery,
+                vector: queryVector
+            },
+            offeredCandidates,
+            agentContext,
+            {
+                topK: k,
+                coreTags,
+                sourceObservationConfig: {
+                    baseTagBoost: Math.max(0, Number(tagBoost) || 0),
+                    coreBoostFactor: Math.max(
+                        0,
+                        Number(coreBoostFactor) || 1.33
+                    )
+                },
+                identityEligibility: curve =>
+                    Boolean(
+                        maid
+                        && String(curve?.diaryName || '').includes(maid)
+                    ),
+                includeTrace: false
+            }
+        );
+        if (!riverResult || !Array.isArray(riverResult.results)) {
+            const error = new Error('RiverMemo 返回了无效的生产结果');
+            error.code = 'RIVERMEMO_INVALID_RESULT';
+            throw error;
+        }
+
+        let finalResults = riverResult.results.map(item => ({
+            ...item,
+            label: Number(item.label ?? item.id ?? item.chunkId),
+            hybridScore: Number(item.score) || 0,
+            riverMemo: {
+                artifactSig: riverResult.artifactSig,
+                queryId: riverResult.queryId,
+                omega: Number(item.omega) || 0,
+                regime: item.riverRegime || riverResult.omega?.regime || null,
+                role: item.role || null,
+                topologyBonus: Number(item.topologyBonus) || 0,
+                anchorBonus: Number(item.anchorBonus) || 0
+            }
+        }));
+
+        console.log(
+            `[LightMemo] 🌊 RiverMemo Topology V3 ranked ` +
+            `${riverResult.diagnostics?.rankedCandidates || 0}/` +
+            `${riverResult.diagnostics?.offeredCandidates || candidates.length} ` +
+            `candidates; Ω=${Number(riverResult.omega?.omega || 0).toFixed(4)}, ` +
+            `regime=${riverResult.omega?.regime || 'unknown'}, ` +
+            `artifact=${riverResult.artifactSig || 'unknown'}.`
+        );
+
+        if (rerankOptions.enabled && finalResults.length > 0) {
+            finalResults.forEach((document, index) => {
+                document.retrieval_rank = index + 1;
+            });
+            finalResults = await this._rerankDocuments(
+                actualQuery,
+                finalResults,
+                k,
+                rerankOptions.rrfOptions
+            );
+        }
+
+        if (aiMemoOptions.enabled && finalResults.length > 0) {
+            const aiMemoResult = await this._summarizeWithAIMemo({
+                results: finalResults,
+                query: actualQuery,
+                presetName: aiMemoOptions.presetName,
+                cacheSalt: JSON.stringify({
+                    memoryEngine: 'rivermemo',
+                    artifactSig: riverResult.artifactSig,
+                    maid,
+                    folder,
+                    searchAll,
+                    k,
+                    rerank,
+                    useBM25,
+                    tagBoost,
+                    coreTags
                 })
             });
             if (aiMemoResult) return aiMemoResult;
@@ -2986,6 +3269,15 @@ class LightMemoPlugin {
             content += `--- (来源: ${r.dbName}, 相关性: ${scoreDisplay})\n`;
             if (localUrl) {
                 content += `    [路径: ${localUrl}]\n`;
+            }
+            if (r.riverMemo) {
+                const river = r.riverMemo;
+                content += `    [RiverMemo Topology V3: ` +
+                    `Ω=${Number(river.omega || 0).toFixed(3)}` +
+                    `/${river.regime || 'unknown'}, ` +
+                    `角色=${river.role || 'unknown'}, ` +
+                    `拓扑+${Number(river.topologyBonus || 0).toFixed(4)}, ` +
+                    `直锚+${Number(river.anchorBonus || 0).toFixed(4)}]\n`;
             }
             if (r.tagBoostInfo) {
                 // 使用解构默认值，确保即使 tagBoostInfo 结构不完整也能安全运行

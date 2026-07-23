@@ -54,6 +54,41 @@ const CORE_SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_tagmemo_artifacts_lookup
         ON tagmemo_artifacts(asset_type, model_sig, status);
 
+    -- RiverMemo Topology V3 独立持久化资产。
+    -- payload 保存 gzip 压缩的规范 JSON；checksum 验证解压后的原始字节。
+    CREATE TABLE IF NOT EXISTS rivermemo_artifacts (
+        artifact_sig TEXT PRIMARY KEY,
+        schema_version TEXT NOT NULL,
+        algorithm_version TEXT NOT NULL,
+        source_v9_artifact_sig TEXT NOT NULL,
+        source_graph_generation TEXT NOT NULL,
+        model_sig TEXT NOT NULL,
+        config_hash TEXT NOT NULL,
+        database_generation TEXT NOT NULL,
+        provenance_generation TEXT NOT NULL,
+        payload_codec TEXT NOT NULL DEFAULT 'gzip-json-v1',
+        payload_checksum TEXT,
+        payload BLOB,
+        status TEXT NOT NULL,
+        error_message TEXT,
+        node_count INTEGER NOT NULL DEFAULT 0,
+        edge_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        published_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_rivermemo_artifacts_compatible
+        ON rivermemo_artifacts(
+            source_v9_artifact_sig,
+            model_sig,
+            config_hash,
+            database_generation,
+            status,
+            updated_at
+        );
+    CREATE INDEX IF NOT EXISTS idx_rivermemo_artifacts_status
+        ON rivermemo_artifacts(status, updated_at);
+
     CREATE TABLE IF NOT EXISTS tag_intrinsic_residual_status (
         tag_id INTEGER NOT NULL,
         artifact_sig TEXT NOT NULL,
