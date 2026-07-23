@@ -510,6 +510,23 @@ function createDualConditionedOperators(sharedTransport, context = {}, options =
                 }
                 return mass;
             },
+            edgeWeight(sourceId, targetId) {
+                const rowIndex = sharedTransport.nodeIndexOf(sourceId);
+                const targetIndex = sharedTransport.nodeIndexOf(targetId);
+                if (rowIndex === undefined || targetIndex === undefined) return 0;
+                // sharedTransport 的每行 target 按 Tag ID 升序；条件化编译仅过滤边，
+                // 不改变顺序，因此可以精确二分定位，不需要扫描整行。
+                let low = rowOffsets[rowIndex];
+                let high = rowOffsets[rowIndex + 1] - 1;
+                while (low <= high) {
+                    const middle = (low + high) >>> 1;
+                    const current = targets[middle];
+                    if (current === targetIndex) return weights[middle];
+                    if (current < targetIndex) low = middle + 1;
+                    else high = middle - 1;
+                }
+                return 0;
+            },
             forEachEdge(sourceId, callback) {
                 const rowIndex = sharedTransport.nodeIndexOf(sourceId);
                 if (rowIndex === undefined) return;

@@ -29,9 +29,11 @@ function buildCandidateGeometry(curve) {
         id: Number(tag.id),
         index,
         position: Number(tag.position) > 0 ? Number(tag.position) : index + 1,
-        closure: tag.vector && curve?.chunkVector
-            ? positiveCosine(tag.vector, curve.chunkVector)
-            : 0
+        closure: Number.isFinite(Number(tag.chunkCosine))
+            ? clamp01(Number(tag.chunkCosine))
+            : tag.vector && curve?.chunkVector
+                ? positiveCosine(tag.vector, curve.chunkVector)
+                : 0
     }));
     const minimumPosition = ordered[0]?.position || 0;
     const maximumPosition = ordered[ordered.length - 1]?.position || minimumPosition;
@@ -82,19 +84,35 @@ function bestNodeAlignment(riverNode, candidate, pairwiseView, options = {}) {
     }
 
     let best = null;
+    const semanticSimilarityCache = options.semanticSimilarityCache;
     for (const item of candidate.ordered) {
-        const cachedSimilarity = pairSimilarity(
-            pairwiseView,
-            Number(riverNode.id),
-            item.id
-        );
-        // Pairwise 资产只覆盖预计算过的 Tag 对，不是全矩阵。缓存未命中时
-        // 必须读取查询河网节点与候选 Tag 的真实向量余弦，否则所有非同 ID
-        // 的语义同构节点都会被误判为无对应，整条 Graph 通道静默归零。
-        const vectorSimilarity = queryTagVector && item.tag?.vector
-            ? positiveCosine(queryTagVector, item.tag.vector)
-            : 0;
-        const similarity = Math.max(cachedSimilarity, vectorSimilarity);
+        const key = pairKey(Number(riverNode.id), item.id);
+        let cachedPair = semanticSimilarityCache?.get?.(key);
+        if (!cachedPair) {
+            const persistedSimilarity = pairSimilarity(
+                pairwiseView,
+                Number(riverNode.id),
+                item.id
+            );
+            // Pairwise 资产只覆盖预计算过的 Tag 对，不是全矩阵。缓存未命中时
+            // 必须读取查询河网节点与候选 Tag 的真实向量余弦，否则所有非同 ID
+            // 的语义同构节点都会被误判为无对应，整条 Graph 通道静默归零。
+            const vectorSimilarity = queryTagVector && item.tag?.vector
+                ? positiveCosine(queryTagVector, item.tag.vector)
+                : 0;
+            cachedPair = Object.freeze({
+                persistedSimilarity,
+                vectorSimilarity,
+                similarity: Math.max(
+                    persistedSimilarity,
+                    vectorSimilarity
+                )
+            });
+            semanticSimilarityCache?.set?.(key, cachedPair);
+        }
+        const cachedSimilarity = cachedPair.persistedSimilarity;
+        const vectorSimilarity = cachedPair.vectorSimilarity;
+        const similarity = cachedPair.similarity;
         if (similarity < semanticThreshold) continue;
         const normalizedSemantic = clamp01(
             (similarity - semanticThreshold)

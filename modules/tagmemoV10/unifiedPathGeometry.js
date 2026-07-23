@@ -1,5 +1,7 @@
 'use strict';
 
+const { resolveFieldWorkspace } = require('./fieldWorkspace');
+
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
 }
@@ -46,10 +48,11 @@ function domainSet(domain) {
 
 function evaluateUnifiedPath(curve, queryState, options = {}) {
     const chain = Array.isArray(curve?.tagCurve) ? curve.tagCurve : [];
-    const local = normalizeField(fieldMap(queryState?.localField));
-    const transfer = normalizeField(fieldMap(queryState?.transferField));
-    const localDomain = domainSet(queryState?.localDomain);
-    const transferDomain = domainSet(queryState?.transferDomain);
+    const workspace = resolveFieldWorkspace(queryState, options);
+    const local = workspace.local;
+    const transfer = workspace.transfer;
+    const localDomain = workspace.localDomain;
+    const transferDomain = workspace.transferDomain;
     const supportMode = String(
         options.supportMode || 'effective_domain'
     ).trim().toLowerCase();
@@ -213,8 +216,11 @@ function evaluateUnifiedPath(curve, queryState, options = {}) {
     const tagClosure = chain.length > 0 && curve?.chunkVector
         ? chain.reduce((sum, tag) => {
             if (!tag.vector) return sum;
+            const rawCosine = Number.isFinite(Number(tag.chunkCosine))
+                ? Number(tag.chunkCosine)
+                : cosine(tag.vector, curve.chunkVector);
             return sum + clamp01(
-                (cosine(tag.vector, curve.chunkVector) - closureFloor)
+                (rawCosine - closureFloor)
                 / Math.max(1e-9, 1 - closureFloor)
             );
         }, 0) / chain.length
@@ -255,10 +261,12 @@ function evaluateUnifiedPath(curve, queryState, options = {}) {
 }
 
 function evaluateCandidateCurves(curves, queryState, options = {}) {
+    const fieldWorkspace = resolveFieldWorkspace(queryState, options);
+    const sharedOptions = { ...options, fieldWorkspace };
     const results = (Array.isArray(curves) ? curves : [])
         .map(curve => Object.freeze({
             curve,
-            geometry: evaluateUnifiedPath(curve, queryState, options)
+            geometry: evaluateUnifiedPath(curve, queryState, sharedOptions)
         }));
     return Object.freeze({
         schema: 'tagmemo-v10-alpha-path-batch-v1',

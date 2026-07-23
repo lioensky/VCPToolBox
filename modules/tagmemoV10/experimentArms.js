@@ -806,40 +806,60 @@ function buildTopologyV2BatchContext(dstcBatch, options = {}) {
         Number(options.topologyV2InnovationConfidenceZ) || 1
     );
 
+    const comparePeerWeight = (left, right) =>
+        (right.weight - left.weight)
+        || (left.peer.index - right.peer.index);
     for (const sample of samples) {
-        const neighbors = samples
-            .filter(peer => peer.index !== sample.index)
-            .map(peer => {
-                const pureDelta = (
-                    peer.pure.score - sample.pure.score
-                ) / bandwidth;
-                const closureDelta = (
-                    peer.closure - sample.closure
-                ) / closureBandwidth;
-                const directDelta = (
-                    peer.directEvidence - sample.directEvidence
-                ) / directBandwidth;
-                const roleWeight = peer.role === sample.role ? 1 : 0.35;
-                return {
-                    peer,
-                    weight: roleWeight * Math.exp(
-                        -0.5 * (
-                            pureDelta * pureDelta
-                            + closureDelta * closureDelta
-                            + directDelta * directDelta
-                        )
+        const selected = [];
+        const fallbackTop = [];
+        for (const peer of samples) {
+            if (peer.index === sample.index) continue;
+            const pureDelta = (
+                peer.pure.score - sample.pure.score
+            ) / bandwidth;
+            const closureDelta = (
+                peer.closure - sample.closure
+            ) / closureBandwidth;
+            const directDelta = (
+                peer.directEvidence - sample.directEvidence
+            ) / directBandwidth;
+            const roleWeight = peer.role === sample.role ? 1 : 0.35;
+            const entry = {
+                peer,
+                weight: roleWeight * Math.exp(
+                    -0.5 * (
+                        pureDelta * pureDelta
+                        + closureDelta * closureDelta
+                        + directDelta * directDelta
                     )
-                };
-            })
-            .sort((left, right) =>
-                (right.weight - left.weight)
-                || (left.peer.index - right.peer.index)
-            );
-        const selected = neighbors.filter(entry => entry.weight >= 1e-4);
-        if (selected.length < minimumPeers) {
-            for (const entry of neighbors.slice(0, minimumPeers)) {
-                if (!selected.includes(entry)) selected.push(entry);
+                )
+            };
+            if (entry.weight >= 1e-4) selected.push(entry);
+
+            // 仅维护原排序的精确前 minimumPeers 项。旧实现只在阈值
+            // 命中不足时读取 neighbors.slice(0, minimumPeers)，无需为此
+            // 排序其余候选。
+            let insertion = fallbackTop.length;
+            while (
+                insertion > 0
+                && comparePeerWeight(entry, fallbackTop[insertion - 1]) < 0
+            ) {
+                insertion--;
             }
+            fallbackTop.splice(insertion, 0, entry);
+            if (fallbackTop.length > minimumPeers) fallbackTop.pop();
+        }
+        selected.sort(comparePeerWeight);
+        if (selected.length < minimumPeers) {
+            const selectedPeerIds = new Set(
+                selected.map(entry => entry.peer.index)
+            );
+            for (const entry of fallbackTop) {
+                if (selectedPeerIds.has(entry.peer.index)) continue;
+                selected.push(entry);
+                selectedPeerIds.add(entry.peer.index);
+            }
+            selected.sort(comparePeerWeight);
         }
         const totalWeight = selected.reduce(
             (sum, entry) => sum + entry.weight,

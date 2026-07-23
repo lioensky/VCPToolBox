@@ -72,7 +72,13 @@ function extractAnchorSeeds(queryState) {
     return { seeds, fallback };
 }
 
-function findContact(seed, curve, anchorTagVectorById, semanticThreshold) {
+function findContact(
+    seed,
+    curve,
+    anchorTagVectorById,
+    semanticThreshold,
+    semanticSimilarityCache = null
+) {
     const tagCurve = Array.isArray(curve?.tagCurve) ? curve.tagCurve : [];
     const exact = tagCurve.find(tag => Number(tag?.id) === seed.tagId);
     if (exact) {
@@ -91,7 +97,22 @@ function findContact(seed, curve, anchorTagVectorById, semanticThreshold) {
     let best = null;
     for (const tag of tagCurve) {
         if (!tag?.vector) continue;
-        const similarity = cosine(seedVector, tag.vector);
+        const left = Number(seed.tagId);
+        const right = Number(tag.id);
+        const cacheKey = left < right
+            ? `${left}:${right}`
+            : `${right}:${left}`;
+        const cached = semanticSimilarityCache?.get?.(cacheKey);
+        const similarity = Number.isFinite(Number(cached?.vectorSimilarity))
+            ? Number(cached.vectorSimilarity)
+            : cosine(seedVector, tag.vector);
+        if (!cached) {
+            semanticSimilarityCache?.set?.(cacheKey, Object.freeze({
+                persistedSimilarity: 0,
+                vectorSimilarity: similarity,
+                similarity
+            }));
+        }
         if (
             similarity >= semanticThreshold
             && (!best || similarity > best.similarity)
@@ -132,6 +153,7 @@ function computeDirectAnchorBatch(pathBatch, queryState, options = {}) {
     const traceLimit = Math.max(0, Math.floor(Number(options.traceLimit) || 8));
     const inboundMassView = normalizeMap(options.inboundMassView);
     const anchorTagVectorById = normalizeMap(options.anchorTagVectorById);
+    const semanticSimilarityCache = options.semanticSimilarityCache || null;
     const configuredMaxInbound = Number(options.maxInbound);
     const maxInbound = Number.isFinite(configuredMaxInbound)
         && configuredMaxInbound > 0
@@ -160,7 +182,8 @@ function computeDirectAnchorBatch(pathBatch, queryState, options = {}) {
                 seed,
                 curve,
                 anchorTagVectorById,
-                semanticThreshold
+                semanticThreshold,
+                semanticSimilarityCache
             );
             if (!contact) continue;
             contacts.push({ ...contact, mass: seed.mass });
@@ -196,9 +219,13 @@ function computeDirectAnchorBatch(pathBatch, queryState, options = {}) {
                     specificityFloor,
                     1 - Math.sqrt(clamp01(inbound / maxInbound))
                 );
-            const closure = clamp01(
-                cosine(contact.candidateTag?.vector, chunkVector)
-            );
+            const closure = Number.isFinite(
+                Number(contact.candidateTag?.chunkCosine)
+            )
+                ? clamp01(Number(contact.candidateTag.chunkCosine))
+                : clamp01(
+                    cosine(contact.candidateTag?.vector, chunkVector)
+                );
             const poolCount = poolContactCounts.get(contact.seedTagId) || 0;
             const rarity = Math.max(
                 rarityFloor,

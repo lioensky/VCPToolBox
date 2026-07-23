@@ -133,6 +133,14 @@ class RiverMemoEngine {
     }
 
     rerank(query, candidates, agentContext = {}, options = {}) {
+        const rerankStartedAt = Date.now();
+        const stageTimings = {};
+        let stageStartedAt = rerankStartedAt;
+        const markStage = name => {
+            const now = Date.now();
+            stageTimings[name] = now - stageStartedAt;
+            stageStartedAt = now;
+        };
         const inputCandidates = Array.isArray(candidates) ? candidates : [];
         if (inputCandidates.length === 0) {
             return Object.freeze({
@@ -176,6 +184,7 @@ class RiverMemoEngine {
                 artifact
             }
         );
+        markStage('prepareQueryMs');
         if (
             !prepared?.queryState
             || !prepared.denoisedVector
@@ -187,11 +196,17 @@ class RiverMemoEngine {
             throw error;
         }
 
+        const fieldWorkspace = this.runtime.createFieldWorkspace(
+            prepared.queryState
+        );
+        const semanticSimilarityCache = new Map();
+
         // 一次投影取得 Chunk/Tag 向量及权限判定所需的 fileId。
         const projected = this.runtime.projectCandidateCurves(
             inputCandidates,
             { artifact }
         );
+        markStage('projectCandidatesMs');
         const inputById = new Map(
             inputCandidates
                 .map(candidate => [candidateId(candidate), candidate])
@@ -201,6 +216,7 @@ class RiverMemoEngine {
             prepared.queryState.localDomain,
             projected.curves
         );
+        markStage('anchorSqlMs');
         const enrichedById = new Map();
 
         for (const curve of projected.curves) {
@@ -275,6 +291,7 @@ class RiverMemoEngine {
                 config: candidateConfig
             }
         );
+        markStage('candidateSupersetMs');
         const selectedById = new Map(
             superset.candidates.map(candidate => [Number(candidate.chunkId), candidate])
         );
@@ -303,9 +320,12 @@ class RiverMemoEngine {
             prepared.queryState,
             {
                 artifact,
+                fieldWorkspace,
+                semanticSimilarityCache,
                 ...(options.pathEvaluation || {})
             }
         );
+        markStage('pathAndRelativeTopologyMs');
         const allowedFileIds = new Set(
             Array.isArray(agentContext.allowedFileIds)
                 ? agentContext.allowedFileIds.map(Number).filter(Number.isFinite)
@@ -322,11 +342,13 @@ class RiverMemoEngine {
             prepared.queryState,
             {
                 artifact,
+                fieldWorkspace,
                 identityEligibility: options.identityEligibility,
                 visibilityEligibility,
                 ...(options.dstc || {})
             }
         );
+        markStage('dstcMs');
         const omega = this.measureOmega(prepared.queryState, {
             artifact,
             config: options.riverObservability
@@ -338,9 +360,11 @@ class RiverMemoEngine {
                 artifact,
                 queryState: prepared.queryState,
                 queryText: String(query?.text || ''),
-                riverObservability: omega
+                riverObservability: omega,
+                semanticSimilarityCache
             }
         );
+        markStage('topologyV3ScoreMs');
         const requestedK = Math.max(
             1,
             Math.floor(Number(options.topK) || scored.results.length)
@@ -400,6 +424,14 @@ class RiverMemoEngine {
                 candidateSuperset: superset.diagnostics,
                 projection: projected.diagnostics,
                 anchorActivatedCandidates: computedAnchorScores.size,
+                semanticSimilarityCacheEntries:
+                    semanticSimilarityCache.size,
+                exactDerivedAssets:
+                    this.runtime.getDerivedAssetDiagnostics?.() || null,
+                stageTimings: Object.freeze({
+                    ...stageTimings,
+                    totalMs: Date.now() - rerankStartedAt
+                }),
                 field: prepared.queryState.fieldDiagnostics,
                 queryProfile: scored.diagnostics.queryProfile,
                 anchorBatchAvailable: scored.diagnostics.anchorBatchAvailable

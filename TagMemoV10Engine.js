@@ -35,6 +35,12 @@ const {
     scoreExperimentArm,
     runExperimentArms
 } = require('./modules/tagmemoV10/experimentArms');
+const {
+    createFieldWorkspace
+} = require('./modules/tagmemoV10/fieldWorkspace');
+const V10DerivedAssetManager = require(
+    './modules/tagmemoV10/derivedAssetManager'
+);
 
 const VERSION = 'v10_alpha';
 const ALGORITHM_VERSION = 'v10.alpha.1';
@@ -55,6 +61,12 @@ class TagMemoV10Engine {
                 getDb: () => this.db,
                 retainedReadyArtifacts: options.retainedReadyArtifacts
             });
+        this.derivedAssetManager = options.derivedAssetManager
+            || new V10DerivedAssetManager({
+                getDb: () => this.db,
+                modelSig: this.config.modelSig || this.config.model,
+                dimension: this.config.dimension
+            });
     }
 
     updateRagParams(ragParams) {
@@ -63,6 +75,19 @@ class TagMemoV10Engine {
 
     rebindDatabase(db) {
         this.db = db;
+        this.derivedAssetManager?.rebindDatabase(db);
+    }
+
+    ensureExactDerivedAssets(options = {}) {
+        return this.derivedAssetManager.ensureExactAssets(options);
+    }
+
+    getDerivedAssetDiagnostics() {
+        return this.derivedAssetManager?.lastDiagnostics || null;
+    }
+
+    createFieldWorkspace(queryState) {
+        return createFieldWorkspace(queryState);
     }
 
     invalidateArtifact(reason = 'source-artifact-changed') {
@@ -629,54 +654,89 @@ class TagMemoV10Engine {
         );
     }
 
-    projectFieldVector(fieldEntries, options = {}) {
+    projectDualFieldVectors(localEntries, transferEntries) {
         const dimension = Math.max(1, Number(this.config.dimension) || 0);
-        const entries = Array.isArray(fieldEntries) ? fieldEntries : [];
-        const ids = entries.map(entry => Number(entry[0])).filter(Number.isFinite);
-        if (ids.length === 0 || !this.db?.prepare) return null;
+        const local = Array.isArray(localEntries) ? localEntries : [];
+        const transfer = Array.isArray(transferEntries) ? transferEntries : [];
+        const localMassById = new Map(local.map(entry => [
+            Number(entry[0]),
+            Math.max(0, Number(entry[1]) || 0)
+        ]));
+        const transferMassById = new Map(transfer.map(entry => [
+            Number(entry[0]),
+            Math.max(0, Number(entry[1]) || 0)
+        ]));
+        const ids = [...new Set([
+            ...localMassById.keys(),
+            ...transferMassById.keys()
+        ].filter(Number.isFinite))];
+        if (ids.length === 0 || !this.db?.prepare) {
+            return Object.freeze({ localVector: null, transferVector: null });
+        }
 
-        const rows = [];
+        const localOutput = new Float64Array(dimension);
+        const transferOutput = new Float64Array(dimension);
+        let localTotalWeight = 0;
+        let transferTotalWeight = 0;
         for (let offset = 0; offset < ids.length; offset += 500) {
             const batch = ids.slice(offset, offset + 500);
             const placeholders = batch.map(() => '?').join(',');
-            rows.push(...this.db.prepare(
+            const rows = this.db.prepare(
                 `SELECT id, vector FROM tags WHERE id IN (${placeholders})`
-            ).all(...batch));
-        }
-        const rowById = new Map(rows.map(row => [Number(row.id), row]));
-        const output = new Float64Array(dimension);
-        let totalWeight = 0;
-        for (const [rawId, rawMass] of entries) {
-            const row = rowById.get(Number(rawId));
-            const mass = Math.max(0, Number(rawMass) || 0);
-            if (!row?.vector || row.vector.length !== dimension * 4 || mass <= 0) continue;
-            const aligned = row.vector.byteOffset % 4 === 0
-                ? row.vector
-                : Buffer.from(row.vector);
-            const tagVector = new Float32Array(
-                aligned.buffer,
-                aligned.byteOffset,
-                dimension
-            );
-            for (let index = 0; index < dimension; index++) {
-                output[index] += tagVector[index] * mass;
+            ).all(...batch);
+            for (const row of rows) {
+                if (!row.vector || row.vector.length !== dimension * 4) continue;
+                const id = Number(row.id);
+                const localMass = localMassById.get(id) || 0;
+                const transferMass = transferMassById.get(id) || 0;
+                if (localMass <= 0 && transferMass <= 0) continue;
+                const aligned = row.vector.byteOffset % 4 === 0
+                    ? row.vector
+                    : Buffer.from(row.vector);
+                const tagVector = new Float32Array(
+                    aligned.buffer,
+                    aligned.byteOffset,
+                    dimension
+                );
+                for (let index = 0; index < dimension; index++) {
+                    const value = tagVector[index];
+                    if (localMass > 0) {
+                        localOutput[index] += value * localMass;
+                    }
+                    if (transferMass > 0) {
+                        transferOutput[index] += value * transferMass;
+                    }
+                }
+                localTotalWeight += localMass;
+                transferTotalWeight += transferMass;
             }
-            totalWeight += mass;
         }
-        if (totalWeight <= 0) return null;
 
-        let norm = 0;
-        for (let index = 0; index < dimension; index++) {
-            output[index] /= totalWeight;
-            norm += output[index] * output[index];
-        }
-        norm = Math.sqrt(norm);
-        if (norm <= 1e-12) return null;
-        const projected = new Float32Array(dimension);
-        for (let index = 0; index < dimension; index++) {
-            projected[index] = output[index] / norm;
-        }
-        return projected;
+        const finalize = (output, totalWeight) => {
+            if (totalWeight <= 0) return null;
+            let norm = 0;
+            for (let index = 0; index < dimension; index++) {
+                output[index] /= totalWeight;
+                norm += output[index] * output[index];
+            }
+            norm = Math.sqrt(norm);
+            if (norm <= 1e-12) return null;
+            const projected = new Float32Array(dimension);
+            for (let index = 0; index < dimension; index++) {
+                projected[index] = output[index] / norm;
+            }
+            return projected;
+        };
+
+        return Object.freeze({
+            localVector: finalize(localOutput, localTotalWeight),
+            transferVector: finalize(transferOutput, transferTotalWeight)
+        });
+    }
+
+    projectFieldVector(fieldEntries, options = {}) {
+        const projected = this.projectDualFieldVectors(fieldEntries, []);
+        return projected.localVector;
     }
 
     prepareQuery(query, agentContext = {}, options = {}) {
@@ -782,11 +842,15 @@ class TagMemoV10Engine {
         const denoisedVector = sourceObservation?.enhancedVector
             ? new Float32Array(sourceObservation.enhancedVector)
             : this.projectFieldVector(solved.sourceField);
+        const projectedFields = this.projectDualFieldVectors(
+            solved.localField,
+            solved.transferField
+        );
         return Object.freeze({
             queryState: solved,
             denoisedVector,
-            localVector: this.projectFieldVector(solved.localField),
-            transferVector: this.projectFieldVector(solved.transferField)
+            localVector: projectedFields.localVector,
+            transferVector: projectedFields.transferVector
         });
     }
 
@@ -868,6 +932,7 @@ class TagMemoV10Engine {
             candidates,
             {
                 dimension: this.config.dimension,
+                derivedAssetManager: this.derivedAssetManager,
                 ...options
             }
         );
@@ -909,12 +974,17 @@ class TagMemoV10Engine {
 
     evaluateCandidateCurves(curves, queryState, options = {}) {
         const artifact = options.artifact || this.getArtifactSnapshot();
+        const fieldWorkspace = options.fieldWorkspace
+            || this.createFieldWorkspace(queryState);
+        const semanticSimilarityCache = options.semanticSimilarityCache
+            || new Map();
         const pathBatch = evaluateCandidateCurves(
             curves,
             queryState,
             {
                 ...artifact.effectiveConfig.pathGeometry,
-                ...(options.config || {})
+                ...(options.config || {}),
+                fieldWorkspace
             }
         );
         const relativeConfig = {
@@ -942,7 +1012,9 @@ class TagMemoV10Engine {
                 ...relativeConfig,
                 pairwiseView: artifact.pairwiseView,
                 provenanceView: artifact.provenanceView,
-                queryTagVectorById
+                queryTagVectorById,
+                semanticSimilarityCache,
+                fieldWorkspace
             }
         );
     }
@@ -1004,7 +1076,9 @@ class TagMemoV10Engine {
                     ...artifact.effectiveConfig.directAnchor,
                     inboundMassView: artifact.inboundMassView,
                     maxInbound: artifact.maxInbound,
-                    anchorTagVectorById
+                    anchorTagVectorById,
+                    semanticSimilarityCache:
+                        options.semanticSimilarityCache || null
                 }
             );
         }

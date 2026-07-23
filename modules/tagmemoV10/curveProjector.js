@@ -16,22 +16,24 @@ function queryByChunks(db, sqlPrefix, values, sqlSuffix = '', chunkSize = 500) {
 function decodeVector(blob, dimension) {
     if (!blob || !Number.isFinite(dimension) || dimension <= 0) return null;
     if (blob instanceof Float32Array) {
-        return blob.length === dimension
-            ? Object.freeze(Array.from(blob))
-            : null;
+        return blob.length === dimension ? blob : null;
     }
     if (blob.length !== dimension * Float32Array.BYTES_PER_ELEMENT) return null;
     const aligned = blob.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0
         ? blob
         : Buffer.from(blob);
-    return Object.freeze(Array.from(
-        new Float32Array(aligned.buffer, aligned.byteOffset, dimension)
-    ));
+    // Float32Array 视图保持 SQLite 原始精度，避免 Array.from() 将每个元素
+    // 物化为普通 JS Number。外层曲线对象只读，算法阶段不得修改向量内容。
+    return new Float32Array(aligned.buffer, aligned.byteOffset, dimension);
 }
 
 function projectCandidateCurves(db, candidates, options = {}) {
     if (!db?.prepare) throw new TypeError('projectCandidateCurves requires a database');
     const dimension = Math.max(1, Math.floor(Number(options.dimension) || 0));
+    const configuredDerivedAssets = options.derivedAssetManager || null;
+    const derivedAssets = configuredDerivedAssets?.isReady?.()
+        ? configuredDerivedAssets
+        : null;
     const ids = [...new Set((Array.isArray(candidates) ? candidates : [])
         .map(candidate => Number(candidate.id ?? candidate.chunkId ?? candidate.label))
         .filter(Number.isFinite))];
@@ -71,12 +73,14 @@ function projectCandidateCurves(db, candidates, options = {}) {
     const tagsByFile = new Map();
     for (const row of fileTagRows) {
         const fileId = Number(row.file_id);
+        const tagId = Number(row.tag_id);
         if (!tagsByFile.has(fileId)) tagsByFile.set(fileId, []);
         tagsByFile.get(fileId).push(Object.freeze({
-            id: Number(row.tag_id),
+            id: tagId,
             name: String(row.name || ''),
             position: Math.max(0, Number(row.position) || 0),
-            vector: decodeVector(row.vector, dimension)
+            vector: decodeVector(row.vector, dimension),
+            vectorNorm: derivedAssets?.getNorm('tag', tagId) || 0
         }));
     }
 
@@ -96,7 +100,11 @@ function projectCandidateCurves(db, candidates, options = {}) {
             missingChunks++;
             continue;
         }
-        const chain = tagsByFile.get(Number(row.file_id)) || [];
+        const rawChain = tagsByFile.get(Number(row.file_id)) || [];
+        const chain = rawChain.map(tag => Object.freeze({
+            ...tag,
+            chunkCosine: derivedAssets?.getChunkTagCosine(id, tag.id)
+        }));
         if (chain.length === 0) missingCurves++;
         const candidate = inputById.get(id) || {};
         curves.push(Object.freeze({
@@ -108,6 +116,7 @@ function projectCandidateCurves(db, candidates, options = {}) {
             diaryName: String(row.diary_name || ''),
             updatedAt: Number(row.updated_at) || 0,
             chunkVector: decodeVector(row.vector, dimension),
+            chunkVectorNorm: derivedAssets?.getNorm('chunk', id) || 0,
             tagCurve: Object.freeze(chain),
             candidateSources: Object.freeze(
                 Array.isArray(candidate.candidateSources)

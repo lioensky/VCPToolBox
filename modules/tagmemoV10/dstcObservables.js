@@ -1,6 +1,7 @@
 'use strict';
 
 const { cosine } = require('./unifiedPathGeometry');
+const { resolveFieldWorkspace } = require('./fieldWorkspace');
 
 const OBSERVABLE_NAMES = Object.freeze([
     'direct',
@@ -113,11 +114,12 @@ function computeDstcObservables(curve, geometry, queryState, options = {}) {
             : []
     );
     const chain = Array.isArray(curve?.tagCurve) ? curve.tagCurve : [];
-    const local = normalizedField(toFieldMap(queryState?.localField));
-    const transfer = normalizedField(toFieldMap(queryState?.transferField));
-    const seeds = sourceIds(queryState);
-    const localDomain = domainIds(queryState?.localDomain);
-    const transferDomain = domainIds(queryState?.transferDomain);
+    const workspace = resolveFieldWorkspace(queryState, options);
+    const local = workspace.local;
+    const transfer = workspace.transfer;
+    const seeds = workspace.sourceIds;
+    const localDomain = workspace.localDomain;
+    const transferDomain = workspace.transferDomain;
 
     let exactSeedHits = 0;
     let localContacts = 0;
@@ -167,11 +169,16 @@ function computeDstcObservables(curve, geometry, queryState, options = {}) {
                 tag.vector,
                 options.semanticSimilarityMode
             );
-            const tagChunkScore = semanticSimilarity(
-                tag.vector,
-                chunkVector,
-                options.semanticSimilarityMode
-            );
+            const rawTagChunkCosine = Number.isFinite(
+                Number(tag.chunkCosine)
+            )
+                ? Number(tag.chunkCosine)
+                : cosine(tag.vector, chunkVector);
+            const tagChunkScore = String(
+                options.semanticSimilarityMode || 'positive'
+            ).toLowerCase() === 'shifted'
+                ? clamp01((rawTagChunkCosine + 1) / 2)
+                : clamp01(rawTagChunkCosine);
             const boundaryPathQuality = Math.sqrt(
                 queryTagScore * tagChunkScore
             );
@@ -327,6 +334,8 @@ function computeDstcObservables(curve, geometry, queryState, options = {}) {
 }
 
 function computeDstcBatch(pathBatch, queryState, options = {}) {
+    const fieldWorkspace = resolveFieldWorkspace(queryState, options);
+    const sharedOptions = { ...options, fieldWorkspace };
     const results = (Array.isArray(pathBatch?.results) ? pathBatch.results : [])
         .map(item => Object.freeze({
             curve: item.curve,
@@ -337,7 +346,7 @@ function computeDstcBatch(pathBatch, queryState, options = {}) {
                 item.geometry,
                 queryState,
                 {
-                    ...options,
+                    ...sharedOptions,
                     identityEligible: typeof options.identityEligibility === 'function'
                         ? options.identityEligibility(item.curve, queryState) === true
                         : options.identityEligible === true,
