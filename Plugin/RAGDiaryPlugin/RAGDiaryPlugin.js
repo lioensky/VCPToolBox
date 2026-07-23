@@ -2607,6 +2607,11 @@ class RAGDiaryPlugin {
         const useTime = allowTimeAndGroup && /::Time(?:\d*\.?\d+)?(?=$|::|[^\d.])/i.test(modifiers);
         const timeRatio = useTime ? this._extractTimeRatio(modifiers) : null;
         const useGroup = allowTimeAndGroup && modifiers.includes('::Group');
+        // 🌊 RiverMemo：作为独立检索引擎接管 TagMemo/TagMemo+。
+        // ::RiverMemo 与 ::TagMemo/::TagMemo+ 同时出现时，后两者仅作为被忽略的兼容语法，
+        // 不再触发 V9 向量增强或测地线重排；外部 ::Rerank/::Rerank+ 仍在 RiverMemo 后执行。
+        const useRiverMemo = /::RiverMemo(?=$|::)/i.test(modifiers);
+
         // 🌟 Rerank+ (RRF): 解析 ::Rerank+ 修饰符
         // 语法: ::Rerank+ (默认α=0.5) 或 ::Rerank+0.7 (α=0.7, Reranker占70%权重)
         const rerankPlusMatch = modifiers.match(/::Rerank\+(\d+\.?\d*)?/);
@@ -2629,9 +2634,14 @@ class RAGDiaryPlugin {
         // ::TagMemo+0.3 → 激活 TagMemo(权重0.3) + 测地线重排
         // ::TagMemo0.3 → 激活 TagMemo(权重0.3)，无测地线
         // ::TagMemo → 激活 TagMemo（动态权重），无测地线
-        const useGeodesicRerank = /::TagMemo\+/.test(modifiers);
+        // ::RiverMemo 出现时，TagMemo/TagMemo+ 必须完全失效。
+        const useGeodesicRerank = !useRiverMemo && /::TagMemo\+/.test(modifiers);
         const tagMemoWeightMatch = modifiers.match(/::TagMemo\+?([\d.]+)/);
-        let tagWeight = tagMemoWeightMatch ? parseFloat(tagMemoWeightMatch[1]) : (modifiers.includes('::TagMemo') ? defaultTagWeight : null);
+        let tagWeight = useRiverMemo
+            ? null
+            : (tagMemoWeightMatch
+                ? parseFloat(tagMemoWeightMatch[1])
+                : (modifiers.includes('::TagMemo') ? defaultTagWeight : null));
 
         // 🌟 V8: 构建 geodesicRerank 选项（传递给 search 的第 7 参数）
         // alpha / minGeoSamples 默认值统一由 rag_params.json: KnowledgeBaseManager.geodesicRerank 热参数提供
@@ -2660,9 +2670,20 @@ class RAGDiaryPlugin {
         const finalK = Math.max(1, Math.round(dynamicK * kMultiplier));
         // 🧹 V4.1: 多取 contextDiaryPrefixes.size 条作为去重补偿缓冲
         const dedupBuffer = contextDiaryPrefixes.size;
-        const kForSearch = useRerank
+        const postEngineCandidateK = useRerank
             ? Math.max(1, Math.round(finalK * this.rerankConfig.multiplier) + dedupBuffer)
             : finalK + dedupBuffer;
+        // RiverMemo 的六路候选超集只能在调用方提供的候选域内工作，因此初始 KNN
+        // 需要覆盖其 union 上限；RiverMemo 自身完成收缩后，外部 Rerank 仍只消费小窗口。
+        const riverCandidateConfig = this.ragParams?.KnowledgeBaseManager?.riverMemo?.candidateSuperset || {};
+        const riverOfferK = useRiverMemo
+            ? Math.max(
+                postEngineCandidateK,
+                parseInt(riverCandidateConfig.maxUnionCandidates, 10) || 300,
+                parseInt(riverCandidateConfig.queryK, 10) || 100
+            )
+            : postEngineCandidateK;
+        const kForSearch = riverOfferK;
 
         // 准备元数据用于生成自描述区块
         const metadata = {
@@ -2671,6 +2692,7 @@ class RAGDiaryPlugin {
             virtualIndex: isVirtualIndex || undefined,
             modifiers: modifiers,
             k: finalK,
+            engine: useRiverMemo ? 'RiverMemo' : (tagWeight !== null ? 'TagMemo' : 'KNN'),
             bm25: useBM25 ? bm25Mode : undefined,
             bm25Weight: useBM25 ? bm25Weight : undefined,
             timeRatio: useTime ? timeRatio : undefined
@@ -2770,7 +2792,10 @@ class RAGDiaryPlugin {
             const kSemantic = Math.max(1, finalK - kTime);
 
             // 1. 语义路召回 (多取一些用于后续衰减/重排)
-            const searchK = useRerank ? Math.max(kSemantic * 2, 20) : kSemantic + 10;
+            const standardSearchK = useRerank ? Math.max(kSemantic * 2, 20) : kSemantic + 10;
+            const searchK = useRiverMemo
+                ? Math.max(standardSearchK, riverOfferK)
+                : standardSearchK;
             let ragResults = await this.vectorDBManager.search(diaryNames, finalQueryVector, searchK + dedupBuffer, tagWeight, coreTagsForSearch, undefined, searchOptions);
             ragResults = this._filterContextDuplicates(ragResults, contextDiaryPrefixes);
             ragResults = ragResults.map(r => ({ ...r, source: 'rag' }));
@@ -2860,6 +2885,37 @@ class RAGDiaryPlugin {
             candidates = await this.vectorDBManager.deduplicateResults(flattenedResults, finalQueryVector);
         }
 
+        // 🌊 RiverMemo 独立引擎重排。
+        // 时间路结果是显式日期约束，不交给 RiverMemo 改写；其余语义/BM25 候选统一进入
+        // Topology V3。@ 语法产生的 ghostTags 原样作为 coreTags 传给 V9 源观测。
+        let riverMemoInfoForBroadcast = null;
+        if (useRiverMemo && candidates.length > 0) {
+            const timeOnlyCandidates = candidates.filter(candidate => candidate.source === 'time');
+            const riverCandidates = candidates.filter(candidate => candidate.source !== 'time');
+            const riverTopK = Math.max(
+                finalK,
+                useRerank
+                    ? Math.round(finalK * this.rerankConfig.multiplier)
+                    : finalK
+            ) + dedupBuffer;
+
+            if (riverCandidates.length > 0) {
+                const riverResult = await this._rerankRAGCandidatesWithRiverMemo({
+                    queryVector: finalQueryVector,
+                    queryText: userContent,
+                    candidates: riverCandidates,
+                    diaryNames,
+                    topK: riverTopK,
+                    coreTags: ghostTags,
+                    baseTagBoost: defaultTagWeight
+                });
+                candidates = [...riverResult.results, ...timeOnlyCandidates];
+                riverMemoInfoForBroadcast = riverResult.meta;
+            } else {
+                candidates = timeOnlyCandidates;
+            }
+        }
+
         // --- 🌟 统一后置处理 (TimeDecay -> Rerank -> Truncate) ---
 
         // 1. TimeDecay: 在截断前对全量结果应用衰减并重排
@@ -2883,6 +2939,9 @@ class RAGDiaryPlugin {
 
             if (useRerank) {
                 // 分别对两路进行 Rerank（如果样本足够）
+                // Rerank+ 需要每一路在进入外部精排前保留当前引擎的检索排位。
+                semanticCandidates.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
+                timeCandidates.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
                 const rrfOpts = useRerankPlus ? { alpha: rrfAlpha } : null;
                 // 语义路重排
                 if (semanticCandidates.length > 0) {
@@ -2937,7 +2996,10 @@ class RAGDiaryPlugin {
         if (useAssociate && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
             const targetDiaries = associateDiaries.length > 0 ? associateDiaries : diaryNames;
             const associateResults = await this._applyAssociativeDiscovery(
-                finalResultsForBroadcast, targetDiaries, finalK, tagWeight ?? defaultTagWeight
+                finalResultsForBroadcast,
+                targetDiaries,
+                finalK,
+                useRiverMemo ? 0 : (tagWeight ?? defaultTagWeight)
             );
             if (associateResults.length > 0) {
                 finalResultsForBroadcast = [...finalResultsForBroadcast, ...associateResults];
@@ -3018,6 +3080,8 @@ class RAGDiaryPlugin {
                     k: finalK,
                     useTime: useTime,
                     useGroup: useGroup,
+                    useRiverMemo: useRiverMemo,
+                    riverMemo: riverMemoInfoForBroadcast,
                     useRerank: useRerank,
                     useRerankPlus: useRerankPlus, // 🌟 Rerank+ (RRF) 模式标识
                     rrfAlpha: rrfAlpha, // 🌟 RRF 权重参数
@@ -3032,9 +3096,11 @@ class RAGDiaryPlugin {
                     bm25Weight: bm25InfoForBroadcast?.bm25Weight,
                     bm25VectorWeight: bm25InfoForBroadcast?.vectorWeight,
                     associateCount: useAssociate ? (finalResultsForBroadcast?.filter(r => r.source === 'associate').length || 0) : undefined,
-                    useTagMemo: tagWeight !== null, // ✅ 添加Tag模式标识
+                    useTagMemo: !useRiverMemo && tagWeight !== null, // RiverMemo 与 TagMemo 互斥
                     tagWeight: tagWeight, // ✅ 添加Tag权重
-                    coreTags: coreTagsForDisplay, // 🌟 广播中依然显示提取到的标签，方便观察
+                    coreTags: useRiverMemo
+                        ? ghostTags.map(tag => tag?.name || String(tag))
+                        : coreTagsForDisplay,
                     timeRatio: useTime ? timeRatio : undefined,
                     timeRanges: (useTime && Array.isArray(timeRanges)) ? timeRanges.map(r => {
                         try {
@@ -3078,6 +3144,144 @@ class RAGDiaryPlugin {
         });
 
         return retrievedContent;
+    }
+
+    /**
+     * 将限定日记本作用域内的候选交给 RiverMemo Topology V3。
+     * 不做静默引擎回退：RiverMemo 不可用或返回坏结果时抛错，由占位符外层生成明确失败信息。
+     */
+    async _rerankRAGCandidatesWithRiverMemo({
+        queryVector,
+        queryText,
+        candidates,
+        diaryNames,
+        topK,
+        coreTags = [],
+        baseTagBoost = 0.6
+    }) {
+        if (!this.vectorDBManager || typeof this.vectorDBManager.rerankWithRiverMemo !== 'function') {
+            const error = new Error('RiverMemo 生产接口不可用');
+            error.code = 'RIVERMEMO_INTERFACE_UNAVAILABLE';
+            throw error;
+        }
+
+        const normalizedCandidates = (Array.isArray(candidates) ? candidates : [])
+            .map(candidate => {
+                const id = Number(candidate?.chunkId ?? candidate?.id ?? candidate?.label);
+                if (!Number.isFinite(id) || id <= 0 || !candidate?.text) return null;
+                return {
+                    ...candidate,
+                    id,
+                    chunkId: id,
+                    bm25Score: Math.max(0, Number(candidate.bm25Score) || 0)
+                };
+            })
+            .filter(Boolean);
+        if (normalizedCandidates.length === 0) {
+            return { results: [], meta: null };
+        }
+
+        const normalizedDiaryNames = [...new Set(
+            (Array.isArray(diaryNames) ? diaryNames : [diaryNames])
+                .map(name => String(name || '').trim())
+                .filter(Boolean)
+        )];
+        const allowedFileIds = [];
+        const db = this.vectorDBManager.db;
+        if (db?.prepare && normalizedDiaryNames.length > 0) {
+            const placeholders = normalizedDiaryNames.map(() => '?').join(',');
+            const rows = db.prepare(
+                `SELECT id FROM files WHERE diary_name IN (${placeholders})`
+            ).all(...normalizedDiaryNames);
+            rows.forEach(row => {
+                const id = Number(row.id);
+                if (Number.isFinite(id)) allowedFileIds.push(id);
+            });
+        }
+        if (allowedFileIds.length === 0) {
+            const error = new Error('RiverMemo 无法建立显式日记本文件权限作用域');
+            error.code = 'RIVERMEMO_EMPTY_PERMISSION_SCOPE';
+            throw error;
+        }
+
+        const result = this.vectorDBManager.rerankWithRiverMemo(
+            {
+                text: String(queryText || ''),
+                vector: queryVector instanceof Float32Array
+                    ? queryVector
+                    : new Float32Array(queryVector)
+            },
+            normalizedCandidates,
+            {
+                agentId: null,
+                diaryNames: normalizedDiaryNames,
+                allowedFileIds,
+                deniedFileIds: [],
+                visibilityMode: 'explicit_sql_scope',
+                permissions: {
+                    allowPublic: false,
+                    allowOwn: false,
+                    allowAuthorized: true,
+                    allowOtherAgentPublic: false,
+                    allowUnknownProvenance: false
+                }
+            },
+            {
+                topK: Math.max(1, Math.floor(Number(topK) || 1)),
+                coreTags: Array.isArray(coreTags) ? coreTags : [],
+                sourceObservationConfig: {
+                    baseTagBoost: Math.max(0, Number(baseTagBoost) || 0),
+                    coreBoostFactor: 1.33
+                },
+                identityEligibility: () => false,
+                includeTrace: false
+            }
+        );
+
+        if (!result || !Array.isArray(result.results)) {
+            const error = new Error('RiverMemo 返回了无效结果');
+            error.code = 'RIVERMEMO_INVALID_RESULT';
+            throw error;
+        }
+
+        const results = result.results.map(item => ({
+            ...item,
+            score: Number(item.score) || 0,
+            original_score: Number(item.originalScore ?? item.original_score) || 0,
+            // RiverMemo 已将 KNN/BM25 等语义候选统一成一个拓扑排序结果；
+            // 对上层 Time 双路分配而言它们都属于语义路。原来源保留在诊断字段。
+            source: 'rag',
+            riverMemoSource: item.source || 'rag',
+            riverMemo: {
+                artifactSig: result.artifactSig || null,
+                queryId: result.queryId || null,
+                omega: Number(item.omega) || 0,
+                regime: item.riverRegime || result.omega?.regime || null,
+                role: item.role || null,
+                topologyBonus: Number(item.topologyBonus) || 0,
+                anchorBonus: Number(item.anchorBonus) || 0
+            }
+        }));
+
+        console.log(
+            `[RAGDiaryPlugin] 🌊 RiverMemo: offered=${normalizedCandidates.length}, ` +
+            `ranked=${result.diagnostics?.rankedCandidates || 0}, returned=${results.length}, ` +
+            `Ω=${Number(result.omega?.omega || 0).toFixed(4)}, ` +
+            `regime=${result.omega?.regime || 'unknown'}`
+        );
+
+        return {
+            results,
+            meta: {
+                artifactSig: result.artifactSig || null,
+                queryId: result.queryId || null,
+                omega: Number(result.omega?.omega) || 0,
+                regime: result.omega?.regime || null,
+                offeredCandidates: normalizedCandidates.length,
+                rankedCandidates: result.diagnostics?.rankedCandidates || 0,
+                returnedCandidates: results.length
+            }
+        };
     }
 
 
