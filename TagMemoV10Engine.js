@@ -4,6 +4,8 @@ const crypto = require('crypto');
 const {
     hashStable,
     immutableSnapshot,
+    createBorrowedReadonlyMapView,
+    createBorrowedReadonlySetView,
     createReadonlyCsr,
     createReadonlyCsrFromArrays
 } = require('./modules/tagmemoV10/immutable');
@@ -15,7 +17,8 @@ const RiverMemoArtifactRepository = require(
     './modules/tagmemoV10/riverMemoArtifactRepository'
 );
 const {
-    createDualConditionedOperators
+    createDualConditionedOperators,
+    createIdentityDualConditionedOperators
 } = require('./modules/tagmemoV10/agentConditioner');
 const { solveDualScaledFields } = require('./modules/tagmemoV10/scaledFieldSolver');
 const { buildCandidateSuperset } = require('./modules/tagmemoV10/candidateSuperset');
@@ -108,6 +111,7 @@ class TagMemoV10Engine {
     }
 
     _estimateConditionedOperatorBytes(operator) {
+        if (operator?.zeroCopy === true) return 0;
         const edgeCount = Math.max(0, Number(operator?.edgeCount) || 0);
         const nodeCount = Math.max(0, Number(operator?.nodeCount) || 0);
         // targets: Uint32(4); local/transfer/base/authorized/forbidden:
@@ -134,25 +138,12 @@ class TagMemoV10Engine {
     }
 
     _compileGlobalConditionedOperator(artifact) {
-        const conditioning = artifact.effectiveConfig.agentConditioning || {};
-        return createDualConditionedOperators(
+        // 全局河网不施加节点、边权限或软亲和门：Local/Transfer 权重严格等于
+        // sharedTransport。复用基础 CSR，避免再常驻每边 44 字节的双算子副本。
+        return createIdentityDualConditionedOperators(
             artifact.sharedTransport,
             {
-                permissions: {
-                    allowPublic: true,
-                    allowOwn: true,
-                    allowAuthorized: true,
-                    allowOtherAgentPublic: true
-                }
-            },
-            {
-                ...conditioning,
-                scopeHash: `global:${artifact.artifactSig}`,
-                failClosed: artifact.effectiveConfig.safety?.failClosed !== false,
-                nodeVisibility: () => true,
-                // 全局河网把 provenance 当作结构来源，而不是召回授权边界。
-                // Chunk 内容的可见性仍由独立 ANN 候选域和后续 eligibility 过滤。
-                edgeProvenance: () => ({ public: 1 })
+                scopeHash: `global:${artifact.artifactSig}`
             }
         );
     }
@@ -180,6 +171,7 @@ class TagMemoV10Engine {
         console.log(
             `[TagMemo-V10] 🌐 Global conditioned operator resident: ` +
             `artifact=${snapshot.artifactSig}, edges=${operator.edgeCount}, ` +
+            `mode=${operator.zeroCopy === true ? 'zero-copy' : 'compiled'}, ` +
             `memory=${(estimatedBytes / 1024 / 1024).toFixed(2)}MiB, ` +
             `compileMs=${Date.now() - startedAt}`
         );
@@ -494,24 +486,26 @@ class TagMemoV10Engine {
             sourceArtifactSig: sourceBundle.artifactSig || null,
             sourceGraphGeneration: sourceBundle.graphGeneration || '',
             sharedTransport,
-            rawResidualRatioView: immutableSnapshot(
-                sourceBundle.rawResidualRatioMap || new Map()
+            // V9 Bundle 采用 RCU 整代替换，发布后不再原位修改。V10 只借用只读
+            // 门面，避免把 Pairwise/残差/入流/虫洞辅助资产按代完整复制一遍。
+            rawResidualRatioView: createBorrowedReadonlyMapView(
+                sourceBundle.rawResidualRatioMap
             ),
-            anchorGainView: immutableSnapshot(
-                sourceBundle.anchorGainMap || new Map()
+            anchorGainView: createBorrowedReadonlyMapView(
+                sourceBundle.anchorGainMap
             ),
-            pairwiseView: immutableSnapshot(
-                sourceBundle.pairwiseView || new Map()
+            pairwiseView: createBorrowedReadonlyMapView(
+                sourceBundle.pairwiseView
             ),
-            inboundMassView: immutableSnapshot(
-                sourceBundle.inboundMassMap || new Map()
+            inboundMassView: createBorrowedReadonlyMapView(
+                sourceBundle.inboundMassMap
             ),
             maxInbound: Math.max(
                 0,
                 Number(sourceBundle.maxInbound) || 0
             ),
-            wormholeView: immutableSnapshot(
-                sourceBundle.wormholeEdges || new Set()
+            wormholeView: createBorrowedReadonlySetView(
+                sourceBundle.wormholeEdges
             ),
             provenanceView,
             effectiveConfig: context.effectiveConfig,
@@ -558,7 +552,9 @@ class TagMemoV10Engine {
                 artifact.rawResidualRatioView
             ),
             anchorGainView: this._viewToArray(artifact.anchorGainView),
-            pairwiseView: this._viewToArray(artifact.pairwiseView),
+            // Rust Topology V3 已对查询河网 Tag 与候选 Tag 使用原始向量计算
+            // 精确余弦；持久化 Pairwise HashMap 是同一语义量的冗余副本。
+            // JS 活跃 V10 仍通过借用 V9 pairwiseView 支持兼容实验接口。
             inboundMassView: this._viewToArray(artifact.inboundMassView),
             wormholeView: this._viewToArray(artifact.wormholeView)
         };
@@ -578,6 +574,10 @@ class TagMemoV10Engine {
             throw new TypeError('Invalid persisted RiverMemo artifact payload');
         }
         const metadata = payload.artifact || {};
+        const sourceBundle = options.sourceBundle
+            && options.sourceBundle.artifactSig === metadata.sourceArtifactSig
+            ? options.sourceBundle
+            : null;
         const sharedTransport = createReadonlyCsrFromArrays(
             payload.sharedTransport
         );
@@ -604,20 +604,33 @@ class TagMemoV10Engine {
             sourceArtifactSig: metadata.sourceArtifactSig,
             sourceGraphGeneration: metadata.sourceGraphGeneration || '',
             sharedTransport,
-            rawResidualRatioView: this._restoreMapView(
-                payload.rawResidualRatioView
-            ),
-            anchorGainView: this._restoreMapView(payload.anchorGainView),
-            pairwiseView: this._restoreMapView(payload.pairwiseView),
-            inboundMassView: this._restoreMapView(payload.inboundMassView),
-            maxInbound: Math.max(0, Number(metadata.maxInbound) || 0),
-            wormholeView: immutableSnapshot(
-                new Set(
-                    Array.isArray(payload.wormholeView)
-                        ? payload.wormholeView
-                        : []
+            rawResidualRatioView: sourceBundle
+                ? createBorrowedReadonlyMapView(
+                    sourceBundle.rawResidualRatioMap
                 )
+                : this._restoreMapView(payload.rawResidualRatioView),
+            anchorGainView: sourceBundle
+                ? createBorrowedReadonlyMapView(sourceBundle.anchorGainMap)
+                : this._restoreMapView(payload.anchorGainView),
+            pairwiseView: sourceBundle
+                ? createBorrowedReadonlyMapView(sourceBundle.pairwiseView)
+                : this._restoreMapView(payload.pairwiseView),
+            inboundMassView: sourceBundle
+                ? createBorrowedReadonlyMapView(sourceBundle.inboundMassMap)
+                : this._restoreMapView(payload.inboundMassView),
+            maxInbound: Math.max(
+                0,
+                Number(sourceBundle?.maxInbound ?? metadata.maxInbound) || 0
             ),
+            wormholeView: sourceBundle
+                ? createBorrowedReadonlySetView(sourceBundle.wormholeEdges)
+                : immutableSnapshot(
+                    new Set(
+                        Array.isArray(payload.wormholeView)
+                            ? payload.wormholeView
+                            : []
+                    )
+                ),
             provenanceView,
             effectiveConfig: immutableSnapshot(
                 metadata.effectiveConfig || {}
@@ -723,7 +736,8 @@ class TagMemoV10Engine {
         const persisted = this.artifactRepository.loadCompatible(criteria);
         if (!persisted) return null;
         const staging = this.restoreArtifact(persisted.payload, {
-            publishedAt: persisted.row.published_at
+            publishedAt: persisted.row.published_at,
+            sourceBundle: context.sourceBundle
         });
         if (
             staging.sourceArtifactSig !== criteria.sourceV9ArtifactSig

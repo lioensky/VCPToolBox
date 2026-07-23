@@ -63,14 +63,6 @@ fn decode_vector(bytes: &[u8], dimension: usize) -> Option<Vec<f32>> {
     )
 }
 
-fn pair_key(left: i64, right: i64) -> String {
-    if left < right {
-        format!("{}:{}", left, right)
-    } else {
-        format!("{}:{}", right, left)
-    }
-}
-
 fn default_top_k() -> usize {
     10
 }
@@ -302,7 +294,6 @@ struct NativeArtifact {
     row_offsets: Vec<usize>,
     targets: Vec<usize>,
     weights: Vec<f64>,
-    pairwise: HashMap<String, f64>,
     inbound: HashMap<i64, f64>,
     max_inbound: f64,
     provenance: HashMap<(i64, i64), Vec<(i64, f64)>>,
@@ -426,19 +417,6 @@ fn load_artifact(db_path: &str, artifact_sig: &str) -> std::result::Result<Arc<N
     let row_offsets = row_offsets_u64.into_iter().map(|value| value as usize).collect();
     let targets = targets_u64.into_iter().map(|value| value as usize).collect();
 
-    let mut pairwise = HashMap::new();
-    if let Some(entries) = payload.get("pairwiseView").and_then(Value::as_array) {
-        for entry in entries {
-            if let Some(parts) = entry.as_array() {
-                if parts.len() >= 2 {
-                    if let (Some(key), Some(value)) = (parts[0].as_str(), parts[1].as_f64()) {
-                        pairwise.insert(key.to_string(), value);
-                    }
-                }
-            }
-        }
-    }
-
     let mut inbound = HashMap::new();
     if let Some(entries) = payload.get("inboundMassView").and_then(Value::as_array) {
         for entry in entries {
@@ -505,7 +483,6 @@ fn load_artifact(db_path: &str, artifact_sig: &str) -> std::result::Result<Arc<N
         row_offsets,
         targets,
         weights,
-        pairwise,
         inbound,
         max_inbound,
         provenance,
@@ -963,15 +940,11 @@ fn evaluate_topology(
                 .iter()
                 .enumerate()
                 .filter_map(|(index, tag)| {
-                    let persisted = artifact
-                        .pairwise
-                        .get(&pair_key(node.id, tag.id))
-                        .copied()
-                        .unwrap_or(0.0);
-                    let vector_similarity = query_vector
+                    // 查询河网与候选曲线的原始 Tag 向量均已加载；直接计算精确
+                    // 余弦，避免在 NativeArtifact 中再常驻一份字符串键 Pairwise 表。
+                    let similarity = query_vector
                         .map(|vector| clamp01(cosine(vector, &tag.vector)))
                         .unwrap_or(0.0);
-                    let similarity = persisted.max(vector_similarity);
                     if similarity < input.config.semantic_node_threshold {
                         return None;
                     }

@@ -262,6 +262,82 @@ function createConditionedOperator(sharedTransport, context = {}, options = {}) 
 }
 
 /**
+ * 全局无条件传播的零拷贝双算子。
+ *
+ * 当所有节点/边都可见、授权比例为 1，且没有 query/affinity 动态门时，
+ * Local 与 Transfer 的条件化权重都与 sharedTransport 完全相同。此时复用
+ * 基础 CSR 即可，不再为每条边常驻 targets + 5 组 Float64 权重。
+ */
+function createIdentityDualConditionedOperators(sharedTransport, options = {}) {
+    if (!sharedTransport || typeof sharedTransport.apply !== 'function') {
+        throw new TypeError(
+            'createIdentityDualConditionedOperators requires a readonly shared transport'
+        );
+    }
+
+    const pairSig = hashStable({
+        schema: 'tagmemo-v10-alpha-identity-dual-operator-v1',
+        sharedTransportSig: sharedTransport.contentSig,
+        scopeHash: options.scopeHash || null
+    }, 40);
+    const makeOperator = scale => Object.freeze({
+        schema: 'tagmemo-v10-alpha-identity-conditioned-operator-v1',
+        scale,
+        operatorSig: hashStable({ pairSig, scale }, 40),
+        pairSig,
+        nodeCount: sharedTransport.nodeCount,
+        edgeCount: sharedTransport.edgeCount,
+        nodeIdAt: sharedTransport.nodeIdAt,
+        nodeIndexOf: sharedTransport.nodeIndexOf,
+        rowMass: sharedTransport.rowMass,
+        edgeWeight: sharedTransport.edgeWeight,
+        forEachEdge: sharedTransport.forEachEdge,
+        apply(input, output = new Float64Array(sharedTransport.nodeCount), diagnostics = null) {
+            const result = sharedTransport.apply(input, output);
+            if (diagnostics && typeof diagnostics === 'object') {
+                diagnostics.visitedEdges = sharedTransport.edgeCount;
+                diagnostics.permittedEdges = sharedTransport.edgeCount;
+                diagnostics.forbiddenMass = 0;
+                diagnostics.propagatedMass = result.reduce(
+                    (sum, value) => sum + Math.max(0, Number(value) || 0),
+                    0
+                );
+            }
+            return result;
+        }
+    });
+
+    const localOperator = makeOperator('local');
+    const transferOperator = makeOperator('transfer');
+    return Object.freeze({
+        schema: 'tagmemo-v10-alpha-identity-dual-operator-v1',
+        pairSig,
+        nodeCount: sharedTransport.nodeCount,
+        edgeCount: sharedTransport.edgeCount,
+        permittedEdges: sharedTransport.edgeCount,
+        forbiddenEdgeMass: 0,
+        zeroCopy: true,
+        localOperator,
+        transferOperator,
+        applyDual(
+            localInput,
+            transferInput,
+            localOutput,
+            transferOutput,
+            localDiagnostics = null,
+            transferDiagnostics = null
+        ) {
+            localOperator.apply(localInput, localOutput, localDiagnostics);
+            transferOperator.apply(
+                transferInput,
+                transferOutput,
+                transferDiagnostics
+            );
+        }
+    });
+}
+
+/**
  * 查询级成对编译条件化算子。
  *
  * 共享图只扫描一次，权限/provenance 只分类一次；Local 与 Transfer 的软门权重
@@ -655,5 +731,6 @@ module.exports = {
     PROVENANCE_CLASSES,
     normalizeProvenance,
     createConditionedOperator,
+    createIdentityDualConditionedOperators,
     createDualConditionedOperators
 };

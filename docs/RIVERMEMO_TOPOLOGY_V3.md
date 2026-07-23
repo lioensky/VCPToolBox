@@ -3,8 +3,13 @@
 > 当前生产构型：Topology V3
 > 算法标识：`rivermemo.topology-v3.1`
 > 结果协议：`rivermemo-topology-v3-result-v1`
+> 原生计算内核：`rivermemo.topology-v3.1-rust`
 > 文档更新时间：2026-07-23
 > 本文只记录拓扑 V3；其他历史、实验或对照构型不属于本文范围。
+>
+> **当前实现状态**：Topology V3 的候选投影、候选超集、路径几何、相对拓扑、
+> DSTC 观测、Direct Anchor、批级条件创新与最终排序已下沉至 Rust。
+> JS 只负责 V9 查询观测、双场准备、一次 N-API 提交和稳定结果组装。
 
 ## 拓扑 V3 总方程
 
@@ -75,7 +80,12 @@ s_A-\tau_A
 
 其中，关系拓扑通道只奖励候选超出同条件期望及其不确定性上界的正创新；直接锚点通道则保护无需复杂河网即可成立的 hop-0 事实接触。两条创新通道均受独立上限约束，最终结果统一投影至 \([0,1]\)。
 
-代码落点分别为 [`buildTopologyV2BatchContext()`](../modules/tagmemoV10/experimentArms.js:701)、[`scoreTopologyV2()`](../modules/tagmemoV10/experimentArms.js:923)、[`computeRiverObservability()`](../modules/tagmemoV10/riverObservability.js:44)、[`computeDirectAnchorBatch()`](../modules/tagmemoV10/directAnchorReadout.js:141) 与 [`scoreTopologyV3()`](../modules/tagmemoV10/experimentArms.js:1277)。
+生产代码落点为 Rust 原生内核
+[`run_native()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1756) 与异步 N-API 入口
+[`rerank_rivermemo_topology_v3()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2121)。
+JS 入口 [`RiverMemoEngine.rerank()`](../RiverMemoEngine.js:425) 只准备连续查询场并消费原生结果。
+[`experimentArms.js`](../modules/tagmemoV10/experimentArms.js) 等旧 JS 实验构型保留在仓库中，
+但不再属于 RiverMemo Topology V3 的生产执行路径。
 
 ---
 
@@ -344,7 +354,9 @@ u_\alpha
 
 > 场不是额外虚构出来的评分地图，而是同一守恒传输过程在不同观测尺度下的稳态响应。
 
-实现位于 [`solveDualScaledFields()`](../modules/tagmemoV10/scaledFieldSolver.js:169)。
+双场求解目前仍由查询准备阶段的
+[`solveDualScaledFields()`](../modules/tagmemoV10/scaledFieldSolver.js:169) 完成；
+求解产生的局部场、迁移场及有效支持域随后通过唯一 N-API 请求交给 Rust 内核。
 
 ### 5.2 两个尺度的物理含义
 
@@ -443,7 +455,9 @@ U_i
 Q_i=0
 \]
 
-候选整体路径质量再由支持覆盖与 Tag 到 chunk 的闭合度收束。实现位于 [`evaluateUnifiedPath()`](../modules/tagmemoV10/unifiedPathGeometry.js:49)。
+候选整体路径质量再由支持覆盖与 Tag 到 chunk 的闭合度收束。生产实现位于
+Rust [`evaluate_path()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:790)；
+同名 JS 算法仅作为已退役实验实现保留，不参与 RiverMemo 生产召回。
 
 ---
 
@@ -510,7 +524,9 @@ w_MM_c
 
 若没有完整边对应，则只允许受限节点退化读出，不能把不可观测的距离、方向和 Motif 当成零值混入。
 
-实现位于 [`evaluateRelativeTopology()`](../modules/tagmemoV10/relativeTopologyMatcher.js:170)。
+生产实现位于 Rust
+[`evaluate_topology()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:928)，
+候选之间通过 Rayon 并行执行。
 
 ---
 
@@ -630,7 +646,11 @@ p_k=\frac{F_k}{\sum_jF_j}
 
 几何平均意味着任何一个维度严重退化都会压低整体 Ω，任何单一维度都不能独自伪造完整河网。
 
-实现位于 [`computeRiverObservability()`](../modules/tagmemoV10/riverObservability.js:44)。
+生产召回中的 Ω 由 Rust
+[`compute_omega()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1430)
+在同一次原生任务中计算。JS
+[`computeRiverObservability()`](../modules/tagmemoV10/riverObservability.js:44)
+只保留给独立只读测量接口，不参与 Topology V3 原生排序。
 
 ### 8.6 工况
 
@@ -695,7 +715,9 @@ R_A(c)
 H(c)=A(c)R_A(c)
 \]
 
-这一通道只读取 hop-0 源锚，不允许远端涌现节点伪装成直接事实。实现位于 [`computeDirectAnchorBatch()`](../modules/tagmemoV10/directAnchorReadout.js:141)。
+这一通道只读取 hop-0 源锚，不允许远端涌现节点伪装成直接事实。生产实现位于
+Rust [`compute_anchors()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1284)，
+接触发现与候选锚计算由 Rayon 并行执行。
 
 ---
 
@@ -798,7 +820,10 @@ B_H(c)
 - \(\Omega^\gamma B_G(c)\)：由河网整体可观测性授权的结构传递增量；
 - \(B_H(c)\)：不依赖河网密度的直接事实锚。
 
-实现位于 [`scoreTopologyV3()`](../modules/tagmemoV10/experimentArms.js:1277)。
+生产实现位于 Rust
+[`assign_v3_scores()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1497)。
+该函数在候选级并行观测结束后执行批级条件期望、创新下置信界、锚激活阈值、
+角色改判和最终有界排序。
 
 ---
 
@@ -845,26 +870,58 @@ B_H(c)
 
 ## 12. 完整生产链
 
-[`RiverMemoEngine.rerank()`](../RiverMemoEngine.js:135) 的拓扑 V3 生产链为：
+[`RiverMemoEngine.rerank()`](../RiverMemoEngine.js:425) 的拓扑 V3 生产链为：
 
 ```text
-整个上下文查询向量
-→ V9 EPA + Residual Pyramid 降噪
-→ V9 有界 Spike 传播
-→ 查询源场 + 请求级有向河网
-→ 同一守恒传输资产上的局部场/迁移场求解
-→ Query / Denoised / Local / Transfer 多源候选超集
-→ 候选 Chunk 与有序 Tag 曲线一次性投影
-→ 双尺度路径几何
-→ 查询河网—候选曲线相对拓扑匹配
-→ 候选观测与正文闭合
-→ 查询河网 Ω 泛函
-→ hop-0 Direct Anchor 批量读出
-→ Topology V3 统一评分
-→ Top-K
+JS：整个上下文查询向量
+→ JS：V9 EPA + Residual Pyramid 降噪
+→ JS：V9 有界 Spike 传播
+→ JS：查询源场 + 请求级有向河网
+→ JS：同一守恒传输资产上的局部场/迁移场求解
+→ 单次 N-API AsyncTask 提交
+→ Rust：加载并缓存同代不可变 RiverMemo Artifact
+→ Rust/SQLite：候选 Chunk、向量和有序 Tag 曲线投影
+→ Rust/Rayon：Query / Denoised / Local / Transfer / BM25 / Anchor 六路候选超集
+→ Rust/Rayon：双尺度路径几何
+→ Rust/Rayon：查询河网—候选曲线相对拓扑匹配
+→ Rust/Rayon：DSTC、正文闭合与 hop-0 Direct Anchor
+→ Rust：查询河网 Ω 与批级条件创新
+→ Rust：Topology V3 统一评分与 Top-K
+→ JS：稳定结果协议组装
 ```
 
-整个请求持有同一代不可变 Artifact，禁止在查询中途混合不同传输核、残差、Pairwise 或配置代际。
+整个请求持有同一代不可变 Artifact，禁止在查询中途混合不同传输核、残差、
+Pairwise 或配置代际。原生 Artifact 按签名缓存；签名变化时旧缓存整体淘汰。
+
+### 12.1 并发与线程边界
+
+生产路径不再创建 [`worker_threads`](../modules/tagmemoV10/riverMemoWorkerPool.js)
+形式的 RiverMemo Node Worker 池。旧 Worker 文件仅作为退役代码保留，不会被
+[`KnowledgeBaseManager.rerankWithRiverMemoAsync()`](../KnowledgeBaseManager.js:935)
+引用或启动。
+
+当前线程模型为：
+
+1. Node 主线程完成查询观测和双场准备；
+2. [`rerank_rivermemo_topology_v3()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2121)
+   返回原生 `AsyncTask`，将整次原生计算移出 Node 事件循环；
+3. Rust 任务内部使用 Rayon 对候选路径、相对拓扑、观测和锚接触并行计算；
+4. 批级统计与最终排序在 Rust 内闭合；
+5. 只跨越一次请求边界和一次结果边界，不在候选循环中往返 JS/Rust。
+
+### 12.2 运行诊断
+
+生产日志应包含 `RiverMemo Topology V3 [Rust/Rayon]`，并报告：
+
+- `nativeTotal`：原生任务总耗时；
+- `load`：Artifact、SQLite 候选曲线及查询/锚 Tag 向量加载耗时；
+- `compute`：Rayon 候选计算和批级排序耗时；
+- `ffi`：从 JS 提交到结果返回的总边界耗时；
+- `threads`：当前 Rayon 工作线程数；
+- `nativeProjection`：Rust 成功投影的候选数；
+- `nativeSelection`：Rust 候选超集选中数。
+
+正常生产日志不应再出现 `RiverMemoWorkerPool Started`。
 
 ---
 
@@ -887,7 +944,9 @@ B_H(c)
 13. 直接锚与结构增量不得互相伪造；
 14. RiverMemo 只做非负修正，无证据候选保留基础分；
 15. 所有结果必须绑定 Artifact 签名与查询 ID；
-16. 拓扑 V3 是本文唯一正式构型。
+16. 候选级 Topology V3 热点必须在 Rust 内部并行，禁止恢复 JS 逐候选计算；
+17. 生产请求只允许一次原生任务提交，不得为 RiverMemo 再启动 Node Worker 池；
+18. 拓扑 V3 是本文唯一正式构型。
 
 ---
 
@@ -907,6 +966,8 @@ B_H(c)
 | `candidateSources` | 候选进入超集的召回来源 |
 | `matchedTags` | 候选原生 Tag 曲线中的 Tag |
 | `coreTagsMatched` | 与查询 Core Tag 相交的候选 Tag |
+
+结果诊断中的 `nativeTopologyV3.backend` 应为 `rust-rayon-sqlite`。
 
 当开启 trace 时，还可检查：
 

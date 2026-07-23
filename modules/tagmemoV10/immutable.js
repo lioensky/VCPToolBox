@@ -133,6 +133,73 @@ function createReadonlyMapView(inputEntries = []) {
     });
 }
 
+/**
+ * 为已经由代际化 Artifact 持有的 Map 创建零拷贝只读门面。
+ *
+ * 该门面不复制 key/value，也不暴露 set/delete/clear。调用方必须保证 source
+ * 在所属 Artifact 生命周期内不再原位修改；TagMemo V9 的 RCU 发布契约满足此条件。
+ */
+function createBorrowedReadonlyMapView(source) {
+    if (!(source instanceof Map)) return createReadonlyMapView([]);
+    return Object.freeze({
+        storageMode: 'borrowed',
+        ownsEntries: false,
+        sourceType: 'Map',
+        size: source.size,
+        has(key) {
+            return source.has(key);
+        },
+        get(key) {
+            return source.get(key);
+        },
+        entries() {
+            return source.entries();
+        },
+        keys() {
+            return source.keys();
+        },
+        values() {
+            return source.values();
+        },
+        forEach(callback, thisArg = undefined) {
+            source.forEach((value, key) => callback.call(thisArg, value, key, this));
+        },
+        toArray() {
+            return Array.from(source.entries());
+        },
+        [Symbol.iterator]() {
+            return source[Symbol.iterator]();
+        }
+    });
+}
+
+/**
+ * Set 的零拷贝只读门面；用途与 createBorrowedReadonlyMapView 相同。
+ */
+function createBorrowedReadonlySetView(source) {
+    if (!(source instanceof Set)) {
+        return immutableSnapshot(source instanceof Set ? source : new Set());
+    }
+    return Object.freeze({
+        storageMode: 'borrowed',
+        ownsEntries: false,
+        sourceType: 'Set',
+        size: source.size,
+        has(item) {
+            return source.has(item);
+        },
+        values() {
+            return source.values();
+        },
+        toArray() {
+            return Array.from(source);
+        },
+        [Symbol.iterator]() {
+            return source[Symbol.iterator]();
+        }
+    });
+}
+
 function createReadonlyCsrFromArrays(input = {}) {
     const orderedNodeIds = Array.from(
         input.nodeIds || [],
@@ -342,6 +409,8 @@ module.exports = {
     hashStable,
     immutableSnapshot,
     createReadonlyMapView,
+    createBorrowedReadonlyMapView,
+    createBorrowedReadonlySetView,
     createReadonlyCsr,
     createReadonlyCsrFromArrays
 };

@@ -4,7 +4,9 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 
 const PAYLOAD_CODEC = 'gzip-json-v1';
-const PAYLOAD_SCHEMA = 'rivermemo-persisted-artifact-v1';
+// V2 不再持久化 V9 Pairwise 视图；Rust Topology V3 使用原始 Tag 向量精确余弦。
+// Schema 提升会让旧 V1 在冷启动时自动失效并重建，清除磁盘与首次解析峰值副本。
+const PAYLOAD_SCHEMA = 'rivermemo-persisted-artifact-v2';
 
 class RiverMemoArtifactRepository {
     constructor(options = {}) {

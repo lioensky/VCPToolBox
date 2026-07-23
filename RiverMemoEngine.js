@@ -57,6 +57,10 @@ class RiverMemoEngine {
         }
         this.runtime = v10Engine;
         this.config = options.config || {};
+        // 诊断标记：原生缓存按 Artifact 签名在首次成功请求时加载。
+        // 这里只记录本门面观测到的状态，不复制或持有原生资产。
+        this._nativeArtifactCacheObserved = false;
+        this._nativeArtifactSigObserved = null;
     }
 
     updateConfig(config = {}) {
@@ -298,6 +302,8 @@ class RiverMemoEngine {
             JSON.stringify(payload)
         );
         const nativeResult = JSON.parse(nativePayload);
+        this._nativeArtifactCacheObserved = true;
+        this._nativeArtifactSigObserved = artifact.artifactSig;
         const inputById = new Map(
             inputCandidates
                 .map(candidate => [candidateId(candidate), candidate])
