@@ -411,7 +411,10 @@ function createPreset(displayName = ""): SemanticRouterPreset {
     fallbackModels: [],
     matchThreshold: 0.18,
     contextWeights: [0.7, 0.3],
-    routes: [createRoute()],
+    // 新建预设先作为可持久化的空草稿保存。此前自动插入的空白路由
+    // 会触发旧版必填校验，并在服务端归一化时被过滤，导致用户误以为
+    // 整个新预设没有保存。需要路由时由用户显式点击“新增路由”。
+    routes: [],
   };
 }
 
@@ -484,9 +487,16 @@ function generateUniquePresetId(base: string): string {
 
 function addPreset(): void {
   const presetId = generateUniquePresetId("NewSemanticPreset");
-  config.value.presets[presetId] = createPreset(presetId);
+
+  // 整体替换 presets 对象，保证预设页签、脏状态计算和保存 payload
+  // 在同一个响应式更新周期内都能观察到新预设。
+  config.value.presets = {
+    ...config.value.presets,
+    [presetId]: createPreset(presetId),
+  };
   selectedPresetId.value = presetId;
-  if (!config.value.defaultPreset) {
+
+  if (!config.value.defaultPreset || !config.value.presets[config.value.defaultPreset]) {
     config.value.defaultPreset = presetId;
   }
 }
@@ -572,7 +582,8 @@ function validateConfigBeforeSave(): string | null {
   }
 
   // 允许保存尚未填写模型或路由的草稿预设。服务端会在持久化时过滤
-  // 不完整的路由项，但会保留预设本身，避免新增预设因前端校验被静默丢弃。
+  // 不完整的路由项，但会保留预设本身；预设完整性应在实际参与路由时
+  // 由运行时兜底，而不应阻断管理面板持久化草稿。
   for (const [presetId, preset] of presetEntries.value) {
     if (!presetId.trim()) return "预设 ID 不能为空。";
     if (!Array.isArray(preset.routes)) {
