@@ -979,6 +979,14 @@ class TagMemoV10Engine {
     }
 
     prepareQuery(query, agentContext = {}, options = {}) {
+        const prepareStartedAt = performance.now();
+        const preparationTimings = {};
+        let stageStartedAt = prepareStartedAt;
+        const markPreparationStage = name => {
+            const now = performance.now();
+            preparationTimings[name] = now - stageStartedAt;
+            stageStartedAt = now;
+        };
         const artifact = options.artifact || this.getArtifactSnapshot();
         if (!this._isArtifactCompatibleWithActiveV9(artifact)) {
             const error = new Error(
@@ -1063,6 +1071,7 @@ class TagMemoV10Engine {
                 })
             });
         }
+        markPreparationStage('sourceObservationMs');
 
         const initial = this.createQueryState(
             query,
@@ -1074,23 +1083,33 @@ class TagMemoV10Engine {
                 sourceObservation
             }
         );
+        markPreparationStage('createQueryStateMs');
         const solved = this.solveQueryState(initial, {
             ...options,
             artifact
         });
+        markPreparationStage('solveDualFieldsMs');
         const denoisedVector = sourceObservation?.enhancedVector
             ? new Float32Array(sourceObservation.enhancedVector)
             : this.projectFieldVector(solved.sourceField);
+        markPreparationStage('sourceProjectionMs');
         const projectedFields = this.projectDualFieldVectors(
             solved.localField,
             solved.transferField
         );
+        markPreparationStage('dualProjectionTotalMs');
+        preparationTimings.dualProjectionNativeMs = Math.max(
+            0,
+            Number(projectedFields.diagnostics?.nativeElapsedMs) || 0
+        );
+        preparationTimings.totalMs = performance.now() - prepareStartedAt;
         return Object.freeze({
             queryState: solved,
             denoisedVector,
             localVector: projectedFields.localVector,
             transferVector: projectedFields.transferVector,
-            fieldProjectionDiagnostics: projectedFields.diagnostics || null
+            fieldProjectionDiagnostics: projectedFields.diagnostics || null,
+            preparationTimings: Object.freeze(preparationTimings)
         });
     }
 

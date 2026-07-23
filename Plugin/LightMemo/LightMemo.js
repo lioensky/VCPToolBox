@@ -839,6 +839,8 @@ class LightMemoPlugin {
         }));
 
         const riverTimings = riverResult.diagnostics?.stageTimings || {};
+        const preparationTimings =
+            riverResult.diagnostics?.preparationTimings || {};
         const fieldDiagnostics = riverResult.diagnostics?.field || {};
         const operatorCache = fieldDiagnostics.conditionedOperatorCache || {};
         const fieldProjection = riverResult.diagnostics?.fieldProjection || {};
@@ -850,7 +852,16 @@ class LightMemoPlugin {
             `regime=${riverResult.omega?.regime || 'unknown'}, ` +
             `artifact=${riverResult.artifactSig || 'unknown'}, ` +
             `total=${Number(riverTimings.totalMs || 0).toFixed(1)}ms, ` +
-            `prepare=${Number(riverTimings.prepareQueryMs || 0).toFixed(1)}ms, ` +
+            `prepare=${Number(riverTimings.prepareQueryMs || 0).toFixed(1)}ms` +
+            `(observe=${Number(
+                preparationTimings.sourceObservationMs || 0
+            ).toFixed(1)}, solve=${Number(
+                preparationTimings.solveDualFieldsMs || 0
+            ).toFixed(1)}, sourceProjection=${Number(
+                preparationTimings.sourceProjectionMs || 0
+            ).toFixed(1)}, dualProjection=${Number(
+                preparationTimings.dualProjectionTotalMs || 0
+            ).toFixed(1)}), ` +
             `project=${Number(riverTimings.projectCandidatesMs || 0).toFixed(1)}ms, ` +
             `anchor=${Number(riverTimings.anchorSqlMs || 0).toFixed(1)}ms, ` +
             `path=${Number(riverTimings.pathAndRelativeTopologyMs || 0).toFixed(1)}ms, ` +

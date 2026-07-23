@@ -429,6 +429,7 @@ class RiverMemoEngine {
                 exactDerivedAssets:
                     this.runtime.getDerivedAssetDiagnostics?.() || null,
                 fieldProjection: prepared.fieldProjectionDiagnostics || null,
+                preparationTimings: prepared.preparationTimings || null,
                 stageTimings: Object.freeze({
                     ...stageTimings,
                     totalMs: Date.now() - rerankStartedAt
