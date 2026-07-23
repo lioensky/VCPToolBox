@@ -1390,7 +1390,8 @@ class LightMemoPlugin {
                 },
                 topologyV3: {
                     label: 'V10-Topology V3 Unified',
-                    results: topologyV3Results
+                    results: topologyV3Results,
+                    diagnostics: armRun.arms.topology_v3.diagnostics
                 },
                 pureTopologyRrfEqual: {
                     label: 'V10 Pure × Topology RRF 1:1',
@@ -1965,10 +1966,35 @@ class LightMemoPlugin {
         md += `- V10 查询源：\`${queryState.sourceObservation?.sourceMode || 'unknown'}\`；V9 观测资产：\`${queryState.sourceObservation?.v9ArtifactSig || '—'}\`\n`;
         const sourceDiagnostics = queryState.sourceObservation?.diagnostics || {};
         const riverDiagnostics = queryState.queryRiverGraph?.diagnostics || {};
+        const topologyV3Results = tracks.topologyV3?.results || [];
         const topologyV3Observation =
-            tracks.topologyV3?.results?.[0]?.armResult?.topologyV3 || {};
+            topologyV3Results[0]?.armResult?.topologyV3 || {};
+        const anchorBatchDiagnostics =
+            tracks.topologyV3?.diagnostics?.anchorBatchDiagnostics || {};
+        const strongestAnchorItem = topologyV3Results.reduce(
+            (strongest, item) => {
+                const strength = Number(
+                    item?.armResult?.topologyV3?.anchorStrength
+                ) || 0;
+                const strongestValue = Number(
+                    strongest?.armResult?.topologyV3?.anchorStrength
+                ) || 0;
+                return !strongest || strength > strongestValue
+                    ? item
+                    : strongest;
+            },
+            null
+        );
+        const strongestAnchorStrength = Number(
+            strongestAnchorItem?.armResult?.topologyV3?.anchorStrength
+        ) || 0;
+        const anchorFrontierPromotions = topologyV3Results.filter(item =>
+            item?.armResult?.topologyV3?.roleReclassificationReason
+                === 'strong-direct-anchor'
+        ).length;
         md += `- 降噪观测：完整=${sourceDiagnostics.completeObservation === true ? '是' : '否'}；向量已变化=${sourceDiagnostics.vectorChanged === true ? '是' : '否'}；ΔL2=${fmt(sourceDiagnostics.vectorDeltaL2, 8)}；源↔增强余弦=${fmt(sourceDiagnostics.sourceEnhancedCosine, 8)}；源节点=${sourceDiagnostics.normalizedSourceNodes ?? sourceDiagnostics.sourceNodes ?? '—'}；EPA深度=${queryState.sourceObservation?.epa?.logicDepth ?? '—'}；Pyramid层数=${queryState.sourceObservation?.pyramid?.levels?.length ?? queryState.sourceObservation?.pyramid?.depth ?? '—'}${sourceDiagnostics.fallbackReason ? `；退化原因=${sourceDiagnostics.fallbackReason}` : ''}\n`;
         md += `- Spike 临时河网：节点=${riverDiagnostics.reachedNodes ?? queryState.queryRiverGraph?.nodes?.length ?? 0}；边=${riverDiagnostics.activeEdges ?? queryState.queryRiverGraph?.edges?.length ?? 0}；种子=${riverDiagnostics.seedNodes ?? '—'}；Ω=${fmt(topologyV3Observation.omega)}（边=${fmt(topologyV3Observation.omegaEdge)}/涌现=${fmt(topologyV3Observation.omegaEmerge)}/流熵=${fmt(topologyV3Observation.omegaFlow)}，工况=${topologyV3Observation.regime || '—'}）\n`;
+        md += `- Direct Anchor 观测：锚种子=${anchorBatchDiagnostics.anchorSeedCount ?? '—'}；质量归一=${tracks.topologyV3?.diagnostics?.anchorMassNormalization || anchorBatchDiagnostics.massNormalization || '—'}；最强候选=${strongestAnchorItem ? `#${itemId(strongestAnchorItem)} / ${fmt(strongestAnchorStrength)}` : '—'}；前沿升格=${anchorFrontierPromotions}\n`;
         md += `- D/S/T/C 消融：${disabledObservables.length > 0
             ? disabledObservables.map(value => `\`${value}\``).join(', ')
             : '无'}\n\n`;
@@ -2141,7 +2167,7 @@ class LightMemoPlugin {
                     if (item.armResult.topologyV3) {
                         const v3 = item.armResult.topologyV3;
                         md += `- Topology V3 工况门控：Ω=${fmt(v3.omega)}（边=${fmt(v3.omegaEdge)}/涌现=${fmt(v3.omegaEmerge)}/流熵=${fmt(v3.omegaFlow)}，${v3.regime || '—'}）；γ=${fmt(v3.omegaGamma)}；V2奖励=${fmt(v3.v2Bonus)}×${fmt(v3.graphGate)}→${fmt(v3.gatedV2Bonus)}\n`;
-                        md += `- V3 Direct Anchor：锚分=${fmt(v3.anchorScore)}×可靠=${fmt(v3.anchorReliability)}→强度=${fmt(v3.anchorStrength)}；奖励=${fmt(v3.anchorBonus)}≤${fmt(v3.anchorBonusCap)}；接触种子=${v3.contactedSeeds}（精确=${v3.exactContacts}/语义=${v3.semanticContacts}）；闭合=${fmt(v3.meanClosure)}\n`;
+                        md += `- V3 Direct Anchor：聚合=${v3.anchorMassNormalization || '—'}；锚分=${fmt(v3.anchorScore)}×可靠=${fmt(v3.anchorReliability)}→强度=${fmt(v3.anchorStrength)}；奖励=${fmt(v3.anchorBonus)}≤${fmt(v3.anchorBonusCap)}；接触种子=${v3.contactedSeeds}（精确=${v3.exactContacts}/语义=${v3.semanticContacts}）；闭合=${fmt(v3.meanClosure)}\n`;
                         md += `- V3 角色与前沿：${v3.originalRole || '—'}→${v3.role || '—'}${v3.roleReclassified ? `（${v3.roleReclassificationReason || '已改判'}）` : '（未改判）'}；直接前沿=${fmt(v3.directFrontierScore)}；来源=${v3.frontierSource || '—'}；最终=${fmt(v3.finalScore)}\n`;
                     }
                     if (item.armResult.topologyRelativeGeometry) {

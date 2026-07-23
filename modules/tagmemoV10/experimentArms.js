@@ -1167,6 +1167,9 @@ function buildTopologyV3BatchContext(dstcBatch, options = {}) {
         directFrontierScore,
         riverObservability,
         anchorBatchAvailable: anchorResults.length === samples.length,
+        anchorBatchDiagnostics: options.anchorBatch?.diagnostics || null,
+        anchorMassNormalization:
+            options.anchorBatch?.massNormalization || null,
         anchorFrontierThreshold,
         structRoleMinOmega,
         anchorBonusCap,
@@ -1214,6 +1217,8 @@ function scoreTopologyV3(item, options = {}, batchContext = null, index = 0) {
             v2Bonus,
             gatedV2Bonus,
             anchorBatchAvailable: context.anchorBatchAvailable,
+            anchorMassNormalization:
+                context.anchorMassNormalization || null,
             anchorScore: clamp01(anchor.anchorScore),
             anchorReliability: clamp01(anchor.anchorReliability),
             anchorStrength: clamp01(anchor.anchorStrength),
@@ -1302,6 +1307,10 @@ function scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
                 batchContext?.riverObservability || null,
             anchorBatchAvailable:
                 batchContext?.anchorBatchAvailable ?? null,
+            anchorBatchDiagnostics:
+                batchContext?.anchorBatchDiagnostics || null,
+            anchorMassNormalization:
+                batchContext?.anchorMassNormalization || null,
             totalTopologyV2Bonus: scored.reduce(
                 (sum, item) =>
                     sum + (Number(item.armResult.topologyV2?.bonus) || 0),

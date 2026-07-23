@@ -121,6 +121,7 @@ function computeDirectAnchorBatch(pathBatch, queryState, options = {}) {
     const semanticThreshold = clamp01(options.semanticThreshold ?? 0.8);
     const semanticDiscount = clamp01(options.semanticDiscount ?? 0.7);
     const specificityFloor = clamp01(options.specificityFloor ?? 0.35);
+    const rarityFloor = clamp01(options.rarityFloor ?? 0.15);
     const reliabilitySeedSaturation = Math.max(
         1,
         Number(options.reliabilitySeedSaturation) || 2
@@ -140,7 +141,12 @@ function computeDirectAnchorBatch(pathBatch, queryState, options = {}) {
     const resultsInput = Array.isArray(pathBatch?.results)
         ? pathBatch.results
         : [];
+    const poolSize = resultsInput.length;
     const { seeds, fallback } = extractAnchorSeeds(queryState);
+    const maxSeedMass = seeds.reduce(
+        (maximum, seed) => Math.max(maximum, Number(seed.mass) || 0),
+        0
+    );
 
     const contactsByCandidate = [];
     const poolContactCounts = new Map(seeds.map(seed => [seed.tagId, 0]));
@@ -166,12 +172,14 @@ function computeDirectAnchorBatch(pathBatch, queryState, options = {}) {
         contactsByCandidate.push(contacts);
     }
 
-    // 第二遍：使用批级接触频率计算候选观测。
+    // 第二遍：使用批级接触率计算稀有度，以最大 Seed 质量为局部标尺，
+    // 再用 noisy-OR 聚合独立接触；避免总和归一的 Source Field 在多种子
+    // Query 中把每个锚点按种子数反比压低。
     const results = resultsInput.map((item, index) => {
         const curve = item?.curve || item;
         const chunkVector = curve?.chunkVector;
         const contacts = contactsByCandidate[index];
-        let contributionSum = 0;
+        let noContactProbability = 1;
         let closureSum = 0;
         let exactContacts = 0;
         let semanticContacts = 0;
@@ -192,15 +200,23 @@ function computeDirectAnchorBatch(pathBatch, queryState, options = {}) {
                 cosine(contact.candidateTag?.vector, chunkVector)
             );
             const poolCount = poolContactCounts.get(contact.seedTagId) || 0;
-            const rarity = 1 / Math.sqrt(1 + poolCount);
+            const rarity = Math.max(
+                rarityFloor,
+                1 - (poolCount / Math.max(1, poolSize))
+            );
+            const normalizedMass = maxSeedMass > 0
+                ? clamp01(contact.mass / maxSeedMass)
+                : 0;
             const matchWeight = contact.exact ? 1 : semanticDiscount;
-            const contribution = contact.mass
+            const contribution = clamp01(
+                normalizedMass
                 * specificity
                 * closure
                 * rarity
-                * matchWeight;
+                * matchWeight
+            );
 
-            contributionSum += contribution;
+            noContactProbability *= 1 - contribution;
             closureSum += closure;
             if (contact.exact) exactContacts++;
             else semanticContacts++;
@@ -210,6 +226,7 @@ function computeDirectAnchorBatch(pathBatch, queryState, options = {}) {
                 exact: contact.exact,
                 similarity: contact.similarity,
                 mass: contact.mass,
+                normalizedMass,
                 specificity,
                 closure,
                 rarity,
@@ -222,9 +239,7 @@ function computeDirectAnchorBatch(pathBatch, queryState, options = {}) {
         const meanClosure = contactedSeeds > 0
             ? closureSum / contactedSeeds
             : 0;
-        const anchorScore = clamp01(
-            contributionSum / Math.sqrt(Math.max(1, contactedSeeds))
-        );
+        const anchorScore = clamp01(1 - noContactProbability);
         let anchorReliability = clamp01(Math.sqrt(
             meanClosure
             * Math.min(1, contactedSeeds / reliabilitySeedSaturation)
@@ -255,14 +270,18 @@ function computeDirectAnchorBatch(pathBatch, queryState, options = {}) {
 
     return Object.freeze({
         schema: SCHEMA,
+        massNormalization: 'max',
         results: Object.freeze(results),
         diagnostics: Object.freeze({
             anchorSeedCount: seeds.length,
             candidateCount: resultsInput.length,
+            poolSize,
             fallbackProvenance: fallback,
             fallbackReliabilityCap,
             specificityUnavailable,
             maxInbound,
+            maxSeedMass,
+            massNormalization: 'max',
             poolContactCounts: Object.freeze(
                 [...poolContactCounts.entries()]
                     .sort((left, right) => left[0] - right[0])
@@ -272,6 +291,8 @@ function computeDirectAnchorBatch(pathBatch, queryState, options = {}) {
                 semanticThreshold,
                 semanticDiscount,
                 specificityFloor,
+                rarityFloor,
+                massNormalization: 'max',
                 reliabilitySeedSaturation,
                 fallbackReliabilityCap,
                 traceLimit

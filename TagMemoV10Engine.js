@@ -139,6 +139,7 @@ class TagMemoV10Engine {
                 semanticThreshold: 0.8,
                 semanticDiscount: 0.7,
                 specificityFloor: 0.35,
+                rarityFloor: 0.15,
                 reliabilitySeedSaturation: 2,
                 fallbackReliabilityCap: 0.5,
                 traceLimit: 8,
