@@ -4,6 +4,22 @@ const {
     computeRiverObservability
 } = require('./modules/tagmemoV10/riverObservability');
 
+let nativeTopologyV3 = null;
+
+function getNativeTopologyV3() {
+    if (nativeTopologyV3) return nativeTopologyV3;
+    const native = require('./rust-vexus-lite');
+    if (typeof native.rerankRivermemoTopologyV3 !== 'function') {
+        const error = new Error(
+            'RiverMemo Topology V3 native kernel is unavailable; rebuild rust-vexus-lite.'
+        );
+        error.code = 'RIVERMEMO_NATIVE_TOPOLOGY_V3_UNAVAILABLE';
+        throw error;
+    }
+    nativeTopologyV3 = native.rerankRivermemoTopologyV3;
+    return nativeTopologyV3;
+}
+
 const VERSION = 'rivermemo_v1';
 const ALGORITHM_VERSION = 'rivermemo.topology-v3.1';
 const RESULT_SCHEMA = 'rivermemo-topology-v3-result-v1';
@@ -132,7 +148,281 @@ class RiverMemoEngine {
         });
     }
 
-    rerank(query, candidates, agentContext = {}, options = {}) {
+    _nativeConfig(artifact, options = {}) {
+        const candidate = {
+            ...(artifact.effectiveConfig?.candidateSuperset || {}),
+            ...(this.config?.candidateSuperset || {}),
+            ...(options.candidateSuperset || {})
+        };
+        const path = {
+            ...(artifact.effectiveConfig?.pathGeometry || {}),
+            ...(options.pathEvaluation || {})
+        };
+        const relative = {
+            ...(artifact.effectiveConfig?.relativeTopology || {}),
+            ...(options.pathEvaluation?.relativeTopology || {})
+        };
+        const omega = {
+            ...(artifact.effectiveConfig?.riverObservability || {}),
+            ...(this.config?.riverObservability || {}),
+            ...(options.riverObservability || {})
+        };
+        const anchor = {
+            ...(artifact.effectiveConfig?.directAnchor || {}),
+            ...(this.config?.directAnchor || {})
+        };
+        const dstc = {
+            ...(artifact.effectiveConfig?.dstc || {}),
+            ...(options.dstc || {})
+        };
+        return {
+            queryK: candidate.queryK,
+            denoisedK: candidate.denoisedK ?? candidate.queryK,
+            localFieldK: candidate.localFieldK,
+            transferFieldK: candidate.transferFieldK,
+            bm25K: candidate.bm25K,
+            anchorK: candidate.anchorK,
+            maxUnionCandidates: candidate.maxUnionCandidates,
+            localWeight: path.localWeight,
+            transferWeight: path.transferWeight,
+            directionFloor: path.directionFloor,
+            closureFloor: path.closureFloor,
+            semanticNodeThreshold: relative.semanticNodeThreshold,
+            relativeDistanceTemperature: relative.relativeDistanceTemperature,
+            reverseDirectionCredit: relative.reverseDirectionCredit,
+            minimumRiverEdgeFlow: relative.minimumRiverEdgeFlow,
+            maximumRiverEdges: relative.maximumRiverEdges,
+            nodeOnlyReliabilityCap: relative.nodeOnlyReliabilityCap,
+            kappaEdge: omega.kappaEdge,
+            kappaRatio: omega.kappaRatio,
+            omegaEpsilon: omega.epsilon,
+            collapsedThreshold: omega.collapsedThreshold,
+            sparseThreshold: omega.sparseThreshold,
+            semanticAnchorThreshold: anchor.semanticThreshold,
+            semanticAnchorDiscount: anchor.semanticDiscount,
+            specificityFloor: anchor.specificityFloor,
+            rarityFloor: anchor.rarityFloor,
+            reliabilitySeedSaturation: anchor.reliabilitySeedSaturation,
+            fallbackReliabilityCap: anchor.fallbackReliabilityCap,
+            topologyBonusCap: dstc.topologyBonusCap,
+            topologyPathSaturation: dstc.topologyPathSaturation,
+            conditionalBandwidth: dstc.topologyV2ConditionalBandwidth,
+            conditionalClosureBandwidth: dstc.topologyV2ClosureBandwidth,
+            conditionalDirectBandwidth: dstc.topologyV2DirectBandwidth,
+            minimumPeers: dstc.topologyV2MinimumPeers,
+            minimumEffectivePeers: dstc.topologyV2MinimumEffectivePeers,
+            innovationConfidenceZ: dstc.topologyV2InnovationConfidenceZ,
+            innovationScale: dstc.topologyV2InnovationScale,
+            omegaGamma: dstc.topologyV3OmegaGamma,
+            structRoleMinOmega: dstc.topologyV3StructRoleMinOmega,
+            anchorBonusCap: dstc.topologyV3AnchorBonusCap,
+            anchorActivationZ: dstc.topologyV3AnchorActivationZ,
+            anchorActivationFloor: dstc.topologyV3AnchorActivationFloor,
+            anchorSaturation: dstc.topologyV3AnchorSaturation,
+            anchorFrontierContrast: dstc.topologyV3AnchorFrontierContrast,
+            anchorFrontierAbsFloor: dstc.topologyV3AnchorFrontierAbsFloor
+        };
+    }
+
+    async _rerankNative(query, inputCandidates, agentContext, options, artifact, prepared) {
+        const queryState = prepared.queryState;
+        const river = queryState.queryRiverGraph || {};
+        const fieldProvenance = (
+            Array.isArray(queryState.sourceObservation?.fieldProvenance)
+                ? queryState.sourceObservation.fieldProvenance
+                : []
+        ).map(entry => ({
+            id: Number(entry?.[0]),
+            hop: Number(entry?.[1]?.hop) || 0,
+            sourceType: String(entry?.[1]?.sourceType || '')
+        }));
+        const dbPath = String(
+            options.dbPath
+            || this.runtime.db?.name
+            || this.runtime.db?.path
+            || ''
+        );
+        if (!dbPath || dbPath === ':memory:') {
+            const error = new Error(
+                'RiverMemo native Topology V3 requires a file-backed SQLite database path.'
+            );
+            error.code = 'RIVERMEMO_NATIVE_DB_PATH_UNAVAILABLE';
+            throw error;
+        }
+
+        const payload = {
+            dimension: Number(this.runtime.config.dimension),
+            topK: Math.max(
+                1,
+                Math.floor(Number(options.topK) || inputCandidates.length)
+            ),
+            includeTrace: options.includeTrace === true,
+            query: {
+                text: String(query?.text || ''),
+                vector: Array.from(query?.vector || options.vector || [])
+            },
+            denoisedVector: Array.from(prepared.denoisedVector),
+            localVector: Array.from(prepared.localVector),
+            transferVector: Array.from(prepared.transferVector),
+            candidates: inputCandidates.map(candidate => ({
+                id: candidateId(candidate),
+                score: Number(candidate.score) || 0,
+                hybridScore: Number(candidate.hybridScore) || 0,
+                vectorScore: Number(candidate.vectorScore) || 0,
+                bm25Score: Number(candidate.bm25Score) || 0,
+                anchorScore: Number(candidate.anchorScore) || 0
+            })).filter(candidate => candidate.id !== null),
+            queryState: {
+                queryId: queryState.queryId,
+                sourceField: queryState.sourceField || [],
+                localField: queryState.localField || [],
+                transferField: queryState.transferField || [],
+                localDomainIds: queryState.localDomain?.ids || [],
+                transferDomainIds: queryState.transferDomain?.ids || [],
+                riverNodes: Array.isArray(river.nodes) ? river.nodes : [],
+                riverEdges: Array.isArray(river.edges) ? river.edges : [],
+                fieldProvenance,
+                completeObservation:
+                    queryState.sourceObservation?.diagnostics
+                        ?.completeObservation === true
+            },
+            allowedFileIds: Array.isArray(agentContext.allowedFileIds)
+                ? agentContext.allowedFileIds.map(Number).filter(Number.isFinite)
+                : [],
+            config: this._nativeConfig(artifact, options)
+        };
+        const nativeStartedAt = Date.now();
+        const nativePayload = await getNativeTopologyV3()(
+            dbPath,
+            artifact.artifactSig,
+            JSON.stringify(payload)
+        );
+        const nativeResult = JSON.parse(nativePayload);
+        const inputById = new Map(
+            inputCandidates
+                .map(candidate => [candidateId(candidate), candidate])
+                .filter(([id]) => id !== null)
+        );
+        const sourceObservation = queryState.sourceObservation || {};
+        const queryMatchedTags = Object.freeze(
+            [...new Set(
+                (Array.isArray(sourceObservation.matchedTags)
+                    ? sourceObservation.matchedTags
+                    : [])
+                    .map(tag => String(tag || '').trim())
+                    .filter(Boolean)
+            )]
+        );
+        const queryCoreTagsMatched = Object.freeze(
+            [...new Set(
+                (Array.isArray(sourceObservation.coreTagsMatched)
+                    ? sourceObservation.coreTagsMatched
+                    : [])
+                    .map(tag => String(tag || '').trim())
+                    .filter(Boolean)
+            )]
+        );
+        const queryCoreTagSet = new Set(
+            queryCoreTagsMatched.map(tag => tag.toLowerCase())
+        );
+        const includeTrace = options.includeTrace === true;
+        const results = (Array.isArray(nativeResult.results)
+            ? nativeResult.results
+            : []
+        ).map(item => {
+            const original = inputById.get(Number(item.chunkId)) || {};
+            const matchedTags = Object.freeze(
+                [...new Set(
+                    (Array.isArray(item.matchedTags) ? item.matchedTags : [])
+                        .map(tag => String(tag || '').trim())
+                        .filter(Boolean)
+                )]
+            );
+            const stable = {
+                ...original,
+                id: Number(item.chunkId),
+                chunkId: Number(item.chunkId),
+                rank: Number(item.rank),
+                score: clamp01(item.score),
+                originalScore: Number(item.originalScore) || 0,
+                baseScore: clamp01(item.baseScore),
+                topologyBonus: clamp01(item.topologyBonus),
+                anchorBonus: clamp01(item.anchorBonus),
+                matchedTags,
+                coreTagsMatched: Object.freeze(
+                    matchedTags.filter(tag =>
+                        queryCoreTagSet.has(tag.toLowerCase())
+                    )
+                ),
+                tagMatchCount: matchedTags.length,
+                role: item.role || 'thematic_neighbor',
+                omega: clamp01(item.omega),
+                riverRegime:
+                    item.riverRegime
+                    || nativeResult.omega?.regime
+                    || 'collapsed',
+                candidateSources: Object.freeze(
+                    (Array.isArray(item.candidateSources)
+                        ? item.candidateSources
+                        : [])
+                        .map(source => typeof source === 'string'
+                            ? Object.freeze({ source })
+                            : Object.freeze({ ...source }))
+                )
+            };
+            if (!includeTrace) return Object.freeze(stable);
+            return Object.freeze({
+                ...stable,
+                topologyV3: item.topologyV3 || null,
+                topologyV2: null,
+                relativeTopology: item.relativeTopology || null,
+                geometry: item.geometry || null,
+                observables: item.observables || null
+            });
+        });
+
+        return Object.freeze({
+            schema: RESULT_SCHEMA,
+            version: VERSION,
+            algorithmVersion: ALGORITHM_VERSION,
+            artifactSig: artifact.artifactSig,
+            artifactGeneration: artifact.generation,
+            queryId: queryState.queryId,
+            omega: Object.freeze(nativeResult.omega || {}),
+            queryTags: Object.freeze({
+                matchedTags: queryMatchedTags,
+                coreTagsMatched: queryCoreTagsMatched,
+                sourceMode: sourceObservation.sourceMode || null
+            }),
+            results: Object.freeze(results),
+            diagnostics: Object.freeze({
+                offeredCandidates: inputCandidates.length,
+                projectedCandidates:
+                    nativeResult.diagnostics?.projectedCandidates || 0,
+                selectedCandidates:
+                    nativeResult.diagnostics?.selectedCandidates || 0,
+                rankedCandidates:
+                    nativeResult.diagnostics?.rankedCandidates || 0,
+                returnedCandidates: results.length,
+                nativeTopologyV3: Object.freeze({
+                    ...(nativeResult.diagnostics || {}),
+                    ffiTotalMs: Date.now() - nativeStartedAt
+                }),
+                exactDerivedAssets:
+                    this.runtime.getDerivedAssetDiagnostics?.() || null,
+                fieldProjection: prepared.fieldProjectionDiagnostics || null,
+                preparationTimings: prepared.preparationTimings || null,
+                field: queryState.fieldDiagnostics,
+                queryProfile: Object.freeze({
+                    mode: nativeResult.queryMode || null,
+                    backend: 'rust-rayon'
+                }),
+                anchorBatchAvailable: true
+            })
+        });
+    }
+
+    async rerank(query, candidates, agentContext = {}, options = {}) {
         const rerankStartedAt = Date.now();
         const stageTimings = {};
         let stageStartedAt = rerankStartedAt;
@@ -196,6 +486,19 @@ class RiverMemoEngine {
             throw error;
         }
 
+        // Topology V3 的候选投影、路径几何、相对拓扑、DSTC、Direct Anchor、
+        // 批级条件创新和最终排序全部由 Rust/Rayon 在一个 N-API 调用内完成。
+        // JS 仅准备查询连续场并消费稳定结果，禁止再进入旧的逐候选计算链。
+        return await this._rerankNative(
+            query,
+            inputCandidates,
+            agentContext,
+            options,
+            artifact,
+            prepared
+        );
+
+        /* istanbul ignore next -- retired JS Topology V3 implementation */
         const fieldWorkspace = this.runtime.createFieldWorkspace(
             prepared.queryState
         );

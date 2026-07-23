@@ -1,5 +1,7 @@
 #![deny(clippy::all)]
 
+mod rivermemo_topology_v3;
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rusqlite::{Connection, OpenFlags};

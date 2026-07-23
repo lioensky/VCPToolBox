@@ -11,7 +11,6 @@ const ResultDeduplicator = require('./ResultDeduplicator'); // ✅ Tagmemo v4 re
 const TagMemoEngine = require('./TagMemoEngine');
 const TagMemoV10Engine = require('./TagMemoV10Engine');
 const RiverMemoEngine = require('./RiverMemoEngine');
-const RiverMemoWorkerPool = require('./modules/tagmemoV10/riverMemoWorkerPool');
 const { decodeVectorBlob } = require('./modules/knowledgeBase/vectorCodec');
 const { queryByChunks } = require('./modules/knowledgeBase/sqliteQueryUtils');
 const {
@@ -139,7 +138,6 @@ class KnowledgeBaseManager {
         this.tagMemoEngine = null;
         this.tagMemoV10Engine = null;
         this.riverMemoEngine = null;
-        this.riverMemoWorkerPool = new RiverMemoWorkerPool();
         this.resultDeduplicator = null; // ✅ Tagmemo v4
         this.ragParams = {}; // ✅ 新增：用于存储热调控参数
         this.ragParamsWatcher = null;
@@ -928,11 +926,11 @@ class KnowledgeBaseManager {
     }
 
     /**
-     * RiverMemo 异步生产接口。
+     * RiverMemo 生产异步门面。
      *
-     * 主线程只生成依赖 V9/EPA 当前活动资产的查询观测；双场求解、候选曲线投影、
-     * SQLite 只读查询与 Topology V3 评分交给常驻 Worker 池，避免 Promise.all
-     * 中的多个 RiverMemo 任务继续串行阻塞 Node.js 事件循环。
+     * 不再启动 Node Worker 或在 Worker 中复制 V10/Artifact/SQLite 运行时。
+     * 查询观测与双场准备完成后，通过唯一 N-API 边界直接进入 Rust Topology V3；
+     * 候选投影和排序并发由 Rust/Rayon 自行管理。
      */
     async rerankWithRiverMemoAsync(query, candidates, agentContext = {}, options = {}) {
         if (!this.riverMemoEngine || !this.tagMemoV10Engine || !this.tagMemoEngine) {
@@ -972,34 +970,26 @@ class KnowledgeBaseManager {
                 coreTags: Array.isArray(options.coreTags) ? options.coreTags : []
             });
 
-        return await this.riverMemoWorkerPool.run({
-            dbPath: this.dbPath,
-            dimension: this.config.dimension,
-            modelSig: this.config.modelSig || this.config.model,
-            artifactSig: artifact.artifactSig,
-            riverMemoConfig:
-                this.ragParams?.KnowledgeBaseManager?.riverMemo || {},
-            query: {
+        return this.riverMemoEngine.rerank(
+            {
                 text: String(query?.text || ''),
                 vector: queryVector
             },
-            candidates: Array.isArray(candidates) ? candidates : [],
+            Array.isArray(candidates) ? candidates : [],
             agentContext,
-            options: {
-                topK: options.topK,
+            {
+                ...options,
+                artifact,
+                dbPath: this.dbPath,
                 coreTags: Array.isArray(options.coreTags) ? options.coreTags : [],
                 sourceObservationResult,
-                sourceObservationConfig,
-                candidateSuperset: options.candidateSuperset,
-                pathEvaluation: options.pathEvaluation,
-                dstc: options.dstc,
-                riverObservability: options.riverObservability,
-                identityDiaryName: options.identityDiaryName
-                    ? String(options.identityDiaryName)
+                sourceField: Array.isArray(sourceObservationResult?.sourceField)
+                    ? sourceObservationResult.sourceField
                     : null,
+                sourceObservationConfig,
                 includeTrace: options.includeTrace === true
             }
-        });
+        );
     }
 
     /**
@@ -1373,12 +1363,7 @@ class KnowledgeBaseManager {
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
 
-        // 停止接收新的 RiverMemo Worker 任务，并等待线程释放各自的只读 SQLite 连接。
-        if (this.riverMemoWorkerPool) {
-            await this.riverMemoWorkerPool.close();
-        }
-
-        // RiverMemo 与 V10 当前无后台写任务，只持有不可变内存快照；先释放门面引用。
+        // RiverMemo 不再持有 Node Worker/独立 SQLite 连接；仅释放门面和不可变快照。
         this.riverMemoEngine = null;
         this.tagMemoV10Engine = null;
 

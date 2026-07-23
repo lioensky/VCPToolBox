@@ -809,8 +809,7 @@ class LightMemoPlugin {
                         Number(coreBoostFactor) || 1.33
                     )
                 },
-                // Worker 线程不能接收函数；传递可克隆的身份作用域描述，
-                // 在线程内重建与旧 identityEligibility 等价的判定。
+                // Rust 内核以 allowedFileIds 执行可见性门控；不再创建 Node Worker。
                 identityDiaryName: maid || null,
                 includeTrace: false
             }
@@ -836,21 +835,28 @@ class LightMemoPlugin {
             }
         }));
 
-        const riverTimings = riverResult.diagnostics?.stageTimings || {};
         const preparationTimings =
             riverResult.diagnostics?.preparationTimings || {};
+        const nativeTimings =
+            riverResult.diagnostics?.nativeTopologyV3 || {};
         const fieldDiagnostics = riverResult.diagnostics?.field || {};
         const operatorCache = fieldDiagnostics.conditionedOperatorCache || {};
         const fieldProjection = riverResult.diagnostics?.fieldProjection || {};
         console.log(
-            `[LightMemo] 🌊 RiverMemo Topology V3 ranked ` +
+            `[LightMemo] 🌊 RiverMemo Topology V3 [Rust/Rayon] ranked ` +
             `${riverResult.diagnostics?.rankedCandidates || 0}/` +
             `${riverResult.diagnostics?.offeredCandidates || candidates.length} ` +
             `candidates; Ω=${Number(riverResult.omega?.omega || 0).toFixed(4)}, ` +
             `regime=${riverResult.omega?.regime || 'unknown'}, ` +
             `artifact=${riverResult.artifactSig || 'unknown'}, ` +
-            `total=${Number(riverTimings.totalMs || 0).toFixed(1)}ms, ` +
-            `prepare=${Number(riverTimings.prepareQueryMs || 0).toFixed(1)}ms` +
+            `nativeTotal=${Number(nativeTimings.totalMs || 0).toFixed(1)}ms` +
+            `(load=${Number(nativeTimings.loadMs || 0).toFixed(1)}, ` +
+            `compute=${Number(nativeTimings.computeMs || 0).toFixed(1)}, ` +
+            `ffi=${Number(nativeTimings.ffiTotalMs || 0).toFixed(1)}, ` +
+            `threads=${Number(nativeTimings.rayonThreads || 0)}), ` +
+            `nativeProjection=${Number(nativeTimings.projectedCandidates || 0)}, ` +
+            `nativeSelection=${Number(nativeTimings.selectedCandidates || 0)}, ` +
+            `prepare=${Number(preparationTimings.totalMs || 0).toFixed(1)}ms` +
             `(observe=${Number(
                 preparationTimings.sourceObservationMs || 0
             ).toFixed(1)}, solve=${Number(
@@ -860,11 +866,6 @@ class LightMemoPlugin {
             ).toFixed(1)}, dualProjection=${Number(
                 preparationTimings.dualProjectionTotalMs || 0
             ).toFixed(1)}), ` +
-            `project=${Number(riverTimings.projectCandidatesMs || 0).toFixed(1)}ms, ` +
-            `anchor=${Number(riverTimings.anchorSqlMs || 0).toFixed(1)}ms, ` +
-            `path=${Number(riverTimings.pathAndRelativeTopologyMs || 0).toFixed(1)}ms, ` +
-            `dstc=${Number(riverTimings.dstcMs || 0).toFixed(1)}ms, ` +
-            `score=${Number(riverTimings.topologyV3ScoreMs || 0).toFixed(1)}ms, ` +
             `fieldProjection=${fieldProjection.backend || 'unknown'}` +
             `(${Number(
                 fieldProjection.nativeElapsedMs

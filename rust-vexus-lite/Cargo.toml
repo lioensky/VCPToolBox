@@ -20,12 +20,16 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.21"
 sha2 = "0.10"
+flate2 = "1.0"
 
 # HNSW向量索引
 usearch = "2.8"
 
 # 哈希Map优化
 hashbrown = "0.14"
+
+# RiverMemo Topology V3 候选级并行计算
+rayon = "1.10"
 
 # 线性代数 (用于 SVD)
 nalgebra = "0.32"
