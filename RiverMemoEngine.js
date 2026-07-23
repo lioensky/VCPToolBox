@@ -369,12 +369,46 @@ class RiverMemoEngine {
             1,
             Math.floor(Number(options.topK) || scored.results.length)
         );
+        const sourceObservation = prepared.queryState.sourceObservation || {};
+        const queryMatchedTags = Object.freeze(
+            Array.isArray(sourceObservation.matchedTags)
+                ? [...new Set(sourceObservation.matchedTags
+                    .map(tag => String(tag || '').trim())
+                    .filter(Boolean))]
+                : []
+        );
+        const queryCoreTagsMatched = Object.freeze(
+            Array.isArray(sourceObservation.coreTagsMatched)
+                ? [...new Set(sourceObservation.coreTagsMatched
+                    .map(tag => String(tag || '').trim())
+                    .filter(Boolean))]
+                : []
+        );
+        const queryCoreTagSet = new Set(
+            queryCoreTagsMatched.map(tag => tag.toLowerCase())
+        );
         const includeTrace = options.includeTrace === true;
         const results = scored.results
             .slice(0, requestedK)
             .map((item, index) => {
                 const v3 = item.armResult.topologyV3 || {};
                 const original = inputById.get(Number(item.curve.chunkId)) || {};
+                // projectCandidateCurves 已经批量读取了所有候选文件的 Tag；
+                // 在此直接复用曲线数据，禁止为了 Info 再次访问 SQLite。
+                const matchedTags = Object.freeze(
+                    [...new Set(
+                        (Array.isArray(item.curve.tagCurve)
+                            ? item.curve.tagCurve
+                            : [])
+                            .map(tag => String(tag?.name || '').trim())
+                            .filter(Boolean)
+                    )]
+                );
+                const coreTagsMatched = Object.freeze(
+                    matchedTags.filter(tag =>
+                        queryCoreTagSet.has(tag.toLowerCase())
+                    )
+                );
                 const stable = {
                     ...original,
                     id: Number(item.curve.chunkId),
@@ -390,6 +424,9 @@ class RiverMemoEngine {
                     baseScore: clamp01(item.armResult.baseScore),
                     topologyBonus: clamp01(v3.gatedV2Bonus),
                     anchorBonus: clamp01(v3.anchorBonus),
+                    matchedTags,
+                    coreTagsMatched,
+                    tagMatchCount: matchedTags.length,
                     role: v3.role || 'thematic_neighbor',
                     omega: clamp01(v3.omega),
                     riverRegime: v3.regime || omega.regime,
@@ -414,6 +451,11 @@ class RiverMemoEngine {
             artifactGeneration: artifact.generation,
             queryId: prepared.queryState.queryId,
             omega,
+            queryTags: Object.freeze({
+                matchedTags: queryMatchedTags,
+                coreTagsMatched: queryCoreTagsMatched,
+                sourceMode: sourceObservation.sourceMode || null
+            }),
             results: Object.freeze(results),
             diagnostics: Object.freeze({
                 offeredCandidates: inputCandidates.length,

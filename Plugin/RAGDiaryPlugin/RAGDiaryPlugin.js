@@ -3114,8 +3114,11 @@ class RAGDiaryPlugin {
                     }) : undefined,
                     // 🌟 限制广播结果数量和长度，防止 payload 过大导致广播失败
                     results: cleanedResults.slice(0, 20),
-                    // ✅ 新增：汇总Tag统计信息
-                    tagStats: tagWeight !== null ? this._aggregateTagStats(cleanedResults) : undefined
+                    // RiverMemo 直接透传曲线投影阶段已有的 per-chunk Tag，
+                    // 与 TagMemo 一样生成统计，但不触发任何额外 Tag 查询。
+                    tagStats: (useRiverMemo || tagWeight !== null)
+                        ? this._aggregateTagStats(cleanedResults)
+                        : undefined
                 };
 
                 // 🛡️ 优化：移除冗余的 JSON 序列化，直接推送对象以减少 CPU 阻塞
@@ -3277,6 +3280,11 @@ class RAGDiaryPlugin {
                 queryId: result.queryId || null,
                 omega: Number(result.omega?.omega) || 0,
                 regime: result.omega?.regime || null,
+                queryTags: result.queryTags || {
+                    matchedTags: [],
+                    coreTagsMatched: [],
+                    sourceMode: null
+                },
                 offeredCandidates: normalizedCandidates.length,
                 rankedCandidates: result.diagnostics?.rankedCandidates || 0,
                 returnedCandidates: results.length
