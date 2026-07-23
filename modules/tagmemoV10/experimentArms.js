@@ -1,11 +1,16 @@
 'use strict';
 
+const {
+    computeRiverObservability
+} = require('./riverObservability');
+
 const ARM_NAMES = Object.freeze([
     'pure',
     'gated',
     'observed',
     'topology',
-    'topology_v2'
+    'topology_v2',
+    'topology_v3'
 ]);
 
 function clamp01(value) {
@@ -1069,12 +1074,185 @@ function scoreTopologyV2(item, options = {}, batchContext = null, index = 0) {
     });
 }
 
+function buildTopologyV3BatchContext(dstcBatch, options = {}) {
+    const v2Context = buildTopologyV2BatchContext(dstcBatch, options);
+    const riverObservability = options.riverObservability
+        || computeRiverObservability(options.queryState, {
+            ...(options.riverObservabilityConfig || {}),
+            structRoleMinOmega:
+                options.topologyV3StructRoleMinOmega
+        });
+    const anchorResults = Array.isArray(options.anchorBatch?.results)
+        ? options.anchorBatch.results
+        : [];
+    const anchorFrontierThreshold = clamp01(
+        options.topologyV3AnchorFrontierThreshold ?? 0.45
+    );
+    const structRoleMinOmega = clamp01(
+        options.topologyV3StructRoleMinOmega ?? 0.12
+    );
+    const anchorBonusCap = clamp01(
+        options.topologyV3AnchorBonusCap ?? 0.06
+    );
+    const anchorBonusScale = Math.max(
+        0,
+        Number(options.topologyV3AnchorBonusScale) || 0.08
+    );
+
+    const samples = v2Context.samples.map((sample, index) => {
+        const anchor = anchorResults[index] || {};
+        const anchorScore = clamp01(anchor.anchorScore);
+        const anchorReliability = clamp01(anchor.anchorReliability);
+        const anchorStrength = clamp01(anchorScore * anchorReliability);
+        const anchorBonus = Math.min(
+            anchorBonusCap,
+            anchorStrength * anchorBonusScale
+        );
+        const originalRole = sample.role;
+        let role = originalRole;
+        let roleReclassified = false;
+        let roleReclassificationReason = null;
+
+        if (anchorStrength >= anchorFrontierThreshold) {
+            role = 'direct_answer';
+            roleReclassified = role !== originalRole;
+            roleReclassificationReason = roleReclassified
+                ? 'strong-direct-anchor'
+                : null;
+        } else if (
+            riverObservability.omega < structRoleMinOmega
+            && role === 'structural_explanation'
+        ) {
+            role = 'thematic_neighbor';
+            roleReclassified = true;
+            roleReclassificationReason = 'collapsed-river-structure';
+        }
+
+        return Object.freeze({
+            ...sample,
+            role,
+            originalRole,
+            roleReclassified,
+            roleReclassificationReason,
+            anchor: Object.freeze({
+                ...anchor,
+                anchorScore,
+                anchorReliability,
+                anchorStrength,
+                anchorBonus
+            })
+        });
+    });
+
+    const v2DirectFrontierScore = v2Context.directFrontierScore;
+    const anchorDirectFrontierScore = Math.max(
+        0,
+        ...samples
+            .filter(sample =>
+                sample.anchor.anchorStrength >= anchorFrontierThreshold
+            )
+            .map(sample => sample.pure.score + sample.anchor.anchorBonus)
+    );
+    const directFrontierScore = Math.max(
+        v2DirectFrontierScore,
+        anchorDirectFrontierScore
+    );
+    const frontierSource = anchorDirectFrontierScore > v2DirectFrontierScore
+        ? 'anchor'
+        : 'v2';
+
+    return Object.freeze({
+        ...v2Context,
+        samples: Object.freeze(samples),
+        directFrontierScore,
+        riverObservability,
+        anchorBatchAvailable: anchorResults.length === samples.length,
+        anchorFrontierThreshold,
+        structRoleMinOmega,
+        anchorBonusCap,
+        anchorBonusScale,
+        v2DirectFrontierScore,
+        anchorDirectFrontierScore,
+        frontierSource
+    });
+}
+
+function scoreTopologyV3(item, options = {}, batchContext = null, index = 0) {
+    const context = batchContext
+        || buildTopologyV3BatchContext({ results: [item] }, options);
+    const sample = context.samples[index] || context.samples[0];
+    const v2Result = scoreTopologyV2(item, options, context, index);
+    const pure = sample?.pure || scorePure(item, options);
+    const omega = clamp01(context.riverObservability?.omega);
+    const omegaGamma = Math.max(
+        0,
+        Number(options.topologyV3OmegaGamma) || 1
+    );
+    const graphGate = Math.pow(omega, omegaGamma);
+    const v2Bonus = clamp01(v2Result.topologyV2?.bonus);
+    const gatedV2Bonus = v2Bonus * graphGate;
+    const anchor = sample?.anchor || {};
+    const anchorBonus = clamp01(anchor.anchorBonus);
+    const score = clamp01(
+        pure.score + gatedV2Bonus + anchorBonus
+    );
+
+    return Object.freeze({
+        ...v2Result,
+        arm: 'topology_v3',
+        score,
+        baseScore: pure.score,
+        topologyV3: Object.freeze({
+            mode: 'river_observability_gated_v2_with_direct_anchor',
+            omega,
+            regime: context.riverObservability?.regime || 'collapsed',
+            omegaEdge: clamp01(context.riverObservability?.omegaEdge),
+            omegaEmerge: clamp01(context.riverObservability?.omegaEmerge),
+            omegaFlow: clamp01(context.riverObservability?.omegaFlow),
+            omegaGamma,
+            graphGate,
+            v2Bonus,
+            gatedV2Bonus,
+            anchorBatchAvailable: context.anchorBatchAvailable,
+            anchorScore: clamp01(anchor.anchorScore),
+            anchorReliability: clamp01(anchor.anchorReliability),
+            anchorStrength: clamp01(anchor.anchorStrength),
+            anchorBonus,
+            anchorBonusCap: context.anchorBonusCap,
+            anchorBonusScale: context.anchorBonusScale,
+            contactedSeeds: Number(anchor.contactedSeeds) || 0,
+            exactContacts: Number(anchor.exactContacts) || 0,
+            semanticContacts: Number(anchor.semanticContacts) || 0,
+            meanClosure: clamp01(anchor.meanClosure),
+            contacts: Array.isArray(anchor.contacts)
+                ? anchor.contacts
+                : Object.freeze([]),
+            originalRole: sample?.originalRole || null,
+            role: sample?.role || 'thematic_neighbor',
+            roleReclassified: sample?.roleReclassified === true,
+            roleReclassificationReason:
+                sample?.roleReclassificationReason || null,
+            structRoleMinOmega: context.structRoleMinOmega,
+            anchorFrontierThreshold: context.anchorFrontierThreshold,
+            directFrontierScore: context.directFrontierScore,
+            v2DirectFrontierScore: context.v2DirectFrontierScore,
+            anchorDirectFrontierScore:
+                context.anchorDirectFrontierScore,
+            frontierSource: context.frontierSource,
+            pureScore: pure.score,
+            finalScore: score,
+            noNegativePenalty: true
+        })
+    });
+}
+
 const ARM_SCORERS = Object.freeze({
     pure: scorePure,
     gated: scoreGated,
     observed: scoreObserved,
     topology: scoreTopology,
-    topology_v2: scoreTopologyV2
+    topology_v2: scoreTopologyV2,
+    topology_v3: scoreTopologyV3
 });
 
 function scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
@@ -1089,7 +1267,9 @@ function scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
     const input = Array.isArray(dstcBatch?.results) ? dstcBatch.results : [];
     const batchContext = normalizedArm === 'topology_v2'
         ? buildTopologyV2BatchContext(dstcBatch, options)
-        : null;
+        : normalizedArm === 'topology_v3'
+            ? buildTopologyV3BatchContext(dstcBatch, options)
+            : null;
     const scored = input
         .map((item, originalIndex) => Object.freeze({
             ...item,
@@ -1118,9 +1298,29 @@ function scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
             candidates: scored.length,
             rejected: scored.filter(item => item.armResult.rejected).length,
             queryProfile: batchContext?.queryProfile || null,
+            riverObservability:
+                batchContext?.riverObservability || null,
+            anchorBatchAvailable:
+                batchContext?.anchorBatchAvailable ?? null,
             totalTopologyV2Bonus: scored.reduce(
                 (sum, item) =>
                     sum + (Number(item.armResult.topologyV2?.bonus) || 0),
+                0
+            ),
+            totalTopologyV3GatedBonus: scored.reduce(
+                (sum, item) =>
+                    sum + (
+                        Number(item.armResult.topologyV3?.gatedV2Bonus)
+                        || 0
+                    ),
+                0
+            ),
+            totalTopologyV3AnchorBonus: scored.reduce(
+                (sum, item) =>
+                    sum + (
+                        Number(item.armResult.topologyV3?.anchorBonus)
+                        || 0
+                    ),
                 0
             ),
             totalObservedBonus: scored.reduce(
@@ -1166,8 +1366,10 @@ module.exports = {
     scoreObserved,
     scoreTopology,
     scoreTopologyV2,
+    scoreTopologyV3,
     classifyTopologyV2Query,
     buildTopologyV2BatchContext,
+    buildTopologyV3BatchContext,
     scoreExperimentArm,
     runExperimentArms
 };

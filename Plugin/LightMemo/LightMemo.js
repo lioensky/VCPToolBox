@@ -634,7 +634,7 @@ class LightMemoPlugin {
     /**
      * TagMemo V10 Alpha 独立实验入口。
      * 服务端批量脚本可传
-     * experiment_arm=pure|gated|observed|topology|topology_v2|all，
+     * experiment_arm=pure|gated|observed|topology|topology_v2|topology_v3|all，
      * 并用 disabled_observables=direct,structural,thematic,closure 做逐项消融。
      */
     async handleTagMemoV10(args = {}) {
@@ -730,10 +730,11 @@ class LightMemoPlugin {
             'observed',
             'topology',
             'topology_v2',
+            'topology_v3',
             'all'
         ].includes(arm)) {
             throw new Error(
-                'experiment_arm 仅支持 pure、gated、observed、topology、topology_v2 或 all。'
+                'experiment_arm 仅支持 pure、gated、observed、topology、topology_v2、topology_v3 或 all。'
             );
         }
         const disabledObservables = this._parseStringArray(
@@ -1298,6 +1299,7 @@ class LightMemoPlugin {
             const pureResults = armRun.arms.pure.results;
             const topologyResults = armRun.arms.topology.results;
             const topologyV2Results = armRun.arms.topology_v2.results;
+            const topologyV3Results = armRun.arms.topology_v3.results;
             const topologyRankById = new Map(
                 topologyResults.map((item, index) => [
                     Number(item.curve?.chunkId ?? item.curve?.id),
@@ -1386,6 +1388,10 @@ class LightMemoPlugin {
                     label: 'V10-Topology V2 Unified',
                     results: topologyV2Results
                 },
+                topologyV3: {
+                    label: 'V10-Topology V3 Unified',
+                    results: topologyV3Results
+                },
                 pureTopologyRrfEqual: {
                     label: 'V10 Pure × Topology RRF 1:1',
                     results: pureTopologyRrfEqualResults,
@@ -1439,6 +1445,7 @@ class LightMemoPlugin {
                 appendTrack(armRun.arms.pure.results);
                 appendTrack(armRun.arms.topology.results);
                 appendTrack(armRun.arms.topology_v2.results);
+                appendTrack(armRun.arms.topology_v3.results);
                 appendTrack(pureTopologyRrfEqualResults);
                 appendTrack(pureTopologyRrfPureFirstResults);
                 appendTrack(armRun.arms.gated.results);
@@ -1510,6 +1517,7 @@ class LightMemoPlugin {
                 topologyScoreMode: item.armResult.topologyScoreMode,
                 topologyDualReadout: item.armResult.topologyDualReadout,
                 topologyV2: item.armResult.topologyV2,
+                topologyV3: item.armResult.topologyV3,
                 relativeTopology: item.relativeTopology,
                 geometry: item.geometry,
                 dstc: item.observables
@@ -1904,6 +1912,7 @@ class LightMemoPlugin {
             'pure',
             'topology',
             'topologyV2',
+            'topologyV3',
             'pureTopologyRrfEqual',
             'pureTopologyRrfPureFirst',
             'gated',
@@ -1939,9 +1948,10 @@ class LightMemoPlugin {
         md += '## 1. 实验身份与公平条件\n\n';
         md += '- **KNN**：原始查询向量余弦排序。\n';
         md += `- **V9 Production**：当前生产 Artifact 与生产测地重排；实际算法版本 \`${v9Artifact.algorithmVersion || 'v9'}\`。\n`;
-        md += '- **V10 Unified-Pure / Gated / Observed / V10-Topology / Topology V2**：共享同一 V10 Artifact、Query State、EPA/Pyramid/Spike 降噪源、双尺度场、候选超集和候选曲线。\n';
+        md += '- **V10 Unified-Pure / Gated / Observed / V10-Topology / Topology V2 / Topology V3**：共享同一 V10 Artifact、Query State、EPA/Pyramid/Spike 降噪源、双尺度场、候选超集和候选曲线。\n';
         md += '- **V10-Topology**：第一主读出是降噪 Spike 修正向量与 Chunk 的相似度；第二主读出比较查询临时有向河网与候选原生有序 Tag 构型，并按图可靠度动态竞争解释权。旧相对增量公式仅由 `legacy_relative_bonus` 回放。\n';
         md += '- **V10-Topology V2 Unified**：以 Pure 连续场得分为内部坐标，按 atomic/propositional/narrative 查询模式估计动态结构置信度；Graph 只奖励其相对同等 Pure 强度候选的正向条件创新，不可观测或低于条件期望时不处罚 Pure。\n';
+        md += '- **V10-Topology V3 Unified**：以 Pure 连续场为底座；河网可观测性 Ω 门控 V2 条件创新奖励；零边极限 Direct Anchor 保护稀有多种子精确接触候选，并在低 Ω 工况下降级无充分传播依据的结构角色。\n';
         md += '- **V10 Pure × Topology RRF 1:1**：在完整同池排名上按 `0.5/(60+PureRank) + 0.5/(60+TopologyRank)` 融合，作为两路同权对照。\n';
         md += '- **V10 Pure × Topology RRF 2:1**：按 `(2/3)/(60+PureRank) + (1/3)/(60+TopologyRank)` 融合，优先保护 Pure 识别的直接答案与高价值前因链，同时保留 Topology 的结构召回。两条 RRF 均不混合异标度绝对分，也不修改底层内核。\n';
         md += `- **Rerank**：${compareRerank
@@ -1955,8 +1965,10 @@ class LightMemoPlugin {
         md += `- V10 查询源：\`${queryState.sourceObservation?.sourceMode || 'unknown'}\`；V9 观测资产：\`${queryState.sourceObservation?.v9ArtifactSig || '—'}\`\n`;
         const sourceDiagnostics = queryState.sourceObservation?.diagnostics || {};
         const riverDiagnostics = queryState.queryRiverGraph?.diagnostics || {};
+        const topologyV3Observation =
+            tracks.topologyV3?.results?.[0]?.armResult?.topologyV3 || {};
         md += `- 降噪观测：完整=${sourceDiagnostics.completeObservation === true ? '是' : '否'}；向量已变化=${sourceDiagnostics.vectorChanged === true ? '是' : '否'}；ΔL2=${fmt(sourceDiagnostics.vectorDeltaL2, 8)}；源↔增强余弦=${fmt(sourceDiagnostics.sourceEnhancedCosine, 8)}；源节点=${sourceDiagnostics.normalizedSourceNodes ?? sourceDiagnostics.sourceNodes ?? '—'}；EPA深度=${queryState.sourceObservation?.epa?.logicDepth ?? '—'}；Pyramid层数=${queryState.sourceObservation?.pyramid?.levels?.length ?? queryState.sourceObservation?.pyramid?.depth ?? '—'}${sourceDiagnostics.fallbackReason ? `；退化原因=${sourceDiagnostics.fallbackReason}` : ''}\n`;
-        md += `- Spike 临时河网：节点=${riverDiagnostics.reachedNodes ?? queryState.queryRiverGraph?.nodes?.length ?? 0}；边=${riverDiagnostics.activeEdges ?? queryState.queryRiverGraph?.edges?.length ?? 0}；种子=${riverDiagnostics.seedNodes ?? '—'}\n`;
+        md += `- Spike 临时河网：节点=${riverDiagnostics.reachedNodes ?? queryState.queryRiverGraph?.nodes?.length ?? 0}；边=${riverDiagnostics.activeEdges ?? queryState.queryRiverGraph?.edges?.length ?? 0}；种子=${riverDiagnostics.seedNodes ?? '—'}；Ω=${fmt(topologyV3Observation.omega)}（边=${fmt(topologyV3Observation.omegaEdge)}/涌现=${fmt(topologyV3Observation.omegaEmerge)}/流熵=${fmt(topologyV3Observation.omegaFlow)}，工况=${topologyV3Observation.regime || '—'}）\n`;
         md += `- D/S/T/C 消融：${disabledObservables.length > 0
             ? disabledObservables.map(value => `\`${value}\``).join(', ')
             : '无'}\n\n`;
@@ -2125,6 +2137,12 @@ class LightMemoPlugin {
                         md += `- V2.1 角色权限：Direct证据=${fmt(v2.directEvidence)}；结构证据=${fmt(v2.structuralEvidence)}；角色倍率=${fmt(v2.roleMultiplier)}；请求奖励=${fmt(v2.requestedBonus)}；角色限幅后=${fmt(v2.confidenceLimitedBonus)}≤${fmt(v2.roleBonusCap)}；直接答案前沿=${fmt(v2.directFrontierScore)}；前沿预算=${v2.frontierBonusBudget === null ? '无限' : fmt(v2.frontierBonusBudget)}；前沿限幅=${v2.frontierLimited ? '是' : '否'}；最终奖励=${fmt(v2.bonus)}\n`;
                         md += `- V2 查询动态置信：模式适配=${fmt(profile.structuralAdequacy)}；场相干=${fmt(profile.fieldCoherence)}（能量集中=${fmt(profile.energyConcentration)}/EPA逻辑=${fmt(profile.epaLogicDepth)}/金字塔相干=${fmt(profile.pyramidCoherence)}）；当前知识域可观测=${fmt(profile.domainObservability)}；综合适配=${fmt(profile.dynamicAdequacy)}；观测头部K=${profile.observabilityHeadK ?? '—'}\n`;
                         md += `- V2 候选置信归因：闭合=${fmt(v2.closure)}；节点覆盖=${fmt(v2.nodeCoverage)}；边覆盖=${fmt(v2.edgeCoverage)}；节点对齐=${fmt(v2.nodeAlignment)}；边可靠=${fmt(v2.edgeReliability)}；核带宽(Pure/Closure/Direct)=${fmt(v2.conditionalBandwidth)}/${fmt(v2.conditionalClosureBandwidth)}/${fmt(v2.conditionalDirectBandwidth)}\n`;
+                    }
+                    if (item.armResult.topologyV3) {
+                        const v3 = item.armResult.topologyV3;
+                        md += `- Topology V3 工况门控：Ω=${fmt(v3.omega)}（边=${fmt(v3.omegaEdge)}/涌现=${fmt(v3.omegaEmerge)}/流熵=${fmt(v3.omegaFlow)}，${v3.regime || '—'}）；γ=${fmt(v3.omegaGamma)}；V2奖励=${fmt(v3.v2Bonus)}×${fmt(v3.graphGate)}→${fmt(v3.gatedV2Bonus)}\n`;
+                        md += `- V3 Direct Anchor：锚分=${fmt(v3.anchorScore)}×可靠=${fmt(v3.anchorReliability)}→强度=${fmt(v3.anchorStrength)}；奖励=${fmt(v3.anchorBonus)}≤${fmt(v3.anchorBonusCap)}；接触种子=${v3.contactedSeeds}（精确=${v3.exactContacts}/语义=${v3.semanticContacts}）；闭合=${fmt(v3.meanClosure)}\n`;
+                        md += `- V3 角色与前沿：${v3.originalRole || '—'}→${v3.role || '—'}${v3.roleReclassified ? `（${v3.roleReclassificationReason || '已改判'}）` : '（未改判）'}；直接前沿=${fmt(v3.directFrontierScore)}；来源=${v3.frontierSource || '—'}；最终=${fmt(v3.finalScore)}\n`;
                     }
                     if (item.armResult.topologyRelativeGeometry) {
                         const relative = item.armResult.topologyRelativeGeometry;

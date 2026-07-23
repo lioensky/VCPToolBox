@@ -19,6 +19,12 @@ const {
 } = require('./modules/tagmemoV10/relativeTopologyMatcher');
 const { computeDstcBatch } = require('./modules/tagmemoV10/dstcObservables');
 const {
+    computeRiverObservability
+} = require('./modules/tagmemoV10/riverObservability');
+const {
+    computeDirectAnchorBatch
+} = require('./modules/tagmemoV10/directAnchorReadout');
+const {
     scoreExperimentArm,
     runExperimentArms
 } = require('./modules/tagmemoV10/experimentArms');
@@ -121,6 +127,23 @@ class TagMemoV10Engine {
                 traceEdgeLimit: 24,
                 ...(configured.relativeTopology || {})
             },
+            riverObservability: {
+                kappaEdge: 0.5,
+                kappaRatio: 0.3,
+                epsilon: 0.02,
+                collapsedThreshold: 0.12,
+                sparseThreshold: 0.45,
+                ...(configured.riverObservability || {})
+            },
+            directAnchor: {
+                semanticThreshold: 0.8,
+                semanticDiscount: 0.7,
+                specificityFloor: 0.35,
+                reliabilitySeedSaturation: 2,
+                fallbackReliabilityCap: 0.5,
+                traceLimit: 8,
+                ...(configured.directAnchor || {})
+            },
             dstc: {
                 compute: true,
                 arm: configured.experimentArm || 'pure',
@@ -146,6 +169,11 @@ class TagMemoV10Engine {
                 topologyV2DirectEvidenceThreshold: 0.55,
                 topologyV2DirectFrontierMargin: 0.03,
                 topologyV2FrontierProtectionMargin: 0.005,
+                topologyV3OmegaGamma: 1,
+                topologyV3StructRoleMinOmega: 0.12,
+                topologyV3AnchorBonusCap: 0.06,
+                topologyV3AnchorBonusScale: 0.08,
+                topologyV3AnchorFrontierThreshold: 0.45,
                 topologyV2RoleCaps: {
                     atomic_concept: 0.08,
                     direct_answer: 0.02,
@@ -244,6 +272,10 @@ class TagMemoV10Engine {
             ),
             inboundMassView: immutableSnapshot(
                 sourceBundle.inboundMassMap || new Map()
+            ),
+            maxInbound: Math.max(
+                0,
+                Number(sourceBundle.maxInbound) || 0
             ),
             wormholeView: immutableSnapshot(
                 sourceBundle.wormholeEdges || new Set()
@@ -540,6 +572,40 @@ class TagMemoV10Engine {
         );
     }
 
+    _loadTagVectorsById(ids) {
+        const uniqueIds = [...new Set(
+            (Array.isArray(ids) ? ids : [])
+                .map(Number)
+                .filter(id => Number.isFinite(id) && id > 0)
+        )];
+        const vectorById = new Map();
+        const dimension = Math.max(1, Number(this.config.dimension) || 0);
+        if (uniqueIds.length === 0 || !this.db?.prepare) return vectorById;
+
+        for (let offset = 0; offset < uniqueIds.length; offset += 500) {
+            const batch = uniqueIds.slice(offset, offset + 500);
+            const placeholders = batch.map(() => '?').join(',');
+            const rows = this.db.prepare(
+                `SELECT id, vector FROM tags WHERE id IN (${placeholders})`
+            ).all(...batch);
+            for (const row of rows) {
+                if (!row.vector || row.vector.length !== dimension * 4) continue;
+                const aligned = row.vector.byteOffset % 4 === 0
+                    ? row.vector
+                    : Buffer.from(row.vector);
+                vectorById.set(
+                    Number(row.id),
+                    new Float32Array(
+                        aligned.buffer,
+                        aligned.byteOffset,
+                        dimension
+                    )
+                );
+            }
+        }
+        return vectorById;
+    }
+
     evaluateCandidateCurves(curves, queryState, options = {}) {
         const artifact = options.artifact || this.getArtifactSnapshot();
         const pathBatch = evaluateCandidateCurves(
@@ -566,29 +632,7 @@ class TagMemoV10Engine {
                 .map(node => Number(node.id))
                 .filter(id => Number.isFinite(id) && id > 0)
         )];
-        const queryTagVectorById = new Map();
-        const dimension = Math.max(1, Number(this.config.dimension) || 0);
-        for (let offset = 0; offset < riverNodeIds.length; offset += 500) {
-            const batch = riverNodeIds.slice(offset, offset + 500);
-            const placeholders = batch.map(() => '?').join(',');
-            const rows = this.db.prepare(
-                `SELECT id, vector FROM tags WHERE id IN (${placeholders})`
-            ).all(...batch);
-            for (const row of rows) {
-                if (!row.vector || row.vector.length !== dimension * 4) continue;
-                const aligned = row.vector.byteOffset % 4 === 0
-                    ? row.vector
-                    : Buffer.from(row.vector);
-                queryTagVectorById.set(
-                    Number(row.id),
-                    new Float32Array(
-                        aligned.buffer,
-                        aligned.byteOffset,
-                        dimension
-                    )
-                );
-            }
-        }
+        const queryTagVectorById = this._loadTagVectorsById(riverNodeIds);
 
         return evaluateRelativeTopologyBatch(
             pathBatch,
@@ -615,15 +659,72 @@ class TagMemoV10Engine {
         );
     }
 
+    _prepareExperimentOptions(dstcBatch, options, artifact) {
+        const queryState = options.queryState || null;
+        const riverObservability = options.riverObservability
+            || computeRiverObservability(
+                queryState,
+                {
+                    ...artifact.effectiveConfig.riverObservability,
+                    structRoleMinOmega:
+                        artifact.effectiveConfig.dstc
+                            ?.topologyV3StructRoleMinOmega
+                }
+            );
+
+        let anchorBatch = options.anchorBatch || null;
+        if (!anchorBatch && queryState) {
+            const provenance = Array.isArray(
+                queryState.sourceObservation?.fieldProvenance
+            )
+                ? queryState.sourceObservation.fieldProvenance
+                : [];
+            const provenanceIds = provenance
+                .filter(entry => {
+                    const value = entry?.[1] || {};
+                    return Number(value.hop) === 0
+                        && (
+                            value.sourceType === 'core'
+                            || value.sourceType === 'seed'
+                        );
+                })
+                .map(entry => Number(entry?.[0]));
+            const fallbackIds = Array.isArray(queryState.sourceField)
+                ? queryState.sourceField.map(entry => Number(entry?.[0]))
+                : [];
+            const anchorIds = provenanceIds.length > 0
+                ? provenanceIds
+                : fallbackIds;
+            const anchorTagVectorById = this._loadTagVectorsById(anchorIds);
+            anchorBatch = computeDirectAnchorBatch(
+                dstcBatch,
+                queryState,
+                {
+                    ...artifact.effectiveConfig.directAnchor,
+                    inboundMassView: artifact.inboundMassView,
+                    maxInbound: artifact.maxInbound,
+                    anchorTagVectorById
+                }
+            );
+        }
+
+        return {
+            ...artifact.effectiveConfig.dstc,
+            ...options,
+            queryState,
+            riverObservabilityConfig:
+                artifact.effectiveConfig.riverObservability,
+            riverObservability,
+            anchorBatch
+        };
+    }
+
     scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
         const artifact = options.artifact || this.getArtifactSnapshot();
         return scoreExperimentArm(
             dstcBatch,
             arm,
-            {
-                ...artifact.effectiveConfig.dstc,
-                ...options
-            }
+            this._prepareExperimentOptions(dstcBatch, options, artifact)
         );
     }
 
@@ -631,10 +732,7 @@ class TagMemoV10Engine {
         const artifact = options.artifact || this.getArtifactSnapshot();
         return runExperimentArms(
             dstcBatch,
-            {
-                ...artifact.effectiveConfig.dstc,
-                ...options
-            }
+            this._prepareExperimentOptions(dstcBatch, options, artifact)
         );
     }
 
