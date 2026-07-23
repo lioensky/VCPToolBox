@@ -571,16 +571,12 @@ function validateConfigBeforeSave(): string | null {
     return "默认预设必须存在。";
   }
 
+  // 允许保存尚未填写模型或路由的草稿预设。服务端会在持久化时过滤
+  // 不完整的路由项，但会保留预设本身，避免新增预设因前端校验被静默丢弃。
   for (const [presetId, preset] of presetEntries.value) {
     if (!presetId.trim()) return "预设 ID 不能为空。";
-    if (!preset.defaultModel.trim()) return `预设 "${presetId}" 缺少默认模型。`;
-    if (!Array.isArray(preset.routes) || preset.routes.length === 0) {
-      return `预设 "${presetId}" 至少需要一个路由项。`;
-    }
-
-    for (const [index, route] of preset.routes.entries()) {
-      if (!route.model.trim()) return `预设 "${presetId}" 的第 ${index + 1} 个路由缺少模型。`;
-      if (!route.description.trim()) return `预设 "${presetId}" 的第 ${index + 1} 个路由缺少语义描述。`;
+    if (!Array.isArray(preset.routes)) {
+      return `预设 "${presetId}" 的路由配置格式无效。`;
     }
   }
 

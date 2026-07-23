@@ -36,7 +36,8 @@
 |------|------|--------|
 | [MEMORY_SYSTEM.md](./MEMORY_SYSTEM.md) | TagMemo算法、EPA模块、残差金字塔、向量索引 | ⭐⭐⭐ |
 | [VCP记忆管理系统.md](./VCP记忆管理系统.md) | 记忆系统上手、日记本管理、记忆注入与操作指南 | ⭐⭐⭐ |
-| [TagMemo_Wave_Algorithm_Deep_Dive.md](./TagMemo_Wave_Algorithm_Deep_Dive.md) | TagMemo / 浪潮算法数学原理、语义动力学与深层机制 | ⭐⭐⭐ |
+| [TagMemo_Wave_Algorithm_Deep_Dive.md](./TagMemo_Wave_Algorithm_Deep_Dive.md) | TagMemo V9 全上下文降噪、传播底座与浪潮算法数学原理 | ⭐⭐⭐ |
+| [RIVERMEMO_TOPOLOGY_V3.md](./RIVERMEMO_TOPOLOGY_V3.md) | RiverMemo 拓扑 V3、双尺度场、相对拓扑与 Ω 统一泛函 | ⭐⭐⭐ |
 | [CONTEXT_BRIDGE.md](./CONTEXT_BRIDGE.md) | 上下文向量引力场公开接口、插件间向量共享机制 | ⭐⭐⭐ |
 | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) | WebSocket协议、节点注册、工具执行、文件传输 | ⭐⭐ |
 | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) | N-API接口、向量操作、性能特性 | ⭐⭐ |
@@ -68,7 +69,8 @@
 | 添加新API端点 | [API_ROUTES.md](./API_ROUTES.md) § 路由挂载流程 |
 | 优化RAG检索 | [MEMORY_SYSTEM.md](./MEMORY_SYSTEM.md) § TagMemo算法 |
 | 上手机忆/日记系统 | [VCP记忆管理系统.md](./VCP记忆管理系统.md) |
-| 深入TagMemo数学原理 | [TagMemo_Wave_Algorithm_Deep_Dive.md](./TagMemo_Wave_Algorithm_Deep_Dive.md) |
+| 理解V9全上下文降噪与传播底座 | [TagMemo_Wave_Algorithm_Deep_Dive.md](./TagMemo_Wave_Algorithm_Deep_Dive.md) |
+| 深入RiverMemo拓扑V3与Ω泛函 | [RIVERMEMO_TOPOLOGY_V3.md](./RIVERMEMO_TOPOLOGY_V3.md) |
 | 部署分布式节点 | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) § 节点注册 |
 | 调试向量索引 | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) § 错误处理 |
 | 定制管理面板 | [FRONTEND_COMPONENTS.md](./FRONTEND_COMPONENTS.md) § AdminPanel |
@@ -217,7 +219,8 @@
 - **VCP理论文档**：[VCP.md](../VCP.md)
 - **VCP技术Lite索引**：[TECHNICAL_LITE.md](./TECHNICAL_LITE.md)
 - **VCP记忆管理系统指南**：[VCP记忆管理系统.md](./VCP记忆管理系统.md)
-- **TagMemo算法深度解析**：[TagMemo_Wave_Algorithm_Deep_Dive.md](./TagMemo_Wave_Algorithm_Deep_Dive.md)
+- **TagMemo V9降噪与传播底座**：[TagMemo_Wave_Algorithm_Deep_Dive.md](./TagMemo_Wave_Algorithm_Deep_Dive.md)
+- **RiverMemo拓扑V3与Ω泛函**：[RIVERMEMO_TOPOLOGY_V3.md](./RIVERMEMO_TOPOLOGY_V3.md)
 - **CPU温度监控配置指南**：[CPU_TEMPERATURE_MONITOR.md](./CPU_TEMPERATURE_MONITOR.md)
 - **变更日志**：[ChangeLog.md](../ChangeLog.md)
 

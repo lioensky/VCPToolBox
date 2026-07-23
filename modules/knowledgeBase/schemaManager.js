@@ -54,6 +54,137 @@ const CORE_SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_tagmemo_artifacts_lookup
         ON tagmemo_artifacts(asset_type, model_sig, status);
 
+    -- RiverMemo Topology V3 独立持久化资产。
+    -- payload 保存 gzip 压缩的规范 JSON；checksum 验证解压后的原始字节。
+    CREATE TABLE IF NOT EXISTS rivermemo_artifacts (
+        artifact_sig TEXT PRIMARY KEY,
+        schema_version TEXT NOT NULL,
+        algorithm_version TEXT NOT NULL,
+        source_v9_artifact_sig TEXT NOT NULL,
+        source_graph_generation TEXT NOT NULL,
+        model_sig TEXT NOT NULL,
+        config_hash TEXT NOT NULL,
+        database_generation TEXT NOT NULL,
+        provenance_generation TEXT NOT NULL,
+        payload_codec TEXT NOT NULL DEFAULT 'gzip-json-v1',
+        payload_checksum TEXT,
+        payload BLOB,
+        status TEXT NOT NULL,
+        error_message TEXT,
+        node_count INTEGER NOT NULL DEFAULT 0,
+        edge_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        published_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_rivermemo_artifacts_compatible
+        ON rivermemo_artifacts(
+            source_v9_artifact_sig,
+            model_sig,
+            config_hash,
+            database_generation,
+            status,
+            updated_at
+        );
+    CREATE INDEX IF NOT EXISTS idx_rivermemo_artifacts_status
+        ON rivermemo_artifacts(status, updated_at);
+
+    -- RiverMemo/V10 精确向量派生资产。
+    -- vector_sig 是原始 Float32 BLOB 的 SHA-256；模型、维度或向量内容变化时
+    -- 对应范数及 Chunk-Tag closure 自动失效。所有值均由 Float64 累加产生，
+    -- 仅消除查询热路径的重复计算，不做量化或近似。
+    CREATE TABLE IF NOT EXISTS v10_vector_metrics (
+        entity_type TEXT NOT NULL CHECK(entity_type IN ('tag', 'chunk')),
+        entity_id INTEGER NOT NULL,
+        model_sig TEXT NOT NULL,
+        dimension INTEGER NOT NULL,
+        vector_sig TEXT NOT NULL,
+        l2_norm REAL NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (entity_type, entity_id, model_sig, dimension)
+    );
+    CREATE INDEX IF NOT EXISTS idx_v10_vector_metrics_generation
+        ON v10_vector_metrics(model_sig, dimension, entity_type);
+
+    CREATE TABLE IF NOT EXISTS v10_chunk_tag_geometry (
+        chunk_id INTEGER NOT NULL,
+        tag_id INTEGER NOT NULL,
+        model_sig TEXT NOT NULL,
+        dimension INTEGER NOT NULL,
+        chunk_vector_sig TEXT NOT NULL,
+        tag_vector_sig TEXT NOT NULL,
+        cosine REAL NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chunk_id, tag_id, model_sig, dimension),
+        FOREIGN KEY(chunk_id) REFERENCES chunks(id) ON DELETE CASCADE,
+        FOREIGN KEY(tag_id) REFERENCES tags(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_v10_chunk_tag_geometry_tag
+        ON v10_chunk_tag_geometry(tag_id, model_sig, dimension);
+
+    CREATE TABLE IF NOT EXISTS v10_derived_asset_status (
+        asset_type TEXT NOT NULL,
+        model_sig TEXT NOT NULL,
+        dimension INTEGER NOT NULL,
+        source_generation TEXT NOT NULL,
+        row_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL,
+        error_message TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (asset_type, model_sig, dimension)
+    );
+
+    -- 事实变化与派生失效必须处于同一 SQLite 事务。即使进程在写入后、
+    -- JS 通知前崩溃，下一次启动也会看到 stale 并执行精确增量核验。
+    CREATE TRIGGER IF NOT EXISTS trg_v10_tags_insert_stale
+    AFTER INSERT ON tags BEGIN
+        UPDATE v10_derived_asset_status
+        SET status = 'stale', error_message = 'tags-inserted',
+            updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_v10_tags_vector_stale
+    AFTER UPDATE OF vector ON tags BEGIN
+        UPDATE v10_derived_asset_status
+        SET status = 'stale', error_message = 'tag-vector-updated',
+            updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_v10_tags_delete_stale
+    AFTER DELETE ON tags BEGIN
+        UPDATE v10_derived_asset_status
+        SET status = 'stale', error_message = 'tags-deleted',
+            updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_v10_chunks_insert_stale
+    AFTER INSERT ON chunks BEGIN
+        UPDATE v10_derived_asset_status
+        SET status = 'stale', error_message = 'chunks-inserted',
+            updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_v10_chunks_vector_stale
+    AFTER UPDATE OF vector ON chunks BEGIN
+        UPDATE v10_derived_asset_status
+        SET status = 'stale', error_message = 'chunk-vector-updated',
+            updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_v10_chunks_delete_stale
+    AFTER DELETE ON chunks BEGIN
+        UPDATE v10_derived_asset_status
+        SET status = 'stale', error_message = 'chunks-deleted',
+            updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_v10_file_tags_insert_stale
+    AFTER INSERT ON file_tags BEGIN
+        UPDATE v10_derived_asset_status
+        SET status = 'stale', error_message = 'file-tags-inserted',
+            updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_v10_file_tags_delete_stale
+    AFTER DELETE ON file_tags BEGIN
+        UPDATE v10_derived_asset_status
+        SET status = 'stale', error_message = 'file-tags-deleted',
+            updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000;
+    END;
+
     CREATE TABLE IF NOT EXISTS tag_intrinsic_residual_status (
         tag_id INTEGER NOT NULL,
         artifact_sig TEXT NOT NULL,

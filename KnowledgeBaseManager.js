@@ -9,6 +9,8 @@ const chokidar = require('chokidar');
 const { getEmbeddingsBatch } = require('./EmbeddingUtils');
 const ResultDeduplicator = require('./ResultDeduplicator'); // ✅ Tagmemo v4 requirement
 const TagMemoEngine = require('./TagMemoEngine');
+const TagMemoV10Engine = require('./TagMemoV10Engine');
+const RiverMemoEngine = require('./RiverMemoEngine');
 const { decodeVectorBlob } = require('./modules/knowledgeBase/vectorCodec');
 const { queryByChunks } = require('./modules/knowledgeBase/sqliteQueryUtils');
 const {
@@ -134,6 +136,8 @@ class KnowledgeBaseManager {
         this.deleteBatchTimer = null;
         this.isProcessingDeletes = false;
         this.tagMemoEngine = null;
+        this.tagMemoV10Engine = null;
+        this.riverMemoEngine = null;
         this.resultDeduplicator = null; // ✅ Tagmemo v4
         this.ragParams = {}; // ✅ 新增：用于存储热调控参数
         this.ragParamsWatcher = null;
@@ -270,9 +274,55 @@ class KnowledgeBaseManager {
 
         await this.loadRagParams();
 
-        // 初始化浪潮引擎
+        // 初始化生产 V9.2 浪潮引擎。
         this.tagMemoEngine = new TagMemoEngine(this.db, this.tagIndex, this.config, this.ragParams, this);
         await this.tagMemoEngine.initialize();
+
+        // V10 Alpha 是独立实验内核：从已发布 V9.2 事实资产复制构建只读 CSR，
+        // 不进入 V9 内部兜底，也不改变现有 search/applyTagBoost 契约。
+        this.tagMemoV10Engine = new TagMemoV10Engine(
+            this.db,
+            this.tagIndex,
+            this.config,
+            this.ragParams,
+            { v9Engine: this.tagMemoEngine }
+        );
+        // V10 精确派生资产不做量化或截断。启动时先快速检查事实代际；
+        // 缺失/stale 时仅补算变化的向量范数与 Chunk-Tag closure。
+        // 该步骤先于 RiverMemo 门面发布，避免首个查询承担冷启动重计算。
+        try {
+            this.tagMemoV10Engine.ensureExactDerivedAssets();
+        } catch (error) {
+            // 派生资产失败不应阻止 V9 启动；RiverMemo 仍可通过原始向量公式
+            // 精确回退，但记录明确告警以便运维修复。
+            console.error(
+                '[KnowledgeBase] ⚠️ V10 exact derived asset audit failed; ' +
+                'RiverMemo will use exact runtime fallback:',
+                error.message || error
+            );
+        }
+
+        const riverMemoConfig =
+            this.ragParams?.KnowledgeBaseManager?.riverMemo || {};
+        this.riverMemoEngine = new RiverMemoEngine(
+            this.tagMemoV10Engine,
+            { config: riverMemoConfig }
+        );
+
+        // RiverMemo 是 V9 的低成本伴生编译资产，不以查询开关决定是否训练。
+        // 冷启动优先恢复与当前 V9/模型/配置/数据库代际完全匹配的持久化资产；
+        // 未命中或验收失败时才重新构建并落库。
+        try {
+            this.tagMemoV10Engine.restoreOrBuildArtifact({
+                sourceBundle:
+                    this.tagMemoEngine.getArtifactBundleSnapshot('v9')
+            });
+        } catch (error) {
+            console.error(
+                '[KnowledgeBase] ⚠️ RiverMemo cold-start companion unavailable; V9 remains active:',
+                error.message || error
+            );
+        }
         this._cleanupStalePairwiseSimilarityModels();
 
         this._startWatcher();
@@ -316,6 +366,12 @@ class KnowledgeBaseManager {
             this.ragParams = parsed;
             console.log('[KnowledgeBase] ✅ RAG 热调控参数已加载');
             if (this.tagMemoEngine) this.tagMemoEngine.updateRagParams(parsed);
+            if (this.tagMemoV10Engine) this.tagMemoV10Engine.updateRagParams(parsed);
+            if (this.riverMemoEngine) {
+                this.riverMemoEngine.updateConfig(
+                    parsed.KnowledgeBaseManager?.riverMemo || {}
+                );
+            }
             return true;
         } catch (e) {
             console.error('[KnowledgeBase] ❌ 加载 rag_params.json 失败，继续使用最后健康配置:', e.message);
@@ -338,6 +394,32 @@ class KnowledgeBaseManager {
             console.log('[KnowledgeBase] 🔄 检测到 rag_params.json 变更，正在重新加载...');
             await this.loadRagParams();
         });
+    }
+
+    /**
+     * V9 原子发布后的 RiverMemo 伴生编译协调器。
+     * 本方法故意同步：V9 发布已经完成，RiverMemo 必须先落库验收，再替换活动指针。
+     * 任何异常由 V9 发布方捕获，绝不回滚健康的 V9。
+     */
+    onTagMemoArtifactPublished(sourceBundle, registry = null) {
+        if (!this.tagMemoV10Engine) {
+            // 首次启动时 V9 先于 V10 初始化；随后冷启动恢复流程会消费本代 V9。
+            return null;
+        }
+
+        this.tagMemoV10Engine.invalidateArtifact(
+            `v9-published:${sourceBundle?.artifactSig || 'unknown'}`
+        );
+        const artifact =
+            this.tagMemoV10Engine.buildPersistAndPublishArtifact({
+                sourceBundle
+            });
+        console.log(
+            `[KnowledgeBase] 🌊 RiverMemo companion ready for V9 ` +
+            `${sourceBundle.artifactSig}: artifact=${artifact.artifactSig}, ` +
+            `v9Generation=${registry?.generation ?? sourceBundle.generation ?? 'unknown'}`
+        );
+        return artifact;
     }
 
     _initSchema() {
@@ -386,6 +468,12 @@ class KnowledgeBaseManager {
             this.tagMemoEngine.db = db;
             if (this.tagMemoEngine.epa) this.tagMemoEngine.epa.db = db;
             if (this.tagMemoEngine.residualPyramid) this.tagMemoEngine.residualPyramid.db = db;
+        }
+        if (this.tagMemoV10Engine) {
+            this.tagMemoV10Engine.rebindDatabase(db);
+        }
+        if (this.riverMemoEngine) {
+            this.riverMemoEngine.rebindDatabase(db);
         }
 
         if (this.resultDeduplicator) {
@@ -741,6 +829,193 @@ class KnowledgeBaseManager {
         };
     }
 
+    getTagMemoV10ArtifactSnapshot(options = {}) {
+        if (!this.tagMemoV10Engine) return null;
+        const forceRebuild = options.forceRebuild === true;
+        const bundle = forceRebuild
+            ? this.tagMemoV10Engine.buildAndPublishArtifact(options)
+            : this.tagMemoV10Engine.getArtifactSnapshot(options);
+        return {
+            bundle,
+            requestedVersion: 'v10_alpha',
+            effectiveVersion: 'v10_alpha',
+            fallbackUsed: false,
+            fallbackReason: null
+        };
+    }
+
+    prepareTagMemoV10Query(query, agentContext = {}, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            const error = new Error('TagMemo V10 Alpha engine is not available');
+            error.code = 'TAGMEMO_V10_ARTIFACT_UNAVAILABLE';
+            throw error;
+        }
+        return this.tagMemoV10Engine.prepareQuery(query, agentContext, options);
+    }
+
+    buildTagMemoV10CandidateSuperset(sourceCandidates, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.buildCandidateSuperset(sourceCandidates, options);
+    }
+
+    projectTagMemoV10CandidateCurves(candidates, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.projectCandidateCurves(candidates, options);
+    }
+
+    evaluateTagMemoV10CandidateCurves(curves, queryState, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.evaluateCandidateCurves(
+            curves,
+            queryState,
+            options
+        );
+    }
+
+    computeTagMemoV10Dstc(pathBatch, queryState, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.computeDstcObservables(
+            pathBatch,
+            queryState,
+            options
+        );
+    }
+
+    runTagMemoV10ExperimentArms(dstcBatch, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.runExperimentArms(dstcBatch, options);
+    }
+
+    scoreTagMemoV10ExperimentArm(dstcBatch, arm, options = {}) {
+        if (!this.tagMemoV10Engine) {
+            throw new Error('TagMemo V10 Alpha engine is not available');
+        }
+        return this.tagMemoV10Engine.scoreExperimentArm(
+            dstcBatch,
+            arm,
+            options
+        );
+    }
+
+    /**
+     * RiverMemo 生产接口：固定执行 Topology V3 与其绑定的 Ω 河网测量器。
+     * 调用方只提供查询、候选 Chunk 和权限作用域，不得选择实验臂。
+     */
+    rerankWithRiverMemo(query, candidates, agentContext = {}, options = {}) {
+        if (!this.riverMemoEngine) {
+            const error = new Error('RiverMemo engine is not available');
+            error.code = 'RIVERMEMO_UNAVAILABLE';
+            throw error;
+        }
+        return this.riverMemoEngine.rerank(
+            query,
+            candidates,
+            agentContext,
+            options
+        );
+    }
+
+    /**
+     * RiverMemo 生产异步门面。
+     *
+     * 不再启动 Node Worker 或在 Worker 中复制 V10/Artifact/SQLite 运行时。
+     * 查询观测与双场准备完成后，通过唯一 N-API 边界直接进入 Rust Topology V3；
+     * 候选投影和排序并发由 Rust/Rayon 自行管理。
+     */
+    async rerankWithRiverMemoAsync(query, candidates, agentContext = {}, options = {}) {
+        if (!this.riverMemoEngine || !this.tagMemoV10Engine || !this.tagMemoEngine) {
+            const error = new Error('RiverMemo async runtime is not available');
+            error.code = 'RIVERMEMO_ASYNC_UNAVAILABLE';
+            throw error;
+        }
+        if (!this.dbPath) {
+            const error = new Error('RiverMemo async runtime has no SQLite database path');
+            error.code = 'RIVERMEMO_ASYNC_DB_PATH_UNAVAILABLE';
+            throw error;
+        }
+
+        const artifact = this.tagMemoV10Engine.getArtifactSnapshot({
+            buildIfMissing: false
+        });
+        if (!artifact?.artifactSig) {
+            const error = new Error('RiverMemo active artifact is unavailable');
+            error.code = 'RIVERMEMO_ARTIFACT_UNAVAILABLE';
+            throw error;
+        }
+
+        const queryVectorRaw = query?.vector || options.vector;
+        const queryVector = queryVectorRaw instanceof Float32Array
+            ? queryVectorRaw
+            : new Float32Array(queryVectorRaw || []);
+        const sourceObservationConfig = {
+            ...(artifact.effectiveConfig?.sourceObservation || {}),
+            ...(options.sourceObservation || {}),
+            ...(options.sourceObservationConfig || {})
+        };
+        const sourceObservationResult = options.sourceObservationResult
+            || this.tagMemoEngine.observeQueryForV10(queryVector, {
+                artifactBundle: this.tagMemoEngine.getArtifactBundleSnapshot('v9'),
+                baseTagBoost: sourceObservationConfig.baseTagBoost,
+                coreBoostFactor: sourceObservationConfig.coreBoostFactor,
+                coreTags: Array.isArray(options.coreTags) ? options.coreTags : []
+            });
+
+        return this.riverMemoEngine.rerank(
+            {
+                text: String(query?.text || ''),
+                vector: queryVector
+            },
+            Array.isArray(candidates) ? candidates : [],
+            agentContext,
+            {
+                ...options,
+                artifact,
+                dbPath: this.dbPath,
+                coreTags: Array.isArray(options.coreTags) ? options.coreTags : [],
+                sourceObservationResult,
+                sourceField: Array.isArray(sourceObservationResult?.sourceField)
+                    ? sourceObservationResult.sourceField
+                    : null,
+                sourceObservationConfig,
+                includeTrace: options.includeTrace === true
+            }
+        );
+    }
+
+    /**
+     * 对已求解的 RiverMemo/V10 Query State 计算只读 Ω 观测。
+     */
+    measureRiverMemoOmega(queryState, options = {}) {
+        if (!this.riverMemoEngine) {
+            const error = new Error('RiverMemo engine is not available');
+            error.code = 'RIVERMEMO_UNAVAILABLE';
+            throw error;
+        }
+        return this.riverMemoEngine.measureOmega(queryState, options);
+    }
+
+    getRiverMemoArtifactSnapshot(options = {}) {
+        if (!this.riverMemoEngine) return null;
+        const bundle = this.riverMemoEngine.getArtifactSnapshot(options);
+        return {
+            bundle,
+            requestedVersion: 'rivermemo_v1',
+            effectiveVersion: 'rivermemo_v1',
+            fallbackUsed: false,
+            fallbackReason: null
+        };
+    }
+
     /**
      * 使用当前文件过滤与 Tag 清洗规则生成只读一致性快照。
      * 此阶段不请求 Embedding，也不修改 SQLite / Vexus 索引。
@@ -1087,6 +1362,10 @@ class KnowledgeBaseManager {
 
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
+
+        // RiverMemo 不再持有 Node Worker/独立 SQLite 连接；仅释放门面和不可变快照。
+        this.riverMemoEngine = null;
+        this.tagMemoV10Engine = null;
 
         // 先停止 TagMemo 新任务/计时器，并等待正在运行的派生任务释放 Rust 写租约；
         // 数据库连接必须在它结束后才能关闭。

@@ -67,6 +67,140 @@
       "hubPenaltyCeiling": 1.8,
       "hubSmoothingRatio": 0.1
     },
+    "riverMemo": {
+      "enabled": false,
+      "sourceObservation": {
+        "mode": "v9_epa_pyramid_spike",
+        "baseTagBoost": 0.6,
+        "coreBoostFactor": 1.33,
+        "allowKnnFallback": false,
+        "fallbackSourceK": 16
+      },
+      "localField": {
+        "solver": "scaled_resolvent",
+        "alpha": 0.15,
+        "maxIterations": 80,
+        "tolerance": 1e-9
+      },
+      "transferField": {
+        "solver": "scaled_resolvent",
+        "alpha": 0.55,
+        "maxIterations": 80,
+        "tolerance": 1e-9
+      },
+      "effectiveSupport": {
+        "method": "mass_ratio",
+        "localMassRatio": 0.8,
+        "transferMassRatio": 0.9
+      },
+      "agentConditioning": {
+        "enabled": true,
+        "localAffinityMin": 0.75,
+        "localAffinityMax": 1.25,
+        "transferAffinityMin": 0.9,
+        "transferAffinityMax": 1.1
+      },
+      "candidateSuperset": {
+        "queryK": 100,
+        "denoisedK": 100,
+        "localFieldK": 100,
+        "transferFieldK": 100,
+        "bm25K": 50,
+        "anchorK": 50,
+        "maxUnionCandidates": 300,
+        "minimumGeometryCoverage": 0.5,
+        "minimumQuota": {
+          "query_knn": 20,
+          "denoised_field_knn": 20,
+          "local_field_knn": 20,
+          "transfer_field_knn": 20,
+          "bm25": 10,
+          "anchor_direct": 10
+        }
+      },
+      "pathGeometry": {
+        "localWeight": 0.6,
+        "transferWeight": 0.4,
+        "directionFloor": 0.05,
+        "closureFloor": 0,
+        "supportMode": "effective_domain",
+        "minimumSupportedPotential": 0
+      },
+      "relativeTopology": {
+        "enabled": true,
+        "semanticNodeThreshold": 0.48,
+        "relativeDistanceTemperature": 0.35,
+        "reverseDirectionCredit": 0.25,
+        "selfEvidenceFloor": 0.15,
+        "nodeOnlyReliabilityCap": 0.2,
+        "minimumRiverEdgeFlow": 0.015,
+        "maximumRiverEdges": 96,
+        "traceEdgeLimit": 24
+      },
+      "riverObservability": {
+        "kappaEdge": 0.5,
+        "kappaRatio": 0.3,
+        "epsilon": 0.02,
+        "collapsedThreshold": 0.12,
+        "sparseThreshold": 0.45
+      },
+      "directAnchor": {
+        "semanticThreshold": 0.8,
+        "semanticDiscount": 0.7,
+        "specificityFloor": 0.35,
+        "rarityFloor": 0.15,
+        "reliabilitySeedSaturation": 2,
+        "fallbackReliabilityCap": 0.5,
+        "traceLimit": 8
+      },
+      "dstc": {
+        "semanticScoreMode": "positive",
+        "pureScoreMode": "topology_limited",
+        "topologyBonusCap": 0.08,
+        "topologyPathSaturation": 0.15,
+        "topologyReliabilityMode": "path_closure",
+        "topologyV2BonusCap": 0.08,
+        "topologyV2InnovationScale": 0.5,
+        "topologyV2ConditionalBandwidth": 0.04,
+        "topologyV2ClosureBandwidth": 0.1,
+        "topologyV2DirectBandwidth": 0.12,
+        "topologyV2MinimumPeers": 3,
+        "topologyV2MinimumEffectivePeers": 2.5,
+        "topologyV2InnovationConfidenceZ": 1,
+        "topologyV2QueryConfidenceFloor": 0.2,
+        "topologyV2DirectEvidenceThreshold": 0.55,
+        "topologyV2DirectFrontierMargin": 0.03,
+        "topologyV2FrontierProtectionMargin": 0.005,
+        "topologyV3OmegaGamma": 1,
+        "topologyV3StructRoleMinOmega": 0.12,
+        "topologyV3AnchorBonusCap": 0.1,
+        "topologyV3AnchorActivationZ": 2,
+        "topologyV3AnchorActivationFloor": 0.05,
+        "topologyV3AnchorSaturation": 0.2,
+        "topologyV3AnchorFrontierContrast": 2,
+        "topologyV3AnchorFrontierAbsFloor": 0.1,
+        "topologyV2RoleCaps": {
+          "atomic_concept": 0.08,
+          "direct_answer": 0.02,
+          "structural_explanation": 0.045,
+          "thematic_neighbor": 0.008
+        },
+        "topologyV2RoleMultipliers": {
+          "atomic_concept": 1,
+          "direct_answer": 0.35,
+          "structural_explanation": 0.7,
+          "thematic_neighbor": 0.15
+        },
+        "semanticSimilarityMode": "positive",
+        "closureMode": "query_weighted",
+        "queryClosureWeight": 0.65,
+        "tagClosureWeight": 0.35
+      },
+      "safety": {
+        "permissionViolationTolerance": 0,
+        "failClosed": true
+      }
+    },
     "intrinsicResidual": {
       "method": "anchored_gs",
       "maxNeighbors": 48,

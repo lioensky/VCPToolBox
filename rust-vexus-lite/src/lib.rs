@@ -1,5 +1,7 @@
 #![deny(clippy::all)]
 
+mod rivermemo_topology_v3;
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rusqlite::{Connection, OpenFlags};
@@ -42,6 +44,18 @@ pub struct ProjectResult {
     pub probabilities: Vec<f64>,
     pub entropy: f64,
     pub total_energy: f64,
+}
+
+#[napi(object)]
+pub struct DualWeightedProjectionResult {
+    pub local_vector: Option<Vec<f64>>,
+    pub transfer_vector: Option<Vec<f64>>,
+    pub requested_count: u32,
+    pub found_count: u32,
+    pub missing_count: u32,
+    pub local_total_weight: f64,
+    pub transfer_total_weight: f64,
+    pub elapsed_ms: f64,
 }
 
 #[napi(object)]
@@ -311,6 +325,117 @@ impl VexusIndex {
         }
 
         Ok(results)
+    }
+
+    /// RiverMemo 全局双场投影。
+    ///
+    /// Tag 向量直接从当前常驻 usearch F32 索引按 key 读取；整个查询只复用一个
+    /// dimension 大小的临时缓冲区，不维护第二份全库向量矩阵。
+    #[napi]
+    pub fn project_dual_weighted(
+        &self,
+        tag_ids: Vec<i64>,
+        local_masses: Float64Array,
+        transfer_masses: Float64Array,
+    ) -> Result<DualWeightedProjectionResult> {
+        let started_at = std::time::Instant::now();
+        let dim = self.dimensions as usize;
+        let local_weights: &[f64] = &local_masses;
+        let transfer_weights: &[f64] = &transfer_masses;
+
+        if local_weights.len() != tag_ids.len() || transfer_weights.len() != tag_ids.len() {
+            return Err(Error::from_reason(format!(
+                "Dual projection size mismatch: ids={}, local={}, transfer={}",
+                tag_ids.len(),
+                local_weights.len(),
+                transfer_weights.len()
+            )));
+        }
+
+        let index = self
+            .index
+            .read()
+            .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
+        let mut tag_vector = vec![0.0f32; dim];
+        let mut local_output = vec![0.0f64; dim];
+        let mut transfer_output = vec![0.0f64; dim];
+        let mut local_total_weight = 0.0f64;
+        let mut transfer_total_weight = 0.0f64;
+        let mut found_count = 0usize;
+
+        for (position, &tag_id) in tag_ids.iter().enumerate() {
+            let local_mass = local_weights[position].max(0.0);
+            let transfer_mass = transfer_weights[position].max(0.0);
+            if tag_id <= 0
+                || (!local_mass.is_finite() && !transfer_mass.is_finite())
+                || (local_mass <= 0.0 && transfer_mass <= 0.0)
+            {
+                continue;
+            }
+
+            let local_mass = if local_mass.is_finite() {
+                local_mass
+            } else {
+                0.0
+            };
+            let transfer_mass = if transfer_mass.is_finite() {
+                transfer_mass
+            } else {
+                0.0
+            };
+            let matches = index.get(tag_id as u64, &mut tag_vector).map_err(|e| {
+                Error::from_reason(format!(
+                    "Failed to read Tag vector {} from usearch: {:?}",
+                    tag_id, e
+                ))
+            })?;
+            if matches == 0 {
+                continue;
+            }
+
+            found_count += 1;
+            for dimension in 0..dim {
+                let value = tag_vector[dimension] as f64;
+                if local_mass > 0.0 {
+                    local_output[dimension] += value * local_mass;
+                }
+                if transfer_mass > 0.0 {
+                    transfer_output[dimension] += value * transfer_mass;
+                }
+            }
+            local_total_weight += local_mass;
+            transfer_total_weight += transfer_mass;
+        }
+
+        let finalize = |mut output: Vec<f64>, total_weight: f64| -> Option<Vec<f64>> {
+            if total_weight <= 0.0 {
+                return None;
+            }
+            let mut norm_sq = 0.0f64;
+            for value in output.iter_mut() {
+                *value /= total_weight;
+                norm_sq += *value * *value;
+            }
+            let norm = norm_sq.sqrt();
+            if norm <= 1e-12 {
+                return None;
+            }
+            for value in output.iter_mut() {
+                *value /= norm;
+            }
+            Some(output)
+        };
+
+        Ok(DualWeightedProjectionResult {
+            local_vector: finalize(local_output, local_total_weight),
+            transfer_vector: finalize(transfer_output, transfer_total_weight),
+            requested_count: tag_ids.len() as u32,
+            found_count: found_count as u32,
+            missing_count: tag_ids.len().saturating_sub(found_count) as u32,
+            local_total_weight,
+            transfer_total_weight,
+            elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+        })
     }
 
     /// 删除 (按 ID)

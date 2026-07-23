@@ -6,7 +6,7 @@ numpy
 # Wan2.1VideoGen dependencies
 requests==2.31.0
 python-dotenv==1.0.0
-Pillow==11.0.0
+Pillow>=11.0.0
 
 # MCP-O
 psutil>=5.9.0

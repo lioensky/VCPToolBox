@@ -245,6 +245,26 @@ class TagMemoEngine {
             `[TagMemoEngine] 📦 V9.1 production artifact published atomically: ` +
             `generation=${generation}, artifact=${bundle.artifactSig}`
         );
+
+        // RiverMemo 是 V9 的伴生派生资产。V9 必须先独立原子发布；
+        // 伴生编译/落库失败只影响 RiverMemo，不得回滚已经健康的 V9。
+        if (
+            this.knowledgeBaseManager
+            && typeof this.knowledgeBaseManager
+                .onTagMemoArtifactPublished === 'function'
+        ) {
+            try {
+                this.knowledgeBaseManager.onTagMemoArtifactPublished(
+                    bundle,
+                    registry
+                );
+            } catch (error) {
+                console.error(
+                    '[TagMemoEngine] ⚠️ RiverMemo companion build failed after V9 publish; V9 remains active:',
+                    error.message || error
+                );
+            }
+        }
         return registry;
     }
 
@@ -549,6 +569,10 @@ class TagMemoEngine {
         let activeSpikes = new Map();
         const accumulatedEnergy = new Map();
         const fieldProvenance = new Map();
+        // V10 共享观测需要的不只是最终节点势，还需要查询诱导传播过程中
+        // 实际承载过质量的有向边。该资产严格请求级，不写入全局 Artifact。
+        const riverEdgeFlow = new Map();
+        const strongestParentByNode = new Map();
         for (const tag of initialTags) {
             const key = `seed:${tag.id}`;
             const sourceType = tag.isCore ? 'core' : 'seed';
@@ -606,6 +630,49 @@ class TagMemoEngine {
                         diagnostics.returnFlowSuppressedMass += unpenalizedCurrent - injectedCurrent;
                     }
                     if (injectedCurrent < 0.01) continue;
+
+                    const sourceId = Number(spike.nodeId);
+                    const targetId = Number(neighborId);
+                    const edgeKey = `${sourceId}:${targetId}`;
+                    const previousEdge = riverEdgeFlow.get(edgeKey);
+                    if (previousEdge) {
+                        previousEdge.flow += injectedCurrent;
+                        previousEdge.maxFlow = Math.max(
+                            previousEdge.maxFlow,
+                            injectedCurrent
+                        );
+                        previousEdge.minHop = Math.min(
+                            previousEdge.minHop,
+                            spike.hop + 1
+                        );
+                    } else {
+                        riverEdgeFlow.set(edgeKey, {
+                            sourceId,
+                            targetId,
+                            flow: injectedCurrent,
+                            maxFlow: injectedCurrent,
+                            conductance: Math.max(0, Number(coocWeight) || 0),
+                            minHop: spike.hop + 1,
+                            wormhole: isWormhole,
+                            immediateReturn: isImmediateReturn
+                        });
+                    }
+                    const previousParent = strongestParentByNode.get(targetId);
+                    if (
+                        !previousParent
+                        || injectedCurrent > previousParent.flow
+                        || (
+                            injectedCurrent === previousParent.flow
+                            && spike.hop + 1 < previousParent.hop
+                        )
+                    ) {
+                        strongestParentByNode.set(targetId, {
+                            parentId: sourceId,
+                            flow: injectedCurrent,
+                            hop: spike.hop + 1,
+                            wormhole: isWormhole
+                        });
+                    }
 
                     const nextMomentum = spike.momentum - momentumCost;
                     if (nextMomentum < 0 && !isWormhole) continue;
@@ -673,7 +740,75 @@ class TagMemoEngine {
             activeSpikes = nextSpikes;
         }
 
-        return { accumulatedEnergy, fieldProvenance, diagnostics };
+        const maximumNodeEnergy = Math.max(
+            0,
+            ...accumulatedEnergy.values()
+        );
+        const maximumEdgeFlow = Math.max(
+            0,
+            ...[...riverEdgeFlow.values()].map(edge => edge.flow)
+        );
+        const riverGraph = Object.freeze({
+            schema: 'tagmemo-query-spike-river-v1',
+            nodes: Object.freeze(
+                [...accumulatedEnergy.entries()]
+                    .map(([rawId, rawEnergy]) => {
+                        const id = Number(rawId);
+                        const provenance = fieldProvenance.get(id) || {};
+                        const parent = strongestParentByNode.get(id) || null;
+                        return Object.freeze({
+                            id,
+                            energy: Math.max(0, Number(rawEnergy) || 0),
+                            normalizedEnergy: maximumNodeEnergy > 0
+                                ? Math.max(0, Number(rawEnergy) || 0)
+                                    / maximumNodeEnergy
+                                : 0,
+                            sourceType: provenance.sourceType || 'unknown',
+                            originType: provenance.originType || null,
+                            hop: Number.isFinite(provenance.hop)
+                                ? provenance.hop
+                                : null,
+                            seedId: Number.isFinite(provenance.seedId)
+                                ? provenance.seedId
+                                : null,
+                            strongestParent: parent
+                                ? Object.freeze({ ...parent })
+                                : null
+                        });
+                    })
+                    .sort((left, right) =>
+                        (right.energy - left.energy) || (left.id - right.id)
+                    )
+            ),
+            edges: Object.freeze(
+                [...riverEdgeFlow.values()]
+                    .map(edge => Object.freeze({
+                        ...edge,
+                        normalizedFlow: maximumEdgeFlow > 0
+                            ? edge.flow / maximumEdgeFlow
+                            : 0
+                    }))
+                    .sort((left, right) =>
+                        (right.flow - left.flow)
+                        || (left.sourceId - right.sourceId)
+                        || (left.targetId - right.targetId)
+                    )
+            ),
+            diagnostics: Object.freeze({
+                seedNodes: initialTags.length,
+                reachedNodes: accumulatedEnergy.size,
+                activeEdges: riverEdgeFlow.size,
+                maximumNodeEnergy,
+                maximumEdgeFlow
+            })
+        });
+
+        return {
+            accumulatedEnergy,
+            fieldProvenance,
+            diagnostics,
+            riverGraph
+        };
     }
 
     /**
@@ -825,6 +960,7 @@ class TagMemoEngine {
             // [4.5] 仿脑认知扩散 (Spike Propagation / Lif-Router)
             // 🔧 重构 V7：动量与残差张力驱动的虫洞跃迁 (Wormhole Routing)
             let propagationDiagnostics = null;
+            let queryRiverGraph = null;
             if (allTags.length > 0 && queryMatrix) {
                 const srConfig = config.spikeRouting || {};
                 const MAX_EMERGENT_NODES = srConfig.maxEmergentNodes ?? 50;
@@ -839,6 +975,7 @@ class TagMemoEngine {
                 const accumulatedEnergy = propagation.accumulatedEnergy;
                 const fieldProvenance = propagation.fieldProvenance;
                 propagationDiagnostics = propagation.diagnostics;
+                queryRiverGraph = propagation.riverGraph || null;
 
                 // 查询级缓存仅用于返回；并发搜索必须继续显式传递 energyField 与 provenance。
                 this.lastEnergyField = accumulatedEnergy;
@@ -1101,9 +1238,40 @@ class TagMemoEngine {
                     artifactSig: artifactBundle?.artifactSig || null,
                     graphGeneration: artifactBundle?.graphGeneration || null,
                     artifactGeneration: artifactBundle?.generation || null,
-                    epa: { logicDepth, entropy: entropyPenalty, resonance: resonance.resonance },
-                    pyramid: { coverage: features.coverage, novelty: features.novelty, depth: features.depth },
+                    epa: {
+                        logicDepth,
+                        entropy: entropyPenalty,
+                        resonance: resonance.resonance,
+                        dominantAxes: Array.isArray(epaResult.dominantAxes)
+                            ? epaResult.dominantAxes.map(axis => ({
+                                label: axis.label,
+                                score: Number(axis.score) || 0
+                            }))
+                            : []
+                    },
+                    pyramid: {
+                        coverage: features.coverage,
+                        novelty: features.novelty,
+                        coherence: features.coherence,
+                        activation: features.tagMemoActivation,
+                        depth: features.depth,
+                        levels: levels.map(level => ({
+                            level: level.level,
+                            energyExplained: level.energyExplained,
+                            residualEnergyRatio: level.residualEnergyRatio,
+                            tags: (Array.isArray(level.tags) ? level.tags : [])
+                                .map(tag => ({
+                                    id: Number(tag.id),
+                                    name: tag.name || null,
+                                    similarity: Number(tag.similarity) || 0,
+                                    contribution: Number(tag.contribution) || 0,
+                                    handshakeMagnitude:
+                                        Number(tag.handshakeMagnitude) || 0
+                                }))
+                        }))
+                    },
                     propagation: propagationDiagnostics,
+                    queryRiverGraph,
                     algorithmVersion: artifactBundle?.algorithmVersion || queryVersion
                 }
             };
@@ -1118,6 +1286,138 @@ class TagMemoEngine {
                 artifactBundle
             };
         }
+    }
+
+    /**
+     * 为 V10 提供 V9 完整查询降噪管线的只读观测。
+     *
+     * 该接口复用 EPA、Residual Pyramid、语言/世界观门控、Core 加权和
+     * Spike 路由，但不把 V9 的最终候选奖励或 geodesicRerank 人格带入 V10。
+     * V10 消费的是降噪后的 Spike 节点场、来源信息和查询级有向边流。
+     */
+    observeQueryForV10(vector, options = {}) {
+        const sourceVector = vector instanceof Float32Array
+            ? new Float32Array(vector)
+            : new Float32Array(vector || []);
+        const artifactBundle = options.artifactBundle
+            || this.getArtifactBundleSnapshot('v9');
+        const observation = this.applyTagBoost(
+            sourceVector,
+            Math.max(0, Number(options.baseTagBoost ?? 0.6)),
+            Array.isArray(options.coreTags) ? options.coreTags : [],
+            Math.max(0, Number(options.coreBoostFactor ?? 1.33)),
+            {
+                artifactBundle,
+                version: 'v9'
+            }
+        );
+        const enhancedVector = observation.vector instanceof Float32Array
+            && observation.vector.length === sourceVector.length
+            ? observation.vector
+            : null;
+        let sourceNormSq = 0;
+        let enhancedNormSq = 0;
+        let sourceEnhancedDot = 0;
+        let vectorDeltaSq = 0;
+        if (enhancedVector) {
+            for (let index = 0; index < sourceVector.length; index++) {
+                const sourceValue = Number(sourceVector[index]) || 0;
+                const enhancedValue = Number(enhancedVector[index]) || 0;
+                const delta = enhancedValue - sourceValue;
+                sourceNormSq += sourceValue * sourceValue;
+                enhancedNormSq += enhancedValue * enhancedValue;
+                sourceEnhancedDot += sourceValue * enhancedValue;
+                vectorDeltaSq += delta * delta;
+            }
+        }
+        const sourceEnhancedCosine = sourceNormSq > 0 && enhancedNormSq > 0
+            ? sourceEnhancedDot / Math.sqrt(sourceNormSq * enhancedNormSq)
+            : 0;
+        const vectorDeltaL2 = Math.sqrt(vectorDeltaSq);
+        // applyTagBoost() 为兼容生产路径会在内部故障或无法构造上下文时
+        // 返回原查询向量。V10 不得把这种兼容回退误报成完整降噪观测。
+        const completeObservation = Boolean(
+            observation.info
+            && enhancedVector
+            && vectorDeltaL2 > 1e-7
+        );
+        const spikeField = completeObservation
+            && observation.energyField instanceof Map
+            ? [...observation.energyField.entries()]
+                .map(([rawId, rawMass]) => Object.freeze([
+                    Number(rawId),
+                    Math.max(0, Number(rawMass) || 0)
+                ]))
+                .filter(([id, mass]) =>
+                    Number.isFinite(id) && id > 0 && mass > 0
+                )
+                .sort((left, right) =>
+                    (right[1] - left[1]) || (left[0] - right[0])
+                )
+            : [];
+        const totalMass = spikeField.reduce(
+            (sum, entry) => sum + entry[1],
+            0
+        );
+        const normalizedSpikeField = Object.freeze(
+            spikeField.map(([id, mass]) =>
+                Object.freeze([id, totalMass > 0 ? mass / totalMass : 0])
+            )
+        );
+        const info = observation.info || {};
+        return Object.freeze({
+            schema: 'tagmemo-v10-v9-denoised-observation-v1',
+            sourceMode: normalizedSpikeField.length > 0
+                ? 'v9_epa_pyramid_spike'
+                : 'unavailable',
+            sourceField: normalizedSpikeField,
+            enhancedVector: completeObservation
+                ? Object.freeze(Array.from(enhancedVector))
+                : null,
+            fieldProvenance: Object.freeze(
+                observation.energyFieldProvenance instanceof Map
+                    ? [...observation.energyFieldProvenance.entries()]
+                        .map(([id, value]) => Object.freeze([
+                            Number(id),
+                            Object.freeze({ ...value })
+                        ]))
+                    : []
+            ),
+            queryRiverGraph: info.queryRiverGraph || null,
+            epa: Object.freeze({ ...(info.epa || {}) }),
+            pyramid: Object.freeze({ ...(info.pyramid || {}) }),
+            propagation: Object.freeze({ ...(info.propagation || {}) }),
+            matchedTags: Object.freeze(
+                Array.isArray(info.matchedTags)
+                    ? info.matchedTags.slice()
+                    : []
+            ),
+            coreTagsMatched: Object.freeze(
+                Array.isArray(info.coreTagsMatched)
+                    ? info.coreTagsMatched.slice()
+                    : []
+            ),
+            v9ArtifactSig: artifactBundle?.artifactSig || null,
+            diagnostics: Object.freeze({
+                sourceNodes: normalizedSpikeField.length,
+                rawSpikeMass: totalMass,
+                completeObservation,
+                vectorDeltaL2,
+                sourceEnhancedCosine,
+                vectorChanged: vectorDeltaL2 > 1e-7,
+                fallbackReason: completeObservation
+                    ? null
+                    : !observation.info
+                        ? 'v9-tag-boost-returned-no-query-info'
+                        : !enhancedVector
+                            ? 'v9-tag-boost-returned-invalid-vector'
+                            : 'v9-enhanced-vector-equals-source-vector',
+                riverNodes:
+                    info.queryRiverGraph?.diagnostics?.reachedNodes || 0,
+                riverEdges:
+                    info.queryRiverGraph?.diagnostics?.activeEdges || 0
+            })
+        });
     }
 
     /**
