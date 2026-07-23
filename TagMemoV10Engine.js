@@ -67,17 +67,11 @@ class TagMemoV10Engine {
                 modelSig: this.config.modelSig || this.config.model,
                 dimension: this.config.dimension
             });
+        // RiverMemo 的传播域是全局 Tag 图，而不是任一 Diary/Chunk ANN 索引。
+        // 每个活动 Artifact 只常驻一份全局编译算子；候选索引的加载、卸载和
+        // 请求级文件范围均不得分裂该资产。
         this._conditionedOperatorCache = new Map();
-        this._conditionedOperatorCacheLimit = Math.max(
-            0,
-            Math.floor(
-                Number(
-                    options.conditionedOperatorCacheEntries
-                    ?? process.env.TAGMEMO_V10_OPERATOR_CACHE_ENTRIES
-                    ?? 4
-                ) || 0
-            )
-        );
+        this._conditionedOperatorCacheLimit = 1;
         this._conditionedOperatorCacheStats = {
             hits: 0,
             misses: 0,
@@ -85,6 +79,7 @@ class TagMemoV10Engine {
             evictions: 0,
             estimatedBytes: 0
         };
+        this._nativeDualProjectionWarningLogged = false;
     }
 
     updateRagParams(ragParams) {
@@ -94,7 +89,8 @@ class TagMemoV10Engine {
     rebindDatabase(db) {
         this.db = db;
         this.derivedAssetManager?.rebindDatabase(db);
-        this._clearConditionedOperatorCache('database-rebound');
+        // 常驻算子只闭包引用不可变 Artifact，不引用 SQLite 连接。
+        // 数据库连接重绑不代表资产代际变化，因此不能制造无意义的冷启动。
     }
 
     _clearConditionedOperatorCache(reason = 'manual') {
@@ -133,6 +129,63 @@ class TagMemoV10Engine {
         });
     }
 
+    _globalConditionedOperatorKey(artifact) {
+        return `global:${artifact.artifactSig}`;
+    }
+
+    _compileGlobalConditionedOperator(artifact) {
+        const conditioning = artifact.effectiveConfig.agentConditioning || {};
+        return createDualConditionedOperators(
+            artifact.sharedTransport,
+            {
+                permissions: {
+                    allowPublic: true,
+                    allowOwn: true,
+                    allowAuthorized: true,
+                    allowOtherAgentPublic: true
+                }
+            },
+            {
+                ...conditioning,
+                scopeHash: `global:${artifact.artifactSig}`,
+                failClosed: artifact.effectiveConfig.safety?.failClosed !== false,
+                nodeVisibility: () => true,
+                // 全局河网把 provenance 当作结构来源，而不是召回授权边界。
+                // Chunk 内容的可见性仍由独立 ANN 候选域和后续 eligibility 过滤。
+                edgeProvenance: () => ({ public: 1 })
+            }
+        );
+    }
+
+    warmGlobalConditionedOperator(artifact = null) {
+        const snapshot = artifact || this.getArtifactSnapshot({
+            buildIfMissing: false
+        });
+        if (!snapshot) return null;
+
+        const cacheKey = this._globalConditionedOperatorKey(snapshot);
+        const cached = this._conditionedOperatorCache.get(cacheKey);
+        if (cached) return cached.operator;
+
+        const startedAt = Date.now();
+        const operator = this._compileGlobalConditionedOperator(snapshot);
+        const estimatedBytes = this._estimateConditionedOperatorBytes(operator);
+        this._conditionedOperatorCache.clear();
+        this._conditionedOperatorCache.set(cacheKey, {
+            operator,
+            estimatedBytes
+        });
+        this._conditionedOperatorCacheStats.misses++;
+        this._conditionedOperatorCacheStats.estimatedBytes = estimatedBytes;
+        console.log(
+            `[TagMemo-V10] 🌐 Global conditioned operator resident: ` +
+            `artifact=${snapshot.artifactSig}, edges=${operator.edgeCount}, ` +
+            `memory=${(estimatedBytes / 1024 / 1024).toFixed(2)}MiB, ` +
+            `compileMs=${Date.now() - startedAt}`
+        );
+        return operator;
+    }
+
     _getOrCreateConditionedOperator(
         artifact,
         queryState,
@@ -140,16 +193,14 @@ class TagMemoV10Engine {
         common,
         options = {}
     ) {
-        // 当前 compiled dual operator 只消费传播可见性与两类软门。
-        // identityEligibility/rankingEligibility 属于后续候选观测语义，
-        // 不参与 createDualConditionedOperators 的 TypedArray 编译，
-        // 因此不能让 LightMemo 的候选身份回调阻断算子复用。
+        // 显式动态传播门改变算子数学定义，只能请求级编译且不得污染常驻资产。
+        // identityEligibility/rankingEligibility 仅用于后续候选观测，不影响传播。
         const hasDynamicCallbacks = [
             'nodeVisibility',
             'queryGate',
             'affinityGate'
         ].some(name => typeof options[name] === 'function');
-        if (this._conditionedOperatorCacheLimit <= 0 || hasDynamicCallbacks) {
+        if (hasDynamicCallbacks) {
             this._conditionedOperatorCacheStats.bypasses++;
             return {
                 operator: createDualConditionedOperators(
@@ -157,52 +208,21 @@ class TagMemoV10Engine {
                     agentContext,
                     common
                 ),
-                status: hasDynamicCallbacks ? 'dynamic-callback' : 'disabled'
+                status: 'dynamic-callback'
             };
         }
 
-        const cacheKey = hashStable({
-            artifactSig: artifact.artifactSig,
-            graphGeneration: artifact.graphGeneration,
-            scopeHash: queryState.scopeHash,
-            publicDiaryNames: agentContext.publicDiaryNames,
-            permissions: agentContext.permissions,
-            conditioning: artifact.effectiveConfig.agentConditioning || {},
-            failClosed: common.failClosed
-        }, 48);
+        const cacheKey = this._globalConditionedOperatorKey(artifact);
         const cached = this._conditionedOperatorCache.get(cacheKey);
         if (cached) {
-            this._conditionedOperatorCache.delete(cacheKey);
-            this._conditionedOperatorCache.set(cacheKey, cached);
             this._conditionedOperatorCacheStats.hits++;
             return { operator: cached.operator, status: 'hit' };
         }
 
-        this._conditionedOperatorCacheStats.misses++;
-        const operator = createDualConditionedOperators(
-            artifact.sharedTransport,
-            agentContext,
-            common
-        );
-        const estimatedBytes = this._estimateConditionedOperatorBytes(operator);
-        this._conditionedOperatorCache.set(cacheKey, {
-            operator,
-            estimatedBytes
-        });
-        this._conditionedOperatorCacheStats.estimatedBytes += estimatedBytes;
-
-        while (
-            this._conditionedOperatorCache.size
-            > this._conditionedOperatorCacheLimit
-        ) {
-            const oldestKey = this._conditionedOperatorCache.keys().next().value;
-            const evicted = this._conditionedOperatorCache.get(oldestKey);
-            this._conditionedOperatorCache.delete(oldestKey);
-            this._conditionedOperatorCacheStats.evictions++;
-            this._conditionedOperatorCacheStats.estimatedBytes -=
-                Math.max(0, Number(evicted?.estimatedBytes) || 0);
-        }
-        return { operator, status: 'miss' };
+        return {
+            operator: this.warmGlobalConditionedOperator(artifact),
+            status: 'miss'
+        };
     }
 
     ensureExactDerivedAssets(options = {}) {
@@ -653,6 +673,9 @@ class TagMemoV10Engine {
             `artifact=${artifact.artifactSig}, nodes=${artifact.sharedTransport.nodeCount}, ` +
             `edges=${artifact.sharedTransport.edgeCount}, sourceV9=${artifact.sourceArtifactSig}`
         );
+        // 发布是唯一预热点：无论冷启动恢复还是资产重建，服务器进入 Ready
+        // 之前都已经持有本代全局算子，首个查询不会承担 45 万边编译。
+        this.warmGlobalConditionedOperator(artifact);
         return artifact;
     }
 
@@ -804,10 +827,84 @@ class TagMemoV10Engine {
             ...localMassById.keys(),
             ...transferMassById.keys()
         ].filter(Number.isFinite))];
-        if (ids.length === 0 || !this.db?.prepare) {
-            return Object.freeze({ localVector: null, transferVector: null });
+        if (ids.length === 0) {
+            return Object.freeze({
+                localVector: null,
+                transferVector: null,
+                diagnostics: Object.freeze({
+                    backend: 'empty-field',
+                    requestedTags: 0,
+                    foundTags: 0,
+                    missingTags: 0,
+                    nativeElapsedMs: 0
+                })
+            });
         }
 
+        if (typeof this.tagIndex?.projectDualWeighted === 'function') {
+            const localMasses = new Float64Array(ids.length);
+            const transferMasses = new Float64Array(ids.length);
+            for (let index = 0; index < ids.length; index++) {
+                localMasses[index] = localMassById.get(ids[index]) || 0;
+                transferMasses[index] = transferMassById.get(ids[index]) || 0;
+            }
+            try {
+                const native = this.tagIndex.projectDualWeighted(
+                    ids,
+                    localMasses,
+                    transferMasses
+                );
+                const localVector = native?.localVector
+                    ? new Float32Array(native.localVector)
+                    : null;
+                const transferVector = native?.transferVector
+                    ? new Float32Array(native.transferVector)
+                    : null;
+                return Object.freeze({
+                    localVector,
+                    transferVector,
+                    diagnostics: Object.freeze({
+                        backend: 'native-usearch',
+                        requestedTags: Math.max(
+                            0,
+                            Number(native?.requestedCount) || ids.length
+                        ),
+                        foundTags: Math.max(0, Number(native?.foundCount) || 0),
+                        missingTags: Math.max(0, Number(native?.missingCount) || 0),
+                        nativeElapsedMs: Math.max(
+                            0,
+                            Number(native?.elapsedMs) || 0
+                        )
+                    })
+                });
+            } catch (error) {
+                if (!this._nativeDualProjectionWarningLogged) {
+                    this._nativeDualProjectionWarningLogged = true;
+                    console.warn(
+                        '[TagMemo-V10] Native usearch dual projection failed; ' +
+                        'falling back to exact SQLite projection:',
+                        error.message || error
+                    );
+                }
+            }
+        }
+
+        if (!this.db?.prepare) {
+            return Object.freeze({
+                localVector: null,
+                transferVector: null,
+                diagnostics: Object.freeze({
+                    backend: 'unavailable',
+                    requestedTags: ids.length,
+                    foundTags: null,
+                    missingTags: null,
+                    nativeElapsedMs: null,
+                    reason: 'native-projection-and-sqlite-unavailable'
+                })
+            });
+        }
+
+        const fallbackStartedAt = Date.now();
         const localOutput = new Float64Array(dimension);
         const transferOutput = new Float64Array(dimension);
         let localTotalWeight = 0;
@@ -864,7 +961,15 @@ class TagMemoV10Engine {
 
         return Object.freeze({
             localVector: finalize(localOutput, localTotalWeight),
-            transferVector: finalize(transferOutput, transferTotalWeight)
+            transferVector: finalize(transferOutput, transferTotalWeight),
+            diagnostics: Object.freeze({
+                backend: 'sqlite-fallback',
+                requestedTags: ids.length,
+                foundTags: null,
+                missingTags: null,
+                nativeElapsedMs: null,
+                elapsedMs: Date.now() - fallbackStartedAt
+            })
         });
     }
 
@@ -984,7 +1089,8 @@ class TagMemoV10Engine {
             queryState: solved,
             denoisedVector,
             localVector: projectedFields.localVector,
-            transferVector: projectedFields.transferVector
+            transferVector: projectedFields.transferVector,
+            fieldProjectionDiagnostics: projectedFields.diagnostics || null
         });
     }
 

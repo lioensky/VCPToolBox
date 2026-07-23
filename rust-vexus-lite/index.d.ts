@@ -32,6 +32,16 @@ export interface ProjectResult {
   entropy: number
   totalEnergy: number
 }
+export interface DualWeightedProjectionResult {
+  localVector?: Array<number>
+  transferVector?: Array<number>
+  requestedCount: number
+  foundCount: number
+  missingCount: number
+  localTotalWeight: number
+  transferTotalWeight: number
+  elapsedMs: number
+}
 export interface IntrinsicResidualResult {
   tagCount: number
   computedCount: number
@@ -106,6 +116,13 @@ export declare class VexusIndex {
   addBatch(ids: Array<number>, vectors: Float32Array): void
   /** 搜索 */
   search(query: Float32Array, k: number): Array<SearchResult>
+  /**
+   * RiverMemo 全局双场投影。
+   *
+   * Tag 向量直接从当前常驻 usearch F32 索引按 key 读取；整个查询只复用一个
+   * dimension 大小的临时缓冲区，不维护第二份全库向量矩阵。
+   */
+  projectDualWeighted(tagIds: Array<number>, localMasses: Float64Array, transferMasses: Float64Array): DualWeightedProjectionResult
   /** 删除 (按 ID) */
   remove(id: number): void
   /** 获取当前索引状态 */

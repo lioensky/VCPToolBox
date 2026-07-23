@@ -428,6 +428,7 @@ class RiverMemoEngine {
                     semanticSimilarityCache.size,
                 exactDerivedAssets:
                     this.runtime.getDerivedAssetDiagnostics?.() || null,
+                fieldProjection: prepared.fieldProjectionDiagnostics || null,
                 stageTimings: Object.freeze({
                     ...stageTimings,
                     totalMs: Date.now() - rerankStartedAt

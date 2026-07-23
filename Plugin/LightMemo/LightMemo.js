@@ -841,6 +841,7 @@ class LightMemoPlugin {
         const riverTimings = riverResult.diagnostics?.stageTimings || {};
         const fieldDiagnostics = riverResult.diagnostics?.field || {};
         const operatorCache = fieldDiagnostics.conditionedOperatorCache || {};
+        const fieldProjection = riverResult.diagnostics?.fieldProjection || {};
         console.log(
             `[LightMemo] 🌊 RiverMemo Topology V3 ranked ` +
             `${riverResult.diagnostics?.rankedCandidates || 0}/` +
@@ -855,6 +856,14 @@ class LightMemoPlugin {
             `path=${Number(riverTimings.pathAndRelativeTopologyMs || 0).toFixed(1)}ms, ` +
             `dstc=${Number(riverTimings.dstcMs || 0).toFixed(1)}ms, ` +
             `score=${Number(riverTimings.topologyV3ScoreMs || 0).toFixed(1)}ms, ` +
+            `fieldProjection=${fieldProjection.backend || 'unknown'}` +
+            `(${Number(
+                fieldProjection.nativeElapsedMs
+                ?? fieldProjection.elapsedMs
+                ?? 0
+            ).toFixed(2)}ms, ` +
+            `${fieldProjection.foundTags ?? '—'}/` +
+            `${fieldProjection.requestedTags ?? '—'} tags), ` +
             `operatorCache=${fieldDiagnostics.conditionedOperatorCacheStatus || 'unknown'}` +
             `(${operatorCache.entries || 0}/${operatorCache.limit || 0}, ` +
             `${(Number(operatorCache.estimatedBytes || 0) / 1048576).toFixed(1)}MiB).`
