@@ -107,7 +107,8 @@
                   <code>::Group</code> 负责语义组增强，<code>::BM25+</code> 负责日记全文 BM25 匹配，
                   <code>::BM25</code> 负责日记 tag / keyword BM25 匹配，
                   <code>::Rerank</code> 负责普通精排，<code>::Expand</code> 负责父文档展开。
-                  注意：普通 <code>::Rerank</code> 与 <code>::Rerank+</code> 只能二选一。
+                  注意：普通 <code>::Rerank</code> 与 <code>::Rerank+</code> 只能二选一；
+                  <code>::RiverMemo</code>、<code>::TagMemo</code> 与 <code>::TagMemo+</code> 只能三选一。
                 </p>
               </div>
 
@@ -249,6 +250,25 @@
                   <AppSwitch v-model="enabledSuffixes.base64Memo" />
                 </div>
                 <p>从召回日记中提取图片、音频、视频、PDF 等附件并注入当前对话。</p>
+              </div>
+
+              <div class="syntax-card syntax-option-card syntax-option-card--wide river-memo-card">
+                <div class="syntax-option-head">
+                  <div>
+                    <strong>RiverMemo 语义统一场记忆推理</strong>
+                    <code>::RiverMemo</code>
+                  </div>
+                  <AppSwitch
+                    :model-value="enabledSuffixes.riverMemo"
+                    @update:model-value="setExclusiveSuffix('riverMemo', $event)"
+                  />
+                </div>
+                <p>
+                  调用浪潮自主研发的语义统一场方程进行记忆推理。该场方程将信息传递动力学与
+                  信息传递场统一为同一个数学结构，以一个方程推演记忆与信息的完整运动过程。
+                  RiverMemo 无需填写参数，并会接管 TagMemo 记忆增强；
+                  它与 TagMemo、TagMemo+ 只能三选一。
+                </p>
               </div>
 
               <div class="syntax-card syntax-option-card">
@@ -949,6 +969,7 @@ const generatedSyntax = computed(() => {
   if (enabledSuffixes.group) suffixes.push("::Group");
   if (enabledSuffixes.bm25Plus) suffixes.push(`::BM25+${sanitizeNumber(bm25PlusWeight.value)}`);
   if (enabledSuffixes.bm25) suffixes.push(`::BM25${sanitizeNumber(bm25Weight.value)}`);
+  if (enabledSuffixes.riverMemo) suffixes.push("::RiverMemo");
   if (enabledSuffixes.tagMemo) suffixes.push(`::TagMemo${sanitizeNumber(tagMemoWeight.value)}`);
   if (enabledSuffixes.tagMemoPlus) suffixes.push(`::TagMemo+${sanitizeNumber(tagMemoPlusWeight.value)}`);
   if (enabledSuffixes.rerank) suffixes.push("::Rerank");
@@ -1006,12 +1027,20 @@ function setExclusiveSuffix(key: SuffixKey, value: boolean): void {
     return;
   }
 
+  if (key === "riverMemo") {
+    enabledSuffixes.tagMemo = false;
+    enabledSuffixes.tagMemoPlus = false;
+    return;
+  }
+
   if (key === "tagMemo") {
+    enabledSuffixes.riverMemo = false;
     enabledSuffixes.tagMemoPlus = false;
     return;
   }
 
   if (key === "tagMemoPlus") {
+    enabledSuffixes.riverMemo = false;
     enabledSuffixes.tagMemo = false;
     return;
   }
@@ -1268,6 +1297,16 @@ function close(): void {
 .syntax-classic-card {
   background: color-mix(in srgb, var(--highlight-text) 8%, var(--tertiary-bg));
   border-color: color-mix(in srgb, var(--highlight-text) 26%, var(--border-color));
+}
+
+.river-memo-card {
+  border-color: color-mix(in srgb, var(--info-text) 34%, var(--border-color));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--info-bg) 72%, var(--tertiary-bg)),
+      color-mix(in srgb, var(--highlight-text) 6%, var(--tertiary-bg))
+    );
 }
 
 .syntax-card--mode {

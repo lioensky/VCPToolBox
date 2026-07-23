@@ -275,6 +275,7 @@
             <div class="rag-console__section">
               <span class="rag-console__label">风险提示</span>
               <ul class="rag-console__tips">
+                <li><strong>RiverMemo / V10 已联合校准，除启用开关外不建议调参。</strong></li>
                 <li>高风险参数建议单独修改并观察效果。</li>
                 <li>虫洞路由参数耦合较强，不建议一次联动改太多项。</li>
                 <li>
@@ -312,6 +313,11 @@
         </header>
 
         <TagMemoV9ControlPanel
+          v-if="knowledgeBaseParams"
+          v-model="knowledgeBaseParams"
+        />
+
+        <RiverMemoV3ControlPanel
           v-if="knowledgeBaseParams"
           v-model="knowledgeBaseParams"
         />
@@ -874,6 +880,7 @@ import UiInput from "@/components/ui/UiInput.vue";
 import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import OrderedCooccurrenceModal from "@/features/rag-tuning/OrderedCooccurrenceModal.vue";
+import RiverMemoV3ControlPanel from "@/features/rag-tuning/RiverMemoV3ControlPanel.vue";
 import TagMemoV9ControlPanel from "@/features/rag-tuning/TagMemoV9ControlPanel.vue";
 import WormholeRoutingModal from "@/features/rag-tuning/WormholeRoutingModal.vue";
 import {
@@ -939,10 +946,11 @@ interface GroupSection {
 
 const WORMHOLE_GROUP_NAME = "KnowledgeBaseManager";
 const V9_KERNEL_PARAM_KEY = "v9";
-const TAGMEMO_V9_DEDICATED_KEYS = new Set([
+const TAGMEMO_DEDICATED_KEYS = new Set([
   "tagMemoVersioning",
   "v9",
   "intrinsicResidual",
+  "riverMemo",
 ]);
 const WORMHOLE_PARAM_KEY = "spikeRouting";
 const GEODESIC_GROUP_NAME = "KnowledgeBaseManager";
@@ -1128,7 +1136,7 @@ const groupSections = computed<GroupSection[]>(() =>
     .map(([groupName, groupParams]) => {
       const entries = Object.entries(groupParams)
         .filter(([paramKey]) =>
-          groupName !== "KnowledgeBaseManager" || !TAGMEMO_V9_DEDICATED_KEYS.has(paramKey)
+          groupName !== "KnowledgeBaseManager" || !TAGMEMO_DEDICATED_KEYS.has(paramKey)
         )
         .map(([paramKey, value]) =>
           buildEntry(groupName, paramKey, value, originalParams.value[groupName]?.[paramKey])
@@ -1156,7 +1164,7 @@ const knowledgeBaseParams = computed<ParamGroup>({
 
 const dedicatedLeafCount = computed(() => {
   const current = params.value.KnowledgeBaseManager || {};
-  return [...TAGMEMO_V9_DEDICATED_KEYS].reduce((total, key) => {
+  return [...TAGMEMO_DEDICATED_KEYS].reduce((total, key) => {
     const value = current[key];
     return total + (value === undefined ? 0 : countLeafValues(value));
   }, 0);
@@ -1165,7 +1173,7 @@ const dedicatedLeafCount = computed(() => {
 const dedicatedChangedLeafCount = computed(() => {
   const current = params.value.KnowledgeBaseManager || {};
   const original = originalParams.value.KnowledgeBaseManager || {};
-  return [...TAGMEMO_V9_DEDICATED_KEYS].reduce((total, key) => {
+  return [...TAGMEMO_DEDICATED_KEYS].reduce((total, key) => {
     const value = current[key];
     if (value === undefined) return total;
     return total + countChangedLeaves(value, original[key]);

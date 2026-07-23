@@ -14,6 +14,7 @@ export type DiarySuffixKey =
   | "expand"
   | "associate"
   | "base64Memo"
+  | "riverMemo"
   | "tagMemo"
   | "tagMemoPlus"
   | "rerankPlus"
@@ -104,6 +105,7 @@ export function createDefaultDiarySyntaxState(): DiarySyntaxEditorState {
       expand: false,
       associate: false,
       base64Memo: false,
+      riverMemo: false,
       tagMemo: false,
       tagMemoPlus: false,
       rerankPlus: false,
@@ -297,18 +299,29 @@ function applyAdvancedSuffix(state: DiarySyntaxEditorState, suffix: string): voi
     return;
   }
 
+  if (/^RiverMemo$/i.test(suffix)) {
+    state.enabledSuffixes.riverMemo = true;
+    state.enabledSuffixes.tagMemo = false;
+    state.enabledSuffixes.tagMemoPlus = false;
+    return;
+  }
+
   const tagMemoPlus = suffix.match(/^TagMemo\+([0-9.]+)?$/i);
   if (tagMemoPlus) {
-    state.enabledSuffixes.tagMemoPlus = true;
-    state.enabledSuffixes.tagMemo = false;
+    if (!state.enabledSuffixes.riverMemo) {
+      state.enabledSuffixes.tagMemoPlus = true;
+      state.enabledSuffixes.tagMemo = false;
+    }
     state.tagMemoPlusWeight = tagMemoPlus[1] ?? "";
     return;
   }
 
   const tagMemo = suffix.match(/^TagMemo([0-9.]+)?$/i);
   if (tagMemo) {
-    state.enabledSuffixes.tagMemo = true;
-    state.enabledSuffixes.tagMemoPlus = false;
+    if (!state.enabledSuffixes.riverMemo) {
+      state.enabledSuffixes.tagMemo = true;
+      state.enabledSuffixes.tagMemoPlus = false;
+    }
     state.tagMemoWeight = tagMemo[1] ?? "";
     return;
   }
