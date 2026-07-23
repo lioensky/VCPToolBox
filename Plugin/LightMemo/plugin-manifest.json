@@ -1,9 +1,9 @@
 {
   "manifestVersion": "1.0.0",
   "name": "LightMemo",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "displayName": "轻量回忆插件 (LightMemo)",
-  "description": "一个允许AI主动搜索其RAG知识库（日记、知识库）的插件，支持TagMemo V9与固定Topology V3生产构型RiverMemo，作为DeepMemo（上下文搜索）的补充。",
+  "description": "轻量RAG检索插件：支持标准TagMemo V9、Rust/Rayon Topology V3、KNN及其生产构型A/B对比。",
   "author": "VCP",
   "pluginType": "hybridservice",
   "entryPoint": {
@@ -32,6 +32,21 @@
       "type": "string",
       "description": "Rerank服务的模型名称。",
       "default": ""
+    },
+    "RerankMaxDocumentsPerRequest": {
+      "type": "number",
+      "description": "单次Rerank请求的最大候选数，代码硬上限为25。",
+      "default": 25
+    },
+    "RerankMaxConcurrentRequests": {
+      "type": "number",
+      "description": "Rerank小批量请求的最大并发数，限制范围为1到10。",
+      "default": 3
+    },
+    "RerankMaxTokensPerBatch": {
+      "type": "number",
+      "description": "单批Rerank请求的估算Token上限。",
+      "default": 30000
     }
   },
   "capabilities": {
@@ -42,24 +57,9 @@
         "example": "<<<[TOOL_REQUEST]>>>\\ntool_name:「始」LightMemo「末」,\\nenginemode:「始」rivermemo「末」,\\nfolder:「始」VCP开发「末」,\\nquery:「始」RiverMemo如何恢复连续记忆中的逻辑链「末」,\\nk:「始」5「末」,\\ntag_boost:「始」0.6「末」\\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
-        "commandIdentifier": "MapDistance",
-        "description": "开发测绘指令：用于比较一个起点A到一个或多个目标B/C/D/E在原始KNN与TagMemo V9.1拓扑空间中的距离差异，返回Markdown表格。适合AI开发、RAG调参和观察V9.1增强偏移。\n参数:\n- command (字符串, 必需): 固定传入 map_distance。也兼容 MapDistance、mapping、tagmemo_map、wave_map、测绘。\n- start / origin / a / start_query / query (字符串, 必需): 起点A文本。\n- targets / target / b / goal / goals (字符串或数组, 必需): 一个或多个目标文本。字符串支持英文逗号、中文逗号、顿号、| 或 ｜ 分隔；也可传JSON数组字符串。\n- tag_boost (数字或字符串, 可选, 默认0.6): 用于两端V9.1 TagMemo增强的权重。可传0关闭增强；测绘模式不需要加+号。\n- alpha / geo_alpha (数字, 可选): V9.1势能场加权距离中的Tag能量场权重。未提供时读取系统 geodesicRerank.alpha，仍未配置则默认0.35。\n- core_tags (字符串数组或分隔字符串, 可选): 核心标签列表，参与两端TagMemo增强。\n- core_boost_factor (数字, 可选, 默认1.33): 核心标签额外加权因子。\n\n输出列:\n- 纯KNN距离/相似度: 原始embedding余弦距离与相似度。\n- V9.1 TagMemo距离/相似度: 起点和目标都经过V9.1增强后的向量距离与相似度。\n- V9.1势能场加权距离/相似度: 将纯KNN相似度与A/B各自Tag能量场相似度按alpha融合。\n- Tag能量场相似度: 直接比较两端Spike Propagation能量场的余弦相似度。\n\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\ncommand:「始」map_distance「末」,\nstart:「始」GraphRAG中的标签拓扑如何影响召回「末」,\ntargets:「始」纯向量KNN召回, V9.1 TagMemo增强, V9.1势能场重排「末」,\ntag_boost:「始」0.6「末」,\nalpha:「始」0.35「末」,\ncore_tags:「始」TagMemo, RAG, 势能场「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\ncommand:「始」map_distance「末」,\nstart:「始」GraphRAG中的标签拓扑如何影响召回「末」,\ntargets:「始」纯向量KNN召回, V9.1 TagMemo增强, V9.1势能场重排「末」,\ntag_boost:「始」0.6「末」,\nalpha:「始」0.35「末」\n<<<[END_TOOL_REQUEST]>>>"
-      },
-      {
         "commandIdentifier": "TagMemoAB",
-        "description": "TagMemo V9.1单轨记忆寻址对照测试。保留TagMemoAB命令名以兼容既有工具调用，但不再加载V8.3资产；固定比较原始KNN、请求开始时捕获的不可变V9.1 ArtifactBundle，以及可选的独立Rerank。\n参数:\n- command (字符串, 必需): 固定传入 tagmemo_ab；也支持tagmemo_compare、v91_compare。旧别名tagmemo-ab、memory_address_ab、双轨寻址、双轨测绘仅作为协议兼容入口。\n- ab_mode (字符串, 可选, 默认 A): A/kernel/mode_a 为固定对称候选超集对照；B/product/mode_b 为端到端Top-K对照。\n- query (字符串, 必需): 记忆寻址输入。\n- maid / folder / search_all_knowledge_bases: 与普通 LightMemo 搜索作用域相同；必须提供 maid/folder，或显式开启全库搜索。\n- k (整数, 可选, 默认5): 模式B每条路径的返回数量，也是模式A表格的基础展示量。\n- top_l / topL (整数, 可选): 模式A每条召回路径进入对称超集的候选数，默认 max(20,k×4)。\n- tag_boost (数字, 可选, 默认0.6): V9.1 TagMemo增强强度。\n- potential_field / use_potential_field (布尔, 可选, 默认true): 是否在V9.1查询级能量场上执行Potential Field重排。\n- BM25 / bm25 / use_bm25 (布尔, 可选, 默认true): 模式A是否将BM25 Top-L纳入对称候选超集。\n- compare_rerank / compareRerank / rerank_compare (布尔, 可选, 默认false): 是否增加独立Rerank横向基线。开启前需配置RerankUrl、RerankApi、RerankModel；未配置或调用失败时报告会明确标记不可用。\n- include_details / includeDetails (布尔, 可选, 默认false): 是否返回排行表之后的补充说明与后续数据。默认在排行表结束后截断，以降低批量LLM评测的Token成本；仅在显式传入true时返回完整后续内容。兼容别名include_followup_data、full_report。\n- core_tags、core_boost_factor: 与普通TagMemo搜索一致。\n\n模式A输出: KNN∪V9.1∪BM25固定超集、候选进入路径、KNN/V9.1排名与V9.1相对KNN的排名变化；开启compare_rerank后增加同池Rerank排名及V9.1相对Rerank变化。默认在排行表后截断。\n模式B输出: KNN与V9.1独立Top-K、重合率、KNN独占与V9.1独占召回；开启compare_rerank后，在两路Top-K并集上执行Rerank并显示第三路结果。默认在排行表后截断。\n\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\ncommand:「始」tagmemo_ab「末」,\nab_mode:「始」A「末」,\nfolder:「始」VCP开发「末」,\nquery:「始」TagMemo传播稳定性与虫洞预算「末」,\nk:「始」8「末」,\ntop_l:「始」30「末」,\ntag_boost:「始」0.6「末」,\npotential_field:「始」true「末」,\nBM25:「始」true「末」,\ncompare_rerank:「始」true「末」,\ninclude_details:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\ncommand:「始」tagmemo_ab「末」,\nab_mode:「始」B「末」,\nfolder:「始」VCP开发「末」,\nquery:「始」TagMemo V9.1有界传播与势能场召回「末」,\nk:「始」8「末」,\ntag_boost:「始」0.6「末」,\npotential_field:「始」true「末」,\ncompare_rerank:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
-      },
-      {
-        "commandIdentifier": "TagMemoUnifiedAB",
-        "description": "TagMemo统一寻址具名A/B评审指令。固定运行KNN、当前V9 Production、V10 Unified-Pure、V10 Unified-Gated、V10 Unified-Observed，并可选加入独立Rerank。输出为具名Markdown评审文档，不返回JSON，适合人类或隔离AI打分员直接阅读和填写裁决。\n参数:\n- command (字符串, 必需): 固定传入 tagmemo_v10_ab。兼容tagmemo-v10-ab、tagmemo_unified_ab、tagmemo-unified-ab、统一寻址对照。\n- query (字符串, 必需): 统一A/B评审查询。\n- maid / folder / search_all_knowledge_bases: 与普通LightMemo作用域一致；必须提供maid/folder，或显式开启全库搜索。\n- k (整数, 可选, 默认5): 每条具名轨道展示的Top-K数量。\n- source_k / sourceK (整数, 可选, 默认16): V10查询源场注入Tag数量。\n- tag_boost (数字, 可选, 默认0.6): V9 Production增强强度。V9轨道始终使用请求开始时捕获的不可变生产Artifact，并在能量场可用时执行生产测地重排。\n- core_tags / core_boost_factor: V9 Production核心Tag及其增强参数。\n- disabled_observables / disabledObservables (字符串数组或分隔字符串, 可选): V10 D/S/T/C消融列表，可选direct、structural、thematic、closure。\n- BM25 / bm25 / use_bm25 (布尔, 可选, 默认true): 是否让BM25来源进入V10对称候选超集。\n- compare_rerank / compareRerank / rerank_compare (布尔, 可选, 默认false): 是否增加具名Rerank轨道。需要配置RerankUrl、RerankApi、RerankModel；未配置时Markdown会明确标记为降级输出。\n- include_details / includeDetails (布尔, 可选, 默认false): 是否返回统一排名总表之后的完整候选正文、深度诊断、性能计时与评审区。默认在统一排名总表后截断，以降低批量LLM评测的Token成本；兼容别名include_followup_data、full_report。\n- force_artifact_rebuild (布尔, 可选, 默认false): 是否强制重建V10 Artifact。正式批量评审建议只在第一条预热请求使用true。\n\nMarkdown默认输出包括:\n1. Artifact、Query ID、消融项和公平条件；\n2. 各轨道与V10 Pure的Top-K重合度；\n3. KNN / V9 Production / V10三臂 / Rerank统一排名总表；并在此处截断。\n显式设置include_details=true后继续输出:\n4. 每条具名轨道的完整候选正文、日记本、路径和分数；\n5. V9曲线证据及V10路径质量、D/S/T/C、门控和Observed增益；\n6. 全阶段性能计时；\n7. 可供评审员填写的相关性、链条完整性、惊喜度、漂移、身份权限和最终裁决表。\n\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\ncommand:「始」tagmemo_v10_ab「末」,\nfolder:「始」VCP开发「末」,\nmaid:「始」小克「末」,\nquery:「始」TagMemo统一认知几何如何改善前因恢复与跨主体迁移「末」,\nk:「始」10「末」,\nsource_k:「始」16「末」,\ntag_boost:「始」0.6「末」,\nBM25:「始」true「末」,\ncompare_rerank:「始」true「末」,\ninclude_details:「始」false「末」,\nforce_artifact_rebuild:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\ncommand:「始」tagmemo_v10_ab「末」,\nfolder:「始」VCP开发「末」,\nmaid:「始」小克「末」,\nquery:「始」TagMemo统一认知几何如何生成Local与Transfer双尺度场「末」,\nk:「始」8「末」,\ncompare_rerank:「始」true「末」,\nBM25:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
-      },
-      {
-        "commandIdentifier": "TagMemoV10Alpha",
-        "description": "TagMemo V10 Alpha统一认知几何实验指令。它不替换V9.2生产搜索，而是在同一不可变V10 Artifact与同一对称候选超集上运行Local/Transfer双尺度场、统一路径几何及Pure/Gated/Observed三臂，返回可供服务器批量脚本解析的JSON文本。\n参数:\n- command (字符串, 必需): 推荐传入 tagmemo_v10；兼容tagmemo-v10、tagmemo_v10_alpha、v10_alpha、统一认知几何。也可使用version/tagmemo_version=v10_alpha触发。\n- query (字符串, 必需): 实验查询文本。\n- maid / folder / search_all_knowledge_bases: 与普通LightMemo作用域一致；必须提供maid/folder，或显式开启全库搜索。权限实验建议使用明确folder/maid，不建议默认全库。\n- k (整数, 可选, 默认5): 每个实验臂返回的Top-K数量。\n- source_k / sourceK (整数, 可选, 默认16): 原始查询向量注入V10源场时读取的Tag数量。\n- experiment_arm / experimentArm / arm (字符串, 可选, 默认all): pure、gated、observed或all。all会让三臂共享完全相同的Artifact、Query State、双尺度场、候选超集与曲线。\n- disabled_observables / disabledObservables (字符串数组或分隔字符串, 可选): D/S/T/C消融列表，可选direct、structural、thematic、closure。Pure不读取这些观测；Observed中被禁用项的边际贡献严格为0。\n- BM25 / bm25 / use_bm25 (布尔, 可选, 默认true): 是否让BM25候选进入V10对称候选超集。\n- force_artifact_rebuild (布尔, 可选, 默认false): 强制从当前V9事实底座、数据库事实和边来源重新编译并发布V10内存Artifact。正式跑批建议仅第一条预热请求设为true，后续固定返回的artifactSig。\n\n输出Schema: tagmemo-v10-alpha-lightmemo-result-v1。包含artifactSig/configHash/databaseGeneration/provenanceGeneration、Query Trace、Local/Transfer域、候选来源进入率与淘汰项、路径分段归因、D/S/T/C观测、门控原因及Observed逐项边际贡献。\n\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\ncommand:「始」tagmemo_v10「末」,\nfolder:「始」VCP开发「末」,\nquery:「始」TagMemo统一认知几何与跨主体经验迁移「末」,\nk:「始」8「末」,\nsource_k:「始」16「末」,\nexperiment_arm:「始」all「末」,\ndisabled_observables:「始」closure「末」,\nBM25:「始」true「末」,\nforce_artifact_rebuild:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\ncommand:「始」tagmemo_v10「末」,\nfolder:「始」VCP开发「末」,\nquery:「始」TagMemo统一认知几何如何生成Local与Transfer双尺度场「末」,\nk:「始」8「末」,\nexperiment_arm:「始」all「末」,\nBM25:「始」true「末」,\nforce_artifact_rebuild:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "LightMemo生产构型A/B对比。所有轨道共享同一SQL权限作用域、同一查询向量与同一候选事实域；固定比较原始KNN、标准TagMemo V9、下沉到Rust/Rayon的RiverMemo Topology V3，并默认在三轨候选并集上增加独立Rerank。该入口不再加载或运行任何V10实验构型。\\n参数:\\n- command (字符串, 必需): 固定传入 tagmemo_ab；兼容tagmemo-ab、tagmemo_compare、memory_address_ab、v91_compare、寻址对照。\\n- query (字符串, 必需): 检索查询。\\n- maid / folder / search_all_knowledge_bases: 与普通搜索一致；必须提供maid/folder，或显式开启全库搜索。\\n- k (整数, 可选, 默认5): 每条轨道展示的Top-K。\\n- candidate_k / candidateK (整数, 可选, 默认max(30,k×5)): TagMemo V9、Rust V3与Rerank使用的对称候选窗口。\\n- tag_boost (数字, 可选, 默认0.6): V9增强及Rust V3共享V9观测源的强度。\\n- core_tags / core_boost_factor: 核心Tag及额外增强系数。\\n- BM25 / bm25 / use_bm25 (布尔, 可选, 默认true): 是否向Rust V3候选超集提供BM25来源。\\n- compare_rerank / compareRerank / rerank_compare (布尔, 可选, 默认true): 是否增加独立Rerank轨道；未配置服务时报告会明确标记不可用。\\n输出为紧凑Markdown，包括三组Top-K重合率及KNN、TagMemo V9、Rust Topology V3、Rerank统一排名表。",
+        "example": "<<<[TOOL_REQUEST]>>>\\ntool_name:「始」LightMemo「末」,\\ncommand:「始」tagmemo_ab「末」,\\nfolder:「始」VCP开发「末」,\\nquery:「始」TagMemo如何恢复连续记忆中的逻辑链「末」,\\nk:「始」8「末」,\\ntag_boost:「始」0.6「末」,\\ncompare_rerank:「始」true「末」\\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

@@ -1,8 +1,7 @@
-// Plugin/LightMemoPlugin/LightMemo.js
+// Plugin/LightMemo/LightMemo.js
 const fs = require('fs').promises;
 const path = require('path');
 const axios = require('axios');
-const dotenv = require('dotenv');
 const { Jieba } = require('@node-rs/jieba');
 const { dict } = require('@node-rs/jieba/dict');
 
@@ -79,7 +78,6 @@ class LightMemoPlugin {
         this.tdbKnowledgeManager = null; // 冷知识库（TriviumDB）检索管理器
         this.aiMemoBridge = null; // RAGDiaryPlugin 共享的 AI 记忆总结桥
         this.getSingleEmbedding = null;
-        this.getBatchEmbeddings = null;
         this.projectBasePath = '';
         this.dailyNoteRootPath = '';
         this.rerankConfig = {};
@@ -120,9 +118,6 @@ class LightMemoPlugin {
         if (dependencies.getSingleEmbedding) {
             this.getSingleEmbedding = dependencies.getSingleEmbedding;
         }
-        if (dependencies.getBatchEmbeddings) {
-            this.getBatchEmbeddings = dependencies.getBatchEmbeddings;
-        }
 
         this.loadConfig(); // Load config after dependencies are set
         this.loadSemanticGroups();
@@ -148,20 +143,15 @@ class LightMemoPlugin {
             // 小批量请求采用有界并发，避免无上限并发压垮服务商。
             maxConcurrentRequests: Number.isFinite(configuredConcurrency)
                 ? Math.max(1, Math.min(10, configuredConcurrency))
-                : 3,
-            multiplier: parseFloat(process.env.RerankMultiplier) || 2.0
+                : 3
         };
     }
 
     async processToolCall(args) {
         try {
-            const result = this._isTagMemoV10Request(args)
-                ? await this.handleTagMemoV10(args)
-                : this._isTagMemoABRequest(args)
-                    ? await this.handleTagMemoAB(args)
-                    : this._isMappingRequest(args)
-                        ? await this.handleMapping(args)
-                        : await this.handleSearch(args);
+            const result = this._isTagMemoABRequest(args)
+                ? await this.handleTagMemoAB(args)
+                : await this.handleSearch(args);
 
             return this._normalizeToolResult(result);
         } catch (error) {
@@ -207,6 +197,22 @@ class LightMemoPlugin {
         }
 
         return result;
+    }
+
+    _isTagMemoABRequest(args = {}) {
+        const command = String(args.command || args.action || '')
+            .trim()
+            .toLowerCase();
+        return [
+            'tagmemo_ab',
+            'tagmemo-ab',
+            'tagmemo_compare',
+            'tagmemo-compare',
+            'memory_address_ab',
+            'memory-address-ab',
+            'v91_compare',
+            '寻址对照'
+        ].includes(command);
     }
 
     async handleSearch(args) {
@@ -673,11 +679,6 @@ class LightMemoPlugin {
         );
     }
 
-    // 兼容已经使用首版 memory_engine 的内部调用与测试。
-    _parseMemoryEngine(value) {
-        return this._parseEngineMode(value);
-    }
-
     _parseRerankOptions(rerank) {
         if (rerank === true) return { enabled: true, rrfOptions: null };
         if (typeof rerank === 'number' && rerank > 0 && rerank <= 1) {
@@ -730,7 +731,8 @@ class LightMemoPlugin {
         tagBoost,
         coreTags,
         coreBoostFactor,
-        aiMemoOptions
+        aiMemoOptions,
+        returnResults = false
     }) {
         if (
             !this.vectorDBManager
@@ -912,99 +914,17 @@ class LightMemoPlugin {
             if (aiMemoResult) return aiMemoResult;
         }
 
-        return this.formatResults(finalResults, query);
-    }
-
-    _isTagMemoV10Request(args = {}) {
-        const command = String(args.command || args.action || '').trim().toLowerCase();
-        const version = String(
-            args.tagmemo_version || args.tagMemoVersion || args.version || ''
-        ).trim().toLowerCase();
-        return [
-            'tagmemo_v10',
-            'tagmemo-v10',
-            'tagmemo_v10_alpha',
-            'tagmemo-v10-alpha',
-            'tagmemo_v10_ab',
-            'tagmemo-v10-ab',
-            'tagmemo_unified_ab',
-            'tagmemo-unified-ab',
-            'v10_alpha',
-            'v10-alpha',
-            '统一认知几何',
-            '统一寻址对照'
-        ].includes(command) || ['v10', 'v10_alpha', 'v10.alpha.1'].includes(version);
-    }
-
-    _isTagMemoABRequest(args = {}) {
-        const command = String(args.command || args.action || '').trim().toLowerCase();
-        const mode = String(args.ab_mode || args.abMode || '').trim().toLowerCase();
-        return [
-            'tagmemo_ab', 'tagmemo-ab', 'memory_address_ab',
-            'memory-address-ab', '双轨寻址', '双轨测绘',
-            'tagmemo_compare', 'tagmemo-compare', 'v91_compare'
-        ].includes(command) || ['a', 'b', 'mode_a', 'mode_b', 'kernel', 'product'].includes(mode);
+        return returnResults ? finalResults : this.formatResults(finalResults, query);
     }
 
     /**
-     * TagMemo V10 Alpha 独立实验入口。
-     * 服务端批量脚本可传
-     * experiment_arm=pure|gated|observed|topology|topology_v2|topology_v3|all，
-     * 并用 disabled_observables=direct,structural,thematic,closure 做逐项消融。
+     * 生产构型 A/B：同一作用域内比较 KNN、TagMemo V9、Rust Topology V3
+     * 与可选外部 Rerank。这里不再承载任何 V10 实验臂。
      */
-    async handleTagMemoV10(args = {}) {
-        const requestStartedAt = performance.now();
-        const timing = {};
-        const measureSync = (name, operation) => {
-            const startedAt = performance.now();
-            const result = operation();
-            timing[name] = performance.now() - startedAt;
-            return result;
-        };
-        const measureAsync = async (name, operation) => {
-            const startedAt = performance.now();
-            const result = await operation();
-            timing[name] = performance.now() - startedAt;
-            return result;
-        };
+    async handleTagMemoAB(args = {}) {
+        const query = String(args.query || '').trim();
+        if (!query) throw new Error('TagMemo A/B 需要 query 参数。');
 
-        const required = [
-            'getTagMemoV10ArtifactSnapshot',
-            'prepareTagMemoV10Query',
-            'buildTagMemoV10CandidateSuperset',
-            'projectTagMemoV10CandidateCurves',
-            'evaluateTagMemoV10CandidateCurves',
-            'computeTagMemoV10Dstc'
-        ];
-        const missing = required.filter(name =>
-            typeof this.vectorDBManager?.[name] !== 'function'
-        );
-        if (missing.length > 0) {
-            throw new Error(
-                `TagMemo V10 Alpha 接口不可用：${missing.join(', ')}`
-            );
-        }
-
-        const command = String(args.command || args.action || '').trim().toLowerCase();
-        const abRequested = [
-            'tagmemo_v10_ab',
-            'tagmemo-v10-ab',
-            'tagmemo_unified_ab',
-            'tagmemo-unified-ab',
-            '统一寻址对照'
-        ].includes(command);
-        const compareRerank = abRequested && this._parseBooleanAlias(
-            [
-                ['compare_rerank', args.compare_rerank],
-                ['compareRerank', args.compareRerank],
-                ['rerank_compare', args.rerank_compare]
-            ],
-            false,
-            'TagMemo unified A/B Rerank comparison'
-        );
-        const includeDetails = abRequested && this._parseABIncludeDetails(args);
-        const query = String(args.query || args.start || '').trim();
-        if (!query) throw new Error('TagMemo V10 Alpha 需要 query 参数。');
         const parsedMaidScope = this._parseMaidScopedFolder(args.maid);
         const maid = parsedMaidScope.maid;
         const folder = this._mergeFolderScopes(
@@ -1017,44 +937,31 @@ class LightMemoPlugin {
         );
         if (!searchAll && !maid && !folder) {
             throw new Error(
-                'TagMemo V10 Alpha 必须提供 maid/folder，或开启 search_all_knowledge_bases。'
+                'TagMemo A/B 必须提供 maid/folder，或开启 search_all_knowledge_bases。'
             );
         }
 
         const k = Math.max(1, Math.floor(this._parseNumber(args.k, 5)));
-        const mapExperimentK = Math.max(
+        const candidateK = Math.max(
             k,
             Math.floor(this._parseNumber(
-                args.map_k ?? args.mapK,
-                Math.max(20, k * 4)
+                args.candidate_k ?? args.candidateK,
+                Math.max(30, k * 5)
             ))
         );
-        const sourceK = Math.max(
-            1,
-            Math.floor(this._parseNumber(args.source_k ?? args.sourceK, 16))
+        const tagBoost = Math.max(0, Math.min(1, this._parseNumber(
+            typeof args.tag_boost === 'string'
+                ? args.tag_boost.replace(/\+$/, '')
+                : args.tag_boost,
+            0.6
+        )));
+        const coreTags = this._parseStringArray(
+            args.core_tags || args.coreTags
         );
-        // 统一 A/B 必须同时计算所有实验臂，确保评审文档来自同一 Query State 与候选池。
-        const arm = abRequested
-            ? 'all'
-            : String(
-                args.experiment_arm || args.experimentArm || args.arm || 'all'
-            ).trim().toLowerCase();
-        if (![
-            'pure',
-            'gated',
-            'observed',
-            'topology',
-            'topology_v2',
-            'topology_v3',
-            'all'
-        ].includes(arm)) {
-            throw new Error(
-                'experiment_arm 仅支持 pure、gated、observed、topology、topology_v2、topology_v3 或 all。'
-            );
-        }
-        const disabledObservables = this._parseStringArray(
-            args.disabled_observables || args.disabledObservables
-        ).map(value => value.toLowerCase());
+        const coreBoostFactor = this._parseNumber(
+            args.core_boost_factor,
+            1.33
+        );
         const useBM25 = this._parseBooleanAlias(
             [
                 ['BM25', args.BM25],
@@ -1062,894 +969,7 @@ class LightMemoPlugin {
                 ['use_bm25', args.use_bm25]
             ],
             true,
-            'TagMemo V10 BM25'
-        );
-        const forceArtifactRebuild = this._parseBoolean(
-            args.force_artifact_rebuild,
-            false
-        );
-
-        const candidates = await measureAsync(
-            'gatherCandidatesMs',
-            () => this._gatherCandidateChunks({
-                maid,
-                folder,
-                searchAll,
-                ignoreExcludedFolders: false,
-                timeRange: null
-            })
-        );
-        if (candidates.length === 0) {
-            return this._buildAiFriendlyTextResult(
-                JSON.stringify({
-                    schema: 'tagmemo-v10-alpha-lightmemo-result-v1',
-                    version: 'v10_alpha',
-                    query,
-                    error: 'no-candidates-in-scope'
-                })
-            );
-        }
-
-        const queryVectorRaw = await measureAsync(
-            'embeddingMs',
-            () => this.getSingleEmbedding(query)
-        );
-        if (!queryVectorRaw) {
-            throw new Error('TagMemo V10 Alpha 查询向量化失败。');
-        }
-        const queryVector = queryVectorRaw instanceof Float32Array
-            ? queryVectorRaw
-            : new Float32Array(queryVectorRaw);
-        const snapshot = measureSync(
-            'artifactSnapshotMs',
-            () => this.vectorDBManager.getTagMemoV10ArtifactSnapshot({
-                forceRebuild: forceArtifactRebuild
-            })
-        );
-        if (!snapshot?.bundle) {
-            throw new Error('TagMemo V10 Alpha Artifact 不可用。');
-        }
-
-        // _gatherCandidateChunks 已经执行当前请求的 SQL 作用域与署名过滤。
-        // 将这些 file_id 显式声明为 authorized，禁止 provenance 层自行猜测公开权限。
-        const allowedFileIds = [...new Set(
-            candidates.map(candidate => Number(candidate.fileId))
-                .filter(Number.isFinite)
-        )];
-        const diaryNames = [...new Set(
-            candidates.map(candidate => String(candidate.dbName || ''))
-                .filter(Boolean)
-        )];
-        const prepared = measureSync(
-            'prepareAndSolveQueryMs',
-            () => this.vectorDBManager.prepareTagMemoV10Query(
-                { text: query, vector: queryVector },
-                {
-                    agentId: maid || null,
-                    diaryNames,
-                    allowedFileIds,
-                    deniedFileIds: [],
-                    visibilityMode: 'explicit_sql_scope',
-                    permissions: {
-                        allowPublic: false,
-                        allowOwn: true,
-                        allowAuthorized: true,
-                        allowOtherAgentPublic: false,
-                        allowUnknownProvenance: false
-                    }
-                },
-                {
-                    artifact: snapshot.bundle,
-                    sourceObservationConfig: { sourceK }
-                }
-            )
-        );
-        const queryState = prepared.queryState;
-        if (
-            !prepared.denoisedVector
-            || !prepared.localVector
-            || !prepared.transferVector
-        ) {
-            throw new Error(
-                'TagMemo V10 Alpha 降噪源或双尺度场无法回投影。'
-            );
-        }
-
-        // _scoreByVectorSimilarity 当前是同步 SQLite + CPU 热循环包装成 async。
-        // 分别计时而非 Promise.all，避免四个同步阶段被错误显示成同一个并发耗时。
-        const queryRanked = await measureAsync(
-            'queryVectorScoreMs',
-            () => this._scoreByVectorSimilarity(candidates, queryVector)
-        );
-        const denoisedRanked = await measureAsync(
-            'denoisedVectorScoreMs',
-            () => this._scoreByVectorSimilarity(
-                candidates,
-                prepared.denoisedVector
-            )
-        );
-        const localRanked = await measureAsync(
-            'localVectorScoreMs',
-            () => this._scoreByVectorSimilarity(candidates, prepared.localVector)
-        );
-        const transferRanked = await measureAsync(
-            'transferVectorScoreMs',
-            () => this._scoreByVectorSimilarity(candidates, prepared.transferVector)
-        );
-        const queryScoreById = new Map(
-            queryRanked.map(item => [Number(item.label), item.vectorScore])
-        );
-        const denoisedScoreById = new Map(
-            denoisedRanked.map(item => [
-                Number(item.label),
-                item.vectorScore
-            ])
-        );
-        const localScoreById = new Map(
-            localRanked.map(item => [Number(item.label), item.vectorScore])
-        );
-        const transferScoreById = new Map(
-            transferRanked.map(item => [Number(item.label), item.vectorScore])
-        );
-
-        const bm25Ranked = measureSync(
-            'bm25Ms',
-            () => useBM25
-                ? this._buildBm25TopIds(
-                    query,
-                    candidates,
-                    Math.max(k, Number(
-                        snapshot.bundle.effectiveConfig?.candidateSuperset?.bm25K
-                    ) || 50)
-                )
-                : []
-        );
-        const bm25ScoreById = new Map(
-            bm25Ranked.map(item => [Number(item.id), Number(item.score) || 0])
-        );
-
-        // Anchor 路只从 Local 有效域直达 file_tags，不从 Transfer 获得身份资格。
-        const localDomainIds = Array.isArray(queryState.localDomain?.ids)
-            ? queryState.localDomain.ids.map(Number).filter(Number.isFinite)
-            : [];
-        const anchorScoreByChunkId = new Map();
-        measureSync('anchorDirectMs', () => {
-            if (localDomainIds.length > 0 && allowedFileIds.length > 0) {
-                const db = this.vectorDBManager.db;
-                const tagPlaceholders = localDomainIds.map(() => '?').join(',');
-                const filePlaceholders = allowedFileIds.map(() => '?').join(',');
-                const anchorRows = db.prepare(`
-                    SELECT c.id AS chunk_id, COUNT(DISTINCT ft.tag_id) AS hits
-                    FROM chunks c
-                    JOIN file_tags ft ON ft.file_id = c.file_id
-                    WHERE ft.tag_id IN (${tagPlaceholders})
-                      AND c.file_id IN (${filePlaceholders})
-                    GROUP BY c.id
-                    ORDER BY hits DESC, c.id ASC
-                `).all(...localDomainIds, ...allowedFileIds);
-                const maximumHits = Math.max(
-                    1,
-                    ...anchorRows.map(row => Number(row.hits) || 0)
-                );
-                for (const row of anchorRows) {
-                    anchorScoreByChunkId.set(
-                        Number(row.chunk_id),
-                        (Number(row.hits) || 0) / maximumHits
-                    );
-                }
-            }
-        });
-
-        const candidateAssemblyStartedAt = performance.now();
-        const enrichedById = new Map(candidates.map(candidate => {
-            const id = Number(candidate.label);
-            return [id, {
-                ...candidate,
-                id,
-                chunkId: id,
-                queryScore: queryScoreById.get(id) || 0,
-                denoisedFieldScore: denoisedScoreById.get(id) || 0,
-                localFieldScore: localScoreById.get(id) || 0,
-                transferFieldScore: transferScoreById.get(id) || 0,
-                bm25Score: bm25ScoreById.get(id) || 0,
-                anchorScore: anchorScoreByChunkId.get(id) || 0
-            }];
-        }));
-        const rank = (scoreMap, limit, scoreField) =>
-            [...enrichedById.values()]
-                .filter(item => (scoreMap.get(item.id) || 0) > 0)
-                .sort((left, right) =>
-                    (scoreMap.get(right.id) || 0)
-                    - (scoreMap.get(left.id) || 0)
-                )
-                .slice(0, limit)
-                .map(item => ({
-                    ...item,
-                    score: item[scoreField]
-                }));
-        const candidateConfig = snapshot.bundle.effectiveConfig
-            ?.candidateSuperset || {};
-        const sourceCandidates = {
-            query_knn: rank(
-                queryScoreById,
-                Number(candidateConfig.queryK) || 100,
-                'queryScore'
-            ),
-            denoised_field_knn: rank(
-                denoisedScoreById,
-                Number(candidateConfig.denoisedK)
-                    || Number(candidateConfig.queryK)
-                    || 100,
-                'denoisedFieldScore'
-            ),
-            local_field_knn: rank(
-                localScoreById,
-                Number(candidateConfig.localFieldK) || 100,
-                'localFieldScore'
-            ),
-            transfer_field_knn: rank(
-                transferScoreById,
-                Number(candidateConfig.transferFieldK) || 100,
-                'transferFieldScore'
-            ),
-            bm25: rank(
-                bm25ScoreById,
-                Number(candidateConfig.bm25K) || 50,
-                'bm25Score'
-            ),
-            anchor_direct: rank(
-                anchorScoreByChunkId,
-                Number(candidateConfig.anchorK) || 50,
-                'anchorScore'
-            )
-        };
-        timing.candidateAssemblyMs = performance.now() - candidateAssemblyStartedAt;
-
-        const superset = measureSync(
-            'candidateSupersetMs',
-            () => this.vectorDBManager
-                .buildTagMemoV10CandidateSuperset(sourceCandidates, {
-                    artifact: snapshot.bundle
-                })
-        );
-        const projected = measureSync(
-            'curveProjectionMs',
-            () => this.vectorDBManager
-                .projectTagMemoV10CandidateCurves(superset.candidates)
-        );
-        const pathBatch = measureSync(
-            'pathGeometryMs',
-            () => this.vectorDBManager
-                .evaluateTagMemoV10CandidateCurves(
-                    projected.curves,
-                    queryState,
-                    { artifact: snapshot.bundle }
-                )
-        );
-        const allowedFileIdSet = new Set(allowedFileIds);
-        const dstcBatch = measureSync(
-            'dstcMs',
-            () => this.vectorDBManager.computeTagMemoV10Dstc(
-                pathBatch,
-                queryState,
-                {
-                    artifact: snapshot.bundle,
-                    disabledObservables,
-                    identityEligibility: curve =>
-                        Boolean(maid && String(curve.diaryName || '').includes(maid)),
-                    visibilityEligibility: curve =>
-                        allowedFileIdSet.has(Number(curve.fileId))
-                }
-            )
-        );
-        const armOptions = {
-            artifact: snapshot.bundle,
-            disabledObservables,
-            queryState,
-            queryText: query
-        };
-        const armRun = measureSync(
-            'experimentArmsMs',
-            () => arm === 'all'
-                ? this.vectorDBManager.runTagMemoV10ExperimentArms(
-                    dstcBatch,
-                    armOptions
-                )
-                : {
-                    schema: 'tagmemo-v10-alpha-experiment-arms-v1',
-                    candidateCount: dstcBatch.results.length,
-                    arms: {
-                        [arm]: this.vectorDBManager.scoreTagMemoV10ExperimentArm(
-                            dstcBatch,
-                            arm,
-                            armOptions
-                        )
-                    }
-                }
-        );
-
-        if (abRequested) {
-            const baselineStartedAt = performance.now();
-            const v9Snapshot = this.vectorDBManager.getTagMemoArtifactSnapshot('v9', {
-                strictVersion: true
-            });
-            if (!v9Snapshot?.bundle) {
-                throw new Error('统一 A/B 无法执行：V9 Production ArtifactBundle 不可用。');
-            }
-
-            const tagBoost = Math.max(0, Math.min(1, this._parseNumber(
-                typeof args.tag_boost === 'string'
-                    ? args.tag_boost.replace(/\+$/, '')
-                    : args.tag_boost,
-                0.6
-            )));
-            const coreTags = this._parseStringArray(args.core_tags || args.coreTags);
-            const coreBoostFactor = this._parseNumber(args.core_boost_factor, 1.33);
-            const v9Boost = this.vectorDBManager.applyTagBoost(
-                new Float32Array(queryVector),
-                tagBoost,
-                coreTags,
-                coreBoostFactor,
-                {
-                    tagMemoVersion: 'v9',
-                    strictVersion: true,
-                    artifactBundle: v9Snapshot.bundle
-                }
-            );
-            const v9VectorRanked = (await this._scoreByVectorSimilarity(
-                candidates,
-                v9Boost.vector
-            )).map(item => ({
-                ...item,
-                id: Number(item.label),
-                score: Number(item.vectorScore) || 0
-            })).sort((left, right) => right.score - left.score);
-            const v9Ranked = v9Boost.energyField
-                ? this.vectorDBManager.geodesicRerank(v9VectorRanked, {
-                    artifactBundle: v9Snapshot.bundle,
-                    tagMemoVersion: 'v9',
-                    energyField: v9Boost.energyField,
-                    energyFieldProvenance: v9Boost.energyFieldProvenance,
-                    originalQueryVector: queryVector,
-                    enhancedQueryVector: v9Boost.vector,
-                    queryGeometryState: {
-                        epa: v9Boost.info?.epa || null,
-                        pyramid: v9Boost.info?.pyramid || null
-                    }
-                })
-                : v9VectorRanked;
-            timing.v9ProductionMs = performance.now() - baselineStartedAt;
-
-            const knnRanked = queryRanked.map(item => ({
-                ...item,
-                id: Number(item.label),
-                score: Number(item.vectorScore) || 0
-            })).sort((left, right) => right.score - left.score);
-            const normalizedDenoisedRanked = denoisedRanked.map(item => ({
-                ...item,
-                id: Number(item.label),
-                score: Number(item.vectorScore) || 0
-            })).sort((left, right) => right.score - left.score);
-            const normalizedLocalRanked = localRanked.map(item => ({
-                ...item,
-                id: Number(item.label),
-                score: Number(item.vectorScore) || 0
-            })).sort((left, right) => right.score - left.score);
-            const normalizedTransferRanked = transferRanked.map(item => ({
-                ...item,
-                id: Number(item.label),
-                score: Number(item.vectorScore) || 0
-            })).sort((left, right) => right.score - left.score);
-
-            const mapDiagnostics = this._buildTagMemoMapDiagnostics({
-                k,
-                rawKnn: knnRanked,
-                v9PrivateKnn: v9VectorRanked,
-                v10Denoised: normalizedDenoisedRanked,
-                v10Local: normalizedLocalRanked,
-                v10Transfer: normalizedTransferRanked
-            });
-
-            const orthogonalStartedAt = performance.now();
-            const orthogonalMaps = {
-                raw: {
-                    label: 'Raw KNN Map',
-                    ranked: knnRanked.slice(0, mapExperimentK)
-                },
-                v9Private: {
-                    label: 'V9 Private KNN Map',
-                    ranked: v9VectorRanked.slice(0, mapExperimentK)
-                },
-                v10Denoised: {
-                    label: 'V10 Denoised Spike Map',
-                    ranked: normalizedDenoisedRanked.slice(
-                        0,
-                        mapExperimentK
-                    )
-                },
-                v10Local: {
-                    label: 'V10 Local Map',
-                    ranked: normalizedLocalRanked.slice(0, mapExperimentK)
-                },
-                v10Transfer: {
-                    label: 'V10 Transfer Map',
-                    ranked: normalizedTransferRanked.slice(0, mapExperimentK)
-                }
-            };
-            const orthogonalCandidateById = new Map();
-            for (const map of Object.values(orthogonalMaps)) {
-                for (const item of map.ranked) {
-                    const id = Number(item.id ?? item.label);
-                    const candidate = enrichedById.get(id);
-                    if (!candidate || orthogonalCandidateById.has(id)) continue;
-                    orthogonalCandidateById.set(id, {
-                        ...candidate,
-                        id,
-                        chunkId: id,
-                        score: Number(item.score ?? item.vectorScore) || 0,
-                        candidateSources: [{
-                            source: 'orthogonal_map_union',
-                            rank: 0,
-                            rawScore: Number(item.score ?? item.vectorScore) || 0,
-                            normalizedScore: 0
-                        }]
-                    });
-                }
-            }
-            const orthogonalProjected = this.vectorDBManager
-                .projectTagMemoV10CandidateCurves(
-                    [...orthogonalCandidateById.values()]
-                );
-            const orthogonalPathBatch = this.vectorDBManager
-                .evaluateTagMemoV10CandidateCurves(
-                    orthogonalProjected.curves,
-                    queryState,
-                    { artifact: snapshot.bundle }
-                );
-            const orthogonalDstcBatch = this.vectorDBManager.computeTagMemoV10Dstc(
-                orthogonalPathBatch,
-                queryState,
-                {
-                    artifact: snapshot.bundle,
-                    disabledObservables,
-                    identityEligibility: curve =>
-                        Boolean(maid && String(curve.diaryName || '').includes(maid)),
-                    visibilityEligibility: curve =>
-                        allowedFileIdSet.has(Number(curve.fileId))
-                }
-            );
-            const orthogonalDstcById = new Map(
-                orthogonalDstcBatch.results.map(item => [
-                    Number(item.curve?.chunkId ?? item.curve?.id),
-                    item
-                ])
-            );
-            const orthogonalRuns = {};
-            const runV9Kernel = ranked => {
-                const input = ranked.map(item => ({
-                    ...item,
-                    id: Number(item.id ?? item.label),
-                    score: Number(item.score ?? item.vectorScore) || 0
-                }));
-                return v9Boost.energyField
-                    ? this.vectorDBManager.geodesicRerank(input, {
-                        artifactBundle: v9Snapshot.bundle,
-                        tagMemoVersion: 'v9',
-                        energyField: v9Boost.energyField,
-                        energyFieldProvenance: v9Boost.energyFieldProvenance,
-                        originalQueryVector: queryVector,
-                        enhancedQueryVector: v9Boost.vector,
-                        queryGeometryState: {
-                            epa: v9Boost.info?.epa || null,
-                            pyramid: v9Boost.info?.pyramid || null
-                        }
-                    })
-                    : input;
-            };
-            for (const [mapName, map] of Object.entries(orthogonalMaps)) {
-                const mapIds = new Set(map.ranked.map(item =>
-                    Number(item.id ?? item.label)
-                ));
-                const mapDstcBatch = {
-                    schema: orthogonalDstcBatch.schema,
-                    results: orthogonalDstcBatch.results.filter(item =>
-                        mapIds.has(Number(item.curve?.chunkId ?? item.curve?.id))
-                    )
-                };
-                const v10Kernel = this.vectorDBManager
-                    .scoreTagMemoV10ExperimentArm(
-                        mapDstcBatch,
-                        'pure',
-                        armOptions
-                    );
-                const v9Kernel = runV9Kernel(map.ranked);
-                const sourceRankById = new Map(map.ranked.map((item, index) => [
-                    Number(item.id ?? item.label),
-                    index + 1
-                ]));
-                const v9RankById = new Map(v9Kernel.map((item, index) => [
-                    Number(item.id ?? item.label),
-                    index + 1
-                ]));
-                const v10RankById = new Map(v10Kernel.results.map((item, index) => [
-                    Number(item.curve?.chunkId ?? item.curve?.id),
-                    index + 1
-                ]));
-                orthogonalRuns[mapName] = {
-                    label: map.label,
-                    offered: map.ranked.length,
-                    evaluatedByV10: mapDstcBatch.results.length,
-                    missingFromProjection: [...mapIds].filter(id =>
-                        !orthogonalDstcById.has(id)
-                    ),
-                    source: map.ranked,
-                    v9Kernel,
-                    v10Kernel: v10Kernel.results,
-                    rankMovements: map.ranked.map(item => {
-                        const id = Number(item.id ?? item.label);
-                        const sourceRank = sourceRankById.get(id);
-                        const v9Rank = v9RankById.get(id) ?? null;
-                        const v10Rank = v10RankById.get(id) ?? null;
-                        return {
-                            id,
-                            sourceRank,
-                            v9Rank,
-                            v10Rank,
-                            v9Delta: v9Rank === null
-                                ? null
-                                : sourceRank - v9Rank,
-                            v10Delta: v10Rank === null
-                                ? null
-                                : sourceRank - v10Rank
-                        };
-                    })
-                };
-            }
-            timing.orthogonalMapKernelMs =
-                performance.now() - orthogonalStartedAt;
-            // Pure 与 Topology 的绝对分不处于同一物理标尺，使用完整同池
-            // 排名做 Reciprocal Rank Fusion。并列保留 1:1 与 Pure 优先的
-            // 2:1 两条评审轨；它们不修改任一 V10 实验臂的内核分数。
-            const pureTopologyRrfK = 60;
-            const pureResults = armRun.arms.pure.results;
-            const topologyResults = armRun.arms.topology.results;
-            const topologyV2Results = armRun.arms.topology_v2.results;
-            const topologyV3Results = armRun.arms.topology_v3.results;
-            const topologyRankById = new Map(
-                topologyResults.map((item, index) => [
-                    Number(item.curve?.chunkId ?? item.curve?.id),
-                    index + 1
-                ])
-            );
-            const buildPureTopologyRrf = (armName, rawWeights) => {
-                const weightTotal =
-                    Number(rawWeights.pure) + Number(rawWeights.topology);
-                if (!Number.isFinite(weightTotal) || weightTotal <= 0) {
-                    throw new Error(`无效的 Pure × Topology RRF 权重：${armName}`);
-                }
-                const weights = Object.freeze({
-                    pure: Number(rawWeights.pure) / weightTotal,
-                    topology: Number(rawWeights.topology) / weightTotal
-                });
-                return pureResults
-                    .map((item, index) => {
-                        const id = Number(
-                            item.curve?.chunkId ?? item.curve?.id
-                        );
-                        const pureRank = index + 1;
-                        const topologyRank = topologyRankById.get(id);
-                        const pureContribution = weights.pure
-                            / (pureTopologyRrfK + pureRank);
-                        const topologyContribution =
-                            Number.isFinite(topologyRank)
-                                ? weights.topology
-                                    / (pureTopologyRrfK + topologyRank)
-                                : 0;
-                        const fusionScore =
-                            pureContribution + topologyContribution;
-                        return {
-                            ...item,
-                            armResult: Object.freeze({
-                                ...item.armResult,
-                                arm: armName,
-                                score: fusionScore,
-                                baseScore: fusionScore,
-                                fusion: Object.freeze({
-                                    mode: 'rrf',
-                                    k: pureTopologyRrfK,
-                                    weights,
-                                    pureRank,
-                                    topologyRank:
-                                        Number.isFinite(topologyRank)
-                                            ? topologyRank
-                                            : null,
-                                    pureContribution,
-                                    topologyContribution
-                                })
-                            })
-                        };
-                    })
-                    .sort((left, right) =>
-                        (right.armResult.score - left.armResult.score)
-                        || (
-                            left.armResult.fusion.pureRank
-                            - right.armResult.fusion.pureRank
-                        )
-                    );
-            };
-            const pureTopologyRrfEqualResults = buildPureTopologyRrf(
-                'pure_topology_rrf_1_1',
-                { pure: 1, topology: 1 }
-            );
-            const pureTopologyRrfPureFirstResults = buildPureTopologyRrf(
-                'pure_topology_rrf_2_1',
-                { pure: 2, topology: 1 }
-            );
-            const tracks = {
-                knn: { label: 'KNN', results: knnRanked },
-                v9: {
-                    label: `V9 Production (${v9Snapshot.bundle.algorithmVersion || 'v9'})`,
-                    results: v9Ranked
-                },
-                pure: {
-                    label: 'V10 Unified-Pure',
-                    results: pureResults
-                },
-                topology: {
-                    label: 'V10-Topology',
-                    results: topologyResults
-                },
-                topologyV2: {
-                    label: 'V10-Topology V2 Unified',
-                    results: topologyV2Results
-                },
-                topologyV3: {
-                    label: 'V10-Topology V3 Unified',
-                    results: topologyV3Results,
-                    diagnostics: armRun.arms.topology_v3.diagnostics
-                },
-                pureTopologyRrfEqual: {
-                    label: 'V10 Pure × Topology RRF 1:1',
-                    results: pureTopologyRrfEqualResults,
-                    fusion: {
-                        mode: 'rrf',
-                        k: pureTopologyRrfK,
-                        weights: { pure: 0.5, topology: 0.5 }
-                    }
-                },
-                pureTopologyRrfPureFirst: {
-                    label: 'V10 Pure × Topology RRF 2:1',
-                    results: pureTopologyRrfPureFirstResults,
-                    fusion: {
-                        mode: 'rrf',
-                        k: pureTopologyRrfK,
-                        weights: { pure: 2 / 3, topology: 1 / 3 }
-                    }
-                },
-                gated: {
-                    label: 'V10 Unified-Gated',
-                    results: armRun.arms.gated.results
-                },
-                observed: {
-                    label: 'V10 Unified-Observed',
-                    results: armRun.arms.observed.results
-                }
-            };
-
-            let rerankTrack = null;
-            if (compareRerank) {
-                const rerankPool = [];
-                const seen = new Set();
-                const appendTrack = items => {
-                    for (const item of items.slice(0, Math.max(k * 3, 20))) {
-                        const id = Number(
-                            item.id ?? item.label ?? item.curve?.chunkId
-                        );
-                        if (!Number.isFinite(id) || seen.has(id)) continue;
-                        const candidate = enrichedById.get(id);
-                        if (!candidate?.text) continue;
-                        seen.add(id);
-                        rerankPool.push({
-                            ...candidate,
-                            id,
-                            retrieval_rank: rerankPool.length + 1
-                        });
-                    }
-                };
-                appendTrack(knnRanked);
-                appendTrack(v9Ranked);
-                appendTrack(armRun.arms.pure.results);
-                appendTrack(armRun.arms.topology.results);
-                appendTrack(armRun.arms.topology_v2.results);
-                appendTrack(armRun.arms.topology_v3.results);
-                appendTrack(pureTopologyRrfEqualResults);
-                appendTrack(pureTopologyRrfPureFirstResults);
-                appendTrack(armRun.arms.gated.results);
-                appendTrack(armRun.arms.observed.results);
-
-                const rerankStartedAt = performance.now();
-                const reranked = await this._rerankDocuments(
-                    query,
-                    rerankPool,
-                    Math.min(k, rerankPool.length)
-                );
-                timing.rerankMs = performance.now() - rerankStartedAt;
-                rerankTrack = {
-                    label: 'Rerank',
-                    configured: Boolean(
-                        this.rerankConfig.url
-                        && this.rerankConfig.apiKey
-                        && this.rerankConfig.model
-                    ),
-                    results: reranked.map(item => ({
-                        ...item,
-                        id: Number(item.id ?? item.label),
-                        score: Number(item.rerank_score) || 0
-                    }))
-                };
-                tracks.rerank = rerankTrack;
-            }
-
-            timing.totalBeforeMarkdownMs = performance.now() - requestStartedAt;
-            const markdown = this._formatTagMemoUnifiedABMarkdown({
-                query,
-                k,
-                tracks,
-                artifact: snapshot.bundle,
-                v9Artifact: v9Snapshot.bundle,
-                queryState,
-                disabledObservables,
-                candidateDiagnostics: superset.diagnostics,
-                mapDiagnostics,
-                orthogonalRuns,
-                mapExperimentK,
-                timing,
-                compareRerank,
-                rerankTrack,
-                includeDetails
-            });
-            return this._buildAiFriendlyTextResult(markdown);
-        }
-
-        const serializeArm = run => ({
-            arm: run.arm,
-            diagnostics: run.diagnostics,
-            top: run.results.slice(0, k).map((item, index) => ({
-                rank: index + 1,
-                chunkId: item.curve.chunkId,
-                diaryName: item.curve.diaryName,
-                path: item.curve.path,
-                text: item.curve.text,
-                score: item.armResult.score,
-                baseScore: item.armResult.baseScore,
-                gateMultiplier: item.armResult.gateMultiplier,
-                observedBonus: item.armResult.observedBonus,
-                marginalContributions:
-                    item.armResult.marginalContributions,
-                rejected: item.armResult.rejected,
-                rejectionReasons: item.armResult.rejectionReasons,
-                candidateSources: item.curve.candidateSources,
-                denoisedFieldScore: item.curve.denoisedFieldScore,
-                topologyScoreMode: item.armResult.topologyScoreMode,
-                topologyDualReadout: item.armResult.topologyDualReadout,
-                topologyV2: item.armResult.topologyV2,
-                topologyV3: item.armResult.topologyV3,
-                relativeTopology: item.relativeTopology,
-                geometry: item.geometry,
-                dstc: item.observables
-            }))
-        });
-        const reportAssemblyStartedAt = performance.now();
-        const report = {
-            schema: 'tagmemo-v10-alpha-lightmemo-result-v1',
-            version: 'v10_alpha',
-            algorithmVersion: 'v10.alpha.1',
-            query,
-            requestedArm: arm,
-            disabledObservables,
-            artifact: {
-                artifactSig: snapshot.bundle.artifactSig,
-                configHash: snapshot.bundle.configHash,
-                databaseGeneration: snapshot.bundle.databaseGeneration,
-                provenanceGeneration: snapshot.bundle.provenanceGeneration,
-                graphGeneration: snapshot.bundle.graphGeneration
-            },
-            queryTrace: {
-                queryId: queryState.queryId,
-                artifactSig: queryState.artifactSig,
-                scopeHash: queryState.scopeHash,
-                sourceObservation: queryState.sourceObservation,
-                queryRiverGraph: queryState.queryRiverGraph,
-                solver: queryState.solver,
-                fieldDiagnostics: queryState.fieldDiagnostics,
-                localDomain: queryState.localDomain,
-                transferDomain: queryState.transferDomain
-            },
-            candidateDiagnostics: superset.diagnostics,
-            curveDiagnostics: projected.diagnostics,
-            pathDiagnostics: pathBatch.diagnostics,
-            timing,
-            arms: Object.fromEntries(
-                Object.entries(armRun.arms).map(([name, run]) => [
-                    name,
-                    serializeArm(run)
-                ])
-            )
-        };
-        timing.reportAssemblyMs = performance.now() - reportAssemblyStartedAt;
-
-        // 先执行一次与最终结构等价的序列化以测量 JSON 成本，再把测量值写入最终输出。
-        const serializationStartedAt = performance.now();
-        const serializationProbe = JSON.stringify(report);
-        timing.serializationMs = performance.now() - serializationStartedAt;
-        timing.serializedBytes = Buffer.byteLength(serializationProbe, 'utf8');
-        timing.totalBeforeFinalSerializationMs = performance.now() - requestStartedAt;
-
-        const roundedTiming = {};
-        for (const [name, value] of Object.entries(timing)) {
-            roundedTiming[name] = name === 'serializedBytes'
-                ? value
-                : Number(value.toFixed(3));
-        }
-        report.timing = roundedTiming;
-        const finalPayload = JSON.stringify(report);
-
-        console.log(
-            `[LightMemo][TagMemo-V10 Timing] total=${roundedTiming.totalBeforeFinalSerializationMs}ms, ` +
-            `artifact=${roundedTiming.artifactSnapshotMs}ms, ` +
-            `prepare+solve=${roundedTiming.prepareAndSolveQueryMs}ms, ` +
-            `vectors=${Number((
-                roundedTiming.queryVectorScoreMs
-                + roundedTiming.denoisedVectorScoreMs
-                + roundedTiming.localVectorScoreMs
-                + roundedTiming.transferVectorScoreMs
-            ).toFixed(3))}ms, ` +
-            `curve=${roundedTiming.curveProjectionMs}ms, ` +
-            `geometry=${roundedTiming.pathGeometryMs}ms, ` +
-            `dstc=${roundedTiming.dstcMs}ms, ` +
-            `arms=${roundedTiming.experimentArmsMs}ms, ` +
-            `json=${roundedTiming.serializationMs}ms/${roundedTiming.serializedBytes}B`
-        );
-
-        return this._buildAiFriendlyTextResult(finalPayload);
-    }
-
-    /**
-     * TagMemo V9.1 单轨寻址对照。
-     * 模式 A：固定对称候选超集比较 KNN / V9.1向量增强 / V9.1+测地线 / 独立 Rerank。
-     * 模式 B：同时比较三路端到端 Top-K，并可加入独立 Rerank。
-     * 测地线对照在每次 A/B 中固定执行，不再由 potential_field 参数二选一。
-     */
-    async handleTagMemoAB(args = {}) {
-        if (!this.vectorDBManager || typeof this.vectorDBManager.applyTagBoost !== 'function') {
-            throw new Error('TagMemo V9.1 对照无法执行：KnowledgeBaseManager 未注入或版本接口不可用。');
-        }
-
-        const query = String(args.query || args.start || '').trim();
-        if (!query) throw new Error('TagMemo V9.1 对照需要 query 参数。');
-
-        const parsedMaidScope = this._parseMaidScopedFolder(args.maid);
-        const maid = parsedMaidScope.maid;
-        const folder = this._mergeFolderScopes(args.folder, parsedMaidScope.folder);
-        const searchAll = this._parseBoolean(args.search_all_knowledge_bases, false);
-        if (!searchAll && !maid && !folder) {
-            throw new Error('TagMemo V9.1 对照必须提供 maid/folder，或开启 search_all_knowledge_bases。');
-        }
-
-        const rawMode = String(args.ab_mode || args.abMode || args.mode || 'A').trim().toLowerCase();
-        const abMode = ['b', 'mode_b', 'product', 'end_to_end'].includes(rawMode) ? 'B' : 'A';
-        const k = Math.max(1, Math.floor(this._parseNumber(args.k, 5)));
-        const topL = Math.max(k, Math.floor(this._parseNumber(args.top_l ?? args.topL, Math.max(20, k * 4))));
-        const tagBoost = Math.max(0, Math.min(1, this._parseNumber(
-            typeof args.tag_boost === 'string' ? args.tag_boost.replace(/\+$/, '') : args.tag_boost,
-            0.6
-        )));
-        const coreTags = this._parseStringArray(args.core_tags || args.coreTags);
-        const coreBoostFactor = this._parseNumber(args.core_boost_factor, 1.33);
-        const useBM25 = this._parseBooleanAlias(
-            [['BM25', args.BM25], ['bm25', args.bm25], ['use_bm25', args.use_bm25]],
-            true,
-            'TagMemo V9.1 comparison BM25'
+            'TagMemo A/B BM25'
         );
         const compareRerank = this._parseBooleanAlias(
             [
@@ -1957,10 +977,9 @@ class LightMemoPlugin {
                 ['compareRerank', args.compareRerank],
                 ['rerank_compare', args.rerank_compare]
             ],
-            false,
-            'TagMemo V9.1 Rerank comparison'
+            true,
+            'TagMemo A/B Rerank'
         );
-        const includeDetails = this._parseABIncludeDetails(args);
 
         const candidates = await this._gatherCandidateChunks({
             maid,
@@ -1970,28 +989,49 @@ class LightMemoPlugin {
             timeRange: null
         });
         if (candidates.length === 0) {
-            return this._buildAiFriendlyTextResult('TagMemo V9.1 对照：指定作用域内没有可用记忆。');
+            return 'TagMemo A/B：指定作用域内没有可用记忆。';
         }
 
-        const queryVector = await this.getSingleEmbedding(query);
-        if (!queryVector) throw new Error('TagMemo V9.1 对照查询向量化失败。');
+        const queryVectorRaw = await this.getSingleEmbedding(query);
+        if (!queryVectorRaw) throw new Error('TagMemo A/B 查询向量化失败。');
+        const queryVector = queryVectorRaw instanceof Float32Array
+            ? queryVectorRaw
+            : new Float32Array(queryVectorRaw);
 
-        const snapshot = this.vectorDBManager.getTagMemoArtifactSnapshot('v9', {
-            strictVersion: true
-        });
-        if (!snapshot?.bundle) {
-            throw new Error('TagMemo V9.1 对照无法执行：V9.1 ArtifactBundle 不可用。');
+        const normalizeRanked = (items, scoreField = 'vectorScore') =>
+            items
+                .map(item => ({
+                    ...item,
+                    id: Number(item.id ?? item.label ?? item.chunkId),
+                    score: Number(
+                        item[scoreField]
+                        ?? item.score
+                        ?? item.hybridScore
+                        ?? item.vectorScore
+                    ) || 0
+                }))
+                .filter(item => Number.isFinite(item.id))
+                .sort((left, right) => right.score - left.score);
+
+        const knnRanked = normalizeRanked(
+            await this._scoreByVectorSimilarity(candidates, queryVector)
+        );
+
+        if (
+            !this.vectorDBManager
+            || typeof this.vectorDBManager.applyTagBoost !== 'function'
+            || typeof this.vectorDBManager.getTagMemoArtifactSnapshot !== 'function'
+        ) {
+            throw new Error('TagMemo V9 生产接口不可用。');
         }
-
-        const knnRanked = (await this._scoreByVectorSimilarity(candidates, queryVector))
-            .map(item => ({
-                ...item,
-                id: item.label,
-                score: item.vectorScore || 0
-            }))
-            .sort((a, b) => b.score - a.score);
-
-        const boost = this.vectorDBManager.applyTagBoost(
+        const v9Snapshot = this.vectorDBManager.getTagMemoArtifactSnapshot(
+            'v9',
+            { strictVersion: true }
+        );
+        if (!v9Snapshot?.bundle) {
+            throw new Error('TagMemo V9 ArtifactBundle 不可用。');
+        }
+        const v9Boost = this.vectorDBManager.applyTagBoost(
             new Float32Array(queryVector),
             tagBoost,
             coreTags,
@@ -1999,627 +1039,201 @@ class LightMemoPlugin {
             {
                 tagMemoVersion: 'v9',
                 strictVersion: true,
-                artifactBundle: snapshot.bundle
+                artifactBundle: v9Snapshot.bundle
             }
         );
-        const v91VectorRanked = (await this._scoreByVectorSimilarity(candidates, boost.vector))
-            .map(item => ({
-                ...item,
-                id: item.label,
-                score: item.vectorScore || 0
-            }))
-            .sort((a, b) => b.score - a.score);
-
-        // A/B 固定双跑：同一增强向量、同一查询能量场、同一候选全集。
-        // vectorRanked 是“不开测地线”的 V9.1 基线；geodesicRanked 是唯一实验变量。
-        const geodesicRanked = boost.energyField
-            ? this.vectorDBManager.geodesicRerank(v91VectorRanked, {
-                artifactBundle: snapshot.bundle,
-                tagMemoVersion: 'v9',
-                energyField: boost.energyField,
-                energyFieldProvenance: boost.energyFieldProvenance,
-                originalQueryVector: queryVector,
-                enhancedQueryVector: boost.vector,
-                queryGeometryState: {
-                    epa: boost.info?.epa || null,
-                    pyramid: boost.info?.pyramid || null
-                }
-            })
-            : v91VectorRanked;
-
-        const runs = {
-            knn: {
-                ranked: knnRanked,
-                top: knnRanked.slice(0, abMode === 'A' ? topL : k)
-            },
-            v9: {
-                snapshot,
-                boost,
-                vectorRanked: v91VectorRanked,
-                ranked: v91VectorRanked,
-                top: v91VectorRanked.slice(0, abMode === 'A' ? topL : k)
-            },
-            geodesic: {
-                ranked: geodesicRanked,
-                top: geodesicRanked.slice(0, abMode === 'A' ? topL : k)
-            }
-        };
-
-        const rerankRun = compareRerank
-            ? await this._buildTagMemoABRerankRun({
-                query,
-                candidates,
-                runs,
-                abMode,
-                topL,
-                k,
-                useBM25
-            })
-            : null;
-
-        if (abMode === 'A') {
-            return this._buildAiFriendlyTextResult(this._formatTagMemoKernelAB({
-                query,
-                candidates,
-                runs,
-                topL,
-                k,
-                tagBoost,
-                useBM25,
-                rerankRun,
-                includeDetails
-            }));
+        if (!v9Boost?.vector) {
+            throw new Error('TagMemo V9 查询增强失败。');
         }
 
-        return this._buildAiFriendlyTextResult(this._formatTagMemoProductAB({
-            query,
-            runs,
-            k,
-            tagBoost,
-            rerankRun,
-            includeDetails
-        }));
-    }
-
-    _buildTagMemoMapDiagnostics({
-        k,
-        rawKnn,
-        v9PrivateKnn,
-        v10Denoised,
-        v10Local,
-        v10Transfer
-    }) {
-        const normalizedK = Math.max(1, Math.floor(Number(k) || 1));
-        const itemId = item => Number(item?.id ?? item?.label ?? item?.chunkId);
-        const buildMap = (name, label, items) => {
-            const ranked = (Array.isArray(items) ? items : [])
-                .map((item, index) => ({
-                    id: itemId(item),
-                    rank: index + 1,
-                    score: Number(item?.score ?? item?.vectorScore) || 0
-                }))
-                .filter(item => Number.isFinite(item.id))
-                .slice(0, normalizedK);
-            return {
-                name,
-                label,
-                ranked,
-                ids: new Set(ranked.map(item => item.id))
-            };
-        };
-        const maps = {
-            raw: buildMap('raw', 'Raw KNN Map', rawKnn),
-            v9Private: buildMap(
-                'v9Private',
-                'V9 Private KNN Map',
-                v9PrivateKnn
-            ),
-            v10Denoised: buildMap(
-                'v10Denoised',
-                'V10 Denoised Spike Map',
-                v10Denoised
-            ),
-            v10Local: buildMap('v10Local', 'V10 Local Map', v10Local),
-            v10Transfer: buildMap(
-                'v10Transfer',
-                'V10 Transfer Map',
-                v10Transfer
+        const v9VectorRanked = normalizeRanked(
+            await this._scoreByVectorSimilarity(candidates, v9Boost.vector)
+        );
+        const v9Input = v9VectorRanked.slice(0, candidateK);
+        const v9Ranked = (
+            v9Boost.energyField
+            && typeof this.vectorDBManager.geodesicRerank === 'function'
+        )
+            ? normalizeRanked(
+                this.vectorDBManager.geodesicRerank(v9Input, {
+                    tagMemoVersion: 'v9',
+                    artifactBundle: v9Snapshot.bundle,
+                    energyField: v9Boost.energyField,
+                    energyFieldProvenance: v9Boost.energyFieldProvenance,
+                    originalQueryVector: queryVector,
+                    enhancedQueryVector: v9Boost.vector,
+                    queryGeometryState: {
+                        epa: v9Boost.info?.epa || null,
+                        pyramid: v9Boost.info?.pyramid || null
+                    }
+                }),
+                'score'
             )
-        };
-        const pair = (leftName, rightName) => {
-            const left = maps[leftName];
-            const right = maps[rightName];
-            const intersectionIds = [...left.ids].filter(id => right.ids.has(id));
-            const unionIds = new Set([...left.ids, ...right.ids]);
-            const leftOnlyIds = [...left.ids].filter(id => !right.ids.has(id));
-            const rightOnlyIds = [...right.ids].filter(id => !left.ids.has(id));
-            return {
-                left: leftName,
-                right: rightName,
-                intersection: intersectionIds.length,
-                union: unionIds.size,
-                jaccard: unionIds.size > 0
-                    ? intersectionIds.length / unionIds.size
-                    : 0,
-                leftOnly: leftOnlyIds.length,
-                rightOnly: rightOnlyIds.length,
-                leftOnlyIds,
-                rightOnlyIds
-            };
-        };
+            : v9Input;
 
-        return {
-            k: normalizedK,
-            maps: Object.fromEntries(
-                Object.entries(maps).map(([name, map]) => [
-                    name,
-                    {
-                        name: map.name,
-                        label: map.label,
-                        ranked: map.ranked
-                    }
-                ])
-            ),
-            pairs: [
-                pair('raw', 'v9Private'),
-                pair('raw', 'v10Denoised'),
-                pair('v9Private', 'v10Denoised'),
-                pair('v10Denoised', 'v10Local'),
-                pair('v10Local', 'v10Transfer'),
-                pair('raw', 'v10Local'),
-                pair('raw', 'v10Transfer')
-            ]
-        };
-    }
-
-    _formatTagMemoUnifiedABMarkdown({
-        query,
-        k,
-        tracks,
-        artifact,
-        v9Artifact,
-        queryState,
-        disabledObservables,
-        candidateDiagnostics,
-        mapDiagnostics,
-        orthogonalRuns,
-        mapExperimentK,
-        timing,
-        compareRerank,
-        rerankTrack,
-        includeDetails = false
-    }) {
-        const fmt = (value, digits = 4) => Number.isFinite(Number(value))
-            ? Number(value).toFixed(digits)
-            : '—';
-        const itemId = item => Number(
-            item?.id ?? item?.label ?? item?.curve?.chunkId
-        );
-        const itemScore = item => Number(
-            item?.armResult?.score ?? item?.score ?? item?.vectorScore
-        ) || 0;
-        const itemText = item => String(
-            item?.curve?.text ?? item?.text ?? ''
-        ).trim();
-        const itemDiary = item => String(
-            item?.curve?.diaryName ?? item?.dbName ?? ''
-        ).trim();
-        const itemPath = item => String(
-            item?.curve?.path ?? item?.sourceFile ?? ''
-        ).trim();
-        const topByTrack = Object.fromEntries(
-            Object.entries(tracks).map(([name, track]) => [
-                name,
-                (track.results || []).slice(0, k)
-            ])
-        );
-        const rankMaps = Object.fromEntries(
-            Object.entries(topByTrack).map(([name, items]) => [
-                name,
-                new Map(items.map((item, index) => [
-                    itemId(item),
-                    { rank: index + 1, score: itemScore(item) }
-                ]))
-            ])
-        );
-        const trackOrder = [
-            'knn',
-            'v9',
-            'pure',
-            'topology',
-            'topologyV2',
-            'topologyV3',
-            'pureTopologyRrfEqual',
-            'pureTopologyRrfPureFirst',
-            'gated',
-            'observed'
-        ];
-        if (tracks.rerank) trackOrder.push('rerank');
-        const trackLabel = name => tracks[name]?.label || name;
-        const allIds = [];
-        const seenIds = new Set();
-        const canonicalById = new Map();
-        for (const name of trackOrder) {
-            for (const item of topByTrack[name] || []) {
-                const id = itemId(item);
-                if (!canonicalById.has(id)) canonicalById.set(id, item);
-                if (!Number.isFinite(id) || seenIds.has(id)) continue;
-                seenIds.add(id);
-                allIds.push(id);
-            }
-        }
-
-        const pureIds = new Set((topByTrack.pure || []).map(itemId));
-        const overlapWithPure = name => {
-            const ids = new Set((topByTrack[name] || []).map(itemId));
-            return [...ids].filter(id => pureIds.has(id)).length;
-        };
-
-        let md = '# TagMemo 统一寻址 A/B 评审文档\n\n';
-        md += '> 本报告使用具名轨道，供人类或隔离 AI 打分员直接评估。  \n';
-        md += `> 查询：**${this._escapeMarkdownCell(query)}**  \n`;
-        md += `> Top-K：${k}  \n`;
-        md += `> 生成时间：${new Date().toISOString()}  \n\n`;
-
-        md += '## 1. 实验身份与公平条件\n\n';
-        md += '- **KNN**：原始查询向量余弦排序。\n';
-        md += `- **V9 Production**：当前生产 Artifact 与生产测地重排；实际算法版本 \`${v9Artifact.algorithmVersion || 'v9'}\`。\n`;
-        md += '- **V10 Unified-Pure / Gated / Observed / V10-Topology / Topology V2 / Topology V3**：共享同一 V10 Artifact、Query State、EPA/Pyramid/Spike 降噪源、双尺度场、候选超集和候选曲线。\n';
-        md += '- **V10-Topology**：第一主读出是降噪 Spike 修正向量与 Chunk 的相似度；第二主读出比较查询临时有向河网与候选原生有序 Tag 构型，并按图可靠度动态竞争解释权。旧相对增量公式仅由 `legacy_relative_bonus` 回放。\n';
-        md += '- **V10-Topology V2 Unified**：以 Pure 连续场得分为内部坐标，按 atomic/propositional/narrative 查询模式估计动态结构置信度；Graph 只奖励其相对同等 Pure 强度候选的正向条件创新，不可观测或低于条件期望时不处罚 Pure。\n';
-        md += '- **V10-Topology V3 Unified**：以 Pure 连续场为底座；河网可观测性 Ω 门控 V2 条件创新奖励；零边极限 Direct Anchor 保护稀有多种子精确接触候选，并在低 Ω 工况下降级无充分传播依据的结构角色。\n';
-        md += '- **V10 Pure × Topology RRF 1:1**：在完整同池排名上按 `0.5/(60+PureRank) + 0.5/(60+TopologyRank)` 融合，作为两路同权对照。\n';
-        md += '- **V10 Pure × Topology RRF 2:1**：按 `(2/3)/(60+PureRank) + (1/3)/(60+TopologyRank)` 融合，优先保护 Pure 识别的直接答案与高价值前因链，同时保留 Topology 的结构召回。两条 RRF 均不混合异标度绝对分，也不修改底层内核。\n';
-        md += `- **Rerank**：${compareRerank
-            ? (rerankTrack?.configured
-                ? '已启用独立外部精排。'
-                : '已请求但服务未配置，轨道为明确标记的降级输出。')
-            : '未请求。'}\n`;
-        md += `- V10 Artifact：\`${artifact.artifactSig}\`\n`;
-        md += `- V9 Artifact：\`${v9Artifact.artifactSig}\`\n`;
-        md += `- Query ID：\`${queryState.queryId}\`\n`;
-        md += `- V10 查询源：\`${queryState.sourceObservation?.sourceMode || 'unknown'}\`；V9 观测资产：\`${queryState.sourceObservation?.v9ArtifactSig || '—'}\`\n`;
-        const sourceDiagnostics = queryState.sourceObservation?.diagnostics || {};
-        const riverDiagnostics = queryState.queryRiverGraph?.diagnostics || {};
-        const topologyV3Results = tracks.topologyV3?.results || [];
-        const topologyV3Observation =
-            topologyV3Results[0]?.armResult?.topologyV3 || {};
-        const anchorBatchDiagnostics =
-            tracks.topologyV3?.diagnostics?.anchorBatchDiagnostics || {};
-        const anchorRankedItems = topologyV3Results
-            .slice()
-            .sort((left, right) =>
-                (
-                    Number(right?.armResult?.topologyV3?.anchorStrength)
-                    || 0
-                ) - (
-                    Number(left?.armResult?.topologyV3?.anchorStrength)
-                    || 0
-                )
-            );
-        const strongestAnchorItem = anchorRankedItems[0] || null;
-        const secondAnchorItem = anchorRankedItems[1] || null;
-        const strongestAnchorStrength = Number(
-            strongestAnchorItem?.armResult?.topologyV3?.anchorStrength
-        ) || 0;
-        const secondAnchorStrength = Number(
-            secondAnchorItem?.armResult?.topologyV3?.anchorStrength
-        ) || 0;
-        const anchorFrontierPromotions = topologyV3Results.filter(item =>
-            item?.armResult?.topologyV3?.roleReclassificationReason
-                === 'strong-direct-anchor-contrast'
-        ).length;
-        const anchorAwardedCount = Number(
-            tracks.topologyV3?.diagnostics?.anchorAwardedCount
-        ) || 0;
-        md += `- 降噪观测：完整=${sourceDiagnostics.completeObservation === true ? '是' : '否'}；向量已变化=${sourceDiagnostics.vectorChanged === true ? '是' : '否'}；ΔL2=${fmt(sourceDiagnostics.vectorDeltaL2, 8)}；源↔增强余弦=${fmt(sourceDiagnostics.sourceEnhancedCosine, 8)}；源节点=${sourceDiagnostics.normalizedSourceNodes ?? sourceDiagnostics.sourceNodes ?? '—'}；EPA深度=${queryState.sourceObservation?.epa?.logicDepth ?? '—'}；Pyramid层数=${queryState.sourceObservation?.pyramid?.levels?.length ?? queryState.sourceObservation?.pyramid?.depth ?? '—'}${sourceDiagnostics.fallbackReason ? `；退化原因=${sourceDiagnostics.fallbackReason}` : ''}\n`;
-        md += `- Spike 临时河网：节点=${riverDiagnostics.reachedNodes ?? queryState.queryRiverGraph?.nodes?.length ?? 0}；边=${riverDiagnostics.activeEdges ?? queryState.queryRiverGraph?.edges?.length ?? 0}；种子=${riverDiagnostics.seedNodes ?? '—'}；Ω=${fmt(topologyV3Observation.omega)}（边=${fmt(topologyV3Observation.omegaEdge)}/涌现=${fmt(topologyV3Observation.omegaEmerge)}/流熵=${fmt(topologyV3Observation.omegaFlow)}，工况=${topologyV3Observation.regime || '—'}）\n`;
-        md += `- Direct Anchor 观测：锚种子=${anchorBatchDiagnostics.anchorSeedCount ?? '—'}；质量归一=${tracks.topologyV3?.diagnostics?.anchorMassNormalization || anchorBatchDiagnostics.massNormalization || '—'}；最强候选=${strongestAnchorItem ? `#${itemId(strongestAnchorItem)} / ${fmt(strongestAnchorStrength)}` : '—'}；次强候选=${secondAnchorItem ? `#${itemId(secondAnchorItem)} / ${fmt(secondAnchorStrength)}` : '—'}；池内μ=${fmt(tracks.topologyV3?.diagnostics?.anchorBatchMean)}；池内σ=${fmt(tracks.topologyV3?.diagnostics?.anchorBatchStdDev)}；激活门槛=${fmt(tracks.topologyV3?.diagnostics?.anchorActivationThreshold)}；获奖候选=${anchorAwardedCount}；前沿升格=${anchorFrontierPromotions}\n`;
-        md += `- D/S/T/C 消融：${disabledObservables.length > 0
-            ? disabledObservables.map(value => `\`${value}\``).join(', ')
-            : '无'}\n\n`;
-
-        md += '## 2. 私有地图位移诊断\n\n';
-        md += '> 本节只比较候选生成坐标，不混入最终排序内核。V10 Denoised Spike Map 是 EPA/Pyramid/Spike 完整降噪后形成的第一主读出地图；Local/Transfer 是在同一降噪源上经权限条件化双尺度场回投影形成的地图。\n\n';
-        md += '| 地图对 | 交集 | 并集 | Jaccard | 左侧独占 | 右侧独占 |\n';
-        md += '|---|---:|---:|---:|---:|---:|\n';
-        for (const pair of mapDiagnostics?.pairs || []) {
-            const left = mapDiagnostics.maps[pair.left]?.label || pair.left;
-            const right = mapDiagnostics.maps[pair.right]?.label || pair.right;
-            md += `| ${left} ↔ ${right} | ${pair.intersection} | ${pair.union} | ${fmt(pair.jaccard)} | ${pair.leftOnly} | ${pair.rightOnly} |\n`;
-        }
-        md += '\n### 地图 Top-K 明细\n\n';
-        for (const map of Object.values(mapDiagnostics?.maps || {})) {
-            md += `- **${map.label}**：${map.ranked.map(item =>
-                `${item.rank}.#${item.id}(${fmt(item.score)})`
-            ).join('；') || '无'}\n`;
-        }
-
-        md += `\n## 3. 地图 × 排序内核正交交换（Map-K=${mapExperimentK}）\n\n`;
-        md += '> 每行固定候选地图，只交换 V9 Production Kernel 与 V10 Unified-Pure Kernel。V10 对五张地图的并集仅做一次曲线投影与观测计算，不重复求场。\n\n';
-        md += '| 候选地图 | 地图候选数 | V10可评估 | V9 Kernel Top-K | V10 Kernel Top-K | 内核Top-K重合 | Jaccard |\n';
-        md += '|---|---:|---:|---|---|---:|---:|\n';
-        for (const run of Object.values(orthogonalRuns || {})) {
-            const v9Top = (run.v9Kernel || []).slice(0, k);
-            const v10Top = (run.v10Kernel || []).slice(0, k);
-            const v9Ids = new Set(v9Top.map(itemId));
-            const v10Ids = new Set(v10Top.map(itemId));
-            const intersection = [...v9Ids].filter(id => v10Ids.has(id)).length;
-            const union = new Set([...v9Ids, ...v10Ids]).size;
-            const topList = items => items.map((item, index) =>
-                `${index + 1}.#${itemId(item)}(${fmt(itemScore(item))})`
-            ).join('；') || '无';
-            md += `| ${run.label} | ${run.offered} | ${run.evaluatedByV10} | ${topList(v9Top)} | ${topList(v10Top)} | ${intersection} | ${fmt(union > 0 ? intersection / union : 0)} |\n`;
-            if (run.missingFromProjection?.length > 0) {
-                md += `\n- ${run.label} 未能进入 V10 曲线投影的 Chunk：${run.missingFromProjection.map(id => `#${id}`).join('、')}\n`;
-            }
-        }
-
-        md += '\n### 固定地图内核排名跨越\n\n';
-        md += '> 正 ΔRank 表示内核把候选向前提升；负值表示向后移动。该表只展示每张地图经 V10 Pure 后的 Top-K。\n\n';
-        for (const run of Object.values(orthogonalRuns || {})) {
-            const movementById = new Map(
-                (run.rankMovements || []).map(item => [item.id, item])
-            );
-            md += `#### ${run.label}\n\n`;
-            md += '| Chunk | 地图原排名 | V9 Kernel 排名/Δ | V10 Kernel 排名/Δ | Query | Local | Transfer | Path | Occupancy | 语义底座 | 拓扑原量 | 可靠度 | 拓扑增益 |\n';
-            md += '|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n';
-            for (const item of (run.v10Kernel || []).slice(0, k)) {
-                const id = itemId(item);
-                const movement = movementById.get(id) || {};
-                const components = item.armResult?.components || {};
-                const rankDelta = (rank, delta) => rank == null
-                    ? '—'
-                    : `#${rank} / ${delta > 0 ? '+' : ''}${delta}`;
-                md += `| ${id} | #${movement.sourceRank ?? '—'} | ${rankDelta(movement.v9Rank, movement.v9Delta)} | ${rankDelta(movement.v10Rank, movement.v10Delta)} | ${fmt(components.query)} | ${fmt(components.local)} | ${fmt(components.transfer)} | ${fmt(components.path)} | ${fmt(components.occupancy)} | ${fmt(item.armResult?.semanticBase)} | ${fmt(item.armResult?.topologyRaw)} | ${fmt(item.armResult?.topologyReliability)} | ${fmt(item.armResult?.topologyBonus)} |\n`;
-            }
-            md += '\n';
-        }
-
-        md += '## 4. 产品 Top-K 重合与区间推动\n\n';
-        for (const name of trackOrder.filter(name => name !== 'pure')) {
-            md += `- ${trackLabel(name)} ↔ V10 Unified-Pure：${overlapWithPure(name)}/${k}\n`;
-        }
-        const droppedByUnionCap = Array.isArray(candidateDiagnostics?.droppedByUnionCap)
-            ? candidateDiagnostics.droppedByUnionCap.length
-            : Number(candidateDiagnostics?.droppedByUnionCap) || 0;
-        md += `- 候选超集：提供 ${candidateDiagnostics?.offeredUnique ?? '—'} 个唯一候选，` +
-            `保留 ${candidateDiagnostics?.selectedUnique ?? '—'} 个，` +
-            `并集上限淘汰 ${droppedByUnionCap} 个，` +
-            `多来源入选 ${candidateDiagnostics?.multiSourceSelected ?? '—'} 个。\n\n`;
-
-        const fullKnnRank = new Map(
-            (tracks.knn?.results || []).map((item, index) => [
-                itemId(item),
-                index + 1
-            ])
-        );
-        md += '### V10 Pure Top-K 相对 Raw KNN 的跨越\n\n';
-        md += '| V10排名 | Chunk | Raw KNN排名 | ΔRank | 候选来源 | Query | Local | Transfer | Path | Occupancy | 语义底座 | 拓扑原量 | 可靠度 | 拓扑增益 |\n';
-        md += '|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n';
-        (topByTrack.pure || []).forEach((item, index) => {
-            const id = itemId(item);
-            const rawRank = fullKnnRank.get(id) ?? null;
-            const pureRank = index + 1;
-            const delta = rawRank === null ? null : rawRank - pureRank;
-            const sources = Array.isArray(item.curve?.candidateSources)
-                ? item.curve.candidateSources
-                    .map(source => source.source || String(source))
-                    .join('+')
-                : '—';
-            const components = item.armResult?.components || {};
-            md += `| ${pureRank} | ${id} | ${rawRank === null ? '—' : rawRank} | ${delta === null ? '新候选' : `${delta > 0 ? '+' : ''}${delta}`} | ${sources || '—'} | ${fmt(components.query)} | ${fmt(components.local)} | ${fmt(components.transfer)} | ${fmt(components.path)} | ${fmt(components.occupancy)} | ${fmt(item.armResult?.semanticBase)} | ${fmt(item.armResult?.topologyRaw)} | ${fmt(item.armResult?.topologyReliability)} | ${fmt(item.armResult?.topologyBonus)} |\n`;
+        const rustV3Ranked = await this._handleRiverMemoSearch({
+            query,
+            actualQuery: query,
+            queryVector,
+            candidates,
+            maid,
+            folder,
+            searchAll,
+            k: candidateK,
+            rerank: false,
+            useBM25,
+            tagBoost,
+            coreTags,
+            coreBoostFactor,
+            aiMemoOptions: { enabled: false, presetName: null },
+            returnResults: true
         });
-        md += '\n';
 
-        md += '## 5. 统一排名总表\n\n';
-        md += `| Chunk | 记忆摘要 | ${trackOrder.map(trackLabel).join(' | ')} |\n`;
-        md += `|---:|---|${trackOrder.map(() => '---:').join('|')}|\n`;
-        for (const id of allIds) {
-            const summary = this._escapeMarkdownCell(
-                this._shortMemoryText(itemText(canonicalById.get(id)), 100)
+        let rerankTrack = {
+            requested: compareRerank,
+            available: false,
+            results: []
+        };
+        const rerankConfigured = Boolean(
+            this.rerankConfig.url
+            && this.rerankConfig.apiKey
+            && this.rerankConfig.model
+        );
+        if (compareRerank && rerankConfigured) {
+            const candidateById = new Map(
+                candidates.map(item => [Number(item.label), item])
             );
-            const cells = trackOrder.map(name => {
-                const ranked = rankMaps[name]?.get(id);
-                return ranked ? `#${ranked.rank} / ${fmt(ranked.score)}` : '—';
-            });
-            md += `| ${id} | ${summary} | ${cells.join(' | ')} |\n`;
-        }
-
-        if (!includeDetails) {
-            md += '\n> 后续完整候选正文、诊断、性能计时与评审区已默认省略；显式传入 `include_details: true` 可返回。\n';
-            return md;
-        }
-
-        md += '\n## 6. 各具名轨道完整候选\n\n';
-        for (const name of trackOrder) {
-            md += `### ${trackLabel(name)}\n\n`;
-            const items = topByTrack[name] || [];
-            if (items.length === 0) {
-                md += '无可用结果。\n\n';
-                continue;
-            }
-            items.forEach((item, index) => {
-                md += `#### ${index + 1}. Chunk ${itemId(item)} · 分数 ${fmt(itemScore(item), 6)}\n\n`;
-                md += `- 日记本：${this._escapeMarkdownCell(itemDiary(item) || '—')}\n`;
-                md += `- 路径：${this._escapeMarkdownCell(itemPath(item) || '—')}\n`;
-                if (item.armResult) {
-                    const values = item.observables?.values || {};
-                    const components = item.armResult.components || {};
-                    const sources = Array.isArray(item.curve?.candidateSources)
-                        ? item.curve.candidateSources
-                            .map(source => source.source || String(source))
-                            .join('+')
-                        : '';
-                    md += `- 候选来源：${sources || '—'}\n`;
-                    md += `- V10 基础分：${fmt(item.armResult.baseScore, 6)}；门控倍率：${fmt(item.armResult.gateMultiplier)}；Observed 增益：${fmt(item.armResult.observedBonus, 6)}\n`;
-                    if (item.armResult.fusion) {
-                        const fusion = item.armResult.fusion;
-                        md += `- Pure × Topology RRF：权重=${fmt(fusion.weights?.pure, 4)}:${fmt(fusion.weights?.topology, 4)}；Pure=#${fusion.pureRank ?? '—'} / ${fmt(fusion.pureContribution, 8)}；Topology=#${fusion.topologyRank ?? '—'} / ${fmt(fusion.topologyContribution, 8)}；k=${fusion.k}；融合分=${fmt(item.armResult.score, 8)}\n`;
-                    }
-                    md += `- 六分量 Q/D/L/X/G/O：${fmt(components.query)}/${fmt(item.curve?.denoisedFieldScore)}/${fmt(components.local)}/${fmt(components.transfer)}/${fmt(components.path)}/${fmt(components.occupancy)}\n`;
-                    md += `- 权限校准：模式=${item.armResult.pureScoreMode || '—'}；语义底座=${fmt(item.armResult.semanticBase)}；拓扑原量=${fmt(item.armResult.topologyRaw)}；可靠度=${fmt(item.armResult.topologyReliability)}；拓扑增益=${fmt(item.armResult.topologyBonus)}≤${fmt(item.armResult.topologyBonusCap)}\n`;
-                    if (item.armResult.topologyDualReadout) {
-                        const dual = item.armResult.topologyDualReadout;
-                        md += `- Topology 双主读出：模式=${item.armResult.topologyScoreMode || '—'}；Field=${fmt(dual.fieldScore)}；Graph=${fmt(dual.graphScore)}；可靠度模式=${dual.graphReliabilityMode || '—'}；图可靠度=${fmt(dual.graphReliability)}（边=${fmt(dual.graphEdgeReliability)}/节点退化=${fmt(dual.graphNodeOnlyReliability)}≤${fmt(dual.graphNodeOnlyReliabilityCap)}）；图权重=${fmt(dual.graphWeight)}；合成=${fmt(dual.dualReadoutScore)}\n`;
-                        md += `- 相对河网：节点覆盖=${fmt(dual.matchedNodeCoverage)}；边覆盖=${fmt(dual.matchedEdgeCoverage)}；节点对齐=${fmt(dual.nodeAlignmentScore)}；节点图分=${fmt(dual.nodeGraphScore)}；完整边图分=${fmt(dual.edgeGraphScore)}；相对距离=${fmt(dual.relativeDistanceScore)}；方向=${fmt(dual.directionScore)}；边拓扑=${fmt(dual.edgeTopologyScore)}；Motif=${fmt(dual.motifScore)}；正文闭合=${fmt(dual.meanClosure)}\n`;
-                        const strongestEdges = Array.isArray(item.relativeTopology?.edgeAlignments)
-                            ? item.relativeTopology.edgeAlignments.slice(0, 3)
-                            : [];
-                        if (strongestEdges.length > 0) {
-                            md += `- 最强河道对应：${strongestEdges.map(edge =>
-                                `${edge.sourceId}→${edge.targetId} ≈ ${edge.candidateSourceId}→${edge.candidateTargetId}` +
-                                `(距${fmt(edge.distanceSimilarity, 3)}/向${fmt(edge.directionSimilarity, 3)}/独立${fmt(edge.independentFraction, 3)}/质${fmt(edge.edgeQuality, 3)})`
-                            ).join('；')}\n`;
-                        } else {
-                            md += `- 最强河道对应：无（${dual.reason || '未形成可信边对应'}）\n`;
-                        }
-                    }
-                    if (item.armResult.topologyV2) {
-                        const v2 = item.armResult.topologyV2;
-                        const profile = v2.queryProfile || {};
-                        md += `- Topology V2.1 大统一：查询模式=${v2.queryMode}；知识角色=${v2.role || '—'}；查询置信=${fmt(v2.queryConfidence)}；候选置信=${fmt(v2.candidateConfidence)}；统计可靠=${fmt(v2.statisticalReliability)}；联合置信=${fmt(v2.combinedConfidence)}；Pure=${fmt(v2.pureScore)}；Graph=${fmt(v2.graphScore)}（节点=${fmt(v2.graphNodeScore)}/边=${fmt(v2.graphEdgeScore)}）；最终=${fmt(v2.finalScore)}；负向处罚=关闭\n`;
-                        md += `- V2.1 保守创新：条件期望=${fmt(v2.conditionalExpectedGraph)}；标准差=${fmt(v2.conditionalStdDev)}；预测不确定度=${fmt(v2.conditionalPredictionUncertainty)}；原创新=${fmt(v2.graphInnovationRaw)}；下置信界创新=${fmt(v2.graphInnovationLowerBound)}→正向${fmt(v2.graphInnovationPositive)}；z=${fmt(v2.innovationConfidenceZ)}；有效样本=${fmt(v2.conditionalEffectivePeerCount)}；条件邻居=${v2.conditionalPeerCount}\n`;
-                        md += `- V2.1 角色权限：Direct证据=${fmt(v2.directEvidence)}；结构证据=${fmt(v2.structuralEvidence)}；角色倍率=${fmt(v2.roleMultiplier)}；请求奖励=${fmt(v2.requestedBonus)}；角色限幅后=${fmt(v2.confidenceLimitedBonus)}≤${fmt(v2.roleBonusCap)}；直接答案前沿=${fmt(v2.directFrontierScore)}；前沿预算=${v2.frontierBonusBudget === null ? '无限' : fmt(v2.frontierBonusBudget)}；前沿限幅=${v2.frontierLimited ? '是' : '否'}；最终奖励=${fmt(v2.bonus)}\n`;
-                        md += `- V2 查询动态置信：模式适配=${fmt(profile.structuralAdequacy)}；场相干=${fmt(profile.fieldCoherence)}（能量集中=${fmt(profile.energyConcentration)}/EPA逻辑=${fmt(profile.epaLogicDepth)}/金字塔相干=${fmt(profile.pyramidCoherence)}）；当前知识域可观测=${fmt(profile.domainObservability)}；综合适配=${fmt(profile.dynamicAdequacy)}；观测头部K=${profile.observabilityHeadK ?? '—'}\n`;
-                        md += `- V2 候选置信归因：闭合=${fmt(v2.closure)}；节点覆盖=${fmt(v2.nodeCoverage)}；边覆盖=${fmt(v2.edgeCoverage)}；节点对齐=${fmt(v2.nodeAlignment)}；边可靠=${fmt(v2.edgeReliability)}；核带宽(Pure/Closure/Direct)=${fmt(v2.conditionalBandwidth)}/${fmt(v2.conditionalClosureBandwidth)}/${fmt(v2.conditionalDirectBandwidth)}\n`;
-                    }
-                    if (item.armResult.topologyV3) {
-                        const v3 = item.armResult.topologyV3;
-                        md += `- Topology V3 工况门控：Ω=${fmt(v3.omega)}（边=${fmt(v3.omegaEdge)}/涌现=${fmt(v3.omegaEmerge)}/流熵=${fmt(v3.omegaFlow)}，${v3.regime || '—'}）；γ=${fmt(v3.omegaGamma)}；V2奖励=${fmt(v3.v2Bonus)}×${fmt(v3.graphGate)}→${fmt(v3.gatedV2Bonus)}\n`;
-                        md += `- V3 Direct Anchor：聚合=${v3.anchorMassNormalization || '—'}；锚分=${fmt(v3.anchorScore)}×可靠=${fmt(v3.anchorReliability)}→强度=${fmt(v3.anchorStrength)}；激活=${fmt(v3.anchorActivation)}；奖励=${fmt(v3.anchorBonus)}≤${fmt(v3.anchorBonusCap)}；接触种子=${v3.contactedSeeds}（精确=${v3.exactContacts}/语义=${v3.semanticContacts}）；闭合=${fmt(v3.meanClosure)}\n`;
-                        md += `- V3 Anchor 批内对比：μ=${fmt(v3.anchorBatchMean)}；σ=${fmt(v3.anchorBatchStdDev)}；θ=${fmt(v3.anchorActivationThreshold)}（floor=${fmt(v3.anchorActivationFloor)}/z=${fmt(v3.anchorActivationZ)}/sat=${fmt(v3.anchorSaturation)}）；最强=${fmt(v3.strongestAnchorStrength)}；次强=${fmt(v3.secondAnchorStrength)}；前沿判据=${fmt(v3.anchorFrontierContrast)}×且≥${fmt(v3.anchorFrontierAbsFloor)}；升格=${v3.anchorFrontierPromoted ? '是' : '否'}；获奖=${v3.anchorAwardedCount}\n`;
-                        md += `- V3 角色与前沿：${v3.originalRole || '—'}→${v3.role || '—'}${v3.roleReclassified ? `（${v3.roleReclassificationReason || '已改判'}）` : '（未改判）'}；直接前沿=${fmt(v3.directFrontierScore)}；来源=${v3.frontierSource || '—'}；最终=${fmt(v3.finalScore)}\n`;
-                    }
-                    if (item.armResult.topologyRelativeGeometry) {
-                        const relative = item.armResult.topologyRelativeGeometry;
-                        md += `- 三层相对几何：Q=${fmt(relative.queryBase)}；ΔL=${fmt(relative.localGain)}×${fmt(relative.localReliability)}→${fmt(relative.localGainAward)}；ΔX=${fmt(relative.transferGain)}×${fmt(relative.transferReliability)}→${fmt(relative.transferGainAward)}；ΔB=${fmt(relative.boundaryGain)}×${fmt(relative.boundaryReliability)}→${fmt(relative.boundaryGainAward)}；Path→${fmt(relative.pathGainAward)}；总几何增益=${fmt(relative.totalGeometryGain)}\n`;
-                        if (relative.strongestBoundary) {
-                            const boundary = relative.strongestBoundary;
-                            md += `- 一跳边界路径：Tag=${this._escapeMarkdownCell(boundary.tagName || boundary.tagId || '—')}；Q→Tag=${fmt(boundary.queryTagScore)}；Tag→Chunk=${fmt(boundary.tagChunkScore)}；B=${fmt(boundary.boundaryPathQuality)}；命中=${relative.boundaryHits}；饱和=${fmt(relative.boundarySaturation)}\n`;
-                        } else {
-                            md += '- 一跳边界路径：无可信边界接触\n';
-                        }
-                    }
-                    md += `- D/S/T/C：${fmt(values.direct)}/${fmt(values.structural)}/${fmt(values.thematic)}/${fmt(values.closure)}\n`;
-                    md += `- 路径质量：${fmt(item.geometry?.pathQuality)}；拒判：${item.armResult.rejected ? '是' : '否'}${item.armResult.rejectionReasons?.length
-                        ? `（${item.armResult.rejectionReasons.join(', ')}）`
-                        : ''}\n`;
-                } else if (name === 'v9') {
-                    md += `- V9 曲线分：${fmt(item.geo_score)}；奖励：${fmt(item.geo_bonus)}；证据级别：${item.geo_evidence_class || '—'}\n`;
-                }
-                md += `\n${itemText(item) || '（空正文）'}\n\n`;
-            });
-        }
-
-        md += '## 7. 性能计时\n\n';
-        md += '| 阶段 | 耗时 ms |\n|---|---:|\n';
-        for (const [name, value] of Object.entries(timing)) {
-            if (name.endsWith('Ms')) md += `| ${name} | ${fmt(value, 3)} |\n`;
-        }
-
-        md += '\n## 8. 评审员裁决区\n\n';
-        md += '请独立评价每条轨道，不要只依据算法内部评分。\n\n';
-        md += '| 轨道 | 相关性(1-5) | 前因/链条完整性(1-5) | 有价值惊喜(1-5) | 漂移风险(1-5，低为好) | 身份/权限正确 | 总体名次 |\n';
-        md += '|---|---:|---:|---:|---:|---|---:|\n';
-        for (const name of trackOrder) {
-            md += `| ${trackLabel(name)} |  |  |  |  |  |  |\n`;
-        }
-        md += '\n### 最终裁决\n\n';
-        md += '- 最佳轨道：\n';
-        md += '- 最差轨道：\n';
-        md += '- V10 独占有效召回：\n';
-        md += '- 漂亮但错误的联想：\n';
-        md += '- 权限或身份问题：\n';
-        md += '- 评审理由：\n';
-
-        return md;
-    }
-
-    async _buildTagMemoABRerankRun({ query, candidates, runs, abMode, topL, k, useBM25 }) {
-        const configured = Boolean(
-            this.rerankConfig.url &&
-            this.rerankConfig.apiKey &&
-            this.rerankConfig.model
-        );
-        if (!configured) {
-            console.warn('[LightMemo] TagMemo V9.1 Rerank comparison requested, but Rerank is not configured.');
-            return {
-                requested: true,
-                available: false,
-                error: 'Rerank 未配置（需要 RerankUrl、RerankApi、RerankModel）',
-                ranked: []
-            };
-        }
-
-        const poolById = new Map();
-        const candidateById = new Map(
-            candidates.map(candidate => [Number(candidate.label), candidate])
-        );
-        const addToPool = (items, limit = items.length) => {
-            items.slice(0, limit).forEach((item, index) => {
-                const id = Number(item.id ?? item.label);
-                if (!Number.isFinite(id)) return;
-                const canonical = candidateById.get(id) || {};
-                const existing = poolById.get(id);
-                const retrievalRank = index + 1;
-                if (!existing || retrievalRank < existing.retrieval_rank) {
+            const poolById = new Map();
+            for (const track of [knnRanked, v9Ranked, rustV3Ranked]) {
+                for (const item of track.slice(0, candidateK)) {
+                    const id = Number(item.id ?? item.label ?? item.chunkId);
+                    if (!Number.isFinite(id) || poolById.has(id)) continue;
+                    const canonical = candidateById.get(id) || item;
                     poolById.set(id, {
                         ...canonical,
-                        ...(existing || {}),
                         ...item,
                         id,
                         label: item.label ?? canonical.label ?? id,
-                        text: String(item.text ?? existing?.text ?? canonical.text ?? '').trim(),
-                        retrieval_rank: retrievalRank
+                        text: String(item.text ?? canonical.text ?? '').trim(),
+                        retrieval_rank: poolById.size + 1
                     });
                 }
-            });
-        };
-
-        if (abMode === 'A') {
-            addToPool(runs.knn.ranked, topL);
-            addToPool(runs.v9.ranked, topL);
-            addToPool(runs.geodesic.ranked, topL);
-            if (useBM25) addToPool(this._buildBm25TopIds(query, candidates, topL), topL);
-        } else {
-            addToPool(runs.knn.top, k);
-            addToPool(runs.v9.top, k);
-            addToPool(runs.geodesic.top, k);
-        }
-
-        const pool = [...poolById.values()].filter(item => item.text);
-        const droppedCount = poolById.size - pool.length;
-        if (droppedCount > 0) {
-            console.warn(`[LightMemo] TagMemo V9.1 comparison: dropped ${droppedCount} Rerank candidates without text.`);
-        }
-        if (pool.length === 0) {
-            return {
+            }
+            const pool = [...poolById.values()].filter(item => item.text);
+            const reranked = await this._rerankDocuments(
+                query,
+                pool,
+                Math.min(k, pool.length)
+            );
+            rerankTrack = {
                 requested: true,
-                available: false,
-                error: '没有可供 Rerank 横向比较的候选',
-                ranked: []
+                available: reranked.some(item => !item.rerank_failed),
+                results: normalizeRanked(reranked, 'rerank_score')
             };
         }
 
-        console.log(`[LightMemo] TagMemo V9.1 comparison: reranking ${pool.length} symmetric candidates.`);
-        const outputLimit = abMode === 'A' ? pool.length : Math.min(k, pool.length);
-        const reranked = await this._rerankDocuments(query, pool, outputLimit);
-        const failedCount = reranked.filter(item => item.rerank_failed).length;
-        const ranked = reranked.map(item => ({
-            ...item,
-            id: item.id ?? item.label,
-            score: Number(item.rerank_score) || 0
-        }));
+        return this._formatProductionAB({
+            query,
+            k,
+            candidateK,
+            artifactVersion: v9Snapshot.bundle.algorithmVersion || 'v9',
+            tracks: {
+                knn: knnRanked,
+                v9: v9Ranked,
+                rustV3: rustV3Ranked,
+                rerank: rerankTrack.results
+            },
+            rerankTrack
+        });
+    }
 
-        return {
-            requested: true,
-            available: failedCount < reranked.length,
-            partialFailure: failedCount > 0 && failedCount < reranked.length,
-            error: failedCount === reranked.length ? 'Rerank API 调用全部失败，未生成有效对比' : null,
-            candidateCount: pool.length,
-            ranked
+    _formatProductionAB({
+        query,
+        k,
+        candidateK,
+        artifactVersion,
+        tracks,
+        rerankTrack
+    }) {
+        const definitions = [
+            ['knn', 'KNN'],
+            ['v9', `TagMemo ${artifactVersion}`],
+            ['rustV3', 'Rust Topology V3']
+        ];
+        if (rerankTrack.requested) definitions.push(['rerank', 'Rerank']);
+
+        const topTracks = Object.fromEntries(definitions.map(([name]) => [
+            name,
+            (tracks[name] || []).slice(0, k)
+        ]));
+        const rankMaps = Object.fromEntries(definitions.map(([name]) => [
+            name,
+            new Map(topTracks[name].map((item, index) => [
+                Number(item.id ?? item.label ?? item.chunkId),
+                {
+                    rank: index + 1,
+                    score: Number(
+                        item.score
+                        ?? item.rerank_score
+                        ?? item.hybridScore
+                        ?? item.vectorScore
+                    ) || 0
+                }
+            ]))
+        ]));
+        const canonicalById = new Map();
+        for (const [name] of definitions) {
+            for (const item of topTracks[name]) {
+                const id = Number(item.id ?? item.label ?? item.chunkId);
+                if (Number.isFinite(id) && !canonicalById.has(id)) {
+                    canonicalById.set(id, item);
+                }
+            }
+        }
+
+        const overlap = (left, right) => {
+            const leftIds = new Set(topTracks[left].map(item =>
+                Number(item.id ?? item.label ?? item.chunkId)
+            ));
+            const rightIds = new Set(topTracks[right].map(item =>
+                Number(item.id ?? item.label ?? item.chunkId)
+            ));
+            return [...leftIds].filter(id => rightIds.has(id)).length;
         };
+        const fmt = value => Number.isFinite(Number(value))
+            ? Number(value).toFixed(4)
+            : '—';
+        const shortText = text => {
+            const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+            return normalized.length > 100
+                ? `${normalized.slice(0, 99)}…`
+                : normalized;
+        };
+
+        let output = '# LightMemo 生产构型 A/B\n\n';
+        output += `- 查询：${this._escapeMarkdownCell(query)}\n`;
+        output += `- Top-K：${k}；候选窗口：${candidateK}\n`;
+        output += `- KNN ↔ TagMemo V9 重合：${overlap('knn', 'v9')}/${k}\n`;
+        output += `- KNN ↔ Rust V3 重合：${overlap('knn', 'rustV3')}/${k}\n`;
+        output += `- TagMemo V9 ↔ Rust V3 重合：${overlap('v9', 'rustV3')}/${k}\n`;
+        if (rerankTrack.requested) {
+            output += `- Rerank：${rerankTrack.available
+                ? '可用'
+                : '已请求，但未配置或调用失败'}\n`;
+        }
+        output += '\n';
+        output += `| Chunk | 记忆摘要 | ${definitions.map(([, label]) => label).join(' | ')} |\n`;
+        output += `|---:|---|${definitions.map(() => '---:').join('|')}|\n`;
+        for (const [id, item] of canonicalById) {
+            const cells = definitions.map(([name]) => {
+                const ranked = rankMaps[name].get(id);
+                return ranked
+                    ? `#${ranked.rank} / ${fmt(ranked.score)}`
+                    : '—';
+            });
+            output += `| ${id} | ${this._escapeMarkdownCell(shortText(item.text))} | ${cells.join(' | ')} |\n`;
+        }
+        return output;
     }
 
     _buildBm25TopIds(query, candidates, limit) {
@@ -2641,420 +1255,6 @@ class LightMemoPlugin {
             .slice(0, limit);
     }
 
-    _rankMap(items) {
-        return new Map(items.map((item, index) => [
-            Number(item.id ?? item.label),
-            { rank: index + 1, score: Number(item.score ?? item.vectorScore) || 0, item }
-        ]));
-    }
-
-    _shortMemoryText(text, maxLength = 84) {
-        const normalized = String(text || '').replace(/\s+/g, ' ').trim();
-        return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
-    }
-
-    _formatGeometryShadow(item) {
-        const shadow = item?.geo_geometry_shadow;
-        if (!shadow || typeof shadow !== 'object') return '';
-        const fmt = value => Number(value || 0).toFixed(3);
-        const weights = shadow.queryWeights || {};
-        const direction = Number(shadow.directionConsistency || 0);
-        const lift = Number(shadow.vectorLift || 0);
-        const guarded = shadow.nodeFieldGuarded === true ? ' 节点场守卫' : '';
-        return `D/S/T/C4/F=${fmt(shadow.directScore)}/${fmt(shadow.structuralScore)}/` +
-            `${fmt(shadow.thematicScore)}/${fmt(shadow.closureScore)}/${fmt(shadow.fusedScore)}` +
-            ` W=${fmt(weights.direct)}/${fmt(weights.structural)}/${fmt(weights.thematic)}` +
-            ` Dir=${fmt(direction)} Lift=${lift >= 0 ? '+' : ''}${lift.toFixed(4)}${guarded}`;
-    }
-
-    _formatGeometryAuxiliary(item) {
-        if (!item || item.geo_aux_enabled !== true) return '辅助=关闭';
-        const fmt = value => Number(value || 0).toFixed(4);
-        const reliability = Number(item.geo_aux_reliability || 0).toFixed(3);
-        const identity = Number(item.geo_identity_anchor_strength || 0).toFixed(3);
-        const identityMark = item.geo_identity_anchor_eligible === true ? '✓' : '×';
-        return `主轨=${fmt(item.geo_base_bonus)} 辅助=${fmt(item.geo_aux_bonus)} ` +
-            `地板=${fmt(item.geo_aux_target_floor)}(几何${fmt(item.geo_aux_geometry_floor)}` +
-            `/身份${fmt(item.geo_aux_identity_floor)}) 可靠=${reliability} ` +
-            `身份锚=${identityMark}${identity} 原因=${item.geo_aux_reason || 'unknown'}`;
-    }
-
-    _formatTagMemoKernelAB({
-        query,
-        candidates,
-        runs,
-        topL,
-        k,
-        tagBoost,
-        useBM25,
-        rerankRun,
-        includeDetails = false
-    }) {
-        const bm25Top = useBM25 ? this._buildBm25TopIds(query, candidates, topL) : [];
-        const sources = new Map();
-        const add = (items, source) => items.slice(0, topL).forEach(item => {
-            const id = Number(item.id ?? item.label);
-            if (!sources.has(id)) sources.set(id, new Set());
-            sources.get(id).add(source);
-        });
-        add(runs.knn.ranked, 'KNN');
-        add(runs.v9.ranked, 'V9.1');
-        add(runs.geodesic.ranked, '测地线');
-        add(bm25Top, 'BM25');
-
-        const knnMap = this._rankMap(runs.knn.ranked);
-        const v91Map = this._rankMap(runs.v9.ranked);
-        const geoMap = this._rankMap(runs.geodesic.ranked);
-        const rerankMap = rerankRun?.available ? this._rankMap(rerankRun.ranked) : new Map();
-        const byId = new Map(candidates.map(item => [Number(item.label), item]));
-        const ids = [...sources.keys()].sort((a, b) => {
-            const bestA = Math.min(knnMap.get(a)?.rank || Infinity, v91Map.get(a)?.rank || Infinity, geoMap.get(a)?.rank || Infinity);
-            const bestB = Math.min(knnMap.get(b)?.rank || Infinity, v91Map.get(b)?.rank || Infinity, geoMap.get(b)?.rank || Infinity);
-            return bestA - bestB;
-        });
-
-        const displayedIds = ids.slice(0, topL);
-        let text = `\n[--- TagMemo V9.1 对照模式 A：固定对称候选超集 ---]\n`;
-        text += `查询: ${query}\n参数: topL=${topL}, displayK=${k}, tag_boost=${tagBoost}, BM25=${useBM25}, compare_rerank=${Boolean(rerankRun)}\n`;
-        text += `V9.1资产: ${runs.v9.snapshot.bundle.artifactSig}\n`;
-        text += `固定实验变量: V9.1不开测地线 vs V9.1开启测地线（同一增强向量、能量场与候选全集）\n`;
-        text += `对称超集: ${ids.length} 个唯一 chunk（KNN ∪ V9.1 ∪ 测地线${useBM25 ? ' ∪ BM25' : ''}），表格展示 ${displayedIds.length} 条\n`;
-        if (rerankRun) {
-            text += rerankRun.available
-                ? `Rerank横向基线: ${rerankRun.candidateCount} 个对称候选${rerankRun.partialFailure ? '（部分批次失败）' : ''}\n\n`
-                : `Rerank横向基线: 不可用（${rerankRun.error}）\n\n`;
-        } else {
-            text += '\n';
-        }
-        text += `| # | 候选记忆 | 进入路径 | KNN排名/分数 | V9.1无测地线 | V9.1+测地线 | ΔRank(测地线-无测地线) | 曲线分/置信度 |${rerankRun ? ' Rerank排名/分数 |' : ''}\n`;
-        text += `|---:|---|---|---:|---:|---:|---:|---:|${rerankRun ? '---:|' : ''}\n`;
-        displayedIds.forEach((id, index) => {
-            const candidate = byId.get(id);
-            const knn = knnMap.get(id);
-            const v91 = v91Map.get(id);
-            const geo = geoMap.get(id);
-            const reranked = rerankMap.get(id);
-            const delta = v91 && geo ? v91.rank - geo.rank : null;
-            const fmt = value => value ? `${value.rank}/${value.score.toFixed(4)}` : '—';
-            const geoItem = geo?.item;
-            const contactTags = Array.isArray(geoItem?.geo_contact_tags)
-                ? geoItem.geo_contact_tags.slice(0, 4).map(contact => {
-                    const marker = contact.exact ? '=' : '~';
-                    const source = contact.sourceType
-                        ? `@${contact.sourceType}${Number.isFinite(contact.hop) ? `:${contact.hop}` : ''}`
-                        : '';
-                    return `${marker}${contact.name || contact.id}:${Number(contact.potential || 0).toFixed(2)}${source}`;
-                }).join(', ')
-                : '';
-            const geometryShadow = this._formatGeometryShadow(geoItem);
-            const geometryAuxiliary = this._formatGeometryAuxiliary(geoItem);
-            const diagnostics = (geoItem && Number(geoItem.geo_score) > 0
-                ? `${geoItem.geo_evidence_class || 'unknown'} ` +
-                    `${Number(geoItem.geo_score).toFixed(4)}/${Number(geoItem.geo_confidence || 0).toFixed(3)} ` +
-                    `+${Number(geoItem.geo_bonus || 0).toFixed(4)}≤${Number(geoItem.geo_bonus_cap || 0).toFixed(3)}` +
-                    `${Number(geoItem.geo_direct_semantic_hits || 0) > 0
-                        ? ` 直锚=${Number(geoItem.geo_direct_semantic_hits)}` +
-                            `/强${Number(geoItem.geo_direct_semantic_strength || 0).toFixed(2)}` +
-                            `/奖信${Number(geoItem.geo_reward_confidence || 0).toFixed(2)}`
-                        : ''}` +
-                    `${contactTags ? `<br>${this._escapeMarkdownCell(contactTags)}` : ''}`
-                : `守卫/0${geoItem?.geo_guard_reason ? `<br>${this._escapeMarkdownCell(geoItem.geo_guard_reason)}` : ''}`) +
-                `${geometryShadow ? `<br>${this._escapeMarkdownCell(geometryShadow)}` : ''}` +
-                `${geometryAuxiliary ? `<br>${this._escapeMarkdownCell(geometryAuxiliary)}` : ''}`;
-            text += `| ${index + 1} | ${this._escapeMarkdownCell(this._shortMemoryText(candidate?.text))} | ${[...sources.get(id)].join('+')} | ${fmt(knn)} | ${fmt(v91)} | ${fmt(geo)} | ${delta === null ? '—' : delta > 0 ? `+${delta}` : delta} | ${diagnostics} |${rerankRun ? ` ${fmt(reranked)} |` : ''}\n`;
-        });
-        if (!includeDetails) {
-            text += `\n后续说明已默认省略；显式传入 include_details: true 可返回。\n`;
-            return text;
-        }
-        text += `\n说明: 正 ΔRank 表示开启测地线后相对同一 V9.1 向量基线前移；诊断依次显示证据等级、曲线分/置信度、最终奖励≤等级上限。direct/structural/thematic 的排序权限逐级降低；@seed/@core/@emergent:n 表示接触场节点来源。D/S/T/C4/F 分别表示直接层、结构层、主题层、查询—候选闭合层和有界融合分；W 为查询动态权重，Dir 为候选顺序正向导通一致性，Lift 为增强查询相对原查询的余弦提升。辅助生产轨不替换主轨，只在节点场证据、类别证据、融合分与闭合度同时过门时补足保守奖励地板；几何地板与严格身份锚地板取最大值而不叠加。C4/Lift 不可独立发奖，节点场守卫候选保持无测地线分数。Rerank 只重排同一对称候选池。\n`;
-        text += `[--- 模式 A 结束 ---]\n`;
-        return text;
-    }
-
-    _formatTagMemoProductAB({
-        query,
-        runs,
-        k,
-        tagBoost,
-        rerankRun,
-        includeDetails = false
-    }) {
-        const knnTop = runs.knn.top;
-        const v91Top = runs.v9.top;
-        const geoTop = runs.geodesic.top;
-        const knnIds = new Set(knnTop.map(item => Number(item.id ?? item.label)));
-        const v91Ids = new Set(v91Top.map(item => Number(item.id ?? item.label)));
-        const geoIds = new Set(geoTop.map(item => Number(item.id ?? item.label)));
-        const geoOverlap = [...v91Ids].filter(id => geoIds.has(id));
-        const vectorOnly = [...v91Ids].filter(id => !geoIds.has(id));
-        const geoOnly = [...geoIds].filter(id => !v91Ids.has(id));
-        const knnMap = this._rankMap(knnTop);
-        const v91Map = this._rankMap(v91Top);
-        const geoMap = this._rankMap(geoTop);
-        const rerankMap = rerankRun?.available ? this._rankMap(rerankRun.ranked) : new Map();
-        const rerankIds = new Set(rerankRun?.available ? rerankRun.ranked.map(item => Number(item.id ?? item.label)) : []);
-        const rerankV91Overlap = [...rerankIds].filter(id => v91Ids.has(id)).length;
-        const rerankGeoOverlap = [...rerankIds].filter(id => geoIds.has(id)).length;
-        const items = new Map();
-        [...knnTop, ...v91Top, ...geoTop, ...(rerankRun?.ranked || [])]
-            .forEach(item => items.set(Number(item.id ?? item.label), item));
-        const union = [...new Set([...knnIds, ...v91Ids, ...geoIds, ...rerankIds])];
-
-        let text = `\n[--- TagMemo V9.1 对照模式 B：端到端寻址 ---]\n`;
-        text += `查询: ${query}\n参数: k=${k}, tag_boost=${tagBoost}, geodesic_comparison=always, compare_rerank=${Boolean(rerankRun)}\n`;
-        text += `V9.1资产: ${runs.v9.snapshot.bundle.artifactSig}\n`;
-        text += `无测地线/测地线重合=${geoOverlap.length}/${k} (${(geoOverlap.length / k * 100).toFixed(1)}%) | 无测地线独占=${vectorOnly.length} | 测地线独占=${geoOnly.length}\n`;
-        if (rerankRun) {
-            text += rerankRun.available
-                ? `Rerank Top-${rerankRun.ranked.length}: 与无测地线重合=${rerankV91Overlap} | 与测地线重合=${rerankGeoOverlap}${rerankRun.partialFailure ? ' | 部分批次失败' : ''}\n\n`
-                : `Rerank横向基线: 不可用（${rerankRun.error}）\n\n`;
-        } else {
-            text += '\n';
-        }
-        text += `| 记忆片段 | KNN | V9.1无测地线 | V9.1+测地线 | 曲线分/置信度 |${rerankRun ? ' Rerank |' : ''} 归属 |\n`;
-        text += `|---|---:|---:|---:|---:|${rerankRun ? '---:|' : ''}---|\n`;
-        union.forEach(id => {
-            const knnItem = knnMap.get(id);
-            const v91Item = v91Map.get(id);
-            const geoItem = geoMap.get(id);
-            const reranked = rerankMap.get(id);
-            const owners = [];
-            if (knnItem) owners.push('KNN');
-            if (v91Item) owners.push('V9.1');
-            if (geoItem) owners.push('测地线');
-            if (reranked) owners.push('Rerank');
-            const fmt = value => value ? `${value.rank}/${value.score.toFixed(4)}` : '—';
-            const geoData = geoItem?.item;
-            const contactTags = Array.isArray(geoData?.geo_contact_tags)
-                ? geoData.geo_contact_tags.slice(0, 4).map(contact => {
-                    const marker = contact.exact ? '=' : '~';
-                    const source = contact.sourceType
-                        ? `@${contact.sourceType}${Number.isFinite(contact.hop) ? `:${contact.hop}` : ''}`
-                        : '';
-                    return `${marker}${contact.name || contact.id}:${Number(contact.potential || 0).toFixed(2)}${source}`;
-                }).join(', ')
-                : '';
-            const geometryShadow = this._formatGeometryShadow(geoData);
-            const geometryAuxiliary = this._formatGeometryAuxiliary(geoData);
-            const diagnostics = (geoData && Number(geoData.geo_score) > 0
-                ? `${geoData.geo_evidence_class || 'unknown'} ` +
-                    `${Number(geoData.geo_score).toFixed(4)}/${Number(geoData.geo_confidence || 0).toFixed(3)} ` +
-                    `+${Number(geoData.geo_bonus || 0).toFixed(4)}≤${Number(geoData.geo_bonus_cap || 0).toFixed(3)}` +
-                    `${Number(geoData.geo_direct_semantic_hits || 0) > 0
-                        ? ` 直锚=${Number(geoData.geo_direct_semantic_hits)}` +
-                            `/强${Number(geoData.geo_direct_semantic_strength || 0).toFixed(2)}` +
-                            `/奖信${Number(geoData.geo_reward_confidence || 0).toFixed(2)}`
-                        : ''}` +
-                    `${contactTags ? `<br>${this._escapeMarkdownCell(contactTags)}` : ''}`
-                : `守卫/0${geoData?.geo_guard_reason ? `<br>${this._escapeMarkdownCell(geoData.geo_guard_reason)}` : ''}`) +
-                `${geometryShadow ? `<br>${this._escapeMarkdownCell(geometryShadow)}` : ''}` +
-                `${geometryAuxiliary ? `<br>${this._escapeMarkdownCell(geometryAuxiliary)}` : ''}`;
-            text += `| ${this._escapeMarkdownCell(this._shortMemoryText(items.get(id)?.text, 100))} | ${fmt(knnItem)} | ${fmt(v91Item)} | ${fmt(geoItem)} | ${diagnostics} |${rerankRun ? ` ${fmt(reranked)} |` : ''} ${owners.join('+') || '—'} |\n`;
-        });
-        if (!includeDetails) {
-            text += `\n后续说明已默认省略；显式传入 include_details: true 可返回。\n`;
-            return text;
-        }
-        text += `\n测地线独占项用于判断曲线算法是否抵达无测地线 V9.1 未命中的有效记忆；无测地线独占项用于检查曲线重排的召回损失。两路始终共享同一增强向量、能量场和候选全集。D/S/T/C4/F、W、Dir、Lift 保留完整几何诊断；生产辅助只读取通过可靠度门控后的保守地板差额，C4/Lift 不独立发奖，节点场守卫保持零辅助。\n`;
-        text += `[--- 模式 B 结束 ---]\n`;
-        return text;
-    }
-
-    _getChunkVector(chunkId) {
-        const db = this.vectorDBManager?.db;
-        const dim = this.vectorDBManager?.config?.dimension;
-        if (!db || !dim) return null;
-        const row = db.prepare('SELECT vector FROM chunks WHERE id = ?').get(chunkId);
-        if (!row?.vector || row.vector.length !== dim * 4) return null;
-        if (row.vector.byteOffset % 4 === 0) {
-            return new Float32Array(row.vector.buffer, row.vector.byteOffset, dim);
-        }
-        const copied = Buffer.from(row.vector);
-        return new Float32Array(copied.buffer, copied.byteOffset, dim);
-    }
-
-    /**
-     * 🧭 判断是否为开发测绘请求。
-     * 支持 command/mode/action = map_distance/MapDistance/测绘，
-     * 或显式 mapping/map_distance/map_develop 为真。
-     */
-    _isMappingRequest(args = {}) {
-        const command = String(args.command || args.mode || args.action || '').trim().toLowerCase();
-        if (['mapdistance', 'map_distance', 'mapping', 'tagmemo_map', 'wave_map', '测绘', '开发测绘'].includes(command)) {
-            return true;
-        }
-
-        return this._parseBooleanAlias(
-            [
-                ['mapping', args.mapping],
-                ['map_distance', args.map_distance],
-                ['map_develop', args.map_develop]
-            ],
-            false,
-            'mapping'
-        );
-    }
-
-    /**
-     * 🧭 LightMemo 开发测绘：比较起点 A 到一个或多个目标的三类距离。
-     * - 纯 KNN 距离: 1 - cos(A, B)
-     * - V9.1 TagMemo 距离: 1 - cos(TagBoost(A), TagBoost(B))
-     * - V9.1 势能场加权距离: (1 - alpha) * 纯KNN + alpha * Tag 能量场距离
-     */
-    async handleMapping(args = {}) {
-        const startText = args.start || args.origin || args.a || args.start_query || args.query;
-        const targets = this._parseStringArray(args.targets || args.target || args.b || args.goal || args.goals);
-        const rawTagBoost = args.tag_boost ?? 0.6;
-        const tagBoost = this._parseNumber(typeof rawTagBoost === 'string' ? rawTagBoost.replace(/\+$/, '') : rawTagBoost, 0.6);
-        const coreTags = this._parseStringArray(args.core_tags || args.coreTags);
-        const coreBoostFactor = this._parseNumber(args.core_boost_factor, 1.33);
-        const geoConfig = this.vectorDBManager?.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
-        const alpha = Math.max(0, Math.min(1, this._parseNumber(args.geo_alpha ?? args.alpha, geoConfig.alpha ?? 0.35)));
-
-        if (!startText || !String(startText).trim()) {
-            throw new Error("测绘模式需要提供起点参数 start/origin/a/start_query/query。");
-        }
-        if (targets.length === 0) {
-            throw new Error("测绘模式需要提供目标参数 targets/target/b/goal/goals，可用逗号、中文逗号、顿号或 | 分隔多个目标。");
-        }
-        if (!this.getBatchEmbeddings && !this.getSingleEmbedding) {
-            throw new Error("测绘模式无法执行：Embedding 依赖未注入。");
-        }
-
-        const mappingTexts = [String(startText), ...targets];
-        const mappingVectors = await this._getMappingEmbeddings(mappingTexts);
-        const startVector = mappingVectors[0];
-        if (!startVector) {
-            throw new Error("起点 A 向量化失败。");
-        }
-
-        const startBoost = this._applyMappingTagBoost(startVector, tagBoost, coreTags, coreBoostFactor);
-        const rows = [];
-
-        for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
-            const targetText = targets[targetIndex];
-            const targetVector = mappingVectors[targetIndex + 1];
-            if (!targetVector) {
-                rows.push({
-                    target: targetText,
-                    error: '目标向量化失败'
-                });
-                continue;
-            }
-
-            const targetBoost = this._applyMappingTagBoost(targetVector, tagBoost, coreTags, coreBoostFactor);
-            const pureKnnSim = this._cosineSimilarity(startVector, targetVector);
-            const waveSim = this._cosineSimilarity(startBoost.vector, targetBoost.vector);
-            const geoFieldSim = this._energyFieldSimilarity(startBoost.energyField, targetBoost.energyField);
-            const weightedGeoSim = (1 - alpha) * pureKnnSim + alpha * geoFieldSim;
-
-            rows.push({
-                target: targetText,
-                pureKnnSim,
-                pureKnnDistance: 1 - pureKnnSim,
-                waveSim,
-                waveDistance: 1 - waveSim,
-                geoFieldSim,
-                weightedGeoSim,
-                weightedGeoDistance: 1 - weightedGeoSim,
-                startTags: startBoost.info?.matchedTags || [],
-                targetTags: targetBoost.info?.matchedTags || []
-            });
-        }
-
-        const reportText = this._formatMappingResults({
-            startText: String(startText),
-            rows,
-            tagBoost,
-            alpha,
-            coreTags
-        });
-
-        return this._buildAiFriendlyTextResult(reportText);
-    }
-
-    async _getMappingEmbeddings(texts) {
-        if (!Array.isArray(texts) || texts.length === 0) return [];
-        const normalizedTexts = texts.map(text => String(text || '').trim());
-
-        if (this.getBatchEmbeddings) {
-            console.log(`[LightMemo] Mapping batch embedding: ${normalizedTexts.length} texts in one batched pipeline.`);
-            const vectors = await this.getBatchEmbeddings(normalizedTexts);
-            if (Array.isArray(vectors) && vectors.length === normalizedTexts.length) {
-                return vectors;
-            }
-            console.warn(
-                `[LightMemo] Mapping batch embedding returned invalid length ` +
-                `(${Array.isArray(vectors) ? vectors.length : 'non-array'}), falling back to single embedding.`
-            );
-        }
-
-        console.warn('[LightMemo] Mapping batch embedding unavailable. Falling back to sequential single embedding.');
-        const vectors = [];
-        for (const text of normalizedTexts) {
-            vectors.push(text ? await this.getSingleEmbedding(text) : null);
-        }
-        return vectors;
-    }
-
-    _applyMappingTagBoost(vector, tagBoost, coreTags, coreBoostFactor) {
-        const baseVector = vector instanceof Float32Array ? vector : new Float32Array(vector);
-        if (tagBoost > 0 && this.vectorDBManager && typeof this.vectorDBManager.applyTagBoost === 'function') {
-            const boostResult = this.vectorDBManager.applyTagBoost(
-                new Float32Array(baseVector),
-                tagBoost,
-                coreTags,
-                coreBoostFactor
-            );
-
-            if (boostResult && boostResult.vector) {
-                return {
-                    vector: boostResult.vector instanceof Float32Array ? boostResult.vector : new Float32Array(boostResult.vector),
-                    info: boostResult.info || null,
-                    energyField: boostResult.energyField || null,
-                    energyFieldProvenance: boostResult.energyFieldProvenance || null,
-                    artifactBundle: boostResult.artifactBundle || null
-                };
-            }
-        }
-
-        return {
-            vector: baseVector,
-            info: null,
-            energyField: null,
-            energyFieldProvenance: null,
-            artifactBundle: null
-        };
-    }
-
-    _energyFieldSimilarity(fieldA, fieldB) {
-        if (!(fieldA instanceof Map) || !(fieldB instanceof Map) || fieldA.size === 0 || fieldB.size === 0) {
-            return 0;
-        }
-
-        let dot = 0;
-        let normA = 0;
-        let normB = 0;
-
-        for (const value of fieldA.values()) {
-            const n = Number(value) || 0;
-            normA += n * n;
-        }
-        for (const value of fieldB.values()) {
-            const n = Number(value) || 0;
-            normB += n * n;
-        }
-        if (normA <= 0 || normB <= 0) return 0;
-
-        const [small, large] = fieldA.size <= fieldB.size ? [fieldA, fieldB] : [fieldB, fieldA];
-        for (const [tagId, value] of small.entries()) {
-            if (!large.has(tagId)) continue;
-            dot += (Number(value) || 0) * (Number(large.get(tagId)) || 0);
-        }
-
-        return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-    }
 
     _buildAiFriendlyTextResult(reportText) {
         // hybridservice/direct 插件会被 Plugin.js 解开 { status, result }。
@@ -3068,32 +1268,6 @@ class LightMemoPlugin {
                 ]
             }
         };
-    }
-
-    _formatMappingResults({ startText, rows, tagBoost, alpha, coreTags }) {
-        const fmt = (value) => Number.isFinite(value) ? value.toFixed(4) : 'N/A';
-        const fmtTags = (tags) => Array.isArray(tags) && tags.length > 0
-            ? tags.slice(0, 5).join(', ')
-            : '—';
-
-        let content = `\n[--- LightMemo 开发测绘 / TagMemo Geodesic Map ---]\n`;
-        content += `起点 A: ${startText}\n`;
-        content += `参数: tag_boost=${tagBoost}, geodesic_alpha=${alpha}${coreTags.length > 0 ? `, core_tags=${coreTags.join(', ')}` : ''}\n\n`;
-        content += `| # | 目标 | 纯KNN距离 | 纯KNN相似度 | V9.1 TagMemo距离 | V9.1 TagMemo相似度 | V9.1势能场加权距离 | V9.1势能场加权相似度 | Tag能量场相似度 | A命中Tag | 目标命中Tag |\n`;
-        content += `|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|\n`;
-
-        rows.forEach((row, index) => {
-            if (row.error) {
-                content += `| ${index + 1} | ${this._escapeMarkdownCell(row.target)} | N/A | N/A | N/A | N/A | N/A | N/A | N/A | ${row.error} | — |\n`;
-                return;
-            }
-
-            content += `| ${index + 1} | ${this._escapeMarkdownCell(row.target)} | ${fmt(row.pureKnnDistance)} | ${fmt(row.pureKnnSim)} | ${fmt(row.waveDistance)} | ${fmt(row.waveSim)} | ${fmt(row.weightedGeoDistance)} | ${fmt(row.weightedGeoSim)} | ${fmt(row.geoFieldSim)} | ${this._escapeMarkdownCell(fmtTags(row.startTags))} | ${this._escapeMarkdownCell(fmtTags(row.targetTags))} |\n`;
-        });
-
-        content += `\n说明: 距离越小表示越近；纯KNN为原始向量余弦距离，V9.1 TagMemo为两端都经过增强后的向量距离，势能场加权距离使用 A/B 的Tag能量场余弦相似度与纯KNN按 alpha 融合，便于开发时观察语义拓扑与原始向量空间的偏差。\n`;
-        content += `[--- 测绘结束 ---]\n`;
-        return content;
     }
 
     _escapeMarkdownCell(value) {
@@ -3616,23 +1790,6 @@ class LightMemoPlugin {
             console.error('[LightMemo] AIMemo summarization failed. Falling back to raw memories:', error.message);
             return null;
         }
-    }
-
-    /**
-     * 解析 A/B 报告的后续详情开关。默认仅返回排行表及其之前的内容，
-     * 只有调用方显式请求时才附加完整正文、诊断和评审数据。
-     */
-    _parseABIncludeDetails(args = {}) {
-        return this._parseBooleanAlias(
-            [
-                ['include_details', args.include_details],
-                ['includeDetails', args.includeDetails],
-                ['include_followup_data', args.include_followup_data],
-                ['full_report', args.full_report]
-            ],
-            false,
-            'TagMemo A/B follow-up details'
-        );
     }
 
     /**

@@ -287,20 +287,18 @@ class KnowledgeBaseManager {
             this.ragParams,
             { v9Engine: this.tagMemoEngine }
         );
-        // V10 精确派生资产不做量化或截断。启动时先快速检查事实代际；
-        // 缺失/stale 时仅补算变化的向量范数与 Chunk-Tag closure。
-        // 该步骤先于 RiverMemo 门面发布，避免首个查询承担冷启动重计算。
-        try {
-            this.tagMemoV10Engine.ensureExactDerivedAssets();
-        } catch (error) {
-            // 派生资产失败不应阻止 V9 启动；RiverMemo 仍可通过原始向量公式
-            // 精确回退，但记录明确告警以便运维修复。
-            console.error(
-                '[KnowledgeBase] ⚠️ V10 exact derived asset audit failed; ' +
-                'RiverMemo will use exact runtime fallback:',
-                error.message || error
-            );
-        }
+        // 已停用旧 JS exact derived asset 启动审计。
+        // RiverMemo Topology V3 现由 Rust 从原始向量计算并按 artifact 签名持有
+        // 原生运行时缓存；v10_vector_metrics / v10_chunk_tag_geometry 仅供已退休的
+        // JS 路径使用。保留下方旧入口注释，便于兼容性回滚，不再在启动时重建。
+        // try {
+        //     this.tagMemoV10Engine.ensureExactDerivedAssets();
+        // } catch (error) {
+        //     console.error(
+        //         '[KnowledgeBase] ⚠️ Legacy V10 exact derived asset audit failed:',
+        //         error.message || error
+        //     );
+        // }
 
         const riverMemoConfig =
             this.ragParams?.KnowledgeBaseManager?.riverMemo || {};
