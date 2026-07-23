@@ -318,8 +318,8 @@
         />
 
         <RiverMemoV3ControlPanel
-          v-if="knowledgeBaseParams"
-          v-model="knowledgeBaseParams"
+          v-if="riverMemoParams"
+          v-model="riverMemoParams"
         />
 
         <article
@@ -1159,6 +1159,19 @@ const knowledgeBaseParams = computed<ParamGroup>({
   get: () => params.value.KnowledgeBaseManager || {},
   set: (value) => {
     params.value.KnowledgeBaseManager = value;
+  },
+});
+
+const riverMemoParams = computed<ParamGroup>({
+  get: () => {
+    const value = params.value.KnowledgeBaseManager?.riverMemo;
+    return isParamRecord(value) ? value : {};
+  },
+  set: (value) => {
+    params.value.KnowledgeBaseManager = {
+      ...(params.value.KnowledgeBaseManager || {}),
+      riverMemo: value,
+    };
   },
 });
 
