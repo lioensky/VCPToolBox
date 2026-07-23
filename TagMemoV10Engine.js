@@ -67,6 +67,24 @@ class TagMemoV10Engine {
                 modelSig: this.config.modelSig || this.config.model,
                 dimension: this.config.dimension
             });
+        this._conditionedOperatorCache = new Map();
+        this._conditionedOperatorCacheLimit = Math.max(
+            0,
+            Math.floor(
+                Number(
+                    options.conditionedOperatorCacheEntries
+                    ?? process.env.TAGMEMO_V10_OPERATOR_CACHE_ENTRIES
+                    ?? 4
+                ) || 0
+            )
+        );
+        this._conditionedOperatorCacheStats = {
+            hits: 0,
+            misses: 0,
+            bypasses: 0,
+            evictions: 0,
+            estimatedBytes: 0
+        };
     }
 
     updateRagParams(ragParams) {
@@ -76,6 +94,115 @@ class TagMemoV10Engine {
     rebindDatabase(db) {
         this.db = db;
         this.derivedAssetManager?.rebindDatabase(db);
+        this._clearConditionedOperatorCache('database-rebound');
+    }
+
+    _clearConditionedOperatorCache(reason = 'manual') {
+        const removed = this._conditionedOperatorCache?.size || 0;
+        this._conditionedOperatorCache?.clear();
+        if (this._conditionedOperatorCacheStats) {
+            this._conditionedOperatorCacheStats.estimatedBytes = 0;
+        }
+        if (removed > 0) {
+            console.log(
+                `[TagMemo-V10] 🧹 Conditioned operator LRU cleared: ` +
+                `reason=${reason}, removed=${removed}`
+            );
+        }
+    }
+
+    _estimateConditionedOperatorBytes(operator) {
+        const edgeCount = Math.max(0, Number(operator?.edgeCount) || 0);
+        const nodeCount = Math.max(0, Number(operator?.nodeCount) || 0);
+        // targets: Uint32(4); local/transfer/base/authorized/forbidden:
+        // 5 × Float64(8); rowOffsets: (nodeCount + 1) × Uint32(4).
+        return edgeCount * 44 + (nodeCount + 1) * 4;
+    }
+
+    getConditionedOperatorCacheDiagnostics() {
+        const stats = this._conditionedOperatorCacheStats;
+        return Object.freeze({
+            enabled: this._conditionedOperatorCacheLimit > 0,
+            limit: this._conditionedOperatorCacheLimit,
+            entries: this._conditionedOperatorCache.size,
+            hits: stats.hits,
+            misses: stats.misses,
+            bypasses: stats.bypasses,
+            evictions: stats.evictions,
+            estimatedBytes: stats.estimatedBytes
+        });
+    }
+
+    _getOrCreateConditionedOperator(
+        artifact,
+        queryState,
+        agentContext,
+        common,
+        options = {}
+    ) {
+        // 当前 compiled dual operator 只消费传播可见性与两类软门。
+        // identityEligibility/rankingEligibility 属于后续候选观测语义，
+        // 不参与 createDualConditionedOperators 的 TypedArray 编译，
+        // 因此不能让 LightMemo 的候选身份回调阻断算子复用。
+        const hasDynamicCallbacks = [
+            'nodeVisibility',
+            'queryGate',
+            'affinityGate'
+        ].some(name => typeof options[name] === 'function');
+        if (this._conditionedOperatorCacheLimit <= 0 || hasDynamicCallbacks) {
+            this._conditionedOperatorCacheStats.bypasses++;
+            return {
+                operator: createDualConditionedOperators(
+                    artifact.sharedTransport,
+                    agentContext,
+                    common
+                ),
+                status: hasDynamicCallbacks ? 'dynamic-callback' : 'disabled'
+            };
+        }
+
+        const cacheKey = hashStable({
+            artifactSig: artifact.artifactSig,
+            graphGeneration: artifact.graphGeneration,
+            scopeHash: queryState.scopeHash,
+            publicDiaryNames: agentContext.publicDiaryNames,
+            permissions: agentContext.permissions,
+            conditioning: artifact.effectiveConfig.agentConditioning || {},
+            failClosed: common.failClosed
+        }, 48);
+        const cached = this._conditionedOperatorCache.get(cacheKey);
+        if (cached) {
+            this._conditionedOperatorCache.delete(cacheKey);
+            this._conditionedOperatorCache.set(cacheKey, cached);
+            this._conditionedOperatorCacheStats.hits++;
+            return { operator: cached.operator, status: 'hit' };
+        }
+
+        this._conditionedOperatorCacheStats.misses++;
+        const operator = createDualConditionedOperators(
+            artifact.sharedTransport,
+            agentContext,
+            common
+        );
+        const estimatedBytes = this._estimateConditionedOperatorBytes(operator);
+        this._conditionedOperatorCache.set(cacheKey, {
+            operator,
+            estimatedBytes
+        });
+        this._conditionedOperatorCacheStats.estimatedBytes += estimatedBytes;
+
+        while (
+            this._conditionedOperatorCache.size
+            > this._conditionedOperatorCacheLimit
+        ) {
+            const oldestKey = this._conditionedOperatorCache.keys().next().value;
+            const evicted = this._conditionedOperatorCache.get(oldestKey);
+            this._conditionedOperatorCache.delete(oldestKey);
+            this._conditionedOperatorCacheStats.evictions++;
+            this._conditionedOperatorCacheStats.estimatedBytes -=
+                Math.max(0, Number(evicted?.estimatedBytes) || 0);
+        }
+        return { operator, status: 'miss' };
     }
 
     ensureExactDerivedAssets(options = {}) {
@@ -93,6 +220,7 @@ class TagMemoV10Engine {
     invalidateArtifact(reason = 'source-artifact-changed') {
         const previous = this._activeArtifact;
         this._activeArtifact = null;
+        this._clearConditionedOperatorCache(`artifact-invalidated:${reason}`);
         if (previous) {
             console.warn(
                 `[TagMemo-V10] 🧹 Active artifact invalidated: reason=${reason}, ` +
@@ -505,6 +633,12 @@ class TagMemoV10Engine {
             || staging.version !== VERSION
         ) {
             throw new TypeError('Invalid V10 artifact staging object');
+        }
+        if (
+            this._activeArtifact
+            && this._activeArtifact.artifactSig !== staging.artifactSig
+        ) {
+            this._clearConditionedOperatorCache('artifact-republished');
         }
         const generation = ++this._artifactGeneration;
         const publishedAt = Number(options.publishedAt) || Date.now();
@@ -1157,11 +1291,14 @@ class TagMemoV10Engine {
             queryGate: options.queryGate,
             affinityGate: options.affinityGate
         };
-        const dualOperator = createDualConditionedOperators(
-            artifact.sharedTransport,
+        const operatorResolution = this._getOrCreateConditionedOperator(
+            artifact,
+            queryState,
             agentContext,
-            common
+            common,
+            options
         );
+        const dualOperator = operatorResolution.operator;
         const localOperator = dualOperator.localOperator;
         const transferOperator = dualOperator.transferOperator;
         const solved = solveDualScaledFields({
@@ -1189,7 +1326,12 @@ class TagMemoV10Engine {
             transferField: solved.transferField,
             localDomain: solved.localDomain,
             transferDomain: solved.transferDomain,
-            fieldDiagnostics: solved.diagnostics
+            fieldDiagnostics: Object.freeze({
+                ...solved.diagnostics,
+                conditionedOperatorCacheStatus: operatorResolution.status,
+                conditionedOperatorCache:
+                    this.getConditionedOperatorCacheDiagnostics()
+            })
         });
     }
 

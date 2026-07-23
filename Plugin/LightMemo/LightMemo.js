@@ -838,13 +838,26 @@ class LightMemoPlugin {
             }
         }));
 
+        const riverTimings = riverResult.diagnostics?.stageTimings || {};
+        const fieldDiagnostics = riverResult.diagnostics?.field || {};
+        const operatorCache = fieldDiagnostics.conditionedOperatorCache || {};
         console.log(
             `[LightMemo] 🌊 RiverMemo Topology V3 ranked ` +
             `${riverResult.diagnostics?.rankedCandidates || 0}/` +
             `${riverResult.diagnostics?.offeredCandidates || candidates.length} ` +
             `candidates; Ω=${Number(riverResult.omega?.omega || 0).toFixed(4)}, ` +
             `regime=${riverResult.omega?.regime || 'unknown'}, ` +
-            `artifact=${riverResult.artifactSig || 'unknown'}.`
+            `artifact=${riverResult.artifactSig || 'unknown'}, ` +
+            `total=${Number(riverTimings.totalMs || 0).toFixed(1)}ms, ` +
+            `prepare=${Number(riverTimings.prepareQueryMs || 0).toFixed(1)}ms, ` +
+            `project=${Number(riverTimings.projectCandidatesMs || 0).toFixed(1)}ms, ` +
+            `anchor=${Number(riverTimings.anchorSqlMs || 0).toFixed(1)}ms, ` +
+            `path=${Number(riverTimings.pathAndRelativeTopologyMs || 0).toFixed(1)}ms, ` +
+            `dstc=${Number(riverTimings.dstcMs || 0).toFixed(1)}ms, ` +
+            `score=${Number(riverTimings.topologyV3ScoreMs || 0).toFixed(1)}ms, ` +
+            `operatorCache=${fieldDiagnostics.conditionedOperatorCacheStatus || 'unknown'}` +
+            `(${operatorCache.entries || 0}/${operatorCache.limit || 0}, ` +
+            `${(Number(operatorCache.estimatedBytes || 0) / 1048576).toFixed(1)}MiB).`
         );
 
         if (rerankOptions.enabled && finalResults.length > 0) {
