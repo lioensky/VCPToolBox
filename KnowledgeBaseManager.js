@@ -11,6 +11,7 @@ const ResultDeduplicator = require('./ResultDeduplicator'); // ✅ Tagmemo v4 re
 const TagMemoEngine = require('./TagMemoEngine');
 const TagMemoV10Engine = require('./TagMemoV10Engine');
 const RiverMemoEngine = require('./RiverMemoEngine');
+const RiverMemoWorkerPool = require('./modules/tagmemoV10/riverMemoWorkerPool');
 const { decodeVectorBlob } = require('./modules/knowledgeBase/vectorCodec');
 const { queryByChunks } = require('./modules/knowledgeBase/sqliteQueryUtils');
 const {
@@ -138,6 +139,7 @@ class KnowledgeBaseManager {
         this.tagMemoEngine = null;
         this.tagMemoV10Engine = null;
         this.riverMemoEngine = null;
+        this.riverMemoWorkerPool = new RiverMemoWorkerPool();
         this.resultDeduplicator = null; // ✅ Tagmemo v4
         this.ragParams = {}; // ✅ 新增：用于存储热调控参数
         this.ragParamsWatcher = null;
@@ -926,6 +928,81 @@ class KnowledgeBaseManager {
     }
 
     /**
+     * RiverMemo 异步生产接口。
+     *
+     * 主线程只生成依赖 V9/EPA 当前活动资产的查询观测；双场求解、候选曲线投影、
+     * SQLite 只读查询与 Topology V3 评分交给常驻 Worker 池，避免 Promise.all
+     * 中的多个 RiverMemo 任务继续串行阻塞 Node.js 事件循环。
+     */
+    async rerankWithRiverMemoAsync(query, candidates, agentContext = {}, options = {}) {
+        if (!this.riverMemoEngine || !this.tagMemoV10Engine || !this.tagMemoEngine) {
+            const error = new Error('RiverMemo async runtime is not available');
+            error.code = 'RIVERMEMO_ASYNC_UNAVAILABLE';
+            throw error;
+        }
+        if (!this.dbPath) {
+            const error = new Error('RiverMemo async runtime has no SQLite database path');
+            error.code = 'RIVERMEMO_ASYNC_DB_PATH_UNAVAILABLE';
+            throw error;
+        }
+
+        const artifact = this.tagMemoV10Engine.getArtifactSnapshot({
+            buildIfMissing: false
+        });
+        if (!artifact?.artifactSig) {
+            const error = new Error('RiverMemo active artifact is unavailable');
+            error.code = 'RIVERMEMO_ARTIFACT_UNAVAILABLE';
+            throw error;
+        }
+
+        const queryVectorRaw = query?.vector || options.vector;
+        const queryVector = queryVectorRaw instanceof Float32Array
+            ? queryVectorRaw
+            : new Float32Array(queryVectorRaw || []);
+        const sourceObservationConfig = {
+            ...(artifact.effectiveConfig?.sourceObservation || {}),
+            ...(options.sourceObservation || {}),
+            ...(options.sourceObservationConfig || {})
+        };
+        const sourceObservationResult = options.sourceObservationResult
+            || this.tagMemoEngine.observeQueryForV10(queryVector, {
+                artifactBundle: this.tagMemoEngine.getArtifactBundleSnapshot('v9'),
+                baseTagBoost: sourceObservationConfig.baseTagBoost,
+                coreBoostFactor: sourceObservationConfig.coreBoostFactor,
+                coreTags: Array.isArray(options.coreTags) ? options.coreTags : []
+            });
+
+        return await this.riverMemoWorkerPool.run({
+            dbPath: this.dbPath,
+            dimension: this.config.dimension,
+            modelSig: this.config.modelSig || this.config.model,
+            artifactSig: artifact.artifactSig,
+            riverMemoConfig:
+                this.ragParams?.KnowledgeBaseManager?.riverMemo || {},
+            query: {
+                text: String(query?.text || ''),
+                vector: queryVector
+            },
+            candidates: Array.isArray(candidates) ? candidates : [],
+            agentContext,
+            options: {
+                topK: options.topK,
+                coreTags: Array.isArray(options.coreTags) ? options.coreTags : [],
+                sourceObservationResult,
+                sourceObservationConfig,
+                candidateSuperset: options.candidateSuperset,
+                pathEvaluation: options.pathEvaluation,
+                dstc: options.dstc,
+                riverObservability: options.riverObservability,
+                identityDiaryName: options.identityDiaryName
+                    ? String(options.identityDiaryName)
+                    : null,
+                includeTrace: options.includeTrace === true
+            }
+        });
+    }
+
+    /**
      * 对已求解的 RiverMemo/V10 Query State 计算只读 Ω 观测。
      */
     measureRiverMemoOmega(queryState, options = {}) {
@@ -1295,6 +1372,11 @@ class KnowledgeBaseManager {
 
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
+
+        // 停止接收新的 RiverMemo Worker 任务，并等待线程释放各自的只读 SQLite 连接。
+        if (this.riverMemoWorkerPool) {
+            await this.riverMemoWorkerPool.close();
+        }
 
         // RiverMemo 与 V10 当前无后台写任务，只持有不可变内存快照；先释放门面引用。
         this.riverMemoEngine = null;

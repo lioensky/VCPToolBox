@@ -2610,7 +2610,8 @@ class RAGDiaryPlugin {
         // 🌊 RiverMemo：作为独立检索引擎接管 TagMemo/TagMemo+。
         // ::RiverMemo 与 ::TagMemo/::TagMemo+ 同时出现时，后两者仅作为被忽略的兼容语法，
         // 不再触发 V9 向量增强或测地线重排；外部 ::Rerank/::Rerank+ 仍在 RiverMemo 后执行。
-        const useRiverMemo = /::RiverMemo(?=$|::)/i.test(modifiers);
+        // 兼容末尾 K 倍率写法，例如 ::RiverMemo:0.8；倍率仍由 _extractKMultiplier 统一解析。
+        const useRiverMemo = /::RiverMemo(?=$|::|:\d+(?:\.\d+)?$)/i.test(modifiers);
 
         // 🌟 Rerank+ (RRF): 解析 ::Rerank+ 修饰符
         // 语法: ::Rerank+ (默认α=0.5) 或 ::Rerank+0.7 (α=0.7, Reranker占70%权重)
@@ -3162,9 +3163,9 @@ class RAGDiaryPlugin {
         coreTags = [],
         baseTagBoost = 0.6
     }) {
-        if (!this.vectorDBManager || typeof this.vectorDBManager.rerankWithRiverMemo !== 'function') {
-            const error = new Error('RiverMemo 生产接口不可用');
-            error.code = 'RIVERMEMO_INTERFACE_UNAVAILABLE';
+        if (!this.vectorDBManager || typeof this.vectorDBManager.rerankWithRiverMemoAsync !== 'function') {
+            const error = new Error('RiverMemo 异步生产接口不可用');
+            error.code = 'RIVERMEMO_ASYNC_INTERFACE_UNAVAILABLE';
             throw error;
         }
 
@@ -3207,7 +3208,7 @@ class RAGDiaryPlugin {
             throw error;
         }
 
-        const result = this.vectorDBManager.rerankWithRiverMemo(
+        const result = await this.vectorDBManager.rerankWithRiverMemoAsync(
             {
                 text: String(queryText || ''),
                 vector: queryVector instanceof Float32Array
@@ -3236,7 +3237,6 @@ class RAGDiaryPlugin {
                     baseTagBoost: Math.max(0, Number(baseTagBoost) || 0),
                     coreBoostFactor: 1.33
                 },
-                identityEligibility: () => false,
                 includeTrace: false
             }
         );

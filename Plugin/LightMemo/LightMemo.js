@@ -734,12 +734,12 @@ class LightMemoPlugin {
     }) {
         if (
             !this.vectorDBManager
-            || typeof this.vectorDBManager.rerankWithRiverMemo !== 'function'
+            || typeof this.vectorDBManager.rerankWithRiverMemoAsync !== 'function'
         ) {
             const error = new Error(
-                'RiverMemo 生产接口不可用；请求未回退到其他记忆引擎'
+                'RiverMemo 异步生产接口不可用；请求未回退到其他记忆引擎'
             );
-            error.code = 'RIVERMEMO_INTERFACE_UNAVAILABLE';
+            error.code = 'RIVERMEMO_ASYNC_INTERFACE_UNAVAILABLE';
             throw error;
         }
 
@@ -792,7 +792,7 @@ class LightMemoPlugin {
         const rerankOptions = this._parseRerankOptions(rerank);
         // 与既有 LightMemo 行为一致：外部 Rerank 只消费最终检索窗口。
         // RiverMemo 自身先在完整 SQL 授权候选域上建立六路候选超集。
-        const riverResult = this.vectorDBManager.rerankWithRiverMemo(
+        const riverResult = await this.vectorDBManager.rerankWithRiverMemoAsync(
             {
                 text: actualQuery,
                 vector: queryVector
@@ -809,11 +809,9 @@ class LightMemoPlugin {
                         Number(coreBoostFactor) || 1.33
                     )
                 },
-                identityEligibility: curve =>
-                    Boolean(
-                        maid
-                        && String(curve?.diaryName || '').includes(maid)
-                    ),
+                // Worker 线程不能接收函数；传递可克隆的身份作用域描述，
+                // 在线程内重建与旧 identityEligibility 等价的判定。
+                identityDiaryName: maid || null,
                 includeTrace: false
             }
         );
