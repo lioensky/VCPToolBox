@@ -112,7 +112,10 @@ fn number(config: &Value, path: &[&str], fallback: f64) -> f64 {
         };
         current = next;
     }
-    current.as_f64().filter(|value| value.is_finite()).unwrap_or(fallback)
+    current
+        .as_f64()
+        .filter(|value| value.is_finite())
+        .unwrap_or(fallback)
 }
 
 fn boolean(config: &Value, path: &[&str], fallback: bool) -> bool {
@@ -162,9 +165,7 @@ fn load_pairwise(
     model_sig: &str,
 ) -> std::result::Result<HashMap<(i64, i64), f64>, String> {
     let mut statement = connection
-        .prepare(
-            "SELECT tag_a, tag_b, similarity FROM tag_pair_similarity WHERE model_sig = ?1",
-        )
+        .prepare("SELECT tag_a, tag_b, similarity FROM tag_pair_similarity WHERE model_sig = ?1")
         .map_err(|error| format!("prepare pairwise failed: {}", error))?;
     let rows = statement
         .query_map(params![model_sig], |row| {
@@ -176,8 +177,16 @@ fn load_pairwise(
         })
         .map_err(|error| format!("query pairwise failed: {}", error))?;
     let mut output = HashMap::new();
-    for row in rows.flatten() {
-        output.insert((row.0.min(row.1), row.0.max(row.1)), row.2);
+    for row in rows {
+        let (left, right, similarity) =
+            row.map_err(|error| format!("decode pairwise row failed: {}", error))?;
+        if !similarity.is_finite() {
+            return Err(format!(
+                "pairwise row ({}, {}) contains non-finite similarity",
+                left, right
+            ));
+        }
+        output.insert((left.min(right), left.max(right)), similarity);
     }
     Ok(output)
 }
@@ -205,11 +214,19 @@ fn load_anchor_gains(
     let mut gains = HashMap::new();
     let mut raw = HashMap::new();
     let mut signature = String::new();
-    for row in rows.flatten() {
-        gains.insert(row.0, row.1.clamp(0.5, 2.0));
-        raw.insert(row.0, row.2.clamp(0.0, 1.0));
-        if signature.is_empty() && !row.3.is_empty() {
-            signature = row.3;
+    for row in rows {
+        let (tag_id, gain, raw_residual, artifact_sig) =
+            row.map_err(|error| format!("decode intrinsic residual row failed: {}", error))?;
+        if !gain.is_finite() || !raw_residual.is_finite() {
+            return Err(format!(
+                "intrinsic residual row for Tag {} contains non-finite values",
+                tag_id
+            ));
+        }
+        gains.insert(tag_id, gain.clamp(0.5, 2.0));
+        raw.insert(tag_id, raw_residual.clamp(0.0, 1.0));
+        if signature.is_empty() && !artifact_sig.is_empty() {
+            signature = artifact_sig;
         }
     }
     Ok((gains, raw, signature))
@@ -266,11 +283,10 @@ fn build_fact_matrix(
         if similarity < 0.15 {
             0.4 + similarity * 1.0
         } else {
-            0.5
-                + 0.8
-                    * (-((similarity - semantic_peak).powi(2))
-                        / (2.0 * semantic_sigma * semantic_sigma))
-                        .exp()
+            0.5 + 0.8
+                * (-((similarity - semantic_peak).powi(2))
+                    / (2.0 * semantic_sigma * semantic_sigma))
+                    .exp()
         }
     };
 
@@ -294,8 +310,10 @@ fn build_fact_matrix(
                     let semantic = semantic_gain(left.tag_id, right.tag_id);
                     if left.position > 0 && right.position > 0 {
                         let count = tags.len() as f64;
-                        let phi_left = 0.9 - 0.4 * (left.position - 1).max(0) as f64 / (count - 1.0).max(1.0);
-                        let phi_right = 0.9 - 0.4 * (right.position - 1).max(0) as f64 / (count - 1.0).max(1.0);
+                        let phi_left =
+                            0.9 - 0.4 * (left.position - 1).max(0) as f64 / (count - 1.0).max(1.0);
+                        let phi_right =
+                            0.9 - 0.4 * (right.position - 1).max(0) as f64 / (count - 1.0).max(1.0);
                         let delta = (right.position - left.position).max(1) as f64;
                         let distance = if distance_decay > 0.0 {
                             (-distance_decay * (delta - 1.0)).exp()
@@ -313,7 +331,8 @@ fn build_fact_matrix(
                                 .min(reverse_anchor_max);
                         }
                         dynamic_reverse = dynamic_reverse.clamp(0.25, 0.70);
-                        let backward = (base * dynamic_reverse * semantic).min(forward * reverse_guard);
+                        let backward =
+                            (base * dynamic_reverse * semantic).min(forward * reverse_guard);
                         add_edge(&mut matrix, left.tag_id, right.tag_id, forward);
                         add_edge(&mut matrix, right.tag_id, left.tag_id, backward);
                     } else {
@@ -336,8 +355,7 @@ fn build_transport(
 ) -> (HashMap<i64, HashMap<i64, f64>>, HashSet<(i64, i64)>) {
     let v9 = config.get("v9").unwrap_or(&Value::Null);
     let outbound_mass = number(v9, &["outboundMass"], 0.95).clamp(0.01, 0.999999);
-    let reserve_mass = number(v9, &["associationReserveMass"], 0.05)
-        .clamp(0.0, outbound_mass);
+    let reserve_mass = number(v9, &["associationReserveMass"], 0.05).clamp(0.0, outbound_mass);
     let evidence_compression = number(v9, &["evidenceCompression"], 1.0).max(0.01);
     let wormhole_gain = number(v9, &["wormholeGain"], 1.35).max(1.0);
     let tension_threshold = number(v9, &["tensionThreshold"], 1.0).max(0.0);
@@ -370,10 +388,7 @@ fn build_transport(
         .filter(|value| *value > 0.0 && value.is_finite())
         .collect();
     positive.sort_by(|left, right| left.total_cmp(right));
-    let median = positive
-        .get(positive.len() / 2)
-        .copied()
-        .unwrap_or(1.0);
+    let median = positive.get(positive.len() / 2).copied().unwrap_or(1.0);
     let smoothing = (median * smoothing_ratio).max(1e-9);
 
     let mut transport = HashMap::new();
@@ -383,7 +398,8 @@ fn build_transport(
         let mut total = 0.0;
         let mut wormhole_total = 0.0;
         for (target, conductance, wormhole) in edges {
-            let relative = target_inflow.get(&target).copied().unwrap_or(0.0) / (median + smoothing);
+            let relative =
+                target_inflow.get(&target).copied().unwrap_or(0.0) / (median + smoothing);
             let raw_penalty = if hub_exponent > 0.0 {
                 relative.max(1e-9).powf(-hub_exponent)
             } else {
@@ -401,7 +417,11 @@ fn build_transport(
         if total <= 0.0 {
             continue;
         }
-        let reserved = if wormhole_total > 0.0 { reserve_mass } else { 0.0 };
+        let reserved = if wormhole_total > 0.0 {
+            reserve_mass
+        } else {
+            0.0
+        };
         let main = outbound_mass - reserved;
         let row = transport.entry(source).or_insert_with(HashMap::new);
         for (target, value, wormhole) in adjusted {
@@ -452,14 +472,15 @@ fn build_provenance(
                         (left.tag_id, right.tag_id, forward_gain * distance),
                         (right.tag_id, left.tag_id, reverse_gain * distance),
                     ] {
-                        let entry = aggregated
-                            .entry((source, target, file_id))
-                            .or_insert_with(|| ProvenanceContribution {
-                                file_id,
-                                diary_name: left.diary_name.clone(),
-                                path: left.path.clone(),
-                                mass: 0.0,
-                            });
+                        let entry =
+                            aggregated
+                                .entry((source, target, file_id))
+                                .or_insert_with(|| ProvenanceContribution {
+                                    file_id,
+                                    diary_name: left.diary_name.clone(),
+                                    path: left.path.clone(),
+                                    mass: 0.0,
+                                });
                         entry.mass += mass;
                     }
                 }
@@ -470,7 +491,10 @@ fn build_provenance(
 
     let mut output: BTreeMap<(i64, i64), Vec<ProvenanceContribution>> = BTreeMap::new();
     for ((source, target, _), contribution) in aggregated {
-        output.entry((source, target)).or_default().push(contribution);
+        output
+            .entry((source, target))
+            .or_default()
+            .push(contribution);
     }
     output
 }
@@ -564,14 +588,7 @@ fn artifact_payload(
                 format!("{}:{}", source, target),
                 contributions
                     .iter()
-                    .map(|item| {
-                        json!([
-                            item.file_id,
-                            item.diary_name,
-                            item.path,
-                            item.mass
-                        ])
-                    })
+                    .map(|item| { json!([item.file_id, item.diary_name, item.path, item.mass]) })
                     .collect::<Vec<_>>()
             ])
         })
@@ -697,13 +714,7 @@ fn run_build(
         48,
     );
 
-    let native = build_native_artifact(
-        &transport,
-        inbound,
-        anchor_gain,
-        wormholes,
-        &provenance,
-    );
+    let native = build_native_artifact(&transport, inbound, anchor_gain, wormholes, &provenance);
     let published_at = now_ms();
     let metadata = json!({
         "schema": "tagmemo-v10-alpha-artifact-v1",
@@ -802,8 +813,7 @@ impl Task for NativeMemoArtifactBuildTask {
     type JsValue = NativeMemoArtifactBuildResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        run_build(&self.runtime, &self.db_path, &self.input_json)
-            .map_err(Error::from_reason)
+        run_build(&self.runtime, &self.db_path, &self.input_json).map_err(Error::from_reason)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {

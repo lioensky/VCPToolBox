@@ -1034,7 +1034,11 @@ struct DualFieldOutput {
     diagnostics: DualFieldDiagnostics,
 }
 
-fn apply_transport(artifact: &crate::rivermemo_topology_v3::NativeArtifact, input: &[f64], output: &mut [f64]) {
+fn apply_transport(
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    input: &[f64],
+    output: &mut [f64],
+) {
     output.fill(0.0);
     for source in 0..artifact.node_ids.len() {
         let mass = input[source];
@@ -1055,16 +1059,29 @@ fn field_mass(field: &[f64]) -> f64 {
     field.iter().map(|value| positive(*value)).sum()
 }
 
-fn effective_domain(artifact: &crate::rivermemo_topology_v3::NativeArtifact, field: &[f64], ratio: f64) -> Vec<i64> {
+fn effective_domain(
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    field: &[f64],
+    ratio: f64,
+) -> Vec<i64> {
     let total = field_mass(field);
     if total <= 0.0 {
         return Vec::new();
     }
-    let mut ranked: Vec<(i64, f64)> = artifact.node_ids.iter().copied()
+    let mut ranked: Vec<(i64, f64)> = artifact
+        .node_ids
+        .iter()
+        .copied()
         .zip(field.iter().copied())
         .filter(|(_, mass)| *mass > 0.0)
         .collect();
-    ranked.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal).then_with(|| left.0.cmp(&right.0)));
+    ranked.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| left.0.cmp(&right.0))
+    });
     let mut retained = Vec::new();
     let mut mass = 0.0;
     for (id, value) in ranked {
@@ -1077,7 +1094,12 @@ fn effective_domain(artifact: &crate::rivermemo_topology_v3::NativeArtifact, fie
     retained
 }
 
-fn project_field(index: &Index, artifact: &crate::rivermemo_topology_v3::NativeArtifact, field: &[f64], dimension: usize) -> std::result::Result<Vec<f32>, String> {
+fn project_field(
+    index: &Index,
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    field: &[f64],
+    dimension: usize,
+) -> std::result::Result<Vec<f32>, String> {
     let mut output = vec![0.0f64; dimension];
     let mut buffer = vec![0.0f32; dimension];
     let mut total = 0.0;
@@ -1086,7 +1108,8 @@ fn project_field(index: &Index, artifact: &crate::rivermemo_topology_v3::NativeA
             continue;
         }
         let id = artifact.node_ids[node_index];
-        let found = index.get(id as u64, &mut buffer)
+        let found = index
+            .get(id as u64, &mut buffer)
             .map_err(|error| format!("Memo field projection failed for Tag {}: {:?}", id, error))?;
         if found == 0 {
             continue;
@@ -1120,7 +1143,23 @@ fn solve_dual_fields(
     }
     let source_mass = field_mass(&source);
     if source_mass <= 0.0 {
-        return Err("Memo dual field source contains no positive mass".to_string());
+        return Ok(DualFieldOutput {
+            local_field: Vec::new(),
+            transfer_field: Vec::new(),
+            local_domain_ids: Vec::new(),
+            transfer_domain_ids: Vec::new(),
+            local_vector: vec![0.0; dimension],
+            transfer_vector: vec![0.0; dimension],
+            diagnostics: DualFieldDiagnostics {
+                iterations: 0,
+                local_converged: true,
+                transfer_converged: true,
+                local_residual: 0.0,
+                transfer_residual: 0.0,
+                local_mass: 0.0,
+                transfer_mass: 0.0,
+            },
+        });
     }
     for value in &mut source {
         *value /= source_mass;
@@ -1145,7 +1184,8 @@ fn solve_dual_fields(
         if !local_converged {
             apply_transport(artifact, &local, &mut propagated_local);
             for index in 0..source.len() {
-                next_local[index] = (1.0 - local_alpha) * source[index] + local_alpha * propagated_local[index];
+                next_local[index] =
+                    (1.0 - local_alpha) * source[index] + local_alpha * propagated_local[index];
             }
             local_residual = l1_distance(&next_local, &local);
             local_converged = local_residual <= config.local_tolerance.max(1e-15);
@@ -1154,7 +1194,8 @@ fn solve_dual_fields(
         if !transfer_converged {
             apply_transport(artifact, &transfer, &mut propagated_transfer);
             for index in 0..source.len() {
-                next_transfer[index] = (1.0 - transfer_alpha) * source[index] + transfer_alpha * propagated_transfer[index];
+                next_transfer[index] = (1.0 - transfer_alpha) * source[index]
+                    + transfer_alpha * propagated_transfer[index];
             }
             transfer_residual = l1_distance(&next_transfer, &transfer);
             transfer_converged = transfer_residual <= config.transfer_tolerance.max(1e-15);
@@ -1165,10 +1206,20 @@ fn solve_dual_fields(
         }
     }
 
-    let local_field: Vec<(i64, f64)> = artifact.node_ids.iter().copied().zip(local.iter().copied())
-        .filter(|(_, mass)| *mass > 0.0).collect();
-    let transfer_field: Vec<(i64, f64)> = artifact.node_ids.iter().copied().zip(transfer.iter().copied())
-        .filter(|(_, mass)| *mass > 0.0).collect();
+    let local_field: Vec<(i64, f64)> = artifact
+        .node_ids
+        .iter()
+        .copied()
+        .zip(local.iter().copied())
+        .filter(|(_, mass)| *mass > 0.0)
+        .collect();
+    let transfer_field: Vec<(i64, f64)> = artifact
+        .node_ids
+        .iter()
+        .copied()
+        .zip(transfer.iter().copied())
+        .filter(|(_, mass)| *mass > 0.0)
+        .collect();
     let local_domain_ids = effective_domain(artifact, &local, config.local_mass_ratio);
     let transfer_domain_ids = effective_domain(artifact, &transfer, config.transfer_mass_ratio);
     let local_vector = project_field(index, artifact, &local, dimension)?;
@@ -1207,6 +1258,9 @@ struct PipelineDiagnostics {
     fusion_ms: f64,
     total_ms: f64,
     seed_nodes: usize,
+    observation_cached: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation_cache_error: Option<String>,
     dual_field: DualFieldDiagnostics,
     fusion: FusionDiagnostics,
 }
@@ -1329,20 +1383,28 @@ fn run_pipeline(
     drop(index_guard);
     drop(connection);
 
-    let observation_handle = runtime
-        .store_query_observation(
-            artifact_sig,
-            observation.clone(),
-            input.query_vector.clone(),
-            enhanced_vector.iter().map(|value| *value as f32).collect(),
-            dual_fields.local_vector.clone(),
-            dual_fields.transfer_vector.clone(),
-            dual_fields.local_field.clone(),
-            dual_fields.transfer_field.clone(),
-            dual_fields.local_domain_ids.clone(),
-            dual_fields.transfer_domain_ids.clone(),
-        )
-        .ok();
+    let (observation_handle, observation_cache_error) = match runtime.store_query_observation(
+        artifact_sig,
+        observation.clone(),
+        input.query_vector.clone(),
+        enhanced_vector.iter().map(|value| *value as f32).collect(),
+        dual_fields.local_vector.clone(),
+        dual_fields.transfer_vector.clone(),
+        dual_fields.local_field.clone(),
+        dual_fields.transfer_field.clone(),
+        dual_fields.local_domain_ids.clone(),
+        dual_fields.transfer_domain_ids.clone(),
+    ) {
+        Ok(handle) => (Some(handle), None),
+        Err(error) => {
+            eprintln!(
+                "[Vexus-Lite][MemoPipeline] observation cache degraded: {}",
+                error
+            );
+            (None, Some(error))
+        }
+    };
+    let observation_cached = observation_handle.is_some();
 
     let maximum_weight = selected_tags
         .iter()
@@ -1408,6 +1470,8 @@ fn run_pipeline(
             fusion_ms,
             total_ms: total_started.elapsed().as_secs_f64() * 1000.0,
             seed_nodes,
+            observation_cached,
+            observation_cache_error,
             dual_field: dual_field_diagnostics,
             fusion,
         },

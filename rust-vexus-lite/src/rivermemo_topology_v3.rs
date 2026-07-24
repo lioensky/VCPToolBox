@@ -5,6 +5,7 @@ use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
@@ -603,24 +604,41 @@ fn decode_artifact(
     db_path: &str,
     artifact_sig: &str,
 ) -> std::result::Result<Arc<NativeArtifact>, String> {
+    const MAX_DECOMPRESSED_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+
     let connection = open_readonly(db_path)?;
-    let (codec, compressed): (String, Vec<u8>) = connection
+    let (codec, expected_checksum, compressed): (String, String, Vec<u8>) = connection
         .query_row(
-            "SELECT payload_codec, payload FROM rivermemo_artifacts \
+            "SELECT payload_codec, payload_checksum, payload FROM rivermemo_artifacts \
              WHERE artifact_sig = ?1 AND status = 'ready' LIMIT 1",
             rusqlite::params![artifact_sig],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|error| format!("RiverMemo artifact {} unavailable: {}", artifact_sig, error))?;
     if codec != "gzip-json-v1" {
         return Err(format!("unsupported RiverMemo artifact codec: {}", codec));
     }
 
-    let mut decoder = GzDecoder::new(compressed.as_slice());
+    let decoder = GzDecoder::new(compressed.as_slice());
+    let mut limited = decoder.take(MAX_DECOMPRESSED_ARTIFACT_BYTES + 1);
     let mut raw = Vec::new();
-    decoder
+    limited
         .read_to_end(&mut raw)
         .map_err(|error| format!("decompress RiverMemo artifact failed: {}", error))?;
+    if raw.len() as u64 > MAX_DECOMPRESSED_ARTIFACT_BYTES {
+        return Err(format!(
+            "RiverMemo artifact {} exceeds decompressed size limit of {} bytes",
+            artifact_sig, MAX_DECOMPRESSED_ARTIFACT_BYTES
+        ));
+    }
+    let actual_checksum = format!("{:x}", Sha256::digest(&raw));
+    if expected_checksum.is_empty() || actual_checksum != expected_checksum {
+        return Err(format!(
+            "RiverMemo artifact {} checksum mismatch",
+            artifact_sig
+        ));
+    }
+
     let payload: Value = serde_json::from_slice(&raw)
         .map_err(|error| format!("decode RiverMemo artifact JSON failed: {}", error))?;
 
@@ -655,6 +673,57 @@ fn decode_artifact(
             .unwrap_or(Value::Array(Vec::new())),
     )
     .map_err(|error| format!("decode transport weights failed: {}", error))?;
+
+    let mut unique_node_ids = HashSet::with_capacity(node_ids.len());
+    if node_ids
+        .iter()
+        .any(|id| *id <= 0 || !unique_node_ids.insert(*id))
+    {
+        return Err(format!(
+            "RiverMemo artifact {} contains invalid or duplicate node IDs",
+            artifact_sig
+        ));
+    }
+    if row_offsets_u64.len() != node_ids.len() + 1 {
+        return Err(format!(
+            "RiverMemo artifact {} CSR rowOffsets length mismatch",
+            artifact_sig
+        ));
+    }
+    if row_offsets_u64.first().copied() != Some(0)
+        || row_offsets_u64.windows(2).any(|pair| pair[0] > pair[1])
+    {
+        return Err(format!(
+            "RiverMemo artifact {} CSR rowOffsets are not monotonic from zero",
+            artifact_sig
+        ));
+    }
+    if targets_u64.len() != weights.len()
+        || row_offsets_u64.last().copied() != Some(targets_u64.len() as u64)
+    {
+        return Err(format!(
+            "RiverMemo artifact {} CSR edge array length mismatch",
+            artifact_sig
+        ));
+    }
+    if targets_u64
+        .iter()
+        .any(|target| *target >= node_ids.len() as u64)
+    {
+        return Err(format!(
+            "RiverMemo artifact {} CSR target index out of bounds",
+            artifact_sig
+        ));
+    }
+    if weights
+        .iter()
+        .any(|weight| !weight.is_finite() || *weight < 0.0)
+    {
+        return Err(format!(
+            "RiverMemo artifact {} contains invalid edge weights",
+            artifact_sig
+        ));
+    }
 
     let node_index = node_ids
         .iter()

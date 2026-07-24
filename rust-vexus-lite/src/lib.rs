@@ -232,14 +232,52 @@ impl VexusIndex {
             .save(&temp_path)
             .map_err(|e| Error::from_reason(format!("Failed to save index: {:?}", e)))?;
 
-        // 🛡️ Windows 兼容性修复：目标文件存在时 rename 会失败
+        // Windows 不支持 rename 覆盖现有文件。先把旧索引移到备份，
+        // 新文件替换失败时再回滚，避免“先删除旧文件”造成不可恢复的数据丢失。
         #[cfg(target_os = "windows")]
         {
-            if std::path::Path::new(&index_path).exists() {
-                let _ = std::fs::remove_file(&index_path);
+            let target = std::path::Path::new(&index_path);
+            let backup_path = format!("{}.bak", index_path);
+            let backup = std::path::Path::new(&backup_path);
+            let had_target = target.exists();
+
+            if had_target {
+                if backup.exists() {
+                    std::fs::remove_file(backup).map_err(|e| {
+                        Error::from_reason(format!("Failed to remove stale index backup: {}", e))
+                    })?;
+                }
+                std::fs::rename(target, backup).map_err(|e| {
+                    Error::from_reason(format!("Failed to stage existing index backup: {}", e))
+                })?;
+            }
+
+            if let Err(replace_error) = std::fs::rename(&temp_path, target) {
+                let rollback_error = if had_target {
+                    std::fs::rename(backup, target).err()
+                } else {
+                    None
+                };
+                return Err(Error::from_reason(match rollback_error {
+                    Some(error) => format!(
+                        "Failed to replace index file: {}; rollback also failed: {}",
+                        replace_error, error
+                    ),
+                    None => format!("Failed to replace index file: {}", replace_error),
+                }));
+            }
+
+            if had_target {
+                std::fs::remove_file(backup).map_err(|e| {
+                    Error::from_reason(format!(
+                        "Index replaced but failed to remove backup {}: {}",
+                        backup_path, e
+                    ))
+                })?;
             }
         }
 
+        #[cfg(not(target_os = "windows"))]
         std::fs::rename(&temp_path, &index_path)
             .map_err(|e| Error::from_reason(format!("Failed to rename index file: {}", e)))?;
 
@@ -706,11 +744,7 @@ impl VexusIndex {
         db_path: String,
         input_json: String,
     ) -> AsyncTask<memo_artifact_builder::NativeMemoArtifactBuildTask> {
-        memo_artifact_builder::rebuild_with_runtime(
-            self.memo_runtime.clone(),
-            db_path,
-            input_json,
-        )
+        memo_artifact_builder::rebuild_with_runtime(self.memo_runtime.clone(), db_path, input_json)
     }
 
     /// 释放本索引持有的统一 Memo 图快照。
@@ -932,6 +966,21 @@ impl VexusIndex {
 
         let q: &[f32] = &query;
         let tags: &[f32] = &flattened_tags;
+        let expected_tags_len = n.checked_mul(dim).ok_or_else(|| {
+            Error::from_reason(format!(
+                "Handshake input size overflow: n_tags={}, dimension={}",
+                n, dim
+            ))
+        })?;
+        if q.len() != dim || tags.len() != expected_tags_len {
+            return Err(Error::from_reason(format!(
+                "Handshake dimension mismatch: query expected {}, got {}; tags expected {}, got {}",
+                dim,
+                q.len(),
+                expected_tags_len,
+                tags.len()
+            )));
+        }
 
         let mut magnitudes = Vec::with_capacity(n);
         let mut directions = Vec::with_capacity(n * dim);
@@ -1059,11 +1108,11 @@ impl VexusIndex {
     #[napi]
     pub fn publish_epa_basis_cache(&self, db_path: String) -> Result<EpaBasisResult> {
         let pending = {
-            let mut guard = self
+            let guard = self
                 .epa_pending_cache
                 .lock()
                 .map_err(|e| Error::from_reason(format!("EPA pending cache lock failed: {}", e)))?;
-            guard.take()
+            guard.clone()
         };
 
         let pending = match pending {
@@ -1086,6 +1135,14 @@ impl VexusIndex {
             }
         };
 
+        let target_db_identity = sqlite_database_identity(&db_path);
+        if target_db_identity != pending.db_identity {
+            return Err(Error::from_reason(format!(
+                "EPA pending cache database mismatch: computed for {}, publish requested for {}",
+                pending.db_identity, target_db_identity
+            )));
+        }
+
         println!(
             "[Vexus-Lite][EPA] publish_epa_basis_cache started: db={}, tags={}, clusters={}, basis={}",
             db_path,
@@ -1107,6 +1164,18 @@ impl VexusIndex {
         .map_err(|e| Error::from_reason(format!("EPA cache write failed: {}", e)))?;
         tx.commit()
             .map_err(|e| Error::from_reason(format!("EPA cache commit failed: {}", e)))?;
+
+        {
+            let mut guard = self
+                .epa_pending_cache
+                .lock()
+                .map_err(|e| Error::from_reason(format!("EPA pending cache lock failed: {}", e)))?;
+            if guard.as_ref().map(|cache| cache.cache_sig.as_str())
+                == Some(pending.cache_sig.as_str())
+            {
+                *guard = None;
+            }
+        }
 
         let publish_ms = started_at.elapsed().as_secs_f64() * 1000.0;
         println!(
@@ -1203,18 +1272,12 @@ fn open_sqlite_readwrite(db_path: &str) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-fn checkpoint_sqlite_wal(conn: &Connection, mode: &str) -> rusqlite::Result<()> {
-    let sql = match mode {
-        "TRUNCATE" => "PRAGMA wal_checkpoint(TRUNCATE)",
-        "FULL" => "PRAGMA wal_checkpoint(FULL)",
-        _ => "PRAGMA wal_checkpoint(PASSIVE)",
-    };
-    conn.execute_batch(sql)
-}
-
 /// 🌟 EPA: Rust 侧 K-Means + 加权 PCA 计算结果暂存。
+#[derive(Clone)]
 pub struct EpaPendingCache {
     cache_json: String,
+    cache_sig: String,
+    db_identity: String,
     tag_count: u32,
     cluster_count: u32,
     basis_count: u32,
@@ -1242,6 +1305,14 @@ fn stable_sha256_hex(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+fn sqlite_database_identity(db_path: &str) -> String {
+    std::fs::canonicalize(db_path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(db_path))
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase()
 }
 
 fn json_escape(value: &str) -> String {
@@ -1579,18 +1650,18 @@ impl Task for EpaBasisTask {
                 .map_err(|e| Error::from_reason(format!("Query tags failed: {}", e)))?;
 
             for row in rows {
-                if let Ok((name, bytes)) = row {
-                    if bytes.len() != dim * 4 {
-                        continue;
-                    }
-                    let mut vector: Vec<f32> = bytes
-                        .chunks_exact(4)
-                        .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
-                        .collect();
-                    normalize_f32_vector(&mut vector);
-                    tag_names.push(name);
-                    tag_vectors.push(vector);
+                let (name, bytes) = row
+                    .map_err(|e| Error::from_reason(format!("Decode EPA Tag row failed: {}", e)))?;
+                if bytes.len() != dim * 4 {
+                    continue;
                 }
+                let mut vector: Vec<f32> = bytes
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+                    .collect();
+                normalize_f32_vector(&mut vector);
+                tag_names.push(name);
+                tag_vectors.push(vector);
             }
         }
 
@@ -1778,6 +1849,8 @@ impl Task for EpaBasisTask {
         );
 
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let cache_sig = stable_sha256_hex(&cache_json);
+        let db_identity = sqlite_database_identity(&self.db_path);
         {
             let mut guard = self
                 .pending_cache
@@ -1785,6 +1858,8 @@ impl Task for EpaBasisTask {
                 .map_err(|e| Error::from_reason(format!("EPA pending cache lock failed: {}", e)))?;
             *guard = Some(EpaPendingCache {
                 cache_json,
+                cache_sig,
+                db_identity,
                 tag_count: tag_count as u32,
                 cluster_count: k_clusters as u32,
                 basis_count: selected_k as u32,
@@ -2235,13 +2310,17 @@ impl Task for IntrinsicResidualTask {
         let mut skipped_files = 0usize;
         let mut edge_updates = 0usize;
         let load_started = Instant::now();
+        let mut content_hasher = {
+            use sha2::Digest;
+            sha2::Sha256::new()
+        };
 
         {
             let conn = open_sqlite_readonly(&self.db_path).map_err(|e| {
                 Error::from_reason(format!("DB readonly open/config failed: {}", e))
             })?;
             let mut stmt = conn
-                .prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL")
+                .prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL ORDER BY id")
                 .map_err(|e| Error::from_reason(format!("Prepare failed: {}", e)))?;
             let rows = stmt
                 .query_map([], |row| {
@@ -2250,17 +2329,24 @@ impl Task for IntrinsicResidualTask {
                 .map_err(|e| Error::from_reason(format!("Query failed: {}", e)))?;
 
             for row in rows {
-                if let Ok((id, bytes)) = row {
-                    if bytes.len() == dim * 4 {
-                        let mut vec: Vec<f32> = bytes
-                            .chunks_exact(4)
-                            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
-                            .collect();
-                        // P0: residual 必须是单位向量相对于局部子空间的不可解释比例。
-                        // 不再隐含依赖 embedding 服务已经归一化。
-                        normalize_f32_vector(&mut vec);
-                        tag_vectors.insert(id, vec);
-                    }
+                let (id, bytes) = row.map_err(|e| {
+                    Error::from_reason(format!("Decode intrinsic Tag row failed: {}", e))
+                })?;
+                {
+                    use sha2::Digest;
+                    content_hasher.update(id.to_le_bytes());
+                    content_hasher.update((bytes.len() as u64).to_le_bytes());
+                    content_hasher.update(&bytes);
+                }
+                if bytes.len() == dim * 4 {
+                    let mut vec: Vec<f32> = bytes
+                        .chunks_exact(4)
+                        .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+                        .collect();
+                    // P0: residual 必须是单位向量相对于局部子空间的不可解释比例。
+                    // 不再隐含依赖 embedding 服务已经归一化。
+                    normalize_f32_vector(&mut vec);
+                    tag_vectors.insert(id, vec);
                 }
             }
 
@@ -2333,19 +2419,26 @@ impl Task for IntrinsicResidualTask {
             let mut file_tags: Vec<(i64, i64)> = Vec::with_capacity(64);
 
             for row in rows {
-                if let Ok((fid, tid, position)) = row {
-                    if fid != current_file_id {
-                        flush(
-                            &file_tags,
-                            &mut adjacency,
-                            &mut edge_updates,
-                            &mut skipped_files,
-                        );
-                        file_tags.clear();
-                        current_file_id = fid;
-                    }
-                    file_tags.push((tid, position));
+                let (fid, tid, position) = row.map_err(|e| {
+                    Error::from_reason(format!("Decode intrinsic adjacency row failed: {}", e))
+                })?;
+                {
+                    use sha2::Digest;
+                    content_hasher.update(fid.to_le_bytes());
+                    content_hasher.update(tid.to_le_bytes());
+                    content_hasher.update(position.to_le_bytes());
                 }
+                if fid != current_file_id {
+                    flush(
+                        &file_tags,
+                        &mut adjacency,
+                        &mut edge_updates,
+                        &mut skipped_files,
+                    );
+                    file_tags.clear();
+                    current_file_id = fid;
+                }
+                file_tags.push((tid, position));
             }
             flush(
                 &file_tags,
@@ -2381,9 +2474,13 @@ impl Task for IntrinsicResidualTask {
                         })?;
 
                     for row in rows {
-                        if let Ok((a, b, sim)) = row {
-                            pairwise_similarity.insert((a, b), sim);
-                        }
+                        let (a, b, sim) = row.map_err(|e| {
+                            Error::from_reason(format!(
+                                "Decode pairwise similarity row failed: {}",
+                                e
+                            ))
+                        })?;
+                        pairwise_similarity.insert(pair_key(a, b), sim);
                     }
                     println!(
                         "[Vexus-Lite][IntrinsicResidual] semantic cache loaded: pairs={}, model_sig={}, elapsed={:.2}ms",
@@ -2397,8 +2494,13 @@ impl Task for IntrinsicResidualTask {
             }
         }
 
+        let content_digest = {
+            use sha2::Digest;
+            format!("{:x}", content_hasher.finalize())
+        };
         let graph_generation = format!(
-            "tags:{}:sources:{}:edge_updates:{}:skipped_files:{}",
+            "content:{}:tags:{}:sources:{}:edge_updates:{}:skipped_files:{}",
+            content_digest,
             tag_vectors.len(),
             adjacency.len(),
             edge_updates,
@@ -2738,12 +2840,16 @@ impl Task for PairwiseSimTask {
         let mut cached: HashSet<(i64, i64)> = HashSet::new();
         let mut max_tag_id = 0_i64;
         let mut file_tag_rows = 0_u64;
-        {
+        let (pair_count, graph_generation) = {
             let conn = open_sqlite_readonly(&self.db_path).map_err(|e| {
                 Error::from_reason(format!("DB readonly open/config failed: {}", e))
             })?;
+            let mut content_hasher = {
+                use sha2::Digest;
+                sha2::Sha256::new()
+            };
             let mut stmt = conn
-                .prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL")
+                .prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL ORDER BY id")
                 .map_err(|e| Error::from_reason(format!("Prepare tags query failed: {}", e)))?;
             let rows = stmt
                 .query_map([], |row| {
@@ -2752,15 +2858,22 @@ impl Task for PairwiseSimTask {
                 .map_err(|e| Error::from_reason(format!("Query tags failed: {}", e)))?;
 
             for row in rows {
-                if let Ok((id, bytes)) = row {
-                    max_tag_id = max_tag_id.max(id);
-                    if bytes.len() == dim * 4 {
-                        let vec: Vec<f32> = bytes
-                            .chunks_exact(4)
-                            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
-                            .collect();
-                        tag_vectors.insert(id, vec);
-                    }
+                let (id, bytes) = row.map_err(|e| {
+                    Error::from_reason(format!("Decode pairwise Tag row failed: {}", e))
+                })?;
+                max_tag_id = max_tag_id.max(id);
+                {
+                    use sha2::Digest;
+                    content_hasher.update(id.to_le_bytes());
+                    content_hasher.update((bytes.len() as u64).to_le_bytes());
+                    content_hasher.update(&bytes);
+                }
+                if bytes.len() == dim * 4 {
+                    let vec: Vec<f32> = bytes
+                        .chunks_exact(4)
+                        .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+                        .collect();
+                    tag_vectors.insert(id, vec);
                 }
             }
 
@@ -2770,7 +2883,7 @@ impl Task for PairwiseSimTask {
             // 约定 tag_a < tag_b
             // ====================================================================
             let mut stmt = conn
-                .prepare("SELECT file_id, tag_id FROM file_tags ORDER BY file_id")
+                .prepare("SELECT file_id, tag_id FROM file_tags ORDER BY file_id, tag_id")
                 .map_err(|e| {
                     Error::from_reason(format!("Prepare file_tags query failed: {}", e))
                 })?;
@@ -2800,28 +2913,41 @@ impl Task for PairwiseSimTask {
             };
 
             for row in rows {
-                if let Ok((fid, tid)) = row {
-                    file_tag_rows += 1;
-                    max_tag_id = max_tag_id.max(tid);
-                    if fid != current_file_id {
-                        flush(&file_tags, &mut pair_set);
-                        file_tags.clear();
-                        current_file_id = fid;
-                    }
-                    file_tags.push(tid);
+                let (fid, tid) = row.map_err(|e| {
+                    Error::from_reason(format!("Decode pairwise file_tags row failed: {}", e))
+                })?;
+                file_tag_rows += 1;
+                max_tag_id = max_tag_id.max(tid);
+                {
+                    use sha2::Digest;
+                    content_hasher.update(fid.to_le_bytes());
+                    content_hasher.update(tid.to_le_bytes());
                 }
+                if fid != current_file_id {
+                    flush(&file_tags, &mut pair_set);
+                    file_tags.clear();
+                    current_file_id = fid;
+                }
+                file_tags.push(tid);
             }
             flush(&file_tags, &mut pair_set);
-        }
 
-        let pair_count = pair_set.len() as u32;
-        let graph_generation = format!(
-            "tags:{}:max_tag:{}:file_tag_rows:{}:pairs:{}",
-            tag_vectors.len(),
-            max_tag_id,
-            file_tag_rows,
-            pair_count
-        );
+            let content_digest = {
+                use sha2::Digest;
+                format!("{:x}", content_hasher.finalize())
+            };
+            let pair_count = pair_set.len() as u32;
+            let graph_generation = format!(
+                "content:{}:tags:{}:max_tag:{}:file_tag_rows:{}:pairs:{}",
+                content_digest,
+                tag_vectors.len(),
+                max_tag_id,
+                file_tag_rows,
+                pair_count
+            );
+            (pair_count, graph_generation)
+        };
+
         let effective_config = format!(
             "{{\"algorithm\":\"{}\",\"dimension\":{},\"minSimilarity\":{},\"modelSig\":\"{}\"}}",
             PAIRWISE_ALGORITHM_VERSION,
@@ -2863,9 +2989,10 @@ impl Task for PairwiseSimTask {
                 })?;
 
             for row in rows {
-                if let Ok((a, b)) = row {
-                    cached.insert((a, b));
-                }
+                let (a, b) = row.map_err(|e| {
+                    Error::from_reason(format!("Decode pairwise status cache row failed: {}", e))
+                })?;
+                cached.insert(pair_key(a, b));
             }
         }
 
@@ -2956,146 +3083,109 @@ impl Task for PairwiseSimTask {
         // Step 5: 流式分包写入
         // ====================================================================
         let stored_count = to_insert.len() as u32;
-
         if !status_rows.is_empty() || self.full_rebuild {
-            const WRITE_CHUNK_SIZE: usize = 1000;
-            let passive_checkpoint_every_chunks =
-                std::env::var("VEXUS_PAIRWISE_PASSIVE_CHECKPOINT_EVERY_CHUNKS")
-                    .ok()
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(0);
             let mut conn = open_sqlite_readwrite(&self.db_path)
                 .map_err(|e| Error::from_reason(format!("DB write open/config failed: {}", e)))?;
+            let tx = conn.transaction().map_err(|e| {
+                Error::from_reason(format!("Begin atomic pairwise publish failed: {}", e))
+            })?;
 
             if self.full_rebuild {
-                conn.execute("DELETE FROM tag_pair_similarity", [])
+                tx.execute("DELETE FROM tag_pair_similarity", [])
                     .map_err(|e| {
                         Error::from_reason(format!(
                             "Full rebuild positive cache clear failed: {}",
                             e
                         ))
                     })?;
-                conn.execute("DELETE FROM tag_pair_similarity_status", [])
+                tx.execute("DELETE FROM tag_pair_similarity_status", [])
                     .map_err(|e| {
                         Error::from_reason(format!("Full rebuild status cache clear failed: {}", e))
                     })?;
             }
 
             let artifact_now = now_ms;
-            conn.execute(
-                "INSERT OR REPLACE INTO tagmemo_artifacts \
-                 (artifact_sig, asset_type, model_sig, graph_generation, algorithm_version, config_hash, effective_config, status, created_at, updated_at) \
-                 VALUES (?1, 'pairwise_similarity', ?2, ?3, ?4, ?5, ?6, 'ready', ?7, ?7)",
-                rusqlite::params![
-                    &artifact_sig,
-                    &self.model_sig,
-                    &graph_generation,
-                    PAIRWISE_ALGORITHM_VERSION,
-                    &config_hash,
-                    &effective_config,
-                    artifact_now
-                ],
-            )
-            .map_err(|e| Error::from_reason(format!("Pairwise artifact registration failed: {}", e)))?;
+            tx.execute(
+        "INSERT OR REPLACE INTO tagmemo_artifacts \
+         (artifact_sig, asset_type, model_sig, graph_generation, algorithm_version, config_hash, effective_config, status, created_at, updated_at) \
+         VALUES (?1, 'pairwise_similarity', ?2, ?3, ?4, ?5, ?6, 'building', ?7, ?7)",
+        rusqlite::params![
+            &artifact_sig,
+            &self.model_sig,
+            &graph_generation,
+            PAIRWISE_ALGORITHM_VERSION,
+            &config_hash,
+            &effective_config,
+            artifact_now
+        ],
+    )
+    .map_err(|e| {
+        Error::from_reason(format!("Pairwise building registration failed: {}", e))
+    })?;
 
-            for (chunk_index, chunk) in to_insert.chunks(WRITE_CHUNK_SIZE).enumerate() {
-                {
-                    let tx = conn.transaction().map_err(|e| {
-                        Error::from_reason(format!("Begin tx chunk {} failed: {}", chunk_index, e))
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "INSERT OR REPLACE INTO tag_pair_similarity \
+                 (tag_a, tag_b, similarity, model_sig, computed_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                    )
+                    .map_err(|e| {
+                        Error::from_reason(format!("Prepare pairwise value insert failed: {}", e))
                     })?;
-
-                    {
-                        let mut stmt = tx
-                            .prepare(
-                                "INSERT OR REPLACE INTO tag_pair_similarity \
-                                 (tag_a, tag_b, similarity, model_sig, computed_at) \
-                                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                            )
-                            .map_err(|e| {
-                                Error::from_reason(format!(
-                                    "Prepare insert chunk {} failed: {}",
-                                    chunk_index, e
-                                ))
-                            })?;
-
-                        for (a, b, sim, ts) in chunk {
-                            stmt.execute(rusqlite::params![a, b, sim, &self.model_sig, ts])
-                                .map_err(|e| {
-                                    Error::from_reason(format!(
-                                        "Insert pair chunk {} failed: {}",
-                                        chunk_index, e
-                                    ))
-                                })?;
-                        }
-                    }
-
-                    tx.commit().map_err(|e| {
-                        Error::from_reason(format!("Commit tx chunk {} failed: {}", chunk_index, e))
-                    })?;
+                for (a, b, sim, ts) in &to_insert {
+                    stmt.execute(rusqlite::params![a, b, sim, &self.model_sig, ts])
+                        .map_err(|e| {
+                            Error::from_reason(format!(
+                                "Insert pairwise value ({}, {}) failed: {}",
+                                a, b, e
+                            ))
+                        })?;
                 }
+            }
 
-                if passive_checkpoint_every_chunks > 0
-                    && (chunk_index + 1) % passive_checkpoint_every_chunks == 0
-                {
-                    checkpoint_sqlite_wal(&conn, "PASSIVE").map_err(|e| {
+            {
+                let mut stmt = tx
+            .prepare(
+                "INSERT OR REPLACE INTO tag_pair_similarity_status \
+                 (tag_a, tag_b, model_sig, artifact_sig, status, similarity, min_similarity, computed_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .map_err(|e| {
+                Error::from_reason(format!("Prepare pairwise status insert failed: {}", e))
+            })?;
+                for (a, b, status, similarity, ts) in &status_rows {
+                    stmt.execute(rusqlite::params![
+                        a,
+                        b,
+                        &self.model_sig,
+                        &artifact_sig,
+                        status,
+                        similarity,
+                        self.min_similarity,
+                        ts
+                    ])
+                    .map_err(|e| {
                         Error::from_reason(format!(
-                            "Passive WAL checkpoint after chunk {} failed: {}",
-                            chunk_index, e
+                            "Insert pairwise status ({}, {}) failed: {}",
+                            a, b, e
                         ))
                     })?;
                 }
             }
 
-            for (chunk_index, chunk) in status_rows.chunks(WRITE_CHUNK_SIZE).enumerate() {
-                let tx = conn.transaction().map_err(|e| {
-                    Error::from_reason(format!(
-                        "Begin pairwise status tx chunk {} failed: {}",
-                        chunk_index, e
-                    ))
-                })?;
-                {
-                    let mut stmt = tx
-                        .prepare(
-                            "INSERT OR REPLACE INTO tag_pair_similarity_status \
-                             (tag_a, tag_b, model_sig, artifact_sig, status, similarity, min_similarity, computed_at) \
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                        )
-                        .map_err(|e| {
-                            Error::from_reason(format!(
-                                "Prepare pairwise status insert chunk {} failed: {}",
-                                chunk_index, e
-                            ))
-                        })?;
+            tx.execute(
+                "UPDATE tagmemo_artifacts SET status = 'ready', updated_at = ?2 \
+         WHERE artifact_sig = ?1",
+                rusqlite::params![&artifact_sig, artifact_now],
+            )
+            .map_err(|e| Error::from_reason(format!("Pairwise ready transition failed: {}", e)))?;
 
-                    for (a, b, status, similarity, ts) in chunk {
-                        stmt.execute(rusqlite::params![
-                            a,
-                            b,
-                            &self.model_sig,
-                            &artifact_sig,
-                            status,
-                            similarity,
-                            self.min_similarity,
-                            ts
-                        ])
-                        .map_err(|e| {
-                            Error::from_reason(format!(
-                                "Insert pairwise status chunk {} failed: {}",
-                                chunk_index, e
-                            ))
-                        })?;
-                    }
-                }
-                tx.commit().map_err(|e| {
-                    Error::from_reason(format!(
-                        "Commit pairwise status tx chunk {} failed: {}",
-                        chunk_index, e
-                    ))
-                })?;
-            }
+            tx.commit().map_err(|e| {
+                Error::from_reason(format!("Commit atomic pairwise publish failed: {}", e))
+            })?;
 
-            // 最终 TRUNCATE checkpoint 由 JS coordinator 统一执行，避免 Rust/JS 跨连接轮流 TRUNCATE
-            // 导致 better-sqlite3 旧连接看到 transient malformed 视图。
+            // 最终 TRUNCATE checkpoint 仍由 JS coordinator 统一执行。
         }
 
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
@@ -3157,8 +3247,9 @@ impl Task for RecoverTask {
             .write()
             .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
 
-        // 定义处理单行的闭包
-        let mut process_row = |id: i64, vector_bytes: Vec<u8>| {
+        // 维度不匹配仍按兼容契约跳过；索引内部失败必须显式返回，
+        // 避免调用方把部分恢复误认为完整成功。
+        let mut process_row = |id: i64, vector_bytes: Vec<u8>| -> Result<()> {
             if vector_bytes.len() == expected_byte_len {
                 let vec_slice: Vec<f32> = vector_bytes
                     .chunks_exact(4)
@@ -3167,15 +3258,22 @@ impl Task for RecoverTask {
 
                 if index.size() + 1 >= index.capacity() {
                     let new_cap = (index.capacity() as f64 * 1.5) as usize;
-                    let _ = index.reserve(new_cap); // AsyncTask 中 reserve 失败暂不中断，因为是后台恢复
+                    index.reserve(new_cap).map_err(|e| {
+                        Error::from_reason(format!(
+                            "Recover reserve failed before vector {}: {:?}",
+                            id, e
+                        ))
+                    })?;
                 }
 
-                if index.add(id as u64, &vec_slice).is_ok() {
-                    count += 1;
-                }
+                index.add(id as u64, &vec_slice).map_err(|e| {
+                    Error::from_reason(format!("Recover add failed for vector {}: {:?}", id, e))
+                })?;
+                count += 1;
             } else {
                 skipped_dim_mismatch += 1;
             }
+            Ok(())
         };
 
         if let Some(name) = &self.filter_diary_name {
@@ -3186,9 +3284,10 @@ impl Task for RecoverTask {
                 .map_err(|e| Error::from_reason(format!("Query failed: {}", e)))?;
 
             for row_result in rows {
-                if let Ok((id, vector_bytes)) = row_result {
-                    process_row(id, vector_bytes);
-                }
+                let (id, vector_bytes) = row_result.map_err(|e| {
+                    Error::from_reason(format!("Decode recovery row failed: {}", e))
+                })?;
+                process_row(id, vector_bytes)?;
             }
         } else {
             let rows = stmt
@@ -3198,9 +3297,10 @@ impl Task for RecoverTask {
                 .map_err(|e| Error::from_reason(format!("Query failed: {}", e)))?;
 
             for row_result in rows {
-                if let Ok((id, vector_bytes)) = row_result {
-                    process_row(id, vector_bytes);
-                }
+                let (id, vector_bytes) = row_result.map_err(|e| {
+                    Error::from_reason(format!("Decode recovery row failed: {}", e))
+                })?;
+                process_row(id, vector_bytes)?;
             }
         }
 
