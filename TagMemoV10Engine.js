@@ -659,6 +659,77 @@ class TagMemoV10Engine {
         };
     }
 
+    publishNativeArtifactHandle(nativeResult, options = {}) {
+        if (
+            !nativeResult?.artifactSig
+            || !nativeResult?.sourceArtifactSig
+            || nativeResult.persisted !== true
+        ) {
+            throw new TypeError(
+                'Native Memo artifact handle requires persisted artifact/source signatures'
+            );
+        }
+        const generation = ++this._artifactGeneration;
+        const publishedAt = Number(options.publishedAt) || Date.now();
+        const effectiveConfig = options.effectiveConfig
+            || this.getEffectiveConfig(options.config || {});
+        const artifact = Object.freeze({
+            schema: ARTIFACT_SCHEMA,
+            version: VERSION,
+            algorithmVersion:
+                nativeResult.algorithmVersion || 'memo.native-artifact-v1',
+            artifactSig: nativeResult.artifactSig,
+            generation,
+            nativeGeneration:
+                Number(nativeResult.generation) || null,
+            graphGeneration: nativeResult.graphGeneration || '',
+            databaseGeneration: nativeResult.databaseGeneration || '',
+            provenanceGeneration:
+                nativeResult.provenanceGeneration || '',
+            modelSig:
+                nativeResult.modelSig
+                || this.v9Engine?.modelSig
+                || this.config.modelSig
+                || this.config.model
+                || 'unknown-model',
+            configHash: nativeResult.configHash || null,
+            sourceArtifactSig: nativeResult.sourceArtifactSig,
+            sourceGraphGeneration:
+                nativeResult.sourceGraphGeneration
+                || nativeResult.graphGeneration
+                || '',
+            maxInbound: Math.max(
+                0,
+                Number(nativeResult.maxInbound) || 0
+            ),
+            effectiveConfig,
+            nodeCount: Math.max(
+                0,
+                Number(nativeResult.nodeCount) || 0
+            ),
+            edgeCount: Math.max(
+                0,
+                Number(nativeResult.edgeCount) || 0
+            ),
+            storageMode: 'rust-memo-runtime',
+            residentAtPublication: nativeResult.resident === true,
+            publishedAt
+        });
+        this._clearConditionedOperatorCache(
+            'native-artifact-handle-published'
+        );
+        this._activeArtifact = artifact;
+        console.log(
+            `[TagMemo-V10] 🦀 Native control handle published: ` +
+            `generation=${generation}, nativeGeneration=` +
+            `${artifact.nativeGeneration ?? 'lazy'}, ` +
+            `artifact=${artifact.artifactSig}, nodes=${artifact.nodeCount}, ` +
+            `edges=${artifact.edgeCount}, resident=` +
+            `${artifact.residentAtPublication}.`
+        );
+        return artifact;
+    }
+
     publishArtifact(staging, options = {}) {
         if (
             !staging

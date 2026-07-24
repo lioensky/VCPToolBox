@@ -83,10 +83,28 @@ class TagMemoEngine {
 
     _hasWarmDerivedCaches() {
         const epaReady = !!(this.epa && this.epa.initialized && this.epa.orthoBasis && this.epa.orthoBasis.length > 0);
-        const pairwiseReady = this.tagPairSimilarities instanceof Map && this.tagPairSimilarities.size > 0;
-        const intrinsicReady = this.tagIntrinsicResiduals instanceof Map && this.tagIntrinsicResiduals.size > 0;
-        const matrixReady = this.tagCooccurrenceMatrix instanceof Map && this.tagCooccurrenceMatrix.size > 0;
-        return { epaReady, pairwiseReady, intrinsicReady, matrixReady };
+
+        // Rust 原生 Memo 重构后，生产图资产由 VexusIndex.memoRuntime 持有。
+        // publishNativeArtifactHandle() 会有意释放 Pairwise/IR/Matrix 的 JS Map，
+        // 因此不能再用这些兼容 Map 是否为空来判断原生生产资产是否就绪。
+        const nativeMemoReady = !!(
+            this._activeArtifactBundle
+            && this._activeArtifactBundle.storageMode === 'rust-memo-runtime'
+            && this._activeArtifactBundle.artifactSig
+        );
+        const pairwiseReady = nativeMemoReady
+            || (this.tagPairSimilarities instanceof Map && this.tagPairSimilarities.size > 0);
+        const intrinsicReady = nativeMemoReady
+            || (this.tagIntrinsicResiduals instanceof Map && this.tagIntrinsicResiduals.size > 0);
+        const matrixReady = nativeMemoReady
+            || (this.tagCooccurrenceMatrix instanceof Map && this.tagCooccurrenceMatrix.size > 0);
+        return {
+            epaReady,
+            pairwiseReady,
+            intrinsicReady,
+            matrixReady,
+            nativeMemoReady
+        };
     }
 
     _shouldSkipPostStartupDerivedRefresh() {
@@ -277,6 +295,69 @@ class TagMemoEngine {
             error.code = 'TAGMEMO_JS_GRAPH_RUNTIME_RETIRED';
             throw error;
         }
+    }
+
+    publishNativeArtifactHandle(nativeResult, effectiveConfig = {}) {
+        if (
+            !nativeResult?.artifactSig
+            || !nativeResult?.sourceArtifactSig
+            || nativeResult.persisted !== true
+        ) {
+            throw new TypeError(
+                'Native Memo control publication requires persisted artifact/source signatures'
+            );
+        }
+        const generation = ++this._artifactBundleGeneration;
+        const publishedAt = Date.now();
+        const lightweight = Object.freeze({
+            version: 'v9',
+            artifactSig: nativeResult.sourceArtifactSig,
+            graphGeneration: nativeResult.graphGeneration,
+            modelSig: this.modelSig,
+            effectiveConfig: this._deepFreezeConfig(
+                JSON.parse(JSON.stringify(effectiveConfig || {}))
+            ),
+            potentialFieldConfig: this._deepFreezeConfig(
+                JSON.parse(JSON.stringify(
+                    effectiveConfig?.potentialFieldRerank
+                    || effectiveConfig?.geodesicRerank
+                    || {}
+                ))
+            ),
+            residualArtifact: this.intrinsicResidualArtifact
+                ? Object.freeze({ ...this.intrinsicResidualArtifact })
+                : null,
+            algorithmVersion: 'v9.1-rust-native',
+            generation,
+            nativeGeneration:
+                Number(nativeResult.generation) || null,
+            residentAtPublication: nativeResult.resident === true,
+            publishedAt,
+            storageMode: 'rust-memo-runtime'
+        });
+        this._activeArtifactBundle = lightweight;
+        this._artifactBundlesByVersion = Object.freeze({
+            generation,
+            publishedAt,
+            activeVersion: 'v9',
+            bundles: Object.freeze({ v9: lightweight })
+        });
+
+        // 原生构建成功后，JS 不再重新加载或保留图、pairwise、residual 资产。
+        this.tagCooccurrenceMatrix = null;
+        this.tagIntrinsicResiduals = null;
+        this.tagRawResidualRatios = null;
+        this.tagPairSimilarities = new Map();
+        this.lastEnergyField = null;
+        this.lastEnergyFieldProvenance = null;
+
+        console.log(
+            `[TagMemoEngine] 🦀 Native V9 control handle published: ` +
+            `generation=${generation}, artifact=${lightweight.artifactSig}, ` +
+            `runtimeArtifact=${nativeResult.artifactSig}, ` +
+            `resident=${lightweight.residentAtPublication}`
+        );
+        return lightweight;
     }
 
     _publishArtifactBundle(staging) {
@@ -581,12 +662,12 @@ class TagMemoEngine {
             console.warn('[TagMemoEngine] ⚠️ V8.2 cold start check failed (table may not exist yet):', e.message);
         }
 
-        // 加载矩阵依赖的持久化底座：边相似度 + 节点内生残差
-        this.loadPairwiseSimilarities();
-        this.loadIntrinsicResiduals();
-
-        // 启动时构建共现矩阵：确保 reverseAnchorBoost 能吃到已加载残差
-        this.buildDirectedCooccurrenceMatrix();
+        // 生产图资产已归属 VexusIndex.memoRuntime。启动阶段只初始化轻量
+        // 调度/分析门面；Pairwise、Residual、事实图和传播 Kernel 不再加载到 JS。
+        this.tagPairSimilarities = new Map();
+        this.tagIntrinsicResiduals = null;
+        this.tagRawResidualRatios = null;
+        this.tagCooccurrenceMatrix = null;
     }
 
     /**
@@ -3534,40 +3615,113 @@ class TagMemoEngine {
 
         try {
             const rebuilt = await this._withRustWriteLease('tagmemo:matrix-rebuild', async () => {
-                // V9.1 单轨顺序：sim 预计算 → 健康屏障/加载 → intrinsic residual
-                // 预计算/屏障/加载 → 构建并原子发布 V9.1 kernel → 清理退休资产。
-                const pairResult = await this.recomputePairwiseSimilarities({ blocking: true, leaseAlreadyHeld: true, fullRebuild: fullRebuildPairwise });
+                // Pairwise/IR 派生表与最终统一图资产均由 Rust 计算。JS 只负责租约、
+                // 阶段健康屏障和轻量发布回执，禁止再加载 Map 或编译 CSR。
+                const pairResult = await this.recomputePairwiseSimilarities({
+                    blocking: true,
+                    leaseAlreadyHeld: true,
+                    fullRebuild: fullRebuildPairwise
+                });
                 if (!pairResult) return false;
-                // 🛡️ P0: Rust 写后先 checkpoint + 健康屏障（含 suspect 重开），再用健康连接读取派生表，
-                // 避免跨连接 WAL/SHM 瞬态视图触发读端 malformed。屏障失败即中止本轮，不继续后续阶段。
-                if (!this._assertHealthyAfterRustWrite('pairwise-sim load barrier')) return false;
-                this.loadPairwiseSimilarities({ failOnCorruption: true });
-
-                const isThresholdRebuild = rebuildReason === 'threshold' || rebuildReason === 'follow-up-threshold';
-                const shouldRecomputeIntrinsicResiduals = forceIntrinsicResiduals
-                    || this._isIntrinsicResidualRecomputeEnabled()
-                    || (isThresholdRebuild && this._isIntrinsicResidualThresholdRecomputeEnabled());
-
-                if (shouldRecomputeIntrinsicResiduals) {
-                    if (forceIntrinsicResiduals) {
-                        console.log('[TagMemoEngine] 🔁 Intrinsic residual recompute forced by active full training request.');
-                    } else if (isThresholdRebuild && !this._isIntrinsicResidualRecomputeEnabled()) {
-                        console.log('[TagMemoEngine] 🔁 Intrinsic residual recompute enabled for threshold matrix rebuild: TAGMEMO_IR_RECOMPUTE_ON_THRESHOLD=true.');
-                    }
-                    const intrinsicResult = await this.recomputeIntrinsicResiduals({ leaseAlreadyHeld: true });
-                    if (!intrinsicResult) return false;
-                    if (!this._assertHealthyAfterRustWrite('intrinsic-residuals load barrier')) return false;
-                    this.loadIntrinsicResiduals({ failOnCorruption: true });
-                } else {
-                    const skipReason = isThresholdRebuild
-                        ? 'TAGMEMO_IR_RECOMPUTE_ON_THRESHOLD=false and TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE=false'
-                        : 'TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE=false';
-                    console.log(`[TagMemoEngine] 🛡️ Intrinsic residual hot recompute skipped: ${skipReason}. Loading existing residual cache only.`);
-                    this.loadIntrinsicResiduals({ failOnCorruption: true });
+                if (!this._assertHealthyAfterRustWrite('pairwise-sim native build barrier')) {
+                    return false;
                 }
 
-                const publishedRegistry = this.buildDirectedCooccurrenceMatrix();
-                if (!publishedRegistry?.bundles?.v9) return false;
+                const isThresholdRebuild =
+                    rebuildReason === 'threshold'
+                    || rebuildReason === 'follow-up-threshold';
+                const shouldRecomputeIntrinsicResiduals =
+                    forceIntrinsicResiduals
+                    || this._isIntrinsicResidualRecomputeEnabled()
+                    || (
+                        isThresholdRebuild
+                        && this._isIntrinsicResidualThresholdRecomputeEnabled()
+                    );
+
+                if (shouldRecomputeIntrinsicResiduals) {
+                    const intrinsicResult = await this.recomputeIntrinsicResiduals({
+                        leaseAlreadyHeld: true
+                    });
+                    if (!intrinsicResult) return false;
+                    this.intrinsicResidualArtifact = Object.freeze({
+                        artifactSig: intrinsicResult.artifactSig || null,
+                        modelSig: this.modelSig,
+                        algorithmVersion:
+                            intrinsicResult.algorithmVersion || null,
+                        configHash: intrinsicResult.configHash || null
+                    });
+                    if (!this._assertHealthyAfterRustWrite(
+                        'intrinsic-residuals native build barrier'
+                    )) {
+                        return false;
+                    }
+                }
+
+                if (
+                    !this.tagIndex
+                    || typeof this.tagIndex.rebuildMemoArtifact !== 'function'
+                ) {
+                    throw new Error(
+                        'Native rebuildMemoArtifact ABI is unavailable; rebuild rust-vexus-lite'
+                    );
+                }
+                const dbPath = path.join(
+                    path.dirname(this.db.name),
+                    'knowledge_base.sqlite'
+                );
+                const kbConfig = JSON.parse(JSON.stringify(
+                    this.ragParams?.KnowledgeBaseManager || {}
+                ));
+                const memoControlConfig =
+                    this.knowledgeBaseManager?.tagMemoV10Engine
+                        ?.getEffectiveConfig?.() || {};
+                // Rust 构图读取 orderedCooccurrence/v9；统一查询读取规范化后的
+                // localField/transferField/dstc 等字段。二者冻结为同一代配置快照。
+                const effectiveConfig = JSON.parse(JSON.stringify({
+                    ...kbConfig,
+                    ...memoControlConfig,
+                    orderedCooccurrence:
+                        kbConfig.orderedCooccurrence || {},
+                    v9: kbConfig.v9 || {},
+                    spikeRouting: kbConfig.spikeRouting || {}
+                }));
+                const nativeResult = await this.tagIndex.rebuildMemoArtifact(
+                    dbPath,
+                    JSON.stringify({
+                        modelSig: this.modelSig,
+                        effectiveConfig
+                    })
+                );
+                if (
+                    !nativeResult?.success
+                    || nativeResult.persisted !== true
+                    || nativeResult.resident !== true
+                ) {
+                    throw new Error(
+                        'Native Memo artifact build did not publish a resident asset'
+                    );
+                }
+
+                // 屏障可能重绑 better-sqlite3，但不会触碰 VexusIndex 内的 Arc。
+                if (!this._assertHealthyAfterRustWrite(
+                    'native-memo-artifact publish barrier'
+                )) {
+                    return false;
+                }
+                const v9Handle = this.publishNativeArtifactHandle(
+                    nativeResult,
+                    effectiveConfig
+                );
+                if (
+                    this.knowledgeBaseManager
+                    && typeof this.knowledgeBaseManager
+                        .onNativeMemoArtifactPublished === 'function'
+                ) {
+                    this.knowledgeBaseManager.onNativeMemoArtifactPublished(
+                        nativeResult,
+                        v9Handle
+                    );
+                }
                 if (cleanupRetiredV83Assets) {
                     this._cleanupRetiredV83DerivedAssets();
                 }
@@ -3777,8 +3931,9 @@ class TagMemoEngine {
             const skipDecision = this._shouldSkipPostStartupDerivedRefresh();
             if (skipDecision.skip) {
                 console.log(
-                    '[TagMemoEngine] 🛡️ Post-startup derived refresh skipped: warm EPA/pairwise/IR/matrix caches are already loaded, ' +
-                    'EPA/IR hot recompute switches are false, and no tag changes accumulated.'
+                    '[TagMemoEngine] 🛡️ Post-startup derived refresh skipped: warm EPA and Memo production assets are ready ' +
+                    `(nativeMemo=${skipDecision.nativeMemoReady}), EPA/IR hot recompute switches are false, ` +
+                    'and no tag changes accumulated.'
                 );
                 return;
             }
@@ -3810,8 +3965,14 @@ class TagMemoEngine {
                     );
                 }
                 this._enqueueDerivedTask('matrix-rebuild', async () => {
+                    const reason = forceFullDerivedRefresh
+                        ? 'startup-full-derived-refresh'
+                        : 'startup-bootstrap';
                     return await this.doMatrixRebuild({
-                        reason: forceFullDerivedRefresh ? 'startup-full-derived-refresh' : 'startup-bootstrap'
+                        reason,
+                        // 缺少生产原生资产时，bootstrap 是服务可用性的前置条件，
+                        // 不能再被通用派生任务的 5 分钟启动冷却阻塞。
+                        allowDuringStartupCooldown: reason === 'startup-bootstrap'
                     });
                 });
             } else if (this._accumulatedNewTagIds.size > 0) {

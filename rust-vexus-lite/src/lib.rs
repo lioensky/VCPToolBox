@@ -1,5 +1,6 @@
 #![deny(clippy::all)]
 
+mod memo_artifact_builder;
 mod memo_dtsc;
 mod memo_pipeline;
 mod memo_sensing;
@@ -691,6 +692,23 @@ impl VexusIndex {
             self.memo_runtime.clone(),
             db_path,
             artifact_sig,
+            input_json,
+        )
+    }
+
+    /// 从 SQLite 事实层和 Rust 派生表原生编译统一 Memo 图资产。
+    ///
+    /// 完整图、CSR、provenance、持久化 payload 与活动 Arc 均不跨越
+    /// N-API 边界；JavaScript 只接收签名、代际与规模摘要。
+    #[napi]
+    pub fn rebuild_memo_artifact(
+        &self,
+        db_path: String,
+        input_json: String,
+    ) -> AsyncTask<memo_artifact_builder::NativeMemoArtifactBuildTask> {
+        memo_artifact_builder::rebuild_with_runtime(
+            self.memo_runtime.clone(),
+            db_path,
             input_json,
         )
     }

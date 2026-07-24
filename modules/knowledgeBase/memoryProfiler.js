@@ -77,91 +77,94 @@ function profileTagMemo(tagMemoEngine) {
 }
 
 function profileRiverMemo(state) {
-    const runtime = state.tagMemoV10Engine;
-    const engine = state.riverMemoEngine;
-    if (!runtime) {
+    const controlRuntime = state.tagMemoV10Engine;
+    if (!controlRuntime) {
         return { available: false, estimatedBytes: 0 };
     }
 
-    const artifact = runtime.getArtifactSnapshot?.({ buildIfMissing: false })
-        || null;
-    const nodeCount = Math.max(
+    const artifact = controlRuntime.getArtifactSnapshot?.({
+        buildIfMissing: false
+    }) || null;
+    let nativeRuntime = null;
+    try {
+        nativeRuntime = typeof state.tagIndex?.memoRuntimeStats === 'function'
+            ? state.tagIndex.memoRuntimeStats()
+            : null;
+    } catch (error) {
+        nativeRuntime = { available: false, error: error.message || String(error) };
+    }
+
+    const residentArtifactSig =
+        nativeRuntime?.activeArtifactSig
+        ?? nativeRuntime?.artifactSig
+        ?? null;
+    const nativeNodeCount = Math.max(
         0,
-        Number(artifact?.sharedTransport?.nodeCount) || 0
+        Number(nativeRuntime?.nodeCount) || 0
     );
-    const edgeCount = Math.max(
+    const nativeEdgeCount = Math.max(
         0,
-        Number(artifact?.sharedTransport?.edgeCount) || 0
+        Number(nativeRuntime?.edgeCount) || 0
     );
-    // CSR 自有数组：nodeIds 作为 JS Number 估 8B，rowOffsets Uint32 4B，
-    // targetIndices Uint32 4B，weights Float64 8B；Map/对象壳不在此精确归因。
-    const transportEstimatedBytes = nodeCount * 8
-        + (nodeCount + 1) * 4
-        + edgeCount * 12;
-    const provenanceEdges = Math.max(
-        0,
-        Number(artifact?.provenanceView?.edgeCount) || 0
+    const resident = Boolean(
+        residentArtifactSig
+        && residentArtifactSig === artifact?.artifactSig
     );
-    // 仅为诊断级下界：key、数组及至少一个贡献对象的保守壳开销。
-    const provenanceEstimatedBytes = provenanceEdges * 128;
+    // 仅提供 Rust CSR 数组下界，不把它计入 JS estimatedBytes。
+    // HashMap、HashSet、Provenance Vec 与 allocator 开销仍只能由进程 RSS 观察。
+    const nativeCsrLowerBoundBytes = resident
+        ? nativeNodeCount * 8
+            + (nativeNodeCount + 1) * 8
+            + nativeEdgeCount * 16
+        : 0;
     const conditionedOperator =
-        runtime.getConditionedOperatorCacheDiagnostics?.() || null;
-    const borrowedViews = {
-        rawResidualRatio: artifact?.rawResidualRatioView?.storageMode
-            === 'borrowed',
-        anchorGain: artifact?.anchorGainView?.storageMode === 'borrowed',
-        pairwise: artifact?.pairwiseView?.storageMode === 'borrowed',
-        inboundMass: artifact?.inboundMassView?.storageMode === 'borrowed',
-        wormhole: artifact?.wormholeView?.storageMode === 'borrowed'
-    };
-    const borrowedViewCount = Object.values(borrowedViews)
-        .filter(Boolean).length;
+        controlRuntime.getConditionedOperatorCacheDiagnostics?.() || null;
     const conditionedEstimatedBytes = Math.max(
         0,
         Number(conditionedOperator?.estimatedBytes) || 0
     );
-    const estimatedBytes = transportEstimatedBytes
-        + provenanceEstimatedBytes
-        + conditionedEstimatedBytes;
 
     return {
         available: true,
         artifactSig: artifact?.artifactSig || null,
         sourceV9ArtifactSig: artifact?.sourceArtifactSig || null,
         generation: artifact?.generation || null,
+        nativeGeneration:
+            Number(nativeRuntime?.generation)
+            || artifact?.nativeGeneration
+            || null,
+        storageMode: artifact?.storageMode || null,
+        resident,
+        residentAtControlPublication:
+            artifact?.residentAtPublication === true,
         transport: {
-            nodeCount,
-            edgeCount,
-            estimatedBytes: transportEstimatedBytes,
-            storageMode: 'owned-csr'
+            nodeCount: nativeNodeCount || Number(artifact?.nodeCount) || 0,
+            edgeCount: nativeEdgeCount || Number(artifact?.edgeCount) || 0,
+            estimatedBytes: 0,
+            storageMode: 'rust-arc'
         },
-        provenance: {
-            edgeCount: provenanceEdges,
-            sourceCount: Math.max(
-                0,
-                Number(artifact?.provenanceView?.sourceCount) || 0
-            ),
-            estimatedBytes: provenanceEstimatedBytes
-        },
-        auxiliaryViews: {
-            borrowedFromV9: borrowedViews,
-            borrowedViewCount,
-            ownedViewCount: Object.keys(borrowedViews).length
-                - borrowedViewCount,
-            pairwisePersistedInV2: false
+        jsGraphAssets: {
+            csrResident: false,
+            provenanceResident: false,
+            pairwiseResident: false,
+            estimatedBytes: 0
         },
         conditionedOperator,
-        nativeArtifactCache: {
-            observedLoaded:
-                engine?._nativeArtifactCacheObserved === true,
-            artifactSig:
-                engine?._nativeArtifactSigObserved || null,
-            pairwiseResident: false,
-            estimatedBytes: null,
+        nativeRuntime: {
+            available: nativeRuntime !== null
+                && nativeRuntime?.available !== false,
+            resident,
+            activeArtifactSig: residentArtifactSig,
+            generation: Number(nativeRuntime?.generation) || 0,
+            nodeCount: nativeNodeCount,
+            edgeCount: nativeEdgeCount,
+            csrLowerBoundBytes: nativeCsrLowerBoundBytes,
+            error: nativeRuntime?.error || null,
             note:
-                'Rust 原生分配计入 RSS，但无法由 process.memoryUsage() 按资产精确归因。'
+                'Rust 资产由 VexusIndex MemoRuntime 的 Arc 持有；下界不含 HashMap/Provenance/allocator 开销。'
         },
-        estimatedBytes
+        // JS 可归因内存只剩控制面与可能存在的退休兼容算子缓存。
+        estimatedBytes: conditionedEstimatedBytes
     };
 }
 

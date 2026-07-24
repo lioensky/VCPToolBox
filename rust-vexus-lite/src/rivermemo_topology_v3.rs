@@ -402,7 +402,7 @@ impl MemoRuntime {
             .map(|(_, _, artifact)| artifact.clone()))
     }
 
-    fn publish(
+    pub(crate) fn publish(
         &self,
         artifact_sig: &str,
         artifact: Arc<NativeArtifact>,
