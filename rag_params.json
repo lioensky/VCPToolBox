@@ -47,6 +47,21 @@
     ]
   },
   "KnowledgeBaseManager": {
+    "resultDeduplication": {
+      "semanticThreshold": 0.92,
+      "finalSemanticThreshold": 0.97,
+      "maxResults": 1000,
+      "minSemanticCandidates": 2,
+      "sourcePriority": {
+        "rag": 50,
+        "time": 45,
+        "bm25_body": 40,
+        "bm25_tag": 40,
+        "continuity": 35,
+        "associate": 10,
+        "unknown": 0
+      }
+    },
     "tagMemoVersioning": {
       "activeVersion": "v9",
       "availableVersions": [

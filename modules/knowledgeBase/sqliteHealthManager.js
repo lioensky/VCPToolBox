@@ -9,6 +9,10 @@ class SqliteHealthManager {
         this.Database = options.Database || Database;
         this.onConnectionRebound = options.onConnectionRebound || (() => {});
         this.logPrefix = options.logPrefix || 'KnowledgeBase';
+        const configuredBusyTimeout = Number(options.busyTimeoutMs);
+        this.busyTimeoutMs = Number.isFinite(configuredBusyTimeout)
+            ? Math.max(0, Math.floor(configuredBusyTimeout))
+            : 10000;
         this.dbPath = null;
         this.db = null;
         this.state = 'healthy';
@@ -20,6 +24,11 @@ class SqliteHealthManager {
         db.pragma('journal_mode = WAL');
         db.pragma('synchronous = NORMAL');
         db.pragma('foreign_keys = ON');
+        // SQLite 同一时刻只有一个写者。Rust/rusqlite、管理维护脚本或其他
+        // better-sqlite3 连接短暂持锁时，在原生层等待锁释放，而不是立即把
+        // 瞬态写竞争上抛成文件摄取失败。该配置属于连接级 PRAGMA，因此每次
+        // 恢复/重开连接都必须重新设置。
+        db.pragma(`busy_timeout = ${this.busyTimeoutMs}`);
     }
 
     assertIntegrity(db) {
@@ -37,6 +46,16 @@ class SqliteHealthManager {
         return error?.code === 'SQLITE_CORRUPT'
             || error?.code === 'SQLITE_NOTADB'
             || /database disk image is malformed|file is not a database|database corruption|quick_check failed/i.test(message);
+    }
+
+    isBusyError(error) {
+        const code = String(error?.code || '').toUpperCase();
+        const message = String(error?.message || error || '');
+        return code === 'SQLITE_BUSY'
+            || code.startsWith('SQLITE_BUSY_')
+            || code === 'SQLITE_LOCKED'
+            || code.startsWith('SQLITE_LOCKED_')
+            || /database (?:is )?locked|database table is locked/i.test(message);
     }
 
     openWithRecovery(dbPath) {

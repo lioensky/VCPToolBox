@@ -62,6 +62,7 @@ async _flushDeleteBatch() {
             return;
         }
         this.isProcessingDeletes = true;
+        let retryDelayMs = 0;
 
         const batchFiles = Array.from(this.pendingDeletes).slice(0, this.config.maxDeleteBatchSize);
         if (this.deleteBatchTimer) {
@@ -76,12 +77,22 @@ async _flushDeleteBatch() {
             console.error('[KnowledgeBase] ❌ Delete batch failed:', e);
             if (this._isSqliteCorruptionError(e)) {
                 await this._handleRuntimeSqliteCorruption(e, []);
+            } else if (this._isSqliteBusyError(e)) {
+                retryDelayMs = this.config.sqliteBusyRetryDelayMs;
+                console.warn(
+                    `[KnowledgeBase] ⏳ SQLite remained busy after ${this.config.sqliteBusyTimeoutMs}ms; ` +
+                    `${batchFiles.length} delete(s) remain queued and will retry in ${retryDelayMs}ms.`
+                );
             }
         } finally {
             this.isProcessingDeletes = false;
             this.lastJsWriteFinishedAt = Date.now();
             if (!this.databaseCorruptionDetected && this.pendingDeletes.size > 0) {
-                setImmediate(() => this._flushDeleteBatch());
+                if (retryDelayMs > 0) {
+                    setTimeout(() => this._flushDeleteBatch(), retryDelayMs);
+                } else {
+                    setImmediate(() => this._flushDeleteBatch());
+                }
             }
         }
     },
@@ -107,6 +118,7 @@ async _flushBatch() {
             return;
         }
         this.isProcessing = true;
+        let retryDelayMs = 0;
 
         // 1. 📋 准备批次：先从队列中取出，但不立即永久删除
         const batchFiles = Array.from(this.pendingFiles).slice(0, this.config.maxBatchSize);
@@ -160,7 +172,12 @@ async _flushBatch() {
                         chunks: chunkText(content),
                         tags: this._extractTags(content)
                     });
-                } catch (e) { if (e.code !== 'ENOENT') console.warn(`Read error ${filePath}:`, e.message); }
+                } catch (e) {
+                    // 元数据快路径也可能执行 UPDATE。忙锁属于数据库级瞬态失败，
+                    // 必须交给批次错误边界统一保留队列，不能伪装成单文件读取失败后出队。
+                    if (this._isSqliteBusyError(e) || this._isSqliteCorruptionError(e)) throw e;
+                    if (e.code !== 'ENOENT') console.warn(`Read error ${filePath}:`, e.message);
+                }
             }));
 
             if (docsByDiary.size === 0) {
@@ -454,6 +471,15 @@ async _flushBatch() {
 
             if (this._isSqliteCorruptionError(e)) {
                 await this._handleRuntimeSqliteCorruption(e, batchFiles);
+            } else if (this._isSqliteBusyError(e)) {
+                // SQLITE_BUSY/LOCKED 是共享数据库级竞争，不是任一文件的确定性错误。
+                // 文件全部保留，且不消耗 fileRetryCount，防止短暂外部写锁导致永久丢索引。
+                retryDelayMs = this.config.sqliteBusyRetryDelayMs;
+                console.warn(
+                    `[KnowledgeBase] ⏳ SQLite remained busy after ${this.config.sqliteBusyTimeoutMs}ms; ` +
+                    `${batchFiles.length} file(s) remain queued without consuming retry budget. ` +
+                    `Retrying in ${retryDelayMs}ms.`
+                );
             } else {
                 // 🛡️ 核心修复：重试计数，防止确定性失败导致无限循环
                 const MAX_FILE_RETRIES = 3;
@@ -473,7 +499,13 @@ async _flushBatch() {
         finally {
             this.isProcessing = false;
             this.lastJsWriteFinishedAt = Date.now();
-            if (!this.databaseCorruptionDetected && this.pendingFiles.size > 0) setImmediate(() => this._flushBatch());
+            if (!this.databaseCorruptionDetected && this.pendingFiles.size > 0) {
+                if (retryDelayMs > 0) {
+                    setTimeout(() => this._flushBatch(), retryDelayMs);
+                } else {
+                    setImmediate(() => this._flushBatch());
+                }
+            }
         }
     },
 
@@ -583,7 +615,9 @@ async _handleDeleteBatch(filePaths) {
             }
         } catch (e) {
             console.error(`[KnowledgeBase] Delete error:`, e);
-            if (this._isSqliteCorruptionError(e)) throw e;
+            // 忙锁与损坏都必须交给队列拥有者处理。吞掉 SQLITE_BUSY 会让
+            // _flushDeleteBatch() 误删 pendingDeletes，造成 SQLite 中的幽灵记录。
+            if (this._isSqliteCorruptionError(e) || this._isSqliteBusyError(e)) throw e;
         }
     }
 };

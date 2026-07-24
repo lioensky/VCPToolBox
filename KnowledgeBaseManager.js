@@ -61,6 +61,18 @@ class KnowledgeBaseManager {
 
             batchWindow: parseInt(process.env.KNOWLEDGEBASE_BATCH_WINDOW_MS, 10) || 1000,
             maxBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_BATCH_SIZE, 10) || 50,
+            sqliteBusyTimeoutMs: (() => {
+                const value = Number(process.env.KNOWLEDGEBASE_SQLITE_BUSY_TIMEOUT_MS);
+                return Number.isFinite(value) && value >= 0
+                    ? Math.floor(value)
+                    : 10000;
+            })(),
+            sqliteBusyRetryDelayMs: (() => {
+                const value = Number(process.env.KNOWLEDGEBASE_SQLITE_BUSY_RETRY_DELAY_MS);
+                return Number.isFinite(value) && value >= 0
+                    ? Math.floor(value)
+                    : 1000;
+            })(),
             indexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_INDEX_SAVE_DELAY, 10) || 120000,
             tagIndexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY, 10) || 300000,
             deleteBatchWindow: parseInt(process.env.KNOWLEDGEBASE_DELETE_BATCH_WINDOW_MS, 10) || 1000,
@@ -166,7 +178,8 @@ class KnowledgeBaseManager {
         this._indexRecoveryTail = Promise.resolve();
 
         this.sqliteHealthManager = new SqliteHealthManager({
-            onConnectionRebound: db => this._rebindDatabaseConnection(db)
+            onConnectionRebound: db => this._rebindDatabaseConnection(db),
+            busyTimeoutMs: this.config.sqliteBusyTimeoutMs
         });
         this.migrationVectorCache = new MigrationVectorCache({
             getDb: () => this.db,
@@ -267,7 +280,8 @@ class KnowledgeBaseManager {
         // 2. 预热日记本名称向量缓存（同步阻塞，确保 RAG 插件启动即可用）
         this._hydrateDiaryNameCacheSync();
 
-        // ✅ Tagmemo v4: 初始化结果去重器
+        // 🧹 初始化 KBM 通用结果去重器。
+        // 它是召回后的独立后处理层，不属于已经下沉 Rust 的 TagMemo 查询主链。
         this.resultDeduplicator = new ResultDeduplicator(this.db, {
             dimension: this.config.dimension
         });
@@ -372,6 +386,11 @@ class KnowledgeBaseManager {
             // 覆盖仍在工作的最后健康配置。
             this.ragParams = parsed;
             console.log('[KnowledgeBase] ✅ RAG 热调控参数已加载');
+            if (this.resultDeduplicator) {
+                this.resultDeduplicator.updateConfig(
+                    parsed.KnowledgeBaseManager?.resultDeduplication || {}
+                );
+            }
             if (this.tagMemoEngine) this.tagMemoEngine.updateRagParams(parsed);
             if (this.tagMemoV10Engine) this.tagMemoV10Engine.updateRagParams(parsed);
             if (this.riverMemoEngine) {
@@ -490,8 +509,6 @@ class KnowledgeBaseManager {
 
         if (this.resultDeduplicator) {
             this.resultDeduplicator.db = db;
-            if (this.resultDeduplicator.epa) this.resultDeduplicator.epa.db = db;
-            if (this.resultDeduplicator.residualCalculator) this.resultDeduplicator.residualCalculator.db = db;
         }
     }
 
@@ -504,6 +521,10 @@ class KnowledgeBaseManager {
 
     _isSqliteCorruptionError(error) {
         return this.sqliteHealthManager.isCorruptionError(error);
+    }
+
+    _isSqliteBusyError(error) {
+        return this.sqliteHealthManager.isBusyError(error);
     }
 
     _quarantineSqliteDatabase(dbPath, reason = 'corrupt') {
@@ -1860,14 +1881,39 @@ class KnowledgeBaseManager {
     }
 
     /**
-     * 🌟 Tagmemo V4: 对结果集进行智能去重 (SVD + Residual)
+     * 对召回结果执行统一去重。
+     * 先做稳定身份/正文硬去重，再按 options.semantic 决定是否抑制语义近重复。
+     * 任意内部异常都回退到硬去重结果，不允许去重故障拖垮整次 RAG。
+     *
      * @param {Array} candidates - 候选结果数组
-     * @param {Float32Array|Array} queryVector - 查询向量
-     * @returns {Promise<Array>} 去重后的结果
+     * @param {Float32Array|Array|null} queryVector - 查询向量
+     * @param {object} options - { semantic, semanticThreshold, maxResults, stage }
+     * @returns {Promise<Array>}
      */
-    async deduplicateResults(candidates, queryVector) {
+    async deduplicateResults(candidates, queryVector = null, options = {}) {
+        if (!Array.isArray(candidates) || candidates.length === 0) return [];
         if (!this.resultDeduplicator) return candidates;
-        return await this.resultDeduplicator.deduplicate(candidates, queryVector);
+
+        try {
+            return await this.resultDeduplicator.deduplicate(
+                candidates,
+                queryVector,
+                options
+            );
+        } catch (error) {
+            console.warn(
+                `[KnowledgeBase] Result deduplication failed at stage=${options.stage || 'unknown'}; ` +
+                `falling back to exact deduplication: ${error.message}`
+            );
+            try {
+                return this.resultDeduplicator.hardDeduplicate(candidates);
+            } catch (fallbackError) {
+                console.warn(
+                    `[KnowledgeBase] Exact deduplication fallback also failed: ${fallbackError.message}`
+                );
+                return candidates;
+            }
+        }
     }
 
     // =========================================================================

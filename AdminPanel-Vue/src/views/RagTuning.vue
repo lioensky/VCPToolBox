@@ -312,6 +312,129 @@
           </div>
         </header>
 
+        <section v-if="resultDeduplicationParams" class="dedup-console">
+          <header class="dedup-console__header">
+            <div class="dedup-console__identity">
+              <span class="material-symbols-outlined">filter_alt</span>
+              <div>
+                <span class="dedup-console__eyebrow">Result Deduplication</span>
+                <h3>查询结果去重控制台</h3>
+                <p>
+                  在多路召回结果合并后执行语义去重，并按来源优先级决定相似候选的保留顺序。
+                  阈值越高，只有越相似的结果才会被判定为重复。
+                </p>
+              </div>
+            </div>
+            <div class="dedup-console__status">
+              <UiBadge variant="info">召回后处理</UiBadge>
+              <UiBadge variant="warning">影响最终结果集</UiBadge>
+            </div>
+          </header>
+
+          <div class="dedup-console__grid">
+            <article class="dedup-card dedup-card--thresholds">
+              <header class="dedup-card__header">
+                <div>
+                  <span class="dedup-console__eyebrow">Semantic Gates</span>
+                  <h4>语义判重门槛</h4>
+                </div>
+                <UiBadge variant="warning">敏感参数</UiBadge>
+              </header>
+
+              <div class="dedup-field-grid">
+                <label class="dedup-field">
+                  <span>初次语义去重阈值</span>
+                  <code>semanticThreshold</code>
+                  <small>主结果合并阶段的相似度门槛。降低会更积极地合并近似结果。</small>
+                  <UiInput
+                    :model-value="dedupNumber('semanticThreshold', 0.92)"
+                    type="number"
+                    :min="-1"
+                    :max="1"
+                    :step="0.01"
+                    @update:model-value="updateDedupNumber('semanticThreshold', $event)"
+                  />
+                </label>
+
+                <label class="dedup-field">
+                  <span>最终语义去重阈值</span>
+                  <code>finalSemanticThreshold</code>
+                  <small>输出前二次去重门槛，通常应不低于初次阈值以避免过度裁剪。</small>
+                  <UiInput
+                    :model-value="dedupNumber('finalSemanticThreshold', 0.97)"
+                    type="number"
+                    :min="-1"
+                    :max="1"
+                    :step="0.01"
+                    @update:model-value="updateDedupNumber('finalSemanticThreshold', $event)"
+                  />
+                </label>
+
+                <label class="dedup-field">
+                  <span>最大结果处理数</span>
+                  <code>maxResults</code>
+                  <small>允许进入去重流程的结果上限，过高会增加语义比较成本。</small>
+                  <UiInput
+                    :model-value="dedupNumber('maxResults', 1000)"
+                    type="number"
+                    :min="1"
+                    :step="1"
+                    @update:model-value="updateDedupInteger('maxResults', $event, 1)"
+                  />
+                </label>
+
+                <label class="dedup-field">
+                  <span>最少语义候选数</span>
+                  <code>minSemanticCandidates</code>
+                  <small>达到该候选数量后才启用语义判重，避免对极小结果集做无效计算。</small>
+                  <UiInput
+                    :model-value="dedupNumber('minSemanticCandidates', 2)"
+                    type="number"
+                    :min="0"
+                    :step="1"
+                    @update:model-value="updateDedupInteger('minSemanticCandidates', $event, 0)"
+                  />
+                </label>
+              </div>
+            </article>
+
+            <article class="dedup-card dedup-card--priority">
+              <header class="dedup-card__header">
+                <div>
+                  <span class="dedup-console__eyebrow">Source Arbitration</span>
+                  <h4>重复候选来源优先级</h4>
+                </div>
+                <UiBadge variant="info">数值越高越优先</UiBadge>
+              </header>
+
+              <p class="dedup-card__description">
+                两条结果被判定为重复时，优先保留分值更高的来源。该设置只决定同类候选的保留权，
+                不直接改变原始相似度分数。
+              </p>
+
+              <div class="dedup-priority-grid">
+                <label
+                  v-for="source in DEDUP_SOURCE_OPTIONS"
+                  :key="source.key"
+                  class="dedup-priority-field"
+                >
+                  <span class="material-symbols-outlined">{{ source.icon }}</span>
+                  <span>
+                    <strong>{{ source.label }}</strong>
+                    <code>{{ source.key }}</code>
+                  </span>
+                  <UiInput
+                    :model-value="dedupSourcePriority(source.key, source.fallback)"
+                    type="number"
+                    :step="1"
+                    @update:model-value="updateDedupSourcePriority(source.key, $event)"
+                  />
+                </label>
+              </div>
+            </article>
+          </div>
+        </section>
+
         <TagMemoV9ControlPanel
           v-if="knowledgeBaseParams"
           v-model="knowledgeBaseParams"
@@ -904,6 +1027,7 @@ import {
 import { showMessage } from "@/utils";
 
 type NumericRecord = Record<string, number>;
+type DedupSourceKey = "rag" | "time" | "bm25_body" | "bm25_tag" | "continuity" | "associate" | "unknown";
 type ParamEntryKind = "number" | "tuple" | "nested";
 type StatusType = "info" | "success" | "error";
 type BadgeVariant = "default" | "secondary" | "success" | "warning" | "danger" | "info" | "outline";
@@ -947,11 +1071,26 @@ interface GroupSection {
 const WORMHOLE_GROUP_NAME = "KnowledgeBaseManager";
 const V9_KERNEL_PARAM_KEY = "v9";
 const TAGMEMO_DEDICATED_KEYS = new Set([
+  "resultDeduplication",
   "tagMemoVersioning",
   "v9",
   "intrinsicResidual",
   "riverMemo",
 ]);
+const DEDUP_SOURCE_OPTIONS: ReadonlyArray<{
+  key: DedupSourceKey;
+  label: string;
+  icon: string;
+  fallback: number;
+}> = [
+  { key: "rag", label: "语义 RAG", icon: "neurology", fallback: 50 },
+  { key: "time", label: "时间召回", icon: "schedule", fallback: 45 },
+  { key: "bm25_body", label: "正文 BM25", icon: "description", fallback: 40 },
+  { key: "bm25_tag", label: "标签 BM25", icon: "sell", fallback: 40 },
+  { key: "continuity", label: "上下文连续性", icon: "timeline", fallback: 35 },
+  { key: "associate", label: "关联发现", icon: "hub", fallback: 10 },
+  { key: "unknown", label: "未知来源", icon: "help", fallback: 0 },
+];
 const WORMHOLE_PARAM_KEY = "spikeRouting";
 const GEODESIC_GROUP_NAME = "KnowledgeBaseManager";
 const GEODESIC_PARAM_KEY = "geodesicRerank";
@@ -1154,6 +1293,64 @@ const groupSections = computed<GroupSection[]>(() =>
       };
     })
 );
+
+const resultDeduplicationParams = computed<Record<string, ParamValue> | null>(() => {
+  const value = params.value.KnowledgeBaseManager?.resultDeduplication;
+  return isParamRecord(value) ? value : null;
+});
+
+function dedupNumber(key: string, fallback: number): number {
+  const value = resultDeduplicationParams.value?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function dedupSourcePriority(key: DedupSourceKey, fallback: number): number {
+  const sourcePriority = resultDeduplicationParams.value?.sourcePriority;
+  if (!isParamRecord(sourcePriority)) return fallback;
+  const value = sourcePriority[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function updateDedupNumber(key: string, rawValue: string | number): void {
+  const value = Number(rawValue);
+  const current = resultDeduplicationParams.value;
+  if (!Number.isFinite(value) || !current || !params.value.KnowledgeBaseManager) return;
+
+  params.value.KnowledgeBaseManager.resultDeduplication = {
+    ...current,
+    [key]: value,
+  };
+}
+
+function updateDedupInteger(
+  key: string,
+  rawValue: string | number,
+  minimum: number
+): void {
+  const value = Number(rawValue);
+  if (!Number.isFinite(value)) return;
+  updateDedupNumber(key, Math.max(minimum, Math.round(value)));
+}
+
+function updateDedupSourcePriority(
+  key: DedupSourceKey,
+  rawValue: string | number
+): void {
+  const value = Number(rawValue);
+  const current = resultDeduplicationParams.value;
+  if (!Number.isFinite(value) || !current || !params.value.KnowledgeBaseManager) return;
+
+  const sourcePriority = isParamRecord(current.sourcePriority)
+    ? current.sourcePriority
+    : {};
+  params.value.KnowledgeBaseManager.resultDeduplication = {
+    ...current,
+    sourcePriority: {
+      ...sourcePriority,
+      [key]: Math.round(value),
+    },
+  };
+}
 
 const knowledgeBaseParams = computed<ParamGroup>({
   get: () => params.value.KnowledgeBaseManager || {},
@@ -2037,6 +2234,170 @@ onBeforeUnmount(() => {
 .rag-lab__main {
   display: grid;
   gap: var(--space-5);
+}
+
+.dedup-console {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 26%, var(--border-color));
+  border-radius: var(--radius-xl);
+  background:
+    radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--highlight-text) 8%, transparent), transparent 34%),
+    color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+}
+
+.dedup-console__header,
+.dedup-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.dedup-console__identity {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.dedup-console__identity > .material-symbols-outlined {
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  height: 44px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--highlight-text) 13%, transparent);
+  color: var(--highlight-text);
+  font-size: 25px;
+}
+
+.dedup-console h3,
+.dedup-console h4,
+.dedup-console p {
+  margin: 0;
+}
+
+.dedup-console h3 {
+  margin-top: 4px;
+  font-size: var(--font-size-section-title-strong);
+}
+
+.dedup-console__identity p {
+  max-width: 76ch;
+  margin-top: 8px;
+  color: var(--secondary-text);
+  line-height: 1.6;
+}
+
+.dedup-console__eyebrow {
+  color: var(--highlight-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dedup-console__status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.dedup-console__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: var(--space-4);
+}
+
+.dedup-card {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-bg) 44%, transparent);
+}
+
+.dedup-card__header h4 {
+  margin-top: 4px;
+  font-size: var(--font-size-title);
+}
+
+.dedup-card__description {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
+}
+
+.dedup-field-grid,
+.dedup-priority-grid {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.dedup-field-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dedup-field {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+  border-radius: var(--radius-md);
+}
+
+.dedup-field > span,
+.dedup-priority-field strong {
+  font-weight: 600;
+}
+
+.dedup-field code,
+.dedup-priority-field code {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.dedup-field small {
+  min-height: 3em;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.45;
+}
+
+.dedup-field :deep(.ui-input),
+.dedup-priority-field :deep(.ui-input) {
+  width: 100%;
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+.dedup-priority-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dedup-priority-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 86px;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+  padding: 10px var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+  border-radius: var(--radius-md);
+}
+
+.dedup-priority-field > .material-symbols-outlined {
+  color: var(--highlight-text);
+  font-size: 20px;
+}
+
+.dedup-priority-field > span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
 }
 
 .group-panel {
@@ -3435,6 +3796,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1180px) {
+  .dedup-console__grid {
+    grid-template-columns: 1fr;
+  }
+
   .rag-lab__summary {
     grid-template-columns: 1fr;
   }
@@ -3453,6 +3818,11 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 960px) {
+  .dedup-field-grid,
+  .dedup-priority-grid {
+    grid-template-columns: 1fr;
+  }
+
   .geodesic-workbench__hero,
   .geodesic-stage__header {
     grid-template-columns: 1fr;
@@ -3501,6 +3871,23 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 640px) {
+  .dedup-console {
+    padding: var(--space-4);
+  }
+
+  .dedup-console__header,
+  .dedup-card__header {
+    flex-direction: column;
+  }
+
+  .dedup-console__status {
+    justify-content: flex-start;
+  }
+
+  .dedup-priority-field {
+    grid-template-columns: auto minmax(0, 1fr) 76px;
+  }
+
   .geodesic-story {
     grid-template-columns: 1fr;
   }

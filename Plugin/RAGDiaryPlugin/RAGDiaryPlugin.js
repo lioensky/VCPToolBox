@@ -2821,24 +2821,23 @@ class RAGDiaryPlugin {
                 console.log(`[RAGDiaryPlugin] Time path: Found ${timeChunks.length} chunks in range.`);
             }
 
-            // 3. 合并与初步去重（仅主召回池，不含额外+3）
-            const allEntries = new Map();
-            ragResults.forEach(r => allEntries.set(r.text.trim(), r));
-            timeResults.forEach(r => {
-                const trimmedText = r.text.trim();
-                if (!allEntries.has(trimmedText)) {
-                    allEntries.set(trimmedText, r);
+            // 3. 合并候选。统一去重器会处理 chunkId、规范化正文及语义近重复；
+            // 这里不再自行用原始正文 Map 去重，避免不同换行/空白格式绕过去重。
+            candidates = [
+                ...ragResults,
+                ...timeResults,
+                ...(bm25InfoForBroadcast?.results || [])
+            ];
+            candidates = await this.vectorDBManager.deduplicateResults(
+                candidates,
+                finalQueryVector,
+                {
+                    stage: 'time-candidate-pool',
+                    semantic: true,
+                    semanticThreshold: this.ragParams?.KnowledgeBaseManager
+                        ?.resultDeduplication?.semanticThreshold
                 }
-            });
-            if (bm25InfoForBroadcast?.results?.length > 0) {
-                bm25InfoForBroadcast.results.forEach(r => {
-                    const trimmedText = r.text?.trim();
-                    if (trimmedText && !allEntries.has(trimmedText)) {
-                        allEntries.set(trimmedText, r);
-                    }
-                });
-            }
-            candidates = Array.from(allEntries.values());
+            );
 
         } else {
             // --- Standard path (no time filter / no parsed time range) ---
@@ -2883,7 +2882,16 @@ class RAGDiaryPlugin {
                 flattenedResults.push(...bm25InfoForBroadcast.results);
             }
             flattenedResults = this._filterContextDuplicates(flattenedResults, contextDiaryPrefixes);
-            candidates = await this.vectorDBManager.deduplicateResults(flattenedResults, finalQueryVector);
+            candidates = await this.vectorDBManager.deduplicateResults(
+                flattenedResults,
+                finalQueryVector,
+                {
+                    stage: 'shotgun-candidate-pool',
+                    semantic: true,
+                    semanticThreshold: this.ragParams?.KnowledgeBaseManager
+                        ?.resultDeduplication?.semanticThreshold
+                }
+            );
         }
 
         // 🌊 RiverMemo 独立引擎重排。
@@ -3010,6 +3018,22 @@ class RAGDiaryPlugin {
         // 🌟 V9: 父文档展开 - 将命中的 chunk 展开为完整日记文件（按文件去重）— 始终在最后执行
         if (useExpand && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
             finalResultsForBroadcast = await this._expandChunksToFullDocuments(finalResultsForBroadcast, dbScopeKey, requestCache);
+        }
+
+        // 🧹 最终输出去重：在 Time 连续性、Associate 与 Expand 全部完成后统一收口。
+        // 使用比候选池更高的语义阈值，只消除几乎相同的结果；异常由 KBM 门面安全回退到硬去重。
+        if (finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
+            const finalDedupConfig = this.ragParams?.KnowledgeBaseManager?.resultDeduplication || {};
+            finalResultsForBroadcast = await this.vectorDBManager.deduplicateResults(
+                finalResultsForBroadcast,
+                finalQueryVector,
+                {
+                    stage: 'final-output',
+                    semantic: true,
+                    semanticThreshold: finalDedupConfig.finalSemanticThreshold ?? 0.97,
+                    maxResults: Math.max(1, finalResultsForBroadcast.length)
+                }
+            );
         }
 
         if (useTime && timeRanges && timeRanges.length > 0) {

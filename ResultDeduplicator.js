@@ -1,194 +1,416 @@
 /**
  * ResultDeduplicator.js
- * Tagmemo v4 核心组件：基于 SVD 和残差金字塔的结果智能去重器
- * 
- * 功能：
- * 1. 分析结果集中的潜在主题 (Latent Topics)
- * 2. 使用残差投影选择最具代表性的结果
- * 3. 确保弱语义关联 (Weak Links) 不被丢弃
+ *
+ * KnowledgeBaseManager 通用结果去重器。
+ *
+ * 去重分为两层：
+ * 1. 硬去重：按 chunkId、规范化正文和稳定路径身份消除完全重复项；
+ * 2. 语义去重：对有向量的候选执行余弦近重复抑制，无向量候选始终安全保留。
+ *
+ * 本组件不属于 TagMemo/RiverMemo 的 Rust 查询主链。它只处理各召回引擎已经返回的候选，
+ * 为霰弹枪查询、多路 BM25/Time 合并和最终输出提供统一的后处理能力。
  */
-
-const EPAModule = require('./EPAModule');
-const ResidualPyramid = require('./ResidualPyramid');
 
 class ResultDeduplicator {
     constructor(db, config = {}) {
         this.db = db;
         this.config = {
-            dimension: config.dimension || 3072,
-            maxResults: config.maxResults || 20, // 最终保留的最大结果数
-            topicCount: config.topicCount || 8, // SVD 提取的主题数
-            minEnergyRatio: 0.1, // 剩余能量阈值
-            redundancyThreshold: 0.85, // 冗余阈值 (余弦相似度)
+            dimension: 3072,
+            semanticThreshold: 0.92,
+            maxResults: 1000,
+            minSemanticCandidates: 2,
+            sourcePriority: {
+                rag: 50,
+                time: 45,
+                bm25_body: 40,
+                bm25_tag: 40,
+                continuity: 35,
+                associate: 10,
+                unknown: 0
+            },
             ...config
         };
+    }
 
-        // 复用现有的基础设施
-        this.epa = new EPAModule(db, {
-            dimension: this.config.dimension,
-            maxBasisDim: this.config.topicCount,
-            clusterCount: 16 // 针对结果集的小规模聚类
-        });
+    updateConfig(config = {}) {
+        if (!config || typeof config !== 'object' || Array.isArray(config)) return;
+        const next = { ...this.config };
 
-        // 残差金字塔用于投影计算
-        this.residualCalculator = new ResidualPyramid(null, db, {
-            dimension: this.config.dimension
-        });
+        if (Number.isFinite(Number(config.dimension)) && Number(config.dimension) > 0) {
+            next.dimension = Math.floor(Number(config.dimension));
+        }
+        if (Number.isFinite(Number(config.semanticThreshold))) {
+            next.semanticThreshold = Math.max(-1, Math.min(1, Number(config.semanticThreshold)));
+        }
+        if (Number.isFinite(Number(config.maxResults)) && Number(config.maxResults) > 0) {
+            next.maxResults = Math.floor(Number(config.maxResults));
+        }
+        if (Number.isFinite(Number(config.minSemanticCandidates)) && Number(config.minSemanticCandidates) >= 0) {
+            next.minSemanticCandidates = Math.floor(Number(config.minSemanticCandidates));
+        }
+        if (config.sourcePriority && typeof config.sourcePriority === 'object' && !Array.isArray(config.sourcePriority)) {
+            next.sourcePriority = {
+                ...next.sourcePriority,
+                ...config.sourcePriority
+            };
+        }
+
+        this.config = next;
     }
 
     /**
-     * 对候选结果集进行去重和精选
-     * @param {Array} candidates - 候选结果数组 [{ text, score, vector?, ... }]
-     * @param {Object} queryVector - 原始查询向量 (Float32Array)
+     * 对候选结果执行硬去重和可选的语义去重。
+     *
+     * @param {Array<object>} candidates
+     * @param {Float32Array|Array<number>|null} queryVector
+     * @param {object} options
+     * @param {boolean} [options.semantic=true] 是否执行向量语义去重
+     * @param {number} [options.semanticThreshold] 语义近重复阈值
+     * @param {number} [options.maxResults] 最大保留数
+     * @param {string} [options.stage='candidate'] 日志阶段名
+     * @returns {Promise<Array<object>>}
      */
-    async deduplicate(candidates, queryVector) {
-        if (!candidates || candidates.length === 0) return [];
+    async deduplicate(candidates, queryVector = null, options = {}) {
+        if (!Array.isArray(candidates) || candidates.length === 0) return [];
 
-        // 1. 预处理：过滤无向量的结果，确保 Float32Array
-        const validCandidates = candidates.filter(c => c.vector || c._vector); // 兼容不同字段名
-        if (validCandidates.length <= 5) return candidates; // 数量太少无需去重
+        const stage = String(options.stage || 'candidate');
+        const hardDeduplicated = this.hardDeduplicate(candidates);
+        const semanticEnabled = options.semantic !== false;
+        const maxResults = this._resolveMaxResults(options.maxResults);
 
-        console.log(`[ResultDeduplicator] Starting deduplication for ${validCandidates.length} candidates...`);
-
-        // 提取向量数组
-        const vectors = validCandidates.map(c => {
-            const v = c.vector || c._vector;
-            return v instanceof Float32Array ? v : new Float32Array(v);
-        });
-
-        // 2. 这里的 SVD 分析不再依赖预训练的 Tag 簇，而是直接对本次的结果集进行分析
-        // 临时构造一个 clusterData 结构给 EPAModule 用
-        const clusterData = {
-            vectors: vectors,
-            weights: vectors.map(v => 1), // 等权重
-            labels: validCandidates.map(c => 'candidate')
-        };
-
-        // 3. 计算加权 PCA (SVD) 以提取当前结果集的主题分布
-        // 这能告诉我们，这些搜索结果主要在讨论哪几个方面
-        const svdResult = this.epa._computeWeightedPCA(clusterData);
-        const { U: topics, S: energies } = svdResult;
-
-        // 过滤掉能量极弱的主题
-        const significantTopics = [];
-        const totalEnergy = energies.reduce((a, b) => a + b, 0);
-        let cumEnergy = 0;
-        for (let i = 0; i < topics.length; i++) {
-            significantTopics.push(topics[i]);
-            cumEnergy += energies[i];
-            if (cumEnergy / totalEnergy > 0.95) break;
+        if (!semanticEnabled || hardDeduplicated.length < this.config.minSemanticCandidates) {
+            return hardDeduplicated.slice(0, maxResults);
         }
 
-        console.log(`[ResultDeduplicator] Identify ${significantTopics.length} significant latent topics.`);
+        try {
+            const hydrated = this._hydrateMissingVectors(hardDeduplicated);
+            const semanticThreshold = this._resolveSemanticThreshold(options.semanticThreshold);
+            const results = this._semanticDeduplicate(
+                hydrated,
+                queryVector,
+                semanticThreshold,
+                maxResults
+            );
 
-        // 4. 残差选择算法 (Residual Selection)
-        // 目标：选择一组结果，使其能最大程度覆盖 query 在 significantTopics 上的投影
-
-        const selectedIndices = new Set();
-        const selectedResults = [];
-
-        // 4.1 优先保留与 Query 最直接相关的第一名 (Anchor)
-        // 假设 candidates 已经按 score 排序，直接取第一个
-        // 但为了严谨，我们重新计算一次与 Query 的相似度
-        let bestIdx = -1;
-        let bestSim = -1;
-
-        // 归一化 Query
-        const nQuery = this._normalize(queryVector);
-
-        for (let i = 0; i < vectors.length; i++) {
-            const sim = this._dotProduct(this._normalize(vectors[i]), nQuery);
-            if (sim > bestSim) {
-                bestSim = sim;
-                bestIdx = i;
-            }
+            console.log(
+                `[ResultDeduplicator] stage=${stage}: ` +
+                `${candidates.length} input -> ${hardDeduplicated.length} exact -> ` +
+                `${results.length} semantic (threshold=${semanticThreshold.toFixed(3)}).`
+            );
+            return results;
+        } catch (error) {
+            console.warn(
+                `[ResultDeduplicator] stage=${stage}: semantic deduplication failed; ` +
+                `falling back to exact results: ${error.message}`
+            );
+            return hardDeduplicated.slice(0, maxResults);
         }
+    }
 
-        if (bestIdx !== -1) {
-            selectedIndices.add(bestIdx);
-            selectedResults.push(validCandidates[bestIdx]);
-        }
+    /**
+     * 无副作用的确定性硬去重。
+     * 同一身份出现多个版本时，优先保留来源等级高、分数高、信息更完整的结果。
+     */
+    hardDeduplicate(candidates) {
+        if (!Array.isArray(candidates) || candidates.length === 0) return [];
 
-        // 4.2 迭代选择：寻找能解释剩余特征的最佳候选项
-        const maxRounds = this.config.maxResults - 1;
+        const selected = [];
+        const identityOwner = new Map();
 
-        // 初始正交基 = [第一名]
-        const currentBasis = [vectors[bestIdx]];
+        for (let index = 0; index < candidates.length; index++) {
+            const candidate = candidates[index];
+            if (!candidate || typeof candidate !== 'object') continue;
 
-        for (let round = 0; round < maxRounds; round++) {
-            let maxProjectedEnergy = -1;
-            let nextBestIdx = -1;
+            const identities = this._getExactIdentities(candidate);
 
-            // 遍历未选择的候选者
-            for (let i = 0; i < vectors.length; i++) {
-                if (selectedIndices.has(i)) continue;
-
-                const vec = vectors[i];
-
-                // A. 计算该向量与已选集合的"差异" (残差)
-                // 使用 ResidualPyramid 的正交投影逻辑
-                // 我们想找一个向量，它在"已选基底"之外的分量最大（即提供了最多的新信息）
-                const { residual } = this.residualCalculator._computeOrthogonalProjection(vec, currentBasis.map(v => ({ vector: v })));
-                const noveltyEnergy = this._magnitude(residual) ** 2;
-
-                // B. 同时，这个新信息必须是"相关"的新信息，而不是噪音
-                // 检查它在 significantTopics 上的投影
-                // 这里做一个简化：只要它在 Topics 空间内有投影，且相对于已选基底独特即可
-
-                // 综合评分：差异性 * 原始相关度
-                // 原始 score 通常在 candidates[i].score 中
-                // 如果没有，用刚才算的 sim
-                const originalScore = validCandidates[i].score || 0.5;
-                const score = noveltyEnergy * (originalScore + 0.5); // +0.5 平滑防止负分
-
-                if (score > maxProjectedEnergy) {
-                    maxProjectedEnergy = score;
-                    nextBestIdx = i;
-                }
+            // 没有稳定身份的候选无法证明相同，必须各自保留。
+            if (identities.length === 0) {
+                selected.push(candidate);
+                continue;
             }
 
-            if (nextBestIdx !== -1) {
-                // 检查是否过于相似 (虽然残差投影已经隐含了这一点，但显式阈值更安全)
-                // 实际上正交投影的 residual magnitude 如果很小，说明线性相关（相似）
-                if (maxProjectedEnergy < 0.01) {
-                    console.log(`[ResultDeduplicator] Remaining candidates provide negligible novelty. Stopping.`);
+            let existingIndex = -1;
+            for (const identity of identities) {
+                if (identityOwner.has(identity)) {
+                    existingIndex = identityOwner.get(identity);
                     break;
                 }
+            }
 
-                selectedIndices.add(nextBestIdx);
-                selectedResults.push(validCandidates[nextBestIdx]);
-                currentBasis.push(vectors[nextBestIdx]);
-            } else {
-                break;
+            if (existingIndex === -1) {
+                const nextIndex = selected.length;
+                selected.push(candidate);
+                for (const identity of identities) identityOwner.set(identity, nextIndex);
+                continue;
+            }
+
+            const existing = selected[existingIndex];
+            if (this._isPreferredCandidate(candidate, existing)) {
+                selected[existingIndex] = candidate;
+            }
+
+            // 将两个版本暴露的全部身份都归并到同一槽位，防止传递性重复漏网。
+            const mergedIdentities = [
+                ...this._getExactIdentities(existing),
+                ...identities
+            ];
+            for (const identity of mergedIdentities) identityOwner.set(identity, existingIndex);
+        }
+
+        return selected;
+    }
+
+    _semanticDeduplicate(candidates, queryVector, threshold, maxResults) {
+        const query = this._toValidVector(queryVector);
+        const ranked = candidates
+            .map((candidate, index) => ({
+                candidate,
+                index,
+                vector: this._getCandidateVector(candidate)
+            }))
+            .sort((a, b) => this._compareCandidates(a, b, query));
+
+        const selected = [];
+        const selectedVectors = [];
+
+        for (const entry of ranked) {
+            if (selected.length >= maxResults) break;
+
+            // 无向量项无法可靠做语义判断，必须保留，不能静默丢失 BM25/外部候选。
+            if (!entry.vector) {
+                selected.push(entry);
+                selectedVectors.push(null);
+                continue;
+            }
+
+            let redundant = false;
+            for (const selectedVector of selectedVectors) {
+                if (!selectedVector) continue;
+                if (this._cosineSimilarity(entry.vector, selectedVector) >= threshold) {
+                    redundant = true;
+                    break;
+                }
+            }
+
+            if (!redundant) {
+                selected.push(entry);
+                selectedVectors.push(entry.vector);
             }
         }
 
-        console.log(`[ResultDeduplicator] Selected ${selectedResults.length} / ${validCandidates.length} diverse results.`);
-        return selectedResults;
+        // 语义比较时可能为挑选代表项调整次序；最终恢复来源优先、分数和原始次序的稳定排序。
+        return selected
+            .sort((a, b) => this._compareOutputOrder(a, b))
+            .map(entry => entry.candidate);
     }
 
-    _normalize(vec) {
-        const dim = vec.length;
-        const res = new Float32Array(dim);
-        let mag = 0;
-        for (let i = 0; i < dim; i++) mag += vec[i] ** 2;
-        mag = Math.sqrt(mag);
-        if (mag > 1e-9) {
-            for (let i = 0; i < dim; i++) res[i] = vec[i] / mag;
+    _hydrateMissingVectors(candidates) {
+        if (!this.db || typeof this.db.prepare !== 'function') return candidates;
+
+        let statement;
+        try {
+            statement = this.db.prepare('SELECT vector FROM chunks WHERE id = ? LIMIT 1');
+        } catch (error) {
+            return candidates;
         }
-        return res;
+
+        return candidates.map(candidate => {
+            if (this._getCandidateVector(candidate)) return candidate;
+
+            const chunkId = this._getChunkId(candidate);
+            if (chunkId === null) return candidate;
+
+            try {
+                const row = statement.get(chunkId);
+                const vector = this._decodeStoredVector(row?.vector);
+                if (!vector) return candidate;
+                return { ...candidate, _vector: vector };
+            } catch (error) {
+                return candidate;
+            }
+        });
     }
 
-    _dotProduct(v1, v2) {
-        let sum = 0;
-        for (let i = 0; i < v1.length; i++) sum += v1[i] * v2[i];
-        return sum;
+    _getExactIdentities(candidate) {
+        const identities = [];
+        const chunkId = this._getChunkId(candidate);
+        if (chunkId !== null) identities.push(`chunk:${chunkId}`);
+
+        const normalizedText = this._normalizeText(candidate.text ?? candidate.content);
+        if (normalizedText) identities.push(`text:${normalizedText}`);
+
+        const fullPath = String(
+            candidate.fullPath || candidate.sourceFile || candidate._expandedFilePath || ''
+        ).trim().replace(/\\/g, '/').toLowerCase();
+        const chunkIndex = candidate.chunkIndex ?? candidate.chunk_index ?? candidate.offset;
+        if (fullPath && chunkIndex !== undefined && chunkIndex !== null) {
+            identities.push(`path-chunk:${fullPath}:${chunkIndex}`);
+        }
+
+        return identities;
     }
 
-    _magnitude(vec) {
-        let sum = 0;
-        for (let i = 0; i < vec.length; i++) sum += vec[i] ** 2;
-        return Math.sqrt(sum);
+    _isPreferredCandidate(candidate, existing) {
+        const candidatePriority = this._getSourcePriority(candidate);
+        const existingPriority = this._getSourcePriority(existing);
+        if (candidatePriority !== existingPriority) return candidatePriority > existingPriority;
+
+        const candidateScore = this._getScore(candidate);
+        const existingScore = this._getScore(existing);
+        if (candidateScore !== existingScore) return candidateScore > existingScore;
+
+        return this._candidateCompleteness(candidate) > this._candidateCompleteness(existing);
+    }
+
+    _compareCandidates(a, b, queryVector) {
+        const aQuerySimilarity = queryVector && a.vector
+            ? this._cosineSimilarity(a.vector, queryVector)
+            : null;
+        const bQuerySimilarity = queryVector && b.vector
+            ? this._cosineSimilarity(b.vector, queryVector)
+            : null;
+
+        if (aQuerySimilarity !== null || bQuerySimilarity !== null) {
+            const safeA = aQuerySimilarity ?? -Infinity;
+            const safeB = bQuerySimilarity ?? -Infinity;
+            if (safeA !== safeB) return safeB - safeA;
+        }
+
+        const scoreDiff = this._getScore(b.candidate) - this._getScore(a.candidate);
+        if (scoreDiff !== 0) return scoreDiff;
+
+        const priorityDiff = this._getSourcePriority(b.candidate) - this._getSourcePriority(a.candidate);
+        if (priorityDiff !== 0) return priorityDiff;
+        return a.index - b.index;
+    }
+
+    _compareOutputOrder(a, b) {
+        const priorityDiff = this._getSourcePriority(b.candidate) - this._getSourcePriority(a.candidate);
+        if (priorityDiff !== 0) return priorityDiff;
+
+        const scoreDiff = this._getScore(b.candidate) - this._getScore(a.candidate);
+        if (scoreDiff !== 0) return scoreDiff;
+        return a.index - b.index;
+    }
+
+    _getSourcePriority(candidate) {
+        const source = String(candidate?.source || 'unknown').toLowerCase();
+        const configured = Number(this.config.sourcePriority?.[source]);
+        if (Number.isFinite(configured)) return configured;
+        if (source.startsWith('bm25')) {
+            const bm25Priority = Number(this.config.sourcePriority?.bm25_body);
+            return Number.isFinite(bm25Priority) ? bm25Priority : 40;
+        }
+        return Number(this.config.sourcePriority?.unknown) || 0;
+    }
+
+    _getScore(candidate) {
+        const score = Number(
+            candidate?.rerank_score ??
+            candidate?.rrf_score ??
+            candidate?.score ??
+            candidate?.original_score ??
+            0
+        );
+        return Number.isFinite(score) ? score : 0;
+    }
+
+    _candidateCompleteness(candidate) {
+        let score = 0;
+        if (this._getChunkId(candidate) !== null) score += 4;
+        if (candidate.fullPath || candidate.sourceFile) score += 2;
+        if (candidate.text || candidate.content) score += 2;
+        if (candidate.vector || candidate._vector) score += 1;
+        if (candidate.matchedTags) score += 1;
+        return score;
+    }
+
+    _getChunkId(candidate) {
+        const value = candidate?.chunkId ?? candidate?.id ?? candidate?.label;
+        if (typeof value === 'bigint') {
+            const converted = Number(value);
+            return Number.isSafeInteger(converted) && converted > 0 ? converted : null;
+        }
+        const numeric = Number(value);
+        return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
+    }
+
+    _getCandidateVector(candidate) {
+        return this._toValidVector(candidate?.vector || candidate?._vector);
+    }
+
+    _toValidVector(value) {
+        if (!value || typeof value.length !== 'number') return null;
+        if (value.length !== this.config.dimension) return null;
+
+        const vector = value instanceof Float32Array
+            ? value
+            : new Float32Array(value);
+        let magnitudeSquared = 0;
+        for (let i = 0; i < vector.length; i++) {
+            const component = vector[i];
+            if (!Number.isFinite(component)) return null;
+            magnitudeSquared += component * component;
+        }
+        return magnitudeSquared > 1e-12 ? vector : null;
+    }
+
+    _decodeStoredVector(value) {
+        if (!value) return null;
+        if (value instanceof Float32Array) return this._toValidVector(value);
+
+        if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+            const expectedBytes = this.config.dimension * Float32Array.BYTES_PER_ELEMENT;
+            if (value.byteLength !== expectedBytes) return null;
+            const copied = Buffer.from(value);
+            const vector = new Float32Array(
+                copied.buffer,
+                copied.byteOffset,
+                this.config.dimension
+            );
+            return this._toValidVector(new Float32Array(vector));
+        }
+
+        return this._toValidVector(value);
+    }
+
+    _normalizeText(value) {
+        return String(value || '')
+            .normalize('NFKC')
+            .replace(/\r\n?/g, '\n')
+            .replace(/[ \t]+/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim()
+            .toLowerCase();
+    }
+
+    _resolveSemanticThreshold(value) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return Math.max(-1, Math.min(1, parsed));
+        return Math.max(-1, Math.min(1, Number(this.config.semanticThreshold) || 0.92));
+    }
+
+    _resolveMaxResults(value) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+        const configured = Number(this.config.maxResults);
+        return Number.isFinite(configured) && configured > 0
+            ? Math.floor(configured)
+            : Number.MAX_SAFE_INTEGER;
+    }
+
+    _cosineSimilarity(v1, v2) {
+        if (!v1 || !v2 || v1.length !== v2.length) return -1;
+        let dot = 0;
+        let mag1 = 0;
+        let mag2 = 0;
+        for (let i = 0; i < v1.length; i++) {
+            dot += v1[i] * v2[i];
+            mag1 += v1[i] * v1[i];
+            mag2 += v2[i] * v2[i];
+        }
+        if (mag1 <= 1e-12 || mag2 <= 1e-12) return -1;
+        return dot / Math.sqrt(mag1 * mag2);
     }
 }
 
