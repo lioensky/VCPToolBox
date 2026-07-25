@@ -49,28 +49,165 @@ topic:「始」general / news / finance「末」,
 search_depth:「始」advanced「末」, //语义搜索模式
 include_raw_content:「始」'markdown'「末」 //获取原始内容
 
-## 5. 专业级信息深度垂直检索，AnySearch，支持1000并发的超级聚类爬虫
-调用 AnySearch 进行实时搜索、垂直领域搜索、批量搜索、领域目录查询或网页正文提取。
-参数:
-- command/action (string, 可选, 默认 search): search、list_domains、batch_search、extract。
-- query/q/text (string, search 必需): 搜索词。垂直搜索时必须遵循 list_domains 返回的 query_format。
-- domain (string, 可选): 垂直领域，如 finance、academic、security、code、tech、legal 等。
-- sub_domain (string, 垂直搜索建议/通常必需): 子领域路由，如 finance.us_stock、academic.doi、security.cve。
-- sub_domain_params (object|string, 可选): 子领域额外参数。
-- content_types (string|array, 可选): web、news、code、doc、academic、data、image、video、audio。
-- zone (string, 可选): cn 或 intl；当 list_domains 标记 zone=CN 时必须传 cn。
-- max_results (integer, 可选): 结果数量，范围 1-100。
-- freshness (string, 可选): day、week、month、year。
-- domains (string|array, list_domains 可选): 批量查询最多 5 个领域；与 domain 二选一。
-- queries (array|string, batch_search 必需): 1-5 个查询对象或字符串。
-- url (string, extract 必需): 需要提取正文的网页 URL。
-调用格式示例:
+## 5. 专业级实时与垂直领域检索，AnySearch，单次最多五路真并发
+想查实时信息、专业资料或网页正文时用这个工具。普通搜索只给 query；垂直搜索再加 sub_domain 和必要的 params。
 
+[===vcp_fold:0.0::desc:AnySearch 基础搜索与编排===]
+核心参数:
+- query: 默认搜索词；sub_domain: 「域.子域」；params: 优先写 k=v,k2=v2；max_results: 1-10。
+- queries: 同一路线批量搜索 1-5 个词，用 | 分隔。
+- 编号路线: query1..query5、sub_domain1..5、params1..5、max_results1..5，最多五路并发；每路继承顶层默认值，queryN 仅在该路线需要改写搜索词时填写；不能与 queries 混用。
+- url: 提取网页正文。领域或深参数不确定时，用 command=get_sub_domains, domain=域 查询，不要猜。
+
+基础搜索:
+<<<[TOOL_REQUEST]>>>
 tool_name:「始」AnySearch「末」,
-command:「始」search「末」,
-query:「始」AI regulation 2026「末」,
-content_types:「始」news「末」,
-freshness:「始」week「末」,
-max_results:「始」5「末」
+query:「始」what is photosynthesis「末」
+<<<[END_TOOL_REQUEST]>>>
 
-复杂垂直搜索前建议先调用 list_domains 获取 sub_domain、query_format、params_schema 和 zone 约束。
+多路线搜索:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AnySearch「末」,
+query:「始」Go 1.26 有哪些重要变化「末」,
+sub_domain1:「始」code.doc「末」,
+params1:「始」library=golang「末」,
+query2:「始」Go 1.26 new APIs examples「末」,
+sub_domain2:「始」code.snippet「末」,
+sub_domain3:「始」general「末」,
+max_results:「始」3「末」
+<<<[END_TOOL_REQUEST]>>>
+[===vcp_fold:0.5===]
+
+[===vcp_fold:0.35::desc:AnySearch 批量搜索、正文提取与兼容参数===]
+同路多词用 queries，顶层 sub_domain/params/max_results 会注入每条:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AnySearch「末」,
+sub_domain:「始」finance.news「末」,
+params:「始」type=general「末」,
+queries:「始」AI 芯片需求 2026|全球 EV 市场展望「末」
+<<<[END_TOOL_REQUEST]>>>
+
+提取正文只给 url。params 使用逗号分隔的 k=v 文本；目录括号是官方 Required 标记，部分受 type 等条件约束。不适用的参数不要传，完整规则用 get_sub_domains 查询。
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AnySearch「末」,
+url:「始」https://example.com/article「末」
+<<<[END_TOOL_REQUEST]>>>
+[===vcp_fold:0.5===]
+
+[===vcp_fold:0.35::desc:AnySearch 复杂参数与多领域编排示例===]
+复杂参数调用原则：已知参数语义时，直接把多个参数写成逗号分隔的 k=v 文本；字段含义、枚举、格式或条件必填不确定时，先查 get_sub_domains，读完返回规则再搜索。不适用的参数不要传空值。
+
+指定软件包漏洞：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AnySearch「末」,
+query:「始」Jinja2 2.4.1 已知漏洞与修复建议「末」,
+sub_domain:「始」security.vuln「末」,
+params:「始」type=package,value=PyPI:jinja2@2.4.1「末」,
+max_results:「始」5「末」
+<<<[END_TOOL_REQUEST]>>>
+
+多条件生物医学文献筛选：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AnySearch「末」,
+query:「始」large language models in clinical diagnosis「末」,
+sub_domain:「始」academic.biomedical「末」,
+params:「始」sort=date,source=MED,field=tiab,year_from=2024,has_pdf=true,open_access=false「末」
+<<<[END_TOOL_REQUEST]>>>
+
+跨领域复杂研究——顶层 query 是默认词，各编号路线只写需要覆盖的字段：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AnySearch「末」,
+query:「始」OpenAI 近期动态「末」,
+sub_domain1:「始」finance.news「末」,
+params1:「始」type=general「末」,
+query2:「始」OpenAI research papers 2026「末」,
+sub_domain2:「始」academic.search「末」,
+query3:「始」OpenAI API examples「末」,
+sub_domain3:「始」code.snippet「末」,
+query4:「始」OpenAI legal cases「末」,
+sub_domain4:「始」legal.case「末」,
+sub_domain5:「始」general「末」,
+max_results:「始」3「末」
+<<<[END_TOOL_REQUEST]>>>
+
+参数不确定时只查目标领域，不要猜：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AnySearch「末」,
+command:「始」get_sub_domains「末」,
+domain:「始」travel「末」
+<<<[END_TOOL_REQUEST]>>>
+读完返回的完整规则后，再按其中的子域、枚举、格式和条件要求调用搜索。
+[===vcp_fold:0.5===]
+
+[===vcp_fold:0.35::desc:学术与文献检索 academic===]
+想查学术论文、数据集、预印本、引用或生物医学文献时用 academic 领域。
+
+子域与必填参数:
+- academic.search: 通用学术搜索
+- academic.dataset: 数据集搜索
+- academic.preprint: 预印本搜索
+- academic.citation(id): 引用搜索，必填 id
+- academic.biomedical: 生物医学文献
+
+academic.biomedical 常用参数:
+- sort: relevance / date / pub_date / author / journal / cited
+- source: MED / PMC / PPR / AGR / PAT
+- field: tiab（标题+摘要）
+- year_from / year_to: 年份范围
+- has_pdf: true / false
+- open_access: true / false
+- date_type: 日期类型
+
+示例:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AnySearch「末」,
+query:「始」large language models in clinical diagnosis「末」,
+sub_domain:「始」academic.biomedical「末」,
+params:「始」sort=date,source=MED,field=tiab,year_from=2024,has_pdf=true「末」
+<<<[END_TOOL_REQUEST]>>>
+
+不确定参数含义时，用 command=get_sub_domains, domain=academic 查询完整 schema。
+[===vcp_fold:0.5===]
+
+[===vcp_fold:0.35::desc:金融与市场检索 finance===]
+想查股票、基金、宏观经济、日历或筛选器时用 finance 领域。
+
+子域与必填参数:
+- finance.news(type): 新闻，必填 type
+- finance.quote(type,symbol,cn_code): 行情，必填 type 和 symbol 或 cn_code
+- finance.fundamental(type,symbol,cn_code): 基本面
+- finance.macro(type): 宏观经济
+- finance.calendar(type): 经济日历
+- finance.screen(type): 筛选器
+
+示例:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AnySearch「末」,
+query:「始」Apple 最新公司新闻「末」,
+sub_domain:「始」finance.news「末」,
+params:「始」type=stock,symbol=AAPL「末」
+<<<[END_TOOL_REQUEST]>>>
+
+不确定参数含义时，用 command=get_sub_domains, domain=finance 查询完整 schema。
+[===vcp_fold:0.5===]
+
+[===vcp_fold:0.35::desc:其他垂直领域选择===]
+其他常用领域：legal 法律，health 医药健康，business 商业/公司/职位，security 威胁情报与漏洞，energy 能源电力，travel 航班，gaming 游戏与电竞，resource 图片，social_media 社媒，ip IP 信息，environment 空气质量，agriculture 农业，film 影视资源。
+选择领域后使用「域.子域」；具体子域、必填项、枚举或罕见参数必须用 command=get_sub_domains, domain=域 查询，不要依赖此处静态复制。
+[===vcp_fold:0.5===]
+
+[===vcp_fold:0.35::desc:代码与技术文档检索 code===]
+想查编程文档或代码片段时用 code 领域。
+
+子域与必填参数:
+- code.doc(library): 官方文档，必填 library
+- code.snippet: 代码片段
+
+示例:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AnySearch「末」,
+query:「始」Go 1.26 release notes「末」,
+sub_domain:「始」code.doc「末」,
+params:「始」library=golang「末」
+<<<[END_TOOL_REQUEST]>>>
+[===vcp_fold:0.5===]
