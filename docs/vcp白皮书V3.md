@@ -916,7 +916,7 @@ TDB库则可以用[[xx知识库]]作为系统提示词引入。
 ### 8.6 高级修饰器
 
 ```
-[[Nova日记本:1.5::Time::Group::TagMemo::Rerank+0.7::TimeDecay::Truncate0.25::Associate::RoleValve@User>3]]
+[[Nova日记本:1.5::Time::Group::RiverMemo::Rerank+0.7::TimeDecay::Truncate0.25::Associate::RoleValve@User>3]]
 ```
 
 | 修饰器 | 功能 |
@@ -925,7 +925,8 @@ TDB库则可以用[[xx知识库]]作为系统提示词引入。
 | `::Time` | 时间感知检索,支持生物钟逻辑,跨上下文连续记忆传递 |
 | `::Group` | 语义组捕网增强 |
 | `::TagMemo` | 启用浪潮算法 |
-| `::TagMemo+` | 启用当前生产级 TagMemo / RiverMemo 增强重排 |
+| `::TagMemo+` | 启用当前生产级 TagMemo DSTC增强重排 |
+| `::RiverMemo` | 启用当前生产级 RiverMemo 几何拓扑增强重排 |
 | `::Associate` | 启用涟漪联想召回(单索引交叉联想,聚合索引涟漪共现) |
 | `::Rerank` | Rerank 精排 |
 | `::Rerank+0.7` | 倒数秩融合,平衡浪潮和 Rerank |
