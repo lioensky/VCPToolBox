@@ -42,12 +42,21 @@ const MIN_DOMAINS = 5;
 const MIN_SUBS = 10;
 
 function getEndpoint() {
-  return (process.env.ANYSEARCH_ENDPOINT || DEFAULT_ENDPOINT).trim() || DEFAULT_ENDPOINT;
+  // v3 对齐：优先用 ANYSEARCH_MCP_ENDPOINT，旧 ANYSEARCH_ENDPOINT 作为兼容别名
+  const mcp = (process.env.ANYSEARCH_MCP_ENDPOINT || "").trim();
+  if (mcp) return mcp;
+  return (
+    (process.env.ANYSEARCH_ENDPOINT || DEFAULT_ENDPOINT).trim() ||
+    DEFAULT_ENDPOINT
+  );
 }
-
 function isLoopback(hostname) {
-  return hostname === "127.0.0.1" || hostname === "localhost" ||
-    hostname === "::1" || hostname === "[::1]";
+  return (
+    hostname === "127.0.0.1" ||
+    hostname === "localhost" ||
+    hostname === "::1" ||
+    hostname === "[::1]"
+  );
 }
 
 function rpc(method, params) {
@@ -55,8 +64,12 @@ function rpc(method, params) {
   const url = new URL(getEndpoint());
   let transport;
   if (url.protocol === "https:") transport = https;
-  else if (url.protocol === "http:" && isLoopback(url.hostname)) transport = http;
-  else return Promise.reject(new Error("endpoint 必须是 https://（http:// 仅允许 127.0.0.1）"));
+  else if (url.protocol === "http:" && isLoopback(url.hostname))
+    transport = http;
+  else
+    return Promise.reject(
+      new Error("endpoint 必须是 https://（http:// 仅允许 127.0.0.1）")
+    );
 
   const options = {
     hostname: url.hostname,
@@ -72,12 +85,20 @@ function rpc(method, params) {
     const req = transport.request(options, (res) => {
       let raw = "";
       res.setEncoding("utf8");
-      res.on("data", (chunk) => { raw += chunk; });
+      res.on("data", (chunk) => {
+        raw += chunk;
+      });
       res.on("end", () => {
         try {
           const data = JSON.parse(raw);
           if (res.statusCode >= 400 || data.error) {
-            reject(new Error(data.error ? (data.error.message || "API error") : `HTTP ${res.statusCode}`));
+            reject(
+              new Error(
+                data.error
+                  ? data.error.message || "API error"
+                  : `HTTP ${res.statusCode}`
+              )
+            );
             return;
           }
           resolve(data.result || {});
@@ -102,17 +123,22 @@ function textOf(result) {
 // 服务端声明的权威域清单：tools/list 中 get_sub_domains 的 domain enum
 async function fetchDomainEnum() {
   const result = await rpc("tools/list", {});
-  const tool = (result.tools || []).find((t) => t && t.name === "get_sub_domains");
+  const tool = (result.tools || []).find(
+    (t) => t && t.name === "get_sub_domains"
+  );
   if (!tool || !tool.inputSchema || !tool.inputSchema.properties) {
     throw new Error("tools/list 中找不到 get_sub_domains 的参数定义");
   }
   const props = tool.inputSchema.properties;
-  const domainEnum = (props.domain && props.domain.enum) ||
+  const domainEnum =
+    (props.domain && props.domain.enum) ||
     (props.domains && props.domains.items && props.domains.items.enum);
   if (!Array.isArray(domainEnum) || domainEnum.length === 0) {
     throw new Error("tools/list 未声明 domain enum");
   }
-  return domainEnum.map((item) => String(item).trim().toLowerCase()).filter(Boolean);
+  return domainEnum
+    .map((item) => String(item).trim().toLowerCase())
+    .filter(Boolean);
 }
 
 // 从 get_sub_domains 的 Markdown 输出解析目录：
@@ -130,7 +156,10 @@ function parseInto(catalog, text) {
       current = subs.get(head[2]);
       continue;
     }
-    if (/^##\s/.test(line)) { current = null; continue; }
+    if (/^##\s/.test(line)) {
+      current = null;
+      continue;
+    }
     if (!current) continue;
     const param = /^-\s+`([a-z0-9_]+)`\s+\(required\)/.exec(line);
     if (param && !current.includes(param[1])) current.push(param[1]);
@@ -142,7 +171,10 @@ async function fetchLiveCatalog() {
   const catalog = new Map();
   for (let i = 0; i < domains.length; i += BATCH_SIZE) {
     const batch = domains.slice(i, i + BATCH_SIZE);
-    const result = await rpc("tools/call", { name: "get_sub_domains", arguments: { domains: batch } });
+    const result = await rpc("tools/call", {
+      name: "get_sub_domains",
+      arguments: { domains: batch },
+    });
     parseInto(catalog, textOf(result));
   }
   return catalog;
@@ -207,17 +239,22 @@ function splitDescription(description) {
 
 async function main() {
   const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
-  const command = manifest.capabilities && manifest.capabilities.invocationCommands &&
+  const command =
+    manifest.capabilities &&
+    manifest.capabilities.invocationCommands &&
     manifest.capabilities.invocationCommands[0];
-  const parts = command && typeof command.description === "string"
-    ? splitDescription(command.description)
-    : null;
+  const parts =
+    command && typeof command.description === "string"
+      ? splitDescription(command.description)
+      : null;
 
   const live = await fetchLiveCatalog();
   let totalSubs = 0;
   for (const subs of live.values()) totalSubs += subs.size;
   if (live.size < MIN_DOMAINS || totalSubs < MIN_SUBS) {
-    throw new Error(`解析结果过小（${live.size} 域 / ${totalSubs} 子领域），疑似 API 格式漂移，已放弃写入`);
+    throw new Error(
+      `解析结果过小（${live.size} 域 / ${totalSubs} 子领域），疑似 API 格式漂移，已放弃写入`
+    );
   }
 
   const fresh = formatCatalog(live);
