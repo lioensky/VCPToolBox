@@ -10,13 +10,17 @@ let wssInstance;
 let pluginManager = null; // 为 PluginManager 实例占位
 let attachedHttpServer = null;
 let upgradeHandler = null;
+let heartbeatInterval = null;
 let isDraining = false;
 let shutdownPromise = null;
+
+const WEBSOCKET_HEARTBEAT_INTERVAL_MS = 60 * 1000;
 
 let serverConfig = {
     debugMode: false,
     vcpKey: null,
-    distributedMusicPlaylistSyncEnabled: false
+    distributedMusicPlaylistSyncEnabled: false,
+    heartbeatEnabled: false
 };
 
 // 用于存储不同类型的客户端
@@ -144,6 +148,12 @@ function initialize(httpServer, config) {
         console.error('[WebSocketServer] Cannot initialize without an HTTP server instance.');
         return;
     }
+
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
+
     serverConfig = { ...serverConfig, ...config };
     attachedHttpServer = httpServer;
     isDraining = false;
@@ -537,6 +547,31 @@ function initialize(httpServer, config) {
         });
     });
 
+    if (serverConfig.heartbeatEnabled) {
+        heartbeatInterval = setInterval(() => {
+            if (!wssInstance || isDraining) return;
+
+            let pingedClientCount = 0;
+            wssInstance.clients.forEach(client => {
+                if (client.readyState !== WebSocket.OPEN) return;
+
+                try {
+                    client.ping();
+                    pingedClientCount++;
+                } catch (error) {
+                    console.warn(`[WebSocketServer] Heartbeat ping failed for client ${client.clientId || 'unknown'}: ${error.message}`);
+                }
+            });
+
+            if (serverConfig.debugMode && pingedClientCount > 0) {
+                console.log(`[WebSocketServer] Sent heartbeat ping to ${pingedClientCount} connected client(s).`);
+            }
+        }, WEBSOCKET_HEARTBEAT_INTERVAL_MS);
+        heartbeatInterval.unref();
+
+        console.log(`[WebSocketServer] Protocol heartbeat enabled (interval: ${WEBSOCKET_HEARTBEAT_INTERVAL_MS / 1000}s).`);
+    }
+
     if (serverConfig.debugMode) {
         console.log(`[WebSocketServer] Initialized. Waiting for HTTP server upgrades.`);
     }
@@ -621,6 +656,12 @@ async function beginDrain() {
     }
 
     isDraining = true;
+
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
+
     writeLog('WebSocketServer entered draining mode.');
 
     if (attachedHttpServer && upgradeHandler) {
