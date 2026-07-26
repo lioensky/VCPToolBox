@@ -615,18 +615,22 @@ async function handleCreateCommand(args) {
 
         const trimmedMaidName = maid.trim();
         const trimmedFolderName = typeof folder === 'string' ? folder.trim() : '';
-        let folderName = trimmedFolderName || trimmedMaidName;
-        let actualMaidName = trimmedMaidName;
-        const tagMatch = trimmedMaidName.match(/^\[(.*?)\](.*)$/);
+        // 解析旧式 [文件夹]作者 格式——闭括号后必须有非空作者名才视为旧格式
+        const tagMatch = trimmedMaidName.match(/^\[([^\]]*)\](.+)$/);
+        let folderName;
+        let actualMaidName;
 
-        if (trimmedFolderName) {
-            debugLog(`Explicit folder provided. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
-        } else if (tagMatch) {
-            folderName = tagMatch[1].trim();
+        if (tagMatch) {
+            // maid 确实是旧式格式，提取作者
             actualMaidName = tagMatch[2].trim();
-            debugLog(`Tagged note detected. Tag: ${folderName}, Actual Maid: ${actualMaidName}`);
+            // 目录：显式 folder 优先，否则用旧式 maid 中的目录部分
+            folderName = trimmedFolderName || tagMatch[1].trim() || actualMaidName;
+            debugLog(`Legacy maid format parsed. Folder: ${folderName}, Actual Maid: ${actualMaidName}, explicit folder: ${!!trimmedFolderName}`);
         } else {
-            debugLog(`No tag detected. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
+            // maid 是普通署名
+            actualMaidName = trimmedMaidName;
+            folderName = trimmedFolderName || trimmedMaidName;
+            debugLog(`Plain maid. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
         }
 
         const folderResolution = await resolveDiaryFolderName(folderName, {
@@ -1053,7 +1057,7 @@ function generateDiff(oldText, newText, oldLabel, newLabel) {
 
         hunks.push(
             `@@ -${aRange} +${bRange} @@\n` +
-                hunkOps.map((o) => o.type + o.line).join('\n')
+            hunkOps.map((o) => o.type + o.line).join('\n')
         );
 
         idx = hunkEnd;
@@ -1135,8 +1139,7 @@ async function handleUpdateCommand(args) {
     }
 
     debugLog(
-        `Validated input for update. Target length: ${target.length}. Maid: ${
-            maid || 'Not specified'
+        `Validated input for update. Target length: ${target.length}. Maid: ${maid || 'Not specified'
         }. Folder: ${folder || 'Not specified'}`
     );
 
