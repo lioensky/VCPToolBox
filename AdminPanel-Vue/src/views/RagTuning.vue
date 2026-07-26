@@ -148,13 +148,26 @@
                   <p>预检只读取文件与数据库，不请求向量、不写入数据。确认后只向量化差分 Tag。</p>
                 </div>
 
+                <div
+                  v-if="isTagConsistencyScanning"
+                  class="tag-consistency-scanning"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span class="material-symbols-outlined" aria-hidden="true">progress_activity</span>
+                  <div>
+                    <strong>正在后台扫描 Tag 一致性</strong>
+                    <p>可离开本页；重新打开后会自动恢复扫描状态与结果。</p>
+                  </div>
+                </div>
+
                 <UiButton
                   variant="secondary"
                   :disabled="isTagConsistencyScanning || isTagConsistencyApplying"
                   block
                   @click="previewTagConsistency"
                 >
-                  {{ isTagConsistencyScanning ? "正在扫描…" : "扫描 Tag 一致性" }}
+                  {{ isTagConsistencyScanning ? "扫描任务运行中" : "扫描 Tag 一致性" }}
                 </UiButton>
 
                 <template v-if="tagConsistencyPreview">
@@ -991,6 +1004,7 @@ import {
   ragApi,
   type ParamGroup,
   type TagConsistencyPreview,
+  type TagConsistencyPreviewTask,
   type ParamValue,
   type RagParamTheme,
   type RagParams,
@@ -1099,6 +1113,7 @@ const ORDERED_COOCCURRENCE_PARAM_KEY = "orderedCooccurrence";
 const formId = "rag-tuning-form";
 const CONTENT_CONTAINER_ID = "config-details-container";
 const GROUP_SCROLL_OFFSET = 16;
+const TAG_CONSISTENCY_POLL_INTERVAL_MS = 2_000;
 const semanticSimulationUrl = `${import.meta.env.BASE_URL}tagmemo-simulation.html`;
 
 const appStore = useAppStore();
@@ -1124,6 +1139,8 @@ const isTagConsistencyScanning = ref(false);
 const isTagConsistencyApplying = ref(false);
 const tagConsistencyPreview = ref<TagConsistencyPreview | null>(null);
 const tagMemoAssetsStale = ref(false);
+let tagConsistencyPollTimer: number | null = null;
+let tagConsistencyStatusRequestPending = false;
 
 function cloneParams(source: RagParams): RagParams {
   return JSON.parse(JSON.stringify(source));
@@ -1938,36 +1955,106 @@ function formatConsistencyExpiry(timestamp: number): string {
   }).format(new Date(timestamp));
 }
 
+function clearTagConsistencyPolling(): void {
+  if (tagConsistencyPollTimer !== null) {
+    window.clearTimeout(tagConsistencyPollTimer);
+    tagConsistencyPollTimer = null;
+  }
+}
+
+function scheduleTagConsistencyPolling(): void {
+  clearTagConsistencyPolling();
+  tagConsistencyPollTimer = window.setTimeout(() => {
+    tagConsistencyPollTimer = null;
+    void refreshTagConsistencyTask();
+  }, TAG_CONSISTENCY_POLL_INTERVAL_MS);
+}
+
+function acceptTagConsistencyTask(task: TagConsistencyPreviewTask): void {
+  if (task.status === "running") {
+    isTagConsistencyScanning.value = true;
+    scheduleTagConsistencyPolling();
+    return;
+  }
+
+  clearTagConsistencyPolling();
+  isTagConsistencyScanning.value = false;
+
+  if (task.status === "completed" && task.preview) {
+    tagConsistencyPreview.value = task.preview;
+    const summary = task.preview.summary;
+    statusMessage.value = task.preview.requiresConfirmation
+      ? `Tag 预检完成：需新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量。请核对后确认执行。`
+      : "Tag 预检完成：当前数据库与最新清洗、屏蔽规则一致。";
+    statusType.value = task.preview.requiresConfirmation ? "info" : "success";
+    return;
+  }
+
+  if (task.status === "failed") {
+    tagConsistencyPreview.value = null;
+    statusMessage.value = `Tag 一致性预检失败：${task.error?.message || "未知错误"}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+    return;
+  }
+
+  if (task.status === "expired") {
+    tagConsistencyPreview.value = null;
+    statusMessage.value = "上次 Tag 一致性预检快照已过期，请重新扫描。";
+    statusType.value = "info";
+  }
+}
+
+async function refreshTagConsistencyTask(): Promise<void> {
+  if (tagConsistencyStatusRequestPending) {
+    return;
+  }
+
+  tagConsistencyStatusRequestPending = true;
+  try {
+    const response = await ragApi.getTagConsistencyPreviewStatus({
+      showLoader: false,
+      loadingKey: "rag-tuning.tag-consistency.status",
+      suppressErrorMessage: true,
+    });
+    if (response.task) {
+      acceptTagConsistencyTask(response.task);
+    }
+  } catch (error: unknown) {
+    if (isTagConsistencyScanning.value) {
+      scheduleTagConsistencyPolling();
+    }
+    console.warn("Failed to restore Tag consistency preview task:", error);
+  } finally {
+    tagConsistencyStatusRequestPending = false;
+  }
+}
+
 async function previewTagConsistency(): Promise<void> {
   if (isTagConsistencyScanning.value || isTagConsistencyApplying.value) {
     return;
   }
 
+  clearTagConsistencyPolling();
   isTagConsistencyScanning.value = true;
   tagConsistencyPreview.value = null;
 
   try {
     const response = await ragApi.previewTagConsistency({
+      showLoader: false,
       loadingKey: "rag-tuning.tag-consistency.preview",
     });
-    if (!response.preview) {
-      throw new Error(response.error || "主服务未返回一致性预检结果");
+    if (!response.task) {
+      throw new Error(response.error || "主服务未返回一致性扫描任务");
     }
 
-    tagConsistencyPreview.value = response.preview;
-    const summary = response.preview.summary;
-    statusMessage.value = response.preview.requiresConfirmation
-      ? `Tag 预检完成：需新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量。请核对后确认执行。`
-      : "Tag 预检完成：当前数据库与最新清洗、屏蔽规则一致。";
-    statusType.value = response.preview.requiresConfirmation ? "info" : "success";
-    showMessage(statusMessage.value, statusType.value);
+    acceptTagConsistencyTask(response.task);
   } catch (error: unknown) {
+    isTagConsistencyScanning.value = false;
     const errorMessage = error instanceof Error ? error.message : String(error);
-    statusMessage.value = `Tag 一致性预检失败：${errorMessage}`;
+    statusMessage.value = `Tag 一致性预检启动失败：${errorMessage}`;
     statusType.value = "error";
     showMessage(statusMessage.value, "error");
-  } finally {
-    isTagConsistencyScanning.value = false;
   }
 }
 
@@ -2121,10 +2208,12 @@ onMounted(() => {
   window.addEventListener("message", handleSemanticSimulationMessage);
   void loadParams();
   void loadThemes();
+  void refreshTagConsistencyTask();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("message", handleSemanticSimulationMessage);
+  clearTagConsistencyPolling();
 });
 </script>
 
@@ -3539,6 +3628,52 @@ onBeforeUnmount(() => {
 .tag-consistency-card :deep(.ui-button) {
   justify-content: center;
   width: 100%;
+}
+
+.tag-consistency-scanning {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 32%, var(--border-color));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--highlight-text) 7%, transparent);
+}
+
+.tag-consistency-scanning > .material-symbols-outlined {
+  flex: 0 0 auto;
+  color: var(--highlight-text);
+  font-size: 24px;
+  animation: tag-consistency-spin 1.1s linear infinite;
+}
+
+.tag-consistency-scanning > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.tag-consistency-scanning strong {
+  font-size: var(--font-size-helper);
+}
+
+.tag-consistency-scanning p {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  line-height: 1.45;
+}
+
+@keyframes tag-consistency-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tag-consistency-scanning > .material-symbols-outlined {
+    animation: none;
+  }
 }
 
 .tag-consistency-stats {

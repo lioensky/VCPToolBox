@@ -1909,8 +1909,23 @@ class KnowledgeBaseManager {
     }
 
     /**
-     * 使用当前文件过滤与 Tag 清洗规则生成只读一致性快照。
-     * 此阶段不请求 Embedding，也不修改 SQLite / Vexus 索引。
+     * 启动只读 Tag 一致性扫描任务并立即返回任务状态。
+     * 扫描归属主服务进程，管理页面关闭或请求断开不会中止任务。
+     */
+    startTagConsistencyPreview() {
+        return this.tagConsistencyService.startPreviewTask();
+    }
+
+    /**
+     * 查询最近一次 Tag 一致性扫描任务，可用于页面重开后的状态恢复。
+     */
+    getTagConsistencyPreviewStatus() {
+        return this.tagConsistencyService.getPreviewTaskStatus();
+    }
+
+    /**
+     * 同步兼容入口：等待当前规则的一致性快照生成完成。
+     * 新管理面板应使用 startTagConsistencyPreview + getTagConsistencyPreviewStatus。
      */
     async previewTagConsistency() {
         return await this.tagConsistencyService.createPreview();

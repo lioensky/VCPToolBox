@@ -82,9 +82,28 @@ export interface TagConsistencyPreview {
   requiresConfirmation: boolean;
 }
 
+export type TagConsistencyPreviewTaskStatus =
+  | "idle"
+  | "running"
+  | "completed"
+  | "failed"
+  | "expired";
+
+export interface TagConsistencyPreviewTask {
+  taskId: string | null;
+  status: TagConsistencyPreviewTaskStatus;
+  startedAt: number | null;
+  finishedAt: number | null;
+  preview: TagConsistencyPreview | null;
+  error: {
+    code?: string;
+    message: string;
+  } | null;
+}
+
 export interface TagConsistencyPreviewResponse {
   success?: boolean;
-  preview?: TagConsistencyPreview;
+  task?: TagConsistencyPreviewTask;
   code?: string;
   error?: string;
 }
@@ -155,12 +174,25 @@ export const ragApi = {
   },
 
   async previewTagConsistency(
-    uiOptions: RequestUiOptions = {}
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
   ): Promise<TagConsistencyPreviewResponse> {
     return requestWithUi(
       {
         url: "/admin_api/rag-tag-consistency/preview",
         method: "POST",
+        timeoutMs: 60_000,
+      },
+      uiOptions
+    );
+  },
+
+  async getTagConsistencyPreviewStatus(
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<TagConsistencyPreviewResponse> {
+    return requestWithUi(
+      {
+        url: "/admin_api/rag-tag-consistency/preview/status",
+        timeoutMs: 60_000,
       },
       uiOptions
     );

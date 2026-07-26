@@ -22,6 +22,8 @@ class TagConsistencyService {
         this.VexusIndex = options.VexusIndex;
         this.snapshots = new Map();
         this.running = false;
+        this.latestPreviewTask = null;
+        this.previewTaskPromise = null;
     }
 
     _createError(message, code, statusCode = 500) {
@@ -308,7 +310,45 @@ class TagConsistencyService {
         };
     }
 
-    async createPreview() {
+    _toPublicPreviewTask(task = this.latestPreviewTask) {
+        if (!task) {
+            return {
+                taskId: null,
+                status: 'idle',
+                startedAt: null,
+                finishedAt: null,
+                preview: null,
+                error: null
+            };
+        }
+
+        let status = task.status;
+        let preview = task.preview;
+        if (
+            status === 'completed'
+            && preview
+            && preview.expiresAt <= Date.now()
+        ) {
+            status = 'expired';
+            preview = null;
+        }
+
+        return {
+            taskId: task.taskId,
+            status,
+            startedAt: task.startedAt,
+            finishedAt: task.finishedAt,
+            preview,
+            error: task.error
+        };
+    }
+
+    getPreviewTaskStatus() {
+        this._cleanupSnapshots();
+        return this._toPublicPreviewTask();
+    }
+
+    startPreviewTask() {
         if (!this.owner.initialized) {
             throw this._createError(
                 'KnowledgeBase 尚未初始化完成',
@@ -318,24 +358,80 @@ class TagConsistencyService {
         }
         if (this.running) {
             throw this._createError(
-                'Tag 一致性维护任务正在执行',
+                'Tag 一致性修复任务正在执行',
                 'TAG_CONSISTENCY_BUSY',
                 409
             );
         }
+        if (this.latestPreviewTask?.status === 'running') {
+            return this._toPublicPreviewTask();
+        }
 
         this._cleanupSnapshots();
-        const plan = await this._buildPlan();
-        const token = crypto.randomBytes(24).toString('hex');
-        const snapshot = {
-            token,
-            createdAt: Date.now(),
-            expiresAt: Date.now() + SNAPSHOT_TTL_MS,
-            plan
+        const task = {
+            taskId: crypto.randomBytes(16).toString('hex'),
+            status: 'running',
+            startedAt: Date.now(),
+            finishedAt: null,
+            preview: null,
+            error: null
         };
-        this.snapshots.clear();
-        this.snapshots.set(token, snapshot);
-        return this._toPublicSnapshot(snapshot);
+        this.latestPreviewTask = task;
+
+        this.previewTaskPromise = this._buildPlan()
+            .then(plan => {
+                const token = crypto.randomBytes(24).toString('hex');
+                const snapshot = {
+                    token,
+                    createdAt: Date.now(),
+                    expiresAt: Date.now() + SNAPSHOT_TTL_MS,
+                    plan
+                };
+                this.snapshots.clear();
+                this.snapshots.set(token, snapshot);
+                task.preview = this._toPublicSnapshot(snapshot);
+                task.status = 'completed';
+                task.finishedAt = Date.now();
+                console.log(
+                    `[KnowledgeBase] Tag consistency preview task ${task.taskId} completed: ` +
+                    `scanned=${plan.summary.scannedFiles}, affected=${plan.summary.affectedFiles}.`
+                );
+            })
+            .catch(error => {
+                task.status = 'failed';
+                task.finishedAt = Date.now();
+                task.error = {
+                    code: error.code || 'TAG_CONSISTENCY_PREVIEW_FAILED',
+                    message: error.message || 'Failed to preview Tag consistency'
+                };
+                console.error(
+                    `[KnowledgeBase] Tag consistency preview task ${task.taskId} failed:`,
+                    error.message || error
+                );
+            })
+            .finally(() => {
+                if (this.latestPreviewTask === task) {
+                    this.previewTaskPromise = null;
+                }
+            });
+
+        return this._toPublicPreviewTask(task);
+    }
+
+    async createPreview() {
+        const task = this.startPreviewTask();
+        if (task.status === 'running' && this.previewTaskPromise) {
+            await this.previewTaskPromise;
+        }
+        const completed = this.getPreviewTaskStatus();
+        if (completed.status === 'completed' && completed.preview) {
+            return completed.preview;
+        }
+        throw this._createError(
+            completed.error?.message || 'Tag 一致性预检失败',
+            completed.error?.code || 'TAG_CONSISTENCY_PREVIEW_FAILED',
+            500
+        );
     }
 
     async _vectorize(names) {
@@ -473,7 +569,7 @@ class TagConsistencyService {
     }
 
     async applyPreview(token) {
-        if (this.running) {
+        if (this.running || this.latestPreviewTask?.status === 'running') {
             throw this._createError(
                 'Tag 一致性维护任务正在执行',
                 'TAG_CONSISTENCY_BUSY',
@@ -539,6 +635,9 @@ class TagConsistencyService {
             }
 
             this.snapshots.delete(snapshot.token);
+            if (this.latestPreviewTask?.preview?.token === snapshot.token) {
+                this.latestPreviewTask = null;
+            }
             this.owner.lastJsWriteFinishedAt = Date.now();
             console.warn(
                 `[KnowledgeBase] 🧹 Tag consistency reconciliation complete: `

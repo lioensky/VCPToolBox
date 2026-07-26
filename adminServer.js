@@ -392,7 +392,7 @@ function proxyTagConsistencyRequest(req, res, endpoint, timeoutMs) {
     const proxyReq = http.request(
         `http://127.0.0.1:${MAIN_PORT}${targetPath}`,
         {
-            method: 'POST',
+            method: req.method,
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': req.headers.authorization || '',
@@ -445,7 +445,9 @@ function proxyTagConsistencyRequest(req, res, endpoint, timeoutMs) {
             });
         }
     });
-    proxyReq.write(JSON.stringify(req.body || {}));
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+        proxyReq.write(JSON.stringify(req.body || {}));
+    }
     proxyReq.end();
 }
 
@@ -455,6 +457,15 @@ app.post('/admin_api/rag-tag-consistency/preview', (req, res) => {
         res,
         'rag-tag-consistency/preview',
         10 * 60 * 1000
+    );
+});
+
+app.get('/admin_api/rag-tag-consistency/preview/status', (req, res) => {
+    proxyTagConsistencyRequest(
+        req,
+        res,
+        'rag-tag-consistency/preview/status',
+        60 * 1000
     );
 });
 

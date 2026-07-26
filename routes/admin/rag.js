@@ -254,22 +254,47 @@ module.exports = function(options) {
         } else res.status(503).json({ error: 'Unavailable' });
     });
 
-    router.post('/rag-tag-consistency/preview', async (req, res) => {
+    router.post('/rag-tag-consistency/preview', (req, res) => {
         try {
-            if (!vectorDBManager || typeof vectorDBManager.previewTagConsistency !== 'function') {
+            if (!vectorDBManager || typeof vectorDBManager.startTagConsistencyPreview !== 'function') {
                 return res.status(503).json({
                     success: false,
                     error: 'Tag consistency preview is unavailable'
                 });
             }
 
-            const preview = await vectorDBManager.previewTagConsistency();
-            res.json({ success: true, preview });
+            const task = vectorDBManager.startTagConsistencyPreview();
+            res.status(task.status === 'running' ? 202 : 200).json({
+                success: true,
+                task
+            });
         } catch (error) {
             res.status(error.statusCode || 500).json({
                 success: false,
                 code: error.code,
-                error: error.message || 'Failed to preview Tag consistency'
+                error: error.message || 'Failed to start Tag consistency preview'
+            });
+        }
+    });
+
+    router.get('/rag-tag-consistency/preview/status', (req, res) => {
+        try {
+            if (!vectorDBManager || typeof vectorDBManager.getTagConsistencyPreviewStatus !== 'function') {
+                return res.status(503).json({
+                    success: false,
+                    error: 'Tag consistency preview status is unavailable'
+                });
+            }
+
+            res.json({
+                success: true,
+                task: vectorDBManager.getTagConsistencyPreviewStatus()
+            });
+        } catch (error) {
+            res.status(error.statusCode || 500).json({
+                success: false,
+                code: error.code,
+                error: error.message || 'Failed to query Tag consistency preview status'
             });
         }
     });
