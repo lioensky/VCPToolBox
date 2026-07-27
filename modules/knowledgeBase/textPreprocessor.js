@@ -69,8 +69,8 @@ function extractTags(content, config = {}, options = {}) {
     const dateRegex = /(\d{4}年\d{1,2}月\d{1,2}日|\d{4}年\d{1,2}月|\d{1,2}月\d{1,2}日|\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{2}[-./]\d{1,2}[-./]\d{1,2}|\d{4}[-./]\d{1,2})/;
     tags = tags.filter(tag => {
         const isChinese = /[\u4e00-\u9fa5]/.test(tag);
-        if (isChinese && tag.length > 15) return false;
-        if (!isChinese && tag.length > 30) return false;
+        if (isChinese && tag.length > 20) return false;
+        if (!isChinese && tag.length > 40) return false;
         return !dateRegex.test(tag);
     });
 
