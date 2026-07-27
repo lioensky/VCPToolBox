@@ -20,12 +20,25 @@ function prepareTextForEmbedding(text) {
 function extractTags(content, config = {}, options = {}) {
     if (typeof content !== 'string') return [];
 
-    const tagLines = content.match(/Tag:\s*(.+)$/gim);
-    if (!tagLines) return [];
+    // Tag 只允许出现在文档末尾的连续元数据行中。
+    // 从最后一个非空行反向收集，遇到第一行非 Tag 内容立即停止，
+    // 防止正文、引用或示例中的行内/中间 Tag: 被误解析。
+    const lines = content.split(/\r?\n/);
+    let lastContentLine = lines.length - 1;
+    while (lastContentLine >= 0 && lines[lastContentLine].trim() === '') {
+        lastContentLine--;
+    }
+
+    const tagContents = [];
+    for (let i = lastContentLine; i >= 0; i--) {
+        const match = lines[i].match(/^\s*Tag:\s*(.+?)\s*$/i);
+        if (!match) break;
+        tagContents.unshift(match[1]);
+    }
+    if (tagContents.length === 0) return [];
 
     const allTags = [];
-    for (const line of tagLines) {
-        const tagContent = line.replace(/Tag:\s*/i, '');
+    for (const tagContent of tagContents) {
         allTags.push(
             ...tagContent
                 .split(/[,，、;|｜]/)
