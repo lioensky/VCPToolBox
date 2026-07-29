@@ -217,6 +217,16 @@ export const FULL_PRESET_THEMES: FullPresetTheme[] = [
     defaultRadius: 'xl',
   },
   {
+    id: 'editorial-graphite',
+    label: '编辑墨色',
+    description: '暖纸朱砂与工业石墨的明暗双色主题',
+    icon: 'ink_pen',
+    colors: {},
+    swatches: ['#b94832', '#21675c', '#f2a900', '#76bfae'],
+    defaultRadius: 'md',
+    defaultFont: 'serif',
+  },
+  {
     id: 'anthropic',
     label: 'Anthropic',
     description: '暖米色画布与陶土强调色',
@@ -908,6 +918,25 @@ export function clearThemePreferences(): void {
 }
 
 /**
+ * 将浏览器 UI（移动端地址栏/PWA 外壳）同步为当前主题的实际背景色。
+ * 颜色来自最终计算值，因此可自动兼容预设和用户自定义变量。
+ */
+export function syncBrowserThemeColor(): void {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+  if (!meta) return
+
+  const primaryBg = window
+    .getComputedStyle(document.documentElement)
+    .getPropertyValue('--primary-bg')
+    .trim()
+
+  if (primaryBg) {
+    meta.content = primaryBg
+  }
+}
+
+/**
  * 应用完整的主题快照到 DOM
  */
 export function applyFullTheme(snapshot: ThemeSnapshot): void {
@@ -918,6 +947,7 @@ export function applyFullTheme(snapshot: ThemeSnapshot): void {
   applyThemePreferences(snapshot)
   applyCustomCss(snapshot.customCss)
   applyBackgroundImage(snapshot.backgroundImage)
+  syncBrowserThemeColor()
 }
 
 /**

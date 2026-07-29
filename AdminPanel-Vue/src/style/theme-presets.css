@@ -101,6 +101,73 @@ html[data-theme-preset="anthropic"] {
   --accent-bg-light: oklch(0.685 0.142 38 / 0.12);
 }
 
+/*
+ * Editorial Ink / Industrial Graphite
+ *
+ * 一套预设同时承载两种外观：
+ * - light: 暖白纸张、炭墨、朱砂、松石
+ * - dark:  工业石墨、骨白、警示黄、铜绿
+ *
+ * 保留项目原有 token 命名，使现有组件无需感知外部配色词汇。
+ */
+html[data-theme-preset="editorial-graphite"] {
+  --primary-bg-light: #f2efe7;
+  --secondary-bg-light: #fcfaf4;
+  --tertiary-bg-light: #e7e1d5;
+  --input-bg-light: #e7e1d5;
+  --primary-text-light: #1b211f;
+  --secondary-text-light: #626a66;
+  --border-color-light: #d2cbc0;
+  --highlight-text-light: #b94832;
+  --accent-bg-light: color-mix(in srgb, #b94832 12%, transparent);
+  --button-bg-light: #b94832;
+  --button-hover-bg-light: #963925;
+  --success-color-light: #21675c;
+  --cpu-color-light: #b94832;
+  --memory-color-light: #21675c;
+  --scrollbar-track-light: #f2efe7;
+  --scrollbar-thumb-light: #d2cbc0;
+  --scrollbar-thumb-hover-light: #a69f94;
+
+  --primary-bg-dark: #171a1d;
+  --secondary-bg-dark: #20252a;
+  --tertiary-bg-dark: #2a3035;
+  --input-bg-dark: #2a3035;
+  --primary-text-dark: #f2f0e9;
+  --secondary-text-dark: #a7afb1;
+  --border-color-dark: #3b4449;
+  --highlight-text-dark: #f2a900;
+  --accent-bg-dark: color-mix(in srgb, #f2a900 14%, transparent);
+  --button-bg-dark: #f2a900;
+  --button-hover-bg-dark: #ffc238;
+  --success-color-dark: #76bfae;
+  --cpu-color-dark: #f2a900;
+  --memory-color-dark: #76bfae;
+  --scrollbar-track-dark: #171a1d;
+  --scrollbar-thumb-dark: #3b4449;
+  --scrollbar-thumb-hover-dark: #566168;
+}
+
+html[data-theme-preset="editorial-graphite"][data-theme="light"] {
+  --on-accent-text: #fffaf3;
+  --success-text: #21675c;
+  --success-bg: #d9e7e1;
+  --success-border: color-mix(in srgb, #21675c 34%, #d9e7e1);
+  --app-shell-bg: color-mix(in srgb, #e7e1d5 72%, transparent);
+  --app-content-bg: color-mix(in srgb, #fcfaf4 96%, transparent);
+  --overlay-frost-bg: color-mix(in srgb, #fcfaf4 88%, transparent);
+}
+
+html[data-theme-preset="editorial-graphite"][data-theme="dark"] {
+  --on-accent-text: #171a1d;
+  --success-text: #76bfae;
+  --success-bg: #243d39;
+  --success-border: color-mix(in srgb, #76bfae 34%, #243d39);
+  --app-shell-bg: color-mix(in srgb, #20252a 72%, transparent);
+  --app-content-bg: color-mix(in srgb, #20252a 94%, transparent);
+  --overlay-frost-bg: color-mix(in srgb, #20252a 88%, transparent);
+}
+
 html[data-theme-preset="ocean-breeze"] {
   --highlight-text-dark: oklch(0.70 0.16 265);
   --highlight-text-light: oklch(0.48 0.16 265);

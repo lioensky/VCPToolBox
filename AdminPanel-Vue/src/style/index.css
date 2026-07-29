@@ -257,7 +257,11 @@ html[data-theme="dark"] {
   --memory-color: var(--memory-color-dark);
   color-scheme: dark;
 
-  --primary-color-translucent: oklch(0.70 0.12 240 / 0.3);
+  --primary-color-translucent: color-mix(
+    in srgb,
+    var(--highlight-text) 30%,
+    transparent
+  );
   --app-shell-bg: color-mix(in srgb, var(--secondary-bg) 18%, transparent);
   --app-shell-border: transparent;
   --app-content-bg: color-mix(in srgb, var(--primary-bg) 8%, transparent);
@@ -308,7 +312,11 @@ html[data-theme="light"] {
   --shadow-overlay-soft: 0 2px 10px oklch(0.12 0.01 230 / 0.12);
   color-scheme: light;
 
-  --primary-color-translucent: oklch(0.68 0.16 230 / 0.3);
+  --primary-color-translucent: color-mix(
+    in srgb,
+    var(--highlight-text) 30%,
+    transparent
+  );
   --app-shell-bg: oklch(0.975 0 0 / 0.16);
   --app-shell-border: transparent;
   --app-content-bg: oklch(1 0 0 / 0.50);
@@ -346,10 +354,14 @@ body {
   background-color: var(--primary-bg);
   background-image: radial-gradient(
       at 0% 0%,
-      oklch(0.75 0.14 230 / 0.05) 0px,
+      color-mix(in srgb, var(--highlight-text) 5%, transparent) 0,
       transparent 50%
     ),
-    radial-gradient(at 100% 100%, oklch(0.68 0.16 230 / 0.05) 0px, transparent 50%);
+    radial-gradient(
+      at 100% 100%,
+      color-mix(in srgb, var(--button-bg) 5%, transparent) 0,
+      transparent 50%
+    );
   color: var(--primary-text);
   font-size: var(--font-size-body);
   line-height: 1.6;

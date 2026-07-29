@@ -11,7 +11,10 @@ import {
 } from "@/app/routes/manifest";
 import { pluginApi } from "@/api";
 import { useLocalStorage } from "@/composables/useLocalStorage";
-import { applyActiveTheme } from "@/features/theme-editor/themeEngine";
+import {
+  applyActiveTheme,
+  syncBrowserThemeColor,
+} from "@/features/theme-editor/themeEngine";
 import type { ThemeMode } from "@/features/theme-editor/themeEngine";
 import type { PluginInfo } from "@/types/api.plugin";
 
@@ -82,10 +85,7 @@ export const useAppStore = defineStore("app", () => {
 
     resolvedTheme.value = newTheme;
     document.documentElement.setAttribute("data-theme", newTheme);
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) {
-      meta.setAttribute("content", newTheme === "light" ? "#f2f4f8" : "#08090d");
-    }
+    syncBrowserThemeColor();
   }
 
   // 自动同步主题状态到 DOM，确保 CSS 变量正确应用
