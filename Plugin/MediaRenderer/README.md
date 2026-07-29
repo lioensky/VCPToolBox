@@ -15,9 +15,11 @@ MediaRenderer 使用 VCP 已有的托管 Chrome 运行时，通过 Puppeteer/CDP
 - PNG/WebP 透明背景
 - JPG 自定义底色
 - 最多 16 步串行批量渲染
+- 使用现有图片作为底图添加 CSS/SVG/Canvas 特效
+- 支持 Data URI、HTTP/HTTPS 和 `file://` 底图
 - ImageFileServer 图床 URL
 - 可选 Base64 多模态返回
-- 外部资源请求阻断
+- 除显式底图外的外部资源请求阻断
 - HTML JavaScript 默认关闭
 
 当前版本暂不包含 GIF 和 MP4，但渲染器的输出目录及部署环境可在后续接入全局 FFmpeg 编码器。
@@ -104,6 +106,48 @@ fileName:「始」gradient-icon「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
 
+## 基于已有图片添加代码特效
+
+通过 `sourceImage` 传入底图，并在 HTML 或 SVG 源码中使用 `{{SOURCE_IMAGE}}` 占位符。插件会在渲染前把占位符替换为经过验证的素材地址。
+
+`sourceImage` 支持：
+
+- `data:image/...;base64,...`
+- HTTP/HTTPS 图片 URL
+- `file://` 本地图片
+- VCP ImageFileServer 图片 URL
+
+对于 `file://`，插件会在 Node.js 侧读取并验证图片，然后转成 Data URI；Chromium 不会直接获得本地文件访问权限。
+
+下面使用 CSS 给已有图片增加饱和度、霓虹投影、圆角和边框光效：
+
+```text
+<<<[TOOL_REQUEST]>>>
+maid:「始」Nova「末」,
+tool_name:「始」MediaRenderer「末」,
+command:「始」RenderImage「末」,
+sourceImage:「始」file:///path/to/source.png「末」,
+html:「始」<!doctype html><style>html,body{margin:0;width:100%;height:100%;background:#080b16}.stage{position:relative;width:100%;height:100%;display:grid;place-items:center;overflow:hidden}.source{width:78%;height:78%;object-fit:cover;border-radius:12%;filter:saturate(1.35) contrast(1.1) drop-shadow(0 0 28px #22d3eeaa)}.glow{position:absolute;inset:8%;border:4px solid #67e8f9;border-radius:15%;mix-blend-mode:screen;box-shadow:0 0 50px #06b6d4}</style><div class="stage"><img class="source" src="{{SOURCE_IMAGE}}"><div class="glow"></div></div>「末」,
+width:「始」1024「末」,
+height:「始」1024「末」,
+format:「始」png「末」,
+fileName:「始」neon-effect「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+可使用的浏览器图像能力包括：
+
+- CSS `filter`
+- `mix-blend-mode`
+- `mask-image`
+- `clip-path`
+- 渐变、阴影、边框和文字覆盖层
+- SVG filter
+- CSS 变换和透视
+- Canvas；使用 Canvas 时需显式设置 `allowJavaScript=true`
+
+如果提供了 `sourceImage`，但源码中没有 `{{SOURCE_IMAGE}}`，插件会拒绝请求，避免素材参数被静默忽略。
+
 ## 壁纸调用
 
 壁纸通常不需要透明通道，推荐使用 JPG：
@@ -126,11 +170,11 @@ fileName:「始」night-wallpaper「末」
 
 数字后缀从 1 开始连续编号：
 
-- command1、html1、width1、height1
-- command2、svg2、width2、height2
+- command1、html1、sourceImage1、width1、height1
+- command2、svg2、sourceImage2、width2、height2
 - 依次类推
 
-没有数字后缀的参数是公共默认值。每一步的后缀参数会覆盖公共默认值。
+没有数字后缀的参数是公共默认值。每一步的后缀参数会覆盖公共默认值。公共 `sourceImage` 也可以被所有步骤继承，以便对同一底图连续生成多套不同特效。
 
 下面的 format、transparent、width、height 对所有步骤生效：
 
@@ -159,6 +203,7 @@ fileName2:「始」cyan-triangle「末」
 |---|---|---|---|
 | html | 二选一 | - | HTML 源码 |
 | svg | 二选一 | - | SVG 源码 |
+| sourceImage | 否 | - | 底图；支持 Data URI、HTTP/HTTPS、`file://` |
 | width | 是 | - | 64-4096 |
 | height | 是 | - | 64-4096 |
 | format | 否 | 透明时 PNG，否则 JPG | png、jpg、webp |
@@ -176,16 +221,18 @@ fileName2:「始」cyan-triangle「末」
 AI 提供的 HTML/SVG 按不可信输入处理：
 
 1. 默认禁用 HTML JavaScript。
-2. 阻断 HTTP、HTTPS、file 等外部资源请求。
-3. 仅允许 about:blank、Data URI 和 Blob URL。
-4. 每份源码最多 2MB。
-5. 宽高和总像素数受限。
-6. 每一步使用独立浏览器上下文和页面。
-7. 页面完成后立即关闭。
-8. 文件名会移除路径分隔符及危险字符。
-9. 输出只能写入 image/media-renderer。
+2. 只有显式声明的 `sourceImage` 可以作为外部图片素材。
+3. HTTP/HTTPS 模式只放行与 `sourceImage` 完全相同的 URL；页面中的其他网络请求继续被阻断。
+4. `file://` 底图由 Node.js 读取并转换为 Data URI，Chromium 不直接访问本地文件系统。
+5. 未声明底图时，仅允许 about:blank、Data URI 和 Blob URL。
+6. 本地或内联底图最大 25MB，每份 HTML/SVG 源码最多 2MB。
+7. 宽高和总像素数受限。
+8. 每一步使用独立浏览器上下文和页面。
+9. 页面完成后立即关闭。
+10. 文件名会移除路径分隔符及危险字符。
+11. 输出只能写入 image/media-renderer。
 
-由于网络请求被阻断，字体、图片等资源必须使用系统字体、内联 SVG、Data URI 或 CSS 绘制。对 AI 绘制图标和壁纸而言，这也是结果最稳定、最容易复现的方式。
+普通字体和附加图片仍应使用系统字体、内联 SVG、Data URI 或 CSS 绘制。需要编辑的主图片应通过 `sourceImage` 显式声明，而不是在 HTML 中任意引用网络或本地地址。
 
 ## 输出
 

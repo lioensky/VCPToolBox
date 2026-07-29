@@ -11,6 +11,7 @@ const MIN_DIMENSION = 64;
 const MAX_DIMENSION = 4096;
 const MAX_PIXELS = MAX_DIMENSION * MAX_DIMENSION;
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
+const MAX_SOURCE_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_BATCH_SIZE = 16;
 const DEFAULT_TIMEOUT_MS = 45000;
 const MAX_TIMEOUT_MS = 120000;
@@ -76,6 +77,20 @@ function sanitizeFileStem(value) {
     return stem || crypto.randomUUID();
 }
 
+function normalizeSourceImage(value) {
+    const sourceImage = String(value || '').trim();
+    if (!sourceImage) return null;
+    if (
+        sourceImage.startsWith('data:image/') ||
+        sourceImage.startsWith('http://') ||
+        sourceImage.startsWith('https://') ||
+        sourceImage.startsWith('file://')
+    ) {
+        return sourceImage;
+    }
+    throw new Error('sourceImage 仅支持 data:image、http://、https:// 或 file://。');
+}
+
 function normalizeRequest(raw = {}) {
     const html = typeof raw.html === 'string' ? raw.html : '';
     const svg = typeof raw.svg === 'string' ? raw.svg : '';
@@ -117,11 +132,89 @@ function normalizeRequest(raw = {}) {
         showBase64,
         allowJavaScript,
         waitMs,
+        sourceImage: normalizeSourceImage(
+            raw.sourceImage || raw.source_image || raw.image || raw.image_url
+        ),
         fileStem: sanitizeFileStem(raw.fileName || raw.filename || raw.name)
     };
 }
 
-function buildHtmlDocument(request) {
+function escapeHtmlAttribute(value) {
+    return String(value)
+        .replace(/&/g, '&')
+        .replace(/"/g, '"')
+        .replace(/</g, '<')
+        .replace(/>/g, '>');
+}
+
+async function resolveSourceImage(request) {
+    if (!request.sourceImage) {
+        return { resolvedSourceImage: null, allowedRemoteUrl: null };
+    }
+
+    if (request.sourceImage.startsWith('data:image/')) {
+        if (Buffer.byteLength(request.sourceImage, 'utf8') > MAX_SOURCE_IMAGE_BYTES * 1.5) {
+            throw new Error(`sourceImage Data URI 超过约 ${MAX_SOURCE_IMAGE_BYTES / 1024 / 1024}MB 限制。`);
+        }
+        return {
+            resolvedSourceImage: request.sourceImage,
+            allowedRemoteUrl: null
+        };
+    }
+
+    if (request.sourceImage.startsWith('http://') || request.sourceImage.startsWith('https://')) {
+        return {
+            resolvedSourceImage: request.sourceImage,
+            allowedRemoteUrl: request.sourceImage
+        };
+    }
+
+    const fileUrl = new URL(request.sourceImage);
+    let localPath = decodeURIComponent(fileUrl.pathname);
+    if (process.platform === 'win32' && /^\/[A-Za-z]:/.test(localPath)) {
+        localPath = localPath.slice(1);
+    }
+
+    const stat = await fs.stat(localPath);
+    if (!stat.isFile()) {
+        throw new Error('sourceImage 的 file:// 地址不是普通文件。');
+    }
+    if (stat.size > MAX_SOURCE_IMAGE_BYTES) {
+        throw new Error(`sourceImage 文件超过 ${MAX_SOURCE_IMAGE_BYTES / 1024 / 1024}MB 限制。`);
+    }
+
+    const imageBuffer = await fs.readFile(localPath);
+    const metadata = await sharp(imageBuffer, { limitInputPixels: MAX_PIXELS }).metadata();
+    const mimeMap = {
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        webp: 'image/webp',
+        gif: 'image/gif',
+        svg: 'image/svg+xml',
+        tiff: 'image/tiff',
+        avif: 'image/avif'
+    };
+    const mimeType = mimeMap[metadata.format];
+    if (!mimeType) {
+        throw new Error(`sourceImage 文件不是受支持的图片格式: ${metadata.format || 'unknown'}`);
+    }
+
+    return {
+        resolvedSourceImage: `data:${mimeType};base64,${imageBuffer.toString('base64')}`,
+        allowedRemoteUrl: null
+    };
+}
+
+function applySourceImagePlaceholder(source, resolvedSourceImage) {
+    if (!resolvedSourceImage) return source;
+    if (!source.includes('{{SOURCE_IMAGE}}')) {
+        throw new Error('提供 sourceImage 时，html/svg 源码中必须包含 {{SOURCE_IMAGE}} 占位符。');
+    }
+    return source.replaceAll('{{SOURCE_IMAGE}}', escapeHtmlAttribute(resolvedSourceImage));
+}
+
+function buildHtmlDocument(request, resolvedSourceImage) {
+    const source = applySourceImagePlaceholder(request.source, resolvedSourceImage);
     if (request.sourceType === 'svg') {
         return `<!doctype html>
 <html>
@@ -148,11 +241,11 @@ body > svg {
 }
 </style>
 </head>
-<body>${request.source}</body>
+<body>${source}</body>
 </html>`;
     }
 
-    return request.source;
+    return source;
 }
 
 async function applyCanvasPolicy(page, request) {
@@ -170,16 +263,50 @@ html, body {
     });
 }
 
-async function installNetworkPolicy(page) {
+async function installNetworkPolicy(page, allowedRemoteUrl = null) {
     await page.setRequestInterception(true);
     page.on('request', request => {
         const url = request.url();
-        if (url === 'about:blank' || url.startsWith('data:') || url.startsWith('blob:')) {
+        if (
+            url === 'about:blank' ||
+            url.startsWith('data:') ||
+            url.startsWith('blob:') ||
+            (allowedRemoteUrl && url === allowedRemoteUrl)
+        ) {
             request.continue().catch(() => {});
             return;
         }
         request.abort('blockedbyclient').catch(() => {});
     });
+}
+
+async function waitForImages(page, timeoutMs) {
+    await page.evaluate(async (imageTimeoutMs) => {
+        const images = Array.from(document.images);
+        await Promise.all(images.map(image => new Promise((resolve, reject) => {
+            if (image.complete) {
+                if (image.naturalWidth > 0) {
+                    image.decode?.().then(resolve, resolve);
+                } else {
+                    reject(new Error(`图片加载失败: ${image.currentSrc || image.src || 'unknown'}`));
+                }
+                return;
+            }
+
+            const timer = setTimeout(() => {
+                reject(new Error(`等待图片超时: ${image.currentSrc || image.src || 'unknown'}`));
+            }, imageTimeoutMs);
+
+            image.addEventListener('load', () => {
+                clearTimeout(timer);
+                image.decode?.().then(resolve, resolve);
+            }, { once: true });
+            image.addEventListener('error', () => {
+                clearTimeout(timer);
+                reject(new Error(`图片加载失败: ${image.currentSrc || image.src || 'unknown'}`));
+            }, { once: true });
+        })));
+    }, timeoutMs);
 }
 
 async function encodeImage(pngBuffer, request) {
@@ -246,6 +373,7 @@ async function saveArtifact(buffer, request) {
 
 async function renderOne(browser, rawRequest, stepIndex) {
     const request = normalizeRequest(rawRequest);
+    const sourceImageAsset = await resolveSourceImage(request);
     const context = await browser.createBrowserContext();
     let page;
 
@@ -258,9 +386,9 @@ async function renderOne(browser, rawRequest, stepIndex) {
             deviceScaleFactor: 1
         });
         await page.setJavaScriptEnabled(request.allowJavaScript);
-        await installNetworkPolicy(page);
+        await installNetworkPolicy(page, sourceImageAsset.allowedRemoteUrl);
 
-        const documentHtml = buildHtmlDocument(request);
+        const documentHtml = buildHtmlDocument(request, sourceImageAsset.resolvedSourceImage);
         await page.setContent(documentHtml, {
             waitUntil: 'domcontentloaded',
             timeout: request.timeoutMs
@@ -270,6 +398,7 @@ async function renderOne(browser, rawRequest, stepIndex) {
         await page.evaluate(async () => {
             if (document.fonts?.ready) await document.fonts.ready;
         });
+        await waitForImages(page, request.timeoutMs);
 
         if (request.waitMs > 0) {
             await new Promise(resolve => setTimeout(resolve, request.waitMs));
@@ -328,6 +457,7 @@ async function renderOne(browser, rawRequest, stepIndex) {
                 mimeType,
                 transparent: request.transparent,
                 quality: request.quality,
+                sourceImageUsed: Boolean(request.sourceImage),
                 byteLength: imageBuffer.length,
                 showBase64: request.showBase64,
                 ...artifact
@@ -345,7 +475,8 @@ const STEP_FIELDS = [
     'command', 'html', 'svg', 'width', 'height', 'format', 'imageFormat',
     'transparent', 'transparentBackground', 'background', 'backgroundColor',
     'quality', 'showBase64', 'showbase64', 'allowJavaScript', 'waitMs',
-    'timeoutMs', 'fileName', 'filename', 'name'
+    'timeoutMs', 'fileName', 'filename', 'name', 'sourceImage',
+    'source_image', 'image', 'image_url'
 ];
 
 function buildStep(params, suffix = '') {
@@ -486,5 +617,7 @@ module.exports = {
     shutdown,
     normalizeRequest,
     collectSteps,
-    connectToManagedBrowser
+    connectToManagedBrowser,
+    resolveSourceImage,
+    applySourceImagePlaceholder
 };
