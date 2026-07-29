@@ -1,6 +1,6 @@
 # MediaRenderer
 
-MediaRenderer 使用 VCP 已有的托管 Chrome 运行时，通过 Puppeteer/CDP 将 AI 编写的 HTML 或 SVG 渲染为静态图片。
+MediaRenderer 使用 VCP 已有的托管 Chrome 运行时和服务器全局 FFmpeg，通过 Puppeteer/CDP 将 AI 编写的 HTML 或 SVG 渲染为静态图片、GIF 或视频。
 
 插件不通过 ChromeBridge 传输源码或截图，而是直接调用根层浏览器运行时，取得 DevTools WebSocket Endpoint 后创建独立浏览器上下文。
 
@@ -19,10 +19,13 @@ MediaRenderer 使用 VCP 已有的托管 Chrome 运行时，通过 Puppeteer/CDP
 - 支持 Data URI、HTTP/HTTPS 和 `file://` 底图
 - ImageFileServer 图床 URL
 - 可选 Base64 多模态返回
-- 除显式底图外的外部资源请求阻断
-- HTML JavaScript 默认关闭
-
-当前版本暂不包含 GIF 和 MP4，但渲染器的输出目录及部署环境可在后续接入全局 FFmpeg 编码器。
+- 除显式底图/素材外的页面外部资源请求阻断
+- HTML JavaScript 默认关闭，动画或内置库模式自动开启
+- GIF、MP4、WebM 确定性逐帧渲染
+- 透明 GIF 与透明 WebM
+- 内置 Anime.js 3.2.2、Three.js r160
+- 本地、内网和公网图片/音频/字体/模型素材
+- MP4/WebM 音频混流
 
 ## 运行前提
 
@@ -38,7 +41,7 @@ VCP_BROWSER_RUNTIME_ENABLED=true
 VCP_BROWSER_EXECUTABLE_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe
 ```
 
-插件复用根项目已经安装的 Puppeteer 和 Sharp，不需要在插件目录单独安装依赖。
+插件复用根项目已经安装的 Puppeteer、Sharp 和 mime-types，不需要在插件目录单独安装依赖。GIF/视频还要求系统 PATH 中存在 FFmpeg；也可以通过 `FfmpegPath` 配置绝对路径。
 
 ## 透明图标怎么实现
 
@@ -206,7 +209,7 @@ fileName2:「始」cyan-triangle「末」
 | sourceImage | 否 | - | 底图；支持 Data URI、HTTP/HTTPS、`file://` |
 | width | 是 | - | 64-4096 |
 | height | 是 | - | 64-4096 |
-| format | 否 | 透明时 PNG，否则 JPG | png、jpg、webp |
+| format | 否 | 透明时 PNG，否则 JPG | png、jpg、webp、gif、mp4、webm |
 | transparent | 否 | false | 保留 Alpha 通道 |
 | background | 否 | #ffffff | 非透明输出的 Alpha 合成底色 |
 | quality | 否 | 90 | JPG/WebP 质量，1-100 |
@@ -215,31 +218,40 @@ fileName2:「始」cyan-triangle「末」
 | waitMs | 否 | 0 | 截图前额外等待，最大 10000ms |
 | timeoutMs | 否 | 45000 | 单步超时，最大 120000ms |
 | fileName | 否 | UUID | 文件名主体 |
+| libraries | 否 | - | `anime`、`three` 或逗号分隔组合 |
+| assets | 否 | [] | JSON 素材数组，每项包含 id、type、source |
+| durationMs | 动画 | 5000 | 动画时长，100-60000ms |
+| fps | 动画 | 30 | 每秒帧数，1-60 |
+| readyMode | 否 | 动画为 auto | load、auto、signal |
+| audioAssetId | 否 | - | 混入 MP4/WebM 的音频素材 id |
 
 ## 安全策略
 
 AI 提供的 HTML/SVG 按不可信输入处理：
 
-1. 默认禁用 HTML JavaScript。
-2. 只有显式声明的 `sourceImage` 可以作为外部图片素材。
-3. HTTP/HTTPS 模式只放行与 `sourceImage` 完全相同的 URL；页面中的其他网络请求继续被阻断。
-4. `file://` 底图由 Node.js 读取并转换为 Data URI，Chromium 不直接访问本地文件系统。
-5. 未声明底图时，仅允许 about:blank、Data URI 和 Blob URL。
-6. 本地或内联底图最大 25MB，每份 HTML/SVG 源码最多 2MB。
-7. 宽高和总像素数受限。
-8. 每一步使用独立浏览器上下文和页面。
-9. 页面完成后立即关闭。
-10. 文件名会移除路径分隔符及危险字符。
-11. 输出只能写入 image/media-renderer。
+1. 默认禁用 HTML JavaScript；动画或显式内置库模式自动开启。
+2. `sourceImage` 和 `assets` 是外部素材的显式入口。
+3. 页面自身的任意 HTTP/HTTPS/file 请求仍被阻断；assets 由 Node.js 获取后转为 Data URI。
+4. `file://` 素材由 Node.js 读取，Chromium 不直接访问本地文件系统。
+5. 默认允许显式内网素材；可通过 `AllowPrivateNetworkAssets=false` 禁止。
+6. 云元数据地址始终禁止，重定向后的每个 URL 都重新校验。
+7. 单素材最大 50MB、总素材最大 100MB，每份 HTML/SVG 源码最多 2MB。
+8. 宽高、总像素数、时长、FPS 和总帧数受限。
+9. 每一步使用独立浏览器上下文和页面。
+10. 页面完成后立即关闭，逐帧临时目录无论成功失败都会清理。
+11. FFmpeg 使用参数数组启动，不通过 shell 拼接用户输入。
+12. 文件名会移除路径分隔符及危险字符。
+13. 图片/GIF 仅写入 image/media-renderer；MP4/WebM 仅写入 file/media-renderer。
 
-普通字体和附加图片仍应使用系统字体、内联 SVG、Data URI 或 CSS 绘制。需要编辑的主图片应通过 `sourceImage` 显式声明，而不是在 HTML 中任意引用网络或本地地址。
+普通字体和附加图片可以使用系统字体、内联 SVG、Data URI，或通过 `assets` 显式声明。需要编辑的主图片可继续使用便捷的 `sourceImage` 参数。
 
 ## 输出
 
 生成物保存到：
 
 ```text
-image/media-renderer/
+image/media-renderer/   # PNG/JPG/WebP/GIF
+file/media-renderer/    # MP4/WebM
 ```
 
 返回结果包括：
@@ -254,4 +266,100 @@ image/media-renderer/
 - 文件大小
 - 批量任务的每步结果
 
-默认只返回 URL。只有 showBase64=true 时才额外返回图片 Data URI。
+默认只返回 URL。只有静态图片设置 showBase64=true 时才额外返回图片 Data URI；GIF/视频不内联 Base64。
+
+## GIF 与视频调用
+
+动画使用逻辑时间逐帧渲染，不是让浏览器实时录屏。对于 `durationMs=5000`、`fps=30`，插件生成 150 帧；每一帧都以绝对时间调用页面帧函数，所以机器负载不会改变动画进度。
+
+页面使用以下协议：
+
+```html
+<script>
+window.__MEDIA_RENDERER__.setFrameRenderer(async (timeMs, frameIndex, fps) => {
+    const seconds = timeMs / 1000;
+    // 根据绝对时间更新 DOM、Canvas、Anime.js 或 Three.js 场景。
+});
+
+window.__MEDIA_RENDERER__.setReady();
+</script>
+```
+
+异步加载字体、模型或纹理时，应在全部初始化完成后调用 `setReady()`，并传入：
+
+```text
+readyMode: signal
+```
+
+如果没有注册帧函数，插件会暂停 Web Animations API/CSS 动画并设置其 `currentTime`。复杂 Anime.js、Canvas 和 Three.js 动画应显式注册帧函数，避免依赖真实时钟或 `requestAnimationFrame` 的累计增量。
+
+### 透明 GIF 示例
+
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MediaRenderer「末」,
+command:「始」RenderAnimation「末」,
+html:「始」<!doctype html><style>html,body{margin:0;width:100%;height:100%;background:transparent}.stage{width:100%;height:100%;display:grid;place-items:center}.dot{width:96px;height:96px;border-radius:50%;background:#22d3ee;box-shadow:0 0 30px #06b6d4}</style><div class="stage"><div class="dot"></div></div><script>const dot=document.querySelector('.dot');window.__MEDIA_RENDERER__.setFrameRenderer((timeMs)=>{const p=(timeMs%2000)/2000;dot.style.transform=`translateX(${Math.sin(p*Math.PI*2)*170}px)`;});window.__MEDIA_RENDERER__.setReady();</script>「末」,
+width:「始」640「末」,
+height:「始」360「末」,
+format:「始」gif「末」,
+transparent:「始」true「末」,
+durationMs:「始」2000「末」,
+fps:「始」24「末」,
+readyMode:「始」signal「末」,
+fileName:「始」moving-dot「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+GIF 只有索引透明色，不具备 PNG 那样的 8-bit 半透明通道。发光、阴影和抗锯齿边缘会被量化；复杂半透明动画优先使用透明 WebM。
+
+## 内置 Anime.js 与 Three.js
+
+通过 `libraries` 加载受信任的本地版本，不需要 CDN：
+
+```text
+libraries: anime,three
+```
+
+- `anime` 注入全局 `window.anime`，版本 3.2.2。
+- `three` 注入全局 `window.THREE`，版本 r160。
+
+依赖直接复用 `AdminPanel-Vue/vendor`，不复制到插件目录，也不会把第三方源码放进 AI 上下文。
+
+## 通用素材
+
+`assets` 可以传数组，也可以传 JSON 字符串：
+
+```json
+[
+  {
+    "id": "music",
+    "type": "audio",
+    "source": "file:///path/to/music.mp3"
+  },
+  {
+    "id": "titleFont",
+    "type": "font",
+    "source": "http://192.168.1.20/assets/title.woff2"
+  }
+]
+```
+
+源码中通过占位符使用素材：
+
+```css
+@font-face {
+    font-family: TitleFont;
+    src: url("{{ASSET:titleFont}}") format("woff2");
+}
+```
+
+MP4/WebM 音频混流通过素材 id 指定：
+
+```text
+audioAssetId: music
+```
+
+音频由 FFmpeg 直接读取插件临时文件并混流，不依赖浏览器自动播放。GIF 不包含音频。
+
+默认允许显式声明的 localhost、局域网和公网 HTTP/HTTPS 素材。页面未声明的网络访问仍会被阻断，云元数据地址始终禁止。

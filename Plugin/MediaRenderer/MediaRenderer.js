@@ -1,6 +1,12 @@
 const fs = require('fs/promises');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
+const dns = require('dns/promises');
+const net = require('net');
+const { spawn } = require('child_process');
+const { fileURLToPath } = require('url');
+const mime = require('mime-types');
 const puppeteer = require('puppeteer');
 const sharp = require('sharp');
 const browserRuntimeManager = require('../../modules/browserRuntimeManager.js');
@@ -15,15 +21,90 @@ const MAX_SOURCE_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_BATCH_SIZE = 16;
 const DEFAULT_TIMEOUT_MS = 45000;
 const MAX_TIMEOUT_MS = 120000;
-const SUPPORTED_FORMATS = new Set(['png', 'jpg', 'jpeg', 'webp']);
+const IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'webp']);
+const ANIMATION_FORMATS = new Set(['gif', 'mp4', 'webm']);
+const SUPPORTED_FORMATS = new Set([...IMAGE_FORMATS, ...ANIMATION_FORMATS]);
+const MAX_ASSET_BYTES = 50 * 1024 * 1024;
+const MAX_TOTAL_ASSET_BYTES = 100 * 1024 * 1024;
+const MAX_ASSET_COUNT = 24;
+const MAX_FFMPEG_ERROR_BYTES = 64 * 1024;
+const DEFAULT_DURATION_MS = 5000;
+const DEFAULT_FPS = 30;
+const DEFAULT_MAX_FRAMES = 600;
+const BUILTIN_LIBRARIES = Object.freeze({
+    anime: {
+        path: path.join(PROJECT_ROOT, 'AdminPanel-Vue', 'vendor', 'anime.min.js'),
+        global: 'anime'
+    },
+    animejs: {
+        path: path.join(PROJECT_ROOT, 'AdminPanel-Vue', 'vendor', 'anime.min.js'),
+        global: 'anime'
+    },
+    three: {
+        path: path.join(PROJECT_ROOT, 'AdminPanel-Vue', 'vendor', 'three.min.js'),
+        global: 'THREE'
+    },
+    threejs: {
+        path: path.join(PROJECT_ROOT, 'AdminPanel-Vue', 'vendor', 'three.min.js'),
+        global: 'THREE'
+    }
+});
+const ASSET_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const MEDIA_RENDERER_BOOTSTRAP = `
+<script>
+(() => {
+    const state = {
+        ready: false,
+        readyPromise: null,
+        readyResolve: null,
+        frameRenderer: null
+    };
+    state.readyPromise = new Promise(resolve => { state.readyResolve = resolve; });
+    window.__MEDIA_RENDERER__ = {
+        get ready() { return state.ready; },
+        setReady() {
+            if (!state.ready) {
+                state.ready = true;
+                state.readyResolve();
+            }
+        },
+        waitUntilReady() { return state.readyPromise; },
+        setFrameRenderer(renderer) {
+            if (typeof renderer !== 'function') throw new Error('frameRenderer 必须是函数。');
+            state.frameRenderer = renderer;
+        },
+        async renderFrame(timeMs, frameIndex, fps) {
+            if (state.frameRenderer) {
+                await state.frameRenderer(timeMs, frameIndex, fps);
+            } else if (typeof window.__MEDIA_RENDERER_RENDER_FRAME__ === 'function') {
+                await window.__MEDIA_RENDERER_RENDER_FRAME__(timeMs, frameIndex, fps);
+            } else {
+                for (const animation of document.getAnimations()) {
+                    animation.pause();
+                    animation.currentTime = timeMs;
+                }
+            }
+            await new Promise(resolve => requestAnimationFrame(() =>
+                requestAnimationFrame(resolve)
+            ));
+        }
+    };
+})();
+</script>`;
 
 let pluginConfig = {};
+let hostPluginManager = null;
 let debugMode = false;
 let renderQueue = Promise.resolve();
+let builtinLibrarySourceCache = new Map();
+let ffmpegAvailabilityPromise = null;
 
-function initialize(config = {}) {
+function initialize(config = {}, dependencies = {}) {
     pluginConfig = config;
+    hostPluginManager = dependencies.pluginManager || null;
     debugMode = parseBoolean(config.DebugMode ?? process.env.DebugMode, false);
+    builtinLibrarySourceCache = new Map();
+    ffmpegAvailabilityPromise = null;
 }
 
 function parseBoolean(value, defaultValue = false) {
@@ -51,12 +132,75 @@ function normalizeFormat(value, transparent) {
     let format = String(value || (transparent ? 'png' : 'jpg')).trim().toLowerCase();
     if (format === 'jpeg') format = 'jpg';
     if (!SUPPORTED_FORMATS.has(format)) {
-        throw new Error(`不支持输出格式 ${format}，可选 png、jpg、webp。`);
+        throw new Error(`不支持输出格式 ${format}，可选 png、jpg、webp、gif、mp4、webm。`);
     }
     if (transparent && format === 'jpg') {
         format = 'png';
     }
+    if (transparent && format === 'mp4') {
+        throw new Error('MP4/H.264 不支持透明通道；请使用 GIF、WebM，或设置 transparent=false。');
+    }
     return format;
+}
+
+function normalizeLibraries(value) {
+    const values = Array.isArray(value)
+        ? value
+        : String(value || '').split(/[\s,;]+/);
+    const normalized = [];
+    for (const item of values) {
+        const name = String(item || '').trim().toLowerCase();
+        if (!name) continue;
+        if (!BUILTIN_LIBRARIES[name]) {
+            throw new Error(`未知内置库 ${name}，当前支持 anime、three。`);
+        }
+        const canonicalName = name.startsWith('anime') ? 'anime' : 'three';
+        if (!normalized.includes(canonicalName)) normalized.push(canonicalName);
+    }
+    return normalized;
+}
+
+function normalizeAssets(value) {
+    if (value === undefined || value === null || value === '') return [];
+    let assets = value;
+    if (typeof assets === 'string') {
+        try {
+            assets = JSON.parse(assets);
+        } catch (error) {
+            throw new Error(`assets 必须是 JSON 数组: ${error.message}`);
+        }
+    }
+    if (!Array.isArray(assets)) throw new Error('assets 必须是数组。');
+    if (assets.length > MAX_ASSET_COUNT) {
+        throw new Error(`单步最多声明 ${MAX_ASSET_COUNT} 个素材。`);
+    }
+
+    const seenIds = new Set();
+    return assets.map((asset, index) => {
+        if (!asset || typeof asset !== 'object' || Array.isArray(asset)) {
+            throw new Error(`第 ${index + 1} 个素材必须是对象。`);
+        }
+        const id = String(asset.id || '').trim();
+        if (!ASSET_ID_PATTERN.test(id)) {
+            throw new Error(`第 ${index + 1} 个素材 id 无效；需以字母开头且只含字母、数字、_、-。`);
+        }
+        if (seenIds.has(id)) throw new Error(`素材 id 重复: ${id}`);
+        seenIds.add(id);
+
+        const source = String(asset.source || asset.url || '').trim();
+        if (!/^(?:data:|file:|https?:)/i.test(source)) {
+            throw new Error(`素材 ${id} 仅支持 data:、file://、http:// 或 https://。`);
+        }
+        const type = String(asset.type || 'auto').trim().toLowerCase();
+        if (!['auto', 'image', 'audio', 'video', 'font', 'json', 'binary'].includes(type)) {
+            throw new Error(`素材 ${id} 使用了未知 type: ${type}`);
+        }
+        return { id, type, source };
+    });
+}
+
+function isAnimationFormat(format) {
+    return ANIMATION_FORMATS.has(format);
 }
 
 function normalizeColor(value, fallback) {
@@ -111,12 +255,33 @@ function normalizeRequest(raw = {}) {
 
     const transparent = parseBoolean(raw.transparent ?? raw.transparentBackground, false);
     const format = normalizeFormat(raw.format || raw.imageFormat, transparent);
+    const animation = isAnimationFormat(format);
     const quality = parseInteger(raw.quality, 90, 1, 100, 'quality');
     const timeoutMs = parseInteger(raw.timeoutMs, DEFAULT_TIMEOUT_MS, 1000, MAX_TIMEOUT_MS, 'timeoutMs');
     const background = normalizeColor(raw.background || raw.backgroundColor, '#ffffff');
     const showBase64 = parseBoolean(raw.showBase64 ?? raw.showbase64, false);
-    const allowJavaScript = parseBoolean(raw.allowJavaScript, false);
+    const libraries = normalizeLibraries(raw.libraries || raw.library || raw.libs);
+    const assets = normalizeAssets(raw.assets);
+    const allowJavaScript = animation || libraries.length > 0 ||
+        parseBoolean(raw.allowJavaScript, false);
     const waitMs = parseInteger(raw.waitMs, 0, 0, 10000, 'waitMs');
+    const durationMs = parseInteger(raw.durationMs, DEFAULT_DURATION_MS, 100, 60000, 'durationMs');
+    const fps = parseInteger(raw.fps, DEFAULT_FPS, 1, 60, 'fps');
+    const maxFrames = parseInteger(
+        pluginConfig.MaxAnimationFrames ?? process.env.MediaRendererMaxAnimationFrames,
+        DEFAULT_MAX_FRAMES,
+        1,
+        3600,
+        'MaxAnimationFrames'
+    );
+    const frameCount = animation ? Math.ceil(durationMs * fps / 1000) : 1;
+    if (frameCount > maxFrames) {
+        throw new Error(`动画需要 ${frameCount} 帧，超过当前 ${maxFrames} 帧上限。`);
+    }
+    const readyMode = String(raw.readyMode || (animation ? 'auto' : 'load')).trim().toLowerCase();
+    if (!['load', 'auto', 'signal'].includes(readyMode)) {
+        throw new Error('readyMode 仅支持 load、auto、signal。');
+    }
 
     return {
         sourceType: html ? 'html' : 'svg',
@@ -132,6 +297,14 @@ function normalizeRequest(raw = {}) {
         showBase64,
         allowJavaScript,
         waitMs,
+        animation,
+        durationMs,
+        fps,
+        frameCount,
+        readyMode,
+        libraries,
+        assets,
+        audioAssetId: String(raw.audioAssetId || raw.audio || '').trim() || null,
         sourceImage: normalizeSourceImage(
             raw.sourceImage || raw.source_image || raw.image || raw.image_url
         ),
@@ -141,10 +314,223 @@ function normalizeRequest(raw = {}) {
 
 function escapeHtmlAttribute(value) {
     return String(value)
-        .replace(/&/g, '&')
-        .replace(/"/g, '"')
-        .replace(/</g, '<')
-        .replace(/>/g, '>');
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function escapeInlineScript(value) {
+    return String(value).replace(/<\/script/gi, '<\\/script');
+}
+
+function isPrivateAddress(address) {
+    const normalized = String(address || '').replace(/^\[|\]$/g, '').toLowerCase();
+    if (net.isIPv4(normalized)) {
+        const octets = normalized.split('.').map(Number);
+        return octets[0] === 10 ||
+            octets[0] === 127 ||
+            (octets[0] === 169 && octets[1] === 254) ||
+            (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+            (octets[0] === 192 && octets[1] === 168);
+    }
+    if (net.isIPv6(normalized)) {
+        return normalized === '::1' ||
+            normalized.startsWith('fc') ||
+            normalized.startsWith('fd') ||
+            normalized.startsWith('fe8') ||
+            normalized.startsWith('fe9') ||
+            normalized.startsWith('fea') ||
+            normalized.startsWith('feb');
+    }
+    return false;
+}
+
+function isForbiddenMetadataAddress(address) {
+    const normalized = String(address || '').replace(/^\[|\]$/g, '').toLowerCase();
+    return normalized === '169.254.169.254' ||
+        normalized === '100.100.100.200' ||
+        normalized === 'fd00:ec2::254';
+}
+
+async function assertRemoteAssetUrlAllowed(rawUrl) {
+    const url = new URL(rawUrl);
+    if (!['http:', 'https:'].includes(url.protocol)) {
+        throw new Error(`远程素材协议不受支持: ${url.protocol}`);
+    }
+    if (url.username || url.password) {
+        throw new Error('远程素材 URL 不允许包含用户名或密码。');
+    }
+
+    const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    const allowPrivate = parseBoolean(
+        pluginConfig.AllowPrivateNetworkAssets ?? process.env.MediaRendererAllowPrivateNetworkAssets,
+        true
+    );
+    const addresses = net.isIP(hostname)
+        ? [{ address: hostname }]
+        : await dns.lookup(hostname, { all: true, verbatim: true });
+
+    if (!addresses.length) throw new Error(`无法解析素材主机: ${hostname}`);
+    for (const entry of addresses) {
+        if (isForbiddenMetadataAddress(entry.address)) {
+            throw new Error(`禁止访问云元数据地址: ${entry.address}`);
+        }
+        if (isPrivateAddress(entry.address) && !allowPrivate) {
+            throw new Error(`当前配置禁止访问内网素材地址: ${entry.address}`);
+        }
+    }
+    return url;
+}
+
+function parseDataUri(source, assetId) {
+    const match = String(source).match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/i);
+    if (!match) throw new Error(`素材 ${assetId} 的 Data URI 无效。`);
+    const mimeType = match[1] || 'application/octet-stream';
+    const buffer = match[2]
+        ? Buffer.from(match[3], 'base64')
+        : Buffer.from(decodeURIComponent(match[3]), 'utf8');
+    return { buffer, mimeType };
+}
+
+async function readResponseBufferWithLimit(response, limitBytes, assetId) {
+    if (!response.body) return Buffer.alloc(0);
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > limitBytes) {
+            await reader.cancel().catch(() => {});
+            throw new Error(`素材 ${assetId} 超过 ${limitBytes / 1024 / 1024}MB 限制。`);
+        }
+        chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, total);
+}
+
+async function downloadRemoteAsset(source, assetId, timeoutMs) {
+    let currentUrl = source;
+    for (let redirectCount = 0; redirectCount <= 5; redirectCount++) {
+        await assertRemoteAssetUrlAllowed(currentUrl);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        let response;
+        try {
+            response = await fetch(currentUrl, {
+                redirect: 'manual',
+                signal: controller.signal,
+                headers: { 'User-Agent': 'VCPToolBox-MediaRenderer/1.0' }
+            });
+        } finally {
+            clearTimeout(timer);
+        }
+
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+            const location = response.headers.get('location');
+            if (!location) throw new Error(`素材 ${assetId} 重定向缺少 Location。`);
+            currentUrl = new URL(location, currentUrl).href;
+            continue;
+        }
+        if (!response.ok) {
+            throw new Error(`素材 ${assetId} 下载失败: HTTP ${response.status}`);
+        }
+        const declaredLength = Number(response.headers.get('content-length'));
+        if (Number.isFinite(declaredLength) && declaredLength > MAX_ASSET_BYTES) {
+            throw new Error(`素材 ${assetId} 超过 ${MAX_ASSET_BYTES / 1024 / 1024}MB 限制。`);
+        }
+        return {
+            buffer: await readResponseBufferWithLimit(response, MAX_ASSET_BYTES, assetId),
+            mimeType: String(response.headers.get('content-type') || '').split(';')[0] ||
+                mime.lookup(new URL(currentUrl).pathname) ||
+                'application/octet-stream',
+            sourceUrl: currentUrl
+        };
+    }
+    throw new Error(`素材 ${assetId} 重定向次数超过 5 次。`);
+}
+
+async function resolveAsset(asset, timeoutMs) {
+    let buffer;
+    let mimeType;
+    let localPath = null;
+
+    if (asset.source.startsWith('data:')) {
+        ({ buffer, mimeType } = parseDataUri(asset.source, asset.id));
+    } else if (asset.source.startsWith('file:')) {
+        localPath = fileURLToPath(asset.source);
+        const stat = await fs.stat(localPath);
+        if (!stat.isFile()) throw new Error(`素材 ${asset.id} 不是普通文件。`);
+        if (stat.size > MAX_ASSET_BYTES) {
+            throw new Error(`素材 ${asset.id} 超过 ${MAX_ASSET_BYTES / 1024 / 1024}MB 限制。`);
+        }
+        buffer = await fs.readFile(localPath);
+        mimeType = mime.lookup(localPath) || 'application/octet-stream';
+    } else {
+        const remote = await downloadRemoteAsset(asset.source, asset.id, timeoutMs);
+        buffer = remote.buffer;
+        mimeType = remote.mimeType;
+    }
+
+    if (buffer.length > MAX_ASSET_BYTES) {
+        throw new Error(`素材 ${asset.id} 超过 ${MAX_ASSET_BYTES / 1024 / 1024}MB 限制。`);
+    }
+    return {
+        ...asset,
+        buffer,
+        mimeType,
+        localPath,
+        dataUri: `data:${mimeType};base64,${buffer.toString('base64')}`
+    };
+}
+
+async function resolveAssets(request) {
+    const resolved = [];
+    let totalBytes = 0;
+    for (const asset of request.assets) {
+        const item = await resolveAsset(asset, request.timeoutMs);
+        totalBytes += item.buffer.length;
+        if (totalBytes > MAX_TOTAL_ASSET_BYTES) {
+            throw new Error(`素材总大小超过 ${MAX_TOTAL_ASSET_BYTES / 1024 / 1024}MB 限制。`);
+        }
+        resolved.push(item);
+    }
+    if (request.audioAssetId) {
+        const audio = resolved.find(asset => asset.id === request.audioAssetId);
+        if (!audio) throw new Error(`audioAssetId 指向不存在的素材: ${request.audioAssetId}`);
+        if (audio.type !== 'audio' && !audio.mimeType.startsWith('audio/')) {
+            throw new Error(`素材 ${audio.id} 不是音频素材。`);
+        }
+    }
+    return resolved;
+}
+
+function applyAssetPlaceholders(source, assets) {
+    let result = source;
+    for (const asset of assets) {
+        const placeholder = `{{ASSET:${asset.id}}}`;
+        if (result.includes(placeholder)) {
+            result = result.replaceAll(placeholder, escapeHtmlAttribute(asset.dataUri));
+        }
+    }
+    const unresolved = result.match(/{{ASSET:([^}]+)}}/);
+    if (unresolved) throw new Error(`源码引用了未声明素材: ${unresolved[1]}`);
+    return result;
+}
+
+async function getBuiltinLibraryScripts(libraries) {
+    const scripts = [];
+    for (const name of libraries) {
+        const library = BUILTIN_LIBRARIES[name];
+        if (!builtinLibrarySourceCache.has(name)) {
+            builtinLibrarySourceCache.set(name, await fs.readFile(library.path, 'utf8'));
+        }
+        scripts.push(`<script>${escapeInlineScript(builtinLibrarySourceCache.get(name))}</script>`);
+    }
+    return scripts.join('\n');
 }
 
 async function resolveSourceImage(request) {
@@ -213,13 +599,18 @@ function applySourceImagePlaceholder(source, resolvedSourceImage) {
     return source.replaceAll('{{SOURCE_IMAGE}}', escapeHtmlAttribute(resolvedSourceImage));
 }
 
-function buildHtmlDocument(request, resolvedSourceImage) {
-    const source = applySourceImagePlaceholder(request.source, resolvedSourceImage);
+async function buildHtmlDocument(request, resolvedSourceImage, assets) {
+    let source = applySourceImagePlaceholder(request.source, resolvedSourceImage);
+    source = applyAssetPlaceholders(source, assets);
+    const libraryScripts = await getBuiltinLibraryScripts(request.libraries);
+    const runtimeHead = `${MEDIA_RENDERER_BOOTSTRAP}\n${libraryScripts}`;
+
     if (request.sourceType === 'svg') {
         return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
+${runtimeHead}
 <style>
 html, body {
     width: 100%;
@@ -245,7 +636,28 @@ body > svg {
 </html>`;
     }
 
-    return source;
+    if (/<head(?:\s[^>]*)?>/i.test(source)) {
+        return source.replace(/<head(\s[^>]*)?>/i, match => `${match}\n${runtimeHead}`);
+    }
+    if (/<html(?:\s[^>]*)?>/i.test(source)) {
+        return source.replace(/<html(\s[^>]*)?>/i, match =>
+            `${match}\n<head><meta charset="utf-8">${runtimeHead}</head>`
+        );
+    }
+    return `<!doctype html><html><head><meta charset="utf-8">${runtimeHead}</head><body>${source}</body></html>`;
+}
+
+async function waitForPageReady(page, request) {
+    const sourceRequestsSignal = /__MEDIA_RENDERER__(?:_READY__|\.setReady|\[['"]setReady['"]\])/i
+        .test(request.source);
+    if (request.readyMode === 'load' || (request.readyMode === 'auto' && !sourceRequestsSignal)) {
+        return;
+    }
+    await page.waitForFunction(
+        () => window.__MEDIA_RENDERER__?.ready === true ||
+            window.__MEDIA_RENDERER_READY__ === true,
+        { timeout: request.timeoutMs }
+    );
 }
 
 async function applyCanvasPolicy(page, request) {
@@ -338,42 +750,228 @@ async function encodeImage(pngBuffer, request) {
     }).toBuffer();
 }
 
+function runProcess(command, args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(command, args, {
+            shell: false,
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+        const stdout = [];
+        let stderr = '';
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            child.kill('SIGKILL');
+            reject(new Error(`${command} 执行超过 ${timeoutMs}ms。`));
+        }, timeoutMs);
+
+        child.stdout.on('data', chunk => stdout.push(chunk));
+        child.stderr.on('data', chunk => {
+            stderr += chunk.toString();
+            if (stderr.length > MAX_FFMPEG_ERROR_BYTES) {
+                stderr = stderr.slice(-MAX_FFMPEG_ERROR_BYTES);
+            }
+        });
+        child.on('error', error => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(new Error(`无法启动 ${command}: ${error.message}`));
+        });
+        child.on('close', code => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (code === 0) {
+                resolve({ stdout: Buffer.concat(stdout), stderr });
+            } else {
+                reject(new Error(`${command} 退出码 ${code}: ${stderr.trim().slice(-4000)}`));
+            }
+        });
+    });
+}
+
+async function ensureFfmpegAvailable() {
+    if (!ffmpegAvailabilityPromise) {
+        const executable = String(
+            pluginConfig.FfmpegPath ||
+            process.env.MediaRendererFfmpegPath ||
+            'ffmpeg'
+        ).trim();
+        ffmpegAvailabilityPromise = runProcess(executable, ['-version'], 10000)
+            .then(() => executable)
+            .catch(error => {
+                ffmpegAvailabilityPromise = null;
+                throw new Error(`FFmpeg 不可用: ${error.message}`);
+            });
+    }
+    return ffmpegAvailabilityPromise;
+}
+
+function buildFfmpegArgs(request, framePattern, outputPath, audioPath = null) {
+    const args = [
+        '-hide_banner', '-loglevel', 'error', '-y',
+        '-framerate', String(request.fps),
+        '-i', framePattern
+    ];
+    if (audioPath && request.format !== 'gif') {
+        args.push('-stream_loop', '-1', '-i', audioPath);
+    }
+
+    if (request.format === 'gif') {
+        args.push(
+            '-filter_complex',
+            '[0:v]split[v1][v2];[v1]palettegen=reserve_transparent=1:stats_mode=diff[p];[v2][p]paletteuse=dither=sierra2_4a:alpha_threshold=1',
+            '-loop', '0'
+        );
+    } else if (request.format === 'mp4') {
+        args.push(
+            '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-crf', String(Math.max(0, Math.min(51, Math.round((100 - request.quality) * 0.45 + 2)))),
+            '-movflags', '+faststart'
+        );
+        if (audioPath) args.push('-c:a', 'aac', '-b:a', '192k', '-shortest');
+    } else if (request.format === 'webm') {
+        args.push(
+            '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2:color=black@0',
+            '-c:v', 'libvpx-vp9',
+            '-pix_fmt', request.transparent ? 'yuva420p' : 'yuv420p',
+            '-crf', String(Math.max(0, Math.min(63, Math.round((100 - request.quality) * 0.5 + 8)))),
+            '-b:v', '0'
+        );
+        if (request.transparent) {
+            args.push('-auto-alt-ref', '0', '-metadata:s:v:0', 'alpha_mode=1');
+        }
+        if (audioPath) args.push('-c:a', 'libopus', '-b:a', '160k', '-shortest');
+    }
+    args.push('-t', (request.durationMs / 1000).toFixed(3), outputPath);
+    return args;
+}
+
+async function capturePng(page, request) {
+    return page.screenshot({
+        type: 'png',
+        omitBackground: request.transparent,
+        captureBeyondViewport: false,
+        clip: {
+            x: 0,
+            y: 0,
+            width: request.width,
+            height: request.height
+        }
+    });
+}
+
+async function encodeAnimation(page, request, assets) {
+    const ffmpeg = await ensureFfmpegAvailable();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'vcp-media-renderer-'));
+    const framePattern = path.join(tempDir, 'frame-%06d.png');
+    const outputPath = path.join(tempDir, `output.${request.format}`);
+    let audioPath = null;
+
+    try {
+        for (let frameIndex = 0; frameIndex < request.frameCount; frameIndex++) {
+            const timeMs = frameIndex * 1000 / request.fps;
+            await page.evaluate(
+                async ({ timeMs, frameIndex, fps }) => {
+                    await window.__MEDIA_RENDERER__.renderFrame(timeMs, frameIndex, fps);
+                },
+                { timeMs, frameIndex, fps: request.fps }
+            );
+            const frameBuffer = await capturePng(page, request);
+            const framePath = path.join(tempDir, `frame-${String(frameIndex).padStart(6, '0')}.png`);
+            await fs.writeFile(framePath, frameBuffer);
+        }
+
+        if (request.audioAssetId && request.format !== 'gif') {
+            const audio = assets.find(asset => asset.id === request.audioAssetId);
+            const extension = mime.extension(audio.mimeType) || 'bin';
+            audioPath = path.join(tempDir, `audio.${extension}`);
+            await fs.writeFile(audioPath, audio.buffer);
+        }
+
+        const ffmpegTimeoutMs = parseInteger(
+            pluginConfig.FfmpegTimeoutMs ?? process.env.MediaRendererFfmpegTimeoutMs,
+            180000,
+            10000,
+            600000,
+            'FfmpegTimeoutMs'
+        );
+        await runProcess(
+            ffmpeg,
+            buildFfmpegArgs(request, framePattern, outputPath, audioPath),
+            ffmpegTimeoutMs
+        );
+        return await fs.readFile(outputPath);
+    } finally {
+        await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+}
+
 function getOutputEnvironment() {
     const projectBasePath = process.env.PROJECT_BASE_PATH || PROJECT_ROOT;
-    const serverPort = process.env.SERVER_PORT || process.env.PORT;
-    const imageKey = process.env.IMAGESERVER_IMAGE_KEY || process.env.Image_Key;
+    const serverPort = process.env.SERVER_PORT || process.env.PORT || pluginConfig.PORT;
+    const imageKey = process.env.IMAGESERVER_IMAGE_KEY ||
+        process.env.Image_Key ||
+        hostPluginManager?.getResolvedPluginConfigValue?.('ImageServer', 'Image_Key');
+    const fileKey = process.env.IMAGESERVER_FILE_KEY ||
+        process.env.File_Key ||
+        hostPluginManager?.getResolvedPluginConfigValue?.('ImageServer', 'File_Key');
     const httpBase = process.env.VarHttpUrl || 'http://localhost';
 
-    if (!serverPort) throw new Error('缺少 SERVER_PORT/PORT，无法构造图片 URL。');
-    if (!imageKey) throw new Error('缺少 IMAGESERVER_IMAGE_KEY/Image_Key，无法构造图片 URL。');
+    if (!serverPort) throw new Error('缺少 SERVER_PORT/PORT，无法构造媒体 URL。');
+    if (!imageKey) throw new Error('缺少 ImageServer.Image_Key，无法构造图片 URL。');
 
-    return { projectBasePath, serverPort, imageKey, httpBase: httpBase.replace(/\/+$/, '') };
+    return {
+        projectBasePath,
+        serverPort,
+        imageKey,
+        fileKey,
+        httpBase: httpBase.replace(/\/+$/, '')
+    };
 }
 
 async function saveArtifact(buffer, request) {
     const env = getOutputEnvironment();
     const extension = request.format;
     const fileName = `${request.fileStem}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.${extension}`;
-    const outputDir = path.join(env.projectBasePath, 'image', OUTPUT_SUBDIR);
+    const useFileService = request.format === 'mp4' || request.format === 'webm';
+    if (useFileService && !env.fileKey) {
+        throw new Error('缺少 ImageServer.File_Key，无法托管 MP4/WebM 视频。');
+    }
+
+    const serviceRoot = useFileService ? 'file' : 'image';
+    const serviceRoute = useFileService ? 'files' : 'images';
+    const serviceKey = useFileService ? env.fileKey : env.imageKey;
+    const outputDir = path.join(env.projectBasePath, serviceRoot, OUTPUT_SUBDIR);
     const outputPath = path.join(outputDir, fileName);
 
     await fs.mkdir(outputDir, { recursive: true });
     await fs.writeFile(outputPath, buffer);
 
     const relativeUrlPath = `${OUTPUT_SUBDIR}/${encodeURIComponent(fileName)}`;
-    const imageUrl = `${env.httpBase}:${env.serverPort}/pw=${env.imageKey}/images/${relativeUrlPath}`;
+    const mediaUrl = `${env.httpBase}:${env.serverPort}/pw=${serviceKey}/${serviceRoute}/${relativeUrlPath}`;
 
     return {
         fileName,
         outputPath,
-        serverPath: `image/${OUTPUT_SUBDIR}/${fileName}`,
-        imageUrl
+        serverPath: `${serviceRoot}/${OUTPUT_SUBDIR}/${fileName}`,
+        mediaUrl,
+        imageUrl: mediaUrl,
+        serviceType: useFileService ? 'file' : 'image'
     };
 }
 
 async function renderOne(browser, rawRequest, stepIndex) {
     const request = normalizeRequest(rawRequest);
-    const sourceImageAsset = await resolveSourceImage(request);
+    const [sourceImageAsset, assets] = await Promise.all([
+        resolveSourceImage(request),
+        resolveAssets(request)
+    ]);
     const context = await browser.createBrowserContext();
     let page;
 
@@ -388,7 +986,11 @@ async function renderOne(browser, rawRequest, stepIndex) {
         await page.setJavaScriptEnabled(request.allowJavaScript);
         await installNetworkPolicy(page, sourceImageAsset.allowedRemoteUrl);
 
-        const documentHtml = buildHtmlDocument(request, sourceImageAsset.resolvedSourceImage);
+        const documentHtml = await buildHtmlDocument(
+            request,
+            sourceImageAsset.resolvedSourceImage,
+            assets
+        );
         await page.setContent(documentHtml, {
             waitUntil: 'domcontentloaded',
             timeout: request.timeoutMs
@@ -399,49 +1001,63 @@ async function renderOne(browser, rawRequest, stepIndex) {
             if (document.fonts?.ready) await document.fonts.ready;
         });
         await waitForImages(page, request.timeoutMs);
+        await waitForPageReady(page, request);
 
         if (request.waitMs > 0) {
             await new Promise(resolve => setTimeout(resolve, request.waitMs));
         }
 
-        const pngBuffer = await page.screenshot({
-            type: 'png',
-            omitBackground: request.transparent,
-            captureBeyondViewport: false,
-            clip: {
-                x: 0,
-                y: 0,
-                width: request.width,
-                height: request.height
-            }
-        });
+        let mediaBuffer;
+        let metadata = { width: request.width, height: request.height };
+        if (request.animation) {
+            mediaBuffer = await encodeAnimation(page, request, assets);
+        } else {
+            const pngBuffer = await capturePng(page, request);
+            mediaBuffer = await encodeImage(pngBuffer, request);
+            metadata = await sharp(mediaBuffer).metadata();
+        }
 
-        const imageBuffer = await encodeImage(pngBuffer, request);
-        const metadata = await sharp(imageBuffer).metadata();
-        const artifact = await saveArtifact(imageBuffer, request);
-        const mimeType = request.format === 'jpg' ? 'image/jpeg' : `image/${request.format}`;
+        const artifact = await saveArtifact(mediaBuffer, request);
+        const mimeTypes = {
+            jpg: 'image/jpeg',
+            png: 'image/png',
+            webp: 'image/webp',
+            gif: 'image/gif',
+            mp4: 'video/mp4',
+            webm: 'video/webm'
+        };
+        const mimeType = mimeTypes[request.format];
 
         const formatAdjusted = request.transparent &&
             ['jpg', 'jpeg'].includes(String(request.requestedFormat || '').toLowerCase());
+        const mediaLabel = request.animation ? '动画' : '图片';
+        const displayHint = request.format === 'gif'
+            ? `请使用 <img src="${artifact.imageUrl}" alt="渲染动画"> 展示给用户。`
+            : request.animation
+                ? `请使用 <video src="${artifact.imageUrl}" controls autoplay loop></video> 展示给用户。`
+                : `请使用 <img src="${artifact.imageUrl}" alt="渲染图片"> 展示给用户。`;
 
         const text = [
-            `第 ${stepIndex} 张图片渲染成功。`,
+            `第 ${stepIndex} 个${mediaLabel}渲染成功。`,
             `- 类型: ${request.sourceType.toUpperCase()}`,
             `- 分辨率: ${metadata.width}x${metadata.height}`,
             `- 格式: ${request.format.toUpperCase()}`,
+            request.animation ? `- 时长/FPS/帧数: ${request.durationMs}ms / ${request.fps} / ${request.frameCount}` : null,
             `- 透明背景: ${request.transparent ? '是' : '否'}`,
+            request.libraries.length ? `- 内置库: ${request.libraries.join(', ')}` : null,
+            assets.length ? `- 素材数: ${assets.length}` : null,
             formatAdjusted ? '- 格式调整: JPEG 不支持透明通道，已自动改为 PNG。' : null,
-            `- 文件大小: ${(imageBuffer.length / 1024).toFixed(1)} KB`,
+            `- 文件大小: ${(mediaBuffer.length / 1024).toFixed(1)} KB`,
             `- 可访问URL: ${artifact.imageUrl}`,
-            `请使用 <img src="${artifact.imageUrl}" alt="渲染图片"> 展示给用户。`
+            displayHint
         ].filter(Boolean).join('\n');
 
         const content = [{ type: 'text', text }];
-        if (request.showBase64) {
+        if (request.showBase64 && !request.animation) {
             content.push({
                 type: 'image_url',
                 image_url: {
-                    url: `data:${mimeType};base64,${imageBuffer.toString('base64')}`
+                    url: `data:${mimeType};base64,${mediaBuffer.toString('base64')}`
                 }
             });
         }
@@ -457,9 +1073,15 @@ async function renderOne(browser, rawRequest, stepIndex) {
                 mimeType,
                 transparent: request.transparent,
                 quality: request.quality,
+                animation: request.animation,
+                durationMs: request.animation ? request.durationMs : null,
+                fps: request.animation ? request.fps : null,
+                frameCount: request.animation ? request.frameCount : null,
+                libraries: request.libraries,
+                assetCount: assets.length,
                 sourceImageUsed: Boolean(request.sourceImage),
-                byteLength: imageBuffer.length,
-                showBase64: request.showBase64,
+                byteLength: mediaBuffer.length,
+                showBase64: request.showBase64 && !request.animation,
                 ...artifact
             }
         };
@@ -476,7 +1098,8 @@ const STEP_FIELDS = [
     'transparent', 'transparentBackground', 'background', 'backgroundColor',
     'quality', 'showBase64', 'showbase64', 'allowJavaScript', 'waitMs',
     'timeoutMs', 'fileName', 'filename', 'name', 'sourceImage',
-    'source_image', 'image', 'image_url'
+    'source_image', 'image', 'image_url', 'libraries', 'library', 'libs',
+    'assets', 'durationMs', 'fps', 'readyMode', 'audioAssetId', 'audio'
 ];
 
 function buildStep(params, suffix = '') {
@@ -520,7 +1143,10 @@ function collectSteps(params = {}) {
 
     for (const [index, step] of steps.entries()) {
         const command = String(step.command || 'RenderImage').trim().toLowerCase();
-        if (!['renderimage', 'render', 'htmltoscreenshot', 'svgtoscreenshot'].includes(command)) {
+        if (![
+            'renderimage', 'render', 'htmltoscreenshot', 'svgtoscreenshot',
+            'renderanimation', 'rendergif', 'rendervideo'
+        ].includes(command)) {
             throw new Error(`第 ${index + 1} 步使用了未知 command: ${step.command}`);
         }
     }
@@ -609,6 +1235,9 @@ async function processToolCall(params) {
 
 function shutdown() {
     renderQueue = Promise.resolve();
+    builtinLibrarySourceCache.clear();
+    ffmpegAvailabilityPromise = null;
+    hostPluginManager = null;
 }
 
 module.exports = {
