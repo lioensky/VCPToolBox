@@ -15,17 +15,17 @@ MediaRenderer 使用 VCP 已有的托管 Chrome 运行时和服务器全局 FFmp
 - PNG/WebP 透明背景
 - JPG 自定义底色
 - 最多 16 步串行批量渲染
-- 使用现有图片作为底图添加 CSS/SVG/Canvas 特效
-- 支持 Data URI、HTTP/HTTPS 和 `file://` 底图
+- HTML/CSS/SVG 源码直接引用 Data URI、HTTP/HTTPS 和 `file://` 图片、视频、字体等资源
+- Node.js 侧安全预取源码资源并改写为 Data URI
 - ImageFileServer 图床 URL
 - 可选 Base64 多模态返回
-- 除显式底图/素材外的页面外部资源请求阻断
+- 除源码明确引用并通过校验的资源外，页面运行时网络请求全部阻断
 - HTML JavaScript 默认关闭，动画或内置库模式自动开启
 - GIF、MP4、WebM 确定性逐帧渲染
 - 透明 GIF 与透明 WebM
-- 内置 Anime.js 3.2.2、Three.js r160
-- 本地、内网和公网图片/音频/字体/模型素材
-- MP4/WebM 音频混流
+- Anime.js 3.2.2、Three.js r160 常见 CDN 标签自动重定向到本地版本
+- 本地、内网和公网图片/音频/视频/字体素材
+- 通过直接 `audioUrl` 进行 MP4/WebM 音频混流
 
 ## 运行前提
 
@@ -109,28 +109,28 @@ fileName:「始」gradient-icon「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
 
-## 基于已有图片添加代码特效
+## 在源码中直接引用图片、视频和字体
 
-通过 `sourceImage` 传入底图，并在 HTML 或 SVG 源码中使用 `{{SOURCE_IMAGE}}` 占位符。插件会在渲染前把占位符替换为经过验证的素材地址。
+推荐把资源 URL 直接写进 HTML/CSS/SVG，不需要创建 `assets` JSON，也不需要资源 id 或占位符。
 
-`sourceImage` 支持：
+支持的常见位置：
 
-- `data:image/...;base64,...`
-- HTTP/HTTPS 图片 URL
-- `file://` 本地图片
-- VCP ImageFileServer 图片 URL
+- `<img src>`、`<video src>`、`<audio src>`、`<source src>` 和 `poster`
+- `<img srcset>`
+- SVG `href`、`xlink:href`
+- CSS `url(...)`，包括 `@font-face`
+- `data:`、`file://`、HTTP/HTTPS 和 VCP ImageFileServer URL
 
-对于 `file://`，插件会在 Node.js 侧读取并验证图片，然后转成 Data URI；Chromium 不会直接获得本地文件访问权限。
+插件先在 Node.js 侧提取 URL，逐跳检查远程重定向和目标地址，再读取或下载资源并改写成 Data URI。Chromium 不直接访问本地文件系统，也不能任意联网。
 
-下面使用 CSS 给已有图片增加饱和度、霓虹投影、圆角和边框光效：
+下面直接引用本地图片，并用 CSS 添加饱和度、霓虹投影、圆角和边框光效：
 
 ```text
 <<<[TOOL_REQUEST]>>>
 maid:「始」Nova「末」,
 tool_name:「始」MediaRenderer「末」,
 command:「始」RenderImage「末」,
-sourceImage:「始」file:///path/to/source.png「末」,
-html:「始」<!doctype html><style>html,body{margin:0;width:100%;height:100%;background:#080b16}.stage{position:relative;width:100%;height:100%;display:grid;place-items:center;overflow:hidden}.source{width:78%;height:78%;object-fit:cover;border-radius:12%;filter:saturate(1.35) contrast(1.1) drop-shadow(0 0 28px #22d3eeaa)}.glow{position:absolute;inset:8%;border:4px solid #67e8f9;border-radius:15%;mix-blend-mode:screen;box-shadow:0 0 50px #06b6d4}</style><div class="stage"><img class="source" src="{{SOURCE_IMAGE}}"><div class="glow"></div></div>「末」,
+html:「始」<!doctype html><style>html,body{margin:0;width:100%;height:100%;background:#080b16}.stage{position:relative;width:100%;height:100%;display:grid;place-items:center;overflow:hidden}.source{width:78%;height:78%;object-fit:cover;border-radius:12%;filter:saturate(1.35) contrast(1.1) drop-shadow(0 0 28px #22d3eeaa)}.glow{position:absolute;inset:8%;border:4px solid #67e8f9;border-radius:15%;mix-blend-mode:screen;box-shadow:0 0 50px #06b6d4}</style><div class="stage"><img class="source" src="file:///D:/media/source.png"><div class="glow"></div></div>「末」,
 width:「始」1024「末」,
 height:「始」1024「末」,
 format:「始」png「末」,
@@ -149,7 +149,7 @@ fileName:「始」neon-effect「末」
 - CSS 变换和透视
 - Canvas；使用 Canvas 时需显式设置 `allowJavaScript=true`
 
-如果提供了 `sourceImage`，但源码中没有 `{{SOURCE_IMAGE}}`，插件会拒绝请求，避免素材参数被静默忽略。
+旧版 `sourceImage + {{SOURCE_IMAGE}}` 和 `assets + {{ASSET:id}}` 仍兼容，但新调用不再推荐使用。提供旧版 `sourceImage` 却没有相应占位符时，插件仍会拒绝请求。
 
 ## 壁纸调用
 
@@ -206,7 +206,7 @@ fileName2:「始」cyan-triangle「末」
 |---|---|---|---|
 | html | 二选一 | - | HTML 源码 |
 | svg | 二选一 | - | SVG 源码 |
-| sourceImage | 否 | - | 底图；支持 Data URI、HTTP/HTTPS、`file://` |
+| sourceImage | 否 | - | 旧版单底图兼容参数；新调用优先直接在源码写 URL |
 | width | 是 | - | 64-4096 |
 | height | 是 | - | 64-4096 |
 | format | 否 | 透明时 PNG，否则 JPG | png、jpg、webp、gif、mp4、webm |
@@ -218,20 +218,21 @@ fileName2:「始」cyan-triangle「末」
 | waitMs | 否 | 0 | 截图前额外等待，最大 10000ms |
 | timeoutMs | 否 | 45000 | 单步超时，最大 120000ms |
 | fileName | 否 | UUID | 文件名主体 |
-| libraries | 否 | - | `anime`、`three` 或逗号分隔组合 |
-| assets | 否 | [] | JSON 素材数组，每项包含 id、type、source |
+| libraries | 否 | - | 兼容参数；源码使用受支持 CDN 标签时可省略 |
+| assets | 否 | [] | 旧版占位符/音频兼容参数，普通素材无需使用 |
 | durationMs | 动画 | 5000 | 动画时长，100-60000ms |
 | fps | 动画 | 30 | 每秒帧数，1-60 |
 | readyMode | 否 | 动画为 auto | load、auto、signal |
-| audioAssetId | 否 | - | 混入 MP4/WebM 的音频素材 id |
+| audioUrl | 否 | - | 直接混入 MP4/WebM 的音频 URL，支持 data/file/HTTP(S) |
+| audioAssetId | 否 | - | 旧版兼容：选择 assets 中的音频 id |
 
 ## 安全策略
 
 AI 提供的 HTML/SVG 按不可信输入处理：
 
-1. 默认禁用 HTML JavaScript；动画或显式内置库模式自动开启。
-2. `sourceImage` 和 `assets` 是外部素材的显式入口。
-3. 页面自身的任意 HTTP/HTTPS/file 请求仍被阻断；assets 由 Node.js 获取后转为 Data URI。
+1. 默认禁用 HTML JavaScript；动画、显式内置库或受支持 CDN 标签模式自动开启。
+2. 源码中的静态资源 URL、`audioUrl`、旧版 `sourceImage/assets` 都由 Node.js 预取。
+3. 通过校验的资源会改写为 Data URI；页面运行时新增的任意 HTTP/HTTPS/file 请求仍被阻断。
 4. `file://` 素材由 Node.js 读取，Chromium 不直接访问本地文件系统。
 5. 默认允许显式内网素材；可通过 `AllowPrivateNetworkAssets=false` 禁止。
 6. 云元数据地址始终禁止，重定向后的每个 URL 都重新校验。
@@ -243,7 +244,7 @@ AI 提供的 HTML/SVG 按不可信输入处理：
 12. 文件名会移除路径分隔符及危险字符。
 13. 图片/GIF 仅写入 image/media-renderer；MP4/WebM 仅写入 file/media-renderer。
 
-普通字体和附加图片可以使用系统字体、内联 SVG、Data URI，或通过 `assets` 显式声明。需要编辑的主图片可继续使用便捷的 `sourceImage` 参数。
+普通字体、图片和视频可以直接在源码中使用 Data URI、`file://` 或 HTTP/HTTPS。旧版 `assets` 与 `sourceImage` 仅用于兼容已有调用。
 
 ## 输出
 
@@ -313,22 +314,27 @@ fileName:「始」moving-dot「末」
 
 GIF 只有索引透明色，不具备 PNG 那样的 8-bit 半透明通道。发光、阴影和抗锯齿边缘会被量化；复杂半透明动画优先使用透明 WebM。
 
-## 内置 Anime.js 与 Three.js
+## Anime.js 与 Three.js 的 CDN 本地重定向
 
-通过 `libraries` 加载受信任的本地版本，不需要 CDN：
+AI 可以直接输出熟悉的传统全局 CDN 标签：
 
-```text
-libraries: anime,three
+```html
+<script src="https://cdn.jsdelivr.net/npm/animejs@3.2.2/lib/anime.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
 ```
 
-- `anime` 注入全局 `window.anime`，版本 3.2.2。
-- `three` 注入全局 `window.THREE`，版本 r160。
+插件识别 jsDelivr、unpkg、cdnjs 上路径匹配的 Anime.js/Three.js，移除远程标签并注入本地文件，完全不会请求 CDN：
 
-依赖直接复用 `AdminPanel-Vue/vendor`，不复制到插件目录，也不会把第三方源码放进 AI 上下文。
+- Anime.js 提供全局 `window.anime`，本地版本 3.2.2。
+- Three.js 提供全局 `window.THREE`，本地版本 r160。
+- 其他外部脚本一律拒绝执行。
+- ES Module 形式的 Three.js/import map 当前不支持，请使用传统 `three.min.js` 全局脚本。
 
-## 通用素材
+旧的 `libraries: anime,three` 参数继续兼容。依赖直接复用 `AdminPanel-Vue/vendor`，不复制到插件目录。
 
-`assets` 可以传数组，也可以传 JSON 字符串：
+## 旧版 assets 兼容
+
+普通素材应直接写在源码中。仅旧调用需要继续使用 `assets` 数组或 JSON 字符串：
 
 ```json
 [
@@ -354,12 +360,12 @@ libraries: anime,three
 }
 ```
 
-MP4/WebM 音频混流通过素材 id 指定：
+新调用通过 URL 直接指定 MP4/WebM 音轨：
 
 ```text
-audioAssetId: music
+audioUrl: file:///D:/media/music.mp3
 ```
 
-音频由 FFmpeg 直接读取插件临时文件并混流，不依赖浏览器自动播放。GIF 不包含音频。
+旧调用仍可使用 `audioAssetId: music`。音频由 Node.js 安全读取或下载，再交给 FFmpeg 临时文件混流，不依赖浏览器自动播放。GIF 不包含音频。
 
 默认允许显式声明的 localhost、局域网和公网 HTTP/HTTPS 素材。页面未声明的网络访问仍会被阻断，云元数据地址始终禁止。

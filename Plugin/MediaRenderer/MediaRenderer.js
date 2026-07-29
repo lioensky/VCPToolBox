@@ -31,6 +31,11 @@ const MAX_FFMPEG_ERROR_BYTES = 64 * 1024;
 const DEFAULT_DURATION_MS = 5000;
 const DEFAULT_FPS = 30;
 const DEFAULT_MAX_FRAMES = 600;
+const TRUSTED_LIBRARY_CDN_HOSTS = new Set([
+    'cdn.jsdelivr.net',
+    'unpkg.com',
+    'cdnjs.cloudflare.com'
+]);
 const BUILTIN_LIBRARIES = Object.freeze({
     anime: {
         path: path.join(PROJECT_ROOT, 'AdminPanel-Vue', 'vendor', 'anime.min.js'),
@@ -160,6 +165,48 @@ function normalizeLibraries(value) {
     return normalized;
 }
 
+function decodeHtmlUrl(value) {
+    const ampersand = String.fromCharCode(38);
+    return String(value || '').split(`${ampersand}amp;`).join(ampersand);
+}
+
+function detectBuiltinLibraryFromUrl(rawUrl) {
+    let url;
+    try {
+        url = new URL(decodeHtmlUrl(rawUrl));
+    } catch {
+        return null;
+    }
+    if (url.protocol !== 'https:' || !TRUSTED_LIBRARY_CDN_HOSTS.has(url.hostname.toLowerCase())) {
+        return null;
+    }
+
+    const pathname = decodeURIComponent(url.pathname).toLowerCase();
+    if (
+        /(?:^|\/)animejs(?:@[^/]+)?\/lib\/anime(?:\.min)?\.js$/.test(pathname) ||
+        /(?:^|\/)anime(?:\.min)?\.js$/.test(pathname)
+    ) {
+        return 'anime';
+    }
+    if (
+        /(?:^|\/)three(?:@[^/]+)?\/build\/three(?:\.min)?\.js$/.test(pathname) ||
+        /(?:^|\/)three(?:\.min)?\.js$/.test(pathname)
+    ) {
+        return 'three';
+    }
+    return null;
+}
+
+function findBuiltinCdnLibraries(source) {
+    const libraries = [];
+    const scriptPattern = /<script\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1[^>]*>\s*<\/script\s*>/gi;
+    for (const match of String(source || '').matchAll(scriptPattern)) {
+        const name = detectBuiltinLibraryFromUrl(match[2]);
+        if (name && !libraries.includes(name)) libraries.push(name);
+    }
+    return libraries;
+}
+
 function normalizeAssets(value) {
     if (value === undefined || value === null || value === '') return [];
     let assets = value;
@@ -261,7 +308,14 @@ function normalizeRequest(raw = {}) {
     const background = normalizeColor(raw.background || raw.backgroundColor, '#ffffff');
     const showBase64 = parseBoolean(raw.showBase64 ?? raw.showbase64, false);
     const libraries = normalizeLibraries(raw.libraries || raw.library || raw.libs);
+    for (const name of findBuiltinCdnLibraries(source)) {
+        if (!libraries.includes(name)) libraries.push(name);
+    }
     const assets = normalizeAssets(raw.assets);
+    const audioUrl = String(raw.audioUrl || raw.audio_url || '').trim() || null;
+    if (audioUrl && !/^(?:data:|file:|https?:)/i.test(audioUrl)) {
+        throw new Error('audioUrl 仅支持 data:、file://、http:// 或 https://。');
+    }
     const allowJavaScript = animation || libraries.length > 0 ||
         parseBoolean(raw.allowJavaScript, false);
     const waitMs = parseInteger(raw.waitMs, 0, 0, 10000, 'waitMs');
@@ -304,6 +358,7 @@ function normalizeRequest(raw = {}) {
         readyMode,
         libraries,
         assets,
+        audioUrl,
         audioAssetId: String(raw.audioAssetId || raw.audio || '').trim() || null,
         sourceImage: normalizeSourceImage(
             raw.sourceImage || raw.source_image || raw.image || raw.image_url
@@ -490,7 +545,23 @@ async function resolveAsset(asset, timeoutMs) {
 async function resolveAssets(request) {
     const resolved = [];
     let totalBytes = 0;
-    for (const asset of request.assets) {
+    const declaredAssets = [...request.assets];
+    if (request.audioUrl) {
+        if (declaredAssets.some(asset => asset.id === '__directAudio')) {
+            throw new Error('素材 id __directAudio 为插件保留名称。');
+        }
+        declaredAssets.push({
+            id: '__directAudio',
+            type: 'audio',
+            source: request.audioUrl
+        });
+        request.audioAssetId = '__directAudio';
+    }
+    if (declaredAssets.length > MAX_ASSET_COUNT) {
+        throw new Error(`单步最多使用 ${MAX_ASSET_COUNT} 个素材。`);
+    }
+
+    for (const asset of declaredAssets) {
         const item = await resolveAsset(asset, request.timeoutMs);
         totalBytes += item.buffer.length;
         if (totalBytes > MAX_TOTAL_ASSET_BYTES) {
@@ -506,6 +577,86 @@ async function resolveAssets(request) {
         }
     }
     return resolved;
+}
+
+function rewriteBuiltinCdnScriptTags(source) {
+    return String(source).replace(
+        /<script\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1[^>]*>\s*<\/script\s*>/gi,
+        (tag, _quote, rawUrl) => {
+            const library = detectBuiltinLibraryFromUrl(rawUrl);
+            return library
+                ? `<!-- MediaRenderer: ${library} CDN redirected to bundled local script -->`
+                : tag;
+        }
+    );
+}
+
+function assertNoExternalScripts(source) {
+    const match = String(source).match(
+        /<script\b[^>]*\bsrc\s*=\s*(["'])(?:https?:\/\/|file:\/\/)[\s\S]*?\1[^>]*>/i
+    );
+    if (match) {
+        throw new Error('仅允许通过可信 CDN script 标签引用 Anime.js/Three.js；其他外部脚本禁止执行。');
+    }
+}
+
+function collectDirectSourceUrls(source) {
+    const found = new Map();
+    const add = rawValue => {
+        const original = String(rawValue || '').trim();
+        const fetchUrl = decodeHtmlUrl(original);
+        if (/^(?:https?:|file:)/i.test(fetchUrl) && !found.has(original)) {
+            found.set(original, fetchUrl);
+        }
+    };
+
+    const assetTagPattern = /<(?:img|image|video|audio|source|track|link|input|use)\b[^>]*>/gi;
+    for (const tagMatch of String(source).matchAll(assetTagPattern)) {
+        const tag = tagMatch[0];
+        const attributePattern = /\b(?:src|poster|href|xlink:href)\s*=\s*(["'])(.*?)\1/gi;
+        for (const attributeMatch of tag.matchAll(attributePattern)) add(attributeMatch[2]);
+
+        const srcsetPattern = /\bsrcset\s*=\s*(["'])(.*?)\1/gi;
+        for (const srcsetMatch of tag.matchAll(srcsetPattern)) {
+            for (const candidate of srcsetMatch[2].split(',')) {
+                add(candidate.trim().split(/\s+/)[0]);
+            }
+        }
+    }
+
+    const cssUrlPattern = /url\(\s*(["']?)(.*?)\1\s*\)/gi;
+    for (const match of String(source).matchAll(cssUrlPattern)) add(match[2]);
+    return [...found.entries()].map(([original, fetchUrl]) => ({ original, fetchUrl }));
+}
+
+async function resolveDirectSourceAssets(source, existingAssets, timeoutMs) {
+    let rewrittenSource = rewriteBuiltinCdnScriptTags(source);
+    assertNoExternalScripts(rewrittenSource);
+    const references = collectDirectSourceUrls(rewrittenSource);
+    if (references.length + existingAssets.length > MAX_ASSET_COUNT) {
+        throw new Error(
+            `源码直引资源与兼容 assets 合计最多 ${MAX_ASSET_COUNT} 个，当前为 ` +
+            `${references.length + existingAssets.length} 个。`
+        );
+    }
+
+    let totalBytes = existingAssets.reduce((sum, asset) => sum + asset.buffer.length, 0);
+    const directAssets = [];
+    for (const [index, reference] of references.entries()) {
+        const asset = await resolveAsset({
+            id: `direct${index + 1}`,
+            type: 'auto',
+            source: reference.fetchUrl
+        }, timeoutMs);
+        totalBytes += asset.buffer.length;
+        if (totalBytes > MAX_TOTAL_ASSET_BYTES) {
+            throw new Error(`素材总大小超过 ${MAX_TOTAL_ASSET_BYTES / 1024 / 1024}MB 限制。`);
+        }
+        rewrittenSource = rewrittenSource.split(reference.original).join(asset.dataUri);
+        directAssets.push(asset);
+    }
+
+    return { source: rewrittenSource, directAssets };
 }
 
 function applyAssetPlaceholders(source, assets) {
@@ -549,9 +700,18 @@ async function resolveSourceImage(request) {
     }
 
     if (request.sourceImage.startsWith('http://') || request.sourceImage.startsWith('https://')) {
+        const image = await resolveAsset({
+            id: 'sourceImage',
+            type: 'image',
+            source: request.sourceImage
+        }, request.timeoutMs);
+        if (!image.mimeType.startsWith('image/')) {
+            throw new Error(`sourceImage 远程资源不是图片: ${image.mimeType}`);
+        }
+        await sharp(image.buffer, { limitInputPixels: MAX_PIXELS }).metadata();
         return {
-            resolvedSourceImage: request.sourceImage,
-            allowedRemoteUrl: request.sourceImage
+            resolvedSourceImage: image.dataUri,
+            allowedRemoteUrl: null
         };
     }
 
@@ -599,8 +759,8 @@ function applySourceImagePlaceholder(source, resolvedSourceImage) {
     return source.replaceAll('{{SOURCE_IMAGE}}', escapeHtmlAttribute(resolvedSourceImage));
 }
 
-async function buildHtmlDocument(request, resolvedSourceImage, assets) {
-    let source = applySourceImagePlaceholder(request.source, resolvedSourceImage);
+async function buildHtmlDocument(request, resolvedSourceImage, assets, preparedSource = null) {
+    let source = applySourceImagePlaceholder(preparedSource || request.source, resolvedSourceImage);
     source = applyAssetPlaceholders(source, assets);
     const libraryScripts = await getBuiltinLibraryScripts(request.libraries);
     const runtimeHead = `${MEDIA_RENDERER_BOOTSTRAP}\n${libraryScripts}`;
@@ -972,6 +1132,12 @@ async function renderOne(browser, rawRequest, stepIndex) {
         resolveSourceImage(request),
         resolveAssets(request)
     ]);
+    const directSource = await resolveDirectSourceAssets(
+        request.source,
+        assets,
+        request.timeoutMs
+    );
+    const allAssets = [...assets, ...directSource.directAssets];
     const context = await browser.createBrowserContext();
     let page;
 
@@ -989,7 +1155,8 @@ async function renderOne(browser, rawRequest, stepIndex) {
         const documentHtml = await buildHtmlDocument(
             request,
             sourceImageAsset.resolvedSourceImage,
-            assets
+            assets,
+            directSource.source
         );
         await page.setContent(documentHtml, {
             waitUntil: 'domcontentloaded',
@@ -1010,7 +1177,7 @@ async function renderOne(browser, rawRequest, stepIndex) {
         let mediaBuffer;
         let metadata = { width: request.width, height: request.height };
         if (request.animation) {
-            mediaBuffer = await encodeAnimation(page, request, assets);
+            mediaBuffer = await encodeAnimation(page, request, allAssets);
         } else {
             const pngBuffer = await capturePng(page, request);
             mediaBuffer = await encodeImage(pngBuffer, request);
@@ -1044,8 +1211,8 @@ async function renderOne(browser, rawRequest, stepIndex) {
             `- 格式: ${request.format.toUpperCase()}`,
             request.animation ? `- 时长/FPS/帧数: ${request.durationMs}ms / ${request.fps} / ${request.frameCount}` : null,
             `- 透明背景: ${request.transparent ? '是' : '否'}`,
-            request.libraries.length ? `- 内置库: ${request.libraries.join(', ')}` : null,
-            assets.length ? `- 素材数: ${assets.length}` : null,
+            request.libraries.length ? `- 本地库: ${request.libraries.join(', ')}` : null,
+            allAssets.length ? `- 素材数: ${allAssets.length}` : null,
             formatAdjusted ? '- 格式调整: JPEG 不支持透明通道，已自动改为 PNG。' : null,
             `- 文件大小: ${(mediaBuffer.length / 1024).toFixed(1)} KB`,
             `- 可访问URL: ${artifact.imageUrl}`,
@@ -1078,7 +1245,8 @@ async function renderOne(browser, rawRequest, stepIndex) {
                 fps: request.animation ? request.fps : null,
                 frameCount: request.animation ? request.frameCount : null,
                 libraries: request.libraries,
-                assetCount: assets.length,
+                assetCount: allAssets.length,
+                directSourceAssetCount: directSource.directAssets.length,
                 sourceImageUsed: Boolean(request.sourceImage),
                 byteLength: mediaBuffer.length,
                 showBase64: request.showBase64 && !request.animation,
@@ -1099,7 +1267,8 @@ const STEP_FIELDS = [
     'quality', 'showBase64', 'showbase64', 'allowJavaScript', 'waitMs',
     'timeoutMs', 'fileName', 'filename', 'name', 'sourceImage',
     'source_image', 'image', 'image_url', 'libraries', 'library', 'libs',
-    'assets', 'durationMs', 'fps', 'readyMode', 'audioAssetId', 'audio'
+    'assets', 'durationMs', 'fps', 'readyMode', 'audioAssetId', 'audio',
+    'audioUrl', 'audio_url'
 ];
 
 function buildStep(params, suffix = '') {
