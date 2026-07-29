@@ -1,11 +1,12 @@
 {
   "manifestVersion": "1.0.0",
   "name": "MediaRenderer",
-  "displayName": "HTML/SVG 媒体渲染器",
-  "version": "2.1.0",
-  "description": "使用 VCP 托管 Chrome 与系统 FFmpeg，将 HTML/SVG 渲染为 PNG、JPG、WebP、GIF、MP4 或 WebM。源码可直接引用 data:、file://、HTTP/HTTPS 图片、视频和字体；Anime.js/Three.js 常见 CDN 标签会自动改用本地脚本。",
+  "displayName": "HTML/SVG/程序音乐媒体生成器",
+  "version": "2.2.0",
+  "description": "使用 VCP 托管 Chrome 与系统 FFmpeg 渲染 HTML/SVG 图片和动画；也可在无需浏览器与 FFmpeg 的独立 Node.js 子进程中执行 AI 编写的合成代码，生成 PCM16 WAV 程序音乐。",
   "author": "VCPToolBox",
   "pluginType": "hybridservice",
+  "requiresAdmin": true,
   "entryPoint": {
     "script": "MediaRenderer.js"
   },
@@ -18,21 +19,27 @@
     "AllowPrivateNetworkAssets": "boolean",
     "FfmpegPath": "string",
     "FfmpegTimeoutMs": "integer",
-    "MaxAnimationFrames": "integer"
+    "MaxAnimationFrames": "integer",
+    "AudioSynthesisTimeoutMs": "integer",
+    "MaxAudioDurationMs": "integer"
   },
   "configSchemaDescriptions": {
     "DebugMode": "是否输出 MediaRenderer 的逐步渲染诊断日志。",
     "AllowPrivateNetworkAssets": "是否允许源码直引资源、audioUrl、sourceImage 和兼容 assets 访问 localhost、局域网及私网 HTTP/HTTPS 地址；云元数据地址始终阻断。",
-    "FfmpegPath": "生成 GIF、MP4、WebM 时使用的 FFmpeg 命令名或绝对路径。只生成 PNG、JPG、WebP 时无需 FFmpeg。",
+    "FfmpegPath": "生成 GIF、MP4、WebM 时使用的 FFmpeg 命令名或绝对路径。生成静态图或 WAV 时无需 FFmpeg。",
     "FfmpegTimeoutMs": "FFmpeg 对逐帧 PNG 进行 GIF/视频编码的单次超时，范围 10000-600000ms。",
-    "MaxAnimationFrames": "每个 GIF/视频任务允许生成的最大帧数，实际帧数为 ceil(durationMs × fps / 1000)，范围 1-3600。"
+    "MaxAnimationFrames": "每个 GIF/视频任务允许生成的最大帧数，实际帧数为 ceil(durationMs × fps / 1000)，范围 1-3600。",
+    "AudioSynthesisTimeoutMs": "GenerateAudio 音乐合成子进程默认及最大执行超时，范围 1000-300000ms。",
+    "MaxAudioDurationMs": "GenerateAudio 单次允许生成的最大音频时长，范围 1000-900000ms；仍受总采样数上限约束。"
   },
   "defaults": {
     "DebugMode": false,
     "AllowPrivateNetworkAssets": true,
     "FfmpegPath": "ffmpeg",
     "FfmpegTimeoutMs": 180000,
-    "MaxAnimationFrames": 600
+    "MaxAnimationFrames": 600,
+    "AudioSynthesisTimeoutMs": 30000,
+    "MaxAudioDurationMs": 300000
   },
   "capabilities": {
     "invocationCommands": [
@@ -47,6 +54,12 @@
         "commandIdentifier": "RenderAnimation",
         "description": "将 HTML/SVG 按确定性逻辑时间逐帧截图，再通过 FFmpeg 编码为 GIF、MP4 或 WebM。它不是实时录屏：例如 durationMs=5000、fps=30 会生成 150 张 PNG 帧，每帧调用页面帧函数并传入绝对 timeMs，因此机器快慢不会改变动画时间轴。\n\n页面协议：使用 `window.__MEDIA_RENDERER__.setFrameRenderer((timeMs, frameIndex, fps) => {...})`，根据绝对 timeMs 更新 DOM、Canvas、Anime.js 或 Three.js 场景。不要依赖实时 setInterval 或不断累加的 requestAnimationFrame。资源和场景初始化完成后调用 `window.__MEDIA_RENDERER__.setReady()`，并设置 readyMode=signal。没有注册帧函数时，插件只会尝试暂停 Web Animations API/CSS 动画并设置 currentTime。\n\n素材与脚本：图片、纹理、视频和字体直接写进 HTML/CSS/SVG 的 data:、file:// 或 HTTP/HTTPS URL；无需 assets JSON。Anime.js/Three.js 可直接输出 jsDelivr、unpkg 或 cdnjs 的传统全局脚本标签，插件会改用本地内置脚本并分别提供 window.anime、window.THREE。其他远程脚本禁止执行。\n\n视频参数：\n- format：gif、mp4、webm。GIF 输出到图片服务；MP4/WebM 输出到文件服务。\n- durationMs：逻辑时长 100-60000ms，默认 5000。\n- fps：1-60，默认 30。帧数等于 ceil(durationMs × fps / 1000)，不得超过 MaxAnimationFrames。\n- transparent：GIF/WebM 可设 true；MP4/H.264 不支持透明，必须为 false。GIF 只有索引透明色，半透明发光会被量化；高质量 Alpha 优先用 WebM。\n- quality：编码质量 1-100，默认 90。\n- audioUrl：MP4/WebM 可选音轨，直接填写 data:、file:// 或 HTTP/HTTPS 音频 URL。插件安全读取后交给 FFmpeg，音频不足时循环并按视频时长截断。GIF 不含音频。\n- readyMode：复杂动画和异步资源使用 signal；页面准备完成后必须调用 setReady()。\n- timeoutMs：页面资源和初始化超时；FFmpeg 编码另受 FfmpegTimeoutMs 控制。\n\n运行前提：服务器必须安装 FFmpeg，或通过 FfmpegPath 配置其绝对路径。编码流程会先生成全部 PNG 帧，任务耗时与 durationMs×fps、分辨率和编码器速度相关；长视频应降低 FPS/分辨率或提高相应超时。MP4 使用 H.264 yuv420p，WebM 使用 VP9，透明 WebM 使用 yuva420p。\n\nAI 调用格式（必须遵守）：\n必须输出完整的 <<<[TOOL_REQUEST]>>> 到 <<<[END_TOOL_REQUEST]>>> 工具块；每个参数都使用中文边界符「始」「末」，参数之间用英文逗号分隔。html 或 svg 源码必须整体放在同一对「始」「末」内，不要使用 Markdown 代码围栏，不要只输出 HTML，也不要省略 tool_name 和 command。\n\n完整调用示例：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MediaRenderer「末」,\ncommand:「始」RenderAnimation「末」,\nhtml:「始」<!doctype html><script src=\"https://cdn.jsdelivr.net/npm/animejs@3.2.2/lib/anime.min.js\"></script><style>html,body{margin:0;width:100%;height:100%;background:#07111f}.stage{height:100%;display:grid;place-items:center}.dot{width:96px;height:96px;border-radius:50%;background:#22d3ee;box-shadow:0 0 32px #06b6d4}</style><div class=\"stage\"><div class=\"dot\"></div></div><script>const dot=document.querySelector('.dot');window.__MEDIA_RENDERER__.setFrameRenderer(timeMs=>{const p=(timeMs%2000)/2000;dot.style.transform=`translateX(${Math.sin(p*Math.PI*2)*180}px) scale(${1+.2*Math.sin(p*Math.PI*2)})`;});window.__MEDIA_RENDERER__.setReady();</script>「末」,\nwidth:「始」640「末」,\nheight:「始」360「末」,\nformat:「始」mp4「末」,\ntransparent:「始」false「末」,\ndurationMs:「始」4000「末」,\nfps:「始」30「末」,\nreadyMode:「始」signal「末」,\naudioUrl:「始」file:///D:/media/music.mp3「末」,\nfileName:「始」moving-dot-video「末」\n<<<[END_TOOL_REQUEST]>>>",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MediaRenderer「末」,\ncommand:「始」RenderAnimation「末」,\nhtml:「始」<!doctype html><script src=\"https://cdn.jsdelivr.net/npm/animejs@3.2.2/lib/anime.min.js\"></script><style>html,body{margin:0;width:100%;height:100%;background:#07111f}.stage{height:100%;display:grid;place-items:center}.dot{width:96px;height:96px;border-radius:50%;background:#22d3ee;box-shadow:0 0 32px #06b6d4}</style><div class=\"stage\"><div class=\"dot\"></div></div><script>const dot=document.querySelector('.dot');window.__MEDIA_RENDERER__.setFrameRenderer(timeMs=>{const p=(timeMs%2000)/2000;dot.style.transform=`translateX(${Math.sin(p*Math.PI*2)*180}px) scale(${1+.2*Math.sin(p*Math.PI*2)})`;});window.__MEDIA_RENDERER__.setReady();</script>「末」,\nwidth:「始」640「末」,\nheight:「始」360「末」,\nformat:「始」mp4「末」,\ntransparent:「始」false「末」,\ndurationMs:「始」4000「末」,\nfps:「始」30「末」,\nreadyMode:「始」signal「末」,\naudioUrl:「始」file:///D:/media/music.mp3「末」,\nfileName:「始」moving-dot-video「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "GenerateAudio",
+        "commandIdentifier": "GenerateAudio",
+        "description": "在独立 Node.js 子进程中执行 AI 编写的 JavaScript 合成代码，直接生成 WAV/PCM16 音乐；不启动浏览器，不需要 FFmpeg 或额外 npm 依赖。子进程具有执行超时并在超时后终止进程树。\n\n管理员授权（强制）：每次调用必须提供 `requireAdmin`，内容是用户提供的 6 位管理员验证码。缺失或错误时不会启动合成子进程。不要猜测验证码，也不要用示例数字代替。\n\n代码协议：`code` 必须声明 `function synthesize(api)` 或 `const synthesize = api => ...`。可以自由编写循环、算法作曲、DSP、8-bit 波形、滤波、延迟、鼓点和程序化音效。直接写入 `api.left`、`api.right` 或 `api.channelData[channel]` 的 Float32Array；采样值通常为 -1 到 1，超出时插件会统一归一化。函数可以是 async。\n\n内置 API：\n- api.sampleRate、api.duration、api.durationMs、api.channels、api.tempo、api.seed。\n- api.left、api.right、api.channelData：预分配且长度固定的声道采样数组。\n- api.noteToFrequency('C#5')：音符转 Hz。\n- api.oscillator(type, phase, duty)：sine、square/pulse、triangle、saw。\n- api.envelope(time, duration, options)：ADSR 包络。\n- api.addNote({note,start,duration,wave,duty,volume,pan,attack,decay,sustain,release})：便捷叠加音符，时间单位为秒。\n- api.random()、api.noise()：由 seed 控制的确定性随机数/白噪声。\n- api.secondsPerBeat、api.beatToSeconds(beats)。\n- api.Math：标准数学对象。\n\n主要参数：code 必需，最大 1MB；durationMs 默认 10000；sampleRate 默认 44100，范围 8000-48000；channels 为 1 或 2；tempo 范围 20-400；seed 为非负整数；masterVolume 范围 0-1；fadeOutMs 默认 30；timeoutMs 不得超过管理员配置的 AudioSynthesisTimeoutMs；fileName 为输出名主体。输出固定为 WAV/PCM16 并托管到文件服务。总声道采样数最多 3000 万。\n\nAI 调用格式（必须遵守）：必须输出完整工具块，每个参数使用中文边界符「始」「末」。code 必须整体放在同一对边界符内，不使用 Markdown 代码围栏。\n\n完整调用示例：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MediaRenderer「末」,\ncommand:「始」GenerateAudio「末」,\nrequireAdmin:「始」用户提供的6位管理员验证码「末」,\ndurationMs:「始」8000「末」,\nsampleRate:「始」44100「末」,\nchannels:「始」2「末」,\ntempo:「始」160「末」,\nseed:「始」42「末」,\ncode:「始」function synthesize(api){const beat=api.secondsPerBeat;const melody=['C5','E5','G5','C6','G5','E5','D5','G4'];for(let bar=0;bar<4;bar++){for(let i=0;i<melody.length;i++){api.addNote({note:melody[i],start:bar*8*beat/2+i*beat/2,duration:beat*.42,wave:'square',duty:.25,volume:.22,pan:(i%2?0.25:-0.25),attack:.005,release:.04});}for(let step=0;step<16;step++){const start=bar*4*beat+step*beat/4;if(step%4===0)api.addNote({note:'C2',start,duration:beat*.45,wave:'triangle',volume:.28});const from=Math.floor(start*api.sampleRate),len=Math.floor(.035*api.sampleRate);for(let j=0;j<len&&from+j<api.left.length;j++){const env=1-j/len;const hit=api.noise()*env*(step%4===2?.14:.05);api.left[from+j]+=hit;api.right[from+j]+=hit;}}}}「末」,\nfileName:「始」eight-bit-theme「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MediaRenderer「末」,\ncommand:「始」GenerateAudio「末」,\nrequireAdmin:「始」用户提供的6位管理员验证码「末」,\ndurationMs:「始」8000「末」,\ntempo:「始」160「末」,\nseed:「始」42「末」,\ncode:「始」function synthesize(api){const notes=['C5','E5','G5','C6'];for(let i=0;i<32;i++)api.addNote({note:notes[i%4],start:i*.25,duration:.2,wave:'square',duty:.25,volume:.2,pan:i%2?.2:-.2});}「末」,\nfileName:「始」eight-bit-theme「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

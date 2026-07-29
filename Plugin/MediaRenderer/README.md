@@ -1,8 +1,11 @@
 # MediaRenderer
 
-MediaRenderer 使用 VCP 已有的托管 Chrome 运行时和服务器全局 FFmpeg，通过 Puppeteer/CDP 将 AI 编写的 HTML 或 SVG 渲染为静态图片、GIF 或视频。
+MediaRenderer 包含两条彼此独立的生成路径：
 
-插件不通过 ChromeBridge 传输源码或截图，而是直接调用根层浏览器运行时，取得 DevTools WebSocket Endpoint 后创建独立浏览器上下文。
+- 使用 VCP 托管 Chrome 与服务器全局 FFmpeg，将 AI 编写的 HTML/SVG 渲染为静态图片、GIF 或视频。
+- 在独立 Node.js 子进程中运行 AI 编写的音乐合成 JavaScript，直接生成 WAV/PCM16；此路径不启动浏览器，也不需要 FFmpeg 或额外 npm 依赖。
+
+图形渲染不通过 ChromeBridge 传输源码或截图，而是直接调用根层浏览器运行时，取得 DevTools WebSocket Endpoint 后创建独立浏览器上下文。音乐合成则完全绕过浏览器运行时。
 
 ## 功能范围
 
@@ -26,6 +29,10 @@ MediaRenderer 使用 VCP 已有的托管 Chrome 运行时和服务器全局 FFmp
 - Anime.js 3.2.2、Three.js r160 常见 CDN 标签自动重定向到本地版本
 - 本地、内网和公网图片/音频/视频/字体素材
 - 通过直接 `audioUrl` 进行 MP4/WebM 音频混流
+- AI 自由 JavaScript 程序音乐/音效合成
+- 方波、脉冲波、三角波、锯齿波、正弦波与确定性噪声辅助 API
+- 固定时长、单/双声道 PCM16 WAV 输出
+- 独立子进程、执行超时与进程树回收
 
 ## 运行前提
 
@@ -42,6 +49,8 @@ VCP_BROWSER_EXECUTABLE_PATH=C:\Program Files\Google\Chrome\Application\chrome.ex
 ```
 
 插件复用根项目已经安装的 Puppeteer、Sharp 和 mime-types，不需要在插件目录单独安装依赖。GIF/视频还要求系统 PATH 中存在 FFmpeg；也可以通过 `FfmpegPath` 配置绝对路径。
+
+`GenerateAudio` 只依赖当前 Node.js 运行时。只生成 WAV 时，不要求启用托管浏览器，也不要求安装 FFmpeg。
 
 ## 透明图标怎么实现
 
@@ -200,6 +209,89 @@ fileName2:「始」cyan-triangle「末」
 
 插件会严格按照步骤顺序执行，并在一个结果中返回所有图片 URL。批量上限为 16 张，以避免一次调用长期占用浏览器和内存。
 
+## 程序化音乐生成
+
+`GenerateAudio` 接受 AI 编写的 JavaScript 合成代码，在专用子进程中生成 WAV。调用必须带有用户提供的 6 位管理员验证码：
+
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MediaRenderer「末」,
+command:「始」GenerateAudio「末」,
+requireAdmin:「始」用户提供的6位管理员验证码「末」,
+durationMs:「始」8000「末」,
+sampleRate:「始」44100「末」,
+channels:「始」2「末」,
+tempo:「始」160「末」,
+seed:「始」42「末」,
+code:「始」function synthesize(api) {
+    const notes = ['C5', 'E5', 'G5', 'C6', 'G5', 'E5', 'D5', 'G4'];
+    for (let step = 0; step < 32; step++) {
+        api.addNote({
+            note: notes[step % notes.length],
+            start: step * 0.25,
+            duration: 0.2,
+            wave: 'square',
+            duty: 0.25,
+            volume: 0.2,
+            pan: step % 2 ? 0.2 : -0.2,
+            attack: 0.005,
+            release: 0.04
+        });
+    }
+}「末」,
+fileName:「始」eight-bit-theme「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+`code` 必须声明 `synthesize(api)`，可以同步或异步执行。插件预先分配固定长度的 `Float32Array` 声道：
+
+```js
+function synthesize(api) {
+    for (let frame = 0; frame < api.left.length; frame++) {
+        const time = frame / api.sampleRate;
+        const phase = time * 220 % 1;
+        const sample = phase < 0.25 ? 0.15 : -0.15;
+        api.left[frame] += sample;
+        api.right[frame] += sample;
+    }
+}
+```
+
+可用 API：
+
+| 成员 | 说明 |
+|---|---|
+| `sampleRate`、`duration`、`durationMs` | 固定音频时间轴 |
+| `channels`、`channelData`、`left`、`right` | 声道和采样数组；单声道时 right 与 left 指向同一数组 |
+| `tempo`、`secondsPerBeat`、`beatToSeconds()` | 节拍辅助 |
+| `seed`、`random()`、`noise()` | 可复现随机数与白噪声 |
+| `noteToFrequency()` | 将 C4、F#5、Bb3 等音符转换为 Hz |
+| `oscillator()` | sine、square/pulse、triangle、saw/sawtooth |
+| `envelope()` | ADSR 包络计算 |
+| `addNote()` | 快速叠加带波形、包络、音量和声像的音符 |
+| `Math` | 标准 JavaScript 数学对象 |
+
+代码也可以完全忽略便捷 API，自行实现振荡器、滤波、延迟、混响、鼓机、Tracker、算法作曲或其他 DSP。可信 Worker 最后统一处理非有限值、峰值归一化、主音量、尾部淡出和 WAV 编码。
+
+音乐参数：
+
+| 参数 | 必需 | 默认值 | 说明 |
+|---|---|---|---|
+| command | 是 | - | `GenerateAudio` |
+| requireAdmin | 是 | - | 用户提供的 6 位管理员验证码 |
+| code | 是 | - | 声明 `synthesize(api)` 的 JavaScript，最大 1MB |
+| durationMs | 否 | 10000 | 100ms 至管理员配置的最大时长 |
+| sampleRate | 否 | 44100 | 8000-48000 Hz |
+| channels | 否 | 2 | 1 或 2 |
+| tempo | 否 | 120 | 20-400 BPM |
+| seed | 否 | 1 | 0 至 2147483647 |
+| masterVolume | 否 | 0.8 | 0-1 |
+| fadeOutMs | 否 | 30 | 尾部淡出时间 |
+| timeoutMs | 否 | 30000 | 不得超过 `AudioSynthesisTimeoutMs` |
+| fileName | 否 | generated-audio | 输出文件名主体 |
+
+输出固定为 WAV、16-bit PCM。需要 MP3/AAC/Opus 时，可后续通过其他转码流程处理；音乐合成自身不依赖压缩编码器。
+
 ## 参数说明
 
 | 参数 | 必需 | 默认值 | 说明 |
@@ -242,7 +334,11 @@ AI 提供的 HTML/SVG 按不可信输入处理：
 10. 页面完成后立即关闭，逐帧临时目录无论成功失败都会清理。
 11. FFmpeg 使用参数数组启动，不通过 shell 拼接用户输入。
 12. 文件名会移除路径分隔符及危险字符。
-13. 图片/GIF 仅写入 image/media-renderer；MP4/WebM 仅写入 file/media-renderer。
+13. 图片/GIF 仅写入 image/media-renderer；MP4/WebM/WAV 仅写入 file/media-renderer。
+14. GenerateAudio 在启动 Worker 前强制比对用户提交的 `requireAdmin` 与 PluginManager 服务端注入的解密验证码。
+15. 合成代码运行在独立 Node.js 子进程；超时会终止进程树，主服务不会执行 AI 合成代码。
+16. 合成代码大小、时长、采样率、声道数、总声道采样数、Worker 输出及 WAV 文件大小均有限制。
+17. Worker 结束后由主进程重新校验 WAV 头、PCM 格式、采样率、声道数、数据长度和实际时长。
 
 普通字体、图片和视频可以直接在源码中使用 Data URI、`file://` 或 HTTP/HTTPS。旧版 `assets` 与 `sourceImage` 仅用于兼容已有调用。
 
@@ -252,7 +348,7 @@ AI 提供的 HTML/SVG 按不可信输入处理：
 
 ```text
 image/media-renderer/   # PNG/JPG/WebP/GIF
-file/media-renderer/    # MP4/WebM
+file/media-renderer/    # MP4/WebM/WAV
 ```
 
 返回结果包括：

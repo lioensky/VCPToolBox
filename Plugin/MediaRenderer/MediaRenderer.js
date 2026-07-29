@@ -31,6 +31,14 @@ const MAX_FFMPEG_ERROR_BYTES = 64 * 1024;
 const DEFAULT_DURATION_MS = 5000;
 const DEFAULT_FPS = 30;
 const DEFAULT_MAX_FRAMES = 600;
+const DEFAULT_AUDIO_DURATION_MS = 10000;
+const DEFAULT_AUDIO_SAMPLE_RATE = 44100;
+const DEFAULT_AUDIO_TIMEOUT_MS = 30000;
+const MAX_AUDIO_CODE_BYTES = 1024 * 1024;
+const MAX_AUDIO_TOTAL_SAMPLES = 30 * 1000 * 1000;
+const MAX_AUDIO_OUTPUT_BYTES = 128 * 1024 * 1024;
+const MAX_AUDIO_PROCESS_OUTPUT_BYTES = 256 * 1024;
+const AUDIO_WORKER_PATH = path.join(__dirname, 'AudioSynthesisWorker.js');
 const TRUSTED_LIBRARY_CDN_HOSTS = new Set([
     'cdn.jsdelivr.net',
     'unpkg.com',
@@ -103,6 +111,7 @@ let debugMode = false;
 let renderQueue = Promise.resolve();
 let builtinLibrarySourceCache = new Map();
 let ffmpegAvailabilityPromise = null;
+const activeAudioChildren = new Set();
 
 function initialize(config = {}, dependencies = {}) {
     pluginConfig = config;
@@ -126,6 +135,18 @@ function parseInteger(value, fallback, min, max, fieldName) {
     if (!Number.isFinite(parsed)) {
         if (fallback !== undefined) return fallback;
         throw new Error(`${fieldName} 必须是整数。`);
+    }
+    if (parsed < min || parsed > max) {
+        throw new Error(`${fieldName} 必须在 ${min}-${max} 之间，当前值为 ${parsed}。`);
+    }
+    return parsed;
+}
+
+function parseNumber(value, fallback, min, max, fieldName) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+        if (fallback !== undefined) return fallback;
+        throw new Error(`${fieldName} 必须是数字。`);
     }
     if (parsed < min || parsed > max) {
         throw new Error(`${fieldName} 必须在 ${min}-${max} 之间，当前值为 ${parsed}。`);
@@ -365,6 +386,80 @@ function normalizeRequest(raw = {}) {
         ),
         fileStem: sanitizeFileStem(raw.fileName || raw.filename || raw.name)
     };
+}
+
+function normalizeAudioRequest(raw = {}) {
+    const code = String(raw.code || raw.audioCode || raw.javascript || '').trim();
+    if (!code) throw new Error('GenerateAudio 必须提供 code 参数。');
+    if (Buffer.byteLength(code, 'utf8') > MAX_AUDIO_CODE_BYTES) {
+        throw new Error(`音频合成代码超过 ${MAX_AUDIO_CODE_BYTES / 1024 / 1024}MB 限制。`);
+    }
+
+    const maxDurationMs = parseInteger(
+        pluginConfig.MaxAudioDurationMs ?? process.env.MediaRendererMaxAudioDurationMs,
+        300000,
+        1000,
+        900000,
+        'MaxAudioDurationMs'
+    );
+    const durationMs = parseInteger(
+        raw.durationMs,
+        DEFAULT_AUDIO_DURATION_MS,
+        100,
+        maxDurationMs,
+        'durationMs'
+    );
+    const sampleRate = parseInteger(
+        raw.sampleRate,
+        DEFAULT_AUDIO_SAMPLE_RATE,
+        8000,
+        48000,
+        'sampleRate'
+    );
+    const channels = parseInteger(raw.channels, 2, 1, 2, 'channels');
+    const totalSamples = Math.ceil(durationMs * sampleRate / 1000) * channels;
+    if (totalSamples > MAX_AUDIO_TOTAL_SAMPLES) {
+        throw new Error(
+            `音频需要 ${totalSamples} 个声道采样，超过 ${MAX_AUDIO_TOTAL_SAMPLES} 上限；` +
+            '请降低时长、采样率或声道数。'
+        );
+    }
+
+    const timeoutLimitMs = parseInteger(
+        pluginConfig.AudioSynthesisTimeoutMs ?? process.env.MediaRendererAudioSynthesisTimeoutMs,
+        DEFAULT_AUDIO_TIMEOUT_MS,
+        1000,
+        300000,
+        'AudioSynthesisTimeoutMs'
+    );
+
+    return {
+        code,
+        durationMs,
+        sampleRate,
+        channels,
+        tempo: parseNumber(raw.tempo, 120, 20, 400, 'tempo'),
+        seed: parseInteger(raw.seed, 1, 0, 0x7fffffff, 'seed'),
+        masterVolume: parseNumber(raw.masterVolume ?? raw.volume, 0.8, 0, 1, 'masterVolume'),
+        fadeOutMs: parseInteger(raw.fadeOutMs, 30, 0, Math.min(durationMs, 10000), 'fadeOutMs'),
+        timeoutMs: parseInteger(raw.timeoutMs, timeoutLimitMs, 1000, timeoutLimitMs, 'timeoutMs'),
+        fileStem: sanitizeFileStem(raw.fileName || raw.filename || raw.name || 'generated-audio'),
+        format: 'wav'
+    };
+}
+
+function validateAdminForAudio(params, context = {}) {
+    const supplied = String(params.requireAdmin || '').trim();
+    const realCode = String(context.decryptedAuthCode || '').trim();
+    if (!realCode) {
+        throw new Error('无法获取管理员验证码。请确保主服务器配置正确。');
+    }
+    if (!/^\d{6}$/.test(supplied)) {
+        throw new Error('GenerateAudio 必须提供 requireAdmin 参数（6位管理员验证码）。');
+    }
+    if (supplied !== realCode) {
+        throw new Error('管理员验证码错误。');
+    }
 }
 
 function escapeHtmlAttribute(value) {
@@ -953,6 +1048,134 @@ function runProcess(command, args, timeoutMs) {
     });
 }
 
+function killProcessTree(child) {
+    if (!child?.pid) return;
+    if (process.platform === 'win32') {
+        const killer = spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], {
+            shell: false,
+            windowsHide: true,
+            stdio: 'ignore'
+        });
+        killer.unref();
+        return;
+    }
+    try {
+        process.kill(-child.pid, 'SIGKILL');
+    } catch {
+        try {
+            child.kill('SIGKILL');
+        } catch {}
+    }
+}
+
+function runAudioWorker(request, outputPath) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [
+            '--max-old-space-size=512',
+            AUDIO_WORKER_PATH
+        ], {
+            cwd: path.dirname(outputPath),
+            shell: false,
+            windowsHide: true,
+            detached: process.platform !== 'win32',
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: {
+                PATH: process.env.PATH || '',
+                SystemRoot: process.env.SystemRoot || '',
+                WINDIR: process.env.WINDIR || '',
+                TEMP: process.env.TEMP || os.tmpdir(),
+                TMP: process.env.TMP || os.tmpdir()
+            }
+        });
+        activeAudioChildren.add(child);
+
+        let stdout = '';
+        let stderr = '';
+        let settled = false;
+        const finish = (error, result) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            activeAudioChildren.delete(child);
+            if (error) reject(error);
+            else resolve(result);
+        };
+        const appendLimited = (current, chunk) => {
+            const next = current + chunk.toString('utf8');
+            return next.length > MAX_AUDIO_PROCESS_OUTPUT_BYTES
+                ? next.slice(-MAX_AUDIO_PROCESS_OUTPUT_BYTES)
+                : next;
+        };
+        const timer = setTimeout(() => {
+            killProcessTree(child);
+            finish(new Error(`音乐合成子进程执行超过 ${request.timeoutMs}ms，已强制终止。`));
+        }, request.timeoutMs);
+
+        child.stdout.on('data', chunk => {
+            stdout = appendLimited(stdout, chunk);
+        });
+        child.stderr.on('data', chunk => {
+            stderr = appendLimited(stderr, chunk);
+        });
+        child.on('error', error => {
+            finish(new Error(`无法启动音乐合成子进程: ${error.message}`));
+        });
+        child.on('close', code => {
+            if (code !== 0) {
+                finish(new Error(
+                    `音乐合成子进程退出码 ${code}: ${stderr.trim().slice(-8000) || '无错误输出'}`
+                ));
+                return;
+            }
+            try {
+                const result = JSON.parse(stdout.trim());
+                if (result.status !== 'success') throw new Error('Worker 未报告成功状态。');
+                finish(null, result);
+            } catch (error) {
+                finish(new Error(`音乐合成子进程返回无效结果: ${error.message}`));
+            }
+        });
+
+        const payload = JSON.stringify({ ...request, outputPath });
+        child.stdin.on('error', error => {
+            finish(new Error(`向音乐合成子进程写入参数失败: ${error.message}`));
+        });
+        child.stdin.end(payload);
+    });
+}
+
+function inspectPcm16Wav(buffer, request) {
+    if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'RIFF' ||
+        buffer.toString('ascii', 8, 12) !== 'WAVE') {
+        throw new Error('音乐合成子进程没有生成有效的 WAV 文件。');
+    }
+    if (buffer.length > MAX_AUDIO_OUTPUT_BYTES) {
+        throw new Error(`WAV 文件超过 ${MAX_AUDIO_OUTPUT_BYTES / 1024 / 1024}MB 限制。`);
+    }
+    if (buffer.toString('ascii', 12, 16) !== 'fmt ' ||
+        buffer.readUInt16LE(20) !== 1 ||
+        buffer.readUInt16LE(34) !== 16 ||
+        buffer.toString('ascii', 36, 40) !== 'data') {
+        throw new Error('WAV 必须是标准 16-bit PCM 格式。');
+    }
+
+    const channels = buffer.readUInt16LE(22);
+    const sampleRate = buffer.readUInt32LE(24);
+    const dataSize = buffer.readUInt32LE(40);
+    if (channels !== request.channels || sampleRate !== request.sampleRate) {
+        throw new Error('WAV 声道数或采样率与请求不一致。');
+    }
+    if (44 + dataSize !== buffer.length) {
+        throw new Error('WAV data chunk 长度无效。');
+    }
+    const frameCount = dataSize / (channels * 2);
+    const durationMs = frameCount * 1000 / sampleRate;
+    if (Math.abs(durationMs - request.durationMs) > 2) {
+        throw new Error(`WAV 时长 ${durationMs.toFixed(3)}ms 与请求不一致。`);
+    }
+    return { channels, sampleRate, frameCount, durationMs };
+}
+
 async function ensureFfmpegAvailable() {
     if (!ffmpegAvailabilityPromise) {
         const executable = String(
@@ -1084,7 +1307,6 @@ function getOutputEnvironment() {
     const httpBase = process.env.VarHttpUrl || 'http://localhost';
 
     if (!serverPort) throw new Error('缺少 SERVER_PORT/PORT，无法构造媒体 URL。');
-    if (!imageKey) throw new Error('缺少 ImageServer.Image_Key，无法构造图片 URL。');
 
     return {
         projectBasePath,
@@ -1099,9 +1321,12 @@ async function saveArtifact(buffer, request) {
     const env = getOutputEnvironment();
     const extension = request.format;
     const fileName = `${request.fileStem}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.${extension}`;
-    const useFileService = request.format === 'mp4' || request.format === 'webm';
+    const useFileService = ['mp4', 'webm', 'wav'].includes(request.format);
     if (useFileService && !env.fileKey) {
-        throw new Error('缺少 ImageServer.File_Key，无法托管 MP4/WebM 视频。');
+        throw new Error('缺少 ImageServer.File_Key，无法托管音频或视频文件。');
+    }
+    if (!useFileService && !env.imageKey) {
+        throw new Error('缺少 ImageServer.Image_Key，无法托管图片文件。');
     }
 
     const serviceRoot = useFileService ? 'file' : 'image';
@@ -1380,15 +1605,65 @@ async function executeRenderBatch(params) {
     }
 }
 
+async function generateAudio(params, context = {}) {
+    validateAdminForAudio(params, context);
+    const request = normalizeAudioRequest(params);
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'vcp-audio-synthesis-'));
+    const outputPath = path.join(tempDir, 'output.wav');
+
+    try {
+        const workerResult = await runAudioWorker(request, outputPath);
+        const wavBuffer = await fs.readFile(outputPath);
+        const metadata = inspectPcm16Wav(wavBuffer, request);
+        const artifact = await saveArtifact(wavBuffer, request);
+        const channelLabel = metadata.channels === 1 ? '单声道' : '立体声';
+        const text = [
+            '程序化音乐生成成功。',
+            '- 格式: WAV / PCM16',
+            `- 时长: ${(metadata.durationMs / 1000).toFixed(3)} 秒`,
+            `- 采样率: ${metadata.sampleRate} Hz`,
+            `- 声道: ${channelLabel}`,
+            `- BPM: ${request.tempo}`,
+            `- 随机种子: ${request.seed}`,
+            `- 峰值（归一化前）: ${Number(workerResult.peakBeforeNormalization).toFixed(4)}`,
+            `- 文件大小: ${(wavBuffer.length / 1024).toFixed(1)} KB`,
+            `- 可访问URL: ${artifact.mediaUrl}`,
+            `<audio src="${artifact.mediaUrl}" controls></audio>`
+        ].join('\n');
+
+        return {
+            content: [{ type: 'text', text }],
+            details: {
+                format: 'wav',
+                mimeType: 'audio/wav',
+                durationMs: metadata.durationMs,
+                sampleRate: metadata.sampleRate,
+                channels: metadata.channels,
+                frameCount: metadata.frameCount,
+                tempo: request.tempo,
+                seed: request.seed,
+                byteLength: wavBuffer.length,
+                ...artifact
+            }
+        };
+    } finally {
+        await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+}
+
 function enqueueRender(task) {
     const scheduled = renderQueue.then(task, task);
     renderQueue = scheduled.catch(() => {});
     return scheduled;
 }
 
-async function processToolCall(params) {
+async function processToolCall(params, context = {}) {
     try {
-        const result = await enqueueRender(() => executeRenderBatch(params || {}));
+        const input = params || {};
+        const command = String(input.command || 'RenderImage').trim().toLowerCase();
+        const result = command === 'generateaudio'
+            ? await generateAudio(input, context)
+            : await enqueueRender(() => executeRenderBatch(input));
         return { status: 'success', result };
     } catch (error) {
         const message = `MediaRenderer 错误: ${error.message || error}`;
@@ -1403,6 +1678,8 @@ async function processToolCall(params) {
 }
 
 function shutdown() {
+    for (const child of activeAudioChildren) killProcessTree(child);
+    activeAudioChildren.clear();
     renderQueue = Promise.resolve();
     builtinLibrarySourceCache.clear();
     ffmpegAvailabilityPromise = null;
@@ -1417,5 +1694,8 @@ module.exports = {
     collectSteps,
     connectToManagedBrowser,
     resolveSourceImage,
-    applySourceImagePlaceholder
+    applySourceImagePlaceholder,
+    normalizeAudioRequest,
+    inspectPcm16Wav,
+    generateAudio
 };
