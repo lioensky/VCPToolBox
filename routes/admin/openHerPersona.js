@@ -192,5 +192,26 @@ module.exports = function(options) {
         }
     });
 
+    router.delete('/openher-persona/:agentKey', async (req, res) => {
+        try {
+            const agentKey = decodeURIComponent(req.params.agentKey);
+            const result = await callOpenHerPersona({
+                command: 'delete_agent',
+                agentId: agentKey,
+            });
+            if (result && result.status === 'error') {
+                return res.status(400).json(result);
+            }
+            res.json(result);
+        } catch (error) {
+            console.error('[AdminAPI] Error deleting OpenHerPersona agent:', error);
+            res.status(500).json({
+                status: 'error',
+                error: 'Failed to delete OpenHerPersona agent',
+                details: error.message,
+            });
+        }
+    });
+
     return router;
 };
