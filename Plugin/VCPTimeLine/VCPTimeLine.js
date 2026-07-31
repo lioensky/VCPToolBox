@@ -556,6 +556,38 @@ class VCPTimeLine {
         return this.callModel(prompt, timeline, this.config.maxOutputTokens);
     }
 
+    async compactTimelineContent(agentName, month, content) {
+        agentName = this.safeAgentName(agentName);
+        if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new Error('月份必须为 YYYY-MM');
+
+        const normalized = String(content || '').replace(/\r\n/g, '\n').trim();
+        if (!normalized) throw new Error('当前 Timeline 内容为空');
+
+        const lines = normalized.split('\n');
+        const firstLine = lines.shift()?.trim() || '';
+        let lastNonEmptyIndex = lines.length - 1;
+        while (lastNonEmptyIndex >= 0 && !lines[lastNonEmptyIndex].trim()) lastNonEmptyIndex--;
+
+        let tagLine = '';
+        if (lastNonEmptyIndex >= 0 && /^Tag\s*[:：]/i.test(lines[lastNonEmptyIndex].trim())) {
+            tagLine = lines[lastNonEmptyIndex].trim();
+            lines.splice(lastNonEmptyIndex, 1);
+        }
+
+        const body = lines.join('\n').trim();
+        if (!body) throw new Error('当前 Timeline 没有可精简的正文');
+
+        const prompt = `你是个人记忆时间线精简编辑器。请进一步精简 Agent「${agentName}」在 ${month} 的 Timeline 正文，删除重复、冗余和次要表述，同时保留关键人物、事件、结果、观点归属、状态变化及时间线索，不得虚构。保持清晰、连贯的 Markdown；只输出精简后的正文，不要添加日期作者行、Tag 行、解释、前后缀或代码围栏。`;
+        let compactedBody = await this.callModel(prompt, body, this.config.maxOutputTokens);
+        compactedBody = compactedBody
+            .replace(/^```(?:markdown|md)?\s*\n?/i, '')
+            .replace(/\n?```\s*$/i, '')
+            .trim();
+
+        if (!compactedBody) throw new Error('模型未返回有效的精简正文');
+        return [firstLine, compactedBody, tagLine].filter(Boolean).join('\n\n') + '\n';
+    }
+
     buildTimestamp(agentName, month) {
         const [year, monthNumber] = month.split('-').map(Number);
         const lastDay = new Date(year, monthNumber, 0).getDate();
@@ -761,6 +793,14 @@ class VCPTimeLine {
         route('put', '/vcp-timeline/agents/:agentName/files/:month', async (req, res) => {
             await this.saveTimelineFile(req.params.agentName, req.params.month, req.body?.content);
             res.json({ success: true, message: '时间线文件已保存' });
+        });
+        route('post', '/vcp-timeline/agents/:agentName/files/:month/compact', async (req, res) => {
+            const content = await this.compactTimelineContent(
+                req.params.agentName,
+                req.params.month,
+                req.body?.content
+            );
+            res.json({ success: true, content, message: 'Timeline 正文已精简，请确认后保存' });
         });
         route('put', '/vcp-timeline/agents/:agentName/summaries/:month', async (req, res) => {
             const summaries = await this.saveSummary(req.params.agentName, req.params.month, req.body?.summary);

@@ -127,6 +127,15 @@ export const vcpTimelineApi = {
     }, ui)
   },
 
+  compactFile(agentName: string, month: string, content: string, context: HttpRequestContext = {}, ui: RequestUiOptions = {}) {
+    return requestWithUi<{ success: boolean; content: string; message?: string }>({
+      url: `/admin_api/vcp-timeline/agents/${encodeURIComponent(agentName)}/files/${encodeURIComponent(month)}/compact`,
+      method: 'POST',
+      body: { content },
+      ...context,
+    }, ui)
+  },
+
   saveSummary(agentName: string, month: string, summary: string, context: HttpRequestContext = {}, ui: RequestUiOptions = {}) {
     return requestWithUi<{ success: boolean; summaries: Record<string, string>; message?: string }>({
       url: `/admin_api/vcp-timeline/agents/${encodeURIComponent(agentName)}/summaries/${encodeURIComponent(month)}`,
