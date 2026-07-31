@@ -146,11 +146,11 @@ async function main() {
                 }
             }
 
-            // 检测是否包含 || 分隔的多个查询
-            const subQueries = query.split('||').map(q => q.trim()).filter(q => q.length > 0);
+            // 检测是否包含 | 分隔的多个查询
+            const subQueries = query.split('|').map(q => q.trim()).filter(q => q.length > 0);
 
             if (subQueries.length === 0) {
-                throw new Error("No valid search query after splitting by '||'");
+                throw new Error("No valid search query after splitting by '|'");
             }
 
             if (subQueries.length > 1) {
