@@ -553,7 +553,7 @@ class VCPTimeLine {
     async generateOneLineSummary(agentName, month, timeline) {
         const custom = this.config.summaryPrompt;
         const prompt = custom || `你是月度时间线摘要器。请把 Agent「${agentName}」在 ${month} 的时间线压缩成严格的一句话。只输出一句摘要，不要标题、列表、Tag、解释或前后缀；保留最重要事件和状态变化。`;
-        return this.callModel(prompt, timeline, Math.min(300, this.config.maxOutputTokens));
+        return this.callModel(prompt, timeline, this.config.maxOutputTokens);
     }
 
     buildTimestamp(agentName, month) {
