@@ -183,6 +183,8 @@ VCP 的终极愿景，从来不是"让人类更高效地使用 AI"。而是构�
 > 想快速扫一遍技术地图，请看 [VCP 技术 Lite 索引](docs/TECHNICAL_LITE.md)。
 >
 > 工程实现细节、API、配置、运维，请见 [完整文档体系](docs/DOCUMENTATION_INDEX.md)。
+>
+> 了解VCP动向、更新内容，请见 [VCP更新日志](https://www.vcptoolbox.com/?page=changelog)。
 
 ---
 
