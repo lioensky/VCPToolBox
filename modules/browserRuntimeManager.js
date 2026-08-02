@@ -28,6 +28,10 @@ let lastLaunchArgs = [];
 let startedAt = null;
 let lastTouchedAt = null;
 let lastError = null;
+let runtimeInstanceId = null;
+let previousPid = null;
+let lastCloseReason = null;
+let lastClosedAt = null;
 let shutdownHooksRegistered = false;
 
 function readBooleanEnv(name, defaultValue = false) {
@@ -520,6 +524,8 @@ async function ensureManagedBrowser(options = {}) {
         currentProfileDir = launchConfig.profileDir;
         currentDebuggingPort = launchConfig.remoteDebuggingPort;
         currentExtensionDir = launchConfig.loadExtension ? launchConfig.extensionDir : null;
+        runtimeInstanceId = crypto.randomUUID();
+        lastCloseReason = null;
         startedAt = Date.now();
         lastTouchedAt = Date.now();
 
@@ -535,6 +541,9 @@ async function ensureManagedBrowser(options = {}) {
 
         chromeProcess.on('exit', (code, signal) => {
             console.log(`[BrowserRuntimeManager] managed Chrome exited. code=${code}, signal=${signal}`);
+            previousPid = chromeProcess?.pid || previousPid;
+            lastClosedAt = Date.now();
+            lastCloseReason = lastCloseReason || `process_exit:${code ?? 'null'}:${signal || 'none'}`;
             chromeProcess = null;
             startedAt = null;
             currentLaunchConfig = null;
@@ -586,6 +595,8 @@ function killProcessTree(pid) {
 
 async function closeManagedBrowser(reason = 'manual') {
     clearIdleTimer();
+    lastCloseReason = reason;
+    lastClosedAt = Date.now();
 
     const proc = chromeProcess;
     if (!proc) {
@@ -593,6 +604,7 @@ async function closeManagedBrowser(reason = 'manual') {
     }
 
     const pid = proc.pid;
+    previousPid = pid;
     try {
         proc.kill('SIGTERM');
     } catch (_) {
@@ -719,6 +731,10 @@ function getManagedBrowserStatus(extra = {}) {
         enabled: config.enabled,
         running: isProcessAlive(),
         pid: isProcessAlive() ? chromeProcess.pid : null,
+        runtimeInstanceId,
+        previousPid,
+        lastCloseReason,
+        lastClosedAt: lastClosedAt ? new Date(lastClosedAt).toISOString() : null,
         startedAt: startedAt ? new Date(startedAt).toISOString() : null,
         lastTouchedAt: lastTouchedAt ? new Date(lastTouchedAt).toISOString() : null,
         executablePath: currentExecutablePath,

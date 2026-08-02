@@ -205,12 +205,15 @@ function connect(options = {}) {
         return;
     }
 
-    // 从storage获取URL和Key
+    // 从 storage 获取连接参数。发布文件已经确立 managed 身份后，storage 中的旧
+    // agent/user 字段不得反向覆盖本次启动代次的 Token 与身份。
     chrome.storage.local.get(['serverUrl', 'vcpKey', 'clientKind', 'managedRuntime', 'managedToken', 'maxTabs', 'connectionEnabled'], (result) => {
         if (result.connectionEnabled !== undefined) connectionEnabled = result.connectionEnabled === true;
-        if (result.clientKind) runtimeIdentity.clientKind = result.clientKind;
-        if (result.managedRuntime === true) runtimeIdentity.managedRuntime = true;
-        if (result.managedToken) runtimeIdentity.managedToken = result.managedToken;
+        if (!runtimeIdentity.managedRuntime) {
+            if (result.clientKind) runtimeIdentity.clientKind = result.clientKind;
+            if (result.managedRuntime === true) runtimeIdentity.managedRuntime = true;
+            if (result.managedToken) runtimeIdentity.managedToken = result.managedToken;
+        }
         if (result.maxTabs) runtimeIdentity.maxTabs = Math.max(1, Number.parseInt(result.maxTabs, 10) || runtimeIdentity.maxTabs);
 
         if (!options.force && !connectionEnabled && !shouldAutoReconnect()) {
@@ -891,6 +894,49 @@ function normalizeCdpKeys(keys) {
     return String(keys || '').split(/\s*\+\s*|\s*,\s*/).filter(Boolean);
 }
 
+function getCdpKeyDescriptor(rawKey) {
+    const aliases = {
+        esc: 'Escape',
+        return: 'Enter',
+        space: ' ',
+        arrowup: 'ArrowUp',
+        arrowdown: 'ArrowDown',
+        arrowleft: 'ArrowLeft',
+        arrowright: 'ArrowRight',
+        pageup: 'PageUp',
+        pagedown: 'PageDown'
+    };
+    const key = aliases[String(rawKey || '').toLowerCase()] || String(rawKey || '');
+    const specialKeys = {
+        Enter: { code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r' },
+        Tab: { code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9, text: '\t' },
+        Escape: { code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 },
+        Backspace: { code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 },
+        Delete: { code: 'Delete', windowsVirtualKeyCode: 46, nativeVirtualKeyCode: 46 },
+        ArrowLeft: { code: 'ArrowLeft', windowsVirtualKeyCode: 37, nativeVirtualKeyCode: 37 },
+        ArrowUp: { code: 'ArrowUp', windowsVirtualKeyCode: 38, nativeVirtualKeyCode: 38 },
+        ArrowRight: { code: 'ArrowRight', windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 },
+        ArrowDown: { code: 'ArrowDown', windowsVirtualKeyCode: 40, nativeVirtualKeyCode: 40 },
+        PageUp: { code: 'PageUp', windowsVirtualKeyCode: 33, nativeVirtualKeyCode: 33 },
+        PageDown: { code: 'PageDown', windowsVirtualKeyCode: 34, nativeVirtualKeyCode: 34 },
+        Home: { code: 'Home', windowsVirtualKeyCode: 36, nativeVirtualKeyCode: 36 },
+        End: { code: 'End', windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35 },
+        ' ': { code: 'Space', windowsVirtualKeyCode: 32, nativeVirtualKeyCode: 32, text: ' ' }
+    };
+    if (specialKeys[key]) return { key, location: 0, ...specialKeys[key] };
+
+    const character = key.slice(0, 1);
+    const upper = character.toUpperCase();
+    return {
+        key: character,
+        code: /^[a-z]$/i.test(character) ? `Key${upper}` : (/^\d$/.test(character) ? `Digit${character}` : character),
+        windowsVirtualKeyCode: upper.charCodeAt(0) || 0,
+        nativeVirtualKeyCode: upper.charCodeAt(0) || 0,
+        location: 0,
+        text: character
+    };
+}
+
 async function dispatchCdpKeySequence(tabId, keys) {
     const tokens = normalizeCdpKeys(keys);
     if (!tokens.length) throw new Error('send_keys 缺少 keys 参数');
@@ -902,18 +948,66 @@ async function dispatchCdpKeySequence(tabId, keys) {
         if (modifiersMap[lower]) modifiers |= modifiersMap[lower];
         else actionKeys.push(token);
     }
-    const aliases = { esc: 'Escape', return: 'Enter', space: ' ', arrowup: 'ArrowUp', arrowdown: 'ArrowDown', arrowleft: 'ArrowLeft', arrowright: 'ArrowRight', pageup: 'PageUp', pagedown: 'PageDown' };
+
+    const descriptors = [];
     for (const rawKey of actionKeys) {
-        const key = aliases[rawKey.toLowerCase()] || rawKey;
-        await sendCdpCommand(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key.length === 1 ? `Key${key.toUpperCase()}` : key, modifiers });
-        await sendCdpCommand(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key.length === 1 ? `Key${key.toUpperCase()}` : key, modifiers });
+        const descriptor = getCdpKeyDescriptor(rawKey);
+        descriptors.push(descriptor);
+        const common = {
+            key: descriptor.key,
+            code: descriptor.code,
+            modifiers,
+            location: descriptor.location,
+            windowsVirtualKeyCode: descriptor.windowsVirtualKeyCode,
+            nativeVirtualKeyCode: descriptor.nativeVirtualKeyCode
+        };
+        await sendCdpCommand(tabId, 'Input.dispatchKeyEvent', {
+            type: descriptor.text && modifiers === 0 ? 'keyDown' : 'rawKeyDown',
+            ...common
+        });
+        if (descriptor.text && modifiers === 0) {
+            await sendCdpCommand(tabId, 'Input.dispatchKeyEvent', {
+                type: 'char',
+                ...common,
+                text: descriptor.text,
+                unmodifiedText: descriptor.text
+            });
+        }
+        await sendCdpCommand(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...common });
     }
-    return { keys: actionKeys, modifiers };
+    return { keys: actionKeys, modifiers, descriptors };
+}
+
+function summarizeTabState(tabs) {
+    return (Array.isArray(tabs) ? tabs : []).map(tab => ({
+        id: tab.id,
+        url: tab.url || '',
+        title: tab.title || '',
+        active: tab.active === true
+    }));
+}
+
+function detectKeyboardPageTransition(beforeTabs, afterTabs, sourceTabId) {
+    const beforeById = new Map(beforeTabs.map(tab => [tab.id, tab]));
+    const afterSource = afterTabs.find(tab => tab.id === sourceTabId) || null;
+    const beforeSource = beforeById.get(sourceTabId) || null;
+    const createdTabs = afterTabs.filter(tab => !beforeById.has(tab.id));
+    const sourceNavigated = !!beforeSource && !!afterSource && beforeSource.url !== afterSource.url;
+    return {
+        observed: sourceNavigated || createdTabs.length > 0,
+        sourceNavigated,
+        createdTabs,
+        beforeSource,
+        afterSource,
+        tabCountBefore: beforeTabs.length,
+        tabCountAfter: afterTabs.length
+    };
 }
 
 async function executeCdpAction(commandData, tabId) {
     await ensureDebuggerAttached(tabId);
     const command = commandData.command;
+    const tabsBefore = command === 'send_keys' ? summarizeTabState(await queryAllTabs()) : null;
     const targetState = await resolveActionTargetInPage(tabId, commandData.target);
     if (commandData.target && !targetState.found) {
         const error = new Error(`CDP Input 无法解析目标: ${commandData.target}`);
@@ -955,21 +1049,49 @@ async function executeCdpAction(commandData, tabId) {
         throw new Error(`CDP Input 不支持动作: ${command}`);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 120));
-    const afterState = commandData.target ? await resolveActionTargetInPage(tabId, commandData.target) : null;
+    const dispatchedKeys = command === 'send_keys'
+        ? normalizeCdpKeys(commandData.keys || commandData.text).map(key => String(key).toLowerCase())
+        : [];
+    const enterOnInput = command === 'send_keys' &&
+        dispatchedKeys.some(key => key === 'enter' || key === 'return') &&
+        !!commandData.target &&
+        ['input', 'textarea'].includes(targetState?.tagName);
+    await new Promise(resolve => setTimeout(resolve, enterOnInput ? 900 : 120));
+
+    let afterState = null;
+    try {
+        afterState = commandData.target ? await resolveActionTargetInPage(tabId, commandData.target) : null;
+    } catch (error) {
+        // 导航后旧文档句柄不可解析本身属于页面迁移证据，后续由标签状态确权。
+        afterState = { unavailableAfterDispatch: true, reason: error.message };
+    }
+
     const expectedValue = String(commandData.value ?? commandData.text ?? '');
-    const verified = (command === 'type' || command === 'set_value')
+    let verified = (command === 'type' || command === 'set_value')
         ? (afterState?.type === 'password' ? afterState?.valueLength === expectedValue.length : String(afterState?.value ?? '') === expectedValue)
         : null;
+    let verificationType = verified === null ? 'cdp-dispatch-observed' : 'value-readback';
+    let keyboardTransition = null;
+
+    if (enterOnInput) {
+        const tabsAfter = summarizeTabState(await queryAllTabs());
+        keyboardTransition = detectKeyboardPageTransition(tabsBefore || [], tabsAfter, tabId);
+        verified = keyboardTransition.observed;
+        verificationType = 'enter-submit-page-transition';
+    }
+
     return {
-        message: `动作已通过 CDP Input 执行: ${command}`,
+        message: verified === false && enterOnInput
+            ? 'Enter 已通过 CDP Input 发送，但未观察到来源页导航或新标签创建'
+            : `动作已通过 CDP Input 执行: ${command}`,
         code: verified === false ? 'ACTION_VERIFICATION_FAILED' : (verified === true ? 'ACTION_VERIFIED' : 'ACTION_DISPATCHED'),
         result: {
             attempted: true,
             verified,
-            verificationType: verified === null ? 'cdp-dispatch-observed' : 'value-readback',
+            verificationType,
             beforeState: targetState,
             afterState,
+            keyboardTransition,
             targetResolution: targetState,
             backendUsed: 'cdp-input',
             fallbackUsed: false,
@@ -1184,6 +1306,43 @@ function parseNumberParam(value, defaultValue, minValue, maxValue) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return defaultValue;
     return Math.min(Math.max(parsed, minValue), maxValue);
+}
+
+function estimateCdpBodyBytes(body, base64Encoded) {
+    const text = String(body || '');
+    if (!base64Encoded) return new TextEncoder().encode(text).byteLength;
+    const normalized = text.replace(/\s+/g, '');
+    const padding = normalized.endsWith('==') ? 2 : (normalized.endsWith('=') ? 1 : 0);
+    return Math.max(0, Math.floor(normalized.length * 3 / 4) - padding);
+}
+
+async function sha256Text(text) {
+    const bytes = new TextEncoder().encode(String(text || ''));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function buildCdpResponseBodyResult(response, commandData = {}) {
+    const body = String(response?.body || '');
+    const base64Encoded = response?.base64Encoded === true;
+    const bodyChars = body.length;
+    const bodyBytes = estimateCdpBodyBytes(body, base64Encoded);
+    const metadataOnly = parseBooleanParam(commandData.metadataOnly, false);
+    const maxBodyChars = Math.round(parseNumberParam(commandData.maxBodyChars, 16384, 0, 1000000));
+    const truncated = !metadataOnly && bodyChars > maxBodyChars;
+    const exposedBody = metadataOnly ? undefined : (truncated ? body.slice(0, maxBodyChars) : body);
+
+    return {
+        ...(exposedBody === undefined ? {} : { body: exposedBody }),
+        base64Encoded,
+        bodyBytes,
+        bodyChars,
+        sha256: await sha256Text(body),
+        metadataOnly,
+        maxBodyChars,
+        truncated,
+        omittedChars: metadataOnly ? bodyChars : Math.max(0, bodyChars - maxBodyChars)
+    };
 }
 
 async function ensureDebuggerAttached(tabId) {
@@ -1444,9 +1603,15 @@ async function processCdpCommand(commandData) {
             });
             return { result: logs };
 
-        case 'cdp_get_response_body':
+        case 'cdp_get_response_body': {
             if (!attachedTabId) throw new Error('CDP 未启动');
-            return { result: await sendCdpCommand(attachedTabId, 'Network.getResponseBody', { requestId: cdpRequestId }) };
+            if (!cdpRequestId) throw new Error('cdp_get_response_body 缺少 requestId');
+            const response = await sendCdpCommand(attachedTabId, 'Network.getResponseBody', { requestId: cdpRequestId });
+            return {
+                message: 'Response Body 读取成功；大正文按 maxBodyChars 自动截断',
+                result: await buildCdpResponseBodyResult(response, commandData)
+            };
+        }
 
         case 'cdp_clear_network':
             networkLogs.clear();

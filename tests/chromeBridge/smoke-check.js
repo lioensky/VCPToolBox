@@ -8,6 +8,7 @@ const vm = require('vm');
 const root = path.resolve(__dirname, '..', '..');
 const files = {
     bridge: path.join(root, 'Plugin', 'ChromeBridge', 'ChromeBridge.js'),
+    runtime: path.join(root, 'modules', 'browserRuntimeManager.js'),
     background: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'background.js'),
     content: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'content_script.js'),
     popup: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'popup.js'),
@@ -25,12 +26,14 @@ function checkJavaScriptSyntax(file) {
     new vm.Script(read(file), { filename: file });
 }
 
-for (const file of [files.bridge, files.background, files.content, files.popup]) {
+for (const file of [files.bridge, files.runtime, files.background, files.content, files.popup]) {
     checkJavaScriptSyntax(file);
 }
 
 const pluginManifest = JSON.parse(read(files.pluginManifest));
 const extensionManifest = JSON.parse(read(files.extensionManifest));
+const bridge = read(files.bridge);
+const runtime = read(files.runtime);
 const background = read(files.background);
 const content = read(files.content);
 const popup = read(files.popup);
@@ -48,6 +51,13 @@ assert.match(background, /executeCdpAction/);
 assert.match(background, /Input\.dispatchMouseEvent/);
 assert.match(background, /Input\.dispatchKeyEvent/);
 assert.match(background, /Input\.insertText/);
+assert.match(background, /function getCdpKeyDescriptor/);
+assert.match(background, /windowsVirtualKeyCode:\s*13/);
+assert.match(background, /nativeVirtualKeyCode:\s*13/);
+assert.match(background, /type:\s*'char'/);
+assert.match(background, /function detectKeyboardPageTransition/);
+assert.match(background, /enter-submit-page-transition/);
+assert.match(background, /Enter 已通过 CDP Input 发送，但未观察到来源页导航或新标签创建/);
 assert.match(background, /CDP_BACKEND_UNAVAILABLE/);
 assert.match(background, /fallbackReason/);
 assert.match(background, /unifiedPageGraph/);
@@ -55,6 +65,15 @@ assert.match(background, /groundedMarkdown/);
 assert.match(background, /interactionTree/);
 assert.match(background, /scrollContext/);
 assert.match(background, /snapshotDiff/);
+assert.match(background, /if\s*\(!runtimeIdentity\.managedRuntime\)/);
+assert.match(background, /buildCdpResponseBodyResult/);
+assert.match(background, /maxBodyChars,\s*16384/);
+assert.match(background, /metadataOnly/);
+assert.match(background, /sha256Text/);
+
+assert.match(runtime, /runtimeInstanceId/);
+assert.match(runtime, /lastCloseReason/);
+assert.match(runtime, /previousPid/);
 
 assert.match(content, /lastStableContentHash/);
 assert.match(content, /lastStructureHash/);
@@ -65,6 +84,9 @@ assert.match(content, /verifyClickAction/);
 assert.match(content, /SCROLL_BOUNDARY_REACHED/);
 assert.match(content, /SENSITIVE_FIELD_PATTERN/);
 assert.match(content, /redactHtml/);
+assert.match(content, /redactHtmlWithMetadata/);
+assert.match(content, /REDACTION_ENABLED_NO_MATCH/);
+assert.match(content, /redactedFieldCount/);
 assert.match(content, /ACTION_VERIFICATION_FAILED/);
 assert.match(content, /checkElementOcclusion/);
 assert.match(content, /ELEMENT_OCCLUDED/);
@@ -112,12 +134,23 @@ assert.match(fixture, /商品 Alpha/);
 assert.match(fixture, /商品 Beta/);
 assert.strictEqual((fixture.match(/class="buy-button"/g) || []).length, 2);
 
-const bridge = read(files.bridge);
 assert.match(bridge, /pageContentMarkdown/);
 assert.match(bridge, /interactionTree/);
 assert.match(bridge, /scrollContext/);
 assert.match(bridge, /snapshotDiff/);
 assert.match(bridge, /当前页面 Grounded Markdown/);
+assert.match(bridge, /function controlsManagedRuntime/);
+assert.match(bridge, /touchManagedRuntimeForCommand/);
+assert.match(bridge, /getRuntimeReplacementDetails/);
+assert.match(bridge, /RUNTIME_RESTARTED/);
+assert.match(bridge, /shouldUseTrustedKeyboard/);
+assert.match(bridge, /command === 'send_keys'/);
+assert.match(bridge, /\? 'cdp-input'/);
+assert.doesNotMatch(
+    bridge,
+    /function handleClientMessage[\s\S]*?entry\.clientKind === 'managed'[\s\S]*?touchManagedBrowser\(\)[\s\S]*?if \(message\.type === 'clientHello'\)/,
+    'heartbeat/pageInfo 等普通客户端消息不应刷新 managed idle timer'
+);
 
 const commandDescriptions = new Map(
     pluginManifest.capabilities.invocationCommands.map(item => [item.command, item.description])
@@ -140,6 +173,10 @@ console.log(JSON.stringify({
     agentViewFormat: 'grounded-markdown-v1',
     pluginVersion: pluginManifest.version,
     defaultRedaction: true,
+    responseBodyDefaultMaxChars: 16384,
+    managedIdleTouch: 'command-dispatch-and-completion',
+    managedSendKeysBackend: 'cdp-input',
+    enterVerification: 'source-navigation-or-new-tab',
     fixture: path.relative(root, files.fixture),
-    checkedJavaScriptFiles: 4
+    checkedJavaScriptFiles: 5
 }, null, 2));

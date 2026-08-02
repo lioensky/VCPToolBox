@@ -232,9 +232,6 @@ function handleClientMessage(clientId, message) {
     const entry = connectedChromes.get(clientId);
     if (entry) {
         entry.lastSeenAt = nowIso();
-        if (entry.clientKind === 'managed') {
-            browserRuntimeManager.touchManagedBrowser();
-        }
     }
 
     if (message.type === 'clientHello') {
@@ -392,6 +389,8 @@ function buildCommandFromParams(params, suffix = '') {
         origin: params[`origin${suffix}`],
         storageTypes: params[`storageTypes${suffix}`],
         cdpParams: params[`cdpParams${suffix}`],
+        metadataOnly: params[`metadataOnly${suffix}`],
+        maxBodyChars: params[`maxBodyChars${suffix}`],
         snapshotId: params[`snapshotId${suffix}`],
         documentGeneration: params[`documentGeneration${suffix}`],
         strict: params[`strict${suffix}`],
@@ -547,6 +546,34 @@ async function selectChromeClient(cmdParams = {}, options = {}) {
     return null;
 }
 
+function controlsManagedRuntime(entry) {
+    if (!entry || !browserRuntimeManager.getManagedBrowserStatus().running) return false;
+    return (entry.clientKind === 'managed' && entry.managedTokenValid === true) ||
+        entry.clientKind === 'agent';
+}
+
+function touchManagedRuntimeForCommand(entry) {
+    if (!controlsManagedRuntime(entry)) return null;
+    return browserRuntimeManager.touchManagedBrowser();
+}
+
+function getRuntimeReplacementDetails(runtimeAtDispatch) {
+    if (!runtimeAtDispatch?.runtimeInstanceId) return null;
+    const currentRuntime = browserRuntimeManager.getManagedBrowserStatus();
+    if (currentRuntime.runtimeInstanceId === runtimeAtDispatch.runtimeInstanceId) return null;
+    return {
+        code: 'RUNTIME_RESTARTED',
+        oldRuntimeInstanceId: runtimeAtDispatch.runtimeInstanceId,
+        newRuntimeInstanceId: currentRuntime.runtimeInstanceId,
+        oldPid: runtimeAtDispatch.pid,
+        newPid: currentRuntime.pid,
+        lastCloseReason: currentRuntime.lastCloseReason,
+        lastClosedAt: currentRuntime.lastClosedAt,
+        documentInvalidated: true,
+        actionApplied: 'unknown'
+    };
+}
+
 async function enforceManagedTabLimit(entry, cmdParams) {
     if (!entry || entry.clientKind !== 'managed' || cmdParams.command !== 'open_url') return;
 
@@ -576,11 +603,18 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
         effectiveCmdParams.verification = featureFlags.actionVerification ? 'auto' : 'observe';
     }
     if (effectiveCmdParams.actionBackend === undefined) {
-        effectiveCmdParams.actionBackend = featureFlags.cdpInput
-            ? featureFlags.actionBackend
-            : 'content-script';
+        // 键盘提交依赖浏览器可信输入事件。managed/agent 的 send_keys 默认走 CDP，
+        // 否则 content-script 构造的 KeyboardEvent.isTrusted=false，真实站点可能直接忽略。
+        const shouldUseTrustedKeyboard = command === 'send_keys' &&
+            ((entry.clientKind === 'managed' && entry.managedTokenValid) || entry.clientKind === 'agent');
+        effectiveCmdParams.actionBackend = shouldUseTrustedKeyboard
+            ? 'cdp-input'
+            : (featureFlags.cdpInput ? featureFlags.actionBackend : 'content-script');
     } else if (!featureFlags.cdpInput && effectiveCmdParams.actionBackend === 'auto') {
-        effectiveCmdParams.actionBackend = 'content-script';
+        effectiveCmdParams.actionBackend = command === 'send_keys' &&
+            ((entry.clientKind === 'managed' && entry.managedTokenValid) || entry.clientKind === 'agent')
+            ? 'cdp-input'
+            : 'content-script';
     }
     if (effectiveCmdParams.allowFallback === undefined) {
         effectiveCmdParams.allowFallback = true;
@@ -593,10 +627,15 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
         }
     }
 
-    if (!options.skipTouch && entry.clientKind === 'managed') {
-        browserRuntimeManager.touchManagedBrowser();
+    if (!options.skipTouch) {
+        // 以“该命令是否实际控制当前 managed runtime”为准，而不是只看 hello
+        // 最终被归类出的 clientKind。agent 高权限桥可能承接 managed 目标，仍须续期。
+        touchManagedRuntimeForCommand(entry);
     }
 
+    const runtimeAtDispatch = controlsManagedRuntime(entry)
+        ? browserRuntimeManager.getManagedBrowserStatus()
+        : null;
     const bridgeRequestId = `cb-req-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     const commandStartedAt = Date.now();
     recordMetric('commands');
@@ -655,7 +694,29 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
                     const pending = pendingCommands.get(bridgeRequestId);
                     if (!pending) return;
 
+                    const runtimeReplacement = getRuntimeReplacementDetails(runtimeAtDispatch);
+                    if (runtimeReplacement) {
+                        recordMetric('commandErrors');
+                        clearTimeout(pending.timeout);
+                        if (pending.fallbackTimer) clearTimeout(pending.fallbackTimer);
+                        pendingCommands.delete(bridgeRequestId);
+                        entry.ws.removeListener('message', messageListener);
+                        const error = new Error('managed Chrome 在命令执行期间发生换代，旧文档与句柄已失效');
+                        error.code = runtimeReplacement.code;
+                        error.details = {
+                            ...runtimeReplacement,
+                            downstreamResult: {
+                                status: msg.data.status,
+                                code: msg.data.code || null,
+                                error: msg.data.error || null
+                            }
+                        };
+                        reject(error);
+                        return;
+                    }
+
                     if (msg.data.status === 'error') {
+                        if (!options.skipTouch) touchManagedRuntimeForCommand(entry);
                         recordMetric('commandErrors');
                         recordMetric('totalCommandDurationMs', Date.now() - commandStartedAt);
                         if (msg.data.code === 'ACTION_VERIFICATION_FAILED') recordMetric('verificationFailures');
@@ -671,6 +732,7 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
                         error.details = msg.data.details || null;
                         reject(error);
                     } else if (!actualWaitForPageInfo) {
+                        if (!options.skipTouch) touchManagedRuntimeForCommand(entry);
                         recordMetric('totalCommandDurationMs', Date.now() - commandStartedAt);
                         if (msg.data.result?.fallbackUsed) recordMetric('fallbacks');
                         // 不需要等待页面信息，直接返回
@@ -687,6 +749,7 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
                             code: msg.data.code || null
                         });
                     } else {
+                        if (!options.skipTouch) touchManagedRuntimeForCommand(entry);
                         // 命令执行成功，标记并短暂等待页面信息；若页面内容没有变化或站点阻断 content_script，不应拖到 30 秒超时
                         console.log(`[ChromeBridge] ✅ 命令执行成功，等待页面加载/刷新...`);
                         pending.commandExecuted = true;
@@ -694,6 +757,7 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
                         pending.commandResult = msg.data.result;
                         pending.fallbackTimer = setTimeout(() => {
                             const stillPending = pendingCommands.get(bridgeRequestId);
+                            if (!options.skipTouch) touchManagedRuntimeForCommand(entry);
                             if (!stillPending || !stillPending.commandExecuted) return;
                             clearTimeout(stillPending.timeout);
                             pendingCommands.delete(bridgeRequestId);

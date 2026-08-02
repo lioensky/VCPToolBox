@@ -32,7 +32,7 @@
             },
             {
                 "command": "browser_status",
-                "description": "查询 ChromeBridge 连接池、managed Chrome 进程、Profile、idle timer、权限等级、协议版本、客户端能力、feature flags、快照/动作指标和最大标签页上限状态。\n- `command`: 固定为 `browser_status`。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」browser_status「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "description": "查询 ChromeBridge 连接池、managed Chrome 进程、Profile、idle timer、运行实例 ID、上一 PID/关闭原因、权限等级、协议版本、客户端能力、feature flags、快照/动作指标和最大标签页上限状态。该只读监控命令本身不刷新 idle timer，避免轮询状态导致浏览器永久存活；实际页面、标签、截图和 CDP 控制命令会在发送与完成时自动续期。\n- `command`: 固定为 `browser_status`。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」browser_status「末」\n<<<[END_TOOL_REQUEST]>>>",
                 "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」browser_status「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
@@ -142,7 +142,7 @@
             },
             {
                 "command": "cdp_get_response_body",
-                "description": "获取指定网络请求的响应体内容。\n- `command`: 固定为 `cdp_get_response_body`。\n- `requestId`: 目标请求的 ID (从 cdp_network_query 结果中获取)。",
+                "description": "获取指定网络请求的响应体内容。为避免大响应撑爆 Agent 上下文，默认最多外显 16384 字符，并返回 `bodyBytes`、`bodyChars`、`sha256`、`truncated` 和 `omittedChars` 元数据。\n- `command`: 固定为 `cdp_get_response_body`。\n- `requestId`: 目标请求的 ID（从 cdp_network_query 结果中获取）。\n- `metadataOnly`: 可选；为 true 时不返回正文，只返回长度、编码和摘要。\n- `maxBodyChars`: 可选；正文最大外显字符数，默认 16384，范围 0-1000000。",
                 "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_get_response_body「末」,\nrequestId: 「始」123.45「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {

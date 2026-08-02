@@ -67,16 +67,30 @@ function getSafeElementValue(el) {
     return shouldRedactElementValue(el) ? '[REDACTED]' : String(value);
 }
 
-function redactHtml(html) {
-    if (!redactSensitiveDom) return String(html || '');
+function redactHtmlWithMetadata(html) {
+    const source = String(html || '');
+    if (!redactSensitiveDom) {
+        return { html: source, enabled: false, applied: false, redactedFieldCount: 0 };
+    }
     const container = document.createElement('template');
-    container.innerHTML = String(html || '');
+    container.innerHTML = source;
+    let redactedFieldCount = 0;
     container.content.querySelectorAll('input, textarea, [contenteditable="true"]').forEach(el => {
         if (!isSensitiveElement(el)) return;
+        redactedFieldCount++;
         if (el.hasAttribute('value')) el.setAttribute('value', '[REDACTED]');
         el.textContent = '';
     });
-    return container.innerHTML;
+    return {
+        html: container.innerHTML,
+        enabled: true,
+        applied: redactedFieldCount > 0,
+        redactedFieldCount
+    };
+}
+
+function redactHtml(html) {
+    return redactHtmlWithMetadata(html).html;
 }
 
 function safeCssEscape(value) {
@@ -2441,11 +2455,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     const resolved = target ? resolveTargetElement(target) : { element: document.body, source: 'body' };
                     const element = resolved.element;
                     if (!element) throw makeStructuredError('TARGET_NOT_FOUND', `未找到目标元素: ${target}`);
+                    const redacted = redactHtmlWithMetadata(element.outerHTML);
                     result = {
                         status: 'success',
-                        code: redactSensitiveDom ? 'SENSITIVE_DATA_REDACTED' : null,
-                        result: redactHtml(element.outerHTML),
-                        redaction: { enabled: redactSensitiveDom },
+                        code: redacted.applied
+                            ? 'SENSITIVE_DATA_REDACTED'
+                            : (redacted.enabled ? 'REDACTION_ENABLED_NO_MATCH' : null),
+                        result: redacted.html,
+                        redaction: {
+                            enabled: redacted.enabled,
+                            applied: redacted.applied,
+                            redactedFieldCount: redacted.redactedFieldCount
+                        },
                         targetResolution: { source: resolved.source, handleId: resolved.handleId, confidence: resolved.confidence }
                     };
                 } else if (command === 'query_js') {
