@@ -1163,6 +1163,29 @@ class PluginManager extends EventEmitter {
             }
 
             // --- 通用结果处理 ---
+            // direct/distributed 插件不会经过上方 stdio 的 pluginOutput 状态分支，
+            // 因此必须在这里解释统一的 { status, result/error } 业务返回契约。
+            // 顶层 status:error 代表工具业务失败，即使 Promise 正常 fulfilled，
+            // 也必须进入异常链，不能被 ToolExecutor 误报为“发包 success”。
+            if (
+                resultFromPlugin &&
+                typeof resultFromPlugin === 'object' &&
+                resultFromPlugin.status === 'error'
+            ) {
+                const normalizedPluginOutput = {};
+                if (resultFromPlugin.result !== undefined) {
+                    normalizedPluginOutput.result = resultFromPlugin.result;
+                }
+                normalizedPluginOutput.plugin_error =
+                    resultFromPlugin.error ||
+                    resultFromPlugin.message ||
+                    `Plugin "${toolName}" reported an unspecified error.`;
+                if (resultFromPlugin.code !== undefined) {
+                    normalizedPluginOutput.code = resultFromPlugin.code;
+                }
+                throw new Error(JSON.stringify(normalizedPluginOutput));
+            }
+
             // 兼容 direct/hybrid 插件主动返回 stdio 风格的 { status, result } 包装。
             // stdio 插件会在上方被解包到 pluginOutput.result；direct 插件没有这一步，
             // 因此这里补齐一次，使 direct 插件也能返回与 VSearch 相同的
