@@ -56,8 +56,34 @@ assert.match(background, /windowsVirtualKeyCode:\s*13/);
 assert.match(background, /nativeVirtualKeyCode:\s*13/);
 assert.match(background, /type:\s*'char'/);
 assert.match(background, /function detectKeyboardPageTransition/);
+assert.match(background, /function waitForKeyboardPageTransition/);
+assert.match(background, /timeoutMs = 3000/);
+assert.match(background, /observationTimedOut/);
 assert.match(background, /enter-submit-page-transition/);
-assert.match(background, /Enter 已通过 CDP Input 发送，但未观察到来源页导航或新标签创建/);
+assert.match(background, /enter-dispatched-transition-unconfirmed/);
+assert.match(background, /ACTION_DISPATCHED_UNCONFIRMED/);
+assert.match(background, /观察窗内尚未确认页面迁移/);
+assert.doesNotMatch(
+    background,
+    /verified\s*=\s*keyboardTransition\.observed\s*;/,
+    'Enter 未观察到迁移时不得直接赋值 false 并包装成执行错误'
+);
+assert.match(
+    background,
+    /verified\s*=\s*keyboardTransition\.observed\s*\?\s*true\s*:\s*null/,
+    'Enter 未确认态必须映射为 verified=null'
+);
+assert.match(background, /function isSafeContentScriptRetryCommand/);
+assert.match(background, /function sendSafeCommandAfterNavigation/);
+assert.match(background, /CONTENT_SCRIPT_NOT_READY_AFTER_NAVIGATION/);
+for (const command of ['wait_for', 'get_page_info', 'query_html', 'query_js', 'page_code_search']) {
+    assert.match(background, new RegExp(`['"]${command}['"]`), `缺少导航后安全重试命令: ${command}`);
+}
+assert.doesNotMatch(
+    background.match(/function isSafeContentScriptRetryCommand[\s\S]*?\n}/)?.[0] || '',
+    /send_keys|click|type|set_value/,
+    '有副作用动作不得进入导航后自动重试白名单'
+);
 assert.match(background, /CDP_BACKEND_UNAVAILABLE/);
 assert.match(background, /fallbackReason/);
 assert.match(background, /unifiedPageGraph/);
@@ -176,7 +202,9 @@ console.log(JSON.stringify({
     responseBodyDefaultMaxChars: 16384,
     managedIdleTouch: 'command-dispatch-and-completion',
     managedSendKeysBackend: 'cdp-input',
-    enterVerification: 'source-navigation-or-new-tab',
+    enterVerification: 'verified-or-dispatched-unconfirmed',
+    enterObservationMs: 3000,
+    navigationRetry: 'read-only-commands-only',
     fixture: path.relative(root, files.fixture),
     checkedJavaScriptFiles: 5
 }, null, 2));

@@ -87,7 +87,7 @@
             },
             {
                 "command": "send_keys",
-                "description": "向目标元素或当前焦点元素发送键盘动作。支持 Enter、Tab、Escape、方向键、PageUp/PageDown、Home/End 及 Ctrl/Cmd/Alt/Shift 组合键。managed/agent 且启用 `VCP_CHROME_CDP_INPUT` 时优先使用 CDP Input，否则使用 content-script fallback。\n- `target`: 可选；省略时发送到当前焦点元素。\n- `keys`: 必填，可传 `Ctrl+A`、`Enter`、`ArrowDown` 等。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」send_keys「末」,\ntarget: 「始」vcp-searchbox-1「末」,\nkeys: 「始」Enter「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "description": "向目标元素或当前焦点元素发送键盘动作。支持 Enter、Tab、Escape、方向键、PageUp/PageDown、Home/End 及 Ctrl/Cmd/Alt/Shift 组合键。managed/agent 默认使用真实 CDP Input，不受 `VCP_CHROME_CDP_INPUT` 默认路由开关影响，避免站点忽略 `isTrusted=false` 的 content-script 合成键盘事件。对输入控件发送 Enter 时，会在最多 3 秒内观察来源页 URL 变化或新标签创建：观察到迁移返回 `ACTION_VERIFIED`；观察窗内尚无迁移证据返回成功态 `ACTION_DISPATCHED_UNCONFIRMED`，不能据此判定 Enter 无效，调用方应继续通过 URL、标签页或页面快照确权。导航后紧随的 wait_for/get_page_info/query_* 会等待新 content script 就绪并安全重试，但不会重放 Enter、click、type 等有副作用动作。\n- `target`: 可选；省略时发送到当前焦点元素。\n- `keys`: 必填，可传 `Ctrl+A`、`Enter`、`ArrowDown` 等。\n- `actionBackend`: managed/agent 默认 `cdp-input`；可显式指定后端。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」send_keys「末」,\ntarget: 「始」vcp-searchbox-1「末」,\nkeys: 「始」Enter「末」\n<<<[END_TOOL_REQUEST]>>>",
                 "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」send_keys「末」,\nkeys: 「始」Ctrl+A「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {

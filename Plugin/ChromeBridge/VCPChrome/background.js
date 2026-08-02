@@ -764,11 +764,65 @@ function shouldTreatChannelCloseAsNavigation(commandData, error) {
     return navigationProneCommands.has(commandData?.command) && isExpectedNavigationChannelClose(error);
 }
 
+function isSafeContentScriptRetryCommand(command) {
+    return new Set([
+        'wait_for',
+        'get_page_info',
+        'query_html',
+        'query_js',
+        'page_code_search'
+    ]).has(String(command || ''));
+}
+
 function sendCommandToContentScript(tabId, commandData) {
     return chrome.tabs.sendMessage(tabId, {
         type: 'EXECUTE_COMMAND',
         data: commandData
     });
+}
+
+async function sendSafeCommandAfterNavigation(tabId, commandData, initialError) {
+    if (!isSafeContentScriptRetryCommand(commandData?.command) || !isExpectedNavigationChannelClose(initialError)) {
+        throw initialError;
+    }
+
+    const loadResult = await waitForTabLoadComplete(
+        tabId,
+        Math.min(Math.max(Number(commandData.timeoutMs) || 10000, 3000), 15000)
+    );
+
+    let lastError = initialError;
+    for (let attempt = 1; attempt <= 8; attempt++) {
+        try {
+            const response = await sendCommandToContentScript(tabId, commandData);
+            console.log(`[VCP Background] ✅ 导航后只读命令重试成功: ${commandData.command}, attempt=${attempt}`);
+            return {
+                response,
+                retry: {
+                    applied: true,
+                    attempts: attempt,
+                    loadReason: loadResult.reason,
+                    initialError: String(initialError?.message || initialError)
+                }
+            };
+        } catch (error) {
+            lastError = error;
+            if (!isExpectedNavigationChannelClose(error)) throw error;
+            await new Promise(resolve => setTimeout(resolve, Math.min(250 * attempt, 1000)));
+        }
+    }
+
+    const error = new Error(`导航已发生，但新页面 content script 在安全重试窗口内仍未就绪: ${lastError?.message || lastError}`);
+    error.code = 'CONTENT_SCRIPT_NOT_READY_AFTER_NAVIGATION';
+    error.details = {
+        command: commandData.command,
+        tabId,
+        loadReason: loadResult.reason,
+        attempts: 8,
+        initialError: String(initialError?.message || initialError),
+        lastError: String(lastError?.message || lastError)
+    };
+    throw error;
 }
 
 async function resolveActionTargetInPage(tabId, target) {
@@ -1004,6 +1058,30 @@ function detectKeyboardPageTransition(beforeTabs, afterTabs, sourceTabId) {
     };
 }
 
+async function waitForKeyboardPageTransition(beforeTabs, sourceTabId, timeoutMs = 3000) {
+    const startedAt = Date.now();
+    let transition = detectKeyboardPageTransition(
+        beforeTabs,
+        summarizeTabState(await queryAllTabs()),
+        sourceTabId
+    );
+
+    while (!transition.observed && Date.now() - startedAt < timeoutMs) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        transition = detectKeyboardPageTransition(
+            beforeTabs,
+            summarizeTabState(await queryAllTabs()),
+            sourceTabId
+        );
+    }
+
+    return {
+        ...transition,
+        observationMs: Date.now() - startedAt,
+        observationTimedOut: !transition.observed
+    };
+}
+
 async function executeCdpAction(commandData, tabId) {
     await ensureDebuggerAttached(tabId);
     const command = commandData.command;
@@ -1056,7 +1134,7 @@ async function executeCdpAction(commandData, tabId) {
         dispatchedKeys.some(key => key === 'enter' || key === 'return') &&
         !!commandData.target &&
         ['input', 'textarea'].includes(targetState?.tagName);
-    await new Promise(resolve => setTimeout(resolve, enterOnInput ? 900 : 120));
+    await new Promise(resolve => setTimeout(resolve, 120));
 
     let afterState = null;
     try {
@@ -1074,17 +1152,24 @@ async function executeCdpAction(commandData, tabId) {
     let keyboardTransition = null;
 
     if (enterOnInput) {
-        const tabsAfter = summarizeTabState(await queryAllTabs());
-        keyboardTransition = detectKeyboardPageTransition(tabsBefore || [], tabsAfter, tabId);
-        verified = keyboardTransition.observed;
-        verificationType = 'enter-submit-page-transition';
+        keyboardTransition = await waitForKeyboardPageTransition(tabsBefore || [], tabId, 3000);
+        // 未在有限观察窗中看到导航不能证明 Enter 无效；站点可能延迟创建标签
+        // 或先执行异步校验。此时标记“尚未确认”，不得把已生效动作包装成错误。
+        verified = keyboardTransition.observed ? true : null;
+        verificationType = keyboardTransition.observed
+            ? 'enter-submit-page-transition'
+            : 'enter-dispatched-transition-unconfirmed';
     }
 
     return {
-        message: verified === false && enterOnInput
-            ? 'Enter 已通过 CDP Input 发送，但未观察到来源页导航或新标签创建'
+        message: enterOnInput && verified === null
+            ? 'Enter 已通过 CDP Input 发送；观察窗内尚未确认页面迁移，后续应通过 URL、标签页或页面快照确权'
             : `动作已通过 CDP Input 执行: ${command}`,
-        code: verified === false ? 'ACTION_VERIFICATION_FAILED' : (verified === true ? 'ACTION_VERIFIED' : 'ACTION_DISPATCHED'),
+        code: verified === false
+            ? 'ACTION_VERIFICATION_FAILED'
+            : (verified === true
+                ? 'ACTION_VERIFIED'
+                : (enterOnInput ? 'ACTION_DISPATCHED_UNCONFIRMED' : 'ACTION_DISPATCHED')),
         result: {
             attempted: true,
             verified,
@@ -1212,64 +1297,68 @@ async function handleIncomingCommand(commandData) {
         return;
     }
 
-    // 其他指令转发给 content_script
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]) {
-            chrome.tabs.sendMessage(tabs[0].id, {
-                type: 'EXECUTE_COMMAND',
-                data: commandData
-            }).catch(err => {
-                if (shouldTreatChannelCloseAsNavigation(commandData, err)) {
-                    console.log('[VCP Background] 🔄 点击触发导航导致 content script 通道关闭，等待标签页完成加载:', err.message);
-                    waitForTabLoadComplete(tabs[0].id, 12000).then((loadResult) => {
-                        sendResponseToWs({
-                            type: 'command_result',
-                            data: {
-                                requestId,
-                                sourceClientId,
-                                status: 'success',
-                                code: 'NAVIGATION_COMPLETED_OR_STABLE',
-                                message: `点击已触发页面导航，已等待标签页状态: ${loadResult.reason}，随后请求新页面信息。`,
-                                result: {
-                                    navigationInProgress: false,
-                                    navigationWaitReason: loadResult.reason,
-                                    tab: loadResult.tab ? {
-                                        id: loadResult.tab.id,
-                                        title: loadResult.tab.title,
-                                        url: loadResult.tab.url,
-                                        status: loadResult.tab.status
-                                    } : null,
-                                    originalChannelError: err.message
-                                }
-                            }
-                        });
+    // 其他指令转发给 content_script。导航后只允许重试无副作用查询/等待命令；
+    // click/type/send_keys 等动作绝不自动重放，避免重复提交。
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const activeTab = tabs[0];
+    if (!activeTab) {
+        sendResponseToWs({
+            type: 'command_result',
+            data: { requestId, sourceClientId, status: 'error', code: 'NO_ACTIVE_TAB', error: '没有活动的标签页' }
+        });
+        return;
+    }
 
-// 必须在 command_result 之后请求 page_info：
-                        // 服务端只有收到 command_result 后才会把 pending 标记为 commandExecuted。
-                        // Bing/Google 搜索结果页 load complete 后还会异步填充结果列表，过早抓取只会得到顶部导航。
-                        setTimeout(() => requestPageInfoWithRetry(tabs[0].id), 2500);
-                    });
-                    return;
-                }
-
-                sendResponseToWs({
-                    type: 'command_result',
-                    data: {
-                        requestId,
-                        sourceClientId,
-                        status: 'error',
-                        code: 'CONTENT_SCRIPT_CONTEXT_LOST',
-                        error: '无法连接到页面脚本: ' + err.message
-                    }
-                });
-            });
-        } else {
+    try {
+        await sendCommandToContentScript(activeTab.id, commandData);
+    } catch (err) {
+        if (shouldTreatChannelCloseAsNavigation(commandData, err)) {
+            console.log('[VCP Background] 🔄 点击触发导航导致 content script 通道关闭，等待标签页完成加载:', err.message);
+            const loadResult = await waitForTabLoadComplete(activeTab.id, 12000);
             sendResponseToWs({
                 type: 'command_result',
-                data: { requestId, sourceClientId, status: 'error', code: 'NO_ACTIVE_TAB', error: '没有活动的标签页' }
+                data: {
+                    requestId,
+                    sourceClientId,
+                    status: 'success',
+                    code: 'NAVIGATION_COMPLETED_OR_STABLE',
+                    message: `点击已触发页面导航，已等待标签页状态: ${loadResult.reason}，随后请求新页面信息。`,
+                    result: {
+                        navigationInProgress: false,
+                        navigationWaitReason: loadResult.reason,
+                        tab: loadResult.tab ? {
+                            id: loadResult.tab.id,
+                            title: loadResult.tab.title,
+                            url: loadResult.tab.url,
+                            status: loadResult.tab.status
+                        } : null,
+                        originalChannelError: err.message
+                    }
+                }
+            });
+            // 必须在 command_result 之后请求 page_info：服务端收到结果后才会将 pending 标记为已执行。
+            setTimeout(() => requestPageInfoWithRetry(activeTab.id), 2500);
+            return;
+        }
+
+        try {
+            await sendSafeCommandAfterNavigation(activeTab.id, commandData, err);
+            // content script 会自行通过 COMMAND_RESULT 回传原命令结果，此处不能重复发送。
+            return;
+        } catch (retryError) {
+            sendResponseToWs({
+                type: 'command_result',
+                data: {
+                    requestId,
+                    sourceClientId,
+                    status: 'error',
+                    code: retryError.code || 'CONTENT_SCRIPT_CONTEXT_LOST',
+                    error: '无法连接到页面脚本: ' + retryError.message,
+                    details: retryError.details || null
+                }
             });
         }
-    });
+    }
 }
 
 function sendResponseToWs(message) {
