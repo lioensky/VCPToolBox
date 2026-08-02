@@ -122,8 +122,8 @@
             },
             {
                 "command": "execute_script",
-                "description": "在当前页面上下文中执行自定义 JavaScript 代码，并获取返回值。\n- `command`: 固定为 `execute_script`。\n- `text`: 要执行的 JavaScript 代码字符串。\n\n**注意:** 该指令允许直接操作 DOM 或调用页面全局函数，执行结果将通过回调返回。",
-                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」execute_script「末」,\ntext: 「始」return { width: window.innerWidth, title: document.title }「末」\n<<<[END_TOOL_REQUEST]>>>"
+                "description": "在当前页面上下文中执行自定义异步 JavaScript 代码，并逐层透传返回值。\n- `command`: 固定为 `execute_script`。\n- `text`: 要执行的 JavaScript 代码字符串；支持 `await`，应使用 `return` 返回可结构化克隆的值。\n- `executionWorld`: 可选，`MAIN` / `ISOLATED`，默认 `MAIN`。需要调用页面自有 JS 全局时使用 MAIN；只读取标准 DOM 时推荐 ISOLATED，以避开站点 CSP/Trusted Types 等主世界策略。\n\n返回诊断包含 `SCRIPT_RESULT_RETURNED` / `SCRIPT_RESULT_MISSING`、执行世界、frame 数量与结果类型。DOM 节点、函数、循环引用等不可结构化克隆值不能直接返回。\n\n**注意:** 该指令允许直接操作 DOM 或调用页面全局函数，属于高权限指令。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」execute_script「末」,\nexecutionWorld: 「始」ISOLATED「末」,\ntext: 「始」return { ok: true, width: window.innerWidth, title: document.title }「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
                 "command": "cdp_start",

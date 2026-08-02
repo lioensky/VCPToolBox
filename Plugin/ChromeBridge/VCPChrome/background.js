@@ -1519,22 +1519,43 @@ async function captureScreenshot(commandData = {}) {
 async function executeScriptInMainWorld(commandData) {
     const tabId = currentActiveTabId;
     const code = commandData.text || '';
+    const requestedWorld = String(commandData.executionWorld || commandData.world || 'MAIN').trim().toUpperCase();
+    const executionWorld = requestedWorld === 'ISOLATED' ? 'ISOLATED' : 'MAIN';
     if (!tabId) throw new Error('没有活动的标签页');
     if (!code.trim()) throw new Error('execute_script 缺少 text 代码内容');
 
     const injectionResults = await chrome.scripting.executeScript({
         target: { tabId },
-        world: 'MAIN',
+        world: executionWorld,
         func: async (userCode) => {
-            const fn = new Function(`return (async () => {\n${userCode}\n})()`);
-            return await fn();
+            // 必须逐层 return/await。否则用户代码中的 return 只会退出动态函数，
+            // chrome.scripting.executeScript() 最终会得到 undefined（经 JSON 后表现为 null）。
+            const runner = new Function(`return (async () => {\n${userCode}\n})()`);
+            return await runner();
         },
         args: [code]
     });
 
+    const firstFrame = Array.isArray(injectionResults) ? injectionResults[0] : null;
+    const scriptResult = firstFrame?.result;
+    const resultPresent = Boolean(firstFrame) &&
+        Object.prototype.hasOwnProperty.call(firstFrame, 'result') &&
+        scriptResult !== undefined;
+
     return {
-        message: '脚本执行成功',
-        result: injectionResults?.[0]?.result
+        message: resultPresent
+            ? `脚本执行成功 (${executionWorld})`
+            : `脚本执行完成，但未返回可序列化结果 (${executionWorld})`,
+        result: scriptResult === undefined ? null : scriptResult,
+        code: resultPresent ? 'SCRIPT_RESULT_RETURNED' : 'SCRIPT_RESULT_MISSING',
+        details: {
+            executionWorld,
+            frameCount: Array.isArray(injectionResults) ? injectionResults.length : 0,
+            frameId: firstFrame?.frameId ?? null,
+            documentId: firstFrame?.documentId ?? null,
+            resultPresent,
+            resultType: scriptResult === null ? 'null' : typeof scriptResult
+        }
     };
 }
 

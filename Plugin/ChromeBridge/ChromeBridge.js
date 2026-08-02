@@ -372,6 +372,7 @@ function buildCommandFromParams(params, suffix = '') {
         y: params[`y${suffix}`],
         behavior: params[`behavior${suffix}`],
         expression: params[`expression${suffix}`],
+        executionWorld: params[`executionWorld${suffix}`] || params[`world${suffix}`],
         selector: params[`selector${suffix}`],
         nodeId: params[`nodeId${suffix}`],
         depth: params[`depth${suffix}`],

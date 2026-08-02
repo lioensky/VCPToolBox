@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
     "name": "VCP Chrome Control",
-    "version": "1.0.1",
-    "description": "连接到VCP服务器，允许AI代理与您的浏览器交互。",
+    "version": "1.0.2",
+    "description": "连接到VCP服务器，允许AI代理与您的浏览器交互。1.0.2 加固 execute_script 异步结果透传并支持 MAIN/ISOLATED 执行世界。",
     "permissions": [
         "storage",
         "activeTab",
