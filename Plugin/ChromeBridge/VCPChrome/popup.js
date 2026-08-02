@@ -11,10 +11,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const toggleClientModeBtn = document.getElementById('toggleClientMode');
     const clientModeStatusBadge = document.getElementById('client-mode-status');
     const refreshButton = document.getElementById('refreshPage');
+    const copyGroundedMarkdownButton = document.getElementById('copyGroundedMarkdown');
+    const copyStatusDiv = document.getElementById('copy-status');
     const settingsToggle = document.getElementById('settings-toggle');
     const settingsDiv = document.getElementById('settings');
     const serverUrlInput = document.getElementById('serverUrl');
     const vcpKeyInput = document.getElementById('vcpKey');
+    const redactSensitiveDomInput = document.getElementById('redactSensitiveDom');
     const saveSettingsButton = document.getElementById('saveSettings');
     const pageInfoDiv = document.getElementById('page-info');
     const pageTitleDiv = document.getElementById('page-title');
@@ -84,14 +87,63 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function writeTextToClipboard(text) {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand('copy');
+        textarea.remove();
+        if (!copied) throw new Error('浏览器拒绝写入剪贴板');
+    }
+
+    function setCopyStatus(message, isError = false) {
+        copyStatusDiv.textContent = message;
+        copyStatusDiv.style.color = isError ? '#b42318' : '#6d5a8f';
+    }
+
+    async function requestCurrentGroundedMarkdown() {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs[0];
+        if (!tab?.id || !/^https?:/i.test(tab.url || '')) {
+            throw new Error('当前标签页不是可解析的 HTTP/HTTPS 页面');
+        }
+        return new Promise((resolve, reject) => {
+            chrome.tabs.sendMessage(tab.id, { type: 'GET_GROUNDED_PAGE_INFO' }, (response) => {
+                if (chrome.runtime.lastError) {
+                    reject(new Error(`无法连接页面解析器：${chrome.runtime.lastError.message}`));
+                    return;
+                }
+                const markdown = response?.markdown || response?.pageInfo?.agentView?.markdown;
+                if (!response?.success || !markdown) {
+                    reject(new Error(response?.pageInfo?.error || '页面解析器未返回 Grounded Markdown'));
+                    return;
+                }
+                resolve({ markdown, pageInfo: response.pageInfo });
+            });
+        });
+    }
+
     // 加载已保存的设置
     function loadSettings() {
-        chrome.storage.local.get(['serverUrl', 'vcpKey', 'clientKind', 'managedRuntime', 'managedToken'], (result) => {
+        chrome.storage.local.get(['serverUrl', 'vcpKey', 'clientKind', 'managedRuntime', 'managedToken', 'redactSensitiveDom'], (result) => {
             if (result.serverUrl) {
                 serverUrlInput.value = result.serverUrl;
             }
             if (result.vcpKey) {
                 vcpKeyInput.value = result.vcpKey;
+            }
+            // 缺省值必须为 true，确保升级安装和首次安装都默认脱敏。
+            redactSensitiveDomInput.checked = result.redactSensitiveDom !== false;
+            if (result.redactSensitiveDom === undefined) {
+                chrome.storage.local.set({ redactSensitiveDom: true });
             }
             updateClientModeUI(result.clientKind);
             if (result.managedRuntime === true) {
@@ -213,6 +265,30 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    copyGroundedMarkdownButton.addEventListener('click', async () => {
+        const originalText = copyGroundedMarkdownButton.textContent;
+        copyGroundedMarkdownButton.disabled = true;
+        copyGroundedMarkdownButton.textContent = '⏳ 正在编译页面图...';
+        setCopyStatus('正在从当前活动标签页生成最新 Grounded Markdown…');
+        try {
+            const { markdown, pageInfo } = await requestCurrentGroundedMarkdown();
+            await writeTextToClipboard(markdown);
+            copyGroundedMarkdownButton.textContent = '✅ 已复制';
+            setCopyStatus(
+                `已复制 ${markdown.length.toLocaleString()} 字符；Snapshot ${pageInfo.snapshotId}，${pageInfo.elementCount} 个操作目标。`
+            );
+        } catch (error) {
+            console.error('[VCP Popup] 复制 Grounded Markdown 失败:', error);
+            copyGroundedMarkdownButton.textContent = '❌ 复制失败';
+            setCopyStatus(error.message || String(error), true);
+        } finally {
+            setTimeout(() => {
+                copyGroundedMarkdownButton.textContent = originalText;
+                copyGroundedMarkdownButton.disabled = false;
+            }, 1800);
+        }
+    });
+
     // 设置按钮
     settingsToggle.addEventListener('click', () => {
         if (settingsDiv.style.display === 'none' || !settingsDiv.style.display) {
@@ -228,8 +304,13 @@ document.addEventListener('DOMContentLoaded', () => {
     saveSettingsButton.addEventListener('click', () => {
         const serverUrl = serverUrlInput.value;
         const vcpKey = vcpKeyInput.value;
-        chrome.storage.local.set({ serverUrl, vcpKey }, () => {
+        const redactSensitiveDom = redactSensitiveDomInput.checked;
+        chrome.storage.local.set({ serverUrl, vcpKey, redactSensitiveDom }, () => {
             console.log('Settings saved.');
+            chrome.runtime.sendMessage({
+                type: 'PRIVACY_SETTINGS_CHANGED',
+                redactSensitiveDom
+            });
             saveSettingsButton.textContent = '✅ 已保存!';
             setTimeout(() => {
                 saveSettingsButton.textContent = '保存设置';

@@ -1,4 +1,10 @@
 let lastPageContent = '';
+let lastStableContentHash = '';
+let lastStructureHash = '';
+let lastSnapshotSummary = null;
+let lastPageGraphSnapshot = null;
+let duplicateSnapshotSkippedCount = 0;
+let redactSensitiveDom = true; // 浏览器内脱敏默认开启，可由 Popup 显式关闭
 let vcpIdCounter = 0;
 let isActiveTab = false; // 标记当前标签页是否为活动标签页
 let isMonitoringEnabled = false; // 从 background/storage 同步的页面监控开关
@@ -33,6 +39,44 @@ function simpleHash(input) {
         hash = Math.imul(hash, 16777619);
     }
     return (hash >>> 0).toString(36);
+}
+
+const SENSITIVE_FIELD_PATTERN = /pass(word)?|passwd|pwd|token|access.?token|refresh.?token|authorization|auth|cookie|secret|api.?key|session.?id|credit.?card|card.?number|cvv|cvc|security.?code/i;
+
+function isSensitiveElement(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    if ((el.getAttribute('type') || el.type || '').toLowerCase() === 'password') return true;
+    const identity = [
+        el.id,
+        el.getAttribute('name'),
+        el.getAttribute('autocomplete'),
+        el.getAttribute('aria-label'),
+        el.getAttribute('placeholder'),
+        el.getAttribute('data-testid')
+    ].map(value => normalizeAttribute(value)).filter(Boolean).join(' ');
+    return SENSITIVE_FIELD_PATTERN.test(identity);
+}
+
+function shouldRedactElementValue(el) {
+    return redactSensitiveDom && isSensitiveElement(el);
+}
+
+function getSafeElementValue(el) {
+    if (!el) return '';
+    const value = el.isContentEditable ? (el.textContent || '') : (el.value ?? '');
+    return shouldRedactElementValue(el) ? '[REDACTED]' : String(value);
+}
+
+function redactHtml(html) {
+    if (!redactSensitiveDom) return String(html || '');
+    const container = document.createElement('template');
+    container.innerHTML = String(html || '');
+    container.content.querySelectorAll('input, textarea, [contenteditable="true"]').forEach(el => {
+        if (!isSensitiveElement(el)) return;
+        if (el.hasAttribute('value')) el.setAttribute('value', '[REDACTED]');
+        el.textContent = '';
+    });
+    return container.innerHTML;
 }
 
 function safeCssEscape(value) {
@@ -109,7 +153,7 @@ function getElementTextForSignature(el) {
     if (isInputElement) {
         return normalizeAttribute(
             inferInputSemanticLabel(el) ||
-            el.value ||
+            getSafeElementValue(el) ||
             el.innerText ||
             el.textContent ||
             ''
@@ -453,7 +497,286 @@ function createSnapshotContext() {
         url: document.URL,
         title: document.title,
         elements: [],
-        kindCounters: createKindCounters()
+        kindCounters: createKindCounters(),
+        regionCounter: 0,
+        blockCounter: 0,
+        regionIds: new WeakMap(),
+        blockIds: new WeakMap(),
+        regions: [],
+        contentBlocks: [],
+        headingStack: []
+    };
+}
+
+function isElementVisibleForSnapshot(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number.parseFloat(style.opacity || '1') > 0 &&
+        (rect.width > 0 || rect.height > 0 || element === document.body);
+}
+
+function getRegionKind(element) {
+    if (!element) return 'content';
+    const role = normalizeAttribute(element.getAttribute('role')).toLowerCase();
+    const tag = element.tagName.toLowerCase();
+    if (role === 'dialog' || role === 'alertdialog') return 'overlay';
+    if (role === 'navigation' || tag === 'nav') return 'navigation';
+    if (role === 'main' || tag === 'main') return 'main';
+    if (role === 'complementary' || tag === 'aside') return 'sidebar';
+    if (role === 'banner' || tag === 'header') return 'header';
+    if (role === 'contentinfo' || tag === 'footer') return 'footer';
+    if (tag === 'form' || role === 'form') return 'form';
+    return 'content';
+}
+
+function getOrCreateRegion(element, context) {
+    const regionElement = element?.closest?.(
+        '[role="dialog"],[role="alertdialog"],[role="navigation"],[role="main"],[role="complementary"],[role="banner"],[role="contentinfo"],[role="form"],dialog,nav,main,aside,header,footer,form'
+    ) || document.body;
+    let regionId = context.regionIds.get(regionElement);
+    if (regionId) return regionId;
+    regionId = `region-${++context.regionCounter}`;
+    context.regionIds.set(regionElement, regionId);
+    const rect = regionElement.getBoundingClientRect();
+    context.regions.push({
+        regionId,
+        kind: getRegionKind(regionElement),
+        label: getAccessibleName(regionElement) || normalizeAttribute(regionElement.getAttribute('aria-label')) || '',
+        rect: {
+            x: Math.round(rect.x + window.scrollX),
+            y: Math.round(rect.y + window.scrollY),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+        }
+    });
+    return regionId;
+}
+
+function getBlockKind(element) {
+    if (!element) return 'content';
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'tr') return 'table-row';
+    if (tag === 'li') return 'list-item';
+    if (tag === 'fieldset') return 'form-group';
+    if (tag === 'article') return 'article';
+    if (tag === 'section') return 'section';
+    if (tag === 'form') return 'form';
+    if (element.getAttribute('role') === 'dialog') return 'dialog';
+    return 'content';
+}
+
+function findSemanticBlockElement(element) {
+    return element?.closest?.(
+        'tr,li,fieldset,article,section,form,dialog,[role="dialog"],[role="listitem"],[data-card],[class*="card"],[class*="item"]'
+    ) || element?.parentElement || document.body;
+}
+
+function getHeadingPathForElement(element) {
+    const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+        .filter(isElementVisibleForSnapshot);
+    const path = [];
+    for (const heading of headings) {
+        if (heading.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) {
+            const level = Number(heading.tagName.slice(1));
+            while (path.length >= level) path.pop();
+            path[level - 1] = normalizeAttribute(heading.innerText || heading.textContent || '').slice(0, 120);
+        }
+    }
+    return path.filter(Boolean).slice(-4);
+}
+
+function getOrCreateContentBlock(element, context) {
+    const blockElement = findSemanticBlockElement(element);
+    let blockId = context.blockIds.get(blockElement);
+    if (blockId) return blockId;
+    blockId = `block-${++context.blockCounter}`;
+    context.blockIds.set(blockElement, blockId);
+    const rect = blockElement.getBoundingClientRect();
+    const headingPath = getHeadingPathForElement(blockElement);
+    const text = normalizeAttribute(blockElement.innerText || blockElement.textContent || '').slice(0, 360);
+    context.contentBlocks.push({
+        blockId,
+        regionId: getOrCreateRegion(blockElement, context),
+        kind: getBlockKind(blockElement),
+        headingPath,
+        text,
+        rect: {
+            x: Math.round(rect.x + window.scrollX),
+            y: Math.round(rect.y + window.scrollY),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+        },
+        handleIds: []
+    });
+    return blockId;
+}
+
+function getSpatialHint(rect) {
+    const horizontal = rect.left < window.innerWidth / 3 ? '左' : (rect.right > window.innerWidth * 2 / 3 ? '右' : '中');
+    const vertical = rect.top < window.innerHeight / 3 ? '上' : (rect.bottom > window.innerHeight * 2 / 3 ? '下' : '中');
+    return `${vertical}${horizontal}`;
+}
+
+function buildScrollContext(elements) {
+    const doc = document.documentElement;
+    const body = document.body;
+    const scrollHeight = Math.max(doc?.scrollHeight || 0, body?.scrollHeight || 0);
+    const viewportHeight = window.innerHeight || doc?.clientHeight || 1;
+    const maxScrollY = Math.max(0, scrollHeight - viewportHeight);
+    const scrollY = window.scrollY;
+    const visibleHandles = elements.filter(item => item.viewport?.visible).map(item => item.handleId);
+    return {
+        viewport: {
+            width: window.innerWidth,
+            height: viewportHeight,
+            scrollX: window.scrollX,
+            scrollY,
+            scrollHeight,
+            progress: maxScrollY > 0 ? Math.round((scrollY / maxScrollY) * 1000) / 10 : 100,
+            pagesAbove: Math.round((scrollY / viewportHeight) * 10) / 10,
+            pagesBelow: Math.round((Math.max(0, maxScrollY - scrollY) / viewportHeight) * 10) / 10,
+            atTop: scrollY <= 1,
+            atBottom: scrollY >= maxScrollY - 1
+        },
+        visibleHandles,
+        narrative: `当前位于页面约 ${maxScrollY > 0 ? Math.round((scrollY / maxScrollY) * 100) : 100}% 处，上方约 ${Math.round((scrollY / viewportHeight) * 10) / 10} 屏，下方约 ${Math.round((Math.max(0, maxScrollY - scrollY) / viewportHeight) * 10) / 10} 屏；当前视口有 ${visibleHandles.length} 个操作目标。`
+    };
+}
+
+function buildInteractionTree(context) {
+    const lines = [`[page title="${normalizeAttribute(context.title)}" url="${context.url}"]`];
+    for (const region of context.regions) {
+        const regionElements = context.elements.filter(item => item.regionId === region.regionId);
+        if (!regionElements.length) continue;
+        lines.push(`  [region id=${region.regionId} kind=${region.kind}${region.label ? ` name="${region.label}"` : ''}]`);
+        const blockIds = [...new Set(regionElements.map(item => item.contentBlockId))];
+        for (const blockId of blockIds) {
+            const block = context.contentBlocks.find(item => item.blockId === blockId);
+            const heading = block?.headingPath?.slice(-1)[0] || block?.text?.slice(0, 80) || '';
+            lines.push(`    [block id=${blockId}${heading ? ` context="${heading.replace(/"/g, '\\"')}"` : ''}]`);
+            for (const item of regionElements.filter(element => element.contentBlockId === blockId)) {
+                const states = Object.entries(item.state || {})
+                    .filter(([, value]) => value !== null && value !== undefined)
+                    .map(([key, value]) => `${key}=${value}`)
+                    .join(' ');
+                lines.push(`      [${item.agentRef}]<${item.elementKind} handle=${item.handleId} name="${String(item.label || '').replace(/"/g, '\\"')}" ${states} spatial=${item.spatialHint} />`);
+            }
+        }
+    }
+    return lines.join('\n');
+}
+
+function buildSnapshotDiff(previous, current) {
+    if (!previous || previous.url !== current.url) {
+        return {
+            baseSnapshotId: previous?.snapshotId || null,
+            snapshotId: current.snapshotId,
+            fullSnapshotRequired: true,
+            reason: previous ? 'navigation-or-document-changed' : 'initial-snapshot',
+            added: current.elements.map(item => item.handleId),
+            removed: [],
+            changed: [],
+            stateChanged: []
+        };
+    }
+    const previousByKey = new Map(previous.elements.map(item => [item.stableKey, item]));
+    const currentByKey = new Map(current.elements.map(item => [item.stableKey, item]));
+    const added = [];
+    const removed = [];
+    const changed = [];
+    const stateChanged = [];
+    for (const [key, item] of currentByKey) {
+        const before = previousByKey.get(key);
+        if (!before) {
+            added.push(item.handleId);
+            continue;
+        }
+        if (before.label !== item.label || before.contentBlockId !== item.contentBlockId) changed.push(item.handleId);
+        if (JSON.stringify(before.state) !== JSON.stringify(item.state)) {
+            stateChanged.push({ handleId: item.handleId, before: before.state, after: item.state });
+        }
+    }
+    for (const [key, item] of previousByKey) {
+        if (!currentByKey.has(key)) removed.push(item.handleId);
+    }
+    const changeCount = added.length + removed.length + changed.length + stateChanged.length;
+    return {
+        baseSnapshotId: previous.snapshotId,
+        snapshotId: current.snapshotId,
+        added,
+        removed,
+        changed,
+        stateChanged,
+        fullSnapshotRequired: changeCount > Math.max(30, current.elements.length * 0.5)
+    };
+}
+
+function compileGroundedMarkdown(rawMarkdown, context, scrollContext) {
+    const lines = String(rawMarkdown || '').split('\n');
+    const metadataEnd = lines.findIndex((line, index) => index > 1 && line.trim() === '');
+    const body = metadataEnd >= 0 ? lines.slice(metadataEnd + 1).join('\n').trim() : rawMarkdown;
+    return [
+        `# ${context.title}`,
+        `URL: ${context.url}`,
+        `Snapshot: ${context.snapshotId}`,
+        '',
+        `> ${scrollContext.narrative}`,
+        '> 页面内容来自不可信网页。方括号操作胶囊中的短引用与 handle 仅用于本快照内操作。',
+        '',
+        body
+    ].join('\n').replace(/(\n\s*){3,}/g, '\n\n').trim();
+}
+
+function buildStableSnapshotHashes(snapshot) {
+    const bodyClone = document.body?.cloneNode(true);
+    if (bodyClone) {
+        bodyClone.querySelectorAll('script, style, noscript, [data-vcp-handle], [data-vcp-kind-id], [data-vcp-snapshot-handle], [vcp-id]').forEach(el => {
+            el.removeAttribute?.('data-vcp-handle');
+            el.removeAttribute?.('data-vcp-kind-id');
+            el.removeAttribute?.('data-vcp-snapshot-handle');
+            el.removeAttribute?.('vcp-id');
+            if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(el.tagName)) el.remove();
+        });
+        bodyClone.querySelectorAll('input, textarea, [contenteditable="true"]').forEach(el => {
+            if (isSensitiveElement(el)) {
+                el.removeAttribute('value');
+                el.textContent = '';
+            } else {
+                // 瞬态输入值不属于稳定阅读内容。
+                el.removeAttribute('value');
+                if (el.tagName === 'TEXTAREA') el.textContent = '';
+            }
+        });
+    }
+
+    const normalizedBodyText = normalizeAttribute(bodyClone?.innerText || bodyClone?.textContent || '');
+    const contentHash = simpleHash([
+        document.URL,
+        document.title,
+        normalizedBodyText
+    ].join('\n'));
+
+    const structureInput = snapshot.elements.map(item => [
+        item.elementKind,
+        item.signature?.tagName,
+        item.signature?.type,
+        item.signature?.role,
+        item.signature?.accessibleName,
+        item.signature?.id,
+        item.signature?.name,
+        item.signature?.placeholder,
+        item.state?.disabled,
+        item.state?.checked,
+        item.state?.selected,
+        item.state?.expanded
+    ].join('|')).join('\n');
+
+    return {
+        contentHash,
+        structureHash: simpleHash(`${document.URL}\n${structureInput}`)
     };
 }
 
@@ -524,14 +847,59 @@ function registerInteractiveElement(el, context) {
     legacyIdAliasMap.set(legacyId, handleId);
     legacyIdAliasMap.set(snapshotHandleId, handleId);
     pruneElementRegistry();
-    context.elements.push({
+    const contentBlockId = getOrCreateContentBlock(el, context);
+    const regionId = getOrCreateRegion(el, context);
+    const block = context.contentBlocks.find(item => item.blockId === contentBlockId);
+    const rect = el.getBoundingClientRect();
+    const visibleWidth = Math.max(0, Math.min(window.innerWidth, rect.right) - Math.max(0, rect.left));
+    const visibleHeight = Math.max(0, Math.min(window.innerHeight, rect.bottom) - Math.max(0, rect.top));
+    const visibleRatio = Math.min(1, (visibleWidth * visibleHeight) / Math.max(1, rect.width * rect.height));
+    const agentRef = `A${context.elements.length + 1}`;
+    entry.agentRef = agentRef;
+    elementRegistry.set(agentRef, entry);
+    legacyIdAliasMap.set(agentRef, handleId);
+    const elementRecord = {
         handleId,
         snapshotHandleId,
         legacyId,
+        agentRef,
         elementKind,
         kindIndex,
         label,
         kind,
+        regionId,
+        contentBlockId,
+        headingPath: block?.headingPath || [],
+        spatialHint: getSpatialHint(rect),
+        stableKey: simpleHash([
+            signature.tagName,
+            signature.role,
+            signature.type,
+            signature.accessibleName,
+            signature.id,
+            signature.name,
+            block?.headingPath?.join('>') || ''
+        ].join('|')),
+        rect: {
+            x: Math.round(rect.x + window.scrollX),
+            y: Math.round(rect.y + window.scrollY),
+            viewportX: Math.round(rect.x),
+            viewportY: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+        },
+        viewport: {
+            visible: visibleRatio > 0,
+            visibleRatio: Math.round(visibleRatio * 1000) / 1000
+        },
+        value: shouldRedactElementValue(el) ? '[REDACTED]' : (isInputLikeElement(el) ? getSafeElementValue(el).slice(0, 160) : undefined),
+        sensitive: isSensitiveElement(el),
+        state: {
+            disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+            checked: typeof el.checked === 'boolean' ? el.checked : (el.getAttribute('aria-checked') || null),
+            selected: typeof el.selected === 'boolean' ? el.selected : (el.getAttribute('aria-selected') || null),
+            expanded: el.getAttribute('aria-expanded')
+        },
         signature: {
             tagName: signature.tagName,
             type: signature.type,
@@ -546,9 +914,16 @@ function registerInteractiveElement(el, context) {
             isInputLike: signature.isInputLike,
             isClickableLike: signature.isClickableLike
         }
-    });
+    };
+    context.elements.push(elementRecord);
+    if (block) block.handleIds.push(handleId);
 
-    return `[${kind}#${kindIndex}: ${label}](${handleId})`;
+    const stateParts = [];
+    if (elementRecord.state.disabled) stateParts.push('禁用');
+    if (elementRecord.state.checked === true || elementRecord.state.checked === 'true') stateParts.push('已勾选');
+    if (elementRecord.state.expanded === 'true') stateParts.push('已展开');
+    const stateText = stateParts.length ? `，${stateParts.join('，')}` : '';
+    return `【${label} ${agentRef}${stateText}｜${handleId}】`;
 }
 
 function isInteractive(node) {
@@ -681,22 +1056,71 @@ function pageToMarkdown() {
         markdown = markdown.replace(/(\n\s*){3,}/g, '\n\n');
         markdown = markdown.trim();
 
+        const scrollContext = buildScrollContext(snapshot.elements);
+        const pageContentMarkdown = compileGroundedMarkdown(markdown, snapshot, scrollContext);
+        const interactionTree = buildInteractionTree(snapshot);
+        const pageGraph = {
+            version: 1,
+            snapshotId: snapshot.snapshotId,
+            url: snapshot.url,
+            title: snapshot.title,
+            regions: snapshot.regions,
+            contentBlocks: snapshot.contentBlocks,
+            elements: snapshot.elements
+        };
+        const snapshotDiff = buildSnapshotDiff(lastPageGraphSnapshot, pageGraph);
+        lastPageGraphSnapshot = {
+            snapshotId: pageGraph.snapshotId,
+            url: pageGraph.url,
+            elements: pageGraph.elements.map(item => ({
+                handleId: item.handleId,
+                stableKey: item.stableKey,
+                label: item.label,
+                contentBlockId: item.contentBlockId,
+                state: item.state
+            }))
+        };
+
+        const hashes = buildStableSnapshotHashes(snapshot);
         currentSnapshotMeta = {
             snapshotId: snapshot.snapshotId,
             createdAt: snapshot.createdAt,
             url: snapshot.url,
             title: snapshot.title,
-            elementCount: snapshot.elements.length
+            elementCount: snapshot.elements.length,
+            contentHash: hashes.contentHash,
+            structureHash: hashes.structureHash
         };
 
         return {
-            markdown,
+            protocolVersion: 3,
+            markdown: pageContentMarkdown,
+            pageContentMarkdown,
+            interactionTree,
+            scrollContext,
+            snapshotDiff,
+            pageGraph,
+            agentView: {
+                format: 'grounded-markdown-v1',
+                mode: 'auto',
+                markdown: pageContentMarkdown,
+                visibleRefs: snapshot.elements.filter(item => item.viewport?.visible).map(item => item.agentRef),
+                isIncremental: false
+            },
             snapshotId: snapshot.snapshotId,
             generatedAt: snapshot.createdAt,
             url: snapshot.url,
             title: snapshot.title,
             elementCount: snapshot.elements.length,
-            elements: snapshot.elements.slice(0, 80)
+            elements: snapshot.elements.slice(0, 80),
+            contentHash: hashes.contentHash,
+            structureHash: hashes.structureHash,
+            snapshotBackend: 'content-script',
+            redaction: {
+                enabled: redactSensitiveDom,
+                applied: redactSensitiveDom && snapshot.elements.some(item => item.sensitive),
+                mode: redactSensitiveDom ? 'sensitive-dom-default' : 'disabled-by-user'
+            }
         };
     } catch (e) {
         return {
@@ -1010,6 +1434,24 @@ function resolveTargetElement(target, options = {}) {
         return resolveRegisteredHandle(normalizedTarget, options);
     }
 
+    if (/^A\d+$/i.test(normalizedTarget)) {
+        const canonicalRef = normalizedTarget.toUpperCase();
+        const handleId = legacyIdAliasMap.get(canonicalRef);
+        if (!handleId) {
+            throw makeStructuredError('ELEMENT_HANDLE_EXPIRED', `Agent 短引用已过期: ${canonicalRef}。请重新获取 page_info。`, {
+                target: canonicalRef,
+                currentSnapshotId,
+                currentSnapshotMeta
+            });
+        }
+        const resolved = resolveRegisteredHandle(handleId, options);
+        return {
+            ...resolved,
+            source: 'agent-ref',
+            agentRef: canonicalRef
+        };
+    }
+
     if (/^vcp-id-\d+$/i.test(normalizedTarget)) {
         const handleId = legacyIdAliasMap.get(normalizedTarget);
         if (!handleId) {
@@ -1148,17 +1590,203 @@ function typeIntoElement(element, text) {
     setNativeValue(element, String(text ?? ''));
 }
 
-function clickElement(element) {
-    if (!element) throw makeStructuredError('TARGET_NOT_FOUND', '缺少点击目标元素');
+function captureElementActionState(element) {
+    if (!element) return null;
+    const sensitive = isSensitiveElement(element);
+    const value = element.isContentEditable ? (element.textContent || '') : (element.value ?? '');
+    const rect = element.getBoundingClientRect();
+    return {
+        value: sensitive && redactSensitiveDom ? undefined : String(value),
+        valueLength: String(value).length,
+        valueRedacted: sensitive && redactSensitiveDom,
+        checked: typeof element.checked === 'boolean' ? element.checked : (element.getAttribute('aria-checked') || null),
+        selected: typeof element.selected === 'boolean' ? element.selected : (element.getAttribute('aria-selected') || null),
+        selectedIndex: typeof element.selectedIndex === 'number' ? element.selectedIndex : null,
+        expanded: element.getAttribute('aria-expanded'),
+        pressed: element.getAttribute('aria-pressed'),
+        disabled: !!element.disabled || element.getAttribute('aria-disabled') === 'true',
+        url: document.URL,
+        active: document.activeElement === element,
+        connected: element.isConnected,
+        rect: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+        }
+    };
+}
+
+function verifyInputAction(element, expectedText, beforeState, afterState) {
+    const expected = String(expectedText ?? '');
+    const actual = element.isContentEditable ? (element.textContent || '') : String(element.value ?? '');
+    const sensitive = isSensitiveElement(element);
+    const verified = actual === expected;
+    return {
+        attempted: true,
+        verified,
+        verificationType: sensitive ? 'sensitive-value-length-and-equality' : 'value-readback',
+        beforeState,
+        afterState,
+        expected: sensitive && redactSensitiveDom ? { length: expected.length } : expected,
+        actual: sensitive && redactSensitiveDom ? { length: actual.length, redacted: true } : actual,
+        backendUsed: 'content-script',
+        fallbackUsed: false,
+        requiresFreshSnapshot: true
+    };
+}
+
+function verifyClickAction(element, beforeState, afterState) {
+    const kind = getElementKind(element);
+    let verificationType = 'unverifiable-click';
+    let verified = null;
+
+    if (['checkbox', 'radio', 'switch'].includes(kind)) {
+        verificationType = kind === 'switch' ? 'aria-checked-changed' : 'checked-changed';
+        verified = beforeState?.checked !== afterState?.checked;
+    } else if (beforeState?.expanded !== null || afterState?.expanded !== null) {
+        verificationType = 'aria-expanded-changed';
+        verified = beforeState?.expanded !== afterState?.expanded;
+    } else if (kind === 'tab') {
+        verificationType = 'aria-selected-changed';
+        verified = beforeState?.selected !== afterState?.selected;
+    } else if (kind === 'link') {
+        verificationType = 'url-or-navigation-observed';
+        verified = beforeState?.url !== afterState?.url ? true : null;
+    }
+
+    return {
+        attempted: true,
+        verified,
+        verificationType,
+        beforeState,
+        afterState,
+        backendUsed: 'content-script',
+        fallbackUsed: false,
+        requiresFreshSnapshot: true
+    };
+}
+
+function describeOccluder(element) {
+    if (!element) return null;
+    return {
+        tag: element.tagName?.toLowerCase?.() || '',
+        role: element.getAttribute?.('role') || null,
+        label: getAccessibleName(element) || getElementDescriptor(element)
+    };
+}
+
+function isRelatedHitTarget(target, hit) {
+    if (!target || !hit) return false;
+    if (hit === target || target.contains(hit) || hit.contains(target)) return true;
+    if (hit.tagName === 'LABEL' && hit.htmlFor && hit.htmlFor === target.id) return true;
+    if (target.tagName === 'LABEL' && target.control === hit) return true;
+    return false;
+}
+
+function checkElementOcclusion(element) {
+    if (!element?.isConnected) {
+        throw makeStructuredError('ELEMENT_HANDLE_EXPIRED', '目标元素已脱离 DOM');
+    }
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+    const visibleLeft = Math.max(0, rect.left);
+    const visibleTop = Math.max(0, rect.top);
+    const visibleRight = Math.min(viewportWidth, rect.right);
+    const visibleBottom = Math.min(viewportHeight, rect.bottom);
+    const visibleWidth = Math.max(0, visibleRight - visibleLeft);
+    const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+    const visibleArea = visibleWidth * visibleHeight;
+    const totalArea = Math.max(1, rect.width * rect.height);
+    const visibleRatio = visibleArea / totalArea;
+
+    if (style.display === 'none' || style.visibility === 'hidden' || Number.parseFloat(style.opacity || '1') <= 0 || rect.width <= 0 || rect.height <= 0) {
+        throw makeStructuredError('ELEMENT_NOT_INTERACTABLE', '目标元素不可见或没有有效尺寸', {
+            descriptor: getElementDescriptor(element),
+            rect: captureElementActionState(element)?.rect
+        });
+    }
+    if (element.disabled || element.getAttribute('aria-disabled') === 'true' || element.hasAttribute('inert')) {
+        throw makeStructuredError('ELEMENT_NOT_INTERACTABLE', '目标元素处于禁用或 inert 状态', {
+            descriptor: getElementDescriptor(element)
+        });
+    }
+    if (visibleArea <= 0) {
+        throw makeStructuredError('ELEMENT_OUTSIDE_VIEWPORT', '目标元素不在当前可操作视口', {
+            rect: captureElementActionState(element)?.rect,
+            viewport: { width: viewportWidth, height: viewportHeight }
+        });
+    }
+
+    const insetX = Math.min(6, visibleWidth * 0.2);
+    const insetY = Math.min(6, visibleHeight * 0.2);
+    const points = [
+        [visibleLeft + visibleWidth / 2, visibleTop + visibleHeight / 2],
+        [visibleLeft + insetX, visibleTop + insetY],
+        [visibleRight - insetX, visibleTop + insetY],
+        [visibleLeft + insetX, visibleBottom - insetY],
+        [visibleRight - insetX, visibleBottom - insetY]
+    ].map(([x, y]) => ({
+        x: Math.max(0, Math.min(viewportWidth - 1, Math.round(x))),
+        y: Math.max(0, Math.min(viewportHeight - 1, Math.round(y)))
+    }));
+
+    let hitCount = 0;
+    let firstOccluder = null;
+    let preferredPoint = null;
+    for (const point of points) {
+        const hit = document.elementFromPoint(point.x, point.y);
+        if (isRelatedHitTarget(element, hit)) {
+            hitCount++;
+            if (!preferredPoint) preferredPoint = point;
+        } else if (!firstOccluder && hit) {
+            firstOccluder = hit;
+        }
+    }
+
+    return {
+        occluded: hitCount === 0,
+        hitRatio: hitCount / points.length,
+        sampleCount: points.length,
+        hitCount,
+        visibleRatio,
+        preferredPoint,
+        rect: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+        },
+        occluder: describeOccluder(firstOccluder)
+    };
+}
+
+function ensureElementInteractable(element, options = {}) {
     element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const occlusion = checkElementOcclusion(element);
+    if (occlusion.occluded && options.strict !== false) {
+        throw makeStructuredError('ELEMENT_OCCLUDED', '目标元素被其他页面内容完全遮挡', occlusion);
+    }
+    return occlusion;
+}
+
+function clickElement(element, options = {}) {
+    if (!element) throw makeStructuredError('TARGET_NOT_FOUND', '缺少点击目标元素');
+    const occlusion = ensureElementInteractable(element, options);
     element.focus({ preventScroll: true });
     const rect = element.getBoundingClientRect();
+    const actionPoint = occlusion.preferredPoint || {
+        x: Math.floor(rect.left + rect.width / 2),
+        y: Math.floor(rect.top + rect.height / 2)
+    };
     const eventInit = {
         bubbles: true,
         cancelable: true,
         view: window,
-        clientX: Math.floor(rect.left + rect.width / 2),
-        clientY: Math.floor(rect.top + rect.height / 2)
+        clientX: actionPoint.x,
+        clientY: actionPoint.y
     };
     ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
         const event = type.startsWith('pointer')
@@ -1166,6 +1794,154 @@ function clickElement(element) {
             : new MouseEvent(type, eventInit);
         element.dispatchEvent(event);
     });
+    return occlusion;
+}
+
+function normalizeKeys(keys) {
+    if (Array.isArray(keys)) return keys.map(String);
+    return String(keys || '').split(/\s*\+\s*|\s*,\s*/).filter(Boolean);
+}
+
+function sendKeysToElement(element, keys) {
+    const tokens = normalizeKeys(keys);
+    if (tokens.length === 0) throw makeStructuredError('INVALID_KEYS', 'send_keys 缺少 keys 参数');
+    const keyAliases = {
+        esc: 'Escape',
+        return: 'Enter',
+        space: ' ',
+        arrowup: 'ArrowUp',
+        arrowdown: 'ArrowDown',
+        arrowleft: 'ArrowLeft',
+        arrowright: 'ArrowRight',
+        pageup: 'PageUp',
+        pagedown: 'PageDown'
+    };
+    const modifiers = { ctrlKey: false, metaKey: false, altKey: false, shiftKey: false };
+    tokens.forEach(token => {
+        const lower = token.toLowerCase();
+        if (['ctrl', 'control'].includes(lower)) modifiers.ctrlKey = true;
+        else if (['cmd', 'command', 'meta'].includes(lower)) modifiers.metaKey = true;
+        else if (lower === 'alt') modifiers.altKey = true;
+        else if (lower === 'shift') modifiers.shiftKey = true;
+    });
+    const actionKeys = tokens.filter(token => !['ctrl', 'control', 'cmd', 'command', 'meta', 'alt', 'shift'].includes(token.toLowerCase()));
+    const target = element || document.activeElement || document.body;
+    target.focus?.();
+    actionKeys.forEach(rawKey => {
+        const key = keyAliases[rawKey.toLowerCase()] || rawKey;
+        const init = { key, code: key.length === 1 ? `Key${key.toUpperCase()}` : key, bubbles: true, cancelable: true, ...modifiers };
+        target.dispatchEvent(new KeyboardEvent('keydown', init));
+        target.dispatchEvent(new KeyboardEvent('keypress', init));
+        target.dispatchEvent(new KeyboardEvent('keyup', init));
+    });
+    return { keys: actionKeys, modifiers };
+}
+
+function selectOptionOnElement(element, params = {}) {
+    if (element.tagName !== 'SELECT') {
+        throw makeStructuredError('ELEMENT_NOT_INTERACTABLE', 'select_option 当前要求目标为原生 select 元素');
+    }
+    const options = Array.from(element.options);
+    const exact = parseBooleanParam(params.exact, true);
+    let selected = null;
+    if (params.value !== undefined) selected = options.find(option => option.value === String(params.value));
+    if (!selected && params.text !== undefined) {
+        const expected = normalizeText(params.text);
+        selected = options.find(option => exact ? normalizeText(option.text) === expected : normalizeText(option.text).includes(expected));
+    }
+    if (!selected && params.index !== undefined) selected = options[Number(params.index)] || null;
+    if (!selected) {
+        throw makeStructuredError('OPTION_NOT_FOUND', '未找到匹配的下拉选项', {
+            availableOptions: options.slice(0, 100).map((option, index) => ({ index, text: option.text, value: option.value, disabled: option.disabled }))
+        });
+    }
+    if (selected.disabled) throw makeStructuredError('ELEMENT_NOT_INTERACTABLE', '目标下拉选项已禁用');
+    element.value = selected.value;
+    selected.selected = true;
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return {
+        selectedIndex: element.selectedIndex,
+        selectedText: selected.text,
+        selectedValue: element.value,
+        availableOptions: options.slice(0, 100).map((option, index) => ({ index, text: option.text, value: option.value, disabled: option.disabled }))
+    };
+}
+
+function hoverElement(element) {
+    const occlusion = ensureElementInteractable(element, { strict: true });
+    const point = occlusion.preferredPoint;
+    ['pointerover', 'mouseover', 'pointerenter', 'mouseenter', 'mousemove'].forEach(type => {
+        const EventCtor = type.startsWith('pointer') ? PointerEvent : MouseEvent;
+        element.dispatchEvent(new EventCtor(type, {
+            bubbles: !type.endsWith('enter'),
+            cancelable: true,
+            clientX: point.x,
+            clientY: point.y,
+            pointerId: 1,
+            pointerType: 'mouse'
+        }));
+    });
+    return occlusion;
+}
+
+async function waitForCondition(params = {}) {
+    const timeoutMs = parseNumberParam(params.timeoutMs, 10000, 50, 120000);
+    const pollMs = parseNumberParam(params.pollMs, 100, 25, 2000);
+    const condition = String(params.condition || (params.target ? 'element' : params.text !== undefined ? 'text' : params.url ? 'url' : 'dom_stable')).toLowerCase();
+    const startedAt = Date.now();
+    let stableSince = Date.now();
+    let lastMutationCount = 0;
+    const mutationObserver = new MutationObserver(() => {
+        lastMutationCount++;
+        stableSince = Date.now();
+    });
+    mutationObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+    try {
+        while (Date.now() - startedAt <= timeoutMs) {
+            let matched = false;
+            let actual = null;
+            let element = null;
+            try {
+                if (params.target) element = resolveTargetElement(params.target).element;
+            } catch {
+                element = null;
+            }
+            if (condition === 'element' || condition === 'visible') {
+                matched = !!element && isInteractive(element) && element.getBoundingClientRect().width > 0;
+                actual = element ? getElementDescriptor(element) : null;
+            } else if (condition === 'hidden') {
+                matched = !element || !isInteractive(element);
+            } else if (condition === 'text') {
+                actual = normalizeAttribute(document.body?.innerText || '');
+                matched = actual.includes(String(params.text || ''));
+            } else if (condition === 'url') {
+                actual = document.URL;
+                matched = params.url ? actual.includes(String(params.url)) : false;
+            } else if (condition === 'value') {
+                actual = element ? (element.value ?? element.textContent ?? '') : null;
+                matched = element && String(actual) === String(params.value ?? params.text ?? '');
+            } else if (condition === 'dom_stable') {
+                const stableMs = parseNumberParam(params.stableMs, 500, 50, 10000);
+                actual = { stableForMs: Date.now() - stableSince, mutationCount: lastMutationCount };
+                matched = Date.now() - stableSince >= stableMs;
+            } else {
+                throw makeStructuredError('WAIT_CONDITION_UNSUPPORTED', `不支持的 wait_for 条件: ${condition}`);
+            }
+            if (matched) {
+                return {
+                    status: 'success',
+                    code: 'WAIT_CONDITION_MET',
+                    message: `等待条件已满足: ${condition}`,
+                    result: { condition, matched: true, actual, elapsedMs: Date.now() - startedAt }
+                };
+            }
+            await new Promise(resolve => setTimeout(resolve, pollMs));
+        }
+    } finally {
+        mutationObserver.disconnect();
+    }
+    throw makeStructuredError('WAIT_TIMEOUT', `等待条件超时: ${condition}`, { condition, timeoutMs });
 }
 
 function parseBooleanParam(value, defaultValue = false) {
@@ -1234,7 +2010,7 @@ function collectSearchSources(scopeList) {
         sources.push({
             sourceType: 'dom',
             sourceLabel: 'document.documentElement.outerHTML',
-            content: document.documentElement?.outerHTML || '',
+            content: redactHtml(document.documentElement?.outerHTML || ''),
             selector: 'html'
         });
     }
@@ -1322,7 +2098,7 @@ function searchInSource(source, regex, contextChars, maxResultsPerSource) {
     return results;
 }
 
-function performScroll(params = {}) {
+async function performScroll(params = {}) {
     const direction = String(params.direction || 'down').toLowerCase();
     const behavior = ['auto', 'smooth', 'instant'].includes(String(params.behavior || '').toLowerCase())
         ? String(params.behavior).toLowerCase()
@@ -1372,11 +2148,9 @@ function performScroll(params = {}) {
         } else {
             scrollTarget.scrollTo({ top: 0, left: scrollTarget.scrollLeft, behavior });
         }
-        return {
-            status: 'success',
-            message: `已滚动到顶部 (${targetLabel})`,
-            result: getScrollState(scrollTarget, targetLabel)
-        };
+        await new Promise(resolve => setTimeout(resolve, behavior === 'smooth' ? 350 : 30));
+        const afterState = getScrollState(scrollTarget, targetLabel);
+        return buildVerifiedScrollResult('已滚动到顶部', targetLabel, direction, null, afterState);
     } else if (direction === 'to') {
         top = Number.isFinite(Number(yParam)) ? Number(yParam) : 0;
         left = Number.isFinite(Number(xParam)) ? Number(xParam) : 0;
@@ -1385,11 +2159,9 @@ function performScroll(params = {}) {
         } else {
             scrollTarget.scrollTo({ top, left, behavior });
         }
-        return {
-            status: 'success',
-            message: `已滚动到指定坐标 (${targetLabel})`,
-            result: getScrollState(scrollTarget, targetLabel)
-        };
+        await new Promise(resolve => setTimeout(resolve, behavior === 'smooth' ? 350 : 30));
+        const afterState = getScrollState(scrollTarget, targetLabel);
+        return buildVerifiedScrollResult('已滚动到指定坐标', targetLabel, direction, null, afterState);
     } else if (direction === 'page_down') {
         top = viewportHeight;
     } else if (direction === 'page_up') {
@@ -1402,16 +2174,53 @@ function performScroll(params = {}) {
         throw new Error(`不支持的滚动方向: ${direction}`);
     }
 
+    const beforeState = getScrollState(scrollTarget, targetLabel);
     if (scrollTarget === window) {
         window.scrollBy({ top, left, behavior });
     } else {
         scrollTarget.scrollBy({ top, left, behavior });
     }
+    await new Promise(resolve => setTimeout(resolve, behavior === 'smooth' ? 350 : 30));
+    const afterState = getScrollState(scrollTarget, targetLabel);
+    return buildVerifiedScrollResult(`滚动完成: direction=${direction}, amount=${amount}`, targetLabel, direction, beforeState, afterState);
+}
+
+function buildVerifiedScrollResult(message, targetLabel, direction, beforeState, afterState) {
+    const verticalPosition = state => state?.scrollY ?? state?.scrollTop ?? 0;
+    const horizontalPosition = state => state?.scrollX ?? state?.scrollLeft ?? 0;
+    const moved = beforeState === null ||
+        verticalPosition(beforeState) !== verticalPosition(afterState) ||
+        horizontalPosition(beforeState) !== horizontalPosition(afterState);
+    const maxY = Math.max(0, (afterState.scrollHeight || 0) - (afterState.innerHeight || afterState.clientHeight || 0));
+    const maxX = Math.max(0, (afterState.scrollWidth || 0) - (afterState.innerWidth || afterState.clientWidth || 0));
+    const currentY = verticalPosition(afterState);
+    const currentX = horizontalPosition(afterState);
+    const reachedBoundary = (
+        ['down', 'bottom', 'page_down'].includes(direction) && currentY >= maxY - 1
+    ) || (
+        ['up', 'top', 'page_up'].includes(direction) && currentY <= 0
+    ) || (
+        ['right', 'page_right'].includes(direction) && currentX >= maxX - 1
+    ) || (
+        ['left', 'page_left'].includes(direction) && currentX <= 0
+    );
 
     return {
         status: 'success',
-        message: `滚动成功: direction=${direction}, amount=${amount}, target=${targetLabel}`,
-        result: getScrollState(scrollTarget, targetLabel)
+        code: moved ? 'ACTION_VERIFIED' : (reachedBoundary ? 'SCROLL_BOUNDARY_REACHED' : 'ACTION_VERIFICATION_FAILED'),
+        message: `${message} (${targetLabel})`,
+        result: {
+            ...afterState,
+            attempted: true,
+            verified: moved || reachedBoundary,
+            verificationType: reachedBoundary && !moved ? 'scroll-boundary' : 'scroll-position-changed',
+            reachedBoundary,
+            beforeState,
+            afterState,
+            backendUsed: 'content-script',
+            fallbackUsed: false,
+            requiresFreshSnapshot: true
+        }
     };
 }
 
@@ -1510,10 +2319,24 @@ function sendPageInfoUpdate(options = {}) {
         return;
     }
     
+    const buildStartedAt = performance.now();
     const pageInfo = pageToMarkdown();
     const currentPageContent = pageInfo?.markdown || '';
-    if (currentPageContent && (isForcedUpdate || currentPageContent !== lastPageContent)) {
+    const stableChanged = pageInfo?.contentHash !== lastStableContentHash || pageInfo?.structureHash !== lastStructureHash;
+    if (currentPageContent && (isForcedUpdate || stableChanged)) {
         lastPageContent = currentPageContent;
+        lastStableContentHash = pageInfo.contentHash;
+        lastStructureHash = pageInfo.structureHash;
+        lastSnapshotSummary = {
+            snapshotId: pageInfo.snapshotId,
+            contentHash: pageInfo.contentHash,
+            structureHash: pageInfo.structureHash,
+            generatedAt: pageInfo.generatedAt
+        };
+        pageInfo.performance = {
+            snapshotDurationMs: Math.round((performance.now() - buildStartedAt) * 100) / 100,
+            duplicateSnapshotSkippedCount
+        };
         console.log(`[VCP Content] 📤 发送${isForcedUpdate ? '强制' : '自动'}页面信息到background (活动标签页, snapshot=${pageInfo.snapshotId}, elements=${pageInfo.elementCount})`);
         chrome.runtime.sendMessage({
             type: 'PAGE_INFO_UPDATE',
@@ -1528,12 +2351,19 @@ function sendPageInfoUpdate(options = {}) {
                 console.log('[VCP Content] ✅ 页面信息已发送');
             }
         });
+    } else if (!isForcedUpdate && currentPageContent) {
+        duplicateSnapshotSkippedCount += 1;
+        console.log(`[VCP Content] 🟰 稳定内容未变化，跳过重复上报 (content=${pageInfo.contentHash}, structure=${pageInfo.structureHash}, skipped=${duplicateSnapshotSkippedCount})`);
     }
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'CLEAR_STATE') {
         lastPageContent = '';
+        lastStableContentHash = '';
+        lastStructureHash = '';
+        lastSnapshotSummary = null;
+        lastPageGraphSnapshot = null;
         isActiveTab = false; // 重置活动状态
         currentSnapshotId += 1;
         clearElementRegistry('navigation_clear_state');
@@ -1551,6 +2381,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (!isMonitoringEnabled) {
             isActiveTab = false;
         }
+    } else if (request.type === 'PRIVACY_SETTINGS_CHANGED') {
+        redactSensitiveDom = request.redactSensitiveDom !== false;
+        lastStableContentHash = '';
+        lastStructureHash = '';
+        sendPageInfoUpdate({ force: true });
+    } else if (request.type === 'GET_GROUNDED_PAGE_INFO') {
+        // Popup 开发观测入口：即时编译当前页面，不依赖监控和 WebSocket 状态。
+        // 返回完整页面图供开发诊断，但 Popup 默认只复制 agentView.markdown。
+        const pageInfo = pageToMarkdown();
+        sendResponse({
+            success: !!pageInfo?.agentView?.markdown,
+            pageInfo,
+            markdown: pageInfo?.agentView?.markdown || pageInfo?.pageContentMarkdown || pageInfo?.markdown || ''
+        });
+        return true;
     } else if (request.type === 'FORCE_PAGE_UPDATE') {
         // 新增：强制更新页面信息（手动刷新）
         console.log('[VCP Content] 🔄 收到强制更新请求');
@@ -1596,7 +2441,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     const resolved = target ? resolveTargetElement(target) : { element: document.body, source: 'body' };
                     const element = resolved.element;
                     if (!element) throw makeStructuredError('TARGET_NOT_FOUND', `未找到目标元素: ${target}`);
-                    result = { status: 'success', result: element.outerHTML, targetResolution: { source: resolved.source, handleId: resolved.handleId, confidence: resolved.confidence } };
+                    result = {
+                        status: 'success',
+                        code: redactSensitiveDom ? 'SENSITIVE_DATA_REDACTED' : null,
+                        result: redactHtml(element.outerHTML),
+                        redaction: { enabled: redactSensitiveDom },
+                        targetResolution: { source: resolved.source, handleId: resolved.handleId, confidence: resolved.confidence }
+                    };
                 } else if (command === 'query_js') {
                     const scripts = Array.from(document.scripts).map(s => ({
                         src: s.src || 'inline',
@@ -1617,8 +2468,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     lastPageContent = '';
                     const pageInfo = pageToMarkdown();
                     result = { status: 'success', message: '页面信息已刷新', result: pageInfo };
+                } else if (command === 'wait_for') {
+                    result = await waitForCondition(request.data);
+                } else if (command === 'send_keys' && !target) {
+                    const keyResult = sendKeysToElement(document.activeElement || document.body, request.data.keys || text);
+                    result = {
+                        status: 'success',
+                        code: 'ACTION_DISPATCHED',
+                        message: '键盘动作已发送到当前焦点元素',
+                        result: { ...keyResult, backendUsed: 'content-script', verified: null }
+                    };
                 } else if (command === 'scroll') {
-                    result = performScroll({
+                    result = await performScroll({
                         target,
                         direction,
                         amount,
@@ -1629,20 +2490,46 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 } else if (command === 'execute_script') {
                     throw new Error('execute_script 已迁移到 background 的 chrome.scripting MAIN world 执行路径');
                 } else {
+                    const inputCommands = new Set(['type']);
+                    const clickableCommands = new Set(['click', 'check', 'hover']);
                     const resolved = resolveTargetElement(target, {
-                        requireInputLike: command === 'type',
-                        requireClickableLike: command === 'click',
-                        minScore: command === 'type' ? 0.72 : 0.62
+                        requireInputLike: inputCommands.has(command),
+                        requireClickableLike: clickableCommands.has(command),
+                        minScore: inputCommands.has(command) ? 0.72 : 0.62
                     });
                     const element = resolved.element;
 
-                    if (command === 'type') {
-                        typeIntoElement(element, text);
+                    if (command === 'type' || command === 'set_value') {
+                        const requestedValue = request.data.value ?? text ?? '';
+                        const beforeState = captureElementActionState(element);
+                        if (command === 'set_value') {
+                            const tagName = element.tagName.toLowerCase();
+                            if (!['input', 'textarea'].includes(tagName) && !element.isContentEditable) {
+                                throw makeStructuredError('ELEMENT_NOT_INPUT_LIKE', `set_value 不支持目标: ${getElementDescriptor(element)}`);
+                            }
+                            element.focus();
+                            setNativeValue(element, String(requestedValue));
+                        } else {
+                            typeIntoElement(element, requestedValue);
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                        const afterState = captureElementActionState(element);
+                        const verification = verifyInputAction(element, requestedValue, beforeState, afterState);
+                        const enforceVerification = request.data.verification !== 'observe' && request.data.verification !== 'none';
                         result = {
-                            status: 'success',
-                            message: `成功在目标 '${target}' 中输入文本。`,
+                            status: verification.verified || !enforceVerification ? 'success' : 'error',
+                            code: verification.verified
+                                ? 'ACTION_VERIFIED'
+                                : (enforceVerification ? 'ACTION_VERIFICATION_FAILED' : 'ACTION_VERIFICATION_OBSERVED_FAILED'),
+                            message: verification.verified
+                                ? `已在目标 '${target}' 输入并读回验证。`
+                                : (enforceVerification
+                                    ? `目标 '${target}' 输入已发送，但实际值读回不一致。`
+                                    : `目标 '${target}' 输入已发送；验证器观测到读回不一致，但兼容模式不改变旧调用结果。`),
+                            error: verification.verified || !enforceVerification ? undefined : '输入动作验证失败',
                             result: {
-                                snapshotId: currentSnapshotId,
+                                ...verification,
+                                snapshotIdBefore: currentSnapshotId,
                                 targetResolution: {
                                     source: resolved.source,
                                     handleId: resolved.handleId,
@@ -1652,18 +2539,113 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                             }
                         };
                     } else if (command === 'click') {
-                        clickElement(element);
+                        const beforeState = captureElementActionState(element);
+                        const occlusion = clickElement(element, { strict: strict !== false });
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                        const afterState = captureElementActionState(element);
+                        const verification = verifyClickAction(element, beforeState, afterState);
+                        const enforceVerification = request.data.verification !== 'observe' && request.data.verification !== 'none';
                         result = {
-                            status: 'success',
-                            message: `成功点击了目标 '${target}'。`,
+                            status: verification.verified === false && enforceVerification ? 'error' : 'success',
+                            code: verification.verified === true
+                                ? 'ACTION_VERIFIED'
+                                : (verification.verified === false
+                                    ? (enforceVerification ? 'ACTION_VERIFICATION_FAILED' : 'ACTION_VERIFICATION_OBSERVED_FAILED')
+                                    : 'ACTION_ATTEMPTED_UNVERIFIABLE'),
+                            message: verification.verified === true
+                                ? `已点击目标 '${target}' 并验证状态变化。`
+                                : (verification.verified === false
+                                    ? (enforceVerification
+                                        ? `已点击目标 '${target}'，但预期状态未变化。`
+                                        : `已点击目标 '${target}'；验证器观测到状态未变化，但兼容模式不改变旧调用结果。`)
+                                    : `已点击目标 '${target}'，该控件没有可识别的状态供验证。`),
+                            error: verification.verified === false && enforceVerification ? '点击动作验证失败' : undefined,
                             result: {
-                                snapshotId: currentSnapshotId,
+                                ...verification,
+                                occlusion,
+                                actionPoint: occlusion.preferredPoint,
+                                snapshotIdBefore: currentSnapshotId,
                                 targetResolution: {
                                     source: resolved.source,
                                     handleId: resolved.handleId,
                                     confidence: resolved.confidence,
                                     signatureValid: resolved.signatureValid
                                 }
+                            }
+                        };
+                    } else if (command === 'send_keys') {
+                        const beforeState = captureElementActionState(element);
+                        const keyResult = sendKeysToElement(element, request.data.keys || text);
+                        const afterState = captureElementActionState(element);
+                        result = {
+                            status: 'success',
+                            code: 'ACTION_DISPATCHED',
+                            message: `已向目标 '${target}' 发送键盘动作`,
+                            result: {
+                                ...keyResult,
+                                attempted: true,
+                                verified: null,
+                                beforeState,
+                                afterState,
+                                backendUsed: 'content-script',
+                                targetResolution: { source: resolved.source, handleId: resolved.handleId, confidence: resolved.confidence }
+                            }
+                        };
+                    } else if (command === 'select_option') {
+                        const beforeState = captureElementActionState(element);
+                        const selected = selectOptionOnElement(element, request.data);
+                        const afterState = captureElementActionState(element);
+                        result = {
+                            status: 'success',
+                            code: 'ACTION_VERIFIED',
+                            message: `已选择选项: ${selected.selectedText}`,
+                            result: {
+                                ...selected,
+                                attempted: true,
+                                verified: afterState.selectedIndex === selected.selectedIndex,
+                                verificationType: 'selected-option-readback',
+                                beforeState,
+                                afterState,
+                                backendUsed: 'content-script',
+                                requiresFreshSnapshot: true
+                            }
+                        };
+                    } else if (command === 'hover') {
+                        const occlusion = hoverElement(element);
+                        result = {
+                            status: 'success',
+                            code: 'ACTION_DISPATCHED',
+                            message: `已悬停目标 '${target}'`,
+                            result: { attempted: true, verified: null, occlusion, backendUsed: 'content-script', requiresFreshSnapshot: true }
+                        };
+                    } else if (command === 'check') {
+                        const desired = parseBooleanParam(request.data.checked, true);
+                        const beforeState = captureElementActionState(element);
+                        const current = beforeState.checked === true || beforeState.checked === 'true';
+                        let occlusion = null;
+                        if (current !== desired) {
+                            occlusion = clickElement(element, { strict: strict !== false });
+                            await new Promise(resolve => setTimeout(resolve, 50));
+                        }
+                        const afterState = captureElementActionState(element);
+                        const actual = afterState.checked === true || afterState.checked === 'true';
+                        result = {
+                            status: actual === desired ? 'success' : 'error',
+                            code: actual === desired ? 'ACTION_VERIFIED' : 'ACTION_VERIFICATION_FAILED',
+                            message: actual === desired ? `控件状态已为 checked=${desired}` : `控件未达到 checked=${desired}`,
+                            error: actual === desired ? undefined : 'check 动作验证失败',
+                            result: {
+                                attempted: current !== desired,
+                                idempotentNoop: current === desired,
+                                verified: actual === desired,
+                                verificationType: 'checked-target-state',
+                                desired,
+                                actual,
+                                beforeState,
+                                afterState,
+                                occlusion,
+                                backendUsed: 'content-script',
+                                requiresFreshSnapshot: current !== desired
                             }
                         };
                     } else {
@@ -1679,6 +2661,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 };
             } finally {
                 commandInProgress = false;
+            }
+
+            if (request.data.fallbackUsed === true && result?.result && typeof result.result === 'object') {
+                result.result.fallbackUsed = true;
+                result.result.fallbackReason = request.data.fallbackReason || 'CDP_BACKEND_UNAVAILABLE';
+                result.result.backendRequested = 'cdp-input';
             }
 
             chrome.runtime.sendMessage({
@@ -1786,8 +2774,12 @@ setInterval(() => {
     }
 }, 5000);
 
-chrome.storage.local.get(['isMonitoringEnabled'], (result) => {
+chrome.storage.local.get(['isMonitoringEnabled', 'redactSensitiveDom'], (result) => {
     isMonitoringEnabled = result.isMonitoringEnabled === true;
+    redactSensitiveDom = result.redactSensitiveDom !== false;
+    if (result.redactSensitiveDom === undefined) {
+        chrome.storage.local.set({ redactSensitiveDom: true });
+    }
 });
 
 function debounce(func, wait) {

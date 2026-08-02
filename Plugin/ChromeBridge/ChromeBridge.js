@@ -9,6 +9,44 @@ const browserRuntimeManager = require('../../modules/browserRuntimeManager.js');
 let pluginConfig = {};
 let debugMode = false;
 
+const chromeBridgeMetrics = {
+    commands: 0,
+    commandErrors: 0,
+    totalCommandDurationMs: 0,
+    snapshotsReceived: 0,
+    duplicateSnapshotsSkipped: 0,
+    snapshotBytes: 0,
+    verificationFailures: 0,
+    fallbacks: 0,
+    cdpAttachFailures: 0
+};
+
+function getFeatureFlags() {
+    const read = (name, defaultValue) => parseBoolean(
+        process.env[name] ?? pluginConfig[name],
+        defaultValue
+    );
+    return {
+        protocolV3: read('VCP_CHROME_PROTOCOL_V3', false),
+        stableSnapshotHash: read('VCP_CHROME_STABLE_SNAPSHOT_HASH', true),
+        interactionTree: read('VCP_CHROME_INTERACTION_TREE', false),
+        cdpEnhancedSnapshot: read('VCP_CHROME_CDP_ENHANCED_SNAPSHOT', false),
+        cdpInput: read('VCP_CHROME_CDP_INPUT', false),
+        actionVerification: read('VCP_CHROME_ACTION_VERIFICATION', false),
+        snapshotDiff: read('VCP_CHROME_SNAPSHOT_DIFF', false),
+        strictDocumentGeneration: read('VCP_CHROME_STRICT_DOCUMENT_GENERATION', false),
+        redactSensitiveDom: read('VCP_CHROME_REDACT_SENSITIVE_DOM', true),
+        metricsEnabled: read('VCP_CHROME_METRICS_ENABLED', true),
+        actionBackend: String(process.env.VCP_CHROME_ACTION_BACKEND || pluginConfig.VCP_CHROME_ACTION_BACKEND || 'auto'),
+        snapshotBackend: String(process.env.VCP_CHROME_SNAPSHOT_BACKEND || pluginConfig.VCP_CHROME_SNAPSHOT_BACKEND || 'auto')
+    };
+}
+
+function recordMetric(name, increment = 1) {
+    if (!getFeatureFlags().metricsEnabled || !(name in chromeBridgeMetrics)) return;
+    chromeBridgeMetrics[name] += increment;
+}
+
 // 存储连接的Chrome插件客户端
 // key: clientId, value: { clientId, ws, clientKind, remoteAddress, connectedAt, lastSeenAt, capabilities, permissionLevel, managedTokenValid, activeTabInfo, maxTabs, lastPageInfo }
 const connectedChromes = new Map();
@@ -113,8 +151,19 @@ function updateClientFromHello(entry, helloData = {}) {
     entry.clientKind = tokenValid ? 'managed' : (declaredKind === 'managed' ? 'user' : declaredKind);
     entry.managedTokenValid = tokenValid;
     entry.permissionLevel = (tokenValid || entry.clientKind === 'agent') ? 'high' : 'restricted';
+    entry.protocolVersion = Number.parseInt(helloData.protocolVersion, 10) || 1;
     entry.capabilities = Array.isArray(helloData.capabilities) ? helloData.capabilities : [];
+    entry.snapshotBackends = Array.isArray(helloData.snapshotBackends) ? helloData.snapshotBackends : [];
+    entry.actionBackends = Array.isArray(helloData.actionBackends) ? helloData.actionBackends : [];
+    entry.featureSettings = helloData.featureSettings && typeof helloData.featureSettings === 'object'
+        ? helloData.featureSettings
+        : {};
     entry.extensionVersion = helloData.extensionVersion || entry.extensionVersion || null;
+    entry.managedTokenCreatedAt = Number(helloData.managedTokenCreatedAt) || 0;
+    entry.stageGeneration = helloData.stageGeneration || null;
+    entry.sourceManifestHash = helloData.sourceManifestHash || null;
+    entry.stagedManifestHash = helloData.stagedManifestHash || null;
+    entry.runtimeConfigGeneratedAt = helloData.runtimeConfigGeneratedAt || null;
     entry.userAgent = helloData.userAgent || entry.userAgent || null;
     entry.platform = helloData.platform || entry.platform || null;
     entry.maxTabs = Number.parseInt(helloData.maxTabs, 10) || getMaxTabsLimit();
@@ -124,7 +173,7 @@ function updateClientFromHello(entry, helloData = {}) {
         browserRuntimeManager.touchManagedBrowser();
     }
 
-    console.log(`[ChromeBridge] 🤝 clientHello: ${entry.clientId}, kind=${entry.clientKind}, permission=${entry.permissionLevel}, tokenValid=${entry.managedTokenValid}`);
+    console.log(`[ChromeBridge] 🤝 clientHello: ${entry.clientId}, protocol=v${entry.protocolVersion}, kind=${entry.clientKind}, permission=${entry.permissionLevel}, tokenValid=${entry.managedTokenValid}`);
 }
 
 // WebSocketServer调用：新Chrome客户端连接
@@ -139,12 +188,21 @@ function handleNewClient(ws) {
         remoteAddress,
         connectedAt: nowIso(),
         lastSeenAt: nowIso(),
+        protocolVersion: 1,
         capabilities: [],
+        snapshotBackends: [],
+        actionBackends: [],
+        featureSettings: {},
         permissionLevel: 'restricted',
         managedTokenValid: false,
         activeTabInfo: null,
         lastPageInfo: null,
         extensionVersion: null,
+        managedTokenCreatedAt: 0,
+        stageGeneration: null,
+        sourceManifestHash: null,
+        stagedManifestHash: null,
+        runtimeConfigGeneratedAt: null,
         userAgent: null,
         platform: null,
         maxTabs: getMaxTabsLimit()
@@ -188,7 +246,11 @@ function handleClientMessage(clientId, message) {
 
     if (message.type === 'pageInfoUpdate') {
         const data = message.data || {};
-        const markdown = data.markdown;
+        const markdown = data.agentView?.markdown || data.pageContentMarkdown || data.markdown || '';
+        const snapshotBytes = Buffer.byteLength(JSON.stringify(data), 'utf8');
+        recordMetric('snapshotsReceived');
+        recordMetric('snapshotBytes', snapshotBytes);
+        recordMetric('duplicateSnapshotsSkipped', Number(data.performance?.duplicateSnapshotSkippedCount || 0) - Number(entry?.lastPageInfo?.performance?.duplicateSnapshotSkippedCount || 0));
 
         if (entry) {
             const lines = String(markdown || '').split('\n');
@@ -198,19 +260,40 @@ function handleClientMessage(clientId, message) {
             entry.activeTabInfo = {
                 title,
                 url,
+                protocolVersion: Number.parseInt(data.protocolVersion, 10) || entry.protocolVersion || 1,
                 snapshotId: data.snapshotId,
+                contentHash: data.contentHash || null,
+                structureHash: data.structureHash || null,
+                snapshotBackend: data.snapshotBackend || 'legacy',
                 elementCount: data.elementCount,
                 generatedAt: data.generatedAt,
                 updatedAt: nowIso()
             };
             entry.lastPageInfo = {
                 markdown,
+                pageContentMarkdown: data.pageContentMarkdown || markdown,
+                interactionTree: data.interactionTree || '',
+                scrollContext: data.scrollContext || null,
+                snapshotDiff: data.snapshotDiff || null,
+                pageGraph: data.pageGraph || null,
+                agentView: data.agentView || {
+                    format: 'legacy-markdown',
+                    mode: 'compatibility',
+                    markdown
+                },
+                protocolVersion: Number.parseInt(data.protocolVersion, 10) || entry.protocolVersion || 1,
                 snapshotId: data.snapshotId,
                 generatedAt: data.generatedAt,
                 url,
                 title,
+                contentHash: data.contentHash || null,
+                structureHash: data.structureHash || null,
+                snapshotBackend: data.snapshotBackend || 'legacy',
                 elementCount: data.elementCount,
                 elements: Array.isArray(data.elements) ? data.elements : [],
+                redaction: data.redaction || null,
+                performance: data.performance || null,
+                snapshotBytes,
                 error: data.error || null,
                 updatedAt: nowIso()
             };
@@ -236,11 +319,20 @@ function handleClientMessage(clientId, message) {
                     message: pendingCmd.executionMessage,
                     result: pendingCmd.commandResult,
                     page_info: markdown,
+                    page_info_structured: entry?.lastPageInfo || null,
                     page_info_meta: entry?.lastPageInfo ? {
+                        protocolVersion: entry.lastPageInfo.protocolVersion,
                         snapshotId: entry.lastPageInfo.snapshotId,
                         generatedAt: entry.lastPageInfo.generatedAt,
                         url: entry.lastPageInfo.url,
                         title: entry.lastPageInfo.title,
+                        contentHash: entry.lastPageInfo.contentHash,
+                        structureHash: entry.lastPageInfo.structureHash,
+                        snapshotBackend: entry.lastPageInfo.snapshotBackend,
+                        agentViewFormat: entry.lastPageInfo.agentView?.format || null,
+                        scrollContext: entry.lastPageInfo.scrollContext,
+                        snapshotDiff: entry.lastPageInfo.snapshotDiff,
+                        redaction: entry.lastPageInfo.redaction,
                         elementCount: entry.lastPageInfo.elementCount
                     } : null
                 });
@@ -256,6 +348,14 @@ function buildCommandFromParams(params, suffix = '') {
         browserTarget: params[`browserTarget${suffix}`] || params.browserTarget,
         target: params[`target${suffix}`],
         text: params[`text${suffix}`],
+        value: params[`value${suffix}`],
+        keys: params[`keys${suffix}`],
+        checked: params[`checked${suffix}`],
+        index: params[`index${suffix}`],
+        exact: params[`exact${suffix}`],
+        condition: params[`condition${suffix}`],
+        pollMs: params[`pollMs${suffix}`],
+        stableMs: params[`stableMs${suffix}`],
         url: params[`url${suffix}`],
         format: params[`format${suffix}`],
         imageFormat: params[`imageFormat${suffix}`],
@@ -293,7 +393,12 @@ function buildCommandFromParams(params, suffix = '') {
         storageTypes: params[`storageTypes${suffix}`],
         cdpParams: params[`cdpParams${suffix}`],
         snapshotId: params[`snapshotId${suffix}`],
+        documentGeneration: params[`documentGeneration${suffix}`],
         strict: params[`strict${suffix}`],
+        actionBackend: params[`actionBackend${suffix}`],
+        verification: params[`verification${suffix}`],
+        allowFallback: params[`allowFallback${suffix}`],
+        timeoutMs: params[`timeoutMs${suffix}`],
         wait_for_page_info: params[`wait_for_page_info${suffix}`],
         pageInfoFallbackMs: params[`pageInfoFallbackMs${suffix}`],
         waitMs: params[`waitMs${suffix}`],
@@ -329,7 +434,11 @@ function authorizeChromeCommand(entry, command) {
     }
 
     if (entry.clientKind === 'distributed') {
-        const distributedAllowed = new Set(['open_url', 'click', 'type', 'scroll', 'query_html', 'query_js', 'get_page_info', 'list_tabs', 'switch_tab']);
+        const distributedAllowed = new Set([
+            'open_url', 'click', 'type', 'set_value', 'send_keys', 'select_option',
+            'hover', 'check', 'scroll', 'wait_for', 'query_html', 'query_js',
+            'get_page_info', 'list_tabs', 'switch_tab'
+        ]);
         if (!distributedAllowed.has(command)) {
             return {
                 allowed: false,
@@ -383,11 +492,15 @@ function getManagedConnectionDiagnostics() {
         client.managedTokenValid === false
     );
 
+    const runtime = browserRuntimeManager.getManagedBrowserStatus();
     return {
-        runtime: browserRuntimeManager.getManagedBrowserStatus(),
+        runtime,
         clients,
         rejectedManagedLikeClients,
-        hint: 'open_chrome 接受 clientKind=managed 且 managedTokenValid=true 的托管 Chrome，或用户在扩展 Popup 中显式切换的 clientKind=agent 高权限模式；若没有任何 clients，优先怀疑扩展未加载或 MV3 service worker 没有启动。'
+        stagingConsistent: runtime.extensionStage
+            ? runtime.extensionStage.sourceManifestHash === runtime.extensionStage.stagedManifestHash
+            : null,
+        hint: 'managed 校验失败时，对照 runtime.tokenCreatedAt 与 client.managedTokenCreatedAt，并确认 runtime.extensionStage.stageGeneration 等于 client.stageGeneration。代次或 Manifest 指纹不一致表示 Chrome 仍在运行旧 staged extension；没有任何 clients 时优先检查扩展加载和 MV3 service worker。'
     };
 }
 
@@ -455,6 +568,24 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
     }
 
     const { command } = cmdParams;
+    const featureFlags = getFeatureFlags();
+    const effectiveCmdParams = { ...cmdParams };
+    const actionCommands = new Set(['click', 'type', 'set_value', 'send_keys', 'select_option', 'hover', 'check', 'scroll']);
+    if (actionCommands.has(command) && effectiveCmdParams.verification === undefined) {
+        // 验证开关关闭时仍由扩展观测状态，但不得因新验证语义改变旧调用的成败。
+        effectiveCmdParams.verification = featureFlags.actionVerification ? 'auto' : 'observe';
+    }
+    if (effectiveCmdParams.actionBackend === undefined) {
+        effectiveCmdParams.actionBackend = featureFlags.cdpInput
+            ? featureFlags.actionBackend
+            : 'content-script';
+    } else if (!featureFlags.cdpInput && effectiveCmdParams.actionBackend === 'auto') {
+        effectiveCmdParams.actionBackend = 'content-script';
+    }
+    if (effectiveCmdParams.allowFallback === undefined) {
+        effectiveCmdParams.allowFallback = true;
+    }
+
     if (!options.skipAuthorization) {
         const auth = authorizeChromeCommand(entry, command);
         if (!auth.allowed) {
@@ -467,9 +598,14 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
     }
 
     const bridgeRequestId = `cb-req-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const commandStartedAt = Date.now();
+    recordMetric('commands');
 
     // 只有会导致页面导航/交互变化的命令才默认等待页面信息；CDP/查询/脚本执行类指令直接返回结构化结果
-    const pageChangingCommands = new Set(['open_url', 'click', 'type', 'scroll']);
+    const pageChangingCommands = new Set([
+        'open_url', 'click', 'type', 'set_value', 'send_keys',
+        'select_option', 'hover', 'check', 'scroll', 'wait_for'
+    ]);
     const needsPageLoad = (command === 'open_url' && isInCommandChain);
     const actualWaitForPageInfo = (waitForPageInfo && pageChangingCommands.has(command)) || needsPageLoad || cmdParams.wait_for_page_info === true;
 
@@ -479,7 +615,7 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
     const commandMessage = {
         type: 'command',
         data: {
-            ...cmdParams,
+            ...effectiveCmdParams,
             requestId: bridgeRequestId,
             wait_for_page_info: actualWaitForPageInfo
         }
@@ -520,6 +656,10 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
                     if (!pending) return;
 
                     if (msg.data.status === 'error') {
+                        recordMetric('commandErrors');
+                        recordMetric('totalCommandDurationMs', Date.now() - commandStartedAt);
+                        if (msg.data.code === 'ACTION_VERIFICATION_FAILED') recordMetric('verificationFailures');
+                        if (msg.data.result?.fallbackUsed) recordMetric('fallbacks');
                         clearTimeout(pending.timeout);
                         if (pending.fallbackTimer) {
                             clearTimeout(pending.fallbackTimer);
@@ -531,6 +671,8 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
                         error.details = msg.data.details || null;
                         reject(error);
                     } else if (!actualWaitForPageInfo) {
+                        recordMetric('totalCommandDurationMs', Date.now() - commandStartedAt);
+                        if (msg.data.result?.fallbackUsed) recordMetric('fallbacks');
                         // 不需要等待页面信息，直接返回
                         clearTimeout(pending.timeout);
                         if (pending.fallbackTimer) {
@@ -630,13 +772,19 @@ async function runLifecycleCommand(command, params = {}) {
         }
 
         case 'browser_status': {
+            const metrics = { ...chromeBridgeMetrics };
+            metrics.averageCommandDurationMs = metrics.commands > 0
+                ? Math.round(metrics.totalCommandDurationMs / metrics.commands)
+                : 0;
             return {
                 success: true,
                 message: '获取浏览器运行时状态成功',
                 result: {
                     runtime: browserRuntimeManager.getManagedBrowserStatus(),
                     clients: getOpenClients().map(summarizeClient),
-                    maxTabs: getMaxTabsLimit()
+                    maxTabs: getMaxTabsLimit(),
+                    featureFlags: getFeatureFlags(),
+                    metrics
                 }
             };
         }
@@ -670,6 +818,7 @@ async function runLifecycleCommand(command, params = {}) {
 function summarizeClient(entry) {
     return {
         clientId: entry.clientId,
+        protocolVersion: entry.protocolVersion || 1,
         clientKind: entry.clientKind,
         remoteAddress: entry.remoteAddress,
         connectedAt: entry.connectedAt,
@@ -677,8 +826,18 @@ function summarizeClient(entry) {
         permissionLevel: entry.permissionLevel,
         managedTokenValid: entry.managedTokenValid,
         extensionVersion: entry.extensionVersion,
+        managedTokenCreatedAt: entry.managedTokenCreatedAt
+            ? new Date(entry.managedTokenCreatedAt).toISOString()
+            : null,
+        stageGeneration: entry.stageGeneration,
+        sourceManifestHash: entry.sourceManifestHash,
+        stagedManifestHash: entry.stagedManifestHash,
+        runtimeConfigGeneratedAt: entry.runtimeConfigGeneratedAt,
         platform: entry.platform,
         capabilities: entry.capabilities,
+        snapshotBackends: entry.snapshotBackends,
+        actionBackends: entry.actionBackends,
+        featureSettings: entry.featureSettings,
         maxTabs: entry.maxTabs,
         activeTabInfo: entry.activeTabInfo
     };
@@ -873,14 +1032,18 @@ function formatCommandResultAsMarkdown(commandResult = {}) {
 
     if (commandResult.page_info) {
         lines.push('');
-        lines.push('## 当前页面 Markdown');
+        lines.push('## 当前页面 Grounded Markdown');
         lines.push('');
         lines.push(String(commandResult.page_info));
-    } else if (commandResult.result?.markdown) {
+    } else if (commandResult.result?.agentView?.markdown || commandResult.result?.pageContentMarkdown || commandResult.result?.markdown) {
         lines.push('');
-        lines.push('## 当前页面 Markdown');
+        lines.push('## 当前页面 Grounded Markdown');
         lines.push('');
-        lines.push(String(commandResult.result.markdown));
+        lines.push(String(
+            commandResult.result.agentView?.markdown ||
+            commandResult.result.pageContentMarkdown ||
+            commandResult.result.markdown
+        ));
     } else if (typeof commandResult.result === 'string') {
         lines.push('');
         lines.push('## Result');

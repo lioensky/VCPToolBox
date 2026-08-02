@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "VCP Chrome Control",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "连接到VCP服务器，允许AI代理与您的浏览器交互。",
     "permissions": [
         "storage",
@@ -11,7 +11,8 @@
         "alarms"
     ],
     "host_permissions": [
-        "<all_urls>"
+        "<all_urls>",
+        "https://*.bilibili.com/*"
     ],
     "web_accessible_resources": [
         {
@@ -41,7 +42,10 @@
     },
     "content_scripts": [
         {
-            "matches": ["<all_urls>"],
+            "matches": [
+                "<all_urls>",
+                "https://*.bilibili.com/*"
+            ],
             "js": ["content_script.js"]
         }
     ]
