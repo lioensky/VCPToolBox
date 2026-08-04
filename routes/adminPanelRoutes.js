@@ -93,6 +93,7 @@ module.exports = function (
   mount("/", "agents"); // Handles /agents/*
   mount("/", "tvs"); // Handles /tvsvars/*
   mount("/", "placeholders"); // Handles /placeholders
+  mount("/", "placeholderExplorer"); // Handles /placeholder-explorer/*
   mount("/", "schedules"); // Handles /schedules/*
   mount("/", "rag"); // Handles /rag-tags, /rag-params, /available-clusters, etc.
   mount("/", "agentAssistant"); // Handles /agent-assistant/*

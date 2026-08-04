@@ -1,0 +1,64 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "PlaceholderExplorerCommand",
+  "version": "1.0.0",
+  "displayName": "占位符管理命令",
+  "description": "查询 PlaceholderExplorer 索引，并安全编辑 config.env、sarprompt.json 或 TVStxt 变量文件。",
+  "author": "VCPToolBox",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node PlaceholderExplorerCommand.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 120000
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [],
+    "invocationCommands": [
+      {
+        "command": "Scan",
+        "description": "重建全量占位符索引。参数：command 固定为 Scan。调用格式：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PlaceholderExplorerCommand「末」,\ncommand:「始」Scan「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "Locate",
+        "description": "查询占位符的定义文件与行号、引用位置、可编辑性及完整嵌套链。参数：placeholder（必需，可传 VarToolList 或 {{VarToolList}}）。调用格式：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PlaceholderExplorerCommand「末」,\ncommand:「始」Locate「末」,\nplaceholder:「始」{{VarToolList}}「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "Edit",
+        "description": "安全编辑可写占位符。流程为读全文、内存修改、临时文件写入、校验、备份原文件、原子替换。参数：placeholder（必需）、newValue（必需）、scope（可选，definition 编辑 config.env/sarprompt.json 定义值，file 编辑该变量唯一指向的 TVStxt 文件正文）。内置、聚合、插件、表情包和声明式占位符只读。编辑 config.env 后必须重启 VCP 服务才生效。调用格式：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PlaceholderExplorerCommand「末」,\ncommand:「始」Edit「末」,\nplaceholder:「始」{{VarCity}}「末」,\nnewValue:「始」Shanghai「末」,\nscope:「始」definition「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "Preview",
+        "description": "使用现有 messageProcessor.resolveAllVariables 路径干跑展开。参数：placeholder（必需）、model（可选）、role（可选，默认 system）、context（可选）、text（可选）。不会绕过角色判定；role=user 的普通内容不会获得 system 特权。独立进程无法读取主进程静态插件实时内存值。调用格式：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PlaceholderExplorerCommand「末」,\ncommand:「始」Preview「末」,\nplaceholder:「始」{{VarTimeNow}}「末」,\nrole:「始」system「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "CheckDeadLinks",
+        "description": "执行双向健康检查并返回死链、孤儿、缺失文件和扫描错误。参数：command 固定为 CheckDeadLinks。调用格式：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PlaceholderExplorerCommand「末」,\ncommand:「始」CheckDeadLinks「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "configSchema": {
+    "PLACEHOLDER_SCAN_ROOT": {
+      "type": "string",
+      "default": "."
+    },
+    "PLACEHOLDER_INDEX_FILE": {
+      "type": "string",
+      "default": "generated/placeholder-index.json"
+    },
+    "PLACEHOLDER_BACKUP_DIR": {
+      "type": "string",
+      "default": "backups"
+    },
+    "PLACEHOLDER_BACKUP_RETENTION": {
+      "type": "integer",
+      "default": 20
+    },
+    "PLACEHOLDER_MAX_EDIT_BYTES": {
+      "type": "integer",
+      "default": 1048576
+    }
+  }
+}
