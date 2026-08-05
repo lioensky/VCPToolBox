@@ -28,6 +28,26 @@ function normalizeReasoningTag(value) {
     : 'think';
 }
 
+function normalizeReasoningModelFilters(value) {
+  const filters = Array.isArray(value)
+    ? value
+    : String(value || '').split(',');
+
+  return filters
+    .map(filter => String(filter || '').trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function shouldConvertReasoningForModel(modelName, enabled, modelFilters) {
+  if (!enabled || !modelName) return false;
+
+  const normalizedModelName = String(modelName).toLowerCase();
+  const normalizedFilters = normalizeReasoningModelFilters(modelFilters);
+  if (normalizedFilters.length === 0) return false;
+
+  return normalizedFilters.some(filter => normalizedModelName.includes(filter));
+}
+
 function valueToReasoningText(value, seen = new Set()) {
   if (value === undefined || value === null || value === false) return '';
   if (typeof value === 'string') return value;
@@ -120,6 +140,8 @@ function buildClientVisibleContent(message, enabled, tagName = 'think', ...addit
 module.exports = {
   REASONING_KEYS,
   normalizeReasoningTag,
+  normalizeReasoningModelFilters,
+  shouldConvertReasoningForModel,
   extractReasoningText,
   extractReasoningTextFromSources,
   removeReasoningFields,

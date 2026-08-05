@@ -4,6 +4,11 @@ const path = require('path');
 const dotenv = require('dotenv');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
+const {
+    normalizeReasoningTag,
+    normalizeReasoningModelFilters,
+    shouldConvertReasoningForModel
+} = require('../../modules/reasoningContentAdapter.js');
 
 // --- State and Config Variables ---
 let VCP_SERVER_PORT;
@@ -12,6 +17,9 @@ let MAX_HISTORY_ROUNDS;
 let CONTEXT_TTL_HOURS;
 let DEBUG_MODE;
 let VCP_API_TARGET_URL;
+let REASONING_TO_CONTENT_ENABLED;
+let REASONING_TO_CONTENT_TAG;
+let REASONING_TO_CONTENT_MODELS;
 
 // --- Task Delegation Config Variables ---
 let DELEGATION_MAX_ROUNDS;
@@ -43,6 +51,9 @@ function initialize(config, dependencies) {
     VCP_SERVER_PORT = config.PORT;
     VCP_SERVER_ACCESS_KEY = config.Key;
     DEBUG_MODE = String(config.DebugMode || 'false').toLowerCase() === 'true';
+    REASONING_TO_CONTENT_ENABLED = String(config.ReasoningToContentEnabled || 'false').toLowerCase() === 'true';
+    REASONING_TO_CONTENT_TAG = normalizeReasoningTag(config.ReasoningToContentTag);
+    REASONING_TO_CONTENT_MODELS = normalizeReasoningModelFilters(config.ReasoningToContentModel);
     // 使用 127.0.0.1 避开某些系统上 localhost 解析到 IPv6 (::1) 导致的延迟
     VCP_API_TARGET_URL = `http://127.0.0.1:${VCP_SERVER_PORT}/v1`;
 
@@ -293,11 +304,12 @@ function awardAgentPoints(agentBaseName, agentName, points, reason) {
 // --- Helper Functions ---
 
 /**
- * 移除文本中的 VCP 思维链内容
+ * 移除文本中的 VCP 思维链内容，以及主总线按模型转换到正文中的推理标签。
  * @param {string} text - 需要处理的文本
+ * @param {string} modelName - VCP 响应中的实际模型名
  * @returns {string} 清理后的文本
  */
-function removeVCPThinkingChain(text) {
+function removeVCPThinkingChain(text, modelName = '') {
     if (typeof text !== 'string') return text;
 
     let result = text;
@@ -318,6 +330,19 @@ function removeVCPThinkingChain(text) {
 
         // 移除从开始标记到结束标记（包括结束标记）的内容
         result = result.substring(0, startIndex) + result.substring(endIndex + endMarker.length);
+    }
+
+    if (shouldConvertReasoningForModel(
+        modelName,
+        REASONING_TO_CONTENT_ENABLED,
+        REASONING_TO_CONTENT_MODELS
+    )) {
+        const tagName = REASONING_TO_CONTENT_TAG;
+        const completeBlockPattern = new RegExp(`<${tagName}>[\\s\\S]*?<\\/${tagName}>\\s*`, 'gi');
+        const danglingBlockPattern = new RegExp(`<${tagName}>[\\s\\S]*$`, 'gi');
+        result = result
+            .replace(completeBlockPattern, '')
+            .replace(danglingBlockPattern, '');
     }
 
     // 清理多余的连续空白行
@@ -863,8 +888,9 @@ async function processToolCall(args) {
             throw new Error(`Agent '${agent_name}' 从VCP服务器获取的响应无效或缺失内容。`);
         }
 
-        // 移除 VCP 思维链内容
-        const cleanedAssistantResponse = removeVCPThinkingChain(assistantResponseContent);
+        // 移除 VCP 思维链及主总线为当前模型转入正文的推理标签，避免污染 AA 历史。
+        const responseModel = responseFromVCP.data?.model || agentConfig.id;
+        const cleanedAssistantResponse = removeVCPThinkingChain(assistantResponseContent, responseModel);
         const safeAssistantResponseForReturn = String(cleanedAssistantResponse || '').trim() || '[AgentAssistant] 目标 Agent 返回了空文本回复。';
 
         if (useContext) {
@@ -1019,7 +1045,8 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
                 throw new Error(`Agent '${agentConfig.baseName}' 返回了无效或缺失的后续内容。`);
             }
 
-            const cleanedAssistantResponse = removeVCPThinkingChain(assistantResponseContent);
+            const responseModel = responseFromVCP.data?.model || agentConfig.id;
+            const cleanedAssistantResponse = removeVCPThinkingChain(assistantResponseContent, responseModel);
             state = assertDelegationNotCancelled(delegationId);
             state.lastResponsePreview = truncateText(cleanedAssistantResponse);
             state.updatedAt = Date.now();

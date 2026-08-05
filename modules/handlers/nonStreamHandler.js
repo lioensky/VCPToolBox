@@ -4,7 +4,8 @@ const roleDivider = require('../roleDivider.js');
 const {
   buildClientVisibleContent,
   removeReasoningFields,
-  normalizeReasoningTag
+  normalizeReasoningTag,
+  shouldConvertReasoningForModel
 } = require('../reasoningContentAdapter.js');
 
 function hasVisibleContent(content) {
@@ -160,11 +161,17 @@ class NonStreamHandler {
       shouldProcessMediaPlus,
       isTextOnlyForceTranslateModel,
       requestPreprocessorConfig,
-      reasoningToContentEnabled,
-      reasoningToContentTag
+      reasoningToContentEnabled: reasoningToContentGloballyEnabled,
+      reasoningToContentTag,
+      reasoningToContentModels
     } = this.context;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || this.context.forceShowVCP;
+    const reasoningToContentEnabled = shouldConvertReasoningForModel(
+      originalBody.model,
+      reasoningToContentGloballyEnabled,
+      reasoningToContentModels
+    );
     const reasoningTag = normalizeReasoningTag(reasoningToContentTag);
 
     const containsImageUrlPart = (content) => Array.isArray(content) &&

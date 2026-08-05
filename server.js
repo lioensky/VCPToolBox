@@ -375,6 +375,10 @@ const REASONING_TO_CONTENT_ENABLED = (process.env.ReasoningToContentEnabled || "
 const REASONING_TO_CONTENT_TAG = String(process.env.ReasoningToContentTag || "think").trim().toLowerCase() === "thinking"
     ? "thinking"
     : "think";
+const REASONING_TO_CONTENT_MODELS = String(process.env.ReasoningToContentModel || "")
+    .split(',')
+    .map(model => model.trim().toLowerCase())
+    .filter(Boolean);
 const RAG_MEMO_REFRESH = (process.env.RAGMemoRefresh || "false").toLowerCase() === "true"; // 新增：传递RAG日记刷新开关
 const ENABLE_ROLE_DIVIDER = (process.env.EnableRoleDivider || "false").toLowerCase() === "true"; // 新增：角色分割开关
 const ENABLE_ROLE_DIVIDER_IN_LOOP = (process.env.EnableRoleDividerInLoop || "false").toLowerCase() === "true"; // 新增：循环栈角色分割开关
@@ -1178,6 +1182,7 @@ const chatCompletionHandler = new ChatCompletionHandler({
     SHOW_VCP_OUTPUT,
     reasoningToContentEnabled: REASONING_TO_CONTENT_ENABLED,
     reasoningToContentTag: REASONING_TO_CONTENT_TAG,
+    reasoningToContentModels: REASONING_TO_CONTENT_MODELS,
     VCPToolCode, // 新增：传递VCP工具调用验证码开关
     RAGMemoRefresh: RAG_MEMO_REFRESH, // 新增：传递RAG日记刷新开关
     enableRoleDivider: ENABLE_ROLE_DIVIDER, // 新增：传递角色分割开关
