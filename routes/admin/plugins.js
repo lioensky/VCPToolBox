@@ -234,8 +234,12 @@ module.exports = function(options) {
 
             manifest.description = description;
             await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
-            await pluginManager.loadPlugins();
-            res.json({ message: `插件 ${pluginName} 的描述已更新并重新加载。` });
+            const refreshResult = await pluginManager.refreshPluginManifestMetadata(targetManifestPath);
+            res.json({
+                message: refreshResult.refreshed
+                    ? `插件 ${pluginName} 的描述已更新并刷新到内存。`
+                    : `插件 ${pluginName} 的描述已保存。`
+            });
         } catch (error) {
             console.error(`[AdminPanelRoutes] Error updating description for plugin ${pluginName}:`, error);
             res.status(500).json({ error: `更新插件 ${pluginName} 描述时出错`, details: error.message });
@@ -363,8 +367,12 @@ module.exports = function(options) {
             }
 
             await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
-            await pluginManager.loadPlugins();
-            res.json({ message: `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的描述已更新并重新加载。` });
+            const refreshResult = await pluginManager.refreshPluginManifestMetadata(targetManifestPath);
+            res.json({
+                message: refreshResult.refreshed
+                    ? `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的描述已更新并刷新到内存。`
+                    : `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的描述已保存。`
+            });
         } catch (error) {
             console.error(`[AdminPanelRoutes] Error updating command description for plugin ${pluginName}, command ${commandIdentifier}:`, error);
             res.status(500).json({ error: `更新指令描述时出错`, details: error.message });

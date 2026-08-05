@@ -2,6 +2,11 @@
 const { StringDecoder } = require('string_decoder');
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
+const {
+  extractReasoningText,
+  removeReasoningFields,
+  normalizeReasoningTag
+} = require('../reasoningContentAdapter.js');
 
 class StreamHandler {
   constructor(context) {
@@ -44,10 +49,13 @@ class StreamHandler {
       shouldProcessMedia,
       shouldProcessMediaPlus,
       isTextOnlyForceTranslateModel,
-      requestPreprocessorConfig
+      requestPreprocessorConfig,
+      reasoningToContentEnabled,
+      reasoningToContentTag
     } = this.context;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || this.context.forceShowVCP;
+    const reasoningTag = normalizeReasoningTag(reasoningToContentTag);
     const id = originalBody.requestId || originalBody.messageId;
 
     let currentMessagesForLoop = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
@@ -137,18 +145,91 @@ class StreamHandler {
         let chunkIdleTimer = null;
         const CHUNK_IDLE_TIMEOUT = 90000; // 90 秒无新 chunk 则判定上游流冻结
         let message = { content: '', reasoning_content: '' };
+        let clientReasoningBlockOpen = false;
+        let clientReasoningEndsWithNewline = false;
 
         const appendDelta = (delta) => {
           if (delta && delta.content) {
             collectedContentThisTurn += delta.content;
             message.content += delta.content;
           }
-          if (delta && delta.reasoning_content) {
-            // P0 安全修复：reasoning_content 只保留在日志 message.reasoning_content 中，
-            // 绝不混入 collectedContentThisTurn。该变量会进入 VCP 循环与 OneRing 入库，
-            // 一旦混入推理链会造成明文持久化与后续上下文污染。
-            message.reasoning_content += delta.reasoning_content;
+
+          const reasoningText = extractReasoningText(delta);
+          if (reasoningText) {
+            // 推理内容只保留在日志字段中，绝不混入 collectedContentThisTurn。
+            // 客户端展示转换在独立副本上进行，避免进入 VCP Loop、OneRing 和日记。
+            message.reasoning_content += reasoningText;
           }
+        };
+
+        const transformParsedDataForClient = (parsedData) => {
+          if (!reasoningToContentEnabled || !parsedData || typeof parsedData !== 'object') {
+            return parsedData;
+          }
+
+          const transformed = JSON.parse(JSON.stringify(parsedData));
+          const choice = transformed.choices?.[0];
+          const delta = choice?.delta;
+          if (!delta || typeof delta !== 'object') return transformed;
+
+          const reasoningText = extractReasoningText(delta);
+          const visibleContent = typeof delta.content === 'string' ? delta.content : '';
+          let clientContent = '';
+
+          if (reasoningText) {
+            if (!clientReasoningBlockOpen) {
+              clientContent += `<${reasoningTag}>\n`;
+              clientReasoningBlockOpen = true;
+            }
+            clientContent += reasoningText;
+            clientReasoningEndsWithNewline = /(?:\r\n|\r|\n)$/.test(reasoningText);
+          }
+
+          // 正文与推理同 chunk 出现时，先规范闭合思考块，再输出正文。
+          if (visibleContent && clientReasoningBlockOpen) {
+            clientContent += `${clientReasoningEndsWithNewline ? '' : '\n'}</${reasoningTag}>\n`;
+            clientReasoningBlockOpen = false;
+            clientReasoningEndsWithNewline = false;
+          }
+          clientContent += visibleContent;
+
+          // 上游明确结束但没有正文时，也必须规范补齐闭合标签。
+          if (choice.finish_reason && clientReasoningBlockOpen) {
+            clientContent += `${clientReasoningEndsWithNewline ? '' : '\n'}</${reasoningTag}>\n`;
+            clientReasoningBlockOpen = false;
+            clientReasoningEndsWithNewline = false;
+          }
+
+          removeReasoningFields(delta);
+          if (clientContent) {
+            delta.content = clientContent;
+          } else if (Object.prototype.hasOwnProperty.call(delta, 'content')) {
+            delete delta.content;
+          }
+
+          return transformed;
+        };
+
+        const writeClientReasoningCloseChunk = () => {
+          if (!reasoningToContentEnabled || !clientReasoningBlockOpen || res.writableEnded || res.destroyed) {
+            return;
+          }
+
+          const closePrefix = clientReasoningEndsWithNewline ? '' : '\n';
+          clientReasoningBlockOpen = false;
+          clientReasoningEndsWithNewline = false;
+          const closePayload = {
+            id: `chatcmpl-VCP-reasoning-close-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: originalBody.model || 'unknown',
+            choices: [{
+              index: 0,
+              delta: { content: `${closePrefix}</${reasoningTag}>\n` },
+              finish_reason: null
+            }]
+          };
+          res.write(`data: ${JSON.stringify(closePayload)}\n\n`);
         };
         // 🌟 核心修复：注入 SSE 幽灵心跳保活，防止上游卡顿时浏览器假死
         keepAliveTimer = setInterval(() => {
@@ -221,30 +302,34 @@ class StreamHandler {
 
           for (const line of lines) {
             const trimmedLine = line.trim();
+            const isDoneLine = trimmedLine === 'data: [DONE]' || trimmedLine === 'data:[DONE]';
+            let parsedData = null;
 
-            // 1. 转发逻辑：只要不是 [DONE] 就立即转发
-            if (!res.writableEnded && !res.destroyed) {
-              // 必须保留空行，因为 SSE 依靠空行 (\n\n) 来分隔消息块
-              // 如果丢失空行，多个 data: 块会被合并，导致前端解析 JSON 失败
-              if (trimmedLine !== 'data: [DONE]' && trimmedLine !== 'data:[DONE]') {
+            if (trimmedLine.startsWith('data:')) {
+              const jsonData = trimmedLine.substring(5).trim();
+              if (jsonData && jsonData !== '[DONE]') {
                 try {
-                  // 统一使用 \n 作为换行符转发，确保前端解析正常
-                  res.write(line + '\n');
-                } catch (writeError) {
-                  streamAborted = true;
-                }
+                  parsedData = JSON.parse(jsonData);
+                  // 后台始终收集未经展示转换的原始 delta。
+                  appendDelta(parsedData.choices?.[0]?.delta);
+                } catch (e) { }
               }
             }
 
-            // 2. 后台解析逻辑：收集内容用于 VCP 循环
-            if (trimmedLine.startsWith('data: ')) {
-              const jsonData = trimmedLine.substring(6).trim();
-              if (jsonData && jsonData !== '[DONE]') {
-                try {
-                  const parsedData = JSON.parse(jsonData);
-                  const delta = parsedData.choices?.[0]?.delta;
-                  appendDelta(delta);
-                } catch (e) { }
+            // 转发时才将 reasoning 字段改写成标签化正文；内部处理仍使用原始 parsedData。
+            if (!res.writableEnded && !res.destroyed) {
+              try {
+                if (isDoneLine) {
+                  writeClientReasoningCloseChunk();
+                } else if (reasoningToContentEnabled && parsedData) {
+                  const transformedData = transformParsedDataForClient(parsedData);
+                  res.write(`data: ${JSON.stringify(transformedData)}\n`);
+                } else {
+                  // 保留空行，因为 SSE 依靠空行分隔消息块。
+                  res.write(line + '\n');
+                }
+              } catch (writeError) {
+                streamAborted = true;
               }
             }
           }
@@ -259,27 +344,36 @@ class StreamHandler {
             sseLineBuffer += remainingString;
           }
 
-          // 处理最后剩余的 buffer 并转发
+          // 处理最后剩余的 buffer并转发
           if (sseLineBuffer.length > 0) {
             const trimmedLine = sseLineBuffer.trim();
-            if (!res.writableEnded && !res.destroyed && trimmedLine !== 'data: [DONE]' && trimmedLine !== 'data:[DONE]') {
-              try {
-                res.write(sseLineBuffer + '\n');
-              } catch (e) { }
-            }
+            const isDoneLine = trimmedLine === 'data: [DONE]' || trimmedLine === 'data:[DONE]';
+            let parsedData = null;
 
-            if (trimmedLine.startsWith('data: ')) {
-              const jsonData = trimmedLine.substring(6).trim();
+            if (trimmedLine.startsWith('data:')) {
+              const jsonData = trimmedLine.substring(5).trim();
               if (jsonData && jsonData !== '[DONE]') {
                 try {
-                  const parsedData = JSON.parse(jsonData);
-                  const delta = parsedData.choices?.[0]?.delta;
-                  appendDelta(delta);
+                  parsedData = JSON.parse(jsonData);
+                  appendDelta(parsedData.choices?.[0]?.delta);
                 } catch (e) { }
               }
             }
+
+            if (!res.writableEnded && !res.destroyed) {
+              try {
+                if (isDoneLine) {
+                  writeClientReasoningCloseChunk();
+                } else if (reasoningToContentEnabled && parsedData) {
+                  res.write(`data: ${JSON.stringify(transformParsedDataForClient(parsedData))}\n`);
+                } else {
+                  res.write(sseLineBuffer + '\n');
+                }
+              } catch (e) { }
+            }
           }
 
+          writeClientReasoningCloseChunk();
           if (abortController?.signal) abortController.signal.removeEventListener('abort', abortHandler);
           resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn, message: message });
         });

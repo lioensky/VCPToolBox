@@ -24,6 +24,62 @@ const SSH_MANAGER_ENV_PLUGIN_ALLOWLIST = new Set([
 const LOG_MONITOR_ENV_PLUGIN_ALLOWLIST = new Set([
     'LinuxLogMonitor'
 ]);
+const EMBEDDED_FILE_URL_REGEX = /file:\/\/[^\s"'()\]\}\>，。？！）\r\n]+/g;
+
+function getFormattedLocalTimestamp() {
+    const date = new Date();
+    const year = date.getFullYear();
+    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+    const day = date.getDate().toString().padStart(2, '0');
+    const hours = date.getHours().toString().padStart(2, '0');
+    const minutes = date.getMinutes().toString().padStart(2, '0');
+    const seconds = date.getSeconds().toString().padStart(2, '0');
+    const milliseconds = date.getMilliseconds().toString().padStart(3, '0');
+    const timezoneOffsetMinutes = date.getTimezoneOffset();
+    const offsetSign = timezoneOffsetMinutes > 0 ? '-' : '+';
+    const offsetHours = Math.abs(Math.floor(timezoneOffsetMinutes / 60)).toString().padStart(2, '0');
+    const offsetMinutes = Math.abs(timezoneOffsetMinutes % 60).toString().padStart(2, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${milliseconds}${offsetSign}${offsetHours}:${offsetMinutes}`;
+}
+
+function filterFuzzyDiff(resultObj, timestamp) {
+    if (
+        resultObj &&
+        typeof resultObj === 'object' &&
+        resultObj.fuzzyDiff &&
+        typeof resultObj.fuzzyDiff === 'object'
+    ) {
+        const { candidateFile, diff } = resultObj.fuzzyDiff;
+        resultObj.fuzzyDiff = { candidateFile, diff, timestamp };
+    }
+}
+
+async function resolveArgsFileUrls(obj, requestIp, debugMode = false) {
+    if (!obj || typeof obj !== 'object') return;
+
+    for (const key of Object.keys(obj)) {
+        const value = obj[key];
+        if (typeof value === 'string') {
+            if (value.startsWith('file://')) {
+                if (debugMode) console.log(`[PluginManager] Intercepted file URL in args: ${value}`);
+                obj[key] = await FileFetcherServer.resolveFileUrl(value, requestIp);
+            } else if (value.includes('file://')) {
+                const matches = value.match(EMBEDDED_FILE_URL_REGEX);
+                if (!matches) continue;
+
+                let resolvedValue = value;
+                for (const matchUrl of matches) {
+                    if (debugMode) console.log(`[PluginManager] Intercepted embedded file URL in args: ${matchUrl}`);
+                    const resolvedUrl = await FileFetcherServer.resolveFileUrl(matchUrl, requestIp);
+                    resolvedValue = resolvedValue.split(matchUrl).join(resolvedUrl);
+                }
+                obj[key] = resolvedValue;
+            }
+        } else if (value && typeof value === 'object') {
+            await resolveArgsFileUrls(value, requestIp, debugMode);
+        }
+    }
+}
 
 class PluginManager extends EventEmitter {
     constructor() {
@@ -40,6 +96,14 @@ class PluginManager extends EventEmitter {
         this.webSocketServer = null; // 为 WebSocketServer 实例占位
         this.isReloading = false;
         this.reloadTimeout = null;
+        this.reloadPending = false;
+        this.reloadChangedPaths = new Set();
+        this.pluginWatcher = null;
+        this.pluginLoadPromise = null;
+        this.pluginLoadRequested = false;
+        this.staticPluginsInitialized = false;
+        this.staticPluginSignatures = new Map();
+        this.staticPluginPlaceholderKeys = new Map();
         this.vectorDBManager = null; // 修复：不再自己创建，等待注入
         this.tdbKnowledgeManager = null; // 冷知识库管理器，等待 server.js 注入
         this.toolApprovalManager = new ToolApprovalManager(path.join(__dirname, 'toolApprovalConfig.json'));
@@ -373,44 +437,123 @@ class PluginManager extends EventEmitter {
         }
     }
 
-    async initializeStaticPlugins() {
-        console.log('[PluginManager] Initializing static plugins...');
-        for (const plugin of this.plugins.values()) {
-            if (plugin.pluginType === 'static') {
-                // Immediately set a "loading" state for the placeholder.
-                if (plugin.capabilities && plugin.capabilities.systemPromptPlaceholders) {
-                    plugin.capabilities.systemPromptPlaceholders.forEach(ph => {
-                        this.staticPlaceholderValues.set(ph.placeholder, { value: `[${plugin.displayName} a-zheng-zai-jia-zai-zhong... ]`, serverId: 'local' });
-                    });
-                }
+    _getStaticPluginSignature(plugin) {
+        return JSON.stringify({
+            entryPoint: plugin.entryPoint,
+            communication: plugin.communication,
+            refreshIntervalCron: plugin.refreshIntervalCron || null,
+            configSchema: plugin.configSchema || null,
+            pluginSpecificEnvConfig: plugin.pluginSpecificEnvConfig || {},
+            placeholders: plugin.capabilities?.systemPromptPlaceholders || []
+        });
+    }
 
-                // Trigger the first update in the background (fire and forget).
+    async initializeStaticPlugins() {
+        const wasInitialized = this.staticPluginsInitialized;
+        this.staticPluginsInitialized = true;
+        console.log('[PluginManager] Initializing static plugins...');
+
+        const activeStaticPluginNames = new Set();
+        const activeLocalPlaceholderKeys = new Set();
+        for (const plugin of this.plugins.values()) {
+            if (plugin.pluginType !== 'static') continue;
+
+            activeStaticPluginNames.add(plugin.name);
+            const placeholderKeys = new Set(
+                (plugin.capabilities?.systemPromptPlaceholders || [])
+                    .map(placeholder => placeholder.placeholder)
+                    .filter(Boolean)
+            );
+            this.staticPluginPlaceholderKeys.set(plugin.name, placeholderKeys);
+            placeholderKeys.forEach(key => activeLocalPlaceholderKeys.add(key));
+
+            const signature = this._getStaticPluginSignature(plugin);
+            const previousSignature = this.staticPluginSignatures.get(plugin.name);
+            const missingPlaceholder = Array.from(placeholderKeys).some(
+                key => !this.staticPlaceholderValues.has(key)
+            );
+            const needsRefresh = !wasInitialized || previousSignature !== signature || missingPlaceholder;
+
+            if (needsRefresh) {
+                placeholderKeys.forEach(placeholderKey => {
+                    if (!this.staticPlaceholderValues.has(placeholderKey)) {
+                        this.staticPlaceholderValues.set(placeholderKey, {
+                            value: `[${plugin.displayName} a-zheng-zai-jia-zai-zhong... ]`,
+                            serverId: 'local'
+                        });
+                    }
+                });
+
                 this._updateStaticPluginValue(plugin).catch(err => {
                     console.error(`[PluginManager] Initial background update for ${plugin.name} failed: ${err.message}`);
                 });
+            }
 
-                // Set up the scheduled recurring updates.
-                if (plugin.refreshIntervalCron) {
-                    if (this.scheduledJobs.has(plugin.name)) {
-                        this.scheduledJobs.get(plugin.name).cancel();
-                    }
-                    try {
-                        const job = schedule.scheduleJob(plugin.refreshIntervalCron, () => {
-                            if (this.debugMode) console.log(`[PluginManager] Scheduled update for static plugin: ${plugin.name}`);
-                            this._updateStaticPluginValue(plugin).catch(err => {
-                                console.error(`[PluginManager] Scheduled background update for ${plugin.name} failed: ${err.message}`);
-                            });
+            const existingJob = this.scheduledJobs.get(plugin.name);
+            if (!plugin.refreshIntervalCron) {
+                if (existingJob) existingJob.cancel();
+                this.scheduledJobs.delete(plugin.name);
+            } else if (needsRefresh || !existingJob) {
+                if (existingJob) existingJob.cancel();
+                try {
+                    const job = schedule.scheduleJob(plugin.refreshIntervalCron, () => {
+                        if (this.debugMode) console.log(`[PluginManager] Scheduled update for static plugin: ${plugin.name}`);
+                        this._updateStaticPluginValue(plugin).catch(err => {
+                            console.error(`[PluginManager] Scheduled background update for ${plugin.name} failed: ${err.message}`);
                         });
-                        this.scheduledJobs.set(plugin.name, job);
-                        if (this.debugMode) console.log(`[PluginManager] Scheduled ${plugin.name} with cron: ${plugin.refreshIntervalCron}`);
-                    } catch (e) {
-                        console.error(`[PluginManager] Invalid cron string for ${plugin.name}: ${plugin.refreshIntervalCron}. Error: ${e.message}`);
-                    }
+                    });
+                    this.scheduledJobs.set(plugin.name, job);
+                    if (this.debugMode) console.log(`[PluginManager] Scheduled ${plugin.name} with cron: ${plugin.refreshIntervalCron}`);
+                } catch (error) {
+                    console.error(`[PluginManager] Invalid cron string for ${plugin.name}: ${plugin.refreshIntervalCron}. Error: ${error.message}`);
+                    this.scheduledJobs.delete(plugin.name);
                 }
             }
+
+            this.staticPluginSignatures.set(plugin.name, signature);
         }
+
+        this._cancelObsoleteStaticPluginJobs(activeStaticPluginNames);
+
+        // 清理已删除插件或已删除 placeholder 声明留下的本地值；
+        // 分布式值始终由 serverId 所有权管理，不受本地重载影响。
+        for (const [placeholder, entry] of this.staticPlaceholderValues.entries()) {
+            if (entry?.serverId === 'local' && !activeLocalPlaceholderKeys.has(placeholder)) {
+                this.staticPlaceholderValues.delete(placeholder);
+            }
+        }
+
         console.log('[PluginManager] Static plugins initialization process has been started (updates will run in the background).');
     }
+
+    _cancelObsoleteStaticPluginJobs(activeStaticPluginNames = null) {
+        const activeNames = activeStaticPluginNames || new Set(
+            Array.from(this.plugins.values())
+                .filter(plugin => plugin.pluginType === 'static')
+                .map(plugin => plugin.name)
+        );
+
+        for (const [pluginName, job] of this.scheduledJobs.entries()) {
+            const plugin = this.plugins.get(pluginName);
+            if (activeNames.has(pluginName) && plugin?.refreshIntervalCron) continue;
+            try {
+                job.cancel();
+            } catch (error) {
+                if (this.debugMode) {
+                    console.warn(`[PluginManager] Failed to cancel obsolete static job for ${pluginName}: ${error.message}`);
+                }
+            }
+            this.scheduledJobs.delete(pluginName);
+        }
+
+        for (const pluginName of this.staticPluginSignatures.keys()) {
+            if (!activeNames.has(pluginName)) {
+                this.staticPluginSignatures.delete(pluginName);
+                this.staticPluginPlaceholderKeys.delete(pluginName);
+            }
+        }
+    }
+
     async prewarmPythonPlugins() {
         console.log('[PluginManager] Checking for Python plugins to pre-warm...');
         if (this.plugins.has('SciCalculator')) {
@@ -502,6 +645,38 @@ class PluginManager extends EventEmitter {
     async shutdownAllPlugins() {
         console.log('[PluginManager] Shutting down all plugins...'); // Keep
 
+        clearTimeout(this.reloadTimeout);
+        this.reloadTimeout = null;
+        this.reloadChangedPaths.clear();
+
+        if (this.pluginWatcher) {
+            try {
+                await this.pluginWatcher.close();
+            } catch (error) {
+                console.error('[PluginManager] Error closing plugin file watcher:', error);
+            } finally {
+                this.pluginWatcher = null;
+            }
+        }
+
+        for (const [requestId, approval] of this.pendingApprovals.entries()) {
+            clearTimeout(approval.timeoutId);
+            approval.reject(new Error(JSON.stringify({
+                plugin_error: 'Plugin manager is shutting down; pending manual approval was cancelled.',
+                error_type: 'plugin_manager_shutdown'
+            })));
+            try {
+                if (this.webSocketServer && typeof this.webSocketServer.cancelVcpLogApprovalCache === 'function') {
+                    this.webSocketServer.cancelVcpLogApprovalCache(requestId);
+                }
+            } catch (error) {
+                if (this.debugMode) {
+                    console.warn(`[PluginManager] Failed to clear approval cache for ${requestId}: ${error.message}`);
+                }
+            }
+        }
+        this.pendingApprovals.clear();
+
         // VectorDBManager 是 server.js 注入并持有生命周期的外部依赖。
         // 必须先让 DailyNote 等常驻服务排空自身队列，再由 server.js 统一关闭 KBD；
         // 禁止在此提前/重复 shutdown 数据库。
@@ -533,8 +708,59 @@ class PluginManager extends EventEmitter {
         console.log('[PluginManager] All plugin shutdown processes initiated and scheduled jobs cancelled.'); // Keep
     }
 
+    async _validateLocalPluginManifestsBeforeReload() {
+        const hasLoadedLocalPlugins = Array.from(this.plugins.values()).some(manifest => !manifest.isDistributed);
+        if (!hasLoadedLocalPlugins) return;
+
+        const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
+        const validationTasks = pluginFolders
+            .filter(folder => folder.isDirectory())
+            .map(async folder => {
+                const manifestPath = path.join(PLUGIN_DIR, folder.name, manifestFileName);
+                try {
+                    const manifestContent = await fs.readFile(manifestPath, 'utf-8');
+                    JSON.parse(manifestContent);
+                } catch (error) {
+                    if (error.code === 'ENOENT') return;
+                    throw new Error(`Manifest pre-validation failed for ${folder.name}: ${error.message}`);
+                }
+            });
+        await Promise.all(validationTasks);
+    }
+
     async loadPlugins() {
+        this.pluginLoadRequested = true;
+
+        if (!this.pluginLoadPromise) {
+            this.pluginLoadPromise = (async () => {
+                let result;
+                do {
+                    this.pluginLoadRequested = false;
+                    result = await this._loadPluginsOnce();
+                } while (this.pluginLoadRequested);
+                return result;
+            })().finally(() => {
+                this.pluginLoadPromise = null;
+                if (this.pluginLoadRequested) {
+                    queueMicrotask(() => {
+                        this.loadPlugins().catch(error => {
+                            console.error('[PluginManager] Deferred plugin reload failed:', error);
+                        });
+                    });
+                }
+            });
+        }
+
+        return this.pluginLoadPromise;
+    }
+
+    async _loadPluginsOnce() {
         console.log('[PluginManager] Starting plugin discovery...');
+
+        // 在关闭任何现有模块前先验证全部启用清单，避免编辑中的半截 JSON
+        // 将一个正常运行的插件注册表破坏为部分加载状态。
+        await this._validateLocalPluginManifestsBeforeReload();
+
         // 1. 清理现有插件状态
         // 1.1 识别并关闭本地插件，保留分布式插件
         const distributedPlugins = new Map();
@@ -566,7 +792,8 @@ class PluginManager extends EventEmitter {
 
         this.plugins = distributedPlugins; // 仅保留分布式插件，本地插件将被重新发现
         this.messagePreprocessors.clear();
-        this.staticPlaceholderValues.clear();
+        // 占位符值在候选清单完成加载前保持可用。静态插件协调阶段会精确清理
+        // 已删除的本地占位符，分布式值则始终按 serverId 生命周期管理。
         this.serviceModules.clear();
 
         const discoveredPreprocessors = new Map();
@@ -755,6 +982,15 @@ class PluginManager extends EventEmitter {
 
             this.buildVCPDescription();
             this.emit('tools_changed', { reason: 'local_reload' });
+
+            // 首次启动由 server.js 显式初始化静态插件；后续重载则在这里协调
+            // 新增、删除、禁用及 cron 变更，避免遗留旧任务或漏掉新任务。
+            if (this.staticPluginsInitialized) {
+                await this.initializeStaticPlugins();
+            } else {
+                this._cancelObsoleteStaticPluginJobs();
+            }
+
             console.log(`[PluginManager] Plugin discovery finished. Loaded ${this.plugins.size} plugins.`);
         } catch (error) {
             if (error.code === 'ENOENT') console.error(`[PluginManager] Plugin directory ${PLUGIN_DIR} not found.`);
@@ -805,7 +1041,20 @@ class PluginManager extends EventEmitter {
     }
 
     getAllPlaceholderValues() {
-        return this.staticPlaceholderValues;
+        const valuesMap = new Map();
+        for (const [key, entry] of this.staticPlaceholderValues.entries()) {
+            const sanitizedKey = key.replace(/^{{|}}$/g, '');
+            let value;
+            if (typeof entry === 'object' && entry !== null && Object.prototype.hasOwnProperty.call(entry, 'value')) {
+                value = entry.value;
+            } else if (typeof entry === 'string') {
+                value = entry;
+            } else {
+                value = `[Invalid format for placeholder ${sanitizedKey}]`;
+            }
+            valuesMap.set(sanitizedKey, value || `[Placeholder ${sanitizedKey} has no value]`);
+        }
+        return valuesMap;
     }
 
     // getVCPDescription() { // This method is no longer needed as VCPDescription is deprecated
@@ -903,33 +1152,6 @@ class PluginManager extends EventEmitter {
             throw notFoundError;
         }
 
-        // Helper function to generate a timestamp string
-        const _getFormattedLocalTimestamp = () => {
-            const date = new Date();
-            const year = date.getFullYear();
-            const month = (date.getMonth() + 1).toString().padStart(2, '0');
-            const day = date.getDate().toString().padStart(2, '0');
-            const hours = date.getHours().toString().padStart(2, '0');
-            const minutes = date.getMinutes().toString().padStart(2, '0');
-            const seconds = date.getSeconds().toString().padStart(2, '0');
-            const milliseconds = date.getMilliseconds().toString().padStart(3, '0');
-            const timezoneOffsetMinutes = date.getTimezoneOffset();
-            const offsetSign = timezoneOffsetMinutes > 0 ? "-" : "+";
-            const offsetHours = Math.abs(Math.floor(timezoneOffsetMinutes / 60)).toString().padStart(2, '0');
-            const offsetMinutes = Math.abs(timezoneOffsetMinutes % 60).toString().padStart(2, '0');
-            const timezoneString = `${offsetSign}${offsetHours}:${offsetMinutes}`;
-            return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${milliseconds}${timezoneString}`;
-        };
-
-        // Helper to clean up fuzzyDiff output for error/success responses
-        const _filterFuzzyDiff = (resultObj, timestamp) => {
-            if (resultObj && typeof resultObj === 'object' &&
-                resultObj.fuzzyDiff && typeof resultObj.fuzzyDiff === 'object') {
-                const { candidateFile, diff } = resultObj.fuzzyDiff;
-                resultObj.fuzzyDiff = { candidateFile, diff, timestamp };
-            }
-        };
-
         const maidNameFromArgs = toolArgs && toolArgs.maid ? toolArgs.maid : null;
         const pluginSpecificArgs = { ...toolArgs };
 
@@ -945,36 +1167,8 @@ class PluginManager extends EventEmitter {
         // --- 预先拉取所有的异地文件，将其透明化 ---
         // 逻辑漏洞修复：如果是分布式插件，则不进行预拉取，直接透传 file:// 协议，由分布式端自行处理
         if (!plugin.isDistributed) {
-            const resolveArgsUrls = async (obj) => {
-                if (!obj || typeof obj !== 'object') return;
-                for (const key of Object.keys(obj)) {
-                    const val = obj[key];
-                    if (typeof val === 'string') {
-                        if (val.startsWith('file://')) {
-                            if (this.debugMode) console.log(`[PluginManager] Intercepted file URL in args: ${val}`);
-                            obj[key] = await FileFetcherServer.resolveFileUrl(val, requestIp);
-                        } else if (val.includes('file://')) {
-                            // 优化正则表达式：增加对中文标点（），。？！）和换行符的排除，防止匹配过长导致解析失败
-                            const fileRegex = /file:\/\/[^\s"'()\]\}\>，。？！）\r\n]+/g;
-                            const matches = val.match(fileRegex);
-                            if (matches) {
-                                let newVal = val;
-                                for (const matchUrl of matches) {
-                                    if (this.debugMode) console.log(`[PluginManager] Intercepted embedded file URL in args: ${matchUrl}`);
-                                    const resolvedUrl = await FileFetcherServer.resolveFileUrl(matchUrl, requestIp);
-                                    newVal = newVal.split(matchUrl).join(resolvedUrl); // replaceAll fallback
-                                }
-                                obj[key] = newVal;
-                            }
-                        }
-                    } else if (typeof val === 'object' && val !== null) {
-                        await resolveArgsUrls(val);
-                    }
-                }
-            };
-
             try {
-                await resolveArgsUrls(pluginSpecificArgs);
+                await resolveArgsFileUrls(pluginSpecificArgs, requestIp, this.debugMode);
             } catch (resolveError) {
                 throw new Error(JSON.stringify({ plugin_error: `Failed to pre-fetch files: ${resolveError.message}` }));
             }
@@ -1018,13 +1212,15 @@ class PluginManager extends EventEmitter {
                         toolName,
                         maid: maidNameFromArgs,
                         args: pluginSpecificArgs,
-                        timestamp: _getFormattedLocalTimestamp(),
+                        timestamp: getFormattedLocalTimestamp(),
                         approvalTtlMs // 同步给 VCPLog 补发缓存使用,确保超时后能自动清除
                     }
                 };
                 this.webSocketServer.broadcast(approvalRequest, 'VCPLog');
                 console.log(`[PluginManager] 🔔 正在等待工具调用人工审核: ${toolName} (ID: ${requestId})`);
             } else {
+                const pendingApproval = this.pendingApprovals.get(requestId);
+                if (pendingApproval) clearTimeout(pendingApproval.timeoutId);
                 this.pendingApprovals.delete(requestId);
                 throw new Error(JSON.stringify({ plugin_error: 'WebSocketServer not initialized, cannot request manual approval.' }));
             }
@@ -1157,7 +1353,7 @@ class PluginManager extends EventEmitter {
                         normalizedPluginOutput.result = pluginOutput.result;
                     }
                     normalizedPluginOutput.plugin_error = pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.`;
-                    _filterFuzzyDiff(normalizedPluginOutput, _getFormattedLocalTimestamp());
+                    filterFuzzyDiff(normalizedPluginOutput, getFormattedLocalTimestamp());
                     throw new Error(JSON.stringify(normalizedPluginOutput));
                 }
             }
@@ -1205,8 +1401,8 @@ class PluginManager extends EventEmitter {
             if (maidNameFromArgs) {
                 finalResultObject.MaidName = maidNameFromArgs;
             }
-            finalResultObject.timestamp = _getFormattedLocalTimestamp();
-            _filterFuzzyDiff(finalResultObject, _getFormattedLocalTimestamp());
+            finalResultObject.timestamp = getFormattedLocalTimestamp();
+            filterFuzzyDiff(finalResultObject, getFormattedLocalTimestamp());
 
             const sanitizedResult = this._sanitizeToolResultForAi(finalResultObject);
             toolCallRecordStore.finishRecord(managedToolCallRecord, {
@@ -1231,9 +1427,9 @@ class PluginManager extends EventEmitter {
                 errorObject.MaidName = maidNameFromArgs;
             }
             if (!errorObject.timestamp) {
-                errorObject.timestamp = _getFormattedLocalTimestamp();
+                errorObject.timestamp = getFormattedLocalTimestamp();
             }
-            _filterFuzzyDiff(errorObject, _getFormattedLocalTimestamp());
+            filterFuzzyDiff(errorObject, getFormattedLocalTimestamp());
             const sanitizedErrorObject = this._sanitizeToolResultForAi(errorObject);
             toolCallRecordStore.finishRecord(managedToolCallRecord, {
                 success: false,
@@ -2096,9 +2292,13 @@ class PluginManager extends EventEmitter {
         });
     }
     startPluginWatcher() {
+        if (this.pluginWatcher) {
+            if (this.debugMode) console.log('[PluginManager] Plugin file watcher is already running.');
+            return this.pluginWatcher;
+        }
         if (this.debugMode) console.log('[PluginManager] Starting plugin file watcher...');
 
-        const watcher = chokidar.watch(PLUGIN_DIR, {
+        this.pluginWatcher = chokidar.watch(PLUGIN_DIR, {
             ignored: [
                 '**/node_modules/**',
                 '**/.git/**',
@@ -2108,7 +2308,7 @@ class PluginManager extends EventEmitter {
                 '**/.*'
             ],
             persistent: true,
-            ignoreInitial: true, // Don't fire on initial scan
+            ignoreInitial: true,
             awaitWriteFinish: {
                 stabilityThreshold: 500,
                 pollInterval: 100
@@ -2117,98 +2317,216 @@ class PluginManager extends EventEmitter {
 
         const filterManifest = (filePath) => {
             const fileName = path.basename(filePath);
-            return fileName === 'plugin-manifest.json' || fileName === 'plugin-manifest.json.block';
+            return fileName === manifestFileName || fileName === `${manifestFileName}.block`;
         };
 
-        watcher
-            .on('add', filePath => {
-                if (filterManifest(filePath)) this.handlePluginManifestChange('add', filePath);
-            })
-            .on('change', filePath => {
-                if (filterManifest(filePath)) this.handlePluginManifestChange('change', filePath);
-            })
-            .on('unlink', filePath => {
-                if (filterManifest(filePath)) this.handlePluginManifestChange('unlink', filePath);
-            });
+        const enqueueManifestChange = (eventType, filePath) => {
+            if (filterManifest(filePath)) this.handlePluginManifestChange(eventType, filePath);
+        };
+
+        this.pluginWatcher
+            .on('add', filePath => enqueueManifestChange('add', filePath))
+            .on('change', filePath => enqueueManifestChange('change', filePath))
+            .on('unlink', filePath => enqueueManifestChange('unlink', filePath))
+            .on('error', error => console.error('[PluginManager] Plugin watcher error:', error));
 
         console.log(`[PluginManager] Chokidar is now watching ${PLUGIN_DIR} for manifest changes.`);
+        return this.pluginWatcher;
     }
 
-    handlePluginManifestChange(eventType, filePath) {
+    _getManifestRuntimeSignature(manifest) {
+        const capabilities = { ...(manifest.capabilities || {}) };
+        delete capabilities.invocationCommands;
+
+        return JSON.stringify({
+            name: manifest.name,
+            pluginType: manifest.pluginType,
+            entryPoint: manifest.entryPoint,
+            communication: manifest.communication,
+            configSchema: manifest.configSchema,
+            capabilities,
+            refreshIntervalCron: manifest.refreshIntervalCron,
+            requiresAdmin: manifest.requiresAdmin,
+            requiresKnowledgeBaseManager: manifest.requiresKnowledgeBaseManager,
+            requiresContextBridge: manifest.requiresContextBridge,
+            hasApiRoutes: manifest.hasApiRoutes,
+            webSocketPush: manifest.webSocketPush
+        });
+    }
+
+    async _refreshPluginManifestMetadata(filePath) {
+        if (path.basename(filePath) !== manifestFileName) {
+            return { refreshed: false };
+        }
+
+        let content;
+        try {
+            content = await fs.readFile(filePath, 'utf-8');
+        } catch (error) {
+            if (error.code === 'ENOENT') return { refreshed: false };
+            throw error;
+        }
+
+        const freshManifest = JSON.parse(content);
+        if (!freshManifest.name) return { refreshed: false };
+
+        const currentManifest = this.plugins.get(freshManifest.name);
+        if (!currentManifest || currentManifest.isDistributed) {
+            return { refreshed: false };
+        }
+
+        const runtimeChanged =
+            this._getManifestRuntimeSignature(currentManifest) !==
+            this._getManifestRuntimeSignature(freshManifest);
+
+        if (runtimeChanged && currentManifest.communication?.protocol !== 'direct') {
+            return { refreshed: false, runtimeChanged: true };
+        }
+
+        if (runtimeChanged) {
+            // 常驻 direct 模块不自动重启。只合并展示字段，运行字段继续沿用内存中
+            // 已初始化的版本，避免清单与真实运行实例发生半热更新。
+            const mergedCapabilities = {
+                ...(currentManifest.capabilities || {}),
+                invocationCommands: freshManifest.capabilities?.invocationCommands ||
+                    currentManifest.capabilities?.invocationCommands
+            };
+            this.plugins.set(freshManifest.name, {
+                ...currentManifest,
+                displayName: freshManifest.displayName || freshManifest.name,
+                description: freshManifest.description || '',
+                version: freshManifest.version,
+                author: freshManifest.author,
+                capabilities: mergedCapabilities
+            });
+        } else {
+            freshManifest.basePath = currentManifest.basePath || path.dirname(filePath);
+            freshManifest.pluginSpecificEnvConfig = currentManifest.pluginSpecificEnvConfig || {};
+            this.plugins.set(freshManifest.name, freshManifest);
+        }
+
+        return {
+            refreshed: true,
+            pluginName: freshManifest.name,
+            restartRequired: runtimeChanged
+        };
+    }
+
+    async refreshPluginManifestMetadata(filePath) {
+        const refreshResult = await this._refreshPluginManifestMetadata(filePath);
+        if (!refreshResult.refreshed) return refreshResult;
+
+        this.buildVCPDescription();
+        this.emit('tools_changed', {
+            reason: 'manifest_metadata_refresh',
+            pluginNames: [refreshResult.pluginName],
+            restartRequiredPluginNames: refreshResult.restartRequired
+                ? [refreshResult.pluginName]
+                : []
+        });
+
+        if (this.webSocketServer && typeof this.webSocketServer.broadcastToAdminPanel === 'function') {
+            this.webSocketServer.broadcastToAdminPanel({
+                type: 'plugins-reloaded',
+                message: refreshResult.restartRequired
+                    ? `Plugin ${refreshResult.pluginName} metadata was refreshed; runtime changes require a process restart.`
+                    : `Plugin ${refreshResult.pluginName} metadata was refreshed.`
+            });
+        }
+
+        return refreshResult;
+    }
+
+    async _flushPluginManifestChanges() {
         if (this.isReloading) {
-            if (this.debugMode) console.log(`[PluginManager] Already reloading, skipping event '${eventType}' for: ${filePath}`);
+            this.reloadPending = true;
             return;
         }
 
-        clearTimeout(this.reloadTimeout);
+        this.isReloading = true;
+        try {
+            do {
+                this.reloadPending = false;
+                const changedPaths = Array.from(this.reloadChangedPaths);
+                this.reloadChangedPaths.clear();
+                if (changedPaths.length === 0) continue;
 
-        if (this.debugMode) console.log(`[PluginManager] Debouncing plugin reload trigger due to '${eventType}' event on: ${path.basename(filePath)}`);
-
-        this.reloadTimeout = setTimeout(async () => {
-            this.isReloading = true;
-
-            try {
-                // --- 精细化检查：判断是否需要触发重载 ---
-                if (eventType !== 'unlink') {
+                let metadataOnly = true;
+                const refreshedNames = [];
+                const restartRequiredNames = [];
+                for (const changedPath of changedPaths) {
                     try {
-                        const content = await fs.readFile(filePath, 'utf-8');
-                        const manifest = JSON.parse(content);
-
-                        // 如果是常驻内存型插件（direct 协议），禁止自动热重载以维持稳定性
-                        if (manifest.communication?.protocol === 'direct') {
-                            if (this.debugMode) console.log(`[PluginManager] Resident plugin manifest change detected (${manifest.name}), skipping auto-reload to maintain stability.`);
-                            this.isReloading = false;
-                            return;
+                        const refreshResult = await this._refreshPluginManifestMetadata(changedPath);
+                        if (refreshResult.refreshed) {
+                            refreshedNames.push(refreshResult.pluginName);
+                            if (refreshResult.restartRequired) {
+                                restartRequiredNames.push(refreshResult.pluginName);
+                            }
+                        } else {
+                            metadataOnly = false;
                         }
-                    } catch (e) {
-                        // 如果读取或解析失败，保守起见继续执行重载
+                    } catch (error) {
+                        // 保存过程中的短暂不完整 JSON 不破坏当前运行状态，交给下一次事件；
+                        // 若没有后续事件，则保留旧清单并输出明确错误。
+                        console.warn(`[PluginManager] Manifest metadata refresh deferred for ${changedPath}: ${error.message}`);
+                        metadataOnly = false;
                     }
                 }
 
-                console.log(`[PluginManager] Manifest file change detected ('${eventType}'). Hot-reloading plugins...`);
-                await this.loadPlugins();
-                console.log('[PluginManager] Hot-reload complete.');
+                if (metadataOnly && refreshedNames.length > 0) {
+                    this.buildVCPDescription();
+                    this.emit('tools_changed', {
+                        reason: 'manifest_metadata_refresh',
+                        pluginNames: refreshedNames,
+                        restartRequiredPluginNames: restartRequiredNames
+                    });
+                    console.log(`[PluginManager] Refreshed plugin metadata without restarting runtime: ${refreshedNames.join(', ')}`);
+                    if (restartRequiredNames.length > 0) {
+                        console.warn(`[PluginManager] Resident plugin runtime changes require a process restart to take effect: ${restartRequiredNames.join(', ')}`);
+                    }
+                } else {
+                    console.log(`[PluginManager] Manifest state changed (${changedPaths.length} path(s)). Hot-reloading plugins...`);
+                    await this.loadPlugins();
+                    console.log('[PluginManager] Hot-reload complete.');
+                }
 
                 if (this.webSocketServer && typeof this.webSocketServer.broadcastToAdminPanel === 'function') {
                     this.webSocketServer.broadcastToAdminPanel({
                         type: 'plugins-reloaded',
-                        message: 'Plugin list has been updated due to file changes.'
+                        message: metadataOnly
+                            ? 'Plugin metadata has been refreshed without restarting resident services.'
+                            : 'Plugin list has been updated due to file changes.'
                     });
-                    if (this.debugMode) console.log('[PluginManager] Notified admin panel about plugin reload.');
                 }
-            } catch (error) {
-                console.error('[PluginManager] Error during hot-reload:', error);
-            } finally {
-                this.isReloading = false;
+            } while (this.reloadPending || this.reloadChangedPaths.size > 0);
+        } catch (error) {
+            console.error('[PluginManager] Error during hot-reload:', error);
+        } finally {
+            this.isReloading = false;
+            if (this.reloadChangedPaths.size > 0) {
+                this.handlePluginManifestChange('pending', Array.from(this.reloadChangedPaths)[0]);
             }
-        }, 500); // 500ms debounce window
+        }
+    }
+
+    handlePluginManifestChange(eventType, filePath) {
+        this.reloadChangedPaths.add(filePath);
+        if (this.isReloading) this.reloadPending = true;
+
+        clearTimeout(this.reloadTimeout);
+        if (this.debugMode) {
+            console.log(`[PluginManager] Queued manifest '${eventType}' event for: ${path.basename(filePath)}`);
+        }
+
+        this.reloadTimeout = setTimeout(() => {
+            this.reloadTimeout = null;
+            this._flushPluginManifestChanges().catch(error => {
+                console.error('[PluginManager] Failed to flush manifest changes:', error);
+            });
+        }, 500);
     }
 }
 
 const pluginManager = new PluginManager();
-
-// 新增：获取所有静态占位符值
-pluginManager.getAllPlaceholderValues = function () {
-    const valuesMap = new Map();
-    for (const [key, entry] of this.staticPlaceholderValues.entries()) {
-        // Sanitize the key to remove legacy brackets for consistency
-        const sanitizedKey = key.replace(/^{{|}}$/g, '');
-
-        let value;
-        // Handle modern object format
-        if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
-            value = entry.value;
-            // Handle legacy raw string format
-        } else if (typeof entry === 'string') {
-            value = entry;
-        } else {
-            // Fallback for any other unexpected format
-            value = `[Invalid format for placeholder ${sanitizedKey}]`;
-        }
-
-        valuesMap.set(sanitizedKey, value || `[Placeholder ${sanitizedKey} has no value]`);
-    }
-    return valuesMap;
-};
 
 module.exports = pluginManager;

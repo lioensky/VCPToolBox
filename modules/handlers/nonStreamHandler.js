@@ -1,6 +1,11 @@
 // modules/handlers/nonStreamHandler.js
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
+const {
+  buildClientVisibleContent,
+  removeReasoningFields,
+  normalizeReasoningTag
+} = require('../reasoningContentAdapter.js');
 
 function hasVisibleContent(content) {
   if (typeof content === 'string') return content.trim().length > 0;
@@ -154,10 +159,13 @@ class NonStreamHandler {
       shouldProcessMedia,
       shouldProcessMediaPlus,
       isTextOnlyForceTranslateModel,
-      requestPreprocessorConfig
+      requestPreprocessorConfig,
+      reasoningToContentEnabled,
+      reasoningToContentTag
     } = this.context;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || this.context.forceShowVCP;
+    const reasoningTag = normalizeReasoningTag(reasoningToContentTag);
 
     const containsImageUrlPart = (content) => Array.isArray(content) &&
       content.some(part => part?.type === 'image_url' && part.image_url && typeof part.image_url.url === 'string');
@@ -252,19 +260,32 @@ class NonStreamHandler {
     };
 
     let fullContentFromAI = '';
-    const extractedMessage = (rawResponseText) => parseNonStreamResponse(rawResponseText).message;
+    let currentAIContentForClient = '';
+    const extractedResponse = (rawResponseText) => parseNonStreamResponse(rawResponseText);
     const extractVisibleContent = (message, fallbackText = '') => {
       if (!message) return fallbackText;
-      // P0 安全修复：OneRing 入库和 VCP 循环只使用可见正文 content。
-      // reasoning_content 只能作为调试/日志字段存在，不能进入持久化上下文。
+      // OneRing 入库和 VCP 循环始终只使用正文 content。
       return message.content || '';
     };
+    const extractClientContent = (message, fallbackText = '', choice = null) => {
+      if (!message) return fallbackText;
+      return buildClientVisibleContent(
+        message,
+        reasoningToContentEnabled,
+        reasoningTag,
+        choice,
+        choice?.delta
+      );
+    };
 
-    const initMessage = extractedMessage(aiResponseText);
+    const initParsedResponse = extractedResponse(aiResponseText);
+    const initMessage = initParsedResponse.message;
     if (initMessage) {
       fullContentFromAI = extractVisibleContent(initMessage);
+      currentAIContentForClient = extractClientContent(initMessage, '', initParsedResponse.choice);
     } else {
       fullContentFromAI = aiResponseText;
+      currentAIContentForClient = aiResponseText;
     }
     if (writeChatLog) chatLogs.push({ request: originalBody, response: initMessage || fullContentFromAI});
     if (fullContentFromAI && fullContentFromAI.trim()) {
@@ -285,7 +306,7 @@ class NonStreamHandler {
       }
 
       let anyToolProcessedInCurrentIteration = false;
-      conversationHistoryForClient.push(currentAIContentForLoop);
+      conversationHistoryForClient.push(currentAIContentForClient);
 
       const toolCalls = vcpToolUseForbidden ? [] : ToolCallParser.parse(currentAIContentForLoop);
 
@@ -359,11 +380,14 @@ class NonStreamHandler {
 
           if (recursionAiResponse.ok) {
             const recursionText = recursionReadResult.text;
-            const recursionMessage = extractedMessage(recursionText);
+            const recursionParsedResponse = extractedResponse(recursionText);
+            const recursionMessage = recursionParsedResponse.message;
             if (recursionMessage) {
               currentAIContentForLoop = '\n' + extractVisibleContent(recursionMessage);
+              currentAIContentForClient = '\n' + extractClientContent(recursionMessage, '', recursionParsedResponse.choice);
             } else {
               currentAIContentForLoop = '\n' + recursionText;
+              currentAIContentForClient = '\n' + recursionText;
             }
             if (currentAIContentForLoop && currentAIContentForLoop.trim()) {
               oneRingAssistantTurnParts.push(currentAIContentForLoop);
@@ -499,11 +523,14 @@ class NonStreamHandler {
         if (!recursionAiResponse.ok) break;
 
         const recursionText = recursionReadResult.text;
-        const recursionMessage = extractedMessage(recursionText);
+        const recursionParsedResponse = extractedResponse(recursionText);
+        const recursionMessage = recursionParsedResponse.message;
         if (recursionMessage) {
           currentAIContentForLoop = '\n' + extractVisibleContent(recursionMessage);
+          currentAIContentForClient = '\n' + extractClientContent(recursionMessage, '', recursionParsedResponse.choice);
         } else {
           currentAIContentForLoop = '\n' + recursionText;
+          currentAIContentForClient = '\n' + recursionText;
         }
         if (currentAIContentForLoop && currentAIContentForLoop.trim()) {
           oneRingAssistantTurnParts.push(currentAIContentForLoop);
@@ -536,6 +563,10 @@ class NonStreamHandler {
         finalJsonResponse.choices = [{ message: { content: finalContentForClient } }];
       } else {
         finalJsonResponse.choices[0].message.content = finalContentForClient;
+        if (reasoningToContentEnabled) {
+          removeReasoningFields(finalJsonResponse.choices[0].message);
+          removeReasoningFields(finalJsonResponse.choices[0]);
+        }
       }
       finalJsonResponse.choices[0].finish_reason = recursionDepth >= maxRecursion ? 'length' : 'stop';
     } catch (e) {

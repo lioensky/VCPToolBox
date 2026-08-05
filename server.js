@@ -371,7 +371,11 @@ const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
 const CHAT_LOG_ENABLED = (process.env.CHAT_LOG_ENABLED || "false").toLowerCase() === "true";
 const VCPToolCode = (process.env.VCPToolCode || "false").toLowerCase() === "true"; // 新增：读取VCP工具调用验证码开关
 const SHOW_VCP_OUTPUT = (process.env.ShowVCP || "False").toLowerCase() === "true"; // 读取 ShowVCP 环境变量
-const RAG_MEMO_REFRESH = (process.env.RAGMemoRefresh || "false").toLowerCase() === "true"; // 新增：RAG日记刷新开关
+const REASONING_TO_CONTENT_ENABLED = (process.env.ReasoningToContentEnabled || "false").toLowerCase() === "true";
+const REASONING_TO_CONTENT_TAG = String(process.env.ReasoningToContentTag || "think").trim().toLowerCase() === "thinking"
+    ? "thinking"
+    : "think";
+const RAG_MEMO_REFRESH = (process.env.RAGMemoRefresh || "false").toLowerCase() === "true"; // 新增：传递RAG日记刷新开关
 const ENABLE_ROLE_DIVIDER = (process.env.EnableRoleDivider || "false").toLowerCase() === "true"; // 新增：角色分割开关
 const ENABLE_ROLE_DIVIDER_IN_LOOP = (process.env.EnableRoleDividerInLoop || "false").toLowerCase() === "true"; // 新增：循环栈角色分割开关
 const ROLE_DIVIDER_SYSTEM = (process.env.RoleDividerSystem || "true").toLowerCase() === "true"; // 新增：System角色分割开关
@@ -1172,6 +1176,8 @@ const chatCompletionHandler = new ChatCompletionHandler({
     webSocketServer,
     DEBUG_MODE,
     SHOW_VCP_OUTPUT,
+    reasoningToContentEnabled: REASONING_TO_CONTENT_ENABLED,
+    reasoningToContentTag: REASONING_TO_CONTENT_TAG,
     VCPToolCode, // 新增：传递VCP工具调用验证码开关
     RAGMemoRefresh: RAG_MEMO_REFRESH, // 新增：传递RAG日记刷新开关
     enableRoleDivider: ENABLE_ROLE_DIVIDER, // 新增：传递角色分割开关
@@ -1613,6 +1619,10 @@ async function initialize() {
         }
     }
     if (DEBUG_MODE) console.log('表情包列表缓存加载完成。');
+
+    // 所有插件运行时、服务路由和静态任务就绪后再启动清单监听，
+    // 避免启动阶段的文件写入触发多余重载。
+    pluginManager.startPluginWatcher();
 
     // 初始化通用任务调度器
     taskScheduler.initialize(pluginManager, webSocketServer, DEBUG_MODE);
