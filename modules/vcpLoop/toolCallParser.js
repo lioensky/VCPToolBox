@@ -20,6 +20,53 @@ class ToolCallParser {
   };
 
   /**
+   * 从可见正文中剥离模型思考块。
+   *
+   * 支持：
+   * - <think>...</think> 与 <thinking>...</thinking>
+   * - 大小写、标签空白和属性变体
+   * - 同类或混合标签嵌套
+   * - 未闭合开始标签：保守丢弃该标签之后的全部内容
+   *
+   * 未配对的结束标签只移除标签本身，不会吞掉其后的可见正文。
+   *
+   * @param {string} content
+   * @returns {string}
+   */
+  static stripReasoningBlocks(content) {
+    if (!content || typeof content !== 'string') return '';
+
+    const tagRegex = /<\s*(\/?)\s*(think(?:ing)?)\b[^>]*>/gi;
+    const chunks = [];
+    let cursor = 0;
+    let depth = 0;
+    let match;
+
+    while ((match = tagRegex.exec(content)) !== null) {
+      if (depth === 0) {
+        chunks.push(content.slice(cursor, match.index));
+      }
+
+      const isClosingTag = match[1] === '/';
+      if (isClosingTag) {
+        if (depth > 0) depth -= 1;
+      } else {
+        depth += 1;
+      }
+
+      cursor = tagRegex.lastIndex;
+    }
+
+    // depth > 0 表示思考标签未闭合。为避免潜藏的工具调用被执行，
+    // 故意不保留最后一个开始标签之后的任何内容。
+    if (depth === 0) {
+      chunks.push(content.slice(cursor));
+    }
+
+    return chunks.join('');
+  }
+
+  /**
    * 解析AI响应中的所有工具调用
    * @param {string} content - AI响应内容
    * @returns {Array<{name: string, args: object, archery: boolean, archeryNoReply?: boolean}>}
@@ -27,7 +74,7 @@ class ToolCallParser {
   static parse(content) {
     if (!content || typeof content !== 'string') return [];
 
-    const contentWithoutThink = content.replace(/<think>[\s\S]*?<\/think>/g, '');
+    const contentWithoutThink = this.stripReasoningBlocks(content);
     const toolCalls = [];
     let searchOffset = 0;
 
