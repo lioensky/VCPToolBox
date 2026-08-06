@@ -42,5 +42,8 @@
     "vite": "^8.0.3",
     "vitest": "^3.2.4",
     "vue-tsc": "^3.2.6"
+  },
+  "overrides": {
+    "postcss": "8.5.12"
   }
 }
