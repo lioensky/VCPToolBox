@@ -290,7 +290,7 @@ pub const CONFIG_PAGE_HTML: &str = r##"<!DOCTYPE html>
           <div class="guide">
             你的 API 聚合网关地址。自建请部署
             <a href="https://github.com/songquanpeng/new-api" target="_blank">New-API</a>；
-            或使用聚合商如 <a href="https://openrouter.ai" target="_blank">OpenRouter</a>
+            或使用聚合商如 <a href="https://openrouter.ai" target="_blank">OpenRouter</a>、<a href="https://www.orcarouter.ai" target="_blank">OrcaRouter</a>
           </div>
           <input type="text" name="API_URL" placeholder="http://127.0.0.1:3000" required>
         </div>

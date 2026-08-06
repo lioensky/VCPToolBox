@@ -205,7 +205,7 @@ docker-compose up -d
 For more detailed installation, distributed node deployment, and frontend configuration, see the [operations and deployment documentation](docs/OPERATIONS.md).
 
 **Recommended Frontend**: [VCPChat](https://github.com/lioensky/VCPChat) (official).
-**Recommended Backend**: Official or aggregated APIs that support SSE streaming output and standardized formatting, such as [NewAPI](https://github.com/QuantumNous/new-api) and [OpenRouter](https://openrouter.ai/). Please note again: **do not use reverse-proxy or relay APIs**.
+**Recommended Backend**: Official or aggregated APIs that support SSE streaming output and standardized formatting, such as [NewAPI](https://github.com/QuantumNous/new-api), [OpenRouter](https://openrouter.ai/) and [OrcaRouter](https://www.orcarouter.ai). Please note again: **do not use reverse-proxy or relay APIs**.
 **VCPMobile** (friendly project): [VCPMobile](https://github.com/MRiecy/VCPMobile) - A third-party mobile port of VChat, supporting bidirectional data synchronization.
 **AIO-Hub** (friendly project): [AIO-Hub](https://github.com/miaotouy/aio-hub) - A high-performance desktop LLM chat client built with Tauri, with a rich compilation and debugging toolchain, very suitable for AI development, and partial native API compatibility with VCP.
 
