@@ -117,6 +117,55 @@ test("indexStore 构建递归引用链并检测死链", () => {
   assert.equal(manifestOnly.checks.deadLinks.length, 0);
 });
 
+test("indexStore 将内置开关和预处理器协议识别为运行时定义", () => {
+  const runtimePlaceholders = [
+    "[[AIMemo=True]]",
+    "[[AIMemo=False]]",
+    "[[VCPStaticFold::Auto]]",
+    "[[VCPStaticFold::Lite]]",
+    "[[VCPStaticFold::Full]]",
+    "[[VCPTimeLine::Agent]]",
+    "[[VCPTimeLine::Agent:K:Threshold]]",
+  ];
+  const index = buildIndex({
+    references: runtimePlaceholders.map((placeholder, offset) => ({
+      placeholder,
+      file: "Agent/Test.txt",
+      line: offset + 1,
+      source: "agent",
+    })),
+  });
+
+  for (const placeholder of runtimePlaceholders) {
+    const entry = index.entries.find((item) => item.placeholder === placeholder);
+    assert.equal(entry?.type, "runtime_dynamic", placeholder);
+    assert.equal(entry?.definitions.length, 1, placeholder);
+    assert.equal(
+      index.checks.deadLinks.some((item) => item.placeholder === placeholder),
+      false,
+      placeholder
+    );
+  }
+});
+
+test("indexStore 不会宽泛豁免未知 VCP 方括号协议", () => {
+  const placeholder = "[[VCPUnknown::Value]]";
+  const index = buildIndex({
+    references: [
+      {
+        placeholder,
+        file: "Agent/Test.txt",
+        line: 1,
+        source: "agent",
+      },
+    ],
+  });
+
+  assert.ok(
+    index.checks.deadLinks.some((item) => item.placeholder === placeholder)
+  );
+});
+
 test("atomicValidatedWrite 先备份再替换并清理临时文件", async () => {
   const root = await makeTempProject();
   const pluginDir = path.join(root, "Plugin", "PlaceholderExplorer");

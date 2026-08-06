@@ -24,16 +24,18 @@ function innerName(placeholder) {
 
 function isDiaryDeclaration(placeholder) {
   const inner = innerName(placeholder);
-  return (
-    /(日记本|知识库)/.test(inner) ||
-    /^VCP元思考/.test(inner) ||
-    /^AIMemo=/.test(inner)
-  );
+  return /(日记本|知识库)/.test(inner) || /^VCP元思考/.test(inner);
 }
 
 function isRuntimePattern(placeholder) {
   const inner = innerName(placeholder);
-  return /^VCP_ASYNC_RESULT::/.test(inner) || /^VCPTavern::/.test(inner);
+  return (
+    /^VCP_ASYNC_RESULT::/.test(inner) ||
+    /^VCPTavern::/.test(inner) ||
+    /^AIMemo=(?:True|False)$/i.test(inner) ||
+    /^VCPStaticFold::(?:Auto|Lite|Full)$/i.test(inner) ||
+    /^VCPTimeLine::[^:\]\r\n]+(?::[^:\]\r\n]+){0,2}$/i.test(inner)
+  );
 }
 
 function buildReferenceChains(
@@ -132,6 +134,21 @@ function buildIndex({
 
     if (
       !definitionsByPlaceholder.has(placeholder) &&
+      isRuntimePattern(placeholder)
+    ) {
+      definitionsByPlaceholder.set(placeholder, [
+        {
+          type: "runtime_dynamic",
+          file: reference.file,
+          line: reference.line,
+          value: "由 VCP 内置功能或消息预处理器消费的运行时协议",
+          resolvesTo: null,
+          editable: false,
+          source: "runtime_pattern",
+        },
+      ]);
+    } else if (
+      !definitionsByPlaceholder.has(placeholder) &&
       isDiaryDeclaration(placeholder)
     ) {
       definitionsByPlaceholder.set(placeholder, [
@@ -143,21 +160,6 @@ function buildIndex({
           resolvesTo: null,
           editable: false,
           source: "declaration",
-        },
-      ]);
-    } else if (
-      !definitionsByPlaceholder.has(placeholder) &&
-      isRuntimePattern(placeholder)
-    ) {
-      definitionsByPlaceholder.set(placeholder, [
-        {
-          type: "runtime_dynamic",
-          file: "modules/messageProcessor.js",
-          line: 1,
-          value: "运行时动态协议占位符",
-          resolvesTo: null,
-          editable: false,
-          source: "runtime_pattern",
         },
       ]);
     }
