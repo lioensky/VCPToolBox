@@ -25,7 +25,8 @@ export const APP_ROUTE_COMPONENTS = {
   "preprocessor-order-manager": () =>
     import("@/views/PreprocessorOrderManager.vue"),
   "tool-approval-manager": () => import("@/views/ToolApprovalManager.vue"),
-  "tool-call-records-manager": () => import("@/views/ToolCallRecordsManager.vue"),
+  "tool-call-records-manager": () =>
+    import("@/views/ToolCallRecordsManager.vue"),
   "thinking-chains-editor": () => import("@/views/ThinkingChainsEditor.vue"),
   "rag-tuning": () => import("@/views/RagTuning.vue"),
   "schedule-manager": () => import("@/views/ScheduleManager.vue"),
@@ -37,6 +38,8 @@ export const APP_ROUTE_COMPONENTS = {
   "bridge-hijack-config": () => import("@/views/BridgeHijackConfig.vue"),
   "theme-editor": () => import("@/views/ThemeEditor.vue"),
   "placeholder-viewer": () => import("@/views/PlaceholderViewer.vue"),
+  "placeholder-explorer-manager": () =>
+    import("@/views/PlaceholderExplorerManager.vue"),
   plugins: () => import("@/views/PluginsHub.vue"),
   "plugin-store": () => import("@/views/PluginStore.vue"),
   "plugin-config": () => import("@/views/PluginConfig.vue"),

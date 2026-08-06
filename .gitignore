@@ -177,6 +177,9 @@ ip_blacklist.json
 /VectorStoreTDB/
 
 # 插件缓存文件
+# PlaceholderExplorer 的备份与运行时索引可能包含私密值或本机绝对路径，严禁入库。
+Plugin/PlaceholderExplorer/backups/
+Plugin/PlaceholderExplorer/generated/placeholder-index.json
 Plugin/ArtistMatcher/artist_cache.json
 Plugin/DailyHot/dailyhot_cache.md
 Plugin/EmojiListGenerator/generated_lists/

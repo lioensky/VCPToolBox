@@ -1,0 +1,54 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "PlaceholderExplorer",
+  "version": "1.0.0",
+  "displayName": "占位符索引管理器",
+  "description": "定期扫描 VCP 的 Tar/Var/Sar、插件、Agent、Toolbox、表情包及内置占位符，提供可折叠的定义、引用、嵌套链和健康检查摘要。",
+  "author": "VCPToolBox",
+  "pluginType": "static",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node PlaceholderExplorer.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 120000
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{VCPPlaceholderMap}}",
+        "description": "PlaceholderExplorer 生成的全量占位符索引摘要。"
+      }
+    ],
+    "invocationCommands": []
+  },
+  "configSchema": {
+    "PLACEHOLDER_SCAN_ROOT": {
+      "type": "string",
+      "default": ".",
+      "description": "扫描根目录；相对路径以 VCP 项目根目录为基准。"
+    },
+    "PLACEHOLDER_INDEX_FILE": {
+      "type": "string",
+      "default": "generated/placeholder-index.json",
+      "description": "索引 JSON 输出路径；相对路径以本插件目录为基准。"
+    },
+    "PLACEHOLDER_BACKUP_DIR": {
+      "type": "string",
+      "default": "backups",
+      "description": "编辑前备份目录，必须位于本插件目录内。"
+    },
+    "PLACEHOLDER_BACKUP_RETENTION": {
+      "type": "integer",
+      "default": 20,
+      "description": "最多保留的备份文件数。"
+    },
+    "PLACEHOLDER_MAX_EDIT_BYTES": {
+      "type": "integer",
+      "default": 1048576,
+      "description": "单次编辑内容最大字节数。"
+    }
+  },
+  "refreshIntervalCron": "*/30 * * * *"
+}
