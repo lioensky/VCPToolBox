@@ -46,7 +46,12 @@
                 "<all_urls>",
                 "https://*.bilibili.com/*"
             ],
-            "js": ["content_script.js"]
+            "js": [
+                "webcore/web-agent-protocol.js",
+                "webcore/web-agent-page-core.js",
+                "webcore/web-agent-page-runtime-core.js",
+                "content_script.js"
+            ]
         }
     ]
 }

@@ -11,6 +11,13 @@ const files = {
     runtime: path.join(root, 'modules', 'browserRuntimeManager.js'),
     background: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'background.js'),
     content: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'content_script.js'),
+    protocolCore: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'webcore', 'web-agent-protocol.js'),
+    pageCore: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'webcore', 'web-agent-page-core.js'),
+    pageRuntimeCore: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'webcore', 'web-agent-page-runtime-core.js'),
+    runtimeCore: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'webcore', 'web-agent-runtime-core.js'),
+    adapterContract: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'webcore', 'adapter-contract.js'),
+    chromeAdapter: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'webcore', 'chrome-adapter.js'),
+    coreIndex: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'webcore', 'index.js'),
     popup: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'popup.js'),
     popupHtml: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'popup.html'),
     pluginManifest: path.join(root, 'Plugin', 'ChromeBridge', 'plugin-manifest.json'),
@@ -26,7 +33,21 @@ function checkJavaScriptSyntax(file) {
     new vm.Script(read(file), { filename: file });
 }
 
-for (const file of [files.bridge, files.runtime, files.background, files.content, files.popup]) {
+const checkedJavaScriptFiles = [
+    files.bridge,
+    files.runtime,
+    files.background,
+    files.content,
+    files.protocolCore,
+    files.pageCore,
+    files.pageRuntimeCore,
+    files.runtimeCore,
+    files.adapterContract,
+    files.chromeAdapter,
+    files.coreIndex,
+    files.popup
+];
+for (const file of checkedJavaScriptFiles) {
     checkJavaScriptSyntax(file);
 }
 
@@ -36,6 +57,13 @@ const bridge = read(files.bridge);
 const runtime = read(files.runtime);
 const background = read(files.background);
 const content = read(files.content);
+const protocolCore = read(files.protocolCore);
+const pageCore = read(files.pageCore);
+const pageRuntimeCore = read(files.pageRuntimeCore);
+const runtimeCore = read(files.runtimeCore);
+const adapterContract = read(files.adapterContract);
+const chromeAdapter = read(files.chromeAdapter);
+const coreIndex = read(files.coreIndex);
 const popup = read(files.popup);
 const popupHtml = read(files.popupHtml);
 const fixture = read(files.fixture);
@@ -47,32 +75,20 @@ assert.match(background, /protocolVersion:\s*3/);
 assert.match(background, /stableSnapshotHash/);
 assert.match(background, /sensitiveDomRedaction/);
 assert.match(background, /redactSensitiveDom\s*=\s*true/);
-assert.match(background, /executeCdpAction/);
-assert.match(background, /Input\.dispatchMouseEvent/);
-assert.match(background, /Input\.dispatchKeyEvent/);
-assert.match(background, /Input\.insertText/);
-assert.match(background, /function getCdpKeyDescriptor/);
-assert.match(background, /windowsVirtualKeyCode:\s*13/);
-assert.match(background, /nativeVirtualKeyCode:\s*13/);
-assert.match(background, /type:\s*'char'/);
-assert.match(background, /function detectKeyboardPageTransition/);
-assert.match(background, /function waitForKeyboardPageTransition/);
-assert.match(background, /timeoutMs = 3000/);
-assert.match(background, /observationTimedOut/);
-assert.match(background, /enter-submit-page-transition/);
-assert.match(background, /enter-dispatched-transition-unconfirmed/);
-assert.match(background, /ACTION_DISPATCHED_UNCONFIRMED/);
-assert.match(background, /观察窗内尚未确认页面迁移/);
-assert.doesNotMatch(
-    background,
-    /verified\s*=\s*keyboardTransition\.observed\s*;/,
-    'Enter 未观察到迁移时不得直接赋值 false 并包装成执行错误'
-);
-assert.match(
-    background,
-    /verified\s*=\s*keyboardTransition\.observed\s*\?\s*true\s*:\s*null/,
-    'Enter 未确认态必须映射为 verified=null'
-);
+assert.match(background, /importScripts\(/);
+for (const coreFile of [
+    'web-agent-protocol.js',
+    'adapter-contract.js',
+    'web-agent-runtime-core.js',
+    'chrome-adapter.js'
+]) {
+    assert.match(background, new RegExp(coreFile.replace(/\./g, '\\.')), `background 缺少 Core 加载: ${coreFile}`);
+}
+assert.match(background, /createChromeWebAgentAdapter/);
+assert.match(background, /createWebAgentRuntime/);
+assert.match(background, /executeLegacyCommandThroughCore/);
+assert.match(background, /normalizeLegacyChromeCommand/);
+assert.match(background, /formatLegacyChromeResult/);
 assert.match(background, /function isSafeContentScriptRetryCommand/);
 assert.match(background, /function sendSafeCommandAfterNavigation/);
 assert.match(background, /CONTENT_SCRIPT_NOT_READY_AFTER_NAVIGATION/);
@@ -92,48 +108,89 @@ assert.match(background, /interactionTree/);
 assert.match(background, /scrollContext/);
 assert.match(background, /snapshotDiff/);
 assert.match(background, /if\s*\(!runtimeIdentity\.managedRuntime\)/);
-assert.match(background, /buildCdpResponseBodyResult/);
-assert.match(background, /maxBodyChars,\s*16384/);
-assert.match(background, /metadataOnly/);
-assert.match(background, /sha256Text/);
+assert.match(background, /noteDocumentGeneration/);
+assert.match(background, /updateDocumentState/);
+
+assert.match(protocolCore, /const PROTOCOL_VERSION = 1/);
+assert.match(protocolCore, /const CHROME_BRIDGE_PROTOCOL_VERSION = 3/);
+assert.match(protocolCore, /debugger_send_command/);
+assert.match(protocolCore, /const \[id, domain, risk, sideEffecting, retryable, sensitiveResult, requires\]/);
+assert.match(protocolCore, /\n\s+risk,\r?\n\s+sideEffecting,/);
+assert.match(protocolCore, /sideEffecting/);
+assert.match(protocolCore, /retryable/);
+assert.match(protocolCore, /sensitiveResult/);
+assert.match(protocolCore, /function isRetryAllowed/);
+assert.match(protocolCore, /runtime_execute_script/);
+assert.match(protocolCore, /network_get_response_body/);
+
+assert.match(adapterContract, /class WebAgentAdapter/);
+assert.match(adapterContract, /sendDebuggerCommand/);
+assert.match(adapterContract, /dispatchNativeInput/);
+assert.match(adapterContract, /captureScreenshot/);
+assert.match(adapterContract, /waitForNavigation/);
+
+assert.match(runtimeCore, /function getKeyDescriptor/);
+assert.match(runtimeCore, /windowsVirtualKeyCode:\s*13/);
+assert.match(runtimeCore, /nativeVirtualKeyCode:\s*13/);
+assert.match(runtimeCore, /function createKeyboardPlan/);
+assert.match(runtimeCore, /function detectTargetTransition/);
+assert.match(runtimeCore, /function buildResponseBodyResult/);
+assert.match(runtimeCore, /maxBodyChars,\s*16384/);
+assert.match(runtimeCore, /metadataOnly/);
+assert.match(runtimeCore, /sha256Text/);
+assert.match(runtimeCore, /debugger_send_command/);
+assert.match(runtimeCore, /runtime_execute_script/);
+
+assert.match(chromeAdapter, /Input\.dispatchMouseEvent/);
+assert.match(chromeAdapter, /Input\.dispatchKeyEvent/);
+assert.match(chromeAdapter, /Input\.insertText/);
+assert.match(chromeAdapter, /type:\s*'char'/);
+assert.match(chromeAdapter, /chrome\.debugger/);
+assert.match(chromeAdapter, /chrome-tabs-capture/);
+assert.match(coreIndex, /createChromeRuntime/);
 
 assert.match(runtime, /runtimeInstanceId/);
 assert.match(runtime, /lastCloseReason/);
 assert.match(runtime, /previousPid/);
 
-assert.match(content, /lastStableContentHash/);
-assert.match(content, /lastStructureHash/);
-assert.match(content, /buildStableSnapshotHashes/);
-assert.match(content, /captureElementActionState/);
-assert.match(content, /verifyInputAction/);
-assert.match(content, /verifyClickAction/);
-assert.match(content, /SCROLL_BOUNDARY_REACHED/);
-assert.match(content, /SENSITIVE_FIELD_PATTERN/);
-assert.match(content, /redactHtml/);
-assert.match(content, /redactHtmlWithMetadata/);
-assert.match(content, /REDACTION_ENABLED_NO_MATCH/);
-assert.match(content, /redactedFieldCount/);
-assert.match(content, /ACTION_VERIFICATION_FAILED/);
-assert.match(content, /checkElementOcclusion/);
-assert.match(content, /ELEMENT_OCCLUDED/);
-assert.match(content, /sendKeysToElement/);
-assert.match(content, /selectOptionOnElement/);
-assert.match(content, /hoverElement/);
-assert.match(content, /waitForCondition/);
-assert.match(content, /idempotentNoop/);
-assert.match(content, /function getOrCreateContentBlock/);
-assert.match(content, /function buildInteractionTree/);
-assert.match(content, /function buildScrollContext/);
-assert.match(content, /function buildSnapshotDiff/);
-assert.match(content, /function compileGroundedMarkdown/);
-assert.match(content, /format:\s*'grounded-markdown-v1'/);
+assert.match(content, /VCPWebAgentPageRuntimeCore/);
+assert.match(content, /createWebAgentPageRuntime/);
+assert.match(content, /pageRuntime\.snapshot\(\)/);
+assert.match(content, /pageRuntime\.execute\(/);
+assert.match(content, /pageRuntime\.invalidateDocument/);
 assert.match(content, /GET_GROUNDED_PAGE_INFO/);
-assert.match(content, /contentBlockId/);
-assert.match(content, /headingPath/);
-assert.match(content, /agentRef/);
-assert.match(content, /elementRegistry\.set\(agentRef/);
-assert.match(content, /Agent 短引用已过期/);
-assert.match(content, /source:\s*'agent-ref'/);
+assert.match(content, /EXECUTE_CORE_COMMAND/);
+assert.match(content, /EXECUTE_COMMAND/);
+assert.doesNotMatch(content, /function validateEntry/);
+assert.doesNotMatch(content, /function dispatchClick/);
+assert.doesNotMatch(content, /function selectOption/);
+assert.doesNotMatch(content, /function checkOcclusion/);
+
+assert.match(pageCore, /SENSITIVE_FIELD_PATTERN/);
+assert.match(pageCore, /redactHtmlWithMetadata/);
+assert.match(pageCore, /captureElementActionState/);
+assert.match(pageCore, /verifyInputAction/);
+assert.match(pageCore, /verifyClickAction/);
+assert.match(pageCore, /createElementSignature/);
+assert.match(pageCore, /createLocatorHints/);
+
+assert.match(pageRuntimeCore, /function buildHashes/);
+assert.match(pageRuntimeCore, /function buildInteractionTree/);
+assert.match(pageRuntimeCore, /function buildScrollContext/);
+assert.match(pageRuntimeCore, /function buildDiff/);
+assert.match(pageRuntimeCore, /format:\s*'grounded-markdown-v1'/);
+assert.match(pageRuntimeCore, /contentBlockId/);
+assert.match(pageRuntimeCore, /headingPath/);
+assert.match(pageRuntimeCore, /agentRef/);
+assert.match(pageRuntimeCore, /SCROLL_BOUNDARY_REACHED/);
+assert.match(pageRuntimeCore, /REDACTION_ENABLED_NO_MATCH/);
+assert.match(pageRuntimeCore, /ACTION_VERIFICATION_FAILED/);
+assert.match(pageRuntimeCore, /ELEMENT_OCCLUDED/);
+assert.match(pageRuntimeCore, /idempotentNoop/);
+assert.match(pageRuntimeCore, /ELEMENT_HANDLE_NOT_REGISTERED/);
+assert.match(pageRuntimeCore, /source:\s*'registry-exact'/);
+assert.match(pageRuntimeCore, /recoveryUsed:\s*false/);
+assert.match(pageRuntimeCore, /queryRootType/);
 
 assert.match(popupHtml, /id="redactSensitiveDom"\s+checked/);
 assert.match(popupHtml, /type="password"\s+id="vcpKey"/);
@@ -193,7 +250,22 @@ assert.match(commandDescriptions.get('scroll'), /SCROLL_BOUNDARY_REACHED/);
 assert.match(commandDescriptions.get('hover'), /ELEMENT_OCCLUDED/);
 assert.match(commandDescriptions.get('wait_for'), /dom_stable/);
 
-console.log('ChromeBridge 操作增强脚本级冒烟检查通过');
+const contentScripts = extensionManifest.content_scripts[0].js;
+assert.deepStrictEqual(contentScripts, [
+    'webcore/web-agent-protocol.js',
+    'webcore/web-agent-page-core.js',
+    'webcore/web-agent-page-runtime-core.js',
+    'content_script.js'
+]);
+for (const injectedFile of contentScripts) {
+    assert.match(
+        background,
+        new RegExp(`['"]${injectedFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`),
+        `手动补注入缺少 ${injectedFile}`
+    );
+}
+
+console.log('ChromeBridge Web Agent Core 脚本级冒烟检查通过');
 console.log(JSON.stringify({
     protocolVersion: 3,
     agentViewFormat: 'grounded-markdown-v1',
@@ -206,5 +278,8 @@ console.log(JSON.stringify({
     enterObservationMs: 3000,
     navigationRetry: 'read-only-commands-only',
     fixture: path.relative(root, files.fixture),
-    checkedJavaScriptFiles: 5
+    webAgentProtocolVersion: 1,
+    pageRuntimeVersion: '0.2.1',
+    coreCapabilityCount: 71,
+    checkedJavaScriptFiles: checkedJavaScriptFiles.length
 }, null, 2));
