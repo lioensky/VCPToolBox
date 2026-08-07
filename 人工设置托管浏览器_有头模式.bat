@@ -8,13 +8,13 @@ echo ============================================================
 echo  VCP Managed Chrome - Interactive Setup Mode
 echo ============================================================
 echo.
-echo This launcher opens the production managed Chrome profile
-echo in headed, visible, non-minimized mode.
+echo This launcher asks the running VCP server to open its managed
+echo Chrome through the HumanTool / ChromeBridge open_chrome path.
 echo.
 echo IMPORTANT:
-echo - Close the server-managed Chrome instance before continuing.
-echo - Never run two Chrome processes with the same managed profile.
-echo - Close the entire browser normally after changing settings.
+echo - Start the VCP server before continuing.
+echo - The VCP server remains the sole owner of the Chrome process.
+echo - This window may be closed after the server accepts the request.
 echo.
 pause
 
@@ -33,7 +33,7 @@ set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
 if "%EXIT_CODE%"=="0" (
-    echo [DONE] The managed browser setup session has ended.
+    echo [DONE] The VCP server accepted the managed browser setup request.
 ) else (
     echo [ERROR] Launcher exit code: %EXIT_CODE%
 )

@@ -402,9 +402,6 @@ function buildChromeArgs(config) {
         '--noerrdialogs',
         '--disable-sync',
         '--disable-popup-blocking',
-        // 托管浏览器关闭最后一个窗口后必须退出，不能让扩展 WebSocket、
-        // Alarm 或 Chrome“后台应用”继续保活进程并形成重连循环。
-        '--disable-background-mode',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
         '--disable-features=Translate,MediaRouter,SessionRestore,InfiniteSessionRestore',

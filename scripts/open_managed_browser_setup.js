@@ -11,187 +11,121 @@ const configPath = path.join(projectRoot, 'config.env');
 if (fs.existsSync(configPath)) {
     dotenv.config({ path: configPath, override: false });
 } else {
-    console.warn('[Managed Browser Setup] 未找到 config.env，将使用默认值和当前环境变量。');
+    console.warn('[Managed Browser Setup] 未找到 config.env，将使用当前环境变量。');
 }
 
-const browserRuntimeManager = require('../modules/browserRuntimeManager.js');
-
-function resolveProjectPath(value, fallback) {
-    const raw = String(value || '').trim();
-    if (!raw) return fallback;
-    return path.isAbsolute(raw) ? raw : path.resolve(projectRoot, raw);
+function readRequiredConfig(name) {
+    const value = String(process.env[name] || '').trim();
+    if (!value) {
+        throw new Error(`config.env 缺少必要配置 ${name}`);
+    }
+    return value;
 }
 
-function requestJson(url, timeoutMs = 1500) {
+function buildOpenChromeToolRequest() {
+    return [
+        '<<<[TOOL_REQUEST]>>>',
+        'maid:「始」ManagedBrowserSetup「末」,',
+        'tool_name:「始」ChromeBridge「末」,',
+        'command:「始」open_chrome「末」,',
+        'interactiveSetup:「始」true「末」,',
+        'timeoutMs:「始」30000「末」',
+        '<<<[END_TOOL_REQUEST]>>>'
+    ].join('\n');
+}
+
+function extractErrorMessage(statusCode, body) {
+    try {
+        const parsed = JSON.parse(body);
+        return parsed.plugin_error ||
+            parsed.plugin_execution_error ||
+            parsed.error ||
+            parsed.details ||
+            parsed.message ||
+            `HTTP ${statusCode}`;
+    } catch (_) {
+        return body.trim() || `HTTP ${statusCode}`;
+    }
+}
+
+function postHumanTool({ port, key, body, timeoutMs = 45000 }) {
     return new Promise((resolve, reject) => {
-        const request = http.get(url, { timeout: timeoutMs }, response => {
-            let body = '';
+        const request = http.request({
+            hostname: '127.0.0.1',
+            port,
+            path: '/v1/human/tool',
+            method: 'POST',
+            timeout: timeoutMs,
+            headers: {
+                'Authorization': `Bearer ${key}`,
+                'Content-Type': 'text/plain;charset=UTF-8',
+                'Content-Length': Buffer.byteLength(body)
+            }
+        }, response => {
+            let responseBody = '';
             response.setEncoding('utf8');
             response.on('data', chunk => {
-                body += chunk;
+                responseBody += chunk;
             });
             response.on('end', () => {
-                try {
-                    resolve(JSON.parse(body));
-                } catch (error) {
-                    reject(error);
+                if (response.statusCode >= 200 && response.statusCode < 300) {
+                    try {
+                        resolve(JSON.parse(responseBody));
+                    } catch (_) {
+                        resolve({ status: 'success', raw: responseBody });
+                    }
+                    return;
                 }
+
+                reject(new Error(extractErrorMessage(response.statusCode, responseBody)));
             });
         });
-        request.on('timeout', () => request.destroy(new Error('timeout')));
-        request.on('error', reject);
+
+        request.on('timeout', () => {
+            request.destroy(new Error(`HumanTool 请求在 ${timeoutMs}ms 后超时`));
+        });
+        request.on('error', error => {
+            reject(new Error(
+                `无法调用 VCP HumanTool（127.0.0.1:${port}）：${error.message}。` +
+                '请确认 VCP 服务器已经启动且 PORT/Key 配置正确。'
+            ));
+        });
+
+        request.write(body);
+        request.end();
     });
 }
 
-async function getPageTargetCount(activeRuntime) {
-    if (!activeRuntime?.port) return null;
-    try {
-        const targets = await requestJson(`http://127.0.0.1:${activeRuntime.port}/json/list`);
-        if (!Array.isArray(targets)) return null;
-        return targets.filter(target => target?.type === 'page').length;
-    } catch (_) {
-        return null;
-    }
-}
-
-async function detectActiveManagedProfile(profileDir) {
-    const activePortPath = path.join(profileDir, 'DevToolsActivePort');
-    try {
-        const content = await fs.promises.readFile(activePortPath, 'utf8');
-        const port = Number.parseInt(content.split(/\r?\n/)[0], 10);
-        if (!Number.isFinite(port) || port <= 0) return null;
-        const version = await requestJson(`http://127.0.0.1:${port}/json/version`);
-        return {
-            port,
-            browser: version.Browser || 'Chrome',
-            webSocketDebuggerUrl: version.webSocketDebuggerUrl || null
-        };
-    } catch (_) {
-        return null;
-    }
-}
-
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function waitForManagedBrowserExit(profileDir) {
-    // Chrome 启动初期 DevToolsActivePort 和首个 page target 可能尚未生成。
-    let observedActiveRuntime = false;
-    let observedPageTarget = false;
-    for (let attempt = 0; attempt < 60; attempt++) {
-        const status = browserRuntimeManager.getManagedBrowserStatus();
-        const activeRuntime = await detectActiveManagedProfile(profileDir);
-        const pageTargetCount = await getPageTargetCount(activeRuntime);
-
-        if (status.running || activeRuntime) observedActiveRuntime = true;
-        if (pageTargetCount !== null && pageTargetCount > 0) {
-            observedPageTarget = true;
-            break;
-        }
-        await sleep(250);
-    }
-
-    if (!observedActiveRuntime) {
-        throw new Error('浏览器启动后未检测到活动进程或 DevTools 端口');
-    }
-
-    // 点击最后一个窗口的 X 后，Chromium 可能因扩展 WebSocket、Alarm 或
-    // “关闭后继续运行后台应用”而继续保留主进程。此时不能只等待进程退出：
-    // 连续确认 page target 消失后，应主动清理仅由扩展保活的进程树。
-    let noPageTargetSince = null;
-    let devToolsUnavailableSince = null;
-    while (true) {
-        const status = browserRuntimeManager.getManagedBrowserStatus();
-        const activeRuntime = await detectActiveManagedProfile(profileDir);
-        if (!status.running && !activeRuntime) return;
-
-        const pageTargetCount = await getPageTargetCount(activeRuntime);
-        if (pageTargetCount !== null && pageTargetCount > 0) {
-            observedPageTarget = true;
-            noPageTargetSince = null;
-            devToolsUnavailableSince = null;
-        } else if (pageTargetCount === 0 && observedPageTarget) {
-            noPageTargetSince ??= Date.now();
-            devToolsUnavailableSince = null;
-        } else if (!activeRuntime && observedPageTarget) {
-            // 某些 Chromium 版本在最后窗口关闭时先撤销 DevTools HTTP，
-            // 后台扩展进程稍后才退出；同样不能无限等待。
-            devToolsUnavailableSince ??= Date.now();
-        }
-
-        const pageWindowClosed =
-            noPageTargetSince !== null && Date.now() - noPageTargetSince >= 2000;
-        const devToolsClosed =
-            devToolsUnavailableSince !== null && Date.now() - devToolsUnavailableSince >= 2000;
-        if (pageWindowClosed || devToolsClosed) {
-            console.log('[Managed Browser Setup] 最后一个浏览器窗口已关闭，正在清理扩展后台残留进程……');
-            await browserRuntimeManager.closeManagedBrowser('setup_last_window_closed');
-            return;
-        }
-
-        await sleep(500);
-    }
-}
-
 async function main() {
-    const profileDir = resolveProjectPath(
-        process.env.VCP_BROWSER_PROFILE_DIR,
-        path.join(projectRoot, 'Plugin', 'ChromeBridge', 'managed-profile')
-    );
-    const activeRuntime = await detectActiveManagedProfile(profileDir);
+    const port = readRequiredConfig('PORT');
+    const key = readRequiredConfig('Key');
+    const requestBody = buildOpenChromeToolRequest();
 
     console.log('============================================================');
     console.log(' VCP Managed Chrome - 人工基础设置模式');
     console.log('============================================================');
-    console.log(`Profile: ${profileDir}`);
+    console.log('');
+    console.log(`正在通过服务器 HumanTool 调用 ChromeBridge open_chrome……`);
+    console.log(`Endpoint: http://127.0.0.1:${port}/v1/human/tool`);
     console.log('');
 
-    if (activeRuntime) {
-        throw new Error(
-            `托管 Profile 正被运行中的 ${activeRuntime.browser} 占用（DevTools 端口 ${activeRuntime.port}）。` +
-            '请先通过 ChromeBridge close_chrome 或关闭服务器托管浏览器，再重新运行本脚本；' +
-            '禁止同时用两个 Chrome 进程写入同一 Profile。'
-        );
-    }
-
-    console.log('将以有头、非最小化模式打开与生产环境相同的 managed Profile。');
-    console.log('可在浏览器中设置麦克风、摄像头、通知、语言、登录态和站点权限。');
-    console.log('设置完成后请正常关闭整个浏览器窗口；本脚本会随浏览器退出。');
-    console.log('');
-
-    const status = await browserRuntimeManager.ensureManagedBrowser({
-        enabled: true,
-        headless: false,
-        startMinimized: false,
-        windowsHide: false,
-        // 人工设置期间不触发常规 5 分钟空闲回收；最长保留 24 小时。
-        idleTimeoutMs: 24 * 60 * 60 * 1000
+    const result = await postHumanTool({
+        port,
+        key,
+        body: requestBody
     });
 
-    console.log('[Managed Browser Setup] 浏览器已启动：');
-    console.log(JSON.stringify({
-        pid: status.pid,
-        executablePath: status.executablePath,
-        profileDir: status.profileDir,
-        extensionDir: status.extensionDir,
-        headless: status.headless,
-        startMinimized: status.startMinimized,
-        windowsHide: status.windowsHide
-    }, null, 2));
+    console.log('[Managed Browser Setup] 服务器已接受请求并启动托管浏览器。');
     console.log('');
-    console.log('如扩展未自动识别，请打开扩展 Popup，直接点击 Managed。无需配对令牌。');
-    console.log('提示：Chrome 的麦克风/摄像头权限通常按站点 origin 保存。');
-    console.log('请访问实际目标站点并在地址栏左侧“网站设置”中允许对应权限。');
+    console.log('浏览器生命周期现由 VCP 服务器主进程管理。');
+    console.log('可在浏览器中设置扩展、登录态、语言、麦克风、摄像头及站点权限。');
+    console.log('设置完成后可以正常关闭浏览器窗口。');
     console.log('');
-    console.log('[Managed Browser Setup] 正在等待浏览器关闭，请勿关闭本窗口……');
-
-    await waitForManagedBrowserExit(profileDir);
-    console.log('[Managed Browser Setup] 已检测到浏览器退出。');
+    console.log(JSON.stringify(result, null, 2));
 }
 
 main().catch(error => {
     console.error('');
-    console.error(`[Managed Browser Setup] 启动失败：${error.message}`);
+    console.error(`[Managed Browser Setup] 请求失败：${error.message}`);
     process.exitCode = 1;
 });

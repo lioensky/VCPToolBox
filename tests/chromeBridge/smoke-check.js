@@ -170,15 +170,18 @@ assert.match(coreIndex, /createChromeRuntime/);
 assert.match(runtime, /runtimeInstanceId/);
 assert.match(runtime, /lastCloseReason/);
 assert.match(runtime, /previousPid/);
-assert.match(runtime, /--disable-background-mode/);
 
-assert.match(managedSetup, /function waitForManagedBrowserExit/);
-assert.match(managedSetup, /function getPageTargetCount/);
-assert.match(managedSetup, /\/json\/list/);
-assert.match(managedSetup, /target\?\.type === 'page'/);
-assert.match(managedSetup, /noPageTargetSince/);
-assert.match(managedSetup, /setup_last_window_closed/);
-assert.match(managedSetup, /closeManagedBrowser\('setup_last_window_closed'\)/);
+assert.match(managedSetup, /function buildOpenChromeToolRequest/);
+assert.match(managedSetup, /function postHumanTool/);
+assert.match(managedSetup, /path:\s*'\/v1\/human\/tool'/);
+assert.match(managedSetup, /'Authorization':\s*`Bearer \$\{key\}`/);
+assert.match(managedSetup, /'Content-Type':\s*'text\/plain;charset=UTF-8'/);
+assert.match(managedSetup, /tool_name:「始」ChromeBridge「末」/);
+assert.match(managedSetup, /command:「始」open_chrome「末」/);
+assert.match(managedSetup, /interactiveSetup:「始」true「末」/);
+assert.doesNotMatch(managedSetup, /browserRuntimeManager|ensureManagedBrowser|DevToolsActivePort|waitForManagedBrowserExit/);
+assert.match(bridge, /const interactiveSetup = parseBoolean\(params\.interactiveSetup, false\)/);
+assert.match(bridge, /idleTimeoutMs:\s*24 \* 60 \* 60 \* 1000/);
 
 assert.match(content, /VCPWebAgentPageRuntimeCore/);
 assert.match(content, /createWebAgentPageRuntime/);

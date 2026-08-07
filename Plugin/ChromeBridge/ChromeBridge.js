@@ -818,13 +818,40 @@ async function runLifecycleCommand(command, params = {}) {
     switch (command) {
         case 'open_chrome': {
             const timeoutMs = Number.parseInt(params.timeoutMs, 10) || 10000;
-            await browserRuntimeManager.ensureManagedBrowser();
-            let client = await waitForManagedClient(timeoutMs);
+            const interactiveSetup = parseBoolean(params.interactiveSetup, false);
+            const launchOptions = interactiveSetup
+                ? {
+                    enabled: true,
+                    headless: false,
+                    startMinimized: false,
+                    windowsHide: false,
+                    idleTimeoutMs: 24 * 60 * 60 * 1000
+                }
+                : {};
 
+            await browserRuntimeManager.ensureManagedBrowser(launchOptions);
+
+            // 人工设置只要求服务器主进程成功拥有并启动浏览器。此时用户可能正要
+            // 配置扩展或首次选择 Managed，不能等待握手，更不能因尚未握手而重启。
+            if (interactiveSetup) {
+                return {
+                    success: true,
+                    message: 'managed Chrome 已由服务器以人工设置模式启动',
+                    result: {
+                        interactiveSetup: true,
+                        runtime: browserRuntimeManager.getManagedBrowserStatus(),
+                        connectedManagedClient: getOpenClients()
+                            .filter(isTrustedManagedClient)
+                            .map(summarizeClient)[0] || null
+                    }
+                };
+            }
+
+            let client = await waitForManagedClient(timeoutMs);
             if (!client) {
-                console.warn('[ChromeBridge] open_chrome 未等到 managed token 连接，准备重启 managed Chrome 后重试一次。');
+                console.warn('[ChromeBridge] open_chrome 未等到可信 managed 连接，准备重启 managed Chrome 后重试一次。');
                 await browserRuntimeManager.closeManagedBrowser('open_chrome_unverified_restart');
-                await browserRuntimeManager.ensureManagedBrowser();
+                await browserRuntimeManager.ensureManagedBrowser(launchOptions);
                 client = await waitForManagedClient(timeoutMs);
             }
 
@@ -841,8 +868,11 @@ async function runLifecycleCommand(command, params = {}) {
             }
             return {
                 success: true,
-                message: 'managed Chrome 已启动并通过 token 校验连接',
+                message: interactiveSetup
+                    ? 'managed Chrome 已由服务器以人工设置模式启动并连接'
+                    : 'managed Chrome 已启动并建立可信连接',
                 result: {
+                    interactiveSetup,
                     runtime: browserRuntimeManager.getManagedBrowserStatus(),
                     connectedManagedClient: summarizeClient(client)
                 }
