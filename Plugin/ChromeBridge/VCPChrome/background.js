@@ -32,6 +32,7 @@ let runtimeIdentity = {
     protocolVersion: 3,
     clientKind: 'user',
     managedRuntime: false,
+    manualManagedSelection: false,
     managedToken: null,
     managedTokenCreatedAt: 0,
     stageGeneration: null,
@@ -104,10 +105,15 @@ async function executeLegacyCommandThroughCore(commandData = {}) {
 function applyRuntimeConfig(config, source = 'unknown') {
     if (!config || config.managedRuntime !== true || !config.managedToken) return null;
 
+    // 用户在 Popup 中明确选择的模式优先；自动 staging 配置只能补全自动模式，
+    // 不能在 MV3 service worker 重启后覆盖人工选择。
+    if (runtimeIdentity.manualManagedSelection) return null;
+
     runtimeIdentity = {
         ...runtimeIdentity,
         clientKind: 'managed',
         managedRuntime: true,
+        manualManagedSelection: false,
         managedToken: String(config.managedToken),
         managedTokenCreatedAt: Number(config.tokenCreatedAt) || 0,
         stageGeneration: config.stageGeneration || null,
@@ -128,6 +134,7 @@ function applyRuntimeConfig(config, source = 'unknown') {
         vcpKey: runtimeConnectionConfig.vcpKey,
         clientKind: 'managed',
         managedRuntime: true,
+        manualManagedSelection: false,
         managedToken: runtimeIdentity.managedToken,
         managedTokenCreatedAt: runtimeIdentity.managedTokenCreatedAt,
         stageGeneration: runtimeIdentity.stageGeneration,
@@ -212,6 +219,7 @@ function sendClientHello() {
                 redactSensitiveDom
             },
             managedRuntime: runtimeIdentity.managedRuntime,
+            manualManagedSelection: runtimeIdentity.manualManagedSelection,
             managedToken: runtimeIdentity.managedToken,
             managedTokenCreatedAt: runtimeIdentity.managedTokenCreatedAt,
             stageGeneration: runtimeIdentity.stageGeneration,
@@ -488,21 +496,54 @@ function updateIcon() {
     chrome.action.setBadgeBackgroundColor({ color: isConnected ? '#00C853' : '#FF5252' });
 }
 
-function applyClientMode(mode) {
+async function applyClientMode(mode) {
     const normalizedMode = String(mode || '').trim().toLowerCase();
-    const clientKind = normalizedMode === 'agent' ? 'agent' : 'user';
-    runtimeIdentity = {
-        ...runtimeIdentity,
-        clientKind,
-        managedRuntime: false
-    };
-    connectionEnabled = clientKind === 'agent' ? true : connectionEnabled;
-    chrome.storage.local.set({
-        clientKind,
-        agentMode: clientKind === 'agent',
-        managedRuntime: false,
-        connectionEnabled
-    });
+
+    if (normalizedMode === 'managed') {
+        // 人工 Managed 是用户在扩展 UI 中的明确授权，不依赖 Chromium
+        // 是否允许读取动态 staging 文件或接受 Profile storage 预注入。
+        runtimeIdentity = {
+            ...runtimeIdentity,
+            clientKind: 'managed',
+            managedRuntime: true,
+            manualManagedSelection: true,
+            managedToken: null,
+            managedTokenCreatedAt: 0
+        };
+        connectionEnabled = true;
+        isMonitoringEnabled = true;
+        await chrome.storage.local.set({
+            clientKind: 'managed',
+            agentMode: false,
+            managedRuntime: true,
+            manualManagedSelection: true,
+            managedToken: null,
+            managedTokenCreatedAt: 0,
+            isMonitoringEnabled: true,
+            connectionEnabled: true
+        });
+    } else {
+        const clientKind = normalizedMode === 'agent' ? 'agent' : 'user';
+        runtimeIdentity = {
+            ...runtimeIdentity,
+            clientKind,
+            managedRuntime: false,
+            manualManagedSelection: false,
+            managedToken: null,
+            managedTokenCreatedAt: 0
+        };
+        connectionEnabled = clientKind === 'agent' ? true : connectionEnabled;
+        await chrome.storage.local.set({
+            clientKind,
+            agentMode: clientKind === 'agent',
+            managedRuntime: false,
+            manualManagedSelection: false,
+            managedToken: null,
+            managedTokenCreatedAt: 0,
+            connectionEnabled
+        });
+    }
+
     if (reconnectTimerId && !shouldAutoReconnect()) {
         clearTimeout(reconnectTimerId);
         reconnectTimerId = null;
@@ -512,9 +553,12 @@ function applyClientMode(mode) {
     } else if (shouldAutoReconnect()) {
         connect();
     }
+    broadcastMonitoringStatusToTabs();
     broadcastStatusUpdate();
     return {
+        success: true,
         clientKind: runtimeIdentity.clientKind,
+        managedRuntime: runtimeIdentity.managedRuntime,
         agentMode: runtimeIdentity.clientKind === 'agent',
         isConnected
     };
@@ -571,7 +615,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ isMonitoringEnabled: isMonitoringEnabled });
         return true;
     } else if (request.type === 'SET_CLIENT_MODE') {
-        sendResponse(applyClientMode(request.mode));
+        applyClientMode(request.mode)
+            .then(sendResponse)
+            .catch(error => sendResponse({
+                success: false,
+                error: error.message || String(error),
+                clientKind: runtimeIdentity.clientKind,
+                managedRuntime: runtimeIdentity.managedRuntime,
+                isConnected
+            }));
         return true;
     } else if (request.type === 'PRIVACY_SETTINGS_CHANGED') {
         redactSensitiveDom = request.redactSensitiveDom !== false;
@@ -849,6 +901,7 @@ function isSafeContentScriptRetryCommand(command) {
         'wait_for',
         'get_page_info',
         'get_page_image',
+        'page_get_image',
         'query_html',
         'query_js',
         'page_code_search'
@@ -1400,7 +1453,7 @@ async function executePageImageCommand(commandData = {}) {
     const resolvedResponse = await chrome.tabs.sendMessage(tab.id, {
         type: 'EXECUTE_CORE_COMMAND',
         data: {
-            command: 'get_page_image',
+            command: 'page_get_image',
             imageId: commandData.imageId || commandData.target,
             runtimeInstanceId: commandData.runtimeInstanceId,
             documentGeneration: commandData.documentGeneration,
@@ -1477,7 +1530,7 @@ async function executePageImageCommand(commandData = {}) {
 async function handleIncomingCommand(commandData) {
     const { command, requestId, sourceClientId } = commandData;
 
-    if (command === 'get_page_image') {
+    if (command === 'get_page_image' || command === 'page_get_image') {
         try {
             const result = await executePageImageCommand(commandData);
             sendResponseToWs({
@@ -1864,10 +1917,21 @@ if (chrome.alarms && chrome.alarms.onAlarm) {
     });
 }
 
-// 尝试加载 managed runtime 配置，然后按连接开关/Agent保活策略连接。
-chrome.storage.local.get(['connectionEnabled', 'clientKind'], (result) => {
+// 恢复用户明确选择的模式。人工 Managed 优先于自动 staging 探测。
+chrome.storage.local.get(['connectionEnabled', 'clientKind', 'managedRuntime', 'manualManagedSelection'], (result) => {
     if (result.connectionEnabled !== undefined) connectionEnabled = result.connectionEnabled === true;
     if (result.clientKind === 'agent') runtimeIdentity.clientKind = 'agent';
+    if (
+        result.clientKind === 'managed' &&
+        result.managedRuntime === true &&
+        result.manualManagedSelection === true
+    ) {
+        runtimeIdentity.clientKind = 'managed';
+        runtimeIdentity.managedRuntime = true;
+        runtimeIdentity.manualManagedSelection = true;
+        runtimeIdentity.managedToken = null;
+        runtimeIdentity.managedTokenCreatedAt = 0;
+    }
 
     loadManagedRuntimeConfig().finally(() => {
         if (runtimeIdentity.managedRuntime || runtimeIdentity.clientKind === 'agent') {

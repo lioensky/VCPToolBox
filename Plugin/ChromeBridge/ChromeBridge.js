@@ -144,13 +144,25 @@ function registerRoutes(app, config, projectBasePath) {
     }
 }
 
+function isTrustedManagedClient(entry) {
+    return entry?.clientKind === 'managed' &&
+        (entry.managedTokenValid === true || entry.manualManagedSelection === true);
+}
+
 function updateClientFromHello(entry, helloData = {}) {
     const declaredKind = normalizeClientKind(helloData.clientKind);
     const tokenValid = declaredKind === 'managed' && browserRuntimeManager.validateManagedToken(helloData.managedToken);
+    // WebSocket 在进入 ChromeBridge 前已经通过 VCP Key 鉴权。人工声明还要求
+    // 用户在扩展 Popup 中明确选择 Managed，不依赖 Chromium 的配置预注入。
+    const manualManagedSelection = declaredKind === 'managed' &&
+        helloData.manualManagedSelection === true;
 
-    entry.clientKind = tokenValid ? 'managed' : (declaredKind === 'managed' ? 'user' : declaredKind);
+    entry.clientKind = (tokenValid || manualManagedSelection)
+        ? 'managed'
+        : (declaredKind === 'managed' ? 'user' : declaredKind);
     entry.managedTokenValid = tokenValid;
-    entry.permissionLevel = (tokenValid || entry.clientKind === 'agent') ? 'high' : 'restricted';
+    entry.manualManagedSelection = manualManagedSelection;
+    entry.permissionLevel = (isTrustedManagedClient(entry) || entry.clientKind === 'agent') ? 'high' : 'restricted';
     entry.protocolVersion = Number.parseInt(helloData.protocolVersion, 10) || 1;
     entry.capabilities = Array.isArray(helloData.capabilities) ? helloData.capabilities : [];
     entry.snapshotBackends = Array.isArray(helloData.snapshotBackends) ? helloData.snapshotBackends : [];
@@ -173,7 +185,7 @@ function updateClientFromHello(entry, helloData = {}) {
         browserRuntimeManager.touchManagedBrowser();
     }
 
-    console.log(`[ChromeBridge] 🤝 clientHello: ${entry.clientId}, protocol=v${entry.protocolVersion}, kind=${entry.clientKind}, permission=${entry.permissionLevel}, tokenValid=${entry.managedTokenValid}`);
+    console.log(`[ChromeBridge] 🤝 clientHello: ${entry.clientId}, protocol=v${entry.protocolVersion}, kind=${entry.clientKind}, permission=${entry.permissionLevel}, tokenValid=${entry.managedTokenValid}, manualManaged=${entry.manualManagedSelection}`);
 }
 
 // WebSocketServer调用：新Chrome客户端连接
@@ -195,6 +207,7 @@ function handleNewClient(ws) {
         featureSettings: {},
         permissionLevel: 'restricted',
         managedTokenValid: false,
+        manualManagedSelection: false,
         activeTabInfo: null,
         lastPageInfo: null,
         extensionVersion: null,
@@ -426,7 +439,7 @@ function authorizeChromeCommand(entry, command) {
         return { allowed: true };
     }
 
-    if ((entry.clientKind === 'managed' && entry.managedTokenValid) || entry.clientKind === 'agent') {
+    if (isTrustedManagedClient(entry) || entry.clientKind === 'agent') {
         return { allowed: true };
     }
 
@@ -482,9 +495,9 @@ async function waitForManagedClient(timeoutMs = 10000) {
     const started = Date.now();
 
     while (Date.now() - started < timeoutMs) {
-        const managed = getOpenClients().find(entry =>
-            (entry.clientKind === 'managed' && entry.managedTokenValid) || entry.clientKind === 'agent'
-        );
+        // managed 是本机运行时身份，不是高权限能力的泛称。
+        // 远端 agent 即使先连接，也绝不能满足本机 managed 启动就绪条件。
+        const managed = getOpenClients().find(isTrustedManagedClient);
         if (managed) return managed;
         await new Promise(resolve => setTimeout(resolve, 250));
     }
@@ -517,7 +530,9 @@ async function selectChromeClient(cmdParams = {}, options = {}) {
     let clients = getOpenClients();
 
     const findByKind = (kind) => clients.find(entry => {
-        if (kind === 'managed') return (entry.clientKind === 'managed' && entry.managedTokenValid) || entry.clientKind === 'agent';
+        // managed 接受 token 自动认证或 Popup 人工明确选择；agent 保持独立目标，
+        // 避免分布式 agent 与服务器本机 managed Chrome 竞态。
+        if (kind === 'managed') return isTrustedManagedClient(entry);
         return entry.clientKind === kind;
     });
 
@@ -556,8 +571,9 @@ async function selectChromeClient(cmdParams = {}, options = {}) {
 
 function controlsManagedRuntime(entry) {
     if (!entry || !browserRuntimeManager.getManagedBrowserStatus().running) return false;
-    return (entry.clientKind === 'managed' && entry.managedTokenValid === true) ||
-        entry.clientKind === 'agent';
+    // 自动 token 或用户在服务器浏览器中明确选择的 Managed 均可控制本机运行时；
+    // 独立的 agent 身份永远不会隐式控制本机进程。
+    return isTrustedManagedClient(entry);
 }
 
 function touchManagedRuntimeForCommand(entry) {
@@ -614,13 +630,13 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
         // 键盘提交依赖浏览器可信输入事件。managed/agent 的 send_keys 默认走 CDP，
         // 否则 content-script 构造的 KeyboardEvent.isTrusted=false，真实站点可能直接忽略。
         const shouldUseTrustedKeyboard = command === 'send_keys' &&
-            ((entry.clientKind === 'managed' && entry.managedTokenValid) || entry.clientKind === 'agent');
+            (isTrustedManagedClient(entry) || entry.clientKind === 'agent');
         effectiveCmdParams.actionBackend = shouldUseTrustedKeyboard
             ? 'cdp-input'
             : (featureFlags.cdpInput ? featureFlags.actionBackend : 'content-script');
     } else if (!featureFlags.cdpInput && effectiveCmdParams.actionBackend === 'auto') {
         effectiveCmdParams.actionBackend = command === 'send_keys' &&
-            ((entry.clientKind === 'managed' && entry.managedTokenValid) || entry.clientKind === 'agent')
+            (isTrustedManagedClient(entry) || entry.clientKind === 'agent')
             ? 'cdp-input'
             : 'content-script';
     }
@@ -636,8 +652,7 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
     }
 
     if (!options.skipTouch) {
-        // 以“该命令是否实际控制当前 managed runtime”为准，而不是只看 hello
-        // 最终被归类出的 clientKind。agent 高权限桥可能承接 managed 目标，仍须续期。
+        // 仅通过本机 managed token 校验的连接可以续期本机运行时。
         touchManagedRuntimeForCommand(entry);
     }
 
@@ -897,6 +912,7 @@ function summarizeClient(entry) {
         lastSeenAt: entry.lastSeenAt,
         permissionLevel: entry.permissionLevel,
         managedTokenValid: entry.managedTokenValid,
+        manualManagedSelection: entry.manualManagedSelection,
         extensionVersion: entry.extensionVersion,
         managedTokenCreatedAt: entry.managedTokenCreatedAt
             ? new Date(entry.managedTokenCreatedAt).toISOString()

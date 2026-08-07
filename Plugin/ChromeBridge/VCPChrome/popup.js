@@ -8,8 +8,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const vcpStatusBadge = document.getElementById('vcp-status');
     const toggleMonitorBtn = document.getElementById('toggleMonitor');
     const toggleVCPBtn = document.getElementById('toggleVCP');
-    const toggleClientModeBtn = document.getElementById('toggleClientMode');
+    const selectUserModeBtn = document.getElementById('selectUserMode');
+    const selectAgentModeBtn = document.getElementById('selectAgentMode');
+    const selectManagedModeBtn = document.getElementById('selectManagedMode');
+    const clientModeButtons = {
+        user: selectUserModeBtn,
+        agent: selectAgentModeBtn,
+        managed: selectManagedModeBtn
+    };
     const clientModeStatusBadge = document.getElementById('client-mode-status');
+    const clientModeError = document.getElementById('client-mode-error');
     const refreshButton = document.getElementById('refreshPage');
     const copyGroundedMarkdownButton = document.getElementById('copyGroundedMarkdown');
     const copyStatusDiv = document.getElementById('copy-status');
@@ -56,16 +64,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateClientModeUI(clientKind) {
-        currentClientKind = clientKind === 'agent' ? 'agent' : 'user';
-        if (currentClientKind === 'agent') {
+        currentClientKind = ['user', 'agent', 'managed'].includes(clientKind) ? clientKind : 'user';
+        clientModeError.textContent = '';
+
+        Object.entries(clientModeButtons).forEach(([mode, button]) => {
+            button.classList.toggle('mode-button-active', mode === currentClientKind);
+            button.setAttribute('aria-pressed', mode === currentClientKind ? 'true' : 'false');
+        });
+
+        if (currentClientKind === 'managed') {
+            clientModeStatusBadge.textContent = 'Managed';
+            clientModeStatusBadge.className = 'status-badge badge-managed';
+        } else if (currentClientKind === 'agent') {
             clientModeStatusBadge.textContent = 'Agent';
             clientModeStatusBadge.className = 'status-badge badge-on';
-            toggleClientModeBtn.textContent = '切换为 User 模式';
         } else {
             clientModeStatusBadge.textContent = 'User';
             clientModeStatusBadge.className = 'status-badge badge-off';
-            toggleClientModeBtn.textContent = '切换为 Agent 模式';
         }
+    }
+
+    function showClientModeError(message) {
+        clientModeError.textContent = message || '客户端模式切换失败';
     }
 
     // 更新页面信息显示
@@ -133,7 +153,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 加载已保存的设置
     function loadSettings() {
-        chrome.storage.local.get(['serverUrl', 'vcpKey', 'clientKind', 'managedRuntime', 'managedToken', 'redactSensitiveDom'], (result) => {
+        chrome.storage.local.get(['serverUrl', 'vcpKey', 'clientKind', 'managedRuntime', 'redactSensitiveDom'], (result) => {
             if (result.serverUrl) {
                 serverUrlInput.value = result.serverUrl;
             }
@@ -145,7 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (result.redactSensitiveDom === undefined) {
                 chrome.storage.local.set({ redactSensitiveDom: true });
             }
-            updateClientModeUI(result.clientKind);
+            updateClientModeUI(result.managedRuntime === true ? 'managed' : result.clientKind);
             if (result.managedRuntime === true) {
                 settingsToggle.textContent = '⚙️ 设置（managed）';
                 if (!vcpKeyInput.value && result.managedToken) {
@@ -226,14 +246,35 @@ document.addEventListener('DOMContentLoaded', () => {
         chrome.runtime.sendMessage({ type: 'TOGGLE_CONNECTION' });
     });
 
-    toggleClientModeBtn.addEventListener('click', () => {
-        const nextMode = currentClientKind === 'agent' ? 'user' : 'agent';
-        chrome.runtime.sendMessage({ type: 'SET_CLIENT_MODE', mode: nextMode }, (response) => {
-            if (response) {
-                updateClientModeUI(response.clientKind);
+    function selectClientMode(mode) {
+        const selectedButton = clientModeButtons[mode];
+        if (!selectedButton || mode === currentClientKind) return;
+
+        selectedButton.disabled = true;
+        clientModeError.textContent = '';
+
+        chrome.runtime.sendMessage({
+            type: 'SET_CLIENT_MODE',
+            mode
+        }, (response) => {
+            selectedButton.disabled = false;
+            if (chrome.runtime.lastError) {
+                updateClientModeUI(currentClientKind);
+                showClientModeError(chrome.runtime.lastError.message);
+                return;
             }
+            if (!response?.success) {
+                updateClientModeUI(response?.clientKind || currentClientKind);
+                showClientModeError(response?.error);
+                return;
+            }
+            updateClientModeUI(response.clientKind);
         });
-    });
+    }
+
+    selectUserModeBtn.addEventListener('click', () => selectClientMode('user'));
+    selectAgentModeBtn.addEventListener('click', () => selectClientMode('agent'));
+    selectManagedModeBtn.addEventListener('click', () => selectClientMode('managed'));
 
     // 手动刷新按钮
     refreshButton.addEventListener('click', () => {

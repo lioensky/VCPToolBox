@@ -111,10 +111,16 @@ assert.match(background, /pageImages/);
 assert.match(background, /pageImageCapture/);
 assert.match(background, /executePageImageCommand/);
 assert.match(background, /captureResolvedPageImage/);
+assert.match(background, /command:\s*'page_get_image'/);
+assert.match(background, /command === 'get_page_image' \|\| command === 'page_get_image'/);
 assert.match(background, /OffscreenCanvas/);
 assert.match(background, /PAGE_IMAGE_CAPTURED/);
 assert.match(background, /data:image|blobToDataUrl/);
 assert.match(background, /if\s*\(!runtimeIdentity\.managedRuntime\)/);
+assert.match(background, /manualManagedSelection/);
+assert.match(background, /normalizedMode === 'managed'/);
+assert.match(background, /SET_CLIENT_MODE/);
+assert.doesNotMatch(background, /managedPairingToken|manual_pairing/);
 assert.match(background, /noteDocumentGeneration/);
 assert.match(background, /updateDocumentState/);
 
@@ -129,6 +135,8 @@ assert.match(protocolCore, /sensitiveResult/);
 assert.match(protocolCore, /function isRetryAllowed/);
 assert.match(protocolCore, /runtime_execute_script/);
 assert.match(protocolCore, /network_get_response_body/);
+assert.match(protocolCore, /\['page_get_image',\s*'page',\s*Risk\.READ,\s*false,\s*true,\s*false,\s*\['page',\s*'screenshot'\]\]/);
+assert.match(protocolCore, /get_page_image:\s*'page_get_image'/);
 
 assert.match(adapterContract, /class WebAgentAdapter/);
 assert.match(adapterContract, /sendDebuggerCommand/);
@@ -208,7 +216,18 @@ assert.match(pageRuntimeCore, /data-vcp-image-id/);
 
 assert.match(popupHtml, /id="redactSensitiveDom"\s+checked/);
 assert.match(popupHtml, /type="password"\s+id="vcpKey"/);
+assert.doesNotMatch(popupHtml, /id="managedToken"/);
+assert.match(popupHtml, /id="client-mode-error"/);
+assert.match(popupHtml, /id="selectUserMode"/);
+assert.match(popupHtml, /id="selectAgentMode"/);
+assert.match(popupHtml, /id="selectManagedMode"/);
+assert.doesNotMatch(popupHtml, /id="toggleClientMode"/);
 assert.match(popup, /result\.redactSensitiveDom\s*!==\s*false/);
+assert.match(popup, /selectClientMode\('user'\)/);
+assert.match(popup, /selectClientMode\('agent'\)/);
+assert.match(popup, /selectClientMode\('managed'\)/);
+assert.doesNotMatch(popup, /currentClientKind === 'agent'\s*\?\s*'managed'/);
+assert.doesNotMatch(popup, /managedPairingToken|managedTokenInput/);
 assert.match(popup, /PRIVACY_SETTINGS_CHANGED/);
 assert.match(popupHtml, /id="copyGroundedMarkdown"/);
 assert.match(popupHtml, /复制当前页面 MD 操作图全文/);
@@ -243,6 +262,27 @@ assert.match(bridge, /url:\s*imageDataUrl/);
 assert.match(bridge, /当前页面 Grounded Markdown/);
 assert.match(bridge, /function controlsManagedRuntime/);
 assert.match(bridge, /touchManagedRuntimeForCommand/);
+assert.match(bridge, /function isTrustedManagedClient/);
+assert.match(
+    bridge,
+    /entry\?\.clientKind === 'managed'[\s\S]*?entry\.managedTokenValid === true \|\| entry\.manualManagedSelection === true/,
+    'managed 目标必须由 token 自动认证或 Popup 人工明确选择'
+);
+assert.doesNotMatch(
+    bridge.match(/async function waitForManagedClient[\s\S]*?\n}/)?.[0] || '',
+    /clientKind === 'agent'/,
+    '远端 agent 不得满足本机 managed 启动等待条件'
+);
+assert.doesNotMatch(
+    bridge.match(/function controlsManagedRuntime[\s\S]*?\n}/)?.[0] || '',
+    /clientKind === 'agent'/,
+    '远端 agent 不得控制或续租本机 managed 运行时'
+);
+assert.match(
+    bridge.match(/function controlsManagedRuntime[\s\S]*?\n}/)?.[0] || '',
+    /isTrustedManagedClient/,
+    '本机运行时控制应统一接受自动或人工 Managed'
+);
 assert.match(bridge, /getRuntimeReplacementDetails/);
 assert.match(bridge, /RUNTIME_RESTARTED/);
 assert.match(bridge, /shouldUseTrustedKeyboard/);

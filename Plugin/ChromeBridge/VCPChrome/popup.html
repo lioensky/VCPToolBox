@@ -35,6 +35,18 @@
             background-color: #f8d7da;
             color: #721c24;
         }
+        .badge-managed {
+            background-color: #dbeafe;
+            color: #1d4ed8;
+        }
+        #client-mode-error {
+            min-height: 16px;
+            margin-top: 5px;
+            color: #b42318;
+            font-size: 11px;
+            line-height: 1.35;
+            text-align: left;
+        }
         button {
             padding: 8px 15px;
             font-size: 14px;
@@ -53,6 +65,16 @@
             display: flex;
             gap: 8px;
             margin-top: 10px;
+        }
+        .mode-button-group button {
+            padding: 7px 5px;
+            font-size: 12px;
+        }
+        .mode-button-active {
+            border-color: #2563eb;
+            background: #dbeafe;
+            color: #1d4ed8;
+            font-weight: 700;
         }
         .button-group button {
             flex: 1;
@@ -173,9 +195,12 @@
         <button id="toggleVCP">连接VCP</button>
     </div>
     
-    <div class="button-group">
-        <button id="toggleClientMode" style="width: 100%;">切换为 Agent 模式</button>
+    <div class="button-group mode-button-group" role="group" aria-label="客户端模式">
+        <button id="selectUserMode" type="button">User</button>
+        <button id="selectAgentMode" type="button">Agent</button>
+        <button id="selectManagedMode" type="button">Managed</button>
     </div>
+    <div id="client-mode-error" aria-live="polite"></div>
 
     <div class="button-group">
         <button id="refreshPage" style="width: 100%;">🔄 手动刷新</button>

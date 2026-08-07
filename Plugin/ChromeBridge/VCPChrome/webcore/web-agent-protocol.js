@@ -27,6 +27,7 @@
 
     const commandDefinitions = [
         ['page_get_info', 'page', Risk.READ, false, true, false, ['page']],
+        ['page_get_image', 'page', Risk.READ, false, true, false, ['page', 'screenshot']],
         ['page_query_html', 'page', Risk.READ, false, true, true, ['page']],
         ['page_query_scripts', 'page', Risk.ELEVATED, false, true, true, ['page']],
         ['page_code_search', 'page', Risk.ELEVATED, false, true, true, ['page']],
@@ -115,6 +116,7 @@
 
     const LEGACY_COMMAND_MAP = Object.freeze({
         get_page_info: 'page_get_info',
+        get_page_image: 'page_get_image',
         query_html: 'page_query_html',
         query_js: 'page_query_scripts',
         page_code_search: 'page_code_search',

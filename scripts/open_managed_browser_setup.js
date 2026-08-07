@@ -60,6 +60,37 @@ async function detectActiveManagedProfile(profileDir) {
     }
 }
 
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitForManagedBrowserExit(profileDir) {
+    // Chrome 启动初期 DevToolsActivePort 可能尚未生成；先等待实例出现。
+    let observedActiveRuntime = false;
+    for (let attempt = 0; attempt < 60; attempt++) {
+        const status = browserRuntimeManager.getManagedBrowserStatus();
+        const activeRuntime = await detectActiveManagedProfile(profileDir);
+        if (status.running || activeRuntime) {
+            observedActiveRuntime = true;
+            break;
+        }
+        await sleep(250);
+    }
+
+    if (!observedActiveRuntime) {
+        throw new Error('浏览器启动后未检测到活动进程或 DevTools 端口');
+    }
+
+    // 保持设置器 Node 进程存活，直到用户正常关闭整个浏览器。
+    // 这样 BrowserRuntimeManager 的进程退出钩子不会在 main() 返回后提前终止 Chrome。
+    while (true) {
+        const status = browserRuntimeManager.getManagedBrowserStatus();
+        const activeRuntime = await detectActiveManagedProfile(profileDir);
+        if (!status.running && !activeRuntime) return;
+        await sleep(1000);
+    }
+}
+
 async function main() {
     const profileDir = resolveProjectPath(
         process.env.VCP_BROWSER_PROFILE_DIR,
@@ -106,8 +137,14 @@ async function main() {
         windowsHide: status.windowsHide
     }, null, 2));
     console.log('');
+    console.log('如扩展未自动识别，请打开扩展 Popup，直接点击 Managed。无需配对令牌。');
     console.log('提示：Chrome 的麦克风/摄像头权限通常按站点 origin 保存。');
     console.log('请访问实际目标站点并在地址栏左侧“网站设置”中允许对应权限。');
+    console.log('');
+    console.log('[Managed Browser Setup] 正在等待浏览器关闭，请勿关闭本窗口……');
+
+    await waitForManagedBrowserExit(profileDir);
+    console.log('[Managed Browser Setup] 已检测到浏览器退出。');
 }
 
 main().catch(error => {
