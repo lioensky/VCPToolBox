@@ -273,6 +273,8 @@ function handleClientMessage(clientId, message) {
                 scrollContext: data.scrollContext || null,
                 snapshotDiff: data.snapshotDiff || null,
                 pageGraph: data.pageGraph || null,
+                images: Array.isArray(data.images) ? data.images : [],
+                imageCount: Number(data.imageCount) || (Array.isArray(data.images) ? data.images.length : 0),
                 agentView: data.agentView || {
                     format: 'legacy-markdown',
                     mode: 'compatibility',
@@ -330,7 +332,9 @@ function handleClientMessage(clientId, message) {
                         scrollContext: entry.lastPageInfo.scrollContext,
                         snapshotDiff: entry.lastPageInfo.snapshotDiff,
                         redaction: entry.lastPageInfo.redaction,
-                        elementCount: entry.lastPageInfo.elementCount
+                        elementCount: entry.lastPageInfo.elementCount,
+                        imageCount: entry.lastPageInfo.imageCount,
+                        images: entry.lastPageInfo.images
                     } : null
                 });
                 pendingCommands.delete(requestId);
@@ -356,6 +360,8 @@ function buildCommandFromParams(params, suffix = '') {
         url: params[`url${suffix}`],
         format: params[`format${suffix}`],
         imageFormat: params[`imageFormat${suffix}`],
+        imageId: params[`imageId${suffix}`],
+        maxWidth: params[`maxWidth${suffix}`],
         quality: params[`quality${suffix}`],
         urlIncludes: params[`urlIncludes${suffix}`],
         cdpRequestId: params[`requestId${suffix}`] || params[`cdpRequestId${suffix}`],
@@ -394,6 +400,7 @@ function buildCommandFromParams(params, suffix = '') {
         maxBodyChars: params[`maxBodyChars${suffix}`],
         snapshotId: params[`snapshotId${suffix}`],
         documentGeneration: params[`documentGeneration${suffix}`],
+        runtimeInstanceId: params[`runtimeInstanceId${suffix}`],
         strict: params[`strict${suffix}`],
         actionBackend: params[`actionBackend${suffix}`],
         verification: params[`verification${suffix}`],
@@ -1070,7 +1077,7 @@ function formatObjectAsMarkdown(value, options = {}) {
     return lines.join('\n');
 }
 
-function getScreenshotDataUrl(commandResult = {}) {
+function getImageDataUrl(commandResult = {}) {
     const result = commandResult?.result || commandResult;
     const dataUrl = result?.dataUrl || result?.imageUrl || result?.url;
     if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')) {
@@ -1115,8 +1122,8 @@ function formatCommandResultAsMarkdown(commandResult = {}) {
         lines.push('');
         lines.push(commandResult.result);
     } else if (commandResult.result !== undefined) {
-        const screenshotDataUrl = getScreenshotDataUrl(commandResult);
-        const details = screenshotDataUrl
+        const imageDataUrl = getImageDataUrl(commandResult);
+        const details = imageDataUrl
             ? { ...commandResult.result, dataUrl: '[omitted:data-image-url]' }
             : commandResult.result;
         lines.push('');
@@ -1170,17 +1177,17 @@ function normalizeToolResultForAi(commandResult) {
         };
     }
 
-    const screenshotDataUrl = getScreenshotDataUrl(commandResult);
-    const extraContent = screenshotDataUrl
+    const imageDataUrl = getImageDataUrl(commandResult);
+    const extraContent = imageDataUrl
         ? [{
             type: 'image_url',
             image_url: {
-                url: screenshotDataUrl
+                url: imageDataUrl
             }
         }]
         : [];
 
-    const details = screenshotDataUrl && commandResult?.result
+    const details = imageDataUrl && commandResult?.result
         ? {
             ...commandResult,
             result: {

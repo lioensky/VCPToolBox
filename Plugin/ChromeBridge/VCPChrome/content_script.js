@@ -45,6 +45,7 @@ function sendRuntimeMessage(message) {
 
 const LEGACY_PAGE_COMMANDS = Object.freeze({
     get_page_info: 'page_get_info',
+    get_page_image: 'page_get_image',
     query_html: 'page_query_html',
     query_js: 'page_query_scripts',
     page_code_search: 'page_code_search',

@@ -68,7 +68,7 @@ const popup = read(files.popup);
 const popupHtml = read(files.popupHtml);
 const fixture = read(files.fixture);
 
-assert.strictEqual(pluginManifest.version, '2.3.0');
+assert.strictEqual(pluginManifest.version, '2.4.0');
 assert.strictEqual(extensionManifest.manifest_version, 3);
 
 assert.match(background, /protocolVersion:\s*3/);
@@ -92,7 +92,7 @@ assert.match(background, /formatLegacyChromeResult/);
 assert.match(background, /function isSafeContentScriptRetryCommand/);
 assert.match(background, /function sendSafeCommandAfterNavigation/);
 assert.match(background, /CONTENT_SCRIPT_NOT_READY_AFTER_NAVIGATION/);
-for (const command of ['wait_for', 'get_page_info', 'query_html', 'query_js', 'page_code_search']) {
+for (const command of ['wait_for', 'get_page_info', 'get_page_image', 'query_html', 'query_js', 'page_code_search']) {
     assert.match(background, new RegExp(`['"]${command}['"]`), `缺少导航后安全重试命令: ${command}`);
 }
 assert.doesNotMatch(
@@ -107,6 +107,13 @@ assert.match(background, /groundedMarkdown/);
 assert.match(background, /interactionTree/);
 assert.match(background, /scrollContext/);
 assert.match(background, /snapshotDiff/);
+assert.match(background, /pageImages/);
+assert.match(background, /pageImageCapture/);
+assert.match(background, /executePageImageCommand/);
+assert.match(background, /captureResolvedPageImage/);
+assert.match(background, /OffscreenCanvas/);
+assert.match(background, /PAGE_IMAGE_CAPTURED/);
+assert.match(background, /data:image|blobToDataUrl/);
 assert.match(background, /if\s*\(!runtimeIdentity\.managedRuntime\)/);
 assert.match(background, /noteDocumentGeneration/);
 assert.match(background, /updateDocumentState/);
@@ -161,6 +168,7 @@ assert.match(content, /pageRuntime\.invalidateDocument/);
 assert.match(content, /GET_GROUNDED_PAGE_INFO/);
 assert.match(content, /EXECUTE_CORE_COMMAND/);
 assert.match(content, /EXECUTE_COMMAND/);
+assert.match(content, /get_page_image:\s*'page_get_image'/);
 assert.doesNotMatch(content, /function validateEntry/);
 assert.doesNotMatch(content, /function dispatchClick/);
 assert.doesNotMatch(content, /function selectOption/);
@@ -191,6 +199,12 @@ assert.match(pageRuntimeCore, /ELEMENT_HANDLE_NOT_REGISTERED/);
 assert.match(pageRuntimeCore, /source:\s*'registry-exact'/);
 assert.match(pageRuntimeCore, /recoveryUsed:\s*false/);
 assert.match(pageRuntimeCore, /queryRootType/);
+assert.match(pageRuntimeCore, /STRICT_IMAGE_ID_PATTERN/);
+assert.match(pageRuntimeCore, /function scoreContentImage/);
+assert.match(pageRuntimeCore, /function registerPageImage/);
+assert.match(pageRuntimeCore, /function resolvePageImage/);
+assert.match(pageRuntimeCore, /PAGE_IMAGE_RESOLVED/);
+assert.match(pageRuntimeCore, /data-vcp-image-id/);
 
 assert.match(popupHtml, /id="redactSensitiveDom"\s+checked/);
 assert.match(popupHtml, /type="password"\s+id="vcpKey"/);
@@ -221,6 +235,11 @@ assert.match(bridge, /pageContentMarkdown/);
 assert.match(bridge, /interactionTree/);
 assert.match(bridge, /scrollContext/);
 assert.match(bridge, /snapshotDiff/);
+assert.match(bridge, /imageId/);
+assert.match(bridge, /maxWidth/);
+assert.match(bridge, /function getImageDataUrl/);
+assert.match(bridge, /type:\s*'image_url'/);
+assert.match(bridge, /url:\s*imageDataUrl/);
 assert.match(bridge, /当前页面 Grounded Markdown/);
 assert.match(bridge, /function controlsManagedRuntime/);
 assert.match(bridge, /touchManagedRuntimeForCommand/);
@@ -239,13 +258,15 @@ const commandDescriptions = new Map(
     pluginManifest.capabilities.invocationCommands.map(item => [item.command, item.description])
 );
 for (const command of [
-    'browser_status', 'type', 'click', 'scroll', 'get_page_info',
+    'browser_status', 'type', 'click', 'scroll', 'get_page_info', 'get_page_image',
     'send_keys', 'set_value', 'select_option', 'hover', 'check', 'wait_for'
 ]) {
     assert(commandDescriptions.has(command), `缺少 manifest 指令说明: ${command}`);
 }
 assert.match(commandDescriptions.get('type'), /ACTION_VERIFICATION_FAILED/);
 assert.match(commandDescriptions.get('scroll'), /SCROLL_BOUNDARY_REACHED/);
+assert.match(commandDescriptions.get('get_page_image'), /image_url\.url=data:image/);
+assert.match(commandDescriptions.get('get_page_image'), /IMG1/);
 
 assert.match(commandDescriptions.get('hover'), /ELEMENT_OCCLUDED/);
 assert.match(commandDescriptions.get('wait_for'), /dom_stable/);
@@ -279,7 +300,7 @@ console.log(JSON.stringify({
     navigationRetry: 'read-only-commands-only',
     fixture: path.relative(root, files.fixture),
     webAgentProtocolVersion: 1,
-    pageRuntimeVersion: '0.2.1',
+    pageRuntimeVersion: '0.3.0',
     coreCapabilityCount: 71,
     checkedJavaScriptFiles: checkedJavaScriptFiles.length
 }, null, 2));

@@ -11,12 +11,14 @@
 
     if (!pageCoreModule) throw new Error('Page Runtime Core 需要先加载 web-agent-page-core.js');
 
-    const VERSION = '0.2.2';
+    const VERSION = '0.3.0';
     const KIND_ID_PATTERN = /^vcp-(searchbox|input|textarea|button|link|select|option|checkbox|radio|tab|switch|menuitem|interactive)-(\d+)$/i;
     const STRICT_HANDLE_PATTERN = /^vcp-h-(\d+)-(\d+)-(\d+)-([a-z0-9]+)$/i;
+    const STRICT_IMAGE_ID_PATTERN = /^vcp-img-(\d+)-(\d+)-(\d+)-([a-z0-9]+)$/i;
     const READ_ONLY_COMMANDS = Object.freeze(new Set([
         'get_page_info', 'page_get_info', 'query_html', 'page_query_html',
-        'query_js', 'page_query_scripts', 'page_code_search', 'wait_for', 'page_wait_for'
+        'query_js', 'page_query_scripts', 'page_code_search', 'wait_for', 'page_wait_for',
+        'get_page_image', 'page_get_image'
     ]));
     const REGISTRY_SNAPSHOT_RETENTION = 20;
 
@@ -38,6 +40,8 @@
         let redactSensitiveDom = options.redactSensitiveDom !== false;
         const registry = new Map();
         const aliases = new Map();
+        const imageRegistry = new Map();
+        const imageAliases = new Map();
 
         function structuredError(code, message, details = {}) {
             return pageCore.makeStructuredError(code, message, details);
@@ -67,14 +71,17 @@
             snapshotId = 0;
             registry.clear();
             aliases.clear();
+            imageRegistry.clear();
+            imageAliases.clear();
             lastGraph = null;
             lastSnapshot = null;
             documentObject.querySelectorAll(
-                '[data-vcp-handle],[data-vcp-kind-id],[data-vcp-snapshot-handle],[vcp-id]'
+                '[data-vcp-handle],[data-vcp-kind-id],[data-vcp-snapshot-handle],[data-vcp-image-id],[vcp-id]'
             ).forEach(element => {
                 element.removeAttribute('data-vcp-handle');
                 element.removeAttribute('data-vcp-kind-id');
                 element.removeAttribute('data-vcp-snapshot-handle');
+                element.removeAttribute('data-vcp-image-id');
                 element.removeAttribute('vcp-id');
             });
             return {
@@ -164,6 +171,7 @@
         function createSnapshotContext() {
             snapshotId += 1;
             aliases.clear();
+            imageAliases.clear();
             return {
                 runtimeInstanceId,
                 documentGeneration,
@@ -172,6 +180,7 @@
                 url: documentObject.URL,
                 title: documentObject.title,
                 elements: [],
+                images: [],
                 regions: [],
                 contentBlocks: [],
                 regionMap: new WeakMap(),
@@ -237,6 +246,242 @@
                     registry.delete(key);
                 }
             }
+            for (const [key, entry] of imageRegistry) {
+                if (
+                    entry.documentGeneration !== documentGeneration ||
+                    entry.snapshotId < snapshotId - REGISTRY_SNAPSHOT_RETENTION ||
+                    !entry.element?.isConnected
+                ) {
+                    imageRegistry.delete(key);
+                }
+            }
+        }
+
+        function getImageCaption(element) {
+            const figure = element.closest?.('figure');
+            const caption = figure?.querySelector?.('figcaption');
+            return pageCore.normalizeAttribute(
+                caption?.innerText ||
+                caption?.textContent ||
+                element.getAttribute?.('aria-description') ||
+                ''
+            ).slice(0, 240);
+        }
+
+        function getElementText(element) {
+            return pageCore.normalizeAttribute(element?.innerText || element?.textContent || '');
+        }
+
+        function getNearbyImageText(element) {
+            const directTexts = [
+                getElementText(element.previousElementSibling),
+                getElementText(element.nextElementSibling),
+                getElementText(element.parentElement?.previousElementSibling),
+                getElementText(element.parentElement?.nextElementSibling)
+            ].filter(text => text && text.length <= 240);
+            if (directTexts.length) return directTexts.join(' ').slice(0, 320);
+
+            const semanticContainer = element.closest?.(
+                'figure,article,main,[role="main"],section,.article,.content,.post'
+            );
+            const semanticText = getElementText(semanticContainer);
+            if (semanticText) return semanticText.slice(0, 320);
+
+            let ancestor = element.parentElement;
+            for (let depth = 0; ancestor && depth < 6; depth++, ancestor = ancestor.parentElement) {
+                const text = getElementText(ancestor);
+                if (text.length >= 80) return text.slice(0, 320);
+            }
+            return '';
+        }
+
+        function findDenseContentAncestor(element) {
+            let ancestor = element.parentElement;
+            for (let depth = 0; ancestor && depth < 8; depth++, ancestor = ancestor.parentElement) {
+                if (ancestor.matches?.(
+                    'nav,aside,header,footer,[role="navigation"],[role="complementary"],[role="banner"],[role="contentinfo"]'
+                )) return null;
+                const text = getElementText(ancestor);
+                const paragraphCount = ancestor.querySelectorAll?.('p').length || 0;
+                const headingCount = ancestor.querySelectorAll?.('h1,h2').length || 0;
+                const imageCount = ancestor.querySelectorAll?.('img,video,picture').length || 0;
+                if (
+                    text.length >= 300 &&
+                    (paragraphCount >= 2 || headingCount >= 1) &&
+                    imageCount <= 40
+                ) {
+                    return ancestor;
+                }
+            }
+            return null;
+        }
+
+        function scoreContentImage(element) {
+            if (!element || !isVisible(element)) return { accepted: false, score: -100 };
+            const rect = element.getBoundingClientRect();
+            const width = Math.round(rect.width);
+            const height = Math.round(rect.height);
+            const area = width * height;
+            if (width < 120 || height < 80 || area < 18000) {
+                return { accepted: false, score: -20 };
+            }
+
+            const tag = element.tagName.toLowerCase();
+            const src = tag === 'video'
+                ? String(element.poster || '')
+                : String(element.currentSrc || element.src || '');
+            if (tag === 'video' && !src && element.readyState < 2) {
+                return { accepted: false, score: -20 };
+            }
+
+            const identity = [
+                element.id,
+                element.className,
+                element.getAttribute('role'),
+                element.getAttribute('data-testid'),
+                element.getAttribute('aria-label'),
+                element.getAttribute('alt')
+            ].map(value => String(value || '').toLowerCase()).join(' ');
+            const inspectableSrc = /^(https?:)?\/\//i.test(src) ? src.toLowerCase() : '';
+            const badIdentity =
+                /(^|[\s/_-])(ad|ads|advert|advertisement|sponsor|promo|推广|广告)([\s/_-]|$)/i.test(identity) ||
+                /doubleclick|googlesyndication|\/(?:ads?|advert|sponsor|promo)(?:[/?#._-]|$)/i.test(inspectableSrc);
+            const decorativeIdentity =
+                /(^|[\s/_-])(icon|logo|avatar|emoji|badge|sprite|qrcode|qr-code|tracking|pixel)([\s/_-]|$)/i.test(identity);
+            const excludedRegion = element.closest?.(
+                'nav,aside,header,footer,[role="navigation"],[role="complementary"],[role="banner"],[role="contentinfo"]'
+            );
+            const semanticPrimaryContainer = element.closest?.(
+                'article,main,[role="main"],[itemprop="articleBody"],[class*="article-content"],[class*="article_body"],[class*="post-content"],[class*="entry-content"]'
+            );
+            const denseContentAncestor = semanticPrimaryContainer ? null : findDenseContentAncestor(element);
+            const primaryContainer = semanticPrimaryContainer || denseContentAncestor;
+            const figure = element.closest?.('figure');
+            const caption = getImageCaption(element);
+            const alt = pageCore.normalizeAttribute(element.getAttribute?.('alt') || element.getAttribute?.('aria-label'));
+            const nearbyText = getNearbyImageText(element);
+            const parentHasHeading = Boolean(element.parentElement?.querySelector?.('h1,h2,h3,h4'));
+            const viewportShare = area / Math.max(1, windowObject.innerWidth * windowObject.innerHeight);
+
+            let score = 0;
+            if (semanticPrimaryContainer) score += 6;
+            else if (denseContentAncestor) score += 5;
+            if (figure) score += 3;
+            if (caption) score += 2;
+            if (alt && alt.length >= 4) score += 1;
+            if (nearbyText.length >= 80) score += 2;
+            if (parentHasHeading) score += 1;
+            if (width >= Math.min(480, windowObject.innerWidth * 0.45)) score += 2;
+            if (viewportShare >= 0.12) score += 2;
+            if (tag === 'video') score += 4;
+            if (excludedRegion && !primaryContainer) score -= 7;
+            if (badIdentity) score -= 10;
+            if (decorativeIdentity) score -= 6;
+            if (element.getAttribute?.('role') === 'presentation' || element.getAttribute?.('aria-hidden') === 'true') score -= 5;
+
+            return {
+                accepted: score >= 5,
+                score,
+                src,
+                caption,
+                alt,
+                nearbyText,
+                primary: Boolean(primaryContainer),
+                primaryReason: semanticPrimaryContainer
+                    ? 'semantic-container'
+                    : (denseContentAncestor ? 'dense-content-ancestor' : null),
+                width,
+                height
+            };
+        }
+
+        function registerPageImage(element, context) {
+            if (context.images.length >= 16) return '';
+            const scored = scoreContentImage(element);
+            if (!scored.accepted) return '';
+
+            const ordinal = context.images.length + 1;
+            const imageId = `IMG${ordinal}`;
+            const kind = element.tagName.toLowerCase() === 'video' ? 'video-frame' : 'content-image';
+            const hash = pageCore.simpleHash([
+                scored.src,
+                scored.alt,
+                scored.caption,
+                scored.width,
+                scored.height,
+                getHeadingPath(element).join('>')
+            ].join('|')).slice(0, 8);
+            const strictImageId = `vcp-img-${documentGeneration}-${context.snapshotId}-${ordinal}-${hash}`;
+            const rect = element.getBoundingClientRect();
+            const record = {
+                imageId,
+                strictImageId,
+                kind,
+                documentGeneration,
+                snapshotId: context.snapshotId,
+                alt: scored.alt || '',
+                caption: scored.caption || '',
+                nearbyText: scored.nearbyText || '',
+                primaryReason: scored.primaryReason || null,
+                headingPath: getHeadingPath(element),
+                contentBlockId: getOrCreateBlock(element, context),
+                intrinsicSize: {
+                    width: Number(element.naturalWidth || element.videoWidth || 0),
+                    height: Number(element.naturalHeight || element.videoHeight || 0)
+                },
+                displaySize: {
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height)
+                },
+                viewportVisible: rect.bottom > 0 && rect.right > 0 &&
+                    rect.top < windowObject.innerHeight && rect.left < windowObject.innerWidth,
+                relevanceScore: scored.score,
+                sourceType: element.tagName.toLowerCase()
+            };
+            const entry = {
+                element,
+                imageId,
+                strictImageId,
+                documentGeneration,
+                snapshotId: context.snapshotId,
+                record
+            };
+            imageRegistry.set(strictImageId, entry);
+            imageAliases.set(imageId, strictImageId);
+            element.setAttribute('data-vcp-image-id', strictImageId);
+            context.images.push(record);
+
+            const description = record.caption || record.alt ||
+                (record.nearbyText && record.nearbyText.length <= 120 ? record.nearbyText : '') ||
+                (kind === 'video-frame' ? '视频当前画面' : '正文插图');
+            return `\n[图片 ${imageId}｜${description}｜${record.displaySize.width}×${record.displaySize.height}｜id=${strictImageId}]\n`;
+        }
+
+        function resolvePageImage(imageId) {
+            const requested = String(imageId || '').trim();
+            if (!requested) {
+                throw structuredError('IMAGE_ID_REQUIRED', 'get_page_image 缺少 imageId');
+            }
+            const strictMatch = requested.match(STRICT_IMAGE_ID_PATTERN);
+            if (strictMatch && Number(strictMatch[1]) !== documentGeneration) {
+                throw structuredError('IMAGE_HANDLE_EXPIRED', '图片 ID 所属文档代次已失效', {
+                    requestedImageId: requested,
+                    currentDocumentGeneration: documentGeneration,
+                    currentSnapshotId: snapshotId
+                });
+            }
+            const canonical = imageAliases.get(requested) || requested;
+            const entry = imageRegistry.get(canonical);
+            if (!entry || !entry.element?.isConnected) {
+                throw structuredError('IMAGE_NOT_FOUND', `当前页面未找到图片: ${requested}`, {
+                    requestedImageId: requested,
+                    availableImageIds: Array.from(imageAliases.keys())
+                });
+            }
+            if (entry.documentGeneration !== documentGeneration) {
+                throw structuredError('IMAGE_HANDLE_EXPIRED', '图片 ID 已随页面导航失效');
+            }
+            return entry;
         }
 
         function registerElement(element, context) {
@@ -481,11 +726,24 @@
                 }
                 if (node.nodeType !== NodeObject.ELEMENT_NODE) return '';
                 if (!isVisible(node) || ignored.has(node.tagName)) return '';
-                if (node.parentElement?.closest?.('[data-vcp-handle]')) return '';
+                // 上一轮快照写入的 data-vcp-handle 不得导致当前快照跳过整棵子树。
+                // processed 已负责本轮去重；交互节点分支也会优先扫描其内部视觉对象。
+                if (node.tagName === 'IMG' || node.tagName === 'VIDEO') {
+                    processed.add(node);
+                    return registerPageImage(node, context);
+                }
                 if (pageCore.isInteractive(node)) {
                     processed.add(node);
+                    const visualMarkers = Array.from(node.querySelectorAll('img,video'))
+                        .filter(visual => !processed.has(visual))
+                        .map(visual => {
+                            processed.add(visual);
+                            return registerPageImage(visual, context);
+                        })
+                        .filter(Boolean)
+                        .join('');
                     node.querySelectorAll('*').forEach(child => processed.add(child));
-                    return `${registerElement(node, context)}\n`;
+                    return `${visualMarkers}${registerElement(node, context)}\n`;
                 }
                 let content = '';
                 if (node.shadowRoot) {
@@ -528,7 +786,8 @@
                 title: context.title,
                 regions: context.regions,
                 contentBlocks: context.contentBlocks,
-                elements: context.elements
+                elements: context.elements,
+                images: context.images
             };
             const snapshotDiff = buildDiff(lastGraph, pageGraph);
             const hashes = buildHashes(context, markdown);
@@ -559,6 +818,8 @@
                 scrollContext,
                 snapshotDiff,
                 pageGraph,
+                images: context.images,
+                imageCount: context.images.length,
                 agentView: {
                     format: 'grounded-markdown-v1',
                     mode: 'core',
@@ -1273,6 +1534,45 @@
                 snapshotId: params.snapshotId
             }, strict);
             if (command === 'get_info') return { status: 'success', message: '页面信息已刷新', result: snapshot() };
+            if (command === 'get_image') {
+                const entry = resolvePageImage(params.imageId || params.target);
+                const element = entry.element;
+                element.scrollIntoView?.({ block: 'center', inline: 'center', behavior: 'instant' });
+                await new Promise(resolve => setTimeout(resolve, 120));
+                const rect = element.getBoundingClientRect();
+                const style = windowObject.getComputedStyle(element);
+                if (!isVisible(element) || rect.width <= 0 || rect.height <= 0) {
+                    throw structuredError('IMAGE_NOT_VISIBLE', '目标图片当前不可见或没有有效尺寸');
+                }
+                return {
+                    status: 'success',
+                    code: 'PAGE_IMAGE_RESOLVED',
+                    message: `已解析页面图片 ${entry.imageId}`,
+                    result: {
+                        ...entry.record,
+                        resolvedImageId: entry.strictImageId,
+                        runtimeInstanceId,
+                        documentGeneration,
+                        snapshotId,
+                        currentSrc: element.tagName === 'VIDEO'
+                            ? String(element.poster || element.currentSrc || '')
+                            : String(element.currentSrc || element.src || ''),
+                        viewportRect: {
+                            x: Math.round(rect.x),
+                            y: Math.round(rect.y),
+                            width: Math.round(rect.width),
+                            height: Math.round(rect.height)
+                        },
+                        pageRect: {
+                            x: Math.round(rect.x + windowObject.scrollX),
+                            y: Math.round(rect.y + windowObject.scrollY),
+                            width: Math.round(rect.width),
+                            height: Math.round(rect.height)
+                        },
+                        devicePixelRatio: windowObject.devicePixelRatio || 1
+                    }
+                };
+            }
             if (command === 'query_html') {
                 const resolved = params.target
                     ? resolveTarget(params.target)
@@ -1479,6 +1779,7 @@
                 occlusion: true,
                 wait: true,
                 search: true,
+                pageImages: true,
                 redaction: true
             };
         }
@@ -1489,6 +1790,7 @@
             snapshot,
             execute,
             resolveTarget,
+            scoreContentImage,
             checkOcclusion,
             waitFor,
             pageCodeSearch,
@@ -1506,6 +1808,7 @@
         VERSION,
         KIND_ID_PATTERN,
         STRICT_HANDLE_PATTERN,
+        STRICT_IMAGE_ID_PATTERN,
         READ_ONLY_COMMANDS,
         REGISTRY_SNAPSHOT_RETENTION,
         createWebAgentPageRuntime
