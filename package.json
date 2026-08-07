@@ -7,7 +7,10 @@
     "start": "node server.js",
     "start:admin": "node adminServer.js",
     "start:all": "node server.js & node adminServer.js",
-    "build:admin": "cd AdminPanel-Vue && npm install && npm run build"
+    "build:admin": "cd AdminPanel-Vue && npm install && npm run build",
+    "build:daily-note-searcher": "node scripts/build_rust_plugin.js Plugin/DailyNoteSearcher DailyNoteSearcher",
+    "build:code-searcher": "node scripts/build_rust_plugin.js Plugin/CodeSearcher CodeSearcher",
+    "build:rust-searchers": "npm run build:daily-note-searcher && npm run build:code-searcher"
   },
   "keywords": [],
   "author": "",

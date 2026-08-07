@@ -143,6 +143,121 @@ pub struct VexusIndex {
     memo_runtime: Arc<MemoRuntime>,
 }
 
+static INDEX_SAVE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn unique_index_sidecar_path(target: &std::path::Path, role: &str) -> std::path::PathBuf {
+    let sequence = INDEX_SAVE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let file_name = target
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "vexus-index".to_string());
+    target.with_file_name(format!(
+        ".{}.{}.{}.{}.{}",
+        file_name,
+        role,
+        std::process::id(),
+        timestamp,
+        sequence
+    ))
+}
+
+fn sync_index_file(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .open(path)?
+        .sync_all()
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(target: &std::path::Path) -> std::io::Result<()> {
+    let parent = target.parent().unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(target_os = "windows")]
+fn retry_windows_file_operation<T, F>(mut operation: F) -> std::io::Result<T>
+where
+    F: FnMut() -> std::io::Result<T>,
+{
+    const RETRY_DELAYS_MS: [u64; 6] = [20, 40, 80, 160, 320, 500];
+    let mut last_error = None;
+
+    for attempt in 0..=RETRY_DELAYS_MS.len() {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if attempt < RETRY_DELAYS_MS.len()
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::PermissionDenied
+                            | std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::Interrupted
+                    ) =>
+            {
+                last_error = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAYS_MS[attempt]));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| std::io::Error::other("file operation retry exhausted")))
+}
+
+fn publish_index_file(temp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let backup = unique_index_sidecar_path(target, "bak");
+        let had_target = target.exists();
+
+        if had_target {
+            retry_windows_file_operation(|| std::fs::rename(target, &backup))?;
+        }
+
+        if let Err(replace_error) = retry_windows_file_operation(|| std::fs::rename(temp, target)) {
+            let rollback_error = if had_target {
+                retry_windows_file_operation(|| std::fs::rename(&backup, target)).err()
+            } else {
+                None
+            };
+            return Err(match rollback_error {
+                Some(error) => std::io::Error::new(
+                    replace_error.kind(),
+                    format!(
+                        "failed to publish new index: {}; rollback also failed: {}",
+                        replace_error, error
+                    ),
+                ),
+                None => replace_error,
+            });
+        }
+
+        if had_target {
+            if let Err(error) = retry_windows_file_operation(|| std::fs::remove_file(&backup)) {
+                // 新目标已经完整发布；遗留唯一命名备份不应把成功保存误报为失败。
+                eprintln!(
+                    "[Vexus-Lite] Index published but stale backup cleanup failed ({}): {}",
+                    backup.to_string_lossy(),
+                    error
+                );
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::fs::rename(temp, target)?;
+        #[cfg(unix)]
+        sync_parent_directory(target)?;
+    }
+
+    Ok(())
+}
+
 #[napi]
 impl VexusIndex {
     /// 创建新的空索引
@@ -217,69 +332,46 @@ impl VexusIndex {
         })
     }
 
-    /// 保存索引到磁盘
+    /// 保存索引到磁盘。
+    ///
+    /// 临时文件始终与目标位于同一目录，保证 rename 不跨文件系统。Unix 使用
+    /// 原子覆盖并同步父目录；Windows 使用可回滚备份交换，并对杀毒软件、索引器
+    /// 短暂持有句柄造成的共享冲突进行有界重试。
     #[napi]
     pub fn save(&self, index_path: String) -> Result<()> {
+        // save 会发布共享磁盘状态；使用写锁串行化同一 VexusIndex 实例的保存，
+        // 避免多个读锁持有者同时争抢目标文件。唯一 sidecar 名仍防御多实例碰撞。
         let index = self
             .index
-            .read()
+            .write()
             .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
+        let target = std::path::Path::new(&index_path);
+        let temp = unique_index_sidecar_path(target, "tmp");
+        let temp_text = temp.to_string_lossy().into_owned();
 
-        // 原子写入：先写临时文件，再重命名
-        let temp_path = format!("{}.tmp", index_path);
-
-        index
-            .save(&temp_path)
-            .map_err(|e| Error::from_reason(format!("Failed to save index: {:?}", e)))?;
-
-        // Windows 不支持 rename 覆盖现有文件。先把旧索引移到备份，
-        // 新文件替换失败时再回滚，避免“先删除旧文件”造成不可恢复的数据丢失。
-        #[cfg(target_os = "windows")]
-        {
-            let target = std::path::Path::new(&index_path);
-            let backup_path = format!("{}.bak", index_path);
-            let backup = std::path::Path::new(&backup_path);
-            let had_target = target.exists();
-
-            if had_target {
-                if backup.exists() {
-                    std::fs::remove_file(backup).map_err(|e| {
-                        Error::from_reason(format!("Failed to remove stale index backup: {}", e))
-                    })?;
-                }
-                std::fs::rename(target, backup).map_err(|e| {
-                    Error::from_reason(format!("Failed to stage existing index backup: {}", e))
-                })?;
-            }
-
-            if let Err(replace_error) = std::fs::rename(&temp_path, target) {
-                let rollback_error = if had_target {
-                    std::fs::rename(backup, target).err()
-                } else {
-                    None
-                };
-                return Err(Error::from_reason(match rollback_error {
-                    Some(error) => format!(
-                        "Failed to replace index file: {}; rollback also failed: {}",
-                        replace_error, error
-                    ),
-                    None => format!("Failed to replace index file: {}", replace_error),
-                }));
-            }
-
-            if had_target {
-                std::fs::remove_file(backup).map_err(|e| {
-                    Error::from_reason(format!(
-                        "Index replaced but failed to remove backup {}: {}",
-                        backup_path, e
-                    ))
-                })?;
-            }
+        if let Err(error) = index.save(&temp_text) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(Error::from_reason(format!(
+                "Failed to save temporary index {}: {:?}",
+                temp_text, error
+            )));
         }
 
-        #[cfg(not(target_os = "windows"))]
-        std::fs::rename(&temp_path, &index_path)
-            .map_err(|e| Error::from_reason(format!("Failed to rename index file: {}", e)))?;
+        if let Err(error) = sync_index_file(&temp) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(Error::from_reason(format!(
+                "Failed to sync temporary index {}: {}",
+                temp_text, error
+            )));
+        }
+
+        if let Err(error) = publish_index_file(&temp, target) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(Error::from_reason(format!(
+                "Failed to atomically publish index {}: {}",
+                index_path, error
+            )));
+        }
 
         Ok(())
     }
@@ -1319,7 +1411,7 @@ fn json_escape(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
-        .replace('\n', "\\n")
+        .replace('\n', "\n")
         .replace('\r', "\\r")
         .replace('\t', "\\t")
 }
