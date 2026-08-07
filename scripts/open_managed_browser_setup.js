@@ -43,6 +43,17 @@ function requestJson(url, timeoutMs = 1500) {
     });
 }
 
+async function getPageTargetCount(activeRuntime) {
+    if (!activeRuntime?.port) return null;
+    try {
+        const targets = await requestJson(`http://127.0.0.1:${activeRuntime.port}/json/list`);
+        if (!Array.isArray(targets)) return null;
+        return targets.filter(target => target?.type === 'page').length;
+    } catch (_) {
+        return null;
+    }
+}
+
 async function detectActiveManagedProfile(profileDir) {
     const activePortPath = path.join(profileDir, 'DevToolsActivePort');
     try {
@@ -65,13 +76,17 @@ function sleep(ms) {
 }
 
 async function waitForManagedBrowserExit(profileDir) {
-    // Chrome 启动初期 DevToolsActivePort 可能尚未生成；先等待实例出现。
+    // Chrome 启动初期 DevToolsActivePort 和首个 page target 可能尚未生成。
     let observedActiveRuntime = false;
+    let observedPageTarget = false;
     for (let attempt = 0; attempt < 60; attempt++) {
         const status = browserRuntimeManager.getManagedBrowserStatus();
         const activeRuntime = await detectActiveManagedProfile(profileDir);
-        if (status.running || activeRuntime) {
-            observedActiveRuntime = true;
+        const pageTargetCount = await getPageTargetCount(activeRuntime);
+
+        if (status.running || activeRuntime) observedActiveRuntime = true;
+        if (pageTargetCount !== null && pageTargetCount > 0) {
+            observedPageTarget = true;
             break;
         }
         await sleep(250);
@@ -81,13 +96,41 @@ async function waitForManagedBrowserExit(profileDir) {
         throw new Error('浏览器启动后未检测到活动进程或 DevTools 端口');
     }
 
-    // 保持设置器 Node 进程存活，直到用户正常关闭整个浏览器。
-    // 这样 BrowserRuntimeManager 的进程退出钩子不会在 main() 返回后提前终止 Chrome。
+    // 点击最后一个窗口的 X 后，Chromium 可能因扩展 WebSocket、Alarm 或
+    // “关闭后继续运行后台应用”而继续保留主进程。此时不能只等待进程退出：
+    // 连续确认 page target 消失后，应主动清理仅由扩展保活的进程树。
+    let noPageTargetSince = null;
+    let devToolsUnavailableSince = null;
     while (true) {
         const status = browserRuntimeManager.getManagedBrowserStatus();
         const activeRuntime = await detectActiveManagedProfile(profileDir);
         if (!status.running && !activeRuntime) return;
-        await sleep(1000);
+
+        const pageTargetCount = await getPageTargetCount(activeRuntime);
+        if (pageTargetCount !== null && pageTargetCount > 0) {
+            observedPageTarget = true;
+            noPageTargetSince = null;
+            devToolsUnavailableSince = null;
+        } else if (pageTargetCount === 0 && observedPageTarget) {
+            noPageTargetSince ??= Date.now();
+            devToolsUnavailableSince = null;
+        } else if (!activeRuntime && observedPageTarget) {
+            // 某些 Chromium 版本在最后窗口关闭时先撤销 DevTools HTTP，
+            // 后台扩展进程稍后才退出；同样不能无限等待。
+            devToolsUnavailableSince ??= Date.now();
+        }
+
+        const pageWindowClosed =
+            noPageTargetSince !== null && Date.now() - noPageTargetSince >= 2000;
+        const devToolsClosed =
+            devToolsUnavailableSince !== null && Date.now() - devToolsUnavailableSince >= 2000;
+        if (pageWindowClosed || devToolsClosed) {
+            console.log('[Managed Browser Setup] 最后一个浏览器窗口已关闭，正在清理扩展后台残留进程……');
+            await browserRuntimeManager.closeManagedBrowser('setup_last_window_closed');
+            return;
+        }
+
+        await sleep(500);
     }
 }
 

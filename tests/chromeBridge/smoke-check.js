@@ -22,6 +22,7 @@ const files = {
     popupHtml: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'popup.html'),
     pluginManifest: path.join(root, 'Plugin', 'ChromeBridge', 'plugin-manifest.json'),
     extensionManifest: path.join(root, 'Plugin', 'ChromeBridge', 'VCPChrome', 'manifest.json'),
+    managedSetup: path.join(root, 'scripts', 'open_managed_browser_setup.js'),
     fixture: path.join(root, 'tests', 'chromeBridge', 'pages', 'basic-actions.html')
 };
 
@@ -45,7 +46,8 @@ const checkedJavaScriptFiles = [
     files.adapterContract,
     files.chromeAdapter,
     files.coreIndex,
-    files.popup
+    files.popup,
+    files.managedSetup
 ];
 for (const file of checkedJavaScriptFiles) {
     checkJavaScriptSyntax(file);
@@ -66,6 +68,7 @@ const chromeAdapter = read(files.chromeAdapter);
 const coreIndex = read(files.coreIndex);
 const popup = read(files.popup);
 const popupHtml = read(files.popupHtml);
+const managedSetup = read(files.managedSetup);
 const fixture = read(files.fixture);
 
 assert.strictEqual(pluginManifest.version, '2.4.0');
@@ -167,6 +170,15 @@ assert.match(coreIndex, /createChromeRuntime/);
 assert.match(runtime, /runtimeInstanceId/);
 assert.match(runtime, /lastCloseReason/);
 assert.match(runtime, /previousPid/);
+assert.match(runtime, /--disable-background-mode/);
+
+assert.match(managedSetup, /function waitForManagedBrowserExit/);
+assert.match(managedSetup, /function getPageTargetCount/);
+assert.match(managedSetup, /\/json\/list/);
+assert.match(managedSetup, /target\?\.type === 'page'/);
+assert.match(managedSetup, /noPageTargetSince/);
+assert.match(managedSetup, /setup_last_window_closed/);
+assert.match(managedSetup, /closeManagedBrowser\('setup_last_window_closed'\)/);
 
 assert.match(content, /VCPWebAgentPageRuntimeCore/);
 assert.match(content, /createWebAgentPageRuntime/);
