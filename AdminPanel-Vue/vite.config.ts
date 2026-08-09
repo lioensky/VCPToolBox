@@ -5,7 +5,7 @@ import { resolve } from "path";
 import { visualizer } from "rollup-plugin-visualizer";
 
 function readVcpServerPort(): string {
-  const configPath = resolve(__dirname, "..", "config.env");
+  const configPath = resolve(import.meta.dirname, "..", "config.env");
   if (!existsSync(configPath)) return "6005";
 
   const content = readFileSync(configPath, "utf-8");
@@ -36,7 +36,7 @@ export default defineConfig(({ mode }) => {
     base: "/AdminPanel/",
     resolve: {
       alias: {
-        "@": resolve(__dirname, "src"),
+        "@": resolve(import.meta.dirname, "src"),
       },
     },
     server: {

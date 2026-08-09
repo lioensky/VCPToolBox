@@ -165,13 +165,25 @@ function redact(text) {
 
 // ─── 路径白名单验证 ───────────────────────────────────────────────────────────
 
+function isPathWithinRoot(projectPath, root) {
+    // 先词法规范化，再用 realpath 解析符号链接(防 symlink 绕过白名单)
+    // realpath 失败(路径不存在等)时退回词法规范化结果
+    let resolved = path.resolve(projectPath);
+    let r = path.resolve(root);
+    try { resolved = fs.realpathSync.native(resolved); } catch (e) {}
+    try { r = fs.realpathSync.native(r); } catch (e) {}
+    const relative = path.relative(r, resolved);
+    return relative === "" ||
+        (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+
 function validatePath(projectPath) {
     if (!projectPath || typeof projectPath !== "string")
         return "projectPath 是必填参数。";
     const resolved = path.resolve(projectPath);
     for (const root of CFG.allowedRoots) {
-        const r = path.resolve(root);
-        if (resolved === r || resolved.startsWith(r + path.sep)) return null;
+        if (isPathWithinRoot(resolved, root)) return null;
     }
     return `projectPath "${resolved}" 不在白名单内。允许的路径: ${CFG.allowedRoots.join(", ")}`;
 }
@@ -395,7 +407,7 @@ function checkFileSizes(task) {
         const fp = m[1].replace(/[,。、）)】]+$/, "");
         if (seen.has(fp)) continue;
         seen.add(fp);
-        const isAllowed = CFG.allowedRoots.some(r => fp.startsWith(path.resolve(r)));
+        const isAllowed = CFG.allowedRoots.some(r => isPathWithinRoot(fp, r));
         if (!isAllowed) continue;
         try {
             const stat = fs.statSync(fp);
@@ -551,7 +563,7 @@ function countActiveJobs() {
 
 /** 清理旧 job 文件：删除超过 retainDays 天且状态非 running 的全部文件。
  *  在 listJobs 和 run 时触发，每次最多清理 50 个，避免阻塞主流程。 */
-function cleanupOldJobs(retainDays = 7) {
+function cleanupOldJobs(retainDays = 7, maxClean = 50) {
     const metaDir = path.join(CFG.jobRoot, "meta");
     let files = [];
     try { files = fs.readdirSync(metaDir).filter(f => f.endsWith(".json") && !f.endsWith(".args.json")); }

@@ -326,9 +326,13 @@
             <template #leading><span class="material-symbols-outlined">update</span></template>
             手动刷新快照
           </UiButton>
-          <UiButton variant="danger" :disabled="isActionRunning" @click="resetSelected">
+          <UiButton variant="outline" :disabled="isActionRunning" @click="resetSelected">
             <template #leading><span class="material-symbols-outlined">restart_alt</span></template>
             重置该 Agent 轴状态
+          </UiButton>
+          <UiButton variant="danger" :disabled="isActionRunning" @click="deleteSelected">
+            <template #leading><span class="material-symbols-outlined">delete_forever</span></template>
+            永久删除观测记录
           </UiButton>
         </UiCard>
       </main>
@@ -784,8 +788,9 @@ async function tickSelected(): Promise<void> {
 
 async function resetSelected(): Promise<void> {
   if (!selectedAgent.value) return;
+  const target = { ...selectedAgent.value.summary };
   const confirmed = await askConfirm({
-    message: `确定要重置「${selectedAgent.value.summary.agentLabel}」的 OpenHerPersona 情绪状态吗？`,
+    message: `确定要重置「${target.agentLabel}」的 OpenHerPersona 情绪状态吗？`,
     danger: true,
     confirmText: "重置",
   });
@@ -793,7 +798,7 @@ async function resetSelected(): Promise<void> {
 
   isActionRunning.value = true;
   try {
-    await openHerPersonaApi.resetAgent(selectedAgent.value.summary.agentKey, selectedAgent.value.summary.agentLabel, {
+    await openHerPersonaApi.resetAgent(target.agentKey, target.agentLabel, {
       loadingKey: "openher-persona.reset",
     });
     showMessage("Agent 情绪已重置", "success");
@@ -801,6 +806,36 @@ async function resetSelected(): Promise<void> {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     showMessage(`重置失败：${errorMessage}`, "error");
+  } finally {
+    isActionRunning.value = false;
+  }
+}
+
+async function deleteSelected(): Promise<void> {
+  if (!selectedAgent.value) return;
+  const target = { ...selectedAgent.value.summary };
+  const confirmed = await askConfirm({
+    message: `确定要永久删除「${target.agentLabel}」的全部 OpenHerPersona 观测记录吗？这会清除轴状态、主体锚点缓存和审计记录，且不可撤销。`,
+    danger: true,
+    confirmText: "永久删除",
+  });
+  if (!confirmed) return;
+
+  isActionRunning.value = true;
+  try {
+    const result = await openHerPersonaApi.deleteAgent(target.agentKey, {
+      loadingKey: "openher-persona.delete",
+    });
+    if (!result.deleted) {
+      showMessage("未找到可删除的 Agent 观测记录", "info");
+    } else {
+      showMessage(`已永久删除「${target.agentLabel}」的观测记录`, "success");
+    }
+    if (selectedAgentKey.value === target.agentKey) selectedAgentKey.value = "";
+    await loadStatus(true);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    showMessage(`删除失败：${errorMessage}`, "error");
   } finally {
     isActionRunning.value = false;
   }

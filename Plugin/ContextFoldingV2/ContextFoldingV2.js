@@ -417,16 +417,35 @@ class ContextFoldingV2 {
      * S 高 → 语义宽泛 → 阈值降低 → 保守保留
      */
     _computeDynamicThreshold(contextVector, bridge, overrideBase = null) {
-        const L = bridge.computeLogicDepth(contextVector);
-        const S = bridge.computeSemanticWidth(contextVector);
+        const rawL = bridge.computeLogicDepth(contextVector);
+        const rawS = bridge.computeSemanticWidth(contextVector);
+        const L = Number.isFinite(Number(rawL)) ? Math.max(0, Math.min(1, Number(rawL))) : 0;
+        const S = Number.isFinite(Number(rawS)) ? Math.max(0, Math.min(1, Number(rawS))) : 0;
 
-        // 从热参数读取（面板可实时调整，无需重启）
-        const { thresholdBase, thresholdRange, lWeight, sWeight } = this.hotParams;
-        // 如果占位符指定了数字（如 [[ContextFoldingV2:0.6]]），则覆盖 json 配置的基准线
-        const base = overrideBase !== null ? overrideBase : thresholdBase;
+        // 从热参数读取（面板可实时调整，无需重启）。
+        // 热配置和桥接指标均视为不可信数值输入，避免 NaN 让所有相似度比较失效。
+        const configuredRange = Array.isArray(this.hotParams.thresholdRange)
+            ? this.hotParams.thresholdRange
+            : [0.40, 0.60];
+        const rangeStart = Number(configuredRange[0]);
+        const rangeEnd = Number(configuredRange[1]);
+        const minThreshold = Number.isFinite(rangeStart) ? rangeStart : 0.40;
+        const maxThreshold = Number.isFinite(rangeEnd) ? rangeEnd : 0.60;
+        const lowerBound = Math.min(minThreshold, maxThreshold);
+        const upperBound = Math.max(minThreshold, maxThreshold);
+
+        const configuredBase = Number(this.hotParams.thresholdBase);
+        const requestedBase = overrideBase !== null ? Number(overrideBase) : configuredBase;
+        const base = Number.isFinite(requestedBase)
+            ? requestedBase
+            : (Number.isFinite(configuredBase) ? configuredBase : 0.50);
+        const parsedLWeight = Number(this.hotParams.lWeight);
+        const parsedSWeight = Number(this.hotParams.sWeight);
+        const lWeight = Number.isFinite(parsedLWeight) ? parsedLWeight : 0.05;
+        const sWeight = Number.isFinite(parsedSWeight) ? parsedSWeight : 0.05;
         const threshold = base + lWeight * L - sWeight * S;
 
-        return Math.max(thresholdRange[0], Math.min(thresholdRange[1], threshold));
+        return Math.max(lowerBound, Math.min(upperBound, threshold));
     }
 
     // ═══════════════════════════════════════════════════

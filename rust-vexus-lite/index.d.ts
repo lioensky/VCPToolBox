@@ -143,7 +143,13 @@ export declare class VexusIndex {
    * 注意：移除了 map_path，因为映射关系现在由 SQLite 管理
    */
   static load(indexPath: string, unusedMapPath: string | undefined | null, dim: number, capacity: number): VexusIndex
-  /** 保存索引到磁盘 */
+  /**
+   * 保存索引到磁盘。
+   *
+   * 临时文件始终与目标位于同一目录，保证 rename 不跨文件系统。Unix 使用
+   * 原子覆盖并同步父目录；Windows 使用可回滚备份交换，并对杀毒软件、索引器
+   * 短暂持有句柄造成的共享冲突进行有界重试。
+   */
   save(indexPath: string): void
   /** 单个添加 (JS 循环调用) */
   add(id: number, vector: Float32Array): void

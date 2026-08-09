@@ -268,6 +268,19 @@ export interface OpenHerPersonaConfigResponse {
   sourceOfTruth: "json" | string;
 }
 
+export interface OpenHerPersonaDeleteResponse {
+  status: "success" | "error";
+  plugin: string;
+  deleted: boolean;
+  agentKey?: string;
+  deletedRows?: {
+    state: number;
+    anchors: number;
+    audit: number;
+  };
+  message?: string;
+}
+
 export const openHerPersonaApi = {
   async getStatus(
     requestContext: HttpRequestContext = {},
@@ -336,6 +349,20 @@ export const openHerPersonaApi = {
         url: `/admin_api/openher-persona/${encodeURIComponent(agentKey)}/reset`,
         method: "POST",
         body: { agentName },
+        timeoutMs: 35000,
+      },
+      uiOptions
+    );
+  },
+
+  async deleteAgent(
+    agentKey: string,
+    uiOptions: RequestUiOptions = {}
+  ): Promise<OpenHerPersonaDeleteResponse> {
+    return requestWithUi(
+      {
+        url: `/admin_api/openher-persona/${encodeURIComponent(agentKey)}`,
+        method: "DELETE",
         timeoutMs: 35000,
       },
       uiOptions

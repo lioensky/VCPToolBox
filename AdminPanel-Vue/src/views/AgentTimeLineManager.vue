@@ -213,7 +213,16 @@
           <UiTextarea v-model="fileDraft" rows="20" :disabled="running" />
         </UiField>
         <div class="actions end">
-          <UiButton variant="primary" :disabled="running || savingFile" @click="saveFile">保存 Timeline 文件</UiButton>
+          <UiButton
+            variant="outline"
+            :loading="compactingFile"
+            :disabled="running || savingFile || compactingFile || !fileDraft.trim()"
+            @click="compactFile"
+          >
+            <template #leading><span class="material-symbols-outlined">compress</span></template>
+            精简当前 Timeline 内容
+          </UiButton>
+          <UiButton variant="primary" :disabled="running || savingFile || compactingFile" @click="saveFile">保存 Timeline 文件</UiButton>
         </div>
       </div>
       <div v-else class="empty-state">选择 Agent 和月份后可编辑数据。首次生成前，可输入 Agent 名并启动生成任务。</div>
@@ -266,6 +275,7 @@ const loadingAgent = ref(false)
 const savingConfig = ref(false)
 const savingFile = ref(false)
 const savingSummary = ref(false)
+const compactingFile = ref(false)
 const status = ref<VcpTimelineStatus | null>(null)
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -461,6 +471,12 @@ async function saveConfig() {
   }
 }
 
+function syncCurrentMonthDrafts() {
+  const month = selectedMonth.value
+  summaryDraft.value = detail.value?.summaries[month] || ''
+  fileDraft.value = detail.value?.files.find(file => file.month === month)?.content || ''
+}
+
 async function loadAgent(agentName: string) {
   loadingAgent.value = true
   try {
@@ -469,6 +485,8 @@ async function loadAgent(agentName: string) {
     detail.value = response.detail
     status.value = response.detail.status
     selectedMonth.value = availableMonths.value[availableMonths.value.length - 1] || ''
+    // 当前月份未变化时 watch 不会重新执行，必须显式同步新返回的摘要和文件。
+    syncCurrentMonthDrafts()
     if (status.value.running) schedulePoll(agentName)
   } finally {
     loadingAgent.value = false
@@ -550,13 +568,30 @@ async function startSummaryGeneration() {
   }
 }
 
+async function compactFile() {
+  if (!selectedAgent.value || !selectedMonth.value || !fileDraft.value.trim()) return
+  compactingFile.value = true
+  try {
+    const response = await vcpTimelineApi.compactFile(
+      selectedAgent.value,
+      selectedMonth.value,
+      fileDraft.value,
+    )
+    fileDraft.value = response.content
+    showMessage(response.message || 'Timeline 正文已精简，请确认后保存', 'success')
+  } catch (error) {
+    showMessage(`精简失败：${error instanceof Error ? error.message : String(error)}`, 'error')
+  } finally {
+    compactingFile.value = false
+  }
+}
+
 async function saveFile() {
   if (!selectedAgent.value || !selectedMonth.value) return
   savingFile.value = true
   try {
     await vcpTimelineApi.saveFile(selectedAgent.value, selectedMonth.value, fileDraft.value)
     await loadAgent(selectedAgent.value)
-    selectedMonth.value = selectedMonth.value
     showMessage('Timeline 文件已保存', 'success')
   } catch (error) {
     showMessage(`保存失败：${error instanceof Error ? error.message : String(error)}`, 'error')

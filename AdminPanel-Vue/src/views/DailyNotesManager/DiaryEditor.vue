@@ -208,7 +208,7 @@ const editorStatusBadgeVariant = computed(() =>
 
 /* 预览处于激活态时，强制隐藏底下 CodeMirror，防止透字叠影 */
 :deep(.EasyMDEContainer .CodeMirror.CodeMirror-preview-active),
-:deep(.editor-preview-active) ~ :deep(.CodeMirror),
+:deep(.editor-preview-active ~ .CodeMirror),
 :deep(.EasyMDEContainer .CodeMirror:has(+ .editor-preview-active)),
 :deep(.EasyMDEContainer .CodeMirror:has(~ .editor-preview-active)) {
   visibility: hidden !important;

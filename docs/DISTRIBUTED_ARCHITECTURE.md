@@ -861,3 +861,18 @@ module.exports = {
 **文档版本**: 1.0  
 **最后更新**: 2026-02-13  
 **相关文件**: `WebSocketServer.js`, `FileFetcherServer.js`, `Plugin.js`
+
+## 分布式工具取消与节点生命周期
+
+`executeDistributedTool()` 的 pending 项绑定目标 `serverId`。服务端只接受该节点返回的 `tool_result`；其他节点即使意外复用了同一个 `requestId` 也不会完成请求。目标节点断开时，服务端立即清理并 reject 该节点的所有 pending，并且不向已经关闭的 socket 发送取消帧。
+
+节点在 `register_tools.data.capabilities.cancelTool === true` 时声明支持取消。服务端 timeout 只在目标 socket 仍为 `OPEN` 且节点已声明该能力时 best-effort 发送一次：
+
+```json
+{
+  "type": "cancel_tool",
+  "data": { "requestId": "..." }
+}
+```
+
+旧节点未声明能力时不会收到该帧，但节点侧的本地 deadline 仍然独立生效。服务端断线清理与节点本地 AbortController 都是必要的生命周期边界，不能依赖对方在连接关闭后继续接收消息。

@@ -279,6 +279,37 @@
 
 注意：Manifest V3 扩展在 headless 下兼容性需要专项验证。首版建议默认有头但最小化，而非纯 headless。
 
+### 10.4 Windows 人工基础设置入口
+
+根目录提供 [`人工设置托管浏览器_有头模式.bat`](../人工设置托管浏览器_有头模式.bat)，用于在具有桌面会话的 Windows 服务器上，以可见窗口打开生产 managed Chrome 使用的同一 Profile。
+
+该入口通过 [`open_managed_browser_setup.js`](../scripts/open_managed_browser_setup.js) 加载根 [`config.env`](../config.env.example)，并强制覆盖以下启动属性：
+
+- `headless=false`
+- `startMinimized=false`
+- `windowsHide=false`
+- 人工设置期间将 idle timeout 延长到 24 小时
+
+脚本继续复用：
+
+- `VCP_BROWSER_EXECUTABLE_PATH` 或运行时自动探测到的 Chrome/Edge。
+- `VCP_BROWSER_PROFILE_DIR` 对应的托管 Profile。
+- `VCP_BROWSER_EXTENSION_DIR` 与 VCPChrome staging 逻辑。
+- 窗口尺寸、扩展开关和 managed runtime 配置。
+
+因此在该窗口内完成的登录、Cookie、语言、麦克风、摄像头、通知及站点权限，会保存到后续服务器 managed Chrome 使用的 Profile 中。
+
+使用约束：
+
+1. 运行前先通过 `close_chrome` 或其它正常方式关闭服务器已经启动的 managed Chrome。
+2. 不得让两个 Chrome 进程同时写入同一个 `VCP_BROWSER_PROFILE_DIR`。
+3. 辅助器会检查 `DevToolsActivePort` 对应实例是否仍存活；确认占用时会拒绝启动，而不是删除活动锁。
+4. 设置完成后应正常关闭整个浏览器窗口，避免 Profile 状态未刷盘。
+5. 麦克风和摄像头权限通常按网站 origin 保存。应访问实际目标站点，通过地址栏左侧的网站设置授予权限；只修改全局默认设置不一定覆盖站点级拒绝。
+6. Windows 服务运行于 Session 0、无交互桌面或以不同系统账户运行时，即使配置为有头也可能无法在当前用户桌面显示。该 BAT 应在与生产 VCP 相同的 Windows 用户、可交互桌面会话中执行。
+
+该入口只用于人工初始化和排障，不替代 [`ensureManagedBrowser()`](../modules/browserRuntimeManager.js:426) 的生产生命周期管理。
+
 ---
 
 ## 11. UrlFetch 联动设计

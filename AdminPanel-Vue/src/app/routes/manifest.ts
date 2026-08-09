@@ -1,4 +1,7 @@
-import type { RouteLocationNormalizedLoaded, RouteLocationRaw } from "vue-router";
+import type {
+  RouteLocationNormalizedLoaded,
+  RouteLocationRaw,
+} from "vue-router";
 import type { PluginInfo } from "@/types/api.plugin";
 
 export type AppRouteGroup =
@@ -44,6 +47,7 @@ export type AppRouteId =
   | "final-context-viewer"
   | "bridge-hijack-config"
   | "placeholder-viewer"
+  | "placeholder-explorer-manager"
   | "plugins"
   | "plugin-store"
   | "plugin-config";
@@ -460,6 +464,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     showInSidebar: true,
   },
   {
+    id: "placeholder-explorer-manager",
+    routeName: "PlaceholderExplorerManager",
+    path: "/placeholder-explorer-manager",
+    title: "占位符索引管理",
+    icon: "account_tree",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
+  },
+  {
     id: "plugin-config",
     routeName: "PluginConfig",
     path: "/plugin/:pluginName/config",
@@ -487,7 +501,9 @@ const APP_ROUTE_BY_PATH = new Map(
 );
 
 export function getAppRouteMetaById(routeId: AppRouteId): AppRouteMeta {
-  return APP_ROUTE_BY_ID.get(routeId) ?? APP_ROUTE_BY_ID.get(APP_DEFAULT_ROUTE_ID)!;
+  return (
+    APP_ROUTE_BY_ID.get(routeId) ?? APP_ROUTE_BY_ID.get(APP_DEFAULT_ROUTE_ID)!
+  );
 }
 
 export function isAppRouteId(value: string): value is AppRouteId {

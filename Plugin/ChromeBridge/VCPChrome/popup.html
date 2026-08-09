@@ -35,6 +35,18 @@
             background-color: #f8d7da;
             color: #721c24;
         }
+        .badge-managed {
+            background-color: #dbeafe;
+            color: #1d4ed8;
+        }
+        #client-mode-error {
+            min-height: 16px;
+            margin-top: 5px;
+            color: #b42318;
+            font-size: 11px;
+            line-height: 1.35;
+            text-align: left;
+        }
         button {
             padding: 8px 15px;
             font-size: 14px;
@@ -54,9 +66,36 @@
             gap: 8px;
             margin-top: 10px;
         }
+        .mode-button-group button {
+            padding: 7px 5px;
+            font-size: 12px;
+        }
+        .mode-button-active {
+            border-color: #2563eb;
+            background: #dbeafe;
+            color: #1d4ed8;
+            font-weight: 700;
+        }
         .button-group button {
             flex: 1;
             margin: 0;
+        }
+        .copy-button {
+            width: 100%;
+            border-color: #8b5cf6;
+            background: #f5f0ff;
+            color: #4c1d95;
+            font-weight: 600;
+        }
+        .copy-button:hover {
+            background: #ede3ff;
+        }
+        #copy-status {
+            min-height: 16px;
+            margin-top: 5px;
+            color: #6d5a8f;
+            font-size: 11px;
+            text-align: left;
         }
         #settings {
             margin-top: 15px;
@@ -73,10 +112,32 @@
             margin-bottom: 5px;
             font-size: 12px;
         }
-        .input-group input {
+        .input-group input[type="text"],
+        .input-group input[type="password"] {
             width: 95%;
             padding: 5px;
             font-size: 12px;
+        }
+        .privacy-setting {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 8px;
+            border-radius: 4px;
+            background: #eaf7ee;
+        }
+        .privacy-setting input {
+            margin-top: 2px;
+        }
+        .privacy-setting label {
+            margin: 0;
+            line-height: 1.4;
+        }
+        .setting-hint {
+            display: block;
+            margin-top: 3px;
+            color: #607066;
+            font-weight: normal;
         }
         #settings-toggle {
             font-size: 12px;
@@ -134,13 +195,21 @@
         <button id="toggleVCP">连接VCP</button>
     </div>
     
-    <div class="button-group">
-        <button id="toggleClientMode" style="width: 100%;">切换为 Agent 模式</button>
+    <div class="button-group mode-button-group" role="group" aria-label="客户端模式">
+        <button id="selectUserMode" type="button">User</button>
+        <button id="selectAgentMode" type="button">Agent</button>
+        <button id="selectManagedMode" type="button">Managed</button>
     </div>
+    <div id="client-mode-error" aria-live="polite"></div>
 
     <div class="button-group">
         <button id="refreshPage" style="width: 100%;">🔄 手动刷新</button>
     </div>
+
+    <div class="button-group">
+        <button id="copyGroundedMarkdown" class="copy-button">📋 复制当前页面 MD 操作图全文</button>
+    </div>
+    <div id="copy-status" aria-live="polite"></div>
 
     <!-- 显示最新页面信息 -->
     <div id="page-info">
@@ -158,7 +227,14 @@
         </div>
         <div class="input-group">
             <label for="vcpKey">VCP 密钥:</label>
-            <input type="text" id="vcpKey" placeholder="your_secret_key">
+            <input type="password" id="vcpKey" placeholder="your_secret_key">
+        </div>
+        <div class="input-group privacy-setting">
+            <input type="checkbox" id="redactSensitiveDom" checked>
+            <label for="redactSensitiveDom">
+                页面敏感信息脱敏
+                <span class="setting-hint">默认开启；隐藏密码、令牌、密钥、Cookie、会话及支付字段值。</span>
+            </label>
         </div>
         <button id="saveSettings">保存设置</button>
     </div>

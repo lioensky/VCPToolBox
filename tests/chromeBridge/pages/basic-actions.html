@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChromeBridge 基础动作冒烟页</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 24px;
+            min-height: 2400px;
+            font-family: system-ui, sans-serif;
+        }
+
+        main {
+            max-width: 680px;
+            margin: 0 auto;
+        }
+
+        fieldset {
+            display: grid;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        label {
+            display: grid;
+            gap: 4px;
+        }
+
+        #status {
+            padding: 12px;
+            background: #eef6ff;
+        }
+
+        .product-card {
+            padding: 14px;
+            margin: 10px 0;
+            border: 1px solid #ccd6e0;
+            border-radius: 8px;
+        }
+
+        #hover-target {
+            padding: 12px;
+            border: 1px dashed #477;
+        }
+
+        #overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            display: none;
+            place-items: center;
+            background: rgba(0, 0, 0, 0.25);
+        }
+
+        #overlay.visible {
+            display: grid;
+        }
+
+        #overlay-card {
+            padding: 24px;
+            background: white;
+        }
+
+        #bottom-marker {
+            margin-top: 1800px;
+            padding: 20px;
+            background: #eaf7ee;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>ChromeBridge 基础动作冒烟页</h1>
+        <p>用于验证稳定快照、输入读回、checkbox 状态变化、滚动边界和敏感字段脱敏。</p>
+
+        <fieldset>
+            <legend>普通输入与敏感输入</legend>
+            <label>
+                搜索
+                <input id="search" name="search" type="search" placeholder="搜索关键词">
+            </label>
+            <label>
+                密码
+                <input id="password" name="password" type="password" value="fixture-password-secret" autocomplete="current-password">
+            </label>
+            <label>
+                API Token
+                <input id="api-token" name="api_token" type="text" value="fixture-token-secret">
+            </label>
+        </fieldset>
+
+        <fieldset>
+            <legend>状态控件</legend>
+            <label>
+                <input id="terms" name="terms" type="checkbox">
+                同意条款
+            </label>
+            <label>
+                城市
+                <select id="city" name="city">
+                    <option value="beijing">北京</option>
+                    <option value="shanghai">上海</option>
+                    <option value="disabled" disabled>禁用选项</option>
+                </select>
+            </label>
+            <label>
+                日期
+                <input id="appointment-date" type="date">
+            </label>
+            <button id="toggle-details" type="button" aria-expanded="false" aria-controls="details">展开详情</button>
+            <button id="disabled-button" type="button" disabled>禁用按钮</button>
+            <button id="show-overlay" type="button">显示遮挡层</button>
+            <div id="hover-target" tabindex="0">悬停显示提示</div>
+            <div id="hover-result" hidden>悬停成功</div>
+            <div id="details" hidden>动作验证成功时，此区域应变为可见。</div>
+        </fieldset>
+
+        <section id="product-results" aria-labelledby="product-results-title">
+            <h2 id="product-results-title">同名操作归属测试</h2>
+            <article class="product-card" data-card>
+                <h3>商品 Alpha</h3>
+                <p>价格 100 元，当前有货。</p>
+                <button type="button" class="buy-button">购买</button>
+            </article>
+            <article class="product-card" data-card>
+                <h3>商品 Beta</h3>
+                <p>价格 200 元，当前有货。</p>
+                <button type="button" class="buy-button">购买</button>
+            </article>
+        </section>
+
+        <div id="overlay" role="dialog" aria-label="测试遮挡层">
+            <div id="overlay-card">
+                <p>此遮挡层用于验证 ELEMENT_OCCLUDED。</p>
+                <button id="close-overlay" type="button">关闭遮挡层</button>
+            </div>
+        </div>
+
+        <p id="status" role="status">尚未执行动作</p>
+        <div id="bottom-marker">页面底部边界标记</div>
+    </main>
+
+    <script>
+        const search = document.getElementById('search');
+        const terms = document.getElementById('terms');
+        const toggle = document.getElementById('toggle-details');
+        const details = document.getElementById('details');
+        const status = document.getElementById('status');
+        const city = document.getElementById('city');
+        const hoverTarget = document.getElementById('hover-target');
+        const hoverResult = document.getElementById('hover-result');
+        const overlay = document.getElementById('overlay');
+
+        search.addEventListener('input', () => {
+            status.textContent = `搜索值长度：${search.value.length}`;
+        });
+
+        terms.addEventListener('change', () => {
+            status.textContent = `条款状态：${terms.checked}`;
+        });
+
+        toggle.addEventListener('click', () => {
+            const expanded = toggle.getAttribute('aria-expanded') === 'true';
+            toggle.setAttribute('aria-expanded', String(!expanded));
+            details.hidden = expanded;
+            status.textContent = `详情展开：${!expanded}`;
+        });
+
+        city.addEventListener('change', () => {
+            status.textContent = `城市：${city.value}`;
+        });
+
+        hoverTarget.addEventListener('mouseenter', () => {
+            hoverResult.hidden = false;
+            status.textContent = '悬停成功';
+        });
+
+        document.getElementById('show-overlay').addEventListener('click', () => {
+            overlay.classList.add('visible');
+        });
+
+        document.getElementById('close-overlay').addEventListener('click', () => {
+            overlay.classList.remove('visible');
+        });
+
+        setTimeout(() => {
+            document.body.dataset.asyncReady = 'true';
+        }, 300);
+    </script>
+</body>
+</html>

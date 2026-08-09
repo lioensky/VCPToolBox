@@ -3,7 +3,7 @@
   "name": "DailyNoteSearcher",
   "version": "1.0.0",
   "displayName": "日记/知识库搜索器 (Rust)",
-  "description": "一个使用 Rust 编写的高性能文本搜索插件，支持在日记目录或 knowledge 冷知识库目录中进行快速、精准的文本/正则/BM25 搜索。当前以 hybridservice/direct 方式常驻启动本地 HTTP 服务，同时 Rust 可执行文件仍保留 stdin 一次性调用兼容路径。",
+  "description": "一个使用 Rust 编写的高性能文本搜索插件，支持在日记目录或 knowledge 冷知识库目录中进行快速、精准的文本/正则/BM25 搜索。当前以 hybridservice/direct 方式常驻启动本地 HTTP 服务，具备父进程存活检测与优雅关闭能力；JS 桥按 Windows/Linux/macOS 及 x64/arm64 精确选择原生二进制，同时 Rust 可执行文件仍保留 stdin 一次性调用兼容路径。",
   "author": "Kilo Code",
   "pluginType": "hybridservice",
   "entryPoint": {
@@ -28,6 +28,11 @@
       "type": "integer",
       "description": "DailyNoteSearcher direct/HTTP 调用超时时间（毫秒）。",
       "default": 60000
+    },
+    "DAILY_NOTE_SEARCHER_SHUTDOWN_TIMEOUT": {
+      "type": "integer",
+      "description": "等待 Rust 常驻服务优雅退出的最长时间（毫秒）；超时后由 JS 桥强制终止进程树。",
+      "default": 5000
     },
     "DAILY_NOTE_ROOT": {
       "type": "string",

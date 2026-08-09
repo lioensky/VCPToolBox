@@ -107,8 +107,8 @@ struct NativeInput {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct QueryInput {
-    #[serde(default)]
-    text: String,
+    #[serde(default, rename = "text")]
+    _text: String,
     #[serde(default)]
     vector: Vec<f32>,
 }
@@ -1761,33 +1761,252 @@ struct ScoredWork {
     final_score: f64,
 }
 
-fn query_mode(text: &str) -> &'static str {
-    let relation_signals = [
-        "导致", "造成", "因为", "所以", "通过", "依赖", "属于", "定义", "源于", "关系", "->", "→",
-    ]
-    .iter()
-    .filter(|token| text.contains(**token))
-    .count();
-    let narrative_signals = [
-        "随后", "之后", "此前", "最终", "阶段", "过程", "历史", "事件", "然后", "演变",
-    ]
-    .iter()
-    .filter(|token| text.contains(**token))
-    .count();
-    let clauses = text
-        .split(['，', ',', '。', '；', ';', '！', '？', '\n'])
-        .filter(|value| !value.trim().is_empty())
-        .count();
-    if text.chars().count() <= 28 && clauses <= 1 && relation_signals == 0 {
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryMorphology {
+    atomic_weight: f64,
+    propositional_weight: f64,
+    narrative_weight: f64,
+    confidence: f64,
+    effective_depth: f64,
+    depth_variance: f64,
+    energy_concentration: f64,
+    shallow_energy_ratio: f64,
+    forward_flow_ratio: f64,
+    same_level_flow_ratio: f64,
+    chainness: f64,
+    branching: f64,
+    merging: f64,
+    growth_persistence: f64,
+    dominant_mode: String,
+}
+
+fn compute_query_morphology(input: &NativeInput) -> QueryMorphology {
+    let nodes = &input.query_state.river_nodes;
+    let edges = &input.query_state.river_edges;
+    let node_count = nodes.len();
+    let edge_count = edges.len();
+    let hop_by_id: HashMap<i64, usize> = nodes
+        .iter()
+        .map(|node| (node.id, node.hop.max(0) as usize))
+        .collect();
+    let maximum_hop = hop_by_id.values().copied().max().unwrap_or(0);
+
+    let energies: Vec<f64> = nodes
+        .iter()
+        .map(|node| {
+            positive(if node.normalized_energy != 0.0 {
+                node.normalized_energy
+            } else {
+                node.energy
+            })
+        })
+        .collect();
+    let total_energy: f64 = energies.iter().sum();
+    let weighted_hop = if total_energy > 1e-12 {
+        nodes
+            .iter()
+            .zip(&energies)
+            .map(|(node, energy)| node.hop.max(0) as f64 * energy)
+            .sum::<f64>()
+            / total_energy
+    } else {
+        0.0
+    };
+    let hop_variance = if total_energy > 1e-12 {
+        nodes
+            .iter()
+            .zip(&energies)
+            .map(|(node, energy)| energy * (node.hop.max(0) as f64 - weighted_hop).powi(2))
+            .sum::<f64>()
+            / total_energy
+    } else {
+        0.0
+    };
+    let effective_depth = clamp01(1.0 - (-weighted_hop / 1.75).exp());
+    let depth_variance = clamp01(1.0 - (-hop_variance.sqrt() / 1.5).exp());
+    let shallow_energy_ratio = if total_energy > 1e-12 {
+        nodes
+            .iter()
+            .zip(&energies)
+            .filter(|(node, _)| node.hop <= 1)
+            .map(|(_, energy)| *energy)
+            .sum::<f64>()
+            / total_energy
+    } else {
+        1.0
+    };
+
+    let raw_hhi = if total_energy > 1e-12 {
+        energies
+            .iter()
+            .map(|energy| (energy / total_energy).powi(2))
+            .sum::<f64>()
+    } else {
+        1.0
+    };
+    let uniform_hhi = 1.0 / node_count.max(1) as f64;
+    let energy_concentration = if node_count > 1 {
+        clamp01((raw_hhi - uniform_hhi) / (1.0 - uniform_hhi))
+    } else {
+        1.0
+    };
+
+    let mut inbound_degree: HashMap<i64, usize> = HashMap::new();
+    let mut outbound_degree: HashMap<i64, usize> = HashMap::new();
+    let mut total_flow = 0.0;
+    let mut forward_flow = 0.0;
+    let mut same_level_flow = 0.0;
+    for edge in edges {
+        let flow = positive(if edge.normalized_flow != 0.0 {
+            edge.normalized_flow
+        } else {
+            edge.flow
+        });
+        if flow <= 0.0 {
+            continue;
+        }
+        total_flow += flow;
+        *outbound_degree.entry(edge.source_id).or_default() += 1;
+        *inbound_degree.entry(edge.target_id).or_default() += 1;
+        let source_hop = hop_by_id.get(&edge.source_id).copied().unwrap_or(0);
+        let target_hop = hop_by_id.get(&edge.target_id).copied().unwrap_or(0);
+        if target_hop > source_hop {
+            forward_flow += flow;
+        } else if target_hop == source_hop {
+            same_level_flow += flow;
+        }
+    }
+    let forward_flow_ratio = if total_flow > 1e-12 {
+        clamp01(forward_flow / total_flow)
+    } else {
+        0.0
+    };
+    let same_level_flow_ratio = if total_flow > 1e-12 {
+        clamp01(same_level_flow / total_flow)
+    } else {
+        0.0
+    };
+
+    let reached_nodes: Vec<i64> = nodes
+        .iter()
+        .filter(|node| node.hop > 0)
+        .map(|node| node.id)
+        .collect();
+    let reached_count = reached_nodes.len().max(1) as f64;
+    let chain_fit = reached_nodes
+        .iter()
+        .filter(|id| {
+            inbound_degree.get(id).copied().unwrap_or(0) <= 1
+                && outbound_degree.get(id).copied().unwrap_or(0) <= 1
+        })
+        .count() as f64
+        / reached_count;
+    let branching = clamp01(
+        reached_nodes
+            .iter()
+            .map(|id| {
+                outbound_degree
+                    .get(id)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_sub(1)
+            })
+            .sum::<usize>() as f64
+            / reached_count,
+    );
+    let merging = clamp01(
+        reached_nodes
+            .iter()
+            .map(|id| {
+                inbound_degree
+                    .get(id)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_sub(1)
+            })
+            .sum::<usize>() as f64
+            / reached_count,
+    );
+    let chainness = clamp01(
+        chain_fit
+            * forward_flow_ratio.sqrt()
+            * (0.35 + 0.65 * effective_depth)
+            * (1.0 - 0.5 * branching),
+    );
+
+    let occupied_hops: HashSet<usize> = hop_by_id.values().copied().collect();
+    let level_occupancy = if maximum_hop > 0 {
+        occupied_hops.len().saturating_sub(1) as f64 / maximum_hop as f64
+    } else {
+        0.0
+    };
+    let growth_persistence = clamp01(level_occupancy * effective_depth.sqrt());
+    let middle_depth = clamp01(1.0 - (2.0 * effective_depth - 1.0).abs());
+    let relational_complexity =
+        clamp01(0.35 * same_level_flow_ratio + 0.35 * branching + 0.3 * merging);
+
+    let sample_reliability = clamp01(
+        (1.0 - (-(node_count as f64) / 8.0).exp()) * (1.0 - (-(edge_count as f64) / 8.0).exp()),
+    )
+    .sqrt();
+    let completeness = if input.query_state.complete_observation {
+        1.0
+    } else {
+        0.5
+    };
+    let confidence = clamp01(sample_reliability * completeness);
+
+    let atomic_logit = 1.45 * shallow_energy_ratio + 0.9 * energy_concentration
+        - 1.25 * effective_depth
+        - 0.65 * growth_persistence
+        - 0.45 * chainness;
+    let propositional_logit =
+        1.25 * relational_complexity + 0.7 * middle_depth + 0.35 * depth_variance
+            - 0.25 * chainness;
+    let narrative_logit = 1.4 * effective_depth
+        + 1.15 * chainness
+        + 0.8 * forward_flow_ratio
+        + 0.65 * growth_persistence
+        - 0.65 * branching
+        - 0.3 * energy_concentration;
+
+    const TEMPERATURE: f64 = 1.0;
+    let logits = [atomic_logit, propositional_logit, narrative_logit];
+    let maximum_logit = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let exponentials = logits.map(|logit| ((logit - maximum_logit) / TEMPERATURE).exp());
+    let exponential_sum: f64 = exponentials.iter().sum();
+    let topology_weights = exponentials.map(|value| value / exponential_sum.max(1e-12));
+    let prior = [1.0 / 3.0; 3];
+    let weights = [
+        confidence * topology_weights[0] + (1.0 - confidence) * prior[0],
+        confidence * topology_weights[1] + (1.0 - confidence) * prior[1],
+        confidence * topology_weights[2] + (1.0 - confidence) * prior[2],
+    ];
+    let dominant_mode = if weights[0] >= weights[1] && weights[0] >= weights[2] {
         "atomic"
-    } else if text.chars().count() >= 90
-        || clauses >= 4
-        || narrative_signals >= 2
-        || relation_signals >= 3
-    {
+    } else if weights[2] >= weights[1] {
         "narrative"
     } else {
         "propositional"
+    };
+
+    QueryMorphology {
+        atomic_weight: weights[0],
+        propositional_weight: weights[1],
+        narrative_weight: weights[2],
+        confidence,
+        effective_depth,
+        depth_variance,
+        energy_concentration,
+        shallow_energy_ratio,
+        forward_flow_ratio,
+        same_level_flow_ratio,
+        chainness,
+        branching,
+        merging,
+        growth_persistence,
+        dominant_mode: dominant_mode.to_string(),
     }
 }
 
@@ -2120,6 +2339,7 @@ struct NativeOutput {
     query_id: Option<String>,
     omega: OmegaOutput,
     query_mode: String,
+    query_morphology: QueryMorphology,
     results: Vec<NativeResultItem>,
     diagnostics: NativeDiagnostics,
 }
@@ -2312,15 +2532,42 @@ fn run_native(
     let load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
 
     let compute_started = Instant::now();
+    let morphology = compute_query_morphology(&input);
     let allowed: HashSet<i64> = input.allowed_file_ids.iter().copied().collect();
     let explicit_scope = !allowed.is_empty();
+
+    // Anchor rarity depends on the complete selected candidate pool, so compute it
+    // before consuming `curves`. The indexed parallel result preserves curve order.
+    let anchor_results = compute_anchors(
+        &curves,
+        &seeds,
+        &seed_vectors,
+        &artifact,
+        &input.config,
+        fallback_anchor,
+    );
+    let core_tag_names: HashSet<String> = input
+        .query_state
+        .field_provenance
+        .iter()
+        .filter(|entry| entry.source_type == "core")
+        .filter_map(|entry| {
+            curves
+                .iter()
+                .flat_map(|curve| curve.tags.iter())
+                .find(|tag| tag.id == entry.id)
+                .map(|tag| tag.name.to_lowercase())
+        })
+        .collect();
+
     let mut work: Vec<ScoredWork> = curves
-        .par_iter()
-        .map(|curve| {
-            let geometry = evaluate_path(curve, &workspace, &artifact, &input.config);
-            let topology = evaluate_topology(curve, &input, &artifact, &query_tag_vectors);
+        .into_par_iter()
+        .zip(anchor_results.into_par_iter())
+        .map(|(curve, anchor)| {
+            let geometry = evaluate_path(&curve, &workspace, &artifact, &input.config);
+            let topology = evaluate_topology(&curve, &input, &artifact, &query_tag_vectors);
             let visible = !explicit_scope || allowed.contains(&curve.file_id);
-            let observables = evaluate_observables(curve, &geometry, &input, &workspace, visible);
+            let observables = evaluate_observables(&curve, &geometry, &input, &workspace, visible);
             let semantic_total = (input.config.pure_query_weight
                 + input.config.pure_local_weight
                 + input.config.pure_transfer_weight)
@@ -2348,16 +2595,18 @@ fn run_native(
                 input.config.topology_bonus_cap * topology_raw * topology_reliability;
             let pure_score =
                 clamp01(semantic_base + topology_bonus.min(input.config.topology_bonus_cap));
-            let mode = query_mode(&input.query.text);
-            let graph_score = if mode == "atomic" {
-                clamp01(0.75 * topology.node_graph_score + 0.25 * topology.edge_graph_score)
-            } else if mode == "narrative" {
-                clamp01(0.15 * topology.node_graph_score + 0.85 * topology.edge_graph_score)
-            } else {
-                clamp01(0.25 * topology.node_graph_score + 0.75 * topology.edge_graph_score)
-            };
+            let atomic_score = 0.75 * topology.node_graph_score + 0.25 * topology.edge_graph_score;
+            let propositional_score =
+                0.25 * topology.node_graph_score + 0.75 * topology.edge_graph_score;
+            let narrative_score =
+                0.15 * topology.node_graph_score + 0.85 * topology.edge_graph_score;
+            let graph_score = clamp01(
+                morphology.atomic_weight * atomic_score
+                    + morphology.propositional_weight * propositional_score
+                    + morphology.narrative_weight * narrative_score,
+            );
             ScoredWork {
-                curve: curve.clone(),
+                curve,
                 geometry,
                 topology,
                 direct_evidence: observables.semantic_boundary_score.max(observables.direct),
@@ -2365,7 +2614,7 @@ fn run_native(
                 pure_score,
                 graph_score,
                 role: String::new(),
-                anchor: AnchorOutput::default(),
+                anchor,
                 v2_bonus: 0.0,
                 gated_bonus: 0.0,
                 anchor_bonus: 0.0,
@@ -2374,20 +2623,8 @@ fn run_native(
         })
         .collect();
 
-    let anchor_results = compute_anchors(
-        &curves,
-        &seeds,
-        &seed_vectors,
-        &artifact,
-        &input.config,
-        fallback_anchor,
-    );
-    for (item, anchor) in work.iter_mut().zip(anchor_results) {
-        item.anchor = anchor;
-    }
-
     let omega = compute_omega(&input);
-    let mode = query_mode(&input.query.text);
+    let mode = morphology.dominant_mode.as_str();
     assign_v3_scores(&mut work, mode, &omega, &input.config);
     work.sort_by(|left, right| {
         right
@@ -2404,19 +2641,6 @@ fn run_native(
             .then_with(|| left.curve.union_rank.cmp(&right.curve.union_rank))
     });
     let ranked_count = work.len();
-    let core_tag_names: HashSet<String> = input
-        .query_state
-        .field_provenance
-        .iter()
-        .filter(|entry| entry.source_type == "core")
-        .filter_map(|entry| {
-            curves
-                .iter()
-                .flat_map(|curve| curve.tags.iter())
-                .find(|tag| tag.id == entry.id)
-                .map(|tag| tag.name.to_lowercase())
-        })
-        .collect();
 
     let results: Vec<NativeResultItem> = work
         .into_iter()
@@ -2498,6 +2722,7 @@ fn run_native(
         query_id: input.query_state.query_id.clone(),
         omega,
         query_mode: mode.to_string(),
+        query_morphology: morphology,
         diagnostics: NativeDiagnostics {
             backend: "rust-rayon-sqlite".to_string(),
             offered_candidates: input.candidates.len(),

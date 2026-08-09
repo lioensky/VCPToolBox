@@ -138,6 +138,9 @@ async function main() {
                     searchOptions.end_date = endDate.trim();
                 }
                 searchOptions.time_range = null; // 显式覆盖任何默认或传入的 time_range 值
+                // 防御 @tavily/core 0.5.2 SDK 内部 _search() 函数硬编码 days:3 默认值的问题
+                // SDK 合并参数时 defaultOptions.days=3 不会被 undefined 覆盖，需显式传入
+                searchOptions.days = undefined;
             } else if (time_range) {
                 // 仅在没有日期范围时才使用 time_range 参数
                 const validTimeRanges = ['day', 'week', 'month', 'year', 'd', 'w', 'm', 'y'];
@@ -146,11 +149,11 @@ async function main() {
                 }
             }
 
-            // 检测是否包含 || 分隔的多个查询
-            const subQueries = query.split('||').map(q => q.trim()).filter(q => q.length > 0);
+            // 检测是否包含 | 分隔的多个查询
+            const subQueries = query.split('|').map(q => q.trim()).filter(q => q.length > 0);
 
             if (subQueries.length === 0) {
-                throw new Error("No valid search query after splitting by '||'");
+                throw new Error("No valid search query after splitting by '|'");
             }
 
             if (subQueries.length > 1) {

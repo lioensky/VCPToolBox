@@ -943,6 +943,18 @@ graph TD
 - **对 Agent 透明**：整个复杂的远程文件获取和参数替换过程对最终的插件是完全透明的
 - **未来的基石**：这个系统是构建更复杂的星型、网状 Agent 网络，实现跨设备协同任务的关键一步
 
+> 想了解VCP的完整系统实现和工程原理，请看 [VCP 白皮书](docs/vcp白皮书V3.md)。
+>
+> 想深入了解统一记忆寻址底座，请看 [RiverMemo：拓扑 V3 与 Ω 泛函](docs/RIVERMEMO_TOPOLOGY_V3.md)。
+>
+> 想了解设计背后的完整思路，推荐阅读 [VCP 1.0 正式版发布演讲稿](VCP.md)——那里把每一个系统为什么这样设计讲得最透。
+>
+> 想快速扫一遍技术地图，请看 [VCP 技术 Lite 索引](docs/TECHNICAL_LITE.md)。
+>
+> 工程实现细节、API、配置、运维，请见 [完整文档体系](docs/DOCUMENTATION_INDEX.md)。
+>
+> 了解VCP动向、更新内容，请见 [VCP更新日志](https://www.vcptoolbox.com/?page=changelog)。
+
 ---
 
 ## 7. 安装与部署

@@ -22,10 +22,16 @@ let currentExecutablePath = null;
 let currentProfileDir = null;
 let currentDebuggingPort = null;
 let currentExtensionDir = null;
+let currentLaunchConfig = null;
+let currentExtensionStage = null;
 let lastLaunchArgs = [];
 let startedAt = null;
 let lastTouchedAt = null;
 let lastError = null;
+let runtimeInstanceId = null;
+let previousPid = null;
+let lastCloseReason = null;
+let lastClosedAt = null;
 let shutdownHooksRegistered = false;
 
 function readBooleanEnv(name, defaultValue = false) {
@@ -146,13 +152,20 @@ function isProcessAlive() {
     return !!chromeProcess && !chromeProcess.killed && chromeProcess.exitCode === null;
 }
 
-function loadPersistedManagedToken() {
+function loadPersistedManagedToken(options = {}) {
     try {
         const raw = fs.readFileSync(MANAGED_TOKEN_FILE, 'utf8');
         const payload = JSON.parse(raw);
         if (payload && payload.token && payload.createdAt) {
-            managedToken = String(payload.token);
-            tokenCreatedAt = Number(payload.createdAt) || 0;
+            const persistedCreatedAt = Number(payload.createdAt) || 0;
+            const shouldReplace = options.force === true ||
+                !managedToken ||
+                persistedCreatedAt > tokenCreatedAt ||
+                (persistedCreatedAt === tokenCreatedAt && String(payload.token) !== managedToken);
+            if (shouldReplace) {
+                managedToken = String(payload.token);
+                tokenCreatedAt = persistedCreatedAt;
+            }
             return true;
         }
     } catch (_) {
@@ -195,11 +208,19 @@ function makeManagedRuntimePayload(config) {
         managedRuntime: true,
         clientKind: 'managed',
         managedToken: refreshManagedToken(config),
+        tokenCreatedAt,
         serverUrl: config.serverUrl,
         vcpKey: config.vcpKey,
         maxTabs: config.maxTabs,
+        stageGeneration: config.stageGeneration || null,
+        sourceManifestHash: config.sourceManifestHash || null,
+        stagedManifestHash: config.stagedManifestHash || null,
         generatedAt: new Date().toISOString()
     };
+}
+
+function hashBuffer(buffer) {
+    return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
 function buildChromeLocalStorageValue(value) {
@@ -229,11 +250,19 @@ async function writeManagedStorageFallback(config, payload) {
 }
 
 async function stageManagedExtension(config) {
-    if (!config.loadExtension) return config.extensionDir;
+    if (!config.loadExtension) {
+        return {
+            extensionDir: config.extensionDir,
+            stageGeneration: null,
+            sourceManifestHash: null,
+            stagedManifestHash: null
+        };
+    }
 
     const sourceManifestPath = path.join(config.extensionDir, 'manifest.json');
+    let sourceManifest;
     try {
-        await fsp.access(sourceManifestPath);
+        sourceManifest = await fsp.readFile(sourceManifestPath);
     } catch (error) {
         throw new Error(`VCPChrome 源扩展目录不可用: ${config.extensionDir}`);
     }
@@ -253,7 +282,19 @@ async function stageManagedExtension(config) {
         }
     });
 
-    return stagedExtensionDir;
+    const stagedManifest = await fsp.readFile(path.join(stagedExtensionDir, 'manifest.json'));
+    const sourceManifestHash = hashBuffer(sourceManifest);
+    const stagedManifestHash = hashBuffer(stagedManifest);
+    if (sourceManifestHash !== stagedManifestHash) {
+        throw new Error('VCPChrome staged Manifest 与源码不一致，已拒绝启动旧扩展副本');
+    }
+
+    return {
+        extensionDir: stagedExtensionDir,
+        stageGeneration: crypto.randomUUID(),
+        sourceManifestHash,
+        stagedManifestHash
+    };
 }
 
 async function writeManagedExtensionConfig(config) {
@@ -447,8 +488,14 @@ async function ensureManagedBrowser(options = {}) {
         }
 
         await prepareManagedProfile(config);
-        const stagedExtensionDir = await stageManagedExtension(config);
-        const launchConfig = { ...config, extensionDir: stagedExtensionDir };
+        const extensionStage = await stageManagedExtension(config);
+        const launchConfig = {
+            ...config,
+            extensionDir: extensionStage.extensionDir,
+            stageGeneration: extensionStage.stageGeneration,
+            sourceManifestHash: extensionStage.sourceManifestHash,
+            stagedManifestHash: extensionStage.stagedManifestHash
+        };
         const runtimeConfigPath = await writeManagedExtensionConfig(launchConfig);
         if (launchConfig.loadExtension) {
             const stagedManifestPath = path.join(launchConfig.extensionDir, 'manifest.json');
@@ -459,7 +506,13 @@ async function ensureManagedBrowser(options = {}) {
 
         const args = buildChromeArgs(launchConfig);
         lastLaunchArgs = [...args];
-        console.log(`[BrowserRuntimeManager] launching managed Chrome: executable=${executablePath}, profile=${launchConfig.profileDir}, extension=${launchConfig.loadExtension ? launchConfig.extensionDir : 'disabled'}, runtimeConfig=${runtimeConfigPath || 'N/A'}`);
+        currentLaunchConfig = {
+            headless: launchConfig.headless === true,
+            windowsHide: launchConfig.windowsHide === true,
+            startMinimized: launchConfig.startMinimized === true
+        };
+        currentExtensionStage = extensionStage;
+        console.log(`[BrowserRuntimeManager] launching managed Chrome: executable=${executablePath}, profile=${launchConfig.profileDir}, extension=${launchConfig.loadExtension ? launchConfig.extensionDir : 'disabled'}, runtimeConfig=${runtimeConfigPath || 'N/A'}, headless=${currentLaunchConfig.headless}, stageGeneration=${extensionStage.stageGeneration || 'N/A'}`);
         chromeProcess = spawn(executablePath, args, {
             cwd: PROJECT_ROOT,
             detached: false,
@@ -471,6 +524,8 @@ async function ensureManagedBrowser(options = {}) {
         currentProfileDir = launchConfig.profileDir;
         currentDebuggingPort = launchConfig.remoteDebuggingPort;
         currentExtensionDir = launchConfig.loadExtension ? launchConfig.extensionDir : null;
+        runtimeInstanceId = crypto.randomUUID();
+        lastCloseReason = null;
         startedAt = Date.now();
         lastTouchedAt = Date.now();
 
@@ -486,8 +541,12 @@ async function ensureManagedBrowser(options = {}) {
 
         chromeProcess.on('exit', (code, signal) => {
             console.log(`[BrowserRuntimeManager] managed Chrome exited. code=${code}, signal=${signal}`);
+            previousPid = chromeProcess?.pid || previousPid;
+            lastClosedAt = Date.now();
+            lastCloseReason = lastCloseReason || `process_exit:${code ?? 'null'}:${signal || 'none'}`;
             chromeProcess = null;
             startedAt = null;
+            currentLaunchConfig = null;
             clearIdleTimer();
         });
 
@@ -495,6 +554,7 @@ async function ensureManagedBrowser(options = {}) {
             lastError = error.message;
             chromeProcess = null;
             startedAt = null;
+            currentLaunchConfig = null;
             clearIdleTimer();
         });
 
@@ -535,6 +595,8 @@ function killProcessTree(pid) {
 
 async function closeManagedBrowser(reason = 'manual') {
     clearIdleTimer();
+    lastCloseReason = reason;
+    lastClosedAt = Date.now();
 
     const proc = chromeProcess;
     if (!proc) {
@@ -542,6 +604,7 @@ async function closeManagedBrowser(reason = 'manual') {
     }
 
     const pid = proc.pid;
+    previousPid = pid;
     try {
         proc.kill('SIGTERM');
     } catch (_) {
@@ -656,9 +719,9 @@ function getManagedToken() {
 }
 
 function validateManagedToken(token) {
-    if (!managedToken) {
-        loadPersistedManagedToken();
-    }
+    // 人工设置器、主服务和其它消费者可能是不同 Node 进程。握手校验前强制
+    // 同步磁盘真相，避免一个进程轮换 Token 后另一个进程仍拿旧内存值拒绝新扩展。
+    loadPersistedManagedToken({ force: true });
     return !!token && !!managedToken && token === managedToken && !isTokenExpired();
 }
 
@@ -668,6 +731,10 @@ function getManagedBrowserStatus(extra = {}) {
         enabled: config.enabled,
         running: isProcessAlive(),
         pid: isProcessAlive() ? chromeProcess.pid : null,
+        runtimeInstanceId,
+        previousPid,
+        lastCloseReason,
+        lastClosedAt: lastClosedAt ? new Date(lastClosedAt).toISOString() : null,
         startedAt: startedAt ? new Date(startedAt).toISOString() : null,
         lastTouchedAt: lastTouchedAt ? new Date(lastTouchedAt).toISOString() : null,
         executablePath: currentExecutablePath,
@@ -679,9 +746,12 @@ function getManagedBrowserStatus(extra = {}) {
         devToolsActivePortFile: path.join(currentProfileDir || config.profileDir, 'DevToolsActivePort'),
         loadExtension: config.loadExtension,
         restrictExtensions: config.restrictExtensions,
-        headless: config.headless,
-        windowsHide: config.windowsHide,
-        startMinimized: config.startMinimized,
+        configuredHeadless: config.headless,
+        headless: currentLaunchConfig ? currentLaunchConfig.headless : config.headless,
+        windowsHide: currentLaunchConfig ? currentLaunchConfig.windowsHide : config.windowsHide,
+        startMinimized: currentLaunchConfig ? currentLaunchConfig.startMinimized : config.startMinimized,
+        effectiveHeadlessArgPresent: lastLaunchArgs.includes('--headless=new'),
+        extensionStage: currentExtensionStage,
         idleTimeoutMs: config.idleTimeoutMs,
         maxTabs: config.maxTabs,
         tokenCreatedAt: tokenCreatedAt ? new Date(tokenCreatedAt).toISOString() : null,

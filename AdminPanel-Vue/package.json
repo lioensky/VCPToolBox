@@ -34,7 +34,7 @@
     "@vitejs/plugin-vue": "^6.0.5",
     "@vue/eslint-config-prettier": "^10.2.0",
     "@vue/eslint-config-typescript": "^14.5.0",
-    "esbuild": "^0.27.4",
+    "esbuild": "^0.28.1",
     "eslint": "^9.22.0",
     "eslint-plugin-vue": "^10.0.0",
     "rollup-plugin-visualizer": "^7.0.1",
@@ -42,5 +42,8 @@
     "vite": "^8.0.3",
     "vitest": "^3.2.4",
     "vue-tsc": "^3.2.6"
+  },
+  "overrides": {
+    "postcss": "8.5.23"
   }
 }

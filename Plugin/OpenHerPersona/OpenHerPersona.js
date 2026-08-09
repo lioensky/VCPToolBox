@@ -495,6 +495,7 @@ let embeddingProviderTag = "default";
 let dbHandle = null;
 let dropLegacyDone = false;
 const agentQueues = new Map();
+const agentObservationGenerations = new Map();
 const messageVectorCache = new Map();
 const MESSAGE_VECTOR_CACHE_LIMIT = 80;
 
@@ -1164,7 +1165,7 @@ function getStoredAnchorVectors(agentKey, agentLabel) {
   return vectors;
 }
 
-async function ensureAnchorVectors(agentKey, agentLabel) {
+async function ensureAnchorVectors(agentKey, agentLabel, expectedGeneration = null) {
   const key = normalizeAgentKey(agentKey);
   const label = normalizeAgentLabel(agentLabel || key, key);
   const stored = getStoredAnchorVectors(key, label);
@@ -1187,6 +1188,12 @@ async function ensureAnchorVectors(agentKey, agentLabel) {
     activeConfig.OpenHerPersonaEmbeddingTimeoutMs * 4
   );
   if (!Array.isArray(embedded) || embedded.length !== flat.length || embedded.some((vector) => !Array.isArray(vector))) {
+    return null;
+  }
+  if (
+    expectedGeneration !== null &&
+    expectedGeneration !== (agentObservationGenerations.get(key) || 0)
+  ) {
     return null;
   }
 
@@ -1969,7 +1976,9 @@ function resolveAgentIdentityFromText(text) {
 }
 
 function resolveAgentIdentity(messages, requestConfig) {
-  const fromConfig = resolveAgentIdentityFromObject(requestConfig);
+  // 暂停方案 1：请求配置对象的递归字段匹配可能误命中无关 name/agent 字段。
+  // 观测入口当前仅信任 system 消息中的 OneRing 标记。
+  // const fromConfig = resolveAgentIdentityFromObject(requestConfig);
   let fromLatestSystem = null;
   if (Array.isArray(messages)) {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -1982,7 +1991,7 @@ function resolveAgentIdentity(messages, requestConfig) {
       }
     }
   }
-  if (fromConfig && (fromConfig.source === "object" || !fromLatestSystem)) return fromConfig;
+  // if (fromConfig && (fromConfig.source === "object" || !fromLatestSystem)) return fromConfig;
   return fromLatestSystem;
 }
 
@@ -2005,6 +2014,7 @@ function buildObservationFingerprint(agentKey, latestMessage) {
 
 function enqueueObservation(agentKey, job) {
   const key = normalizeAgentKey(agentKey);
+  job.generation = agentObservationGenerations.get(key) || 0;
   const existing = agentQueues.get(key) || { running: false, jobs: [] };
   if (existing.jobs.length >= activeConfig.OpenHerPersonaQueueMaxSize) {
     existing.jobs.shift();
@@ -2047,15 +2057,21 @@ function summarizeJob(job) {
   };
 }
 
+function isObservationJobCurrent(job) {
+  const key = normalizeAgentKey(job && job.agentKey);
+  const currentGeneration = agentObservationGenerations.get(key) || 0;
+  return Number(job && job.generation) === currentGeneration;
+}
+
 async function observeJob(job) {
-  if (!activeConfig.OpenHerPersonaEnabled) return;
+  if (!activeConfig.OpenHerPersonaEnabled || !isObservationJobCurrent(job)) return;
   const state = loadAgentState(job.agentKey, job.agentLabel);
   if (state.lastInputHash === job.inputHash) {
     debugLog("skip duplicate observation", job.inputHash);
     return;
   }
 
-  const anchorVectors = await ensureAnchorVectors(state.agentKey, state.agentLabel);
+  const anchorVectors = await ensureAnchorVectors(state.agentKey, state.agentLabel, job.generation);
   if (!anchorVectors) {
     saveAudit(state.agentKey, "observe_skipped", { reason: "anchors_unavailable", job: summarizeJob(job) });
     return;
@@ -2066,6 +2082,10 @@ async function observeJob(job) {
     saveAudit(state.agentKey, "observe_skipped", { reason: "message_vector_unavailable", job: summarizeJob(job) });
     return;
   }
+
+  // 删除操作会递增 generation；丢弃删除期间仍在等待向量结果的旧任务，
+  // 防止它在 SQLite 记录被删除后重新写回误识别的 Agent。
+  if (!isObservationJobCurrent(job)) return;
 
   const scores = scoreAllAxes(messageVector, anchorVectors, state.agentLabel);
   applyObservationToState(state, scores, job.inputHash);
@@ -2115,6 +2135,7 @@ async function processMessages(messages, requestConfig = {}) {
     text: latestMessage.text,
     inputHash,
     queuedAt: nowIso(),
+    generation: agentObservationGenerations.get(identity.agentKey) || 0,
   };
 
   if (effectiveConfig.OpenHerPersonaAsyncObservation) {
@@ -2141,6 +2162,42 @@ function resetAgentState(agentKey, agentLabel) {
   return state;
 }
 
+function deleteAgentState(agentKey) {
+  const key = normalizeAgentKey(agentKey);
+  if (key === DEFAULT_AGENT_KEY) {
+    return {
+      status: "error",
+      plugin: PLUGIN_NAME,
+      deleted: false,
+      message: "Refusing to delete the default agent bucket.",
+    };
+  }
+
+  agentObservationGenerations.set(key, (agentObservationGenerations.get(key) || 0) + 1);
+  const queue = agentQueues.get(key);
+  if (queue) queue.jobs.length = 0;
+  agentQueues.delete(key);
+
+  const deletedRows = { state: 0, anchors: 0, audit: 0 };
+  const db = openDb();
+  if (db) {
+    const transaction = db.transaction(() => {
+      deletedRows.state = db.prepare("DELETE FROM openher_axis_state WHERE agent_key = ?").run(key).changes;
+      deletedRows.anchors = db.prepare("DELETE FROM openher_axis_anchors WHERE agent_key = ?").run(key).changes;
+      deletedRows.audit = db.prepare("DELETE FROM openher_axis_audit WHERE agent_key = ?").run(key).changes;
+    });
+    transaction();
+  }
+
+  return {
+    status: "success",
+    plugin: PLUGIN_NAME,
+    deleted: deletedRows.state > 0 || deletedRows.anchors > 0 || deletedRows.audit > 0,
+    agentKey: key,
+    deletedRows,
+  };
+}
+
 function getAxisStatusForAgent(agentKey, agentLabel) {
   const state = loadAgentState(agentKey, agentLabel);
   return {
@@ -2163,7 +2220,7 @@ function getAxisStatusForAgent(agentKey, agentLabel) {
 }
 
 function getStatus(params = {}) {
-  const identity = resolveAgentIdentity([], params) || {
+  const identity = resolveAgentIdentityFromObject(params) || {
     agentKey: normalizeAgentKey(params.agentKey || params.agent || DEFAULT_AGENT_KEY),
     agentLabel: normalizeAgentLabel(params.agentLabel || params.agentName || params.agent || DEFAULT_AGENT_LABEL),
   };
@@ -2255,12 +2312,19 @@ async function processToolCall(params) {
   }
 
   if (command === "reset") {
-    const identity = resolveAgentIdentity([], params || {}) || {
+    const identity = resolveAgentIdentityFromObject(params || {}) || {
       agentKey: normalizeAgentKey(params && (params.agentKey || params.agent)),
       agentLabel: normalizeAgentLabel(params && (params.agentLabel || params.agentName || params.agent)),
     };
     const state = resetAgentState(identity.agentKey, identity.agentLabel);
     return { status: "success", reset: true, state: getAxisStatusForAgent(state.agentKey, state.agentLabel) };
+  }
+
+  if (command === "delete" || command === "delete_agent") {
+    const identity = resolveAgentIdentityFromObject(params || {}) || {
+      agentKey: normalizeAgentKey(params && (params.agentKey || params.agent)),
+    };
+    return deleteAgentState(identity.agentKey);
   }
 
   if (command === "config" || command === "get_config") {
@@ -2280,7 +2344,7 @@ async function processToolCall(params) {
     status: "error",
     plugin: PLUGIN_NAME,
     message: `Unsupported command: ${command}`,
-    supportedCommands: ["status", "snapshot", "reset", "config", "save_config", "explain"],
+    supportedCommands: ["status", "snapshot", "reset", "delete", "config", "save_config", "explain"],
   };
 }
 

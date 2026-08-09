@@ -4,11 +4,11 @@
 > 算法标识：`rivermemo.topology-v3.1`
 > 结果协议：`rivermemo-topology-v3-result-v1`
 > 原生计算内核：`rivermemo.topology-v3.1-rust`
-> 文档更新时间：2026-07-23
+> 文档更新时间：2026-08-04
 > 本文只记录拓扑 V3；其他历史、实验或对照构型不属于本文范围。
 >
 > **当前实现状态**：Topology V3 的候选投影、候选超集、路径几何、相对拓扑、
-> DSTC 观测、Direct Anchor、批级条件创新与最终排序已下沉至 Rust。
+> 查询河网形态统计、DSTC 观测、Direct Anchor、批级条件创新与最终排序已下沉至 Rust。
 > JS 只负责 V9 查询观测、双场准备、一次 N-API 提交和稳定结果组装。
 
 ## 拓扑 V3 总方程
@@ -55,7 +55,8 @@ s_A-\tau_A
 - \(\Pi_{[a,b]}(x)=\min(b,\max(a,x))\) 是区间投影；
 - \([x]_+=\max(0,x)\) 是正部；
 - \(S_i^{\mathrm{field}}\) 是 V9 降噪观测经 RiverMemo 双场读出的语义基线；
-- \(G_i\) 是候选对查询河网的相对拓扑匹配；
+- \(G_i\) 是候选对查询河网的相对拓扑匹配，并由查询河网的
+  Atomic / Propositional / Narrative 形态概率连续混合节点图与边图读出；
 - \(Z_i\) 是候选的语义、闭合、直接证据和角色条件；
 - \(\mathbb E(G\mid Z_i)\) 是在条件 \(Z_i\) 下该类候选本来应有的拓扑分；
 - \(\sigma(G\mid Z_i)\) 是该条件预测的不确定性；
@@ -81,8 +82,8 @@ s_A-\tau_A
 其中，关系拓扑通道只奖励候选超出同条件期望及其不确定性上界的正创新；直接锚点通道则保护无需复杂河网即可成立的 hop-0 事实接触。两条创新通道均受独立上限约束，最终结果统一投影至 \([0,1]\)。
 
 生产代码落点为 Rust 原生内核
-[`run_native()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1756) 与异步 N-API 入口
-[`rerank_rivermemo_topology_v3()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2121)。
+[`run_native()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2346) 与异步 N-API 入口
+[`rerank_rivermemo_topology_v3()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2777)。
 JS 入口 [`RiverMemoEngine.rerank()`](../RiverMemoEngine.js:425) 只准备连续查询场并消费原生结果。
 [`experimentArms.js`](../modules/tagmemoV10/experimentArms.js) 等旧 JS 实验构型保留在仓库中，
 但不再属于 RiverMemo Topology V3 的生产执行路径。
@@ -100,8 +101,9 @@ RiverMemo 是 VCP 长期记忆系统中建立在 TagMemo V9 已验证传播底�
 3. 传递过程如何生成请求级有向河网；
 4. 离散传递如何诱导局部场与迁移场；
 5. 候选记忆如何作为有序曲线读取这些场；
-6. 河网是否充分形成，如何由 Ω 泛函统一度量；
-7. 拓扑证据与直接事实锚如何在同一最终泛函中闭合。
+6. 河网呈现浅聚、关系桥接还是深链形态，如何连续调制图读出；
+7. 河网是否充分形成，如何由 Ω 泛函统一度量；
+8. 拓扑证据与直接事实锚如何在同一最终泛函中闭合。
 
 因此，RiverMemo 的核心不是再增加一层经验规则，而是建立：
 
@@ -117,6 +119,8 @@ RiverMemo 是 VCP 长期记忆系统中建立在 TagMemo V9 已验证传播底�
 \text{连续场}
 \rightarrow
 \text{候选曲线读出}
+\rightarrow
+\text{查询河网形态 Softmax}
 \rightarrow
 \Omega
 \rightarrow
@@ -170,6 +174,8 @@ V9 提供：
 \Gamma_c
 \rightarrow
 \mathcal T(c)
+\rightarrow
+\mathcal M(\mathcal R_q)
 \rightarrow
 \Omega(\mathcal R_q)
 \rightarrow
@@ -456,7 +462,7 @@ Q_i=0
 \]
 
 候选整体路径质量再由支持覆盖与 Tag 到 chunk 的闭合度收束。生产实现位于
-Rust [`evaluate_path()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:790)；
+Rust [`evaluate_path()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1180)；
 同名 JS 算法仅作为已退役实验实现保留，不参与 RiverMemo 生产召回。
 
 ---
@@ -525,8 +531,121 @@ w_MM_c
 若没有完整边对应，则只允许受限节点退化读出，不能把不可观测的距离、方向和 Motif 当成零值混入。
 
 生产实现位于 Rust
-[`evaluate_topology()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:928)，
+[`evaluate_topology()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1317)，
 候选之间通过 Rayon 并行执行。
+
+### 7.4 查询河网形态与连续图读出
+
+候选拓扑匹配之前，系统只读取查询侧感应河网，估计其在三种拓扑形态中的连续位置：
+
+\[
+\mathcal M(\mathcal R_q)
+=
+(p_A,p_P,p_N),
+\qquad
+p_A+p_P+p_N=1
+\]
+
+其中：
+
+- \(p_A\) 为 Atomic 权重：偏好浅层、聚集、能量集中且纵向延伸较弱的河网；
+- \(p_P\) 为 Propositional 权重：偏好中等深度、同层关系、分叉与汇合；
+- \(p_N\) 为 Narrative 权重：偏好深层、链式、方向一致且跨层持续的河网。
+
+形态统计器不读取查询文本，也不读取候选，因此不依赖中文、英文或其他自然语言关键词，
+同时不会被当前召回候选池反向污染。生产实现为 Rust
+[`compute_query_morphology()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1784)。
+
+#### 7.4.1 形态特征
+
+当前实现从查询河网计算以下归一化特征：
+
+| 特征 | 含义 |
+|:--|:--|
+| `effectiveDepth` | 节点能量加权 hop 经饱和映射后的有效深度 |
+| `depthVariance` | 能量加权 hop 离散度 |
+| `energyConcentration` | 扣除有限节点均匀基线后的能量 HHI |
+| `shallowEnergyRatio` | hop 0 与 hop 1 承载的能量比例 |
+| `forwardFlowRatio` | 沿 hop 增长方向传递的正边流比例 |
+| `sameLevelFlowRatio` | 同 hop 层关系边承载的正边流比例 |
+| `chainness` | 节点入出度拟合、向前流、有效深度与低分叉共同形成的链性 |
+| `branching` | 非叶节点超出单一路径的平均分叉强度 |
+| `merging` | 节点超出单一父路径的平均汇合强度 |
+| `growthPersistence` | 河网在多个 hop 尺度上持续占据层级的程度 |
+
+这些量描述的是请求级感应河网的形态，不宣称等价于自然语言学意义上的查询类别。
+
+#### 7.4.2 稳定 Softmax 与低样本收缩
+
+统计器先由形态特征构造三个 logit：
+
+\[
+(\ell_A,\ell_P,\ell_N)
+\]
+
+再使用减去最大 logit 的数值稳定 Softmax：
+
+\[
+\widetilde p_k
+=
+\frac{
+\exp((\ell_k-\max_j\ell_j)/T)
+}{
+\sum_j\exp((\ell_j-\max_r\ell_r)/T)
+}
+\]
+
+当前温度 \(T=1\)。节点或边样本较少、或观测不完整时，以置信度
+\(c_M\in[0,1]\) 向均匀先验收缩：
+
+\[
+p_k
+=
+c_M\widetilde p_k
++
+(1-c_M)\frac{1}{3}
+\]
+
+其中 \(c_M\) 由节点样本量、边样本量与 `completeObservation` 共同决定。
+因此空河网或极小河网不会被强行硬判为任一模式。
+
+#### 7.4.3 三评分头连续混合
+
+对每个候选，节点图分为 \(G_i^{node}\)，边图分为 \(G_i^{edge}\)。
+三个读出头保持为：
+
+\[
+G_i^{atomic}=0.75G_i^{node}+0.25G_i^{edge}
+\]
+
+\[
+G_i^{prop}=0.25G_i^{node}+0.75G_i^{edge}
+\]
+
+\[
+G_i^{narr}=0.15G_i^{node}+0.85G_i^{edge}
+\]
+
+最终用于条件创新统计的图分不是硬模式切换，而是：
+
+\[
+\boxed{
+G_i
+=
+p_AG_i^{atomic}
++
+p_PG_i^{prop}
++
+p_NG_i^{narr}
+}
+\]
+
+这使形态边界连续：河网特征的小幅变化只会平滑改变节点图与边图的权重，
+不会因关键词命中或离散阈值跨越而突然切换整套图评分。
+
+结果中的 `queryMode` 仍保留为兼容诊断字段，其值是
+\(\arg\max(p_A,p_P,p_N)\) 对应的 `atomic`、`propositional` 或 `narrative`。
+当前候选角色判定仍消费该主导标签；候选 `graphScore` 已使用完整连续概率混合。
 
 ---
 
@@ -647,7 +766,7 @@ p_k=\frac{F_k}{\sum_jF_j}
 几何平均意味着任何一个维度严重退化都会压低整体 Ω，任何单一维度都不能独自伪造完整河网。
 
 生产召回中的 Ω 由 Rust
-[`compute_omega()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1430)
+[`compute_omega()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2028)
 在同一次原生任务中计算。JS
 [`computeRiverObservability()`](../modules/tagmemoV10/riverObservability.js:44)
 只保留给独立只读测量接口，不参与 Topology V3 原生排序。
@@ -716,7 +835,7 @@ H(c)=A(c)R_A(c)
 \]
 
 这一通道只读取 hop-0 源锚，不允许远端涌现节点伪装成直接事实。生产实现位于
-Rust [`compute_anchors()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1284)，
+Rust [`compute_anchors()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1662)，
 接触发现与候选锚计算由 Rayon 并行执行。
 
 ---
@@ -821,7 +940,7 @@ B_H(c)
 - \(B_H(c)\)：不依赖河网密度的直接事实锚。
 
 生产实现位于 Rust
-[`assign_v3_scores()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1497)。
+[`assign_v3_scores()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2094)。
 该函数在候选级并行观测结束后执行批级条件期望、创新下置信界、锚激活阈值、
 角色改判和最终有界排序。
 
@@ -882,6 +1001,7 @@ JS：整个上下文查询向量
 → Rust：加载并缓存同代不可变 RiverMemo Artifact
 → Rust/SQLite：候选 Chunk、向量和有序 Tag 曲线投影
 → Rust/Rayon：Query / Denoised / Local / Transfer / BM25 / Anchor 六路候选超集
+→ Rust：查询河网形态统计、稳定 Softmax 与低样本先验收缩
 → Rust/Rayon：双尺度路径几何
 → Rust/Rayon：查询河网—候选曲线相对拓扑匹配
 → Rust/Rayon：DSTC、正文闭合与 hop-0 Direct Anchor
@@ -903,7 +1023,7 @@ Pairwise 或配置代际。原生 Artifact 按签名缓存；签名变化时旧�
 当前线程模型为：
 
 1. Node 主线程完成查询观测和双场准备；
-2. [`rerank_rivermemo_topology_v3()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2121)
+2. [`rerank_rivermemo_topology_v3()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2777)
    返回原生 `AsyncTask`，将整次原生计算移出 Node 事件循环；
 3. Rust 任务内部使用 Rayon 对候选路径、相对拓扑、观测和锚接触并行计算；
 4. 批级统计与最终排序在 Rust 内闭合；
@@ -934,19 +1054,23 @@ Pairwise 或配置代际。原生 Artifact 按签名缓存；签名变化时旧�
 3. 传输算子的最大行质量必须严格小于 1；
 4. 河网边必须来自本次查询实际承载过的流量；
 5. Ω 只读取查询河网，不读取候选；
-6. 局部场与迁移场必须共享同一源和节点空间；
-7. 候选主路径质量只能来自有效支持域；
-8. 候选 Tag 顺序必须来自稳定的文件 Tag 序位；
-9. 相对拓扑必须区分节点对应与完整边对应；
-10. 没有完整边对应时，只能使用受限节点退化读出；
-11. 结构增量必须由 \(\Omega^\gamma\) 统一授权；
-12. 直接锚只能来自 hop-0 `core/seed`；
-13. 直接锚与结构增量不得互相伪造；
-14. RiverMemo 只做非负修正，无证据候选保留基础分；
-15. 所有结果必须绑定 Artifact 签名与查询 ID；
-16. 候选级 Topology V3 热点必须在 Rust 内部并行，禁止恢复 JS 逐候选计算；
-17. 生产请求只允许一次原生任务提交，不得为 RiverMemo 再启动 Node Worker 池；
-18. 拓扑 V3 是本文唯一正式构型。
+6. 查询形态统计只读取查询河网，不读取查询文本或候选；
+7. 查询形态必须输出归一化的 Atomic / Propositional / Narrative 连续权重；
+8. 低样本或不完整观测下，形态概率必须按置信度向均匀先验收缩；
+9. 候选图分必须由三种形态评分头连续混合，不得恢复语言关键词硬切换；
+10. 局部场与迁移场必须共享同一源和节点空间；
+11. 候选主路径质量只能来自有效支持域；
+12. 候选 Tag 顺序必须来自稳定的文件 Tag 序位；
+13. 相对拓扑必须区分节点对应与完整边对应；
+14. 没有完整边对应时，只能使用受限节点退化读出；
+15. 结构增量必须由 \(\Omega^\gamma\) 统一授权；
+16. 直接锚只能来自 hop-0 `core/seed`；
+17. 直接锚与结构增量不得互相伪造；
+18. RiverMemo 只做非负修正，无证据候选保留基础分；
+19. 所有结果必须绑定 Artifact 签名与查询 ID；
+20. 候选级 Topology V3 热点必须在 Rust 内部并行，禁止恢复 JS 逐候选计算；
+21. 生产请求只允许一次原生任务提交，不得为 RiverMemo 再启动 Node Worker 池；
+22. 拓扑 V3 是本文唯一正式构型。
 
 ---
 
@@ -957,6 +1081,8 @@ Pairwise 或配置代际。原生 Artifact 按签名缓存；签名变化时旧�
 | 字段 | 数学含义 |
 |:--|:--|
 | `baseScore` | \(S_0(c)\)，连续场与闭合基础分 |
+| `queryMode` | 形态概率最大项对应的兼容主导标签，不是文本关键词分类结果 |
+| `queryMorphology` | 查询河网形态权重、置信度与全部结构统计特征 |
 | `omega` | \(\Omega(\mathcal R_q)\)，查询河网总可观测性 |
 | `riverRegime` | Ω 所处的解释区间 |
 | `topologyBonus` | \(\Omega^\gamma B_G(c)\) |
@@ -968,6 +1094,16 @@ Pairwise 或配置代际。原生 Artifact 按签名缓存；签名变化时旧�
 | `coreTagsMatched` | 与查询 Core Tag 相交的候选 Tag |
 
 结果诊断中的 `nativeTopologyV3.backend` 应为 `rust-rayon-sqlite`。
+
+`queryMorphology` 在正式结果中直接提供，不依赖候选 trace 开关。其核心字段包括：
+
+- `atomicWeight`、`propositionalWeight`、`narrativeWeight`：三种形态的连续混合权重；
+- `confidence`：形态统计的样本与观测置信度；
+- `effectiveDepth`、`depthVariance`、`shallowEnergyRatio`：纵深与浅层聚集；
+- `energyConcentration`：节点能量集中程度；
+- `forwardFlowRatio`、`sameLevelFlowRatio`：边流方向结构；
+- `chainness`、`branching`、`merging`、`growthPersistence`：链性、跨尺度层级扩张与关系复杂度；
+- `dominantMode`：为兼容输出导出的最大概率标签。
 
 当开启 trace 时，还可检查：
 
@@ -991,10 +1127,12 @@ Pairwise 或配置代际。原生 Artifact 按签名缓存；签名变化时旧�
 3. 同一守恒传输算子可通过 resolvent 方程生成不同尺度的连续场；
 4. 候选有序 Tag 曲线可以读取该场；
 5. 查询河网可以在候选曲线上进行相对拓扑对应；
-6. Ω 可以候选无关地测量河网是否形成；
-7. Ω 可以统一控制结构证据的排序权限；
-8. 直接事实锚可以作为与河网密度正交的通道；
-9. 三者可以在一个有界、可回放、只做非负修正的泛函中闭合。
+6. 查询河网的浅聚、关系桥接与深链形态可以通过候选无关的结构统计连续测量；
+7. 形态 Softmax 可以平滑混合节点图与边图读出，避免语言关键词硬切换；
+8. Ω 可以候选无关地测量河网是否形成；
+9. Ω 可以统一控制结构证据的排序权限；
+10. 直接事实锚可以作为与河网密度正交的通道；
+11. 形态读出、可观测性和直接锚可以在一个有界、可回放、只做非负修正的泛函中闭合。
 
 ### 不应扩张的结论
 
@@ -1003,6 +1141,7 @@ Pairwise 或配置代际。原生 Artifact 按签名缓存；签名变化时旧�
 - 人类认知在微观上等价于 RiverMemo；
 - Ω 是所有信息系统唯一可能的可观测泛函；
 - 当前参数是跨模型、跨知识库的普适常数；
+- Atomic / Propositional / Narrative 形态权重等价于自然语言学或认知科学中的严格分类；
 - 语义向量相似度等价于形式逻辑同一；
 - 统计叙事方向等价于严格因果关系。
 
@@ -1028,6 +1167,10 @@ RiverMemo 没有抛弃 TagMemo V9。
 
 \[
 \text{候选曲线读取场并复现相对拓扑}
+\]
+
+\[
+\mathcal M\text{ 测量河网是浅聚、关系桥接还是深链，并连续混合图读出}
 \]
 
 \[

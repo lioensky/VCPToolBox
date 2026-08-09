@@ -9,6 +9,11 @@ class SqliteHealthManager {
         this.Database = options.Database || Database;
         this.onConnectionRebound = options.onConnectionRebound || (() => {});
         this.logPrefix = options.logPrefix || 'KnowledgeBase';
+        this.platform = options.platform || process.platform;
+        // Darwin 对“已映射文件被截断到零”会直接发出不可恢复的 SIGBUS。
+        // 核心知识库存在 better-sqlite3 与 rusqlite 多连接访问，因此 macOS
+        // 只做非截断 checkpoint；其他平台保持原有 TRUNCATE 行为。
+        this.checkpointMode = this.platform === 'darwin' ? 'PASSIVE' : 'TRUNCATE';
         const configuredBusyTimeout = Number(options.busyTimeoutMs);
         this.busyTimeoutMs = Number.isFinite(configuredBusyTimeout)
             ? Math.max(0, Math.floor(configuredBusyTimeout))
@@ -24,6 +29,11 @@ class SqliteHealthManager {
         db.pragma('journal_mode = WAL');
         db.pragma('synchronous = NORMAL');
         db.pragma('foreign_keys = ON');
+        if (this.platform === 'darwin') {
+            // 只关闭主数据库文件的可选 mmap。WAL-index/SHM 仍由 SQLite
+            // 按协议管理；避免主动截断 WAL 才是 Darwin SIGBUS 的主要防线。
+            db.pragma('mmap_size = 0');
+        }
         // SQLite 同一时刻只有一个写者。Rust/rusqlite、管理维护脚本或其他
         // better-sqlite3 连接短暂持锁时，在原生层等待锁释放，而不是立即把
         // 瞬态写竞争上抛成文件摄取失败。该配置属于连接级 PRAGMA，因此每次
@@ -39,6 +49,10 @@ class SqliteHealthManager {
             error.code = 'SQLITE_CORRUPT';
             throw error;
         }
+    }
+
+    checkpoint(db) {
+        return db.pragma(`wal_checkpoint(${this.checkpointMode})`);
     }
 
     isCorruptionError(error) {
@@ -93,7 +107,7 @@ class SqliteHealthManager {
     checkpointAndAssertHealthy(reason = 'manual-checkpoint') {
         if (!this.db) return false;
         try {
-            this.db.pragma('wal_checkpoint(TRUNCATE)');
+            this.checkpoint(this.db);
             this.assertIntegrity(this.db);
             this.state = 'healthy';
             return true;
@@ -143,7 +157,7 @@ class SqliteHealthManager {
             const reopened = new this.Database(this.dbPath);
             try {
                 this.configureConnection(reopened);
-                reopened.pragma('wal_checkpoint(TRUNCATE)');
+                this.checkpoint(reopened);
                 this.assertIntegrity(reopened);
             } catch (error) {
                 try { reopened.close(); } catch (_) {}
@@ -191,7 +205,7 @@ class SqliteHealthManager {
 
             const reopened = new this.Database(this.dbPath);
             this.configureConnection(reopened);
-            reopened.pragma('wal_checkpoint(TRUNCATE)');
+            this.checkpoint(reopened);
             this.assertIntegrity(reopened);
             this._publishConnection(reopened);
             this.state = 'healthy';
