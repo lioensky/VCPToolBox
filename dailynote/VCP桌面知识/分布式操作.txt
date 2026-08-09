@@ -50,5 +50,5 @@ saveName:「始」画布挂件「末」
 # 精细化改造已有插件的方法
 
 阅读widget日志可以了解所有当前widget运行时
-H:\MCP\VCPChat\AppData\DesktopWidgets\CATALOG.md
+F:\VCP\VCPChat\AppData\DesktopWidgets\CATALOG.md
 然后使用本地版本的FileOperator进行对应操作

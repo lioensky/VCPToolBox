@@ -1,0 +1,33 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "TagFolder",
+  "version": "1.0.0",
+  "displayName": "标签折叠器",
+  "description": "读取 list.md 中的标签白名单，生成折叠行为指令注入系统提示词，实现对 nvim 系列标签包裹内容的上下文折叠管理。",
+  "author": "ATRI & Lucifer",
+  "pluginType": "static",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node TagFolder.js"
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{VCPTagFolder}}",
+        "description": "基于 list.md 白名单生成的上下文折叠指令，告知模型如何处理 nvim 系列标签包裹的内容块。"
+      }
+    ],
+    "invocationCommands": []
+  },
+  "configSchema": {
+    "LIST_PATH": {
+      "type": "string",
+      "description": "list.md 文件的绝对路径",
+      "default": "./list.md"
+    }
+  },
+  "refreshIntervalCron": "*/10 * * * *"
+}

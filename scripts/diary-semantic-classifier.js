@@ -41,7 +41,7 @@ const config = {
     storePath: process.env.KNOWLEDGEBASE_STORE_PATH || path.join(__dirname, 'VectorStore'),
     rootPath: process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(__dirname, 'dailynote'),
     dbName: 'knowledge_base.sqlite',
-    dimension: parseInt(process.env.VECTORDB_DIMENSION) || 3072,
+    dimension: parseInt(process.env.VECTORDB_DIMENSION) || 2560, // was 3072
     apiKey: process.env.API_Key,
     apiUrl: process.env.API_URL,
     model: process.env.WhitelistEmbeddingModel || 'google/gemini-embedding-001'

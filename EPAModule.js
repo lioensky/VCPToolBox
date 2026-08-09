@@ -11,7 +11,7 @@ class EPAModule {
             maxBasisDim: config.maxBasisDim || 64,
             minVarianceRatio: config.minVarianceRatio || 0.01,
             clusterCount: config.clusterCount || 64,
-            dimension: config.dimension || 3072,
+            dimension: config.dimension || 2560, // was 3072
             strictOrthogonalization: config.strictOrthogonalization !== undefined ? config.strictOrthogonalization : true,
             vexusIndex: config.vexusIndex || null,
             ...config

@@ -13,7 +13,7 @@ class ResidualPyramid {
             topK: config.topK || 10,
             // 修正：使用能量阈值。0.1 表示当残差能量低于原始能量的 10% 时停止 (即解释了 90%)
             minEnergyRatio: config.minEnergyRatio || 0.1,
-            dimension: config.dimension || 3072,
+            dimension: config.dimension || 2560, // was 3072
             ...config
         };
     }

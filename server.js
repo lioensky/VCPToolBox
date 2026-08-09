@@ -130,10 +130,10 @@ const apiErrorCounts = new Map();
 const loginAttempts = new Map();
 const tempBlocks = new Map();
 const noCredentialAccess = new Map(); // 无凭据访问计数（防DDoS探测）
-const MAX_LOGIN_ATTEMPTS = 5; // 15分钟内最多尝试5次（错误凭据）
+const MAX_LOGIN_ATTEMPTS = 50; // 15分钟内最多尝试5次（错误凭据）
 const MAX_NO_CREDENTIAL_REQUESTS = 100; // 15分钟内无凭据访问上限（防DDoS探测）
 const LOGIN_ATTEMPT_WINDOW = 15 * 60 * 1000; // 15分钟的窗口
-const TEMP_BLOCK_DURATION = 30 * 60 * 1000; // 封禁30分钟（错误凭据触发）
+const TEMP_BLOCK_DURATION = 1 * 60 * 1000; // 封禁30分钟（错误凭据触发）
 const NO_CREDENTIAL_BLOCK_DURATION = 15 * 60 * 1000; // 封禁15分钟（无凭据DDoS触发）
 
 const ChatCompletionHandler = require('./modules/chatCompletionHandler.js');

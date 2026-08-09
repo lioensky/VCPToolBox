@@ -54,7 +54,7 @@ class TDBKnowledgeManager {
             apiKey: process.env.API_Key,
             apiUrl: process.env.API_URL,
             model: config.model || process.env.TDB_KNOWLEDGE_MODEL || process.env.WhitelistEmbeddingModel || 'google/gemini-embedding-001',
-            dimension: parseInt(config.dimension || process.env.TDB_KNOWLEDGE_DIMENSION || process.env.VECTORDB_DIMENSION, 10) || 3072,
+            dimension: parseInt(config.dimension || process.env.TDB_KNOWLEDGE_DIMENSION || process.env.VECTORDB_DIMENSION, 10) || 2560, // was 3072
             fullScanOnStartup: (process.env.TDB_KNOWLEDGE_FULL_SCAN_ON_STARTUP || 'true').toLowerCase() === 'true',
             batchWindow: parseInt(process.env.TDB_KNOWLEDGE_BATCH_WINDOW_MS, 10) || 3000,
             maxBatchSize: parseInt(process.env.TDB_KNOWLEDGE_MAX_BATCH_SIZE, 10) || 20,

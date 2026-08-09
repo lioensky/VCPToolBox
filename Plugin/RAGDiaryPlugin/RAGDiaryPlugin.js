@@ -574,7 +574,7 @@ class RAGDiaryPlugin {
 
         const db = this.vectorDBManager?.db;
         const checkStmt = db ? db.prepare('SELECT vector FROM tags WHERE name = ?') : null;
-        const dim = this.vectorDBManager?.config?.dimension || 3072;
+        const dim = this.vectorDBManager?.config?.dimension || 2560; // was 3072
 
         const tagsToEmbed = [];
         const tagResults = new Array(tags.length).fill(null);
@@ -5230,5 +5230,4 @@ class RAGDiaryPlugin {
     }
 }
 
-// 导出实例以供 Plugin.js 加载
 module.exports = new RAGDiaryPlugin();

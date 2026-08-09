@@ -1,6 +1,6 @@
 Vchat主题文件示例:
 
-[H:\MCP\VCPChat\styles\themes\themes黑白简约.css]
+[F:\VCP\VCPChat\styles\themes\themes黑白简约.css]
 
 /*
  * styles/themes/themes黑白简约.css

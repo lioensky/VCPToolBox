@@ -1,0 +1,62 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "MIDITranslator",
+  "version": "0.3.0",
+  "displayName": "MIDI翻译器",
+  "description": "一个高性能的MIDI文件解析与生成插件，可以从midi-input目录读取MIDI文件并解析为DSL格式，也可以从DSL生成MIDI文件到midi-output目录。核心引擎由Rust编写，确保性能与安全。提供DSL语法验证、事件提取和双向转换测试等功能。",
+  "author": "ATRI",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "MIDITranslator.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 300000
+  },
+  "configSchema": {
+    "MAIDNAME": {
+      "type": "string",
+      "description": "调用此插件的AI女仆的署名。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "list_midi_files",
+        "description": "列出midi-input目录中可用的所有MIDI文件。\n参数:\n- maidname (字符串, 可选): 调用此插件的AI女仆的署名。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」list_midi_files「末」,\nmaidname:「始」AI-Assistant「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」list_midi_files「末」,\nmaidname:「始」AI-Assistant「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "parse_midi",
+        "description": "解析midi-input目录中的一个MIDI文件，并将其内容转换为结构化的DSL格式。\n参数:\n- fileName (字符串, 必需): 需要解析的MIDI文件名（位于midi-input目录中）。\n- maidname (字符串, 可选): 调用此插件的AI女仆的署名。\n- outputDSLPath (字符串, 可选): 指定DSL文件的输出路径。如果不提供，将只返回DSL字符串。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」parse_midi「末」,\nfileName:「始」example.mid「末」,\nmaidname:「始」AI-Assistant「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」parse_midi「末」,\nfileName:「始」twinkle.mid「末」,\nmaidname:「始」AI-Assistant「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "generate_midi",
+        "description": "根据提供的DSL字符串生成一个MIDI文件到midi-output目录。\n参数:\n- dslContent (字符串, 必需): 描述音乐的DSL内容，格式为:\n  Timeline: [0-总ticks]BPM|拍号|TPB每四分音符ticks数\n  Track0: [音符名,起始拍位,力度,ch通道号] [~音符名,结束拍位,ch通道号]\n  Track1: [cc,控制器号,拍位,值,ch通道号] [lyric,拍位,\"歌词\"]\n- outputFileName (字符串, 可选): 生成的MIDI文件的文件名。如果不提供，将使用默认名称。\n- maidname (字符串, 可选): 调用此插件的AI女仆的署名。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」generate_midi「末」,\ndslContent:「始」Timeline: [0-1920]120|4/4|TPB480\\nTrack0: [c4,0.0,100,ch0] [~c4,4.0,ch0] [e4,1.0,100,ch0] [~e4,5.0,ch0] [g4,2.0,100,ch0] [~g4,6.0,ch0]「末」,\noutputFileName:「始」generated.mid「末」,\nmaidname:「始」AI-Assistant「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」generate_midi「末」,\ndslContent:「始」Timeline: [0-1920]120|4/4|TPB480\\nTrack0: [c4,0.0,100,ch0] [~c4,4.0,ch0] [e4,1.0,100,ch0] [~e4,5.0,ch0] [g4,2.0,100,ch0] [~g4,6.0,ch0]「末」,\noutputFileName:「始」generated.mid「末」,\nmaidname:「始」AI-Assistant「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "validate_dsl",
+        "description": "验证DSL语法是否正确，返回验证结果。\n参数:\n- dslContent (字符串, 必需): 需要验证的DSL内容\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」validate_dsl「末」,\ndslContent:「始」Timeline: [0-1920]120|4/4|TPB480\\nTrack0: [c4,0.0,100,ch0] [~c4,4.0,ch0]「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」validate_dsl「末」,\ndslContent:「始」Timeline: [0-1920]120|4/4|TPB480\\nTrack0: [c4,0.0,100,ch0] [~c4,4.0,ch0]「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "validate_dsl_with_details",
+        "description": "验证DSL语法并返回详细的错误信息列表。\n参数:\n- dslContent (字符串, 必需): 需要验证的DSL内容\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」validate_dsl_with_details「末」,\ndslContent:「始」Timeline: [0-1920]120|4/4|TPB480\\nTrack0: [c4,0.0,100,ch0] [~c4,4.0,ch0]「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」validate_dsl_with_details「末」,\ndslContent:「始」Timeline: [0-1920]120|4/4|TPB480\\nTrack0: [c4,0.0,100,ch0] [~c4,4.0,ch0]「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "extract_events",
+        "description": "从DSL中提取特定类型的事件。\n参数:\n- dslContent (字符串, 必需): DSL内容\n- eventType (字符串, 必需): 事件类型，如\"note_on\", \"lyric\", \"cc\"等\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」extract_events「末」,\ndslContent:「始」Timeline: [0-1920]120|4/4|TPB480\\nTrack0: [c4,0.0,100,ch0] [~c4,4.0,ch0] [lyric,2.0,\"hello\"]「末」,\neventType:「始」lyric「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」extract_events「末」,\ndslContent:「始」Timeline: [0-1920]120|4/4|TPB480\\nTrack0: [c4,0.0,100,ch0] [~c4,4.0,ch0] [lyric,2.0,\"hello\"]「末」,\neventType:「始」lyric「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "list_output_files",
+        "description": "列出midi-output目录中所有已生成的MIDI文件。\n参数:\n- maidname (字符串, 可选): 调用此插件的AI女仆的署名。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」list_output_files「末」,\nmaidname:「始」AI-Assistant「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MIDITranslator「末」,\ncommand:「始」list_output_files「末」,\nmaidname:「始」AI-Assistant「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

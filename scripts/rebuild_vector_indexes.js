@@ -23,7 +23,7 @@ const config = {
     storePath: path.join(__dirname, '..', 'VectorStore'),
     dbName: 'knowledge_base.sqlite',
     // ⚠️ 确保这个维度与您的模型和配置一致
-    dimension: parseInt(process.env.VECTORDB_DIMENSION) || 3072,
+    dimension: parseInt(process.env.VECTORDB_DIMENSION) || 2560, // was 3072
 };
 
 async function main() {

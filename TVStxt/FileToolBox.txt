@@ -28,8 +28,8 @@ filePath:「始」/path/to/your/document.pdf「末」
   - `modules\chatCompletionHandler.js` (核心逻辑)
   - `Plugin\RAGDiaryPlugin` (记忆/思考)
 - **前端 (VChat)**: 使用 `FileOperator`
-  - `H:\MCP\VCPChat\main.js`, `renderer.js`
-  - `H:\MCP\VCPChat\modules`, `Assistantmodules`
+  - `F:\VCP\VCPChat\main.js`, `renderer.js`
+  - `F:\VCP\VCPChat\modules`, `Assistantmodules`
 
 [===vcp_fold:0.5===]
 

@@ -9,7 +9,7 @@ require('dotenv').config();
 const config = {
     storePath: path.join(__dirname, 'VectorStore'),
     dbName: 'knowledge_base.sqlite',
-    dimension: parseInt(process.env.VECTORDB_DIMENSION) || 3072,
+    dimension: parseInt(process.env.VECTORDB_DIMENSION) || 2560, // was 3072
     // 从环境变量获取黑名单
     tagBlacklist: (process.env.TAG_BLACKLIST || '').split(',').map(t => t.trim()).filter(Boolean)
 };
