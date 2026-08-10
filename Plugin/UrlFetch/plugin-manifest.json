@@ -2,8 +2,8 @@
   "manifestVersion": "1.0.0",
   "name": "UrlFetch",
   "displayName": "URL 内容获取插件",
-  "version": "0.2.0",
-  "description": "通用 URL 内容获取插件。支持：1. 'text' (默认): 返回解析后的网页文本或链接列表。 2. 'jina': 使用 Jina Reader 将网页转换为 Markdown。 3. 'download': 将网页下载为 Markdown 并写入根目录 knowledge 的指定子文件夹。 4. 'snapshot': 返回网页的完整长截图。 5. 'image': 直接下载网络图片并返回 Base64（URL 为图片时自动启用）。 6. 'file:///' 本地路径: 读取本地文本文件或图片。",
+  "version": "0.3.0",
+  "description": "通用 URL 内容获取插件。支持：1. 'text' (默认): 返回解析后的网页文本、PDF文本或链接列表，PDF 可按 URL、响应头和文件签名自动识别。 2. 'jina': 使用 Jina Reader 将网页转换为 Markdown。 3. 'download': 将网页或PDF下载为 Markdown 并写入根目录 knowledge 的指定子文件夹。 4. 'snapshot': 返回网页的完整长截图。 5. 'image': 直接下载网络图片并返回 Base64（URL 为图片时自动启用）。 6. 'file:///' 本地路径: 读取本地文本文件、PDF或图片。",
   "author": "Lionsky",
   "pluginType": "synchronous",
   "entryPoint": {
