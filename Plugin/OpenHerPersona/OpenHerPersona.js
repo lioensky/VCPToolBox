@@ -1051,21 +1051,62 @@ function createDefaultEmbeddingProvider() {
 function createContextBridgeEmbeddingProvider(bridge) {
   return async (texts) => {
     if (!Array.isArray(texts)) return null;
-    return Promise.all(
-      texts.map(async (text) => {
-        const normalized = String(text || "").trim();
-        if (!normalized) return null;
-        if (typeof bridge.getEmbeddingFromCache === "function") {
-          const exact = bridge.getEmbeddingFromCache(normalized);
-          if (exact) return exact;
+
+    const normalizedTexts = texts.map((text) => String(text || "").trim());
+    const results = new Array(normalizedTexts.length).fill(null);
+    const missingIndices = [];
+    const missingTexts = [];
+
+    normalizedTexts.forEach((normalized, index) => {
+      if (!normalized) return;
+      if (typeof bridge.getEmbeddingFromCache === "function") {
+        const exact = bridge.getEmbeddingFromCache(normalized);
+        if (exact) {
+          results[index] = exact;
+          return;
         }
-        if (typeof bridge.getFuzzyEmbeddingFromCache === "function") {
-          const fuzzy = bridge.getFuzzyEmbeddingFromCache(normalized);
-          if (fuzzy && fuzzy.vector) return fuzzy.vector;
+      }
+      if (typeof bridge.getFuzzyEmbeddingFromCache === "function") {
+        const fuzzy = bridge.getFuzzyEmbeddingFromCache(normalized);
+        if (fuzzy && fuzzy.vector) {
+          results[index] = fuzzy.vector;
+          return;
         }
-        return bridge.embedText(normalized);
-      })
-    );
+      }
+      missingIndices.push(index);
+      missingTexts.push(normalized);
+    });
+
+    if (missingTexts.length === 0) return results;
+
+    if (typeof bridge.embedBatch === "function") {
+      const embedded = await bridge.embedBatch(missingTexts);
+      if (!Array.isArray(embedded) || embedded.length !== missingTexts.length) {
+        return results;
+      }
+      embedded.forEach((vector, missingIndex) => {
+        if (Array.isArray(vector) || ArrayBuffer.isView(vector)) {
+          results[missingIndices[missingIndex]] = vector;
+        }
+      });
+      return results;
+    }
+
+    // Compatibility fallback for older ContextBridge implementations. Keep the
+    // single-text API bounded instead of recreating an unbounded Promise.all.
+    const concurrency = Math.min(5, missingTexts.length);
+    let cursor = 0;
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (cursor < missingTexts.length) {
+        const missingIndex = cursor++;
+        const vector = await bridge.embedText(missingTexts[missingIndex]);
+        if (Array.isArray(vector) || ArrayBuffer.isView(vector)) {
+          results[missingIndices[missingIndex]] = vector;
+        }
+      }
+    });
+    await Promise.all(workers);
+    return results;
   };
 }
 
@@ -1995,11 +2036,12 @@ function resolveAgentIdentity(messages, requestConfig) {
   return fromLatestSystem;
 }
 
-function findLatestRealMessage(messages) {
+function findLatestRealMessage(messages, targetRole = null) {
   if (!Array.isArray(messages)) return null;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (!message || !["user", "assistant"].includes(message.role)) continue;
+    if (targetRole && message.role !== targetRole) continue;
     const text = messageContentToText(message.content);
     if (!text.trim()) continue;
     if (message.role === "user" && isVcpVirtualUserText(text)) continue;
@@ -2008,8 +2050,9 @@ function findLatestRealMessage(messages) {
   return null;
 }
 
-function buildObservationFingerprint(agentKey, latestMessage) {
-  return hashText(`${agentKey}:${latestMessage.role}:${latestMessage.index}:${latestMessage.text}`);
+function buildObservationFingerprint(agentKey, latestMessage, normalizedText = null) {
+  const semanticText = String(normalizedText || latestMessage.text || "").trim();
+  return hashText(`${agentKey}:${latestMessage.role}:${semanticText}`);
 }
 
 function enqueueObservation(agentKey, job) {
@@ -2052,8 +2095,10 @@ function summarizeJob(job) {
     agentKey: job.agentKey,
     agentLabel: job.agentLabel,
     role: job.role,
-    textHash: hashText(job.text || ""),
-    textLength: String(job.text || "").length,
+    observationType: job.observationType || (job.role === "assistant" ? "expression" : "stimulus"),
+    phase: job.phase || "message_preprocessor",
+    textHash: hashText(job.normalizedText || job.text || ""),
+    textLength: String(job.normalizedText || job.text || "").length,
   };
 }
 
@@ -2077,7 +2122,10 @@ async function observeJob(job) {
     return;
   }
 
-  const messageVector = await embedText(job.text, job.role);
+  // RAGDiaryPlugin keeps the original message in the downstream chain while
+  // caching the sanitized text. Always reuse that same sanitizer before cache
+  // lookup; querying with the raw assistant text would miss an existing vector.
+  const messageVector = await embedText(job.normalizedText || job.text, job.role);
   if (!messageVector) {
     saveAudit(state.agentKey, "observe_skipped", { reason: "message_vector_unavailable", job: summarizeJob(job) });
     return;
@@ -2089,11 +2137,23 @@ async function observeJob(job) {
 
   const scores = scoreAllAxes(messageVector, anchorVectors, state.agentLabel);
   applyObservationToState(state, scores, job.inputHash);
+  state.lastObservation = {
+    ...(state.lastObservation || {}),
+    role: job.role,
+    observationType: job.observationType || "expression",
+    phase: job.phase || "next_request_history",
+    semanticSubject: "assistant_expression",
+    stateSemantics: "internal_state_inferred_from_expression",
+  };
   saveAgentState(state);
   saveAudit(state.agentKey, "observe", {
     role: job.role,
-    textHash: hashText(job.text),
-    textLength: job.text.length,
+    observationType: job.observationType || "expression",
+    phase: job.phase || "next_request_history",
+    semanticSubject: "assistant_expression",
+    stateSemantics: "internal_state_inferred_from_expression",
+    textHash: hashText(job.normalizedText || job.text),
+    textLength: String(job.normalizedText || job.text).length,
     mood: computeMoodFromState(state),
     topAxes: getTopAxesFromScores(scores, 6),
   });
@@ -2123,16 +2183,29 @@ async function processMessages(messages, requestConfig = {}) {
   const identity = resolveAgentIdentity(messages, requestConfig);
   if (!identity) return messages;
 
-  const latestMessage = findLatestRealMessage(messages);
+  // This preprocessor runs before the current upstream completion. Therefore
+  // only an assistant already present in history is a real Agent expression.
+  // The latest user message is an external stimulus and must not be projected
+  // directly onto subject-anchored Agent axes.
+  const latestMessage = findLatestRealMessage(messages, "assistant");
   if (!latestMessage) return messages;
 
-  const inputHash = buildObservationFingerprint(identity.agentKey, latestMessage);
+  // RAGDiaryPlugin sanitizes for embedding but deliberately passes the original
+  // message downstream. Reapply the shared ContextBridge sanitizer so exact
+  // cache lookup uses the same key as the upstream RAG embedding pipeline.
+  const normalizedText = sanitizeForEmbedding(latestMessage.text, latestMessage.role).slice(0, 4000);
+  if (!normalizedText) return messages;
+
+  const inputHash = buildObservationFingerprint(identity.agentKey, latestMessage, normalizedText);
   const job = {
     agentKey: identity.agentKey,
     agentLabel: identity.agentLabel,
     source: identity.source,
     role: latestMessage.role,
+    observationType: "expression",
+    phase: "next_request_history",
     text: latestMessage.text,
+    normalizedText,
     inputHash,
     queuedAt: nowIso(),
     generation: agentObservationGenerations.get(identity.agentKey) || 0,
