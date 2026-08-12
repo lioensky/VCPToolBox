@@ -11,6 +11,7 @@ const TIMEOUT_MIN_MS = 1000;
 const TIMEOUT_MAX_MS = 40000;
 const MAX_RESULTS_MIN = 1;
 const MAX_RESULTS_MAX = 10;
+const ZONES = new Set(["cn", "intl"]);
 const BATCH_MAX = 5;
 const DOMAINS_MAX = 5;
 
@@ -114,6 +115,15 @@ function normalizeCommand(payload) {
   if (!hasQuery && firstString(payload, ["url", "URL", "link"]))
     return "extract";
   return "search";
+}
+
+function parseZone(source, keys = ["zone", "Zone"]) {
+  const zone = firstString(source, keys).toLowerCase();
+  if (!zone) return undefined;
+  if (!ZONES.has(zone)) {
+    fail("zone 仅支持 cn（中国大陆）或 intl（国际）。");
+  }
+  return zone;
 }
 
 function parseMaxResults(source) {
@@ -244,7 +254,7 @@ function compileSearchTasks(payload) {
     "subDomain",
     "subdomain",
   ]);
-  const topZone = firstString(payload, ["zone", "Zone"]);
+  const topZone = parseZone(payload);
   const topParams = parseSubDomainParams(payload);
   const topMaxResults = parseMaxResults(payload);
 
@@ -327,7 +337,7 @@ function compileSearchTasks(payload) {
          `sub_domain${i}`,
          `subDomain${i}`,
        ]);
-       const zone = firstString(payload, [`zone${i}`]);
+      const zone = parseZone(payload, [`zone${i}`]);
        const params = parseSubDomainParams({
         params: payload[`params${i}`],
         sdp: payload[`sdp${i}`],
