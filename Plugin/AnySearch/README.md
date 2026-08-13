@@ -87,7 +87,17 @@ query:「始」what is photosynthesis「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
 
-**4. 批量并行搜索**（顶层 `sub_domain`/`params`/`max_results` 注入每条，1-5 条）：
+**4. 区域搜索**（`zone` 仅支持 `cn` 或 `intl`，不是 `us`、`jp` 等国家代码）：
+
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AnySearch「末」,
+query:「始」人工智能最新动态「末」,
+zone:「始」cn「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+**5. 批量并行搜索**（顶层 `sub_domain`/`zone`/`params`/`max_results` 注入每条，1-5 条）：
 
 ```text
 <<<[TOOL_REQUEST]>>>
@@ -139,12 +149,14 @@ domain:「始」finance「末」
 | command                    | action, tool, mode     | 通常省略                           | 按参数自动推断；显式可用 `search` / `get_sub_domains` / `batch_search` / `extract`     |
 | query                      | q, text                | 搜索必需                           | 搜索词                                                                                 |
 | sub_domain                 | subDomain, subdomain   | 垂直搜索必需                       | 目录中的「域.子域」，如 `finance.news`；不带即通用搜索                                 |
+| zone                       | Zone                   | 否                                 | **仅** `cn`（中国大陆）或 `intl`（国际）；插件会校验并传给 API。批量搜索由顶层注入每条，自由路线可由 `zone1..zone5` 覆盖 |
 | domain                     | -                      | 通常省略                           | 自动取 `sub_domain` 前缀；显式给出且与前缀矛盾时报错                                   |
 | params                     | sub_domain_params, sdp | 按所选子域                         | 文本 `k=v,k2=v2`、`{k:v}` 或 JSON 对象；不适用参数不要传，完整规则查 `get_sub_domains` |
 | max_results                | maxResults             | 否                                 | 结果数量，范围 1-10                                                                    |
 | queries                    | query_items            | 批量必需                           | 1-5 条，`\|` 分隔；也接受 JSON 数组；顶层共享参数注入每条                              |
 | query1..query5             | q1..q5, text1..text5   | 自由路线                           | 编号字段，每路继承顶层默认值；与 `queries` 不能混用                                    |
 | sub_domain1..sub_domain5   | subDomain1..5          | 自由路线                           | 每路子域覆盖                                                                           |
+| zone1..zone5               | -                      | 自由路线                           | 每路搜索区域覆盖                                                                       |
 | params1..params5           | sdp1..5                | 自由路线                           | 每路深参数覆盖                                                                         |
 | max_results1..max_results5 | maxResults1..5         | 自由路线                           | 每路结果数覆盖                                                                         |
 | domains                    | -                      | `get_sub_domains` 与 domain 二选一 | 领域数组或逗号分隔字符串，最多 5 个                                                    |
