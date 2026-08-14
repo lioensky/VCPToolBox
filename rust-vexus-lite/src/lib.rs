@@ -166,8 +166,12 @@ fn unique_index_sidecar_path(target: &std::path::Path, role: &str) -> std::path:
 }
 
 fn sync_index_file(path: &std::path::Path) -> std::io::Result<()> {
+    // Windows 的 FlushFileBuffers 要求句柄具备写权限；只读句柄即使文件
+    // 可读取也会返回 ERROR_ACCESS_DENIED。usearch 已完成临时文件写入，
+    // 此处仅重新打开同一文件执行持久化屏障，不修改内容。
     std::fs::OpenOptions::new()
         .read(true)
+        .write(true)
         .open(path)?
         .sync_all()
 }
@@ -3054,13 +3058,18 @@ impl Task for PairwiseSimTask {
         ));
 
         // ====================================================================
-        // Step 3: 增量模式 — 加载当前 artifact 已处理的正/负 pair 集合
-        // full_rebuild = true 时才按显式重建语义清空整张旧表。
+        // Step 3: 增量模式 — 跨图代际加载兼容的正/负 pair 状态。
         //
-        // 注意：非 full_rebuild 冷启动不能在 Rust 侧主动删除旧 model_sig。
-        // 部分用户可能处于“签名变化 / tag 索引尚未恢复 / 空库初始化”窗口；
-        // 如果此时先 DELETE 旧模型行，而本轮 pair_set 又为 0，就会造成旧缓存被清空且新缓存未生成。
-        // 旧模型行的安全清理交给 JS 侧在确认当前 model_sig 已有可用缓存后执行。
+        // artifact_sig 包含完整 graph_generation；只按当前 artifact 查询会导致
+        // 任意新增 file_tag / pair 都生成新签名，使旧图中几十万条未变化 pair
+        // 全部失去命中。pair 的余弦值只依赖：
+        //   model_sig + dimension + algorithm + min_similarity + 两端向量。
+        // Tag 向量更新会由 SQLite 事实事务删除涉及该 Tag 的正值与状态行，
+        // 因此这里可以安全地跨 graph_generation 复用兼容 artifact 的状态。
+        //
+        // full_rebuild = true 时仍按显式重建语义清空并重算全部 pair。
+        // 非 full_rebuild 不主动删除旧 model_sig，旧模型清理由 JS 在当前模型
+        // 已产生健康缓存后执行，避免空库/签名切换窗口形成缓存真空。
         // ====================================================================
         if !self.full_rebuild {
             let conn = open_sqlite_readonly(&self.db_path).map_err(|e| {
@@ -3068,21 +3077,47 @@ impl Task for PairwiseSimTask {
             })?;
             let mut stmt = conn
                 .prepare(
-                    "SELECT tag_a, tag_b FROM tag_pair_similarity_status \
-                     WHERE artifact_sig = ?1 AND status IN ('computed', 'below_threshold', 'missing_vector')",
+                    "SELECT DISTINCT s.tag_a, s.tag_b \
+                     FROM tag_pair_similarity_status s \
+                     JOIN tagmemo_artifacts a ON a.artifact_sig = s.artifact_sig \
+                     WHERE s.model_sig = ?1 \
+                       AND s.min_similarity = ?2 \
+                       AND s.status IN ('computed', 'below_threshold', 'missing_vector') \
+                       AND a.asset_type = 'pairwise_similarity' \
+                       AND a.model_sig = ?1 \
+                       AND a.algorithm_version = ?3 \
+                       AND a.config_hash = ?4 \
+                       AND a.status = 'ready'",
                 )
-                .map_err(|e| Error::from_reason(format!("Prepare pairwise status cache query failed: {}", e)))?;
-            let rows = stmt
-                .query_map(rusqlite::params![&artifact_sig], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-                })
                 .map_err(|e| {
-                    Error::from_reason(format!("Query pairwise status cache failed: {}", e))
+                    Error::from_reason(format!(
+                        "Prepare compatible pairwise status cache query failed: {}",
+                        e
+                    ))
+                })?;
+            let rows = stmt
+                .query_map(
+                    rusqlite::params![
+                        &self.model_sig,
+                        self.min_similarity,
+                        PAIRWISE_ALGORITHM_VERSION,
+                        &config_hash
+                    ],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(|e| {
+                    Error::from_reason(format!(
+                        "Query compatible pairwise status cache failed: {}",
+                        e
+                    ))
                 })?;
 
             for row in rows {
                 let (a, b) = row.map_err(|e| {
-                    Error::from_reason(format!("Decode pairwise status cache row failed: {}", e))
+                    Error::from_reason(format!(
+                        "Decode compatible pairwise status row failed: {}",
+                        e
+                    ))
                 })?;
                 cached.insert(pair_key(a, b));
             }
