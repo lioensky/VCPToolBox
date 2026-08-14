@@ -13,6 +13,7 @@ const TagMemoV10Engine = require('./TagMemoV10Engine');
 const RiverMemoEngine = require('./RiverMemoEngine');
 const { decodeVectorBlob } = require('./modules/knowledgeBase/vectorCodec');
 const { queryByChunks } = require('./modules/knowledgeBase/sqliteQueryUtils');
+const { stableSerialize } = require('./modules/tagmemoV10/immutable');
 const {
     prepareTextForEmbedding,
     extractTags
@@ -497,13 +498,20 @@ class KnowledgeBaseManager {
             .slice(0, 40);
     }
 
+    _computeNativeMemoConfigHash(effectiveConfig) {
+        // 跨语言持久化契约必须使用规范 JSON。Rust 的 serde_json::Map 在当前
+        // 构建中按键有序序列化；普通 JSON.stringify 依赖 JS 对象插入顺序，
+        // 会让同一配置在重启恢复时产生不同 hash 并错误拒绝健康资产。
+        return crypto.createHash('sha256')
+            .update(stableSerialize(effectiveConfig))
+            .digest('hex')
+            .slice(0, 32);
+    }
+
     _restoreNativeMemoControlHandles() {
         if (!this.tagMemoEngine || !this.tagMemoV10Engine) return null;
         const effectiveConfig = this._buildNativeMemoEffectiveConfig();
-        const configHash = crypto.createHash('sha256')
-            .update(JSON.stringify(effectiveConfig))
-            .digest('hex')
-            .slice(0, 32);
+        const configHash = this._computeNativeMemoConfigHash(effectiveConfig);
         const databaseGeneration =
             this._computeNativeMemoDatabaseGeneration();
         const row = this.db.prepare(`

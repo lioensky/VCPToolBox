@@ -288,6 +288,61 @@ const CORE_SCHEMA_SQL = `
 `;
 
 const POST_MIGRATION_INDEX_SQL = `
+    -- Pairwise 扫描前事实代际。该值与 tags/file_tags 的权威变更处于同一
+    -- SQLite 事务，使 Rust 可以在读取全库高维 BLOB 前安全短路。
+    INSERT OR IGNORE INTO kv_store(key, value)
+    VALUES ('tagmemo_pairwise_fact_generation', '1');
+
+    CREATE TRIGGER IF NOT EXISTS trg_pairwise_tags_insert_generation
+    AFTER INSERT ON tags
+    BEGIN
+        UPDATE kv_store
+        SET value = CAST(COALESCE(CAST(value AS INTEGER), 0) + 1 AS TEXT)
+        WHERE key = 'tagmemo_pairwise_fact_generation';
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_pairwise_tags_vector_generation
+    AFTER UPDATE OF vector ON tags
+    WHEN OLD.vector IS NOT NEW.vector
+    BEGIN
+        UPDATE kv_store
+        SET value = CAST(COALESCE(CAST(value AS INTEGER), 0) + 1 AS TEXT)
+        WHERE key = 'tagmemo_pairwise_fact_generation';
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_pairwise_tags_delete_generation
+    AFTER DELETE ON tags
+    BEGIN
+        UPDATE kv_store
+        SET value = CAST(COALESCE(CAST(value AS INTEGER), 0) + 1 AS TEXT)
+        WHERE key = 'tagmemo_pairwise_fact_generation';
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_pairwise_file_tags_insert_generation
+    AFTER INSERT ON file_tags
+    BEGIN
+        UPDATE kv_store
+        SET value = CAST(COALESCE(CAST(value AS INTEGER), 0) + 1 AS TEXT)
+        WHERE key = 'tagmemo_pairwise_fact_generation';
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_pairwise_file_tags_update_generation
+    AFTER UPDATE OF file_id, tag_id ON file_tags
+    WHEN OLD.file_id IS NOT NEW.file_id OR OLD.tag_id IS NOT NEW.tag_id
+    BEGIN
+        UPDATE kv_store
+        SET value = CAST(COALESCE(CAST(value AS INTEGER), 0) + 1 AS TEXT)
+        WHERE key = 'tagmemo_pairwise_fact_generation';
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_pairwise_file_tags_delete_generation
+    AFTER DELETE ON file_tags
+    BEGIN
+        UPDATE kv_store
+        SET value = CAST(COALESCE(CAST(value AS INTEGER), 0) + 1 AS TEXT)
+        WHERE key = 'tagmemo_pairwise_fact_generation';
+    END;
+
     -- 必须在旧数据库完成 tags.vector_version 附加迁移后创建。
     -- Tag 向量版本由 SQLite 在事实事务内单调推进，启动差分只比较整数版本，
     -- 不需要读取并哈希全库高维 BLOB。WHEN 条件避免无关字段更新误增版本。

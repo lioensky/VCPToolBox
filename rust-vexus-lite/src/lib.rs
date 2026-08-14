@@ -2927,6 +2927,73 @@ impl Task for PairwiseSimTask {
         let start = Instant::now();
         let dim = self.dimensions as usize;
         const PAIRWISE_ALGORITHM_VERSION: &str = "pairwise_cosine_v9_1_single_track";
+        let effective_config = format!(
+            "{{\"algorithm\":\"{}\",\"dimension\":{},\"minSimilarity\":{},\"modelSig\":\"{}\"}}",
+            PAIRWISE_ALGORITHM_VERSION,
+            dim,
+            self.min_similarity,
+            json_escape(&self.model_sig)
+        );
+        let config_hash = stable_sha256_hex(&effective_config);
+
+        // 扫描前代际门禁：事实事务通过 SQLite trigger 单调推进该值。
+        // 命中同模型/算法/配置的 ready artifact 时，避免读取全部高维 Tag BLOB、
+        // 扫描 file_tags 以及重新构造几十万条 pair_set。
+        let fact_generation = {
+            let conn = open_sqlite_readonly(&self.db_path).map_err(|e| {
+                Error::from_reason(format!("DB readonly generation open failed: {}", e))
+            })?;
+            conn.query_row(
+                "SELECT value FROM kv_store \
+                 WHERE key = 'tagmemo_pairwise_fact_generation'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| "unavailable".to_string())
+        };
+        if !self.full_rebuild && fact_generation != "unavailable" {
+            let conn = open_sqlite_readonly(&self.db_path).map_err(|e| {
+                Error::from_reason(format!("DB readonly artifact gate open failed: {}", e))
+            })?;
+            let prefix = format!("fact:{}:%", fact_generation);
+            let cached_graph: Option<String> = conn
+                .query_row(
+                    "SELECT graph_generation FROM tagmemo_artifacts \
+                     WHERE asset_type = 'pairwise_similarity' \
+                       AND model_sig = ?1 \
+                       AND algorithm_version = ?2 \
+                       AND config_hash = ?3 \
+                       AND graph_generation LIKE ?4 \
+                       AND status = 'ready' \
+                     ORDER BY updated_at DESC LIMIT 1",
+                    rusqlite::params![
+                        &self.model_sig,
+                        PAIRWISE_ALGORITHM_VERSION,
+                        &config_hash,
+                        &prefix
+                    ],
+                    |row| row.get(0),
+                )
+                .ok();
+            if let Some(graph_generation) = cached_graph {
+                let pair_count = graph_generation
+                    .rsplit_once(":pairs:")
+                    .and_then(|(_, value)| value.parse::<u32>().ok())
+                    .unwrap_or(0);
+                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                println!(
+                    "[Vexus-Lite][Pairwise] fact generation unchanged; full scan skipped: generation={}, pairs={}, elapsed={:.2}ms",
+                    fact_generation, pair_count, elapsed_ms
+                );
+                return Ok(PairwiseSimResult {
+                    pair_count,
+                    computed_count: 0,
+                    skipped_count: pair_count,
+                    stored_count: 0,
+                    elapsed_ms,
+                });
+            }
+        }
 
         // ====================================================================
         // Step 1-3: 只读加载 Tag 向量、共现 pair 与缓存集合
@@ -3034,7 +3101,8 @@ impl Task for PairwiseSimTask {
             };
             let pair_count = pair_set.len() as u32;
             let graph_generation = format!(
-                "content:{}:tags:{}:max_tag:{}:file_tag_rows:{}:pairs:{}",
+                "fact:{}:content:{}:tags:{}:max_tag:{}:file_tag_rows:{}:pairs:{}",
+                fact_generation,
                 content_digest,
                 tag_vectors.len(),
                 max_tag_id,
@@ -3044,14 +3112,6 @@ impl Task for PairwiseSimTask {
             (pair_count, graph_generation)
         };
 
-        let effective_config = format!(
-            "{{\"algorithm\":\"{}\",\"dimension\":{},\"minSimilarity\":{},\"modelSig\":\"{}\"}}",
-            PAIRWISE_ALGORITHM_VERSION,
-            dim,
-            self.min_similarity,
-            json_escape(&self.model_sig)
-        );
-        let config_hash = stable_sha256_hex(&effective_config);
         let artifact_sig = stable_sha256_hex(&format!(
             "{}|{}|{}|{}",
             self.model_sig, graph_generation, PAIRWISE_ALGORITHM_VERSION, config_hash
