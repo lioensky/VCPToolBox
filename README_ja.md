@@ -205,7 +205,7 @@ docker-compose up -d
 より詳しいインストール、分散ノードのデプロイ、フロントエンド設定については、[運用デプロイドキュメント](docs/OPERATIONS.md)をご覧ください。
 
 **推奨フロントエンド**：[VCPChat](https://github.com/lioensky/VCPChat)（公式）。
-**推奨バックエンド**：SSE ストリーミング出力とフォーマット標準化に対応した公式または集約 API。例えば [NewAPI](https://github.com/QuantumNous/new-api) や [OpenRouter](https://openrouter.ai/) などです。繰り返しますが、**リバースプロキシ API や中継 API は使用しないでください**。
+**推奨バックエンド**：SSE ストリーミング出力とフォーマット標準化に対応した公式または集約 API。例えば [NewAPI](https://github.com/QuantumNous/new-api)、[OpenRouter](https://openrouter.ai/)、[OrcaRouter](https://www.orcarouter.ai) などです。繰り返しますが、**リバースプロキシ API や中継 API は使用しないでください**。
 **VCPMobile**（友好プロジェクト）：[VCPMobile](https://github.com/MRiecy/VCPMobile) - VChat の第三者モバイル移植版で、双方向データ同期に対応します。
 **AIO-Hub**（友好プロジェクト）：[AIO-Hub](https://github.com/miaotouy/aio-hub) - Tauri で開発された高性能デスクトップ LLM チャットクライアントで、豊富なコンパイル・デバッグ用ツールチェーンを備え、AI 開発での利用に非常に適しており、一部 VCP のネイティブ API 互換にも対応しています。
 

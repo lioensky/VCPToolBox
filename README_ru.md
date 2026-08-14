@@ -205,7 +205,7 @@ docker-compose up -d
 Более подробные сведения об установке, развертывании распределённых узлов и настройке фронтенда см. в [документации по эксплуатации и развертыванию](docs/OPERATIONS.md).
 
 **Рекомендуемый фронтенд**: [VCPChat](https://github.com/lioensky/VCPChat) (официальный).
-**Рекомендуемый бэкенд**: официальные или агрегированные API с поддержкой потокового вывода SSE и стандартизации формата, например [NewAPI](https://github.com/QuantumNous/new-api) и [OpenRouter](https://openrouter.ai/). Ещё раз обратите внимание: **не используйте reverse-proxy или relay API**.
+**Рекомендуемый бэкенд**: официальные или агрегированные API с поддержкой потокового вывода SSE и стандартизации формата, например [NewAPI](https://github.com/QuantumNous/new-api), [OpenRouter](https://openrouter.ai/) и [OrcaRouter](https://www.orcarouter.ai). Ещё раз обратите внимание: **не используйте reverse-proxy или relay API**.
 **VCPMobile** (дружественный проект): [VCPMobile](https://github.com/MRiecy/VCPMobile) - сторонний мобильный порт VChat с поддержкой двусторонней синхронизации данных.
 **AIO-Hub** (дружественный проект): [AIO-Hub](https://github.com/miaotouy/aio-hub) - высокопроизводительный десктопный LLM-чат-клиент на базе Tauri с богатым стеком инструментов компиляции и отладки, хорошо подходящий для AI-разработки и частично совместимый с нативными API VCP.
 
