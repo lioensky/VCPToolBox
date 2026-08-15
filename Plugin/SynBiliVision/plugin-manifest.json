@@ -1,0 +1,40 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "SynBiliVision",
+  "displayName": "B站用户信息综合查询",
+  "version": "2.3.0",
+  "description": "获取当前登录 B 站账号的综合信息，包括浏览历史、收藏夹、最近收藏、投币记录和观看偏好分析。",
+  "author": "VCP Team",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node SynBiliVision.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 120000
+  },
+  "configSchema": {
+    "BILIBILI_COOKIE": {
+      "type": "string",
+      "description": "B 站登录 Cookie，至少需要包含 SESSDATA。"
+    },
+    "BILIBILI_COOKIE_FILE": {
+      "type": "string",
+      "description": "B 站 Netscape Cookie 文件路径；配置后优先读取该文件，避免在配置中保存明文 Cookie。"
+    },
+    "BILIBILI_MID": {
+      "type": "string",
+      "description": "用户 MID，可选。未提供时插件会优先从登录态自动解析。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "SynBiliVision",
+        "description": "《B站用户信息综合查询 v2.3》获取当前登录用户的 B 站活动信息。\n\n支持动作：\n- history: 浏览历史，支持 days 与 limit\n- favorites: 收藏夹列表，并附带每个收藏夹的内容预览\n- recent_fav: 最近收藏内容（跨收藏夹聚合）\n- coins: 最近投币视频\n- info: 当前登录账号信息\n- all: 综合报告（默认）\n\n参数说明：\n- action: 操作类型，默认 all\n- limit: 返回数量限制，默认 20，最大 50\n- days: 浏览历史的回溯天数，默认 7，最大 30\n\n请使用如下格式调用：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynBiliVision「末」\naction:「始」all「末」\nlimit:「始」20「末」\ndays:「始」7「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "获取综合报告：\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynBiliVision「末」\naction:「始」all「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n只获取浏览历史：\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynBiliVision「末」\naction:「始」history「末」\nlimit:「始」10「末」\ndays:「始」3「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n只获取最近收藏：\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynBiliVision「末」\naction:「始」recent_fav「末」\nlimit:「始」10「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}

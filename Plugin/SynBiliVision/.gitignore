@@ -1,0 +1,5 @@
+config.env
+*cookies*.txt
+logs/
+*.zip
+test_output/
