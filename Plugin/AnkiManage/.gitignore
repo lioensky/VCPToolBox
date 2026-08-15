@@ -1,0 +1,6 @@
+config.env
+__pycache__/
+*.pyc
+*.zip
+temp_request*.json
+test_output/

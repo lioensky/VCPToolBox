@@ -1,0 +1,132 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "AnkiManage",
+  "displayName": "Anki 管理与操作",
+  "version": "1.2.0",
+  "description": "VCP 体系下的独立 Anki 管理工具。支持添加笔记、更新字段、挂起卡片及重新调度。",
+  "author": "VCPAnki Team",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python main.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "configSchema": {
+    "ANKI_CONNECT_URL": {
+      "type": "string",
+      "description": "Local AnkiConnect endpoint URL.",
+      "default": "http://127.0.0.1:8765"
+    },
+    "ANKI_CONNECT_TIMEOUT_SECONDS": {
+      "type": "integer",
+      "description": "AnkiConnect request timeout in seconds.",
+      "default": 10
+    },
+    "ANKI_CONNECT_RETRIES": {
+      "type": "integer",
+      "description": "Retry attempts after a connection failure.",
+      "default": 3
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "anki_add_note",
+        "description": "向 Anki 添加一条新笔记。支持指定牌组、模板、字段及标签。",
+        "args": [
+          {
+            "name": "deck",
+            "type": "string",
+            "description": "牌组名称"
+          },
+          {
+            "name": "model",
+            "type": "string",
+            "description": "笔记类型 (Model Name)"
+          },
+          {
+            "name": "fields",
+            "type": "string",
+            "description": "字段内容的 JSON 字符串"
+          },
+          {
+            "name": "tags",
+            "type": "string",
+            "description": "空格分隔的标签"
+          },
+          {
+            "name": "dryRun",
+            "type": "boolean",
+            "description": "为 true 时仅返回写入预览，不修改 Anki。"
+          }
+        ]
+      },
+      {
+        "command": "anki_update_note",
+        "description": "更新现有笔记的字段内容。",
+        "args": [
+          {
+            "name": "note_id",
+            "type": "number",
+            "description": "笔记 ID"
+          },
+          {
+            "name": "fields",
+            "type": "string",
+            "description": "需要更新的字段内容的 JSON 字符串"
+          },
+          {
+            "name": "dryRun",
+            "type": "boolean",
+            "description": "为 true 时仅返回写入预览，不修改 Anki。"
+          }
+        ]
+      },
+      {
+        "command": "anki_suspend",
+        "description": "挂起或取消挂起卡片。",
+        "args": [
+          {
+            "name": "card_ids",
+            "type": "string",
+            "description": "逗号分隔的 Card ID 列表"
+          },
+          {
+            "name": "suspend",
+            "type": "string",
+            "description": "true 挂起, false 取消挂起"
+          },
+          {
+            "name": "dryRun",
+            "type": "boolean",
+            "description": "为 true 时仅返回操作预览，不修改 Anki。"
+          }
+        ]
+      },
+      {
+        "command": "anki_reschedule",
+        "description": "重新调度卡片的复习日期。",
+        "args": [
+          {
+            "name": "card_ids",
+            "type": "string",
+            "description": "逗号分隔的 Card ID 列表"
+          },
+          {
+            "name": "days",
+            "type": "number",
+            "description": "今天起算的新间隔天数"
+          },
+          {
+            "name": "dryRun",
+            "type": "boolean",
+            "description": "为 true 时仅返回操作预览，不修改 Anki。"
+          }
+        ]
+      }
+    ]
+  }
+}
