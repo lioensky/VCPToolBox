@@ -1,0 +1,8 @@
+config.env
+*.env.local
+*cookies*.txt
+logs/
+screenshots/
+backup_*/
+*.zip
+node_modules/

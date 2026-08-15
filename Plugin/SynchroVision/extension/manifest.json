@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "VCP SynchroVision Eye",
+  "version": "2.0.0",
+  "description": "VCP SynchroVision - Full Browser Awareness (v2.0)",
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "scripting",
+    "storage",
+    "history",
+    "bookmarks",
+    "downloads",
+    "sessions",
+    "topSites"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    },
+    {
+      "matches": [
+        "*://chatgpt.com/*",
+        "*://chat.openai.com/*",
+        "*://grok.com/*",
+        "*://x.ai/*",
+        "*://x.com/i/grok*",
+        "*://gemini.google.com/*",
+        "*://aistudio.google.com/*",
+        "*://claude.ai/*",
+        "*://chat.deepseek.com/*",
+        "*://hunyuan.tencent.com/*",
+        "*://yiyan.baidu.com/*",
+        "*://kimi.moonshot.cn/*",
+        "*://doubao.com/*"
+      ],
+      "js": ["ai_intent_observer.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
+}

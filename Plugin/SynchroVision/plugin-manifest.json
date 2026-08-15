@@ -1,0 +1,105 @@
+{
+  "name": "SynchroVision",
+  "displayName": "视界同调 (SynchroVision)",
+  "version": "2.0.0",
+  "description": "全面浏览器感知系统：实时页面感知、浏览历史、书签、下载记录、打开标签页、搜索记录（含 ChatGPT/Grok 网页与浏览器 App/PWA 提问轨迹）、系统窗口状态、B站精准历史、AI意图捕获。让Agent完全了解你的上网情况。",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "script": "SynchroVision.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 15000
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{CurrentVisualContext}}",
+        "description": "包含当前激活标签页的标题、URL、打开标签数量的实时简报。",
+        "isDynamic": true
+      }
+    ],
+    "invocationCommands": [
+      {
+        "command": "inspect_active_tab",
+        "description": "获取当前浏览器激活标签页的详细内容（URL、标题、Markdown正文、截图路径、打开的标签页列表）。当需要了解用户当前在看什么时使用。",
+        "args": [],
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynchroVision「末」,\ncommand:「始」inspect_active_tab「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "check_user_intent",
+        "description": "全面浏览器感知扫描。聚合：本地浏览器历史(含标题、访问时间)、B站API历史、系统所有窗口、最近搜索（含 ChatGPT/Grok）、AI对话意图。当需要全面了解用户最近的上网活动时使用。",
+        "args": [],
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynchroVision「末」,\ncommand:「始」check_user_intent「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "get_browser_history",
+        "description": "获取完整的浏览器历史记录(Chrome/Edge)，包含标题、访问时间、访问次数。支持参数: limit(数量), days_back(天数), browser(浏览器名)。",
+        "args": ["limit", "days_back", "browser"],
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynchroVision「末」,\ncommand:「始」get_browser_history「末」,\nlimit:「始」50「末」,\ndays_back:「始」7「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "get_bookmarks",
+        "description": "获取浏览器书签列表，包含名称、URL、文件夹路径、添加日期。支持参数: search(搜索关键词), browser(浏览器名)。",
+        "args": ["search", "browser"],
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynchroVision「末」,\ncommand:「始」get_bookmarks「末」,\nsearch:「始」python「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "get_downloads",
+        "description": "获取浏览器下载记录，包含文件名、路径、大小、状态、下载时间。支持参数: limit(数量), days_back(天数), browser(浏览器名)。",
+        "args": ["limit", "days_back", "browser"],
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynchroVision「末」,\ncommand:「始」get_downloads「末」,\nlimit:「始」20「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "get_recent_searches",
+        "description": "获取用户最近的搜索记录(Google/Bing/Baidu/Bilibili/YouTube，以及 ChatGPT/Grok 的网页与浏览器 App/PWA 提问轨迹)。支持参数: limit(数量), days_back(天数)。",
+        "args": ["limit", "days_back"],
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynchroVision「末」,\ncommand:「始」get_recent_searches「末」,\nlimit:「始」20「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "get_extensions",
+        "description": "获取浏览器已安装的扩展列表，包含名称、版本、描述。",
+        "args": ["browser"],
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynchroVision「末」,\ncommand:「始」get_extensions「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "get_open_tabs",
+        "description": "获取当前所有打开的浏览器标签页（需要扩展连接）。返回每个窗口的所有标签信息。",
+        "args": [],
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynchroVision「末」,\ncommand:「始」get_open_tabs「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "get_all_windows",
+        "description": "获取系统所有可见窗口列表，包含应用名、标题、类别(浏览器/代码/通讯/媒体等)、内存占用。",
+        "args": [],
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynchroVision「末」,\ncommand:「始」get_all_windows「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "get_focus_summary",
+        "description": "获取用户当前的焦点摘要：主要在做什么(编程/浏览/通讯/娱乐等)，各类型窗口数量统计。",
+        "args": [],
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynchroVision「末」,\ncommand:「始」get_focus_summary「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "get_full_overview",
+        "description": "获取完整的浏览器感知报告：实时页面、所有打开标签、焦点分析、历史记录、书签、下载、搜索（含 ChatGPT/Grok）、扩展、B站历史。这是最全面的感知命令。",
+        "args": [],
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SynchroVision「末」,\ncommand:「始」get_full_overview「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "webSocketPush": {
+    "enabled": true,
+    "targetClientType": "SynchroVisionEye",
+    "messageType": "synchro_command"
+  },
+  "configSchema": {
+    "DebugMode": "boolean"
+  },
+  "configSchemaDescriptions": {
+    "DebugMode": "是否启用调试模式，输出详细日志"
+  },
+  "defaults": {
+    "DebugMode": false
+  }
+}
