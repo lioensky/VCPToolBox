@@ -1,0 +1,9 @@
+config.env
+*cookies*.txt
+node_modules/
+downloads/
+output/
+*.mp3
+*.flac
+*.wav
+scratch/

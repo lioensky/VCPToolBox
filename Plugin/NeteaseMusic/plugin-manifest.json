@@ -1,0 +1,32 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "NeteaseMusic",
+  "displayName": "网易云音乐助手",
+  "version": "1.2.0",
+  "description": "网易云音乐 VCP 同步插件，支持搜索、歌单、歌曲详情、歌词、分享短链解析、每日推荐、红心、歌单操作、个人数据查询、下载与多模态音乐分析。",
+  "author": "VCP Team",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node index.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 300000
+  },
+  "configSchema": {
+    "NETEASE_COOKIE": {
+      "type": "string",
+      "description": "网易云音乐登录 Cookie。个人数据、每日推荐、红心和歌单写操作需要有效 Cookie。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "NeteaseMusic",
+        "description": "【网易云音乐助手】参数为 action 加对应参数。支持 search, playlist, playlist_all_songs, song_detail, song_info, share_song, cover, song_url, lyric, my_playlists, user_playlist, recent_songs, top_songs, daily_recommend, today_listens, like_song, unlike_song, add_to_playlist, remove_from_playlist, top_playlist, login_status, download, analyze。歌曲类动作可传 id/ids/songId/url/shareUrl/shareText，支持 https://163cn.tv/... 这类短链和整段分享文案。daily_recommend 默认返回紧凑歌曲信息，包含 coverUrl、artistText、推荐理由与可用时的红心状态。recent_songs/top_songs/today_listens 默认返回听歌记录画像，包含 artistText、liked、playTime/playCount/score；如需扫描歌曲属于哪些歌单，请显式传 includePlaylistState=true。账号写操作支持 dryRun=true 安全预检。download 支持下载音乐文件，analyze 支持使用多模态大模型体毛级分析音乐音频节奏曲风等特征。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」NeteaseMusic「末」\naction:「始」song_info「末」\nshareText:「始」分享Neuro-sama/Evil Neuro的单曲《NEVER (feat. Evil Neuro)》: https://163cn.tv/7mipOKo「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
