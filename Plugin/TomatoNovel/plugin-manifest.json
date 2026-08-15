@@ -1,0 +1,48 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "TomatoNovel",
+  "version": "1.0.0",
+  "displayName": "番茄小说增强器",
+  "description": "提供多功能搜书、全本精准下载、以及极速下载大纲目录等功能。",
+  "author": "Antigravity",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node TomatoNovel.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 720000
+  },
+  "configSchema": {
+    "TOMATO_DOWNLOADER_PATH": {
+      "type": "string",
+      "description": "TomatoNovelDownloader.exe 的绝对路径。"
+    },
+    "TOMATO_DOWNLOADER_CWD": {
+      "type": "string",
+      "description": "下载器工作目录；留空时使用可执行文件所在目录。"
+    },
+    "TOMATO_DOWNLOAD_DIR": {
+      "type": "string",
+      "description": "下载器输出目录；留空时使用可执行文件所在目录。"
+    },
+    "TOMATO_DOWNLOADER_PORT": {
+      "type": "integer",
+      "description": "下载器本地 HTTP 服务端口，默认 18423。"
+    },
+    "TOMATO_HTTP_PROXY": {
+      "type": "string",
+      "description": "可选 HTTP/HTTPS 代理地址。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "TomatoNovel",
+        "description": "调用此工具管理番茄小说，支持搜书、下载全本、下载简介和大纲目录。\n参数:\n- action (字符串, 必需): 细分功能类型。可选：'search' (搜书), 'download' (精准全本下载), 'download_intro' (仅下载大纲)。\n- query (字符串, 条件必需): 搜书时必需，表示搜索关键词（主角/分类/Tags/设定等）。\n- book_id (字符串, 条件必需): 下载或提取大纲时必需，表示书籍的唯一 ID。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」TomatoNovel「末」,\naction:「始」search「末」,\nquery:「始」穿成哈利邻居 程序员转生「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」TomatoNovel「末」,\naction:「始」download_intro「末」,\nbook_id:「始」7580018670118652952「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

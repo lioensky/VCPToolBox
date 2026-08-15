@@ -1,0 +1,6 @@
+config.env
+__pycache__/
+*.epub
+*.log
+logs/
+downloads/
