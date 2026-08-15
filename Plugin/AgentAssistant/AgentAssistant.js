@@ -9,6 +9,10 @@ const {
     normalizeReasoningModelFilters,
     shouldConvertReasoningForModel
 } = require('../../modules/reasoningContentAdapter.js');
+const {
+    DEFAULT_HEARTBEAT_DELAY_SECONDS,
+    parseFlowlockDirectives
+} = require('./flowlockProtocol.js');
 
 // --- State and Config Variables ---
 let VCP_SERVER_PORT;
@@ -180,8 +184,8 @@ function loadAgentsFromLocalConfig() {
     CONTEXT_TTL_HOURS = parseInt(config.contextTtlHours || '24', 10);
     DELEGATION_MAX_ROUNDS = parseInt(config.delegationMaxRounds || '15', 10);
     DELEGATION_TIMEOUT = parseInt(config.delegationTimeout || '300000', 10);
-    DELEGATION_SYSTEM_PROMPT = config.delegationSystemPrompt || "[异步委托模式]\n你当前正在接受来自 {{SenderName}} 的一项异步委托任务。请专注于完成以下委托内容，按照任务要求认真执行。你可以自由使用你所拥有的的所有工具来完成任务。\n\n[长执行任务优化机制]\n如果当前步骤涉及需要长时间等待的任务（如：视频生成、大型文件处理等），你可以在输出中包含 `[[NextHeartbeat::秒数]]` 占位符。系统将推迟下一次心跳（心跳即：再次唤醒你）的到来，在这段时间内不会产生额外的轮次和Token消耗。例如：如果你预计渲染需要3分钟，可以输出 `[[NextHeartbeat::180]]`。\n\n委托任务内容:\n{{TaskPrompt}}\n\n当你确认任务已经彻底完成后，请输出委托完成报告，格式如下:\n[[TaskComplete]]\n（此处写上你的任务完成报告，详细描述你完成了什么、执行过程和最终结果）\n\n如果你认为任务由于缺少工具、信息或其他原因【完全无法完成】，请输出失败报告，格式如下:\n[[TaskFailed]]\n（此处写上失败原因）";
-    DELEGATION_HEARTBEAT_PROMPT = config.delegationHeartbeatPrompt || "[系统提示:]当前委托任务仍在进行中。请继续执行你的委托任务。如果你在等待长执行任务，请根据需要输出 `[[NextHeartbeat::秒数]]` 进行推迟。如果任务已完成，请输出 [[TaskComplete]] 及完成报告。如果确认无法完成，请输出 [[TaskFailed]] 及失败原因。";
+    DELEGATION_SYSTEM_PROMPT = config.delegationSystemPrompt || "[异步委托模式]\n你当前正在接受来自 {{SenderName}} 的一项异步委托任务。请专注于完成以下委托内容，按照任务要求认真执行。你可以自由使用你所拥有的所有工具来完成任务。\n\n[Flowlock 心流锁协议]\n开始自主心跳必须输出 `[[Flowlock::Start]]`；未启动心流锁时，其他继续类 Flowlock 指令不会启动后续心跳。\n任务彻底完成时输出 `[[Flowlock::Complete]]` 和完成报告；确认完全无法完成时输出 `[[Flowlock::Fail]]` 和失败原因；需要主动退出但不宣告完成或失败时输出 `[[Flowlock::Stop]]`。\n默认在回复结束 2 秒后触发下一轮。可输出 `[[Flowlock::NextHeartbeat::秒数]]` 调整下一次心跳时间，例如 `[[Flowlock::NextHeartbeat::180]]`。\n可输出 `[[Flowlock::NextPrompt]]下一轮要使用的提示词[[/Flowlock::NextPrompt]]` 自定义下一轮提示词。NextPrompt 与 NextHeartbeat 可以在同一回复中组合使用。\n若同一回复包含多个控制标记，优先级始终为 Complete > Fail > Stop > Start/Continue；终止标记生效时忽略心跳时间和下一轮提示词。\n旧标记 `[[TaskComplete]]`、`[[TaskFailed]]`、`[[NextHeartbeat::秒数]]` 仍兼容，但新任务应优先使用 Flowlock 协议。\n\n委托任务内容:\n{{TaskPrompt}}";
+    DELEGATION_HEARTBEAT_PROMPT = config.delegationHeartbeatPrompt || "[系统提示:]心流锁仍在运行，请继续执行委托任务。默认 2 秒后再次唤醒；你可以组合使用 [[Flowlock::NextHeartbeat::秒数]] 和 [[Flowlock::NextPrompt]]...[[/Flowlock::NextPrompt]]。完成时输出 [[Flowlock::Complete]]，无法完成时输出 [[Flowlock::Fail]]，仅需退出自主心跳时输出 [[Flowlock::Stop]]。";
 
     const AGENT_ALL_SYSTEM_PROMPT = config.globalSystemPrompt || "";
     Object.keys(AGENTS).forEach(key => delete AGENTS[key]); // Clear existing agents
@@ -550,6 +554,9 @@ function createDelegationSnapshot(state) {
         taskPromptPreview: state.taskPromptPreview,
         lastResponsePreview: state.lastResponsePreview || '',
         lastHeartbeatDelaySeconds: state.lastHeartbeatDelaySeconds || 0,
+        flowlockActive: !!state.flowlockActive,
+        flowlockProtocolMode: state.flowlockProtocolMode || 'pending',
+        nextHeartbeatPromptPreview: state.nextHeartbeatPromptPreview || '',
         cancelRequested: !!state.cancelRequested,
         completionStatus: state.completionStatus || null,
         finalReportPreview: state.finalReportPreview || '',
@@ -774,6 +781,9 @@ async function processToolCall(args) {
             taskPromptPreview: truncateText(promptTextForStorage),
             lastResponsePreview: '',
             lastHeartbeatDelaySeconds: 0,
+            flowlockActive: false,
+            flowlockProtocolMode: 'pending',
+            nextHeartbeatPromptPreview: '',
             cancelRequested: false,
             cancelReason: '',
             completionStatus: null,
@@ -1051,74 +1061,95 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
             state.lastResponsePreview = truncateText(cleanedAssistantResponse);
             state.updatedAt = Date.now();
             activeDelegations.set(delegationId, state);
-
-            // 检查完成标记的容错正则
-            const completionMatch = cleanedAssistantResponse.match(/\[\[TaskComplete(?:\s*\]\]|\s[\s\S]*?\]\])/i);
-            const failureMatch = cleanedAssistantResponse.match(/\[\[TaskFailed(?:\s*\]\]|\s[\s\S]*?\]\])/i);
-
-            if (completionMatch) {
-                // Task is completed
-                completionStatus = 'Succeed';
-                // 提取标记后面的内容作为报告
-                const reportStartIndex = completionMatch.index + completionMatch[0].length;
-                let potentialReport = cleanedAssistantResponse.substring(reportStartIndex).trim();
-
-                // 如果标记后面没有内容，把整个回复当做报告
-                if (!potentialReport) {
-                    potentialReport = cleanedAssistantResponse;
+            const flowlock = parseFlowlockDirectives(cleanedAssistantResponse);
+            if (flowlock.isFlowlockProtocol) {
+                if (state.flowlockProtocolMode !== 'flowlock') {
+                    // 从兼容模式首次切换到严格 Flowlock 模式时，不继承旧模式的隐式活动状态。
+                    state.flowlockActive = false;
                 }
-                finalReport = potentialReport;
+                state.flowlockProtocolMode = 'flowlock';
+            } else if (state.flowlockProtocolMode === 'pending') {
+                // 没有 Flowlock 标记时维持旧版委托兼容行为。
+                state.flowlockProtocolMode = 'legacy';
+                state.flowlockActive = true;
+            }
+
+            // 终止控制优先级由解析器统一保证：Complete > Fail > Stop。
+            if (flowlock.action === 'complete') {
+                completionStatus = 'Succeed';
+                finalReport = flowlock.report || cleanedAssistantResponse;
+                state.flowlockActive = false;
                 state.status = 'completed';
                 state.completionStatus = completionStatus;
                 state.finalReportPreview = truncateText(finalReport);
                 state.updatedAt = Date.now();
                 activeDelegations.set(delegationId, state);
-                break; // Exit the loop
-            } else if (failureMatch) {
-                // Task is explicitly failed by the agent
+                break;
+            } else if (flowlock.action === 'fail') {
                 completionStatus = 'Failed';
-                // 提取标记后面的内容作为报告
-                const reportStartIndex = failureMatch.index + failureMatch[0].length;
-                let potentialReport = cleanedAssistantResponse.substring(reportStartIndex).trim();
-
-                // 如果标记后面没有内容，把整个回复当做报告
-                if (!potentialReport) {
-                    potentialReport = cleanedAssistantResponse;
-                }
-                finalReport = "【Agent主动放弃任务】\n" + potentialReport;
+                finalReport = `【Agent主动放弃任务】\n${flowlock.report || cleanedAssistantResponse}`;
+                state.flowlockActive = false;
                 state.status = 'failed';
                 state.completionStatus = completionStatus;
                 state.finalReportPreview = truncateText(finalReport);
                 state.updatedAt = Date.now();
                 activeDelegations.set(delegationId, state);
-                break; // Exit the loop
-            } else {
-                // Task is not completed yet, push history and add heartbeat prompt
-                messagesForVCP.push({ role: 'assistant', content: cleanedAssistantResponse });
-
-                // 处理心跳延迟占位符: [[NextHeartbeat::秒数]]
-                const delayMatch = cleanedAssistantResponse.match(/\[\[NextHeartbeat::(\d+)\]\]/i);
-                if (delayMatch && delayMatch[1]) {
-                    const delaySeconds = parseInt(delayMatch[1], 10);
-                    if (!isNaN(delaySeconds) && delaySeconds > 0) {
-                        // 确保总延迟不超过剩余超时时间，避免永久挂起
-                        const elapsed = Date.now() - state.startTime;
-                        const remainingTimeout = DELEGATION_TIMEOUT - elapsed;
-                        const actualDelayMs = Math.min(delaySeconds * 1000, Math.max(0, remainingTimeout - 10000)); // 预留10s缓冲
-
-                        if (actualDelayMs > 0) {
-                            state.status = 'waiting';
-                            state.lastHeartbeatDelaySeconds = Math.round(actualDelayMs / 1000);
-                            state.updatedAt = Date.now();
-                            activeDelegations.set(delegationId, state);
-                            if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] AI requested heartbeat delay: ${delaySeconds}s. Actual delay: ${Math.round(actualDelayMs / 1000)}s.`);
-                            await sleepWithDelegationCancel(delegationId, actualDelayMs);
-                        }
-                    }
-                }
-
-                messagesForVCP.push({ role: 'user', content: DELEGATION_HEARTBEAT_PROMPT });
+                break;
+            } else if (flowlock.action === 'stop') {
+                completionStatus = 'Stopped';
+                finalReport = `【Agent主动停止心流锁】\n${flowlock.report || 'Agent 已主动退出自主心跳模式，任务未宣告完成或失败。'}`;
+                state.flowlockActive = false;
+                state.status = 'stopped';
+                state.completionStatus = completionStatus;
+                state.finalReportPreview = truncateText(finalReport);
+                state.updatedAt = Date.now();
+                activeDelegations.set(delegationId, state);
+                break;
             }
+
+            if (flowlock.start) {
+                state.flowlockActive = true;
+            }
+
+            // 一旦使用 Flowlock 协议，必须先 Start；仅输出 Prompt/Heartbeat 不会隐式启动。
+            if (state.flowlockProtocolMode === 'flowlock' && !state.flowlockActive) {
+                completionStatus = 'Stopped';
+                finalReport = `【心流锁未启动】\n${flowlock.report || 'Agent 未输出 [[Flowlock::Start]]，因此没有进入自主心跳模式。'}`;
+                state.status = 'stopped';
+                state.completionStatus = completionStatus;
+                state.finalReportPreview = truncateText(finalReport);
+                state.updatedAt = Date.now();
+                activeDelegations.set(delegationId, state);
+                break;
+            }
+
+            messagesForVCP.push({ role: 'assistant', content: cleanedAssistantResponse });
+
+            const requestedDelaySeconds = flowlock.nextHeartbeatSeconds || DEFAULT_HEARTBEAT_DELAY_SECONDS;
+            const elapsed = Date.now() - state.startTime;
+            const remainingTimeout = DELEGATION_TIMEOUT - elapsed;
+            const actualDelayMs = Math.min(
+                requestedDelaySeconds * 1000,
+                Math.max(0, remainingTimeout - 10000)
+            );
+
+            state.lastHeartbeatDelaySeconds = Math.round(actualDelayMs / 1000);
+            state.nextHeartbeatPromptPreview = truncateText(flowlock.nextPrompt || DELEGATION_HEARTBEAT_PROMPT);
+            state.updatedAt = Date.now();
+
+            if (actualDelayMs > 0) {
+                state.status = 'waiting';
+                activeDelegations.set(delegationId, state);
+                if (DEBUG_MODE) {
+                    console.error(`[AgentAssistant Delegation] Next heartbeat in ${Math.round(actualDelayMs / 1000)}s (${flowlock.hasExplicitHeartbeat ? 'explicit' : 'default'}).`);
+                }
+                await sleepWithDelegationCancel(delegationId, actualDelayMs);
+            }
+
+            messagesForVCP.push({
+                role: 'user',
+                content: flowlock.nextPrompt || DELEGATION_HEARTBEAT_PROMPT
+            });
 
             state.currentRound++;
             activeDelegations.set(delegationId, state);
@@ -1141,7 +1172,11 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
         const secureReport = finalReport || "未知错误导致无报告";
         const finalState = activeDelegations.get(delegationId);
         if (finalState) {
-            finalState.status = completionStatus === 'Succeed' ? 'completed' : (completionStatus === 'Cancelled' ? 'cancelled' : 'failed');
+            finalState.status = completionStatus === 'Succeed'
+                ? 'completed'
+                : (completionStatus === 'Cancelled'
+                    ? 'cancelled'
+                    : (completionStatus === 'Stopped' ? 'stopped' : 'failed'));
             finalState.completionStatus = completionStatus;
             finalState.finalReportPreview = truncateText(secureReport);
             finalState.endTime = Date.now();
