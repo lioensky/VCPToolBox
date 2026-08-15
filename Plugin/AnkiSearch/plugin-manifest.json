@@ -1,0 +1,59 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "AnkiSearch",
+  "displayName": "Anki 搜索与查询",
+  "version": "1.2.0",
+  "description": "VCP 体系下的独立 Anki 查询工具。支持使用 Anki 强大的查询语法搜索卡片，获取牌组统计数据，以及查询笔记类型（Model）。",
+  "author": "VCPAnki Team",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python main.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "configSchema": {
+    "ANKI_CONNECT_URL": {
+      "type": "string",
+      "description": "Local AnkiConnect endpoint URL.",
+      "default": "http://127.0.0.1:8765"
+    },
+    "ANKI_CONNECT_TIMEOUT_SECONDS": {
+      "type": "integer",
+      "description": "AnkiConnect request timeout in seconds.",
+      "default": 5
+    },
+    "ANKI_CONNECT_RETRIES": {
+      "type": "integer",
+      "description": "Retry attempts after a connection failure.",
+      "default": 3
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "anki_search_cards",
+        "description": "使用 Anki 查询语法搜索卡片。例如：'deck:默认 is:due' 查找到期卡片。",
+        "args": [
+          {
+            "name": "query",
+            "type": "string",
+            "description": "Anki 查询语句 (e.g., 'deck:Default is:due')"
+          }
+        ]
+      },
+      {
+        "command": "anki_get_decks",
+        "description": "获取所有牌组列表及其学习统计信息（新卡、到期卡等）。",
+        "args": []
+      },
+      {
+        "command": "anki_get_models",
+        "description": "获取所有笔记类型（Model）及其字段结构。",
+        "args": []
+      }
+    ]
+  }
+}

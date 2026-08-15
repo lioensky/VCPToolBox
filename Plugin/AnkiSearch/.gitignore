@@ -1,0 +1,5 @@
+config.env
+__pycache__/
+*.pyc
+*.zip
+test_output/
