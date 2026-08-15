@@ -1,0 +1,42 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "YTFetch",
+  "displayName": "YouTube Gemini Fetch",
+  "version": "0.1.0",
+  "description": "Use Gemini API to directly read public YouTube URLs and return multimodal video/audio analysis without downloading the video locally.",
+  "author": "VCP Community",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python YTFetch.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 300000
+  },
+  "configSchema": {
+    "GEMINI_API_KEY": {
+      "type": "string",
+      "description": "Google AI Studio API key."
+    },
+    "GEMINI_API_BASE_URL": {
+      "type": "string",
+      "description": "Gemini API base URL.",
+      "default": "https://generativelanguage.googleapis.com"
+    },
+    "YTFETCH_MODEL": {
+      "type": "string",
+      "description": "Default non-Pro Gemini model.",
+      "default": "gemini-2.5-flash-lite"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "YTFetch",
+        "description": "Fetch and analyze a public YouTube video through Gemini direct YouTube URL input. Parameters: url(required), prompt(optional), model(optional, default gemini-2.5-flash-lite), fallbackModels(optional comma-separated), maxOutputTokens(optional, default 40000), thinkingBudget(optional), raw(optional boolean). command=list_models lists available non-Pro generateContent models.",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:<YTFetch>\nurl:<https://www.youtube.com/watch?v=BClcpTpEyn4>\nprompt:<Use Simplified Chinese. Summarize the video content, visuals, audio, and key timeline.>\nmodel:<gemini-2.5-flash-lite>\nmaxOutputTokens:<40000>\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
