@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+config.env
+*.local
+tokens.json
+
+# Local health data and runtime output
+logs/
+*.db
+reports/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,74 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "HealthQuery",
+  "version": "2.1.0",
+  "displayName": "HealthQuery (Fitbit)",
+  "description": "Integrated Google Fitbit health data query tool. Supports Steps, Heart Rate, Sleep analysis via Fitbit Web API.",
+  "author": "VCP Developer",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python HealthQuery.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 60000
+  },
+  "configSchema": {
+    "CLIENT_ID": {
+      "type": "string",
+      "description": "Fitbit OAuth2 Client ID"
+    },
+    "CLIENT_SECRET": {
+      "type": "string",
+      "description": "Fitbit OAuth2 Client Secret"
+    },
+    "REDIRECT_URI": {
+      "type": "string",
+      "description": "Registered Fitbit OAuth2 redirect URI."
+    },
+    "TOKEN_FILE": {
+      "type": "string",
+      "description": "Local OAuth token file name or absolute path."
+    },
+    "FITBIT_REQUEST_TIMEOUT_SECONDS": {
+      "type": "number",
+      "description": "Fitbit API request timeout in seconds.",
+      "default": 20
+    },
+    "DEBUG_MODE": {
+      "type": "boolean",
+      "description": "Enable local debug logging of health query activity.",
+      "default": false
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "auth_status",
+        "description": "Check if the Fitbit API authorization is valid.\nReturns authentication status.",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」HealthQuery「末」,\ncommand:「始」auth_status「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "trigger_auth",
+        "description": "Trigger the Fitbit OAuth2 authorization flow. Opens a browser window for the user to log in.\nUse this if 'auth_status' returns false or invalid.",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」HealthQuery「末」,\ncommand:「始」trigger_auth「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "query_daily_summary",
+        "description": "Get daily activity summary (Steps, Calories, Distance, Active Minutes).\nParams:\n- date (string, optional): 'YYYY-MM-DD' or 'today'. Default 'today'.",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」HealthQuery「末」,\ncommand:「始」query_daily_summary「末」,\ndate:「始」today「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "query_heart_rate_trend",
+        "description": "Get heart rate data including Resting HR, Zones, and detailed stats.\nParams:\n- date (string, optional): 'YYYY-MM-DD' or 'today'. Default 'today'.",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」HealthQuery「末」,\ncommand:「始」query_heart_rate_trend「末」,\ndate:「始」today「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "query_sleep_analysis",
+        "description": "Get sleep logs and stage analysis (Deep, Light, REM, Awake).\nParams:\n- date (string, optional): 'YYYY-MM-DD' or 'today'. Default 'today'.",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」HealthQuery「末」,\ncommand:「始」query_sleep_analysis「末」,\ndate:「始」today「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
