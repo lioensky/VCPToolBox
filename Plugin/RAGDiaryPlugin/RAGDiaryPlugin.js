@@ -1192,7 +1192,7 @@ class RAGDiaryPlugin {
                     }
 
                     // 检查 RAG/Meta/AIMemo/冷知识库 占位符
-                    if (/\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\{\{.*日记本.*\}\}|\[\[.*知识库.*\]\]|《《.*知识库.*》》|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(text)) {
+                      if (/\[\[[^\]]*日记本[^\]]*\]\]|<<[^>]*日记本[^>]*>>|《《[^》]*日记本[^》]*》》|\{\{[^}]*日记本[^}]*\}\}|\[\[[^\]]*知识库[^\]]*\]\]|《《[^》]*知识库[^》]*》》|\[\[[^\]]*VCP元思考[^\]]*\]\]|\[\[AIMemo=True\]\]/.test(text)) {
                         if (!acc.includes(index)) {
                             acc.push(index);
                             if (m.role === 'user') {
@@ -1333,12 +1333,12 @@ class RAGDiaryPlugin {
                     newMessages[index].content = this._replaceTextInContent(
                         newMessages[index].content,
                         (text) => text
-                            .replace(/\[\[.*日记本.*\]\]/g, '')
-                            .replace(/<<.*日记本>>/g, '')
-                            .replace(/《《.*日记本.*》》/g, '')
-                            .replace(/\{\{.*日记本.*\}\}/g, '')
-                            .replace(/\[\[.*知识库.*\]\]/g, '')
-                            .replace(/《《.*知识库.*》》/g, '')
+                            .replace(/\[\[[^\]]*日记本[^\]]*\]\]/g, '')
+                            .replace(/<<[^>]*日记本[^>]*>>/g, '')
+                            .replace(/《《[^》]*日记本[^》]*》》/g, '')
+                            .replace(/\{\{[^}]*日记本[^}]*\}\}/g, '')
+                            .replace(/\[\[[^\]]*知识库[^\]]*\]\]/g, '')
+                            .replace(/《《[^》]*知识库[^》]*》》/g, '')
                     );
                 }
                 return newMessages;
@@ -1471,12 +1471,12 @@ class RAGDiaryPlugin {
                 }
                 if (shouldClean) {
                     msg.content = this._replaceTextInContent(msg.content, (text) => text
-                        .replace(/\[\[.*日记本.*\]\]/g, '[RAG处理失败]')
-                        .replace(/<<.*日记本>>/g, '[RAG处理失败]')
-                        .replace(/《《.*日记本.*》》/g, '[RAG处理失败]')
-                        .replace(/\{\{.*日记本\}\}/g, '[RAG处理失败]')
-                        .replace(/\[\[.*知识库.*\]\]/g, '[冷知识库处理失败]')
-                        .replace(/《《.*知识库.*》》/g, '[冷知识库处理失败]'));
+                        .replace(/\[\[[^\]]*日记本[^\]]*\]\]/g, '[RAG处理失败]')
+                        .replace(/<<[^>]*日记本[^>]*>>/g, '[RAG处理失败]')
+                        .replace(/《《[^》]*日记本[^》]*》》/g, '[RAG处理失败]')
+                        .replace(/\{\{[^}]*日记本[^}]*\}\}/g, '[RAG处理失败]')
+                        .replace(/\[\[[^\]]*知识库[^\]]*\]\]/g, '[冷知识库处理失败]')
+                        .replace(/《《[^》]*知识库[^》]*》》/g, '[冷知识库处理失败]'));
                 }
             });
             return safeMessages;
@@ -1493,19 +1493,19 @@ class RAGDiaryPlugin {
         // 移除全局 AIMemo 开关占位符，因为它只作为许可证，不应出现在最终输出中
         processedContent = processedContent.replace(/\[\[AIMemo=True\]\]/g, '');
 
-        const ragDeclarations = [...processedContent.matchAll(/\[\[(.*?)日记本(.*?)\]\]/g)];
-        const fullTextDeclarations = [...processedContent.matchAll(/<<(.*?)日记本(.*?)>>/g)];
-        const hybridDeclarations = [...processedContent.matchAll(/《《(.*?)日记本(.*?)》》/g)];
-        const metaThinkingDeclarations = [...processedContent.matchAll(/\[\[VCP元思考(.*?)\]\]/g)];
-        const directDiariesDeclarations = [...processedContent.matchAll(/\{\{(.*?)日记本(.*?)\}\}/g)];
+        const ragDeclarations = [...processedContent.matchAll(/\[\[([^\]]*?)日记本([^\]]*?)\]\]/g)];
+        const fullTextDeclarations = [...processedContent.matchAll(/<<([^>]*?)日记本([^>]*?)>>/g)];
+        const hybridDeclarations = [...processedContent.matchAll(/《《([^》]*?)日记本([^》]*?)》》/g)];
+        const metaThinkingDeclarations = [...processedContent.matchAll(/\[\[VCP元思考([^\]]*?)\]\]/g)];
+        const directDiariesDeclarations = [...processedContent.matchAll(/\{\{([^}]*?)日记本([^}]*?)\}\}/g)];
         // 🧊 冷知识库占位符：[[xx知识库]] 直接检索 / 《《xx知识库》》 门控检索。
-        // “xx知识库日记本”是合法的日记本名称；宽松的知识库正则也会命中它，因此必须让日记本语法优先。
+        // "xx知识库日记本"是合法的日记本名称；宽松的知识库正则也会命中它，因此必须让日记本语法优先。
         // 例如 [[vcp知识库日记本]] 只能指向 dailynote/vcp知识库，不能再被解释为 knowledge/vcp。
         const isUnambiguousTdbDeclaration = (match) =>
             !this.tdbProcessor?.isDiaryPlaceholderAmbiguity(match[1], match[2]);
-        const tdbDirectDeclarations = [...processedContent.matchAll(/\[\[(.*?)知识库(.*?)\]\]/g)]
+        const tdbDirectDeclarations = [...processedContent.matchAll(/\[\[([^\]]*?)知识库([^\]]*?)\]\]/g)]
             .filter(isUnambiguousTdbDeclaration);
-        const tdbHybridDeclarations = [...processedContent.matchAll(/《《(.*?)知识库(.*?)》》/g)]
+        const tdbHybridDeclarations = [...processedContent.matchAll(/《《([^》]*?)知识库([^》]*?)》》/g)]
             .filter(isUnambiguousTdbDeclaration);
         console.log(`[RAGDiaryPlugin] Found ${directDiariesDeclarations.length} {{...}} declarations`);
 
