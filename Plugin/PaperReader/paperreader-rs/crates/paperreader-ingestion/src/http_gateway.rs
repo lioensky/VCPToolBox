@@ -1,8 +1,13 @@
+use crate::mineru_layout_json::build_raw_result_from_mineru_layout_json;
+use crate::split_pdf::{
+    MINERU_DEFAULT_OVERLAP_PAGES, MINERU_MAX_PAGES_PER_PART, merge_split_results, pdf_page_count,
+    persist_split_artifacts, split_pdf,
+};
 use crate::*;
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use zip::ZipArchive;
@@ -170,7 +175,11 @@ impl MinerUHttpGateway {
         Err(IngestionError::parse_timeout(batch_id.to_string()))
     }
 
-    fn download_zip_markdown(&self, zip_url: &str) -> Result<String, IngestionError> {
+    fn download_zip_layout_or_markdown(
+        &self,
+        zip_url: &str,
+        title: &str,
+    ) -> Result<MinerURawResult, IngestionError> {
         let mut resp = self
             .client
             .get(zip_url)
@@ -187,29 +196,95 @@ impl MinerUHttpGateway {
         resp.read_to_end(&mut bytes)
             .map_err(|err| IngestionError::malformed_mineru_result(err.to_string()))?;
 
-        let cursor = std::io::Cursor::new(bytes);
-        let mut archive = ZipArchive::new(cursor)
+        let mut archive = ZipArchive::new(Cursor::new(bytes))
             .map_err(|err| IngestionError::malformed_mineru_result(err.to_string()))?;
+        let mut markdown = None;
+        let mut layout_json = None;
 
-        for i in 0..archive.len() {
+        for index in 0..archive.len() {
             let mut file = archive
-                .by_index(i)
+                .by_index(index)
                 .map_err(|err| IngestionError::malformed_mineru_result(err.to_string()))?;
             let name = file.name().to_string();
-            if name.to_lowercase().ends_with(".md") {
+            let lower_name = name.to_lowercase();
+            if lower_name.ends_with(".json") && layout_json.is_none() {
                 let mut content = String::new();
                 file.read_to_string(&mut content)
                     .map_err(|err| IngestionError::malformed_mineru_result(err.to_string()))?;
+                if serde_json::from_str::<Value>(&content)
+                    .ok()
+                    .and_then(|value| value.get("pdf_info").cloned())
+                    .is_some()
+                {
+                    layout_json = Some(content);
+                }
+            } else if lower_name.ends_with(".md") && markdown.is_none() {
+                let mut content = String::new();
+                file.read_to_string(&mut content)
+                    .map_err(|err| IngestionError::malformed_mineru_result(err.to_string()))?;
+                markdown = Some(content);
+            }
+        }
+
+        if let Some(json) = layout_json {
+            return build_raw_result_from_mineru_layout_json(title, &json);
+        }
+        if let Some(markdown) = markdown {
+            return Ok(build_raw_result_from_text(title, &markdown));
+        }
+
+        Err(IngestionError::malformed_mineru_result(
+            "Zip archive did not contain a MinerU layout JSON or Markdown file",
+        ))
+    }
+
+    fn download_layout_json(&self, zip_url: &str) -> Result<String, IngestionError> {
+        let mut resp = self
+            .client
+            .get(zip_url)
+            .send()
+            .map_err(|err| IngestionError::malformed_mineru_result(err.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(IngestionError::malformed_mineru_result(format!(
+                "Zip download failed: http_status={}",
+                resp.status()
+            )));
+        }
+
+        let mut bytes = Vec::new();
+        resp.read_to_end(&mut bytes)
+            .map_err(|err| IngestionError::malformed_mineru_result(err.to_string()))?;
+        let mut archive = ZipArchive::new(Cursor::new(bytes))
+            .map_err(|err| IngestionError::malformed_mineru_result(err.to_string()))?;
+        for index in 0..archive.len() {
+            let mut file = archive
+                .by_index(index)
+                .map_err(|err| IngestionError::malformed_mineru_result(err.to_string()))?;
+            if !file.name().to_lowercase().ends_with(".json") {
+                continue;
+            }
+            let mut content = String::new();
+            file.read_to_string(&mut content)
+                .map_err(|err| IngestionError::malformed_mineru_result(err.to_string()))?;
+            if serde_json::from_str::<Value>(&content)
+                .ok()
+                .and_then(|value| value.get("pdf_info").cloned())
+                .is_some()
+            {
                 return Ok(content);
             }
         }
 
         Err(IngestionError::malformed_mineru_result(
-            "Zip archive did not contain a Markdown file",
+            "Zip archive did not contain a MinerU layout JSON file",
         ))
     }
 
-    fn parse_file(&self, file_path: &Path, title: &str) -> Result<MinerURawResult, IngestionError> {
+    fn parse_file_single(
+        &self,
+        file_path: &Path,
+        title: &str,
+    ) -> Result<MinerURawResult, IngestionError> {
         let file_name = file_path
             .file_name()
             .and_then(|value| value.to_str())
@@ -229,9 +304,7 @@ impl MinerUHttpGateway {
             IngestionError::malformed_mineru_result("No full_zip_url in batch result")
         })?;
 
-        let markdown = self.download_zip_markdown(&zip_url)?;
-        let mut raw = build_raw_result_from_text(title, &markdown);
-        raw.version = "mineru-v4-zip-bridge-1.0".to_string();
+        let mut raw = self.download_zip_layout_or_markdown(&zip_url, title)?;
         if let Some(page_count) = result.page_count {
             raw.document_info.page_count = page_count;
         }
@@ -241,6 +314,44 @@ impl MinerUHttpGateway {
             .insert("mineru_full_zip_url".to_string(), json!(zip_url));
         raw.metadata
             .insert("mineru_state".to_string(), json!(result.state));
+        Ok(raw)
+    }
+
+    fn parse_file_with_artifact_root(
+        &self,
+        file_path: &Path,
+        title: &str,
+        artifact_root: &Path,
+    ) -> Result<MinerURawResult, IngestionError> {
+        let page_count = pdf_page_count(file_path)?;
+        if page_count <= MINERU_MAX_PAGES_PER_PART {
+            return self.parse_file_single(file_path, title);
+        }
+
+        let split_dir = artifact_root.join("ingestion_parts").join("pdf_parts");
+        let plan = split_pdf(
+            file_path,
+            &split_dir,
+            MINERU_MAX_PAGES_PER_PART,
+            MINERU_DEFAULT_OVERLAP_PAGES,
+        )?;
+        let mut results = Vec::with_capacity(plan.parts.len());
+        for part in &plan.parts {
+            let raw = self.parse_file_single(&part.local_pdf_path, title)?;
+            let layout_url = raw
+                .metadata
+                .get("mineru_full_zip_url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    IngestionError::malformed_mineru_result(
+                        "MinerU split result did not include full ZIP URL",
+                    )
+                })?;
+            let layout_json = self.download_layout_json(layout_url)?;
+            results.push((part.clone(), layout_json));
+        }
+        let (raw, per_part_results) = merge_split_results(title, &plan, results)?;
+        persist_split_artifacts(artifact_root, &plan, &per_part_results)?;
         Ok(raw)
     }
 }
@@ -266,7 +377,7 @@ impl MinerUGateway for MinerUHttpGateway {
             ImportSourceType::RawText | ImportSourceType::Snapshot => {
                 Ok(build_raw_result_from_text(&title, source_ref))
             }
-            ImportSourceType::File => self.parse_file(Path::new(source_ref), &title),
+            ImportSourceType::File => self.parse_file_single(Path::new(source_ref), &title),
             ImportSourceType::Url => {
                 // Best-effort fallback: fetch URL body and bridge to text blocks.
                 // A full MinerU URL task flow can be added later without breaking the contract.
@@ -287,6 +398,29 @@ impl MinerUGateway for MinerUHttpGateway {
                 Ok(build_raw_result_from_text(&title, &body))
             }
         }
+    }
+
+    fn generate_raw_result_with_artifact_root(
+        &self,
+        source_type: ImportSourceType,
+        source_ref: &str,
+        display_name: Option<String>,
+        artifact_root: Option<&Path>,
+    ) -> Result<MinerURawResult, IngestionError> {
+        if source_type != ImportSourceType::File {
+            return self.generate_raw_result(source_type, source_ref, display_name);
+        }
+        let title = display_name
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| source_ref.to_string());
+        if let Some(artifact_root) = artifact_root {
+            return self.parse_file_with_artifact_root(
+                Path::new(source_ref),
+                &title,
+                artifact_root,
+            );
+        }
+        self.parse_file_single(Path::new(source_ref), &title)
     }
 
     fn submit_url_task(
