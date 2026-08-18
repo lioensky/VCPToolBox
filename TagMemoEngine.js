@@ -3270,27 +3270,53 @@ class TagMemoEngine {
 
         const run = async () => {
             console.log(`[TagMemoEngine] ⚡ V8.2 Triggering Rust pairwise similarity precomputation (model_sig=${this.modelSig}, fullRebuild=${fullRebuild})...`);
-            try {
-                const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
-                const result = await this.tagIndex.computePairwiseSimilarities(
-                    dbPath,
-                    this.modelSig,
-                    minSimilarity,
-                    fullRebuild
-                );
-                if (!result) return null;
-                console.log(
-                    `[TagMemoEngine] ✅ V8.2 Rust pairwise sim done: ` +
-                    `pairs=${result.pairCount}, computed=${result.computedCount}, ` +
-                    `skipped=${result.skippedCount}, stored=${result.storedCount}, ` +
-                    `elapsed=${result.elapsedMs.toFixed(2)}ms`
-                );
-                return result;
-            } catch (e) {
-                console.error('[TagMemoEngine] ❌ V8.2 Rust pairwise sim failed:', e.message || e);
-                if (e.stack) console.error(e.stack);
-                return null;
+            // 🦀⏱️ 阶段 3.2 stale retry：Rust 端若返回 tag count stale，外部
+            // INSERT/DELETE 已经发生，整体重做一次。pairwise-sim 租约或
+            // matrix-rebuild 流水线租约均覆盖此次循环。
+            const MAX_PAIRWISE_STALE_RETRIES = 1;
+            for (let attempt = 1; attempt <= MAX_PAIRWISE_STALE_RETRIES + 1; attempt++) {
+                try {
+                    const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
+                    // 事实代际由 JS 主连接（better-sqlite3）读取传入，规避 Rust
+                    // rusqlite readonly 读不到未 checkpoint WAL 变更的 stale 门禁问题。
+                    const factGenerationRow = this.db.prepare(
+                        "SELECT value FROM kv_store WHERE key = 'tagmemo_pairwise_fact_generation'"
+                    ).get();
+                    const factGeneration = factGenerationRow
+                        ? String(factGenerationRow.value)
+                        : null;
+                    // PASSIVE checkpoint：同步 -shm 的 wal-index，让 Rust 侧
+                    // rusqlite readonly 连接能读到本次事务刚提交的
+                    // tags/file_tags/status 变更（否则读到上次 checkpoint 旧值）。
+                    this.db.pragma('wal_checkpoint(PASSIVE)');
+                    const result = await this.tagIndex.computePairwiseSimilarities(
+                        dbPath,
+                        this.modelSig,
+                        minSimilarity,
+                        fullRebuild,
+                        factGeneration
+                    );
+                    if (!result) return null;
+                    console.log(
+                        `[TagMemoEngine] ✅ V8.2 Rust pairwise sim done: ` +
+                        `pairs=${result.pairCount}, computed=${result.computedCount}, ` +
+                        `skipped=${result.skippedCount}, stored=${result.storedCount}, ` +
+                        `elapsed=${result.elapsedMs.toFixed(2)}ms`
+                    );
+                    return result;
+                } catch (e) {
+                    const message = (e && e.message) || String(e);
+                    const stale = /Pairwise tag count stale|database mismatch|tag count stale/i.test(message);
+                    if (stale && attempt <= MAX_PAIRWISE_STALE_RETRIES) {
+                        console.warn(`[TagMemoEngine] 🦀⏱️ Pairwise stale on attempt ${attempt}, retrying: ${message}`);
+                        continue;
+                    }
+                    console.error('[TagMemoEngine] ❌ V8.2 Rust pairwise sim failed:', message);
+                    if (e.stack) console.error(e.stack);
+                    return null;
+                }
             }
+            return null;
         };
 
         if (leaseAlreadyHeld) return await run();
@@ -3685,13 +3711,30 @@ class TagMemoEngine {
                     v9: kbConfig.v9 || {},
                     spikeRouting: kbConfig.spikeRouting || {}
                 }));
-                const nativeResult = await this.tagIndex.rebuildMemoArtifact(
-                    dbPath,
-                    JSON.stringify({
-                        modelSig: this.modelSig,
-                        effectiveConfig
-                    })
-                );
+                // 🦀⏱️ 阶段 3.4 stale retry：artifact 重建阶段若外部仍能 INSERT/DELETE
+                // tags，Rust 端 stale 自检抛错，重做一次。
+                const MAX_ARTIFACT_STALE_RETRIES = 1;
+                let nativeResult = null;
+                for (let attempt = 1; attempt <= MAX_ARTIFACT_STALE_RETRIES + 1; attempt++) {
+                    try {
+                        nativeResult = await this.tagIndex.rebuildMemoArtifact(
+                            dbPath,
+                            JSON.stringify({
+                                modelSig: this.modelSig,
+                                effectiveConfig
+                            })
+                        );
+                        break;
+                    } catch (e) {
+                        const message = (e && e.message) || String(e);
+                        const stale = /MemoArtifact tag count stale|database mismatch|tag count stale/i.test(message);
+                        if (stale && attempt <= MAX_ARTIFACT_STALE_RETRIES) {
+                            console.warn(`[TagMemoEngine] 🦀⏱️ MemoArtifact stale on attempt ${attempt}, retrying: ${message}`);
+                            continue;
+                        }
+                        throw e;
+                    }
+                }
                 if (
                     !nativeResult?.success
                     || nativeResult.persisted !== true
@@ -3872,34 +3915,45 @@ class TagMemoEngine {
                 `[TagMemoEngine] ⚡ Triggering Rust intrinsic residual precomputation ` +
                 `(config=${effectiveConfigJson}, model_sig=${this.modelSig})...`
             );
-            try {
-                const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
-                const result = await this.tagIndex.computeIntrinsicResiduals(
-                    dbPath,
-                    effectiveConfig.maxBasis,
-                    effectiveConfig.minNeighbors,
-                    this.modelSig,
-                    effectiveConfigJson
-                );
-                if (!result) return null;
-                const configVerified = this._validateIntrinsicResidualEffectiveConfig(effectiveConfig, result);
-                if (!configVerified) {
-                    console.error('[TagMemoEngine] ❌ Refusing residual artifact with unverified effective configuration.');
+            // 🦀⏱️ 阶段 3.3 stale retry：Rust 端 tag count stale 错误说明外部
+            // INSERT/DELETE 已发生，整体重做一次。
+            const MAX_IR_STALE_RETRIES = 1;
+            for (let attempt = 1; attempt <= MAX_IR_STALE_RETRIES + 1; attempt++) {
+                try {
+                    const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
+                    const result = await this.tagIndex.computeIntrinsicResiduals(
+                        dbPath,
+                        effectiveConfig.maxBasis,
+                        effectiveConfig.minNeighbors,
+                        this.modelSig,
+                        effectiveConfigJson
+                    );
+                    if (!result) return null;
+                    const configVerified = this._validateIntrinsicResidualEffectiveConfig(effectiveConfig, result);
+                    if (!configVerified) {
+                        console.error('[TagMemoEngine] ❌ Refusing residual artifact with unverified effective configuration.');
+                        return null;
+                    }
+                    console.log(
+                        `[TagMemoEngine] ✅ Rust precomputation complete: ` +
+                        `${result.computedCount} computed, ${result.skippedCount} skipped, ` +
+                        `algorithm=${result.algorithmVersion}, artifact=${result.artifactSig}, ` +
+                        `elapsed=${result.elapsedMs.toFixed(2)}ms`
+                    );
+                    return result;
+                } catch (e) {
+                    const message = (e && e.message) || String(e);
+                    const stale = /IntrinsicResidual tag count stale|database mismatch|tag count stale/i.test(message);
+                    if (stale && attempt <= MAX_IR_STALE_RETRIES) {
+                        console.warn(`[TagMemoEngine] 🦀⏱️ IntrinsicResidual stale on attempt ${attempt}, retrying: ${message}`);
+                        continue;
+                    }
+                    console.error('[TagMemoEngine] ❌ Rust precomputation failed:', message);
+                    if (e.stack) console.error(e.stack);
                     return null;
                 }
-                console.log(
-                    `[TagMemoEngine] ✅ Rust precomputation complete: ` +
-                    `${result.computedCount} computed, ${result.skippedCount} skipped, ` +
-                    `algorithm=${result.algorithmVersion}, artifact=${result.artifactSig}, ` +
-                    `elapsed=${result.elapsedMs.toFixed(2)}ms`
-                );
-
-                return result;
-            } catch (e) {
-                console.error('[TagMemoEngine] ❌ Rust precomputation failed:', e.message || e);
-                if (e.stack) console.error(e.stack);
-                return null;
             }
+            return null;
         };
 
         if (leaseAlreadyHeld) return await run();

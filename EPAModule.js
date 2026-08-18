@@ -242,8 +242,28 @@ class EPAModule {
     }
 
     async _recomputeWithRust(tagCount) {
+        // 🦀⏱️ 阶段 3 EPA 原子性：compute 与 publish 之间存在并发窗口期（kv_store
+        // 被其他路径修改、tag 表被 INSERT/DELETE）。rust-vexus-lite::publish_epa_basis_cache
+        // 现在在持锁内主动比对 tag_count；JS 侧捕获 stale 错误后整体重做一次。
+        const MAX_EPA_STALE_RETRIES = 1;
+
+        for (let attempt = 1; attempt <= MAX_EPA_STALE_RETRIES + 1; attempt++) {
+            const attemptResult = await this._runEpaComputePublishOnce(tagCount, attempt);
+            if (attemptResult === 'success') return true;
+            if (attemptResult === 'stale' && attempt <= MAX_EPA_STALE_RETRIES) {
+                console.warn(
+                    `[EPA] 🦀⏱️ Stale publish detected on attempt ${attempt}, retrying compute → publish...`
+                );
+                continue;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    async _runEpaComputePublishOnce(tagCount, attempt) {
         console.log(
-            `[EPA] 🦀 computeEpaBasis JS call starting without write lease: db=${this.db.name}, ` +
+            `[EPA] 🦀 computeEpaBasis JS call (attempt ${attempt}) without write lease: db=${this.db.name}, ` +
             `tagCount=${tagCount}, clusters=${this.config.clusterCount}, maxBasis=${this.config.maxBasisDim}`
         );
 
@@ -266,47 +286,59 @@ class EPAModule {
 
         if (!result || !result.success) {
             console.warn(`[EPA] Rust basis recompute skipped/failed: ${result?.message || 'unknown reason'}`);
-            return false;
+            return 'failed';
         }
 
         if (typeof this.config.vexusIndex.publishEpaBasisCache !== 'function') {
             console.warn('[EPA] Rust basis compute finished but publishEpaBasisCache is unavailable; rebuild rust-vexus-lite.');
-            return false;
+            return 'failed';
         }
 
         const publish = async () => {
             console.log('[EPA] 🦀 Publishing Rust EPA basis cache under short write lease...');
-            const publishResult = this.config.vexusIndex.publishEpaBasisCache(this.db.name);
-            this._logRustEpaSummary('epa.publish', publishResult);
-            if (!publishResult || !publishResult.success) {
-                console.warn(`[EPA] Rust EPA cache publish skipped/failed: ${publishResult?.message || 'unknown reason'}`);
-                return false;
+            try {
+                const publishResult = this.config.vexusIndex.publishEpaBasisCache(this.db.name);
+                this._logRustEpaSummary('epa.publish', publishResult);
+                if (!publishResult || !publishResult.success) {
+                    console.warn(`[EPA] Rust EPA cache publish skipped/failed: ${publishResult?.message || 'unknown reason'}`);
+                    return { ok: false, stale: false };
+                }
+                if (this.config.afterRustWrite) {
+                    this.config.afterRustWrite('epa basis');
+                }
+                return { ok: true, stale: false, publishResult };
+            } catch (e) {
+                const message = (e && e.message) || String(e);
+                const stale = /EPA pending cache.*stale|database mismatch|tag count stale/i.test(message);
+                console.warn(
+                    `[EPA] 🦀⏱️ publish_epa_basis_cache threw${stale ? ' (stale)' : ''}: ${message}`
+                );
+                return { ok: false, stale };
             }
-            if (this.config.afterRustWrite) {
-                this.config.afterRustWrite('epa basis');
-            }
-            return publishResult;
         };
 
-        const publishResult = this.config.withRustWriteLease
+        const publishOutcome = this.config.withRustWriteLease
             ? await this.config.withRustWriteLease('tagmemo:epa-basis-publish', publish, {
                 pendingThreshold: 0,
                 ttlMs: 60 * 1000
             })
             : await publish();
 
-        if (!publishResult) return false;
-
-        if (await this._loadFromCache({ expectedTagCount: tagCount })) {
-            console.log(
-                `[EPA] 🦀 Rust basis ready: tags=${publishResult.tagCount}, clusters=${publishResult.clusterCount}, ` +
-                `basis=${publishResult.basisCount}, elapsed=${publishResult.elapsedMs.toFixed(2)}ms`
-            );
-            return true;
+        if (!publishOutcome) return 'failed';
+        if (publishOutcome.ok) {
+            const publishResult = publishOutcome.publishResult;
+            if (await this._loadFromCache({ expectedTagCount: tagCount })) {
+                console.log(
+                    `[EPA] 🦀 Rust basis ready: tags=${publishResult.tagCount}, clusters=${publishResult.clusterCount}, ` +
+                    `basis=${publishResult.basisCount}, elapsed=${publishResult.elapsedMs.toFixed(2)}ms`
+                );
+                return 'success';
+            }
+            console.warn('[EPA] Rust basis publish finished but cache reload failed; falling back to JS.');
+            return 'failed';
         }
-
-        console.warn('[EPA] Rust basis publish finished but cache reload failed; falling back to JS.');
-        return false;
+        if (publishOutcome.stale) return 'stale';
+        return 'failed';
     }
 
     async refreshInBackground() {

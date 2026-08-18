@@ -1336,6 +1336,7 @@ impl VexusIndex {
         model_sig: String,
         min_similarity: Option<f64>,
         full_rebuild: Option<bool>,
+        fact_generation: Option<String>,
     ) -> AsyncTask<PairwiseSimTask> {
         AsyncTask::new(PairwiseSimTask {
             db_path,
@@ -1343,6 +1344,7 @@ impl VexusIndex {
             model_sig,
             min_similarity: min_similarity.unwrap_or(0.05),
             full_rebuild: full_rebuild.unwrap_or(false),
+            fact_generation_override: fact_generation,
         })
     }
 }
@@ -2914,6 +2916,7 @@ pub struct PairwiseSimTask {
     model_sig: String,
     min_similarity: f64,
     full_rebuild: bool,
+    fact_generation_override: Option<String>,
 }
 
 impl Task for PairwiseSimTask {
@@ -2939,17 +2942,24 @@ impl Task for PairwiseSimTask {
         // 扫描前代际门禁：事实事务通过 SQLite trigger 单调推进该值。
         // 命中同模型/算法/配置的 ready artifact 时，避免读取全部高维 Tag BLOB、
         // 扫描 file_tags 以及重新构造几十万条 pair_set。
-        let fact_generation = {
-            let conn = open_sqlite_readonly(&self.db_path).map_err(|e| {
-                Error::from_reason(format!("DB readonly generation open failed: {}", e))
-            })?;
-            conn.query_row(
-                "SELECT value FROM kv_store \
-                 WHERE key = 'tagmemo_pairwise_fact_generation'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap_or_else(|_| "unavailable".to_string())
+        // 事实代际优先取 JS 主连接（better-sqlite3）传入的权威值。
+        // Rust 侧 rusqlite readonly 连接与 better-sqlite3 是两份独立编译，
+        // mmap -shm 时读到的是上次 flush 的旧 WAL-index，无法看见未 checkpoint
+        // 的 WAL 变更（与 SIGBUS 系列同根因）。仅当调用方未传入时才回退直读。
+        let fact_generation = match &self.fact_generation_override {
+            Some(generation) => generation.clone(),
+            None => {
+                let conn = open_sqlite_readonly(&self.db_path).map_err(|e| {
+                    Error::from_reason(format!("DB readonly generation open failed: {}", e))
+                })?;
+                conn.query_row(
+                    "SELECT value FROM kv_store \
+                     WHERE key = 'tagmemo_pairwise_fact_generation'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap_or_else(|_| "unavailable".to_string())
+            }
         };
         if !self.full_rebuild && fact_generation != "unavailable" {
             let conn = open_sqlite_readonly(&self.db_path).map_err(|e| {

@@ -55,6 +55,17 @@ function insertFile(db, id, tagIds) {
     });
 }
 
+function getFactGeneration(db) {
+    // PASSIVE checkpoint：同步 -shm 的 wal-index，让 Rust 侧 rusqlite readonly
+    // 连接能读到本次事务刚提交的 tags/file_tags/status 变更（生产 TagMemoEngine
+    // 在每次 compute 前执行同款 checkpoint，此处模拟生产完整链路）。
+    db.pragma('wal_checkpoint(PASSIVE)');
+    const row = db.prepare(
+        "SELECT value FROM kv_store WHERE key = 'tagmemo_pairwise_fact_generation'"
+    ).get();
+    return row ? String(row.value) : null;
+}
+
 async function run() {
     const tempRoot = fs.mkdtempSync(
         path.join(os.tmpdir(), 'vcp-pairwise-incremental-')
@@ -76,7 +87,8 @@ async function run() {
             dbPath,
             MODEL_SIG,
             MIN_SIMILARITY,
-            false
+            false,
+            getFactGeneration(db)
         );
         assert.strictEqual(first.pairCount, 3);
         assert.strictEqual(first.computedCount, 3);
@@ -99,7 +111,8 @@ async function run() {
             dbPath,
             MODEL_SIG,
             MIN_SIMILARITY,
-            false
+            false,
+            getFactGeneration(db)
         );
         assert.strictEqual(second.pairCount, 5);
         assert.strictEqual(
@@ -144,7 +157,8 @@ async function run() {
             dbPath,
             MODEL_SIG,
             MIN_SIMILARITY,
-            false
+            false,
+            getFactGeneration(db)
         );
         assert.strictEqual(warm.pairCount, 5);
         assert.strictEqual(warm.computedCount, 0);
@@ -172,7 +186,8 @@ async function run() {
                 dbPath,
                 MODEL_SIG,
                 MIN_SIMILARITY,
-                false
+                false,
+                getFactGeneration(db)
             );
         assert.strictEqual(afterVectorChange.pairCount, 5);
         assert.strictEqual(
