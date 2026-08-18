@@ -527,6 +527,32 @@ async function fetchWithRetry(
   }
   throw new Error('Fetch failed after all retries.');
 }
+
+// 剥离 Markdown 代码块，避免 VCP Refresh 误扫源码示例中的伪 RAG 标签
+function stripMarkdownCodeFencesForRagRefresh(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/```[\s\S]*?```/g, '');
+}
+
+// 安全解析 RAG metadata：必须是合法 JSON 对象，否则跳过（不抛错污染用户请求）
+function safeParseRagBlockMetadata(rawMetadata, debugMode = false) {
+  if (typeof rawMetadata !== 'string') return null;
+  const trimmed = rawMetadata.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    if (debugMode) console.warn(`[VCP Refresh] 跳过非 JSON metadata: ${trimmed.slice(0, 80)}`);
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed
+      : null;
+  } catch (e) {
+    if (debugMode) console.warn(`[VCP Refresh] metadata JSON 解析失败，跳过: ${e.message}`);
+    return null;
+  }
+}
+
 // 辅助函数：根据新上下文刷新对话历史中的RAG区块
 async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, debugMode = false) {
   const ragPlugin = pluginManager.messagePreprocessors?.get('RAGDiaryPlugin');
@@ -542,14 +568,15 @@ async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, de
   const newMessages = JSON.parse(JSON.stringify(messages));
   let hasRefreshed = false;
 
-  // 🟢 改进点1：使用更健壮的正则 [\s\S]*? 匹配跨行内容，并允许标签周围有空格
-  const ragBlockRegex = /<!-- VCP_RAG_BLOCK_START ([\s\S]*?) -->([\s\S]*?)<!-- VCP_RAG_BLOCK_END -->/g;
+  // metadata 只接受 JSON 对象，避免误匹配源码示例、正则模板和未渲染占位符。
+  const ragBlockRegex = /<!-- VCP_RAG_BLOCK_START\s+(\{[\s\S]*?\})\s+-->([\s\S]*?)<!-- VCP_RAG_BLOCK_END -->/g;
 
   for (let i = 0; i < newMessages.length; i++) {
     // 只处理 assistant 和 system 角色中的字符串内容
     // 🟢 改进点2：有些场景下 RAG 可能会被注入到 user 消息中，建议也检查 user
     if (['assistant', 'system', 'user'].includes(newMessages[i].role) && typeof newMessages[i].content === 'string') {
-      let messageContent = newMessages[i].content;
+      // 先剥离 Markdown 代码围栏，避免扫描到示例中的伪 RAG 标签。
+      let messageContent = stripMarkdownCodeFencesForRagRefresh(newMessages[i].content);
 
       // 快速检查是否存在标记，避免无效正则匹配
       if (!messageContent.includes('VCP_RAG_BLOCK_START')) {
@@ -571,8 +598,10 @@ async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, de
           const metadataJson = match[1];
 
           try {
-            // 🟢 改进点3：解析元数据时如果不严谨可能会报错，增加容错
-            const metadata = JSON.parse(metadataJson);
+            const metadata = safeParseRagBlockMetadata(metadataJson, debugMode);
+            if (!metadata) {
+              continue;
+            }
 
             if (debugMode) {
               console.log(`[VCP Refresh] 正在刷新区块 (${metadata.dbName})...`);
