@@ -101,6 +101,10 @@ fn open_readwrite(path: &str) -> std::result::Result<Connection, String> {
     connection
         .pragma_update(None, "synchronous", "NORMAL")
         .map_err(|error| format!("configure SQLite synchronous failed: {}", error))?;
+
+    // Builder 使用独立的 RW 打开函数，但必须与 lib.rs 主路径共享同一个
+    // keepalive；否则 builder 首次写入仍可能成为未受保护的 first-attach。
+    crate::ensure_sqlite_keepalive(path);
     Ok(connection)
 }
 

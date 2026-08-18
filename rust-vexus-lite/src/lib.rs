@@ -11,7 +11,7 @@ use rivermemo_topology_v3::MemoRuntime;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rusqlite::{Connection, OpenFlags};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 use usearch::Index;
 
@@ -1360,11 +1360,62 @@ fn open_sqlite_readonly(db_path: &str) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-fn open_sqlite_readwrite(db_path: &str) -> rusqlite::Result<Connection> {
+fn normalized_sqlite_path(db_path: &str) -> String {
+    std::fs::canonicalize(db_path)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(db_path)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from(db_path))
+        })
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase()
+}
+
+static SQLITE_KEEPALIVES: LazyLock<Mutex<std::collections::HashMap<String, Connection>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+fn open_sqlite_readwrite_inner(db_path: &str) -> rusqlite::Result<Connection> {
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     configure_sqlite_connection(&conn, false)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    Ok(conn)
+}
+
+pub(crate) fn ensure_sqlite_keepalive(db_path: &str) {
+    let key = normalized_sqlite_path(db_path);
+    let mut guard = SQLITE_KEEPALIVES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if guard.contains_key(&key) {
+        return;
+    }
+
+    match open_sqlite_readwrite_inner(db_path).and_then(|keepalive| {
+        keepalive.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
+        Ok(keepalive)
+    }) {
+        Ok(keepalive) => {
+            guard.insert(key.clone(), keepalive);
+            eprintln!(
+                "[Vexus] 🛡️ SQLite keepalive retained for {}",
+                key
+            );
+        }
+        Err(error) => {
+            eprintln!(
+                "[Vexus] ❌ SQLite keepalive unavailable for {}; retrying later: {}",
+                key, error
+            );
+        }
+    }
+}
+
+fn open_sqlite_readwrite(db_path: &str) -> rusqlite::Result<Connection> {
+    let conn = open_sqlite_readwrite_inner(db_path)?;
+    ensure_sqlite_keepalive(db_path);
     Ok(conn)
 }
 
@@ -3513,7 +3564,6 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[napi(object)]
