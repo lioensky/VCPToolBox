@@ -303,12 +303,13 @@ router.get('/posts', async (req, res) => {
                     return null;
                 }
 
-                // 轻量模式：不读正文，lastReply 字段缺省
+                // 轻量模式：不读正文，lastReply/replyCount 字段缺省
                 if (lightMode) {
                     return {
                         ...postMeta,
                         lastReplyBy: null,
                         lastReplyAt: null,
+                        replyCount: null,
                         modifiedAt: stats.mtime.toISOString(),
                         mtimeMs: stats.mtimeMs
                     };
@@ -321,7 +322,7 @@ router.get('/posts', async (req, res) => {
                 let lastReplyBy = null;
                 let lastReplyAt = null;
                 let match;
-                
+
                 // 限制匹配次数防止 ReDoS
                 let matchCount = 0;
                 while ((match = replyPattern.exec(content)) !== null && matchCount < FORUM_CONFIG.MAX_FLOORS_PER_POST) {
@@ -334,6 +335,8 @@ router.get('/posts', async (req, res) => {
                     ...postMeta,
                     lastReplyBy,
                     lastReplyAt,
+                    // 楼层总数（复用上面的匹配计数；客户端列表展示回复数徽标用）
+                    replyCount: matchCount,
                     modifiedAt: stats.mtime.toISOString(),
                     mtimeMs: stats.mtimeMs
                 };
