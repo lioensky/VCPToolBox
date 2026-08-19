@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, 'config.env') });
+const dotenv = require('dotenv');
+const fsSync = require('fs');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const AnonymizeUAPlugin = require('puppeteer-extra-plugin-anonymize-ua');
@@ -319,6 +321,21 @@ function isPdfUrl(url) {
         return new URL(url).pathname.toLowerCase().endsWith('.pdf');
     } catch {
         return false;
+    }
+}
+
+function getCurrentUrlFetchCookieEnv() {
+    try {
+        const configPath = path.resolve(__dirname, 'config.env');
+        return {
+            ...process.env,
+            ...dotenv.parse(fsSync.readFileSync(configPath, 'utf8'))
+        };
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            console.error(`读取 UrlFetch config.env 失败: ${error.message}`);
+        }
+        return process.env;
     }
 }
 
@@ -922,16 +939,26 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
         };
 
         // 方式1：多站点原始格式 (FETCH_COOKIES_RAW_MULTI) - 优先级最高
-        const fetchCookiesRawMulti = process.env.FETCH_COOKIES_RAW_MULTI;
+        const currentCookieEnv = getCurrentUrlFetchCookieEnv();
+        const fetchCookiesRawMulti = currentCookieEnv.FETCH_COOKIES_RAW_MULTI;
         if (fetchCookiesRawMulti && fetchCookiesRawMulti.trim()) {
             try {
                 const cookiesMap = JSON.parse(fetchCookiesRawMulti);
-                // 遍历所有域名配置，找到匹配当前访问 URL 的
-                for (const [domain, cookieString] of Object.entries(cookiesMap)) {
-                    if (urlObj.hostname.includes(domain)) {
-                        cookiesToSet = parseRawCookies(cookieString, urlObj);
-                        break;
-                    }
+                const matchingEntry = Object.entries(cookiesMap)
+                    .filter(([domain, cookieString]) => {
+                        if (typeof cookieString !== 'string') return false;
+                        const normalizedDomain = String(domain || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+                        return normalizedDomain &&
+                            (urlObj.hostname.toLowerCase() === normalizedDomain ||
+                                urlObj.hostname.toLowerCase().endsWith(`.${normalizedDomain}`));
+                    })
+                    .sort((left, right) => {
+                        const leftDomain = String(left[0]).trim().replace(/^\.+|\.+$/g, '');
+                        const rightDomain = String(right[0]).trim().replace(/^\.+|\.+$/g, '');
+                        return rightDomain.length - leftDomain.length;
+                    })[0];
+                if (matchingEntry) {
+                    cookiesToSet = parseRawCookies(matchingEntry[1], urlObj);
                 }
             } catch (multiCookieError) {
                 console.error('解析多站点 Cookies 失败:', multiCookieError.message);
