@@ -1158,8 +1158,11 @@ async function readMail(args = {}) {
     imageCount: normalized.imageUrls.length + imageContent.length,
     parsedDocumentCount: parsedDocuments.length
   });
-  // 供 admin API 提取原始 HTML / 纯文本 / 附件元数据（AI 工具路径忽略该字段）
-  aiResult.detail = normalized;
+  // 仅 admin API 调用（includeDetail）时挂归一化详情——避免 AI 工具链路
+  // 因 detail 携带 html/text/markdown 副本而膨胀上下文
+  if (args.includeDetail === true) {
+    aiResult.detail = normalized;
+  }
   return aiResult;
 }
 
@@ -2325,6 +2328,7 @@ async function adminListEmails(args = {}) {
 async function adminReadMail(args = {}) {
   const result = await readMail({
     ...args,
+    includeDetail: true,
     includeAttachmentContent: args.includeAttachmentContent === undefined ? false : args.includeAttachmentContent
   });
   return {
