@@ -1,14 +1,15 @@
 {
     "manifest_version": 3,
     "name": "VCP Chrome Control",
-    "version": "1.0.2",
-    "description": "连接到VCP服务器，允许AI代理与您的浏览器交互。1.0.2 加固 execute_script 异步结果透传并支持 MAIN/ISOLATED 执行世界。",
+    "version": "1.0.3",
+    "description": "连接到VCP服务器，允许AI代理与您的浏览器交互。1.0.3 增加当前站点 UrlFetch Cookie 一键配置。",
     "permissions": [
         "storage",
         "activeTab",
         "scripting",
         "debugger",
-        "alarms"
+        "alarms",
+        "cookies"
     ],
     "host_permissions": [
         "<all_urls>",

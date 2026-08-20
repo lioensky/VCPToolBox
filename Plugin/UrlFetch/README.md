@@ -30,7 +30,17 @@ FETCH_PROXY_PORT=7890
 #### Cookies 配置（三选一）
 
 ##### 方式一：FETCH_COOKIES_RAW_MULTI（推荐，支持多网站）
-JSON 对象格式，key 是域名关键词，value 是 cookie 字符串。会根据访问的 URL 自动匹配对应的 cookies。
+JSON 对象格式，key 是域名，value 是 cookie 字符串。访问 URL 时仅匹配主机名完全相等或其合法子域名；多个匹配项会优先使用最长、最具体的域名配置。
+
+**VCPChrome 一键配置**：
+1. 在 VCPChrome Popup 中打开已登录的 HTTP/HTTPS 页面
+2. 首次点击“配置当前站点 UrlFetch Cookie”时确认风险
+3. 扩展读取当前 URL 可用的全部 Cookie（包括 HttpOnly），通过已鉴权的 VCP WebSocket 发送到服务端
+4. 服务端只更新 `Plugin/UrlFetch/config.env` 中的 `FETCH_COOKIES_RAW_MULTI`，同一站点重复配置只替换该站点，其他站点和手工配置保持不变
+
+成功后 Popup 只显示站点、Cookie 数量和更新时间，不显示 Cookie 名称或值。该操作不会新增 HTTP 接口，也不需要重启 VCP 服务。
+
+**格式限制**：一键配置使用现有的 `name=value` 原始 Cookie 字符串格式，因此不会保留 Cookie 的 `path`、`SameSite`、`HttpOnly`、`secure` 等属性。这是 `FETCH_COOKIES_RAW_MULTI` 语义本身的限制。
 
 **获取步骤**：
 1. 在浏览器中打开第一个网站并登录（如 B站）
@@ -268,3 +278,4 @@ A: 当直接访问某些网站失败时，会自动尝试通过配置的代理�
 
 - **v0.1.0**: 初始版本，支持文本和快照模式
 - **v0.1.1**: 新增 Cookies 配置支持
+- **未定版本**: VCPChrome 支持当前站点 UrlFetch Cookie 一键配置；更新 `FETCH_COOKIES_RAW_MULTI` 时保留其他站点、注释和环境变量。
