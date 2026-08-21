@@ -18,8 +18,8 @@ const dns = require('dns').promises;
 const net = require('net');
 
 const multer = require('multer');
-const extract = require('extract-zip');
 const tar = require('tar');
+const { extractZipSafely } = require('../../modules/safeZipExtractor');
 
 const ROOT = path.join(__dirname, '..', '..');
 const PLUGIN_DIR = path.join(ROOT, 'Plugin');
@@ -880,7 +880,11 @@ async function installFromArchive(archivePath, task, options, archiveNameHint = 
     try {
         pushLog(task, `[extract:${format}] ${archivePath} -> ${workDir}`);
         if (format === 'zip') {
-            await extract(archivePath, { dir: workDir });
+            await extractZipSafely(archivePath, workDir, {
+                maxEntries: MAX_UPLOAD_FILES,
+                maxTotalSize: MAX_UPLOAD_BYTES,
+                maxEntrySize: MAX_UPLOAD_BYTES,
+            });
         } else {
             await tar.x({
                 file: archivePath,
@@ -907,7 +911,11 @@ async function installFromGithub(parsed, task, options) {
         const workDir = path.join(TMP_DIR, `extract-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`);
         await ensureDir(workDir);
         try {
-            await extract(zipPath, { dir: workDir });
+            await extractZipSafely(zipPath, workDir, {
+                maxEntries: MAX_UPLOAD_FILES,
+                maxTotalSize: MAX_UPLOAD_BYTES,
+                maxEntrySize: MAX_UPLOAD_BYTES,
+            });
             await assertSafeExtractedTree(workDir);
             let searchRoot = workDir;
             if (parsed.subpath) {
