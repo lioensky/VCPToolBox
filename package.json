@@ -32,16 +32,15 @@
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "eslint": "^9.39.1",
-    "exceljs": "^3.4.0",
+    "exceljs": "^4.4.0",
     "express": "^5.1.0",
-    "extract-zip": "^2.0.1",
     "flatted": "^3.3.3",
     "hnswlib-node": "^1.4.2",
     "https-browserify": "^1.0.0",
     "https-proxy-agent": "^7.0.4",
     "ioredis": "^5.6.1",
     "jsdom": "^24.1.3",
-    "mailparser": "^3.7.4",
+    "mailparser": "^3.9.15",
     "mammoth": "^1.11.0",
     "md5": "^2.3.0",
     "mime-types": "^3.0.1",
@@ -52,7 +51,7 @@
     "pdf-parse": "^2.2.16",
     "pm2": "^7.0.1",
     "proper-lockfile": "^4.1.2",
-    "puppeteer": "^22.15.0",
+    "puppeteer": "^25.8.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-anonymize-ua": "^2.4.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
@@ -62,12 +61,23 @@
     "stylelint": "^16.25.0",
     "tar": "^7.5.13",
     "trash": "^10.0.0",
-    "triviumdb": "^0.7.1",
+    "triviumdb": "0.7.5",
     "turndown": "^7.2.1",
     "undici": "^7.13.0",
+    "unzipper": "^0.10.14",
     "user-agents": "^1.1.597",
     "uuid": "^14.0.0",
     "winston": "^3.17.0",
     "ws": "^8.17.0"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.2",
+    "exceljs": {
+      "uuid": "11.1.1"
+    },
+    "html-to-text": "10.0.1",
+    "ip-address": "10.5.0",
+    "js-yaml": "4.3.1",
+    "nanoid": "3.3.18"
   }
 }

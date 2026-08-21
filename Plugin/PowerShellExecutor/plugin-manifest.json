@@ -1,10 +1,10 @@
 {
   "manifestVersion": "1.0.0",
   "name": "ServerPowerShellExecutor",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "PowerShell命令执行器",
-  "description": "一个允许AI执行PowerShell命令并返回其输出的插件。支持阻塞式和后台式执行并捕获输出结果。",
-  "author": "Your Name",
+  "description": "一个允许AI执行PowerShell命令并返回其输出的插件。支持阻塞式和后台式执行并捕获输出结果。v1.1.0: PS7优先检测 + 路径感知智能安全检查 + BOM编码保护。",
+  "author": "lionsky",
   "pluginType": "synchronous",
   "requiresAdmin": true,
   "entryPoint": {

@@ -1,10 +1,10 @@
 {
   "manifestVersion": "1.0.0",
   "name": "SemanticGroupEditor",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "displayName": "语义组编辑器",
-  "description": "一个用于查询和更新RAG知识库中语义词元组的插件。",
-  "author": "Roo",
+  "description": "用于查询、更新和设置 RAG 知识库中语义词元组权重的插件。所有命令支持串语法批量操作。",
+  "author": "lionsky & infinite-vector",
   "pluginType": "synchronous",
   "entryPoint": {
     "type": "nodejs",
@@ -18,13 +18,18 @@
     "invocationCommands": [
       {
         "commandIdentifier": "QueryGroups",
-        "description": "查询当前系统中所有的语义词元组，返回组名和对应的词元列表。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」QueryGroups「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」QueryGroups「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "查询语义词元组。不传 groupname 则返回全部组的概览；传入 groupname 则只返回指定组的详细信息。\n参数:\n- groupname (字符串, 可选): 要查询的组名，多个组用英文逗号分隔。不存在的组名会被明确提示。\n\n全量查询:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」QueryGroups「末」\n<<<[END_TOOL_REQUEST]>>>\n\n按名查询:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」QueryGroups「末」,\ngroupname:「始」绘画与视觉创作,代码实现与工程「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」QueryGroups「末」,\ngroupname:「始」绘画与视觉创作「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "UpdateGroups",
-        "description": "更新或创建语义词元组。如果组名已存在，则覆盖更新；如果不存在，则新建。支持批量操作。\n参数:\n- groupname (字符串, 必需): 要更新或创建的组名。\n- groupwords (字符串, 必需): 词元列表，用英文逗号分隔。\n\n单次更新调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」UpdateGroups「末」,\ngroupname:「始」新的组名「末」,\ngroupwords:「始」词1,词2,词3「末」\n<<<[END_TOOL_REQUEST]>>>\n\n批量更新调用格式 (使用数字后缀):\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand1:「始」UpdateGroups「末」,\ngroupname1:「始」组名A「末」,\ngroupwords1:「始」词A1,词A2「末」,\ncommand2:「始」UpdateGroups「末」,\ngroupname2:「始」组名B「末」,\ngroupwords2:「始」词B1,词B2「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "更新或创建语义词元组的词元列表。组名已存在则覆盖词元；不存在则新建（默认权重1）。\n参数:\n- groupname (字符串, 必需): 组名。\n- groupwords (字符串, 必需): 词元列表，用英文逗号分隔。\n\n单次:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」UpdateGroups「末」,\ngroupname:「始」科幻概念「末」,\ngroupwords:「始」戴森球,曲率引擎,赛博朋克「末」\n<<<[END_TOOL_REQUEST]>>>\n\n批量 (串语法):\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand1:「始」UpdateGroups「末」,\ngroupname1:「始」组名A「末」,\ngroupwords1:「始」词A1,词A2「末」,\ncommand2:「始」UpdateGroups「末」,\ngroupname2:「始」组名B「末」,\ngroupwords2:「始」词B1,词B2「末」\n<<<[END_TOOL_REQUEST]>>>",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」UpdateGroups「末」,\ngroupname:「始」科幻概念「末」,\ngroupwords:「始」戴森球,曲率引擎,赛博朋克「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "SetWeight",
+        "description": "设置语义组的权重值。权重影响 RAG 检索时该组向量对查询增强的贡献（groupWeight = weight × activationStrength）。\n参数:\n- groupname (字符串, 必需): 组名，多个组用英文逗号分隔可批量设置同一权重。\n- weight (数字, 必需): 大于 0 的有限数字。1 = 默认，0 到 1 之间 = 减弱，>1 = 增强。当前 RAG 管线使用回退表达式，因此不接受 0。\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」SetWeight「末」,\ngroupname:「始」绘画与视觉创作「末」,\nweight:「始」1.5「末」\n<<<[END_TOOL_REQUEST]>>>\n\n串语法批量:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand1:「始」SetWeight「末」,\ngroupname1:「始」绘画与视觉创作「末」,\nweight1:「始」1.5「末」,\ncommand2:「始」SetWeight「末」,\ngroupname2:「始」代码实现与工程「末」,\nweight2:「始」0.8「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」SetWeight「末」,\ngroupname:「始」绘画与视觉创作「末」,\nweight:「始」1.5「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

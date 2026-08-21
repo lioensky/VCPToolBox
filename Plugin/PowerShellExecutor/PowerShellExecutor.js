@@ -1,28 +1,173 @@
 const { spawn, execSync } = require('child_process');
 const path = require('path');
 const crypto = require('crypto');
-const http = require('http'); // 用于向主服务器发送回调
-const fs = require('fs').promises; // 添加 fs 模块
+const http = require('http');
+const fs = require('fs');
+const fsPromises = require('fs').promises;
+const os = require('os');
 require('dotenv').config({ path: path.join(__dirname, 'config.env') });
 
-// 用于向主服务器发送回调的函数
+// --- Shell 检测（PS7 优先） ---
+// 与前端 PowerShellExecutor v1.1.0 保持一致的检测逻辑
+// 检测顺序：Program Files 标准路径 → where.exe PATH 查找 → 回退 powershell.exe
+let resolvedShell = 'powershell.exe';
+
+if (os.platform() === 'win32') {
+    const pwshPath = path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe');
+    if (fs.existsSync(pwshPath)) {
+        resolvedShell = pwshPath;
+    } else {
+        // 二级回退：尝试 where.exe 查找 PATH 中的 pwsh
+        // 注意：winget/MSIX 安装的 PS7 位于 WindowsApps（AppExecution Alias），
+        // 该路径下的 pwsh.exe 是特殊占位文件，fs.existsSync 可能返回 false，
+        // 但 where.exe 能正确找到它且可直接 spawn。因此直接信任 where 结果。
+        try {
+            const whereResult = execSync('where.exe pwsh', { windowsHide: true, encoding: 'utf8', timeout: 5000 }).trim();
+            const firstLine = whereResult.split(/\r?\n/)[0].trim();
+            if (firstLine) {
+                resolvedShell = firstLine;
+            }
+        } catch (e) {
+            // where.exe 失败（pwsh 不在 PATH 中），保持 powershell.exe 回退
+        }
+    }
+}
+
+console.error(`[ServerPowerShellExecutor] Using shell: ${resolvedShell}`);
+
+// --- 配置加载 ---
+const defaultConfig = {
+    returnMode: 'delta',
+    forbiddenCommands: [],
+    authRequiredCommands: []
+};
+
+try {
+    const configPath = path.join(__dirname, 'config.env');
+    if (fs.existsSync(configPath)) {
+        const configContent = fs.readFileSync(configPath, 'utf-8');
+
+        const returnModeMatch = configContent.match(/^POWERSHELL_RETURN_MODE\s*=\s*(delta|full)/m);
+        if (returnModeMatch) {
+            defaultConfig.returnMode = returnModeMatch[1];
+        }
+
+        const forbiddenMatch = configContent.match(/^FORBIDDEN_COMMANDS\s*=\s*(.*)/m);
+        if (forbiddenMatch && forbiddenMatch[1]) {
+            defaultConfig.forbiddenCommands = forbiddenMatch[1].split(',').map(c => c.trim().toLowerCase()).filter(c => c);
+        }
+
+        const authRequiredMatch = configContent.match(/^AUTH_REQUIRED_COMMANDS\s*=\s*(.*)/m);
+        if (authRequiredMatch && authRequiredMatch[1]) {
+            defaultConfig.authRequiredCommands = authRequiredMatch[1].split(',').map(c => c.trim().toLowerCase()).filter(c => c);
+        }
+    }
+} catch (error) {
+    console.error('[ServerPowerShellExecutor] Error reading config.env:', error);
+}
+
+// --- 智能安全检查（移植自前端 v1.1.0） ---
+/**
+ * 智能安全检查函数 - 区分命令关键字和路径内容
+ * @param {string} command - 要检查的命令字符串
+ * @param {string[]} forbiddenKeywords - 禁止的关键字列表
+ * @param {string[]} authRequiredKeywords - 需要授权的关键字列表
+ * @returns {object} - 检查结果 {isForbidden, needsAuth, matchedKeyword, reason}
+ */
+function intelligentSecurityCheck(command, forbiddenKeywords, authRequiredKeywords) {
+    const result = {
+        isForbidden: false,
+        needsAuth: false,
+        matchedKeyword: null,
+        reason: null
+    };
+
+    const normalizedCommand = command.trim().toLowerCase();
+    if (!normalizedCommand) {
+        return result;
+    }
+
+    // 定义路径模式
+    const pathPatterns = [
+        /[a-z]:\\[^\\/:*?"<>|]*(?:\\[^\\/:*?"<>|]*)*\\?/gi,  // Windows路径
+        /\/[^\/\s]*(?:\/[^\/\s]*)*\/?/g,                      // Unix路径
+        /\$env:[a-z_]+[^\\/:*?"<>|\s]*/gi,                   // PS环境变量路径
+        /\${[^}]+}[^\\/:*?"<>|\s]*/gi,                       // 变量路径
+        /~\/[^\/\s]*(?:\/[^\/\s]*)*\/?/g                     // 用户目录路径
+    ];
+
+    // 提取所有可能的路径
+    const detectedPaths = [];
+    pathPatterns.forEach(pattern => {
+        const matches = normalizedCommand.match(pattern);
+        if (matches) {
+            detectedPaths.push(...matches);
+        }
+    });
+
+    // 创建不包含路径的命令版本
+    let commandWithoutPaths = normalizedCommand;
+    detectedPaths.forEach(p => {
+        commandWithoutPaths = commandWithoutPaths.replace(p.toLowerCase(), ' __PATH_PLACEHOLDER__ ');
+    });
+    commandWithoutPaths = commandWithoutPaths.replace(/\s+/g, ' ').trim();
+
+    // 检查禁止的关键字
+    for (const keyword of forbiddenKeywords) {
+        if (!keyword) continue;
+        const keywordLower = keyword.toLowerCase();
+
+        const isInPath = detectedPaths.some(p => p.toLowerCase().includes(keywordLower));
+        if (isInPath && !commandWithoutPaths.includes(keywordLower)) {
+            continue;
+        }
+
+        if (commandWithoutPaths.includes(keywordLower)) {
+            const wordBoundaryPattern = new RegExp(`\\b${keywordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+            if (wordBoundaryPattern.test(commandWithoutPaths)) {
+                result.isForbidden = true;
+                result.matchedKeyword = keyword;
+                result.reason = `命令包含被禁止的关键字: ${keyword}`;
+                return result;
+            }
+        }
+    }
+
+    // 检查需要授权的关键字
+    for (const keyword of authRequiredKeywords) {
+        if (!keyword) continue;
+        const keywordLower = keyword.toLowerCase();
+
+        const isInPath = detectedPaths.some(p => p.toLowerCase().includes(keywordLower));
+        if (isInPath && !commandWithoutPaths.includes(keywordLower)) {
+            continue;
+        }
+
+        if (commandWithoutPaths.includes(keywordLower)) {
+            const wordBoundaryPattern = new RegExp(`\\b${keywordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+            if (wordBoundaryPattern.test(commandWithoutPaths)) {
+                result.needsAuth = true;
+                result.matchedKeyword = keyword;
+                result.reason = `命令包含需要授权的关键字: ${keyword}`;
+            }
+        }
+    }
+
+    return result;
+}
+
+// --- 回调函数 ---
 function sendCallback(requestId, status, result) {
-    const callbackBaseUrl = process.env.CALLBACK_BASE_URL || 'http://localhost:6005/plugin-callback'; // 默认为localhost
+    const callbackBaseUrl = process.env.CALLBACK_BASE_URL || 'http://localhost:6005/plugin-callback';
     const pluginNameForCallback = process.env.PLUGIN_NAME_FOR_CALLBACK || 'PowerShellExecutor';
 
     if (!callbackBaseUrl) {
-        console.error('错误: CALLBACK_BASE_URL 环境变量未设置。无法发送异步回调。');
+        console.error('错误: CALLBACK_BASE_URL 环境变量未设置。');
         return;
     }
 
     const callbackUrl = `${callbackBaseUrl}/${pluginNameForCallback}/${requestId}`;
-
-    const payload = JSON.stringify({
-        requestId: requestId,
-        status: status,
-        result: result
-    });
-
+    const payload = JSON.stringify({ requestId, status, result });
     const protocol = callbackBaseUrl.startsWith('https') ? require('https') : require('http');
 
     const options = {
@@ -34,52 +179,64 @@ function sendCallback(requestId, status, result) {
     };
 
     const req = protocol.request(callbackUrl, options, (res) => {
-        console.log(`回调响应状态 ${requestId}: ${res.statusCode}`);
+        console.error(`回调响应状态 ${requestId}: ${res.statusCode}`);
     });
-
     req.on('error', (e) => {
         console.error(`回调请求错误 ${requestId}: ${e.message}`);
     });
-
     req.write(payload);
     req.end();
 }
 
 /**
  * 在 Windows 上强制终止进程树
- * @param {number} pid - 要终止的进程 PID
  */
 function forceKillProcessTree(pid) {
     try {
         execSync(`taskkill /F /T /PID ${pid}`, { windowsHide: true, stdio: 'ignore' });
     } catch (e) {
-        // 进程可能已经退出，忽略错误
+        // 进程可能已经退出
     }
 }
 
-async function executePowerShellCommand(command, executionType = 'blocking', timeout = 60000) {
+/**
+ * 执行 PowerShell 命令
+ * blocking 模式使用临时脚本文件（BOM 保护中文）
+ * background 模式同理
+ */
+async function executePowerShellCommand(command, executionType = 'blocking', timeout = 600000) {
     return new Promise((resolve, reject) => {
         let stdoutBuffer = Buffer.from('');
         let stderrBuffer = Buffer.from('');
+        let tempScriptPath = null;
 
-        // 预置编码命令以确保UTF-8输出
+        // 预置编码命令
         const fullCommand = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`;
 
-        // 统一使用非分离模式 spawn powershell.exe，保持进程树完整
-        const child = spawn('powershell.exe', ['-Command', fullCommand], {
-            windowsHide: executionType !== 'background', // background 模式显示窗口
-            timeout: 0, // 我们自己管理超时
-        });
+        if (executionType === 'blocking') {
+            // blocking 模式：写入带 BOM 的临时脚本文件执行，确保中文命令在 PS5.1 下也不乱码
+            try {
+                const tempScriptName = `vcp-server-ps-${crypto.randomUUID()}.ps1`;
+                tempScriptPath = path.join(os.tmpdir(), tempScriptName);
+                // UTF-8 BOM 前缀保护中文（与前端 v1.1.0 一致）
+                fs.writeFileSync(tempScriptPath, `\ufeff${fullCommand}`, 'utf8');
+            } catch (e) {
+                return reject(new Error(`无法创建临时脚本文件: ${e.message}`));
+            }
 
-        if (executionType === 'background') {
-            // background 模式：不再 detach，保持进程树完整以便超时后清理
-            // 返回子进程引用供调用方管理
-            resolve(child);
-        } else {
-            // blocking 模式
+            const child = spawn(resolvedShell, [
+                '-NoProfile',
+                '-NoLogo',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', tempScriptPath
+            ], {
+                windowsHide: true,
+                timeout: 0,
+            });
+
             const timeoutId = setTimeout(() => {
-                // Windows 上 child.kill() 可能无效，使用 taskkill 强杀进程树
                 forceKillProcessTree(child.pid);
+                cleanupTempScript(tempScriptPath);
                 reject(new Error(`命令在 ${timeout / 1000} 秒后超时。`));
             }, timeout);
 
@@ -93,17 +250,17 @@ async function executePowerShellCommand(command, executionType = 'blocking', tim
 
             child.on('close', (code) => {
                 clearTimeout(timeoutId);
+                cleanupTempScript(tempScriptPath);
 
                 const stdout = stdoutBuffer.toString('utf8');
                 const stderr = stderrBuffer.toString('utf8');
 
                 if (code !== 0) {
                     let errorMessage = `PowerShell 命令执行失败，退出码为 ${code}。`;
-                    if (stderr) {
-                        errorMessage += ` 错误输出: ${stderr}`;
-                    }
-                    if (stdout) {
-                        errorMessage += ` 标准输出: ${stdout}`;
+                    if (stderr) errorMessage += ` 错误输出: ${stderr}`;
+                    if (stdout) errorMessage += ` 标准输出: ${stdout}`;
+                    if (!stderr && !stdout) {
+                        errorMessage += ` [诊断] 无输出。Shell: ${resolvedShell} | 临时脚本: ${tempScriptPath || 'N/A'}`;
                     }
                     reject(new Error(errorMessage));
                     return;
@@ -113,10 +270,33 @@ async function executePowerShellCommand(command, executionType = 'blocking', tim
 
             child.on('error', (err) => {
                 clearTimeout(timeoutId);
+                cleanupTempScript(tempScriptPath);
                 reject(new Error(`启动PowerShell命令失败: ${err.message}`));
             });
+
+        } else {
+            // background 模式：保持原有逻辑（spawn 不分离，轮询输出文件）
+            const child = spawn(resolvedShell, ['-NoProfile', '-NoLogo', '-Command', fullCommand], {
+                windowsHide: false,
+                timeout: 0,
+            });
+
+            resolve(child);
         }
     });
+}
+
+/**
+ * 清理临时脚本文件
+ */
+function cleanupTempScript(filePath) {
+    if (filePath) {
+        try {
+            fs.unlinkSync(filePath);
+        } catch (e) {
+            // 文件可能已被清理或不存在，忽略
+        }
+    }
 }
 
 async function main() {
@@ -128,6 +308,7 @@ async function main() {
     process.stdin.on('end', async () => {
         try {
             const args = JSON.parse(input);
+
             // 支持 command, command1, command2... 串行执行
             const commands = [];
             if (args.command) {
@@ -139,22 +320,23 @@ async function main() {
                 i++;
             }
 
-            // --- 安全性检查 ---
-            const forbiddenCommands = (process.env.FORBIDDEN_COMMANDS || '').toLowerCase().split(',').map(cmd => cmd.trim()).filter(Boolean);
-            const authRequiredCommands = (process.env.AUTH_REQUIRED_COMMANDS || '').toLowerCase().split(',').map(cmd => cmd.trim()).filter(Boolean);
+            // --- 智能安全性检查 ---
             let isAuthRequiredByConfig = false;
 
             for (const cmd of commands) {
-                const lowerCaseCmd = cmd.toLowerCase();
+                const securityResult = intelligentSecurityCheck(
+                    cmd,
+                    defaultConfig.forbiddenCommands,
+                    defaultConfig.authRequiredCommands
+                );
 
-                // 1. 检查是否包含被禁止的指令
-                if (forbiddenCommands.length > 0 && forbiddenCommands.some(forbidden => lowerCaseCmd.includes(forbidden))) {
-                    throw new Error(`执行被拒绝：指令 "${cmd.substring(0, 50)}..." 包含被禁止的关键字。`);
+                if (securityResult.isForbidden) {
+                    throw new Error(`执行被拒绝：${securityResult.reason}`);
                 }
 
-                // 2. 检查是否需要管理员授权
-                if (!isAuthRequiredByConfig && authRequiredCommands.length > 0 && authRequiredCommands.some(authCmd => lowerCaseCmd.includes(authCmd))) {
+                if (securityResult.needsAuth) {
                     isAuthRequiredByConfig = true;
+                    console.error(`[ServerPowerShellExecutor] 命令需要授权：${securityResult.reason}`);
                 }
             }
             // --- 安全性检查结束 ---
@@ -164,21 +346,20 @@ async function main() {
             if (isMultiCommand) {
                 const psCommandObjects = commands.map(cmd => {
                     const escapedCmdForPs = cmd.replace(/'/g, "''");
-                    // 为最终输出的JSON字符串转义命令本身
                     const escapedCmdForJson = cmd.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
                     return `$output = (Invoke-Expression -Command '${escapedCmdForPs}') *>&1 | Out-String; $results.Add([PSCustomObject]@{command='${escapedCmdForJson}'; output=$output.Trim()}) | Out-Null;`;
                 }).join('\n');
-                // 将所有命令包装在一个脚本中，该脚本收集每个命令的输出并最终输出为JSON
                 command = `$results = New-Object System.Collections.ArrayList; ${psCommandObjects} $results | ConvertTo-Json -Compress -Depth 5;`;
             } else {
                 command = commands.join('; ');
             }
+
             let executionType = args.executionType;
-            const toolPassword = args.tool_password || args.requireAdmin; // 兼容旧版 requireAdmin 参数
+            const toolPassword = args.tool_password || args.requireAdmin;
             let notice;
 
             if (!executionType) {
-                executionType = 'blocking'; // 如果未提供，则默认为 blocking
+                executionType = 'blocking';
             } else if (executionType !== 'blocking' && executionType !== 'background') {
                 throw new Error('无效的参数: executionType。必须是 "blocking" 或 "background"。');
             }
@@ -194,15 +375,12 @@ async function main() {
 
             if (toolPassword) {
                 const realCode = process.env.DECRYPTED_AUTH_CODE;
-
                 if (!realCode) {
                     throw new Error('无法获取验证码。请确保主服务器配置正确。');
                 }
-
                 if (String(toolPassword) !== realCode) {
                     throw new Error('验证码错误。');
                 }
-                // 移除原有的强制切换 background 的逻辑
             }
 
             if (executionType === 'background') {
@@ -210,24 +388,18 @@ async function main() {
                 const tempFilePath = path.join(__dirname, `${requestId}.log`);
                 const finalCommand = `${command} *>&1 | Tee-Object -FilePath "${tempFilePath}"`;
 
-                // 启动 PowerShell 进程（不再 detach，保持进程树完整）
                 const childProcess = await executePowerShellCommand(finalCommand, 'background');
 
-                // 关键：等待轮询完成，同时持有子进程引用以便超时清理
                 const output = await new Promise((resolve, reject) => {
                     let lastSize = -1;
                     let idleCycles = 0;
                     let totalWaitTime = 0;
-                    const maxIdleCycles = 3; // 6秒无增长则认为结束
-                    const pollingInterval = 2000; // 2秒
-                    const maxTotalWaitTime = 45000; // 最大等待45秒
+                    const maxIdleCycles = 3;
+                    const pollingInterval = 2000;
+                    const maxTotalWaitTime = 45000;
                     let processExited = false;
 
-                    // 监听进程退出事件，提前结束轮询
-                    childProcess.on('exit', () => {
-                        processExited = true;
-                    });
-
+                    childProcess.on('exit', () => { processExited = true; });
                     childProcess.on('error', (err) => {
                         processExited = true;
                         console.error(`后台进程启动错误: ${err.message}`);
@@ -236,7 +408,7 @@ async function main() {
                     const intervalId = setInterval(async () => {
                         totalWaitTime += pollingInterval;
                         try {
-                            const stats = await fs.stat(tempFilePath).catch(() => null);
+                            const stats = await fsPromises.stat(tempFilePath).catch(() => null);
 
                             if (stats) {
                                 if (stats.size > 0 && stats.size > lastSize) {
@@ -247,28 +419,21 @@ async function main() {
                                 }
                             }
 
-                            // 判定结束的条件：
-                            // 1. 进程已退出（最可靠的信号）
-                            // 2. 超过空闲周期
-                            // 3. 超过最大总等待时间
                             const shouldFinish = processExited || idleCycles >= maxIdleCycles || totalWaitTime >= maxTotalWaitTime;
 
                             if (shouldFinish) {
                                 clearInterval(intervalId);
 
-                                // 如果进程还没退出且是超时导致的结束，强杀进程树
                                 if (!processExited && totalWaitTime >= maxTotalWaitTime) {
                                     console.error(`后台任务超时 (${maxTotalWaitTime / 1000}s)，强制终止进程树 PID: ${childProcess.pid}`);
                                     forceKillProcessTree(childProcess.pid);
                                 } else if (!processExited && idleCycles >= maxIdleCycles) {
-                                    // 输出稳定，进程可能还在但不再产出，也强杀
                                     forceKillProcessTree(childProcess.pid);
                                 }
 
-                                // 赋予最后一两秒的写入宽限期
                                 await new Promise(r => setTimeout(r, 1000));
 
-                                const fileBuffer = await fs.readFile(tempFilePath).catch(() => null);
+                                const fileBuffer = await fsPromises.readFile(tempFilePath).catch(() => null);
                                 let fileContent = (totalWaitTime >= maxTotalWaitTime && lastSize === -1)
                                     ? '后台任务启动超时或无输出产生。'
                                     : '未能读取到后台任务输出。';
@@ -279,29 +444,24 @@ async function main() {
                                         fileContent = fileBuffer.toString('utf16le');
                                     }
                                 }
-                                await fs.unlink(tempFilePath).catch(() => { });
+                                await fsPromises.unlink(tempFilePath).catch(() => {});
                                 resolve(fileContent);
                             }
                         } catch (error) {
                             clearInterval(intervalId);
-                            // 超时清理：确保进程被杀死
                             if (!processExited && childProcess.pid) {
                                 forceKillProcessTree(childProcess.pid);
                             }
-                            await fs.unlink(tempFilePath).catch(() => { });
+                            await fsPromises.unlink(tempFilePath).catch(() => {});
                             reject(new Error(`轮询后台任务输出时出错: ${error.message}`));
                         }
                     }, pollingInterval);
                 });
 
-                // 只有在轮询结束后，才进行最终的输出
                 let resultOutput = output;
                 if (isMultiCommand) {
                     try {
-                        // 如果是多命令模式，输出应该是JSON字符串，我们将其解析为对象
                         resultOutput = JSON.parse(output);
-
-                        // ===== 将多命令输出转化为 Markdown =====
                         let markdownOutput = `**PowerShell 批量执行结果**\n\n`;
                         if (Array.isArray(resultOutput)) {
                             resultOutput.forEach((res, index) => {
@@ -312,15 +472,14 @@ async function main() {
                             markdownOutput += `\`\`\`json\n${JSON.stringify(resultOutput, null, 2)}\n\`\`\``;
                         }
                         resultOutput = markdownOutput;
-
                     } catch (e) {
                         console.error(`多命令JSON解析错误: ${e.message}。返回原始输出。`);
                         resultOutput = `**PowerShell 原始输出**\n\`\`\`\n${output}\n\`\`\``;
                     }
                 } else {
-                    // 单一命令直接包装
                     resultOutput = `**PowerShell 执行结果**\n\`\`\`\n${output}\n\`\`\``;
                 }
+
                 const finalResult = { status: 'success', result: { content: [{ type: 'text', text: resultOutput }] } };
                 if (notice) {
                     finalResult.result.notice = notice;
@@ -329,15 +488,12 @@ async function main() {
                 console.log(JSON.stringify(finalResult));
 
             } else {
-                // blocking 模式保持不变
+                // blocking 模式
                 const output = await executePowerShellCommand(command, executionType);
                 let resultOutput = output;
                 if (isMultiCommand) {
                     try {
-                        // 如果是多命令模式，输出应该是JSON字符串，我们将其解析为对象
                         resultOutput = JSON.parse(output);
-
-                        // ===== 将多命令输出转化为 Markdown =====
                         let markdownOutput = `**PowerShell 批量执行结果**\n\n`;
                         if (Array.isArray(resultOutput)) {
                             resultOutput.forEach((res, index) => {
@@ -348,13 +504,11 @@ async function main() {
                             markdownOutput += `\`\`\`json\n${JSON.stringify(resultOutput, null, 2)}\n\`\`\``;
                         }
                         resultOutput = markdownOutput;
-
                     } catch (e) {
                         console.error(`多命令JSON解析错误: ${e.message}。返回原始输出。`);
                         resultOutput = `**PowerShell 原始输出**\n\`\`\`\n${output}\n\`\`\``;
                     }
                 } else {
-                    // 单一命令直接包装
                     resultOutput = `**PowerShell 执行结果**\n\`\`\`\n${output}\n\`\`\``;
                 }
                 console.log(JSON.stringify({ status: 'success', result: { content: [{ type: 'text', text: resultOutput }] } }));

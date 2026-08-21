@@ -17,6 +17,7 @@ if (
 console.log('[VCP Background] 🚀 VCPChrome background.js loaded.');
 let ws = null;
 let isConnected = false;
+const pendingUrlFetchCookieSync = new Map();
 let isMonitoringEnabled = false; // 页面监控开关
 let redactSensitiveDom = true; // 浏览器内隐私开关：默认开启，用户可在 Popup 显式关闭
 let heartbeatIntervalId = null;
@@ -331,6 +332,17 @@ function connect(options = {}) {
             if (message.type === 'heartbeat_ack') {
                 console.log('Received heartbeat acknowledgment.');
                 // 可以选择更新一个时间戳来跟踪连接活跃度
+            } else if (message.type === 'urlfetch_cookie_sync_result') {
+                const requestId = message.data?.requestId;
+                const pending = pendingUrlFetchCookieSync.get(requestId);
+                if (!pending) return;
+                pendingUrlFetchCookieSync.delete(requestId);
+                clearTimeout(pending.timeoutId);
+                pending.sendResponse(message.data || {
+                    requestId,
+                    status: 'error',
+                    error: '服务端返回了无效的 Cookie 同步响应'
+                });
             } else if (message.type === 'command') {
                 const commandData = message.data;
                 console.log('Received commandData:', commandData);
@@ -447,6 +459,7 @@ function connect(options = {}) {
             console.log('WebSocket connection closed.');
             isConnected = false;
             ws = null;
+            rejectPendingUrlFetchCookieSync('VCP WebSocket 已断开');
             updateIcon();
             broadcastStatusUpdate(); // 广播最新状态
             if (heartbeatIntervalId) {
@@ -462,6 +475,7 @@ function connect(options = {}) {
             console.error('WebSocket error:', error);
             isConnected = false;
             ws = null;
+            rejectPendingUrlFetchCookieSync('VCP WebSocket 发生错误');
             updateIcon();
             broadcastStatusUpdate(); // 广播最新状态
             if (heartbeatIntervalId) {
@@ -644,6 +658,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         // 不再立即返回状态，而是等待广播
         // sendResponse({ isConnected: !isConnected });
+    } else if (request.type === 'SYNC_URLFETCH_COOKIES') {
+        requestUrlFetchCookieSync(sendResponse);
+        return true;
     } else if (request.type === 'PAGE_INFO_UPDATE') {
         const senderTabId = sender.tab?.id;
         
@@ -1717,6 +1734,133 @@ function sendResponseToWs(message) {
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(message));
     }
+}
+
+function rejectPendingUrlFetchCookieSync(errorMessage) {
+    pendingUrlFetchCookieSync.forEach((pending, requestId) => {
+        clearTimeout(pending.timeoutId);
+        pending.sendResponse({
+            status: 'error',
+            code: 'VCP_NOT_CONNECTED',
+            error: errorMessage
+        });
+        pendingUrlFetchCookieSync.delete(requestId);
+    });
+}
+
+function createRequestId() {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
+}
+
+function requestUrlFetchCookieSync(sendResponse) {
+    if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) {
+        sendResponse({ status: 'error', code: 'VCP_NOT_CONNECTED', error: 'VCP WebSocket 尚未连接' });
+        return;
+    }
+
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (chrome.runtime.lastError) {
+            sendResponse({
+                status: 'error',
+                code: 'ACTIVE_TAB_QUERY_FAILED',
+                error: `无法获取当前活动标签页：${chrome.runtime.lastError.message}`
+            });
+            return;
+        }
+
+        const tab = tabs?.[0];
+        const pageUrl = String(tab?.url || '');
+        let url;
+        try {
+            url = new URL(pageUrl);
+        } catch (_) {
+            sendResponse({ status: 'error', code: 'INVALID_PAGE_URL', error: '当前标签页不是有效网页' });
+            return;
+        }
+
+        if (!['http:', 'https:'].includes(url.protocol)) {
+            sendResponse({
+                status: 'error',
+                code: 'UNSUPPORTED_PAGE',
+                error: '当前标签页不是 HTTP/HTTPS 页面，无法读取 Cookie'
+            });
+            return;
+        }
+
+        const siteKey = url.hostname.toLowerCase().replace(/\.$/, '');
+        const validSiteKey = siteKey.length > 0 &&
+            siteKey.length <= 253 &&
+            !siteKey.includes(':') &&
+            siteKey.split('.').every(label =>
+                label.length > 0 &&
+                label.length <= 63 &&
+                /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label)
+            );
+        if (!validSiteKey) {
+            sendResponse({
+                status: 'error',
+                code: 'INVALID_PAGE_URL',
+                error: '当前页面主机名格式不受支持'
+            });
+            return;
+        }
+
+        chrome.cookies.getAll({ url: pageUrl }, (cookies) => {
+            if (chrome.runtime.lastError) {
+                sendResponse({
+                    status: 'error',
+                    code: 'COOKIE_QUERY_FAILED',
+                    error: `读取当前站点 Cookie 失败：${chrome.runtime.lastError.message}`
+                });
+                return;
+            }
+            if (!Array.isArray(cookies) || cookies.length === 0) {
+                sendResponse({
+                    status: 'error',
+                    code: 'NO_COOKIES',
+                    error: '当前页面没有可用 Cookie'
+                });
+                return;
+            }
+
+            const requestId = createRequestId();
+            const timeoutId = setTimeout(() => {
+                const pending = pendingUrlFetchCookieSync.get(requestId);
+                if (!pending) return;
+                pendingUrlFetchCookieSync.delete(requestId);
+                pending.sendResponse({
+                    status: 'error',
+                    code: 'URLFETCH_COOKIE_SYNC_TIMEOUT',
+                    error: '服务端写入 UrlFetch Cookie 超时'
+                });
+            }, 30000);
+
+            pendingUrlFetchCookieSync.set(requestId, { sendResponse, timeoutId });
+            try {
+                ws.send(JSON.stringify({
+                    type: 'urlfetch_cookie_sync',
+                    data: {
+                        requestId,
+                        siteKey,
+                        pageUrl,
+                        cookies: cookies.map(cookie => ({
+                            name: cookie.name,
+                            value: cookie.value
+                        }))
+                    }
+                }));
+            } catch (error) {
+                clearTimeout(timeoutId);
+                pendingUrlFetchCookieSync.delete(requestId);
+                sendResponse({
+                    status: 'error',
+                    code: 'COOKIE_SYNC_SEND_FAILED',
+                    error: `发送 Cookie 到 VCP 服务端失败：${error.message || error}`
+                });
+            }
+        });
+    });
 }
 
 function parseNumberParam(value, defaultValue, minValue, maxValue) {

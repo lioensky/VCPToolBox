@@ -1154,15 +1154,6 @@ class RAGDiaryPlugin {
                 return directTextResult.messages;
             }
 
-            // ✅ 新增：更新上下文向量映射（为后续衰减聚合做准备）
-            // 🌟 修复：传递 allowApi 配置，控制是否允许向量化历史消息
-            await this.contextVectorManager.updateContext(messages, { allowApi: this.contextVectorAllowApi });
-
-            // 🌟 V2折叠：将上下文中的消息 hash+vector 同步写入 FoldingStore
-            if (this.foldingStore) {
-                this._syncContextToFoldingStore(messages);
-            }
-
             const collectedAttachments = []; // 🌟 V7: 用于收集 ::Base64Memo 触发的附件
 
             // V3.0: 支持多system消息处理
@@ -1201,7 +1192,7 @@ class RAGDiaryPlugin {
                     }
 
                     // 检查 RAG/Meta/AIMemo/冷知识库 占位符
-                    if (/\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\{\{.*日记本.*\}\}|\[\[.*知识库.*\]\]|《《.*知识库.*》》|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(text)) {
+                      if (/\[\[[^\]]*日记本[^\]]*\]\]|<<[^>]*日记本[^>]*>>|《《[^》]*日记本[^》]*》》|\{\{[^}]*日记本[^}]*\}\}|\[\[[^\]]*知识库[^\]]*\]\]|《《[^》]*知识库[^》]*》》|\[\[[^\]]*VCP元思考[^\]]*\]\]|\[\[AIMemo=True\]\]/.test(text)) {
                         if (!acc.includes(index)) {
                             acc.push(index);
                             if (m.role === 'user') {
@@ -1214,9 +1205,22 @@ class RAGDiaryPlugin {
                 return acc;
             }, []);
 
-            // 如果没有找到任何需要处理的 system 消息，则直接返回
+            // 如果没有找到任何需要处理的 system 消息，则直接返回。
+            // 常规对话/编程请求不消费历史上下文向量，因此不应扫描、哈希或模糊匹配整段历史。
             if (targetSystemMessageIndices.length === 0) {
                 return messages;
+            }
+
+            // 仅在确实存在 RAG / 记忆 / 元思考占位符时构建上下文向量。
+            // CONTEXT_VECTOR_ALLOW_API_HISTORY=false 只禁止 API 请求，并不会自动省略缓存扫描，
+            // 因此该门控必须放在调用方，才能让普通请求真正走零开销快速路径。
+            await this.contextVectorManager.updateContext(messages, {
+                allowApi: this.contextVectorAllowApi
+            });
+
+            // V2 折叠同步同样只服务于记忆链路，避免普通请求重复扫描全部 assistant 历史。
+            if (this.foldingStore) {
+                this._syncContextToFoldingStore(messages);
             }
 
             // 2. 准备共享资源 (V3.3: 精准上下文提取)
@@ -1329,12 +1333,12 @@ class RAGDiaryPlugin {
                     newMessages[index].content = this._replaceTextInContent(
                         newMessages[index].content,
                         (text) => text
-                            .replace(/\[\[.*日记本.*\]\]/g, '')
-                            .replace(/<<.*日记本>>/g, '')
-                            .replace(/《《.*日记本.*》》/g, '')
-                            .replace(/\{\{.*日记本.*\}\}/g, '')
-                            .replace(/\[\[.*知识库.*\]\]/g, '')
-                            .replace(/《《.*知识库.*》》/g, '')
+                            .replace(/\[\[[^\]]*日记本[^\]]*\]\]/g, '')
+                            .replace(/<<[^>]*日记本[^>]*>>/g, '')
+                            .replace(/《《[^》]*日记本[^》]*》》/g, '')
+                            .replace(/\{\{[^}]*日记本[^}]*\}\}/g, '')
+                            .replace(/\[\[[^\]]*知识库[^\]]*\]\]/g, '')
+                            .replace(/《《[^》]*知识库[^》]*》》/g, '')
                     );
                 }
                 return newMessages;
@@ -1467,12 +1471,12 @@ class RAGDiaryPlugin {
                 }
                 if (shouldClean) {
                     msg.content = this._replaceTextInContent(msg.content, (text) => text
-                        .replace(/\[\[.*日记本.*\]\]/g, '[RAG处理失败]')
-                        .replace(/<<.*日记本>>/g, '[RAG处理失败]')
-                        .replace(/《《.*日记本.*》》/g, '[RAG处理失败]')
-                        .replace(/\{\{.*日记本\}\}/g, '[RAG处理失败]')
-                        .replace(/\[\[.*知识库.*\]\]/g, '[冷知识库处理失败]')
-                        .replace(/《《.*知识库.*》》/g, '[冷知识库处理失败]'));
+                        .replace(/\[\[[^\]]*日记本[^\]]*\]\]/g, '[RAG处理失败]')
+                        .replace(/<<[^>]*日记本[^>]*>>/g, '[RAG处理失败]')
+                        .replace(/《《[^》]*日记本[^》]*》》/g, '[RAG处理失败]')
+                        .replace(/\{\{[^}]*日记本[^}]*\}\}/g, '[RAG处理失败]')
+                        .replace(/\[\[[^\]]*知识库[^\]]*\]\]/g, '[冷知识库处理失败]')
+                        .replace(/《《[^》]*知识库[^》]*》》/g, '[冷知识库处理失败]'));
                 }
             });
             return safeMessages;
@@ -1489,19 +1493,19 @@ class RAGDiaryPlugin {
         // 移除全局 AIMemo 开关占位符，因为它只作为许可证，不应出现在最终输出中
         processedContent = processedContent.replace(/\[\[AIMemo=True\]\]/g, '');
 
-        const ragDeclarations = [...processedContent.matchAll(/\[\[(.*?)日记本(.*?)\]\]/g)];
-        const fullTextDeclarations = [...processedContent.matchAll(/<<(.*?)日记本(.*?)>>/g)];
-        const hybridDeclarations = [...processedContent.matchAll(/《《(.*?)日记本(.*?)》》/g)];
-        const metaThinkingDeclarations = [...processedContent.matchAll(/\[\[VCP元思考(.*?)\]\]/g)];
-        const directDiariesDeclarations = [...processedContent.matchAll(/\{\{(.*?)日记本(.*?)\}\}/g)];
+        const ragDeclarations = [...processedContent.matchAll(/\[\[([^\]]*?)日记本([^\]]*?)\]\]/g)];
+        const fullTextDeclarations = [...processedContent.matchAll(/<<([^>]*?)日记本([^>]*?)>>/g)];
+        const hybridDeclarations = [...processedContent.matchAll(/《《([^》]*?)日记本([^》]*?)》》/g)];
+        const metaThinkingDeclarations = [...processedContent.matchAll(/\[\[VCP元思考([^\]]*?)\]\]/g)];
+        const directDiariesDeclarations = [...processedContent.matchAll(/\{\{([^}]*?)日记本([^}]*?)\}\}/g)];
         // 🧊 冷知识库占位符：[[xx知识库]] 直接检索 / 《《xx知识库》》 门控检索。
-        // “xx知识库日记本”是合法的日记本名称；宽松的知识库正则也会命中它，因此必须让日记本语法优先。
+        // "xx知识库日记本"是合法的日记本名称；宽松的知识库正则也会命中它，因此必须让日记本语法优先。
         // 例如 [[vcp知识库日记本]] 只能指向 dailynote/vcp知识库，不能再被解释为 knowledge/vcp。
         const isUnambiguousTdbDeclaration = (match) =>
             !this.tdbProcessor?.isDiaryPlaceholderAmbiguity(match[1], match[2]);
-        const tdbDirectDeclarations = [...processedContent.matchAll(/\[\[(.*?)知识库(.*?)\]\]/g)]
+        const tdbDirectDeclarations = [...processedContent.matchAll(/\[\[([^\]]*?)知识库([^\]]*?)\]\]/g)]
             .filter(isUnambiguousTdbDeclaration);
-        const tdbHybridDeclarations = [...processedContent.matchAll(/《《(.*?)知识库(.*?)》》/g)]
+        const tdbHybridDeclarations = [...processedContent.matchAll(/《《([^》]*?)知识库([^》]*?)》》/g)]
             .filter(isUnambiguousTdbDeclaration);
         console.log(`[RAGDiaryPlugin] Found ${directDiariesDeclarations.length} {{...}} declarations`);
 

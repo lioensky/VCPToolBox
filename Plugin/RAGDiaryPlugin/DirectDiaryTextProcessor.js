@@ -438,12 +438,12 @@ class DirectDiaryTextProcessor {
     }
 
     hasDirectDiaryPlaceholder(text) {
-        return typeof text === 'string' && /\{\{.*?日记本.*?\}\}/.test(text);
+        return typeof text === 'string' && /\{\{[^}]*?日记本[^}]*?\}\}/.test(text);
     }
 
     hasVectorOrSemanticPlaceholder(text) {
         if (!text || typeof text !== 'string') return false;
-        return /\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\[\[.*知识库.*\]\]|《《.*知识库.*》》|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(text);
+        return /\[\[[^\]]*日记本[^\]]*\]\]|<<[^>]*日记本[^>]*>>|《《[^》]*日记本[^》]*》》|\[\[[^\]]*知识库[^\]]*\]\]|《《[^》]*知识库[^》]*》》|\[\[[^\]]*VCP元思考[^\]]*\]\]|\[\[AIMemo=True\]\]/.test(text);
     }
 
     isDirectOnlyText(text) {
@@ -942,17 +942,17 @@ class DirectDiaryTextProcessor {
 
     sanitizeNestedPlaceholders(diaryContent) {
         return String(diaryContent || '')
-            .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
-            .replace(/<<.*日记本.*>>/g, '[循环占位符已移除]')
-            .replace(/《《.*日记本.*》》/g, '[循环占位符已移除]')
-            .replace(/\{\{.*日记本.*\}\}/g, '[循环占位符已移除]')
-            .replace(/\[\[.*知识库.*\]\]/g, '[循环占位符已移除]')
-            .replace(/《《.*知识库.*》》/g, '[循环占位符已移除]');
+            .replace(/\[\[[^\]]*日记本[^\]]*\]\]/g, '[循环占位符已移除]')
+            .replace(/<<[^>]*日记本[^>]*>>/g, '[循环占位符已移除]')
+            .replace(/《《[^》]*日记本[^》]*》》/g, '[循环占位符已移除]')
+            .replace(/\{\{[^}]*日记本[^}]*\}\}/g, '[循环占位符已移除]')
+            .replace(/\[\[[^\]]*知识库[^\]]*\]\]/g, '[循环占位符已移除]')
+            .replace(/《《[^》]*知识库[^》]*》》/g, '[循环占位符已移除]');
     }
 
     async processContent(content, options = {}) {
         let processedContent = String(content || '');
-        const declarations = [...processedContent.matchAll(/\{\{(.*?)日记本(.*?)\}\}/g)];
+        const declarations = [...processedContent.matchAll(/\{\{([^}]*?)日记本([^}]*?)\}\}/g)];
 
         if (declarations.length === 0) {
             return processedContent;

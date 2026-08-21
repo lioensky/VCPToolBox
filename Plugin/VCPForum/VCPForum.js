@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const axios = require('axios');
+const { fileURLToPath } = require('url');
 
 const FORUM_DIR = process.env.KNOWLEDGEBASE_ROOT_PATH ? path.join(process.env.KNOWLEDGEBASE_ROOT_PATH, 'VCP论坛') : path.join(__dirname, '..', '..', 'dailynote', 'VCP论坛');
 const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
@@ -32,124 +33,112 @@ function getLocalISOTimestamp() {
 }
 
 /**
- * Processes file:// URLs in content, converting them to server URLs.
- * Uses hyper-stack-trace mechanism for distributed file fetching.
- * @param {string} content - The content containing potential file:// URLs
- * @param {object} args - The original arguments (may contain image_base64 for retries)
- * @returns {Promise<string>} - Content with file:// URLs replaced by server URLs
+ * Detects a browser-safe image extension from the source path or file signature.
+ * @param {string} filePath - Source image path.
+ * @param {Buffer} buffer - Image data.
+ * @returns {string} Extension without a leading dot.
+ */
+function detectImageExtension(filePath, buffer) {
+    const allowedExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+    const sourceExtension = path.extname(filePath).slice(1).toLowerCase();
+    if (allowedExtensions.has(sourceExtension)) {
+        return sourceExtension;
+    }
+
+    if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+    if (buffer.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return 'jpg';
+    if (buffer.subarray(0, 6).toString('ascii') === 'GIF87a' || buffer.subarray(0, 6).toString('ascii') === 'GIF89a') return 'gif';
+    if (buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return 'webp';
+    return 'png';
+}
+
+/**
+ * Copies an image into image/forum and returns its authenticated HTTP URL.
+ * The source may be an original local image or a .file_cache image prepared by Plugin.js.
+ * @param {string} fileUrl - Local file URL.
+ * @param {string|null} imageBase64 - Optional retry image data.
+ * @returns {Promise<string>} Public image URL.
+ */
+async function publishForumImage(fileUrl, imageBase64 = null) {
+    let filePath = '';
+    let imageBuffer;
+
+    if (imageBase64) {
+        const dataUriMatch = imageBase64.match(/^data:image\/[\w.+-]+;base64,([\s\S]+)$/);
+        imageBuffer = Buffer.from(dataUriMatch ? dataUriMatch[1] : imageBase64, 'base64');
+    } else {
+        filePath = fileURLToPath(fileUrl);
+        imageBuffer = await fs.readFile(filePath);
+    }
+
+    const imageExtension = detectImageExtension(filePath, imageBuffer);
+    const generatedFileName = `${crypto.randomBytes(16).toString('hex')}.${imageExtension}`;
+    const forumImageDir = path.join(PROJECT_BASE_PATH, 'image', 'forum');
+    const localImageServerPath = path.join(forumImageDir, generatedFileName);
+
+    await fs.mkdir(forumImageDir, { recursive: true });
+    await fs.writeFile(localImageServerPath, imageBuffer);
+
+    const relativeServerPathForUrl = path.posix.join('forum', generatedFileName);
+    return `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+}
+
+/**
+ * Processes local images in Markdown and HTML, publishing them through ImageServer.
+ * Plugin.js may already have rewritten a remote file URL to a local .file_cache URL;
+ * that cached file is copied into image/forum before the URL is replaced.
+ * @param {string} content - Content containing potential file URLs.
+ * @param {object} args - Original arguments (may contain image_base64 for compatibility).
+ * @returns {Promise<string>} Content with local image URLs replaced by HTTP URLs.
  */
 async function processLocalImages(content, args = {}) {
     if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
-        // If environment variables are not set, return content as-is
         return content;
     }
 
-    // Match Markdown image syntax: ![alt](file://...)
-    const imageRegex = /!\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
-    const matches = [...content.matchAll(imageRegex)];
-    
-    if (matches.length === 0) {
+    const localImageUrls = [];
+    const markdownImageRegex = /!\[[^\]]*\]\((file:\/\/[^)\s]+)\)/gi;
+    const htmlImageRegex = /<img\b[^>]*\bsrc\s*=\s*(?:"(file:\/\/[^"]+)"|'(file:\/\/[^']+)'|(file:\/\/[^\s>]+))[^>]*>/gi;
+
+    for (const match of content.matchAll(markdownImageRegex)) {
+        localImageUrls.push({ index: match.index, fileUrl: match[1] });
+    }
+    for (const match of content.matchAll(htmlImageRegex)) {
+        localImageUrls.push({ index: match.index, fileUrl: match[1] || match[2] || match[3] });
+    }
+
+    localImageUrls.sort((a, b) => a.index - b.index);
+    if (localImageUrls.length === 0) {
         return content;
     }
 
     let processedContent = content;
-    
-    // Check if we have a base64 version from retry (single image case)
-    let imageBase64 = args.image_base64;
-    
-    if (imageBase64) {
-        // This is a retry with fetched file data
-        // Extract pure base64 from Data URI if needed
-        const dataUriMatch = imageBase64.match(/^data:image\/\w+;base64,(.*)$/);
-        if (dataUriMatch) {
-            imageBase64 = dataUriMatch[1];
+    const publishedUrls = new Map();
+
+    for (let index = 0; index < localImageUrls.length; index++) {
+        const fileUrl = localImageUrls[index].fileUrl;
+        if (publishedUrls.has(fileUrl)) {
+            processedContent = processedContent.split(fileUrl).join(publishedUrls.get(fileUrl));
+            continue;
         }
-        
-        // Process only the first image (the one that was fetched)
-        const match = matches[0];
-        const altText = match[1];
-        const fileUrl = match[2];
-        const fullMatch = match[0];
-        
-        // Save image to server
-        const imageBuffer = Buffer.from(imageBase64, 'base64');
-        const imageExtension = 'png'; // Default, could be improved by detecting actual type
-        const generatedFileName = `${crypto.randomBytes(8).toString('hex')}.${imageExtension}`;
-        const forumImageDir = path.join(PROJECT_BASE_PATH, 'image', 'forum');
-        const localImageServerPath = path.join(forumImageDir, generatedFileName);
-        
-        await fs.mkdir(forumImageDir, { recursive: true });
-        await fs.writeFile(localImageServerPath, imageBuffer);
-        
-        // Construct server URL
-        const relativeServerPathForUrl = `forum/${generatedFileName}`;
-        const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
-        
-        // Replace in content
-        const newImageMarkdown = `![${altText}](${accessibleImageUrl})`;
-        processedContent = processedContent.replace(fullMatch, newImageMarkdown);
-        
-        // If there are more images, process them recursively
-        if (matches.length > 1) {
-            // Remove the processed image from args to avoid reprocessing
-            const newArgs = { ...args };
-            delete newArgs.image_base64;
-            return await processLocalImages(processedContent, newArgs);
-        }
-        
-        return processedContent;
-    }
-    
-    // No base64 provided, try to read the first local file
-    const match = matches[0];
-    const altText = match[1];
-    const fileUrl = match[2];
-    const fullMatch = match[0];
-    
-    try {
-        // Convert file:// URL to local path - handle Windows paths
-        let filePath = fileUrl.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '');
-        // Handle backslashes in Windows paths
-        filePath = filePath.replace(/\//g, path.sep);
-        
-        const buffer = await fs.readFile(filePath);
-        imageBase64 = buffer.toString('base64');
-        
-        // Save image to server
-        const imageBuffer = Buffer.from(imageBase64, 'base64');
-        const imageExtension = 'png';
-        const generatedFileName = `${crypto.randomBytes(8).toString('hex')}.${imageExtension}`;
-        const forumImageDir = path.join(PROJECT_BASE_PATH, 'image', 'forum');
-        const localImageServerPath = path.join(forumImageDir, generatedFileName);
-        
-        await fs.mkdir(forumImageDir, { recursive: true });
-        await fs.writeFile(localImageServerPath, imageBuffer);
-        
-        // Construct server URL
-        const relativeServerPathForUrl = `forum/${generatedFileName}`;
-        const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
-        
-        // Replace in content
-        const newImageMarkdown = `![${altText}](${accessibleImageUrl})`;
-        processedContent = processedContent.replace(fullMatch, newImageMarkdown);
-        
-        // If there are more images, process them recursively
-        if (matches.length > 1) {
-            return await processLocalImages(processedContent, args);
-        }
-        
-        return processedContent;
-    } catch (e) {
-        if (e.code === 'ENOENT') {
-            // File not found locally - trigger hyper-stack-trace
-            const structuredError = new Error(`本地文件未找到，需要远程获取: ${fileUrl}`);
-            structuredError.code = 'FILE_NOT_FOUND_LOCALLY';
-            structuredError.fileUrl = fileUrl;
-            throw structuredError;
-        } else {
-            throw new Error(`读取本地文件时发生错误: ${e.message}`);
+
+        try {
+            const imageBase64 = index === 0 ? args.image_base64 || null : null;
+            const accessibleImageUrl = await publishForumImage(fileUrl, imageBase64);
+            publishedUrls.set(fileUrl, accessibleImageUrl);
+            processedContent = processedContent.split(fileUrl).join(accessibleImageUrl);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                const structuredError = new Error(`本地文件未找到，需要远程获取: ${fileUrl}`);
+                structuredError.code = 'FILE_NOT_FOUND_LOCALLY';
+                structuredError.fileUrl = fileUrl;
+                throw structuredError;
+            }
+            throw new Error(`发布论坛本地图片时发生错误 (${fileUrl}): ${error.message}`);
         }
     }
+
+    return processedContent;
 }
 
 /**

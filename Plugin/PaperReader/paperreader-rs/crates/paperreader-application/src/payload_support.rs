@@ -75,9 +75,10 @@ pub(crate) fn guess_display_name(source_ref: &str) -> Option<String> {
 
 pub(crate) fn snippet(text: &str) -> String {
     const LIMIT: usize = 220;
-    if text.len() <= LIMIT {
+    if text.chars().count() <= LIMIT {
         text.to_string()
     } else {
-        format!("{}...", &text[..LIMIT])
+        let prefix = text.chars().take(LIMIT).collect::<String>();
+        format!("{prefix}...")
     }
 }

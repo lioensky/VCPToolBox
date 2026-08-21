@@ -13,10 +13,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 mod http_gateway;
+mod mineru_layout_json;
 mod raw_result_builder;
+mod split_pdf;
 
 pub use http_gateway::MinerUHttpGateway;
 pub use raw_result_builder::build_raw_result_from_text;
+pub use split_pdf::{
+    MinerUSplitPart, MinerUSplitPlan, MinerUSplitResult, build_split_plan, merge_split_results,
+    pdf_page_count, persist_split_artifacts, split_pdf,
+};
 
 // =============================================================================
 // 导入请求模型
@@ -136,6 +142,16 @@ pub trait MinerUGateway {
         source_ref: &str,
         display_name: Option<String>,
     ) -> Result<MinerURawResult, IngestionError>;
+
+    fn generate_raw_result_with_artifact_root(
+        &self,
+        source_type: ImportSourceType,
+        source_ref: &str,
+        display_name: Option<String>,
+        _artifact_root: Option<&std::path::Path>,
+    ) -> Result<MinerURawResult, IngestionError> {
+        self.generate_raw_result(source_type, source_ref, display_name)
+    }
 
     /// 提交单文档URL解析任务
     fn submit_url_task(

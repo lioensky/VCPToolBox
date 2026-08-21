@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const dotenv = require('dotenv');
 const pluginManager = require('../../Plugin.js');
 const browserRuntimeManager = require('../../modules/browserRuntimeManager.js');
 
@@ -54,6 +55,17 @@ const connectedChromes = new Map();
 // 存储等待响应的命令
 // key: requestId, value: { resolve, reject, timeout, waitForPageInfo }
 const pendingCommands = new Map();
+let urlfetchConfigWriteQueue = Promise.resolve();
+
+const URLFETCH_COOKIE_SYNC_LIMITS = {
+    maxRequestBytes: 2 * 1024 * 1024,
+    maxCookies: 5000,
+    maxCookieNameLength: 256,
+    maxCookieValueLength: 8192,
+    maxCookieBytes: 1.5 * 1024 * 1024,
+    maxPageUrlLength: 2048,
+    maxSiteKeyLength: 253
+};
 
 const HIGH_PRIVILEGE_COMMANDS = new Set([
     'execute_script',
@@ -119,6 +131,324 @@ function allowUserHighPrivilege() {
 
 function isOpen(ws) {
     return ws && ws.readyState === 1;
+}
+
+function isUuid(value) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
+function normalizeSiteKey(value) {
+    return String(value || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+}
+
+function isValidSiteKey(value) {
+    const siteKey = normalizeSiteKey(value);
+    if (!siteKey || siteKey.length > URLFETCH_COOKIE_SYNC_LIMITS.maxSiteKeyLength) return false;
+    if (siteKey.includes(':') || siteKey.includes('/') || siteKey.includes('\\') || siteKey.includes('..')) return false;
+    return siteKey.split('.').every(label =>
+        label.length > 0 &&
+        label.length <= 63 &&
+        /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label)
+    );
+}
+
+function parseJsonObjectWithoutDuplicateKeys(rawValue) {
+    const parsed = JSON.parse(rawValue);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('FETCH_COOKIES_RAW_MULTI 必须是 JSON 对象');
+    }
+
+    const source = String(rawValue);
+    let index = 0;
+    const skipWhitespace = () => {
+        while (/\s/.test(source[index] || '')) index += 1;
+    };
+    const readString = () => {
+        const start = index;
+        if (source[index] !== '"') throw new Error('FETCH_COOKIES_RAW_MULTI JSON 对象键格式无效');
+        index += 1;
+        let escaped = false;
+        while (index < source.length) {
+            const char = source[index++];
+            if (escaped) {
+                escaped = false;
+            } else if (char === '\\') {
+                escaped = true;
+            } else if (char === '"') {
+                return JSON.parse(source.slice(start, index));
+            }
+        }
+        throw new Error('FETCH_COOKIES_RAW_MULTI JSON 字符串未闭合');
+    };
+    const skipValue = () => {
+        const start = index;
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        while (index < source.length) {
+            const char = source[index];
+            if (inString) {
+                index += 1;
+                if (escaped) escaped = false;
+                else if (char === '\\') escaped = true;
+                else if (char === '"') inString = false;
+                continue;
+            }
+            if (char === '"') {
+                inString = true;
+                index += 1;
+                continue;
+            }
+            if (char === '{' || char === '[') depth += 1;
+            if (char === '}' || char === ']') {
+                if (depth === 0) break;
+                depth -= 1;
+            }
+            if (depth === 0 && (char === ',' || char === '}')) break;
+            index += 1;
+        }
+        return source.slice(start, index).trim();
+    };
+
+    skipWhitespace();
+    if (source[index++] !== '{') throw new Error('FETCH_COOKIES_RAW_MULTI 必须是 JSON 对象');
+    const seenKeys = new Set();
+    skipWhitespace();
+    while (source[index] !== '}') {
+        const key = readString();
+        const normalizedKey = normalizeSiteKey(key);
+        if (seenKeys.has(normalizedKey)) {
+            throw new Error('FETCH_COOKIES_RAW_MULTI 存在重复域名配置项');
+        }
+        seenKeys.add(normalizedKey);
+        skipWhitespace();
+        if (source[index++] !== ':') throw new Error('FETCH_COOKIES_RAW_MULTI JSON 对象缺少冒号');
+        const rawEntryValue = skipValue();
+        if (typeof parsed[key] !== 'string') {
+            throw new Error(`FETCH_COOKIES_RAW_MULTI 域名 ${key} 的值必须是字符串`);
+        }
+        if (!rawEntryValue) throw new Error('FETCH_COOKIES_RAW_MULTI JSON 对象值不能为空');
+        skipWhitespace();
+        if (source[index] === ',') {
+            index += 1;
+            skipWhitespace();
+        } else if (source[index] !== '}') {
+            throw new Error('FETCH_COOKIES_RAW_MULTI JSON 对象格式无效');
+        }
+    }
+    return parsed;
+}
+
+function getUrlFetchConfigPath() {
+    const projectBasePath = pluginConfig.PROJECT_BASE_PATH || process.env.PROJECT_BASE_PATH || path.resolve(__dirname, '../..');
+    return path.join(projectBasePath, 'Plugin', 'UrlFetch', 'config.env');
+}
+
+function getEnvAssignmentLines(content, key) {
+    const pattern = new RegExp(`^([ \\t]*)${key}[ \\t]*=[^\\r\\n]*$`, 'gm');
+    return Array.from(String(content || '').matchAll(pattern));
+}
+
+function getInlineEnvComment(line, equalsIndex) {
+    let inDoubleQuote = false;
+    let inSingleQuote = false;
+    let escaped = false;
+    let jsonDepth = 0;
+
+    for (let index = equalsIndex + 1; index < line.length; index += 1) {
+        const char = line[index];
+        if (inDoubleQuote || inSingleQuote) {
+            if (escaped) {
+                escaped = false;
+            } else if (char === '\\') {
+                escaped = true;
+            } else if ((inDoubleQuote && char === '"') || (inSingleQuote && char === "'")) {
+                inDoubleQuote = false;
+                inSingleQuote = false;
+            }
+            continue;
+        }
+        if (char === '"') {
+            inDoubleQuote = true;
+        } else if (char === "'") {
+            inSingleQuote = true;
+        } else if (char === '{' || char === '[') {
+            jsonDepth += 1;
+        } else if (char === '}' || char === ']') {
+            jsonDepth = Math.max(0, jsonDepth - 1);
+        } else if (char === '#' && jsonDepth === 0 && /\s/.test(line[index - 1] || '')) {
+            return line.slice(index).trim();
+        }
+    }
+    return '';
+}
+
+async function updateUrlFetchCookiesConfig(siteKey, cookies) {
+    const configPath = getUrlFetchConfigPath();
+    let content = '';
+    let fileMode = null;
+    try {
+        content = await fs.promises.readFile(configPath, 'utf8');
+        fileMode = (await fs.promises.stat(configPath)).mode;
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+    }
+
+    const assignments = getEnvAssignmentLines(content, 'FETCH_COOKIES_RAW_MULTI');
+    if (assignments.length > 1) {
+        throw new Error('config.env 中存在重复的 FETCH_COOKIES_RAW_MULTI 配置项');
+    }
+
+    let cookieMap = {};
+    if (assignments.length === 1) {
+        const parsedEnv = dotenv.parse(content);
+        const rawJson = parsedEnv.FETCH_COOKIES_RAW_MULTI;
+        if (rawJson && rawJson.trim()) {
+            cookieMap = parseJsonObjectWithoutDuplicateKeys(rawJson);
+        }
+    }
+
+    const normalizedSiteKey = normalizeSiteKey(siteKey);
+    let existingKey = Object.keys(cookieMap).find(key => normalizeSiteKey(key) === normalizedSiteKey);
+    if (existingKey) {
+        cookieMap[existingKey] = cookies;
+    } else {
+        cookieMap[normalizedSiteKey] = cookies;
+    }
+
+    const serialized = JSON.stringify(cookieMap);
+    let updatedContent;
+    if (assignments.length === 1) {
+        const match = assignments[0];
+        const lineStart = match.index;
+        const lineEnd = lineStart + match[0].length;
+        const equalsIndex = match[0].indexOf('=');
+        const inlineComment = getInlineEnvComment(match[0], equalsIndex);
+        const preservedComment = inlineComment ? ` ${inlineComment}` : '';
+        updatedContent = `${content.slice(0, lineStart)}${match[1]}FETCH_COOKIES_RAW_MULTI=${serialized}${preservedComment}${content.slice(lineEnd)}`;
+    } else {
+        const newline = content.includes('\r\n') ? '\r\n' : '\n';
+        const separator = content.length === 0 || content.endsWith('\n') ? '' : newline;
+        updatedContent = `${content}${separator}FETCH_COOKIES_RAW_MULTI=${serialized}${newline}`;
+    }
+
+    const tempPath = `${configPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    try {
+        await fs.promises.writeFile(tempPath, updatedContent, {
+            encoding: 'utf8',
+            mode: fileMode || 0o600
+        });
+        if (fileMode) await fs.promises.chmod(tempPath, fileMode);
+        await fs.promises.rename(tempPath, configPath);
+    } catch (error) {
+        try {
+            await fs.promises.unlink(tempPath);
+        } catch (_) {
+            // ignore cleanup errors
+        }
+        throw error;
+    }
+}
+
+function enqueueUrlFetchConfigUpdate(task) {
+    const operation = urlfetchConfigWriteQueue.then(task, task);
+    urlfetchConfigWriteQueue = operation.catch(() => {});
+    return operation;
+}
+
+function sendUrlFetchCookieSyncResult(entry, data) {
+    if (!isOpen(entry?.ws)) return;
+    entry.ws.send(JSON.stringify({
+        type: 'urlfetch_cookie_sync_result',
+        data
+    }));
+}
+
+async function handleUrlFetchCookieSync(clientId, data = {}) {
+    const entry = connectedChromes.get(clientId);
+    const requestId = data.requestId;
+    if (!entry || !isOpen(entry.ws)) return;
+
+    const fail = (error, code = 'URLFETCH_COOKIE_SYNC_REJECTED') => {
+        sendUrlFetchCookieSyncResult(entry, {
+            requestId: isUuid(requestId) ? requestId : null,
+            status: 'error',
+            code,
+            error
+        });
+    };
+
+    const serializedRequest = JSON.stringify(data);
+    if (Buffer.byteLength(serializedRequest, 'utf8') > URLFETCH_COOKIE_SYNC_LIMITS.maxRequestBytes) {
+        fail('Cookie 同步请求过大', 'URLFETCH_COOKIE_SYNC_TOO_LARGE');
+        return;
+    }
+    if (!isUuid(requestId)) {
+        fail('requestId 无效', 'INVALID_REQUEST_ID');
+        return;
+    }
+
+    let pageUrl;
+    try {
+        pageUrl = new URL(String(data.pageUrl || ''));
+    } catch (_) {
+        fail('pageUrl 无效', 'INVALID_PAGE_URL');
+        return;
+    }
+    const protocol = pageUrl.protocol.toLowerCase();
+    const pageHost = pageUrl.hostname.toLowerCase().replace(/\.$/, '');
+    const siteKey = normalizeSiteKey(data.siteKey);
+    if (!['http:', 'https:'].includes(protocol) || !pageHost || String(data.pageUrl).length > URLFETCH_COOKIE_SYNC_LIMITS.maxPageUrlLength) {
+        fail('仅支持有效的 HTTP/HTTPS pageUrl', 'INVALID_PAGE_URL');
+        return;
+    }
+    if (!isValidSiteKey(siteKey) || !(pageHost === siteKey || pageHost.endsWith(`.${siteKey}`))) {
+        fail('siteKey 不是当前页面主机名或其合法父域名', 'INVALID_SITE_KEY');
+        return;
+    }
+    if (!Array.isArray(data.cookies) || data.cookies.length === 0 || data.cookies.length > URLFETCH_COOKIE_SYNC_LIMITS.maxCookies) {
+        fail('Cookie 数组数量无效', 'INVALID_COOKIE_ARRAY');
+        return;
+    }
+
+    let cookieBytes = 0;
+    const cookiePairs = [];
+    for (const cookie of data.cookies) {
+        if (!cookie || typeof cookie !== 'object' || Array.isArray(cookie)) {
+            fail('Cookie 项格式无效', 'INVALID_COOKIE');
+            return;
+        }
+        const name = String(cookie.name ?? '');
+        const value = String(cookie.value ?? '');
+        if (!name || name.length > URLFETCH_COOKIE_SYNC_LIMITS.maxCookieNameLength ||
+            value.length > URLFETCH_COOKIE_SYNC_LIMITS.maxCookieValueLength ||
+            /[\r\n;]/.test(name)) {
+            fail('Cookie 名称或值长度/格式无效', 'INVALID_COOKIE');
+            return;
+        }
+        const pair = `${name}=${value}`;
+        cookieBytes += Buffer.byteLength(pair, 'utf8') + 2;
+        if (cookieBytes > URLFETCH_COOKIE_SYNC_LIMITS.maxCookieBytes) {
+            fail('Cookie 内容过大', 'URLFETCH_COOKIE_SYNC_TOO_LARGE');
+            return;
+        }
+        cookiePairs.push(pair);
+    }
+
+    const cookieString = cookiePairs.join('; ');
+    try {
+        await enqueueUrlFetchConfigUpdate(() => updateUrlFetchCookiesConfig(siteKey, cookieString));
+        sendUrlFetchCookieSyncResult(entry, {
+            requestId,
+            status: 'success',
+            siteKey,
+            cookieCount: data.cookies.length,
+            updatedAt: nowIso()
+        });
+    } catch (error) {
+        console.error(`[ChromeBridge] UrlFetch Cookie 配置写入失败 (${error.code || 'CONFIG_WRITE_ERROR'}): ${error.message}`);
+        fail(error.message || 'UrlFetch Cookie 配置写入失败', 'URLFETCH_CONFIG_WRITE_FAILED');
+    }
 }
 
 function getConnection(clientIdOrEntry) {
@@ -245,6 +575,13 @@ function handleClientMessage(clientId, message) {
     const entry = connectedChromes.get(clientId);
     if (entry) {
         entry.lastSeenAt = nowIso();
+    }
+
+    if (message?.type === 'urlfetch_cookie_sync') {
+        // WebSocketServer 已在连接建立时完成 VCP_Key 鉴权；此处只接受已登记且仍打开的连接。
+        if (!entry || !isOpen(entry.ws)) return;
+        void handleUrlFetchCookieSync(clientId, message.data || {});
+        return;
     }
 
     if (message.type === 'clientHello') {

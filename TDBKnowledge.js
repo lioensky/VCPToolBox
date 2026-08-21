@@ -69,6 +69,15 @@ class TDBKnowledgeManager {
             ignorePrefixes: splitList(process.env.TDB_KNOWLEDGE_IGNORE_PREFIXES, []),
             ignoreSuffixes: splitList(process.env.TDB_KNOWLEDGE_IGNORE_SUFFIXES, []),
             syncMode: process.env.TDB_KNOWLEDGE_SYNC_MODE || 'normal',
+            expectedNodes: (() => {
+                const value = Number(process.env.TDB_KNOWLEDGE_EXPECTED_NODES);
+                return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+            })(),
+            memoryLimitMb: (() => {
+                const value = Number(process.env.TDB_KNOWLEDGE_MEMORY_LIMIT_MB);
+                return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+            })(),
+            autoBuildQuiver: (process.env.TDB_KNOWLEDGE_AUTO_BUILD_QUIVER || 'true').toLowerCase() === 'true',
             idleUnloadHours: parseFloat(process.env.TDB_KNOWLEDGE_IDLE_UNLOAD_HOURS || '0') || 0,
             idleSweepIntervalMs: parseInt(process.env.TDB_KNOWLEDGE_IDLE_SWEEP_INTERVAL_MS, 10) || 15 * 60 * 1000,
             ...config
@@ -278,12 +287,12 @@ class TDBKnowledgeManager {
         return !eventVersion || this._getFileEventVersion(filePath) === eventVersion;
     }
 
-    async closeLibrary(library, options = {}) {
+    async closeLibrary(library) {
         const safeName = safeLibraryName(library);
-        return this._withLibraryQueue(safeName, async () => this._closeLibraryUnlocked(safeName, options));
+        return this._withLibraryQueue(safeName, async () => this._closeLibraryUnlocked(safeName));
     }
 
-    async _closeLibraryUnlocked(library, options = {}) {
+    async _closeLibraryUnlocked(library) {
         const safeName = safeLibraryName(library);
         const handle = this.libs.get(safeName);
         if (!handle) return false;
@@ -292,20 +301,10 @@ class TDBKnowledgeManager {
             return false;
         }
 
-        const shouldFlush = options.flush !== false;
-        try {
-            if (shouldFlush) this._safeFlush(handle.db);
-        } catch (e) {
-            console.warn(`[TDBKnowledge] Flush before close failed for "${safeName}":`, e.message);
+        if (typeof handle.db?.close !== 'function') {
+            throw new Error(`TriviumDB close() is unavailable for "${safeName}".`);
         }
-
-        try {
-            if (typeof handle.db?.close === 'function') {
-                handle.db.close();
-            }
-        } catch (e) {
-            console.warn(`[TDBKnowledge] Close failed for "${safeName}":`, e.message);
-        }
+        handle.db.close();
 
         this.libs.delete(safeName);
         console.log(`[TDBKnowledge] 💤 Closed idle library "${safeName}".`);
@@ -313,37 +312,20 @@ class TDBKnowledgeManager {
     }
 
     _openTriviumDb(dbPath) {
-        const lockPath = dbPath + '.lock';
-        if (fsSync.existsSync(lockPath)) {
-            console.warn(`[TDBKnowledge] ⚠️ Found TriviumDB lock, trying cleanup: ${lockPath}`);
-            try {
-                fsSync.unlinkSync(lockPath);
-                console.log('[TDBKnowledge] 🧹 TriviumDB lock removed.');
-            } catch (e) {
-                console.warn(`[TDBKnowledge] Lock cleanup skipped: ${e.message}`);
-            }
-        }
-
         try {
-            return new TriviumDB(dbPath, this.config.dimension, 'f32', this.config.syncMode);
-        } catch (e1) {
-            try {
-                return new TriviumDB(dbPath, { dim: this.config.dimension, dtype: 'f32', syncMode: this.config.syncMode });
-            } catch (e2) {
-                try {
-                    return new TriviumDB(dbPath, this.config.dimension);
-                } catch (e3) {
-                    throw new Error(`Failed to open TriviumDB at ${dbPath}: ${e3.message}`);
-                }
-            }
+            return new TriviumDB(dbPath, {
+                dim: this.config.dimension,
+                dtype: 'f32',
+                syncMode: this.config.syncMode,
+                storageMode: 'mmap',
+                autoBuildQuiver: this.config.autoBuildQuiver,
+                loadTextIndex: true,
+                expectedNodes: this.config.expectedNodes,
+                memoryLimitMb: this.config.memoryLimitMb
+            });
+        } catch (error) {
+            throw new Error(`Failed to open TriviumDB at ${dbPath}: ${error.message}`);
         }
-    }
-    _callDb(db, methodNames, args = [], fallback = undefined) {
-        for (const name of methodNames) {
-            if (typeof db[name] === 'function') return db[name](...args);
-        }
-        if (fallback !== undefined) return fallback;
-        throw new Error(`TriviumDB method not found: ${methodNames.join('/')}`);
     }
 
     _normalizeFilePath(filePath) {
@@ -592,8 +574,6 @@ class TDBKnowledgeManager {
         this._beginLibraryUse(handle);
 
         try {
-            await this._deleteExistingFileNodes(handle, library, relPath);
-
             const chunks = chunkText(content).filter(Boolean);
             if (chunks.length === 0) return;
 
@@ -619,87 +599,130 @@ class TDBKnowledgeManager {
                 return;
             }
 
-            let docNodeId = null;
-            if (docVector) {
-                docNodeId = this._insertNode(handle.db, docVector, {
-                    type: 'document',
-                    library,
-                    source_path: relPath,
-                    title: path.basename(relPath),
-                    checksum,
-                    chunk_count: chunks.length,
-                    mtime: stats.mtimeMs,
-                    size: stats.size,
-                    updated_at: now
-                });
-            }
-
-            const chunkRows = [];
+            const oldNodeIds = this._getExistingFileNodeIds(library, relPath);
+            const insertedIds = [];
+            const pendingChunks = [];
             const embeddingBatchSize = Math.max(1, this.config.embeddingBatchSize);
-            for (let start = 0; start < chunks.length; start += embeddingBatchSize) {
-                const batchChunks = chunks.slice(start, start + embeddingBatchSize);
-                const vectors = await getEmbeddingsBatch(batchChunks, {
-                    apiKey: this.config.apiKey,
-                    apiUrl: this.config.apiUrl,
-                    model: this.config.model
-                });
-
-                for (let offset = 0; offset < batchChunks.length; offset++) {
-                    const i = start + offset;
-                    const vector = vectors[offset];
-                    if (!vector) continue;
-
-                    const text = chunks[i];
-                    const chunkChecksum = crypto.createHash('sha256').update(text).digest('hex');
-                    const nodeId = this._insertNode(handle.db, vector, {
-                        type: 'chunk',
+            let docNodeId = null;
+            try {
+                if (docVector) {
+                    [docNodeId] = handle.db.batchInsert([Array.from(docVector)], [{
+                        type: 'document',
                         library,
                         source_path: relPath,
-                        chunk_index: i,
-                        text_preview: text.slice(0, 500),
-                        checksum: chunkChecksum,
+                        title: path.basename(relPath),
+                        checksum,
+                        chunk_count: chunks.length,
+                        mtime: stats.mtimeMs,
+                        size: stats.size,
                         updated_at: now
+                    }]);
+                    insertedIds.push(docNodeId);
+                }
+
+                for (let start = 0; start < chunks.length; start += embeddingBatchSize) {
+                    const batchChunks = chunks.slice(start, start + embeddingBatchSize);
+                    const vectors = await getEmbeddingsBatch(batchChunks, {
+                        apiKey: this.config.apiKey,
+                        apiUrl: this.config.apiUrl,
+                        model: this.config.model
                     });
+                    const batchVectors = [];
+                    const batchPayloads = [];
+                    const batchRows = [];
 
-                    chunkRows.push({ index: i, nodeId, checksum: chunkChecksum });
-
-                    if (docNodeId != null) this._safeLink(handle.db, docNodeId, nodeId, 'contains', 1.0);
-                    if (chunkRows.length > 1) {
-                        const prev = chunkRows[chunkRows.length - 2];
-                        this._safeLink(handle.db, prev.nodeId, nodeId, 'next', 0.7);
-                        this._safeLink(handle.db, nodeId, prev.nodeId, 'prev', 0.7);
+                    for (let offset = 0; offset < batchChunks.length; offset++) {
+                        const vector = vectors[offset];
+                        if (!vector) continue;
+                        const index = start + offset;
+                        const text = chunks[index];
+                        const chunkChecksum = crypto.createHash('sha256').update(text).digest('hex');
+                        batchVectors.push(Array.from(vector));
+                        batchPayloads.push({
+                            type: 'chunk',
+                            library,
+                            source_path: relPath,
+                            chunk_index: index,
+                            text_preview: text.slice(0, 500),
+                            checksum: chunkChecksum,
+                            updated_at: now
+                        });
+                        batchRows.push({ index, text, checksum: chunkChecksum });
                     }
 
-                    this._safeIndexText(handle.db, nodeId, text);
+                    if (batchVectors.length === 0) continue;
+                    const batchIds = handle.db.batchInsert(batchVectors, batchPayloads);
+                    insertedIds.push(...batchIds);
+                    for (let i = 0; i < batchRows.length; i++) {
+                        const row = { ...batchRows[i], nodeId: batchIds[i] };
+                        const previous = pendingChunks[pendingChunks.length - 1];
+                        if (docNodeId != null) handle.db.link(docNodeId, row.nodeId, 'contains', 1.0);
+                        if (previous) {
+                            handle.db.link(previous.nodeId, row.nodeId, 'next', 0.7);
+                            handle.db.link(row.nodeId, previous.nodeId, 'prev', 0.7);
+                        }
+                        handle.db.indexText(row.nodeId, row.text);
+                        pendingChunks.push(row);
+                    }
                 }
+
+                if (pendingChunks.length === 0) throw new Error(`No chunk embeddings were generated for ${relPath}.`);
+                const finalStats = await fs.stat(normalizedPath);
+                const finalContent = await fs.readFile(normalizedPath, 'utf-8');
+                const finalChecksum = crypto.createHash('sha256').update(finalContent).digest('hex');
+                if (!this._isCurrentFileEvent(normalizedPath, eventVersion) || finalStats.size !== stats.size || finalStats.mtimeMs !== stats.mtimeMs || finalChecksum !== checksum) {
+                    const latestVersion = this._bumpFileEventVersion(normalizedPath);
+                    this._queueFile(normalizedPath, latestVersion);
+                    throw new Error(`File changed while indexing: ${relPath}`);
+                }
+
+                this._replaceFileMetadata({
+                    library,
+                    relPath,
+                    checksum,
+                    stats,
+                    docNodeId,
+                    now,
+                    chunkRows: pendingChunks
+                });
+            } catch (error) {
+                for (const nodeId of insertedIds) this._safeDelete(handle.db, nodeId);
+                throw error;
             }
 
-            const tx = this.metaDb.transaction(() => {
-                this.metaDb.prepare(`
-                    INSERT INTO files (library, path, checksum, mtime, size, doc_node_id, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(library, path) DO UPDATE SET
-                        checksum = excluded.checksum,
-                        mtime = excluded.mtime,
-                        size = excluded.size,
-                        doc_node_id = excluded.doc_node_id,
-                        updated_at = excluded.updated_at
-                `).run(library, relPath, checksum, stats.mtimeMs, stats.size, docNodeId, now);
+            for (const nodeId of oldNodeIds) this._safeDelete(handle.db, nodeId);
 
-                this.metaDb.prepare('DELETE FROM chunks WHERE library = ? AND path = ?').run(library, relPath);
-                const insertChunk = this.metaDb.prepare('INSERT INTO chunks (library, path, chunk_index, node_id, checksum) VALUES (?, ?, ?, ?, ?)');
-                for (const row of chunkRows) insertChunk.run(library, relPath, row.index, row.nodeId, row.checksum);
-            });
-            tx();
-
-            console.log(`[TDBKnowledge] ✅ Indexed ${relPath} into "${library}" (${chunkRows.length}/${chunks.length} chunks).`);
+            console.log(`[TDBKnowledge] ✅ Indexed ${relPath} into "${library}" (${pendingChunks.length}/${chunks.length} chunks).`);
         } finally {
             this._endLibraryUse(handle);
         }
     }
 
-    _insertNode(db, vector, payload) {
-        return this._callDb(db, ['insert', 'insertNode'], [Array.from(vector), payload]);
+    _getExistingFileNodeIds(library, relPath) {
+        const fileRow = this.metaDb.prepare('SELECT doc_node_id FROM files WHERE library = ? AND path = ?').get(library, relPath);
+        const chunkRows = this.metaDb.prepare('SELECT node_id FROM chunks WHERE library = ? AND path = ? ORDER BY chunk_index').all(library, relPath);
+        const ids = chunkRows.map(row => row.node_id);
+        if (fileRow?.doc_node_id != null) ids.push(fileRow.doc_node_id);
+        return ids;
+    }
+
+    _replaceFileMetadata({ library, relPath, checksum, stats, docNodeId, now, chunkRows }) {
+        this.metaDb.transaction(() => {
+            this.metaDb.prepare(`
+                INSERT INTO files (library, path, checksum, mtime, size, doc_node_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(library, path) DO UPDATE SET
+                    checksum = excluded.checksum,
+                    mtime = excluded.mtime,
+                    size = excluded.size,
+                    doc_node_id = excluded.doc_node_id,
+                    updated_at = excluded.updated_at
+            `).run(library, relPath, checksum, stats.mtimeMs, stats.size, docNodeId, now);
+
+            this.metaDb.prepare('DELETE FROM chunks WHERE library = ? AND path = ?').run(library, relPath);
+            const insertChunk = this.metaDb.prepare('INSERT INTO chunks (library, path, chunk_index, node_id, checksum) VALUES (?, ?, ?, ?, ?)');
+            for (const row of chunkRows) insertChunk.run(library, relPath, row.index, row.nodeId, row.checksum);
+        })();
     }
 
     async _deleteExistingFileNodes(handle, library, relPath) {
@@ -742,7 +765,7 @@ class TDBKnowledgeManager {
 
     _safeDelete(db, nodeId) {
         try {
-            this._callDb(db, ['delete', 'deleteNode'], [nodeId], null);
+            db.delete(nodeId);
         } catch (e) {
             if (!/not found|missing|absent/i.test(e.message || '')) {
                 console.warn(`[TDBKnowledge] Failed to delete node ${nodeId}:`, e.message);
@@ -750,25 +773,9 @@ class TDBKnowledgeManager {
         }
     }
 
-    _safeLink(db, src, dst, label, weight) {
-        try {
-            this._callDb(db, ['link'], [src, dst, label, weight], null);
-        } catch (e) {
-            console.warn(`[TDBKnowledge] Failed to link ${src} -> ${dst}:`, e.message);
-        }
-    }
-
-    _safeIndexText(db, nodeId, text) {
-        try {
-            this._callDb(db, ['indexText', 'index_text'], [nodeId, text], null);
-        } catch (e) {
-            // 旧版绑定可能未暴露文本索引，忽略即可退化为纯向量检索。
-        }
-    }
-
     _safeBuildTextIndex(db) {
         try {
-            this._callDb(db, ['buildTextIndex', 'build_text_index'], [], null);
+            db.buildTextIndex();
         } catch (e) {
             // 同上，保持兼容。
         }
@@ -776,7 +783,7 @@ class TDBKnowledgeManager {
 
     _safeFlush(db) {
         try {
-            this._callDb(db, ['flush'], [], null);
+            db.flush();
         } catch (e) {
             console.warn('[TDBKnowledge] Flush failed:', e.message);
         }
@@ -823,6 +830,74 @@ class TDBKnowledgeManager {
         }
 
         return sorted;
+    }
+
+    async reachable(library, sourceId, options = {}) {
+        if (!this.initialized || !TriviumDB) return [];
+        const safeName = safeLibraryName(library);
+        return this._withLibraryQueue(safeName, async () => {
+            const handle = this.getOrOpenLibrary(safeName);
+            this._beginLibraryUse(handle);
+            try {
+                return handle.db.reachable(sourceId, {
+                    minDepth: options.minDepth ?? 1,
+                    maxDepth: options.maxDepth ?? 1,
+                    labels: options.labels,
+                    direction: options.direction || 'outgoing',
+                    maxVisitedNodes: options.maxVisitedNodes ?? 10000
+                }).map(result => ({ ...result, library: safeName }));
+            } finally {
+                this._endLibraryUse(handle);
+            }
+        });
+    }
+
+    async searchGraphFirst(library, queryVector, anchorIds, options = {}) {
+        if (!this.initialized || !TriviumDB || !queryVector) return [];
+        if (!Array.isArray(anchorIds)) throw new TypeError('anchorIds must be an array.');
+        const safeName = safeLibraryName(library);
+        return this._withLibraryQueue(safeName, async () => {
+            const handle = this.getOrOpenLibrary(safeName);
+            this._beginLibraryUse(handle);
+            try {
+                const topK = options.topK ?? 10;
+                const maxAnchorNodes = options.maxAnchorNodes ?? 100000;
+                return handle.db.searchGraphFirst(
+                    Array.from(queryVector),
+                    anchorIds,
+                    topK,
+                    maxAnchorNodes
+                ).map(hit => this._mapSearchHit(safeName, hit));
+            } finally {
+                this._endLibraryUse(handle);
+            }
+        });
+    }
+
+    async searchFileWithVector(library, sourcePath, queryVector, options = {}) {
+        if (!this.initialized || !TriviumDB || !queryVector) return [];
+        const safeName = safeLibraryName(library);
+        const normalizedSourcePath = String(sourcePath || '');
+        const anchorIds = this.metaDb.prepare(`
+            SELECT node_id
+            FROM chunks
+            WHERE library = ? AND path = ?
+            ORDER BY chunk_index
+        `).all(safeName, normalizedSourcePath).map(row => row.node_id);
+        if (anchorIds.length === 0) return [];
+        return this.searchGraphFirst(safeName, queryVector, anchorIds, options);
+    }
+
+    _mapSearchHit(library, hit) {
+        return {
+            library,
+            id: hit.id,
+            score: hit.score,
+            payload: hit.payload || {},
+            text: hit.payload?.text_preview || '',
+            sourceFile: hit.payload?.source_path || '',
+            chunkIndex: hit.payload?.chunk_index
+        };
     }
 
     /**
@@ -875,29 +950,16 @@ class TDBKnowledgeManager {
             const minScore = options.minScore ?? 0.1;
             const hybridAlpha = options.hybridAlpha ?? 0.7;
 
-            let hits;
-            try {
-                hits = this._callDb(handle.db, ['searchHybrid', 'search_hybrid'], [
-                    Array.from(queryVector),
-                    queryText,
-                    topK,
-                    expandDepth,
-                    minScore,
-                    hybridAlpha
-                ]);
-            } catch (e) {
-                hits = this._callDb(handle.db, ['search'], [Array.from(queryVector), topK, expandDepth, minScore], []);
-            }
+            const hits = handle.db.searchHybrid(
+                Array.from(queryVector),
+                queryText,
+                topK,
+                expandDepth,
+                minScore,
+                hybridAlpha
+            );
 
-            return (hits || []).map(hit => ({
-                library,
-                id: hit.id,
-                score: hit.score,
-                payload: hit.payload || {},
-                text: hit.payload?.text_preview || '',
-                sourceFile: hit.payload?.source_path || '',
-                chunkIndex: hit.payload?.chunk_index
-            }));
+            return (hits || []).map(hit => this._mapSearchHit(library, hit));
         } finally {
             this._endLibraryUse(handle);
         }
@@ -978,7 +1040,7 @@ class TDBKnowledgeManager {
         }
 
         for (const name of candidates) {
-            await this.closeLibrary(name, { flush: true });
+            await this.closeLibrary(name);
         }
     }
 
@@ -1272,7 +1334,7 @@ class TDBKnowledgeManager {
         }
 
         for (const name of Array.from(this.libs.keys())) {
-            await this.closeLibrary(name, { flush: true });
+            await this.closeLibrary(name);
         }
         this.libs.clear();
         this.libraryQueues.clear();

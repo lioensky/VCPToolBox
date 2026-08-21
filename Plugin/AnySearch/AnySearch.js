@@ -11,6 +11,7 @@ const TIMEOUT_MIN_MS = 1000;
 const TIMEOUT_MAX_MS = 40000;
 const MAX_RESULTS_MIN = 1;
 const MAX_RESULTS_MAX = 10;
+const ZONES = new Set(["cn", "intl"]);
 const BATCH_MAX = 5;
 const DOMAINS_MAX = 5;
 
@@ -114,6 +115,15 @@ function normalizeCommand(payload) {
   if (!hasQuery && firstString(payload, ["url", "URL", "link"]))
     return "extract";
   return "search";
+}
+
+function parseZone(source, keys = ["zone", "Zone"]) {
+  const zone = firstString(source, keys).toLowerCase();
+  if (!zone) return undefined;
+  if (!ZONES.has(zone)) {
+    fail("zone 仅支持 cn（中国大陆）或 intl（国际）。");
+  }
+  return zone;
 }
 
 function parseMaxResults(source) {
@@ -229,8 +239,8 @@ function buildExtractArguments(payload) {
 // v3 对齐：统一编译搜索任务 IR。把 VCP 输入编译成 1-5 个内部任务数组，
 // 供 executeSearchTasks 有界并发执行。三种模式：
 //   1. 单路：只有顶层 query，无编号字段 → 1 个任务
-//   2. 同路多词：queries（| 分隔），共享 sub_domain/params/max_results → N 个任务
-//   3. 自由路线：queryN/sub_domainN/paramsN/max_resultsN（N=1..5），继承顶层默认值
+//   2. 同路多词：queries（| 分隔），共享 sub_domain/zone/params/max_results → N 个任务
+//   3. 自由路线：queryN/sub_domainN/zoneN/paramsN/max_resultsN（N=1..5），继承顶层默认值
 // 规则：
 //   - queries 与编号字段混用 → 报错
 //   - 编号不连续 → 允许，按升序稳定输出
@@ -244,6 +254,7 @@ function compileSearchTasks(payload) {
     "subDomain",
     "subdomain",
   ]);
+  const topZone = parseZone(payload);
   const topParams = parseSubDomainParams(payload);
   const topMaxResults = parseMaxResults(payload);
 
@@ -256,6 +267,7 @@ function compileSearchTasks(payload) {
       `text${i}`,
       `sub_domain${i}`,
       `subDomain${i}`,
+      `zone${i}`,
       `params${i}`,
       `sdp${i}`,
       `max_results${i}`,
@@ -300,7 +312,7 @@ function compileSearchTasks(payload) {
     if (items.length < 1 || items.length > BATCH_MAX) {
       fail(`queries 需要 1-${BATCH_MAX} 个查询。`);
     }
-    // 每个查询共享顶层 sub_domain/params/max_results
+    // 每个查询共享顶层 sub_domain/zone/params/max_results
     return items.map((item, idx) => {
       const query =
         typeof item === "string"
@@ -308,8 +320,9 @@ function compileSearchTasks(payload) {
           : firstString(item, ["query", "q", "text", "Query"]);
       if (!query) fail(`queries 的第 ${idx + 1} 项缺少 query。`);
       const task = { routeIndex: idx, query };
-      if (topSubDomain) task.sub_domain = topSubDomain;
-      if (topParams) task.params = topParams;
+       if (topSubDomain) task.sub_domain = topSubDomain;
+       if (topZone) task.zone = topZone;
+       if (topParams) task.params = topParams;
       if (topMaxResults !== undefined) task.max_results = topMaxResults;
       return task;
     });
@@ -320,11 +333,12 @@ function compileSearchTasks(payload) {
     const tasks = [];
     for (const i of numberedFields) {
       const query = firstString(payload, [`query${i}`, `q${i}`, `text${i}`]);
-      const subDomain = firstString(payload, [
-        `sub_domain${i}`,
-        `subDomain${i}`,
-      ]);
-      const params = parseSubDomainParams({
+       const subDomain = firstString(payload, [
+         `sub_domain${i}`,
+         `subDomain${i}`,
+       ]);
+      const zone = parseZone(payload, [`zone${i}`]);
+       const params = parseSubDomainParams({
         params: payload[`params${i}`],
         sdp: payload[`sdp${i}`],
         sub_domain_params: payload[`sub_domain_params${i}`],
@@ -335,15 +349,16 @@ function compileSearchTasks(payload) {
       });
 
       // 继承顶层默认值
-      const finalQuery = query || topQuery;
-      const finalSubDomain = subDomain || topSubDomain;
-      const finalParams = params || topParams;
+       const finalQuery = query || topQuery;
+       const finalSubDomain = subDomain || topSubDomain;
+       const finalZone = zone || topZone;
+       const finalParams = params || topParams;
       const finalMaxResults =
         maxResults !== undefined ? maxResults : topMaxResults;
 
-      // 只有 max_resultsN 没有 query/tag/params 差异 → 不创建路线
+      // 只有 max_resultsN 没有 query/tag/zone/params 差异 → 不创建路线
       // 即：编号字段只提供了 max_resultsN，且无顶层 query 可继承
-      const hasOverride = query || subDomain || params;
+       const hasOverride = query || subDomain || zone || params;
       if (!hasOverride && !topQuery) {
         continue; // 空路线：只有 max_resultsN，无 query 可继承
       }
@@ -352,8 +367,9 @@ function compileSearchTasks(payload) {
       }
 
       const task = { routeIndex: i, query: finalQuery };
-      if (finalSubDomain) task.sub_domain = finalSubDomain;
-      if (finalParams) task.params = finalParams;
+       if (finalSubDomain) task.sub_domain = finalSubDomain;
+       if (finalZone) task.zone = finalZone;
+       if (finalParams) task.params = finalParams;
       if (finalMaxResults !== undefined) task.max_results = finalMaxResults;
       tasks.push(task);
     }
@@ -365,8 +381,9 @@ function compileSearchTasks(payload) {
   // 模式 1：单路搜索
   if (!topQuery) fail("search 缺少必填参数 query。");
   const task = { routeIndex: 0, query: topQuery };
-  if (topSubDomain) task.sub_domain = topSubDomain;
-  if (topParams) task.params = topParams;
+   if (topSubDomain) task.sub_domain = topSubDomain;
+   if (topZone) task.zone = topZone;
+   if (topParams) task.params = topParams;
   if (topMaxResults !== undefined) task.max_results = topMaxResults;
   return [task];
 }
@@ -411,6 +428,7 @@ function executeSearchTasks(tasks) {
   const promises = tasks.map((task) => {
     const body = { query: task.query };
     if (task.sub_domain) body.tag = task.sub_domain;
+    if (task.zone) body.zone = task.zone;
     if (task.params) body.params = task.params;
     if (task.max_results !== undefined) body.max_results = task.max_results;
 

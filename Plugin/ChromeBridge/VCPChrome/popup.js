@@ -21,6 +21,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const refreshButton = document.getElementById('refreshPage');
     const copyGroundedMarkdownButton = document.getElementById('copyGroundedMarkdown');
     const copyStatusDiv = document.getElementById('copy-status');
+    const syncUrlFetchCookiesButton = document.getElementById('syncUrlFetchCookies');
+    const urlFetchCookieStatusDiv = document.getElementById('urlfetch-cookie-status');
     const settingsToggle = document.getElementById('settings-toggle');
     const settingsDiv = document.getElementById('settings');
     const serverUrlInput = document.getElementById('serverUrl');
@@ -127,6 +129,33 @@ document.addEventListener('DOMContentLoaded', () => {
     function setCopyStatus(message, isError = false) {
         copyStatusDiv.textContent = message;
         copyStatusDiv.style.color = isError ? '#b42318' : '#6d5a8f';
+    }
+
+    function setUrlFetchCookieStatus(message, isError = false) {
+        urlFetchCookieStatusDiv.textContent = message;
+        urlFetchCookieStatusDiv.style.color = isError ? '#b42318' : '#6b7280';
+    }
+
+    function getUrlFetchCookieRiskConfirmation() {
+        return new Promise(resolve => {
+            chrome.storage.local.get(['urlfetchCookieRiskConfirmed'], result => {
+                resolve(result.urlfetchCookieRiskConfirmed === true);
+            });
+        });
+    }
+
+    async function confirmUrlFetchCookieRiskIfNeeded() {
+        if (await getUrlFetchCookieRiskConfirmation()) return true;
+
+        const confirmed = window.confirm(
+            '此操作会读取当前网页可用的全部 Cookie，包括 HttpOnly Cookie，并通过已鉴权的 VCP WebSocket 上传到服务端，保存到 Plugin/UrlFetch/config.env。Cookie 可用于访问你的登录会话，请确认你信任当前 VCP 服务端。是否继续？'
+        );
+        if (!confirmed) return false;
+
+        await new Promise(resolve => {
+            chrome.storage.local.set({ urlfetchCookieRiskConfirmed: true }, resolve);
+        });
+        return true;
     }
 
     async function requestCurrentGroundedMarkdown() {
@@ -327,6 +356,52 @@ document.addEventListener('DOMContentLoaded', () => {
                 copyGroundedMarkdownButton.textContent = originalText;
                 copyGroundedMarkdownButton.disabled = false;
             }, 1800);
+        }
+    });
+
+    syncUrlFetchCookiesButton.addEventListener('click', async () => {
+        const originalText = syncUrlFetchCookiesButton.textContent;
+        syncUrlFetchCookiesButton.disabled = true;
+        setUrlFetchCookieStatus('正在读取当前站点 Cookie…');
+        try {
+            const confirmed = await confirmUrlFetchCookieRiskIfNeeded();
+            if (!confirmed) {
+                setUrlFetchCookieStatus('已取消 Cookie 配置。');
+                return;
+            }
+
+            setUrlFetchCookieStatus('正在读取并发送 Cookie…');
+            const response = await new Promise(resolve => {
+                chrome.runtime.sendMessage({ type: 'SYNC_URLFETCH_COOKIES' }, result => {
+                    if (chrome.runtime.lastError) {
+                        resolve({
+                            status: 'error',
+                            code: 'POPUP_MESSAGE_FAILED',
+                            error: chrome.runtime.lastError.message
+                        });
+                        return;
+                    }
+                    resolve(result || {
+                        status: 'error',
+                        code: 'EMPTY_RESPONSE',
+                        error: '扩展后台未返回结果'
+                    });
+                });
+            });
+
+            if (response.status !== 'success') {
+                throw new Error(response.error || 'UrlFetch Cookie 配置失败');
+            }
+
+            const updatedAt = response.updatedAt ? new Date(response.updatedAt).toLocaleString() : '刚刚';
+            setUrlFetchCookieStatus(
+                `已配置 ${response.siteKey}，共 ${response.cookieCount} 个 Cookie。更新时间：${updatedAt}`
+            );
+        } catch (error) {
+            setUrlFetchCookieStatus(error.message || String(error), true);
+        } finally {
+            syncUrlFetchCookiesButton.textContent = originalText;
+            syncUrlFetchCookiesButton.disabled = false;
         }
     });
 

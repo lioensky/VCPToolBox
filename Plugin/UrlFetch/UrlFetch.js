@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, 'config.env') });
+const dotenv = require('dotenv');
+const fsSync = require('fs');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const AnonymizeUAPlugin = require('puppeteer-extra-plugin-anonymize-ua');
@@ -9,6 +11,7 @@ const fs = require('fs/promises');
 const { v4: uuidv4 } = require('uuid');
 const { Readability } = require('@mozilla/readability');
 const { JSDOM } = require('jsdom');
+const { PDFParse } = require('pdf-parse');
 const https = require('https');
 const http = require('http');
 const browserRuntimeManager = require('../../modules/browserRuntimeManager.js');
@@ -30,6 +33,7 @@ const JINA_API_KEY = process.env.JINA_API_KEY;
 const JINA_READER_TIMEOUT_MS = Number(process.env.JINA_READER_TIMEOUT_MS || 20000);
 const DIRECT_FETCH_TIMEOUT_MS = Number(process.env.DIRECT_FETCH_TIMEOUT_MS || 12000);
 const DIRECT_FETCH_MAX_BYTES = Number(process.env.DIRECT_FETCH_MAX_BYTES || 5 * 1024 * 1024);
+const PDF_FETCH_MAX_BYTES = Number(process.env.PDF_FETCH_MAX_BYTES || 50 * 1024 * 1024);
 const KNOWLEDGE_BASE_DIR = path.resolve(PROJECT_BASE_PATH || process.cwd(), 'knowledge');
 const URLFETCH_PERSISTENT_PROFILE = String(process.env.URLFETCH_PERSISTENT_PROFILE || 'true').toLowerCase() !== 'false';
 const URLFETCH_PROFILE_DIR = process.env.URLFETCH_PROFILE_DIR || path.resolve(__dirname, 'browser-profiles');
@@ -289,6 +293,10 @@ async function handleLocalFile(fileUrl) {
                 { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } }
             ]
         };
+    } else if (ext === '.pdf') {
+        const buffer = await fs.readFile(localPath);
+        const textContent = await extractPdfText(buffer, fileUrl);
+        return { content: [{ type: 'text', text: `路径: ${localPath}\n\n${textContent}` }] };
     } else {
         // 本地文本文件 → 读取并返回内容
         const textContent = await fs.readFile(localPath, 'utf-8');
@@ -306,6 +314,96 @@ function isImageUrl(url) {
     } catch {
         return false;
     }
+}
+
+function isPdfUrl(url) {
+    try {
+        return new URL(url).pathname.toLowerCase().endsWith('.pdf');
+    } catch {
+        return false;
+    }
+}
+
+function getCurrentUrlFetchCookieEnv() {
+    try {
+        const configPath = path.resolve(__dirname, 'config.env');
+        return {
+            ...process.env,
+            ...dotenv.parse(fsSync.readFileSync(configPath, 'utf8'))
+        };
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            console.error(`读取 UrlFetch config.env 失败: ${error.message}`);
+        }
+        return process.env;
+    }
+}
+
+function hasPdfSignature(buffer) {
+    if (!Buffer.isBuffer(buffer) || buffer.length < 5) return false;
+    // 允许 PDF 文件签名前存在少量 BOM、空白或传输填充。
+    return buffer.subarray(0, Math.min(buffer.length, 1024)).includes(Buffer.from('%PDF-'));
+}
+
+function isPdfResponse({ url = '', contentType = '', contentDisposition = '', buffer = null }) {
+    return isPdfUrl(url) ||
+        String(contentType).toLowerCase().includes('application/pdf') ||
+        /filename\*?=(?:UTF-8''|["'])?[^;"']*\.pdf\b/i.test(String(contentDisposition)) ||
+        hasPdfSignature(buffer);
+}
+
+async function extractPdfText(buffer, sourceUrl) {
+    if (!Buffer.isBuffer(buffer) || !buffer.length) {
+        throw new Error('PDF 解析失败: 文件内容为空');
+    }
+
+    const parser = new PDFParse({ data: buffer });
+    try {
+        const data = await parser.getText();
+        const text = normalizeExtractedText(data && data.text);
+        if (!text) {
+            throw new Error('PDF 中未提取到文本；该文件可能是纯扫描件，需要 OCR 才能识别');
+        }
+
+        let fileName = 'document.pdf';
+        try {
+            fileName = decodeURIComponent(path.basename(new URL(sourceUrl).pathname)) || fileName;
+        } catch (_) {
+            // ignore
+        }
+
+        return `PDF文件: ${fileName}\n来源: ${sourceUrl}\n页数: ${data.total || data.pages?.length || '未知'}\n\n${text}`;
+    } finally {
+        await parser.destroy();
+    }
+}
+
+async function extractPdfFromPuppeteerResponse(response, fallbackUrl) {
+    if (!response) return null;
+
+    const responseUrl = response.url() || fallbackUrl;
+    const headers = response.headers();
+    const contentType = String(headers['content-type'] || '').toLowerCase();
+    const contentDisposition = String(headers['content-disposition'] || '');
+
+    if (!isPdfResponse({ url: responseUrl, contentType, contentDisposition })) {
+        return null;
+    }
+
+    const contentLength = Number(headers['content-length'] || 0);
+    if (contentLength > PDF_FETCH_MAX_BYTES) {
+        throw new Error(`PDF 响应大小超过 ${(PDF_FETCH_MAX_BYTES / 1024 / 1024).toFixed(1)}MB 限制`);
+    }
+
+    const buffer = await response.buffer();
+    if (buffer.length > PDF_FETCH_MAX_BYTES) {
+        throw new Error(`PDF 响应超过 ${(PDF_FETCH_MAX_BYTES / 1024 / 1024).toFixed(1)}MB 限制`);
+    }
+    if (!hasPdfSignature(buffer)) {
+        throw new Error(`服务器声明返回 PDF，但响应内容不是有效 PDF: ${responseUrl}`);
+    }
+
+    return await extractPdfText(buffer, responseUrl);
 }
 
 function sanitizeProfileSegment(segment) {
@@ -603,33 +701,65 @@ function requestDirectHttp(targetUrl, redirectCount = 0) {
             }
 
             const contentType = String(res.headers['content-type'] || '').toLowerCase();
-            if (contentType && !contentType.includes('text/') && !contentType.includes('html') && !contentType.includes('xml')) {
+            const contentDisposition = String(res.headers['content-disposition'] || '');
+            const headerDeclaresPdf = isPdfResponse({
+                url: urlObj.toString(),
+                contentType,
+                contentDisposition
+            });
+            const isDeclaredText = !contentType ||
+                contentType.includes('text/') ||
+                contentType.includes('html') ||
+                contentType.includes('xml');
+            const contentLength = Number(res.headers['content-length'] || 0);
+            const initialLimit = headerDeclaresPdf ? PDF_FETCH_MAX_BYTES : DIRECT_FETCH_MAX_BYTES;
+
+            if (contentLength > initialLimit) {
                 res.resume();
-                reject(new Error(`直接读取失败: 非文本响应 ${contentType}`));
+                reject(new Error(`直接读取失败: 响应大小超过 ${(initialLimit / 1024 / 1024).toFixed(1)}MB 限制`));
                 return;
             }
 
             const chunks = [];
             let totalBytes = 0;
+            let detectedPdf = headerDeclaresPdf;
 
             res.on('data', chunk => {
                 totalBytes += chunk.length;
-                if (totalBytes > DIRECT_FETCH_MAX_BYTES) {
-                    req.destroy(new Error(`直接读取失败: 响应超过 ${(DIRECT_FETCH_MAX_BYTES / 1024 / 1024).toFixed(1)}MB 限制`));
+                if (!detectedPdf && chunks.length === 0) {
+                    detectedPdf = hasPdfSignature(chunk);
+                }
+
+                const activeLimit = detectedPdf ? PDF_FETCH_MAX_BYTES : DIRECT_FETCH_MAX_BYTES;
+                if (totalBytes > activeLimit) {
+                    req.destroy(new Error(`直接读取失败: 响应超过 ${(activeLimit / 1024 / 1024).toFixed(1)}MB 限制`));
                     return;
                 }
                 chunks.push(chunk);
             });
 
             res.on('end', () => {
-                const body = Buffer.concat(chunks).toString('utf8');
-                if (!body.trim()) {
+                const buffer = Buffer.concat(chunks);
+                if (!buffer.length) {
                     reject(new Error('直接读取失败: 响应为空'));
                     return;
                 }
 
+                const responseIsPdf = isPdfResponse({
+                    url: urlObj.toString(),
+                    contentType,
+                    contentDisposition,
+                    buffer
+                });
+                if (!responseIsPdf && !isDeclaredText) {
+                    reject(new Error(`直接读取失败: 非文本响应 ${contentType || '未知类型'}`));
+                    return;
+                }
+
                 resolve({
-                    body,
+                    body: responseIsPdf ? null : buffer.toString('utf8'),
+                    buffer,
+                    isPdf: responseIsPdf,
                     contentType,
                     finalUrl: urlObj.toString()
                 });
@@ -645,7 +775,11 @@ function requestDirectHttp(targetUrl, redirectCount = 0) {
 }
 
 async function fetchWithDirectHttp(url) {
-    const { body, contentType, finalUrl } = await requestDirectHttp(url);
+    const { body, buffer, isPdf, contentType, finalUrl } = await requestDirectHttp(url);
+
+    if (isPdf) {
+        return await extractPdfText(buffer, finalUrl);
+    }
 
     if (contentType.includes('text/plain') || !/<html[\s>]/i.test(body)) {
         const text = body.trim();
@@ -690,6 +824,10 @@ async function fetchWithManagedChrome(url, mode = 'text') {
     let browser;
     let page;
     try {
+        if (isPdfUrl(url)) {
+            return await fetchWithDirectHttp(url);
+        }
+
         await browserRuntimeManager.ensureManagedBrowser();
         const browserWSEndpoint = await browserRuntimeManager.getManagedBrowserWebSocketEndpoint();
         if (!browserWSEndpoint) {
@@ -699,7 +837,12 @@ async function fetchWithManagedChrome(url, mode = 'text') {
         browser = await puppeteer.connect({ browserWSEndpoint });
         page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 900 });
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        const response = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        const pdfText = await extractPdfFromPuppeteerResponse(response, url);
+        if (pdfText) {
+            return pdfText;
+        }
+
         await autoScroll(page, mode);
 
         const pageContent = await page.content();
@@ -796,16 +939,26 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
         };
 
         // 方式1：多站点原始格式 (FETCH_COOKIES_RAW_MULTI) - 优先级最高
-        const fetchCookiesRawMulti = process.env.FETCH_COOKIES_RAW_MULTI;
+        const currentCookieEnv = getCurrentUrlFetchCookieEnv();
+        const fetchCookiesRawMulti = currentCookieEnv.FETCH_COOKIES_RAW_MULTI;
         if (fetchCookiesRawMulti && fetchCookiesRawMulti.trim()) {
             try {
                 const cookiesMap = JSON.parse(fetchCookiesRawMulti);
-                // 遍历所有域名配置，找到匹配当前访问 URL 的
-                for (const [domain, cookieString] of Object.entries(cookiesMap)) {
-                    if (urlObj.hostname.includes(domain)) {
-                        cookiesToSet = parseRawCookies(cookieString, urlObj);
-                        break;
-                    }
+                const matchingEntry = Object.entries(cookiesMap)
+                    .filter(([domain, cookieString]) => {
+                        if (typeof cookieString !== 'string') return false;
+                        const normalizedDomain = String(domain || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+                        return normalizedDomain &&
+                            (urlObj.hostname.toLowerCase() === normalizedDomain ||
+                                urlObj.hostname.toLowerCase().endsWith(`.${normalizedDomain}`));
+                    })
+                    .sort((left, right) => {
+                        const leftDomain = String(left[0]).trim().replace(/^\.+|\.+$/g, '');
+                        const rightDomain = String(right[0]).trim().replace(/^\.+|\.+$/g, '');
+                        return rightDomain.length - leftDomain.length;
+                    })[0];
+                if (matchingEntry) {
+                    cookiesToSet = parseRawCookies(matchingEntry[1], urlObj);
                 }
             } catch (multiCookieError) {
                 console.error('解析多站点 Cookies 失败:', multiCookieError.message);
@@ -852,6 +1005,10 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             }
         }
 
+        if (mode === 'text' && isPdfUrl(url)) {
+            return await fetchWithDirectHttp(url);
+        }
+
         // image 模式：直接下载图片，不需要先导航到页面
         if (mode === 'image') {
             const response = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
@@ -869,7 +1026,13 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             };
         }
 
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        const navigationResponse = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        if (mode === 'text') {
+            const pdfText = await extractPdfFromPuppeteerResponse(navigationResponse, url);
+            if (pdfText) {
+                return pdfText;
+            }
+        }
 
         if (mode === 'snapshot') {
             // Check for essential environment variables for saving image

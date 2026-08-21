@@ -1149,7 +1149,7 @@ async function readMail(args = {}) {
   lines.push('- 下载附件：调用 `download_attachment`。');
   lines.push('- 转发/新发：调用 `send_mail`，正文或 `attachments` 可包含 URL / `file://`。');
 
-  return asAiContent(lines.join('\n'), imageContent, {
+  const aiResult = asAiContent(lines.join('\n'), imageContent, {
     command: 'read_mail',
     user,
     mailbox: mailboxInfo.mailbox,
@@ -1158,6 +1158,12 @@ async function readMail(args = {}) {
     imageCount: normalized.imageUrls.length + imageContent.length,
     parsedDocumentCount: parsedDocuments.length
   });
+  // 仅 admin API 调用（includeDetail）时挂归一化详情——避免 AI 工具链路
+  // 因 detail 携带 html/text/markdown 副本而膨胀上下文
+  if (args.includeDetail === true) {
+    aiResult.detail = normalized;
+  }
+  return aiResult;
 }
 
 function extractUrlsFromText(text) {
@@ -1518,6 +1524,215 @@ async function downloadAttachment(args = {}) {
     fileUrl,
     size: stat.size
   });
+}
+
+/**
+ * 标记邮件已读/未读（SDK transport.markMessages；admin API 与移动端专用）。
+ * @param {object} args - { mailId | mailId[], read = true, fid?, mailbox/user }
+ */
+async function markMail(args = {}) {
+  const mailboxInfo = resolveMailboxArgs(args);
+  const user = mailboxInfo.user;
+  const mailId = args.mailId || args.id;
+  if (!mailId) throw new Error('mark_mail 需要 mailId。');
+  const read = args.read === undefined ? true : normalizeBoolean(args.read, true);
+  const client = getClient(user);
+  const ids = (Array.isArray(mailId) ? mailId : [mailId]).map(String);
+
+  if (client.transport && typeof client.transport.markMessages === 'function') {
+    await client.transport.markMessages(ids, { read }, args.fid ? String(args.fid) : undefined);
+  } else {
+    await callFirstAvailable(client, [
+      'mail.mark',
+      'mark',
+      'messages.mark',
+      'emails.mark'
+    ], [{ ids, id: ids[0], mailId: ids[0], read, user }]);
+  }
+
+  // 标志位变化后刷新缓存，让列表与占位符尽快一致
+  await pollOnce().catch(() => {});
+
+  return asAiText([
+    '# ClawEmail 标记结果',
+    '',
+    '## 状态',
+    '',
+    `- 结果：已标记为${read ? '已读' : '未读'}`,
+    `- 邮箱：${user}`,
+    `- 邮箱槽位：${mailboxInfo.mailbox}`,
+    `- mailId：\`${ids.join(', ')}\``
+  ].join('\n'), {
+    command: 'mark_mail',
+    user,
+    mailbox: mailboxInfo.mailbox,
+    mailId: ids.join(','),
+    read
+  });
+}
+
+/**
+ * 搜索邮件（SDK transport.searchMessages，支持 fts 全文；admin API 与移动端专用）。
+ * @param {object} args - { keyword/q, from, to, subject, since, before, unreadOnly, fts, limit, fid, mailbox/user }
+ */
+async function searchMails(args = {}) {
+  const mailboxInfo = resolveMailboxArgs(args);
+  const user = mailboxInfo.user;
+  const limit = normalizeInteger(args.limit, DEFAULT_POLL_LIMIT);
+  const client = getClient(user);
+
+  const query = {
+    fid: String(args.fid || args.folderId || 1),
+    from: args.from,
+    to: args.to,
+    subject: args.subject,
+    keyword: args.keyword || args.q,
+    since: args.since,
+    before: args.before,
+    unread: args.unreadOnly !== undefined ? normalizeBoolean(args.unreadOnly, false) : undefined,
+    fts: normalizeBoolean(args.fts, false),
+    limit
+  };
+  Object.keys(query).forEach(key => query[key] === undefined && delete query[key]);
+
+  if (!query.keyword && !query.from && !query.to && !query.subject) {
+    throw new Error('search_mail 需要 keyword/from/to/subject 至少一项。');
+  }
+
+  const result = client.transport && typeof client.transport.searchMessages === 'function'
+    ? await client.transport.searchMessages(query)
+    : await callFirstAvailable(client, [
+      'mail.search',
+      'search',
+      'messages.search',
+      'emails.search'
+    ], [query]);
+
+  const rawList = Array.isArray(result)
+    ? result
+    : Array.isArray(result?.emails)
+      ? result.emails
+      : Array.isArray(result?.mails)
+        ? result.mails
+        : Array.isArray(result?.data)
+          ? result.data
+          : [];
+
+  const emails = rawList.slice(0, limit).map(mail => normalizeMailSummary(mail, user));
+  const lines = [];
+
+  lines.push('# ClawEmail 邮件搜索');
+  lines.push('');
+  lines.push('## 统计');
+  lines.push('');
+  lines.push(`- 查询邮箱：${user}`);
+  lines.push(`- 邮箱槽位：${mailboxInfo.mailbox}`);
+  lines.push(`- 返回数量：${emails.length}`);
+  lines.push(`- 全文搜索（fts）：${mdBool(query.fts === true)}`);
+  lines.push('');
+
+  if (emails.length === 0) {
+    lines.push('## 邮件');
+    lines.push('');
+    lines.push('没有匹配的邮件。');
+  } else {
+    lines.push('## 邮件');
+    lines.push('');
+    lines.push('| # | 状态 | mailId | 发件人 | 主题 | 时间 | 附件 | 预览 |');
+    lines.push('|---:|---|---|---|---|---|---|');
+    emails.forEach((mail, index) => {
+      const status = mail.unread === true ? '未读' : (mail.read === true ? '已读' : '未知');
+      lines.push(`| ${index + 1} | ${status} | \`${mdInline(mail.mailId, '未知')}\` | ${mdInline(formatArrayForMd(mail.from), '未知')} | ${mdInline(mail.subject, '(无主题)')} | ${mdInline(mail.date, '未知')} | ${mdBool(mail.hasAttachments)} | ${mdInline(mail.preview, '')} |`);
+    });
+  }
+
+  const aiResult = asAiText(lines.join('\n'), {
+    command: 'search_mail',
+    user,
+    mailbox: mailboxInfo.mailbox,
+    count: emails.length
+  });
+  aiResult.emails = emails;
+  return aiResult;
+}
+
+/**
+ * 移动邮件到任意文件夹（SDK transport.moveMessages；垃圾箱软删除见 moveToTrash）。
+ * @param {object} args - { mailId | mailId[], target/targetFolderId, fid?（源文件夹）, mailbox/user }
+ */
+async function moveMailToFolder(args = {}) {
+  const mailboxInfo = resolveMailboxArgs(args);
+  const user = mailboxInfo.user;
+  const mailId = args.mailId || args.id;
+  if (!mailId) throw new Error('move_mail 需要 mailId。');
+  const target = args.target || args.targetFolderId || args.targetFid || args.toFid;
+  if (!target) throw new Error('move_mail 需要 target（目标文件夹 id）。');
+  const client = getClient(user);
+  const ids = (Array.isArray(mailId) ? mailId : [mailId]).map(String);
+
+  if (client.transport && typeof client.transport.moveMessages === 'function') {
+    await client.transport.moveMessages(ids, String(target), args.fid ? String(args.fid) : undefined);
+  } else {
+    await callFirstAvailable(client, [
+      'mail.move',
+      'move',
+      'messages.move',
+      'emails.move'
+    ], [{ ids, id: ids[0], mailId: ids[0], target: String(target), user }]);
+  }
+
+  await pollOnce().catch(() => {});
+
+  return asAiText([
+    '# ClawEmail 移动结果',
+    '',
+    '## 状态',
+    '',
+    '- 结果：邮件已移动',
+    `- 邮箱：${user}`,
+    `- 邮箱槽位：${mailboxInfo.mailbox}`,
+    `- mailId：\`${ids.join(', ')}\``,
+    `- 目标文件夹：\`${target}\``
+  ].join('\n'), {
+    command: 'move_mail',
+    user,
+    mailbox: mailboxInfo.mailbox,
+    mailId: ids.join(','),
+    target: String(target)
+  });
+}
+
+/**
+ * 获取附件原始字节（供 admin API 流式回传；与 download_attachment 写磁盘工具不同，
+ * 本函数不落盘，直接返回 Buffer）。
+ * @param {object} args - { mailId, attachmentId/partId, mailbox/user }
+ * @returns {Promise<{user, mailbox, mailId, attachmentId, filename, contentType, size, buffer}>}
+ */
+async function getAttachmentData(args = {}) {
+  const mailboxInfo = resolveMailboxArgs(args);
+  const user = mailboxInfo.user;
+  const mailId = args.mailId || args.id;
+  if (!mailId) throw new Error('get_attachment 需要 mailId。');
+  const attachmentId = args.attachmentId || args.partId;
+  if (!attachmentId) throw new Error('get_attachment 需要 attachmentId 或 partId。');
+
+  const client = getClient(user);
+  const part = String(args.partId || attachmentId);
+  const result = await client.mail.getAttachment({ id: mailId, part });
+  const buffer = await attachmentResponseToBuffer(result);
+  const filename = result?.filename || `${attachmentId}.bin`;
+  const contentType = result?.contentType || mime.lookup(filename) || 'application/octet-stream';
+
+  return {
+    user,
+    mailbox: mailboxInfo.mailbox,
+    mailId,
+    attachmentId,
+    filename,
+    contentType,
+    size: buffer.length,
+    buffer
+  };
 }
 
 async function pollOnce() {
@@ -2113,12 +2328,18 @@ async function adminListEmails(args = {}) {
 async function adminReadMail(args = {}) {
   const result = await readMail({
     ...args,
+    includeDetail: true,
     includeAttachmentContent: args.includeAttachmentContent === undefined ? false : args.includeAttachmentContent
   });
   return {
     meta: result.meta,
     markdown: extractTextContent(result),
-    content: result.content || []
+    content: result.content || [],
+    // 原始 HTML / 纯文本 / 附件元数据（移动端保真渲染与附件列表用）
+    html: result.detail?.html ?? null,
+    text: result.detail?.text ?? null,
+    attachments: result.detail?.attachments ?? [],
+    imageUrls: result.detail?.imageUrls ?? []
   };
 }
 
@@ -2130,6 +2351,62 @@ async function adminMoveToTrash(args = {}) {
   };
 }
 
+// ===== 以下为 V1.1/V2 补全的 admin 包装（SDK 能力现成，仅补出口） =====
+
+async function adminSendMail(args = {}) {
+  const result = await sendMail(args);
+  return {
+    meta: result.meta,
+    markdown: extractTextContent(result)
+  };
+}
+
+async function adminReplyMail(args = {}) {
+  const result = await replyMail(args);
+  return {
+    meta: result.meta,
+    markdown: extractTextContent(result)
+  };
+}
+
+async function adminListFolders(args = {}) {
+  const result = await listFolders(args);
+  return {
+    meta: { user: result.user, mailbox: result.mailbox },
+    folders: result.folders || []
+  };
+}
+
+async function adminMarkMail(args = {}) {
+  const result = await markMail(args);
+  return {
+    meta: result.meta,
+    markdown: extractTextContent(result)
+  };
+}
+
+async function adminSearchMails(args = {}) {
+  const result = await searchMails(args);
+  return {
+    meta: result.meta,
+    emails: result.emails || [],
+    markdown: extractTextContent(result)
+  };
+}
+
+async function adminMoveMail(args = {}) {
+  const result = await moveMailToFolder(args);
+  return {
+    meta: result.meta,
+    markdown: extractTextContent(result)
+  };
+}
+
+/** 附件原始字节（路由层流式回传；不经 markdown 包装）。 */
+async function adminGetAttachment(args = {}) {
+  return await getAttachmentData(args);
+}
+
 module.exports = {
   initialize,
   processToolCall,
@@ -2139,6 +2416,13 @@ module.exports = {
   adminListEmails,
   adminReadMail,
   adminMoveToTrash,
+  adminSendMail,
+  adminReplyMail,
+  adminListFolders,
+  adminMarkMail,
+  adminSearchMails,
+  adminMoveMail,
+  adminGetAttachment,
   _private: {
     buildPlaceholderText,
     buildSubMailboxPlaceholderText,
@@ -2148,6 +2432,10 @@ module.exports = {
     resolveMailboxArgs,
     listFolders,
     findTrashFolder,
-    moveToTrash
+    moveToTrash,
+    markMail,
+    searchMails,
+    moveMailToFolder,
+    getAttachmentData
   }
 };

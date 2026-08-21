@@ -97,6 +97,24 @@
             font-size: 11px;
             text-align: left;
         }
+        .urlfetch-cookie-button {
+            width: 100%;
+            border-color: #c2410c;
+            background: #fff7ed;
+            color: #9a3412;
+            font-weight: 600;
+        }
+        .urlfetch-cookie-button:hover {
+            background: #ffedd5;
+        }
+        #urlfetch-cookie-status {
+            min-height: 16px;
+            margin-top: 5px;
+            color: #6b7280;
+            font-size: 11px;
+            line-height: 1.35;
+            text-align: left;
+        }
         #settings {
             margin-top: 15px;
             padding-top: 10px;
@@ -210,6 +228,11 @@
         <button id="copyGroundedMarkdown" class="copy-button">📋 复制当前页面 MD 操作图全文</button>
     </div>
     <div id="copy-status" aria-live="polite"></div>
+
+    <div class="button-group">
+        <button id="syncUrlFetchCookies" class="urlfetch-cookie-button">🍪 配置当前站点 UrlFetch Cookie</button>
+    </div>
+    <div id="urlfetch-cookie-status" aria-live="polite"></div>
 
     <!-- 显示最新页面信息 -->
     <div id="page-info">

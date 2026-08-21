@@ -3,9 +3,9 @@ const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
 const multer = require('multer');
-const extract = require('extract-zip');
 const tar = require('tar');
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
+const { extractZipSafely } = require('../../modules/safeZipExtractor');
 
 const IMAGE_ROOT_DIR = path.join(__dirname, '..', '..', 'image');
 const EMOJI_LISTS_DIR = path.join(
@@ -505,8 +505,10 @@ async function extractArchiveSafely(archiveFormat, archiveFilePath, extractDir) 
     };
 
     if (archiveFormat === 'zip') {
-        await extract(archiveFilePath, {
-            dir: extractDir,
+        await extractZipSafely(archiveFilePath, extractDir, {
+            maxEntries: MAX_EXTRACTED_FILE_COUNT,
+            maxTotalSize: MAX_EXTRACTED_TOTAL_SIZE,
+            maxEntrySize: MAX_EXTRACTED_TOTAL_SIZE,
             onEntry(entry) {
                 checkEntryBudget(entry && entry.uncompressedSize);
             },

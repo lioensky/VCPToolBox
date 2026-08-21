@@ -11,7 +11,7 @@ use rivermemo_topology_v3::MemoRuntime;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rusqlite::{Connection, OpenFlags};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 use usearch::Index;
 
@@ -166,8 +166,12 @@ fn unique_index_sidecar_path(target: &std::path::Path, role: &str) -> std::path:
 }
 
 fn sync_index_file(path: &std::path::Path) -> std::io::Result<()> {
+    // Windows 的 FlushFileBuffers 要求句柄具备写权限；只读句柄即使文件
+    // 可读取也会返回 ERROR_ACCESS_DENIED。usearch 已完成临时文件写入，
+    // 此处仅重新打开同一文件执行持久化屏障，不修改内容。
     std::fs::OpenOptions::new()
         .read(true)
+        .write(true)
         .open(path)?
         .sync_all()
 }
@@ -1356,11 +1360,62 @@ fn open_sqlite_readonly(db_path: &str) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-fn open_sqlite_readwrite(db_path: &str) -> rusqlite::Result<Connection> {
+fn normalized_sqlite_path(db_path: &str) -> String {
+    std::fs::canonicalize(db_path)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(db_path)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from(db_path))
+        })
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase()
+}
+
+static SQLITE_KEEPALIVES: LazyLock<Mutex<std::collections::HashMap<String, Connection>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+fn open_sqlite_readwrite_inner(db_path: &str) -> rusqlite::Result<Connection> {
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     configure_sqlite_connection(&conn, false)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    Ok(conn)
+}
+
+pub(crate) fn ensure_sqlite_keepalive(db_path: &str) {
+    let key = normalized_sqlite_path(db_path);
+    let mut guard = SQLITE_KEEPALIVES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if guard.contains_key(&key) {
+        return;
+    }
+
+    match open_sqlite_readwrite_inner(db_path).and_then(|keepalive| {
+        keepalive.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
+        Ok(keepalive)
+    }) {
+        Ok(keepalive) => {
+            guard.insert(key.clone(), keepalive);
+            eprintln!(
+                "[Vexus] 🛡️ SQLite keepalive retained for {}",
+                key
+            );
+        }
+        Err(error) => {
+            eprintln!(
+                "[Vexus] ❌ SQLite keepalive unavailable for {}; retrying later: {}",
+                key, error
+            );
+        }
+    }
+}
+
+fn open_sqlite_readwrite(db_path: &str) -> rusqlite::Result<Connection> {
+    let conn = open_sqlite_readwrite_inner(db_path)?;
+    ensure_sqlite_keepalive(db_path);
     Ok(conn)
 }
 
@@ -2923,6 +2978,73 @@ impl Task for PairwiseSimTask {
         let start = Instant::now();
         let dim = self.dimensions as usize;
         const PAIRWISE_ALGORITHM_VERSION: &str = "pairwise_cosine_v9_1_single_track";
+        let effective_config = format!(
+            "{{\"algorithm\":\"{}\",\"dimension\":{},\"minSimilarity\":{},\"modelSig\":\"{}\"}}",
+            PAIRWISE_ALGORITHM_VERSION,
+            dim,
+            self.min_similarity,
+            json_escape(&self.model_sig)
+        );
+        let config_hash = stable_sha256_hex(&effective_config);
+
+        // 扫描前代际门禁：事实事务通过 SQLite trigger 单调推进该值。
+        // 命中同模型/算法/配置的 ready artifact 时，避免读取全部高维 Tag BLOB、
+        // 扫描 file_tags 以及重新构造几十万条 pair_set。
+        let fact_generation = {
+            let conn = open_sqlite_readonly(&self.db_path).map_err(|e| {
+                Error::from_reason(format!("DB readonly generation open failed: {}", e))
+            })?;
+            conn.query_row(
+                "SELECT value FROM kv_store \
+                 WHERE key = 'tagmemo_pairwise_fact_generation'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| "unavailable".to_string())
+        };
+        if !self.full_rebuild && fact_generation != "unavailable" {
+            let conn = open_sqlite_readonly(&self.db_path).map_err(|e| {
+                Error::from_reason(format!("DB readonly artifact gate open failed: {}", e))
+            })?;
+            let prefix = format!("fact:{}:%", fact_generation);
+            let cached_graph: Option<String> = conn
+                .query_row(
+                    "SELECT graph_generation FROM tagmemo_artifacts \
+                     WHERE asset_type = 'pairwise_similarity' \
+                       AND model_sig = ?1 \
+                       AND algorithm_version = ?2 \
+                       AND config_hash = ?3 \
+                       AND graph_generation LIKE ?4 \
+                       AND status = 'ready' \
+                     ORDER BY updated_at DESC LIMIT 1",
+                    rusqlite::params![
+                        &self.model_sig,
+                        PAIRWISE_ALGORITHM_VERSION,
+                        &config_hash,
+                        &prefix
+                    ],
+                    |row| row.get(0),
+                )
+                .ok();
+            if let Some(graph_generation) = cached_graph {
+                let pair_count = graph_generation
+                    .rsplit_once(":pairs:")
+                    .and_then(|(_, value)| value.parse::<u32>().ok())
+                    .unwrap_or(0);
+                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                println!(
+                    "[Vexus-Lite][Pairwise] fact generation unchanged; full scan skipped: generation={}, pairs={}, elapsed={:.2}ms",
+                    fact_generation, pair_count, elapsed_ms
+                );
+                return Ok(PairwiseSimResult {
+                    pair_count,
+                    computed_count: 0,
+                    skipped_count: pair_count,
+                    stored_count: 0,
+                    elapsed_ms,
+                });
+            }
+        }
 
         // ====================================================================
         // Step 1-3: 只读加载 Tag 向量、共现 pair 与缓存集合
@@ -3030,7 +3152,8 @@ impl Task for PairwiseSimTask {
             };
             let pair_count = pair_set.len() as u32;
             let graph_generation = format!(
-                "content:{}:tags:{}:max_tag:{}:file_tag_rows:{}:pairs:{}",
+                "fact:{}:content:{}:tags:{}:max_tag:{}:file_tag_rows:{}:pairs:{}",
+                fact_generation,
                 content_digest,
                 tag_vectors.len(),
                 max_tag_id,
@@ -3040,27 +3163,24 @@ impl Task for PairwiseSimTask {
             (pair_count, graph_generation)
         };
 
-        let effective_config = format!(
-            "{{\"algorithm\":\"{}\",\"dimension\":{},\"minSimilarity\":{},\"modelSig\":\"{}\"}}",
-            PAIRWISE_ALGORITHM_VERSION,
-            dim,
-            self.min_similarity,
-            json_escape(&self.model_sig)
-        );
-        let config_hash = stable_sha256_hex(&effective_config);
         let artifact_sig = stable_sha256_hex(&format!(
             "{}|{}|{}|{}",
             self.model_sig, graph_generation, PAIRWISE_ALGORITHM_VERSION, config_hash
         ));
 
         // ====================================================================
-        // Step 3: 增量模式 — 加载当前 artifact 已处理的正/负 pair 集合
-        // full_rebuild = true 时才按显式重建语义清空整张旧表。
+        // Step 3: 增量模式 — 跨图代际加载兼容的正/负 pair 状态。
         //
-        // 注意：非 full_rebuild 冷启动不能在 Rust 侧主动删除旧 model_sig。
-        // 部分用户可能处于“签名变化 / tag 索引尚未恢复 / 空库初始化”窗口；
-        // 如果此时先 DELETE 旧模型行，而本轮 pair_set 又为 0，就会造成旧缓存被清空且新缓存未生成。
-        // 旧模型行的安全清理交给 JS 侧在确认当前 model_sig 已有可用缓存后执行。
+        // artifact_sig 包含完整 graph_generation；只按当前 artifact 查询会导致
+        // 任意新增 file_tag / pair 都生成新签名，使旧图中几十万条未变化 pair
+        // 全部失去命中。pair 的余弦值只依赖：
+        //   model_sig + dimension + algorithm + min_similarity + 两端向量。
+        // Tag 向量更新会由 SQLite 事实事务删除涉及该 Tag 的正值与状态行，
+        // 因此这里可以安全地跨 graph_generation 复用兼容 artifact 的状态。
+        //
+        // full_rebuild = true 时仍按显式重建语义清空并重算全部 pair。
+        // 非 full_rebuild 不主动删除旧 model_sig，旧模型清理由 JS 在当前模型
+        // 已产生健康缓存后执行，避免空库/签名切换窗口形成缓存真空。
         // ====================================================================
         if !self.full_rebuild {
             let conn = open_sqlite_readonly(&self.db_path).map_err(|e| {
@@ -3068,21 +3188,47 @@ impl Task for PairwiseSimTask {
             })?;
             let mut stmt = conn
                 .prepare(
-                    "SELECT tag_a, tag_b FROM tag_pair_similarity_status \
-                     WHERE artifact_sig = ?1 AND status IN ('computed', 'below_threshold', 'missing_vector')",
+                    "SELECT DISTINCT s.tag_a, s.tag_b \
+                     FROM tag_pair_similarity_status s \
+                     JOIN tagmemo_artifacts a ON a.artifact_sig = s.artifact_sig \
+                     WHERE s.model_sig = ?1 \
+                       AND s.min_similarity = ?2 \
+                       AND s.status IN ('computed', 'below_threshold', 'missing_vector') \
+                       AND a.asset_type = 'pairwise_similarity' \
+                       AND a.model_sig = ?1 \
+                       AND a.algorithm_version = ?3 \
+                       AND a.config_hash = ?4 \
+                       AND a.status = 'ready'",
                 )
-                .map_err(|e| Error::from_reason(format!("Prepare pairwise status cache query failed: {}", e)))?;
-            let rows = stmt
-                .query_map(rusqlite::params![&artifact_sig], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-                })
                 .map_err(|e| {
-                    Error::from_reason(format!("Query pairwise status cache failed: {}", e))
+                    Error::from_reason(format!(
+                        "Prepare compatible pairwise status cache query failed: {}",
+                        e
+                    ))
+                })?;
+            let rows = stmt
+                .query_map(
+                    rusqlite::params![
+                        &self.model_sig,
+                        self.min_similarity,
+                        PAIRWISE_ALGORITHM_VERSION,
+                        &config_hash
+                    ],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(|e| {
+                    Error::from_reason(format!(
+                        "Query compatible pairwise status cache failed: {}",
+                        e
+                    ))
                 })?;
 
             for row in rows {
                 let (a, b) = row.map_err(|e| {
-                    Error::from_reason(format!("Decode pairwise status cache row failed: {}", e))
+                    Error::from_reason(format!(
+                        "Decode compatible pairwise status row failed: {}",
+                        e
+                    ))
                 })?;
                 cached.insert(pair_key(a, b));
             }
@@ -3418,7 +3564,6 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[napi(object)]

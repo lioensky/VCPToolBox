@@ -13,6 +13,7 @@ const TagMemoV10Engine = require('./TagMemoV10Engine');
 const RiverMemoEngine = require('./RiverMemoEngine');
 const { decodeVectorBlob } = require('./modules/knowledgeBase/vectorCodec');
 const { queryByChunks } = require('./modules/knowledgeBase/sqliteQueryUtils');
+const { stableSerialize } = require('./modules/tagmemoV10/immutable');
 const {
     prepareTextForEmbedding,
     extractTags
@@ -108,9 +109,36 @@ class KnowledgeBaseManager {
             // 语言置信度补偿配置
             langConfidenceEnabled: (process.env.LANG_CONFIDENCE_GATING_ENABLED || 'true').toLowerCase() === 'true',
             langPenaltyUnknown: parseFloat(process.env.LANG_PENALTY_UNKNOWN) || 0.05,
-            // 🌟 是否默认持久化索引（建议 false，仅在内存重建以保证原子性）
-            // 🌟 是否持久化全局 Tag 索引
-            persistTagIndex: (process.env.KNOWLEDGEBASE_PERSIST_TAG_INDEX || 'false').toLowerCase() === 'true',
+            // 全局 Tag 索引落地模式（单一枚举配置）：
+            // - always：传统模式，每次防抖窗口结束均重写完整 usearch。
+            // - generational：推荐模式，加载双槽基线并回放 SQLite 差分，
+            //   仅当累计实际差异达到阈值时发布新一代 usearch。
+            // 兼容旧布尔配置：true => always，false => generational。
+            tagIndexPersistenceMode: (() => {
+                const raw = String(
+                    process.env.KNOWLEDGEBASE_PERSIST_TAG_INDEX
+                    || 'generational'
+                ).trim().toLowerCase();
+                if (raw === 'always' || raw === 'true') return 'always';
+                if (raw === 'generational' || raw === 'false') {
+                    return 'generational';
+                }
+                console.warn(
+                    `[KnowledgeBase] Invalid KNOWLEDGEBASE_PERSIST_TAG_INDEX="${raw}"; ` +
+                    'falling back to recommended mode "generational".'
+                );
+                return 'generational';
+            })(),
+            tagIndexBaselineDeltaRatio: (() => {
+                const value = Number(
+                    process.env.KNOWLEDGEBASE_TAG_INDEX_BASELINE_DELTA_RATIO
+                );
+                return Number.isFinite(value) && value > 0 && value <= 1
+                    ? value
+                    : 0.05;
+            })(),
+            // 兼容仍读取该字段的旧代码；两种枚举模式都表示启用 Tag 索引落地。
+            persistTagIndex: true,
             // 🌟 是否默认持久化索引（建议 false，仅在内存重建以保证原子性）
             persistDefault: (process.env.KNOWLEDGEBASE_PERSIST_DEFAULT || 'false').toLowerCase() === 'true',
             // 🌟 强制开启持久化的文件夹白名单 (支持中英文逗号)
@@ -202,6 +230,7 @@ class KnowledgeBaseManager {
             config: this.config,
             VexusIndex,
             getDbPath: () => this.dbPath,
+            getDb: () => this.db,
             waitForCoordinatorIdle: options => this._waitForDatabaseCoordinatorIdle(options),
             ensureDiaryDateIndex: diaryName => this._ensureDiaryDateIndexCached(diaryName),
             invalidateDiaryDateIndex: diaryName => this.invalidateDiaryDateIndex(diaryName),
@@ -244,36 +273,52 @@ class KnowledgeBaseManager {
         this._initSchema();
         this._cleanupDatabaseOrphans();
 
-        // 1. 初始化全局 Tag 索引 (优先从磁盘加载或从 SQLite 重建)
+        // 1. 初始化全局 Tag 索引。
+        // tags 是唯一权威真相；磁盘 usearch 只是允许落后的双槽基线。
+        // 正常启动先加载基线，再仅回放配套成员页与权威 tags 的差分。
         const tagCapacity = 50000;
-        const tagIdxPath = path.join(this.config.storePath, 'index_global_tags.usearch');
         let indexReady = false;
+        const baselineRestore = this.indexRepository.loadGlobalTagBaseline(
+            tagCapacity
+        );
 
-        // 全局 Tag 索引持久化判定：显式开关 OR 白名单包含 'global_tags'
-        const shouldPersistTags = this.config.persistTagIndex || this.config.persistFolders.has('global_tags');
-
-        if (shouldPersistTags && fsSync.existsSync(tagIdxPath)) {
-            try {
-                this.tagIndex = VexusIndex.load(tagIdxPath, null, this.config.dimension, tagCapacity);
-                this.indexRepository.tagIndex = this.tagIndex;
-                console.log('[KnowledgeBase] ✅ Global Tag Index loaded from disk.');
-                indexReady = true;
-            } catch (e) {
-                console.warn(`[KnowledgeBase] ⚠️ Failed to load tag index from disk: ${e.message}. Rebuilding...`);
-            }
+        if (baselineRestore?.index) {
+            this.tagIndex = baselineRestore.index;
+            this.indexRepository.tagIndex = this.tagIndex;
+            indexReady = true;
         }
 
         if (!indexReady) {
-            console.log('[KnowledgeBase] 🚀 Building Global Tag Index from SQLite...');
-            this.tagIndex = new VexusIndex(this.config.dimension, tagCapacity);
+            console.log(
+                '[KnowledgeBase] 🚀 No compatible Global Tag baseline; ' +
+                'building once from SQLite...'
+            );
+            this.tagIndex = new VexusIndex(
+                this.config.dimension,
+                tagCapacity
+            );
             this.indexRepository.tagIndex = this.tagIndex;
             try {
-                const count = await this.tagIndex.recoverFromSqlite(dbPath, 'tags', null);
-                console.log(`[KnowledgeBase] ✅ Global Tag Index ready. ${count} vectors indexed.`);
-                // 如果开启了持久化但文件不存在，则保存一次
-                if (shouldPersistTags) this._saveIndexToDisk('global_tags');
+                const count = await this.tagIndex.recoverFromSqlite(
+                    dbPath,
+                    'tags',
+                    null
+                );
+                console.log(
+                    `[KnowledgeBase] ✅ Global Tag Index ready. ` +
+                    `${count} vectors indexed.`
+                );
+                // 首次迁移必须强制建立配套基线；之后 generational 模式才按
+                // 5% 差分阈值合并，always 模式则每次静默窗口后更新。
+                this.indexRepository.publishGlobalTagBaseline({
+                    force: true
+                });
+                indexReady = true;
             } catch (e) {
-                console.error(`[KnowledgeBase] ❌ Global Tag Index recovery failed: ${e.message}`);
+                console.error(
+                    `[KnowledgeBase] ❌ Global Tag Index recovery failed: ` +
+                    e.message
+                );
             }
         }
 
@@ -453,13 +498,20 @@ class KnowledgeBaseManager {
             .slice(0, 40);
     }
 
+    _computeNativeMemoConfigHash(effectiveConfig) {
+        // 跨语言持久化契约必须使用规范 JSON。Rust 的 serde_json::Map 在当前
+        // 构建中按键有序序列化；普通 JSON.stringify 依赖 JS 对象插入顺序，
+        // 会让同一配置在重启恢复时产生不同 hash 并错误拒绝健康资产。
+        return crypto.createHash('sha256')
+            .update(stableSerialize(effectiveConfig))
+            .digest('hex')
+            .slice(0, 32);
+    }
+
     _restoreNativeMemoControlHandles() {
         if (!this.tagMemoEngine || !this.tagMemoV10Engine) return null;
         const effectiveConfig = this._buildNativeMemoEffectiveConfig();
-        const configHash = crypto.createHash('sha256')
-            .update(JSON.stringify(effectiveConfig))
-            .digest('hex')
-            .slice(0, 32);
+        const configHash = this._computeNativeMemoConfigHash(effectiveConfig);
         const databaseGeneration =
             this._computeNativeMemoDatabaseGeneration();
         const row = this.db.prepare(`

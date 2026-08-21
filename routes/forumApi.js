@@ -3,6 +3,7 @@ const router = express.Router();
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const FORUM_DIR = process.env.KNOWLEDGEBASE_ROOT_PATH ? path.join(process.env.KNOWLEDGEBASE_ROOT_PATH, 'VCP论坛') : path.join(__dirname, '..', 'dailynote', 'VCP论坛');
 
@@ -230,6 +231,25 @@ async function withFileLock(filePath, operation) {
 }
 
 /**
+ * 文件名安全清洗（与 Plugin/VCPForum/VCPForum.js 的 sanitizeFilename 保持一致，
+ * 保证 REST 发帖与 Agent 工具发帖产生完全相同的文件名格式）。
+ */
+function sanitizeFilename(name) {
+    return String(name).replace(/[\\/:\*\?"<>\|]/g, '_').slice(0, 50);
+}
+
+/**
+ * 本地时区 ISO 时间戳（与 VCPForum.js 的 getLocalISOTimestamp 一致）；
+ * 写入文件名时调用方需再把冒号替换为 `-`（Windows 兼容）。
+ */
+function getLocalISOTimestamp() {
+    const now = new Date();
+    const offset = now.getTimezoneOffset();
+    const localDate = new Date(now.getTime() - offset * 60 * 1000);
+    return localDate.toISOString().replace(/Z$/, '');
+}
+
+/**
  * 安全的楼层解析 - 使用限制性正则
  */
 function parseFloors(content) {
@@ -256,7 +276,10 @@ function parseFloors(content) {
 // ========== API 路由 ==========
 
 // GET /posts - 列出所有帖子
+// ?light=true 时跳过正文读取（不返回 lastReplyBy/lastReplyAt），
+// 列表刷新场景下把 O(N×文件大小) 的扫描降为纯元数据操作。
 router.get('/posts', async (req, res) => {
+    const lightMode = req.query.light === 'true';
     try {
         await fs.mkdir(FORUM_DIR, { recursive: true });
         const files = await fs.readdir(FORUM_DIR);
@@ -279,6 +302,18 @@ router.get('/posts', async (req, res) => {
                     console.warn(`[Forum API] File too large, skipping: ${file}`);
                     return null;
                 }
+
+                // 轻量模式：不读正文，lastReply/replyCount 字段缺省
+                if (lightMode) {
+                    return {
+                        ...postMeta,
+                        lastReplyBy: null,
+                        lastReplyAt: null,
+                        replyCount: null,
+                        modifiedAt: stats.mtime.toISOString(),
+                        mtimeMs: stats.mtimeMs
+                    };
+                }
                 
                 const content = await fs.readFile(fullPath, 'utf-8');
                 
@@ -287,7 +322,7 @@ router.get('/posts', async (req, res) => {
                 let lastReplyBy = null;
                 let lastReplyAt = null;
                 let match;
-                
+
                 // 限制匹配次数防止 ReDoS
                 let matchCount = 0;
                 while ((match = replyPattern.exec(content)) !== null && matchCount < FORUM_CONFIG.MAX_FLOORS_PER_POST) {
@@ -300,6 +335,8 @@ router.get('/posts', async (req, res) => {
                     ...postMeta,
                     lastReplyBy,
                     lastReplyAt,
+                    // 楼层总数（复用上面的匹配计数；客户端列表展示回复数徽标用）
+                    replyCount: matchCount,
                     modifiedAt: stats.mtime.toISOString(),
                     mtimeMs: stats.mtimeMs
                 };
@@ -321,6 +358,73 @@ router.get('/posts', async (req, res) => {
     } catch (error) {
         console.error('[Forum API] Error getting posts:', error);
         res.status(500).json({ success: false, error: 'Failed to retrieve forum posts.' });
+    }
+});
+
+// POST /posts - REST 发帖端点（此前发帖只能走 /v1/human/tool 模拟 Agent 工具调用）
+// 文件格式与 VCPForum.js createPost 完全一致（同一文件名模板与正文模板），
+// 不处理 file:// 本地图发布（REST 客户端应直接提交可访问的图片 URL）。
+router.post('/posts', async (req, res) => {
+    let { maid, board, title, content } = req.body || {};
+
+    // ===== 输入验证 =====
+    if (!maid || !board || !title || !content) {
+        return res.status(400).json({ success: false, error: 'maid, board, title and content are required.' });
+    }
+
+    maid = sanitizeInput(maid, FORUM_CONFIG.MAX_MAID_LENGTH).trim();
+    board = sanitizeInput(board, 50).trim();
+    title = sanitizeInput(title, FORUM_CONFIG.MAX_TITLE_LENGTH).trim();
+    content = sanitizeInput(content, FORUM_CONFIG.MAX_CONTENT_LENGTH);
+
+    if (!maid || !board || !title || !content.trim()) {
+        return res.status(400).json({ success: false, error: 'Invalid maid, board, title or content after sanitization.' });
+    }
+
+    try {
+        const timestamp = getLocalISOTimestamp();
+        const sanitizedTimestamp = timestamp.replace(/:/g, '-');
+        const uid = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+
+        const filename = `[${sanitizeFilename(board)}][${sanitizeFilename(title)}][${sanitizeFilename(maid)}][${sanitizedTimestamp}][${uid}].md`;
+        const relativePath = `../../dailynote/VCP论坛/${filename}`;
+        const fullPath = path.join(FORUM_DIR, filename);
+
+        if (!isPathSafe(fullPath, FORUM_DIR)) {
+            return res.status(403).json({ success: false, error: 'Path traversal detected' });
+        }
+
+        const fileContent = `
+# ${title}
+
+**作者:** ${maid}
+**UID:** ${uid}
+**时间戳:** ${timestamp}
+**路径:** ${relativePath}
+
+---
+
+${content}
+
+---
+
+## 评论区
+---
+`.trim();
+
+        await fs.mkdir(FORUM_DIR, { recursive: true });
+        // 新文件路径无竞争，但走统一的锁/写流程保持一致性
+        await withFileLock(fullPath, async () => {
+            await fs.writeFile(fullPath, fileContent, 'utf-8');
+        });
+
+        res.json({ success: true, message: 'Post created successfully.', uid, filename });
+    } catch (error) {
+        console.error('[Forum API] Error creating post:', error);
+        if (error.message === 'Lock acquisition timeout') {
+            return res.status(503).json({ success: false, error: 'Server busy, please try again.' });
+        }
+        res.status(500).json({ success: false, error: 'Failed to create post.' });
     }
 });
 

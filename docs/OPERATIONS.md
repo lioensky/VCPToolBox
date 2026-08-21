@@ -771,6 +771,49 @@ grep "POST /v1/chat" ~/.pm2/logs/vcptoolbox-out.log | wc -l
 
 ## 8. 备份与恢复
 
+### 8.0 `knowledge_base.sqlite` 在线直连红线
+
+> **主服务在线时，禁止 SQLite CLI、维护脚本、备份/分析程序或第二个
+> VCPToolBox 实例直接打开生产 `VectorStore/knowledge_base.sqlite`。**
+
+核心知识库由同一 Node.js 进程内的 `better-sqlite3` 与 Rust `rusqlite`
+两套 bundled SQLite runtime 共同访问。WAL 模式下存在两类致命风险：
+
+1. **同进程第二套 SQLite runtime 的 readwrite first-attach**
+   - POSIX `fcntl` 锁按进程记录，不同 bundled runtime 无法可靠识别同进程另一
+     runtime 持有的 DMS 锁。
+   - readwrite first-attach 可能缩短并重建 `-shm`；另一 runtime 若仍映射旧长度，
+     macOS 会直接产生不可恢复的 `SIGBUS`。
+   - 主服务通过 Rust 常驻 keepalive 与 JavaScript 候选连接“先验证、后发布、
+     再关闭旧连接”共同维持运行期连接引用，任何绕过该纪律的新直连入口都必须审计。
+
+2. **外部进程关闭 WAL 连接**
+   - 外部进程若被 SQLite 判定为可执行最后连接清理的一方，并成功取得所需排他锁，
+     可能 checkpoint 并删除 `-wal`/`-shm`。
+   - 在线主服务的连接、事务和锁状态会影响该分支是否成功，因此这不是每次关闭都
+     必然发生；但一旦发生，主服务可能继续映射旧 inode，后续连接则创建新 inode，
+     形成 WAL-index 双脑、写分叉或静默坏库。
+   - 只读打开不会执行 readwrite first-attach 截断，但不应据此把外部进程关闭或
+     在线文件操作视为安全。
+
+在线查看数据库必须走管理面板或主服务 API。必须使用 SQLite CLI 或仓库内维护脚本时：
+
+```bash
+# 1. 先按实际部署名称停止唯一主实例
+pm2 stop vcptoolbox
+
+# 2. 确认 Node/VCPToolBox 进程已经完全退出后再操作数据库
+pm2 status
+
+# 3. 操作完成后恢复唯一实例
+pm2 start vcptoolbox
+```
+
+不要在主服务在线时直接复制 `knowledge_base.sqlite`，也不要只复制主文件而忽略
+同代的 `-wal`。需要一致性备份时应先停服，或使用由主服务协调的 SQLite 备份接口。
+Rust keepalive 建立后，进程存活期间禁止对同一路径执行在线
+`rename + recreate` 换库；运行期损坏应停止业务并通过重启后的 quarantine 流程恢复。
+
 ### 8.1 需要备份的数据
 
 | 目录/文件 | 说明 | 优先级 |

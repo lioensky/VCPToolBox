@@ -105,9 +105,10 @@ See [minimax-image-guide.md](minimax-image-guide.md) for ratio dimensions and de
 python scripts/minimax_music.py --prompt "Indie folk, melancholic" --lyrics "[verse]\nStreetlights flicker" -o song.mp3
 python scripts/minimax_music.py --prompt "Upbeat pop, energetic" --auto-lyrics -o pop.mp3
 python scripts/minimax_music.py --prompt "Jazz piano, smooth, relaxing" --instrumental -o jazz.mp3
+python scripts/minimax_music.py --model music-cover --prompt "Lo-fi bedroom pop rework" --audio-url https://example.com/reference.mp3 -o cover.mp3
 ```
 
-**Model:** `music-2.5+` (default). Sync: returns audio hex or URL.
+**Model:** `music-3.0` (default). Sync: returns audio hex or URL.
 
 | Flag | Default | Options |
 |------|---------|---------|
@@ -115,12 +116,20 @@ python scripts/minimax_music.py --prompt "Jazz piano, smooth, relaxing" --instru
 | `--prompt` | (empty) | Music description: style, mood, scenario (max 2000 chars) |
 | `--lyrics` | (empty) | Song lyrics with structure tags (max 3500 chars) |
 | `--lyrics-file` | (empty) | Read lyrics from file |
-| `--model` | `music-2.5+` | music-2.5+ / music-2.5 |
-| `--instrumental` | false | Generate instrumental only (no vocals, music-2.5+ only) |
-| `--auto-lyrics` | false | Auto-generate lyrics from prompt |
+| `--model` | `music-3.0` | music-3.0 / music-2.6 / music-cover / music-3.0-free / music-2.6-free / music-cover-free |
+| `--region` | (env, else global_en) | global_en (`https://api.minimax.io/v1`) / cn_zh (`https://api.minimaxi.com/v1`) |
+| `--instrumental` | false | Generate instrumental only (no vocals, text-to-music models only) |
+| `--auto-lyrics` | false | Auto-generate lyrics from prompt (text-to-music models only) |
+| `--audio-url` | (empty) | Reference track URL (cover models only) |
+| `--audio-file` | (empty) | Local reference track sent as base64 (cover models only) |
+| `--cover-feature-id` | (empty) | Preprocessed reference id, requires `--lyrics` (cover models only) |
 | `--format` | mp3 | mp3 / wav / pcm |
 | `--sample-rate` | 44100 | 16000 / 24000 / 32000 / 44100 |
 | `--bitrate` | 256000 | 32000 / 64000 / 128000 / 256000 |
+
+**Regional endpoints:** resolution order is `--region`, then `MINIMAX_API_BASE`, then `MINIMAX_REGION`, then `global_en`.
+
+**Cover models:** supply exactly one of `--audio-url`, `--audio-file` or `--cover-feature-id`, plus a `--prompt` describing the target style.
 
 **Lyrics structure tags:** `[Intro]`, `[Verse]`, `[Pre Chorus]`, `[Chorus]`, `[Interlude]`, `[Bridge]`, `[Outro]`, `[Post Chorus]`, `[Transition]`, `[Break]`, `[Hook]`, `[Build Up]`, `[Inst]`, `[Solo]`
 
