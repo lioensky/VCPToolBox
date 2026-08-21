@@ -553,7 +553,7 @@ function safeParseRagBlockMetadata(rawMetadata, debugMode = false) {
   }
 }
 
-// 辅助函数：根据新上下文刷新对话历史中的RAG区块
+// 辅助函数：根据新上下文刷新对话历史中由真实 system 消息承载的 RAG 区块
 async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, debugMode = false) {
   const ragPlugin = pluginManager.messagePreprocessors?.get('RAGDiaryPlugin');
   // 检查插件是否存在且是否实现了refreshRagBlock方法
@@ -572,9 +572,10 @@ async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, de
   const ragBlockRegex = /<!-- VCP_RAG_BLOCK_START\s+(\{[\s\S]*?\})\s+-->([\s\S]*?)<!-- VCP_RAG_BLOCK_END -->/g;
 
   for (let i = 0; i < newMessages.length; i++) {
-    // 只处理 assistant 和 system 角色中的字符串内容
-    // 🟢 改进点2：有些场景下 RAG 可能会被注入到 user 消息中，建议也检查 user
-    if (['assistant', 'system', 'user'].includes(newMessages[i].role) && typeof newMessages[i].content === 'string') {
+    // 安全边界：只刷新协议层真实的 system 消息。
+    // 不接受 assistant、普通 user 或通过文本前缀模拟的“虚拟 system-user”，
+    // 否则客户端可自行构造合法 RAG metadata，在工具循环中触发任意日记本刷新。
+    if (newMessages[i]?.role === 'system' && typeof newMessages[i].content === 'string') {
       // 先剥离 Markdown 代码围栏，避免扫描到示例中的伪 RAG 标签。
       let messageContent = stripMarkdownCodeFencesForRagRefresh(newMessages[i].content);
 
@@ -1443,5 +1444,13 @@ class ChatCompletionHandler {
     }
   }
 }
+
+// 暴露纯刷新入口供安全回归测试和内部复用；请求主链路仍通过 handler context 调用同一实现。
+Object.defineProperty(ChatCompletionHandler, 'refreshRagBlocksIfNeeded', {
+  value: _refreshRagBlocksIfNeeded,
+  writable: false,
+  configurable: false,
+  enumerable: false
+});
 
 module.exports = ChatCompletionHandler;
