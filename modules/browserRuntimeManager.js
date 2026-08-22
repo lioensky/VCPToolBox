@@ -435,6 +435,8 @@ function buildChromeArgs(config) {
             args.push(`--disable-extensions-except=${config.extensionDir}`);
         }
         args.push(`--load-extension=${config.extensionDir}`);
+        // Chrome 137+ may reject unpacked extensions unless explicit debugging is enabled.
+        args.push('--enable-unsafe-extension-debugging');
     }
 
     args.push('about:blank');
