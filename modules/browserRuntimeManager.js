@@ -483,6 +483,18 @@ async function ensureManagedBrowser(options = {}) {
         return getManagedBrowserStatus();
     }
 
+    const existingBrowserWSEndpoint = await getManagedBrowserWebSocketEndpoint({
+        allowUnownedProcess: true,
+        profileDir: config.profileDir,
+        attempts: 1
+    });
+    if (existingBrowserWSEndpoint) {
+        currentProfileDir = config.profileDir;
+        currentDebuggingPort = Number.parseInt(new URL(existingBrowserWSEndpoint).port, 10) || 0;
+        lastTouchedAt = Date.now();
+        return getManagedBrowserStatus({ reusedExistingProcess: true });
+    }
+
     if (launchPromise) {
         return launchPromise;
     }
@@ -565,6 +577,11 @@ async function ensureManagedBrowser(options = {}) {
             clearIdleTimer();
         });
 
+        const browserWSEndpoint = await waitForManagedBrowserWebSocketEndpoint();
+        if (!browserWSEndpoint) {
+            lastError = 'managed Chrome started but DevTools endpoint did not become reachable within 10 seconds';
+        }
+
         registerShutdownHooks();
         scheduleIdleClose();
 
@@ -639,15 +656,17 @@ async function restartManagedBrowser() {
     await closeManagedBrowser('restart');
     return ensureManagedBrowser();
 }
-async function readDevToolsActivePort() {
-    if (!isProcessAlive()) {
+async function readDevToolsActivePort(options = {}) {
+    const allowUnownedProcess = options.allowUnownedProcess === true;
+    if (!allowUnownedProcess && !isProcessAlive()) {
         return null;
     }
 
-    const profileDir = currentProfileDir || getRuntimeConfig().profileDir;
+    const profileDir = options.profileDir || currentProfileDir || getRuntimeConfig().profileDir;
+    const attempts = Number.isInteger(options.attempts) ? Math.max(1, options.attempts) : 40;
     const activePortPath = path.join(profileDir, 'DevToolsActivePort');
 
-    for (let attempt = 0; attempt < 40; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
         try {
             const content = await fsp.readFile(activePortPath, 'utf8');
             const [portLine, wsPathLine] = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
@@ -664,10 +683,27 @@ async function readDevToolsActivePort() {
     return null;
 }
 
-async function getManagedBrowserWebSocketEndpoint() {
-    const activePort = await readDevToolsActivePort();
+async function getManagedBrowserWebSocketEndpoint(options = {}) {
+    const activePort = await readDevToolsActivePort(options);
     if (!activePort) return null;
-    return `ws://127.0.0.1:${activePort.port}${activePort.wsPath}`;
+    try {
+        const version = await httpGetJson(`http://127.0.0.1:${activePort.port}/json/version`);
+        return typeof version.webSocketDebuggerUrl === 'string' && version.webSocketDebuggerUrl
+            ? version.webSocketDebuggerUrl
+            : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function waitForManagedBrowserWebSocketEndpoint(timeoutMs = 10000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const endpoint = await getManagedBrowserWebSocketEndpoint();
+        if (endpoint) return endpoint;
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    return null;
 }
 
 function httpGetJson(url) {
