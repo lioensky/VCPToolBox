@@ -86,6 +86,7 @@ function getRuntimeConfig() {
         windowHeight: readIntegerEnv('VCP_BROWSER_WINDOW_HEIGHT', 900, 240, 10000),
         startMinimized: readBooleanEnv('VCP_BROWSER_START_MINIMIZED', false),
         windowsHide: readBooleanEnv('VCP_BROWSER_WINDOWS_HIDE', false),
+        disableGpu: readBooleanEnv('VCP_BROWSER_DISABLE_GPU', false),
         restrictExtensions: readBooleanEnv('VCP_BROWSER_RESTRICT_EXTENSIONS', false),
         maxTabs: readIntegerEnv('VCP_BROWSER_MAX_TABS', 8, 1, 200),
         serverUrl: String(process.env.VCP_BROWSER_SERVER_URL || `ws://localhost:${process.env.PORT || 6005}`).trim(),
@@ -422,6 +423,10 @@ function buildChromeArgs(config) {
         args.push('--start-minimized');
     }
 
+    if (config.disableGpu) {
+        args.push('--disable-gpu', '--disable-gpu-compositing', '--in-process-gpu');
+    }
+
     if (config.loadExtension) {
         // 托管运行时必须让命令行加载的未打包扩展成为唯一扩展来源。
         // 仅使用 --load-extension 在部分 Chrome/Edge 环境中会被策略/安全提示静默禁用；
@@ -430,6 +435,8 @@ function buildChromeArgs(config) {
             args.push(`--disable-extensions-except=${config.extensionDir}`);
         }
         args.push(`--load-extension=${config.extensionDir}`);
+        // Chrome 137+ may reject unpacked extensions unless explicit debugging is enabled.
+        args.push('--enable-unsafe-extension-debugging');
     }
 
     args.push('about:blank');
@@ -476,6 +483,18 @@ async function ensureManagedBrowser(options = {}) {
         return getManagedBrowserStatus();
     }
 
+    const existingBrowserWSEndpoint = await getManagedBrowserWebSocketEndpoint({
+        allowUnownedProcess: true,
+        profileDir: config.profileDir,
+        attempts: 1
+    });
+    if (existingBrowserWSEndpoint) {
+        currentProfileDir = config.profileDir;
+        currentDebuggingPort = Number.parseInt(new URL(existingBrowserWSEndpoint).port, 10) || 0;
+        lastTouchedAt = Date.now();
+        return getManagedBrowserStatus({ reusedExistingProcess: true });
+    }
+
     if (launchPromise) {
         return launchPromise;
     }
@@ -512,7 +531,7 @@ async function ensureManagedBrowser(options = {}) {
             startMinimized: launchConfig.startMinimized === true
         };
         currentExtensionStage = extensionStage;
-        console.log(`[BrowserRuntimeManager] launching managed Chrome: executable=${executablePath}, profile=${launchConfig.profileDir}, extension=${launchConfig.loadExtension ? launchConfig.extensionDir : 'disabled'}, runtimeConfig=${runtimeConfigPath || 'N/A'}, headless=${currentLaunchConfig.headless}, stageGeneration=${extensionStage.stageGeneration || 'N/A'}`);
+        console.error(`[BrowserRuntimeManager] launching managed Chrome: executable=${executablePath}, profile=${launchConfig.profileDir}, extension=${launchConfig.loadExtension ? launchConfig.extensionDir : 'disabled'}, runtimeConfig=${runtimeConfigPath || 'N/A'}, headless=${currentLaunchConfig.headless}, stageGeneration=${extensionStage.stageGeneration || 'N/A'}`);
         chromeProcess = spawn(executablePath, args, {
             cwd: PROJECT_ROOT,
             detached: false,
@@ -540,7 +559,7 @@ async function ensureManagedBrowser(options = {}) {
         });
 
         chromeProcess.on('exit', (code, signal) => {
-            console.log(`[BrowserRuntimeManager] managed Chrome exited. code=${code}, signal=${signal}`);
+            console.error(`[BrowserRuntimeManager] managed Chrome exited. code=${code}, signal=${signal}`);
             previousPid = chromeProcess?.pid || previousPid;
             lastClosedAt = Date.now();
             lastCloseReason = lastCloseReason || `process_exit:${code ?? 'null'}:${signal || 'none'}`;
@@ -557,6 +576,11 @@ async function ensureManagedBrowser(options = {}) {
             currentLaunchConfig = null;
             clearIdleTimer();
         });
+
+        const browserWSEndpoint = await waitForManagedBrowserWebSocketEndpoint();
+        if (!browserWSEndpoint) {
+            lastError = 'managed Chrome started but DevTools endpoint did not become reachable within 10 seconds';
+        }
 
         registerShutdownHooks();
         scheduleIdleClose();
@@ -632,15 +656,17 @@ async function restartManagedBrowser() {
     await closeManagedBrowser('restart');
     return ensureManagedBrowser();
 }
-async function readDevToolsActivePort() {
-    if (!isProcessAlive()) {
+async function readDevToolsActivePort(options = {}) {
+    const allowUnownedProcess = options.allowUnownedProcess === true;
+    if (!allowUnownedProcess && !isProcessAlive()) {
         return null;
     }
 
-    const profileDir = currentProfileDir || getRuntimeConfig().profileDir;
+    const profileDir = options.profileDir || currentProfileDir || getRuntimeConfig().profileDir;
+    const attempts = Number.isInteger(options.attempts) ? Math.max(1, options.attempts) : 40;
     const activePortPath = path.join(profileDir, 'DevToolsActivePort');
 
-    for (let attempt = 0; attempt < 40; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
         try {
             const content = await fsp.readFile(activePortPath, 'utf8');
             const [portLine, wsPathLine] = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
@@ -657,10 +683,27 @@ async function readDevToolsActivePort() {
     return null;
 }
 
-async function getManagedBrowserWebSocketEndpoint() {
-    const activePort = await readDevToolsActivePort();
+async function getManagedBrowserWebSocketEndpoint(options = {}) {
+    const activePort = await readDevToolsActivePort(options);
     if (!activePort) return null;
-    return `ws://127.0.0.1:${activePort.port}${activePort.wsPath}`;
+    try {
+        const version = await httpGetJson(`http://127.0.0.1:${activePort.port}/json/version`);
+        return typeof version.webSocketDebuggerUrl === 'string' && version.webSocketDebuggerUrl
+            ? version.webSocketDebuggerUrl
+            : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function waitForManagedBrowserWebSocketEndpoint(timeoutMs = 10000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const endpoint = await getManagedBrowserWebSocketEndpoint();
+        if (endpoint) return endpoint;
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    return null;
 }
 
 function httpGetJson(url) {
@@ -749,6 +792,7 @@ function getManagedBrowserStatus(extra = {}) {
         configuredHeadless: config.headless,
         headless: currentLaunchConfig ? currentLaunchConfig.headless : config.headless,
         windowsHide: currentLaunchConfig ? currentLaunchConfig.windowsHide : config.windowsHide,
+        disableGpu: config.disableGpu,
         startMinimized: currentLaunchConfig ? currentLaunchConfig.startMinimized : config.startMinimized,
         effectiveHeadlessArgPresent: lastLaunchArgs.includes('--headless=new'),
         extensionStage: currentExtensionStage,
