@@ -67,6 +67,40 @@ VCPTavern 是一个强大的消息预处理插件，专为 VCP 系统设计。�
 | `{{TimeSinceLastChat}}` | 距离上次对话的完整描述 | `距离上次对话已过去 3天5小时` (首次对话时为空) |
 | `{{LastChatTime}}` | 上次对话的时间点描述 | `上次对话时间：2026/2/11 10:00:00` (首次对话时为空) |
 
+### Tavern 专属占位符白名单
+
+如果需要在 Tavern 注入的伪系统消息中解析插件提供的其他占位符，可以在预设 JSON 顶层添加 `placeholderAllowlist`。这里只会影响当前 Tavern 预设的注入内容，不会改变全局 user 消息变量权限。
+
+Tavern 只在以下伪系统消息中解析白名单占位符：
+
+- 以 `[系统提示:]`、`[系统邀请指令:]` 或其他 `[系统...]` 标记开头的消息。
+- 完整的 `[系统通知] ... [系统通知结束]` 块，也兼容 `[系统通知:] ... [系统通知结束]`。
+
+普通 user 注入、普通 assistant 注入、没有闭合标记的 `[系统通知]` 块，都不会解析 `placeholderAllowlist` 中的占位符。
+
+```json
+{
+  "placeholderAllowlist": [
+    "VCPChromePageInfo",
+    "VCPWeatherInfo"
+  ],
+  "rules": [
+    {
+      "type": "embed",
+      "target": "last_user",
+      "position": "before",
+      "enabled": true,
+      "content": {
+        "role": "user",
+        "content": "[系统通知]\n{{VCPChromePageInfo}}\n[系统通知结束]"
+      }
+    }
+  ]
+}
+```
+
+占位符名称可以写成 `VCPChromePageInfo` 或 `{{VCPChromePageInfo}}`。只有列入 `placeholderAllowlist` 且已由插件管理器提供文本值的占位符才会展开；未列入白名单或暂时没有值的占位符会保持原文。
+
 ### 身份识别机制 (Identity Recognition)
 
 VCPTavern 如何区分不同的角色和话题？
