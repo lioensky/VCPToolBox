@@ -86,6 +86,7 @@ function getRuntimeConfig() {
         windowHeight: readIntegerEnv('VCP_BROWSER_WINDOW_HEIGHT', 900, 240, 10000),
         startMinimized: readBooleanEnv('VCP_BROWSER_START_MINIMIZED', false),
         windowsHide: readBooleanEnv('VCP_BROWSER_WINDOWS_HIDE', false),
+        disableGpu: readBooleanEnv('VCP_BROWSER_DISABLE_GPU', false),
         restrictExtensions: readBooleanEnv('VCP_BROWSER_RESTRICT_EXTENSIONS', false),
         maxTabs: readIntegerEnv('VCP_BROWSER_MAX_TABS', 8, 1, 200),
         serverUrl: String(process.env.VCP_BROWSER_SERVER_URL || `ws://localhost:${process.env.PORT || 6005}`).trim(),
@@ -422,6 +423,10 @@ function buildChromeArgs(config) {
         args.push('--start-minimized');
     }
 
+    if (config.disableGpu) {
+        args.push('--disable-gpu', '--disable-gpu-compositing', '--in-process-gpu');
+    }
+
     if (config.loadExtension) {
         // 托管运行时必须让命令行加载的未打包扩展成为唯一扩展来源。
         // 仅使用 --load-extension 在部分 Chrome/Edge 环境中会被策略/安全提示静默禁用；
@@ -749,6 +754,7 @@ function getManagedBrowserStatus(extra = {}) {
         configuredHeadless: config.headless,
         headless: currentLaunchConfig ? currentLaunchConfig.headless : config.headless,
         windowsHide: currentLaunchConfig ? currentLaunchConfig.windowsHide : config.windowsHide,
+        disableGpu: config.disableGpu,
         startMinimized: currentLaunchConfig ? currentLaunchConfig.startMinimized : config.startMinimized,
         effectiveHeadlessArgPresent: lastLaunchArgs.includes('--headless=new'),
         extensionStage: currentExtensionStage,
