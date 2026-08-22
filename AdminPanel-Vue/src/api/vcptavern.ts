@@ -29,6 +29,7 @@ export interface TavernRule {
 
 export interface TavernPreset {
   description?: string;
+  placeholderAllowlist?: string[];
   rules?: TavernRule[];
 }
 
