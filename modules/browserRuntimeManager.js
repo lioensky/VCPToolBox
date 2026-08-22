@@ -531,7 +531,7 @@ async function ensureManagedBrowser(options = {}) {
             startMinimized: launchConfig.startMinimized === true
         };
         currentExtensionStage = extensionStage;
-        console.log(`[BrowserRuntimeManager] launching managed Chrome: executable=${executablePath}, profile=${launchConfig.profileDir}, extension=${launchConfig.loadExtension ? launchConfig.extensionDir : 'disabled'}, runtimeConfig=${runtimeConfigPath || 'N/A'}, headless=${currentLaunchConfig.headless}, stageGeneration=${extensionStage.stageGeneration || 'N/A'}`);
+        console.error(`[BrowserRuntimeManager] launching managed Chrome: executable=${executablePath}, profile=${launchConfig.profileDir}, extension=${launchConfig.loadExtension ? launchConfig.extensionDir : 'disabled'}, runtimeConfig=${runtimeConfigPath || 'N/A'}, headless=${currentLaunchConfig.headless}, stageGeneration=${extensionStage.stageGeneration || 'N/A'}`);
         chromeProcess = spawn(executablePath, args, {
             cwd: PROJECT_ROOT,
             detached: false,
@@ -559,7 +559,7 @@ async function ensureManagedBrowser(options = {}) {
         });
 
         chromeProcess.on('exit', (code, signal) => {
-            console.log(`[BrowserRuntimeManager] managed Chrome exited. code=${code}, signal=${signal}`);
+            console.error(`[BrowserRuntimeManager] managed Chrome exited. code=${code}, signal=${signal}`);
             previousPid = chromeProcess?.pid || previousPid;
             lastClosedAt = Date.now();
             lastCloseReason = lastCloseReason || `process_exit:${code ?? 'null'}:${signal || 'none'}`;
