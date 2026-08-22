@@ -98,11 +98,10 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
     let currentTextBuffer = "";
     let cursor = 0;
 
-    // Identify protected blocks: TOOL_REQUEST and DailyNote
+    // Identify protected TOOL_REQUEST blocks.
     const protectedBlocks = [];
     const blockMarkers = [
-        { start: '<<<[TOOL_REQUEST]>>>', end: '<<<[END_TOOL_REQUEST]>>>' },
-        { start: '<<<DailyNoteStart>>>', end: '<<<DailyNoteEnd>>>' }
+        { start: '<<<[TOOL_REQUEST]>>>', end: '<<<[END_TOOL_REQUEST]>>>' }
     ];
 
     for (const marker of blockMarkers) {

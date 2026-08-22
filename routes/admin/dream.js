@@ -31,6 +31,21 @@ module.exports = function(options) {
         return error;
     }
 
+    async function _writeDailyNote(maid, date, content) {
+        const writeResult = await pluginManager.processToolCall('DailyNote', {
+            command: 'create',
+            maid,
+            Date: date,
+            Content: content
+        }, null, 'admin/dream');
+
+        if (!writeResult || writeResult.status !== 'success') {
+            throw new Error(writeResult?.error || 'DailyNote returned an unexpected response.');
+        }
+
+        return writeResult;
+    }
+
     async function _processDreamOperation(filename, opId, action) {
         if (!filename || !filename.endsWith('.json')) {
             throw _createHttpError(400, 'Invalid filename.');
@@ -69,12 +84,11 @@ module.exports = function(options) {
                 const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
                 try {
-                    const writeResult = await pluginManager.executePlugin('DailyNoteWrite', JSON.stringify({
-                        maidName: maidName,
-                        dateString: dateStr,
-                        contentText: operation.newContent || ''
-                    }));
-                    result.newDiary = writeResult;
+                    result.newDiary = await _writeDailyNote(
+                        maidName,
+                        dateStr,
+                        operation.newContent || ''
+                    );
                 } catch (e) {
                     operation.status = 'error';
                     operation.error = `创建合并日记失败: ${e.message}`;
@@ -123,12 +137,11 @@ module.exports = function(options) {
                 const dateStr = operation.suggestedDate || new Date().toISOString().split('T')[0];
 
                 try {
-                    const writeResult = await pluginManager.executePlugin('DailyNoteWrite', JSON.stringify({
-                        maidName: `[${maidName}的梦]${maidName}`,
-                        dateString: dateStr,
-                        contentText: operation.insightContent || ''
-                    }));
-                    result.newDiary = writeResult;
+                    result.newDiary = await _writeDailyNote(
+                        `[${maidName}的梦]${maidName}`,
+                        dateStr,
+                        operation.insightContent || ''
+                    );
                 } catch (e) {
                     operation.status = 'error';
                     operation.error = `创建梦感悟失败: ${e.message}`;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           OpenWebUI VCP Tool Call Display Enhancer
 // @version        3.9.8
-// @description    同时支持（```VCPToolCall）代码块包裹的 ToolCall（完美）和裸露的 ToolCall（有 BUG），同时支持日记渲染。
+// @description    同时支持（```VCPToolCall）代码块包裹的 ToolCall（完美）和裸露的 ToolCall（有 BUG）。
 // @author         B3000Kcn & FangTongtong
 // @match          https://your.openwebui.url/*
 // @run-at         document-idle
@@ -33,9 +33,9 @@
         /* --- 主引擎: 结构修正 --- */
         "." + HIDDEN_CLASS + " { position: absolute !important; top: 0; left: 0; width: 100%; height: 100px; opacity: 0.001; pointer-events: none; z-index: -1; clip-path: inset(0 0 100% 0); }",
         "." + JAILBREAK_CLASS + " { border: none !important; background: transparent !important; box-shadow: none !important; padding: 0 !important; margin: 8px 0 !important; min-height: auto !important; }",
-        "." + JAILBREAK_CLASS + " .language-VCPToolCall, ." + JAILBREAK_CLASS + " .language-DailyNote { margin: 0 !important; border-radius: 4px; overflow: visible; background: transparent; border: none; padding: 0 !important; min-height: auto; }",
-        "." + JAILBREAK_CLASS + " > *:not(.language-VCPToolCall):not(.language-DailyNote) { display: none !important; }",
-        "." + JAILBREAK_CLASS + " .language-VCPToolCall > *:not(." + WRAPPER_CLASS + "):not(div[id^='code-textarea-']), ." + JAILBREAK_CLASS + " .language-DailyNote > *:not(." + WRAPPER_CLASS + "):not(div[id^='code-textarea-']) { display: none !important; }",
+        "." + JAILBREAK_CLASS + " .language-VCPToolCall { margin: 0 !important; border-radius: 4px; overflow: visible; background: transparent; border: none; padding: 0 !important; min-height: auto; }",
+        "." + JAILBREAK_CLASS + " > *:not(.language-VCPToolCall) { display: none !important; }",
+        "." + JAILBREAK_CLASS + " .language-VCPToolCall > *:not(." + WRAPPER_CLASS + "):not(div[id^='code-textarea-']) { display: none !important; }",
         "." + WRAPPER_CLASS + " { display: flex; flex-direction: column; gap: 8px; width: 100%; position: relative; z-index: 10; }",
 
         /* --- 兜底引擎隐藏原始文本 --- */
@@ -85,16 +85,12 @@
         /* 去除最后一行边框 */
         "." + CARD_CLASS + " .vcp-key:nth-last-child(-n+2), ." + CARD_CLASS + " .vcp-val:nth-last-child(-n+2) { border-bottom: none !important; }",
 
-        /* Tag Pill */
-        ".vcp-tag-pill { display: inline-block; padding: 2px 6px; margin: 2px 4px 2px 0; border-radius: 4px; background-color: rgba(175, 184, 193, 0.2); font-family: inherit; font-size: 0.9em; color: #4b5563; border: 1px solid transparent; }",
-        ".dark .vcp-tag-pill { color: #d1d5db; background-color: rgba(110, 118, 129, 0.4); }",
-
         /* Markdown */
         "." + CARD_CLASS + " .vcp-val p { margin: 0 0 0.5em 0; }",
         "." + CARD_CLASS + " .vcp-val p:last-child { margin-bottom: 0; }",
         "." + CARD_CLASS + " .vcp-val pre { background: #f3f4f6; border-radius: 4px; padding: 8px; overflow-x: auto; margin: 4px 0; border: 1px solid " + BORDER_LIGHT + "; }",
         ".dark ." + CARD_CLASS + " .vcp-val pre { background: #1f2937; border-color: " + BORDER_DARK + "; }",
-        "." + CARD_CLASS + " .vcp-val code:not(.vcp-tag-pill) { font-family: inherit; background: rgba(175, 184, 193, 0.2); border-radius: 3px; padding: 0.2em 0.4em; font-size: 85%; }",
+        "." + CARD_CLASS + " .vcp-val code { font-family: inherit; background: rgba(175, 184, 193, 0.2); border-radius: 3px; padding: 0.2em 0.4em; font-size: 85%; }",
         "." + CARD_CLASS + " .vcp-val pre code { background: transparent; padding: 0; border-radius: 0; font-size: 100%; }",
         "." + CARD_CLASS + " .vcp-val ul, ." + CARD_CLASS + " .vcp-val ol { margin: 4px 0; padding-left: 20px; }",
 
@@ -129,13 +125,13 @@
         } catch(e) { el.textContent = text; }
     }
 
-    function createCardDOM_Main(type) {
+    function createCardDOM_Main() {
         var container = document.createElement('div');
         container.className = CARD_CLASS;
         container.setAttribute('data-status', 'running');
 
-        var icon  = type === 'DailyNote' ? '📔' : '⚙️';
-        var title = type === 'DailyNote' ? 'Daily Note' : 'VCP Tool Call';
+        var icon  = '⚙️';
+        var title = 'VCP Tool Call';
 
         container.innerHTML = [
             '<div class="vcp-header">',
@@ -164,18 +160,6 @@
         };
     }
 
-    function createNormalRow(key, valHtmlOrText, grid, isHtml) {
-        var keyDiv = document.createElement('div');
-        keyDiv.className = 'vcp-key';
-        keyDiv.textContent = key;
-        var valDiv = document.createElement('div');
-        valDiv.className = 'vcp-val vcp-val-full';
-        if (isHtml) valDiv.innerHTML = valHtmlOrText;
-        else valDiv.textContent = valHtmlOrText;
-        grid.appendChild(keyDiv);
-        grid.appendChild(valDiv);
-    }
-
     function createMarkdownRow(key, val, grid) {
         var keyDiv = document.createElement('div');
         keyDiv.className = 'vcp-key';
@@ -185,33 +169,6 @@
         renderMarkdown(valDiv, val);
         grid.appendChild(keyDiv);
         grid.appendChild(valDiv);
-    }
-
-    function createHeaderRow(key1, val1, key2, val2Html, grid) {
-        var k1 = document.createElement('div'); k1.className = 'vcp-key'; k1.textContent = key1;
-        var v1 = document.createElement('div'); v1.className = 'vcp-val vcp-border-r'; v1.textContent = val1;
-        var k2 = document.createElement('div'); k2.className = 'vcp-key'; k2.textContent = key2;
-        var v2 = document.createElement('div'); v2.className = 'vcp-val'; v2.innerHTML = val2Html;
-        grid.appendChild(k1); grid.appendChild(v1); grid.appendChild(k2); grid.appendChild(v2);
-    }
-
-    function getWeekDay(dateStr) {
-        var parts = dateStr.split('.');
-        if(parts.length < 3) return "";
-        var d = new Date(parts[0], parseInt(parts[1])-1, parts[2]);
-        var days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-        return days[d.getDay()] || "";
-    }
-
-    function formatTags(rawTags) {
-        if(!rawTags) return "";
-        var clean = rawTags.replace(/^[\((]/, '').replace(/[\))]$/, '');
-        var tags = clean.split(/[,,]/);
-        return tags.map(function(t) {
-            var txt = t.trim();
-            if(!txt) return "";
-            return '<code class="vcp-tag-pill">' + txt + '</code>';
-        }).join('');
     }
 
     function renderToolCall(ui, cleanText) {
@@ -242,82 +199,20 @@
         return true;
     }
 
-    function renderDailyNote(ui, cleanText) {
-        var lines = cleanText.split('\n');
-        var data  = { maid: "", date: "", content: "", tag: "" };
-        var currentKey = null;
-
-        lines.forEach(function(line) {
-            var l = line.trimEnd();
-            if (!l || l.includes("<<<")) return;
-            if (l.startsWith("Maid:"))    { currentKey = "maid";    data.maid    = l.substring(5).trim(); }
-            else if (l.startsWith("Date:"))    { currentKey = "date";    data.date    = l.substring(5).trim(); }
-            else if (l.startsWith("Content:")) { currentKey = "content"; data.content = l.substring(8).trim(); }
-            else if (l.startsWith("Tag:"))     { currentKey = "tag";     data.tag     = l.substring(4).trim(); }
-            else if (currentKey) { data[currentKey] += '\n' + l; }
-        });
-
-        if (!data.maid && !data.date) return false;
-
-        var rawMaid     = data.maid;
-        var displayMaid = rawMaid;
-        var notebookName = rawMaid;
-        var nbMatch = rawMaid.match(/^\[(.*?)\](.*)$/);
-        if (nbMatch) {
-            notebookName = nbMatch[1];
-            displayMaid  = nbMatch[2].trim();
-        }
-        if (notebookName === "代码") ui.titleText.textContent = "代码日记本";
-        else if (notebookName.endsWith("日记本")) ui.titleText.textContent = notebookName;
-        else ui.titleText.textContent = notebookName + "日记本";
-
-        var dateStr = data.date;
-        var timeStr = "";
-        var contentBody = data.content;
-
-        var timeMatch = contentBody.match(/^\[(\d{2}:\d{2}:\d{2})\]/);
-        if (timeMatch) {
-            timeStr     = timeMatch[1];
-            contentBody = contentBody.substring(timeMatch[0].length).trim();
-        }
-
-        var subjectVal = "Normal";
-        var subjMatch  = contentBody.match(/^[\(\uff08](.*?)[\)\uff09]/);
-        if (subjMatch) {
-            subjectVal  = subjMatch[1];
-            contentBody = contentBody.substring(subjMatch[0].length).trim();
-        }
-
-        var weekDay = getWeekDay(dateStr);
-        var dateHtml = '<b>' + dateStr + '</b> ' +
-                       '<span style="color:#6b7280; font-size:0.9em; margin:0 4px;">' + weekDay + '</span> ' +
-                       '<i>' + timeStr + '</i>';
-
-        var tagHtml = formatTags(data.tag);
-
-        ui.gridContainer.innerHTML = '';
-        createHeaderRow("Maid", displayMaid, "Date", dateHtml, ui.gridContainer);
-        createNormalRow("Subject", subjectVal, ui.gridContainer, false);
-        createMarkdownRow("Content", contentBody, ui.gridContainer);
-        if (tagHtml) createNormalRow("Tag", tagHtml, ui.gridContainer, true);
-
-        return true;
-    }
-
-    function updateCard(ui, fragmentText, type) {
-        var isComplete = fragmentText.includes(type === 'DailyNote' ? '<<<DailyNoteEnd>>>' : '<<<[END_TOOL_REQUEST]>>>');
+    function updateCard(ui, fragmentText) {
+        var isComplete = fragmentText.includes('<<<[END_TOOL_REQUEST]>>>');
         if (isComplete) { ui.container.setAttribute('data-status', 'done'); ui.copyBtn.style.display = 'inline-flex'; }
 
         var cleanText = fragmentText;
-        var marker    = type === 'DailyNote' ? '<<<DailyNoteEnd>>>' : '<<<[END_TOOL_REQUEST]>>>';
+        var marker = '<<<[END_TOOL_REQUEST]>>>';
         var eIdx = cleanText.lastIndexOf(marker);
         if (eIdx !== -1) cleanText = cleanText.substring(0, eIdx);
 
-        (type === 'DailyNote' ? renderDailyNote : renderToolCall)(ui, cleanText);
+        renderToolCall(ui, cleanText);
 
         ui.copyBtn.onclick = function() {
-            var s = type === 'DailyNote' ? '<<<DailyNoteStart>>>' : '<<<[TOOL_REQUEST]>>>';
-            var e = type === 'DailyNote' ? '<<<DailyNoteEnd>>>'   : '<<<[END_TOOL_REQUEST]>>>';
+            var s = '<<<[TOOL_REQUEST]>>>';
+            var e = '<<<[END_TOOL_REQUEST]>>>';
             navigator.clipboard.writeText(s + '\n' + cleanText.trim() + '\n' + e);
             var o = ui.copyBtn.textContent; ui.copyBtn.textContent = 'Copied!';
             setTimeout(function() { if (ui.copyBtn.isConnected) ui.copyBtn.textContent = o; }, 2000);
@@ -330,7 +225,7 @@
         return node.textContent || "";
     }
 
-    function mount(contentNode, parent, type) {
+    function mount(contentNode, parent) {
         if (processedMap.has(parent)) return;
 
         // ★ 标记：本容器已被主引擎接管，兜底引擎看到要绕道
@@ -356,7 +251,7 @@
         var state = { wrapper: wrapper, cards: [], lastText: '' };
         processedMap.set(parent, state);
 
-        var startMarker = type === 'DailyNote' ? '<<<DailyNoteStart>>>' : '<<<[TOOL_REQUEST]>>>';
+        var startMarker = '<<<[TOOL_REQUEST]>>>';
 
         var update = function() {
             if (!contentNode.isConnected) return;
@@ -367,11 +262,11 @@
             var segs = text.split(startMarker);
             for (var i = 1; i < segs.length; i++) {
                 if (!state.cards[i-1]) {
-                    var ui = createCardDOM_Main(type);
+                    var ui = createCardDOM_Main();
                     state.wrapper.appendChild(ui.container);
                     state.cards[i-1] = { ui: ui };
                 }
-                updateCard(state.cards[i-1].ui, segs[i], type);
+                updateCard(state.cards[i-1].ui, segs[i]);
             }
         };
 
@@ -387,13 +282,7 @@
         document.querySelectorAll('.language-VCPToolCall').forEach(function(el) {
             if (!processedMap.has(el)) {
                 var cm = el.querySelector('.cm-content');
-                if (cm) mount(cm, el, 'VCPToolCall');
-            }
-        });
-        document.querySelectorAll('.language-DailyNote').forEach(function(el) {
-            if (!processedMap.has(el)) {
-                var cm = el.querySelector('.cm-content');
-                if (cm) mount(cm, el, 'DailyNote');
+                if (cm) mount(cm, el);
             }
         });
     }
@@ -560,7 +449,7 @@
         if (parent.closest && parent.closest('.' + CARD_CLASS)) return;
 
         // ★ 避开主引擎接管的区域（代码块 + primary 标记）
-        if (parent.closest && parent.closest('.language-VCPToolCall, .language-DailyNote')) return;
+        if (parent.closest && parent.closest('.language-VCPToolCall')) return;
         if (parent.closest && parent.closest('[data-vcp-primary-mounted="1"]')) return;
 
         // 经典代码块防护

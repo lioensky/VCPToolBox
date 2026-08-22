@@ -680,7 +680,6 @@ class ChatCompletionHandler {
       activeRequests,
       writeDebugLog,
       writeChatLog,
-      handleDiaryFromAIResponse,
       webSocketServer,
       DEBUG_MODE,
       SHOW_VCP_OUTPUT,

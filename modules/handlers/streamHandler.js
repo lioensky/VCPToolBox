@@ -22,7 +22,6 @@ class StreamHandler {
       pluginManager,
       writeDebugLog,
       writeChatLog,
-      handleDiaryFromAIResponse,
       webSocketServer,
       DEBUG_MODE,
       SHOW_VCP_OUTPUT,
@@ -69,7 +68,6 @@ class StreamHandler {
     let recursionDepth = 0;
     const maxRecursion = maxVCPLoopStream || 5;
     let currentAIContentForLoop = '';
-    let currentAIRawDataForDiary = '';
     let chatLogs = [];
     let oneRingAssistantTurnParts = [];
 
@@ -145,7 +143,6 @@ class StreamHandler {
       return new Promise((resolve, reject) => {
         const decoder = new StringDecoder('utf8');
         let collectedContentThisTurn = '';
-        let rawResponseDataThisTurn = '';
         let sseLineBuffer = '';
         let streamAborted = false;
         let keepAliveTimer = null;
@@ -277,7 +274,7 @@ class StreamHandler {
             }
             if (keepAliveTimer) clearInterval(keepAliveTimer);
             if (abortController?.signal) abortController.signal.removeEventListener('abort', abortHandler);
-            resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn, message: message });
+            resolve({ content: collectedContentThisTurn, message: message });
           }, CHUNK_IDLE_TIMEOUT);
         };
         resetChunkIdleTimer(); // 启动首次空闲计时
@@ -287,7 +284,7 @@ class StreamHandler {
           if (DEBUG_MODE) console.log('[Stream Abort] Abort signal received, stopping stream processing.');
           if (abortController?.signal) abortController.signal.removeEventListener('abort', abortHandler);
           if (aiResponse.body && !aiResponse.body.destroyed) aiResponse.body.destroy();
-          resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn, message: message });
+          resolve({ content: collectedContentThisTurn, message: message });
         };
 
         if (abortController?.signal) {
@@ -299,7 +296,6 @@ class StreamHandler {
           resetChunkIdleTimer(); // 每收到一个 chunk 就重置空闲计时器
 
           const chunkString = decoder.write(chunk);
-          rawResponseDataThisTurn += chunkString;
           sseLineBuffer += chunkString;
 
           // 按行处理：既保证了转发的实时性，又解决了 [DONE] 跨包截断的问题
@@ -347,7 +343,6 @@ class StreamHandler {
           if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
           const remainingString = decoder.end();
           if (remainingString) {
-            rawResponseDataThisTurn += remainingString;
             sseLineBuffer += remainingString;
           }
 
@@ -382,7 +377,7 @@ class StreamHandler {
 
           writeClientReasoningCloseChunk();
           if (abortController?.signal) abortController.signal.removeEventListener('abort', abortHandler);
-          resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn, message: message });
+          resolve({ content: collectedContentThisTurn, message: message });
         });
 
         aiResponse.body.on('error', streamError => {
@@ -409,14 +404,10 @@ class StreamHandler {
     if (DEBUG_MODE) console.log('[VCP Stream Loop] Processing initial AI call.');
     let initialAIResponseData = await processAIResponseStreamHelper(firstAiAPIResponse, true);
     currentAIContentForLoop = initialAIResponseData.content;
-    currentAIRawDataForDiary = initialAIResponseData.raw;
     if (writeChatLog) chatLogs.push({ request: originalBody, response: initialAIResponseData.message });
     if (currentAIContentForLoop && currentAIContentForLoop.trim()) {
       oneRingAssistantTurnParts.push(currentAIContentForLoop);
     }
-    handleDiaryFromAIResponse(currentAIRawDataForDiary).catch(e =>
-      console.error('[VCP Stream Loop] Error in initial diary handling:', e),
-    );
 
     // --- VCP 循环 ---
     while (recursionDepth < maxRecursion) {
@@ -726,11 +717,6 @@ class StreamHandler {
           response: nextAIResponseData.message,
         });
       }
-
-      // 记录日志
-      handleDiaryFromAIResponse(nextAIResponseData.raw).catch(e =>
-        console.error(`[VCP Stream Loop] Error in diary handling for depth ${recursionDepth}:`, e),
-      );
 
       recursionDepth++;
     } // toolcall loop end
