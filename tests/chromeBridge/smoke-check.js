@@ -170,6 +170,28 @@ assert.match(coreIndex, /createChromeRuntime/);
 assert.match(runtime, /runtimeInstanceId/);
 assert.match(runtime, /lastCloseReason/);
 assert.match(runtime, /previousPid/);
+assert.match(runtime, /const expectedCloseReasons = new WeakMap\(\)/);
+assert.match(runtime, /const spawnedProcess = spawn\(/);
+assert.match(
+    runtime,
+    /if \(chromeProcess === spawnedProcess\) \{[\s\S]*?chromeProcess = null;/,
+    '旧 Chrome 的 exit/error 回调只能清理自己，不得清空新一代进程引用'
+);
+assert.match(
+    runtime,
+    /expectedCloseReasons\.set\(proc, reason\)/,
+    '主动关闭必须记录预期关闭原因'
+);
+assert.match(
+    runtime,
+    /if \(expectedReason\) \{[\s\S]*?console\.log\(message\);[\s\S]*?\} else \{[\s\S]*?console\.warn\(message\);/,
+    '正常空闲/人工关闭不得作为 ERROR 输出'
+);
+assert.doesNotMatch(
+    runtime,
+    /console\.error\(`\[BrowserRuntimeManager\] launching managed Chrome/,
+    '正常启动 managed Chrome 不得使用 ERROR 日志级别'
+);
 
 assert.match(managedSetup, /function buildOpenChromeToolRequest/);
 assert.match(managedSetup, /function postHumanTool/);
@@ -182,6 +204,18 @@ assert.match(managedSetup, /interactiveSetup:「始」true「末」/);
 assert.doesNotMatch(managedSetup, /browserRuntimeManager|ensureManagedBrowser|DevToolsActivePort|waitForManagedBrowserExit/);
 assert.match(bridge, /const interactiveSetup = parseBoolean\(params\.interactiveSetup, false\)/);
 assert.match(bridge, /idleTimeoutMs:\s*24 \* 60 \* 60 \* 1000/);
+assert.match(bridge, /const launchedRuntime = browserRuntimeManager\.getManagedBrowserStatus\(\)/);
+assert.match(
+    bridge,
+    /!runtimeAfterWait\.running[\s\S]*?runtimeAfterWait\.runtimeInstanceId === launchedRuntime\.runtimeInstanceId/,
+    'open_chrome 必须识别等待期间由用户关闭的同一运行时实例'
+);
+assert.match(bridge, /managed_browser_closed_during_open/);
+assert.match(
+    bridge,
+    /且浏览器仍在运行；准备重启 managed Chrome 后重试一次/,
+    '只有浏览器仍在运行但扩展未可信连接时才允许重启重试'
+);
 
 assert.match(content, /VCPWebAgentPageRuntimeCore/);
 assert.match(content, /createWebAgentPageRuntime/);

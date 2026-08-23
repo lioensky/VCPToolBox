@@ -16,6 +16,7 @@ const MANAGED_TOKEN_FILE = path.join(PROJECT_ROOT, 'Plugin', 'ChromeBridge', 'ma
 let chromeProcess = null;
 let launchPromise = null;
 let idleTimer = null;
+const expectedCloseReasons = new WeakMap();
 let managedToken = null;
 let tokenCreatedAt = 0;
 let currentExecutablePath = null;
@@ -531,13 +532,14 @@ async function ensureManagedBrowser(options = {}) {
             startMinimized: launchConfig.startMinimized === true
         };
         currentExtensionStage = extensionStage;
-        console.error(`[BrowserRuntimeManager] launching managed Chrome: executable=${executablePath}, profile=${launchConfig.profileDir}, extension=${launchConfig.loadExtension ? launchConfig.extensionDir : 'disabled'}, runtimeConfig=${runtimeConfigPath || 'N/A'}, headless=${currentLaunchConfig.headless}, stageGeneration=${extensionStage.stageGeneration || 'N/A'}`);
-        chromeProcess = spawn(executablePath, args, {
+        console.log(`[BrowserRuntimeManager] launching managed Chrome: executable=${executablePath}, profile=${launchConfig.profileDir}, extension=${launchConfig.loadExtension ? launchConfig.extensionDir : 'disabled'}, runtimeConfig=${runtimeConfigPath || 'N/A'}, headless=${currentLaunchConfig.headless}, stageGeneration=${extensionStage.stageGeneration || 'N/A'}`);
+        const spawnedProcess = spawn(executablePath, args, {
             cwd: PROJECT_ROOT,
             detached: false,
             stdio: ['ignore', 'ignore', 'pipe'],
             windowsHide: launchConfig.windowsHide
         });
+        chromeProcess = spawnedProcess;
 
         currentExecutablePath = executablePath;
         currentProfileDir = launchConfig.profileDir;
@@ -548,7 +550,7 @@ async function ensureManagedBrowser(options = {}) {
         startedAt = Date.now();
         lastTouchedAt = Date.now();
 
-        chromeProcess.stderr.on('data', data => {
+        spawnedProcess.stderr.on('data', data => {
             const text = data.toString().trim();
             if (text) {
                 lastError = text.slice(-1000);
@@ -558,23 +560,39 @@ async function ensureManagedBrowser(options = {}) {
             }
         });
 
-        chromeProcess.on('exit', (code, signal) => {
-            console.error(`[BrowserRuntimeManager] managed Chrome exited. code=${code}, signal=${signal}`);
-            previousPid = chromeProcess?.pid || previousPid;
+        spawnedProcess.on('exit', (code, signal) => {
+            const expectedReason = expectedCloseReasons.get(spawnedProcess) || null;
+            expectedCloseReasons.delete(spawnedProcess);
+            const closeReason = expectedReason || `process_exit:${code ?? 'null'}:${signal || 'none'}`;
+            const message = `[BrowserRuntimeManager] managed Chrome exited. code=${code}, signal=${signal || 'none'}, reason=${closeReason}`;
+            if (expectedReason) {
+                console.log(message);
+            } else {
+                console.warn(message);
+            }
+
+            previousPid = spawnedProcess.pid || previousPid;
             lastClosedAt = Date.now();
-            lastCloseReason = lastCloseReason || `process_exit:${code ?? 'null'}:${signal || 'none'}`;
-            chromeProcess = null;
-            startedAt = null;
-            currentLaunchConfig = null;
-            clearIdleTimer();
+            lastCloseReason = closeReason;
+
+            // 旧进程可能在强制关闭超时后才上报 exit。此时新一代 Chrome 可能已经启动，
+            // 旧回调绝不能清空新进程的全局状态，否则会触发重复拉起/关闭循环。
+            if (chromeProcess === spawnedProcess) {
+                chromeProcess = null;
+                startedAt = null;
+                currentLaunchConfig = null;
+                clearIdleTimer();
+            }
         });
 
-        chromeProcess.on('error', error => {
+        spawnedProcess.on('error', error => {
             lastError = error.message;
-            chromeProcess = null;
-            startedAt = null;
-            currentLaunchConfig = null;
-            clearIdleTimer();
+            if (chromeProcess === spawnedProcess) {
+                chromeProcess = null;
+                startedAt = null;
+                currentLaunchConfig = null;
+                clearIdleTimer();
+            }
         });
 
         const browserWSEndpoint = await waitForManagedBrowserWebSocketEndpoint();
@@ -629,6 +647,7 @@ async function closeManagedBrowser(reason = 'manual') {
 
     const pid = proc.pid;
     previousPid = pid;
+    expectedCloseReasons.set(proc, reason);
     try {
         proc.kill('SIGTERM');
     } catch (_) {
@@ -814,6 +833,7 @@ function registerShutdownHooks() {
         clearIdleTimer();
         if (chromeProcess && isProcessAlive()) {
             try {
+                expectedCloseReasons.set(chromeProcess, 'server_shutdown');
                 chromeProcess.kill('SIGTERM');
             } catch (_) {
                 // ignore
