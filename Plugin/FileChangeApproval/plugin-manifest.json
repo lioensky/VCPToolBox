@@ -1,0 +1,32 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "FileChangeApproval",
+  "displayName": "文件变更审批",
+  "version": "1.0.0",
+  "description": "为其他文件类插件提供可选的文件变更提案、快照、文本 Diff、人工审批和自动批准能力。",
+  "author": "VCPToolBox",
+  "pluginType": "service",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "FileChangeApproval.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 1800000
+  },
+  "configSchema": {
+    "RequireUserApproval": {
+      "type": "boolean",
+      "default": true,
+      "description": "新文件变更是否需要用户审批。关闭后自动批准，但仍保存快照和执行记录。"
+    },
+    "DebugMode": {
+      "type": "boolean",
+      "default": false,
+      "description": "是否输出文件变更审批调试日志。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": []
+  }
+}

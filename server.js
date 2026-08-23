@@ -1447,20 +1447,7 @@ async function initialize() {
         };
         if (DEBUG_MODE) console.log('[Server] Injecting dependencies into plugins...');
 
-        // 注入到消息预处理器
-        for (const [name, module] of pluginManager.messagePreprocessors) {
-            if (typeof module.setDependencies === 'function') {
-                module.setDependencies(dependencies);
-                if (DEBUG_MODE) console.log(`  - Injected dependencies into message preprocessor: ${name}.`);
-            }
-        }
-        // 注入到服务模块 (排除VCPLog自身)
-        for (const [name, serviceData] of pluginManager.serviceModules) {
-            if (name !== 'VCPLog' && typeof serviceData.module.setDependencies === 'function') {
-                serviceData.module.setDependencies(dependencies);
-                if (DEBUG_MODE) console.log(`  - Injected dependencies into service: ${name}.`);
-            }
-        }
+        pluginManager.injectDependencies(dependencies);
     } catch (e) {
         console.error('[Server] An error occurred during dependency injection:', e);
     }

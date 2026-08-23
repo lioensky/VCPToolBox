@@ -76,6 +76,9 @@ export type * from "./schedule";
 export { dreamApi } from "./dream";
 export type * from "./dream";
 
+export { changeProposalsApi } from "./changeProposals";
+export type * from "./changeProposals";
+
 export { emojisApi } from "./emojis";
 export type * from "./emojis";
 

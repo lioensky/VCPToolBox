@@ -31,6 +31,8 @@ export const APP_ROUTE_COMPONENTS = {
   "rag-tuning": () => import("@/views/RagTuning.vue"),
   "schedule-manager": () => import("@/views/ScheduleManager.vue"),
   "dream-manager": () => import("@/views/DreamManager.vue"),
+  "change-proposals-manager": () =>
+    import("@/views/ChangeProposalsManager.vue"),
   "server-log-viewer": () => import("@/views/ServerLogViewer.vue"),
   "semantic-model-router-editor": () =>
     import("@/views/SemanticModelRouterEditor.vue"),

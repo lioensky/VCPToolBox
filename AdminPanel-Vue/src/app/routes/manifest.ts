@@ -42,6 +42,7 @@ export type AppRouteId =
   | "rag-tuning"
   | "schedule-manager"
   | "dream-manager"
+  | "change-proposals-manager"
   | "server-log-viewer"
   | "semantic-model-router-editor"
   | "final-context-viewer"
@@ -353,6 +354,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     showInSidebar: true,
   },
   // ── 工具 & 插件 ──
+  {
+    id: "change-proposals-manager",
+    routeName: "ChangeProposalsManager",
+    path: "/change-proposals-manager",
+    title: "文件变更审批",
+    icon: "difference",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
+  },
   {
     id: "dynamic-tools-manager",
     routeName: "DynamicToolsManager",

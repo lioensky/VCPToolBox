@@ -1006,6 +1006,10 @@ class PluginManager extends EventEmitter {
                 }
             }
 
+            // 所有插件实例完成初始化后再注入通用能力，确保 service 插件的
+            // getService() 已经返回当前热加载周期的实例。
+            this.injectDependencies();
+
             this.buildVCPDescription();
             this.emit('tools_changed', { reason: 'local_reload' });
 
@@ -1093,6 +1097,49 @@ class PluginManager extends EventEmitter {
 
     getServiceModule(name) {
         return this.serviceModules.get(name)?.module;
+    }
+
+    getServiceCapability(name) {
+        const serviceModule = this.getServiceModule(name);
+        if (!serviceModule) return null;
+        if (typeof serviceModule.getService === 'function') {
+            return serviceModule.getService();
+        }
+        return serviceModule;
+    }
+
+    injectDependencies(dependencies = {}) {
+        const injectedDependencies = {
+            ...dependencies,
+            pluginManager: dependencies.pluginManager || this,
+            vcpLogFunctions: dependencies.vcpLogFunctions || this.getVCPLogFunctions()
+        };
+
+        if (!Object.prototype.hasOwnProperty.call(injectedDependencies, 'changeProposalService')) {
+            injectedDependencies.changeProposalService =
+                this.getServiceCapability('FileChangeApproval');
+        }
+
+        for (const [name, module] of this.messagePreprocessors) {
+            if (typeof module.setDependencies === 'function') {
+                module.setDependencies(injectedDependencies);
+                if (this.debugMode) {
+                    console.log(`[PluginManager] Injected common dependencies into message preprocessor: ${name}.`);
+                }
+            }
+        }
+
+        for (const [name, serviceData] of this.serviceModules) {
+            const module = serviceData.module;
+            if (name !== 'VCPLog' && typeof module.setDependencies === 'function') {
+                module.setDependencies(injectedDependencies);
+                if (this.debugMode) {
+                    console.log(`[PluginManager] Injected common dependencies into service: ${name}.`);
+                }
+            }
+        }
+
+        return injectedDependencies;
     }
 
     _executeDirectToolCallWithTimeout(plugin, toolName, serviceModule, pluginSpecificArgs, directContext) {

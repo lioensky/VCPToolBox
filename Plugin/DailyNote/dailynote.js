@@ -43,6 +43,8 @@ const IGNORED_FOLDERS = ['MusicDiary'];
 // 文件落盘后即可向 AI 返回；SQLite/Rust 向量入库仍由
 // KnowledgeBaseManager.runExternalFileMutation() 的内部 FIFO 队列托管并在后台完成。
 let knowledgeBaseManager = null;
+let changeProposalService = null;
+let changeProposalWarningLogged = false;
 let residentQueue = Promise.resolve();
 let residentAcceptingRequests = true;
 let residentPendingCount = 0;
@@ -681,8 +683,6 @@ async function handleCreateCommand(args) {
         let filePath = path.join(dirPath, finalFileName);
         let counter = 1;
 
-        await fs.mkdir(dirPath, { recursive: true });
-
         const timeStringForContent = `${hours}:${minutes}`;
         const fileContent = contentStartsWithAiTimePrefix(processedContent)
             ? `[${datePart}] - ${actualMaidName}\n${processedContent}`
@@ -691,24 +691,72 @@ async function handleCreateCommand(args) {
         // 使用 wx 原子排他创建，避免多个调用方在 access 与 writeFile 之间同时抢到同一路径。
         const maxFileNameAttempts = 1000;
         while (counter <= maxFileNameAttempts) {
+            let exists = false;
             try {
-                debugLog(`Attempting atomic create: ${filePath}`);
-                await fs.writeFile(filePath, fileContent, { encoding: 'utf-8', flag: 'wx' });
-                break;
+                await fs.access(filePath);
+                exists = true;
             } catch (err) {
-                if (err.code !== 'EEXIST') {
-                    throw err;
-                }
+                if (err.code !== 'ENOENT') throw err;
+            }
+            if (exists || (changeProposalService && changeProposalService.isPathReserved(filePath))) {
                 counter++;
                 finalFileName = `${baseFileNameWithoutExt}(${counter})${fileExtension}`;
                 filePath = path.join(dirPath, finalFileName);
+                continue;
             }
+            break;
         }
 
         if (counter > maxFileNameAttempts) {
             throw new Error(`Unable to allocate a unique diary filename after ${maxFileNameAttempts} attempts.`);
         }
 
+        if (changeProposalService) {
+            const proposal = await changeProposalService.createProposal({
+                sourcePlugin: 'DailyNote',
+                command: 'create',
+                operationType: 'create',
+                path: filePath,
+                beforeExists: false,
+                afterContent: fileContent,
+                agentName: actualMaidName,
+                encoding: 'utf8'
+            });
+
+            if (proposal.status === 'applied') {
+                return {
+                    status: 'success',
+                    result: {
+                        ...(proposal.result || {}),
+                        proposalId: proposal.proposalId,
+                        proposalStatus: proposal.status,
+                        approvalMode: proposal.approvalMode
+                    }
+                };
+            }
+            if (proposal.status === 'pending_approval') {
+                return {
+                    status: 'success',
+                    result: {
+                        message: `${actualMaidName} 的日记变更提案已创建，等待用户审批；文件尚未写入。`,
+                        proposedPath: filePath,
+                        proposalId: proposal.proposalId,
+                        proposalStatus: proposal.status,
+                        approvalMode: proposal.approvalMode
+                    }
+                };
+            }
+            return {
+                status: 'error',
+                error: proposal.errorMessage || `DailyNote create proposal ended with status ${proposal.status}.`,
+                proposalId: proposal.proposalId,
+                proposalStatus: proposal.status
+            };
+        }
+
+        await fs.mkdir(dirPath, { recursive: true });
+        debugLog(`Attempting atomic create: ${filePath}`);
+        await fs.writeFile(filePath, fileContent, { encoding: 'utf-8', flag: 'wx' });
         debugLog(`Successfully wrote file (length: ${fileContent.length})`);
         return {
             status: "success",
@@ -716,6 +764,8 @@ async function handleCreateCommand(args) {
                 message: `${actualMaidName} 的日记已保存到 ${sanitizedFolderName} 文件夹 (${finalFileName})，知识库索引将在后台更新`,
                 folder: sanitizedFolderName,
                 fileName: finalFileName,
+                targetFile: filePath,
+                mutationPaths: { upserts: [filePath], deletes: [] },
                 indexStatus: "queued"
             }
         };
@@ -1146,6 +1196,7 @@ async function handleUpdateCommand(args) {
     try {
         let modificationDone = false;
         let modifiedFilePath = null;
+        let pendingProposal = null;
 
         // Fuzzy diff: 在遍历过程中收集最佳候选（零额外IO）
         const probes = FUZZY_DIFF_ENABLED ? extractSmartProbes(target, 5) : [];
@@ -1400,7 +1451,21 @@ async function handleUpdateCommand(args) {
                             replace +
                             content.substring(index + target.length);
                         try {
-                            await atomicReplaceIfUnchanged(filePath, newContent, readVersion);
+                            if (changeProposalService) {
+                                pendingProposal = await changeProposalService.createProposal({
+                                    sourcePlugin: 'DailyNote',
+                                    command: 'update',
+                                    operationType: 'update',
+                                    path: filePath,
+                                    beforeExists: true,
+                                    beforeContent: content,
+                                    afterContent: newContent,
+                                    agentName: maid,
+                                    encoding: 'utf8'
+                                });
+                            } else {
+                                await atomicReplaceIfUnchanged(filePath, newContent, readVersion);
+                            }
                             modificationDone = true;
                             modifiedFilePath = filePath;
                             debugLog(`Successfully modified file: ${filePath}`);
@@ -1460,6 +1525,26 @@ async function handleUpdateCommand(args) {
         if (modificationDone) {
             const finalFileName = path.basename(modifiedFilePath);
             const folderName = path.basename(path.dirname(modifiedFilePath));
+            if (pendingProposal && pendingProposal.status === 'pending_approval') {
+                return {
+                    status: 'success',
+                    result: {
+                        message: `${maid || 'AI'} 的日记更新提案已创建，等待用户审批；文件尚未修改。`,
+                        proposedTargetFile: modifiedFilePath,
+                        proposalId: pendingProposal.proposalId,
+                        proposalStatus: pendingProposal.status,
+                        approvalMode: pendingProposal.approvalMode
+                    }
+                };
+            }
+            if (pendingProposal && pendingProposal.status !== 'applied') {
+                return {
+                    status: 'error',
+                    error: pendingProposal.errorMessage || `DailyNote update proposal ended with status ${pendingProposal.status}.`,
+                    proposalId: pendingProposal.proposalId,
+                    proposalStatus: pendingProposal.status
+                };
+            }
             return {
                 status: 'success',
                 result: {
@@ -1468,6 +1553,10 @@ async function handleUpdateCommand(args) {
                     targetFile: modifiedFilePath,
                     folder: folderName,
                     fileName: finalFileName,
+                    proposalId: pendingProposal?.proposalId,
+                    proposalStatus: pendingProposal?.status,
+                    approvalMode: pendingProposal?.approvalMode,
+                    mutationPaths: { upserts: [modifiedFilePath], deletes: [] },
                     indexStatus: 'queued'
                 }
             };
@@ -1626,11 +1715,81 @@ function enqueueResidentRequest(args, context = {}) {
     return requestPromise;
 }
 
+async function applyDailyNoteProposal(proposal) {
+    if (proposal.operationType === 'create') {
+        await fs.mkdir(path.dirname(proposal.path), { recursive: true });
+        await fs.writeFile(proposal.path, proposal.afterContent, {
+            encoding: proposal.encoding || 'utf8',
+            flag: 'wx'
+        });
+        return {
+            message: `文件已写入: ${proposal.path}`,
+            targetFile: proposal.path,
+            folder: path.basename(path.dirname(proposal.path)),
+            fileName: path.basename(proposal.path),
+            mutationPaths: { upserts: [proposal.path], deletes: [] },
+            indexStatus: 'queued'
+        };
+    }
+
+    const currentStats = await fs.stat(proposal.path);
+    const currentContent = await fs.readFile(
+        proposal.path,
+        proposal.encoding || 'utf8'
+    );
+    if (currentContent !== proposal.beforeContent) {
+        const conflict = new Error(
+            'Diary file changed before approved update could be applied.'
+        );
+        conflict.code = 'DAILY_NOTE_WRITE_CONFLICT';
+        throw conflict;
+    }
+
+    await atomicReplaceIfUnchanged(
+        proposal.path,
+        proposal.afterContent,
+        currentStats
+    );
+    return {
+        message: `文件已更新: ${proposal.path}`,
+        result: `Successfully edited diary file: ${proposal.path}`,
+        targetFile: proposal.path,
+        folder: path.basename(path.dirname(proposal.path)),
+        fileName: path.basename(proposal.path),
+        mutationPaths: { upserts: [proposal.path], deletes: [] },
+        indexStatus: 'queued'
+    };
+}
+
+function registerChangeProposalHandler(options = {}) {
+    if (
+        changeProposalService
+        && typeof changeProposalService.registerApplyHandler === 'function'
+    ) {
+        changeProposalService.registerApplyHandler(
+            'DailyNote',
+            applyDailyNoteProposal
+        );
+        return;
+    }
+
+    if (options.warnWhenUnavailable && !changeProposalWarningLogged) {
+        console.warn(
+            '[DailyNote] FileChangeApproval unavailable; file changes will use direct-write compatibility mode.'
+        );
+        changeProposalWarningLogged = true;
+    }
+}
+
 function initialize(config = {}, dependencies = {}) {
     knowledgeBaseManager =
         dependencies.knowledgeBaseManager ||
         dependencies.vectorDBManager ||
         knowledgeBaseManager;
+    changeProposalService =
+        dependencies.changeProposalService ||
+        changeProposalService;
+    registerChangeProposalHandler();
     residentAcceptingRequests = true;
     residentInitialized = true;
     console.log(
@@ -1644,6 +1803,10 @@ function setDependencies(dependencies = {}) {
         dependencies.knowledgeBaseManager ||
         dependencies.vectorDBManager ||
         knowledgeBaseManager;
+    changeProposalService =
+        dependencies.changeProposalService ||
+        changeProposalService;
+    registerChangeProposalHandler({ warnWhenUnavailable: true });
     if (knowledgeBaseManager) {
         console.log('[DailyNote] 🔗 KnowledgeBaseManager coordinator connected.');
     }
@@ -1663,6 +1826,7 @@ async function shutdown() {
     residentAcceptingRequests = false;
     await residentQueue;
     knowledgeBaseManager = null;
+    changeProposalService = null;
     residentInitialized = false;
     console.log('[DailyNote] Resident service shutdown complete.');
 }
