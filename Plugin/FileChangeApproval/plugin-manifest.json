@@ -17,7 +17,7 @@
   "configSchema": {
     "RequireUserApproval": {
       "type": "boolean",
-      "default": true,
+      "default": false,
       "description": "新文件变更是否需要用户审批。关闭后自动批准，但仍保存快照和执行记录。"
     },
     "DebugMode": {

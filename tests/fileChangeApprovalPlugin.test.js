@@ -28,6 +28,14 @@ async function createRuntime() {
     };
 }
 
+test('user approval is disabled by default', () => {
+    const service = new plugin.ChangeProposalService({
+        config: {}
+    });
+
+    assert.equal(service.getConfig().requireUserApproval, false);
+});
+
 test('service plugin persists manual proposals and applies after approval', async () => {
     const context = await createRuntime();
     try {

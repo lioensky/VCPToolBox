@@ -8,7 +8,7 @@ const express = require('express');
 const Database = require('better-sqlite3');
 
 const PLUGIN_NAME = 'FileChangeApproval';
-const DEFAULT_REQUIRE_USER_APPROVAL = true;
+const DEFAULT_REQUIRE_USER_APPROVAL = false;
 const DELETABLE_STATUSES = new Set([
     'applied',
     'rejected',

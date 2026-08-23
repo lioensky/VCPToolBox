@@ -218,7 +218,7 @@ const selected = ref<ChangeProposal | null>(null);
 const loading = ref(false);
 const processing = ref(false);
 const savingConfig = ref(false);
-const config = reactive({ requireUserApproval: true });
+const config = reactive({ requireUserApproval: false });
 const filters = reactive({
   status: "all",
   sourcePlugin: "all",
@@ -293,7 +293,7 @@ function errorMessage(error: unknown): string {
 
 async function loadConfig(): Promise<void> {
   const next = await changeProposalsApi.getConfig();
-  config.requireUserApproval = next.requireUserApproval !== false;
+  config.requireUserApproval = next.requireUserApproval === true;
 }
 
 async function loadProposals(): Promise<void> {
@@ -354,7 +354,7 @@ async function saveApprovalConfig(): Promise<void> {
       { requireUserApproval: nextValue },
       { loadingKey: "change-proposals.config" }
     );
-    config.requireUserApproval = next.requireUserApproval !== false;
+    config.requireUserApproval = next.requireUserApproval === true;
     showMessage("文件变更审批配置已保存", "success");
   } catch (error) {
     config.requireUserApproval = !nextValue;

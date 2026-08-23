@@ -1,6 +1,7 @@
 # FileChangeApproval
 
 `FileChangeApproval` 是一个后台 service 插件，为文件类插件提供统一的变更提案能力。
+默认关闭用户审批，新文件变更会自动批准并执行；可在管理面板或插件 `config.env` 中将 `RequireUserApproval` 设为 `true` 启用人工审批。
 
 当前阶段接入 `DailyNote`，支持：
 
