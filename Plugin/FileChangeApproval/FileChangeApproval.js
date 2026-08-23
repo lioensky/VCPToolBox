@@ -15,6 +15,12 @@ const DELETABLE_STATUSES = new Set([
     'failed',
     'stale'
 ]);
+const ARCHIVABLE_STATUSES = new Set([
+    'applied',
+    'rejected',
+    'failed',
+    'stale'
+]);
 
 let runtime = null;
 
@@ -185,7 +191,9 @@ class ChangeProposalService {
                 result_json TEXT,
                 before_snapshot TEXT,
                 after_snapshot TEXT,
-                diff_json TEXT
+                diff_json TEXT,
+                archived INTEGER NOT NULL DEFAULT 0,
+                archived_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_change_proposals_status
                 ON change_proposals(status);
@@ -193,6 +201,23 @@ class ChangeProposalService {
                 ON change_proposals(created_at);
             CREATE INDEX IF NOT EXISTS idx_change_proposals_source_plugin
                 ON change_proposals(source_plugin);
+        `);
+        const columns = new Set(
+            this.db.prepare('PRAGMA table_info(change_proposals)').all().map(column => column.name)
+        );
+        if (!columns.has('archived')) {
+            this.db.exec(
+                'ALTER TABLE change_proposals ADD COLUMN archived INTEGER NOT NULL DEFAULT 0'
+            );
+        }
+        if (!columns.has('archived_at')) {
+            this.db.exec(
+                'ALTER TABLE change_proposals ADD COLUMN archived_at TEXT'
+            );
+        }
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_change_proposals_archived
+                ON change_proposals(archived);
         `);
         this.initialized = true;
         this.debug('initialized');
@@ -354,7 +379,9 @@ class ChangeProposalService {
             rejectionReason: row.rejection_reason || '',
             errorMessage: row.error_message || '',
             result: row.result_json ? JSON.parse(row.result_json) : null,
-            diff: row.diff_json ? JSON.parse(row.diff_json) : null
+            diff: row.diff_json ? JSON.parse(row.diff_json) : null,
+            archived: row.archived === 1,
+            archivedAt: row.archived_at || null
         };
     }
 
@@ -432,7 +459,9 @@ class ChangeProposalService {
             result_json: null,
             before_snapshot: beforeSnapshot,
             after_snapshot: afterSnapshot,
-            diff_json: JSON.stringify(diff)
+            diff_json: JSON.stringify(diff),
+            archived: 0,
+            archived_at: null
         };
 
         this.db.prepare(`
@@ -442,14 +471,16 @@ class ChangeProposalService {
                 before_exists, before_hash, after_hash, before_size, after_size,
                 encoding, approval_mode, approval_source, status,
                 rejection_reason, error_message, result_json,
-                before_snapshot, after_snapshot, diff_json
+                before_snapshot, after_snapshot, diff_json,
+                archived, archived_at
             ) VALUES (
                 @id, @source_plugin, @command, @agent_name, @session_id,
                 @created_at, @updated_at, @operation_type, @path,
                 @before_exists, @before_hash, @after_hash, @before_size, @after_size,
                 @encoding, @approval_mode, @approval_source, @status,
                 @rejection_reason, @error_message, @result_json,
-                @before_snapshot, @after_snapshot, @diff_json
+                @before_snapshot, @after_snapshot, @diff_json,
+                @archived, @archived_at
             )
         `).run(row);
 
@@ -464,6 +495,20 @@ class ChangeProposalService {
         this.initialize();
         const clauses = [];
         const params = {};
+        const archivedQuery = query.archived;
+        if (
+            archivedQuery === undefined
+            || archivedQuery === null
+            || archivedQuery === ''
+        ) {
+            clauses.push('archived = 0');
+        } else if (String(archivedQuery).toLowerCase() !== 'all') {
+            clauses.push('archived = @archived');
+            params.archived = (
+                archivedQuery === true
+                || String(archivedQuery).toLowerCase() === 'true'
+            ) ? 1 : 0;
+        }
         if (query.status && query.status !== 'all') {
             clauses.push('status = @status');
             params.status = String(query.status);
@@ -578,6 +623,37 @@ class ChangeProposalService {
             proposalId: row.id,
             status: 'deleted'
         };
+    }
+
+    archiveProposal(proposalId, archived = true) {
+        this.initialize();
+        const row = this.db.prepare(
+            'SELECT * FROM change_proposals WHERE id = ?'
+        ).get(String(proposalId));
+        if (!row) {
+            throw Object.assign(new Error('Change proposal not found'), { statusCode: 404 });
+        }
+        if (!ARCHIVABLE_STATUSES.has(row.status)) {
+            throw Object.assign(
+                new Error(`Proposal with status ${row.status} cannot be archived`),
+                { statusCode: 409 }
+            );
+        }
+
+        const nextArchived = archived === true;
+        this.db.prepare(`
+            UPDATE change_proposals
+            SET archived = ?, archived_at = ?, updated_at = ?
+            WHERE id = ?
+        `).run(
+            nextArchived ? 1 : 0,
+            nextArchived ? nowIso() : null,
+            nowIso(),
+            row.id
+        );
+        return this._rowToSummary(this.db.prepare(
+            'SELECT * FROM change_proposals WHERE id = ?'
+        ).get(row.id));
     }
 
     async _applyProposal(proposalId) {
@@ -824,6 +900,7 @@ function registerRoutes(_app, adminApiRouter, _pluginConfig, _projectBasePath) {
                     status: req.query.status,
                     sourcePlugin: req.query.sourcePlugin || req.query.source_plugin,
                     search: req.query.search || req.query.q,
+                    archived: req.query.archived,
                     limit: req.query.limit
                 })
             });
@@ -897,6 +974,31 @@ function registerRoutes(_app, adminApiRouter, _pluginConfig, _projectBasePath) {
             });
         } catch (error) {
             console.error(`[${PLUGIN_NAME}] Failed to reject proposal:`, error);
+            res.status(error.statusCode || 500).json({
+                status: 'error',
+                error: error.message
+            });
+        }
+    });
+
+    adminApiRouter.post('/change-proposals/:proposalId/archive', (req, res) => {
+        const service = requireService(res);
+        if (!service) return;
+        try {
+            const archived = req.body?.archived !== false;
+            const proposal = service.archiveProposal(
+                req.params.proposalId,
+                archived
+            );
+            res.json({
+                status: 'success',
+                message: archived
+                    ? '文件变更审批记录已归档。'
+                    : '文件变更审批记录已取消归档。',
+                proposal
+            });
+        } catch (error) {
+            console.error(`[${PLUGIN_NAME}] Failed to archive proposal:`, error);
             res.status(error.statusCode || 500).json({
                 status: 'error',
                 error: error.message

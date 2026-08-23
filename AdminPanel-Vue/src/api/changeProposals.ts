@@ -48,6 +48,8 @@ export interface ChangeProposal {
   beforeContent?: string;
   afterContent?: string;
   snapshotReadError?: string;
+  archived?: boolean;
+  archivedAt?: string | null;
 }
 
 interface ConfigResponse {
@@ -102,6 +104,7 @@ export const changeProposalsApi = {
       status?: string;
       sourcePlugin?: string;
       search?: string;
+      archived?: boolean | "all";
     } = {},
     uiOptions: RequestUiOptions = READ_OPTIONS
   ): Promise<ChangeProposal[]> {
@@ -111,6 +114,9 @@ export const changeProposalsApi = {
       params.set("sourcePlugin", query.sourcePlugin);
     }
     if (query.search) params.set("search", query.search);
+    if (query.archived !== undefined && query.archived !== "all") {
+      params.set("archived", query.archived ? "true" : "false");
+    }
     const suffix = params.toString() ? `?${params.toString()}` : "";
     const response = await requestWithUi<ListResponse>(
       { url: `/admin_api/change-proposals${suffix}` },
@@ -167,6 +173,21 @@ export const changeProposalsApi = {
       {
         url: `/admin_api/change-proposals/${encodeURIComponent(proposalId)}`,
         method: "DELETE",
+      },
+      uiOptions
+    );
+  },
+
+  async archive(
+    proposalId: string,
+    archived = true,
+    uiOptions: RequestUiOptions = {}
+  ): Promise<ProposalResponse> {
+    return requestWithUi<ProposalResponse>(
+      {
+        url: `/admin_api/change-proposals/${encodeURIComponent(proposalId)}/archive`,
+        method: "POST",
+        body: { archived },
       },
       uiOptions
     );

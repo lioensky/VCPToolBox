@@ -49,6 +49,13 @@
           </option>
         </UiSelect>
       </UiField>
+      <UiField label="记录" size="sm">
+        <UiSelect v-model="filters.archived">
+          <option value="active">未归档</option>
+          <option value="archived">已归档</option>
+          <option value="all">全部记录</option>
+        </UiSelect>
+      </UiField>
       <UiField label="搜索" size="sm" class="change-proposals-search">
         <UiInput
           v-model.trim="filters.search"
@@ -75,87 +82,114 @@
         class="change-proposal-item"
         :class="{ selected: selected?.proposalId === proposal.proposalId }"
       >
-        <button
-          class="change-proposal-summary"
-          type="button"
-          @click="selectProposal(proposal)"
+        <div class="change-proposal-summary-row">
+          <button
+            class="change-proposal-summary"
+            type="button"
+            :aria-expanded="selected?.proposalId === proposal.proposalId"
+            @click="selectProposal(proposal)"
+          >
+            <span class="material-symbols-outlined proposal-icon">
+              {{ proposal.operationType === "create" ? "note_add" : "edit_note" }}
+            </span>
+            <span class="proposal-summary-main">
+              <strong>{{ proposal.path }}</strong>
+              <small>
+                {{ proposal.sourcePlugin }} · {{ proposal.command }} ·
+                {{ formatTime(proposal.createdAt) }}
+              </small>
+            </span>
+            <span class="proposal-summary-badges">
+              <UiBadge :variant="statusVariant(proposal.status)">
+                {{ statusLabel(proposal.status) }}
+              </UiBadge>
+              <UiBadge v-if="proposal.archived" variant="outline">
+                已归档
+              </UiBadge>
+            </span>
+          </button>
+          <div
+            v-if="canManageProposal(proposal)"
+            class="change-proposal-row-actions"
+            @click.stop
+          >
+            <UiIconButton
+              :label="proposal.archived ? '取消归档' : '归档'"
+              :title="proposal.archived ? '取消归档' : '归档'"
+              :disabled="processing"
+              size="sm"
+              @click="toggleArchive(proposal)"
+            >
+              <span class="material-symbols-outlined">
+                {{ proposal.archived ? "unarchive" : "archive" }}
+              </span>
+            </UiIconButton>
+            <UiIconButton
+              label="删除审批记录"
+              title="删除审批记录"
+              :disabled="processing"
+              size="sm"
+              @click="deleteProposal(proposal)"
+            >
+              <span class="material-symbols-outlined">delete_forever</span>
+            </UiIconButton>
+          </div>
+        </div>
+
+        <div
+          v-if="selected?.proposalId === proposal.proposalId && selected"
+          class="proposal-detail"
         >
-          <span class="material-symbols-outlined proposal-icon">
-            {{ proposal.operationType === "create" ? "note_add" : "edit_note" }}
-          </span>
-          <span class="proposal-summary-main">
-            <strong>{{ proposal.path }}</strong>
-            <small>
-              {{ proposal.sourcePlugin }} · {{ proposal.command }} ·
-              {{ formatTime(proposal.createdAt) }}
-            </small>
-          </span>
-          <UiBadge :variant="statusVariant(proposal.status)">
-            {{ statusLabel(proposal.status) }}
-          </UiBadge>
-        </button>
+          <header class="proposal-detail-header">
+            <h3>{{ selected.path || selected.proposalId }}</h3>
+            <p>{{ detailDescription }}</p>
+          </header>
+          <div class="proposal-detail-meta">
+            <span>状态：{{ statusLabel(selected.status) }}</span>
+            <span>新增 {{ selected.diff?.additions || 0 }} 行</span>
+            <span>删除 {{ selected.diff?.deletions || 0 }} 行</span>
+            <span>编码：{{ selected.encoding || "utf8" }}</span>
+            <span>审批来源：{{ approvalSourceLabel }}</span>
+          </div>
+
+          <div v-if="selected.snapshotReadError" class="proposal-error">
+            快照读取失败：{{ selected.snapshotReadError }}
+          </div>
+
+          <div v-else class="proposal-content-grid">
+            <section class="proposal-content-pane">
+              <h3>原始内容</h3>
+              <pre>{{ selected.beforeExists ? selected.beforeContent : "文件不存在" }}</pre>
+            </section>
+            <section class="proposal-content-pane">
+              <h3>预期内容</h3>
+              <pre>{{ selected.afterContent || "" }}</pre>
+            </section>
+          </div>
+
+          <section class="proposal-diff-pane">
+            <h3>文本 Diff</h3>
+            <pre class="proposal-diff">{{ selected.diff?.unified || "没有可显示的文本差异。" }}</pre>
+          </section>
+
+          <div v-if="selected.errorMessage" class="proposal-error">
+            {{ selected.errorMessage }}
+          </div>
+          <div v-if="selected.rejectionReason" class="proposal-error">
+            拒绝理由：{{ selected.rejectionReason }}
+          </div>
+
+          <div v-if="selected.status === 'pending_approval'" class="proposal-actions">
+            <UiButton variant="primary" :disabled="processing" @click="approveSelected">
+              批准并执行
+            </UiButton>
+            <UiButton variant="danger" :disabled="processing" @click="rejectSelected">
+              拒绝
+            </UiButton>
+          </div>
+        </div>
       </article>
     </div>
-
-    <UiSettingsCard
-      v-if="selected"
-      class="proposal-detail"
-      :title="selected.path || selected.proposalId"
-      :description="detailDescription"
-      variant="subtle"
-    >
-      <div class="proposal-detail-meta">
-        <span>状态：{{ statusLabel(selected.status) }}</span>
-        <span>新增 {{ selected.diff?.additions || 0 }} 行</span>
-        <span>删除 {{ selected.diff?.deletions || 0 }} 行</span>
-        <span>编码：{{ selected.encoding || "utf8" }}</span>
-        <span>审批来源：{{ approvalSourceLabel }}</span>
-      </div>
-
-      <div v-if="selected.snapshotReadError" class="proposal-error">
-        快照读取失败：{{ selected.snapshotReadError }}
-      </div>
-
-      <div v-else class="proposal-content-grid">
-        <section class="proposal-content-pane">
-          <h3>原始内容</h3>
-          <pre>{{ selected.beforeExists ? selected.beforeContent : "文件不存在" }}</pre>
-        </section>
-        <section class="proposal-content-pane">
-          <h3>预期内容</h3>
-          <pre>{{ selected.afterContent || "" }}</pre>
-        </section>
-      </div>
-
-      <section class="proposal-diff-pane">
-        <h3>文本 Diff</h3>
-        <pre class="proposal-diff">{{ selected.diff?.unified || "没有可显示的文本差异。" }}</pre>
-      </section>
-
-      <div v-if="selected.errorMessage" class="proposal-error">
-        {{ selected.errorMessage }}
-      </div>
-      <div v-if="selected.rejectionReason" class="proposal-error">
-        拒绝理由：{{ selected.rejectionReason }}
-      </div>
-
-      <div v-if="selected.status === 'pending_approval'" class="proposal-actions">
-        <UiButton variant="primary" :disabled="processing" @click="approveSelected">
-          批准并执行
-        </UiButton>
-        <UiButton variant="danger" :disabled="processing" @click="rejectSelected">
-          拒绝
-        </UiButton>
-      </div>
-      <div v-else-if="canDeleteSelected" class="proposal-actions">
-        <UiButton variant="danger" :disabled="processing" @click="deleteSelected">
-          <template #leading>
-            <span class="material-symbols-outlined">delete_forever</span>
-          </template>
-          删除审批记录
-        </UiButton>
-      </div>
-    </UiSettingsCard>
   </section>
 </template>
 
@@ -170,6 +204,7 @@ import UiBadge from "@/components/ui/UiBadge.vue";
 import UiButton from "@/components/ui/UiButton.vue";
 import UiEmptyState from "@/components/ui/UiEmptyState.vue";
 import UiField from "@/components/ui/UiField.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
 import UiInput from "@/components/ui/UiInput.vue";
 import UiPageActions from "@/components/ui/UiPageActions.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
@@ -184,7 +219,12 @@ const loading = ref(false);
 const processing = ref(false);
 const savingConfig = ref(false);
 const config = reactive({ requireUserApproval: true });
-const filters = reactive({ status: "all", sourcePlugin: "all", search: "" });
+const filters = reactive({
+  status: "all",
+  sourcePlugin: "all",
+  search: "",
+  archived: "active" as "active" | "archived" | "all",
+});
 
 const sourcePlugins = computed(() =>
   [
@@ -211,11 +251,9 @@ const approvalSourceLabel = computed(() => {
   return selected.value?.approvalSource || "未审批";
 });
 
-const canDeleteSelected = computed(() =>
-  ["applied", "rejected", "failed", "stale"].includes(
-    selected.value?.status || ""
-  )
-);
+function canManageProposal(proposal: ChangeProposal): boolean {
+  return ["applied", "rejected", "failed", "stale"].includes(proposal.status);
+}
 
 function statusLabel(status: ChangeProposalStatus): string {
   return (
@@ -261,7 +299,15 @@ async function loadConfig(): Promise<void> {
 async function loadProposals(): Promise<void> {
   loading.value = true;
   try {
-    proposals.value = await changeProposalsApi.list(filters);
+    proposals.value = await changeProposalsApi.list({
+      status: filters.status,
+      sourcePlugin: filters.sourcePlugin,
+      search: filters.search,
+      archived:
+        filters.archived === "all"
+          ? "all"
+          : filters.archived === "archived",
+    });
     if (selected.value) {
       const refreshed = proposals.value.find(
         (proposal) => proposal.proposalId === selected.value?.proposalId
@@ -361,10 +407,9 @@ async function rejectSelected(): Promise<void> {
   }
 }
 
-async function deleteSelected(): Promise<void> {
+async function deleteProposal(proposal: ChangeProposal): Promise<void> {
   if (
-    !selected.value ||
-    !canDeleteSelected.value ||
+    !canManageProposal(proposal) ||
     !(await askConfirm({
       title: "删除审批记录",
       message:
@@ -376,13 +421,14 @@ async function deleteSelected(): Promise<void> {
     return;
   }
 
-  const proposalId = selected.value.proposalId;
   processing.value = true;
   try {
-    await changeProposalsApi.delete(proposalId, {
+    await changeProposalsApi.delete(proposal.proposalId, {
       loadingKey: "change-proposals.delete",
     });
-    selected.value = null;
+    if (selected.value?.proposalId === proposal.proposalId) {
+      selected.value = null;
+    }
     showMessage("审批记录及其快照已删除", "success");
     await refresh();
   } catch (error) {
@@ -392,8 +438,44 @@ async function deleteSelected(): Promise<void> {
   }
 }
 
+async function toggleArchive(proposal: ChangeProposal): Promise<void> {
+  if (!canManageProposal(proposal)) return;
+
+  const nextArchived = !proposal.archived;
+  const actionLabel = nextArchived ? "归档" : "取消归档";
+  if (
+    !(await askConfirm({
+      title: `${actionLabel}审批记录`,
+      message: nextArchived
+        ? "归档后记录会从未归档列表隐藏，但快照仍会保留。"
+        : "确定将这条审批记录恢复到未归档列表吗？",
+      confirmText: actionLabel,
+    }))
+  ) {
+    return;
+  }
+
+  processing.value = true;
+  try {
+    await changeProposalsApi.archive(proposal.proposalId, nextArchived, {
+      loadingKey: nextArchived
+        ? "change-proposals.archive"
+        : "change-proposals.unarchive",
+    });
+    if (nextArchived && selected.value?.proposalId === proposal.proposalId) {
+      selected.value = null;
+    }
+    showMessage(`审批记录已${actionLabel}`, "success");
+    await refresh();
+  } catch (error) {
+    showMessage(`${actionLabel}审批记录失败：${errorMessage(error)}`, "error");
+  } finally {
+    processing.value = false;
+  }
+}
+
 watch(
-  () => [filters.status, filters.sourcePlugin, filters.search],
+  () => [filters.status, filters.sourcePlugin, filters.search, filters.archived],
   () => void loadProposals()
 );
 
@@ -417,7 +499,11 @@ onMounted(() => void refresh());
 
 .change-proposals-toolbar {
   display: grid;
-  grid-template-columns: minmax(150px, 0.7fr) minmax(150px, 0.7fr) minmax(240px, 1.6fr);
+  grid-template-columns:
+    minmax(140px, 0.7fr)
+    minmax(140px, 0.7fr)
+    minmax(140px, 0.7fr)
+    minmax(240px, 1.6fr);
   gap: var(--space-3);
 }
 
@@ -435,9 +521,16 @@ onMounted(() => void refresh());
   border-color: var(--accent-color);
 }
 
+.change-proposal-summary-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
 .change-proposal-summary {
   display: grid;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: var(--space-3);
   align-items: center;
@@ -447,6 +540,19 @@ onMounted(() => void refresh());
   background: transparent;
   text-align: left;
   cursor: pointer;
+}
+
+.change-proposal-summary:hover,
+.change-proposal-summary:focus-visible {
+  background: color-mix(in srgb, var(--accent-color) 7%, transparent);
+}
+
+.change-proposal-row-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  padding: 0 var(--space-2) 0 0;
 }
 
 .proposal-icon {
@@ -467,6 +573,35 @@ onMounted(() => void refresh());
 
 .proposal-summary-main small {
   color: var(--secondary-text);
+}
+
+.proposal-summary-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+.proposal-detail {
+  padding: var(--space-3);
+  border-top: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+}
+
+.proposal-detail-header {
+  margin-bottom: var(--space-3);
+}
+
+.proposal-detail-header h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--font-size-body);
+}
+
+.proposal-detail-header p {
+  margin: var(--space-1) 0 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
 }
 
 .proposal-detail-meta {
@@ -541,12 +676,22 @@ onMounted(() => void refresh());
   }
 
   .change-proposal-summary {
-    grid-template-columns: 28px minmax(0, 1fr);
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: var(--space-2);
+    padding: var(--space-2);
   }
 
-  .change-proposal-summary :deep(.ui-badge) {
+  .change-proposal-summary-badges {
     grid-column: 2;
-    justify-self: start;
+    justify-content: flex-start;
+  }
+
+  .change-proposal-summary-row {
+    align-items: flex-start;
+  }
+
+  .change-proposal-row-actions {
+    padding: var(--space-2) var(--space-1) 0 0;
   }
 
   .proposal-actions {

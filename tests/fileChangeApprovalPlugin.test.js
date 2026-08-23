@@ -306,6 +306,66 @@ test('pending proposals cannot be deleted before approval or rejection', async (
     }
 });
 
+test('terminal proposals can be archived and restored without removing snapshots', async () => {
+    const context = await createRuntime();
+    try {
+        const pending = await context.service.createProposal({
+            sourcePlugin: 'TestPlugin',
+            command: 'write',
+            operationType: 'create',
+            path: path.join(context.root, 'archived.txt'),
+            beforeExists: false,
+            afterContent: 'archive me'
+        });
+        const rejected = context.service.rejectProposal(pending.proposalId);
+        assert.equal(rejected.status, 'rejected');
+
+        const archived = context.service.archiveProposal(pending.proposalId);
+        assert.equal(archived.archived, true);
+        assert.equal(
+            context.service.listProposals().some(item => item.proposalId === pending.proposalId),
+            false
+        );
+        assert.equal(
+            context.service.listProposals({ archived: true })[0].proposalId,
+            pending.proposalId
+        );
+        await fs.access(
+            path.join(context.service.snapshotDir, pending.proposalId, 'after.txt')
+        );
+
+        const restored = context.service.archiveProposal(pending.proposalId, false);
+        assert.equal(restored.archived, false);
+        assert.equal(
+            context.service.listProposals()[0].proposalId,
+            pending.proposalId
+        );
+    } finally {
+        await context.cleanup();
+    }
+});
+
+test('pending proposals cannot be archived before approval or rejection', async () => {
+    const context = await createRuntime();
+    try {
+        const pending = await context.service.createProposal({
+            sourcePlugin: 'TestPlugin',
+            command: 'write',
+            operationType: 'create',
+            path: path.join(context.root, 'pending-archive.txt'),
+            beforeExists: false,
+            afterContent: 'keep active'
+        });
+
+        assert.throws(
+            () => context.service.archiveProposal(pending.proposalId),
+            error => error.statusCode === 409
+        );
+    } finally {
+        await context.cleanup();
+    }
+});
+
 test('changed source file becomes stale instead of being overwritten', async () => {
     const context = await createRuntime();
     try {
@@ -354,6 +414,7 @@ test('plugin registers all management API endpoints', () => {
             'GET /change-proposals/:proposalId',
             'POST /change-proposals/:proposalId/approve',
             'POST /change-proposals/:proposalId/reject',
+            'POST /change-proposals/:proposalId/archive',
             'DELETE /change-proposals/:proposalId'
         ]
     );
