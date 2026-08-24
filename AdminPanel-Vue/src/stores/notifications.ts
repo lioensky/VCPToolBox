@@ -45,6 +45,10 @@ export interface NotificationItem {
     toolName: string;
     maid?: string;
     args?: unknown;
+    changePreview?: {
+      target: string;
+      replace: string;
+    };
   };
   /** 解析失败标记 */
   unread: boolean;
@@ -99,6 +103,19 @@ function parseLogMessage(raw: string): ParsedNotification {
       data.args && typeof data.args === "object"
         ? data.args.command || JSON.stringify(data.args)
         : "";
+    const rawChangePreview =
+      data.changePreview && typeof data.changePreview === "object"
+        ? (data.changePreview as Record<string, unknown>)
+        : null;
+    const changePreview =
+      rawChangePreview &&
+      typeof rawChangePreview.target === "string" &&
+      typeof rawChangePreview.replace === "string"
+        ? {
+            target: rawChangePreview.target,
+            replace: rawChangePreview.replace,
+          }
+        : undefined;
     return {
       title: `🛠️ 审核请求: ${data.toolName || "未知工具"}`,
       content: [
@@ -115,6 +132,7 @@ function parseLogMessage(raw: string): ParsedNotification {
         toolName: String(data.toolName || ""),
         maid: data.maid,
         args: data.args,
+        changePreview,
       },
     };
   }

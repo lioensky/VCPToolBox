@@ -123,12 +123,16 @@ pattern:「始exp」*.js「末exp」
 
 ### 局部修改文件（ApplyDiff）
 
+推荐统一使用 `target` / `replace`。旧版 `searchString` / `replaceString`
+仍保持运行时兼容，无需立即迁移已有 Agent 提示词；如果两组字段同时提供，
+以 `target` / `replace` 为准。
+
 <<<[TOOL_REQUEST_EXP]>>>
 tool_name:「始exp」FileOperator「末exp」,
 command:「始exp」ApplyDiff「末exp」,
 filePath:「始exp」/path/to/file.js「末exp」,
-searchString:「始exp」const oldValue = 42;「末exp」,
-replaceString:「始exp」const newValue = 100;「末exp」
+target:「始exp」const oldValue = 42;「末exp」,
+replace:「始exp」const newValue = 100;「末exp」
 <<<[END_TOOL_REQUEST_EXP]>>>
 
 ### 批量操作
@@ -197,8 +201,14 @@ content:「始exp」{
 |------|------|------|
 | `filePath` | 是 | 目标文件路径 |
 | `diffContent` | 否 | diff 格式的修改内容 |
-| `searchString` | 否 | 要查找的文本 |
-| `replaceString` | 否 | 替换后的文本 |
+| `target` | 否 | 要查找并替换的旧文本（推荐字段） |
+| `replace` | 否 | 替换后的新文本（推荐字段） |
+| `searchString` | 否 | `target` 的旧版兼容别名 |
+| `replaceString` | 否 | `replace` 的旧版兼容别名 |
+
+使用文本替换模式时，必须同时提供一组完整字段：推荐使用
+`target` / `replace`，已有调用也可以继续使用
+`searchString` / `replaceString`。新旧字段同时出现时，新字段优先。
 
 ### DownloadFile
 

@@ -42,6 +42,39 @@ function getFormattedLocalTimestamp() {
     return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${milliseconds}${offsetSign}${offsetHours}:${offsetMinutes}`;
 }
 
+function getCaseInsensitiveToolArg(toolArgs, ...candidateNames) {
+    if (!toolArgs || typeof toolArgs !== 'object' || Array.isArray(toolArgs)) {
+        return undefined;
+    }
+
+    for (const name of candidateNames) {
+        if (Object.prototype.hasOwnProperty.call(toolArgs, name) && toolArgs[name] !== undefined) {
+            return toolArgs[name];
+        }
+    }
+
+    const normalizedNames = candidateNames.map(name => String(name).toLowerCase());
+    for (const [key, value] of Object.entries(toolArgs)) {
+        if (value !== undefined && normalizedNames.includes(key.toLowerCase())) {
+            return value;
+        }
+    }
+
+    return undefined;
+}
+
+function buildToolChangePreview(toolArgs) {
+    // 新字段优先；旧字段及任意键名大小写均兼容，让旧 Agent 提示词也能获得审核 diff。
+    const target = getCaseInsensitiveToolArg(toolArgs, 'target', 'searchString');
+    const replace = getCaseInsensitiveToolArg(toolArgs, 'replace', 'replaceString');
+
+    if (typeof target !== 'string' || typeof replace !== 'string') {
+        return null;
+    }
+
+    return { target, replace };
+}
+
 function filterFuzzyDiff(resultObj, timestamp) {
     if (
         resultObj &&
@@ -1231,6 +1264,7 @@ class PluginManager extends EventEmitter {
             // 发送审核请求到管理面板
             if (this.webSocketServer) {
                 const approvalTtlMs = this.toolApprovalManager.getTimeoutMs();
+                const changePreview = buildToolChangePreview(pluginSpecificArgs);
                 const approvalRequest = {
                     type: 'tool_approval_request',
                     data: {
@@ -1238,6 +1272,8 @@ class PluginManager extends EventEmitter {
                         toolName,
                         maid: maidNameFromArgs,
                         args: pluginSpecificArgs,
+                        // 提供稳定的文件变更预览协议，前端无需了解各插件的新旧参数别名。
+                        ...(changePreview ? { changePreview } : {}),
                         timestamp: getFormattedLocalTimestamp(),
                         approvalTtlMs // 同步给 VCPLog 补发缓存使用,确保超时后能自动清除
                     }

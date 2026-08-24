@@ -50,6 +50,27 @@ let residentInitialized = false;
 
 
 // --- Debug Logging (to stderr) ---
+function getArgumentValue(args, ...candidateNames) {
+    if (!args || typeof args !== 'object') {
+        return undefined;
+    }
+
+    for (const name of candidateNames) {
+        if (Object.prototype.hasOwnProperty.call(args, name) && args[name] !== undefined) {
+            return args[name];
+        }
+    }
+
+    const normalizedNames = candidateNames.map(name => String(name).toLowerCase());
+    for (const [key, value] of Object.entries(args)) {
+        if (value !== undefined && normalizedNames.includes(key.toLowerCase())) {
+            return value;
+        }
+    }
+
+    return undefined;
+}
+
 function debugLog(message, ...args) {
     if (DEBUG_MODE) {
         console.error(`[DailyNote][Debug] ${message}`, ...args); // Log debug to stderr
@@ -1120,7 +1141,10 @@ async function atomicReplaceIfUnchanged(filePath, content, expectedStats) {
 async function handleUpdateCommand(args) {
     debugLog("Processing 'update' command with args:", args);
 
-    const { target, replace, maid } = args;
+    // 参数键名大小写不敏感：兼容 target/replace、Target/Replace、TARGET/REPLACE 等写法。
+    const target = getArgumentValue(args, 'target');
+    const replace = getArgumentValue(args, 'replace');
+    const maid = getArgumentValue(args, 'maid');
     const folder = args.folder || args.Folder || args.folderName || args.FolderName || args.fold || args.Fold;
 
     if (typeof target !== 'string' || typeof replace !== 'string') {
@@ -1561,8 +1585,8 @@ async function dispatchCommand(args) {
         typeof parameters.Content === 'string' ||
         typeof parameters.content === 'string';
     const hasUpdateTargetReplace =
-        typeof parameters.target === 'string' &&
-        typeof parameters.replace === 'string';
+        typeof getArgumentValue(parameters, 'target') === 'string' &&
+        typeof getArgumentValue(parameters, 'replace') === 'string';
 
     let normalizedCommand = rawCommand;
     if (rawCommand !== 'create' && rawCommand !== 'update') {
