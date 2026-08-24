@@ -111,6 +111,16 @@ export interface TagConsistencyPreviewResponse {
 export interface TagConsistencyApplyResult {
   applied: boolean;
   summary: TagConsistencySummary;
+  indexUpdate: {
+    mode:
+      | "active-rust-delta"
+      | "baseline-plus-sqlite-delta"
+      | "sqlite-full-rebuild";
+    requestedDeletes: number;
+    requestedUpserts: number;
+    totalVectors: number;
+  };
+  checkpointPublished: boolean;
   waveAssetsStale: boolean;
   recommendedAction: "active-full-training";
   message: string;
@@ -207,6 +217,9 @@ export const ragApi = {
         url: "/admin_api/rag-tag-consistency/apply",
         method: "POST",
         body: { token },
+        // 与独立 adminServer 的维护代理窗口一致。大型 usearch 删除现已在
+        // Rust 后台线程执行，不冻结页面，但请求需要等待 checkpoint 完成。
+        timeoutMs: 30 * 60 * 1000,
       },
       uiOptions
     );
