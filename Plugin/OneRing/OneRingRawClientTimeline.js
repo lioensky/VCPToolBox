@@ -213,32 +213,62 @@ class RawClientTimelineStrategy {
         const unmatched = [];
         let noticePrefixUserMatched = 0;
 
-        for (const binding of clientBindings) {
-            const candidates = contextMap.contextRecords
-                .map((record) => {
-                    if (!record || usedRawIndexes.has(record.rawIndex)) return null;
-                    if (record.role !== binding.role) return null;
-                    const hashMatch = findClientRawHashMatchVariant(record.hashText, binding.sentHash);
-                    if (!hashMatch) return null;
+        // 客户端同时提供 index、role 和 raw hash。绝大多数消息可按 index O(1)
+        // 定位后做一次强 Hash 校验；只有 index 校验失败时才允许全局 Hash 搜索。
+        const recordsByRawIndex = new Map(
+            contextMap.contextRecords.map(record => [record.rawIndex, record])
+        );
+        const recordsByContextIndex = new Map(
+            contextMap.contextRecords.map(record => [record.contextIndex, record])
+        );
 
-                    // binding.index 可能是 rawIndex，也可能是客户端压缩后的 contextIndex。
-                    // 不提前假设；hash/time 才是真相源。排序只用于多候选歧义时稳定选最近的那个。
+        const tryRecord = (record, binding) => {
+            if (!record || usedRawIndexes.has(record.rawIndex) || record.role !== binding.role) return null;
+            const hashMatch = findClientRawHashMatchVariant(record.hashText, binding.sentHash);
+            return hashMatch ? { record, hashMatch } : null;
+        };
+
+        for (const binding of clientBindings) {
+            // sentMessageIndex 通常是服务端 raw messages 下标。
+            let best = tryRecord(recordsByRawIndex.get(binding.index), binding);
+            let matchMode = best ? 'raw-index' : null;
+
+            // 兼容客户端只对真实 conversation 块连续编号的旧包体。
+            if (!best) {
+                best = tryRecord(recordsByContextIndex.get(binding.index), binding);
+                if (best) matchMode = 'context-index';
+            }
+
+            // 仅为 index 漂移、伪 system user 插入等异常情况保留强 Hash 搜索兜底。
+            // 不使用 fuzzy/Levenshtein；单次遍历中直接维护最佳项，避免构建和排序候选数组。
+            if (!best) {
+                for (const record of contextMap.contextRecords) {
+                    const candidate = tryRecord(record, binding);
+                    if (!candidate) continue;
+
                     const rawDistance = Math.abs(record.rawIndex - binding.index);
                     const contextDistance = Math.abs(record.contextIndex - binding.index);
-                    const exactRaw = record.rawIndex === binding.index ? 0 : 1;
-                    const exactContext = record.contextIndex === binding.index ? 0 : 1;
-                    return { record, hashMatch, rawDistance, contextDistance, exactRaw, exactContext };
-                })
-                .filter(Boolean)
-                .sort((a, b) => {
-                    if (a.exactRaw !== b.exactRaw) return a.exactRaw - b.exactRaw;
-                    if (a.exactContext !== b.exactContext) return a.exactContext - b.exactContext;
-                    if (a.rawDistance !== b.rawDistance) return a.rawDistance - b.rawDistance;
-                    if (a.contextDistance !== b.contextDistance) return a.contextDistance - b.contextDistance;
-                    return a.record.rawIndex - b.record.rawIndex;
-                });
+                    const rank = [
+                        record.rawIndex === binding.index ? 0 : 1,
+                        record.contextIndex === binding.index ? 0 : 1,
+                        rawDistance,
+                        contextDistance,
+                        record.rawIndex
+                    ];
 
-            const best = candidates[0] || null;
+                    if (
+                        !best ||
+                        rank.some((value, index) =>
+                            value < best.rank[index] &&
+                            rank.slice(0, index).every((prefix, prefixIndex) => prefix === best.rank[prefixIndex])
+                        )
+                    ) {
+                        best = { ...candidate, rank };
+                    }
+                }
+                if (best) matchMode = 'hash-search';
+            }
+
             if (!best) {
                 unmatched.push(binding);
                 continue;
@@ -250,9 +280,7 @@ class RawClientTimelineStrategy {
                 binding,
                 record: best.record,
                 hashMatch: best.hashMatch,
-                matchMode: best.record.rawIndex === binding.index
-                    ? 'raw-index'
-                    : (best.record.contextIndex === binding.index ? 'context-index' : 'hash-search')
+                matchMode
             });
         }
 
@@ -398,12 +426,25 @@ class RawClientTimelineStrategy {
                 let updated = 0;
                 let inserted = 0;
 
+                // DB 正文 Hash 每行只计算一次。旧实现会为每个客户端 binding
+                // 从头扫描 recentRows，并反复重算相同行正文的 SHA-256。
+                const recentRowsByRoleAndHash = new Map();
+                for (const row of recentRows) {
+                    if (!row || !row.role) continue;
+                    const key = `${row.role}:${snapshot.contentHash(row.content)}`;
+                    if (!recentRowsByRoleAndHash.has(key)) recentRowsByRoleAndHash.set(key, []);
+                    recentRowsByRoleAndHash.get(key).push(row);
+                }
+
                 for (const item of items) {
                     const itemContentHash = snapshot.contentHash(item.dbText);
-                    const matched = recentRows.find(row => {
-                        if (!row || row.role !== item.role || usedIds.has(row.id)) return false;
-                        return snapshot.contentHash(row.content) === itemContentHash;
-                    });
+                    const key = `${item.role}:${itemContentHash}`;
+                    const candidates = recentRowsByRoleAndHash.get(key) || [];
+                    let matched = null;
+                    while (candidates.length > 0 && !matched) {
+                        const candidate = candidates.shift();
+                        if (candidate && !usedIds.has(candidate.id)) matched = candidate;
+                    }
 
                     if (matched) {
                         usedIds.add(matched.id);

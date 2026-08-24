@@ -2255,7 +2255,10 @@ class OneRingPreprocessor {
                 'record-only-client-verified-hash',
                 { suppressLog: suppressClientBindingLog }
             );
-        timing.mark('extractPostBlocks', `blocks=${postBlocks.length}`);
+        timing.mark(
+            'extractPostBlocksAndClientHashBind',
+            `blocks=${postBlocks.length} clientVerified=${clientTimestampBindings.verifiedBindings.length}`
+        );
         const summaryStats = {
             injected: 0,
             dbInserted: 0,
@@ -2344,7 +2347,7 @@ class OneRingPreprocessor {
         summaryStats.dbInserted += syncStats.inserted || 0;
         summaryStats.dbUpdated += syncStats.updated || 0;
         summaryStats.fuzzyEdited += syncStats.fuzzyEdited || 0;
-        timing.mark('syncRecordOnlyPostWithDb', `engine=${syncStats.snapshotFastPath ? 'snapshot' : 'fuzzy'} inserted=${syncStats.inserted || 0} updated=${syncStats.updated || 0} fuzzyEdited=${syncStats.fuzzyEdited || 0}`);
+        timing.mark('syncRecordOnlyPostWithDb', `engine=${syncStats.snapshotFastPath ? 'snapshot' : 'hash-only-fallback'} inserted=${syncStats.inserted || 0} updated=${syncStats.updated || 0} fuzzyEdited=${syncStats.fuzzyEdited || 0}`);
 
         const exactTimestampBindings = this._bindExactTimestampsForPostBlocks(agentName, frontendSource, postBlocks, threshold);
         // 时间戳绑定原则：
