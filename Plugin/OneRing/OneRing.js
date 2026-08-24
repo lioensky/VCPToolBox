@@ -558,6 +558,11 @@ function normalizeTailTagPlacement(value) {
 }
 
 function normalizeHotConfig(raw = {}) {
+    const rawMemo = raw.memo && typeof raw.memo === 'object' ? raw.memo : {};
+    const memoFallbackMessageCount = Object.prototype.hasOwnProperty.call(rawMemo, 'fallbackMessageCount')
+        ? rawMemo.fallbackMessageCount
+        : config.ONERING_MEMO_FALLBACK_MESSAGE_COUNT;
+
     return {
         enabled: toBoolean(raw.enabled, DEFAULT_HOT_CONFIG.enabled),
         tailTagPlacement: normalizeTailTagPlacement(raw.tailTagPlacement),
@@ -566,7 +571,10 @@ function normalizeHotConfig(raw = {}) {
         timeInsertPrepend: toBoolean(raw.timeInsertPrepend, DEFAULT_HOT_CONFIG.timeInsertPrepend),
         timeInsertMiddle: toBoolean(raw.timeInsertMiddle, DEFAULT_HOT_CONFIG.timeInsertMiddle),
         asyncOnlyMode: toBoolean(raw.asyncOnlyMode, DEFAULT_HOT_CONFIG.asyncOnlyMode),
-        memo: oneRingMemo.normalizeConfig(raw.memo)
+        memo: oneRingMemo.normalizeConfig({
+            ...rawMemo,
+            fallbackMessageCount: memoFallbackMessageCount
+        })
     };
 }
 
