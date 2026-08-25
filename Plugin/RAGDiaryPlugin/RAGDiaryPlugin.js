@@ -979,21 +979,59 @@ class RAGDiaryPlugin {
             while ((blockMatch = blockRegex.exec(content)) !== null) {
                 const block = blockMatch[1] ?? blockMatch[2];
 
-                // 提取键值对，并严格保持分隔符成对：
-                // - 普通格式：「始」...「末」
-                // - 转义格式：「始ESCAPE」...「末ESCAPE」
-                const kvRegex = /(\w+):\s*(?:[「『]始ESCAPE[」』]([\s\S]*?)[「『]末ESCAPE[」』]|[「『]始[」』]([\s\S]*?)[「『]末[」』])/gi;
-                const fields = {};
-                let kvMatch;
-                while ((kvMatch = kvRegex.exec(block)) !== null) {
-                    fields[kvMatch[1].toLowerCase()] = (kvMatch[2] ?? kvMatch[3]).trim();
-                }
+                // 这里只做最小识别：
+                // 1. 已经位于 TOOL_REQUEST 块内；
+                // 2. 块内包含 tool_name 与 DailyNote；
+                // 3. 直接定位 Content 的前 80 个字符。
+                // 不再解析 command，也不要求字段前必须有逗号或换行。
+                const lowerBlock = block.toLowerCase();
+                if (!lowerBlock.includes('tool_name')) continue;
+                if (!lowerBlock.includes('dailynote')) continue;
 
-                // 仅处理 DailyNote create 指令
-                if (fields.tool_name?.toLowerCase() === 'dailynote' &&
-                    fields.command?.toLowerCase() === 'create' &&
-                    fields.content) {
-                    const prefix = fields.content.substring(0, PREFIX_LEN).trim();
+                const extractContent = () => {
+                    const markers = [
+                        ['Content:「始ESCAPE」', '「末ESCAPE」'],
+                        ['Content:「始」', '「末」'],
+                        ['content:「始ESCAPE」', '「末ESCAPE」'],
+                        ['content:「始」', '「末」']
+                    ];
+
+                    for (const [opening, closing] of markers) {
+                        const start = block.indexOf(opening);
+                        if (start === -1) continue;
+
+                        const valueStart = start + opening.length;
+                        const valueEnd = block.indexOf(closing, valueStart);
+                        if (valueEnd === -1) continue;
+
+                        return block.substring(valueStart, valueEnd).trim();
+                    }
+
+                    // 字段名大小写兼容，但仍保持简单的直接定位逻辑。
+                    const contentLabelMatch = block.match(/content\s*:/i);
+                    if (!contentLabelMatch) return '';
+
+                    const tail = block.substring(contentLabelMatch.index + contentLabelMatch[0].length);
+                    const escapedOpening = tail.indexOf('「始ESCAPE」');
+                    if (escapedOpening !== -1) {
+                        const valueStart = escapedOpening + '「始ESCAPE」'.length;
+                        const valueEnd = tail.indexOf('「末ESCAPE」', valueStart);
+                        return valueEnd === -1 ? '' : tail.substring(valueStart, valueEnd).trim();
+                    }
+
+                    const normalOpening = tail.indexOf('「始」');
+                    if (normalOpening !== -1) {
+                        const valueStart = normalOpening + '「始」'.length;
+                        const valueEnd = tail.indexOf('「末」', valueStart);
+                        return valueEnd === -1 ? '' : tail.substring(valueStart, valueEnd).trim();
+                    }
+
+                    return '';
+                };
+
+                const diaryContent = extractContent();
+                if (diaryContent) {
+                    const prefix = diaryContent.substring(0, PREFIX_LEN).trim();
                     if (prefix.length > 0) {
                         prefixes.add(prefix);
                     }
