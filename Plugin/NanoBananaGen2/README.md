@@ -1,7 +1,7 @@
 # NanoBananaGen2 — Gemini/NanoBanana 图像生成插件（自定义渠道）
 
 > **Author:** lionsky (更新: infinite-vector)  
-> **Version:** 1.1.0  
+> **Version:** 1.2.0
 > **License:** MIT  
 > **Runtime:** Node.js ≥ 18
 
@@ -130,8 +130,14 @@ API_CHANNELS=https://openrouter.ai/api/v1|sk-or-key|google/gemini-2.5-flash-imag
 
 | 变量 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
-| `NanoBananaProxy` | ❌ | — | 代理地址，如 `http://127.0.0.1:7890` |
-| `DIST_IMAGE_SERVERS` | ❌ | — | 分布式图床地址，用于 `file://` 路径降级处理 |
+| `NanoBananaProxy` | ❌ | — | 代理地址，如 `http://127.0.0.1:7890`；同时支持 HTTP/HTTPS 请求 |
+| `DIST_IMAGE_SERVERS` | ❌ | — | 分布式图床地址，用于 `file://` 路径降级处理；多个地址用逗号分隔 |
+| `USE_PUBLIC_URL` | ❌ | `false` | `true` 输出不带端口的公网 URL（需反代完成端口映射）；`false` 输出带端口的本地 URL |
+| `SAFETY_BYPASS_TEXT` | ❌ | 未设置时使用内置默认值 | 追加到 prompt 尾部的文本；显式留空字符串则关闭追加 |
+| `MAX_RETRIES` | ❌ | `2` | 429/503 请求的最大重试次数 |
+| `RETRY_BASE_DELAY_MS` | ❌ | `2000` | 429/503 重试的基础等待毫秒数 |
+
+`USE_PUBLIC_URL`、`SAFETY_BYPASS_TEXT`、`MAX_RETRIES`、`RETRY_BASE_DELAY_MS`、`DIST_IMAGE_SERVERS` 的配置名与源码及 `plugin-manifest.json` 保持一致。`SAFETY_BYPASS_TEXT` 不设置时保留向后兼容的内置文本；设置为空字符串时完全不追加。
 
 ---
 
@@ -258,11 +264,12 @@ image_size:「始」1K「末」
 ```
 单渠道模式：
   固定 URL + KEY
-  从 NANO_BANANA_MODEL 模型池随机选一个
+  从 NANO_BANANA_MODEL 模型池洗牌后按顺序尝试
 
 多渠道模式：
-  随机选一个渠道（URL + KEY 绑定）
-  从该渠道的模型池随机选一个
+  将所有 URL + KEY + 模型组合洗牌
+  按顺序尝试；渠道失败时自动切换下一个组合
+  429/503 按 MAX_RETRIES 与 RETRY_BASE_DELAY_MS 重试
 ```
 
 ---
@@ -371,6 +378,17 @@ image_url_2:「始」第二张图片 URL。「末」
 ---
 
 ## 📝 更新日志
+
+### v1.2.0 (2026-08-25) — by infinite-vector
+
+- **🔧 修复 details 膨胀**：改用白名单，避免输入图片 base64 在返回体中重复展开
+- **🔧 新增多渠道 failover**：所有渠道/模型组合洗牌尝试，429/503 支持重试
+- **🔧 修复 URL 配置**：声明 `USE_PUBLIC_URL`，修正默认值、端口与斜杠拼接
+- **🔧 修复 HTTP 代理**：新增 `http-proxy-agent`，HTTP/HTTPS 请求分别使用对应代理
+- **🔧 实现分布式图床回捞**：本地 `file://` 读取失败时按配置尝试远程图床
+- **🔧 增加写出路径安全检查**：阻止生成文件路径逃逸目标目录
+- **🔧 配置破限文本**：支持 `SAFETY_BYPASS_TEXT`，留空可关闭追加
+- **🔧 修复参数提示与协议判断**：合成图错误指向 `image_url_N`，严格判断 HTTP/HTTPS URL
 
 ### v1.1.0 (2026-05-08) — by infinite-vector
 
