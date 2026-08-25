@@ -530,8 +530,8 @@ class DirectDiaryTextProcessor {
             .replace(/\[\[.*?\]\]/gs, ' ')
             .replace(/<<.*?>>/gs, ' ')
             .replace(/《《.*?》》/gs, ' ')
-            .replace(/<<<\[TOOL_REQUEST\]>>>[\s\S]*?<<<\[END_TOOL_REQUEST\]>>>/g, ' ')
-            .replace(/「始」[\s\S]*?「末」/g, ' ')
+            .replace(/(?:<<<\[?TOOL_REQUEST_ESCAPE\]?>>>[\s\S]*?<<<\[?END_TOOL_REQUEST_ESCAPE\]?>>>|<<<\[?TOOL_REQUEST\]?>>>[\s\S]*?<<<\[?END_TOOL_REQUEST\]?>>>)/gi, ' ')
+            .replace(/(?:「始ESCAPE」[\s\S]*?「末ESCAPE」|「始」[\s\S]*?「末」)/gi, ' ')
             .replace(/\s+/g, ' ')
             .trim();
     }
