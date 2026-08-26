@@ -465,3 +465,160 @@ audioUrl: file:///D:/media/music.mp3
 旧调用仍可使用 `audioAssetId: music`。音频由 Node.js 安全读取或下载，再交给 FFmpeg 临时文件混流，不依赖浏览器自动播放。GIF 不包含音频。
 
 默认允许显式声明的 localhost、局域网和公网 HTTP/HTTPS 素材。页面未声明的网络访问仍会被阻断，云元数据地址始终禁止。
+
+## Windows 鼠标主题生成
+
+`GenerateCursorTheme` 从一份完整 HTML 生成 Windows CUR/ANI 鼠标主题 ZIP，并复用 MediaRenderer 已有的托管浏览器、Anime.js 本地注入、素材预取、页面隔离与网络阻断能力。
+
+完整输入协议见 [CURSOR_THEME_PROTOCOL.md](./CURSOR_THEME_PROTOCOL.md)。
+
+### 为什么采用一份 HTML
+
+输入按以下层次组织：
+
+1. 一个全局 `<style>`，通过 CSS 变量统一颜色、描边、阴影和发光。
+2. 一个公共 SVG `<defs>`，使用 `<symbol>` 定义视觉原型。
+3. 15 个显式的核心角色 `<svg data-cursor="...">` 插槽。
+4. 一个可选的共享确定性动画函数 `window.__CURSOR_THEME__.setRenderer()`。
+
+该结构让 AI 只绘制少量原型，再通过 `<use>` 组合完整主题；插件负责角色校验、逐帧截图、多尺寸生成、Windows 字段映射和安装包打包。
+
+### 核心角色
+
+必须恰好各声明一次：
+
+```text
+arrow
+help
+appstarting
+wait
+crosshair
+text
+handwriting
+unavailable
+vertical
+horizontal
+diagonal1
+diagonal2
+move
+alternate
+link
+```
+
+可选扩展角色：
+
+```text
+pin
+person
+```
+
+扩展角色缺失时，Windows 安装映射会回退到 `arrow`。核心角色不会被插件静默补齐。
+
+### 角色声明
+
+```html
+<svg
+  data-cursor="arrow"
+  data-hotspot="3,2"
+  viewBox="0 0 64 64"
+>
+  <use href="#base-arrow"/>
+</svg>
+```
+
+属性：
+
+| 属性 | 说明 |
+|---|---|
+| `data-cursor` | 语义角色名 |
+| `data-hotspot` | 可选热点，使用 viewBox 坐标 |
+| `data-duration` | 可选动画周期毫秒；大于 0 时输出 ANI |
+| `data-fps` | 可选动画 FPS，默认 24 |
+| `viewBox` | 必需，推荐统一为 `0 0 64 64` |
+
+默认输出 32、48、64 像素三档。插件将三档 PNG 和各自换算后的热点写入同一个 CUR；ANI 的每个逻辑帧同样是多尺寸 CUR。AI 不需要重复提供多份 SVG。
+
+### 共享动画
+
+简单 CSS/Web Animations 动画无需 JavaScript 渲染器，插件会按逻辑时间冻结动画。
+
+复杂动画使用一个共享入口：
+
+```html
+<script>
+window.__CURSOR_THEME__.setRenderer((role, timeMs, root) => {
+  const spinner = root.querySelector('[data-part="spinner"]');
+  if (spinner) {
+    const degrees = (timeMs % 1200) / 1200 * 360;
+    spinner.setAttribute("transform", `rotate(${degrees} 32 32)`);
+  }
+});
+
+window.__CURSOR_THEME__.setReady();
+</script>
+```
+
+动画必须由 `role`、`timeMs` 和当前 `root` 确定，不依赖真实时钟、`setInterval` 或实时帧累加。
+
+Anime.js 推荐建立 `autoplay: false` 的时间线，再在共享渲染器中调用 `timeline.seek(timeMs)`。常见可信 CDN 标签仍会被改写成本地内置 Anime.js，不会访问 CDN。
+
+### 调用参数
+
+| 参数 | 必需 | 默认值 | 说明 |
+|---|---:|---|---|
+| command | 是 | - | `GenerateCursorTheme` |
+| html | 是 | - | 完整主题 HTML，最大 2MB |
+| themeName | 否 | VCP Cursor Theme | Windows 主题名称 |
+| author | 否 | VCPToolBox AI | 作者 |
+| sizes | 否 | 32,48,64 | 1-8 个尺寸，范围 16-256 |
+| libraries | 否 | 自动识别 | 可设为 `anime` |
+| readyMode | 否 | auto | 异步初始化推荐 `signal` |
+| timeoutMs | 否 | 45000 | 1000-120000ms |
+| waitMs | 否 | 0 | 截图前额外等待，最大 10000ms |
+| assets | 否 | [] | 旧版素材占位符兼容参数 |
+
+### 输出与安装包
+
+ZIP 保存到：
+
+```text
+file/media-renderer/
+```
+
+总览图保存到：
+
+```text
+image/media-renderer/
+```
+
+ZIP 内包含：
+
+```text
+ThemeName/
+├─ cursors/
+│  ├─ arrow.cur
+│  ├─ wait.ani
+│  └─ ...
+├─ preview.png
+├─ source.html
+├─ theme.json
+├─ install.inf
+├─ install.cmd
+├─ uninstall.cmd
+└─ README.txt
+```
+
+插件同时返回 ZIP 下载 URL 和总览图 URL。总览图显示所有角色的第一帧、热点、静态/动画标记及可选角色回退信息。
+
+### 限制与安全
+
+- 15 个核心角色必须恰好各出现一次。
+- 单角色最多 120 个逻辑帧。
+- 整套主题最多 240 个逻辑帧。
+- 每个逻辑帧按所有请求尺寸截图。
+- HTML JavaScript 只在隔离的 Chromium BrowserContext 中执行。
+- 页面运行时网络默认阻断。
+- 外部脚本仅允许被识别并替换为本地版本的 Anime.js/Three.js。
+- CUR/ANI/ZIP 编码在 Node.js 中处理受控 Buffer，不执行 AI 提供的 Node.js 代码。
+- 安装脚本只复制光标文件并修改当前用户的 Windows 光标注册表字段。
+- `source.html` 仅供二次编辑，不参与安装执行。
