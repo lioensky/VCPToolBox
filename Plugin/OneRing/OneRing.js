@@ -515,7 +515,7 @@ function replaceOnlyTriggerWithNotice(content, triggerText) {
 const HOT_CONFIG_FILE_NAME = 'OneRingConfig.json';
 const DEFAULT_HOT_CONFIG = Object.freeze({
     enabled: true,
-    tailTagPlacement: 'inline',
+    tailTagPlacement: 'system_user_block',
     maxContextBlocks: 10,
     timeInsert: true,
     timeInsertPrepend: true,

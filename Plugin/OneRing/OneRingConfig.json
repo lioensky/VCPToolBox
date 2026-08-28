@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "tailTagPlacement": "inline",
+  "tailTagPlacement": "system_user_block",
   "maxContextBlocks": 10,
   "timeInsert": true,
   "description": {
     "enabled": "OneRing 热开关。false 时插件直接透传 messages，不再读取 ONERING_ENABLED 环境开关。",
-    "tailTagPlacement": "OneRing 来源标记输出位置。inline=继续追加到原 user/assistant 块内部；system_user_block=从原块剥离后追加独立 user 伪系统提示块，降低 assistant 块内部来源标记导致的 AI 幻觉风险。",
+    "tailTagPlacement": "AI 块时间轴来源设置。system_user_block（默认）=使用独立 user 伪系统块，可大幅提升 AI 的时间理解能力并降低 AI 世界幻觉，但部分老模型不兼容 AI/User/User/User/AI 形式的连续消息数组；inline=追加到原消息块，可保持严格数组兼容，但会显著增加 AI 对时间与消息来源产生幻觉的风险。",
     "maxContextBlocks": "最大补充后上下文 block 数。block 指 role=user 或 role=assistant 的消息块；若当前 post 已经接近或超过该数量，OneRing 不再继续插入补充消息。",
     "timeInsert": "是否允许基于时间戳顺序进行 Post 内插入。true=按时间线合并补入消息；false=不做时间线内插入。"
   }

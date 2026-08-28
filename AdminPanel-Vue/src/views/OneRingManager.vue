@@ -29,11 +29,28 @@
             <AppCheckbox v-model="draft.enabled" />
             <span><strong>启用 OneRing</strong><small>关闭后不执行 OneRing 主上下文流程；Memo 最终注入仍保持独立。</small></span>
           </label>
-          <UiField label="来源标记输出位置">
+          <UiField label="AI 块时间轴来源设置">
             <UiSelect v-model="draft.tailTagPlacement">
-              <option value="inline">追加到原消息块</option>
-              <option value="system_user_block">独立 user 伪系统块</option>
+              <option value="system_user_block">独立 user 伪系统块（推荐，默认）</option>
+              <option value="inline">追加到原消息块（兼容老模型）</option>
             </UiSelect>
+            <div
+              class="placement-notice"
+              :class="{ warning: draft.tailTagPlacement === 'inline' }"
+              role="note"
+            >
+              <span class="material-symbols-outlined">
+                {{ draft.tailTagPlacement === 'system_user_block' ? 'tips_and_updates' : 'warning' }}
+              </span>
+              <p v-if="draft.tailTagPlacement === 'system_user_block'">
+                <strong>推荐：</strong>独立 user 伪系统块可大幅提升 AI 对时间的理解能力，并降低 AI 世界幻觉。
+                但部分老模型不兼容 <code>AI / User / User / User / AI</code> 形式的连续消息数组。
+              </p>
+              <p v-else>
+                <strong>兼容模式：</strong>追加到原消息块可以保持严格的消息数组兼容性，适用于不支持连续同角色消息的老模型；
+                但会显著增加 AI 对时间与消息来源产生幻觉的风险。
+              </p>
+            </div>
           </UiField>
           <UiField label="最大补充上下文块数">
             <UiInput v-model.number="draft.maxContextBlocks" type="number" min="1" />
@@ -160,7 +177,7 @@ import { showMessage } from '@/utils'
 
 const defaultConfig: OneRingConfig = {
   enabled: true,
-  tailTagPlacement: 'inline',
+  tailTagPlacement: 'system_user_block',
   maxContextBlocks: 10,
   timeInsert: true,
   timeInsertPrepend: true,
@@ -357,6 +374,12 @@ onUnmounted(stopGenerationPolling)
 .toggle-row { display: flex; align-items: flex-start; gap: var(--space-2); padding: 12px; border: 1px solid var(--border-color); border-radius: var(--radius-md); }
 .toggle-row span { display: flex; flex-direction: column; gap: 4px; }
 .toggle-row small, .helper, .memo-meta { color: var(--secondary-text); font-size: var(--font-size-helper); }
+.placement-notice { display: flex; align-items: flex-start; gap: 9px; margin-top: 10px; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--highlight-text) 42%, var(--border-color)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--highlight-text) 7%, transparent); color: var(--secondary-text); font-size: var(--font-size-helper); line-height: 1.65; }
+.placement-notice .material-symbols-outlined { flex: 0 0 auto; margin-top: 1px; color: var(--highlight-text); font-size: 20px !important; }
+.placement-notice p { margin: 0; }
+.placement-notice strong { color: var(--highlight-text); }
+.placement-notice.warning { border-color: color-mix(in srgb, var(--danger-text) 48%, var(--border-color)); background: color-mix(in srgb, var(--danger-text) 7%, transparent); }
+.placement-notice.warning .material-symbols-outlined, .placement-notice.warning strong { color: var(--danger-text); }
 .section-header { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-3); }
 .agent-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .memo-body { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-4); }
