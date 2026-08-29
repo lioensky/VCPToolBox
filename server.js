@@ -248,6 +248,8 @@ function destroyIdleSockets() {
     console.log(`[Server] Destroyed ${destroyedCount} idle socket(s).`);
 }
 
+const HTTP_CLOSE_TIMEOUT_MS = 8000; // 硬上限：server.close() 不再被长流式请求无限期拖住
+
 async function closeHttpServerGracefully() {
     if (!server || typeof server.close !== 'function') {
         return;
@@ -258,6 +260,13 @@ async function closeHttpServerGracefully() {
     destroyIdleSockets();
 
     await new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+        };
+
         try {
             server.close((error) => {
                 if (error) {
@@ -265,12 +274,28 @@ async function closeHttpServerGracefully() {
                 } else {
                     console.log('[Server] HTTP server stopped accepting new connections.');
                 }
-                resolve();
+                finish();
             });
         } catch (error) {
             console.error('[Server] Failed to invoke server.close():', error);
-            resolve();
+            finish();
         }
+
+        // Node 的 server.close() 会等待所有现有连接自然关闭后才回调，
+        // 长流式请求可能一直占着连接导致重启被拖住（曾出现 43s 才关闭）。
+        // 超过硬超时后强制销毁剩余连接，让关闭流程继续推进到排空/中止阶段。
+        const forceTimer = setTimeout(() => {
+            console.warn(`[Server] HTTP server.close() timed out after ${HTTP_CLOSE_TIMEOUT_MS}ms. Forcing destruction of ${trackedSockets.size} remaining connection(s).`);
+            for (const socket of trackedSockets) {
+                try {
+                    if (!socket.destroyed) socket.destroy();
+                } catch (e) {
+                    // ignore
+                }
+            }
+            finish();
+        }, HTTP_CLOSE_TIMEOUT_MS);
+        forceTimer.unref();
     });
 }
 
@@ -1655,7 +1680,7 @@ async function gracefulShutdown(exitCode = 0, reason = 'signal') {
             console.log(`[Server][ShutdownTrace] Phase 2/10 - HTTP server listener closed. trackedSockets=${trackedSockets.size}, activeHttpRequests=${activeHttpRequests.size}`);
 
             console.log(`[Server][ShutdownTrace] Phase 3/10 - waiting active requests to drain (initial=${activeRequests.size})`);
-            const drainedNaturally = await waitForActiveRequestsToDrain(30000);
+            const drainedNaturally = await waitForActiveRequestsToDrain(10000);
             console.log(`[Server][ShutdownTrace] Phase 3/10 - drain wait result=${drainedNaturally}, remaining=${activeRequests.size}`);
 
             if (!drainedNaturally) {
