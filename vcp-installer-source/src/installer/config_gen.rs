@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 use tokio::sync::mpsc;
 
 use crate::app::{GithubMirror, InstallConfig, ProgressEvent};
+use crate::mirrors::MirrorConfig;
 use crate::installer::downloader;
 
 /// 基于 VCPToolBox 的 config.env.example 生成 config.env
@@ -348,40 +349,125 @@ End If
 pub async fn download_newapi(
     install_dir: &Path,
     mirror: &GithubMirror,
+    mirror_config: &MirrorConfig,
     step_index: usize,
     progress_tx: mpsc::Sender<ProgressEvent>,
 ) -> Result<()> {
     let (url, version) = downloader::get_github_release_url(
         "QuantumNous/new-api",
-        "new-api",
+        "new-api .exe",  // 限定 Windows exe，避免匹配到 arm/linux/darwin
     )
     .await
     .context("查询 NewAPI 最新版本失败")?;
 
     let lower = url.to_ascii_lowercase();
-    if !lower.ends_with(".exe") || lower.contains("setup") {
-        bail!("获取到的 NewAPI 资产不是期望的裸 exe: {}", url);
+    let is_text_file = lower.ends_with(".txt")
+        || lower.ends_with(".md")
+        || lower.ends_with(".json")
+        || lower.ends_with(".tar")
+        || lower.ends_with(".gz")
+        || lower.ends_with(".zip")
+        || lower.ends_with(".tar.gz")
+        || lower.ends_with(".7z");
+    if is_text_file {
+        bail!("获取到的 NewAPI 资产不是可执行文件: {}", url);
     }
 
-    let _ = progress_tx
-        .send(ProgressEvent::Log(format!("发现 NewAPI 版本: {}", version)))
-        .await;
+    let _ = crate::log_router::send_log_event(&progress_tx, format!("发现 NewAPI 版本: {}", version)).await;
 
-    let mirror_prefix = mirror.prefix();
-    let mirrored_url = downloader::apply_mirror(&url, &mirror_prefix);
+    // 缓存策略：下载至 DL_runtimes，安装至 runtimes
+    let dl_runtimes_dir = crate::mirrors::get_exe_dir().join("DL_runtimes");
+    let runtimes_dir = install_dir.join("runtimes");
+    tokio::fs::create_dir_all(&dl_runtimes_dir).await;
+    tokio::fs::create_dir_all(&runtimes_dir).await.ok();
 
-    downloader::download_with_retry(
-        downloader::DownloadConfig {
-            url: mirrored_url,
-            dest: install_dir.join("new-api.exe"),
-            step_index,
-            resume: false,
-        },
-        progress_tx,
-        3,
-    )
-    .await
-    .context("下载 NewAPI 失败")?;
+    let cached_path = dl_runtimes_dir.join("new-api.exe");
+    let install_path = runtimes_dir.join("new-api.exe");
+
+    // 2026-08-23: INI 版本校验（统一缓存校验机制）
+    let ini_version = mirror_config.get_runtime_version("NewAPI");
+    let cache_exists = cached_path.exists();
+    let install_exists = install_path.exists();
+
+    let needs_download;
+    match ini_version {
+        Some(v) if v == &version => {
+            // INI 记录版本 == 最新版本
+            if cache_exists && install_exists {
+                let _ = crate::log_router::send_log_event(&progress_tx, format!(
+                    "NewAPI 缓存校验通过（版本 {}），使用缓存",
+                    version
+                )).await;
+                return Ok(());
+            }
+            // 版本匹配但安装目录缺失 → 从缓存拷贝
+            if cache_exists && !install_exists {
+                let _ = crate::log_router::send_log_event(&progress_tx,
+                    "NewAPI 缓存存在但安装目录缺失，拷贝到 runtimes".to_string()).await;
+                std::fs::copy(&cached_path, &install_path)
+                    .with_context(|| "拷贝 NewAPI 到 runtimes 失败")?;
+                return Ok(());
+            }
+            // 版本匹配但缓存丢失 → 重新下载
+            let _ = crate::log_router::send_log_event(&progress_tx,
+                "NewAPI 缓存文件丢失，重新下载".to_string()).await;
+            needs_download = true;
+        }
+        Some(v) => {
+            // INI 记录版本 != 最新版本 → 缓存过期
+            let _ = crate::log_router::send_log_event(&progress_tx, format!(
+                "NewAPI 缓存过期（INI: {} → 最新: {}），重新下载",
+                v, version
+            )).await;
+            needs_download = true;
+        }
+        None => {
+            // INI 无记录
+            if cache_exists && install_exists {
+                // 缓存存在但无 INI 记录 → 无法确认版本，重新下载
+                let _ = crate::log_router::send_log_event(&progress_tx,
+                    "NewAPI 缓存存在但无版本记录，重新下载".to_string()).await;
+            }
+            needs_download = true;
+        }
+    }
+
+    // 需要下载
+    if needs_download {
+        let _ = crate::log_router::send_log_event(&progress_tx,
+            "正在下载 NewAPI（多镜像降级 + 断点续传）...".to_string()).await;
+
+        downloader::download_with_preferred_fallback(
+            downloader::DownloadConfig {
+                url: url.clone(),
+                dest: cached_path.clone(),
+                step_index,
+                resume: true,
+            },
+            mirror,
+            mirror_config,
+            progress_tx.clone(),
+            2,  // 每镜像重试 2 次
+        )
+        .await
+        .context("下载 NewAPI 失败（所有镜像站均已尝试）")?;
+
+        // 下载成功后，更新 INI 记录版本
+        let mut mc = mirror_config.clone();
+        if mc.set_and_save_runtime_version("NewAPI", &version).is_ok() {
+            let _ = crate::log_router::send_log_event(&progress_tx, format!(
+                "NewAPI 版本已记录到 INI: {}",
+                version
+            )).await;
+        }
+
+        let _ = crate::log_router::send_log_event(&progress_tx,
+            "new-api.exe 已缓存到 DL_runtimes".to_string()).await;
+
+        // 拷贝到 runtimes
+        std::fs::copy(&cached_path, &install_path)
+            .with_context(|| "拷贝 NewAPI 到 runtimes 失败")?;
+    }
 
     Ok(())
 }
@@ -427,3 +513,163 @@ fn chrono_like_timestamp() -> String {
 
     secs.to_string()
 }
+
+/// 生成 start-upgrade.bat（组件升级脚本，git pull 4 组件，自动检测 + 3 次重试）
+///
+/// 特性：
+/// - 路径自动适配：通过 %~dp0 定位脚本所在目录为 VCP 安装根
+/// - 组件自动检测：VCPToolBox/VCPChat（必选）缺失时警告；VCPBackUpDEV/VCPDistributedServer（可选）缺失时跳过
+/// - 韧性：每个组件 git pull 失败时自动重试 3 次（5 秒退避）
+/// - 全程日志：写入 <root>/upgrade_log/upgrade.log
+/// - 双击友好：所有退出路径加 pause，防止窗口闪退
+
+
+/// 生成 start-upgrade.bat（组件升级脚本，git pull 4 组件，自动检测 + 3 次重试）
+///
+/// 特性：
+/// - 路径自动适配：通过 %~dp0 定位脚本所在目录为 VCP 安装根
+/// - 组件自动检测：VCPToolBox/VCPChat（必选）缺失时警告；VCPBackUpDEV/VCPDistributedServer（可选）缺失时跳过
+/// - 韧性：每个组件 git pull 失败时自动重试 3 次（5 秒退避）
+/// - 全程日志：写入 <root>/upgrade_log/upgrade.log
+/// - 双击友好：所有退出路径加 pause，防止窗口闪退
+
+/// 生成 start-upgrade.bat（组件升级脚本，git pull 4 组件，自动检测 + 3 次重试）
+///
+/// 特性：
+/// - 路径自动适配：通过 %~dp0 定位脚本所在目录为 VCP 安装根
+/// - 组件自动检测：VCPToolBox/VCPChat（必选）缺失时警告；VCPBackUpDEV/VCPDistributedServer（可选）缺失时跳过
+/// - 韧性：每个组件 git pull 失败时自动重试 3 次（5 秒退避）
+/// - 全程日志：写入 <root>/upgrade_log/upgrade.log
+/// - 双击友好：所有退出路径加 pause，防止窗口闪退
+/// 生成 start-upgrade.bat（组件升级脚本，git pull 自动检测组件 + 3 次重试）
+///
+/// 特性：
+/// - 路径自动适配：通过 %~dp0 定位脚本所在目录为 VCP 安装根
+/// - 组件自动检测：VCPToolBox/VCPChat（必选）缺失时警告；VCPBackUpDEV/VCPDistributedServer（可选）缺失时跳过
+/// - 韧性：每个组件 git pull 失败时自动重试 3 次（5 秒退避）
+/// - 全程日志：写入 <root>/upgrade_log/upgrade.log
+/// - 双击友好：末尾 pause，防窗口闪退
+/// 注意：bat 内容避免 if "(echo ...)" 包裹（cmd 对块内 ) 解析异常），检测日志用 if 单行 echo 形式
+pub fn generate_start_upgrade_bat(install_dir: &Path) -> Result<()> {
+    // bat 内容纯 ASCII（Rust 写 UTF-8，cmd chcp 65001 读取）
+    let content = "@echo off\r\n\
+setlocal\r\n\
+chcp 65001 >nul\r\n\
+\r\n\
+:: Auto-detect VCP install root from script location\r\n\
+set \"VCP_ROOT=%~dp0\"\r\n\
+if \"%VCP_ROOT:~-1%\"==\"\\\" set \"VCP_ROOT=%VCP_ROOT:~0,-1%\"\r\n\
+\r\n\
+set GIT=%VCP_ROOT%\\runtimes\\git\\cmd\\git.exe\r\n\
+set LOG_DIR=%VCP_ROOT%\\upgrade_log\r\n\
+if not exist \"%LOG_DIR%\" mkdir \"%LOG_DIR%\"\r\n\
+set LOG=%LOG_DIR%\\upgrade.log\r\n\
+\r\n\
+echo ==========================================\r\n\
+echo   VCP Upgrade Tool\r\n\
+echo   Install: %VCP_ROOT%\r\n\
+echo   Log:     %LOG%\r\n\
+echo ==========================================\r\n\
+echo.\r\n\
+\r\n\
+:: Check git\r\n\
+if not exist \"%GIT%\" (\r\n\
+    echo [ERROR] git not found: %GIT% >>\"%LOG%\" 2>&1\r\n\
+    echo [ERROR] git not found: %GIT%\r\n\
+    pause\r\n\
+    exit /b 1\r\n\
+)\r\n\
+\r\n\
+:: Add runtimes to PATH\r\n\
+set \"PATH=%VCP_ROOT%\\runtimes\\git\\cmd;%VCP_ROOT%\\runtimes\\node;%VCP_ROOT%\\runtimes\\python;%VCP_ROOT%\\runtimes\\python\\Scripts;%PATH%\"\r\n\
+\r\n\
+echo [git] %GIT% >>\"%LOG%\" 2>&1\r\n\
+\"%GIT%\" --version >>\"%LOG%\" 2>&1\r\n\
+\r\n\
+:: Detect installed components\r\n\
+echo [Detection] Scanning installed components... >>\"%LOG%\" 2>&1\r\n\
+set HAVE_TOOLBOX=0\r\n\
+set HAVE_CHAT=0\r\n\
+set HAVE_BACKUP=0\r\n\
+set HAVE_DIST=0\r\n\
+\r\n\
+if exist \"%VCP_ROOT%\\VCPToolBox\\.git\" set HAVE_TOOLBOX=1\r\n\
+if exist \"%VCP_ROOT%\\VCPChat\\.git\" set HAVE_CHAT=1\r\n\
+if exist \"%VCP_ROOT%\\VCPBackUpDEV\\.git\" set HAVE_BACKUP=1\r\n\
+if exist \"%VCP_ROOT%\\VCPDistributedServer\\.git\" set HAVE_DIST=1\r\n\
+\r\n\
+if \"%HAVE_TOOLBOX%\"==\"1\" echo   [OK] VCPToolBox (required) >>\"%LOG%\" 2>&1\r\n\
+if \"%HAVE_CHAT%\"==\"1\" echo   [OK] VCPChat (required) >>\"%LOG%\" 2>&1\r\n\
+if \"%HAVE_BACKUP%\"==\"1\" echo   [OK] VCPBackUpDEV (optional) >>\"%LOG%\" 2>&1\r\n\
+if \"%HAVE_DIST%\"==\"1\" echo   [OK] VCPDistributedServer (optional) >>\"%LOG%\" 2>&1\r\n\
+if \"%HAVE_TOOLBOX%\"==\"0\" echo   [WARN] VCPToolBox (required) NOT installed >>\"%LOG%\" 2>&1\r\n\
+if \"%HAVE_CHAT%\"==\"0\" echo   [WARN] VCPChat (required) NOT installed >>\"%LOG%\" 2>&1\r\n\
+if \"%HAVE_BACKUP%\"==\"0\" echo   [SKIP] VCPBackUpDEV not installed (optional) >>\"%LOG%\" 2>&1\r\n\
+if \"%HAVE_DIST%\"==\"0\" echo   [SKIP] VCPDistributedServer not installed (optional) >>\"%LOG%\" 2>&1\r\n\
+\r\n\
+:: Run upgrades for detected components\r\n\
+if \"%HAVE_TOOLBOX%\"==\"1\" call :upgrade VCPToolBox\r\n\
+if \"%HAVE_CHAT%\"==\"1\" call :upgrade VCPChat\r\n\
+if \"%HAVE_BACKUP%\"==\"1\" call :upgrade VCPBackUpDEV\r\n\
+if \"%HAVE_DIST%\"==\"1\" call :upgrade VCPDistributedServer\r\n\
+\r\n\
+echo.\r\n\
+echo ==========================================\r\n\
+echo   Upgrade complete\r\n\
+echo   Logs: %LOG%\r\n\
+echo ==========================================\r\n\
+echo.\r\n\
+pause\r\n\
+exit /b 0\r\n\
+\r\n\
+:upgrade\r\n\
+set COMP=%~1\r\n\
+set COMP_DIR=%VCP_ROOT%\\%COMP%\r\n\
+set MAX_RETRY=3\r\n\
+set ATTEMPT=1\r\n\
+\r\n\
+echo.\r\n\
+echo ==========================================\r\n\
+echo [%COMP%] git pull (max %MAX_RETRY% attempts)\r\n\
+echo ==========================================\r\n\
+\r\n\
+echo.\r\n\
+echo [%COMP%] git pull\r\n\
+echo [before] commit: >>\"%LOG%\" 2>&1\r\n\
+\"%GIT%\" -C \"%COMP_DIR%\" log -1 --oneline >>\"%LOG%\" 2>&1\r\n\
+\"%GIT%\" -C \"%COMP_DIR%\" log -1 --oneline\r\n\
+\r\n\
+:RETRY_LOOP\r\n\
+pushd \"%COMP_DIR%\" >nul\r\n\
+\"%GIT%\" pull >>\"%LOG%\" 2>&1\r\n\
+set PULL_ERR=%ERRORLEVEL%\r\n\
+popd >nul\r\n\
+\r\n\
+echo [attempt %ATTEMPT%/%MAX_RETRY%] exit_code=%PULL_ERR% >>\"%LOG%\" 2>&1\r\n\
+\r\n\
+if \"%PULL_ERR%\"==\"0\" (\r\n\
+    echo   [OK] %COMP%: upgrade successful\r\n\
+    echo [%COMP%] [OK] SUCCESS >>\"%LOG%\" 2>&1\r\n\
+    exit /b 0\r\n\
+)\r\n\
+\r\n\
+if %ATTEMPT% GEQ %MAX_RETRY% (\r\n\
+    echo   [FAIL] %COMP%: upgrade failed after %MAX_RETRY% attempts\r\n\
+    echo [%COMP%] [FAIL] FAILED after %MAX_RETRY% attempts >>\"%LOG%\" 2>&1\r\n\
+    exit /b 1\r\n\
+)\r\n\
+\r\n\
+echo   [RETRY] %COMP%: attempt %ATTEMPT% failed (code %PULL_ERR%), waiting 5s...\r\n\
+echo [%COMP%] [RETRY] attempt %ATTEMPT% failed, retrying... >>\"%LOG%\" 2>&1\r\n\
+set /a ATTEMPT+=1\r\n\
+ping -n 6 127.0.0.1 >nul\r\n\
+goto RETRY_LOOP\r\n\
+\r\n";
+
+    let script_path = install_dir.join("start-upgrade.bat");
+    fs::write(&script_path, content)
+        .with_context(|| format!("写入升级脚本失败: {}", script_path.display()))?;
+
+    Ok(())
+}
+

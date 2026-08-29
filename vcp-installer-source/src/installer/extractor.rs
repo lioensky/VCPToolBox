@@ -49,7 +49,7 @@ pub fn detect_format(path: &Path) -> Result<ArchiveFormat> {
     }
 }
 
-fn extract_sync(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf> {
+pub fn extract_sync(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf> {
     match detect_format(archive_path)? {
         ArchiveFormat::Zip => extract_zip(archive_path, dest_dir),
         ArchiveFormat::TarGz => extract_tar_gz(archive_path, dest_dir),

@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 
 use crate::app::ProgressEvent;
+use crate::cache::CacheManager;
 
 #[derive(Debug, Clone)]
 pub struct PortableNode {
@@ -30,11 +31,12 @@ impl PortableNode {
 
     pub async fn install(
         runtimes_dir: &Path,
+        cache: &CacheManager,
+        mirror_config: &crate::mirrors::MirrorConfig,
         step_index: usize,
         progress_tx: mpsc::Sender<ProgressEvent>,
     ) -> Result<Self> {
         let install_dir = runtimes_dir.join("node");
-        let temp_file = runtimes_dir.join("node.zip");
         let temp_extract = runtimes_dir.join("node_temp");
 
         let result: Result<Self> = async {
@@ -50,45 +52,118 @@ impl PortableNode {
                 .await
                 .context("获取 Node.js LTS 版本失败")?;
 
-            let _ = progress_tx
-                .send(ProgressEvent::Log(format!(
+            let _ = crate::log_router::send_log_event(&progress_tx, format!(
                     "Node.js LTS 版本: {}",
                     version
-                )))
-                .await;
+                )).await;
 
-            let url = format!(
-                "https://nodejs.org/dist/{}/node-{}-win-x64.zip",
-                version, version
-            );
+            let cache_name = format!("node-{}-win-x64.zip", version);
+            let dl_file_path = cache.path(&cache_name);
 
-            let _ = progress_tx
-                .send(ProgressEvent::Log("正在下载 Node.js...".to_string()))
-                .await;
+            // 2026-08-23: INI 版本校验（统一缓存校验机制）
+            let ini_version = mirror_config.get_runtime_version("Node.js");
+            let cache_exists = dl_file_path.exists();
 
-            crate::installer::downloader::download_with_retry(
-                crate::installer::downloader::DownloadConfig {
-                    url,
-                    dest: temp_file.clone(),
-                    step_index,
-                    resume: false,
-                },
-                progress_tx.clone(),
-                3,
-            )
-            .await
-            .context("下载 Node.js 失败")?;
+            let needs_download;
+            match ini_version {
+                Some(v) if v == &version => {
+                    if cache_exists {
+                        let _ = crate::log_router::send_log_event(&progress_tx, format!(
+                            "Node.js 缓存校验通过（版本 {}），使用缓存",
+                            version
+                        )).await;
+                        needs_download = false;
+                    } else {
+                        let _ = crate::log_router::send_log_event(&progress_tx,
+                            "Node.js 缓存文件丢失，重新下载".to_string()).await;
+                        needs_download = true;
+                    }
+                }
+                Some(v) => {
+                    let _ = crate::log_router::send_log_event(&progress_tx, format!(
+                        "Node.js 缓存过期（INI: {} → 最新: {}），重新下载",
+                        v, version
+                    )).await;
+                    needs_download = true;
+                }
+                None => {
+                    if cache_exists {
+                        let _ = crate::log_router::send_log_event(&progress_tx,
+                            "Node.js 缓存存在但无版本记录，重新下载".to_string()).await;
+                    }
+                    needs_download = true;
+                }
+            }
 
-            let _ = progress_tx
-                .send(ProgressEvent::Log("正在解压 Node.js...".to_string()))
-                .await;
+            if needs_download {
+                let _ = crate::log_router::send_log_event(&progress_tx,
+                    "正在下载 Node.js（多源降级：npmmirror → nodejs.org）...".to_string()).await;
+
+                let sources: Vec<(String, String)> = vec![
+                    ("npmmirror 国内CDN".to_string(), format!(
+                        "https://npmmirror.com/mirrors/node/{}/node-{}-win-x64.zip",
+                        version, version
+                    )),
+                    ("nodejs.org 官方".to_string(), format!(
+                        "https://nodejs.org/dist/{}/node-{}-win-x64.zip",
+                        version, version
+                    )),
+                ];
+
+                let mut last_error: Option<String> = None;
+                let mut download_ok = false;
+
+                for (source_name, source_url) in sources.iter() {
+                    let _ = crate::log_router::send_log_event(&progress_tx,
+                        format!("尝试源: {} ({})", source_name, source_url)).await;
+                    match crate::installer::downloader::download_with_retry(
+                        crate::installer::downloader::DownloadConfig {
+                            url: source_url.clone(),
+                            dest: dl_file_path.clone(),
+                            step_index,
+                            resume: true,  // 启用断点续传
+                        },
+                        progress_tx.clone(),
+                        3,
+                    ).await {
+                        Ok(_) => {
+                            let _ = crate::log_router::send_log_event(&progress_tx,
+                                format!("[OK] Node.js 下载成功（来源: {}）", source_name)).await;
+                            download_ok = true;
+                            break;
+                        }
+                        Err(err) => {
+                            last_error = Some(format!("{}: {}", source_name, err));
+                            let _ = crate::log_router::send_log_event(&progress_tx,
+                                format!("[WARN] Node.js 源 {} 下载失败，尝试下一源", source_name)).await;
+                        }
+                    }
+                }
+
+                if !download_ok {
+                    anyhow::bail!("Node.js 下载失败（所有源均已尝试）: {}", last_error.unwrap_or_default());
+                }
+
+                // 下载成功后，更新 INI 记录版本
+                let mut mc = mirror_config.clone();
+                if mc.set_and_save_runtime_version("Node.js", &version).is_ok() {
+                    let _ = crate::log_router::send_log_event(&progress_tx, format!(
+                        "Node.js 版本已记录到 INI: {}",
+                        version
+                    )).await;
+                }
+            }
+
+            let dl_file = dl_file_path;
+
+            let _ = crate::log_router::send_log_event(&progress_tx, "正在解压 Node.js...".to_string()).await;
 
             if temp_extract.exists() {
                 let _ = tokio::fs::remove_dir_all(&temp_extract).await;
             }
             tokio::fs::create_dir_all(&temp_extract).await?;
 
-            crate::installer::extractor::extract(&temp_file, &temp_extract)
+            crate::installer::extractor::extract(&dl_file, &temp_extract)
                 .await
                 .context("解压 Node.js ZIP 失败")?;
 
@@ -110,7 +185,8 @@ impl PortableNode {
                 let _ = tokio::fs::remove_dir_all(&temp_extract).await;
             }
 
-            let _ = tokio::fs::remove_file(&temp_file).await;
+            // 保留 dl_file，不删除，下次安装可以直接使用
+            // let _ = tokio::fs::remove_file(&dl_file).await;
 
             let node = Self {
                 install_dir: install_dir.clone(),
@@ -119,12 +195,10 @@ impl PortableNode {
             };
 
             let verified = node.verify()?;
-            let _ = progress_tx
-                .send(ProgressEvent::Log(format!(
+            let _ = crate::log_router::send_log_event(&progress_tx, format!(
                     "Node.js 安装完成：{}",
                     verified
-                )))
-                .await;
+                )).await;
 
             Ok(node)
         }

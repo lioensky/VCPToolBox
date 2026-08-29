@@ -1,12 +1,13 @@
 use crate::app::{App, DependencyStatus};
 use ratatui::{
     Frame,
+    layout::{Alignment, Margin},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const SPINNER: &[char] = &['-', '/', '|', '\\'];
 
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -19,163 +20,198 @@ pub fn render(frame: &mut Frame, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines = vec![Line::from("")];
+    let spinner = spinner_char();
 
+    let mut lines: Vec<Line> = Vec::new();
+
+    // ===== Header =====
     if app.env_check_done {
         lines.push(Line::from(Span::styled(
-            "  ✅ 环境检测完成",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
+            "[OK] 环境检测完成",
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    if app.env_check_done {
+        // ===== 系统信息 =====
+        lines.push(Line::from(Span::styled(
+            "系统信息：",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(system_line("系  统", &app.env_check.os_version, Color::White));
+        lines.push(system_line("处理器", &app.env_check.cpu_name, Color::White));
+        lines.push(system_line("内  存", &format!("{:.1} GB", app.env_check.total_memory_gb), Color::White));
+        lines.push(system_line("显  卡", &app.env_check.gpu_name, Color::White));
+        lines.push(Line::from(""));
+
+        // ===== 网络检测 =====
+        lines.push(Line::from(Span::styled(
+            "网络检测：",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )));
+
+        let (gh_mark, gh_text, gh_color) = if app.env_check.network_github {
+            ("YES", "GitHub官方源，可达。", Color::Green)
+        } else {
+            ("NO ", "GitHub官方源，不可达。", Color::Red)
+        };
+        lines.push(network_line(gh_mark, gh_text, gh_color));
+
+        let (npm_mark, npm_text, npm_color) = if app.env_check.network_npm {
+            ("YES", "NPM   官方源，可达。", Color::Green)
+        } else {
+            ("NO ", "NPM   官方源，不可达。", Color::Red)
+        };
+        lines.push(network_line(npm_mark, npm_text, npm_color));
+
+        let (pip_mark, pip_text, pip_color) = if app.pip_source_ok {
+            ("YES", "PIP   官方源，可达。", Color::Green)
+        } else {
+            ("NO ", "PIP   官方源，不可达。", Color::Red)
+        };
+        lines.push(network_line(pip_mark, pip_text, pip_color));
+
+        let (msvc_mark, msvc_text, msvc_color) = if app.msvc_source_ok {
+            ("YES", "MSVC  官方源，可达。", Color::Green)
+        } else {
+            ("NO ", "MSVC  官方源，不可达。", Color::Red)
+        };
+        lines.push(network_line(msvc_mark, msvc_text, msvc_color));
+
+        lines.push(Line::from(Span::styled(
+            "注：可在 vcp-mirrors.ini 文件中配置所有镜像站，加速安装进程。",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
+
+        // ===== 安装应用 =====
+        lines.push(Line::from(Span::styled(
+            "安装应用：",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )));
+
+        lines.push(app_line("Git", &app.env_check.git));
+        lines.push(app_line("Node.js", &app.env_check.node));
+        lines.push(app_line("Python", &app.env_check.python));
+        lines.push(msvc_line(&app.env_check.msvc));
+
+        if let Some(err) = &app.env_check_error {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("  ! {}", err),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            format!("  {} 正在检测系统环境与网络状态，请稍候...", spinner),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    // ===== Footer =====
+    lines.push(Line::from(""));
+    if app.env_check_done {
+        lines.push(Line::from(Span::styled(
+            "  按 Enter 继续  |  按 R 重新检测  |  按 Esc 返回",
+            Style::default().fg(Color::DarkGray),
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            format!("  {} 正在检测系统环境与网络状态，请稍候...", spinner_char()),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(Span::styled(
-            "  检测完成后才能继续下一步。",
+            "  按 Esc 返回",
             Style::default().fg(Color::DarkGray),
         )));
     }
 
-    lines.push(Line::from(""));
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(para, inner.inner(Margin { horizontal: 2, vertical: 1 }));
+}
 
-    lines.push(status_line(
-        "操作系统",
-        if app.env_check_done && !app.env_check.os_version.is_empty() {
-            app.env_check.os_version.clone()
-        } else {
-            "检测中...".to_string()
-        },
-        if app.env_check_done {
-            Color::Green
-        } else {
-            Color::DarkGray
-        },
-    ));
+// ===== Helper: system info line =====
+fn system_line(label: &str, value: &str, color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("[{}]  ", label),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(value.to_string(), Style::default().fg(color)),
+    ])
+}
 
-    let disk_text = if app.env_check_done {
-        if app.env_check.disk_space_ok {
-            format!("{:.1} GB 可用", app.env_check.disk_space_gb)
-        } else {
-            format!("{:.1} GB 可用（不足 3GB）", app.env_check.disk_space_gb)
-        }
+// ===== Helper: network status line =====
+fn network_line(mark: &str, text: &str, color: Color) -> Line<'static> {
+    let mark_styled = if mark == "YES" {
+        Span::styled("[YES] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
     } else {
-        "检测中...".to_string()
+        Span::styled("[NO ] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
     };
-    lines.push(status_line(
-        "磁盘空间",
-        disk_text,
-        if !app.env_check_done {
-            Color::DarkGray
-        } else if app.env_check.disk_space_ok {
-            Color::Green
-        } else {
-            Color::Red
-        },
-    ));
+    Line::from(vec![
+        mark_styled,
+        Span::styled(text.to_string(), Style::default().fg(color)),
+    ])
+}
 
-    let github_text = if app.env_check_done {
-        if app.env_check.network_github {
-            format!("可达，推荐 {}", app.config.mirror.display_name())
-        } else {
-            "直连和镜像均不可达".to_string()
+// ===== Helper: app status line =====
+fn app_line(name: &str, status: &DependencyStatus) -> Line<'static> {
+    let (mark, text, color) = match status {
+        DependencyStatus::Installed(v) => {
+            ("YES", format!("{} ({})", name, v), Color::Green)
         }
-    } else {
-        "检测中...".to_string()
-    };
-    lines.push(status_line(
-        "GitHub网络",
-        github_text,
-        if !app.env_check_done {
-            Color::DarkGray
-        } else if app.env_check.network_github {
-            Color::Green
-        } else {
-            Color::Red
-        },
-    ));
-
-    let npm_text = if app.env_check_done {
-        if !app.env_check.network_npm {
-            "官方源和镜像均不可达".to_string()
-        } else if app.config.use_npm_mirror {
-            "官方源较慢/不可达，已推荐 npmmirror.com".to_string()
-        } else {
-            "官方源可达".to_string()
+        DependencyStatus::NotFound => {
+            ("NO ", format!("{} 未检测到，将自动下载 Portable 版", name), Color::Yellow)
         }
-    } else {
-        "检测中...".to_string()
-    };
-    lines.push(status_line(
-        "npm源",
-        npm_text,
-        if !app.env_check_done {
-            Color::DarkGray
-        } else if !app.env_check.network_npm {
-            Color::Red
-        } else if app.config.use_npm_mirror {
-            Color::Yellow
-        } else {
-            Color::Green
-        },
-    ));
-
-    let pip_text = if app.env_check_done {
-        if !app.pip_source_ok {
-            "官方源和镜像均不可达".to_string()
-        } else if app.config.use_pip_mirror {
-            "官方源较慢/不可达，已推荐清华源".to_string()
-        } else {
-            "官方源可达".to_string()
+        DependencyStatus::Checking => {
+            ("-- ", format!("{} 检测中...", name), Color::DarkGray)
         }
-    } else {
-        "检测中...".to_string()
+        DependencyStatus::WillUsePortable => {
+            ("NO ", format!("{} 未检测到，将使用 Portable 版", name), Color::Yellow)
+        }
     };
-    lines.push(status_line(
-        "pip源",
-        pip_text,
-        if !app.env_check_done {
-            Color::DarkGray
-        } else if !app.pip_source_ok {
-            Color::Red
-        } else if app.config.use_pip_mirror {
-            Color::Yellow
-        } else {
-            Color::Green
-        },
-    ));
 
-    lines.push(Line::from(""));
+    let mark_styled = if mark == "YES" {
+        Span::styled("[YES] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+    } else if mark == "NO " {
+        Span::styled("[NO ] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled("[-- ] ", Style::default().fg(Color::DarkGray))
+    };
 
-    lines.push(dep_line("Git", &app.env_check.git));
-    lines.push(dep_line("Node.js", &app.env_check.node));
-    lines.push(dep_line("Python", &app.env_check.python));
-    lines.push(msvc_dep_line(&app.env_check.msvc));
+    Line::from(vec![
+        mark_styled,
+        Span::styled(text, Style::default().fg(color)),
+    ])
+}
 
-    if let Some(err) = &app.env_check_error {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("  ⚠ {}", err),
-            Style::default().fg(Color::Red),
-        )));
-    }
+// ===== Helper: MSVC status line =====
+fn msvc_line(status: &DependencyStatus) -> Line<'static> {
+    let (mark, text, color) = match status {
+        DependencyStatus::Installed(v) => {
+            ("YES", format!("MSVC Build Tools ({})", v), Color::Green)
+        }
+        DependencyStatus::NotFound => {
+            ("NO ", "MSVC Build Tools 未检测到，将尝试 winget 自动安装".to_string(), Color::Yellow)
+        }
+        DependencyStatus::Checking => {
+            ("-- ", "MSVC Build Tools 检测中...".to_string(), Color::DarkGray)
+        }
+        DependencyStatus::WillUsePortable => {
+            ("-- ", "MSVC Build Tools 将自动安装".to_string(), Color::Yellow)
+        }
+    };
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        if app.env_check_done {
-            "  按 Enter 继续  |  按 R 重新检测  |  按 Esc 返回"
-        } else {
-            "  正在检测中...  |  按 Esc 返回"
-        },
-        Style::default().fg(Color::DarkGray),
-    )));
+    let mark_styled = if mark == "YES" {
+        Span::styled("[YES] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+    } else if mark == "NO " {
+        Span::styled("[NO ] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled("[-- ] ", Style::default().fg(Color::DarkGray))
+    };
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, inner);
+    Line::from(vec![
+        mark_styled,
+        Span::styled(text, Style::default().fg(color)),
+    ])
 }
 
 fn spinner_char() -> char {
@@ -185,72 +221,5 @@ fn spinner_char() -> char {
         .as_millis()
         / 100) as usize
         % SPINNER.len();
-
     SPINNER[idx]
-}
-
-fn status_line(label: &str, value: impl Into<String>, color: Color) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            format!("  {:<12}", label),
-            Style::default().fg(Color::White),
-        ),
-        Span::styled(value.into(), Style::default().fg(color)),
-    ])
-}
-
-fn dep_line(name: &str, status: &DependencyStatus) -> Line<'static> {
-    let (icon, text, color) = match status {
-        DependencyStatus::Installed(v) => {
-            ("✅", format!("{} ({})", name, v), Color::Green)
-        }
-        DependencyStatus::NotFound => (
-            "📦",
-            format!("{} 未检测到，将自动下载 Portable 版", name),
-            Color::Yellow,
-        ),
-        DependencyStatus::Checking => (
-            "🔍",
-            format!("{} 检测中...", name),
-            Color::DarkGray,
-        ),
-        DependencyStatus::WillUsePortable => (
-            "📦",
-            format!("{} 使用 Portable 版", name),
-            Color::Blue,
-        ),
-    };
-
-    Line::from(vec![
-        Span::styled(format!("  {} ", icon), Style::default()),
-        Span::styled(text, Style::default().fg(color)),
-    ])
-}
-
-fn msvc_dep_line(status: &DependencyStatus) -> Line<'static> {
-    let (icon, text, color) = match status {
-        DependencyStatus::Installed(v) => {
-            ("✅", format!("MSVC Build Tools ({})", v), Color::Green)
-        }
-        DependencyStatus::NotFound => (
-            "📦",
-            "MSVC Build Tools 未检测到，将尝试 winget 自动安装".to_string(),
-            Color::Yellow,
-        ),
-        DependencyStatus::Checking => (
-            "🔍",
-            "MSVC Build Tools 检测中...".to_string(),
-            Color::DarkGray,
-        ),
-        DependencyStatus::WillUsePortable => (
-            "⚠️",
-            "MSVC Build Tools 未检测到".to_string(),
-            Color::Yellow,
-        ),
-    };
-
-    Line::from(vec![
-        Span::styled(format!("  {} ", icon), Style::default()),
-        Span::styled(text, Style::default().fg(color)),
-    ])
 }

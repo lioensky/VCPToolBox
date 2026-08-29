@@ -20,9 +20,11 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     if let Some(progress) = &app.install_progress {
         let chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(6),
+            Constraint::Length(3),   // 进度条
+            Constraint::Length(1),   // 空行
+            Constraint::Min(4),      // 步骤列表
+            Constraint::Length(1),   // 空行
+            Constraint::Min(4),      // 日志区域（弹性）
         ])
         .split(inner);
 
@@ -36,11 +38,11 @@ pub fn render(frame: &mut Frame, app: &App) {
 
         for (idx, step) in progress.steps.iter().enumerate() {
             let (icon, color) = match &step.status {
-                StepStatus::Pending => ("○", Color::DarkGray),
-                StepStatus::Running => ("⏳", Color::Yellow),
-                StepStatus::Completed => ("✅", Color::Green),
-                StepStatus::Failed(_) => ("❌", Color::Red),
-                StepStatus::Skipped => ("⏭", Color::DarkGray),
+                StepStatus::Pending => ("[--]", Color::DarkGray),
+                StepStatus::Running => ("[**]", Color::Yellow),
+                StepStatus::Completed => ("[OK]", Color::Green),
+                StepStatus::Failed(_) => ("[XX]", Color::Red),
+                StepStatus::Skipped => ("[$$]", Color::DarkGray),
             };
 
             let mut text = format!("  {} {}", icon, step.name);
@@ -68,14 +70,14 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
 
         let step_paragraph = Paragraph::new(step_lines).wrap(Wrap { trim: false });
-        frame.render_widget(step_paragraph, chunks[1]);
+        frame.render_widget(step_paragraph, chunks[2]);
 
         let log_block = Block::default()
-            .title(" 日志 (↑↓滚动) | ⚠ 点击窗口会暂停显示，右键恢复 | 安装始终在后台运行 ")
+            .title(" 日志 (上下键滚动) ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray));
 
-        let visible_height = chunks[2].height.saturating_sub(2) as usize;
+        let visible_height = chunks[4].height.saturating_sub(2) as usize;
         let total_logs = app.log_messages.len();
         let scroll = app.log_scroll.min(total_logs.saturating_sub(1));
         let end = total_logs.saturating_sub(scroll);
@@ -102,7 +104,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             .block(log_block)
             .wrap(Wrap { trim: false });
 
-        frame.render_widget(log_paragraph, chunks[2]);
+        frame.render_widget(log_paragraph, chunks[4]);
     } else {
         let lines = vec![
             Line::from(""),
