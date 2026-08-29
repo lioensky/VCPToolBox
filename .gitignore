@@ -248,6 +248,10 @@ image/sensegen/
 image/webuigen/
 image/zimagegen/
 
+# MediaRenderer 渲染输出
+image/media-renderer/
+file/media-renderer/
+
 # 网络抓取图片输出
 image/urlfetch/
 

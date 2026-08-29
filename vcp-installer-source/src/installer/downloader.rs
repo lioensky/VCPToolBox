@@ -18,7 +18,8 @@ use tokio::{
     time::sleep,
 };
 
-use crate::app::ProgressEvent;
+use crate::app::{GithubMirror, ProgressEvent};
+use crate::mirrors::{MirrorConfig, MirrorResult};
 
 const USER_AGENT_VALUE: &str = "vcp-installer/1.0";
 const DEFAULT_DOWNLOAD_RETRIES: usize = 3;
@@ -74,20 +75,16 @@ pub async fn download_with_retry(
 ) -> Result<PathBuf> {
     let client = build_http_client()?;
 
-    let _ = progress_tx
-        .send(ProgressEvent::Log(format!("开始下载: {}", config.url)))
-        .await;
+    let _ = crate::log_router::send_log_event(&progress_tx, format!("开始下载: {}", config.url)).await;
 
     let mut last_error: Option<anyhow::Error> = None;
 
     for attempt in 0..=max_retries {
         if attempt > 0 {
-            let _ = progress_tx
-                .send(ProgressEvent::Log(format!(
+            let _ = crate::log_router::send_log_event(&progress_tx, format!(
                     "下载重试 ({}/{}): {}",
                     attempt, max_retries, config.url
-                )))
-                .await;
+                )).await;
 
             sleep(Duration::from_secs(retry_delay_secs(attempt))).await;
         }
@@ -155,6 +152,86 @@ pub async fn get_nodejs_lts_version() -> Result<String> {
     bail!("无法获取 Node.js LTS 版本")
 }
 
+/// 解析 Python 版本号字符串，返回 (major, minor, patch, is_release_candidate)
+/// 如 "cpython-3.13.15+20260814" -> (3, 13, 15, false)
+///    "cpython-3.15.0rc1+20260814" -> (3, 15, 0, true)
+fn parse_python_version(name: &str) -> Option<(u32, u32, u32, bool)> {
+    // 提取 cpython- 后面的部分，到 +build 之前
+    let start = name.strip_prefix("cpython-")?;
+    let end = start.split_once('+').map(|(v, _)| v).unwrap_or(start);
+
+    // 检查是否 RC/beta
+    let is_rc = end.ends_with("rc1") || end.ends_with("rc2") || end.ends_with("beta");
+
+    // 解析主版本号 (如 3.13.15 或 3.15.0rc1)
+    let mut parts = end.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+
+    // patch 可能在 rc 前面
+    let patch_str = parts.next()?;
+    let patch = patch_str
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse::<u32>()
+        .unwrap_or(0);
+
+    Some((major, minor, patch, is_rc))
+}
+
+/// 获取 python-build-standalone 最新版稳定版 Windows x64 install_only.tar.gz 的下载 URL
+/// 
+/// 使用 astral-sh 仓库（每个 release 包含多个 Python 版本）
+/// 从 latest release 中挑选最高稳定版（排除 rc/beta 和 freethreaded）
+/// 返回：(下载URL, 文件名)
+pub async fn get_latest_python_standalone_url() -> Result<(String, String)> {
+    let url = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest";
+    let release: GithubRelease = request_json_with_retry(url, true).await?;
+
+    // 过滤：x86_64-pc-windows-msvc, install_only.tar.gz, 非 freethreaded
+    let mut candidates: Vec<(&GithubAsset, (u32, u32, u32))> = Vec::new();
+
+    for asset in &release.assets {
+        let name = &asset.name;
+
+        // 必须是稳定版文件名格式
+        if !name.starts_with("cpython-")
+            || !name.contains("+")
+            || !name.contains("x86_64-pc-windows-msvc-install_only.tar.gz")
+        {
+            continue;
+        }
+
+        // 排除 freethreaded 版本
+        if name.contains("-freethreaded-") {
+            continue;
+        }
+
+        // 排除 RC/beta，只存稳定版
+        if let Some((_, _, _, is_rc)) = parse_python_version(name) {
+            if is_rc {
+                continue;
+            }
+        }
+
+        if let Some((major, minor, patch, _)) = parse_python_version(name) {
+            candidates.push((asset, (major, minor, patch)));
+        }
+    }
+
+    // 按 (major, minor, patch) 降序排，选最高的稳定版
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+    if let Some((asset, version)) = candidates.first() {
+        return Ok((asset.browser_download_url.clone(), asset.name.clone()));
+    }
+
+    bail!(
+        "在 astral-sh/python-build-standalone latest release 中未找到稳定的 Windows x64 包"
+    )
+}
+
 /// 将 GitHub URL 替换为镜像 URL
 pub fn apply_mirror(url: &str, mirror_prefix: &str) -> String {
     const GITHUB_PREFIX: &str = "https://github.com/";
@@ -173,6 +250,234 @@ pub fn apply_mirror(url: &str, mirror_prefix: &str) -> String {
     } else {
         url.to_string()
     }
+}
+
+// ==========================================
+// 镜像自动降级重试下载
+// ==========================================
+
+/// 使用镜像降级策略下载文件
+/// 
+/// - 优先使用用户选择的镜像
+/// - 如果失败，按检测结果排序依次尝试其他可用镜像
+/// - 跳过检测时已标记为不可达的镜像
+/// 
+/// 参数：
+/// - `mirror_config`: 从配置文件加载的镜像配置
+/// - `github_mirror`: 用户选择的 GitHub 镜像
+/// - `mirror_results`: 按速度排序的镜像检测结果（仅 GitHub 镜像）
+/// - `is_github_download`: 是否为 GitHub 资源下载（只有 GitHub 才做镜像降级）
+pub async fn download_with_mirror_fallback(
+    config: DownloadConfig,
+    mirror_config: &MirrorConfig,
+    github_mirror: &GithubMirror,
+    mirror_results: &[MirrorResult],
+    is_github_download: bool,
+    progress_tx: mpsc::Sender<ProgressEvent>,
+    max_total_retries: usize,
+) -> Result<PathBuf> {
+    // 如果不是 GitHub 资源下载，直接走普通下载
+    if !is_github_download {
+        return download_with_retry(config, progress_tx, max_total_retries).await;
+    }
+
+    let client = build_http_client()?;
+
+    // 构建尝试顺序：先试用户选的镜像，然后按检测结果排序补全
+    let mut tried = Vec::new();
+    
+    // 1. 用户选择的镜像对应的 prefix
+    let user_prefix = github_mirror.prefix(mirror_config);
+    let user_name = github_mirror.display_name(mirror_config);
+    tried.push((user_prefix, user_name));
+
+    // 2. 按检测结果补全（跳过不可达的，跳过已试过的）
+    for result in mirror_results {
+        let url = result.entry.url.clone();
+        let name = result.entry.name.clone();
+        if !tried.iter().any(|(p, _)| *p == url) {
+            tried.push((url, name));
+        }
+    }
+
+    let _ = crate::log_router::send_log_event(&progress_tx, format!("开始下载: {}", config.url)).await;
+
+    let retries_per_mirror = if max_total_retries < tried.len() { 1 } else { max_total_retries / tried.len() };
+
+    let mut last_error: Option<anyhow::Error> = None;
+
+    for (mirror_idx, (mirror_prefix, mirror_name)) in tried.iter().enumerate() {
+        if !mirror_results.is_empty() {
+            // 跳过检测时标记为不可达的镜像（但用户选的不跳过）
+            if mirror_idx > 0 {
+                let is_reachable = mirror_results
+                    .iter()
+                    .any(|r| r.entry.url == *mirror_prefix && r.is_reachable());
+                if !is_reachable {
+                    continue;
+                }
+            }
+        }
+
+        let mirrored_url = apply_mirror(&config.url, mirror_prefix);
+
+        for attempt in 0..retries_per_mirror {
+            if mirror_idx > 0 || attempt > 0 {
+                let _ = crate::log_router::send_log_event(&progress_tx, format!(
+                        "下载重试 (镜像: {}): {}",
+                        mirror_name, mirrored_url
+                    )).await;
+
+                if attempt > 0 {
+                    sleep(Duration::from_secs(retry_delay_secs(attempt))).await;
+                }
+            }
+
+            let attempt_config = DownloadConfig {
+                url: mirrored_url.clone(),
+                dest: config.dest.clone(),
+                step_index: config.step_index,
+                resume: config.resume || attempt > 0 || mirror_idx > 0,
+            };
+
+            match download_once(&client, &attempt_config, &progress_tx).await {
+                Ok(path) => {
+                    if mirror_idx > 0 || attempt > 0 {
+                        let _ = crate::log_router::send_log_event(&progress_tx, format!(
+                                "✅ 下载成功（使用镜像: {}）",
+                                mirror_name
+                            )).await;
+                    }
+                    return Ok(path);
+                }
+                Err(err) => {
+                    last_error = Some(err);
+                }
+            }
+        }
+    }
+
+    let final_error = last_error.unwrap_or_else(|| anyhow!("下载失败，所有镜像站均尝试完毕"));
+
+    let _ = progress_tx
+        .send(ProgressEvent::StepFailed {
+            step_index: config.step_index,
+            error: final_error.to_string(),
+        })
+        .await;
+
+    Err(final_error)
+}
+
+/// 使用 preferred_github 列表进行多镜像降级重试（供运行时安装使用）
+///
+/// 与 download_with_mirror_fallback 不同，此函数不依赖 mirror_results（站点测试
+/// 结果），而是直接用 preferred_github（上次动态优选的可用站点列表）作为降级候选。
+///
+/// 顺序：1. 用户所选镜像（最高优先级）→ 2. preferred_github（已测过最快的站）
+///       → 3. 直连 GitHub（兜底，防止 preferred 全过期）
+///
+/// 参数：
+/// - `config`: 原始下载配置（URL 为 GitHub 直连 URL）
+/// - `github_mirror`: 用户选择的镜像（最高优先级）
+/// - `mirror_config`: 全局镜像配置
+/// - `progress_tx`: 进度通道
+/// - `max_retries_per_mirror`: 每个镜像内的重试次数
+pub async fn download_with_preferred_fallback(
+    config: DownloadConfig,
+    github_mirror: &GithubMirror,
+    mirror_config: &MirrorConfig,
+    progress_tx: mpsc::Sender<ProgressEvent>,
+    max_retries_per_mirror: usize,
+) -> Result<PathBuf> {
+    // 构建候选前缀列表
+    let user_prefix = github_mirror.prefix(mirror_config);
+    let user_name = github_mirror.display_name(mirror_config);
+
+    let mut tried: Vec<(String, String)> = vec![(user_prefix.clone(), user_name)];
+    let user_prefix_set: std::collections::HashSet<String> =
+        std::collections::HashSet::from([user_prefix.clone()]);
+
+    // preferred_github（已测过最快的站，优先于备用列表）
+    for entry in &mirror_config.preferred_github {
+        if !user_prefix_set.contains(&entry.url) && !tried.iter().any(|(p, _)| *p == entry.url) {
+            tried.push((entry.url.clone(), entry.name.clone()));
+        }
+    }
+
+    // GitHub 直连兜底
+    const GITHUB_DIRECT: &str = "https://github.com/";
+    if !tried.iter().any(|(p, _)| *p == GITHUB_DIRECT) {
+        tried.push((GITHUB_DIRECT.to_string(), "GitHub Official".to_string()));
+    }
+
+    let client = build_http_client()?;
+
+    let _ = crate::log_router::send_log_event(
+        &progress_tx,
+        format!("开始下载（多镜像降级，共 {} 个候选）: {}", tried.len(), config.url),
+    )
+    .await;
+
+    let mut last_error: Option<anyhow::Error> = None;
+
+    for (mirror_idx, (mirror_prefix, mirror_name)) in tried.iter().enumerate() {
+        let mirrored_url = apply_mirror(&config.url, mirror_prefix);
+
+        for attempt in 0..max_retries_per_mirror {
+            if mirror_idx > 0 || attempt > 0 {
+                let _ = crate::log_router::send_log_event(
+                    &progress_tx,
+                    format!(
+                        "下载重试 (镜像: {}, 第{}/{}次): {}",
+                        mirror_name,
+                        attempt + 1,
+                        max_retries_per_mirror,
+                        mirrored_url
+                    ),
+                )
+                .await;
+
+                if attempt > 0 {
+                    sleep(Duration::from_secs(retry_delay_secs(attempt))).await;
+                }
+            }
+
+            let attempt_config = DownloadConfig {
+                url: mirrored_url.clone(),
+                dest: config.dest.clone(),
+                step_index: config.step_index,
+                resume: config.resume || attempt > 0 || mirror_idx > 0,
+            };
+
+            match download_once(&client, &attempt_config, &progress_tx).await {
+                Ok(path) => {
+                    if mirror_idx > 0 || attempt > 0 {
+                        let _ = crate::log_router::send_log_event(
+                            &progress_tx,
+                            format!("[OK] 下载成功（使用镜像: {}）", mirror_name),
+                        )
+                        .await;
+                    }
+                    return Ok(path);
+                }
+                Err(err) => {
+                    last_error = Some(err);
+                }
+            }
+        }
+    }
+
+    let final_error = last_error.unwrap_or_else(|| anyhow!("下载失败，所有镜像站均尝试完毕"));
+
+    let _ = progress_tx
+        .send(ProgressEvent::StepFailed {
+            step_index: config.step_index,
+            error: final_error.to_string(),
+        })
+        .await;
+
+    Err(final_error)
 }
 
 fn build_http_client() -> Result<Client> {
@@ -217,12 +522,10 @@ async fn download_once(
     let status = response.status();
 
     if status == StatusCode::RANGE_NOT_SATISFIABLE && existing_size > 0 {
-        let _ = progress_tx
-            .send(ProgressEvent::Log(format!(
+        let _ = crate::log_router::send_log_event(&progress_tx, format!(
                 "检测到本地文件可能已完整下载，跳过续传: {}",
                 config.dest.display()
-            )))
-            .await;
+            )).await;
 
         let _ = progress_tx
             .send(ProgressEvent::DownloadProgress {
@@ -244,11 +547,9 @@ async fn download_once(
 
     let append_mode = existing_size > 0 && status == StatusCode::PARTIAL_CONTENT;
     if existing_size > 0 && !append_mode {
-        let _ = progress_tx
-            .send(ProgressEvent::Log(
+        let _ = crate::log_router::send_log_event(&progress_tx, 
                 "服务器不支持断点续传，已从头重新下载".to_string(),
-            ))
-            .await;
+            ).await;
     }
 
     let mut file = if append_mode {
@@ -372,7 +673,32 @@ fn asset_matches(name: &str, pattern: &str) -> bool {
         return true;
     }
 
-    parts.iter().all(|part| name.contains(part))
+    // 基本匹配：包含所有关键词
+    let basic_match = parts.iter().all(|part| name.contains(part));
+    if !basic_match {
+        return false;
+    }
+
+    // Windows x64 优先过滤：如果是 Windows 环境且资产名包含架构标识
+    let has_windows_indicator = name.contains("windows")
+        || name.contains("win")
+        || name.contains("amd64")
+        || name.contains("x86_64")
+        || name.contains("x64");
+
+    let has_non_windows_indicator = name.contains("linux")
+        || name.contains("macos")
+        || name.contains("darwin")
+        || name.contains("arm64")
+        || name.contains("aarch64")
+        || name.contains("arm");
+
+    // 如果资产明确是非 Windows 架构，不匹配
+    if has_non_windows_indicator && !has_windows_indicator {
+        return false;
+    }
+
+    true
 }
 
 fn retry_delay_secs(attempt: usize) -> u64 {

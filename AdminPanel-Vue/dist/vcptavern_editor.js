@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const editorContainer = document.getElementById('editor-container');
     const presetNameInput = document.getElementById('preset-name');
     const presetDescriptionInput = document.getElementById('preset-description');
+    const presetPlaceholderAllowlistInput = document.getElementById('preset-placeholder-allowlist');
     const rulesList = document.getElementById('rules-list');
     const addRuleBtn = document.getElementById('add-rule');
     const savePresetBtn = document.getElementById('save-preset');
@@ -45,6 +46,10 @@ document.addEventListener('DOMContentLoaded', () => {
             presetNameInput.value = name;
             presetNameInput.disabled = true; // Don't allow editing name of existing preset
             presetDescriptionInput.value = currentPreset.description || '';
+            presetPlaceholderAllowlistInput.value = (currentPreset.placeholderAllowlist || [])
+                .map(item => String(item).replace(/^\{\{|\}\}$/g, '').trim())
+                .filter(Boolean)
+                .join('\n');
             renderRules(currentPreset.rules || []);
             editorContainer.classList.remove('hidden');
         } catch (error) {
@@ -231,6 +236,10 @@ document.addEventListener('DOMContentLoaded', () => {
         return {
             name: document.getElementById('preset-name').value.trim(),
             description: document.getElementById('preset-description').value.trim(),
+            placeholderAllowlist: presetPlaceholderAllowlistInput.value
+                .split(/[\n,，]+/)
+                .map(item => item.trim().replace(/^\{\{|\}\}$/g, ''))
+                .filter((item, index, items) => item && items.indexOf(item) === index),
             rules: rules
         };
     }
@@ -247,6 +256,7 @@ document.addEventListener('DOMContentLoaded', () => {
         presetNameInput.value = '';
         presetNameInput.disabled = false;
         presetDescriptionInput.value = '';
+        presetPlaceholderAllowlistInput.value = '';
         rulesList.innerHTML = '';
         editorContainer.classList.remove('hidden');
     });

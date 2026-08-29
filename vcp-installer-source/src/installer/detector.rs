@@ -67,6 +67,10 @@ pub async fn detect_environment(install_path: &Path) -> EnvCheckResult {
         check_network("https://registry.npmjs.org"),
     );
 
+    let total_memory_gb = get_total_memory_gb();
+    let cpu_name = get_cpu_name();
+    let gpu_name = get_gpu_name();
+
     EnvCheckResult {
         git,
         node,
@@ -77,6 +81,9 @@ pub async fn detect_environment(install_path: &Path) -> EnvCheckResult {
         network_github,
         network_npm,
         os_version,
+        total_memory_gb,
+        cpu_name,
+        gpu_name,
     }
 }
 
@@ -99,6 +106,7 @@ fn detect_msvc(install_path: &Path) -> DependencyStatus {
                 "-products", "*",
                 "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
                 "-property", "displayName",
+                "-utf8",  // 强制 UTF-8 输出（中文 Windows 下 GBK 会被误解析为乱码）
             ])
             .output()
         {
@@ -165,6 +173,97 @@ fn read_output_text(stdout: &[u8], stderr: &[u8]) -> String {
     } else {
         String::from_utf8_lossy(stderr).trim().to_string()
     }
+}
+
+/// 获取系统总内存（GB），使用 sysinfo 库
+pub fn get_total_memory_gb() -> f64 {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    sys.total_memory() as f64 / 1073741824.0
+}
+
+/// 获取 CPU 名称，从 Windows 注册表读取
+/// 注册表路径：HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\ProcessorNameString
+pub fn get_cpu_name() -> String {
+    if cfg!(windows) {
+        // 方案1：通过 reg query 读取注册表
+        if let Ok(output) = Command::new("reg")
+            .args([
+                "query",
+                r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+                "/v",
+                "ProcessorNameString",
+            ])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.contains("REG_SZ") {
+                    // 格式：ProcessorNameString    REG_SZ    Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+                    let parts: Vec<&str> = trimmed.splitn(2, "REG_SZ").collect();
+                    if parts.len() == 2 {
+                        let name = parts[1].trim();
+                        if !name.is_empty() {
+                            return name.to_string();
+                        }
+                    }
+                }
+            }
+        }
+
+        // 方案2：通过 PowerShell 读取（备用）
+        if let Ok(output) = Command::new("powershell")
+            .args(["-Command",
+                   r#"Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1 -ExpandProperty Name"#])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !text.is_empty() {
+                return text;
+            }
+        }
+    }
+
+    // 最终回退
+    "未知".to_string()
+}
+
+/// 获取 GPU 名称，使用 PowerShell + WMI/CIM（跳过虚拟显示器）
+pub fn get_gpu_name() -> String {
+    if cfg!(windows) {
+        // 使用 PowerShell 查询真实 GPU（过滤虚拟显示器）
+        let ps_cmd = r#"
+            Get-CimInstance -ClassName Win32_VideoController |
+                Where-Object { $_.Name -notlike "*Virtual*" -and $_.Name -notlike "*Microsoft Basic*" } |
+                Sort-Object -Property AdapterRAM -Descending |
+                Select-Object -First 1 -ExpandProperty Name
+        "#;
+        if let Ok(output) = Command::new("powershell")
+            .args(["-Command", ps_cmd.trim()])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !text.is_empty() {
+                return text;
+            }
+        }
+
+        // 备用：直接取第一个非空的 GPU
+        if let Ok(output) = Command::new("powershell")
+            .args(["-Command",
+                   r#"Get-CimInstance -ClassName Win32_VideoController | Select-Object -First 1 -ExpandProperty Name"#])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !text.is_empty() {
+                return text;
+            }
+        }
+    }
+
+    "未知".to_string()
 }
 
 /// 简单网络连通性检测

@@ -475,38 +475,121 @@ class TagConsistencyService {
         });
     }
 
-    _buildStagingIndex(finalTags) {
-        if (!this.VexusIndex) {
-            throw this._createError(
-                'VexusIndex 不可用，无法安全重建全局 Tag 索引',
-                'TAG_CONSISTENCY_INDEX_UNAVAILABLE',
-                503
-            );
-        }
-        const capacity = Math.max(50000, Math.ceil(finalTags.length * 1.2) + 100);
-        const index = new this.VexusIndex(this.owner.config.dimension, capacity);
-        for (const tag of finalTags) {
-            const vector = tag.vector instanceof Float32Array
-                ? tag.vector
-                : this.owner._decodeVectorBlob(
-                    tag.vector,
-                    this.owner.config.dimension,
-                    `tag-consistency:${tag.id}`
-                );
-            if (!vector) {
+    _buildIndexDelta(plan, finalTags, vectorMap) {
+        const finalByName = new Map(finalTags.map(tag => [tag.name, tag]));
+        const removeIds = plan.orphanTags.map(tag => Number(tag.id));
+        const upsertIds = [];
+        const vectors = new Float32Array(
+            vectorMap.size * this.owner.config.dimension
+        );
+        let position = 0;
+
+        for (const [name, rawVector] of vectorMap) {
+            const tag = finalByName.get(name);
+            if (!tag || !Number.isInteger(tag.id) || tag.id <= 0) {
                 throw this._createError(
-                    `Tag「${tag.name}」缺少有效向量，无法发布一致性索引`,
+                    `Tag「${name}」没有可用的最终 ID，无法构造索引差分`,
+                    'TAG_CONSISTENCY_INVALID_DELTA',
+                    409
+                );
+            }
+            const vector = rawVector instanceof Float32Array
+                ? rawVector
+                : new Float32Array(rawVector || []);
+            if (vector.length !== this.owner.config.dimension) {
+                throw this._createError(
+                    `Tag「${name}」向量维度无效，无法构造索引差分`,
                     'TAG_CONSISTENCY_INVALID_VECTOR',
                     409
                 );
             }
-            index.add(tag.id, vector);
+            upsertIds.push(tag.id);
+            vectors.set(vector, position * this.owner.config.dimension);
+            position++;
         }
-        return index;
+
+        return { removeIds, upsertIds, vectors };
+    }
+
+    _bindActiveTagIndex(index) {
+        this.owner.tagIndex = index;
+        this.owner.indexRepository.tagIndex = index;
+        if (this.owner.tagMemoEngine) {
+            this.owner.tagMemoEngine.tagIndex = index;
+            this.owner.tagMemoEngine.tagPairSimilarities = new Map();
+            this.owner.tagMemoEngine.tagIntrinsicResiduals = new Map();
+            this.owner.tagMemoEngine.tagRawResidualRatios = new Map();
+            this.owner.tagMemoEngine.intrinsicResidualArtifact = null;
+        }
+    }
+
+    async _recoverActiveTagIndex() {
+        if (!this.VexusIndex) {
+            throw this._createError(
+                'VexusIndex 不可用，无法恢复全局 Tag 索引',
+                'TAG_CONSISTENCY_INDEX_UNAVAILABLE',
+                503
+            );
+        }
+
+        const expectedCount = Number(this.owner.db.prepare(
+            'SELECT COUNT(*) AS count FROM tags WHERE vector IS NOT NULL'
+        ).get()?.count) || 0;
+        const capacity = Math.max(
+            50000,
+            Math.ceil(expectedCount * 1.2) + 100
+        );
+
+        // 首选正常冷启动路径：健康旧 checkpoint + 修复后 SQLite 差分。
+        const baseline = this.owner.indexRepository.loadGlobalTagBaseline(
+            capacity
+        );
+        let recoveredIndex = baseline?.index || null;
+        let recoveryMode = recoveredIndex
+            ? 'baseline-plus-sqlite-delta'
+            : 'sqlite-full-rebuild';
+
+        if (!recoveredIndex) {
+            recoveredIndex = new this.VexusIndex(
+                this.owner.config.dimension,
+                capacity
+            );
+            const recoveredCount = await recoveredIndex.recoverFromSqlite(
+                this.owner.dbPath,
+                'tags',
+                null
+            );
+            if (Number(recoveredCount) !== expectedCount) {
+                throw this._createError(
+                    `全局 Tag 索引恢复不完整：expected=${expectedCount}, recovered=${recoveredCount}`,
+                    'TAG_CONSISTENCY_INDEX_RECOVERY_INCOMPLETE',
+                    500
+                );
+            }
+        }
+
+        const actualCount = Number(
+            recoveredIndex.stats?.().totalVectors
+        ) || 0;
+        if (actualCount !== expectedCount) {
+            throw this._createError(
+                `全局 Tag 索引恢复校验失败：expected=${expectedCount}, actual=${actualCount}`,
+                'TAG_CONSISTENCY_INDEX_RECOVERY_INCOMPLETE',
+                500
+            );
+        }
+
+        this._bindActiveTagIndex(recoveredIndex);
+        console.warn(
+            `[KnowledgeBase] ♻️ Active Tag index recovered after delta failure: ` +
+            `mode=${recoveryMode}, vectors=${actualCount}.`
+        );
+        return { index: recoveredIndex, mode: recoveryMode };
     }
 
     _applyTransaction(plan, finalTags, vectorMap) {
         const tagByName = new Map(finalTags.map(tag => [tag.name, tag]));
+        const existingTagNames = new Set(plan.tagRows.map(row => row.name));
         const insertTag = this.owner.db.prepare(
             'INSERT INTO tags (id, name, vector) VALUES (?, ?, ?)'
         );
@@ -522,7 +605,7 @@ class TagConsistencyService {
 
         const transaction = this.owner.db.transaction(() => {
             for (const tag of finalTags) {
-                if (!plan.tagRows.some(row => row.name === tag.name)) {
+                if (!existingTagNames.has(tag.name)) {
                     const vector = vectorMap.get(tag.name);
                     const buffer = Buffer.from(
                         vector.buffer,
@@ -614,24 +697,65 @@ class TagConsistencyService {
                 );
             }
 
-            const vectorMap = await this._vectorize(verifiedPlan.vectorizeNames);
-            const finalTags = this._allocateFinalTags(verifiedPlan, vectorMap);
-            const stagingIndex = this._buildStagingIndex(finalTags);
-
-            this._applyTransaction(verifiedPlan, finalTags, vectorMap);
-
-            this.owner.tagIndex = stagingIndex;
-            this.owner.indexRepository.tagIndex = stagingIndex;
-            if (this.owner.tagMemoEngine) {
-                this.owner.tagMemoEngine.tagIndex = stagingIndex;
-                this.owner.tagMemoEngine.tagPairSimilarities = new Map();
-                this.owner.tagMemoEngine.tagIntrinsicResiduals = new Map();
-                this.owner.tagMemoEngine.tagRawResidualRatios = new Map();
-                this.owner.tagMemoEngine.intrinsicResidualArtifact = null;
+            if (
+                !this.owner.tagIndex
+                || typeof this.owner.tagIndex.applyTagDelta !== 'function'
+            ) {
+                throw this._createError(
+                    '活动 Tag 索引缺少 applyTagDelta ABI，请先重新构建 rust-vexus-lite',
+                    'TAG_CONSISTENCY_DELTA_ABI_UNAVAILABLE',
+                    503
+                );
             }
 
-            if (this.owner.indexRepository.shouldPersist('global_tags')) {
-                this.owner._saveIndexToDisk('global_tags');
+            const vectorMap = await this._vectorize(
+                verifiedPlan.vectorizeNames
+            );
+            const finalTags = this._allocateFinalTags(
+                verifiedPlan,
+                vectorMap
+            );
+            const delta = this._buildIndexDelta(
+                verifiedPlan,
+                finalTags,
+                vectorMap
+            );
+
+            // SQLite 是唯一权威事实。提交后若活动 usearch 差分失败，不回滚
+            // 文件事实，而是判废该实例并走冷启动同款基线回放恢复。
+            this._applyTransaction(verifiedPlan, finalTags, vectorMap);
+
+            let deltaResult = null;
+            let recoveryMode = null;
+            try {
+                deltaResult = await this.owner.tagIndex.applyTagDelta(
+                    delta.removeIds,
+                    delta.upsertIds,
+                    delta.vectors
+                );
+                this._bindActiveTagIndex(this.owner.tagIndex);
+            } catch (deltaError) {
+                console.error(
+                    '[KnowledgeBase] ❌ Active Tag index delta failed; ' +
+                    'discarding the instance and recovering from authoritative SQLite:',
+                    deltaError.message || deltaError
+                );
+                const recovered = await this._recoverActiveTagIndex();
+                recoveryMode = recovered.mode;
+            }
+
+            // 用户确认修复是明确的健康维护边界，不受 generational 5% 阈值限制。
+            // 发布失败不损坏旧 checkpoint，但本次接口必须明确报告未完成落盘。
+            const checkpointPublished =
+                this.owner.indexRepository.publishGlobalTagBaseline({
+                    force: true
+                });
+            if (!checkpointPublished) {
+                throw this._createError(
+                    'Tag 数据与内存索引已修复，但新 Usearch 代际 checkpoint 未能发布',
+                    'TAG_CONSISTENCY_CHECKPOINT_FAILED',
+                    500
+                );
             }
 
             this.snapshots.delete(snapshot.token);
@@ -644,16 +768,28 @@ class TagConsistencyService {
                 + `vectorsCreated=${verifiedPlan.summary.vectorsToCreate}, `
                 + `vectorsRemoved=${verifiedPlan.summary.vectorsToRemove}, `
                 + `relationsAdded=${verifiedPlan.summary.relationsToAdd}, `
-                + `relationsRemoved=${verifiedPlan.summary.relationsToRemove}. `
+                + `relationsRemoved=${verifiedPlan.summary.relationsToRemove}, `
+                + `indexMode=${recoveryMode || 'active-rust-delta'}, `
+                + 'checkpoint=forced-generational. '
                 + 'TagMemo derived assets are stale and must be rebuilt.'
             );
 
             return {
                 applied: true,
                 summary: verifiedPlan.summary,
+                indexUpdate: {
+                    mode: recoveryMode || 'active-rust-delta',
+                    requestedDeletes: delta.removeIds.length,
+                    requestedUpserts: delta.upsertIds.length,
+                    totalVectors: Number(
+                        deltaResult?.totalVectors
+                        ?? this.owner.tagIndex.stats?.().totalVectors
+                    ) || 0
+                },
+                checkpointPublished: true,
                 waveAssetsStale: true,
                 recommendedAction: 'active-full-training',
-                message: 'Tag 差分修复与全局内存索引重建已完成；请继续重建 V9.1 浪潮矩阵资产。'
+                message: 'Tag 差分修复、活动内存索引增量更新与新 Usearch 代际落盘已完成；请继续重建 V9.1 浪潮矩阵资产。'
             };
         } finally {
             if (lease) lease.release();

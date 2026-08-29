@@ -464,10 +464,12 @@ class VCPTimeLine {
                 if (endMonth && header.month > endMonth) continue;
                 const lines = content.split(/\r?\n/);
                 const firstNonEmpty = lines.findIndex(line => line.trim());
+                const headerLine = firstNonEmpty >= 0 ? lines[firstNonEmpty].trim() : '';
                 const body = lines.filter((_, index) => index !== firstNonEmpty).join('\n').trim();
                 if (!body) continue;
                 if (!grouped.has(header.month)) grouped.set(header.month, []);
-                grouped.get(header.month).push(body);
+                // 保留日记原始首行的具体日期，让月度总结模型能够建立事件级时间线。
+                grouped.get(header.month).push(`${headerLine}\n${body}`);
             }
         };
 
@@ -530,7 +532,7 @@ class VCPTimeLine {
     }
 
     async summarizeMonth(agentName, month, memories) {
-        const prompt = `你是个人记忆时间线整理器。请把 Agent「${agentName}」在 ${month} 的记忆碎片整理为客观、完整、连贯的月度时间线 Markdown。保留明确人物、事件、结果、观点归属和时间线索；不得虚构。末尾仅保留一行“Tag: 标签1, 标签2, ...”。`;
+        const prompt = `你是个人记忆时间线整理器。请把 Agent「${agentName}」在 ${month} 的记忆碎片整理为客观、完整、连贯的月度时间线 Markdown。输入中的每篇日记都以“[YYYY-MM-DD] - 作者”日期作者行开头；必须把事件尽可能按具体日期组织，并在每条事件或事件段落中保留对应的 YYYY-MM-DD 日期，不能把具体日期概括丢失为只有月份。保留明确人物、事件、结果、观点归属和时间线索；不得虚构，不得编造输入中没有的日期。末尾仅保留一行“Tag: 标签1, 标签2, ...”。`;
         const budget = Math.max(512, this.config.maxContextTokens - this.config.maxOutputTokens - 1000);
         let chunks = this.splitByBudget(memories, budget);
         let outputs = [];

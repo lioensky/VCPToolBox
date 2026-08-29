@@ -1176,7 +1176,6 @@ const chatCompletionHandler = new ChatCompletionHandler({
     activeRequests,
     writeDebugLog,
     writeChatLog,
-    handleDiaryFromAIResponse,
     webSocketServer,
     DEBUG_MODE,
     SHOW_VCP_OUTPUT,
@@ -1299,122 +1298,6 @@ app.post('/v1/human/tool', async (req, res) => {
     }
 });
 
-
-async function handleDiaryFromAIResponse(responseText) {
-    let fullAiResponseTextForDiary = '';
-    let successfullyParsedForDiary = false;
-    if (!responseText || typeof responseText !== 'string' || responseText.trim() === "") {
-        return;
-    }
-    const lines = responseText.trim().split('\n');
-    const looksLikeSSEForDiary = lines.some(line => line.startsWith('data: '));
-    if (looksLikeSSEForDiary) {
-        let sseContent = '';
-        for (const line of lines) {
-            if (line.startsWith('data: ')) {
-                const jsonData = line.substring(5).trim();
-                if (jsonData === '[DONE]') continue;
-                try {
-                    const parsedData = JSON.parse(jsonData);
-                    const contentChunk = parsedData.choices?.[0]?.delta?.content || parsedData.choices?.[0]?.message?.content || '';
-                    if (contentChunk) sseContent += contentChunk;
-                } catch (e) { /* ignore */ }
-            }
-        }
-        if (sseContent) {
-            fullAiResponseTextForDiary = sseContent;
-            successfullyParsedForDiary = true;
-        }
-    }
-    if (!successfullyParsedForDiary) {
-        try {
-            const parsedJson = JSON.parse(responseText);
-            const jsonContent = parsedJson.choices?.[0]?.message?.content;
-            if (jsonContent && typeof jsonContent === 'string') {
-                fullAiResponseTextForDiary = jsonContent;
-                successfullyParsedForDiary = true;
-            }
-        } catch (e) { /* ignore */ }
-    }
-    if (!successfullyParsedForDiary && !looksLikeSSEForDiary) {
-        fullAiResponseTextForDiary = responseText;
-    }
-
-    if (fullAiResponseTextForDiary.trim()) {
-        const dailyNoteRegex = /<<<DailyNoteStart>>>(.*?)<<<DailyNoteEnd>>>/s;
-        const match = fullAiResponseTextForDiary.match(dailyNoteRegex);
-        if (match && match[1]) {
-            const noteBlockContent = match[1].trim();
-            if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Found structured daily note block.');
-
-            const maidMatch = noteBlockContent.match(/^\s*Maid:\s*(.+?)$/m);
-            const dateMatch = noteBlockContent.match(/^\s*Date:\s*(.+?)$/m);
-
-            const maidName = maidMatch ? maidMatch[1].trim() : null;
-            const dateString = dateMatch ? dateMatch[1].trim() : null;
-
-            let contentText = null;
-            const contentMatch = noteBlockContent.match(/^\s*Content:\s*([\s\S]*)$/m);
-            if (contentMatch) {
-                contentText = contentMatch[1].trim();
-            }
-
-            if (maidName && dateString && contentText) {
-                const diaryPayload = { maidName, dateString, contentText };
-                try {
-                    if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Calling DailyNoteWrite plugin with payload:', diaryPayload);
-                    // pluginManager.executePlugin is expected to handle JSON stringification if the plugin expects a string
-                    // and to parse the JSON response from the plugin.
-                    // The third argument to executePlugin in Plugin.js is inputData, which can be a string or object.
-                    // For stdio, it's better to stringify here.
-                    const pluginResult = await pluginManager.executePlugin("DailyNoteWrite", JSON.stringify(diaryPayload));
-                    // pluginResult is the direct parsed JSON object from the DailyNoteWrite plugin's stdout.
-                    // Example success: { status: "success", message: "Diary saved to /path/to/your/file.txt" }
-                    // Example error:   { status: "error", message: "Error details" }
-
-                    if (pluginResult && pluginResult.status === "success" && pluginResult.message) {
-                        const dailyNoteWriteResponse = pluginResult; // Use pluginResult directly
-
-                        if (DEBUG_MODE) console.log(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported success: ${dailyNoteWriteResponse.message}`);
-
-                        let filePath = '';
-                        const successMessage = dailyNoteWriteResponse.message; // e.g., "Diary saved to /path/to/file.txt"
-                        const pathMatchMsg = /Diary saved to (.*)/;
-                        const matchedPath = successMessage.match(pathMatchMsg);
-                        if (matchedPath && matchedPath[1]) {
-                            filePath = matchedPath[1];
-                        }
-
-                        const notification = {
-                            type: 'daily_note_created',
-                            data: {
-                                maidName: diaryPayload.maidName,
-                                dateString: diaryPayload.dateString,
-                                filePath: filePath,
-                                status: 'success',
-                                message: `日记 '${filePath || '未知路径'}' 已为 '${diaryPayload.maidName}' (${diaryPayload.dateString}) 创建成功。`
-                            }
-                        };
-                        webSocketServer.broadcast(notification, 'VCPLog');
-                        if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Broadcasted daily_note_created notification:', notification);
-
-                    } else if (pluginResult && pluginResult.status === "error") {
-                        // Handle errors reported by the plugin's JSON response
-                        console.error(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported an error:`, pluginResult.message || pluginResult);
-                    } else {
-                        // Handle cases where pluginResult is null, or status is not "success"/"error", or message is missing on success.
-                        console.error(`[handleDiaryFromAIResponse] DailyNoteWrite plugin returned an unexpected response structure or failed:`, pluginResult);
-                    }
-                } catch (pluginError) {
-                    // This catches errors from pluginManager.executePlugin itself (e.g., process spawn error, timeout)
-                    console.error('[handleDiaryFromAIResponse] Error executing DailyNoteWrite plugin:', pluginError.message, pluginError.stack);
-                }
-            } else {
-                console.error('[handleDiaryFromAIResponse] Could not extract Maid, Date, or Content from daily note block:', { maidName, dateString, contentText: contentText?.substring(0, 50) });
-            }
-        }
-    }
-}
 
 // --- Admin API Router (Moved to routes/adminPanelRoutes.js) ---
 

@@ -14,7 +14,7 @@ const SECURITY_CONFIG = {
     // 允许的图片文件扩展名
     ALLOWED_IMAGE_EXTENSIONS: ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.ico'],
     // 允许的文件扩展名
-    ALLOWED_FILE_EXTENSIONS: ['.txt', '.pdf', '.doc', '.docx', '.json', '.xml', '.csv', '.md', '.mp4', '.webm', '.webp', '.mov', '.avi', '.pptx', '.wav', '.mp3', '.ppt', '.csv'],
+    ALLOWED_FILE_EXTENSIONS: ['.txt', '.pdf', '.doc', '.docx', '.json', '.xml', '.csv', '.md', '.mp4', '.webm', '.webp', '.mov', '.avi', '.pptx', '.wav', '.mp3', '.ppt', '.zip'],
     // 最大文件大小 (100MB)
     MAX_FILE_SIZE: 100 * 1024 * 1024,
     // 异常检测配置

@@ -82,6 +82,21 @@
             placeholder="描述预设用途"
           />
         </UiField>
+        <UiField
+          label="伪系统占位符白名单"
+          for-id="preset-placeholder-allowlist"
+          class="full-width"
+        >
+          <UiTextarea
+            id="preset-placeholder-allowlist"
+            v-model="editorState.placeholderAllowlistText"
+            rows="3"
+            placeholder="VCPChromePageInfo&#10;VCPWeatherInfo"
+          />
+          <small class="field-hint">
+            每行或用逗号填写一个占位符。仅在 Tavern 注入的伪系统消息中解析。
+          </small>
+        </UiField>
       </div>
 
       <div class="rules-header">
@@ -294,6 +309,14 @@ void dragGhostElement
 
 .full-width {
   grid-column: 1 / -1;
+}
+
+.field-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.45;
 }
 
 .rules-header {

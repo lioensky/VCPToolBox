@@ -1,17 +1,11 @@
-use crate::app::{App, GithubMirror};
+use crate::app::App;
 use crossterm::event::KeyCode;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
-
-#[derive(Debug, Clone, Copy)]
-enum ToggleRef {
-    NpmMirror,
-    PipMirror,
-}
 
 #[derive(Debug, Clone, Copy)]
 enum FieldType {
@@ -19,9 +13,8 @@ enum FieldType {
         buffer_index: usize,
         is_password: bool,
     },
-    MirrorSelect,
-    Toggle {
-        value_ref: ToggleRef,
+    MirrorList {
+        section: &'static str,
     },
 }
 
@@ -42,23 +35,19 @@ const FIELDS: [FormField; 4] = [
         hint: "VCP 安装目录，建议不要放系统盘根目录",
     },
     FormField {
-        label: "GitHub 镜像",
-        field_type: FieldType::MirrorSelect,
-        hint: "← → 或 空格切换：直连 / ghproxy",
+        label: "GitHub 镜像站",
+        field_type: FieldType::MirrorList { section: "github" },
+        hint: "安装时将自动选择镜像站点并轮换，无需手动选择",
     },
     FormField {
-        label: "npm 镜像",
-        field_type: FieldType::Toggle {
-            value_ref: ToggleRef::NpmMirror,
-        },
-        hint: "空格切换，国内网络建议开启",
+        label: "npm 镜像站",
+        field_type: FieldType::MirrorList { section: "npm" },
+        hint: "安装时将自动选择镜像站点并轮换，无需手动选择",
     },
     FormField {
-        label: "pip 镜像",
-        field_type: FieldType::Toggle {
-            value_ref: ToggleRef::PipMirror,
-        },
-        hint: "空格切换，国内网络建议开启",
+        label: "pip 镜像站",
+        field_type: FieldType::MirrorList { section: "pip" },
+        hint: "安装时将自动选择镜像站点并轮换，无需手动选择",
     },
 ];
 
@@ -73,23 +62,25 @@ pub fn render(frame: &mut Frame, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let focused_index = app
-        .config_form_cursor
-        .min(FIELDS.len().saturating_sub(1));
+    let focused_index = app.config_form_cursor.min(FIELDS.len().saturating_sub(1));
 
     let mut lines = Vec::new();
 
     lines.push(Line::from(vec![Span::styled(
-        "  ─── VCP 安装配置 ───",
+        "  --- VCP 安装配置 ---",
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
+    )]));
+    lines.push(Line::from(vec![Span::styled(
+        "  * 安装时将自动选择镜像站点并轮换，无需手动选择",
+        Style::default().fg(Color::DarkGray),
     )]));
     lines.push(Line::from(""));
 
     for (index, field) in FIELDS.iter().enumerate() {
         let is_focused = index == focused_index;
-        let prefix = if is_focused { "▸ " } else { "  " };
+        let prefix = if is_focused { "> " } else { "  " };
 
         let label_style = if is_focused {
             Style::default()
@@ -104,13 +95,19 @@ pub fn render(frame: &mut Frame, app: &App) {
             label_style,
         )]));
 
-        lines.push(render_value_line(app, *field, is_focused));
-
-        if is_focused {
-            lines.push(Line::from(vec![Span::styled(
-                format!("      💡 {}", field.hint),
-                Style::default().fg(Color::DarkGray),
-            )]));
+        match field.field_type {
+            FieldType::TextInput { .. } => {
+                lines.push(render_text_input_line(app, *field, is_focused));
+                if is_focused {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("      * {}", field.hint),
+                        Style::default().fg(Color::DarkGray),
+                    )]));
+                }
+            }
+            FieldType::MirrorList { section } => {
+                lines.extend(render_mirror_lines(app, *field, is_focused, section));
+            }
         }
 
         lines.push(Line::from(""));
@@ -118,112 +115,169 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
-        "  💡 API密钥、管理密码等配置将在安装完成后引导您编辑 config.env",
+        "  * API密钥、管理密码等配置将在安装完成后引导您编辑 config.env",
         Style::default().fg(Color::Yellow),
     )]));
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
         format!(
-            "  字段 {}/{}  |  ↑↓/Tab 切换  |  ←→/空格 切换选项  |  直接输入编辑  |  Enter 开始安装  |  Esc 返回",
+            "  字段 {}/{}  |  上下键/Tab 切换  |  直接输入编辑路径  |  Enter 开始安装  |  Esc 返回",
             focused_index + 1,
             FIELDS.len()
         ),
         Style::default().fg(Color::DarkGray),
     )]));
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
-fn render_value_line(app: &App, field: FormField, is_focused: bool) -> Line<'static> {
-    match field.field_type {
-        FieldType::TextInput {
-            buffer_index,
-            is_password,
-        } => {
-            let raw = app
-                .config_form_buffers
-                .get(buffer_index)
-                .cloned()
-                .unwrap_or_default();
+fn render_text_input_line(app: &App, field: FormField, is_focused: bool) -> Line<'static> {
+    let buffer_index = match field.field_type {
+        FieldType::TextInput { buffer_index, .. } => buffer_index,
+        _ => 0,
+    };
+    let is_password = match field.field_type {
+        FieldType::TextInput { is_password, .. } => is_password,
+        _ => false,
+    };
 
-            let display = if is_password && !is_focused && !raw.is_empty() {
-                "*".repeat(raw.chars().count().min(24))
-            } else {
-                raw
-            };
+    let raw = app
+        .config_form_buffers
+        .get(buffer_index)
+        .cloned()
+        .unwrap_or_default();
 
-            let border_style = if is_focused {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
+    let display = if is_password && !is_focused && !raw.is_empty() {
+        "*".repeat(raw.chars().count().min(24))
+    } else {
+        raw
+    };
 
-            let text_style = if is_focused {
-                Style::default().fg(Color::White)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-
-            let cursor = if is_focused { "│" } else { "" };
-
-            Line::from(vec![
-                Span::styled("      [", border_style),
-                Span::styled(format!("{display}{cursor}"), text_style),
-                Span::styled("]", border_style),
-            ])
-        }
-        FieldType::MirrorSelect => {
-            let direct_selected = matches!(app.config.mirror, GithubMirror::Direct);
-            let ghproxy_selected = matches!(app.config.mirror, GithubMirror::GhProxy);
-            let custom_selected = matches!(app.config.mirror, GithubMirror::Custom(_));
-
-            let mut spans = vec![Span::raw("      ")];
-            spans.extend(render_radio("直连", direct_selected));
-            spans.push(Span::raw("   "));
-            spans.extend(render_radio("ghproxy 加速", ghproxy_selected));
-
-            if custom_selected {
-                spans.push(Span::raw("   "));
-                spans.extend(render_radio("自定义(已保存)", true));
-            }
-
-            Line::from(spans)
-        }
-        FieldType::Toggle { value_ref } => {
-            let is_on = match value_ref {
-                ToggleRef::NpmMirror => app.config.use_npm_mirror,
-                ToggleRef::PipMirror => app.config.use_pip_mirror,
-            };
-
-            let (text, color) = if is_on {
-                ("[  ON  ] 已启用", Color::Green)
-            } else {
-                ("[ OFF  ] 已关闭", Color::DarkGray)
-            };
-
-            Line::from(vec![
-                Span::raw("      "),
-                Span::styled(text, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-            ])
-        }
-    }
-}
-
-fn render_radio(label: &str, selected: bool) -> Vec<Span<'static>> {
-    let prefix = if selected { "● " } else { "○ " };
-    let style = if selected {
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD)
+    let border_style = if is_focused {
+        Style::default().fg(Color::Green)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    vec![Span::styled(format!("{prefix}{label}"), style)]
+    let text_style = if is_focused {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    let cursor = if is_focused { "|" } else { "" };
+
+    Line::from(vec![
+        Span::styled("      [", border_style),
+        Span::styled(format!("{display}{cursor}"), text_style),
+        Span::styled("]", border_style),
+    ])
 }
 
-/// 返回 true 表示应开始安装
+fn render_mirror_lines(
+    app: &App,
+    field: FormField,
+    _is_focused: bool,
+    section: &str,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let color = Color::DarkGray;
+
+    match section {
+        "github" => {
+            // Show preferred_github only (up to 3)
+            if !app.mirror_config.preferred_github.is_empty() {
+                for (i, entry) in app.mirror_config.preferred_github.iter().take(3).enumerate() {
+                    let prefix = match i {
+                        0 => "[优选1] ",
+                        1 => "[优选2] ",
+                        2 => "[优选3] ",
+                        _ => "",
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("      {}{}", prefix, entry.name), Style::default().fg(Color::Cyan)),
+                        Span::styled(format!(" -> {}", truncate_url(&entry.url)), Style::default().fg(color)),
+                    ]));
+                }
+            } else {
+                // No preferred yet, show first 3 from github as reference
+                for (i, entry) in app.mirror_config.github.iter().take(3).enumerate() {
+                    let prefix = match i {
+                        0 => "[备用1] ",
+                        1 => "[备用2] ",
+                        2 => "[备用3] ",
+                        _ => "",
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("      {}{}", prefix, entry.name), Style::default().fg(color)),
+                        Span::styled(format!(" -> {}", truncate_url(&entry.url)), Style::default().fg(color)),
+                    ]));
+                }
+            }
+        }
+        "npm" => {
+            for (i, entry) in app.mirror_config.npm.iter().enumerate() {
+                let prefix = match i {
+                    0 => "[1] ",
+                    1 => "[2] ",
+                    2 => "[3] ",
+                    _ => "",
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("      {}{}", prefix, entry.name), Style::default().fg(color)),
+                    Span::styled(format!(" -> {}", truncate_url(&entry.url)), Style::default().fg(color)),
+                ]));
+            }
+        }
+        "pip" => {
+            for (i, entry) in app.mirror_config.pip.iter().enumerate() {
+                let prefix = match i {
+                    0 => "[1] ",
+                    1 => "[2] ",
+                    2 => "[3] ",
+                    3 => "[4] ",
+                    4 => "[5] ",
+                    5 => "[6] ",
+                    _ => "",
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("      {}{}", prefix, entry.name), Style::default().fg(color)),
+                    Span::styled(format!(" -> {}", truncate_url(&entry.url)), Style::default().fg(color)),
+                ]));
+            }
+        }
+        _ => {
+            lines.push(Line::from(vec![
+                Span::raw("      "),
+                Span::styled("(无配置)", Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(vec![
+            Span::raw("      "),
+            Span::styled("(无配置)", Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
+    lines
+}
+
+fn truncate_url(url: &str) -> String {
+    let max = 55;
+    if url.len() <= max {
+        url.to_string()
+    } else {
+        format!("{}...", &url[..max.saturating_sub(3)])
+    }
+}
+
+/// Returns true if installation should start
 pub fn handle_input(app: &mut App, key: KeyCode) -> bool {
     if app.config_form_cursor >= FIELDS.len() {
         app.config_form_cursor = FIELDS.len().saturating_sub(1);
@@ -248,34 +302,6 @@ pub fn handle_input(app: &mut App, key: KeyCode) -> bool {
             app.apply_config_form();
             true
         }
-        KeyCode::Left => {
-            match current.field_type {
-                FieldType::MirrorSelect => set_prev_mirror(app),
-                FieldType::Toggle { value_ref } => set_toggle(app, value_ref, false),
-                FieldType::TextInput { .. } => {}
-            }
-            false
-        }
-        KeyCode::Right => {
-            match current.field_type {
-                FieldType::MirrorSelect => set_next_mirror(app),
-                FieldType::Toggle { value_ref } => set_toggle(app, value_ref, true),
-                FieldType::TextInput { .. } => {}
-            }
-            false
-        }
-        KeyCode::Char(' ') => {
-            match current.field_type {
-                FieldType::MirrorSelect => cycle_mirror(app),
-                FieldType::Toggle { value_ref } => toggle_switch(app, value_ref),
-                FieldType::TextInput { buffer_index, .. } => {
-                    if let Some(buffer) = app.config_form_buffers.get_mut(buffer_index) {
-                        buffer.push(' ');
-                    }
-                }
-            }
-            false
-        }
         KeyCode::Backspace => {
             if let FieldType::TextInput { buffer_index, .. } = current.field_type {
                 if let Some(buffer) = app.config_form_buffers.get_mut(buffer_index) {
@@ -294,42 +320,4 @@ pub fn handle_input(app: &mut App, key: KeyCode) -> bool {
         }
         _ => false,
     }
-}
-
-fn toggle_switch(app: &mut App, toggle: ToggleRef) {
-    match toggle {
-        ToggleRef::NpmMirror => app.config.use_npm_mirror = !app.config.use_npm_mirror,
-        ToggleRef::PipMirror => app.config.use_pip_mirror = !app.config.use_pip_mirror,
-    }
-}
-
-fn set_toggle(app: &mut App, toggle: ToggleRef, value: bool) {
-    match toggle {
-        ToggleRef::NpmMirror => app.config.use_npm_mirror = value,
-        ToggleRef::PipMirror => app.config.use_pip_mirror = value,
-    }
-}
-
-fn cycle_mirror(app: &mut App) {
-    app.config.mirror = match &app.config.mirror {
-        GithubMirror::Direct => GithubMirror::GhProxy,
-        GithubMirror::GhProxy => GithubMirror::Direct,
-        GithubMirror::Custom(_) => GithubMirror::Direct,
-    };
-}
-
-fn set_prev_mirror(app: &mut App) {
-    app.config.mirror = match &app.config.mirror {
-        GithubMirror::Direct => GithubMirror::Direct,
-        GithubMirror::GhProxy => GithubMirror::Direct,
-        GithubMirror::Custom(_) => GithubMirror::Direct,
-    };
-}
-
-fn set_next_mirror(app: &mut App) {
-    app.config.mirror = match &app.config.mirror {
-        GithubMirror::Direct => GithubMirror::GhProxy,
-        GithubMirror::GhProxy => GithubMirror::GhProxy,
-        GithubMirror::Custom(_) => GithubMirror::Direct,
-    };
 }

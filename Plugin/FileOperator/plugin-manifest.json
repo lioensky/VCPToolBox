@@ -113,11 +113,11 @@
       },
       {
         "command": "ApplyDiff",
-        "description": "功能: 对指定文件应用一个差异(diff)修改。调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」ApplyDiff「末」,\nfilePath:「始」H:\\MCP\\VCPChat\\AppData\\canvas\\nova_cool_doc.md「末」,\nsearchString:「始」nova的温度好酷哦！还有html样式哦！看到我的评论了吗？「末」,\nreplaceString:「始」nova的文档好酷哦！还有html样式哦！看到我的评论了吗？「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "功能: 对指定文件应用一个差异(diff)修改。推荐统一使用target表示要被替换的旧内容，replace表示替换后的新内容。为避免已有Agent提示词迁移风险，旧字段searchString/replaceString仍保持完全兼容；若新旧字段同时提供，以target/replace为准。调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」ApplyDiff「末」,\nfilePath:「始」H:\\MCP\\VCPChat\\AppData\\canvas\\nova_cool_doc.md「末」,\ntarget:「始」nova的温度好酷哦！还有html样式哦！看到我的评论了吗？「末」,\nreplace:「始」nova的文档好酷哦！还有html样式哦！看到我的评论了吗？「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
      {
        "command": "UpdateHistory",
-       "description": "功能: 安全地更新一个JSON格式的聊天历史文件。此命令专门用于修改AI自己（role: 'assistant'）的发言内容。它会读取文件，解析JSON，查找并替换指定的文本字符串（仅限第一次出现），然后将更新后的内容写回文件，确保JSON结构的完整性。\n参数:\n- filePath (字符串, 必需): 聊天历史JSON文件的绝对路径。\n- searchString (字符串, 必需): 要在AI发言内容中查找的精确文本。\n- replaceString (字符串, 必需): 用于替换找到的文本的新内容。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」UpdateHistory「末」,\nfilePath:「始」H:\\path\\to\\your\\history.json「末」,\nsearchString:「始」这是我想修改的旧内容。「末」,\nreplaceString:「始」这是替换后的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>"
+       "description": "功能: 安全地更新一个JSON格式的聊天历史文件。此命令专门用于修改AI自己（role: 'assistant'）的发言内容。它会读取文件，解析JSON，查找并替换指定的文本字符串（仅限第一次出现），然后将更新后的内容写回文件，确保JSON结构的完整性。推荐统一使用target/replace；旧字段searchString/replaceString仍保持完全兼容，若两组同时提供则以新字段为准。\n参数:\n- filePath (字符串, 必需): 聊天历史JSON文件的绝对路径。\n- target (字符串, 必需): 要在AI发言内容中查找的精确旧文本。\n- replace (字符串, 必需): 用于替换target的新内容。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」UpdateHistory「末」,\nfilePath:「始」H:\\path\\to\\your\\history.json「末」,\ntarget:「始」这是我想修改的旧内容。「末」,\nreplace:「始」这是替换后的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>"
      },
      {
        "command": "CreateCanvas",

@@ -82,6 +82,21 @@
             <pre v-if="item.preformatted" class="notification-card__content">{{ item.content }}</pre>
             <p v-else class="notification-card__content">{{ item.content }}</p>
 
+            <section
+              v-if="item.toolApproval?.changePreview"
+              class="notification-change-preview"
+              aria-label="文件变更差异预览"
+            >
+              <div class="notification-change-preview__pane notification-change-preview__pane--target">
+                <span class="notification-change-preview__label">− 原内容（target）</span>
+                <pre>{{ item.toolApproval.changePreview.target }}</pre>
+              </div>
+              <div class="notification-change-preview__pane notification-change-preview__pane--replace">
+                <span class="notification-change-preview__label">+ 新内容（replace）</span>
+                <pre>{{ item.toolApproval.changePreview.replace }}</pre>
+              </div>
+            </section>
+
             <div v-if="item.toolApproval" class="notification-approval">
               <textarea
                 v-model="approvalReasons[item.toolApproval.requestId]"
@@ -448,6 +463,59 @@ pre.notification-card__content {
   border-radius: 8px;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
   font-size: 0.8rem;
+}
+
+.notification-change-preview {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.notification-change-preview__pane {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-color) 74%, transparent);
+  border-radius: 10px;
+}
+
+.notification-change-preview__pane--target {
+  border-color: color-mix(in srgb, var(--danger-color) 44%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color) 9%, var(--primary-bg));
+}
+
+.notification-change-preview__pane--replace {
+  border-color: color-mix(in srgb, var(--success-color) 44%, var(--border-color));
+  background: color-mix(in srgb, var(--success-color) 9%, var(--primary-bg));
+}
+
+.notification-change-preview__label {
+  display: block;
+  padding: 6px 9px;
+  color: var(--secondary-text);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 64%, transparent);
+  font-size: var(--font-size-helper);
+  font-weight: 600;
+}
+
+.notification-change-preview__pane--target .notification-change-preview__label {
+  color: color-mix(in srgb, var(--danger-color) 78%, var(--primary-text));
+}
+
+.notification-change-preview__pane--replace .notification-change-preview__label {
+  color: color-mix(in srgb, var(--success-color) 78%, var(--primary-text));
+}
+
+.notification-change-preview pre {
+  max-height: 180px;
+  margin: 0;
+  padding: 9px;
+  overflow: auto;
+  color: var(--primary-text);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .notification-approval {

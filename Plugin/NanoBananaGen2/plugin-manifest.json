@@ -2,7 +2,7 @@
   "manifestVersion": "1.0.0",
   "name": "NanoBananaGen2",
   "displayName": "NanoBanana 图像生成 (自定义渠道)",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "通过 OpenAI Chat Completions 兼容接口调用 Gemini/NanoBanana 图像生成模型。支持自定义 API 地址（可接入任何 /v1/chat/completions 兼容服务）、多渠道绑定轮询（URL+KEY+多MODEL 对应）、单渠道多模型随机、1K/2K/4K 尺寸选择、内置安全过滤绕过。",
   "author": "Kilo Code (魔改: CodeCC & infinite-vector)",
   "pluginType": "synchronous",
@@ -44,6 +44,26 @@
     "DIST_IMAGE_SERVERS": {
       "type": "string",
       "description": "分布式图床地址，用于 file:// 路径降级处理"
+    },
+    "USE_PUBLIC_URL": {
+      "type": "boolean",
+      "description": "true=输出不带端口的公网 URL（需反代已做端口映射）；false=输出带端口的本地 URL。本地部署请用 false。",
+      "default": false
+    },
+    "SAFETY_BYPASS_TEXT": {
+      "type": "string",
+      "description": "追加到 prompt 尾部的破限文本。留空字符串则完全不追加。不设置此项时使用内置默认值。",
+      "default": ""
+    },
+    "MAX_RETRIES": {
+      "type": "number",
+      "description": "429/503 请求的最大重试次数。",
+      "default": 2
+    },
+    "RETRY_BASE_DELAY_MS": {
+      "type": "number",
+      "description": "429/503 重试的基础等待毫秒数。",
+      "default": 2000
     }
   },
   "capabilities": {

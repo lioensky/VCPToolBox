@@ -51,6 +51,7 @@ export function useVcptavernEditor() {
   const editorState = reactive({
     name: '',
     description: '',
+    placeholderAllowlistText: '',
     rules: [] as TavernRule[],
   })
 
@@ -63,6 +64,7 @@ export function useVcptavernEditor() {
     return JSON.stringify({
       name: editorState.name,
       description: editorState.description,
+      placeholderAllowlistText: editorState.placeholderAllowlistText,
       rules: editorState.rules,
     })
   }
@@ -73,7 +75,12 @@ export function useVcptavernEditor() {
   }
 
   watch(
-    () => ({ n: editorState.name, d: editorState.description, r: editorState.rules }),
+    () => ({
+      n: editorState.name,
+      d: editorState.description,
+      p: editorState.placeholderAllowlistText,
+      r: editorState.rules,
+    }),
     () => {
       if (isApplyingExternal) return
       if (!isEditorVisible.value) return
@@ -234,6 +241,23 @@ export function useVcptavernEditor() {
     return merged
   }
 
+  function parsePlaceholderAllowlist(value: string): string[] {
+    return [...new Set(
+      value
+        .split(/[\n,，]+/)
+        .map((item) => item.trim().replace(/^\{\{|\}\}$/g, ''))
+        .filter(Boolean),
+    )]
+  }
+
+  function formatPlaceholderAllowlist(value: unknown): string {
+    if (!Array.isArray(value)) return ''
+    return value
+      .map((item) => String(item).trim().replace(/^\{\{|\}\}$/g, ''))
+      .filter(Boolean)
+      .join('\n')
+  }
+
   // --- Drag session ---
 
   const { dragGhost, dragGhostElement, startPointerDrag } =
@@ -303,6 +327,7 @@ export function useVcptavernEditor() {
       suppressListAnimation.value = true
       editorState.name = name
       editorState.description = data.description || ''
+      editorState.placeholderAllowlistText = formatPlaceholderAllowlist(data.placeholderAllowlist)
       editorState.rules = (data.rules || []).map((rule) => normalizeRule(rule))
       isEditorVisible.value = true
       isNewPreset.value = false
@@ -341,6 +366,7 @@ export function useVcptavernEditor() {
     selectedPresetName.value = ''
     editorState.name = ''
     editorState.description = ''
+    editorState.placeholderAllowlistText = ''
     editorState.rules = []
     isEditorVisible.value = true
     isNewPreset.value = true
@@ -459,6 +485,7 @@ export function useVcptavernEditor() {
       selectedPresetName.value = ''
       editorState.name = ''
       editorState.description = ''
+      editorState.placeholderAllowlistText = ''
       editorState.rules = []
       isEditorVisible.value = false
       isNewPreset.value = false
@@ -507,6 +534,7 @@ export function useVcptavernEditor() {
     try {
       const payload: TavernPreset = {
         description: editorState.description.trim().slice(0, DESCRIPTION_MAX_LENGTH),
+        placeholderAllowlist: parsePlaceholderAllowlist(editorState.placeholderAllowlistText),
         rules: editorState.rules.map((rule) => {
           const normalized = normalizeRule(rule)
           if (normalized.content?.content) {

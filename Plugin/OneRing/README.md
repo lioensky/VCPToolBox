@@ -181,21 +181,54 @@ OneRing 的最重要工程点是消息来源判断，而不是复杂记忆算法
 
 ---
 
-## 尾部标记策略
+## AI 块时间轴来源与尾部标记策略
 
-OneRing 不再模仿群聊系统做开头标记，而是只做尾部标记：
+OneRing 使用以下机器可读标记保存消息时间与来源：
 
 ```text
 [OneRing通知:Ryan于2026-06-05 12:30:00发送于Vchat]
 ```
 
-这样更鲁棒：
+其中 AI（`assistant`）块的来源标记支持两种输出方式，由 `OneRingConfig.json` 中的 `tailTagPlacement` 控制。
+
+### 独立 user 伪系统块（默认、推荐）
+
+```json
+{
+  "tailTagPlacement": "system_user_block"
+}
+```
+
+OneRing 会从 AI 原消息中剥离来源尾标，并紧跟其后插入独立的 `user` 伪系统提示块：
+
+```text
+assistant: AI 回复正文
+user: [系统提示:][OneRing通知:上一条消息由小克于2026-06-05 12:30:00发送于Vchat]
+```
+
+**优点：**可大幅提升 AI 对时间及消息来源的理解能力，降低 AI 把 OneRing 来源信息误当成自身回复内容而形成的世界幻觉。
+
+**兼容性提醒：**这种方式可能形成 `AI / User / User / User / AI` 等连续消息数组。部分老模型或严格校验角色交替的旧接口不兼容这种数组；遇到拒绝请求、角色交替校验错误等问题时，可切换为“追加到原消息块”。
+
+### 追加到原消息块（老模型兼容模式）
+
+```json
+{
+  "tailTagPlacement": "inline"
+}
+```
+
+该模式将 OneRing 来源尾标直接保留在原 `user/assistant` 消息正文末尾，可以实现更严格的消息数组兼容，适合不支持连续同角色消息的老模型。
+
+**风险提示：**AI 更容易把正文末尾的机器来源标记误认为对话内容或自身叙述。虽然数组兼容性更高，但会显著增加 AI 对时间、发送者及世界状态产生幻觉的风险，因此不再作为默认设置。
+
+两种方式共用相同的底层时间线与净化机制：
 
 - 不污染消息开头，不干扰已有群聊/私聊来源识别。
 - fuzzy diff 时可以直接剥离尾部标记。
 - ContextFoldingV2 查询、哈希、向量化前可以统一净化该尾标。
 - 同一正文即使时间戳不同，也能匹配到同一折叠缓存。
-- 由于 AI 回复入库是异步数据库写入，无法回写前端历史，因此 OneRing 会在每次预处理时检查本次 post 内所有 `user/assistant` 历史块；凡是缺失 `[OneRing通知:...]` 尾标的块都会被补标。
+- 由于 AI 回复入库是异步数据库写入，无法回写前端历史，因此 OneRing 会在每次预处理时检查本次 post 内所有 `user/assistant` 历史块并恢复可信时间线来源。
 - 对 `assistant` 块补标时，senderName 使用当前触发语法中的 AgentName；对 `user` 块补标时，仍走来源识别逻辑。
 - 跨端补齐后的上下文会按 OneRing 尾标时间戳进行全局稳定排序；无尾标的当前轮消息排在已知历史之后。
 
@@ -395,6 +428,7 @@ ONERING_OUTPUT_DEDUP_SIMILARITY=0.98
 
 说明：
 
+- AI 块时间轴来源位置通过热配置文件 `Plugin/OneRing/OneRingConfig.json` 的 `tailTagPlacement` 设置；默认值为 `system_user_block`（独立 user 伪系统块），仅在需要兼容严格角色交替的老模型时建议改为 `inline`（追加到原消息块）。
 - `ONERING_ENABLED` 是总开关，但实际触发仍依赖 `[[OneRing::Agent::Frontend]]` 或 `[[OneRing::Agent::Frontend::Only]]`；独立 `[[OneRing::Only]]` 只是模式开关，不会单独触发。
 - `ONERING_MAX_CONTEXT_BLOCKS` 默认建议为 `10`，避免过度消耗 token；需要更长跨端补齐时再手动调高。
 - `ONERING_ALLOW_CONTEXT_PATCH=false` 会关闭普通模式下的跨端补齐。

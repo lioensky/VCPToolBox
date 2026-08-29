@@ -971,25 +971,67 @@ class RAGDiaryPlugin {
 
             if (!content.includes('TOOL_REQUEST')) continue;
 
-            // 匹配所有工具调用块
-            const blockRegex = /<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>/gi;
+            // 匹配普通和 ESCAPE 形式的工具调用块。
+            // ESCAPE 形式常见于工具调用 Content 内可能包含「始」/「末」时，
+            // 例如：Content:「始ESCAPE」...「末」。
+            const blockRegex = /(?:<<<\[?TOOL_REQUEST_ESCAPE\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST_ESCAPE\]?>>>|<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>)/gi;
             let blockMatch;
             while ((blockMatch = blockRegex.exec(content)) !== null) {
-                const block = blockMatch[1];
+                const block = blockMatch[1] ?? blockMatch[2];
 
-                // 提取键值对（「始」...「末」格式）
-                const kvRegex = /(\w+):\s*[「『]始[」』]([\s\S]*?)[「『]末[」』]/g;
-                const fields = {};
-                let kvMatch;
-                while ((kvMatch = kvRegex.exec(block)) !== null) {
-                    fields[kvMatch[1].toLowerCase()] = kvMatch[2].trim();
-                }
+                // 这里只做最小识别：
+                // 1. 已经位于 TOOL_REQUEST 块内；
+                // 2. 块内包含 tool_name 与 DailyNote；
+                // 3. 直接定位 Content 的前 80 个字符。
+                // 不再解析 command，也不要求字段前必须有逗号或换行。
+                const lowerBlock = block.toLowerCase();
+                if (!lowerBlock.includes('tool_name')) continue;
+                if (!lowerBlock.includes('dailynote')) continue;
 
-                // 仅处理 DailyNote create 指令
-                if (fields.tool_name?.toLowerCase() === 'dailynote' &&
-                    fields.command?.toLowerCase() === 'create' &&
-                    fields.content) {
-                    const prefix = fields.content.substring(0, PREFIX_LEN).trim();
+                const extractContent = () => {
+                    const markers = [
+                        ['Content:「始ESCAPE」', '「末ESCAPE」'],
+                        ['Content:「始」', '「末」'],
+                        ['content:「始ESCAPE」', '「末ESCAPE」'],
+                        ['content:「始」', '「末」']
+                    ];
+
+                    for (const [opening, closing] of markers) {
+                        const start = block.indexOf(opening);
+                        if (start === -1) continue;
+
+                        const valueStart = start + opening.length;
+                        const valueEnd = block.indexOf(closing, valueStart);
+                        if (valueEnd === -1) continue;
+
+                        return block.substring(valueStart, valueEnd).trim();
+                    }
+
+                    // 字段名大小写兼容，但仍保持简单的直接定位逻辑。
+                    const contentLabelMatch = block.match(/content\s*:/i);
+                    if (!contentLabelMatch) return '';
+
+                    const tail = block.substring(contentLabelMatch.index + contentLabelMatch[0].length);
+                    const escapedOpening = tail.indexOf('「始ESCAPE」');
+                    if (escapedOpening !== -1) {
+                        const valueStart = escapedOpening + '「始ESCAPE」'.length;
+                        const valueEnd = tail.indexOf('「末ESCAPE」', valueStart);
+                        return valueEnd === -1 ? '' : tail.substring(valueStart, valueEnd).trim();
+                    }
+
+                    const normalOpening = tail.indexOf('「始」');
+                    if (normalOpening !== -1) {
+                        const valueStart = normalOpening + '「始」'.length;
+                        const valueEnd = tail.indexOf('「末」', valueStart);
+                        return valueEnd === -1 ? '' : tail.substring(valueStart, valueEnd).trim();
+                    }
+
+                    return '';
+                };
+
+                const diaryContent = extractContent();
+                if (diaryContent) {
+                    const prefix = diaryContent.substring(0, PREFIX_LEN).trim();
                     if (prefix.length > 0) {
                         prefixes.add(prefix);
                     }
@@ -1020,23 +1062,36 @@ class RAGDiaryPlugin {
         const filtered = results.filter(r => {
             if (!r.text) return true;
 
-            // 日记条目格式: "[2026-02-15] - 角色名\n[14:00] 内容..."
-            // 需要跳过日期头 "[yyyy-MM-dd] - name\n" 来匹配 Content 字段
+            // 日记条目格式:
+            // "[2026-02-15] - 角色名\n[14:00]\n内容..."
+            // 先跳过日期头。时间行不能无条件跳过：
+            // DailyNote 会把 Content 以 [HH:mm] 开头的情况视为 AI 时间前缀，
+            // 此时该时间本身就是 Content 的一部分；普通 Content 则会由 DailyNote
+            // 自动追加一个独立时间行。因此下面同时比较两种正文视图。
             let body = r.text.trim();
-            const headerMatch = body.match(/^\[\d{4}-\d{2}-\d{2}\]\s*-\s*.*?\n/);
+            const headerMatch = body.match(/^\[\d{4}[-.]\d{2}[-.]\d{2}\]\s*-\s*.*?(?:\r?\n|$)/);
             if (headerMatch) {
                 body = body.substring(headerMatch[0].length);
             }
 
-            const resultPrefix = body.substring(0, PREFIX_LEN).trim();
-            if (resultPrefix.length === 0) return true;
+            const resultBodies = [body];
+            const timeHeaderMatch = body.match(/^\s*\[\d{1,2}:\d{2}(?::\d{2})?\]\s*(?:\r?\n|$)/);
+            if (timeHeaderMatch) {
+                resultBodies.push(body.substring(timeHeaderMatch[0].length));
+            }
 
-            // 前缀匹配：检查 resultPrefix 是否与任一上下文前缀的开头相同
-            for (const ctxPrefix of prefixes) {
-                // 取两者较短长度进行比较
-                const compareLen = Math.min(resultPrefix.length, ctxPrefix.length);
-                if (compareLen > 10 && resultPrefix.substring(0, compareLen) === ctxPrefix.substring(0, compareLen)) {
-                    return false; // 命中去重，过滤掉
+            const resultPrefixes = resultBodies
+                .map(candidateBody => candidateBody.substring(0, PREFIX_LEN).trim())
+                .filter(Boolean);
+            if (resultPrefixes.length === 0) return true;
+
+            // 前缀匹配：检查任一正文视图是否与任一上下文前缀相同
+            for (const resultPrefix of resultPrefixes) {
+                for (const ctxPrefix of prefixes) {
+                    const compareLen = Math.min(resultPrefix.length, ctxPrefix.length);
+                    if (compareLen > 10 && resultPrefix.substring(0, compareLen) === ctxPrefix.substring(0, compareLen)) {
+                        return false; // 命中去重，过滤掉
+                    }
                 }
             }
             return true;

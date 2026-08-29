@@ -46,6 +46,9 @@
             <div class="preset-meta">
                 <input type="text" id="preset-name" placeholder="预设名称 (文件名, 仅限英文和数字)">
                 <textarea id="preset-description" placeholder="预设描述"></textarea>
+                <label for="preset-placeholder-allowlist">伪系统占位符白名单</label>
+                <textarea id="preset-placeholder-allowlist" rows="3" placeholder="每行一个，例如：&#10;VCPChromePageInfo&#10;VCPWeatherInfo"></textarea>
+                <small class="field-hint">仅在 [系统通知]、[系统提示:]、[系统邀请指令:] 等伪系统消息中解析。</small>
             </div>
             <h2>注入规则</h2>
             <div id="rules-list">

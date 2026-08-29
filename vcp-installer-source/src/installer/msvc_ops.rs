@@ -1,19 +1,40 @@
 use std::path::Path;
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use futures_util::StreamExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 use crate::app::ProgressEvent;
+use crate::mirrors::MirrorConfig;
 
-/// vs_BuildTools.exe 官方下载地址
-const VS_BUILDTOOLS_URL: &str = "https://aka.ms/vs/17/release/vs_BuildTools.exe";
+/// Install arguments: --quiet no GUI, --norestart prevents system restart prompt
+/// Workloads: VCTools includes VC++ compiler + Windows SDK
+const INSTALL_ARGS: &[&str] = &[
+    "--wait",
+    "--quiet",
+    "--norestart",
+    "--add", "Microsoft.VisualStudio.Workload.VCTools",
+    "--includeRecommended",
+];
 
-/// 安装参数：--passive 显示GUI进度（比 --quiet 友好）
-/// 工作负载：VCTools 包含 VC++ 编译器 + Windows SDK
-const INSTALL_ARGS: &str = "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.VC.ATLMFC.Spectre --add Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre --includeRecommended";
+/// Total timeout for the entire MSVC install operation (30 minutes).
+/// vs_BuildTools.exe + component download + install can legitimately take a long
+/// time on slow connections, but anything beyond 30 min is almost certainly stuck.
+const MSVC_TOTAL_TIMEOUT_SECS: u64 = 1800;
 
-/// 检测 winget 是否可用
+/// Activity timeout: if no output for this many seconds, consider the process hung.
+/// vs_BuildTools.exe is very quiet during component downloads (can go 2-3 min silent
+/// between progress updates). 180 seconds is safe.
+const MSVC_ACTIVITY_TIMEOUT_SECS: u64 = 180;
+
+/// Maximum retry attempts for the entire install (winget or direct download).
+const MSVC_MAX_RETRIES: u32 = 3;
+
+/// Check if winget is available
 fn is_winget_available() -> bool {
     std::process::Command::new("winget")
         .arg("--version")
@@ -24,239 +45,544 @@ fn is_winget_available() -> bool {
         .unwrap_or(false)
 }
 
-/// 等待子进程完成，期间每15秒发送心跳日志（用于无stdout输出的场景）
+/// Verify MSVC Build Tools is actually installed (vswhere check).
+/// Returns Ok(version_string) if found, Err if not detected.
+/// This is the post-install verification step to catch silent install failures.
+pub fn verify_msvc_installed() -> Result<String> {
+    let program_files_x86 = std::env::var("ProgramFiles(x86)")
+        .unwrap_or_else(|_| r"C:\Program Files (x86)".to_string());
+    let vswhere_path = Path::new(&program_files_x86)
+        .join("Microsoft Visual Studio")
+        .join("Installer")
+        .join("vswhere.exe");
+
+    if !vswhere_path.exists() {
+        bail!("vswhere.exe not found at {}", vswhere_path.display());
+    }
+
+    let output = Command::new(&vswhere_path)
+        .args([
+            "-latest",
+            "-products", "*",
+            "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property", "displayName",
+            "-utf8",
+        ])
+        .output()
+        .context("Failed to run vswhere.exe")?;
+
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if name.is_empty() {
+        bail!("MSVC Build Tools not detected after install (vswhere returned empty)");
+    }
+
+    Ok(name)
+}
+
+/// Wait for child process with:
+/// 1. Heartbeat log every heartbeat_secs (visibility)
+/// 2. Activity watchdog: kill if no output for activity_timeout_secs (2GB download hang)
+/// 3. Total timeout: kill if running longer than total_timeout_secs (30 min safety)
+///
+/// The activity timestamp is shared with the reader tasks via `activity_marker`.
 async fn wait_with_heartbeat(
     mut child: tokio::process::Child,
     tx: &mpsc::Sender<ProgressEvent>,
     task_name: &str,
+    heartbeat_secs: u64,
+    activity_timeout_secs: u64,
+    total_timeout_secs: u64,
+    activity_marker: Arc<AtomicU64>,
 ) -> Result<std::process::ExitStatus> {
-    let mut elapsed = 0u64;
+    use std::time::{Duration, Instant};
+
+    let start = Instant::now();
+
     loop {
         tokio::select! {
             result = child.wait() => {
-                return result.context("等待进程失败");
+                return result.context("Waiting for process failed");
             }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
-                elapsed += 15;
+            _ = tokio::time::sleep(Duration::from_secs(heartbeat_secs)) => {
+                let now = Instant::now();
+
+                // Total timeout check (hard kill at 30 min)
+                if now.duration_since(start) >= Duration::from_secs(total_timeout_secs) {
+                    let _ = child.kill().await;
+                    bail!(
+                        "{} total timeout exceeded ({}s), killing process",
+                        task_name, total_timeout_secs
+                    );
+                }
+
+                // Activity timeout check (hung detection)
+                let last_activity_secs = activity_marker.load(Ordering::Relaxed);
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if last_activity_secs > 0
+                    && now_secs.saturating_sub(last_activity_secs) >= activity_timeout_secs
+                {
+                    let _ = child.kill().await;
+                    bail!(
+                        "{} activity timeout exceeded (no output for {}s), killing process",
+                        task_name, activity_timeout_secs
+                    );
+                }
+
+                let elapsed = now.duration_since(start).as_secs();
                 let mins = elapsed / 60;
                 let secs = elapsed % 60;
                 let msg = if mins > 0 {
-                    format!("  {} 已等待 {}分{}秒...", task_name, mins, secs)
+                    format!("  Waiting {} ... {}m{}s", task_name, mins, secs)
                 } else {
-                    format!("  {} 已等待 {}秒...", task_name, secs)
+                    format!("  Waiting {} ... {}s", task_name, secs)
                 };
-                tx.send(ProgressEvent::Log(msg)).await.ok();
+                crate::log_router::send_log_event(&tx, msg).await;
             }
         }
     }
 }
 
-/// 等待子进程完成，同时逐行读取 stdout/stderr 实时推送到 TUI，并保留心跳兜底
+/// Wait for child process with realtime output reading + activity/total timeout watchdog.
+///
+/// Spawns reader tasks that log lines as they arrive and update a shared activity
+/// timestamp. The main loop enforces activity timeout (no output = network blackhole)
+/// and total timeout (30 min safety).
 async fn wait_with_realtime_output(
     mut child: tokio::process::Child,
     tx: &mpsc::Sender<ProgressEvent>,
     task_name: &str,
+    heartbeat_secs: u64,
+    activity_timeout_secs: u64,
+    total_timeout_secs: u64,
 ) -> Result<std::process::ExitStatus> {
-    // 取出 stdout/stderr
+    use std::time::{Duration, Instant};
+
+    let start = Instant::now();
+    // Shared activity marker (unix secs). Reader tasks update it; main loop reads it.
+    // Initialize to now so the watchdog has a baseline.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let activity_marker = Arc::new(AtomicU64::new(now_secs));
+
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
     let tx_out = tx.clone();
-    let tx_err = tx.clone();
-    let tx_hb = tx.clone();
-    let task_name_hb = task_name.to_string();
-
-    // spawn stdout 逐行读取
+    let marker_out = activity_marker.clone();
     let stdout_task = tokio::spawn(async move {
         if let Some(out) = stdout {
             let reader = BufReader::new(out);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                // Update activity on every read
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                marker_out.store(now, Ordering::Relaxed);
+
                 let trimmed = line.trim().to_string();
                 if !trimmed.is_empty() {
-                    tx_out.send(ProgressEvent::Log(format!("  [winget] {}", trimmed))).await.ok();
+                    let _ = crate::log_router::send_log_event(
+                        &tx_out,
+                        format!("  [winget] {}", trimmed),
+                    )
+                    .await;
                 }
             }
         }
     });
 
-    // spawn stderr 逐行读取
+    let tx_err = tx.clone();
+    let marker_err = activity_marker.clone();
     let stderr_task = tokio::spawn(async move {
         if let Some(err) = stderr {
             let reader = BufReader::new(err);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                marker_err.store(now, Ordering::Relaxed);
+
                 let trimmed = line.trim().to_string();
                 if !trimmed.is_empty() {
-                    tx_err.send(ProgressEvent::Log(format!("  [winget] {}", trimmed))).await.ok();
+                    let _ = crate::log_router::send_log_event(
+                        &tx_err,
+                        format!("  [winget] {}", trimmed),
+                    )
+                    .await;
                 }
             }
         }
     });
 
-    // spawn 心跳兜底（winget可能长时间无输出）
-    let heartbeat_task = tokio::spawn(async move {
-        let mut elapsed = 0u64;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-            elapsed += 30;
-            let mins = elapsed / 60;
-            let secs = elapsed % 60;
-            let msg = if mins > 0 {
-                format!("  {} 已运行 {}分{}秒...", task_name_hb, mins, secs)
-            } else {
-                format!("  {} 已运行 {}秒...", task_name_hb, secs)
-            };
-            tx_hb.send(ProgressEvent::Log(msg)).await.ok();
+    // Main loop: select on child exit or heartbeat/timeout check.
+    loop {
+        tokio::select! {
+            result = child.wait() => {
+                // Process ended. Wait for readers to drain remaining buffered output.
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+                return result.context("Waiting for process failed");
+            }
+            _ = tokio::time::sleep(Duration::from_secs(heartbeat_secs)) => {
+                let now = Instant::now();
+
+                // Total timeout (hard kill at 30 min)
+                if now.duration_since(start) >= Duration::from_secs(total_timeout_secs) {
+                    let _ = child.kill().await;
+                    stdout_task.abort();
+                    stderr_task.abort();
+                    bail!(
+                        "{} total timeout exceeded ({}s), killing process",
+                        task_name, total_timeout_secs
+                    );
+                }
+
+                // Activity timeout (no output for too long = hung)
+                let last_activity_secs = activity_marker.load(Ordering::Relaxed);
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if last_activity_secs > 0
+                    && now_secs.saturating_sub(last_activity_secs) >= activity_timeout_secs
+                {
+                    let _ = child.kill().await;
+                    stdout_task.abort();
+                    stderr_task.abort();
+                    bail!(
+                        "{} activity timeout exceeded (no output for {}s), killing process",
+                        task_name, activity_timeout_secs
+                    );
+                }
+
+                let elapsed = now.duration_since(start).as_secs();
+                let mins = elapsed / 60;
+                let secs = elapsed % 60;
+                let msg = if mins > 0 {
+                    format!("  Waiting {} ... {}m{}s", task_name, mins, secs)
+                } else {
+                    format!("  Waiting {} ... {}s", task_name, secs)
+                };
+                crate::log_router::send_log_event(&tx, msg).await;
+            }
         }
-    });
-
-    // 等待子进程结束
-    let status = child.wait().await.context("等待进程失败")?;
-
-    // 等 stdout/stderr 读完
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
-
-    // 终止心跳
-    heartbeat_task.abort();
-
-    Ok(status)
+    }
 }
 
-/// 通过 winget 安装 VS Build Tools
+/// Install VS Build Tools via winget
 async fn install_via_winget(
     tx: &mpsc::Sender<ProgressEvent>,
 ) -> Result<()> {
-    tx.send(ProgressEvent::Log(
-        "  检测到 winget，使用 winget 安装 VS Build Tools...".to_string(),
-    )).await.ok();
+    crate::log_router::send_log_event(&tx,
+        "  winget detected, installing VS Build Tools via winget...".to_string(),
+    ).await;
 
-    tx.send(ProgressEvent::Log(
-        "  这需要下载约 1-2GB，可能需要较长时间，请耐心等待...".to_string(),
-    )).await.ok();
+    crate::log_router::send_log_event(&tx,
+        "  NOTE: About 1-2 GB download, expect 5-15 minutes. Be patient.".to_string(),
+    ).await;
+
+    crate::log_router::send_log_event(&tx,
+        "  Downloading Microsoft.VisualStudio.2022.BuildTools...".to_string(),
+    ).await;
 
     let child = tokio::process::Command::new("winget")
         .args([
             "install",
             "Microsoft.VisualStudio.2022.BuildTools",
-            "--override", INSTALL_ARGS,
+            "--override", "--wait --quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended",
             "--accept-source-agreements",
             "--accept-package-agreements",
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .context("启动 winget 失败")?;
+        .context("Failed to start winget")?;
 
-    // 使用实时输出 + 心跳
-    let status = wait_with_realtime_output(child, tx, "MSVC 安装").await?;
+    let status = wait_with_realtime_output(
+        child, tx, "MSVC install", 15,
+        MSVC_ACTIVITY_TIMEOUT_SECS,
+        MSVC_TOTAL_TIMEOUT_SECS,
+    ).await?;
 
     if status.success() {
         Ok(())
     } else {
-        bail!("winget 安装 VS Build Tools 失败，退出码: {:?}", status.code())
+        bail!("winget install failed, exit code: {:?}", status.code())
     }
 }
 
-/// 直接下载 vs_BuildTools.exe 并运行安装
+/// Download vs_BuildTools.exe with streaming + mirror fallback (URLs from config)
+async fn download_vs_buildtools_exe(
+    tx: &mpsc::Sender<ProgressEvent>,
+    exe_path: &Path,
+    mirror_config: &MirrorConfig,
+) -> Result<()> {
+    tokio::fs::create_dir_all(exe_path.parent().unwrap()).await
+        .context("Failed to create DL_runtimes directory")?;
+
+    // No hard timeout here — hangs are caught by the install-step activity watchdog.
+    // The download itself can be slow but we'll detect stalls via vs_BuildTools.exe output.
+    let client = reqwest::Client::builder()
+        .build()
+        .context("Failed to create HTTP client")?;
+
+    let urls: Vec<String> = mirror_config.msvc.iter().map(|e| e.url.clone()).collect();
+
+    for (i, url) in urls.iter().enumerate() {
+        if i > 0 {
+            crate::log_router::send_log_event(&tx, format!(
+                "  Retrying with mirror: {}",
+                url
+            )).await;
+        }
+
+        crate::log_router::send_log_event(&tx, format!(
+            "  Downloading vs_BuildTools.exe from: {}",
+            url
+        )).await;
+
+        match stream_download(&client, url, exe_path, tx).await {
+            Ok(_) => {
+                let size = tokio::fs::metadata(exe_path).await?.len();
+                crate::log_router::send_log_event(&tx, format!(
+                    "  Download complete: {:.1} MB, saved to DL_runtimes",
+                    size as f64 / (1024.0 * 1024.0)
+                )).await;
+                return Ok(());
+            }
+            Err(e) => {
+                // Clean partial file
+                let _ = tokio::fs::remove_file(exe_path).await;
+                crate::log_router::send_log_event(&tx, format!(
+                    "  Download failed: {}",
+                    e
+                )).await;
+            }
+        }
+    }
+
+    bail!("Failed to download vs_BuildTools.exe from all configured URLs")
+}
+
+/// Stream download with progress reporting
+async fn stream_download(
+    client: &reqwest::Client,
+    url: &str,
+    dest: &Path,
+    tx: &mpsc::Sender<ProgressEvent>,
+) -> Result<()> {
+    let mut file = tokio::fs::File::create(dest).await
+        .with_context(|| format!("Failed to create file: {}", dest.display()))?;
+
+    let mut downloaded: u64 = 0;
+    let mut last_report = std::time::Instant::now();
+
+    let response = client.get(url).send().await
+        .with_context(|| format!("Request failed: {}", url))?;
+
+    if !response.status().is_success() {
+        bail!("Download failed: HTTP {}", response.status());
+    }
+
+    let total = response.content_length().unwrap_or(0);
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.with_context(|| format!("Read stream failed: {}", url))?;
+
+        file.write_all(&chunk).await
+            .with_context(|| format!("Write failed: {}", dest.display()))?;
+
+        downloaded += chunk.len() as u64;
+
+        // Report at most once per second
+        if last_report.elapsed().as_secs() >= 1 {
+            if total > 0 {
+                let pct = (downloaded as f64 / total as f64) * 100.0;
+                crate::log_router::send_log_event(&tx, format!(
+                    "  Download: {:.1}% ({:.1}/{:.1} MB)",
+                    pct,
+                    downloaded as f64 / (1024.0 * 1024.0),
+                    total as f64 / (1024.0 * 1024.0)
+                )).await;
+            } else {
+                crate::log_router::send_log_event(&tx, format!(
+                    "  Download: {:.1} MB",
+                    downloaded as f64 / (1024.0 * 1024.0)
+                )).await;
+            }
+            last_report = std::time::Instant::now();
+        }
+    }
+
+    file.flush().await
+        .with_context(|| format!("Flush failed: {}", dest.display()))?;
+
+    Ok(())
+}
+
+/// Install VS Build Tools via direct download
 async fn install_via_direct_download(
     tx: &mpsc::Sender<ProgressEvent>,
-    install_path: &Path,
+    _install_path: &Path,
+    mirror_config: &MirrorConfig,
 ) -> Result<()> {
-    tx.send(ProgressEvent::Log(
-        "  winget 不可用，将直接下载 vs_BuildTools.exe 安装...".to_string(),
-    )).await.ok();
+    crate::log_router::send_log_event(&tx,
+        "  winget not available (or failed), using vs_BuildTools.exe...".to_string(),
+    ).await;
 
-    // 下载 vs_BuildTools.exe
-    let downloads_dir = install_path.join("runtimes").join("downloads");
-    tokio::fs::create_dir_all(&downloads_dir).await
-        .context("创建下载目录失败")?;
+    let dl_runtimes_dir = crate::mirrors::get_exe_dir().join("DL_runtimes");
+    let exe_path = dl_runtimes_dir.join("vs_BuildTools.exe");
 
-    let exe_path = downloads_dir.join("vs_BuildTools.exe");
-
-    tx.send(ProgressEvent::Log(
-        "  正在下载 vs_BuildTools.exe（约 1.4MB）...".to_string(),
-    )).await.ok();
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .context("创建 HTTP 客户端失败")?;
-
-    let resp = client.get(VS_BUILDTOOLS_URL)
-        .send()
-        .await
-        .context("下载 vs_BuildTools.exe 失败")?;
-
-    if !resp.status().is_success() {
-        bail!("下载 vs_BuildTools.exe 失败，HTTP {}", resp.status());
+    if exe_path.exists() {
+        let size = tokio::fs::metadata(&exe_path).await?.len();
+        crate::log_router::send_log_event(&tx, format!(
+            "  Cached vs_BuildTools.exe found ({:.1} MB), reusing",
+            size as f64 / (1024.0 * 1024.0)
+        )).await;
+    } else {
+        download_vs_buildtools_exe(tx, &exe_path, mirror_config).await?;
     }
 
-    let bytes = resp.bytes().await.context("读取下载内容失败")?;
-    tokio::fs::write(&exe_path, &bytes).await.context("保存 vs_BuildTools.exe 失败")?;
+    crate::log_router::send_log_event(&tx,
+        "  NOTE: About 1-2 GB download, expect 5-15 minutes. Be patient.".to_string(),
+    ).await;
 
-    tx.send(ProgressEvent::Log(
-        format!("  vs_BuildTools.exe 下载完成 ({:.1} KB)", bytes.len() as f64 / 1024.0),
-    )).await.ok();
+    crate::log_router::send_log_event(&tx,
+        "  Installing VS Build Tools (downloading components in background)...".to_string(),
+    ).await;
 
-    // 运行安装（--passive 显示 GUI 进度窗口）
-    tx.send(ProgressEvent::Log(
-        "  正在安装 VS Build Tools（将弹出安装进度窗口）...".to_string(),
-    )).await.ok();
+    // Shared activity marker for the watchdog (vs_BuildTools.exe is mostly quiet).
+    // It prints occasional progress lines; we treat any output as activity.
+    let activity_marker = Arc::new(AtomicU64::new(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    ));
 
-    tx.send(ProgressEvent::Log(
-        "  这需要下载约 1-2GB 组件，可能需要较长时间，请耐心等待...".to_string(),
-    )).await.ok();
+    // Collect proxy env vars from current process and pass to installer
+    let mut cmd = tokio::process::Command::new(&exe_path);
+    cmd.args(INSTALL_ARGS);
 
-    let child = tokio::process::Command::new(&exe_path)
-        .args(INSTALL_ARGS.split_whitespace())
-        .spawn()
-        .context("启动 vs_BuildTools.exe 失败")?;
+    for (key, _) in std::env::vars() {
+        let lower = key.to_lowercase();
+        if lower.contains("proxy") {
+            if let Ok(val) = std::env::var(&key) {
+                cmd.env(&key, val);
+            }
+        }
+    }
 
-    // 直接下载路径用 --passive 弹GUI，只需心跳兜底
-    let status = wait_with_heartbeat(child, tx, "MSVC 安装").await?;
+    let child = cmd.spawn().context("Failed to start vs_BuildTools.exe")?;
 
-    // 清理下载的安装文件
-    let _ = tokio::fs::remove_file(&exe_path).await;
-    let _ = tokio::fs::remove_dir(&downloads_dir).await;
+    let status = wait_with_heartbeat(
+        child, tx, "MSVC install", 15,
+        MSVC_ACTIVITY_TIMEOUT_SECS,
+        MSVC_TOTAL_TIMEOUT_SECS,
+        activity_marker,
+    ).await?;
 
     if status.success() {
         Ok(())
     } else {
-        bail!("vs_BuildTools.exe 安装失败，退出码: {:?}", status.code())
+        bail!("vs_BuildTools.exe install failed, exit code: {:?}", status.code())
     }
 }
 
-/// 安装 MSVC Build Tools（主入口）
+/// Install MSVC Build Tools (main entry)
 ///
-/// 策略：winget 优先，不可用时降级为直接下载 vs_BuildTools.exe
-/// 安装失败不阻断整体流程
+/// Strategy:
+/// 1. Try winget first
+/// 2. If winget unavailable or fails, fallback to direct download vs_BuildTools.exe
+/// 3. After install, verify with vswhere
+/// 4. Retry up to MSVC_MAX_RETRIES times on failure
+///
+/// Install failure BLOCKS the overall flow (returns Err) since native modules
+/// cannot be compiled without MSVC.
 pub async fn install_msvc_build_tools(
     tx: &mpsc::Sender<ProgressEvent>,
     install_path: &Path,
+    mirror_config: &MirrorConfig,
 ) -> Result<()> {
-    let result = if is_winget_available() {
-        install_via_winget(tx).await
-    } else {
-        install_via_direct_download(tx, install_path).await
-    };
+    let mut last_error = String::new();
 
-    match &result {
-        Ok(()) => {
-            tx.send(ProgressEvent::Log(
-                "✅ VS Build Tools 安装完成".to_string(),
-            )).await.ok();
+    for attempt in 1..=MSVC_MAX_RETRIES {
+        if attempt > 1 {
+            crate::log_router::send_log_event(&tx, format!(
+                "  MSVC install attempt {}/{}, retrying...",
+                attempt, MSVC_MAX_RETRIES
+            )).await;
         }
-        Err(e) => {
-            tx.send(ProgressEvent::Log(
-                format!("⚠ VS Build Tools 安装失败: {}", e),
-            )).await.ok();
-            tx.send(ProgressEvent::Log(
-                "  npm install 将继续执行，但原生模块可能编译失败".to_string(),
-            )).await.ok();
+
+        let result = if is_winget_available() {
+            match install_via_winget(tx).await {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    crate::log_router::send_log_event(&tx, format!(
+                        "  winget failed: {}", e
+                    )).await;
+                    crate::log_router::send_log_event(&tx,
+                        "  Falling back to direct download...".to_string(),
+                    ).await;
+                    // Fallback to direct download on same attempt
+                    install_via_direct_download(tx, install_path, mirror_config).await
+                        .map_err(|de| {
+                            anyhow::anyhow!("winget: {}; direct: {}", e, de)
+                        })
+                }
+            }
+        } else {
+            install_via_direct_download(tx, install_path, mirror_config).await
+        };
+
+        match &result {
+            Ok(()) => {
+                // Post-install verification with vswhere
+                crate::log_router::send_log_event(&tx,
+                    "  Verifying MSVC installation with vswhere...".to_string(),
+                ).await;
+
+                match verify_msvc_installed() {
+                    Ok(version) => {
+                        crate::log_router::send_log_event(&tx,
+                            format!("  MSVC verified: {}", version),
+                        ).await;
+                        crate::log_router::send_log_event(&tx,
+                            "VS Build Tools installed successfully".to_string(),
+                        ).await;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        last_error = format!("verification failed: {}", e);
+                        crate::log_router::send_log_event(&tx, format!(
+                            "  MSVC verification FAILED: {}", e
+                        )).await;
+                    }
+                }
+            }
+            Err(e) => {
+                last_error = e.to_string();
+                crate::log_router::send_log_event(&tx, format!(
+                    "  MSVC install error: {}", e
+                )).await;
+            }
         }
     }
 
-    result
+    // All retries exhausted
+    bail!(
+        "MSVC Build Tools install failed after {} attempts: {}. \
+         Native modules (better-sqlite3, node-pty, hnswlib-node) cannot be compiled without it.",
+        MSVC_MAX_RETRIES, last_error
+    )
 }

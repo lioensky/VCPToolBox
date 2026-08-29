@@ -633,7 +633,7 @@ async function readFile(filePath, encoding = 'utf8', lines) {
       ];
     } else {
       // For text-based files — return header and raw content as separate objects
-      // (no code block wrapping, to avoid interfering with ApplyDiff searchString matching)
+      // (no code block wrapping, to avoid interfering with ApplyDiff target matching)
       returnData.content = [
         { type: 'text', text: headerText },
         { type: 'text', text: content }
@@ -1453,10 +1453,10 @@ async function createCanvas(fileName, content, encoding = 'utf8') {
   }
 }
 
-async function updateHistory(filePath, searchString, replaceString, encoding = 'utf8') {
+async function updateHistory(filePath, target, replace, encoding = 'utf8') {
   try {
     filePath = resolveAndNormalizePath(filePath);
-    debugLog('Updating history file', { filePath, searchString, replaceString });
+    debugLog('Updating history file', { filePath, target, replace });
 
     if (!isPathAllowed(filePath, 'UpdateHistory')) {
       throw new Error(`Access denied: Path '${filePath}' is not in allowed directories`);
@@ -1486,9 +1486,9 @@ async function updateHistory(filePath, searchString, replaceString, encoding = '
       const entry = history[i];
       if (entry.role === 'assistant' && typeof entry.content === 'string') {
         // [CRLF Fix] Use normalized comparison
-        if (helper.includes(entry.content, searchString)) {
+        if (helper.includes(entry.content, target)) {
           // [CRLF Fix] Use safe replacement
-          const replaceResult = helper.safeReplace(entry.content, searchString, replaceString);
+          const replaceResult = helper.safeReplace(entry.content, target, replace);
           if (replaceResult.success) {
             entry.content = replaceResult.result;
             updateApplied = true;
@@ -1500,7 +1500,7 @@ async function updateHistory(filePath, searchString, replaceString, encoding = '
     }
 
     if (!updateApplied) {
-      throw new Error(`Content to replace was not found in any assistant message. Search string: "${searchString}"`);
+      throw new Error(`Content to replace was not found in any assistant message. Target: "${target}"`);
     }
 
     // 4. Stringify the modified history and write it back
@@ -1526,14 +1526,23 @@ async function updateHistory(filePath, searchString, replaceString, encoding = '
   }
 }
 
+function getTargetReplaceParameters(parameters) {
+  return {
+    // 新字段优先；旧字段保留兼容，避免已有 Agent 提示词和批量调用迁移失败。
+    target: getParameterValue(parameters, 'target', 'searchString'),
+    replace: getParameterValue(parameters, 'replace', 'replaceString')
+  };
+}
+
 async function applyDiff(parameters) {
   try {
-    const { diffContent, searchString, replaceString, encoding = 'utf8' } = parameters;
+    const { diffContent, encoding = 'utf8' } = parameters;
+    const { target, replace } = getTargetReplaceParameters(parameters);
     const filePath = getPathParameter(parameters, 'filePath');
 
     // [FIX] Resolve path and read raw content directly via fs.readFile(),
     // bypassing readFile()'s display formatting (code block wrapping)
-    // that was causing searchString match failures.
+    // that was causing target match failures.
     const resolvedPath = resolveAndNormalizePath(filePath);
 
     if (!isPathAllowed(resolvedPath, 'ApplyDiff')) {
@@ -1567,13 +1576,17 @@ async function applyDiff(parameters) {
 
       newContent = helper.denormalize(normResult);
 
-    } else if (searchString !== undefined && replaceString !== undefined) {
-      const replaceResult = helper.safeReplace(originalContent, searchString, replaceString);
+    } else if (target !== undefined && replace !== undefined) {
+      if (typeof target !== 'string' || typeof replace !== 'string') {
+        throw new Error('ApplyDiff "target" and "replace" parameters must be strings.');
+      }
+
+      const replaceResult = helper.safeReplace(originalContent, target, replace);
 
       if (!replaceResult.success) {
         throw new Error(
-          `Diff application failed: searchString not found after CRLF normalization. ` +
-          `Search: "${searchString.substring(0, 80)}..."`
+          `Diff application failed: target not found after CRLF normalization. ` +
+          `Target: "${target.substring(0, 80)}..."`
         );
       }
 
@@ -1584,7 +1597,10 @@ async function applyDiff(parameters) {
       });
 
     } else {
-      throw new Error('ApplyDiff requires either "diffContent" or both "searchString" and "replaceString" parameters.');
+      throw new Error(
+        'ApplyDiff requires either "diffContent" or both "target" and "replace" parameters. ' +
+        'Legacy "searchString"/"replaceString" parameters remain supported.'
+      );
     }
 
     const editResult = await editFile(filePath, newContent, encoding);
@@ -1698,9 +1714,11 @@ async function processBatchRequest(request) {
         case 'CreateCanvas':
           result = await createCanvas(parameters.fileName, parameters.content, parameters.encoding);
           break;
-        case 'UpdateHistory':
-          result = await updateHistory(getPathParameter(parameters, 'filePath'), parameters.searchString, parameters.replaceString, parameters.encoding);
+        case 'UpdateHistory': {
+          const { target, replace } = getTargetReplaceParameters(parameters);
+          result = await updateHistory(getPathParameter(parameters, 'filePath'), target, replace, parameters.encoding);
           break;
+        }
         case 'ApplyDiff':
           result = await applyDiff(parameters);
           break;
@@ -1808,8 +1826,10 @@ async function processRequest(request) {
       return await downloadFile(parameters.url, parameters.downloadDir, parameters.fileName);
     case 'CreateCanvas':
       return await createCanvas(parameters.fileName, parameters.content, parameters.encoding);
-    case 'UpdateHistory':
-      return await updateHistory(getPathParameter(parameters, 'filePath'), parameters.searchString, parameters.replaceString, parameters.encoding);
+    case 'UpdateHistory': {
+      const { target, replace } = getTargetReplaceParameters(parameters);
+      return await updateHistory(getPathParameter(parameters, 'filePath'), target, replace, parameters.encoding);
+    }
     case 'ApplyDiff':
       return await applyDiff(parameters);
     default:

@@ -112,6 +112,15 @@ export interface VexusStats {
   capacity: number
   memoryUsage: number
 }
+/** 对活动 Tag 索引执行单次排他差分后的摘要。 */
+export interface TagIndexDeltaResult {
+  requestedDeletes: number
+  requestedUpserts: number
+  appliedDeletes: number
+  appliedUpserts: number
+  totalVectors: number
+  memoRuntimeCleared: boolean
+}
 /** VexusIndex 内部统一 Memo 运行时诊断。 */
 export interface MemoRuntimeStats {
   activeArtifactSig?: string
@@ -159,6 +168,14 @@ export declare class VexusIndex {
    * 内部依然是逐条 add，但避免了多次获取写锁的开销。
    */
   addBatch(ids: Array<number>, vectors: Float32Array): void
+  /**
+   * 对当前活动 Tag 索引执行一次后台排他差分。
+   *
+   * N-API 调用只复制实际变化的向量并立即返回 Promise；耗时的 usearch 删除、
+   * upsert 与 MemoRuntime 失效均在 libuv 工作线程执行，不阻塞 Node 事件循环。
+   * 搜索通过同一 RwLock 等待差分完成，只会看到差分前或差分后的索引。
+   */
+  applyTagDelta(removeIds: Array<number>, upsertIds: Array<number>, upsertVectors: Float32Array): Promise<unknown>
   /** 搜索 */
   search(query: Float32Array, k: number): Array<SearchResult>
   /**

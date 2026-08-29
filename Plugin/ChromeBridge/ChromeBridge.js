@@ -1167,6 +1167,7 @@ async function runLifecycleCommand(command, params = {}) {
                 : {};
 
             await browserRuntimeManager.ensureManagedBrowser(launchOptions);
+            const launchedRuntime = browserRuntimeManager.getManagedBrowserStatus();
 
             // 人工设置只要求服务器主进程成功拥有并启动浏览器。此时用户可能正要
             // 配置扩展或首次选择 Managed，不能等待握手，更不能因尚未握手而重启。
@@ -1186,7 +1187,22 @@ async function runLifecycleCommand(command, params = {}) {
 
             let client = await waitForManagedClient(timeoutMs);
             if (!client) {
-                console.warn('[ChromeBridge] open_chrome 未等到可信 managed 连接，准备重启 managed Chrome 后重试一次。');
+                const runtimeAfterWait = browserRuntimeManager.getManagedBrowserStatus();
+
+                // 用户可能在扩展刷新或握手等待期间主动点 X 关闭窗口。此时进程已经
+                // 自然退出，必须尊重关闭意图；无条件重启会形成“关掉又打开”的循环。
+                if (
+                    !runtimeAfterWait.running &&
+                    runtimeAfterWait.runtimeInstanceId === launchedRuntime.runtimeInstanceId
+                ) {
+                    throw new Error(JSON.stringify({
+                        plugin_error: 'managed Chrome 在等待扩展连接期间已被关闭，已停止 open_chrome 自动重试。',
+                        error_type: 'managed_browser_closed_during_open',
+                        runtime: runtimeAfterWait
+                    }));
+                }
+
+                console.warn('[ChromeBridge] open_chrome 未等到可信 managed 连接，且浏览器仍在运行；准备重启 managed Chrome 后重试一次。');
                 await browserRuntimeManager.closeManagedBrowser('open_chrome_unverified_restart');
                 await browserRuntimeManager.ensureManagedBrowser(launchOptions);
                 client = await waitForManagedClient(timeoutMs);

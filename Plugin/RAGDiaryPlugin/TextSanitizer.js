@@ -67,14 +67,15 @@ function stripToolMarkers(text) {
     const blacklistedKeys = ['tool_name', 'command', 'archery', 'maid'];
     const blacklistedValues = ['dailynote', 'update', 'create', 'no_reply'];
 
-    let processed = text.replace(/<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>/gi, (match, block) => {
+    let processed = text.replace(/(?:<<<\[?TOOL_REQUEST_ESCAPE\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST_ESCAPE\]?>>>|<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>)/gi, (match, escapedBlock, normalBlock) => {
+        const block = escapedBlock ?? normalBlock;
         const results = [];
-        const regex = /(\w+):\s*[「『]始[」』]([\s\S]*?)[「『]末[」』]/g;
+        const regex = /(\w+):\s*(?:[「『]始ESCAPE[」』]([\s\S]*?)[「『]末ESCAPE[」』]|[「『]始[」』]([\s\S]*?)[「『]末[」』])/gi;
         let m;
 
         while ((m = regex.exec(block)) !== null) {
             const key = m[1].toLowerCase();
-            const val = m[2].trim();
+            const val = (m[2] ?? m[3]).trim();
             const valLower = val.toLowerCase();
 
             const isTechKey = blacklistedKeys.includes(key);
@@ -88,7 +89,10 @@ function stripToolMarkers(text) {
         if (results.length === 0) {
             return block.split('\n')
                 .map(line => {
-                    const cleanLine = line.replace(/\w+:\s*[「『]始[」』]/g, '').replace(/[「『]末[」』]/g, '').trim();
+                    const cleanLine = line
+                        .replace(/\w+:\s*(?:[「『]始ESCAPE[」』]|[「『]始[」』])/gi, '')
+                        .replace(/(?:[「『]末ESCAPE[」』]|[「『]末[」』])/gi, '')
+                        .trim();
                     const lower = cleanLine.toLowerCase();
                     if (blacklistedValues.some(bv => lower.includes(bv))) return '';
                     return cleanLine;
@@ -101,10 +105,10 @@ function stripToolMarkers(text) {
     });
 
     return processed
-        .replace(/<<<\[?TOOL_REQUEST\]?>>>/gi, '')
-        .replace(/<<<\[?END_TOOL_REQUEST\]?>>>/gi, '')
-        .replace(/[「」『』]始[「」『』]/g, '')
-        .replace(/[「」『』]末[「」『』]/g, '')
+        .replace(/<<<\[?(?:TOOL_REQUEST|TOOL_REQUEST_ESCAPE)\]?>>>/gi, '')
+        .replace(/<<<\[?(?:END_TOOL_REQUEST|END_TOOL_REQUEST_ESCAPE)\]?>>>/gi, '')
+        .replace(/[「」『』]始(?:ESCAPE)?[「」『』]/gi, '')
+        .replace(/[「」『』]末(?:ESCAPE)?[「」『』]/gi, '')
         .replace(/[「」『』]/g, '')
         .replace(/[ \t]+/g, ' ')
         .replace(/\n{3,}/g, '\n\n')

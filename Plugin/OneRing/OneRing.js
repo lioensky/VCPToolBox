@@ -515,7 +515,7 @@ function replaceOnlyTriggerWithNotice(content, triggerText) {
 const HOT_CONFIG_FILE_NAME = 'OneRingConfig.json';
 const DEFAULT_HOT_CONFIG = Object.freeze({
     enabled: true,
-    tailTagPlacement: 'inline',
+    tailTagPlacement: 'system_user_block',
     maxContextBlocks: 10,
     timeInsert: true,
     timeInsertPrepend: true,
@@ -558,6 +558,11 @@ function normalizeTailTagPlacement(value) {
 }
 
 function normalizeHotConfig(raw = {}) {
+    const rawMemo = raw.memo && typeof raw.memo === 'object' ? raw.memo : {};
+    const memoFallbackMessageCount = Object.prototype.hasOwnProperty.call(rawMemo, 'fallbackMessageCount')
+        ? rawMemo.fallbackMessageCount
+        : config.ONERING_MEMO_FALLBACK_MESSAGE_COUNT;
+
     return {
         enabled: toBoolean(raw.enabled, DEFAULT_HOT_CONFIG.enabled),
         tailTagPlacement: normalizeTailTagPlacement(raw.tailTagPlacement),
@@ -566,7 +571,10 @@ function normalizeHotConfig(raw = {}) {
         timeInsertPrepend: toBoolean(raw.timeInsertPrepend, DEFAULT_HOT_CONFIG.timeInsertPrepend),
         timeInsertMiddle: toBoolean(raw.timeInsertMiddle, DEFAULT_HOT_CONFIG.timeInsertMiddle),
         asyncOnlyMode: toBoolean(raw.asyncOnlyMode, DEFAULT_HOT_CONFIG.asyncOnlyMode),
-        memo: oneRingMemo.normalizeConfig(raw.memo)
+        memo: oneRingMemo.normalizeConfig({
+            ...rawMemo,
+            fallbackMessageCount: memoFallbackMessageCount
+        })
     };
 }
 
@@ -2255,7 +2263,10 @@ class OneRingPreprocessor {
                 'record-only-client-verified-hash',
                 { suppressLog: suppressClientBindingLog }
             );
-        timing.mark('extractPostBlocks', `blocks=${postBlocks.length}`);
+        timing.mark(
+            'extractPostBlocksAndClientHashBind',
+            `blocks=${postBlocks.length} clientVerified=${clientTimestampBindings.verifiedBindings.length}`
+        );
         const summaryStats = {
             injected: 0,
             dbInserted: 0,
@@ -2344,7 +2355,7 @@ class OneRingPreprocessor {
         summaryStats.dbInserted += syncStats.inserted || 0;
         summaryStats.dbUpdated += syncStats.updated || 0;
         summaryStats.fuzzyEdited += syncStats.fuzzyEdited || 0;
-        timing.mark('syncRecordOnlyPostWithDb', `engine=${syncStats.snapshotFastPath ? 'snapshot' : 'fuzzy'} inserted=${syncStats.inserted || 0} updated=${syncStats.updated || 0} fuzzyEdited=${syncStats.fuzzyEdited || 0}`);
+        timing.mark('syncRecordOnlyPostWithDb', `engine=${syncStats.snapshotFastPath ? 'snapshot' : 'hash-only-fallback'} inserted=${syncStats.inserted || 0} updated=${syncStats.updated || 0} fuzzyEdited=${syncStats.fuzzyEdited || 0}`);
 
         const exactTimestampBindings = this._bindExactTimestampsForPostBlocks(agentName, frontendSource, postBlocks, threshold);
         // 时间戳绑定原则：

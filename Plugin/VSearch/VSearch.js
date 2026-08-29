@@ -10,7 +10,7 @@ const configPath = path.resolve(__dirname, './config.env');
 const rootConfigPath = path.resolve(__dirname, '../../config.env');
 const manifestPath = path.resolve(__dirname, './plugin-manifest.json');
 
-dotenv.config({ path: configPath });
+dotenv.config({ path: configPath, quiet: true });
 
 const {
     VSearchKey: API_KEY,

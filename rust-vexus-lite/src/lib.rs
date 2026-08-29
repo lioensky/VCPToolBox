@@ -122,6 +122,17 @@ pub struct VexusStats {
     pub memory_usage: f64,
 }
 
+/// 对活动 Tag 索引执行单次排他差分后的摘要。
+#[napi(object)]
+pub struct TagIndexDeltaResult {
+    pub requested_deletes: u32,
+    pub requested_upserts: u32,
+    pub applied_deletes: u32,
+    pub applied_upserts: u32,
+    pub total_vectors: u32,
+    pub memo_runtime_cleared: bool,
+}
+
 /// VexusIndex 内部统一 Memo 运行时诊断。
 #[napi(object)]
 pub struct MemoRuntimeStats {
@@ -455,6 +466,28 @@ impl VexusIndex {
         }
 
         Ok(())
+    }
+
+    /// 对当前活动 Tag 索引执行一次后台排他差分。
+    ///
+    /// N-API 调用只复制实际变化的向量并立即返回 Promise；耗时的 usearch 删除、
+    /// upsert 与 MemoRuntime 失效均在 libuv 工作线程执行，不阻塞 Node 事件循环。
+    /// 搜索通过同一 RwLock 等待差分完成，只会看到差分前或差分后的索引。
+    #[napi]
+    pub fn apply_tag_delta(
+        &self,
+        remove_ids: Vec<i64>,
+        upsert_ids: Vec<i64>,
+        upsert_vectors: Float32Array,
+    ) -> AsyncTask<TagIndexDeltaTask> {
+        AsyncTask::new(TagIndexDeltaTask {
+            index: self.index.clone(),
+            memo_runtime: self.memo_runtime.clone(),
+            dimensions: self.dimensions,
+            remove_ids,
+            upsert_ids,
+            upsert_vectors: upsert_vectors.to_vec(),
+        })
     }
 
     /// 搜索
@@ -3434,6 +3467,128 @@ impl Task for PairwiseSimTask {
             skipped_count: skipped,
             stored_count,
             elapsed_ms: elapsed,
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+pub struct TagIndexDeltaTask {
+    index: Arc<RwLock<Index>>,
+    memo_runtime: Arc<MemoRuntime>,
+    dimensions: u32,
+    remove_ids: Vec<i64>,
+    upsert_ids: Vec<i64>,
+    upsert_vectors: Vec<f32>,
+}
+
+impl Task for TagIndexDeltaTask {
+    type Output = TagIndexDeltaResult;
+    type JsValue = TagIndexDeltaResult;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        use std::collections::HashSet;
+
+        let dim = self.dimensions as usize;
+        let expected_len = self
+            .upsert_ids
+            .len()
+            .checked_mul(dim)
+            .ok_or_else(|| Error::from_reason("Tag delta vector size overflow".to_string()))?;
+        if self.upsert_vectors.len() != expected_len {
+            return Err(Error::from_reason(format!(
+                "Tag delta size mismatch: ids={}, expected vector values={}, got={}",
+                self.upsert_ids.len(),
+                expected_len,
+                self.upsert_vectors.len()
+            )));
+        }
+        if self
+            .remove_ids
+            .iter()
+            .chain(self.upsert_ids.iter())
+            .any(|id| *id <= 0)
+        {
+            return Err(Error::from_reason(
+                "Tag delta IDs must all be positive integers".to_string(),
+            ));
+        }
+
+        let mut seen_upserts = HashSet::with_capacity(self.upsert_ids.len());
+        if self
+            .upsert_ids
+            .iter()
+            .any(|id| !seen_upserts.insert(*id))
+        {
+            return Err(Error::from_reason(
+                "Tag delta contains duplicate upsert IDs".to_string(),
+            ));
+        }
+        let unique_removes: HashSet<i64> =
+            self.remove_ids.iter().copied().collect();
+
+        let index = self.index.write().map_err(|error| {
+            Error::from_reason(format!("Tag delta index lock failed: {}", error))
+        })?;
+
+        // 在首个结构修改前完成最大容量预留，避免常见内存错误产生部分应用。
+        let required_capacity = index
+            .size()
+            .checked_add(self.upsert_ids.len())
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| Error::from_reason("Tag delta capacity overflow".to_string()))?;
+        if required_capacity >= index.capacity() {
+            let expanded = required_capacity
+                .checked_add(required_capacity / 2)
+                .unwrap_or(required_capacity);
+            index.reserve(expanded).map_err(|error| {
+                Error::from_reason(format!(
+                    "Tag delta reserve failed before mutation: {:?}",
+                    error
+                ))
+            })?;
+        }
+
+        let mut applied_deletes = 0_u32;
+        for id in &unique_removes {
+            if index.remove(*id as u64).is_ok() {
+                applied_deletes = applied_deletes.saturating_add(1);
+            }
+        }
+
+        let mut applied_upserts = 0_u32;
+        for (position, id) in self.upsert_ids.iter().enumerate() {
+            let start = position * dim;
+            let vector = &self.upsert_vectors[start..start + dim];
+            let _ = index.remove(*id as u64);
+            index.add(*id as u64, vector).map_err(|error| {
+                Error::from_reason(format!(
+                    "Tag delta became unusable after partial apply at upsert {} id {}: {:?}",
+                    position, id, error
+                ))
+            })?;
+            applied_upserts = applied_upserts.saturating_add(1);
+        }
+
+        let total_vectors = index.size() as u32;
+        drop(index);
+
+        self.memo_runtime.clear().map_err(|error| {
+            Error::from_reason(format!(
+                "Tag delta applied but MemoRuntime invalidation failed; index must be recovered: {}",
+                error
+            ))
+        })?;
+
+        Ok(TagIndexDeltaResult {
+            requested_deletes: unique_removes.len() as u32,
+            requested_upserts: self.upsert_ids.len() as u32,
+            applied_deletes,
+            applied_upserts,
+            total_vectors,
+            memo_runtime_cleared: true,
         })
     }
 

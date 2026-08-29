@@ -133,7 +133,6 @@ class NonStreamHandler {
       pluginManager,
       writeDebugLog,
       writeChatLog,
-      handleDiaryFromAIResponse,
       DEBUG_MODE,
       SHOW_VCP_OUTPUT,
       maxVCPLoopNonStream,
@@ -245,7 +244,6 @@ class NonStreamHandler {
     });
     firstAiAPIResponse = firstReadResult.response;
     const aiResponseText = firstReadResult.text;
-    let firstResponseRawDataForClientAndDiary = aiResponseText;
     let chatLogs = [];
     let oneRingAssistantTurnParts = [];
 
@@ -406,11 +404,6 @@ class NonStreamHandler {
                 response: recursionMessage || recursionText,
               });
             }
-            // 记录日志
-            handleDiaryFromAIResponse(recursionText).catch(e =>
-              console.error(`[VCP NonStream Loop] Error in diary handling for depth ${recursionDepth}:`, e),
-            );
-
             recursionDepth++;
             continue;
           }
@@ -550,10 +543,6 @@ class NonStreamHandler {
           });
         }
 
-        // 记录日志
-        handleDiaryFromAIResponse(recursionText).catch(e =>
-          console.error(`[VCP NonStream Loop] Error in diary handling for depth ${recursionDepth}:`, e),
-        );
       } else {
         anyToolProcessedInCurrentIteration = false;
       }
@@ -587,7 +576,6 @@ class NonStreamHandler {
     if (!res.writableEnded && !res.destroyed) {
       res.send(Buffer.from(JSON.stringify(finalJsonResponse)));
     }
-    await handleDiaryFromAIResponse(firstResponseRawDataForClientAndDiary);
   }
 }
 
