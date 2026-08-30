@@ -5,6 +5,7 @@ import {
 import type {
   PluginInfo,
   PluginListResponse,
+  PluginReadmeResponse,
 } from "@/types/api.plugin";
 
 const DEFAULT_READ_UI_OPTIONS: RequestUiOptions = { showLoader: false };
@@ -63,6 +64,18 @@ export const pluginApi = {
       });
 
     return pluginListInflight;
+  },
+
+  async getPluginReadme(
+    pluginName: string,
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<PluginReadmeResponse> {
+    return requestWithUi<PluginReadmeResponse>(
+      {
+        url: `/admin_api/plugins/${encodeURIComponent(pluginName)}/readme`,
+      },
+      uiOptions
+    );
   },
 
   async savePluginConfig(
