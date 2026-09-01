@@ -1,0 +1,107 @@
+一.日用插件
+1.基于VCP-RustSearch的纯文本检索器
+tool_name:「始」DailyNoteSearcher「末」,
+query:「始」关键词或正则表达式「末」,
+folder:「始」(可选)子文件夹名称/日记索引名称「末」,
+is_regex:「始」(可选)true/false「末」,
+case_sensitive:「始」(可选)true/false「末」,
+whole_word:「始」(可选)true/false「末」,
+context_lines:「始」(可选)数字/不选就是返回整篇日记「末」
+
+支持BM25模式
+mode:「始」bm25「末」,
+query:「始」用户问题或检索意图「末」,
+folder:「始」角色日记本目录名「末」,
+bm25_limit:「始」10「末」,   //按文件修改时间倒序取最近 N 条
+root_path:「始」(可选)dailynote 或 knowledge「末」 //默认dailynote，也可选指定服务器目录
+
+## 2. VChat闹钟 (VCPAlarm)
+铃声是小克的主题曲MV！
+tool_name:「始」VCPAlarm「末」,
+time_description:「始」1分钟后「末」, // 支持具体时间（如'晚上10点30分'）或相对时间（如'15分钟后'）
+reminder_text:「始」提醒我检查烤箱里的点心「末」 //可选，闹钟动画里展示一段提醒文本
+
+## 3. 科学计算器 (SciCalculator)
+tool_name:「始」SciCalculator「末」,
+expression:「始」您要计算的完整数学表达式「末」
+
+- 基础运算: +, -, *, /, // (整除), % (取模), ** (乘方), -x (负号)
+- 常量: pi, e
+- 数学函数: sin, cos, tan, asin, acos, atan, sqrt, root(x,n), log(x,[base]), exp, abs, ceil, floor, sinh, cosh, tanh
+- 统计函数: mean, median, mode, variance, stdev, norm_pdf, norm_cdf, t_test
+- 微积分 (重要: expr_str必须用引号包裹):
+  - 定积分: integral('expr_str', lower, upper)
+  - 不定积分: integral('expr_str') (返回KaTeX格式LaTeX公式)
+- 误差传递: error_propagation('expr_str', {'var1':(value, error), ...})
+- 置信区间: confidence_interval([data_list], confidence_level)
+
+
+## 4. 统一生图/修图/多图合成
+以下生图工具已做字段兼容，AI无需记多套命令。所有模型的prompt均支持纯自然语言描述，中文或英文都可以；需要文字排版、字体特效、画面风格、人物动作、镜头语言时直接在prompt中详细描述即可。
+
+### 推荐优先使用
+- ZImageTurboGen：国产开源图像模型，支持文本生成、修图、多图合成，NSFW相对宽松。每日有100点免费算力额度。
+- DoubaoGen：国产强图像模型，字体/中文排版/海报类任务表现强，输出规格偏高。
+- NanoBananaGen2：顶级图像编辑AI，适合长描述、复杂修图、多图参考和角色一致性任务。
+- GPTImageGen：OpenAI超大参数图片编辑模型，适合通用生成与编辑，但昂贵而缓慢。
+- AgnesGen: 小米新出的图像生成模型, 性能很不错,超快,3秒1图,适合日常配图,玩梗,关键是免费!
+
+### 统一调用格式
+tool_name:「始」ZImageTurboGen 或 DoubaoGen 或 NanoBananaGen2 或 GPTImageGen 或 AgnesGen「末」,
+command:「始」generate / edit / compose「末」,
+prompt:「始」(必需) 用于生成、编辑或合成图片的自然语言描述，支持中文或英文。纯文本描述即可，不需要特殊格式。「末」,
+size:「始」(可选) 统一尺寸字段，也兼容resolution和image_size。可写1024x1024、1536x1024、2K、4K、adaptive等，具体可用值取决于所选模型。「末」,
+image:「始」(编辑/合成时必需) 单图URL/base64/data URI，或图片数组，例如["url1","url2"]。也兼容image_url、image_1、image_2、image_url_1、image_base64_1等字段。「末」,
+negative_prompt:「始」(可选) 不希望出现的内容，例如模糊、低质量、变形、错误文字等。只有Zimage支持该功能。「末」,
+showbase64:「始」(可选) 是否在返回结果中附带 base64 图片数据供直接查看，默认 false。可填 true 或 false。「末」
+
+### 使用规则
+- image可以直接写数组：image:「始」["url1","url2"]「末」
+- image也可以写编号字段分开传url：image_1、image_2。
+
+### 模型差异注意
+- ZImageTurboGen：文生图会自动贴近固定支持分辨率；输入比例/尺寸会被映射到最接近的可用规格。编辑/合成走异步任务，输入图片会先转base64再提交。
+- DoubaoGen：不适合生成低于2K的图片，建议size写2K、4K、2048x2048或adaptive。
+- NanoBananaGen2：image_size主要支持1K、2K、4K；长prompt和复杂修图适合优先使用。
+- GPTImageGen：支持具体宽高如1024x1024、1536x1024；4K属于实验性/不稳定能力，失败时降低尺寸重试。
+
+二.联网插件
+## 1. 语义穿透联网检索 (VSearch)
+首选联网引擎。支持语义级检索范围与多关键词并发搜索，适合获取多角度观点。
+tool_name:「始」VSearch「末」,
+SearchTopic:「始」探讨AI在医疗诊断中的最新应用「末」,
+Keywords:「始」AI medical diagnosis 2024, 深度学习 医疗影像 突破, transformer models in healthcare「末」,
+SearchMode:「始」grounding「末」,  //三个模式，'grounding' (Gemini-Google搜索-快),  'grok' (Grok推理级搜索-缓慢-支持舆论媒体搜索-注意偏见),默认grouding
+ShowURL:「始」false「末」,
+ink:「始」mark_history「末」 //可选，是否将检索结果写入history.json
+
+## 2. 网页/文件内容爬取器 (UrlFetch)
+用于获取特定网页、在线文件或本地文件的文本/快照。
+tool_name:「始」UrlFetch「末」,
+url:「始」(必需) 网页/文件 URL (本地路径请以 file:// 开头)「末」, 
+mode:「始」(可选) 'text' (默认) 或 'snapshot' (多模态网页快照) 或 'jina' (AI级网页转md，推荐该模式) 或 'image' (读取网络图片)「末」
+可用于获取服务器信息例如
+获取每日新闻：file://C:\Tsubasa\VCPToolbox\Plugin\DailyHot\dailyhot_cache.md 
+获取天气预报：file://C:\Tsubasa\VCPToolbox\Plugin\WeatherReporter\weather_cache.txt
+
+## 3. B站视频/内容爬虫 (BilibiliFetch)
+获取 B 站视频文本（TTS 转化）、弹幕、评论及高清快照。
+tool_name:「始」BilibiliFetch「末」,
+url:「始」(必需) 视频 URL (支持 b23.tv 短链接)「末」,
+lang:「始」(可选) 字幕语言，如 'ai-zh'「末」,
+danmaku_num:「始」(可选) 弹幕数量「末」,
+comment_num:「始」(可选) 评论数量「末」,
+snapshots:「始」(可选) 时间点截图，逗号分隔「末」,
+hd_snapshot:「始」true「末」, //是否调用 ffmpeg 获取超清截图
+need_subs:「始」true「末」, //是否获取字幕
+
+### 检索 B 站视频/UP主
+action:「始」search「末」,
+keyword:「始」搜索词「末」,
+search_type:「始」'video' 或 'bili_user'「末」
+
+### 调查 UP 主投稿列表
+action:「始」get_up_videos「末」,
+mid:「始」用户 ID「末」,
+pn:「始」1「末」
+
