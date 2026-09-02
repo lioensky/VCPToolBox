@@ -603,8 +603,26 @@ async function processLocalFiles(content) {
 }
 
 // --- 'create' Command Logic ---
-function contentStartsWithAiTimePrefix(content) {
-    return /^\s*\[\d{1,2}:\d{2}(?::\d{2})?\](?=\s|$)/.test(content);
+const DIARY_TIME_PREFIX_RE =
+    /^\s*\[([0-9]{1,2}):([0-9]{2})(?::([0-9]{2}))?\](?=\s|$)/;
+
+function parseLeadingDiaryTimePrefix(content) {
+    if (typeof content !== 'string') {
+        return null;
+    }
+
+    const match = DIARY_TIME_PREFIX_RE.exec(content);
+    if (!match) {
+        return null;
+    }
+
+    // Keep this syntax-based rather than enforcing real-world clock ranges:
+    // diary timestamps may represent fictional or otherwise custom time systems.
+    return {
+        hours: match[1].padStart(2, '0'),
+        minutes: match[2],
+        seconds: match[3] ?? null
+    };
 }
 
 async function handleCreateCommand(args) {
@@ -672,10 +690,14 @@ async function handleCreateCommand(args) {
 
         const datePart = dateString.replace(/[.\\\/\s-]/g, '-').replace(/-+/g, '-');
         const now = new Date();
-        const hours = now.getHours().toString().padStart(2, '0');
-        const minutes = now.getMinutes().toString().padStart(2, '0');
-        const seconds = now.getSeconds().toString().padStart(2, '0');
-        const timeStringForFile = `${hours}_${minutes}_${seconds}`;
+        const runtimeHours = now.getHours().toString().padStart(2, '0');
+        const runtimeMinutes = now.getMinutes().toString().padStart(2, '0');
+        const runtimeSeconds = now.getSeconds().toString().padStart(2, '0');
+        const explicitTime = parseLeadingDiaryTimePrefix(processedContent);
+        const fileHours = explicitTime?.hours ?? runtimeHours;
+        const fileMinutes = explicitTime?.minutes ?? runtimeMinutes;
+        const fileSeconds = explicitTime?.seconds ?? runtimeSeconds;
+        const timeStringForFile = `${fileHours}_${fileMinutes}_${fileSeconds}`;
 
         const dirPath = path.join(dailyNoteRootPath, sanitizedFolderName);
 
@@ -704,8 +726,8 @@ async function handleCreateCommand(args) {
 
         await fs.mkdir(dirPath, { recursive: true });
 
-        const timeStringForContent = `${hours}:${minutes}`;
-        const fileContent = contentStartsWithAiTimePrefix(processedContent)
+        const timeStringForContent = `${runtimeHours}:${runtimeMinutes}`;
+        const fileContent = explicitTime
             ? `[${datePart}] - ${actualMaidName}\n${processedContent}`
             : `[${datePart}] - ${actualMaidName}\n[${timeStringForContent}]\n${processedContent}`;
 
