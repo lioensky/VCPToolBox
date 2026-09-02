@@ -95,39 +95,6 @@ class KnowledgeBaseManager {
             indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
             indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
             idleSweepLogTick: (process.env.KNOWLEDGEBASE_IDLE_SWEEP_LOG_TICK || 'false').toLowerCase() === 'true',
-            // Rust 原生多索引 ANN 开发诊断。只从进程环境读取，不属于用户
-            // RAG 热参数；默认关闭且任何比较结果都不得影响实际检索输出。
-            nativeAnnShadowCompare:
-                (process.env.KNOWLEDGEBASE_NATIVE_ANN_SHADOW_COMPARE || 'false')
-                    .toLowerCase() === 'true',
-            nativeAnnShadowSampleRate: (() => {
-                const value = Number(
-                    process.env.KNOWLEDGEBASE_NATIVE_ANN_SHADOW_SAMPLE_RATE
-                );
-                return Number.isFinite(value)
-                    ? Math.max(0, Math.min(1, value))
-                    : 1;
-            })(),
-            nativeAnnShadowLogMatches:
-                (process.env.KNOWLEDGEBASE_NATIVE_ANN_SHADOW_LOG_MATCHES || 'false')
-                    .toLowerCase() === 'true',
-            // 原生语义去重 Shadow 会在 setImmediate 中额外执行一次 JS 黄金
-            // 算法，仅供开发一致性审计，必须使用独立开关且默认关闭。
-            nativeSemanticShadowCompare:
-                (process.env.KNOWLEDGEBASE_NATIVE_SEMANTIC_SHADOW_COMPARE || 'false')
-                    .toLowerCase() === 'true',
-            nativeSemanticShadowSampleRate: (() => {
-                const value = Number(
-                    process.env.KNOWLEDGEBASE_NATIVE_SEMANTIC_SHADOW_SAMPLE_RATE
-                );
-                return Number.isFinite(value)
-                    ? Math.max(0, Math.min(1, value))
-                    : 1;
-            })(),
-            nativeSemanticShadowLogMatches:
-                (process.env.KNOWLEDGEBASE_NATIVE_SEMANTIC_SHADOW_LOG_MATCHES || 'false')
-                    .toLowerCase() === 'true',
-
             ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛').split(',').map(f => f.trim()).filter(Boolean),
             ignorePrefixes: (process.env.IGNORE_PREFIXES || process.env.IGNORE_PREFIX || '已整理').split(',').map(p => p.trim()).filter(Boolean),
             ignoreSuffixes: (process.env.IGNORE_SUFFIXES || process.env.IGNORE_SUFFIX || '夜伽').split(',').map(s => s.trim()).filter(Boolean),
@@ -143,12 +110,12 @@ class KnowledgeBaseManager {
             // 语言置信度补偿配置
             langConfidenceEnabled: (process.env.LANG_CONFIDENCE_GATING_ENABLED || 'true').toLowerCase() === 'true',
             langPenaltyUnknown: parseFloat(process.env.LANG_PENALTY_UNKNOWN) || 0.05,
-            // Native River 联合查询生产灰度开关。开启后，Memo observation
-            // 仍由统一管线生成，但 ANN/合并/向量 hydrate/语义去重/Topology V3
-            // 收敛为一次 NativeKnowledgeRuntime 调用。
+            // Native River 联合查询是 RiverMemo 的默认生产范式。Memo observation
+            // 仍由统一管线生成，ANN/合并/向量 hydrate/语义去重/Topology V3
+            // 收敛为一次 NativeKnowledgeRuntime 调用。仅显式 false 时紧急关闭。
             nativeRiverQueryEnabled:
-                (process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_ENABLED || 'false')
-                    .toLowerCase() === 'true',
+                (process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_ENABLED || 'true')
+                    .toLowerCase() !== 'false',
             nativeRiverQueryFallbackToLegacy:
                 (process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_FALLBACK_TO_LEGACY || 'true')
                     .toLowerCase() !== 'false',
