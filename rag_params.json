@@ -36,6 +36,10 @@
     ],
     "shotgunDecayFactor": 0.75,
     "shotgunHistorySegmentLimit": 3,
+    "nativeTimeCandidates": {
+      "perDiaryLimit": 10,
+      "globalLimit": 50
+    },
     "refreshWeights": [
       0.5,
       0.35,

@@ -271,7 +271,20 @@ class RAGDiaryPlugin {
     async loadRagParams() {
         const paramsPath = path.join(projectBasePath || path.join(__dirname, '../../'), 'rag_params.json');
         try {
-            this.ragParams = await this._readJsonFileStable(paramsPath, { RAGDiaryPlugin: {} }, { label: 'rag_params.json' });
+            const previousParams = JSON.stringify(this.ragParams || {});
+            const nextParams = await this._readJsonFileStable(
+                paramsPath,
+                { RAGDiaryPlugin: {} },
+                { label: 'rag_params.json' }
+            );
+            this.ragParams = nextParams;
+            if (
+                previousParams !== JSON.stringify(nextParams)
+                && this.queryCacheEnabled
+            ) {
+                this.cacheManager.clear('query');
+                console.log('[RAGDiaryPlugin] RAG 热调控参数已变更，查询缓存已清空。');
+            }
             console.log('[RAGDiaryPlugin] ✅ RAG 热调控参数已加载');
         } catch (e) {
             console.error('[RAGDiaryPlugin] ❌ 加载 rag_params.json 失败:', e.message);
@@ -661,6 +674,103 @@ class RAGDiaryPlugin {
         }
 
         return optimized.queryText;
+    }
+
+    async _getBM25FileCandidates(dbName, userContent, aiContent, limit, mode, bm25Weight = 0.6) {
+        const diaryNames = Array.isArray(dbName)
+            ? [...new Set(dbName.map(name => String(name || '').trim()).filter(Boolean))]
+            : [String(dbName || '').trim()].filter(Boolean);
+        const weightedQueryText = this._buildWeightedBM25QueryText(
+            userContent,
+            aiContent
+        );
+        const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
+        const sparseWeight = Math.max(
+            0,
+            Math.min(
+                1,
+                Number.isFinite(Number(bm25Weight))
+                    ? Number(bm25Weight)
+                    : 0.6
+            )
+        );
+        const perDiaryResults = await Promise.all(
+            diaryNames.map(async diaryName => {
+                const result =
+                    await this.directDiaryTextProcessor.getBM25DiaryCandidates(
+                        diaryName,
+                        weightedQueryText,
+                        safeLimit,
+                        mode
+                    );
+                const entries = Array.isArray(result.entries)
+                    ? result.entries
+                    : [];
+                const maxScore = entries.reduce(
+                    (maximum, entry) =>
+                        Math.max(maximum, Number(entry.bm25Score) || 0),
+                    0
+                ) || 1;
+                return {
+                    diaryName,
+                    result,
+                    files: entries.map(entry => ({
+                        path: entry.relativePath
+                            || path.join(diaryName, entry.file),
+                        bm25Score: Math.max(
+                            0,
+                            Number(entry.bm25Score) || 0
+                        ),
+                        normalizedBM25Score: Math.max(
+                            0,
+                            Math.min(
+                                1,
+                                (Number(entry.bm25Score) || 0) / maxScore
+                            )
+                        ),
+                        source: mode === 'body'
+                            ? 'bm25_body'
+                            : 'bm25_tag'
+                    }))
+                };
+            })
+        );
+        const byPath = new Map();
+        for (const item of perDiaryResults) {
+            for (const file of item.files) {
+                const existing = byPath.get(file.path);
+                if (
+                    !existing
+                    || file.normalizedBM25Score
+                        > existing.normalizedBM25Score
+                ) {
+                    byPath.set(file.path, file);
+                }
+            }
+        }
+        const files = Array.from(byPath.values())
+            .sort((left, right) =>
+                right.normalizedBM25Score - left.normalizedBM25Score
+                || left.path.localeCompare(right.path)
+            )
+            .slice(0, safeLimit * Math.max(1, diaryNames.length));
+        return {
+            matched: files.length > 0,
+            files,
+            queryTokens: [...new Set(
+                perDiaryResults.flatMap(item =>
+                    item.result.queryTokens || []
+                )
+            )],
+            matchedCount: perDiaryResults.reduce(
+                (sum, item) =>
+                    sum + (Number(item.result.matchedCount) || 0),
+                0
+            ),
+            weightedQueryText,
+            bm25Weight: sparseWeight,
+            vectorWeight: 1 - sparseWeight
+        };
     }
 
     async _getBM25RagCandidates(dbName, userContent, aiContent, limit, mode, queryVector, contextDiaryPrefixes = new Set(), requestCache = null, bm25Weight = 0.6) {
@@ -2680,7 +2790,11 @@ class RAGDiaryPlugin {
             ghostTags, // 🌟 修复 2.4：将外部的 ghostTags 传入生成器
             isFreshTimeConversationStart,
             shotgunDecayFactor: this.ragParams?.RAGDiaryPlugin?.shotgunDecayFactor,
-            shotgunHistorySegmentLimit: this.ragParams?.RAGDiaryPlugin?.shotgunHistorySegmentLimit
+            shotgunHistorySegmentLimit: this.ragParams?.RAGDiaryPlugin?.shotgunHistorySegmentLimit,
+            nativeTimePerDiaryLimit: this.ragParams?.RAGDiaryPlugin
+                ?.nativeTimeCandidates?.perDiaryLimit,
+            nativeTimeGlobalLimit: this.ragParams?.RAGDiaryPlugin
+                ?.nativeTimeCandidates?.globalLimit
         });
 
         // 2️⃣ 尝试从缓存获取
@@ -2854,20 +2968,150 @@ class RAGDiaryPlugin {
         let riverMemoInfoForBroadcast = null;
         let riverMemoAlreadyRanked = false;
 
-        // 纯 RiverMemo 路径直接进入 KBM 原生联合代理，跳过 JS search、
-        // 候选 hydrate 和高维语义去重。Time/BM25/历史 Shotgun 等混合输入
-        // 暂时保留旧链路，避免改变其候选融合语义。
+        // Native Query Plan V2：RiverMemo 的当前查询、历史 Shotgun 多向量、
+        // Time 文件约束及 BM25 文件级稀疏分数统一交给 Rust。JS 只保留
+        // DSL/时间表达式/BM25 分词控制面，不再构造高维 Chunk 候选池。
         const canUseNativeRiverFullPath = Boolean(
             useRiverMemo
-            && !useTime
-            && !useBM25
-            && (!historySegments || historySegments.length === 0)
             && this.vectorDBManager?.config?.nativeRiverQueryEnabled === true
             && typeof this.vectorDBManager.executeNativeRiverQuery === 'function'
         );
         if (canUseNativeRiverFullPath) {
+            // BM25 在 JS 仅保留分词、IDF 与文件级打分控制面。必须在进入
+            // 原生联合调用前完成；Chunk 展开、向量融合与去重全部由 Rust 执行。
+            if (useBM25) {
+                const bm25Limit = Math.max(
+                    kForSearch,
+                    finalK * (useRerank ? 5 : 3)
+                );
+                bm25InfoForBroadcast = await this._getBM25FileCandidates(
+                    diaryNames,
+                    userContent,
+                    aiContent,
+                    bm25Limit,
+                    bm25Mode,
+                    bm25Weight
+                );
+                console.log(
+                    `[RAGDiaryPlugin] BM25 file plan: ` +
+                    `mode=${bm25Mode}, files=${bm25InfoForBroadcast.files.length}, ` +
+                    `matched=${bm25InfoForBroadcast.matchedCount}.`
+                );
+            }
+
+            const nativeFileCandidates = new Map();
+            const mergeNativeFileCandidate = candidate => {
+                const candidatePath = String(candidate?.path || '').trim();
+                if (!candidatePath) return;
+                const existing = nativeFileCandidates.get(candidatePath) || {
+                    path: candidatePath,
+                    bm25Score: 0,
+                    normalizedBM25Score: 0,
+                    timeScore: 0,
+                    source: ''
+                };
+                existing.bm25Score = Math.max(
+                    existing.bm25Score,
+                    Number(candidate?.bm25Score) || 0
+                );
+                existing.normalizedBM25Score = Math.max(
+                    existing.normalizedBM25Score,
+                    Number(candidate?.normalizedBM25Score) || 0
+                );
+                existing.timeScore = Math.max(
+                    existing.timeScore,
+                    Number(candidate?.timeScore) || 0
+                );
+                const nextSource = String(candidate?.source || '');
+                if (
+                    nextSource === 'time'
+                    || !existing.source
+                    || existing.source === 'rag'
+                ) {
+                    existing.source = nextSource;
+                }
+                nativeFileCandidates.set(candidatePath, existing);
+            };
+
+            for (const file of bm25InfoForBroadcast?.files || []) {
+                mergeNativeFileCandidate(file);
+            }
+
+            if (useTime && timeRanges && timeRanges.length > 0) {
+                for (const timeRange of timeRanges) {
+                    for (const diaryName of diaryNames) {
+                        const filePaths = await this._getTimeRangeFilePathsCached(
+                            diaryName,
+                            timeRange,
+                            requestCache
+                        );
+                        for (const filePath of filePaths) {
+                            mergeNativeFileCandidate({
+                                path: filePath,
+                                timeScore: 1,
+                                source: 'time'
+                            });
+                        }
+                    }
+                }
+            }
+
+            const shotgunConfig = this.ragParams?.RAGDiaryPlugin || {};
+            const historySegmentLimit = Math.max(
+                0,
+                parseInt(shotgunConfig.shotgunHistorySegmentLimit, 10) || 3
+            );
+            const rawDecayFactor = Number(shotgunConfig.shotgunDecayFactor);
+            const decayFactor = Number.isFinite(rawDecayFactor)
+                ? Math.max(0, Math.min(1, rawDecayFactor))
+                : 0.85;
+            const nativeHistorySegments = (historySegments || [])
+                .slice(-historySegmentLimit)
+                .map((segment, index, selected) => ({
+                    vector: segment.vector,
+                    weight: Math.pow(
+                        decayFactor,
+                        selected.length - index
+                    )
+                }))
+                .filter(segment =>
+                    segment.vector
+                    && typeof segment.vector.length === 'number'
+                );
+
+            const nativeHybridRequired = (
+                nativeHistorySegments.length > 0
+                || nativeFileCandidates.size > 0
+            );
+            const nativeTimeConfig =
+                this.ragParams?.RAGDiaryPlugin?.nativeTimeCandidates || {};
+            const timePerDiaryLimit = Math.max(
+                1,
+                Math.min(
+                    50,
+                    Math.floor(Number(nativeTimeConfig.perDiaryLimit) || 10)
+                )
+            );
+            const timeGlobalLimit = Math.max(
+                1,
+                Math.min(
+                    500,
+                    Math.floor(Number(nativeTimeConfig.globalLimit) || 50)
+                )
+            );
+            const boundedTimeOffer = useTime
+                && timeRanges
+                && timeRanges.length > 0
+                ? Math.min(
+                    timeGlobalLimit,
+                    timePerDiaryLimit * diaryNames.length
+                )
+                : 0;
+            // Time 最终仍由 JS 按 ::Time ratio 做强制双路配额。原生输出窗口
+            // 必须覆盖受限 Time 池，否则 Topology 小 topK 可能在配额执行前
+            // 淘汰全部时间候选。
             const riverTopK = Math.max(
-                finalK,
+                finalK + boundedTimeOffer,
                 useRerank
                     ? Math.round(finalK * this.rerankConfig.multiplier)
                     : finalK
@@ -2883,6 +3127,22 @@ class RAGDiaryPlugin {
                         topK: riverTopK,
                         candidateK: riverOfferK,
                         coreTags: Array.isArray(ghostTags) ? ghostTags : [],
+                        supplementalQueryVectors: nativeHistorySegments,
+                        hybridPlan: nativeHybridRequired ? {
+                            supplemental: {
+                                perIndexK: Math.max(
+                                    2,
+                                    Math.round(riverOfferK / 2)
+                                )
+                            },
+                            fileCandidates: Array.from(
+                                nativeFileCandidates.values()
+                            ),
+                            bm25Weight: bm25Weight ?? 0.6,
+                            bm25Mode,
+                            timePerDiaryLimit,
+                            timeGlobalLimit
+                        } : null,
                         sourceObservationConfig: {
                             baseTagBoost:
                                 Math.max(0, Number(defaultTagWeight) || 0),
@@ -2896,7 +3156,10 @@ class RAGDiaryPlugin {
                     ...item,
                     score: Number(item.score) || 0,
                     original_score: Number(item.originalScore) || 0,
-                    source: 'rag',
+                    // 只有显式 Time 来源需要穿透到后置 80/20 配额；
+                    // BM25 已参与 RiverMemo 候选超集，后续仍属于统一语义路。
+                    source: item.source === 'time' ? 'time' : 'rag',
+                    riverMemoSource: item.source || 'rag',
                     riverMemo: {
                         artifactSig: nativeResult.artifactSig || null,
                         queryId: nativeResult.queryId || null,
@@ -2933,10 +3196,14 @@ class RAGDiaryPlugin {
                     nativeResult.diagnostics?.nativeTopologyV3 || null
             };
             console.log(
-                `[RAGDiaryPlugin] 🌊 Native River full path: ` +
+                `[RAGDiaryPlugin] 🌊 Native River full path V2: ` +
                 `diaries=${diaryNames.join('|')}, returned=${candidates.length}, ` +
+                `historyVectors=${nativeHistorySegments.length}, ` +
+                `fileCandidates=${nativeFileCandidates.size}, ` +
                 `jointUsed=${nativeResult.diagnostics?.nativeTopologyV3
-                    ?.jointUsed === true}.`
+                    ?.jointUsed === true}, ` +
+                `hybridPlanUsed=${nativeResult.diagnostics?.nativeTopologyV3
+                    ?.hybridPlanUsed === true}.`
             );
         }
 
@@ -2951,7 +3218,7 @@ class RAGDiaryPlugin {
             }
         }
 
-        if (useBM25) {
+        if (useBM25 && !riverMemoAlreadyRanked) {
             const bm25Limit = Math.max(kForSearch, finalK * (useRerank ? 5 : 3));
             bm25InfoForBroadcast = await this._getBM25RagCandidates(
                 diaryNames,
@@ -3760,8 +4027,13 @@ class RAGDiaryPlugin {
         const fileMetas = metaGroups.flat();
 
         if (fileMetas.length === 0) return [];
-        const recentFilePaths = fileMetas.map(meta => meta.relativePath);
-        const fileDateMap = new Map(fileMetas.map(meta => [meta.relativePath, meta.date]));
+        // 连续性唤起是 K 外极小补充，不应先 hydrate 整个日记日期索引。
+        // 日期索引已按新到旧排序；只展开最近 limit 个文件即可。
+        const recentFileMetas = fileMetas.slice(0, Math.max(1, limit));
+        const recentFilePaths = recentFileMetas.map(meta => meta.relativePath);
+        const fileDateMap = new Map(
+            recentFileMetas.map(meta => [meta.relativePath, meta.date])
+        );
 
         try {
             const chunks = await this._getChunksByFilePathsCached(recentFilePaths, requestCache);
@@ -4544,7 +4816,9 @@ class RAGDiaryPlugin {
             autoBlacklist = null,
             isFreshTimeConversationStart = false,
             shotgunDecayFactor = null,
-            shotgunHistorySegmentLimit = null
+            shotgunHistorySegmentLimit = null,
+            nativeTimePerDiaryLimit = null,
+            nativeTimeGlobalLimit = null
         } = params;
 
         const currentDate = modifiers.includes('::Time')
@@ -4569,7 +4843,9 @@ class RAGDiaryPlugin {
             auto_bl: autoBlacklist ? autoBlacklist.sort().join(',') : '',
             fresh_time_start: isFreshTimeConversationStart,
             shotgun_decay: shotgunDecayFactor,
-            shotgun_history_limit: shotgunHistorySegmentLimit
+            shotgun_history_limit: shotgunHistorySegmentLimit,
+            native_time_per_diary_limit: nativeTimePerDiaryLimit,
+            native_time_global_limit: nativeTimeGlobalLimit
         });
     }
 

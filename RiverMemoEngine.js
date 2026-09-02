@@ -189,6 +189,7 @@ class RiverMemoEngine {
                 hybridScore: Number(candidate.hybridScore) || 0,
                 vectorScore: Number(candidate.vectorScore) || 0,
                 bm25Score: Number(candidate.bm25Score) || 0,
+                timeScore: Number(candidate.timeScore) || 0,
                 anchorScore: Number(candidate.anchorScore) || 0
             })).filter(candidate => candidate.id !== null),
             queryState: {
@@ -223,12 +224,24 @@ class RiverMemoEngine {
         let nativePayload;
 
         if (jointRequested) {
-            if (
-                !nativeKnowledgeRuntime
-                || typeof nativeKnowledgeRuntime.executeRiverQuery !== 'function'
-            ) {
+            const hybridPlan = options.nativeHybridPlan
+                && typeof options.nativeHybridPlan === 'object'
+                ? options.nativeHybridPlan
+                : null;
+            const supplementalVectors = options.nativeSupplementalVectors instanceof Float32Array
+                ? options.nativeSupplementalVectors
+                : new Float32Array(options.nativeSupplementalVectors || []);
+            const useHybridAbi = !!hybridPlan;
+            const nativeMethodAvailable = nativeKnowledgeRuntime && (
+                useHybridAbi
+                    ? typeof nativeKnowledgeRuntime.executeRiverQueryHybrid === 'function'
+                    : typeof nativeKnowledgeRuntime.executeRiverQuery === 'function'
+            );
+            if (!nativeMethodAvailable) {
                 const error = new Error(
-                    'NativeKnowledgeRuntime joint River ABI is unavailable'
+                    useHybridAbi
+                        ? 'NativeKnowledgeRuntime hybrid River ABI is unavailable'
+                        : 'NativeKnowledgeRuntime joint River ABI is unavailable'
                 );
                 error.code = 'NATIVE_RIVER_QUERY_ABI_UNAVAILABLE';
                 if (options.nativeJointFallbackToLegacy === false) throw error;
@@ -251,32 +264,51 @@ class RiverMemoEngine {
                     const queryVector = query?.vector instanceof Float32Array
                         ? query.vector
                         : new Float32Array(query?.vector || []);
-                    nativePayload = await nativeKnowledgeRuntime.executeRiverQuery(
-                        dbPath,
-                        artifact.artifactSig,
-                        inputJson,
-                        diaryNames,
-                        queryVector,
-                        Math.max(
+                    const nativePerIndexK = Math.max(
+                        1,
+                        Math.floor(Number(options.nativePerIndexK) || 300)
+                    );
+                    const nativeCandidateK = Math.max(
+                        1,
+                        Math.floor(Number(
+                            options.nativeCandidateK
+                            ?? inputCandidates.length
+                            ?? 300
+                        ) || 300)
+                    );
+                    const nativeSemanticThreshold = Math.max(
+                        -1,
+                        Math.min(
                             1,
-                            Math.floor(Number(options.nativePerIndexK) || 300)
-                        ),
-                        Math.max(
-                            1,
-                            Math.floor(Number(
-                                options.nativeCandidateK
-                                ?? inputCandidates.length
-                                ?? 300
-                            ) || 300)
-                        ),
-                        Math.max(
-                            -1,
-                            Math.min(
-                                1,
-                                Number(options.nativeSemanticThreshold) || 0.92
-                            )
+                            Number(options.nativeSemanticThreshold) || 0.92
                         )
                     );
+
+                    if (useHybridAbi) {
+                        nativePayload = await nativeKnowledgeRuntime.executeRiverQueryHybrid(
+                            dbPath,
+                            artifact.artifactSig,
+                            inputJson,
+                            diaryNames,
+                            queryVector,
+                            supplementalVectors,
+                            JSON.stringify(hybridPlan),
+                            nativePerIndexK,
+                            nativeCandidateK,
+                            nativeSemanticThreshold
+                        );
+                    } else {
+                        nativePayload = await nativeKnowledgeRuntime.executeRiverQuery(
+                            dbPath,
+                            artifact.artifactSig,
+                            inputJson,
+                            diaryNames,
+                            queryVector,
+                            nativePerIndexK,
+                            nativeCandidateK,
+                            nativeSemanticThreshold
+                        );
+                    }
                     jointUsed = true;
                 } catch (error) {
                     if (options.nativeJointFallbackToLegacy === false) throw error;
@@ -377,6 +409,20 @@ class RiverMemoEngine {
             : []
         ).map(item => {
             const original = inputById.get(Number(item.chunkId)) || {};
+            const rawCandidateSources = (Array.isArray(item.candidateSources)
+                ? item.candidateSources
+                : []
+            ).map(source => typeof source === 'string'
+                ? source
+                : String(source?.source || '')
+            ).filter(Boolean);
+            const resolvedSource = rawCandidateSources.includes('time')
+                ? 'time'
+                : (rawCandidateSources.includes('bm25')
+                    ? (options.nativeHybridPlan?.bm25Mode === 'body'
+                        ? 'bm25_body'
+                        : 'bm25_tag')
+                    : (original.source || 'rag'));
             const matchedTags = Object.freeze(
                 [...new Set(
                     (Array.isArray(item.matchedTags) ? item.matchedTags : [])
@@ -388,6 +434,7 @@ class RiverMemoEngine {
                 ...original,
                 id: Number(item.chunkId),
                 chunkId: Number(item.chunkId),
+                source: resolvedSource,
                 rank: Number(item.rank),
                 score: clamp01(item.score),
                 originalScore: Number(item.originalScore) || 0,
@@ -408,9 +455,7 @@ class RiverMemoEngine {
                     || nativeResult.omega?.regime
                     || 'collapsed',
                 candidateSources: Object.freeze(
-                    (Array.isArray(item.candidateSources)
-                        ? item.candidateSources
-                        : [])
+                    rawCandidateSources
                         .map(source => typeof source === 'string'
                             ? Object.freeze({ source })
                             : Object.freeze({ ...source }))
@@ -453,6 +498,7 @@ class RiverMemoEngine {
                 nativeTopologyV3: Object.freeze({
                     ...(nativeResult.diagnostics || {}),
                     ffiTotalMs: Date.now() - nativeStartedAt,
+                    hybridPlanUsed: jointUsed && !!options.nativeHybridPlan,
                     runtimeOwnership: jointUsed
                         ? 'native-knowledge-runtime-joint'
                         : 'vexus-index-instance',

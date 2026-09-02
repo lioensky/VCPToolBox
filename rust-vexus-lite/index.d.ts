@@ -201,6 +201,14 @@ export declare class NativeKnowledgeRuntime {
    * 原生检索结果替换；topK、权限作用域和 Topology 配置保持原契约。
    */
   executeRiverQuery(dbPath: string, artifactSig: string, riverInputJson: string, diaryNames: Array<string>, query: Float32Array, perIndexK: number, candidateK: number, semanticThreshold: number): Promise<unknown>
+  /**
+   * Native Query Plan V2：在一次后台任务中融合当前向量、历史分段向量、
+   * Time 文件候选和 BM25 文件候选，再执行统一语义去重与 Topology V3。
+   *
+   * supplemental_vectors 是 count × dimension 的扁平 Float32Array；低维计划
+   * 继续使用 JSON，避免任何 Chunk/Tag 高维向量经 JSON 或 N-API 往返。
+   */
+  executeRiverQueryHybrid(dbPath: string, artifactSig: string, riverInputJson: string, diaryNames: Array<string>, query: Float32Array, supplementalVectors: Float32Array, hybridPlanJson: string, perIndexK: number, candidateK: number, semanticThreshold: number): Promise<unknown>
   /** 按 expectedGeneration 注销索引。代际不匹配时返回 false，不修改注册表。 */
   unregisterDiaryIndex(diaryName: string, expectedGeneration: number): boolean
   diaryIndexState(diaryName: string): RegisteredDiaryIndexState | null

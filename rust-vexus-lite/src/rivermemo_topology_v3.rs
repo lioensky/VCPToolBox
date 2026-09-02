@@ -127,6 +127,8 @@ struct CandidateInput {
     #[serde(default)]
     bm25_score: f64,
     #[serde(default)]
+    time_score: f64,
+    #[serde(default)]
     anchor_score: f64,
 }
 
@@ -886,6 +888,7 @@ struct Curve {
     local_score: f64,
     transfer_score: f64,
     bm25_score: f64,
+    time_score: f64,
     anchor_score: f64,
     union_score: f64,
     union_rank: usize,
@@ -1029,6 +1032,7 @@ fn load_curves(
             local_score: 0.0,
             transfer_score: 0.0,
             bm25_score: positive(candidate.bm25_score),
+            time_score: positive(candidate.time_score),
             anchor_score: positive(candidate.anchor_score),
             union_score: 0.0,
             union_rank: 0,
@@ -1166,6 +1170,10 @@ fn select_superset(curves: Vec<Curve>, config: &NativeConfig) -> Vec<Curve> {
         (
             "bm25",
             source_top(&curves, |curve| curve.bm25_score, config.bm25_k),
+        ),
+        (
+            "time",
+            source_top(&curves, |curve| curve.time_score, config.query_k),
         ),
         (
             "anchor_direct",

@@ -25,6 +25,11 @@ async function run() {
 
     const tagIndex = new VexusIndex(DIMENSION, 32);
     const runtime = new NativeKnowledgeRuntime(tagIndex);
+    assert.strictEqual(
+        typeof runtime.executeRiverQueryHybrid,
+        'function',
+        'Native Query Plan V2 ABI must be exported by the binding'
+    );
     assert.deepStrictEqual(
         {
             acceptingQueries: runtime.stats().acceptingQueries,
@@ -159,6 +164,25 @@ async function run() {
         /not registered/i
     );
 
+    assert.throws(
+        () => runtime.executeRiverQueryHybrid(
+            'unused.sqlite',
+            'unused-artifact',
+            JSON.stringify({ observationHandle: 'unused-observation' }),
+            ['SharedMemory'],
+            vectorFor(3),
+            new Float32Array(DIMENSION + 1),
+            JSON.stringify({
+                schema: 'vcp-native-hybrid-query-plan-v2'
+            }),
+            8,
+            8,
+            0.92
+        ),
+        /not divisible by dimension/i,
+        'malformed flattened supplemental vectors must fail before data-plane work'
+    );
+
     const wrongDimension = new VexusIndex(DIMENSION / 2, 16);
     assert.throws(
         () => runtime.registerDiaryIndex('WrongDimension', wrongDimension),
@@ -184,7 +208,8 @@ async function run() {
 
     console.log(
         '[NativeKnowledgeRuntimeRegistryTest] PASS: instance ownership, ' +
-        'generation-safe replacement, shared revision and shutdown verified.'
+        'generation-safe replacement, shared revision, hybrid ABI validation ' +
+        'and shutdown verified.'
     );
 }
 
