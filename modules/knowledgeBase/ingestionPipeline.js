@@ -375,27 +375,29 @@ async _flushBatch() {
 
             const { updates, tagUpdates, deletions, newTagIds } = transaction();
 
-            // 💡 核心修复：在添加新向量之前，先从 Vexus 索引中移除所有旧的向量
-            if (deletions && deletions.size > 0) {
-                for (const [dName, chunkIds] of deletions) {
-                    const idx = await this._getOrLoadDiaryIndex(dName, { allowJsProcessing: true });
-                    if (idx && idx.remove) {
-                        chunkIds.forEach(id => {
-                            try {
-                                idx.remove(id);
-                            } catch (e) {
-                                // usearch 对不存在的 id 可能抛错；删除路径必须保持幂等，避免批处理重试循环。
-                                if (e.message && !/not found|missing|absent/i.test(e.message)) {
-                                    console.warn(`[KnowledgeBase] ⚠️ Failed to remove stale vector ${id} from "${dName}": ${e.message}`);
-                                }
-                            }
-                        });
-                        this._scheduleIndexSave(dName);
-                    }
-                }
+            // 每个日记本只发布一次排他 Chunk 差分。SQLite 已经提交权威事实；
+            // Rust 在同一 RwLock 写锁内完成该日记本全部旧 ID 删除和新 ID upsert，
+            // 并发 search 只能看到批次前或批次后状态，不能观察到公共索引半批状态。
+            const affectedDiaryNames = new Set([
+                ...deletions.keys(),
+                ...updates.keys()
+            ]);
+            for (const dName of affectedDiaryNames) {
+                const deltaResult = await this.indexRepository.applyChunkDelta(
+                    dName,
+                    deletions.get(dName) || [],
+                    updates.get(dName) || []
+                );
+                console.log(
+                    `[KnowledgeBase] 🔐 Atomic diary index publish: "${dName}", ` +
+                    `mode=${deltaResult.mode}, deletes=${deltaResult.requestedDeletes || 0}, ` +
+                    `upserts=${deltaResult.requestedUpserts || 0}, ` +
+                    `revision=${deltaResult.revision ?? 'recovered'}.`
+                );
             }
 
-            // 🛠️ 修复：针对 Tag Index 的安全写入
+            // Tag 索引已有独立 applyTagDelta 路径的生命周期；这里保留现有兼容
+            // upsert，日记公共索引的读写原子性不再依赖这段逻辑。
             tagUpdates.forEach(u => {
                 try {
                     this.tagIndex.add(u.id, u.vec);
@@ -411,35 +413,6 @@ async _flushBatch() {
                 }
             });
             this._scheduleIndexSave('global_tags');
-
-            // 🛠️ 修复：针对 Diary Index 的安全写入
-            for (const [dName, chunks] of updates) {
-                const idx = await this._getOrLoadDiaryIndex(dName, { allowJsProcessing: true });
-
-                chunks.forEach(u => {
-                    try {
-                        // 尝试直接添加
-                        idx.add(u.id, u.vec);
-                    } catch (e) {
-                        // 捕获 "Duplicate keys" 错误
-                        if (e.message && e.message.includes('Duplicate')) {
-                            // console.warn(`[KnowledgeBase] ⚠️ ID Collision detected for ${u.id} in ${dName}. Performing upsert.`);
-                            try {
-                                // 策略：先移除冲突的 ID，再重新添加 (Upsert)
-                                if (idx.remove) idx.remove(u.id);
-                                idx.add(u.id, u.vec);
-                            } catch (retryErr) {
-                                console.error(`[KnowledgeBase] ❌ Failed to upsert vector ${u.id} in ${dName}:`, retryErr.message);
-                            }
-                        } else {
-                            // 如果是其他错误（如维度不对），则抛出
-                            console.error(`[KnowledgeBase] ❌ Vector add error detected:`, e);
-                        }
-                    }
-                });
-
-                this._scheduleIndexSave(dName);
-            }
 
             // 5. ✅ 成功处理后，移除文件并清空重试计数
             batchFiles.forEach(f => {
@@ -587,7 +560,9 @@ async _handleDeleteBatch(filePaths) {
 
             for (const [diaryName, chunkIds] of chunkIdsByDiary) {
                 if (chunkIds.length >= this.config.deleteRebuildThreshold) {
-                    // 大目录删除时逐个 remove 上万向量会长时间阻塞事件循环；直接丢弃该日记索引，后续从 SQLite 干净重建。
+                    // 大目录删除直接撤销新查询可见的实例；已经取得旧实例读引用的查询
+                    // 最终会在 SQLite hydrate 阶段丢弃已删除 ID，新查询从权威层重建。
+                    this.indexRepository.unregisterDiaryIndex(diaryName);
                     this.diaryIndices.delete(diaryName);
                     this.diaryIndexLastUsed.delete(diaryName);
                     this._deletePersistedDiaryIndex(diaryName);
@@ -598,20 +573,16 @@ async _handleDeleteBatch(filePaths) {
                     continue;
                 }
 
-                const idx = await this._getOrLoadDiaryIndex(diaryName, { allowJsDeleteProcessing: true });
-                if (idx && idx.remove) {
-                    chunkIds.forEach(id => {
-                        try {
-                            idx.remove(id);
-                        } catch (e) {
-                            // 删除事件可能乱序/重复；向量不存在不应导致错误风暴或后续处理停滞。
-                            if (e.message && !/not found|missing|absent/i.test(e.message)) {
-                                console.warn(`[KnowledgeBase] ⚠️ Failed to remove vector ${id} from "${diaryName}": ${e.message}`);
-                            }
-                        }
-                    });
-                    this._scheduleIndexSave(diaryName);
-                }
+                const deltaResult = await this.indexRepository.applyChunkDelta(
+                    diaryName,
+                    chunkIds,
+                    []
+                );
+                console.log(
+                    `[KnowledgeBase] 🔐 Atomic diary delete publish: "${diaryName}", ` +
+                    `mode=${deltaResult.mode}, deletes=${deltaResult.requestedDeletes || 0}, ` +
+                    `revision=${deltaResult.revision ?? 'recovered'}.`
+                );
             }
         } catch (e) {
             console.error(`[KnowledgeBase] Delete error:`, e);

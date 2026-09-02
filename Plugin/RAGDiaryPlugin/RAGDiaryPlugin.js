@@ -2851,6 +2851,94 @@ class RAGDiaryPlugin {
         });
 
         let candidates = [];
+        let riverMemoInfoForBroadcast = null;
+        let riverMemoAlreadyRanked = false;
+
+        // 纯 RiverMemo 路径直接进入 KBM 原生联合代理，跳过 JS search、
+        // 候选 hydrate 和高维语义去重。Time/BM25/历史 Shotgun 等混合输入
+        // 暂时保留旧链路，避免改变其候选融合语义。
+        const canUseNativeRiverFullPath = Boolean(
+            useRiverMemo
+            && !useTime
+            && !useBM25
+            && (!historySegments || historySegments.length === 0)
+            && this.vectorDBManager?.config?.nativeRiverQueryEnabled === true
+            && typeof this.vectorDBManager.executeNativeRiverQuery === 'function'
+        );
+        if (canUseNativeRiverFullPath) {
+            const riverTopK = Math.max(
+                finalK,
+                useRerank
+                    ? Math.round(finalK * this.rerankConfig.multiplier)
+                    : finalK
+            ) + dedupBuffer;
+            const nativeResult =
+                await this.vectorDBManager.executeNativeRiverQuery(
+                    {
+                        text: String(userContent || ''),
+                        vector: finalQueryVector
+                    },
+                    {
+                        diaryNames,
+                        topK: riverTopK,
+                        candidateK: riverOfferK,
+                        coreTags: Array.isArray(ghostTags) ? ghostTags : [],
+                        sourceObservationConfig: {
+                            baseTagBoost:
+                                Math.max(0, Number(defaultTagWeight) || 0),
+                            coreBoostFactor: 1.33
+                        },
+                        enabled: true
+                    }
+                );
+            candidates = this._filterContextDuplicates(
+                (nativeResult.results || []).map(item => ({
+                    ...item,
+                    score: Number(item.score) || 0,
+                    original_score: Number(item.originalScore) || 0,
+                    source: 'rag',
+                    riverMemo: {
+                        artifactSig: nativeResult.artifactSig || null,
+                        queryId: nativeResult.queryId || null,
+                        omega: Number(item.omega) || 0,
+                        regime:
+                            item.riverRegime
+                            || nativeResult.omega?.regime
+                            || null,
+                        role: item.role || null,
+                        topologyBonus: Number(item.topologyBonus) || 0,
+                        anchorBonus: Number(item.anchorBonus) || 0
+                    }
+                })),
+                contextDiaryPrefixes
+            );
+            riverMemoAlreadyRanked = true;
+            riverMemoInfoForBroadcast = {
+                artifactSig: nativeResult.artifactSig || null,
+                queryId: nativeResult.queryId || null,
+                omega: Number(nativeResult.omega?.omega) || 0,
+                regime: nativeResult.omega?.regime || null,
+                queryTags: nativeResult.queryTags || {
+                    matchedTags: [],
+                    coreTagsMatched: [],
+                    sourceMode: null
+                },
+                offeredCandidates:
+                    nativeResult.diagnostics?.offeredCandidates || 0,
+                rankedCandidates:
+                    nativeResult.diagnostics?.rankedCandidates || 0,
+                returnedCandidates: candidates.length,
+                nativeJointQuery: true,
+                nativeDiagnostics:
+                    nativeResult.diagnostics?.nativeTopologyV3 || null
+            };
+            console.log(
+                `[RAGDiaryPlugin] 🌊 Native River full path: ` +
+                `diaries=${diaryNames.join('|')}, returned=${candidates.length}, ` +
+                `jointUsed=${nativeResult.diagnostics?.nativeTopologyV3
+                    ?.jointUsed === true}.`
+            );
+        }
 
         // 🌟 Time 连续性补充准备：只要启用 ::Time 且命中新对话判定，就预先准备最近 3 条
         // 注意：不依赖 timeRanges 是否解析成功，最终仍在主召回完成后做 K 外追加
@@ -2884,7 +2972,7 @@ class RAGDiaryPlugin {
             }
         }
 
-        if (useTime && timeRanges && timeRanges.length > 0) {
+        if (!riverMemoAlreadyRanked && useTime && timeRanges && timeRanges.length > 0) {
             // --- 🌟 V5: 平衡双路召回 (Balanced Dual-Path Retrieval) ---
             // 目标：默认语义召回占 80%，时间召回占 20%，且时间召回也进行相关性排序。
             // 可用 ::Time0.1 / ::Time0.3 显式控制时间路比例。
@@ -2938,7 +3026,7 @@ class RAGDiaryPlugin {
                 }
             );
 
-        } else {
+        } else if (!riverMemoAlreadyRanked) {
             // --- Standard path (no time filter / no parsed time range) ---
             // 🌟 Tagmemo V4: Shotgun Query Implementation
             let searchVectors = [{ vector: finalQueryVector, type: 'current', weight: 1.0 }];
@@ -2996,8 +3084,8 @@ class RAGDiaryPlugin {
         // 🌊 RiverMemo 独立引擎重排。
         // 时间路结果是显式日期约束，不交给 RiverMemo 改写；其余语义/BM25 候选统一进入
         // Topology V3。@ 语法产生的 ghostTags 原样作为 coreTags 传给 V9 源观测。
-        let riverMemoInfoForBroadcast = null;
-        if (useRiverMemo && candidates.length > 0) {
+        // 纯原生联合路径已完成 Topology V3 时不得再次重排。
+        if (useRiverMemo && !riverMemoAlreadyRanked && candidates.length > 0) {
             const timeOnlyCandidates = candidates.filter(candidate => candidate.source === 'time');
             const riverCandidates = candidates.filter(candidate => candidate.source !== 'time');
             const riverTopK = Math.max(

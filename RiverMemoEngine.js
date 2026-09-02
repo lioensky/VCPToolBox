@@ -294,18 +294,94 @@ class RiverMemoEngine {
         const nativeStartedAt = Date.now();
         const inputJson = JSON.stringify(payload);
         const tagIndex = this.runtime.tagIndex;
-        if (typeof tagIndex?.rerankRivermemoTopologyV3 !== 'function') {
-            const error = new Error(
-                'RiverMemo requires the VexusIndex-owned native runtime; rebuild rust-vexus-lite.'
-            );
-            error.code = 'RIVERMEMO_UNIFIED_NATIVE_RUNTIME_UNAVAILABLE';
-            throw error;
+        const nativeKnowledgeRuntime = options.nativeKnowledgeRuntime || null;
+        const jointRequested = options.nativeJointQuery === true;
+        let jointUsed = false;
+        let jointFallbackReason = null;
+        let nativePayload;
+
+        if (jointRequested) {
+            if (
+                !nativeKnowledgeRuntime
+                || typeof nativeKnowledgeRuntime.executeRiverQuery !== 'function'
+            ) {
+                const error = new Error(
+                    'NativeKnowledgeRuntime joint River ABI is unavailable'
+                );
+                error.code = 'NATIVE_RIVER_QUERY_ABI_UNAVAILABLE';
+                if (options.nativeJointFallbackToLegacy === false) throw error;
+                jointFallbackReason = error.code;
+            } else {
+                try {
+                    const diaryNames = [...new Set(
+                        (Array.isArray(agentContext.diaryNames)
+                            ? agentContext.diaryNames
+                            : []
+                        ).map(name => String(name || '').trim()).filter(Boolean)
+                    )];
+                    if (diaryNames.length === 0) {
+                        const error = new Error(
+                            'Native joint River query requires an explicit diary scope'
+                        );
+                        error.code = 'NATIVE_RIVER_QUERY_EMPTY_DIARY_SCOPE';
+                        throw error;
+                    }
+                    const queryVector = query?.vector instanceof Float32Array
+                        ? query.vector
+                        : new Float32Array(query?.vector || []);
+                    nativePayload = await nativeKnowledgeRuntime.executeRiverQuery(
+                        dbPath,
+                        artifact.artifactSig,
+                        inputJson,
+                        diaryNames,
+                        queryVector,
+                        Math.max(
+                            1,
+                            Math.floor(Number(options.nativePerIndexK) || 300)
+                        ),
+                        Math.max(
+                            1,
+                            Math.floor(Number(
+                                options.nativeCandidateK
+                                ?? inputCandidates.length
+                                ?? 300
+                            ) || 300)
+                        ),
+                        Math.max(
+                            -1,
+                            Math.min(
+                                1,
+                                Number(options.nativeSemanticThreshold) || 0.92
+                            )
+                        )
+                    );
+                    jointUsed = true;
+                } catch (error) {
+                    if (options.nativeJointFallbackToLegacy === false) throw error;
+                    jointFallbackReason =
+                        error.code || error.message || 'native-joint-failed';
+                    console.warn(
+                        `[RiverMemo] Native joint query failed; falling back to ` +
+                        `legacy native Topology input: ${error.message}`
+                    );
+                }
+            }
         }
-        const nativePayload = await tagIndex.rerankRivermemoTopologyV3(
-            dbPath,
-            artifact.artifactSig,
-            inputJson
-        );
+
+        if (!jointUsed) {
+            if (typeof tagIndex?.rerankRivermemoTopologyV3 !== 'function') {
+                const error = new Error(
+                    'RiverMemo requires the VexusIndex-owned native runtime; rebuild rust-vexus-lite.'
+                );
+                error.code = 'RIVERMEMO_UNIFIED_NATIVE_RUNTIME_UNAVAILABLE';
+                throw error;
+            }
+            nativePayload = await tagIndex.rerankRivermemoTopologyV3(
+                dbPath,
+                artifact.artifactSig,
+                inputJson
+            );
+        }
         const nativeResult = JSON.parse(nativePayload);
         const memoRuntimeStats = typeof tagIndex?.memoRuntimeStats === 'function'
             ? tagIndex.memoRuntimeStats()
@@ -317,6 +393,40 @@ class RiverMemoEngine {
                 .map(candidate => [candidateId(candidate), candidate])
                 .filter(([id]) => id !== null)
         );
+
+        // 联合路径没有把中间候选返回 JS。只按最终 Top-K ID 批量 hydrate
+        // 正文和路径，恢复现有公共结果对象契约。
+        if (jointUsed && this.runtime.db?.prepare) {
+            const finalIds = [...new Set(
+                (Array.isArray(nativeResult.results)
+                    ? nativeResult.results
+                    : []
+                ).map(item => Number(item?.chunkId ?? item?.id))
+                    .filter(id => Number.isSafeInteger(id) && id > 0)
+            )];
+            if (finalIds.length > 0) {
+                const placeholders = finalIds.map(() => '?').join(',');
+                const rows = this.runtime.db.prepare(`
+                    SELECT c.id, c.content AS text, f.path AS sourceFile,
+                           f.diary_name AS diaryName, f.id AS fileId
+                    FROM chunks c
+                    JOIN files f ON f.id = c.file_id
+                    WHERE c.id IN (${placeholders})
+                `).all(...finalIds);
+                for (const row of rows) {
+                    inputById.set(Number(row.id), {
+                        id: Number(row.id),
+                        chunkId: Number(row.id),
+                        text: row.text,
+                        sourceFile: row.sourceFile,
+                        fullPath: row.sourceFile,
+                        diaryName: row.diaryName,
+                        fileId: Number(row.fileId),
+                        source: 'rag'
+                    });
+                }
+            }
+        }
         const sourceObservation = queryState.sourceObservation || {};
         const queryMatchedTags = Object.freeze(
             [...new Set(
@@ -421,7 +531,12 @@ class RiverMemoEngine {
                 nativeTopologyV3: Object.freeze({
                     ...(nativeResult.diagnostics || {}),
                     ffiTotalMs: Date.now() - nativeStartedAt,
-                    runtimeOwnership: 'vexus-index-instance',
+                    runtimeOwnership: jointUsed
+                        ? 'native-knowledge-runtime-joint'
+                        : 'vexus-index-instance',
+                    jointRequested,
+                    jointUsed,
+                    jointFallbackReason,
                     memoRuntime: memoRuntimeStats
                         ? Object.freeze({ ...memoRuntimeStats })
                         : null

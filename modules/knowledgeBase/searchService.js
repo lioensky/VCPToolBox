@@ -440,6 +440,25 @@ async _searchSelectedIndices(diaryNames, vector, k, tagBoost, coreTags = [], cor
         let allResults = resultsPerIndex.flat();
         allResults.sort((a, b) => (b.score || 0) - (a.score || 0));
 
+        // 开发/灰度 Shadow compare：只由 config.env 环境变量启用。
+        // 不 await、不替换 allResults、不进入用户 RAG 热参数；原生异常和差异
+        // 仅写日志，因此不会增加当前请求的关键路径等待或改变检索输出。
+        const nativeShadowContext = {
+            diaryNames: selectedDiaries,
+            queryVector: searchVecFloat,
+            perIndexK,
+            globalK,
+            legacyResults: allResults
+        };
+        implementations._scheduleNativeAnnShadowCompare.call(
+            this,
+            nativeShadowContext
+        );
+        implementations._scheduleNativeSemanticShadowCompare.call(
+            this,
+            nativeShadowContext
+        );
+
         // 测地读出只在物理索引结果合并后执行一次，并复用增强阶段的
         // 原生 QueryObservation，确保所有成员共享同一图代际和排序口径。
         if (options?.geodesicRerank) {
@@ -587,6 +606,272 @@ async _searchSelectedIndices(diaryNames, vector, k, tagBoost, coreTags = [], cor
         return hydratedResults;
     },
 
+_scheduleNativeAnnShadowCompare({
+        diaryNames,
+        queryVector,
+        perIndexK,
+        globalK,
+        legacyResults
+    }) {
+        if (
+            this.config.nativeAnnShadowCompare !== true
+            || !this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.searchDiaryIndices !== 'function'
+        ) {
+            return;
+        }
+        const sampleRate = Math.max(
+            0,
+            Math.min(1, Number(this.config.nativeAnnShadowSampleRate) || 0)
+        );
+        if (sampleRate <= 0 || Math.random() > sampleRate) return;
+
+        const legacyById = new Map();
+        for (const result of Array.isArray(legacyResults) ? legacyResults : []) {
+            const id = Number(result?.id);
+            if (!Number.isSafeInteger(id) || id <= 0) continue;
+            const score = Number(result?.score) || 0;
+            const current = legacyById.get(id);
+            if (!current || score > current.score) {
+                legacyById.set(id, { id, score });
+            }
+        }
+        const expectedIds = [...legacyById.values()]
+            .sort((left, right) =>
+                (right.score - left.score) || (left.id - right.id)
+            )
+            .slice(0, Math.max(1, Number(globalK) || 1))
+            .map(result => result.id);
+        const startedAt = Date.now();
+
+        let nativeTask;
+        try {
+            nativeTask = this.nativeKnowledgeRuntime.searchDiaryIndices(
+                diaryNames,
+                queryVector,
+                Math.max(1, Number(perIndexK) || 1),
+                Math.max(1, Number(globalK) || 1)
+            );
+        } catch (error) {
+            console.warn(
+                `[KnowledgeBase][NativeAnnShadow] setup failed: ${error.message}`
+            );
+            return;
+        }
+
+        Promise.resolve(nativeTask)
+            .then(payload => {
+                const native = JSON.parse(payload);
+                const actualIds = (Array.isArray(native?.results)
+                    ? native.results
+                    : []
+                ).map(result => Number(result?.id))
+                    .filter(Number.isSafeInteger);
+                const exactMatch =
+                    expectedIds.length === actualIds.length
+                    && expectedIds.every((id, index) => id === actualIds[index]);
+
+                if (!exactMatch) {
+                    const expectedSet = new Set(expectedIds);
+                    const actualSet = new Set(actualIds);
+                    const onlyLegacy = expectedIds.filter(id => !actualSet.has(id));
+                    const onlyNative = actualIds.filter(id => !expectedSet.has(id));
+                    console.warn(
+                        `[KnowledgeBase][NativeAnnShadow] DIFF ` +
+                        `diaries=${diaryNames.join('|')}, perIndexK=${perIndexK}, ` +
+                        `globalK=${globalK}, legacy=[${expectedIds.join(',')}], ` +
+                        `native=[${actualIds.join(',')}], ` +
+                        `onlyLegacy=[${onlyLegacy.join(',')}], ` +
+                        `onlyNative=[${onlyNative.join(',')}], ` +
+                        `nativeMs=${Number(native?.diagnostics?.totalMs || 0).toFixed(2)}, ` +
+                        `observedMs=${Date.now() - startedAt}.`
+                    );
+                } else if (this.config.nativeAnnShadowLogMatches === true) {
+                    console.log(
+                        `[KnowledgeBase][NativeAnnShadow] MATCH ` +
+                        `diaries=${diaryNames.join('|')}, candidates=${actualIds.length}, ` +
+                        `nativeMs=${Number(native?.diagnostics?.totalMs || 0).toFixed(2)}, ` +
+                        `observedMs=${Date.now() - startedAt}.`
+                    );
+                }
+            })
+            .catch(error => {
+                console.warn(
+                    `[KnowledgeBase][NativeAnnShadow] execution failed: ${error.message}`
+                );
+            });
+    },
+
+_scheduleNativeSemanticShadowCompare({
+        diaryNames,
+        queryVector,
+        perIndexK,
+        globalK,
+        legacyResults
+    }) {
+        if (
+            this.config.nativeSemanticShadowCompare !== true
+            || !this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime
+                .searchDiaryIndicesDeduplicated !== 'function'
+            || !this.resultDeduplicator
+            || !this.dbPath
+        ) {
+            return;
+        }
+        const sampleRate = Math.max(
+            0,
+            Math.min(
+                1,
+                Number(this.config.nativeSemanticShadowSampleRate) || 0
+            )
+        );
+        if (sampleRate <= 0 || Math.random() > sampleRate) return;
+
+        // ANN 联合层的硬身份是 Chunk ID。先按 ID 保留最高分，使 JS 黄金输入
+        // 与 Rust 合并后的候选集合一致，避免跨物理索引重复产生伪差异。
+        const legacyById = new Map();
+        for (const result of Array.isArray(legacyResults) ? legacyResults : []) {
+            const id = Number(result?.id);
+            if (!Number.isSafeInteger(id) || id <= 0) continue;
+            const score = Number(result?.score) || 0;
+            const current = legacyById.get(id);
+            if (!current || score > current.score) {
+                legacyById.set(id, {
+                    id,
+                    chunkId: id,
+                    score,
+                    source: 'rag'
+                });
+            }
+        }
+        const candidates = [...legacyById.values()].sort((left, right) =>
+            (right.score - left.score) || (left.id - right.id)
+        );
+        if (candidates.length === 0) return;
+
+        const candidateK = candidates.length;
+        const finalK = Math.max(1, Number(globalK) || 1);
+        const threshold = Math.max(
+            -1,
+            Math.min(
+                1,
+                Number(
+                    this.resultDeduplicator.config?.semanticThreshold
+                ) || 0.92
+            )
+        );
+
+        // 开发诊断可能执行旧 JS O(n²×dimension) 黄金算法，必须脱离当前
+        // 请求栈。原生任务先入后台队列，随后 JS 计算只影响显式开启诊断的环境。
+        setImmediate(() => {
+            const startedAt = Date.now();
+            let nativeTask;
+            try {
+                nativeTask =
+                    this.nativeKnowledgeRuntime
+                        .searchDiaryIndicesDeduplicated(
+                            this.dbPath,
+                            diaryNames,
+                            queryVector,
+                            Math.max(1, Number(perIndexK) || 1),
+                            candidateK,
+                            threshold,
+                            finalK
+                        );
+            } catch (error) {
+                console.warn(
+                    `[KnowledgeBase][NativeSemanticShadow] setup failed: ` +
+                    `${error.message}`
+                );
+                return;
+            }
+
+            let expectedIds;
+            try {
+                const hydrated =
+                    this.resultDeduplicator
+                        ._hydrateMissingVectors(candidates);
+                expectedIds =
+                    this.resultDeduplicator
+                        ._semanticDeduplicate(
+                            hydrated,
+                            queryVector,
+                            threshold,
+                            finalK
+                        )
+                        .map(result => Number(result?.id ?? result?.chunkId))
+                        .filter(Number.isSafeInteger);
+            } catch (error) {
+                console.warn(
+                    `[KnowledgeBase][NativeSemanticShadow] JS reference ` +
+                    `failed: ${error.message}`
+                );
+                return;
+            }
+
+            Promise.resolve(nativeTask)
+                .then(payload => {
+                    const native = JSON.parse(payload);
+                    const actualIds = (Array.isArray(native?.results)
+                        ? native.results
+                        : []
+                    ).map(result => Number(result?.id))
+                        .filter(Number.isSafeInteger);
+                    const exactMatch =
+                        expectedIds.length === actualIds.length
+                        && expectedIds.every(
+                            (id, index) => id === actualIds[index]
+                        );
+
+                    if (!exactMatch) {
+                        const expectedSet = new Set(expectedIds);
+                        const actualSet = new Set(actualIds);
+                        const onlyLegacy = expectedIds.filter(
+                            id => !actualSet.has(id)
+                        );
+                        const onlyNative = actualIds.filter(
+                            id => !expectedSet.has(id)
+                        );
+                        console.warn(
+                            `[KnowledgeBase][NativeSemanticShadow] DIFF ` +
+                            `diaries=${diaryNames.join('|')}, ` +
+                            `candidateK=${candidateK}, finalK=${finalK}, ` +
+                            `threshold=${threshold}, ` +
+                            `legacy=[${expectedIds.join(',')}], ` +
+                            `native=[${actualIds.join(',')}], ` +
+                            `onlyLegacy=[${onlyLegacy.join(',')}], ` +
+                            `onlyNative=[${onlyNative.join(',')}], ` +
+                            `semanticMs=${Number(
+                                native?.diagnostics?.semanticDedupMs || 0
+                            ).toFixed(2)}, ` +
+                            `observedMs=${Date.now() - startedAt}.`
+                        );
+                    } else if (
+                        this.config.nativeSemanticShadowLogMatches === true
+                    ) {
+                        console.log(
+                            `[KnowledgeBase][NativeSemanticShadow] MATCH ` +
+                            `diaries=${diaryNames.join('|')}, ` +
+                            `candidateK=${candidateK}, finalK=${finalK}, ` +
+                            `suppressed=${Number(
+                                native?.diagnostics?.semanticSuppressed || 0
+                            )}, semanticMs=${Number(
+                                native?.diagnostics?.semanticDedupMs || 0
+                            ).toFixed(2)}, ` +
+                            `observedMs=${Date.now() - startedAt}.`
+                        );
+                    }
+                })
+                .catch(error => {
+                    console.warn(
+                        `[KnowledgeBase][NativeSemanticShadow] execution ` +
+                        `failed: ${error.message}`
+                    );
+                });
+        });
+    },
+
 async getChunksByFilePaths(filePaths) {
         if (!filePaths || filePaths.length === 0) return [];
 
@@ -697,6 +982,13 @@ class SearchService {
 
     async _searchSelectedIndices(...args) {
         return await implementations._searchSelectedIndices.apply(
+            this.owner,
+            args
+        );
+    }
+
+    _scheduleNativeAnnShadowCompare(...args) {
+        return implementations._scheduleNativeAnnShadowCompare.apply(
             this.owner,
             args
         );

@@ -38,9 +38,11 @@ const TagConsistencyService = require('./modules/knowledgeBase/tagConsistencySer
 
 // 尝试加载 Rust Vexus 引擎
 let VexusIndex = null;
+let NativeKnowledgeRuntime = null;
 try {
     const vexusModule = require('./rust-vexus-lite');
     VexusIndex = vexusModule.VexusIndex;
+    NativeKnowledgeRuntime = vexusModule.NativeKnowledgeRuntime || null;
     console.log('[KnowledgeBase] 🦀 Vexus-Lite Rust engine loaded');
 } catch (e) {
     console.error('[KnowledgeBase] ❌ Critical: Vexus-Lite not found.');
@@ -93,6 +95,38 @@ class KnowledgeBaseManager {
             indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
             indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
             idleSweepLogTick: (process.env.KNOWLEDGEBASE_IDLE_SWEEP_LOG_TICK || 'false').toLowerCase() === 'true',
+            // Rust 原生多索引 ANN 开发诊断。只从进程环境读取，不属于用户
+            // RAG 热参数；默认关闭且任何比较结果都不得影响实际检索输出。
+            nativeAnnShadowCompare:
+                (process.env.KNOWLEDGEBASE_NATIVE_ANN_SHADOW_COMPARE || 'false')
+                    .toLowerCase() === 'true',
+            nativeAnnShadowSampleRate: (() => {
+                const value = Number(
+                    process.env.KNOWLEDGEBASE_NATIVE_ANN_SHADOW_SAMPLE_RATE
+                );
+                return Number.isFinite(value)
+                    ? Math.max(0, Math.min(1, value))
+                    : 1;
+            })(),
+            nativeAnnShadowLogMatches:
+                (process.env.KNOWLEDGEBASE_NATIVE_ANN_SHADOW_LOG_MATCHES || 'false')
+                    .toLowerCase() === 'true',
+            // 原生语义去重 Shadow 会在 setImmediate 中额外执行一次 JS 黄金
+            // 算法，仅供开发一致性审计，必须使用独立开关且默认关闭。
+            nativeSemanticShadowCompare:
+                (process.env.KNOWLEDGEBASE_NATIVE_SEMANTIC_SHADOW_COMPARE || 'false')
+                    .toLowerCase() === 'true',
+            nativeSemanticShadowSampleRate: (() => {
+                const value = Number(
+                    process.env.KNOWLEDGEBASE_NATIVE_SEMANTIC_SHADOW_SAMPLE_RATE
+                );
+                return Number.isFinite(value)
+                    ? Math.max(0, Math.min(1, value))
+                    : 1;
+            })(),
+            nativeSemanticShadowLogMatches:
+                (process.env.KNOWLEDGEBASE_NATIVE_SEMANTIC_SHADOW_LOG_MATCHES || 'false')
+                    .toLowerCase() === 'true',
 
             ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛').split(',').map(f => f.trim()).filter(Boolean),
             ignorePrefixes: (process.env.IGNORE_PREFIXES || process.env.IGNORE_PREFIX || '已整理').split(',').map(p => p.trim()).filter(Boolean),
@@ -109,6 +143,39 @@ class KnowledgeBaseManager {
             // 语言置信度补偿配置
             langConfidenceEnabled: (process.env.LANG_CONFIDENCE_GATING_ENABLED || 'true').toLowerCase() === 'true',
             langPenaltyUnknown: parseFloat(process.env.LANG_PENALTY_UNKNOWN) || 0.05,
+            // Native River 联合查询生产灰度开关。开启后，Memo observation
+            // 仍由统一管线生成，但 ANN/合并/向量 hydrate/语义去重/Topology V3
+            // 收敛为一次 NativeKnowledgeRuntime 调用。
+            nativeRiverQueryEnabled:
+                (process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_ENABLED || 'false')
+                    .toLowerCase() === 'true',
+            nativeRiverQueryFallbackToLegacy:
+                (process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_FALLBACK_TO_LEGACY || 'true')
+                    .toLowerCase() !== 'false',
+            nativeRiverQueryPerIndexK: (() => {
+                const value = Number(
+                    process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_PER_INDEX_K
+                );
+                return Number.isFinite(value) && value > 0
+                    ? Math.floor(value)
+                    : 300;
+            })(),
+            nativeRiverQueryCandidateK: (() => {
+                const value = Number(
+                    process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_CANDIDATE_K
+                );
+                return Number.isFinite(value) && value > 0
+                    ? Math.floor(value)
+                    : 300;
+            })(),
+            nativeRiverQuerySemanticThreshold: (() => {
+                const value = Number(
+                    process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_SEMANTIC_THRESHOLD
+                );
+                return Number.isFinite(value)
+                    ? Math.max(-1, Math.min(1, value))
+                    : 0.92;
+            })(),
             // 全局 Tag 索引落地模式（单一枚举配置）：
             // - always：传统模式，每次防抖窗口结束均重写完整 usearch。
             // - generational：推荐模式，加载双槽基线并回放 SQLite 差分，
@@ -156,6 +223,8 @@ class KnowledgeBaseManager {
         this.diaryIndexLastUsed = new Map(); // 🌟 记录每个索引的最后使用时间
         this.idleSweepTimer = null;
         this.tagIndex = null;
+        this.nativeKnowledgeRuntime = null;
+        this.nativeDiaryIndexGenerations = new Map();
         this.watcher = null;
         this.initialized = false;
         this.eventLoopWatchdogTimer = null;
@@ -234,6 +303,10 @@ class KnowledgeBaseManager {
             waitForCoordinatorIdle: options => this._waitForDatabaseCoordinatorIdle(options),
             ensureDiaryDateIndex: diaryName => this._ensureDiaryDateIndexCached(diaryName),
             invalidateDiaryDateIndex: diaryName => this.invalidateDiaryDateIndex(diaryName),
+            onDiaryIndexPublished: (diaryName, index) =>
+                this._registerNativeDiaryIndex(diaryName, index),
+            onDiaryIndexRemoved: diaryName =>
+                this._unregisterNativeDiaryIndex(diaryName),
             onRecoveryStateChange: active => {
                 this.indexRecoveryActive = active;
             },
@@ -322,7 +395,32 @@ class KnowledgeBaseManager {
             }
         }
 
-        // 2. 预热日记本名称向量缓存（同步阻塞，确保 RAG 插件启动即可用）
+        // 2. 创建实例级原生联合查询运行时。它只克隆 Tag MemoRuntime Arc，
+        // 后续日记索引由 IndexRepository 在完整加载/恢复后发布。
+        if (NativeKnowledgeRuntime && indexReady) {
+            try {
+                this.nativeKnowledgeRuntime = new NativeKnowledgeRuntime(
+                    this.tagIndex
+                );
+                console.log(
+                    '[KnowledgeBase] 🦀 NativeKnowledgeRuntime ready; ' +
+                    'diary registry lifecycle enabled.'
+                );
+            } catch (error) {
+                this.nativeKnowledgeRuntime = null;
+                console.warn(
+                    '[KnowledgeBase] ⚠️ NativeKnowledgeRuntime initialization ' +
+                    `failed; legacy retrieval remains available: ${error.message}`
+                );
+            }
+        } else {
+            console.warn(
+                '[KnowledgeBase] ⚠️ NativeKnowledgeRuntime ABI unavailable; ' +
+                'legacy retrieval remains available.'
+            );
+        }
+
+        // 3. 预热日记本名称向量缓存（同步阻塞，确保 RAG 插件启动即可用）
         this._hydrateDiaryNameCacheSync();
 
         // 🧹 初始化 KBM 通用结果去重器。
@@ -913,6 +1011,38 @@ class KnowledgeBaseManager {
 
     _deleteAllPersistedDiaryIndexes() {
         return this.indexRepository.deleteAllPersisted();
+    }
+
+    _registerNativeDiaryIndex(diaryName, index) {
+        if (!this.nativeKnowledgeRuntime) return null;
+        const state = this.nativeKnowledgeRuntime.registerDiaryIndex(
+            String(diaryName),
+            index
+        );
+        this.nativeDiaryIndexGenerations.set(
+            String(diaryName),
+            Number(state.generation)
+        );
+        return state;
+    }
+
+    _unregisterNativeDiaryIndex(diaryName) {
+        const normalized = String(diaryName || '').trim();
+        const generation = this.nativeDiaryIndexGenerations.get(normalized);
+        if (
+            !this.nativeKnowledgeRuntime
+            || !Number.isSafeInteger(generation)
+            || generation <= 0
+        ) {
+            this.nativeDiaryIndexGenerations.delete(normalized);
+            return false;
+        }
+        const removed = this.nativeKnowledgeRuntime.unregisterDiaryIndex(
+            normalized,
+            generation
+        );
+        if (removed) this.nativeDiaryIndexGenerations.delete(normalized);
+        return removed;
     }
 
     async _getOrLoadDiaryIndex(diaryName, options = {}) {
@@ -1636,6 +1766,24 @@ class KnowledgeBaseManager {
                     observationHandle: prepared.observationHandle,
                     sourceObservationResult,
                     sourceField: prepared.sourceField,
+                    nativeKnowledgeRuntime: this.nativeKnowledgeRuntime,
+                    // 只有 executeNativeRiverQuery 或显式调用方可以触发联合重搜。
+                    // 普通 rerankWithRiverMemoAsync 必须尊重调用方已构造的
+                    // BM25/Time/LightMemo 候选，不能因全局开关而覆盖它们。
+                    nativeJointQuery:
+                        options.nativeJointQuery === true,
+                    nativeJointFallbackToLegacy:
+                        options.nativeJointFallbackToLegacy
+                        ?? this.config.nativeRiverQueryFallbackToLegacy,
+                    nativePerIndexK:
+                        options.nativePerIndexK
+                        ?? this.config.nativeRiverQueryPerIndexK,
+                    nativeCandidateK:
+                        options.nativeCandidateK
+                        ?? this.config.nativeRiverQueryCandidateK,
+                    nativeSemanticThreshold:
+                        options.nativeSemanticThreshold
+                        ?? this.config.nativeRiverQuerySemanticThreshold,
                     sourceObservationConfig: {
                         ...(artifact.effectiveConfig
                             ?.sourceObservation || {}),
@@ -1892,6 +2040,192 @@ class KnowledgeBaseManager {
             candidates,
             agentContext,
             options
+        );
+    }
+
+    /**
+     * Rust 原生联合 River 查询公共代理。
+     *
+     * 调用方无需先执行 search() 或 hydrate 候选；这里只准备控制面、
+     * observationHandle 和权限作用域，随后由 NativeKnowledgeRuntime 完成
+     * ANN→合并→向量 hydrate→语义去重→Topology V3。
+     */
+    async executeNativeRiverQuery(query, options = {}) {
+        const rawVector = query?.vector || options.queryVector;
+        const queryVector = rawVector instanceof Float32Array
+            ? rawVector
+            : new Float32Array(rawVector || []);
+        if (queryVector.length !== this.config.dimension) {
+            throw new RangeError(
+                `Native River query vector must be ${this.config.dimension}, ` +
+                `got ${queryVector.length}`
+            );
+        }
+
+        const diaryNames = [...new Set(
+            (Array.isArray(options.diaryNames)
+                ? options.diaryNames
+                : [options.diaryNames]
+            ).map(name => String(name || '').trim()).filter(Boolean)
+        )];
+        if (diaryNames.length === 0) {
+            const error = new Error(
+                'Native River query requires an explicit diary scope'
+            );
+            error.code = 'NATIVE_RIVER_QUERY_EMPTY_DIARY_SCOPE';
+            throw error;
+        }
+
+        await Promise.all(
+            diaryNames.map(name => this._getOrLoadDiaryIndex(name))
+        );
+
+        const placeholders = diaryNames.map(() => '?').join(',');
+        const allowedFileIds = this.db.prepare(
+            `SELECT id FROM files WHERE diary_name IN (${placeholders})`
+        ).all(...diaryNames)
+            .map(row => Number(row.id))
+            .filter(Number.isSafeInteger);
+        if (allowedFileIds.length === 0) {
+            const error = new Error(
+                'Native River query resolved an empty file permission scope'
+            );
+            error.code = 'NATIVE_RIVER_QUERY_EMPTY_PERMISSION_SCOPE';
+            throw error;
+        }
+
+        const finalK = Math.max(
+            1,
+            Math.floor(Number(options.topK) || 8)
+        );
+        const candidateK = Math.max(
+            finalK,
+            Math.floor(Number(
+                options.candidateK
+                ?? this.config.nativeRiverQueryCandidateK
+            ) || 300)
+        );
+        const prepared = options.preparedMemoObservation
+            || await this.prepareUnifiedMemoObservation(
+                {
+                    text: String(query?.text || ''),
+                    vector: queryVector
+                },
+                {
+                    ...options,
+                    queryText: String(query?.text || ''),
+                    vector: queryVector
+                }
+            );
+        const agentContext = {
+            agentId: options.agentId || null,
+            diaryNames,
+            allowedFileIds,
+            deniedFileIds: [],
+            visibilityMode: 'explicit_sql_scope',
+            permissions: {
+                allowPublic: false,
+                allowOwn: false,
+                allowAuthorized: true,
+                allowOtherAgentPublic: false,
+                allowUnknownProvenance: false
+            }
+        };
+        const jointEnabled = options.enabled
+            ?? this.config.nativeRiverQueryEnabled;
+        const fallbackEnabled = options.fallbackToLegacy
+            ?? this.config.nativeRiverQueryFallbackToLegacy;
+
+        if (jointEnabled) {
+            try {
+                // 非空哨兵只通过 RiverMemoEngine 公共输入校验；联合 Runtime
+                // 会在 Rust 内覆盖 candidates，哨兵不会参与任何计算。
+                return await this.riverMemoEngine.rerank(
+                    {
+                        text: String(query?.text || ''),
+                        vector: queryVector
+                    },
+                    [{ id: 1, chunkId: 1, score: 0 }],
+                    agentContext,
+                    {
+                        ...options,
+                        artifact: prepared.artifact,
+                        dbPath: this.dbPath,
+                        nativePreparedQuery: prepared.nativePreparedQuery,
+                        observationHandle: prepared.observationHandle,
+                        sourceObservationResult:
+                            prepared.sourceObservationResult,
+                        sourceField: prepared.sourceField,
+                        topK: finalK,
+                        nativeKnowledgeRuntime:
+                            this.nativeKnowledgeRuntime,
+                        nativeJointQuery: true,
+                        nativeJointFallbackToLegacy: false,
+                        nativePerIndexK:
+                            options.perIndexK
+                            ?? this.config.nativeRiverQueryPerIndexK,
+                        nativeCandidateK: candidateK,
+                        nativeSemanticThreshold:
+                            options.semanticThreshold
+                            ?? this.config
+                                .nativeRiverQuerySemanticThreshold
+                    }
+                );
+            } catch (error) {
+                if (!fallbackEnabled) throw error;
+                console.warn(
+                    `[KnowledgeBase][NativeRiverQuery] joint execution failed; ` +
+                    `running complete legacy fallback: ${error.message}`
+                );
+            }
+        }
+
+        // 完整旧链路回退：真实搜索、JS 兼容去重、原生 Topology V3。
+        let candidates = await this.search(
+            diaryNames,
+            queryVector,
+            candidateK,
+            0,
+            [],
+            undefined,
+            {
+                perIndexK:
+                    options.perIndexK
+                    ?? this.config.nativeRiverQueryPerIndexK,
+                globalK: candidateK
+            }
+        );
+        candidates = await this.deduplicateResults(
+            candidates,
+            queryVector,
+            {
+                stage: 'native-river-query-fallback',
+                semantic: true,
+                semanticThreshold:
+                    options.semanticThreshold
+                    ?? this.config.nativeRiverQuerySemanticThreshold,
+                maxResults: candidateK
+            }
+        );
+        return await this.riverMemoEngine.rerank(
+            {
+                text: String(query?.text || ''),
+                vector: queryVector
+            },
+            candidates,
+            agentContext,
+            {
+                ...options,
+                artifact: prepared.artifact,
+                dbPath: this.dbPath,
+                nativePreparedQuery: prepared.nativePreparedQuery,
+                observationHandle: prepared.observationHandle,
+                sourceObservationResult:
+                    prepared.sourceObservationResult,
+                sourceField: prepared.sourceField,
+                topK: finalK,
+                nativeJointQuery: false
+            }
         );
     }
 
@@ -2319,6 +2653,21 @@ class KnowledgeBaseManager {
 
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
+
+        // 先停止原生 Runtime 接收新查询并撤销注册名。已经开始的查询持有
+        // 独立 Arc 快照，可在后续 shutdown 阶段安全完成。
+        if (this.nativeKnowledgeRuntime) {
+            try {
+                this.nativeKnowledgeRuntime.shutdown();
+            } catch (error) {
+                console.warn(
+                    '[KnowledgeBase] Failed to shutdown NativeKnowledgeRuntime:',
+                    error.message || error
+                );
+            }
+            this.nativeKnowledgeRuntime = null;
+        }
+        this.nativeDiaryIndexGenerations.clear();
 
         // 统一 MemoRuntime 归属全局 Tag VexusIndex；关闭前显式释放活动图快照。
         // 若仍有原生查询持有 Arc，实际内存会在最后一个查询结束后安全回收。

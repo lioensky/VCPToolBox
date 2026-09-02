@@ -13,6 +13,8 @@ class IndexRepository {
         this.waitForCoordinatorIdle = options.waitForCoordinatorIdle;
         this.ensureDiaryDateIndex = options.ensureDiaryDateIndex || (() => {});
         this.invalidateDiaryDateIndex = options.invalidateDiaryDateIndex || (() => {});
+        this.onDiaryIndexPublished = options.onDiaryIndexPublished || (() => null);
+        this.onDiaryIndexRemoved = options.onDiaryIndexRemoved || (() => false);
         this.onRecoveryStateChange = options.onRecoveryStateChange || (() => {});
         this.onRecoveryTailChange = options.onRecoveryTailChange || (() => {});
         this.diaryIndices = options.diaryIndices || new Map();
@@ -323,6 +325,18 @@ class IndexRepository {
                     await this.recoverFromDb(index, 'chunks', diaryName);
                 }
                 this.diaryIndices.set(diaryName, index);
+                try {
+                    this.onDiaryIndexPublished(diaryName, index);
+                } catch (error) {
+                    if (this.diaryIndices.get(diaryName) === index) {
+                        this.diaryIndices.delete(diaryName);
+                    }
+                    this.lastUsed.delete(diaryName);
+                    throw new Error(
+                        `Diary index loaded but native publication failed for ` +
+                        `"${diaryName}": ${error.message}`
+                    );
+                }
                 this.ensureDiaryDateIndex(diaryName);
                 return index;
             } finally {
@@ -411,6 +425,139 @@ class IndexRepository {
             );
             return 0;
         }
+    }
+
+    /**
+     * 将一个日记本的 Chunk 删除与 upsert 作为单个索引发布批次执行。
+     *
+     * 新原生 ABI 在同一 RwLock 写锁内完成整个差分；并发 search 只能看到批次前
+     * 或批次后状态。旧二进制或原生部分应用失败时，禁止退回逐条 add/remove：
+     * 直接丢弃当前实例，从 SQLite 权威事实层构建完整替代实例后再发布。
+     */
+    async applyChunkDelta(diaryName, removeIds = [], upserts = []) {
+        const normalizedDiaryName = String(diaryName || '').trim();
+        if (!normalizedDiaryName) {
+            throw new TypeError('applyChunkDelta requires a diary name');
+        }
+
+        const deletes = [...new Set(
+            (Array.isArray(removeIds) ? removeIds : [])
+                .map(Number)
+                .filter(id => Number.isSafeInteger(id) && id > 0)
+        )];
+        const normalizedUpserts = (Array.isArray(upserts) ? upserts : [])
+            .map(entry => ({
+                id: Number(entry?.id),
+                vec: entry?.vec
+            }))
+            .filter(entry =>
+                Number.isSafeInteger(entry.id)
+                && entry.id > 0
+                && entry.vec
+                && typeof entry.vec.length === 'number'
+                && entry.vec.length === this.config.dimension
+            );
+
+        if (deletes.length === 0 && normalizedUpserts.length === 0) {
+            return {
+                mode: 'noop',
+                requestedDeletes: 0,
+                requestedUpserts: 0
+            };
+        }
+
+        const index = await this.getOrLoad(normalizedDiaryName, {
+            allowJsProcessing: true,
+            allowJsDeleteProcessing: true
+        });
+
+        if (typeof index?.applyChunkDelta === 'function') {
+            const ids = normalizedUpserts.map(entry => entry.id);
+            const vectors = new Float32Array(ids.length * this.config.dimension);
+            normalizedUpserts.forEach((entry, position) => {
+                vectors.set(entry.vec, position * this.config.dimension);
+            });
+
+            try {
+                const result = await index.applyChunkDelta(deletes, ids, vectors);
+                this.scheduleSave(normalizedDiaryName);
+                return {
+                    mode: 'native-atomic-delta',
+                    ...result
+                };
+            } catch (error) {
+                console.error(
+                    `[${this.logPrefix}] ❌ Atomic Chunk delta failed for ` +
+                    `"${normalizedDiaryName}"; discarding the instance and rebuilding ` +
+                    `from authoritative SQLite: ${error.message}`
+                );
+            }
+        } else {
+            console.warn(
+                `[${this.logPrefix}] ⚠️ applyChunkDelta ABI unavailable for ` +
+                `"${normalizedDiaryName}"; rebuilding the complete index instead of ` +
+                `exposing a non-atomic per-item update.`
+            );
+        }
+
+        // 失败的原生差分可能已经部分修改 usearch；旧实例绝不能重新发布。
+        if (this.diaryIndices.get(normalizedDiaryName) === index) {
+            this.diaryIndices.delete(normalizedDiaryName);
+        }
+        this.lastUsed.delete(normalizedDiaryName);
+        this.deletePersisted(normalizedDiaryName);
+
+        const replacement = new this.VexusIndex(this.config.dimension, 50000);
+        const recovered = await this.recoverFromDb(
+            replacement,
+            'chunks',
+            normalizedDiaryName
+        );
+        const expected = Number(
+            this.getDb?.()?.prepare(`
+                SELECT COUNT(*) AS count
+                FROM chunks c
+                JOIN files f ON f.id = c.file_id
+                WHERE f.diary_name = ? AND c.vector IS NOT NULL
+            `).get(normalizedDiaryName)?.count
+        ) || 0;
+        if (recovered !== expected) {
+            throw new Error(
+                `Chunk index recovery count mismatch for "${normalizedDiaryName}": ` +
+                `expected ${expected}, recovered ${recovered}`
+            );
+        }
+
+        this.diaryIndices.set(normalizedDiaryName, replacement);
+        try {
+            this.onDiaryIndexPublished(normalizedDiaryName, replacement);
+        } catch (error) {
+            if (this.diaryIndices.get(normalizedDiaryName) === replacement) {
+                this.diaryIndices.delete(normalizedDiaryName);
+            }
+            this.lastUsed.delete(normalizedDiaryName);
+            throw new Error(
+                `Recovered diary index native publication failed for ` +
+                `"${normalizedDiaryName}": ${error.message}`
+            );
+        }
+        this.lastUsed.set(normalizedDiaryName, Date.now());
+        this.ensureDiaryDateIndex(normalizedDiaryName);
+        this.scheduleSave(normalizedDiaryName);
+        console.warn(
+            `[${this.logPrefix}] ♻️ Diary index rebuilt atomically after delta ` +
+            `fallback: "${normalizedDiaryName}", vectors=${recovered}.`
+        );
+        return {
+            mode: 'sqlite-full-recovery',
+            requestedDeletes: deletes.length,
+            requestedUpserts: normalizedUpserts.length,
+            totalVectors: recovered
+        };
+    }
+
+    unregisterDiaryIndex(diaryName) {
+        return this.onDiaryIndexRemoved(String(diaryName || '').trim());
     }
 
     deletePersisted(diaryName) {
@@ -558,6 +705,7 @@ class IndexRepository {
                     this.saveTimers.delete(name);
                 }
                 this.saveToDisk(name);
+                this.unregisterDiaryIndex(name);
                 this.diaryIndices.delete(name);
                 this.lastUsed.delete(name);
                 this.invalidateDiaryDateIndex(name);
