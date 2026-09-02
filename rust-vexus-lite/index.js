@@ -310,9 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { rerankRivermemoTopologyV3, clearRivermemoTopologyV3Cache, VexusIndex, VexusWatcher } = nativeBinding
+const { VexusIndex, VexusWatcher } = nativeBinding
 
-module.exports.rerankRivermemoTopologyV3 = rerankRivermemoTopologyV3
-module.exports.clearRivermemoTopologyV3Cache = clearRivermemoTopologyV3Cache
 module.exports.VexusIndex = VexusIndex
 module.exports.VexusWatcher = VexusWatcher

@@ -4,22 +4,6 @@ const {
     computeRiverObservability
 } = require('./modules/tagmemoV10/riverObservability');
 
-let legacyNativeTopologyV3 = null;
-
-function getLegacyNativeTopologyV3() {
-    if (legacyNativeTopologyV3) return legacyNativeTopologyV3;
-    const native = require('./rust-vexus-lite');
-    if (typeof native.rerankRivermemoTopologyV3 !== 'function') {
-        const error = new Error(
-            'RiverMemo Topology V3 native kernel is unavailable; rebuild rust-vexus-lite.'
-        );
-        error.code = 'RIVERMEMO_NATIVE_TOPOLOGY_V3_UNAVAILABLE';
-        throw error;
-    }
-    legacyNativeTopologyV3 = native.rerankRivermemoTopologyV3;
-    return legacyNativeTopologyV3;
-}
-
 const VERSION = 'rivermemo_v1';
 const ALGORITHM_VERSION = 'rivermemo.topology-v3.1';
 const RESULT_SCHEMA = 'rivermemo-topology-v3-result-v1';
@@ -272,11 +256,11 @@ class RiverMemoEngine {
                     ? []
                     : Array.from(query?.vector || options.vector || [])
             },
-            denoisedVector: observationHandle
-                ? []
-                : Array.from(prepared.denoisedVector),
-            localVector: Array.from(prepared.localVector),
-            transferVector: Array.from(prepared.transferVector),
+            ...(observationHandle ? {} : {
+                denoisedVector: Array.from(prepared.denoisedVector),
+                localVector: Array.from(prepared.localVector),
+                transferVector: Array.from(prepared.transferVector)
+            }),
             candidates: inputCandidates.map(candidate => ({
                 id: candidateId(candidate),
                 score: Number(candidate.score) || 0,
@@ -287,24 +271,20 @@ class RiverMemoEngine {
             })).filter(candidate => candidate.id !== null),
             queryState: {
                 queryId: queryState.queryId,
-                sourceField: observationHandle
-                    ? []
-                    : (queryState.sourceField || []),
-                localField: queryState.localField || [],
-                transferField: queryState.transferField || [],
-                localDomainIds: queryState.localDomain?.ids || [],
-                transferDomainIds: queryState.transferDomain?.ids || [],
-                riverNodes: observationHandle
-                    ? []
-                    : (Array.isArray(river.nodes) ? river.nodes : []),
-                riverEdges: observationHandle
-                    ? []
-                    : (Array.isArray(river.edges) ? river.edges : []),
-                fieldProvenance: observationHandle ? [] : fieldProvenance,
                 completeObservation: observationHandle
                     ? true
                     : queryState.sourceObservation?.diagnostics
-                        ?.completeObservation === true
+                        ?.completeObservation === true,
+                ...(observationHandle ? {} : {
+                    sourceField: queryState.sourceField || [],
+                    localField: queryState.localField || [],
+                    transferField: queryState.transferField || [],
+                    localDomainIds: queryState.localDomain?.ids || [],
+                    transferDomainIds: queryState.transferDomain?.ids || [],
+                    riverNodes: Array.isArray(river.nodes) ? river.nodes : [],
+                    riverEdges: Array.isArray(river.edges) ? river.edges : [],
+                    fieldProvenance
+                })
             },
             allowedFileIds: Array.isArray(agentContext.allowedFileIds)
                 ? agentContext.allowedFileIds.map(Number).filter(Number.isFinite)
@@ -314,22 +294,20 @@ class RiverMemoEngine {
         const nativeStartedAt = Date.now();
         const inputJson = JSON.stringify(payload);
         const tagIndex = this.runtime.tagIndex;
-        const usesUnifiedMemoRuntime =
-            typeof tagIndex?.rerankRivermemoTopologyV3 === 'function';
-        const nativePayload = usesUnifiedMemoRuntime
-            ? await tagIndex.rerankRivermemoTopologyV3(
-                dbPath,
-                artifact.artifactSig,
-                inputJson
-            )
-            : await getLegacyNativeTopologyV3()(
-                dbPath,
-                artifact.artifactSig,
-                inputJson
+        if (typeof tagIndex?.rerankRivermemoTopologyV3 !== 'function') {
+            const error = new Error(
+                'RiverMemo requires the VexusIndex-owned native runtime; rebuild rust-vexus-lite.'
             );
+            error.code = 'RIVERMEMO_UNIFIED_NATIVE_RUNTIME_UNAVAILABLE';
+            throw error;
+        }
+        const nativePayload = await tagIndex.rerankRivermemoTopologyV3(
+            dbPath,
+            artifact.artifactSig,
+            inputJson
+        );
         const nativeResult = JSON.parse(nativePayload);
-        const memoRuntimeStats = usesUnifiedMemoRuntime
-            && typeof tagIndex?.memoRuntimeStats === 'function'
+        const memoRuntimeStats = typeof tagIndex?.memoRuntimeStats === 'function'
             ? tagIndex.memoRuntimeStats()
             : null;
         this._nativeArtifactCacheObserved = true;
@@ -443,9 +421,7 @@ class RiverMemoEngine {
                 nativeTopologyV3: Object.freeze({
                     ...(nativeResult.diagnostics || {}),
                     ffiTotalMs: Date.now() - nativeStartedAt,
-                    runtimeOwnership: usesUnifiedMemoRuntime
-                        ? 'vexus-index-instance'
-                        : 'legacy-module-cache',
+                    runtimeOwnership: 'vexus-index-instance',
                     memoRuntime: memoRuntimeStats
                         ? Object.freeze({ ...memoRuntimeStats })
                         : null

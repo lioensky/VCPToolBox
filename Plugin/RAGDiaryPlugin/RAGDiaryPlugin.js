@@ -798,6 +798,28 @@ class RAGDiaryPlugin {
     }
 
     /**
+     * 对消息数组执行 copy-on-write：只克隆即将修改的消息对象。
+     * content 的文本替换由 MessageContentUtils 以纯函数方式返回新值，
+     * 因此无需复制未修改的历史正文、多模态数据或 Base64 payload。
+     */
+    _cloneMessagesAtIndices(messages, indices = []) {
+        const cloned = Array.isArray(messages) ? messages.slice() : [];
+        for (const rawIndex of new Set(indices)) {
+            const index = Number(rawIndex);
+            if (
+                Number.isInteger(index)
+                && index >= 0
+                && index < cloned.length
+                && cloned[index]
+                && typeof cloned[index] === 'object'
+            ) {
+                cloned[index] = { ...cloned[index] };
+            }
+        }
+        return cloned;
+    }
+
+    /**
      * V3 动态参数计算：结合逻辑深度 (L)、共振 (R) 和语义宽度 (S)
      */
     async _calculateDynamicParams(queryVector, userText, aiText) {
@@ -1383,7 +1405,10 @@ class RAGDiaryPlugin {
                 // 安全起见，移除所有占位符
                 // 🧪 BETA: 使用 _replaceTextInContent 兼容 string / array / object 三种 content 形态
                 //          （user 消息更可能是 array 形式的多模态 content）
-                const newMessages = JSON.parse(JSON.stringify(messages));
+                const newMessages = this._cloneMessagesAtIndices(
+                    messages,
+                    targetSystemMessageIndices
+                );
                 for (const index of targetSystemMessageIndices) {
                     newMessages[index].content = this._replaceTextInContent(
                         newMessages[index].content,
@@ -1424,7 +1449,10 @@ class RAGDiaryPlugin {
             const contextDiaryPrefixes = this._extractContextDiaryPrefixes(messages);
 
             // 3. 循环处理每个识别到的 system 消息
-            const newMessages = JSON.parse(JSON.stringify(messages));
+            const newMessages = this._cloneMessagesAtIndices(
+                messages,
+                targetSystemMessageIndices
+            );
             const globalProcessedDiaries = new Set(); // 在最外层维护一个 Set
             const requestCache = this._createRequestCache(); // 🌟 单轮请求级缓存：chunks/time/fullDoc/diaryScore/tagBoost
             // 🌟 优化：并发处理所有目标 system 消息，显著提升多日记本场景下的 Rerank 速度
@@ -1478,9 +1506,16 @@ class RAGDiaryPlugin {
                 }
 
                 if (base64DataArray.length > 0) {
-                    // 找到第一个用户消息（楼层最上面那个）
-                    const firstUserMsg = newMessages.find(m => m.role === 'user');
-                    if (firstUserMsg) {
+                    // 找到第一个用户消息（楼层最上面那个）。若它此前未因占位符
+                    // 处理而克隆，此处按需克隆，保持输入 messages 完全不可变。
+                    const firstUserIndex = newMessages.findIndex(m => m.role === 'user');
+                    if (firstUserIndex >= 0) {
+                        if (newMessages[firstUserIndex] === messages[firstUserIndex]) {
+                            newMessages[firstUserIndex] = {
+                                ...newMessages[firstUserIndex]
+                            };
+                        }
+                        const firstUserMsg = newMessages[firstUserIndex];
                         const note = `[召回${base64DataArray.length}个日记多模态数据]`;
 
                         if (typeof firstUserMsg.content === 'string') {
@@ -1515,23 +1550,28 @@ class RAGDiaryPlugin {
             console.error('[RAGDiaryPlugin] Error message:', error.message);
             // 返回原始消息，移除占位符以避免二次错误
             // 🧪 BETA: 同时清理 BETA 占位符承载体与独立 [系统通知] 承载体。
-            const safeMessages = JSON.parse(JSON.stringify(messages));
-            safeMessages.forEach(msg => {
-                let shouldClean = msg.role === 'system';
-                if (!shouldClean && msg.role === 'user') {
-                    const text = this._extractTextFromContent(msg.content);
+            const safeMessages = Array.isArray(messages) ? messages.slice() : [];
+            safeMessages.forEach((message, index) => {
+                let shouldClean = message.role === 'system';
+                if (!shouldClean && message.role === 'user') {
+                    const text = this._extractTextFromContent(message.content);
                     if (this._isRagPlaceholderCarrierUserText(text)) {
                         shouldClean = true;
                     }
                 }
                 if (shouldClean) {
-                    msg.content = this._replaceTextInContent(msg.content, (text) => text
-                        .replace(/\[\[[^\]]*日记本[^\]]*\]\]/g, '[RAG处理失败]')
-                        .replace(/<<[^>]*日记本[^>]*>>/g, '[RAG处理失败]')
-                        .replace(/《《[^》]*日记本[^》]*》》/g, '[RAG处理失败]')
-                        .replace(/\{\{[^}]*日记本[^}]*\}\}/g, '[RAG处理失败]')
-                        .replace(/\[\[[^\]]*知识库[^\]]*\]\]/g, '[冷知识库处理失败]')
-                        .replace(/《《[^》]*知识库[^》]*》》/g, '[冷知识库处理失败]'));
+                    const clonedMessage = { ...message };
+                    clonedMessage.content = this._replaceTextInContent(
+                        message.content,
+                        (text) => text
+                            .replace(/\[\[[^\]]*日记本[^\]]*\]\]/g, '[RAG处理失败]')
+                            .replace(/<<[^>]*日记本[^>]*>>/g, '[RAG处理失败]')
+                            .replace(/《《[^》]*日记本[^》]*》》/g, '[RAG处理失败]')
+                            .replace(/\{\{[^}]*日记本[^}]*\}\}/g, '[RAG处理失败]')
+                            .replace(/\[\[[^\]]*知识库[^\]]*\]\]/g, '[冷知识库处理失败]')
+                            .replace(/《《[^》]*知识库[^》]*》》/g, '[冷知识库处理失败]')
+                    );
+                    safeMessages[index] = clonedMessage;
                 }
             });
             return safeMessages;

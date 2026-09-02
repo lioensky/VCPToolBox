@@ -1302,22 +1302,34 @@ class KnowledgeBaseManager {
                 && tag.name.trim()
                 && tag.vector
                 && typeof tag.vector.length === 'number'
+                && tag.vector.length === this.config.dimension
             )
             .map(tag => ({
                 name: tag.name.trim(),
-                vector: Array.from(tag.vector, value => Number(value) || 0),
-                isCore: tag.isCore === true
+                isCore: tag.isCore === true,
+                vector: tag.vector instanceof Float32Array
+                    ? tag.vector
+                    : new Float32Array(tag.vector)
             }));
+        const ghostVectors = new Float32Array(
+            ghostTags.length * this.config.dimension
+        );
+        ghostTags.forEach((tag, index) => {
+            ghostVectors.set(tag.vector, index * this.config.dimension);
+        });
+        const ghostMetadata = ghostTags.map(tag => ({
+            name: tag.name,
+            isCore: tag.isCore
+        }));
 
-        const nativePayload = await this.tagIndex.runMemoPipeline(
+        const nativeResult = await this.tagIndex.runMemoPipeline(
             dbPath,
             artifact.artifactSig,
             JSON.stringify({
                 queryId: options.queryId || null,
                 queryText: String(query?.text || options.queryText || ''),
-                queryVector: Array.from(queryVector),
                 coreTags: stringCoreTags,
-                ghostTags,
+                ghostTags: ghostMetadata,
                 config: {
                     baseTagBoost: Math.max(
                         0,
@@ -1438,25 +1450,23 @@ class KnowledgeBaseManager {
                             options.maxObservationEdges ?? 0
                     }
                 }
-            })
+            }),
+            queryVector,
+            ghostVectors
         );
-        const pipeline = JSON.parse(nativePayload);
-        const observation = pipeline?.observation;
+        const pipeline = nativeResult?.metadataJson
+            ? JSON.parse(nativeResult.metadataJson)
+            : null;
+        const enhancedVector = nativeResult?.enhancedVector;
+        const observationHandle = typeof pipeline?.observationHandle === 'string'
+            && pipeline.observationHandle
+            ? pipeline.observationHandle
+            : null;
         if (
             pipeline?.artifactSig !== artifact.artifactSig
-            || observation?.artifactSig !== artifact.artifactSig
-            || !Array.isArray(observation?.nodes)
-            || !Array.isArray(observation?.edges)
-            || !Array.isArray(pipeline?.enhancedVector)
-            || pipeline.enhancedVector.length !== this.config.dimension
-            || !Array.isArray(pipeline?.localVector)
-            || pipeline.localVector.length !== this.config.dimension
-            || !Array.isArray(pipeline?.transferVector)
-            || pipeline.transferVector.length !== this.config.dimension
-            || !Array.isArray(pipeline?.localField)
-            || !Array.isArray(pipeline?.transferField)
-            || !Array.isArray(pipeline?.localDomainIds)
-            || !Array.isArray(pipeline?.transferDomainIds)
+            || !observationHandle
+            || !(enhancedVector instanceof Float32Array)
+            || enhancedVector.length !== this.config.dimension
         ) {
             const error = new Error(
                 'Unified native Memo pipeline failed artifact/schema validation'
@@ -1465,24 +1475,6 @@ class KnowledgeBaseManager {
             throw error;
         }
 
-        const fieldProvenance = observation.nodes.map(node => Object.freeze([
-            Number(node.id),
-            Object.freeze({
-                sourceType: node.sourceType || 'unknown',
-                originType: node.originType || null,
-                hop: Number(node.hop) || 0,
-                seedId: Number.isFinite(Number(node.seedId))
-                    ? Number(node.seedId)
-                    : null
-            })
-        ]));
-        const sourceField = (Array.isArray(observation.sourceField)
-            ? observation.sourceField
-            : []
-        ).map(entry => Object.freeze([
-            Number(entry?.[0]),
-            Math.max(0, Number(entry?.[1]) || 0)
-        ]));
         const pyramidRaw = pipeline.pyramid || {};
         const pyramidFeatures = pyramidRaw.features || {};
         const pyramid = Object.freeze({
@@ -1499,41 +1491,29 @@ class KnowledgeBaseManager {
                     : []
             )
         });
-        const enhancedVector = Object.freeze(
-            pipeline.enhancedVector.map(value => Number(value) || 0)
-        );
-        const observationHandle = typeof pipeline.observationHandle === 'string'
-            && pipeline.observationHandle
-            ? pipeline.observationHandle
-            : null;
         const nativeFusion = pipeline.diagnostics?.fusion || null;
-
+        const emptyField = Object.freeze([]);
+        const queryRiverGraph = Object.freeze({
+            schema: 'vexus-unified-memo-river-handle-v1',
+            nodes: emptyField,
+            edges: emptyField,
+            diagnostics: Object.freeze({
+                reachedNodes:
+                    Number(pipeline.diagnostics?.sensing?.reachedNodes) || 0,
+                activeEdges:
+                    Number(pipeline.diagnostics?.sensing?.activeEdges) || 0
+            })
+        });
         const sourceObservationResult = Object.freeze({
             schema: pipeline.schema,
-            sourceMode: 'rust_unified_memo_pipeline',
-            sourceField: Object.freeze(sourceField),
+            sourceMode: 'rust_unified_memo_pipeline_handle',
+            sourceField: emptyField,
             enhancedVector,
-            fieldProvenance: Object.freeze(fieldProvenance),
-            queryRiverGraph: Object.freeze({
-                schema: 'vexus-unified-memo-river-v1',
-                nodes: Object.freeze(observation.nodes),
-                edges: Object.freeze(observation.edges),
-                diagnostics: Object.freeze({
-                    reachedNodes:
-                        observation.diagnostics?.reachedNodes || 0,
-                    activeEdges:
-                        observation.diagnostics?.activeEdges || 0,
-                    maximumNodeEnergy:
-                        observation.diagnostics?.maximumNodeEnergy || 0,
-                    maximumEdgeFlow:
-                        observation.diagnostics?.maximumEdgeFlow || 0
-                })
-            }),
+            fieldProvenance: emptyField,
+            queryRiverGraph,
             epa: Object.freeze({ ...(pipeline.epa || {}) }),
             pyramid,
-            propagation: Object.freeze({
-                native: observation.diagnostics || null
-            }),
+            propagation: Object.freeze({ native: null }),
             matchedTags: Object.freeze(
                 Array.isArray(pipeline.matchedTags)
                     ? pipeline.matchedTags.slice()
@@ -1553,8 +1533,8 @@ class KnowledgeBaseManager {
             effectiveTagBoost:
                 Math.max(0, Number(pipeline.effectiveTagBoost) || 0),
             diagnostics: Object.freeze({
-                completeObservation: sourceField.length > 0,
-                nativeSensing: observation.diagnostics || null,
+                completeObservation: true,
+                nativeSensing: null,
                 nativeFusion: nativeFusion
                     ? Object.freeze({ ...nativeFusion })
                     : null,
@@ -1564,52 +1544,45 @@ class KnowledgeBaseManager {
                 runtimeOwnership: 'vexus-index-instance'
             })
         });
-
-        const normalizeNativeField = entries => Object.freeze(
-            entries.map(entry => Object.freeze([
-                Number(entry?.[0]),
-                Math.max(0, Number(entry?.[1]) || 0)
-            ])).filter(entry =>
-                Number.isFinite(entry[0]) && entry[0] > 0 && entry[1] > 0
-            )
-        );
-        const localField = normalizeNativeField(pipeline.localField);
-        const transferField = normalizeNativeField(pipeline.transferField);
-        const localDomainIds = Object.freeze(
-            pipeline.localDomainIds.map(Number).filter(Number.isFinite)
-        );
-        const transferDomainIds = Object.freeze(
-            pipeline.transferDomainIds.map(Number).filter(Number.isFinite)
-        );
+        const observation = Object.freeze({
+            schema: 'vexus-unified-memo-observation-handle-v1',
+            artifactSig: artifact.artifactSig,
+            queryId: pipeline.queryId || options.queryId || null,
+            sourceField: emptyField,
+            nodes: emptyField,
+            edges: emptyField,
+            diagnostics: null
+        });
+        const emptyVector = new Float32Array(0);
 
         return Object.freeze({
             artifact,
             observationHandle,
-            observation: Object.freeze(observation),
+            observation,
             sourceObservationResult,
-            sourceField: Object.freeze(sourceField),
+            sourceField: emptyField,
             queryVector,
-            enhancedVector: new Float32Array(enhancedVector),
+            enhancedVector,
             nativePreparedQuery: Object.freeze({
                 queryState: Object.freeze({
-                    queryId: observation.queryId || options.queryId || null,
-                    sourceField: Object.freeze(sourceField),
-                    localField,
-                    transferField,
-                    localDomain: Object.freeze({ ids: localDomainIds }),
-                    transferDomain: Object.freeze({ ids: transferDomainIds }),
-                    queryRiverGraph: sourceObservationResult.queryRiverGraph,
+                    queryId: observation.queryId,
+                    sourceField: emptyField,
+                    localField: emptyField,
+                    transferField: emptyField,
+                    localDomain: Object.freeze({ ids: emptyField }),
+                    transferDomain: Object.freeze({ ids: emptyField }),
+                    queryRiverGraph,
                     sourceObservation: sourceObservationResult,
                     fieldDiagnostics: Object.freeze({
-                        backend: 'rust-unified-memo-pipeline',
+                        backend: 'rust-unified-memo-pipeline-handle',
                         ...(pipeline.diagnostics?.dualField || {})
                     })
                 }),
-                denoisedVector: new Float32Array(enhancedVector),
-                localVector: new Float32Array(pipeline.localVector),
-                transferVector: new Float32Array(pipeline.transferVector),
+                denoisedVector: enhancedVector,
+                localVector: emptyVector,
+                transferVector: emptyVector,
                 fieldProjectionDiagnostics: Object.freeze({
-                    backend: 'rust-unified-memo-pipeline'
+                    backend: 'rust-unified-memo-pipeline-handle'
                 }),
                 preparationTimings: Object.freeze({
                     nativePipelineTotalMs:

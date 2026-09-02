@@ -18,13 +18,15 @@ export interface NativeMemoArtifactBuildResult {
   elapsedMs: number
 }
 /**
- * RiverMemo Topology V3 原生异步入口。
+ * 统一 Memo 查询的轻量 N-API 返回值。
  *
- * N-API 只提交一次后台任务；SQLite 投影、候选几何与批级评分均在 Rust
- * 工作线程内完成，候选级热点由 Rayon 并行，不占用 Node.js 事件循环。
+ * 完整 Observation、双场、域集合与投影向量只保留在 MemoRuntime 中；Node
+ * 只接收后续读出所需的句柄、诊断摘要和用于 KNN 的增强查询向量。
  */
-export declare function rerankRivermemoTopologyV3(dbPath: string, artifactSig: string, inputJson: string): Promise<unknown>
-export declare function clearRivermemoTopologyV3Cache(): void
+export interface MemoPipelineResult {
+  metadataJson: string
+  enhancedVector: Float32Array
+}
 /**
  * 搜索结果 (返回 ID 而非 Tag 文本)
  * 上层 JS 会拿着 ID 去 SQLite 里查具体的文本内容
@@ -198,14 +200,7 @@ export declare class VexusIndex {
    * EPA、Residual Pyramid、Core/语言/层级门控、Spike 与向量融合全部在
    * 同一 Rust 后台任务中完成；返回值同时供 DTSC 和 Topology V3 读出复用。
    */
-  runMemoPipeline(dbPath: string, artifactSig: string, inputJson: string): Promise<unknown>
-  /**
-   * 在本 Tag 向量索引拥有的统一 MemoRuntime 上执行共同 Spike 感应。
-   *
-   * 输入只包含 EPA/Pyramid 门控后的初始 Tag 种子与传播参数；输出的
-   * QueryObservation 同时供 DTSC 和 RiverMemo Topology V3 两个读出头消费。
-   */
-  senseMemoQuery(dbPath: string, artifactSig: string, inputJson: string): Promise<unknown>
+  runMemoPipeline(dbPath: string, artifactSig: string, inputJson: string, queryVector: Float32Array, ghostVectors: Float32Array): Promise<unknown>
   /**
    * 在统一 QueryObservation 上执行 DTSC 测地曲线读出。
    *

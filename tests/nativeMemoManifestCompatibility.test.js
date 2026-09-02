@@ -98,6 +98,61 @@ async function main() {
         assert.strictEqual(result.success, true);
         assert.strictEqual(result.persisted, true);
 
+        index.add(1, new Float32Array([1, 0, 0, 0]));
+        index.add(2, new Float32Array([0, 1, 0, 0]));
+        index.add(3, new Float32Array([0, 0, 1, 0]));
+        const pipelineResult = await index.runMemoPipeline(
+            dbPath,
+            result.artifactSig,
+            JSON.stringify({
+                queryId: 'typed-array-regression',
+                queryText: 'typed array regression',
+                coreTags: [],
+                ghostTags: [],
+                config: {
+                    maxLevels: 1,
+                    pyramidTopK: 3,
+                    maxEmergentNodes: 8,
+                    spikeRouting: {
+                        maxSafeHops: 2,
+                        maxPropagationStates: 100,
+                        maxOutputNodes: 0,
+                        maxOutputEdges: 0
+                    }
+                }
+            }),
+            new Float32Array([1, 0, 0, 0]),
+            new Float32Array(0)
+        );
+        assert(
+            pipelineResult.enhancedVector instanceof Float32Array,
+            'Memo pipeline must return its high-dimensional result as Float32Array'
+        );
+        assert.strictEqual(pipelineResult.enhancedVector.length, 4);
+        const pipelineMetadata = JSON.parse(pipelineResult.metadataJson);
+        assert.strictEqual(pipelineMetadata.artifactSig, result.artifactSig);
+        assert.strictEqual(
+            typeof pipelineMetadata.observationHandle,
+            'string',
+            'Memo pipeline must return a reusable native observation handle'
+        );
+        for (const retiredField of [
+            'observation',
+            'localVector',
+            'transferVector',
+            'localField',
+            'transferField',
+            'localDomainIds',
+            'transferDomainIds',
+            'enhancedVector'
+        ]) {
+            assert.strictEqual(
+                Object.hasOwn(pipelineMetadata, retiredField),
+                false,
+                `lightweight pipeline metadata must not expose ${retiredField}`
+            );
+        }
+
         const row = db.prepare(`
             SELECT config_hash, database_generation, status
             FROM rivermemo_artifacts
@@ -131,11 +186,19 @@ async function main() {
         );
 
         console.log(
-            '[NativeMemoManifestTest] PASS: canonical config hash and database generation are cross-language compatible.'
+            '[NativeMemoManifestTest] PASS: canonical manifest and TypedArray/handle Memo ABI are compatible.'
         );
     } finally {
         db.close();
-        fs.rmSync(root, { recursive: true, force: true });
+        try {
+            fs.rmSync(root, { recursive: true, force: true });
+        } catch (error) {
+            // Rust SQLite keepalive 与进程同生命周期；Windows 在当前测试进程
+            // 退出前会拒绝删除仍被 keepalive 持有的临时数据库。
+            if (process.platform !== 'win32' || error?.code !== 'EBUSY') {
+                throw error;
+            }
+        }
     }
 }
 

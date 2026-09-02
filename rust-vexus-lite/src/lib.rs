@@ -800,6 +800,8 @@ impl VexusIndex {
         db_path: String,
         artifact_sig: String,
         input_json: String,
+        query_vector: Float32Array,
+        ghost_vectors: Float32Array,
     ) -> AsyncTask<memo_pipeline::MemoPipelineTask> {
         memo_pipeline::run_with_runtime(
             self.index.clone(),
@@ -808,25 +810,8 @@ impl VexusIndex {
             artifact_sig,
             self.dimensions as usize,
             input_json,
-        )
-    }
-
-    /// 在本 Tag 向量索引拥有的统一 MemoRuntime 上执行共同 Spike 感应。
-    ///
-    /// 输入只包含 EPA/Pyramid 门控后的初始 Tag 种子与传播参数；输出的
-    /// QueryObservation 同时供 DTSC 和 RiverMemo Topology V3 两个读出头消费。
-    #[napi]
-    pub fn sense_memo_query(
-        &self,
-        db_path: String,
-        artifact_sig: String,
-        input_json: String,
-    ) -> AsyncTask<memo_sensing::MemoSensingTask> {
-        memo_sensing::sense_with_runtime(
-            self.memo_runtime.clone(),
-            db_path,
-            artifact_sig,
-            input_json,
+            query_vector.to_vec(),
+            ghost_vectors.to_vec(),
         )
     }
 

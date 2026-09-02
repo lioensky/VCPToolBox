@@ -1,9 +1,7 @@
-use crate::rivermemo_topology_v3::{load_artifact_from_runtime, MemoRuntime, NativeArtifact};
-use napi::bindgen_prelude::*;
+use crate::rivermemo_topology_v3::NativeArtifact;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 const OBSERVATION_SCHEMA: &str = "vexus-unified-memo-observation-v1";
@@ -529,54 +527,3 @@ pub(crate) fn sense_typed(
     })
 }
 
-pub(crate) fn sense(
-    artifact: &NativeArtifact,
-    artifact_sig: &str,
-    input: SenseInput,
-) -> std::result::Result<String, String> {
-    let output = sense_typed(artifact, artifact_sig, input)?;
-    serde_json::to_string(&output)
-        .map_err(|error| format!("encode unified Memo observation failed: {}", error))
-}
-
-pub struct MemoSensingTask {
-    runtime: Arc<MemoRuntime>,
-    db_path: String,
-    artifact_sig: String,
-    input_json: String,
-}
-
-impl Task for MemoSensingTask {
-    type Output = String;
-    type JsValue = String;
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        let artifact = load_artifact_from_runtime(&self.runtime, &self.db_path, &self.artifact_sig)
-            .map_err(Error::from_reason)?;
-        let input: SenseInput = serde_json::from_str(&self.input_json).map_err(|error| {
-            Error::from_reason(format!(
-                "invalid unified Memo sensing input JSON: {}",
-                error
-            ))
-        })?;
-        sense(&artifact, &self.artifact_sig, input).map_err(Error::from_reason)
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
-    }
-}
-
-pub(crate) fn sense_with_runtime(
-    runtime: Arc<MemoRuntime>,
-    db_path: String,
-    artifact_sig: String,
-    input_json: String,
-) -> AsyncTask<MemoSensingTask> {
-    AsyncTask::new(MemoSensingTask {
-        runtime,
-        db_path,
-        artifact_sig,
-        input_json,
-    })
-}

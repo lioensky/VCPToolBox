@@ -1,6 +1,5 @@
 use flate2::read::GzDecoder;
 use napi::bindgen_prelude::*;
-use napi_derive::napi;
 use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
@@ -10,7 +9,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::memo_sensing::SenseOutput;
@@ -93,7 +92,9 @@ struct NativeInput {
     query: QueryInput,
     #[serde(default)]
     denoised_vector: Vec<f32>,
+    #[serde(default)]
     local_vector: Vec<f32>,
+    #[serde(default)]
     transfer_vector: Vec<f32>,
     #[serde(default)]
     candidates: Vec<CandidateInput>,
@@ -579,15 +580,6 @@ impl MemoRuntime {
     }
 }
 
-/// 旧模块级 N-API ABI 的兼容缓存。生产路径改由 VexusIndex.memo_runtime 持有，
-/// 只有尚未升级的外部调用方才会进入这里。
-static LEGACY_ARTIFACT_CACHE: OnceLock<Mutex<HashMap<String, Arc<NativeArtifact>>>> =
-    OnceLock::new();
-
-fn legacy_artifact_cache() -> &'static Mutex<HashMap<String, Arc<NativeArtifact>>> {
-    LEGACY_ARTIFACT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 fn open_readonly(path: &str) -> std::result::Result<Connection, String> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("open readonly SQLite failed: {}", error))?;
@@ -842,28 +834,6 @@ fn decode_artifact(
         wormhole_edges,
         provenance,
     }))
-}
-
-fn load_artifact_legacy(
-    db_path: &str,
-    artifact_sig: &str,
-) -> std::result::Result<Arc<NativeArtifact>, String> {
-    if let Some(cached) = legacy_artifact_cache()
-        .lock()
-        .map_err(|error| format!("legacy artifact cache lock failed: {}", error))?
-        .get(artifact_sig)
-        .cloned()
-    {
-        return Ok(cached);
-    }
-
-    let artifact = decode_artifact(db_path, artifact_sig)?;
-    let mut cache = legacy_artifact_cache()
-        .lock()
-        .map_err(|error| format!("legacy artifact cache lock failed: {}", error))?;
-    cache.clear();
-    cache.insert(artifact_sig.to_string(), artifact.clone());
-    Ok(artifact)
 }
 
 pub(crate) fn load_artifact_from_runtime(
@@ -2345,7 +2315,7 @@ struct NativeOutput {
 }
 
 fn run_native(
-    runtime: Option<&MemoRuntime>,
+    runtime: &MemoRuntime,
     db_path: &str,
     artifact_sig: &str,
     input_json: &str,
@@ -2353,7 +2323,7 @@ fn run_native(
     let total_started = Instant::now();
     let mut input: NativeInput = serde_json::from_str(input_json)
         .map_err(|error| format!("invalid RiverMemo native input JSON: {}", error))?;
-    if let (Some(runtime), Some(handle)) = (runtime, input.observation_handle.as_deref()) {
+    if let Some(handle) = input.observation_handle.as_deref() {
         let cached = runtime.get_query_observation(handle, artifact_sig)?;
         input.query.vector = cached.original_query_vector.as_ref().clone();
         input.denoised_vector = cached.enhanced_query_vector.as_ref().clone();
@@ -2414,10 +2384,7 @@ fn run_native(
     }
 
     let load_started = Instant::now();
-    let artifact = match runtime {
-        Some(runtime) => load_artifact_from_runtime(runtime, db_path, artifact_sig)?,
-        None => load_artifact_legacy(db_path, artifact_sig)?,
-    };
+    let artifact = load_artifact_from_runtime(runtime, db_path, artifact_sig)?;
     let mut curves = load_curves(db_path, &input.candidates, dimension)?;
     let original_score_by_id: HashMap<i64, f64> = input
         .candidates
@@ -2744,7 +2711,7 @@ fn run_native(
 }
 
 pub struct RiverMemoTopologyV3Task {
-    runtime: Option<Arc<MemoRuntime>>,
+    runtime: Arc<MemoRuntime>,
     db_path: String,
     artifact_sig: String,
     input_json: String,
@@ -2756,7 +2723,7 @@ impl Task for RiverMemoTopologyV3Task {
 
     fn compute(&mut self) -> Result<Self::Output> {
         run_native(
-            self.runtime.as_deref(),
+            &self.runtime,
             &self.db_path,
             &self.artifact_sig,
             &self.input_json,
@@ -2769,24 +2736,6 @@ impl Task for RiverMemoTopologyV3Task {
     }
 }
 
-/// RiverMemo Topology V3 原生异步入口。
-///
-/// N-API 只提交一次后台任务；SQLite 投影、候选几何与批级评分均在 Rust
-/// 工作线程内完成，候选级热点由 Rayon 并行，不占用 Node.js 事件循环。
-#[napi]
-pub fn rerank_rivermemo_topology_v3(
-    db_path: String,
-    artifact_sig: String,
-    input_json: String,
-) -> AsyncTask<RiverMemoTopologyV3Task> {
-    AsyncTask::new(RiverMemoTopologyV3Task {
-        runtime: None,
-        db_path,
-        artifact_sig,
-        input_json,
-    })
-}
-
 pub(crate) fn rerank_with_runtime(
     runtime: Arc<MemoRuntime>,
     db_path: String,
@@ -2794,20 +2743,9 @@ pub(crate) fn rerank_with_runtime(
     input_json: String,
 ) -> AsyncTask<RiverMemoTopologyV3Task> {
     AsyncTask::new(RiverMemoTopologyV3Task {
-        runtime: Some(runtime),
+        runtime,
         db_path,
         artifact_sig,
         input_json,
     })
-}
-
-#[napi]
-pub fn clear_rivermemo_topology_v3_cache() -> Result<()> {
-    legacy_artifact_cache()
-        .lock()
-        .map_err(|error| {
-            Error::from_reason(format!("legacy artifact cache lock failed: {}", error))
-        })?
-        .clear();
-    Ok(())
 }
