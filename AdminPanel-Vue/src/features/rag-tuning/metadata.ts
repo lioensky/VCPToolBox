@@ -380,6 +380,27 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       range: "建议 0 ~ 5，默认 3",
       tone: "sensitive",
     },
+    nativeTimeCandidates: {
+      label: "原生时间候选限流",
+      summary: "限制 Native Query Plan V2 在 Rust 中展开并保留的显式 Time 范围 Chunk 数量，防止宽时间范围造成候选池膨胀。",
+      logic: "Rust 会先按每个日记本独立截断，再执行全局截断。调高可扩大时间范围覆盖，但会增加向量比较、语义去重和 RiverMemo 路径评估成本；新对话连续性记忆不受此设置影响。",
+      range: "每日记本 1 ~ 50；全局 1 ~ 500。默认 10 / 50",
+      tone: "sensitive",
+    },
+    "nativeTimeCandidates.perDiaryLimit": {
+      label: "单日记本 Time Chunk 上限",
+      summary: "每个日记本在一次显式 Time 范围查询中最多保留的高相关 Chunk 数。",
+      logic: "Rust 按当前 Query 余弦相似度排序后截断，重叠时间范围的同一 Chunk 只计一次。通常保持 10 即可。",
+      range: "1 ~ 50，默认 10",
+      tone: "sensitive",
+    },
+    "nativeTimeCandidates.globalLimit": {
+      label: "全局 Time Chunk 上限",
+      summary: "所有目标日记本完成各自限流后，允许进入统一候选池的 Time Chunk 总上限。",
+      logic: "该值是跨日记本总保险。聚合日记本较多时可适当提高，但不建议超过实际需要，以免挤占 ANN 与 BM25 候选处理预算。",
+      range: "1 ~ 500，默认 50",
+      tone: "sensitive",
+    },
     refreshWeights: {
       label: "流内刷新权重",
       summary: "控制工具刷新阶段里用户、AI 和工具结果三者的占比。",
@@ -1477,6 +1498,14 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
 
   if (leafKey === "shotgunhistorysegmentlimit") {
     return { min: 0, max: 10, step: 1 };
+  }
+
+  if (key === "nativetimecandidates.perdiarylimit") {
+    return { min: 1, max: 50, step: 1 };
+  }
+
+  if (key === "nativetimecandidates.globallimit") {
+    return { min: 1, max: 500, step: 1 };
   }
 
   if (leafKey.includes("days")) {
