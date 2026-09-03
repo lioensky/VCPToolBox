@@ -20,7 +20,6 @@ let isConnected = false;
 const pendingUrlFetchCookieSync = new Map();
 let isMonitoringEnabled = false; // 页面监控开关
 let redactSensitiveDom = true; // 浏览器内隐私开关：默认开启，用户可在 Popup 显式关闭
-let heartbeatIntervalId = null;
 let latestPageInfo = null;
 let currentActiveTabId = null;
 const pageImageCache = new Map();
@@ -58,6 +57,7 @@ let runtimeConnectionConfig = {
     vcpKey: null
 };
 let reconnectTimerId = null;
+let connectAttemptInProgress = false;
 let connectionEnabled = true;
 
 const chromeWebAgentAdapter = globalThis.VCPChromeWebAgentAdapter.createChromeWebAgentAdapter(chrome, {
@@ -247,11 +247,11 @@ function scheduleReconnect(delayMs = 2000) {
     if (reconnectTimerId) return;
     reconnectTimerId = setTimeout(() => {
         reconnectTimerId = null;
-        if (!isConnected && (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING)) {
+        if (!isConnected && !connectAttemptInProgress && (!ws || ws.readyState === WebSocket.CLOSED)) {
             console.log('[VCP Background] 尝试重新连接 VCP WebSocket...');
             loadManagedRuntimeConfig().finally(() => connect());
         }
-    }, delayMs);
+    }, Math.max(0, Number(delayMs) || 0));
 }
 
 function queryAllTabs() {
@@ -270,14 +270,18 @@ async function ensureTabBudgetForOpenUrl() {
 }
 
 function connect(options = {}) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        console.log('WebSocket is already connected.');
+    // storage.get 本身是异步边界。只检查 OPEN 不足以阻止启动回调、alarm、
+    // 模式切换和重连 timer 在该窗口内创建多代 CONNECTING socket。
+    if (connectAttemptInProgress || (ws && ws.readyState !== WebSocket.CLOSED)) {
+        console.log('WebSocket connection is already active or connecting.');
         return;
     }
+    connectAttemptInProgress = true;
 
     // 从 storage 获取连接参数。发布文件已经确立 managed 身份后，storage 中的旧
     // agent/user 字段不得反向覆盖本次启动代次的 Token 与身份。
     chrome.storage.local.get(['serverUrl', 'vcpKey', 'clientKind', 'managedRuntime', 'managedToken', 'maxTabs', 'connectionEnabled'], (result) => {
+        connectAttemptInProgress = false;
         if (result.connectionEnabled !== undefined) connectionEnabled = result.connectionEnabled === true;
         if (!runtimeIdentity.managedRuntime) {
             if (result.clientKind) runtimeIdentity.clientKind = result.clientKind;
@@ -292,15 +296,29 @@ function connect(options = {}) {
             return;
         }
 
+        // connect() 进入 storage 异步读取后，另一条路径仍可能先创建 socket。
+        // 第二次检查保证全局任意时刻至多存在一个活动/连接中的代次。
+        if (ws && ws.readyState !== WebSocket.CLOSED) {
+            console.log('WebSocket connection became active while loading configuration.');
+            return;
+        }
+
         const serverUrlToUse = runtimeConnectionConfig.serverUrl || result.serverUrl || defaultServerUrl;
         const keyToUse = runtimeConnectionConfig.vcpKey || result.vcpKey || defaultVcpKey;
         
         const fullUrl = `${serverUrlToUse}/vcp-chrome-observer/VCP_Key=${keyToUse}`;
         console.log('Connecting to:', fullUrl);
 
-        ws = new WebSocket(fullUrl);
+        const socket = new WebSocket(fullUrl);
+        let socketHeartbeatIntervalId = null;
+        ws = socket;
 
-        ws.onopen = () => {
+        socket.onopen = () => {
+            // 旧代次迟到的 open 事件不得夺回全局连接，也不得创建幽灵心跳。
+            if (ws !== socket) {
+                socket.close();
+                return;
+            }
             console.log('WebSocket connection established.');
             isConnected = true;
             if (reconnectTimerId) {
@@ -310,10 +328,10 @@ function connect(options = {}) {
             sendClientHello();
             updateIcon();
             broadcastStatusUpdate(); // 广播最新状态
-            // 启动心跳包
-            heartbeatIntervalId = setInterval(() => {
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({
+            // 心跳句柄属于具体 socket 代次，close 时由同一闭包可靠清理。
+            socketHeartbeatIntervalId = setInterval(() => {
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({
                         type: 'heartbeat',
                         timestamp: Date.now(),
                         clientKind: runtimeIdentity.clientKind,
@@ -324,7 +342,7 @@ function connect(options = {}) {
             }, HEARTBEAT_INTERVAL);
         };
 
-        ws.onmessage = (event) => {
+        socket.onmessage = (event) => {
             console.log('Message from server:', event.data);
             const message = JSON.parse(event.data);
             
@@ -455,33 +473,31 @@ function connect(options = {}) {
             }
         };
 
-        ws.onclose = () => {
+        socket.onclose = () => {
             console.log('WebSocket connection closed.');
+            if (socketHeartbeatIntervalId) {
+                clearInterval(socketHeartbeatIntervalId);
+                socketHeartbeatIntervalId = null;
+            }
+
+            // 旧 socket 的迟到 close 只能清理自己的局部资源，绝不能把新代次
+            // 标记为断开或清空全局 ws，否则会触发连接代次互相打断的重连风暴。
+            if (ws !== socket) return;
+
             isConnected = false;
             ws = null;
             rejectPendingUrlFetchCookieSync('VCP WebSocket 已断开');
             updateIcon();
             broadcastStatusUpdate(); // 广播最新状态
-            if (heartbeatIntervalId) {
-                clearInterval(heartbeatIntervalId);
-                heartbeatIntervalId = null;
-            }
             if (shouldAutoReconnect()) {
                 scheduleReconnect();
             }
         };
 
-        ws.onerror = (error) => {
+        socket.onerror = (error) => {
+            // WebSocket error 按规范会紧随 close；状态收敛和重连统一由 onclose
+            // 完成。这里若提前 ws=null，close 回调将无法识别自己的连接代次。
             console.error('WebSocket error:', error);
-            isConnected = false;
-            ws = null;
-            rejectPendingUrlFetchCookieSync('VCP WebSocket 发生错误');
-            updateIcon();
-            broadcastStatusUpdate(); // 广播最新状态
-            if (heartbeatIntervalId) {
-                clearInterval(heartbeatIntervalId);
-                heartbeatIntervalId = null;
-            }
         };
     });
 }

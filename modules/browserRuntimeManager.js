@@ -15,6 +15,7 @@ const MANAGED_TOKEN_FILE = path.join(PROJECT_ROOT, 'Plugin', 'ChromeBridge', 'ma
 
 let chromeProcess = null;
 let launchPromise = null;
+let closePromise = null;
 let idleTimer = null;
 const expectedCloseReasons = new WeakMap();
 let managedToken = null;
@@ -88,6 +89,7 @@ function getRuntimeConfig() {
         startMinimized: readBooleanEnv('VCP_BROWSER_START_MINIMIZED', false),
         windowsHide: readBooleanEnv('VCP_BROWSER_WINDOWS_HIDE', false),
         disableGpu: readBooleanEnv('VCP_BROWSER_DISABLE_GPU', false),
+        chromeVerboseLogging: readBooleanEnv('VCP_BROWSER_CHROME_VERBOSE_LOGGING', false),
         restrictExtensions: readBooleanEnv('VCP_BROWSER_RESTRICT_EXTENSIONS', false),
         maxTabs: readIntegerEnv('VCP_BROWSER_MAX_TABS', 8, 1, 200),
         serverUrl: String(process.env.VCP_BROWSER_SERVER_URL || `ws://localhost:${process.env.PORT || 6005}`).trim(),
@@ -150,8 +152,11 @@ function findChromeExecutable() {
     return null;
 }
 
-function isProcessAlive() {
-    return !!chromeProcess && !chromeProcess.killed && chromeProcess.exitCode === null;
+function isProcessAlive(proc = chromeProcess) {
+    // ChildProcess.killed 仅表示 kill() 成功发出了信号，不表示操作系统进程已经退出。
+    // 若把它当作死亡状态，closeManagedBrowser() 会在 SIGTERM 后跳过进程树强杀，
+    // 从而留下仍运行的 Chrome/扩展进程。
+    return !!proc && proc.exitCode === null && proc.signalCode === null;
 }
 
 function loadPersistedManagedToken(options = {}) {
@@ -404,13 +409,21 @@ function buildChromeArgs(config) {
         '--noerrdialogs',
         '--disable-sync',
         '--disable-popup-blocking',
+        // 关闭最后一个窗口时必须结束托管运行时，不能让扩展 Service Worker
+        // 通过 Chrome background mode 留驻并持续向父 Node 进程输出日志。
+        '--disable-background-mode',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
         '--disable-features=Translate,MediaRouter,SessionRestore,InfiniteSessionRestore',
-        '--enable-logging=stderr',
-        '--v=1',
         `--window-size=${config.windowWidth},${config.windowHeight}`
     ];
+
+    // Chromium --v=1 会输出高频 verbose 日志。扩展刷新后关闭窗口时，
+    // Service Worker/WebSocket/Profile shutdown 可产生持续 stderr 洪流；
+    // Node 若持续 drain + toString，会表现为服务器 JS 主线程满核。
+    if (config.chromeVerboseLogging) {
+        args.push('--enable-logging=stderr', '--v=1');
+    }
 
     if (config.remoteDebuggingPort > 0) {
         args.push(`--remote-debugging-port=${config.remoteDebuggingPort}`);
@@ -479,6 +492,12 @@ async function ensureManagedBrowser(options = {}) {
         throw new Error('托管浏览器运行时未启用，请设置 VCP_BROWSER_RUNTIME_ENABLED=true');
     }
 
+    // 空闲关闭、人工关闭与自动拉起可能来自不同消费者。启动必须等待当前关闭
+    // 完全收敛，否则同一 Profile 会短暂存在两代 Chrome，并放大扩展重连竞态。
+    if (closePromise) {
+        await closePromise;
+    }
+
     if (isProcessAlive()) {
         touchManagedBrowser();
         return getManagedBrowserStatus();
@@ -529,14 +548,17 @@ async function ensureManagedBrowser(options = {}) {
         currentLaunchConfig = {
             headless: launchConfig.headless === true,
             windowsHide: launchConfig.windowsHide === true,
-            startMinimized: launchConfig.startMinimized === true
+            startMinimized: launchConfig.startMinimized === true,
+            chromeVerboseLogging: launchConfig.chromeVerboseLogging === true
         };
         currentExtensionStage = extensionStage;
-        console.log(`[BrowserRuntimeManager] launching managed Chrome: executable=${executablePath}, profile=${launchConfig.profileDir}, extension=${launchConfig.loadExtension ? launchConfig.extensionDir : 'disabled'}, runtimeConfig=${runtimeConfigPath || 'N/A'}, headless=${currentLaunchConfig.headless}, stageGeneration=${extensionStage.stageGeneration || 'N/A'}`);
+        console.log(`[BrowserRuntimeManager] launching managed Chrome: executable=${executablePath}, profile=${launchConfig.profileDir}, extension=${launchConfig.loadExtension ? launchConfig.extensionDir : 'disabled'}, runtimeConfig=${runtimeConfigPath || 'N/A'}, headless=${currentLaunchConfig.headless}, chromeVerboseLogging=${currentLaunchConfig.chromeVerboseLogging}, stageGeneration=${extensionStage.stageGeneration || 'N/A'}`);
         const spawnedProcess = spawn(executablePath, args, {
             cwd: PROJECT_ROOT,
             detached: false,
-            stdio: ['ignore', 'ignore', 'pipe'],
+            // 默认不创建 stderr pipe，避免 Chrome verbose 日志洪流占满 Node
+            // 事件循环。仅显式诊断模式才由父进程消费 Chromium 日志。
+            stdio: ['ignore', 'ignore', launchConfig.chromeVerboseLogging ? 'pipe' : 'ignore'],
             windowsHide: launchConfig.windowsHide
         });
         chromeProcess = spawnedProcess;
@@ -550,15 +572,17 @@ async function ensureManagedBrowser(options = {}) {
         startedAt = Date.now();
         lastTouchedAt = Date.now();
 
-        spawnedProcess.stderr.on('data', data => {
-            const text = data.toString().trim();
-            if (text) {
-                lastError = text.slice(-1000);
-                if (readBooleanEnv('DebugMode', false)) {
-                    console.warn('[BrowserRuntimeManager][chrome]', text);
+        if (spawnedProcess.stderr) {
+            spawnedProcess.stderr.on('data', data => {
+                const text = data.toString().trim();
+                if (text) {
+                    lastError = text.slice(-1000);
+                    if (readBooleanEnv('DebugMode', false)) {
+                        console.warn('[BrowserRuntimeManager][chrome]', text);
+                    }
                 }
-            }
-        });
+            });
+        }
 
         spawnedProcess.on('exit', (code, signal) => {
             const expectedReason = expectedCloseReasons.get(spawnedProcess) || null;
@@ -636,39 +660,62 @@ function killProcessTree(pid) {
 }
 
 async function closeManagedBrowser(reason = 'manual') {
-    clearIdleTimer();
-    lastCloseReason = reason;
-    lastClosedAt = Date.now();
+    if (closePromise) {
+        await closePromise;
+        return getManagedBrowserStatus();
+    }
 
-    const proc = chromeProcess;
-    if (!proc) {
+    const operation = (async () => {
+        clearIdleTimer();
+        lastCloseReason = reason;
+        lastClosedAt = Date.now();
+
+        const proc = chromeProcess;
+        if (!proc) {
+            return getManagedBrowserStatus({ lastCloseReason: reason });
+        }
+
+        const pid = proc.pid;
+        previousPid = pid;
+        expectedCloseReasons.set(proc, reason);
+        try {
+            proc.kill('SIGTERM');
+        } catch (_) {
+            // ignore
+        }
+
+        await Promise.race([
+            new Promise(resolve => proc.once('exit', resolve)),
+            new Promise(resolve => setTimeout(resolve, 2500))
+        ]);
+
+        // 必须检查捕获的具体进程，不能检查 ChildProcess.killed。后者在信号发出
+        // 后立即为 true，即使 Chrome 仍未退出，会导致原实现永远跳过树清理。
+        if (isProcessAlive(proc)) {
+            await killProcessTree(pid);
+            await Promise.race([
+                new Promise(resolve => proc.once('exit', resolve)),
+                new Promise(resolve => setTimeout(resolve, 1000))
+            ]);
+        }
+
+        if (chromeProcess === proc) {
+            chromeProcess = null;
+            startedAt = null;
+            currentLaunchConfig = null;
+        }
+
         return getManagedBrowserStatus({ lastCloseReason: reason });
-    }
+    })();
 
-    const pid = proc.pid;
-    previousPid = pid;
-    expectedCloseReasons.set(proc, reason);
+    closePromise = operation;
     try {
-        proc.kill('SIGTERM');
-    } catch (_) {
-        // ignore
+        return await operation;
+    } finally {
+        if (closePromise === operation) {
+            closePromise = null;
+        }
     }
-
-    await Promise.race([
-        new Promise(resolve => proc.once('exit', resolve)),
-        new Promise(resolve => setTimeout(resolve, 2500))
-    ]);
-
-    if (chromeProcess === proc && isProcessAlive()) {
-        await killProcessTree(pid);
-    }
-
-    if (chromeProcess === proc) {
-        chromeProcess = null;
-    }
-
-    startedAt = null;
-    return getManagedBrowserStatus({ lastCloseReason: reason });
 }
 
 async function restartManagedBrowser() {
@@ -812,6 +859,9 @@ function getManagedBrowserStatus(extra = {}) {
         headless: currentLaunchConfig ? currentLaunchConfig.headless : config.headless,
         windowsHide: currentLaunchConfig ? currentLaunchConfig.windowsHide : config.windowsHide,
         disableGpu: config.disableGpu,
+        chromeVerboseLogging: currentLaunchConfig
+            ? currentLaunchConfig.chromeVerboseLogging
+            : config.chromeVerboseLogging,
         startMinimized: currentLaunchConfig ? currentLaunchConfig.startMinimized : config.startMinimized,
         effectiveHeadlessArgPresent: lastLaunchArgs.includes('--headless=new'),
         extensionStage: currentExtensionStage,
