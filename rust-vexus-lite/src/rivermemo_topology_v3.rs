@@ -946,8 +946,11 @@ fn load_curves(
             })
             .map_err(|error| format!("query batched chunk projection failed: {}", error))?;
         for row in rows {
-            let (id, file_id, bytes) =
-                row.map_err(|error| format!("decode batched chunk row failed: {}", error))?;
+            // 与旧逐候选实现保持行级故障隔离：单条脏记录不能拖垮
+            // 整个候选批次；prepare/query 级数据库错误仍在上方显式返回。
+            let Ok((id, file_id, bytes)) = row else {
+                continue;
+            };
             let Some(vector) = decode_vector(&bytes, dimension) else {
                 continue;
             };
@@ -992,8 +995,11 @@ fn load_curves(
             })
             .map_err(|error| format!("query batched tag curve projection failed: {}", error))?;
         for row in rows {
-            let (file_id, tag_id, position, name, bytes) =
-                row.map_err(|error| format!("decode batched tag curve row failed: {}", error))?;
+            // 旧实现通过 rows.flatten() 跳过单条 Tag 行解码错误。
+            // 批量化后保留同一容错边界，避免一条脏 Tag 污染整次查询。
+            let Ok((file_id, tag_id, position, name, bytes)) = row else {
+                continue;
+            };
             if let Some(vector) = decode_vector(&bytes, dimension) {
                 tags_by_file
                     .entry(file_id)
@@ -1086,8 +1092,11 @@ fn load_tag_vectors_by_ids(
             })
             .map_err(|error| format!("query batched Tag vectors failed: {}", error))?;
         for row in rows {
-            let (id, bytes) =
-                row.map_err(|error| format!("decode batched Tag vector row failed: {}", error))?;
+            // 查询河网与 Anchor 向量的旧逐 ID 读取会忽略单行读取错误；
+            // 共享批量读取必须保持相同的“缺失向量”降级语义。
+            let Ok((id, bytes)) = row else {
+                continue;
+            };
             if let Some(vector) = decode_vector(&bytes, dimension) {
                 vectors.insert(id, vector);
             }
