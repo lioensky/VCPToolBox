@@ -210,7 +210,7 @@ API_URL=https://api.openai.com
 | `KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY` | number | 300000 | Tag 索引保存延迟（毫秒） |
 | `RAGMemoRefresh` | boolean | true | 启用流内记忆刷新器 |
 
-冷知识库使用 TriviumDB 0.7.5，并为每个一级目录维护独立子库：
+冷知识库使用 TriviumDB 0.8.5，并为每个一级目录维护独立子库：
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
