@@ -1,0 +1,122 @@
+{
+    "displayName": "AI Easy Text to Image with LoRA and Face Detailer",
+    "description": "Advanced text-to-image with LoRA and face enhancement, compatible with plugin parameter replacement.",
+    "version": "1.0",
+    "workflow": {
+        "3": {
+            "inputs": {
+                "seed": "{{SEED}}",
+                "steps": "{{STEPS}}",
+                "cfg": "{{CFG}}",
+                "sampler_name": "{{SAMPLER}}",
+                "scheduler": "{{SCHEDULER}}",
+                "denoise": "{{DENOISE}}",
+                "model": ["13", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["5", 0]
+            },
+            "class_type": "KSampler",
+            "_meta": { "title": "K Sampler" }
+        },
+        "4": {
+            "inputs": { "ckpt_name": "waiIllustriousMixFP8_waiV16MIX.safetensors" },
+            "class_type": "CheckpointLoaderSimple",
+            "_meta": { "title": "Load Checkpoint" }
+        },
+        "5": {
+            "inputs": {
+                "width": "{{WIDTH}}",
+                "height": "{{HEIGHT}}",
+                "batch_size": "{{BATCH_SIZE}}"
+            },
+            "class_type": "EmptyLatentImage",
+            "_meta": { "title": "Empty Latent Image" }
+        },
+        "6": {
+            "inputs": {
+                "text": "{{POSITIVE_PROMPT}}",
+                "clip": ["13", 1]
+            },
+            "class_type": "CLIPTextEncode",
+            "_meta": { "title": "Positive Prompt" }
+        },
+        "7": {
+            "inputs": {
+                "text": "{{NEGATIVE_PROMPT}}",
+                "clip": ["13", 1]
+            },
+            "class_type": "CLIPTextEncode",
+            "_meta": { "title": "Negative Prompt" }
+        },
+        "8": {
+            "inputs": {
+                "samples": ["3", 0],
+                "vae": ["4", 2]
+            },
+            "class_type": "VAEDecode",
+            "_meta": { "title": "VAE Decode" }
+        },
+        "9": {
+            "inputs": {
+                "filename_prefix": "ComfyUI_FaceDetail",
+                "images": ["11", 0]
+            },
+            "class_type": "SaveImage",
+            "_meta": { "title": "Save Image" }
+        },
+        "11": {
+            "inputs": {
+                "seed": 0,
+                "steps": 8,
+                "cfg": 8,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": 0.5,
+                "feather": 5,
+                "bbox_threshold": 0.5,
+                "bbox_dilation": 10,
+                "bbox_crop_factor": 3,
+                "image": ["8", 0],
+                "model": ["13", 0],
+                "clip": ["13", 1],
+                "vae": ["4", 2],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "bbox_detector": ["12", 0],
+                "guide_size": 512,
+                "guide_size_for": true,
+                "max_size": 1024,
+                "noise_mask": true,
+                "force_inpaint": true,
+                "sam_detection_hint": "center-1",
+                "sam_dilation": 0,
+                "sam_threshold": 0.93,
+                "sam_bbox_expansion": 0,
+                "sam_mask_hint_threshold": 0.7,
+                "sam_mask_hint_use_negative": "False",
+                "drop_size": 10,
+                "wildcard": "",
+                "cycle": 1
+            },
+            "class_type": "FaceDetailer",
+            "_meta": { "title": "Face Detailer" }
+        },
+        "12": {
+            "inputs": {
+                "model_name": "bbox/face_yolov8m.pt"
+            },
+            "class_type": "UltralyticsDetectorProvider",
+            "_meta": { "title": "Face Detector Provider" }
+        },
+        "13": {
+            "inputs": {
+                "text": "{{LORA_PROMPT}}",
+                "model": ["4", 0],
+                "clip": ["4", 1]
+            },
+            "class_type": "LoraTagLoader",
+            "_meta": { "title": "Lora Tag Loader" }
+        }
+    }
+}

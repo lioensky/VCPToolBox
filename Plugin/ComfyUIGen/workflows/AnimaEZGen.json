@@ -1,0 +1,152 @@
+{
+  "displayName": "Anima EZ 文生图",
+  "description": "Anima Base 1.0 动漫与艺术插画工作流，已从 ComfyUI 子图画布格式转换为 API prompt 格式。",
+  "version": "1.0",
+  "workflow": {
+    "44": {
+      "inputs": {
+        "unet_name": "waiANIMA_v10Base10.safetensors",
+        "weight_dtype": "default"
+      },
+      "class_type": "UNETLoader",
+      "_meta": {
+        "title": "加载 Anima UNet"
+      }
+    },
+    "45": {
+      "inputs": {
+        "clip_name": "waiANIMA_v10Base10_txt.safetensors",
+        "type": "stable_diffusion",
+        "device": "default"
+      },
+      "class_type": "CLIPLoader",
+      "_meta": {
+        "title": "加载 Anima CLIP"
+      }
+    },
+    "15": {
+      "inputs": {
+        "vae_name": "qwenImage_qwenImageVAE.safetensors"
+      },
+      "class_type": "VAELoader",
+      "_meta": {
+        "title": "加载 Qwen Image VAE"
+      }
+    },
+    "75": {
+      "inputs": {
+        "lora_name": "anima_rendering_detailer_base10.safetensors",
+        "strength_model": 0.4,
+        "strength_clip": 1,
+        "model": [
+          "44",
+          0
+        ],
+        "clip": [
+          "45",
+          0
+        ]
+      },
+      "class_type": "LoraLoader",
+      "_meta": {
+        "title": "加载 Anima Rendering Detailer LoRA"
+      }
+    },
+    "28": {
+      "inputs": {
+        "width": "{{WIDTH}}",
+        "height": "{{HEIGHT}}",
+        "batch_size": "{{BATCH_SIZE}}"
+      },
+      "class_type": "EmptyLatentImage",
+      "_meta": {
+        "title": "空 Latent 图像"
+      }
+    },
+    "11": {
+      "inputs": {
+        "text": "{{POSITIVE_PROMPT}}",
+        "clip": [
+          "75",
+          1
+        ]
+      },
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "正面提示词"
+      }
+    },
+    "12": {
+      "inputs": {
+        "text": "{{NEGATIVE_PROMPT}}",
+        "clip": [
+          "75",
+          1
+        ]
+      },
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "负面提示词"
+      }
+    },
+    "19": {
+      "inputs": {
+        "seed": "{{SEED}}",
+        "steps": "{{STEPS}}",
+        "cfg": "{{CFG}}",
+        "sampler_name": "{{SAMPLER}}",
+        "scheduler": "{{SCHEDULER}}",
+        "denoise": "{{DENOISE}}",
+        "model": [
+          "75",
+          0
+        ],
+        "positive": [
+          "11",
+          0
+        ],
+        "negative": [
+          "12",
+          0
+        ],
+        "latent_image": [
+          "28",
+          0
+        ]
+      },
+      "class_type": "KSampler",
+      "_meta": {
+        "title": "K 采样器"
+      }
+    },
+    "46": {
+      "inputs": {
+        "samples": [
+          "19",
+          0
+        ],
+        "vae": [
+          "15",
+          0
+        ]
+      },
+      "class_type": "VAEDecode",
+      "_meta": {
+        "title": "VAE 解码"
+      }
+    },
+    "74": {
+      "inputs": {
+        "filename_prefix": "AnimaEZGen",
+        "images": [
+          "46",
+          0
+        ]
+      },
+      "class_type": "SaveImage",
+      "_meta": {
+        "title": "保存 Anima 图像"
+      }
+    }
+  }
+}

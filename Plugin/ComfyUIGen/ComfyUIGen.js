@@ -99,6 +99,13 @@ function resolveSeed(seedCandidate) {
    return s;
 }
 
+// 将调用参数转换为有限数值；未传或非法时回退到配置值
+function resolveNumericArg(value, fallback) {
+    if (value === undefined || value === null || value === '') return fallback;
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
 // 纯粹的数据替换 - 直接替换占位符为具体值（含种子自动处理）
 function fillWorkflowParameters(workflow, args, config) {
     const settings = config.userSettings || {};
@@ -115,8 +122,8 @@ function fillWorkflowParameters(workflow, args, config) {
     ].filter(part => part && String(part).trim());
     const positivePrompt = positivePromptParts.join(', ');
     
-    // 先解析种子：当配置默认种子为 -1 或非法时，运行时自动改为随机合法值（不透传 -1）
-    const resolvedSeed = resolveSeed(settings.defaultSeed);
+    // 调用参数优先；seed=-1 或非法时在运行时生成随机合法种子
+    const resolvedSeed = resolveSeed(args.seed ?? settings.defaultSeed);
 
     // 构建负面提示词
     const negativePromptParts = [
@@ -127,17 +134,17 @@ function fillWorkflowParameters(workflow, args, config) {
     
     // 构建替换映射
     const replacements = {
-        // 基础参数 - 优先使用args传入的值
-        '{{MODEL}}': settings.defaultModel || 'sd_xl_base_1.0.safetensors',
-        '{{WIDTH}}': args.width || settings.defaultWidth || 1024,
-        '{{HEIGHT}}': args.height || settings.defaultHeight || 1024,
-        '{{STEPS}}': settings.defaultSteps || 30,
-        '{{CFG}}': settings.defaultCfg || 7.5,
-        '{{SAMPLER}}': settings.defaultSampler || 'dpmpp_2m',
-        '{{SCHEDULER}}': settings.defaultScheduler || 'normal',
-        '{{SEED}}': resolvedSeed, // 使用运行时解析后的合法种子
-        '{{DENOISE}}': settings.defaultDenoise || 1.0,
-        '{{BATCH_SIZE}}': settings.defaultBatchSize || 1,
+        // 基础参数 - 调用参数优先于用户配置
+        '{{MODEL}}': args.model || settings.defaultModel || 'sd_xl_base_1.0.safetensors',
+        '{{WIDTH}}': resolveNumericArg(args.width, settings.defaultWidth || 1024),
+        '{{HEIGHT}}': resolveNumericArg(args.height, settings.defaultHeight || 1024),
+        '{{STEPS}}': resolveNumericArg(args.steps, settings.defaultSteps || 30),
+        '{{CFG}}': resolveNumericArg(args.cfg, settings.defaultCfg || 7.5),
+        '{{SAMPLER}}': args.sampler || settings.defaultSampler || 'dpmpp_2m',
+        '{{SCHEDULER}}': args.scheduler || settings.defaultScheduler || 'normal',
+        '{{SEED}}': resolvedSeed,
+        '{{DENOISE}}': resolveNumericArg(args.denoise, settings.defaultDenoise ?? 1.0),
+        '{{BATCH_SIZE}}': resolveNumericArg(args.batch_size, settings.defaultBatchSize || 1),
         
         // 提示词相关
         '{{POSITIVE_PROMPT}}': positivePrompt,
@@ -167,10 +174,13 @@ function fillWorkflowParameters(workflow, args, config) {
         '{{FD_GUIDE_SIZE}}': settings.faceDetailerGuideSize || 512
     };
     
-    // 安全的JSON替换 - 先解析为对象，然后递归替换
+    // 安全的JSON替换 - 精确匹配时保留数值/布尔类型，嵌入字符串时再转为文本
     function replaceInObject(obj, replacements) {
         if (typeof obj === 'string') {
-            // 对字符串值进行占位符替换
+            if (Object.prototype.hasOwnProperty.call(replacements, obj)) {
+                return replacements[obj];
+            }
+
             let result = obj;
             for (const [placeholder, value] of Object.entries(replacements)) {
                 if (result.includes(placeholder)) {
@@ -195,6 +205,40 @@ function fillWorkflowParameters(workflow, args, config) {
     
     // 使用安全的对象替换方法
     return replaceInObject(workflow, replacements);
+}
+
+// 根据单次调用配置节点式 LoRA。lora_name 显式留空时绕过并移除所有 LoraLoader。
+function configureWorkflowLora(workflow, args) {
+    if (!Object.prototype.hasOwnProperty.call(args, 'lora_name')) return workflow;
+
+    const loraName = typeof args.lora_name === 'string' ? args.lora_name.trim() : '';
+    const loraNodes = Object.entries(workflow)
+        .filter(([, node]) => node && node.class_type === 'LoraLoader');
+
+    for (const [nodeId, node] of loraNodes) {
+        if (loraName) {
+            node.inputs.lora_name = loraName;
+            node.inputs.strength_model = resolveNumericArg(args.lora_strength, node.inputs.strength_model ?? 1);
+            node.inputs.strength_clip = resolveNumericArg(args.lora_clip_strength, node.inputs.strength_clip ?? node.inputs.strength_model ?? 1);
+            continue;
+        }
+
+        const modelSource = node.inputs.model;
+        const clipSource = node.inputs.clip;
+
+        for (const otherNode of Object.values(workflow)) {
+            if (!otherNode || !otherNode.inputs) continue;
+            for (const [inputName, inputValue] of Object.entries(otherNode.inputs)) {
+                if (!Array.isArray(inputValue) || String(inputValue[0]) !== String(nodeId)) continue;
+                if (inputValue[1] === 0 && modelSource) otherNode.inputs[inputName] = modelSource;
+                if (inputValue[1] === 1 && clipSource) otherNode.inputs[inputName] = clipSource;
+            }
+        }
+
+        delete workflow[nodeId];
+    }
+
+    return workflow;
 }
 
 // 构建LoRA字符串
@@ -389,7 +433,10 @@ async function generateImageAndSave(args) {
             // 兼容旧格式（直接是工作流）和新格式（包含元数据和 workflow 键）
             const workflowObject = wfTemplate.workflow || wfTemplate;
 
-            const updated = fillWorkflowParameters(workflowObject, args, config);
+            const updated = configureWorkflowLora(
+                fillWorkflowParameters(workflowObject, args, config),
+                args
+            );
             const queueResult = await queuePrompt(updated, config);
             debugLog('Queued with prompt_id:', queueResult.prompt_id);
 
@@ -506,4 +553,13 @@ async function main() {
     }
 }
 
-main();
+if (require.main === module) {
+    main();
+}
+
+module.exports = {
+    fillWorkflowParameters,
+    configureWorkflowLora,
+    resolveSeed,
+    resolveNumericArg
+};
