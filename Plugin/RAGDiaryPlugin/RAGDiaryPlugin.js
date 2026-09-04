@@ -5283,7 +5283,7 @@ class RAGDiaryPlugin {
      */
     getContextBridge() {
         const self = this;
-        const BRIDGE_VERSION = '1.1';
+        const BRIDGE_VERSION = '1.2';
 
         return Object.freeze({
             /** 接口版本号，用于未来兼容性检查 */
@@ -5426,19 +5426,26 @@ class RAGDiaryPlugin {
             },
 
             /**
-             * 执行结构化日记检索，可选择复用 TagMemo 浪潮增强与测地线重排。
-             * 此接口只返回候选及检索元数据，不生成展示文本，也不重新向量化日记文档。
-             * TagBoost 在桥内只计算一次，并通过 preparedBoostResult 传入 KnowledgeBaseManager，
-             * 避免感应阶段和实际搜索阶段重复运行浪潮管线。
+             * 执行结构化日记检索，可优先使用 Rust 原生 RiverMemo，并在不可用时回退
+             * 到 TagMemo/普通 KNN。此接口只返回候选及检索元数据，不生成展示文本，
+             * 也不重新向量化日记文档。
+             *
+             * RiverMemo 路径复用 KnowledgeBaseManager 的显式日记本权限作用域和
+             * Native Query Plan；ANN、候选合并、向量 hydrate、语义去重与
+             * Topology V3 均在原生链路完成。TagMemo 回退路径仍只计算一次
+             * TagBoost，并通过 preparedBoostResult 复用同一次感应。
              *
              * @param {object} options
              * @param {string|string[]} options.diaryNames - 日记本/索引名称
              * @param {Array|Float32Array} options.queryVector - 已生成的查询向量
              * @param {number} [options.k=10] - 最大候选 chunk 数
-             * @param {boolean} [options.tagMemo=false] - 是否启用 TagMemo 浪潮增强
+             * @param {boolean} [options.riverMemo=false] - 是否优先启用 Rust 原生 RiverMemo
+             * @param {number} [options.candidateK] - RiverMemo 原生候选超集大小
+             * @param {string} [options.queryText=''] - RiverMemo 查询文本
+             * @param {boolean} [options.tagMemo=false] - 回退时是否启用 TagMemo 浪潮增强
              * @param {number} [options.tagWeight] - 显式 Tag 权重；省略时使用动态权重
-             * @param {boolean} [options.geodesicRerank=false] - 是否启用查询级测地线重排
-             * @param {boolean} [options.deduplicate=false] - 是否执行智能语义去重
+             * @param {boolean} [options.geodesicRerank=false] - 回退时是否启用查询级测地线重排
+             * @param {boolean} [options.deduplicate=false] - 回退时是否执行智能语义去重
              * @param {string} [options.userText=''] - 动态参数计算使用的用户文本
              * @param {string} [options.aiText=''] - 动态参数计算使用的 AI 文本
              * @param {Array} [options.coreTags=[]] - 显式核心 Tag 或幽灵节点
@@ -5449,6 +5456,9 @@ class RAGDiaryPlugin {
                     diaryNames,
                     queryVector,
                     k = 10,
+                    riverMemo = false,
+                    candidateK,
+                    queryText = '',
                     tagMemo = false,
                     tagWeight,
                     geodesicRerank = false,
@@ -5459,14 +5469,28 @@ class RAGDiaryPlugin {
                 } = options || {};
 
                 if (!queryVector || !self.vectorDBManager || typeof self.vectorDBManager.search !== 'function') {
-                    return { results: [], meta: { tagMemoUsed: false, fallbackReason: 'search-unavailable' } };
+                    return {
+                        results: [],
+                        meta: {
+                            riverMemoUsed: false,
+                            tagMemoUsed: false,
+                            fallbackReason: 'search-unavailable'
+                        }
+                    };
                 }
 
                 const names = Array.isArray(diaryNames)
                     ? [...new Set(diaryNames.map(name => String(name || '').trim()).filter(Boolean))]
                     : String(diaryNames || '').trim();
                 if ((Array.isArray(names) && names.length === 0) || !names) {
-                    return { results: [], meta: { tagMemoUsed: false, fallbackReason: 'empty-diary-scope' } };
+                    return {
+                        results: [],
+                        meta: {
+                            riverMemoUsed: false,
+                            tagMemoUsed: false,
+                            fallbackReason: 'empty-diary-scope'
+                        }
+                    };
                 }
 
                 const safeK = Math.max(1, Math.min(1000, Math.floor(Number(k) || 10)));
@@ -5475,6 +5499,68 @@ class RAGDiaryPlugin {
                 let matchedTags = [];
                 let dynamicMetrics = null;
                 let fallbackReason = null;
+
+                if (
+                    riverMemo === true &&
+                    typeof self.vectorDBManager.executeNativeRiverQuery === 'function'
+                ) {
+                    try {
+                        const safeCandidateK = Number.isFinite(Number(candidateK))
+                            ? Math.max(safeK, Math.min(5000, Math.floor(Number(candidateK))))
+                            : undefined;
+                        const nativeResult = await self.vectorDBManager.executeNativeRiverQuery(
+                            {
+                                text: String(queryText || userText || ''),
+                                vector: queryVector instanceof Float32Array
+                                    ? queryVector
+                                    : new Float32Array(queryVector)
+                            },
+                            {
+                                diaryNames: names,
+                                topK: safeK,
+                                candidateK: safeCandidateK,
+                                coreTags: Array.isArray(coreTags) ? coreTags : [],
+                                sourceObservationConfig: {
+                                    baseTagBoost: Number.isFinite(Number(tagWeight))
+                                        ? Math.max(0, Math.min(1, Number(tagWeight)))
+                                        : 0.6,
+                                    coreBoostFactor: 1.33
+                                },
+                                enabled: true,
+                                fallbackToLegacy: true
+                            }
+                        );
+
+                        return {
+                            results: Array.isArray(nativeResult?.results)
+                                ? nativeResult.results
+                                : [],
+                            meta: {
+                                riverMemoUsed: true,
+                                nativeJointQueryUsed:
+                                    nativeResult?.diagnostics?.nativeTopologyV3?.jointUsed === true,
+                                artifactSig: nativeResult?.artifactSig || null,
+                                queryId: nativeResult?.queryId || null,
+                                omega: Number(nativeResult?.omega?.omega) || 0,
+                                regime: nativeResult?.omega?.regime || null,
+                                tagMemoUsed: false,
+                                geodesicRerankUsed: false,
+                                deduplicated: true,
+                                matchedTags:
+                                    nativeResult?.queryTags?.matchedTags || [],
+                                fallbackReason: null
+                            }
+                        };
+                    } catch (error) {
+                        fallbackReason = `rivermemo-failed: ${error.message}`;
+                        console.warn(
+                            '[RAGDiaryPlugin] ContextBridge retrieveDiary RiverMemo fallback:',
+                            error.message
+                        );
+                    }
+                } else if (riverMemo) {
+                    fallbackReason = 'rivermemo-unavailable';
+                }
 
                 if (tagMemo && typeof self.vectorDBManager.applyTagBoostAsync === 'function') {
                     try {
@@ -5499,11 +5585,16 @@ class RAGDiaryPlugin {
                     } catch (error) {
                         effectiveTagWeight = null;
                         preparedBoostResult = null;
-                        fallbackReason = `tagmemo-failed: ${error.message}`;
+                        const tagMemoFailure = `tagmemo-failed: ${error.message}`;
+                        fallbackReason = fallbackReason
+                            ? `${fallbackReason}; ${tagMemoFailure}`
+                            : tagMemoFailure;
                         console.warn('[RAGDiaryPlugin] ContextBridge retrieveDiary TagMemo fallback:', error.message);
                     }
                 } else if (tagMemo) {
-                    fallbackReason = 'tagmemo-unavailable';
+                    fallbackReason = fallbackReason
+                        ? `${fallbackReason}; tagmemo-unavailable`
+                        : 'tagmemo-unavailable';
                 }
 
                 const searchOptions = preparedBoostResult ? {
@@ -5534,6 +5625,8 @@ class RAGDiaryPlugin {
                 return {
                     results: Array.isArray(results) ? results : [],
                     meta: {
+                        riverMemoUsed: false,
+                        nativeJointQueryUsed: false,
                         tagMemoUsed: !!preparedBoostResult,
                         tagWeight: preparedBoostResult ? effectiveTagWeight : null,
                         geodesicRerankUsed: !!preparedBoostResult && geodesicRerank === true,
