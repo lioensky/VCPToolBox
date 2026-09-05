@@ -359,11 +359,14 @@ async _flushBatch() {
                 return { updates, tagUpdates, deletions, newTagIds };
             });
 
+            const _tPhaseStart = Date.now();
             const { updates, tagUpdates, deletions, newTagIds } = transaction();
+            const _tSqliteMs = Date.now() - _tPhaseStart;
 
             // 每个日记本只发布一次排他 Chunk 差分。SQLite 已经提交权威事实；
             // Rust 在同一 RwLock 写锁内完成该日记本全部旧 ID 删除和新 ID upsert，
             // 并发 search 只能看到批次前或批次后状态，不能观察到公共索引半批状态。
+            const _tRustStart = Date.now();
             const affectedDiaryNames = new Set([
                 ...deletions.keys(),
                 ...updates.keys()
@@ -381,9 +384,11 @@ async _flushBatch() {
                     `revision=${deltaResult.revision ?? 'recovered'}.`
                 );
             }
+            const _tRustMs = Date.now() - _tRustStart;
 
             // Tag 索引已有独立 applyTagDelta 路径的生命周期；这里保留现有兼容
             // upsert，日记公共索引的读写原子性不再依赖这段逻辑。
+            const _tTagStart = Date.now();
             tagUpdates.forEach(u => {
                 try {
                     this.tagIndex.add(u.id, u.vec);
@@ -413,13 +418,23 @@ async _flushBatch() {
                     this._ensureDiaryDateIndexCached(dName);
                 }
             }
-
-            console.log(`[KnowledgeBase] ✅ Batch complete. Updated ${updates.size} diary indices.`);
+            const _tTagAndDateMs = Date.now() - _tTagStart;
 
             // 数据更新后，检查是否需要重建 V9.1 矩阵（防抖 + 阈值）。
             // 使用“成功新增的唯一 tag id”累计触发 1% 阈值；
             // file_tags 组关系仍是共现矩阵真相，但不再作为“新增 1% tag”的计数依据。
+            const _tMatrixStart = Date.now();
             if (this.tagMemoEngine) this.tagMemoEngine.scheduleMatrixRebuildForNewTags(newTagIds);
+            const _tMatrixMs = Date.now() - _tMatrixStart;
+
+            console.log(
+                `[KnowledgeBase] ⏱️ Phase Breakdown: ` +
+                `SQLite=${_tSqliteMs}ms, ` +
+                `applyChunkDelta=${_tRustMs}ms, ` +
+                `Tag&Date=${_tTagAndDateMs}ms, ` +
+                `scheduleMatrix=${_tMatrixMs}ms (Total=${Date.now() - _tPhaseStart}ms)`
+            );
+            console.log(`[KnowledgeBase] ✅ Batch complete. Updated ${updates.size} diary indices.`);
 
         } catch (e) {
             console.error('[KnowledgeBase] ❌ Batch processing failed catastrophically.');
