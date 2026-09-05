@@ -234,6 +234,10 @@ const CORE_SCHEMA_SQL = `
     );
     CREATE INDEX IF NOT EXISTS idx_pair_sim_model
         ON tag_pair_similarity(model_sig);
+    -- 主键只覆盖 tag_a 左前缀；反向端点索引保证按任一 Tag
+    -- 枚举或失效无向 Pair 时不会退化为全表扫描。
+    CREATE INDEX IF NOT EXISTS idx_pair_sim_tag_b
+        ON tag_pair_similarity(tag_b);
 
     CREATE TABLE IF NOT EXISTS tag_pair_similarity_status (
         tag_a INTEGER NOT NULL,
@@ -252,6 +256,8 @@ const CORE_SCHEMA_SQL = `
         ON tag_pair_similarity_status(artifact_sig, status);
     CREATE INDEX IF NOT EXISTS idx_pair_sim_status_model
         ON tag_pair_similarity_status(model_sig);
+    CREATE INDEX IF NOT EXISTS idx_pair_sim_status_tag_b
+        ON tag_pair_similarity_status(tag_b);
 
     CREATE TABLE IF NOT EXISTS kv_store (
         key TEXT PRIMARY KEY,

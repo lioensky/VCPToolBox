@@ -263,37 +263,23 @@ async _flushBatch() {
                 const tagUpdates = [];
                 const newTagIds = [];
 
-                const insertTag = this.db.prepare('INSERT INTO tags (name, vector) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET vector = excluded.vector');
-                const getTagId = this.db.prepare('SELECT id FROM tags WHERE name = ?');
-                // V9.1 向量更新失效钩子 — 正值、负缓存和处理状态必须一起失效，
-                // 由 Rust 增量补回，防止陈旧 artifact 或 below_threshold 状态掩盖重算。
-                const invalidatePairSim = this.db.prepare(
-                    'DELETE FROM tag_pair_similarity WHERE tag_a = ? OR tag_b = ?'
-                );
-                const invalidatePairSimStatus = this.db.prepare(
-                    'DELETE FROM tag_pair_similarity_status WHERE tag_a = ? OR tag_b = ?'
-                );
-                const invalidateIntrinsicResidual = this.db.prepare(
-                    'DELETE FROM tag_intrinsic_residuals WHERE tag_id = ?'
-                );
-                const invalidateIntrinsicResidualStatus = this.db.prepare(
-                    'DELETE FROM tag_intrinsic_residual_status WHERE tag_id = ?'
+                // 此路径只创建数据库中尚不存在的新 Tag。黑名单已在提取阶段过滤，
+                // 向量化失败项也不会落库；新分配的 ID 不可能存在历史 Pairwise/IR
+                // 派生记录，因此禁止在事实写事务中扫描大型派生表做无效失效。
+                // 已有 Tag 的真实向量替换必须走专用维护路径，并在那里标脏或精确失效。
+                const insertTag = this.db.prepare(
+                    'INSERT INTO tags (name, vector) VALUES (?, ?)'
                 );
 
                 newTags.forEach((t, i) => {
                     if (!tagVectors[i]) return; // 🛡️ 跳过向量化失败的 tag
                     const vecFloat = new Float32Array(tagVectors[i]);
                     const vecBuf = Buffer.from(vecFloat.buffer, vecFloat.byteOffset, vecFloat.byteLength);
-                    insertTag.run(t, vecBuf);
-                    const id = getTagId.get(t).id;
+                    const inserted = insertTag.run(t, vecBuf);
+                    const id = Number(inserted.lastInsertRowid);
                     tagCache.set(t, { id, vector: vecBuf });
                     tagUpdates.push({ id, vec: vecFloat });
                     newTagIds.push(id);
-                    // 失效旧的 pairwise similarity / intrinsic residual 记录及其状态缓存
-                    invalidatePairSim.run(id, id);
-                    invalidatePairSimStatus.run(id, id);
-                    invalidateIntrinsicResidual.run(id);
-                    invalidateIntrinsicResidualStatus.run(id);
                 });
 
                 const insertFile = this.db.prepare('INSERT INTO files (path, diary_name, checksum, mtime, size, updated_at) VALUES (?, ?, ?, ?, ?, ?)');
