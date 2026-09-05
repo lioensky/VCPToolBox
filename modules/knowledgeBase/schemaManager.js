@@ -415,8 +415,41 @@ function addColumnIfMissing(db, table, column, definition, logPrefix) {
 function initializeKnowledgeBaseSchema(db, options = {}) {
     assertDatabase(db);
     const logPrefix = options.logPrefix || 'KnowledgeBase';
+    const reversePairIndexes = [
+        'idx_pair_sim_tag_b',
+        'idx_pair_sim_status_tag_b'
+    ];
+    const existingReversePairIndexes = new Set(
+        db.prepare(`
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name IN (?, ?)
+        `).all(...reversePairIndexes).map(row => row.name)
+    );
+    const missingReversePairIndexes = reversePairIndexes.filter(
+        name => !existingReversePairIndexes.has(name)
+    );
+    const reverseIndexMigrationStartedAt = Date.now();
+
+    if (missingReversePairIndexes.length > 0) {
+        console.warn(
+            `[${logPrefix}] 🧱 Building missing Pairwise reverse endpoint ` +
+            `index(es): ${missingReversePairIndexes.join(', ')}. ` +
+            'Large databases may take time; startup will continue after SQLite finishes.'
+        );
+    }
 
     db.exec(CORE_SCHEMA_SQL);
+
+    if (missingReversePairIndexes.length > 0) {
+        console.log(
+            `[${logPrefix}] ✅ Pairwise reverse endpoint index migration complete: ` +
+            `${missingReversePairIndexes.join(', ')}, ` +
+            `elapsed=${Date.now() - reverseIndexMigrationStartedAt}ms.`
+        );
+    }
+
     for (const [table, column, definition] of ADDITIVE_MIGRATIONS) {
         addColumnIfMissing(db, table, column, definition, logPrefix);
     }
