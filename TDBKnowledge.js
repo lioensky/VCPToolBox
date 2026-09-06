@@ -304,6 +304,9 @@ class TDBKnowledgeManager {
         if (typeof handle.db?.close !== 'function') {
             throw new Error(`TriviumDB close() is unavailable for "${safeName}".`);
         }
+        this._safeBuildTextIndex(handle.db);
+        this._safeCompact(handle.db);
+        this._safeFlush(handle.db);
         handle.db.close();
 
         this.libs.delete(safeName);
@@ -496,6 +499,16 @@ class TDBKnowledgeManager {
                 if (jobs.length < this.config.maxBatchSize) break;
             }
         } finally {
+            // 🌟 批处理收尾落盘：当工作队列任务处理完毕（排空或退出）时，若有积攒的未落盘变更，立即执行 flush 与文本索引构建！
+            // 彻底解决“入库后 vectorstoretdb 目录下迟迟未见 .tdb 文件”的问题。
+            if (this.processedSinceFlush > 0 || this.processedSinceTextIndexBuild > 0) {
+                for (const handle of this.libs.values()) {
+                    this._safeBuildTextIndex(handle.db);
+                    this._safeFlush(handle.db);
+                }
+                this.processedSinceFlush = 0;
+                this.processedSinceTextIndexBuild = 0;
+            }
             this.isProcessing = false;
             this.isQueueWorkerRunning = false;
         }
@@ -618,6 +631,12 @@ class TDBKnowledgeManager {
                         updated_at: now
                     }]);
                     insertedIds.push(docNodeId);
+                    if (typeof handle.db.indexKeyword === 'function') {
+                        const baseTitle = path.basename(relPath, path.extname(relPath));
+                        if (baseTitle && baseTitle.length >= 2) {
+                            try { handle.db.indexKeyword(docNodeId, baseTitle); } catch (_) {}
+                        }
+                    }
                 }
 
                 for (let start = 0; start < chunks.length; start += embeddingBatchSize) {
@@ -662,6 +681,12 @@ class TDBKnowledgeManager {
                             handle.db.link(row.nodeId, previous.nodeId, 'prev', 0.7);
                         }
                         handle.db.indexText(row.nodeId, row.text);
+                        if (typeof handle.db.indexKeyword === 'function') {
+                            const baseTitle = path.basename(relPath, path.extname(relPath));
+                            if (baseTitle && baseTitle.length >= 2) {
+                                try { handle.db.indexKeyword(row.nodeId, baseTitle); } catch (_) {}
+                            }
+                        }
                         pendingChunks.push(row);
                     }
                 }
@@ -786,6 +811,16 @@ class TDBKnowledgeManager {
             db.flush();
         } catch (e) {
             console.warn('[TDBKnowledge] Flush failed:', e.message);
+        }
+    }
+
+    _safeCompact(db) {
+        try {
+            if (typeof db?.compact === 'function') {
+                db.compact();
+            }
+        } catch (e) {
+            console.warn('[TDBKnowledge] Compact failed:', e.message);
         }
     }
 
@@ -950,19 +985,81 @@ class TDBKnowledgeManager {
             const minScore = options.minScore ?? 0.1;
             const hybridAlpha = options.hybridAlpha ?? 0.7;
 
+            const payloadFilter = options.payloadFilter || options.filter || null;
             const hits = handle.db.searchHybrid(
                 Array.from(queryVector),
                 queryText,
                 topK,
                 expandDepth,
                 minScore,
-                hybridAlpha
+                hybridAlpha,
+                payloadFilter
             );
 
             return (hits || []).map(hit => this._mapSearchHit(library, hit));
         } finally {
             this._endLibraryUse(handle);
         }
+    }
+
+    async subgraph(library, sourceId, options = {}) {
+        if (!this.initialized || !TriviumDB) return null;
+        const safeName = safeLibraryName(library);
+        return this._withLibraryQueue(safeName, async () => {
+            const handle = this.getOrOpenLibrary(safeName);
+            this._beginLibraryUse(handle);
+            try {
+                if (typeof handle.db.querySubgraph !== 'function') {
+                    throw new Error('querySubgraph is not supported by this TriviumDB version');
+                }
+                return handle.db.querySubgraph(sourceId, {
+                    minDepth: options.minDepth ?? 1,
+                    maxDepth: options.maxDepth ?? 1,
+                    labels: options.labels,
+                    direction: options.direction || 'outgoing',
+                    maxVisitedNodes: options.maxVisitedNodes ?? 10000,
+                    maxEdges: options.maxEdges ?? 50000
+                });
+            } finally {
+                this._endLibraryUse(handle);
+            }
+        });
+    }
+
+    async queryTql(library, query) {
+        if (!this.initialized || !TriviumDB) return null;
+        const safeName = safeLibraryName(library);
+        return this._withLibraryQueue(safeName, async () => {
+            const handle = this.getOrOpenLibrary(safeName);
+            this._beginLibraryUse(handle);
+            try {
+                const trimmed = String(query || '').trim();
+                const isMutation = trimmed.startsWith('CREATE')
+                    || (trimmed.startsWith('MATCH') && (trimmed.includes('CREATE') || trimmed.includes('SET') || trimmed.includes('DELETE')));
+                if (isMutation) {
+                    return handle.db.tqlMut(trimmed);
+                } else {
+                    return handle.db.tql(trimmed);
+                }
+            } finally {
+                this._endLibraryUse(handle);
+            }
+        });
+    }
+
+    async compactLibrary(library) {
+        if (!this.initialized || !TriviumDB) return;
+        const safeName = safeLibraryName(library);
+        return this._withLibraryQueue(safeName, async () => {
+            const handle = this.getOrOpenLibrary(safeName);
+            this._beginLibraryUse(handle);
+            try {
+                this._safeCompact(handle.db);
+                this._safeFlush(handle.db);
+            } finally {
+                this._endLibraryUse(handle);
+            }
+        });
     }
 
     listLibraries() {

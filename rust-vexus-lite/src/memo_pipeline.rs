@@ -2,6 +2,7 @@ use crate::memo_sensing::{sense_typed, SenseConfig, SenseInput, SenseOutput, Sen
 use crate::rivermemo_topology_v3::{load_artifact_from_runtime, MemoRuntime};
 use base64::Engine;
 use napi::bindgen_prelude::*;
+use napi_derive::napi;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -86,6 +87,7 @@ struct PipelineInput {
     query_id: Option<String>,
     #[serde(default, rename = "queryText")]
     _query_text: String,
+    #[serde(default)]
     query_vector: Vec<f32>,
     #[serde(default)]
     core_tags: Vec<String>,
@@ -99,6 +101,7 @@ struct PipelineInput {
 #[serde(rename_all = "camelCase")]
 struct GhostTagInput {
     name: String,
+    #[serde(default)]
     vector: Vec<f32>,
     #[serde(default)]
     is_core: bool,
@@ -1267,26 +1270,33 @@ struct PipelineDiagnostics {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PipelineOutput {
+struct PipelineMetadataOutput {
     schema: String,
     algorithm_version: String,
     artifact_sig: String,
     query_id: Option<String>,
-    observation_handle: Option<String>,
-    observation: SenseOutput,
-    enhanced_vector: Vec<f64>,
-    local_vector: Vec<f32>,
-    transfer_vector: Vec<f32>,
-    local_field: Vec<(i64, f64)>,
-    transfer_field: Vec<(i64, f64)>,
-    local_domain_ids: Vec<i64>,
-    transfer_domain_ids: Vec<i64>,
+    observation_handle: String,
     epa: EpaOutput,
     pyramid: PyramidOutput,
     matched_tags: Vec<String>,
     core_tags_matched: Vec<String>,
     effective_tag_boost: f64,
     diagnostics: PipelineDiagnostics,
+}
+
+pub struct MemoPipelineComputeOutput {
+    metadata_json: String,
+    enhanced_vector: Vec<f32>,
+}
+
+/// 统一 Memo 查询的轻量 N-API 返回值。
+///
+/// 完整 Observation、双场、域集合与投影向量只保留在 MemoRuntime 中；Node
+/// 只接收后续读出所需的句柄、诊断摘要和用于 KNN 的增强查询向量。
+#[napi(object)]
+pub struct MemoPipelineResult {
+    pub metadata_json: String,
+    pub enhanced_vector: Float32Array,
 }
 
 fn run_pipeline(
@@ -1296,16 +1306,36 @@ fn run_pipeline(
     artifact_sig: &str,
     dimensions: usize,
     input_json: &str,
-) -> std::result::Result<String, String> {
+    query_vector: &[f32],
+    ghost_vectors: &[f32],
+) -> std::result::Result<MemoPipelineComputeOutput, String> {
     let total_started = Instant::now();
-    let input: PipelineInput = serde_json::from_str(input_json)
+    let mut input: PipelineInput = serde_json::from_str(input_json)
         .map_err(|error| format!("invalid unified Memo pipeline input JSON: {}", error))?;
+    input.query_vector = query_vector.to_vec();
     if input.query_vector.len() != dimensions {
         return Err(format!(
             "Memo pipeline dimension mismatch: expected {}, got {}",
             dimensions,
             input.query_vector.len()
         ));
+    }
+    let expected_ghost_values = input
+        .ghost_tags
+        .len()
+        .checked_mul(dimensions)
+        .ok_or_else(|| "Memo pipeline ghost vector size overflow".to_string())?;
+    if ghost_vectors.len() != expected_ghost_values {
+        return Err(format!(
+            "Memo pipeline ghost vector size mismatch: ghosts={}, expected values={}, got={}",
+            input.ghost_tags.len(),
+            expected_ghost_values,
+            ghost_vectors.len()
+        ));
+    }
+    for (position, ghost) in input.ghost_tags.iter_mut().enumerate() {
+        let start = position * dimensions;
+        ghost.vector = ghost_vectors[start..start + dimensions].to_vec();
     }
     let artifact = load_artifact_from_runtime(runtime, db_path, artifact_sig)?;
     let connection = open_readonly(db_path)?;
@@ -1383,28 +1413,21 @@ fn run_pipeline(
     drop(index_guard);
     drop(connection);
 
-    let (observation_handle, observation_cache_error) = match runtime.store_query_observation(
+    let enhanced_vector_f32: Vec<f32> =
+        enhanced_vector.iter().map(|value| *value as f32).collect();
+    let observation_handle = runtime.store_query_observation(
         artifact_sig,
-        observation.clone(),
+        observation,
         input.query_vector.clone(),
-        enhanced_vector.iter().map(|value| *value as f32).collect(),
+        enhanced_vector_f32.clone(),
         dual_fields.local_vector.clone(),
         dual_fields.transfer_vector.clone(),
         dual_fields.local_field.clone(),
         dual_fields.transfer_field.clone(),
         dual_fields.local_domain_ids.clone(),
         dual_fields.transfer_domain_ids.clone(),
-    ) {
-        Ok(handle) => (Some(handle), None),
-        Err(error) => {
-            eprintln!(
-                "[Vexus-Lite][MemoPipeline] observation cache degraded: {}",
-                error
-            );
-            (None, Some(error))
-        }
-    };
-    let observation_cached = observation_handle.is_some();
+    )?;
+    let observation_cached = true;
 
     let maximum_weight = selected_tags
         .iter()
@@ -1431,30 +1454,13 @@ fn run_pipeline(
         .collect::<Vec<_>>();
     let seed_nodes = gated_tags.len();
 
-    let DualFieldOutput {
-        local_field,
-        transfer_field,
-        local_domain_ids,
-        transfer_domain_ids,
-        local_vector,
-        transfer_vector,
-        diagnostics: dual_field_diagnostics,
-    } = dual_fields;
-
-    serde_json::to_string(&PipelineOutput {
+    let dual_field_diagnostics = dual_fields.diagnostics;
+    let metadata_json = serde_json::to_string(&PipelineMetadataOutput {
         schema: PIPELINE_SCHEMA.to_string(),
         algorithm_version: PIPELINE_ALGORITHM.to_string(),
         artifact_sig: artifact_sig.to_string(),
         query_id: input.query_id.clone(),
         observation_handle,
-        observation,
-        enhanced_vector,
-        local_vector,
-        transfer_vector,
-        local_field,
-        transfer_field,
-        local_domain_ids,
-        transfer_domain_ids,
         epa,
         pyramid,
         matched_tags,
@@ -1471,12 +1477,17 @@ fn run_pipeline(
             total_ms: total_started.elapsed().as_secs_f64() * 1000.0,
             seed_nodes,
             observation_cached,
-            observation_cache_error,
+            observation_cache_error: None,
             dual_field: dual_field_diagnostics,
             fusion,
         },
     })
-    .map_err(|error| format!("encode unified Memo pipeline output failed: {}", error))
+    .map_err(|error| format!("encode unified Memo pipeline metadata failed: {}", error))?;
+
+    Ok(MemoPipelineComputeOutput {
+        metadata_json,
+        enhanced_vector: enhanced_vector_f32,
+    })
 }
 
 pub struct MemoPipelineTask {
@@ -1486,11 +1497,13 @@ pub struct MemoPipelineTask {
     artifact_sig: String,
     dimensions: usize,
     input_json: String,
+    query_vector: Vec<f32>,
+    ghost_vectors: Vec<f32>,
 }
 
 impl Task for MemoPipelineTask {
-    type Output = String;
-    type JsValue = String;
+    type Output = MemoPipelineComputeOutput;
+    type JsValue = MemoPipelineResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
         run_pipeline(
@@ -1500,12 +1513,17 @@ impl Task for MemoPipelineTask {
             &self.artifact_sig,
             self.dimensions,
             &self.input_json,
+            &self.query_vector,
+            &self.ghost_vectors,
         )
         .map_err(Error::from_reason)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
+        Ok(MemoPipelineResult {
+            metadata_json: output.metadata_json,
+            enhanced_vector: Float32Array::new(output.enhanced_vector),
+        })
     }
 }
 
@@ -1516,6 +1534,8 @@ pub(crate) fn run_with_runtime(
     artifact_sig: String,
     dimensions: usize,
     input_json: String,
+    query_vector: Vec<f32>,
+    ghost_vectors: Vec<f32>,
 ) -> AsyncTask<MemoPipelineTask> {
     AsyncTask::new(MemoPipelineTask {
         index,
@@ -1524,5 +1544,7 @@ pub(crate) fn run_with_runtime(
         artifact_sig,
         dimensions,
         input_json,
+        query_vector,
+        ghost_vectors,
     })
 }

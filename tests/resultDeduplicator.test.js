@@ -79,6 +79,74 @@ test('missing vectors are hydrated from SQLite-compatible storage before semanti
     assert.ok(results[0]._vector instanceof Float32Array);
 });
 
+test('missing vectors are hydrated in one SQLite batch with unique chunk ids', async () => {
+    const stored = new Map([
+        [61, vectorBuffer([1, 0, 0])],
+        [62, vectorBuffer([0, 1, 0])],
+        [63, vectorBuffer([0, 0, 1])]
+    ]);
+    let prepareCount = 0;
+    let allCount = 0;
+    let receivedIds = null;
+    const db = {
+        prepare(sql) {
+            prepareCount++;
+            assert.match(sql, /SELECT id, vector FROM chunks WHERE id IN/);
+            return {
+                all(...ids) {
+                    allCount++;
+                    receivedIds = ids;
+                    return ids
+                        .filter(id => stored.has(id))
+                        .map(id => ({ id, vector: stored.get(id) }));
+                }
+            };
+        }
+    };
+    const deduplicator = new ResultDeduplicator(db, {
+        dimension: 3,
+        semanticThreshold: 0.999
+    });
+
+    const results = await deduplicator.deduplicate([
+        { chunkId: 61, text: 'batch alpha', score: 0.9, source: 'rag' },
+        { chunkId: 62, text: 'batch beta', score: 0.8, source: 'rag' },
+        { chunkId: 63, text: 'batch gamma', score: 0.7, source: 'rag' }
+    ], vector([1, 0, 0]));
+
+    assert.equal(prepareCount, 1);
+    assert.equal(allCount, 1);
+    assert.deepEqual(receivedIds, [61, 62, 63]);
+    assert.equal(results.length, 3);
+    assert.ok(results.every(result => result._vector instanceof Float32Array));
+});
+
+test('batch hydration deduplicates repeated chunk ids before querying SQLite', () => {
+    let receivedIds = null;
+    const db = {
+        prepare() {
+            return {
+                all(...ids) {
+                    receivedIds = ids;
+                    return ids.map(id => ({
+                        id,
+                        vector: vectorBuffer(id === 71 ? [1, 0, 0] : [0, 1, 0])
+                    }));
+                }
+            };
+        }
+    };
+    const deduplicator = new ResultDeduplicator(db, { dimension: 3 });
+    const hydrated = deduplicator._hydrateMissingVectors([
+        { chunkId: 71, text: 'first version' },
+        { chunkId: 71, text: 'second version' },
+        { chunkId: 72, text: 'other chunk' }
+    ]);
+
+    assert.deepEqual(receivedIds, [71, 72]);
+    assert.ok(hydrated.every(result => result._vector instanceof Float32Array));
+});
+
 test('vectorless BM25 and anonymous candidates are preserved safely', async () => {
     const deduplicator = new ResultDeduplicator(null, { dimension: 3 });
     const firstAnonymous = { score: 0.2, source: 'unknown' };
@@ -142,4 +210,24 @@ test('runtime config updates semantic threshold and source priorities', async ()
     assert.equal(results.length, 1);
     assert.equal(results[0].chunkId, 52, 'semantic representative selection remains score-first without a query');
     assert.equal(deduplicator.config.sourcePriority.associate, 100);
+});
+
+test('prepared cosine path preserves cosine similarity semantics', () => {
+    const deduplicator = new ResultDeduplicator(null, { dimension: 3 });
+    const left = vector([3, 4, 0]);
+    const right = vector([4, 0, 3]);
+    const leftDescriptor = deduplicator._createVectorDescriptor(left);
+    const rightDescriptor = deduplicator._createVectorDescriptor(right);
+
+    assert.ok(leftDescriptor);
+    assert.ok(rightDescriptor);
+    assert.equal(
+        deduplicator._cosineSimilarityPrepared(leftDescriptor, rightDescriptor),
+        deduplicator._cosineSimilarity(left, right)
+    );
+    assert.ok(
+        Math.abs(
+            deduplicator._cosineSimilarityPrepared(leftDescriptor, rightDescriptor) - 0.48
+        ) < 1e-6
+    );
 });

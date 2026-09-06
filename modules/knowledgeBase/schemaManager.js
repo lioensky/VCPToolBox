@@ -234,6 +234,10 @@ const CORE_SCHEMA_SQL = `
     );
     CREATE INDEX IF NOT EXISTS idx_pair_sim_model
         ON tag_pair_similarity(model_sig);
+    -- 主键只覆盖 tag_a 左前缀；反向端点索引保证按任一 Tag
+    -- 枚举或失效无向 Pair 时不会退化为全表扫描。
+    CREATE INDEX IF NOT EXISTS idx_pair_sim_tag_b
+        ON tag_pair_similarity(tag_b);
 
     CREATE TABLE IF NOT EXISTS tag_pair_similarity_status (
         tag_a INTEGER NOT NULL,
@@ -252,6 +256,8 @@ const CORE_SCHEMA_SQL = `
         ON tag_pair_similarity_status(artifact_sig, status);
     CREATE INDEX IF NOT EXISTS idx_pair_sim_status_model
         ON tag_pair_similarity_status(model_sig);
+    CREATE INDEX IF NOT EXISTS idx_pair_sim_status_tag_b
+        ON tag_pair_similarity_status(tag_b);
 
     CREATE TABLE IF NOT EXISTS kv_store (
         key TEXT PRIMARY KEY,
@@ -409,8 +415,41 @@ function addColumnIfMissing(db, table, column, definition, logPrefix) {
 function initializeKnowledgeBaseSchema(db, options = {}) {
     assertDatabase(db);
     const logPrefix = options.logPrefix || 'KnowledgeBase';
+    const reversePairIndexes = [
+        'idx_pair_sim_tag_b',
+        'idx_pair_sim_status_tag_b'
+    ];
+    const existingReversePairIndexes = new Set(
+        db.prepare(`
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name IN (?, ?)
+        `).all(...reversePairIndexes).map(row => row.name)
+    );
+    const missingReversePairIndexes = reversePairIndexes.filter(
+        name => !existingReversePairIndexes.has(name)
+    );
+    const reverseIndexMigrationStartedAt = Date.now();
+
+    if (missingReversePairIndexes.length > 0) {
+        console.warn(
+            `[${logPrefix}] 🧱 Building missing Pairwise reverse endpoint ` +
+            `index(es): ${missingReversePairIndexes.join(', ')}. ` +
+            'Large databases may take time; startup will continue after SQLite finishes.'
+        );
+    }
 
     db.exec(CORE_SCHEMA_SQL);
+
+    if (missingReversePairIndexes.length > 0) {
+        console.log(
+            `[${logPrefix}] ✅ Pairwise reverse endpoint index migration complete: ` +
+            `${missingReversePairIndexes.join(', ')}, ` +
+            `elapsed=${Date.now() - reverseIndexMigrationStartedAt}ms.`
+        );
+    }
+
     for (const [table, column, definition] of ADDITIVE_MIGRATIONS) {
         addColumnIfMissing(db, table, column, definition, logPrefix);
     }

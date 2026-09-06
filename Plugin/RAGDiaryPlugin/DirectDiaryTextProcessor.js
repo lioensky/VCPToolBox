@@ -1101,7 +1101,14 @@ class DirectDiaryTextProcessor {
             return { processed: false, messages };
         }
 
-        const newMessages = JSON.parse(JSON.stringify(messages));
+        // Copy-on-write：纯文本快速路径只会修改目标承载消息。
+        // 未修改历史消息及其多模态/Base64 content 保持原引用，避免整树 JSON 深拷贝。
+        const targetIndexSet = new Set(targetIndices);
+        const newMessages = messages.map((message, index) =>
+            targetIndexSet.has(index) && message && typeof message === 'object'
+                ? { ...message }
+                : message
+        );
         const processedDiaries = new Set();
 
         await Promise.all(targetIndices.map(async (index) => {

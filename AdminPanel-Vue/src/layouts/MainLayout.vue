@@ -76,8 +76,13 @@
 
         <div ref="contentRef" class="content-scroll-region" id="config-details-container">
           <!-- 路由视图 -->
-          <router-view v-if="isPageHeaderActionsReady" v-slot="{ Component, route }">
-            <component :is="Component" :key="route.fullPath" :data-page="String(route.name || '')" />
+          <router-view v-if="isPageHeaderActionsReady" v-slot="{ Component, route: viewRoute }">
+            <component
+              v-if="Component"
+              :is="Component"
+              :key="viewRoute?.fullPath || 'pending-route'"
+              :data-page="String(viewRoute?.name || '')"
+            />
           </router-view>
         </div>
       </main>

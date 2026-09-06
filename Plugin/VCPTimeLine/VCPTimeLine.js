@@ -298,10 +298,12 @@ class VCPTimeLine {
             summaryLines.length > 0 ? summaryLines.join('\n') : '（暂无月度时间线摘要）'
         ];
 
+        const canRetrieve = typeof this.contextBridge?.retrieveDiary === 'function';
+        const canSearch = typeof this.contextBridge?.searchDiary === 'function';
         if (
             !queryVector ||
             !this.contextBridge ||
-            typeof this.contextBridge.searchDiary !== 'function' ||
+            (!canRetrieve && !canSearch) ||
             files.length === 0 ||
             k < 1
         ) {
@@ -310,17 +312,26 @@ class VCPTimeLine {
 
         // Timeline 文档已经位于 dailynote/<Agent>timeline，由 KnowledgeBaseManager 自动建立向量索引。
         // 此处只复用 RAG 生成的 queryVector 搜索现有 chunk，绝不重新向量化 Timeline 文档。
+        // 优先由 Rust Native River Query 完成 ANN、候选融合、hydrate、语义去重与
+        // Topology V3；桥接层在原生资产/ABI 不可用时自动回退 TagMemo/KNN。
         // 索引名称必须与服务器上的真实目录名完全一致（Linux 大小写敏感）。
         const indexName = path.basename(this.getTimelineDir(agentName, false));
         const candidateK = Math.max(k * 8, 20);
         let chunks = [];
         let retrievalMeta = null;
 
-        if (typeof this.contextBridge.retrieveDiary === 'function') {
+        if (canRetrieve) {
+            const queryText = [userText, aiText]
+                .filter(text => String(text || '').trim())
+                .join('\n');
             const retrieval = await this.contextBridge.retrieveDiary({
                 diaryNames: indexName,
                 queryVector,
                 k: candidateK,
+                candidateK: Math.max(candidateK * 4, 100),
+                riverMemo: true,
+                queryText,
+                // RiverMemo 整体不可用时，桥接层继续回退到这条 TagMemo 路径。
                 tagMemo: true,
                 geodesicRerank: true,
                 deduplicate: false,
@@ -358,9 +369,14 @@ class VCPTimeLine {
             .slice(0, k);
 
         if (expanded.length > 0) {
-            const retrievalMode = retrievalMeta?.tagMemoUsed
-                ? `TagMemo 浪潮${retrievalMeta.geodesicRerankUsed ? ' + 测地线重排' : ''}`
-                : '向量检索';
+            let retrievalMode = '向量检索';
+            if (retrievalMeta?.riverMemoUsed) {
+                retrievalMode = retrievalMeta.nativeJointQueryUsed
+                    ? 'Rust 原生 RiverMemo 联合检索'
+                    : 'RiverMemo 原生拓扑检索（兼容路径）';
+            } else if (retrievalMeta?.tagMemoUsed) {
+                retrievalMode = `TagMemo 浪潮${retrievalMeta.geodesicRerankUsed ? ' + 测地线重排' : ''}`;
+            }
             sections.push([
                 `## 与当前对话相关的完整月度时间线（Top ${expanded.length}，阈值 ${threshold}，${retrievalMode}）`,
                 ...expanded.map(file => `### ${file.month}（相关度 ${file.score.toFixed(4)}）\n${file.content.trim()}`)

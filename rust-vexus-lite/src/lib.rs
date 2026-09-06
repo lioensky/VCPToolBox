@@ -1,9 +1,11 @@
 #![deny(clippy::all)]
 
+mod knowledge_runtime;
 mod memo_artifact_builder;
 mod memo_dtsc;
 mod memo_pipeline;
 mod memo_sensing;
+mod result_deduplicator;
 mod rivermemo_topology_v3;
 
 use rivermemo_topology_v3::MemoRuntime;
@@ -122,6 +124,18 @@ pub struct VexusStats {
     pub memory_usage: f64,
 }
 
+/** 对任意 Chunk/日记索引执行单次排他差分后的摘要。 */
+#[napi(object)]
+pub struct ChunkIndexDeltaResult {
+    pub requested_deletes: u32,
+    pub requested_upserts: u32,
+    pub applied_deletes: u32,
+    pub applied_upserts: u32,
+    pub total_vectors: u32,
+    pub previous_revision: i64,
+    pub revision: i64,
+}
+
 /// 对活动 Tag 索引执行单次排他差分后的摘要。
 #[napi(object)]
 pub struct TagIndexDeltaResult {
@@ -146,12 +160,14 @@ pub struct MemoRuntimeStats {
 /// 核心索引结构 (无状态，只存向量)
 #[napi]
 pub struct VexusIndex {
-    index: Arc<RwLock<Index>>,
-    dimensions: u32,
+    pub(crate) index: Arc<RwLock<Index>>,
+    pub(crate) dimensions: u32,
+    /// 索引内容代际。批量差分成功后只递增一次，供联合查询冻结和校验快照。
+    pub(crate) content_revision: Arc<std::sync::atomic::AtomicU64>,
     epa_pending_cache: Arc<std::sync::Mutex<Option<EpaPendingCache>>>,
     /// TagMemo 与 RiverMemo 共用的原生图资产运行时。
     /// 与本 VexusIndex 实例同生命周期，禁止使用进程全局生产缓存。
-    memo_runtime: Arc<MemoRuntime>,
+    pub(crate) memo_runtime: Arc<MemoRuntime>,
 }
 
 static INDEX_SAVE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -296,6 +312,7 @@ impl VexusIndex {
         Ok(Self {
             index: Arc::new(RwLock::new(index)),
             dimensions: dim,
+            content_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             epa_pending_cache: Arc::new(std::sync::Mutex::new(None)),
             memo_runtime: Arc::new(MemoRuntime::new()),
         })
@@ -342,6 +359,7 @@ impl VexusIndex {
         Ok(Self {
             index: Arc::new(RwLock::new(index)),
             dimensions: dim,
+            content_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             epa_pending_cache: Arc::new(std::sync::Mutex::new(None)),
             memo_runtime: Arc::new(MemoRuntime::new()),
         })
@@ -420,6 +438,8 @@ impl VexusIndex {
         index
             .add(id as u64, vec_slice)
             .map_err(|e| Error::from_reason(format!("Add failed: {:?}", e)))?;
+        self.content_revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
         Ok(())
     }
@@ -464,8 +484,40 @@ impl VexusIndex {
                 ))
             })?;
         }
+        if count > 0 {
+            self.content_revision
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
 
         Ok(())
+    }
+
+    /// 对日记/Chunk 索引执行一次后台排他差分。
+    ///
+    /// 删除、容量预留和全部 upsert 在同一写锁内完成。并发 search 只能在整个
+    /// 批次之前或之后取得读锁，不会观察到公共索引的半批状态。
+    #[napi]
+    pub fn apply_chunk_delta(
+        &self,
+        remove_ids: Vec<i64>,
+        upsert_ids: Vec<i64>,
+        upsert_vectors: Float32Array,
+    ) -> AsyncTask<ChunkIndexDeltaTask> {
+        AsyncTask::new(ChunkIndexDeltaTask {
+            index: self.index.clone(),
+            content_revision: self.content_revision.clone(),
+            dimensions: self.dimensions,
+            remove_ids,
+            upsert_ids,
+            upsert_vectors: upsert_vectors.to_vec(),
+        })
+    }
+
+    /// 返回当前索引内容代际。
+    #[napi(getter)]
+    pub fn revision(&self) -> i64 {
+        self.content_revision
+            .load(std::sync::atomic::Ordering::Acquire) as i64
     }
 
     /// 对当前活动 Tag 索引执行一次后台排他差分。
@@ -482,6 +534,7 @@ impl VexusIndex {
     ) -> AsyncTask<TagIndexDeltaTask> {
         AsyncTask::new(TagIndexDeltaTask {
             index: self.index.clone(),
+            content_revision: self.content_revision.clone(),
             memo_runtime: self.memo_runtime.clone(),
             dimensions: self.dimensions,
             remove_ids,
@@ -800,6 +853,8 @@ impl VexusIndex {
         db_path: String,
         artifact_sig: String,
         input_json: String,
+        query_vector: Float32Array,
+        ghost_vectors: Float32Array,
     ) -> AsyncTask<memo_pipeline::MemoPipelineTask> {
         memo_pipeline::run_with_runtime(
             self.index.clone(),
@@ -808,25 +863,8 @@ impl VexusIndex {
             artifact_sig,
             self.dimensions as usize,
             input_json,
-        )
-    }
-
-    /// 在本 Tag 向量索引拥有的统一 MemoRuntime 上执行共同 Spike 感应。
-    ///
-    /// 输入只包含 EPA/Pyramid 门控后的初始 Tag 种子与传播参数；输出的
-    /// QueryObservation 同时供 DTSC 和 RiverMemo Topology V3 两个读出头消费。
-    #[napi]
-    pub fn sense_memo_query(
-        &self,
-        db_path: String,
-        artifact_sig: String,
-        input_json: String,
-    ) -> AsyncTask<memo_sensing::MemoSensingTask> {
-        memo_sensing::sense_with_runtime(
-            self.memo_runtime.clone(),
-            db_path,
-            artifact_sig,
-            input_json,
+            query_vector.to_vec(),
+            ghost_vectors.to_vec(),
         )
     }
 
@@ -909,6 +947,8 @@ impl VexusIndex {
         index
             .remove(id as u64)
             .map_err(|e| Error::from_reason(format!("Remove failed: {:?}", e)))?;
+        self.content_revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
         Ok(())
     }
@@ -3475,8 +3515,146 @@ impl Task for PairwiseSimTask {
     }
 }
 
+pub struct ChunkIndexDeltaTask {
+    index: Arc<RwLock<Index>>,
+    content_revision: Arc<std::sync::atomic::AtomicU64>,
+    dimensions: u32,
+    remove_ids: Vec<i64>,
+    upsert_ids: Vec<i64>,
+    upsert_vectors: Vec<f32>,
+}
+
+impl Task for ChunkIndexDeltaTask {
+    type Output = ChunkIndexDeltaResult;
+    type JsValue = ChunkIndexDeltaResult;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        use std::collections::HashSet;
+        use std::sync::atomic::Ordering;
+
+        let dim = self.dimensions as usize;
+        let expected_len = self
+            .upsert_ids
+            .len()
+            .checked_mul(dim)
+            .ok_or_else(|| Error::from_reason("Chunk delta vector size overflow".to_string()))?;
+        if self.upsert_vectors.len() != expected_len {
+            return Err(Error::from_reason(format!(
+                "Chunk delta size mismatch: ids={}, expected vector values={}, got={}",
+                self.upsert_ids.len(),
+                expected_len,
+                self.upsert_vectors.len()
+            )));
+        }
+        if self
+            .remove_ids
+            .iter()
+            .chain(self.upsert_ids.iter())
+            .any(|id| *id <= 0)
+        {
+            return Err(Error::from_reason(
+                "Chunk delta IDs must all be positive integers".to_string(),
+            ));
+        }
+
+        let unique_removes: HashSet<i64> = self.remove_ids.iter().copied().collect();
+        let mut seen_upserts = HashSet::with_capacity(self.upsert_ids.len());
+        if self
+            .upsert_ids
+            .iter()
+            .any(|id| !seen_upserts.insert(*id))
+        {
+            return Err(Error::from_reason(
+                "Chunk delta contains duplicate upsert IDs".to_string(),
+            ));
+        }
+
+        let previous_revision = self.content_revision.load(Ordering::Acquire);
+        if unique_removes.is_empty() && self.upsert_ids.is_empty() {
+            let total_vectors = self
+                .index
+                .read()
+                .map_err(|error| {
+                    Error::from_reason(format!("Chunk delta index read lock failed: {}", error))
+                })?
+                .size() as u32;
+            return Ok(ChunkIndexDeltaResult {
+                requested_deletes: 0,
+                requested_upserts: 0,
+                applied_deletes: 0,
+                applied_upserts: 0,
+                total_vectors,
+                previous_revision: previous_revision as i64,
+                revision: previous_revision as i64,
+            });
+        }
+
+        let index = self.index.write().map_err(|error| {
+            Error::from_reason(format!("Chunk delta index write lock failed: {}", error))
+        })?;
+
+        // 在任何结构修改前完成容量预留，尽可能让可预见失败保持零副作用。
+        let required_capacity = index
+            .size()
+            .checked_add(self.upsert_ids.len())
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| Error::from_reason("Chunk delta capacity overflow".to_string()))?;
+        if required_capacity >= index.capacity() {
+            let expanded = required_capacity
+                .checked_add(required_capacity / 2)
+                .unwrap_or(required_capacity);
+            index.reserve(expanded).map_err(|error| {
+                Error::from_reason(format!(
+                    "Chunk delta reserve failed before mutation: {:?}",
+                    error
+                ))
+            })?;
+        }
+
+        let mut applied_deletes = 0_u32;
+        for id in &unique_removes {
+            if index.remove(*id as u64).is_ok() {
+                applied_deletes = applied_deletes.saturating_add(1);
+            }
+        }
+
+        let mut applied_upserts = 0_u32;
+        for (position, id) in self.upsert_ids.iter().enumerate() {
+            let start = position * dim;
+            let vector = &self.upsert_vectors[start..start + dim];
+            let _ = index.remove(*id as u64);
+            index.add(*id as u64, vector).map_err(|error| {
+                Error::from_reason(format!(
+                    "Chunk delta became unusable after partial apply at upsert {} id {}: {:?}",
+                    position, id, error
+                ))
+            })?;
+            applied_upserts = applied_upserts.saturating_add(1);
+        }
+
+        let total_vectors = index.size() as u32;
+        drop(index);
+        let revision = self.content_revision.fetch_add(1, Ordering::AcqRel) + 1;
+
+        Ok(ChunkIndexDeltaResult {
+            requested_deletes: unique_removes.len() as u32,
+            requested_upserts: self.upsert_ids.len() as u32,
+            applied_deletes,
+            applied_upserts,
+            total_vectors,
+            previous_revision: previous_revision as i64,
+            revision: revision as i64,
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
 pub struct TagIndexDeltaTask {
     index: Arc<RwLock<Index>>,
+    content_revision: Arc<std::sync::atomic::AtomicU64>,
     memo_runtime: Arc<MemoRuntime>,
     dimensions: u32,
     remove_ids: Vec<i64>,
@@ -3574,6 +3752,8 @@ impl Task for TagIndexDeltaTask {
 
         let total_vectors = index.size() as u32;
         drop(index);
+        self.content_revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
         self.memo_runtime.clear().map_err(|error| {
             Error::from_reason(format!(

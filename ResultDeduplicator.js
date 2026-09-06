@@ -11,6 +11,8 @@
  * 为霰弹枪查询、多路 BM25/Time 合并和最终输出提供统一的后处理能力。
  */
 
+const { performance } = require('perf_hooks');
+
 class ResultDeduplicator {
     constructor(db, config = {}) {
         this.db = db;
@@ -19,6 +21,8 @@ class ResultDeduplicator {
             semanticThreshold: 0.92,
             maxResults: 1000,
             minSemanticCandidates: 2,
+            hydrationBatchSize: 500,
+            slowLogMs: 25,
             sourcePriority: {
                 rag: 50,
                 time: 45,
@@ -48,6 +52,12 @@ class ResultDeduplicator {
         if (Number.isFinite(Number(config.minSemanticCandidates)) && Number(config.minSemanticCandidates) >= 0) {
             next.minSemanticCandidates = Math.floor(Number(config.minSemanticCandidates));
         }
+        if (Number.isFinite(Number(config.hydrationBatchSize)) && Number(config.hydrationBatchSize) > 0) {
+            next.hydrationBatchSize = Math.min(900, Math.floor(Number(config.hydrationBatchSize)));
+        }
+        if (Number.isFinite(Number(config.slowLogMs)) && Number(config.slowLogMs) >= 0) {
+            next.slowLogMs = Number(config.slowLogMs);
+        }
         if (config.sourcePriority && typeof config.sourcePriority === 'object' && !Array.isArray(config.sourcePriority)) {
             next.sourcePriority = {
                 ...next.sourcePriority,
@@ -73,8 +83,10 @@ class ResultDeduplicator {
     async deduplicate(candidates, queryVector = null, options = {}) {
         if (!Array.isArray(candidates) || candidates.length === 0) return [];
 
+        const startedAt = performance.now();
         const stage = String(options.stage || 'candidate');
         const hardDeduplicated = this.hardDeduplicate(candidates);
+        const exactFinishedAt = performance.now();
         const semanticEnabled = options.semantic !== false;
         const maxResults = this._resolveMaxResults(options.maxResults);
 
@@ -84,6 +96,7 @@ class ResultDeduplicator {
 
         try {
             const hydrated = this._hydrateMissingVectors(hardDeduplicated);
+            const hydrationFinishedAt = performance.now();
             const semanticThreshold = this._resolveSemanticThreshold(options.semanticThreshold);
             const results = this._semanticDeduplicate(
                 hydrated,
@@ -91,11 +104,21 @@ class ResultDeduplicator {
                 semanticThreshold,
                 maxResults
             );
+            const finishedAt = performance.now();
+            const exactMs = exactFinishedAt - startedAt;
+            const hydrateMs = hydrationFinishedAt - exactFinishedAt;
+            const semanticMs = finishedAt - hydrationFinishedAt;
+            const totalMs = finishedAt - startedAt;
+            const timingSuffix = totalMs >= this.config.slowLogMs
+                ? ` timings[exact=${exactMs.toFixed(1)}ms, hydrate=${hydrateMs.toFixed(1)}ms, ` +
+                    `semantic=${semanticMs.toFixed(1)}ms, total=${totalMs.toFixed(1)}ms]`
+                : '';
 
             console.log(
                 `[ResultDeduplicator] stage=${stage}: ` +
                 `${candidates.length} input -> ${hardDeduplicated.length} exact -> ` +
-                `${results.length} semantic (threshold=${semanticThreshold.toFixed(3)}).`
+                `${results.length} semantic (threshold=${semanticThreshold.toFixed(3)}).` +
+                timingSuffix
             );
             return results;
         } catch (error) {
@@ -161,32 +184,46 @@ class ResultDeduplicator {
     }
 
     _semanticDeduplicate(candidates, queryVector, threshold, maxResults) {
-        const query = this._toValidVector(queryVector);
+        // 向量有效性和范数都只计算一次。旧实现会在 sort 比较器和每一对
+        // 候选比较中重复扫描 3072 维向量，候选池较大时会放大为主要 CPU 热点。
+        const queryDescriptor = this._createVectorDescriptor(queryVector);
         const ranked = candidates
-            .map((candidate, index) => ({
-                candidate,
-                index,
-                vector: this._getCandidateVector(candidate)
-            }))
-            .sort((a, b) => this._compareCandidates(a, b, query));
+            .map((candidate, index) => {
+                const descriptor = this._createVectorDescriptor(
+                    candidate?.vector || candidate?._vector
+                );
+                return {
+                    candidate,
+                    index,
+                    vector: descriptor?.vector || null,
+                    vectorDescriptor: descriptor,
+                    querySimilarity: queryDescriptor && descriptor
+                        ? this._cosineSimilarityPrepared(descriptor, queryDescriptor)
+                        : null
+                };
+            })
+            .sort((a, b) => this._compareCandidates(a, b));
 
         const selected = [];
-        const selectedVectors = [];
+        const selectedDescriptors = [];
 
         for (const entry of ranked) {
             if (selected.length >= maxResults) break;
 
             // 无向量项无法可靠做语义判断，必须保留，不能静默丢失 BM25/外部候选。
-            if (!entry.vector) {
+            if (!entry.vectorDescriptor) {
                 selected.push(entry);
-                selectedVectors.push(null);
                 continue;
             }
 
             let redundant = false;
-            for (const selectedVector of selectedVectors) {
-                if (!selectedVector) continue;
-                if (this._cosineSimilarity(entry.vector, selectedVector) >= threshold) {
+            for (const selectedDescriptor of selectedDescriptors) {
+                if (
+                    this._cosineSimilarityPrepared(
+                        entry.vectorDescriptor,
+                        selectedDescriptor
+                    ) >= threshold
+                ) {
                     redundant = true;
                     break;
                 }
@@ -194,7 +231,7 @@ class ResultDeduplicator {
 
             if (!redundant) {
                 selected.push(entry);
-                selectedVectors.push(entry.vector);
+                selectedDescriptors.push(entry.vectorDescriptor);
             }
         }
 
@@ -207,27 +244,59 @@ class ResultDeduplicator {
     _hydrateMissingVectors(candidates) {
         if (!this.db || typeof this.db.prepare !== 'function') return candidates;
 
-        let statement;
+        const missingChunkIds = [];
+        const seenChunkIds = new Set();
+        for (const candidate of candidates) {
+            if (this._getCandidateVector(candidate)) continue;
+            const chunkId = this._getChunkId(candidate);
+            if (chunkId === null || seenChunkIds.has(chunkId)) continue;
+            seenChunkIds.add(chunkId);
+            missingChunkIds.push(chunkId);
+        }
+        if (missingChunkIds.length === 0) return candidates;
+
+        const vectorByChunkId = new Map();
+        const batchSize = Math.max(
+            1,
+            Math.min(900, Number(this.config.hydrationBatchSize) || 500)
+        );
+
         try {
-            statement = this.db.prepare('SELECT vector FROM chunks WHERE id = ? LIMIT 1');
+            for (let offset = 0; offset < missingChunkIds.length; offset += batchSize) {
+                const batch = missingChunkIds.slice(offset, offset + batchSize);
+                const placeholders = batch.map(() => '?').join(',');
+                const rows = this.db.prepare(
+                    `SELECT id, vector FROM chunks WHERE id IN (${placeholders})`
+                ).all(...batch);
+                for (const row of rows || []) {
+                    const vector = this._decodeStoredVector(row?.vector);
+                    if (vector) vectorByChunkId.set(Number(row.id), vector);
+                }
+            }
         } catch (error) {
-            return candidates;
+            // 非 better-sqlite3 的兼容适配器可能只实现单行 get；生产路径始终走上面的批量查询。
+            try {
+                const statement = this.db.prepare(
+                    'SELECT vector FROM chunks WHERE id = ? LIMIT 1'
+                );
+                for (const chunkId of missingChunkIds) {
+                    const vector = this._decodeStoredVector(
+                        statement.get(chunkId)?.vector
+                    );
+                    if (vector) vectorByChunkId.set(chunkId, vector);
+                }
+            } catch (fallbackError) {
+                return candidates;
+            }
         }
 
         return candidates.map(candidate => {
             if (this._getCandidateVector(candidate)) return candidate;
-
             const chunkId = this._getChunkId(candidate);
-            if (chunkId === null) return candidate;
-
-            try {
-                const row = statement.get(chunkId);
-                const vector = this._decodeStoredVector(row?.vector);
-                if (!vector) return candidate;
-                return { ...candidate, _vector: vector };
-            } catch (error) {
-                return candidate;
-            }
+            const vector = chunkId === null
+                ? null
+                : vectorByChunkId.get(chunkId);
+            return vector ? { ...candidate, _vector: vector } : candidate;
         });
     }
 
@@ -262,17 +331,10 @@ class ResultDeduplicator {
         return this._candidateCompleteness(candidate) > this._candidateCompleteness(existing);
     }
 
-    _compareCandidates(a, b, queryVector) {
-        const aQuerySimilarity = queryVector && a.vector
-            ? this._cosineSimilarity(a.vector, queryVector)
-            : null;
-        const bQuerySimilarity = queryVector && b.vector
-            ? this._cosineSimilarity(b.vector, queryVector)
-            : null;
-
-        if (aQuerySimilarity !== null || bQuerySimilarity !== null) {
-            const safeA = aQuerySimilarity ?? -Infinity;
-            const safeB = bQuerySimilarity ?? -Infinity;
+    _compareCandidates(a, b) {
+        if (a.querySimilarity !== null || b.querySimilarity !== null) {
+            const safeA = a.querySimilarity ?? -Infinity;
+            const safeB = b.querySimilarity ?? -Infinity;
             if (safeA !== safeB) return safeB - safeA;
         }
 
@@ -340,6 +402,10 @@ class ResultDeduplicator {
     }
 
     _toValidVector(value) {
+        return this._createVectorDescriptor(value)?.vector || null;
+    }
+
+    _createVectorDescriptor(value) {
         if (!value || typeof value.length !== 'number') return null;
         if (value.length !== this.config.dimension) return null;
 
@@ -352,7 +418,11 @@ class ResultDeduplicator {
             if (!Number.isFinite(component)) return null;
             magnitudeSquared += component * component;
         }
-        return magnitudeSquared > 1e-12 ? vector : null;
+        if (magnitudeSquared <= 1e-12) return null;
+        return {
+            vector,
+            inverseMagnitude: 1 / Math.sqrt(magnitudeSquared)
+        };
     }
 
     _decodeStoredVector(value) {
@@ -400,17 +470,33 @@ class ResultDeduplicator {
     }
 
     _cosineSimilarity(v1, v2) {
+        const descriptor1 = this._createVectorDescriptor(v1);
+        const descriptor2 = this._createVectorDescriptor(v2);
+        if (!descriptor1 || !descriptor2) return -1;
+        return this._cosineSimilarityPrepared(descriptor1, descriptor2);
+    }
+
+    _cosineSimilarityPrepared(descriptor1, descriptor2) {
+        const v1 = descriptor1?.vector;
+        const v2 = descriptor2?.vector;
         if (!v1 || !v2 || v1.length !== v2.length) return -1;
+
         let dot = 0;
-        let mag1 = 0;
-        let mag2 = 0;
-        for (let i = 0; i < v1.length; i++) {
-            dot += v1[i] * v2[i];
-            mag1 += v1[i] * v1[i];
-            mag2 += v2[i] * v2[i];
+        // 四路展开可减少 3072 维热循环中的边界判断与循环控制开销。
+        let i = 0;
+        const unrolledLength = v1.length - (v1.length % 4);
+        for (; i < unrolledLength; i += 4) {
+            dot += v1[i] * v2[i]
+                + v1[i + 1] * v2[i + 1]
+                + v1[i + 2] * v2[i + 2]
+                + v1[i + 3] * v2[i + 3];
         }
-        if (mag1 <= 1e-12 || mag2 <= 1e-12) return -1;
-        return dot / Math.sqrt(mag1 * mag2);
+        for (; i < v1.length; i++) {
+            dot += v1[i] * v2[i];
+        }
+        return dot *
+            descriptor1.inverseMagnitude *
+            descriptor2.inverseMagnitude;
     }
 }
 

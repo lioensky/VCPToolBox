@@ -33,6 +33,28 @@
 
     <div v-if="pluginData" class="plugin-config-container">
       <form @submit.prevent="savePluginConfig">
+        <div class="plugin-metadata-section">
+          <div class="plugin-metadata-heading">
+            <h3>插件描述</h3>
+            <UiButton
+              v-if="pluginData.hasReadme"
+              type="button"
+              variant="outline"
+              size="sm"
+              :disabled="isReadmeLoading"
+              @click="openReadme"
+            >
+              <template #leading>
+                <span class="material-symbols-outlined">menu_book</span>
+              </template>
+              {{ isReadmeLoading ? '读取中…' : '阅读 README' }}
+            </UiButton>
+          </div>
+          <p class="plugin-manifest-description">
+            {{ pluginData.manifest.description?.trim() || '该插件暂未提供描述信息。' }}
+          </p>
+        </div>
+
         <div v-if="!hasEnvContent && !hasConfigSchema" class="config-warning">
           <div class="warning-content">
             <p class="warning-title">该插件暂无配置文件</p>
@@ -283,13 +305,42 @@
     </div>
 
     <UiEmptyState v-else title="加载插件配置中…" />
+
+    <BaseModal
+      v-model="isReadmeOpen"
+      :aria-label="`${pluginName} README`"
+    >
+      <template #default="{ overlayAttrs, panelAttrs, panelRef }">
+        <div v-bind="overlayAttrs" class="plugin-readme-modal">
+          <article :ref="panelRef" v-bind="panelAttrs" class="plugin-readme-panel">
+            <header class="plugin-readme-header">
+              <div>
+                <h3>{{ pluginData?.manifest.displayName || pluginName }}</h3>
+                <p>{{ readmeFileName || 'README.md' }}</p>
+              </div>
+              <UiIconButton
+                type="button"
+                label="关闭 README"
+                title="关闭"
+                @click="isReadmeOpen = false"
+              >
+                <span class="material-symbols-outlined">close</span>
+              </UiIconButton>
+            </header>
+            <div class="plugin-readme-body markdown-body" v-html="renderedReadme"></div>
+          </article>
+        </div>
+      </template>
+    </BaseModal>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
+import { pluginApi } from '@/api'
+import BaseModal from '@/components/ui/BaseModal.vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import UiBadge from '@/components/ui/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
@@ -299,7 +350,9 @@ import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
 import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
+import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 import { usePluginConfigStore, type InvocationCommand } from '@/stores/pluginConfig'
+import { showMessage } from '@/utils'
 
 type TextareaValue = string | number | readonly string[] | null
 
@@ -323,6 +376,11 @@ const {
   invocationCommands
 } = storeToRefs(pluginConfigStore)
 const isDistributedPlugin = computed(() => Boolean(pluginData.value?.isDistributed))
+const isReadmeOpen = ref(false)
+const isReadmeLoading = ref(false)
+const readmeFileName = ref('')
+const renderedReadme = ref('')
+const { renderMarkdown } = useMarkdownRenderer()
 
 const {
   isSensitiveKey,
@@ -335,6 +393,25 @@ const {
   removeCustomField,
   addCustomField
 } = pluginConfigStore
+
+async function openReadme() {
+  if (!pluginData.value?.hasReadme || isReadmeLoading.value) return
+
+  isReadmeLoading.value = true
+  try {
+    const readme = await pluginApi.getPluginReadme(pluginName.value, {
+      showLoader: false
+    })
+    readmeFileName.value = readme.fileName
+    renderedReadme.value = await renderMarkdown(readme.content)
+    isReadmeOpen.value = true
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    showMessage(`读取插件 README 失败：${message}`, 'error')
+  } finally {
+    isReadmeLoading.value = false
+  }
+}
 
 async function saveInvocationCommandDescription(cmd: InvocationCommand) {
   await pluginConfigStore.saveInvocationCommandDescription(pluginName.value, cmd)
@@ -416,6 +493,7 @@ watch(
   margin: 0;
 }
 
+.plugin-metadata-section,
 .schema-fields-section,
 .custom-fields-section,
 .invocation-commands-section {
@@ -427,6 +505,7 @@ watch(
   background: transparent;
 }
 
+.plugin-metadata-section h3,
 .schema-fields-section h3,
 .custom-fields-section h3,
 .invocation-commands-section h3 {
@@ -434,6 +513,108 @@ watch(
   color: var(--primary-text);
   font-size: var(--font-size-title);
   line-height: 1.35;
+}
+
+.plugin-metadata-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.plugin-metadata-heading h3 {
+  margin: 0;
+}
+
+.plugin-manifest-description {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-body);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.plugin-readme-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(920px, calc(100vw - 32px));
+  max-height: min(88vh, 900px);
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--primary-bg);
+  box-shadow: var(--shadow-lg);
+}
+
+.plugin-readme-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.plugin-readme-header h3,
+.plugin-readme-header p {
+  margin: 0;
+}
+
+.plugin-readme-header p {
+  margin-top: var(--space-1);
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.plugin-readme-body {
+  flex: 1;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: clamp(24px, 4vw, 48px);
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.plugin-readme-body :deep(> :first-child) {
+  margin-top: 0;
+}
+
+.plugin-readme-body :deep(> :last-child) {
+  margin-bottom: 0;
+}
+
+.plugin-readme-body :deep(img) {
+  max-width: 100%;
+  height: auto;
+}
+
+.plugin-readme-body :deep(pre) {
+  overflow-x: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+}
+
+.plugin-readme-body :deep(code) {
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+@media (max-width: 600px) {
+  .plugin-readme-panel {
+    width: calc(100vw - 16px);
+    max-height: 92vh;
+  }
+
+  .plugin-readme-header {
+    padding: var(--space-3);
+  }
+
+  .plugin-readme-body {
+    padding: 20px 16px 28px;
+  }
 }
 
 .config-field {
@@ -513,7 +694,6 @@ watch(
 /* 文本掩码样式 (用于 textarea) */
 .password-masked {
   -webkit-text-security: disc !important;
-  text-security: disc !important;
 }
 
 .form-actions {

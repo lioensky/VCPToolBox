@@ -557,12 +557,16 @@ export function buildSidebarNavItems(): AppNavItem[] {
 }
 
 export function resolveAppRouteTitle(
-  route: RouteLocationNormalizedLoaded,
+  route: RouteLocationNormalizedLoaded | null | undefined,
   context?: {
     navItems?: readonly AppNavItem[];
     plugins?: readonly PluginInfo[];
   }
 ): string | undefined {
+  if (!route) {
+    return undefined;
+  }
+
   const namedRoute = getAppRouteMetaByRouteName(route.name);
   if (namedRoute) {
     if (namedRoute.id === "plugin-config" && context?.plugins) {

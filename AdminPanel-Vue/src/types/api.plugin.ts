@@ -62,6 +62,7 @@ export interface PluginManifest {
 export interface PluginInfo {
   name: string;
   manifest: PluginManifest;
+  hasReadme?: boolean;
   isDistributed?: boolean;
   serverId?: string;
   configEnvContent?: string;
@@ -73,6 +74,11 @@ export interface PluginInfo {
 export interface PluginListResponse {
   plugins: PluginInfo[];
   total: number;
+}
+
+export interface PluginReadmeResponse {
+  fileName: string;
+  content: string;
 }
 
 export interface ConfigEntry {

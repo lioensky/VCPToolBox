@@ -22,13 +22,60 @@ const MARKDOWN_SANITIZE_OPTIONS: DOMPurifyModule.Config = {
   ADD_ATTR: ["class"],
 };
 
-function escapeHtml(content: string): string {
+const PLAIN_TEXT_CODE_LANGUAGES = new Set([
+  "",
+  "text",
+  "txt",
+  "plain",
+  "plaintext",
+  "none",
+]);
+
+const VCP_TOOL_PROTOCOL_PATTERN =
+  /<<<\[(?:END_)?TOOL_REQUEST(?:_EXP)?\]>>>|「始(?:exp)?」|「末(?:exp)?」/;
+
+export function escapeMarkdownCodeHtml(content: string): string {
   return content
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+interface MarkdownCodeHighlighter {
+  getLanguage(languageName: string): unknown;
+  highlight(
+    code: string,
+    options: { language: string; ignoreIllegals: boolean }
+  ): { value: string };
+}
+
+export function renderMarkdownCodeBlock(
+  code: string,
+  language: string,
+  highlighter: MarkdownCodeHighlighter | null
+): string {
+  const safeLanguage = (language || "").trim().split(/\s+/)[0].toLowerCase();
+
+  if (
+    !highlighter ||
+    PLAIN_TEXT_CODE_LANGUAGES.has(safeLanguage) ||
+    VCP_TOOL_PROTOCOL_PATTERN.test(code) ||
+    !highlighter.getLanguage(safeLanguage)
+  ) {
+    return escapeMarkdownCodeHtml(code);
+  }
+
+  try {
+    return highlighter.highlight(code, {
+      language: safeLanguage,
+      ignoreIllegals: true,
+    }).value;
+  } catch (error) {
+    console.warn("[useMarkdownRenderer] highlight 失败，回退原文:", error);
+    return escapeMarkdownCodeHtml(code);
+  }
 }
 
 /**
@@ -87,20 +134,10 @@ export function useMarkdownRenderer() {
           mh({
             langPrefix: "hljs language-",
             highlight(code: string, lang: string): string {
-              const safeLang = (lang || "").trim().split(/\s+/)[0] || "";
-              if (!hljsModule) return code;
-              try {
-                if (safeLang && hljsModule.getLanguage(safeLang)) {
-                  return hljsModule.highlight(code, {
-                    language: safeLang,
-                    ignoreIllegals: true,
-                  }).value;
-                }
-                return hljsModule.highlightAuto(code).value;
-              } catch (err) {
-                console.warn("[useMarkdownRenderer] highlight 失败，回退原文:", err);
-                return code;
-              }
+              // 围栏代码块首先是“原文展示”区域。纯文本、未标注语言、
+              // 未知语言及 VCP 工具协议均不做自动语言猜测，避免 highlight.js
+              // 将 <<<[TOOL_REQUEST]>>> 等内容误判成 XML 并拆成额外 span。
+              return renderMarkdownCodeBlock(code, lang, hljsModule);
             },
           })
         );
@@ -129,7 +166,7 @@ export function useMarkdownRenderer() {
 
     if (!markedModule || !dompurifyModule) {
       console.warn("[useMarkdownRenderer] 渲染引擎未就绪，降级为文本转义输出");
-      const escapedHtml = escapeHtml(content);
+      const escapedHtml = escapeMarkdownCodeHtml(content);
       lastRenderedContent.value = escapedHtml;
       return escapedHtml;
     }

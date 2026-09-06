@@ -126,6 +126,38 @@ assert.match(background, /SET_CLIENT_MODE/);
 assert.doesNotMatch(background, /managedPairingToken|manual_pairing/);
 assert.match(background, /noteDocumentGeneration/);
 assert.match(background, /updateDocumentState/);
+assert.match(background, /let connectAttemptInProgress = false;/);
+assert.match(
+    background,
+    /if \(connectAttemptInProgress \|\| \(ws && ws\.readyState !== WebSocket\.CLOSED\)\)/,
+    'WebSocket OPEN/CONNECTING/CLOSING 阶段必须拒绝重叠建连'
+);
+assert.match(background, /const socket = new WebSocket\(fullUrl\);/);
+assert.match(
+    background,
+    /socket\.onclose = \(\) => \{[\s\S]*?if \(ws !== socket\) return;/,
+    '旧 WebSocket 的迟到 close 事件不得清空新连接代次'
+);
+assert.match(
+    background,
+    /let socketHeartbeatIntervalId = null;[\s\S]*?socketHeartbeatIntervalId = setInterval/,
+    '每个 WebSocket 代次必须独立持有心跳句柄'
+);
+assert.doesNotMatch(
+    background,
+    /let heartbeatIntervalId = null;/,
+    '不得用单个全局心跳句柄管理可能交错的 WebSocket 生命周期'
+);
+assert.match(
+    background,
+    /socket\.onerror = \(error\) => \{[\s\S]*?console\.error\('WebSocket error:', error\);[\s\S]*?\};/,
+    'WebSocket error 应等待同一 socket 的 close 事件统一收敛状态'
+);
+assert.doesNotMatch(
+    background.match(/socket\.onerror = \(error\) => \{[\s\S]*?\n\s*};/)?.[0] || '',
+    /ws = null|scheduleReconnect|setInterval/,
+    'onerror 不得提前清空全局 socket 或另起重连/心跳'
+);
 
 assert.match(protocolCore, /const PROTOCOL_VERSION = 1/);
 assert.match(protocolCore, /const CHROME_BRIDGE_PROTOCOL_VERSION = 3/);
@@ -172,6 +204,27 @@ assert.match(runtime, /lastCloseReason/);
 assert.match(runtime, /previousPid/);
 assert.match(runtime, /const expectedCloseReasons = new WeakMap\(\)/);
 assert.match(runtime, /const spawnedProcess = spawn\(/);
+assert.match(runtime, /let closePromise = null;/);
+assert.match(
+    runtime,
+    /function isProcessAlive\(proc = chromeProcess\)[\s\S]*?proc\.exitCode === null && proc\.signalCode === null/,
+    'Chrome 存活判断必须依据退出状态，不能把 ChildProcess.killed 当作已经退出'
+);
+assert.doesNotMatch(
+    runtime.match(/function isProcessAlive[\s\S]*?return ([^;]+);/)?.[1] || '',
+    /\.killed/,
+    'ChildProcess.killed 只表示发出过信号，不能用于跳过超时后的进程树清理'
+);
+assert.match(
+    runtime,
+    /if \(closePromise\) \{[\s\S]*?await closePromise;[\s\S]*?\}/,
+    '启动和并发关闭必须等待当前关闭操作收敛'
+);
+assert.match(
+    runtime,
+    /if \(isProcessAlive\(proc\)\) \{[\s\S]*?await killProcessTree\(pid\);/,
+    'SIGTERM 超时后必须检查具体旧进程并执行进程树清理'
+);
 assert.match(
     runtime,
     /if \(chromeProcess === spawnedProcess\) \{[\s\S]*?chromeProcess = null;/,
@@ -191,6 +244,31 @@ assert.doesNotMatch(
     runtime,
     /console\.error\(`\[BrowserRuntimeManager\] launching managed Chrome/,
     '正常启动 managed Chrome 不得使用 ERROR 日志级别'
+);
+assert.match(
+    runtime,
+    /'--disable-background-mode'/,
+    '关闭最后一个托管窗口后不得允许 Chrome background mode 留驻'
+);
+assert.match(
+    runtime,
+    /if \(config\.chromeVerboseLogging\) \{[\s\S]*?args\.push\('--enable-logging=stderr', '--v=1'\);/,
+    'Chromium verbose logging 必须由显式诊断配置控制'
+);
+assert.doesNotMatch(
+    runtime.match(/const args = \[[\s\S]*?\n\s*];/)?.[0] || '',
+    /--enable-logging=stderr|--v=1/,
+    '生产默认 Chrome 参数不得开启 verbose stderr 洪流'
+);
+assert.match(
+    runtime,
+    /stdio: \['ignore', 'ignore', launchConfig\.chromeVerboseLogging \? 'pipe' : 'ignore'\]/,
+    '生产默认不得创建可能被 Chrome 后代继承的 stderr pipe'
+);
+assert.match(
+    runtime,
+    /if \(spawnedProcess\.stderr\) \{[\s\S]*?spawnedProcess\.stderr\.on\('data'/,
+    '诊断模式的 stderr 消费必须兼容默认 ignore 模式'
 );
 
 assert.match(managedSetup, /function buildOpenChromeToolRequest/);

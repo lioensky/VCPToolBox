@@ -5,6 +5,22 @@ const { readPluginDashboardCards } = require('./lib/dashboardCards');
 
 const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
+const maxReadmeSizeBytes = 2 * 1024 * 1024;
+
+async function findPluginReadmePath(pluginPath) {
+    try {
+        const entries = await fs.readdir(pluginPath, { withFileTypes: true });
+        const readmeEntry = entries.find(entry =>
+            entry.isFile() && entry.name.toLowerCase() === 'readme.md'
+        );
+        return readmeEntry ? path.join(pluginPath, readmeEntry.name) : null;
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            console.warn(`[AdminPanelRoutes] Error checking README in ${pluginPath}:`, error);
+        }
+        return null;
+    }
+}
 
 module.exports = function(options) {
     const router = express.Router();
@@ -30,12 +46,16 @@ module.exports = function(options) {
                         }
                     }
                 }
+                const readmePath = !p.isDistributed && p.basePath
+                    ? await findPluginReadmePath(p.basePath)
+                    : null;
                 pluginDataMap.set(p.name, {
                     name: p.name,
                     manifest: p,
                     dashboardCards: readPluginDashboardCards(p.name, p),
                     enabled: true,
                     configEnvContent: configEnvContent,
+                    hasReadme: Boolean(readmePath),
                     isDistributed: p.isDistributed || false,
                     serverId: p.serverId || null
                 });
@@ -63,12 +83,14 @@ module.exports = function(options) {
                                 }
                             }
                             manifest.basePath = pluginPath;
+                            const readmePath = await findPluginReadmePath(pluginPath);
                             pluginDataMap.set(manifest.name, {
                                 name: manifest.name,
                                 manifest: manifest,
                                 dashboardCards: readPluginDashboardCards(manifest.name, manifest),
                                 enabled: false,
                                 configEnvContent: configEnvContent,
+                                hasReadme: Boolean(readmePath),
                                 isDistributed: false,
                                 serverId: null
                             });
@@ -86,6 +108,70 @@ module.exports = function(options) {
         } catch (error) {
             console.error('[AdminPanelRoutes] Error listing plugins:', error);
             res.status(500).json({ error: 'Failed to list plugins', details: error.message });
+        }
+    });
+
+    // Read a plugin README (README.md match is case-insensitive)
+    router.get('/plugins/:pluginName/readme', async (req, res) => {
+        const pluginName = req.params.pluginName;
+        const PLUGIN_DIR = path.join(__dirname, '..', '..', 'Plugin');
+
+        try {
+            const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
+            let targetPluginPath = null;
+
+            for (const folder of pluginFolders) {
+                if (!folder.isDirectory()) {
+                    continue;
+                }
+
+                const pluginPath = path.join(PLUGIN_DIR, folder.name);
+                const manifestPaths = [
+                    path.join(pluginPath, manifestFileName),
+                    path.join(pluginPath, manifestFileName + blockedManifestExtension)
+                ];
+
+                for (const manifestPath of manifestPaths) {
+                    try {
+                        const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+                        if (manifest.name === pluginName) {
+                            targetPluginPath = pluginPath;
+                            break;
+                        }
+                    } catch (error) {
+                        if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) {
+                            console.warn(`[AdminPanelRoutes] Error checking manifest ${manifestPath}:`, error);
+                        }
+                    }
+                }
+
+                if (targetPluginPath) {
+                    break;
+                }
+            }
+
+            if (!targetPluginPath) {
+                return res.status(404).json({ error: `Plugin '${pluginName}' not found.` });
+            }
+
+            const readmePath = await findPluginReadmePath(targetPluginPath);
+            if (!readmePath) {
+                return res.status(404).json({ error: `Plugin '${pluginName}' does not provide a README.md file.` });
+            }
+
+            const readmeStat = await fs.stat(readmePath);
+            if (!readmeStat.isFile() || readmeStat.size > maxReadmeSizeBytes) {
+                return res.status(413).json({ error: 'Plugin README is too large to display.' });
+            }
+
+            const content = await fs.readFile(readmePath, 'utf-8');
+            res.json({
+                fileName: path.basename(readmePath),
+                content
+            });
+        } catch (error) {
+            console.error(`[AdminPanelRoutes] Error reading README for plugin ${pluginName}:`, error);
+            res.status(500).json({ error: `读取插件 ${pluginName} README 时出错`, details: error.message });
         }
     });
 

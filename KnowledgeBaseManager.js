@@ -38,9 +38,11 @@ const TagConsistencyService = require('./modules/knowledgeBase/tagConsistencySer
 
 // 尝试加载 Rust Vexus 引擎
 let VexusIndex = null;
+let NativeKnowledgeRuntime = null;
 try {
     const vexusModule = require('./rust-vexus-lite');
     VexusIndex = vexusModule.VexusIndex;
+    NativeKnowledgeRuntime = vexusModule.NativeKnowledgeRuntime || null;
     console.log('[KnowledgeBase] 🦀 Vexus-Lite Rust engine loaded');
 } catch (e) {
     console.error('[KnowledgeBase] ❌ Critical: Vexus-Lite not found.');
@@ -93,7 +95,6 @@ class KnowledgeBaseManager {
             indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
             indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
             idleSweepLogTick: (process.env.KNOWLEDGEBASE_IDLE_SWEEP_LOG_TICK || 'false').toLowerCase() === 'true',
-
             ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛').split(',').map(f => f.trim()).filter(Boolean),
             ignorePrefixes: (process.env.IGNORE_PREFIXES || process.env.IGNORE_PREFIX || '已整理').split(',').map(p => p.trim()).filter(Boolean),
             ignoreSuffixes: (process.env.IGNORE_SUFFIXES || process.env.IGNORE_SUFFIX || '夜伽').split(',').map(s => s.trim()).filter(Boolean),
@@ -109,6 +110,39 @@ class KnowledgeBaseManager {
             // 语言置信度补偿配置
             langConfidenceEnabled: (process.env.LANG_CONFIDENCE_GATING_ENABLED || 'true').toLowerCase() === 'true',
             langPenaltyUnknown: parseFloat(process.env.LANG_PENALTY_UNKNOWN) || 0.05,
+            // Native River 联合查询是 RiverMemo 的默认生产范式。Memo observation
+            // 仍由统一管线生成，ANN/合并/向量 hydrate/语义去重/Topology V3
+            // 收敛为一次 NativeKnowledgeRuntime 调用。仅显式 false 时紧急关闭。
+            nativeRiverQueryEnabled:
+                (process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_ENABLED || 'true')
+                    .toLowerCase() !== 'false',
+            nativeRiverQueryFallbackToLegacy:
+                (process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_FALLBACK_TO_LEGACY || 'true')
+                    .toLowerCase() !== 'false',
+            nativeRiverQueryPerIndexK: (() => {
+                const value = Number(
+                    process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_PER_INDEX_K
+                );
+                return Number.isFinite(value) && value > 0
+                    ? Math.floor(value)
+                    : 300;
+            })(),
+            nativeRiverQueryCandidateK: (() => {
+                const value = Number(
+                    process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_CANDIDATE_K
+                );
+                return Number.isFinite(value) && value > 0
+                    ? Math.floor(value)
+                    : 300;
+            })(),
+            nativeRiverQuerySemanticThreshold: (() => {
+                const value = Number(
+                    process.env.KNOWLEDGEBASE_NATIVE_RIVER_QUERY_SEMANTIC_THRESHOLD
+                );
+                return Number.isFinite(value)
+                    ? Math.max(-1, Math.min(1, value))
+                    : 0.92;
+            })(),
             // 全局 Tag 索引落地模式（单一枚举配置）：
             // - always：传统模式，每次防抖窗口结束均重写完整 usearch。
             // - generational：推荐模式，加载双槽基线并回放 SQLite 差分，
@@ -156,6 +190,8 @@ class KnowledgeBaseManager {
         this.diaryIndexLastUsed = new Map(); // 🌟 记录每个索引的最后使用时间
         this.idleSweepTimer = null;
         this.tagIndex = null;
+        this.nativeKnowledgeRuntime = null;
+        this.nativeDiaryIndexGenerations = new Map();
         this.watcher = null;
         this.initialized = false;
         this.eventLoopWatchdogTimer = null;
@@ -234,6 +270,10 @@ class KnowledgeBaseManager {
             waitForCoordinatorIdle: options => this._waitForDatabaseCoordinatorIdle(options),
             ensureDiaryDateIndex: diaryName => this._ensureDiaryDateIndexCached(diaryName),
             invalidateDiaryDateIndex: diaryName => this.invalidateDiaryDateIndex(diaryName),
+            onDiaryIndexPublished: (diaryName, index) =>
+                this._registerNativeDiaryIndex(diaryName, index),
+            onDiaryIndexRemoved: diaryName =>
+                this._unregisterNativeDiaryIndex(diaryName),
             onRecoveryStateChange: active => {
                 this.indexRecoveryActive = active;
             },
@@ -322,7 +362,32 @@ class KnowledgeBaseManager {
             }
         }
 
-        // 2. 预热日记本名称向量缓存（同步阻塞，确保 RAG 插件启动即可用）
+        // 2. 创建实例级原生联合查询运行时。它只克隆 Tag MemoRuntime Arc，
+        // 后续日记索引由 IndexRepository 在完整加载/恢复后发布。
+        if (NativeKnowledgeRuntime && indexReady) {
+            try {
+                this.nativeKnowledgeRuntime = new NativeKnowledgeRuntime(
+                    this.tagIndex
+                );
+                console.log(
+                    '[KnowledgeBase] 🦀 NativeKnowledgeRuntime ready; ' +
+                    'diary registry lifecycle enabled.'
+                );
+            } catch (error) {
+                this.nativeKnowledgeRuntime = null;
+                console.warn(
+                    '[KnowledgeBase] ⚠️ NativeKnowledgeRuntime initialization ' +
+                    `failed; legacy retrieval remains available: ${error.message}`
+                );
+            }
+        } else {
+            console.warn(
+                '[KnowledgeBase] ⚠️ NativeKnowledgeRuntime ABI unavailable; ' +
+                'legacy retrieval remains available.'
+            );
+        }
+
+        // 3. 预热日记本名称向量缓存（同步阻塞，确保 RAG 插件启动即可用）
         this._hydrateDiaryNameCacheSync();
 
         // 🧹 初始化 KBM 通用结果去重器。
@@ -915,6 +980,38 @@ class KnowledgeBaseManager {
         return this.indexRepository.deleteAllPersisted();
     }
 
+    _registerNativeDiaryIndex(diaryName, index) {
+        if (!this.nativeKnowledgeRuntime) return null;
+        const state = this.nativeKnowledgeRuntime.registerDiaryIndex(
+            String(diaryName),
+            index
+        );
+        this.nativeDiaryIndexGenerations.set(
+            String(diaryName),
+            Number(state.generation)
+        );
+        return state;
+    }
+
+    _unregisterNativeDiaryIndex(diaryName) {
+        const normalized = String(diaryName || '').trim();
+        const generation = this.nativeDiaryIndexGenerations.get(normalized);
+        if (
+            !this.nativeKnowledgeRuntime
+            || !Number.isSafeInteger(generation)
+            || generation <= 0
+        ) {
+            this.nativeDiaryIndexGenerations.delete(normalized);
+            return false;
+        }
+        const removed = this.nativeKnowledgeRuntime.unregisterDiaryIndex(
+            normalized,
+            generation
+        );
+        if (removed) this.nativeDiaryIndexGenerations.delete(normalized);
+        return removed;
+    }
+
     async _getOrLoadDiaryIndex(diaryName, options = {}) {
         return this.indexRepository.getOrLoad(diaryName, options);
     }
@@ -1302,22 +1399,34 @@ class KnowledgeBaseManager {
                 && tag.name.trim()
                 && tag.vector
                 && typeof tag.vector.length === 'number'
+                && tag.vector.length === this.config.dimension
             )
             .map(tag => ({
                 name: tag.name.trim(),
-                vector: Array.from(tag.vector, value => Number(value) || 0),
-                isCore: tag.isCore === true
+                isCore: tag.isCore === true,
+                vector: tag.vector instanceof Float32Array
+                    ? tag.vector
+                    : new Float32Array(tag.vector)
             }));
+        const ghostVectors = new Float32Array(
+            ghostTags.length * this.config.dimension
+        );
+        ghostTags.forEach((tag, index) => {
+            ghostVectors.set(tag.vector, index * this.config.dimension);
+        });
+        const ghostMetadata = ghostTags.map(tag => ({
+            name: tag.name,
+            isCore: tag.isCore
+        }));
 
-        const nativePayload = await this.tagIndex.runMemoPipeline(
+        const nativeResult = await this.tagIndex.runMemoPipeline(
             dbPath,
             artifact.artifactSig,
             JSON.stringify({
                 queryId: options.queryId || null,
                 queryText: String(query?.text || options.queryText || ''),
-                queryVector: Array.from(queryVector),
                 coreTags: stringCoreTags,
-                ghostTags,
+                ghostTags: ghostMetadata,
                 config: {
                     baseTagBoost: Math.max(
                         0,
@@ -1438,25 +1547,23 @@ class KnowledgeBaseManager {
                             options.maxObservationEdges ?? 0
                     }
                 }
-            })
+            }),
+            queryVector,
+            ghostVectors
         );
-        const pipeline = JSON.parse(nativePayload);
-        const observation = pipeline?.observation;
+        const pipeline = nativeResult?.metadataJson
+            ? JSON.parse(nativeResult.metadataJson)
+            : null;
+        const enhancedVector = nativeResult?.enhancedVector;
+        const observationHandle = typeof pipeline?.observationHandle === 'string'
+            && pipeline.observationHandle
+            ? pipeline.observationHandle
+            : null;
         if (
             pipeline?.artifactSig !== artifact.artifactSig
-            || observation?.artifactSig !== artifact.artifactSig
-            || !Array.isArray(observation?.nodes)
-            || !Array.isArray(observation?.edges)
-            || !Array.isArray(pipeline?.enhancedVector)
-            || pipeline.enhancedVector.length !== this.config.dimension
-            || !Array.isArray(pipeline?.localVector)
-            || pipeline.localVector.length !== this.config.dimension
-            || !Array.isArray(pipeline?.transferVector)
-            || pipeline.transferVector.length !== this.config.dimension
-            || !Array.isArray(pipeline?.localField)
-            || !Array.isArray(pipeline?.transferField)
-            || !Array.isArray(pipeline?.localDomainIds)
-            || !Array.isArray(pipeline?.transferDomainIds)
+            || !observationHandle
+            || !(enhancedVector instanceof Float32Array)
+            || enhancedVector.length !== this.config.dimension
         ) {
             const error = new Error(
                 'Unified native Memo pipeline failed artifact/schema validation'
@@ -1465,24 +1572,6 @@ class KnowledgeBaseManager {
             throw error;
         }
 
-        const fieldProvenance = observation.nodes.map(node => Object.freeze([
-            Number(node.id),
-            Object.freeze({
-                sourceType: node.sourceType || 'unknown',
-                originType: node.originType || null,
-                hop: Number(node.hop) || 0,
-                seedId: Number.isFinite(Number(node.seedId))
-                    ? Number(node.seedId)
-                    : null
-            })
-        ]));
-        const sourceField = (Array.isArray(observation.sourceField)
-            ? observation.sourceField
-            : []
-        ).map(entry => Object.freeze([
-            Number(entry?.[0]),
-            Math.max(0, Number(entry?.[1]) || 0)
-        ]));
         const pyramidRaw = pipeline.pyramid || {};
         const pyramidFeatures = pyramidRaw.features || {};
         const pyramid = Object.freeze({
@@ -1499,41 +1588,29 @@ class KnowledgeBaseManager {
                     : []
             )
         });
-        const enhancedVector = Object.freeze(
-            pipeline.enhancedVector.map(value => Number(value) || 0)
-        );
-        const observationHandle = typeof pipeline.observationHandle === 'string'
-            && pipeline.observationHandle
-            ? pipeline.observationHandle
-            : null;
         const nativeFusion = pipeline.diagnostics?.fusion || null;
-
+        const emptyField = Object.freeze([]);
+        const queryRiverGraph = Object.freeze({
+            schema: 'vexus-unified-memo-river-handle-v1',
+            nodes: emptyField,
+            edges: emptyField,
+            diagnostics: Object.freeze({
+                reachedNodes:
+                    Number(pipeline.diagnostics?.sensing?.reachedNodes) || 0,
+                activeEdges:
+                    Number(pipeline.diagnostics?.sensing?.activeEdges) || 0
+            })
+        });
         const sourceObservationResult = Object.freeze({
             schema: pipeline.schema,
-            sourceMode: 'rust_unified_memo_pipeline',
-            sourceField: Object.freeze(sourceField),
+            sourceMode: 'rust_unified_memo_pipeline_handle',
+            sourceField: emptyField,
             enhancedVector,
-            fieldProvenance: Object.freeze(fieldProvenance),
-            queryRiverGraph: Object.freeze({
-                schema: 'vexus-unified-memo-river-v1',
-                nodes: Object.freeze(observation.nodes),
-                edges: Object.freeze(observation.edges),
-                diagnostics: Object.freeze({
-                    reachedNodes:
-                        observation.diagnostics?.reachedNodes || 0,
-                    activeEdges:
-                        observation.diagnostics?.activeEdges || 0,
-                    maximumNodeEnergy:
-                        observation.diagnostics?.maximumNodeEnergy || 0,
-                    maximumEdgeFlow:
-                        observation.diagnostics?.maximumEdgeFlow || 0
-                })
-            }),
+            fieldProvenance: emptyField,
+            queryRiverGraph,
             epa: Object.freeze({ ...(pipeline.epa || {}) }),
             pyramid,
-            propagation: Object.freeze({
-                native: observation.diagnostics || null
-            }),
+            propagation: Object.freeze({ native: null }),
             matchedTags: Object.freeze(
                 Array.isArray(pipeline.matchedTags)
                     ? pipeline.matchedTags.slice()
@@ -1553,8 +1630,8 @@ class KnowledgeBaseManager {
             effectiveTagBoost:
                 Math.max(0, Number(pipeline.effectiveTagBoost) || 0),
             diagnostics: Object.freeze({
-                completeObservation: sourceField.length > 0,
-                nativeSensing: observation.diagnostics || null,
+                completeObservation: true,
+                nativeSensing: null,
                 nativeFusion: nativeFusion
                     ? Object.freeze({ ...nativeFusion })
                     : null,
@@ -1564,52 +1641,45 @@ class KnowledgeBaseManager {
                 runtimeOwnership: 'vexus-index-instance'
             })
         });
-
-        const normalizeNativeField = entries => Object.freeze(
-            entries.map(entry => Object.freeze([
-                Number(entry?.[0]),
-                Math.max(0, Number(entry?.[1]) || 0)
-            ])).filter(entry =>
-                Number.isFinite(entry[0]) && entry[0] > 0 && entry[1] > 0
-            )
-        );
-        const localField = normalizeNativeField(pipeline.localField);
-        const transferField = normalizeNativeField(pipeline.transferField);
-        const localDomainIds = Object.freeze(
-            pipeline.localDomainIds.map(Number).filter(Number.isFinite)
-        );
-        const transferDomainIds = Object.freeze(
-            pipeline.transferDomainIds.map(Number).filter(Number.isFinite)
-        );
+        const observation = Object.freeze({
+            schema: 'vexus-unified-memo-observation-handle-v1',
+            artifactSig: artifact.artifactSig,
+            queryId: pipeline.queryId || options.queryId || null,
+            sourceField: emptyField,
+            nodes: emptyField,
+            edges: emptyField,
+            diagnostics: null
+        });
+        const emptyVector = new Float32Array(0);
 
         return Object.freeze({
             artifact,
             observationHandle,
-            observation: Object.freeze(observation),
+            observation,
             sourceObservationResult,
-            sourceField: Object.freeze(sourceField),
+            sourceField: emptyField,
             queryVector,
-            enhancedVector: new Float32Array(enhancedVector),
+            enhancedVector,
             nativePreparedQuery: Object.freeze({
                 queryState: Object.freeze({
-                    queryId: observation.queryId || options.queryId || null,
-                    sourceField: Object.freeze(sourceField),
-                    localField,
-                    transferField,
-                    localDomain: Object.freeze({ ids: localDomainIds }),
-                    transferDomain: Object.freeze({ ids: transferDomainIds }),
-                    queryRiverGraph: sourceObservationResult.queryRiverGraph,
+                    queryId: observation.queryId,
+                    sourceField: emptyField,
+                    localField: emptyField,
+                    transferField: emptyField,
+                    localDomain: Object.freeze({ ids: emptyField }),
+                    transferDomain: Object.freeze({ ids: emptyField }),
+                    queryRiverGraph,
                     sourceObservation: sourceObservationResult,
                     fieldDiagnostics: Object.freeze({
-                        backend: 'rust-unified-memo-pipeline',
+                        backend: 'rust-unified-memo-pipeline-handle',
                         ...(pipeline.diagnostics?.dualField || {})
                     })
                 }),
-                denoisedVector: new Float32Array(enhancedVector),
-                localVector: new Float32Array(pipeline.localVector),
-                transferVector: new Float32Array(pipeline.transferVector),
+                denoisedVector: enhancedVector,
+                localVector: emptyVector,
+                transferVector: emptyVector,
                 fieldProjectionDiagnostics: Object.freeze({
-                    backend: 'rust-unified-memo-pipeline'
+                    backend: 'rust-unified-memo-pipeline-handle'
                 }),
                 preparationTimings: Object.freeze({
                     nativePipelineTotalMs:
@@ -1663,6 +1733,24 @@ class KnowledgeBaseManager {
                     observationHandle: prepared.observationHandle,
                     sourceObservationResult,
                     sourceField: prepared.sourceField,
+                    nativeKnowledgeRuntime: this.nativeKnowledgeRuntime,
+                    // 只有 executeNativeRiverQuery 或显式调用方可以触发联合重搜。
+                    // 普通 rerankWithRiverMemoAsync 必须尊重调用方已构造的
+                    // BM25/Time/LightMemo 候选，不能因全局开关而覆盖它们。
+                    nativeJointQuery:
+                        options.nativeJointQuery === true,
+                    nativeJointFallbackToLegacy:
+                        options.nativeJointFallbackToLegacy
+                        ?? this.config.nativeRiverQueryFallbackToLegacy,
+                    nativePerIndexK:
+                        options.nativePerIndexK
+                        ?? this.config.nativeRiverQueryPerIndexK,
+                    nativeCandidateK:
+                        options.nativeCandidateK
+                        ?? this.config.nativeRiverQueryCandidateK,
+                    nativeSemanticThreshold:
+                        options.nativeSemanticThreshold
+                        ?? this.config.nativeRiverQuerySemanticThreshold,
                     sourceObservationConfig: {
                         ...(artifact.effectiveConfig
                             ?.sourceObservation || {}),
@@ -1919,6 +2007,470 @@ class KnowledgeBaseManager {
             candidates,
             agentContext,
             options
+        );
+    }
+
+    /**
+     * Rust 原生联合 River 查询公共代理。
+     *
+     * 调用方无需先执行 search() 或 hydrate 候选；这里只准备控制面、
+     * observationHandle 和权限作用域，随后由 NativeKnowledgeRuntime 完成
+     * ANN→合并→向量 hydrate→语义去重→Topology V3。
+     */
+    async executeNativeRiverQuery(query, options = {}) {
+        const rawVector = query?.vector || options.queryVector;
+        const queryVector = rawVector instanceof Float32Array
+            ? rawVector
+            : new Float32Array(rawVector || []);
+        if (queryVector.length !== this.config.dimension) {
+            throw new RangeError(
+                `Native River query vector must be ${this.config.dimension}, ` +
+                `got ${queryVector.length}`
+            );
+        }
+
+        const diaryNames = [...new Set(
+            (Array.isArray(options.diaryNames)
+                ? options.diaryNames
+                : [options.diaryNames]
+            ).map(name => String(name || '').trim()).filter(Boolean)
+        )];
+        if (diaryNames.length === 0) {
+            const error = new Error(
+                'Native River query requires an explicit diary scope'
+            );
+            error.code = 'NATIVE_RIVER_QUERY_EMPTY_DIARY_SCOPE';
+            throw error;
+        }
+
+        await Promise.all(
+            diaryNames.map(name => this._getOrLoadDiaryIndex(name))
+        );
+
+        const placeholders = diaryNames.map(() => '?').join(',');
+        const allowedFileIds = this.db.prepare(
+            `SELECT id FROM files WHERE diary_name IN (${placeholders})`
+        ).all(...diaryNames)
+            .map(row => Number(row.id))
+            .filter(Number.isSafeInteger);
+        if (allowedFileIds.length === 0) {
+            const error = new Error(
+                'Native River query resolved an empty file permission scope'
+            );
+            error.code = 'NATIVE_RIVER_QUERY_EMPTY_PERMISSION_SCOPE';
+            throw error;
+        }
+
+        const finalK = Math.max(
+            1,
+            Math.floor(Number(options.topK) || 8)
+        );
+        const candidateK = Math.max(
+            finalK,
+            Math.floor(Number(
+                options.candidateK
+                ?? this.config.nativeRiverQueryCandidateK
+            ) || 300)
+        );
+        const supplementalQueryVectors = (Array.isArray(options.supplementalQueryVectors)
+            ? options.supplementalQueryVectors
+            : []
+        ).map((entry, index) => {
+            const rawVector = entry?.vector ?? entry;
+            const vector = rawVector instanceof Float32Array
+                ? rawVector
+                : new Float32Array(rawVector || []);
+            if (vector.length !== this.config.dimension) {
+                throw new RangeError(
+                    `Native supplemental query vector ${index} must be ` +
+                    `${this.config.dimension}, got ${vector.length}`
+                );
+            }
+            const weight = Math.max(
+                0,
+                Math.min(1, Number(entry?.weight ?? 1) || 0)
+            );
+            return { vector, weight };
+        });
+        const nativeSupplementalVectors = new Float32Array(
+            supplementalQueryVectors.length * this.config.dimension
+        );
+        supplementalQueryVectors.forEach((entry, index) => {
+            nativeSupplementalVectors.set(
+                entry.vector,
+                index * this.config.dimension
+            );
+        });
+        const rawHybridPlan = options.hybridPlan
+            && typeof options.hybridPlan === 'object'
+            ? options.hybridPlan
+            : null;
+        const nativeHybridPlan = (
+            rawHybridPlan
+            || supplementalQueryVectors.length > 0
+        ) ? {
+            schema: 'vcp-native-hybrid-query-plan-v2',
+            supplemental: {
+                weights: supplementalQueryVectors.map(entry => entry.weight),
+                perIndexK: Math.max(
+                    1,
+                    Math.floor(Number(
+                        rawHybridPlan?.supplemental?.perIndexK
+                        ?? Math.max(2, Math.round(candidateK / 2))
+                    ) || 2)
+                )
+            },
+            fileCandidates: Array.isArray(rawHybridPlan?.fileCandidates)
+                ? rawHybridPlan.fileCandidates
+                    .map(candidate => ({
+                        path: String(candidate?.path || '').trim(),
+                        bm25Score: Math.max(
+                            0,
+                            Number(candidate?.bm25Score) || 0
+                        ),
+                        normalizedBM25Score: Math.max(
+                            0,
+                            Math.min(
+                                1,
+                                Number(candidate?.normalizedBM25Score) || 0
+                            )
+                        ),
+                        timeScore: Math.max(
+                            0,
+                            Number(candidate?.timeScore) || 0
+                        ),
+                        source: String(candidate?.source || '').trim()
+                    }))
+                    .filter(candidate => candidate.path)
+                : [],
+            bm25Weight: Math.max(
+                0,
+                Math.min(1, Number(rawHybridPlan?.bm25Weight ?? 0.6))
+            ),
+            bm25Mode: rawHybridPlan?.bm25Mode === 'body'
+                ? 'body'
+                : 'tag',
+            // JS 配置先规范化，Rust ABI 内再次执行硬夹逼，防止错误热参数
+            // 将宽时间范围扩展为无界 Chunk 候选池。
+            timePerDiaryLimit: Math.max(
+                1,
+                Math.min(
+                    50,
+                    Math.floor(
+                        Number(rawHybridPlan?.timePerDiaryLimit) || 10
+                    )
+                )
+            ),
+            timeGlobalLimit: Math.max(
+                1,
+                Math.min(
+                    500,
+                    Math.floor(
+                        Number(rawHybridPlan?.timeGlobalLimit) || 50
+                    )
+                )
+            )
+        } : null;
+
+        const prepared = options.preparedMemoObservation
+            || await this.prepareUnifiedMemoObservation(
+                {
+                    text: String(query?.text || ''),
+                    vector: queryVector
+                },
+                {
+                    ...options,
+                    queryText: String(query?.text || ''),
+                    vector: queryVector
+                }
+            );
+        const agentContext = {
+            agentId: options.agentId || null,
+            diaryNames,
+            allowedFileIds,
+            deniedFileIds: [],
+            visibilityMode: 'explicit_sql_scope',
+            permissions: {
+                allowPublic: false,
+                allowOwn: false,
+                allowAuthorized: true,
+                allowOtherAgentPublic: false,
+                allowUnknownProvenance: false
+            }
+        };
+        const jointEnabled = options.enabled
+            ?? this.config.nativeRiverQueryEnabled;
+        const fallbackEnabled = options.fallbackToLegacy
+            ?? this.config.nativeRiverQueryFallbackToLegacy;
+
+        if (jointEnabled) {
+            try {
+                // 非空哨兵只通过 RiverMemoEngine 公共输入校验；联合 Runtime
+                // 会在 Rust 内覆盖 candidates，哨兵不会参与任何计算。
+                return await this.riverMemoEngine.rerank(
+                    {
+                        text: String(query?.text || ''),
+                        vector: queryVector
+                    },
+                    [{ id: 1, chunkId: 1, score: 0 }],
+                    agentContext,
+                    {
+                        ...options,
+                        artifact: prepared.artifact,
+                        dbPath: this.dbPath,
+                        nativePreparedQuery: prepared.nativePreparedQuery,
+                        observationHandle: prepared.observationHandle,
+                        sourceObservationResult:
+                            prepared.sourceObservationResult,
+                        sourceField: prepared.sourceField,
+                        topK: finalK,
+                        nativeKnowledgeRuntime:
+                            this.nativeKnowledgeRuntime,
+                        nativeJointQuery: true,
+                        nativeHybridPlan,
+                        nativeSupplementalVectors,
+                        nativeJointFallbackToLegacy: false,
+                        nativePerIndexK:
+                            options.perIndexK
+                            ?? this.config.nativeRiverQueryPerIndexK,
+                        nativeCandidateK: candidateK,
+                        nativeSemanticThreshold:
+                            options.semanticThreshold
+                            ?? this.config
+                                .nativeRiverQuerySemanticThreshold
+                    }
+                );
+            } catch (error) {
+                if (!fallbackEnabled) throw error;
+                console.warn(
+                    `[KnowledgeBase][NativeRiverQuery] joint execution failed; ` +
+                    `running complete legacy fallback: ${error.message}`
+                );
+            }
+        }
+// 完整旧链路回退：复刻 Query Plan V2 的当前 ANN、历史多向量、
+// BM25/Time 文件展开和 Time 双重限流，再交给原生 Topology V3。
+// 此路径只在联合 ABI 不可用/失败时执行，保留正确性优先于性能。
+const perIndexK = options.perIndexK
+    ?? this.config.nativeRiverQueryPerIndexK;
+const currentSearchPromise = this.search(
+    diaryNames,
+    queryVector,
+    candidateK,
+    0,
+    [],
+    undefined,
+    {
+        perIndexK,
+        globalK: candidateK
+    }
+);
+const supplementalSearchPromises = supplementalQueryVectors.map(
+    async entry => {
+        const results = await this.search(
+            diaryNames,
+            entry.vector,
+            Math.max(2, Math.round(candidateK / 2)),
+            0,
+            [],
+            undefined,
+            {
+                perIndexK: Math.max(
+                    2,
+                    Math.round(Number(perIndexK) / 2)
+                ),
+                globalK: Math.max(
+                    2,
+                    Math.round(candidateK / 2)
+                )
+            }
+        );
+        return results.map(result => ({
+            ...result,
+            score: (Number(result.score) || 0) * entry.weight,
+            vectorScore: Number(result.score) || 0,
+            source: 'history'
+        }));
+    }
+);
+const [currentCandidates, ...supplementalCandidates] =
+    await Promise.all([
+        currentSearchPromise,
+        ...supplementalSearchPromises
+    ]);
+let candidates = [
+    ...currentCandidates.map(result => ({
+        ...result,
+        vectorScore: Number(result.score) || 0,
+        source: result.source || 'rag'
+    })),
+    ...supplementalCandidates.flat()
+];
+
+const fileCandidates = nativeHybridPlan?.fileCandidates || [];
+if (fileCandidates.length > 0) {
+    const filePlanByPath = new Map(
+        fileCandidates.map(candidate => [candidate.path, candidate])
+    );
+    const chunks = await this.getChunksByFilePaths(
+        fileCandidates.map(candidate => candidate.path)
+    );
+    const queryMagnitude = Math.sqrt(
+        Array.from(queryVector).reduce(
+            (sum, value) => sum + value * value,
+            0
+        )
+    );
+    const cosineToQuery = vector => {
+        if (
+            !vector
+            || vector.length !== queryVector.length
+            || queryMagnitude <= 1e-12
+        ) {
+            return 0;
+        }
+        let dot = 0;
+        let magnitude = 0;
+        for (let index = 0; index < vector.length; index++) {
+            const value = Number(vector[index]) || 0;
+            dot += queryVector[index] * value;
+            magnitude += value * value;
+        }
+        return magnitude > 1e-12
+            ? dot / (queryMagnitude * Math.sqrt(magnitude))
+            : 0;
+    };
+    const timeByDiary = new Map();
+    const sparseWeight = nativeHybridPlan.bm25Weight;
+    for (const chunk of chunks) {
+        const chunkPath = chunk.fullPath || chunk.sourceFile || '';
+        const filePlan = filePlanByPath.get(chunkPath);
+        if (!filePlan) continue;
+        const vectorScore = cosineToQuery(chunk.vector);
+        const isTime = filePlan.source === 'time'
+            || filePlan.timeScore > 0;
+        const score = filePlan.bm25Score > 0
+            ? filePlan.normalizedBM25Score * sparseWeight
+                + vectorScore * (1 - sparseWeight)
+            : vectorScore;
+        const candidate = {
+            ...chunk,
+            score,
+            vectorScore,
+            bm25Score: filePlan.bm25Score,
+            normalizedBM25Score:
+                filePlan.normalizedBM25Score,
+            timeScore: filePlan.timeScore,
+            source: isTime
+                ? 'time'
+                : (filePlan.source || 'rag')
+        };
+        if (isTime) {
+            const normalizedPath = String(chunkPath)
+                .replace(/\\/g, '/');
+            const diaryName = normalizedPath.split('/')[0]
+                || chunk.diaryName
+                || 'unknown';
+            if (!timeByDiary.has(diaryName)) {
+                timeByDiary.set(diaryName, new Map());
+            }
+            const diaryPool = timeByDiary.get(diaryName);
+            const chunkId = Number(chunk.chunkId ?? chunk.id);
+            const existing = diaryPool.get(chunkId);
+            if (!existing || score > existing.score) {
+                diaryPool.set(chunkId, candidate);
+            }
+        } else {
+            candidates.push(candidate);
+        }
+    }
+
+    const limitedTime = [];
+    const perDiaryLimit = nativeHybridPlan.timePerDiaryLimit;
+    const globalLimit = nativeHybridPlan.timeGlobalLimit;
+    for (const diaryName of [...timeByDiary.keys()].sort()) {
+        const diaryCandidates = Array.from(
+            timeByDiary.get(diaryName).values()
+        ).sort((left, right) =>
+            (right.vectorScore || 0) - (left.vectorScore || 0)
+            || Number(left.chunkId ?? left.id)
+                - Number(right.chunkId ?? right.id)
+        );
+        limitedTime.push(
+            ...diaryCandidates.slice(0, perDiaryLimit)
+        );
+    }
+    limitedTime.sort((left, right) =>
+        (right.vectorScore || 0) - (left.vectorScore || 0)
+        || Number(left.chunkId ?? left.id)
+            - Number(right.chunkId ?? right.id)
+    );
+    candidates.push(...limitedTime.slice(0, globalLimit));
+}
+
+// 先按 Chunk 身份合并多路候选，保留最高主分并合并稀疏/时间证据。
+const mergedByChunk = new Map();
+for (const candidate of candidates) {
+    const id = Number(candidate?.chunkId ?? candidate?.id);
+    if (!Number.isSafeInteger(id) || id <= 0) continue;
+    const existing = mergedByChunk.get(id);
+    if (!existing) {
+        mergedByChunk.set(id, { ...candidate, id, chunkId: id });
+        continue;
+    }
+    if ((candidate.score || 0) > (existing.score || 0)) {
+        Object.assign(existing, candidate, { id, chunkId: id });
+    }
+    existing.vectorScore = Math.max(
+        Number(existing.vectorScore) || 0,
+        Number(candidate.vectorScore) || 0
+    );
+    existing.bm25Score = Math.max(
+        Number(existing.bm25Score) || 0,
+        Number(candidate.bm25Score) || 0
+    );
+    existing.timeScore = Math.max(
+        Number(existing.timeScore) || 0,
+        Number(candidate.timeScore) || 0
+    );
+    if (candidate.source === 'time') existing.source = 'time';
+}
+candidates = await this.deduplicateResults(
+    Array.from(mergedByChunk.values())
+        .sort((left, right) =>
+            (right.score || 0) - (left.score || 0)
+            || left.chunkId - right.chunkId
+        )
+        .slice(0, candidateK),
+    queryVector,
+    {
+        stage: 'native-river-query-v2-fallback',
+        semantic: true,
+        semanticThreshold:
+            options.semanticThreshold
+            ?? this.config.nativeRiverQuerySemanticThreshold,
+        maxResults: candidateK
+    }
+);
+        return await this.riverMemoEngine.rerank(
+            {
+                text: String(query?.text || ''),
+                vector: queryVector
+            },
+            candidates,
+            agentContext,
+            {
+                ...options,
+                artifact: prepared.artifact,
+                dbPath: this.dbPath,
+                nativePreparedQuery: prepared.nativePreparedQuery,
+                observationHandle: prepared.observationHandle,
+                sourceObservationResult:
+                    prepared.sourceObservationResult,
+                sourceField: prepared.sourceField,
+                topK: finalK,
+                nativeJointQuery: false
+            }
         );
     }
 
@@ -2346,6 +2898,21 @@ class KnowledgeBaseManager {
 
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
+
+        // 先停止原生 Runtime 接收新查询并撤销注册名。已经开始的查询持有
+        // 独立 Arc 快照，可在后续 shutdown 阶段安全完成。
+        if (this.nativeKnowledgeRuntime) {
+            try {
+                this.nativeKnowledgeRuntime.shutdown();
+            } catch (error) {
+                console.warn(
+                    '[KnowledgeBase] Failed to shutdown NativeKnowledgeRuntime:',
+                    error.message || error
+                );
+            }
+            this.nativeKnowledgeRuntime = null;
+        }
+        this.nativeDiaryIndexGenerations.clear();
 
         // 统一 MemoRuntime 归属全局 Tag VexusIndex；关闭前显式释放活动图快照。
         // 若仍有原生查询持有 Arc，实际内存会在最后一个查询结束后安全回收。
