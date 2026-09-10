@@ -174,21 +174,50 @@ function getTaskById(taskId) {
     return taskCenterData.tasks.find(task => task.id === taskId) || null;
 }
 
+const BAK_FILE = path.join(__dirname, 'task-center-data.json.bak');
+let saveDisabled = false; // 熔断安全锁：一旦处于损坏或怀疑状态，禁止写盘抹杀
+let saveQueue = Promise.resolve(); // FIFO 互斥串行队列，彻底消除并发写入撕裂
+
 async function loadData() {
-    try {
-        if (!fs.existsSync(DATA_FILE)) {
-            taskCenterData = createDefaultData();
-            await saveData();
-            return;
+    const tryParse = async (filePath) => {
+        if (!fs.existsSync(filePath)) return null;
+        const raw = await fsPromises.readFile(filePath, 'utf-8');
+        if (!raw || !raw.trim()) return null;
+        const parsed = JSON.parse(raw);
+        const shaped = ensureDataShape(parsed);
+        // 如果文件非空，但 tasks 数量为 0 且文件体积大于 1KB，怀疑解析坍缩
+        if (raw.length > 1024 && (!shaped.tasks || shaped.tasks.length === 0)) {
+            throw new Error(`文件体积异常(${raw.length}B)但无有效任务，触发安全拦截`);
         }
-        const raw = await fsPromises.readFile(DATA_FILE, 'utf-8');
-        taskCenterData = ensureDataShape(JSON.parse(raw));
+        return shaped;
+    };
+
+    try {
+        let loaded = null;
+        try {
+            loaded = await tryParse(DATA_FILE);
+        } catch (err) {
+            console.error(`[TaskAssistant] ⚠️ 主文件 ${DATA_FILE} 读取损坏:`, err.message);
+            console.warn(`[TaskAssistant] 🛡️ 尝试从镜像备份恢复: ${BAK_FILE}`);
+            loaded = await tryParse(BAK_FILE);
+        }
+
+        if (!loaded) {
+            if (!fs.existsSync(DATA_FILE) && !fs.existsSync(BAK_FILE)) {
+                taskCenterData = createDefaultData();
+                await saveData();
+                return;
+            } else {
+                throw new Error('主数据与备份数据均无法有效解析，触发系统保护！');
+            }
+        }
+
+        taskCenterData = loaded;
 
         // 🛡️ 启动时清理：重置所有卡死的 running 标志
-        // 服务器重启后不可能有任务正在运行，running=true 只可能是上次崩溃遗留的脏状态
         let staleCount = 0;
         for (const task of taskCenterData.tasks) {
-            if (task.runtime.running) {
+            if (task.runtime && task.runtime.running) {
                 task.runtime.running = false;
                 task.runtime.lastResult = `error: 服务器重启时发现任务卡死，已自动重置`;
                 task.runtime.lastError = '服务器重启自动重置 running 标志';
@@ -200,18 +229,64 @@ async function loadData() {
             await saveData();
         }
     } catch (e) {
-        console.error('[TaskAssistant] 加载 task-center-data.json 失败:', e.message);
+        console.error('[TaskAssistant] 🚨 致命错误：拒绝降级为空壳！开启写盘熔断锁定！原因:', e.message);
+        saveDisabled = true; // 绝对不允许把内存默认空壳写回磁盘
         taskCenterData = createDefaultData();
     }
 }
 
 async function saveData() {
-    try {
-        taskCenterData.history = (taskCenterData.history || []).slice(-(taskCenterData.settings.maxHistory || MAX_HISTORY));
-        await fsPromises.writeFile(DATA_FILE, JSON.stringify(taskCenterData, null, 2), 'utf-8');
-    } catch (e) {
-        console.error('[TaskAssistant] 保存 task-center-data.json 失败:', e.message);
+    if (saveDisabled) {
+        console.warn('[TaskAssistant] 🔒 熔断锁生效中，已拒绝执行 saveData()，保护磁盘物理现场！');
+        return;
     }
+
+    return new Promise((resolve) => {
+        saveQueue = saveQueue.then(async () => {
+            const randTag = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            const tmpFile = path.join(__dirname, `task-center-data.json.${randTag}.tmp`);
+
+            try {
+                taskCenterData.history = (taskCenterData.history || []).slice(-(taskCenterData.settings?.maxHistory || MAX_HISTORY));
+                const serialized = JSON.stringify(taskCenterData, null, 2);
+
+                // 🛡️ 严防空壳反向覆写大文件：如果原磁盘文件大于 10KB，但当前待写入内容小于 1KB 且没有任务，拦截！
+                if (fs.existsSync(DATA_FILE)) {
+                    try {
+                        const stat = await fsPromises.stat(DATA_FILE);
+                        if (stat.size > 10240 && serialized.length < 1024 && (!taskCenterData.tasks || taskCenterData.tasks.length === 0)) {
+                            console.error(`[TaskAssistant] 🚨 拦截到恶性覆写攻击：原文件 ${stat.size}B，当前试图写入 ${serialized.length}B 的空壳！已熔断！`);
+                            saveDisabled = true;
+                            resolve(false);
+                            return;
+                        }
+                        // 每次安全落盘前，轮转镜像一份 .bak
+                        await fsPromises.copyFile(DATA_FILE, BAK_FILE);
+                    } catch (statErr) {
+                        logDebug(`copyFile .bak warning: ${statErr.message}`);
+                    }
+                }
+
+                // 🛡️ 1. 写入独立随机临时文件（彻底规避跨请求并发冲突）
+                await fsPromises.writeFile(tmpFile, serialized, 'utf-8');
+
+                // 🛡️ 2. 操作系统级原子重命名替换（零重尾残渣，瞬间指针替换）
+                await fsPromises.rename(tmpFile, DATA_FILE);
+                resolve(true);
+            } catch (e) {
+                console.error('[TaskAssistant] 保存 task-center-data.json 失败:', e.message);
+                try {
+                    if (fs.existsSync(tmpFile)) await fsPromises.unlink(tmpFile);
+                } catch (unlinkErr) {
+                    logDebug(`unlink tmpFile warning: ${unlinkErr.message}`);
+                }
+                resolve(false);
+            }
+        }).catch((queueErr) => {
+            console.error('[TaskAssistant] 队列排队写入出现未捕获异常:', queueErr.message);
+            resolve(false);
+        });
+    });
 }
 
 // Forum logic has been moved to lib/forum-engine.js
@@ -721,6 +796,13 @@ async function updateConfig(newConfig) {
     const tasks = Array.isArray(newConfig.tasks)
         ? newConfig.tasks.map(sanitizeTaskInput)
         : [];
+
+    // 🛡️ 防前端误传空数组抹空库（Anti-Empty Collapse Guard）
+    // 如果当前已有有效任务（>=1），且前端提交的任务数组为空，且未显式带有 forceEmpty 确认标记，则拒绝全量清空
+    if (taskCenterData.tasks && taskCenterData.tasks.length > 0 && tasks.length === 0 && !newConfig.forceEmpty) {
+        console.warn('[TaskAssistant] 🛡️ 拦截到可疑的全量清空配置请求：当前存在任务且未指定 forceEmpty，已拒绝覆盖以防数据意外丢失！');
+        throw new Error('检测到清空所有任务的危险操作。如确需清空，请逐个删除任务或提供 forceEmpty 参数确认。');
+    }
 
     taskCenterData = {
         version: 1,
