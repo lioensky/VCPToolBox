@@ -529,7 +529,7 @@ for (const key in process.env) {
     if (/^Detector\d+$/.test(key)) {
         const index = key.substring(8);
         const outputKey = `Detector_Output${index}`;
-        if (process.env[outputKey]) {
+        if (process.env[outputKey] !== undefined) {
             detectors.push({ detector: process.env[key], output: process.env[outputKey] });
         }
     }
@@ -542,7 +542,7 @@ for (const key in process.env) {
     if (/^SuperDetector\d+$/.test(key)) {
         const index = key.substring(13);
         const outputKey = `SuperDetector_Output${index}`;
-        if (process.env[outputKey]) {
+        if (process.env[outputKey] !== undefined) {
             superDetectors.push({ detector: process.env[key], output: process.env[outputKey] });
         }
     }
