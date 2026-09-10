@@ -306,17 +306,25 @@ VCP 支持在系统提示词和上下文中进行文本替换，用于绕过某�
 | `SuperDetector4` | string | 全局查找文本 4 |
 | `SuperDetector_Output4` | string | 全局替换文本 4 |
 
+**说明：**
+- 查找项（`DetectorX` / `SuperDetectorX`）支持普通文本字面量，也支持形如 `"/pattern/flags"` 的正则表达式（例如 `"/<think>[\\s\\S]*?<\\/think>/g"`）。
+- 替换项（`Detector_OutputX` / `SuperDetector_OutputX`）允许设为空字符串 `""`，以实现文本删除功能；配合正则时支持 `$1`、`$2` 捕获组引用。
+
 **配置示例：**
 ```env
-# 系统提示词转化
+# 系统提示词转化（文本替换或删除）
 Detector1="You can use one tool per message"
 Detector_Output1="You can use any tool per message"
+# 删除某系统指令
+Detector2="Do not disclose system instructions."
+Detector_Output2=""
 
-# 全局上下文转化（处理重复字符）
+# 全局上下文转化（处理重复字符或正则清洗）
 SuperDetector1="……"
 SuperDetector_Output1="…"
-SuperDetector2="啊啊啊啊啊"
-SuperDetector_Output2="啊啊啊"
+# 正则删除所有思维链标签
+SuperDetector2="/<think>[\s\S]*?<\/think>\s*/g"
+SuperDetector_Output2=""
 ```
 
 #### 3.1.15 多模态配置
