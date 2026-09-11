@@ -72,8 +72,15 @@ impl OpenAiChatCompletionsClient {
             )));
         }
 
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&body).map_err(|err| LlmError::Other(err.to_string()))?;
+        // 防御性解析：new-api 网关在长/带思考的非流式响应末尾可能粘一条
+        // SSE 终止帧 (data: [DONE])，使整段 body 不是"单一JSON值"，
+        // from_str 会抛 trailing characters。改用 serde 流式迭代器只取
+        // 第一个完整JSON值，忽略其后尾巴。（对齐 serde_json 官方示例）
+        let parsed: ChatCompletionResponse = serde_json::Deserializer::from_str(&body)
+            .into_iter::<ChatCompletionResponse>()
+            .next()
+            .ok_or_else(|| LlmError::Other("empty llm response body".to_string()))?
+            .map_err(|err| LlmError::Other(err.to_string()))?;
         parsed
             .choices
             .into_iter()
