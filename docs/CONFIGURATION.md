@@ -351,12 +351,43 @@ SuperDetector_Output2=""
 
 #### 3.1.17 模型专属指令
 
-通过 `SarModelN` / `SarPromptN` 对配置模型专属提示词：
+通过 `SarModelN` / `SarPromptN` 对配置模型专属提示词。旧版环境变量迁移到
+`sarprompt.json` 后默认使用精确匹配：
 
 ```env
 SarModel1=gemini-2.5-flash-preview-05-20,gemini-2.5-flash-preview-04-17
 SarPrompt1="请对用户的输入信息做出详尽，泛化的思考..."
 ```
+
+管理面板保存的 `sarprompt.json` 支持四种 `matchMode`：
+
+| `matchMode` | 行为 |
+|---|---|
+| `exact` | 模型名精确命中 `models` 中的项时生效 |
+| `includes` | 模型名包含 `models` 中任一关键词时生效 |
+| `exactExclude` | 模型名精确命中 `models` 中的项时不生效，其余模型生效 |
+| `includesExclude` | 模型名包含 `models` 中任一关键词时不生效，其余模型生效 |
+
+排除模式通过 `sarprompt.json` 配置，且与正向匹配模式互斥。例如：
+
+```json
+[
+  {
+    "promptKey": "SarPrompt1",
+    "models": ["GPT"],
+    "content": "仅注入非 GPT 模型的提示词",
+    "matchMode": "includesExclude"
+  },
+  {
+    "promptKey": "SarPrompt2",
+    "models": ["GPT-5.6"],
+    "content": "除 GPT-5.6 外的模型使用这条提示词",
+    "matchMode": "exactExclude"
+  }
+]
+```
+
+排除模式下 `models` 仍需至少包含一个非空模型或关键词；空列表不会使该提示词组生效。
 
 #### 3.1.15 插件 API 密钥
 

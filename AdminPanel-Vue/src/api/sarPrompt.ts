@@ -6,11 +6,17 @@ import {
 const API_BASE_URL = "/admin_api/sarprompts";
 const DEFAULT_READ_UI_OPTIONS: RequestUiOptions = { showLoader: false };
 
+export type SarPromptMatchMode =
+  | "exact"
+  | "includes"
+  | "exactExclude"
+  | "includesExclude";
+
 export interface SarPrompt {
   promptKey: string;
   models: string[];
   content: string;
-  matchMode?: 'exact' | 'includes';
+  matchMode?: SarPromptMatchMode;
 }
 
 export const sarPromptApi = {
