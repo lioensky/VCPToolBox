@@ -26,7 +26,7 @@ MediaRenderer 包含两条彼此独立的生成路径：
 - HTML JavaScript 默认关闭，动画或内置库模式自动开启
 - GIF、MP4、WebM 确定性逐帧渲染
 - 透明 GIF 与透明 WebM
-- Anime.js 3.2.2、Three.js r160 常见 CDN 标签自动重定向到本地版本
+- Anime.js 3.2.2、Three.js r160、Pixi.js v8.20 常见 CDN 标签自动重定向到本地版本
 - 本地、内网和公网图片/音频/视频/字体素材
 - 通过直接 `audioUrl` 进行 MP4/WebM 音频混流
 - AI 自由 JavaScript 程序音乐/音效合成
@@ -410,23 +410,60 @@ fileName:「始」moving-dot「末」
 
 GIF 只有索引透明色，不具备 PNG 那样的 8-bit 半透明通道。发光、阴影和抗锯齿边缘会被量化；复杂半透明动画优先使用透明 WebM。
 
-## Anime.js 与 Three.js 的 CDN 本地重定向
+## Anime.js、Three.js 与 Pixi.js 的 CDN 本地重定向
 
 AI 可以直接输出熟悉的传统全局 CDN 标签：
 
 ```html
 <script src="https://cdn.jsdelivr.net/npm/animejs@3.2.2/lib/anime.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@8/dist/pixi.min.js"></script>
 ```
 
-插件识别 jsDelivr、unpkg、cdnjs 上路径匹配的 Anime.js/Three.js，移除远程标签并注入本地文件，完全不会请求 CDN：
+插件识别 jsDelivr、unpkg、cdnjs 上路径匹配的 Anime.js、Three.js 与 Pixi.js，移除远程标签并注入本地文件，完全不会请求 CDN：
 
 - Anime.js 提供全局 `window.anime`，本地版本 3.2.2。
 - Three.js 提供全局 `window.THREE`，本地版本 r160。
+- Pixi.js 提供全局 `window.PIXI`，本地版本 v8.20。
 - 其他外部脚本一律拒绝执行。
-- ES Module 形式的 Three.js/import map 当前不支持，请使用传统 `three.min.js` 全局脚本。
+- ES Module 形式的库/import map 当前不支持，请使用传统全局脚本形式。
 
-旧的 `libraries: anime,three` 参数继续兼容。依赖直接复用 `AdminPanel-Vue/vendor`，不复制到插件目录。
+旧的 `libraries: anime,three,pixi` 参数继续兼容。依赖直接复用 `AdminPanel-Vue/vendor`，不复制到插件目录。
+
+### Pixi.js v8 动画规范与避坑说明
+
+Pixi.js v8 相比旧版本（v6/v7）有重大架构升级，编写 HTML 源码时必须严格遵守以下准则：
+
+1. **异步初始化（不可使用同步构造函数）**：
+   - 错误写法（v6/v7）：`const app = new PIXI.Application({ width: 800, height: 600 });`（v8 会抛出异常）。
+   - 正确写法（v8）：
+     ```javascript
+     const app = new PIXI.Application();
+     await app.init({
+       width: 800,
+       height: 600,
+       preference: 'webgl', // 强烈推荐显式设置 webgl，兼容无头 Chromium
+       backgroundAlpha: 0   // 若需透明背景输出，设为 0 并配置 transparent=true
+     });
+     document.body.appendChild(app.canvas); // v8 推荐使用 app.canvas，兼容 app.view
+     ```
+2. **停用自动帧循环，改由确定性时间驱动**：
+   - 必须停用自带的 Ticker：
+     ```javascript
+     app.ticker.autoStart = false;
+     app.ticker.stop();
+     ```
+   - 在逐帧回调中根据绝对 `timeMs` 驱动属性，并显式调用渲染：
+     ```javascript
+     window.__MEDIA_RENDERER__.setFrameRenderer((timeMs, frameIndex, fps) => {
+       // 根据绝对 timeMs 更新 2D 图形、网格、粒子或滤镜
+       app.render(); // 必须显式调用渲染当前帧！
+     });
+     ```
+3. **就绪信号**：
+   - 全部初始化与素材准备完成后，调用 `window.__MEDIA_RENDERER__.setReady()`，并在工具调用中设置 `readyMode: "signal"`。
+4. **图形绘制 API**：
+   - v8 推荐现代链式调用：`graphics.rect(x, y, w, h); graphics.fill(0x00f3ff);`，`graphics.circle(x, y, r); graphics.stroke({ width: 2, color: 0xff0055 });`。
 
 ## 旧版 assets 兼容
 
@@ -618,7 +655,7 @@ ThemeName/
 - 每个逻辑帧按所有请求尺寸截图。
 - HTML JavaScript 只在隔离的 Chromium BrowserContext 中执行。
 - 页面运行时网络默认阻断。
-- 外部脚本仅允许被识别并替换为本地版本的 Anime.js/Three.js。
+- 外部脚本仅允许被识别并替换为本地版本的 Anime.js/Three.js/Pixi.js。
 - CUR/ANI/ZIP 编码在 Node.js 中处理受控 Buffer，不执行 AI 提供的 Node.js 代码。
 - 安装脚本只复制光标文件并修改当前用户的 Windows 光标注册表字段。
 - `source.html` 仅供二次编辑，不参与安装执行。
