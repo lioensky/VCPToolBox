@@ -93,7 +93,7 @@
         <UiSettingsForm as="div" :columns="1" gap="sm">
           <UiField
             label="适用模型"
-            description="多个模型用英文逗号分隔。"
+            description="多个模型用英文逗号分隔；排除模式下表示要排除的模型或关键词。"
             size="sm"
           >
             <UiInput
@@ -106,7 +106,7 @@
           </UiField>
           <UiField
             label="匹配模式"
-            description="exact: 模型名必须完全一致 | includes: 模型名包含关键词即命中"
+            :description="getMatchModeDescription(group.matchMode)"
             size="sm"
           >
             <select
@@ -115,6 +115,8 @@
             >
               <option value="exact">精确匹配 (exact)</option>
               <option value="includes">子串包含 (includes)</option>
+              <option value="exactExclude">精确排除 (exactExclude)</option>
+              <option value="includesExclude">包含排除 (includesExclude)</option>
             </select>
           </UiField>
           <UiField
@@ -151,6 +153,20 @@ import UiToolbar from "@/components/ui/UiToolbar.vue";
 const sarPrompts = ref<(SarPrompt & { modelsInput: string })[]>([]);
 const isLoading = ref(false);
 const isSaving = ref(false);
+
+const getMatchModeDescription = (matchMode: SarPrompt["matchMode"]) => {
+  switch (matchMode) {
+    case "includes":
+      return "模型名包含列表中任一关键词时生效";
+    case "exactExclude":
+      return "模型名精确命中列表时不生效，其余模型生效";
+    case "includesExclude":
+      return "模型名包含列表中任一关键词时不生效，其余模型生效";
+    case "exact":
+    default:
+      return "模型名精确命中列表时生效";
+  }
+};
 
 const fetchSarPrompts = async () => {
   isLoading.value = true;

@@ -696,7 +696,7 @@ async function replaceOtherVariables(text, model, role, context) {
             if (group && group.models && group.content) {
                 const modelList = group.models.map(m => m.trim().toLowerCase());
                 const matchMode = group.matchMode || 'exact';
-                // 检查当前模型是否匹配（支持exact/includes两种模式）
+                // 检查当前模型是否匹配（支持正向和排除模式）
                 if (model && sarPromptManager.isModelMatch(modelList, model.toLowerCase(), matchMode)) {
                     let promptValue = group.content;
                     // 模型匹配，准备注入的文本
