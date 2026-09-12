@@ -54,7 +54,10 @@ function error(message, ...args) {
  * 检查最后一行是否为Tag行
  */
 function detectTagLine(content) {
-    const lines = content.split('\n');
+    const lines = content.split(/\r?\n/);
+    while (lines.length > 1 && lines[lines.length - 1].trim() === '') {
+        lines.pop();
+    }
     if (lines.length === 0) {
         return { hasTag: false, lastLine: '', contentWithoutLastLine: content };
     }
@@ -302,13 +305,15 @@ async function processFile(filePath) {
         let finalContent = content;
         
         if (detection.hasTag) {
-            if (isTagFormatValid(detection.lastLine)) {
+            const fixedTag = fixTagFormat(detection.lastLine);
+            const canonicalContent = detection.contentWithoutLastLine.trimEnd() + '\n\n' + fixedTag;
+
+            if (isTagFormatValid(detection.lastLine) && canonicalContent === content) {
                 log(`  ✓ Tag format is valid`);
                 stats.skipped++;
             } else {
-                log(`  ⚠ Tag format needs fixing`);
-                const fixedTag = fixTagFormat(detection.lastLine);
-                finalContent = detection.contentWithoutLastLine + '\n' + fixedTag;
+                log(`  ⚠ Tag format or body/tag spacing needs fixing`);
+                finalContent = canonicalContent;
                 modified = true;
                 stats.fixed++;
                 log(`  ✓ Fixed tag: ${fixedTag}`);
@@ -320,7 +325,7 @@ async function processFile(filePath) {
             
             if (generatedTag) {
                 const fixedTag = fixTagFormat(generatedTag);
-                finalContent = content + '\n' + fixedTag;
+                finalContent = content.trimEnd() + '\n\n' + fixedTag;
                 modified = true;
                 stats.generated++;
                 log(`  ✓ Generated tag: ${fixedTag}`);

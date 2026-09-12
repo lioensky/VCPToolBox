@@ -89,7 +89,10 @@ function parseDateToNum(dateStr) {
 
 // --- Helper: Tag Processing (aligned with DailyNote plugin) ---
 function detectTagLine(content) {
-    const lines = content.split('\n');
+    const lines = content.split(/\r?\n/);
+    while (lines.length > 1 && lines[lines.length - 1].trim() === '') {
+        lines.pop();
+    }
     if (lines.length === 0) {
         return { hasTag: false, lastLine: '', contentWithoutLastLine: content };
     }
@@ -126,12 +129,12 @@ function processTags(contentText, externalTag) {
     if (externalTag && typeof externalTag === 'string' && externalTag.trim() !== '') {
         const fixedTag = fixTagFormat(externalTag);
         const contentBody = detection.hasTag ? detection.contentWithoutLastLine : contentText;
-        return contentBody.trimEnd() + '\n' + fixedTag;
+        return contentBody.trimEnd() + '\n\n' + fixedTag;
     }
 
     if (detection.hasTag) {
         const fixedTag = fixTagFormat(detection.lastLine);
-        return detection.contentWithoutLastLine.trimEnd() + '\n' + fixedTag;
+        return detection.contentWithoutLastLine.trimEnd() + '\n\n' + fixedTag;
     }
 
     throw new Error("Tag is missing. Please provide a 'Tag' argument or add a 'Tag:' line at the end of the 'Content'.");
