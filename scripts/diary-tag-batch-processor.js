@@ -110,6 +110,14 @@ function fixTagFormat(tagLine) {
 }
 
 /**
+ * 按日记写入时的规则拼接正文和Tag。
+ * 正文末尾去除多余空白，并在Tag前保留一个空行。
+ */
+function composeTaggedContent(contentBody, fixedTag) {
+    return contentBody.trimEnd() + '\n\n' + fixedTag;
+}
+
+/**
  * 检查Tag格式是否合规
  */
 function isTagFormatValid(tagLine) {
@@ -308,7 +316,7 @@ async function processFile(filePath) {
             } else {
                 log(`  ⚠ Tag format needs fixing`);
                 const fixedTag = fixTagFormat(detection.lastLine);
-                finalContent = detection.contentWithoutLastLine + '\n' + fixedTag;
+                finalContent = composeTaggedContent(detection.contentWithoutLastLine, fixedTag);
                 modified = true;
                 stats.fixed++;
                 log(`  ✓ Fixed tag: ${fixedTag}`);
@@ -320,7 +328,7 @@ async function processFile(filePath) {
             
             if (generatedTag) {
                 const fixedTag = fixTagFormat(generatedTag);
-                finalContent = content + '\n' + fixedTag;
+                finalContent = composeTaggedContent(content, fixedTag);
                 modified = true;
                 stats.generated++;
                 log(`  ✓ Generated tag: ${fixedTag}`);
