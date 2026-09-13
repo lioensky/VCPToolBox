@@ -462,7 +462,7 @@ async function processTags(contentText, externalTag) {
         }
         const fixedTag = fixTagFormat(externalTag);
         const contentBody = detection.hasTag ? detection.contentWithoutLastLine : contentText;
-        return contentBody.trimEnd() + '\n' + fixedTag;
+        return contentBody.trimEnd() + '\n\n' + fixedTag;
     }
 
     // Fallback to detecting tag in content
@@ -471,7 +471,7 @@ async function processTags(contentText, externalTag) {
         debugLog('Tag detected in content, fixing format...');
         const fixedTag = fixTagFormat(detection.lastLine);
         // Ensure there's exactly one newline before the tag.
-        return detection.contentWithoutLastLine.trimEnd() + '\n' + fixedTag;
+        return detection.contentWithoutLastLine.trimEnd() + '\n\n' + fixedTag;
     }
 
     if (TAG_MASTER_ENABLED) {
@@ -480,7 +480,7 @@ async function processTags(contentText, externalTag) {
         if (generatedTag) {
             const fixedTag = fixTagFormat(generatedTag);
             debugLog('Generated and appended tag:', fixedTag);
-            return contentText.trimEnd() + '\n' + fixedTag;
+            return contentText.trimEnd() + '\n\n' + fixedTag;
         }
 
         console.warn('[DailyNote] TagMaster enabled but failed to generate tags. Falling back to missing-tag error.');
