@@ -136,6 +136,7 @@ const AA_COMM_REGEX = /\[Tips:这是一条来自AgentAssistant通讯中心\s+([\
 
 // 群聊发言头标记，如 [莱恩的发言]: 或 [小克的发言]:
 const GROUPCHAT_SENDER_REGEX = /^\s*\[([^\]]{1,30})的发言\]\s*[:：]\s*/;
+const SYSTEM_META_SENDER_REGEX = /<system_meta>\s*\[系统提示\]\s*[:：]\s*([^\s，\r\n<>]+?)\s*发送于/i;
 
 const NEW_CONVERSATION_START_SUFFIX = '；这是一个新对话的起点';
 const ONERING_TAIL_STACK_REGEX = /(?:\s*\[OneRing通知:[\s\S]*?于\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?发送于[^\]]*?(?:；这是一个新对话的起点)?\]\s*)+$/;
@@ -244,8 +245,18 @@ function classifyUserContent(rawContent, defaultUserName, registeredAgentName = 
         return { senderName: aaSenderName, source: 'AA', cleanText: text };
     }
 
-    // 5. 普通用户发言
-    return { senderName: defaultUserName, source: 'Direct', cleanText: text };
+    // 5. 客户端元数据来源（如移动端 <system_meta>[系统提示]：用户名发送于...）
+    let clientMetaSenderName = null;
+    const metaMatch = SYSTEM_META_SENDER_REGEX.exec(text);
+    if (metaMatch) {
+        const candidate = metaMatch[1].trim();
+        if (candidate && !isUnresolvedTemplateName(candidate)) {
+            clientMetaSenderName = candidate;
+        }
+    }
+
+    // 6. 普通用户发言
+    return { senderName: clientMetaSenderName || defaultUserName, source: 'Direct', cleanText: text };
 }
 
 /**
