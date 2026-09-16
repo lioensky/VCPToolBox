@@ -19,6 +19,7 @@
   "dependencies": {
     "@dqbd/tiktoken": "^1.0.22",
     "@mozilla/readability": "^0.6.0",
+    "@napi-rs/canvas": "^0.1.80",
     "@node-rs/jieba": "^2.0.1",
     "@tavily/core": "^0.7.6",
     "axios": "^1.6.0",
@@ -58,6 +59,7 @@
     "rss-parser": "^3.13.0",
     "serpapi": "^2.2.1",
     "sharp": "0.35.3",
+    "ssh2": "^1.17.0",
     "stylelint": "^16.25.0",
     "tar": "^7.5.13",
     "trash": "^10.0.0",
