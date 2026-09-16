@@ -109,16 +109,22 @@ class SarPromptManager {
      * 模型匹配辅助函数
      * @param {string[]} modelList - 已toLowerCase的模型名数组
      * @param {string} normalizedModel - 已toLowerCase的当前模型名
-     * @param {string} matchMode - 'exact'(默认) | 'includes'(子串包含)
+     * @param {string} matchMode - 'exact'(默认) | 'includes' | 'exactExclude' | 'includesExclude'
      * @returns {boolean}
      */
     isModelMatch(modelList, normalizedModel, matchMode = 'exact') {
         const filtered = modelList.filter(m => m.length > 0); // 过滤空字符串
-        if (matchMode === 'includes') {
-            return filtered.some(m => normalizedModel.includes(m));
+        if (filtered.length === 0) {
+            return false;
         }
-        // 默认精确匹配（含未知matchMode值的fallback）
-        return filtered.includes(normalizedModel);
+
+        const isExcludeMode = matchMode === 'exactExclude' || matchMode === 'includesExclude';
+        const isIncludesMode = matchMode === 'includes' || matchMode === 'includesExclude';
+        const matched = isIncludesMode
+            ? filtered.some(m => normalizedModel.includes(m))
+            : filtered.includes(normalizedModel);
+
+        return isExcludeMode ? !matched : matched;
     }
 
     getSarPrompt(modelName) {

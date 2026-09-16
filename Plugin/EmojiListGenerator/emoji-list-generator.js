@@ -18,6 +18,29 @@ function debugLog(message, ...args) {
     }
 }
 
+function compareText(a, b) {
+    return String(a).localeCompare(String(b), 'zh-Hans-CN', {
+        numeric: true,
+        sensitivity: 'base'
+    });
+}
+
+async function writeFileIfChanged(filePath, nextContent) {
+    try {
+        const currentContent = await fs.readFile(filePath, 'utf-8');
+        if (currentContent === nextContent) {
+            return false;
+        }
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            throw error;
+        }
+    }
+
+    await fs.writeFile(filePath, nextContent, 'utf-8');
+    return true;
+}
+
 // --- Main Logic ---
 async function generateEmojiLists() {
     if (!sourceImageBaseDir) {
@@ -34,7 +57,9 @@ async function generateEmojiLists() {
         debugLog(`Ensured output directory exists: ${outputDirForLists}`);
 
         const entries = await fs.readdir(sourceImageBaseDir, { withFileTypes: true });
-        const emojiDirs = entries.filter(entry => entry.isDirectory() && entry.name.endsWith('表情包'));
+        const emojiDirs = entries
+            .filter(entry => entry.isDirectory() && entry.name.endsWith('表情包'))
+            .sort((left, right) => compareText(left.name, right.name));
 
         if (emojiDirs.length === 0) {
             console.warn(`[EmojiListGenerator] No directories ending with '表情包' found in ${sourceImageBaseDir}`);
@@ -43,6 +68,8 @@ async function generateEmojiLists() {
         }
 
         let generatedCount = 0;
+        let updatedCount = 0;
+        let unchangedCount = 0;
         for (const dirEntry of emojiDirs) {
             const emojiPackName = dirEntry.name; // e.g., "通用表情包"
             const emojiPackPath = path.join(sourceImageBaseDir, emojiPackName);
@@ -50,20 +77,34 @@ async function generateEmojiLists() {
 
             try {
                 const files = await fs.readdir(emojiPackPath);
-                const imageFiles = files.filter(file => /\.(jpg|jpeg|png|gif)$/i.test(file));
+                const imageFiles = files
+                    .filter(file => /\.(jpg|jpeg|png|gif)$/i.test(file))
+                    .sort(compareText);
                 const listContent = imageFiles.join('|');
 
-                await fs.writeFile(outputFilePath, listContent);
-                debugLog(`Successfully generated list for ${emojiPackName} at ${outputFilePath} with ${imageFiles.length} images.`);
+                const didWrite = await writeFileIfChanged(outputFilePath, listContent);
+                if (didWrite) {
+                    updatedCount++;
+                    debugLog(`Updated list for ${emojiPackName} at ${outputFilePath} with ${imageFiles.length} images.`);
+                } else {
+                    unchangedCount++;
+                    debugLog(`Skipped unchanged list for ${emojiPackName} at ${outputFilePath}.`);
+                }
                 generatedCount++;
             } catch (error) {
                 console.error(`[EmojiListGenerator] Error processing emoji pack ${emojiPackName}:`, error.message);
                 // Continue to next pack if one fails
             }
         }
-        const successMsg = `Generated ${generatedCount} emoji list files in ${outputDirForLists}.`;
+        const successMsg = `Processed ${generatedCount} emoji list files in ${outputDirForLists}; updated ${updatedCount}, unchanged ${unchangedCount}.`;
         console.log(`[EmojiListGenerator] ${successMsg}`);
-        process.stdout.write(JSON.stringify({ status: "success", message: successMsg, generated_files: generatedCount }));
+        process.stdout.write(JSON.stringify({
+            status: "success",
+            message: successMsg,
+            generated_files: generatedCount,
+            updated_files: updatedCount,
+            unchanged_files: unchangedCount
+        }));
 
     } catch (error) {
         if (error.code === 'ENOENT' && error.path === sourceImageBaseDir) {

@@ -87,6 +87,22 @@ function compareText(a, b) {
     });
 }
 
+async function writeTextFileIfChanged(filePath, nextContent) {
+    try {
+        const currentContent = await fs.readFile(filePath, 'utf-8');
+        if (currentContent === nextContent) {
+            return false;
+        }
+    } catch (error) {
+        if (!error || error.code !== 'ENOENT') {
+            throw error;
+        }
+    }
+
+    await fs.writeFile(filePath, nextContent, 'utf-8');
+    return true;
+}
+
 function buildPreviewUrl(relativePath) {
     return `/admin_api/emojis/file?path=${encodeURIComponent(relativePath)}`;
 }
@@ -536,6 +552,9 @@ async function rebuildEmojiGeneratedLists() {
         .sort(compareText);
 
     const packs = [];
+    let updatedCount = 0;
+    let unchangedCount = 0;
+
     for (const packName of emojiDirs) {
         const packDirPath = path.join(IMAGE_ROOT_DIR, packName);
         const packEntries = await fs.readdir(packDirPath, { withFileTypes: true });
@@ -546,17 +565,29 @@ async function rebuildEmojiGeneratedLists() {
             .sort(compareText);
 
         const targetFilePath = path.join(EMOJI_LISTS_DIR, `${packName}.txt`);
-        await fs.writeFile(targetFilePath, imageFiles.join('|'), 'utf-8');
+        const didWrite = await writeTextFileIfChanged(
+            targetFilePath,
+            imageFiles.join('|')
+        );
+
+        if (didWrite) {
+            updatedCount += 1;
+        } else {
+            unchangedCount += 1;
+        }
 
         packs.push({
             name: packName,
             count: imageFiles.length,
             filePath: targetFilePath,
+            updated: didWrite,
         });
     }
 
     return {
         generatedCount: packs.length,
+        updatedCount,
+        unchangedCount,
         packs,
     };
 }

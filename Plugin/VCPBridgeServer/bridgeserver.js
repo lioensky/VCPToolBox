@@ -878,7 +878,13 @@ function resolveUpstreamEndpoint(model, stream) {
 
 async function proxyRequest(req, res, { messages, model, body, downstreamFormat }) {
     // 0. 解析 Profile（请求级动态切换）
+    if (runtimeConfig.debugMode) {
+        console.log(`[VCPBridgeServer] Incoming: path=${req.path} | rawModel=${model} | headerProfile=${req.headers['x-bridge-profile']}`);
+    }
     const profileConfig = resolveProfileForRequest(req, model);
+    if (runtimeConfig.debugMode) {
+        console.log(`[VCPBridgeServer] Matched profile: ${profileConfig ? profileConfig.name : 'NONE (fallback to global)'}`);
+    }
 
     // 如果 profile 通过 model 前缀提取了真实 model，使用它
     const effectiveModel = profileConfig?._extractedModel || model;
@@ -998,6 +1004,27 @@ function startServer() {
             modelMap: runtimeConfig.modelMap,
             configPath: runtimeConfig.configPath
         });
+    });
+
+    // 模型列表探活（支持 OpenAI 根端点与 Profile 前缀端点，兼容客户端连通性检查）
+    app.get(['/v1/models', '/v1/:profile/models'], (req, res, next) => {
+        const profile = req.params?.profile;
+        if (profile && ['chat', 'responses', 'messages', 'beta'].includes(profile)) {
+            return next();
+        }
+        const configuredModels = new Set([
+            runtimeConfig.defaultModel,
+            ...Object.keys(runtimeConfig.modelMap || {}),
+            ...Object.values(runtimeConfig.modelMap || {})
+        ].filter(Boolean));
+        if (configuredModels.size === 0) configuredModels.add('gpt-5.6-sol');
+        const data = Array.from(configuredModels).map(id => ({
+            id,
+            object: 'model',
+            created: 1700000000,
+            owned_by: 'vcp-bridge'
+        }));
+        res.json({ object: 'list', data });
     });
 
     // ─── Profile-prefixed routes ─────────────────────────────────────────

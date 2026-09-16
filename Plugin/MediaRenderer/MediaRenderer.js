@@ -78,6 +78,14 @@ const BUILTIN_LIBRARIES = Object.freeze({
     threejs: {
         path: path.join(PROJECT_ROOT, 'AdminPanel-Vue', 'vendor', 'three.min.js'),
         global: 'THREE'
+    },
+    pixi: {
+        path: path.join(PROJECT_ROOT, 'AdminPanel-Vue', 'vendor', 'pixi.min.js'),
+        global: 'PIXI'
+    },
+    pixijs: {
+        path: path.join(PROJECT_ROOT, 'AdminPanel-Vue', 'vendor', 'pixi.min.js'),
+        global: 'PIXI'
     }
 });
 const ASSET_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
@@ -237,9 +245,11 @@ function normalizeLibraries(value) {
         const name = String(item || '').trim().toLowerCase();
         if (!name) continue;
         if (!BUILTIN_LIBRARIES[name]) {
-            throw new Error(`未知内置库 ${name}，当前支持 anime、three。`);
+            throw new Error(`未知内置库 ${name}，当前支持 anime、three、pixi。`);
         }
-        const canonicalName = name.startsWith('anime') ? 'anime' : 'three';
+        let canonicalName = 'anime';
+        if (name.startsWith('three')) canonicalName = 'three';
+        else if (name.startsWith('pixi')) canonicalName = 'pixi';
         if (!normalized.includes(canonicalName)) normalized.push(canonicalName);
     }
     return normalized;
@@ -273,6 +283,12 @@ function detectBuiltinLibraryFromUrl(rawUrl) {
         /(?:^|\/)three(?:\.min)?\.js$/.test(pathname)
     ) {
         return 'three';
+    }
+    if (
+        /(?:^|\/)pixi(?:\.js)?(?:@[^/]+)?(?:\/dist)?\/pixi(?:\.min)?\.js$/.test(pathname) ||
+        /(?:^|\/)pixi(?:\.min)?\.js$/.test(pathname)
+    ) {
+        return 'pixi';
     }
     return null;
 }
@@ -750,7 +766,7 @@ function assertNoExternalScripts(source) {
         /<script\b[^>]*\bsrc\s*=\s*(["'])(?:https?:\/\/|file:\/\/)[\s\S]*?\1[^>]*>/i
     );
     if (match) {
-        throw new Error('仅允许通过可信 CDN script 标签引用 Anime.js/Three.js；其他外部脚本禁止执行。');
+        throw new Error('仅允许通过可信 CDN script 标签引用 Anime.js/Three.js/Pixi.js；其他外部脚本禁止执行。');
     }
 }
 

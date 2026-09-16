@@ -38,6 +38,62 @@ function escapeRegExp(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * 将 generated_lists 中的 `文件名.ext|文件名.ext` 压缩为供 AI 阅读的扩展名分组格式。
+ * 磁盘格式和前端 API 契约保持不变，仅减少提示词中重复扩展名产生的 token。
+ *
+ * 示例：
+ * 开心.jpg|难过.jpg|鼓掌.png
+ * ->
+ * .jpg表情:开心|难过
+ * .png表情:鼓掌
+ */
+function formatEmojiListForPrompt(rawList) {
+    if (typeof rawList !== 'string' || !rawList.trim()) {
+        return '';
+    }
+
+    const groups = new Map();
+    const ungrouped = [];
+
+    for (const rawFileName of rawList.split('|')) {
+        const fileName = rawFileName.trim();
+        if (!fileName) continue;
+
+        const extension = path.extname(fileName).toLowerCase();
+        if (!extension || extension === '.') {
+            ungrouped.push(fileName);
+            continue;
+        }
+
+        const baseName = fileName.slice(0, -path.extname(fileName).length);
+        if (!groups.has(extension)) {
+            groups.set(extension, []);
+        }
+        groups.get(extension).push(baseName);
+    }
+
+    const lines = [...groups.entries()]
+        .sort(([leftExtension], [rightExtension]) => leftExtension.localeCompare(rightExtension))
+        .map(([extension, names]) => {
+            names.sort((left, right) => left.localeCompare(right, 'zh-Hans-CN', {
+                numeric: true,
+                sensitivity: 'base'
+            }));
+            return `${extension}表情:${names.join('|')}`;
+        });
+
+    if (ungrouped.length > 0) {
+        ungrouped.sort((left, right) => left.localeCompare(right, 'zh-Hans-CN', {
+            numeric: true,
+            sensitivity: 'base'
+        }));
+        lines.push(`其他表情:${ungrouped.join('|')}`);
+    }
+
+    return lines.join('\n');
+}
+
 function replaceFirstAliasPlaceholder(text, alias, replacementText, prefix = '') {
     const escapedAlias = escapeRegExp(alias);
     const escapedPrefix = prefix ? `${escapeRegExp(prefix)}:` : '';
@@ -549,6 +605,25 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
     }
 }
 
+function applySingleDetectorRule(text, rule) {
+    if (typeof rule?.detector !== 'string' || rule.detector.length === 0 || typeof rule?.output !== 'string') {
+        return text;
+    }
+
+    // 支持 /pattern/flags 正则表达式语法
+    const regexMatch = rule.detector.match(/^\/(.+)\/([dgimsuvy]*)$/s);
+    if (regexMatch) {
+        try {
+            const regex = new RegExp(regexMatch[1], regexMatch[2]);
+            return text.replace(regex, rule.output);
+        } catch (e) {
+            console.warn(`[Detector] 无效的正则表达式: ${rule.detector}，回退为普通字符串替换`);
+        }
+    }
+
+    return text.replaceAll(rule.detector, rule.output);
+}
+
 function applyDetectorRules(text, role, context = {}) {
     const { detectors = [], superDetectors = [] } = context;
     if (text == null) return '';
@@ -557,16 +632,12 @@ function applyDetectorRules(text, role, context = {}) {
 
     if (role === 'system') {
         for (const rule of detectors) {
-            if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
-                processedText = processedText.replaceAll(rule.detector, rule.output);
-            }
+            processedText = applySingleDetectorRule(processedText, rule);
         }
     }
 
     for (const rule of superDetectors) {
-        if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
-            processedText = processedText.replaceAll(rule.detector, rule.output);
-        }
+        processedText = applySingleDetectorRule(processedText, rule);
     }
 
     return processedText;
@@ -625,7 +696,7 @@ async function replaceOtherVariables(text, model, role, context) {
             if (group && group.models && group.content) {
                 const modelList = group.models.map(m => m.trim().toLowerCase());
                 const matchMode = group.matchMode || 'exact';
-                // 检查当前模型是否匹配（支持exact/includes两种模式）
+                // 检查当前模型是否匹配（支持正向和排除模式）
                 if (model && sarPromptManager.isModelMatch(modelList, model.toLowerCase(), matchMode)) {
                     let promptValue = group.content;
                     // 模型匹配，准备注入的文本
@@ -881,13 +952,19 @@ async function replacePriorityVariables(text, context, role) {
     }
 
     // --- 表情包处理 ---
+    // 缓存仍保留 `文件名.ext|文件名.ext` 原始格式，确保前端接口兼容；
+    // 仅在注入 AI 提示词时按扩展名分组并省略每个文件名的重复后缀。
     const emojiPlaceholderRegex = /\{\{([^{}]+?表情包)\}\}/g;
     let emojiMatch;
     while ((emojiMatch = emojiPlaceholderRegex.exec(processedText)) !== null) {
         const placeholder = emojiMatch[0];
         const emojiName = emojiMatch[1];
         const emojiList = cachedEmojiLists.get(emojiName);
-        processedText = processedText.replaceAll(placeholder, emojiList || `[${emojiName}列表不可用]`);
+        const promptEmojiList = formatEmojiListForPrompt(emojiList);
+        processedText = processedText.replaceAll(
+            placeholder,
+            promptEmojiList || `[${emojiName}列表不可用]`
+        );
     }
 
     // --- 日记本处理 (迁移到 RAGDiaryPlugin) ---
@@ -901,6 +978,7 @@ module.exports = {
     replaceAgentVariables: resolveAllVariables,
     replaceOtherVariables,
     replacePriorityVariables,
+    formatEmojiListForPrompt,
     applyDetectorRules,
     applyDetectorsToMessages,
     extractTextFromMessageContent,

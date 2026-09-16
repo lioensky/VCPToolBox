@@ -3455,14 +3455,20 @@ class RAGDiaryPlugin {
             }
         }
 
-        // 🌟 V10: 联想共现发现 - 每个已召回 chunk 作为种子，在同一虚拟索引范围内搜索并提取共现结果
+        // 🌟 V10: 联想共现发现 - 每个已召回 chunk 作为种子，在同一虚拟索引范围内搜索并提取共现结果。
+        // ::RiverMemo::Associate 的二次联想同样进入 Rust RiverMemo；普通 ::Associate
+        // 暂时保留既有 KNN/TagMemo 路径，避免改变旧占位符语义。
         if (useAssociate && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
             const targetDiaries = associateDiaries.length > 0 ? associateDiaries : diaryNames;
             const associateResults = await this._applyAssociativeDiscovery(
                 finalResultsForBroadcast,
                 targetDiaries,
                 finalK,
-                useRiverMemo ? 0 : (tagWeight ?? defaultTagWeight)
+                useRiverMemo ? null : (tagWeight ?? defaultTagWeight),
+                {
+                    useRiverMemo,
+                    riverBaseTagBoost: defaultTagWeight
+                }
             );
             if (associateResults.length > 0) {
                 finalResultsForBroadcast = [...finalResultsForBroadcast, ...associateResults];
@@ -3881,8 +3887,12 @@ class RAGDiaryPlugin {
 
     /**
      * 🌟 V10: 联想共现发现 (Associative Co-occurrence Discovery)
-     * 将已召回的 n 个 chunk 作为种子，每个种子以当前动态 K 在目标索引中执行纯语义搜索，
-     * 产生 n 组联想结果。从中提取在 ≥2 组中共现的结果，作为"潜在认知共现"额外追加。
+     * 将已召回的 n 个 chunk 作为种子，每个种子在目标索引中执行联想搜索，
+     * 产生 n 组结果。从中提取在 ≥2 组中共现的结果，作为"潜在认知共现"额外追加。
+     *
+     * ::RiverMemo::Associate 使用 Rust Native Query Plan + RiverMemo Topology V3；
+     * 普通 ::Associate 保留既有 KNN/TagMemo 搜索。两条路径共享相同的跨种子
+     * 共现判定、原始结果排除和最终排序规则。
      *
      * 聚合模式下，种子会跨所有聚合日记本索引搜索，实现真正的跨域认知关联。
      * 结果为额外追加，不占用原始 K 配额。
@@ -3890,10 +3900,17 @@ class RAGDiaryPlugin {
      * @param {Array} seedResults - 原始召回结果（每个需包含 text 字段）
      * @param {string[]} targetDiaries - 联想搜索的目标日记本列表
      * @param {number} dynamicK - 每个种子的联想搜索深度
-     * @param {number|null} associateTagWeight - 联想搜索的 TagMemo 权重（动态计算值，null 则无 Tag 增强）
+     * @param {number|null} associateTagWeight - 旧路径的 TagMemo 权重
+     * @param {{useRiverMemo?: boolean, riverBaseTagBoost?: number}} options - 联想引擎配置
      * @returns {Promise<Array>} 共现结果数组（source='associate'）
      */
-    async _applyAssociativeDiscovery(seedResults, targetDiaries, dynamicK, associateTagWeight = null) {
+    async _applyAssociativeDiscovery(
+        seedResults,
+        targetDiaries,
+        dynamicK,
+        associateTagWeight = null,
+        options = {}
+    ) {
         if (!seedResults || seedResults.length === 0 || !targetDiaries || targetDiaries.length === 0) {
             return [];
         }
@@ -3934,11 +3951,46 @@ class RAGDiaryPlugin {
         const originalPathSet = new Set(seedResults.map(r => r.fullPath).filter(Boolean));
 
         // 3. 每个种子在同一个虚拟联合索引范围内执行搜索。
-        // KnowledgeBaseManager 会统一增强查询、合并物理索引候选并全局 Top-K，
-        // 这里不再自行遍历成员索引，避免重新引入按库候选配额。
+        // RiverMemo 分支将 ANN、候选合并、hydrate、语义去重及 Topology V3
+        // 收敛到 Rust；旧路径仍由 KnowledgeBaseManager 执行联合索引搜索。
         const selectedDiaries = [...new Set(
             targetDiaries.map(name => String(name || '').trim()).filter(Boolean)
         )];
+        const useRiverMemo = options.useRiverMemo === true;
+        const canUseNativeRiverMemo = useRiverMemo
+            && typeof this.vectorDBManager?.executeNativeRiverQuery === 'function';
+        if (useRiverMemo && !canUseNativeRiverMemo) {
+            const error = new Error('RiverMemo 联想需要原生联合查询接口');
+            error.code = 'RIVERMEMO_ASSOCIATE_UNAVAILABLE';
+            throw error;
+        }
+
+        const safeSearchK = Math.max(
+            1,
+            Math.min(1000, Math.floor(Number(dynamicK) || 10))
+        );
+        const riverConfig =
+            this.ragParams?.KnowledgeBaseManager?.riverMemo?.candidateSuperset || {};
+        const riverCandidateK = Math.max(
+            safeSearchK,
+            Math.min(
+                5000,
+                Math.max(
+                    safeSearchK * 3,
+                    Math.floor(Number(riverConfig.queryK) || 100),
+                    Math.floor(Number(riverConfig.maxUnionCandidates) || 300)
+                )
+            )
+        );
+        const riverBaseTagBoost = Math.max(
+            0,
+            Math.min(
+                1,
+                Number.isFinite(Number(options.riverBaseTagBoost))
+                    ? Number(options.riverBaseTagBoost)
+                    : 0.6
+            )
+        );
         const coOccurrenceMap = new Map(); // textKey → { count, bestScore, result }
 
         for (let seedIdx = 0; seedIdx < seedChunks.length; seedIdx++) {
@@ -3947,11 +3999,60 @@ class RAGDiaryPlugin {
 
             let allResults = [];
             try {
-                // 🌟 V10.2: 使用动态计算的 TagMemo 权重参与联想发现
-                allResults = await this.vectorDBManager.search(
-                    selectedDiaries, seed.vector, dynamicK, associateTagWeight
-                );
+                if (canUseNativeRiverMemo) {
+                    const riverResult =
+                        await this.vectorDBManager.executeNativeRiverQuery(
+                            {
+                                text: seed.text,
+                                vector: seed.vector instanceof Float32Array
+                                    ? seed.vector
+                                    : new Float32Array(seed.vector)
+                            },
+                            {
+                                diaryNames: selectedDiaries,
+                                topK: safeSearchK,
+                                candidateK: riverCandidateK,
+                                sourceObservationConfig: {
+                                    baseTagBoost: riverBaseTagBoost,
+                                    coreBoostFactor: 1.33
+                                },
+                                enabled: true,
+                                fallbackToLegacy: true
+                            }
+                        );
+                    allResults = Array.isArray(riverResult?.results)
+                        ? riverResult.results.map(result => ({
+                            ...result,
+                            _associateEngine: 'rivermemo',
+                            _associateRiverMemo: {
+                                artifactSig: riverResult.artifactSig || null,
+                                queryId: riverResult.queryId || null,
+                                omega: Number(result.omega) || 0,
+                                regime:
+                                    result.riverRegime
+                                    || riverResult.omega?.regime
+                                    || null,
+                                topologyBonus:
+                                    Number(result.topologyBonus) || 0,
+                                anchorBonus:
+                                    Number(result.anchorBonus) || 0
+                            }
+                        }))
+                        : [];
+                } else {
+                    // 兼容旧 ::Associate：使用动态 TagMemo 权重或普通 KNN。
+                    allResults = await this.vectorDBManager.search(
+                        selectedDiaries,
+                        seed.vector,
+                        safeSearchK,
+                        associateTagWeight
+                    );
+                }
             } catch (e) {
+                console.warn(
+                    `[RAGDiaryPlugin] Associate seed ${seedIdx + 1}/${seedChunks.length} ` +
+                    `${canUseNativeRiverMemo ? 'RiverMemo' : 'legacy'} search failed: ${e.message}`
+                );
                 allResults = [];
             }
 
@@ -3986,6 +4087,9 @@ class RAGDiaryPlugin {
                     ...data.result,
                     source: 'associate',
                     _associateCoCount: data.count,
+                    _associateEngine:
+                        data.result._associateEngine
+                        || (canUseNativeRiverMemo ? 'rivermemo' : 'legacy'),
                     score: data.bestScore
                 });
             }
@@ -3999,7 +4103,16 @@ class RAGDiaryPlugin {
             return (b.score || 0) - (a.score || 0);
         });
 
-        console.log(`[RAGDiaryPlugin] 🌟 Associate: ${seedChunks.length} 种子 × ${selectedDiaries.length} 索引（联合搜索）→ ${coOccurrenceMap.size} 候选 → ${associateResults.length} 共现命中 (tagWeight=${associateTagWeight?.toFixed(3) ?? 'null'})`);
+        console.log(
+            `[RAGDiaryPlugin] 🌟 Associate [${canUseNativeRiverMemo
+                ? 'RiverMemo Topology V3 Rust/Rayon'
+                : 'Legacy KNN/TagMemo'}]: ` +
+            `${seedChunks.length} 种子 × ${selectedDiaries.length} 索引（联合搜索）` +
+            `→ ${coOccurrenceMap.size} 候选 → ${associateResults.length} 共现命中 ` +
+            `(tagWeight=${canUseNativeRiverMemo
+                ? riverBaseTagBoost.toFixed(3)
+                : (associateTagWeight?.toFixed(3) ?? 'null')})`
+        );
 
         return associateResults;
     }
