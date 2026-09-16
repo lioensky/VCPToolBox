@@ -8,9 +8,9 @@ const PLUGIN_ROOT = __dirname;
 const SKILL_ROOT = path.join(PLUGIN_ROOT, 'SKILL');
 const OUTPUT_FILE = path.join(PLUGIN_ROOT, 'skill-index.txt');
 const CONFIG_FILE = path.join(PLUGIN_ROOT, 'config.env');
-const DEFAULT_HEADER_TEXT = '这里是Skill技能目录，若你需要对应技能，请使用文件管理插件的Ink模式读取技能。';
+const DEFAULT_HEADER_TEXT = '这里是Skill技能目录，若你需要对应技能，可直接引用下方折叠块中已展开的技能正文；如需按需深读完整技能文件，可用 ServerFileOperator 的 ReadFile 命令（filePath 填下方 Linux 绝对路径），或用 LinuxShellExecutor（cat/less 等）直接读取。';
 const DEFAULT_SKILL_THRESHOLD = 0.35;
-const DEFAULT_PATH_MODE = 'absolute_windows';
+const DEFAULT_PATH_MODE = 'auto';
 
 function loadLocalConfigEnv() {
   try {
@@ -56,18 +56,28 @@ function getSkillThreshold() {
   return DEFAULT_SKILL_THRESHOLD;
 }
 
+function defaultPathMode() {
+  return process.platform === 'win32' ? 'absolute_windows' : 'linux';
+}
+
 function getPathMode() {
   const value = String(process.env.SKILLBRIDGE_PATH_MODE || '').trim().toLowerCase();
   if (value === 'relative') return 'relative';
   if (value === 'absolute_windows') return 'absolute_windows';
-  return DEFAULT_PATH_MODE;
+  if (value === 'linux' || value === 'posix') return 'linux';
+  return defaultPathMode();
 }
 
 function formatSkillPath(skillMdPath) {
   const resolvedPath = path.resolve(skillMdPath);
-  if (getPathMode() === 'relative') {
+  const mode = getPathMode();
+  if (mode === 'relative') {
     return path.relative(PLUGIN_ROOT, resolvedPath).replace(/\\/g, '/');
   }
+  if (mode === 'linux') {
+    return resolvedPath.replace(/\\/g, '/');
+  }
+  // absolute_windows: 兼容旧 Windows 部署
   return resolvedPath.replace(/\//g, '\\');
 }
 
@@ -164,11 +174,13 @@ async function collectSkillEntries() {
       const frontmatter = extractFrontmatter(rawContent);
       const description = extractDescriptionFromFrontmatter(frontmatter);
       const summary = flattenText(description || extractFallbackSnippet(rawContent, 400));
+      const body = normalizeText(rawContent).replace(/^---[\s\S]*?\n---\s*/m, '').trim().replace(/^\n+/, '');
 
       entries.push({
         name: skillDirName,
         skillPath: formatSkillPath(skillMdPath),
-        summary
+        summary,
+        body
       });
     } catch (error) {
       entries.push({
@@ -198,6 +210,8 @@ function buildFoldOutput(entries) {
     lines.push(`[===vcp_fold: ${skillThreshold} ::desc: 《${entry.summary}》===]`);
     lines.push(`- Skill: ${entry.name}`);
     lines.push(`- 路径: ${entry.skillPath}`);
+    lines.push('');
+    lines.push(entry.body);
   }
 
   return lines.join('\n').trim();
