@@ -661,6 +661,20 @@ class KnowledgeBaseManager {
             `${v9Handle?.artifactSig || artifact.sourceArtifactSig}, ` +
             `nativeGeneration=${artifact.nativeGeneration ?? 'unknown'}.`
         );
+        try {
+            const pruneResult = this.tagMemoV10Engine?.artifactRepository?.prune();
+            if (pruneResult && (pruneResult.retired > 0 || pruneResult.deleted > 0)) {
+                console.log(
+                    `[KnowledgeBase] 🧹 Native Memo lifecycle prune complete: ` +
+                    `retired=${pruneResult.retired}, deleted=${pruneResult.deleted}.`
+                );
+            }
+        } catch (pruneError) {
+            console.warn(
+                '[KnowledgeBase] ⚠️ Native Memo artifact repository prune warning:',
+                pruneError.message || pruneError
+            );
+        }
         return artifact;
     }
 
