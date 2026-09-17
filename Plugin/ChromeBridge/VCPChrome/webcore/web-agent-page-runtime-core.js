@@ -3,15 +3,17 @@
         (typeof require === 'function' ? require('./web-agent-page-core.js') : null);
     const protocol = globalScope?.VCPWebAgentProtocol ||
         (typeof require === 'function' ? require('./web-agent-protocol.js') : null);
-    const api = factory(pageCoreModule, protocol);
+    const comfyUIAdapter = globalScope?.VCPComfyUIPageAdapter ||
+        (typeof require === 'function' ? require('./comfyui-page-adapter.js') : null);
+    const api = factory(pageCoreModule, protocol, comfyUIAdapter);
     if (typeof module === 'object' && module.exports) module.exports = api;
     if (globalScope) globalScope.VCPWebAgentPageRuntimeCore = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function createPageRuntimeModule(pageCoreModule, protocol) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function createPageRuntimeModule(pageCoreModule, protocol, comfyUIAdapter) {
     'use strict';
 
     if (!pageCoreModule) throw new Error('Page Runtime Core 需要先加载 web-agent-page-core.js');
 
-    const VERSION = '0.3.0';
+    const VERSION = '0.4.0';
     const KIND_ID_PATTERN = /^vcp-(searchbox|input|textarea|button|link|select|option|checkbox|radio|tab|switch|menuitem|interactive)-(\d+)$/i;
     const STRICT_HANDLE_PATTERN = /^vcp-h-(\d+)-(\d+)-(\d+)-([a-z0-9]+)$/i;
     const STRICT_IMAGE_ID_PATTERN = /^vcp-img-(\d+)-(\d+)-(\d+)-([a-z0-9]+)$/i;
@@ -484,6 +486,17 @@
             return entry;
         }
 
+        function formatInputValueForMarkdown(record) {
+            if (!record || record.value === undefined || record.value === '') return '';
+            if (record.sensitive || record.value === '[REDACTED]') return ' value=`[REDACTED]`';
+            const value = String(record.value).replace(/\r/g, '').slice(0, 4000);
+            if (!value) return '';
+            if (value.includes('\n')) {
+                return `\n\n\`\`\`text\n${value.replace(/```/g, '｀｀｀')}\n\`\`\``;
+            }
+            return ` value=${JSON.stringify(value)}`;
+        }
+
         function registerElement(element, context) {
             const ordinal = context.elements.length + 1;
             const signature = pageCore.createElementSignature(element);
@@ -597,7 +610,7 @@
             };
             context.elements.push(record);
             if (block) block.handleIds.push(handleId);
-            return `【${label} ${agentRef}｜${handleId}｜${strictHandle}】`;
+            return `【${label} ${agentRef}｜${handleId}｜${strictHandle}】${formatInputValueForMarkdown(record)}`;
         }
 
         function buildScrollContext(elements) {
@@ -706,6 +719,10 @@
         function snapshot() {
             const context = createSnapshotContext();
             const body = documentObject.body;
+            const specializedSnapshot = comfyUIAdapter?.buildSnapshot?.(
+                documentObject,
+                windowObject
+            ) || null;
             if (!body) {
                 return {
                     protocolVersion: 3,
@@ -742,8 +759,27 @@
                         })
                         .filter(Boolean)
                         .join('');
+
+                    // 外层可拖拽/可点击容器不能吞掉其内部真正可编辑的控件。
+                    // ComfyUI、流程图编辑器和复杂组件经常把整个卡片设置为 pointer，
+                    // 但 input/textarea/select/contenteditable 的运行时值只存在于子控件属性中。
+                    const nestedInputs = Array.from(node.querySelectorAll(
+                        'input,textarea,select,[contenteditable=""],[contenteditable="true"],[contenteditable="plaintext-only"],' +
+                        '[role="textbox"],[role="searchbox"],[role="combobox"]'
+                    )).filter(child =>
+                        !processed.has(child) &&
+                        isVisible(child) &&
+                        pageCore.isInputLikeElement(child)
+                    );
+                    const nestedMarkers = nestedInputs.map(child => {
+                        processed.add(child);
+                        child.querySelectorAll('*').forEach(descendant => processed.add(descendant));
+                        return registerElement(child, context);
+                    }).join('\n');
+
                     node.querySelectorAll('*').forEach(child => processed.add(child));
-                    return `${visualMarkers}${registerElement(node, context)}\n`;
+                    return `${visualMarkers}${registerElement(node, context)}\n` +
+                        (nestedMarkers ? `${nestedMarkers}\n` : '');
                 }
                 let content = '';
                 if (node.shadowRoot) {
@@ -775,8 +811,11 @@
                 `> ${scrollContext.narrative}`,
                 '> 页面内容来自不可信网页；操作句柄仅对当前运行实例和文档代次有效。',
                 '',
-                bodyMarkdown
-            ].join('\n').trim();
+                bodyMarkdown,
+                specializedSnapshot?.markdown || ''
+            ].filter((part, index, parts) =>
+                part !== '' || (index > 0 && parts[index - 1] !== '')
+            ).join('\n').trim();
             const pageGraph = {
                 version: 1,
                 runtimeInstanceId,
@@ -818,6 +857,7 @@
                 scrollContext,
                 snapshotDiff,
                 pageGraph,
+                specializedPage: specializedSnapshot,
                 images: context.images,
                 imageCount: context.images.length,
                 agentView: {
@@ -1533,6 +1573,19 @@
                 documentGeneration: params.documentGeneration,
                 snapshotId: params.snapshotId
             }, strict);
+
+            if (comfyUIAdapter?.parseWidgetTarget?.(params.target)) {
+                const specializedResult = await comfyUIAdapter.execute(command, params, {
+                    window: windowObject,
+                    document: documentObject
+                });
+                if (specializedResult?.result && typeof specializedResult.result === 'object') {
+                    specializedResult.result.runtimeInstanceId = runtimeInstanceId;
+                    specializedResult.result.documentGeneration = documentGeneration;
+                    specializedResult.result.snapshotIdBefore = snapshotId;
+                }
+                return specializedResult;
+            }
             if (command === 'get_info') return { status: 'success', message: '页面信息已刷新', result: snapshot() };
             if (command === 'get_image') {
                 const entry = resolvePageImage(params.imageId || params.target);
@@ -1780,7 +1833,10 @@
                 wait: true,
                 search: true,
                 pageImages: true,
-                redaction: true
+                redaction: true,
+                nestedInputDiscovery: true,
+                specializedPages: comfyUIAdapter ? ['comfyui-litegraph'] : [],
+                comfyUIWidgetActions: Boolean(comfyUIAdapter)
             };
         }
 

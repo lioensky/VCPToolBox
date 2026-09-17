@@ -305,34 +305,55 @@ document.addEventListener('DOMContentLoaded', () => {
     selectAgentModeBtn.addEventListener('click', () => selectClientMode('agent'));
     selectManagedModeBtn.addEventListener('click', () => selectClientMode('managed'));
 
-    // 手动刷新按钮
-    refreshButton.addEventListener('click', () => {
+    function requestManualRefresh(timeoutMs = 10000) {
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const finish = (callback, value) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutId);
+                callback(value);
+            };
+            const timeoutId = setTimeout(() => {
+                finish(reject, new Error(`手动刷新等待响应超时（${timeoutMs}ms）`));
+            }, timeoutMs);
+
+            chrome.runtime.sendMessage({ type: 'MANUAL_REFRESH' }, response => {
+                if (chrome.runtime.lastError) {
+                    finish(reject, new Error(chrome.runtime.lastError.message));
+                    return;
+                }
+                if (!response?.success) {
+                    finish(reject, new Error(response?.error || '扩展后台未返回刷新成功状态'));
+                    return;
+                }
+                finish(resolve, response);
+            });
+        });
+    }
+
+    // 手动刷新按钮：所有成功、失败和超时路径都必须在 finally 中恢复 UI。
+    refreshButton.addEventListener('click', async () => {
+        if (refreshButton.disabled) return;
         console.log('[VCP Popup] 🔄 手动刷新按钮被点击');
+        const originalText = '🔄 手动刷新';
         refreshButton.textContent = '⏳ 刷新中...';
         refreshButton.disabled = true;
-        
-        chrome.runtime.sendMessage({ type: 'MANUAL_REFRESH' }, (response) => {
-            console.log('[VCP Popup] 手动刷新响应:', response);
-            
-            if (chrome.runtime.lastError) {
-                console.log('[VCP Popup] ❌ 手动刷新错误:', chrome.runtime.lastError);
-                refreshButton.textContent = '❌ 刷新失败';
-            } else if (response && response.success) {
-                console.log('[VCP Popup] ✅ 手动刷新成功');
-                refreshButton.textContent = '✅ 已刷新';
-                // 延迟加载最新信息
-                setTimeout(loadLastPageInfo, 300);
-            } else {
-                console.log('[VCP Popup] ❌ 手动刷新失败');
-                refreshButton.textContent = '❌ 刷新失败';
-            }
-            
-            // 恢复按钮状态
+
+        try {
+            const response = await requestManualRefresh();
+            console.log('[VCP Popup] ✅ 手动刷新成功:', response);
+            refreshButton.textContent = '✅ 已刷新';
+            setTimeout(loadLastPageInfo, 300);
+        } catch (error) {
+            console.error('[VCP Popup] ❌ 手动刷新失败:', error);
+            refreshButton.textContent = '❌ 刷新失败';
+        } finally {
             setTimeout(() => {
-                refreshButton.textContent = '🔄 手动刷新';
+                refreshButton.textContent = originalText;
                 refreshButton.disabled = false;
             }, 1500);
-        });
+        }
     });
 
     copyGroundedMarkdownButton.addEventListener('click', async () => {

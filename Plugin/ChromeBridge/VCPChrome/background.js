@@ -788,6 +788,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 console.error("[VCP Background] ❌ 广播失败:", error);
             }
         });
+
+        // content script 的 FORCE_PAGE_UPDATE 会等待 PAGE_INFO_UPDATE 完成后
+        // 才响应 Popup。必须显式确认，否则消息通道因监听器返回 true 而永久悬挂。
+        sendResponse({
+            success: true,
+            accepted: true,
+            snapshotId: request.data.snapshotId
+        });
+        return false;
     } else if (request.type === 'MANUAL_REFRESH') {
         // 手动刷新不受监控开关限制
         console.log('[VCP Background] 🔄 收到手动刷新请求');
@@ -812,36 +821,41 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }, (response) => {
                 if (chrome.runtime.lastError) {
                     console.log('[VCP Background] ⚠️ Content script未就绪，尝试重新注入');
-                    // Content script未注入，先注入再发送
+                    // ComfyUI 状态桥必须运行在 MAIN world；通用 Core 与 content script
+                    // 仍运行在 ISOLATED world。两组脚本不能混在同一次注入中。
                     chrome.scripting.executeScript({
                         target: { tabId: targetTab.id },
+                        world: 'MAIN',
+                        files: ['webcore/comfyui-main-world-bridge.js']
+                    }).then(() => chrome.scripting.executeScript({
+                        target: { tabId: targetTab.id },
+                        world: 'ISOLATED',
                         files: [
                             'webcore/web-agent-protocol.js',
                             'webcore/web-agent-page-core.js',
+                            'webcore/comfyui-page-adapter.js',
                             'webcore/web-agent-page-runtime-core.js',
                             'content_script.js'
                         ]
-                    }, () => {
-                        if (chrome.runtime.lastError) {
-                            console.log('[VCP Background] ❌ 注入失败:', chrome.runtime.lastError.message);
-                            sendResponse({ success: false, error: '无法注入脚本: ' + chrome.runtime.lastError.message });
-                        } else {
-                            console.log('[VCP Background] ✅ 脚本注入成功，重新发送请求');
-                            // 等待一小段时间确保脚本完全加载
-                            setTimeout(() => {
-                                chrome.tabs.sendMessage(targetTab.id, {
-                                    type: 'FORCE_PAGE_UPDATE'
-                                }, (response) => {
-                                    if (chrome.runtime.lastError) {
-                                        console.log('[VCP Background] ❌ 重试发送失败:', chrome.runtime.lastError.message);
-                                        sendResponse({ success: false, error: chrome.runtime.lastError.message });
-                                    } else {
-                                        console.log('[VCP Background] ✅ content script响应:', response);
-                                        sendResponse({ success: true });
-                                    }
-                                });
-                            }, 100);
-                        }
+                    })).then(() => {
+                        console.log('[VCP Background] ✅ 脚本注入成功，重新发送请求');
+                        // 等待一小段时间确保脚本完全加载
+                        setTimeout(() => {
+                            chrome.tabs.sendMessage(targetTab.id, {
+                                type: 'FORCE_PAGE_UPDATE'
+                            }, (response) => {
+                                if (chrome.runtime.lastError) {
+                                    console.log('[VCP Background] ❌ 重试发送失败:', chrome.runtime.lastError.message);
+                                    sendResponse({ success: false, error: chrome.runtime.lastError.message });
+                                } else {
+                                    console.log('[VCP Background] ✅ content script响应:', response);
+                                    sendResponse({ success: true });
+                                }
+                            });
+                        }, 100);
+                    }).catch(error => {
+                        console.log('[VCP Background] ❌ 注入失败:', error.message);
+                        sendResponse({ success: false, error: '无法注入脚本: ' + error.message });
                     });
                 } else {
                     console.log('[VCP Background] ✅ content script响应:', response);
