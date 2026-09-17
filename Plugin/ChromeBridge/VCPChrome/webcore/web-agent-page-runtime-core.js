@@ -1039,7 +1039,88 @@
             };
         }
 
+        function createPersistentTarget(target, options = {}) {
+            assertContext(options, options.strict === true);
+            const resolved = resolveTarget(target, { sideEffecting: true });
+            const element = resolved.element;
+            if (element.getRootNode() !== documentObject) {
+                throw structuredError('SKILL_TARGET_UNSUPPORTED', '暂不支持固化 Shadow DOM 或 iframe 内目标');
+            }
+
+            // 持久目标只记录相对稳定的身份特征。title、placeholder 等属性经常
+            // 随按钮状态、输入内容或业务流程变化，不能成为永久硬约束。
+            const persistentHints = pageCore.createLocatorHints(element)
+                .filter(hint => !['placeholder', 'title'].includes(hint.type));
+            const selectors = [...new Set(persistentHints.map(hint => hint.selector))]
+                .filter(selector => {
+                    try {
+                        const matches = documentObject.querySelectorAll(selector);
+                        return matches.length === 1 && matches[0] === element;
+                    } catch { return false; }
+                });
+            if (!selectors.length) {
+                throw structuredError('TARGET_NOT_FOUND', '目标没有可唯一定位的持久化选择器', {
+                    candidateCount: 0
+                });
+            }
+            const signature = {};
+            for (const attribute of ['type', 'role', 'name', 'aria-label', 'aria-labelledby', 'href']) {
+                const value = element.getAttribute(attribute);
+                if (value) signature[attribute] = value;
+            }
+            return {
+                kind: 'loom-persistent-target',
+                version: 1,
+                origin: new URL(documentObject.URL).origin,
+                tagName: element.tagName.toLowerCase(),
+                selectors,
+                attributes: signature,
+                text: pageCore.isInputLikeElement(element)
+                    ? null : pageCore.normalizeAttribute(element.textContent).slice(0, 160),
+            };
+        }
+
+        function resolvePersistentTarget(target) {
+            if (target.version !== 1 || target.origin !== new URL(documentObject.URL).origin) {
+                throw structuredError('SKILL_TARGET_CONTEXT_MISMATCH', 'Skill 目标页面来源或定位版本不匹配');
+            }
+            if (!Array.isArray(target.selectors) || !target.selectors.length || target.selectors.length > 16) {
+                throw structuredError('INVALID_REQUEST', 'Skill 定位信息无效');
+            }
+            const candidates = new Set();
+            const volatileAttributes = new Set([
+                'placeholder', 'title', 'value', 'style', 'class', 'className'
+            ]);
+            for (const selector of target.selectors) {
+                let matches;
+                try { matches = documentObject.querySelectorAll(selector); }
+                catch { throw structuredError('INVALID_REQUEST', 'Skill 选择器无效'); }
+                for (const element of matches) {
+                    if (element.tagName.toLowerCase() !== target.tagName) continue;
+                    if (!Object.entries(target.attributes || {}).every(([key, value]) =>
+                        volatileAttributes.has(key) || element.getAttribute(key) === value)) continue;
+                    if (target.text !== null && pageCore.normalizeAttribute(element.textContent).slice(0, 160) !== target.text) continue;
+                    candidates.add(element);
+                }
+            }
+            if (candidates.size === 0) {
+                throw structuredError('TARGET_NOT_FOUND', 'Skill 持久化目标未找到匹配元素（0 matches）', {
+                    candidateCount: 0
+                });
+            }
+            if (candidates.size > 1) {
+                throw structuredError('TARGET_AMBIGUOUS', `Skill 持久化目标存在歧义（${candidates.size} matches）`, {
+                    candidateCount: candidates.size
+                });
+            }
+            return {
+                element: [...candidates][0], source: 'skill-persistent',
+                confidence: 1, candidateCount: 1, signatureValid: true,
+            };
+        }
+
         function resolveTarget(target, options = {}) {
+            if (target?.kind === 'loom-persistent-target') return resolvePersistentTarget(target);
             if (!target) throw structuredError('TARGET_NOT_FOUND', '缺少目标元素 target');
             const normalized = String(target).trim();
             const strictMatch = normalized.match(STRICT_HANDLE_PATTERN);
@@ -1155,6 +1236,30 @@
                     currentSnapshotId: snapshotId
                 });
             }
+
+            // 文本全等和子串/相似匹配属于不同的置信层级。只要存在唯一全等元素，
+            // 就应直接采用它，不能让“回复”之类的短子串候选制造虚假歧义。
+            const exactTextMatches = scored.filter(item => item.score === 1);
+            if (exactTextMatches.length === 1) {
+                return {
+                    element: exactTextMatches[0].element,
+                    entry: null,
+                    handleId: exactTextMatches[0].element.getAttribute('data-vcp-snapshot-handle'),
+                    source: 'semantic-text',
+                    confidence: 1,
+                    candidateCount: 1,
+                    scoreMargin: 1,
+                    signatureValid: null
+                };
+            }
+            if (exactTextMatches.length > 1) {
+                throw structuredError('TARGET_AMBIGUOUS', `目标文本存在多个全等候选: ${normalized}`, {
+                    candidateCount: exactTextMatches.length,
+                    confidence: 1,
+                    scoreMargin: 0
+                });
+            }
+
             const margin = scored.length > 1 ? scored[0].score - scored[1].score : 1;
             if (scored.length > 1 && margin < 0.08) {
                 throw structuredError('TARGET_AMBIGUOUS', `目标文本存在多个近似候选: ${normalized}`, {
@@ -1846,6 +1951,7 @@
             snapshot,
             execute,
             resolveTarget,
+            createPersistentTarget,
             scoreContentImage,
             checkOcclusion,
             waitFor,
