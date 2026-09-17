@@ -48,11 +48,25 @@
                 "https://*.bilibili.com/*"
             ],
             "js": [
+                "webcore/comfyui-main-world-bridge.js"
+            ],
+            "world": "MAIN",
+            "run_at": "document_start"
+        },
+        {
+            "matches": [
+                "<all_urls>",
+                "https://*.bilibili.com/*"
+            ],
+            "js": [
                 "webcore/web-agent-protocol.js",
                 "webcore/web-agent-page-core.js",
+                "webcore/comfyui-page-adapter.js",
                 "webcore/web-agent-page-runtime-core.js",
                 "content_script.js"
-            ]
+            ],
+            "world": "ISOLATED",
+            "run_at": "document_idle"
         }
     ]
 }
