@@ -1,6 +1,6 @@
 // WebSocketServer.js
 const WebSocket = require('ws');
-
+const url = require('url');
 const fs = require('fs').promises;
 const path = require('path');
 const { syncDistributedMusicDiary } = require('./modules/distributedMusicDiarySync');
@@ -176,7 +176,7 @@ function initialize(httpServer, config) {
             return;
         }
 
-        const parsedUrl = new URL(request.url, 'http://localhost');
+        const parsedUrl = url.parse(request.url, true);
         const pathname = parsedUrl.pathname;
 
         const vcpLogPathRegex = /^\/VCPlog\/VCP_Key=(.+)$/;
@@ -247,9 +247,9 @@ function initialize(httpServer, config) {
         // 通用设备名识别:前端可通过 ?deviceName=xxx 上报稳定设备名,用于 VCPLog 离线补发区分设备。
         // 兼容 device_name / devicename,便于不同前端渐进接入。
         const deviceName = normalizeDeviceName(
-            parsedUrl.searchParams.get('deviceName') ||
-            parsedUrl.searchParams.get('device_name') ||
-            parsedUrl.searchParams.get('devicename')
+            parsedUrl.query.deviceName ||
+            parsedUrl.query.device_name ||
+            parsedUrl.query.devicename
         );
 
         if (isAuthenticated) {
@@ -1076,4 +1076,4 @@ module.exports = {
         sendCancelToolIfSupported,
         rejectPendingToolRequestsForServer
     }
-};
+};
