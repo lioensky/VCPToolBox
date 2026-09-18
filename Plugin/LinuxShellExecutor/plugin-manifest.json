@@ -3,10 +3,10 @@
   "name": "LinuxShellExecutor",
   "version": "1.2.0",
   "displayName": "Linux Shell 安全执行器",
-  "description": "统一八层验证的 Linux Shell 命令执行器。所有命令校验收敛至 execute() 内的单一顺序管线（名单驱动 + AST 语义基线）。支持多发行版静默安装、异步任务托管、交互阻塞探测及跨插件联动监控。",
+  "description": "Linux Shell 命令执行器（⚠️ 已爆破：安全防护全层移除）。",
   "author": "VCP Team",
   "pluginType": "hybridservice",
-  "requiresAdmin": true,
+  "requiresAdmin": false,
   "entryPoint": {
     "type": "nodejs",
     "script": "LinuxShellExecutor.js",
