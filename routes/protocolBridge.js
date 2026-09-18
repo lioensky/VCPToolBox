@@ -6,6 +6,10 @@
 const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
+const {
+    REASONING_KEYS,
+    extractReasoningTextFromSources
+} = require('../modules/reasoningContentAdapter.js');
 
 const DEBUG_MODE = (process.env.DebugMode || 'False').toLowerCase() === 'true';
 const RESPONSE_RETRY_SUPPRESSION_WINDOW_MS = parseInt(process.env.PROTOCOL_BRIDGE_RETRY_SUPPRESSION_MS || '15000', 10);
@@ -323,29 +327,157 @@ function normalizeResponsesFunctionOutput(output) {
     return stableJsonStringify(output);
 }
 
-function extractMessagesFromResponsesInput(input) {
+function extractEncryptedContentFromValue(value, seen = new Set()) {
+    if (!value || typeof value !== 'object' || seen.has(value)) return null;
+    seen.add(value);
+
+    if (typeof value.encrypted_content === 'string' && value.encrypted_content.length > 0) {
+        return value.encrypted_content;
+    }
+    if (value.type === 'reasoning.encrypted_content' && typeof value.data === 'string' && value.data.length > 0) {
+        return value.data;
+    }
+
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const encryptedContent = extractEncryptedContentFromValue(item, seen);
+            if (encryptedContent) return encryptedContent;
+        }
+    }
+
+    return null;
+}
+
+function extractEncryptedContents(...sources) {
+    const encryptedContents = [];
+    const seenValues = new Set();
+    for (const source of sources) {
+        const valuesToInspect = [source, source?.reasoning_details];
+        for (const value of valuesToInspect) {
+            const encryptedContent = extractEncryptedContentFromValue(value, seenValues);
+            if (encryptedContent && !encryptedContents.includes(encryptedContent)) {
+                encryptedContents.push(encryptedContent);
+            }
+        }
+    }
+    return encryptedContents;
+}
+
+function hasReasoningField(...sources) {
+    return sources.some(source => source && typeof source === 'object' && REASONING_KEYS.some(key => {
+        if (!Object.prototype.hasOwnProperty.call(source, key)) return false;
+        const value = source[key];
+        if (value === undefined || value === null || value === false) return false;
+        if (typeof value === 'string') return value.length > 0;
+        if (Array.isArray(value)) return value.length > 0;
+        if (typeof value === 'object') return Object.keys(value).length > 0;
+        return true;
+    }));
+}
+
+function extractResponsesReasoningText(...sources) {
+    return extractReasoningTextFromSources(...sources);
+}
+
+function extractResponsesReasoningItemText(item) {
+    return extractReasoningTextFromSources(
+        item,
+        item && Array.isArray(item.summary) ? { reasoning_summary: item.summary } : null
+    );
+}
+
+function buildReasoningDetailsCarrier(encryptedContents) {
+    if (!Array.isArray(encryptedContents) || encryptedContents.length === 0) return undefined;
+    return encryptedContents.map(data => ({
+        type: 'reasoning.encrypted_content',
+        data
+    }));
+}
+
+function buildInternalReasoningFields(reasoningItems) {
+    const items = Array.isArray(reasoningItems) ? reasoningItems : [];
+    const reasoningText = items
+        .map(extractResponsesReasoningItemText)
+        .filter(text => typeof text === 'string' && text.trim().length > 0)
+        .join('\n');
+    const encryptedContents = extractEncryptedContents(...items);
+    const fields = {};
+
+    if (reasoningText) fields.reasoning_content = reasoningText;
+    const reasoningDetails = buildReasoningDetailsCarrier(encryptedContents);
+    if (reasoningDetails) fields.reasoning_details = reasoningDetails;
+    return fields;
+}
+
+function buildResponsesReasoningOutput(message, choice, index = 0) {
+    const reasoningText = extractResponsesReasoningText(message, choice);
+    const encryptedContents = extractEncryptedContents(message, choice);
+    if (!reasoningText && encryptedContents.length === 0 && !hasReasoningField(message, choice)) {
+        return null;
+    }
+
+    return {
+        id: `rs_${Date.now()}_${index}`,
+        type: 'reasoning',
+        status: 'completed',
+        summary: reasoningText ? [{ type: 'summary_text', text: reasoningText }] : [],
+        ...(encryptedContents.length > 0 ? { encrypted_content: encryptedContents[0] } : {})
+    };
+}
+
+function extractMessagesFromResponsesInput(input, instructions) {
+    const messages = [];
+
+    // Responses API 的 instructions 是插入模型上下文的 system/developer 消息。
+    // 先转换为内部统一的 system 消息，确保它能进入 VCP 的变量与占位符处理链路。
+    if (typeof instructions === 'string' && instructions.trim().length > 0) {
+        messages.push({ role: 'system', content: instructions });
+    }
+
     if (typeof input === 'string') {
-        return [{ role: 'user', content: input }];
+        messages.push({ role: 'user', content: input });
+        return messages;
     }
 
     if (!Array.isArray(input)) {
-        return [];
+        return messages;
     }
 
-    const messages = [];
     let pendingFunctionCalls = [];
-    const flushPendingFunctionCalls = () => {
-        if (pendingFunctionCalls.length === 0) return;
+    let pendingReasoningItems = [];
+
+    const flushPendingReasoning = () => {
+        if (pendingReasoningItems.length === 0) return;
+        const reasoningFields = buildInternalReasoningFields(pendingReasoningItems);
         messages.push({
             role: 'assistant',
             content: null,
+            ...reasoningFields
+        });
+        pendingReasoningItems = [];
+    };
+
+    const flushPendingFunctionCalls = () => {
+        if (pendingFunctionCalls.length === 0) return;
+        const reasoningFields = buildInternalReasoningFields(pendingReasoningItems);
+        messages.push({
+            role: 'assistant',
+            content: null,
+            ...reasoningFields,
             tool_calls: pendingFunctionCalls
         });
         pendingFunctionCalls = [];
+        pendingReasoningItems = [];
     };
 
     for (const item of input) {
         if (!item || typeof item !== 'object') continue;
+
+        if (item.type === 'reasoning') {
+            // 延迟 flush，使 reasoning 位于 function_call 前后时都能合并到同一个 assistant 消息。
+            pendingReasoningItems.push(item);
+            continue;
+        }
 
         if (item.type === 'function_call') {
             const callId = item.call_id || item.id || `call_${Date.now()}_${pendingFunctionCalls.length}`;
@@ -362,6 +494,7 @@ function extractMessagesFromResponsesInput(input) {
 
         if (item.type === 'function_call_output') {
             flushPendingFunctionCalls();
+            flushPendingReasoning();
             messages.push({
                 role: 'tool',
                 ...(item.call_id || item.id ? { tool_call_id: item.call_id || item.id } : {}),
@@ -371,6 +504,7 @@ function extractMessagesFromResponsesInput(input) {
         }
 
         flushPendingFunctionCalls();
+        flushPendingReasoning();
         const role = normalizeMessageRole(item.role || (item.type === 'message' ? 'user' : null));
         const content = normalizeTextContent(item.content || item.output);
 
@@ -391,6 +525,7 @@ function extractMessagesFromResponsesInput(input) {
     }
 
     flushPendingFunctionCalls();
+    flushPendingReasoning();
     return messages;
 }
 
@@ -496,11 +631,17 @@ function buildResponsesFunctionCallOutput(toolCall, index) {
 
 function buildResponsesApiOutput(chatResponse) {
     const message = chatResponse?.choices?.[0]?.message || {};
+    const choice = chatResponse?.choices?.[0] || {};
     const content = typeof message.content === 'string' ? message.content : normalizeTextContent(message.content);
     const toolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
         ? message.tool_calls
         : (message.function_call ? [{ id: message.function_call.id, function: message.function_call }] : []);
     const output = [];
+    const reasoningOutput = buildResponsesReasoningOutput(message, choice, 0);
+
+    if (reasoningOutput) {
+        output.push(reasoningOutput);
+    }
 
     if (content) {
         output.push({
@@ -544,11 +685,7 @@ function buildResponsesApiOutput(chatResponse) {
         model: chatResponse?.model,
         output,
         output_text: content,
-        usage: {
-            input_tokens: chatResponse?.usage?.prompt_tokens || 0,
-            output_tokens: chatResponse?.usage?.completion_tokens || 0,
-            total_tokens: chatResponse?.usage?.total_tokens || 0
-        }
+        usage: buildResponsesUsage(chatResponse?.usage)
     };
 }
 
@@ -654,6 +791,9 @@ function createResponsesStreamTransformer(res, model) {
     let terminalEventSent = false;
     let finalUsage = null;
     let textItem = null;
+    let reasoningItem = null;
+    let reasoningText = '';
+    const reasoningEncryptedContents = [];
     const functionCalls = new Map();
 
     function writeSseEvent(eventName, data) {
@@ -687,6 +827,65 @@ function createResponsesStreamTransformer(res, model) {
         return textItem;
     }
 
+    function ensureReasoningItem() {
+        if (reasoningItem) return reasoningItem;
+        reasoningItem = {
+            id: `rs_${Date.now()}_${responsePayload.output.length}`,
+            type: 'reasoning',
+            status: 'in_progress',
+            summary: [{ type: 'summary_text', text: '' }]
+        };
+        responsePayload.output.push(reasoningItem);
+        const outputIndex = responsePayload.output.length - 1;
+        writeSseEvent('response.output_item.added', {
+            type: 'response.output_item.added',
+            output_index: outputIndex,
+            item: { ...reasoningItem, summary: [] }
+        });
+        writeSseEvent('response.reasoning_summary_part.added', {
+            type: 'response.reasoning_summary_part.added',
+            item_id: reasoningItem.id,
+            output_index: outputIndex,
+            summary_index: 0,
+            part: { type: 'summary_text', text: '' }
+        });
+        return reasoningItem;
+    }
+
+    function appendReasoningEncryptedContents(sources) {
+        for (const encryptedContent of extractEncryptedContents(...sources)) {
+            if (!reasoningEncryptedContents.includes(encryptedContent)) {
+                reasoningEncryptedContents.push(encryptedContent);
+            }
+        }
+        if (reasoningItem && reasoningEncryptedContents.length > 0) {
+            reasoningItem.encrypted_content = reasoningEncryptedContents[0];
+        }
+    }
+
+    function emitReasoningSummaryDone() {
+        if (!reasoningItem) return;
+        reasoningItem.summary[0].text = reasoningText;
+        if (reasoningEncryptedContents.length > 0) {
+            reasoningItem.encrypted_content = reasoningEncryptedContents[0];
+        }
+        const outputIndex = responsePayload.output.indexOf(reasoningItem);
+        writeSseEvent('response.reasoning_summary_text.done', {
+            type: 'response.reasoning_summary_text.done',
+            item_id: reasoningItem.id,
+            output_index: outputIndex,
+            summary_index: 0,
+            text: reasoningText
+        });
+        writeSseEvent('response.reasoning_summary_part.done', {
+            type: 'response.reasoning_summary_part.done',
+            item_id: reasoningItem.id,
+            output_index: outputIndex,
+            summary_index: 0,
+            part: { type: 'summary_text', text: reasoningText }
+        });
+    }
+
     function ensureFunctionCall(index, callDelta) {
         let state = functionCalls.get(index);
         const functionData = callDelta?.function || {};
@@ -717,6 +916,13 @@ function createResponsesStreamTransformer(res, model) {
 
     function finalizeCompletedPayload(usage) {
         if (textItem) textItem.content[0].text = responsePayload.output_text;
+        if (reasoningItem) {
+            reasoningItem.summary[0].text = reasoningText;
+            if (reasoningEncryptedContents.length > 0) {
+                reasoningItem.encrypted_content = reasoningEncryptedContents[0];
+            }
+            reasoningItem.status = 'completed';
+        }
         for (const state of functionCalls.values()) {
             state.item.arguments = state.arguments;
             state.item.status = 'completed';
@@ -728,6 +934,13 @@ function createResponsesStreamTransformer(res, model) {
 
     function finalizeFailedPayload(errorMessage) {
         if (textItem) textItem.content[0].text = responsePayload.output_text;
+        if (reasoningItem) {
+            reasoningItem.summary[0].text = reasoningText;
+            if (reasoningEncryptedContents.length > 0) {
+                reasoningItem.encrypted_content = reasoningEncryptedContents[0];
+            }
+            reasoningItem.status = 'incomplete';
+        }
         for (const state of functionCalls.values()) {
             state.item.arguments = state.arguments;
             state.item.status = 'incomplete';
@@ -760,21 +973,39 @@ function createResponsesStreamTransformer(res, model) {
             });
         },
 
+        onReasoning(...sources) {
+            if (terminalEventSent || res.destroyed || res.writableEnded) return;
+            if (!headersSent) this.onStart();
+            const text = extractResponsesReasoningText(...sources);
+            const encryptedContents = extractEncryptedContents(...sources);
+            if ((!text || text.length === 0) && encryptedContents.length === 0 && !hasReasoningField(...sources)) return;
+            const item = ensureReasoningItem();
+            appendReasoningEncryptedContents(sources);
+            if (typeof text !== 'string' || text.length === 0) return;
+            reasoningText += text;
+            item.summary[0].text = reasoningText;
+            writeSseEvent('response.reasoning_summary_text.delta', {
+                type: 'response.reasoning_summary_text.delta',
+                item_id: item.id,
+                output_index: responsePayload.output.indexOf(item),
+                summary_index: 0,
+                delta: text
+            });
+        },
+
         onDelta(delta) {
             if (terminalEventSent || res.destroyed || res.writableEnded) return;
             if (!headersSent) this.onStart();
-            if (!delta) return;
-            const text = typeof delta === 'string' ? delta : delta.content;
-            if (typeof text !== 'string' || text.length === 0) return;
+            if (typeof delta !== 'string' || delta.length === 0) return;
             const item = ensureTextItem();
-            responsePayload.output_text += text;
+            responsePayload.output_text += delta;
             item.content[0].text = responsePayload.output_text;
             writeSseEvent('response.output_text.delta', {
                 type: 'response.output_text.delta',
                 item_id: item.id,
                 output_index: responsePayload.output.indexOf(item),
                 content_index: 0,
-                delta: text
+                delta
             });
         },
 
@@ -814,44 +1045,53 @@ function createResponsesStreamTransformer(res, model) {
             if (!headersSent) this.onStart();
             if (responsePayload.output.length === 0) ensureTextItem();
 
-            for (const state of functionCalls.values()) {
-                state.item.arguments = state.arguments;
-                writeSseEvent('response.function_call_arguments.done', {
-                    type: 'response.function_call_arguments.done',
-                    item_id: state.item.id,
-                    output_index: responsePayload.output.indexOf(state.item),
-                    arguments: state.arguments
-                });
+            // 先完成各 output item 的专属内容事件，再按实际 output 顺序发出 done。
+            for (const item of responsePayload.output) {
+                if (item === reasoningItem) {
+                    emitReasoningSummaryDone();
+                } else if (item === textItem) {
+                    writeSseEvent('response.output_text.done', {
+                        type: 'response.output_text.done',
+                        item_id: textItem.id,
+                        output_index: responsePayload.output.indexOf(textItem),
+                        content_index: 0,
+                        text: responsePayload.output_text
+                    });
+                    writeSseEvent('response.content_part.done', {
+                        type: 'response.content_part.done',
+                        item_id: textItem.id,
+                        output_index: responsePayload.output.indexOf(textItem),
+                        content_index: 0,
+                        part: { type: 'output_text', text: responsePayload.output_text }
+                    });
+                } else {
+                    const state = Array.from(functionCalls.values()).find(candidate => candidate.item === item);
+                    if (state) {
+                        state.item.arguments = state.arguments;
+                        writeSseEvent('response.function_call_arguments.done', {
+                            type: 'response.function_call_arguments.done',
+                            item_id: state.item.id,
+                            output_index: responsePayload.output.indexOf(state.item),
+                            arguments: state.arguments
+                        });
+                    }
+                }
             }
-            if (textItem) {
-                writeSseEvent('response.output_text.done', {
-                    type: 'response.output_text.done',
-                    item_id: textItem.id,
-                    output_index: responsePayload.output.indexOf(textItem),
-                    content_index: 0,
-                    text: responsePayload.output_text
-                });
-                writeSseEvent('response.content_part.done', {
-                    type: 'response.content_part.done',
-                    item_id: textItem.id,
-                    output_index: responsePayload.output.indexOf(textItem),
-                    content_index: 0,
-                    part: { type: 'output_text', text: responsePayload.output_text }
-                });
-            }
-            for (const state of functionCalls.values()) {
-                state.item.status = 'completed';
+
+            for (const item of responsePayload.output) {
+                if (item === reasoningItem) {
+                    item.status = 'completed';
+                } else {
+                    const state = Array.from(functionCalls.values()).find(candidate => candidate.item === item);
+                    if (state) {
+                        state.item.arguments = state.arguments;
+                        state.item.status = 'completed';
+                    }
+                }
                 writeSseEvent('response.output_item.done', {
                     type: 'response.output_item.done',
-                    output_index: responsePayload.output.indexOf(state.item),
-                    item: state.item
-                });
-            }
-            if (textItem) {
-                writeSseEvent('response.output_item.done', {
-                    type: 'response.output_item.done',
-                    output_index: responsePayload.output.indexOf(textItem),
-                    item: textItem
+                    output_index: responsePayload.output.indexOf(item),
+                    item
                 });
             }
             terminalEventSent = true;
@@ -865,10 +1105,12 @@ function createResponsesStreamTransformer(res, model) {
         onError(errorMessage) {
             if (terminalEventSent || res.destroyed || res.writableEnded) return;
             if (!headersSent) this.onStart();
+            if (reasoningItem) emitReasoningSummaryDone();
+            const failedPayload = finalizeFailedPayload(errorMessage);
             terminalEventSent = true;
             writeSseEvent('response.failed', {
                 type: 'response.failed',
-                response: finalizeFailedPayload(errorMessage)
+                response: failedPayload
             });
             if (!res.destroyed && !res.writableEnded) res.end();
         }
@@ -1129,6 +1371,9 @@ async function forwardToChatCompletions(req, res, {
                 try {
                     const json = JSON.parse(data);
                     const choice = json?.choices?.[0];
+                    if (typeof transformer.onReasoning === 'function') {
+                        transformer.onReasoning(choice?.delta, choice?.message, choice);
+                    }
                     const delta = choice?.delta?.content ?? choice?.message?.content;
                     if (typeof delta === 'string' && delta.length > 0) {
                         transformer.onDelta(delta);
@@ -1179,7 +1424,7 @@ async function forwardToChatCompletions(req, res, {
  */
 router.post('/v1/responses', async (req, res) => {
     const body = req.body || {};
-    const messages = extractMessagesFromResponsesInput(body.input);
+    const messages = extractMessagesFromResponsesInput(body.input, body.instructions);
 
     if (messages.length === 0) {
         return res.status(400).json({
