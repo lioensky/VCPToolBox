@@ -13,6 +13,7 @@ const ToolApprovalManager = require('./modules/toolApprovalManager');
 const { hasFoldMarkers, buildDynamicFoldObject } = require('./modules/foldProtocol');
 const { sanitizeToolResult } = require('./modules/toolResultPrivacyGuard');
 const toolCallRecordStore = require('./modules/toolCallRecordStore');
+const jevClient = require('./modules/jevClient');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -983,6 +984,16 @@ class PluginManager extends EventEmitter {
                         if (this.tdbKnowledgeManager) {
                             dependencies.tdbKnowledgeManager = this.tdbKnowledgeManager;
                             if (this.debugMode) console.log(`[PluginManager] 🧊 Injected TDBKnowledgeManager into RAGDiaryPlugin.`);
+                        }
+                    }
+
+                    // --- Jev 通用决策服务依赖注入 ---
+                    // 任何 direct 常驻插件均可通过 manifest 显式申请同一个 Jev 客户端。
+                    // 客户端只读取根 config.env 中的 JEV_* 配置，避免插件复制或持有密钥。
+                    if (manifest.requiresJevClient === true) {
+                        dependencies.jevClient = jevClient;
+                        if (this.debugMode) {
+                            console.log(`[PluginManager] Injected JevClient into ${manifest.name}.`);
                         }
                     }
 
@@ -2437,6 +2448,7 @@ class PluginManager extends EventEmitter {
             requiresAdmin: manifest.requiresAdmin,
             requiresKnowledgeBaseManager: manifest.requiresKnowledgeBaseManager,
             requiresContextBridge: manifest.requiresContextBridge,
+            requiresJevClient: manifest.requiresJevClient,
             hasApiRoutes: manifest.hasApiRoutes,
             webSocketPush: manifest.webSocketPush
         });
