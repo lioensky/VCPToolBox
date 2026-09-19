@@ -119,6 +119,7 @@ async function main(args) {
         args,
         '睡觉tips',
         '睡觉提示',
+        'sleepTips',
         'tips',
         'tip',
         'message'
