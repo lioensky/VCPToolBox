@@ -26,6 +26,38 @@
     "VCPSLEEP_DREAM_PROBABILITY": {
       "type": "number",
       "description": "VCPSleep 额外的入梦概率门，范围 0-1；通过后仍须满足 AgentDream 自身的时间窗、冷却和 DREAM_PROBABILITY。"
+    },
+    "VCPSLEEP_VCPINFO_ENABLED": {
+      "type": "boolean",
+      "description": "是否由主进程向前端广播 VCPSleep 的入睡、醒来、失败和超时状态。默认开启。"
+    }
+  },
+  "vcpInfoLifecycle": {
+    "enabledConfigKey": "VCPSLEEP_VCPINFO_ENABLED",
+    "enabledByDefault": true,
+    "type": "VCP_SLEEP",
+    "start": {
+      "message": "{{args.maid|args.Maid|args.agent_name}} 抱着小枕头去睡 {{args.sleeptime|args.sleepTime|args.睡觉时间|args.duration|args.seconds}} 啦……",
+      "data": {
+        "agentName": "{{args.maid|args.Maid|args.agent_name}}",
+        "sleepTime": "{{args.sleeptime|args.sleepTime|args.睡觉时间|args.duration|args.seconds}}",
+        "tips": "{{args.sleeptips|args.sleepTips|args.睡觉tips|args.睡觉提示|args.tips}}"
+      }
+    },
+    "success": {
+      "message": "{{args.maid|args.Maid|args.agent_name}} 睡醒啦，小枕头已经按时完成任务。",
+      "data": {
+        "agentName": "{{args.maid|args.Maid|args.agent_name}}",
+        "sleepTime": "{{args.sleeptime|args.sleepTime|args.睡觉时间|args.duration|args.seconds}}"
+      }
+    },
+    "error": {
+      "message": "{{args.maid|args.Maid|args.agent_name}} 的小枕头遇到了一点状况，这次没有正常睡完。",
+      "includeError": true
+    },
+    "timeout": {
+      "message": "{{args.maid|args.Maid|args.agent_name}} 睡得太沉啦，小枕头没能在规定时间内叫醒她。",
+      "includeError": true
     }
   },
   "capabilities": {

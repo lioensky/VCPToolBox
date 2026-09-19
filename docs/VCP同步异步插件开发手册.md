@@ -554,7 +554,91 @@ timely_contact:「始」(可选) 设置一个未来时间点定时调用工具�
     ```
 通过在插件内部增加这种兼容性处理，可以大大提高AI调用插件的成功率和用户体验。
 
-### 4.4 分布式文件 URL：插件无需关心跨节点取文件
+### 4.4 同步插件生命周期 VCPInfo 通知
+
+同步插件是按次启动的子进程，退出或超时后不能继续持有 WebSocket。需要向前端即时展示“任务开始、完成、失败、超时”状态时，不应让插件自行连接 WebSocket，而应使用主进程提供的生命周期 VCPInfo 中央总线。
+
+#### 4.4.1 在 manifest 中注册通知
+
+在插件的 `plugin-manifest.json` 根级别声明 `vcpInfoLifecycle`。未声明该字段的插件不会发送任何生命周期 VCPInfo。
+
+```json
+{
+  "configSchema": {
+    "MY_PLUGIN_VCPINFO_ENABLED": {
+      "type": "boolean",
+      "description": "是否发送工具生命周期即时通知。"
+    }
+  },
+  "vcpInfoLifecycle": {
+    "enabledConfigKey": "MY_PLUGIN_VCPINFO_ENABLED",
+    "enabledByDefault": true,
+    "type": "MY_PLUGIN_STATUS",
+    "start": {
+      "message": "{{args.maid}} 开始执行任务。",
+      "data": {
+        "agentName": "{{args.maid}}",
+        "task": "{{args.task|args.command}}"
+      }
+    },
+    "success": {
+      "message": "{{args.maid}} 的任务执行完成。"
+    },
+    "error": {
+      "message": "{{args.maid}} 的任务执行失败。",
+      "includeError": true
+    },
+    "timeout": {
+      "message": "{{args.maid}} 的任务执行超时。",
+      "includeError": true
+    }
+  }
+}
+```
+
+声明职责分为两层：
+
+1. `plugin-manifest.json` 注册插件支持哪些通知阶段以及消息内容。
+2. 插件级 `config.env` 设置 `enabledConfigKey` 指定的布尔配置，供最终用户决定是否发送。
+
+如果配置键不存在，则使用 `enabledByDefault`。如果整个 `vcpInfoLifecycle` 不存在，中央总线不会为该插件发送通知。
+
+#### 4.4.2 支持的阶段
+
+| 阶段 | 触发时机 |
+|------|----------|
+| `start` | 工具通过人工审核、即将开始真实执行时 |
+| `success` | 工具成功返回并完成主进程结果处理时 |
+| `error` | 工具执行、解析或业务处理失败时 |
+| `timeout` | 错误被识别为执行超时时；优先于普通 `error` |
+
+每次调用会生成唯一的 `invocationId`。同一次调用的开始和结束事件使用相同 ID，前端可以据此更新同一张状态卡片。
+
+#### 4.4.3 消息模板
+
+模板使用 `{{...}}`：
+
+- `{{args.maid}}`：读取工具参数，参数名大小写不敏感。
+- `{{plugin.name}}`、`{{plugin.displayName}}`：插件清单字段。
+- `{{elapsedMs}}` / `{{durationMs}}`：从开始执行到当前事件的毫秒数。
+- `{{error.message}}`：错误消息。
+- `{{result.someField}}`：成功结果中的字段。
+- `{{args.task|args.command}}`：候选回退语法，按顺序取第一个非空值。
+
+只有清单中明确写入 `message` 或 `data` 的字段会广播，不会自动把完整工具参数发送给前端，避免意外泄露敏感入参。
+
+#### 4.4.4 生命周期安全性
+
+通知由 VCP 主进程通过 VCPLog/VCPInfo WebSocket 广播，与同步插件子进程生命周期解耦：
+
+- 子进程正常退出后，主进程仍可发送 `success`。
+- 子进程被终止时，主进程仍可发送 `error` 或 `timeout`。
+- 插件无须持有 WebSocket、服务端口或访问密钥。
+- 插件 stdout 仍然只输出最终标准 JSON，不会被进度消息污染。
+
+该机制适合“正在休息”“正在渲染”“正在下载”“正在执行长计算”等用户可感知的长耗时状态。秒级、无交互价值的工具不建议注册，以免产生通知噪音。
+
+### 4.5 分布式文件 URL：插件无需关心跨节点取文件
 
 在当前版本中，分布式文件处理已经由插件管理器透明接管。插件收到参数前，主服务会预先扫描本地插件调用参数中的 `file://` URL，并通过 [`FileFetcherServer.resolveFileUrl()`](FileFetcherServer.js:1) 自动把远程文件拉取并转换为可用的数据形式。对应逻辑位于 [`PluginManager.processToolCall()`](Plugin.js:909)。
 
@@ -572,7 +656,7 @@ timely_contact:「始」(可选) 设置一个未来时间点定时调用工具�
 
 > 注意：分布式工具本身（即 `plugin.isDistributed` 的云端/远端插件）不会由主服务器预拉取其 `file://` 参数，而是透传给分布式端处理；这里的“透明预处理”主要面向由当前主服务直接执行的本地插件。
 
-#### 4.4.1 推荐实践：兼容 Data URI 与纯 Base64
+#### 4.5.1 推荐实践：兼容 Data URI 与纯 Base64
 
 很多上游链路为了保留 MIME 类型，会把图片、音频或文件内容包装为 Data URI：
 
@@ -623,18 +707,18 @@ const imageData = parseBase64Payload(imageInput, 'image/png');
 // imageData.mimeType 可用于构造请求头或多模态消息
 ```
 
-#### 4.4.2 插件开发建议
+#### 4.5.2 插件开发建议
 
 *   **不要再实现旧版 `FILE_NOT_FOUND_LOCALLY` 流程**：这会让插件行为与当前插件管理器的透明预处理重复，甚至造成错误处理路径混乱。
 *   **不要假设收到的一定是本地路径**：你的插件可能收到普通 URL、Data URI、纯 Base64 或经过服务端转换后的可访问地址，应按插件自身能力声明并做清晰校验。
 *   **在 `description` 中明确入参格式**：如果插件支持 Base64，请写清楚是否支持 Data URI、纯 Base64、URL，以及推荐优先级。
 *   **大文件谨慎内联**：Base64 会显著放大体积并消耗上下文/token；如已有可访问 URL，优先返回 URL，把 Base64 作为必要时的兼容选项。
 
-### 4.5 VCP Auth 验证码机制：管理员权限指令
+### 4.6 VCP Auth 验证码机制：管理员权限指令
 
 VCP Auth 验证码机制允许插件开发者为特定的指令添加一层安全验证，确保只有拥有正确验证码的用户才能执行敏感操作。这对于需要管理员权限或高风险操作的插件（如系统命令执行、文件删除等）至关重要。
 
-#### 4.5.1 启用管理员权限 (Manifest 配置)
+#### 4.6.1 启用管理员权限 (Manifest 配置)
 
 要在插件级别启用 VCP Auth 验证码机制，你需要在 `plugin-manifest.json` 的根级别添加 `requiresAdmin` 字段并设置为 `true`。
 
@@ -653,7 +737,7 @@ VCP Auth 验证码机制允许插件开发者为特定的指令添加一层安�
 1.  从安全存储中获取并解密当前的 VCP Auth 验证码。
 2.  将解密后的验证码注入到插件进程的环境变量 `DECRYPTED_AUTH_CODE` 中。
 
-#### 4.5.2 AI 调用规范 (InvocationCommands)
+#### 4.6.2 AI 调用规范 (InvocationCommands)
 
 如果你的插件启用了管理员权限，你必须在 `invocationCommands` 的 `description` 中明确告知 AI 必须提供一个名为 `requireAdmin` 的参数，其值为用户提供的验证码。
 
@@ -668,7 +752,7 @@ VCP Auth 验证码机制允许插件开发者为特定的指令添加一层安�
 ]
 ```
 
-#### 4.5.3 插件内部验证逻辑 (核心实现)
+#### 4.6.3 插件内部验证逻辑 (核心实现)
 
 插件脚本必须从输入参数中读取用户提供的验证码（例如 `args.requireAdmin`），并将其与环境变量 `DECRYPTED_AUTH_CODE` 进行比对。
 
