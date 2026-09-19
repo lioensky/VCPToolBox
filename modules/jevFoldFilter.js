@@ -18,8 +18,14 @@
  *   两种错误不对称，所以本模块只会从候选里移除，且失败时一律不动。
  * - 一次请求问全部区块：官方与本机实测均表明题数不增加延迟（1题331ms/31题329ms/70题372ms），
  *   批量还比逐题便宜约 12 倍且答案不变。
- * - 每轮记忆化：按 userContent 哈希缓存，同一轮内多个占位符共用一次调用。
- * - state 极简：只放当前用户消息。官方明确 Jev 有 context rot，无关内容会拉低准确率。
+ * - 每轮记忆化：按**送进 Jev 的那段文本**哈希缓存，同一轮内多个占位符共用一次调用。
+ * - state 只放一个 `user_message` 字段：本轮请求 + 其前面的近若干轮对话（默认 1 轮，指涉消解用）。
+ *   刻意把对话**拼进这个字符串**而不是新开 state 字段——69 条问题都引用 `user_message`，
+ *   若把"如何理解指涉"的说明写进问题里会复制 69 份（约 +3.4K tokens，近乎翻倍）；
+ *   写进 state 新字段则要多训一次模型对字段的注意力。拼进 user_message 只付一次内容成本。
+ *   embedding 阶段本来就用 user+AI 混合向量（mainSearchWeights [0.7,0.3]），Jev 只看用户
+ *   一句会读不懂"第二个改成红色"这类指涉，错砍的方向恰好是它唯一能犯的错。
+ * - 官方明确 Jev 有 context rot，所以对话默认只取最近一轮、每条截断，不整段历史灌入。
  * - 问题措辞按官方"字面理解"告诫写成直接条件句，不藏复合判断。
  *
  * 配置（根 config.env，全部可选，默认关闭）：
@@ -28,6 +34,8 @@
  *   JevFoldIntentGate=0.15     轮级意图低于此值视为闲聊，候选全部折叠
  *   JevFoldMinChars=1200       候选内容总字符低于此值时跳过本轮调用（省下 350ms）
  *   JevFoldTimeoutMs=4000      单次请求硬超时；热路径不做重试
+ *   JevFoldDialogueRounds=1    随请求附带的近几轮对话（0=关闭，上限 6）
+ *   JevFoldDialogueMsgChars=300 对话里每条消息的截断长度
  */
 
 const fsSync = require('fs');
@@ -55,7 +63,12 @@ const DEFAULTS = Object.freeze({
     minChars: 1200,
     timeoutMs: 4000,
     maxUserChars: 1200,
-    maxDescChars: 200
+    maxDescChars: 200,
+    // 近若干轮对话随请求附带：解决"第二个改成红色"这类指涉——embedding 那侧本来就
+    // 用了 user+AI 混合向量，Jev 只看用户一句会在方向上系统性错砍。
+    // 默认 1 轮（一问一答两条）：成本实测 4303 -> 约 4600 tokens（+7%），一轮多六分之一美分。
+    dialogueRounds: 1,
+    dialogueMsgChars: 300
 });
 
 const INTENT_QUESTION = '用户消息 `user_message` 是否表达了要执行某个具体操作的意图（而不是纯闲聊或单纯追问）？';
@@ -72,7 +85,9 @@ function getConfig() {
         minChars: readNumber('JevFoldMinChars', DEFAULTS.minChars, 0, Number.MAX_SAFE_INTEGER),
         timeoutMs: readNumber('JevFoldTimeoutMs', DEFAULTS.timeoutMs, 200, 60000),
         maxUserChars: DEFAULTS.maxUserChars,
-        maxDescChars: DEFAULTS.maxDescChars
+        maxDescChars: DEFAULTS.maxDescChars,
+        dialogueRounds: Math.round(readNumber('JevFoldDialogueRounds', DEFAULTS.dialogueRounds, 0, 6)),
+        dialogueMsgChars: Math.round(readNumber('JevFoldDialogueMsgChars', DEFAULTS.dialogueMsgChars, 40, 2000))
     };
 }
 
@@ -145,11 +160,46 @@ function getDescUniverse(tvsDir) {
 }
 
 /**
+ * 把"近 N 轮对话"和"本轮请求"拼成送进 Jev 的那段文本。
+ *
+ * 为什么要拼：用户消息经常是指涉型的（"第二个改成红色"、"就按你说的办"），单看这一句
+ * 没有信息量，Jev 会把概率整体打低并错砍区块。embedding 那侧用 user+AI 混合向量，本来就
+ * 带着这段上下文；Jev 不带就是能力倒退。
+ *
+ * 为什么拼进 user_message 而不是新开 state 字段：69 条问题全部引用 `user_message`，
+ * 说明性指令写进问题会复制 69 份（约 +3.4K tokens）；写进独立字段则要模型额外注意一个
+ * 键。这里靠文本自带的标题说明，一份成本都不多付。
+ *
+ * @param {string} userText  本轮用户消息（已 sanitize）
+ * @param {Array}  [recentMessages]  本轮之前的消息，时间升序 [{role, text}]
+ * @param {Object} cfg
+ * @returns {string} 送进 state.user_message 的文本
+ */
+function composeUserMessage(userText, recentMessages, cfg) {
+    const request = truncate(String(userText || '').trim(), cfg.maxUserChars);
+    const rounds = Number(cfg.dialogueRounds) || 0;
+    if (rounds <= 0 || !Array.isArray(recentMessages) || recentMessages.length === 0) {
+        return request;
+    }
+
+    // 一轮 = 一问一答两条消息；只留 user/assistant 且有正文的
+    const usable = recentMessages
+        .filter(m => m && (m.role === 'user' || m.role === 'assistant'))
+        .map(m => ({ role: m.role, text: String(m.text || '').trim() }))
+        .filter(m => m.text);
+    const window = usable.slice(-rounds * 2);
+    if (window.length === 0) return request;
+
+    const lines = window.map(m => `${m.role === 'user' ? '用户' : '助手'}：${truncate(m.text, cfg.dialogueMsgChars)}`);
+    return `【近 ${window.length} 条对话，仅用于理解本轮请求里的指代】\n${lines.join('\n')}\n【本轮请求】\n${request}`;
+}
+
+/**
  * 就一批 desc 向 Jev 提问，返回 { intent, probs: Map<desc, number>, latencyMs }。
  * 任何异常都抛出，由 filterCandidates 转成 applied=false。
  */
-async function askJev({ client, userText, descs, cfg, debug, placeholderKey }) {
-    const state = { user_message: truncate(userText, cfg.maxUserChars) };
+async function askJev({ client, stateText, descs, cfg, debug, placeholderKey }) {
+    const state = { user_message: stateText };
     const questions = {
         turn_intent: { type: 'noul', instructions: INTENT_QUESTION }
     };
@@ -188,6 +238,7 @@ async function askJev({ client, userText, descs, cfg, debug, placeholderKey }) {
  * @param {Object}   p
  * @param {string}   p.userContent  当前用户消息（已 sanitize）
  * @param {Array}    p.candidates   [{ description, content }]，顺序即展开顺序
+ * @param {Array}   [p.recentMessages]  本轮之前的对话，时间升序 [{role, text}]；用于消解指涉
  * @param {boolean} [p.debug]
  * @param {Object}  [p.client]      注入用（测试）；默认 require('./jevClient')
  * @param {string[]} [p.universe]   注入用（测试）；默认扫 TVStxt
@@ -206,8 +257,11 @@ async function filterCandidates(p = {}) {
     const userText = String(p.userContent || '').trim();
     if (!userText) return { applied: false, reason: 'no_user_text' };
 
+    // 近若干轮对话随请求一起送：指涉型消息单看没有信息量，会系统性错砍
+    const stateText = composeUserMessage(userText, p.recentMessages, cfg);
     const totalChars = candidates.reduce((sum, c) => sum + String((c && c.content) || '').length, 0);
-    const cacheKey = sha256(userText);
+    // 缓存键必须是"实际送出去的那段文本"：同一句"改成红色"配上不同历史，答案是不同的
+    const cacheKey = sha256(stateText);
     let entry = turnCache.get(cacheKey);
     const wasCached = Boolean(entry);
 
@@ -232,7 +286,7 @@ async function filterCandidates(p = {}) {
             }
             const result = await askJev({
                 client,
-                userText,
+                stateText,
                 descs: [...needed],
                 cfg,
                 debug: p.debug,
@@ -246,7 +300,7 @@ async function filterCandidates(p = {}) {
             if (missing.length > 0) {
                 const extra = await askJev({
                     client,
-                    userText,
+                    stateText,
                     descs: missing,
                     cfg,
                     debug: p.debug,
@@ -259,7 +313,7 @@ async function filterCandidates(p = {}) {
     } catch (e) {
         // 热路径铁律：Jev 出任何问题都退回 embedding 的原结果，绝不因过滤失败而少给工具文档
         if (p.debug) {
-            console.log(`[JevFold] 跳过过滤（${(e && e.code) || ''} ${(e && e.message) || e}`);
+            console.log(`[JevFold] 跳过过滤（${(e && e.code) || ''} ${(e && e.message) || e}）`);
         }
         return { applied: false, reason: `jev_error:${(e && (e.code || e.message)) || 'unknown'}`, totalChars };
     }
@@ -300,5 +354,5 @@ module.exports = {
     getConfig,
     clearTurnCache,
     // 供测试与诊断
-    _internals: { normalizeDesc, loadDescUniverse, getDescUniverse, DEFAULTS, turnCache }
+    _internals: { normalizeDesc, loadDescUniverse, getDescUniverse, composeUserMessage, DEFAULTS, turnCache }
 };

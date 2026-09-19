@@ -600,9 +600,21 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             .filter(item => item.entry.description);
 
         if (descEntries.length > 0 && jevFoldFilter.isEnabled()) {
+            // 把本轮之前的对话（时间升序）一并交给 Jev：像“第二个改成红色”这种指涉型消息
+            // 单看没有信息量，会整体压低概率并错砍区块。取多少条、每条截多长由模块配置决定，
+            // 这里只多备一点余量（12 条）供其裁剪；embedding 那侧本来就用 user+AI 混合向量。
+            const recentMessages = [];
+            for (let i = lastUserMessage.index - 1; i >= 0 && recentMessages.length < 12; i--) {
+                const m = contextMessages[i];
+                if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+                const text = extractTextFromMessageContent(m.content);
+                if (!text || !text.trim()) continue;
+                recentMessages.unshift({ role: m.role, text: text.trim() });
+            }
             try {
                 const decision = await jevFoldFilter.filterCandidates({
                     userContent,
+                    recentMessages,
                     candidates: descEntries.map(item => ({
                         description: item.entry.description,
                         content: item.entry.content
