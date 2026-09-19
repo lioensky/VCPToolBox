@@ -7,6 +7,7 @@ const tvsManager = require('./tvsManager.js'); // 引入新的TVS管理器
 const toolboxManager = require('./toolboxManager.js');
 const dynamicToolRegistry = require('./dynamicToolRegistry.js');
 const sarPromptManager = require('./sarPromptManager.js');
+const jevFoldFilter = require('./jevFoldFilter.js'); // 折叠级联第二阶段：embedding 出候选后由 Jev 再筛一次
 
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || DEFAULT_TIMEZONE; // 用于控制 AI 报告的时间，默认回退到根目录 config.env 的 DEFAULT_TIMEZONE
@@ -546,7 +547,7 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
         }
 
         const getThreshold = (block) => Number.isFinite(Number(block.threshold)) ? Number(block.threshold) : 0;
-        const includedContents = [];
+        const includedEntries = []; // 保持展开顺序：{ content, description }，description 为空串表示 legacy 区块
         let hiddenBlocksCount = 0;
 
         const legacyBlocks = blocks.filter(block => !(typeof block.description === 'string' && block.description.trim()));
@@ -569,7 +570,7 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
 
             if (!description) {
                 if (activeLegacyBlocks.has(block)) {
-                    includedContents.push(content);
+                    includedEntries.push({ content, description: '' });
                 } else {
                     hiddenBlocksCount += 1;
                 }
@@ -583,13 +584,75 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             }
 
             if (sim >= threshold) {
-                includedContents.push(content);
+                includedEntries.push({ content, description });
             } else {
                 hiddenBlocksCount += 1;
             }
         }
 
-        let combinedContent = includedContents.filter(Boolean).join('\n\n---\n\n');
+        // --- Jev 级联第二阶段 ---
+        // embedding 阈值只负责"别漏"，Jev 负责"别滥"：仅从已展开的候选里移除，绝不新增。
+        // 任何失败（未配置/超时/网络/响应异常）都原样保留 embedding 的结果。
+        // 注意：此处必须自行兜住异常，否则会冒泡到外层 catch 把整个折叠退化成 fallbackBlock。
+        const droppedEntryIndices = new Set();
+        const descEntries = includedEntries
+            .map((entry, index) => ({ entry, index }))
+            .filter(item => item.entry.description);
+
+        if (descEntries.length > 0 && jevFoldFilter.isEnabled()) {
+            // 把本轮之前的对话（时间升序）一并交给 Jev：像“第二个改成红色”这种指涉型消息
+            // 单看没有信息量，会整体压低概率并错砍区块。取多少条、每条截多长由模块配置决定，
+            // 这里只多备一点余量（12 条）供其裁剪；embedding 那侧本来就用 user+AI 混合向量。
+            const recentMessages = [];
+            for (let i = lastUserMessage.index - 1; i >= 0 && recentMessages.length < 12; i--) {
+                const m = contextMessages[i];
+                if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+                const text = extractTextFromMessageContent(m.content);
+                if (!text || !text.trim()) continue;
+                recentMessages.unshift({ role: m.role, text: text.trim() });
+            }
+            try {
+                const decision = await jevFoldFilter.filterCandidates({
+                    userContent,
+                    recentMessages,
+                    candidates: descEntries.map(item => ({
+                        description: item.entry.description,
+                        content: item.entry.content
+                    })),
+                    debug: Boolean(context.DEBUG_MODE),
+                    placeholderKey
+                });
+
+                if (decision.applied && Array.isArray(decision.droppedIndices) && decision.droppedIndices.length > 0) {
+                    for (const droppedInCandidates of decision.droppedIndices) {
+                        const mapped = descEntries[droppedInCandidates];
+                        if (mapped) droppedEntryIndices.add(mapped.index);
+                    }
+                    if (context.DEBUG_MODE) {
+                        console.log(
+                            `[DynamicFold] ${placeholderKey} Jev 二次过滤(${decision.reason})：` +
+                            `候选 ${descEntries.length} → 折叠 ${droppedEntryIndices.size} / ` +
+                            `intent=${typeof decision.intent === 'number' ? decision.intent.toFixed(3) : '?'}` +
+                            `${decision.cached ? ' / 复用本轮缓存' : ''}`
+                        );
+                    }
+                } else if (context.DEBUG_MODE && !decision.applied) {
+                    console.log(`[DynamicFold] ${placeholderKey} Jev 二次过滤未生效: ${decision.reason}`);
+                }
+            } catch (e) {
+                droppedEntryIndices.clear();
+                if (context.DEBUG_MODE) {
+                    console.log(`[DynamicFold] ${placeholderKey} Jev 二次过滤异常，保留 embedding 结果: ${e && e.message}`);
+                }
+            }
+        }
+
+        const keptContents = includedEntries
+            .filter((entry, index) => !droppedEntryIndices.has(index))
+            .map(entry => entry.content);
+        hiddenBlocksCount += droppedEntryIndices.size;
+
+        let combinedContent = keptContents.filter(Boolean).join('\n\n---\n\n');
         if (!combinedContent) {
             combinedContent = fallbackBlock.content;
         }

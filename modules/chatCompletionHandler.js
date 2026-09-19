@@ -846,7 +846,7 @@ class ChatCompletionHandler {
       // 3. 执行上下文修剪
       if (originalBody.messages && Array.isArray(originalBody.messages)) {
         const originalCount = originalBody.messages.length;
-        originalBody.messages = contextManager.pruneMessages(
+        originalBody.messages = await contextManager.pruneMessagesSmart(
           originalBody.messages,
           contextTokenLimit,
           DEBUG_MODE
