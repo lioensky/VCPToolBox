@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { getEmbeddingsBatch, cosineSimilarity } = require('../../EmbeddingUtils');
 const toolCallRecordStore = require('../toolCallRecordStore');
+const jevRiverReranker = require('../jevRiverReranker'); // river semantic:N 的级联第二阶段
 
 const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, '..', '..', 'VCPTimedContacts');
 
@@ -279,7 +280,27 @@ class ToolExecutor {
         scored.sort((a, b) => b.score - a.score);
         
         // 5. 取 Top-N，按原始顺序排列
-        const topN = scored.slice(0, n);
+        // 若开启 JevRiverRerank，则 embedding 只负责"别漏"（出 Top-K），
+        // 由 Jev 在 K 内重排出 N 条（负责"别滥"）；任何失败都保留 embedding 的 Top-N。
+        let topN = scored.slice(0, n);
+        if (jevRiverReranker.isEnabled()) {
+          try {
+            const rerank = await jevRiverReranker.rerankTopN({
+              queryText,
+              items: scored,
+              n,
+              debug: this.debugMode
+            });
+            if (rerank.applied && Array.isArray(rerank.selected) && rerank.selected.length > 0) {
+              topN = rerank.selected;
+            } else if (this.debugMode && rerank && !rerank.applied) {
+              console.log(`[River] Jev 重排未生效(${rerank.reason})，保留 embedding 的 Top-${n}`);
+            }
+          } catch (e) {
+            // 绝不能让重排异常冒泡到外层 catch——那会连带丢掉 embedding 结果、退回 last:N
+            if (this.debugMode) console.log(`[River] Jev 重排异常，保留 embedding 结果: ${e && e.message}`);
+          }
+        }
         topN.sort((a, b) => a.index - b.index);
         
         args.river_context = topN.map(m => ({
