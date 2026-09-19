@@ -1185,6 +1185,57 @@ class PluginManager extends EventEmitter {
         });
     }
 
+    _tryTriggerDreamForVCPSleep(plugin, pluginSpecificArgs) {
+        if (!plugin || plugin.name !== 'VCPSleep') return;
+
+        const sleepConfig = this._getPluginConfig(plugin);
+        if (sleepConfig.VCPSLEEP_DREAM_ENABLED !== true) return;
+
+        // AgentDream 使用 .block 清单时不会进入 serviceModules；此处静默跳过，
+        // 让 VCPSleep 在梦系统未启用时仍保持完全独立可用。
+        const agentDreamModule = this.getServiceModule('AgentDream');
+        if (!agentDreamModule || typeof agentDreamModule.tryTriggerDreamFromSleep !== 'function') {
+            if (this.debugMode) {
+                console.log('[PluginManager] VCPSleep dream integration skipped: AgentDream is not enabled.');
+            }
+            return;
+        }
+
+        const agentName = String(
+            pluginSpecificArgs?.maid ||
+            pluginSpecificArgs?.Maid ||
+            pluginSpecificArgs?.agent_name ||
+            ''
+        ).trim();
+        if (!agentName) {
+            if (this.debugMode) {
+                console.log('[PluginManager] VCPSleep dream integration skipped: no maid/agent_name was provided.');
+            }
+            return;
+        }
+
+        const configuredProbability = Number(sleepConfig.VCPSLEEP_DREAM_PROBABILITY);
+        const probability = Number.isFinite(configuredProbability)
+            ? Math.min(1, Math.max(0, configuredProbability))
+            : 1;
+
+        // 梦与睡眠计时并行执行。梦境由 AgentDream 自己广播并持久化，
+        // 不应让一次较慢的模型请求延长用户指定的 VCPSleep 时长。
+        Promise.resolve(
+            agentDreamModule.tryTriggerDreamFromSleep(agentName, probability)
+        ).then(result => {
+            if (this.debugMode) {
+                console.log(
+                    `[PluginManager] VCPSleep dream integration result for ${agentName}: ${JSON.stringify(result)}`
+                );
+            }
+        }).catch(error => {
+            console.error(
+                `[PluginManager] VCPSleep dream integration failed for ${agentName}; sleep continues normally: ${error.message}`
+            );
+        });
+    }
+
     // 新增：获取 VCPLog 插件的推送函数，供其他插件依赖注入
     getVCPLogFunctions() {
         const vcpLogModule = this.getServiceModule('VCPLog');
@@ -1392,6 +1443,10 @@ class PluginManager extends EventEmitter {
 
                 const logParam = executionParam ? (executionParam.length > 100 ? executionParam.substring(0, 100) + '...' : executionParam) : null;
                 if (this.debugMode) console.log(`[PluginManager] Calling local executePlugin for: ${toolName} with prepared param:`, logParam);
+
+                if (toolName === 'VCPSleep') {
+                    this._tryTriggerDreamForVCPSleep(plugin, pluginSpecificArgs);
+                }
 
                 const pluginOutput = await this.executePlugin(toolName, executionParam, requestIp, executionOptions); // Returns {status, result/error}
 
