@@ -6,7 +6,7 @@
     const RESPONSE_EVENT = 'vcp-comfyui-agent-response';
     const MAX_NODES = 300;
     const MAX_WIDGET_VALUE_CHARS = 12000;
-    const REFRESH_INTERVAL_MS = 750;
+    const REFRESH_INTERVAL_MS = 1500;
 
     if (globalThis.__VCP_COMFYUI_MAIN_WORLD_BRIDGE__) return;
     globalThis.__VCP_COMFYUI_MAIN_WORLD_BRIDGE__ = true;
@@ -104,6 +104,60 @@
         };
     }
 
+    function compareStableIds(left, right) {
+        return String(left).localeCompare(String(right), undefined, { numeric: true });
+    }
+
+    function serializeGraphLinks(graph) {
+        const source = graph?.links;
+        const links = source instanceof Map
+            ? Array.from(source.values())
+            : Array.isArray(source)
+                ? source
+                : Object.values(source || {});
+
+        return links
+            .filter(Boolean)
+            .map(link => ({
+                originNodeId: String(link?.origin_id ?? ''),
+                originSlot: Number.isFinite(Number(link?.origin_slot))
+                    ? Number(link.origin_slot)
+                    : -1,
+                targetNodeId: String(link?.target_id ?? ''),
+                targetSlot: Number.isFinite(Number(link?.target_slot))
+                    ? Number(link.target_slot)
+                    : -1,
+                type: normalizeText(link?.type, 120)
+            }))
+            .sort((left, right) =>
+                compareStableIds(left.originNodeId, right.originNodeId) ||
+                left.originSlot - right.originSlot ||
+                compareStableIds(left.targetNodeId, right.targetNodeId) ||
+                left.targetSlot - right.targetSlot ||
+                left.type.localeCompare(right.type)
+            );
+    }
+
+    function createSemanticFingerprint(state) {
+        return JSON.stringify({
+            version: state.version,
+            adapter: state.adapter,
+            detected: state.detected,
+            ready: state.ready,
+            workflow: state.workflow,
+            nodes: state.nodes.map(node => ({
+                id: node.id,
+                type: node.type,
+                title: node.title,
+                mode: node.mode,
+                widgets: node.widgets,
+                inputs: node.inputs,
+                outputs: node.outputs
+            })),
+            links: state.links
+        });
+    }
+
     function ensureStateElement() {
         let element = document.getElementById(STATE_ELEMENT_ID);
         if (!element) {
@@ -119,6 +173,9 @@
     function publishState(reason = 'interval') {
         if (!isLikelyComfyUIPage()) return;
         const { graph, nodes } = getGraphNodes();
+        const serializedNodes = nodes
+            .map(serializeNode)
+            .sort((left, right) => compareStableIds(left.id, right.id));
         const state = {
             version: 1,
             adapter: 'comfyui-litegraph',
@@ -128,14 +185,15 @@
             generatedAt: Date.now(),
             workflow: {
                 title: normalizeText(document.title.replace(/\s*-\s*ComfyUI\s*$/i, ''), 240),
-                nodeCount: nodes.length
+                nodeCount: serializedNodes.length
             },
-            nodes: nodes.map(serializeNode)
+            nodes: serializedNodes,
+            links: serializeGraphLinks(graph)
         };
-        const serialized = JSON.stringify(state);
-        if (serialized === lastSerializedState) return;
-        lastSerializedState = serialized;
-        ensureStateElement().textContent = serialized;
+        const semanticFingerprint = createSemanticFingerprint(state);
+        if (semanticFingerprint === lastSerializedState) return;
+        lastSerializedState = semanticFingerprint;
+        ensureStateElement().textContent = JSON.stringify(state);
         document.dispatchEvent(new CustomEvent('vcp-comfyui-agent-state-updated'));
     }
 
