@@ -1,0 +1,58 @@
+name: Telegram Bridge
+on:
+  pull_request:
+    paths:
+      - 'Plugin/TelegramBridge/**'
+      - 'Plugin.js'
+      - 'server.js'
+      - 'modules/**'
+      - 'tests/**'
+      - '.github/workflows/telegram-bridge.yml'
+  push:
+    branches: ['codex/telegram-bridge-pr']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  plugin:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, node: '20.20.2'}
+          - {os: ubuntu-latest, node: '22.21.1'}
+          - {os: windows-latest, node: '22.21.1'}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: Plugin/TelegramBridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: Plugin/TelegramBridge/package-lock.json
+      - run: npm ci
+      - run: node --unhandled-rejections=strict --test tests/*.test.js
+      - run: npm run check
+      - run: npm run scan:secrets
+      - run: npm audit --omit=dev --audit-level=high
+      - run: node scripts/package-release.js --version 0.1.0-beta.1
+
+  host-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.21.1'
+          cache: npm
+      - run: npm ci --ignore-scripts --omit=dev
+      - run: npm ci --prefix Plugin/TelegramBridge
+      - name: Host contract tests
+        run: node --unhandled-rejections=strict --test --test-timeout=30000 tests/async_task_correlation.test.js tests/host_integration_dispatch.test.js tests/plugin_callback_handler.test.js tests/plugin_host_integration_capabilities.test.js tests/request_context_propagation.test.js tests/tool_approval_request_context.test.js
+      - name: Real isolated PluginManager integration
+        env:
+          VCP_TEST_HOST_ROOT: ${{ github.workspace }}
+        run: node --unhandled-rejections=strict --test --test-timeout=30000 Plugin/TelegramBridge/tests/host_real_integration.test.js

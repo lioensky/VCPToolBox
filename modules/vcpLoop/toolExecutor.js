@@ -6,6 +6,11 @@ const { pathToFileURL } = require('url');
 const { getEmbeddingsBatch, cosineSimilarity } = require('../../EmbeddingUtils');
 const toolCallRecordStore = require('../toolCallRecordStore');
 const jevRiverReranker = require('../jevRiverReranker'); // river semantic:N 的级联第二阶段
+const {
+  dispatchIntegrationEvent,
+  extractAsyncTaskId,
+  normalizeRequestContext
+} = require('../hostIntegration');
 
 const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, '..', '..', 'VCPTimedContacts');
 
@@ -190,8 +195,9 @@ class ToolExecutor {
    * 执行单个工具调用
    * @returns {Promise<{success: boolean, content: Array, error?: string, raw?: any}>}
    */
-  async execute(toolCall, clientIp, contextMessages = []) {
+  async execute(toolCall, clientIp, contextMessages = [], requestContext = {}) {
     const { name, args, river, vref, archeryNoReply } = toolCall;
+    const normalizedRequestContext = normalizeRequestContext(requestContext);
 
     // === river 上下文注入 ===
     // river 协议允许 AI 在工具调用时携带对话上下文，支持四种模式：
@@ -392,8 +398,10 @@ class ToolExecutor {
       if (this.debugMode) console.log(`[ToolExecutor] Calling processToolCall for ${name} with args keys: ${Object.keys(args).join(', ')}`);
       const result = await this.pluginManager.processToolCall(name, args, clientIp, 'post', {
         archeryNoReply: !!archeryNoReply,
-        toolCallRecordHandle: recordHandle
+        toolCallRecordHandle: recordHandle,
+        requestContext: normalizedRequestContext
       });
+      this._emitAsyncTaskReceipt(name, result, normalizedRequestContext);
       const processedResult = this._processResult(name, result);
       toolCallRecordStore.finishRecord(recordHandle, {
         success: true,
@@ -414,10 +422,36 @@ class ToolExecutor {
   /**
    * 批量执行工具调用
    */
-  async executeAll(toolCalls, clientIp, contextMessages = []) {
+  async executeAll(toolCalls, clientIp, contextMessages = [], requestContext = {}) {
+    const normalizedRequestContext = normalizeRequestContext(requestContext);
     return Promise.all(
-      toolCalls.map(tc => this.execute(tc, clientIp, contextMessages))
+      toolCalls.map(tc => this.execute(tc, clientIp, contextMessages, normalizedRequestContext))
     );
+  }
+
+  _emitAsyncTaskReceipt(pluginName, result, requestContext) {
+    const plugin = this.pluginManager?.getPlugin?.(pluginName);
+    if (plugin?.pluginType !== 'asynchronous' || !result || typeof result !== 'object') {
+      return false;
+    }
+
+    const taskId = extractAsyncTaskId(result, pluginName);
+    if (!taskId || typeof this.pluginManager?.emit !== 'function') {
+      return false;
+    }
+
+    const event = {
+      type: 'async_task_receipt',
+      data: {
+        correlationVersion: 1,
+        pluginName,
+        taskId,
+        parentRequestId: requestContext.parentRequestId,
+        parentMessageId: requestContext.parentMessageId
+      }
+    };
+
+    return dispatchIntegrationEvent(this.pluginManager, 'async_task_receipt', event);
   }
 
   _attachRecordIdToResult(result, recordHandle) {
