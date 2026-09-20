@@ -1,7 +1,7 @@
 // Plugin/AgentDream/DreamWaveEngine.js
 // 记忆涟漪浪潮引擎 - 实现基于多级时间线和共振的梦境召回
-// 🌊 核心算法: 种子记忆 → L0联想 → L1共振桥梁 → L2下探 → 深渊浪潮
-// 🔑 设计原则: 纯本地向量操作，零网络依赖
+// 🌊 核心算法: 种子记忆 → RiverMemo L0联想 → L1共振桥梁 → L2下探 → 深渊浪潮
+// 🔑 设计原则: 复用已摄取向量，走本地 Rust RiverMemo，零 Embedding 网络依赖
 
 const fsPromises = require('fs').promises;
 const fsSync = require('fs');
@@ -391,61 +391,117 @@ class DreamWaveEngine {
     // =========================================================================
 
     /**
-     * 对某篇向量在多个日记本索引中进行召回
-     * 🔧 关键修复: Float32Array → Array.from() 以匹配 KnowledgeBaseManager.search() 签名
-     * 🔧 署名过滤: 召回结果中排除非本人署名的公共日记
-     * 🌊 V8 升级: 测地线重排 — 过采样 2×k 候选，经 geodesicRerank 后截断回 k
-     *    tagBoost 使用 "0.6+" 语法触发 KnowledgeBaseManager 内置的测地线重排管线
+     * 对某篇记忆在 Agent 可见的多个日记本中执行联想召回。
+     *
+     * 主路径一次进入 Rust Native Query Plan：
+     * ANN → 跨索引合并 → hydrate → 语义去重 → RiverMemo Topology V3/Rayon。
+     * executeNativeRiverQuery 内部已带完整 legacy candidate fallback；只有整个
+     * RiverMemo 环境不可用时，才回退到历史 ANN + TagMemo DTSC 路径。
+     *
+     * @param {string} agentName
+     * @param {Float32Array|Array<number>} vector
+     * @param {number} k
+     * @param {string} queryText - 与该向量对应的记忆正文，用于 RiverMemo 查询观测
      */
-    async _recallForVector(agentName, vector, k) {
+    async _recallForVector(agentName, vector, k, queryText = '') {
         if (!vector || !this.kb) return [];
 
         const indices = this._getSearchableIndexNames(agentName);
+        if (indices.length === 0) return [];
+
+        const safeK = Math.max(1, Math.floor(Number(k) || 1));
+        // 为源文件自排除、文件级去重和署名过滤留出候选余量。
+        const oversampleK = Math.min(200, Math.max(safeK, safeK * 3));
+        const queryVector = vector instanceof Float32Array
+            ? vector
+            : new Float32Array(vector);
+        const observationText = String(queryText || '').substring(0, 4000);
         let allResults = [];
+        let riverMemoUsed = false;
 
-        // 🌊 V8 测地线重排: 过采样 2×k，让 geodesicRerank 有足够候选做地形感知排序
-        const oversampleK = k * 2;
-
-        // 🔧 核心修复: KnowledgeBaseManager.search(diaryName, queryVec, k, tagBoost)
-        // queryVec 必须是 Array (Array.isArray 检查)，不能是 Float32Array！
-        const queryVecArray = Array.from(vector);
-
-        // 🌊 tagBoost = "0.6+" — 尾部 "+" 触发 V8 geodesicRerank 管线
-        const tagBoostWithGeodesic = '0.6+';
-
-        for (const idxName of indices) {
+        if (typeof this.kb.executeNativeRiverQuery === 'function') {
             try {
-                const results = await this.kb.search(idxName, queryVecArray, oversampleK, tagBoostWithGeodesic);
-                if (results && results.length > 0) {
-                    allResults = allResults.concat(results);
-                }
-            } catch (e) {
-                // 静默跳过搜索失败的索引
+                const riverResult = await this.kb.executeNativeRiverQuery(
+                    {
+                        text: observationText,
+                        vector: queryVector
+                    },
+                    {
+                        agentId: agentName,
+                        diaryNames: indices,
+                        topK: oversampleK,
+                        sourceObservationConfig: {
+                            baseTagBoost: 0.6,
+                            coreBoostFactor: 1.33
+                        },
+                        enabled: true,
+                        // 一级回退仍会进入原生 Topology V3，只把联合候选生成退回 JS。
+                        fallbackToLegacy: true
+                    }
+                );
+                allResults = Array.isArray(riverResult?.results)
+                    ? riverResult.results
+                    : [];
+                riverMemoUsed = true;
+
+                const jointUsed =
+                    riverResult?.diagnostics?.nativeTopologyV3?.jointUsed === true;
+                console.log(
+                    `[DreamWave]   RiverMemo Topology V3 召回: ` +
+                    `mode=${jointUsed ? 'native-joint' : 'topology-fallback'}, ` +
+                    `candidates=${allResults.length}, omega=` +
+                    `${(Number(riverResult?.omega?.omega) || 0).toFixed(3)}`
+                );
+            } catch (error) {
+                console.warn(
+                    `[DreamWave]   RiverMemo 不可用，回退 ANN + TagMemo DTSC: ` +
+                    `${error.message}`
+                );
             }
         }
 
-        // 按分数排序（分数已包含测地线重排融合后的 finalScore）
+        if (!riverMemoUsed) {
+            // 最末级兼容回退：保留旧行为，避免原生 Memo Artifact 尚未就绪时整梦失败。
+            const queryVecArray = Array.from(queryVector);
+            const tagBoostWithGeodesic = '0.6+';
+
+            for (const idxName of indices) {
+                try {
+                    const results = await this.kb.search(
+                        idxName,
+                        queryVecArray,
+                        safeK * 2,
+                        tagBoostWithGeodesic
+                    );
+                    if (results && results.length > 0) {
+                        allResults = allResults.concat(results);
+                    }
+                } catch (error) {
+                    // 单个索引失败不应阻断其他可见日记本。
+                }
+            }
+        }
+
         allResults.sort((a, b) => (b.score || 0) - (a.score || 0));
 
-        // 去重（按 fullPath）
+        // 按文件去重；RiverMemo 返回 chunk 级结果，梦境消费文件级记忆。
         const unique = [];
         const seen = new Set();
-        for (const r of allResults) {
-            const key = r.fullPath || r.sourceFile || '';
+        for (const result of allResults) {
+            const key = result.fullPath || result.sourceFile || '';
             if (key && !seen.has(key)) {
                 seen.add(key);
-                unique.push(r);
+                unique.push(result);
             }
         }
 
-        // 🔧 署名过滤: 排除公共日记本中非本人署名的记忆
+        // 二次执行署名过滤，防止公共日记本中的其他 Agent 记忆进入梦境。
         const filtered = [];
-        for (const r of unique) {
-            const relPath = r.fullPath || '';
+        for (const result of unique) {
+            const relPath = result.fullPath || '';
             const topDir = relPath.split('/')[0] || relPath.split('\\')[0] || '';
 
             if (topDir.startsWith('公共')) {
-                // 公共日记本 → 检查署名
                 const absPath = path.join(DAILY_NOTE_ROOT, relPath);
                 try {
                     const fd = await fsPromises.open(absPath, 'r');
@@ -454,18 +510,17 @@ class DreamWaveEngine {
                     await fd.close();
                     const head = buffer.toString('utf-8', 0, bytesRead);
                     const author = this._extractAuthor(head);
-                    // 有署名但不是本人 → 跳过
                     if (author && !author.includes(agentName)) {
                         continue;
                     }
-                } catch (e) {
-                    // 读取失败时宽容处理，保留
+                } catch (error) {
+                    // 读取失败时宽容保留；权限域已由 diaryNames + allowedFileIds 强制限定。
                 }
             }
-            filtered.push(r);
+            filtered.push(result);
         }
 
-        return filtered.slice(0, k);
+        return filtered.slice(0, safeK);
     }
 
     /**
@@ -515,7 +570,7 @@ class DreamWaveEngine {
             throw new Error("知识库未就绪，无法生成梦境浪潮");
         }
 
-        console.log(`[DreamWave] 🌊 开始为 ${agentName} 生成记忆涟漪浪潮 (V8 测地线重排已启用, tagBoost=0.6+, 过采样=2×k)...`);
+        console.log(`[DreamWave] 🌊 开始为 ${agentName} 生成记忆涟漪浪潮 (RiverMemo Topology V3 [Rust/Rayon])...`);
 
         const buckets = await this._getTimelineBuckets(agentName);
 
@@ -543,10 +598,10 @@ class DreamWaveEngine {
 
             // 3/5/7 原则
             const k = this._determineK(content.length);
-            console.log(`[DreamWave]   种子 ${path.basename(seed.filePath)} (${content.length}字) → k=${k} (过采样${k * 2}→重排→${k})`);
+            console.log(`[DreamWave]   种子 ${path.basename(seed.filePath)} (${content.length}字) → RiverMemo k=${k}`);
 
-            const recalls = await this._recallForVector(agentName, vector, k);
-            console.log(`[DreamWave]   → 测地线重排后召回 ${recalls.length} 条结果`);
+            const recalls = await this._recallForVector(agentName, vector, k, content);
+            console.log(`[DreamWave]   → RiverMemo 拓扑联想后召回 ${recalls.length} 条结果`);
 
             // 收集命中计数，用于找共振桥梁
             const seedRelPath = path.relative(DAILY_NOTE_ROOT, seed.filePath).replace(/\\/g, '/');
@@ -596,7 +651,12 @@ class DreamWaveEngine {
             const vec = this._getVectorByRelPath(l1.fullPath);
             if (vec) {
                 allCollectedVectors.push(vec);
-                const l2Recalls = await this._recallForVector(agentName, vec, 3);
+                const l2Recalls = await this._recallForVector(
+                    agentName,
+                    vec,
+                    3,
+                    l1.text || ''
+                );
                 for (const r of l2Recalls) {
                     const rPath = r.fullPath || '';
                     if (!seenL2Paths.has(rPath)) {
@@ -640,7 +700,12 @@ class DreamWaveEngine {
             if (!vector) continue;
 
             const k = this._determineK(content.length);
-            const recalls = await this._recallForVector(agentName, vector, k);
+            const recalls = await this._recallForVector(
+                agentName,
+                vector,
+                k,
+                content
+            );
 
             for (const r of recalls) {
                 const rPath = r.fullPath || '';
@@ -686,8 +751,22 @@ class DreamWaveEngine {
                 for (let i = 0; i < dim; i++) waveVector[i] /= mag;
             }
 
-            // 用浪潮向量召回 k=5，取前3
-            const deepRaw = await this._recallForVector(agentName, waveVector, 5);
+            // 用所有桥梁记忆的正文形成复合观测，浪潮向量提供查询坐标；
+            // RiverMemo 据此读取跨记忆的关系拓扑，而非只比较平均向量距离。
+            const waveObservationText = [
+                ...hydratedL1,
+                ...hydratedL2,
+                ...hydratedMidL1
+            ].map(item => item.content || item.text || '')
+                .filter(Boolean)
+                .join('\n\n')
+                .substring(0, 4000);
+            const deepRaw = await this._recallForVector(
+                agentName,
+                waveVector,
+                5,
+                waveObservationText
+            );
             const deepTop = deepRaw.slice(0, 3);
 
             for (const r of deepTop) {
