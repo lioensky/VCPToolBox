@@ -33,6 +33,18 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function parseApiKeys(value) {
+    const seen = new Set();
+    return String(value || '')
+        .split(/[,，|]/)
+        .map(key => key.trim())
+        .filter(key => {
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+}
+
 class JevClientError extends Error {
     constructor(message, options = {}) {
         super(message);
@@ -49,6 +61,7 @@ class JevClient {
     constructor(options = {}) {
         this.options = { ...options };
         this.proxyAgents = new Map();
+        this.apiKeyCursor = 0;
     }
 
     _resolveConfig(overrides = {}) {
@@ -65,12 +78,12 @@ class JevClient {
             || process.env.JEV_API_URL
             || defaults.url
         ).trim();
-        const apiKey = String(
+        const apiKeys = parseApiKeys(
             overrides.apiKey
             || this.options.apiKey
             || process.env.JEV_API_KEY
             || ''
-        ).trim();
+        );
         const model = String(
             overrides.model
             || this.options.model
@@ -109,7 +122,7 @@ class JevClient {
         return {
             provider,
             url,
-            apiKey,
+            apiKeys,
             model,
             timeoutMs,
             maxRetries,
@@ -128,6 +141,13 @@ class JevClient {
                 || 'VCPToolBox'
             ).trim()
         };
+    }
+
+    _takeNextApiKey(apiKeys) {
+        if (!Array.isArray(apiKeys) || apiKeys.length === 0) return '';
+        const index = this.apiKeyCursor % apiKeys.length;
+        this.apiKeyCursor = (index + 1) % apiKeys.length;
+        return apiKeys[index];
     }
 
     _validateState(state) {
@@ -297,16 +317,17 @@ class JevClient {
 
     isConfigured(overrides = {}) {
         const config = this._resolveConfig(overrides);
-        return Boolean(config.url && config.apiKey && config.model);
+        return Boolean(config.url && config.apiKeys.length > 0 && config.model);
     }
 
     getStatus(overrides = {}) {
         const config = this._resolveConfig(overrides);
         return Object.freeze({
-            configured: Boolean(config.url && config.apiKey && config.model),
+            configured: Boolean(config.url && config.apiKeys.length > 0 && config.model),
             provider: config.provider,
             url: config.url,
             model: config.model,
+            apiKeyCount: config.apiKeys.length,
             timeoutMs: config.timeoutMs,
             maxRetries: config.maxRetries,
             proxyEnabled: Boolean(config.proxyUrl)
@@ -318,7 +339,7 @@ class JevClient {
         this._validateQuestions(questions);
 
         const config = this._resolveConfig(options);
-        if (!config.url || !config.apiKey || !config.model) {
+        if (!config.url || config.apiKeys.length === 0 || !config.model) {
             throw new JevClientError(
                 'Jev 尚未配置，请设置 JEV_API_KEY，并按需设置 JEV_PROVIDER、JEV_API_URL 与 JEV_MODEL。',
                 {
@@ -328,20 +349,26 @@ class JevClient {
             );
         }
 
+        // 每次调用只领取一个 Key；该调用的全部重试沿用同一 Key，
+        // 避免一次逻辑请求占用多个轮询槽位。
+        const requestConfig = {
+            ...config,
+            apiKey: this._takeNextApiKey(config.apiKeys)
+        };
         const body = {
             model: config.model,
             state,
             questions
         };
-        const headers = this._buildHeaders(config, options.headers);
-        const proxyAgent = this._getProxyAgent(config.proxyUrl);
+        const headers = this._buildHeaders(requestConfig, options.headers);
+        const proxyAgent = this._getProxyAgent(requestConfig.proxyUrl);
         let lastError = null;
 
-        for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+        for (let attempt = 0; attempt <= requestConfig.maxRetries; attempt++) {
             try {
-                const response = await axios.post(config.url, body, {
+                const response = await axios.post(requestConfig.url, body, {
                     headers,
-                    timeout: config.timeoutMs,
+                    timeout: requestConfig.timeoutMs,
                     maxRedirects: 0,
                     signal: options.signal,
                     ...(proxyAgent ? {
@@ -358,17 +385,17 @@ class JevClient {
                 ) {
                     throw new JevClientError('Jev 返回了无效响应：缺少 answers 对象。', {
                         code: 'JEV_INVALID_RESPONSE',
-                        provider: config.provider
+                        provider: requestConfig.provider
                     });
                 }
                 return response.data;
             } catch (error) {
                 lastError = error instanceof JevClientError
                     ? error
-                    : this._createRequestError(error, config);
+                    : this._createRequestError(error, requestConfig);
                 if (
                     !lastError.retryable
-                    || attempt >= config.maxRetries
+                    || attempt >= requestConfig.maxRetries
                     || options.signal?.aborted
                 ) {
                     throw lastError;
@@ -379,13 +406,13 @@ class JevClient {
                 );
                 const retryDelayMs = Number.isFinite(retryAfterSeconds)
                     ? Math.max(0, retryAfterSeconds * 1000)
-                    : config.retryBaseDelayMs * (2 ** attempt);
+                    : requestConfig.retryBaseDelayMs * (2 ** attempt);
                 await sleep(retryDelayMs);
             }
         }
 
         throw lastError || new JevClientError('Jev 请求失败。', {
-            provider: config.provider
+            provider: requestConfig.provider
         });
     }
 }
