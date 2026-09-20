@@ -23,7 +23,7 @@ function powershellCommand() {
 test('local installer dry-run validates a pinned package without changing target config or state', (t) => {
   const shell = powershellCommand();
   if (!shell) return t.skip('PowerShell is unavailable');
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-install-'));
+  const temp = physicalTempDir(path.join(os.tmpdir(), 'telegram-install-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const releaseDir = path.join(temp, 'release');
   const targetRoot = path.join(temp, 'VCPToolBox');
@@ -74,7 +74,7 @@ test('installer source documents explicit apply and never overwrites private sta
 test('apply pins npm to the plugin and leaves parent dependencies and private state intact', t => {
   const shell = powershellCommand();
   if (!shell) return t.skip('PowerShell is unavailable');
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-install-scope-'));
+  const temp = physicalTempDir(path.join(os.tmpdir(), 'telegram-install-scope-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const targetRoot = path.join(temp, 'host');
   const targetPlugin = path.join(targetRoot, 'Plugin', 'TelegramBridge');
@@ -108,3 +108,9 @@ function npm {
   assert.equal(fs.readFileSync(path.join(targetPlugin, 'state', 'sentinel'), 'utf8'), 'state-keep');
   assert.equal(fs.readFileSync(path.join(targetPlugin, 'config.env'), 'utf8'), 'TELEGRAM_MODE=probe\n');
 });
+
+// Hosted Windows runners may expose TEMP through an 8.3 alias. Fixtures use
+// the same physical paths that the bridge persists; containment checks stay strict.
+function physicalTempDir(prefix) {
+  return fs.realpathSync.native(fs.mkdtempSync(prefix));
+}

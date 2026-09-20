@@ -49,6 +49,7 @@ jobs:
           node-version: '22.21.1'
           cache: npm
       - run: npm ci --ignore-scripts --omit=dev
+      - run: npm rebuild better-sqlite3
       - run: npm ci --prefix Plugin/TelegramBridge
       - name: Host contract tests
         run: node --unhandled-rejections=strict --test --test-timeout=30000 tests/async_task_correlation.test.js tests/host_integration_dispatch.test.js tests/plugin_callback_handler.test.js tests/plugin_host_integration_capabilities.test.js tests/request_context_propagation.test.js tests/tool_approval_request_context.test.js

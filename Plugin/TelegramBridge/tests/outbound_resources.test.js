@@ -22,7 +22,7 @@ function candidate(url, image = false) {
 
 function fixture(t, extra = {}) {
   const { createOutboundResources } = require('../src/outboundResources');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-outbound-test-'));
+  const root = physicalTempDir(path.join(os.tmpdir(), 'telegram-outbound-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const stateDir = path.join(root, 'state');
   const imageRoot = path.join(root, 'image');
@@ -600,3 +600,9 @@ test('remote images stage and choose photo/animation, while old local images omi
   await resources.send({ chatId: '42', media });
   assert.equal(item.calls.at(-1).method, 'sendPhoto');
 });
+
+// Hosted Windows runners may expose TEMP through an 8.3 alias. Fixtures use
+// the same physical paths that the bridge persists; containment checks stay strict.
+function physicalTempDir(prefix) {
+  return fs.realpathSync.native(fs.mkdtempSync(prefix));
+}

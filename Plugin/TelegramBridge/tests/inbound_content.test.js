@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 const { readInboundImages, prepareVcpInput } = require('../src/inboundContent');
 
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-inbound-'));
+  const root = physicalTempDir(path.join(os.tmpdir(), 'tg-inbound-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'inbox'));
   function file(name, mime, data) {
@@ -272,7 +272,7 @@ test('helper output can be sent unchanged as user data through the trusted VCP c
 });
 
 test('verified inbound images become native image parts and reject changed or escaping files', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vision-'));
+  const root = physicalTempDir(path.join(os.tmpdir(), 'tg-vision-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const inbox = path.join(root, 'inbox');
   fs.mkdirSync(inbox);
@@ -289,3 +289,9 @@ test('verified inbound images become native image parts and reject changed or es
   fs.writeFileSync(file, Buffer.from('changed'));
   assert.throws(() => readInboundImages([attachment], root), e => e.code === 'INBOUND_IMAGE_INVALID');
 });
+
+// Hosted Windows runners may expose TEMP through an 8.3 alias. Fixtures use
+// the same physical paths that the bridge persists; containment checks stay strict.
+function physicalTempDir(prefix) {
+  return fs.realpathSync.native(fs.mkdtempSync(prefix));
+}

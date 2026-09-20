@@ -4,7 +4,7 @@ const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cryp
 const D=require('better-sqlite3');
 function api(){let x;try{x=require('../src/inboundImageContext');}catch(e){if(e.code!=='MODULE_NOT_FOUND')throw e;}assert.equal(typeof x?.rememberInboundImages,'function');return x;}
 function fixture(t){
- const root=fs.mkdtempSync(path.join(os.tmpdir(),'tg-image-context-'));fs.mkdirSync(path.join(root,'inbox'));
+ const root=physicalTempDir(path.join(os.tmpdir(),'tg-image-context-'));fs.mkdirSync(path.join(root,'inbox'));
  const db=new D(':memory:');const md=path.join(__dirname,'../migrations');for(const f of fs.readdirSync(md).filter(f=>f.endsWith('.sql')).sort())db.exec(fs.readFileSync(path.join(md,f),'utf8'));
  t.after(()=>{db.close();fs.rmSync(root,{recursive:true,force:true});});
  const scope='telegram:42:0:ExampleAgent',context={scopeKey:scope,conversationId:'current',ownerUserId:'42'};
@@ -93,3 +93,9 @@ test('historical album order follows Telegram messages even when attachment time
  const actual=x.attachHistoryImages(f.db,f.context,[{role:'user',content:'compare',requestId:a.requestId}],f.root);
  assert.deepEqual(actual[0].images,[a.data,b.data]);
 });
+
+// Hosted Windows runners may expose TEMP through an 8.3 alias. Fixtures use
+// the same physical paths that the bridge persists; containment checks stay strict.
+function physicalTempDir(prefix) {
+  return fs.realpathSync.native(fs.mkdtempSync(prefix));
+}

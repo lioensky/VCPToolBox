@@ -74,9 +74,9 @@ async function startApproval(requestContext, toolArgs = { command: 'safe-fixture
   callPromise.catch(() => {});
   let timeoutId;
   const timeoutPromise = new Promise((resolve, reject) => {
-    timeoutId = setTimeout(() => reject(new Error('tool_approval_request event was not emitted')), 250);
+    timeoutId = setTimeout(() => reject(new Error('tool_approval_request event was not emitted')), 2000);
   });
-  const [event] = await Promise.race([eventPromise, timeoutPromise]);
+  const [event] = await Promise.race([eventPromise, callPromise.then(() => { throw new Error('tool call finished without approval'); }), timeoutPromise]);
   clearTimeout(timeoutId);
   return { event, callPromise };
 }

@@ -33,7 +33,7 @@ function pngBytes(extra = 0) {
 }
 
 function fixture(t, overrides = {}) {
-  const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-attachment-'));
+  const pluginRoot = physicalTempDir(path.join(os.tmpdir(), 'telegram-attachment-'));
   const stateDir = path.join(pluginRoot, 'state');
   const outputRoot = path.join(pluginRoot, 'output');
   fs.mkdirSync(outputRoot, { recursive: true });
@@ -222,7 +222,7 @@ test('MIME mismatch and download/redirect failures remove partial files and sani
 });
 
 test('physical inbox symlink escape is rejected without writing outside state', async (t) => {
-  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-escape-target-'));
+  const target = physicalTempDir(path.join(os.tmpdir(), 'telegram-escape-target-'));
   t.after(() => fs.rmSync(target, { recursive: true, force: true }));
   const item = fixture(t);
   const scopeDir = path.join(item.stateDir, 'inbox', hashScopeKey(item.scope.key));
@@ -321,3 +321,9 @@ test('media groups are ordered, bounded and submitted exactly once', async () =>
   );
   await Promise.all(overflow);
 });
+
+// Hosted Windows runners may expose TEMP through an 8.3 alias. Fixtures use
+// the same physical paths that the bridge persists; containment checks stay strict.
+function physicalTempDir(prefix) {
+  return fs.realpathSync.native(fs.mkdtempSync(prefix));
+}
