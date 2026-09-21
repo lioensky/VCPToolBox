@@ -679,13 +679,18 @@ async function main(request) {
         SearchMode = process.env.SearchMode || 'kimisearch' } = request;
     const showURL = ShowURL === true || ShowURL === 'true';
 
-    if (!SearchTopic || !Keywords) {
-        return sendResponse({ status: "error", error: "缺少必需参数: SearchTopic 和 Keywords。" });
+    if (!SearchTopic || typeof SearchTopic !== 'string' || !SearchTopic.trim()) {
+        return sendResponse({ status: "error", error: "缺少必需参数: SearchTopic。" });
     }
 
-    const keywordList = Keywords.split(/[,\n，]/).map(k => k.trim()).filter(k => k.length > 0);
+    // Keywords 是可选的高级分支控制参数。简单搜索未提供有效关键词时，
+    // 直接使用 SearchTopic 作为唯一搜索词，让后续搜索 AI 自行理解和扩展意图。
+    const keywordList = typeof Keywords === 'string'
+        ? Keywords.split(/[,\n，]/).map(k => k.trim()).filter(k => k.length > 0)
+        : [];
     if (keywordList.length === 0) {
-        return sendResponse({ status: "error", error: "未识别到有效的关键词。" });
+        keywordList.push(SearchTopic.trim());
+        log(`未提供有效 Keywords，使用 SearchTopic 作为唯一搜索词`);
     }
 
     const { deadline } = await createDeadlineContext();
