@@ -101,6 +101,7 @@ class JevToolCallExp {
             .replace(/【[\s\S]*?】/g, ' ')
             .replace(/\[[\s\S]*?\]/g, ' ');
         const quotedTools = [
+            ...extractMarkedValues(toolSelectionText, '`', '`'),
             ...extractMarkedValues(toolSelectionText, '\'', '\''),
             ...extractMarkedValues(toolSelectionText, '“', '”'),
             ...extractMarkedValues(toolSelectionText, '"', '"')
