@@ -19,6 +19,7 @@ export interface ToolApprovalConfig {
 
 export interface Preprocessor {
   name: string;
+  kind?: "preprocessor" | "stage";
   displayName?: string;
   description?: string;
 }

@@ -26,6 +26,7 @@ const STATIC_PLACEHOLDER_INJECTION_STAGE = '$StaticPlaceholderInjection';
 const PREPROCESSOR_VIRTUAL_STAGES = Object.freeze({
     [STATIC_PLACEHOLDER_INJECTION_STAGE]: {
         name: STATIC_PLACEHOLDER_INJECTION_STAGE,
+        kind: 'stage',
         displayName: '静态/混合插件占位符注入',
         description: '在此位置注入静态、混合及分布式插件上报的系统提示词占位符内容。可拖动以隔离动态网页文本与前置捕获指令。'
     }
@@ -2358,6 +2359,7 @@ class PluginManager extends EventEmitter {
             const manifest = this.plugins.get(name);
             return {
                 name: name,
+                kind: 'preprocessor',
                 displayName: manifest ? manifest.displayName : name,
                 description: manifest ? manifest.description : 'N/A'
             };
