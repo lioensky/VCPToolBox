@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "virtualToolName": "JEV",
+  "maxExpandedCalls": 5,
+  "categories": {
+    "web_search": {
+      "aliases": ["联网搜索", "搜索", "搜搜"],
+      "defaultTool": "vsearch",
+      "tools": {
+        "vsearch": {
+          "plugin": "VSearch",
+          "aliases": ["vsearch", "v搜索", "默认搜索"],
+          "fixedArgs": {
+            "SearchMode": "grounding",
+            "ShowURL": "false"
+          }
+        },
+        "google": {
+          "plugin": "SerpSearch",
+          "aliases": ["google", "谷歌", "谷歌搜索"],
+          "fixedArgs": {
+            "command": "google_search"
+          }
+        },
+        "google_scholar": {
+          "plugin": "SerpSearch",
+          "aliases": ["scholar", "google scholar", "谷歌学术", "学术搜索"],
+          "fixedArgs": {
+            "command": "google_scholar_search"
+          }
+        },
+        "tavily": {
+          "plugin": "TavilySearch",
+          "aliases": ["tavily", "tavilyadvance", "tavily advanced"],
+          "fixedArgs": {
+            "search_depth": "advanced",
+            "topic": "general",
+            "include_raw_content": "markdown"
+          }
+        },
+        "anysearch": {
+          "plugin": "AnySearch",
+          "aliases": ["anysearch", "any search"],
+          "fixedArgs": {
+            "command": "search",
+            "max_results": "5"
+          },
+          "subDomains": {
+            "general": "通用网页与实时信息",
+            "resource.image": "图片资源",
+            "social_media.social_media": "社交媒体",
+            "finance.news": "公司、股票、基金、宏观经济新闻",
+            "academic.search": "通用学术论文",
+            "academic.dataset": "学术数据集",
+            "academic.preprint": "预印本",
+            "academic.biomedical": "生物医学文献",
+            "legal.case": "法律判例",
+            "health.drug": "药物信息",
+            "health.trial": "临床试验",
+            "business.company": "公司信息",
+            "business.jobs": "职位招聘",
+            "security.intel": "威胁情报",
+            "security.vuln": "漏洞与软件包安全",
+            "code.doc": "编程语言或软件库官方文档",
+            "code.snippet": "代码片段与示例",
+            "energy.electricity": "能源与电力",
+            "travel.flight": "航班搜索",
+            "gaming.esports": "电竞信息",
+            "agriculture.fao": "农业与粮食数据"
+          }
+        },
+        "bilibili_search": {
+          "plugin": "BilibiliFetch",
+          "aliases": ["b站搜索", "哔哩哔哩搜索", "搜b站", "bilibili search"],
+          "fixedArgs": {
+            "action": "search",
+            "search_type": "video",
+            "page": "1"
+          }
+        },
+        "bilibili_fetch": {
+          "plugin": "BilibiliFetch",
+          "aliases": ["b站获取", "b站视频", "哔哩哔哩", "bilibili"],
+          "fixedArgs": {
+            "need_subs": "true",
+            "need_pbp": "true",
+            "danmaku_num": "20",
+            "comment_num": "20"
+          }
+        }
+      }
+    },
+    "image_generation": {
+      "aliases": ["图片生成", "生成图片", "生图", "修图", "图片编辑", "多图合成"],
+      "defaultTool": "nanobanana",
+      "tools": {
+        "nanobanana": {
+          "plugin": "NanoBananaGen2",
+          "aliases": ["谷歌生图", "nanobanana", "nano banana", "香蕉", "纳米香蕉"],
+          "sizes": {
+            "1K": "快速或普通清晰度",
+            "2K": "高清图片",
+            "4K": "超高清图片"
+          }
+        },
+        "gpt_image": {
+          "plugin": "GPTImageGen",
+          "aliases": ["gpt生图", "gpt image", "openai生图", "openai image"],
+          "sizes": {
+            "1024x1024": "标准方图",
+            "1536x1024": "横向图片",
+            "1024x1536": "竖向图片",
+            "2048x2048": "高清方图",
+            "3840x2160": "实验性四K横图",
+            "2160x3840": "实验性四K竖图"
+          }
+        },
+        "zimage": {
+          "plugin": "ZImageTurboGen",
+          "aliases": ["zimage", "z-image", "z图"],
+          "sizes": {
+            "1024x1024": "标准方图",
+            "1024x768": "横向四比三",
+            "768x1024": "竖向四比三",
+            "1024x576": "宽屏横图",
+            "576x1024": "手机竖图",
+            "2048x2048": "高清方图",
+            "2048x1152": "高清宽屏横图",
+            "1152x2048": "高清手机竖图"
+          }
+        },
+        "doubao": {
+          "plugin": "DoubaoGen",
+          "aliases": ["豆包", "doubao", "seedream"],
+          "sizes": {
+            "1024x1024": "标准方图",
+            "1152x864": "横向四比三",
+            "864x1152": "竖向四比三",
+            "1280x720": "宽屏横图",
+            "720x1280": "手机竖图",
+            "2048x2048": "高清方图",
+            "2560x1440": "二点五K宽屏横图",
+            "1440x2560": "二点五K手机竖图"
+          }
+        }
+      }
+    }
+  }
+}
