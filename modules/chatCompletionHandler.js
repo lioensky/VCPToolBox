@@ -1008,6 +1008,10 @@ class ChatCompletionHandler {
         superDetectors: this.config.superDetectors,
         DEBUG_MODE,
         messages: tavernProcessedMessages, // 将近期消息列表传递下去，用于支持上下文动态折叠 (Contextual Folding)
+        // 静态/混合/分布式插件上报内容由 preprocessor_order.json 中的
+        // $StaticPlaceholderInjection 虚拟阶段注入，避免动态网页文本在
+        // CapturePreprocessor 之前生成可执行截图占位符。
+        deferStaticPluginPlaceholders: true,
         // 🔒 灵魂级占位符去重：跨消息共享展开状态
         // Agent 类：整个上下文只允许展开一个 agent（第一个遇到的），后续所有 agent 占位符均不展开
         // Toolbox 类：每种 toolbox 各允许展开一次，同名重复出现时不再展开
@@ -1049,40 +1053,56 @@ class ChatCompletionHandler {
       }
       if (DEBUG_MODE) await writeDebugLog('LogAfterVariableProcessing', processedMessages);
 
-      // --- 媒体处理器 ---
-      if (shouldProcessMedia) {
-        if (shouldProcessMediaPlus) {
-          for (const msg of processedMessages) {
-            if (msg.role === 'user' && Array.isArray(msg.content)) {
-              const mediaParts = msg.content.filter(part => part.type === 'image_url' && part.image_url && typeof part.image_url.url === 'string' && /^data:(image|audio|video)\/[^;]+;base64,/.test(part.image_url.url));
-              if (mediaParts.length > 0) {
-                msg.__vcp_media_backup__ = JSON.parse(JSON.stringify(mediaParts));
-              }
+      if (shouldProcessMedia && shouldProcessMediaPlus) {
+        for (const msg of processedMessages) {
+          if (msg.role === 'user' && Array.isArray(msg.content)) {
+            const mediaParts = msg.content.filter(part => part.type === 'image_url' && part.image_url && typeof part.image_url.url === 'string' && /^data:(image|audio|video)\/[^;]+;base64,/.test(part.image_url.url));
+            if (mediaParts.length > 0) {
+              msg.__vcp_media_backup__ = JSON.parse(JSON.stringify(mediaParts));
             }
-          }
-        }
-
-        const processorName = pluginManager.messagePreprocessors.has('MultiModalProcessor')
-          ? 'MultiModalProcessor'
-          : 'ImageProcessor';
-        if (pluginManager.messagePreprocessors.has(processorName)) {
-          if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${processorName}`);
-          try {
-            processedMessages = await pluginManager.executeMessagePreprocessor(processorName, processedMessages, requestPreprocessorConfig);
-          } catch (pluginError) {
-            console.error(`[Server] Error in preprocessor ${processorName}:`, pluginError);
           }
         }
       }
 
-      // --- 其他通用消息预处理器 ---
-      for (const name of pluginManager.messagePreprocessors.keys()) {
-        // 跳过已经特殊处理的插件
-        if (name === 'ImageProcessor' || name === 'MultiModalProcessor' || name === 'VCPTavern') continue;
+      // --- 可排序消息处理管线 ---
+      // VCPTavern 已在变量展开前执行；其余真实预处理器与静态占位符注入
+      // 严格遵循 preprocessor_order.json，确保动态插件文本不能污染前置捕获指令。
+      const STATIC_PLACEHOLDER_INJECTION_STAGE = '$StaticPlaceholderInjection';
+      const selectedMediaProcessor = pluginManager.messagePreprocessors.has('MultiModalProcessor')
+        ? 'MultiModalProcessor'
+        : 'ImageProcessor';
+      const orderedPipeline = Array.isArray(pluginManager.preprocessorOrder)
+        ? pluginManager.preprocessorOrder
+        : Array.from(pluginManager.messagePreprocessors.keys());
+
+      for (const name of orderedPipeline) {
+        if (name === 'VCPTavern') continue;
+
+        if (name === STATIC_PLACEHOLDER_INJECTION_STAGE) {
+          if (DEBUG_MODE) console.log('[Server] Injecting static/hybrid/distributed plugin placeholders.');
+          processedMessages = await messageProcessor.injectStaticPluginPlaceholdersInMessages(
+            processedMessages,
+            {
+              ...processingContext,
+              messages: processedMessages
+            }
+          );
+          continue;
+        }
+
+        if (name === 'ImageProcessor' || name === 'MultiModalProcessor') {
+          if (!shouldProcessMedia || name !== selectedMediaProcessor) continue;
+        }
+
+        if (!pluginManager.messagePreprocessors.has(name)) continue;
 
         if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${name}`);
         try {
-          processedMessages = await pluginManager.executeMessagePreprocessor(name, processedMessages, requestPreprocessorConfig);
+          processedMessages = await pluginManager.executeMessagePreprocessor(
+            name,
+            processedMessages,
+            requestPreprocessorConfig
+          );
         } catch (pluginError) {
           console.error(`[Server] Error in preprocessor ${name}:`, pluginError);
         }

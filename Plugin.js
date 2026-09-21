@@ -22,6 +22,14 @@ const {
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
 const PREPROCESSOR_ORDER_FILE = path.join(__dirname, 'preprocessor_order.json');
+const STATIC_PLACEHOLDER_INJECTION_STAGE = '$StaticPlaceholderInjection';
+const PREPROCESSOR_VIRTUAL_STAGES = Object.freeze({
+    [STATIC_PLACEHOLDER_INJECTION_STAGE]: {
+        name: STATIC_PLACEHOLDER_INJECTION_STAGE,
+        displayName: '静态/混合插件占位符注入',
+        description: '在此位置注入静态、混合及分布式插件上报的系统提示词占位符内容。可拖动以隔离动态网页文本与前置捕获指令。'
+    }
+});
 const SSH_MANAGER_ENV_PLUGIN_ALLOWLIST = new Set([
     'LinuxShellExecutor',
     'LinuxLogMonitor'
@@ -922,9 +930,11 @@ class PluginManager extends EventEmitter {
                 }
             }
 
-            // 3. 确定预处理器加载顺序
+            // 3. 确定预处理器与虚拟管线阶段的加载顺序
             const availablePlugins = new Set(discoveredPreprocessors.keys());
+            const availableStages = new Set(Object.keys(PREPROCESSOR_VIRTUAL_STAGES));
             let finalOrder = [];
+            let savedOrderHasVirtualStage = false;
             try {
                 const orderContent = await fs.readFile(PREPROCESSOR_ORDER_FILE, 'utf-8');
                 const savedOrder = JSON.parse(orderContent);
@@ -933,6 +943,10 @@ class PluginManager extends EventEmitter {
                         if (availablePlugins.has(pluginName)) {
                             finalOrder.push(pluginName);
                             availablePlugins.delete(pluginName);
+                        } else if (availableStages.has(pluginName)) {
+                            finalOrder.push(pluginName);
+                            availableStages.delete(pluginName);
+                            savedOrderHasVirtualStage = true;
                         }
                     });
                 }
@@ -940,11 +954,23 @@ class PluginManager extends EventEmitter {
                 if (error.code !== 'ENOENT') console.error(`[PluginManager] Error reading existing ${PREPROCESSOR_ORDER_FILE}:`, error);
             }
 
-            finalOrder.push(...Array.from(availablePlugins).sort());
+            // 旧版顺序文件没有虚拟阶段时，将其置于最前，严格保持“变量展开后、
+            // 所有消息预处理器前注入静态占位符”的历史行为。
+            if (!savedOrderHasVirtualStage) {
+                finalOrder.unshift(...Array.from(availableStages));
+                availableStages.clear();
+            }
 
-            // 4. 注册预处理器
+            finalOrder.push(...Array.from(availablePlugins).sort());
+            finalOrder.push(...Array.from(availableStages));
+
+            // 4. 注册真实预处理器；虚拟阶段仅存在于 preprocessorOrder 中，
+            // 由主消息管线识别执行，不注册为伪插件模块。
             for (const pluginName of finalOrder) {
-                this.messagePreprocessors.set(pluginName, discoveredPreprocessors.get(pluginName));
+                const processor = discoveredPreprocessors.get(pluginName);
+                if (processor) {
+                    this.messagePreprocessors.set(pluginName, processor);
+                }
             }
             this.preprocessorOrder = finalOrder;
             if (finalOrder.length > 0) console.log('[PluginManager] Final message preprocessor order: ' + finalOrder.join(' -> '));
@@ -2322,8 +2348,13 @@ class PluginManager extends EventEmitter {
     }
 
     getPreprocessorOrder() {
-        // 返回所有已发现、已排序的预处理器信息
+        // 返回所有已发现、已排序的真实预处理器和虚拟管线阶段。
         return this.preprocessorOrder.map(name => {
+            const virtualStage = PREPROCESSOR_VIRTUAL_STAGES[name];
+            if (virtualStage) {
+                return { ...virtualStage };
+            }
+
             const manifest = this.plugins.get(name);
             return {
                 name: name,

@@ -732,6 +732,82 @@ function applyDetectorsToMessages(messages, context = {}) {
     });
 }
 
+async function injectStaticPluginPlaceholders(text, context = {}) {
+    const { pluginManager, DEBUG_MODE } = context;
+    if (text == null) return '';
+
+    let processedText = String(text);
+    const staticFoldMode = extractStaticFoldMode(processedText);
+    processedText = removeStaticFoldModePlaceholders(processedText);
+
+    if (!pluginManager || typeof pluginManager.getAllPlaceholderValues !== 'function') {
+        return processedText;
+    }
+
+    const staticPlaceholderValues = pluginManager.getAllPlaceholderValues();
+    if (!staticPlaceholderValues || staticPlaceholderValues.size === 0) {
+        return processedText;
+    }
+
+    for (const [placeholder, entry] of staticPlaceholderValues.entries()) {
+        // 只处理当前文本实际包含的占位符，避免无效的动态折叠计算。
+        const fullPlaceholder = `{{${placeholder}}}`;
+        if (!processedText.includes(fullPlaceholder)) {
+            continue;
+        }
+
+        const escapedPlaceholder = placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        const placeholderRegex = new RegExp('\\{\\{' + escapedPlaceholder + '\\}\\}', 'g');
+
+        let valueToInject = entry;
+        if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
+            valueToInject = entry.value;
+        }
+
+        if (typeof valueToInject === 'object' && valueToInject !== null && valueToInject.vcp_dynamic_fold) {
+            if (staticFoldMode === 'lite') {
+                valueToInject = resolveStaticFoldLite(valueToInject);
+                if (DEBUG_MODE) console.log(`[StaticFold] ${placeholder} 使用 Lite 模式，跳过语义向量判定。`);
+            } else if (staticFoldMode === 'full') {
+                valueToInject = resolveStaticFoldFull(valueToInject);
+                if (DEBUG_MODE) console.log(`[StaticFold] ${placeholder} 使用 Full 模式，跳过语义向量判定。`);
+            } else {
+                valueToInject = await resolveDynamicFoldProtocol(valueToInject, context, placeholder);
+            }
+        }
+
+        processedText = processedText.replace(placeholderRegex, valueToInject || `[${placeholder} 信息不可用]`);
+    }
+
+    return processedText;
+}
+
+async function injectStaticPluginPlaceholdersInMessages(messages, context = {}) {
+    if (!Array.isArray(messages)) return messages;
+
+    for (const message of messages) {
+        if (!message || message.role !== 'system') continue;
+
+        if (typeof message.content === 'string') {
+            message.content = await injectStaticPluginPlaceholders(message.content, {
+                ...context,
+                messages
+            });
+        } else if (Array.isArray(message.content)) {
+            for (const part of message.content) {
+                if (part && part.type === 'text' && typeof part.text === 'string') {
+                    part.text = await injectStaticPluginPlaceholders(part.text, {
+                        ...context,
+                        messages
+                    });
+                }
+            }
+        }
+    }
+
+    return messages;
+}
+
 async function replaceOtherVariables(text, model, role, context) {
     const { pluginManager, cachedEmojiLists, DEBUG_MODE } = context;
     if (text == null) return '';
@@ -876,42 +952,10 @@ async function replaceOtherVariables(text, model, role, context) {
         if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
         processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
 
-        const staticFoldMode = extractStaticFoldMode(processedText);
-        processedText = removeStaticFoldModePlaceholders(processedText);
-
-        const staticPlaceholderValues = pluginManager.getAllPlaceholderValues(); // Use the getter
-        if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
-            for (const [placeholder, entry] of staticPlaceholderValues.entries()) {
-                // 修复上下文折叠漏洞：如果当前文本压根没有这个占位符，直接跳过，避免触发不必要的向量化和计算
-                // 修复占位符前缀包含冲突：使用 {{}} 边界精确匹配，防止短名称吞噬长名称（如 VCPClawMailInbox ⊂ VCPClawMailInboxMail1）
-                const fullPlaceholder = `{{${placeholder}}}`;
-                if (!processedText.includes(fullPlaceholder)) {
-                    continue;
-                }
-
-                const escapedPlaceholder = placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-                const placeholderRegex = new RegExp('\\{\\{' + escapedPlaceholder + '\\}\\}', 'g');
-
-                let valueToInject = entry;
-                if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
-                    valueToInject = entry.value;
-                }
-
-                // 支持 vcp_dynamic_fold 协议
-                if (typeof valueToInject === 'object' && valueToInject !== null && valueToInject.vcp_dynamic_fold) {
-                    if (staticFoldMode === 'lite') {
-                        valueToInject = resolveStaticFoldLite(valueToInject);
-                        if (DEBUG_MODE) console.log(`[StaticFold] ${placeholder} 使用 Lite 模式，跳过语义向量判定。`);
-                    } else if (staticFoldMode === 'full') {
-                        valueToInject = resolveStaticFoldFull(valueToInject);
-                        if (DEBUG_MODE) console.log(`[StaticFold] ${placeholder} 使用 Full 模式，跳过语义向量判定。`);
-                    } else {
-                        valueToInject = await resolveDynamicFoldProtocol(valueToInject, context, placeholder);
-                    }
-                }
-
-                processedText = processedText.replace(placeholderRegex, valueToInject || `[${placeholder} 信息不可用]`);
-            }
+        // 默认保持历史行为；主请求管线可通过 deferStaticPluginPlaceholders
+        // 将静态/混合/分布式插件占位符延迟到可排序的虚拟阶段。
+        if (!context.deferStaticPluginPlaceholders) {
+            processedText = await injectStaticPluginPlaceholders(processedText, context);
         }
 
         const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions();
@@ -1040,6 +1084,8 @@ module.exports = {
     // 导出主函数，并重命名旧函数以供内部调用
     replaceAgentVariables: resolveAllVariables,
     replaceOtherVariables,
+    injectStaticPluginPlaceholders,
+    injectStaticPluginPlaceholdersInMessages,
     replacePriorityVariables,
     formatEmojiListForPrompt,
     applyDetectorRules,
