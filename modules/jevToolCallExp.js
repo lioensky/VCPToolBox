@@ -94,20 +94,28 @@ class JevToolCallExp {
         const categories = extractMarkedValues(raw, '{', '}');
         const primary = extractMarkedValues(raw, '【', '】');
         const constraints = extractMarkedValues(raw, '[', ']');
+        // 工具引号只在语义锚点外识别。数学表达式、通讯正文等主要负载中
+        // 可能合法包含单/双引号，不能把 integral('sin(x)') 中的 sin(x)
+        // 误判成显式工具名称。
+        const toolSelectionText = raw
+            .replace(/【[\s\S]*?】/g, ' ')
+            .replace(/\[[\s\S]*?\]/g, ' ');
         const quotedTools = [
-            ...extractMarkedValues(raw, '\'', '\''),
-            ...extractMarkedValues(raw, '“', '”'),
-            ...extractMarkedValues(raw, '"', '"')
+            ...extractMarkedValues(toolSelectionText, '\'', '\''),
+            ...extractMarkedValues(toolSelectionText, '“', '”'),
+            ...extractMarkedValues(toolSelectionText, '"', '"')
         ];
 
         if (categories.length === 0) {
-            throw new Error('JEV 表达式缺少能力目录，请使用 {联网搜索} 或 {图片生成}。');
+            const inferredCategory = this._inferImplicitCategory(raw);
+            if (inferredCategory) {
+                categories.push(inferredCategory);
+            } else {
+                throw new Error('JEV 表达式缺少能力目录，且无法从高置信度日用动作推断。请使用 {联网搜索}、{图片生成} 或 {日用工具}。');
+            }
         }
         if (categories.length > 1) {
             throw new Error('一个 JEV 块只能包含一个能力目录。');
-        }
-        if (primary.length === 0) {
-            throw new Error('JEV 表达式缺少主要内容，请使用【主要内容】。');
         }
 
         const categoryKey = this._resolveCategory(categories[0]);
@@ -118,15 +126,41 @@ class JevToolCallExp {
             else semanticConstraints.push(value);
         }
 
+        const uniqueUrls = uniqueStrings(imageUrls);
+        const allowsUrlAsPrimary = categoryKey === 'web_search' && uniqueUrls.length > 0;
+        if (primary.length === 0 && !allowsUrlAsPrimary) {
+            throw new Error('JEV 表达式缺少主要内容，请使用【主要内容】。打开网页时也可直接把 URL 放入 [URL]。');
+        }
+
         return {
             raw,
             categoryKey,
             categoryLabel: categories[0],
             primary,
             constraints: semanticConstraints,
-            imageUrls: uniqueStrings(imageUrls),
+            imageUrls: uniqueUrls,
             quotedTools: uniqueStrings(quotedTools)
         };
+    }
+
+    _inferImplicitCategory(raw) {
+        // 只允许高置信度日用动作省略目录。联网搜索、网页访问和图片生成
+        // 仍要求显式目录，避免一句普通聊天被误执行成外部工具调用。
+        const hasMarkedUrl = /\[(?:https?:\/\/|file:\/\/)[^\]]+\]/i.test(raw);
+        const hasUrlFetchAction = /打开|读取|查看|访问|看图|截图|快照/i.test(raw);
+        if (hasMarkedUrl && hasUrlFetchAction) return '联网搜索';
+
+        const dailyActionPatterns = [
+            /(?:请|帮我|麻烦)?\s*(?:计算|求解|算一下|科学计算)\s*【/i,
+            /(?:请|帮我|麻烦)?\s*(?:联络|联系|通讯|委托)\s*\[/i,
+            /(?:请|帮我|麻烦)?\s*(?:播放|点歌|放一首|听歌)\s*【/i,
+            /(?:设置|创建|定个|安排)(?:一个)?闹钟|在\[[^\]]+\](?:设置|创建|定个)闹钟/i,
+            /(?:请|帮我|进入)?\s*(?:睡眠|睡一觉|打个盹|打盹|等待回调|休眠)\s*\[/i,
+            /(?:请|帮我|主动)?\s*(?:主动回忆|快速回忆|检索记忆|搜索记忆|回忆)\s*【/i
+        ];
+        return dailyActionPatterns.some(pattern => pattern.test(raw))
+            ? '日用工具'
+            : null;
     }
 
     _resolveCategory(label) {
@@ -188,6 +222,9 @@ class JevToolCallExp {
 
         if (parsed.categoryKey === 'web_search') {
             toolKeys = this._normalizeBilibiliSelection(toolKeys, parsed);
+            toolKeys = this._normalizeUrlFetchSelection(toolKeys, parsed);
+        } else if (parsed.categoryKey === 'daily_tools') {
+            toolKeys = this._normalizeDailyToolSelection(toolKeys, parsed);
         }
 
         const calls = [];
@@ -200,6 +237,8 @@ class JevToolCallExp {
                 args = await this._buildWebSearchArgs(toolKey, tool, parsed);
             } else if (parsed.categoryKey === 'image_generation') {
                 args = await this._buildImageArgs(toolKey, tool, parsed);
+            } else if (parsed.categoryKey === 'daily_tools') {
+                args = this._buildDailyToolArgs(toolKey, tool, parsed);
             } else {
                 throw new Error(`JEV 尚未实现能力目录 "${parsed.categoryKey}"。`);
             }
@@ -237,6 +276,34 @@ class JevToolCallExp {
                 .filter(key => key !== 'bilibili_search' && key !== 'bilibili_fetch')
                 .concat(desired)
         );
+    }
+
+    _normalizeDailyToolSelection(toolKeys, parsed) {
+        // 引号显式选择具有最高优先级；否则按完整自然语言中的动作词路由。
+        if (parsed.quotedTools.length > 0) return toolKeys;
+
+        const raw = parsed.raw;
+        const routes = [
+            { re: /联络|联系|通讯|委托|问问.*(?:女仆|agent)/i, toolKey: 'agent_assistant' },
+            { re: /闹钟|提醒我|叫醒我|定时提醒/i, toolKey: 'alarm' },
+            { re: /计算|求解|算一下|科学计算/i, toolKey: 'calculator' },
+            { re: /睡一觉|睡眠|打盹|等待回调|等候回调|休眠/i, toolKey: 'sleep' },
+            { re: /播放|点歌|放一首|听歌/i, toolKey: 'music_controller' },
+            { re: /回忆|记忆|知识库|检索.*(?:日记|记忆)|搜索.*(?:日记|记忆)/i, toolKey: 'light_memo' }
+        ];
+        const route = routes.find(item => item.re.test(raw));
+        return [route ? route.toolKey : 'light_memo'];
+    }
+
+    _normalizeUrlFetchSelection(toolKeys, parsed) {
+        const hasUrl = parsed.imageUrls.length > 0;
+        const hasAction = /打开|读取|查看|访问|看图|截图|快照/i.test(parsed.raw);
+        if (!hasUrl || !hasAction) return toolKeys;
+
+        // URL + 明确访问动作是强信号。除非用户显式用引号选择了其他搜索器，
+        // 否则直接收敛为 UrlFetch，避免隐式目录推断后回落到默认 VSearch。
+        if (parsed.quotedTools.length > 0) return toolKeys;
+        return ['url_fetch'];
     }
 
     async _buildWebSearchArgs(toolKey, tool, parsed) {
@@ -286,6 +353,13 @@ class JevToolCallExp {
         if (toolKey === 'bilibili_fetch') {
             args.url = main;
             this._applyBilibiliConstraints(args, constraints);
+            return args;
+        }
+
+        if (toolKey === 'url_fetch') {
+            args.url = parsed.imageUrls[0] || main;
+            if (!args.url) throw new Error('打开网页需要在 [URL] 或【URL】中提供地址。');
+            args.mode = this._resolveUrlFetchMode(constraints, tool, parsed.raw);
             return args;
         }
 
@@ -407,6 +481,101 @@ class JevToolCallExp {
         if (danmaku) args.danmaku_num = danmaku[1];
         if (comments) args.comment_num = comments[1];
         if (/不要字幕|无需字幕/.test(joined)) args.need_subs = 'false';
+    }
+
+    _resolveUrlFetchMode(constraints, tool, raw = '') {
+        const joined = `${constraints.join(' ')} ${raw}`.toLowerCase();
+        // 更具体的多模态动作优先于“打开/读取网页”等通用文本动作。
+        for (const mode of ['image', 'snapshot', 'text']) {
+            const aliases = tool.modes?.[mode] || [];
+            if (aliases.some(alias => joined.includes(String(alias).toLowerCase()))) {
+                return mode;
+            }
+        }
+        return 'text';
+    }
+
+    _buildDailyToolArgs(toolKey, tool, parsed) {
+        const main = parsed.primary.join(' ').trim();
+        const constraints = parsed.constraints;
+        const joined = constraints.join(' ');
+        const args = { ...(tool.fixedArgs || {}) };
+
+        if (toolKey === 'light_memo') {
+            args.query = main;
+            const folder = constraints.find(value => (
+                /^(?:索引|目录|文件夹|folder)\s*[:：]/i.test(value)
+            )) || constraints.find(value => (
+                !/^\d+\s*(?:条|个|项|篇)$/.test(value)
+                && !/所有知识库|全部知识库|其他人的日记|跨知识库/.test(value)
+            ));
+            if (folder) args.folder = folder.replace(/^(?:索引|目录|文件夹|folder)\s*[:：]\s*/i, '');
+            const count = joined.match(/(\d+)\s*(?:条|个|项|篇)/);
+            if (count) args.k = count[1];
+            if (/所有知识库|全部知识库|其他人的日记|跨知识库/.test(joined)) {
+                args.search_all_knowledge_bases = 'true';
+            }
+            return args;
+        }
+
+        if (toolKey === 'alarm') {
+            const time = constraints.find(value => (
+                /\d|分钟后|小时后|明天|后天|早上|上午|中午|下午|晚上|半夜|凌晨/.test(value)
+            ));
+            if (!time) throw new Error('设置闹钟需要在 [] 中提供时间。');
+            args.time_description = time;
+            if (main) args.reminder_text = main;
+            return args;
+        }
+
+        if (toolKey === 'calculator') {
+            args.expression = main;
+            return args;
+        }
+
+        if (toolKey === 'agent_assistant') {
+            const modePatterns = /临时(?:通讯|聊天|联络)|异步委托|委托任务|查询委托|delegation(?:id)?|river|上下文|last:\d+|semantic:\d+|full|text|(?:19|20)\d{2}-\d{1,2}-\d{1,2}-\d{1,2}:\d{1,2}/i;
+            const target = constraints.find(value => !modePatterns.test(value));
+            if (!target) throw new Error('女仆通讯需要在 [] 中提供目标 Agent。');
+            args.agent_name = target.replace(/^(?:联络|联系|目标|agent)\s*[:：]\s*/i, '');
+            args.prompt = main;
+
+            if (/临时(?:通讯|聊天|联络)/.test(joined)) args.temporary_contact = 'true';
+            if (/异步委托|委托任务/.test(joined)) args.task_delegation = 'true';
+
+            const delegation = joined.match(/(?:查询委托|delegation(?:id)?)\s*[:：]?\s*([A-Za-z0-9_-]+)/i);
+            if (delegation) args.query_delegation = delegation[1];
+
+            const timely = joined.match(/((?:19|20)\d{2}-\d{1,2}-\d{1,2}-\d{1,2}:\d{1,2})/);
+            if (timely) args.timely_contact = timely[1];
+
+            const river = joined.match(/(?:river|上下文)\s*[:：]?\s*(full|text|last:\d+|semantic:\d+)/i);
+            if (river) args.river = river[1];
+            return args;
+        }
+
+        if (toolKey === 'sleep') {
+            const duration = constraints.find(value => (
+                /\d+\s*(?:秒|分钟|小时|天)|半小时|一会儿|片刻/.test(value)
+            ));
+            if (!duration) throw new Error('睡眠需要在 [] 中提供时长。');
+            args.sleeptime = duration;
+            if (main) args.tips = main;
+            return args;
+        }
+
+        if (toolKey === 'music_controller') {
+            args.songname = main;
+            for (const [stageMode, aliases] of Object.entries(tool.stageModes || {})) {
+                if (aliases.some(alias => joined.toLowerCase().includes(String(alias).toLowerCase()))) {
+                    args.stageMode = stageMode;
+                    break;
+                }
+            }
+            return args;
+        }
+
+        throw new Error(`JEV 尚未实现日用工具模板 "${toolKey}"。`);
     }
 
     async _buildImageArgs(toolKey, tool, parsed) {

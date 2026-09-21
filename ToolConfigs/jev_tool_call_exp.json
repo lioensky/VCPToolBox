@@ -87,6 +87,18 @@
             "danmaku_num": "20",
             "comment_num": "20"
           }
+        },
+        "url_fetch": {
+          "plugin": "UrlFetch",
+          "aliases": ["urlfetch", "打开网页", "读取网页", "网页内容", "网页截图", "打开图片", "图片地址", "看图"],
+          "fixedArgs": {
+            "mode": "text"
+          },
+          "modes": {
+            "text": ["文本", "正文", "读取", "网页内容", "text"],
+            "snapshot": ["截图", "网页截图", "快照", "snapshot"],
+            "image": ["看图", "图片", "读取图片", "image"]
+          }
         }
       }
     },
@@ -141,6 +153,53 @@
             "2048x2048": "高清方图",
             "2560x1440": "二点五K宽屏横图",
             "1440x2560": "二点五K手机竖图"
+          }
+        }
+      }
+    },
+    "daily_tools": {
+      "aliases": ["日用工具", "日常工具", "音乐播放", "点歌", "播放音乐", "VCP点歌台"],
+      "defaultTool": "light_memo",
+      "tools": {
+        "light_memo": {
+          "plugin": "LightMemo",
+          "aliases": ["主动回忆", "快速回忆", "检索记忆", "搜索记忆", "lightmemo"],
+          "fixedArgs": {
+            "k": "5",
+            "search_all_knowledge_bases": "false"
+          }
+        },
+        "alarm": {
+          "plugin": "VCPAlarm",
+          "aliases": ["设置闹钟", "创建闹钟", "定个闹钟", "提醒我", "vcpalarm"]
+        },
+        "calculator": {
+          "plugin": "SciCalculator",
+          "aliases": ["科学计算", "计算一下", "计算表达式", "scicalculator"]
+        },
+        "agent_assistant": {
+          "plugin": "AgentAssistant",
+          "aliases": ["联络女仆", "联络agent", "联系女仆", "联系agent", "女仆通讯", "委托任务", "agentassistant"]
+        },
+        "sleep": {
+          "plugin": "VCPSleep",
+          "aliases": ["睡一觉", "打个盹", "进入睡眠", "等待回调", "vcpsleep"]
+        },
+        "music_controller": {
+          "plugin": "MusicController",
+          "aliases": ["播放歌曲", "播放音乐", "点歌台", "点歌", "播放器", "musiccontroller", "VCP点歌台"],
+          "fixedArgs": {
+            "command": "playSong"
+          },
+          "stageModes": {
+            "luminous": ["流光", "luminous"],
+            "partita": ["云阶", "partita"],
+            "cadenza": ["心象", "cadenza"],
+            "tempera": ["凝彩", "tempera"],
+            "sonnet": ["商籁", "sonnet"],
+            "diorama": ["镜台", "diorama"],
+            "fume": ["浮名", "fume"],
+            "starborn": ["星诞", "starborn"]
           }
         }
       }
