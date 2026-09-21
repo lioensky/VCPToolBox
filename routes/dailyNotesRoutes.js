@@ -763,10 +763,10 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
         }
     });
 
-    // POST /note/:folderName/:fileName - 保存笔记
+    // POST /note/:folderName/:fileName - 保存笔记 (支持重命名与内容同时修改)
     router.post('/note/:folderName/:fileName', async (req, res) => {
         const { folderName, fileName } = req.params;
-        const { content } = req.body;
+        let { content, newFileName } = req.body;
 
         if (typeof content !== 'string') {
             return res.status(400).json({ error: 'Invalid request body' });
@@ -779,32 +779,108 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
         }
 
         const targetFolderPath = path.join(dailyNoteRootPath, folderName);
-        const filePath = path.join(targetFolderPath, fileName);
+        const oldFilePath = path.join(targetFolderPath, fileName);
 
-        if (!isPathSafe(filePath, dailyNoteRootPath)) {
+        if (!isPathSafe(oldFilePath, dailyNoteRootPath)) {
             return res.status(403).json({ error: 'Invalid file path' });
         }
 
+        // 处理新文件名逻辑
+        let actualNewFileName = fileName;
+        let isRename = false;
+
+        if (typeof newFileName === 'string' && newFileName.trim()) {
+            let cleanNewName = newFileName.trim();
+
+            // 1. 判断新名字是否已经以白名单扩展名（如 .txt / .md）结尾
+            const hasValidExt = allowedExtensions.some(ext => cleanNewName.toLowerCase().endsWith(`.${ext}`));
+            if (!hasValidExt) {
+                // 2. 新名字未带合法扩展名时：优先寻找原文件名中的合法扩展名；若原文件也无合法扩展名，兜底采用 .txt
+                const matchedOldExt = allowedExtensions.find(ext => fileName.toLowerCase().endsWith(`.${ext}`));
+                const validExtToAppend = matchedOldExt ? `.${matchedOldExt}` : (allowedExtensions[0] ? `.${allowedExtensions[0]}` : '.txt');
+                cleanNewName += validExtToAppend;
+            }
+
+            if (cleanNewName.includes('..') || cleanNewName.includes('/') || cleanNewName.includes('\\')) {
+                return res.status(403).json({ error: 'Invalid new file name' });
+            }
+
+            if (cleanNewName !== fileName) {
+                actualNewFileName = cleanNewName;
+                isRename = true;
+            }
+        }
+
+        const newFilePath = path.join(targetFolderPath, actualNewFileName);
+        if (!isPathSafe(newFilePath, dailyNoteRootPath)) {
+            return res.status(403).json({ error: 'Invalid new file path' });
+        }
+
         try {
+            const mutationKey = isRename
+                ? `rename-save:${folderName}/${fileName}->${actualNewFileName}`
+                : `save:${folderName}/${fileName}`;
+
             const result = await executeFileMutation(
-                `save:${folderName}/${fileName}`,
+                mutationKey,
                 async () => {
                     await fs.mkdir(targetFolderPath, { recursive: true });
-                    await fs.writeFile(filePath, content, 'utf-8');
-                    dirCache.invalidate(targetFolderPath);
-                    return {
-                        status: 'success',
-                        mutationPaths: {
-                            upserts: [filePath],
-                            deletes: [],
-                        },
-                        response: { message: 'Saved successfully' },
-                    };
+
+                    if (isRename) {
+                        // 检查新目标文件是否已存在（防止冲突静默覆盖已有日记）
+                        try {
+                            await fs.access(newFilePath);
+                            const err = new Error(`文件 "${actualNewFileName}" 已存在，请使用其他名称`);
+                            err.code = 'EEXIST';
+                            throw err;
+                        } catch (err) {
+                            if (err.code !== 'ENOENT') throw err;
+                        }
+
+                        // 1. 写入新文件（内容是最新编辑的 content）
+                        await fs.writeFile(newFilePath, content, 'utf-8');
+
+                        // 2. 物理删除旧文件
+                        try {
+                            await fs.unlink(oldFilePath);
+                        } catch (unlinkErr) {
+                            if (unlinkErr.code !== 'ENOENT') throw unlinkErr;
+                        }
+
+                        dirCache.invalidate(targetFolderPath);
+                        return {
+                            status: 'success',
+                            mutationPaths: {
+                                upserts: [newFilePath],
+                                deletes: [oldFilePath],
+                            },
+                            response: {
+                                message: 'Saved and renamed successfully',
+                                savedFileName: actualNewFileName,
+                            },
+                        };
+                    } else {
+                        // 未重命名：原位覆写
+                        await fs.writeFile(oldFilePath, content, 'utf-8');
+                        dirCache.invalidate(targetFolderPath);
+                        return {
+                            status: 'success',
+                            mutationPaths: {
+                                upserts: [oldFilePath],
+                                deletes: [],
+                            },
+                            response: {
+                                message: 'Saved successfully',
+                                savedFileName: fileName,
+                            },
+                        };
+                    }
                 }
             );
             res.json(result.response);
         } catch (error) {
-            res.status(500).json({ error: 'Failed to save file', details: error.message });
+            const status = error.code === 'EEXIST' || error.message.includes('已存在') ? 409 : 500;
+            res.status(status).json({ error: 'Failed to save file', details: error.message });
         }
     });
 
