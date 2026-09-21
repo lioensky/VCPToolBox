@@ -685,9 +685,9 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
             # Prepare image directory in PROJECT_BASE_PATH
             project_base_path = os.environ.get('PROJECT_BASE_PATH', os.getcwd())
             
-            # 标题来自远端，不可直接作为路径；BV 号后缀还可避免清洗后的标题碰撞。
-            safe_title = sanitize_filename(video_title) if video_title else bvid
-            safe_directory = sanitize_filename(f"{safe_title}_{bvid}", max_length=100)
+            # 公开图片 URL 使用纯 ASCII 的 BV 号目录，避免中文标题经过百分号编码后
+            # 形成超长 URL，减少模型上下文开销和复述 URL 时的出错概率。
+            safe_directory = sanitize_filename(bvid, max_length=64)
 
             # 纵深防御：即使未来清洗规则被修改，最终路径也不得逃逸 bilibili 根目录。
             bilibili_root = os.path.abspath(
@@ -774,7 +774,8 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
                         accessible_url = get_accessible_url(img_path)
                         images_to_add.append({
                             "type": "image_url",
-                            "image_url": {"url": accessible_url}
+                            "image_url": {"url": accessible_url},
+                            "_snapshot_time": t_val
                         })
                         mode_label = "HD" if hd_snapshot and "hd_snapshot" in os.path.basename(img_path) else "雪碧图"
                         snapshot_text += f"- 时间点 {t_val}s 的快照已保存 [{mode_label}]: {os.path.basename(img_path)}\n"
@@ -822,16 +823,25 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
         text_parts.append(snapshot_text)
         
     full_text = "\n".join(text_parts).strip()
-    
-    # Append HTML <img> tags for images to ensure they are rendered in the AI's response
-    # This follows the pattern in the provided Node.js example
-    if images_to_add:
-        full_text += "\n\n请务必使用以下 HTML <img> 标签将视频快照直接展示给用户：\n"
-        for img_obj in images_to_add:
-            img_url = img_obj["image_url"]["url"]
-            full_text += f'<img src="{img_url}" width="400" alt="Bilibili Snapshot">\n'
-    
-    return full_text
+
+    if not images_to_add:
+        return full_text
+
+    # 图片通过标准多模态 content 数组直接交给模型看图，不再仅依赖模型从文本中
+    # 复制 URL。仍提供短 HTML 引用，让模型在认为画面有趣或精彩时自行决定是否分享。
+    full_text += "\n\n【快照使用提示】\n以下快照已作为多模态图片提供，你可以直接结合画面理解视频。若你认为其中有有趣或精彩的画面，可在回复中酌情分享，不必逐张展示。"
+    for img_obj in images_to_add:
+        img_url = img_obj["image_url"]["url"]
+        snapshot_time = img_obj.pop("_snapshot_time", None)
+        time_label = f"{snapshot_time:g}s" if isinstance(snapshot_time, (int, float)) else "未知时间"
+        full_text += f'\n- {time_label}: <img src="{img_url}" width="400" alt="Bilibili Snapshot">'
+
+    return {
+        "content": [
+            {"type": "text", "text": full_text},
+            *images_to_add
+        ]
+    }
 
 def search_bilibili(keyword: str, search_type: str = "video", page: int = 1) -> dict:
     """
