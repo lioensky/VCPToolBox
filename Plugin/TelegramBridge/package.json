@@ -1,0 +1,20 @@
+{
+  "name": "vcp-telegram-bridge",
+  "version": "0.1.0-beta.1",
+  "description": "Telegram transport plugin for VCPToolBox.",
+  "type": "commonjs",
+  "main": "TelegramBridge.js",
+  "private": true,
+  "engines": {
+    "node": ">=20.20.2 <21 || >=22.21.1 <23"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check TelegramBridge.js && node --check scripts/package-release.js && node --check scripts/scan-secrets.js",
+    "package:release": "node scripts/package-release.js",
+    "scan:secrets": "node scripts/scan-secrets.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.9.0"
+  }
+}

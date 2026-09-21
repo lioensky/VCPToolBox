@@ -16,6 +16,7 @@ const fs = require('fs').promises; // fs.promises for async operations
 const path = require('path');
 const { Writable } = require('stream');
 const fsSync = require('fs'); // Renamed to fsSync for clarity with fs.promises
+const { createPluginCallbackHandler } = require('./modules/handlers/pluginCallbackHandler');
 
 // 🌟 核心修复：彻底解放 Node.js 默认的全局连接池限制，防止底层网络排队导致 AdminPanel 死锁
 const http = require('http');
@@ -1342,60 +1343,16 @@ const forumApiRoutes = require('./routes/forumApi');
 
 // 新增：异步插件回调路由
 const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, 'VCPAsyncResults');
-
-async function ensureAsyncResultsDir() {
-    try {
-        await fs.mkdir(VCP_ASYNC_RESULTS_DIR, { recursive: true });
-    } catch (error) {
-        console.error(`[ServerSetup] 创建 VCPAsyncResults 目录失败: ${VCP_ASYNC_RESULTS_DIR}`, error);
-    }
-}
-
-app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
-    const { pluginName, taskId } = req.params;
-    const callbackData = req.body; // 这是插件回调时发送的 JSON 数据
-
-    if (DEBUG_MODE) {
-        console.log(`[Server] Received callback for plugin: ${pluginName}, taskId: ${taskId}`);
-        console.log(`[Server] Callback data:`, JSON.stringify(callbackData, null, 2));
-    }
-
-    // 1. Save callback data to a file
-    await ensureAsyncResultsDir();
-    const resultFilePath = path.join(VCP_ASYNC_RESULTS_DIR, `${pluginName}-${taskId}.json`);
-    try {
-        await fs.writeFile(resultFilePath, JSON.stringify(callbackData, null, 2), 'utf-8');
-        if (DEBUG_MODE) console.log(`[Server Callback] Saved async result for ${pluginName}-${taskId} to ${resultFilePath}`);
-    } catch (fileError) {
-        console.error(`[Server Callback] Error saving async result file for ${pluginName}-${taskId}:`, fileError);
-        // Continue with WebSocket push even if file saving fails for now
-    }
-
-    const pluginManifest = pluginManager.getPlugin(pluginName);
-
-    if (!pluginManifest) {
-        console.error(`[Server Callback] Plugin manifest not found for: ${pluginName}`);
-        // Still attempt to acknowledge the callback if possible, but log error
-        return res.status(404).json({ status: "error", message: "Plugin not found, but callback noted." });
-    }
-
-    // 2. WebSocket push (existing logic)
-    if (pluginManifest.webSocketPush && pluginManifest.webSocketPush.enabled) {
-        const targetClientType = pluginManifest.webSocketPush.targetClientType || null;
-        const wsMessage = {
-            type: pluginManifest.webSocketPush.messageType || 'plugin_callback_notification',
-            data: callbackData
-        };
-        webSocketServer.broadcast(wsMessage, targetClientType);
-        if (DEBUG_MODE) {
-            console.log(`[Server Callback] WebSocket push for ${pluginName} (taskId: ${taskId}) processed. Message:`, JSON.stringify(wsMessage, null, 2));
-        }
-    } else if (DEBUG_MODE) {
-        console.log(`[Server Callback] WebSocket push not configured or disabled for plugin: ${pluginName}`);
-    }
-
-    res.status(200).json({ status: "success", message: "Callback received and processed" });
+const pluginCallbackHandler = createPluginCallbackHandler({
+    asyncResultsDir: VCP_ASYNC_RESULTS_DIR,
+    fsPromises: fs,
+    pluginManager,
+    webSocketServer,
+    logger: console,
+    debugMode: DEBUG_MODE
 });
+
+app.post('/plugin-callback/:pluginName/:taskId', pluginCallbackHandler);
 
 
 async function initialize() {

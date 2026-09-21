@@ -2,6 +2,7 @@
 const { StringDecoder } = require('string_decoder');
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
+const { deriveRequestContextFromOriginalBody } = require('../hostIntegration');
 const {
   extractReasoningText,
   removeReasoningFields,
@@ -63,6 +64,7 @@ class StreamHandler {
     );
     const reasoningTag = normalizeReasoningTag(reasoningToContentTag);
     const id = originalBody.requestId || originalBody.messageId;
+    const requestContext = deriveRequestContextFromOriginalBody(originalBody);
 
     let currentMessagesForLoop = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
     let recursionDepth = 0;
@@ -458,7 +460,7 @@ class StreamHandler {
       // 执行 Archery 调用
       const archeryLogs = await Promise.all(archeryCalls.map(async toolCall => {
         try {
-          const result = await toolExecutor.execute(toolCall, clientIp, currentMessagesForLoop);
+          const result = await toolExecutor.execute(toolCall, clientIp, currentMessagesForLoop, requestContext);
           const isError = !result.success || (result.raw && this.context.isToolResultError(result.raw));
 
           if (isError) {
@@ -568,7 +570,7 @@ class StreamHandler {
       }
 
       // 执行普通调用
-      const toolResults = await toolExecutor.executeAll(normalCalls, clientIp, currentMessagesForLoop);
+      const toolResults = await toolExecutor.executeAll(normalCalls, clientIp, currentMessagesForLoop, requestContext);
       const combinedToolResultsForAI = toolResults.map(r => r.content).flat();
       if (archeryErrorContents.length > 0) combinedToolResultsForAI.push(...archeryErrorContents);
 

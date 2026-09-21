@@ -1,0 +1,6 @@
+<div id="vcp-root" style="color:red">
+  <h3>ExampleAgent</h3>
+  <p>第一段 <img src="http://localhost:6005/pw=fixture/images/ExampleAgent/a.png"></p>
+  <div><strong>标题：</strong><ul><li>条目一</li><li>条目二</li></ul></div>
+</div>
+[@!fixture-tag] [@second-tag]

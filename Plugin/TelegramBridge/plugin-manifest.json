@@ -1,0 +1,164 @@
+{
+  "manifestVersion": "1.0",
+  "version": "0.1.0-beta.1",
+  "name": "TelegramBridge",
+  "displayName": "Telegram Bridge",
+  "description": "Connects authorized Telegram chats to VCP agents with a fail-closed runtime mode.",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "TelegramBridge.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 60000
+  },
+  "configSchema": {
+    "TELEGRAM_MODE": {
+      "type": "string",
+      "default": "disabled",
+      "required": false,
+      "enum": [
+        "disabled",
+        "probe",
+        "enabled"
+      ],
+      "description": "Accepted modes: disabled, probe, and enabled. Disabled remains the safe default."
+    },
+    "TELEGRAM_BOT_TOKEN": {
+      "type": "string",
+      "default": "",
+      "required": false
+    },
+    "TELEGRAM_ALLOWED_USER_IDS": {
+      "type": "string",
+      "default": "",
+      "required": false
+    },
+    "TELEGRAM_ALLOWED_CHAT_IDS": {
+      "type": "string",
+      "default": "",
+      "required": false
+    },
+    "TELEGRAM_GROUPS_ENABLED": {
+      "type": "string",
+      "default": "false",
+      "required": false
+    },
+    "TELEGRAM_DEFAULT_AGENT": {
+      "type": "string",
+      "default": "ExampleAgent",
+      "required": false
+    },
+    "TELEGRAM_ALLOWED_AGENTS": {
+      "type": "string",
+      "default": "ExampleAgent",
+      "required": false
+    },
+    "TELEGRAM_POLL_TIMEOUT_SEC": {
+      "type": "string",
+      "default": "30",
+      "required": false
+    },
+    "TELEGRAM_UPDATE_LIMIT": {
+      "type": "string",
+      "default": "50",
+      "required": false
+    },
+    "TELEGRAM_MAX_CONCURRENT_SCOPES": {
+      "type": "string",
+      "default": "3",
+      "required": false
+    },
+    "TELEGRAM_MAX_QUEUED_TOTAL": {
+      "type": "string",
+      "default": "100",
+      "required": false
+    },
+    "TELEGRAM_MAX_QUEUED_PER_SCOPE": {
+      "type": "string",
+      "default": "20",
+      "required": false
+    },
+    "TELEGRAM_MAX_INBOUND_BYTES": {
+      "type": "string",
+      "default": "19922944",
+      "required": false
+    },
+    "TELEGRAM_MAX_OUTBOUND_BYTES": {
+      "type": "string",
+      "default": "47185920",
+      "required": false
+    },
+    "TELEGRAM_OUTBOUND_DNS": {
+      "type": "string",
+      "default": "system",
+      "enum": [
+        "system",
+        "cloudflare"
+      ],
+      "required": false,
+      "description": "DNS for outbound public resource downloads only; cloudflare uses pinned TLS-verified encrypted DNS without relaxing private-address restrictions."
+    },
+    "TELEGRAM_HISTORY_MAX_MESSAGES": {
+      "type": "string",
+      "default": "40",
+      "required": false
+    },
+    "TELEGRAM_HISTORY_MAX_BYTES": {
+      "type": "string",
+      "default": "262144",
+      "required": false
+    },
+    "TELEGRAM_STATE_DIR": {
+      "type": "string",
+      "default": "",
+      "required": false
+    },
+    "TELEGRAM_VCP_BASE_URL": {
+      "type": "string",
+      "default": "http://127.0.0.1:6005/v1",
+      "required": false
+    },
+    "TELEGRAM_VCP_MODEL": {
+      "type": "string",
+      "default": "VCPModelAuto",
+      "required": false
+    },
+    "TELEGRAM_AGENT_MODELS": {
+      "type": "string",
+      "default": "{}",
+      "required": false
+    },
+    "TELEGRAM_VCP_TEMPERATURE": {
+      "type": "string",
+      "default": "",
+      "required": false
+    },
+    "TELEGRAM_VCP_MAX_TOKENS": {
+      "type": "string",
+      "default": "",
+      "required": false
+    },
+    "TELEGRAM_VCP_KEY": {
+      "type": "string",
+      "default": "",
+      "required": false
+    },
+    "TELEGRAM_STREAM_MODE": {
+      "type": "string",
+      "default": "draft",
+      "required": false
+    },
+    "TELEGRAM_PROACTIVE_ENABLED": {
+      "type": "string",
+      "default": "false",
+      "required": false
+    },
+    "TELEGRAM_LOG_CONTENT": {
+      "type": "string",
+      "default": "false",
+      "required": false
+    }
+  }
+}

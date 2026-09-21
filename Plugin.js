@@ -18,6 +18,11 @@ const {
     createDefaultDependencyBridgeRegistry,
     createDefaultExecutionBridgeRegistry
 } = require('./modules/pluginBridgeRegistry');
+const {
+    dispatchIntegrationEvent,
+    normalizeIntegrationId,
+    normalizeRequestContext
+} = require('./modules/hostIntegration');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -39,6 +44,12 @@ const LOG_MONITOR_ENV_PLUGIN_ALLOWLIST = new Set([
     'LinuxLogMonitor'
 ]);
 const EMBEDDED_FILE_URL_REGEX = /file:\/\/[^\s"'()\]\}\>，。？！）\r\n]+/g;
+const HOST_INTEGRATION_CAPABILITIES = Object.freeze({
+    hostIntegrationVersion: 1,
+    approvalCorrelationVersion: 1,
+    asyncCorrelationVersion: 1,
+    approvalResponseMethod: 'handleApprovalResponse'
+});
 
 function getFormattedLocalTimestamp() {
     const date = new Date();
@@ -1232,7 +1243,36 @@ class PluginManager extends EventEmitter {
         };
     }
 
+    getIntegrationCapabilities() {
+        return HOST_INTEGRATION_CAPABILITIES;
+    }
+
+    _emitIntegrationEvent(eventName, event) {
+        return dispatchIntegrationEvent(this, eventName, event);
+    }
+
+    emitAsyncTaskCompleted(pluginName, taskId) {
+        const normalizedPluginName = normalizeIntegrationId(pluginName);
+        const normalizedTaskId = normalizeIntegrationId(taskId);
+        if (!normalizedPluginName || !normalizedTaskId) {
+            return false;
+        }
+
+        this._emitIntegrationEvent('async_task_completed', {
+            type: 'async_task_completed',
+            data: {
+                correlationVersion: 1,
+                pluginName: normalizedPluginName,
+                taskId: normalizedTaskId
+            }
+        });
+        return true;
+    }
+
     async processToolCall(toolName, toolArgs, requestIp = null, sourceNode = null, executionOptions = {}) {
+        const requestContext = normalizeRequestContext(
+            executionOptions?.requestContext
+        );
         const shouldManageToolCallRecord = !executionOptions?.toolCallRecordHandle;
         const managedToolCallRecord = shouldManageToolCallRecord
             ? toolCallRecordStore.beginRecord({ toolName, args: toolArgs || {}, requestIp, sourceNode })
@@ -1317,6 +1357,18 @@ class PluginManager extends EventEmitter {
                     }
                 };
                 this.webSocketServer.broadcast(approvalRequest, 'VCPLog');
+                this._emitIntegrationEvent('tool_approval_request', {
+                    type: 'tool_approval_request',
+                    data: {
+                        requestId,
+                        parentRequestId: requestContext.parentRequestId,
+                        parentMessageId: requestContext.parentMessageId,
+                        correlationVersion: 1,
+                        toolName,
+                        timestamp: approvalRequest.data.timestamp,
+                        approvalTtlMs: approvalRequest.data.approvalTtlMs
+                    }
+                });
                 console.log(`[PluginManager] 🔔 正在等待工具调用人工审核: ${toolName} (ID: ${requestId})`);
             } else {
                 const pendingApproval = this.pendingApprovals.get(requestId);
