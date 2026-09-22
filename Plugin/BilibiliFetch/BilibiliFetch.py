@@ -262,8 +262,8 @@ def build_bilibili_cookie() -> str:
         if "SESSDATA" in full_cookie:
             logging.info("Cookie contains SESSDATA. Login-required APIs (AI subtitles) should work.")
         else:
-            logging.warning("Cookie does NOT contain SESSDATA. AI Summary API will fail with -101. "
-                            "Please ensure SESSDATA is included in BILIBILI_COOKIE, or install the browser sync extension.")
+            logging.warning("Cookie does NOT contain SESSDATA. Login-required APIs (AI subtitles) will fail with -101. "
+                            "Please ensure SESSDATA is included in BILIBILI_COOKIE.")
         return full_cookie
     except Exception as e:
         logging.warning(f"Error building cookie via manager, falling back to static config: {e}")
@@ -518,16 +518,7 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
                         return json.dumps({"body": standard_body}, ensure_ascii=False)
                 logging.warning("Step 5: AI Summary API returned success but subtitle list is empty.")
         elif sum_code == -101:
-            logging.error("╔════════════════════════════════════════════════════════════════╗")
-            logging.error("║  登录凭证已失效！AI Summary API 返回 -101 (账号未登录)        ║")
-            logging.error("║  推荐方案（自动）：重新登录 B站后，浏览器同步扩展会          ║")
-            logging.error("║  自动推送最新 Cookie，无需任何手动操作。                     ║")
-            logging.error("║  手动方案（备用）：                                          ║")
-            logging.error("║  1. 在 Edge 中打开 https://www.bilibili.com 并确认已登录     ║")
-            logging.error("║  2. 按 F12 → Application → Cookies → bilibili.com          ║")
-            logging.error("║  3. 复制所有 Cookie 字段，粘贴到 config.env 的               ║")
-            logging.error("║     BILIBILI_COOKIE=\"...\" 中（SESSDATA 包含在内）           ║")
-            logging.error("╚════════════════════════════════════════════════════════════════╝")
+            logging.warning("Step 5: AI Summary API returned -101 (account not logged in). SESSDATA credential required for AI transcript.")
             return json.dumps({"body": [], "_error": "SESSDATA_EXPIRED"})
         elif sum_code == -403:
             logging.error("Step 5: AI Summary API returned -403 (访问权限不足). WBI signing may be invalid or cookie is missing/expired.")
@@ -1003,10 +994,23 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
 
                     if img_path:
                         accessible_url = get_accessible_url(img_path)
+                        # 核心健壮性设计：将小体积快照编码为内联 Base64 Data URI，
+                        # 彻底消除下游 API 网关（如 New-API/One-API）因将 localhost:6005 判定为非法内网端口而触发的 SSRF 500 报错，
+                        # 同时使公网远端大模型真正具备免网络穿透的视觉读图能力。
+                        b64_url = accessible_url
+                        try:
+                            import base64
+                            with open(img_path, "rb") as f_img:
+                                b64_data = base64.b64encode(f_img.read()).decode('ascii')
+                                b64_url = f"data:image/jpeg;base64,{b64_data}"
+                        except Exception as b64_err:
+                            logging.warning(f"Failed to encode snapshot to base64: {b64_err}")
+
                         images_to_add.append({
                             "type": "image_url",
-                            "image_url": {"url": accessible_url},
-                            "_snapshot_time": t_val
+                            "image_url": {"url": b64_url},
+                            "_snapshot_time": t_val,
+                            "_display_url": accessible_url
                         })
                         mode_label = "HD" if hd_snapshot and "hd_snapshot" in os.path.basename(img_path) else "雪碧图"
                         snapshot_text += f"- 时间点 {t_val}s 的快照已保存 [{mode_label}]: {os.path.basename(img_path)}\n"
@@ -1062,15 +1066,22 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
     # 复制 URL。仍提供短 HTML 引用，让模型在认为画面有趣或精彩时自行决定是否分享。
     full_text += "\n\n【快照使用提示】\n以下快照已作为多模态图片提供，你可以直接结合画面理解视频。若你认为其中有有趣或精彩的画面，可在回复中酌情分享，不必逐张展示。"
     for img_obj in images_to_add:
-        img_url = img_obj["image_url"]["url"]
+        display_url = img_obj.pop("_display_url", img_obj["image_url"]["url"])
         snapshot_time = img_obj.pop("_snapshot_time", None)
         time_label = f"{snapshot_time:g}s" if isinstance(snapshot_time, (int, float)) else "未知时间"
-        full_text += f'\n- {time_label}: <img src="{img_url}" width="400" alt="Bilibili Snapshot">'
+        full_text += f'\n- {time_label}: <img src="{display_url}" width="400" alt="Bilibili Snapshot">'
+
+    # 安全熔断器：多模态图片单次上限设为 10 张，防止过大请求体撑爆大模型上下文或触发网关体积超限
+    MAX_MULTIMODAL_IMAGES = 10
+    capped_images = images_to_add
+    if len(images_to_add) > MAX_MULTIMODAL_IMAGES:
+        logging.info(f"Multimodal images capped to top {MAX_MULTIMODAL_IMAGES} to prevent context overflow.")
+        capped_images = images_to_add[:MAX_MULTIMODAL_IMAGES]
 
     return {
         "content": [
             {"type": "text", "text": full_text},
-            *images_to_add
+            *capped_images
         ]
     }
 
@@ -1241,11 +1252,8 @@ def process_bilibili_url(video_input: str, lang_code: str | None = None) -> str:
             if isinstance(subtitle_data, dict) and 'body' in subtitle_data and isinstance(subtitle_data['body'], list):
                 # Check for login credential expiration error
                 if '_error' in subtitle_data and subtitle_data['_error'] == 'SESSDATA_EXPIRED':
-                    error_msg = ("【字幕获取失败】B站登录凭证已失效（-101）。"
-                                 "推荐方案：重新登录 B站，浏览器同步扩展会自动更新 Cookie，无需手动操作。"
-                                 "手动方案：F12 → Application → Cookies → bilibili.com，"
-                                 "将完整 Cookie 字符串（含 SESSDATA）粘贴到 config.env 的 BILIBILI_COOKIE 字段中。")
-                    logging.error(error_msg)
+                    error_msg = "【字幕获取失败】B站登录凭证未配置或已失效（-101）。请在 config.env 或环境变量中配置有效的 BILIBILI_COOKIE（需包含 SESSDATA）。"
+                    logging.warning(error_msg)
                     return error_msg
                 # Extract content with timestamp
                 lines = [f"[{item.get('from', 0):.2f}] {item.get('content', '')}" for item in subtitle_data['body'] if isinstance(item, dict)]
