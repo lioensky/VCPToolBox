@@ -157,7 +157,8 @@ class JevToolCallExp {
             /(?:请|帮我|麻烦)?\s*(?:播放|点歌|放一首|听歌)\s*【/i,
             /(?:设置|创建|定个|安排)(?:一个)?闹钟|在\[[^\]]+\](?:设置|创建|定个)闹钟/i,
             /(?:请|帮我|进入)?\s*(?:睡眠|睡一觉|打个盹|打盹|等待回调|休眠)\s*\[/i,
-            /(?:请|帮我|主动)?\s*(?:主动回忆|快速回忆|检索记忆|搜索记忆|回忆)\s*【/i
+            /(?:请|帮我|主动)?\s*(?:主动回忆|快速回忆|检索记忆|搜索记忆|回忆)\s*【/i,
+            /(?:请|帮我)?\s*(?:进行|使用)?\s*(?:\[音乐检索\]|音乐检索)\s*【/i
         ];
         return dailyActionPatterns.some(pattern => pattern.test(raw))
             ? '日用工具'
@@ -289,6 +290,8 @@ class JevToolCallExp {
             { re: /闹钟|提醒我|叫醒我|定时提醒/i, toolKey: 'alarm' },
             { re: /计算|求解|算一下|科学计算/i, toolKey: 'calculator' },
             { re: /睡一觉|睡眠|打盹|等待回调|等候回调|休眠/i, toolKey: 'sleep' },
+            // “音乐检索”是 LightMemo 的语义音乐库检索，不是立即播放。
+            { re: /\[音乐检索\]|音乐检索/i, toolKey: 'light_memo' },
             { re: /播放|点歌|放一首|听歌/i, toolKey: 'music_controller' },
             { re: /回忆|记忆|知识库|检索.*(?:日记|记忆)|搜索.*(?:日记|记忆)/i, toolKey: 'light_memo' }
         ];
@@ -503,14 +506,35 @@ class JevToolCallExp {
         const args = { ...(tool.fixedArgs || {}) };
 
         if (toolKey === 'light_memo') {
-            args.query = main;
-            const folder = constraints.find(value => (
-                /^(?:索引|目录|文件夹|folder)\s*[:：]/i.test(value)
-            )) || constraints.find(value => (
-                !/^\d+\s*(?:条|个|项|篇)$/.test(value)
-                && !/所有知识库|全部知识库|其他人的日记|跨知识库/.test(value)
+            // LightMemo 的音乐与日期过滤是 query 内部语法。JEV 的 [] 会先被
+            // 解析为约束，因此需要把这些专用约束重新带上方括号拼回 query。
+            // 同时将它们排除在 folder 推断之外，避免把日期误当成索引名。
+            const musicConstraintRe = /^音乐检索$/;
+            const dateConstraintRe = /^\s*20\d{2}[-./]\d{1,2}(?:[-./]\d{1,2})?(?:\s*[~到-]\s*20\d{2}[-./]\d{1,2}(?:[-./]\d{1,2})?)?\s*$/;
+            const queryConstraints = constraints.filter(value => (
+                musicConstraintRe.test(value) || dateConstraintRe.test(value)
             ));
-            if (folder) args.folder = folder.replace(/^(?:索引|目录|文件夹|folder)\s*[:：]\s*/i, '');
+            const queryParts = [
+                ...queryConstraints.map(value => `[${value.trim()}]`),
+                main
+            ].filter(Boolean);
+            args.query = queryParts.join(' ');
+
+            const nonFolderConstraintRe = /^(?:音乐检索|\d+\s*(?:条|个|项|篇)|所有知识库|全部知识库|其他人的日记|跨知识库)$/;
+            const folderConstraints = constraints.filter(value => (
+                !dateConstraintRe.test(value)
+                && !nonFolderConstraintRe.test(value.trim())
+            ));
+            const folder = folderConstraints.find(value => (
+                /^(?:索引|目录|文件夹|folder)\s*[:：]/i.test(value)
+            )) || folderConstraints[0];
+            if (folder) {
+                args.folder = folder.replace(
+                    /^(?:索引|目录|文件夹|folder)\s*[:：]\s*/i,
+                    ''
+                );
+            }
+
             const count = joined.match(/(\d+)\s*(?:条|个|项|篇)/);
             if (count) args.k = count[1];
             if (/所有知识库|全部知识库|其他人的日记|跨知识库/.test(joined)) {
