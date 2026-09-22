@@ -1,0 +1,122 @@
+{
+  "displayName": "Qwen Image 2.1 文生图",
+  "description": "Qwen Image 2.1 文生图工作流，已从 ComfyUI 子图画布格式转换为插件可调用的 API prompt 格式。",
+  "version": "1.0",
+  "workflow": {
+    "451": {
+      "inputs": {
+        "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      },
+      "class_type": "UNETLoader",
+      "_meta": {
+        "title": "加载 Qwen Image 2.1 UNet"
+      }
+    },
+    "453": {
+      "inputs": {
+        "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+        "type": "qwen_image",
+        "device": "default"
+      },
+      "class_type": "CLIPLoader",
+      "_meta": {
+        "title": "加载 Qwen3-VL 文本编码器"
+      }
+    },
+    "454": {
+      "inputs": {
+        "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+      },
+      "class_type": "VAELoader",
+      "_meta": {
+        "title": "加载 Qwen Image 2.1 VAE"
+      }
+    },
+    "452": {
+      "inputs": {
+        "prompt": "{{POSITIVE_PROMPT}}",
+        "negative_prompt": "{{NEGATIVE_PROMPT}}",
+        "resolution": 1024,
+        "clip": [
+          "453",
+          0
+        ]
+      },
+      "class_type": "TextEncodeQwenImage21",
+      "_meta": {
+        "title": "Qwen Image 2.1 提示词编码"
+      }
+    },
+    "456": {
+      "inputs": {
+        "width": "{{WIDTH}}",
+        "height": "{{HEIGHT}}",
+        "batch_size": "{{BATCH_SIZE}}"
+      },
+      "class_type": "EmptyLatentImage",
+      "_meta": {
+        "title": "空 Latent 图像"
+      }
+    },
+    "458": {
+      "inputs": {
+        "seed": "{{SEED}}",
+        "steps": "{{STEPS}}",
+        "cfg": "{{CFG}}",
+        "sampler_name": "{{SAMPLER}}",
+        "scheduler": "{{SCHEDULER}}",
+        "denoise": "{{DENOISE}}",
+        "model": [
+          "451",
+          0
+        ],
+        "positive": [
+          "452",
+          0
+        ],
+        "negative": [
+          "452",
+          1
+        ],
+        "latent_image": [
+          "456",
+          0
+        ]
+      },
+      "class_type": "KSampler",
+      "_meta": {
+        "title": "K 采样器"
+      }
+    },
+    "457": {
+      "inputs": {
+        "samples": [
+          "458",
+          0
+        ],
+        "vae": [
+          "454",
+          0
+        ]
+      },
+      "class_type": "VAEDecode",
+      "_meta": {
+        "title": "VAE 解码"
+      }
+    },
+    "471": {
+      "inputs": {
+        "filename_prefix": "QwenImage21",
+        "images": [
+          "457",
+          0
+        ]
+      },
+      "class_type": "SaveImage",
+      "_meta": {
+        "title": "保存 Qwen Image 2.1 图像"
+      }
+    }
+  }
+}
