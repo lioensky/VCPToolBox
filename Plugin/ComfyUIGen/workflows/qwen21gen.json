@@ -1,7 +1,7 @@
 {
   "displayName": "Qwen Image 2.1 文生图",
-  "description": "Qwen Image 2.1 文生图工作流。使用模型要求的固定采样配置：30 步、CFG 1.0、Euler、Simple。",
-  "version": "1.1",
+  "description": "Qwen Image 2.1 文生图工作流。步数可自定义（建议 25–40），CFG 固定 1.0，并使用 Euler、Simple。",
+  "version": "1.2",
   "workflow": {
     "451": {
       "inputs": {
@@ -62,7 +62,7 @@
     "458": {
       "inputs": {
         "seed": "{{SEED}}",
-        "steps": 30,
+        "steps": "{{STEPS}}",
         "cfg": 1.0,
         "sampler_name": "euler",
         "scheduler": "simple",
