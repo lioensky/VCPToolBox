@@ -199,15 +199,11 @@ class ToolExecutor {
     // 本执行链，使验证码、人工审核、工具记录、隐私过滤与分布式桥保持生效。
     if (jevToolCallExp.isVirtualToolName(name)) {
       try {
-        const expandedCalls = await jevToolCallExp.plan(args?.expression, args || {});
+        // 传入完整虚拟调用，使规划器在展开后保留通用调用协议：
+        // timely_contact/tool_password 参数及 archery/ink/river/vref 元数据。
+        const expandedCalls = await jevToolCallExp.plan(args?.expression, toolCall);
         if (expandedCalls.length === 0) {
           return this._createErrorResult(name, 'JEV 没有生成可执行的真实工具调用。');
-        }
-
-        if (args?.tool_password) {
-          for (const expandedCall of expandedCalls) {
-            expandedCall.args.tool_password = args.tool_password;
-          }
         }
 
         const expandedResults = await this.executeAll(expandedCalls, clientIp, contextMessages);

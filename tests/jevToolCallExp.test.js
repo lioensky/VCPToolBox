@@ -52,6 +52,62 @@ JEV:「始」{联网搜索} 【最近美国土豆是不是打折】「末」
     assert.equal(calls[0].args.expression, '{联网搜索} 【最近美国土豆是不是打折】');
 });
 
+test('JEV 展开继承通用参数与调用级高级协议', async () => {
+    const { planner } = makePlanner();
+    const [virtualCall] = ToolCallParser.parse(`
+<<<[TOOL_REQUEST]>>>
+maid:「始」Nova「末」,
+JEV:「始」{联网搜索} 【未来发布会消息】「末」,
+timely_contact:「始」2027-07-05-14:00「末」,
+archery:「始」no_reply「末」,
+ink:「始」mark_history「末」,
+river:「始」last:3「末」,
+vref:「始」2「末」,
+tool_password:「始」123456「末」
+<<<[END_TOOL_REQUEST]>>>
+    `);
+
+    const [call] = await planner.plan(
+        virtualCall.args.expression,
+        virtualCall
+    );
+
+    assert.equal(call.name, 'VSearch');
+    assert.equal(call.args.maid, 'Nova');
+    assert.equal(call.args.timely_contact, '2027-07-05-14:00');
+    assert.equal(call.args.tool_password, '123456');
+    assert.equal(call.archery, true);
+    assert.equal(call.archeryNoReply, true);
+    assert.equal(call.markHistory, true);
+    assert.equal(call.river, 'last:3');
+    assert.equal(call.vref, '2');
+});
+
+test('JEV 字段支持 ESCAPE 包裹并保留协议字面量', async () => {
+    const { planner } = makePlanner();
+    const [virtualCall] = ToolCallParser.parse(`
+<<<[TOOL_REQUEST]>>>
+JEV:「始ESCAPE」{日用工具} 计算【字符串 "「始」" 与 <<<[TOOL_REQUEST]>>> 的长度】「末ESCAPE」
+<<<[END_TOOL_REQUEST]>>>
+    `);
+
+    assert.equal(virtualCall.name, 'JEV');
+    assert.equal(
+        virtualCall.args.expression,
+        '{日用工具} 计算【字符串 "「始」" 与 <<<[TOOL_REQUEST]>>> 的长度】'
+    );
+
+    const [call] = await planner.plan(
+        virtualCall.args.expression,
+        virtualCall
+    );
+    assert.equal(call.name, 'SciCalculator');
+    assert.equal(
+        call.args.expression,
+        '字符串 "「始」" 与 <<<[TOOL_REQUEST]>>> 的长度'
+    );
+});
+
 test('联网搜索默认使用 VSearch grounding 模板且不调用 Jev', async () => {
     const { planner, decisions } = makePlanner({ configured: true });
     const calls = await planner.plan(

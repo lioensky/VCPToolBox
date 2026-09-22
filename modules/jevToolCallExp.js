@@ -217,10 +217,21 @@ class JevToolCallExp {
         return selected;
     }
 
-    async plan(expression, inheritedArgs = {}) {
+    async plan(expression, inheritedCall = {}) {
         const parsed = this.parse(expression);
         const category = this.config.categories[parsed.categoryKey];
         let toolKeys = this._resolveRequestedTools(parsed, category);
+
+        // 兼容历史上直接传 args 的调用方式，同时允许 ToolExecutor 传入完整
+        // 虚拟调用，以继承 archery、ink、river、vref 等调用级元数据。
+        const inheritedArgs = (
+            inheritedCall.args
+            && typeof inheritedCall.args === 'object'
+        ) ? inheritedCall.args : inheritedCall;
+        const inheritedMeta = (
+            inheritedCall.args
+            && typeof inheritedCall.args === 'object'
+        ) ? inheritedCall : {};
 
         if (parsed.categoryKey === 'web_search') {
             toolKeys = this._normalizeBilibiliSelection(toolKeys, parsed);
@@ -247,15 +258,21 @@ class JevToolCallExp {
 
             if (inheritedArgs.maid && !args.maid) args.maid = inheritedArgs.maid;
             if (inheritedArgs.valet && !args.valet) args.valet = inheritedArgs.valet;
+            if (inheritedArgs.timely_contact && !args.timely_contact) {
+                args.timely_contact = inheritedArgs.timely_contact;
+            }
+            if (inheritedArgs.tool_password && !args.tool_password) {
+                args.tool_password = inheritedArgs.tool_password;
+            }
 
             calls.push({
                 name: tool.plugin,
                 args,
-                archery: false,
-                archeryNoReply: false,
-                markHistory: false,
-                river: null,
-                vref: null,
+                archery: inheritedMeta.archery === true,
+                archeryNoReply: inheritedMeta.archeryNoReply === true,
+                markHistory: inheritedMeta.markHistory === true,
+                river: inheritedMeta.river || null,
+                vref: inheritedMeta.vref || null,
                 jev: {
                     category: parsed.categoryKey,
                     toolKey
