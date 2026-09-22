@@ -5,6 +5,18 @@ import sys
 import json
 import os
 import time
+# --- Bilibili 域定向直连与代理友好协调 ---
+# 国内用户挂全局/系统代理（如 Clash 7890 端口）常导致 B站 API 误走海外节点触发 412 风控。
+# 通过规范注入 NO_PROXY，让发往 B站 域名的请求在代理环境下优先直连，同时保留海内外用户的自定义代理规则。
+bili_target_domains = ("bilibili.com", "bilivideo.com", "hdslb.com", "bvc.bilivideo.com")
+current_no_proxy = os.environ.get('NO_PROXY', os.environ.get('no_proxy', ''))
+if '*' not in current_no_proxy:
+    needed_domains = [d for d in bili_target_domains if d not in current_no_proxy]
+    if needed_domains:
+        new_no_proxy = f"{current_no_proxy},{','.join(needed_domains)}".strip(',')
+        os.environ['NO_PROXY'] = new_no_proxy
+        os.environ['no_proxy'] = new_no_proxy
+# ----------------------------------------------------
 import requests
 import logging
 import re
@@ -26,9 +38,10 @@ def get_ffmpeg_path():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     # BilibiliFetch.py 在 Plugin/BilibiliFetch/ 下，往上3层到项目根
     project_root = os.path.join(script_dir, '..', '..', '..')
+    ext = '.exe' if os.name == 'nt' else ''
     candidates = [
-        os.path.join(project_root, 'VCPChat', 'bin', 'ffmpeg.exe'),
-        os.path.join(project_root, 'VCPToolBox', 'bin', 'ffmpeg.exe'),
+        os.path.join(project_root, 'VCPChat', 'bin', f'ffmpeg{ext}'),
+        os.path.join(project_root, 'VCPToolBox', 'bin', f'ffmpeg{ext}'),
     ]
     for path in candidates:
         if os.path.isfile(path):
@@ -114,7 +127,158 @@ def getWbiKeys(headers: dict) -> tuple[str, str]:
         logging.error(f"Error getting WBI keys: {e}")
         return "", ""
 
+# --- Cookie Management ---
+
+def read_config_value(key: str, default: str = '', global_fallback: bool = True) -> str:
+    """从 config.env 文件读取指定键的值。支持热重载，并可选回退至全局 config.env。"""
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # 1. 优先尝试读取插件目录下的 config.env
+        config_path = os.path.join(script_dir, 'config.env')
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('#') or not line:
+                        continue
+                    if line.startswith(f"{key}="):
+                        return line[len(key)+1:].strip().strip('"')
+        
+        # 2. 回退尝试读取 VCP 根目录下的 config.env
+        if global_fallback:
+            global_path = os.path.abspath(os.path.join(script_dir, '..', '..', 'config.env'))
+            if os.path.exists(global_path):
+                with open(global_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('#') or not line:
+                            continue
+                        if line.startswith(f"{key}="):
+                            return line[len(key)+1:].strip().strip('"')
+    except Exception as e:
+        logging.warning(f"Failed to read {key} from config.env: {e}")
+    return default
+
+def get_config_priority(key: str, env_keys: list = None, default: str = '') -> str:
+    """
+    按照优先级获取配置项的值：
+    1. 插件目录下的本地 config.env 文件（最高优先级）
+    2. 系统环境变量（os.environ）
+    3. 全局 VCP 根目录下的 config.env 文件（回退）
+    4. 默认值
+    """
+    # 1. 尝试读取本地插件目录内的 config.env (关闭全局回退)
+    local_val = read_config_value(key, default='', global_fallback=False)
+    if local_val:
+        return local_val
+    if env_keys:
+        for env_key in env_keys:
+            local_val = read_config_value(env_key, default='', global_fallback=False)
+            if local_val:
+                return local_val
+
+    # 2. 尝试读取系统环境变量
+    if env_keys:
+        for env_key in env_keys:
+            env_val = os.environ.get(env_key)
+            if env_val:
+                return env_val
+    else:
+        env_val = os.environ.get(key)
+        if env_val:
+            return env_val
+
+    # 3. 尝试读取全局根目录的 config.env (开启全局回退)
+    global_val = read_config_value(key, default='', global_fallback=True)
+    if global_val:
+        return global_val
+    if env_keys:
+        for env_key in env_keys:
+            global_val = read_config_value(env_key, default='', global_fallback=True)
+            if global_val:
+                return global_val
+
+    return default
+
+class BilibiliCookieManager:
+    """
+    内联凭据管理器：协调浏览器热扩展缓存、局部 config.env 与全局回退。
+    实现原子读取、重试保护与 SESSDATA 优先动态合并。
+    """
+    def __init__(self):
+        self.script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.cache_file = os.path.join(self.script_dir, '.cookies_cache')
+
+    def get_fresh_cookie(self) -> str:
+        """从本地隐藏缓存文件或 config.env 中构建最新的 Cookie 字符串。"""
+        sessdata_from_cache = ""
+        other_cookie = ""
+
+        if os.path.exists(self.cache_file):
+            for attempt in range(3):
+                try:
+                    with open(self.cache_file, "r", encoding="utf-8") as f:
+                        cache_data = json.load(f)
+                        sessdata_from_cache = cache_data.get("SESSDATA", "").strip()
+                        other_cookie = cache_data.get("BILIBILI_COOKIE", "").strip()
+                    break  # 读取成功
+                except Exception as e:
+                    if attempt < 2:
+                        time.sleep(0.05)  # 避让可能的写锁冲突
+                        continue
+                    cache_size = os.path.getsize(self.cache_file) if os.path.exists(self.cache_file) else -1
+                    logging.warning(
+                        f"Failed to read .cookies_cache after 3 attempts (size={cache_size}B). "
+                        f"Falling back to config.env. Error: {e}"
+                    )
+
+        # 若无缓存或缓存不全，多级回退到 config.env (优先局部，回退全局)
+        if not other_cookie:
+            other_cookie = get_config_priority('BILIBILI_COOKIE').strip().strip('"')
+
+        cookie_dict = {}
+        if other_cookie:
+            for part in other_cookie.split(';'):
+                part = part.strip()
+                if '=' in part:
+                    k, v = part.split('=', 1)
+                    cookie_dict[k.strip()] = v.strip()
+
+        # 浏览器扩展更新的 SESSDATA 具备最高优先级覆盖权
+        if sessdata_from_cache:
+            cookie_dict['SESSDATA'] = sessdata_from_cache
+
+        return "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
+
+
+def build_bilibili_cookie() -> str:
+    """
+    构建完整的 B站 Cookie 字符串。
+    自闭环调度内联 BilibiliCookieManager，实现无外部依赖的热加载。
+    """
+    try:
+        manager = BilibiliCookieManager()
+        full_cookie = manager.get_fresh_cookie()
+        if "SESSDATA" in full_cookie:
+            logging.info("Cookie contains SESSDATA. Login-required APIs (AI subtitles) should work.")
+        else:
+            logging.warning("Cookie does NOT contain SESSDATA. AI Summary API will fail with -101. "
+                            "Please ensure SESSDATA is included in BILIBILI_COOKIE, or install the browser sync extension.")
+        return full_cookie
+    except Exception as e:
+        logging.warning(f"Error building cookie via manager, falling back to static config: {e}")
+        other_cookie = get_config_priority('BILIBILI_COOKIE').strip().strip('"')
+        cookie_dict = {}
+        if other_cookie:
+            for part in other_cookie.split(';'):
+                part = part.strip()
+                if '=' in part:
+                    k, v = part.split('=', 1)
+                    cookie_dict[k.strip()] = v.strip()
+        return "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
+
 # --- Helper Functions ---
+
 
 def extract_bvid_and_page(video_input: str) -> 'tuple[str | None, int]':
     """Extracts BV ID and page number from URL or direct input."""
@@ -167,6 +331,9 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
     3. AI Summary API (data.model_result.subtitle) - Ultimate fallback
     Returns the subtitle content as a JSON string or '{"body":[]}' if none found or error.
     """
+    if user_cookie and 'SESSDATA' not in user_cookie:
+        logging.warning("BILIBILI_COOKIE does not contain 'SESSDATA'. AI Summary API (AI字幕) will likely fail with -101 (账号未登录).")
+
     logging.info(f"Attempting to fetch subtitles for BVID: {bvid}")
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
@@ -179,6 +346,13 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
 
     aid, cid = None, None
     subtitles_from_apis = [] # List of subtitle objects from various APIs
+
+    wbi_keys_cached = None
+    def get_cached_wbi_keys():
+        nonlocal wbi_keys_cached
+        if wbi_keys_cached is None:
+            wbi_keys_cached = getWbiKeys(headers)
+        return wbi_keys_cached
 
     # --- Step 1: Get Video Info & Subtitles from View API ---
     try:
@@ -223,8 +397,9 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
     # --- Step 3: Get Subtitles from Player WBI API ---
     try:
         logging.info("Step 3: Fetching subtitle list using WBI Player API...")
-        img_key, sub_key = getWbiKeys(headers)
-        wbi_params = {'cid': cid, 'bvid': bvid, 'isGaiaAvoided': 'false', 'web_location': '1315873'}
+        img_key, sub_key = get_cached_wbi_keys()
+        # 精简参数，移除 isGaiaAvoided 等硬编码参数，避免触发新版风控
+        wbi_params = {'cid': cid, 'bvid': bvid}
         if aid: wbi_params['aid'] = aid
         
         if img_key and sub_key:
@@ -240,39 +415,45 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
                 subtitles_from_apis.extend(wbi_subs)
                 logging.info(f"Step 3: Found {len(wbi_subs)} subtitles via Player WBI API.")
         else:
-            logging.warning(f"Step 3: Player WBI API returned error {wbi_data.get('code')}")
+            logging.warning(f"Step 3: Player WBI API returned error {wbi_data.get('code')}: {wbi_data.get('message')}")
     except Exception as e:
         logging.warning(f"Step 3: Error fetching via Player WBI API: {e}")
 
     # --- Step 4: Language Selection & Fetch Content ---
     subtitle_url = None
     if subtitles_from_apis:
-        # Deduplicate by lan and prefer entries with subtitle_url
         subtitle_map = {}
         for sub in subtitles_from_apis:
             lan = sub.get('lan')
             url = sub.get('subtitle_url')
             if lan and url:
                 if url.startswith('//'): url = "https:" + url
-                # Prefer non-AI if multiple exist for same language?
-                # Actually B站 usually only has one per language code.
                 subtitle_map[lan] = url
 
         logging.info(f"Collected subtitle languages: {list(subtitle_map.keys())}")
 
-        # Selection logic
         selected_lan = None
+        # 获取所有 ai 开头的字幕语言标识，增强泛化兼容性
+        ai_lans = [l for l in subtitle_map.keys() if str(l).startswith('ai')]
+
+        # 1. 如果用户明确指定了语言且精确匹配
         if lang_code and lang_code in subtitle_map:
             selected_lan = lang_code
-        elif 'ai-zh' in subtitle_map:
-            selected_lan = 'ai-zh'
-        elif 'zh-CN' in subtitle_map:
-            selected_lan = 'zh-CN'
-        elif 'zh-Hans' in subtitle_map:
-            selected_lan = 'zh-Hans'
-        elif subtitle_map:
-            selected_lan = list(subtitle_map.keys())[0]
-            logging.warning(f"Preferred language not found, falling back to: {selected_lan}")
+        # 2. 如果用户指定了包含 ai 的语言，但没有精确匹配，则兜底给第一个找到的 ai 字幕
+        elif lang_code and str(lang_code).startswith('ai') and ai_lans:
+            selected_lan = ai_lans[0]
+        # 3. 智能回退优先级：ai-zh > 其他任意AI > zh-CN > zh-Hans > 任意第一个
+        elif not selected_lan:
+            if 'ai-zh' in subtitle_map:
+                selected_lan = 'ai-zh'
+            elif ai_lans:
+                selected_lan = ai_lans[0]
+            elif 'zh-CN' in subtitle_map:
+                selected_lan = 'zh-CN'
+            elif 'zh-Hans' in subtitle_map:
+                selected_lan = 'zh-Hans'
+            elif subtitle_map:
+                selected_lan = list(subtitle_map.keys())[0]
 
         if selected_lan:
             subtitle_url = subtitle_map[selected_lan]
@@ -281,16 +462,27 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
     if subtitle_url:
         try:
             logging.info(f"Fetching subtitle content from: {subtitle_url}")
-            resp = requests.get(subtitle_url, headers=headers, timeout=15)
-            if resp.ok and 'body' in resp.json():
-                return resp.text
+            # 关键修复：获取静态 json 文件时，剥离 Cookie，避免 CDN 节点报跨域或 403 错误
+            static_headers = {
+                'User-Agent': headers.get('User-Agent', 'Mozilla/5.0'),
+                'Accept': 'application/json, text/plain, */*'
+            }
+            resp = requests.get(subtitle_url, headers=static_headers, timeout=15)
+            if resp.ok:
+                try:
+                    json_data = resp.json()
+                    if 'body' in json_data:
+                        return resp.text
+                except Exception as json_e:
+                    logging.warning(f"Failed to parse subtitle JSON from URL, trying raw text: {json_e}")
+                    return resp.text
         except Exception as e:
             logging.error(f"Error fetching subtitle content: {e}")
 
     # --- Step 5: Ultimate Fallback - AI Summary API ---
     logging.info("Step 5: No CC subtitles found, attempting AI Summary API...")
     try:
-        img_key, sub_key = getWbiKeys(headers)
+        img_key, sub_key = get_cached_wbi_keys()
         sum_params = {'cid': cid, 'bvid': bvid}
         if aid: sum_params['aid'] = aid
         
@@ -301,23 +493,46 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
 
         sum_resp = requests.get(SUMMARY_API_URL, params=sum_params, headers=headers, timeout=15)
         sum_data = sum_resp.json()
-        if sum_data.get('code') == 0:
-            model_result = sum_data.get('data', {}).get('model_result', {})
-            ai_subs_list = model_result.get('subtitle', [])
-            if ai_subs_list and len(ai_subs_list) > 0:
-                part_subs = ai_subs_list[0].get('part_subtitle', [])
-                if part_subs:
-                    logging.info(f"Step 5: Found {len(part_subs)} AI transcript segments.")
-                    # Convert to standard CC format
-                    standard_body = []
-                    for item in part_subs:
-                        standard_body.append({
-                            'from': item.get('start_timestamp', 0),
-                            'to': item.get('end_timestamp', 0),
-                            'content': item.get('content', '')
-                        })
-                    return json.dumps({"body": standard_body}, ensure_ascii=False)
-        logging.warning("Step 5: AI Summary API did not return subtitles.")
+        sum_code = sum_data.get('code')
+        if sum_code == 0:
+            inner_code = sum_data.get('data', {}).get('code')
+            if inner_code == 1:
+                logging.warning("Step 5: AI Summary API returned data.code=1 (no speech detected / not yet summarized).")
+            elif inner_code == -1:
+                logging.warning("Step 5: AI Summary API returned data.code=-1 (unsupported content or API error).")
+            else:
+                model_result = sum_data.get('data', {}).get('model_result', {})
+                ai_subs_list = model_result.get('subtitle', [])
+                if ai_subs_list and len(ai_subs_list) > 0:
+                    part_subs = ai_subs_list[0].get('part_subtitle', [])
+                    if part_subs:
+                        logging.info(f"Step 5: Found {len(part_subs)} AI transcript segments.")
+                        # Convert to standard CC format
+                        standard_body = []
+                        for item in part_subs:
+                            standard_body.append({
+                                'from': item.get('start_timestamp', 0),
+                                'to': item.get('end_timestamp', 0),
+                                'content': item.get('content', '')
+                            })
+                        return json.dumps({"body": standard_body}, ensure_ascii=False)
+                logging.warning("Step 5: AI Summary API returned success but subtitle list is empty.")
+        elif sum_code == -101:
+            logging.error("╔════════════════════════════════════════════════════════════════╗")
+            logging.error("║  登录凭证已失效！AI Summary API 返回 -101 (账号未登录)        ║")
+            logging.error("║  推荐方案（自动）：重新登录 B站后，浏览器同步扩展会          ║")
+            logging.error("║  自动推送最新 Cookie，无需任何手动操作。                     ║")
+            logging.error("║  手动方案（备用）：                                          ║")
+            logging.error("║  1. 在 Edge 中打开 https://www.bilibili.com 并确认已登录     ║")
+            logging.error("║  2. 按 F12 → Application → Cookies → bilibili.com          ║")
+            logging.error("║  3. 复制所有 Cookie 字段，粘贴到 config.env 的               ║")
+            logging.error("║     BILIBILI_COOKIE=\"...\" 中（SESSDATA 包含在内）           ║")
+            logging.error("╚════════════════════════════════════════════════════════════════╝")
+            return json.dumps({"body": [], "_error": "SESSDATA_EXPIRED"})
+        elif sum_code == -403:
+            logging.error("Step 5: AI Summary API returned -403 (访问权限不足). WBI signing may be invalid or cookie is missing/expired.")
+        else:
+            logging.warning(f"Step 5: AI Summary API returned code={sum_code}: {sum_data.get('message')}")
     except Exception as e:
         logging.warning(f"Step 5: Error fetching via AI Summary API: {e}")
 
@@ -463,7 +678,13 @@ def fetch_hd_snapshot(bvid: str, cid: str, timestamp: float, img_dir: str, heade
     ]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        kwargs = {
+            'capture_output': True,
+            'timeout': 30
+        }
+        if os.name == 'nt':
+            kwargs['creationflags'] = 0x08000000 # subprocess.CREATE_NO_WINDOW
+        result = subprocess.run(cmd, **kwargs)
         if result.returncode == 0 and os.path.exists(out_path):
             size = os.path.getsize(out_path)
             logging.info(f"HD snapshot saved: {out_path} ({w}x{h}, {size}B)")
@@ -535,7 +756,8 @@ def sanitize_filename(name: str, max_length: int = 80) -> str:
     除 Windows 禁用字符外，同时移除控制字符、替换所有空白，并规避
     尾随点/空格、保留设备名和过长路径段。截断时附加摘要以降低重名风险。
     """
-    original = str(name or "")
+    import unicodedata
+    original = unicodedata.normalize('NFC', str(name or ""))
     # Windows 禁止 ASCII 控制字符及 \ / : * ? " < > |。
     safe_name = re.sub(r'[\x00-\x1f\\/:*?"<>|]', '_', original)
     # 不让标题中的普通空格、制表符或换行进入目录名。
@@ -562,11 +784,13 @@ def sanitize_filename(name: str, max_length: int = 80) -> str:
 
 def get_accessible_url(local_path: str) -> str:
     """Constructs an accessible URL for the image server."""
-    # VCP Image Server environment variables
-    var_http_url = os.environ.get('VarHttpUrl')
-    server_port = os.environ.get('SERVER_PORT')
-    image_key = os.environ.get('IMAGESERVER_IMAGE_KEY')
-    project_base_path = os.environ.get('PROJECT_BASE_PATH')
+    var_http_url = get_config_priority('VarHttpUrl', ['VAR_HTTP_URL', 'VarHttpUrl'], 'http://localhost')
+    server_port = get_config_priority('PORT', ['SERVER_PORT', 'PORT'], '6005')
+    image_key = get_config_priority('Image_Key', ['IMAGESERVER_IMAGE_KEY', 'Image_Key'])
+    project_base_path = get_config_priority('PROJECT_BASE_PATH', ['PROJECT_BASE_PATH'])
+    if not project_base_path:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_base_path = os.path.abspath(os.path.join(script_dir, '..', '..'))
     
     if all([var_http_url, server_port, image_key, project_base_path]):
         # Calculate relative path from PROJECT_BASE_PATH/image/
@@ -590,9 +814,10 @@ def get_accessible_url(local_path: str) -> str:
 
     # Fallback URI 同样需要编码空格、Unicode 和 URL 保留字符。
     file_path = os.path.abspath(local_path).replace("\\", "/")
-    return "file:///" + urllib.parse.quote(file_path, safe='/:')
+    prefix = "file://" if file_path.startswith('/') else "file:///"
+    return prefix + urllib.parse.quote(file_path, safe='/:')
 
-def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, danmaku_num: int = 0, comment_num: int = 0, snapshot_at_times: list | None = None, need_subs: bool = True, need_pbp: bool = True, hd_snapshot: bool = False) -> dict:
+def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, danmaku_num: int = 0, comment_num: int = 0, snapshot_at_times: list | None = None, need_subs: bool = True, need_pbp: bool = True, hd_snapshot: bool = False) -> str:
     """
     Enhanced version of process_bilibili_url that handles short URLs, fetches danmaku/comments, snapshots, and PBP.
     Returns a dictionary suitable for VCP multimodal output.
@@ -603,10 +828,10 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
     # 2. Extract BVID
     bvid, page = extract_bvid_and_page(resolved_url)
     if not bvid:
-        return f"无法从输入提取 BV 号: {video_input}"
+        raise ValueError(f"无法从输入提取有效的 B站 视频/链接（BV号）: {video_input}")
     logging.info(f"Extracted BVID: {bvid}, Page: {page}")
 
-    user_cookie = os.environ.get('BILIBILI_COOKIE')
+    user_cookie = build_bilibili_cookie()
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': f'https://www.bilibili.com/video/{bvid}/',
@@ -648,6 +873,12 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
                 logging.info(f"Found CID via pagelist fallback: {cid} (page {page})")
     except Exception as e:
         logging.error(f"Error getting video info: {e}")
+
+    if not cid:
+        err_msg = "无法获取视频的 CID 标识符。可能是视频已被删除、链接有误，或遭到B站风控阻断。"
+        if 'view_data' in locals() and view_data.get('code') != 0:
+            err_msg += f" B站API错误码: {view_data.get('code')}, 信息: {view_data.get('message')}"
+        raise ValueError(err_msg)
 
     # 4. Concurrent fetching
     results = {}
@@ -823,7 +1054,7 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
         text_parts.append(snapshot_text)
         
     full_text = "\n".join(text_parts).strip()
-
+    
     if not images_to_add:
         return full_text
 
@@ -849,7 +1080,7 @@ def search_bilibili(keyword: str, search_type: str = "video", page: int = 1) -> 
     search_type: 'video' 或 'bili_user'
     """
     logging.info(f"Searching Bilibili for '{keyword}' with type '{search_type}', page {page}")
-    user_cookie = os.environ.get('BILIBILI_COOKIE')
+    user_cookie = build_bilibili_cookie()
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://www.bilibili.com/',
@@ -874,7 +1105,7 @@ def search_bilibili(keyword: str, search_type: str = "video", page: int = 1) -> 
         data = resp.json()
         
         if data.get('code') != 0:
-            return f"搜索失败: {data.get('message', '未知错误')}"
+            raise RuntimeError(f"搜索失败: {data.get('message', '未知错误')}")
         
         results = data.get('data', {}).get('result', [])
         if not results:
@@ -913,15 +1144,19 @@ def search_bilibili(keyword: str, search_type: str = "video", page: int = 1) -> 
         return "\n\n".join(clean_results)
     except Exception as e:
         logging.error(f"Error during Bilibili search: {e}")
-        return f"搜索出错: {e}"
+        raise RuntimeError(f"搜索出错: {e}") from e
 
 def get_up_videos(mid: str, pn: int = 1, ps: int = 30) -> dict:
     """获取指定 UP 主的所有投稿视频 BV 号"""
-    logging.info(f"Fetching videos for UP mid: {mid}, page {pn}")
-    user_cookie = os.environ.get('BILIBILI_COOKIE')
+    mid_str = str(mid).strip()
+    if not mid_str.isdigit():
+        raise ValueError(f"获取 UP 主视频失败: UP主ID(mid) 必须是纯数字字符串，您输入的是: '{mid}'")
+
+    logging.info(f"Fetching videos for UP mid: {mid_str}, page {pn}")
+    user_cookie = build_bilibili_cookie()
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': f'https://space.bilibili.com/{mid}/video',
+        'Referer': f'https://space.bilibili.com/{mid_str}/video',
     }
     if user_cookie:
         headers['Cookie'] = user_cookie
@@ -931,7 +1166,7 @@ def get_up_videos(mid: str, pn: int = 1, ps: int = 30) -> dict:
         return {"error": "Failed to get WBI keys for space search"}
 
     params = {
-        'mid': mid,
+        'mid': mid_str,
         'pn': pn,
         'ps': ps,
         'order': 'pubdate'
@@ -944,13 +1179,13 @@ def get_up_videos(mid: str, pn: int = 1, ps: int = 30) -> dict:
         data = resp.json()
         
         if data.get('code') != 0:
-            return f"获取 UP 主视频失败: {data.get('message', '未知错误')}"
+            raise RuntimeError(f"获取 UP 主视频失败: {data.get('message', '未知错误')}")
         
         vlist = data.get('data', {}).get('list', {}).get('vlist', [])
         if not vlist:
             return "该 UP 主暂无投稿视频。"
         
-        clean_results = [f"--- UP主 (MID: {mid}) 的投稿视频 (第 {pn} 页) ---"]
+        clean_results = [f"--- UP主 (MID: {mid_str}) 的投稿视频 (第 {pn} 页) ---"]
         for item in vlist:
             title = item.get('title', '无标题')
             bvid = item.get('bvid', '未知')
@@ -963,7 +1198,7 @@ def get_up_videos(mid: str, pn: int = 1, ps: int = 30) -> dict:
         return "\n\n".join(clean_results)
     except Exception as e:
         logging.error(f"Error fetching UP videos: {e}")
-        return f"获取视频列表出错: {e}"
+        raise RuntimeError(f"获取视频列表出错: {e}") from e
 
 # --- Main execution for VCP Synchronous Plugin ---
 
@@ -974,7 +1209,7 @@ def process_bilibili_url(video_input: str, lang_code: str | None = None) -> str:
     Accepts a language code for subtitle selection.
     Returns plain text subtitle content or an empty string on failure.
     """
-    user_cookie = os.environ.get('BILIBILI_COOKIE')
+    user_cookie = build_bilibili_cookie()
 
     if user_cookie:
         logging.info("Using cookie from BILIBILI_COOKIE environment variable.")
@@ -1004,12 +1239,20 @@ def process_bilibili_url(video_input: str, lang_code: str | None = None) -> str:
         try:
             subtitle_data = json.loads(subtitle_json_string)
             if isinstance(subtitle_data, dict) and 'body' in subtitle_data and isinstance(subtitle_data['body'], list):
+                # Check for login credential expiration error
+                if '_error' in subtitle_data and subtitle_data['_error'] == 'SESSDATA_EXPIRED':
+                    error_msg = ("【字幕获取失败】B站登录凭证已失效（-101）。"
+                                 "推荐方案：重新登录 B站，浏览器同步扩展会自动更新 Cookie，无需手动操作。"
+                                 "手动方案：F12 → Application → Cookies → bilibili.com，"
+                                 "将完整 Cookie 字符串（含 SESSDATA）粘贴到 config.env 的 BILIBILI_COOKIE 字段中。")
+                    logging.error(error_msg)
+                    return error_msg
                 # Extract content with timestamp
                 lines = [f"[{item.get('from', 0):.2f}] {item.get('content', '')}" for item in subtitle_data['body'] if isinstance(item, dict)]
                 processed_text = "\n".join(lines).strip()
                 logging.info(f"Successfully processed subtitle text for BVID {bvid}. Length: {len(processed_text)}")
                 if processed_text:
-                    processed_text += "\n\n——以上内容来自VCP-STT语音识别转文本，可能存在谐音错别字内容，请自行甄别"
+                    processed_text += "\n\n——以上内容来自Bilibili视频字幕（CC/AI生成），可能存在谐音或错别字，请自行甄别"
                 return processed_text
             else:
                 logging.warning(f"Subtitle JSON for BVID {bvid} has unexpected structure or is missing 'body'. Raw: {subtitle_json_string[:100]}...")
@@ -1030,6 +1273,10 @@ def handle_single_request(data: dict):
     """Handles a single request dictionary and returns the result data."""
     action = data.get('action', 'fetch_video')
     
+    valid_actions = {'fetch_video', 'search', 'get_up_videos'}
+    if action not in valid_actions:
+        raise ValueError(f"不支持的 action 参数: '{action}'。可用的 actions 包含: {sorted(list(valid_actions))}")
+    
     if action == 'search':
         keyword = data.get('keyword')
         if not keyword:
@@ -1049,8 +1296,20 @@ def handle_single_request(data: dict):
     else: # Default: fetch_video
         url = data.get('url')
         lang = data.get('lang')
-        danmaku_num = int(data.get('danmaku_num', 0))
-        comment_num = int(data.get('comment_num', 0))
+        if not lang:
+            lang = read_config_value('BILIBILI_SUB_LANG') or None
+        # Robust integer parsing with default fallbacks and sensible upper/lower bounds
+        try:
+            danmaku_num = int(data.get('danmaku_num', 0))
+            danmaku_num = max(0, min(danmaku_num, 1000))
+        except (ValueError, TypeError):
+            danmaku_num = 0
+
+        try:
+            comment_num = int(data.get('comment_num', 0))
+            comment_num = max(0, min(comment_num, 100))
+        except (ValueError, TypeError):
+            comment_num = 0
         
         # Parse snapshot_at_times if provided (comma separated string or list)
         snapshots_raw = data.get('snapshots')
@@ -1063,17 +1322,24 @@ def handle_single_request(data: dict):
         if not url:
             raise ValueError("Missing required argument: url")
 
+        # Robust boolean parsing
         need_subs = data.get('need_subs', True)
         if isinstance(need_subs, str):
             need_subs = need_subs.lower() != 'false'
+        else:
+            need_subs = bool(need_subs)
 
         need_pbp = data.get('need_pbp', True)
         if isinstance(need_pbp, str):
             need_pbp = need_pbp.lower() != 'false'
+        else:
+            need_pbp = bool(need_pbp)
             
         hd_snapshot = data.get('hd_snapshot', False)
         if isinstance(hd_snapshot, str):
             hd_snapshot = hd_snapshot.lower() in ('true', '1', 'yes')
+        else:
+            hd_snapshot = bool(hd_snapshot)
 
         return process_bilibili_enhanced(url, lang_code=lang, danmaku_num=danmaku_num, comment_num=comment_num, snapshot_at_times=snapshot_at_times, need_subs=need_subs, need_pbp=need_pbp, hd_snapshot=hd_snapshot)
 
@@ -1088,7 +1354,12 @@ if __name__ == "__main__":
         input_data = json.loads(input_data_raw)
         
         # Check for serial/batch calls (command1, command2, etc.)
-        is_serial = any(key.startswith('command') or key.startswith('url') and key[3:].isdigit() for key in input_data)
+        # Note: If single request contains keys with digits like danmaku_num, they shouldn't trigger misdetection.
+        is_serial = any(
+            (key.startswith('command') and key[len('command'):].isdigit()) or 
+            (key.startswith('url') and key[len('url'):].isdigit()) 
+            for key in input_data
+        )
         
         if is_serial:
             logging.info("Detected serial/batch request.")
