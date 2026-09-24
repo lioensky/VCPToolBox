@@ -179,6 +179,7 @@ export function usePreprocessorOrderManager() {
 
       preprocessors.value = order.map((item: Preprocessor) => ({
         name: item.name,
+        kind: item.kind === 'stage' ? 'stage' : 'preprocessor',
         displayName: item.displayName || item.name,
         description: item.description,
       }))

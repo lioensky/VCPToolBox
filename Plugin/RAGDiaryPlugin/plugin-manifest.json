@@ -5,6 +5,7 @@
     "description": "通过向量检索动态地将日记内容注入到系统提示词中，以实现高效、低消耗的长期记忆。",
     "author": "Ryan & Gemini",
     "pluginType": "hybridservice",
+    "requiresJevClient": true,
     "entryPoint": {
         "script": "RAGDiaryPlugin.js"
     },
@@ -39,6 +40,26 @@
             "type": "number",
             "description": "单次Rerank请求的最大Token数",
             "default": 30000
+        },
+        "JevAdvancedRerank": {
+            "type": "boolean",
+            "description": "启用后使用全局Jev决策服务替代传统Rerank模型",
+            "default": false
+        },
+        "JevRerankPrompt": {
+            "type": "string",
+            "description": "Jev重排决策指令",
+            "default": "请选择最值得用于回答当前查询的记忆。请从逻辑关联、记忆叙事连续性、信息解释力三个层面综合判断；优先保留能直接解释当前问题、补足关键背景或维持人物与事件连续性的内容，压低仅有表面词汇重合、重复、跑题或缺乏上下文价值的内容。"
+        },
+        "JevRerankMaxChoices": {
+            "type": "integer",
+            "description": "单次Jev重排最大候选数，硬上限255",
+            "default": 255
+        },
+        "JevRerankMaxDocumentChars": {
+            "type": "integer",
+            "description": "每篇候选发送给Jev的最大字符数",
+            "default": 6000
         }
     }
 }

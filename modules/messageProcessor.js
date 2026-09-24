@@ -7,6 +7,7 @@ const tvsManager = require('./tvsManager.js'); // 引入新的TVS管理器
 const toolboxManager = require('./toolboxManager.js');
 const dynamicToolRegistry = require('./dynamicToolRegistry.js');
 const sarPromptManager = require('./sarPromptManager.js');
+const jevFoldFilter = require('./jevFoldFilter.js'); // 折叠级联第二阶段：embedding 出候选后由 Jev 再筛一次
 
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || DEFAULT_TIMEZONE; // 用于控制 AI 报告的时间，默认回退到根目录 config.env 的 DEFAULT_TIMEZONE
@@ -546,7 +547,7 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
         }
 
         const getThreshold = (block) => Number.isFinite(Number(block.threshold)) ? Number(block.threshold) : 0;
-        const includedContents = [];
+        const includedEntries = []; // 保持展开顺序：{ content, description }，description 为空串表示 legacy 区块
         let hiddenBlocksCount = 0;
 
         const legacyBlocks = blocks.filter(block => !(typeof block.description === 'string' && block.description.trim()));
@@ -569,7 +570,7 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
 
             if (!description) {
                 if (activeLegacyBlocks.has(block)) {
-                    includedContents.push(content);
+                    includedEntries.push({ content, description: '' });
                 } else {
                     hiddenBlocksCount += 1;
                 }
@@ -583,13 +584,75 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             }
 
             if (sim >= threshold) {
-                includedContents.push(content);
+                includedEntries.push({ content, description });
             } else {
                 hiddenBlocksCount += 1;
             }
         }
 
-        let combinedContent = includedContents.filter(Boolean).join('\n\n---\n\n');
+        // --- Jev 级联第二阶段 ---
+        // embedding 阈值只负责"别漏"，Jev 负责"别滥"：仅从已展开的候选里移除，绝不新增。
+        // 任何失败（未配置/超时/网络/响应异常）都原样保留 embedding 的结果。
+        // 注意：此处必须自行兜住异常，否则会冒泡到外层 catch 把整个折叠退化成 fallbackBlock。
+        const droppedEntryIndices = new Set();
+        const descEntries = includedEntries
+            .map((entry, index) => ({ entry, index }))
+            .filter(item => item.entry.description);
+
+        if (descEntries.length > 0 && jevFoldFilter.isEnabled()) {
+            // 把本轮之前的对话（时间升序）一并交给 Jev：像“第二个改成红色”这种指涉型消息
+            // 单看没有信息量，会整体压低概率并错砍区块。取多少条、每条截多长由模块配置决定，
+            // 这里只多备一点余量（12 条）供其裁剪；embedding 那侧本来就用 user+AI 混合向量。
+            const recentMessages = [];
+            for (let i = lastUserMessage.index - 1; i >= 0 && recentMessages.length < 12; i--) {
+                const m = contextMessages[i];
+                if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+                const text = extractTextFromMessageContent(m.content);
+                if (!text || !text.trim()) continue;
+                recentMessages.unshift({ role: m.role, text: text.trim() });
+            }
+            try {
+                const decision = await jevFoldFilter.filterCandidates({
+                    userContent,
+                    recentMessages,
+                    candidates: descEntries.map(item => ({
+                        description: item.entry.description,
+                        content: item.entry.content
+                    })),
+                    debug: Boolean(context.DEBUG_MODE),
+                    placeholderKey
+                });
+
+                if (decision.applied && Array.isArray(decision.droppedIndices) && decision.droppedIndices.length > 0) {
+                    for (const droppedInCandidates of decision.droppedIndices) {
+                        const mapped = descEntries[droppedInCandidates];
+                        if (mapped) droppedEntryIndices.add(mapped.index);
+                    }
+                    if (context.DEBUG_MODE) {
+                        console.log(
+                            `[DynamicFold] ${placeholderKey} Jev 二次过滤(${decision.reason})：` +
+                            `候选 ${descEntries.length} → 折叠 ${droppedEntryIndices.size} / ` +
+                            `intent=${typeof decision.intent === 'number' ? decision.intent.toFixed(3) : '?'}` +
+                            `${decision.cached ? ' / 复用本轮缓存' : ''}`
+                        );
+                    }
+                } else if (context.DEBUG_MODE && !decision.applied) {
+                    console.log(`[DynamicFold] ${placeholderKey} Jev 二次过滤未生效: ${decision.reason}`);
+                }
+            } catch (e) {
+                droppedEntryIndices.clear();
+                if (context.DEBUG_MODE) {
+                    console.log(`[DynamicFold] ${placeholderKey} Jev 二次过滤异常，保留 embedding 结果: ${e && e.message}`);
+                }
+            }
+        }
+
+        const keptContents = includedEntries
+            .filter((entry, index) => !droppedEntryIndices.has(index))
+            .map(entry => entry.content);
+        hiddenBlocksCount += droppedEntryIndices.size;
+
+        let combinedContent = keptContents.filter(Boolean).join('\n\n---\n\n');
         if (!combinedContent) {
             combinedContent = fallbackBlock.content;
         }
@@ -667,6 +730,82 @@ function applyDetectorsToMessages(messages, context = {}) {
 
         return newMessage;
     });
+}
+
+async function injectStaticPluginPlaceholders(text, context = {}) {
+    const { pluginManager, DEBUG_MODE } = context;
+    if (text == null) return '';
+
+    let processedText = String(text);
+    const staticFoldMode = extractStaticFoldMode(processedText);
+    processedText = removeStaticFoldModePlaceholders(processedText);
+
+    if (!pluginManager || typeof pluginManager.getAllPlaceholderValues !== 'function') {
+        return processedText;
+    }
+
+    const staticPlaceholderValues = pluginManager.getAllPlaceholderValues();
+    if (!staticPlaceholderValues || staticPlaceholderValues.size === 0) {
+        return processedText;
+    }
+
+    for (const [placeholder, entry] of staticPlaceholderValues.entries()) {
+        // 只处理当前文本实际包含的占位符，避免无效的动态折叠计算。
+        const fullPlaceholder = `{{${placeholder}}}`;
+        if (!processedText.includes(fullPlaceholder)) {
+            continue;
+        }
+
+        const escapedPlaceholder = placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        const placeholderRegex = new RegExp('\\{\\{' + escapedPlaceholder + '\\}\\}', 'g');
+
+        let valueToInject = entry;
+        if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
+            valueToInject = entry.value;
+        }
+
+        if (typeof valueToInject === 'object' && valueToInject !== null && valueToInject.vcp_dynamic_fold) {
+            if (staticFoldMode === 'lite') {
+                valueToInject = resolveStaticFoldLite(valueToInject);
+                if (DEBUG_MODE) console.log(`[StaticFold] ${placeholder} 使用 Lite 模式，跳过语义向量判定。`);
+            } else if (staticFoldMode === 'full') {
+                valueToInject = resolveStaticFoldFull(valueToInject);
+                if (DEBUG_MODE) console.log(`[StaticFold] ${placeholder} 使用 Full 模式，跳过语义向量判定。`);
+            } else {
+                valueToInject = await resolveDynamicFoldProtocol(valueToInject, context, placeholder);
+            }
+        }
+
+        processedText = processedText.replace(placeholderRegex, valueToInject || `[${placeholder} 信息不可用]`);
+    }
+
+    return processedText;
+}
+
+async function injectStaticPluginPlaceholdersInMessages(messages, context = {}) {
+    if (!Array.isArray(messages)) return messages;
+
+    for (const message of messages) {
+        if (!message || message.role !== 'system') continue;
+
+        if (typeof message.content === 'string') {
+            message.content = await injectStaticPluginPlaceholders(message.content, {
+                ...context,
+                messages
+            });
+        } else if (Array.isArray(message.content)) {
+            for (const part of message.content) {
+                if (part && part.type === 'text' && typeof part.text === 'string') {
+                    part.text = await injectStaticPluginPlaceholders(part.text, {
+                        ...context,
+                        messages
+                    });
+                }
+            }
+        }
+    }
+
+    return messages;
 }
 
 async function replaceOtherVariables(text, model, role, context) {
@@ -813,42 +952,10 @@ async function replaceOtherVariables(text, model, role, context) {
         if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
         processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
 
-        const staticFoldMode = extractStaticFoldMode(processedText);
-        processedText = removeStaticFoldModePlaceholders(processedText);
-
-        const staticPlaceholderValues = pluginManager.getAllPlaceholderValues(); // Use the getter
-        if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
-            for (const [placeholder, entry] of staticPlaceholderValues.entries()) {
-                // 修复上下文折叠漏洞：如果当前文本压根没有这个占位符，直接跳过，避免触发不必要的向量化和计算
-                // 修复占位符前缀包含冲突：使用 {{}} 边界精确匹配，防止短名称吞噬长名称（如 VCPClawMailInbox ⊂ VCPClawMailInboxMail1）
-                const fullPlaceholder = `{{${placeholder}}}`;
-                if (!processedText.includes(fullPlaceholder)) {
-                    continue;
-                }
-
-                const escapedPlaceholder = placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-                const placeholderRegex = new RegExp('\\{\\{' + escapedPlaceholder + '\\}\\}', 'g');
-
-                let valueToInject = entry;
-                if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
-                    valueToInject = entry.value;
-                }
-
-                // 支持 vcp_dynamic_fold 协议
-                if (typeof valueToInject === 'object' && valueToInject !== null && valueToInject.vcp_dynamic_fold) {
-                    if (staticFoldMode === 'lite') {
-                        valueToInject = resolveStaticFoldLite(valueToInject);
-                        if (DEBUG_MODE) console.log(`[StaticFold] ${placeholder} 使用 Lite 模式，跳过语义向量判定。`);
-                    } else if (staticFoldMode === 'full') {
-                        valueToInject = resolveStaticFoldFull(valueToInject);
-                        if (DEBUG_MODE) console.log(`[StaticFold] ${placeholder} 使用 Full 模式，跳过语义向量判定。`);
-                    } else {
-                        valueToInject = await resolveDynamicFoldProtocol(valueToInject, context, placeholder);
-                    }
-                }
-
-                processedText = processedText.replace(placeholderRegex, valueToInject || `[${placeholder} 信息不可用]`);
-            }
+        // 默认保持历史行为；主请求管线可通过 deferStaticPluginPlaceholders
+        // 将静态/混合/分布式插件占位符延迟到可排序的虚拟阶段。
+        if (!context.deferStaticPluginPlaceholders) {
+            processedText = await injectStaticPluginPlaceholders(processedText, context);
         }
 
         const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions();
@@ -977,6 +1084,8 @@ module.exports = {
     // 导出主函数，并重命名旧函数以供内部调用
     replaceAgentVariables: resolveAllVariables,
     replaceOtherVariables,
+    injectStaticPluginPlaceholders,
+    injectStaticPluginPlaceholdersInMessages,
     replacePriorityVariables,
     formatEmojiListForPrompt,
     applyDetectorRules,

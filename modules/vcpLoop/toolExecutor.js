@@ -5,6 +5,8 @@ const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { getEmbeddingsBatch, cosineSimilarity } = require('../../EmbeddingUtils');
 const toolCallRecordStore = require('../toolCallRecordStore');
+const jevRiverReranker = require('../jevRiverReranker'); // river semantic:N 的级联第二阶段
+const jevToolCallExp = require('../jevToolCallExp');
 
 const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, '..', '..', 'VCPTimedContacts');
 
@@ -192,6 +194,40 @@ class ToolExecutor {
   async execute(toolCall, clientIp, contextMessages = []) {
     const { name, args, river, vref, archeryNoReply } = toolCall;
 
+    // === JEV 实验性虚拟工具展开 ===
+    // JEV 本身不是插件。规划器仅生成白名单真实工具调用，随后递归进入
+    // 本执行链，使验证码、人工审核、工具记录、隐私过滤与分布式桥保持生效。
+    if (jevToolCallExp.isVirtualToolName(name)) {
+      try {
+        // 传入完整虚拟调用，使规划器在展开后保留通用调用协议：
+        // timely_contact/tool_password 参数及 archery/ink/river/vref 元数据。
+        const expandedCalls = await jevToolCallExp.plan(args?.expression, toolCall);
+        if (expandedCalls.length === 0) {
+          return this._createErrorResult(name, 'JEV 没有生成可执行的真实工具调用。');
+        }
+
+        const expandedResults = await this.executeAll(expandedCalls, clientIp, contextMessages);
+        if (expandedResults.length === 1) return expandedResults[0];
+
+        const successful = expandedResults.filter(result => result?.success);
+        return {
+          success: successful.length === expandedResults.length,
+          content: expandedResults.flatMap(result => Array.isArray(result?.content) ? result.content : []),
+          raw: {
+            status: successful.length === expandedResults.length ? 'success' : 'partial',
+            virtualTool: 'JEV',
+            expandedTools: expandedCalls.map(call => call.name),
+            results: expandedResults.map(result => result?.raw ?? {
+              success: result?.success,
+              error: result?.error
+            })
+          }
+        };
+      } catch (error) {
+        return this._createErrorResult(name, `JEV 规划错误: ${error.message}`);
+      }
+    }
+
     // === river 上下文注入 ===
     // river 协议允许 AI 在工具调用时携带对话上下文，支持四种模式：
     //   full     — 原始多模态消息（含图片等），完整深拷贝
@@ -279,7 +315,27 @@ class ToolExecutor {
         scored.sort((a, b) => b.score - a.score);
         
         // 5. 取 Top-N，按原始顺序排列
-        const topN = scored.slice(0, n);
+        // 若开启 JevRiverRerank，则 embedding 只负责"别漏"（出 Top-K），
+        // 由 Jev 在 K 内重排出 N 条（负责"别滥"）；任何失败都保留 embedding 的 Top-N。
+        let topN = scored.slice(0, n);
+        if (jevRiverReranker.isEnabled()) {
+          try {
+            const rerank = await jevRiverReranker.rerankTopN({
+              queryText,
+              items: scored,
+              n,
+              debug: this.debugMode
+            });
+            if (rerank.applied && Array.isArray(rerank.selected) && rerank.selected.length > 0) {
+              topN = rerank.selected;
+            } else if (this.debugMode && rerank && !rerank.applied) {
+              console.log(`[River] Jev 重排未生效(${rerank.reason})，保留 embedding 的 Top-${n}`);
+            }
+          } catch (e) {
+            // 绝不能让重排异常冒泡到外层 catch——那会连带丢掉 embedding 结果、退回 last:N
+            if (this.debugMode) console.log(`[River] Jev 重排异常，保留 embedding 结果: ${e && e.message}`);
+          }
+        }
         topN.sort((a, b) => a.index - b.index);
         
         args.river_context = topN.map(m => ({

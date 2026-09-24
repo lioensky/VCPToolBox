@@ -2,13 +2,16 @@
 这里收纳了 VCP 强大的联网检索、网页爬取及深度研究工具。
 
 ## 1. 语义穿透联网检索 (VSearch)
-首选联网引擎。支持语义级检索范围与多关键词并发搜索，适合获取多角度观点。
+首选联网引擎。简单搜索只需填写完整的 SearchTopic，由搜索 AI 自行理解和扩展意图；不要为简单搜索强行拆分关键词。
 tool_name:「始」VSearch「末」,
-SearchTopic:「始」探讨AI在医疗诊断中的最新应用「末」,
-Keywords:「始」AI medical diagnosis 2024, 深度学习 医疗影像 突破, transformer models in healthcare「末」,
-SearchMode:「始」grounding「末」,  //三个模式，'grounding' (Gemini-Google搜索-快),  'grok' (Grok推理级搜索-缓慢-支持舆论媒体搜索-注意偏见),默认grouding
+SearchTopic:「始」OpenAI 最近发布了哪些新模型「末」,
+SearchMode:「始」grounding「末」,  //可选：'grounding' (Gemini-Google搜索-快)、'grok' (Grok推理级搜索-缓慢-支持舆论媒体搜索-注意偏见)、'tavily'、'kimisearch'
 ShowURL:「始」false「末」,
 ink:「始」mark_history「末」 //可选，是否将检索结果写入history.json
+
+深度研究需要控制多个检索分支时，才额外提供 Keywords；用逗号或换行分隔：
+SearchTopic:「始」探讨AI在医疗诊断中的最新应用「末」,
+Keywords:「始」AI medical diagnosis 2026, 深度学习医疗影像突破, transformer models in healthcare「末」,
 
 ## 2. 网页/文件内容爬取器 (UrlFetch)
 用于获取特定网页、在线文件或本地文件的文本/快照。

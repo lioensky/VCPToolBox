@@ -1,7 +1,7 @@
 {
   "displayName": "Anima EZ 文生图",
-  "description": "Anima Base 1.0 动漫与艺术插画工作流，已从 ComfyUI 子图画布格式转换为 API prompt 格式。",
-  "version": "1.0",
+  "description": "Anima Base 1.0 动漫与艺术插画工作流。步数可自定义，CFG 固定 4，并使用 Euler Ancestral、Simple。",
+  "version": "1.2",
   "workflow": {
     "44": {
       "inputs": {
@@ -93,10 +93,10 @@
       "inputs": {
         "seed": "{{SEED}}",
         "steps": "{{STEPS}}",
-        "cfg": "{{CFG}}",
-        "sampler_name": "{{SAMPLER}}",
-        "scheduler": "{{SCHEDULER}}",
-        "denoise": "{{DENOISE}}",
+        "cfg": 4,
+        "sampler_name": "euler_ancestral",
+        "scheduler": "simple",
+        "denoise": 1,
         "model": [
           "75",
           0

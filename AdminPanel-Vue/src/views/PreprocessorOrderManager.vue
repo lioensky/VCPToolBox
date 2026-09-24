@@ -36,14 +36,17 @@
       class="preprocessor-order-panel"
       variant="subtle"
       size="sm"
-      title="预处理器执行顺序"
-      description="按住左侧手柄拖动排序，越靠上的插件越优先执行。保存后会触发热重载。"
+      title="消息处理管线顺序"
+      description="拖动预处理器与注入阶段以控制执行时机。静态/混合插件占位符阶段之后注入的网页等动态文本，不会反向触发位于它上方的捕获预处理器。保存后会触发热重载。"
       divided
     >
       <UiToolbar class="order-toolbar" density="compact">
         <div class="order-summary">
           <UiBadge variant="outline">
-            {{ orderedPreprocessors.length }} 个预处理器
+            {{ orderedPreprocessors.length }} 个管线节点
+          </UiBadge>
+          <UiBadge variant="secondary">
+            {{ orderedPreprocessors.filter((item) => item.kind === "stage").length }} 个注入阶段
           </UiBadge>
         </div>
       </UiToolbar>
@@ -62,6 +65,7 @@
           :class="[
             'draggable-item',
             {
+              'draggable-item--stage': plugin.kind === 'stage',
               'draggable-item--dragging': draggingPluginName === plugin.name,
               'draggable-item--drop-before':
                 draggingPluginName !== null &&
@@ -82,7 +86,11 @@
           <span class="plugin-index">{{ index + 1 }}.</span>
 
           <span class="plugin-copy">
-            <span class="plugin-name">{{ plugin.displayName || plugin.name }}</span>
+            <span class="plugin-title-row">
+              <span class="plugin-name">{{ plugin.displayName || plugin.name }}</span>
+              <UiBadge v-if="plugin.kind === 'stage'" variant="info">管线阶段</UiBadge>
+              <UiBadge v-else variant="outline">预处理器</UiBadge>
+            </span>
             <span v-if="plugin.description" class="plugin-description">
               {{ plugin.description }}
             </span>
@@ -244,6 +252,15 @@ void dragGhostElement
   background: color-mix(in srgb, var(--primary-text) 2.5%, transparent);
 }
 
+.draggable-item--stage {
+  background: color-mix(in srgb, var(--highlight-text) 7%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--highlight-text) 72%, transparent);
+}
+
+.draggable-item--stage:hover {
+  background: color-mix(in srgb, var(--highlight-text) 11%, transparent);
+}
+
 .draggable-item--dragging {
   opacity: 0.16;
   filter: saturate(0.88);
@@ -284,6 +301,14 @@ void dragGhostElement
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+}
+
+.plugin-title-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .plugin-name {

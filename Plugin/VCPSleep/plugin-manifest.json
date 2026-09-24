@@ -1,0 +1,72 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "VCPSleep",
+  "version": "1.0.0",
+  "displayName": "VCPSleep 打盹小枕头",
+  "description": "给 AI 准备的一只软绵绵小枕头。调用后会让当前流式工具链安静地睡上一会儿，时间到了再带着睡前留下的 tips 醒来继续工作。",
+  "author": "VCP",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node VCPSleep.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 43500000
+  },
+  "configSchema": {
+    "DEFAULT_TIMEZONE": {
+      "type": "string",
+      "description": "醒来报时使用的 IANA 时区，例如 Asia/Shanghai。"
+    },
+    "VCPSLEEP_DREAM_ENABLED": {
+      "type": "boolean",
+      "description": "是否允许睡眠时联动已启用的 AgentDream 尝试做一次梦。默认关闭。"
+    },
+    "VCPSLEEP_DREAM_PROBABILITY": {
+      "type": "number",
+      "description": "VCPSleep 额外的入梦概率门，范围 0-1；通过后仍须满足 AgentDream 自身的时间窗、冷却和 DREAM_PROBABILITY。"
+    },
+    "VCPSLEEP_VCPINFO_ENABLED": {
+      "type": "boolean",
+      "description": "是否由主进程向前端广播 VCPSleep 的入睡、醒来、失败和超时状态。默认开启。"
+    }
+  },
+  "vcpInfoLifecycle": {
+    "enabledConfigKey": "VCPSLEEP_VCPINFO_ENABLED",
+    "enabledByDefault": true,
+    "type": "VCP_SLEEP",
+    "start": {
+      "message": "{{args.maid|args.Maid|args.agent_name}} 抱着小枕头去睡 {{args.sleeptime|args.sleepTime|args.睡觉时间|args.duration|args.seconds}} 啦……",
+      "data": {
+        "agentName": "{{args.maid|args.Maid|args.agent_name}}",
+        "sleepTime": "{{args.sleeptime|args.sleepTime|args.睡觉时间|args.duration|args.seconds}}",
+        "tips": "{{args.sleeptips|args.sleepTips|args.睡觉tips|args.睡觉提示|args.tips}}"
+      }
+    },
+    "success": {
+      "message": "{{args.maid|args.Maid|args.agent_name}} 睡醒啦，小枕头已经按时完成任务。",
+      "data": {
+        "agentName": "{{args.maid|args.Maid|args.agent_name}}",
+        "sleepTime": "{{args.sleeptime|args.sleepTime|args.睡觉时间|args.duration|args.seconds}}"
+      }
+    },
+    "error": {
+      "message": "{{args.maid|args.Maid|args.agent_name}} 的小枕头遇到了一点状况，这次没有正常睡完。",
+      "includeError": true
+    },
+    "timeout": {
+      "message": "{{args.maid|args.Maid|args.agent_name}} 睡得太沉啦，小枕头没能在规定时间内叫醒她。",
+      "includeError": true
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "VCPSleep",
+        "description": "让自己抱着小枕头打个盹，并将当前流式工具调用挂起到睡醒为止。适合等待倒计时、限流冷却、稍后继续检查任务等场景。醒来后，小枕头会告诉你当前日期、时分秒、时区和 UTC 偏移；如果睡前留了 tips，也会把这张小纸条交还给你。\n\n参数:\n- 睡觉时间 / sleepTime / sleeptime (必需): 想睡多久。参数名不区分大小写。纯数字按秒计算，也支持 30s、10m、2h、1小时30分钟、1分20秒等可爱写法；必须大于 0，单次最多睡 12 小时。\n- 睡觉tips / sleepTips / sleeptips (可选): 写给睡醒后的自己看的小纸条，参数名不区分大小写。若有后续任务，建议简洁写明醒来后要检查什么或继续做什么；如果只是单纯休息，可以不写。\n\n注意:\n- 这是同步等待工具：调用后当前工具链会原地打盹，直到时间到达才返回。\n- 如果管理员开启了 VCPSleep 的做梦联动，并且 AgentDream 插件也已启用，你可能在睡眠期间做一次梦；是否入梦仍完全服从 AgentDream 的 Agent 名单、时间窗口、做梦间隔和概率设置。\n- 不要用它代替无需等待的普通思考，也不要超过 12 小时。\n- 报时采用服务器 DEFAULT_TIMEZONE；未配置时使用 Asia/Shanghai。\n\n调用格式:\n<<<[TOOL_REQUEST]>>>\nmaid:「始」你的名字「末」,\ntool_name:「始」VCPSleep「末」,\nsleeptime:「始」10m「末」,\nsleeptips:「始」十分钟冷却结束啦，请重新检查刚才的任务状态，然后继续处理。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "```text\n只想安静小睡 30 秒（tips 可以不写）：\n<<<[TOOL_REQUEST]>>>\nmaid:「始」Nova「末」,\ntool_name:「始」VCPSleep「末」,\n睡觉时间:「始」30s「末」\n<<<[END_TOOL_REQUEST]>>>\n\n带一张睡醒小纸条，睡上 2 小时：\n<<<[TOOL_REQUEST]>>>\nmaid:「始」Nova「末」,\ntool_name:「始」VCPSleep「末」,\n睡觉时间:「始」2h「末」,\n睡觉tips:「始」两小时的等待期已经结束，请继续执行之前暂缓的任务，并先核对当前时间与任务状态。「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}

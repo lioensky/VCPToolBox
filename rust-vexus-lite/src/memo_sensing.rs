@@ -60,6 +60,8 @@ pub(crate) struct SenseConfig {
     pub(crate) minimum_injected_current: f64,
     pub(crate) max_output_nodes: usize,
     pub(crate) max_output_edges: usize,
+    /// 0 disables route recording. Recording never changes propagation.
+    pub(crate) max_transition_records: usize,
 }
 
 impl Default for SenseConfig {
@@ -80,6 +82,7 @@ impl Default for SenseConfig {
             // 只在后续融合层限制 emergent candidates。
             max_output_nodes: 0,
             max_output_edges: 0,
+            max_transition_records: 0,
         }
     }
 }
@@ -176,6 +179,21 @@ pub(crate) struct SenseDiagnostics {
     pub(crate) elapsed_ms: f64,
 }
 
+/// A time-expanded transition between accepted propagation states.
+/// State identity is (hop, previous_id, node_id), not just a Tag ID.
+/// Multiple seed paths may merge into one state; no unique seed lineage is claimed.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObservationTransition {
+    pub(crate) source_id: i64,
+    pub(crate) target_id: i64,
+    pub(crate) previous_id: Option<i64>,
+    pub(crate) hop: usize,
+    pub(crate) flow: f64,
+    pub(crate) wormhole: bool,
+    pub(crate) immediate_return: bool,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SenseOutput {
@@ -187,6 +205,8 @@ pub(crate) struct SenseOutput {
     pub(crate) nodes: Vec<ObservationNode>,
     pub(crate) edges: Vec<ObservationEdge>,
     pub(crate) diagnostics: SenseDiagnostics,
+    pub(crate) transitions: Vec<ObservationTransition>,
+    pub(crate) transitions_truncated: bool,
 }
 
 fn fir_weights(config: &SenseConfig) -> Vec<f64> {
@@ -258,9 +278,13 @@ pub(crate) fn sense_typed(
     let mut return_flow_suppressed_mass = 0.0;
     let mut state_truncations = 0usize;
     let mut hop_in_flight_mass = Vec::new();
+    let transition_limit = config.max_transition_records.min(16_000);
+    let mut transitions = Vec::new();
+    let mut transitions_truncated = false;
 
     for hop in 0..config.max_safe_hops {
         let mut next: HashMap<(Option<usize>, usize), SpikeState> = HashMap::new();
+        let mut hop_transitions = Vec::new();
 
         for spike in active.values() {
             if spike.energy < config.firing_threshold || spike.momentum < 0.0 {
@@ -340,6 +364,22 @@ pub(crate) fn sense_typed(
                 if next_momentum < 0.0 && !wormhole {
                     continue;
                 }
+                if transition_limit > 0 {
+                    // Bound temporary storage as well as the retained observation.
+                    if hop_transitions.len() < transition_limit {
+                        hop_transitions.push(ObservationTransition {
+                            source_id,
+                            target_id,
+                            previous_id: spike.previous_index.map(|i| artifact.node_ids[i]),
+                            hop: spike.hop + 1,
+                            flow: injected,
+                            wormhole,
+                            immediate_return,
+                        });
+                    } else {
+                        transitions_truncated = true;
+                    }
+                }
                 next.entry((Some(spike.node_index), target_index))
                     .and_modify(|state| {
                         state.energy += injected;
@@ -373,6 +413,28 @@ pub(crate) fn sense_typed(
                 .map(|state| ((state.previous_index, state.node_index), state))
                 .collect();
         }
+
+        // Reject transfers whose destination state was discarded by the state cap.
+        hop_transitions.retain(|edge| {
+            let source = artifact.node_index.get(&edge.source_id).copied();
+            let target = artifact.node_index.get(&edge.target_id).copied();
+            match (source, target) {
+                (Some(source), Some(target)) => next.contains_key(&(Some(source), target)),
+                _ => false,
+            }
+        });
+        hop_transitions.sort_by(|left, right| {
+            right.flow.total_cmp(&left.flow)
+                .then_with(|| left.source_id.cmp(&right.source_id))
+                .then_with(|| left.target_id.cmp(&right.target_id))
+                .then_with(|| left.previous_id.cmp(&right.previous_id))
+        });
+        let remaining = transition_limit.saturating_sub(transitions.len());
+        if hop_transitions.len() > remaining {
+            transitions_truncated = true;
+            hop_transitions.truncate(remaining);
+        }
+        transitions.extend(hop_transitions);
 
         let mut node_energy: HashMap<usize, f64> = HashMap::new();
         let mut in_flight = 0.0;
@@ -524,6 +586,8 @@ pub(crate) fn sense_typed(
         },
         nodes,
         edges,
+        transitions,
+        transitions_truncated,
     })
 }
 

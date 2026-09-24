@@ -644,6 +644,7 @@ class TagConsistencyService {
                 DELETE FROM tag_intrinsic_residuals;
                 DELETE FROM tag_intrinsic_residual_status;
                 DELETE FROM tagmemo_artifacts;
+                DELETE FROM rivermemo_artifacts;
                 DELETE FROM tags
                 WHERE id NOT IN (SELECT DISTINCT tag_id FROM file_tags);
             `);

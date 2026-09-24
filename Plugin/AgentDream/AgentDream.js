@@ -795,6 +795,102 @@ function _stopDreamScheduler() {
     }
 }
 
+function _isInDreamTimeWindow(date = new Date()) {
+    const currentHour = date.getHours();
+    const windowStart = DREAM_CONFIG.timeWindowStart;
+    const windowEnd = DREAM_CONFIG.timeWindowEnd;
+
+    if (windowStart <= windowEnd) {
+        return currentHour >= windowStart && currentHour < windowEnd;
+    }
+    return currentHour >= windowStart || currentHour < windowEnd;
+}
+
+/**
+ * 供 VCPSleep 调用的可选入梦入口。
+ * 只在 AgentDream 已启用并初始化时可达，并严格服从 AgentDream 自己的：
+ * Agent 配置/白名单、时间窗口、频率冷却、概率和全局并发锁。
+ * sleepProbability 是 VCPSleep 额外的一层概率门，不会覆盖 DREAM_PROBABILITY。
+ */
+async function tryTriggerDreamFromSleep(agentName, sleepProbability = 1) {
+    const normalizedAgentName = String(agentName || '').trim();
+    if (!normalizedAgentName || !DREAM_AGENTS[normalizedAgentName]) {
+        return { status: 'skipped', reason: 'agent_not_configured', agentName: normalizedAgentName || null };
+    }
+
+    if (
+        DREAM_CONFIG.agentList.length > 0 &&
+        !DREAM_CONFIG.agentList.includes(normalizedAgentName)
+    ) {
+        return { status: 'skipped', reason: 'agent_not_in_dream_list', agentName: normalizedAgentName };
+    }
+
+    if (!_isInDreamTimeWindow()) {
+        return {
+            status: 'skipped',
+            reason: 'outside_dream_time_window',
+            agentName: normalizedAgentName,
+            timeWindowStart: DREAM_CONFIG.timeWindowStart,
+            timeWindowEnd: DREAM_CONFIG.timeWindowEnd
+        };
+    }
+
+    const lastDreamTime = lastDreamTimestamps.get(normalizedAgentName) || 0;
+    const frequencyMs = DREAM_CONFIG.frequencyHours * 60 * 60 * 1000;
+    const elapsedMs = Date.now() - lastDreamTime;
+    if (elapsedMs < frequencyMs) {
+        return {
+            status: 'skipped',
+            reason: 'dream_frequency_cooldown',
+            agentName: normalizedAgentName,
+            remainingMs: frequencyMs - elapsedMs
+        };
+    }
+
+    if (isDreamingInProgress) {
+        return { status: 'skipped', reason: 'dream_already_in_progress', agentName: normalizedAgentName };
+    }
+
+    const normalizedSleepProbability = Math.min(1, Math.max(0, Number(sleepProbability) || 0));
+    const sleepRoll = Math.random();
+    if (sleepRoll >= normalizedSleepProbability) {
+        return {
+            status: 'skipped',
+            reason: 'sleep_probability_miss',
+            agentName: normalizedAgentName,
+            roll: sleepRoll,
+            probability: normalizedSleepProbability
+        };
+    }
+
+    const dreamRoll = Math.random();
+    if (dreamRoll >= DREAM_CONFIG.probability) {
+        return {
+            status: 'skipped',
+            reason: 'agent_dream_probability_miss',
+            agentName: normalizedAgentName,
+            roll: dreamRoll,
+            probability: DREAM_CONFIG.probability
+        };
+    }
+
+    isDreamingInProgress = true;
+    console.log(`[AgentDream] 💤 VCPSleep triggered a dream for ${normalizedAgentName}.`);
+    try {
+        const result = await triggerDream(normalizedAgentName);
+        if (result.status === 'success') {
+            lastDreamTimestamps.set(normalizedAgentName, Date.now());
+            _saveDreamState();
+        }
+        return {
+            ...result,
+            source: 'VCPSleep'
+        };
+    } finally {
+        isDreamingInProgress = false;
+    }
+}
+
 /**
  * 核心调度检查 - 每次定时器触发时执行
  * 1. 检查当前时间是否在做梦时间窗口内
@@ -815,17 +911,7 @@ async function _checkAndTriggerDreams() {
     // 检查时间窗口（支持跨午夜，例如 22:00 - 06:00）
     const windowStart = DREAM_CONFIG.timeWindowStart;
     const windowEnd = DREAM_CONFIG.timeWindowEnd;
-    let inWindow = false;
-
-    if (windowStart <= windowEnd) {
-        // 正常窗口: 例如 1:00 - 6:00
-        inWindow = currentHour >= windowStart && currentHour < windowEnd;
-    } else {
-        // 跨午夜窗口: 例如 22:00 - 6:00
-        inWindow = currentHour >= windowStart || currentHour < windowEnd;
-    }
-
-    if (!inWindow) {
+    if (!_isInDreamTimeWindow(now)) {
         if (DEBUG_MODE) console.error(`[AgentDream] Scheduler: outside dream window (current: ${currentHour}:00, window: ${windowStart}:00-${windowEnd}:00)`);
         return;
     }
@@ -966,6 +1052,7 @@ module.exports = {
     processToolCall,
     // 暴露给外部调度系统使用
     triggerDream,
+    tryTriggerDreamFromSleep,
     // 二期面板接口预留
     getDreamConfig: () => ({ ...DREAM_CONFIG }),
     getDreamAgents: () => ({ ...DREAM_AGENTS }),

@@ -425,7 +425,7 @@ function formatWeatherInfo(
     currentStr += `空气质量: ${airQuality.category} (AQI ${airQuality.aqi}), PM2.5: ${airQuality.pm2p5}\n`;
   }
 
-  // --- Block 0.35: Short Forecast (Next 3 Days) + Current ---
+  // --- Block 0.55: Short Forecast (Next 3 Days) + Current ---
   let shortStr = currentStr + '\n【3日预报】\n';
   if (forecast && forecast.length >= 3) {
     for (let i = 0; i < 3; i++) {
@@ -438,7 +438,7 @@ function formatWeatherInfo(
     shortStr += `天气预报获取失败。\n`;
   }
 
-  // --- Block 0.5: Full Detailed Forecast ---
+  // --- Block 0.65: Full Detailed Forecast ---
   let fullStr = '';
 
   // Add Air Quality section
@@ -530,8 +530,8 @@ function formatWeatherInfo(
     vcp_dynamic_fold: true,
     plugin_description: "天气预报插件，提供各个城市及地区的实时天气、未来数天预报、空气质量预警与生活日出日落太阳位置",
     fold_blocks: [
-      { threshold: 0.5, content: readableText },
-      { threshold: 0.35, content: shortStr.trim() },
+      { threshold: 0.65, content: readableText },
+      { threshold: 0.55, content: shortStr.trim() },
       { threshold: 0.0, content: currentStr.trim() }
     ]
   };

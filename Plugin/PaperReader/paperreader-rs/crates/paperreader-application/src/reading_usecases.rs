@@ -828,7 +828,11 @@ fn compose_rolling_context_limited(
         .join("\n");
 
     if lines.len() > max_chars {
-        lines = lines[lines.len().saturating_sub(max_chars)..].to_string();
+        let mut start = lines.len().saturating_sub(max_chars);
+        while start < lines.len() && !lines.is_char_boundary(start) {
+            start += 1;
+        }
+        lines = lines[start..].to_string();
     }
     lines
 }

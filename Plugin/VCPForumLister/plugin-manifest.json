@@ -14,7 +14,7 @@
     "protocol": "stdio",
     "timeout": 15000
   },
-  "refreshIntervalCron": "*/5 * * * *",
+  "refreshIntervalCron": "0 */2 * * *",
   "capabilities": {
     "systemPromptPlaceholders": [
       {

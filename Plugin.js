@@ -13,10 +13,24 @@ const ToolApprovalManager = require('./modules/toolApprovalManager');
 const { hasFoldMarkers, buildDynamicFoldObject } = require('./modules/foldProtocol');
 const { sanitizeToolResult } = require('./modules/toolResultPrivacyGuard');
 const toolCallRecordStore = require('./modules/toolCallRecordStore');
+const { ToolLifecycleVcpInfo } = require('./modules/toolLifecycleVcpInfo');
+const {
+    createDefaultDependencyBridgeRegistry,
+    createDefaultExecutionBridgeRegistry
+} = require('./modules/pluginBridgeRegistry');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
 const PREPROCESSOR_ORDER_FILE = path.join(__dirname, 'preprocessor_order.json');
+const STATIC_PLACEHOLDER_INJECTION_STAGE = '$StaticPlaceholderInjection';
+const PREPROCESSOR_VIRTUAL_STAGES = Object.freeze({
+    [STATIC_PLACEHOLDER_INJECTION_STAGE]: {
+        name: STATIC_PLACEHOLDER_INJECTION_STAGE,
+        kind: 'stage',
+        displayName: '静态/混合插件占位符注入',
+        description: '在此位置注入静态、混合及分布式插件上报的系统提示词占位符内容。可拖动以隔离动态网页文本与前置捕获指令。'
+    }
+});
 const SSH_MANAGER_ENV_PLUGIN_ALLOWLIST = new Set([
     'LinuxShellExecutor',
     'LinuxLogMonitor'
@@ -141,6 +155,12 @@ class PluginManager extends EventEmitter {
         this.tdbKnowledgeManager = null; // 冷知识库管理器，等待 server.js 注入
         this.toolApprovalManager = new ToolApprovalManager(path.join(__dirname, 'toolApprovalConfig.json'));
         this.pendingApprovals = new Map(); // requestId -> { resolve, reject, timeoutId }
+        this.toolLifecycleVcpInfo = new ToolLifecycleVcpInfo({
+            pushVcpInfo: data => this.getVCPLogFunctions().pushVcpInfo(data),
+            debugMode: this.debugMode
+        });
+        this.dependencyBridgeRegistry = createDefaultDependencyBridgeRegistry();
+        this.executionBridgeRegistry = createDefaultExecutionBridgeRegistry();
     }
 
     _sanitizeToolResultForAi(result) {
@@ -911,9 +931,11 @@ class PluginManager extends EventEmitter {
                 }
             }
 
-            // 3. 确定预处理器加载顺序
+            // 3. 确定预处理器与虚拟管线阶段的加载顺序
             const availablePlugins = new Set(discoveredPreprocessors.keys());
+            const availableStages = new Set(Object.keys(PREPROCESSOR_VIRTUAL_STAGES));
             let finalOrder = [];
+            let savedOrderHasVirtualStage = false;
             try {
                 const orderContent = await fs.readFile(PREPROCESSOR_ORDER_FILE, 'utf-8');
                 const savedOrder = JSON.parse(orderContent);
@@ -922,6 +944,10 @@ class PluginManager extends EventEmitter {
                         if (availablePlugins.has(pluginName)) {
                             finalOrder.push(pluginName);
                             availablePlugins.delete(pluginName);
+                        } else if (availableStages.has(pluginName)) {
+                            finalOrder.push(pluginName);
+                            availableStages.delete(pluginName);
+                            savedOrderHasVirtualStage = true;
                         }
                     });
                 }
@@ -929,11 +955,23 @@ class PluginManager extends EventEmitter {
                 if (error.code !== 'ENOENT') console.error(`[PluginManager] Error reading existing ${PREPROCESSOR_ORDER_FILE}:`, error);
             }
 
-            finalOrder.push(...Array.from(availablePlugins).sort());
+            // 旧版顺序文件没有虚拟阶段时，将其置于最前，严格保持“变量展开后、
+            // 所有消息预处理器前注入静态占位符”的历史行为。
+            if (!savedOrderHasVirtualStage) {
+                finalOrder.unshift(...Array.from(availableStages));
+                availableStages.clear();
+            }
 
-            // 4. 注册预处理器
+            finalOrder.push(...Array.from(availablePlugins).sort());
+            finalOrder.push(...Array.from(availableStages));
+
+            // 4. 注册真实预处理器；虚拟阶段仅存在于 preprocessorOrder 中，
+            // 由主消息管线识别执行，不注册为伪插件模块。
             for (const pluginName of finalOrder) {
-                this.messagePreprocessors.set(pluginName, discoveredPreprocessors.get(pluginName));
+                const processor = discoveredPreprocessors.get(pluginName);
+                if (processor) {
+                    this.messagePreprocessors.set(pluginName, processor);
+                }
             }
             this.preprocessorOrder = finalOrder;
             if (finalOrder.length > 0) console.log('[PluginManager] Final message preprocessor order: ' + finalOrder.join(' -> '));
@@ -963,72 +1001,21 @@ class PluginManager extends EventEmitter {
                     initialConfig.Key = process.env.Key;
                     initialConfig.PROJECT_BASE_PATH = this.projectBasePath;
 
-                    const dependencies = {
-                        vcpLogFunctions: this.getVCPLogFunctions(),
-                        pluginManager: this
-                    };
-
-                    // --- 注入 VectorDBManager ---
-                    if (
-                        manifest.requiresKnowledgeBaseManager === true ||
-                        manifest.name === 'RAGDiaryPlugin' ||
-                        manifest.name === 'DailyNote' ||
-                        manifest.name === 'DailyNoteManager'
-                    ) {
-                        dependencies.vectorDBManager = this.vectorDBManager;
-                        dependencies.knowledgeBaseManager = this.vectorDBManager;
-                    }
-                    if (manifest.name === 'RAGDiaryPlugin') {
-                        // 🧊 注入冷知识库管理器，供 [[xx知识库]] / 《《xx知识库》》 占位符使用
-                        if (this.tdbKnowledgeManager) {
-                            dependencies.tdbKnowledgeManager = this.tdbKnowledgeManager;
-                            if (this.debugMode) console.log(`[PluginManager] 🧊 Injected TDBKnowledgeManager into RAGDiaryPlugin.`);
-                        }
-                    }
-
-                    // --- 🌟 ContextBridge 通用依赖注入 ---
-                    // 任何在 manifest 中声明 "requiresContextBridge": true 的插件都能获得 RAG 上下文向量接口
-                    if (manifest.requiresContextBridge) {
-                        const ragPluginModule = this.messagePreprocessors.get('RAGDiaryPlugin');
-                        if (ragPluginModule && typeof ragPluginModule.getContextBridge === 'function') {
-                            dependencies.contextBridge = ragPluginModule.getContextBridge();
-                            if (this.debugMode) console.log(`[PluginManager] 🌟 Injected ContextBridge into ${manifest.name}.`);
-                        } else {
-                            console.warn(`[PluginManager] Plugin "${manifest.name}" requires ContextBridge, but RAGDiaryPlugin is not available.`);
-                        }
-                    }
-
-                    // --- LightMemo 特殊依赖注入（向后兼容 + ContextBridge） ---
-                    if (manifest.name === 'LightMemo') {
-                        const ragPluginModule = this.messagePreprocessors.get('RAGDiaryPlugin');
-                        if (ragPluginModule && ragPluginModule.vectorDBManager && typeof ragPluginModule.getSingleEmbedding === 'function') {
-                            dependencies.vectorDBManager = ragPluginModule.vectorDBManager;
-                            dependencies.getSingleEmbedding = ragPluginModule.getSingleEmbedding.bind(ragPluginModule);
-                            if (typeof ragPluginModule.getBatchEmbeddingsCached === 'function') {
-                                dependencies.getBatchEmbeddings = ragPluginModule.getBatchEmbeddingsCached.bind(ragPluginModule);
-                            } else if (typeof ragPluginModule.getBatchEmbeddings === 'function') {
-                                dependencies.getBatchEmbeddings = ragPluginModule.getBatchEmbeddings.bind(ragPluginModule);
+                    const dependencies = await this.dependencyBridgeRegistry.buildDependencies(
+                        manifest,
+                        {
+                            vcpLogFunctions: this.getVCPLogFunctions(),
+                            pluginManager: this
+                        },
+                        {
+                            vectorDBManager: this.vectorDBManager,
+                            tdbKnowledgeManager: this.tdbKnowledgeManager,
+                            getMessagePreprocessor: name => this.messagePreprocessors.get(name),
+                            debugLog: (...args) => {
+                                if (this.debugMode) console.log('[PluginManager]', ...args);
                             }
-                            // 同时注入 ContextBridge（如果 LightMemo 未在 manifest 中声明，也主动注入）
-                            if (!dependencies.contextBridge && typeof ragPluginModule.getContextBridge === 'function') {
-                                dependencies.contextBridge = ragPluginModule.getContextBridge();
-                            }
-                            // AIMemoBridge 由 RAGDiaryPlugin 唯一持有配置、预设和缓存。
-                            // LightMemo 只提交自身召回候选，避免重复实例化 AIMemoHandler。
-                            if (typeof ragPluginModule.getAIMemoBridge === 'function') {
-                                dependencies.aiMemoBridge = ragPluginModule.getAIMemoBridge();
-                            }
-                            if (this.debugMode) console.log(`[PluginManager] Injected VectorDBManager, embeddings, ContextBridge and AIMemoBridge into LightMemo.`);
-                        } else {
-                            console.error(`[PluginManager] Critical dependency failure: RAGDiaryPlugin or its components not available for LightMemo injection.`);
                         }
-                        // 注入冷知识库管理器（TDBKnowledge），供 LightMemo 检索企业级知识库
-                        if (this.tdbKnowledgeManager) {
-                            dependencies.tdbKnowledgeManager = this.tdbKnowledgeManager;
-                            if (this.debugMode) console.log(`[PluginManager] Injected TDBKnowledgeManager into LightMemo.`);
-                        }
-                    }
-                    // --- 注入结束 ---
+                    );
 
                     await module.initialize(initialConfig, dependencies);
                 } catch (e) {
@@ -1170,6 +1157,57 @@ class PluginManager extends EventEmitter {
                     clearTimeout(timeoutId);
                     reject(error);
                 }
+            );
+        });
+    }
+
+    _tryTriggerDreamForVCPSleep(plugin, pluginSpecificArgs) {
+        if (!plugin || plugin.name !== 'VCPSleep') return;
+
+        const sleepConfig = this._getPluginConfig(plugin);
+        if (sleepConfig.VCPSLEEP_DREAM_ENABLED !== true) return;
+
+        // AgentDream 使用 .block 清单时不会进入 serviceModules；此处静默跳过，
+        // 让 VCPSleep 在梦系统未启用时仍保持完全独立可用。
+        const agentDreamModule = this.getServiceModule('AgentDream');
+        if (!agentDreamModule || typeof agentDreamModule.tryTriggerDreamFromSleep !== 'function') {
+            if (this.debugMode) {
+                console.log('[PluginManager] VCPSleep dream integration skipped: AgentDream is not enabled.');
+            }
+            return;
+        }
+
+        const agentName = String(
+            pluginSpecificArgs?.maid ||
+            pluginSpecificArgs?.Maid ||
+            pluginSpecificArgs?.agent_name ||
+            ''
+        ).trim();
+        if (!agentName) {
+            if (this.debugMode) {
+                console.log('[PluginManager] VCPSleep dream integration skipped: no maid/agent_name was provided.');
+            }
+            return;
+        }
+
+        const configuredProbability = Number(sleepConfig.VCPSLEEP_DREAM_PROBABILITY);
+        const probability = Number.isFinite(configuredProbability)
+            ? Math.min(1, Math.max(0, configuredProbability))
+            : 1;
+
+        // 梦与睡眠计时并行执行。梦境由 AgentDream 自己广播并持久化，
+        // 不应让一次较慢的模型请求延长用户指定的 VCPSleep 时长。
+        Promise.resolve(
+            agentDreamModule.tryTriggerDreamFromSleep(agentName, probability)
+        ).then(result => {
+            if (this.debugMode) {
+                console.log(
+                    `[PluginManager] VCPSleep dream integration result for ${agentName}: ${JSON.stringify(result)}`
+                );
+            }
+        }).catch(error => {
+            console.error(
+                `[PluginManager] VCPSleep dream integration failed for ${agentName}; sleep continues normally: ${error.message}`
             );
         });
     }
@@ -1316,109 +1354,67 @@ class PluginManager extends EventEmitter {
         }
         // --- 人工审核逻辑结束 ---
 
-        try {
-            let resultFromPlugin;
-            if (plugin.isDistributed) {
-                // --- 分布式插件调用逻辑 ---
-                if (!this.webSocketServer) {
-                    throw new Error('[PluginManager] WebSocketServer is not initialized. Cannot call distributed tool.');
-                }
-                if (this.debugMode) console.log(`[PluginManager] Processing distributed tool call for: ${toolName} on server ${plugin.serverId}`);
-                resultFromPlugin = await this.webSocketServer.executeDistributedTool(plugin.serverId, toolName, pluginSpecificArgs);
-                // 分布式工具的返回结果应该已经是JS对象了
-            } else if (toolName === 'ChromeControl' && plugin.communication?.protocol === 'direct') {
-                // --- ChromeControl 特殊处理逻辑 ---
-                if (!this.webSocketServer) {
-                    throw new Error('[PluginManager] WebSocketServer is not initialized. Cannot call ChromeControl tool.');
-                }
-                if (this.debugMode) console.log(`[PluginManager] Processing direct WebSocket tool call for: ${toolName}`);
-                const command = pluginSpecificArgs.command;
-                delete pluginSpecificArgs.command;
-                resultFromPlugin = await this.webSocketServer.forwardCommandToChrome(command, pluginSpecificArgs);
+        // Manifest 驱动的工具生命周期 VCPInfo 由主进程统一发送。
+        // 同步插件子进程退出、被杀或超时，都不会影响已发送的 WebSocket 通知。
+        const lifecycleContext = this.toolLifecycleVcpInfo.createContext(
+            plugin,
+            pluginSpecificArgs,
+            {
+                requestIp,
+                sourceNode,
+                pluginConfig: this._getPluginConfig(plugin)
+            }
+        );
+        this.toolLifecycleVcpInfo.emit(lifecycleContext, 'start');
 
-            } else if (plugin.pluginType === 'hybridservice' && plugin.communication?.protocol === 'direct') {
-                // --- 混合服务插件直接调用逻辑 ---
-                if (this.debugMode) console.log(`[PluginManager] Processing direct tool call for hybrid service: ${toolName}`);
-                const serviceModule = this.getServiceModule(toolName);
-                if (!serviceModule) {
-                    throw new Error(`[PluginManager] Hybrid service plugin "${toolName}" module not found. It may have failed to load or initialize during hot-reload.`);
-                }
-                if (typeof serviceModule.processToolCall !== 'function') {
-                    throw new Error(`[PluginManager] Hybrid service plugin "${toolName}" does not have a processToolCall function.`);
-                }
-                const directContext = {
+        try {
+            const executionResult = await this.executionBridgeRegistry.execute(
+                plugin,
+                pluginSpecificArgs,
+                {
+                    toolName,
                     requestIp,
                     sourceNode,
-                    pluginName: toolName
-                };
-                if (plugin.requiresAdmin) {
-                    const decryptedCode = await this._getDecryptedAuthCode();
-                    if (decryptedCode) {
-                        directContext.decryptedAuthCode = decryptedCode;
-                        if (this.debugMode) console.log(`[PluginManager] Provided decrypted auth context for admin-required hybrid plugin: ${toolName}`);
-                    } else {
-                        console.error(`[PluginManager] Failed to obtain auth code for admin-required hybrid plugin: ${toolName}. Execution denied.`);
-                        throw new Error(JSON.stringify({ plugin_error: `Plugin "${toolName}" requires admin authentication, but auth code could not be obtained. Execution denied.` }));
-                    }
+                    executionOptions,
+                    webSocketServer: this.webSocketServer,
+                    debugMode: this.debugMode,
+                    debugLog: (...args) => {
+                        if (this.debugMode) console.log('[PluginManager]', ...args);
+                    },
+                    debugWarn: (...args) => {
+                        if (this.debugMode) console.warn('[PluginManager]', ...args);
+                    },
+                    getServiceModule: name => this.getServiceModule(name),
+                    getDecryptedAuthCode: () => this._getDecryptedAuthCode(),
+                    executeDirectWithTimeout: (...args) => this._executeDirectToolCallWithTimeout(...args),
+                    executeStdio: (...args) => this.executePlugin(...args),
+                    triggerSleepDream: (...args) => this._tryTriggerDreamForVCPSleep(...args),
+                    filterFuzzyDiff,
+                    getTimestamp: getFormattedLocalTimestamp
                 }
-                resultFromPlugin = await this._executeDirectToolCallWithTimeout(
-                    plugin,
-                    toolName,
-                    serviceModule,
-                    pluginSpecificArgs,
-                    directContext
-                );
-            } else {
-                // --- 本地插件调用逻辑 (现有逻辑) ---
-                if (!((plugin.pluginType === 'synchronous' || plugin.pluginType === 'asynchronous') && plugin.communication?.protocol === 'stdio')) {
-                    throw new Error(`[PluginManager] Local plugin "${toolName}" (type: ${plugin.pluginType}) is not a supported stdio plugin for direct tool call.`);
+            );
+
+            if (Object.prototype.hasOwnProperty.call(executionResult, 'shortCircuitResult')) {
+                const shortCircuitResult = executionResult.shortCircuitResult;
+                this.toolLifecycleVcpInfo.emit(lifecycleContext, 'success', {
+                    result: shortCircuitResult
+                });
+                toolCallRecordStore.finishRecord(managedToolCallRecord, {
+                    success: true,
+                    result: shortCircuitResult
+                });
+                if (
+                    managedToolCallRecord?.id &&
+                    shortCircuitResult &&
+                    typeof shortCircuitResult === 'object' &&
+                    !shortCircuitResult.tool_call_record_id
+                ) {
+                    shortCircuitResult.tool_call_record_id = managedToolCallRecord.id;
                 }
-
-                let executionParam = null;
-                if (Object.keys(pluginSpecificArgs).length > 0) {
-                    executionParam = JSON.stringify(pluginSpecificArgs);
-                }
-
-                const logParam = executionParam ? (executionParam.length > 100 ? executionParam.substring(0, 100) + '...' : executionParam) : null;
-                if (this.debugMode) console.log(`[PluginManager] Calling local executePlugin for: ${toolName} with prepared param:`, logParam);
-
-                const pluginOutput = await this.executePlugin(toolName, executionParam, requestIp, executionOptions); // Returns {status, result/error}
-
-                if (pluginOutput.__vcpArcheryNoReplySilent) {
-                    toolCallRecordStore.finishRecord(managedToolCallRecord, {
-                        success: true,
-                        result: pluginOutput.result
-                    });
-                    if (managedToolCallRecord?.id && pluginOutput.result && typeof pluginOutput.result === 'object' && !pluginOutput.result.tool_call_record_id) {
-                        pluginOutput.result.tool_call_record_id = managedToolCallRecord.id;
-                    }
-                    return pluginOutput.result;
-                }
-
-                if (pluginOutput.status === "success") {
-                    if (typeof pluginOutput.result === 'string') {
-                        try {
-                            // If the result is a string, try to parse it as JSON.
-                            resultFromPlugin = JSON.parse(pluginOutput.result);
-                        } catch (parseError) {
-                            // If parsing fails, wrap it. This is for plugins that return plain text.
-                            if (this.debugMode) console.warn(`[PluginManager] Local plugin ${toolName} result string was not valid JSON. Original: "${pluginOutput.result.substring(0, 100)}"`);
-                            resultFromPlugin = { original_plugin_output: pluginOutput.result };
-                        }
-                    } else {
-                        // If the result is already an object (as with our new image plugins), use it directly.
-                        resultFromPlugin = pluginOutput.result;
-                    }
-                } else {
-                    const normalizedPluginOutput = {};
-                    if (pluginOutput.result) {
-                        normalizedPluginOutput.result = pluginOutput.result;
-                    }
-                    normalizedPluginOutput.plugin_error = pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.`;
-                    filterFuzzyDiff(normalizedPluginOutput, getFormattedLocalTimestamp());
-                    throw new Error(JSON.stringify(normalizedPluginOutput));
-                }
+                return shortCircuitResult;
             }
+
+            let resultFromPlugin = executionResult.result;
 
             // --- 通用结果处理 ---
             // direct/distributed 插件不会经过上方 stdio 的 pluginOutput 状态分支，
@@ -1467,6 +1463,9 @@ class PluginManager extends EventEmitter {
             filterFuzzyDiff(finalResultObject, getFormattedLocalTimestamp());
 
             const sanitizedResult = this._sanitizeToolResultForAi(finalResultObject);
+            this.toolLifecycleVcpInfo.emit(lifecycleContext, 'success', {
+                result: sanitizedResult
+            });
             toolCallRecordStore.finishRecord(managedToolCallRecord, {
                 success: true,
                 result: sanitizedResult
@@ -1477,6 +1476,7 @@ class PluginManager extends EventEmitter {
             return sanitizedResult;
 
         } catch (e) {
+            this.toolLifecycleVcpInfo.emit(lifecycleContext, 'error', { error: e });
             console.error(`[PluginManager processToolCall] Error during execution for plugin ${toolName}:`, e.message);
             let errorObject;
             try {
@@ -2349,11 +2349,17 @@ class PluginManager extends EventEmitter {
     }
 
     getPreprocessorOrder() {
-        // 返回所有已发现、已排序的预处理器信息
+        // 返回所有已发现、已排序的真实预处理器和虚拟管线阶段。
         return this.preprocessorOrder.map(name => {
+            const virtualStage = PREPROCESSOR_VIRTUAL_STAGES[name];
+            if (virtualStage) {
+                return { ...virtualStage };
+            }
+
             const manifest = this.plugins.get(name);
             return {
                 name: name,
+                kind: 'preprocessor',
                 displayName: manifest ? manifest.displayName : name,
                 description: manifest ? manifest.description : 'N/A'
             };
@@ -2437,8 +2443,10 @@ class PluginManager extends EventEmitter {
             requiresAdmin: manifest.requiresAdmin,
             requiresKnowledgeBaseManager: manifest.requiresKnowledgeBaseManager,
             requiresContextBridge: manifest.requiresContextBridge,
+            requiresJevClient: manifest.requiresJevClient,
             hasApiRoutes: manifest.hasApiRoutes,
-            webSocketPush: manifest.webSocketPush
+            webSocketPush: manifest.webSocketPush,
+            vcpInfoLifecycle: manifest.vcpInfoLifecycle
         });
     }
 

@@ -5,6 +5,7 @@ mod memo_artifact_builder;
 mod memo_dtsc;
 mod memo_pipeline;
 mod memo_sensing;
+mod memo_thinking;
 mod result_deduplicator;
 mod rivermemo_topology_v3;
 
@@ -912,6 +913,23 @@ impl VexusIndex {
         input_json: String,
     ) -> AsyncTask<memo_artifact_builder::NativeMemoArtifactBuildTask> {
         memo_artifact_builder::rebuild_with_runtime(self.memo_runtime.clone(), db_path, input_json)
+    }
+
+    /// 从已有 Sense 观测构建方法模块框架，不重新感应或修改图资产。
+    /// 输入仅包含观测句柄、显式思维簇范围、候选 ID 与阶段配额。
+    #[napi]
+    pub fn plan_memo_thinking(
+        &self,
+        db_path: String,
+        artifact_sig: String,
+        input_json: String,
+    ) -> AsyncTask<memo_thinking::ThinkingTask> {
+        AsyncTask::new(memo_thinking::ThinkingTask {
+            runtime: self.memo_runtime.clone(),
+            db_path,
+            artifact_sig,
+            input_json,
+        })
     }
 
     /// 释放本索引持有的统一 Memo 图快照。

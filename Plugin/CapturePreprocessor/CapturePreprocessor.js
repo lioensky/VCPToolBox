@@ -55,21 +55,25 @@ function replaceOutsideVcpRagBlocks(text, regex, replacement) {
 
 /**
  * 通过 /v1/human/tool 端点调用分布式 ScreenPilot
- * @param {Object} params ScreenPilot 的参数
- * @returns {Promise<Object>} 包含 base64 图片结果的数据对象
+ * @param {Object} params ScreenPilot 的参数；command 默认为 ScreenCapture
+ * @returns {Promise<Object>} ScreenPilot 返回的数据对象
  */
-function callScreenPilot(params) {
+function callScreenPilot(params = {}) {
     return new Promise((resolve, reject) => {
         if (!serverKey) {
             return reject(new Error('VCP Server API Key is missing.'));
         }
 
         const timeoutMs = parseInt(vcpConfig.MONITOR_TIMEOUT_MS || '30000', 10);
+        const command = params.command || 'ScreenCapture';
 
         let toolRequestBody = `<<<[TOOL_REQUEST]>>>
 tool_name:「始」ScreenPilot「末」,
-command:「始」ScreenCapture「末」,
-ocr:「始」false「末」`;
+command:「始」${command}「末」`;
+
+        if (command === 'ScreenCapture') {
+            toolRequestBody += `,\nocr:「始」false「末」`;
+        }
 
         if (params.hwnd) {
             toolRequestBody += `,\nhwnd:「始」${params.hwnd}「末」`;
@@ -278,9 +282,11 @@ class CapturePreprocessor {
         }
 
         // 支持 {{VCPScreenShot}}, {{VCPScreenShotMini}}, {{VCPScreenShot:窗口}},
-        // {{VCPScreenShot:[长窗口标题]}}, {{VCPScreenShot:28182346}} 和 {{VCPCameraCapture(N)}}。
+        // {{VCPScreenShot:[长窗口标题]}}, {{VCPScreenShot:28182346}}, {{VCPCameraCapture(N)}}，
+        // 以及用于查询当前窗口及关联进程信息的 {{VCPWindowList}} / {{VCPProcessList}}。
         // 说明：纯数字目标会被视为 hwnd；方括号包裹用于兼容带空格、冒号、逗号等标点的长标题。
-        const placeholderRegex = /{{\s*(?:(VCPScreenShotMini|VCPScreenShot)(?::(\[[\s\S]*?\]|[^}]+))?|VCPCameraCapture(?:\((\d+)\))?)\s*}}/g;
+        // VCPWindowList 与 VCPProcessList 是同一 QueryWindows 查询的别名；后者并不包含无窗口后台进程。
+        const placeholderRegex = /{{\s*(?:(VCPScreenShotMini|VCPScreenShot)(?::(\[[\s\S]*?\]|[^}]+))?|VCPCameraCapture(?:\((\d+)\))?|(VCPWindowList|VCPProcessList))\s*}}/g;
         const matches = [...stripVcpRagBlocks(systemPromptText).matchAll(placeholderRegex)];
 
         if (matches.length === 0) {
@@ -326,6 +332,15 @@ class CapturePreprocessor {
                         targetLabel
                     });
                 }
+            } else if (match[4]) {
+                const taskKey = 'window_list';
+
+                if (!seenTargets.has(taskKey)) {
+                    seenTargets.add(taskKey);
+                    captureTasks.push({
+                        type: 'windowList'
+                    });
+                }
             } else {
                 const cameraIndex = match[3] ? parseInt(match[3], 10) : 0;
                 const taskKey = `camera_${cameraIndex}`;
@@ -361,15 +376,29 @@ class CapturePreprocessor {
                         return { type: 'screen', title: task.targetLabel || task.params.windowTitle || task.params.hwnd || 'FullScreen', status: 'success', data: finalData, isMini: task.isMini };
                     })
                     .catch(e => ({ type: 'screen', title: task.targetLabel || task.params.windowTitle || task.params.hwnd || 'FullScreen', status: 'error', message: e.message }));
-            } else {
-                // 目前分布式架构仅接管了屏幕截图，未开发分布式的摄像头工具。
-                return Promise.resolve({
-                    type: 'camera',
-                    index: task.cameraIndex,
-                    status: 'error',
-                    message: "Distributed VCPCameraCapture is not yet implemented."
-                });
             }
+
+            if (task.type === 'windowList') {
+                return callScreenPilot({ command: 'QueryWindows' })
+                    .then(result => ({
+                        type: 'windowList',
+                        status: 'success',
+                        data: result
+                    }))
+                    .catch(e => ({
+                        type: 'windowList',
+                        status: 'error',
+                        message: e.message
+                    }));
+            }
+
+            // 目前分布式架构仅接管了屏幕截图和窗口查询，未开发分布式的摄像头工具。
+            return Promise.resolve({
+                type: 'camera',
+                index: task.cameraIndex,
+                status: 'error',
+                message: "Distributed VCPCameraCapture is not yet implemented."
+            });
         });
 
         const settledResults = await Promise.all(promises);
@@ -392,7 +421,11 @@ class CapturePreprocessor {
                     userContent.push(...result.data.content);
                 }
             } else {
-                const taskName = result.type === 'screen' ? `ScreenShot(${result.title})` : `CameraCapture(${result.index})`;
+                const taskName = result.type === 'screen'
+                    ? `ScreenShot(${result.title})`
+                    : result.type === 'windowList'
+                        ? 'WindowList'
+                        : `CameraCapture(${result.index})`;
                 userContent.push({ type: 'text', text: `[Capture Error for ${taskName}: ${result.message}]` });
             }
         }

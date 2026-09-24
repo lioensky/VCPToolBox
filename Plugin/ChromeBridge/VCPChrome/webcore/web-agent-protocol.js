@@ -125,6 +125,8 @@
         type: 'page_type',
         set_value: 'page_set_value',
         send_keys: 'page_send_keys',
+        press: 'page_send_keys',
+        page_press: 'page_send_keys',
         select_option: 'page_select_option',
         check: 'page_check',
         hover: 'page_hover',

@@ -141,6 +141,11 @@ class ToolCallParser {
 
       if (field.key === 'tool_name') {
         toolName = trimmedValue;
+      } else if (field.key.toLowerCase() === 'jev') {
+        // JEV 是实验性虚拟工具字段。它没有真实 plugin manifest，
+        // 由 ToolExecutor 在插件查找前展开为一个或多个白名单真实工具调用。
+        toolName = 'JEV';
+        args.expression = trimmedValue;
       } else if (field.key === 'archery') {
         isArchery = trimmedValue === 'true' || trimmedValue === 'no_reply';
         archeryNoReply = trimmedValue === 'no_reply';
