@@ -106,6 +106,19 @@ class RAGDiaryPlugin {
         const envPath = path.join(__dirname, 'config.env');
         dotenv.config({ path: envPath });
 
+        // 元思考扩散构链配置仅属于本插件，不修改全局 rag_params。
+        const riverNumber = (name, fallback, min, max) => {
+            const raw = process.env[name];
+            const value = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+            return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+        };
+        this.riverThinkingConfig = Object.freeze({
+            enabled: String(process.env.RAG_RIVER_THINKING_ENABLED || 'false').trim().toLowerCase() === 'true',
+            candidateK: Math.floor(riverNumber('RAG_RIVER_THINKING_CANDIDATE_K', 48, 1, 256)),
+            maxTransitionRecords: Math.floor(riverNumber('RAG_RIVER_THINKING_MAX_TRANSITIONS', 8000, 1, 16000)),
+            minClosure: riverNumber('RAG_RIVER_THINKING_MIN_CLOSURE', 0.2, 0, 1)
+        });
+
         // 🌟 初始化缓存系统
         this.queryCacheEnabled = (process.env.RAG_QUERY_CACHE_ENABLED || 'true').toLowerCase() === 'true';
         this.contextVectorAllowApi = (process.env.CONTEXT_VECTOR_ALLOW_API_HISTORY || 'false').toLowerCase() === 'true';
@@ -1601,6 +1614,15 @@ class RAGDiaryPlugin {
             );
             const globalProcessedDiaries = new Set(); // 在最外层维护一个 Set
             const requestCache = this._createRequestCache(); // 🌟 单轮请求级缓存：chunks/time/fullDoc/diaryScore/tagBoost
+            if (this.riverThinkingConfig?.enabled && targetSystemMessageIndices.some(index =>
+                /\[\[VCP元思考[^\]]*\]\]/.test(this._extractTextFromContent(messages[index].content))
+            )) {
+                requestCache.riverThinking = {
+                    config: this.riverThinkingConfig,
+                    observations: [],
+                    deferred: []
+                };
+            }
             // 🌟 优化：并发处理所有目标 system 消息，显著提升多日记本场景下的 Rerank 速度
             await Promise.all(targetSystemMessageIndices.map(async (index) => {
                 console.log(`[RAGDiaryPlugin] Processing system message at index: ${index}`);
@@ -1634,6 +1656,25 @@ class RAGDiaryPlugin {
                     () => processedContent
                 );
             }));
+
+            // 所有日记门控和检索结束后再执行元思考，不等待自身造成死锁。
+            // 观测只保留在本请求；禁止单例 lastObservation 串会话。
+            if (requestCache.riverThinking) {
+                const deferredResults = await Promise.all(
+                    requestCache.riverThinking.deferred.map(async task => ({
+                        token: task.token,
+                        result: await task.run()
+                    }))
+                );
+                for (const { token, result } of deferredResults) {
+                    for (const index of targetSystemMessageIndices) {
+                        newMessages[index].content = this._replaceTextInContent(
+                            newMessages[index].content,
+                            text => text.replace(token, () => String(result.content || ''))
+                        );
+                    }
+                }
+            }
 
             // 🌟 V7: 处理收集到的多模态附件
             if (collectedAttachments.length > 0) {
@@ -1760,7 +1801,7 @@ class RAGDiaryPlugin {
             const placeholder = match[0];
             const modifiersAndParams = match[1] || '';
 
-            processingPromises.push((async () => {
+            const runMetaThinking = async () => {
                 // 静默处理元思考占位符
 
                 // 解析参数：链名称和修饰符
@@ -1836,7 +1877,22 @@ class RAGDiaryPlugin {
                         isAutoMode,
                         autoThreshold,
                         autoWhitelist,
-                        autoBlacklist
+                        autoBlacklist,
+                        requestCache?.riverThinking ? {
+                            config: requestCache.riverThinking.config,
+                            getObservation: async () => {
+                                const eligible = requestCache.riverThinking.observations
+                                    .filter(entry => entry.useGroup === useGroup)
+                                    .sort((a, b) => a.scope.localeCompare(b.scope));
+                                return eligible[0]?.prepared || null;
+                            },
+                            searchNativeCandidates: async (diaryName, vector, options) =>
+                                this.vectorDBManager.searchNativeDiaryCandidates(
+                                    diaryName,
+                                    vector,
+                                    options
+                                )
+                        } : null
                     );
 
                     // 元思考链处理完成（静默），等待最后统一替换注入
@@ -1848,7 +1904,14 @@ class RAGDiaryPlugin {
                         content: `[VCP元思考链处理失败: ${error.message}]`
                     };
                 }
-            })());
+            };
+            if (requestCache?.riverThinking) {
+                const token = `__VCP_META_PENDING_${crypto.randomUUID()}__`;
+                processedContent = processedContent.replace(placeholder, () => token);
+                requestCache.riverThinking.deferred.push({ token, run: runMetaThinking });
+            } else {
+                processingPromises.push(runMetaThinking());
+            }
         }
 
         // --- 1. 收集 [[...]] 中的 AIMemo 请求 ---
@@ -2154,7 +2217,8 @@ class RAGDiaryPlugin {
             });
 
             // ✅ 尝试从缓存获取
-            const cachedResult = this._getCachedResult(cacheKey);
+            const cachedResult = requestCache?.riverThinking && /::RiverMemo(?=$|::|:\d+(?:\.\d+)?$)/i.test(modifiers)
+                ? null : this._getCachedResult(cacheKey);
             if (cachedResult) {
                 processingPromises.push(Promise.resolve({ placeholder, content: cachedResult.content }));
                 continue; // ⭐ 跳过后续的阈值判断
@@ -2834,7 +2898,9 @@ class RAGDiaryPlugin {
         });
 
         // 2️⃣ 尝试从缓存获取
-        const cachedResult = this._getCachedResult(cacheKey);
+        // River 元思考需要本轮原生观测，不能把历史正文缓存当作有效 Sense。
+        const cachedResult = requestCache?.riverThinking && /::RiverMemo(?=$|::|:\d+(?:\.\d+)?$)/i.test(modifiers)
+            ? null : this._getCachedResult(cacheKey);
         if (cachedResult) {
             // 缓存命中时，仍需广播VCP Info（可选）
             if (this.pushVcpInfo && cachedResult.vcpInfo) {
@@ -3152,6 +3218,26 @@ class RAGDiaryPlugin {
                     ? Math.round(finalK * this.rerankConfig.multiplier)
                     : finalK
             ) + dedupBuffer;
+            let thinkingObservation = null;
+            if (requestCache?.riverThinking
+                && typeof this.vectorDBManager.prepareUnifiedMemoObservation === 'function'
+                && typeof this.vectorDBManager.tagIndex?.planMemoThinking === 'function') {
+                try {
+                    thinkingObservation = await this.vectorDBManager.prepareUnifiedMemoObservation(
+                        { text: String(userContent || ''), vector: finalQueryVector },
+                        {
+                            coreTags: ghostTags,
+                            sourceObservationConfig: {
+                                baseTagBoost: Math.max(0, Number(defaultTagWeight) || 0),
+                                coreBoostFactor: 1.33
+                            },
+                            maxTransitionRecords: requestCache.riverThinking.config.maxTransitionRecords
+                        }
+                    );
+                } catch (error) {
+                    console.warn('[RAGDiaryPlugin] River thinking observation unavailable:', error.message);
+                }
+            }
             const nativeResult =
                 await this.vectorDBManager.executeNativeRiverQuery(
                     {
@@ -3160,6 +3246,7 @@ class RAGDiaryPlugin {
                     },
                     {
                         diaryNames,
+                        preparedMemoObservation: thinkingObservation || undefined,
                         topK: riverTopK,
                         candidateK: riverOfferK,
                         coreTags: Array.isArray(ghostTags) ? ghostTags : [],
@@ -3187,6 +3274,13 @@ class RAGDiaryPlugin {
                         enabled: true
                     }
                 );
+            if (thinkingObservation && nativeResult?.artifactSig === thinkingObservation.artifact.artifactSig) {
+                requestCache.riverThinking.observations.push({
+                    scope: `${dbScopeKey}:${modifiers}`,
+                    useGroup,
+                    prepared: thinkingObservation
+                });
+            }
             candidates = this._filterContextDuplicates(
                 (nativeResult.results || []).map(item => ({
                     ...item,

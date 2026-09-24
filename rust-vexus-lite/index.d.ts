@@ -303,6 +303,11 @@ export declare class VexusIndex {
    * N-API 边界；JavaScript 只接收签名、代际与规模摘要。
    */
   rebuildMemoArtifact(dbPath: string, inputJson: string): Promise<unknown>
+  /**
+   * 从已有 Sense 观测构建方法模块框架，不重新感应或修改图资产。
+   * 输入仅包含观测句柄、显式思维簇范围、候选 ID 与阶段配额。
+   */
+  planMemoThinking(dbPath: string, artifactSig: string, inputJson: string): Promise<unknown>
   /** 释放本索引持有的统一 Memo 图快照。 */
   clearMemoRuntime(): void
   /** 获取统一 Memo 图快照的常驻诊断。 */

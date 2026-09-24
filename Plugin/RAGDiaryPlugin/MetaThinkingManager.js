@@ -105,7 +105,7 @@ class MetaThinkingManager {
     /**
      * 处理VCP元思考链 - 递归向量增强的多阶段推理
      */
-    async processMetaThinkingChain(chainName, queryVector, userContent, aiContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65, autoWhitelist = null, autoBlacklist = null) {
+    async processMetaThinkingChain(chainName, queryVector, userContent, aiContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65, autoWhitelist = null, autoBlacklist = null, riverOptions = null) {
 
         // 🌟 兜底：如果配置尚未加载，先执行加载
         if (!this.metaThinkingChains.chains || Object.keys(this.metaThinkingChains.chains).length === 0) {
@@ -174,11 +174,201 @@ class MetaThinkingManager {
 
         console.log(`[MetaThinkingManager] 使用K序列: [${finalKSequence.join(', ')}]`);
 
+        // 请求级观测优先使用 Sense 构链；没有观测时仍允许走 Rust 原生
+        // 多索引 ANN，避免为元思考再走一遍 JS search 往返。
+        if (riverOptions?.getObservation) {
+            try {
+                const prepared = await riverOptions.getObservation();
+                if (!prepared && riverOptions.searchNativeCandidates) {
+                    const nativeResults = [];
+                    let groups = null;
+                    let nativeVector = queryVector;
+                    if (useGroup) {
+                        groups = this.ragPlugin.semanticGroups.detectAndActivateGroups(userContent);
+                        if (groups.size > 0) {
+                            nativeVector = await this.ragPlugin.semanticGroups.getEnhancedVector(
+                                userContent, groups, queryVector
+                            ) || queryVector;
+                        }
+                    }
+                    for (let i = 0; i < chain.length; i++) {
+                        const k = finalKSequence[i];
+                        const candidates = k === 0
+                            ? []
+                            : await riverOptions.searchNativeCandidates(
+                                chain[i],
+                                nativeVector,
+                                {
+                                    perIndexK: Math.max(k, riverOptions.config.candidateK),
+                                    globalK: Math.max(k, riverOptions.config.candidateK)
+                                }
+                            );
+                        nativeResults.push({
+                            clusterName: chain[i],
+                            stage: i + 1,
+                            k,
+                            results: candidates.slice(0, k),
+                            nativeAnn: true
+                        });
+                    }
+                    const nativeFormatted = this._formatMetaThinkingResults(
+                        nativeResults, finalChainName, groups, isAutoMode
+                    );
+                    try {
+                        this.ragPlugin.pushVcpInfo?.({
+                            type: 'META_THINKING_CHAIN',
+                            chainName: finalChainName,
+                            query: combinedQueryForDisplay,
+                            useGroup,
+                            engine: 'rivermemo-native-ann',
+                            kSequence: finalKSequence,
+                            totalStages: chain.length,
+                            stages: nativeResults.map(stage => ({
+                                ...stage,
+                                results: stage.results.map(result => ({
+                                    text: this._stripTagMetadata(result.text),
+                                    score: result.score
+                                }))
+                            }))
+                        });
+                    } catch (error) {
+                        console.warn('[MetaThinkingManager] Native ANN broadcast failed:', error.message);
+                    }
+                    return nativeFormatted;
+                }
+                if (prepared) {
+                    const config = riverOptions.config;
+                    if (chain.length > 32 || finalKSequence.some(k =>
+                        !Number.isSafeInteger(k) || k < 0 || k > 32
+                    )) throw new Error('阶段或 K 超过原生构链预算');
+                    let candidateVector = queryVector;
+                    let groups = null;
+                    if (useGroup) {
+                        groups = this.ragPlugin.semanticGroups.detectAndActivateGroups(userContent);
+                        if (groups.size > 0) {
+                            candidateVector = await this.ragPlugin.semanticGroups.getEnhancedVector(
+                                userContent, groups, queryVector
+                            ) || queryVector;
+                        }
+                    }
+                    const stages = [];
+                    // 有界串行召回，避免大量思维簇同时加载索引。
+                    for (let i = 0; i < chain.length; i++) {
+                        const k = finalKSequence[i];
+                        const candidates = k === 0 ? [] : await this.ragPlugin.vectorDBManager.search(
+                            chain[i], candidateVector,
+                            Math.min(256, Math.max(k, config.candidateK)), 0
+                        );
+                        stages.push({ diaryName: chain[i], k, candidates });
+                    }
+                    const plan = await this.ragPlugin.vectorDBManager.planRiverThinking(
+                        prepared, stages, { minClosure: config.minClosure }
+                    );
+                    const results = plan.stages.map((stage, index) => ({
+                        clusterName: stage.diaryName,
+                        stage: index + 1,
+                        k: stage.k,
+                        results: stage.results
+                    }));
+                    const formatted = this._formatMetaThinkingResults(
+                        results, finalChainName, groups, isAutoMode
+                    );
+                    try {
+                        this.ragPlugin.pushVcpInfo?.({
+                            type: 'META_THINKING_CHAIN',
+                            chainName: finalChainName,
+                            query: combinedQueryForDisplay,
+                            useGroup,
+                            engine: 'rivermemo-sense',
+                            artifactSig: plan.artifactSig,
+                            kSequence: finalKSequence,
+                            totalStages: chain.length,
+                            stages: results.map(stage => ({
+                                ...stage,
+                                results: stage.results.map(result => ({
+                                    text: this._stripTagMetadata(result.text),
+                                    score: result.riverThinking?.score,
+                                    riverThinking: result.riverThinking
+                                }))
+                            }))
+                        });
+                    } catch (error) {
+                        console.warn('[MetaThinkingManager] River broadcast failed:', error.message);
+                    }
+                    return formatted;
+                }
+            } catch (error) {
+                // Sense 已存在但没有形成可承接的思维路径时，
+                // 降级到 Rust 原生 ANN，而不是立即回到 JS search。
+                if (riverOptions?.searchNativeCandidates) {
+                    try {
+                        const nativeResults = [];
+                        let groups = null;
+                        let nativeVector = queryVector;
+                        if (useGroup) {
+                            groups = this.ragPlugin.semanticGroups.detectAndActivateGroups(userContent);
+                            if (groups.size > 0) {
+                                nativeVector = await this.ragPlugin.semanticGroups.getEnhancedVector(
+                                    userContent, groups, queryVector
+                                ) || queryVector;
+                            }
+                        }
+                        for (let i = 0; i < chain.length; i++) {
+                            const k = finalKSequence[i];
+                            const candidates = k === 0
+                                ? []
+                                : await riverOptions.searchNativeCandidates(
+                                    chain[i],
+                                    nativeVector,
+                                    {
+                                        perIndexK: Math.max(k, riverOptions.config.candidateK),
+                                        globalK: Math.max(k, riverOptions.config.candidateK)
+                                    }
+                                );
+                            nativeResults.push({
+                                clusterName: chain[i],
+                                stage: i + 1,
+                                k,
+                                results: candidates.slice(0, k),
+                                nativeAnn: true,
+                                degraded: true
+                            });
+                        }
+                        const nativeFormatted = this._formatMetaThinkingResults(
+                            nativeResults, finalChainName, groups, isAutoMode
+                        );
+                        this.ragPlugin.pushVcpInfo?.({
+                            type: 'META_THINKING_CHAIN',
+                            chainName: finalChainName,
+                            query: combinedQueryForDisplay,
+                            useGroup,
+                            engine: 'rivermemo-native-ann',
+                            fallbackFrom: 'rivermemo-sense',
+                            fallbackReason: error.message,
+                            kSequence: finalKSequence,
+                            totalStages: chain.length,
+                            stages: nativeResults
+                        });
+                        console.warn(
+                            `[MetaThinkingManager] River Sense had no grounded route; ` +
+                            `degraded to native ANN: ${error.message}`
+                        );
+                        return nativeFormatted;
+                    } catch (nativeError) {
+                        console.warn(
+                            `[MetaThinkingManager] Native ANN fallback failed: ${nativeError.message}`
+                        );
+                    }
+                }
+                console.warn(`[MetaThinkingManager] River thinking fallback to legacy:`, error.message);
+            }
+        }
+
         // 1️⃣ 生成缓存键（使用最终确定的链名称和K序列）
         const cacheKey = this.ragPlugin._generateCacheKey({
             userContent,
             aiContent: aiContent || '',
-            chainName: finalChainName,
+            chainName: `${finalChainName}:tagless-v1:${JSON.stringify(chain)}`,
             kSequence: finalKSequence,
             useGroup,
             isAutoMode
@@ -229,7 +419,7 @@ class MetaThinkingManager {
 
             try {
                 // 使用当前查询向量搜索当前簇
-                const searchResults = await this.ragPlugin.vectorDBManager.search(clusterName, currentQueryVector, k);
+                const searchResults = k === 0 ? [] : await this.ragPlugin.vectorDBManager.search(clusterName, currentQueryVector, k);
 
                 if (!searchResults || searchResults.length === 0) {
                     console.warn(`[MetaThinkingManager] 阶段${i + 1}未找到结果，使用原始查询向量继续`);
@@ -356,6 +546,28 @@ class MetaThinkingManager {
     }
 
     /**
+     * 只移除末尾连续 Tag 元数据行，与知识库标签提取边界一致。
+     * 保留正文中的示例、行内 Tag 文本以及闭合代码块中的内容。
+     */
+    _stripTagMetadata(text) {
+        const lines = String(text || '').split(/\r?\n/);
+        let end = lines.length - 1;
+        while (end >= 0 && !lines[end].trim()) end--;
+        let start = end;
+        while (start >= 0 && /^[ \t]*Tag[：:][^\r\n]*$/i.test(lines[start])) start--;
+        if (start === end) return String(text || '').trim();
+        // 不擦除未闭合代码围栏内的示例。
+        let fence = null;
+        for (let i = 0; i <= start; i++) {
+            const match = lines[i].match(/^[ \t]*(`{3,}|~{3,})/);
+            if (!match) continue;
+            if (!fence) fence = match[1];
+            else if (match[1][0] === fence[0] && match[1].length >= fence.length) fence = null;
+        }
+        return fence ? String(text || '').trim() : lines.slice(0, start + 1).join('\n').trim();
+    }
+
+    /**
      * 格式化元思考链结果
      */
     _formatMetaThinkingResults(chainResults, chainName, activatedGroups, isAutoMode = false) {
@@ -373,7 +585,11 @@ class MetaThinkingManager {
         if (isAutoMode) {
             content += `[自动选择主题: "${chainName}"]\n`;
         }
-        content += `[推理链路径: ${chainResults.map(r => r.clusterName).join(' → ')}]\n\n`;
+        const riverMode = chainResults.some(stage => stage.results.some(r => r.riverThinking));
+        content += `[${riverMode ? '阶段配额顺序' : '推理链路径'}: ${chainResults.map(r => r.clusterName).join(' → ')}]\n\n`;
+        if (riverMode) {
+            content += '[Sense传播支持的方法框架：承接表示语义渠道支持，不代表形式逻辑证明；补充模块不构成依赖。]\n';
+        }
 
         // 输出每个阶段的结果
         for (const stageResult of chainResults) {
@@ -391,7 +607,19 @@ class MetaThinkingManager {
             } else {
                 content += `  [召回 ${stageResult.results.length} 个元逻辑模块]\n`;
                 for (const result of stageResult.results) {
-                    content += `  * ${result.text.trim()}\n`;
+                    const body = this._stripTagMetadata(result.text);
+                    if (!body) continue;
+                    const route = result.riverThinking;
+                    if (route) {
+                        const labels = {
+                            root: '起始渠道', continuation: '渠道承接',
+                            analogy: '类比迁移（需验证）', supplement: '独立补充'
+                        };
+                        const parents = route.parents?.length
+                            ? `；承接模块 ${route.parents.join(', ')}` : '';
+                        content += `  [模块 ${route.chunkId}：${labels[route.relation] || '独立补充'}${parents}]\n`;
+                    }
+                    content += `  * ${body}\n`;
                 }
             }
             content += '\n';

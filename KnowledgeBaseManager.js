@@ -1558,7 +1558,13 @@ class KnowledgeBaseManager {
                         maxOutputNodes:
                             options.maxObservationNodes ?? 0,
                         maxOutputEdges:
-                            options.maxObservationEdges ?? 0
+                            options.maxObservationEdges ?? 0,
+                        maxTransitionRecords: Math.max(
+                            0,
+                            Math.min(16000, Math.floor(
+                                Number(options.maxTransitionRecords) || 0
+                            ))
+                        )
                     }
                 }
             }),
@@ -2486,6 +2492,150 @@ candidates = await this.deduplicateResults(
                 nativeJointQuery: false
             }
         );
+    }
+
+    /**
+     * 元思考无 Sense 时的原生并发候选召回。
+     * 仅执行 NativeKnowledgeRuntime 的多日记索引 ANN，不伪造河网、
+     * 不触发二次 JS search，也不需要 observationHandle。
+     */
+    async searchNativeDiaryCandidates(diaryName, queryVector, options = {}) {
+        const names = [...new Set(
+            (Array.isArray(diaryName) ? diaryName : [diaryName])
+                .map(name => String(name || '').trim())
+                .filter(Boolean)
+        )];
+        const vector = queryVector instanceof Float32Array
+            ? queryVector
+            : new Float32Array(queryVector || []);
+        if (
+            names.length === 0
+            || vector.length !== this.config.dimension
+            || !this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.searchDiaryIndices !== 'function'
+        ) {
+            return [];
+        }
+
+        await Promise.all(names.map(name => this._getOrLoadDiaryIndex(name)));
+        const perIndexK = Math.max(
+            1,
+            Math.min(1000, Math.floor(Number(options.perIndexK) || 64))
+        );
+        const globalK = Math.max(
+            1,
+            Math.min(2000, Math.floor(Number(options.globalK) || perIndexK))
+        );
+        const payload = await this.nativeKnowledgeRuntime.searchDiaryIndices(
+            names,
+            vector,
+            perIndexK,
+            globalK
+        );
+        const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
+        const ids = (Array.isArray(parsed?.results) ? parsed.results : [])
+            .map(item => Number(item?.id))
+            .filter(id => Number.isSafeInteger(id) && id > 0);
+        if (ids.length === 0 || !this.db?.prepare) return [];
+
+        const placeholders = ids.map(() => '?').join(',');
+        const rows = this.db.prepare(`
+            SELECT c.id, c.content AS text, c.vector, f.path AS sourceFile,
+                   f.diary_name AS diaryName, f.id AS fileId
+            FROM chunks c
+            JOIN files f ON f.id = c.file_id
+            WHERE c.id IN (${placeholders})
+        `).all(...ids);
+        const byId = new Map(rows.map(row => [Number(row.id), row]));
+        return ids.map(id => {
+            const row = byId.get(id);
+            const native = parsed.results.find(item => Number(item?.id) === id) || {};
+            return row ? {
+                ...row,
+                id,
+                chunkId: id,
+                fullPath: row.sourceFile,
+                score: Number(native.score) || 0,
+                vectorScore: Number(native.vectorScore) || Number(native.score) || 0,
+                source: 'native_ann'
+            } : null;
+        }).filter(Boolean);
+    }
+
+    /**
+     * 元思考只读构链：消费调用方的同一次 Sense，不创建第二份查询观测。
+     * Rust 对每个候选再次检查其所属思维簇；正文仅按已验证 ID 回填。
+     */
+    async planRiverThinking(prepared, stages, options = {}) {
+        if (
+            !prepared?.observationHandle
+            || !prepared?.artifact?.artifactSig
+            || typeof this.tagIndex?.planMemoThinking !== 'function'
+        ) {
+            throw new Error('River thinking native ABI or observation unavailable');
+        }
+        if (!Array.isArray(stages) || stages.length === 0 || stages.length > 32) {
+            throw new Error('Invalid River thinking stages');
+        }
+        const normalized = stages.map(stage => {
+            const k = Number(stage.k);
+            if (!Number.isSafeInteger(k) || k < 0 || k > 32) {
+                throw new Error('River thinking K outside native budget');
+            }
+            return {
+                diaryName: String(stage.diaryName || '').trim(),
+                k,
+                candidateIds: [...new Set((stage.candidates || [])
+                    .map(item => Number(item.chunkId ?? item.id))
+                    .filter(id => Number.isSafeInteger(id) && id > 0))]
+                    .slice(0, 256)
+            };
+        });
+        const payload = await this.tagIndex.planMemoThinking(
+            this.dbPath,
+            prepared.artifact.artifactSig,
+            JSON.stringify({
+                observationHandle: prepared.observationHandle,
+                stages: normalized,
+                minClosure: options.minClosure ?? 0.2
+            })
+        );
+        const plan = JSON.parse(payload);
+        if (
+            plan.schema !== 'vcp-river-thinking-plan-v1'
+            || plan.artifactSig !== prepared.artifact.artifactSig
+            || plan.observationHandle !== prepared.observationHandle
+            || !Array.isArray(plan.stages)
+            || plan.stages.length !== stages.length
+        ) {
+            throw new Error('Invalid River thinking result');
+        }
+        const selectedIds = new Set();
+        plan.stages.forEach((stage, index) => {
+            const requested = normalized[index];
+            const originals = new Map(stages[index].candidates.map(item => [
+                Number(item.chunkId ?? item.id), item
+            ]));
+            if (
+                stage.diaryName !== requested.diaryName
+                || stage.k !== requested.k
+                || !Array.isArray(stage.results)
+                || stage.results.length > requested.k
+            ) throw new Error('Invalid River thinking stage result');
+            stage.results = stage.results.map(item => {
+                const id = Number(item.chunkId);
+                if (!originals.has(id) || selectedIds.has(id)) {
+                    throw new Error('River thinking returned an unexpected candidate');
+                }
+                if (!Array.isArray(item.parents)
+                    || item.parents.some(parent => !selectedIds.has(parent))) {
+                    throw new Error('River thinking returned an invalid dependency');
+                }
+                selectedIds.add(id);
+                return { ...originals.get(id), riverThinking: item };
+            });
+        });
+        return plan;
     }
 
     /**
