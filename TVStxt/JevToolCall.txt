@@ -33,7 +33,7 @@ JEV:「始」请使用 {能力} 中的 `可选工具`，围绕【主要内容】
 
 核心示例：
 JEV:「始」请播放【星の余韻】，并启用[星诞]演出模式。「末」
-JEV:「始」打开[https://example.com]。「末」
+JEV:「始」读取[https://example.com]。「末」
 JEV:「始」对网页截图[https://example.com/page]。「末」
 JEV:「始」看图[https://example.com/cat.png]。「末」
 JEV:「始」请使用 {联网搜索}，从[深度学习 医疗影像 突破]和[transformer models in healthcare]这两个分级方向，搜索【AI在医疗诊断中的最新应用】。「末」
