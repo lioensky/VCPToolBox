@@ -1060,28 +1060,30 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
     full_text = "\n".join(text_parts).strip()
     
     if not images_to_add:
-        return full_text
+        return {"content": [{"type": "text", "text": full_text}]}
 
-    # 图片通过标准多模态 content 数组直接交给模型看图，不再仅依赖模型从文本中
-    # 复制 URL。仍提供短 HTML 引用，让模型在认为画面有趣或精彩时自行决定是否分享。
+    # 可分享的链接留在正文；内联图片只进入独立的 OpenAI image_url 内容块。
+    # 不允许在展示 URL 缺失时回退到 data URI，否则 Base64 会进入正文。
     full_text += "\n\n【快照使用提示】\n以下快照已作为多模态图片提供，你可以直接结合画面理解视频。若你认为其中有有趣或精彩的画面，可在回复中酌情分享，不必逐张展示。"
     for img_obj in images_to_add:
-        display_url = img_obj.pop("_display_url", img_obj["image_url"]["url"])
-        snapshot_time = img_obj.pop("_snapshot_time", None)
+        display_url = img_obj["_display_url"]
+        snapshot_time = img_obj["_snapshot_time"]
         time_label = f"{snapshot_time:g}s" if isinstance(snapshot_time, (int, float)) else "未知时间"
         full_text += f'\n- {time_label}: <img src="{display_url}" width="400" alt="Bilibili Snapshot">'
 
-    # 安全熔断器：多模态图片单次上限设为 10 张，防止过大请求体撑爆大模型上下文或触发网关体积超限
+    # 图片数据每次调用最多 10 张；保留所有可分享链接，不把 Base64 拼到文本里。
     MAX_MULTIMODAL_IMAGES = 10
-    capped_images = images_to_add
     if len(images_to_add) > MAX_MULTIMODAL_IMAGES:
         logging.info(f"Multimodal images capped to top {MAX_MULTIMODAL_IMAGES} to prevent context overflow.")
-        capped_images = images_to_add[:MAX_MULTIMODAL_IMAGES]
+    capped_images = images_to_add[:MAX_MULTIMODAL_IMAGES]
 
     return {
         "content": [
             {"type": "text", "text": full_text},
-            *capped_images
+            *[
+                {"type": "image_url", "image_url": img["image_url"]}
+                for img in capped_images
+            ]
         ]
     }
 
@@ -1371,26 +1373,37 @@ if __name__ == "__main__":
         
         if is_serial:
             logging.info("Detected serial/batch request.")
-            results = []
+            content = []
             # Find all indices
             indices = sorted(list(set([re.findall(r'\d+', k)[0] for k in input_data.keys() if re.findall(r'\d+', k)])))
             if not indices: # Fallback if no digits found but suspected serial
                 indices = ['']
 
+            # 批量调用共享图片上限，避免多个任务合并后撑爆多模态请求体。
+            remaining_images = 10
             for idx in indices:
                 # Extract parameters for this index
                 sub_data = {k.replace(idx, ''): v for k, v in input_data.items() if k.endswith(idx)}
-                # Map 'urlX' to 'url' etc. if needed, handle_single_request expects clean keys
                 try:
                     res = handle_single_request(sub_data)
-                    results.append(f"--- 任务 {idx} 结果 ---\n{res if isinstance(res, str) else json.dumps(res, indent=2, ensure_ascii=False)}")
+                    content.append({"type": "text", "text": f"--- 任务 {idx} 结果 ---"})
+                    if isinstance(res, dict) and isinstance(res.get("content"), list):
+                        for part in res["content"]:
+                            if part.get("type") == "text":
+                                content.append({"type": "text", "text": part["text"]})
+                            elif part.get("type") == "image_url" and remaining_images > 0:
+                                content.append({"type": "image_url", "image_url": part["image_url"]})
+                                remaining_images -= 1
+                    else:
+                        content.append({"type": "text", "text": res if isinstance(res, str) else json.dumps(res, ensure_ascii=False)})
                 except Exception as e:
-                    results.append(f"--- 任务 {idx} 失败 ---\n错误: {e}")
-            
-            combined_res = "\n\n".join(results)
-            output = {"status": "success", "result": combined_res}
+                    content.append({"type": "text", "text": f"--- 任务 {idx} 失败 ---\n错误: {e}"})
+
+            output = {"status": "success", "result": {"content": content}}
         else:
             result_data = handle_single_request(input_data)
+            if not isinstance(result_data, dict) or not isinstance(result_data.get("content"), list):
+                result_data = {"content": [{"type": "text", "text": result_data if isinstance(result_data, str) else json.dumps(result_data, ensure_ascii=False)}]}
             output = {"status": "success", "result": result_data}
 
     except (json.JSONDecodeError, ValueError) as e:
