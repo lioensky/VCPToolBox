@@ -41,7 +41,6 @@
     "fs-extra": "^10.1.0",
     "glob": "^7.2.3",
     "globals": "^14.0.0",
-    "hnswlib-node": "^1.4.2",
     "https-browserify": "^1.0.0",
     "https-proxy-agent": "^7.0.4",
     "ioredis": "^5.6.1",
