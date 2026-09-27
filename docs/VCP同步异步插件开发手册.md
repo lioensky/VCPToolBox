@@ -973,3 +973,125 @@ def validate_admin_auth(args):
     ```
 
 通过遵循这个模式，你可以创建强大的异步插件来处理任何耗时的任务，同时保持主服务的响应性和流畅的用户体验。
+## 附录：JEV 双通道提示词声明（同步、异步与混合插件通用）
+
+本附录说明插件如何为 JEV 提供可供用户组装的提示词素材。该声明只会被服务器收集并展示在 JEV 提示词管理面板中，不会因插件加载而自动注入 JEV 或 VCP Agent。
+
+### A.1 两条提示词通道
+
+VCP 中的两份官方提示词职责不同：
+
+- `TVStxt/JevToolCallDecision.txt`：发送给 JEV，用于能力选择、参数裁决和歧义处理；
+- `TVStxt/JevToolCall.txt`：发送给 VCP Agent，由 `config.env` 中的 `VarJEVTool=JevToolCall.txt` 引入，用于指导 Agent 何时以及如何书写 JEV 调用。
+
+第三方插件也可以分别声明：
+
+- `jev.jevPrompt`：该插件发给 JEV 的裁决提示词；
+- `jev.agentPrompt`：该插件发给 VCP Agent 的使用提示词。
+
+两个字段都必须是短小、局部、可审阅的模块。插件不能通过它们覆盖官方系统规则、授予自己权限或要求读取秘密配置。
+
+JEV 声明是可选能力，不是所有插件都需要填写。只有参数组合复杂、需要选择模型、地区、作用域、数据库或多种操作模式的插件，才建议启用 JEV。
+
+### A.1.1 分层路由
+
+JEV 采用按需加载的分层路由：
+
+```text
+官方短协议
+  → 类别与候选插件的 routeSummary
+  → 候选插件完整 jevPrompt + 参数 schema
+  → 标准 tool_name 调用
+```
+
+普通插件继续由 VCP Agent 直接调用。系统不会把所有插件的完整 `jevPrompt` 拼接到每次 JEV 请求中；只有声明 `jev.enabled: true` 且被路由选为候选的插件，才加载自己的完整裁决提示词。
+
+### A.2 Manifest 声明
+
+在现有 `plugin-manifest.json` 中增加可选 `jev` 区域：
+
+```json
+{
+  "name": "ExamplePlugin",
+  "pluginType": "synchronous",
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "ExampleCommand",
+        "description": "执行示例操作。"
+      }
+    ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "示例能力",
+    "aliases": ["示例工具"],
+    "routeSummary": "需要选择示例操作和执行模式。",
+    "jevPrompt": "判断用户是否需要示例操作，并提取 target 与 mode。",
+    "agentPrompt": "当用户请求示例操作时，使用 JEV 的示例能力类别；tool_name 必须使用 ExamplePlugin。",
+    "commands": [
+      {
+        "commandIdentifier": "ExampleCommand",
+        "aliases": ["执行示例", "示例操作"],
+        "parameters": {
+          "target": { "type": "string", "required": true },
+          "mode": { "type": "enum", "values": ["safe", "preview"] }
+        }
+      }
+    ]
+  }
+}
+```
+
+### A.3 标准 tool_name 规则
+
+实际工具调用中的 `tool_name` 必须等于 manifest 的 `name`：
+
+```text
+tool_name:「始」ExamplePlugin「末」
+```
+
+以下内容不能作为实际 `tool_name`：
+
+- `displayName`；
+- 自然语言别名；
+- `commandIdentifier`；
+- 插件作者自定义的短名称。
+
+别名只用于提示词中的语义识别，最终执行仍回到标准插件名和现有 PluginManager 链路。
+
+### A.4 三类插件的适用范围
+
+该声明格式与插件的执行类型无关，以下类型均可使用：
+
+| 插件类型 | JEV 声明用途 |
+|---|---|
+| `synchronous` | 描述即时执行命令和同步参数 |
+| `asynchronous` | 描述任务提交、任务 ID、回调相关参数和结果查询语义 |
+| `hybridservice` | 描述 direct 服务命令以及需要异步或后台处理的命令 |
+
+异步或混合插件必须在 `agentPrompt` 中说明“提交任务”和“等待/查询结果”的区别，在 `jevPrompt` 中说明哪些字段由 JEV 裁决、哪些字段必须由用户明确提供。声明不能改变插件原有的异步回调协议。
+
+### A.5 面板中的插件级管理
+
+管理面板按插件独立显示两块内容：
+
+```text
+ExamplePlugin
+├── 发给 JEV：jevPrompt
+├── 发给 Agent：agentPrompt
+└── 指令与参数：commands / parameters
+```
+
+用户可以分别把多个插件的 `jevPrompt` 组合到 JEV 输出，把多个插件的 `agentPrompt` 组合到 Agent 输出。两个组合区可以选择不同插件集合，且都需要用户主动保存后才生效。
+
+### A.6 开发者检查清单
+
+- `jev.schemaVersion` 已填写；
+- `jevPrompt` 和 `agentPrompt` 简短且职责分明；
+- `commands[].commandIdentifier` 与 `capabilities.invocationCommands` 一致；
+- 参数类型、必填项和枚举值与实际执行逻辑一致；
+- 提示词中使用的 `tool_name` 等于 manifest `name`；
+- 没有依赖第三方提示词自动注入；
+- 同步、异步和混合插件的实际执行协议保持不变。
