@@ -164,7 +164,7 @@ Beneath the philosophy lies mature, deployed engineering. Here is only the brief
 - **Distribution & Resilience**: Star-network topology, with hyper-stack tracing enabling fully transparent cross-server file access; integrated resilience across multiple devices, multiple models, and multiple vector sources; automatic backup, database self-repair, and atomic differential synchronization.
 - **Frontend & Compatibility**: Official desktop frontend VCPChat (high-density feature set + super rendering engine), Vue management panel, and mobile VCPMobile; protocol bridges support multiple API formats such as OpenAI / Anthropic / Gemini and can take over arbitrary frontends.
 
-> To understand VCP's complete system implementation and engineering principles, read the [VCP White Paper](docs/vcp白皮书V3.md).
+> To understand VCP's complete system implementation and engineering principles, read the [VCP White Paper](docs/vcp-whitepaper.md).
 >
 > For the complete thinking behind the design, read the [VCP 1.0 official release speech](VCP.md), which explains most clearly why every system is designed this way.
 >
