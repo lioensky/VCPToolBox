@@ -837,12 +837,22 @@ class JevToolCallExp {
      *    “执行【关闭台灯】”这类写法的意图完全在【】里，不能因此落入 JEV 的随机裁决。
      */
     _thirdPartyMatchLayers(parsed) {
-        const withoutAnchors = parsed.raw
+        // 按语义锚点主次排序，返回别名判定器数组；某层有命中即停止，低层不能覆盖高层：
+        // 1. 【】主要目标：子串匹配；
+        // 2. [] 次要约束：仅当整条约束与别名完全相等（标签式，如 [制冷]）才命中，
+        //    [] 中的自由文本（台词、说明）绝不参与子串匹配，只交给 text 参数原样搬运；
+        // 3. 锚点之外的自然语言动作词（如“打开”“查询”）：兜底。
+        const primaryText = normalizeAlias(parsed.primary.join(' '));
+        const constraintTags = new Set(parsed.constraints.map(normalizeAlias).filter(Boolean));
+        const wrapperText = normalizeAlias(parsed.raw
+            .replace(/【[\s\S]*?】/g, ' ')
+            .replace(/\[[\s\S]*?\]/g, ' ')
             .replace(/`[^`]*`/g, ' ')
-            .replace(/\{[^{}]*\}/g, ' ');
+            .replace(/\{[^{}]*\}/g, ' '));
         return [
-            normalizeAlias(withoutAnchors.replace(/【[\s\S]*?】/g, ' ')),
-            normalizeAlias(withoutAnchors)
+            alias => this._textHasAlias(primaryText, alias),
+            alias => constraintTags.has(normalizeAlias(alias)),
+            alias => this._textHasAlias(wrapperText, alias)
         ];
     }
 
@@ -934,8 +944,8 @@ class JevToolCallExp {
         const commands = entry.commands;
         if (commands.length === 1) return commands[0];
 
-        const matched = this._firstLayerHits(matchLayers, text => commands.filter(cmd => (
-            [cmd.commandIdentifier, ...cmd.aliases].some(alias => this._textHasAlias(text, alias))
+        const matched = this._firstLayerHits(matchLayers, hit => commands.filter(cmd => (
+            [cmd.commandIdentifier, ...cmd.aliases].some(alias => hit(alias))
         )));
         if (matched.length === 1) return matched[0];
 
@@ -1010,8 +1020,8 @@ class JevToolCallExp {
                         throw new Error(`参数 ${name} 的取值 "${prefixed}" 不在允许选项中：${keys.join('、')}。`);
                     }
                 } else {
-                    matched = this._firstLayerHits(matchLayers, text => keys.filter(key => (
-                        aliasesOf(key).some(alias => this._textHasAlias(text, alias))
+                    matched = this._firstLayerHits(matchLayers, hit => keys.filter(key => (
+                        aliasesOf(key).some(alias => hit(alias))
                     )));
                 }
                 if (matched.length === 1) {
@@ -1030,9 +1040,9 @@ class JevToolCallExp {
                 // 同一层内否定词优先；锚点层有任意命中时不再看全文层。
                 let falseHit = [];
                 let trueHit = [];
-                for (const text of matchLayers) {
-                    falseHit = param.falseAliases.filter(alias => this._textHasAlias(text, alias));
-                    trueHit = param.trueAliases.filter(alias => this._textHasAlias(text, alias));
+                for (const hit of matchLayers) {
+                    falseHit = param.falseAliases.filter(alias => hit(alias));
+                    trueHit = param.trueAliases.filter(alias => hit(alias));
                     if (falseHit.length > 0 || trueHit.length > 0) break;
                 }
                 if (falseHit.length > 0) {
