@@ -218,7 +218,19 @@ function scrollActiveItemIntoView() {
     const activeItem = document.querySelector<HTMLElement>(
       `[data-command-index="${activeIndex.value}"]`
     );
-    activeItem?.scrollIntoView({ block: "nearest" });
+    if (!activeItem) return;
+    const container = activeItem.closest<HTMLElement>(".command-results");
+    if (container) {
+      const cTop = container.scrollTop;
+      const cBottom = cTop + container.clientHeight;
+      const itemTop = activeItem.offsetTop;
+      const itemBottom = itemTop + activeItem.offsetHeight;
+      if (itemTop < cTop) {
+        container.scrollTop = itemTop;
+      } else if (itemBottom > cBottom) {
+        container.scrollTop = itemBottom - container.clientHeight;
+      }
+    }
   });
 }
 

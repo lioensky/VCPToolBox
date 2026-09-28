@@ -420,9 +420,23 @@ export function useVcptavernEditor() {
 
     void nextTick().then(() => {
       if (typeof document === 'undefined') return
-      const el = document.querySelector(`[data-rule-id="${copy.id}"]`)
-      if (el instanceof HTMLElement) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      const el = document.querySelector<HTMLElement>(`[data-rule-id="${copy.id}"]`)
+      if (!el) return
+      const scrollContainer =
+        el.closest<HTMLElement>('.content-scroll-region') ||
+        document.querySelector<HTMLElement>('.content-scroll-region')
+      if (scrollContainer) {
+        const containerRect = scrollContainer.getBoundingClientRect()
+        const elRect = el.getBoundingClientRect()
+        const relativeTop = elRect.top - containerRect.top
+        const targetScrollTop =
+          scrollContainer.scrollTop +
+          relativeTop -
+          Math.max(0, (containerRect.height - elRect.height) / 2)
+        scrollContainer.scrollTo({
+          top: Math.max(0, targetScrollTop),
+          behavior: 'smooth',
+        })
       }
     })
   }

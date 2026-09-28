@@ -923,9 +923,31 @@ function addTask(): void {
   showMessage("已新增空白任务，请在任务卡片中填写任务名称和类型", "success");
 
   nextTick(() => {
-    const cards = document.querySelectorAll(".task-card");
+    const cards = document.querySelectorAll<HTMLElement>(".task-card");
     const lastCard = cards[cards.length - 1];
-    lastCard?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!lastCard) return;
+
+    const scrollContainer =
+      lastCard.closest<HTMLElement>(".content-scroll-region") ||
+      document.querySelector<HTMLElement>(".content-scroll-region");
+
+    if (scrollContainer) {
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const cardRect = lastCard.getBoundingClientRect();
+      const relativeTop = cardRect.top - containerRect.top;
+      const targetScrollTop =
+        scrollContainer.scrollTop +
+        relativeTop -
+        Math.max(0, (containerRect.height - cardRect.height) / 2);
+
+      scrollContainer.scrollTo({
+        top: Math.max(0, targetScrollTop),
+        behavior: "smooth",
+      });
+    }
+
+    const nameInput = lastCard.querySelector<HTMLInputElement>("input");
+    nameInput?.focus({ preventScroll: true });
   });
 }
 
