@@ -4,6 +4,22 @@
 >
 > 本方案只设计第三方 JEV 声明的收集、展示和人工组装流程。第三方提示词不会因为插件安装、加载或上线而自动注入运行时提示词。
 
+> **实验实现状态（后端先行）**
+>
+> 本草案部分内容已按讨论结论调整并落地。以下各项以代码为准，开发者说明见 `docs/VCP同步异步插件开发手册.md` 附录：
+>
+> - 与草案不同：第三方声明在 `JEV_THIRD_PARTY_EXP=true` 时可真实参与 JEV 调用（默认关闭；另有可选 `JEV_THIRD_PARTY_ALLOWLIST`）。开关关闭时官方行为不变。
+> - 工具名不变量：第三方调用必须用反引号写出逐字精确的 `manifest.name`，不支持别名，也不做模糊匹配。本文第 4 节中的插件级 `aliases` 和 `routeSummary` 已废弃，由 `jevDescPrompt` 代替。
+> - 能力目录：由官方维护，文件为 `ToolConfigs/jev_third_party_catalog.json`，当前开放信息获取、便利操作、媒体娱乐、物联网控制、生活服务五类。插件只能注册其中一个。
+> - 禁入规则：字符级精准类插件（系统维护、文件编辑、代码、命令行，以及 `requiresAdmin`）在收集阶段即判为 invalid。
+> - 参数 schema：只支持 `enum`、`boolean`、`text`。JEV 只裁决 enum 和 boolean；text 参数原样搬运，不经过 JEV。
+> - 已实现文件：
+>   - `modules/jevThirdPartyRegistry.js`：校验与注册表；
+>   - `Plugin.js`：`buildJevPromptRegistry()` 与 `getJevPromptRegistry()`；
+>   - `modules/jevToolCallExp.js`：第三方路由；
+>   - `routes/admin/jevRegistry.js`：只读调试 API 与 `plan-preview`；
+>   - 插件详情页：只读展示 JEV 声明。
+> - 尚未实现：第 8 节中的提示词组装面板、官方提示词编辑器和用户变量管理。
 ## 1. 背景与目标
 
 当前 JEV 实验实现存在两条不同的提示词链，不能混为一个文件：

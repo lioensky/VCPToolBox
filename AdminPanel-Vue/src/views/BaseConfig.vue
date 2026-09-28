@@ -209,7 +209,6 @@ import {
   serializeEnvAssignment,
   inferEnvValueType,
   isSensitiveConfigKey,
-  buildMergedMainConfigContent,
   type EnvEntry,
 } from '@/utils'
 
@@ -930,11 +929,13 @@ async function loadConfig() {
       loadingKey: 'base-config.load'
     })
 
-    const mergedContent = buildMergedMainConfigContent(result)
-    const entries = parseEnvToList(mergedContent)
-    const documentationSource = result.exampleContent || mergedContent
+    // 直接使用 config.env 原始内容，不再按 example 自动整理重排；
+    // 仅当 config.env 为空时回退到 example 作为初始内容。
+    const configContent = result.content?.trim() ? result.content : (result.exampleContent || '')
+    const entries = parseEnvToList(configContent)
+    const documentationSource = result.exampleContent || configContent
     const documentationMetadata = buildDocumentationMetadata(documentationSource)
-    const fallbackMarkers = extractFallbackGroupMarkers(mergedContent)
+    const fallbackMarkers = extractFallbackGroupMarkers(configContent)
 
     configDocumentation.value = documentationMetadata
 
