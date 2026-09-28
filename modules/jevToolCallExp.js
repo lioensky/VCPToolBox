@@ -818,9 +818,9 @@ class JevToolCallExp {
             throw new Error(`工具 "${toolName}" 注册在 {${entry.categoryLabel}}，不能通过 {${label}} 调用。`);
         }
 
-        const decisionText = this._thirdPartyDecisionText(parsed);
-        const command = await this._selectThirdPartyCommand(entry, parsed, decisionText);
-        const args = await this._buildThirdPartyArgs(entry, command, parsed, decisionText);
+        const matchLayers = this._thirdPartyMatchLayers(parsed);
+        const command = await this._selectThirdPartyCommand(entry, parsed, matchLayers);
+        const args = await this._buildThirdPartyArgs(entry, command, parsed, matchLayers);
 
         return [this._buildExpandedCall(entry.toolName, args, inheritedCall, {
             category: parsed.categoryKey,
@@ -830,12 +830,29 @@ class JevToolCallExp {
         })];
     }
 
-    /** 用于确定性匹配的文本：去掉目录、工具名与【】主要负载，只保留动作词和 [] 约束。 */
-    _thirdPartyDecisionText(parsed) {
-        return parsed.raw
-            .replace(/【[\s\S]*?】/g, ' ')
+    /**
+     * 确定性匹配的分层文本（已归一化）：
+     * 1. 锚点层：去掉目录、工具名与【】，只含动作词和 [] 约束，优先级最高；
+     * 2. 全文层：在锚点层无命中时回退，包含【】内容。
+     *    “执行【关闭台灯】”这类写法的意图完全在【】里，不能因此落入 JEV 的随机裁决。
+     */
+    _thirdPartyMatchLayers(parsed) {
+        const withoutAnchors = parsed.raw
             .replace(/`[^`]*`/g, ' ')
             .replace(/\{[^{}]*\}/g, ' ');
+        return [
+            normalizeAlias(withoutAnchors.replace(/【[\s\S]*?】/g, ' ')),
+            normalizeAlias(withoutAnchors)
+        ];
+    }
+
+    /** 按层依次尝试，返回第一层的非空命中结果。 */
+    _firstLayerHits(layers, collect) {
+        for (const text of layers) {
+            const hits = collect(text);
+            if (hits.length > 0) return hits;
+        }
+        return [];
     }
 
     _textHasAlias(normalizedText, alias) {
@@ -913,14 +930,13 @@ class JevToolCallExp {
         return null;
     }
 
-    async _selectThirdPartyCommand(entry, parsed, decisionText) {
+    async _selectThirdPartyCommand(entry, parsed, matchLayers) {
         const commands = entry.commands;
         if (commands.length === 1) return commands[0];
 
-        const normalized = normalizeAlias(decisionText);
-        const matched = commands.filter(cmd => (
-            [cmd.commandIdentifier, ...cmd.aliases].some(alias => this._textHasAlias(normalized, alias))
-        ));
+        const matched = this._firstLayerHits(matchLayers, text => commands.filter(cmd => (
+            [cmd.commandIdentifier, ...cmd.aliases].some(alias => this._textHasAlias(text, alias))
+        )));
         if (matched.length === 1) return matched[0];
 
         const candidates = matched.length > 1 ? matched : commands;
@@ -971,13 +987,12 @@ class JevToolCallExp {
         });
     }
 
-    async _buildThirdPartyArgs(entry, command, parsed, decisionText) {
+    async _buildThirdPartyArgs(entry, command, parsed, matchLayers) {
         const args = { ...command.fixedArgs };
         if (command.injectCommand) args.command = command.commandIdentifier;
 
         const constraints = parsed.constraints;
         const consumed = new Set();
-        const normalizedDecision = normalizeAlias(decisionText);
         const pending = [];
         const paramEntries = Object.entries(command.parameters || {});
 
@@ -995,7 +1010,9 @@ class JevToolCallExp {
                         throw new Error(`参数 ${name} 的取值 "${prefixed}" 不在允许选项中：${keys.join('、')}。`);
                     }
                 } else {
-                    matched = keys.filter(key => aliasesOf(key).some(alias => this._textHasAlias(normalizedDecision, alias)));
+                    matched = this._firstLayerHits(matchLayers, text => keys.filter(key => (
+                        aliasesOf(key).some(alias => this._textHasAlias(text, alias))
+                    )));
                 }
                 if (matched.length === 1) {
                     args[name] = matched[0];
@@ -1010,8 +1027,14 @@ class JevToolCallExp {
                 });
             } else if (param.type === 'boolean') {
                 // 否定词优先，避免“不要静音”被识别为“静音”。
-                const falseHit = param.falseAliases.filter(alias => this._textHasAlias(normalizedDecision, alias));
-                const trueHit = param.trueAliases.filter(alias => this._textHasAlias(normalizedDecision, alias));
+                // 同一层内否定词优先；锚点层有任意命中时不再看全文层。
+                let falseHit = [];
+                let trueHit = [];
+                for (const text of matchLayers) {
+                    falseHit = param.falseAliases.filter(alias => this._textHasAlias(text, alias));
+                    trueHit = param.trueAliases.filter(alias => this._textHasAlias(text, alias));
+                    if (falseHit.length > 0 || trueHit.length > 0) break;
+                }
                 if (falseHit.length > 0) {
                     args[name] = 'false';
                     this._markExactConstraints(constraints, falseHit, consumed);
