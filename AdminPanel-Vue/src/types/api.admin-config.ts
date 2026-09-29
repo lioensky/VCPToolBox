@@ -11,6 +11,7 @@ export interface ToolApprovalConfig {
   approveAll?: boolean;
   timeoutMinutes?: number;
   approvalList?: string[];
+  whitelist?: string[];
   fuzzyToolMatching?: boolean;
   privacyProtection?: ToolApprovalPrivacyProtectionConfig;
   timeout?: number;

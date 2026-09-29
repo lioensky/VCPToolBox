@@ -30,7 +30,7 @@ module.exports = function(options) {
             res.json(JSON.parse(content));
         } catch (error) {
             if (error.code === 'ENOENT') {
-                res.json({ enabled: false, timeoutMinutes: 5, approveAll: false, approvalList: [] });
+                res.json({ enabled: false, timeoutMinutes: 5, approveAll: false, approvalList: [], whitelist: [] });
             } else {
                 console.error('[AdminPanelRoutes API] Error reading tool approval config:', error);
                 res.status(500).json({ error: 'Failed to read tool approval config', details: error.message });
