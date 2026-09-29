@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "description": "JEV 第三方插件能力目录（实验）。由官方维护，第三方插件只能在 manifest.jev.category 中注册其中一个目录。系统维护、文件编辑、代码编程、命令行等需要字符级精准输入的插件不开放 JEV 接入。",
+  "categories": {
+    "info_retrieval": {
+      "label": "信息获取",
+      "aliases": ["资讯获取", "信息查询"],
+      "description": "天气、新闻、汇率、快递、百科、行情等只读信息查询。"
+    },
+    "convenience": {
+      "label": "便利操作",
+      "aliases": ["便捷操作", "日常便利"],
+      "description": "翻译、单位换算、日程、待办、提醒等轻量日常操作。"
+    },
+    "media_entertainment": {
+      "label": "媒体娱乐",
+      "aliases": ["娱乐媒体"],
+      "description": "音乐、视频、播客、游戏资讯等内容获取与播放控制。"
+    },
+    "iot_control": {
+      "label": "物联网控制",
+      "aliases": ["智能家居", "物联网"],
+      "description": "空调、灯光、窗帘、插座等智能设备控制。"
+    },
+    "life_services": {
+      "label": "生活服务",
+      "aliases": ["生活助手"],
+      "description": "出行、交通、餐饮、购物比价等生活信息与服务。"
+    }
+  },
+  "forbiddenParameterNames": [
+    "target", "replace", "searchString", "replaceString",
+    "code", "script", "shell", "cmd", "sql", "regex",
+    "path", "filePath", "filename", "file", "dir", "directory",
+    "content", "diff", "patch", "old_string", "new_string"
+  ],
+  "denyPlugins": [
+    "PowerShellExecutor",
+    "LinuxShellExecutor",
+    "LinuxLogMonitor",
+    "ServerFileOperator",
+    "FileOperator",
+    "CodeSearcher",
+    "ServerCodeSearcher",
+    "PluginManager",
+    "UserAuth",
+    "VCPToolBridge"
+  ],
+  "limits": {
+    "maxCommands": 8,
+    "maxParametersPerCommand": 16,
+    "maxEnumValues": 64,
+    "minEnumValues": 2,
+    "maxDescPromptLength": 300,
+    "maxJevPromptLength": 1500,
+    "maxAgentPromptLength": 2000,
+    "maxParamDescriptionLength": 300,
+    "maxTextArgLength": 2000
+  }
+}

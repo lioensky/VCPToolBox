@@ -34,12 +34,6 @@ export {
 } from "./env";
 
 // 主配置合并工具
-export {
-  buildMergedMainConfigContent,
-  normalizeValue as normalizeMainConfigValue,
-  type ConfigValueType,
-} from "./mainConfigMerge";
-
 // 性能监控
 export { performanceMonitor, fetchWithPerformance } from "./performance";
 

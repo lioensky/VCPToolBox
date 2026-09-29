@@ -873,7 +873,8 @@ struct TagData {
     id: i64,
     name: String,
     position: i64,
-    vector: Vec<f32>,
+    /// 同一 Tag 在所有候选曲线间共享同一份解码向量，只做引用计数克隆。
+    vector: Arc<[f32]>,
     chunk_cosine: f64,
 }
 
@@ -882,7 +883,7 @@ struct Curve {
     id: i64,
     file_id: i64,
     tags: Vec<TagData>,
-    chunk_vector: Vec<f32>,
+    chunk_vector: Arc<[f32]>,
     query_score: f64,
     denoised_score: f64,
     local_score: f64,
@@ -914,7 +915,7 @@ fn load_curves(
         .map(|candidate| candidate.id)
         .filter(|id| *id > 0)
         .collect();
-    let mut chunks_by_id: HashMap<i64, (i64, Vec<f32>)> =
+    let mut chunks_by_id: HashMap<i64, (i64, Arc<[f32]>)> =
         HashMap::with_capacity(candidate_ids.len());
     let mut unique_file_ids = HashSet::new();
 
@@ -955,14 +956,16 @@ fn load_curves(
                 continue;
             };
             unique_file_ids.insert(file_id);
-            chunks_by_id.insert(id, (file_id, vector));
+            chunks_by_id.insert(id, (file_id, Arc::from(vector)));
         }
     }
 
     // 同一文件的 Tag 曲线只读取和解码一次，供该文件的全部候选 Chunk 复用。
+    // 同一 Tag 出现在多个文件时，按 tag_id 只解码一次，后续行共享同一 Arc。
     let file_ids: Vec<i64> = unique_file_ids.into_iter().collect();
-    let mut tags_by_file: HashMap<i64, Vec<(i64, i64, String, Vec<f32>)>> =
+    let mut tags_by_file: HashMap<i64, Vec<(i64, i64, String, Arc<[f32]>)>> =
         HashMap::with_capacity(file_ids.len());
+    let mut decoded_tags: HashMap<i64, Arc<[f32]>> = HashMap::new();
     let mut file_tag_sql_batches = 0usize;
     for batch in file_ids.chunks(SQLITE_BATCH_SIZE) {
         if batch.is_empty() {
@@ -1000,12 +1003,22 @@ fn load_curves(
             let Ok((file_id, tag_id, position, name, bytes)) = row else {
                 continue;
             };
-            if let Some(vector) = decode_vector(&bytes, dimension) {
-                tags_by_file
-                    .entry(file_id)
-                    .or_default()
-                    .push((tag_id, position, name, vector));
-            }
+            // 只缓存解码成功的向量；失败行保持原有的逐行跳过语义。
+            let vector = match decoded_tags.get(&tag_id) {
+                Some(shared) => shared.clone(),
+                None => {
+                    let Some(decoded) = decode_vector(&bytes, dimension) else {
+                        continue;
+                    };
+                    let shared: Arc<[f32]> = Arc::from(decoded);
+                    decoded_tags.insert(tag_id, shared.clone());
+                    shared
+                }
+            };
+            tags_by_file
+                .entry(file_id)
+                .or_default()
+                .push((tag_id, position, name, vector));
         }
     }
 

@@ -114,6 +114,7 @@ module.exports = function (
   mount("/", "clawMail"); // Handles /claw-mail/*
   mount("/", "tarotDivination"); // Handles /tarot-divination/*
   mount("/", "toolCallRecords"); // Handles /tool-call-records/*
+  mount("/", "jevRegistry"); // Handles /jev/registry/* (JEV 第三方注册表只读调试，实验)
 
   return adminApiRouter;
 };

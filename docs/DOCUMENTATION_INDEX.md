@@ -42,6 +42,7 @@
 | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) | WebSocket协议、节点注册、工具执行、文件传输 | ⭐⭐ |
 | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) | N-API接口、向量操作、性能特性 | ⭐⭐ |
 | [FRONTEND_COMPONENTS.md](./FRONTEND_COMPONENTS.md) | AdminPanel、VCPChrome、OpenWebUISub架构与集成 | ⭐⭐ |
+| [JEV_PROMPT_REGISTRY_MANAGEMENT_SPEC.md](./JEV_PROMPT_REGISTRY_MANAGEMENT_SPEC.md) | JEV 官方提示词编辑、第三方提示词登记与人工组装设计 | ⭐⭐ |
 
 ### 参考文档
 

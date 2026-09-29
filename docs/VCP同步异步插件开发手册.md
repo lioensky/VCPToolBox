@@ -973,3 +973,165 @@ def validate_admin_auth(args):
     ```
 
 通过遵循这个模式，你可以创建强大的异步插件来处理任何耗时的任务，同时保持主服务的响应性和流畅的用户体验。
+## 附录：JEV 第三方插件声明（实验，同步、异步与混合插件通用）
+
+> 实验功能，默认关闭。服务器需在 `config.env` 设置 `JEV_THIRD_PARTY_EXP=true` 才会让第三方声明参与 JEV 调用；可选 `JEV_THIRD_PARTY_ALLOWLIST=PluginA,PluginB` 进一步限制。开关关闭时官方 JEV 行为完全不变，声明只进入注册表供查看。
+
+### A.1 适用范围
+
+JEV 只面向“自然语言即可表达”的广泛工具类插件，优先考虑：
+
+- 信息获取：天气、新闻、汇率、快递、百科、行情；
+- 便利操作：翻译、换算、日程、待办、提醒；
+- 媒体娱乐：音乐、视频、播客的获取与播放控制；
+- 物联网控制：空调、灯光、窗帘、插座；
+- 生活服务：出行、交通、餐饮、比价。
+
+以下插件**暂不开放** JEV 接入，因为它们需要字符级精准输入，自然语言裁决反而会出错：
+
+- 系统维护、命令行 / Shell 执行；
+- 文件编辑、代码编程、需要 `target` / `replace` 精准块的插件；
+- `requiresAdmin: true` 的插件；
+- 已由官方 `ToolConfigs/jev_tool_call_exp.json` 管理的插件。
+
+系统会在收集阶段自动拦截：参数名命中 `target`、`replace`、`code`、`script`、`path`、`content`、`diff` 等禁用名，或插件在官方拒绝名单中，声明都会被标记为 invalid。完整列表见 `ToolConfigs/jev_third_party_catalog.json`。
+
+### A.2 两条不变量
+
+1. **精确工具名**：第三方插件在 JEV 中必须用反引号写出 manifest `name`，逐字精确、大小写敏感。插件不能注册别名，也不存在模糊匹配。
+2. **官方目录**：`jev.category` 只能从官方第三方目录中选一个。目录由 `ToolConfigs/jev_third_party_catalog.json` 维护，当前为：`信息获取`、`便利操作`、`媒体娱乐`、`物联网控制`、`生活服务`。调用时的 `{目录}` 必须与插件注册的目录一致。
+
+调用格式：
+
+```text
+<<<[TOOL_REQUEST]>>>
+maid:「始」Nova「末」,
+JEV:「始」{物联网控制} `SmartAC` 打开空调【把客厅弄凉快些】[制冷][房间:客厅]「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+由此，每一次裁决都被限制在对应插件内部：JEV 只能在该插件声明的命令与参数范围内做选择，最终仍以 `tool_name = manifest.name` 走现有 PluginManager 链路。审核、验证码、工具记录与隐私过滤全部照常生效。
+
+### A.3 Manifest 声明
+
+```json
+{
+  "name": "SmartAC",
+  "displayName": "智能空调",
+  "pluginType": "synchronous",
+  "capabilities": {
+    "invocationCommands": [
+      { "commandIdentifier": "SetAC", "description": "设置空调。" },
+      { "commandIdentifier": "QueryAC", "description": "查询空调状态。" }
+    ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "物联网控制",
+    "jevDescPrompt": "控制家中空调的开关、模式和房间。",
+    "jevPrompt": "想降温选制冷，想取暖选制热，其余选自动。",
+    "agentPrompt": "需要控制空调时使用 {物联网控制} `SmartAC`，房间写成 [房间:xxx]。",
+    "defaultCommand": "SetAC",
+    "commands": [
+      {
+        "commandIdentifier": "SetAC",
+        "description": "设置空调开关与模式",
+        "aliases": ["设置", "打开", "关闭", "调节"],
+        "fixedArgs": {},
+        "parameters": {
+          "mode": {
+            "type": "enum",
+            "description": "空调运行模式",
+            "values": { "cool": "制冷", "heat": "制热", "auto": "自动" },
+            "aliases": { "cool": ["制冷", "冷气"], "heat": ["制热", "暖气"] },
+            "default": "auto"
+          },
+          "power": {
+            "type": "boolean",
+            "description": "是否开机",
+            "trueAliases": ["打开", "开启"],
+            "falseAliases": ["关闭", "关掉"]
+          },
+          "room": {
+            "type": "text",
+            "source": "constraints",
+            "prefixes": ["房间"],
+            "maxLength": 20,
+            "required": false
+          }
+        }
+      },
+      { "commandIdentifier": "QueryAC", "description": "查询空调状态", "aliases": ["查询", "状态"] }
+    ]
+  }
+}
+```
+
+### A.4 字段说明
+
+| 字段 | 必填 | 说明 |
+|---|:-:|---|
+| `schemaVersion` | 是 | 固定为 `1` |
+| `enabled` | 是 | 只有 `true` 才进入注册表 |
+| `category` | 是 | 官方第三方目录中的一个（标签或别名） |
+| `jevDescPrompt` | 是 | 发给 JEV 的插件职责简介，≤300 字 |
+| `jevPrompt` | 是 | 发给 JEV 的插件内部裁决规则，≤1500 字 |
+| `agentPrompt` | 否 | 给 VCP Agent 的使用说明，仅作素材，不自动注入，≤2000 字 |
+| `defaultCommand` | 否 | 多命令无法判定时的回退命令 |
+| `commands[].commandIdentifier` | 是 | 必须与 `capabilities.invocationCommands` 完全一致 |
+| `commands[].aliases` | 否 | 用于识别命令的动作词（**不是工具别名**） |
+| `commands[].injectCommand` | 否 | 默认 `true`，自动传入 `command=commandIdentifier` |
+| `commands[].fixedArgs` | 否 | 固定参数，值为字符串/数字/布尔 |
+| `commands[].parameters` | 否 | 参数 schema，见 A.5 |
+
+`jevDescPrompt`、`jevPrompt`、`agentPrompt` 中若出现指令覆写（如“忽略之前规则”）、秘密读取或代码执行类内容，声明会被判为 invalid。
+
+### A.5 参数类型
+
+只支持三种类型，均为字符串形式传给插件：
+
+| type | 决策方式 | 关键字段 |
+|---|---|---|
+| `enum` | 先按 `values` 键和 `aliases` 确定性匹配；仍不唯一才交给 JEV 在候选内选择 | `description`（必填）、`values`（2~64 个键值对）、`aliases`、`default`、`prefixes` |
+| `boolean` | 先按 `falseAliases`（优先）/`trueAliases` 匹配；未命中再交给 JEV 判断 | `description`（必填）、`trueAliases`、`falseAliases`、`default` |
+| `text` | **不经过 JEV**，原样搬运用户文本；超长直接报错，不截断不改写 | `source`（`primary`=【】内容 / `constraints`=[] 约束 / `url`=[URL]）、`prefixes`、`maxLength` |
+
+规则要点：
+
+- 多个模糊的 enum/boolean 参数会合并为**一次** JEV 请求；
+- JEV 答案必须落在候选内，choice 置信度低于 0.55、或 noul 概率介于 0.3~0.7 时，视为未决，回退 `default`；没有 `default` 就不传该参数；
+- 带 `prefixes` 的参数匹配 `[前缀:值]` 形式的约束；enum 前缀值不在选项中会直接报错；
+- 没有 `prefixes` 的 `constraints` 文本参数会接收剩余未被消费的约束；
+- `required: true` 的参数最终缺失时，调用直接报错，不会执行插件；
+- 参数名不能使用协议保留字段（`command`、`maid`、`tool_password`、`timely_contact`、`river` 等）或字符级精准类禁用名。
+
+### A.6 三类插件
+
+| 插件类型 | 说明 |
+|---|---|
+| `synchronous` | 直接适用 |
+| `asynchronous` | 在 `agentPrompt` 中说明“提交任务”与“查询结果”的区别；异步回调协议保持不变 |
+| `hybridservice` | 可调用的 direct 命令同样适用 |
+
+`static`、`messagePreprocessor`、`service` 不是可调用工具，不支持 JEV 声明。分布式节点上的插件声明会随 `register_tools` 自动上报，规则与本地插件相同。
+
+### A.7 调试
+
+- `GET /admin_api/jev/registry`：查看全部声明、校验状态、错误原因与调用模板；
+- `GET /admin_api/jev/registry/:pluginName`：精确查看单个插件；
+- `GET /admin_api/jev/registry/catalog`：查看官方目录及冲突检查；
+- `POST /admin_api/jev/registry/rebuild`：手动重建注册表；
+- `POST /admin_api/jev/registry/plan-preview`，body `{"expression": "..."}`：只规划、不执行，查看最终会生成的真实调用。
+
+修改 `plugin-manifest.json` 后注册表会随热重载自动重建。
+
+### A.8 开发者检查清单
+
+- 插件属于 A.1 的广泛工具类，不涉及字符级精准输入；
+- `category` 在官方目录中，且调用示例的 `{目录}` 与其一致；
+- 调用示例中工具名用反引号，且与 manifest `name` 逐字相同；
+- `commandIdentifier` 与 `invocationCommands` 一致；
+- enum/boolean 都写了 `description`，enum 的 `values` 为对象而非数组；
+- text 参数写明 `source` 与合理的 `maxLength`；
+- 通过 `/admin_api/jev/registry` 确认 `validation.status` 为 `valid`，再用 `plan-preview` 验证实际调用参数。

@@ -131,7 +131,26 @@ watch(
 
     await nextTick();
     const target = document.getElementById(getReplyAnchorId(floor));
-    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!target) return;
+
+    const scrollContainer =
+      target.closest<HTMLElement>(".content-scroll-region") ||
+      document.querySelector<HTMLElement>(".content-scroll-region");
+
+    if (scrollContainer) {
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const relativeTop = targetRect.top - containerRect.top;
+      const targetScrollTop =
+        scrollContainer.scrollTop +
+        relativeTop -
+        Math.max(0, (containerRect.height - targetRect.height) / 2);
+
+      scrollContainer.scrollTo({
+        top: Math.max(0, targetScrollTop),
+        behavior: "smooth",
+      });
+    }
   }
 );
 </script>

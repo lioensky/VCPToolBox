@@ -91,6 +91,10 @@ export type * from "./toolList";
 export { toolCallRecordsApi } from "./toolCallRecords";
 export type * from "./toolCallRecords";
 
+// JEV 第三方注册表（实验，只读）
+export { jevRegistryApi } from "./jevRegistry";
+export type * from "./jevRegistry";
+
 export { dynamicToolsApi } from "./dynamicTools";
 export type * from "./dynamicTools";
 
