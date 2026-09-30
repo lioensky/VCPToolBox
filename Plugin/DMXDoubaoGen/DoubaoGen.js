@@ -192,6 +192,21 @@ async function signRequest() {
     };
 }
 
+function isPrivateOrLocalHost(hostname) {
+    if (!hostname) return false;
+    const h = hostname.toLowerCase();
+    if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.endsWith('.local')) return true;
+    const parts = h.split('.').map(Number);
+    if (parts.length === 4 && parts.every(p => !isNaN(p) && p >= 0 && p <= 255)) {
+        if (parts[0] === 10) return true;
+        if (parts[0] === 127) return true;
+        if (parts[0] === 192 && parts[1] === 168) return true;
+        if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+        if (parts[0] === 169 && parts[1] === 254) return true;
+    }
+    return false;
+}
+
 // --- Helper function to process the 'image' parameter ---
 async function getImageData(imageUrl, imageBase64) {
     // Priority to imageBase64 if provided (on retry from file fetch)
@@ -210,9 +225,47 @@ async function getImageData(imageUrl, imageBase64) {
         return imageUrl;
     }
 
-    // Handle public https URL
+    // Handle HTTP / HTTPS URL
     if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
-        return imageUrl;
+        try {
+            const parsedUrl = new URL(imageUrl);
+            const isLocal = isPrivateOrLocalHost(parsedUrl.hostname);
+
+            // 1. 本地图床直接读盘加速 (/pw=.../images/... 或 /images/...)
+            const imageMatch = parsedUrl.pathname.match(/(?:\/pw=[^/]+)?\/images\/(.+)$/);
+            if (imageMatch && imageMatch[1] && PROJECT_BASE_PATH) {
+                const subPath = decodeURIComponent(imageMatch[1]);
+                const localDiskPath = path.join(PROJECT_BASE_PATH, 'image', subPath);
+                try {
+                    const stats = await fs.stat(localDiskPath);
+                    if (stats.isFile()) {
+                        const buffer = await fs.readFile(localDiskPath);
+                        const mimeType = mime.lookup(localDiskPath) || 'image/png';
+                        return `data:${mimeType};base64,${buffer.toString('base64')}`;
+                    }
+                } catch {
+                    // 本地未命中，继续网络下载
+                }
+            }
+
+            // 2. 局域网地址：必须本地下载转 Base64（云端无法访问私有网段）
+            if (isLocal) {
+                const resp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 30000 });
+                const mimeType = resp.headers['content-type']?.split(';')[0]?.trim() || 'image/png';
+                return `data:${mimeType};base64,${Buffer.from(resp.data).toString('base64')}`;
+            }
+
+            // 3. 公网地址：尝试预先下载转 Base64，失败则安全回退原 URL
+            try {
+                const resp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 15000 });
+                const mimeType = resp.headers['content-type']?.split(';')[0]?.trim() || 'image/png';
+                return `data:${mimeType};base64,${Buffer.from(resp.data).toString('base64')}`;
+            } catch {
+                return imageUrl;
+            }
+        } catch {
+            return imageUrl;
+        }
     }
 
     // Handle local file URL
