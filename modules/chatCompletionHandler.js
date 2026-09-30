@@ -1015,8 +1015,12 @@ class ChatCompletionHandler {
         // 🔒 灵魂级占位符去重：跨消息共享展开状态
         // Agent 类：整个上下文只允许展开一个 agent（第一个遇到的），后续所有 agent 占位符均不展开
         // Toolbox 类：每种 toolbox 各允许展开一次，同名重复出现时不再展开
+        // VCP 工具 / 静态插件 / 全局清单类：每种在整个请求生命周期内只展开一次
         expandedAgentName: null,    // string | null - 已展开的唯一 Agent 别名
-        expandedToolboxes: new Set() // Set<string> - 已展开的 Toolbox 别名集合
+        expandedToolboxes: new Set(), // Set<string> - 已展开的 Toolbox 别名集合
+        expandedVcpTools: new Set(), // Set<string> - 已展开的 VCP 工具别名集合
+        expandedStaticPlaceholders: new Set(), // Set<string> - 已展开的静态插件占位符集合
+        expandedGlobalPlaceholders: new Set() // Set<string> - 已展开的全局清单占位符集合
       };
 
       // 🔒 顺序处理消息（非并发），确保 agent/toolbox 的"首次展开"语义正确
