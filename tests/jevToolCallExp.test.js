@@ -669,3 +669,23 @@ test('隐式能力推断保持保守，弱信号和不完整组合必须拒绝',
         /缺少能力目录/
     );
 });
+
+test('ToolCallParser 提取参数时保留首行缩进与多行代码缩进', () => {
+    const rawCall = `
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」FileEditor「末」
+content:「始」
+    def hello_world():
+        print("Hello")
+「末」
+inline_code:「始」  const a = 1;「末」
+<<<[END_TOOL_REQUEST]>>>
+    `;
+
+    const [call] = ToolCallParser.parse(rawCall);
+    assert.equal(call.name, 'FileEditor');
+    // 首行前导4空格必须被完整保留，末尾单独的换行被清理
+    assert.equal(call.args.content, '    def hello_world():\n        print("Hello")');
+    // 单行参数的前导2空格也必须完整保留
+    assert.equal(call.args.inline_code, '  const a = 1;');
+});

@@ -110,6 +110,20 @@ function replaceFirstAliasPlaceholder(text, alias, replacementText, prefix = '')
     });
 }
 
+function replaceFirstPlaceholder(text, placeholderWithBrackets, replacementText) {
+    const escaped = escapeRegExp(placeholderWithBrackets);
+    const regex = new RegExp(escaped, 'g');
+    let hasReplacedFirst = false;
+
+    return String(text).replace(regex, () => {
+        if (hasReplacedFirst) {
+            return '';
+        }
+        hasReplacedFirst = true;
+        return replacementText;
+    });
+}
+
 const SYSTEM_USER_PREFIX_REGEX = /^\s*\[系统[^\]]*\]/;
 const SYSTEM_NOTIFICATION_PREFIX_REGEX = /^\s*\[系统通知[:：]?\]/;
 const SYSTEM_EMPTY_PROMPT_PREFIX_REGEX = /^\s*\[系统提示:\]无内容/;
@@ -756,8 +770,14 @@ async function injectStaticPluginPlaceholders(text, context = {}) {
             continue;
         }
 
-        const escapedPlaceholder = placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-        const placeholderRegex = new RegExp('\\{\\{' + escapedPlaceholder + '\\}\\}', 'g');
+        // 🔒 静态占位符去重：跨消息只展开一次
+        if (context.expandedStaticPlaceholders && context.expandedStaticPlaceholders.has(placeholder)) {
+            if (DEBUG_MODE) {
+                console.log(`[StaticFold] 静态占位符 ${fullPlaceholder} 已在之前消息中展开，跳过重复展开`);
+            }
+            processedText = processedText.replaceAll(fullPlaceholder, '');
+            continue;
+        }
 
         let valueToInject = entry;
         if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
@@ -776,7 +796,12 @@ async function injectStaticPluginPlaceholders(text, context = {}) {
             }
         }
 
-        processedText = processedText.replace(placeholderRegex, valueToInject || `[${placeholder} 信息不可用]`);
+        const replacement = valueToInject || `[${placeholder} 信息不可用]`;
+        processedText = replaceFirstPlaceholder(processedText, fullPlaceholder, replacement);
+
+        if (context.expandedStaticPlaceholders) {
+            context.expandedStaticPlaceholders.add(placeholder);
+        }
     }
 
     return processedText;
@@ -910,16 +935,23 @@ async function replaceOtherVariables(text, model, role, context) {
         }
 
         if (processedText.includes('{{VCPDistributedServerList}}')) {
-            let distributedServerListText = '[VCPDistributedServerList information unavailable]';
-            try {
-                const formatter = context.webSocketServer?.formatDistributedServerListForPrompt;
-                if (typeof formatter === 'function') {
-                    distributedServerListText = formatter();
+            if (context.expandedGlobalPlaceholders && context.expandedGlobalPlaceholders.has('VCPDistributedServerList')) {
+                processedText = processedText.replaceAll('{{VCPDistributedServerList}}', '');
+            } else {
+                let distributedServerListText = '[VCPDistributedServerList information unavailable]';
+                try {
+                    const formatter = context.webSocketServer?.formatDistributedServerListForPrompt;
+                    if (typeof formatter === 'function') {
+                        distributedServerListText = formatter();
+                    }
+                } catch (error) {
+                    console.error('[replaceOtherVariables] Error processing {{VCPDistributedServerList}}:', error);
                 }
-            } catch (error) {
-                console.error('[replaceOtherVariables] Error processing {{VCPDistributedServerList}}:', error);
+                processedText = replaceFirstPlaceholder(processedText, '{{VCPDistributedServerList}}', distributedServerListText);
+                if (context.expandedGlobalPlaceholders) {
+                    context.expandedGlobalPlaceholders.add('VCPDistributedServerList');
+                }
             }
-            processedText = processedText.replaceAll('{{VCPDistributedServerList}}', distributedServerListText);
         }
 
         const now = new Date();
@@ -960,33 +992,64 @@ async function replaceOtherVariables(text, model, role, context) {
 
         const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions();
         if (processedText.includes('{{VCPDynamicTools}}')) {
-            let dynamicToolsText = '[VCPDynamicTools information unavailable]';
-            try {
-                dynamicToolsText = await dynamicToolRegistry.buildInjection({
-                    messages: context.messages || context.originalMessages || [],
-                    pluginManager,
-                    debugMode: DEBUG_MODE
-                });
-            } catch (error) {
-                console.error('[replaceOtherVariables] Error processing {{VCPDynamicTools}}:', error);
+            if (context.expandedGlobalPlaceholders && context.expandedGlobalPlaceholders.has('VCPDynamicTools')) {
+                processedText = processedText.replaceAll('{{VCPDynamicTools}}', '');
+            } else {
+                let dynamicToolsText = '[VCPDynamicTools information unavailable]';
+                try {
+                    dynamicToolsText = await dynamicToolRegistry.buildInjection({
+                        messages: context.messages || context.originalMessages || [],
+                        pluginManager,
+                        debugMode: DEBUG_MODE
+                    });
+                } catch (error) {
+                    console.error('[replaceOtherVariables] Error processing {{VCPDynamicTools}}:', error);
+                }
+                processedText = replaceFirstPlaceholder(processedText, '{{VCPDynamicTools}}', dynamicToolsText);
+                if (context.expandedGlobalPlaceholders) {
+                    context.expandedGlobalPlaceholders.add('VCPDynamicTools');
+                }
             }
-            processedText = processedText.replaceAll('{{VCPDynamicTools}}', dynamicToolsText);
         }
         if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
             for (const [placeholderKey, description] of individualPluginDescriptions) {
-                processedText = processedText.replaceAll(`{{${placeholderKey}}}`, description || `[${placeholderKey} 信息不可用]`);
+                const fullPlaceholder = `{{${placeholderKey}}}`;
+                if (!processedText.includes(fullPlaceholder)) continue;
+
+                // 🔒 工具占位符去重：跨消息只展开一次
+                if (context.expandedVcpTools && context.expandedVcpTools.has(placeholderKey)) {
+                    if (DEBUG_MODE) {
+                        console.log(`[ToolGuard] 工具占位符 ${fullPlaceholder} 已在之前消息中展开，跳过重复展开`);
+                    }
+                    processedText = processedText.replaceAll(fullPlaceholder, '');
+                    continue;
+                }
+
+                const replacement = description || `[${placeholderKey} 信息不可用]`;
+                processedText = replaceFirstPlaceholder(processedText, fullPlaceholder, replacement);
+
+                if (context.expandedVcpTools) {
+                    context.expandedVcpTools.add(placeholderKey);
+                }
             }
         }
 
         if (processedText.includes('{{VCPAllTools}}')) {
-            const vcpDescriptionsList = [];
-            if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
-                for (const description of individualPluginDescriptions.values()) {
-                    vcpDescriptionsList.push(description);
+            if (context.expandedGlobalPlaceholders && context.expandedGlobalPlaceholders.has('VCPAllTools')) {
+                processedText = processedText.replaceAll('{{VCPAllTools}}', '');
+            } else {
+                const vcpDescriptionsList = [];
+                if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
+                    for (const description of individualPluginDescriptions.values()) {
+                        vcpDescriptionsList.push(description);
+                    }
+                }
+                const allVcpToolsString = vcpDescriptionsList.length > 0 ? vcpDescriptionsList.join('\n\n---\n\n') : '没有可用的VCP工具描述信息';
+                processedText = replaceFirstPlaceholder(processedText, '{{VCPAllTools}}', allVcpToolsString);
+                if (context.expandedGlobalPlaceholders) {
+                    context.expandedGlobalPlaceholders.add('VCPAllTools');
                 }
             }
-            const allVcpToolsString = vcpDescriptionsList.length > 0 ? vcpDescriptionsList.join('\n\n---\n\n') : '没有可用的VCP工具描述信息';
-            processedText = processedText.replaceAll('{{VCPAllTools}}', allVcpToolsString);
         }
 
         if (process.env.PORT) {
@@ -1087,6 +1150,7 @@ module.exports = {
     injectStaticPluginPlaceholders,
     injectStaticPluginPlaceholdersInMessages,
     replacePriorityVariables,
+    replaceFirstPlaceholder,
     formatEmojiListForPrompt,
     applyDetectorRules,
     applyDetectorsToMessages,

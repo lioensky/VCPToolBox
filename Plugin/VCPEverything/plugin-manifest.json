@@ -5,7 +5,7 @@
   "version": "1.1.0",
   "description": "通过调用 Everything 命令行工具 (es.exe) 在本地计算机上实现毫秒级文件搜索。",
   "author": "VCPToolBox Community",
-  "license": "MIT",
+  "license": "CC BY-NC-SA 4.0",
   "entryPoint": {
     "command": "node local-search-controller.js"
   },

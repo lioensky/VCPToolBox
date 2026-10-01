@@ -156,7 +156,8 @@ class ToolCallParser {
       } else if (field.key === 'vref') {
         vref = trimmedValue;
       } else {
-        args[field.key] = trimmedValue;
+        // 工具参数：保留前导缩进（仅剥离首行紧贴标记的单次换行，以及末尾的单次换行/空白）
+        args[field.key] = this._normalizeFieldValue(field.value);
       }
     }
 
@@ -279,6 +280,19 @@ class ToolCallParser {
     }
 
     return fields;
+  }
+
+  /**
+   * 规范化参数字段值：
+   * 保护首行与各行的代码/文本前导缩进（禁止直接使用全量 trim()）。
+   * 1. 若首字符紧跟换行（\r\n 或 \n），剥离该换行符，但保留第一行代码的缩进空格。
+   * 2. 剥离末尾的换行及尾随空白。
+   * @param {string} value
+   * @returns {string}
+   */
+  static _normalizeFieldValue(value) {
+    if (typeof value !== 'string') return '';
+    return value.replace(/^(?:\r?\n)/, '').replace(/(?:\r?\n)?[ \t]*$/, '');
   }
 
   static _restoreEscapedLiterals(content) {

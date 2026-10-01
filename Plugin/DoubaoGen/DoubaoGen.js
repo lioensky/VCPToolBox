@@ -223,22 +223,64 @@ function netRequest(options, postData) {
     });
 }
 
-function downloadImage(url) {
+function downloadImage(url, timeoutMs = 30000) {
     return new Promise((resolve, reject) => {
         const fullUrl = url.startsWith('http') ? url : `https:${url}`;
-        const client = fullUrl.startsWith('http://') ? http : https;
-        client.get(fullUrl, (res) => {
-            if (res.statusCode === 301 || res.statusCode === 302) {
+        let client;
+        try {
+            const parsed = new URL(fullUrl);
+            client = parsed.protocol === 'http:' ? http : https;
+        } catch (e) {
+            return reject(new Error(`无效的 URL: ${url}`));
+        }
+
+        const req = client.get(fullUrl, (res) => {
+            if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
                 const redirectUrl = res.headers.location;
                 if (!redirectUrl) return reject(new Error('收到重定向但无 Location 头'));
-                return downloadImage(redirectUrl).then(resolve).catch(reject);
+                const nextUrl = new URL(redirectUrl, fullUrl).toString();
+                return downloadImage(nextUrl, timeoutMs).then(resolve).catch(reject);
+            }
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+                return reject(new Error(`HTTP 状态码异常: ${res.statusCode}`));
             }
             const chunks = [];
-            res.on('data', c => chunks.push(c));
+            let totalBytes = 0;
+            const MAX_BYTES = 25 * 1024 * 1024; // 25MB 上限保护
+            res.on('data', c => {
+                totalBytes += c.length;
+                if (totalBytes > MAX_BYTES) {
+                    req.destroy();
+                    reject(new Error('图片体积过大 (超过 25MB)'));
+                    return;
+                }
+                chunks.push(c);
+            });
             res.on('end', () => resolve({ data: Buffer.concat(chunks), contentType: res.headers['content-type'] }));
             res.on('error', reject);
-        }).on('error', reject);
+        });
+
+        req.on('error', reject);
+        req.setTimeout(timeoutMs, () => {
+            req.destroy();
+            reject(new Error(`下载图片超时 (${Math.round(timeoutMs / 1000)}秒)`));
+        });
     });
+}
+
+function isPrivateOrLocalHost(hostname) {
+    if (!hostname) return false;
+    const h = hostname.toLowerCase();
+    if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.endsWith('.local')) return true;
+    const parts = h.split('.').map(Number);
+    if (parts.length === 4 && parts.every(p => !isNaN(p) && p >= 0 && p <= 255)) {
+        if (parts[0] === 10) return true;
+        if (parts[0] === 127) return true;
+        if (parts[0] === 192 && parts[1] === 168) return true;
+        if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+        if (parts[0] === 169 && parts[1] === 254) return true;
+    }
+    return false;
 }
 
 // ============================================================
@@ -504,7 +546,56 @@ async function processSingleImage(item, paramName = 'image') {
     const image = item.image;
     if (!image || typeof image !== 'string') return image;
     if (image.startsWith('data:image')) return image;
-    if (image.startsWith('http://') || image.startsWith('https://')) return image;
+
+    // 处理 HTTP / HTTPS 链接 (支持局域网直接读盘/本地代理下载转 Base64)
+    if (image.startsWith('http://') || image.startsWith('https://')) {
+        try {
+            const parsedUrl = new URL(image);
+            const isLocal = isPrivateOrLocalHost(parsedUrl.hostname);
+
+            // 1. 本地图床直读优化 (如果匹配 /pw=.../images/... 或 /images/...)
+            const imageMatch = parsedUrl.pathname.match(/(?:\/pw=[^/]+)?\/images\/(.+)$/);
+            if (imageMatch && imageMatch[1]) {
+                const subPath = decodeURIComponent(imageMatch[1]);
+                const localDiskPath = path.join(PROJECT_BASE_PATH, 'image', subPath);
+                if (existsSync(localDiskPath) && isPathWithinBase(localDiskPath, path.join(PROJECT_BASE_PATH, 'image'))) {
+                    log('info', `命中本地图床文件直读: ${localDiskPath}`);
+                    const buffer = await fs.readFile(localDiskPath);
+                    const ext = path.extname(localDiskPath).toLowerCase();
+                    const mimeMap = {
+                        '.png': 'image/png', '.jpg': 'image/jpeg',
+                        '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+                        '.webp': 'image/webp', '.bmp': 'image/bmp'
+                    };
+                    const mime = mimeMap[ext] || 'image/jpeg';
+                    return `data:${mime};base64,${buffer.toString('base64')}`;
+                }
+            }
+
+            // 2. 局域网/私有网络地址：云端无法访问，必须本地下载并转为 Base64
+            if (isLocal) {
+                log('info', `检测到局域网/本地图片地址 (${parsedUrl.hostname})，正在本地下载并转 Base64...`);
+                const downloadResult = await downloadImage(image, 30000);
+                const mime = (downloadResult.contentType || 'image/png').split(';')[0].trim();
+                return `data:${mime};base64,${downloadResult.data.toString('base64')}`;
+            }
+
+            // 3. 公网地址：优先尝试在本地下载转 Base64；若失败则安全回退为原 URL (由云端 API 自行抓取)
+            log('info', `尝试在本地预下载图片转 Base64: ${image}`);
+            try {
+                const downloadResult = await downloadImage(image, 15000);
+                const mime = (downloadResult.contentType || 'image/png').split(';')[0].trim();
+                log('info', `公网图片本地转 Base64 成功: ${mime}`);
+                return `data:${mime};base64,${downloadResult.data.toString('base64')}`;
+            } catch (dlErr) {
+                log('warn', `公网图片本地预下载转 Base64 失败 (${dlErr.message})，回退为透传原始 URL`);
+                return image;
+            }
+        } catch (urlErr) {
+            log('warn', `解析或下载图片 URL 异常: ${urlErr.message}`);
+            return image;
+        }
+    }
 
     if (image.startsWith('file://')) {
         let filePath;

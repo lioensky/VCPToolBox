@@ -1,7 +1,7 @@
 ---
 title: VCP 全景技术白皮书 V5
 summary: 全面介绍 VCP 全栈运行时、Jev 决策与自然语言调用管网、Agent 工业级软件工程体系、前端应用群、共享 IPC 管网、Loom 与共笔文坊协作系统的工作原理和系统交互，是理解迈向 VCP 2.0 正式版全景生态的重要读物。
-updatedAt: 2026-09-29
+updatedAt: 2026-09-30
 category: guide
 ---
 
@@ -203,10 +203,12 @@ OneRing 系统为每个 Agent 维护唯一的事实时间线——每条消息�
 │              VCP 中间层服务器(VCPToolBox 2.0)                 │
 │  ───────────────────────────────────────────────────────────  │
 │  协议层:  JEV-TOOL-call 编译器 · JevCallBridgeEXP · 原生ToolCall│
+│          jevcall/vcpcall 管线对齐 · 参数正则白名单安检系统       │
 │          安检双轨隔离机制 · 任意数组兼容 · SystemPromptHacker  │
 │  决策层:  JevRuntime 公共服务 (扩散架构低延迟概率决策, 255/300ms)│
 │          JEVRerank (记忆/提示词/上下文折叠/群聊发言动态裁决)    │
 │  工程层:  VCPCode 核心工程移植 · VCPProjectForge 协同模组      │
+│          MoonASTSearch C/Rust 双擎 · RustCodeSearch AST 强化   │
 │          脉络署名责任制 · 代际分支仲裁 · 操作级虚拟快照树      │
 │  上下文层:引力场 · 折叠 V2 · OneRing · OneRingMemo · 占位符精控│
 │  工具层:  300+ 插件 · 6 大插件协议 · 声明式 Jev 接入规范        │
@@ -415,7 +417,7 @@ JEV:「始」请使用 {联网搜索}，从[美国土豆产能]和[美国当前�
    - **`生活服务`**：即时咨询、资讯聚合与本地生活场景调度。
    第三方插件使用严格的 `ToolName` 作为导航锚点，支持自由绑定上述官方划分的能力大类，零门槛享受官方 JevCallEXPService 的解析红利。
 
-### 4.4 工业级安检双轨隔离机制：高危精准操作的绝对防御
+### 4.4 工业级安检双轨隔离机制：高危精准操作的绝对防御与参数正则白名单系统
 
 在全面拥抱自然语言“言出法随”的柔性便利时，VCP 展现了对系统级生产力与数据主权的极致克制——确立了**自然语言柔性调用与高精度工业操作的双轨物理安全隔离哲学**：
 
@@ -442,6 +444,8 @@ Jev-Tool-Call 柔性自然语言调用         【安检双轨层拦截检验】
 1. **高危破坏性操作安检自动拦截**：凡是涉及**底层命令行执行（CLI / Shell / PowerShell）、精准代码重构（ProjectForge）以及文件系统破坏性/行级编辑（FileOperator / ServerFileOperator）**的 JevCall 请求，将被系统安检层判定为越界风险并直接**自动拒绝**。
 2. **强制收敛至原生严格 VCP ToolCall 协议**：关乎系统根基、代码生命与文件一致性的高精度严肃操作，必须强制走严格、显式且具备防格式坍塌机制的 **VCP 原生 ToolCall 格式**（以 `<<<[TOOL_REQUEST]>>>`、`maid` 署名及严格字段包裹为物理准则）。
 3. **确定性与灵活性的黄金解耦**：日常生活、交互娱乐、信息检索与智能硬件控制走轻盈的自然语言调用；底层代码工程与系统级运维走确定、可审计、抗歧义的原生协议，彻底杜绝模糊语义导致的“误改误删”与不可逆灾难。
+4. **工具调用审核新增白名单系统与内部参数正则级细粒度控制**：在黑名单拦截防御的基础上，系统引入**白名单系统与黑名单交叉校验**。审核系统的颗粒度进一步细化至**单一指令的内部参数正则级**——不仅控制 Agent “能否调用某个指令”，更严密限制指令参数必须满足指定的正则模式、路径白名单或格式规范，从根本上阻断提示词注入注入与越界参数滥用。
+5. **jevcall 与常规 vcpcall 管线深度对齐**：为了消除双协议运行带来的认知与维护分歧，系统进一步统一了 Jev 自然语言调用与原生 VCPCall 调用的底层执行管线。两端在参数解析、中间状态通知、错误规范化、异步占位符追踪以及 VCPToolRecord 审计落盘上实现**能力和实现几乎完整对齐**，大幅降低开发成本与运行时状态分歧。
 
 ### 4.5 串语法与并发
 
@@ -718,7 +722,7 @@ VSearch（自研轻量搜索引擎）、VSearch+（聚合多种模型的联网�
 VCPFetch、VCPBilibiliFetch(检索/字幕/弹幕/评论/截图/上传/Google FileCacheAPI 预向量阅读)、VCPYoutubeFetch、ChromeBridge V3(脚本管理/Cookie/多层级安全解析器/300+ CDP 指令)、VCPDownload、VCPCloudDrive……
 
 **通讯与控制**
-VCPAgentAssistant(混合插件,4 种类型同时声明)、VCPAgentMessage、VCPFlowLock、VCPPluginCreator、VCPMiJiaManager、VCPMail、VCPSuperMail、VCPPowerShell、VCPCodeSearcher、VCPFileOperate(镜像/纠错/回退/批处理/Diff fuzz 检查)、VCPEverything、VCPWorkSpace、ProjectAnalyst、VCPAuthNet、VCPSom(纯数学窗口语义操控)……
+VCPAgentAssistant(混合插件,4 种类型同时声明)、VCPAgentMessage、VCPFlowLock、VCPPluginCreator、VCPMiJiaManager、VCPMail、VCPSuperMail、VCPPowerShell、RustCodeSearch（全面重构，AST 解析与复合正则增强，渐进函数披露，智能行号追踪，保留起止行映射并生成引用依赖报告）、VCPCodeSearcher、VCPFileOperate(镜像/纠错/回退/批处理/Diff fuzz 检查)、VCPEverything、VCPWorkSpace、ProjectAnalyst、VCPAuthNet、VCPSom(纯数学窗口语义操控)……
 
 **数学与科学**
 高级科学计算器、函数图形渲染、3D 模型渲染、NCBI/KEGG 等 6 个生信模组(数百个专业指令,调研指令覆盖蛋白质折叠/RNA 序列/化学标记/药物分子等)
@@ -1636,6 +1640,8 @@ VChat 在迈向 2.0 的进程中完成了底层与桌面宿主的大版本换代
 3. **统一全局磨砂渲染管线**：废弃过去各浮窗、气泡独立执行 CSS `backdrop-filter` 导致的 GPU 重复多重采样与高功耗开销，统一在视图层执行单次全局 Blur 计算并生成共享模糊纹理缓冲区，各组件依据视口坐标按需投影分配，消除局部重绘抖动。
 4. **滚动器与非整数缩放深度修正**：针对 Windows 系统非 100% 缩放（如 125%、150%）下的亚像素修正，彻底收敛滚动器与尺寸计算，杜绝非整数 DPI 环境下长消息界面的偶发全局重排。
 5. **系统级独立语音输入引擎**：新增基于纯 Rust 构建的独立语音引擎，彻底摒弃外部反代。直接通过 **Windows 原生 WinAPI 通道** 或 **本地输入法 API 通道**（即插即用豆包/讯飞等输入法）捕获麦克风输入，让语音指令可脱离主窗口在游戏、创作软件中直接驱动 Agent；配合 **渲染态流式音频朗读（Mimo 2.5 / 本地 SoVITS）**，实现即生成即发音的无停顿语音交互闭环。
+6. **Preload 重构为子应用分区的渐进声明式校验**：彻底打破过去前端 Preload 脚本在单体进程中的庞杂硬编码校验，将 Preload 重构为**子应用分区的渐进声明式校验**。通过按子应用独立声明权限接口、生命周期与 IPC 契约，为 Agent 敏捷、低摩擦地自动化开发和生成海量 VChat 子应用扫清了架构障碍。
+7. **工作区感知的编辑器**：编辑器核心深度融入工作区感知机制，支持工程目录智能过滤、按语义深度渐进展开代码层级，并引入精细的 Token 预算管理机制，在保障 Agent 获取高价值代码上下文的同时，严格抑制上下文膨胀。
 
 ### 13.2 VCPMessageRenderer V4：流式竞态根治与极端内容防御
 
@@ -2428,7 +2434,12 @@ VCP 前端应用群的联动不是预先写死的“应用 A 调用应用 B”�
 4. **编程代际分支仲裁（Revision Branch Arbitration）**：针对多 Agent 并发修改同一模块可能产生的逻辑冲突与语义分歧，引入代际分支仲裁算法，依据上下文置信度、测试通过率与语义兼容性实现自动化分支合并与胜出裁决。
 5. **多历史分支步进式操作备份与无损回退**：构建细粒度的“操作级虚拟快照树”。系统记录 Agent 执行的每一个微观动作，支持在任意分支节点上进行单步前进、跨版本跃迁与精准无损回退，绝不破坏未受影响的工作区资产。
 6. **自动化语法静态检查、自愈修复与虚拟环境治理**：内置实时语言服务器与 AST 校验探针，Agent 写入代码后自动执行多层语法检查，对常见语法偏差与类型错位进行即时自愈；深度整合编译器、单元测试套件与虚拟环境（如 uv / venv / node_modules 等）生命周期管理，确保交付代码开箱即跑。
-7. **深度联动 VCPCLI**：与系统级底层终端交互底座 VCPCLI 实现双向消息总线贯通，Agent 既可通过命令行驱动本地工具链，也能将终端状态无缝回传至 ProjectForge 决策中枢。
+7. **MoonASTSearch 语义代码搜索系统（C + Tree-sitter + Rust 双擎）**：
+   - ProjectForge 正式引入自研 **MoonASTSearch** 搜索系统，底层采用纯 C 实现的渐进优化 **tree-sitter** 路线，整个底层库由 **Rust + C 协同持有**，彻底取代之前前端 JS 侧轻量 SQLite 临时库方案。
+   - **全局 AST 增量实时索引**：通过 `mtime + size + notify` 机制自动监听工程变动，增量构建工作区全局 AST 索引，全自动导出所有函数、类以及工程 Codemap。
+   - **精准行号与渐进函数展开**：自动获取所有函数的绝对精准行号（严格从初始行到结束行）；配合 Jev 决策层实现**渐进语义级代码搜索**与按需迭代展开显示，彻底摆脱传统正则表达式和 `ripgrep (rg)` 搜索在大型项目中带来的巨量无用噪音与上下文浪费。
+   - **函数导出漫游与非生产目录屏蔽**：系统自动计算并呈现函数导出漫游关系；支持智能及手动屏蔽 `.test`、`.doc` 等非生产目录，精准把控工程核心脉络。
+8. **深度联动 VCPCLI**：与系统级底层终端交互底座 VCPCLI 实现双向消息总线贯通，Agent 既可通过命令行驱动本地工具链，也能将终端状态无缝回传至 ProjectForge 决策中枢。
 
 ### 15.3 ProjectModule —— 可视化多 Agent 编程中枢
 
@@ -2602,7 +2613,9 @@ Agent 引用本地文件路径(如 H:\MCP\123.txt)
 | 层级 | 机制 | 说明 |
 |------|------|------|
 | 认证层 | VCP Auth | 动态验证码控制高权限工具 |
-| 插件层 | 细粒度授权 | 任意插件的任意单个指令可独立设置权限级别 |
+| 插件层 | 细粒度授权 | 任意插件的任意单个指令可独立设置权限级别与黑白名单交叉审核 |
+| 参数层 | 参数正则白名单 | 细化至单一指令的内部参数正则级校验，阻断越界传参与注入 |
+| 协议层 | jevcall/vcpcall 对齐 | 自然语言与原生严格调用管线同构化，统一错误、生命周期与审计 |
 | 系统层 | 管理员模式 | 高危操作需明确授权 |
 | 网络层 | VCP_Key | 分布式节点需正确密钥 |
 | 防护层 | 遍历攻击防火墙 | 关键文件严格防护 |
@@ -2669,6 +2682,8 @@ VCP 完全自研的核心引擎清单。这部分不修辞,只列事实。
 | **JEV-TOOL-call / JevCallBridgeEXP** | 统一自然语言工具编译管线与分布式导航桥，支持声明式 Jev 三元接入规范，打通分布式全网节点纳秒级透明寻址 |
 | **安检双轨隔离层 (Security Dual-Track)** | 工业级越界安全拦截中枢，高危命令行执行、代码重构与破坏性文件编辑强制拒绝 Jev 调用，物理收敛至原生严格 VCP ToolCall 格式 |
 | **VCPCode / VCPProjectForge** | 工业级软件工程模组与高能效编码体系（1/6 Token消耗与1/10步骤），具备脉络署名责任制、代际分支仲裁与操作级虚拟快照回退树 |
+| **MoonASTSearch (ProjectForge)** | 基于 C + Tree-sitter + Rust 的全局 AST 索引与渐进语义代码搜索引擎，精准函数行号定位，取代 JS 侧 SQLite |
+| **RustCodeSearch** | 纯 Rust 深度 AST 与复合正则代码检索插件，渐进函数披露，智能行号追踪，保留起止行映射并生成依赖报告 |
 | **ProjectModule (V工程)** | 可视化多 Agent 编程中枢子前端，实现后台并发编码全流程显式渲染、VChat/GroupChat 调度与细粒度单步回退控制 |
 | **VCP RustVexus** | 统一 Rust 记忆与向量基础设施,承载 SQLite/WAL、向量索引、不可变 Artifact 缓存及 RiverMemo N-API 原生任务 |
 | **VCP TagMemo V9** | 全上下文查询观测底座,EPA + Residual Pyramid + 有界 Spike 传播，Tag 校验升级为纯局部增量与减量图计算 |
