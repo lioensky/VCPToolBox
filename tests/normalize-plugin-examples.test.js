@@ -77,3 +77,34 @@ test('preview is read-only; write backs up enabled/disabled configs and preserve
         await fs.rm(temp, { recursive: true, force: true });
     }
 });
+
+test('normalizer and validator ignore browser profiles and non-manifest JSON', async () => {
+    const { validateDirectory } = require('../validate-plugin-json');
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'vcp-scope-'));
+    try {
+        const root = path.join(temp, 'Plugin');
+        const plugin = path.join(root, 'ChromeBridge');
+        const profile = path.join(plugin, 'managed-profile', 'FirstPartySetsPreloaded');
+        await fs.mkdir(profile, { recursive: true });
+        const browserData = '{"site":"a"}\n{"site":"b"}';
+        const unrelated = JSON.stringify(fixture({ description: block }));
+        await fs.writeFile(path.join(profile, 'sets.json'), browserData);
+        await fs.writeFile(path.join(profile, 'plugin-manifest.json'), unrelated);
+        await fs.writeFile(path.join(plugin, 'state.json'), unrelated);
+        await fs.writeFile(path.join(plugin, 'plugin-manifest.json'), JSON.stringify(fixture({ description: block })));
+        const result = await run({ root, backupRoot: path.join(temp, 'backups'), write: true, log() {} });
+        assert.equal(result.files, 1);
+        assert.equal(result.errors, 0);
+        assert.equal(result.changedFiles, 1);
+        assert.equal(await fs.readFile(path.join(profile, 'sets.json'), 'utf8'), browserData);
+        assert.equal(await fs.readFile(path.join(profile, 'plugin-manifest.json'), 'utf8'), unrelated);
+        assert.equal(await fs.readFile(path.join(plugin, 'state.json'), 'utf8'), unrelated);
+        const validation = await validateDirectory(root, () => {});
+        assert.equal(validation.files, 1);
+        assert.equal(validation.invalid, 0);
+        await fs.writeFile(path.join(plugin, 'plugin-manifest.json'), '{broken');
+        assert.equal((await validateDirectory(root, () => {})).invalid, 1);
+    } finally {
+        await fs.rm(temp, { recursive: true, force: true });
+    }
+});

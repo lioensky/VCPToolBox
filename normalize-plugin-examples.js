@@ -76,15 +76,17 @@ function normalizeManifest(manifest) {
 }
 
 async function* findConfigs(directory) {
-    const entries = await fs.readdir(directory, { withFileTypes: true });
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-        const target = path.join(directory, entry.name);
-        // Never follow symlinks or descend into dependency/version-control directories.
-        if (entry.isDirectory() && !['node_modules', '.git', '.plugin-example-backups'].includes(entry.name)) {
-            yield* findConfigs(target);
-        } else if (entry.isFile() && /\.json(?:\.block)?$/i.test(entry.name)) {
-            yield target;
+    const plugins = await fs.readdir(directory, { withFileTypes: true });
+    plugins.sort((a, b) => a.name.localeCompare(b.name));
+    for (const plugin of plugins) {
+        if (!plugin.isDirectory() || ['node_modules', '.git', '.plugin-example-backups'].includes(plugin.name)) continue;
+        const pluginDirectory = path.join(directory, plugin.name);
+        const entries = await fs.readdir(pluginDirectory, { withFileTypes: true });
+        for (const entry of entries) {
+            // Only plugin-root manifests; never traverse browser profiles or runtime data.
+            if (entry.isFile() && ['plugin-manifest.json', 'plugin-manifest.json.block'].includes(entry.name)) {
+                yield path.join(pluginDirectory, entry.name);
+            }
         }
     }
 }
@@ -96,6 +98,7 @@ async function run({ root = path.join(__dirname, 'Plugin'), write = false,
     const backupDirectory = path.join(backupRoot, new Date().toISOString().replace(/[:.]/g, '-') + `-${process.pid}`);
     const summary = { files: 0, commands: 0, changedFiles: 0, changedCommands: 0, warnings: 0, errors: 0 };
     log(write ? '写入模式：修改前自动备份。' : '预览模式：不会修改文件。使用 --write 才会写入。');
+    log('扫描范围：仅 Plugin/<插件>/plugin-manifest.json 和 plugin-manifest.json.block，不进入运行数据子目录。');
     for await (const file of findConfigs(root)) {
         summary.files++;
         const relative = path.relative(root, file);
@@ -139,7 +142,7 @@ async function run({ root = path.join(__dirname, 'Plugin'), write = false,
 if (require.main === module) {
     const args = process.argv.slice(2);
     if (args.includes('--help')) {
-        console.log('用法：node normalize-plugin-examples.js [--write]\n默认只预览；--write 备份并写入。扫描 Plugin 下 .json 和 .json.block。\n只处理带 commandIdentifier 的命令；已有非空 example 不覆盖。\n注意：描述中的调用块可能是参数说明模板，迁移前请审阅预览结果。');
+        console.log('用法：node normalize-plugin-examples.js [--write]\n默认只预览；--write 备份并写入。仅扫描 Plugin/<插件>/plugin-manifest.json 和 plugin-manifest.json.block。\n不进入浏览器配置、缓存或其他运行数据目录。\n只处理带 commandIdentifier 的命令；已有非空 example 不覆盖。\n注意：描述中的调用块可能是参数说明模板，迁移前请审阅预览结果。');
     } else if (args.some(arg => arg !== '--write')) {
         console.error('未知选项。使用 --help 查看用法。');
         process.exitCode = 1;

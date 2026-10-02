@@ -12,7 +12,7 @@ async function validateDirectory(root = path.join(__dirname, 'Plugin'), log = co
     const decoder = new TextDecoder('utf-8', { fatal: true });
     root = path.resolve(root);
 
-    async function visit(directory) {
+    async function visit(directory, depth = 0) {
         let entries;
         try {
             entries = await fs.readdir(directory, { withFileTypes: true });
@@ -24,10 +24,10 @@ async function validateDirectory(root = path.join(__dirname, 'Plugin'), log = co
         entries.sort((a, b) => a.name.localeCompare(b.name));
         for (const entry of entries) {
             const target = path.join(directory, entry.name);
-            // Match the normalizer's scope; never follow symlinks.
-            if (entry.isDirectory() && !['node_modules', '.git', '.plugin-example-backups'].includes(entry.name)) {
-                await visit(target);
-            } else if (entry.isFile() && /\.json(?:\.block)?$/i.test(entry.name)) {
+            // Only direct plugin manifests; never traverse runtime data or symlinks.
+            if (depth === 0 && entry.isDirectory() && !['node_modules', '.git', '.plugin-example-backups'].includes(entry.name)) {
+                await visit(target, 1);
+            } else if (depth === 1 && entry.isFile() && ['plugin-manifest.json', 'plugin-manifest.json.block'].includes(entry.name)) {
                 summary.files++;
                 try {
                     const bytes = await fs.readFile(target);
@@ -43,7 +43,8 @@ async function validateDirectory(root = path.join(__dirname, 'Plugin'), log = co
         }
     }
 
-    log(`只读 JSON 语法及 UTF-8 编码校验：${root}`);
+    log(`只读插件清单 JSON 语法及 UTF-8 编码校验：${root}`);
+    log('范围：仅 Plugin/<插件>/plugin-manifest.json 和 plugin-manifest.json.block，不检查浏览器运行数据。');
     await visit(root);
     log(`汇总：扫描 ${summary.files} 文件，通过 ${summary.valid}，失败 ${summary.invalid}，目录读取失败 ${summary.directoryErrors}。`);
     if (!summary.invalid && !summary.directoryErrors) {
@@ -55,7 +56,7 @@ async function validateDirectory(root = path.join(__dirname, 'Plugin'), log = co
 if (require.main === module) {
     const args = process.argv.slice(2);
     if (args.length === 1 && args[0] === '--help') {
-        console.log('用法：node validate-plugin-json.js\n只读递归校验 Plugin 下 .json 和 .json.block；支持 UTF-8 BOM。\n跳过 node_modules、.git 和符号链接。失败时返回非零退出码。');
+        console.log('用法：node validate-plugin-json.js\n只读校验 Plugin/<插件>/plugin-manifest.json 和 plugin-manifest.json.block；支持 UTF-8 BOM。\n不进入运行数据子目录，跳过符号链接。失败时返回非零退出码。');
     } else if (args.length) {
         console.error('未知选项。使用 --help 查看用法。');
         process.exitCode = 1;
