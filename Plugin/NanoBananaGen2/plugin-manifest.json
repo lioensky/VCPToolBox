@@ -70,17 +70,17 @@
     "invocationCommands": [
       {
         "commandIdentifier": "NanoBananaGenerate",
-        "description": "文生图。通过 NanoBanana 模型生成图片。\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」generate「末」,\nprompt:「始」(必需) 详细的图片生成提示词，建议英文。「末」,\nimage_size:「始」(可选) 1K / 2K / 4K，默认由模型决定。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "文生图。通过 NanoBanana 模型生成图片。\n",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」generate「末」,\nprompt:「始」A beautiful sunset over mountains with dramatic clouds「末」,\nimage_size:「始」4K「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "NanoBananaEdit",
-        "description": "图生图/编辑。基于已有图片进行修改。\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」edit「末」,\nprompt:「始」(必需) 描述如何编辑图片的指令。「末」,\nimage_url:「始」(必需) 图片URL，支持 http/https/file://。「末」,\nimage_size:「始」(可选) 1K / 2K / 4K。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "图生图/编辑。基于已有图片进行修改。\n",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」edit「末」,\nprompt:「始」Add a rainbow and make colors more vibrant「末」,\nimage_url:「始」https://example.com/photo.jpg「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "NanoBananaCompose",
-        "description": "多图合成。将多张图片按指令合成新图。\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」compose「末」,\nprompt:「始」(必需) 描述如何合成多张图片的指令。「末」,\nimage_url_1:「始」(必需) 第一张图片URL。「末」,\nimage_url_2:「始」(可选) 第二张图片URL。「末」,\nimage_url_3:「始」(可选) 第三张...以此类推。「末」,\nimage_size:「始」(可选) 1K / 2K / 4K。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "多图合成。将多张图片按指令合成新图。\n",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」compose「末」,\nprompt:「始」Use background from first image, character from second「末」,\nimage_url_1:「始」https://example.com/bg.jpg「末」,\nimage_url_2:「始」https://example.com/char.png「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]

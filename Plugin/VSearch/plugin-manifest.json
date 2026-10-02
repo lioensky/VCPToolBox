@@ -76,7 +76,8 @@
     "invocationCommands": [
       {
         "commandIdentifier": "VSearch",
-        "description": "执行语义级搜索。简单搜索只需提供主题，搜索AI会自行理解和扩展意图；深度研究时可提供多个关键词，并发执行分支检索后返回整合信息。\n参数:\n- SearchTopic (字符串, 必需): 完整的搜索问题、目标主题或研究背景。\n- Keywords (字符串, 可选): 用于控制深度研究分支的具体关键词，多个关键词请用逗号或换行分隔。简单搜索请省略；省略或留空时自动以 SearchTopic 作为唯一搜索内容。\n- SearchMode (字符串, 可选, 默认'kimisearch'): 搜索模式。可选值: 'grounding' (Google搜索), 'grok' (Grok内置搜索), 'tavily' (Tavily外部搜索), 'kimisearch' (Kimi Search 外部搜索)。\n- ShowURL (布尔值, 可选, 默认false): 是否在结果中显示参考来源的完整URL。如果不需要溯源，建议设为false以节省Token。\n简单搜索调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VSearch「末」,\nSearchTopic:「始」OpenAI 最近发布了哪些新模型「末」,\nSearchMode:「始」grounding「末」,\nShowURL:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>\n\n深度分支搜索时再添加:\nKeywords:「始」官方发布, 模型能力与基准, API价格, 开发者反馈「末」"
+        "description": "执行语义级搜索。简单搜索只需提供主题，搜索AI会自行理解和扩展意图；深度研究时可提供多个关键词，并发执行分支检索后返回整合信息。\n参数:\n- SearchTopic (字符串, 必需): 完整的搜索问题、目标主题或研究背景。\n- Keywords (字符串, 可选): 用于控制深度研究分支的具体关键词，多个关键词请用逗号或换行分隔。简单搜索请省略；省略或留空时自动以 SearchTopic 作为唯一搜索内容。\n- SearchMode (字符串, 可选, 默认'kimisearch'): 搜索模式。可选值: 'grounding' (Google搜索), 'grok' (Grok内置搜索), 'tavily' (Tavily外部搜索), 'kimisearch' (Kimi Search 外部搜索)。\n- ShowURL (布尔值, 可选, 默认false): 是否在结果中显示参考来源的完整URL。如果不需要溯源，建议设为false以节省Token。\n简单搜索调用格式:\n\n\n深度分支搜索时再添加:\nKeywords:「始」官方发布, 模型能力与基准, API价格, 开发者反馈「末」",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VSearch「末」,\nSearchTopic:「始」OpenAI 最近发布了哪些新模型「末」,\nSearchMode:「始」grounding「末」,\nShowURL:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }
