@@ -36,6 +36,7 @@ export interface PluginInvocationCommand {
   commandIdentifier?: string;
   command?: string;
   description?: string;
+  example?: string;
 }
 
 export interface PluginManifest {

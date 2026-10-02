@@ -116,6 +116,26 @@ export const pluginApi = {
     }
   },
 
+  async saveInvocationCommandExample(
+    pluginName: string,
+    commandIdentifier: string,
+    example: string | null,
+    uiOptions: RequestUiOptions = {}
+  ): Promise<void> {
+    try {
+      await requestWithUi(
+        {
+          url: `/admin_api/plugins/${encodeURIComponent(pluginName)}/commands/${encodeURIComponent(commandIdentifier)}/metadata`,
+          method: "POST",
+          body: { example },
+        },
+        uiOptions
+      );
+    } finally {
+      invalidatePluginListCache();
+    }
+  },
+
   async saveInvocationCommandDescription(
     pluginName: string,
     commandIdentifier: string,

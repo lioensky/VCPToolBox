@@ -282,6 +282,7 @@
                 v-model="commandDescriptions[getCommandIdentifier(cmd)]"
               />
               <UiButton
+                type="button"
                 @click="saveInvocationCommandDescription(cmd)"
                 variant="outline"
                 size="sm"
@@ -294,6 +295,45 @@
               >
                 {{ commandStatuses[getCommandIdentifier(cmd)]?.message }}
               </UiBadge>
+            </UiField>
+            <UiField label="调用示例（可选）" :for-id="`cmd-example-${index}`">
+              <p class="description">
+                {{ typeof cmd.example === 'string' ? '已设置调用示例。' : '未设置调用示例，可在下方添加。' }}
+                描述与示例分别保存；清空后保存会保留空字符串，“移除示例”才会删除字段。
+              </p>
+              <p v-if="isDistributedPlugin" class="description">分布式插件的调用示例需在所属节点侧编辑。</p>
+              <UiTextarea
+                :id="`cmd-example-${index}`"
+                v-model="commandExamples[getCommandIdentifier(cmd)]"
+                class="command-example-edit"
+                rows="7"
+                spellcheck="false"
+                placeholder="可粘贴完整工具调用示例，保留原始格式及换行。"
+                :disabled="isDistributedPlugin || !getCommandIdentifier(cmd) || commandExamplePending[getCommandIdentifier(cmd)]"
+              />
+              <div class="command-example-actions">
+                <UiButton
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  :disabled="isDistributedPlugin || !getCommandIdentifier(cmd) || commandExamplePending[getCommandIdentifier(cmd)]"
+                  @click="saveInvocationCommandExample(cmd)"
+                >{{ commandExamplePending[getCommandIdentifier(cmd)] ? '保存中…' : '保存此调用示例' }}</UiButton>
+                <UiButton
+                  v-if="typeof cmd.example === 'string'"
+                  type="button"
+                  variant="danger"
+                  size="sm"
+                  :disabled="isDistributedPlugin || !getCommandIdentifier(cmd) || commandExamplePending[getCommandIdentifier(cmd)]"
+                  @click="saveInvocationCommandExample(cmd, true)"
+                >移除示例</UiButton>
+              </div>
+              <UiBadge
+                v-if="commandExampleStatuses[getCommandIdentifier(cmd)]?.message"
+                class="command-status"
+                role="status"
+                :variant="getStatusVariant(commandExampleStatuses[getCommandIdentifier(cmd)]?.type)"
+              >{{ commandExampleStatuses[getCommandIdentifier(cmd)]?.message }}</UiBadge>
             </UiField>
           </div>
         </div>
@@ -421,6 +461,9 @@ const {
   sensitiveFields,
   commandDescriptions,
   commandStatuses,
+  commandExamples,
+  commandExampleStatuses,
+  commandExamplePending,
   hasEnvContent,
   hasConfigSchema,
   schemaEntries,
@@ -501,6 +544,10 @@ async function openReadme() {
 
 async function saveInvocationCommandDescription(cmd: InvocationCommand) {
   await pluginConfigStore.saveInvocationCommandDescription(pluginName.value, cmd)
+}
+
+async function saveInvocationCommandExample(cmd: InvocationCommand, remove = false) {
+  await pluginConfigStore.saveInvocationCommandExample(pluginName.value, cmd, remove)
 }
 
 async function togglePlugin() {
@@ -820,6 +867,17 @@ watch(
 
 .command-description-edit {
   width: 100%;
+}
+
+.command-example-edit {
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+.command-example-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .command-save-btn {

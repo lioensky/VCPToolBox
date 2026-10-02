@@ -33,6 +33,9 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
   const sensitiveFields = reactive<Record<string, boolean>>({})
   const commandDescriptions = reactive<Record<string, string>>({})
   const commandStatuses = reactive<Record<string, { type: 'info' | 'success' | 'error'; message: string }>>({})
+  const commandExamples = reactive<Record<string, string>>({})
+  const commandExampleStatuses = reactive<Record<string, { type: 'info' | 'success' | 'error'; message: string }>>({})
+  const commandExamplePending = reactive<Record<string, boolean>>({})
 
   const envKeys = computed(() => new Set(
     configEntries.value
@@ -84,6 +87,9 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
     Object.keys(commandDescriptions).forEach((key) => {
       delete commandDescriptions[key]
     })
+    for (const state of [commandExamples, commandExampleStatuses, commandExamplePending]) {
+      Object.keys(state).forEach((key) => { delete state[key] })
+    }
     Object.keys(commandStatuses).forEach((key) => {
       delete commandStatuses[key]
     })
@@ -233,6 +239,7 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
         const identifier = getCommandIdentifier(cmd)
         if (!identifier) return
         commandDescriptions[identifier] = cmd.description || ''
+        commandExamples[identifier] = typeof cmd.example === 'string' ? cmd.example : ''
       })
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -271,6 +278,43 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
         message: `保存失败: ${errorMessage}`
       }
       showMessage(`保存指令描述失败：${errorMessage}`, 'error')
+    }
+  }
+
+  async function saveInvocationCommandExample(pluginName: string, cmd: InvocationCommand, remove = false) {
+    const identifier = getCommandIdentifier(cmd)
+    const currentPlugin = pluginData.value
+    if (!identifier || !currentPlugin || commandExamplePending[identifier]) return
+    if (currentPlugin.isDistributed) {
+      showMessage('分布式插件的调用示例需要在所属节点侧编辑。', 'warning')
+      return
+    }
+    const example = remove ? null : (commandExamples[identifier] ?? '')
+    if (remove && !(await askConfirm({
+      message: `确定移除指令 "${identifier}" 的调用示例吗？此操作立即保存。`,
+      danger: true,
+      confirmText: '移除'
+    }))) return
+    if (pluginData.value !== currentPlugin || commandExamplePending[identifier]) return
+    commandExamplePending[identifier] = true
+    commandExampleStatuses[identifier] = { type: 'info', message: '正在保存示例…' }
+    try {
+      await pluginApi.saveInvocationCommandExample(pluginName, identifier, example, {
+        loadingKey: 'plugin-config.command-example.save'
+      })
+      if (example === null) delete cmd.example
+      else cmd.example = example
+      if (pluginData.value !== currentPlugin) return
+      if (remove) commandExamples[identifier] = ''
+      commandExampleStatuses[identifier] = { type: 'success', message: remove ? '示例已移除' : '示例已保存' }
+      showMessage(remove ? '调用示例已移除。' : '调用示例已保存。', 'success')
+    } catch (error) {
+      if (pluginData.value !== currentPlugin) return
+      const message = error instanceof Error ? error.message : String(error)
+      commandExampleStatuses[identifier] = { type: 'error', message: `保存失败：${message}` }
+      showMessage(`保存调用示例失败：${message}`, 'error')
+    } finally {
+      if (pluginData.value === currentPlugin) commandExamplePending[identifier] = false
     }
   }
 
@@ -376,6 +420,9 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
     sensitiveFields,
     commandDescriptions,
     commandStatuses,
+    commandExamples,
+    commandExampleStatuses,
+    commandExamplePending,
     hasEnvContent,
     hasConfigSchema,
     schemaEntries,
@@ -395,6 +442,7 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
     addCustomField,
     loadPluginConfig,
     saveInvocationCommandDescription,
+    saveInvocationCommandExample,
     togglePlugin,
     savePluginConfig
   }
