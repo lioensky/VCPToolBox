@@ -1,0 +1,68 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "LdBook",
+  "version": "1.0.0",
+  "displayName": "LdBook 电子图书检索器",
+  "description": "面向开放获取与公有领域电子图书的高性能检索与下载工具。采用原生编译自包含架构，支持多镜像全异步竞速检索、智能实体图书去重聚合、多格式探测，以及断点分段下载落盘。",
+  "author": "VCP",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "executable",
+    "command": "LdBook.exe"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 180000
+  },
+  "configSchema": {
+    "HTTP_PROXY": {
+      "type": "string",
+      "description": "代理地址（支持 HTTP/SOCKS5，例如 http://127.0.0.1:7890）。留空则使用系统环境配置。",
+      "default": ""
+    },
+    "SEARCH_MIRRORS": {
+      "type": "string",
+      "description": "逗号分隔的搜索镜像站点列表。站点变动或失效时在此配置更新。",
+      "default": "https://libgen.li,https://libgen.is,https://libgen.rs,https://libgen.st"
+    },
+    "DOWNLOAD_GATEWAYS": {
+      "type": "string",
+      "description": "逗号分隔的下载解析网关列表。",
+      "default": "https://library.lol,http://library.lol"
+    },
+    "DOWNLOAD_CONNECTIONS": {
+      "type": "integer",
+      "description": "分片并发下载连接数（建议 2~4，避免触发网关限流）。",
+      "default": 3
+    },
+    "DOWNLOAD_MAX_RETRIES": {
+      "type": "integer",
+      "description": "单个下载分块在遇到网络抖动时的最大重试次数。",
+      "default": 5
+    },
+    "USER_AGENT": {
+      "type": "string",
+      "description": "请求伪装使用的 User-Agent 请求头。",
+      "default": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "SearchBooks",
+        "description": "检索图书目录。自动聚合去重同名图书的所有可用格式（如 epub, pdf, mobi, txt 等），并提供最佳 MD5 标识供决策。\n参数:\n- query (字符串, 必需): 检索关键词，如书名、作者或 ISBN 编号。\n- format (字符串, 可选): 指定目标文件格式过滤（例如 'epub', 'pdf', 'mobi', 'txt', 'azw3'）。留空则展示全部可用格式。\n- searchField (字符串, 可选, 默认'def'): 检索匹配字段。可选值: 'def' (综合默认/模糊搜索), 'title' (按书名精确或前缀匹配), 'author' (按作者匹配), 'isbn' (按国际标准书号精确匹配)。\n- count (整数, 可选, 默认10): 最大返回的去重图书数量。\n调用格式:\n",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」LdBook「末」,\ncommand:「始」SearchBooks「末」,\nquery:「始」刘慈欣「末」,\nsearchField:「始」author「末」,\nformat:「始」epub「末」,\ncount:「始」5「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "DownloadBook",
+        "description": "直接凭书名和格式一步完成图书检索、加权排序和高速下载落盘（最常用的一键获取工具）。\n参数:\n- title (字符串, 必需): 要下载的书籍名称（例如 '三体 Ⅲ'、'Effective Java'）。\n- format (字符串, 可选, 默认'epub'): 目标文件格式（例如 'epub', 'pdf', 'mobi', 'txt' 等）。\n- searchField (字符串, 可选, 默认'title'): 检索匹配字段。可选值: 'title', 'def', 'author', 'isbn'。\n- outputDir (字符串, 可选, 默认'./downloads'): 本地文件落盘保存目录。\n调用格式:\n",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」LdBook「末」,\ncommand:「始」DownloadBook「末」,\ntitle:「始」三体 Ⅲ「末」,\nformat:「始」epub「末」,\noutputDir:「始」./downloads「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "DownloadByMD5",
+        "description": "已知具体图书文件的 32 位 MD5 哈希时的底层高速断点下载。支持 Range 分块加速、网络抖动自愈重试和严格格式防挂羊头校验。\n参数:\n- md5 (字符串, 必需): 图书文件的 32 位 MD5 哈希。\n- title (字符串, 可选): 保存文件时使用的书名（留空则默认以 md5 命名）。\n- format (字符串, 可选): 预期文件格式（例如 'epub', 'pdf'）。若实际文件格式与预期不符将安全拒绝下载。\n- outputDir (字符串, 可选, 默认'./downloads'): 本地保存目录。\n调用格式:\n",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」LdBook「末」,\ncommand:「始」DownloadByMD5「末」,\nmd5:「始」51ab5c04ec6963438e2300766efee00d「末」,\ntitle:「始」流浪地球「末」,\nformat:「始」epub「末」,\noutputDir:「始」./downloads「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
