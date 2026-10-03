@@ -40,7 +40,8 @@
     "invocationCommands": [
       {
         "commandIdentifier": "StartResearch",
-        "description": "调用此工具对一个指定主题进行深度研究。\n参数:\n- SearchContent (字符串, 必需): 需要进行深度研究的自然语言主题描述。\n- SearchBroadness (整数, 必需, 范围5-20): 定义研究的广度，即需要生成的探索性关键词数量。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FlashDeepSearch「末」,\nSearchContent:「始」探讨人工智能在气候变化建模中的应用及其伦理影响。「末」,\nSearchBroadness:「始」10「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "调用此工具对一个指定主题进行深度研究。\n参数:\n- SearchContent (字符串, 必需): 需要进行深度研究的自然语言主题描述。\n- SearchBroadness (整数, 必需, 范围5-20): 定义研究的广度，即需要生成的探索性关键词数量。\n调用格式:\n",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」FlashDeepSearch「末」,\nSearchContent:「始」探讨人工智能在气候变化建模中的应用及其伦理影响。「末」,\nSearchBroadness:「始」10「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

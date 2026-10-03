@@ -24,12 +24,12 @@
     "invocationCommands": [
       {
         "commandIdentifier": "start_meeting",
-        "description": "启动一个新的Magi三贤者会议来讨论一个特定主题。\n参数:\n- topic (字符串, 必需): 会议需要讨论的主题。\n- rounds (数字, 可选, 默认5): 会议的讨论轮次。\n- wait_for_result (布尔, 可选, 默认false): 是否同步等待会议结束并返回完整结果。如果为false，将立即返回一个会议ID供后续查询。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MagiAgent「末」,\ncommand:「始」start_meeting「末」,\ntopic:「始」[这里是会议主题]「末」,\nrounds:「始」[可选,数字]「末」,\nwait_for_result:「始」[可选,布尔值]「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "启动一个新的Magi三贤者会议来讨论一个特定主题。\n参数:\n- topic (字符串, 必需): 会议需要讨论的主题。\n- rounds (数字, 可选, 默认5): 会议的讨论轮次。\n- wait_for_result (布尔, 可选, 默认false): 是否同步等待会议结束并返回完整结果。如果为false，将立即返回一个会议ID供后续查询。\n调用格式:\n",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MagiAgent「末」,\ncommand:「始」start_meeting「末」,\ntopic:「始」如何帮助用户学习量子物理学？「末」,\nrounds:「始」7「末」,\nwait_for_result:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "query_meeting",
-        "description": "根据会议ID查询一个已经存在或正在进行的Magi会议的状态和结果。\n参数:\n- meeting_id (字符串, 必需): 需要查询的会议ID。\n- summary_only (布尔, 可选, 默认false): 如果为true，将只返回会议的最终总结，省略详细的讨论过程，以节省token。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MagiAgent「末」,\ncommand:「始」query_meeting「末」,\nmeeting_id:「始」[这里是会议ID]「末」,\nsummary_only:「始」[可选,布尔值]「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "根据会议ID查询一个已经存在或正在进行的Magi会议的状态和结果。\n参数:\n- meeting_id (字符串, 必需): 需要查询的会议ID。\n- summary_only (布尔, 可选, 默认false): 如果为true，将只返回会议的最终总结，省略详细的讨论过程，以节省token。\n调用格式:\n",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MagiAgent「末」,\ncommand:「始」query_meeting「末」,\nmeeting_id:「始」magi-session-1722084673267「末」,\nsummary_only:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]

@@ -19,7 +19,7 @@
     "invocationCommands": [
       {
         "commandIdentifier": "findAnimeByUrl",
-        "description": "调用此工具通过图片URL或file://路径查找动漫信息。\n参数:\n- imageUrl (字符串, 必需): 需要识别的图片URL（支持http, https, file协议）。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AnimeFinder「末」,\nimageUrl:「始」https://example.com/anime_image.jpg「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "调用此工具通过图片URL或file://路径查找动漫信息。\n参数:\n- imageUrl (字符串, 必需): 需要识别的图片URL（支持http, https, file协议）。\n调用格式:\n",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」AnimeFinder「末」,\nimageUrl:「始」https://images.plurk.com/32B15UXxymfSMwKGTObY5e.jpg「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]

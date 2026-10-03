@@ -19,12 +19,12 @@
     "invocationCommands": [
       {
         "commandIdentifier": "FindArtist",
-        "description": "【查询画师】调用此工具来查询一个画师的准确Tag。\n参数:\n- command (字符串, 必需): 固定为 'FindArtist'。\n- artist_name (字符串, 必需): 你想要查询的画师名称，英文名或者罗马音字母名。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ArtistMatcher「末」,\ncommand:「始」FindArtist「末」,\nartist_name:「始」ArtistName「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "【查询画师】调用此工具来查询一个画师的准确Tag。\n参数:\n- command (字符串, 必需): 固定为 'FindArtist'。\n- artist_name (字符串, 必需): 你想要查询的画师名称，英文名或者罗马音字母名。\n调用格式:\n",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ArtistMatcher「末」,\ncommand:「始」FindArtist「末」,\nartist_name:「始」Krenz Cushart「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "GetRandomArtistString",
-        "description": "【获取随机画师串】当你选择困难时，调用此工具会随机返回3-6个优质画师的trigger tag组合，并自动分配好权重，可直接用于AI绘画。\n参数:\n- command (字符串, 必需): 固定为 'GetRandomArtistString'。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ArtistMatcher「末」,\ncommand:「始」GetRandomArtistString「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "【获取随机画师串】当你选择困难时，调用此工具会随机返回3-6个优质画师的trigger tag组合，并自动分配好权重，可直接用于AI绘画。\n参数:\n- command (字符串, 必需): 固定为 'GetRandomArtistString'。\n调用格式:\n",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ArtistMatcher「末」,\ncommand:「始」GetRandomArtistString「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]

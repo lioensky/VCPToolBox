@@ -18,17 +18,17 @@
     "invocationCommands": [
       {
         "commandIdentifier": "AddSchedule",
-        "description": "添加一个新的日程。\n参数:\n- time (字符串, 必需): 日程时间，建议格式 YYYY-MM-DD HH:mm。\n- content (字符串, 必需): 日程内容。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ScheduleManager「末」,\ncommand:「始」AddSchedule「末」,\ntime:「始」2025-12-31 10:00「末」,\ncontent:「始」准备跨年晚会「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "添加一个新的日程。\n参数:\n- time (字符串, 必需): 日程时间，建议格式 YYYY-MM-DD HH:mm。\n- content (字符串, 必需): 日程内容。\n调用格式:\n",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ScheduleManager「末」,\ncommand:「始」AddSchedule「末」,\ntime:「始」2025-12-31 10:00「末」,\ncontent:「始」准备跨年晚会「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "DeleteSchedule",
-        "description": "删除指定的日程。\n参数:\n- id (字符串, 必需): 要删除的日程ID。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ScheduleManager「末」,\ncommand:「始」DeleteSchedule「末」,\nid:「始」1735564800000「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "删除指定的日程。\n参数:\n- id (字符串, 必需): 要删除的日程ID。\n调用格式:\n",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ScheduleManager「末」,\ncommand:「始」DeleteSchedule「末」,\nid:「始」1735564800000「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "ListSchedules",
-        "description": "查看所有日程。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ScheduleManager「末」,\ncommand:「始」ListSchedules「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "查看所有日程。\n调用格式:\n",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ScheduleManager「末」,\ncommand:「始」ListSchedules「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]

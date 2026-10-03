@@ -384,14 +384,23 @@ module.exports = function(options) {
         }
     });
 
-    // Update command description
-    router.post('/plugins/:pluginName/commands/:commandIdentifier/description', async (req, res) => {
+    // Omitted fields remain unchanged, including for legacy description requests.
+    router.post([
+        '/plugins/:pluginName/commands/:commandIdentifier/description',
+        '/plugins/:pluginName/commands/:commandIdentifier/metadata'
+    ], async (req, res) => {
         const { pluginName, commandIdentifier } = req.params;
-        const { description } = req.body;
+        const body = req.body || {};
+        const hasDescription = Object.prototype.hasOwnProperty.call(body, 'description');
+        const hasExample = Object.prototype.hasOwnProperty.call(body, 'example');
+        const { description, example } = body;
         const PLUGIN_DIR = path.join(__dirname, '..', '..', 'Plugin');
 
-        if (typeof description !== 'string') {
-            return res.status(400).json({ error: 'Invalid request body. Expected { description: string }.' });
+        if ((!hasDescription && !hasExample) ||
+            (hasDescription && typeof description !== 'string') ||
+            (hasExample && example !== null && typeof example !== 'string') ||
+            (req.path.endsWith('/description') && !hasDescription)) {
+            return res.status(400).json({ error: 'Expected description: string and/or example: string | null (null removes the example).' });
         }
 
         try {
@@ -443,7 +452,12 @@ module.exports = function(options) {
             if (manifest.capabilities && manifest.capabilities.invocationCommands && Array.isArray(manifest.capabilities.invocationCommands)) {
                 const commandIndex = manifest.capabilities.invocationCommands.findIndex(cmd => cmd.commandIdentifier === commandIdentifier || cmd.command === commandIdentifier);
                 if (commandIndex !== -1) {
-                    manifest.capabilities.invocationCommands[commandIndex].description = description;
+                    const command = manifest.capabilities.invocationCommands[commandIndex];
+                    if (hasDescription) command.description = description;
+                    if (hasExample) {
+                        if (example === null) delete command.example;
+                        else command.example = example;
+                    }
                     commandUpdated = true;
                 }
             }
@@ -456,8 +470,8 @@ module.exports = function(options) {
             const refreshResult = await pluginManager.refreshPluginManifestMetadata(targetManifestPath);
             res.json({
                 message: refreshResult.refreshed
-                    ? `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的描述已更新并刷新到内存。`
-                    : `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的描述已保存。`
+                    ? `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的元数据已更新并刷新到内存。`
+                    : `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的元数据已保存。`
             });
         } catch (error) {
             console.error(`[AdminPanelRoutes] Error updating command description for plugin ${pluginName}, command ${commandIdentifier}:`, error);

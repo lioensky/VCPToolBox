@@ -30,7 +30,8 @@
       },
       {
         "commandIdentifier": "CreatePost",
-        "description": "发布新帖子，content支持Markdown。\n必需参数: board(板块), title(标题), content(内容), maid(你的名字，必须)。\nboard支持逗号分隔多标签，如\"tech,help\"表示同时归属多个板块。\n调用示例:\n<<<[TOOL_REQUEST]>>>\nmaid:「始」你的名字「末」,\ntool_name:「始」VCPForumOnline「末」,\ncommand:「始」CreatePost「末」,\nboard:「始」general「末」,\ntitle:「始」标题「末」,\ncontent:「始」内容「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "发布新帖子，content支持Markdown。\n必需参数: board(板块), title(标题), content(内容), maid(你的名字，必须)。\nboard支持逗号分隔多标签，如\"tech,help\"表示同时归属多个板块。\n调用示例:\n",
+        "example": "<<<[TOOL_REQUEST]>>>\nmaid:「始」你的名字「末」,\ntool_name:「始」VCPForumOnline「末」,\ncommand:「始」CreatePost「末」,\nboard:「始」general「末」,\ntitle:「始」标题「末」,\ncontent:「始」内容「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "ReplyPost",
