@@ -22,6 +22,7 @@ const LONG_LINE_LEAD_CHARS: usize = 80; // 长行截取时，匹配点之前保�
 const MAX_UNSHOWN_FILES_LISTED: usize = 30;
 const MAX_SAMPLES: usize = 5;
 const BINARY_PROBE_BYTES: usize = 8192;
+const DEFAULT_IGNORED_FOLDERS: &str = "node_modules,.git,target,VectorStore,DebugLog,backup,test,dist,build,bin,__pycache__,.pytest_cache,.mypy_cache,.ruff_cache,.pytype,.tox,.nox,.venv,venv,env,__pypackages__,site-packages,.eggs,htmlcov,.ipynb_checkpoints,.cache,.parcel-cache,.next,.nuxt,.output,.svelte-kit,.turbo,.angular,coverage,.nyc_output,.gradle,.dart_tool,.pub-cache,.cxx,CMakeFiles,_build,.build,obj,.vs";
 // 白名单模式下，允许无扩展名的常见构建/配置文件
 const EXTENSIONLESS_ALLOWED: &[&str] = &[
     "dockerfile",
@@ -176,7 +177,7 @@ impl AppConfig {
 
         // 统一小写存储，匹配时按目录名大小写不敏感比较（兼容 Windows）
         let ignored_folders = env::var("IGNORED_FOLDERS")
-            .unwrap_or_else(|_| "target,.git,node_modules,dist,build".to_string())
+            .unwrap_or_else(|_| DEFAULT_IGNORED_FOLDERS.to_string())
             .split(',')
             .map(|s| s.trim().trim_matches(|c| c == '/' || c == '\\').to_lowercase())
             .filter(|s| !s.is_empty())
@@ -311,7 +312,15 @@ fn run(args: &InputArgs) -> Result<String, String> {
     }
     let include = build_include(&search_root, args.include.as_deref())?;
 
-    let (hits, stats) = search(&search_root, &regex, &config, include.as_ref(), &base);
+    // 外部路径以搜索目录（单文件则为其父目录）作为结果展示基准。
+    let display_base = if search_root.starts_with(&base) {
+        base.as_path()
+    } else if search_root.is_file() {
+        search_root.parent().unwrap_or(&search_root)
+    } else {
+        search_root.as_path()
+    };
+    let (hits, stats) = search(&search_root, &regex, &config, include.as_ref(), display_base);
 
     let filter_desc = if let Some(inc) = args.include.as_deref().filter(|_| include.is_some()) {
         format!("include {}", inline_code(inc))
@@ -329,7 +338,11 @@ fn run(args: &InputArgs) -> Result<String, String> {
     let input = RenderInput {
         args,
         effective_regex,
-        scope: rel_display(&search_root, &base),
+        scope: if search_root.starts_with(&base) {
+            rel_display(&search_root, &base)
+        } else {
+            search_root.to_string_lossy().replace('\\', "/")
+        },
         filter_desc,
         ignored_desc: ignored.join(","),
         context_lines,
@@ -357,7 +370,8 @@ fn find_project_root() -> PathBuf {
     env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// 解析 search_path：必须存在，且规范化后位于项目根目录之下。
+/// 显式 search_path 允许外部目录；相对路径基于默认项目根目录解析。
+/// 绝对路径严格按原路径处理，不再回落为项目内相对路径。
 fn resolve_search_root(base: &Path, search_path: Option<&str>) -> Result<PathBuf, String> {
     let raw = match search_path {
         Some(p) => p,
@@ -365,25 +379,21 @@ fn resolve_search_root(base: &Path, search_path: Option<&str>) -> Result<PathBuf
     };
 
     let p = Path::new(raw);
-    if p.is_absolute() {
-        if let Ok(c) = fs::canonicalize(p) {
-            if c.starts_with(base) {
-                return Ok(c);
-            }
-        }
+    // Windows 的盘符相对路径和无盘符根路径含义不明确，避免依赖进程盘符状态。
+    if !p.is_absolute() && p.components().any(|c| {
+        matches!(c, std::path::Component::Prefix(_) | std::path::Component::RootDir)
+    }) {
+        return Err(format!("search_path 请使用完整绝对路径或普通相对路径: {}", raw));
     }
-
-    // 兼容 "/modules"、"./modules"、"modules\\sub" 等写法，一律按项目根目录解析
-    let rel = raw.trim_start_matches(|c| c == '/' || c == '\\');
-    let joined = base.join(rel);
-    let canon = fs::canonicalize(&joined).map_err(|_| {
-        format!(
-            "search_path 不存在: {}（按项目根目录解析）。请确认路径拼写，或不传 search_path 以搜索整个项目。",
-            raw
-        )
-    })?;
-    if !canon.starts_with(base) {
-        return Err(format!("search_path 超出项目根目录，已拒绝: {}", raw));
+    let target = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    };
+    let canon = fs::canonicalize(&target)
+        .map_err(|e| format!("search_path 不存在或无法访问: {}（{}）", raw, e))?;
+    if !canon.is_dir() && !canon.is_file() {
+        return Err(format!("search_path 必须是目录或普通文件: {}", raw));
     }
     Ok(canon)
 }
