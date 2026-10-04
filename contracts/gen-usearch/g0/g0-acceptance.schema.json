@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vcptoolbox.local/contracts/gen-usearch/g0/g0-acceptance.schema.json",
+  "title": "Gen-USearch G0 Acceptance Manifest",
+  "type": "object",
+  "required": [
+    "gate",
+    "contract_version",
+    "status",
+    "contracts",
+    "final_checks",
+    "unresolved_p0",
+    "unresolved_p1",
+    "evidence"
+  ],
+  "properties": {
+    "gate": {
+      "const": "G0"
+    },
+    "contract_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "BLOCKED"
+      ]
+    },
+    "contracts": {
+      "type": "object",
+      "required": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6",
+        "C7",
+        "C8"
+      ],
+      "additionalProperties": {
+        "enum": [
+          "PASS",
+          "FAIL",
+          "BLOCKED"
+        ]
+      }
+    },
+    "final_checks": {
+      "type": "object",
+      "required": [
+        "FINAL-01",
+        "FINAL-02",
+        "FINAL-03",
+        "FINAL-04",
+        "FINAL-05"
+      ],
+      "additionalProperties": {
+        "enum": [
+          "PASS",
+          "FAIL",
+          "BLOCKED"
+        ]
+      }
+    },
+    "unresolved_p0": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unresolved_p1": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}
