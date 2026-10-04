@@ -5,9 +5,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { isDeepStrictEqual } = require('node:util');
 const Ajv2020 = require('ajv/dist/2020').default;
 
 const verifier = require('./g0-verifier');
+const { runG0Acceptance } = require('./g0-runner');
 const root = path.resolve(__dirname, '../../..');
 
 function load(rel) {
@@ -20,225 +22,199 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 function compile(schema) {
-  const ajv = new Ajv2020({ allErrors: true, strict: true });
-  return ajv.compile(schema);
+  return new Ajv2020({ allErrors:true, strict:true }).compile(schema);
 }
 
+const lock = load('contracts/gen-usearch/g0/g0-authority-lock.json');
 const registry = load('contracts/gen-usearch/g0/g0-contracts-r3.1.json');
 const failureRegistry = load('contracts/gen-usearch/g0/failure-codes.json');
-const registrySchema = load('contracts/gen-usearch/g0/g0-contracts.schema.json');
-const failureSchema = load('contracts/gen-usearch/g0/failure-codes.schema.json');
-const acceptanceSchema = load('contracts/gen-usearch/g0/g0-acceptance.schema.json');
 const finalFixtures = load('tests/gen-usearch/g0/fixtures/final-race-vectors.json');
-const finalFixtureSchema = load('tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json');
 const invariantFixtures = load('tests/gen-usearch/g0/fixtures/invariant-vectors.json');
-const invariantFixtureSchema = load('tests/gen-usearch/g0/fixtures/invariant-vectors.schema.json');
 
-const validateRegistry = compile(registrySchema);
-const validateFailures = compile(failureSchema);
-const validateFinalFixtures = compile(finalFixtureSchema);
-const validateInvariantFixtures = compile(invariantFixtureSchema);
-const validateAcceptance = compile(acceptanceSchema);
+const schemaSpecs = [
+  ['authority_lock', lock, load('contracts/gen-usearch/g0/g0-authority-lock.schema.json')],
+  ['registry', registry, load('contracts/gen-usearch/g0/g0-contracts.schema.json')],
+  ['failure_codes', failureRegistry, load('contracts/gen-usearch/g0/failure-codes.schema.json')],
+  ['final_fixtures', finalFixtures, load('tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json')],
+  ['invariant_fixtures', invariantFixtures, load('tests/gen-usearch/g0/fixtures/invariant-vectors.schema.json')]
+];
 
-test('strict JSON schemas validate exact artifacts', () => {
-  assert.equal(validateRegistry(registry), true, JSON.stringify(validateRegistry.errors));
-  assert.equal(validateFailures(failureRegistry), true, JSON.stringify(validateFailures.errors));
-  assert.equal(validateFinalFixtures(finalFixtures), true, JSON.stringify(validateFinalFixtures.errors));
-  assert.equal(validateInvariantFixtures(invariantFixtures), true, JSON.stringify(validateInvariantFixtures.errors));
+test('strict schemas validate the exact F2R2 authority surface', () => {
+  for (const [name, artifact, schema] of schemaSpecs) {
+    const validate = compile(schema);
+    assert.equal(validate(artifact), true, `${name}: ${JSON.stringify(validate.errors)}`);
+  }
 });
 
-test('schemas reject weakened or vacuous contract artifacts', () => {
+test('authority lock, not registry, defines the required surface', () => {
+  assert.equal(registry.acceptance.authority_lock_path, 'contracts/gen-usearch/g0/g0-authority-lock.json');
+  assert.equal(registry.acceptance.required_invariant_ids, undefined);
+  assert.ok(lock.required_invariant_ids.length > 0);
+  assert.ok(lock.required_failure_codes.length > 0);
+  assert.ok(lock.required_final_fixture_ids.length > 0);
+  assert.ok(lock.required_invariant_fixture_ids.length > 0);
+});
+
+test('synchronized registry/schema/fixture weakening fails against unchanged authority lock', () => {
   const weakRegistry = clone(registry);
-  weakRegistry.clocks.visibility_seq = null;
-  assert.equal(validateRegistry(weakRegistry), false);
+  const weakInvariantFixtures = clone(invariantFixtures);
+  const drop = 'G0-XINV-018';
+  weakRegistry.invariants = weakRegistry.invariants.filter(x => x.id !== drop);
+  weakInvariantFixtures.vectors = weakInvariantFixtures.vectors.filter(x => x.invariant_id !== drop);
 
-  const emptyFailures = clone(failureRegistry);
-  emptyFailures.codes = [];
-  assert.equal(validateFailures(emptyFailures), false);
-
-  const emptyFinal = clone(finalFixtures);
-  emptyFinal.vectors = [];
-  assert.equal(validateFinalFixtures(emptyFinal), false);
-
-  const emptyInvariant = clone(invariantFixtures);
-  emptyInvariant.vectors = [];
-  assert.equal(validateInvariantFixtures(emptyInvariant), false);
+  const result = verifier.verifyCoverage(
+    lock, weakRegistry, failureRegistry, finalFixtures, weakInvariantFixtures
+  );
+  assert.equal(result.ok, false);
 });
 
-test('all contract artifacts are version-bound', () => {
-  const versions = [
-    registry.contract_version,
-    failureRegistry.contract_version,
-    finalFixtures.contract_version,
-    invariantFixtures.contract_version
-  ];
-  assert.equal(new Set(versions).size, 1);
+test('required sets are exact and non-vacuous against authority lock', () => {
+  const result = verifier.verifyCoverage(lock, registry, failureRegistry, finalFixtures, invariantFixtures);
+  assert.equal(result.ok, true);
+  assert.deepEqual(registry.enums, lock.critical_enums);
+  assert.deepEqual(registry.invariants.map(x => x.id), lock.required_invariant_ids);
+  assert.deepEqual(failureRegistry.codes.map(x => x.code), lock.required_failure_codes);
+  assert.deepEqual(finalFixtures.vectors.map(x => x.id), lock.required_final_fixture_ids);
+  assert.deepEqual(invariantFixtures.vectors.map(x => x.id), lock.required_invariant_fixture_ids);
 });
 
-test('required failure, invariant and fixture sets are exact and non-vacuous', () => {
-  const coverage = verifier.verifyCoverage(registry, failureRegistry, finalFixtures, invariantFixtures);
-  assert.equal(coverage.ok, true);
-  assert.ok(registry.acceptance.required_failure_codes.length > 0);
-  assert.ok(registry.acceptance.required_invariant_ids.length > 0);
-  assert.ok(registry.acceptance.required_final_fixture_ids.length > 0);
-  assert.ok(registry.acceptance.required_invariant_fixture_ids.length > 0);
-
-  for (const invariantId of registry.acceptance.required_invariant_ids) {
-    const rows = invariantFixtures.vectors.filter(row => row.invariant_id === invariantId);
-    assert.equal(rows.length, 2);
-    assert.deepEqual(new Set(rows.map(row => row.polarity)), new Set(['positive','negative']));
-  }
+test('read-view transition guards are executable, not decorative strings', () => {
+  assert.deepEqual(
+    verifier.validateTransition(registry,'read_view_state','QUIESCING','RELEASED',{
+      worker_quiescent:false,pins_released:false
+    }),
+    {ok:false,code:'READER_PIN_VIOLATION'}
+  );
+  assert.deepEqual(
+    verifier.validateTransition(registry,'read_view_state','QUIESCING','RELEASED',{
+      worker_quiescent:true,pins_released:true
+    }),
+    {ok:true}
+  );
+  assert.equal(
+    verifier.validateTransition(registry,'read_view_state','ACTIVE','RELEASED',{}).ok,
+    false
+  );
+  assert.equal(
+    verifier.validateTransition(registry,'read_view_state','ACQUIRING','RELEASED',{
+      acquisition_failed:true,provisional_pins_released:true,active_read_view_published:false
+    }).ok,
+    true
+  );
 });
 
-test('failure codes are unique, complete and contract-bound', () => {
-  const codes = failureRegistry.codes.map(item => item.code);
-  assert.equal(new Set(codes).size, codes.length);
-  assert.deepEqual(codes, registry.acceptance.required_failure_codes);
-  for (const item of failureRegistry.codes) {
-    assert.ok(['P0_CORRECTNESS','P1_ARCHITECTURE','P2_IMPLEMENTATION'].includes(item.severity));
-    assert.match(item.contract, /^C[1-8]$/);
-  }
-  for (const invariant of registry.invariants) {
-    assert.ok(codes.includes(invariant.failure_code));
-  }
+test('GC certificate is derived from RETIRED state before GC_ELIGIBLE transition', () => {
+  const retired = {
+    vector_id:'20',state:'RETIRED',is_current:false,
+    retired_visibility_seq:'700',retirement_durable:true
+  };
+  const views = [{state:'RELEASED',visibility_seq:'650',worker_quiescent:true,pins_released:true}];
+  const proof = verifier.deriveGcCertificate(retired, views);
+  assert.equal(proof.certified, true);
+  assert.equal(proof.certificate.source_state, 'RETIRED');
+
+  const post = {vector_id:'20',state:'GC_ELIGIBLE',retired_visibility_seq:'700'};
+  assert.equal(verifier.validateGcEligibleTransition(retired, post, proof.certificate), true);
+
+  assert.equal(verifier.deriveGcCertificate({...retired,state:'GC_ELIGIBLE'}, views).certified, false);
+  assert.equal(verifier.deriveGcCertificate({...retired,retirement_durable:false}, views).certified, false);
 });
 
-test('state tables close acquisition abort and forbid ACTIVE to RELEASED shortcut', () => {
-  assert.equal(verifier.isAllowedTransition(registry, 'read_view_state', 'ACQUIRING', 'RELEASED'), true);
-  assert.equal(verifier.isAllowedTransition(registry, 'read_view_state', 'ACTIVE', 'QUIESCING'), true);
-  assert.equal(verifier.isAllowedTransition(registry, 'read_view_state', 'ACTIVE', 'RELEASED'), false);
-  assert.equal(verifier.isAllowedTransition(registry, 'chunk_version_state', 'RETIRED', 'ACTIVE'), false);
-  assert.equal(verifier.isAllowedTransition(registry, 'engine_mode', 'LEGACY', 'GENERATIONAL_ACTIVE'), false);
+test('durable coverage is derived from ManifestSnapshot + SegmentRecord + ArtifactReceipt', () => {
+  const vector = {vector_id:'20',state:'ACTIVE',in_volatile_memtable:false,embedding_fingerprint:'e1'};
+  const manifest = {manifest_epoch:'50',segment_ids:['S1'],embedding_fingerprint:'e1'};
+  const records = [{
+    segment_id:'S1',state:'PUBLISHED',artifact_digest:'a'.repeat(64),
+    embedding_fingerprint:'e1',vector_ids:['20']
+  }];
+  const receipts = [{
+    segment_id:'S1',artifact_digest:'a'.repeat(64),
+    artifact_exists:true,artifact_verified:true,final_name_durable:true
+  }];
+
+  assert.equal(verifier.deriveDurableVectorCoverage(vector,manifest,records,receipts), true);
+  assert.equal(verifier.deriveDurableVectorCoverage(
+    vector,{...manifest,segment_ids:[]},records,receipts
+  ), false);
+  assert.equal(verifier.deriveDurableVectorCoverage(
+    vector,manifest,records,[{...receipts[0],artifact_digest:'b'.repeat(64)}]
+  ), false);
+  assert.equal(verifier.deriveDurableVectorCoverage(
+    vector,manifest,records,[{...receipts[0],artifact_verified:false}]
+  ), false);
 });
 
-const finalExecutions = [];
-test('all frozen FINAL race/crash fixtures produce exact deterministic verdicts', async t => {
+test('all frozen FINAL fixtures execute exactly', async t => {
   for (const vector of finalFixtures.vectors) {
     await t.test(vector.id, () => {
-      const actual = verifier.evaluateFixture(vector);
-      const matched = (() => {
-        try { assert.deepEqual(actual, vector.expected); return true; } catch (_) { return false; }
-      })();
-      finalExecutions.push({ id: vector.id, group: vector.group, matched_expected: matched });
-      assert.deepEqual(actual, vector.expected);
+      assert.deepEqual(verifier.evaluateFixture(vector), vector.expected);
     });
   }
 });
 
-const invariantExecutions = [];
-test('every frozen invariant has executable positive and negative evidence', async t => {
+test('all frozen invariants execute with positive and negative evidence', async t => {
   for (const vector of invariantFixtures.vectors) {
     await t.test(vector.id, () => {
-      const actual = verifier.evaluateInvariant(registry, vector.invariant_id, vector.input);
-      const matched = (() => {
-        try { assert.deepEqual(actual, vector.expected); return true; } catch (_) { return false; }
-      })();
-      invariantExecutions.push({ id: vector.id, invariant_id: vector.invariant_id, polarity: vector.polarity, matched_expected: matched });
-      assert.deepEqual(actual, vector.expected);
+      assert.deepEqual(
+        verifier.evaluateInvariant(registry, vector.invariant_id, vector.input),
+        vector.expected
+      );
     });
   }
 });
 
-test('64-bit vector identities remain distinct beyond Number.MAX_SAFE_INTEGER', () => {
-  const a = verifier.parseVectorId('9007199254740992');
-  const b = verifier.parseVectorId('9007199254740993');
-  assert.notEqual(a, b);
-  assert.equal(verifier.validatePhysicalCoverage({
-    visibility_seq:'1',
-    current_vector_ids:['9007199254740993'],
-    physical_vector_ids:['9007199254740992']
-  }).ok, false);
+test('64-bit identities remain exact beyond Number.MAX_SAFE_INTEGER', () => {
+  assert.notEqual(
+    verifier.parseVectorId('9007199254740992'),
+    verifier.parseVectorId('9007199254740993')
+  );
   assert.throws(() => verifier.parseVectorId('01'));
   assert.throws(() => verifier.parseVectorId('9223372036854775808'));
 });
 
-test('GC fails closed for malformed or unproven readers and retirement state', () => {
-  const vector = { vector_id:'10', state:'GC_ELIGIBLE', is_current:false, retired_visibility_seq:'101', retirement_durable:true };
-
-  assert.deepEqual(
-    verifier.canGcLogicalVector(vector, [{state:'ACTIVE',worker_quiescent:false,pins_released:false}]),
-    {can_gc:false,code:'QUERY_READ_VIEW_INVALID'}
-  );
-
-  assert.deepEqual(
-    verifier.canGcLogicalVector(vector, [{state:'BOGUS',visibility_seq:'999',worker_quiescent:false,pins_released:false}]),
-    {can_gc:false,code:'QUERY_READ_VIEW_INVALID'}
-  );
-
-  assert.equal(verifier.canGcLogicalVector(
-    {...vector,retirement_durable:false}, []
-  ).can_gc, false);
-});
-
-test('recovery and manifest durability are derived from records, not caller booleans', () => {
-  const vector = { vector_id:'10', state:'ACTIVE', in_volatile_memtable:false, embedding_fingerprint:'e1' };
-  const selfAsserted = [{
-    segment_id:'S10',
-    state:'PUBLISHED',
-    artifact_exists:true,
-    artifact_verified:true,
-    final_name_durable:true
-  }];
-  assert.deepEqual(
-    verifier.validateRecoveryCoverage(vector, selfAsserted, null),
-    {ok:false,code:'VECTOR_RECOVERY_MATERIAL_MISSING'}
-  );
-
-  assert.deepEqual(
-    verifier.validateManifestSegments(['S10'], [{
-      segment_id:'S10',
-      state:'PUBLISHED',
-      artifact_exists:true,
-      artifact_verified:false,
-      final_name_durable:true
-    }]),
-    {ok:false,code:'SEGMENT_DURABILITY_UNPROVEN',unproven_segment_ids:['S10']}
-  );
-});
-
-test('acceptance is derived from executed evidence and schema-validates', () => {
-  assert.equal(finalExecutions.length, finalFixtures.vectors.length);
-  assert.equal(invariantExecutions.length, invariantFixtures.vectors.length);
-
-  const artifactPaths = registry.acceptance.required_artifact_paths;
-  const artifactDigests = Object.fromEntries(artifactPaths.map(rel => [rel, verifier.sha256Text(text(rel))]));
-  const headSha = execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
-
-  const manifest = verifier.deriveAcceptance({
-    registry,
-    failureRegistry,
-    finalFixtures,
-    invariantFixtures,
-    schemaChecks:{registry:'PASS',failure_codes:'PASS',final_fixtures:'PASS',invariant_fixtures:'PASS'},
-    finalExecutions,
-    invariantExecutions,
-    headSha,
-    artifactDigests
-  });
+test('canonical runner is the only acceptance entry and computes real HEAD and digests', () => {
+  assert.throws(() => runG0Acceptance({root}), TypeError);
+  const manifest = runG0Acceptance(root);
+  const actualHead = execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 
   assert.equal(manifest.status, 'PASS');
-  assert.equal(verifier.validateAcceptanceConsistency(manifest, registry).ok, true);
-  assert.equal(validateAcceptance(manifest), true, JSON.stringify(validateAcceptance.errors));
+  assert.equal(manifest.head_sha, actualHead);
+  assert.equal(
+    manifest.authority_lock_digest,
+    verifier.sha256Text(text('contracts/gen-usearch/g0/g0-authority-lock.json'))
+  );
+
+  assert.deepEqual(Object.keys(manifest.artifact_digests), lock.required_artifact_paths);
+  for (const rel of lock.required_artifact_paths) {
+    assert.equal(manifest.artifact_digests[rel], verifier.sha256Text(text(rel)));
+  }
+});
+
+test('acceptance schema rejects a forged PASS after runner output', () => {
+  const manifest = runG0Acceptance(root);
+  const schema = load('contracts/gen-usearch/g0/g0-acceptance.schema.json');
+  const validate = compile(schema);
+  assert.equal(validate(manifest), true, JSON.stringify(validate.errors));
 
   const falsePass = clone(manifest);
   falsePass.contracts.C4 = 'FAIL';
   falsePass.unresolved_p0 = 9;
-  assert.equal(validateAcceptance(falsePass), false);
-  assert.deepEqual(verifier.validateAcceptanceConsistency(falsePass, registry), {ok:false,code:'FALSE_PASS_ACCEPTANCE'});
+  assert.equal(validate(falsePass), false);
 
-  const brokenEvidence = clone(finalExecutions);
-  brokenEvidence[0].matched_expected = false;
-  const derivedFailure = verifier.deriveAcceptance({
-    registry,
-    failureRegistry,
-    finalFixtures,
-    invariantFixtures,
-    schemaChecks:{registry:'PASS',failure_codes:'PASS',final_fixtures:'PASS',invariant_fixtures:'PASS'},
-    finalExecutions:brokenEvidence,
-    invariantExecutions,
-    headSha,
-    artifactDigests
-  });
-  assert.equal(derivedFailure.status, 'FAIL');
-  assert.ok(derivedFailure.unresolved_p0 > 0);
+  const fakeDigest = clone(manifest);
+  fakeDigest.artifact_digests['contracts/gen-usearch/g0/g0-verifier.js'] = '0'.repeat(64);
+  assert.equal(validate(fakeDigest), true);
+  assert.notEqual(
+    fakeDigest.artifact_digests['contracts/gen-usearch/g0/g0-verifier.js'],
+    verifier.sha256Text(text('tests/gen-usearch/g0/g0-verifier.js'))
+  );
+  // Schema checks format; authority comes from canonical runner recomputation above.
+});
+
+test('authority lock and every required artifact are included in the digest surface', () => {
+  assert.ok(lock.required_artifact_paths.includes('contracts/gen-usearch/g0/g0-authority-lock.json'));
+  assert.ok(lock.required_artifact_paths.includes('tests/gen-usearch/g0/g0-runner.js'));
+  for (const rel of lock.required_artifact_paths) {
+    assert.equal(fs.existsSync(path.join(root,rel)), true, rel);
+  }
 });
