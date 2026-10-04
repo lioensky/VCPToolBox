@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vcptoolbox.local/contracts/gen-usearch/g0/invariant-vectors.schema.json",
+  "title": "Gen-USearch invariant positive/negative fixtures",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fixture_version",
+    "contract_version",
+    "vectors"
+  ],
+  "properties": {
+    "fixture_version": {
+      "const": 1
+    },
+    "contract_version": {
+      "const": "3.1.0-g0-f2r1"
+    },
+    "vectors": {
+      "type": "array",
+      "minItems": 38,
+      "maxItems": 38,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "invariant_id",
+          "polarity",
+          "input",
+          "expected"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "invariant_id": {
+            "enum": [
+              "G0-XINV-001",
+              "G0-XINV-002",
+              "G0-XINV-003",
+              "G0-XINV-004",
+              "G0-XINV-005",
+              "G0-XINV-006",
+              "G0-XINV-007",
+              "G0-XINV-008",
+              "G0-XINV-009",
+              "G0-XINV-010",
+              "G0-XINV-011",
+              "G0-XINV-012",
+              "G0-XINV-013",
+              "G0-XINV-014",
+              "G0-XINV-015",
+              "G0-XINV-016",
+              "G0-XINV-017",
+              "G0-XINV-018",
+              "G0-XINV-019"
+            ]
+          },
+          "polarity": {
+            "enum": [
+              "positive",
+              "negative"
+            ]
+          },
+          "input": {
+            "type": "object"
+          },
+          "expected": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pass"
+            ],
+            "properties": {
+              "pass": {
+                "type": "boolean"
+              },
+              "code": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
