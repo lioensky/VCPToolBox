@@ -32,7 +32,7 @@ jobs:
           node-version: '24'
 
       - name: Install pinned schema validator
-        run: npm install --prefix tests/gen-usearch/g0 --ignore-scripts --no-audit --no-fund
+        run: npm ci --prefix tests/gen-usearch/g0 --ignore-scripts --no-audit --no-fund
 
       - name: Run G0 deterministic contract gate
         run: node --test tests/gen-usearch/g0/g0-contracts.test.js
