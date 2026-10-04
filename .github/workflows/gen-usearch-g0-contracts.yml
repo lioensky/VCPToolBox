@@ -1,0 +1,34 @@
+name: Gen-USearch G0 Contracts
+
+on:
+  push:
+    branches:
+      - codex/gen-usearch-g0-f2-upstream-main
+    paths:
+      - 'contracts/gen-usearch/g0/**'
+      - 'tests/gen-usearch/g0/**'
+      - '.github/workflows/gen-usearch-g0-contracts.yml'
+  pull_request:
+    paths:
+      - 'contracts/gen-usearch/g0/**'
+      - 'tests/gen-usearch/g0/**'
+      - '.github/workflows/gen-usearch-g0-contracts.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Run G0 deterministic contract gate
+        run: node --test tests/gen-usearch/g0/g0-contracts.test.js
