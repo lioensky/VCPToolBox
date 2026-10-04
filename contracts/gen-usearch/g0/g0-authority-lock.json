@@ -285,5 +285,22 @@
     "tests/gen-usearch/g0/package-lock.json",
     ".github/workflows/gen-usearch-g0-contracts.yml"
   ],
-  "sealed_artifact_sha256": {}
+  "sealed_artifact_sha256": {
+    ".github/workflows/gen-usearch-g0-contracts.yml": "d5ab15327e44f0d03f366236cae428d41fe0deb53e43776f879c22dceaf7bf1f",
+    "contracts/gen-usearch/g0/failure-codes.json": "ac6934101d320c26f043029c05353efb5687433d5c03c7c5a878b94d3bbd0e62",
+    "contracts/gen-usearch/g0/failure-codes.schema.json": "a58ca3fddeef8a5781415c73f0c88e2ff49c441a3ee8cf4cb966f2535401a414",
+    "contracts/gen-usearch/g0/g0-acceptance.schema.json": "162c952a5ec8250a710239d6e977f04937bc48393042b35fda5578f21a824f4c",
+    "contracts/gen-usearch/g0/g0-authority-lock.schema.json": "d3b764f1b50b740b0b39444f64df75f97008b5832c9dcdf1bf375c0fbb7d5495",
+    "contracts/gen-usearch/g0/g0-contracts-r3.1.json": "2defd1a921e700accbb9d971109f29ad7744d44d7db4b90fcea16f66dc5e2055",
+    "contracts/gen-usearch/g0/g0-contracts.schema.json": "8836dff504dba147f4db2973fc6baca28da1ce975bc213e42e9798aa5149aa78",
+    "tests/gen-usearch/g0/fixtures/final-race-vectors.json": "39f692ecd4a59cf4542258b6093a57a94b160c2d182f5aaa5c1f9d54fff3d030",
+    "tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json": "c591a8546ef7a1501a9b92cc583e8a7789ef7d8e4822c97174f49ca64abcffbd",
+    "tests/gen-usearch/g0/fixtures/invariant-vectors.json": "2c7c98e7a639a3279828f1c0fa1a23d531ff71997d44b12668092af8ea4792c8",
+    "tests/gen-usearch/g0/fixtures/invariant-vectors.schema.json": "98d5d52e2bd91a97f380325bfca952c06639b5533e2bcd4fc98bd7bc8157256b",
+    "tests/gen-usearch/g0/g0-contracts.test.js": "dba1b6c7685fa905a3a4a51f012cf6b37c20356c85e8b2215cb190a86c5bed50",
+    "tests/gen-usearch/g0/g0-runner.js": "749ecc663ed0de4f40aa8616565f0e6464a8510b9e7d56d0ad6d6be78fb22cb3",
+    "tests/gen-usearch/g0/g0-verifier.js": "8d939d06646d45064b3b1c5ed8d25baafce09a92aa8a01b4c73fd35da2267165",
+    "tests/gen-usearch/g0/package-lock.json": "2cea519d003d54bd7e9ce70901b601283ef9521444a0538fa55d4e7891db2186",
+    "tests/gen-usearch/g0/package.json": "b3e980f05a41ea708cdca3adfe049d1f3ec1dc6644a2ef8b167bd5853183621b"
+  }
 }
