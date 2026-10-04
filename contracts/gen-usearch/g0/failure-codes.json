@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": "3.1.0-g0-f2",
+  "contract_version": "3.1.0-g0-f2r1",
   "codes": [
     {
       "code": "CHUNK_IDENTITY_AMBIGUOUS",
@@ -13,7 +13,37 @@
       "contract": "C1"
     },
     {
+      "code": "CHUNK_HASH_CONTRACT_MISMATCH",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C1"
+    },
+    {
+      "code": "DOCUMENT_IDENTITY_AMBIGUOUS",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C2"
+    },
+    {
       "code": "DOCUMENT_ACTIVE_URI_CONFLICT",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C2"
+    },
+    {
+      "code": "SOURCE_DIGEST_MISMATCH",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C2"
+    },
+    {
+      "code": "SOURCE_DIVERGENCE_DETECTED",
+      "severity": "P1_ARCHITECTURE",
+      "contract": "C2"
+    },
+    {
+      "code": "SOURCE_OBSERVATION_INVALID",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C2"
+    },
+    {
+      "code": "STALE_DOCUMENT_WRITER",
       "severity": "P0_CORRECTNESS",
       "contract": "C2"
     },
@@ -23,9 +53,19 @@
       "contract": "C2"
     },
     {
-      "code": "SOURCE_DIVERGENCE_DETECTED",
-      "severity": "P1_ARCHITECTURE",
+      "code": "SOURCE_COMMIT_UNVERIFIED",
+      "severity": "P0_CORRECTNESS",
       "contract": "C2"
+    },
+    {
+      "code": "SOURCE_UNAVAILABLE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C2"
+    },
+    {
+      "code": "VECTOR_ID_INVALID",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C3"
     },
     {
       "code": "VECTOR_ID_COLLISION",
@@ -43,6 +83,21 @@
       "contract": "C3"
     },
     {
+      "code": "VECTOR_METADATA_MISSING",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C3"
+    },
+    {
+      "code": "EMBEDDING_FAILED",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C4"
+    },
+    {
+      "code": "STALE_EMBEDDING_RESULT",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C4"
+    },
+    {
       "code": "STALE_VECTOR_PUBLICATION",
       "severity": "P0_CORRECTNESS",
       "contract": "C4"
@@ -58,7 +113,17 @@
       "contract": "C4"
     },
     {
+      "code": "MULTIPLE_CURRENT_VECTOR_HEADS",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C4"
+    },
+    {
       "code": "VECTOR_RECOVERY_MATERIAL_MISSING",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C4"
+    },
+    {
+      "code": "VECTOR_STAGE_INCOMPLETE",
       "severity": "P0_CORRECTNESS",
       "contract": "C4"
     },
@@ -73,6 +138,26 @@
       "contract": "C5"
     },
     {
+      "code": "METADATA_REFERENTIAL_INTEGRITY_FAILURE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C5"
+    },
+    {
+      "code": "METADATA_STATE_INVALID",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C5"
+    },
+    {
+      "code": "MANIFEST_METADATA_CONFLICT",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C5"
+    },
+    {
+      "code": "VECTOR_RECOVERY_METADATA_CORRUPT",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C5"
+    },
+    {
       "code": "PHYSICAL_COVERAGE_MISSING",
       "severity": "P0_CORRECTNESS",
       "contract": "C5"
@@ -83,12 +168,32 @@
       "contract": "C5"
     },
     {
-      "code": "QUERY_READ_VIEW_PHYSICAL_GAP",
+      "code": "MANIFEST_EPOCH_REGRESSION",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "MANIFEST_INDEX_FINGERPRINT_MISMATCH",
       "severity": "P0_CORRECTNESS",
       "contract": "C6"
     },
     {
       "code": "COMPACTION_PUBLICATION_STALE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "QUERY_READ_VIEW_INVALID",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "QUERY_READ_VIEW_PHYSICAL_GAP",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "MEMTABLE_GENERATION_MISSING",
       "severity": "P0_CORRECTNESS",
       "contract": "C6"
     },
@@ -108,6 +213,16 @@
       "contract": "C6"
     },
     {
+      "code": "CLOCK_COUPLING_VIOLATION",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "TOMBSTONE_SNAPSHOT_VIOLATION",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
       "code": "INDEX_RUNTIME_ALREADY_OWNED",
       "severity": "P0_CORRECTNESS",
       "contract": "C7"
@@ -123,7 +238,17 @@
       "contract": "C7"
     },
     {
-      "code": "MANIFEST_SEGMENT_MISSING",
+      "code": "RECOVERY_METADATA_INVALID",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "RECOVERY_MANIFEST_INVALID",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "RECOVERY_SEGMENT_ORPHAN",
       "severity": "P0_CORRECTNESS",
       "contract": "C7"
     },
@@ -133,9 +258,74 @@
       "contract": "C7"
     },
     {
+      "code": "RECOVERY_VECTOR_HEAD_MISMATCH",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "RECOVERY_STATE_AMBIGUOUS",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "INDEX_REBUILD_REQUIRED",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "INDEX_NOT_SERVABLE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "EMBEDDING_OUTCOME_UNKNOWN",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "MANIFEST_SEGMENT_MISSING",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "ORPHAN_FINALIZED_SEGMENT",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "RUNTIME_FAIL_STOP_REQUIRED",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
       "code": "UNSUPPORTED_DURABILITY_PROFILE",
       "severity": "P0_CORRECTNESS",
       "contract": "C7"
+    },
+    {
+      "code": "DURABLE_COMMIT_UNCONFIRMED",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "SERVING_OWNERSHIP_CONFLICT",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "ENGINE_MODE_INVALID",
+      "severity": "P1_ARCHITECTURE",
+      "contract": "C8"
+    },
+    {
+      "code": "ENGINE_MODE_TRANSITION_DENIED",
+      "severity": "P1_ARCHITECTURE",
+      "contract": "C8"
+    },
+    {
+      "code": "SHADOW_ACCEPTANCE_REQUIRED",
+      "severity": "P1_ARCHITECTURE",
+      "contract": "C8"
     },
     {
       "code": "SHADOW_INDEXING_FAILED",
@@ -148,12 +338,22 @@
       "contract": "C8"
     },
     {
-      "code": "SHADOW_ACCEPTANCE_REQUIRED",
+      "code": "ACTIVE_ENGINE_UNAVAILABLE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C8"
+    },
+    {
+      "code": "ENGINE_AUTHORITY_AMBIGUOUS",
       "severity": "P1_ARCHITECTURE",
       "contract": "C8"
     },
     {
-      "code": "ACTIVE_ENGINE_UNAVAILABLE",
+      "code": "SHADOW_FAILURE_BLOCKED_CANONICAL_WRITE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C8"
+    },
+    {
+      "code": "SILENT_LEGACY_FALLBACK",
       "severity": "P0_CORRECTNESS",
       "contract": "C8"
     }
