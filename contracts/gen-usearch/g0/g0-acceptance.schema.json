@@ -3,14 +3,19 @@
   "$id": "https://vcptoolbox.local/contracts/gen-usearch/g0/g0-acceptance.schema.json",
   "title": "Gen-USearch G0 Acceptance Manifest",
   "type": "object",
+  "additionalProperties": false,
   "required": [
     "gate",
     "contract_version",
+    "head_sha",
     "status",
     "contracts",
     "final_checks",
+    "schema_checks",
+    "coverage",
     "unresolved_p0",
     "unresolved_p1",
+    "artifact_digests",
     "evidence"
   ],
   "properties": {
@@ -18,8 +23,11 @@
       "const": "G0"
     },
     "contract_version": {
+      "const": "3.1.0-g0-f2r1"
+    },
+    "head_sha": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^[a-f0-9]{40}$"
     },
     "status": {
       "enum": [
@@ -30,6 +38,7 @@
     },
     "contracts": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "C1",
         "C2",
@@ -40,16 +49,68 @@
         "C7",
         "C8"
       ],
-      "additionalProperties": {
-        "enum": [
-          "PASS",
-          "FAIL",
-          "BLOCKED"
-        ]
+      "properties": {
+        "C1": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        },
+        "C2": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        },
+        "C3": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        },
+        "C4": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        },
+        "C5": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        },
+        "C6": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        },
+        "C7": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        },
+        "C8": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        }
       }
     },
     "final_checks": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "FINAL-01",
         "FINAL-02",
@@ -57,12 +118,428 @@
         "FINAL-04",
         "FINAL-05"
       ],
-      "additionalProperties": {
-        "enum": [
-          "PASS",
-          "FAIL",
-          "BLOCKED"
-        ]
+      "properties": {
+        "FINAL-01": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        },
+        "FINAL-02": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        },
+        "FINAL-03": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        },
+        "FINAL-04": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        },
+        "FINAL-05": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "BLOCKED"
+          ]
+        }
+      }
+    },
+    "schema_checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registry",
+        "failure_codes",
+        "final_fixtures",
+        "invariant_fixtures"
+      ],
+      "properties": {
+        "registry": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "failure_codes": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "final_fixtures": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "invariant_fixtures": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_invariants",
+        "covered_invariants",
+        "required_failure_codes",
+        "present_failure_codes",
+        "required_final_fixtures",
+        "executed_final_fixtures",
+        "required_invariant_fixtures",
+        "executed_invariant_fixtures"
+      ],
+      "properties": {
+        "required_invariants": {
+          "const": [
+            "G0-XINV-001",
+            "G0-XINV-002",
+            "G0-XINV-003",
+            "G0-XINV-004",
+            "G0-XINV-005",
+            "G0-XINV-006",
+            "G0-XINV-007",
+            "G0-XINV-008",
+            "G0-XINV-009",
+            "G0-XINV-010",
+            "G0-XINV-011",
+            "G0-XINV-012",
+            "G0-XINV-013",
+            "G0-XINV-014",
+            "G0-XINV-015",
+            "G0-XINV-016",
+            "G0-XINV-017",
+            "G0-XINV-018",
+            "G0-XINV-019"
+          ]
+        },
+        "covered_invariants": {
+          "const": [
+            "G0-XINV-001",
+            "G0-XINV-002",
+            "G0-XINV-003",
+            "G0-XINV-004",
+            "G0-XINV-005",
+            "G0-XINV-006",
+            "G0-XINV-007",
+            "G0-XINV-008",
+            "G0-XINV-009",
+            "G0-XINV-010",
+            "G0-XINV-011",
+            "G0-XINV-012",
+            "G0-XINV-013",
+            "G0-XINV-014",
+            "G0-XINV-015",
+            "G0-XINV-016",
+            "G0-XINV-017",
+            "G0-XINV-018",
+            "G0-XINV-019"
+          ]
+        },
+        "required_failure_codes": {
+          "const": [
+            "CHUNK_IDENTITY_AMBIGUOUS",
+            "CHUNK_SERIALIZATION_NONDETERMINISTIC",
+            "CHUNK_HASH_CONTRACT_MISMATCH",
+            "DOCUMENT_IDENTITY_AMBIGUOUS",
+            "DOCUMENT_ACTIVE_URI_CONFLICT",
+            "SOURCE_DIGEST_MISMATCH",
+            "SOURCE_DIVERGENCE_DETECTED",
+            "SOURCE_OBSERVATION_INVALID",
+            "STALE_DOCUMENT_WRITER",
+            "SOURCE_STATE_UNSTABLE",
+            "SOURCE_COMMIT_UNVERIFIED",
+            "SOURCE_UNAVAILABLE",
+            "VECTOR_ID_INVALID",
+            "VECTOR_ID_COLLISION",
+            "VECTOR_ID_ALLOCATOR_CORRUPT",
+            "VECTOR_ID_EXHAUSTED",
+            "VECTOR_METADATA_MISSING",
+            "EMBEDDING_FAILED",
+            "STALE_EMBEDDING_RESULT",
+            "STALE_VECTOR_PUBLICATION",
+            "INVALID_MVCC_TRANSITION",
+            "INVALID_CURRENT_VECTOR_HEAD",
+            "MULTIPLE_CURRENT_VECTOR_HEADS",
+            "VECTOR_RECOVERY_MATERIAL_MISSING",
+            "VECTOR_STAGE_INCOMPLETE",
+            "VISIBILITY_SEQUENCE_INVALID",
+            "METADATA_INTEGRITY_FAILURE",
+            "METADATA_REFERENTIAL_INTEGRITY_FAILURE",
+            "METADATA_STATE_INVALID",
+            "MANIFEST_METADATA_CONFLICT",
+            "VECTOR_RECOVERY_METADATA_CORRUPT",
+            "PHYSICAL_COVERAGE_MISSING",
+            "SEGMENT_DURABILITY_UNPROVEN",
+            "MANIFEST_EPOCH_REGRESSION",
+            "MANIFEST_INDEX_FINGERPRINT_MISMATCH",
+            "COMPACTION_PUBLICATION_STALE",
+            "QUERY_READ_VIEW_INVALID",
+            "QUERY_READ_VIEW_PHYSICAL_GAP",
+            "MEMTABLE_GENERATION_MISSING",
+            "READER_PIN_VIOLATION",
+            "UNSAFE_GC_ATTEMPT",
+            "QUERY_READ_VIEW_EXPIRED",
+            "CLOCK_COUPLING_VIOLATION",
+            "TOMBSTONE_SNAPSHOT_VIOLATION",
+            "INDEX_RUNTIME_ALREADY_OWNED",
+            "RUNTIME_FENCE_STALE",
+            "QUERY_FENCE_STALE",
+            "RECOVERY_METADATA_INVALID",
+            "RECOVERY_MANIFEST_INVALID",
+            "RECOVERY_SEGMENT_ORPHAN",
+            "RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE",
+            "RECOVERY_VECTOR_HEAD_MISMATCH",
+            "RECOVERY_STATE_AMBIGUOUS",
+            "INDEX_REBUILD_REQUIRED",
+            "INDEX_NOT_SERVABLE",
+            "EMBEDDING_OUTCOME_UNKNOWN",
+            "MANIFEST_SEGMENT_MISSING",
+            "ORPHAN_FINALIZED_SEGMENT",
+            "RUNTIME_FAIL_STOP_REQUIRED",
+            "UNSUPPORTED_DURABILITY_PROFILE",
+            "DURABLE_COMMIT_UNCONFIRMED",
+            "SERVING_OWNERSHIP_CONFLICT",
+            "ENGINE_MODE_INVALID",
+            "ENGINE_MODE_TRANSITION_DENIED",
+            "SHADOW_ACCEPTANCE_REQUIRED",
+            "SHADOW_INDEXING_FAILED",
+            "SHADOW_RESULT_LEAK",
+            "ACTIVE_ENGINE_UNAVAILABLE",
+            "ENGINE_AUTHORITY_AMBIGUOUS",
+            "SHADOW_FAILURE_BLOCKED_CANONICAL_WRITE",
+            "SILENT_LEGACY_FALLBACK"
+          ]
+        },
+        "present_failure_codes": {
+          "const": [
+            "CHUNK_IDENTITY_AMBIGUOUS",
+            "CHUNK_SERIALIZATION_NONDETERMINISTIC",
+            "CHUNK_HASH_CONTRACT_MISMATCH",
+            "DOCUMENT_IDENTITY_AMBIGUOUS",
+            "DOCUMENT_ACTIVE_URI_CONFLICT",
+            "SOURCE_DIGEST_MISMATCH",
+            "SOURCE_DIVERGENCE_DETECTED",
+            "SOURCE_OBSERVATION_INVALID",
+            "STALE_DOCUMENT_WRITER",
+            "SOURCE_STATE_UNSTABLE",
+            "SOURCE_COMMIT_UNVERIFIED",
+            "SOURCE_UNAVAILABLE",
+            "VECTOR_ID_INVALID",
+            "VECTOR_ID_COLLISION",
+            "VECTOR_ID_ALLOCATOR_CORRUPT",
+            "VECTOR_ID_EXHAUSTED",
+            "VECTOR_METADATA_MISSING",
+            "EMBEDDING_FAILED",
+            "STALE_EMBEDDING_RESULT",
+            "STALE_VECTOR_PUBLICATION",
+            "INVALID_MVCC_TRANSITION",
+            "INVALID_CURRENT_VECTOR_HEAD",
+            "MULTIPLE_CURRENT_VECTOR_HEADS",
+            "VECTOR_RECOVERY_MATERIAL_MISSING",
+            "VECTOR_STAGE_INCOMPLETE",
+            "VISIBILITY_SEQUENCE_INVALID",
+            "METADATA_INTEGRITY_FAILURE",
+            "METADATA_REFERENTIAL_INTEGRITY_FAILURE",
+            "METADATA_STATE_INVALID",
+            "MANIFEST_METADATA_CONFLICT",
+            "VECTOR_RECOVERY_METADATA_CORRUPT",
+            "PHYSICAL_COVERAGE_MISSING",
+            "SEGMENT_DURABILITY_UNPROVEN",
+            "MANIFEST_EPOCH_REGRESSION",
+            "MANIFEST_INDEX_FINGERPRINT_MISMATCH",
+            "COMPACTION_PUBLICATION_STALE",
+            "QUERY_READ_VIEW_INVALID",
+            "QUERY_READ_VIEW_PHYSICAL_GAP",
+            "MEMTABLE_GENERATION_MISSING",
+            "READER_PIN_VIOLATION",
+            "UNSAFE_GC_ATTEMPT",
+            "QUERY_READ_VIEW_EXPIRED",
+            "CLOCK_COUPLING_VIOLATION",
+            "TOMBSTONE_SNAPSHOT_VIOLATION",
+            "INDEX_RUNTIME_ALREADY_OWNED",
+            "RUNTIME_FENCE_STALE",
+            "QUERY_FENCE_STALE",
+            "RECOVERY_METADATA_INVALID",
+            "RECOVERY_MANIFEST_INVALID",
+            "RECOVERY_SEGMENT_ORPHAN",
+            "RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE",
+            "RECOVERY_VECTOR_HEAD_MISMATCH",
+            "RECOVERY_STATE_AMBIGUOUS",
+            "INDEX_REBUILD_REQUIRED",
+            "INDEX_NOT_SERVABLE",
+            "EMBEDDING_OUTCOME_UNKNOWN",
+            "MANIFEST_SEGMENT_MISSING",
+            "ORPHAN_FINALIZED_SEGMENT",
+            "RUNTIME_FAIL_STOP_REQUIRED",
+            "UNSUPPORTED_DURABILITY_PROFILE",
+            "DURABLE_COMMIT_UNCONFIRMED",
+            "SERVING_OWNERSHIP_CONFLICT",
+            "ENGINE_MODE_INVALID",
+            "ENGINE_MODE_TRANSITION_DENIED",
+            "SHADOW_ACCEPTANCE_REQUIRED",
+            "SHADOW_INDEXING_FAILED",
+            "SHADOW_RESULT_LEAK",
+            "ACTIVE_ENGINE_UNAVAILABLE",
+            "ENGINE_AUTHORITY_AMBIGUOUS",
+            "SHADOW_FAILURE_BLOCKED_CANONICAL_WRITE",
+            "SILENT_LEGACY_FALLBACK"
+          ]
+        },
+        "required_final_fixtures": {
+          "const": [
+            "FINAL01-BEFORE-COMMIT",
+            "FINAL01-AFTER-COMMIT",
+            "FINAL01-MIXED-WORLD-GAP",
+            "FINAL02-PREFLUSH-SEALED-VISIBLE",
+            "FINAL02-POSTFLUSH-OVERLAP",
+            "FINAL02-POSTFLUSH-SEGMENT",
+            "FINAL02-HANDOFF-GAP",
+            "FINAL03-STAGED-MUST-COPY",
+            "FINAL03-RETIRED-NO-CERT-MUST-COPY",
+            "FINAL03-GC-CERT-MAY-DROP",
+            "FINAL03-STALE-COMPACTION-CAS",
+            "FINAL03-STABLE-COMPACTION-CAS",
+            "FINAL04-SOURCE-OBSERVED-INTENT-PRESENT",
+            "FINAL04-SOURCE-DIVERGENCE",
+            "FINAL04-VOLATILE-ACTIVE-WITH-RECOVERY",
+            "FINAL04-VOLATILE-ACTIVE-NO-RECOVERY",
+            "FINAL04-MANIFEST-MISSING-SEGMENT",
+            "FINAL05-CANCELLED-NOT-RELEASED-BLOCKS-GC",
+            "FINAL05-QUIESCING-BLOCKS-GC",
+            "FINAL05-MALFORMED-ACTIVE-BLOCKS-GC",
+            "FINAL05-RELEASED-OLD-VIEW-ALLOWS-GC",
+            "FINAL05-LIVE-OLD-RUNTIME-BLOCKS-TAKEOVER-GC",
+            "FINAL05-QUIESCENT-OLD-RUNTIME-ALLOWS-TAKEOVER"
+          ]
+        },
+        "executed_final_fixtures": {
+          "const": [
+            "FINAL01-BEFORE-COMMIT",
+            "FINAL01-AFTER-COMMIT",
+            "FINAL01-MIXED-WORLD-GAP",
+            "FINAL02-PREFLUSH-SEALED-VISIBLE",
+            "FINAL02-POSTFLUSH-OVERLAP",
+            "FINAL02-POSTFLUSH-SEGMENT",
+            "FINAL02-HANDOFF-GAP",
+            "FINAL03-STAGED-MUST-COPY",
+            "FINAL03-RETIRED-NO-CERT-MUST-COPY",
+            "FINAL03-GC-CERT-MAY-DROP",
+            "FINAL03-STALE-COMPACTION-CAS",
+            "FINAL03-STABLE-COMPACTION-CAS",
+            "FINAL04-SOURCE-OBSERVED-INTENT-PRESENT",
+            "FINAL04-SOURCE-DIVERGENCE",
+            "FINAL04-VOLATILE-ACTIVE-WITH-RECOVERY",
+            "FINAL04-VOLATILE-ACTIVE-NO-RECOVERY",
+            "FINAL04-MANIFEST-MISSING-SEGMENT",
+            "FINAL05-CANCELLED-NOT-RELEASED-BLOCKS-GC",
+            "FINAL05-QUIESCING-BLOCKS-GC",
+            "FINAL05-MALFORMED-ACTIVE-BLOCKS-GC",
+            "FINAL05-RELEASED-OLD-VIEW-ALLOWS-GC",
+            "FINAL05-LIVE-OLD-RUNTIME-BLOCKS-TAKEOVER-GC",
+            "FINAL05-QUIESCENT-OLD-RUNTIME-ALLOWS-TAKEOVER"
+          ]
+        },
+        "required_invariant_fixtures": {
+          "const": [
+            "G0-XINV-001-POS",
+            "G0-XINV-001-NEG",
+            "G0-XINV-002-POS",
+            "G0-XINV-002-NEG",
+            "G0-XINV-003-POS",
+            "G0-XINV-003-NEG",
+            "G0-XINV-004-POS",
+            "G0-XINV-004-NEG",
+            "G0-XINV-005-POS",
+            "G0-XINV-005-NEG",
+            "G0-XINV-006-POS",
+            "G0-XINV-006-NEG",
+            "G0-XINV-007-POS",
+            "G0-XINV-007-NEG",
+            "G0-XINV-008-POS",
+            "G0-XINV-008-NEG",
+            "G0-XINV-009-POS",
+            "G0-XINV-009-NEG",
+            "G0-XINV-010-POS",
+            "G0-XINV-010-NEG",
+            "G0-XINV-011-POS",
+            "G0-XINV-011-NEG",
+            "G0-XINV-012-POS",
+            "G0-XINV-012-NEG",
+            "G0-XINV-013-POS",
+            "G0-XINV-013-NEG",
+            "G0-XINV-014-POS",
+            "G0-XINV-014-NEG",
+            "G0-XINV-015-POS",
+            "G0-XINV-015-NEG",
+            "G0-XINV-016-POS",
+            "G0-XINV-016-NEG",
+            "G0-XINV-017-POS",
+            "G0-XINV-017-NEG",
+            "G0-XINV-018-POS",
+            "G0-XINV-018-NEG",
+            "G0-XINV-019-POS",
+            "G0-XINV-019-NEG"
+          ]
+        },
+        "executed_invariant_fixtures": {
+          "const": [
+            "G0-XINV-001-POS",
+            "G0-XINV-001-NEG",
+            "G0-XINV-002-POS",
+            "G0-XINV-002-NEG",
+            "G0-XINV-003-POS",
+            "G0-XINV-003-NEG",
+            "G0-XINV-004-POS",
+            "G0-XINV-004-NEG",
+            "G0-XINV-005-POS",
+            "G0-XINV-005-NEG",
+            "G0-XINV-006-POS",
+            "G0-XINV-006-NEG",
+            "G0-XINV-007-POS",
+            "G0-XINV-007-NEG",
+            "G0-XINV-008-POS",
+            "G0-XINV-008-NEG",
+            "G0-XINV-009-POS",
+            "G0-XINV-009-NEG",
+            "G0-XINV-010-POS",
+            "G0-XINV-010-NEG",
+            "G0-XINV-011-POS",
+            "G0-XINV-011-NEG",
+            "G0-XINV-012-POS",
+            "G0-XINV-012-NEG",
+            "G0-XINV-013-POS",
+            "G0-XINV-013-NEG",
+            "G0-XINV-014-POS",
+            "G0-XINV-014-NEG",
+            "G0-XINV-015-POS",
+            "G0-XINV-015-NEG",
+            "G0-XINV-016-POS",
+            "G0-XINV-016-NEG",
+            "G0-XINV-017-POS",
+            "G0-XINV-017-NEG",
+            "G0-XINV-018-POS",
+            "G0-XINV-018-NEG",
+            "G0-XINV-019-POS",
+            "G0-XINV-019-NEG"
+          ]
+        }
       }
     },
     "unresolved_p0": {
@@ -73,12 +550,78 @@
       "type": "integer",
       "minimum": 0
     },
+    "artifact_digests": {
+      "type": "object",
+      "minProperties": 8,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
+    },
     "evidence": {
       "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
       "items": {
-        "type": "string"
+        "type": "string",
+        "minLength": 1
       }
     }
   },
-  "additionalProperties": false
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "PASS"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "contracts": {
+            "const": {
+              "C1": "PASS",
+              "C2": "PASS",
+              "C3": "PASS",
+              "C4": "PASS",
+              "C5": "PASS",
+              "C6": "PASS",
+              "C7": "PASS",
+              "C8": "PASS"
+            }
+          },
+          "final_checks": {
+            "const": {
+              "FINAL-01": "PASS",
+              "FINAL-02": "PASS",
+              "FINAL-03": "PASS",
+              "FINAL-04": "PASS",
+              "FINAL-05": "PASS"
+            }
+          },
+          "schema_checks": {
+            "const": {
+              "registry": "PASS",
+              "failure_codes": "PASS",
+              "final_fixtures": "PASS",
+              "invariant_fixtures": "PASS"
+            }
+          },
+          "unresolved_p0": {
+            "const": 0
+          },
+          "unresolved_p1": {
+            "const": 0
+          },
+          "evidence": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
 }
