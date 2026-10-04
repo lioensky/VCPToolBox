@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vcptoolbox.local/contracts/gen-usearch/g0/g0-contracts.schema.json",
+  "title": "Gen-USearch G0 Contract Registry",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "contract_version",
+    "gate",
+    "status",
+    "clocks",
+    "enums",
+    "transitions",
+    "invariants",
+    "acceptance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "contract_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "gate": {
+      "const": "G0"
+    },
+    "status": {
+      "enum": [
+        "CANDIDATE_NOT_FROZEN",
+        "FROZEN"
+      ]
+    },
+    "clocks": {
+      "type": "object",
+      "required": [
+        "visibility_seq",
+        "manifest_epoch",
+        "vector_id"
+      ]
+    },
+    "enums": {
+      "type": "object",
+      "required": [
+        "chunk_version_state",
+        "memtable_state",
+        "segment_state",
+        "read_view_state",
+        "recovery_state",
+        "engine_mode",
+        "verdict"
+      ]
+    },
+    "transitions": {
+      "type": "object"
+    },
+    "invariants": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "severity",
+          "rule"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "P0_CORRECTNESS",
+              "P1_ARCHITECTURE",
+              "P2_IMPLEMENTATION"
+            ]
+          },
+          "rule": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "required": [
+        "unresolved_p0_required",
+        "unresolved_p1_required",
+        "required_final_checks",
+        "final_check_expected"
+      ]
+    }
+  },
+  "additionalProperties": false
+}
