@@ -21,7 +21,7 @@ A G0 PASS cannot be caller-asserted. The generated acceptance manifest may say P
 ## Local verification
 
 ```bash
-npm install --prefix tests/gen-usearch/g0 --ignore-scripts --no-audit --no-fund
+npm ci --prefix tests/gen-usearch/g0 --ignore-scripts --no-audit --no-fund
 node --test tests/gen-usearch/g0/g0-contracts.test.js
 ```
 
