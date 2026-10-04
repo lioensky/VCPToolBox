@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://vcptoolbox.local/contracts/gen-usearch/g0/failure-codes.schema.json",
-  "title": "Gen-USearch G0 Failure Code Registry",
+  "title": "Gen-USearch G0 Failure Registry",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,7 +14,7 @@
       "const": 1
     },
     "contract_version": {
-      "const": "3.1.0-g0-f2r1"
+      "const": "3.1.0-g0-f2r2"
     },
     "codes": {
       "const": [
