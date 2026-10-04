@@ -7,6 +7,7 @@
   "required": [
     "gate",
     "contract_version",
+    "authority_lock_digest",
     "head_sha",
     "status",
     "contracts",
@@ -23,7 +24,11 @@
       "const": "G0"
     },
     "contract_version": {
-      "const": "3.1.0-g0-f2r1"
+      "const": "3.1.0-g0-f2r2"
+    },
+    "authority_lock_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
     },
     "head_sha": {
       "type": "string",
@@ -160,12 +165,19 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "authority_lock",
         "registry",
         "failure_codes",
         "final_fixtures",
         "invariant_fixtures"
       ],
       "properties": {
+        "authority_lock": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
         "registry": {
           "enum": [
             "PASS",
@@ -554,6 +566,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "contracts/gen-usearch/g0/g0-authority-lock.json",
+        "contracts/gen-usearch/g0/g0-authority-lock.schema.json",
         "contracts/gen-usearch/g0/g0-contracts-r3.1.json",
         "contracts/gen-usearch/g0/failure-codes.json",
         "contracts/gen-usearch/g0/g0-contracts.schema.json",
@@ -564,12 +578,21 @@
         "tests/gen-usearch/g0/fixtures/invariant-vectors.json",
         "tests/gen-usearch/g0/fixtures/invariant-vectors.schema.json",
         "tests/gen-usearch/g0/g0-verifier.js",
+        "tests/gen-usearch/g0/g0-runner.js",
         "tests/gen-usearch/g0/g0-contracts.test.js",
         "tests/gen-usearch/g0/package.json",
         "tests/gen-usearch/g0/package-lock.json",
         ".github/workflows/gen-usearch-g0-contracts.yml"
       ],
       "properties": {
+        "contracts/gen-usearch/g0/g0-authority-lock.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "contracts/gen-usearch/g0/g0-authority-lock.schema.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
         "contracts/gen-usearch/g0/g0-contracts-r3.1.json": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
@@ -607,6 +630,10 @@
           "pattern": "^[a-f0-9]{64}$"
         },
         "tests/gen-usearch/g0/g0-verifier.js": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "tests/gen-usearch/g0/g0-runner.js": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
         },
@@ -675,6 +702,7 @@
           },
           "schema_checks": {
             "const": {
+              "authority_lock": "PASS",
               "registry": "PASS",
               "failure_codes": "PASS",
               "final_fixtures": "PASS",
@@ -686,15 +714,6 @@
           },
           "unresolved_p1": {
             "const": 0
-          },
-          "evidence": {
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
           }
         }
       }
