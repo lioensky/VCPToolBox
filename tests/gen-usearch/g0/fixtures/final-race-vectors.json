@@ -163,12 +163,8 @@
       "kind": "compaction_copy",
       "vector": {
         "vector_id": "20",
-        "state": "VECTOR_STAGED",
-        "is_current": false,
-        "retired_visibility_seq": null,
-        "retirement_durable": false
+        "state": "VECTOR_STAGED"
       },
-      "read_views": [],
       "expected": {
         "copy": true
       }
@@ -177,29 +173,27 @@
       "id": "FINAL03-RETIRED-NO-CERT-MUST-COPY",
       "group": "FINAL-03",
       "kind": "compaction_copy",
-      "vector": {
+      "read_views": [],
+      "expected": {
+        "copy": true
+      },
+      "retired_vector": {
         "vector_id": "20",
         "state": "RETIRED",
         "is_current": false,
         "retired_visibility_seq": "700",
         "retirement_durable": false
       },
-      "read_views": [],
-      "expected": {
-        "copy": true
+      "post_gc_vector": {
+        "vector_id": "20",
+        "state": "GC_ELIGIBLE",
+        "retired_visibility_seq": "700"
       }
     },
     {
       "id": "FINAL03-GC-CERT-MAY-DROP",
       "group": "FINAL-03",
       "kind": "compaction_copy",
-      "vector": {
-        "vector_id": "20",
-        "state": "GC_ELIGIBLE",
-        "is_current": false,
-        "retired_visibility_seq": "700",
-        "retirement_durable": true
-      },
       "read_views": [
         {
           "state": "RELEASED",
@@ -210,6 +204,18 @@
       ],
       "expected": {
         "copy": false
+      },
+      "retired_vector": {
+        "vector_id": "20",
+        "state": "RETIRED",
+        "is_current": false,
+        "retired_visibility_seq": "700",
+        "retirement_durable": true
+      },
+      "post_gc_vector": {
+        "vector_id": "20",
+        "state": "GC_ELIGIBLE",
+        "retired_visibility_seq": "700"
       }
     },
     {
@@ -274,7 +280,6 @@
         "in_volatile_memtable": true,
         "embedding_fingerprint": "e1"
       },
-      "segments": [],
       "recovery_material": {
         "vector_id": "9223372036854775807",
         "state": "RECOVERY_REQUIRED",
@@ -283,7 +288,14 @@
       },
       "expected": {
         "ok": true
-      }
+      },
+      "manifest_snapshot": {
+        "manifest_epoch": "50",
+        "segment_ids": [],
+        "embedding_fingerprint": "e1"
+      },
+      "segment_records": [],
+      "artifact_receipts": []
     },
     {
       "id": "FINAL04-VOLATILE-ACTIVE-NO-RECOVERY",
@@ -295,7 +307,6 @@
         "in_volatile_memtable": true,
         "embedding_fingerprint": "e1"
       },
-      "segments": [],
       "recovery_material": {
         "vector_id": "9223372036854775807",
         "state": "RECOVERY_RELEASED",
@@ -305,32 +316,54 @@
       "expected": {
         "ok": false,
         "code": "VECTOR_RECOVERY_MATERIAL_MISSING"
-      }
+      },
+      "manifest_snapshot": {
+        "manifest_epoch": "50",
+        "segment_ids": [],
+        "embedding_fingerprint": "e1"
+      },
+      "segment_records": [],
+      "artifact_receipts": []
     },
     {
       "id": "FINAL04-MANIFEST-MISSING-SEGMENT",
       "group": "FINAL-04",
       "kind": "manifest_segments",
-      "manifest_segment_ids": [
-        "S10",
-        "S11"
-      ],
-      "segments": [
-        {
-          "segment_id": "S10",
-          "state": "PUBLISHED",
-          "artifact_exists": true,
-          "artifact_verified": true,
-          "final_name_durable": true
-        }
-      ],
       "expected": {
         "ok": false,
         "code": "MANIFEST_SEGMENT_MISSING",
         "missing_segment_ids": [
           "S11"
         ]
-      }
+      },
+      "manifest_snapshot": {
+        "manifest_epoch": "50",
+        "segment_ids": [
+          "S10",
+          "S11"
+        ],
+        "embedding_fingerprint": "e1"
+      },
+      "segment_records": [
+        {
+          "segment_id": "S10",
+          "state": "PUBLISHED",
+          "artifact_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "embedding_fingerprint": "e1",
+          "vector_ids": [
+            "10"
+          ]
+        }
+      ],
+      "artifact_receipts": [
+        {
+          "segment_id": "S10",
+          "artifact_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "artifact_exists": true,
+          "artifact_verified": true,
+          "final_name_durable": true
+        }
+      ]
     },
     {
       "id": "FINAL05-CANCELLED-NOT-RELEASED-BLOCKS-GC",
@@ -338,7 +371,7 @@
       "kind": "logical_gc",
       "vector": {
         "vector_id": "10",
-        "state": "GC_ELIGIBLE",
+        "state": "RETIRED",
         "is_current": false,
         "retired_visibility_seq": "101",
         "retirement_durable": true
@@ -361,7 +394,7 @@
       "kind": "logical_gc",
       "vector": {
         "vector_id": "10",
-        "state": "GC_ELIGIBLE",
+        "state": "RETIRED",
         "is_current": false,
         "retired_visibility_seq": "101",
         "retirement_durable": true
@@ -384,7 +417,7 @@
       "kind": "logical_gc",
       "vector": {
         "vector_id": "10",
-        "state": "GC_ELIGIBLE",
+        "state": "RETIRED",
         "is_current": false,
         "retired_visibility_seq": "101",
         "retirement_durable": true
@@ -407,7 +440,7 @@
       "kind": "logical_gc",
       "vector": {
         "vector_id": "10",
-        "state": "GC_ELIGIBLE",
+        "state": "RETIRED",
         "is_current": false,
         "retired_visibility_seq": "101",
         "retirement_durable": true
