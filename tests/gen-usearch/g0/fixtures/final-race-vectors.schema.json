@@ -17,41 +17,456 @@
       "const": "3.1.0-g0-f2r1"
     },
     "vectors": {
-      "type": "array",
-      "minItems": 23,
-      "maxItems": 23,
-      "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "group",
-          "kind",
-          "expected"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "group": {
-            "enum": [
-              "FINAL-01",
-              "FINAL-02",
-              "FINAL-03",
-              "FINAL-04",
-              "FINAL-05"
+      "const": [
+        {
+          "id": "FINAL01-BEFORE-COMMIT",
+          "group": "FINAL-01",
+          "kind": "physical_coverage",
+          "read_view": {
+            "visibility_seq": "100",
+            "current_vector_ids": [
+              "10"
+            ],
+            "physical_vector_ids": [
+              "10",
+              "11"
             ]
           },
-          "kind": {
-            "type": "string",
-            "minLength": 1
-          },
           "expected": {
-            "type": "object"
+            "ok": true
           }
         },
-        "additionalProperties": true
-      }
+        {
+          "id": "FINAL01-AFTER-COMMIT",
+          "group": "FINAL-01",
+          "kind": "physical_coverage",
+          "read_view": {
+            "visibility_seq": "101",
+            "current_vector_ids": [
+              "11"
+            ],
+            "physical_vector_ids": [
+              "10",
+              "11"
+            ]
+          },
+          "expected": {
+            "ok": true
+          }
+        },
+        {
+          "id": "FINAL01-MIXED-WORLD-GAP",
+          "group": "FINAL-01",
+          "kind": "physical_coverage",
+          "read_view": {
+            "visibility_seq": "101",
+            "current_vector_ids": [
+              "11"
+            ],
+            "physical_vector_ids": [
+              "10"
+            ]
+          },
+          "expected": {
+            "ok": false,
+            "code": "QUERY_READ_VIEW_PHYSICAL_GAP",
+            "missing_vector_ids": [
+              "11"
+            ]
+          }
+        },
+        {
+          "id": "FINAL02-PREFLUSH-SEALED-VISIBLE",
+          "group": "FINAL-02",
+          "kind": "flush_handoff",
+          "current_vector_ids": [
+            "10",
+            "11"
+          ],
+          "sources": {
+            "memtables": {
+              "M10": [
+                "10"
+              ],
+              "M11": [
+                "11"
+              ]
+            },
+            "segments": {}
+          },
+          "expected": {
+            "ok": true
+          }
+        },
+        {
+          "id": "FINAL02-POSTFLUSH-OVERLAP",
+          "group": "FINAL-02",
+          "kind": "flush_handoff",
+          "current_vector_ids": [
+            "10",
+            "11"
+          ],
+          "sources": {
+            "memtables": {
+              "M10": [
+                "10"
+              ],
+              "M11": [
+                "11"
+              ]
+            },
+            "segments": {
+              "S10": [
+                "10"
+              ]
+            }
+          },
+          "expected": {
+            "ok": true
+          }
+        },
+        {
+          "id": "FINAL02-POSTFLUSH-SEGMENT",
+          "group": "FINAL-02",
+          "kind": "flush_handoff",
+          "current_vector_ids": [
+            "10",
+            "11"
+          ],
+          "sources": {
+            "memtables": {
+              "M11": [
+                "11"
+              ]
+            },
+            "segments": {
+              "S10": [
+                "10"
+              ]
+            }
+          },
+          "expected": {
+            "ok": true
+          }
+        },
+        {
+          "id": "FINAL02-HANDOFF-GAP",
+          "group": "FINAL-02",
+          "kind": "flush_handoff",
+          "current_vector_ids": [
+            "10",
+            "11"
+          ],
+          "sources": {
+            "memtables": {
+              "M11": [
+                "11"
+              ]
+            },
+            "segments": {}
+          },
+          "expected": {
+            "ok": false,
+            "code": "QUERY_READ_VIEW_PHYSICAL_GAP",
+            "missing_vector_ids": [
+              "10"
+            ]
+          }
+        },
+        {
+          "id": "FINAL03-STAGED-MUST-COPY",
+          "group": "FINAL-03",
+          "kind": "compaction_copy",
+          "vector": {
+            "vector_id": "20",
+            "state": "VECTOR_STAGED",
+            "is_current": false,
+            "retired_visibility_seq": null,
+            "retirement_durable": false
+          },
+          "read_views": [],
+          "expected": {
+            "copy": true
+          }
+        },
+        {
+          "id": "FINAL03-RETIRED-NO-CERT-MUST-COPY",
+          "group": "FINAL-03",
+          "kind": "compaction_copy",
+          "vector": {
+            "vector_id": "20",
+            "state": "RETIRED",
+            "is_current": false,
+            "retired_visibility_seq": "700",
+            "retirement_durable": false
+          },
+          "read_views": [],
+          "expected": {
+            "copy": true
+          }
+        },
+        {
+          "id": "FINAL03-GC-CERT-MAY-DROP",
+          "group": "FINAL-03",
+          "kind": "compaction_copy",
+          "vector": {
+            "vector_id": "20",
+            "state": "GC_ELIGIBLE",
+            "is_current": false,
+            "retired_visibility_seq": "700",
+            "retirement_durable": true
+          },
+          "read_views": [
+            {
+              "state": "RELEASED",
+              "visibility_seq": "650",
+              "worker_quiescent": true,
+              "pins_released": true
+            }
+          ],
+          "expected": {
+            "copy": false
+          }
+        },
+        {
+          "id": "FINAL03-STALE-COMPACTION-CAS",
+          "group": "FINAL-03",
+          "kind": "compaction_publish",
+          "input_manifest_epoch": "50",
+          "current_manifest_epoch": "51",
+          "expected": {
+            "ok": false,
+            "code": "COMPACTION_PUBLICATION_STALE"
+          }
+        },
+        {
+          "id": "FINAL03-STABLE-COMPACTION-CAS",
+          "group": "FINAL-03",
+          "kind": "compaction_publish",
+          "input_manifest_epoch": "50",
+          "current_manifest_epoch": "50",
+          "expected": {
+            "ok": true
+          }
+        },
+        {
+          "id": "FINAL04-SOURCE-OBSERVED-INTENT-PRESENT",
+          "group": "FINAL-04",
+          "kind": "source_observation",
+          "current_digest": "bbbb",
+          "observed_digest": "bbbb",
+          "observed_source_revision": "20",
+          "reconcile_target_revision": "20",
+          "reconciliation_state": "PENDING",
+          "durable_reconciliation_intent": true,
+          "expected": {
+            "ok": true,
+            "needs_reconciliation": true
+          }
+        },
+        {
+          "id": "FINAL04-SOURCE-DIVERGENCE",
+          "group": "FINAL-04",
+          "kind": "source_observation",
+          "current_digest": "cccc",
+          "observed_digest": "bbbb",
+          "observed_source_revision": "20",
+          "reconcile_target_revision": "20",
+          "reconciliation_state": "COMPLETE",
+          "durable_reconciliation_intent": true,
+          "expected": {
+            "ok": true,
+            "needs_reconciliation": true,
+            "code": "SOURCE_DIVERGENCE_DETECTED"
+          }
+        },
+        {
+          "id": "FINAL04-VOLATILE-ACTIVE-WITH-RECOVERY",
+          "group": "FINAL-04",
+          "kind": "recovery_coverage",
+          "vector": {
+            "vector_id": "9223372036854775807",
+            "state": "ACTIVE",
+            "in_volatile_memtable": true,
+            "embedding_fingerprint": "e1"
+          },
+          "segments": [],
+          "recovery_material": {
+            "vector_id": "9223372036854775807",
+            "state": "RECOVERY_REQUIRED",
+            "exact_vector_bytes": true,
+            "embedding_fingerprint": "e1"
+          },
+          "expected": {
+            "ok": true
+          }
+        },
+        {
+          "id": "FINAL04-VOLATILE-ACTIVE-NO-RECOVERY",
+          "group": "FINAL-04",
+          "kind": "recovery_coverage",
+          "vector": {
+            "vector_id": "9223372036854775807",
+            "state": "ACTIVE",
+            "in_volatile_memtable": true,
+            "embedding_fingerprint": "e1"
+          },
+          "segments": [],
+          "recovery_material": {
+            "vector_id": "9223372036854775807",
+            "state": "RECOVERY_RELEASED",
+            "exact_vector_bytes": false,
+            "embedding_fingerprint": "e1"
+          },
+          "expected": {
+            "ok": false,
+            "code": "VECTOR_RECOVERY_MATERIAL_MISSING"
+          }
+        },
+        {
+          "id": "FINAL04-MANIFEST-MISSING-SEGMENT",
+          "group": "FINAL-04",
+          "kind": "manifest_segments",
+          "manifest_segment_ids": [
+            "S10",
+            "S11"
+          ],
+          "segments": [
+            {
+              "segment_id": "S10",
+              "state": "PUBLISHED",
+              "artifact_exists": true,
+              "artifact_verified": true,
+              "final_name_durable": true
+            }
+          ],
+          "expected": {
+            "ok": false,
+            "code": "MANIFEST_SEGMENT_MISSING",
+            "missing_segment_ids": [
+              "S11"
+            ]
+          }
+        },
+        {
+          "id": "FINAL05-CANCELLED-NOT-RELEASED-BLOCKS-GC",
+          "group": "FINAL-05",
+          "kind": "logical_gc",
+          "vector": {
+            "vector_id": "10",
+            "state": "GC_ELIGIBLE",
+            "is_current": false,
+            "retired_visibility_seq": "101",
+            "retirement_durable": true
+          },
+          "read_views": [
+            {
+              "state": "CANCEL_REQUESTED",
+              "visibility_seq": "100",
+              "worker_quiescent": false,
+              "pins_released": false
+            }
+          ],
+          "expected": {
+            "can_gc": false
+          }
+        },
+        {
+          "id": "FINAL05-QUIESCING-BLOCKS-GC",
+          "group": "FINAL-05",
+          "kind": "logical_gc",
+          "vector": {
+            "vector_id": "10",
+            "state": "GC_ELIGIBLE",
+            "is_current": false,
+            "retired_visibility_seq": "101",
+            "retirement_durable": true
+          },
+          "read_views": [
+            {
+              "state": "QUIESCING",
+              "visibility_seq": "100",
+              "worker_quiescent": false,
+              "pins_released": false
+            }
+          ],
+          "expected": {
+            "can_gc": false
+          }
+        },
+        {
+          "id": "FINAL05-MALFORMED-ACTIVE-BLOCKS-GC",
+          "group": "FINAL-05",
+          "kind": "logical_gc",
+          "vector": {
+            "vector_id": "10",
+            "state": "GC_ELIGIBLE",
+            "is_current": false,
+            "retired_visibility_seq": "101",
+            "retirement_durable": true
+          },
+          "read_views": [
+            {
+              "state": "ACTIVE",
+              "worker_quiescent": false,
+              "pins_released": false
+            }
+          ],
+          "expected": {
+            "can_gc": false,
+            "code": "QUERY_READ_VIEW_INVALID"
+          }
+        },
+        {
+          "id": "FINAL05-RELEASED-OLD-VIEW-ALLOWS-GC",
+          "group": "FINAL-05",
+          "kind": "logical_gc",
+          "vector": {
+            "vector_id": "10",
+            "state": "GC_ELIGIBLE",
+            "is_current": false,
+            "retired_visibility_seq": "101",
+            "retirement_durable": true
+          },
+          "read_views": [
+            {
+              "state": "RELEASED",
+              "visibility_seq": "100",
+              "worker_quiescent": true,
+              "pins_released": true
+            }
+          ],
+          "expected": {
+            "can_gc": true
+          }
+        },
+        {
+          "id": "FINAL05-LIVE-OLD-RUNTIME-BLOCKS-TAKEOVER-GC",
+          "group": "FINAL-05",
+          "kind": "runtime_takeover",
+          "old_runtime": {
+            "serving": true,
+            "may_execute": true,
+            "quiescent": false
+          },
+          "expected": {
+            "can_takeover": false
+          }
+        },
+        {
+          "id": "FINAL05-QUIESCENT-OLD-RUNTIME-ALLOWS-TAKEOVER",
+          "group": "FINAL-05",
+          "kind": "runtime_takeover",
+          "old_runtime": {
+            "serving": false,
+            "may_execute": false,
+            "quiescent": true
+          },
+          "expected": {
+            "can_takeover": true
+          }
+        }
+      ]
     }
   }
 }
