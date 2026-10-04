@@ -16,14 +16,17 @@
     "required_final_fixture_ids",
     "required_invariant_fixture_ids",
     "critical_enums",
-    "required_artifact_paths"
+    "required_artifact_paths",
+    "external_authority_pin",
+    "sealed_artifact_paths",
+    "sealed_artifact_sha256"
   ],
   "properties": {
     "authority_version": {
       "const": 1
     },
     "contract_version": {
-      "const": "3.1.0-g0-f2r2"
+      "const": "3.1.0-g0-f2r3"
     },
     "gate": {
       "const": "G0"
@@ -305,6 +308,121 @@
         "tests/gen-usearch/g0/package-lock.json",
         ".github/workflows/gen-usearch-g0-contracts.yml"
       ]
+    },
+    "external_authority_pin": {
+      "const": {
+        "kind": "github_actions_repository_variable",
+        "name": "G0_AUTHORITY_LOCK_SHA256",
+        "required": true
+      }
+    },
+    "sealed_artifact_paths": {
+      "const": [
+        "contracts/gen-usearch/g0/g0-authority-lock.schema.json",
+        "contracts/gen-usearch/g0/g0-contracts-r3.1.json",
+        "contracts/gen-usearch/g0/failure-codes.json",
+        "contracts/gen-usearch/g0/g0-contracts.schema.json",
+        "contracts/gen-usearch/g0/failure-codes.schema.json",
+        "contracts/gen-usearch/g0/g0-acceptance.schema.json",
+        "tests/gen-usearch/g0/fixtures/final-race-vectors.json",
+        "tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json",
+        "tests/gen-usearch/g0/fixtures/invariant-vectors.json",
+        "tests/gen-usearch/g0/fixtures/invariant-vectors.schema.json",
+        "tests/gen-usearch/g0/g0-verifier.js",
+        "tests/gen-usearch/g0/g0-runner.js",
+        "tests/gen-usearch/g0/g0-contracts.test.js",
+        "tests/gen-usearch/g0/package.json",
+        "tests/gen-usearch/g0/package-lock.json",
+        ".github/workflows/gen-usearch-g0-contracts.yml"
+      ]
+    },
+    "sealed_artifact_sha256": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contracts/gen-usearch/g0/g0-authority-lock.schema.json",
+        "contracts/gen-usearch/g0/g0-contracts-r3.1.json",
+        "contracts/gen-usearch/g0/failure-codes.json",
+        "contracts/gen-usearch/g0/g0-contracts.schema.json",
+        "contracts/gen-usearch/g0/failure-codes.schema.json",
+        "contracts/gen-usearch/g0/g0-acceptance.schema.json",
+        "tests/gen-usearch/g0/fixtures/final-race-vectors.json",
+        "tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json",
+        "tests/gen-usearch/g0/fixtures/invariant-vectors.json",
+        "tests/gen-usearch/g0/fixtures/invariant-vectors.schema.json",
+        "tests/gen-usearch/g0/g0-verifier.js",
+        "tests/gen-usearch/g0/g0-runner.js",
+        "tests/gen-usearch/g0/g0-contracts.test.js",
+        "tests/gen-usearch/g0/package.json",
+        "tests/gen-usearch/g0/package-lock.json",
+        ".github/workflows/gen-usearch-g0-contracts.yml"
+      ],
+      "properties": {
+        "contracts/gen-usearch/g0/g0-authority-lock.schema.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "contracts/gen-usearch/g0/g0-contracts-r3.1.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "contracts/gen-usearch/g0/failure-codes.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "contracts/gen-usearch/g0/g0-contracts.schema.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "contracts/gen-usearch/g0/failure-codes.schema.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "contracts/gen-usearch/g0/g0-acceptance.schema.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "tests/gen-usearch/g0/fixtures/final-race-vectors.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "tests/gen-usearch/g0/fixtures/invariant-vectors.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "tests/gen-usearch/g0/fixtures/invariant-vectors.schema.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "tests/gen-usearch/g0/g0-verifier.js": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "tests/gen-usearch/g0/g0-runner.js": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "tests/gen-usearch/g0/g0-contracts.test.js": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "tests/gen-usearch/g0/package.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "tests/gen-usearch/g0/package-lock.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        ".github/workflows/gen-usearch-g0-contracts.yml": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
     }
   }
 }
