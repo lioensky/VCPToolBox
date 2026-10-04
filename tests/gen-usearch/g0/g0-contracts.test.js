@@ -200,18 +200,7 @@ test('acceptance is derived from executed evidence and schema-validates', () => 
   assert.equal(finalExecutions.length, finalFixtures.vectors.length);
   assert.equal(invariantExecutions.length, invariantFixtures.vectors.length);
 
-  const artifactPaths = [
-    'contracts/gen-usearch/g0/g0-contracts-r3.1.json',
-    'contracts/gen-usearch/g0/failure-codes.json',
-    'contracts/gen-usearch/g0/g0-contracts.schema.json',
-    'contracts/gen-usearch/g0/failure-codes.schema.json',
-    'contracts/gen-usearch/g0/g0-acceptance.schema.json',
-    'tests/gen-usearch/g0/fixtures/final-race-vectors.json',
-    'tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json',
-    'tests/gen-usearch/g0/fixtures/invariant-vectors.json',
-    'tests/gen-usearch/g0/fixtures/invariant-vectors.schema.json',
-    'tests/gen-usearch/g0/g0-verifier.js'
-  ];
+  const artifactPaths = registry.acceptance.required_artifact_paths;
   const artifactDigests = Object.fromEntries(artifactPaths.map(rel => [rel, verifier.sha256Text(text(rel))]));
   const headSha = execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 
