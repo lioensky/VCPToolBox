@@ -1,0 +1,632 @@
+{
+  "fixture_version": 1,
+  "contract_version": "3.1.0-g0-f2r1",
+  "vectors": [
+    {
+      "id": "G0-XINV-001-POS",
+      "invariant_id": "G0-XINV-001",
+      "polarity": "positive",
+      "input": {
+        "uri_changed": true,
+        "before_doc_id": "doc-a",
+        "after_doc_id": "doc-a"
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-001-NEG",
+      "invariant_id": "G0-XINV-001",
+      "polarity": "negative",
+      "input": {
+        "uri_changed": true,
+        "before_doc_id": "doc-a",
+        "after_doc_id": "doc-b"
+      },
+      "expected": {
+        "pass": false,
+        "code": "DOCUMENT_IDENTITY_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "G0-XINV-002-POS",
+      "invariant_id": "G0-XINV-002",
+      "polarity": "positive",
+      "input": {
+        "slot_changed": true,
+        "before_chunk_id": "c1",
+        "after_chunk_id": "c1"
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-002-NEG",
+      "invariant_id": "G0-XINV-002",
+      "polarity": "negative",
+      "input": {
+        "slot_changed": true,
+        "before_chunk_id": "c1",
+        "after_chunk_id": "c2"
+      },
+      "expected": {
+        "pass": false,
+        "code": "CHUNK_IDENTITY_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "G0-XINV-003-POS",
+      "invariant_id": "G0-XINV-003",
+      "polarity": "positive",
+      "input": {
+        "current_head_changed": true,
+        "via_sqlite_cas": true,
+        "durable_commit_confirmed": true
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-003-NEG",
+      "invariant_id": "G0-XINV-003",
+      "polarity": "negative",
+      "input": {
+        "current_head_changed": true,
+        "via_sqlite_cas": false,
+        "durable_commit_confirmed": true
+      },
+      "expected": {
+        "pass": false,
+        "code": "STALE_VECTOR_PUBLICATION"
+      }
+    },
+    {
+      "id": "G0-XINV-004-POS",
+      "invariant_id": "G0-XINV-004",
+      "polarity": "positive",
+      "input": {
+        "logical_visibility_changed": true,
+        "before": "100",
+        "after": "101"
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-004-NEG",
+      "invariant_id": "G0-XINV-004",
+      "polarity": "negative",
+      "input": {
+        "logical_visibility_changed": true,
+        "before": "100",
+        "after": "100"
+      },
+      "expected": {
+        "pass": false,
+        "code": "VISIBILITY_SEQUENCE_INVALID"
+      }
+    },
+    {
+      "id": "G0-XINV-005-POS",
+      "invariant_id": "G0-XINV-005",
+      "polarity": "positive",
+      "input": {
+        "physical_topology_changed": true,
+        "before": "50",
+        "after": "51"
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-005-NEG",
+      "invariant_id": "G0-XINV-005",
+      "polarity": "negative",
+      "input": {
+        "physical_topology_changed": true,
+        "before": "50",
+        "after": "50"
+      },
+      "expected": {
+        "pass": false,
+        "code": "MANIFEST_EPOCH_REGRESSION"
+      }
+    },
+    {
+      "id": "G0-XINV-006-POS",
+      "invariant_id": "G0-XINV-006",
+      "polarity": "positive",
+      "input": {
+        "logical_only": {
+          "vis_before": "100",
+          "vis_after": "101",
+          "epoch_before": "50",
+          "epoch_after": "50"
+        },
+        "physical_only": {
+          "vis_before": "101",
+          "vis_after": "101",
+          "epoch_before": "50",
+          "epoch_after": "51"
+        }
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-006-NEG",
+      "invariant_id": "G0-XINV-006",
+      "polarity": "negative",
+      "input": {
+        "logical_only": {
+          "vis_before": "100",
+          "vis_after": "101",
+          "epoch_before": "50",
+          "epoch_after": "51"
+        },
+        "physical_only": {
+          "vis_before": "101",
+          "vis_after": "102",
+          "epoch_before": "51",
+          "epoch_after": "52"
+        }
+      },
+      "expected": {
+        "pass": false,
+        "code": "CLOCK_COUPLING_VIOLATION"
+      }
+    },
+    {
+      "id": "G0-XINV-007-POS",
+      "invariant_id": "G0-XINV-007",
+      "polarity": "positive",
+      "input": {
+        "visibility_seq": "101",
+        "current_vector_ids": [
+          "11"
+        ],
+        "physical_vector_ids": [
+          "10",
+          "11"
+        ]
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-007-NEG",
+      "invariant_id": "G0-XINV-007",
+      "polarity": "negative",
+      "input": {
+        "visibility_seq": "101",
+        "current_vector_ids": [
+          "11"
+        ],
+        "physical_vector_ids": [
+          "10"
+        ]
+      },
+      "expected": {
+        "pass": false,
+        "code": "QUERY_READ_VIEW_PHYSICAL_GAP"
+      }
+    },
+    {
+      "id": "G0-XINV-008-POS",
+      "invariant_id": "G0-XINV-008",
+      "polarity": "positive",
+      "input": {
+        "current_vector_ids": [
+          "10"
+        ],
+        "sources": {
+          "memtables": {
+            "M10": [
+              "10"
+            ]
+          },
+          "segments": {
+            "S10": [
+              "10"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-008-NEG",
+      "invariant_id": "G0-XINV-008",
+      "polarity": "negative",
+      "input": {
+        "current_vector_ids": [
+          "10"
+        ],
+        "sources": {
+          "memtables": {},
+          "segments": {}
+        }
+      },
+      "expected": {
+        "pass": false,
+        "code": "QUERY_READ_VIEW_PHYSICAL_GAP"
+      }
+    },
+    {
+      "id": "G0-XINV-009-POS",
+      "invariant_id": "G0-XINV-009",
+      "polarity": "positive",
+      "input": {
+        "snapshot_current": true,
+        "global_tombstone": true,
+        "discarded": false
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-009-NEG",
+      "invariant_id": "G0-XINV-009",
+      "polarity": "negative",
+      "input": {
+        "snapshot_current": true,
+        "global_tombstone": true,
+        "discarded": true
+      },
+      "expected": {
+        "pass": false,
+        "code": "TOMBSTONE_SNAPSHOT_VIOLATION"
+      }
+    },
+    {
+      "id": "G0-XINV-010-POS",
+      "invariant_id": "G0-XINV-010",
+      "polarity": "positive",
+      "input": {
+        "vector": {
+          "vector_id": "20",
+          "state": "GC_ELIGIBLE",
+          "is_current": false,
+          "retired_visibility_seq": "700",
+          "retirement_durable": true
+        },
+        "read_views": [
+          {
+            "state": "RELEASED",
+            "visibility_seq": "650",
+            "worker_quiescent": true,
+            "pins_released": true
+          }
+        ],
+        "drop": true
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-010-NEG",
+      "invariant_id": "G0-XINV-010",
+      "polarity": "negative",
+      "input": {
+        "vector": {
+          "vector_id": "20",
+          "state": "GC_ELIGIBLE",
+          "is_current": false,
+          "retired_visibility_seq": "700",
+          "retirement_durable": false
+        },
+        "read_views": [],
+        "drop": true
+      },
+      "expected": {
+        "pass": false,
+        "code": "UNSAFE_GC_ATTEMPT"
+      }
+    },
+    {
+      "id": "G0-XINV-011-POS",
+      "invariant_id": "G0-XINV-011",
+      "polarity": "positive",
+      "input": {
+        "manifest_segment_ids": [
+          "S10"
+        ],
+        "segments": [
+          {
+            "segment_id": "S10",
+            "state": "PUBLISHED",
+            "artifact_exists": true,
+            "artifact_verified": true,
+            "final_name_durable": true
+          }
+        ]
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-011-NEG",
+      "invariant_id": "G0-XINV-011",
+      "polarity": "negative",
+      "input": {
+        "manifest_segment_ids": [
+          "S10"
+        ],
+        "segments": [
+          {
+            "segment_id": "S10",
+            "state": "PUBLISHED",
+            "artifact_exists": true,
+            "artifact_verified": false,
+            "final_name_durable": true
+          }
+        ]
+      },
+      "expected": {
+        "pass": false,
+        "code": "SEGMENT_DURABILITY_UNPROVEN"
+      }
+    },
+    {
+      "id": "G0-XINV-012-POS",
+      "invariant_id": "G0-XINV-012",
+      "polarity": "positive",
+      "input": {
+        "vector": {
+          "vector_id": "9223372036854775807",
+          "state": "ACTIVE",
+          "in_volatile_memtable": true,
+          "embedding_fingerprint": "e1"
+        },
+        "segments": [],
+        "recovery_material": {
+          "vector_id": "9223372036854775807",
+          "state": "RECOVERY_REQUIRED",
+          "exact_vector_bytes": true,
+          "embedding_fingerprint": "e1"
+        }
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-012-NEG",
+      "invariant_id": "G0-XINV-012",
+      "polarity": "negative",
+      "input": {
+        "vector": {
+          "vector_id": "9223372036854775807",
+          "state": "ACTIVE",
+          "in_volatile_memtable": true,
+          "embedding_fingerprint": "e1"
+        },
+        "segments": [],
+        "recovery_material": {
+          "vector_id": "9223372036854775807",
+          "state": "RECOVERY_RELEASED",
+          "exact_vector_bytes": false,
+          "embedding_fingerprint": "e1"
+        }
+      },
+      "expected": {
+        "pass": false,
+        "code": "VECTOR_RECOVERY_MATERIAL_MISSING"
+      }
+    },
+    {
+      "id": "G0-XINV-013-POS",
+      "invariant_id": "G0-XINV-013",
+      "polarity": "positive",
+      "input": {
+        "observed": true,
+        "observed_source_revision": "20",
+        "reconcile_target_revision": "20",
+        "durable_reconciliation_intent": true
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-013-NEG",
+      "invariant_id": "G0-XINV-013",
+      "polarity": "negative",
+      "input": {
+        "observed": true,
+        "observed_source_revision": "20",
+        "reconcile_target_revision": "19",
+        "durable_reconciliation_intent": true
+      },
+      "expected": {
+        "pass": false,
+        "code": "SOURCE_OBSERVATION_INVALID"
+      }
+    },
+    {
+      "id": "G0-XINV-014-POS",
+      "invariant_id": "G0-XINV-014",
+      "polarity": "positive",
+      "input": {
+        "state": "RELEASED",
+        "worker_quiescent": true,
+        "pins_released": true
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-014-NEG",
+      "invariant_id": "G0-XINV-014",
+      "polarity": "negative",
+      "input": {
+        "state": "RELEASED",
+        "worker_quiescent": false,
+        "pins_released": true
+      },
+      "expected": {
+        "pass": false,
+        "code": "READER_PIN_VIOLATION"
+      }
+    },
+    {
+      "id": "G0-XINV-015-POS",
+      "invariant_id": "G0-XINV-015",
+      "polarity": "positive",
+      "input": {
+        "old_runtime": {
+          "serving": false,
+          "may_execute": false,
+          "quiescent": true
+        },
+        "new_owner_started": true
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-015-NEG",
+      "invariant_id": "G0-XINV-015",
+      "polarity": "negative",
+      "input": {
+        "old_runtime": {
+          "serving": true,
+          "may_execute": true,
+          "quiescent": false
+        },
+        "new_owner_started": true
+      },
+      "expected": {
+        "pass": false,
+        "code": "SERVING_OWNERSHIP_CONFLICT"
+      }
+    },
+    {
+      "id": "G0-XINV-016-POS",
+      "invariant_id": "G0-XINV-016",
+      "polarity": "positive",
+      "input": {
+        "acquisition_failed": true,
+        "provisional_pins_released": true,
+        "active_read_view_published": false
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-016-NEG",
+      "invariant_id": "G0-XINV-016",
+      "polarity": "negative",
+      "input": {
+        "acquisition_failed": true,
+        "provisional_pins_released": false,
+        "active_read_view_published": false
+      },
+      "expected": {
+        "pass": false,
+        "code": "QUERY_READ_VIEW_INVALID"
+      }
+    },
+    {
+      "id": "G0-XINV-017-POS",
+      "invariant_id": "G0-XINV-017",
+      "polarity": "positive",
+      "input": {
+        "shadow_failed": true,
+        "canonical_write_success": true,
+        "legacy_lifecycle_mutated": false
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-017-NEG",
+      "invariant_id": "G0-XINV-017",
+      "polarity": "negative",
+      "input": {
+        "shadow_failed": true,
+        "canonical_write_success": false,
+        "legacy_lifecycle_mutated": false
+      },
+      "expected": {
+        "pass": false,
+        "code": "SHADOW_FAILURE_BLOCKED_CANONICAL_WRITE"
+      }
+    },
+    {
+      "id": "G0-XINV-018-POS",
+      "invariant_id": "G0-XINV-018",
+      "polarity": "positive",
+      "input": {
+        "mode": "GENERATIONAL_ACTIVE",
+        "engine_failed": true,
+        "legacy_fallback_used": false
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-018-NEG",
+      "invariant_id": "G0-XINV-018",
+      "polarity": "negative",
+      "input": {
+        "mode": "GENERATIONAL_ACTIVE",
+        "engine_failed": true,
+        "legacy_fallback_used": true
+      },
+      "expected": {
+        "pass": false,
+        "code": "SILENT_LEGACY_FALLBACK"
+      }
+    },
+    {
+      "id": "G0-XINV-019-POS",
+      "invariant_id": "G0-XINV-019",
+      "polarity": "positive",
+      "input": {
+        "vector_ids": [
+          "9007199254740992",
+          "9007199254740993",
+          "9223372036854775807"
+        ],
+        "expected_unique": 3
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-019-NEG",
+      "invariant_id": "G0-XINV-019",
+      "polarity": "negative",
+      "input": {
+        "vector_ids": [
+          "01",
+          "1"
+        ],
+        "expected_unique": 2
+      },
+      "expected": {
+        "pass": false,
+        "code": "VECTOR_ID_INVALID"
+      }
+    }
+  ]
+}
