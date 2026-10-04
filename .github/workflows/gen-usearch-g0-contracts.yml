@@ -36,3 +36,6 @@ jobs:
 
       - name: Run G0 deterministic contract gate
         run: node --test tests/gen-usearch/g0/g0-contracts.test.js
+
+      - name: Generate canonical G0 acceptance manifest
+        run: node tests/gen-usearch/g0/g0-runner.js | tee /tmp/g0-acceptance.json
