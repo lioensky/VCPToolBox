@@ -112,6 +112,10 @@ function captureRepositorySnapshot(root) {
   const expectedSeals = authorityLock.sealed_artifact_sha256;
   const expectedSealPaths = Object.keys(expectedSeals);
   if (expectedSealPaths.length === 0) throw new Error('G0_AUTHORITY_LOCK_SEAL_MAP_EMPTY');
+  const declaredSealPaths = authorityLock.sealed_artifact_paths || [];
+  if (!verifier.exactSetEquals(expectedSealPaths, declaredSealPaths)) {
+    throw new Error('G0_AUTHORITY_LOCK_SEAL_SET_MISMATCH');
+  }
   for (const rel of expectedSealPaths) {
     if (!snapshotBuffers.has(rel)) throw new Error(`G0_SEALED_ARTIFACT_NOT_LOCKED: ${rel}`);
     if (artifactDigests[rel] !== expectedSeals[rel]) {
