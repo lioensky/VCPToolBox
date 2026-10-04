@@ -1,28 +1,31 @@
 # Gen-USearch G0 machine contracts
 
-Status: **G0-F2R1 candidate, not G0 frozen**.
+Status: **G0-F2R2 candidate, not G0 frozen**.
 
 This directory contains the executable machine form of the Gen-USearch G0 R3.1 architecture contract. It intentionally does not implement the production USearch engine.
 
-## What the gate now proves
+## F2R2 authority model
 
-The gate validates the contract artifacts with JSON Schema Draft 2020-12 using pinned Ajv, executes every required invariant with both positive and negative fixtures, runs the FINAL-01..FINAL-05 deterministic race/crash vectors, rejects vacuous fixture/failure/invariant sets, preserves 63-bit vector identity with decimal-string + BigInt semantics, derives GC and recovery decisions from underlying records rather than caller booleans, and derives the acceptance verdict from executed evidence.
+The G0 gate now has three distinct roles:
 
-A G0 PASS cannot be caller-asserted. The generated acceptance manifest may say PASS only when:
+1. `g0-authority-lock.json` freezes the required contract surface independently from the mutable registry.
+2. `g0-verifier.js` evaluates transitions, invariants, GC, recovery and physical coverage from evidence.
+3. `g0-runner.js` is the canonical acceptance entrypoint. It reads the repository itself, runs schema validation, executes fixtures/invariants, reads the real Git HEAD, computes SHA256 for the locked artifact set, and generates the acceptance manifest.
 
-- C1-C8 are all PASS;
-- FINAL-01..FINAL-05 are all PASS;
-- all required schemas validate;
-- required invariant/failure/fixture coverage is exact;
-- unresolved P0 = 0;
-- unresolved P1 = 0;
-- evidence and artifact digests are present.
+Callers do not supply execution receipts, HEAD SHAs, artifact digests, or PASS status.
+
+GC proof is derived from a durable `RETIRED` record plus reader state before transition to `GC_ELIGIBLE`. Durable vector coverage is derived from `ManifestSnapshot + SegmentRecord + ArtifactReceipt`, not from self-asserted booleans.
+
+ReadView transition guards are executable. In particular, `QUIESCING → RELEASED` requires both worker quiescence and released pins.
 
 ## Local verification
 
 ```bash
 npm ci --prefix tests/gen-usearch/g0 --ignore-scripts --no-audit --no-fund
 node --test tests/gen-usearch/g0/g0-contracts.test.js
+node tests/gen-usearch/g0/g0-runner.js
 ```
 
-The result vocabulary remains exactly `PASS / FAIL / BLOCKED`. Passing this suite proves the G0 machine contract is executable and internally enforced. It does **not** by itself freeze G0 or authorize G1 production implementation.
+A green test suite is necessary but not sufficient. CI also runs the canonical runner and requires its generated manifest to be `PASS`.
+
+Changing the Authority Lock changes the frozen required surface and therefore requires explicit G0 authority review. Passing this gate does **not** by itself freeze G0 or authorize G1.
