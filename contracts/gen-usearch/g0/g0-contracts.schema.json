@@ -611,7 +611,23 @@
           "G0-XINV-019-POS",
           "G0-XINV-019-NEG"
         ],
-        "final_check_expected": "PASS"
+        "final_check_expected": "PASS",
+        "required_artifact_paths": [
+          "contracts/gen-usearch/g0/g0-contracts-r3.1.json",
+          "contracts/gen-usearch/g0/failure-codes.json",
+          "contracts/gen-usearch/g0/g0-contracts.schema.json",
+          "contracts/gen-usearch/g0/failure-codes.schema.json",
+          "contracts/gen-usearch/g0/g0-acceptance.schema.json",
+          "tests/gen-usearch/g0/fixtures/final-race-vectors.json",
+          "tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json",
+          "tests/gen-usearch/g0/fixtures/invariant-vectors.json",
+          "tests/gen-usearch/g0/fixtures/invariant-vectors.schema.json",
+          "tests/gen-usearch/g0/g0-verifier.js",
+          "tests/gen-usearch/g0/g0-contracts.test.js",
+          "tests/gen-usearch/g0/package.json",
+          "tests/gen-usearch/g0/package-lock.json",
+          ".github/workflows/gen-usearch-g0-contracts.yml"
+        ]
       }
     }
   }
