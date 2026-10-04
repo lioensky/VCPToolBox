@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vcptoolbox.local/contracts/gen-usearch/g0/final-race-vectors.schema.json",
+  "title": "Gen-USearch deterministic final race/crash fixtures",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fixture_version",
+    "contract_version",
+    "vectors"
+  ],
+  "properties": {
+    "fixture_version": {
+      "const": 2
+    },
+    "contract_version": {
+      "const": "3.1.0-g0-f2r1"
+    },
+    "vectors": {
+      "type": "array",
+      "minItems": 23,
+      "maxItems": 23,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "group",
+          "kind",
+          "expected"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "group": {
+            "enum": [
+              "FINAL-01",
+              "FINAL-02",
+              "FINAL-03",
+              "FINAL-04",
+              "FINAL-05"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}
