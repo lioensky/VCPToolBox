@@ -1,6 +1,6 @@
 {
   "authority_version": 1,
-  "contract_version": "3.1.0-g0-f2r2",
+  "contract_version": "3.1.0-g0-f2r3",
   "gate": "G0",
   "authority_status": "FREEZE_CANDIDATE",
   "required_contract_ids": [
@@ -261,5 +261,29 @@
     "tests/gen-usearch/g0/package.json",
     "tests/gen-usearch/g0/package-lock.json",
     ".github/workflows/gen-usearch-g0-contracts.yml"
-  ]
+  ],
+  "external_authority_pin": {
+    "kind": "github_actions_repository_variable",
+    "name": "G0_AUTHORITY_LOCK_SHA256",
+    "required": true
+  },
+  "sealed_artifact_paths": [
+    "contracts/gen-usearch/g0/g0-authority-lock.schema.json",
+    "contracts/gen-usearch/g0/g0-contracts-r3.1.json",
+    "contracts/gen-usearch/g0/failure-codes.json",
+    "contracts/gen-usearch/g0/g0-contracts.schema.json",
+    "contracts/gen-usearch/g0/failure-codes.schema.json",
+    "contracts/gen-usearch/g0/g0-acceptance.schema.json",
+    "tests/gen-usearch/g0/fixtures/final-race-vectors.json",
+    "tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json",
+    "tests/gen-usearch/g0/fixtures/invariant-vectors.json",
+    "tests/gen-usearch/g0/fixtures/invariant-vectors.schema.json",
+    "tests/gen-usearch/g0/g0-verifier.js",
+    "tests/gen-usearch/g0/g0-runner.js",
+    "tests/gen-usearch/g0/g0-contracts.test.js",
+    "tests/gen-usearch/g0/package.json",
+    "tests/gen-usearch/g0/package-lock.json",
+    ".github/workflows/gen-usearch-g0-contracts.yml"
+  ],
+  "sealed_artifact_sha256": {}
 }
