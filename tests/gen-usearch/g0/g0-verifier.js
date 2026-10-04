@@ -21,8 +21,12 @@ const FAILURE = Object.freeze({
   UNSAFE_GC: 'UNSAFE_GC_ATTEMPT'
 });
 
+function sha256Bytes(bytes) {
+  return crypto.createHash('sha256').update(bytes).digest('hex');
+}
+
 function sha256Text(text) {
-  return crypto.createHash('sha256').update(text).digest('hex');
+  return sha256Bytes(Buffer.from(text, 'utf8'));
 }
 
 function parseCanonicalDecimal(value, { min = 0n, max = null, name = 'value' } = {}) {
@@ -494,6 +498,7 @@ function verifyCoverage(authorityLock, registry, failureRegistry, finalFixtures,
 module.exports = {
   UINT63_MAX,
   FAILURE,
+  sha256Bytes,
   sha256Text,
   parseSequence,
   parseVectorId,
