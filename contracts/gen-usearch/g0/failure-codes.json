@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "contract_version": "3.1.0-g0-f2",
+  "codes": [
+    {
+      "code": "CHUNK_IDENTITY_AMBIGUOUS",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C1"
+    },
+    {
+      "code": "CHUNK_SERIALIZATION_NONDETERMINISTIC",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C1"
+    },
+    {
+      "code": "DOCUMENT_ACTIVE_URI_CONFLICT",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C2"
+    },
+    {
+      "code": "SOURCE_STATE_UNSTABLE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C2"
+    },
+    {
+      "code": "SOURCE_DIVERGENCE_DETECTED",
+      "severity": "P1_ARCHITECTURE",
+      "contract": "C2"
+    },
+    {
+      "code": "VECTOR_ID_COLLISION",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C3"
+    },
+    {
+      "code": "VECTOR_ID_ALLOCATOR_CORRUPT",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C3"
+    },
+    {
+      "code": "VECTOR_ID_EXHAUSTED",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C3"
+    },
+    {
+      "code": "STALE_VECTOR_PUBLICATION",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C4"
+    },
+    {
+      "code": "INVALID_MVCC_TRANSITION",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C4"
+    },
+    {
+      "code": "INVALID_CURRENT_VECTOR_HEAD",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C4"
+    },
+    {
+      "code": "VECTOR_RECOVERY_MATERIAL_MISSING",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C4"
+    },
+    {
+      "code": "VISIBILITY_SEQUENCE_INVALID",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C4"
+    },
+    {
+      "code": "METADATA_INTEGRITY_FAILURE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C5"
+    },
+    {
+      "code": "PHYSICAL_COVERAGE_MISSING",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C5"
+    },
+    {
+      "code": "SEGMENT_DURABILITY_UNPROVEN",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C5"
+    },
+    {
+      "code": "QUERY_READ_VIEW_PHYSICAL_GAP",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "COMPACTION_PUBLICATION_STALE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "READER_PIN_VIOLATION",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "UNSAFE_GC_ATTEMPT",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "QUERY_READ_VIEW_EXPIRED",
+      "severity": "P1_ARCHITECTURE",
+      "contract": "C6"
+    },
+    {
+      "code": "INDEX_RUNTIME_ALREADY_OWNED",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "RUNTIME_FENCE_STALE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "QUERY_FENCE_STALE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "MANIFEST_SEGMENT_MISSING",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "UNSUPPORTED_DURABILITY_PROFILE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C7"
+    },
+    {
+      "code": "SHADOW_INDEXING_FAILED",
+      "severity": "P1_ARCHITECTURE",
+      "contract": "C8"
+    },
+    {
+      "code": "SHADOW_RESULT_LEAK",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C8"
+    },
+    {
+      "code": "SHADOW_ACCEPTANCE_REQUIRED",
+      "severity": "P1_ARCHITECTURE",
+      "contract": "C8"
+    },
+    {
+      "code": "ACTIVE_ENGINE_UNAVAILABLE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C8"
+    }
+  ]
+}
