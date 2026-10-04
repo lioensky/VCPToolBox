@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "contract_version": "3.1.0-g0-f2",
+  "gate": "G0",
+  "status": "CANDIDATE_NOT_FROZEN",
+  "clocks": {
+    "visibility_seq": {
+      "purpose": "logical_visibility_order",
+      "monotonic": true,
+      "independent_from": [
+        "manifest_epoch"
+      ]
+    },
+    "manifest_epoch": {
+      "purpose": "published_physical_topology_order",
+      "monotonic": true,
+      "independent_from": [
+        "visibility_seq"
+      ]
+    },
+    "vector_id": {
+      "purpose": "physical_vector_identity",
+      "range": {
+        "min": 1,
+        "max": "9223372036854775807"
+      },
+      "never_reuse": true
+    }
+  },
+  "enums": {
+    "chunk_version_state": [
+      "PREPARED",
+      "EMBEDDING",
+      "VECTOR_STAGED",
+      "ACTIVE",
+      "RETIRED",
+      "ABORTED",
+      "GC_ELIGIBLE"
+    ],
+    "document_state": [
+      "ACTIVE",
+      "DELETED"
+    ],
+    "document_index_state": [
+      "CURRENT",
+      "INDEX_LAGGING",
+      "INDEX_ERROR"
+    ],
+    "reconciliation_state": [
+      "PENDING",
+      "ADMITTED",
+      "COMPLETE",
+      "ERROR"
+    ],
+    "memtable_state": [
+      "ACTIVE",
+      "SEALED_QUERY_VISIBLE",
+      "FLUSHING",
+      "SEGMENT_PUBLISHED",
+      "RETIRED_QUERY_VISIBLE",
+      "RECLAIMABLE"
+    ],
+    "segment_state": [
+      "BUILDING",
+      "FINALIZED_DURABLE",
+      "PUBLISHED",
+      "RETIRED",
+      "RECLAIMABLE"
+    ],
+    "read_view_state": [
+      "ACQUIRING",
+      "ACTIVE",
+      "CANCEL_REQUESTED",
+      "QUIESCING",
+      "RELEASED"
+    ],
+    "recovery_state": [
+      "RECOVERY_REQUIRED",
+      "SEGMENT_COVERED",
+      "RECOVERY_RECLAIMABLE",
+      "RECOVERY_RELEASED"
+    ],
+    "engine_mode": [
+      "LEGACY",
+      "GENERATIONAL_SHADOW",
+      "GENERATIONAL_ACTIVE"
+    ],
+    "verdict": [
+      "PASS",
+      "FAIL",
+      "BLOCKED"
+    ]
+  },
+  "transitions": {
+    "chunk_version_state": [
+      [
+        "PREPARED",
+        "EMBEDDING"
+      ],
+      [
+        "PREPARED",
+        "ABORTED"
+      ],
+      [
+        "EMBEDDING",
+        "VECTOR_STAGED"
+      ],
+      [
+        "EMBEDDING",
+        "ABORTED"
+      ],
+      [
+        "VECTOR_STAGED",
+        "ACTIVE"
+      ],
+      [
+        "VECTOR_STAGED",
+        "ABORTED"
+      ],
+      [
+        "ACTIVE",
+        "RETIRED"
+      ],
+      [
+        "RETIRED",
+        "GC_ELIGIBLE"
+      ]
+    ],
+    "memtable_state": [
+      [
+        "ACTIVE",
+        "SEALED_QUERY_VISIBLE"
+      ],
+      [
+        "SEALED_QUERY_VISIBLE",
+        "FLUSHING"
+      ],
+      [
+        "FLUSHING",
+        "SEGMENT_PUBLISHED"
+      ],
+      [
+        "SEGMENT_PUBLISHED",
+        "RETIRED_QUERY_VISIBLE"
+      ],
+      [
+        "RETIRED_QUERY_VISIBLE",
+        "RECLAIMABLE"
+      ]
+    ],
+    "segment_state": [
+      [
+        "BUILDING",
+        "FINALIZED_DURABLE"
+      ],
+      [
+        "FINALIZED_DURABLE",
+        "PUBLISHED"
+      ],
+      [
+        "PUBLISHED",
+        "RETIRED"
+      ],
+      [
+        "RETIRED",
+        "RECLAIMABLE"
+      ]
+    ],
+    "read_view_state": [
+      [
+        "ACQUIRING",
+        "ACTIVE"
+      ],
+      [
+        "ACTIVE",
+        "CANCEL_REQUESTED"
+      ],
+      [
+        "CANCEL_REQUESTED",
+        "QUIESCING"
+      ],
+      [
+        "QUIESCING",
+        "RELEASED"
+      ],
+      [
+        "ACTIVE",
+        "RELEASED"
+      ]
+    ],
+    "recovery_state": [
+      [
+        "RECOVERY_REQUIRED",
+        "SEGMENT_COVERED"
+      ],
+      [
+        "SEGMENT_COVERED",
+        "RECOVERY_RECLAIMABLE"
+      ],
+      [
+        "RECOVERY_RECLAIMABLE",
+        "RECOVERY_RELEASED"
+      ]
+    ],
+    "engine_mode": [
+      [
+        "LEGACY",
+        "GENERATIONAL_SHADOW"
+      ],
+      [
+        "GENERATIONAL_SHADOW",
+        "GENERATIONAL_ACTIVE"
+      ]
+    ]
+  },
+  "invariants": [
+    {
+      "id": "G0-XINV-001",
+      "severity": "P0_CORRECTNESS",
+      "rule": "doc_uri_change_does_not_change_doc_id"
+    },
+    {
+      "id": "G0-XINV-002",
+      "severity": "P0_CORRECTNESS",
+      "rule": "slot_index_change_does_not_imply_chunk_id_change"
+    },
+    {
+      "id": "G0-XINV-003",
+      "severity": "P0_CORRECTNESS",
+      "rule": "current_head_change_requires_mvcc_sqlite_cas"
+    },
+    {
+      "id": "G0-XINV-004",
+      "severity": "P0_CORRECTNESS",
+      "rule": "logical_visibility_change_increments_visibility_seq"
+    },
+    {
+      "id": "G0-XINV-005",
+      "severity": "P0_CORRECTNESS",
+      "rule": "physical_topology_change_increments_manifest_epoch"
+    },
+    {
+      "id": "G0-XINV-006",
+      "severity": "P0_CORRECTNESS",
+      "rule": "visibility_seq_and_manifest_epoch_are_independent"
+    },
+    {
+      "id": "G0-XINV-007",
+      "severity": "P0_CORRECTNESS",
+      "rule": "read_view_current_vectors_have_physical_coverage"
+    },
+    {
+      "id": "G0-XINV-008",
+      "severity": "P0_CORRECTNESS",
+      "rule": "flush_handoff_allows_overlap_but_forbids_gap"
+    },
+    {
+      "id": "G0-XINV-009",
+      "severity": "P0_CORRECTNESS",
+      "rule": "global_tombstone_cache_cannot_invalidate_snapshot_current_vector"
+    },
+    {
+      "id": "G0-XINV-010",
+      "severity": "P0_CORRECTNESS",
+      "rule": "compaction_drops_only_gc_eligible_vectors"
+    },
+    {
+      "id": "G0-XINV-011",
+      "severity": "P0_CORRECTNESS",
+      "rule": "manifest_references_only_finalized_durable_segments"
+    },
+    {
+      "id": "G0-XINV-012",
+      "severity": "P0_CORRECTNESS",
+      "rule": "volatile_current_vector_requires_exact_recovery_material"
+    },
+    {
+      "id": "G0-XINV-013",
+      "severity": "P0_CORRECTNESS",
+      "rule": "source_observation_implies_durable_reconciliation_intent"
+    },
+    {
+      "id": "G0-XINV-014",
+      "severity": "P0_CORRECTNESS",
+      "rule": "query_pins_release_only_after_worker_quiescence"
+    },
+    {
+      "id": "G0-XINV-015",
+      "severity": "P0_CORRECTNESS",
+      "rule": "serving_ownership_is_exclusive_and_non_preemptive_in_r1"
+    },
+    {
+      "id": "G0-XINV-016",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "read_view_acquisition_is_all_or_nothing"
+    },
+    {
+      "id": "G0-XINV-017",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "shadow_failure_does_not_block_canonical_source_write"
+    },
+    {
+      "id": "G0-XINV-018",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "active_mode_does_not_silently_fallback_to_legacy"
+    }
+  ],
+  "acceptance": {
+    "unresolved_p0_required": 0,
+    "unresolved_p1_required": 0,
+    "required_final_checks": [
+      "FINAL-01",
+      "FINAL-02",
+      "FINAL-03",
+      "FINAL-04",
+      "FINAL-05"
+    ],
+    "final_check_expected": "PASS"
+  }
+}
