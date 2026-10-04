@@ -202,10 +202,10 @@ test('acceptance schema rejects a forged PASS after runner output', () => {
   assert.equal(validate(falsePass), false);
 
   const fakeDigest = clone(manifest);
-  fakeDigest.artifact_digests['contracts/gen-usearch/g0/g0-verifier.js'] = '0'.repeat(64);
+  fakeDigest.artifact_digests['tests/gen-usearch/g0/g0-verifier.js'] = '0'.repeat(64);
   assert.equal(validate(fakeDigest), true);
   assert.notEqual(
-    fakeDigest.artifact_digests['contracts/gen-usearch/g0/g0-verifier.js'],
+    fakeDigest.artifact_digests['tests/gen-usearch/g0/g0-verifier.js'],
     verifier.sha256Text(text('tests/gen-usearch/g0/g0-verifier.js'))
   );
   // Schema checks format; authority comes from canonical runner recomputation above.
