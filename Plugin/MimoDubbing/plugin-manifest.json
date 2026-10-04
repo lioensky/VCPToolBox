@@ -1,0 +1,48 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "MimoDubbing",
+  "version": "1.1.0",
+  "displayName": "MiMo 字幕时间轴配音",
+  "description": "异步将 SRT、WebVTT 或 JSON 字幕时间轴合成为 24kHz 单声道 WAV，支持预置音色、音色设计、参考音频克隆、导演提示词和风格标签。",
+  "author": "VCPToolBox",
+  "pluginType": "asynchronous",
+  "entryPoint": { "type": "nodejs", "command": "node MimoDubbing.js" },
+  "communication": { "protocol": "stdio", "timeout": 30000 },
+  "configSchema": {
+    "MIMO_API_KEY": { "type": "string", "description": "DMXAPI 或小米官方 API Key，必须与端点匹配。" },
+    "MIMO_API_URL": { "type": "string", "description": "API 完整 URL 或 /v1 基础 URL；默认 DMXAPI。" },
+    "MIMO_MODEL": { "type": "string", "description": "基础模型，默认 mimo-v2.5-tts，自动派生模式后缀。" },
+    "MIMO_TASK_TIMEOUT_MS": { "type": "integer", "description": "后台任务总超时，默认 1800000，最大 7200000 毫秒。" },
+    "MIMO_MAX_SPEED": { "type": "string", "description": "fit 最大加速倍率，默认 2，范围 1–4。" },
+    "MIMO_FFMPEG_PATH": { "type": "string", "description": "FFmpeg 可执行文件路径，不含命令参数；默认 ffmpeg。" },
+    "MIMO_PUBLIC_BASE_URL": { "type": "string", "description": "可选，外部可访问的 VCP 完整基础 URL（包含端口）。" },
+    "CALLBACK_BASE_URL": { "type": "string", "description": "VCP 回调基础地址，可包含 /plugin-callback；未配置时使用本机主服务端口。" }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "submitSequence",
+        "command": "submit",
+        "description": "多段对白合成一个最终WAV：command=submit；填写 text1、text2…，编号必须从1连续递增，最多200段。每段独立使用 voiceN（预置音色）、instructionN（不朗读的导演指令）、modeN（preset/voicedesign/voiceclone）、styleN、reference_audioN、optimize_text_previewN，缺省继承同名不带编号的全局参数。可写 commandN=speak，也可省略，不支持在串中提交或查询其他任务。不填 startN/endN 时，按每段实际生成长度连续拼接，不截断、不加速，pause_afterN 控制该段之后静音秒数（默认0，单段最多60秒，包含末段尾部），可用全局 pause_after 设置默认。全部段填 startN/endN 则使用固定时间轴；不能混合有时间和无时间段，固定时间轴不能使用 pause_after。连续模式不能填写 overflow；时间轴模式可使用 error/fit/truncate。编号分段不能与 timeline 同时提供。音色、导演、唱歌、参考音频限制与字幕提交一致。所有段校验成功后才提交任务；任一段失败则整轨失败，已生成段仍可能计费。只生成一个任务ID和一条完整音轨；结果包含每段实际起止时间。不提供角色注册、自动声线记忆、重叠抢话或上游连续对话推理。必须原文返回回执中的异步结果占位符。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MimoDubbing「末」,\ncommand:「始」submit「末」,\ntext1:「始」你终于来了，我等你好久了。「末」,\nvoice1:「始」冰糖「末」,\ninstruction1:「始」角色：活泼的年轻女性。场景：车站重逢。指导：欣喜，轻快，但不尖叫。「末」,\npause_after1:「始」0.3「末」,\ntext2:「始」抱歉，让你久等了。我们出发吧。「末」,\nvoice2:「始」Dean「末」,\ninstruction2:「始」角色：沉稳温柔的男性。场景：回应朋友。指导：略带歉意，随后轻松坚定。「末」,\npause_after2:「始」0.2「末」,\ntext3:「始」[轻笑]好，这次你带路。「末」,\nvoice3:「始」冰糖「末」,\ninstruction3:「始」角色：活泼的年轻女性。指导：俏皮自然，像接话，不要播音腔。「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "submit",
+        "command": "submit",
+        "description": "异步提交字幕配音。参数：command=submit；timeline 必填，直接填写完整 SRT/WebVTT 文本或 JSON 数组字符串，每条 {start:秒数或HH:MM:SS.mmm,end:同上,text:正文}。时间从0起算，必须顺序排列且不重叠。最多200句、30分钟，单句4000字符、总40000字符。mode 可选 preset（默认）、voicedesign、voiceclone，自动选模型。voice 为预置音色 mimo_default、冰糖、茉莉、苏打、白桦、Mia、Chloe、Milo、Dean。instruction 为不朗读的自然语言控制；可使用角色/场景/指导导演结构，voicedesign 时必填。style 只填写空格分隔风格词，如 开心 变快，不带括号。正文可写 (开心 变快)、（开心 变快）或 [开心 变快] 开头风格及 [吸气][深呼吸][叹气][紧张][激动][疲惫][颤抖][气声][笑][轻笑][抽泣][哽咽] 行内标签。唱歌开头只能为 唱歌/sing/singing 单独一个风格，不能与其他风格混用。voiceclone 必填 reference_audio，格式 data:audio/wav;base64,... 或 data:audio/mpeg;base64,...，仅支持真实WAV/MP3，Base64不超过10MB，不接受HTTP URL/裸本地路径；file:// 可由主服务透明转换。optimize_text_preview 为 voicedesign 可选布尔值。JSON每句可覆盖 mode/voice/instruction/style/reference_audio/optimize_text_preview；其余字段全局生效。overflow=error（默认，超时语音失败，不截断）、fit（只对超时语音使用FFmpeg保音高加速，默认最多2倍，需安装FFmpeg）或truncate（明确截断超出部分，可能丢词）。短句尾部及字幕空隙补静音。逐句调用上游，可能产生多次计费；相邻句音色一致性由上游决定。提交成功仅代表进入后台，不代表已经生成音频。必须把回执中的 {{VCP_ASYNC_RESULT::MimoDubbing::任务ID}} 原文返回用户，不可编造音频URL。完成后占位符替换为WAV下载链接；失败或回调未送达时用 query 查询。",
+        "example": "<<<[TOOL_REQUEST]>>>\nmaid:「始」Nova「末」,\ntool_name:「始」MimoDubbing「末」,\ncommand:「始」submit「末」,\nmode:「始」preset「末」,\nvoice:「始」冰糖「末」,\ninstruction:「始」角色：亲切明亮的讲解员。\n场景：向观众介绍旅行目的地。\n指导：自然清晰，句尾轻收，避免夸张。「末」,\ntimeline:「始」1\n00:00:00,000 --> 00:00:04,000\n(开心)欢迎来到这座城市。\n\n2\n00:00:05,000 --> 00:00:09,000\n[轻笑]我们一起出发吧。「末」,\noverflow:「始」error「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "query",
+        "command": "query",
+        "description": "查询已提交配音任务。参数 command=query，request_id 必填，使用提交回执中的 UUID。返回 Running/Succeed/Failed，成功时包含音频链接及逐句对齐报告，callbackDelivered 表示结果回调是否送达。Running 若已超过任务超时且主服务曾重启，可能是进程中断留下的旧状态，不会自动恢复或重新计费。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MimoDubbing「末」,\ncommand:「始」query「末」,\nrequest_id:「始」12345678-1234-4123-8123-123456789abc「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "webSocketPush": {
+    "enabled": true,
+    "messageType": "mimo_dubbing_status",
+    "targetClientType": "VCPLog"
+  }
+}

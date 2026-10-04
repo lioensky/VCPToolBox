@@ -252,6 +252,8 @@ image/zimagegen/
 image/media-renderer/
 file/media-renderer/
 file/agnesvideogen/
+file/mimo-dubbing/
+Plugin/MimoDubbing/state/
 
 # 全局临时文件与运行时历史
 *.tmp
