@@ -1,31 +1,37 @@
 # Gen-USearch G0 machine contracts
 
-Status: **G0-F2R2 candidate, not G0 frozen**.
+Status: **G0-F2R3 candidate, machine gate hardened, G0 not yet frozen**.
 
-This directory contains the executable machine form of the Gen-USearch G0 R3.1 architecture contract. It intentionally does not implement the production USearch engine.
+This directory contains the executable machine form of the Gen-USearch G0 R3.1 architecture contract. It does not implement the production USearch engine.
 
-## F2R2 authority model
+## F2R3 authority model
 
-The G0 gate now has three distinct roles:
+The gate now has an external trust root and a sealed in-repository contract surface:
 
-1. `g0-authority-lock.json` freezes the required contract surface independently from the mutable registry.
-2. `g0-verifier.js` evaluates transitions, invariants, GC, recovery and physical coverage from evidence.
-3. `g0-runner.js` is the canonical acceptance entrypoint. It reads the repository itself, runs schema validation, executes fixtures/invariants, reads the real Git HEAD, computes SHA256 for the locked artifact set, and generates the acceptance manifest.
+1. A repository-level GitHub variable `G0_AUTHORITY_LOCK_SHA256` pins the exact Authority Lock digest outside the PR branch.
+2. `g0-authority-lock.json` freezes required contracts, invariants, failure codes, fixtures, critical enums, artifact paths, and SHA256 seals for every other locked artifact.
+3. `g0-runner.js` only accepts the real repository top-level, requires every locked worktree file to be byte-identical to `HEAD:path`, verifies the external lock pin, verifies all sealed artifact hashes, executes schemas/fixtures/invariants, reads the real Git HEAD, and emits the acceptance manifest.
+4. A separate `Gen-USearch G0 External Authority` workflow lives on the fork's `master` branch. It verifies the target SHA, external pin and sealed artifact hashes before executing any code from the PR branch, then publishes an independent commit status.
 
-Callers do not supply execution receipts, HEAD SHAs, artifact digests, or PASS status.
+## Safety rules now enforced
 
-GC proof is derived from a durable `RETIRED` record plus reader state before transition to `GC_ELIGIBLE`. Durable vector coverage is derived from `ManifestSnapshot + SegmentRecord + ArtifactReceipt`, not from self-asserted booleans.
-
-ReadView transition guards are executable. In particular, `QUIESCING → RELEASED` requires both worker quiescence and released pins.
+- fake/nested repository roots are rejected;
+- dirty locked artifacts cannot claim an unchanged HEAD;
+- changing the Authority Lock requires an explicit external pin update;
+- changing Runner, Verifier, schemas, fixtures, package lock, or target workflow requires updating their SHA256 seals in the Authority Lock;
+- ReadView transition guards execute;
+- GC certification starts from durable `RETIRED` state and precedes `GC_ELIGIBLE`;
+- durable vector coverage is derived from `ManifestSnapshot + SegmentRecord + ArtifactReceipt`;
+- signed-int64 vector IDs use canonical decimal strings and BigInt;
+- acceptance PASS is generated from executed evidence, not caller-provided receipts.
 
 ## Local verification
 
 ```bash
+export G0_AUTHORITY_LOCK_SHA256="<externally reviewed lock SHA256>"
 npm ci --prefix tests/gen-usearch/g0 --ignore-scripts --no-audit --no-fund
 node --test tests/gen-usearch/g0/g0-contracts.test.js
 node tests/gen-usearch/g0/g0-runner.js
 ```
 
-A green test suite is necessary but not sufficient. CI also runs the canonical runner and requires its generated manifest to be `PASS`.
-
-Changing the Authority Lock changes the frozen required surface and therefore requires explicit G0 authority review. Passing this gate does **not** by itself freeze G0 or authorize G1.
+Passing these gates does **not** itself freeze G0 or authorize G1. After independent re-review reaches unresolved P0=0 and P1=0, the next gate is **G0 Final Review**.
