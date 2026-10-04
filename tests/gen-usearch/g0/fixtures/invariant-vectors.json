@@ -293,12 +293,17 @@
       "invariant_id": "G0-XINV-010",
       "polarity": "positive",
       "input": {
-        "vector": {
+        "retired_vector": {
           "vector_id": "20",
-          "state": "GC_ELIGIBLE",
+          "state": "RETIRED",
           "is_current": false,
           "retired_visibility_seq": "700",
           "retirement_durable": true
+        },
+        "post_gc_vector": {
+          "vector_id": "20",
+          "state": "GC_ELIGIBLE",
+          "retired_visibility_seq": "700"
         },
         "read_views": [
           {
@@ -319,12 +324,17 @@
       "invariant_id": "G0-XINV-010",
       "polarity": "negative",
       "input": {
-        "vector": {
+        "retired_vector": {
           "vector_id": "20",
-          "state": "GC_ELIGIBLE",
+          "state": "RETIRED",
           "is_current": false,
           "retired_visibility_seq": "700",
           "retirement_durable": false
+        },
+        "post_gc_vector": {
+          "vector_id": "20",
+          "state": "GC_ELIGIBLE",
+          "retired_visibility_seq": "700"
         },
         "read_views": [],
         "drop": true
@@ -339,13 +349,28 @@
       "invariant_id": "G0-XINV-011",
       "polarity": "positive",
       "input": {
-        "manifest_segment_ids": [
-          "S10"
-        ],
-        "segments": [
+        "manifest_snapshot": {
+          "manifest_epoch": "50",
+          "segment_ids": [
+            "S10"
+          ],
+          "embedding_fingerprint": "e1"
+        },
+        "segment_records": [
           {
             "segment_id": "S10",
             "state": "PUBLISHED",
+            "artifact_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "embedding_fingerprint": "e1",
+            "vector_ids": [
+              "10"
+            ]
+          }
+        ],
+        "artifact_receipts": [
+          {
+            "segment_id": "S10",
+            "artifact_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "artifact_exists": true,
             "artifact_verified": true,
             "final_name_durable": true
@@ -361,13 +386,28 @@
       "invariant_id": "G0-XINV-011",
       "polarity": "negative",
       "input": {
-        "manifest_segment_ids": [
-          "S10"
-        ],
-        "segments": [
+        "manifest_snapshot": {
+          "manifest_epoch": "50",
+          "segment_ids": [
+            "S10"
+          ],
+          "embedding_fingerprint": "e1"
+        },
+        "segment_records": [
           {
             "segment_id": "S10",
             "state": "PUBLISHED",
+            "artifact_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "embedding_fingerprint": "e1",
+            "vector_ids": [
+              "10"
+            ]
+          }
+        ],
+        "artifact_receipts": [
+          {
+            "segment_id": "S10",
+            "artifact_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "artifact_exists": true,
             "artifact_verified": false,
             "final_name_durable": true
@@ -390,13 +430,19 @@
           "in_volatile_memtable": true,
           "embedding_fingerprint": "e1"
         },
-        "segments": [],
         "recovery_material": {
           "vector_id": "9223372036854775807",
           "state": "RECOVERY_REQUIRED",
           "exact_vector_bytes": true,
           "embedding_fingerprint": "e1"
-        }
+        },
+        "manifest_snapshot": {
+          "manifest_epoch": "50",
+          "segment_ids": [],
+          "embedding_fingerprint": "e1"
+        },
+        "segment_records": [],
+        "artifact_receipts": []
       },
       "expected": {
         "pass": true
@@ -413,13 +459,19 @@
           "in_volatile_memtable": true,
           "embedding_fingerprint": "e1"
         },
-        "segments": [],
         "recovery_material": {
           "vector_id": "9223372036854775807",
           "state": "RECOVERY_RELEASED",
           "exact_vector_bytes": false,
           "embedding_fingerprint": "e1"
-        }
+        },
+        "manifest_snapshot": {
+          "manifest_epoch": "50",
+          "segment_ids": [],
+          "embedding_fingerprint": "e1"
+        },
+        "segment_records": [],
+        "artifact_receipts": []
       },
       "expected": {
         "pass": false,
