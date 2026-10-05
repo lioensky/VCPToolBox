@@ -5,13 +5,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const GenUSearchMemTable = require('./genUSearchMemTable');
+const ReadPins = require('./genUSearchReadPins');
 const { VexusIndex } = require('../../rust-vexus-lite');
 
 const MAX_SIGNED_INT64 = 9223372036854775807n;
 const VIEW_INTERNAL = new WeakMap();
 const VIEW_LIFECYCLE = new WeakMap();
-const MEMTABLE_PINS = new WeakMap();
-const SEGMENT_PINS = new Map();
 
 function codedError(code, message) {
     const error = new Error(message);
@@ -66,44 +65,52 @@ function sha256File(filePath) {
     return hash.digest('hex');
 }
 
-function exactRootPath(root, artifactPath) {
+function exactRootPath(root, segmentId, artifactPath) {
     const rootReal = fs.realpathSync(root);
-    const artifactReal = fs.realpathSync(artifactPath);
-    const relative = path.relative(rootReal, artifactReal);
-    if (!relative || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+    if (!/^seg-[a-f0-9]{64}$/.test(segmentId)) {
         throw codedError(
             'RECOVERY_MANIFEST_INVALID',
-            'manifest artifact is outside the configured segment root'
+            'manifest segment identity is invalid'
+        );
+    }
+    const expected = path.join(rootReal, segmentId + '.usearch');
+    if (path.resolve(artifactPath) !== expected) {
+        throw codedError(
+            'RECOVERY_MANIFEST_INVALID',
+            'manifest artifact path is not bound to segment identity'
+        );
+    }
+    const stat = fs.lstatSync(artifactPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+        throw codedError(
+            'RECOVERY_MANIFEST_INVALID',
+            'manifest artifact must be a regular non-symlink file'
+        );
+    }
+    const artifactReal = fs.realpathSync(artifactPath);
+    if (artifactReal !== expected) {
+        throw codedError(
+            'RECOVERY_MANIFEST_INVALID',
+            'manifest artifact canonical path diverged from segment identity'
         );
     }
     return artifactReal;
 }
 
 function incMemtablePin(memtable) {
-    const next = (MEMTABLE_PINS.get(memtable) || 0) + 1;
-    MEMTABLE_PINS.set(memtable, next);
+    ReadPins.pinMemtable(memtable);
 }
 
 function decMemtablePin(memtable) {
-    const current = MEMTABLE_PINS.get(memtable) || 0;
-    if (current <= 0) {
-        throw codedError('READER_PIN_VIOLATION', 'MemTable pin underflow');
-    }
-    if (current === 1) MEMTABLE_PINS.delete(memtable);
-    else MEMTABLE_PINS.set(memtable, current - 1);
+    ReadPins.unpinMemtable(memtable);
 }
 
 function incSegmentPin(segmentId) {
-    SEGMENT_PINS.set(segmentId, (SEGMENT_PINS.get(segmentId) || 0) + 1);
+    ReadPins.pinSegment(segmentId);
 }
 
 function decSegmentPin(segmentId) {
-    const current = SEGMENT_PINS.get(segmentId) || 0;
-    if (current <= 0) {
-        throw codedError('READER_PIN_VIOLATION', 'segment pin underflow: ' + segmentId);
-    }
-    if (current === 1) SEGMENT_PINS.delete(segmentId);
-    else SEGMENT_PINS.set(segmentId, current - 1);
+    ReadPins.unpinSegment(segmentId);
 }
 
 function recoveryBlobToVector(blob, dimension) {
@@ -279,7 +286,11 @@ class GenUSearchQueryReadViewCoordinator {
         }
 
         try {
-            const artifactPath = exactRootPath(this.segmentRoot, row.artifact_path);
+            const artifactPath = exactRootPath(
+                this.segmentRoot,
+                segmentId,
+                row.artifact_path
+            );
             if (sha256File(artifactPath) !== row.artifact_digest) {
                 throw codedError('RECOVERY_MANIFEST_INVALID', 'manifest segment digest mismatch');
             }
@@ -687,6 +698,13 @@ class GenUSearchQueryReadViewCoordinator {
             for (const vectorId of source.snapshot.vectorIds) {
                 const current = internal.currentByVector.get(vectorId);
                 if (!current || current.embedding_fingerprint !== fingerprint) continue;
+                const coverages = internal.coverageByVector.get(vectorId) || [];
+                const memtableVisible = coverages.some(coverage => (
+                    coverage.source_kind === 'MEMTABLE'
+                    && coverage.source_id === source.snapshot.sourceId
+                    && coverage.coverage_state === 'QUERY_VISIBLE'
+                ));
+                if (!memtableVisible) continue;
                 const recovery = internal.recoveryByVector.get(vectorId);
                 if (
                     !recovery?.blob
@@ -707,11 +725,11 @@ class GenUSearchQueryReadViewCoordinator {
     }
 
     static memtablePinCount(memtable) {
-        return MEMTABLE_PINS.get(memtable) || 0;
+        return ReadPins.memtablePinCount(memtable);
     }
 
     static segmentPinCount(segmentId) {
-        return SEGMENT_PINS.get(String(segmentId)) || 0;
+        return ReadPins.segmentPinCount(segmentId);
     }
 }
 

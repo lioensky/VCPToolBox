@@ -490,3 +490,172 @@ test('embedding fingerprint and query dimension are fail-closed', () => {
         fixture.cleanup();
     }
 });
+
+
+test('active reader pin blocks G2 physical removal until the worker is quiescent', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        const first = fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            docId: 'doc-pin',
+            chunkId: 'chunk-pin',
+            slotIndex: 0,
+            vector: new Float32Array([1, 0, 0, 0]),
+            contentHash: '5'.repeat(64)
+        });
+        const view = fixture.coordinator.acquire({
+            memtables: [memtable],
+            deadline: fixture.now() + 500
+        });
+
+        const second = fixture.stageAndAdmit(memtable, {
+            ordinal: 'b',
+            docId: 'doc-pin',
+            chunkId: 'chunk-pin',
+            slotIndex: 0,
+            vector: new Float32Array([0, 1, 0, 0]),
+            contentHash: '6'.repeat(64),
+            expectedCurrentVersionId: first.staged.chunk_version_id
+        });
+        assert.equal(
+            fixture.store.getChunkVersion(first.staged.chunk_version_id).state,
+            'RETIRED'
+        );
+        assert.equal(
+            fixture.store.getChunkVersion(second.staged.chunk_version_id).state,
+            'ACTIVE'
+        );
+
+        assert.throws(
+            () => fixture.writer.hideAndRemoveVector({
+                memtable,
+                vectorId: first.staged.vector_id
+            }),
+            error => error?.code === 'READER_PIN_VIOLATION'
+        );
+
+        const snapshotResult = fixture.retrieval.search({
+            view,
+            query: new Float32Array([1, 0, 0, 0]),
+            embeddingFingerprint: 'embed-v1',
+            k: 5
+        });
+        assert.equal(snapshotResult.hits.length, 1);
+        assert.equal(snapshotResult.hits[0].vector_id, first.staged.vector_id);
+
+        fixture.coordinator.release(view, { workerQuiescent: true });
+        const removed = fixture.writer.hideAndRemoveVector({
+            memtable,
+            vectorId: first.staged.vector_id
+        });
+        assert.equal(removed.physicalRemoved, true);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('hidden MEMTABLE coverage cannot contribute a candidate when SEGMENT coverage remains', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        const current = fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            vector: new Float32Array([1, 0, 0, 0]),
+            contentHash: '7'.repeat(64)
+        });
+        const receipt = fixture.publishMemtable(memtable);
+
+        fixture.db.prepare(
+            "DELETE FROM gen_usearch_vector_coverage WHERE vector_id = ? AND source_kind = 'MEMTABLE' AND source_id = ?"
+        ).run(BigInt(current.staged.vector_id), memtable.sourceId);
+
+        const view = fixture.coordinator.acquire({
+            memtables: [memtable],
+            deadline: fixture.now() + 500
+        });
+        const result = fixture.retrieval.search({
+            view,
+            query: new Float32Array([1, 0, 0, 0]),
+            embeddingFingerprint: 'embed-v1',
+            k: 5
+        });
+
+        assert.equal(result.hits.length, 1);
+        assert.deepEqual(result.hits[0].physical_sources, [
+            'SEGMENT:' + receipt.segmentId
+        ]);
+        fixture.coordinator.release(view, { workerQuiescent: true });
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('artifact path alias inside segment root cannot impersonate the publisher-owned segment path', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: '8'.repeat(64)
+        });
+        const receipt = fixture.publishMemtable(memtable);
+        const aliasPath = path.join(fixture.segmentRoot, 'alias.usearch');
+        fs.copyFileSync(receipt.artifactPath, aliasPath);
+        fixture.db.prepare(
+            "UPDATE gen_usearch_segments SET artifact_path = ? WHERE segment_id = ?"
+        ).run(aliasPath, receipt.segmentId);
+
+        assert.throws(
+            () => fixture.coordinator.acquire({
+                memtables: [memtable],
+                deadline: fixture.now() + 500
+            }),
+            error => error?.code === 'RECOVERY_MANIFEST_INVALID'
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            0
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.segmentPinCount(receipt.segmentId),
+            0
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('acquisition that exceeds its deadline returns no view and cleans provisional pins', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: '9'.repeat(64)
+        });
+
+        let calls = 0;
+        const coordinator = new GenUSearchQueryReadViewCoordinator({
+            db: fixture.db,
+            runtimeId: 'runtime-g4',
+            segmentRoot: fixture.segmentRoot,
+            maxReadViewMs: 500,
+            now: () => {
+                calls += 1;
+                return calls === 1 ? 1000 : 2000;
+            }
+        });
+
+        assert.throws(
+            () => coordinator.acquire({ memtables: [memtable] }),
+            error => error?.code === 'QUERY_READ_VIEW_EXPIRED'
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            0
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});

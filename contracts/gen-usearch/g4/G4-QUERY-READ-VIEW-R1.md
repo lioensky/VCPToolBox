@@ -38,6 +38,10 @@ G4 may implement only:
 14. One retrieval uses one embedding fingerprint and one query dimension.
 15. MemTable retrieval uses frozen exact recovery bytes captured for snapshot-current vectors while the G2 MemTable remains pinned as physical-existence authority.
 16. QueryReadView public snapshot fields are immutable after acquisition; only lifecycle state may advance.
+17. Reader pins are enforceable physical safety authority. A G2 MemTable with any active or provisional QueryReadView pin cannot remove physical bytes; G2 removal fails READER_PIN_VIOLATION until the final reader reports worker quiescence and releases the pin.
+18. Segment artifact identity is exact, not directory-local. A captured segment must resolve to the publisher-owned regular non-symlink path <segmentRoot>/<segment_id>.usearch; another file inside the same root cannot impersonate the segment even with identical bytes or digest.
+19. Candidate source visibility is frozen at acquisition. A MEMTABLE candidate may contribute only when that exact MemTable source had captured QUERY_VISIBLE coverage for the vector. Hidden physical bytes cannot re-enter retrieval.
+20. Acquisition deadlines apply during acquisition, not only after it. Deadline expiry at any validation stage fails QUERY_READ_VIEW_EXPIRED and releases all provisional pins without creating a usable view.
 
 ## Explicitly deferred beyond G4
 
@@ -63,12 +67,16 @@ G4 may pass only when:
 - coherent SQLite snapshot rejects sequence/manifest/fence divergence;
 - current vectors without pinned physical coverage fail QUERY_READ_VIEW_PHYSICAL_GAP;
 - failed acquisition cleans all provisional pins;
+- acquisition that expires mid-validation returns no view and cleans all provisional pins;
 - expiry requests cancellation without releasing pins;
+- active reader pins block G2 physical removal until worker quiescence;
 - release before worker quiescence fails;
 - post-quiescence release drops every pin exactly once;
 - retrieval filters by snapshot-current metadata and deduplicates MEMTABLE/SEGMENT overlap;
 - stale runtime fence blocks response;
 - artifact digest/dimension/count/membership corruption blocks acquisition;
+- artifact paths must match the exact publisher-owned segment identity and reject in-root aliases/symlinks;
+- hidden MEMTABLE coverage cannot contribute candidates even when bytes remain physically present;
 - embedding/query-dimension mismatch fails closed;
 - stage-boundary tests prove GC/compaction/reclaim/cutover remain unwired;
 - independent adversarial review has unresolved P0 = 0 and P1 = 0.

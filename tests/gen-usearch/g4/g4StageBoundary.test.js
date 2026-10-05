@@ -9,6 +9,7 @@ const root = path.resolve(__dirname, '../../..');
 const read = rel => fs.readFileSync(path.join(root, rel), 'utf8');
 
 const g4ProductionFiles = [
+    'modules/knowledgeBase/genUSearchReadPins.js',
     'modules/knowledgeBase/genUSearchQueryReadView.js',
     'modules/knowledgeBase/genUSearchRetrievalService.js'
 ];
@@ -80,6 +81,7 @@ test('G4 workflow covers prior regressions, G4 contract, query modules and tests
         'modules/knowledgeBase/genUSearchQueryReadView.js',
         'modules/knowledgeBase/genUSearchRetrievalService.js',
         'modules/knowledgeBase/genUSearchSegmentPublisher.js',
+        'modules/knowledgeBase/genUSearchReadPins.js',
         'modules/knowledgeBase/genUSearchMemTable.js',
         'tests/gen-usearch/g1/**',
         'tests/gen-usearch/g2/**',

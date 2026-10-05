@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const GenUSearchMemTable = require('./genUSearchMemTable');
+const ReadPins = require('./genUSearchReadPins');
 
 const MAX_SIGNED_INT64 = 9223372036854775807n;
 const LIVE_WRITER_BY_DB = new WeakMap();
@@ -631,6 +632,7 @@ class GenUSearchPhysicalCoverageWriter {
                 'physical removal requires the writer-bound ACTIVE Gen0 MemTable'
             );
         }
+        ReadPins.assertMemtableRemovalAllowed(memtable);
         if (row.state === 'ACTIVE') {
             throw codedError(
                 'INVALID_CURRENT_VECTOR_HEAD',
