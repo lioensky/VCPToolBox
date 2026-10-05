@@ -540,6 +540,70 @@ test('same durable plan replay is idempotent even after downstream identity mate
     }
 });
 
+test('admitted reconciliation cannot be regressed to PENDING by a newer observation', () => {
+    const fixture = createStoreFixture();
+    try {
+        const plan = reconcileDocumentChunks(baseOptions({
+            observedSourceDigest: 'digest-admitted',
+            observedSourceRevision: 'rev-admitted',
+            targetRevision: 'rev-admitted',
+            previousChunks: [],
+            nextChunks: [next(0, 'new')]
+        }));
+        const admitted = fixture.store.admitReconciliationPlan(plan);
+        assert.equal(admitted.state, 'ADMITTED');
+
+        const replay = fixture.store.recordSourceObservation({
+            docId: 'doc-1',
+            digest: 'digest-admitted',
+            revision: 'rev-admitted'
+        });
+        assert.equal(replay.reconciliation_state, 'ADMITTED');
+        assert.equal(replay.observed_source_revision, 'rev-admitted');
+
+        assert.throws(
+            () => fixture.store.recordSourceObservation({
+                docId: 'doc-1',
+                digest: 'digest-newer',
+                revision: 'rev-newer'
+            }),
+            error => error?.code === 'SOURCE_OBSERVATION_INVALID'
+        );
+
+        const after = fixture.store.getDocument('doc-1');
+        assert.equal(after.reconciliation_state, 'ADMITTED');
+        assert.equal(after.observed_source_revision, 'rev-admitted');
+        assert.equal(after.observed_source_digest, 'digest-admitted');
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('the same source revision cannot change digest while pending', () => {
+    const fixture = createStoreFixture();
+    try {
+        fixture.store.recordSourceObservation({
+            docId: 'doc-1',
+            digest: 'digest-a',
+            revision: 'rev-stable'
+        });
+        assert.throws(
+            () => fixture.store.recordSourceObservation({
+                docId: 'doc-1',
+                digest: 'digest-b',
+                revision: 'rev-stable'
+            }),
+            error => error?.code === 'SOURCE_COMMIT_UNVERIFIED'
+        );
+        const after = fixture.store.getDocument('doc-1');
+        assert.equal(after.observed_source_digest, 'digest-a');
+        assert.equal(after.observed_source_revision, 'rev-stable');
+        assert.equal(after.reconciliation_state, 'PENDING');
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('AMBIGUOUS reconciliation is persisted as ERROR and never becomes publishable admission', () => {
     const fixture = createStoreFixture();
     try {
