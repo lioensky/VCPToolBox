@@ -520,6 +520,18 @@ class GenUSearchMetadataStore {
                     plan.docId,
                     plan.targetRevision
                 );
+                if (existing) {
+                    if (
+                        existing.plan_id !== plan.planId
+                        || existing.plan_digest !== plan.planDigest
+                    ) {
+                        throw codedError(
+                            'SOURCE_OBSERVATION_INVALID',
+                            `Conflicting reconciliation plan for ${plan.docId}@${plan.targetRevision}`
+                        );
+                    }
+                    return existing;
+                }
                 const documentBefore = this._getDocument.get(plan.docId);
                 if (!documentBefore || documentBefore.state !== 'ACTIVE') {
                     throw codedError(
@@ -560,19 +572,6 @@ class GenUSearchMetadataStore {
                 const planState = hasAmbiguity ? 'ERROR' : 'ADMITTED';
                 const documentState = hasAmbiguity ? 'ERROR' : 'ADMITTED';
                 const indexState = hasAmbiguity ? 'INDEX_ERROR' : 'INDEX_LAGGING';
-
-                if (existing) {
-                    if (
-                        existing.plan_id !== plan.planId
-                        || existing.plan_digest !== plan.planDigest
-                    ) {
-                        throw codedError(
-                            'SOURCE_OBSERVATION_INVALID',
-                            `Conflicting reconciliation plan for ${plan.docId}@${plan.targetRevision}`
-                        );
-                    }
-                    return existing;
-                }
 
                 const oldChunkIds = new Set();
                 const freshChunkIds = new Set();
