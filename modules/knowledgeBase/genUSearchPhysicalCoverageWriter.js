@@ -128,6 +128,12 @@ class GenUSearchPhysicalCoverageWriter {
                 'GenUSearchPhysicalCoverageWriter requires a better-sqlite3 compatible database'
             );
         }
+        if (db.inTransaction === true) {
+            throw codedError(
+                'DURABLE_COMMIT_UNCONFIRMED',
+                'G2 physical writer authority requires SQLite autocommit state'
+            );
+        }
         const databaseAuthority = assertDatabaseWriterAvailable(db);
 
         const runtimeId = String(options.runtimeId || '').trim();
@@ -287,6 +293,7 @@ class GenUSearchPhysicalCoverageWriter {
     }
 
     createMemTable(options = {}) {
+        this._assertNoAmbientTransaction();
         const token = Object.freeze({});
         const memtable = new GenUSearchMemTable({
             VexusIndex: options.VexusIndex,
@@ -330,6 +337,16 @@ class GenUSearchPhysicalCoverageWriter {
         return true;
     }
 
+    _assertNoAmbientTransaction() {
+        if (this.db.inTransaction === true) {
+            throw codedError(
+                'DURABLE_COMMIT_UNCONFIRMED',
+                'G2 physical mutations require SQLite autocommit state'
+            );
+        }
+        return true;
+    }
+
     assertCrashDurableProfile() {
         const journalMode = String(
             this.db.pragma('journal_mode', { simple: true }) || ''
@@ -347,6 +364,7 @@ class GenUSearchPhysicalCoverageWriter {
     }
 
     _criticalWrite(fn) {
+        this._assertNoAmbientTransaction();
         this.assertCrashDurableProfile();
         return fn();
     }
@@ -436,11 +454,13 @@ class GenUSearchPhysicalCoverageWriter {
     }
 
     sealMemTable(memtable) {
+        this._assertNoAmbientTransaction();
         const token = this._tokenFor(memtable);
         return memtable.seal(token);
     }
 
     admitVector(options = {}) {
+        this._assertNoAmbientTransaction();
         this._assertBootstrapped();
         const memtable = this._assertBoundMemTable(options.memtable);
         if (memtable.state !== 'ACTIVE') {
@@ -523,6 +543,7 @@ class GenUSearchPhysicalCoverageWriter {
     }
 
     recoverCurrentVectors(options = {}) {
+        this._assertNoAmbientTransaction();
         this._assertBootstrapped();
         const memtable = this._assertBoundMemTable(options.memtable);
         if (memtable.state !== 'ACTIVE') {
@@ -637,6 +658,7 @@ class GenUSearchPhysicalCoverageWriter {
     }
 
     hideAndRemoveVector(options = {}) {
+        this._assertNoAmbientTransaction();
         this._assertBootstrapped();
         const memtable = this._assertBoundMemTable(options.memtable);
         if (memtable.state !== 'ACTIVE') {

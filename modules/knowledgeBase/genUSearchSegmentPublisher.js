@@ -276,12 +276,6 @@ class GenUSearchSegmentPublisher {
             WHERE covered_segment_id = ?
             ORDER BY vector_id
         `).safeIntegers(true);
-        this._getPublishedManifestEpochForSegment = db.prepare(`
-            SELECT MAX(manifest_epoch) AS manifest_epoch
-            FROM gen_usearch_manifest_segments
-            WHERE segment_id = ?
-        `).safeIntegers(true);
-
         this._finalizeTransaction = db.transaction(receipt => {
             const row = this._getSegment.get(receipt.segmentId);
             if (!row || row.state !== 'BUILDING') {
@@ -519,6 +513,16 @@ class GenUSearchSegmentPublisher {
         });
     }
 
+    _assertNoAmbientTransaction() {
+        if (this.db.inTransaction === true) {
+            throw codedError(
+                'DURABLE_COMMIT_UNCONFIRMED',
+                'G3 segment publication requires SQLite autocommit state'
+            );
+        }
+        return true;
+    }
+
     assertCrashDurableProfile() {
         const journalMode = String(
             this.db.pragma('journal_mode', { simple: true }) || ''
@@ -572,6 +576,16 @@ class GenUSearchSegmentPublisher {
 
     _deriveFlushSource(source) {
         const vectorIds = [];
+        const currentEpoch = canonicalEpoch(
+            this.captureManifestEpoch(),
+            'currentManifestEpoch'
+        );
+        const currentMembers = new Set(
+            this._listManifestSegments
+                .all(currentEpoch)
+                .map(row => row.segment_id)
+        );
+
         for (const vectorId of source.vectorIds) {
             const parsed = canonicalVectorId(vectorId);
             const row = this._getRecovery.get(parsed.bigint);
@@ -590,6 +604,34 @@ class GenUSearchSegmentPublisher {
                 }
                 continue;
             }
+            if (
+                ['RETIRED', 'GC_ELIGIBLE'].includes(row.version_state)
+                && row.recovery_state === 'RECOVERY_RELEASED'
+            ) {
+                const coveredSegmentId = String(row.covered_segment_id || '');
+                if (
+                    !coveredSegmentId
+                    || !currentMembers.has(coveredSegmentId)
+                    || !row.embedding_fingerprint
+                    || row.embedding_fingerprint !== row.recovery_fingerprint
+                    || row.embedding_fingerprint !== source.embeddingFingerprint
+                ) {
+                    throw codedError(
+                        'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE',
+                        `released vector ${vectorId} lacks current durable segment authority`
+                    );
+                }
+                const durable = this._verifyManifestMemberArtifactAndCoverage(
+                    coveredSegmentId
+                );
+                if (!durable.vectorIds.includes(vectorId)) {
+                    throw codedError(
+                        'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE',
+                        `released vector ${vectorId} is absent from its current durable segment`
+                    );
+                }
+                continue;
+            }
             if (!['VECTOR_STAGED', 'ACTIVE', 'RETIRED'].includes(row.version_state)) {
                 throw codedError(
                     'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE',
@@ -601,7 +643,7 @@ class GenUSearchSegmentPublisher {
         if (vectorIds.length === 0) {
             throw codedError(
                 'SEGMENT_ARTIFACT_INVALID',
-                'G3 sealed generation has no non-aborted vectors to publish'
+                'G3 sealed generation has no vectors requiring new segment publication'
             );
         }
         return Object.freeze({
@@ -978,6 +1020,7 @@ class GenUSearchSegmentPublisher {
     }
 
     publishSealedMemTable(options = {}) {
+        this._assertNoAmbientTransaction();
         this.assertCrashDurableProfile();
         const sealedSource = this._assertSealedMemTable(options.memtable);
         const source = this._deriveFlushSource(sealedSource);
@@ -994,27 +1037,38 @@ class GenUSearchSegmentPublisher {
         );
 
         if (segment.state === 'PUBLISHED') {
+            const currentEpoch = canonicalEpoch(
+                this.captureManifestEpoch(),
+                'currentManifestEpoch'
+            );
+            if (currentEpoch !== expectedEpoch) {
+                throw codedError(
+                    'COMPACTION_PUBLICATION_STALE',
+                    'idempotent retry expectedManifestEpoch is stale'
+                );
+            }
+            const currentMembers = this._listManifestSegments
+                .all(currentEpoch)
+                .map(row => row.segment_id);
+            if (!currentMembers.includes(segmentId)) {
+                throw codedError(
+                    'RECOVERY_MANIFEST_INVALID',
+                    'PUBLISHED segment is absent from the current manifest'
+                );
+            }
             const verified = this._verifyExistingArtifact(
                 segment,
                 source,
                 vectorIds
             );
-            const epoch = this._getPublishedManifestEpochForSegment
-                .get(segmentId)?.manifest_epoch;
-            if (epoch == null) {
-                throw codedError(
-                    'RECOVERY_MANIFEST_INVALID',
-                    'PUBLISHED segment is absent from manifest history'
-                );
-            }
             this._verifyPublishedTopology(
                 segmentId,
                 vectorIds,
-                epoch
+                currentEpoch
             );
             return Object.freeze({
                 segmentId,
-                manifestEpoch: epoch.toString(),
+                manifestEpoch: currentEpoch.toString(),
                 artifactPath: verified.artifactPath,
                 artifactDigest: verified.artifactDigest,
                 vectorIds: Object.freeze([...vectorIds]),

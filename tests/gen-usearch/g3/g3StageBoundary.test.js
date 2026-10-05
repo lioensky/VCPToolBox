@@ -67,7 +67,7 @@ test('G3 publisher does not implement query, GC, compaction or cutover authority
     for (const forbidden of [
         /QueryReadView/,
         /searchKey64\s*\(/,
-        /GC_ELIGIBLE/,
+        /UPDATE\s+gen_usearch_chunk_versions[\s\S]*GC_ELIGIBLE/i,
         /RECLAIMABLE.*DELETE/i,
         /gen_usearch_runtime_ownership/,
         /GENERATIONAL_SHADOW/,

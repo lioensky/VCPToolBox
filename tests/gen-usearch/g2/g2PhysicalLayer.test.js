@@ -1433,3 +1433,110 @@ test('startup recovery accepts mixed RECOVERY_REQUIRED and SEGMENT_COVERED curre
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
+
+
+test('G2 physical mutation rejects ambient SQLite transactions before native bytes can diverge from coverage', () => {
+    const fixture = createFixture();
+    try {
+        const { staged, vector } = createStagedVersion(fixture);
+        fixture.writer.bootstrapRuntime();
+        fixture.writer.admitVector({
+            memtable: fixture.memtable,
+            vectorId: staged.vector_id,
+            vector
+        });
+
+        const beforeCoverage = fixture.writer.getCoverage({
+            memtable: fixture.memtable,
+            vectorId: staged.vector_id
+        });
+        assert.ok(beforeCoverage);
+        assert.equal(fixture.memtable.hasVector(staged.vector_id), true);
+
+        const outer = fixture.db.transaction(() => {
+            assert.throws(
+                () => fixture.writer.hideAndRemoveVector({
+                    memtable: fixture.memtable,
+                    vectorId: staged.vector_id
+                }),
+                error => error?.code === 'DURABLE_COMMIT_UNCONFIRMED'
+            );
+        });
+        outer();
+
+        assert.equal(fixture.memtable.hasVector(staged.vector_id), true);
+        assert.deepEqual(
+            fixture.writer.getCoverage({
+                memtable: fixture.memtable,
+                vectorId: staged.vector_id
+            }),
+            beforeCoverage
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+
+test('G2 ambient transaction is rejected before native admission begins', () => {
+    const fixture = createFixture();
+    try {
+        const { staged, vector } = createStagedVersion(fixture);
+        fixture.writer.bootstrapRuntime();
+
+        const outer = fixture.db.transaction(() => {
+            assert.throws(
+                () => fixture.writer.admitVector({
+                    memtable: fixture.memtable,
+                    vectorId: staged.vector_id,
+                    vector
+                }),
+                error => error?.code === 'DURABLE_COMMIT_UNCONFIRMED'
+            );
+        });
+        outer();
+
+        assert.equal(fixture.memtable.hasVector(staged.vector_id), false);
+        assert.equal(
+            fixture.writer.getCoverage({
+                memtable: fixture.memtable,
+                vectorId: staged.vector_id
+            }),
+            null
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+
+test('ambient transaction cannot claim G2 writer authority or poison later construction', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g2-writer-tx-'));
+    const db = new Database(path.join(root, 'knowledge.sqlite'));
+    try {
+        db.pragma('journal_mode = WAL');
+        db.pragma('synchronous = FULL');
+        db.pragma('foreign_keys = ON');
+        initializeKnowledgeBaseSchema(db, { logPrefix: 'GenUSearchG2WriterTx' });
+
+        const outer = db.transaction(() => {
+            assert.throws(
+                () => new GenUSearchPhysicalCoverageWriter({
+                    db,
+                    runtimeId: 'runtime-tx-writer'
+                }),
+                error => error?.code === 'DURABLE_COMMIT_UNCONFIRMED'
+            );
+        });
+        outer();
+
+        const writer = new GenUSearchPhysicalCoverageWriter({
+            db,
+            runtimeId: 'runtime-tx-writer'
+        });
+        assert.equal(writer.runtimeId, 'runtime-tx-writer');
+    } finally {
+        try { db.close(); } catch (_) {}
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});

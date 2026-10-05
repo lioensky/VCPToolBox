@@ -32,8 +32,8 @@ G3 may implement only:
 3. **Embedding spaces never mix.**
    Every flushed vector must have recovery fingerprint equal to the sealed Gen0 MemTable fingerprint. A mixed or incomplete source fails before artifact publication.
 
-4. **The sealed MemTable defines the physical candidate flush set; durable lifecycle authority may subtract ABORTED members.**
-   G3 starts from the exact private vector-ID set exposed by the bound `SEALED_QUERY_VISIBLE` Gen0 generation. A member whose authoritative chunk version has since become `ABORTED` is excluded only when its recovery row proves durable abort authority (`RECOVERY_RECLAIMABLE`, `SEGMENT_COVERED`, or `RECOVERY_RELEASED`). Every remaining member must be flushed exactly; duplicate, absent, foreign, or otherwise unsupported lifecycle IDs are rejected. This lets cancellation after seal stop contributing to new immutable segments without blocking unrelated ACTIVE/RETIRED members.
+4. **The sealed MemTable defines the physical candidate flush set; durable lifecycle authority may subtract members that no longer require new segment publication.**
+   G3 starts from the exact private vector-ID set exposed by the bound `SEALED_QUERY_VISIBLE` Gen0 generation. A member whose authoritative chunk version has since become `ABORTED` is excluded only when its recovery row proves durable abort authority (`RECOVERY_RECLAIMABLE`, `SEGMENT_COVERED`, or `RECOVERY_RELEASED`). A `RETIRED` or `GC_ELIGIBLE` member whose recovery is already `RECOVERY_RELEASED` is also excluded, but only after G3 re-proves that its `covered_segment_id` is still in the current authoritative manifest and that the current durable segment still contains that exact vector with matching embedding authority. Every remaining member must be flushed exactly.
 
 5. **Manifest publication is CAS.**
    A flush captures one `manifest_epoch`. Publication succeeds only if both the authoritative sequence and `gen_usearch_manifest_state` still equal that captured epoch. Stale publication fails with no topology mutation.
@@ -56,8 +56,8 @@ G3 may implement only:
 11. **Artifact path is publisher-owned.**
     Callers cannot choose arbitrary final artifact paths. G3 derives final names under one configured segment root from a validated segment identity.
 
-12. **Crash durability is mandatory.**
-    Critical SQLite publication requires WAL + FULL/EXTRA. Artifact durability uses the native Vexus atomic save/fsync path and an explicit post-save digest/reload verification.
+12. **Crash durability and autocommit are mandatory.**
+    G3 publication requires SQLite WAL + FULL/EXTRA and rejects ambient SQLite transactions before creating BUILDING metadata or writing any artifact bytes. Artifact durability uses the native Vexus atomic save/fsync path and an explicit post-save digest/reload verification.
 
 13. **SQLite mutation success requires postcondition proof.**
     FINALIZED_DURABLE and PUBLISHED transitions, manifest CAS, coverage insertion, and recovery transition are read back inside their transactions. Silent trigger ignore/rewrite is fail-closed.
@@ -66,7 +66,7 @@ G3 may implement only:
     G3 production modules must not wire themselves into KnowledgeBaseManager, ingestion, searchService, QueryReadView, runtime ownership, or engine-mode activation.
 
 15. **The flush snapshot is private-authority data with a durable lifecycle filter.**
-    G3 derives candidate vector IDs from GenUSearchMemTable private fields plus authentic native membership, then applies only the authoritative SQLite lifecycle filter defined above. Caller-visible `state` or `listVectorIds()` views cannot redefine either the sealed candidate set or which members qualify as durably ABORTED.
+    G3 derives candidate vector IDs from GenUSearchMemTable private fields plus authentic native membership, then applies only the authoritative SQLite lifecycle filter defined above. Caller-visible `state` or `listVectorIds()` views cannot redefine the sealed candidate set, durable ABORTED exclusions, or current-manifest-backed RECOVERY_RELEASED exclusions.
 
 16. **Segment identity is database-namespaced.**
     The immutable segment identity includes the underlying SQLite database file identity (device/inode when available, canonical path fallback) in addition to Gen0 source identity, embedding fingerprint, and vector IDs, preventing cross-database artifact namespace collisions.
@@ -80,8 +80,8 @@ G3 may implement only:
 19. **Prior manifest epochs are immutable evidence.**
     Publishing epoch N+1 must leave epoch N's exact segment set unchanged. Every member of N+1 is revalidated as `PUBLISHED` with a still-matching durable artifact digest before commit.
 
-20. **Idempotent retry revalidates authority, not status alone.**
-    Reusing a PUBLISHED segment requires re-verifying the full current manifest artifact set and exact SEGMENT coverage before returning success.
+20. **Idempotent retry revalidates current authority, not status or historical membership.**
+    Reusing a PUBLISHED segment requires `expectedManifestEpoch` to equal the current authoritative sequence/manifest_state, requires that exact segment to be a member of the current manifest, and re-verifies the full current manifest artifact set plus exact SEGMENT coverage before returning success. Historical manifest membership is evidence only and cannot authorize a retry.
 
 21. **Segment dimension is native artifact authority.**
     `gen_usearch_segments.dimension` is persisted for every new segment and added to older schemas by an additive migration. `VexusIndex.load()` must compare the caller's expected dimension with the loaded USearch artifact's native `index.dimensions()` and fail closed on mismatch. Current manifest validation native-reloads every member and proves dimension, vector count, exact SEGMENT coverage, and `containsKey64()` membership together.
@@ -115,6 +115,8 @@ G3 may pass only when:
 - SEGMENT coverage cannot exist without a PUBLISHED manifest member;
 - recovery cannot become SEGMENT_COVERED before successful publication;
 - MEMTABLE coverage remains after segment publication;
+- ambient SQLite transactions are rejected before any BUILDING row or segment artifact can be created;
+- RECOVERY_RELEASED RETIRED/GC_ELIGIBLE members already proven durable in the current manifest do not remain mandatory inputs to a later sealed-generation flush;
 - publication failure leaves no false PUBLISHED state, manifest membership, SEGMENT coverage, or SEGMENT_COVERED recovery;
 - forged public MemTable views cannot alter the private sealed candidate set, while a durably ABORTED sealed member is excluded without blocking unrelated flush members;
 - different SQLite databases cannot collide on the same segment identity when sharing an artifact root;
@@ -122,6 +124,7 @@ G3 may pass only when:
 - publishing a new epoch cannot mutate prior manifest evidence or silently retire an existing manifest member;
 - corruption of any artifact in the current manifest blocks publication of the next epoch;
 - idempotent retry detects missing SEGMENT coverage or corrupt manifest artifacts;
+- idempotent retry rejects a stale expected epoch, a current manifest that no longer contains the published segment, or sequence/manifest_state divergence even when historical membership exists;
 - the additive schema migration introduces segment `dimension` without rebuilding or destroying pre-G3 segment metadata;
 - tampering a published segment dimension blocks native manifest verification and cannot advance `manifest_epoch`;
 - every current manifest member is native-reloaded and its dimension, vector count, exact coverage set, and key membership are re-proven before topology mutation;
@@ -147,6 +150,8 @@ Closed findings:
 - tampered persisted segment dimension now blocks native manifest verification and cannot advance `manifest_epoch`;
 - G2/G3 coverage layering is explicit: G2 retains sole MEMTABLE coverage authority while G3 alone adds SEGMENT coverage authority;
 - post-review hardening found that a VECTOR_STAGED member could be sealed and later ABORTED, permanently blocking retries for the whole generation; G3 now filters only durably ABORTED members from the private sealed candidate set and publishes every remaining member exactly, leaving the cancelled vector out of new SEGMENT coverage;
+- a second review found that G3 could acknowledge publication from an inner savepoint before an outer SQLite transaction committed, and that historical manifest membership could satisfy PUBLISHED retry; publication now requires autocommit before any artifact/metadata side effect, while retry is bound to current authoritative manifest epoch and membership;
+- the same review found that G5 could release bytes for a RETIRED vector that still lived inside an unflushed recovered Gen0 generation; G3 now treats RECOVERY_RELEASED RETIRED/GC_ELIGIBLE members as already-satisfied only after re-proving current-manifest durable coverage, so later generations no longer depend on released recovery bytes;
 - no QueryReadView, production retrieval, MemTable reclaim, GC, compaction, runtime serving ownership, cutover, or engine activation was admitted into G3.
 
 Final exact-head implementation evidence:

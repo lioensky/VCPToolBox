@@ -46,8 +46,8 @@ G5 may implement only:
 9. **Embedding authority is exact.**
    The chunk version, recovery row, and durable segment must have the same non-empty embedding fingerprint.
 
-10. **Recovery certification and release are separate transitions.**
-    SEGMENT_COVERED -> RECOVERY_RECLAIMABLE and RECOVERY_RECLAIMABLE -> RECOVERY_RELEASED are distinct crash-durable transitions. Release re-verifies durable segment authority rather than trusting the earlier certification.
+10. **Recovery certification and release are separate transitions, and release must not remain a future flush dependency.**
+    SEGMENT_COVERED -> RECOVERY_RECLAIMABLE and RECOVERY_RECLAIMABLE -> RECOVERY_RELEASED are distinct crash-durable transitions. Release re-verifies durable segment authority rather than trusting the earlier certification. After release, G3 may exclude that RETIRED/GC_ELIGIBLE vector from a later sealed-generation flush only by re-proving the same covered segment remains a current authoritative manifest member and still contains the exact vector.
 
 11. **Released recovery bytes are actually gone.**
     RECOVERY_RELEASED requires vector_blob IS NULL and the original covered_segment_id remains bound as audit evidence.
@@ -96,6 +96,7 @@ G5 may pass only when:
 - missing manifest membership, corrupt artifact, digest mismatch, dimension/count mismatch, coverage mismatch, missing key, or fingerprint mismatch blocks recovery release;
 - RECOVERY_RECLAIMABLE release re-verifies the durable segment rather than trusting prior certification;
 - RECOVERY_RELEASED has vector_blob=NULL and keeps covered_segment_id audit evidence;
+- a released RETIRED/GC_ELIGIBLE vector restored into an unflushed Gen0 no longer blocks later generation publication when its current durable segment authority remains valid;
 - stale runtime-fence coordinators and ambient SQLite transactions are rejected;
 - silent trigger rewrite of recovery release or GC eligibility is caught by transaction postconditions and rolled back;
 - WAL + FULL/EXTRA is required;
@@ -114,7 +115,7 @@ Closed adversarial findings:
 - a corrupted `current_version_id` could otherwise point at an ACTIVE version belonging to another chunk and make a RETIRED target look safely non-current; recovery and GC now re-resolve and require the current version to be ACTIVE and owned by the exact target chunk;
 - an already-present or forged `GC_ELIGIBLE` label could otherwise bypass live-reader revalidation; idempotent GC now re-runs reader-lifetime safety before returning success;
 - silent SQLite trigger rewrites of recovery release or GC eligibility are detected by in-transaction postconditions and roll back;
-- recovery release re-proves the immutable segment path, SHA-256 digest, native dimension/count, exact SEGMENT coverage set, exact key membership, embedding fingerprint, and current-manifest membership;
+- recovery release re-proves the immutable segment path, SHA-256 digest, native dimension/count, exact SEGMENT coverage set, exact key membership, embedding fingerprint, and current-manifest membership; G3 later re-proves the same current durable authority before excluding a released RETIRED/GC_ELIGIBLE member from a new flush dependency;
 - ACTIVE/CANCEL_REQUESTED/QUIESCING older QueryReadViews block GC while RELEASED views do not; reader safety remains scoped to the current serving runtime, and cross-process crash takeover stays outside G5 authority;
 - G5 remains isolated from physical compaction/reclaim, runtime takeover/cutover, existing KnowledgeBase ingestion/search paths, and engine activation;
 - the project stage map remains G0 through G5 only. No additional numbered gate is introduced.
