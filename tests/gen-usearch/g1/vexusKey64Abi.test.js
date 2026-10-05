@@ -59,6 +59,43 @@ test('Gen-USearch Vexus ABI rejects noncanonical or out-of-range keys', () => {
     }
 });
 
+test('Gen-USearch key64 atomic delta preserves signed-int64 identity', async () => {
+    const index = new VexusIndex(4, 32);
+    const a = '9007199254740992';
+    const b = '9007199254740993';
+
+    const first = await index.applyChunkDeltaKey64(
+        [],
+        [a, b],
+        new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0
+        ])
+    );
+    assert.equal(first.requestedUpserts, 2);
+    assert.equal(index.searchKey64(new Float32Array([1, 0, 0, 0]), 2)[0].id, a);
+    assert.equal(index.searchKey64(new Float32Array([0, 1, 0, 0]), 2)[0].id, b);
+
+    const second = await index.applyChunkDeltaKey64(
+        [a],
+        [b],
+        new Float32Array([0, 0, 1, 0])
+    );
+    assert.equal(second.requestedDeletes, 1);
+    assert.equal(second.requestedUpserts, 1);
+
+    const ids = index.searchKey64(
+        new Float32Array([0.5, 0.5, 0.5, 0]),
+        8
+    ).map(row => row.id);
+    assert.equal(ids.includes(a), false);
+    assert.equal(ids.includes(b), true);
+    assert.equal(
+        index.searchKey64(new Float32Array([0, 0, 1, 0]), 1)[0].id,
+        b
+    );
+});
+
 test('legacy numeric Vexus API remains intact', () => {
     const index = new VexusIndex(4, 8);
     const vector = new Float32Array([1, 0, 0, 0]);
