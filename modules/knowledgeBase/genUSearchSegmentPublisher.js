@@ -803,6 +803,7 @@ class GenUSearchSegmentPublisher {
     }
 
     _verifyPublishedTopology(segmentId, vectorIds, epoch) {
+        this._assertManifestArtifactSet(epoch);
         const segment = this._getSegment.get(segmentId);
         if (!segment || segment.state !== 'PUBLISHED') {
             throw codedError(
