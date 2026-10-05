@@ -40,6 +40,8 @@ function exactVectorBytes(vector) {
 }
 
 class GenUSearchPhysicalCoverageWriter {
+    #bootstrapped = false;
+
     constructor(options = {}) {
         const db = options.db;
         if (!db?.prepare || !db?.transaction || !db?.pragma) {
@@ -54,10 +56,12 @@ class GenUSearchPhysicalCoverageWriter {
             );
         }
 
+        Object.defineProperty(this, 'runtimeId', {
+            value: runtimeId,
+            enumerable: true
+        });
         this.db = db;
-        this.runtimeId = runtimeId;
         this.now = typeof options.now === 'function' ? options.now : () => Date.now();
-        this._bootstrapped = false;
 
         this._getVector = db.prepare(`
             SELECT
@@ -106,20 +110,22 @@ class GenUSearchPhysicalCoverageWriter {
             WHERE vector_id = ? AND source_kind = 'MEMTABLE' AND source_id = ?
         `);
 
-        this._bootstrapTransaction = db.transaction(() => {
-            return this._deleteAllMemtableCoverage.run().changes;
-        });
-
+        this._bootstrapTransaction = db.transaction(
+            () => this._deleteAllMemtableCoverage.run().changes
+        );
         this._publishCoverageTransaction = db.transaction(
             (vectorId, sourceId, now) => {
                 this._upsertVisibleCoverage.run(vectorId, sourceId, now, now);
                 return this._getCoverage.get(vectorId, sourceId);
             }
         );
-
         this._hideCoverageTransaction = db.transaction(
             (vectorId, sourceId) => this._deleteCoverage.run(vectorId, sourceId).changes
         );
+    }
+
+    get bootstrapped() {
+        return this.#bootstrapped;
     }
 
     assertCrashDurableProfile() {
@@ -144,7 +150,7 @@ class GenUSearchPhysicalCoverageWriter {
     }
 
     _assertBootstrapped() {
-        if (!this._bootstrapped) {
+        if (!this.#bootstrapped) {
             throw codedError(
                 'MEMTABLE_RUNTIME_NOT_BOOTSTRAPPED',
                 'runtime must purge stale MEMTABLE coverage before physical admission'
@@ -200,10 +206,16 @@ class GenUSearchPhysicalCoverageWriter {
     }
 
     bootstrapRuntime() {
+        if (this.#bootstrapped) {
+            throw codedError(
+                'MEMTABLE_RUNTIME_ALREADY_BOOTSTRAPPED',
+                'runtime bootstrap is one-shot and cannot purge live coverage twice'
+            );
+        }
         const removed = this._criticalWrite(
             () => this._bootstrapTransaction()
         );
-        this._bootstrapped = true;
+        this.#bootstrapped = true;
         return Object.freeze({
             runtimeId: this.runtimeId,
             staleMemtableCoverageRemoved: Number(removed)
@@ -233,6 +245,7 @@ class GenUSearchPhysicalCoverageWriter {
             vectorId: parsed.text,
             vector: options.vector
         });
+        GenUSearchMemTable.assertContains(memtable, parsed.text);
 
         try {
             const now = BigInt(this.now());
@@ -271,7 +284,13 @@ class GenUSearchPhysicalCoverageWriter {
 
         const parsed = canonicalVectorId(options.vectorId);
         const row = this._getVector.get(parsed.bigint);
-        if (row?.state === 'ACTIVE') {
+        if (!row || row.vector_id == null) {
+            throw codedError(
+                'VECTOR_METADATA_MISSING',
+                `Vector ${parsed.text} is not present in Gen-USearch metadata`
+            );
+        }
+        if (row.state === 'ACTIVE') {
             throw codedError(
                 'INVALID_CURRENT_VECTOR_HEAD',
                 'G2 must not remove physical coverage for an ACTIVE logical vector'
