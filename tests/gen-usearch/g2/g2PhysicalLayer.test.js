@@ -561,12 +561,9 @@ test('native key64 membership ABI proves exact physical presence', () => {
     assert.equal(index.containsKey64(id), false);
 });
 
-test('forged revision advance without native membership cannot manufacture coverage', () => {
+test('forged JavaScript index cannot impersonate native physical authority', () => {
     const fixture = createFixture();
     try {
-        const { staged, vector } = createStagedVersion(fixture);
-        fixture.writer.bootstrapRuntime();
-
         class ForgedRevisionIndex {
             constructor() {
                 this.revision = 0;
@@ -578,77 +575,48 @@ test('forged revision advance without native membership cannot manufacture cover
                 this.revision += 1;
             }
             containsKey64() {
-                return false;
+                return true;
             }
         }
 
-        const forged = fixture.writer.createMemTable({
-            VexusIndex: ForgedRevisionIndex,
-            dimension: 4,
-            capacity: 16,
-            generation: '97',
-            embeddingFingerprint: 'embed-v1'
-        });
-
         assert.throws(
-            () => fixture.writer.admitVector({
-                memtable: forged,
-                vectorId: staged.vector_id,
-                vector
+            () => fixture.writer.createMemTable({
+                VexusIndex: ForgedRevisionIndex,
+                dimension: 4,
+                capacity: 16,
+                generation: '97',
+                embeddingFingerprint: 'embed-v1'
             }),
-            error => error?.code === 'PHYSICAL_COVERAGE_MISSING'
-        );
-        assert.equal(forged.hasVector(staged.vector_id), false);
-        assert.equal(
-            fixture.writer.getCoverage({
-                memtable: forged,
-                vectorId: staged.vector_id
-            }),
-            null
+            error => error?.code === 'MEMTABLE_NATIVE_INDEX_UNTRUSTED'
         );
     } finally {
         fixture.cleanup();
     }
 });
 
-test('silent native add without revision advance cannot manufacture physical coverage', () => {
+test('silent JavaScript no-op index is rejected before physical admission', () => {
     const fixture = createFixture();
     try {
-        const { staged, vector } = createStagedVersion(fixture);
-        fixture.writer.bootstrapRuntime();
-
         class NoopIndex {
             constructor() {
                 this.revision = 0;
             }
             addKey64() {}
             removeKey64() {}
+            containsKey64() {
+                return false;
+            }
         }
 
-        const noopMemtable = fixture.writer.createMemTable({
-            VexusIndex: NoopIndex,
-            dimension: 4,
-            capacity: 16,
-            generation: '98',
-            embeddingFingerprint: 'embed-v1'
-        });
-
         assert.throws(
-            () => fixture.writer.admitVector({
-                memtable: noopMemtable,
-                vectorId: staged.vector_id,
-                vector
+            () => fixture.writer.createMemTable({
+                VexusIndex: NoopIndex,
+                dimension: 4,
+                capacity: 16,
+                generation: '98',
+                embeddingFingerprint: 'embed-v1'
             }),
-            error => error?.code === 'PHYSICAL_COVERAGE_MISSING'
-        );
-        assert.equal(noopMemtable.hasVector(staged.vector_id), false);
-        assert.equal(noopMemtable.stats().nativeRevision, 0);
-        assert.equal(
-            fixture.writer.getCoverage({
-                memtable: noopMemtable,
-                vectorId: staged.vector_id
-            }),
-            null
+            error => error?.code === 'MEMTABLE_NATIVE_INDEX_UNTRUSTED'
         );
     } finally {
         fixture.cleanup();
@@ -1022,17 +990,13 @@ test('physical add failure leaves no QUERY_VISIBLE coverage', () => {
         const { staged, vector } = createStagedVersion(fixture);
         fixture.writer.bootstrapRuntime();
 
-        class FailingIndex {
+        class WrongDimensionNativeFactory {
             constructor() {
-                this.revision = 0;
+                return new VexusIndex(5, 16);
             }
-            addKey64() {
-                throw new Error('simulated-native-add-failure');
-            }
-            removeKey64() {}
         }
         const failingMemtable = fixture.writer.createMemTable({
-            VexusIndex: FailingIndex,
+            VexusIndex: WrongDimensionNativeFactory,
             dimension: 4,
             capacity: 16,
             generation: '99',
@@ -1045,7 +1009,7 @@ test('physical add failure leaves no QUERY_VISIBLE coverage', () => {
                 vectorId: staged.vector_id,
                 vector
             }),
-            /simulated-native-add-failure/
+            /Dimension mismatch/
         );
 
         assert.equal(failingMemtable.hasVector(staged.vector_id), false);
