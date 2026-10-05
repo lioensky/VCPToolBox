@@ -9,7 +9,6 @@ on:
       - 'modules/knowledgeBase/schemaManager.js'
       - 'modules/knowledgeBase/genUSearchMetadataStore.js'
       - 'tests/gen-usearch/g1/**'
-      - 'tests/tagIndexGenerationalBaseline.test.js'
       - '.github/workflows/gen-usearch-g1.yml'
   pull_request:
     paths:
@@ -41,7 +40,5 @@ jobs:
       - name: Run G1 durable metadata acceptance
         run: node --test tests/gen-usearch/g1/genUSearchMetadataStore.test.js
 
-      - name: Regress existing Tag generational baseline
-        env:
-          NODE_PATH: ${{ github.workspace }}/tests/gen-usearch/g1/node_modules
-        run: node tests/tagIndexGenerationalBaseline.test.js
+      - name: Regress existing Tag baseline metadata compatibility
+        run: node --test tests/gen-usearch/g1/tagBaselineSchemaCompatibility.test.js
