@@ -515,12 +515,27 @@ class GenUSearchSegmentPublisher {
                     || !member.artifact_path
                     || !SHA256_RE.test(member.artifact_digest || '')
                     || !fs.existsSync(member.artifact_path)
-                    || !fs.statSync(member.artifact_path).isFile()
-                    || sha256File(member.artifact_path) !== member.artifact_digest
                 ) {
                     throw codedError(
                         'RECOVERY_MANIFEST_INVALID',
                         `published manifest member failed durable verification: ${memberId}`
+                    );
+                }
+                try {
+                    this._assertArtifactPathOwned(
+                        memberId,
+                        member.artifact_path
+                    );
+                } catch (_) {
+                    throw codedError(
+                        'RECOVERY_MANIFEST_INVALID',
+                        `published manifest member path authority failed: ${memberId}`
+                    );
+                }
+                if (sha256File(member.artifact_path) !== member.artifact_digest) {
+                    throw codedError(
+                        'RECOVERY_MANIFEST_INVALID',
+                        `published manifest member digest failed: ${memberId}`
                     );
                 }
             }
