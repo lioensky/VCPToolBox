@@ -2,6 +2,7 @@
 
 const {
     assertIdentityOnlyPlan,
+    hashIdentitySnapshot,
     stableStringify
 } = require('./genUSearchReconciler');
 
@@ -218,6 +219,8 @@ class GenUSearchMetadataStore {
             INSERT INTO gen_usearch_reconciliation_plans (
                 plan_id,
                 doc_id,
+                base_document_uri,
+                base_identity_digest,
                 observed_source_digest,
                 observed_source_revision,
                 target_revision,
@@ -225,7 +228,7 @@ class GenUSearchMetadataStore {
                 state,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         this._insertReconciliationItem = db.prepare(`
             INSERT INTO gen_usearch_reconciliation_items (
@@ -517,6 +520,42 @@ class GenUSearchMetadataStore {
                     plan.docId,
                     plan.targetRevision
                 );
+                const documentBefore = this._getDocument.get(plan.docId);
+                if (!documentBefore || documentBefore.state !== 'ACTIVE') {
+                    throw codedError(
+                        'DOCUMENT_IDENTITY_AMBIGUOUS',
+                        `Active Gen-USearch document "${plan.docId}" is unavailable`
+                    );
+                }
+                if ((documentBefore.current_uri ?? null) !== plan.baseDocumentUri) {
+                    throw codedError(
+                        'STALE_DOCUMENT_WRITER',
+                        'Document URI changed after reconciliation plan generation'
+                    );
+                }
+                if (
+                    documentBefore.reconciliation_state === 'PENDING'
+                    && documentBefore.reconcile_target_revision != null
+                    && (
+                        documentBefore.reconcile_target_revision !== plan.targetRevision
+                        || documentBefore.observed_source_digest !== plan.observedSourceDigest
+                    )
+                ) {
+                    throw codedError(
+                        'STALE_DOCUMENT_WRITER',
+                        'A newer pending source observation already owns reconciliation'
+                    );
+                }
+                const currentIdentityDigest = hashIdentitySnapshot(
+                    this.getCurrentChunkIdentitySnapshot(plan.docId)
+                );
+                if (currentIdentityDigest !== plan.baseIdentityDigest) {
+                    throw codedError(
+                        'STALE_DOCUMENT_WRITER',
+                        'Current chunk identity snapshot changed after plan generation'
+                    );
+                }
+
                 const hasAmbiguity = plan.summary.AMBIGUOUS > 0;
                 const planState = hasAmbiguity ? 'ERROR' : 'ADMITTED';
                 const documentState = hasAmbiguity ? 'ERROR' : 'ADMITTED';
@@ -610,6 +649,8 @@ class GenUSearchMetadataStore {
                 this._insertReconciliationPlan.run(
                     plan.planId,
                     plan.docId,
+                    plan.baseDocumentUri,
+                    plan.baseIdentityDigest,
                     plan.observedSourceDigest,
                     plan.observedSourceRevision,
                     plan.targetRevision,
@@ -1199,6 +1240,8 @@ class GenUSearchMetadataStore {
             planVersion: 1,
             identityOnly: true,
             docId: row.doc_id,
+            baseDocumentUri: row.base_document_uri,
+            baseIdentityDigest: row.base_identity_digest,
             observedSourceDigest: row.observed_source_digest,
             observedSourceRevision: row.observed_source_revision,
             targetRevision: row.target_revision,
