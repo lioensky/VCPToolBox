@@ -161,6 +161,39 @@ test('a database admits only one live G2 physical coverage writer', () => {
     }
 });
 
+test('two SQLite connections to the same database file cannot split G2 writer authority', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g2-dual-db-'));
+    const dbPath = path.join(root, 'knowledge.sqlite');
+    const first = new Database(dbPath);
+    const second = new Database(dbPath);
+    try {
+        for (const db of [first, second]) {
+            db.pragma('journal_mode = WAL');
+            db.pragma('synchronous = FULL');
+            db.pragma('foreign_keys = ON');
+        }
+        initializeKnowledgeBaseSchema(first, { logPrefix: 'GenUSearchG2DualWriterTest' });
+
+        const writer = new GenUSearchPhysicalCoverageWriter({
+            db: first,
+            runtimeId: 'runtime-primary'
+        });
+        assert.equal(writer.runtimeId, 'runtime-primary');
+
+        assert.throws(
+            () => new GenUSearchPhysicalCoverageWriter({
+                db: second,
+                runtimeId: 'runtime-secondary'
+            }),
+            error => error?.code === 'MEMTABLE_RUNTIME_ALREADY_OWNED'
+        );
+    } finally {
+        try { first.close(); } catch (_) {}
+        try { second.close(); } catch (_) {}
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('writer rejects duplicate or detached MemTable source identities', () => {
     const fixture = createFixture();
     try {
@@ -462,6 +495,50 @@ test('G2 isolates embedding spaces and permits generation handoff only after sea
             error => error?.code === 'MEMTABLE_EMBEDDING_FINGERPRINT_MISMATCH'
         );
         assert.equal(wrongSpace.hasVector(third.staged.vector_id), false);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('silent native add without revision advance cannot manufacture physical coverage', () => {
+    const fixture = createFixture();
+    try {
+        const { staged, vector } = createStagedVersion(fixture);
+        fixture.writer.bootstrapRuntime();
+
+        class NoopIndex {
+            constructor() {
+                this.revision = 0;
+            }
+            addKey64() {}
+            removeKey64() {}
+        }
+
+        const noopMemtable = fixture.writer.createMemTable({
+            VexusIndex: NoopIndex,
+            dimension: 4,
+            capacity: 16,
+            generation: '98',
+            embeddingFingerprint: 'embed-v1'
+        });
+
+        assert.throws(
+            () => fixture.writer.admitVector({
+                memtable: noopMemtable,
+                vectorId: staged.vector_id,
+                vector
+            }),
+            error => error?.code === 'PHYSICAL_COVERAGE_MISSING'
+        );
+        assert.equal(noopMemtable.hasVector(staged.vector_id), false);
+        assert.equal(noopMemtable.stats().nativeRevision, 0);
+        assert.equal(
+            fixture.writer.getCoverage({
+                memtable: noopMemtable,
+                vectorId: staged.vector_id
+            }),
+            null
+        );
     } finally {
         fixture.cleanup();
     }
