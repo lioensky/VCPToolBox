@@ -202,13 +202,13 @@ class GenUSearchQueryReadViewCoordinator {
             "SELECT owner_id, serving_state, runtime_fence FROM gen_usearch_runtime_ownership WHERE singleton = 1"
         ).safeIntegers(true);
         this._listCurrent = db.prepare(
-            "SELECT h.chunk_id, h.doc_id, h.current_version_id, v.vector_id, v.state AS version_state, v.visibility_seq, v.embedding_fingerprint, vr.state AS recovery_state, vr.embedding_fingerprint AS recovery_fingerprint, vr.vector_blob FROM gen_usearch_chunk_heads h JOIN gen_usearch_documents d ON d.doc_id = h.doc_id JOIN gen_usearch_chunk_versions v ON v.chunk_version_id = h.current_version_id LEFT JOIN gen_usearch_vector_recovery vr ON vr.vector_id = v.vector_id WHERE h.current_version_id IS NOT NULL AND d.state = 'ACTIVE' ORDER BY h.chunk_id"
+            "SELECT h.chunk_id, h.doc_id, h.current_version_id, d.state AS document_state, v.chunk_id AS version_chunk_id, v.vector_id, v.state AS version_state, v.visibility_seq, v.embedding_fingerprint, vr.state AS recovery_state, vr.embedding_fingerprint AS recovery_fingerprint, vr.vector_blob FROM gen_usearch_chunk_heads h LEFT JOIN gen_usearch_documents d ON d.doc_id = h.doc_id LEFT JOIN gen_usearch_chunk_versions v ON v.chunk_version_id = h.current_version_id LEFT JOIN gen_usearch_vector_recovery vr ON vr.vector_id = v.vector_id WHERE h.current_version_id IS NOT NULL ORDER BY h.chunk_id"
         ).safeIntegers(true);
         this._listCoverage = db.prepare(
             "SELECT vector_id, source_kind, source_id, coverage_state FROM gen_usearch_vector_coverage WHERE coverage_state = 'QUERY_VISIBLE' ORDER BY vector_id, source_kind, source_id"
         ).safeIntegers(true);
         this._listManifest = db.prepare(
-            "SELECT ms.segment_id, s.state, s.artifact_path, s.artifact_digest, s.embedding_fingerprint, s.dimension, s.vector_count FROM gen_usearch_manifest_segments ms JOIN gen_usearch_segments s ON s.segment_id = ms.segment_id WHERE ms.manifest_epoch = ? ORDER BY ms.segment_id"
+            "SELECT ms.segment_id, s.state, s.artifact_path, s.artifact_digest, s.embedding_fingerprint, s.dimension, s.vector_count FROM gen_usearch_manifest_segments ms LEFT JOIN gen_usearch_segments s ON s.segment_id = ms.segment_id WHERE ms.manifest_epoch = ? ORDER BY ms.segment_id"
         ).safeIntegers(true);
         this._listSegmentCoverage = db.prepare(
             "SELECT vector_id, coverage_state FROM gen_usearch_vector_coverage WHERE source_kind = 'SEGMENT' AND source_id = ? ORDER BY vector_id"
@@ -440,15 +440,25 @@ class GenUSearchQueryReadViewCoordinator {
             const currentByVector = new Map();
             const recoveryByVector = new Map();
             for (const row of snapshot.metadataRows) {
+                if (row.document_state == null) {
+                    throw codedError(
+                        'QUERY_READ_VIEW_INVALID',
+                        'current-head document authority is missing'
+                    );
+                }
+                if (row.document_state !== 'ACTIVE') {
+                    continue;
+                }
                 if (
-                    row.version_state !== 'ACTIVE'
+                    row.version_chunk_id !== row.chunk_id
+                    || row.version_state !== 'ACTIVE'
                     || row.vector_id == null
                     || row.visibility_seq == null
                     || !row.embedding_fingerprint
                 ) {
                     throw codedError(
                         'QUERY_READ_VIEW_INVALID',
-                        'current-head metadata row is incomplete'
+                        'current-head metadata row is incomplete or identity-mismatched'
                     );
                 }
                 const vectorId = vectorIdText(row.vector_id);
