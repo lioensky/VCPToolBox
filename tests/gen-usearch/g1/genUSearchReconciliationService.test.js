@@ -34,12 +34,28 @@ function createFixture() {
         uri: 'diary/a.txt',
         visibilitySeq: '0'
     });
-    const service = new GenUSearchReconciliationService({ store });
+    let sourceView = committedView([]);
+    const sourceViewProvider = {
+        async readCommittedSourceView(request) {
+            assert.deepEqual(request, {
+                docId: 'doc-1',
+                currentUri: 'diary/a.txt'
+            });
+            return sourceView;
+        }
+    };
+    const service = new GenUSearchReconciliationService({
+        store,
+        sourceViewProvider
+    });
     return {
         root,
         db,
         store,
         service,
+        setSourceView(view) {
+            sourceView = view;
+        },
         cleanup() {
             try { db.close(); } catch (_) {}
             fs.rmSync(root, { recursive: true, force: true });
@@ -96,7 +112,19 @@ function committedView(chunks, overrides = {}) {
     };
 }
 
-test('production service derives previous identity snapshot only from SQLite current heads', () => {
+test('service refuses construction without a canonical source provider', () => {
+    const fixture = createFixture();
+    try {
+        assert.throws(
+            () => new GenUSearchReconciliationService({ store: fixture.store }),
+            /sourceViewProvider/
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('production service derives previous identity snapshot only from SQLite current heads', async () => {
     const fixture = createFixture();
     try {
         publishCurrent(fixture, { chunkId: 'c-alpha', slotIndex: 0, content: 'alpha' });
@@ -115,12 +143,12 @@ test('production service derives previous identity snapshot only from SQLite cur
             }
         ]);
 
-        const { plan, admitted } = fixture.service.planAndAdmitCommittedSource({
-            docId: 'doc-1',
-            committedSourceView: committedView([
-                { slotIndex: 0, content: 'alpha' },
-                { slotIndex: 1, content: 'beta changed' }
-            ])
+        fixture.setSourceView(committedView([
+            { slotIndex: 0, content: 'alpha' },
+            { slotIndex: 1, content: 'beta changed' }
+        ]));
+        const { plan, admitted } = await fixture.service.planAndAdmitCurrentSource({
+            docId: 'doc-1'
         });
 
         assert.equal(plan.operations.find(op => op.kind === 'SAME').chunkId, 'c-alpha');
@@ -132,13 +160,19 @@ test('production service derives previous identity snapshot only from SQLite cur
     }
 });
 
-test('caller cannot override previousChunks authority', () => {
+test('caller cannot override source or previous identity authority per request', async () => {
     const fixture = createFixture();
     try {
-        assert.throws(
-            () => fixture.service.planCommittedSource({
+        await assert.rejects(
+            () => fixture.service.planCurrentSource({
                 docId: 'doc-1',
-                previousChunks: [{ chunkId: 'fake', slotIndex: 0, content: 'fake' }],
+                previousChunks: [{ chunkId: 'fake', slotIndex: 0, content: 'fake' }]
+            }),
+            error => error?.code === 'RECONCILER_AUTHORITY_VIOLATION'
+        );
+        await assert.rejects(
+            () => fixture.service.planCurrentSource({
+                docId: 'doc-1',
                 committedSourceView: committedView([{ slotIndex: 0, content: 'alpha' }])
             }),
             error => error?.code === 'RECONCILER_AUTHORITY_VIOLATION'
@@ -148,7 +182,7 @@ test('caller cannot override previousChunks authority', () => {
     }
 });
 
-test('only verified stable complete source views may enter reconciliation', () => {
+test('only verified stable complete source views from the bound provider may enter reconciliation', async () => {
     const fixture = createFixture();
     try {
         for (const view of [
@@ -156,11 +190,9 @@ test('only verified stable complete source views may enter reconciliation', () =
             committedView([], { commitVerified: false }),
             committedView([], { bytesStable: false })
         ]) {
-            assert.throws(
-                () => fixture.service.planCommittedSource({
-                    docId: 'doc-1',
-                    committedSourceView: view
-                }),
+            fixture.setSourceView(view);
+            await assert.rejects(
+                () => fixture.service.planCurrentSource({ docId: 'doc-1' }),
                 error => error?.code === 'SOURCE_COMMIT_UNVERIFIED'
             );
         }
@@ -169,15 +201,28 @@ test('only verified stable complete source views may enter reconciliation', () =
     }
 });
 
-test('incomplete or corrupt SQLite current-head snapshots fail closed', () => {
+test('provider cannot smuggle lifecycle fields inside committed chunks', async () => {
+    const fixture = createFixture();
+    try {
+        fixture.setSourceView(committedView([
+            { slotIndex: 0, content: 'alpha', state: 'ACTIVE' }
+        ]));
+        await assert.rejects(
+            () => fixture.service.planCurrentSource({ docId: 'doc-1' }),
+            error => error?.code === 'SOURCE_COMMIT_UNVERIFIED'
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('incomplete or corrupt SQLite current-head snapshots fail closed', async () => {
     const fixture = createFixture();
     try {
         fixture.store.createChunkIdentity({ chunkId: 'orphan-head', docId: 'doc-1' });
-        assert.throws(
-            () => fixture.service.planCommittedSource({
-                docId: 'doc-1',
-                committedSourceView: committedView([{ slotIndex: 0, content: 'alpha' }])
-            }),
+        fixture.setSourceView(committedView([{ slotIndex: 0, content: 'alpha' }]));
+        await assert.rejects(
+            () => fixture.service.planCurrentSource({ docId: 'doc-1' }),
             error => error?.code === 'METADATA_INTEGRITY_FAILURE'
         );
     } finally {
@@ -199,16 +244,14 @@ test('duplicate current slots in metadata authority are rejected as ambiguous', 
     }
 });
 
-test('new documents reconcile from an empty authoritative snapshot without caller identity hints', () => {
+test('new documents reconcile from an empty authoritative snapshot without caller identity hints', async () => {
     const fixture = createFixture();
     try {
-        const plan = fixture.service.planCommittedSource({
-            docId: 'doc-1',
-            committedSourceView: committedView([
-                { slotIndex: 0, content: 'first' },
-                { slotIndex: 1, content: 'second' }
-            ])
-        });
+        fixture.setSourceView(committedView([
+            { slotIndex: 0, content: 'first' },
+            { slotIndex: 1, content: 'second' }
+        ]));
+        const plan = await fixture.service.planCurrentSource({ docId: 'doc-1' });
         assert.equal(plan.summary.INSERT, 2);
         assert.equal(plan.summary.AMBIGUOUS, 0);
     } finally {

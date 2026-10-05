@@ -21,7 +21,7 @@ function requireString(value, label, options = {}) {
 
 function validateCommittedSourceView(view) {
     if (!view || typeof view !== 'object' || Array.isArray(view)) {
-        throw new TypeError('committedSourceView must be an object');
+        throw new TypeError('canonical source provider must return a CommittedSourceView object');
     }
     const allowed = new Set([
         'state', 'commitVerified', 'bytesStable',
@@ -54,19 +54,34 @@ function validateCommittedSourceView(view) {
     if (!Array.isArray(view.chunks)) {
         throw new TypeError('committedSourceView.chunks must be an array');
     }
+    const chunks = Object.freeze(view.chunks.map((chunk, index) => {
+        if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) {
+            throw new TypeError(`committedSourceView.chunks[${index}] must be an object`);
+        }
+        const keys = Object.keys(chunk).sort();
+        const allowedChunkKeys = ['content', 'contentHash', 'slotIndex'];
+        if (keys.some(key => !allowedChunkKeys.includes(key))) {
+            throw codedError(
+                'SOURCE_COMMIT_UNVERIFIED',
+                `CommittedSourceView chunk contains unsupported field at index ${index}`
+            );
+        }
+        return Object.freeze({ ...chunk });
+    }));
     return Object.freeze({
         state: view.state,
         commitVerified: true,
         bytesStable: true,
         sourceDigest,
         sourceRevision,
-        chunks: view.chunks
+        chunks
     });
 }
 
 class GenUSearchReconciliationService {
     constructor(options = {}) {
         const store = options.store;
+        const sourceViewProvider = options.sourceViewProvider;
         if (
             !store
             || typeof store.getDocument !== 'function'
@@ -77,25 +92,38 @@ class GenUSearchReconciliationService {
                 'GenUSearchReconciliationService requires a GenUSearchMetadataStore-compatible store'
             );
         }
+        if (!sourceViewProvider || typeof sourceViewProvider.readCommittedSourceView !== 'function') {
+            throw new TypeError(
+                'GenUSearchReconciliationService requires a canonical sourceViewProvider'
+            );
+        }
         this.store = store;
+        this.sourceViewProvider = sourceViewProvider;
     }
 
-    planCommittedSource(options = {}) {
-        if (Object.prototype.hasOwnProperty.call(options, 'previousChunks')) {
+    #normalizeRequest(options) {
+        if (!options || typeof options !== 'object' || Array.isArray(options)) {
+            throw new TypeError('reconciliation request must be an object');
+        }
+        const keys = Object.keys(options);
+        if (keys.length !== 1 || keys[0] !== 'docId') {
             throw codedError(
                 'RECONCILER_AUTHORITY_VIOLATION',
-                'Callers cannot supply previousChunks; SQLite current-head metadata is authoritative'
+                'Public G1 reconciliation requests may contain only docId'
             );
         }
-        const docId = requireString(options.docId, 'docId');
-        const document = this.store.getDocument(docId);
-        if (!document || document.state !== 'ACTIVE') {
-            throw codedError(
-                'DOCUMENT_IDENTITY_AMBIGUOUS',
-                `Active Gen-USearch document "${docId}" is unavailable`
-            );
-        }
-        const source = validateCommittedSourceView(options.committedSourceView);
+        return requireString(options.docId, 'docId');
+    }
+
+    async #readAuthoritativeSource(docId, document) {
+        const rawView = await this.sourceViewProvider.readCommittedSourceView({
+            docId,
+            currentUri: document.current_uri
+        });
+        return validateCommittedSourceView(rawView);
+    }
+
+    #buildPlan(docId, source) {
         const previousChunks = this.store.getCurrentChunkIdentitySnapshot(docId);
         return reconcileDocumentChunks({
             docId,
@@ -107,8 +135,21 @@ class GenUSearchReconciliationService {
         });
     }
 
-    planAndAdmitCommittedSource(options = {}) {
-        const plan = this.planCommittedSource(options);
+    async planCurrentSource(options = {}) {
+        const docId = this.#normalizeRequest(options);
+        const document = this.store.getDocument(docId);
+        if (!document || document.state !== 'ACTIVE') {
+            throw codedError(
+                'DOCUMENT_IDENTITY_AMBIGUOUS',
+                `Active Gen-USearch document "${docId}" is unavailable`
+            );
+        }
+        const source = await this.#readAuthoritativeSource(docId, document);
+        return this.#buildPlan(docId, source);
+    }
+
+    async planAndAdmitCurrentSource(options = {}) {
+        const plan = await this.planCurrentSource(options);
         const admitted = this.store.admitReconciliationPlan(plan);
         return Object.freeze({ plan, admitted });
     }
