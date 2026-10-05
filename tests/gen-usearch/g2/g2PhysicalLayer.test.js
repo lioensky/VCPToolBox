@@ -1150,6 +1150,119 @@ test('removal rejects unknown and ACTIVE logical vectors before hiding coverage'
     }
 });
 
+test('bootstrap fails closed when SQLite silently ignores stale coverage deletion', () => {
+    const fixture = createFixture();
+    try {
+        fixture.db.prepare(`
+            INSERT INTO gen_usearch_vector_coverage (
+                vector_id, source_kind, source_id, coverage_state, created_at, updated_at
+            ) VALUES (999, 'MEMTABLE', 'gen0:stale:1', 'QUERY_VISIBLE', 1, 1)
+        `).run();
+        fixture.db.exec(`
+            CREATE TRIGGER ignore_g2_bootstrap_delete
+            BEFORE DELETE ON gen_usearch_vector_coverage
+            WHEN OLD.source_kind = 'MEMTABLE'
+            BEGIN
+                SELECT RAISE(IGNORE);
+            END;
+        `);
+
+        assert.throws(
+            () => fixture.writer.bootstrapRuntime(),
+            error => error?.code === 'PHYSICAL_COVERAGE_MISSING'
+        );
+        assert.equal(fixture.writer.bootstrapped, false);
+        assert.equal(
+            fixture.db.prepare(`
+                SELECT COUNT(*) AS count
+                FROM gen_usearch_vector_coverage
+                WHERE source_kind = 'MEMTABLE'
+            `).get().count,
+            1
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('single coverage publication fails closed when a trigger rewrites QUERY_VISIBLE state', () => {
+    const fixture = createFixture();
+    try {
+        const { staged, vector } = createStagedVersion(fixture);
+        fixture.writer.bootstrapRuntime();
+        fixture.db.exec(`
+            CREATE TRIGGER rewrite_g2_coverage_state
+            AFTER INSERT ON gen_usearch_vector_coverage
+            WHEN NEW.source_kind = 'MEMTABLE'
+            BEGIN
+                UPDATE gen_usearch_vector_coverage
+                SET coverage_state = 'STAGED'
+                WHERE vector_id = NEW.vector_id
+                  AND source_kind = NEW.source_kind
+                  AND source_id = NEW.source_id;
+            END;
+        `);
+
+        assert.throws(
+            () => fixture.writer.admitVector({
+                memtable: fixture.memtable,
+                vectorId: staged.vector_id,
+                vector
+            }),
+            error => error?.code === 'PHYSICAL_COVERAGE_MISSING'
+        );
+        assert.equal(fixture.memtable.hasVector(staged.vector_id), false);
+        assert.equal(
+            fixture.db.prepare(`
+                SELECT COUNT(*) AS count
+                FROM gen_usearch_vector_coverage
+                WHERE vector_id = ?
+            `).get(BigInt(staged.vector_id)).count,
+            0
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('coverage hide fails closed before physical removal when SQLite ignores delete', () => {
+    const fixture = createFixture();
+    try {
+        const { staged, vector } = createStagedVersion(fixture);
+        fixture.writer.bootstrapRuntime();
+        fixture.writer.admitVector({
+            memtable: fixture.memtable,
+            vectorId: staged.vector_id,
+            vector
+        });
+
+        fixture.db.exec(`
+            CREATE TRIGGER ignore_g2_hide_delete
+            BEFORE DELETE ON gen_usearch_vector_coverage
+            WHEN OLD.vector_id = ${staged.vector_id}
+             AND OLD.source_kind = 'MEMTABLE'
+            BEGIN
+                SELECT RAISE(IGNORE);
+            END;
+        `);
+
+        assert.throws(
+            () => fixture.writer.hideAndRemoveVector({
+                memtable: fixture.memtable,
+                vectorId: staged.vector_id
+            }),
+            error => error?.code === 'PHYSICAL_COVERAGE_MISSING'
+        );
+        assert.equal(fixture.memtable.hasVector(staged.vector_id), true);
+        assert.ok(fixture.writer.getCoverage({
+            memtable: fixture.memtable,
+            vectorId: staged.vector_id
+        }));
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('G2 coverage writes require crash-durable SQLite profile', () => {
     const fixture = createFixture();
     try {
