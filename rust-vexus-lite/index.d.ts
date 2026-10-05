@@ -261,6 +261,8 @@ export declare class VexusIndex {
    * 批次之前或之后取得读锁，不会观察到公共索引的半批状态。
    */
   applyChunkDelta(removeIds: Array<number>, upsertIds: Array<number>, upsertVectors: Float32Array): Promise<unknown>
+  /** Gen-USearch signed-int64-safe atomic chunk delta with canonical decimal string IDs. */
+  applyChunkDeltaKey64(removeIds: Array<string>, upsertIds: Array<string>, upsertVectors: Float32Array): Promise<unknown>
   /** 返回当前索引内容代际。 */
   get revision(): number
   /**
