@@ -41,6 +41,7 @@ function exactVectorBytes(vector) {
 
 class GenUSearchPhysicalCoverageWriter {
     #bootstrapped = false;
+    #activeMemtable = null;
 
     constructor(options = {}) {
         const db = options.db;
@@ -233,6 +234,25 @@ class GenUSearchPhysicalCoverageWriter {
         }
 
         const { parsed, row } = this._readStagedVector(options.vectorId);
+        if (memtable.embeddingFingerprint !== row.embedding_fingerprint) {
+            throw codedError(
+                'MEMTABLE_EMBEDDING_FINGERPRINT_MISMATCH',
+                'staged vector embedding fingerprint does not match the active Gen0 MemTable'
+            );
+        }
+        if (this.#activeMemtable && this.#activeMemtable !== memtable) {
+            if (this.#activeMemtable.state !== 'SEALED_QUERY_VISIBLE') {
+                throw codedError(
+                    'MEMTABLE_ACTIVE_GENERATION_CONFLICT',
+                    'another Gen0 MemTable generation is still ACTIVE'
+                );
+            }
+            this.#activeMemtable = null;
+        }
+        if (!this.#activeMemtable) {
+            this.#activeMemtable = memtable;
+        }
+
         const bytes = exactVectorBytes(options.vector);
         if (bytes.length !== row.vector_blob.length || !bytes.equals(row.vector_blob)) {
             throw codedError(
