@@ -69,7 +69,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work/rust-vexus-lite \
             rust:1.90-alpine3.22 \
-            sh -lc 'apk add --no-cache nodejs npm build-base cmake python3 pkgconf && npm install --ignore-scripts --no-save --package-lock=false --no-audit --no-fund @napi-rs/cli@2.16.0 && ./node_modules/.bin/napi build --platform --release'
+            sh -c 'export PATH=/usr/local/cargo/bin:$PATH; apk add --no-cache nodejs npm build-base cmake python3 pkgconf && npm install --ignore-scripts --no-save --package-lock=false --no-audit --no-fund @napi-rs/cli@2.16.0 && ./node_modules/.bin/napi build --platform --release'
           test -f "rust-vexus-lite/${{ matrix.artifact }}"
       - name: Upload musl native artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
