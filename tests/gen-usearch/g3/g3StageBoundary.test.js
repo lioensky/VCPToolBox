@@ -86,6 +86,7 @@ test('G3 workflow covers G1/G2 regressions, G3 contract, publisher and tests', (
         'contracts/gen-usearch/g2/**',
         'modules/knowledgeBase/genUSearchSegmentPublisher.js',
         'modules/knowledgeBase/genUSearchMemTable.js',
+        'modules/knowledgeBase/genUSearchReadPins.js',
         'modules/knowledgeBase/genUSearchPhysicalCoverageWriter.js',
         'modules/knowledgeBase/genUSearchMetadataStore.js',
         'rust-vexus-lite/src/lib.rs',

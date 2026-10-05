@@ -298,6 +298,7 @@ class GenUSearchPhysicalCoverageWriter {
                 `Gen0 MemTable source identity already exists: ${memtable.sourceId}`
             );
         }
+        ReadPins.bindMemtableDatabase(memtable, this.db);
         this.#sourceIds.add(memtable.sourceId);
         this.#mutationTokens.set(memtable, token);
         return memtable;

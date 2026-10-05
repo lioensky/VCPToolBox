@@ -241,18 +241,38 @@ class GenUSearchQueryReadViewCoordinator {
                 ...row,
                 coverageRows: this._listSegmentCoverage.all(row.segment_id)
             }));
-            return {
-                visibility,
-                manifestSeq,
-                runtime: {
-                    owner_id: runtime.owner_id,
-                    serving_state: runtime.serving_state,
-                    runtime_fence: runtimeFence.text
-                },
-                metadataRows,
-                coverageRows,
-                manifestRows
-            };
+            const pinnedSegmentIds = [];
+            try {
+                for (const row of manifestRows) {
+                    const segmentId = String(row.segment_id || '');
+                    if (!segmentId) {
+                        throw codedError(
+                            'RECOVERY_MANIFEST_INVALID',
+                            'captured manifest member is missing segment identity'
+                        );
+                    }
+                    incSegmentPin(segmentId);
+                    pinnedSegmentIds.push(segmentId);
+                }
+                return {
+                    visibility,
+                    manifestSeq,
+                    runtime: {
+                        owner_id: runtime.owner_id,
+                        serving_state: runtime.serving_state,
+                        runtime_fence: runtimeFence.text
+                    },
+                    metadataRows,
+                    coverageRows,
+                    manifestRows,
+                    pinnedSegmentIds
+                };
+            } catch (error) {
+                for (const segmentId of pinnedSegmentIds.reverse()) {
+                    decSegmentPin(segmentId);
+                }
+                throw error;
+            }
         });
     }
 
@@ -309,6 +329,20 @@ class GenUSearchQueryReadViewCoordinator {
                 dimension,
                 Math.max(16, vectorCount + 1)
             );
+            const postLoadPath = exactRootPath(
+                this.segmentRoot,
+                segmentId,
+                row.artifact_path
+            );
+            if (
+                postLoadPath !== artifactPath
+                || sha256File(postLoadPath) !== row.artifact_digest
+            ) {
+                throw codedError(
+                    'RECOVERY_MANIFEST_INVALID',
+                    'manifest artifact changed while the native segment was loading'
+                );
+            }
             const stats = index.stats();
             if (
                 Number(stats.dimensions) !== dimension
@@ -362,6 +396,7 @@ class GenUSearchQueryReadViewCoordinator {
                 if (!(memtable instanceof GenUSearchMemTable)) {
                     throw codedError('QUERY_READ_VIEW_INVALID', 'invalid MemTable candidate source');
                 }
+                ReadPins.assertMemtableDatabase(memtable, this.db);
                 incMemtablePin(memtable);
                 provisionalMemtables.push(memtable);
                 const snapshot = GenUSearchMemTable.snapshotForImmutableSegment(memtable);
@@ -380,17 +415,7 @@ class GenUSearchQueryReadViewCoordinator {
             }
 
             const snapshot = this._readSnapshot();
-            for (const row of snapshot.manifestRows) {
-                const segmentId = String(row.segment_id || '');
-                if (!segmentId) {
-                    throw codedError(
-                        'RECOVERY_MANIFEST_INVALID',
-                        'captured manifest member is missing segment identity'
-                    );
-                }
-                incSegmentPin(segmentId);
-                provisionalSegments.push(segmentId);
-            }
+            provisionalSegments.push(...snapshot.pinnedSegmentIds);
             this._assertServingRuntime(snapshot.runtime);
 
             if (safeMillis(this.now(), 'now') >= deadline) {

@@ -93,6 +93,7 @@ test('G2 workflow covers contract, production modules and G1 regression', () => 
     for (const required of [
         'contracts/gen-usearch/g2/**',
         'modules/knowledgeBase/genUSearchMemTable.js',
+        'modules/knowledgeBase/genUSearchReadPins.js',
         'modules/knowledgeBase/genUSearchPhysicalCoverageWriter.js',
         'modules/knowledgeBase/genUSearchMetadataStore.js',
         'modules/knowledgeBase/schemaManager.js',

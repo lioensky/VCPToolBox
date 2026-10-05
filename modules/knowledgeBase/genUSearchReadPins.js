@@ -1,12 +1,79 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+
 const MEMTABLE_PINS = new WeakMap();
+const MEMTABLE_DATABASE_AUTHORITY = new WeakMap();
+const MEMORY_DATABASE_AUTHORITY = new WeakMap();
 const SEGMENT_PINS = new Map();
+let nextMemoryDatabaseIdentity = 1;
 
 function codedError(code, message) {
     const error = new Error(message);
     error.code = code;
     return error;
+}
+
+function databaseAuthority(db) {
+    if (!db || typeof db !== 'object') {
+        throw new TypeError('database authority requires a database connection');
+    }
+    const name = String(db.name || '').trim();
+    if (!name || name === ':memory:' || name.startsWith('file::memory:')) {
+        let identity = MEMORY_DATABASE_AUTHORITY.get(db);
+        if (!identity) {
+            identity = 'memory-connection:' + nextMemoryDatabaseIdentity++;
+            MEMORY_DATABASE_AUTHORITY.set(db, identity);
+        }
+        return identity;
+    }
+
+    const absolute = path.resolve(name);
+    try {
+        const stat = fs.statSync(absolute, { bigint: true });
+        if (stat.isFile() && stat.ino !== 0n) {
+            return 'inode:' + stat.dev.toString() + ':' + stat.ino.toString();
+        }
+    } catch (_) {
+        // Canonical-path fallback below.
+    }
+    try {
+        const real = fs.realpathSync.native
+            ? fs.realpathSync.native(absolute)
+            : fs.realpathSync(absolute);
+        return 'path:' + real;
+    } catch (_) {
+        return 'path:' + absolute;
+    }
+}
+
+function bindMemtableDatabase(memtable, db) {
+    if (!memtable || (typeof memtable !== 'object' && typeof memtable !== 'function')) {
+        throw new TypeError('MemTable database authority requires a MemTable object');
+    }
+    const identity = databaseAuthority(db);
+    const existing = MEMTABLE_DATABASE_AUTHORITY.get(memtable);
+    if (existing && existing !== identity) {
+        throw codedError(
+            'MEMTABLE_DATABASE_AUTHORITY_CONFLICT',
+            'MemTable is already bound to a different SQLite authority'
+        );
+    }
+    MEMTABLE_DATABASE_AUTHORITY.set(memtable, identity);
+    return identity;
+}
+
+function assertMemtableDatabase(memtable, db) {
+    const expected = databaseAuthority(db);
+    const actual = MEMTABLE_DATABASE_AUTHORITY.get(memtable);
+    if (!actual || actual !== expected) {
+        throw codedError(
+            'QUERY_READ_VIEW_INVALID',
+            'MemTable does not belong to the QueryReadView SQLite authority'
+        );
+    }
+    return true;
 }
 
 function pinMemtable(memtable) {
@@ -60,6 +127,8 @@ function segmentPinCount(segmentId) {
 }
 
 module.exports = Object.freeze({
+    bindMemtableDatabase,
+    assertMemtableDatabase,
     pinMemtable,
     unpinMemtable,
     memtablePinCount,

@@ -29,7 +29,7 @@ G4 may implement only:
 5. MEMTABLE/SEGMENT overlap is legal; retrieval deduplicates by canonical signed-int64 vector ID before ranking.
 6. Physical presence never creates logical visibility. Stale/retired ANN hits are discarded.
 7. Acquisition is all-or-nothing. Any validation failure cleans every provisional pin and returns no usable view.
-8. Provisional pins participate in safety from the moment acquisition begins.
+8. Provisional pins participate in safety from the moment acquisition begins. MemTables are pinned before their private physical snapshot is consumed; manifest segment pins are established inside the coherent SQLite read transaction before that transaction releases its snapshot.
 9. Deadline expiry requests cancellation but never releases pins.
 10. Pins release only after explicit worker quiescence; early release fails READER_PIN_VIOLATION.
 11. Runtime fence is checked at acquisition and again immediately before response.
@@ -42,6 +42,8 @@ G4 may implement only:
 18. Segment artifact identity is exact, not directory-local. A captured segment must resolve to the publisher-owned regular non-symlink path <segmentRoot>/<segment_id>.usearch; another file inside the same root cannot impersonate the segment even with identical bytes or digest.
 19. Candidate source visibility is frozen at acquisition. A MEMTABLE candidate may contribute only when that exact MemTable source had captured QUERY_VISIBLE coverage for the vector. Hidden physical bytes cannot re-enter retrieval.
 20. Acquisition deadlines apply during acquisition, not only after it. Deadline expiry at any validation stage fails QUERY_READ_VIEW_EXPIRED and releases all provisional pins without creating a usable view.
+21. MemTable identity is database-bound. A caller cannot satisfy current-database MEMTABLE coverage by presenting a MemTable from another SQLite authority that happens to share the same runtime/generation source_id. G4 verifies the private writer-bound database identity before pinning.
+22. Segment artifact verification is stable across native load. Exact publisher-owned path and SHA-256 are rechecked after Vexus load so a path/content substitution between preflight and load fails closed.
 
 ## Explicitly deferred beyond G4
 
@@ -77,6 +79,8 @@ G4 may pass only when:
 - artifact digest/dimension/count/membership corruption blocks acquisition;
 - artifact paths must match the exact publisher-owned segment identity and reject in-root aliases/symlinks;
 - hidden MEMTABLE coverage cannot contribute candidates even when bytes remain physically present;
+- a MemTable from another SQLite database cannot impersonate an identical runtime/generation source_id;
+- artifact identity/digest are stable across native load, not only before it;
 - embedding/query-dimension mismatch fails closed;
 - stage-boundary tests prove GC/compaction/reclaim/cutover remain unwired;
 - independent adversarial review has unresolved P0 = 0 and P1 = 0.
