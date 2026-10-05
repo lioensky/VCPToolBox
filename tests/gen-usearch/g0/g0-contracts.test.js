@@ -33,6 +33,8 @@ function withAuthorityPin(fn) {
 }
 
 const lock = load(LOCK_PATH);
+const architecture = load('contracts/gen-usearch/g0/G0-ARCHITECTURE-R3.1.machine.json');
+const traceability = load('contracts/gen-usearch/g0/G0-TRACEABILITY-R3.1.json');
 const registry = load('contracts/gen-usearch/g0/g0-contracts-r3.1.json');
 const failureRegistry = load('contracts/gen-usearch/g0/failure-codes.json');
 const finalFixtures = load('tests/gen-usearch/g0/fixtures/final-race-vectors.json');
@@ -40,6 +42,8 @@ const invariantFixtures = load('tests/gen-usearch/g0/fixtures/invariant-vectors.
 
 const schemaSpecs = [
   ['authority_lock', lock, load('contracts/gen-usearch/g0/g0-authority-lock.schema.json')],
+  ['architecture', architecture, load('contracts/gen-usearch/g0/G0-ARCHITECTURE-R3.1.schema.json')],
+  ['traceability', traceability, load('contracts/gen-usearch/g0/G0-TRACEABILITY-R3.1.schema.json')],
   ['registry', registry, load('contracts/gen-usearch/g0/g0-contracts.schema.json')],
   ['failure_codes', failureRegistry, load('contracts/gen-usearch/g0/failure-codes.schema.json')],
   ['final_fixtures', finalFixtures, load('tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json')],
@@ -111,8 +115,28 @@ test('dirty locked artifacts cannot claim the unchanged HEAD', () => {
 test('authority lock, not registry, defines required surface', () => {
   assert.equal(registry.acceptance.authority_lock_path, LOCK_PATH);
   assert.equal(registry.acceptance.required_invariant_ids, undefined);
-  const result = verifier.verifyCoverage(lock, registry, failureRegistry, finalFixtures, invariantFixtures);
+  const result = verifier.verifyCoverage(lock, architecture, traceability, registry, failureRegistry, finalFixtures, invariantFixtures);
   assert.equal(result.ok, true);
+});
+
+test('architecture traceability is exact and amendments are fully covered', () => {
+  assert.deepEqual(
+    architecture.requirements.map(x => x.id),
+    lock.required_architecture_requirement_ids
+  );
+  assert.deepEqual(
+    traceability.rows.map(x => x.architecture_requirement_id),
+    lock.required_architecture_requirement_ids
+  );
+  assert.equal(architecture.requirements.length, 31);
+  assert.equal(registry.invariants.length, 31);
+  assert.equal(invariantFixtures.vectors.length, 62);
+  for (const amendment of architecture.amendments) {
+    const row = traceability.amendment_coverage.find(x => x.amendment_id === amendment.id);
+    assert.ok(row, amendment.id);
+    assert.deepEqual(new Set(row.requirement_ids), new Set(amendment.implements_requirement_ids));
+    assert.ok(row.requirement_ids.length > 0);
+  }
 });
 
 test('synchronized registry/schema/fixture weakening fails while lock is unchanged', () => {
@@ -122,7 +146,7 @@ test('synchronized registry/schema/fixture weakening fails while lock is unchang
   weakRegistry.invariants = weakRegistry.invariants.filter(x => x.id !== drop);
   weakInvariantFixtures.vectors = weakInvariantFixtures.vectors.filter(x => x.invariant_id !== drop);
   assert.equal(
-    verifier.verifyCoverage(lock, weakRegistry, failureRegistry, finalFixtures, weakInvariantFixtures).ok,
+    verifier.verifyCoverage(lock, architecture, traceability, weakRegistry, failureRegistry, finalFixtures, weakInvariantFixtures).ok,
     false
   );
 });
