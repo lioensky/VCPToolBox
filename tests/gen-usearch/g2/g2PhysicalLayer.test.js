@@ -42,7 +42,8 @@ function createFixture() {
         dimension: 4,
         capacity: 32,
         runtimeId: 'runtime-a',
-        generation: '1'
+        generation: '1',
+        embeddingFingerprint: 'embed-v1'
     });
 
     return {
@@ -98,7 +99,8 @@ test('Gen0 MemTable uses canonical key64 identity and seals fail-closed', () => 
         dimension: 4,
         capacity: 16,
         runtimeId: 'runtime-1',
-        generation: '7'
+        generation: '7',
+        embeddingFingerprint: 'embed-v1'
     });
     assert.equal(memtable.sourceId, 'gen0:runtime-1:7');
     assert.equal(memtable.state, 'ACTIVE');
@@ -309,7 +311,8 @@ test('coverage cannot be forged for an unknown, non-staged, absent, or mismatche
             dimension: 4,
             capacity: 16,
             runtimeId: 'runtime-a',
-            generation: '2'
+            generation: '2',
+            embeddingFingerprint: 'embed-v1'
         });
         assert.throws(
             () => fixture.writer.admitVector({
@@ -320,6 +323,87 @@ test('coverage cannot be forged for an unknown, non-staged, absent, or mismatche
             error => error?.code === 'INVALID_MVCC_TRANSITION'
         );
         assert.equal(otherMemtable.hasVector(staged.vector_id), false);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('G2 isolates embedding spaces and permits generation handoff only after seal', () => {
+    const fixture = createFixture();
+    try {
+        fixture.writer.bootstrapRuntime();
+
+        const first = createStagedVersion(fixture, {
+            docId: 'doc-gen',
+            chunkId: 'chunk-gen-a',
+            contentHash: 'b'.repeat(64),
+            vector: new Float32Array([1, 0, 0, 0])
+        });
+        const second = createStagedVersion(fixture, {
+            docId: 'doc-gen',
+            chunkId: 'chunk-gen-b',
+            contentHash: 'c'.repeat(64),
+            vector: new Float32Array([0, 1, 0, 0])
+        });
+
+        fixture.writer.admitVector({
+            memtable: fixture.memtable,
+            vectorId: first.staged.vector_id,
+            vector: first.vector
+        });
+
+        const next = new GenUSearchMemTable({
+            VexusIndex,
+            dimension: 4,
+            capacity: 16,
+            runtimeId: 'runtime-a',
+            generation: '2',
+            embeddingFingerprint: 'embed-v1'
+        });
+        assert.throws(
+            () => fixture.writer.admitVector({
+                memtable: next,
+                vectorId: second.staged.vector_id,
+                vector: second.vector
+            }),
+            error => error?.code === 'MEMTABLE_ACTIVE_GENERATION_CONFLICT'
+        );
+        assert.equal(next.hasVector(second.staged.vector_id), false);
+
+        fixture.memtable.seal();
+        const admitted = fixture.writer.admitVector({
+            memtable: next,
+            vectorId: second.staged.vector_id,
+            vector: second.vector
+        });
+        assert.equal(admitted.sourceId, next.sourceId);
+
+        const wrongSpace = new GenUSearchMemTable({
+            VexusIndex,
+            dimension: 4,
+            capacity: 16,
+            runtimeId: 'runtime-a',
+            generation: '3',
+            embeddingFingerprint: 'embed-v2'
+        });
+        next.seal();
+
+        const third = createStagedVersion(fixture, {
+            docId: 'doc-gen',
+            chunkId: 'chunk-gen-c',
+            contentHash: 'd'.repeat(64),
+            vector: new Float32Array([0, 0, 1, 0]),
+            embeddingFingerprint: 'embed-v1'
+        });
+        assert.throws(
+            () => fixture.writer.admitVector({
+                memtable: wrongSpace,
+                vectorId: third.staged.vector_id,
+                vector: third.vector
+            }),
+            error => error?.code === 'MEMTABLE_EMBEDDING_FINGERPRINT_MISMATCH'
+        );
+        assert.equal(wrongSpace.hasVector(third.staged.vector_id), false);
     } finally {
         fixture.cleanup();
     }
@@ -345,7 +429,8 @@ test('physical add failure leaves no QUERY_VISIBLE coverage', () => {
             dimension: 4,
             capacity: 16,
             runtimeId: 'runtime-a',
-            generation: '99'
+            generation: '99',
+            embeddingFingerprint: 'embed-v1'
         });
 
         assert.throws(
