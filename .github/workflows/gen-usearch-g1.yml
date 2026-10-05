@@ -60,3 +60,6 @@ jobs:
 
       - name: Regress existing Tag baseline metadata compatibility
         run: node --test tests/gen-usearch/g1/tagBaselineSchemaCompatibility.test.js
+
+      - name: Regress upstream generational Tag baseline
+        run: NODE_PATH="$GITHUB_WORKSPACE/tests/gen-usearch/g1/node_modules" node --test tests/tagIndexGenerationalBaseline.test.js
