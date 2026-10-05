@@ -1,6 +1,6 @@
 {
   "fixture_version": 2,
-  "contract_version": "3.1.0-g0-f2r3",
+  "contract_version": "3.1.0-g0-final-r1",
   "vectors": [
     {
       "id": "FINAL01-BEFORE-COMMIT",
