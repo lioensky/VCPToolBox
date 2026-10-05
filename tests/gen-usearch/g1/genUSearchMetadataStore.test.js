@@ -193,14 +193,13 @@ test('document identity is stable across URI moves and active URI ownership is u
             error => error?.code === 'DOCUMENT_ACTIVE_URI_CONFLICT'
         );
 
-        fixture.store.nextVisibilitySeq();
         const moved = fixture.store.moveDocument({
             docId: 'doc-alpha',
-            uri: 'archive/a.txt',
-            visibilitySeq: '1'
+            uri: 'archive/a.txt'
         });
         assert.equal(moved.doc_id, 'doc-alpha');
         assert.equal(moved.current_uri, 'archive/a.txt');
+        assert.equal(fixture.store.readSequence('visibility_seq'), '1');
 
         const history = fixture.db.prepare(`
             SELECT uri, valid_from_visibility_seq, valid_to_visibility_seq
@@ -217,6 +216,59 @@ test('document identity is stable across URI moves and active URI ownership is u
             },
             {
                 uri: 'archive/a.txt',
+                valid_from_visibility_seq: 1n,
+                valid_to_visibility_seq: null
+            }
+        ]);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('document URI moves own visibility sequencing and reject caller injection', () => {
+    const fixture = createFixture();
+    try {
+        fixture.store.createDocument({
+            docId: 'doc-seq',
+            uri: 'diary/seq-a.txt',
+            visibilitySeq: '0'
+        });
+
+        assert.throws(
+            () => fixture.store.moveDocument({
+                docId: 'doc-seq',
+                uri: 'diary/seq-b.txt',
+                visibilitySeq: '0'
+            }),
+            error => error?.code === 'VISIBILITY_SEQUENCE_INVALID'
+        );
+        assert.equal(fixture.store.readSequence('visibility_seq'), '0');
+        assert.equal(
+            fixture.store.getDocument('doc-seq').current_uri,
+            'diary/seq-a.txt'
+        );
+
+        fixture.store.moveDocument({
+            docId: 'doc-seq',
+            uri: 'diary/seq-b.txt'
+        });
+        assert.equal(fixture.store.readSequence('visibility_seq'), '1');
+
+        const history = fixture.db.prepare(`
+            SELECT uri, valid_from_visibility_seq, valid_to_visibility_seq
+            FROM gen_usearch_document_uri_history
+            WHERE doc_id = ?
+            ORDER BY valid_from_visibility_seq, uri
+        `).safeIntegers(true).all('doc-seq');
+
+        assert.deepEqual(history, [
+            {
+                uri: 'diary/seq-a.txt',
+                valid_from_visibility_seq: 0n,
+                valid_to_visibility_seq: 1n
+            },
+            {
+                uri: 'diary/seq-b.txt',
                 valid_from_visibility_seq: 1n,
                 valid_to_visibility_seq: null
             }
