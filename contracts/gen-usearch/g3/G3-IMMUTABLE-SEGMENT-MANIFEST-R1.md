@@ -1,6 +1,6 @@
 # Gen-USearch G3 Immutable Segment + Manifest Contract R1
 
-Status: **BOUNDARY_FROZEN / IMPLEMENTATION_ACTIVE**
+Status: **PASS**
 
 G3 authorizes durable immutable segment construction and authoritative manifest publication on top of G2 Gen0 physical authority. It does not authorize query serving, GC, compaction, or cutover.
 
@@ -129,3 +129,44 @@ G3 may pass only when:
 - independent adversarial review has unresolved P0 = 0 and P1 = 0.
 
 G3 PASS does not authorize G4, upstream merge, Ready-for-Review, query serving, or engine activation.
+
+## Independent review closure
+
+Exact-head reviewed implementation: `ea5431e9c8113f3ede5920d67c5d994968161204`.
+
+Closed findings:
+
+- G3 originally trusted public MemTable state/vector-list views; flush authority now comes from private Gen0 state/vector IDs plus authentic native membership, and the authority surface is frozen against replacement;
+- segment identity originally lacked database namespace isolation; identity now binds the underlying SQLite database file identity so separate knowledge bases sharing one artifact root cannot collide;
+- SEGMENT coverage and recovery publication originally needed stronger set semantics; publication now proves exact SEGMENT coverage and exact newly SEGMENT_COVERED recovery sets inside the same transaction;
+- manifest publication originally needed stronger historical evidence protection; epoch N remains immutable while N+1 is validated as the exact prior set plus the new segment;
+- current manifest members are revalidated before future topology mutation, including publisher-owned artifact path, SHA-256 digest, PUBLISHED state, native reload, vector count, exact SEGMENT coverage, and exact key membership;
+- idempotent retry no longer trusts PUBLISHED status alone; it revalidates current manifest authority and segment coverage;
+- artifact-path redirection outside the configured segment root and symlink substitution are rejected;
+- a structural dimension gap was found: Vexus load previously accepted a caller-declared dimension even when the artifact itself had a different native dimension. Segment metadata now persists `dimension`, legacy schemas receive an additive migration, and `VexusIndex.load()` compares expected dimension against the loaded USearch artifact's native `index.dimensions()`;
+- tampered persisted segment dimension now blocks native manifest verification and cannot advance `manifest_epoch`;
+- G2/G3 coverage layering is explicit: G2 retains sole MEMTABLE coverage authority while G3 alone adds SEGMENT coverage authority;
+- no QueryReadView, production retrieval, MemTable reclaim, GC, compaction, runtime serving ownership, cutover, or engine activation was admitted into G3.
+
+Final exact-head implementation evidence:
+
+```text
+G1 exact-head regression = PASS
+G2 exact-head regression = PASS
+G3 exact-head gate       = PASS
+
+G3 adversarial tests     = 19/19
+G3 stage boundary        = 5/5
+
+unresolved P0 = 0
+unresolved P1 = 0
+```
+
+Final G3 decision:
+
+```text
+G3 = PASS
+G4 = NOT AUTHORIZED
+```
+
+G3 PASS does not authorize G4 implementation, upstream merge, Ready-for-Review, query serving, GC, compaction, or engine activation.
