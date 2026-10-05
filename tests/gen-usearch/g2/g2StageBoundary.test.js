@@ -15,7 +15,7 @@ const g2ProductionFiles = [
 
 test('G2 boundary is frozen and limits authority to Gen0 MEMTABLE coverage', () => {
     const contract = read('contracts/gen-usearch/g2/G2-PHYSICAL-LAYER-R1.md');
-    assert.match(contract, /Status: \*\*BOUNDARY_FROZEN \/ IMPLEMENTATION_ACTIVE\*\*/);
+    assert.match(contract, /Status: \*\*PASS\*\*/);
     for (const phrase of [
         'Gen0 MemTable',
         'sole production writer',
