@@ -293,6 +293,159 @@ const CORE_SCHEMA_SQL = `
         ON migration_deleted_files(expires_at);
 `;
 
+
+const GEN_USEARCH_SCHEMA_SQL = `
+    -- Gen-USearch G1 durable metadata core.
+    -- Existing files/chunks remain the canonical content source during G1. These tables
+    -- add stable logical identity and lifecycle authority without changing read traffic.
+    CREATE TABLE IF NOT EXISTS gen_usearch_documents (
+        doc_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL CHECK(state IN ('ACTIVE', 'DELETED')),
+        index_state TEXT NOT NULL CHECK(index_state IN ('CURRENT', 'INDEX_LAGGING', 'INDEX_ERROR')),
+        current_uri TEXT,
+        observed_source_digest TEXT,
+        observed_source_revision TEXT,
+        reconcile_target_revision TEXT,
+        reconciliation_state TEXT NOT NULL CHECK(reconciliation_state IN ('PENDING', 'ADMITTED', 'COMPLETE', 'ERROR')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_gen_usearch_active_document_uri
+        ON gen_usearch_documents(current_uri)
+        WHERE state = 'ACTIVE' AND current_uri IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_document_uri_history (
+        doc_id TEXT NOT NULL,
+        uri TEXT NOT NULL,
+        valid_from_visibility_seq INTEGER NOT NULL CHECK(valid_from_visibility_seq >= 0),
+        valid_to_visibility_seq INTEGER CHECK(
+            valid_to_visibility_seq IS NULL
+            OR valid_to_visibility_seq >= valid_from_visibility_seq
+        ),
+        PRIMARY KEY (doc_id, uri, valid_from_visibility_seq),
+        FOREIGN KEY(doc_id) REFERENCES gen_usearch_documents(doc_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_chunk_heads (
+        chunk_id TEXT PRIMARY KEY,
+        doc_id TEXT NOT NULL,
+        current_version_id INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(doc_id) REFERENCES gen_usearch_documents(doc_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_chunk_versions (
+        chunk_version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chunk_id TEXT NOT NULL,
+        source_revision TEXT NOT NULL,
+        slot_index INTEGER,
+        content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+        state TEXT NOT NULL CHECK(state IN (
+            'PREPARED', 'EMBEDDING', 'VECTOR_STAGED', 'ACTIVE',
+            'RETIRED', 'ABORTED', 'GC_ELIGIBLE'
+        )),
+        vector_id INTEGER UNIQUE,
+        visibility_seq INTEGER CHECK(visibility_seq IS NULL OR visibility_seq >= 0),
+        retired_visibility_seq INTEGER CHECK(
+            retired_visibility_seq IS NULL OR retired_visibility_seq >= 0
+        ),
+        embedding_fingerprint TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(chunk_id) REFERENCES gen_usearch_chunk_heads(chunk_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_gen_usearch_chunk_versions_chunk
+        ON gen_usearch_chunk_versions(chunk_id, chunk_version_id);
+    CREATE INDEX IF NOT EXISTS idx_gen_usearch_chunk_versions_state
+        ON gen_usearch_chunk_versions(state);
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_segments (
+        segment_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL CHECK(state IN (
+            'BUILDING', 'FINALIZED_DURABLE', 'PUBLISHED',
+            'RETIRED', 'RECLAIMABLE'
+        )),
+        artifact_path TEXT,
+        artifact_digest TEXT,
+        embedding_fingerprint TEXT NOT NULL,
+        vector_count INTEGER NOT NULL DEFAULT 0 CHECK(vector_count >= 0),
+        created_at INTEGER NOT NULL,
+        finalized_at INTEGER,
+        published_at INTEGER,
+        retired_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_manifest_state (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        manifest_epoch INTEGER NOT NULL CHECK(manifest_epoch >= 0),
+        updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS gen_usearch_manifest_segments (
+        manifest_epoch INTEGER NOT NULL CHECK(manifest_epoch >= 0),
+        segment_id TEXT NOT NULL,
+        PRIMARY KEY (manifest_epoch, segment_id),
+        FOREIGN KEY(segment_id) REFERENCES gen_usearch_segments(segment_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_vector_recovery (
+        vector_id INTEGER PRIMARY KEY,
+        chunk_version_id INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK(state IN (
+            'RECOVERY_REQUIRED', 'SEGMENT_COVERED',
+            'RECOVERY_RECLAIMABLE', 'RECOVERY_RELEASED'
+        )),
+        embedding_fingerprint TEXT NOT NULL,
+        vector_blob BLOB,
+        covered_segment_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(chunk_version_id) REFERENCES gen_usearch_chunk_versions(chunk_version_id) ON DELETE CASCADE,
+        FOREIGN KEY(covered_segment_id) REFERENCES gen_usearch_segments(segment_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_sequences (
+        name TEXT PRIMARY KEY CHECK(name IN ('visibility_seq', 'manifest_epoch')),
+        value INTEGER NOT NULL CHECK(value >= 0),
+        updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_vector_allocator (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        high_water INTEGER NOT NULL CHECK(high_water >= 0),
+        updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_runtime_ownership (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        owner_id TEXT,
+        serving_state TEXT NOT NULL CHECK(serving_state IN ('IDLE', 'SERVING', 'DRAINING')),
+        runtime_fence INTEGER NOT NULL CHECK(runtime_fence >= 0),
+        acquired_at INTEGER,
+        updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_engine_state (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        mode TEXT NOT NULL CHECK(mode IN ('LEGACY', 'GENERATIONAL_SHADOW', 'GENERATIONAL_ACTIVE')),
+        updated_at INTEGER NOT NULL
+    );
+
+    INSERT OR IGNORE INTO gen_usearch_sequences(name, value, updated_at)
+    VALUES
+        ('visibility_seq', 0, 0),
+        ('manifest_epoch', 0, 0);
+    INSERT OR IGNORE INTO gen_usearch_vector_allocator(singleton, high_water, updated_at)
+    VALUES (1, 0, 0);
+    INSERT OR IGNORE INTO gen_usearch_manifest_state(singleton, manifest_epoch, updated_at)
+    VALUES (1, 0, 0);
+    INSERT OR IGNORE INTO gen_usearch_runtime_ownership(
+        singleton, owner_id, serving_state, runtime_fence, acquired_at, updated_at
+    ) VALUES (1, NULL, 'IDLE', 0, NULL, 0);
+    INSERT OR IGNORE INTO gen_usearch_engine_state(singleton, mode, updated_at)
+    VALUES (1, 'LEGACY', 0);
+`;
+
 const POST_MIGRATION_INDEX_SQL = `
     -- Pairwise 扫描前事实代际。该值与 tags/file_tags 的权威变更处于同一
     -- SQLite 事务，使 Rust 可以在读取全库高维 BLOB 前安全短路。
@@ -454,6 +607,7 @@ function initializeKnowledgeBaseSchema(db, options = {}) {
         addColumnIfMissing(db, table, column, definition, logPrefix);
     }
     db.exec(POST_MIGRATION_INDEX_SQL);
+    db.exec(GEN_USEARCH_SCHEMA_SQL);
 }
 
 module.exports = {
