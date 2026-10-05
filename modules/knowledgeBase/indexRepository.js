@@ -29,6 +29,10 @@ class IndexRepository {
         this.tagBaselineDeltaRatio = Number.isFinite(Number(this.config.tagIndexBaselineDeltaRatio))
             ? Math.max(0.001, Math.min(1, Number(this.config.tagIndexBaselineDeltaRatio)))
             : 0.05;
+        this.chunkBaselineDeltaRatio = Number.isFinite(Number(this.config.chunkIndexBaselineDeltaRatio))
+            ? Math.max(0.001, Math.min(1, Number(this.config.chunkIndexBaselineDeltaRatio)))
+            : 0.05;
+        this.chunkIndexPersistenceMode = this.config.chunkIndexPersistenceMode || 'generational';
     }
 
     _tagBaselinePath(slot) {
@@ -60,6 +64,303 @@ class IndexRepository {
         } catch (_) {
             return null;
         }
+    }
+    _diarySafeName(diaryName) {
+        return crypto.createHash('md5')
+            .update(String(diaryName || '').trim())
+            .digest('hex');
+    }
+
+    _diaryBaselinePath(diaryName, slot) {
+        const safeName = this._diarySafeName(diaryName);
+        return path.join(
+            this.config.storePath,
+            `index_diary_${safeName}_${slot}.usearch`
+        );
+    }
+
+    _readActiveDiaryBaseline(diaryName) {
+        const db = this.getDb?.();
+        if (!db) return null;
+        const normalized = String(diaryName || '').trim();
+        if (!normalized) return null;
+        const row = db.prepare(`
+            SELECT generation, slot, dimension, model_sig, chunk_count, status
+            FROM chunk_index_baselines
+            WHERE diary_name = ? AND status = 'ready'
+            ORDER BY generation DESC
+            LIMIT 1
+        `).get(normalized);
+        if (!row || !Number.isInteger(Number(row.generation)) || !['a', 'b'].includes(row.slot)) {
+            return null;
+        }
+        return {
+            diaryName: normalized,
+            generation: Number(row.generation),
+            slot: row.slot,
+            dimension: Number(row.dimension),
+            modelSig: row.model_sig,
+            chunkCount: Number(row.chunk_count)
+        };
+    }
+
+    _countDiaryBaselineDelta(diaryName, generation) {
+        const db = this.getDb?.();
+        if (!db || !Number.isInteger(Number(generation))) return null;
+        const normalized = String(diaryName || '').trim();
+        if (!normalized) return null;
+
+        // 集合对称差分统计：
+        // 1. deletes：基线已记录但权威库里已被删除（或移到其他日记本）的 chunk_id 数量
+        // 2. upserts：权威库里有效存在但基线未记录的新 chunk_id 数量
+        const row = db.prepare(`
+            SELECT
+                (
+                    SELECT COUNT(*)
+                    FROM chunk_index_baseline_entries e
+                    LEFT JOIN chunks c ON c.id = e.chunk_id
+                    LEFT JOIN files f ON f.id = c.file_id AND f.diary_name = ?
+                    WHERE e.diary_name = ? AND e.generation = ?
+                      AND (c.id IS NULL OR f.id IS NULL OR c.vector IS NULL)
+                ) AS deletes,
+                (
+                    SELECT COUNT(*)
+                    FROM chunks c
+                    JOIN files f ON f.id = c.file_id
+                    LEFT JOIN chunk_index_baseline_entries e
+                      ON e.diary_name = f.diary_name AND e.generation = ? AND e.chunk_id = c.id
+                    WHERE f.diary_name = ? AND c.vector IS NOT NULL AND e.chunk_id IS NULL
+                ) AS upserts,
+                (
+                    SELECT COUNT(*)
+                    FROM chunks c
+                    JOIN files f ON f.id = c.file_id
+                    WHERE f.diary_name = ? AND c.vector IS NOT NULL
+                ) AS current_count,
+                (
+                    SELECT COUNT(*)
+                    FROM chunk_index_baseline_entries
+                    WHERE diary_name = ? AND generation = ?
+                ) AS baseline_count
+        `).get(
+            normalized, normalized, generation,
+            generation, normalized,
+            normalized,
+            normalized, generation
+        );
+
+        const upserts = Number(row?.upserts) || 0;
+        const deletes = Number(row?.deletes) || 0;
+        const currentCount = Number(row?.current_count) || 0;
+        const baselineCount = Number(row?.baseline_count) || 0;
+        const delta = upserts + deletes;
+        const ratio = delta / Math.max(1, currentCount, baselineCount);
+        return { upserts, deletes, delta, ratio, currentCount, baselineCount };
+    }
+
+    /**
+     * 加载落后的单 Agent usearch 双槽基线，并由 SQLite 在内存原子回放差分。
+     */
+    async loadDiaryBaseline(diaryName, capacity = 50000) {
+        const startedAt = Date.now();
+        const db = this.getDb?.();
+        const normalized = String(diaryName || '').trim();
+        const active = this._readActiveDiaryBaseline(normalized);
+        if (!db || !active) return null;
+
+        if (
+            Number(active.dimension) !== Number(this.config.dimension)
+            || active.modelSig !== this.config.modelSig
+        ) {
+            console.log(
+                `[${this.logPrefix}] ⚠️ Diary baseline model signature mismatch for "${normalized}": ` +
+                `stored=(${active.dimension}, ${active.modelSig}) vs config=(${this.config.dimension}, ${this.config.modelSig}).`
+            );
+            return null;
+        }
+
+        const indexPath = this._diaryBaselinePath(normalized, active.slot);
+        if (!fs.existsSync(indexPath)) return null;
+
+        let index;
+        try {
+            const loadStartedAt = Date.now();
+            index = this.VexusIndex.load(
+                indexPath,
+                null,
+                this.config.dimension,
+                Math.max(capacity, Number(active.chunkCount) || 0)
+            );
+            const loadMs = Date.now() - loadStartedAt;
+
+            const delta = this._countDiaryBaselineDelta(normalized, active.generation);
+            if (!delta) {
+                return { index, active, delta: null, loadMs, replayMs: 0, totalMs: loadMs };
+            }
+
+            const replayStartedAt = Date.now();
+
+            // 1. 查找需剔除的旧 chunk_id
+            const deletedRows = db.prepare(`
+                SELECT e.chunk_id
+                FROM chunk_index_baseline_entries e
+                LEFT JOIN chunks c ON c.id = e.chunk_id
+                LEFT JOIN files f ON f.id = c.file_id AND f.diary_name = ?
+                WHERE e.diary_name = ? AND e.generation = ?
+                  AND (c.id IS NULL OR f.id IS NULL OR c.vector IS NULL)
+                ORDER BY e.chunk_id
+            `).all(normalized, normalized, active.generation);
+            const removeIds = deletedRows.map(r => Number(r.chunk_id)).filter(Number.isSafeInteger);
+
+            // 2. 查找需增量灌入的新 chunk_id 与向量
+            const addedRows = db.prepare(`
+                SELECT c.id, c.vector
+                FROM chunks c
+                JOIN files f ON f.id = c.file_id
+                LEFT JOIN chunk_index_baseline_entries e
+                  ON e.diary_name = f.diary_name AND e.generation = ? AND e.chunk_id = c.id
+                WHERE f.diary_name = ? AND c.vector IS NOT NULL AND e.chunk_id IS NULL
+                ORDER BY c.id
+            `).all(active.generation, normalized);
+
+            const upsertIds = [];
+            const flat = new Float32Array(addedRows.length * this.config.dimension);
+            let valid = 0;
+            for (const row of addedRows) {
+                const bytes = row.vector;
+                if (!bytes || bytes.length !== this.config.dimension * 4) continue;
+                let vector;
+                if (bytes.byteOffset % 4 === 0) {
+                    vector = new Float32Array(
+                        bytes.buffer,
+                        bytes.byteOffset,
+                        this.config.dimension
+                    );
+                } else {
+                    const aligned = Buffer.from(bytes);
+                    vector = new Float32Array(
+                        aligned.buffer,
+                        aligned.byteOffset,
+                        this.config.dimension
+                    );
+                }
+                upsertIds.push(Number(row.id));
+                flat.set(vector, valid * this.config.dimension);
+                valid++;
+            }
+
+            if (removeIds.length > 0 || valid > 0) {
+                if (typeof index.applyChunkDelta === 'function') {
+                    const finalFlat = valid === upsertIds.length ? flat : flat.slice(0, valid * this.config.dimension);
+                    await index.applyChunkDelta(removeIds, upsertIds, finalFlat);
+                } else {
+                    for (const id of removeIds) {
+                        try { index.remove(id); } catch (_) {}
+                    }
+                    if (valid > 0) {
+                        index.addBatch(upsertIds, valid === upsertIds.length ? flat : flat.slice(0, valid * this.config.dimension));
+                    }
+                }
+            }
+
+            const replayMs = Date.now() - replayStartedAt;
+            const totalMs = Date.now() - startedAt;
+            console.log(
+                `[${this.logPrefix}] ⚡ Diary baseline restored: "${normalized}", generation=${active.generation}, ` +
+                `slot=${active.slot}, baseline=${delta.baselineCount}, current=${delta.currentCount}, ` +
+                `upserts=${delta.upserts}, deletes=${delta.deletes}, delta=${(delta.ratio * 100).toFixed(2)}%, ` +
+                `load=${loadMs}ms, replay=${replayMs}ms, total=${totalMs}ms.`
+            );
+            return { index, active, delta, loadMs, replayMs, totalMs };
+        } catch (error) {
+            console.warn(
+                `[${this.logPrefix}] ⚠️ Diary baseline load/replay failed for "${normalized}"; ` +
+                `falling back to SQLite rebuild: ${error.message}`
+            );
+            return null;
+        }
+    }
+
+    /**
+     * 将当前内存索引写入非活动槽并原子发布为新代基线。
+     */
+    publishDiaryBaseline(diaryName, options = {}) {
+        const normalized = String(diaryName || '').trim();
+        if (!normalized) return false;
+        const index = this.diaryIndices.get(normalized);
+        if (!index?.save) return false;
+        const db = this.getDb?.();
+        if (!db) return false;
+
+        const active = this._readActiveDiaryBaseline(normalized);
+        const delta = active
+            ? this._countDiaryBaselineDelta(normalized, active.generation)
+            : null;
+
+        if (
+            options.force !== true
+            && delta
+            && delta.ratio < this.chunkBaselineDeltaRatio
+        ) {
+            console.log(
+                `[${this.logPrefix}] 🛡️ Diary baseline checkpoint skipped for "${normalized}": ` +
+                `delta=${delta.delta}/${Math.max(delta.currentCount, delta.baselineCount)} ` +
+                `(${(delta.ratio * 100).toFixed(2)}%) < ${(this.chunkBaselineDeltaRatio * 100).toFixed(2)}%.`
+            );
+            return false;
+        }
+
+        const nextSlot = active?.slot === 'a' ? 'b' : 'a';
+        const nextGeneration = Number(
+            db.prepare('SELECT COALESCE(MAX(generation), 0) + 1 AS generation FROM chunk_index_baselines WHERE diary_name = ?')
+                .get(normalized)?.generation
+        ) || 1;
+        const indexPath = this._diaryBaselinePath(normalized, nextSlot);
+        const saveStartedAt = Date.now();
+        index.save(indexPath);
+
+        const publish = db.transaction(() => {
+            db.prepare(`
+                INSERT INTO chunk_index_baselines
+                    (diary_name, generation, slot, dimension, model_sig, chunk_count, status, created_at)
+                VALUES (?, ?, ?, ?, ?, (
+                    SELECT COUNT(*)
+                    FROM chunks c
+                    JOIN files f ON f.id = c.file_id
+                    WHERE f.diary_name = ? AND c.vector IS NOT NULL
+                ), 'ready', ?)
+            `).run(
+                normalized,
+                nextGeneration,
+                nextSlot,
+                this.config.dimension,
+                this.config.modelSig,
+                normalized,
+                Date.now()
+            );
+
+            db.prepare(`
+                INSERT INTO chunk_index_baseline_entries
+                    (diary_name, generation, chunk_id)
+                SELECT ?, ?, c.id
+                FROM chunks c
+                JOIN files f ON f.id = c.file_id
+                WHERE f.diary_name = ? AND c.vector IS NOT NULL
+            `).run(normalized, nextGeneration, normalized);
+
+            db.prepare(
+                'DELETE FROM chunk_index_baselines WHERE diary_name = ? AND generation != ?'
+            ).run(normalized, nextGeneration);
+        });
+        publish();
+
+        console.log(
+            `[${this.logPrefix}] 💾 Diary baseline checkpoint published: "${normalized}", ` +
+            `generation=${nextGeneration}, slot=${nextSlot}, ` +
+            `threshold=${(this.chunkBaselineDeltaRatio * 100).toFixed(2)}%, ` +
+            `elapsed=${Date.now() - saveStartedAt}ms.`
+        );
+        return true;
     }
 
     _countTagBaselineDelta(generation) {
@@ -274,12 +575,16 @@ class IndexRepository {
     }
 
     shouldPersist(name) {
-        return name === 'global_tags'
-            ? this.config.persistTagIndex
-                || this.config.persistFolders.has('global_tags')
-            : this.config.persistDefault
-                || this.config.persistFolders.has(name)
-                || name.endsWith('簇');
+        if (name === 'global_tags') {
+            return this.config.persistTagIndex
+                || this.config.persistFolders.has('global_tags');
+        }
+        if (this.chunkIndexPersistenceMode === 'none') {
+            return false;
+        }
+        return this.config.persistDefault
+            || this.config.persistFolders.has(name)
+            || name.endsWith('簇');
     }
 
     async getOrLoad(diaryName, options = {}) {
@@ -311,12 +616,28 @@ class IndexRepository {
                 const capacity = 50000;
                 let index;
                 if (persist) {
-                    index = await this.loadOrBuild(
-                        fileName,
-                        capacity,
-                        'chunks',
-                        diaryName
-                    );
+                    if (this.chunkIndexPersistenceMode === 'generational') {
+                        const baselineRestore = await this.loadDiaryBaseline(diaryName, capacity);
+                        if (baselineRestore?.index) {
+                            index = baselineRestore.index;
+                        } else {
+                            console.log(
+                                `[${this.logPrefix}] 🔄 No valid generational baseline for "${diaryName}", ` +
+                                'rebuilding from SQLite and publishing initial baseline...'
+                            );
+                            index = new this.VexusIndex(this.config.dimension, capacity);
+                            await this.recoverFromDb(index, 'chunks', diaryName);
+                            this.diaryIndices.set(diaryName, index);
+                            this.publishDiaryBaseline(diaryName, { force: true });
+                        }
+                    } else {
+                        index = await this.loadOrBuild(
+                            fileName,
+                            capacity,
+                            'chunks',
+                            diaryName
+                        );
+                    }
                 } else {
                     index = new this.VexusIndex(
                         this.config.dimension,
@@ -562,48 +883,72 @@ class IndexRepository {
 
     deletePersisted(diaryName) {
         if (!this.shouldPersist(diaryName)) return;
-        const safeName = crypto.createHash('md5')
-            .update(diaryName)
-            .digest('hex');
-        const indexPath = path.join(
+        const normalized = String(diaryName || '').trim();
+        const safeName = this._diarySafeName(normalized);
+        const legacyPath = path.join(
             this.config.storePath,
             `index_diary_${safeName}.usearch`
         );
-        try {
-            if (fs.existsSync(indexPath)) {
-                fs.unlinkSync(indexPath);
+        const slotAPath = this._diaryBaselinePath(normalized, 'a');
+        const slotBPath = this._diaryBaselinePath(normalized, 'b');
+
+        const targets = [
+            legacyPath, `${legacyPath}.tmp`,
+            slotAPath, `${slotAPath}.tmp`,
+            slotBPath, `${slotBPath}.tmp`
+        ];
+
+        for (const filePath of targets) {
+            try {
+                if (fs.existsSync(filePath)) {
+                    fs.unlinkSync(filePath);
+                }
+            } catch (error) {
                 console.warn(
-                    `[${this.logPrefix}] 🧹 Removed stale persisted index for ` +
-                    `diary "${diaryName}". It will be rebuilt from SQLite.`
+                    `[${this.logPrefix}] ⚠️ Failed to unlink "${filePath}": ${error.message}`
                 );
             }
-            if (fs.existsSync(`${indexPath}.tmp`)) {
-                fs.unlinkSync(`${indexPath}.tmp`);
+        }
+
+        // 清理数据库中的双槽基线元数据
+        try {
+            const db = this.getDb?.();
+            if (db) {
+                db.prepare('DELETE FROM chunk_index_baselines WHERE diary_name = ?').run(normalized);
             }
         } catch (error) {
             console.warn(
-                `[${this.logPrefix}] ⚠️ Failed to remove stale persisted index ` +
-                `for "${diaryName}": ${error.message}`
+                `[${this.logPrefix}] ⚠️ Failed to delete chunk baseline records for "${normalized}": ${error.message}`
             );
         }
+
+        console.warn(
+            `[${this.logPrefix}] 🧹 Removed persisted index and baselines for ` +
+            `diary "${normalized}". It will be rebuilt from SQLite.`
+        );
     }
 
     deleteAllPersisted() {
         try {
             for (const file of fs.readdirSync(this.config.storePath)) {
-                if (!/^index_diary_[a-f0-9]{32}\.usearch(?:\.tmp)?$/i.test(file)) {
+                if (
+                    !/^index_diary_[a-f0-9]{32}(?:_[ab]|_slot_[ab])?\.usearch(?:\.tmp)?$/i.test(file)
+                ) {
                     continue;
                 }
                 fs.unlinkSync(path.join(this.config.storePath, file));
             }
+            const db = this.getDb?.();
+            if (db) {
+                db.prepare('DELETE FROM chunk_index_baselines').run();
+            }
             console.warn(
-                `[${this.logPrefix}] 🧹 Removed all persisted diary indexes ` +
+                `[${this.logPrefix}] 🧹 Removed all persisted diary indexes and baseline records ` +
                 'because orphan chunks had lost diary ownership metadata.'
             );
         } catch (error) {
             console.warn(
-                `[${this.logPrefix}] ⚠️ Failed to remove all persisted diary ` +
-                `indexes: ${error.message}`
+                `[${this.logPrefix}] ⚠️ Failed to remove all persisted diary indexes: ${error.message}`
             );
         }
     }
@@ -643,6 +988,11 @@ class IndexRepository {
                         || this.config.tagIndexPersistenceMode === 'always'
                 });
             }
+
+            if (this.chunkIndexPersistenceMode === 'generational') {
+                return this.publishDiaryBaseline(name, options);
+            }
+
             const index = this.diaryIndices.get(name);
             if (index?.save) {
                 let stats = null;
@@ -653,7 +1003,7 @@ class IndexRepository {
                 );
                 const filePath = path.join(
                     this.config.storePath,
-                    `index_diary_${crypto.createHash('md5').update(name).digest('hex')}.usearch`
+                    `index_diary_${this._diarySafeName(name)}.usearch`
                 );
                 index.save(filePath);
             }
