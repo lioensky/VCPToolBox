@@ -123,11 +123,11 @@ class GenUSearchReconciliationService {
         return validateCommittedSourceView(rawView);
     }
 
-    #buildPlan(docId, source) {
+    #buildPlan(docId, source, baseDocumentUri) {
         const previousChunks = this.store.getCurrentChunkIdentitySnapshot(docId);
         return reconcileDocumentChunks({
             docId,
-            baseDocumentUri: document.current_uri ?? null,
+            baseDocumentUri,
             observedSourceDigest: source.sourceDigest,
             observedSourceRevision: source.sourceRevision,
             targetRevision: source.sourceRevision,
@@ -146,7 +146,18 @@ class GenUSearchReconciliationService {
             );
         }
         const source = await this.#readAuthoritativeSource(docId, document);
-        return this.#buildPlan(docId, source);
+        const afterRead = this.store.getDocument(docId);
+        if (
+            !afterRead
+            || afterRead.state !== 'ACTIVE'
+            || (afterRead.current_uri ?? null) !== (document.current_uri ?? null)
+        ) {
+            throw codedError(
+                'STALE_DOCUMENT_WRITER',
+                'Document URI changed while reading the committed source view'
+            );
+        }
+        return this.#buildPlan(docId, source, document.current_uri ?? null);
     }
 
     async planAndAdmitCurrentSource(options = {}) {
