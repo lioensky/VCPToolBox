@@ -1,6 +1,6 @@
 {
   "fixture_version": 1,
-  "contract_version": "3.1.0-g0-f2r3",
+  "contract_version": "3.1.0-g0-final-r1",
   "vectors": [
     {
       "id": "G0-XINV-001-POS",
@@ -678,6 +678,581 @@
       "expected": {
         "pass": false,
         "code": "VECTOR_ID_INVALID"
+      }
+    },
+    {
+      "id": "G0-XINV-020-POS",
+      "invariant_id": "G0-XINV-020",
+      "polarity": "positive",
+      "input": {
+        "response_emitted": true,
+        "read_view_fence": "42",
+        "current_serving_fence": "42"
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-020-NEG",
+      "invariant_id": "G0-XINV-020",
+      "polarity": "negative",
+      "input": {
+        "response_emitted": true,
+        "read_view_fence": "42",
+        "current_serving_fence": "43"
+      },
+      "expected": {
+        "pass": false,
+        "code": "QUERY_FENCE_STALE"
+      }
+    },
+    {
+      "id": "G0-XINV-021-POS",
+      "invariant_id": "G0-XINV-021",
+      "polarity": "positive",
+      "input": {
+        "durable_high_water_before": "100",
+        "allocated_ids": [
+          "101",
+          "102"
+        ],
+        "durable_high_water_after": "102",
+        "restart_next_id": "103"
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-021-NEG",
+      "invariant_id": "G0-XINV-021",
+      "polarity": "negative",
+      "input": {
+        "durable_high_water_before": "100",
+        "allocated_ids": [
+          "100"
+        ],
+        "durable_high_water_after": "100",
+        "restart_next_id": "101"
+      },
+      "expected": {
+        "pass": false,
+        "code": "VECTOR_ID_ALLOCATOR_CORRUPT"
+      }
+    },
+    {
+      "id": "G0-XINV-022-POS",
+      "invariant_id": "G0-XINV-022",
+      "polarity": "positive",
+      "input": {
+        "recovery_state": "RECOVERY_RELEASED",
+        "vector": {
+          "vector_id": "20",
+          "state": "ACTIVE",
+          "in_volatile_memtable": false,
+          "embedding_fingerprint": "e1"
+        },
+        "manifest_snapshot": {
+          "manifest_epoch": "50",
+          "segment_ids": [
+            "S1"
+          ],
+          "embedding_fingerprint": "e1"
+        },
+        "segment_records": [
+          {
+            "segment_id": "S1",
+            "state": "PUBLISHED",
+            "artifact_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "embedding_fingerprint": "e1",
+            "vector_ids": [
+              "20"
+            ]
+          }
+        ],
+        "artifact_receipts": [
+          {
+            "segment_id": "S1",
+            "artifact_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifact_exists": true,
+            "artifact_verified": true,
+            "final_name_durable": true
+          }
+        ]
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-022-NEG",
+      "invariant_id": "G0-XINV-022",
+      "polarity": "negative",
+      "input": {
+        "recovery_state": "RECOVERY_RELEASED",
+        "vector": {
+          "vector_id": "20",
+          "state": "ACTIVE",
+          "in_volatile_memtable": false,
+          "embedding_fingerprint": "e1"
+        },
+        "manifest_snapshot": {
+          "manifest_epoch": "50",
+          "segment_ids": [],
+          "embedding_fingerprint": "e1"
+        },
+        "segment_records": [],
+        "artifact_receipts": []
+      },
+      "expected": {
+        "pass": false,
+        "code": "RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE"
+      }
+    },
+    {
+      "id": "G0-XINV-023-POS",
+      "invariant_id": "G0-XINV-023",
+      "polarity": "positive",
+      "input": {
+        "snapshot": {
+          "manifest_epoch": "50",
+          "visibility_seq": "100",
+          "segment_set": [
+            "S1"
+          ],
+          "gc_cut": "90"
+        },
+        "current_manifest_epoch": "50"
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-023-NEG",
+      "invariant_id": "G0-XINV-023",
+      "polarity": "negative",
+      "input": {
+        "snapshot": {
+          "manifest_epoch": "50",
+          "visibility_seq": "100",
+          "segment_set": [
+            "S1"
+          ],
+          "gc_cut": "101"
+        },
+        "current_manifest_epoch": "50"
+      },
+      "expected": {
+        "pass": false,
+        "code": "COMPACTION_SNAPSHOT_INVALID"
+      }
+    },
+    {
+      "id": "G0-XINV-024-POS",
+      "invariant_id": "G0-XINV-024",
+      "polarity": "positive",
+      "input": {
+        "physical_candidates": [
+          {
+            "vector_id": "10",
+            "state": "VECTOR_STAGED",
+            "is_current_at_read_view": false
+          },
+          {
+            "vector_id": "11",
+            "state": "ACTIVE",
+            "is_current_at_read_view": true
+          }
+        ],
+        "returned_vector_ids": [
+          "11"
+        ]
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-024-NEG",
+      "invariant_id": "G0-XINV-024",
+      "polarity": "negative",
+      "input": {
+        "physical_candidates": [
+          {
+            "vector_id": "10",
+            "state": "VECTOR_STAGED",
+            "is_current_at_read_view": false
+          },
+          {
+            "vector_id": "11",
+            "state": "ACTIVE",
+            "is_current_at_read_view": true
+          }
+        ],
+        "returned_vector_ids": [
+          "10",
+          "11"
+        ]
+      },
+      "expected": {
+        "pass": false,
+        "code": "LOGICAL_VISIBILITY_VIOLATION"
+      }
+    },
+    {
+      "id": "G0-XINV-025-POS",
+      "invariant_id": "G0-XINV-025",
+      "polarity": "positive",
+      "input": {
+        "physical_hits": [
+          {
+            "vector_id": "11",
+            "chunk_id": "c1",
+            "source": "memtable"
+          },
+          {
+            "vector_id": "11",
+            "chunk_id": "c1",
+            "source": "segment"
+          },
+          {
+            "vector_id": "12",
+            "chunk_id": "c2",
+            "source": "segment"
+          }
+        ],
+        "logical_candidates": [
+          {
+            "vector_id": "11",
+            "chunk_id": "c1"
+          },
+          {
+            "vector_id": "12",
+            "chunk_id": "c2"
+          }
+        ]
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-025-NEG",
+      "invariant_id": "G0-XINV-025",
+      "polarity": "negative",
+      "input": {
+        "physical_hits": [
+          {
+            "vector_id": "11",
+            "chunk_id": "c1",
+            "source": "memtable"
+          },
+          {
+            "vector_id": "11",
+            "chunk_id": "c1",
+            "source": "segment"
+          }
+        ],
+        "logical_candidates": [
+          {
+            "vector_id": "11",
+            "chunk_id": "c1"
+          },
+          {
+            "vector_id": "11",
+            "chunk_id": "c1"
+          }
+        ]
+      },
+      "expected": {
+        "pass": false,
+        "code": "CANDIDATE_DEDUP_VIOLATION"
+      }
+    },
+    {
+      "id": "G0-XINV-026-POS",
+      "invariant_id": "G0-XINV-026",
+      "polarity": "positive",
+      "input": {
+        "created_at_ms": "1000",
+        "deadline_ms": "2000",
+        "now_ms": "2500",
+        "state": "CANCEL_REQUESTED",
+        "pins_released": false
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-026-NEG",
+      "invariant_id": "G0-XINV-026",
+      "polarity": "negative",
+      "input": {
+        "created_at_ms": "1000",
+        "deadline_ms": "2000",
+        "now_ms": "2500",
+        "state": "RELEASED",
+        "pins_released": true
+      },
+      "expected": {
+        "pass": false,
+        "code": "QUERY_READ_VIEW_EXPIRED"
+      }
+    },
+    {
+      "id": "G0-XINV-027-POS",
+      "invariant_id": "G0-XINV-027",
+      "polarity": "positive",
+      "input": {
+        "view_state": "NEW_COMPLETE",
+        "commit_verified": true,
+        "bytes_stable": true
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-027-NEG",
+      "invariant_id": "G0-XINV-027",
+      "polarity": "negative",
+      "input": {
+        "view_state": "PARTIAL",
+        "commit_verified": false,
+        "bytes_stable": false
+      },
+      "expected": {
+        "pass": false,
+        "code": "SOURCE_COMMIT_UNVERIFIED"
+      }
+    },
+    {
+      "id": "G0-XINV-028-POS",
+      "invariant_id": "G0-XINV-028",
+      "polarity": "positive",
+      "input": {
+        "operations": [
+          "PLAN_SAME",
+          "PLAN_MOVE",
+          "PLAN_MODIFY"
+        ]
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-028-NEG",
+      "invariant_id": "G0-XINV-028",
+      "polarity": "negative",
+      "input": {
+        "operations": [
+          "PLAN_MOVE",
+          "RETIRE_VECTOR"
+        ]
+      },
+      "expected": {
+        "pass": false,
+        "code": "RECONCILER_AUTHORITY_VIOLATION"
+      }
+    },
+    {
+      "id": "G0-XINV-029-POS",
+      "invariant_id": "G0-XINV-029",
+      "polarity": "positive",
+      "input": {
+        "read_view_id": "rv-1",
+        "visibility_seq": "100",
+        "metadata_snapshot": {
+          "heads": [
+            "11"
+          ]
+        },
+        "manifest_snapshot": {
+          "manifest_epoch": "50",
+          "segment_ids": [
+            "S1"
+          ],
+          "embedding_fingerprint": "e1"
+        },
+        "memtable_generation_set": [
+          "M1"
+        ],
+        "runtime_fence": "9",
+        "created_at_ms": "1000",
+        "deadline_ms": "2000"
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-029-NEG",
+      "invariant_id": "G0-XINV-029",
+      "polarity": "negative",
+      "input": {
+        "read_view_id": "rv-1",
+        "visibility_seq": "100",
+        "metadata_snapshot": {
+          "heads": [
+            "11"
+          ]
+        },
+        "manifest_snapshot": {
+          "manifest_epoch": "50",
+          "segment_ids": [
+            "S1"
+          ],
+          "embedding_fingerprint": "e1"
+        },
+        "memtable_generation_set": [
+          "M1"
+        ],
+        "created_at_ms": "1000",
+        "deadline_ms": "2000"
+      },
+      "expected": {
+        "pass": false,
+        "code": "QUERY_READ_VIEW_INVALID"
+      }
+    },
+    {
+      "id": "G0-XINV-030-POS",
+      "invariant_id": "G0-XINV-030",
+      "polarity": "positive",
+      "input": {
+        "transactions": [
+          {
+            "kind": "vector_id_allocation",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "visibility_seq_allocation",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "mvcc_commit",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "manifest_publication",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "runtime_fence_change",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "source_observation",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "reconciliation_admission",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          }
+        ]
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-030-NEG",
+      "invariant_id": "G0-XINV-030",
+      "polarity": "negative",
+      "input": {
+        "transactions": [
+          {
+            "kind": "vector_id_allocation",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "visibility_seq_allocation",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "mvcc_commit",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "manifest_publication",
+            "durable_commit": false,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "runtime_fence_change",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "source_observation",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          },
+          {
+            "kind": "reconciliation_admission",
+            "durable_commit": true,
+            "acknowledged": true,
+            "dependent_action": false
+          }
+        ]
+      },
+      "expected": {
+        "pass": false,
+        "code": "DURABLE_COMMIT_UNCONFIRMED"
+      }
+    },
+    {
+      "id": "G0-XINV-031-POS",
+      "invariant_id": "G0-XINV-031",
+      "polarity": "positive",
+      "input": {
+        "source_observation": "MISSING",
+        "delete_inferred": false,
+        "explicit_delete_evidence": false
+      },
+      "expected": {
+        "pass": true
+      }
+    },
+    {
+      "id": "G0-XINV-031-NEG",
+      "invariant_id": "G0-XINV-031",
+      "polarity": "negative",
+      "input": {
+        "source_observation": "MISSING",
+        "delete_inferred": true,
+        "explicit_delete_evidence": false
+      },
+      "expected": {
+        "pass": false,
+        "code": "SOURCE_MISSING_DELETE_INFERENCE"
       }
     }
   ]
