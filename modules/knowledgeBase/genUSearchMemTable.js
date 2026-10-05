@@ -251,6 +251,43 @@ class GenUSearchMemTable {
         });
     }
 
+    static snapshotForImmutableSegment(memtable) {
+        if (!(memtable instanceof GenUSearchMemTable)) {
+            throw new TypeError('expected GenUSearchMemTable');
+        }
+        const vectorIds = [...memtable.#vectorIds];
+        vectorIds.sort((a, b) => {
+            const left = BigInt(a);
+            const right = BigInt(b);
+            return left < right ? -1 : left > right ? 1 : 0;
+        });
+        for (const vectorId of vectorIds) {
+            if (!nativeContainsKey(memtable.#index, vectorId)) {
+                throw codedError(
+                    'PHYSICAL_COVERAGE_MISSING',
+                    `Gen0 native index is missing tracked vector ${vectorId}`
+                );
+            }
+        }
+        const stats = memtable.#index.stats();
+        if (Number(stats.totalVectors) !== vectorIds.length) {
+            throw codedError(
+                'PHYSICAL_COVERAGE_MISSING',
+                'Gen0 native vector count diverged from tracked vector set'
+            );
+        }
+        return Object.freeze({
+            sourceKind: memtable.sourceKind,
+            sourceId: memtable.sourceId,
+            runtimeId: memtable.runtimeId,
+            generation: memtable.generation,
+            embeddingFingerprint: memtable.embeddingFingerprint,
+            dimension: memtable.dimension,
+            state: memtable.#state,
+            vectorIds: Object.freeze(vectorIds)
+        });
+    }
+
     static assertContains(memtable, vectorId) {
         if (!(memtable instanceof GenUSearchMemTable)) {
             throw new TypeError('expected GenUSearchMemTable');
