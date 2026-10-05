@@ -127,6 +127,7 @@ class GenUSearchReconciliationService {
         const previousChunks = this.store.getCurrentChunkIdentitySnapshot(docId);
         return reconcileDocumentChunks({
             docId,
+            baseDocumentUri: document.current_uri ?? null,
             observedSourceDigest: source.sourceDigest,
             observedSourceRevision: source.sourceRevision,
             targetRevision: source.sourceRevision,
