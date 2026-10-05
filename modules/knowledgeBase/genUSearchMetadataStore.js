@@ -558,16 +558,6 @@ class GenUSearchMetadataStore {
                         'A newer pending source observation already owns reconciliation'
                     );
                 }
-                const currentIdentityDigest = hashIdentitySnapshot(
-                    this.getCurrentChunkIdentitySnapshot(plan.docId)
-                );
-                if (currentIdentityDigest !== plan.baseIdentityDigest) {
-                    throw codedError(
-                        'STALE_DOCUMENT_WRITER',
-                        'Current chunk identity snapshot changed after plan generation'
-                    );
-                }
-
                 const hasAmbiguity = plan.summary.AMBIGUOUS > 0;
                 const planState = hasAmbiguity ? 'ERROR' : 'ADMITTED';
                 const documentState = hasAmbiguity ? 'ERROR' : 'ADMITTED';
@@ -603,6 +593,16 @@ class GenUSearchMetadataStore {
                             `Planned new chunk identity already exists: ${chunkId}`
                         );
                     }
+                }
+
+                const currentIdentityDigest = hashIdentitySnapshot(
+                    this.getCurrentChunkIdentitySnapshot(plan.docId)
+                );
+                if (currentIdentityDigest !== plan.baseIdentityDigest) {
+                    throw codedError(
+                        'STALE_DOCUMENT_WRITER',
+                        'Current chunk identity snapshot changed after plan generation'
+                    );
                 }
 
                 const openPlan = this._getOpenReconciliationPlanByDocument.get(plan.docId);
