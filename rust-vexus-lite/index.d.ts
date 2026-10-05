@@ -51,6 +51,14 @@ export interface SearchResult {
   id: number
   score: number
 }
+/**
+ * Gen-USearch safe result. vector_id remains a canonical decimal string
+ * across the N-API boundary.
+ */
+export interface SearchResult64 {
+  id: string
+  score: number
+}
 export interface SvdResult {
   u: Array<number>
   s: Array<number>
@@ -236,6 +244,10 @@ export declare class VexusIndex {
   save(indexPath: string): void
   /** 单个添加 (JS 循环调用) */
   add(id: number, vector: Float32Array): void
+  /** Gen-USearch signed-int64-safe add using a canonical decimal key. */
+  addKey64(id: string, vector: Float32Array): void
+  /** Gen-USearch signed-int64-safe batch add using canonical decimal keys. */
+  addBatchKey64(ids: Array<string>, vectors: Float32Array): void
   /**
    * 批量添加 (FFI 优化版)
    * 注意：这目前是一个“伪批量”实现，主要通过减少 JS/Rust 跨界调用开销来提速。
@@ -261,6 +273,8 @@ export declare class VexusIndex {
   applyTagDelta(removeIds: Array<number>, upsertIds: Array<number>, upsertVectors: Float32Array): Promise<unknown>
   /** 搜索 */
   search(query: Float32Array, k: number): Array<SearchResult>
+  /** Gen-USearch signed-int64-safe search with string IDs. */
+  searchKey64(query: Float32Array, k: number): Array<SearchResult64>
   /**
    * RiverMemo 全局双场投影。
    *
@@ -314,6 +328,8 @@ export declare class VexusIndex {
   memoRuntimeStats(): MemoRuntimeStats
   /** 删除 (按 ID) */
   remove(id: number): void
+  /** Gen-USearch signed-int64-safe delete using a canonical decimal key. */
+  removeKey64(id: string): void
   /** 获取当前索引状态 */
   stats(): VexusStats
   /** 从 SQLite 数据库恢复索引 (异步版本，不阻塞主线程) */

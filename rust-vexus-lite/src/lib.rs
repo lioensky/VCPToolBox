@@ -26,6 +26,79 @@ pub struct SearchResult {
     pub score: f64,
 }
 
+/// Gen-USearch 安全搜索结果。
+/// vector_id 通过十进制字符串跨越 N-API，避免 JavaScript Number 的 53-bit 精度上限。
+#[napi(object)]
+pub struct SearchResult64 {
+    pub id: String,
+    pub score: f64,
+}
+
+fn parse_gen_usearch_key(value: &str) -> Result<u64> {
+    if value.is_empty()
+        || (value.len() > 1 && value.as_bytes()[0] == b'0')
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(Error::from_reason(
+            "Gen-USearch key must be a canonical positive decimal string".to_string(),
+        ));
+    }
+
+    let parsed = value.parse::<u64>().map_err(|_| {
+        Error::from_reason("Gen-USearch key is outside signed-int64 range".to_string())
+    })?;
+    if parsed == 0 || parsed > i64::MAX as u64 {
+        return Err(Error::from_reason(
+            "Gen-USearch key is outside signed-int64 range".to_string(),
+        ));
+    }
+    Ok(parsed)
+}
+
+#[cfg(test)]
+mod gen_usearch_key_tests {
+    use super::parse_gen_usearch_key;
+
+    #[test]
+    fn accepts_distinct_keys_above_js_safe_integer() {
+        assert_eq!(
+            parse_gen_usearch_key("9007199254740992").unwrap(),
+            9_007_199_254_740_992
+        );
+        assert_eq!(
+            parse_gen_usearch_key("9007199254740993").unwrap(),
+            9_007_199_254_740_993
+        );
+        assert_ne!(
+            parse_gen_usearch_key("9007199254740992").unwrap(),
+            parse_gen_usearch_key("9007199254740993").unwrap()
+        );
+    }
+
+    #[test]
+    fn accepts_signed_int64_maximum() {
+        assert_eq!(
+            parse_gen_usearch_key("9223372036854775807").unwrap(),
+            i64::MAX as u64
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_or_out_of_range_keys() {
+        for value in [
+            "",
+            "0",
+            "01",
+            "-1",
+            "abc",
+            "9223372036854775808",
+            "18446744073709551615",
+        ] {
+            assert!(parse_gen_usearch_key(value).is_err(), "{value}");
+        }
+    }
+}
+
 #[napi(object)]
 pub struct SvdResult {
     pub u: Vec<f64>, // 扁平化的正交基底向量集 (k * dim)
@@ -445,6 +518,84 @@ impl VexusIndex {
         Ok(())
     }
 
+    /// Gen-USearch 单条添加。ID 使用规范十进制字符串跨 N-API，
+    /// 保留完整 signed-int64 精度；不改变既有 number ABI。
+    #[napi]
+    pub fn add_key64(&self, id: String, vector: Float32Array) -> Result<()> {
+        let key = parse_gen_usearch_key(&id)?;
+        let index = self
+            .index
+            .write()
+            .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
+
+        let vec_slice: &[f32] = &vector;
+        if vec_slice.len() != self.dimensions as usize {
+            return Err(Error::from_reason(format!(
+                "Dimension mismatch: expected {}, got {}",
+                self.dimensions,
+                vec_slice.len()
+            )));
+        }
+
+        if index.size() + 1 >= index.capacity() {
+            let new_cap = (index.capacity() as f64 * 1.5) as usize;
+            index
+                .reserve(new_cap)
+                .map_err(|e| Error::from_reason(format!("Auto-expand failed: {:?}", e)))?;
+        }
+
+        index
+            .add(key, vec_slice)
+            .map_err(|e| Error::from_reason(format!("Add failed: {:?}", e)))?;
+        self.content_revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Gen-USearch 批量添加。所有 ID 均为规范十进制 signed-int64 字符串。
+    #[napi]
+    pub fn add_batch_key64(&self, ids: Vec<String>, vectors: Float32Array) -> Result<()> {
+        let keys = ids
+            .iter()
+            .map(|id| parse_gen_usearch_key(id))
+            .collect::<Result<Vec<_>>>()?;
+        let index = self
+            .index
+            .write()
+            .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
+
+        let count = keys.len();
+        let dim = self.dimensions as usize;
+        let vec_slice: &[f32] = &vectors;
+        if vec_slice.len() != count * dim {
+            return Err(Error::from_reason("Batch size mismatch".to_string()));
+        }
+
+        if index.size() + count >= index.capacity() {
+            let new_cap = ((index.size() + count) as f64 * 1.5) as usize;
+            index
+                .reserve(new_cap)
+                .map_err(|e| Error::from_reason(format!("Batch auto-expand failed: {:?}", e)))?;
+        }
+
+        for (i, key) in keys.iter().enumerate() {
+            let start = i * dim;
+            let vector = &vec_slice[start..start + dim];
+            let _ = index.remove(*key);
+            index.add(*key, vector).map_err(|e| {
+                Error::from_reason(format!(
+                    "Batch add/update failed idx {} id {}: {:?}",
+                    i, ids[i], e
+                ))
+            })?;
+        }
+        if count > 0 {
+            self.content_revision
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
+        Ok(())
+    }
+
     /// 批量添加 (FFI 优化版)
     /// 注意：这目前是一个“伪批量”实现，主要通过减少 JS/Rust 跨界调用开销来提速。
     /// 内部依然是逐条 add，但避免了多次获取写锁的开销。
@@ -577,6 +728,43 @@ impl VexusIndex {
             });
         }
 
+        Ok(results)
+    }
+
+    /// Gen-USearch 搜索。结果 ID 始终以十进制字符串返回，
+    /// 不经过 JavaScript Number。
+    #[napi]
+    pub fn search_key64(&self, query: Float32Array, k: u32) -> Result<Vec<SearchResult64>> {
+        let index = self
+            .index
+            .read()
+            .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
+
+        let query_slice: &[f32] = &query;
+        if query_slice.len() != self.dimensions as usize {
+            return Err(Error::from_reason(format!(
+                "Search dimension mismatch: expected {}, got {}.",
+                self.dimensions,
+                query_slice.len()
+            )));
+        }
+
+        let matches = index
+            .search(query_slice, k as usize)
+            .map_err(|e| Error::from_reason(format!("Search failed: {:?}", e)))?;
+
+        let mut results = Vec::with_capacity(matches.keys.len());
+        for (key, &dist) in matches.keys.iter().zip(matches.distances.iter()) {
+            if *key == 0 || *key > i64::MAX as u64 {
+                return Err(Error::from_reason(
+                    "Gen-USearch index contains a key outside signed-int64 range".to_string(),
+                ));
+            }
+            results.push(SearchResult64 {
+                id: key.to_string(),
+                score: 1.0 / (1.0 + dist as f64),
+            });
+        }
         Ok(results)
     }
 
@@ -968,6 +1156,23 @@ impl VexusIndex {
         self.content_revision
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
+        Ok(())
+    }
+
+    /// Gen-USearch 删除。ID 使用规范十进制字符串跨 N-API。
+    #[napi]
+    pub fn remove_key64(&self, id: String) -> Result<()> {
+        let key = parse_gen_usearch_key(&id)?;
+        let index = self
+            .index
+            .write()
+            .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
+
+        index
+            .remove(key)
+            .map_err(|e| Error::from_reason(format!("Remove failed: {:?}", e)))?;
+        self.content_revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         Ok(())
     }
 
