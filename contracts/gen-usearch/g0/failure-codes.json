@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": "3.1.0-g0-f2r3",
+  "contract_version": "3.1.0-g0-final-r1",
   "codes": [
     {
       "code": "CHUNK_IDENTITY_AMBIGUOUS",
@@ -356,6 +356,31 @@
       "code": "SILENT_LEGACY_FALLBACK",
       "severity": "P0_CORRECTNESS",
       "contract": "C8"
+    },
+    {
+      "code": "COMPACTION_SNAPSHOT_INVALID",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "LOGICAL_VISIBILITY_VIOLATION",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "CANDIDATE_DEDUP_VIOLATION",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C6"
+    },
+    {
+      "code": "RECONCILER_AUTHORITY_VIOLATION",
+      "severity": "P1_ARCHITECTURE",
+      "contract": "C1"
+    },
+    {
+      "code": "SOURCE_MISSING_DELETE_INFERENCE",
+      "severity": "P0_CORRECTNESS",
+      "contract": "C2"
     }
   ]
 }
