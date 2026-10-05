@@ -1,0 +1,420 @@
+{
+  "traceability_version": 1,
+  "contract_version": "3.1.0-g0-final-r1",
+  "gate": "G0",
+  "architecture_authority_path": "contracts/gen-usearch/g0/G0-ARCHITECTURE-R3.1.machine.json",
+  "rows": [
+    {
+      "architecture_requirement_id": "G0-ARCH-001",
+      "contract": "C2",
+      "severity": "P0_CORRECTNESS",
+      "rule": "doc_uri_change_does_not_change_doc_id",
+      "invariant_id": "G0-XINV-001",
+      "positive_fixture_id": "G0-XINV-001-POS",
+      "negative_fixture_id": "G0-XINV-001-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "DOCUMENT_IDENTITY_AMBIGUOUS"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-002",
+      "contract": "C1",
+      "severity": "P0_CORRECTNESS",
+      "rule": "slot_index_change_does_not_imply_chunk_id_change",
+      "invariant_id": "G0-XINV-002",
+      "positive_fixture_id": "G0-XINV-002-POS",
+      "negative_fixture_id": "G0-XINV-002-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "CHUNK_IDENTITY_AMBIGUOUS"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-003",
+      "contract": "C4",
+      "severity": "P0_CORRECTNESS",
+      "rule": "current_head_change_requires_mvcc_sqlite_cas",
+      "invariant_id": "G0-XINV-003",
+      "positive_fixture_id": "G0-XINV-003-POS",
+      "negative_fixture_id": "G0-XINV-003-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "STALE_VECTOR_PUBLICATION"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-004",
+      "contract": "C4",
+      "severity": "P0_CORRECTNESS",
+      "rule": "logical_visibility_change_increments_visibility_seq",
+      "invariant_id": "G0-XINV-004",
+      "positive_fixture_id": "G0-XINV-004-POS",
+      "negative_fixture_id": "G0-XINV-004-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "VISIBILITY_SEQUENCE_INVALID"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-005",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "physical_topology_change_increments_manifest_epoch",
+      "invariant_id": "G0-XINV-005",
+      "positive_fixture_id": "G0-XINV-005-POS",
+      "negative_fixture_id": "G0-XINV-005-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "MANIFEST_EPOCH_REGRESSION"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-006",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "visibility_seq_and_manifest_epoch_are_independent",
+      "invariant_id": "G0-XINV-006",
+      "positive_fixture_id": "G0-XINV-006-POS",
+      "negative_fixture_id": "G0-XINV-006-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "CLOCK_COUPLING_VIOLATION"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-007",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "read_view_current_vectors_have_physical_coverage",
+      "invariant_id": "G0-XINV-007",
+      "positive_fixture_id": "G0-XINV-007-POS",
+      "negative_fixture_id": "G0-XINV-007-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "QUERY_READ_VIEW_PHYSICAL_GAP"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-008",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "flush_handoff_allows_overlap_but_forbids_gap",
+      "invariant_id": "G0-XINV-008",
+      "positive_fixture_id": "G0-XINV-008-POS",
+      "negative_fixture_id": "G0-XINV-008-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "QUERY_READ_VIEW_PHYSICAL_GAP"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-009",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "global_tombstone_cache_cannot_invalidate_snapshot_current_vector",
+      "invariant_id": "G0-XINV-009",
+      "positive_fixture_id": "G0-XINV-009-POS",
+      "negative_fixture_id": "G0-XINV-009-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "TOMBSTONE_SNAPSHOT_VIOLATION"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-010",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "compaction_drops_only_machine_certified_gc_eligible_vectors",
+      "invariant_id": "G0-XINV-010",
+      "positive_fixture_id": "G0-XINV-010-POS",
+      "negative_fixture_id": "G0-XINV-010-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "UNSAFE_GC_ATTEMPT"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-011",
+      "contract": "C5",
+      "severity": "P0_CORRECTNESS",
+      "rule": "manifest_references_only_verified_finalized_durable_segments",
+      "invariant_id": "G0-XINV-011",
+      "positive_fixture_id": "G0-XINV-011-POS",
+      "negative_fixture_id": "G0-XINV-011-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "SEGMENT_DURABILITY_UNPROVEN"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-012",
+      "contract": "C4",
+      "severity": "P0_CORRECTNESS",
+      "rule": "volatile_current_vector_requires_exact_recovery_material",
+      "invariant_id": "G0-XINV-012",
+      "positive_fixture_id": "G0-XINV-012-POS",
+      "negative_fixture_id": "G0-XINV-012-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "VECTOR_RECOVERY_MATERIAL_MISSING"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-013",
+      "contract": "C2",
+      "severity": "P0_CORRECTNESS",
+      "rule": "source_observation_implies_durable_reconciliation_intent",
+      "invariant_id": "G0-XINV-013",
+      "positive_fixture_id": "G0-XINV-013-POS",
+      "negative_fixture_id": "G0-XINV-013-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "SOURCE_OBSERVATION_INVALID"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-014",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "query_pins_release_only_after_worker_quiescence",
+      "invariant_id": "G0-XINV-014",
+      "positive_fixture_id": "G0-XINV-014-POS",
+      "negative_fixture_id": "G0-XINV-014-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "READER_PIN_VIOLATION"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-015",
+      "contract": "C7",
+      "severity": "P0_CORRECTNESS",
+      "rule": "serving_ownership_is_exclusive_and_non_preemptive_in_r1",
+      "invariant_id": "G0-XINV-015",
+      "positive_fixture_id": "G0-XINV-015-POS",
+      "negative_fixture_id": "G0-XINV-015-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "SERVING_OWNERSHIP_CONFLICT"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-016",
+      "contract": "C6",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "read_view_acquisition_is_all_or_nothing",
+      "invariant_id": "G0-XINV-016",
+      "positive_fixture_id": "G0-XINV-016-POS",
+      "negative_fixture_id": "G0-XINV-016-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "QUERY_READ_VIEW_INVALID"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-017",
+      "contract": "C8",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "shadow_failure_does_not_block_canonical_source_write",
+      "invariant_id": "G0-XINV-017",
+      "positive_fixture_id": "G0-XINV-017-POS",
+      "negative_fixture_id": "G0-XINV-017-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "SHADOW_FAILURE_BLOCKED_CANONICAL_WRITE"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-018",
+      "contract": "C8",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "active_mode_does_not_silently_fallback_to_legacy",
+      "invariant_id": "G0-XINV-018",
+      "positive_fixture_id": "G0-XINV-018-POS",
+      "negative_fixture_id": "G0-XINV-018-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "SILENT_LEGACY_FALLBACK"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-019",
+      "contract": "C3",
+      "severity": "P0_CORRECTNESS",
+      "rule": "vector_id_decimal_string_preserves_signed_int64_identity",
+      "invariant_id": "G0-XINV-019",
+      "positive_fixture_id": "G0-XINV-019-POS",
+      "negative_fixture_id": "G0-XINV-019-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "VECTOR_ID_INVALID"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-020",
+      "contract": "C7",
+      "severity": "P0_CORRECTNESS",
+      "rule": "query_response_requires_current_runtime_fence",
+      "invariant_id": "G0-XINV-020",
+      "positive_fixture_id": "G0-XINV-020-POS",
+      "negative_fixture_id": "G0-XINV-020-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "QUERY_FENCE_STALE"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-021",
+      "contract": "C3",
+      "severity": "P0_CORRECTNESS",
+      "rule": "vector_allocator_high_water_is_durable_monotonic_and_never_reuses",
+      "invariant_id": "G0-XINV-021",
+      "positive_fixture_id": "G0-XINV-021-POS",
+      "negative_fixture_id": "G0-XINV-021-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "VECTOR_ID_ALLOCATOR_CORRUPT"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-022",
+      "contract": "C7",
+      "severity": "P0_CORRECTNESS",
+      "rule": "recovery_material_releases_only_after_durable_segment_coverage",
+      "invariant_id": "G0-XINV-022",
+      "positive_fixture_id": "G0-XINV-022-POS",
+      "negative_fixture_id": "G0-XINV-022-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-023",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "compaction_snapshot_binds_manifest_epoch_visibility_seq_segment_set_and_gc_cut",
+      "invariant_id": "G0-XINV-023",
+      "positive_fixture_id": "G0-XINV-023-POS",
+      "negative_fixture_id": "G0-XINV-023-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "COMPACTION_SNAPSHOT_INVALID"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-024",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "physical_presence_does_not_imply_logical_visibility",
+      "invariant_id": "G0-XINV-024",
+      "positive_fixture_id": "G0-XINV-024-POS",
+      "negative_fixture_id": "G0-XINV-024-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "LOGICAL_VISIBILITY_VIOLATION"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-025",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "multiple_physical_copies_dedup_to_one_logical_candidate",
+      "invariant_id": "G0-XINV-025",
+      "positive_fixture_id": "G0-XINV-025-POS",
+      "negative_fixture_id": "G0-XINV-025-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "CANDIDATE_DEDUP_VIOLATION"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-026",
+      "contract": "C6",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "query_read_view_is_bounded_and_expiry_requests_cancellation_not_release",
+      "invariant_id": "G0-XINV-026",
+      "positive_fixture_id": "G0-XINV-026-POS",
+      "negative_fixture_id": "G0-XINV-026-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "QUERY_READ_VIEW_EXPIRED"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-027",
+      "contract": "C2",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "indexing_accepts_only_committed_complete_source_views",
+      "invariant_id": "G0-XINV-027",
+      "positive_fixture_id": "G0-XINV-027-POS",
+      "negative_fixture_id": "G0-XINV-027-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "SOURCE_COMMIT_UNVERIFIED"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-028",
+      "contract": "C1",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "reconciler_is_identity_planning_only_and_cannot_mutate_lifecycle",
+      "invariant_id": "G0-XINV-028",
+      "positive_fixture_id": "G0-XINV-028-POS",
+      "negative_fixture_id": "G0-XINV-028-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "RECONCILER_AUTHORITY_VIOLATION"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-029",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "query_read_view_contains_coherent_metadata_manifest_memtable_and_fence_snapshot",
+      "invariant_id": "G0-XINV-029",
+      "positive_fixture_id": "G0-XINV-029-POS",
+      "negative_fixture_id": "G0-XINV-029-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "QUERY_READ_VIEW_INVALID"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-030",
+      "contract": "C7",
+      "severity": "P0_CORRECTNESS",
+      "rule": "critical_transactions_are_crash_durable_before_ack_or_dependent_action",
+      "invariant_id": "G0-XINV-030",
+      "positive_fixture_id": "G0-XINV-030-POS",
+      "negative_fixture_id": "G0-XINV-030-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "DURABLE_COMMIT_UNCONFIRMED"
+    },
+    {
+      "architecture_requirement_id": "G0-ARCH-031",
+      "contract": "C2",
+      "severity": "P0_CORRECTNESS",
+      "rule": "missing_source_observation_does_not_imply_document_delete",
+      "invariant_id": "G0-XINV-031",
+      "positive_fixture_id": "G0-XINV-031-POS",
+      "negative_fixture_id": "G0-XINV-031-NEG",
+      "verifier_function": "evaluateInvariant",
+      "failure_code": "SOURCE_MISSING_DELETE_INFERENCE"
+    }
+  ],
+  "amendment_coverage": [
+    {
+      "amendment_id": "A01",
+      "requirement_ids": [
+        "G0-ARCH-013",
+        "G0-ARCH-030"
+      ]
+    },
+    {
+      "amendment_id": "A02",
+      "requirement_ids": [
+        "G0-ARCH-027",
+        "G0-ARCH-031"
+      ]
+    },
+    {
+      "amendment_id": "A03",
+      "requirement_ids": [
+        "G0-ARCH-003",
+        "G0-ARCH-021",
+        "G0-ARCH-030"
+      ]
+    },
+    {
+      "amendment_id": "A04",
+      "requirement_ids": [
+        "G0-ARCH-014",
+        "G0-ARCH-026"
+      ]
+    },
+    {
+      "amendment_id": "A05",
+      "requirement_ids": [
+        "G0-ARCH-014"
+      ]
+    },
+    {
+      "amendment_id": "A06",
+      "requirement_ids": [
+        "G0-ARCH-015"
+      ]
+    },
+    {
+      "amendment_id": "A07",
+      "requirement_ids": [
+        "G0-ARCH-015"
+      ]
+    },
+    {
+      "amendment_id": "A08",
+      "requirement_ids": [
+        "G0-ARCH-015",
+        "G0-ARCH-020"
+      ]
+    },
+    {
+      "amendment_id": "A09",
+      "requirement_ids": [
+        "G0-ARCH-016",
+        "G0-ARCH-029"
+      ]
+    },
+    {
+      "amendment_id": "A10",
+      "requirement_ids": [
+        "G0-ARCH-014",
+        "G0-ARCH-022",
+        "G0-ARCH-029"
+      ]
+    }
+  ]
+}
