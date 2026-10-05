@@ -82,6 +82,10 @@ class GenUSearchMemTable {
             );
         }
         const generation = canonicalGeneration(options.generation);
+        const embeddingFingerprint = String(options.embeddingFingerprint || '').trim();
+        if (!embeddingFingerprint) {
+            throw new TypeError('Gen0 MemTable embeddingFingerprint must not be empty');
+        }
         const sourceId = `gen0:${runtimeId}:${generation}`;
 
         Object.defineProperties(this, {
@@ -89,6 +93,7 @@ class GenUSearchMemTable {
             capacity: { value: capacity, enumerable: true },
             runtimeId: { value: runtimeId, enumerable: true },
             generation: { value: generation, enumerable: true },
+            embeddingFingerprint: { value: embeddingFingerprint, enumerable: true },
             sourceKind: { value: 'MEMTABLE', enumerable: true },
             sourceId: { value: sourceId, enumerable: true }
         });
@@ -164,6 +169,7 @@ class GenUSearchMemTable {
             sourceId: this.sourceId,
             runtimeId: this.runtimeId,
             generation: this.generation,
+            embeddingFingerprint: this.embeddingFingerprint,
             state: this.#state,
             dimension: this.dimension,
             capacity: this.capacity,
