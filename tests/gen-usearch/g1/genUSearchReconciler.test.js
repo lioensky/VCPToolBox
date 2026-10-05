@@ -458,8 +458,8 @@ test('AMBIGUOUS reconciliation is persisted as ERROR and never becomes publishab
 test('a later committed source revision can supersede an errored ambiguous plan', () => {
     const fixture = createStoreFixture();
     try {
-        fixture.store.createChunkIdentity({ chunkId: 'c-1', docId: 'doc-1' });
-        fixture.store.createChunkIdentity({ chunkId: 'c-2', docId: 'doc-1' });
+        publishCurrent(fixture, { chunkId: 'c-1', slotIndex: 0, content: 'same' });
+        publishCurrent(fixture, { chunkId: 'c-2', slotIndex: 1, content: 'same' });
         const ambiguous = reconcileDocumentChunks(baseOptions({
             observedSourceDigest: 'digest-2',
             observedSourceRevision: 'rev-2',
