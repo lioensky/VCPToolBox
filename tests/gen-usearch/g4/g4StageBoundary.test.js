@@ -18,7 +18,7 @@ test('G4 boundary is frozen around QueryReadView and isolated retrieval', () => 
     const contract = read('contracts/gen-usearch/g4/G4-QUERY-READ-VIEW-R1.md');
     assert.match(
         contract,
-        /Status: \*\*BOUNDARY_FROZEN \/ IMPLEMENTATION_ACTIVE\*\*/
+        /Status: \*\*PASS\*\*/
     );
     for (const phrase of [
         'QueryReadView',
@@ -27,7 +27,8 @@ test('G4 boundary is frozen around QueryReadView and isolated retrieval', () => 
         'runtime fence',
         'worker quiescence',
         'compaction',
-        'GENERATIONAL_ACTIVE'
+        'GENERATIONAL_ACTIVE',
+        'G5 = NOT AUTHORIZED'
     ]) {
         assert.ok(contract.includes(phrase), phrase);
     }
