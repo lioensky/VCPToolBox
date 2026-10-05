@@ -61,6 +61,9 @@ G2 may implement only:
 13. **Native membership, not JavaScript bookkeeping, proves physical acceptance.**
     A Gen0 add/remove is authoritative only when the native key64 revision advances exactly once and exact `containsKey64()` confirms the expected post-state. JS-side sets alone cannot manufacture coverage.
 
+14. **SQLite mutation success is proven by postcondition inside the same transaction.**
+    Bootstrap cleanup must verify zero remaining MEMTABLE coverage, publication must read back `QUERY_VISIBLE`, batch publication must verify every row, and hide must verify the authoritative coverage row is absent before any physical delete proceeds. Silent trigger ignore/rewrite is fail-closed.
+
 ## Explicitly deferred beyond G2
 
 G2 does **not** authorize:
@@ -90,6 +93,7 @@ G2 may pass only when:
 - mixed embedding fingerprints cannot be recovered into one Gen0 MemTable;
 - two connections to the same database file cannot obtain concurrent G2 writer authority;
 - native revision changes without exact key membership cannot manufacture coverage;
+- silent SQLite ignore/rewrite of bootstrap, publication, batch publication, or hide operations cannot produce a successful authority transition;
 - durable coverage publication enables the existing G1 MVCC CAS path;
 - removal order cannot leave a false coverage fact;
 - G2 stage-boundary tests prove segment/manifest/query/GC/cutover remain unwired;
