@@ -13,6 +13,7 @@ on:
       - 'rust-vexus-lite/src/lib.rs'
       - 'modules/knowledgeBase/genUSearchMetadataStore.js'
       - 'modules/knowledgeBase/genUSearchReconciler.js'
+      - 'modules/knowledgeBase/genUSearchReconciliationService.js'
       - 'tests/gen-usearch/g1/**'
       - '.github/workflows/gen-usearch-g1.yml'
   pull_request:
@@ -20,6 +21,7 @@ on:
       - 'modules/knowledgeBase/schemaManager.js'
       - 'modules/knowledgeBase/genUSearchMetadataStore.js'
       - 'modules/knowledgeBase/genUSearchReconciler.js'
+      - 'modules/knowledgeBase/genUSearchReconciliationService.js'
       - 'tests/gen-usearch/g1/**'
       - 'tests/tagIndexGenerationalBaseline.test.js'
       - '.github/workflows/gen-usearch-g1.yml'
