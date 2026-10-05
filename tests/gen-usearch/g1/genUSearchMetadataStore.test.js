@@ -910,3 +910,87 @@ test('document creation binds URI history to the visibility sequence inside its 
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
+test('legacy reconciliation schema is rebuilt safely and unverifiable open plans are invalidated', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g1-legacy-recon-'));
+    const db = new Database(path.join(root, 'knowledge.sqlite'));
+    try {
+        db.pragma('journal_mode = WAL');
+        db.pragma('synchronous = FULL');
+        db.pragma('foreign_keys = ON');
+        db.exec(`
+            CREATE TABLE gen_usearch_documents (
+                doc_id TEXT PRIMARY KEY,
+                current_uri TEXT,
+                state TEXT NOT NULL,
+                observed_source_digest TEXT,
+                observed_source_revision TEXT,
+                reconcile_target_revision TEXT,
+                reconciliation_state TEXT NOT NULL,
+                index_state TEXT NOT NULL,
+                visibility_seq INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO gen_usearch_documents VALUES (
+                'legacy-doc', 'legacy.txt', 'ACTIVE',
+                'legacy-digest', 'legacy-rev', 'legacy-rev',
+                'ERROR', 'INDEX_ERROR', 0, 1, 1
+            );
+            CREATE TABLE gen_usearch_reconciliation_plans (
+                plan_id TEXT PRIMARY KEY,
+                doc_id TEXT NOT NULL,
+                observed_source_digest TEXT NOT NULL,
+                observed_source_revision TEXT NOT NULL,
+                target_revision TEXT NOT NULL,
+                plan_digest TEXT NOT NULL CHECK(length(plan_digest) = 64),
+                state TEXT NOT NULL CHECK(state IN ('PENDING', 'ADMITTED', 'COMPLETE', 'ERROR')),
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(doc_id, target_revision),
+                FOREIGN KEY(doc_id) REFERENCES gen_usearch_documents(doc_id) ON DELETE CASCADE
+            );
+            CREATE TABLE gen_usearch_reconciliation_items (
+                plan_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (plan_id, ordinal),
+                FOREIGN KEY(plan_id) REFERENCES gen_usearch_reconciliation_plans(plan_id) ON DELETE CASCADE
+            );
+            INSERT INTO gen_usearch_reconciliation_plans VALUES (
+                'legacy-plan', 'legacy-doc', 'legacy-digest', 'legacy-rev', 'legacy-rev',
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'ERROR', 1, 1
+            );
+            INSERT INTO gen_usearch_reconciliation_items VALUES (
+                'legacy-plan', 0, 'AMBIGUOUS',
+                '{"kind":"AMBIGUOUS","reason":"legacy","oldChunkIds":[],"nextSlots":[0]}'
+            );
+        `);
+
+        initializeKnowledgeBaseSchema(db, { logPrefix: 'GenUSearchLegacyReconTest' });
+        initializeKnowledgeBaseSchema(db, { logPrefix: 'GenUSearchLegacyReconTest' });
+
+        const columns = db.prepare('PRAGMA table_info(gen_usearch_reconciliation_plans)').all();
+        const digest = columns.find(row => row.name === 'base_identity_digest');
+        assert.equal(Number(digest.notnull), 1);
+        const sql = db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'gen_usearch_reconciliation_plans'"
+        ).get().sql;
+        assert.match(sql, /SUPERSEDED/);
+        assert.equal(
+            db.prepare("SELECT COUNT(*) AS count FROM gen_usearch_reconciliation_plans WHERE plan_id = 'legacy-plan'").get().count,
+            0
+        );
+        assert.deepEqual(
+            db.prepare("SELECT reconciliation_state, index_state FROM gen_usearch_documents WHERE doc_id = 'legacy-doc'").get(),
+            {
+                reconciliation_state: 'PENDING',
+                index_state: 'INDEX_LAGGING'
+            }
+        );
+    } finally {
+        try { db.close(); } catch (_) {}
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});

@@ -38,6 +38,7 @@ function createFixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g4-'));
     const dbPath = path.join(root, 'knowledge.sqlite');
     const segmentRoot = path.join(root, 'segments');
+    fs.mkdirSync(segmentRoot, { recursive: true });
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = FULL');
@@ -1352,6 +1353,86 @@ test('QueryReadView release retries after final durable RELEASED update fails on
                 pins_released: 1
             }
         );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+
+test('final response fence rejects a view whose deadline expires during the runtime authority read', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(94);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'response-deadline',
+            contentHash: '94'.repeat(32)
+        });
+        const view = fixture.coordinator.acquire({
+            memtables: [memtable],
+            deadline: fixture.now() + 100
+        });
+        let calls = 0;
+        fixture.coordinator.now = () => {
+            calls += 1;
+            return calls === 1 ? view.deadline - 1 : view.deadline;
+        };
+
+        assert.throws(
+            () => fixture.coordinator.assertResponseFence(view),
+            error => error?.code === 'QUERY_READ_VIEW_EXPIRED'
+        );
+        assert.ok(calls >= 2);
+        assert.equal(view.cancellation_requested, true);
+        assert.deepEqual(
+            fixture.db.prepare(
+                'SELECT state, cancellation_requested FROM gen_usearch_read_view_leases WHERE read_view_id = ?'
+            ).get(view.read_view_id),
+            {
+                state: 'CANCEL_REQUESTED',
+                cancellation_requested: 1
+            }
+        );
+        fixture.coordinator.release(view, { workerQuiescent: true });
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('deadline expiry while QUIESCING persists monotonic cancellation authority', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(95);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'quiesce-expiry',
+            contentHash: '95'.repeat(32)
+        });
+        const view = fixture.coordinator.acquire({
+            memtables: [memtable],
+            deadline: fixture.now() + 10
+        });
+        assert.equal(
+            fixture.coordinator.beginQuiescing(view),
+            'QUIESCING'
+        );
+        assert.equal(view.cancellation_requested, false);
+
+        fixture.coordinator.now = () => view.deadline;
+        assert.throws(
+            () => fixture.coordinator.assertUsable(view),
+            error => error?.code === 'QUERY_READ_VIEW_EXPIRED'
+        );
+        assert.equal(view.cancellation_requested, true);
+        assert.deepEqual(
+            fixture.db.prepare(
+                'SELECT state, cancellation_requested, pins_released FROM gen_usearch_read_view_leases WHERE read_view_id = ?'
+            ).get(view.read_view_id),
+            {
+                state: 'QUIESCING',
+                cancellation_requested: 1,
+                pins_released: 0
+            }
+        );
+        fixture.coordinator.release(view, { workerQuiescent: true });
     } finally {
         fixture.cleanup();
     }

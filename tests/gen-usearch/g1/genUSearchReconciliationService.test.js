@@ -42,6 +42,13 @@ function createFixture() {
                 currentUri: 'diary/a.txt'
             });
             return sourceView;
+        },
+        async withCommittedSourceView(request, callback) {
+            assert.deepEqual(request, {
+                docId: 'doc-1',
+                currentUri: 'diary/a.txt'
+            });
+            return callback(sourceView);
         }
     };
     const service = new GenUSearchReconciliationService({
@@ -174,6 +181,13 @@ test('document URI changes while reading source make the reconciliation plan sta
                         currentUri: 'diary/a.txt'
                     });
                     return sourcePromise;
+                },
+                async withCommittedSourceView(request, callback) {
+                    assert.deepEqual(request, {
+                        docId: 'doc-1',
+                        currentUri: 'diary/a.txt'
+                    });
+                    return callback(await sourcePromise);
                 }
             }
         });
@@ -288,6 +302,97 @@ test('new documents reconcile from an empty authoritative snapshot without calle
         const plan = await fixture.service.planCurrentSource({ docId: 'doc-1' });
         assert.equal(plan.summary.INSERT, 2);
         assert.equal(plan.summary.AMBIGUOUS, 0);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('plan-and-admit uses one committed source lease instead of a stale pre-admission snapshot', async () => {
+    const fixture = createFixture();
+    try {
+        const stale = committedView([
+            { slotIndex: 0, content: 'stale-a' }
+        ], {
+            sourceDigest: 'source-digest-a',
+            sourceRevision: 'rev-a'
+        });
+        const fresh = committedView([
+            { slotIndex: 0, content: 'fresh-b' }
+        ], {
+            sourceDigest: 'source-digest-b',
+            sourceRevision: 'rev-b'
+        });
+        let readCalls = 0;
+        let leaseCalls = 0;
+        const service = new GenUSearchReconciliationService({
+            store: fixture.store,
+            sourceViewProvider: {
+                async readCommittedSourceView() {
+                    readCalls += 1;
+                    return stale;
+                },
+                async withCommittedSourceView(request, callback) {
+                    leaseCalls += 1;
+                    assert.deepEqual(request, {
+                        docId: 'doc-1',
+                        currentUri: 'diary/a.txt'
+                    });
+                    return callback(fresh);
+                }
+            }
+        });
+
+        const result = await service.planAndAdmitCurrentSource({
+            docId: 'doc-1'
+        });
+        assert.equal(readCalls, 0);
+        assert.equal(leaseCalls, 1);
+        assert.equal(result.plan.observedSourceRevision, 'rev-b');
+        assert.equal(result.plan.observedSourceDigest, 'source-digest-b');
+        assert.equal(result.admitted.targetRevision, 'rev-b');
+        assert.equal(result.admitted.observedSourceDigest, 'source-digest-b');
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('committed source lease provider must invoke callback exactly once and preserve its result', async () => {
+    const fixture = createFixture();
+    try {
+        const view = committedView([]);
+        const duplicate = new GenUSearchReconciliationService({
+            store: fixture.store,
+            sourceViewProvider: {
+                async readCommittedSourceView() {
+                    return view;
+                },
+                async withCommittedSourceView(request, callback) {
+                    await callback(view);
+                    return callback(view);
+                }
+            }
+        });
+        await assert.rejects(
+            () => duplicate.planAndAdmitCurrentSource({ docId: 'doc-1' }),
+            error => error?.code === 'SOURCE_COMMIT_UNVERIFIED'
+        );
+
+        const altered = new GenUSearchReconciliationService({
+            store: fixture.store,
+            sourceViewProvider: {
+                async readCommittedSourceView() {
+                    return view;
+                },
+                async withCommittedSourceView(request, callback) {
+                    await callback(view);
+                    return Object.freeze({ forged: true });
+                }
+            }
+        });
+        await assert.rejects(
+            () => altered.planAndAdmitCurrentSource({ docId: 'doc-1' }),
+            error => error?.code === 'SOURCE_COMMIT_UNVERIFIED'
+        );
     } finally {
         fixture.cleanup();
     }

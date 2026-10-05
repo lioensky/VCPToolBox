@@ -219,9 +219,21 @@ class GenUSearchQueryReadViewCoordinator {
         if (!/^[A-Za-z0-9._-]{1,128}$/.test(runtimeId)) {
             throw new TypeError('G4 runtimeId must match [A-Za-z0-9._-]{1,128}');
         }
-        const segmentRoot = path.resolve(String(options.segmentRoot || '').trim());
-        if (!segmentRoot || !fs.existsSync(segmentRoot)) {
-            throw new TypeError('G4 requires an existing segmentRoot');
+        const segmentRootInput = typeof options.segmentRoot === 'string'
+            ? options.segmentRoot.trim()
+            : '';
+        if (!segmentRootInput) {
+            throw new TypeError('G4 requires an explicit pre-provisioned segmentRoot');
+        }
+        const segmentRoot = path.resolve(segmentRootInput);
+        let rootStat;
+        try {
+            rootStat = fs.lstatSync(segmentRoot);
+        } catch (_) {
+            throw new TypeError('G4 requires an existing pre-provisioned segmentRoot');
+        }
+        if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+            throw new TypeError('G4 segmentRoot must be a real non-symlink directory');
         }
 
         this.db = db;
@@ -273,7 +285,10 @@ class GenUSearchQueryReadViewCoordinator {
         this._updateReadViewLease = db.prepare(`
             UPDATE gen_usearch_read_view_leases
             SET state = ?,
-                cancellation_requested = ?,
+                cancellation_requested = CASE
+                    WHEN cancellation_requested = 1 OR ? = 1 THEN 1
+                    ELSE 0
+                END,
                 worker_quiescent = ?,
                 pins_released = ?,
                 updated_at = ?
@@ -381,10 +396,14 @@ class GenUSearchQueryReadViewCoordinator {
                 );
             }
             const updated = this._getReadViewLease.get(input.readViewId);
+            const expectedCancellation = (
+                Number(row.cancellation_requested) === 1
+                || input.cancellationRequested
+            ) ? 1 : 0;
             if (
                 !updated
                 || updated.state !== input.state
-                || Number(updated.cancellation_requested) !== (input.cancellationRequested ? 1 : 0)
+                || Number(updated.cancellation_requested) !== expectedCancellation
                 || Number(updated.worker_quiescent) !== (input.workerQuiescent ? 1 : 0)
                 || Number(updated.pins_released) !== (input.pinsReleased ? 1 : 0)
             ) {
@@ -897,15 +916,14 @@ class GenUSearchQueryReadViewCoordinator {
         }
         const now = safeMillis(this.now(), 'now');
         if (now >= view.deadline) {
-            if (lifecycle.state === 'ACTIVE') {
-                this._persistLifecycle(view, {
-                    ...lifecycle,
-                    state: 'CANCEL_REQUESTED',
-                    cancellation_requested: true
-                });
-            } else {
-                lifecycle.cancellation_requested = true;
-            }
+            const expiredState = lifecycle.state === 'ACTIVE'
+                ? 'CANCEL_REQUESTED'
+                : lifecycle.state;
+            this._persistLifecycle(view, {
+                ...lifecycle,
+                state: expiredState,
+                cancellation_requested: true
+            });
             throw codedError('QUERY_READ_VIEW_EXPIRED', 'QueryReadView deadline expired');
         }
         if (lifecycle.cancellation_requested === true || lifecycle.state !== 'ACTIVE') {
@@ -990,6 +1008,9 @@ class GenUSearchQueryReadViewCoordinator {
         if (!runtime) {
             throw codedError('QUERY_FENCE_STALE', 'runtime ownership row disappeared');
         }
+        // The runtime read can block behind SQLite work. Re-check the bounded
+        // view lifetime after that final authority read and before response use.
+        this.assertUsable(view);
         const fence = integerText(runtime.runtime_fence, 'runtime_fence');
         if (
             runtime.owner_id !== view.runtime_fence.owner_id

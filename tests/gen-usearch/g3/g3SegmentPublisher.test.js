@@ -38,6 +38,7 @@ function createFixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g3-'));
     const dbPath = path.join(root, 'knowledge.sqlite');
     const segmentRoot = path.join(root, 'segments');
+    fs.mkdirSync(segmentRoot, { recursive: true });
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = FULL');
@@ -800,6 +801,7 @@ test('G3 private Gen0 snapshot authority surface cannot be replaced', () => {
 test('different SQLite databases sharing one segment root cannot collide on segment identity', () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g3-dbns-'));
     const sharedSegmentRoot = path.join(parent, 'segments');
+    fs.mkdirSync(sharedSegmentRoot, { recursive: true });
 
     function createDb(name) {
         const dbPath = path.join(parent, name, 'knowledge.sqlite');
@@ -1002,7 +1004,7 @@ test('published artifact path cannot be redirected outside the configured segmen
 });
 
 
-test('G3 additive migration adds segment dimension without rebuilding legacy metadata', () => {
+test('G3 legacy migration invalidates orphan BUILDING metadata instead of retaining NULL dimension', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g3-migrate-'));
     const db = new Database(path.join(root, 'knowledge.sqlite'));
     try {
@@ -1044,12 +1046,7 @@ test('G3 additive migration adds segment dimension without rebuilding legacy met
             FROM gen_usearch_segments
             WHERE segment_id = 'legacy-segment'
         `).get();
-        assert.deepEqual(legacy, {
-            segment_id: 'legacy-segment',
-            state: 'BUILDING',
-            embedding_fingerprint: 'legacy-fingerprint',
-            dimension: null
-        });
+        assert.equal(legacy, undefined);
     } finally {
         try { db.close(); } catch (_) {}
         fs.rmSync(root, { recursive: true, force: true });
@@ -1514,5 +1511,150 @@ test('BEGIN IMMEDIATE serializes competing G3 publishers before artifact mutatio
         }
         try { secondDb?.close(); } catch (_) {}
         fixture.cleanup();
+    }
+});
+
+
+test('G3 requires an explicit pre-provisioned real segment root', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g3-root-'));
+    const db = new Database(path.join(root, 'knowledge.sqlite'));
+    try {
+        db.pragma('journal_mode = WAL');
+        db.pragma('synchronous = FULL');
+        db.pragma('foreign_keys = ON');
+        initializeKnowledgeBaseSchema(db, { logPrefix: 'GenUSearchG3RootTest' });
+
+        assert.throws(
+            () => new GenUSearchSegmentPublisher({ db }),
+            /explicit pre-provisioned segmentRoot/
+        );
+        const missing = path.join(root, 'missing');
+        assert.throws(
+            () => new GenUSearchSegmentPublisher({ db, segmentRoot: missing }),
+            /existing pre-provisioned segmentRoot/
+        );
+
+        const real = path.join(root, 'real');
+        fs.mkdirSync(real);
+        const link = path.join(root, 'link');
+        fs.symlinkSync(real, link, 'dir');
+        assert.throws(
+            () => new GenUSearchSegmentPublisher({ db, segmentRoot: link }),
+            /non-symlink directory/
+        );
+
+        const publisher = new GenUSearchSegmentPublisher({
+            db,
+            segmentRoot: real
+        });
+        assert.equal(publisher.segmentRoot, fs.realpathSync(real));
+    } finally {
+        try { db.close(); } catch (_) {}
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+test('legacy published segment dimension is backfilled from retained recovery bytes without rewinding manifest epoch', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g3-legacy-published-'));
+    const db = new Database(path.join(root, 'knowledge.sqlite'));
+    try {
+        db.pragma('journal_mode = WAL');
+        db.pragma('synchronous = FULL');
+        db.pragma('foreign_keys = OFF');
+        db.exec(`
+            CREATE TABLE gen_usearch_segments (
+                segment_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                artifact_path TEXT,
+                artifact_digest TEXT,
+                embedding_fingerprint TEXT NOT NULL,
+                vector_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                finalized_at INTEGER,
+                published_at INTEGER,
+                retired_at INTEGER
+            );
+            CREATE TABLE gen_usearch_manifest_state (
+                singleton INTEGER PRIMARY KEY,
+                manifest_epoch INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE gen_usearch_manifest_segments (
+                manifest_epoch INTEGER NOT NULL,
+                segment_id TEXT NOT NULL,
+                PRIMARY KEY (manifest_epoch, segment_id)
+            );
+            CREATE TABLE gen_usearch_vector_recovery (
+                vector_id INTEGER PRIMARY KEY,
+                chunk_version_id INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                embedding_fingerprint TEXT NOT NULL,
+                vector_blob BLOB,
+                covered_segment_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE gen_usearch_vector_coverage (
+                vector_id INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                coverage_state TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (vector_id, source_kind, source_id)
+            );
+            CREATE TABLE gen_usearch_sequences (
+                name TEXT PRIMARY KEY,
+                value INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO gen_usearch_segments VALUES (
+                'legacy-published', 'PUBLISHED', '/legacy.usearch', 'deadbeef',
+                'legacy-fingerprint', 1, 1, 2, 3, NULL
+            );
+            INSERT INTO gen_usearch_manifest_state VALUES (1, 7, 1);
+            INSERT INTO gen_usearch_manifest_segments VALUES (7, 'legacy-published');
+            INSERT INTO gen_usearch_sequences VALUES ('visibility_seq', 3, 1);
+            INSERT INTO gen_usearch_sequences VALUES ('manifest_epoch', 7, 1);
+            INSERT INTO gen_usearch_vector_recovery VALUES (
+                11, 101, 'SEGMENT_COVERED', 'legacy-fingerprint',
+                zeroblob(16), 'legacy-published', 1, 1
+            );
+            INSERT INTO gen_usearch_vector_coverage VALUES (
+                11, 'SEGMENT', 'legacy-published', 'QUERY_VISIBLE', 1, 1
+            );
+        `);
+
+        initializeKnowledgeBaseSchema(db, {
+            logPrefix: 'GenUSearchG3LegacyPublishedMigration'
+        });
+
+        assert.equal(
+            db.prepare("SELECT dimension FROM gen_usearch_segments WHERE segment_id = 'legacy-published'").get().dimension,
+            4
+        );
+        assert.equal(
+            db.prepare('SELECT manifest_epoch FROM gen_usearch_manifest_state WHERE singleton = 1').get().manifest_epoch,
+            7
+        );
+        assert.equal(
+            db.prepare("SELECT value FROM gen_usearch_sequences WHERE name = 'manifest_epoch'").get().value,
+            7
+        );
+        assert.equal(
+            db.prepare("SELECT COUNT(*) AS count FROM gen_usearch_manifest_segments WHERE manifest_epoch = 7 AND segment_id = 'legacy-published'").get().count,
+            1
+        );
+        assert.throws(
+            () => db.prepare(`
+                INSERT INTO gen_usearch_segments (
+                    segment_id, state, artifact_path, artifact_digest,
+                    embedding_fingerprint, dimension, vector_count, created_at
+                ) VALUES ('bad-null-dimension', 'BUILDING', NULL, NULL, 'x', NULL, 0, 1)
+            `).run(),
+            /dimension must be positive/
+        );
+    } finally {
+        try { db.close(); } catch (_) {}
+        fs.rmSync(root, { recursive: true, force: true });
     }
 });

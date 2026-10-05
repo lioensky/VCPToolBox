@@ -143,13 +143,25 @@ class GenUSearchSegmentPublisher {
             throw new TypeError('GenUSearchSegmentPublisher requires native VexusIndex');
         }
 
-        const segmentRoot = path.resolve(
-            String(options.segmentRoot || '').trim()
-        );
-        if (!segmentRoot || segmentRoot === path.parse(segmentRoot).root) {
+        const segmentRootInput = typeof options.segmentRoot === 'string'
+            ? options.segmentRoot.trim()
+            : '';
+        if (!segmentRootInput) {
+            throw new TypeError('G3 requires an explicit pre-provisioned segmentRoot');
+        }
+        const segmentRoot = path.resolve(segmentRootInput);
+        if (segmentRoot === path.parse(segmentRoot).root) {
             throw new TypeError('G3 segmentRoot must be a dedicated non-root directory');
         }
-        fs.mkdirSync(segmentRoot, { recursive: true });
+        let rootStat;
+        try {
+            rootStat = fs.lstatSync(segmentRoot);
+        } catch (_) {
+            throw new TypeError('G3 requires an existing pre-provisioned segmentRoot');
+        }
+        if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+            throw new TypeError('G3 segmentRoot must be a real non-symlink directory');
+        }
         this.segmentRoot = fs.realpathSync(segmentRoot);
         this.databaseIdentity = databaseIdentity(db);
         this.db = db;

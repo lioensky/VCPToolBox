@@ -1,0 +1,71 @@
+name: Gen-USearch Packaged Native ABI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - codex/gen-usearch-g0-f2-upstream-main
+    paths:
+      - 'rust-vexus-lite/*.node'
+      - 'rust-vexus-lite/index.js'
+      - 'rust-vexus-lite/index.d.ts'
+      - 'tests/gen-usearch/g1/packagedNativeAbi.test.js'
+      - '.github/workflows/gen-usearch-native-package.yml'
+  pull_request:
+    paths:
+      - 'rust-vexus-lite/*.node'
+      - 'rust-vexus-lite/index.js'
+      - 'rust-vexus-lite/index.d.ts'
+      - 'tests/gen-usearch/g1/packagedNativeAbi.test.js'
+      - '.github/workflows/gen-usearch-native-package.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  host-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: linux-x64-gnu
+          - os: ubuntu-24.04-arm
+            label: linux-arm64-gnu
+          - os: macos-14
+            label: darwin-arm64
+          - os: windows-2025
+            label: windows-x64-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Verify tracked native ABI
+        shell: bash
+        run: node --test tests/gen-usearch/g1/packagedNativeAbi.test.js
+
+  musl-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: linux-x64-musl
+          - os: ubuntu-24.04-arm
+            label: linux-arm64-musl
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify tracked musl native ABI in Alpine
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            node:24-alpine \
+            node --test tests/gen-usearch/g1/packagedNativeAbi.test.js

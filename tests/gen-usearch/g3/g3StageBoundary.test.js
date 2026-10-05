@@ -29,7 +29,7 @@ test('G3 boundary is frozen around immutable segment + manifest authority', () =
     }
 });
 
-test('only the G3 segment publisher mutates segment and manifest membership in production code', () => {
+test('runtime segment/manifest mutation stays with G3 publisher; schema migration is bounded to legacy segment repair', () => {
     const modulesDir = path.join(root, 'modules/knowledgeBase');
     const candidates = fs.readdirSync(modulesDir)
         .filter(name => name.endsWith('.js'))
@@ -43,11 +43,37 @@ test('only the G3 segment publisher mutates segment and manifest membership in p
         if (rel === 'modules/knowledgeBase/genUSearchSegmentPublisher.js') {
             assert.match(source, segmentMutation);
             assert.match(source, manifestMemberMutation);
+        } else if (rel === 'modules/knowledgeBase/schemaManager.js') {
+            assert.match(source, /migrateLegacyGenUSearchSegments/);
+            assert.match(source, segmentMutation);
+            assert.doesNotMatch(source, manifestMemberMutation, rel);
         } else {
             assert.doesNotMatch(source, segmentMutation, rel);
             assert.doesNotMatch(source, manifestMemberMutation, rel);
         }
     }
+});
+
+
+test('legacy segment schema migration cannot rewind manifest authority or reclaim published topology', () => {
+    const source = read('modules/knowledgeBase/schemaManager.js');
+    const start = source.indexOf('function migrateLegacyGenUSearchSegments');
+    const end = source.indexOf('function addColumnIfMissing', start);
+    assert.ok(start >= 0 && end > start);
+    const migration = source.slice(start, end);
+
+    for (const required of [
+        'manifestRefs === 0',
+        'recoveryRefs === 0',
+        "['BUILDING', 'FINALIZED_DURABLE'].includes(segment.state)",
+        'backfilled',
+        'manifest epochs preserved'
+    ]) {
+        assert.ok(migration.includes(required), required);
+    }
+    assert.doesNotMatch(migration, /UPDATE\s+gen_usearch_manifest_state/i);
+    assert.doesNotMatch(migration, /UPDATE\s+gen_usearch_sequences/i);
+    assert.doesNotMatch(migration, /DELETE\s+FROM\s+gen_usearch_manifest_segments/i);
 });
 
 test('G3 remains unwired from existing ingestion, search and serving paths', () => {

@@ -104,9 +104,21 @@ class GenUSearchGcCoordinator {
         if (!/^[A-Za-z0-9._-]{1,128}$/.test(runtimeId)) {
             throw new TypeError('G5 runtimeId must match [A-Za-z0-9._-]{1,128}');
         }
-        const segmentRoot = path.resolve(String(options.segmentRoot || '').trim());
-        if (!fs.existsSync(segmentRoot)) {
-            throw new TypeError('G5 requires an existing segmentRoot');
+        const segmentRootInput = typeof options.segmentRoot === 'string'
+            ? options.segmentRoot.trim()
+            : '';
+        if (!segmentRootInput) {
+            throw new TypeError('G5 requires an explicit pre-provisioned segmentRoot');
+        }
+        const segmentRoot = path.resolve(segmentRootInput);
+        let rootStat;
+        try {
+            rootStat = fs.lstatSync(segmentRoot);
+        } catch (_) {
+            throw new TypeError('G5 requires an existing pre-provisioned segmentRoot');
+        }
+        if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+            throw new TypeError('G5 segmentRoot must be a real non-symlink directory');
         }
 
         this.db = db;

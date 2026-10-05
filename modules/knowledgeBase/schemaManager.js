@@ -656,6 +656,267 @@ function assertDatabase(db) {
     }
 }
 
+function schemaMigrationError(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+}
+
+function tableInfo(db, table) {
+    return db.prepare(`PRAGMA table_info(${table})`).all();
+}
+
+function tableSql(db, table) {
+    return db.prepare(`
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+    `).get(table)?.sql || '';
+}
+
+function migrateLegacyGenUSearchReconciliation(db, logPrefix) {
+    const info = tableInfo(db, 'gen_usearch_reconciliation_plans');
+    if (info.length === 0) return false;
+    const digestColumn = info.find(row => row.name === 'base_identity_digest');
+    const sql = tableSql(db, 'gen_usearch_reconciliation_plans');
+    const needsRebuild = (
+        !digestColumn
+        || Number(digestColumn.notnull) !== 1
+        || !/SUPERSEDED/.test(sql)
+    );
+    if (!needsRebuild) return false;
+
+    const legacyRows = db.prepare(`
+        SELECT plan_id, doc_id
+        FROM gen_usearch_reconciliation_plans
+        WHERE base_identity_digest IS NULL
+           OR length(base_identity_digest) != 64
+    `).all();
+    const invalidDocIds = [...new Set(legacyRows.map(row => row.doc_id))];
+    const migrate = db.transaction(() => {
+        db.exec(`
+            DROP TABLE IF EXISTS gen_usearch_reconciliation_items__migrating;
+            DROP TABLE IF EXISTS gen_usearch_reconciliation_plans__migrating;
+
+            CREATE TABLE gen_usearch_reconciliation_plans__migrating (
+                plan_id TEXT PRIMARY KEY,
+                doc_id TEXT NOT NULL,
+                base_document_uri TEXT,
+                base_identity_digest TEXT NOT NULL CHECK(length(base_identity_digest) = 64),
+                observed_source_digest TEXT NOT NULL,
+                observed_source_revision TEXT NOT NULL,
+                target_revision TEXT NOT NULL,
+                plan_digest TEXT NOT NULL CHECK(length(plan_digest) = 64),
+                state TEXT NOT NULL CHECK( state IN (
+                    'PENDING', 'ADMITTED', 'COMPLETE', 'ERROR', 'SUPERSEDED'
+                )),
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(doc_id, target_revision),
+                FOREIGN KEY(doc_id) REFERENCES gen_usearch_documents(doc_id) ON DELETE CASCADE
+            );
+
+            INSERT INTO gen_usearch_reconciliation_plans__migrating (
+                plan_id, doc_id, base_document_uri, base_identity_digest,
+                observed_source_digest, observed_source_revision, target_revision,
+                plan_digest, state, created_at, updated_at
+            )
+            SELECT
+                plan_id, doc_id, base_document_uri, base_identity_digest,
+                observed_source_digest, observed_source_revision, target_revision,
+                plan_digest, state, created_at, updated_at
+            FROM gen_usearch_reconciliation_plans
+            WHERE base_identity_digest IS NOT NULL
+              AND length(base_identity_digest) = 64;
+
+            CREATE TABLE gen_usearch_reconciliation_items__migrating (
+                plan_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                kind TEXT NOT NULL CHECK(kind IN (
+                    'SAME', 'MODIFY', 'MOVE', 'INSERT',
+                    'DELETE', 'SPLIT', 'MERGE', 'AMBIGUOUS'
+                )),
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (plan_id, ordinal),
+                FOREIGN KEY(plan_id)
+                    REFERENCES gen_usearch_reconciliation_plans__migrating(plan_id)
+                    ON DELETE CASCADE
+            );
+
+            INSERT INTO gen_usearch_reconciliation_items__migrating (
+                plan_id, ordinal, kind, payload_json
+            )
+            SELECT i.plan_id, i.ordinal, i.kind, i.payload_json
+            FROM gen_usearch_reconciliation_items i
+            JOIN gen_usearch_reconciliation_plans__migrating p
+              ON p.plan_id = i.plan_id;
+
+            DROP TABLE gen_usearch_reconciliation_items;
+            DROP TABLE gen_usearch_reconciliation_plans;
+
+            ALTER TABLE gen_usearch_reconciliation_plans__migrating
+                RENAME TO gen_usearch_reconciliation_plans;
+            ALTER TABLE gen_usearch_reconciliation_items__migrating
+                RENAME TO gen_usearch_reconciliation_items;
+
+            CREATE INDEX idx_gen_usearch_reconciliation_doc_state
+                ON gen_usearch_reconciliation_plans(doc_id, state, target_revision);
+            CREATE UNIQUE INDEX idx_gen_usearch_one_open_reconciliation_per_doc
+                ON gen_usearch_reconciliation_plans(doc_id)
+                WHERE state IN ('PENDING', 'ADMITTED', 'ERROR');
+        `);
+
+        const hasOpenPlan = db.prepare(`
+            SELECT 1 AS present
+            FROM gen_usearch_reconciliation_plans
+            WHERE doc_id = ?
+              AND state IN ('PENDING', 'ADMITTED', 'ERROR')
+            LIMIT 1
+        `);
+        const resetDocument = db.prepare(`
+            UPDATE gen_usearch_documents
+            SET reconciliation_state = 'PENDING',
+                index_state = 'INDEX_LAGGING',
+                updated_at = ?
+            WHERE doc_id = ?
+              AND state = 'ACTIVE'
+        `);
+        const now = Date.now();
+        for (const docId of invalidDocIds) {
+            if (!hasOpenPlan.get(docId)) {
+                resetDocument.run(now, docId);
+            }
+        }
+    });
+    migrate.immediate();
+    console.warn(
+        `[${logPrefix}] 🧱 Gen-USearch legacy reconciliation migration: ` +
+        `rebuilt table and invalidated ${legacyRows.length} unverifiable plan(s).`
+    );
+    return true;
+}
+
+function migrateLegacyGenUSearchSegments(db, logPrefix) {
+    const info = tableInfo(db, 'gen_usearch_segments');
+    if (info.length === 0) return false;
+    const dimensionColumn = info.find(row => row.name === 'dimension');
+    if (dimensionColumn && Number(dimensionColumn.notnull) === 1) return false;
+
+    const legacySegments = db.prepare(`
+        SELECT segment_id, state, vector_count, dimension
+        FROM gen_usearch_segments
+        WHERE dimension IS NULL OR dimension <= 0
+        ORDER BY segment_id
+    `).all();
+    if (legacySegments.length === 0) {
+        db.exec(`
+            CREATE TRIGGER IF NOT EXISTS trg_gen_usearch_segments_dimension_insert
+            BEFORE INSERT ON gen_usearch_segments
+            WHEN NEW.dimension IS NULL OR NEW.dimension <= 0
+            BEGIN
+                SELECT RAISE(ABORT, 'gen_usearch_segments.dimension must be positive');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_gen_usearch_segments_dimension_update
+            BEFORE UPDATE OF dimension ON gen_usearch_segments
+            WHEN NEW.dimension IS NULL OR NEW.dimension <= 0
+            BEGIN
+                SELECT RAISE(ABORT, 'gen_usearch_segments.dimension must be positive');
+            END;
+        `);
+        return true;
+    }
+
+    const listCoverage = db.prepare(`
+        SELECT vc.vector_id, vr.vector_blob
+        FROM gen_usearch_vector_coverage vc
+        LEFT JOIN gen_usearch_vector_recovery vr ON vr.vector_id = vc.vector_id
+        WHERE vc.source_kind = 'SEGMENT'
+          AND vc.source_id = ?
+          AND vc.coverage_state = 'QUERY_VISIBLE'
+        ORDER BY vc.vector_id
+    `);
+    const countManifestRefs = db.prepare(`
+        SELECT COUNT(*) AS count FROM gen_usearch_manifest_segments WHERE segment_id = ?
+    `);
+    const countRecoveryRefs = db.prepare(`
+        SELECT COUNT(*) AS count FROM gen_usearch_vector_recovery WHERE covered_segment_id = ?
+    `);
+    const updateDimension = db.prepare(`
+        UPDATE gen_usearch_segments SET dimension = ?
+        WHERE segment_id = ? AND (dimension IS NULL OR dimension <= 0)
+    `);
+    const deleteSegment = db.prepare(`
+        DELETE FROM gen_usearch_segments
+        WHERE segment_id = ? AND state IN ('BUILDING', 'FINALIZED_DURABLE')
+    `);
+
+    const migrate = db.transaction(() => {
+        let backfilled = 0;
+        let invalidated = 0;
+        for (const segment of legacySegments) {
+            const coverage = listCoverage.all(segment.segment_id);
+            if (coverage.length === 0) {
+                const manifestRefs = Number(countManifestRefs.get(segment.segment_id)?.count ?? 0);
+                const recoveryRefs = Number(countRecoveryRefs.get(segment.segment_id)?.count ?? 0);
+                if (manifestRefs === 0 && recoveryRefs === 0 && ['BUILDING', 'FINALIZED_DURABLE'].includes(segment.state)) {
+                    if (deleteSegment.run(segment.segment_id).changes !== 1) {
+                        throw schemaMigrationError('GEN_USEARCH_LEGACY_SEGMENT_MIGRATION_UNSAFE', `Failed to invalidate orphan legacy segment ${segment.segment_id}`);
+                    }
+                    invalidated += 1;
+                    continue;
+                }
+                throw schemaMigrationError('GEN_USEARCH_LEGACY_SEGMENT_MIGRATION_UNSAFE', `Legacy segment ${segment.segment_id} has no recoverable coverage dimension authority`);
+            }
+
+            if (Number(segment.vector_count) !== coverage.length || coverage.some(row => !Buffer.isBuffer(row.vector_blob))) {
+                throw schemaMigrationError('GEN_USEARCH_LEGACY_SEGMENT_MIGRATION_UNSAFE', `Legacy segment ${segment.segment_id} lacks complete retained recovery bytes`);
+            }
+            const dimensions = new Set();
+            for (const row of coverage) {
+                if (row.vector_blob.length === 0 || row.vector_blob.length % 4 !== 0) {
+                    throw schemaMigrationError('GEN_USEARCH_LEGACY_SEGMENT_MIGRATION_UNSAFE', `Legacy segment ${segment.segment_id} has malformed recovery bytes`);
+                }
+                dimensions.add(row.vector_blob.length / 4);
+            }
+            if (dimensions.size !== 1) {
+                throw schemaMigrationError('GEN_USEARCH_LEGACY_SEGMENT_MIGRATION_UNSAFE', `Legacy segment ${segment.segment_id} has inconsistent recovery dimensions`);
+            }
+            const [dimension] = dimensions;
+            if (!Number.isSafeInteger(dimension) || dimension <= 0) {
+                throw schemaMigrationError('GEN_USEARCH_LEGACY_SEGMENT_MIGRATION_UNSAFE', `Legacy segment ${segment.segment_id} has invalid inferred dimension`);
+            }
+            if (updateDimension.run(dimension, segment.segment_id).changes !== 1) {
+                throw schemaMigrationError('GEN_USEARCH_LEGACY_SEGMENT_MIGRATION_UNSAFE', `Failed to backfill legacy segment ${segment.segment_id}`);
+            }
+            backfilled += 1;
+        }
+
+        const remaining = db.prepare(`SELECT COUNT(*) AS count FROM gen_usearch_segments WHERE dimension IS NULL OR dimension <= 0`).get()?.count ?? 0;
+        if (Number(remaining) !== 0) {
+            throw schemaMigrationError('GEN_USEARCH_LEGACY_SEGMENT_MIGRATION_UNSAFE', 'Legacy segment migration left invalid dimension authority');
+        }
+
+        db.exec(`
+            CREATE TRIGGER IF NOT EXISTS trg_gen_usearch_segments_dimension_insert
+            BEFORE INSERT ON gen_usearch_segments
+            WHEN NEW.dimension IS NULL OR NEW.dimension <= 0
+            BEGIN
+                SELECT RAISE(ABORT, 'gen_usearch_segments.dimension must be positive');
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_gen_usearch_segments_dimension_update
+            BEFORE UPDATE OF dimension ON gen_usearch_segments
+            WHEN NEW.dimension IS NULL OR NEW.dimension <= 0
+            BEGIN
+                SELECT RAISE(ABORT, 'gen_usearch_segments.dimension must be positive');
+            END;
+        `);
+        return { backfilled, invalidated };
+    });
+    const result = migrate.immediate();
+    console.warn(`[${logPrefix}] Gen-USearch legacy segment migration: backfilled=${result.backfilled}, invalidated=${result.invalidated}; manifest epochs preserved.`);
+    return true;
+}
+
 function addColumnIfMissing(db, table, column, definition, logPrefix) {
     try {
         const columns = db.prepare(`PRAGMA table_info(${table})`).all();
@@ -727,6 +988,8 @@ function initializeKnowledgeBaseSchema(db, options = {}) {
     for (const [table, column, definition] of GEN_USEARCH_ADDITIVE_MIGRATIONS) {
         addColumnIfMissing(db, table, column, definition, logPrefix);
     }
+    migrateLegacyGenUSearchReconciliation(db, logPrefix);
+    migrateLegacyGenUSearchSegments(db, logPrefix);
 }
 
 module.exports = {

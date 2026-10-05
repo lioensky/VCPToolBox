@@ -31,6 +31,7 @@ function createFixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g5-'));
     const dbPath = path.join(root, 'knowledge.sqlite');
     const segmentRoot = path.join(root, 'segments');
+    fs.mkdirSync(segmentRoot, { recursive: true });
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = FULL');

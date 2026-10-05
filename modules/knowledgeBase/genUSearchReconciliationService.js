@@ -92,9 +92,13 @@ class GenUSearchReconciliationService {
                 'GenUSearchReconciliationService requires a GenUSearchMetadataStore-compatible store'
             );
         }
-        if (!sourceViewProvider || typeof sourceViewProvider.readCommittedSourceView !== 'function') {
+        if (
+            !sourceViewProvider
+            || typeof sourceViewProvider.readCommittedSourceView !== 'function'
+            || typeof sourceViewProvider.withCommittedSourceView !== 'function'
+        ) {
             throw new TypeError(
-                'GenUSearchReconciliationService requires a canonical sourceViewProvider'
+                'GenUSearchReconciliationService requires a canonical sourceViewProvider with readCommittedSourceView() and withCommittedSourceView()'
             );
         }
         this.store = store;
@@ -121,6 +125,64 @@ class GenUSearchReconciliationService {
             currentUri: document.current_uri
         });
         return validateCommittedSourceView(rawView);
+    }
+
+    async #withCommittedSourceLease(docId, callback) {
+        const document = this.store.getDocument(docId);
+        if (!document || document.state !== 'ACTIVE') {
+            throw codedError(
+                'DOCUMENT_IDENTITY_AMBIGUOUS',
+                `Active Gen-USearch document "${docId}" is unavailable`
+            );
+        }
+        const request = Object.freeze({
+            docId,
+            currentUri: document.current_uri
+        });
+        let callbackCount = 0;
+        let callbackResult;
+        const result = await this.sourceViewProvider.withCommittedSourceView(
+            request,
+            async rawView => {
+                callbackCount += 1;
+                if (callbackCount !== 1) {
+                    throw codedError(
+                        'SOURCE_COMMIT_UNVERIFIED',
+                        'canonical source lease callback must execute exactly once'
+                    );
+                }
+                const source = validateCommittedSourceView(rawView);
+                const currentDocument = this.store.getDocument(docId);
+                if (
+                    !currentDocument
+                    || currentDocument.state !== 'ACTIVE'
+                    || (currentDocument.current_uri ?? null) !== (document.current_uri ?? null)
+                ) {
+                    throw codedError(
+                        'STALE_DOCUMENT_WRITER',
+                        'Document URI changed while the committed source lease was held'
+                    );
+                }
+                callbackResult = await callback(
+                    source,
+                    currentDocument.current_uri ?? null
+                );
+                return callbackResult;
+            }
+        );
+        if (callbackCount !== 1) {
+            throw codedError(
+                'SOURCE_COMMIT_UNVERIFIED',
+                'canonical source provider did not execute the committed source lease callback exactly once'
+            );
+        }
+        if (result !== callbackResult) {
+            throw codedError(
+                'SOURCE_COMMIT_UNVERIFIED',
+                'canonical source provider altered the committed source lease result'
+            );
+        }
+        return callbackResult;
     }
 
     #buildPlan(docId, source, baseDocumentUri) {
@@ -161,9 +223,19 @@ class GenUSearchReconciliationService {
     }
 
     async planAndAdmitCurrentSource(options = {}) {
-        const plan = await this.planCurrentSource(options);
-        const admitted = this.store.admitReconciliationPlan(plan);
-        return Object.freeze({ plan, admitted });
+        const docId = this.#normalizeRequest(options);
+        return this.#withCommittedSourceLease(
+            docId,
+            async (source, baseDocumentUri) => {
+                const plan = this.#buildPlan(
+                    docId,
+                    source,
+                    baseDocumentUri
+                );
+                const admitted = this.store.admitReconciliationPlan(plan);
+                return Object.freeze({ plan, admitted });
+            }
+        );
     }
 }
 
