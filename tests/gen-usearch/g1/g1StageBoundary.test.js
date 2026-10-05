@@ -26,6 +26,20 @@ test('G1 does not manufacture physical coverage facts or activate the engine', (
     }
 });
 
+test('G1 lifecycle primitives remain unwired from existing production serving paths', () => {
+    const forbidden = /GenUSearchMetadataStore|GenUSearchReconciliationService|\.stageVector\s*\(|\.publishCurrentHead\s*\(/;
+    const candidates = [
+        'KnowledgeBaseManager.js',
+        ...fs.readdirSync(path.join(root, 'modules/knowledgeBase'))
+            .filter(name => name.endsWith('.js'))
+            .map(name => `modules/knowledgeBase/${name}`)
+            .filter(rel => !g1ProductionFiles.includes(rel))
+    ];
+    for (const rel of candidates) {
+        assert.doesNotMatch(read(rel), forbidden, rel);
+    }
+});
+
 test('signed-int64-safe Vexus ABI covers add, batch, search, remove and atomic delta', () => {
     const rust = read('rust-vexus-lite/src/lib.rs');
     const types = read('rust-vexus-lite/index.d.ts');
@@ -52,6 +66,7 @@ test('signed-int64-safe Vexus ABI covers add, batch, search, remove and atomic d
 test('G1 workflow covers every production surface and upstream baseline dependency', () => {
     const workflow = read('.github/workflows/gen-usearch-g1.yml');
     const required = [
+        'contracts/gen-usearch/g1/**',
         'KnowledgeBaseManager.js',
         'config.env.example',
         'modules/knowledgeBase/indexRepository.js',
