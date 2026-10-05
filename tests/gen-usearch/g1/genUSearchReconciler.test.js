@@ -23,6 +23,7 @@ const {
 function baseOptions(overrides = {}) {
     return {
         docId: 'doc-1',
+        baseDocumentUri: 'diary/a.txt',
         observedSourceDigest: 'source-digest-1',
         observedSourceRevision: 'rev-2',
         targetRevision: 'rev-2',
