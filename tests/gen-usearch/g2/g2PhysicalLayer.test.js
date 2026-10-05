@@ -121,6 +121,31 @@ test('Gen0 MemTable mutation requires its bound writer capability and seals fail
     }
 });
 
+test('failed writer construction does not poison later authority on the same DB', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g2-constructor-'));
+    const db = new Database(path.join(root, 'knowledge.sqlite'));
+    try {
+        db.pragma('journal_mode = WAL');
+        db.pragma('synchronous = FULL');
+        assert.throws(
+            () => new GenUSearchPhysicalCoverageWriter({
+                db,
+                runtimeId: 'runtime-constructor'
+            })
+        );
+
+        initializeKnowledgeBaseSchema(db, { logPrefix: 'GenUSearchG2ConstructorTest' });
+        const writer = new GenUSearchPhysicalCoverageWriter({
+            db,
+            runtimeId: 'runtime-constructor'
+        });
+        assert.equal(writer.runtimeId, 'runtime-constructor');
+    } finally {
+        try { db.close(); } catch (_) {}
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('a database admits only one live G2 physical coverage writer', () => {
     const fixture = createFixture();
     try {
