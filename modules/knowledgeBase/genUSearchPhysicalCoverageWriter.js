@@ -363,19 +363,18 @@ class GenUSearchPhysicalCoverageWriter {
                 'physical removal is allowed only from the ACTIVE Gen0 MemTable'
             );
         }
-        if (this.#activeMemtable !== memtable) {
-            throw codedError(
-                'MEMTABLE_ACTIVE_GENERATION_CONFLICT',
-                'physical removal requires the writer-bound ACTIVE Gen0 MemTable'
-            );
-        }
-
         const parsed = canonicalVectorId(options.vectorId);
         const row = this._getVector.get(parsed.bigint);
         if (!row || row.vector_id == null) {
             throw codedError(
                 'VECTOR_METADATA_MISSING',
                 `Vector ${parsed.text} is not present in Gen-USearch metadata`
+            );
+        }
+        if (this.#activeMemtable !== memtable) {
+            throw codedError(
+                'MEMTABLE_ACTIVE_GENERATION_CONFLICT',
+                'physical removal requires the writer-bound ACTIVE Gen0 MemTable'
             );
         }
         if (row.state === 'ACTIVE') {
