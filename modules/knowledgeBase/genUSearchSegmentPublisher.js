@@ -730,6 +730,63 @@ class GenUSearchSegmentPublisher {
         };
     }
 
+    _assertManifestArtifactSet(epoch) {
+        const members = this._listManifestSegments
+            .all(epoch)
+            .map(row => row.segment_id);
+        for (const segmentId of members) {
+            const segment = this._getSegment.get(segmentId);
+            if (
+                !segment
+                || segment.state !== 'PUBLISHED'
+                || !segment.artifact_path
+                || !SHA256_RE.test(segment.artifact_digest || '')
+                || !fs.existsSync(segment.artifact_path)
+                || !fs.statSync(segment.artifact_path).isFile()
+                || sha256File(segment.artifact_path) !== segment.artifact_digest
+            ) {
+                throw codedError(
+                    'RECOVERY_MANIFEST_INVALID',
+                    `manifest artifact verification failed for ${segmentId}`
+                );
+            }
+        }
+        return members;
+    }
+
+    _verifyPublishedTopology(segmentId, vectorIds, epoch) {
+        const segment = this._getSegment.get(segmentId);
+        if (!segment || segment.state !== 'PUBLISHED') {
+            throw codedError(
+                'RECOVERY_MANIFEST_INVALID',
+                'published segment state is missing or invalid'
+            );
+        }
+        const members = this._listManifestSegments
+            .all(epoch)
+            .map(row => row.segment_id);
+        if (!members.includes(segmentId)) {
+            throw codedError(
+                'RECOVERY_MANIFEST_INVALID',
+                'PUBLISHED segment is absent from recorded manifest set'
+            );
+        }
+        const coverageRows = this._listSegmentCoverage.all(segmentId);
+        if (
+            coverageRows.some(row => row.coverage_state !== 'QUERY_VISIBLE')
+            || !exactSetEquals(
+                coverageRows.map(row => row.vector_id.toString()),
+                vectorIds
+            )
+        ) {
+            throw codedError(
+                'PHYSICAL_COVERAGE_MISSING',
+                'published segment coverage set diverged from immutable artifact'
+            );
+        }
+        return true;
+    }
+
     publishSealedMemTable(options = {}) {
         this.assertCrashDurableProfile();
         const source = this._assertSealedMemTable(options.memtable);
