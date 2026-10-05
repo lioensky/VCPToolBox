@@ -194,6 +194,50 @@ test('two SQLite connections to the same database file cannot split G2 writer au
     }
 });
 
+test('hard-link aliases cannot split G2 writer authority for one SQLite file', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g2-hardlink-'));
+    const original = path.join(root, 'knowledge.sqlite');
+    const alias = path.join(root, 'knowledge-alias.sqlite');
+    const first = new Database(original);
+    let second;
+    try {
+        first.pragma('journal_mode = WAL');
+        first.pragma('synchronous = FULL');
+        first.pragma('foreign_keys = ON');
+        initializeKnowledgeBaseSchema(first, { logPrefix: 'GenUSearchG2HardlinkTest' });
+        first.pragma('wal_checkpoint(TRUNCATE)');
+        fs.linkSync(original, alias);
+
+        second = new Database(alias);
+        second.pragma('journal_mode = WAL');
+        second.pragma('synchronous = FULL');
+        second.pragma('foreign_keys = ON');
+
+        const firstStat = fs.statSync(original);
+        const secondStat = fs.statSync(alias);
+        assert.equal(firstStat.dev, secondStat.dev);
+        assert.equal(firstStat.ino, secondStat.ino);
+
+        const writer = new GenUSearchPhysicalCoverageWriter({
+            db: first,
+            runtimeId: 'runtime-hardlink-primary'
+        });
+        assert.equal(writer.runtimeId, 'runtime-hardlink-primary');
+
+        assert.throws(
+            () => new GenUSearchPhysicalCoverageWriter({
+                db: second,
+                runtimeId: 'runtime-hardlink-secondary'
+            }),
+            error => error?.code === 'MEMTABLE_RUNTIME_ALREADY_OWNED'
+        );
+    } finally {
+        try { first.close(); } catch (_) {}
+        try { second?.close(); } catch (_) {}
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('writer rejects duplicate or detached MemTable source identities', () => {
     const fixture = createFixture();
     try {
