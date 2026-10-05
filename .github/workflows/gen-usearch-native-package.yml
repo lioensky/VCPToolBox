@@ -3,13 +3,13 @@ name: Gen-USearch Packaged Native ABI
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - codex/gen-usearch-g0-f2-upstream-main
     paths:
       - 'rust-vexus-lite/*.node'
       - 'rust-vexus-lite/index.js'
       - 'rust-vexus-lite/index.d.ts'
+      - 'rust-vexus-lite/Cargo.lock'
+      - 'rust-vexus-lite/Cargo.toml'
+      - 'rust-vexus-lite/src/**'
       - 'tests/gen-usearch/g1/packagedNativeAbi.test.js'
       - '.github/workflows/gen-usearch-native-package.yml'
   pull_request:
@@ -17,6 +17,9 @@ on:
       - 'rust-vexus-lite/*.node'
       - 'rust-vexus-lite/index.js'
       - 'rust-vexus-lite/index.d.ts'
+      - 'rust-vexus-lite/Cargo.lock'
+      - 'rust-vexus-lite/Cargo.toml'
+      - 'rust-vexus-lite/src/**'
       - 'tests/gen-usearch/g1/packagedNativeAbi.test.js'
       - '.github/workflows/gen-usearch-native-package.yml'
 

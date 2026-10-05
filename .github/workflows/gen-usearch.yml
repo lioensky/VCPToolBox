@@ -1,0 +1,92 @@
+name: Gen-USearch
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'docs/GEN_USEARCH_ARCHITECTURE.md'
+      - 'modules/knowledgeBase/genUSearch*.js'
+      - 'modules/knowledgeBase/schemaManager.js'
+      - 'rust-vexus-lite/Cargo.lock'
+      - 'rust-vexus-lite/Cargo.toml'
+      - 'rust-vexus-lite/index.d.ts'
+      - 'rust-vexus-lite/src/lib.rs'
+      - 'tests/gen-usearch/**'
+      - 'tests/tagIndexGenerationalBaseline.test.js'
+      - '.github/workflows/gen-usearch.yml'
+  pull_request:
+    paths:
+      - 'docs/GEN_USEARCH_ARCHITECTURE.md'
+      - 'modules/knowledgeBase/genUSearch*.js'
+      - 'modules/knowledgeBase/schemaManager.js'
+      - 'rust-vexus-lite/Cargo.lock'
+      - 'rust-vexus-lite/Cargo.toml'
+      - 'rust-vexus-lite/index.d.ts'
+      - 'rust-vexus-lite/src/lib.rs'
+      - 'tests/gen-usearch/**'
+      - 'tests/tagIndexGenerationalBaseline.test.js'
+      - '.github/workflows/gen-usearch.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install repository dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify signed-int64 parser in Rust
+        run: cargo test --manifest-path rust-vexus-lite/Cargo.toml gen_usearch_key_tests
+
+      - name: Install N-API build CLI
+        run: npm install --prefix rust-vexus-lite --ignore-scripts --no-save --package-lock=false --no-audit --no-fund @napi-rs/cli@2.16.0
+
+      - name: Build Vexus native addon from source
+        run: |
+          cd rust-vexus-lite
+          ./node_modules/.bin/napi build --platform
+
+      - name: Run architecture and authority-boundary tests
+        run: |
+          node --test tests/gen-usearch/genUSearchArchitectureInvariants.test.js
+          node --test tests/gen-usearch/genUSearchBoundary.test.js
+
+      - name: Run metadata, reconciliation and native ABI tests
+        run: |
+          node --test tests/gen-usearch/g1/vexusKey64Abi.test.js
+          node --test tests/gen-usearch/g1/genUSearchMetadataStore.test.js
+          node --test tests/gen-usearch/g1/genUSearchReconciler.test.js
+          node --test tests/gen-usearch/g1/genUSearchReconciliationService.test.js
+          node --test tests/gen-usearch/g1/tagBaselineSchemaCompatibility.test.js
+
+      - name: Run physical, segment, query and GC regressions
+        run: |
+          node --test tests/gen-usearch/g2/g2PhysicalLayer.test.js
+          node --test tests/gen-usearch/g3/g3SegmentPublisher.test.js
+          node --test tests/gen-usearch/g4/g4QueryReadView.test.js
+          node --test tests/gen-usearch/g5/g5GcCoordinator.test.js
+
+      - name: Regress upstream generational baseline
+        run: node --test tests/tagIndexGenerationalBaseline.test.js
+
+  windows-native:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Verify Windows write-through build
+        run: cargo check --locked --manifest-path rust-vexus-lite/Cargo.toml

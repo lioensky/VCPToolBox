@@ -1,8 +1,0 @@
-{
-  "name": "gen-usearch-g0-contract-tests",
-  "private": true,
-  "version": "1.0.0",
-  "devDependencies": {
-    "ajv": "8.17.1"
-  }
-}
