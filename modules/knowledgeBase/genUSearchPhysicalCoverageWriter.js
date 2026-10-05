@@ -3,6 +3,7 @@
 const GenUSearchMemTable = require('./genUSearchMemTable');
 
 const MAX_SIGNED_INT64 = 9223372036854775807n;
+const LIVE_WRITER_BY_DB = new WeakMap();
 
 function codedError(code, message) {
     const error = new Error(message);
@@ -42,6 +43,7 @@ function exactVectorBytes(vector) {
 class GenUSearchPhysicalCoverageWriter {
     #bootstrapped = false;
     #activeMemtable = null;
+    #mutationTokens = new WeakMap();
 
     constructor(options = {}) {
         const db = options.db;
@@ -50,6 +52,13 @@ class GenUSearchPhysicalCoverageWriter {
                 'GenUSearchPhysicalCoverageWriter requires a better-sqlite3 compatible database'
             );
         }
+        if (LIVE_WRITER_BY_DB.has(db)) {
+            throw codedError(
+                'MEMTABLE_RUNTIME_ALREADY_OWNED',
+                'this database already has a live G2 physical coverage writer'
+            );
+        }
+
         const runtimeId = String(options.runtimeId || '').trim();
         if (!/^[A-Za-z0-9._-]{1,128}$/.test(runtimeId)) {
             throw new TypeError(
@@ -63,6 +72,7 @@ class GenUSearchPhysicalCoverageWriter {
         });
         this.db = db;
         this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+        LIVE_WRITER_BY_DB.set(db, this);
 
         this._getVector = db.prepare(`
             SELECT
@@ -129,6 +139,21 @@ class GenUSearchPhysicalCoverageWriter {
         return this.#bootstrapped;
     }
 
+    createMemTable(options = {}) {
+        const token = Object.freeze({});
+        const memtable = new GenUSearchMemTable({
+            VexusIndex: options.VexusIndex,
+            dimension: options.dimension,
+            capacity: options.capacity,
+            runtimeId: this.runtimeId,
+            generation: options.generation,
+            embeddingFingerprint: options.embeddingFingerprint,
+            mutationToken: token
+        });
+        this.#mutationTokens.set(memtable, token);
+        return memtable;
+    }
+
     assertCrashDurableProfile() {
         const journalMode = String(
             this.db.pragma('journal_mode', { simple: true }) || ''
@@ -163,6 +188,12 @@ class GenUSearchPhysicalCoverageWriter {
         if (!(memtable instanceof GenUSearchMemTable)) {
             throw new TypeError('physical coverage requires a GenUSearchMemTable');
         }
+        if (!this.#mutationTokens.has(memtable)) {
+            throw codedError(
+                'MEMTABLE_NOT_BOUND_TO_WRITER',
+                'MemTable was not created by this physical coverage writer'
+            );
+        }
         if (memtable.runtimeId !== this.runtimeId) {
             throw codedError(
                 'MEMTABLE_RUNTIME_MISMATCH',
@@ -176,6 +207,11 @@ class GenUSearchPhysicalCoverageWriter {
             );
         }
         return memtable;
+    }
+
+    _tokenFor(memtable) {
+        this._assertBoundMemTable(memtable);
+        return this.#mutationTokens.get(memtable);
     }
 
     _readStagedVector(vectorId) {
@@ -223,6 +259,11 @@ class GenUSearchPhysicalCoverageWriter {
         });
     }
 
+    sealMemTable(memtable) {
+        const token = this._tokenFor(memtable);
+        return memtable.seal(token);
+    }
+
     admitVector(options = {}) {
         this._assertBootstrapped();
         const memtable = this._assertBoundMemTable(options.memtable);
@@ -240,17 +281,15 @@ class GenUSearchPhysicalCoverageWriter {
                 'staged vector embedding fingerprint does not match the active Gen0 MemTable'
             );
         }
-        if (this.#activeMemtable && this.#activeMemtable !== memtable) {
-            if (this.#activeMemtable.state !== 'SEALED_QUERY_VISIBLE') {
-                throw codedError(
-                    'MEMTABLE_ACTIVE_GENERATION_CONFLICT',
-                    'another Gen0 MemTable generation is still ACTIVE'
-                );
-            }
-            this.#activeMemtable = null;
-        }
-        if (!this.#activeMemtable) {
-            this.#activeMemtable = memtable;
+        if (
+            this.#activeMemtable
+            && this.#activeMemtable !== memtable
+            && this.#activeMemtable.state !== 'SEALED_QUERY_VISIBLE'
+        ) {
+            throw codedError(
+                'MEMTABLE_ACTIVE_GENERATION_CONFLICT',
+                'another Gen0 MemTable generation is still ACTIVE'
+            );
         }
 
         const bytes = exactVectorBytes(options.vector);
@@ -261,11 +300,20 @@ class GenUSearchPhysicalCoverageWriter {
             );
         }
 
+        const token = this._tokenFor(memtable);
+        const previousActive = this.#activeMemtable;
         memtable.addVector({
             vectorId: parsed.text,
             vector: options.vector
-        });
+        }, token);
         GenUSearchMemTable.assertContains(memtable, parsed.text);
+
+        if (
+            !this.#activeMemtable
+            || this.#activeMemtable.state === 'SEALED_QUERY_VISIBLE'
+        ) {
+            this.#activeMemtable = memtable;
+        }
 
         try {
             const now = BigInt(this.now());
@@ -284,9 +332,15 @@ class GenUSearchPhysicalCoverageWriter {
             });
         } catch (error) {
             try {
-                memtable.removeVector(parsed.text);
+                memtable.removeVector(parsed.text, token);
             } catch (_) {
                 // Extra hidden bytes are safe because durable coverage was not published.
+            }
+            if (
+                previousActive !== memtable
+                && memtable.stats().vectorCount === 0
+            ) {
+                this.#activeMemtable = previousActive;
             }
             throw error;
         }
@@ -299,6 +353,12 @@ class GenUSearchPhysicalCoverageWriter {
             throw codedError(
                 'MEMTABLE_NOT_ACTIVE',
                 'physical removal is allowed only from the ACTIVE Gen0 MemTable'
+            );
+        }
+        if (this.#activeMemtable !== memtable) {
+            throw codedError(
+                'MEMTABLE_ACTIVE_GENERATION_CONFLICT',
+                'physical removal requires the writer-bound ACTIVE Gen0 MemTable'
             );
         }
 
@@ -323,7 +383,10 @@ class GenUSearchPhysicalCoverageWriter {
                 memtable.sourceId
             )
         );
-        const physicalRemoved = memtable.removeVector(parsed.text);
+        const physicalRemoved = memtable.removeVector(
+            parsed.text,
+            this._tokenFor(memtable)
+        );
 
         return Object.freeze({
             vectorId: parsed.text,
