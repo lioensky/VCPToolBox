@@ -337,9 +337,9 @@ function validateQueryResponseFence(input) {
 
 function validateAllocatorHistory(input) {
   try {
-    const before = parseVectorId(input?.durable_high_water_before, 'durable_high_water_before');
+    const before = parseSequence(input?.durable_high_water_before, 'durable_high_water_before');
     const allocated = validateVectorIdList(input?.allocated_ids || [], 'allocated_ids').map(BigInt);
-    const after = parseVectorId(input?.durable_high_water_after, 'durable_high_water_after');
+    const after = parseSequence(input?.durable_high_water_after, 'durable_high_water_after');
     const restartNext = parseVectorId(input?.restart_next_id, 'restart_next_id');
     if (allocated.length === 0) return { ok:false, code:'VECTOR_ID_ALLOCATOR_CORRUPT' };
     let prev = before;
@@ -439,9 +439,14 @@ function validateBoundedReadView(input) {
     const now = parseSequence(input?.now_ms, 'now_ms');
     if (deadline <= created) return { ok:false, code:'QUERY_READ_VIEW_EXPIRED' };
     if (now > deadline) {
-      const safe = input?.state === 'CANCEL_REQUESTED' &&
+      const cancelling = ['CANCEL_REQUESTED','QUIESCING'].includes(input?.state) &&
         input?.pins_released === false;
-      return safe ? { ok:true } : { ok:false, code:'QUERY_READ_VIEW_EXPIRED' };
+      const safelyReleased = input?.state === 'RELEASED' &&
+        input?.worker_quiescent === true &&
+        input?.pins_released === true;
+      return (cancelling || safelyReleased)
+        ? { ok:true }
+        : { ok:false, code:'QUERY_READ_VIEW_EXPIRED' };
     }
     return input?.state === 'ACTIVE'
       ? { ok:true }
@@ -704,6 +709,8 @@ function verifyCoverage(authorityLock, architecture, traceability, registry, fai
   const registryInvariantIds = registry.invariants.map(item => item.id);
   const architectureRequirementIds = architecture.requirements.map(item => item.id);
   const traceabilityRequirementIds = traceability.rows.map(item => item.architecture_requirement_id);
+  const architectureAmendmentIds = architecture.amendments.map(item => item.id);
+  const traceabilityAmendmentIds = traceability.amendment_coverage.map(item => item.amendment_id);
   const coveredInvariants = [];
 
   for (const invariantId of authorityLock.required_invariant_ids) {
@@ -748,6 +755,8 @@ function verifyCoverage(authorityLock, architecture, traceability, registry, fai
       JSON.stringify(registry.enums) === JSON.stringify(authorityLock.critical_enums) &&
       exactSetEquals(architectureRequirementIds, authorityLock.required_architecture_requirement_ids) &&
       exactSetEquals(traceabilityRequirementIds, authorityLock.required_architecture_requirement_ids) &&
+      exactSetEquals(architectureAmendmentIds, authorityLock.required_amendment_ids) &&
+      exactSetEquals(traceabilityAmendmentIds, authorityLock.required_amendment_ids) &&
       exactSetEquals(registryInvariantIds, authorityLock.required_invariant_ids) &&
       exactSetEquals(failureCodes, authorityLock.required_failure_codes) &&
       exactSetEquals(finalIds, authorityLock.required_final_fixture_ids) &&
