@@ -16,6 +16,9 @@ const GenUSearchMetadataStore = require(
 const GenUSearchPhysicalCoverageWriter = require(
     '../../../modules/knowledgeBase/genUSearchPhysicalCoverageWriter'
 );
+const GenUSearchMemTable = require(
+    '../../../modules/knowledgeBase/genUSearchMemTable'
+);
 const GenUSearchSegmentPublisher = require(
     '../../../modules/knowledgeBase/genUSearchSegmentPublisher'
 );
@@ -1047,6 +1050,57 @@ test('runtime owner change with unchanged fence still blocks the response', () =
     }
 });
 
+
+test('detached MemTable cannot self-bind and impersonate writer-owned physical authority', () => {
+    const fixture = createFixture();
+    try {
+        const real = fixture.createMemtable(1);
+        const current = fixture.stageAndAdmit(real, {
+            ordinal: 'a',
+            vector: new Float32Array([1, 0, 0, 0]),
+            contentHash: 'cf'.repeat(32)
+        });
+
+        const attackerToken = {};
+        const detached = new GenUSearchMemTable({
+            VexusIndex,
+            dimension: 4,
+            capacity: 64,
+            runtimeId: 'runtime-g4',
+            generation: '1',
+            embeddingFingerprint: 'embed-v1',
+            mutationToken: attackerToken
+        });
+        detached.addVector({
+            vectorId: current.staged.vector_id,
+            vector: current.vector
+        }, attackerToken);
+
+        assert.equal(detached.sourceId, real.sourceId);
+        assert.equal(ReadPins.bindMemtableDatabase, undefined);
+        assert.equal(ReadPins.assertMemtableDatabase, undefined);
+        assert.throws(
+            () => GenUSearchPhysicalCoverageWriter.assertMemtableDatabaseAuthority(
+                detached,
+                fixture.db
+            ),
+            error => error?.code === 'QUERY_READ_VIEW_INVALID'
+        );
+        assert.throws(
+            () => fixture.coordinator.acquire({
+                memtables: [detached],
+                deadline: fixture.now() + 500
+            }),
+            error => error?.code === 'QUERY_READ_VIEW_INVALID'
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(detached),
+            0
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
 
 test('MemTable from another SQLite database cannot impersonate the same runtime generation', () => {
     const first = createFixture();
