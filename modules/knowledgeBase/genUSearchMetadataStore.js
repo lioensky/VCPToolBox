@@ -484,7 +484,18 @@ class GenUSearchMetadataStore {
                     'visibility_seq'
                 );
 
-                this._closeUriHistory.run(visibilitySeq, docId);
+                const closedHistory = this._closeUriHistory.run(
+                    visibilitySeq,
+                    docId
+                ).changes;
+                const expectedOpenHistory = existing.current_uri == null ? 0 : 1;
+                if (closedHistory !== expectedOpenHistory) {
+                    throw codedError(
+                        'METADATA_INTEGRITY_FAILURE',
+                        `Document "${docId}" has ${closedHistory} open URI history rows; expected ${expectedOpenHistory}`
+                    );
+                }
+
                 const changed = this._updateDocumentUri.run(
                     nextUri,
                     now,
