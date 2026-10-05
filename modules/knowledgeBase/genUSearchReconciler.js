@@ -123,6 +123,12 @@ function normalizeNextChunks(chunks) {
         if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) {
             throw new TypeError(`nextChunks[${index}] must be an object`);
         }
+        if (!Object.prototype.hasOwnProperty.call(chunk, 'content')) {
+            throw codedError(
+                'CHUNK_HASH_CONTRACT_MISMATCH',
+                `nextChunks[${index}] must include exact source content`
+            );
+        }
         const slotIndex = chunk.slotIndex == null
             ? index
             : requireSlotIndex(chunk.slotIndex, `nextChunks[${index}].slotIndex`);
@@ -140,12 +146,13 @@ function normalizeNextChunks(chunks) {
 }
 
 function deriveInsertedChunkId(docId, targetRevision, slotIndex, contentHash) {
-    const digest = crypto.createHash('sha256')
-        .update(Buffer.from(
-            `gen-usearch-chunk-v1\0${docId}\0${targetRevision}\0${slotIndex}\0${contentHash}`,
-            'utf8'
-        ))
-        .digest('hex');
+    const digest = hashCanonical({
+        namespace: 'gen-usearch-chunk-v1',
+        docId: requireString(docId, 'docId'),
+        targetRevision: requireString(targetRevision, 'targetRevision', { trim: false }),
+        slotIndex: requireSlotIndex(slotIndex, 'slotIndex'),
+        contentHash: requireSha256(contentHash, 'contentHash')
+    });
     return `guc_${digest.slice(0, 40)}`;
 }
 
@@ -193,7 +200,9 @@ function compareOperations(left, right) {
         if (a[index] < b[index]) return -1;
         if (a[index] > b[index]) return 1;
     }
-    return stableStringify(left).localeCompare(stableStringify(right));
+    const aText = stableStringify(left);
+    const bText = stableStringify(right);
+    return aText < bText ? -1 : (aText > bText ? 1 : 0);
 }
 
 function assertExactKeys(value, expectedKeys, label) {
@@ -254,6 +263,12 @@ function validateOperationShape(operation, index) {
         requireSlotIndex(operation.fromSlot, `${label}.fromSlot`);
         requireSlotIndex(operation.toSlot, `${label}.toSlot`);
         requireSha256(operation.contentHash, `${label}.contentHash`);
+        if (operation.kind === 'SAME' && operation.fromSlot !== operation.toSlot) {
+            throw codedError('RECONCILER_AUTHORITY_VIOLATION', `${label} SAME must not move slots`);
+        }
+        if (operation.kind === 'MOVE' && operation.fromSlot === operation.toSlot) {
+            throw codedError('RECONCILER_AUTHORITY_VIOLATION', `${label} MOVE must change slots`);
+        }
         return;
     }
     if (operation.kind === 'MODIFY') {
@@ -263,6 +278,9 @@ function validateOperationShape(operation, index) {
         requireSlotIndex(operation.toSlot, `${label}.toSlot`);
         requireSha256(operation.fromContentHash, `${label}.fromContentHash`);
         requireSha256(operation.toContentHash, `${label}.toContentHash`);
+        if (operation.fromContentHash === operation.toContentHash) {
+            throw codedError('RECONCILER_AUTHORITY_VIOLATION', `${label} MODIFY must change exact content`);
+        }
         return;
     }
     if (operation.kind === 'INSERT') {
@@ -321,6 +339,48 @@ function validateOperationShape(operation, index) {
     }
     if (operation.contentHash !== undefined) requireSha256(operation.contentHash, `${label}.contentHash`);
 }
+function validatePlanIdentitySets(operations) {
+    const seenOld = new Set();
+    const seenTargetSlots = new Set();
+    const seenResultIds = new Set();
+
+    const claim = (set, value, label) => {
+        if (set.has(value)) {
+            throw codedError('CHUNK_IDENTITY_AMBIGUOUS', `Reconciliation plan repeats ${label}: ${value}`);
+        }
+        set.add(value);
+    };
+
+    for (const operation of operations) {
+        if (['SAME', 'MOVE', 'MODIFY', 'DELETE'].includes(operation.kind)) {
+            claim(seenOld, operation.chunkId, 'old chunk identity');
+        }
+        if (operation.kind === 'SPLIT' || operation.kind === 'MERGE') {
+            operation.oldChunkIds.forEach(id => claim(seenOld, id, 'old chunk identity'));
+        }
+        if (operation.kind === 'AMBIGUOUS') {
+            operation.oldChunkIds.forEach(id => claim(seenOld, id, 'old chunk identity'));
+        }
+
+        if (['SAME', 'MOVE', 'MODIFY', 'INSERT'].includes(operation.kind)) {
+            claim(seenTargetSlots, operation.toSlot, 'target slot');
+        }
+        if (operation.kind === 'SPLIT' || operation.kind === 'MERGE') {
+            operation.newChunks.forEach(row => claim(seenTargetSlots, row.toSlot, 'target slot'));
+        }
+        if (operation.kind === 'AMBIGUOUS') {
+            operation.nextSlots.forEach(slot => claim(seenTargetSlots, slot, 'target slot'));
+        }
+
+        if (['SAME', 'MOVE', 'MODIFY', 'INSERT'].includes(operation.kind)) {
+            claim(seenResultIds, operation.chunkId, 'result chunk identity');
+        }
+        if (operation.kind === 'SPLIT' || operation.kind === 'MERGE') {
+            operation.newChunks.forEach(row => claim(seenResultIds, row.chunkId, 'result chunk identity'));
+        }
+    }
+}
+
 function assertIdentityOnlyPlan(plan) {
     if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
         throw new TypeError('plan must be an object');
@@ -340,10 +400,17 @@ function assertIdentityOnlyPlan(plan) {
     requireString(plan.observedSourceDigest, 'plan.observedSourceDigest');
     requireString(plan.observedSourceRevision, 'plan.observedSourceRevision', { trim: false });
     requireString(plan.targetRevision, 'plan.targetRevision', { trim: false });
+    if (plan.observedSourceRevision !== plan.targetRevision) {
+        throw codedError(
+            'SOURCE_OBSERVATION_INVALID',
+            'Observed source revision and reconciliation target revision must be identical'
+        );
+    }
     requireSha256(plan.planDigest, 'plan.planDigest');
     requireString(plan.planId, 'plan.planId');
     if (!Array.isArray(plan.operations)) throw new TypeError('plan.operations must be an array');
     plan.operations.forEach(validateOperationShape);
+    validatePlanIdentitySets(plan.operations);
 
     if (!plan.summary || typeof plan.summary !== 'object' || Array.isArray(plan.summary)) {
         throw new TypeError('plan.summary must be an object');

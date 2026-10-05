@@ -197,6 +197,14 @@ class GenUSearchMetadataStore {
             FROM gen_usearch_reconciliation_plans
             WHERE doc_id = ? AND target_revision = ?
         `);
+        this._getOpenReconciliationPlanByDocument = db.prepare(`
+            SELECT *
+            FROM gen_usearch_reconciliation_plans
+            WHERE doc_id = ?
+              AND state IN ('PENDING', 'ADMITTED', 'ERROR')
+            ORDER BY created_at, plan_id
+            LIMIT 1
+        `);
         this._insertReconciliationPlan = db.prepare(`
             INSERT INTO gen_usearch_reconciliation_plans (
                 plan_id,
@@ -490,6 +498,38 @@ class GenUSearchMetadataStore {
                 const documentState = hasAmbiguity ? 'ERROR' : 'ADMITTED';
                 const indexState = hasAmbiguity ? 'INDEX_ERROR' : 'INDEX_LAGGING';
 
+                const oldChunkIds = new Set();
+                const freshChunkIds = new Set();
+                for (const operation of plan.operations) {
+                    if (['SAME', 'MOVE', 'MODIFY', 'DELETE'].includes(operation.kind)) {
+                        oldChunkIds.add(operation.chunkId);
+                    } else if (operation.kind === 'SPLIT' || operation.kind === 'MERGE') {
+                        operation.oldChunkIds.forEach(id => oldChunkIds.add(id));
+                        operation.newChunks.forEach(row => freshChunkIds.add(row.chunkId));
+                    } else if (operation.kind === 'INSERT') {
+                        freshChunkIds.add(operation.chunkId);
+                    } else if (operation.kind === 'AMBIGUOUS') {
+                        operation.oldChunkIds.forEach(id => oldChunkIds.add(id));
+                    }
+                }
+                for (const chunkId of oldChunkIds) {
+                    const head = this._getChunkHead.get(chunkId);
+                    if (!head || head.doc_id !== plan.docId) {
+                        throw codedError(
+                            'CHUNK_IDENTITY_AMBIGUOUS',
+                            `Chunk identity "${chunkId}" is not owned by document "${plan.docId}"`
+                        );
+                    }
+                }
+                for (const chunkId of freshChunkIds) {
+                    if (this._getChunkHead.get(chunkId)) {
+                        throw codedError(
+                            'CHUNK_IDENTITY_AMBIGUOUS',
+                            `Planned new chunk identity already exists: ${chunkId}`
+                        );
+                    }
+                }
+
                 if (existing) {
                     if (
                         existing.plan_id !== plan.planId
@@ -516,6 +556,14 @@ class GenUSearchMetadataStore {
                         );
                     }
                     return existing;
+                }
+
+                const openPlan = this._getOpenReconciliationPlanByDocument.get(plan.docId);
+                if (openPlan) {
+                    throw codedError(
+                        'SOURCE_OBSERVATION_INVALID',
+                        `Document "${plan.docId}" already has unresolved reconciliation plan ${openPlan.plan_id}`
+                    );
                 }
 
                 const changed = this._recordPlanObservation.run(

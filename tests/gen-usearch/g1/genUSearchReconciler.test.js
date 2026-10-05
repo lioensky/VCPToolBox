@@ -15,6 +15,7 @@ const GenUSearchMetadataStore = require(
 );
 const {
     hashExactChunkContent,
+    deriveInsertedChunkId,
     assertIdentityOnlyPlan,
     reconcileDocumentChunks
 } = require('../../../modules/knowledgeBase/genUSearchReconciler');
@@ -68,6 +69,14 @@ test('exact UTF-8 chunk hashing is byte exact and does not normalize content', (
     assert.notEqual(hashExactChunkContent('alpha'), hashExactChunkContent('alpha\n'));
     assert.notEqual(hashExactChunkContent('é'), hashExactChunkContent('e\u0301'));
     assert.equal(hashExactChunkContent('alpha'), hashExactChunkContent('alpha'));
+});
+
+test('deterministic inserted IDs are field-bound and delimiter-collision safe', () => {
+    const hash = hashExactChunkContent('alpha');
+    const first = deriveInsertedChunkId('a\0b', 'c', 0, hash);
+    const second = deriveInsertedChunkId('a', 'b\0c', 0, hash);
+    assert.notEqual(first, second);
+    assert.equal(first, deriveInsertedChunkId('a\0b', 'c', 0, hash));
 });
 
 test('unique exact content preserves chunk identity as SAME or MOVE', () => {
@@ -202,6 +211,24 @@ test('duplicate exact content and cross-anchor uncertainty fail closed to AMBIGU
     ));
 });
 
+test('current source hashing cannot be bypassed and target revision must equal observed revision', () => {
+    assert.throws(
+        () => reconcileDocumentChunks(baseOptions({
+            nextChunks: [{ slotIndex: 0, contentHash: hashExactChunkContent('alpha') }]
+        })),
+        error => error?.code === 'CHUNK_HASH_CONTRACT_MISMATCH'
+    );
+
+    assert.throws(
+        () => reconcileDocumentChunks(baseOptions({
+            observedSourceRevision: 'rev-2',
+            targetRevision: 'rev-3',
+            nextChunks: [next(0, 'alpha')]
+        })),
+        error => error?.code === 'SOURCE_OBSERVATION_INVALID'
+    );
+});
+
 test('identity-only plan validation rejects tampering and lifecycle fields', () => {
     const plan = reconcileDocumentChunks(baseOptions({
         previousChunks: [],
@@ -233,6 +260,14 @@ test('identity-only plan validation rejects tampering and lifecycle fields', () 
     assert.throws(
         () => assertIdentityOnlyPlan(nestedLifecycleTamper),
         error => error?.code === 'RECONCILER_AUTHORITY_VIOLATION'
+    );
+
+    const duplicateIdentity = structuredClone(plan);
+    duplicateIdentity.operations.push(structuredClone(duplicateIdentity.operations[0]));
+    duplicateIdentity.summary.INSERT += 1;
+    assert.throws(
+        () => assertIdentityOnlyPlan(duplicateIdentity),
+        error => error?.code === 'CHUNK_IDENTITY_AMBIGUOUS'
     );
 
     const digestTamper = structuredClone(plan);
@@ -282,6 +317,8 @@ test('source observation and reconciliation plan are admitted durably in one tra
 test('AMBIGUOUS reconciliation is persisted as ERROR and never becomes publishable admission', () => {
     const fixture = createStoreFixture();
     try {
+        fixture.store.createChunkIdentity({ chunkId: 'c-1', docId: 'doc-1' });
+        fixture.store.createChunkIdentity({ chunkId: 'c-2', docId: 'doc-1' });
         const ambiguous = reconcileDocumentChunks(baseOptions({
             previousChunks: [
                 previous('c-1', 0, 'same'),
@@ -303,6 +340,54 @@ test('AMBIGUOUS reconciliation is persisted as ERROR and never becomes publishab
     }
 });
 
+test('plan admission enforces chunk ownership, fresh-ID collision safety and one unresolved plan per document', () => {
+    const fixture = createStoreFixture();
+    try {
+        fixture.store.createDocument({
+            docId: 'doc-2',
+            uri: 'diary/b.txt',
+            visibilitySeq: '0'
+        });
+        fixture.store.createChunkIdentity({ chunkId: 'foreign-chunk', docId: 'doc-2' });
+
+        const foreign = reconcileDocumentChunks(baseOptions({
+            previousChunks: [previous('foreign-chunk', 0, 'old')],
+            nextChunks: [next(0, 'new')]
+        }));
+        assert.throws(
+            () => fixture.store.admitReconciliationPlan(foreign),
+            error => error?.code === 'CHUNK_IDENTITY_AMBIGUOUS'
+        );
+
+        const first = reconcileDocumentChunks(baseOptions({
+            nextChunks: [next(0, 'first')]
+        }));
+        const plannedId = first.operations.find(op => op.kind === 'INSERT').chunkId;
+        fixture.store.createChunkIdentity({ chunkId: plannedId, docId: 'doc-2' });
+        assert.throws(
+            () => fixture.store.admitReconciliationPlan(first),
+            error => error?.code === 'CHUNK_IDENTITY_AMBIGUOUS'
+        );
+
+        const admitted = reconcileDocumentChunks(baseOptions({
+            nextChunks: [next(0, 'safe')]
+        }));
+        fixture.store.admitReconciliationPlan(admitted);
+        const concurrent = reconcileDocumentChunks(baseOptions({
+            observedSourceDigest: 'digest-3',
+            observedSourceRevision: 'rev-3',
+            targetRevision: 'rev-3',
+            nextChunks: [next(0, 'later')]
+        }));
+        assert.throws(
+            () => fixture.store.admitReconciliationPlan(concurrent),
+            error => error?.code === 'SOURCE_OBSERVATION_INVALID'
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('failed plan-item persistence rolls back the source observation', () => {
     const fixture = createStoreFixture();
     try {
@@ -313,6 +398,16 @@ test('failed plan-item persistence rolls back the source observation', () => {
             nextChunks: [next(0, 'alpha')]
         }));
         fixture.store.admitReconciliationPlan(first);
+        fixture.db.prepare(`
+            UPDATE gen_usearch_reconciliation_plans
+            SET state = 'COMPLETE'
+            WHERE plan_id = ?
+        `).run(first.planId);
+        fixture.db.prepare(`
+            UPDATE gen_usearch_documents
+            SET reconciliation_state = 'COMPLETE', index_state = 'CURRENT'
+            WHERE doc_id = 'doc-1'
+        `).run();
 
         fixture.db.exec(`
             CREATE TRIGGER fail_reconciliation_item_insert
@@ -326,7 +421,7 @@ test('failed plan-item persistence rolls back the source observation', () => {
             targetRevision: 'rev-3',
             observedSourceRevision: 'rev-3',
             observedSourceDigest: 'digest-3',
-            previousChunks: [previous('c-a', 0, 'alpha')],
+            previousChunks: [],
             nextChunks: [next(0, 'beta')]
         }));
         assert.throws(() => fixture.store.admitReconciliationPlan(second));
@@ -335,7 +430,8 @@ test('failed plan-item persistence rolls back the source observation', () => {
         assert.equal(document.observed_source_digest, 'digest-2');
         assert.equal(document.observed_source_revision, 'rev-2');
         assert.equal(document.reconcile_target_revision, 'rev-2');
-        assert.equal(document.reconciliation_state, 'ADMITTED');
+        assert.equal(document.reconciliation_state, 'COMPLETE');
+        assert.equal(document.index_state, 'CURRENT');
         assert.equal(fixture.store.getReconciliationPlan(second.planId), null);
     } finally {
         fixture.cleanup();

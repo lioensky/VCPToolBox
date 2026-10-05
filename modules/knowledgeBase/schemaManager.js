@@ -370,6 +370,9 @@ const GEN_USEARCH_SCHEMA_SQL = `
     );
     CREATE INDEX IF NOT EXISTS idx_gen_usearch_reconciliation_doc_state
         ON gen_usearch_reconciliation_plans(doc_id, state, target_revision);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_gen_usearch_one_open_reconciliation_per_doc
+        ON gen_usearch_reconciliation_plans(doc_id)
+        WHERE state IN ('PENDING', 'ADMITTED', 'ERROR');
 
     CREATE TABLE IF NOT EXISTS gen_usearch_reconciliation_items (
         plan_id TEXT NOT NULL,
