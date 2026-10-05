@@ -28,7 +28,7 @@
       "const": "G0"
     },
     "status": {
-      "const": "CANDIDATE_NOT_FROZEN"
+      "const": "FROZEN"
     },
     "identity_encoding": {
       "const": {
