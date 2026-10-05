@@ -37,11 +37,10 @@ function createFixture() {
         runtimeId: 'runtime-a',
         now: () => now++
     });
-    const memtable = new GenUSearchMemTable({
+    const memtable = writer.createMemTable({
         VexusIndex,
         dimension: 4,
         capacity: 32,
-        runtimeId: 'runtime-a',
         generation: '1',
         embeddingFingerprint: 'embed-v1'
     });
@@ -93,52 +92,48 @@ function createStagedVersion(fixture, options = {}) {
     return { staged, vector, chunkId };
 }
 
-test('Gen0 MemTable uses canonical key64 identity and seals fail-closed', () => {
-    const memtable = new GenUSearchMemTable({
-        VexusIndex,
-        dimension: 4,
-        capacity: 16,
-        runtimeId: 'runtime-1',
-        generation: '7',
-        embeddingFingerprint: 'embed-v1'
-    });
-    assert.equal(memtable.sourceId, 'gen0:runtime-1:7');
-    assert.equal(memtable.state, 'ACTIVE');
+test('Gen0 MemTable mutation requires its bound writer capability and seals fail-closed', () => {
+    const fixture = createFixture();
+    try {
+        assert.equal(fixture.memtable.sourceId, 'gen0:runtime-a:1');
+        assert.equal(fixture.memtable.state, 'ACTIVE');
 
-    memtable.addVector({
-        vectorId: '9007199254740993',
-        vector: new Float32Array([1, 0, 0, 0])
-    });
-    assert.equal(memtable.hasVector('9007199254740993'), true);
-    assert.equal(memtable.stats().vectorCount, 1);
+        assert.throws(
+            () => fixture.memtable.addVector({
+                vectorId: '9007199254740993',
+                vector: new Float32Array([1, 0, 0, 0])
+            }),
+            error => error?.code === 'MEMTABLE_MUTATION_AUTHORITY_REQUIRED'
+        );
+        assert.throws(
+            () => fixture.memtable.removeVector('9007199254740993'),
+            error => error?.code === 'MEMTABLE_MUTATION_AUTHORITY_REQUIRED'
+        );
+        assert.throws(
+            () => fixture.memtable.seal(),
+            error => error?.code === 'MEMTABLE_MUTATION_AUTHORITY_REQUIRED'
+        );
 
-    assert.throws(
-        () => memtable.addVector({
-            vectorId: '9007199254740993',
-            vector: new Float32Array([0, 1, 0, 0])
-        }),
-        error => error?.code === 'MEMTABLE_VECTOR_ALREADY_PRESENT'
-    );
-    assert.throws(
-        () => memtable.addVector({
-            vectorId: '01',
-            vector: new Float32Array([0, 1, 0, 0])
-        }),
-        error => error?.code === 'VECTOR_ID_INVALID'
-    );
+        assert.equal(fixture.writer.sealMemTable(fixture.memtable), 'SEALED_QUERY_VISIBLE');
+        assert.equal(fixture.memtable.state, 'SEALED_QUERY_VISIBLE');
+    } finally {
+        fixture.cleanup();
+    }
+});
 
-    assert.equal(memtable.seal(), 'SEALED_QUERY_VISIBLE');
-    assert.throws(
-        () => memtable.addVector({
-            vectorId: '2',
-            vector: new Float32Array([0, 1, 0, 0])
-        }),
-        error => error?.code === 'MEMTABLE_NOT_ACTIVE'
-    );
-    assert.throws(
-        () => memtable.removeVector('9007199254740993'),
-        error => error?.code === 'MEMTABLE_NOT_ACTIVE'
-    );
+test('a database admits only one live G2 physical coverage writer', () => {
+    const fixture = createFixture();
+    try {
+        assert.throws(
+            () => new GenUSearchPhysicalCoverageWriter({
+                db: fixture.db,
+                runtimeId: 'runtime-b'
+            }),
+            error => error?.code === 'MEMTABLE_RUNTIME_ALREADY_OWNED'
+        );
+    } finally {
+        fixture.cleanup();
+    }
 });
 
 test('runtime bootstrap purges stale MEMTABLE coverage but preserves SEGMENT facts', () => {
@@ -306,11 +301,10 @@ test('coverage cannot be forged for an unknown, non-staged, absent, or mismatche
             expectedCurrentVersionId: null
         });
 
-        const otherMemtable = new GenUSearchMemTable({
+        const otherMemtable = fixture.writer.createMemTable({
             VexusIndex,
             dimension: 4,
             capacity: 16,
-            runtimeId: 'runtime-a',
             generation: '2',
             embeddingFingerprint: 'embed-v1'
         });
@@ -352,11 +346,10 @@ test('G2 isolates embedding spaces and permits generation handoff only after sea
             vector: first.vector
         });
 
-        const next = new GenUSearchMemTable({
+        const next = fixture.writer.createMemTable({
             VexusIndex,
             dimension: 4,
             capacity: 16,
-            runtimeId: 'runtime-a',
             generation: '2',
             embeddingFingerprint: 'embed-v1'
         });
@@ -370,7 +363,7 @@ test('G2 isolates embedding spaces and permits generation handoff only after sea
         );
         assert.equal(next.hasVector(second.staged.vector_id), false);
 
-        fixture.memtable.seal();
+        fixture.writer.sealMemTable(fixture.memtable);
         const admitted = fixture.writer.admitVector({
             memtable: next,
             vectorId: second.staged.vector_id,
@@ -378,15 +371,14 @@ test('G2 isolates embedding spaces and permits generation handoff only after sea
         });
         assert.equal(admitted.sourceId, next.sourceId);
 
-        const wrongSpace = new GenUSearchMemTable({
+        const wrongSpace = fixture.writer.createMemTable({
             VexusIndex,
             dimension: 4,
             capacity: 16,
-            runtimeId: 'runtime-a',
             generation: '3',
             embeddingFingerprint: 'embed-v2'
         });
-        next.seal();
+        fixture.writer.sealMemTable(next);
 
         const third = createStagedVersion(fixture, {
             docId: 'doc-gen',
@@ -424,11 +416,10 @@ test('physical add failure leaves no QUERY_VISIBLE coverage', () => {
             }
             removeKey64() {}
         }
-        const failingMemtable = new GenUSearchMemTable({
+        const failingMemtable = fixture.writer.createMemTable({
             VexusIndex: FailingIndex,
             dimension: 4,
             capacity: 16,
-            runtimeId: 'runtime-a',
             generation: '99',
             embeddingFingerprint: 'embed-v1'
         });
@@ -486,6 +477,31 @@ test('coverage commit failure rolls physical admission back to hidden state', ()
             `).get(BigInt(staged.vector_id)).count,
             0
         );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('direct MemTable mutation cannot invalidate published coverage out of band', () => {
+    const fixture = createFixture();
+    try {
+        const { staged, vector } = createStagedVersion(fixture);
+        fixture.writer.bootstrapRuntime();
+        fixture.writer.admitVector({
+            memtable: fixture.memtable,
+            vectorId: staged.vector_id,
+            vector
+        });
+
+        assert.throws(
+            () => fixture.memtable.removeVector(staged.vector_id),
+            error => error?.code === 'MEMTABLE_MUTATION_AUTHORITY_REQUIRED'
+        );
+        assert.equal(fixture.memtable.hasVector(staged.vector_id), true);
+        assert.ok(fixture.writer.getCoverage({
+            memtable: fixture.memtable,
+            vectorId: staged.vector_id
+        }));
     } finally {
         fixture.cleanup();
     }
