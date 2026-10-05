@@ -488,3 +488,293 @@ test('G3 refuses ACTIVE or empty Gen0 sources', () => {
         fixture.cleanup();
     }
 });
+
+
+test('G3 ignores forged public MemTable state and vector-list views', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        const staged = fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: '4'.repeat(64)
+        });
+
+        Object.defineProperty(memtable, 'state', {
+            value: 'SEALED_QUERY_VISIBLE',
+            configurable: true
+        });
+        memtable.listVectorIds = () => ['999'];
+
+        assert.throws(
+            () => fixture.publisher.publishSealedMemTable({
+                memtable,
+                expectedManifestEpoch: '0'
+            }),
+            error => error?.code === 'MEMTABLE_NOT_QUERY_VISIBLE'
+        );
+
+        delete memtable.state;
+        fixture.writer.sealMemTable(memtable);
+        memtable.listVectorIds = () => ['999'];
+
+        const receipt = fixture.publisher.publishSealedMemTable({
+            memtable,
+            expectedManifestEpoch: '0'
+        });
+        assert.deepEqual(receipt.vectorIds, [staged.staged.vector_id]);
+        assert.equal(receipt.vectorIds.includes('999'), false);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('extra SEGMENT coverage injected by a trigger rolls the whole manifest publication back', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: '5'.repeat(64)
+        });
+        fixture.writer.sealMemTable(memtable);
+
+        fixture.db.exec(`
+            CREATE TRIGGER inject_extra_g3_segment_coverage
+            AFTER INSERT ON gen_usearch_vector_coverage
+            WHEN NEW.source_kind = 'SEGMENT' AND NEW.vector_id != 999
+            BEGIN
+                INSERT OR REPLACE INTO gen_usearch_vector_coverage (
+                    vector_id, source_kind, source_id,
+                    coverage_state, created_at, updated_at
+                ) VALUES (
+                    999, 'SEGMENT', NEW.source_id,
+                    'QUERY_VISIBLE', NEW.created_at, NEW.updated_at
+                );
+            END;
+        `);
+
+        assert.throws(
+            () => fixture.publisher.publishSealedMemTable({
+                memtable,
+                expectedManifestEpoch: '0'
+            }),
+            error => error?.code === 'PHYSICAL_COVERAGE_MISSING'
+        );
+
+        assert.equal(fixture.publisher.captureManifestEpoch(), '0');
+        assert.equal(
+            fixture.db.prepare(`
+                SELECT COUNT(*) AS count
+                FROM gen_usearch_vector_coverage
+                WHERE source_kind = 'SEGMENT'
+            `).get().count,
+            0
+        );
+        assert.equal(
+            fixture.db.prepare(`
+                SELECT state
+                FROM gen_usearch_segments
+                ORDER BY created_at DESC
+                LIMIT 1
+            `).get().state,
+            'FINALIZED_DURABLE'
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('publishing a new epoch cannot mutate the previous manifest epoch', () => {
+    const fixture = createFixture();
+    try {
+        const first = fixture.createMemtable(1);
+        fixture.stageAndAdmit(first, {
+            ordinal: 'a',
+            contentHash: '6'.repeat(64)
+        });
+        fixture.writer.sealMemTable(first);
+        const firstReceipt = fixture.publisher.publishSealedMemTable({
+            memtable: first,
+            expectedManifestEpoch: '0'
+        });
+
+        const second = fixture.createMemtable(2);
+        fixture.stageAndAdmit(second, {
+            ordinal: 'b',
+            contentHash: '7'.repeat(64)
+        });
+        fixture.writer.sealMemTable(second);
+
+        fixture.db.exec(`
+            CREATE TRIGGER mutate_previous_g3_manifest
+            AFTER INSERT ON gen_usearch_manifest_segments
+            WHEN NEW.manifest_epoch = 2
+            BEGIN
+                DELETE FROM gen_usearch_manifest_segments
+                WHERE manifest_epoch = 1;
+            END;
+        `);
+
+        assert.throws(
+            () => fixture.publisher.publishSealedMemTable({
+                memtable: second,
+                expectedManifestEpoch: '1'
+            }),
+            error => error?.code === 'RECOVERY_MANIFEST_INVALID'
+        );
+
+        assert.equal(fixture.publisher.captureManifestEpoch(), '1');
+        assert.deepEqual(
+            manifestMembers(fixture.db, 1),
+            [firstReceipt.segmentId]
+        );
+        assert.equal(
+            fixture.db.prepare(`
+                SELECT COUNT(*) AS count
+                FROM gen_usearch_manifest_segments
+                WHERE manifest_epoch = 2
+            `).get().count,
+            0
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('publishing a new segment cannot silently retire an existing manifest member', () => {
+    const fixture = createFixture();
+    try {
+        const first = fixture.createMemtable(1);
+        fixture.stageAndAdmit(first, {
+            ordinal: 'a',
+            contentHash: '8'.repeat(64)
+        });
+        fixture.writer.sealMemTable(first);
+        const firstReceipt = fixture.publisher.publishSealedMemTable({
+            memtable: first,
+            expectedManifestEpoch: '0'
+        });
+
+        const second = fixture.createMemtable(2);
+        fixture.stageAndAdmit(second, {
+            ordinal: 'b',
+            contentHash: '9'.repeat(64)
+        });
+        fixture.writer.sealMemTable(second);
+
+        fixture.db.exec(`
+            CREATE TRIGGER retire_previous_g3_segment
+            AFTER UPDATE OF state ON gen_usearch_segments
+            WHEN NEW.state = 'PUBLISHED'
+            BEGIN
+                UPDATE gen_usearch_segments
+                SET state = 'RETIRED'
+                WHERE segment_id != NEW.segment_id
+                  AND state = 'PUBLISHED';
+            END;
+        `);
+
+        assert.throws(
+            () => fixture.publisher.publishSealedMemTable({
+                memtable: second,
+                expectedManifestEpoch: '1'
+            }),
+            error => error?.code === 'RECOVERY_MANIFEST_INVALID'
+        );
+
+        assert.equal(fixture.publisher.captureManifestEpoch(), '1');
+        assert.equal(
+            fixture.db.prepare(`
+                SELECT state
+                FROM gen_usearch_segments
+                WHERE segment_id = ?
+            `).get(firstReceipt.segmentId).state,
+            'PUBLISHED'
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('idempotent retry detects missing published SEGMENT coverage', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        const staged = fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: 'a1'.repeat(32)
+        });
+        fixture.writer.sealMemTable(memtable);
+        const receipt = fixture.publisher.publishSealedMemTable({
+            memtable,
+            expectedManifestEpoch: '0'
+        });
+
+        fixture.db.prepare(`
+            DELETE FROM gen_usearch_vector_coverage
+            WHERE vector_id = ?
+              AND source_kind = 'SEGMENT'
+              AND source_id = ?
+        `).run(BigInt(staged.staged.vector_id), receipt.segmentId);
+
+        assert.throws(
+            () => fixture.publisher.publishSealedMemTable({
+                memtable,
+                expectedManifestEpoch: '1'
+            }),
+            error => error?.code === 'PHYSICAL_COVERAGE_MISSING'
+        );
+        assert.equal(fixture.publisher.captureManifestEpoch(), '1');
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('corruption of a current manifest artifact blocks publication of the next segment', () => {
+    const fixture = createFixture();
+    try {
+        const first = fixture.createMemtable(1);
+        fixture.stageAndAdmit(first, {
+            ordinal: 'a',
+            contentHash: 'b1'.repeat(32)
+        });
+        fixture.writer.sealMemTable(first);
+        const firstReceipt = fixture.publisher.publishSealedMemTable({
+            memtable: first,
+            expectedManifestEpoch: '0'
+        });
+        fs.appendFileSync(firstReceipt.artifactPath, Buffer.from('corrupt-current'));
+
+        const second = fixture.createMemtable(2);
+        fixture.stageAndAdmit(second, {
+            ordinal: 'b',
+            contentHash: 'c1'.repeat(32)
+        });
+        fixture.writer.sealMemTable(second);
+
+        assert.throws(
+            () => fixture.publisher.publishSealedMemTable({
+                memtable: second,
+                expectedManifestEpoch: '1'
+            }),
+            error => error?.code === 'RECOVERY_MANIFEST_INVALID'
+        );
+
+        assert.equal(fixture.publisher.captureManifestEpoch(), '1');
+        assert.deepEqual(
+            manifestMembers(fixture.db, 1),
+            [firstReceipt.segmentId]
+        );
+        assert.equal(
+            fixture.db.prepare(`
+                SELECT COUNT(*) AS count
+                FROM gen_usearch_vector_coverage
+                WHERE source_kind = 'SEGMENT'
+                  AND source_id != ?
+            `).get(firstReceipt.segmentId).count,
+            0
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
