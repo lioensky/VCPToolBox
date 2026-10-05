@@ -500,6 +500,73 @@ test('G2 isolates embedding spaces and permits generation handoff only after sea
     }
 });
 
+test('native key64 membership ABI proves exact physical presence', () => {
+    const index = new VexusIndex(4, 16);
+    const id = '9007199254740993';
+    const vector = new Float32Array([1, 0, 0, 0]);
+
+    assert.equal(index.containsKey64(id), false);
+    const before = index.revision;
+    index.addKey64(id, vector);
+    assert.equal(index.revision, before + 1);
+    assert.equal(index.containsKey64(id), true);
+
+    const beforeRemove = index.revision;
+    index.removeKey64(id);
+    assert.equal(index.revision, beforeRemove + 1);
+    assert.equal(index.containsKey64(id), false);
+});
+
+test('forged revision advance without native membership cannot manufacture coverage', () => {
+    const fixture = createFixture();
+    try {
+        const { staged, vector } = createStagedVersion(fixture);
+        fixture.writer.bootstrapRuntime();
+
+        class ForgedRevisionIndex {
+            constructor() {
+                this.revision = 0;
+            }
+            addKey64() {
+                this.revision += 1;
+            }
+            removeKey64() {
+                this.revision += 1;
+            }
+            containsKey64() {
+                return false;
+            }
+        }
+
+        const forged = fixture.writer.createMemTable({
+            VexusIndex: ForgedRevisionIndex,
+            dimension: 4,
+            capacity: 16,
+            generation: '97',
+            embeddingFingerprint: 'embed-v1'
+        });
+
+        assert.throws(
+            () => fixture.writer.admitVector({
+                memtable: forged,
+                vectorId: staged.vector_id,
+                vector
+            }),
+            error => error?.code === 'PHYSICAL_COVERAGE_MISSING'
+        );
+        assert.equal(forged.hasVector(staged.vector_id), false);
+        assert.equal(
+            fixture.writer.getCoverage({
+                memtable: forged,
+                vectorId: staged.vector_id
+            }),
+            null
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('silent native add without revision advance cannot manufacture physical coverage', () => {
     const fixture = createFixture();
     try {
