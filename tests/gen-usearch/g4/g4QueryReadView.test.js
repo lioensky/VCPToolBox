@@ -25,6 +25,9 @@ const {
 const GenUSearchRetrievalService = require(
     '../../../modules/knowledgeBase/genUSearchRetrievalService'
 );
+const ReadPins = require(
+    '../../../modules/knowledgeBase/genUSearchReadPins'
+);
 const { VexusIndex } = require('../../../rust-vexus-lite');
 
 function createFixture() {
@@ -604,6 +607,70 @@ test('embedding fingerprint and query dimension are fail-closed', () => {
     }
 });
 
+
+test('reader pin release authority is lease-scoped and raw unpin is not exported', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: 'ce'.repeat(32)
+        });
+        const receipt = fixture.publishMemtable(memtable);
+        const view = fixture.coordinator.acquire({
+            memtables: [memtable],
+            deadline: fixture.now() + 500
+        });
+
+        assert.equal(ReadPins.unpinMemtable, undefined);
+        assert.equal(ReadPins.unpinSegment, undefined);
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            1
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.segmentPinCount(receipt.segmentId),
+            1
+        );
+
+        const extraMemtableLease = ReadPins.acquireMemtablePin(memtable);
+        const extraSegmentLease = ReadPins.acquireSegmentPin(receipt.segmentId);
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            2
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.segmentPinCount(receipt.segmentId),
+            2
+        );
+
+        assert.equal(extraMemtableLease.release(), true);
+        assert.equal(extraSegmentLease.release(), true);
+        assert.equal(extraMemtableLease.release(), false);
+        assert.equal(extraSegmentLease.release(), false);
+
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            1
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.segmentPinCount(receipt.segmentId),
+            1
+        );
+
+        fixture.coordinator.release(view, { workerQuiescent: true });
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            0
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.segmentPinCount(receipt.segmentId),
+            0
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
 
 test('active reader pin blocks G2 physical removal until the worker is quiescent', () => {
     const fixture = createFixture();
