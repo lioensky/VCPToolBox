@@ -1,6 +1,6 @@
 # Gen-USearch G0 Architecture Authority R3.1
 
-Status: **FREEZE_CANDIDATE**. This is the normative architecture authority for G0 Final Review.
+Status: **FROZEN**. This is the normative architecture authority for G0 Final Review.
 
 ## Authority planes
 
