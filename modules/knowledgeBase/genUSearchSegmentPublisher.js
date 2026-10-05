@@ -398,6 +398,7 @@ class GenUSearchSegmentPublisher {
                 );
             }
 
+            const recoveryRequiredIds = [];
             for (const vectorId of input.vectorIds) {
                 const parsed = canonicalVectorId(vectorId);
                 this._upsertSegmentCoverage.run(
@@ -425,6 +426,7 @@ class GenUSearchSegmentPublisher {
                     );
                 }
                 if (recovery.state === 'RECOVERY_REQUIRED') {
+                    recoveryRequiredIds.push(vectorId);
                     this._markRecoverySegmentCovered.run(
                         input.segmentId,
                         now,
@@ -451,8 +453,35 @@ class GenUSearchSegmentPublisher {
                 }
             }
 
+            const coverageRows = this._listSegmentCoverage.all(input.segmentId);
+            if (
+                coverageRows.some(row => row.coverage_state !== 'QUERY_VISIBLE')
+                || !exactSetEquals(
+                    coverageRows.map(row => row.vector_id.toString()),
+                    input.vectorIds
+                )
+            ) {
+                throw codedError(
+                    'PHYSICAL_COVERAGE_MISSING',
+                    'SEGMENT coverage exact-set postcondition failed'
+                );
+            }
+
+            const recoveryCoveredIds = this._listRecoveryByCoveredSegment
+                .all(input.segmentId)
+                .map(row => row.vector_id.toString());
+            if (!exactSetEquals(recoveryCoveredIds, recoveryRequiredIds)) {
+                throw codedError(
+                    'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE',
+                    'SEGMENT_COVERED recovery exact-set postcondition failed'
+                );
+            }
+
             const afterSequence = this._getSequence.get()?.value;
             const afterManifest = this._getManifestState.get()?.manifest_epoch;
+            const previousAfter = this._listManifestSegments
+                .all(input.expectedEpoch)
+                .map(row => row.segment_id);
             const afterMembers = this._listManifestSegments
                 .all(nextEpoch)
                 .map(row => row.segment_id);
@@ -463,12 +492,31 @@ class GenUSearchSegmentPublisher {
                 || afterManifest !== nextEpoch
                 || !published
                 || published.state !== 'PUBLISHED'
+                || !exactSetEquals(previousAfter, previous)
                 || !exactSetEquals(afterMembers, manifestSet)
             ) {
                 throw codedError(
                     'RECOVERY_MANIFEST_INVALID',
                     'manifest publication postcondition failed'
                 );
+            }
+
+            for (const memberId of afterMembers) {
+                const member = this._getSegment.get(memberId);
+                if (
+                    !member
+                    || member.state !== 'PUBLISHED'
+                    || !member.artifact_path
+                    || !SHA256_RE.test(member.artifact_digest || '')
+                    || !fs.existsSync(member.artifact_path)
+                    || !fs.statSync(member.artifact_path).isFile()
+                    || sha256File(member.artifact_path) !== member.artifact_digest
+                ) {
+                    throw codedError(
+                        'RECOVERY_MANIFEST_INVALID',
+                        `published manifest member failed durable verification: ${memberId}`
+                    );
+                }
             }
 
             return {
