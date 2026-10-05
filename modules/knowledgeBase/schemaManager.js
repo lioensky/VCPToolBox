@@ -407,6 +407,23 @@ const GEN_USEARCH_SCHEMA_SQL = `
         FOREIGN KEY(covered_segment_id) REFERENCES gen_usearch_segments(segment_id)
     );
 
+    -- Physical query coverage is written only after a concrete source has accepted
+    -- the vector. MVCC publication refuses to make a vector current without at
+    -- least one QUERY_VISIBLE coverage row.
+    CREATE TABLE IF NOT EXISTS gen_usearch_vector_coverage (
+        vector_id INTEGER NOT NULL,
+        source_kind TEXT NOT NULL CHECK(source_kind IN ('MEMTABLE', 'SEGMENT')),
+        source_id TEXT NOT NULL,
+        coverage_state TEXT NOT NULL CHECK(coverage_state IN (
+            'STAGED', 'QUERY_VISIBLE', 'RETIRED'
+        )),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (vector_id, source_kind, source_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_gen_usearch_vector_coverage_query
+        ON gen_usearch_vector_coverage(vector_id, coverage_state);
+
     CREATE TABLE IF NOT EXISTS gen_usearch_sequences (
         name TEXT PRIMARY KEY CHECK(name IN ('visibility_seq', 'manifest_epoch')),
         value INTEGER NOT NULL CHECK(value >= 0),
