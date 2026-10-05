@@ -165,6 +165,8 @@ function runG0Acceptance(root) {
 
   const snapshot = captureRepositorySnapshot(root);
   const authorityLock = snapshot.authorityLock;
+  const architecture = loadSnapshotJson(snapshot, 'contracts/gen-usearch/g0/G0-ARCHITECTURE-R3.1.machine.json');
+  const traceability = loadSnapshotJson(snapshot, 'contracts/gen-usearch/g0/G0-TRACEABILITY-R3.1.json');
   const registry = loadSnapshotJson(snapshot, 'contracts/gen-usearch/g0/g0-contracts-r3.1.json');
   const failureRegistry = loadSnapshotJson(snapshot, 'contracts/gen-usearch/g0/failure-codes.json');
   const finalFixtures = loadSnapshotJson(snapshot, 'tests/gen-usearch/g0/fixtures/final-race-vectors.json');
@@ -172,6 +174,8 @@ function runG0Acceptance(root) {
 
   const schemaSpecs = [
     ['authority_lock', authorityLock, loadSnapshotJson(snapshot, AUTHORITY_LOCK_SCHEMA_PATH)],
+    ['architecture', architecture, loadSnapshotJson(snapshot, 'contracts/gen-usearch/g0/G0-ARCHITECTURE-R3.1.schema.json')],
+    ['traceability', traceability, loadSnapshotJson(snapshot, 'contracts/gen-usearch/g0/G0-TRACEABILITY-R3.1.schema.json')],
     ['registry', registry, loadSnapshotJson(snapshot, 'contracts/gen-usearch/g0/g0-contracts.schema.json')],
     ['failure_codes', failureRegistry, loadSnapshotJson(snapshot, 'contracts/gen-usearch/g0/failure-codes.schema.json')],
     ['final_fixtures', finalFixtures, loadSnapshotJson(snapshot, 'tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json')],
@@ -204,7 +208,7 @@ function runG0Acceptance(root) {
   });
 
   const coverage = verifier.verifyCoverage(
-    authorityLock, registry, failureRegistry, finalFixtures, invariantFixtures
+    authorityLock, architecture, traceability, registry, failureRegistry, finalFixtures, invariantFixtures
   );
 
   const contracts = {};
@@ -266,6 +270,8 @@ function runG0Acceptance(root) {
     final_checks:finalChecks,
     schema_checks:schemaChecks,
     coverage:{
+      required_architecture_requirements:authorityLock.required_architecture_requirement_ids,
+      covered_architecture_requirements:coverage.covered_architecture_requirements,
       required_invariants:authorityLock.required_invariant_ids,
       covered_invariants:coverage.covered_invariants,
       required_failure_codes:authorityLock.required_failure_codes,
