@@ -185,6 +185,46 @@ test('physical admission is blocked until runtime bootstrap', () => {
     }
 });
 
+test('bootstrap gate cannot be forged or repeated after live coverage exists', () => {
+    const fixture = createFixture();
+    try {
+        const { staged, vector } = createStagedVersion(fixture);
+
+        fixture.writer._bootstrapped = true;
+        assert.equal(fixture.writer.bootstrapped, false);
+        assert.throws(
+            () => fixture.writer.admitVector({
+                memtable: fixture.memtable,
+                vectorId: staged.vector_id,
+                vector
+            }),
+            error => error?.code === 'MEMTABLE_RUNTIME_NOT_BOOTSTRAPPED'
+        );
+
+        fixture.writer.bootstrapRuntime();
+        fixture.writer.admitVector({
+            memtable: fixture.memtable,
+            vectorId: staged.vector_id,
+            vector
+        });
+        assert.ok(fixture.writer.getCoverage({
+            memtable: fixture.memtable,
+            vectorId: staged.vector_id
+        }));
+
+        assert.throws(
+            () => fixture.writer.bootstrapRuntime(),
+            error => error?.code === 'MEMTABLE_RUNTIME_ALREADY_BOOTSTRAPPED'
+        );
+        assert.ok(fixture.writer.getCoverage({
+            memtable: fixture.memtable,
+            vectorId: staged.vector_id
+        }));
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('authoritative G2 coverage enables the existing G1 current-head CAS', () => {
     const fixture = createFixture();
     try {
@@ -291,27 +331,36 @@ test('physical add failure leaves no QUERY_VISIBLE coverage', () => {
         const { staged, vector } = createStagedVersion(fixture);
         fixture.writer.bootstrapRuntime();
 
-        const original = fixture.memtable._index.addKey64;
-        fixture.memtable._index.addKey64 = () => {
-            throw new Error('simulated-native-add-failure');
-        };
-        try {
-            assert.throws(
-                () => fixture.writer.admitVector({
-                    memtable: fixture.memtable,
-                    vectorId: staged.vector_id,
-                    vector
-                }),
-                /simulated-native-add-failure/
-            );
-        } finally {
-            fixture.memtable._index.addKey64 = original;
+        class FailingIndex {
+            constructor() {
+                this.revision = 0;
+            }
+            addKey64() {
+                throw new Error('simulated-native-add-failure');
+            }
+            removeKey64() {}
         }
+        const failingMemtable = new GenUSearchMemTable({
+            VexusIndex: FailingIndex,
+            dimension: 4,
+            capacity: 16,
+            runtimeId: 'runtime-a',
+            generation: '99'
+        });
 
-        assert.equal(fixture.memtable.hasVector(staged.vector_id), false);
+        assert.throws(
+            () => fixture.writer.admitVector({
+                memtable: failingMemtable,
+                vectorId: staged.vector_id,
+                vector
+            }),
+            /simulated-native-add-failure/
+        );
+
+        assert.equal(failingMemtable.hasVector(staged.vector_id), false);
         assert.equal(
             fixture.writer.getCoverage({
-                memtable: fixture.memtable,
+                memtable: failingMemtable,
                 vectorId: staged.vector_id
             }),
             null
@@ -382,6 +431,48 @@ test('removal hides durable coverage before deleting volatile bytes', () => {
             }),
             null
         );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('removal rejects unknown and ACTIVE logical vectors before hiding coverage', () => {
+    const fixture = createFixture();
+    try {
+        const { staged, vector, chunkId } = createStagedVersion(fixture);
+        fixture.writer.bootstrapRuntime();
+
+        assert.throws(
+            () => fixture.writer.hideAndRemoveVector({
+                memtable: fixture.memtable,
+                vectorId: '999'
+            }),
+            error => error?.code === 'VECTOR_METADATA_MISSING'
+        );
+
+        fixture.writer.admitVector({
+            memtable: fixture.memtable,
+            vectorId: staged.vector_id,
+            vector
+        });
+        fixture.store.publishCurrentHead({
+            chunkId,
+            chunkVersionId: staged.chunk_version_id,
+            expectedCurrentVersionId: null
+        });
+
+        assert.throws(
+            () => fixture.writer.hideAndRemoveVector({
+                memtable: fixture.memtable,
+                vectorId: staged.vector_id
+            }),
+            error => error?.code === 'INVALID_CURRENT_VECTOR_HEAD'
+        );
+        assert.ok(fixture.writer.getCoverage({
+            memtable: fixture.memtable,
+            vectorId: staged.vector_id
+        }));
+        assert.equal(fixture.memtable.hasVector(staged.vector_id), true);
     } finally {
         fixture.cleanup();
     }
