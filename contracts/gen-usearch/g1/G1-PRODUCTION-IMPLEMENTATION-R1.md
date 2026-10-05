@@ -7,7 +7,7 @@ G1 implements the durable production foundation required by the frozen G0 R3.1 a
 ## In scope
 
 - additive SQLite metadata schema for stable document/chunk/vector identity;
-- durable signed-int64 vector allocator;
+- durable signed-int64 vector allocator that refuses ambient SQLite transactions before returning IDs;
 - independent `visibility_seq` and `manifest_epoch` counters;
 - MVCC staging, physical-coverage admission gate, current-head CAS and retirement;
 - exact recovery bytes for staged vectors;
@@ -42,6 +42,7 @@ G1 may pass only when:
 - exact-head G1 CI is green;
 - Rust key parser and built N-API ABI pass;
 - metadata/MVCC tests pass;
+- every critical metadata write rejects ambient SQLite transactions so a nested savepoint cannot acknowledge authority that an outer rollback can revoke;
 - reconciliation tests pass;
 - upstream #486 baseline compatibility regressions pass;
 - G1 stage-boundary tests pass;
@@ -56,7 +57,8 @@ Exact-head reviewed implementation: `cab92b0b6957a1ab359c5a8ddbfbb4897ce42e24`.
 Closed findings:
 
 - key64 Chunk delta failure semantics were not fail-atomic; fixed with finite-vector preflight, affected-key rollback snapshot, and a no-mutation failure regression;
-- crash durability could be disabled through an unused constructor option; the bypass was removed and WAL + FULL/EXTRA is now non-bypassable.
+- crash durability could be disabled through an unused constructor option; the bypass was removed and WAL + FULL/EXTRA is now non-bypassable;
+- post-review hardening found that better-sqlite3 nested transactions could return allocator or metadata authority from a savepoint and later roll it back from the outer transaction; all G1 critical writes now require autocommit state before execution.
 
 The apparent direct-current-head publication bypass was classified as a deferred-stage boundary rather than an active runtime defect: G1 exposes the low-level MVCC handoff primitive, but stage-boundary tests prohibit any existing KnowledgeBase ingestion/search/serving code from wiring it before G2 authority.
 

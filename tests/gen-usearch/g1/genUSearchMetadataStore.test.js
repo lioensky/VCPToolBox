@@ -816,3 +816,25 @@ test('embedding and abort transitions are fail-closed and staged recovery become
         fixture.cleanup();
     }
 });
+
+
+test('critical metadata writes reject ambient transactions before returning durable authority', () => {
+    const fixture = createFixture();
+    try {
+        const before = fixture.store.readAllocatorHighWater();
+        const outer = fixture.db.transaction(() => {
+            assert.throws(
+                () => fixture.store.allocateVectorIds(1),
+                error => error?.code === 'DURABLE_COMMIT_UNCONFIRMED'
+            );
+        });
+        outer();
+        assert.equal(fixture.store.readAllocatorHighWater(), before);
+
+        const allocated = fixture.store.allocateVectorIds(1);
+        assert.deepEqual(allocated, ['1']);
+        assert.equal(fixture.store.readAllocatorHighWater(), '1');
+    } finally {
+        fixture.cleanup();
+    }
+});

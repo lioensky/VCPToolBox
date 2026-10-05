@@ -1141,3 +1141,70 @@ test('native Vexus load rejects an artifact dimension mismatch', () => {
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
+
+
+test('ABORTED vector in a sealed generation is excluded without blocking unrelated flush members', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(101);
+        const active = fixture.stageAndAdmit(memtable, {
+            ordinal: 'flush-active',
+            vector: new Float32Array([1, 0, 0, 0]),
+            contentHash: '7'.repeat(64)
+        });
+        const cancelled = fixture.stageAndAdmit(memtable, {
+            ordinal: 'flush-aborted',
+            vector: new Float32Array([0, 1, 0, 0]),
+            contentHash: '8'.repeat(64),
+            publishCurrent: false
+        });
+
+        fixture.writer.sealMemTable(memtable);
+        const aborted = fixture.store.abortChunkVersion({
+            chunkVersionId: cancelled.staged.chunk_version_id
+        });
+        assert.equal(aborted.state, 'ABORTED');
+
+        const abortedRecovery = fixture.db.prepare(`
+            SELECT state, vector_blob
+            FROM gen_usearch_vector_recovery
+            WHERE vector_id = ?
+        `).get(BigInt(cancelled.staged.vector_id));
+        assert.equal(abortedRecovery.state, 'RECOVERY_RECLAIMABLE');
+        assert.ok(Buffer.isBuffer(abortedRecovery.vector_blob));
+
+        const receipt = fixture.publisher.publishSealedMemTable({
+            memtable,
+            expectedManifestEpoch: fixture.publisher.captureManifestEpoch()
+        });
+        assert.deepEqual(receipt.vectorIds, [active.staged.vector_id]);
+
+        const segmentCoverage = fixture.db.prepare(`
+            SELECT vector_id
+            FROM gen_usearch_vector_coverage
+            WHERE source_kind = 'SEGMENT' AND source_id = ?
+            ORDER BY vector_id
+        `).safeIntegers(true).all(receipt.segmentId);
+        assert.deepEqual(
+            segmentCoverage.map(row => row.vector_id.toString()),
+            [active.staged.vector_id]
+        );
+
+        const abortedSegmentCoverage = fixture.db.prepare(`
+            SELECT COUNT(*) AS count
+            FROM gen_usearch_vector_coverage
+            WHERE vector_id = ? AND source_kind = 'SEGMENT'
+        `).get(BigInt(cancelled.staged.vector_id));
+        assert.equal(abortedSegmentCoverage.count, 0);
+
+        const retry = fixture.publisher.publishSealedMemTable({
+            memtable,
+            expectedManifestEpoch: fixture.publisher.captureManifestEpoch()
+        });
+        assert.equal(retry.alreadyPublished, true);
+        assert.equal(retry.segmentId, receipt.segmentId);
+        assert.deepEqual(retry.vectorIds, [active.staged.vector_id]);
+    } finally {
+        fixture.cleanup();
+    }
+});

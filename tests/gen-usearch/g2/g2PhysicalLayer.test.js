@@ -1288,3 +1288,148 @@ test('G2 coverage writes require crash-durable SQLite profile', () => {
         fixture.cleanup();
     }
 });
+
+
+test('startup recovery accepts mixed RECOVERY_REQUIRED and SEGMENT_COVERED current vectors', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g2-recover-covered-'));
+    const dbPath = path.join(root, 'knowledge.sqlite');
+    let firstDb;
+    let secondDb;
+    try {
+        firstDb = new Database(dbPath);
+        firstDb.pragma('journal_mode = WAL');
+        firstDb.pragma('synchronous = FULL');
+        firstDb.pragma('foreign_keys = ON');
+        initializeKnowledgeBaseSchema(firstDb, { logPrefix: 'GenUSearchG2RecoverCoveredSeed' });
+
+        let now = 8000;
+        const store = new GenUSearchMetadataStore({ db: firstDb, now: () => now++ });
+        const seedWriter = new GenUSearchPhysicalCoverageWriter({
+            db: firstDb,
+            runtimeId: 'runtime-covered-seed',
+            now: () => now++
+        });
+        seedWriter.bootstrapRuntime();
+        const seedMemtable = seedWriter.createMemTable({
+            VexusIndex,
+            dimension: 4,
+            capacity: 16,
+            generation: '1',
+            embeddingFingerprint: 'embed-v1'
+        });
+
+        store.createDocument({
+            docId: 'doc-covered-recover',
+            uri: 'doc-covered-recover.txt',
+            visibilitySeq: store.readSequence('visibility_seq')
+        });
+
+        const seeded = [];
+        for (const [ordinal, vector] of [
+            ['a', new Float32Array([1, 0, 0, 0])],
+            ['b', new Float32Array([0, 1, 0, 0])]
+        ]) {
+            const chunkId = `chunk-covered-${ordinal}`;
+            store.createChunkIdentity({
+                chunkId,
+                docId: 'doc-covered-recover'
+            });
+            const prepared = store.prepareChunkVersion({
+                chunkId,
+                sourceRevision: `rev-covered-${ordinal}`,
+                slotIndex: ordinal === 'a' ? 0 : 1,
+                contentHash: (ordinal === 'a' ? 'a' : 'b').repeat(64)
+            });
+            store.markEmbedding({
+                chunkVersionId: prepared.chunk_version_id,
+                embeddingFingerprint: 'embed-v1'
+            });
+            const staged = store.stageVector({
+                chunkVersionId: prepared.chunk_version_id,
+                embeddingFingerprint: 'embed-v1',
+                vectorBlob: vector
+            });
+            seedWriter.admitVector({
+                memtable: seedMemtable,
+                vectorId: staged.vector_id,
+                vector
+            });
+            store.publishCurrentHead({
+                chunkId,
+                chunkVersionId: staged.chunk_version_id,
+                expectedCurrentVersionId: null
+            });
+            seeded.push({ staged, vector });
+        }
+
+        firstDb.prepare(`
+            UPDATE gen_usearch_vector_recovery
+            SET state = 'SEGMENT_COVERED'
+            WHERE vector_id = ?
+        `).run(BigInt(seeded[0].staged.vector_id));
+
+        firstDb.close();
+        firstDb = null;
+
+        secondDb = new Database(dbPath);
+        secondDb.pragma('journal_mode = WAL');
+        secondDb.pragma('synchronous = FULL');
+        secondDb.pragma('foreign_keys = ON');
+
+        const recoveryWriter = new GenUSearchPhysicalCoverageWriter({
+            db: secondDb,
+            runtimeId: 'runtime-covered-recover',
+            now: () => now++
+        });
+        const recoveryMemtable = recoveryWriter.createMemTable({
+            VexusIndex,
+            dimension: 4,
+            capacity: 16,
+            generation: '1',
+            embeddingFingerprint: 'embed-v1'
+        });
+
+        const boot = recoveryWriter.bootstrapRuntime();
+        assert.equal(boot.staleMemtableCoverageRemoved, 2);
+
+        const recovered = recoveryWriter.recoverCurrentVectors({
+            memtable: recoveryMemtable
+        });
+        assert.equal(recovered.recoveredVectorCount, 2);
+        assert.deepEqual(
+            [...recovered.vectorIds].sort(),
+            seeded.map(item => item.staged.vector_id).sort()
+        );
+        for (const item of seeded) {
+            assert.equal(
+                recoveryMemtable.hasVector(item.staged.vector_id),
+                true
+            );
+            assert.ok(recoveryWriter.getCoverage({
+                memtable: recoveryMemtable,
+                vectorId: item.staged.vector_id
+            }));
+        }
+
+        const states = secondDb.prepare(`
+            SELECT vector_id, state
+            FROM gen_usearch_vector_recovery
+            WHERE vector_id IN (?, ?)
+            ORDER BY vector_id
+        `).safeIntegers(true).all(
+            BigInt(seeded[0].staged.vector_id),
+            BigInt(seeded[1].staged.vector_id)
+        );
+        assert.deepEqual(
+            states.map(row => [row.vector_id.toString(), row.state]),
+            [
+                [seeded[0].staged.vector_id, 'SEGMENT_COVERED'],
+                [seeded[1].staged.vector_id, 'RECOVERY_REQUIRED']
+            ]
+        );
+    } finally {
+        try { firstDb?.close(); } catch (_) {}
+        try { secondDb?.close(); } catch (_) {}
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});

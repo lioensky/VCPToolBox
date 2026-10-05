@@ -56,7 +56,7 @@ G2 may implement only:
     A second writer for the same underlying SQLite database file is rejected even when opened through a different connection or filesystem alias. File identity uses device/inode when available and canonical path only as fallback, so symlink/hard-link aliases cannot split authority.
 
 12. **Startup recovery is all-or-nothing for authority.**
-    Current heads may be rehydrated only when every row is ACTIVE, has exact RECOVERY_REQUIRED bytes, and matches the target MemTable embedding fingerprint. Mixed or incomplete recovery input fails before coverage publication. Coverage is batch-published only after every physical add has exact native membership proof.
+    Current heads may be rehydrated only when every row is ACTIVE, retains exact recovery bytes, is in RECOVERY_REQUIRED or SEGMENT_COVERED, and matches the target MemTable embedding fingerprint. SEGMENT_COVERED current vectors are rehydrated into the new Gen0 together with newer RECOVERY_REQUIRED current vectors so a prior flush cannot block recovery of later writes. Mixed fingerprints, released/missing bytes, or unsupported recovery states fail before coverage publication. Coverage is batch-published only after every physical add has exact native membership proof.
 
 13. **Native membership, not JavaScript bookkeeping, proves physical acceptance.**
     A Gen0 add/remove is authoritative only when the native key64 revision advances exactly once and exact `containsKey64()` confirms the expected post-state. JS-side sets alone cannot manufacture coverage.
@@ -92,7 +92,7 @@ G2 may pass only when:
 - coverage cannot be forged for a vector absent from the bound MemTable;
 - coverage cannot be admitted for an unknown or non-staged vector version;
 - physical admission failure leaves no QUERY_VISIBLE coverage;
-- startup recovery either restores every eligible current vector and batch-publishes coverage or fails closed without new authoritative coverage;
+- startup recovery restores mixed RECOVERY_REQUIRED and SEGMENT_COVERED ACTIVE current vectors into the new Gen0 and batch-publishes MEMTABLE coverage, or fails closed without new authoritative coverage;
 - mixed embedding fingerprints cannot be recovered into one Gen0 MemTable;
 - two connections to the same database file cannot obtain concurrent G2 writer authority;
 - native revision changes without exact key membership cannot manufacture coverage;
@@ -113,7 +113,7 @@ Closed findings:
 
 - duplicate G2 writer authority could be acquired through separate SQLite connections to the same database file; authority is now bound to underlying file identity and rejects symlink/hard-link aliases;
 - JavaScript bookkeeping and native revision alone could falsely attest physical presence; authoritative add/remove now requires exact native `containsKey64()` post-state and an authentic `rust-vexus-lite.VexusIndex` instance;
-- startup ACTIVE-current recovery existed outside the frozen G2 contract and lacked acceptance coverage; it is now explicitly in scope and tested for complete recovery, incomplete recovery fail-closed, and mixed-fingerprint rejection before mutation;
+- startup ACTIVE-current recovery existed outside the frozen G2 contract and lacked acceptance coverage; it is now explicitly in scope and tested for complete recovery, incomplete recovery fail-closed, mixed-fingerprint rejection before mutation, and restart recovery after a prior segment publication without blocking later unflushed current vectors;
 - bootstrap, single publication, batch recovery publication, and hide trusted SQLite statement success without verifying authority postconditions; all four now read back their required post-state inside the same transaction and fail closed on silent trigger ignore/rewrite;
 - writer identity based on connection/path could be split by hard-link aliases; device/inode identity is now authoritative when available;
 - failed writer construction, forged source identities, removal metadata checks, embedding fingerprint isolation, active-generation handoff, and writer-only MemTable mutation authority are covered by exact G2 regressions.

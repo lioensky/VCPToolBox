@@ -554,7 +554,7 @@ class GenUSearchPhysicalCoverageWriter {
                 row.current_version_id == null
                 || row.version_state !== 'ACTIVE'
                 || row.vector_id == null
-                || row.recovery_state !== 'RECOVERY_REQUIRED'
+                || !['RECOVERY_REQUIRED', 'SEGMENT_COVERED'].includes(row.recovery_state)
                 || !row.vector_blob
                 || !row.embedding_fingerprint
                 || row.embedding_fingerprint !== row.recovery_fingerprint

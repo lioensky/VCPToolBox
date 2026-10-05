@@ -570,6 +570,46 @@ class GenUSearchSegmentPublisher {
         });
     }
 
+    _deriveFlushSource(source) {
+        const vectorIds = [];
+        for (const vectorId of source.vectorIds) {
+            const parsed = canonicalVectorId(vectorId);
+            const row = this._getRecovery.get(parsed.bigint);
+            if (!row || row.vector_id == null) {
+                throw codedError(
+                    'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE',
+                    `vector ${vectorId} lacks lifecycle authority`
+                );
+            }
+            if (row.version_state === 'ABORTED') {
+                if (!['RECOVERY_RECLAIMABLE', 'SEGMENT_COVERED', 'RECOVERY_RELEASED'].includes(row.recovery_state)) {
+                    throw codedError(
+                        'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE',
+                        `aborted vector ${vectorId} lacks durable abort recovery authority`
+                    );
+                }
+                continue;
+            }
+            if (!['VECTOR_STAGED', 'ACTIVE', 'RETIRED'].includes(row.version_state)) {
+                throw codedError(
+                    'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE',
+                    `vector ${vectorId} has unsupported lifecycle state ${row.version_state}`
+                );
+            }
+            vectorIds.push(vectorId);
+        }
+        if (vectorIds.length === 0) {
+            throw codedError(
+                'SEGMENT_ARTIFACT_INVALID',
+                'G3 sealed generation has no non-aborted vectors to publish'
+            );
+        }
+        return Object.freeze({
+            ...source,
+            vectorIds: Object.freeze(vectorIds)
+        });
+    }
+
     _segmentIdentity(source) {
         const digest = crypto.createHash('sha256')
             .update(JSON.stringify({
@@ -939,7 +979,8 @@ class GenUSearchSegmentPublisher {
 
     publishSealedMemTable(options = {}) {
         this.assertCrashDurableProfile();
-        const source = this._assertSealedMemTable(options.memtable);
+        const sealedSource = this._assertSealedMemTable(options.memtable);
+        const source = this._deriveFlushSource(sealedSource);
         const vectorIds = [...source.vectorIds];
         const expectedEpoch = canonicalEpoch(
             options.expectedManifestEpoch,

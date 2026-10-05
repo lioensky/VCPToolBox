@@ -1122,6 +1122,12 @@ class GenUSearchMetadataStore {
     }
 
     _criticalWrite(operation) {
+        if (this.db.inTransaction === true) {
+            throw codedError(
+                'DURABLE_COMMIT_UNCONFIRMED',
+                'Gen-USearch critical writes require SQLite autocommit state'
+            );
+        }
         this.assertCrashDurableProfile();
         const result = operation();
 
