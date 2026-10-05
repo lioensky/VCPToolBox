@@ -213,3 +213,17 @@ G4 query regression             = 24/24
 ```
 
 This remediation does not authorize compaction, segment reclaim, runtime cutover, engine activation, or merge.
+
+
+## Clean-Room Remediation 3 Authority Amendments
+
+G3 publication now has a single serialized crash-consistency boundary:
+
+- all externally supplied timestamps are evaluated before the final autocommit gate, so a callback cannot open an outer transaction after validation and turn publication into nested savepoints;
+- `publishSealedMemTable()` opens a top-level SQLite `BEGIN IMMEDIATE` before BUILDING metadata/artifact publication and holds it through FINALIZED/PUBLISHED manifest commit;
+- competing publishers for the same database are serialized before canonical artifact mutation;
+- any failed publication rolls back all SQLite segment/manifest/coverage authority. Hidden artifact bytes may remain, but carry no authority and are safely overwritten/reverified on retry;
+- Windows native Vexus publication uses `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` and then reopens/syncs the final file before SQLite may record durable segment authority;
+- the G3 workflow includes a `windows-latest` `cargo check --locked` job so the Windows durability branch is compiled on every relevant exact head.
+
+These changes preserve the existing G3 boundary: no GC mutation, compaction, reclaim, serving cutover, or engine activation is authorized.

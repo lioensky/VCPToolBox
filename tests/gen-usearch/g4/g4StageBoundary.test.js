@@ -34,15 +34,27 @@ test('G4 boundary is frozen around QueryReadView and isolated retrieval', () => 
     }
 });
 
-test('G4 modules are read-only with respect to durable Gen-USearch authority', () => {
-    const combined = g4ProductionFiles.map(read).join('\n');
-    for (const forbidden of [
-        /INSERT\s+INTO\s+gen_usearch_/i,
-        /UPDATE\s+gen_usearch_/i,
-        /DELETE\s+FROM\s+gen_usearch_/i
-    ]) {
-        assert.doesNotMatch(combined, forbidden);
+test('G4 durable mutation authority is limited to QueryReadView lease lifecycle', () => {
+    const readPins = read('modules/knowledgeBase/genUSearchReadPins.js');
+    const retrieval = read('modules/knowledgeBase/genUSearchRetrievalService.js');
+    for (const source of [readPins, retrieval]) {
+        assert.doesNotMatch(
+            source,
+            /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+gen_usearch_/i
+        );
     }
+
+    const query = read('modules/knowledgeBase/genUSearchQueryReadView.js');
+    const mutatedTables = [
+        ...query.matchAll(
+            /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(gen_usearch_[a-z0-9_]+)/ig
+        )
+    ].map(match => match[1]);
+    assert.ok(mutatedTables.length >= 2);
+    assert.deepEqual(
+        [...new Set(mutatedTables)],
+        ['gen_usearch_read_view_leases']
+    );
 });
 
 test('G4 remains unwired from existing ingestion, search and serving paths', () => {

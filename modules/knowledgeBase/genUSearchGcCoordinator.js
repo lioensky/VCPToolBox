@@ -197,6 +197,17 @@ class GenUSearchGcCoordinator {
             WHERE source_kind = 'SEGMENT' AND source_id = ?
             ORDER BY vector_id
         `).safeIntegers(true);
+        this._listDurableReadLeases = db.prepare(`
+            SELECT
+                read_view_id, owner_id, runtime_fence, visibility_seq, state,
+                cancellation_requested, worker_quiescent, pins_released,
+                created_at, deadline, updated_at
+            FROM gen_usearch_read_view_leases
+            WHERE owner_id = ?
+              AND runtime_fence = ?
+              AND state != 'RELEASED'
+            ORDER BY visibility_seq, read_view_id
+        `).safeIntegers(true);
 
         const runtimeAtConstruction = this._getRuntime.get();
         if (
@@ -447,16 +458,19 @@ class GenUSearchGcCoordinator {
     }
 
     _assertNoBlockingReaders(retiredSeq) {
-        const liveViews = GenUSearchQueryReadViewCoordinator.snapshotGcSafety(this.db);
+        const durableViews = this._listDurableReadLeases.all(
+            this.runtimeId,
+            BigInt(this.runtimeFence)
+        );
         const blockers = [];
-        for (const view of liveViews) {
+        for (const view of durableViews) {
             if (
-                view.pins_released === true
+                Number(view.pins_released) === 1
                 || !['ACTIVE', 'CANCEL_REQUESTED', 'QUIESCING'].includes(view.state)
             ) {
                 throw codedError(
                     'QUERY_READ_VIEW_INVALID',
-                    'live QueryReadView has invalid GC safety state'
+                    'durable QueryReadView lease has invalid GC safety state'
                 );
             }
             const visibility = canonicalInteger(
@@ -467,13 +481,28 @@ class GenUSearchGcCoordinator {
                 blockers.push(view.read_view_id);
             }
         }
+
+        // Local registry remains an integrity cross-check, not the authority.
+        const localViews = GenUSearchQueryReadViewCoordinator.snapshotGcSafety(this.db);
+        for (const local of localViews) {
+            const durable = durableViews.find(
+                row => row.read_view_id === local.read_view_id
+            );
+            if (!durable) {
+                throw codedError(
+                    'QUERY_READ_VIEW_INVALID',
+                    'local QueryReadView lacks durable lease authority'
+                );
+            }
+        }
+
         if (blockers.length > 0) {
             throw codedError(
                 'UNSAFE_GC_ATTEMPT',
                 'older unreleased QueryReadView blocks GC: ' + blockers.join(',')
             );
         }
-        return liveViews;
+        return durableViews;
     }
 
     _assertRetiredRecoveryAuthority(row) {
@@ -680,26 +709,29 @@ class GenUSearchGcCoordinator {
 
     certifyRecoveryReclaimable(vectorId) {
         const parsed = canonicalVectorId(vectorId);
+        const now = this._nowInteger();
         return this._normalizeRecovery(
             this._criticalWrite(
-                () => this._certifyRecoveryTransaction(parsed.parsed, this._nowInteger())
+                () => this._certifyRecoveryTransaction(parsed.parsed, now)
             )
         );
     }
 
     releaseRecoveryMaterial(vectorId) {
         const parsed = canonicalVectorId(vectorId);
+        const now = this._nowInteger();
         return this._normalizeRecovery(
             this._criticalWrite(
-                () => this._releaseRecoveryTransaction(parsed.parsed, this._nowInteger())
+                () => this._releaseRecoveryTransaction(parsed.parsed, now)
             )
         );
     }
 
     markGcEligible(chunkVersionId) {
         const parsed = canonicalInteger(chunkVersionId, 'chunk_version_id', 1n);
+        const now = this._nowInteger();
         return this._criticalWrite(
-            () => this._markGcEligibleTransaction(parsed.parsed, this._nowInteger())
+            () => this._markGcEligibleTransaction(parsed.parsed, now)
         );
     }
 

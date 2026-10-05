@@ -174,3 +174,15 @@ G5 stage boundary         = 5/5
 ```
 
 Final Upstream Acceptance remains **NOT STARTED**. Upstream merge remains **NOT AUTHORIZED**.
+
+
+## Clean-Room Remediation 3 Authority Amendments
+
+G5 GC safety now consumes cross-process durable reader authority:
+
+- GC reads non-RELEASED `gen_usearch_read_view_leases` rows for the current serving `owner_id + runtime_fence`; an older lease blocks GC regardless of which OS process owns the reader;
+- the process-local live-view registry is only an integrity cross-check and cannot prove absence of readers;
+- callback-derived timestamps are evaluated before the final autocommit check, so a hostile/instrumented `now()` callback cannot open an outer transaction after the durability gate and obtain false RECOVERY_RECLAIMABLE / RECOVERY_RELEASED / GC_ELIGIBLE acknowledgement;
+- RELEASED durable leases stop blocking only after worker-quiescent and pins-released postconditions have been recorded.
+
+Runtime-fence rollover is still the prerequisite for replacement-runtime authority. G5 does not itself perform takeover, cutover, physical reclaim, or compaction.

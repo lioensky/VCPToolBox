@@ -51,6 +51,10 @@ function createFixture() {
     };
 
     const store = new GenUSearchMetadataStore({ db, now: () => tick() });
+    db.prepare(
+        "UPDATE gen_usearch_runtime_ownership SET owner_id = ?, serving_state = 'SERVING', runtime_fence = ?, acquired_at = ?, updated_at = ? WHERE singleton = 1"
+    ).run('runtime-g4', 7n, BigInt(tick()), BigInt(tick()));
+
     const writer = new GenUSearchPhysicalCoverageWriter({
         db,
         runtimeId: 'runtime-g4',
@@ -63,10 +67,6 @@ function createFixture() {
         segmentRoot,
         now: () => tick()
     });
-
-    db.prepare(
-        "UPDATE gen_usearch_runtime_ownership SET owner_id = ?, serving_state = 'SERVING', runtime_fence = ?, acquired_at = ?, updated_at = ? WHERE singleton = 1"
-    ).run('runtime-g4', 7n, BigInt(tick()), BigInt(tick()));
 
     const coordinator = new GenUSearchQueryReadViewCoordinator({
         db,
@@ -1141,5 +1141,67 @@ test('MemTable from another SQLite database cannot impersonate the same runtime 
     } finally {
         first.cleanup();
         second.cleanup();
+    }
+});
+
+test('QUIESCING preserves cancellation and rejects all new query work', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(91);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'quiesce',
+            contentHash: '91'.repeat(32)
+        });
+        const view = fixture.coordinator.acquire({
+            memtables: [memtable],
+            deadline: fixture.now() + 500
+        });
+
+        assert.equal(
+            fixture.coordinator.requestCancellation(view),
+            'CANCEL_REQUESTED'
+        );
+        assert.equal(view.cancellation_requested, true);
+        assert.equal(
+            fixture.coordinator.beginQuiescing(view),
+            'QUIESCING'
+        );
+        assert.equal(view.cancellation_requested, true);
+
+        assert.throws(
+            () => fixture.coordinator.assertUsable(view),
+            error => error?.code === 'QUERY_READ_VIEW_EXPIRED'
+        );
+        assert.throws(
+            () => fixture.coordinator.collectPhysicalCandidates(
+                view,
+                new Float32Array([1, 0, 0, 0]),
+                'embed-v1'
+            ),
+            error => error?.code === 'QUERY_READ_VIEW_EXPIRED'
+        );
+
+        const lease = fixture.db.prepare(
+            "SELECT state, cancellation_requested, worker_quiescent, pins_released FROM gen_usearch_read_view_leases WHERE read_view_id = ?"
+        ).get(view.read_view_id);
+        assert.deepEqual(lease, {
+            state: 'QUIESCING',
+            cancellation_requested: 1,
+            worker_quiescent: 0,
+            pins_released: 0
+        });
+
+        fixture.coordinator.release(view, { workerQuiescent: true });
+        const released = fixture.db.prepare(
+            "SELECT state, cancellation_requested, worker_quiescent, pins_released FROM gen_usearch_read_view_leases WHERE read_view_id = ?"
+        ).get(view.read_view_id);
+        assert.deepEqual(released, {
+            state: 'RELEASED',
+            cancellation_requested: 1,
+            worker_quiescent: 1,
+            pins_released: 1
+        });
+    } finally {
+        fixture.cleanup();
     }
 });

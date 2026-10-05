@@ -156,3 +156,18 @@ G2 stage boundary      = 6/6
 ```
 
 This remediation does not authorize runtime cutover, engine activation, Ready-for-Review merge, or upstream merge.
+
+
+## Clean-Room Remediation 3 Authority Amendments
+
+G2 physical-writer exclusivity is now **cross-process durable authority**, not merely an in-process registry:
+
+- one SQLite database/runtime fence may have only one `gen_usearch_runtime_process_lease`;
+- the lease is keyed by exact `owner_id + runtime_fence + process_token`;
+- a second OS process at the same fence cannot construct authoritative G2 writer state or purge MEMTABLE coverage;
+- a replacement process may claim the lease only after authoritative `runtime_fence` rollover;
+- every bootstrap/coverage mutation rechecks the durable process lease and current runtime ownership/fence inside the authoritative path;
+- process-local WeakMap/Map guards remain optimization/integrity checks only and cannot override durable fencing;
+- an old writer becomes fail-closed after fence rollover.
+
+Crash takeover proof and the act of advancing runtime ownership/fence remain outside G2; G2 only consumes the resulting fenced authority. This does not authorize runtime cutover or engine activation.

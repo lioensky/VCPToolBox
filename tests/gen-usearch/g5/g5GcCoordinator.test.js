@@ -45,6 +45,10 @@ function createFixture() {
     };
 
     const store = new GenUSearchMetadataStore({ db, now: () => tick() });
+    db.prepare(
+        "UPDATE gen_usearch_runtime_ownership SET owner_id = ?, serving_state = 'SERVING', runtime_fence = ?, acquired_at = ?, updated_at = ? WHERE singleton = 1"
+    ).run('runtime-g5', 11n, BigInt(tick()), BigInt(tick()));
+
     const writer = new GenUSearchPhysicalCoverageWriter({
         db,
         runtimeId: 'runtime-g5',
@@ -56,10 +60,6 @@ function createFixture() {
         segmentRoot,
         now: () => tick()
     });
-
-    db.prepare(
-        "UPDATE gen_usearch_runtime_ownership SET owner_id = ?, serving_state = 'SERVING', runtime_fence = ?, acquired_at = ?, updated_at = ? WHERE singleton = 1"
-    ).run('runtime-g5', 11n, BigInt(tick()), BigInt(tick()));
 
     const query = new GenUSearchQueryReadViewCoordinator({
         db,
@@ -685,6 +685,88 @@ test('forged pre-existing GC_ELIGIBLE state is revalidated against live reader s
             seeded.first.staged.chunk_version_id
         );
         assert.equal(cert.state, 'GC_ELIGIBLE');
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('G5 now callback cannot open an ambient transaction after the durability check', () => {
+    const fixture = createFixture();
+    try {
+        const seeded = fixture.seedRetiredSegmented({ acquireOldView: false });
+        let opened = false;
+        const malicious = new GenUSearchGcCoordinator({
+            db: fixture.db,
+            runtimeId: 'runtime-g5',
+            segmentRoot: fixture.segmentRoot,
+            now: () => {
+                if (!opened) {
+                    opened = true;
+                    fixture.db.exec('BEGIN');
+                }
+                return fixture.tick();
+            }
+        });
+
+        assert.throws(
+            () => malicious.certifyRecoveryReclaimable(
+                seeded.first.staged.vector_id
+            ),
+            error => error?.code === 'QUERY_READ_VIEW_INVALID'
+        );
+        if (fixture.db.inTransaction) fixture.db.exec('ROLLBACK');
+        assert.equal(
+            fixture.recovery(seeded.first.staged.vector_id).state,
+            'SEGMENT_COVERED'
+        );
+    } finally {
+        if (fixture.db.inTransaction) {
+            try { fixture.db.exec('ROLLBACK'); } catch (_) {}
+        }
+        fixture.cleanup();
+    }
+});
+
+test('durable reader lease from another process blocks GC even when absent from local registry', () => {
+    const fixture = createFixture();
+    try {
+        const seeded = fixture.seedRetiredSegmented({ acquireOldView: false });
+        releaseRecoveryForRetired(fixture, seeded);
+        const retired = fixture.store.getChunkVersion(
+            seeded.first.staged.chunk_version_id
+        );
+        const blockingVisibility = BigInt(retired.retired_visibility_seq) - 1n;
+
+        fixture.db.prepare(
+            "INSERT INTO gen_usearch_read_view_leases(read_view_id, owner_id, runtime_fence, visibility_seq, state, cancellation_requested, worker_quiescent, pins_released, created_at, deadline, updated_at) VALUES (?, ?, ?, ?, 'ACTIVE', 0, 0, 0, ?, ?, ?)"
+        ).run(
+            'external-process-view',
+            'runtime-g5',
+            11n,
+            blockingVisibility,
+            1n,
+            999999n,
+            1n
+        );
+
+        assert.equal(fixture.gc.inspectLiveReadViews().length, 0);
+        assert.throws(
+            () => fixture.gc.markGcEligible(
+                seeded.first.staged.chunk_version_id
+            ),
+            error => error?.code === 'UNSAFE_GC_ATTEMPT'
+        );
+
+        fixture.db.prepare(
+            "UPDATE gen_usearch_read_view_leases SET state = 'RELEASED', worker_quiescent = 1, pins_released = 1 WHERE read_view_id = ?"
+        ).run('external-process-view');
+
+        assert.equal(
+            fixture.gc.markGcEligible(
+                seeded.first.staged.chunk_version_id
+            ).state,
+            'GC_ELIGIBLE'
+        );
     } finally {
         fixture.cleanup();
     }

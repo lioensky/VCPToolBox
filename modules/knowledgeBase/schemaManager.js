@@ -514,6 +514,33 @@ const GEN_USEARCH_SCHEMA_SQL = `
         updated_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS gen_usearch_runtime_process_lease (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        owner_id TEXT NOT NULL,
+        runtime_fence INTEGER NOT NULL CHECK(runtime_fence >= 0),
+        process_token TEXT NOT NULL,
+        acquired_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_read_view_leases (
+        read_view_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        runtime_fence INTEGER NOT NULL CHECK(runtime_fence >= 0),
+        visibility_seq INTEGER NOT NULL CHECK(visibility_seq >= 0),
+        state TEXT NOT NULL CHECK(state IN (
+            'ACTIVE', 'CANCEL_REQUESTED', 'QUIESCING', 'RELEASED'
+        )),
+        cancellation_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancellation_requested IN (0, 1)),
+        worker_quiescent INTEGER NOT NULL DEFAULT 0 CHECK(worker_quiescent IN (0, 1)),
+        pins_released INTEGER NOT NULL DEFAULT 0 CHECK(pins_released IN (0, 1)),
+        created_at INTEGER NOT NULL,
+        deadline INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gen_usearch_read_view_leases_gc
+        ON gen_usearch_read_view_leases(runtime_fence, state, visibility_seq);
+
     INSERT OR IGNORE INTO gen_usearch_sequences(name, value, updated_at)
     VALUES
         ('visibility_seq', 0, 0),

@@ -73,6 +73,8 @@ test('G1 metadata schema is additive, idempotent and seeded', () => {
             'gen_usearch_sequences',
             'gen_usearch_vector_allocator',
             'gen_usearch_runtime_ownership',
+            'gen_usearch_runtime_process_lease',
+            'gen_usearch_read_view_leases',
             'gen_usearch_engine_state'
         ]) {
             assert.equal(tables.has(table), true, table);
@@ -133,15 +135,22 @@ test('vector allocator is durable, monotonic and never reuses IDs across store r
     }
 });
 
-test('visibility_seq and manifest_epoch advance independently and manifest mirrors its sequence', () => {
+test('visibility_seq advances independently while manifest_epoch is publisher-owned', () => {
     const fixture = createFixture();
     try {
         assert.equal(fixture.store.nextVisibilitySeq(), '1');
         assert.equal(fixture.store.nextVisibilitySeq(), '2');
         assert.equal(fixture.store.readSequence('manifest_epoch'), '0');
 
-        assert.equal(fixture.store.nextManifestEpoch(), '1');
-        assert.equal(fixture.store.readManifestEpoch(), '1');
+        assert.throws(
+            () => fixture.store.nextManifestEpoch(),
+            error => error?.code === 'MANIFEST_METADATA_CONFLICT'
+        );
+        assert.throws(
+            () => fixture.store.nextSequence('manifest_epoch'),
+            error => error?.code === 'MANIFEST_METADATA_CONFLICT'
+        );
+        assert.equal(fixture.store.readManifestEpoch(), '0');
         assert.equal(fixture.store.readSequence('visibility_seq'), '2');
 
         const manifestRow = fixture.db.prepare(`
@@ -149,7 +158,7 @@ test('visibility_seq and manifest_epoch advance independently and manifest mirro
             FROM gen_usearch_manifest_state
             WHERE singleton = 1
         `).safeIntegers(true).get();
-        assert.equal(manifestRow.manifest_epoch, 1n);
+        assert.equal(manifestRow.manifest_epoch, 0n);
     } finally {
         fixture.cleanup();
     }
@@ -836,5 +845,68 @@ test('critical metadata writes reject ambient transactions before returning dura
         assert.equal(fixture.store.readAllocatorHighWater(), '1');
     } finally {
         fixture.cleanup();
+    }
+});
+
+test('document creation binds URI history to the visibility sequence inside its write transaction', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g1-create-race-'));
+    const dbPath = path.join(root, 'knowledge.sqlite');
+    const first = new Database(dbPath);
+    const second = new Database(dbPath);
+    try {
+        for (const db of [first, second]) {
+            db.pragma('journal_mode = WAL');
+            db.pragma('synchronous = FULL');
+            db.pragma('foreign_keys = ON');
+        }
+        initializeKnowledgeBaseSchema(first, { logPrefix: 'GenUSearchG1CreateRace' });
+
+        const secondStore = new GenUSearchMetadataStore({
+            db: second,
+            now: () => 5000
+        });
+        let injected = false;
+        const firstStore = new GenUSearchMetadataStore({
+            db: first,
+            now: () => {
+                if (!injected) {
+                    injected = true;
+                    assert.equal(secondStore.nextVisibilitySeq(), '1');
+                }
+                return 6000;
+            }
+        });
+
+        assert.throws(
+            () => firstStore.createDocument({
+                docId: 'doc-create-race',
+                uri: 'doc-create-race.txt',
+                visibilitySeq: '0'
+            }),
+            error => error?.code === 'VISIBILITY_SEQUENCE_INVALID'
+        );
+
+        assert.equal(firstStore.getDocument('doc-create-race'), null);
+        assert.equal(firstStore.readSequence('visibility_seq'), '1');
+        assert.equal(
+            first.prepare(
+                'SELECT COUNT(*) AS count FROM gen_usearch_document_uri_history WHERE doc_id = ?'
+            ).get('doc-create-race').count,
+            0
+        );
+
+        const created = firstStore.createDocument({
+            docId: 'doc-create-current',
+            uri: 'doc-create-current.txt'
+        });
+        assert.equal(created.doc_id, 'doc-create-current');
+        const history = first.prepare(
+            'SELECT valid_from_visibility_seq FROM gen_usearch_document_uri_history WHERE doc_id = ?'
+        ).safeIntegers(true).get('doc-create-current');
+        assert.equal(history.valid_from_visibility_seq, 1n);
+    } finally {
+        try { first.close(); } catch (_) {}
+        try { second.close(); } catch (_) {}
+        fs.rmSync(root, { recursive: true, force: true });
     }
 });

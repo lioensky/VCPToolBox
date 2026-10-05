@@ -709,11 +709,10 @@ class GenUSearchSegmentPublisher {
         });
     }
 
-    _ensureBuildingRecord(segmentId, source, vectorCount) {
+    _ensureBuildingRecord(segmentId, source, vectorCount, now) {
         const existing = this._getSegment.get(segmentId);
         if (existing) return existing;
 
-        const now = BigInt(this.now());
         try {
             this._insertBuildingSegment.run(
                 segmentId,
@@ -1019,9 +1018,7 @@ class GenUSearchSegmentPublisher {
         return true;
     }
 
-    publishSealedMemTable(options = {}) {
-        this._assertNoAmbientTransaction();
-        this.assertCrashDurableProfile();
+    _publishSealedMemTableLocked(options, operationNow, finalizeNow, publishNow) {
         const sealedSource = this._assertSealedMemTable(options.memtable);
         const source = this._deriveFlushSource(sealedSource);
         const vectorIds = [...source.vectorIds];
@@ -1033,7 +1030,8 @@ class GenUSearchSegmentPublisher {
         let segment = this._ensureBuildingRecord(
             segmentId,
             source,
-            vectorIds.length
+            vectorIds.length,
+            operationNow
         );
 
         if (segment.state === 'PUBLISHED') {
@@ -1083,10 +1081,9 @@ class GenUSearchSegmentPublisher {
                 source,
                 vectorIds
             );
-            const now = BigInt(this.now());
             this._finalizeTransaction({
                 ...receipt,
-                now
+                now: finalizeNow
             });
             segment = this._getSegment.get(segmentId);
         } else if (segment.state === 'FINALIZED_DURABLE') {
@@ -1116,7 +1113,7 @@ class GenUSearchSegmentPublisher {
             expectedEpoch,
             embeddingFingerprint: source.embeddingFingerprint,
             dimension: source.dimension,
-            now: BigInt(this.now())
+            now: publishNow
         });
 
         return Object.freeze({
@@ -1130,6 +1127,45 @@ class GenUSearchSegmentPublisher {
             vectorIds: Object.freeze([...vectorIds]),
             alreadyPublished: false
         });
+    }
+
+    publishSealedMemTable(options = {}) {
+        const operationNow = BigInt(this.now());
+        const finalizeNow = BigInt(this.now());
+        const publishNow = BigInt(this.now());
+
+        // No caller callback may run after this check and before BEGIN IMMEDIATE.
+        this._assertNoAmbientTransaction();
+        this.assertCrashDurableProfile();
+
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+            const result = this._publishSealedMemTableLocked(
+                options,
+                operationNow,
+                finalizeNow,
+                publishNow
+            );
+            this.db.exec('COMMIT');
+            return result;
+        } catch (error) {
+            if (this.db.inTransaction === true) {
+                try {
+                    this.db.exec('ROLLBACK');
+                } catch (rollbackError) {
+                    const combined = codedError(
+                        'DURABLE_COMMIT_UNCONFIRMED',
+                        'G3 publication failed and top-level rollback also failed'
+                    );
+                    combined.cause = {
+                        publication: error,
+                        rollback: rollbackError
+                    };
+                    throw combined;
+                }
+            }
+            throw error;
+        }
     }
 }
 

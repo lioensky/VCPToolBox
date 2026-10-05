@@ -436,7 +436,28 @@ class GenUSearchMetadataStore {
         });
 
         this._createDocumentTransaction = db.transaction(
-            (docId, uri, visibilitySeq, now) => {
+            (docId, uri, suppliedVisibilitySeq, now) => {
+                const sequenceRow = this._getSequence.get('visibility_seq');
+                if (!sequenceRow) {
+                    throw codedError(
+                        'GEN_USEARCH_SEQUENCE_CORRUPT',
+                        'visibility_seq is missing during document creation'
+                    );
+                }
+                const visibilitySeq = parseInteger(
+                    sequenceRow.value,
+                    'visibility_seq'
+                );
+                if (
+                    suppliedVisibilitySeq != null
+                    && suppliedVisibilitySeq !== visibilitySeq
+                ) {
+                    throw codedError(
+                        'VISIBILITY_SEQUENCE_INVALID',
+                        'Document creation visibility_seq became stale before commit'
+                    );
+                }
+
                 this._insertDocument.run(docId, uri, now, now);
                 if (uri) {
                     this._insertUriHistory.run(
@@ -1181,6 +1202,12 @@ class GenUSearchMetadataStore {
         if (!SEQUENCE_NAMES.has(name)) {
             throw new RangeError(`Unknown Gen-USearch sequence: ${name}`);
         }
+        if (name === 'manifest_epoch') {
+            throw codedError(
+                'MANIFEST_METADATA_CONFLICT',
+                'manifest_epoch mutation is reserved to the G3 manifest publisher'
+            );
+        }
         const now = parseInteger(this.now(), 'now');
         return this._criticalWrite(
             () => this._nextSequenceTransaction(name, now)
@@ -1192,7 +1219,10 @@ class GenUSearchMetadataStore {
     }
 
     nextManifestEpoch() {
-        return this.nextSequence('manifest_epoch');
+        throw codedError(
+            'MANIFEST_METADATA_CONFLICT',
+            'manifest_epoch mutation is reserved to the G3 manifest publisher'
+        );
     }
 
     readManifestEpoch() {
@@ -1228,23 +1258,9 @@ class GenUSearchMetadataStore {
         const uri = options.uri == null
             ? null
             : requireString(options.uri, 'uri');
-        const currentVisibilitySeq = parseInteger(
-            this.readSequence('visibility_seq'),
-            'visibilitySeq'
-        );
-        if (options.visibilitySeq != null) {
-            const suppliedVisibilitySeq = parseInteger(
-                options.visibilitySeq,
-                'visibilitySeq'
-            );
-            if (suppliedVisibilitySeq !== currentVisibilitySeq) {
-                throw codedError(
-                    'VISIBILITY_SEQUENCE_INVALID',
-                    'Document creation cannot override the current visibility_seq'
-                );
-            }
-        }
-        const visibilitySeq = currentVisibilitySeq;
+        const suppliedVisibilitySeq = options.visibilitySeq == null
+            ? null
+            : parseInteger(options.visibilitySeq, 'visibilitySeq');
         const now = parseInteger(this.now(), 'now');
 
         return this._criticalWrite(() => {
@@ -1252,7 +1268,7 @@ class GenUSearchMetadataStore {
                 return this._createDocumentTransaction(
                     docId,
                     uri,
-                    visibilitySeq,
+                    suppliedVisibilitySeq,
                     now
                 );
             } catch (error) {

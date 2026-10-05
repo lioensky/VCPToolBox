@@ -70,3 +70,14 @@ unresolved P1 = 0
 G1 = PASS
 G2 = NOT AUTHORIZED
 ```
+
+
+## Clean-Room Remediation 3 Authority Amendments
+
+A clean-room multi-review pass tightened two G1 authority boundaries:
+
+- `manifest_epoch` is no longer a general-purpose metadata sequence. Public `nextSequence('manifest_epoch')` and `nextManifestEpoch()` fail closed with `MANIFEST_METADATA_CONFLICT`. Only the G3 manifest publisher may advance manifest epoch together with the complete next manifest set.
+- document creation binds URI-history `valid_from_visibility_seq` to the authoritative `visibility_seq` read **inside** its SQLite write transaction. An optional caller-supplied visibility cut is validation-only and must still equal the in-transaction authority at commit time.
+- G1 schema initialization additively creates durable runtime-process and QueryReadView lease tables used by later gates; these tables do not activate serving or change G1 stage authority.
+
+These amendments do not authorize manifest publication from G1, runtime takeover, query serving, or merge.

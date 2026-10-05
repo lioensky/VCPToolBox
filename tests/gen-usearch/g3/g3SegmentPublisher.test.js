@@ -45,6 +45,10 @@ function createFixture() {
     initializeKnowledgeBaseSchema(db, { logPrefix: 'GenUSearchG3Test' });
 
     let now = 10000;
+    db.prepare(
+        "UPDATE gen_usearch_runtime_ownership SET owner_id = ?, serving_state = 'SERVING', runtime_fence = ?, acquired_at = ?, updated_at = ? WHERE singleton = 1"
+    ).run('runtime-g3', 21n, BigInt(now++), BigInt(now++));
+
     const store = new GenUSearchMetadataStore({ db, now: () => now++ });
     const writer = new GenUSearchPhysicalCoverageWriter({
         db,
@@ -263,21 +267,23 @@ test('stale manifest CAS leaves finalized artifact unpublished and retryable', (
         assert.equal(fixture.publisher.captureManifestEpoch(), '1');
         assert.deepEqual(manifestMembers(fixture.db, 1), [firstReceipt.segmentId]);
 
-        const pending = fixture.db.prepare(`
-            SELECT *
-            FROM gen_usearch_segments
-            WHERE state = 'FINALIZED_DURABLE'
-        `).get();
-        assert.ok(pending);
-        assert.equal(fs.existsSync(pending.artifact_path), true);
-        assert.equal(sha256File(pending.artifact_path), pending.artifact_digest);
-
-        const noCoverage = fixture.db.prepare(`
-            SELECT COUNT(*) AS count
-            FROM gen_usearch_vector_coverage
-            WHERE source_kind = 'SEGMENT' AND source_id = ?
-        `).get(pending.segment_id);
-        assert.equal(noCoverage.count, 0);
+        assert.equal(
+            fixture.db.prepare(`
+                SELECT COUNT(*) AS count
+                FROM gen_usearch_segments
+                WHERE segment_id != ?
+            `).get(firstReceipt.segmentId).count,
+            0
+        );
+        assert.equal(
+            fixture.db.prepare(`
+                SELECT COUNT(*) AS count
+                FROM gen_usearch_vector_coverage
+                WHERE source_kind = 'SEGMENT'
+                  AND source_id != ?
+            `).get(firstReceipt.segmentId).count,
+            0
+        );
 
         const recoveryBeforeRetry = fixture.db.prepare(`
             SELECT state
@@ -304,7 +310,7 @@ test('stale manifest CAS leaves finalized artifact unpublished and retryable', (
     }
 });
 
-test('corrupted finalized artifact cannot enter the manifest on retry', () => {
+test('hidden artifact from rolled-back publication is untrusted and safely rebuilt on retry', () => {
     const fixture = createFixture();
     try {
         const first = fixture.createMemtable(1);
@@ -313,7 +319,7 @@ test('corrupted finalized artifact cannot enter the manifest on retry', () => {
             contentHash: 'e'.repeat(64)
         });
         fixture.writer.sealMemTable(first);
-        fixture.publisher.publishSealedMemTable({
+        const firstReceipt = fixture.publisher.publishSealedMemTable({
             memtable: first,
             expectedManifestEpoch: '0'
         });
@@ -332,28 +338,23 @@ test('corrupted finalized artifact cannot enter the manifest on retry', () => {
             error => error?.code === 'COMPACTION_PUBLICATION_STALE'
         );
 
-        const pending = fixture.db.prepare(`
-            SELECT *
-            FROM gen_usearch_segments
-            WHERE state = 'FINALIZED_DURABLE'
-        `).get();
-        fs.appendFileSync(pending.artifact_path, Buffer.from('corrupt'));
+        const hiddenArtifacts = fs.readdirSync(fixture.segmentRoot)
+            .filter(name => name.endsWith('.usearch'))
+            .map(name => path.join(fixture.segmentRoot, name))
+            .filter(file => file !== firstReceipt.artifactPath);
+        assert.equal(hiddenArtifacts.length, 1);
+        fs.appendFileSync(hiddenArtifacts[0], Buffer.from('corrupt-hidden'));
 
-        assert.throws(
-            () => fixture.publisher.publishSealedMemTable({
-                memtable: second,
-                expectedManifestEpoch: '1'
-            }),
-            error => error?.code === 'SEGMENT_ARTIFACT_INVALID'
-        );
-        assert.equal(fixture.publisher.captureManifestEpoch(), '1');
-        assert.equal(
-            fixture.db.prepare(`
-                SELECT COUNT(*) AS count
-                FROM gen_usearch_vector_coverage
-                WHERE source_kind = 'SEGMENT' AND source_id = ?
-            `).get(pending.segment_id).count,
-            0
+        const retry = fixture.publisher.publishSealedMemTable({
+            memtable: second,
+            expectedManifestEpoch: '1'
+        });
+        assert.equal(retry.manifestEpoch, '2');
+        assert.equal(fs.existsSync(retry.artifactPath), true);
+        assert.equal(sha256File(retry.artifactPath), retry.artifactDigest);
+        assert.deepEqual(
+            manifestMembers(fixture.db, 2),
+            [firstReceipt.segmentId, retry.segmentId].sort()
         );
     } finally {
         fixture.cleanup();
@@ -389,13 +390,13 @@ test('manifest publication fails closed when SQLite silently ignores a manifest 
         assert.equal(fixture.publisher.captureManifestEpoch(), '0');
         assert.deepEqual(manifestMembers(fixture.db, 0), []);
 
-        const segment = fixture.db.prepare(`
-            SELECT *
-            FROM gen_usearch_segments
-            ORDER BY created_at DESC
-            LIMIT 1
-        `).get();
-        assert.equal(segment.state, 'FINALIZED_DURABLE');
+        assert.equal(
+            fixture.db.prepare(`
+                SELECT COUNT(*) AS count
+                FROM gen_usearch_segments
+            `).get().count,
+            0
+        );
 
         assert.equal(
             fixture.db.prepare(`
@@ -442,15 +443,13 @@ test('mixed or incomplete recovery authority fails before segment finalization',
             error => error?.code === 'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE'
         );
 
-        const segment = fixture.db.prepare(`
-            SELECT *
-            FROM gen_usearch_segments
-            ORDER BY created_at DESC
-            LIMIT 1
-        `).get();
-        assert.equal(segment.state, 'BUILDING');
-        assert.equal(segment.artifact_path, null);
-        assert.equal(segment.artifact_digest, null);
+        assert.equal(
+            fixture.db.prepare(`
+                SELECT COUNT(*) AS count
+                FROM gen_usearch_segments
+            `).get().count,
+            0
+        );
         assert.equal(fixture.publisher.captureManifestEpoch(), '0');
         assert.equal(
             fixture.db.prepare(`
@@ -579,12 +578,10 @@ test('extra SEGMENT coverage injected by a trigger rolls the whole manifest publ
         );
         assert.equal(
             fixture.db.prepare(`
-                SELECT state
+                SELECT COUNT(*) AS count
                 FROM gen_usearch_segments
-                ORDER BY created_at DESC
-                LIMIT 1
-            `).get().state,
-            'FINALIZED_DURABLE'
+            `).get().count,
+            0
         );
     } finally {
         fixture.cleanup();
@@ -1295,9 +1292,6 @@ test('released retired vector already covered by current manifest does not remai
             expectedCurrentVersionId: first.staged.chunk_version_id
         });
 
-        fixture.db.prepare(
-            "UPDATE gen_usearch_runtime_ownership SET owner_id = ?, serving_state = 'SERVING', runtime_fence = ?, updated_at = ? WHERE singleton = 1"
-        ).run('runtime-g3', 21n, 21000n);
         const gc = new GenUSearchGcCoordinator({
             db: fixture.db,
             runtimeId: 'runtime-g3',
@@ -1421,6 +1415,104 @@ test('PUBLISHED retry is bound to the current authoritative manifest epoch and m
             error => error?.code === 'MANIFEST_METADATA_CONFLICT'
         );
     } finally {
+        fixture.cleanup();
+    }
+});
+
+test('G3 now callback cannot smuggle an outer transaction past the entry gate', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(501);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'callback-tx',
+            contentHash: 'e5'.repeat(32)
+        });
+        fixture.writer.sealMemTable(memtable);
+
+        let opened = false;
+        const malicious = new GenUSearchSegmentPublisher({
+            db: fixture.db,
+            segmentRoot: fixture.segmentRoot,
+            now: () => {
+                if (!opened) {
+                    opened = true;
+                    fixture.db.exec('BEGIN');
+                }
+                return 50000;
+            }
+        });
+
+        assert.throws(
+            () => malicious.publishSealedMemTable({
+                memtable,
+                expectedManifestEpoch: '0'
+            }),
+            error => error?.code === 'DURABLE_COMMIT_UNCONFIRMED'
+        );
+        if (fixture.db.inTransaction) fixture.db.exec('ROLLBACK');
+
+        assert.equal(fixture.publisher.captureManifestEpoch(), '0');
+        assert.equal(
+            fixture.db.prepare(
+                'SELECT COUNT(*) AS count FROM gen_usearch_segments'
+            ).get().count,
+            0
+        );
+    } finally {
+        if (fixture.db.inTransaction) {
+            try { fixture.db.exec('ROLLBACK'); } catch (_) {}
+        }
+        fixture.cleanup();
+    }
+});
+
+test('BEGIN IMMEDIATE serializes competing G3 publishers before artifact mutation', () => {
+    const fixture = createFixture();
+    let secondDb;
+    try {
+        const memtable = fixture.createMemtable(502);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'serialized-build',
+            contentHash: 'f5'.repeat(32)
+        });
+        fixture.writer.sealMemTable(memtable);
+
+        secondDb = new Database(fixture.db.name);
+        secondDb.pragma('journal_mode = WAL');
+        secondDb.pragma('synchronous = FULL');
+        secondDb.pragma('foreign_keys = ON');
+        secondDb.pragma('busy_timeout = 1');
+        const secondPublisher = new GenUSearchSegmentPublisher({
+            db: secondDb,
+            segmentRoot: fixture.segmentRoot,
+            now: () => 51000
+        });
+
+        fixture.db.exec('BEGIN IMMEDIATE');
+        assert.throws(
+            () => secondPublisher.publishSealedMemTable({
+                memtable,
+                expectedManifestEpoch: '0'
+            }),
+            error => (
+                error?.code === 'SQLITE_BUSY'
+                || /locked|busy/i.test(String(error?.message || ''))
+            )
+        );
+        fixture.db.exec('ROLLBACK');
+
+        assert.deepEqual(fs.readdirSync(fixture.segmentRoot), []);
+        const receipt = secondPublisher.publishSealedMemTable({
+            memtable,
+            expectedManifestEpoch: '0'
+        });
+        assert.equal(receipt.manifestEpoch, '1');
+        assert.equal(receipt.alreadyPublished, false);
+    } finally {
+        if (fixture.db.inTransaction) {
+            try { fixture.db.exec('ROLLBACK'); } catch (_) {}
+        }
+        try { secondDb?.close(); } catch (_) {}
         fixture.cleanup();
     }
 });

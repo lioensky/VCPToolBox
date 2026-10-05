@@ -115,3 +115,13 @@ jobs:
 
       - name: Enforce G3 authority boundary
         run: node --test tests/gen-usearch/g3/g3StageBoundary.test.js
+
+  g3-windows-durability:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Verify Windows write-through Vexus build
+        run: cargo check --locked --manifest-path rust-vexus-lite/Cargo.toml

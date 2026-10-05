@@ -59,19 +59,23 @@ test('G5 remains unwired from existing ingestion, search and user-facing serving
     }
 });
 
-test('G5 QueryReadView extension is read-only with respect to durable Gen-USearch authority', () => {
+test('G5 QueryReadView durable mutation is limited to cross-process reader leases', () => {
     const source = read('modules/knowledgeBase/genUSearchQueryReadView.js');
-    for (const forbidden of [
-        /INSERT\s+INTO\s+gen_usearch_/i,
-        /UPDATE\s+gen_usearch_/i,
-        /DELETE\s+FROM\s+gen_usearch_/i
-    ]) {
-        assert.doesNotMatch(source, forbidden);
-    }
+    const mutatedTables = [
+        ...source.matchAll(
+            /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(gen_usearch_[a-z0-9_]+)/ig
+        )
+    ].map(match => match[1]);
+    assert.ok(mutatedTables.length >= 2);
+    assert.deepEqual(
+        [...new Set(mutatedTables)],
+        ['gen_usearch_read_view_leases']
+    );
     for (const required of [
         'LIVE_GC_VIEWS',
         'beginQuiescing',
         'snapshotGcSafety',
+        'gen_usearch_read_view_leases',
         'worker_quiescent',
         'pins_released'
     ]) {

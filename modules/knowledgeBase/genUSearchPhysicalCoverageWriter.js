@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const GenUSearchMemTable = require('./genUSearchMemTable');
@@ -8,6 +9,7 @@ const ReadPins = require('./genUSearchReadPins');
 const MAX_SIGNED_INT64 = 9223372036854775807n;
 const LIVE_WRITER_BY_DB = new WeakMap();
 const LIVE_WRITER_BY_DATABASE = new Map();
+const WRITER_RUNTIME_FENCE = new WeakMap();
 const MEMTABLE_DATABASE_AUTHORITY = new WeakMap();
 
 function databaseAuthorityKey(db) {
@@ -37,18 +39,44 @@ function databaseAuthorityIdentity(db) {
     return databaseAuthorityKey(db) ?? db;
 }
 
-function assertDatabaseWriterAvailable(db) {
-    if (LIVE_WRITER_BY_DB.has(db)) {
-        throw codedError(
-            'MEMTABLE_RUNTIME_ALREADY_OWNED',
-            'this database connection already has a live G2 physical coverage writer'
-        );
+function readRuntimeFenceForWriterGuard(db) {
+    try {
+        const row = db.prepare(
+            'SELECT runtime_fence FROM gen_usearch_runtime_ownership WHERE singleton = 1'
+        ).safeIntegers(true).get();
+        return row?.runtime_fence == null ? null : BigInt(row.runtime_fence).toString();
+    } catch (_) {
+        return null;
     }
+}
+
+function localWriterStillOwnsCurrentFence(existing, db) {
+    if (!existing || existing.db?.open === false) return false;
+    const writerFence = WRITER_RUNTIME_FENCE.get(existing);
+    const currentFence = readRuntimeFenceForWriterGuard(db);
+    if (writerFence == null || currentFence == null) {
+        return true;
+    }
+    return writerFence === currentFence;
+}
+
+function assertDatabaseWriterAvailable(db) {
+    const sameConnection = LIVE_WRITER_BY_DB.get(db);
+    if (sameConnection) {
+        if (localWriterStillOwnsCurrentFence(sameConnection, db)) {
+            throw codedError(
+                'MEMTABLE_RUNTIME_ALREADY_OWNED',
+                'this database connection already has a live G2 physical coverage writer'
+            );
+        }
+        LIVE_WRITER_BY_DB.delete(db);
+    }
+
     const key = databaseAuthorityKey(db);
     if (!key) return null;
     const ref = LIVE_WRITER_BY_DATABASE.get(key);
     const existing = ref?.deref?.();
-    if (existing && existing.db?.open !== false) {
+    if (existing && localWriterStillOwnsCurrentFence(existing, db)) {
         throw codedError(
             'MEMTABLE_RUNTIME_ALREADY_OWNED',
             `database already has a live G2 physical coverage writer: ${key}`
@@ -120,6 +148,8 @@ class GenUSearchPhysicalCoverageWriter {
     #activeMemtable = null;
     #mutationTokens = new WeakMap();
     #sourceIds = new Set();
+    #processToken;
+    #runtimeFence;
 
     constructor(options = {}) {
         const db = options.db;
@@ -149,6 +179,30 @@ class GenUSearchPhysicalCoverageWriter {
         });
         this.db = db;
         this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+        this.#processToken = crypto.randomUUID();
+
+        this._getRuntimeOwnership = db.prepare(
+            "SELECT owner_id, serving_state, runtime_fence FROM gen_usearch_runtime_ownership WHERE singleton = 1"
+        ).safeIntegers(true);
+        this._getProcessLease = db.prepare(`
+            SELECT owner_id, runtime_fence, process_token, acquired_at, updated_at
+            FROM gen_usearch_runtime_process_lease
+            WHERE singleton = 1
+        `).safeIntegers(true);
+        this._insertProcessLease = db.prepare(`
+            INSERT INTO gen_usearch_runtime_process_lease(
+                singleton, owner_id, runtime_fence, process_token, acquired_at, updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?)
+        `);
+        this._replaceProcessLease = db.prepare(`
+            UPDATE gen_usearch_runtime_process_lease
+            SET owner_id = ?,
+                runtime_fence = ?,
+                process_token = ?,
+                acquired_at = ?,
+                updated_at = ?
+            WHERE singleton = 1
+        `);
 
         this._getVector = db.prepare(`
             SELECT
@@ -221,7 +275,67 @@ class GenUSearchPhysicalCoverageWriter {
             WHERE vector_id = ? AND source_kind = 'MEMTABLE' AND source_id = ?
         `);
 
+        this._claimProcessLeaseTransaction = db.transaction((processToken, now) => {
+            const runtime = this._getRuntimeOwnership.get();
+            if (!runtime) {
+                throw codedError(
+                    'RUNTIME_FENCE_STALE',
+                    'G2 runtime ownership authority is unavailable'
+                );
+            }
+            const fence = BigInt(runtime.runtime_fence);
+            if (
+                runtime.serving_state !== 'IDLE'
+                && runtime.owner_id !== this.runtimeId
+            ) {
+                throw codedError(
+                    'RUNTIME_FENCE_STALE',
+                    'G2 writer does not own the current runtime fence'
+                );
+            }
+
+            const existing = this._getProcessLease.get();
+            if (existing && BigInt(existing.runtime_fence) === fence) {
+                throw codedError(
+                    'MEMTABLE_RUNTIME_ALREADY_OWNED',
+                    'current runtime fence already has a live G2 process lease'
+                );
+            }
+            if (existing) {
+                this._replaceProcessLease.run(
+                    this.runtimeId,
+                    fence,
+                    processToken,
+                    now,
+                    now
+                );
+            } else {
+                this._insertProcessLease.run(
+                    this.runtimeId,
+                    fence,
+                    processToken,
+                    now,
+                    now
+                );
+            }
+
+            const claimed = this._getProcessLease.get();
+            if (
+                !claimed
+                || claimed.owner_id !== this.runtimeId
+                || BigInt(claimed.runtime_fence) !== fence
+                || claimed.process_token !== processToken
+            ) {
+                throw codedError(
+                    'MEMTABLE_RUNTIME_ALREADY_OWNED',
+                    'G2 process lease claim postcondition failed'
+                );
+            }
+            return fence;
+        });
+
         this._bootstrapTransaction = db.transaction(() => {
+            this._assertProcessAuthority();
             const removed = this._deleteAllMemtableCoverage.run().changes;
             const remaining = this._countAllMemtableCoverage.get()?.count ?? 0n;
             if (remaining !== 0n) {
@@ -234,6 +348,7 @@ class GenUSearchPhysicalCoverageWriter {
         });
         this._publishCoverageTransaction = db.transaction(
             (vectorId, sourceId, now) => {
+                this._assertProcessAuthority();
                 this._upsertVisibleCoverage.run(vectorId, sourceId, now, now);
                 const coverage = this._getCoverage.get(vectorId, sourceId);
                 if (!coverage || coverage.coverage_state !== 'QUERY_VISIBLE') {
@@ -247,6 +362,7 @@ class GenUSearchPhysicalCoverageWriter {
         );
         this._publishCoverageBatchTransaction = db.transaction(
             (vectorIds, sourceId, now) => {
+                this._assertProcessAuthority();
                 for (const vectorId of vectorIds) {
                     this._upsertVisibleCoverage.run(
                         vectorId,
@@ -269,6 +385,7 @@ class GenUSearchPhysicalCoverageWriter {
         );
         this._hideCoverageTransaction = db.transaction(
             (vectorId, sourceId) => {
+                this._assertProcessAuthority();
                 const removed = this._deleteCoverage.run(vectorId, sourceId).changes;
                 if (this._getCoverage.get(vectorId, sourceId)) {
                     throw codedError(
@@ -280,8 +397,14 @@ class GenUSearchPhysicalCoverageWriter {
             }
         );
 
-        // Claim the in-process writer authority only after every required SQL
-        // statement and transaction has initialized successfully.
+        // Durable cross-process lease is authoritative. Process-local registries
+        // remain a fast duplicate guard only.
+        this.#runtimeFence = this._claimProcessLeaseTransaction(
+            this.#processToken,
+            BigInt(Date.now())
+        ).toString();
+        WRITER_RUNTIME_FENCE.set(this, this.#runtimeFence);
+
         LIVE_WRITER_BY_DB.set(db, this);
         if (databaseAuthority) {
             LIVE_WRITER_BY_DATABASE.set(databaseAuthority, new WeakRef(this));
@@ -294,6 +417,7 @@ class GenUSearchPhysicalCoverageWriter {
 
     createMemTable(options = {}) {
         this._assertNoAmbientTransaction();
+        this._assertProcessAuthority();
         const token = Object.freeze({});
         const memtable = new GenUSearchMemTable({
             VexusIndex: options.VexusIndex,
@@ -337,6 +461,39 @@ class GenUSearchPhysicalCoverageWriter {
         return true;
     }
 
+    _assertProcessAuthority() {
+        const runtime = this._getRuntimeOwnership.get();
+        const lease = this._getProcessLease.get();
+        if (!runtime || !lease || lease.process_token !== this.#processToken) {
+            throw codedError(
+                'RUNTIME_FENCE_STALE',
+                'G2 process lease is no longer authoritative'
+            );
+        }
+        const currentFence = BigInt(runtime.runtime_fence);
+        const leaseFence = BigInt(lease.runtime_fence);
+        if (
+            runtime.serving_state !== 'IDLE'
+            && runtime.owner_id !== this.runtimeId
+        ) {
+            throw codedError(
+                'RUNTIME_FENCE_STALE',
+                'G2 runtime ownership moved to another owner'
+            );
+        }
+        if (
+            lease.owner_id !== this.runtimeId
+            || leaseFence !== currentFence
+            || this.#runtimeFence !== currentFence.toString()
+        ) {
+            throw codedError(
+                'RUNTIME_FENCE_STALE',
+                'G2 process lease fence is stale; a new runtime incarnation must claim a new process lease'
+            );
+        }
+        return true;
+    }
+
     _assertNoAmbientTransaction() {
         if (this.db.inTransaction === true) {
             throw codedError(
@@ -365,11 +522,13 @@ class GenUSearchPhysicalCoverageWriter {
 
     _criticalWrite(fn) {
         this._assertNoAmbientTransaction();
+        this._assertProcessAuthority();
         this.assertCrashDurableProfile();
         return fn();
     }
 
     _assertBootstrapped() {
+        this._assertProcessAuthority();
         if (!this.#bootstrapped) {
             throw codedError(
                 'MEMTABLE_RUNTIME_NOT_BOOTSTRAPPED',
@@ -455,6 +614,7 @@ class GenUSearchPhysicalCoverageWriter {
 
     sealMemTable(memtable) {
         this._assertNoAmbientTransaction();
+        this._assertProcessAuthority();
         const token = this._tokenFor(memtable);
         return memtable.seal(token);
     }

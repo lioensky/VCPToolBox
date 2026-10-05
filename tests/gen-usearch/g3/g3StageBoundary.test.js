@@ -98,4 +98,29 @@ test('G3 workflow covers G1/G2 regressions, G3 contract, publisher and tests', (
         assert.ok(workflow.includes(required), required);
     }
     assert.ok(workflow.includes('workflow_dispatch:'));
+    assert.ok(workflow.includes('g3-windows-durability:'));
+    assert.ok(workflow.includes('runs-on: windows-latest'));
+    assert.ok(
+        workflow.includes(
+            'cargo check --locked --manifest-path rust-vexus-lite/Cargo.toml'
+        )
+    );
+});
+
+test('Windows native segment publication is write-through before SQLite can trust it', () => {
+    const cargo = read('rust-vexus-lite/Cargo.toml');
+    const rust = read('rust-vexus-lite/src/lib.rs');
+
+    assert.match(
+        cargo,
+        /\[target\.'cfg\(windows\)'\.dependencies\][\s\S]*windows-sys/
+    );
+    for (const required of [
+        'MOVEFILE_REPLACE_EXISTING',
+        'MOVEFILE_WRITE_THROUGH',
+        'replace_windows_file_write_through',
+        'sync_index_file(target)'
+    ]) {
+        assert.ok(rust.includes(required), required);
+    }
 });

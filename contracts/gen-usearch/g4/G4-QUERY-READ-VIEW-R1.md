@@ -137,3 +137,17 @@ G5 = NOT AUTHORIZED
 ```
 
 G4 PASS does not authorize G5 implementation, upstream merge, Ready-for-Review, GC, compaction, reclaim, runtime cutover, or engine activation.
+
+
+## Clean-Room Remediation 3 Authority Amendments
+
+QueryReadView lifetime is now durable and cancellation-monotonic:
+
+- each admitted QueryReadView creates a SQLite `gen_usearch_read_view_leases` row bound to `owner_id`, exact `runtime_fence`, `visibility_seq`, deadline, and lifecycle state;
+- acquisition revalidates visibility/runtime authority immediately before durable lease admission;
+- `cancellation_requested` is an independent monotonic flag and is never cleared by transition to QUIESCING;
+- `assertUsable()` permits new query work only in ACTIVE state; CANCEL_REQUESTED and QUIESCING are non-usable while retaining pins;
+- release durably records QUIESCING + worker quiescence before process-local pins are dropped, then records RELEASED + pins_released;
+- a crash between those phases leaves a durable blocking lease rather than falsely advertising safe release.
+
+The in-process pin maps remain physical-resource guards, while the SQLite lease is the cross-process reader-lifetime authority consumed by G5.

@@ -40,6 +40,9 @@ rusqlite = { version = "0.29", features = ["bundled"] }
 # 高性能跨平台文件监听
 notify = "6.1"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+
 [build-dependencies]
 napi-build = "2.1"
 

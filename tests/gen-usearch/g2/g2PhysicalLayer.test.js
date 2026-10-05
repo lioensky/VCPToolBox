@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const Database = require('better-sqlite3');
 
 const { initializeKnowledgeBaseSchema } = require(
@@ -20,6 +21,24 @@ const GenUSearchPhysicalCoverageWriter = require(
     '../../../modules/knowledgeBase/genUSearchPhysicalCoverageWriter'
 );
 const { VexusIndex } = require('../../../rust-vexus-lite');
+
+function rolloverRuntimeFence(db, runtimeId, now = Date.now()) {
+    const row = db.prepare(
+        'SELECT runtime_fence FROM gen_usearch_runtime_ownership WHERE singleton = 1'
+    ).safeIntegers(true).get();
+    assert.ok(row);
+    const nextFence = BigInt(row.runtime_fence) + 1n;
+    db.prepare(`
+        UPDATE gen_usearch_runtime_ownership
+        SET owner_id = ?,
+            serving_state = 'DRAINING',
+            runtime_fence = ?,
+            acquired_at = ?,
+            updated_at = ?
+        WHERE singleton = 1
+    `).run(runtimeId, nextFence, BigInt(now), BigInt(now));
+    return nextFence;
+}
 
 function createFixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g2-'));
@@ -695,6 +714,7 @@ test('startup recovery rehydrates ACTIVE current vectors before batch coverage p
         secondDb.pragma('journal_mode = WAL');
         secondDb.pragma('synchronous = FULL');
         secondDb.pragma('foreign_keys = ON');
+        rolloverRuntimeFence(secondDb, 'runtime-recovered', now++);
 
         const recoveryWriter = new GenUSearchPhysicalCoverageWriter({
             db: secondDb,
@@ -819,6 +839,7 @@ test('startup recovery fails closed before coverage when current recovery materi
         secondDb.pragma('journal_mode = WAL');
         secondDb.pragma('synchronous = FULL');
         secondDb.pragma('foreign_keys = ON');
+        rolloverRuntimeFence(secondDb, 'runtime-bad-recover', now++);
 
         const recoveryWriter = new GenUSearchPhysicalCoverageWriter({
             db: secondDb,
@@ -949,6 +970,7 @@ test('startup recovery rejects mixed embedding fingerprints before physical muta
         secondDb.pragma('journal_mode = WAL');
         secondDb.pragma('synchronous = FULL');
         secondDb.pragma('foreign_keys = ON');
+        rolloverRuntimeFence(secondDb, 'runtime-mixed-recover', now++);
         const recoveryWriter = new GenUSearchPhysicalCoverageWriter({
             db: secondDb,
             runtimeId: 'runtime-mixed-recover'
@@ -1375,6 +1397,7 @@ test('startup recovery accepts mixed RECOVERY_REQUIRED and SEGMENT_COVERED curre
         secondDb.pragma('journal_mode = WAL');
         secondDb.pragma('synchronous = FULL');
         secondDb.pragma('foreign_keys = ON');
+        rolloverRuntimeFence(secondDb, 'runtime-covered-recover', now++);
 
         const recoveryWriter = new GenUSearchPhysicalCoverageWriter({
             db: secondDb,
@@ -1538,5 +1561,133 @@ test('ambient transaction cannot claim G2 writer authority or poison later const
     } finally {
         try { db.close(); } catch (_) {}
         fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('durable process lease blocks a second OS process on the same runtime fence', () => {
+    const fixture = createFixture();
+    try {
+        const writerModule = path.resolve(
+            __dirname,
+            '../../../modules/knowledgeBase/genUSearchPhysicalCoverageWriter.js'
+        );
+        const childCode = [
+            "const Database = require('better-sqlite3');",
+            "const Writer = require(process.argv[2]);",
+            "const db = new Database(process.argv[1]);",
+            "db.pragma('journal_mode = WAL');",
+            "db.pragma('synchronous = FULL');",
+            "db.pragma('foreign_keys = ON');",
+            "try {",
+            "  new Writer({ db, runtimeId: 'runtime-child' });",
+            "  console.log('UNEXPECTED_SUCCESS');",
+            "  process.exitCode = 2;",
+            "} catch (error) {",
+            "  console.log(error && error.code ? error.code : String(error));",
+            "  process.exitCode = error && error.code === 'MEMTABLE_RUNTIME_ALREADY_OWNED' ? 0 : 3;",
+            "} finally {",
+            "  try { db.close(); } catch (_) {}",
+            "}"
+        ].join('\n');
+        const child = spawnSync(
+            process.execPath,
+            ['-e', childCode, fixture.db.name, writerModule],
+            {
+                encoding: 'utf8',
+                env: {
+                    ...process.env,
+                    NODE_PATH: path.resolve(__dirname, 'node_modules')
+                }
+            }
+        );
+        assert.equal(child.status, 0, child.stderr || child.stdout);
+        assert.match(child.stdout, /MEMTABLE_RUNTIME_ALREADY_OWNED/);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('runtime fence rollover allows a new process lease and fences the old writer', () => {
+    const fixture = createFixture();
+    try {
+        const nextFence = rolloverRuntimeFence(
+            fixture.db,
+            'runtime-takeover',
+            9000
+        );
+        assert.equal(nextFence, 1n);
+
+        const second = new Database(fixture.db.name);
+        try {
+            second.pragma('journal_mode = WAL');
+            second.pragma('synchronous = FULL');
+            second.pragma('foreign_keys = ON');
+            const takeover = new GenUSearchPhysicalCoverageWriter({
+                db: second,
+                runtimeId: 'runtime-takeover'
+            });
+            assert.equal(takeover.runtimeId, 'runtime-takeover');
+
+            assert.throws(
+                () => fixture.writer.createMemTable({
+                    VexusIndex,
+                    dimension: 4,
+                    capacity: 16,
+                    generation: '9',
+                    embeddingFingerprint: 'embed-v1'
+                }),
+                error => error?.code === 'RUNTIME_FENCE_STALE'
+            );
+        } finally {
+            try { second.close(); } catch (_) {}
+        }
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+
+test('same owner with a new runtime fence cannot be adopted by the old G2 writer', () => {
+    const fixture = createFixture();
+    let second;
+    try {
+        const nextFence = rolloverRuntimeFence(
+            fixture.db,
+            fixture.writer.runtimeId,
+            9100
+        );
+        assert.equal(nextFence, 1n);
+
+        assert.throws(
+            () => fixture.writer.createMemTable({
+                VexusIndex,
+                dimension: 4,
+                capacity: 16,
+                generation: '10',
+                embeddingFingerprint: 'embed-v1'
+            }),
+            error => error?.code === 'RUNTIME_FENCE_STALE'
+        );
+
+        second = new Database(fixture.db.name);
+        second.pragma('journal_mode = WAL');
+        second.pragma('synchronous = FULL');
+        second.pragma('foreign_keys = ON');
+        const replacement = new GenUSearchPhysicalCoverageWriter({
+            db: second,
+            runtimeId: fixture.writer.runtimeId
+        });
+        assert.equal(replacement.runtimeId, fixture.writer.runtimeId);
+        const replacementMemtable = replacement.createMemTable({
+            VexusIndex,
+            dimension: 4,
+            capacity: 16,
+            generation: '10',
+            embeddingFingerprint: 'embed-v1'
+        });
+        assert.equal(replacementMemtable.runtimeId, fixture.writer.runtimeId);
+    } finally {
+        try { second?.close(); } catch (_) {}
+        fixture.cleanup();
     }
 });

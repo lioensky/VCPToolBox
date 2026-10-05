@@ -284,6 +284,34 @@ fn sync_parent_directory(target: &std::path::Path) -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "windows")]
+fn windows_path_wide(path: &std::path::Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn replace_windows_file_write_through(
+    temp: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let temp_wide = windows_path_wide(temp);
+    let target_wide = windows_path_wide(target);
+    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+    let result = unsafe { MoveFileExW(temp_wide.as_ptr(), target_wide.as_ptr(), flags) };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    // MOVEFILE_WRITE_THROUGH covers the replacement operation. Reopen the
+    // final pathname and flush its content/metadata before returning authority.
+    sync_index_file(target)
+}
+
+#[cfg(target_os = "windows")]
 fn retry_windows_file_operation<T, F>(mut operation: F) -> std::io::Result<T>
 where
     F: FnMut() -> std::io::Result<T>,
@@ -316,41 +344,7 @@ where
 fn publish_index_file(temp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
     #[cfg(target_os = "windows")]
     {
-        let backup = unique_index_sidecar_path(target, "bak");
-        let had_target = target.exists();
-
-        if had_target {
-            retry_windows_file_operation(|| std::fs::rename(target, &backup))?;
-        }
-
-        if let Err(replace_error) = retry_windows_file_operation(|| std::fs::rename(temp, target)) {
-            let rollback_error = if had_target {
-                retry_windows_file_operation(|| std::fs::rename(&backup, target)).err()
-            } else {
-                None
-            };
-            return Err(match rollback_error {
-                Some(error) => std::io::Error::new(
-                    replace_error.kind(),
-                    format!(
-                        "failed to publish new index: {}; rollback also failed: {}",
-                        replace_error, error
-                    ),
-                ),
-                None => replace_error,
-            });
-        }
-
-        if had_target {
-            if let Err(error) = retry_windows_file_operation(|| std::fs::remove_file(&backup)) {
-                // 新目标已经完整发布；遗留唯一命名备份不应把成功保存误报为失败。
-                eprintln!(
-                    "[Vexus-Lite] Index published but stale backup cleanup failed ({}): {}",
-                    backup.to_string_lossy(),
-                    error
-                );
-            }
-        }
+        retry_windows_file_operation(|| replace_windows_file_write_through(temp, target))?;
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -452,8 +446,8 @@ impl VexusIndex {
     /// 保存索引到磁盘。
     ///
     /// 临时文件始终与目标位于同一目录，保证 rename 不跨文件系统。Unix 使用
-    /// 原子覆盖并同步父目录；Windows 使用可回滚备份交换，并对杀毒软件、索引器
-    /// 短暂持有句柄造成的共享冲突进行有界重试。
+    /// 原子覆盖并同步父目录；Windows 使用 MOVEFILE_WRITE_THROUGH 原子替换，
+    /// 再同步最终文件，并对杀毒软件、索引器短暂持有句柄造成的共享冲突有界重试。
     #[napi]
     pub fn save(&self, index_path: String) -> Result<()> {
         // save 会发布共享磁盘状态；使用写锁串行化同一 VexusIndex 实例的保存，

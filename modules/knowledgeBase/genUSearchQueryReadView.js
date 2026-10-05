@@ -193,6 +193,7 @@ class QueryReadView {
         });
         VIEW_LIFECYCLE.set(this, {
             state: 'ACTIVE',
+            cancellation_requested: false,
             worker_quiescent: false,
             pins_released: false
         });
@@ -204,7 +205,7 @@ class QueryReadView {
     }
 
     get cancellation_requested() {
-        return this.state === 'CANCEL_REQUESTED';
+        return VIEW_LIFECYCLE.get(this)?.cancellation_requested === true;
     }
 }
 
@@ -254,6 +255,129 @@ class GenUSearchQueryReadViewCoordinator {
         this._listSegmentCoverage = db.prepare(
             "SELECT vector_id, coverage_state FROM gen_usearch_vector_coverage WHERE source_kind = 'SEGMENT' AND source_id = ? ORDER BY vector_id"
         ).safeIntegers(true);
+        this._getReadViewLease = db.prepare(`
+            SELECT
+                read_view_id, owner_id, runtime_fence, visibility_seq, state,
+                cancellation_requested, worker_quiescent, pins_released,
+                created_at, deadline, updated_at
+            FROM gen_usearch_read_view_leases
+            WHERE read_view_id = ?
+        `).safeIntegers(true);
+        this._insertReadViewLease = db.prepare(`
+            INSERT INTO gen_usearch_read_view_leases(
+                read_view_id, owner_id, runtime_fence, visibility_seq, state,
+                cancellation_requested, worker_quiescent, pins_released,
+                created_at, deadline, updated_at
+            ) VALUES (?, ?, ?, ?, 'ACTIVE', 0, 0, 0, ?, ?, ?)
+        `);
+        this._updateReadViewLease = db.prepare(`
+            UPDATE gen_usearch_read_view_leases
+            SET state = ?,
+                cancellation_requested = ?,
+                worker_quiescent = ?,
+                pins_released = ?,
+                updated_at = ?
+            WHERE read_view_id = ?
+              AND owner_id = ?
+              AND runtime_fence = ?
+        `);
+
+        this._admitReadViewLease = db.transaction(input => {
+            const visibilityRow = this._getSequence.get('visibility_seq');
+            const runtime = this._getRuntime.get();
+            if (!visibilityRow || !runtime) {
+                throw codedError(
+                    'QUERY_READ_VIEW_INVALID',
+                    'read lease authority row is unavailable'
+                );
+            }
+            const visibility = integerText(visibilityRow.value, 'visibility_seq');
+            const fence = integerText(runtime.runtime_fence, 'runtime_fence');
+            if (
+                visibility.text !== input.visibilitySeq
+                || runtime.owner_id !== input.ownerId
+                || runtime.owner_id !== this.runtimeId
+                || runtime.serving_state !== 'SERVING'
+                || fence.text !== input.runtimeFence
+            ) {
+                throw codedError(
+                    'QUERY_FENCE_STALE',
+                    'read lease snapshot authority changed before admission'
+                );
+            }
+            this._insertReadViewLease.run(
+                input.readViewId,
+                input.ownerId,
+                fence.parsed,
+                visibility.parsed,
+                BigInt(input.createdAt),
+                BigInt(input.deadline),
+                BigInt(Date.now())
+            );
+            const row = this._getReadViewLease.get(input.readViewId);
+            if (
+                !row
+                || row.owner_id !== input.ownerId
+                || BigInt(row.runtime_fence).toString() !== input.runtimeFence
+                || BigInt(row.visibility_seq).toString() !== input.visibilitySeq
+                || row.state !== 'ACTIVE'
+            ) {
+                throw codedError(
+                    'QUERY_READ_VIEW_INVALID',
+                    'durable read lease admission postcondition failed'
+                );
+            }
+            return row;
+        });
+
+        this._transitionReadViewLease = db.transaction(input => {
+            const row = this._getReadViewLease.get(input.readViewId);
+            if (!row) {
+                throw codedError(
+                    'QUERY_READ_VIEW_INVALID',
+                    'durable read lease is missing'
+                );
+            }
+            if (
+                row.owner_id !== input.ownerId
+                || BigInt(row.runtime_fence).toString() !== input.runtimeFence
+            ) {
+                throw codedError(
+                    'QUERY_FENCE_STALE',
+                    'durable read lease fence diverged'
+                );
+            }
+            const changed = this._updateReadViewLease.run(
+                input.state,
+                input.cancellationRequested ? 1 : 0,
+                input.workerQuiescent ? 1 : 0,
+                input.pinsReleased ? 1 : 0,
+                BigInt(Date.now()),
+                input.readViewId,
+                input.ownerId,
+                BigInt(input.runtimeFence)
+            ).changes;
+            if (changed !== 1) {
+                throw codedError(
+                    'QUERY_READ_VIEW_INVALID',
+                    'durable read lease transition failed'
+                );
+            }
+            const updated = this._getReadViewLease.get(input.readViewId);
+            if (
+                !updated
+                || updated.state !== input.state
+                || Number(updated.cancellation_requested) !== (input.cancellationRequested ? 1 : 0)
+                || Number(updated.worker_quiescent) !== (input.workerQuiescent ? 1 : 0)
+                || Number(updated.pins_released) !== (input.pinsReleased ? 1 : 0)
+            ) {
+                throw codedError(
+                    'QUERY_READ_VIEW_INVALID',
+                    'durable read lease transition postcondition failed'
+                );
+            }
+            return updated;
+        });
 
         this._readSnapshot = db.transaction(() => {
             const visibilityRow = this._getSequence.get('visibility_seq');
@@ -433,6 +557,10 @@ class GenUSearchQueryReadViewCoordinator {
         const deadline = options.deadline == null
             ? createdAt + this.maxReadViewMs
             : safeMillis(options.deadline, 'deadline');
+        this._assertNoAmbientTransaction(
+            'QUERY_READ_VIEW_INVALID',
+            'QueryReadView acquisition callback opened an ambient transaction'
+        );
         if (deadline <= createdAt || deadline - createdAt > this.maxReadViewMs) {
             throw codedError(
                 'QUERY_READ_VIEW_INVALID',
@@ -636,8 +764,22 @@ class GenUSearchQueryReadViewCoordinator {
                 artifact_digest: source.artifactDigest
             })));
 
+            const readViewId = crypto.randomUUID();
+            this._assertNoAmbientTransaction(
+                'QUERY_READ_VIEW_INVALID',
+                'QueryReadView lease admission requires autocommit state'
+            );
+            this._admitReadViewLease({
+                readViewId,
+                ownerId: snapshot.runtime.owner_id,
+                runtimeFence: snapshot.runtime.runtime_fence,
+                visibilitySeq: snapshot.visibility.text,
+                createdAt,
+                deadline
+            });
+
             const view = new QueryReadView({
-                read_view_id: crypto.randomUUID(),
+                read_view_id: readViewId,
                 visibility_seq: snapshot.visibility.text,
                 metadata_snapshot: Object.freeze(metadata),
                 manifest_snapshot: Object.freeze({
@@ -688,6 +830,28 @@ class GenUSearchQueryReadViewCoordinator {
         return internal;
     }
 
+    _persistLifecycle(view, next) {
+        this._assertNoAmbientTransaction(
+            'QUERY_READ_VIEW_INVALID',
+            'QueryReadView lifecycle transition requires autocommit state'
+        );
+        this._transitionReadViewLease({
+            readViewId: view.read_view_id,
+            ownerId: view.runtime_fence.owner_id,
+            runtimeFence: view.runtime_fence.runtime_fence,
+            state: next.state,
+            cancellationRequested: next.cancellation_requested === true,
+            workerQuiescent: next.worker_quiescent === true,
+            pinsReleased: next.pins_released === true
+        });
+        const lifecycle = VIEW_LIFECYCLE.get(view);
+        lifecycle.state = next.state;
+        lifecycle.cancellation_requested = next.cancellation_requested === true;
+        lifecycle.worker_quiescent = next.worker_quiescent === true;
+        lifecycle.pins_released = next.pins_released === true;
+        return lifecycle;
+    }
+
     assertUsable(view) {
         this._internal(view);
         const lifecycle = VIEW_LIFECYCLE.get(view);
@@ -695,9 +859,23 @@ class GenUSearchQueryReadViewCoordinator {
             throw codedError('QUERY_READ_VIEW_INVALID', 'QueryReadView is released');
         }
         const now = safeMillis(this.now(), 'now');
-        if (now >= view.deadline || lifecycle.state === 'CANCEL_REQUESTED') {
-            lifecycle.state = 'CANCEL_REQUESTED';
+        if (now >= view.deadline) {
+            if (lifecycle.state === 'ACTIVE') {
+                this._persistLifecycle(view, {
+                    ...lifecycle,
+                    state: 'CANCEL_REQUESTED',
+                    cancellation_requested: true
+                });
+            } else {
+                lifecycle.cancellation_requested = true;
+            }
             throw codedError('QUERY_READ_VIEW_EXPIRED', 'QueryReadView deadline expired');
+        }
+        if (lifecycle.cancellation_requested === true || lifecycle.state !== 'ACTIVE') {
+            throw codedError(
+                'QUERY_READ_VIEW_EXPIRED',
+                `QueryReadView is not usable in state ${lifecycle.state}`
+            );
         }
         return true;
     }
@@ -705,8 +883,17 @@ class GenUSearchQueryReadViewCoordinator {
     requestCancellation(view) {
         this._internal(view);
         const lifecycle = VIEW_LIFECYCLE.get(view);
-        if (lifecycle.state !== 'RELEASED') lifecycle.state = 'CANCEL_REQUESTED';
-        return lifecycle.state;
+        if (lifecycle.state !== 'RELEASED') {
+            const nextState = lifecycle.state === 'ACTIVE'
+                ? 'CANCEL_REQUESTED'
+                : lifecycle.state;
+            this._persistLifecycle(view, {
+                ...lifecycle,
+                state: nextState,
+                cancellation_requested: true
+            });
+        }
+        return VIEW_LIFECYCLE.get(view).state;
     }
 
     beginQuiescing(view) {
@@ -716,9 +903,12 @@ class GenUSearchQueryReadViewCoordinator {
             throw codedError('QUERY_READ_VIEW_INVALID', 'QueryReadView is released');
         }
         if (lifecycle.state === 'ACTIVE' || lifecycle.state === 'CANCEL_REQUESTED') {
-            lifecycle.state = 'QUIESCING';
+            this._persistLifecycle(view, {
+                ...lifecycle,
+                state: 'QUIESCING'
+            });
         }
-        return lifecycle.state;
+        return VIEW_LIFECYCLE.get(view).state;
     }
 
     release(view, options = {}) {
@@ -731,16 +921,24 @@ class GenUSearchQueryReadViewCoordinator {
                 'QueryReadView pins release only after worker quiescence'
             );
         }
-        lifecycle.worker_quiescent = true;
-        lifecycle.state = 'QUIESCING';
+        this._persistLifecycle(view, {
+            ...lifecycle,
+            state: 'QUIESCING',
+            worker_quiescent: true,
+            pins_released: false
+        });
         for (const source of internal.memtableSources) {
             decMemtablePin(source.pinLease);
         }
         for (const pinLease of internal.segmentPinLeases) {
             decSegmentPin(pinLease);
         }
-        lifecycle.pins_released = true;
-        lifecycle.state = 'RELEASED';
+        this._persistLifecycle(view, {
+            ...VIEW_LIFECYCLE.get(view),
+            state: 'RELEASED',
+            worker_quiescent: true,
+            pins_released: true
+        });
         LIVE_GC_VIEWS.delete(view);
         return true;
     }
@@ -868,6 +1066,7 @@ class GenUSearchQueryReadViewCoordinator {
                 read_view_id: view.read_view_id,
                 visibility_seq: visibility.text,
                 state: lifecycle.state,
+                cancellation_requested: lifecycle.cancellation_requested === true,
                 worker_quiescent: lifecycle.worker_quiescent === true,
                 pins_released: lifecycle.pins_released === true
             }));
