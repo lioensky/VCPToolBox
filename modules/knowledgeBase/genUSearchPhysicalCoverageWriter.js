@@ -40,6 +40,28 @@ function exactVectorBytes(vector) {
     return Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
 }
 
+function recoveryBlobToVector(blob, dimension) {
+    if (!Buffer.isBuffer(blob) || blob.length !== dimension * 4) {
+        throw codedError(
+            'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE',
+            'ACTIVE current vector recovery bytes have the wrong dimension'
+        );
+    }
+    const arrayBuffer = new ArrayBuffer(blob.length);
+    const target = Buffer.from(arrayBuffer);
+    blob.copy(target);
+    const vector = new Float32Array(arrayBuffer);
+    for (const value of vector) {
+        if (!Number.isFinite(value)) {
+            throw codedError(
+                'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE',
+                'ACTIVE current vector recovery bytes contain non-finite f32 values'
+            );
+        }
+    }
+    return vector;
+}
+
 class GenUSearchPhysicalCoverageWriter {
     #bootstrapped = false;
     #activeMemtable = null;
@@ -101,6 +123,25 @@ class GenUSearchPhysicalCoverageWriter {
             ORDER BY vector_id
         `).safeIntegers(true);
 
+        this._listCurrentRecovery = db.prepare(`
+            SELECT
+                h.chunk_id,
+                h.current_version_id,
+                cv.vector_id,
+                cv.state AS version_state,
+                cv.embedding_fingerprint,
+                vr.state AS recovery_state,
+                vr.embedding_fingerprint AS recovery_fingerprint,
+                vr.vector_blob
+            FROM gen_usearch_chunk_heads h
+            LEFT JOIN gen_usearch_chunk_versions cv
+              ON cv.chunk_version_id = h.current_version_id
+            LEFT JOIN gen_usearch_vector_recovery vr
+              ON vr.vector_id = cv.vector_id
+            WHERE h.current_version_id IS NOT NULL
+            ORDER BY h.chunk_id
+        `).safeIntegers(true);
+
         this._deleteAllMemtableCoverage = db.prepare(`
             DELETE FROM gen_usearch_vector_coverage
             WHERE source_kind = 'MEMTABLE'
@@ -128,6 +169,19 @@ class GenUSearchPhysicalCoverageWriter {
             (vectorId, sourceId, now) => {
                 this._upsertVisibleCoverage.run(vectorId, sourceId, now, now);
                 return this._getCoverage.get(vectorId, sourceId);
+            }
+        );
+        this._publishCoverageBatchTransaction = db.transaction(
+            (vectorIds, sourceId, now) => {
+                for (const vectorId of vectorIds) {
+                    this._upsertVisibleCoverage.run(
+                        vectorId,
+                        sourceId,
+                        now,
+                        now
+                    );
+                }
+                return vectorIds.length;
             }
         );
         this._hideCoverageTransaction = db.transaction(
@@ -346,6 +400,120 @@ class GenUSearchPhysicalCoverageWriter {
                 memtable.removeVector(parsed.text, token);
             } catch (_) {
                 // Extra hidden bytes are safe because durable coverage was not published.
+            }
+            if (
+                previousActive !== memtable
+                && memtable.stats().vectorCount === 0
+            ) {
+                this.#activeMemtable = previousActive;
+            }
+            throw error;
+        }
+    }
+
+    recoverCurrentVectors(options = {}) {
+        this._assertBootstrapped();
+        const memtable = this._assertBoundMemTable(options.memtable);
+        if (memtable.state !== 'ACTIVE') {
+            throw codedError(
+                'MEMTABLE_NOT_ACTIVE',
+                'startup recovery requires an ACTIVE Gen0 MemTable'
+            );
+        }
+        if (
+            this.#activeMemtable
+            && this.#activeMemtable !== memtable
+            && this.#activeMemtable.state !== 'SEALED_QUERY_VISIBLE'
+        ) {
+            throw codedError(
+                'MEMTABLE_ACTIVE_GENERATION_CONFLICT',
+                'another Gen0 MemTable generation is still ACTIVE'
+            );
+        }
+        if (memtable.stats().vectorCount !== 0) {
+            throw codedError(
+                'MEMTABLE_RECOVERY_TARGET_NOT_EMPTY',
+                'startup recovery requires an empty Gen0 MemTable'
+            );
+        }
+
+        const rows = this._listCurrentRecovery.all();
+        const prepared = rows.map(row => {
+            if (
+                row.current_version_id == null
+                || row.version_state !== 'ACTIVE'
+                || row.vector_id == null
+                || row.recovery_state !== 'RECOVERY_REQUIRED'
+                || !row.vector_blob
+                || !row.embedding_fingerprint
+                || row.embedding_fingerprint !== row.recovery_fingerprint
+            ) {
+                throw codedError(
+                    'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE',
+                    `Current chunk "${row.chunk_id}" lacks exact ACTIVE recovery authority`
+                );
+            }
+            if (row.embedding_fingerprint !== memtable.embeddingFingerprint) {
+                throw codedError(
+                    'MEMTABLE_EMBEDDING_FINGERPRINT_MISMATCH',
+                    `Current chunk "${row.chunk_id}" belongs to a different embedding space`
+                );
+            }
+            const vectorId = row.vector_id.toString();
+            canonicalVectorId(vectorId);
+            return {
+                vectorId,
+                vectorIdBigInt: row.vector_id,
+                vector: recoveryBlobToVector(
+                    row.vector_blob,
+                    memtable.dimension
+                )
+            };
+        });
+
+        const token = this._tokenFor(memtable);
+        const added = [];
+        const previousActive = this.#activeMemtable;
+        try {
+            for (const row of prepared) {
+                memtable.addVector({
+                    vectorId: row.vectorId,
+                    vector: row.vector
+                }, token);
+                GenUSearchMemTable.assertContains(
+                    memtable,
+                    row.vectorId
+                );
+                added.push(row.vectorId);
+            }
+
+            if (prepared.length > 0) {
+                const now = BigInt(this.now());
+                this._criticalWrite(
+                    () => this._publishCoverageBatchTransaction(
+                        prepared.map(row => row.vectorIdBigInt),
+                        memtable.sourceId,
+                        now
+                    )
+                );
+                this.#activeMemtable = memtable;
+            }
+
+            return Object.freeze({
+                sourceId: memtable.sourceId,
+                recoveredVectorCount: prepared.length,
+                vectorIds: Object.freeze(
+                    prepared.map(row => row.vectorId)
+                )
+            });
+        } catch (error) {
+            for (const vectorId of added.reverse()) {
+                try {
+                    memtable.removeVector(vectorId, token);
+                } catch (_) {
+                    // Hidden physical bytes are safe because batch coverage
+                    // publication has not succeeded.
+                }
             }
             if (
                 previousActive !== memtable
