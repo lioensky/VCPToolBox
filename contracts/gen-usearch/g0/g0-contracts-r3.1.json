@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": "3.1.0-g0-f2r3",
+  "contract_version": "3.1.0-g0-final-r1",
   "gate": "G0",
   "status": "CANDIDATE_NOT_FROZEN",
   "identity_encoding": {
@@ -387,6 +387,90 @@
       "severity": "P0_CORRECTNESS",
       "rule": "vector_id_decimal_string_preserves_signed_int64_identity",
       "failure_code": "VECTOR_ID_INVALID"
+    },
+    {
+      "id": "G0-XINV-020",
+      "contract": "C7",
+      "severity": "P0_CORRECTNESS",
+      "rule": "query_response_requires_current_runtime_fence",
+      "failure_code": "QUERY_FENCE_STALE"
+    },
+    {
+      "id": "G0-XINV-021",
+      "contract": "C3",
+      "severity": "P0_CORRECTNESS",
+      "rule": "vector_allocator_high_water_is_durable_monotonic_and_never_reuses",
+      "failure_code": "VECTOR_ID_ALLOCATOR_CORRUPT"
+    },
+    {
+      "id": "G0-XINV-022",
+      "contract": "C7",
+      "severity": "P0_CORRECTNESS",
+      "rule": "recovery_material_releases_only_after_durable_segment_coverage",
+      "failure_code": "RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE"
+    },
+    {
+      "id": "G0-XINV-023",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "compaction_snapshot_binds_manifest_epoch_visibility_seq_segment_set_and_gc_cut",
+      "failure_code": "COMPACTION_SNAPSHOT_INVALID"
+    },
+    {
+      "id": "G0-XINV-024",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "physical_presence_does_not_imply_logical_visibility",
+      "failure_code": "LOGICAL_VISIBILITY_VIOLATION"
+    },
+    {
+      "id": "G0-XINV-025",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "multiple_physical_copies_dedup_to_one_logical_candidate",
+      "failure_code": "CANDIDATE_DEDUP_VIOLATION"
+    },
+    {
+      "id": "G0-XINV-026",
+      "contract": "C6",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "query_read_view_is_bounded_and_expiry_requests_cancellation_not_release",
+      "failure_code": "QUERY_READ_VIEW_EXPIRED"
+    },
+    {
+      "id": "G0-XINV-027",
+      "contract": "C2",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "indexing_accepts_only_committed_complete_source_views",
+      "failure_code": "SOURCE_COMMIT_UNVERIFIED"
+    },
+    {
+      "id": "G0-XINV-028",
+      "contract": "C1",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "reconciler_is_identity_planning_only_and_cannot_mutate_lifecycle",
+      "failure_code": "RECONCILER_AUTHORITY_VIOLATION"
+    },
+    {
+      "id": "G0-XINV-029",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "query_read_view_contains_coherent_metadata_manifest_memtable_and_fence_snapshot",
+      "failure_code": "QUERY_READ_VIEW_INVALID"
+    },
+    {
+      "id": "G0-XINV-030",
+      "contract": "C7",
+      "severity": "P0_CORRECTNESS",
+      "rule": "critical_transactions_are_crash_durable_before_ack_or_dependent_action",
+      "failure_code": "DURABLE_COMMIT_UNCONFIRMED"
+    },
+    {
+      "id": "G0-XINV-031",
+      "contract": "C2",
+      "severity": "P0_CORRECTNESS",
+      "rule": "missing_source_observation_does_not_imply_document_delete",
+      "failure_code": "SOURCE_MISSING_DELETE_INFERENCE"
     }
   ],
   "acceptance": {
