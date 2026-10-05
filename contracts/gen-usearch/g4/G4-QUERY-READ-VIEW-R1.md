@@ -1,6 +1,6 @@
 # Gen-USearch G4 QueryReadView + Retrieval Contract R1
 
-Status: **BOUNDARY_FROZEN / IMPLEMENTATION_ACTIVE**
+Status: **PASS**
 
 G4 authorizes coherent read snapshots and isolated production retrieval on top of G1 logical MVCC, G2 Gen0 physical authority, and G3 immutable manifest authority. G4 does not authorize GC, compaction, reclaim, serving cutover, or engine-mode activation.
 
@@ -44,6 +44,11 @@ G4 may implement only:
 20. Acquisition deadlines apply during acquisition, not only after it. Deadline expiry at any validation stage fails QUERY_READ_VIEW_EXPIRED and releases all provisional pins without creating a usable view.
 21. MemTable identity is database-bound. A caller cannot satisfy current-database MEMTABLE coverage by presenting a MemTable from another SQLite authority that happens to share the same runtime/generation source_id. G4 verifies the private writer-bound database identity before pinning.
 22. Segment artifact verification is stable across native load. Exact publisher-owned path and SHA-256 are rechecked after Vexus load so a path/content substitution between preflight and load fails closed.
+23. **Authority reads require SQLite autocommit state.** QueryReadView acquisition refuses any ambient SQLite transaction so an outer savepoint cannot export uncommitted metadata/coverage into a usable view. Final response-fence validation also refuses ambient transactions so a stale outer read snapshot cannot hide a newer committed runtime owner/fence.
+24. **Current-head topology is complete and identity-bound.** Every non-null current_version_id is captured through LEFT JOIN authority and must resolve to an ACTIVE version owned by that exact chunk. Missing versions, missing document authority, or cross-chunk version substitution fail closed instead of disappearing from the metadata snapshot.
+25. **Manifest membership is complete.** Every captured manifest member is preserved through LEFT JOIN authority. A manifest row whose segment metadata is missing must reach verification and fail RECOVERY_MANIFEST_INVALID; INNER JOIN omission cannot shrink the topology silently.
+26. **Reader-pin release is capability-scoped.** Pin acquisition returns a private one-shot lease. No raw unpin API is exported, and a caller may release only leases it personally acquired. QueryReadView leases remain private until worker-quiescent release.
+27. **MemTable database authority is G2-writer-private.** Only GenUSearchPhysicalCoverageWriter may bind a MemTable to a SQLite authority. G4 may verify this private binding but callers cannot self-bind a detached MemTable that happens to share runtime/generation/source_id.
 
 ## Explicitly deferred beyond G4
 
@@ -80,9 +85,55 @@ G4 may pass only when:
 - artifact paths must match the exact publisher-owned segment identity and reject in-root aliases/symlinks;
 - hidden MEMTABLE coverage cannot contribute candidates even when bytes remain physically present;
 - a MemTable from another SQLite database cannot impersonate an identical runtime/generation source_id;
+- acquisition from an ambient SQLite transaction is rejected before any provisional pin is created;
+- final response-fence validation cannot run against an ambient stale SQLite read snapshot;
+- a current head whose version is missing or belongs to another chunk fails closed instead of disappearing or being re-labeled;
+- a manifest membership whose segment metadata is missing fails closed instead of disappearing from the snapshot;
+- raw reader unpin capability is not exported and a lease cannot release another reader's pin;
+- a detached MemTable cannot self-register database authority or impersonate a G2-writer-owned MemTable;
 - artifact identity/digest are stable across native load, not only before it;
 - embedding/query-dimension mismatch fails closed;
 - stage-boundary tests prove GC/compaction/reclaim/cutover remain unwired;
 - independent adversarial review has unresolved P0 = 0 and P1 = 0.
 
 G4 PASS does not authorize G5, upstream merge, Ready-for-Review, GC, compaction, reclaim, cutover, or engine activation.
+
+## Independent review closure
+
+Exact-head reviewed implementation: `17dbf7a55dd9ac43182fbdafb94978f36c860b8f`.
+
+Closed findings:
+
+- QueryReadView acquisition could run inside an ambient SQLite transaction. Because better-sqlite3 nests `db.transaction()` as a savepoint, an uncommitted current head and QUERY_VISIBLE coverage could be captured into a view, the outer transaction could roll back, and the view could still return the never-committed vector. Acquisition now requires autocommit before any pin is created;
+- final runtime-fence validation could run inside an ambient read transaction and observe a stale owner/fence after another connection committed a newer fence. Final fence validation now requires a fresh autocommit read;
+- current-head snapshot used INNER JOIN semantics, allowing a missing current version to vanish from metadata. It now preserves every non-null head through LEFT JOIN authority and fails closed when version authority is missing;
+- current-head identity did not prove that the referenced ACTIVE version belonged to the same chunk. Cross-chunk current-version substitution is now rejected explicitly;
+- manifest acquisition used INNER JOIN semantics, allowing an existing manifest membership with missing segment metadata to disappear from `manifest_snapshot`. Manifest membership is now complete and missing segment metadata reaches verification and fails closed;
+- reader pins exposed raw `unpinMemtable()` / `unpinSegment()`, allowing an unrelated caller to decrement a live QueryReadView pin, physically remove a retired vector, and leave the old view returning data whose physical source had been deleted. Pins are now private one-shot lease capabilities;
+- MemTable database binding was publicly writable through ReadPins. A detached MemTable with an attacker-known mutation token, matching source_id, and copied vector could self-bind to the database and satisfy G4 physical authority. Database binding is now private to G2 PhysicalCoverageWriter, while G4 receives only a read-only verifier;
+- cross-database MemTables sharing the same runtime/generation source_id remain rejected by writer-private database identity;
+- provisional pins, acquisition deadlines, hidden MEMTABLE coverage, exact artifact identity, post-load artifact stability, runtime owner/fence checks, current-head filtering, and MEMTABLE/SEGMENT dedup all remain covered by adversarial regressions.
+
+Final implementation evidence:
+
+```text
+G1 regression        = PASS
+G2 regression        = PASS
+G3 regression        = PASS
+G4 exact-head gate   = PASS  (run 37300347530)
+
+G4 adversarial tests = 24/24
+G4 stage boundary    = 5/5
+
+unresolved P0 = 0
+unresolved P1 = 0
+```
+
+Final G4 decision:
+
+```text
+G4 = PASS
+G5 = NOT AUTHORIZED
+```
+
+G4 PASS does not authorize G5 implementation, upstream merge, Ready-for-Review, GC, compaction, reclaim, runtime cutover, or engine activation.
