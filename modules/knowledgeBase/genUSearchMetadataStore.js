@@ -221,8 +221,7 @@ class GenUSearchMetadataStore {
                     this._insertUriHistory.run(
                         docId,
                         uri,
-                        visibilitySeq,
-                        null
+                        visibilitySeq
                     );
                 }
                 return this._getDocument.get(docId);
@@ -258,8 +257,7 @@ class GenUSearchMetadataStore {
                 this._insertUriHistory.run(
                     docId,
                     nextUri,
-                    parseInteger(visibilitySeq, 'visibility_seq'),
-                    null
+                    parseInteger(visibilitySeq, 'visibility_seq')
                 );
                 return this._getDocument.get(docId);
             }
