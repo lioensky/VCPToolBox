@@ -2,6 +2,11 @@ name: Gen-USearch Native Rebuild
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - codex/gen-usearch-g0-f2-upstream-main
+    paths:
+      - '.github/workflows/gen-usearch-native-rebuild.yml'
 
 permissions:
   contents: read
