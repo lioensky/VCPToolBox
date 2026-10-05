@@ -1,9 +1,48 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const GenUSearchMemTable = require('./genUSearchMemTable');
 
 const MAX_SIGNED_INT64 = 9223372036854775807n;
 const LIVE_WRITER_BY_DB = new WeakMap();
+const LIVE_WRITER_BY_DATABASE = new Map();
+
+function databaseAuthorityKey(db) {
+    const name = String(db?.name || '').trim();
+    if (!name || name === ':memory:' || name.startsWith('file::memory:')) {
+        return null;
+    }
+    const absolute = path.resolve(name);
+    try {
+        return fs.realpathSync.native
+            ? fs.realpathSync.native(absolute)
+            : fs.realpathSync(absolute);
+    } catch (_) {
+        return absolute;
+    }
+}
+
+function assertDatabaseWriterAvailable(db) {
+    if (LIVE_WRITER_BY_DB.has(db)) {
+        throw codedError(
+            'MEMTABLE_RUNTIME_ALREADY_OWNED',
+            'this database connection already has a live G2 physical coverage writer'
+        );
+    }
+    const key = databaseAuthorityKey(db);
+    if (!key) return null;
+    const ref = LIVE_WRITER_BY_DATABASE.get(key);
+    const existing = ref?.deref?.();
+    if (existing && existing.db?.open !== false) {
+        throw codedError(
+            'MEMTABLE_RUNTIME_ALREADY_OWNED',
+            `database already has a live G2 physical coverage writer: ${key}`
+        );
+    }
+    if (ref) LIVE_WRITER_BY_DATABASE.delete(key);
+    return key;
+}
 
 function codedError(code, message) {
     const error = new Error(message);
@@ -75,12 +114,7 @@ class GenUSearchPhysicalCoverageWriter {
                 'GenUSearchPhysicalCoverageWriter requires a better-sqlite3 compatible database'
             );
         }
-        if (LIVE_WRITER_BY_DB.has(db)) {
-            throw codedError(
-                'MEMTABLE_RUNTIME_ALREADY_OWNED',
-                'this database already has a live G2 physical coverage writer'
-            );
-        }
+        const databaseAuthority = assertDatabaseWriterAvailable(db);
 
         const runtimeId = String(options.runtimeId || '').trim();
         if (!/^[A-Za-z0-9._-]{1,128}$/.test(runtimeId)) {
@@ -191,6 +225,9 @@ class GenUSearchPhysicalCoverageWriter {
         // Claim the in-process writer authority only after every required SQL
         // statement and transaction has initialized successfully.
         LIVE_WRITER_BY_DB.set(db, this);
+        if (databaseAuthority) {
+            LIVE_WRITER_BY_DATABASE.set(databaseAuthority, new WeakRef(this));
+        }
     }
 
     get bootstrapped() {
