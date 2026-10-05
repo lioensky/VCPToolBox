@@ -557,6 +557,18 @@ impl VexusIndex {
         Ok(())
     }
 
+    /// Gen-USearch 精确成员检查。ID 使用规范十进制 signed-int64 字符串，
+    /// 只回答物理 key 是否存在，不执行 ANN 检索。
+    #[napi]
+    pub fn contains_key64(&self, id: String) -> Result<bool> {
+        let key = parse_gen_usearch_key(&id)?;
+        let index = self
+            .index
+            .read()
+            .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
+        Ok(index.contains(key))
+    }
+
     /// Gen-USearch 批量添加。所有 ID 均为规范十进制 signed-int64 字符串。
     #[napi]
     pub fn add_batch_key64(&self, ids: Vec<String>, vectors: Float32Array) -> Result<()> {
