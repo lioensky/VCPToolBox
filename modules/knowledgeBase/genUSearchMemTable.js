@@ -38,6 +38,17 @@ function canonicalGeneration(value) {
     return normalized;
 }
 
+function nativeRevision(index) {
+    const revision = Number(index?.revision);
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+        throw codedError(
+            'PHYSICAL_COVERAGE_MISSING',
+            'Gen0 MemTable native index must expose a non-negative safe-integer revision'
+        );
+    }
+    return revision;
+}
+
 function requireVector(vector, dimension) {
     if (!(vector instanceof Float32Array)) {
         throw new TypeError('Gen0 MemTable vector must be a Float32Array');
@@ -146,7 +157,15 @@ class GenUSearchMemTable {
             );
         }
 
+        const beforeRevision = nativeRevision(this.#index);
         this.#index.addKey64(vectorId, vector);
+        const afterRevision = nativeRevision(this.#index);
+        if (afterRevision !== beforeRevision + 1) {
+            throw codedError(
+                'PHYSICAL_COVERAGE_MISSING',
+                `Native Gen0 add for vector ${vectorId} did not advance revision exactly once`
+            );
+        }
         this.#vectorIds.add(vectorId);
         return Object.freeze({
             vectorId,
@@ -161,7 +180,15 @@ class GenUSearchMemTable {
         const normalized = canonicalVectorId(vectorId);
         if (!this.#vectorIds.has(normalized)) return false;
 
+        const beforeRevision = nativeRevision(this.#index);
         this.#index.removeKey64(normalized);
+        const afterRevision = nativeRevision(this.#index);
+        if (afterRevision !== beforeRevision + 1) {
+            throw codedError(
+                'PHYSICAL_COVERAGE_MISSING',
+                `Native Gen0 remove for vector ${normalized} did not advance revision exactly once`
+            );
+        }
         this.#vectorIds.delete(normalized);
         return true;
     }
