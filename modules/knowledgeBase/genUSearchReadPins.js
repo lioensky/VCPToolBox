@@ -136,8 +136,6 @@ function segmentPinCount(segmentId) {
 }
 
 module.exports = Object.freeze({
-    bindMemtableDatabase,
-    assertMemtableDatabase,
     acquireMemtablePin,
     memtablePinCount,
     assertMemtableRemovalAllowed,
