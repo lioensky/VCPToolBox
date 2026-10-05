@@ -12,7 +12,7 @@ test('G5 boundary is frozen around logical GC and recovery release only', () => 
     const contract = read('contracts/gen-usearch/g5/G5-GC-RECOVERY-R1.md');
     assert.match(
         contract,
-        /Status: \*\*BOUNDARY_FROZEN \/ IMPLEMENTATION_ACTIVE\*\*/
+        /Status: \*\*PASS\*\*/
     );
     for (const phrase of [
         'GC_ELIGIBLE',
@@ -22,7 +22,7 @@ test('G5 boundary is frozen around logical GC and recovery release only', () => 
         'current SERVING owner',
         'compaction',
         'MemTable reclamation',
-        'G6 = NOT AUTHORIZED'
+        'FINAL_UPSTREAM_ACCEPTANCE = NOT AUTHORIZED'
     ]) {
         assert.ok(contract.includes(phrase), phrase);
     }

@@ -1,6 +1,6 @@
 # Gen-USearch G5 GC Safety + Recovery Release Contract R1
 
-Status: **BOUNDARY_FROZEN / IMPLEMENTATION_ACTIVE**
+Status: **PASS**
 
 G5 authorizes machine-certified logical GC eligibility and bounded recovery-material release on top of G4 QueryReadView safety. It does not authorize physical compaction, segment retirement/reclamation, MemTable reclamation, runtime cutover, or engine activation.
 
@@ -102,12 +102,49 @@ G5 may pass only when:
 - G5 stage-boundary tests prove compaction/reclaim/cutover remain unwired;
 - independent adversarial review has unresolved P0 = 0 and P1 = 0.
 
-G5 implementation activation does not authorize G6, upstream merge, Ready-for-Review, physical compaction/reclaim, cutover, or engine activation.
+G5 PASS does not authorize Final Upstream Acceptance, Ready-for-Review, upstream merge, physical compaction/reclaim, cutover, or engine activation.
 
-Current decision:
+## Independent review closure
+
+Exact-head reviewed implementation: `b0713cdea19e8fefb7e261e4877f74f351d950c3`.
+
+Closed adversarial findings:
+
+- stale runtime-fence coordinators could otherwise retain write authority after a runtime incarnation change; G5 now captures the SERVING fence at construction and rejects every transition after fence rollover;
+- a corrupted `current_version_id` could otherwise point at an ACTIVE version belonging to another chunk and make a RETIRED target look safely non-current; recovery and GC now re-resolve and require the current version to be ACTIVE and owned by the exact target chunk;
+- an already-present or forged `GC_ELIGIBLE` label could otherwise bypass live-reader revalidation; idempotent GC now re-runs reader-lifetime safety before returning success;
+- silent SQLite trigger rewrites of recovery release or GC eligibility are detected by in-transaction postconditions and roll back;
+- recovery release re-proves the immutable segment path, SHA-256 digest, native dimension/count, exact SEGMENT coverage set, exact key membership, embedding fingerprint, and current-manifest membership;
+- ACTIVE/CANCEL_REQUESTED/QUIESCING older QueryReadViews block GC while RELEASED views do not; reader safety remains scoped to the current serving runtime, and cross-process crash takeover stays outside G5 authority;
+- G5 remains isolated from physical compaction/reclaim, runtime takeover/cutover, existing KnowledgeBase ingestion/search paths, and engine activation;
+- the project stage map remains G0 through G5 only. No additional numbered gate is introduced.
+
+Exact-head GitHub evidence for the reviewed implementation:
 
 ```text
-G4 = PASS
-G5 = IMPLEMENTATION_ACTIVE
-G6 = NOT AUTHORIZED
+G5 exact-head run 37303226645 = SUCCESS
+G4 same-head run 37303226562 = SUCCESS
+
+G5 GC/recovery acceptance = 16/16
+G5 authority boundary     = 5/5
+
+unresolved P0 = 0
+unresolved P1 = 0
 ```
+
+Final G5 decision:
+
+```text
+G0 = FROZEN
+G1 = PASS
+G2 = PASS
+G3 = PASS
+G4 = PASS
+G5 = PASS
+
+FINAL_UPSTREAM_ACCEPTANCE = NOT AUTHORIZED
+PR_485_READY_FOR_REVIEW   = NOT AUTHORIZED
+UPSTREAM_MERGE            = NOT AUTHORIZED
+```
+
+G5 PASS closes the last internal implementation gate. It does not by itself authorize the separate final upstream acceptance, Ready-for-Review transition, or merge.
