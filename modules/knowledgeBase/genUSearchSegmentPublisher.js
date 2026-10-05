@@ -244,6 +244,13 @@ class GenUSearchSegmentPublisher {
               AND source_kind = 'SEGMENT'
               AND source_id = ?
         `);
+        this._listSegmentCoverage = db.prepare(`
+            SELECT vector_id, coverage_state
+            FROM gen_usearch_vector_coverage
+            WHERE source_kind = 'SEGMENT'
+              AND source_id = ?
+            ORDER BY vector_id
+        `).safeIntegers(true);
         this._markRecoverySegmentCovered = db.prepare(`
             UPDATE gen_usearch_vector_recovery
             SET state = 'SEGMENT_COVERED',
@@ -257,6 +264,12 @@ class GenUSearchSegmentPublisher {
             FROM gen_usearch_vector_recovery
             WHERE vector_id = ?
         `);
+        this._listRecoveryByCoveredSegment = db.prepare(`
+            SELECT vector_id
+            FROM gen_usearch_vector_recovery
+            WHERE covered_segment_id = ?
+            ORDER BY vector_id
+        `).safeIntegers(true);
         this._getPublishedManifestEpochForSegment = db.prepare(`
             SELECT MAX(manifest_epoch) AS manifest_epoch
             FROM gen_usearch_manifest_segments
