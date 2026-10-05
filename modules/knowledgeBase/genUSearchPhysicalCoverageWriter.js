@@ -15,6 +15,14 @@ function databaseAuthorityKey(db) {
     }
     const absolute = path.resolve(name);
     try {
+        const stat = fs.statSync(absolute, { bigint: true });
+        if (stat.isFile() && stat.ino !== 0n) {
+            return `inode:${stat.dev.toString()}:${stat.ino.toString()}`;
+        }
+    } catch (_) {
+        // Fall back to canonical path when stable file identity is unavailable.
+    }
+    try {
         return fs.realpathSync.native
             ? fs.realpathSync.native(absolute)
             : fs.realpathSync(absolute);
