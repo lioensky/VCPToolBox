@@ -450,7 +450,7 @@ class GenUSearchMetadataStore {
         );
 
         this._moveDocumentTransaction = db.transaction(
-            (docId, nextUri, visibilitySeq, now) => {
+            (docId, nextUri, now) => {
                 const existing = this._getDocument.get(docId);
                 if (!existing || existing.state !== 'ACTIVE') {
                     throw codedError(
@@ -460,10 +460,31 @@ class GenUSearchMetadataStore {
                 }
                 if (existing.current_uri === nextUri) return existing;
 
-                this._closeUriHistory.run(
-                    parseInteger(visibilitySeq, 'visibility_seq'),
-                    docId
+                const sequenceRow = this._getSequence.get('visibility_seq');
+                if (!sequenceRow) {
+                    throw codedError(
+                        'GEN_USEARCH_SEQUENCE_CORRUPT',
+                        'visibility_seq is missing'
+                    );
+                }
+                const previousSeq = parseInteger(
+                    sequenceRow.value,
+                    'visibility_seq'
                 );
+                if (previousSeq >= MAX_SIGNED_INT64) {
+                    throw codedError(
+                        'GEN_USEARCH_SEQUENCE_EXHAUSTED',
+                        'visibility_seq exhausted signed-int64 space'
+                    );
+                }
+                const visibilitySeq = previousSeq + 1n;
+                this._updateSequence.run(
+                    visibilitySeq,
+                    now,
+                    'visibility_seq'
+                );
+
+                this._closeUriHistory.run(visibilitySeq, docId);
                 const changed = this._updateDocumentUri.run(
                     nextUri,
                     now,
@@ -478,7 +499,7 @@ class GenUSearchMetadataStore {
                 this._insertUriHistory.run(
                     docId,
                     nextUri,
-                    parseInteger(visibilitySeq, 'visibility_seq')
+                    visibilitySeq
                 );
                 return this._getDocument.get(docId);
             }
@@ -1137,10 +1158,23 @@ class GenUSearchMetadataStore {
         const uri = options.uri == null
             ? null
             : requireString(options.uri, 'uri');
-        const visibilitySeq = parseInteger(
-            options.visibilitySeq ?? this.readSequence('visibility_seq'),
+        const currentVisibilitySeq = parseInteger(
+            this.readSequence('visibility_seq'),
             'visibilitySeq'
         );
+        if (options.visibilitySeq != null) {
+            const suppliedVisibilitySeq = parseInteger(
+                options.visibilitySeq,
+                'visibilitySeq'
+            );
+            if (suppliedVisibilitySeq !== currentVisibilitySeq) {
+                throw codedError(
+                    'VISIBILITY_SEQUENCE_INVALID',
+                    'Document creation cannot override the current visibility_seq'
+                );
+            }
+        }
+        const visibilitySeq = currentVisibilitySeq;
         const now = parseInteger(this.now(), 'now');
 
         return this._criticalWrite(() => {
@@ -1169,10 +1203,12 @@ class GenUSearchMetadataStore {
     moveDocument(options = {}) {
         const docId = requireString(options.docId, 'docId');
         const uri = requireString(options.uri, 'uri');
-        const visibilitySeq = parseInteger(
-            options.visibilitySeq,
-            'visibilitySeq'
-        );
+        if (Object.prototype.hasOwnProperty.call(options, 'visibilitySeq')) {
+            throw codedError(
+                'VISIBILITY_SEQUENCE_INVALID',
+                'moveDocument owns visibility_seq allocation internally'
+            );
+        }
         const now = parseInteger(this.now(), 'now');
 
         return this._criticalWrite(() => {
@@ -1180,7 +1216,6 @@ class GenUSearchMetadataStore {
                 return this._moveDocumentTransaction(
                     docId,
                     uri,
-                    visibilitySeq,
                     now
                 );
             } catch (error) {
