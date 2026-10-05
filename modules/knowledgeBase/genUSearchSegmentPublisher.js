@@ -9,6 +9,7 @@ const { VexusIndex } = require('../../rust-vexus-lite');
 
 const MAX_SIGNED_INT64 = 9223372036854775807n;
 const SHA256_RE = /^[a-f0-9]{64}$/;
+const MEMORY_DB_ID = new WeakMap();
 
 function codedError(code, message) {
     const error = new Error(message);
@@ -104,7 +105,12 @@ function exactSetEquals(left, right) {
 function databaseIdentity(db) {
     const name = String(db?.name || '').trim();
     if (!name || name === ':memory:' || name.startsWith('file::memory:')) {
-        return `memory:${name || 'anonymous'}`;
+        let identity = MEMORY_DB_ID.get(db);
+        if (!identity) {
+            identity = `memory:${crypto.randomBytes(16).toString('hex')}`;
+            MEMORY_DB_ID.set(db, identity);
+        }
+        return identity;
     }
     const absolute = path.resolve(name);
     try {
@@ -665,6 +671,24 @@ class GenUSearchSegmentPublisher {
         return created;
     }
 
+    _assertArtifactPathOwned(segmentId, artifactPath) {
+        const expected = this._artifactPath(segmentId);
+        if (path.resolve(artifactPath) !== expected) {
+            throw codedError(
+                'SEGMENT_ARTIFACT_INVALID',
+                'segment artifact path is outside publisher-owned identity'
+            );
+        }
+        const stat = fs.lstatSync(artifactPath);
+        if (!stat.isFile()) {
+            throw codedError(
+                'SEGMENT_ARTIFACT_INVALID',
+                'segment artifact must be a regular non-symlink file'
+            );
+        }
+        return expected;
+    }
+
     _buildAndVerifyArtifact(segmentId, source, vectorIds) {
         const artifactPath = this._artifactPath(segmentId);
         const rows = this._readBuildRows(vectorIds, source);
@@ -683,6 +707,7 @@ class GenUSearchSegmentPublisher {
         }
         index.save(artifactPath);
 
+        this._assertArtifactPathOwned(segmentId, artifactPath);
         if (!fs.statSync(artifactPath).isFile()) {
             throw codedError(
                 'SEGMENT_ARTIFACT_INVALID',
@@ -736,13 +761,16 @@ class GenUSearchSegmentPublisher {
             || segment.embedding_fingerprint !== source.embeddingFingerprint
             || BigInt(segment.vector_count) !== BigInt(vectorIds.length)
             || !fs.existsSync(segment.artifact_path)
-            || !fs.statSync(segment.artifact_path).isFile()
         ) {
             throw codedError(
                 'SEGMENT_ARTIFACT_INVALID',
                 'existing segment artifact metadata is incomplete'
             );
         }
+        this._assertArtifactPathOwned(
+            segment.segment_id,
+            segment.artifact_path
+        );
         if (sha256File(segment.artifact_path) !== segment.artifact_digest) {
             throw codedError(
                 'SEGMENT_ARTIFACT_INVALID',
