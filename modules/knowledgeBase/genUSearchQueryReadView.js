@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const GenUSearchMemTable = require('./genUSearchMemTable');
+const GenUSearchPhysicalCoverageWriter = require('./genUSearchPhysicalCoverageWriter');
 const ReadPins = require('./genUSearchReadPins');
 const { VexusIndex } = require('../../rust-vexus-lite');
 
@@ -409,7 +410,10 @@ class GenUSearchQueryReadViewCoordinator {
                 if (!(memtable instanceof GenUSearchMemTable)) {
                     throw codedError('QUERY_READ_VIEW_INVALID', 'invalid MemTable candidate source');
                 }
-                ReadPins.assertMemtableDatabase(memtable, this.db);
+                GenUSearchPhysicalCoverageWriter.assertMemtableDatabaseAuthority(
+                    memtable,
+                    this.db
+                );
                 const memtablePinLease = incMemtablePin(memtable);
                 provisionalMemtables.push(memtablePinLease);
                 const snapshot = GenUSearchMemTable.snapshotForImmutableSegment(memtable);
