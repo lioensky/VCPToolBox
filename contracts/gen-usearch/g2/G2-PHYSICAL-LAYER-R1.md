@@ -28,8 +28,8 @@ G2 may implement only:
 3. **Coverage follows physical acceptance.**
    A `QUERY_VISIBLE` MEMTABLE coverage row may be committed only after the exact signed-int64 vector key has been accepted by the bound MemTable.
 
-4. **Coverage writer is the sole G2 writer.**
-   G2 production code outside `genUSearchPhysicalCoverageWriter.js` must not mutate `gen_usearch_vector_coverage`.
+4. **Coverage writer is the sole G2 physical mutation authority.**
+   G2 production code outside `genUSearchPhysicalCoverageWriter.js` must not mutate `gen_usearch_vector_coverage`. Bound MemTable add/remove/seal operations require a private writer capability and cannot be performed directly by callers.
 
 5. **Removal hides authority before removing bytes.**
    For non-current/non-ACTIVE vectors, G2 must durably remove the coverage fact before deleting the vector from the volatile MemTable. A crash may leave extra physical bytes, never false logical coverage.
@@ -47,6 +47,12 @@ G2 may implement only:
 
 9. **Only one ACTIVE generation may receive writes per physical writer.**
    A later Gen0 generation may begin admission only after the previously bound ACTIVE MemTable has transitioned to `SEALED_QUERY_VISIBLE`.
+
+10. **Source identity is one-to-one.**
+    A writer may create each `gen0:<runtime-id>:<generation>` source identity at most once. Detached or duplicate MemTables cannot manufacture or mutate authoritative coverage.
+
+11. **One database has one live G2 physical writer in-process.**
+    A second writer instance for the same SQLite connection is rejected so it cannot repeat bootstrap and erase live MEMTABLE coverage.
 
 ## Explicitly deferred beyond G2
 
