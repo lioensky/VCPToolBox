@@ -602,9 +602,12 @@ const POST_MIGRATION_INDEX_SQL = `
         ON tag_intrinsic_residuals(model_sig);
 `;
 
-const ADDITIVE_MIGRATIONS = Object.freeze([
+const GEN_USEARCH_ADDITIVE_MIGRATIONS = Object.freeze([
     ['gen_usearch_reconciliation_plans', 'base_document_uri', 'TEXT'],
-    ['gen_usearch_reconciliation_plans', 'base_identity_digest', 'TEXT'],
+    ['gen_usearch_reconciliation_plans', 'base_identity_digest', 'TEXT']
+]);
+
+const ADDITIVE_MIGRATIONS = Object.freeze([
     ['tags', 'vector_version', 'INTEGER NOT NULL DEFAULT 1'],
     ['file_tags', 'position', 'INTEGER NOT NULL DEFAULT 0'],
     ['tag_intrinsic_residuals', 'raw_residual_ratio', 'REAL'],
@@ -692,6 +695,9 @@ function initializeKnowledgeBaseSchema(db, options = {}) {
     }
     db.exec(POST_MIGRATION_INDEX_SQL);
     db.exec(GEN_USEARCH_SCHEMA_SQL);
+    for (const [table, column, definition] of GEN_USEARCH_ADDITIVE_MIGRATIONS) {
+        addColumnIfMissing(db, table, column, definition, logPrefix);
+    }
 }
 
 module.exports = {
