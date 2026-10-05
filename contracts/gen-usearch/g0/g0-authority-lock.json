@@ -353,9 +353,9 @@
     "tests/gen-usearch/g0/fixtures/final-race-vectors.schema.json": "c094071a3e6e1a291932723565fca50842cd09666a28adafb625d21a6422fe89",
     "tests/gen-usearch/g0/fixtures/invariant-vectors.json": "985dad916b7de4173fec85d8521760531d9d6a248666821914c5f3b0c0e3700d",
     "tests/gen-usearch/g0/fixtures/invariant-vectors.schema.json": "bc0957393e8335b71d9c1122ac3893f7ffecb035df1b687b353c4eb50f87eed3",
-    "tests/gen-usearch/g0/g0-contracts.test.js": "6149effbdc7427c7b03d419e5bc5234dc67534958bdaaee15dc0f837aafb6819",
+    "tests/gen-usearch/g0/g0-contracts.test.js": "b848ed3db0351bfccca613e59c9d9c5f6fa03c8dc94cbedce6a8f38a8937f80f",
     "tests/gen-usearch/g0/g0-runner.js": "b11cbce0bfb934875fe488c8a1aaac095848cd9ed0c9011e3aa8a62d329e0abb",
-    "tests/gen-usearch/g0/g0-verifier.js": "b6db4f8a4ad7eb08e4fcf2e123713ec1a0de2bdc7ce2cb167a473fc40705d526",
+    "tests/gen-usearch/g0/g0-verifier.js": "1d9ab848dc433d28acfddc8c5913e21ee69972e964399e7ed8835383e85e39d4",
     "tests/gen-usearch/g0/package-lock.json": "2cea519d003d54bd7e9ce70901b601283ef9521444a0538fa55d4e7891db2186",
     "tests/gen-usearch/g0/package.json": "b3e980f05a41ea708cdca3adfe049d1f3ec1dc6644a2ef8b167bd5853183621b"
   },
