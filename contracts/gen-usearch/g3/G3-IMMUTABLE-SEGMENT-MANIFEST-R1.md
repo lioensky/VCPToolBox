@@ -65,6 +65,24 @@ G3 may implement only:
 14. **G3 remains physically isolated from serving.**
     G3 production modules must not wire themselves into KnowledgeBaseManager, ingestion, searchService, QueryReadView, runtime ownership, or engine-mode activation.
 
+15. **The flush snapshot is private-authority data.**
+    G3 derives state and vector IDs from GenUSearchMemTable private fields plus authentic native membership. Caller-visible `state` or `listVectorIds()` views cannot redefine the sealed flush set.
+
+16. **Segment identity is database-namespaced.**
+    The immutable segment identity includes the underlying SQLite database file identity (device/inode when available, canonical path fallback) in addition to Gen0 source identity, embedding fingerprint, and vector IDs, preventing cross-database artifact namespace collisions.
+
+17. **SEGMENT coverage is an exact set.**
+    After publication, SEGMENT `QUERY_VISIBLE` coverage for the new segment must equal the immutable artifact vector-ID set exactly. Extra or missing coverage rolls back the entire manifest transaction.
+
+18. **Recovery transition is an exact set.**
+    Only vectors that entered publication in `RECOVERY_REQUIRED` may become newly covered by the new segment. Trigger-injected or missing `covered_segment_id` transitions fail closed.
+
+19. **Prior manifest epochs are immutable evidence.**
+    Publishing epoch N+1 must leave epoch N's exact segment set unchanged. Every member of N+1 is revalidated as `PUBLISHED` with a still-matching durable artifact digest before commit.
+
+20. **Idempotent retry revalidates authority, not status alone.**
+    Reusing a PUBLISHED segment requires re-verifying the full current manifest artifact set and exact SEGMENT coverage before returning success.
+
 ## Explicitly deferred beyond G3
 
 G3 does **not** authorize:
@@ -95,6 +113,12 @@ G3 may pass only when:
 - recovery cannot become SEGMENT_COVERED before successful publication;
 - MEMTABLE coverage remains after segment publication;
 - publication failure leaves no false PUBLISHED state, manifest membership, SEGMENT coverage, or SEGMENT_COVERED recovery;
+- forged public MemTable views cannot alter the private sealed flush set;
+- different SQLite databases cannot collide on the same segment identity when sharing an artifact root;
+- trigger-injected extra SEGMENT coverage or recovery transitions fail closed;
+- publishing a new epoch cannot mutate prior manifest evidence or silently retire an existing manifest member;
+- corruption of any artifact in the current manifest blocks publication of the next epoch;
+- idempotent retry detects missing SEGMENT coverage or corrupt manifest artifacts;
 - G3 stage-boundary tests prove query/GC/compaction/cutover remain unwired;
 - independent adversarial review has unresolved P0 = 0 and P1 = 0.
 
