@@ -818,12 +818,27 @@ class GenUSearchSegmentPublisher {
                 || !segment.artifact_path
                 || !SHA256_RE.test(segment.artifact_digest || '')
                 || !fs.existsSync(segment.artifact_path)
-                || !fs.statSync(segment.artifact_path).isFile()
-                || sha256File(segment.artifact_path) !== segment.artifact_digest
             ) {
                 throw codedError(
                     'RECOVERY_MANIFEST_INVALID',
                     `manifest artifact verification failed for ${segmentId}`
+                );
+            }
+            try {
+                this._assertArtifactPathOwned(
+                    segmentId,
+                    segment.artifact_path
+                );
+            } catch (_) {
+                throw codedError(
+                    'RECOVERY_MANIFEST_INVALID',
+                    `manifest artifact path authority failed for ${segmentId}`
+                );
+            }
+            if (sha256File(segment.artifact_path) !== segment.artifact_digest) {
+                throw codedError(
+                    'RECOVERY_MANIFEST_INVALID',
+                    `manifest artifact digest failed for ${segmentId}`
                 );
             }
         }
