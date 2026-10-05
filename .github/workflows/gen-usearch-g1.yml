@@ -7,6 +7,10 @@ on:
       - codex/gen-usearch-g0-f2-upstream-main
     paths:
       - 'modules/knowledgeBase/schemaManager.js'
+      - 'rust-vexus-lite/Cargo.lock'
+      - 'rust-vexus-lite/Cargo.toml'
+      - 'rust-vexus-lite/index.d.ts'
+      - 'rust-vexus-lite/src/lib.rs'
       - 'modules/knowledgeBase/genUSearchMetadataStore.js'
       - 'tests/gen-usearch/g1/**'
       - '.github/workflows/gen-usearch-g1.yml'
@@ -24,7 +28,7 @@ permissions:
 jobs:
   g1-metadata-core:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,6 +40,20 @@ jobs:
 
       - name: Install narrow G1 SQLite dependencies
         run: npm ci --prefix tests/gen-usearch/g1 --no-audit --no-fund
+
+      - name: Verify Gen-USearch 64-bit key parser in Rust
+        run: cargo test --manifest-path rust-vexus-lite/Cargo.toml gen_usearch_key_tests
+
+      - name: Install pinned N-API build CLI
+        run: npm install --prefix rust-vexus-lite --ignore-scripts --no-save --package-lock=false --no-audit --no-fund @napi-rs/cli@2.16.0
+
+      - name: Build Vexus native addon from exact source
+        run: |
+          cd rust-vexus-lite
+          ./node_modules/.bin/napi build --platform
+
+      - name: Run signed-int64 Vexus ABI acceptance
+        run: node --test tests/gen-usearch/g1/vexusKey64Abi.test.js
 
       - name: Run G1 durable metadata acceptance
         run: node --test tests/gen-usearch/g1/genUSearchMetadataStore.test.js
