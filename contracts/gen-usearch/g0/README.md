@@ -1,29 +1,53 @@
 # Gen-USearch G0 machine contracts
 
-Status: **G0-F2R3 candidate, machine gate hardened, G0 not yet frozen**.
+Status: **G0-FINAL-R1 candidate, not yet frozen**.
 
-This directory contains the executable machine form of the Gen-USearch G0 R3.1 architecture contract. It does not implement the production USearch engine.
+This directory contains the complete executable G0 R3.1 architecture authority and its machine traceability closure. It still does **not** implement the production USearch engine.
 
-## F2R3 authority model
+## Frozen-surface candidate
 
-The gate now has an external trust root and a sealed in-repository contract surface:
+G0 Final Review now evaluates one sealed authority surface:
 
-1. A repository-level GitHub variable `G0_AUTHORITY_LOCK_SHA256` pins the exact Authority Lock digest outside the PR branch.
-2. `g0-authority-lock.json` freezes required contracts, invariants, failure codes, fixtures, critical enums, artifact paths, and SHA256 seals for every other locked artifact.
-3. `g0-runner.js` only accepts the real repository top-level, requires every locked worktree file to be byte-identical to `HEAD:path`, verifies the external lock pin, verifies all sealed artifact hashes, executes schemas/fixtures/invariants, reads the real Git HEAD, and emits the acceptance manifest.
-4. A separate `Gen-USearch G0 External Authority` workflow lives on the fork's `master` branch. It verifies the target SHA, external pin and sealed artifact hashes before executing any code from the PR branch, then publishes an independent commit status.
+- `G0-ARCHITECTURE-R3.1.md`: human-readable normative architecture.
+- `G0-ARCHITECTURE-R3.1.machine.json`: machine authority for C1-C8, A01-A10, FINAL-01..05, and 31 normative requirements.
+- `G0-TRACEABILITY-R3.1.json`: exact mapping from every architecture requirement to invariant, positive fixture, negative fixture, verifier selector, and failure code.
+- `g0-contracts-r3.1.json`: 31 executable invariants and state contracts.
+- `g0-authority-lock.json`: external-pin-protected required surface and SHA256 seals.
 
-## Safety rules now enforced
+The current candidate has:
 
-- fake/nested repository roots are rejected;
-- dirty locked artifacts cannot claim an unchanged HEAD;
-- changing the Authority Lock requires an explicit external pin update;
-- changing Runner, Verifier, schemas, fixtures, package lock, or target workflow requires updating their SHA256 seals in the Authority Lock;
-- ReadView transition guards execute;
-- GC certification starts from durable `RETIRED` state and precedes `GC_ELIGIBLE`;
-- durable vector coverage is derived from `ManifestSnapshot + SegmentRecord + ArtifactReceipt`;
-- signed-int64 vector IDs use canonical decimal strings and BigInt;
-- acceptance PASS is generated from executed evidence, not caller-provided receipts.
+```text
+Architecture requirements = 31
+R3.1 amendments           = 10
+Executable invariants     = 31
+Invariant fixtures        = 62
+FINAL race/crash fixtures = 23
+Failure codes             = 76
+Locked artifacts          = 22
+```
+
+## Final traceability additions
+
+The final closure explicitly machine-tests:
+
+- runtime fence revalidation before response;
+- durable monotonic vector-ID allocation and never-reuse;
+- recovery-material retention until durable immutable coverage;
+- compaction dual-cut snapshot coherence;
+- physical presence versus logical visibility;
+- vector and logical-chunk candidate deduplication;
+- bounded QueryReadView expiry/cancellation semantics;
+- CommittedSourceView complete-only indexing;
+- C1 reconciler identity-only authority;
+- complete QueryReadView snapshot shape;
+- crash-durable critical transaction family;
+- missing source observation does not imply delete.
+
+## Authority model
+
+The repository variable `G0_AUTHORITY_LOCK_SHA256` pins the exact Authority Lock outside the PR branch. The lock seals every other required machine artifact. The canonical runner only accepts the real repository top-level, byte-compares locked files with `HEAD:path`, verifies the external pin and all seals, validates schemas and traceability, executes all fixtures/invariants, and emits the acceptance manifest.
+
+A separate `Gen-USearch G0 External Authority` workflow on the fork's `master` branch independently validates the target exact SHA and publishes `gen-usearch/g0-external-authority` status.
 
 ## Local verification
 
@@ -34,4 +58,4 @@ node --test tests/gen-usearch/g0/g0-contracts.test.js
 node tests/gen-usearch/g0/g0-runner.js
 ```
 
-Passing these gates does **not** itself freeze G0 or authorize G1. After independent re-review reaches unresolved P0=0 and P1=0, the next gate is **G0 Final Review**.
+A PASS here means the G0 Final Review candidate is machine-complete. **G0 is not FROZEN until the final independent review explicitly authorizes freeze.**
