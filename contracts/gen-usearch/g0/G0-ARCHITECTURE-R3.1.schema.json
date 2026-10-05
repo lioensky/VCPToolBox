@@ -28,7 +28,7 @@
       "const": "G0"
     },
     "status": {
-      "const": "FREEZE_CANDIDATE"
+      "const": "FROZEN"
     },
     "authority_planes": {
       "const": {
