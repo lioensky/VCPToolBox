@@ -17,6 +17,9 @@ const GenUSearchMetadataStore = require(
 const GenUSearchPhysicalCoverageWriter = require(
     '../../../modules/knowledgeBase/genUSearchPhysicalCoverageWriter'
 );
+const GenUSearchMemTable = require(
+    '../../../modules/knowledgeBase/genUSearchMemTable'
+);
 const GenUSearchSegmentPublisher = require(
     '../../../modules/knowledgeBase/genUSearchSegmentPublisher'
 );
@@ -774,6 +777,224 @@ test('corruption of a current manifest artifact blocks publication of the next s
             `).get(firstReceipt.segmentId).count,
             0
         );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+
+test('G3 private Gen0 snapshot authority surface cannot be replaced', () => {
+    assert.equal(Object.isFrozen(GenUSearchMemTable), true);
+    assert.throws(
+        () => {
+            GenUSearchMemTable.snapshotForImmutableSegment = () => ({
+                state: 'SEALED_QUERY_VISIBLE',
+                vectorIds: ['999']
+            });
+        },
+        TypeError
+    );
+});
+
+test('different SQLite databases sharing one segment root cannot collide on segment identity', () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g3-dbns-'));
+    const sharedSegmentRoot = path.join(parent, 'segments');
+
+    function createDb(name) {
+        const dbPath = path.join(parent, name, 'knowledge.sqlite');
+        fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+        const db = new Database(dbPath);
+        db.pragma('journal_mode = WAL');
+        db.pragma('synchronous = FULL');
+        db.pragma('foreign_keys = ON');
+        initializeKnowledgeBaseSchema(db, { logPrefix: 'GenUSearchG3DbNs' });
+        let now = 20000;
+        const store = new GenUSearchMetadataStore({ db, now: () => now++ });
+        const writer = new GenUSearchPhysicalCoverageWriter({
+            db,
+            runtimeId: 'shared-runtime',
+            now: () => now++
+        });
+        writer.bootstrapRuntime();
+        const publisher = new GenUSearchSegmentPublisher({
+            db,
+            segmentRoot: sharedSegmentRoot,
+            now: () => now++
+        });
+        const memtable = writer.createMemTable({
+            VexusIndex,
+            dimension: 4,
+            capacity: 16,
+            generation: '1',
+            embeddingFingerprint: 'embed-v1'
+        });
+
+        store.createDocument({
+            docId: 'doc-shared',
+            uri: 'doc-shared.txt',
+            visibilitySeq: store.readSequence('visibility_seq')
+        });
+        store.createChunkIdentity({
+            chunkId: 'chunk-shared',
+            docId: 'doc-shared'
+        });
+        const prepared = store.prepareChunkVersion({
+            chunkId: 'chunk-shared',
+            sourceRevision: 'rev-shared',
+            slotIndex: 0,
+            contentHash: 'd1'.repeat(32)
+        });
+        store.markEmbedding({
+            chunkVersionId: prepared.chunk_version_id,
+            embeddingFingerprint: 'embed-v1'
+        });
+        const vector = new Float32Array([1, 2, 3, 4]);
+        const staged = store.stageVector({
+            chunkVersionId: prepared.chunk_version_id,
+            embeddingFingerprint: 'embed-v1',
+            vectorBlob: vector
+        });
+        writer.admitVector({
+            memtable,
+            vectorId: staged.vector_id,
+            vector
+        });
+        store.publishCurrentHead({
+            chunkId: 'chunk-shared',
+            chunkVersionId: staged.chunk_version_id,
+            expectedCurrentVersionId: null
+        });
+        writer.sealMemTable(memtable);
+        return { db, publisher, memtable };
+    }
+
+    let first;
+    let second;
+    try {
+        first = createDb('one');
+        second = createDb('two');
+
+        const one = first.publisher.publishSealedMemTable({
+            memtable: first.memtable,
+            expectedManifestEpoch: '0'
+        });
+        const two = second.publisher.publishSealedMemTable({
+            memtable: second.memtable,
+            expectedManifestEpoch: '0'
+        });
+
+        assert.notEqual(one.segmentId, two.segmentId);
+        assert.notEqual(one.artifactPath, two.artifactPath);
+        assert.equal(path.dirname(one.artifactPath), fs.realpathSync(sharedSegmentRoot));
+        assert.equal(path.dirname(two.artifactPath), fs.realpathSync(sharedSegmentRoot));
+    } finally {
+        try { first?.db.close(); } catch (_) {}
+        try { second?.db.close(); } catch (_) {}
+        fs.rmSync(parent, { recursive: true, force: true });
+    }
+});
+
+test('trigger-injected extra SEGMENT_COVERED recovery transition rolls publication back', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        const included = fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: 'e1'.repeat(32)
+        });
+
+        fixture.store.createDocument({
+            docId: 'doc-extra-recovery',
+            uri: 'doc-extra-recovery.txt',
+            visibilitySeq: fixture.store.readSequence('visibility_seq')
+        });
+        fixture.store.createChunkIdentity({
+            chunkId: 'chunk-extra-recovery',
+            docId: 'doc-extra-recovery'
+        });
+        const prepared = fixture.store.prepareChunkVersion({
+            chunkId: 'chunk-extra-recovery',
+            sourceRevision: 'rev-extra-recovery',
+            slotIndex: 1,
+            contentHash: 'e2'.repeat(32)
+        });
+        fixture.store.markEmbedding({
+            chunkVersionId: prepared.chunk_version_id,
+            embeddingFingerprint: 'embed-v1'
+        });
+        const extra = fixture.store.stageVector({
+            chunkVersionId: prepared.chunk_version_id,
+            embeddingFingerprint: 'embed-v1',
+            vectorBlob: new Float32Array([4, 3, 2, 1])
+        });
+
+        fixture.writer.sealMemTable(memtable);
+
+        fixture.db.exec(
+            "CREATE TRIGGER inject_extra_g3_recovery " +
+            "AFTER UPDATE OF state ON gen_usearch_vector_recovery " +
+            "WHEN NEW.state = 'SEGMENT_COVERED' AND NEW.vector_id != " + extra.vector_id + " " +
+            "BEGIN " +
+            "UPDATE gen_usearch_vector_recovery " +
+            "SET state = 'SEGMENT_COVERED', covered_segment_id = NEW.covered_segment_id " +
+            "WHERE vector_id = " + extra.vector_id + "; " +
+            "END;"
+        );
+
+        assert.throws(
+            () => fixture.publisher.publishSealedMemTable({
+                memtable,
+                expectedManifestEpoch: '0'
+            }),
+            error => error?.code === 'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE'
+        );
+
+        assert.equal(fixture.publisher.captureManifestEpoch(), '0');
+        for (const vectorId of [included.staged.vector_id, extra.vector_id]) {
+            assert.equal(
+                fixture.db.prepare(`
+                    SELECT state
+                    FROM gen_usearch_vector_recovery
+                    WHERE vector_id = ?
+                `).get(BigInt(vectorId)).state,
+                'RECOVERY_REQUIRED'
+            );
+        }
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('published artifact path cannot be redirected outside the configured segment root', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: 'f1'.repeat(32)
+        });
+        fixture.writer.sealMemTable(memtable);
+        const receipt = fixture.publisher.publishSealedMemTable({
+            memtable,
+            expectedManifestEpoch: '0'
+        });
+
+        const outside = path.join(fixture.root, 'outside.usearch');
+        fs.copyFileSync(receipt.artifactPath, outside);
+        fixture.db.prepare(`
+            UPDATE gen_usearch_segments
+            SET artifact_path = ?
+            WHERE segment_id = ?
+        `).run(outside, receipt.segmentId);
+
+        assert.throws(
+            () => fixture.publisher.publishSealedMemTable({
+                memtable,
+                expectedManifestEpoch: '1'
+            }),
+            error => error?.code === 'SEGMENT_ARTIFACT_INVALID'
+        );
+        assert.equal(fixture.publisher.captureManifestEpoch(), '1');
     } finally {
         fixture.cleanup();
     }
