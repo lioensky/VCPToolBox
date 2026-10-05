@@ -321,6 +321,203 @@ function validateRecoveryCoverage(vector, manifestSnapshot, segmentRecords = [],
   return { ok: true };
 }
 
+
+function validateQueryResponseFence(input) {
+  try {
+    const readFence = parseSequence(input?.read_view_fence, 'read_view_fence');
+    const currentFence = parseSequence(input?.current_serving_fence, 'current_serving_fence');
+    if (input?.response_emitted === true && readFence !== currentFence) {
+      return { ok:false, code:'QUERY_FENCE_STALE' };
+    }
+    return { ok:true };
+  } catch (_) {
+    return { ok:false, code:'QUERY_FENCE_STALE' };
+  }
+}
+
+function validateAllocatorHistory(input) {
+  try {
+    const before = parseVectorId(input?.durable_high_water_before, 'durable_high_water_before');
+    const allocated = validateVectorIdList(input?.allocated_ids || [], 'allocated_ids').map(BigInt);
+    const after = parseVectorId(input?.durable_high_water_after, 'durable_high_water_after');
+    const restartNext = parseVectorId(input?.restart_next_id, 'restart_next_id');
+    if (allocated.length === 0) return { ok:false, code:'VECTOR_ID_ALLOCATOR_CORRUPT' };
+    let prev = before;
+    for (const id of allocated) {
+      if (id <= prev) return { ok:false, code:'VECTOR_ID_ALLOCATOR_CORRUPT' };
+      prev = id;
+    }
+    if (after !== prev || restartNext <= after) {
+      return { ok:false, code:'VECTOR_ID_ALLOCATOR_CORRUPT' };
+    }
+    return { ok:true };
+  } catch (_) {
+    return { ok:false, code:'VECTOR_ID_ALLOCATOR_CORRUPT' };
+  }
+}
+
+function validateRecoveryRelease(input) {
+  const released = input?.recovery_state === 'RECOVERY_RELEASED';
+  if (!released) return { ok:true };
+  const covered = deriveDurableVectorCoverage(
+    input.vector,
+    input.manifest_snapshot,
+    input.segment_records || [],
+    input.artifact_receipts || []
+  );
+  return covered
+    ? { ok:true }
+    : { ok:false, code:'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE' };
+}
+
+function validateCompactionSnapshot(input) {
+  try {
+    const snapshot = input?.snapshot;
+    const epoch = parseSequence(snapshot?.manifest_epoch, 'compaction.manifest_epoch');
+    const visibility = parseSequence(snapshot?.visibility_seq, 'compaction.visibility_seq');
+    const gcCut = parseSequence(snapshot?.gc_cut, 'compaction.gc_cut');
+    const currentEpoch = parseSequence(input?.current_manifest_epoch, 'current_manifest_epoch');
+    if (!Array.isArray(snapshot?.segment_set) || snapshot.segment_set.length === 0) {
+      return { ok:false, code:'COMPACTION_SNAPSHOT_INVALID' };
+    }
+    if (gcCut > visibility || epoch !== currentEpoch) {
+      return { ok:false, code:'COMPACTION_SNAPSHOT_INVALID' };
+    }
+    return { ok:true };
+  } catch (_) {
+    return { ok:false, code:'COMPACTION_SNAPSHOT_INVALID' };
+  }
+}
+
+function validateLogicalVisibility(input) {
+  try {
+    const physical = new Map((input?.physical_candidates || []).map(x => [x.vector_id, x]));
+    validateVectorIdList([...physical.keys()], 'physical_candidates');
+    const returned = validateVectorIdList(input?.returned_vector_ids || [], 'returned_vector_ids');
+    for (const id of returned) {
+      const row = physical.get(id);
+      if (!row || row.state !== 'ACTIVE' || row.is_current_at_read_view !== true) {
+        return { ok:false, code:'LOGICAL_VISIBILITY_VIOLATION' };
+      }
+    }
+    return { ok:true };
+  } catch (_) {
+    return { ok:false, code:'LOGICAL_VISIBILITY_VIOLATION' };
+  }
+}
+
+function validateCandidateDedup(input) {
+  try {
+    const physicalHits = input?.physical_hits || [];
+    const logical = input?.logical_candidates || [];
+    if (!Array.isArray(physicalHits) || !Array.isArray(logical)) {
+      return { ok:false, code:'CANDIDATE_DEDUP_VIOLATION' };
+    }
+    const byVector = new Map();
+    for (const hit of physicalHits) {
+      parseVectorId(hit.vector_id);
+      if (typeof hit.chunk_id !== 'string' || !hit.chunk_id) throw new Error('chunk_id');
+      if (!byVector.has(hit.vector_id)) byVector.set(hit.vector_id, hit);
+    }
+    const byChunk = new Map();
+    for (const hit of byVector.values()) {
+      if (!byChunk.has(hit.chunk_id)) byChunk.set(hit.chunk_id, hit.vector_id);
+    }
+    const expected = [...byChunk.entries()].map(([chunk_id,vector_id]) => ({vector_id,chunk_id}));
+    return JSON.stringify(logical) === JSON.stringify(expected)
+      ? { ok:true }
+      : { ok:false, code:'CANDIDATE_DEDUP_VIOLATION' };
+  } catch (_) {
+    return { ok:false, code:'CANDIDATE_DEDUP_VIOLATION' };
+  }
+}
+
+function validateBoundedReadView(input) {
+  try {
+    const created = parseSequence(input?.created_at_ms, 'created_at_ms');
+    const deadline = parseSequence(input?.deadline_ms, 'deadline_ms');
+    const now = parseSequence(input?.now_ms, 'now_ms');
+    if (deadline <= created) return { ok:false, code:'QUERY_READ_VIEW_EXPIRED' };
+    if (now > deadline) {
+      const safe = input?.state === 'CANCEL_REQUESTED' &&
+        input?.pins_released === false;
+      return safe ? { ok:true } : { ok:false, code:'QUERY_READ_VIEW_EXPIRED' };
+    }
+    return input?.state === 'ACTIVE'
+      ? { ok:true }
+      : { ok:false, code:'QUERY_READ_VIEW_EXPIRED' };
+  } catch (_) {
+    return { ok:false, code:'QUERY_READ_VIEW_EXPIRED' };
+  }
+}
+
+function validateCommittedSourceView(input) {
+  const allowed = new Set(['OLD_COMPLETE','NEW_COMPLETE']);
+  return allowed.has(input?.view_state) &&
+    input?.commit_verified === true &&
+    input?.bytes_stable === true
+      ? { ok:true }
+      : { ok:false, code:'SOURCE_COMMIT_UNVERIFIED' };
+}
+
+function validateReconcilerAuthority(input) {
+  const allowed = new Set([
+    'PLAN_SAME','PLAN_MODIFY','PLAN_MOVE','PLAN_INSERT',
+    'PLAN_DELETE','PLAN_SPLIT','PLAN_MERGE','PLAN_AMBIGUOUS'
+  ]);
+  const operations = input?.operations;
+  if (!Array.isArray(operations) || operations.length === 0) {
+    return { ok:false, code:'RECONCILER_AUTHORITY_VIOLATION' };
+  }
+  return operations.every(op => allowed.has(op))
+    ? { ok:true }
+    : { ok:false, code:'RECONCILER_AUTHORITY_VIOLATION' };
+}
+
+function validateCompleteQueryReadView(input) {
+  try {
+    if (typeof input?.read_view_id !== 'string' || !input.read_view_id) throw new Error('read_view_id');
+    parseSequence(input.visibility_seq, 'visibility_seq');
+    if (!input.metadata_snapshot || typeof input.metadata_snapshot !== 'object') throw new Error('metadata_snapshot');
+    if (!validateManifestSnapshot(input.manifest_snapshot)) throw new Error('manifest_snapshot');
+    if (!Array.isArray(input.memtable_generation_set)) throw new Error('memtable_generation_set');
+    parseSequence(input.runtime_fence, 'runtime_fence');
+    const created = parseSequence(input.created_at_ms, 'created_at_ms');
+    const deadline = parseSequence(input.deadline_ms, 'deadline_ms');
+    if (deadline <= created) throw new Error('deadline');
+    return { ok:true };
+  } catch (_) {
+    return { ok:false, code:'QUERY_READ_VIEW_INVALID' };
+  }
+}
+
+function validateCriticalDurability(input) {
+  const requiredKinds = [
+    'vector_id_allocation','visibility_seq_allocation','mvcc_commit',
+    'manifest_publication','runtime_fence_change','source_observation',
+    'reconciliation_admission'
+  ];
+  const rows = input?.transactions;
+  if (!Array.isArray(rows)) return { ok:false, code:'DURABLE_COMMIT_UNCONFIRMED' };
+  const byKind = new Map(rows.map(x => [x.kind, x]));
+  for (const kind of requiredKinds) {
+    const row = byKind.get(kind);
+    if (!row) return { ok:false, code:'DURABLE_COMMIT_UNCONFIRMED' };
+    if ((row.acknowledged === true || row.dependent_action === true) && row.durable_commit !== true) {
+      return { ok:false, code:'DURABLE_COMMIT_UNCONFIRMED' };
+    }
+  }
+  return { ok:true };
+}
+
+function validateMissingSourceSemantics(input) {
+  if (input?.source_observation !== 'MISSING') return { ok:true };
+  if (input?.delete_inferred === true && input?.explicit_delete_evidence !== true) {
+    return { ok:false, code:'SOURCE_MISSING_DELETE_INFERENCE' };
+  }
+  return { ok:true };
+}
+
 function canTakeoverServingOwnership(oldRuntime) {
   return oldRuntime?.may_execute === false &&
     oldRuntime?.quiescent === true &&
@@ -414,6 +611,42 @@ function evaluateInvariant(registry, invariantId, input) {
         pass = new Set(ids).size === input.expected_unique;
         break;
       }
+      case 'G0-XINV-020':
+        pass = validateQueryResponseFence(input).ok;
+        break;
+      case 'G0-XINV-021':
+        pass = validateAllocatorHistory(input).ok;
+        break;
+      case 'G0-XINV-022':
+        pass = validateRecoveryRelease(input).ok;
+        break;
+      case 'G0-XINV-023':
+        pass = validateCompactionSnapshot(input).ok;
+        break;
+      case 'G0-XINV-024':
+        pass = validateLogicalVisibility(input).ok;
+        break;
+      case 'G0-XINV-025':
+        pass = validateCandidateDedup(input).ok;
+        break;
+      case 'G0-XINV-026':
+        pass = validateBoundedReadView(input).ok;
+        break;
+      case 'G0-XINV-027':
+        pass = validateCommittedSourceView(input).ok;
+        break;
+      case 'G0-XINV-028':
+        pass = validateReconcilerAuthority(input).ok;
+        break;
+      case 'G0-XINV-029':
+        pass = validateCompleteQueryReadView(input).ok;
+        break;
+      case 'G0-XINV-030':
+        pass = validateCriticalDurability(input).ok;
+        break;
+      case 'G0-XINV-031':
+        pass = validateMissingSourceSemantics(input).ok;
+        break;
       default:
         throw new Error(`Unhandled invariant: ${invariantId}`);
     }
@@ -519,6 +752,18 @@ module.exports = {
   deriveDurableVectorCoverage,
   validateRecoveryCoverage,
   canTakeoverServingOwnership,
+  validateQueryResponseFence,
+  validateAllocatorHistory,
+  validateRecoveryRelease,
+  validateCompactionSnapshot,
+  validateLogicalVisibility,
+  validateCandidateDedup,
+  validateBoundedReadView,
+  validateCommittedSourceView,
+  validateReconcilerAuthority,
+  validateCompleteQueryReadView,
+  validateCriticalDurability,
+  validateMissingSourceSemantics,
   evaluateInvariant,
   evaluateFixture,
   exactSetEquals,
