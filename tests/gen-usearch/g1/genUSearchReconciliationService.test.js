@@ -1,0 +1,217 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const Database = require('better-sqlite3');
+
+const {
+    initializeKnowledgeBaseSchema
+} = require('../../../modules/knowledgeBase/schemaManager');
+const GenUSearchMetadataStore = require(
+    '../../../modules/knowledgeBase/genUSearchMetadataStore'
+);
+const GenUSearchReconciliationService = require(
+    '../../../modules/knowledgeBase/genUSearchReconciliationService'
+);
+const {
+    hashExactChunkContent
+} = require('../../../modules/knowledgeBase/genUSearchReconciler');
+
+function createFixture() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-g1-service-'));
+    const db = new Database(path.join(root, 'knowledge.sqlite'));
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = FULL');
+    db.pragma('foreign_keys = ON');
+    initializeKnowledgeBaseSchema(db, { logPrefix: 'GenUSearchServiceTest' });
+    let now = 9000;
+    const store = new GenUSearchMetadataStore({ db, now: () => now++ });
+    store.createDocument({
+        docId: 'doc-1',
+        uri: 'diary/a.txt',
+        visibilitySeq: '0'
+    });
+    const service = new GenUSearchReconciliationService({ store });
+    return {
+        root,
+        db,
+        store,
+        service,
+        cleanup() {
+            try { db.close(); } catch (_) {}
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    };
+}
+
+function publishCurrent(fixture, options) {
+    const {
+        chunkId,
+        slotIndex,
+        content,
+        sourceRevision = 'rev-1',
+        sourceId = `M-${chunkId}`
+    } = options;
+    fixture.store.createChunkIdentity({ chunkId, docId: 'doc-1' });
+    const version = fixture.store.prepareChunkVersion({
+        chunkId,
+        sourceRevision,
+        slotIndex,
+        contentHash: hashExactChunkContent(content)
+    });
+    fixture.store.markEmbedding({
+        chunkVersionId: version.chunk_version_id,
+        embeddingFingerprint: 'embed-v1'
+    });
+    const staged = fixture.store.stageVector({
+        chunkVersionId: version.chunk_version_id,
+        embeddingFingerprint: 'embed-v1',
+        vectorBlob: new Float32Array([1, 2, 3, slotIndex + 4])
+    });
+    fixture.db.prepare(`
+        INSERT INTO gen_usearch_vector_coverage (
+            vector_id, source_kind, source_id, coverage_state,
+            created_at, updated_at
+        ) VALUES (?, 'MEMTABLE', ?, 'QUERY_VISIBLE', 9000, 9000)
+    `).run(BigInt(staged.vector_id), sourceId);
+    fixture.store.publishCurrentHead({
+        chunkId,
+        chunkVersionId: staged.chunk_version_id,
+        expectedCurrentVersionId: null
+    });
+}
+
+function committedView(chunks, overrides = {}) {
+    return {
+        state: 'NEW_COMPLETE',
+        commitVerified: true,
+        bytesStable: true,
+        sourceDigest: 'source-digest-v2',
+        sourceRevision: 'rev-2',
+        chunks,
+        ...overrides
+    };
+}
+
+test('production service derives previous identity snapshot only from SQLite current heads', () => {
+    const fixture = createFixture();
+    try {
+        publishCurrent(fixture, { chunkId: 'c-alpha', slotIndex: 0, content: 'alpha' });
+        publishCurrent(fixture, { chunkId: 'c-beta', slotIndex: 1, content: 'beta' });
+
+        assert.deepEqual(fixture.store.getCurrentChunkIdentitySnapshot('doc-1'), [
+            {
+                chunkId: 'c-alpha',
+                slotIndex: 0,
+                contentHash: hashExactChunkContent('alpha')
+            },
+            {
+                chunkId: 'c-beta',
+                slotIndex: 1,
+                contentHash: hashExactChunkContent('beta')
+            }
+        ]);
+
+        const { plan, admitted } = fixture.service.planAndAdmitCommittedSource({
+            docId: 'doc-1',
+            committedSourceView: committedView([
+                { slotIndex: 0, content: 'alpha' },
+                { slotIndex: 1, content: 'beta changed' }
+            ])
+        });
+
+        assert.equal(plan.operations.find(op => op.kind === 'SAME').chunkId, 'c-alpha');
+        assert.equal(plan.operations.find(op => op.kind === 'MODIFY').chunkId, 'c-beta');
+        assert.equal(admitted.state, 'ADMITTED');
+        assert.deepEqual(admitted.operations, plan.operations);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('caller cannot override previousChunks authority', () => {
+    const fixture = createFixture();
+    try {
+        assert.throws(
+            () => fixture.service.planCommittedSource({
+                docId: 'doc-1',
+                previousChunks: [{ chunkId: 'fake', slotIndex: 0, content: 'fake' }],
+                committedSourceView: committedView([{ slotIndex: 0, content: 'alpha' }])
+            }),
+            error => error?.code === 'RECONCILER_AUTHORITY_VIOLATION'
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('only verified stable complete source views may enter reconciliation', () => {
+    const fixture = createFixture();
+    try {
+        for (const view of [
+            committedView([], { state: 'PARTIAL' }),
+            committedView([], { commitVerified: false }),
+            committedView([], { bytesStable: false })
+        ]) {
+            assert.throws(
+                () => fixture.service.planCommittedSource({
+                    docId: 'doc-1',
+                    committedSourceView: view
+                }),
+                error => error?.code === 'SOURCE_COMMIT_UNVERIFIED'
+            );
+        }
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('incomplete or corrupt SQLite current-head snapshots fail closed', () => {
+    const fixture = createFixture();
+    try {
+        fixture.store.createChunkIdentity({ chunkId: 'orphan-head', docId: 'doc-1' });
+        assert.throws(
+            () => fixture.service.planCommittedSource({
+                docId: 'doc-1',
+                committedSourceView: committedView([{ slotIndex: 0, content: 'alpha' }])
+            }),
+            error => error?.code === 'METADATA_INTEGRITY_FAILURE'
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('duplicate current slots in metadata authority are rejected as ambiguous', () => {
+    const fixture = createFixture();
+    try {
+        publishCurrent(fixture, { chunkId: 'c-1', slotIndex: 0, content: 'one' });
+        publishCurrent(fixture, { chunkId: 'c-2', slotIndex: 0, content: 'two' });
+        assert.throws(
+            () => fixture.store.getCurrentChunkIdentitySnapshot('doc-1'),
+            error => error?.code === 'CHUNK_IDENTITY_AMBIGUOUS'
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('new documents reconcile from an empty authoritative snapshot without caller identity hints', () => {
+    const fixture = createFixture();
+    try {
+        const plan = fixture.service.planCommittedSource({
+            docId: 'doc-1',
+            committedSourceView: committedView([
+                { slotIndex: 0, content: 'first' },
+                { slotIndex: 1, content: 'second' }
+            ])
+        });
+        assert.equal(plan.summary.INSERT, 2);
+        assert.equal(plan.summary.AMBIGUOUS, 0);
+    } finally {
+        fixture.cleanup();
+    }
+});

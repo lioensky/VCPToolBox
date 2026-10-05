@@ -362,7 +362,7 @@ const GEN_USEARCH_SCHEMA_SQL = `
         observed_source_revision TEXT NOT NULL,
         target_revision TEXT NOT NULL,
         plan_digest TEXT NOT NULL CHECK(length(plan_digest) = 64),
-        state TEXT NOT NULL CHECK(state IN ('PENDING', 'ADMITTED', 'COMPLETE', 'ERROR')),
+        state TEXT NOT NULL CHECK(state IN ('PENDING', 'ADMITTED', 'COMPLETE', 'ERROR', 'SUPERSEDED')),
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         UNIQUE(doc_id, target_revision),

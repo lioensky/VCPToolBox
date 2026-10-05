@@ -314,6 +314,29 @@ test('source observation and reconciliation plan are admitted durably in one tra
     }
 });
 
+test('same durable plan replay is idempotent even after downstream identity materialization', () => {
+    const fixture = createStoreFixture();
+    try {
+        const plan = reconcileDocumentChunks(baseOptions({
+            previousChunks: [],
+            nextChunks: [next(0, 'alpha')]
+        }));
+        const first = fixture.store.admitReconciliationPlan(plan);
+        const inserted = plan.operations.find(op => op.kind === 'INSERT');
+        fixture.store.createChunkIdentity({
+            chunkId: inserted.chunkId,
+            docId: 'doc-1'
+        });
+
+        const replay = fixture.store.admitReconciliationPlan(plan);
+        assert.equal(replay.planId, first.planId);
+        assert.equal(replay.planDigest, first.planDigest);
+        assert.equal(replay.state, first.state);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('AMBIGUOUS reconciliation is persisted as ERROR and never becomes publishable admission', () => {
     const fixture = createStoreFixture();
     try {
@@ -335,6 +358,44 @@ test('AMBIGUOUS reconciliation is persisted as ERROR and never becomes publishab
         const document = fixture.store.getDocument('doc-1');
         assert.equal(document.reconciliation_state, 'ERROR');
         assert.equal(document.index_state, 'INDEX_ERROR');
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('a later committed source revision can supersede an errored ambiguous plan', () => {
+    const fixture = createStoreFixture();
+    try {
+        fixture.store.createChunkIdentity({ chunkId: 'c-1', docId: 'doc-1' });
+        fixture.store.createChunkIdentity({ chunkId: 'c-2', docId: 'doc-1' });
+        const ambiguous = reconcileDocumentChunks(baseOptions({
+            observedSourceDigest: 'digest-2',
+            observedSourceRevision: 'rev-2',
+            targetRevision: 'rev-2',
+            previousChunks: [
+                previous('c-1', 0, 'same'),
+                previous('c-2', 1, 'same')
+            ],
+            nextChunks: [next(0, 'same'), next(1, 'same')]
+        }));
+        fixture.store.admitReconciliationPlan(ambiguous);
+
+        const nextPlan = reconcileDocumentChunks(baseOptions({
+            observedSourceDigest: 'digest-3',
+            observedSourceRevision: 'rev-3',
+            targetRevision: 'rev-3',
+            previousChunks: [],
+            nextChunks: [next(0, 'unique')]
+        }));
+        const admitted = fixture.store.admitReconciliationPlan(nextPlan);
+        assert.equal(admitted.state, 'ADMITTED');
+        assert.equal(
+            fixture.store.getReconciliationPlan(ambiguous.planId).state,
+            'SUPERSEDED'
+        );
+        const document = fixture.store.getDocument('doc-1');
+        assert.equal(document.observed_source_revision, 'rev-3');
+        assert.equal(document.reconciliation_state, 'ADMITTED');
     } finally {
         fixture.cleanup();
     }

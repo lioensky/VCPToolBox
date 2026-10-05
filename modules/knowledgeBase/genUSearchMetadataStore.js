@@ -1,6 +1,9 @@
 'use strict';
 
-const { assertIdentityOnlyPlan } = require('./genUSearchReconciler');
+const {
+    assertIdentityOnlyPlan,
+    stableStringify
+} = require('./genUSearchReconciler');
 
 const MAX_SIGNED_INT64 = 9223372036854775807n;
 const SEQUENCE_NAMES = new Set(['visibility_seq', 'manifest_epoch']);
@@ -205,6 +208,12 @@ class GenUSearchMetadataStore {
             ORDER BY created_at, plan_id
             LIMIT 1
         `);
+        this._supersedeErrorReconciliationPlan = db.prepare(`
+            UPDATE gen_usearch_reconciliation_plans
+            SET state = 'SUPERSEDED', updated_at = ?
+            WHERE plan_id = ?
+              AND state = 'ERROR'
+        `);
         this._insertReconciliationPlan = db.prepare(`
             INSERT INTO gen_usearch_reconciliation_plans (
                 plan_id,
@@ -234,6 +243,20 @@ class GenUSearchMetadataStore {
             SELECT *
             FROM gen_usearch_chunk_heads
             WHERE chunk_id = ?
+        `);
+        this._listCurrentChunkIdentitySnapshot = db.prepare(`
+            SELECT
+                h.chunk_id,
+                h.current_version_id,
+                v.chunk_version_id,
+                v.slot_index,
+                v.content_hash,
+                v.state
+            FROM gen_usearch_chunk_heads h
+            LEFT JOIN gen_usearch_chunk_versions v
+              ON v.chunk_version_id = h.current_version_id
+            WHERE h.doc_id = ?
+            ORDER BY v.slot_index, h.chunk_id
         `);
         this._insertChunkHead = db.prepare(`
             INSERT INTO gen_usearch_chunk_heads (
@@ -343,6 +366,7 @@ class GenUSearchMetadataStore {
             this._getSequence,
             this._getManifestState,
             this._getChunkHead,
+            this._listCurrentChunkIdentitySnapshot,
             this._getChunkVersion,
             this._getRecovery,
             this._countQueryCoverage,
@@ -498,6 +522,19 @@ class GenUSearchMetadataStore {
                 const documentState = hasAmbiguity ? 'ERROR' : 'ADMITTED';
                 const indexState = hasAmbiguity ? 'INDEX_ERROR' : 'INDEX_LAGGING';
 
+                if (existing) {
+                    if (
+                        existing.plan_id !== plan.planId
+                        || existing.plan_digest !== plan.planDigest
+                    ) {
+                        throw codedError(
+                            'SOURCE_OBSERVATION_INVALID',
+                            `Conflicting reconciliation plan for ${plan.docId}@${plan.targetRevision}`
+                        );
+                    }
+                    return existing;
+                }
+
                 const oldChunkIds = new Set();
                 const freshChunkIds = new Set();
                 for (const operation of plan.operations) {
@@ -530,40 +567,28 @@ class GenUSearchMetadataStore {
                     }
                 }
 
-                if (existing) {
-                    if (
-                        existing.plan_id !== plan.planId
-                        || existing.plan_digest !== plan.planDigest
-                        || existing.state !== planState
-                    ) {
-                        throw codedError(
-                            'SOURCE_OBSERVATION_INVALID',
-                            `Conflicting reconciliation plan for ${plan.docId}@${plan.targetRevision}`
-                        );
-                    }
-                    const document = this._getDocument.get(plan.docId);
-                    if (
-                        !document
-                        || document.observed_source_digest !== plan.observedSourceDigest
-                        || document.observed_source_revision !== plan.observedSourceRevision
-                        || document.reconcile_target_revision !== plan.targetRevision
-                        || document.reconciliation_state !== documentState
-                        || document.index_state !== indexState
-                    ) {
-                        throw codedError(
-                            'SOURCE_OBSERVATION_INVALID',
-                            'Persisted reconciliation plan no longer matches document observation'
-                        );
-                    }
-                    return existing;
-                }
-
                 const openPlan = this._getOpenReconciliationPlanByDocument.get(plan.docId);
                 if (openPlan) {
-                    throw codedError(
-                        'SOURCE_OBSERVATION_INVALID',
-                        `Document "${plan.docId}" already has unresolved reconciliation plan ${openPlan.plan_id}`
-                    );
+                    if (
+                        openPlan.state === 'ERROR'
+                        && openPlan.target_revision !== plan.targetRevision
+                    ) {
+                        const superseded = this._supersedeErrorReconciliationPlan.run(
+                            now,
+                            openPlan.plan_id
+                        ).changes;
+                        if (superseded !== 1) {
+                            throw codedError(
+                                'SOURCE_OBSERVATION_INVALID',
+                                `Failed to supersede errored reconciliation plan ${openPlan.plan_id}`
+                            );
+                        }
+                    } else {
+                        throw codedError(
+                            'SOURCE_OBSERVATION_INVALID',
+                            `Document "${plan.docId}" already has unresolved reconciliation plan ${openPlan.plan_id}`
+                        );
+                    }
                 }
 
                 const changed = this._recordPlanObservation.run(
@@ -598,7 +623,7 @@ class GenUSearchMetadataStore {
                         plan.planId,
                         ordinal,
                         operation.kind,
-                        JSON.stringify(operation)
+                        stableStringify(operation)
                     );
                 });
 
@@ -1243,6 +1268,60 @@ class GenUSearchMetadataStore {
                 'retired_visibility_seq'
             )
         });
+    }
+
+    getCurrentChunkIdentitySnapshot(docId) {
+        const normalizedDocId = requireString(docId, 'docId');
+        const document = this._getDocument.get(normalizedDocId);
+        if (!document || document.state !== 'ACTIVE') {
+            throw codedError(
+                'DOCUMENT_IDENTITY_AMBIGUOUS',
+                `Active Gen-USearch document "${normalizedDocId}" is unavailable`
+            );
+        }
+
+        const rows = this._listCurrentChunkIdentitySnapshot.all(normalizedDocId);
+        const seenSlots = new Set();
+        return Object.freeze(rows.map((row, index) => {
+            if (
+                row.current_version_id == null
+                || row.chunk_version_id == null
+                || row.current_version_id !== row.chunk_version_id
+                || row.state !== 'ACTIVE'
+                || row.slot_index == null
+            ) {
+                throw codedError(
+                    'METADATA_INTEGRITY_FAILURE',
+                    `Chunk identity snapshot is incomplete for ${row.chunk_id}`
+                );
+            }
+            const slotBigInt = parseInteger(
+                row.slot_index,
+                `chunk identity slot_index[${index}]`
+            );
+            if (slotBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
+                throw codedError(
+                    'METADATA_INTEGRITY_FAILURE',
+                    `Chunk identity slot_index exceeds JavaScript safe range: ${slotBigInt}`
+                );
+            }
+            const slotIndex = Number(slotBigInt);
+            if (seenSlots.has(slotIndex)) {
+                throw codedError(
+                    'CHUNK_IDENTITY_AMBIGUOUS',
+                    `Document "${normalizedDocId}" has duplicate current slot_index ${slotIndex}`
+                );
+            }
+            seenSlots.add(slotIndex);
+            return Object.freeze({
+                chunkId: requireString(row.chunk_id, `chunk_id[${index}]`),
+                slotIndex,
+                contentHash: requireSha256(
+                    row.content_hash,
+                    `content_hash[${index}]`
+                )
+            });
+        }));
     }
 
     getChunkHead(chunkId) {

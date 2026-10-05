@@ -61,7 +61,7 @@ jobs:
         run: node --test tests/gen-usearch/g1/genUSearchMetadataStore.test.js
 
       - name: Run G1 stable chunk reconciliation acceptance
-        run: node --test tests/gen-usearch/g1/genUSearchReconciler.test.js
+        run: node --test tests/gen-usearch/g1/genUSearchReconciler.test.js tests/gen-usearch/g1/genUSearchReconciliationService.test.js
 
       - name: Regress existing Tag baseline metadata compatibility
         run: node --test tests/gen-usearch/g1/tagBaselineSchemaCompatibility.test.js
