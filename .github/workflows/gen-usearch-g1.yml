@@ -1,0 +1,47 @@
+name: Gen-USearch G1 Production
+
+on:
+  push:
+    branches:
+      - main
+      - codex/gen-usearch-g0-f2-upstream-main
+    paths:
+      - 'modules/knowledgeBase/schemaManager.js'
+      - 'modules/knowledgeBase/genUSearchMetadataStore.js'
+      - 'tests/gen-usearch/g1/**'
+      - 'tests/tagIndexGenerationalBaseline.test.js'
+      - '.github/workflows/gen-usearch-g1.yml'
+  pull_request:
+    paths:
+      - 'modules/knowledgeBase/schemaManager.js'
+      - 'modules/knowledgeBase/genUSearchMetadataStore.js'
+      - 'tests/gen-usearch/g1/**'
+      - 'tests/tagIndexGenerationalBaseline.test.js'
+      - '.github/workflows/gen-usearch-g1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  g1-metadata-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install narrow G1 SQLite dependencies
+        run: npm ci --prefix tests/gen-usearch/g1 --no-audit --no-fund
+
+      - name: Run G1 durable metadata acceptance
+        run: node --test tests/gen-usearch/g1/genUSearchMetadataStore.test.js
+
+      - name: Regress existing Tag generational baseline
+        env:
+          NODE_PATH: ${{ github.workspace }}/tests/gen-usearch/g1/node_modules
+        run: node tests/tagIndexGenerationalBaseline.test.js
