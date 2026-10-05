@@ -1,6 +1,6 @@
 # Gen-USearch G1 Production Implementation Contract R1
 
-Status: **FINAL_REVIEW_CANDIDATE**
+Status: **PASS**
 
 G1 implements the durable production foundation required by the frozen G0 R3.1 architecture. It does not activate the generational search engine.
 
@@ -48,3 +48,23 @@ G1 may pass only when:
 - independent adversarial review has unresolved P0 = 0 and P1 = 0.
 
 G1 PASS does not authorize G2, upstream merge, or Ready-for-Review.
+
+## Independent review closure
+
+Exact-head reviewed implementation: `cab92b0b6957a1ab359c5a8ddbfbb4897ce42e24`.
+
+Closed findings:
+
+- key64 Chunk delta failure semantics were not fail-atomic; fixed with finite-vector preflight, affected-key rollback snapshot, and a no-mutation failure regression;
+- crash durability could be disabled through an unused constructor option; the bypass was removed and WAL + FULL/EXTRA is now non-bypassable.
+
+The apparent direct-current-head publication bypass was classified as a deferred-stage boundary rather than an active runtime defect: G1 exposes the low-level MVCC handoff primitive, but stage-boundary tests prohibit any existing KnowledgeBase ingestion/search/serving code from wiring it before G2 authority.
+
+Final G1 independent review:
+
+```text
+unresolved P0 = 0
+unresolved P1 = 0
+G1 = PASS
+G2 = NOT AUTHORIZED
+```
