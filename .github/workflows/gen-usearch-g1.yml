@@ -6,6 +6,7 @@ on:
       - main
       - codex/gen-usearch-g0-f2-upstream-main
     paths:
+      - 'contracts/gen-usearch/g1/**'
       - 'KnowledgeBaseManager.js'
       - 'config.env.example'
       - 'modules/knowledgeBase/indexRepository.js'
@@ -22,6 +23,7 @@ on:
       - '.github/workflows/gen-usearch-g1.yml'
   pull_request:
     paths:
+      - 'contracts/gen-usearch/g1/**'
       - 'KnowledgeBaseManager.js'
       - 'config.env.example'
       - 'modules/knowledgeBase/indexRepository.js'
