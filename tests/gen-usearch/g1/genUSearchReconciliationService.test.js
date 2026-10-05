@@ -179,11 +179,9 @@ test('document URI changes while reading source make the reconciliation plan sta
         });
 
         const pendingPlan = service.planCurrentSource({ docId: 'doc-1' });
-        const seq = fixture.store.nextVisibilitySeq();
         fixture.store.moveDocument({
             docId: 'doc-1',
-            uri: 'diary/moved.txt',
-            visibilitySeq: seq
+            uri: 'diary/moved.txt'
         });
         releaseSource(committedView([]));
 
