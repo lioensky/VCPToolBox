@@ -12,6 +12,7 @@ G2 may implement only:
 - canonical runtime/generation source identity for Gen0;
 - the sole production writer for `gen_usearch_vector_coverage` MEMTABLE facts;
 - runtime bootstrap cleanup of stale MEMTABLE coverage before any new physical admission;
+- startup rehydration of durable ACTIVE current vectors from exact recovery bytes into one fingerprint-bound Gen0 MemTable, followed by atomic MEMTABLE coverage publication;
 - fail-closed staging order: metadata VECTOR_STAGED -> physical MemTable acceptance -> durable QUERY_VISIBLE coverage;
 - safe rollback/hiding when physical admission or coverage publication fails;
 - explicit sealing of an ACTIVE MemTable into `SEALED_QUERY_VISIBLE`;
@@ -52,7 +53,13 @@ G2 may implement only:
     A writer may create each `gen0:<runtime-id>:<generation>` source identity at most once. Detached or duplicate MemTables cannot manufacture or mutate authoritative coverage.
 
 11. **One database has one live G2 physical writer in-process.**
-    A second writer instance for the same SQLite connection is rejected so it cannot repeat bootstrap and erase live MEMTABLE coverage.
+    A second writer for the same underlying SQLite database file is rejected even when opened through a different connection, so it cannot repeat bootstrap and erase live MEMTABLE coverage.
+
+12. **Startup recovery is all-or-nothing for authority.**
+    Current heads may be rehydrated only when every row is ACTIVE, has exact RECOVERY_REQUIRED bytes, and matches the target MemTable embedding fingerprint. Mixed or incomplete recovery input fails before coverage publication. Coverage is batch-published only after every physical add has exact native membership proof.
+
+13. **Native membership, not JavaScript bookkeeping, proves physical acceptance.**
+    A Gen0 add/remove is authoritative only when the native key64 revision advances exactly once and exact `containsKey64()` confirms the expected post-state. JS-side sets alone cannot manufacture coverage.
 
 ## Explicitly deferred beyond G2
 
@@ -79,6 +86,10 @@ G2 may pass only when:
 - coverage cannot be forged for a vector absent from the bound MemTable;
 - coverage cannot be admitted for an unknown or non-staged vector version;
 - physical admission failure leaves no QUERY_VISIBLE coverage;
+- startup recovery either restores every eligible current vector and batch-publishes coverage or fails closed without new authoritative coverage;
+- mixed embedding fingerprints cannot be recovered into one Gen0 MemTable;
+- two connections to the same database file cannot obtain concurrent G2 writer authority;
+- native revision changes without exact key membership cannot manufacture coverage;
 - durable coverage publication enables the existing G1 MVCC CAS path;
 - removal order cannot leave a false coverage fact;
 - G2 stage-boundary tests prove segment/manifest/query/GC/cutover remain unwired;
