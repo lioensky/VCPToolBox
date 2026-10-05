@@ -34,7 +34,7 @@
       "const": "G0"
     },
     "authority_status": {
-      "const": "FREEZE_CANDIDATE"
+      "const": "FROZEN"
     },
     "required_contract_ids": {
       "const": [
