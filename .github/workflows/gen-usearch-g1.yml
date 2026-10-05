@@ -19,6 +19,10 @@ on:
   pull_request:
     paths:
       - 'modules/knowledgeBase/schemaManager.js'
+      - 'rust-vexus-lite/Cargo.lock'
+      - 'rust-vexus-lite/Cargo.toml'
+      - 'rust-vexus-lite/index.d.ts'
+      - 'rust-vexus-lite/src/lib.rs'
       - 'modules/knowledgeBase/genUSearchMetadataStore.js'
       - 'modules/knowledgeBase/genUSearchReconciler.js'
       - 'modules/knowledgeBase/genUSearchReconciliationService.js'
