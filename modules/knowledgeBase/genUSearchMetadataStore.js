@@ -97,7 +97,6 @@ class GenUSearchMetadataStore {
         this.now = typeof options.now === 'function'
             ? options.now
             : () => Date.now();
-        this.requireCrashDurability = options.requireCrashDurability !== false;
 
         this._getAllocator = db.prepare(`
             SELECT high_water
@@ -1108,8 +1107,6 @@ class GenUSearchMetadataStore {
     }
 
     assertCrashDurableProfile() {
-        if (!this.requireCrashDurability) return this._durabilityProfile();
-
         const profile = this._durabilityProfile();
         if (
             profile.journalMode !== 'wal'

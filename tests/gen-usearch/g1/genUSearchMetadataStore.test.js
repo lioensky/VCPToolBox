@@ -166,6 +166,17 @@ test('critical writes fail closed unless SQLite is WAL + FULL/EXTRA', () => {
         );
         assert.equal(fixture.store.readAllocatorHighWater(), '0');
 
+        const bypassAttempt = new GenUSearchMetadataStore({
+            db: fixture.db,
+            now: () => 1500,
+            requireCrashDurability: false
+        });
+        assert.throws(
+            () => bypassAttempt.allocateVectorIds(1),
+            error => error?.code === 'UNSUPPORTED_DURABILITY_PROFILE'
+        );
+        assert.equal(bypassAttempt.readAllocatorHighWater(), '0');
+
         fixture.db.pragma('synchronous = FULL');
         assert.deepEqual(fixture.store.allocateVectorIds(1), ['1']);
     } finally {
