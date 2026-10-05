@@ -559,7 +559,7 @@ class GenUSearchSegmentPublisher {
         return artifactPath;
     }
 
-    _readBuildRows(vectorIds, memtable) {
+    _readBuildRows(vectorIds, source) {
         return vectorIds.map(vectorId => {
             const parsed = canonicalVectorId(vectorId);
             const row = this._getRecovery.get(parsed.bigint);
@@ -571,7 +571,7 @@ class GenUSearchSegmentPublisher {
                 || !['RECOVERY_REQUIRED', 'SEGMENT_COVERED', 'RECOVERY_RECLAIMABLE'].includes(row.recovery_state)
                 || !row.embedding_fingerprint
                 || row.embedding_fingerprint !== row.recovery_fingerprint
-                || row.embedding_fingerprint !== memtable.embeddingFingerprint
+                || row.embedding_fingerprint !== source.embeddingFingerprint
             ) {
                 throw codedError(
                     'RECOVERY_ACTIVE_VECTOR_UNRECOVERABLE',
@@ -581,12 +581,12 @@ class GenUSearchSegmentPublisher {
             return {
                 vectorId,
                 vectorIdBigInt: parsed.bigint,
-                vector: recoveryBlobToVector(row.vector_blob, memtable.dimension)
+                vector: recoveryBlobToVector(row.vector_blob, source.dimension)
             };
         });
     }
 
-    _ensureBuildingRecord(segmentId, memtable, vectorCount) {
+    _ensureBuildingRecord(segmentId, source, vectorCount) {
         const existing = this._getSegment.get(segmentId);
         if (existing) return existing;
 
@@ -594,7 +594,7 @@ class GenUSearchSegmentPublisher {
         try {
             this._insertBuildingSegment.run(
                 segmentId,
-                memtable.embeddingFingerprint,
+                source.embeddingFingerprint,
                 vectorCount,
                 now
             );
@@ -606,7 +606,7 @@ class GenUSearchSegmentPublisher {
         const created = this._getSegment.get(segmentId);
         if (
             !created
-            || created.embedding_fingerprint !== memtable.embeddingFingerprint
+            || created.embedding_fingerprint !== source.embeddingFingerprint
             || BigInt(created.vector_count) !== BigInt(vectorCount)
         ) {
             throw codedError(
@@ -617,11 +617,11 @@ class GenUSearchSegmentPublisher {
         return created;
     }
 
-    _buildAndVerifyArtifact(segmentId, memtable, vectorIds) {
+    _buildAndVerifyArtifact(segmentId, source, vectorIds) {
         const artifactPath = this._artifactPath(segmentId);
-        const rows = this._readBuildRows(vectorIds, memtable);
+        const rows = this._readBuildRows(vectorIds, source);
         const index = new VexusIndex(
-            memtable.dimension,
+            source.dimension,
             Math.max(16, rows.length + 1)
         );
         for (const row of rows) {
@@ -652,7 +652,7 @@ class GenUSearchSegmentPublisher {
         const loaded = VexusIndex.load(
             artifactPath,
             null,
-            memtable.dimension,
+            source.dimension,
             Math.max(16, rows.length + 1)
         );
         const stats = loaded.stats();
@@ -680,12 +680,12 @@ class GenUSearchSegmentPublisher {
         };
     }
 
-    _verifyExistingArtifact(segment, memtable, vectorIds) {
+    _verifyExistingArtifact(segment, source, vectorIds) {
         if (
             !segment.artifact_path
             || !segment.artifact_digest
             || !SHA256_RE.test(segment.artifact_digest)
-            || segment.embedding_fingerprint !== memtable.embeddingFingerprint
+            || segment.embedding_fingerprint !== source.embeddingFingerprint
             || BigInt(segment.vector_count) !== BigInt(vectorIds.length)
             || !fs.existsSync(segment.artifact_path)
             || !fs.statSync(segment.artifact_path).isFile()
@@ -704,7 +704,7 @@ class GenUSearchSegmentPublisher {
         const loaded = VexusIndex.load(
             segment.artifact_path,
             null,
-            memtable.dimension,
+            source.dimension,
             Math.max(16, vectorIds.length + 1)
         );
         if (Number(loaded.stats().totalVectors) !== vectorIds.length) {
