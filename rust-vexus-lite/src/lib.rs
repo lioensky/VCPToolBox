@@ -665,6 +665,35 @@ impl VexusIndex {
         })
     }
 
+    /// Gen-USearch signed-int64-safe 原子 Chunk 差分。
+    /// JS 侧全部 ID 使用规范十进制字符串，Rust 解析后复用同一 ChunkIndexDeltaTask，
+    /// 因此删除、容量预留和全部 upsert 仍在同一写锁内完成。
+    #[napi]
+    pub fn apply_chunk_delta_key64(
+        &self,
+        remove_ids: Vec<String>,
+        upsert_ids: Vec<String>,
+        upsert_vectors: Float32Array,
+    ) -> Result<AsyncTask<ChunkIndexDeltaTask>> {
+        let remove_ids = remove_ids
+            .iter()
+            .map(|id| parse_gen_usearch_key(id).map(|key| key as i64))
+            .collect::<Result<Vec<_>>>()?;
+        let upsert_ids = upsert_ids
+            .iter()
+            .map(|id| parse_gen_usearch_key(id).map(|key| key as i64))
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(AsyncTask::new(ChunkIndexDeltaTask {
+            index: self.index.clone(),
+            content_revision: self.content_revision.clone(),
+            dimensions: self.dimensions,
+            remove_ids,
+            upsert_ids,
+            upsert_vectors: upsert_vectors.to_vec(),
+        }))
+    }
+
     /// 返回当前索引内容代际。
     #[napi(getter)]
     pub fn revision(&self) -> i64 {
