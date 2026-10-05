@@ -1,0 +1,8 @@
+{
+  "name": "gen-usearch-g2-tests",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "better-sqlite3": "12.4.1"
+  }
+}
