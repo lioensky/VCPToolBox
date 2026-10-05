@@ -29,7 +29,7 @@ test('G2 boundary is frozen and limits authority to Gen0 MEMTABLE coverage', () 
     }
 });
 
-test('only the G2 physical coverage writer mutates vector coverage in production code', () => {
+test('G2 retains exclusive MEMTABLE coverage authority while later G3 may add SEGMENT coverage', () => {
     const modulesDir = path.join(root, 'modules/knowledgeBase');
     const candidates = fs.readdirSync(modulesDir)
         .filter(name => name.endsWith('.js'))
@@ -40,6 +40,12 @@ test('only the G2 physical coverage writer mutates vector coverage in production
         const source = read(rel);
         if (rel === 'modules/knowledgeBase/genUSearchPhysicalCoverageWriter.js') {
             assert.match(source, mutation);
+            assert.match(source, /'MEMTABLE'/);
+            assert.doesNotMatch(source, /VALUES\s*\([^)]*'SEGMENT'/s);
+        } else if (rel === 'modules/knowledgeBase/genUSearchSegmentPublisher.js') {
+            assert.match(source, mutation);
+            assert.match(source, /'SEGMENT'/);
+            assert.doesNotMatch(source, /VALUES\s*\([^)]*'MEMTABLE'/s);
         } else {
             assert.doesNotMatch(source, mutation, rel);
         }
