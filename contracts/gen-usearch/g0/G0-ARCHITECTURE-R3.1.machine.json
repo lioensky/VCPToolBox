@@ -1,0 +1,393 @@
+{
+  "architecture_version": "R3.1",
+  "contract_version": "3.1.0-g0-final-r1",
+  "gate": "G0",
+  "status": "FREEZE_CANDIDATE",
+  "authority_planes": {
+    "canonical_source": "content_authority",
+    "sqlite": "identity_and_lifecycle_authority",
+    "sqlite_manifest": "physical_topology_authority",
+    "query_read_view_metadata": "logical_query_authority",
+    "pinned_memtables_and_segments": "physical_candidate_sources",
+    "tombstone_cache": "derived_rebuildable_state"
+  },
+  "clocks": {
+    "visibility_seq": "logical_visibility_order",
+    "manifest_epoch": "physical_topology_order",
+    "independence_required": true
+  },
+  "query_read_view_required_fields": [
+    "read_view_id",
+    "visibility_seq",
+    "metadata_snapshot",
+    "manifest_snapshot",
+    "memtable_generation_set",
+    "runtime_fence",
+    "created_at",
+    "deadline"
+  ],
+  "contracts": [
+    {
+      "id": "C1",
+      "name": "Chunk Identity & Reconciliation",
+      "authority": "identity planning only; no lifecycle mutation"
+    },
+    {
+      "id": "C2",
+      "name": "Document / Source Identity",
+      "authority": "stable document identity and committed-source observation"
+    },
+    {
+      "id": "C3",
+      "name": "Vector Identity Allocation",
+      "authority": "signed-int64-safe, durable monotonic, never reuse"
+    },
+    {
+      "id": "C4",
+      "name": "Vector MVCC & Current Head",
+      "authority": "SQLite CAS is logical publication authority"
+    },
+    {
+      "id": "C5",
+      "name": "Metadata / Segment Integrity",
+      "authority": "metadata and durable segment integrity"
+    },
+    {
+      "id": "C6",
+      "name": "Query / Flush / Compaction / GC",
+      "authority": "snapshot correctness and physical/logical separation"
+    },
+    {
+      "id": "C7",
+      "name": "Runtime / Recovery / Ownership",
+      "authority": "single serving owner, crash recovery and durable transaction fencing"
+    },
+    {
+      "id": "C8",
+      "name": "Engine Modes / Shadow Isolation",
+      "authority": "legacy-shadow-active transition and no silent fallback"
+    }
+  ],
+  "requirements": [
+    {
+      "id": "G0-ARCH-001",
+      "contract": "C2",
+      "severity": "P0_CORRECTNESS",
+      "rule": "doc_uri_change_does_not_change_doc_id",
+      "invariant_id": "G0-XINV-001"
+    },
+    {
+      "id": "G0-ARCH-002",
+      "contract": "C1",
+      "severity": "P0_CORRECTNESS",
+      "rule": "slot_index_change_does_not_imply_chunk_id_change",
+      "invariant_id": "G0-XINV-002"
+    },
+    {
+      "id": "G0-ARCH-003",
+      "contract": "C4",
+      "severity": "P0_CORRECTNESS",
+      "rule": "current_head_change_requires_mvcc_sqlite_cas",
+      "invariant_id": "G0-XINV-003"
+    },
+    {
+      "id": "G0-ARCH-004",
+      "contract": "C4",
+      "severity": "P0_CORRECTNESS",
+      "rule": "logical_visibility_change_increments_visibility_seq",
+      "invariant_id": "G0-XINV-004"
+    },
+    {
+      "id": "G0-ARCH-005",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "physical_topology_change_increments_manifest_epoch",
+      "invariant_id": "G0-XINV-005"
+    },
+    {
+      "id": "G0-ARCH-006",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "visibility_seq_and_manifest_epoch_are_independent",
+      "invariant_id": "G0-XINV-006"
+    },
+    {
+      "id": "G0-ARCH-007",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "read_view_current_vectors_have_physical_coverage",
+      "invariant_id": "G0-XINV-007"
+    },
+    {
+      "id": "G0-ARCH-008",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "flush_handoff_allows_overlap_but_forbids_gap",
+      "invariant_id": "G0-XINV-008"
+    },
+    {
+      "id": "G0-ARCH-009",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "global_tombstone_cache_cannot_invalidate_snapshot_current_vector",
+      "invariant_id": "G0-XINV-009"
+    },
+    {
+      "id": "G0-ARCH-010",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "compaction_drops_only_machine_certified_gc_eligible_vectors",
+      "invariant_id": "G0-XINV-010"
+    },
+    {
+      "id": "G0-ARCH-011",
+      "contract": "C5",
+      "severity": "P0_CORRECTNESS",
+      "rule": "manifest_references_only_verified_finalized_durable_segments",
+      "invariant_id": "G0-XINV-011"
+    },
+    {
+      "id": "G0-ARCH-012",
+      "contract": "C4",
+      "severity": "P0_CORRECTNESS",
+      "rule": "volatile_current_vector_requires_exact_recovery_material",
+      "invariant_id": "G0-XINV-012"
+    },
+    {
+      "id": "G0-ARCH-013",
+      "contract": "C2",
+      "severity": "P0_CORRECTNESS",
+      "rule": "source_observation_implies_durable_reconciliation_intent",
+      "invariant_id": "G0-XINV-013"
+    },
+    {
+      "id": "G0-ARCH-014",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "query_pins_release_only_after_worker_quiescence",
+      "invariant_id": "G0-XINV-014"
+    },
+    {
+      "id": "G0-ARCH-015",
+      "contract": "C7",
+      "severity": "P0_CORRECTNESS",
+      "rule": "serving_ownership_is_exclusive_and_non_preemptive_in_r1",
+      "invariant_id": "G0-XINV-015"
+    },
+    {
+      "id": "G0-ARCH-016",
+      "contract": "C6",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "read_view_acquisition_is_all_or_nothing",
+      "invariant_id": "G0-XINV-016"
+    },
+    {
+      "id": "G0-ARCH-017",
+      "contract": "C8",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "shadow_failure_does_not_block_canonical_source_write",
+      "invariant_id": "G0-XINV-017"
+    },
+    {
+      "id": "G0-ARCH-018",
+      "contract": "C8",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "active_mode_does_not_silently_fallback_to_legacy",
+      "invariant_id": "G0-XINV-018"
+    },
+    {
+      "id": "G0-ARCH-019",
+      "contract": "C3",
+      "severity": "P0_CORRECTNESS",
+      "rule": "vector_id_decimal_string_preserves_signed_int64_identity",
+      "invariant_id": "G0-XINV-019"
+    },
+    {
+      "id": "G0-ARCH-020",
+      "contract": "C7",
+      "severity": "P0_CORRECTNESS",
+      "rule": "query_response_requires_current_runtime_fence",
+      "invariant_id": "G0-XINV-020"
+    },
+    {
+      "id": "G0-ARCH-021",
+      "contract": "C3",
+      "severity": "P0_CORRECTNESS",
+      "rule": "vector_allocator_high_water_is_durable_monotonic_and_never_reuses",
+      "invariant_id": "G0-XINV-021"
+    },
+    {
+      "id": "G0-ARCH-022",
+      "contract": "C7",
+      "severity": "P0_CORRECTNESS",
+      "rule": "recovery_material_releases_only_after_durable_segment_coverage",
+      "invariant_id": "G0-XINV-022"
+    },
+    {
+      "id": "G0-ARCH-023",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "compaction_snapshot_binds_manifest_epoch_visibility_seq_segment_set_and_gc_cut",
+      "invariant_id": "G0-XINV-023"
+    },
+    {
+      "id": "G0-ARCH-024",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "physical_presence_does_not_imply_logical_visibility",
+      "invariant_id": "G0-XINV-024"
+    },
+    {
+      "id": "G0-ARCH-025",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "multiple_physical_copies_dedup_to_one_logical_candidate",
+      "invariant_id": "G0-XINV-025"
+    },
+    {
+      "id": "G0-ARCH-026",
+      "contract": "C6",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "query_read_view_is_bounded_and_expiry_requests_cancellation_not_release",
+      "invariant_id": "G0-XINV-026"
+    },
+    {
+      "id": "G0-ARCH-027",
+      "contract": "C2",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "indexing_accepts_only_committed_complete_source_views",
+      "invariant_id": "G0-XINV-027"
+    },
+    {
+      "id": "G0-ARCH-028",
+      "contract": "C1",
+      "severity": "P1_ARCHITECTURE",
+      "rule": "reconciler_is_identity_planning_only_and_cannot_mutate_lifecycle",
+      "invariant_id": "G0-XINV-028"
+    },
+    {
+      "id": "G0-ARCH-029",
+      "contract": "C6",
+      "severity": "P0_CORRECTNESS",
+      "rule": "query_read_view_contains_coherent_metadata_manifest_memtable_and_fence_snapshot",
+      "invariant_id": "G0-XINV-029"
+    },
+    {
+      "id": "G0-ARCH-030",
+      "contract": "C7",
+      "severity": "P0_CORRECTNESS",
+      "rule": "critical_transactions_are_crash_durable_before_ack_or_dependent_action",
+      "invariant_id": "G0-XINV-030"
+    },
+    {
+      "id": "G0-ARCH-031",
+      "contract": "C2",
+      "severity": "P0_CORRECTNESS",
+      "rule": "missing_source_observation_does_not_imply_document_delete",
+      "invariant_id": "G0-XINV-031"
+    }
+  ],
+  "amendments": [
+    {
+      "id": "A01",
+      "rule": "source_observation_and_reconciliation_intent_commit_together_durably",
+      "implements_requirement_ids": [
+        "G0-ARCH-013",
+        "G0-ARCH-030"
+      ]
+    },
+    {
+      "id": "A02",
+      "rule": "index_only_committed_complete_source_view_and_missing_source_is_not_delete",
+      "implements_requirement_ids": [
+        "G0-ARCH-027",
+        "G0-ARCH-031"
+      ]
+    },
+    {
+      "id": "A03",
+      "rule": "critical_sqlite_transactions_are_crash_durable_before_ack",
+      "implements_requirement_ids": [
+        "G0-ARCH-003",
+        "G0-ARCH-021",
+        "G0-ARCH-030"
+      ]
+    },
+    {
+      "id": "A04",
+      "rule": "deadline_requests_cancellation_but_does_not_release_query_pins",
+      "implements_requirement_ids": [
+        "G0-ARCH-014",
+        "G0-ARCH-026"
+      ]
+    },
+    {
+      "id": "A05",
+      "rule": "query_pins_release_only_after_worker_quiescence",
+      "implements_requirement_ids": [
+        "G0-ARCH-014"
+      ]
+    },
+    {
+      "id": "A06",
+      "rule": "serving_ownership_is_exclusive_and_non_preemptive_in_r1",
+      "implements_requirement_ids": [
+        "G0-ARCH-015"
+      ]
+    },
+    {
+      "id": "A07",
+      "rule": "graceful_serving_transfer_requires_drain_before_release",
+      "implements_requirement_ids": [
+        "G0-ARCH-015"
+      ]
+    },
+    {
+      "id": "A08",
+      "rule": "crash_takeover_requires_proof_old_runtime_cannot_execute",
+      "implements_requirement_ids": [
+        "G0-ARCH-015",
+        "G0-ARCH-020"
+      ]
+    },
+    {
+      "id": "A09",
+      "rule": "read_view_acquisition_is_all_or_nothing_with_provisional_cleanup",
+      "implements_requirement_ids": [
+        "G0-ARCH-016",
+        "G0-ARCH-029"
+      ]
+    },
+    {
+      "id": "A10",
+      "rule": "provisional_acquisition_pins_participate_in_gc_safety",
+      "implements_requirement_ids": [
+        "G0-ARCH-014",
+        "G0-ARCH-022",
+        "G0-ARCH-029"
+      ]
+    }
+  ],
+  "final_checks": [
+    {
+      "id": "FINAL-01",
+      "name": "Query Acquisition × MVCC"
+    },
+    {
+      "id": "FINAL-02",
+      "name": "MemTable Rotate × Flush"
+    },
+    {
+      "id": "FINAL-03",
+      "name": "Compaction × Future Logical Publication"
+    },
+    {
+      "id": "FINAL-04",
+      "name": "Crash Recovery"
+    },
+    {
+      "id": "FINAL-05",
+      "name": "GC × Reader/Recovery Lifetime"
+    }
+  ]
+}
