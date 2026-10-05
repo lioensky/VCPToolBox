@@ -1,6 +1,6 @@
 # Gen-USearch G2 Physical Layer Contract R1
 
-Status: **BOUNDARY_FROZEN / IMPLEMENTATION_ACTIVE**
+Status: **PASS**
 
 G2 authorizes the first production physical layer behind the frozen G0 contract and the G1 durable metadata/MVCC foundation.
 
@@ -104,3 +104,25 @@ G2 may pass only when:
 - independent adversarial review has unresolved P0 = 0 and P1 = 0.
 
 G2 PASS does not authorize G3, upstream merge, Ready-for-Review, or engine activation.
+
+## Independent review closure
+
+Exact-head reviewed implementation: `6284334e635687dcff51a3b6d2df4914adde0949`.
+
+Closed findings:
+
+- duplicate G2 writer authority could be acquired through separate SQLite connections to the same database file; authority is now bound to underlying file identity and rejects symlink/hard-link aliases;
+- JavaScript bookkeeping and native revision alone could falsely attest physical presence; authoritative add/remove now requires exact native `containsKey64()` post-state and an authentic `rust-vexus-lite.VexusIndex` instance;
+- startup ACTIVE-current recovery existed outside the frozen G2 contract and lacked acceptance coverage; it is now explicitly in scope and tested for complete recovery, incomplete recovery fail-closed, and mixed-fingerprint rejection before mutation;
+- bootstrap, single publication, batch recovery publication, and hide trusted SQLite statement success without verifying authority postconditions; all four now read back their required post-state inside the same transaction and fail closed on silent trigger ignore/rewrite;
+- writer identity based on connection/path could be split by hard-link aliases; device/inode identity is now authoritative when available;
+- failed writer construction, forged source identities, removal metadata checks, embedding fingerprint isolation, active-generation handoff, and writer-only MemTable mutation authority are covered by exact G2 regressions.
+
+Final G2 independent review:
+
+```text
+unresolved P0 = 0
+unresolved P1 = 0
+G2 = PASS
+G3 = NOT AUTHORIZED
+```
