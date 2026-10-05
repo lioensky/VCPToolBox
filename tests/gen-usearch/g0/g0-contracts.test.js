@@ -128,6 +128,8 @@ test('architecture traceability is exact and amendments are fully covered', () =
     traceability.rows.map(x => x.architecture_requirement_id),
     lock.required_architecture_requirement_ids
   );
+  assert.deepEqual(architecture.amendments.map(x => x.id), lock.required_amendment_ids);
+  assert.deepEqual(traceability.amendment_coverage.map(x => x.amendment_id), lock.required_amendment_ids);
   assert.equal(architecture.requirements.length, 31);
   assert.equal(registry.invariants.length, 31);
   assert.equal(invariantFixtures.vectors.length, 62);
@@ -165,6 +167,29 @@ test('read-view transition guards execute', () => {
     {ok:true}
   );
   assert.equal(verifier.validateTransition(registry,'read_view_state','ACTIVE','RELEASED',{}).ok, false);
+});
+
+test('allocator admits zero initial high-water and read-view expiry permits safe post-quiescence release', () => {
+  assert.deepEqual(
+    verifier.validateAllocatorHistory({
+      durable_high_water_before:'0',
+      allocated_ids:['1','2'],
+      durable_high_water_after:'2',
+      restart_next_id:'3'
+    }),
+    {ok:true}
+  );
+  assert.deepEqual(
+    verifier.validateBoundedReadView({
+      created_at_ms:'1000',
+      deadline_ms:'2000',
+      now_ms:'2500',
+      state:'RELEASED',
+      worker_quiescent:true,
+      pins_released:true
+    }),
+    {ok:true}
+  );
 });
 
 test('GC certificate starts at RETIRED and cannot self-certify from GC_ELIGIBLE', () => {
