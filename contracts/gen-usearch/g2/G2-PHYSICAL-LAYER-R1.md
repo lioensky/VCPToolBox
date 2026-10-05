@@ -42,6 +42,12 @@ G2 may implement only:
    `ACTIVE -> SEALED_QUERY_VISIBLE`.
    G2 does not authorize later flush/segment states.
 
+8. **Embedding spaces never mix.**
+   Each MemTable has one immutable embedding fingerprint. A staged vector may enter that MemTable only when its durable metadata fingerprint matches exactly, even when dimensions are equal.
+
+9. **Only one ACTIVE generation may receive writes per physical writer.**
+   A later Gen0 generation may begin admission only after the previously bound ACTIVE MemTable has transitioned to `SEALED_QUERY_VISIBLE`.
+
 ## Explicitly deferred beyond G2
 
 G2 does **not** authorize:
