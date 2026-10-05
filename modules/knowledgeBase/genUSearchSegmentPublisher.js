@@ -732,23 +732,23 @@ class GenUSearchSegmentPublisher {
 
     publishSealedMemTable(options = {}) {
         this.assertCrashDurableProfile();
-        const memtable = options.memtable;
-        const vectorIds = this._assertSealedMemTable(memtable);
+        const source = this._assertSealedMemTable(options.memtable);
+        const vectorIds = [...source.vectorIds];
         const expectedEpoch = canonicalEpoch(
             options.expectedManifestEpoch,
             'expectedManifestEpoch'
         );
-        const segmentId = this._segmentIdentity(memtable, vectorIds);
+        const segmentId = this._segmentIdentity(source);
         let segment = this._ensureBuildingRecord(
             segmentId,
-            memtable,
+            source,
             vectorIds.length
         );
 
         if (segment.state === 'PUBLISHED') {
             const verified = this._verifyExistingArtifact(
                 segment,
-                memtable,
+                source,
                 vectorIds
             );
             const epoch = this._getPublishedManifestEpochForSegment
@@ -759,15 +759,11 @@ class GenUSearchSegmentPublisher {
                     'PUBLISHED segment is absent from manifest history'
                 );
             }
-            const members = this._listManifestSegments
-                .all(epoch)
-                .map(row => row.segment_id);
-            if (!members.includes(segmentId)) {
-                throw codedError(
-                    'RECOVERY_MANIFEST_INVALID',
-                    'PUBLISHED segment is absent from recorded manifest set'
-                );
-            }
+            this._verifyPublishedTopology(
+                segmentId,
+                vectorIds,
+                epoch
+            );
             return Object.freeze({
                 segmentId,
                 manifestEpoch: epoch.toString(),
@@ -782,7 +778,7 @@ class GenUSearchSegmentPublisher {
         if (segment.state === 'BUILDING') {
             receipt = this._buildAndVerifyArtifact(
                 segmentId,
-                memtable,
+                source,
                 vectorIds
             );
             const now = BigInt(this.now());
@@ -794,7 +790,7 @@ class GenUSearchSegmentPublisher {
         } else if (segment.state === 'FINALIZED_DURABLE') {
             receipt = this._verifyExistingArtifact(
                 segment,
-                memtable,
+                source,
                 vectorIds
             );
         } else {
@@ -804,17 +800,19 @@ class GenUSearchSegmentPublisher {
             );
         }
 
-        // Re-verify final bytes immediately before topology publication.
+        // Re-verify final bytes and the current manifest's durable members
+        // immediately before topology publication.
         receipt = this._verifyExistingArtifact(
             this._getSegment.get(segmentId),
-            memtable,
+            source,
             vectorIds
         );
+        this._assertManifestArtifactSet(expectedEpoch);
 
         const publication = this._publishTransaction({
             ...receipt,
             expectedEpoch,
-            embeddingFingerprint: memtable.embeddingFingerprint,
+            embeddingFingerprint: source.embeddingFingerprint,
             now: BigInt(this.now())
         });
 
