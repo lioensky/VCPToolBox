@@ -415,6 +415,70 @@ test('staged vectors are not logically visible until physical coverage exists', 
     }
 });
 
+test('source reconciliation authority blocks stale or premature current-head publication', () => {
+    const fixture = createFixture();
+    try {
+        const stale = createStagedVersion(fixture, {
+            sourceRevision: 'rev-1',
+            contentHash: '9'.repeat(64)
+        });
+        publishCoverage(fixture, stale, 'M-stale');
+
+        fixture.store.recordSourceObservation({
+            docId: 'doc-mvcc',
+            digest: 'digest-rev-2',
+            revision: 'rev-2'
+        });
+
+        assert.throws(
+            () => fixture.store.publishCurrentHead({
+                chunkId: 'chunk-mvcc',
+                chunkVersionId: stale.chunk_version_id,
+                expectedCurrentVersionId: null
+            }),
+            error => error?.code === 'STALE_VECTOR_PUBLICATION'
+        );
+        assert.equal(fixture.store.readSequence('visibility_seq'), '0');
+        assert.equal(
+            fixture.store.getChunkVersion(stale.chunk_version_id).state,
+            'VECTOR_STAGED'
+        );
+
+        const currentRevision = createStagedVersion(fixture, {
+            sourceRevision: 'rev-2',
+            contentHash: '8'.repeat(64),
+            embeddingFingerprint: 'embed-v2',
+            vectorBlob: new Float32Array([4, 3, 2, 1])
+        });
+        publishCoverage(fixture, currentRevision, 'M-current');
+
+        assert.throws(
+            () => fixture.store.publishCurrentHead({
+                chunkId: 'chunk-mvcc',
+                chunkVersionId: currentRevision.chunk_version_id,
+                expectedCurrentVersionId: null
+            }),
+            error => error?.code === 'STALE_VECTOR_PUBLICATION'
+        );
+
+        fixture.db.prepare(`
+            UPDATE gen_usearch_documents
+            SET reconciliation_state = 'ADMITTED'
+            WHERE doc_id = 'doc-mvcc'
+        `).run();
+
+        const published = fixture.store.publishCurrentHead({
+            chunkId: 'chunk-mvcc',
+            chunkVersionId: currentRevision.chunk_version_id,
+            expectedCurrentVersionId: null
+        });
+        assert.equal(published.currentVersionId, currentRevision.chunk_version_id);
+        assert.equal(published.visibilitySeq, '1');
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('current-head publication retires the old ACTIVE version in the same visibility commit', () => {
     const fixture = createFixture();
     try {
