@@ -434,6 +434,7 @@ const GEN_USEARCH_SCHEMA_SQL = `
         artifact_path TEXT,
         artifact_digest TEXT,
         embedding_fingerprint TEXT NOT NULL,
+        dimension INTEGER NOT NULL CHECK(dimension > 0),
         vector_count INTEGER NOT NULL DEFAULT 0 CHECK(vector_count >= 0),
         created_at INTEGER NOT NULL,
         finalized_at INTEGER,
@@ -604,7 +605,8 @@ const POST_MIGRATION_INDEX_SQL = `
 
 const GEN_USEARCH_ADDITIVE_MIGRATIONS = Object.freeze([
     ['gen_usearch_reconciliation_plans', 'base_document_uri', 'TEXT'],
-    ['gen_usearch_reconciliation_plans', 'base_identity_digest', 'TEXT']
+    ['gen_usearch_reconciliation_plans', 'base_identity_digest', 'TEXT'],
+    ['gen_usearch_segments', 'dimension', 'INTEGER CHECK(dimension IS NULL OR dimension > 0)']
 ]);
 
 const ADDITIVE_MIGRATIONS = Object.freeze([

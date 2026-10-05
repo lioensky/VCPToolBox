@@ -83,6 +83,9 @@ G3 may implement only:
 20. **Idempotent retry revalidates authority, not status alone.**
     Reusing a PUBLISHED segment requires re-verifying the full current manifest artifact set and exact SEGMENT coverage before returning success.
 
+21. **Segment dimension is native artifact authority.**
+    `gen_usearch_segments.dimension` is persisted for every new segment and added to older schemas by an additive migration. `VexusIndex.load()` must compare the caller's expected dimension with the loaded USearch artifact's native `index.dimensions()` and fail closed on mismatch. Current manifest validation native-reloads every member and proves dimension, vector count, exact SEGMENT coverage, and `containsKey64()` membership together.
+
 ## Explicitly deferred beyond G3
 
 G3 does **not** authorize:
@@ -119,6 +122,9 @@ G3 may pass only when:
 - publishing a new epoch cannot mutate prior manifest evidence or silently retire an existing manifest member;
 - corruption of any artifact in the current manifest blocks publication of the next epoch;
 - idempotent retry detects missing SEGMENT coverage or corrupt manifest artifacts;
+- the additive schema migration introduces segment `dimension` without rebuilding or destroying pre-G3 segment metadata;
+- tampering a published segment dimension blocks native manifest verification and cannot advance `manifest_epoch`;
+- every current manifest member is native-reloaded and its dimension, vector count, exact coverage set, and key membership are re-proven before topology mutation;
 - G3 stage-boundary tests prove query/GC/compaction/cutover remain unwired;
 - independent adversarial review has unresolved P0 = 0 and P1 = 0.
 

@@ -21,7 +21,8 @@ test('G3 boundary is frozen around immutable segment + manifest authority', () =
         'MEMTABLE coverage remains',
         'QueryReadView',
         'compaction',
-        'GENERATIONAL_ACTIVE'
+        'GENERATIONAL_ACTIVE',
+        'Segment dimension is native artifact authority'
     ]) {
         assert.ok(contract.includes(phrase), phrase);
     }

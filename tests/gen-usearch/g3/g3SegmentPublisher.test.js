@@ -172,6 +172,7 @@ test('G3 publishes one verified immutable segment and preserves MemTable overlap
         assert.equal(segment.state, 'PUBLISHED');
         assert.equal(segment.artifact_path, receipt.artifactPath);
         assert.equal(segment.artifact_digest, receipt.artifactDigest);
+        assert.equal(segment.dimension, 4);
         assert.equal(segment.vector_count, 2);
 
         assert.equal(fixture.publisher.captureManifestEpoch(), '1');
@@ -997,5 +998,146 @@ test('published artifact path cannot be redirected outside the configured segmen
         assert.equal(fixture.publisher.captureManifestEpoch(), '1');
     } finally {
         fixture.cleanup();
+    }
+});
+
+
+test('G3 additive migration adds segment dimension without rebuilding legacy metadata', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g3-migrate-'));
+    const db = new Database(path.join(root, 'knowledge.sqlite'));
+    try {
+        db.exec(`
+            CREATE TABLE gen_usearch_segments (
+                segment_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                artifact_path TEXT,
+                artifact_digest TEXT,
+                embedding_fingerprint TEXT NOT NULL,
+                vector_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                finalized_at INTEGER,
+                published_at INTEGER,
+                retired_at INTEGER
+            );
+            INSERT INTO gen_usearch_segments (
+                segment_id, state, artifact_path, artifact_digest,
+                embedding_fingerprint, vector_count, created_at
+            ) VALUES (
+                'legacy-segment', 'BUILDING', NULL, NULL,
+                'legacy-fingerprint', 0, 1
+            );
+        `);
+
+        initializeKnowledgeBaseSchema(db, {
+            logPrefix: 'GenUSearchG3DimensionMigration'
+        });
+
+        const columns = new Set(
+            db.prepare(`PRAGMA table_info(gen_usearch_segments)`)
+                .all()
+                .map(row => row.name)
+        );
+        assert.equal(columns.has('dimension'), true);
+
+        const legacy = db.prepare(`
+            SELECT segment_id, state, embedding_fingerprint, dimension
+            FROM gen_usearch_segments
+            WHERE segment_id = 'legacy-segment'
+        `).get();
+        assert.deepEqual(legacy, {
+            segment_id: 'legacy-segment',
+            state: 'BUILDING',
+            embedding_fingerprint: 'legacy-fingerprint',
+            dimension: null
+        });
+    } finally {
+        try { db.close(); } catch (_) {}
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('tampered manifest dimension blocks native verification before next publication', () => {
+    const fixture = createFixture();
+    try {
+        const first = fixture.createMemtable(1);
+        fixture.stageAndAdmit(first, {
+            ordinal: 'a',
+            contentHash: 'd2'.repeat(32)
+        });
+        fixture.writer.sealMemTable(first);
+        const firstReceipt = fixture.publisher.publishSealedMemTable({
+            memtable: first,
+            expectedManifestEpoch: '0'
+        });
+
+        fixture.db.prepare(`
+            UPDATE gen_usearch_segments
+            SET dimension = 5
+            WHERE segment_id = ?
+        `).run(firstReceipt.segmentId);
+
+        const second = fixture.createMemtable(2);
+        fixture.stageAndAdmit(second, {
+            ordinal: 'b',
+            contentHash: 'd3'.repeat(32)
+        });
+        fixture.writer.sealMemTable(second);
+
+        assert.throws(
+            () => fixture.publisher.publishSealedMemTable({
+                memtable: second,
+                expectedManifestEpoch: '1'
+            }),
+            error => [
+                'RECOVERY_MANIFEST_INVALID',
+                'PHYSICAL_COVERAGE_MISSING'
+            ].includes(error?.code)
+        );
+
+        assert.equal(fixture.publisher.captureManifestEpoch(), '1');
+        assert.deepEqual(
+            manifestMembers(fixture.db, 1),
+            [firstReceipt.segmentId]
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+
+test('native Vexus load rejects an artifact dimension mismatch', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g3-native-dim-'));
+    try {
+        const artifactPath = path.join(root, 'dimension.usearch');
+        const index = new VexusIndex(4, 16);
+        index.addKey64(
+            '9007199254740993',
+            new Float32Array([1, 0, 0, 0])
+        );
+        index.save(artifactPath);
+
+        assert.throws(
+            () => VexusIndex.load(
+                artifactPath,
+                null,
+                5,
+                16
+            ),
+            /Loaded index dimension mismatch/
+        );
+
+        const loaded = VexusIndex.load(
+            artifactPath,
+            null,
+            4,
+            16
+        );
+        assert.equal(loaded.stats().dimensions, 4);
+        assert.equal(
+            loaded.containsKey64('9007199254740993'),
+            true
+        );
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
     }
 });

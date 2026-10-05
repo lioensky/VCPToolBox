@@ -421,6 +421,16 @@ impl VexusIndex {
             .load(&index_path)
             .map_err(|e| Error::from_reason(format!("Failed to load index from disk: {:?}", e)))?;
 
+        // 文件自身的维度才是物理事实。调用方传入的 dim 只是一项期望，
+        // 不能把一个既有 artifact 重新解释成另一个 embedding space。
+        let artifact_dimensions = index.dimensions();
+        if artifact_dimensions != dim as usize {
+            return Err(Error::from_reason(format!(
+                "Loaded index dimension mismatch: expected {}, artifact {}",
+                dim, artifact_dimensions
+            )));
+        }
+
         // 检查容量并扩容
         let current_capacity = index.capacity();
         if capacity as usize > current_capacity {
@@ -432,7 +442,7 @@ impl VexusIndex {
 
         Ok(Self {
             index: Arc::new(RwLock::new(index)),
-            dimensions: dim,
+            dimensions: artifact_dimensions as u32,
             content_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             epa_pending_cache: Arc::new(std::sync::Mutex::new(None)),
             memo_runtime: Arc::new(MemoRuntime::new()),
@@ -1237,7 +1247,7 @@ impl VexusIndex {
 
         Ok(VexusStats {
             total_vectors: index.size() as u32,
-            dimensions: self.dimensions,
+            dimensions: index.dimensions() as u32,
             capacity: index.capacity() as u32,
             memory_usage: index.memory_usage() as f64,
         })

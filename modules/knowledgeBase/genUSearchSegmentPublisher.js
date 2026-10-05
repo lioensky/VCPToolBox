@@ -181,9 +181,9 @@ class GenUSearchSegmentPublisher {
         this._insertBuildingSegment = db.prepare(`
             INSERT INTO gen_usearch_segments (
                 segment_id, state, artifact_path, artifact_digest,
-                embedding_fingerprint, vector_count,
+                embedding_fingerprint, dimension, vector_count,
                 created_at, finalized_at, published_at, retired_at
-            ) VALUES (?, 'BUILDING', NULL, NULL, ?, ?, ?, NULL, NULL, NULL)
+            ) VALUES (?, 'BUILDING', NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL)
         `);
         this._finalizeSegment = db.prepare(`
             UPDATE gen_usearch_segments
@@ -339,6 +339,7 @@ class GenUSearchSegmentPublisher {
                 segment.artifact_path !== input.artifactPath
                 || segment.artifact_digest !== input.artifactDigest
                 || segment.embedding_fingerprint !== input.embeddingFingerprint
+                || Number(segment.dimension) !== Number(input.dimension)
                 || BigInt(segment.vector_count) !== BigInt(input.vectorIds.length)
             ) {
                 throw codedError(
@@ -508,36 +509,7 @@ class GenUSearchSegmentPublisher {
             }
 
             for (const memberId of afterMembers) {
-                const member = this._getSegment.get(memberId);
-                if (
-                    !member
-                    || member.state !== 'PUBLISHED'
-                    || !member.artifact_path
-                    || !SHA256_RE.test(member.artifact_digest || '')
-                    || !fs.existsSync(member.artifact_path)
-                ) {
-                    throw codedError(
-                        'RECOVERY_MANIFEST_INVALID',
-                        `published manifest member failed durable verification: ${memberId}`
-                    );
-                }
-                try {
-                    this._assertArtifactPathOwned(
-                        memberId,
-                        member.artifact_path
-                    );
-                } catch (_) {
-                    throw codedError(
-                        'RECOVERY_MANIFEST_INVALID',
-                        `published manifest member path authority failed: ${memberId}`
-                    );
-                }
-                if (sha256File(member.artifact_path) !== member.artifact_digest) {
-                    throw codedError(
-                        'RECOVERY_MANIFEST_INVALID',
-                        `published manifest member digest failed: ${memberId}`
-                    );
-                }
+                this._verifyManifestMemberArtifactAndCoverage(memberId);
             }
 
             return {
@@ -664,6 +636,7 @@ class GenUSearchSegmentPublisher {
             this._insertBuildingSegment.run(
                 segmentId,
                 source.embeddingFingerprint,
+                source.dimension,
                 vectorCount,
                 now
             );
@@ -676,6 +649,7 @@ class GenUSearchSegmentPublisher {
         if (
             !created
             || created.embedding_fingerprint !== source.embeddingFingerprint
+            || Number(created.dimension) !== Number(source.dimension)
             || BigInt(created.vector_count) !== BigInt(vectorCount)
         ) {
             throw codedError(
@@ -744,10 +718,13 @@ class GenUSearchSegmentPublisher {
             Math.max(16, rows.length + 1)
         );
         const stats = loaded.stats();
-        if (Number(stats.totalVectors) !== rows.length) {
+        if (
+            Number(stats.totalVectors) !== rows.length
+            || Number(stats.dimensions) !== Number(source.dimension)
+        ) {
             throw codedError(
                 'SEGMENT_ARTIFACT_INVALID',
-                'reloaded segment vector count mismatch'
+                'reloaded segment vector count/dimension mismatch'
             );
         }
         for (const row of rows) {
@@ -774,6 +751,7 @@ class GenUSearchSegmentPublisher {
             || !segment.artifact_digest
             || !SHA256_RE.test(segment.artifact_digest)
             || segment.embedding_fingerprint !== source.embeddingFingerprint
+            || Number(segment.dimension) !== Number(source.dimension)
             || BigInt(segment.vector_count) !== BigInt(vectorIds.length)
             || !fs.existsSync(segment.artifact_path)
         ) {
@@ -798,10 +776,14 @@ class GenUSearchSegmentPublisher {
             source.dimension,
             Math.max(16, vectorIds.length + 1)
         );
-        if (Number(loaded.stats().totalVectors) !== vectorIds.length) {
+        const loadedStats = loaded.stats();
+        if (
+            Number(loadedStats.totalVectors) !== vectorIds.length
+            || Number(loadedStats.dimensions) !== Number(source.dimension)
+        ) {
             throw codedError(
                 'SEGMENT_ARTIFACT_INVALID',
-                'existing segment vector count mismatch'
+                'existing segment vector count/dimension mismatch'
             );
         }
         for (const vectorId of vectorIds) {
@@ -821,41 +803,102 @@ class GenUSearchSegmentPublisher {
         };
     }
 
+    _verifyManifestMemberArtifactAndCoverage(segmentId) {
+        const segment = this._getSegment.get(segmentId);
+        const dimension = Number(segment?.dimension);
+        const vectorCount = Number(segment?.vector_count);
+        if (
+            !segment
+            || segment.state !== 'PUBLISHED'
+            || !segment.artifact_path
+            || !SHA256_RE.test(segment.artifact_digest || '')
+            || !Number.isSafeInteger(dimension)
+            || dimension <= 0
+            || !Number.isSafeInteger(vectorCount)
+            || vectorCount <= 0
+            || !fs.existsSync(segment.artifact_path)
+        ) {
+            throw codedError(
+                'RECOVERY_MANIFEST_INVALID',
+                `manifest artifact metadata invalid for ${segmentId}`
+            );
+        }
+        try {
+            this._assertArtifactPathOwned(
+                segmentId,
+                segment.artifact_path
+            );
+        } catch (_) {
+            throw codedError(
+                'RECOVERY_MANIFEST_INVALID',
+                `manifest artifact path authority failed for ${segmentId}`
+            );
+        }
+        if (sha256File(segment.artifact_path) !== segment.artifact_digest) {
+            throw codedError(
+                'RECOVERY_MANIFEST_INVALID',
+                `manifest artifact digest failed for ${segmentId}`
+            );
+        }
+
+        const coverageRows = this._listSegmentCoverage.all(segmentId);
+        if (
+            coverageRows.length !== vectorCount
+            || coverageRows.some(row => row.coverage_state !== 'QUERY_VISIBLE')
+        ) {
+            throw codedError(
+                'PHYSICAL_COVERAGE_MISSING',
+                `manifest SEGMENT coverage count/state invalid for ${segmentId}`
+            );
+        }
+        const vectorIds = coverageRows.map(row => row.vector_id.toString());
+
+        let loaded;
+        try {
+            loaded = VexusIndex.load(
+                segment.artifact_path,
+                null,
+                dimension,
+                Math.max(16, vectorCount + 1)
+            );
+        } catch (_) {
+            throw codedError(
+                'RECOVERY_MANIFEST_INVALID',
+                `manifest artifact native reload failed for ${segmentId}`
+            );
+        }
+        const loadedStats = loaded.stats();
+        if (
+            Number(loadedStats.totalVectors) !== vectorCount
+            || Number(loadedStats.dimensions) !== dimension
+        ) {
+            throw codedError(
+                'RECOVERY_MANIFEST_INVALID',
+                `manifest artifact vector count/dimension mismatch for ${segmentId}`
+            );
+        }
+        for (const vectorId of vectorIds) {
+            if (!loaded.containsKey64(vectorId)) {
+                throw codedError(
+                    'RECOVERY_MANIFEST_INVALID',
+                    `manifest artifact missing covered vector ${vectorId} in ${segmentId}`
+                );
+            }
+        }
+        return Object.freeze({
+            segmentId,
+            dimension,
+            vectorCount,
+            vectorIds: Object.freeze(vectorIds)
+        });
+    }
+
     _assertManifestArtifactSet(epoch) {
         const members = this._listManifestSegments
             .all(epoch)
             .map(row => row.segment_id);
         for (const segmentId of members) {
-            const segment = this._getSegment.get(segmentId);
-            if (
-                !segment
-                || segment.state !== 'PUBLISHED'
-                || !segment.artifact_path
-                || !SHA256_RE.test(segment.artifact_digest || '')
-                || !fs.existsSync(segment.artifact_path)
-            ) {
-                throw codedError(
-                    'RECOVERY_MANIFEST_INVALID',
-                    `manifest artifact verification failed for ${segmentId}`
-                );
-            }
-            try {
-                this._assertArtifactPathOwned(
-                    segmentId,
-                    segment.artifact_path
-                );
-            } catch (_) {
-                throw codedError(
-                    'RECOVERY_MANIFEST_INVALID',
-                    `manifest artifact path authority failed for ${segmentId}`
-                );
-            }
-            if (sha256File(segment.artifact_path) !== segment.artifact_digest) {
-                throw codedError(
-                    'RECOVERY_MANIFEST_INVALID',
-                    `manifest artifact digest failed for ${segmentId}`
-                );
-            }
+            this._verifyManifestMemberArtifactAndCoverage(segmentId);
         }
         return members;
     }
@@ -977,6 +1020,7 @@ class GenUSearchSegmentPublisher {
             ...receipt,
             expectedEpoch,
             embeddingFingerprint: source.embeddingFingerprint,
+            dimension: source.dimension,
             now: BigInt(this.now())
         });
 
