@@ -284,10 +284,11 @@ class GenUSearchPhysicalCoverageWriter {
                 );
             }
             const fence = BigInt(runtime.runtime_fence);
-            if (
-                runtime.serving_state !== 'IDLE'
-                && runtime.owner_id !== this.runtimeId
-            ) {
+            const unownedIdle = (
+                runtime.serving_state === 'IDLE'
+                && runtime.owner_id == null
+            );
+            if (!unownedIdle && runtime.owner_id !== this.runtimeId) {
                 throw codedError(
                     'RUNTIME_FENCE_STALE',
                     'G2 writer does not own the current runtime fence'
@@ -472,10 +473,11 @@ class GenUSearchPhysicalCoverageWriter {
         }
         const currentFence = BigInt(runtime.runtime_fence);
         const leaseFence = BigInt(lease.runtime_fence);
-        if (
-            runtime.serving_state !== 'IDLE'
-            && runtime.owner_id !== this.runtimeId
-        ) {
+        const unownedIdle = (
+            runtime.serving_state === 'IDLE'
+            && runtime.owner_id == null
+        );
+        if (!unownedIdle && runtime.owner_id !== this.runtimeId) {
             throw codedError(
                 'RUNTIME_FENCE_STALE',
                 'G2 runtime ownership moved to another owner'

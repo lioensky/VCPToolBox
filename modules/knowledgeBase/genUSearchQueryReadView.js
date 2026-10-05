@@ -283,6 +283,23 @@ class GenUSearchQueryReadViewCoordinator {
         `);
 
         this._admitReadViewLease = db.transaction(input => {
+            if (
+                !Number.isSafeInteger(input.wallStartedAt)
+                || !Number.isSafeInteger(input.deadlineBudgetMs)
+                || input.deadlineBudgetMs <= 0
+            ) {
+                throw codedError(
+                    'QUERY_READ_VIEW_INVALID',
+                    'read lease deadline budget is invalid'
+                );
+            }
+            if (Date.now() - input.wallStartedAt >= input.deadlineBudgetMs) {
+                throw codedError(
+                    'QUERY_READ_VIEW_EXPIRED',
+                    'QueryReadView expired while waiting for lease admission'
+                );
+            }
+
             const visibilityRow = this._getSequence.get('visibility_seq');
             const runtime = this._getRuntime.get();
             if (!visibilityRow || !runtime) {
@@ -553,6 +570,7 @@ class GenUSearchQueryReadViewCoordinator {
             'QUERY_READ_VIEW_INVALID',
             'QueryReadView acquisition requires SQLite autocommit state'
         );
+        const wallStartedAt = Date.now();
         const createdAt = safeMillis(this.now(), 'created_at');
         const deadline = options.deadline == null
             ? createdAt + this.maxReadViewMs
@@ -769,14 +787,33 @@ class GenUSearchQueryReadViewCoordinator {
                 'QUERY_READ_VIEW_INVALID',
                 'QueryReadView lease admission requires autocommit state'
             );
-            this._admitReadViewLease({
+            const deadlineBudgetMs = deadline - createdAt;
+            this._admitReadViewLease.immediate({
                 readViewId,
                 ownerId: snapshot.runtime.owner_id,
                 runtimeFence: snapshot.runtime.runtime_fence,
                 visibilitySeq: snapshot.visibility.text,
                 createdAt,
-                deadline
+                deadline,
+                wallStartedAt,
+                deadlineBudgetMs
             });
+
+            if (Date.now() - wallStartedAt >= deadlineBudgetMs) {
+                this._transitionReadViewLease.immediate({
+                    readViewId,
+                    ownerId: snapshot.runtime.owner_id,
+                    runtimeFence: snapshot.runtime.runtime_fence,
+                    state: 'RELEASED',
+                    cancellationRequested: true,
+                    workerQuiescent: true,
+                    pinsReleased: true
+                });
+                throw codedError(
+                    'QUERY_READ_VIEW_EXPIRED',
+                    'QueryReadView expired immediately after lease admission'
+                );
+            }
 
             const view = new QueryReadView({
                 read_view_id: readViewId,

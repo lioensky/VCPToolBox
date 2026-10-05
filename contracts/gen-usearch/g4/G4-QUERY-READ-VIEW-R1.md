@@ -151,3 +151,20 @@ QueryReadView lifetime is now durable and cancellation-monotonic:
 - a crash between those phases leaves a durable blocking lease rather than falsely advertising safe release.
 
 The in-process pin maps remain physical-resource guards, while the SQLite lease is the cross-process reader-lifetime authority consumed by G5.
+
+
+## Clean-Room Remediation 4
+
+A second fresh clean-room review found one remaining bounded-lifetime race and challenged release retryability.
+
+Closure:
+
+- durable lease admission now uses an IMMEDIATE SQLite transaction, so the write lock is acquired before the final admission callback executes;
+- acquisition carries a wall-clock budget derived from the requested logical deadline; time spent waiting for the SQLite write lock counts against that budget;
+- if the budget is exhausted before insertion, no durable lease is admitted;
+- a second wall-clock check runs immediately after admission; an already-expired unreturned lease is durably closed before acquisition fails and provisional pins are cleaned;
+- regression coverage holds an external `BEGIN IMMEDIATE` lock past the deadline and proves acquisition returns `QUERY_READ_VIEW_EXPIRED` with zero durable leases and zero MemTable pins.
+
+The same review alleged that release could not be retried if the final durable `RELEASED` update failed after physical pins were dropped. Direct verification showed the existing one-shot pin leases are intentionally idempotent: repeated `release()` returns `false` rather than decrementing twice. A fault-injection regression now blocks the first final RELEASED transition, proves local pins are already zero while the durable row remains QUIESCING, then retries release and reaches durable RELEASED without pin underflow.
+
+No new reclaim, GC, compaction, or cutover authority is introduced.

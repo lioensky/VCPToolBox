@@ -171,3 +171,18 @@ G2 physical-writer exclusivity is now **cross-process durable authority**, not m
 - an old writer becomes fail-closed after fence rollover.
 
 Crash takeover proof and the act of advancing runtime ownership/fence remain outside G2; G2 only consumes the resulting fenced authority. This does not authorize runtime cutover or engine activation.
+
+
+## Clean-Room Remediation 4
+
+A fresh clean-room review of implementation head `3e89a943c43e8e6544cc10e91cc5ff11f83f57df` found one remaining G2 owner-validation bypass.
+
+Closure:
+
+- `serving_state = IDLE` no longer disables owner validation when `owner_id` is explicitly populated;
+- an IDLE row may be consumed without an owner match only when `owner_id IS NULL`, preserving unowned pre-serving bootstrap without allowing runtime B to impersonate runtime A;
+- an explicitly owned IDLE row requires the exact same `runtimeId`;
+- exact runtime-fence and durable process-token checks remain mandatory after construction;
+- a new regression proves an IDLE row owned by runtime A cannot be claimed by runtime B and creates no process lease.
+
+This remains consumption of existing runtime authority. G2 still does not acquire runtime ownership, advance a fence, perform cutover, or activate the generational engine.

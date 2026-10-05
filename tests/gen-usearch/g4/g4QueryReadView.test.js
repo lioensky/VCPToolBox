@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 const Database = require('better-sqlite3');
 
 const { initializeKnowledgeBaseSchema } = require(
@@ -1201,6 +1202,156 @@ test('QUIESCING preserves cancellation and rejects all new query work', () => {
             worker_quiescent: 1,
             pins_released: 1
         });
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+
+test('lease admission deadline includes SQLite write-lock wait and leaves no lease or pin', async () => {
+    const fixture = createFixture();
+    let child;
+    try {
+        const memtable = fixture.createMemtable(92);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'lease-wait-deadline',
+            contentHash: '92'.repeat(32)
+        });
+        fixture.db.pragma('busy_timeout = 1000');
+        fixture.coordinator.now = () => Date.now();
+
+        const childCode = [
+            "const Database = require('better-sqlite3');",
+            `const db = new Database(${JSON.stringify(fixture.db.name)});`,
+            "db.pragma('journal_mode = WAL');",
+            "db.pragma('synchronous = FULL');",
+            "db.exec('BEGIN IMMEDIATE');",
+            "process.stdout.write('LOCKED\\n');",
+            "setTimeout(() => {",
+            "  try { db.exec('ROLLBACK'); } catch (_) {}",
+            "  try { db.close(); } catch (_) {}",
+            "}, 180);"
+        ].join('\n');
+
+        child = spawn(process.execPath, ['-e', childCode], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: {
+                ...process.env,
+                NODE_PATH: path.resolve(__dirname, '../g2/node_modules')
+            }
+        });
+        await new Promise((resolve, reject) => {
+            let stdout = '';
+            let stderr = '';
+            child.stdout.on('data', chunk => {
+                stdout += chunk.toString();
+                if (stdout.includes('LOCKED')) resolve();
+            });
+            child.stderr.on('data', chunk => {
+                stderr += chunk.toString();
+            });
+            child.once('error', reject);
+            child.once('exit', code => {
+                if (!stdout.includes('LOCKED')) {
+                    reject(new Error(
+                        `lock helper exited before lock acquisition: ${code}: ${stderr}`
+                    ));
+                }
+            });
+        });
+
+        const deadline = Date.now() + 60;
+        assert.throws(
+            () => fixture.coordinator.acquire({
+                memtables: [memtable],
+                deadline
+            }),
+            error => error?.code === 'QUERY_READ_VIEW_EXPIRED'
+        );
+
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            0
+        );
+        assert.equal(
+            fixture.db.prepare(
+                'SELECT COUNT(*) AS count FROM gen_usearch_read_view_leases'
+            ).get().count,
+            0
+        );
+    } finally {
+        if (child && child.exitCode == null) {
+            child.kill('SIGKILL');
+        }
+        fixture.cleanup();
+    }
+});
+
+test('QueryReadView release retries after final durable RELEASED update fails once', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(93);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'release-retry',
+            contentHash: '93'.repeat(32)
+        });
+        const view = fixture.coordinator.acquire({
+            memtables: [memtable],
+            deadline: fixture.now() + 500
+        });
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            1
+        );
+
+        fixture.db.exec(`
+            CREATE TRIGGER block_one_release_transition
+            BEFORE UPDATE OF state ON gen_usearch_read_view_leases
+            WHEN NEW.state = 'RELEASED'
+            BEGIN
+                SELECT RAISE(ABORT, 'block RELEASED once');
+            END;
+        `);
+
+        assert.throws(
+            () => fixture.coordinator.release(view, { workerQuiescent: true }),
+            /block RELEASED once/
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            0
+        );
+        assert.deepEqual(
+            fixture.db.prepare(
+                'SELECT state, worker_quiescent, pins_released FROM gen_usearch_read_view_leases WHERE read_view_id = ?'
+            ).get(view.read_view_id),
+            {
+                state: 'QUIESCING',
+                worker_quiescent: 1,
+                pins_released: 0
+            }
+        );
+
+        fixture.db.exec('DROP TRIGGER block_one_release_transition');
+
+        assert.equal(
+            fixture.coordinator.release(view, { workerQuiescent: true }),
+            true
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            0
+        );
+        assert.deepEqual(
+            fixture.db.prepare(
+                'SELECT state, worker_quiescent, pins_released FROM gen_usearch_read_view_leases WHERE read_view_id = ?'
+            ).get(view.read_view_id),
+            {
+                state: 'RELEASED',
+                worker_quiescent: 1,
+                pins_released: 1
+            }
+        );
     } finally {
         fixture.cleanup();
     }

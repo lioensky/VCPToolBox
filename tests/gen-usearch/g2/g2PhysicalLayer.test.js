@@ -1691,3 +1691,48 @@ test('same owner with a new runtime fence cannot be adopted by the old G2 writer
         fixture.cleanup();
     }
 });
+
+
+test('IDLE runtime with an explicit different owner cannot be claimed by G2', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-gen-usearch-g2-idle-owner-'));
+    const db = new Database(path.join(root, 'knowledge.sqlite'));
+    try {
+        db.pragma('journal_mode = WAL');
+        db.pragma('synchronous = FULL');
+        db.pragma('foreign_keys = ON');
+        initializeKnowledgeBaseSchema(db, { logPrefix: 'GenUSearchG2IdleOwner' });
+
+        db.prepare(`
+            UPDATE gen_usearch_runtime_ownership
+            SET owner_id = 'runtime-owner-a',
+                serving_state = 'IDLE',
+                runtime_fence = 4,
+                acquired_at = 4000,
+                updated_at = 4000
+            WHERE singleton = 1
+        `).run();
+
+        assert.throws(
+            () => new GenUSearchPhysicalCoverageWriter({
+                db,
+                runtimeId: 'runtime-owner-b'
+            }),
+            error => error?.code === 'RUNTIME_FENCE_STALE'
+        );
+        assert.equal(
+            db.prepare(
+                'SELECT COUNT(*) AS count FROM gen_usearch_runtime_process_lease'
+            ).get().count,
+            0
+        );
+
+        const ownerWriter = new GenUSearchPhysicalCoverageWriter({
+            db,
+            runtimeId: 'runtime-owner-a'
+        });
+        assert.equal(ownerWriter.runtimeId, 'runtime-owner-a');
+    } finally {
+        try { db.close(); } catch (_) {}
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
