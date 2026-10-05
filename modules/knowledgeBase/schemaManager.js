@@ -359,6 +359,9 @@ const GEN_USEARCH_SCHEMA_SQL = `
         ON gen_usearch_chunk_versions(chunk_id, chunk_version_id);
     CREATE INDEX IF NOT EXISTS idx_gen_usearch_chunk_versions_state
         ON gen_usearch_chunk_versions(state);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_gen_usearch_one_active_version_per_chunk
+        ON gen_usearch_chunk_versions(chunk_id)
+        WHERE state = 'ACTIVE';
 
     CREATE TABLE IF NOT EXISTS gen_usearch_segments (
         segment_id TEXT PRIMARY KEY,
