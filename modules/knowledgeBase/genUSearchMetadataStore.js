@@ -2,6 +2,7 @@
 
 const {
     assertIdentityOnlyPlan,
+    assertPlanAgainstBaseIdentity,
     hashIdentitySnapshot,
     stableStringify
 } = require('./genUSearchReconciler');
@@ -627,15 +628,10 @@ class GenUSearchMetadataStore {
                     }
                 }
 
-                const currentIdentityDigest = hashIdentitySnapshot(
+                assertPlanAgainstBaseIdentity(
+                    plan,
                     this.getCurrentChunkIdentitySnapshot(plan.docId)
                 );
-                if (currentIdentityDigest !== plan.baseIdentityDigest) {
-                    throw codedError(
-                        'STALE_DOCUMENT_WRITER',
-                        'Current chunk identity snapshot changed after plan generation'
-                    );
-                }
 
                 const openPlan = this._getOpenReconciliationPlanByDocument.get(plan.docId);
                 if (openPlan) {
