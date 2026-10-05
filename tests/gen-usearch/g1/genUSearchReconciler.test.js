@@ -66,6 +66,46 @@ function createStoreFixture() {
     };
 }
 
+function publishCurrent(fixture, options = {}) {
+    const {
+        chunkId,
+        slotIndex,
+        content,
+        sourceRevision = 'rev-current'
+    } = options;
+    let head = fixture.store.getChunkHead(chunkId);
+    if (!head) {
+        fixture.store.createChunkIdentity({ chunkId, docId: 'doc-1' });
+        head = fixture.store.getChunkHead(chunkId);
+    }
+    const version = fixture.store.prepareChunkVersion({
+        chunkId,
+        sourceRevision,
+        slotIndex,
+        contentHash: hashExactChunkContent(content)
+    });
+    fixture.store.markEmbedding({
+        chunkVersionId: version.chunk_version_id,
+        embeddingFingerprint: 'embed-v1'
+    });
+    const staged = fixture.store.stageVector({
+        chunkVersionId: version.chunk_version_id,
+        embeddingFingerprint: 'embed-v1',
+        vectorBlob: new Float32Array([1, 2, 3, slotIndex + 4])
+    });
+    fixture.db.prepare(`
+        INSERT INTO gen_usearch_vector_coverage (
+            vector_id, source_kind, source_id, coverage_state,
+            created_at, updated_at
+        ) VALUES (?, 'MEMTABLE', ?, 'QUERY_VISIBLE', 5000, 5000)
+    `).run(BigInt(staged.vector_id), `M-${staged.vector_id}`);
+    return fixture.store.publishCurrentHead({
+        chunkId,
+        chunkVersionId: staged.chunk_version_id,
+        expectedCurrentVersionId: head.current_version_id
+    });
+}
+
 test('exact UTF-8 chunk hashing is byte exact and does not normalize content', () => {
     assert.notEqual(hashExactChunkContent('alpha'), hashExactChunkContent('alpha\n'));
     assert.notEqual(hashExactChunkContent('é'), hashExactChunkContent('e\u0301'));
@@ -315,6 +355,57 @@ test('source observation and reconciliation plan are admitted durably in one tra
     }
 });
 
+test('stale reconciliation plans are rejected if current-head authority changes before admission', () => {
+    const fixture = createStoreFixture();
+    try {
+        publishCurrent(fixture, {
+            chunkId: 'c-stale',
+            slotIndex: 0,
+            content: 'old'
+        });
+        const plan = reconcileDocumentChunks(baseOptions({
+            previousChunks: fixture.store.getCurrentChunkIdentitySnapshot('doc-1'),
+            nextChunks: [next(0, 'desired')]
+        }));
+
+        publishCurrent(fixture, {
+            chunkId: 'c-stale',
+            slotIndex: 0,
+            content: 'concurrent',
+            sourceRevision: 'rev-concurrent'
+        });
+
+        assert.throws(
+            () => fixture.store.admitReconciliationPlan(plan),
+            error => error?.code === 'STALE_DOCUMENT_WRITER'
+        );
+        assert.equal(fixture.store.getReconciliationPlan(plan.planId), null);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('a pending observation from another revision blocks stale plan admission', () => {
+    const fixture = createStoreFixture();
+    try {
+        const plan = reconcileDocumentChunks(baseOptions({
+            previousChunks: [],
+            nextChunks: [next(0, 'desired')]
+        }));
+        fixture.store.recordSourceObservation({
+            docId: 'doc-1',
+            digest: 'newer-digest',
+            revision: 'rev-newer'
+        });
+        assert.throws(
+            () => fixture.store.admitReconciliationPlan(plan),
+            error => error?.code === 'STALE_DOCUMENT_WRITER'
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('same durable plan replay is idempotent even after downstream identity materialization', () => {
     const fixture = createStoreFixture();
     try {
@@ -341,8 +432,8 @@ test('same durable plan replay is idempotent even after downstream identity mate
 test('AMBIGUOUS reconciliation is persisted as ERROR and never becomes publishable admission', () => {
     const fixture = createStoreFixture();
     try {
-        fixture.store.createChunkIdentity({ chunkId: 'c-1', docId: 'doc-1' });
-        fixture.store.createChunkIdentity({ chunkId: 'c-2', docId: 'doc-1' });
+        publishCurrent(fixture, { chunkId: 'c-1', slotIndex: 0, content: 'same' });
+        publishCurrent(fixture, { chunkId: 'c-2', slotIndex: 1, content: 'same' });
         const ambiguous = reconcileDocumentChunks(baseOptions({
             previousChunks: [
                 previous('c-1', 0, 'same'),
@@ -385,7 +476,7 @@ test('a later committed source revision can supersede an errored ambiguous plan'
             observedSourceDigest: 'digest-3',
             observedSourceRevision: 'rev-3',
             targetRevision: 'rev-3',
-            previousChunks: [],
+            previousChunks: fixture.store.getCurrentChunkIdentitySnapshot('doc-1'),
             nextChunks: [next(0, 'unique')]
         }));
         const admitted = fixture.store.admitReconciliationPlan(nextPlan);
