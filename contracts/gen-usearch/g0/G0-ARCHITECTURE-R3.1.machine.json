@@ -2,7 +2,7 @@
   "architecture_version": "R3.1",
   "contract_version": "3.1.0-g0-final-r1",
   "gate": "G0",
-  "status": "FREEZE_CANDIDATE",
+  "status": "FROZEN",
   "authority_planes": {
     "canonical_source": "content_authority",
     "sqlite": "identity_and_lifecycle_authority",
