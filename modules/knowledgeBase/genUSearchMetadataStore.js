@@ -42,6 +42,31 @@ function parseInteger(value, label, options = {}) {
     return parsed;
 }
 
+function requireSha256(value, label = 'contentHash') {
+    const normalized = requireString(value, label).toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(normalized)) {
+        throw new TypeError(`${label} must be a 64-character SHA-256 hex digest`);
+    }
+    return normalized;
+}
+
+function exactBuffer(value, label = 'vectorBlob') {
+    if (Buffer.isBuffer(value)) {
+        if (value.length === 0) throw new TypeError(`${label} must not be empty`);
+        return Buffer.from(value);
+    }
+    if (ArrayBuffer.isView(value)) {
+        if (value.byteLength === 0) throw new TypeError(`${label} must not be empty`);
+        return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    }
+    throw new TypeError(`${label} must be a Buffer or ArrayBuffer view`);
+}
+
+function decimalOrNull(value, label) {
+    if (value == null) return null;
+    return parseInteger(value, label).toString();
+}
+
 function requireString(value, label, options = {}) {
     if (typeof value !== 'string') {
         throw new TypeError(`${label} must be a string`);
@@ -149,10 +174,123 @@ class GenUSearchMetadataStore {
               AND state = 'ACTIVE'
         `);
 
+        this._getChunkHead = db.prepare(`
+            SELECT *
+            FROM gen_usearch_chunk_heads
+            WHERE chunk_id = ?
+        `);
+        this._insertChunkHead = db.prepare(`
+            INSERT INTO gen_usearch_chunk_heads (
+                chunk_id, doc_id, current_version_id, created_at, updated_at
+            ) VALUES (?, ?, NULL, ?, ?)
+        `);
+        this._getChunkVersion = db.prepare(`
+            SELECT *
+            FROM gen_usearch_chunk_versions
+            WHERE chunk_version_id = ?
+        `);
+        this._insertChunkVersion = db.prepare(`
+            INSERT INTO gen_usearch_chunk_versions (
+                chunk_id,
+                source_revision,
+                slot_index,
+                content_hash,
+                state,
+                vector_id,
+                visibility_seq,
+                retired_visibility_seq,
+                embedding_fingerprint,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, 'PREPARED', NULL, NULL, NULL, NULL, ?, ?)
+        `);
+        this._markEmbedding = db.prepare(`
+            UPDATE gen_usearch_chunk_versions
+            SET state = 'EMBEDDING',
+                embedding_fingerprint = ?,
+                updated_at = ?
+            WHERE chunk_version_id = ?
+              AND state = 'PREPARED'
+        `);
+        this._stageChunkVersion = db.prepare(`
+            UPDATE gen_usearch_chunk_versions
+            SET state = 'VECTOR_STAGED',
+                vector_id = ?,
+                embedding_fingerprint = ?,
+                updated_at = ?
+            WHERE chunk_version_id = ?
+              AND state = 'EMBEDDING'
+        `);
+        this._insertRecovery = db.prepare(`
+            INSERT INTO gen_usearch_vector_recovery (
+                vector_id,
+                chunk_version_id,
+                state,
+                embedding_fingerprint,
+                vector_blob,
+                covered_segment_id,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, 'RECOVERY_REQUIRED', ?, ?, NULL, ?, ?)
+        `);
+        this._getRecovery = db.prepare(`
+            SELECT *
+            FROM gen_usearch_vector_recovery
+            WHERE vector_id = ?
+        `);
+        this._countQueryCoverage = db.prepare(`
+            SELECT COUNT(*) AS count
+            FROM gen_usearch_vector_coverage
+            WHERE vector_id = ?
+              AND coverage_state = 'QUERY_VISIBLE'
+        `);
+        this._retireActiveVersion = db.prepare(`
+            UPDATE gen_usearch_chunk_versions
+            SET state = 'RETIRED',
+                retired_visibility_seq = ?,
+                updated_at = ?
+            WHERE chunk_version_id = ?
+              AND state = 'ACTIVE'
+        `);
+        this._activateStagedVersion = db.prepare(`
+            UPDATE gen_usearch_chunk_versions
+            SET state = 'ACTIVE',
+                visibility_seq = ?,
+                updated_at = ?
+            WHERE chunk_version_id = ?
+              AND state = 'VECTOR_STAGED'
+        `);
+        this._casCurrentHead = db.prepare(`
+            UPDATE gen_usearch_chunk_heads
+            SET current_version_id = ?,
+                updated_at = ?
+            WHERE chunk_id = ?
+              AND current_version_id IS ?
+        `);
+        this._abortChunkVersion = db.prepare(`
+            UPDATE gen_usearch_chunk_versions
+            SET state = 'ABORTED',
+                updated_at = ?
+            WHERE chunk_version_id = ?
+              AND state IN ('PREPARED', 'EMBEDDING', 'VECTOR_STAGED')
+        `);
+        this._reclaimAbortedRecovery = db.prepare(`
+            UPDATE gen_usearch_vector_recovery
+            SET state = 'RECOVERY_RECLAIMABLE',
+                updated_at = ?
+            WHERE vector_id = ?
+              AND state = 'RECOVERY_REQUIRED'
+        `);
+
         for (const statement of [
             this._getAllocator,
             this._getSequence,
-            this._getManifestState
+            this._getManifestState,
+            this._getChunkHead,
+            this._getChunkVersion,
+            this._getRecovery,
+            this._countQueryCoverage,
+            this._insertChunkVersion
         ]) {
             if (typeof statement.safeIntegers !== 'function') {
                 throw codedError(
@@ -290,6 +428,307 @@ class GenUSearchMetadataStore {
                     );
                 }
                 return row;
+            }
+        );
+
+        this._createChunkTransaction = db.transaction(
+            (chunkId, docId, now) => {
+                const document = this._getDocument.get(docId);
+                if (!document || document.state !== 'ACTIVE') {
+                    throw codedError(
+                        'DOCUMENT_IDENTITY_AMBIGUOUS',
+                        `Active document "${docId}" is unavailable for chunk identity`
+                    );
+                }
+                this._insertChunkHead.run(chunkId, docId, now, now);
+                return this._getChunkHead.get(chunkId);
+            }
+        );
+
+        this._prepareChunkVersionTransaction = db.transaction(
+            (chunkId, sourceRevision, slotIndex, contentHash, now) => {
+                const head = this._getChunkHead.get(chunkId);
+                if (!head) {
+                    throw codedError(
+                        'CHUNK_IDENTITY_AMBIGUOUS',
+                        `Chunk identity "${chunkId}" is unavailable`
+                    );
+                }
+                const inserted = this._insertChunkVersion.run(
+                    chunkId,
+                    sourceRevision,
+                    slotIndex,
+                    contentHash,
+                    now,
+                    now
+                );
+                return this._getChunkVersion.get(inserted.lastInsertRowid);
+            }
+        );
+
+        this._markEmbeddingTransaction = db.transaction(
+            (chunkVersionId, embeddingFingerprint, now) => {
+                const changed = this._markEmbedding.run(
+                    embeddingFingerprint,
+                    now,
+                    chunkVersionId
+                ).changes;
+                if (changed !== 1) {
+                    throw codedError(
+                        'INVALID_MVCC_TRANSITION',
+                        'Chunk version must be PREPARED before EMBEDDING'
+                    );
+                }
+                return this._getChunkVersion.get(chunkVersionId);
+            }
+        );
+
+        this._stageVectorTransaction = db.transaction(
+            (chunkVersionId, embeddingFingerprint, vectorBlob, now) => {
+                const version = this._getChunkVersion.get(chunkVersionId);
+                if (!version || version.state !== 'EMBEDDING') {
+                    throw codedError(
+                        'INVALID_MVCC_TRANSITION',
+                        'Chunk version must be EMBEDDING before VECTOR_STAGED'
+                    );
+                }
+                if (
+                    version.embedding_fingerprint
+                    && version.embedding_fingerprint !== embeddingFingerprint
+                ) {
+                    throw codedError(
+                        'STALE_EMBEDDING_RESULT',
+                        'Embedding fingerprint changed while vectorization was in flight'
+                    );
+                }
+
+                const allocator = this._getAllocator.get();
+                if (!allocator) {
+                    throw codedError(
+                        'VECTOR_ID_ALLOCATOR_CORRUPT',
+                        'Gen-USearch vector allocator row is missing'
+                    );
+                }
+                const highWater = parseInteger(
+                    allocator.high_water,
+                    'vector allocator high_water'
+                );
+                if (highWater >= MAX_SIGNED_INT64) {
+                    throw codedError(
+                        'VECTOR_ID_EXHAUSTED',
+                        'Gen-USearch vector ID allocator exhausted signed-int64 space'
+                    );
+                }
+                const vectorId = highWater + 1n;
+                this._updateAllocator.run(vectorId, now);
+
+                const changed = this._stageChunkVersion.run(
+                    vectorId,
+                    embeddingFingerprint,
+                    now,
+                    chunkVersionId
+                ).changes;
+                if (changed !== 1) {
+                    throw codedError(
+                        'INVALID_MVCC_TRANSITION',
+                        'Failed to transition EMBEDDING version to VECTOR_STAGED'
+                    );
+                }
+                this._insertRecovery.run(
+                    vectorId,
+                    chunkVersionId,
+                    embeddingFingerprint,
+                    vectorBlob,
+                    now,
+                    now
+                );
+                return this._getChunkVersion.get(chunkVersionId);
+            }
+        );
+
+        this._publishCurrentHeadTransaction = db.transaction(
+            (chunkId, chunkVersionId, expectedCurrentVersionId, now) => {
+                const head = this._getChunkHead.get(chunkId);
+                if (!head) {
+                    throw codedError(
+                        'CHUNK_IDENTITY_AMBIGUOUS',
+                        `Chunk identity "${chunkId}" is unavailable`
+                    );
+                }
+
+                const currentVersionId = head.current_version_id ?? null;
+                if (
+                    (currentVersionId === null) !== (expectedCurrentVersionId === null)
+                    || (
+                        currentVersionId !== null
+                        && parseInteger(currentVersionId, 'current_version_id')
+                            !== parseInteger(expectedCurrentVersionId, 'expectedCurrentVersionId')
+                    )
+                ) {
+                    throw codedError(
+                        'STALE_VECTOR_PUBLICATION',
+                        'Current-head CAS expectation does not match SQLite authority'
+                    );
+                }
+
+                const nextVersion = this._getChunkVersion.get(chunkVersionId);
+                if (
+                    !nextVersion
+                    || nextVersion.chunk_id !== chunkId
+                    || nextVersion.state !== 'VECTOR_STAGED'
+                    || nextVersion.vector_id == null
+                ) {
+                    throw codedError(
+                        'INVALID_CURRENT_VECTOR_HEAD',
+                        'Only a VECTOR_STAGED version for the same chunk can become current'
+                    );
+                }
+
+                const recovery = this._getRecovery.get(nextVersion.vector_id);
+                if (
+                    !recovery
+                    || recovery.state === 'RECOVERY_RELEASED'
+                    || !recovery.vector_blob
+                ) {
+                    throw codedError(
+                        'VECTOR_RECOVERY_MATERIAL_MISSING',
+                        'Staged vector lacks exact durable recovery material'
+                    );
+                }
+
+                const coverage = this._countQueryCoverage.get(
+                    nextVersion.vector_id
+                );
+                if (Number(coverage?.count || 0n) < 1) {
+                    throw codedError(
+                        'PHYSICAL_COVERAGE_MISSING',
+                        'Staged vector has no QUERY_VISIBLE physical source'
+                    );
+                }
+
+                const sequenceRow = this._getSequence.get('visibility_seq');
+                if (!sequenceRow) {
+                    throw codedError(
+                        'GEN_USEARCH_SEQUENCE_CORRUPT',
+                        'visibility_seq is missing'
+                    );
+                }
+                const previousSeq = parseInteger(
+                    sequenceRow.value,
+                    'visibility_seq'
+                );
+                if (previousSeq >= MAX_SIGNED_INT64) {
+                    throw codedError(
+                        'GEN_USEARCH_SEQUENCE_EXHAUSTED',
+                        'visibility_seq exhausted signed-int64 space'
+                    );
+                }
+                const visibilitySeq = previousSeq + 1n;
+                this._updateSequence.run(
+                    visibilitySeq,
+                    now,
+                    'visibility_seq'
+                );
+
+                if (currentVersionId !== null) {
+                    const currentVersion = this._getChunkVersion.get(
+                        currentVersionId
+                    );
+                    if (
+                        !currentVersion
+                        || currentVersion.chunk_id !== chunkId
+                        || currentVersion.state !== 'ACTIVE'
+                    ) {
+                        throw codedError(
+                            'INVALID_CURRENT_VECTOR_HEAD',
+                            'SQLite current head does not reference an ACTIVE version'
+                        );
+                    }
+                    const retired = this._retireActiveVersion.run(
+                        visibilitySeq,
+                        now,
+                        currentVersionId
+                    ).changes;
+                    if (retired !== 1) {
+                        throw codedError(
+                            'STALE_VECTOR_PUBLICATION',
+                            'Failed to retire the expected current version'
+                        );
+                    }
+                }
+
+                const activated = this._activateStagedVersion.run(
+                    visibilitySeq,
+                    now,
+                    chunkVersionId
+                ).changes;
+                if (activated !== 1) {
+                    throw codedError(
+                        'STALE_VECTOR_PUBLICATION',
+                        'Failed to activate the staged version'
+                    );
+                }
+
+                const updated = this._casCurrentHead.run(
+                    chunkVersionId,
+                    now,
+                    chunkId,
+                    currentVersionId
+                ).changes;
+                if (updated !== 1) {
+                    throw codedError(
+                        'STALE_VECTOR_PUBLICATION',
+                        'Current-head CAS failed'
+                    );
+                }
+
+                return Object.freeze({
+                    chunkId,
+                    currentVersionId: parseInteger(
+                        chunkVersionId,
+                        'chunkVersionId'
+                    ).toString(),
+                    previousVersionId: currentVersionId == null
+                        ? null
+                        : parseInteger(
+                            currentVersionId,
+                            'previousVersionId'
+                        ).toString(),
+                    vectorId: parseInteger(
+                        nextVersion.vector_id,
+                        'vectorId'
+                    ).toString(),
+                    visibilitySeq: visibilitySeq.toString()
+                });
+            }
+        );
+
+        this._abortChunkVersionTransaction = db.transaction(
+            (chunkVersionId, now) => {
+                const version = this._getChunkVersion.get(chunkVersionId);
+                if (!version) {
+                    throw codedError(
+                        'INVALID_MVCC_TRANSITION',
+                        'Chunk version is unavailable'
+                    );
+                }
+                const changed = this._abortChunkVersion.run(
+                    now,
+                    chunkVersionId
+                ).changes;
+                if (changed !== 1) {
+                    throw codedError(
+                        'INVALID_MVCC_TRANSITION',
+                        `Cannot abort chunk version from state ${version.state}`
+                    );
+                }
+                if (version.vector_id != null) {
+                    this._reclaimAbortedRecovery.run(
+                        now,
+                        version.vector_id
+                    );
+                }
+                return this._getChunkVersion.get(chunkVersionId);
             }
         );
     }
@@ -501,6 +940,203 @@ class GenUSearchMetadataStore {
                 now
             )
         );
+    }
+
+    _normalizeChunkHead(row) {
+        if (!row) return null;
+        return Object.freeze({
+            ...row,
+            current_version_id: decimalOrNull(
+                row.current_version_id,
+                'current_version_id'
+            )
+        });
+    }
+
+    _normalizeChunkVersion(row) {
+        if (!row) return null;
+        return Object.freeze({
+            ...row,
+            chunk_version_id: decimalOrNull(
+                row.chunk_version_id,
+                'chunk_version_id'
+            ),
+            vector_id: decimalOrNull(row.vector_id, 'vector_id'),
+            visibility_seq: decimalOrNull(
+                row.visibility_seq,
+                'visibility_seq'
+            ),
+            retired_visibility_seq: decimalOrNull(
+                row.retired_visibility_seq,
+                'retired_visibility_seq'
+            )
+        });
+    }
+
+    getChunkHead(chunkId) {
+        return this._normalizeChunkHead(
+            this._getChunkHead.get(
+                requireString(chunkId, 'chunkId')
+            )
+        );
+    }
+
+    getChunkVersion(chunkVersionId) {
+        const id = parseInteger(
+            chunkVersionId,
+            'chunkVersionId',
+            { min: 1n }
+        );
+        return this._normalizeChunkVersion(
+            this._getChunkVersion.get(id)
+        );
+    }
+
+    createChunkIdentity(options = {}) {
+        const chunkId = requireString(options.chunkId, 'chunkId');
+        const docId = requireString(options.docId, 'docId');
+        const now = parseInteger(this.now(), 'now');
+
+        return this._criticalWrite(() => {
+            try {
+                return this._normalizeChunkHead(
+                    this._createChunkTransaction(
+                        chunkId,
+                        docId,
+                        now
+                    )
+                );
+            } catch (error) {
+                if (
+                    error?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY'
+                    || error?.code === 'SQLITE_CONSTRAINT_UNIQUE'
+                ) {
+                    throw codedError(
+                        'CHUNK_IDENTITY_AMBIGUOUS',
+                        `Chunk identity already exists: ${chunkId}`
+                    );
+                }
+                throw error;
+            }
+        });
+    }
+
+    prepareChunkVersion(options = {}) {
+        const chunkId = requireString(options.chunkId, 'chunkId');
+        const sourceRevision = requireString(
+            options.sourceRevision,
+            'sourceRevision',
+            { trim: false }
+        );
+        const contentHash = requireSha256(
+            options.contentHash,
+            'contentHash'
+        );
+        const slotIndex = options.slotIndex == null
+            ? null
+            : parseInteger(
+                options.slotIndex,
+                'slotIndex'
+            );
+        const now = parseInteger(this.now(), 'now');
+
+        return this._criticalWrite(() => this._normalizeChunkVersion(
+            this._prepareChunkVersionTransaction(
+                chunkId,
+                sourceRevision,
+                slotIndex,
+                contentHash,
+                now
+            )
+        ));
+    }
+
+    markEmbedding(options = {}) {
+        const chunkVersionId = parseInteger(
+            options.chunkVersionId,
+            'chunkVersionId',
+            { min: 1n }
+        );
+        const embeddingFingerprint = requireString(
+            options.embeddingFingerprint,
+            'embeddingFingerprint'
+        );
+        const now = parseInteger(this.now(), 'now');
+
+        return this._criticalWrite(() => this._normalizeChunkVersion(
+            this._markEmbeddingTransaction(
+                chunkVersionId,
+                embeddingFingerprint,
+                now
+            )
+        ));
+    }
+
+    stageVector(options = {}) {
+        const chunkVersionId = parseInteger(
+            options.chunkVersionId,
+            'chunkVersionId',
+            { min: 1n }
+        );
+        const embeddingFingerprint = requireString(
+            options.embeddingFingerprint,
+            'embeddingFingerprint'
+        );
+        const vectorBlob = exactBuffer(
+            options.vectorBlob,
+            'vectorBlob'
+        );
+        const now = parseInteger(this.now(), 'now');
+
+        return this._criticalWrite(() => this._normalizeChunkVersion(
+            this._stageVectorTransaction(
+                chunkVersionId,
+                embeddingFingerprint,
+                vectorBlob,
+                now
+            )
+        ));
+    }
+
+    publishCurrentHead(options = {}) {
+        const chunkId = requireString(options.chunkId, 'chunkId');
+        const chunkVersionId = parseInteger(
+            options.chunkVersionId,
+            'chunkVersionId',
+            { min: 1n }
+        );
+        const expectedCurrentVersionId = options.expectedCurrentVersionId == null
+            ? null
+            : parseInteger(
+                options.expectedCurrentVersionId,
+                'expectedCurrentVersionId',
+                { min: 1n }
+            );
+        const now = parseInteger(this.now(), 'now');
+
+        return this._criticalWrite(
+            () => this._publishCurrentHeadTransaction(
+                chunkId,
+                chunkVersionId,
+                expectedCurrentVersionId,
+                now
+            )
+        );
+    }
+
+    abortChunkVersion(options = {}) {
+        const chunkVersionId = parseInteger(
+            options.chunkVersionId,
+            'chunkVersionId',
+            { min: 1n }
+        );
+        const now = parseInteger(this.now(), 'now');
+        return this._criticalWrite(() => this._normalizeChunkVersion(
+            this._abortChunkVersionTransaction(
+                chunkVersionId,
+                now
+            )
+        ));
     }
 }
 
