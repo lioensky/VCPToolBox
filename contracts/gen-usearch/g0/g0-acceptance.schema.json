@@ -24,7 +24,7 @@
       "const": "G0"
     },
     "contract_version": {
-      "const": "3.1.0-g0-f2r3"
+      "const": "3.1.0-g0-final-r1"
     },
     "authority_lock_digest": {
       "type": "string",
@@ -166,6 +166,8 @@
       "additionalProperties": false,
       "required": [
         "authority_lock",
+        "architecture",
+        "traceability",
         "registry",
         "failure_codes",
         "final_fixtures",
@@ -173,6 +175,18 @@
       ],
       "properties": {
         "authority_lock": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "architecture": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "traceability": {
           "enum": [
             "PASS",
             "FAIL"
@@ -208,6 +222,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "required_architecture_requirements",
+        "covered_architecture_requirements",
         "required_invariants",
         "covered_invariants",
         "required_failure_codes",
@@ -218,6 +234,76 @@
         "executed_invariant_fixtures"
       ],
       "properties": {
+        "required_architecture_requirements": {
+          "const": [
+            "G0-ARCH-001",
+            "G0-ARCH-002",
+            "G0-ARCH-003",
+            "G0-ARCH-004",
+            "G0-ARCH-005",
+            "G0-ARCH-006",
+            "G0-ARCH-007",
+            "G0-ARCH-008",
+            "G0-ARCH-009",
+            "G0-ARCH-010",
+            "G0-ARCH-011",
+            "G0-ARCH-012",
+            "G0-ARCH-013",
+            "G0-ARCH-014",
+            "G0-ARCH-015",
+            "G0-ARCH-016",
+            "G0-ARCH-017",
+            "G0-ARCH-018",
+            "G0-ARCH-019",
+            "G0-ARCH-020",
+            "G0-ARCH-021",
+            "G0-ARCH-022",
+            "G0-ARCH-023",
+            "G0-ARCH-024",
+            "G0-ARCH-025",
+            "G0-ARCH-026",
+            "G0-ARCH-027",
+            "G0-ARCH-028",
+            "G0-ARCH-029",
+            "G0-ARCH-030",
+            "G0-ARCH-031"
+          ]
+        },
+        "covered_architecture_requirements": {
+          "const": [
+            "G0-ARCH-001",
+            "G0-ARCH-002",
+            "G0-ARCH-003",
+            "G0-ARCH-004",
+            "G0-ARCH-005",
+            "G0-ARCH-006",
+            "G0-ARCH-007",
+            "G0-ARCH-008",
+            "G0-ARCH-009",
+            "G0-ARCH-010",
+            "G0-ARCH-011",
+            "G0-ARCH-012",
+            "G0-ARCH-013",
+            "G0-ARCH-014",
+            "G0-ARCH-015",
+            "G0-ARCH-016",
+            "G0-ARCH-017",
+            "G0-ARCH-018",
+            "G0-ARCH-019",
+            "G0-ARCH-020",
+            "G0-ARCH-021",
+            "G0-ARCH-022",
+            "G0-ARCH-023",
+            "G0-ARCH-024",
+            "G0-ARCH-025",
+            "G0-ARCH-026",
+            "G0-ARCH-027",
+            "G0-ARCH-028",
+            "G0-ARCH-029",
+            "G0-ARCH-030",
+            "G0-ARCH-031"
+          ]
+        },
         "required_invariants": {
           "const": [
             "G0-XINV-001",
@@ -238,7 +324,19 @@
             "G0-XINV-016",
             "G0-XINV-017",
             "G0-XINV-018",
-            "G0-XINV-019"
+            "G0-XINV-019",
+            "G0-XINV-020",
+            "G0-XINV-021",
+            "G0-XINV-022",
+            "G0-XINV-023",
+            "G0-XINV-024",
+            "G0-XINV-025",
+            "G0-XINV-026",
+            "G0-XINV-027",
+            "G0-XINV-028",
+            "G0-XINV-029",
+            "G0-XINV-030",
+            "G0-XINV-031"
           ]
         },
         "covered_invariants": {
@@ -261,7 +359,19 @@
             "G0-XINV-016",
             "G0-XINV-017",
             "G0-XINV-018",
-            "G0-XINV-019"
+            "G0-XINV-019",
+            "G0-XINV-020",
+            "G0-XINV-021",
+            "G0-XINV-022",
+            "G0-XINV-023",
+            "G0-XINV-024",
+            "G0-XINV-025",
+            "G0-XINV-026",
+            "G0-XINV-027",
+            "G0-XINV-028",
+            "G0-XINV-029",
+            "G0-XINV-030",
+            "G0-XINV-031"
           ]
         },
         "required_failure_codes": {
@@ -336,7 +446,12 @@
             "ACTIVE_ENGINE_UNAVAILABLE",
             "ENGINE_AUTHORITY_AMBIGUOUS",
             "SHADOW_FAILURE_BLOCKED_CANONICAL_WRITE",
-            "SILENT_LEGACY_FALLBACK"
+            "SILENT_LEGACY_FALLBACK",
+            "COMPACTION_SNAPSHOT_INVALID",
+            "LOGICAL_VISIBILITY_VIOLATION",
+            "CANDIDATE_DEDUP_VIOLATION",
+            "RECONCILER_AUTHORITY_VIOLATION",
+            "SOURCE_MISSING_DELETE_INFERENCE"
           ]
         },
         "present_failure_codes": {
@@ -411,7 +526,12 @@
             "ACTIVE_ENGINE_UNAVAILABLE",
             "ENGINE_AUTHORITY_AMBIGUOUS",
             "SHADOW_FAILURE_BLOCKED_CANONICAL_WRITE",
-            "SILENT_LEGACY_FALLBACK"
+            "SILENT_LEGACY_FALLBACK",
+            "COMPACTION_SNAPSHOT_INVALID",
+            "LOGICAL_VISIBILITY_VIOLATION",
+            "CANDIDATE_DEDUP_VIOLATION",
+            "RECONCILER_AUTHORITY_VIOLATION",
+            "SOURCE_MISSING_DELETE_INFERENCE"
           ]
         },
         "required_final_fixtures": {
@@ -507,7 +627,31 @@
             "G0-XINV-018-POS",
             "G0-XINV-018-NEG",
             "G0-XINV-019-POS",
-            "G0-XINV-019-NEG"
+            "G0-XINV-019-NEG",
+            "G0-XINV-020-POS",
+            "G0-XINV-020-NEG",
+            "G0-XINV-021-POS",
+            "G0-XINV-021-NEG",
+            "G0-XINV-022-POS",
+            "G0-XINV-022-NEG",
+            "G0-XINV-023-POS",
+            "G0-XINV-023-NEG",
+            "G0-XINV-024-POS",
+            "G0-XINV-024-NEG",
+            "G0-XINV-025-POS",
+            "G0-XINV-025-NEG",
+            "G0-XINV-026-POS",
+            "G0-XINV-026-NEG",
+            "G0-XINV-027-POS",
+            "G0-XINV-027-NEG",
+            "G0-XINV-028-POS",
+            "G0-XINV-028-NEG",
+            "G0-XINV-029-POS",
+            "G0-XINV-029-NEG",
+            "G0-XINV-030-POS",
+            "G0-XINV-030-NEG",
+            "G0-XINV-031-POS",
+            "G0-XINV-031-NEG"
           ]
         },
         "executed_invariant_fixtures": {
@@ -549,7 +693,31 @@
             "G0-XINV-018-POS",
             "G0-XINV-018-NEG",
             "G0-XINV-019-POS",
-            "G0-XINV-019-NEG"
+            "G0-XINV-019-NEG",
+            "G0-XINV-020-POS",
+            "G0-XINV-020-NEG",
+            "G0-XINV-021-POS",
+            "G0-XINV-021-NEG",
+            "G0-XINV-022-POS",
+            "G0-XINV-022-NEG",
+            "G0-XINV-023-POS",
+            "G0-XINV-023-NEG",
+            "G0-XINV-024-POS",
+            "G0-XINV-024-NEG",
+            "G0-XINV-025-POS",
+            "G0-XINV-025-NEG",
+            "G0-XINV-026-POS",
+            "G0-XINV-026-NEG",
+            "G0-XINV-027-POS",
+            "G0-XINV-027-NEG",
+            "G0-XINV-028-POS",
+            "G0-XINV-028-NEG",
+            "G0-XINV-029-POS",
+            "G0-XINV-029-NEG",
+            "G0-XINV-030-POS",
+            "G0-XINV-030-NEG",
+            "G0-XINV-031-POS",
+            "G0-XINV-031-NEG"
           ]
         }
       }
@@ -582,7 +750,12 @@
         "tests/gen-usearch/g0/g0-contracts.test.js",
         "tests/gen-usearch/g0/package.json",
         "tests/gen-usearch/g0/package-lock.json",
-        ".github/workflows/gen-usearch-g0-contracts.yml"
+        ".github/workflows/gen-usearch-g0-contracts.yml",
+        "contracts/gen-usearch/g0/G0-ARCHITECTURE-R3.1.md",
+        "contracts/gen-usearch/g0/G0-ARCHITECTURE-R3.1.machine.json",
+        "contracts/gen-usearch/g0/G0-ARCHITECTURE-R3.1.schema.json",
+        "contracts/gen-usearch/g0/G0-TRACEABILITY-R3.1.json",
+        "contracts/gen-usearch/g0/G0-TRACEABILITY-R3.1.schema.json"
       ],
       "properties": {
         "contracts/gen-usearch/g0/g0-authority-lock.json": {
@@ -652,6 +825,26 @@
         ".github/workflows/gen-usearch-g0-contracts.yml": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
+        },
+        "contracts/gen-usearch/g0/G0-ARCHITECTURE-R3.1.md": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "contracts/gen-usearch/g0/G0-ARCHITECTURE-R3.1.machine.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "contracts/gen-usearch/g0/G0-ARCHITECTURE-R3.1.schema.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "contracts/gen-usearch/g0/G0-TRACEABILITY-R3.1.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "contracts/gen-usearch/g0/G0-TRACEABILITY-R3.1.schema.json": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },
@@ -703,6 +896,8 @@
           "schema_checks": {
             "const": {
               "authority_lock": "PASS",
+              "architecture": "PASS",
+              "traceability": "PASS",
               "registry": "PASS",
               "failure_codes": "PASS",
               "final_fixtures": "PASS",
