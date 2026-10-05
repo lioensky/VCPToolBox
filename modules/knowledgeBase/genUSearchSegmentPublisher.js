@@ -101,6 +101,30 @@ function exactSetEquals(left, right) {
     return a.every((value, index) => value === b[index]);
 }
 
+function databaseIdentity(db) {
+    const name = String(db?.name || '').trim();
+    if (!name || name === ':memory:' || name.startsWith('file::memory:')) {
+        return `memory:${name || 'anonymous'}`;
+    }
+    const absolute = path.resolve(name);
+    try {
+        const stat = fs.statSync(absolute, { bigint: true });
+        if (stat.isFile() && stat.ino !== 0n) {
+            return `inode:${stat.dev.toString()}:${stat.ino.toString()}`;
+        }
+    } catch (_) {
+        // Fall back to canonical path if stable file identity is unavailable.
+    }
+    try {
+        const resolved = fs.realpathSync.native
+            ? fs.realpathSync.native(absolute)
+            : fs.realpathSync(absolute);
+        return `path:${resolved}`;
+    } catch (_) {
+        return `path:${absolute}`;
+    }
+}
+
 class GenUSearchSegmentPublisher {
     constructor(options = {}) {
         const db = options.db;
@@ -121,6 +145,7 @@ class GenUSearchSegmentPublisher {
         }
         fs.mkdirSync(segmentRoot, { recursive: true });
         this.segmentRoot = fs.realpathSync(segmentRoot);
+        this.databaseIdentity = databaseIdentity(db);
         this.db = db;
         this.now = typeof options.now === 'function'
             ? options.now
