@@ -838,6 +838,25 @@ class GenUSearchMetadataStore {
                     );
                 }
 
+                const document = this._getDocument.get(head.doc_id);
+                if (!document || document.state !== 'ACTIVE') {
+                    throw codedError(
+                        'DOCUMENT_IDENTITY_AMBIGUOUS',
+                        `Active document "${head.doc_id}" is unavailable for current-head publication`
+                    );
+                }
+                if (document.reconcile_target_revision != null) {
+                    if (
+                        nextVersion.source_revision !== document.reconcile_target_revision
+                        || !['ADMITTED', 'COMPLETE'].includes(document.reconciliation_state)
+                    ) {
+                        throw codedError(
+                            'STALE_VECTOR_PUBLICATION',
+                            'Staged vector does not match the publishable reconciliation authority'
+                        );
+                    }
+                }
+
                 const recovery = this._getRecovery.get(nextVersion.vector_id);
                 if (
                     !recovery
