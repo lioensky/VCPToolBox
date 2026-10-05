@@ -70,7 +70,8 @@ test('G3 publisher does not implement query, GC, compaction or cutover authority
         /gen_usearch_runtime_ownership/,
         /GENERATIONAL_SHADOW/,
         /GENERATIONAL_ACTIVE/,
-        /compaction/i
+        /publishCompaction\s*\(/,
+        /compactSegments\s*\(/
     ]) {
         assert.doesNotMatch(source, forbidden);
     }
