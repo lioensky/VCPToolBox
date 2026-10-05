@@ -12,7 +12,7 @@ test('G3 boundary is frozen around immutable segment + manifest authority', () =
     const contract = read('contracts/gen-usearch/g3/G3-IMMUTABLE-SEGMENT-MANIFEST-R1.md');
     assert.match(
         contract,
-        /Status: \*\*BOUNDARY_FROZEN \/ IMPLEMENTATION_ACTIVE\*\*/
+        /Status: \*\*PASS\*\*/
     );
     for (const phrase of [
         'immutable native Vexus segment',
