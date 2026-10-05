@@ -358,6 +358,8 @@ const GEN_USEARCH_SCHEMA_SQL = `
     CREATE TABLE IF NOT EXISTS gen_usearch_reconciliation_plans (
         plan_id TEXT PRIMARY KEY,
         doc_id TEXT NOT NULL,
+        base_document_uri TEXT,
+        base_identity_digest TEXT NOT NULL CHECK(length(base_identity_digest) = 64),
         observed_source_digest TEXT NOT NULL,
         observed_source_revision TEXT NOT NULL,
         target_revision TEXT NOT NULL,
