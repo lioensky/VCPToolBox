@@ -57,6 +57,12 @@ test('strict schemas validate exact F2R3 artifacts', () => {
   }
 });
 
+test('G0 frozen authority states are aligned', () => {
+  assert.equal(lock.authority_status, 'FROZEN');
+  assert.equal(architecture.status, 'FROZEN');
+  assert.equal(registry.status, 'FROZEN');
+});
+
 test('authority lock is externally pinned and seals every other locked artifact', () => {
   assert.deepEqual(lock.external_authority_pin, {
     kind:'github_actions_repository_variable',
