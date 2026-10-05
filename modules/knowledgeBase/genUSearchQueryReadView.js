@@ -12,11 +12,46 @@ const { VexusIndex } = require('../../rust-vexus-lite');
 const MAX_SIGNED_INT64 = 9223372036854775807n;
 const VIEW_INTERNAL = new WeakMap();
 const VIEW_LIFECYCLE = new WeakMap();
+const LIVE_GC_VIEWS = new Set();
+const MEMORY_DATABASE_AUTHORITY = new WeakMap();
+let nextMemoryDatabaseIdentity = 1;
 
 function codedError(code, message) {
     const error = new Error(message);
     error.code = code;
     return error;
+}
+
+function databaseAuthorityIdentity(db) {
+    if (!db || typeof db !== 'object') {
+        throw new TypeError('database authority requires a database connection');
+    }
+    const name = String(db.name || '').trim();
+    if (!name || name === ':memory:' || name.startsWith('file::memory:')) {
+        let identity = MEMORY_DATABASE_AUTHORITY.get(db);
+        if (!identity) {
+            identity = 'memory-connection:' + nextMemoryDatabaseIdentity++;
+            MEMORY_DATABASE_AUTHORITY.set(db, identity);
+        }
+        return identity;
+    }
+    const absolute = path.resolve(name);
+    try {
+        const stat = fs.statSync(absolute, { bigint: true });
+        if (stat.isFile() && stat.ino !== 0n) {
+            return 'inode:' + stat.dev.toString() + ':' + stat.ino.toString();
+        }
+    } catch (_) {
+        // Canonical-path fallback below.
+    }
+    try {
+        const real = fs.realpathSync.native
+            ? fs.realpathSync.native(absolute)
+            : fs.realpathSync(absolute);
+        return 'path:' + real;
+    } catch (_) {
+        return 'path:' + absolute;
+    }
 }
 
 function integerText(value, field, min = 0n) {
@@ -156,7 +191,11 @@ class QueryReadView {
             created_at: { value: fields.created_at, enumerable: true },
             deadline: { value: fields.deadline, enumerable: true }
         });
-        VIEW_LIFECYCLE.set(this, { state: 'ACTIVE' });
+        VIEW_LIFECYCLE.set(this, {
+            state: 'ACTIVE',
+            worker_quiescent: false,
+            pins_released: false
+        });
         Object.preventExtensions(this);
     }
 
@@ -186,6 +225,7 @@ class GenUSearchQueryReadViewCoordinator {
 
         this.db = db;
         this.runtimeId = runtimeId;
+        this.databaseAuthority = databaseAuthorityIdentity(db);
         this.segmentRoot = fs.realpathSync(segmentRoot);
         this.now = typeof options.now === 'function' ? options.now : () => Date.now();
         this.maxReadViewMs = safeMillis(options.maxReadViewMs ?? 30000, 'maxReadViewMs');
@@ -615,6 +655,7 @@ class GenUSearchQueryReadViewCoordinator {
 
             VIEW_INTERNAL.set(view, {
                 coordinator: this,
+                databaseAuthority: this.databaseAuthority,
                 memtableSources,
                 segments,
                 currentByVector,
@@ -624,6 +665,7 @@ class GenUSearchQueryReadViewCoordinator {
                     entry => entry.pinLease
                 )
             });
+            LIVE_GC_VIEWS.add(view);
             provisionalMemtables.length = 0;
             provisionalSegments.length = 0;
             return view;
@@ -667,6 +709,18 @@ class GenUSearchQueryReadViewCoordinator {
         return lifecycle.state;
     }
 
+    beginQuiescing(view) {
+        this._internal(view);
+        const lifecycle = VIEW_LIFECYCLE.get(view);
+        if (!lifecycle || lifecycle.state === 'RELEASED') {
+            throw codedError('QUERY_READ_VIEW_INVALID', 'QueryReadView is released');
+        }
+        if (lifecycle.state === 'ACTIVE' || lifecycle.state === 'CANCEL_REQUESTED') {
+            lifecycle.state = 'QUIESCING';
+        }
+        return lifecycle.state;
+    }
+
     release(view, options = {}) {
         const internal = this._internal(view);
         const lifecycle = VIEW_LIFECYCLE.get(view);
@@ -677,13 +731,17 @@ class GenUSearchQueryReadViewCoordinator {
                 'QueryReadView pins release only after worker quiescence'
             );
         }
+        lifecycle.worker_quiescent = true;
+        lifecycle.state = 'QUIESCING';
         for (const source of internal.memtableSources) {
             decMemtablePin(source.pinLease);
         }
         for (const pinLease of internal.segmentPinLeases) {
             decSegmentPin(pinLease);
         }
+        lifecycle.pins_released = true;
         lifecycle.state = 'RELEASED';
+        LIVE_GC_VIEWS.delete(view);
         return true;
     }
 
@@ -784,6 +842,37 @@ class GenUSearchQueryReadViewCoordinator {
             }
         }
         return candidates;
+    }
+
+    static snapshotGcSafety(db) {
+        const authority = databaseAuthorityIdentity(db);
+        const result = [];
+        for (const view of LIVE_GC_VIEWS) {
+            const internal = VIEW_INTERNAL.get(view);
+            const lifecycle = VIEW_LIFECYCLE.get(view);
+            if (!internal || !lifecycle) {
+                throw codedError(
+                    'QUERY_READ_VIEW_INVALID',
+                    'live QueryReadView registry contains malformed authority'
+                );
+            }
+            if (internal.databaseAuthority !== authority) continue;
+            if (!['ACTIVE', 'CANCEL_REQUESTED', 'QUIESCING'].includes(lifecycle.state)) {
+                throw codedError(
+                    'QUERY_READ_VIEW_INVALID',
+                    'live QueryReadView has invalid GC lifecycle state'
+                );
+            }
+            const visibility = integerText(view.visibility_seq, 'visibility_seq');
+            result.push(Object.freeze({
+                read_view_id: view.read_view_id,
+                visibility_seq: visibility.text,
+                state: lifecycle.state,
+                worker_quiescent: lifecycle.worker_quiescent === true,
+                pins_released: lifecycle.pins_released === true
+            }));
+        }
+        return Object.freeze(result);
     }
 
     static memtablePinCount(memtable) {
