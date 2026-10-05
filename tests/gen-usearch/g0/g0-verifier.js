@@ -697,11 +697,13 @@ function exactSetEquals(actual, expected) {
   return a.size === actual.length && expected.every(item => a.has(item));
 }
 
-function verifyCoverage(authorityLock, registry, failureRegistry, finalFixtures, invariantFixtures) {
+function verifyCoverage(authorityLock, architecture, traceability, registry, failureRegistry, finalFixtures, invariantFixtures) {
   const failureCodes = failureRegistry.codes.map(item => item.code);
   const finalIds = finalFixtures.vectors.map(item => item.id);
   const invariantFixtureIds = invariantFixtures.vectors.map(item => item.id);
   const registryInvariantIds = registry.invariants.map(item => item.id);
+  const architectureRequirementIds = architecture.requirements.map(item => item.id);
+  const traceabilityRequirementIds = traceability.rows.map(item => item.architecture_requirement_id);
   const coveredInvariants = [];
 
   for (const invariantId of authorityLock.required_invariant_ids) {
@@ -712,19 +714,49 @@ function verifyCoverage(authorityLock, registry, failureRegistry, finalFixtures,
     }
   }
 
+  const traceabilityOk = traceability.rows.every(row => {
+    const requirement = architecture.requirements.find(item => item.id === row.architecture_requirement_id);
+    const invariant = registry.invariants.find(item => item.id === row.invariant_id);
+    return !!requirement &&
+      !!invariant &&
+      requirement.invariant_id === row.invariant_id &&
+      requirement.contract === row.contract &&
+      requirement.severity === row.severity &&
+      requirement.rule === row.rule &&
+      row.positive_fixture_id === row.invariant_id + '-POS' &&
+      row.negative_fixture_id === row.invariant_id + '-NEG' &&
+      row.verifier_function === 'evaluateInvariant' &&
+      row.failure_code === invariant.failure_code;
+  });
+
+  const amendmentCoverageOk = architecture.amendments.every(amendment => {
+    const mapped = traceability.amendment_coverage.find(row => row.amendment_id === amendment.id);
+    return !!mapped &&
+      exactSetEquals(mapped.requirement_ids, amendment.implements_requirement_ids) &&
+      mapped.requirement_ids.length > 0 &&
+      mapped.requirement_ids.every(id => authorityLock.required_architecture_requirement_ids.includes(id));
+  });
+
   return {
     ok:
+      architecture.contract_version === authorityLock.contract_version &&
+      traceability.contract_version === authorityLock.contract_version &&
       registry.contract_version === authorityLock.contract_version &&
       failureRegistry.contract_version === authorityLock.contract_version &&
       finalFixtures.contract_version === authorityLock.contract_version &&
       invariantFixtures.contract_version === authorityLock.contract_version &&
       JSON.stringify(registry.enums) === JSON.stringify(authorityLock.critical_enums) &&
+      exactSetEquals(architectureRequirementIds, authorityLock.required_architecture_requirement_ids) &&
+      exactSetEquals(traceabilityRequirementIds, authorityLock.required_architecture_requirement_ids) &&
       exactSetEquals(registryInvariantIds, authorityLock.required_invariant_ids) &&
       exactSetEquals(failureCodes, authorityLock.required_failure_codes) &&
       exactSetEquals(finalIds, authorityLock.required_final_fixture_ids) &&
       exactSetEquals(invariantFixtureIds, authorityLock.required_invariant_fixture_ids) &&
-      exactSetEquals(coveredInvariants, authorityLock.required_invariant_ids),
-    covered_invariants: coveredInvariants
+      exactSetEquals(coveredInvariants, authorityLock.required_invariant_ids) &&
+      traceabilityOk &&
+      amendmentCoverageOk,
+    covered_invariants: coveredInvariants,
+    covered_architecture_requirements: traceabilityRequirementIds
   };
 }
 
