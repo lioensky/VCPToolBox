@@ -58,6 +58,14 @@ test('G2 remains unwired from existing ingestion, search and serving paths', () 
     }
 });
 
+test('G2 Gen0 authority is bound to authentic rust-vexus-lite native identity', () => {
+    const memtable = read('modules/knowledgeBase/genUSearchMemTable.js');
+    assert.match(memtable, /require\('\.\.\/\.\.\/rust-vexus-lite'\)/);
+    assert.match(memtable, /instanceof NativeVexusIndex/);
+    assert.match(memtable, /containsKey64/);
+    assert.match(memtable, /PHYSICAL_COVERAGE_MISSING/);
+});
+
 test('G2 production modules do not implement deferred segment, manifest, GC or serving authority', () => {
     const combined = g2ProductionFiles.map(read).join('\n');
     for (const forbidden of [
