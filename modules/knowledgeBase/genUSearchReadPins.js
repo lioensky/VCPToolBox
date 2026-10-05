@@ -76,20 +76,25 @@ function assertMemtableDatabase(memtable, db) {
     return true;
 }
 
-function pinMemtable(memtable) {
+function acquireMemtablePin(memtable) {
     if (!memtable || (typeof memtable !== 'object' && typeof memtable !== 'function')) {
         throw new TypeError('reader pin requires a MemTable object');
     }
     MEMTABLE_PINS.set(memtable, (MEMTABLE_PINS.get(memtable) || 0) + 1);
-}
-
-function unpinMemtable(memtable) {
-    const current = MEMTABLE_PINS.get(memtable) || 0;
-    if (current <= 0) {
-        throw codedError('READER_PIN_VIOLATION', 'MemTable reader pin underflow');
-    }
-    if (current === 1) MEMTABLE_PINS.delete(memtable);
-    else MEMTABLE_PINS.set(memtable, current - 1);
+    let released = false;
+    return Object.freeze({
+        release() {
+            if (released) return false;
+            const current = MEMTABLE_PINS.get(memtable) || 0;
+            if (current <= 0) {
+                throw codedError('READER_PIN_VIOLATION', 'MemTable reader pin underflow');
+            }
+            if (current === 1) MEMTABLE_PINS.delete(memtable);
+            else MEMTABLE_PINS.set(memtable, current - 1);
+            released = true;
+            return true;
+        }
+    });
 }
 
 function memtablePinCount(memtable) {
@@ -106,20 +111,24 @@ function assertMemtableRemovalAllowed(memtable) {
     return true;
 }
 
-function pinSegment(segmentId) {
+function acquireSegmentPin(segmentId) {
     const id = String(segmentId || '');
     if (!id) throw new TypeError('segment reader pin requires segmentId');
     SEGMENT_PINS.set(id, (SEGMENT_PINS.get(id) || 0) + 1);
-}
-
-function unpinSegment(segmentId) {
-    const id = String(segmentId || '');
-    const current = SEGMENT_PINS.get(id) || 0;
-    if (current <= 0) {
-        throw codedError('READER_PIN_VIOLATION', 'segment reader pin underflow: ' + id);
-    }
-    if (current === 1) SEGMENT_PINS.delete(id);
-    else SEGMENT_PINS.set(id, current - 1);
+    let released = false;
+    return Object.freeze({
+        release() {
+            if (released) return false;
+            const current = SEGMENT_PINS.get(id) || 0;
+            if (current <= 0) {
+                throw codedError('READER_PIN_VIOLATION', 'segment reader pin underflow: ' + id);
+            }
+            if (current === 1) SEGMENT_PINS.delete(id);
+            else SEGMENT_PINS.set(id, current - 1);
+            released = true;
+            return true;
+        }
+    });
 }
 
 function segmentPinCount(segmentId) {
@@ -129,11 +138,9 @@ function segmentPinCount(segmentId) {
 module.exports = Object.freeze({
     bindMemtableDatabase,
     assertMemtableDatabase,
-    pinMemtable,
-    unpinMemtable,
+    acquireMemtablePin,
     memtablePinCount,
     assertMemtableRemovalAllowed,
-    pinSegment,
-    unpinSegment,
+    acquireSegmentPin,
     segmentPinCount
 });
