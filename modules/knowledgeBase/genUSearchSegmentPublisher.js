@@ -507,43 +507,35 @@ class GenUSearchSegmentPublisher {
     }
 
     _assertSealedMemTable(memtable) {
-        if (!(memtable instanceof GenUSearchMemTable)) {
-            throw new TypeError('G3 flush source must be GenUSearchMemTable');
-        }
-        if (memtable.state !== 'SEALED_QUERY_VISIBLE') {
+        const snapshot = GenUSearchMemTable.snapshotForImmutableSegment(memtable);
+        if (snapshot.state !== 'SEALED_QUERY_VISIBLE') {
             throw codedError(
                 'MEMTABLE_NOT_QUERY_VISIBLE',
                 'G3 flush requires SEALED_QUERY_VISIBLE Gen0 source'
             );
         }
-        const vectorIds = memtable.listVectorIds().map(id => canonicalVectorId(id).text);
-        const unique = new Set(vectorIds);
-        if (unique.size !== vectorIds.length) {
-            throw codedError(
-                'SEGMENT_ARTIFACT_INVALID',
-                'sealed Gen0 contains duplicate vector IDs'
-            );
-        }
-        vectorIds.sort((a, b) => {
-            const left = BigInt(a);
-            const right = BigInt(b);
-            return left < right ? -1 : left > right ? 1 : 0;
-        });
+        const vectorIds = snapshot.vectorIds.map(
+            id => canonicalVectorId(id).text
+        );
         if (vectorIds.length === 0) {
             throw codedError(
                 'SEGMENT_ARTIFACT_INVALID',
                 'G3 does not publish empty segments'
             );
         }
-        return vectorIds;
+        return Object.freeze({
+            ...snapshot,
+            vectorIds: Object.freeze(vectorIds)
+        });
     }
 
-    _segmentIdentity(memtable, vectorIds) {
+    _segmentIdentity(source) {
         const digest = crypto.createHash('sha256')
             .update(JSON.stringify({
-                sourceId: memtable.sourceId,
-                embeddingFingerprint: memtable.embeddingFingerprint,
-                vectorIds
+                databaseIdentity: this.databaseIdentity,
+                sourceId: source.sourceId,
+                embeddingFingerprint: source.embeddingFingerprint,
+                vectorIds: source.vectorIds
             }))
             .digest('hex');
         return `seg-${digest}`;
