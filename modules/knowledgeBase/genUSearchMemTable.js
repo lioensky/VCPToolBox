@@ -90,9 +90,10 @@ class GenUSearchMemTable {
     #mutationToken;
 
     constructor(options = {}) {
-        const VexusIndex = options.VexusIndex;
-        if (typeof VexusIndex !== 'function') {
-            throw new TypeError('GenUSearchMemTable requires VexusIndex');
+        const { VexusIndex: NativeVexusIndex } = require('../../rust-vexus-lite');
+        const VexusIndex = options.VexusIndex || NativeVexusIndex;
+        if (typeof VexusIndex !== 'function' || typeof NativeVexusIndex !== 'function') {
+            throw new TypeError('GenUSearchMemTable requires the native VexusIndex ABI');
         }
         if (
             (typeof options.mutationToken !== 'object' || options.mutationToken === null)
@@ -137,6 +138,12 @@ class GenUSearchMemTable {
 
         this.#mutationToken = options.mutationToken;
         this.#index = new VexusIndex(dimension, capacity);
+        if (!(this.#index instanceof NativeVexusIndex)) {
+            throw codedError(
+                'MEMTABLE_NATIVE_INDEX_UNTRUSTED',
+                'Gen0 MemTable requires an authentic rust-vexus-lite VexusIndex instance'
+            );
+        }
     }
 
     get state() {
