@@ -276,6 +276,13 @@ class GenUSearchQueryReadViewCoordinator {
         });
     }
 
+    _assertNoAmbientTransaction(code, message) {
+        if (this.db.inTransaction === true) {
+            throw codedError(code, message);
+        }
+        return true;
+    }
+
     _assertServingRuntime(runtime) {
         if (
             runtime.owner_id !== this.runtimeId
@@ -375,6 +382,10 @@ class GenUSearchQueryReadViewCoordinator {
     }
 
     acquire(options = {}) {
+        this._assertNoAmbientTransaction(
+            'QUERY_READ_VIEW_INVALID',
+            'QueryReadView acquisition requires SQLite autocommit state'
+        );
         const createdAt = safeMillis(this.now(), 'created_at');
         const deadline = options.deadline == null
             ? createdAt + this.maxReadViewMs
@@ -656,6 +667,10 @@ class GenUSearchQueryReadViewCoordinator {
 
     assertResponseFence(view) {
         this.assertUsable(view);
+        this._assertNoAmbientTransaction(
+            'QUERY_FENCE_STALE',
+            'final response fence validation requires a fresh autocommit read'
+        );
         const runtime = this._getRuntime.get();
         if (!runtime) {
             throw codedError('QUERY_FENCE_STALE', 'runtime ownership row disappeared');
