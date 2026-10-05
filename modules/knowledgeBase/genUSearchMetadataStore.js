@@ -519,6 +519,66 @@ class GenUSearchMetadataStore {
 
         this._observationTransaction = db.transaction(
             (docId, digest, revision, now) => {
+                const documentBefore = this._getDocument.get(docId);
+                if (!documentBefore || documentBefore.state !== 'ACTIVE') {
+                    throw codedError(
+                        'DOCUMENT_IDENTITY_AMBIGUOUS',
+                        `Active Gen-USearch document "${docId}" is unavailable`
+                    );
+                }
+
+                const sameObservation =
+                    documentBefore.observed_source_revision === revision
+                    && documentBefore.observed_source_digest === digest;
+
+                if (
+                    documentBefore.observed_source_revision === revision
+                    && documentBefore.observed_source_digest != null
+                    && documentBefore.observed_source_digest !== digest
+                ) {
+                    throw codedError(
+                        'SOURCE_COMMIT_UNVERIFIED',
+                        'The same committed source revision produced a different digest'
+                    );
+                }
+
+                const openPlan = this._getOpenReconciliationPlanByDocument.get(docId);
+                if (openPlan?.state === 'ADMITTED') {
+                    if (
+                        openPlan.target_revision === revision
+                        && openPlan.observed_source_digest === digest
+                        && sameObservation
+                    ) {
+                        return documentBefore;
+                    }
+                    throw codedError(
+                        'SOURCE_OBSERVATION_INVALID',
+                        `Document "${docId}" already has an admitted reconciliation plan ${openPlan.plan_id}`
+                    );
+                }
+                if (
+                    openPlan?.state === 'ERROR'
+                    && openPlan.target_revision === revision
+                ) {
+                    if (
+                        openPlan.observed_source_digest === digest
+                        && sameObservation
+                    ) {
+                        return documentBefore;
+                    }
+                    throw codedError(
+                        'SOURCE_COMMIT_UNVERIFIED',
+                        'Errored reconciliation revision changed digest without a new revision'
+                    );
+                }
+                if (
+                    !openPlan
+                    && documentBefore.reconciliation_state === 'PENDING'
+                    && sameObservation
+                ) {
+                    return documentBefore;
+                }
+
                 const changed = this._recordObservation.run(
                     digest,
                     revision,
