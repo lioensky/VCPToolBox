@@ -59,11 +59,20 @@ class GenUSearchMemTable {
     #index;
     #vectorIds = new Set();
     #state = 'ACTIVE';
+    #mutationToken;
 
     constructor(options = {}) {
         const VexusIndex = options.VexusIndex;
         if (typeof VexusIndex !== 'function') {
             throw new TypeError('GenUSearchMemTable requires VexusIndex');
+        }
+        if (
+            (typeof options.mutationToken !== 'object' || options.mutationToken === null)
+            && typeof options.mutationToken !== 'function'
+        ) {
+            throw new TypeError(
+                'GenUSearchMemTable requires a private mutation authority token'
+            );
         }
 
         const dimension = Number(options.dimension);
@@ -98,11 +107,21 @@ class GenUSearchMemTable {
             sourceId: { value: sourceId, enumerable: true }
         });
 
+        this.#mutationToken = options.mutationToken;
         this.#index = new VexusIndex(dimension, capacity);
     }
 
     get state() {
         return this.#state;
+    }
+
+    _assertMutationAuthority(token) {
+        if (token !== this.#mutationToken) {
+            throw codedError(
+                'MEMTABLE_MUTATION_AUTHORITY_REQUIRED',
+                'Gen0 MemTable mutation requires its bound physical coverage writer'
+            );
+        }
     }
 
     _assertActive() {
@@ -114,7 +133,8 @@ class GenUSearchMemTable {
         }
     }
 
-    addVector(options = {}) {
+    addVector(options = {}, mutationToken) {
+        this._assertMutationAuthority(mutationToken);
         this._assertActive();
         const vectorId = canonicalVectorId(options.vectorId);
         const vector = requireVector(options.vector, this.dimension);
@@ -135,7 +155,8 @@ class GenUSearchMemTable {
         });
     }
 
-    removeVector(vectorId) {
+    removeVector(vectorId, mutationToken) {
+        this._assertMutationAuthority(mutationToken);
         this._assertActive();
         const normalized = canonicalVectorId(vectorId);
         if (!this.#vectorIds.has(normalized)) return false;
@@ -145,18 +166,19 @@ class GenUSearchMemTable {
         return true;
     }
 
-    hasVector(vectorId) {
-        const normalized = canonicalVectorId(vectorId);
-        return this.#vectorIds.has(normalized);
-    }
-
-    seal() {
+    seal(mutationToken) {
+        this._assertMutationAuthority(mutationToken);
         if (this.#state === 'SEALED_QUERY_VISIBLE') {
             return this.#state;
         }
         this._assertActive();
         this.#state = 'SEALED_QUERY_VISIBLE';
         return this.#state;
+    }
+
+    hasVector(vectorId) {
+        const normalized = canonicalVectorId(vectorId);
+        return this.#vectorIds.has(normalized);
     }
 
     listVectorIds() {
