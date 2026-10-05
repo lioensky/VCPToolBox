@@ -38,6 +38,23 @@ function canonicalGeneration(value) {
     return normalized;
 }
 
+function nativeContainsKey(index, vectorId) {
+    if (typeof index?.containsKey64 !== 'function') {
+        throw codedError(
+            'PHYSICAL_COVERAGE_MISSING',
+            'Gen0 MemTable native index must expose containsKey64()'
+        );
+    }
+    const present = index.containsKey64(vectorId);
+    if (typeof present !== 'boolean') {
+        throw codedError(
+            'PHYSICAL_COVERAGE_MISSING',
+            'Gen0 MemTable native containsKey64() must return boolean'
+        );
+    }
+    return present;
+}
+
 function nativeRevision(index) {
     const revision = Number(index?.revision);
     if (!Number.isSafeInteger(revision) || revision < 0) {
@@ -160,10 +177,10 @@ class GenUSearchMemTable {
         const beforeRevision = nativeRevision(this.#index);
         this.#index.addKey64(vectorId, vector);
         const afterRevision = nativeRevision(this.#index);
-        if (afterRevision !== beforeRevision + 1) {
+        if (afterRevision !== beforeRevision + 1 || !nativeContainsKey(this.#index, vectorId)) {
             throw codedError(
                 'PHYSICAL_COVERAGE_MISSING',
-                `Native Gen0 add for vector ${vectorId} did not advance revision exactly once`
+                `Native Gen0 add for vector ${vectorId} was not durably observable in the bound index`
             );
         }
         this.#vectorIds.add(vectorId);
@@ -183,10 +200,10 @@ class GenUSearchMemTable {
         const beforeRevision = nativeRevision(this.#index);
         this.#index.removeKey64(normalized);
         const afterRevision = nativeRevision(this.#index);
-        if (afterRevision !== beforeRevision + 1) {
+        if (afterRevision !== beforeRevision + 1 || nativeContainsKey(this.#index, normalized)) {
             throw codedError(
                 'PHYSICAL_COVERAGE_MISSING',
-                `Native Gen0 remove for vector ${normalized} did not advance revision exactly once`
+                `Native Gen0 remove for vector ${normalized} was not durably observable in the bound index`
             );
         }
         this.#vectorIds.delete(normalized);
