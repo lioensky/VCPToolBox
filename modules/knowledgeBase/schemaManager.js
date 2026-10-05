@@ -603,6 +603,8 @@ const POST_MIGRATION_INDEX_SQL = `
 `;
 
 const ADDITIVE_MIGRATIONS = Object.freeze([
+    ['gen_usearch_reconciliation_plans', 'base_document_uri', 'TEXT'],
+    ['gen_usearch_reconciliation_plans', 'base_identity_digest', 'TEXT'],
     ['tags', 'vector_version', 'INTEGER NOT NULL DEFAULT 1'],
     ['file_tags', 'position', 'INTEGER NOT NULL DEFAULT 0'],
     ['tag_intrinsic_residuals', 'raw_residual_ratio', 'REAL'],
