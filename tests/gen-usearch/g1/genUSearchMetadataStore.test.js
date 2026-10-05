@@ -278,6 +278,48 @@ test('document URI moves own visibility sequencing and reject caller injection',
     }
 });
 
+test('corrupt multiple-open URI history fails closed and rolls back visibility sequence', () => {
+    const fixture = createFixture();
+    try {
+        fixture.store.createDocument({
+            docId: 'doc-history-corrupt',
+            uri: 'diary/original.txt',
+            visibilitySeq: '0'
+        });
+        fixture.db.prepare(`
+            INSERT INTO gen_usearch_document_uri_history (
+                doc_id, uri, valid_from_visibility_seq, valid_to_visibility_seq
+            ) VALUES (?, ?, ?, NULL)
+        `).run('doc-history-corrupt', 'diary/ghost.txt', 0);
+
+        assert.throws(
+            () => fixture.store.moveDocument({
+                docId: 'doc-history-corrupt',
+                uri: 'diary/next.txt'
+            }),
+            error => error?.code === 'METADATA_INTEGRITY_FAILURE'
+        );
+
+        assert.equal(fixture.store.readSequence('visibility_seq'), '0');
+        assert.equal(
+            fixture.store.getDocument('doc-history-corrupt').current_uri,
+            'diary/original.txt'
+        );
+        const rows = fixture.db.prepare(`
+            SELECT uri, valid_to_visibility_seq
+            FROM gen_usearch_document_uri_history
+            WHERE doc_id = ?
+            ORDER BY uri
+        `).safeIntegers(true).all('doc-history-corrupt');
+        assert.deepEqual(rows, [
+            { uri: 'diary/ghost.txt', valid_to_visibility_seq: null },
+            { uri: 'diary/original.txt', valid_to_visibility_seq: null }
+        ]);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('source observation and reconciliation intent are committed atomically', () => {
     const fixture = createFixture();
     try {
