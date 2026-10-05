@@ -44,6 +44,7 @@ class GenUSearchPhysicalCoverageWriter {
     #bootstrapped = false;
     #activeMemtable = null;
     #mutationTokens = new WeakMap();
+    #sourceIds = new Set();
 
     constructor(options = {}) {
         const db = options.db;
@@ -150,6 +151,13 @@ class GenUSearchPhysicalCoverageWriter {
             embeddingFingerprint: options.embeddingFingerprint,
             mutationToken: token
         });
+        if (this.#sourceIds.has(memtable.sourceId)) {
+            throw codedError(
+                'MEMTABLE_SOURCE_ID_COLLISION',
+                `Gen0 MemTable source identity already exists: ${memtable.sourceId}`
+            );
+        }
+        this.#sourceIds.add(memtable.sourceId);
         this.#mutationTokens.set(memtable, token);
         return memtable;
     }
