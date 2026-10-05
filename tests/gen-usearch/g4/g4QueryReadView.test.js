@@ -694,6 +694,89 @@ test('non-SERVING runtime fails acquisition and cleans in-transaction segment pi
     }
 });
 
+test('QueryReadView acquisition rejects ambient SQLite transactions before pinning', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: 'aa'.repeat(32)
+        });
+
+        fixture.db.exec('BEGIN IMMEDIATE');
+        try {
+            assert.equal(fixture.db.inTransaction, true);
+            assert.throws(
+                () => fixture.coordinator.acquire({
+                    memtables: [memtable],
+                    deadline: fixture.now() + 500
+                }),
+                error => error?.code === 'QUERY_READ_VIEW_INVALID'
+            );
+            assert.equal(
+                GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+                0
+            );
+        } finally {
+            fixture.db.exec('ROLLBACK');
+        }
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('final response fence rejects ambient stale SQLite snapshots', () => {
+    const fixture = createFixture();
+    let secondDb;
+    try {
+        const memtable = fixture.createMemtable(1);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: 'bb'.repeat(32)
+        });
+        const view = fixture.coordinator.acquire({
+            memtables: [memtable],
+            deadline: fixture.now() + 500
+        });
+
+        fixture.db.exec('BEGIN');
+        try {
+            const frozen = fixture.db.prepare(
+                'SELECT runtime_fence FROM gen_usearch_runtime_ownership WHERE singleton = 1'
+            ).get();
+            assert.equal(Number(frozen.runtime_fence), 7);
+
+            secondDb = new Database(fixture.db.name);
+            secondDb.pragma('journal_mode = WAL');
+            secondDb.pragma('synchronous = FULL');
+            secondDb.prepare(
+                "UPDATE gen_usearch_runtime_ownership SET owner_id = ?, serving_state = 'SERVING', runtime_fence = ?, updated_at = ? WHERE singleton = 1"
+            ).run('runtime-other', 8n, BigInt(fixture.tick()));
+
+            assert.throws(
+                () => fixture.retrieval.search({
+                    view,
+                    query: new Float32Array([1, 0, 0, 0]),
+                    embeddingFingerprint: 'embed-v1',
+                    k: 5
+                }),
+                error => error?.code === 'QUERY_FENCE_STALE'
+            );
+            assert.equal(
+                GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+                1
+            );
+        } finally {
+            fixture.db.exec('ROLLBACK');
+        }
+
+        fixture.coordinator.release(view, { workerQuiescent: true });
+    } finally {
+        try { secondDb?.close(); } catch (_) {}
+        fixture.cleanup();
+    }
+});
+
 test('QueryReadView cannot be forged, transferred to another coordinator, or publicly mutated', () => {
     const fixture = createFixture();
     try {
