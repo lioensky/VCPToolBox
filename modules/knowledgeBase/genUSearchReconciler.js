@@ -456,6 +456,116 @@ function assertIdentityOnlyPlan(plan) {
     }
     return plan;
 }
+function assertPlanAgainstBaseIdentity(plan, previousChunks) {
+    assertIdentityOnlyPlan(plan);
+    const previous = normalizePreviousChunks(previousChunks || []);
+    const baseIdentityDigest = hashCanonical(previous.map(row => ({
+        chunkId: row.chunkId,
+        slotIndex: row.slotIndex,
+        contentHash: row.contentHash
+    })));
+    if (baseIdentityDigest !== plan.baseIdentityDigest) {
+        throw codedError(
+            'STALE_DOCUMENT_WRITER',
+            'Current chunk identity snapshot changed after plan generation'
+        );
+    }
+
+    const previousById = new Map(previous.map(row => [row.chunkId, row]));
+    const claimed = new Set();
+    const claim = (chunkId, fromSlot, contentHash, label) => {
+        const row = previousById.get(chunkId);
+        if (!row) {
+            throw codedError(
+                'CHUNK_IDENTITY_AMBIGUOUS',
+                `${label} references chunk identity outside the base snapshot: ${chunkId}`
+            );
+        }
+        if (claimed.has(chunkId)) {
+            throw codedError(
+                'CHUNK_IDENTITY_AMBIGUOUS',
+                `${label} claims base chunk identity more than once: ${chunkId}`
+            );
+        }
+        if (fromSlot !== undefined && row.slotIndex !== fromSlot) {
+            throw codedError(
+                'RECONCILER_AUTHORITY_VIOLATION',
+                `${label} fromSlot does not match the base snapshot for ${chunkId}`
+            );
+        }
+        if (contentHash !== undefined && row.contentHash !== contentHash) {
+            throw codedError(
+                'RECONCILER_AUTHORITY_VIOLATION',
+                `${label} old content hash does not match the base snapshot for ${chunkId}`
+            );
+        }
+        claimed.add(chunkId);
+    };
+
+    plan.operations.forEach((operation, index) => {
+        const label = `operations[${index}]`;
+        if (operation.kind === 'SAME' || operation.kind === 'MOVE') {
+            claim(
+                operation.chunkId,
+                operation.fromSlot,
+                operation.contentHash,
+                label
+            );
+            return;
+        }
+        if (operation.kind === 'MODIFY') {
+            claim(
+                operation.chunkId,
+                operation.fromSlot,
+                operation.fromContentHash,
+                label
+            );
+            return;
+        }
+        if (operation.kind === 'DELETE') {
+            claim(
+                operation.chunkId,
+                operation.fromSlot,
+                operation.contentHash,
+                label
+            );
+            return;
+        }
+        if (operation.kind === 'SPLIT' || operation.kind === 'MERGE') {
+            operation.oldChunkIds.forEach((chunkId, oldIndex) => {
+                claim(
+                    chunkId,
+                    operation.fromSlots[oldIndex],
+                    undefined,
+                    `${label}.oldChunkIds[${oldIndex}]`
+                );
+            });
+            return;
+        }
+        if (operation.kind === 'AMBIGUOUS') {
+            operation.oldChunkIds.forEach((chunkId, oldIndex) => {
+                claim(
+                    chunkId,
+                    undefined,
+                    operation.contentHash,
+                    `${label}.oldChunkIds[${oldIndex}]`
+                );
+            });
+        }
+    });
+
+    if (
+        claimed.size !== previous.length
+        || previous.some(row => !claimed.has(row.chunkId))
+    ) {
+        throw codedError(
+            'RECONCILER_AUTHORITY_VIOLATION',
+            'Reconciliation plan does not account for the complete base identity snapshot'
+        );
+    }
+    return plan;
+}
+
 function reconcileDocumentChunks(options = {}) {
     const docId = requireString(options.docId, 'docId');
     const baseDocumentUri = options.baseDocumentUri == null
@@ -688,5 +798,6 @@ module.exports = {
     hashIdentitySnapshot,
     deriveInsertedChunkId,
     assertIdentityOnlyPlan,
+    assertPlanAgainstBaseIdentity,
     reconcileDocumentChunks
 };
