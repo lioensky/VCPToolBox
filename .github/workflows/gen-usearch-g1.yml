@@ -77,6 +77,9 @@ jobs:
       - name: Run G1 stable chunk reconciliation acceptance
         run: node --test tests/gen-usearch/g1/genUSearchReconciler.test.js tests/gen-usearch/g1/genUSearchReconciliationService.test.js
 
+      - name: Enforce G1 stage authority boundary
+        run: node --test tests/gen-usearch/g1/g1StageBoundary.test.js
+
       - name: Regress existing Tag baseline metadata compatibility
         run: node --test tests/gen-usearch/g1/tagBaselineSchemaCompatibility.test.js
 
