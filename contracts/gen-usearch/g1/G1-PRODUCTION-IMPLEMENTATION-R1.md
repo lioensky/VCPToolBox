@@ -33,6 +33,8 @@ The following are deliberately **not** production-authorized by G1:
 
 The `gen_usearch_vector_coverage` table is a reserved handoff surface. G1 tests seed it directly to test MVCC publication semantics; no G1 production module is authorized to manufacture physical-coverage facts. The production physical layer must own that admission in a later gate.
 
+The MVCC lifecycle methods exposed by `GenUSearchMetadataStore` are also reserved handoff primitives during G1. G1 must not wire `GenUSearchMetadataStore`, `GenUSearchReconciliationService`, `stageVector()`, or `publishCurrentHead()` into the existing KnowledgeBase ingestion/search/serving path. That production wiring is a later-gate authority change and must explicitly update the stage boundary.
+
 ## G1 acceptance
 
 G1 may pass only when:
