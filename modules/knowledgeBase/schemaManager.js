@@ -352,6 +352,37 @@ const GEN_USEARCH_SCHEMA_SQL = `
         FOREIGN KEY(doc_id) REFERENCES gen_usearch_documents(doc_id) ON DELETE CASCADE
     );
 
+    -- Durable identity-only reconciliation intent. G1 persists the exact plan
+    -- in the same crash-durable transaction as the source observation; lifecycle
+    -- publication remains a separate G2 authority.
+    CREATE TABLE IF NOT EXISTS gen_usearch_reconciliation_plans (
+        plan_id TEXT PRIMARY KEY,
+        doc_id TEXT NOT NULL,
+        observed_source_digest TEXT NOT NULL,
+        observed_source_revision TEXT NOT NULL,
+        target_revision TEXT NOT NULL,
+        plan_digest TEXT NOT NULL CHECK(length(plan_digest) = 64),
+        state TEXT NOT NULL CHECK(state IN ('PENDING', 'ADMITTED', 'COMPLETE', 'ERROR')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(doc_id, target_revision),
+        FOREIGN KEY(doc_id) REFERENCES gen_usearch_documents(doc_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_gen_usearch_reconciliation_doc_state
+        ON gen_usearch_reconciliation_plans(doc_id, state, target_revision);
+
+    CREATE TABLE IF NOT EXISTS gen_usearch_reconciliation_items (
+        plan_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+        kind TEXT NOT NULL CHECK(kind IN (
+            'SAME', 'MODIFY', 'MOVE', 'INSERT',
+            'DELETE', 'SPLIT', 'MERGE', 'AMBIGUOUS'
+        )),
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (plan_id, ordinal),
+        FOREIGN KEY(plan_id) REFERENCES gen_usearch_reconciliation_plans(plan_id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS gen_usearch_chunk_heads (
         chunk_id TEXT PRIMARY KEY,
         doc_id TEXT NOT NULL,

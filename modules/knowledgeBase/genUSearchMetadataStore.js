@@ -1,5 +1,7 @@
 'use strict';
 
+const { assertIdentityOnlyPlan } = require('./genUSearchReconciler');
+
 const MAX_SIGNED_INT64 = 9223372036854775807n;
 const SEQUENCE_NAMES = new Set(['visibility_seq', 'manifest_epoch']);
 
@@ -172,6 +174,52 @@ class GenUSearchMetadataStore {
                 updated_at = ?
             WHERE doc_id = ?
               AND state = 'ACTIVE'
+        `);
+
+        this._recordPlanObservation = db.prepare(`
+            UPDATE gen_usearch_documents
+            SET observed_source_digest = ?,
+                observed_source_revision = ?,
+                reconcile_target_revision = ?,
+                reconciliation_state = ?,
+                index_state = ?,
+                updated_at = ?
+            WHERE doc_id = ?
+              AND state = 'ACTIVE'
+        `);
+        this._getReconciliationPlan = db.prepare(`
+            SELECT *
+            FROM gen_usearch_reconciliation_plans
+            WHERE plan_id = ?
+        `);
+        this._getReconciliationPlanByDocumentRevision = db.prepare(`
+            SELECT *
+            FROM gen_usearch_reconciliation_plans
+            WHERE doc_id = ? AND target_revision = ?
+        `);
+        this._insertReconciliationPlan = db.prepare(`
+            INSERT INTO gen_usearch_reconciliation_plans (
+                plan_id,
+                doc_id,
+                observed_source_digest,
+                observed_source_revision,
+                target_revision,
+                plan_digest,
+                state,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        this._insertReconciliationItem = db.prepare(`
+            INSERT INTO gen_usearch_reconciliation_items (
+                plan_id, ordinal, kind, payload_json
+            ) VALUES (?, ?, ?, ?)
+        `);
+        this._getReconciliationItems = db.prepare(`
+            SELECT ordinal, kind, payload_json
+            FROM gen_usearch_reconciliation_items
+            WHERE plan_id = ?
+            ORDER BY ordinal
         `);
 
         this._getChunkHead = db.prepare(`
@@ -428,6 +476,99 @@ class GenUSearchMetadataStore {
                     );
                 }
                 return row;
+            }
+        );
+
+        this._admitReconciliationPlanTransaction = db.transaction(
+            (plan, now) => {
+                const existing = this._getReconciliationPlanByDocumentRevision.get(
+                    plan.docId,
+                    plan.targetRevision
+                );
+                const hasAmbiguity = plan.summary.AMBIGUOUS > 0;
+                const planState = hasAmbiguity ? 'ERROR' : 'ADMITTED';
+                const documentState = hasAmbiguity ? 'ERROR' : 'ADMITTED';
+                const indexState = hasAmbiguity ? 'INDEX_ERROR' : 'INDEX_LAGGING';
+
+                if (existing) {
+                    if (
+                        existing.plan_id !== plan.planId
+                        || existing.plan_digest !== plan.planDigest
+                        || existing.state !== planState
+                    ) {
+                        throw codedError(
+                            'SOURCE_OBSERVATION_INVALID',
+                            `Conflicting reconciliation plan for ${plan.docId}@${plan.targetRevision}`
+                        );
+                    }
+                    const document = this._getDocument.get(plan.docId);
+                    if (
+                        !document
+                        || document.observed_source_digest !== plan.observedSourceDigest
+                        || document.observed_source_revision !== plan.observedSourceRevision
+                        || document.reconcile_target_revision !== plan.targetRevision
+                        || document.reconciliation_state !== documentState
+                        || document.index_state !== indexState
+                    ) {
+                        throw codedError(
+                            'SOURCE_OBSERVATION_INVALID',
+                            'Persisted reconciliation plan no longer matches document observation'
+                        );
+                    }
+                    return existing;
+                }
+
+                const changed = this._recordPlanObservation.run(
+                    plan.observedSourceDigest,
+                    plan.observedSourceRevision,
+                    plan.targetRevision,
+                    documentState,
+                    indexState,
+                    now,
+                    plan.docId
+                ).changes;
+                if (changed !== 1) {
+                    throw codedError(
+                        'DOCUMENT_IDENTITY_AMBIGUOUS',
+                        `Active Gen-USearch document "${plan.docId}" is unavailable`
+                    );
+                }
+
+                this._insertReconciliationPlan.run(
+                    plan.planId,
+                    plan.docId,
+                    plan.observedSourceDigest,
+                    plan.observedSourceRevision,
+                    plan.targetRevision,
+                    plan.planDigest,
+                    planState,
+                    now,
+                    now
+                );
+                plan.operations.forEach((operation, ordinal) => {
+                    this._insertReconciliationItem.run(
+                        plan.planId,
+                        ordinal,
+                        operation.kind,
+                        JSON.stringify(operation)
+                    );
+                });
+
+                const document = this._getDocument.get(plan.docId);
+                if (
+                    !document
+                    || document.observed_source_digest !== plan.observedSourceDigest
+                    || document.observed_source_revision !== plan.observedSourceRevision
+                    || document.reconcile_target_revision !== plan.targetRevision
+                    || document.reconciliation_state !== documentState
+                    || document.index_state !== indexState
+                ) {
+                    throw codedError(
+                        'SOURCE_OBSERVATION_INVALID',
+                        'Source observation and durable reconciliation plan diverged'
+                    );
+                }
+                return this._getReconciliationPlan.get(plan.planId);
             }
         );
 
@@ -940,6 +1081,89 @@ class GenUSearchMetadataStore {
                 now
             )
         );
+    }
+
+    _normalizeReconciliationPlan(row) {
+        if (!row) return null;
+        const items = this._getReconciliationItems.all(row.plan_id).map(item => {
+            let operation;
+            try {
+                operation = JSON.parse(item.payload_json);
+            } catch (error) {
+                throw codedError(
+                    'METADATA_INTEGRITY_FAILURE',
+                    `Invalid reconciliation payload JSON for ${row.plan_id}#${item.ordinal}`
+                );
+            }
+            if (operation.kind !== item.kind) {
+                throw codedError(
+                    'METADATA_INTEGRITY_FAILURE',
+                    `Reconciliation kind mismatch for ${row.plan_id}#${item.ordinal}`
+                );
+            }
+            return operation;
+        });
+        const summary = {
+            SAME: 0,
+            MODIFY: 0,
+            MOVE: 0,
+            INSERT: 0,
+            DELETE: 0,
+            SPLIT: 0,
+            MERGE: 0,
+            AMBIGUOUS: 0
+        };
+        for (const operation of items) {
+            if (!Object.prototype.hasOwnProperty.call(summary, operation.kind)) {
+                throw codedError(
+                    'METADATA_INTEGRITY_FAILURE',
+                    `Unknown persisted reconciliation kind: ${operation.kind}`
+                );
+            }
+            summary[operation.kind] += 1;
+        }
+        const canonicalPlan = {
+            planVersion: 1,
+            identityOnly: true,
+            docId: row.doc_id,
+            observedSourceDigest: row.observed_source_digest,
+            observedSourceRevision: row.observed_source_revision,
+            targetRevision: row.target_revision,
+            operations: items,
+            summary,
+            planDigest: row.plan_digest,
+            planId: row.plan_id
+        };
+        try {
+            assertIdentityOnlyPlan(canonicalPlan);
+        } catch (error) {
+            throw codedError(
+                'METADATA_INTEGRITY_FAILURE',
+                `Persisted reconciliation plan failed canonical verification: ${error.message}`
+            );
+        }
+        return Object.freeze({
+            ...canonicalPlan,
+            state: row.state,
+            operations: Object.freeze(items),
+            summary: Object.freeze(summary)
+        });
+    }
+
+    getReconciliationPlan(planId) {
+        return this._normalizeReconciliationPlan(
+            this._getReconciliationPlan.get(
+                requireString(planId, 'planId')
+            )
+        );
+    }
+
+    admitReconciliationPlan(plan) {
+        assertIdentityOnlyPlan(plan);
+        const now = parseInteger(this.now(), 'now');
+        return this._criticalWrite(() => this._normalizeReconciliationPlan(
+            this._admitReconciliationPlanTransaction(plan, now)
+        ));
     }
 
     _normalizeChunkHead(row) {

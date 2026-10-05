@@ -62,6 +62,8 @@ test('G1 metadata schema is additive, idempotent and seeded', () => {
         for (const table of [
             'gen_usearch_documents',
             'gen_usearch_document_uri_history',
+            'gen_usearch_reconciliation_plans',
+            'gen_usearch_reconciliation_items',
             'gen_usearch_chunk_heads',
             'gen_usearch_chunk_versions',
             'gen_usearch_segments',
