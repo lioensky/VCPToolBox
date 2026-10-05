@@ -136,6 +136,47 @@ test('a database admits only one live G2 physical coverage writer', () => {
     }
 });
 
+test('writer rejects duplicate or detached MemTable source identities', () => {
+    const fixture = createFixture();
+    try {
+        assert.throws(
+            () => fixture.writer.createMemTable({
+                VexusIndex,
+                dimension: 4,
+                capacity: 16,
+                generation: '1',
+                embeddingFingerprint: 'embed-v1'
+            }),
+            error => error?.code === 'MEMTABLE_SOURCE_ID_COLLISION'
+        );
+
+        const detached = new GenUSearchMemTable({
+            VexusIndex,
+            dimension: 4,
+            capacity: 16,
+            runtimeId: 'runtime-a',
+            generation: '77',
+            embeddingFingerprint: 'embed-v1',
+            mutationToken: {}
+        });
+        fixture.writer.bootstrapRuntime();
+        const { staged, vector } = createStagedVersion(fixture, {
+            chunkId: 'chunk-detached',
+            contentHash: 'e'.repeat(64)
+        });
+        assert.throws(
+            () => fixture.writer.admitVector({
+                memtable: detached,
+                vectorId: staged.vector_id,
+                vector
+            }),
+            error => error?.code === 'MEMTABLE_NOT_BOUND_TO_WRITER'
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('runtime bootstrap purges stale MEMTABLE coverage but preserves SEGMENT facts', () => {
     const fixture = createFixture();
     try {
