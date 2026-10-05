@@ -716,6 +716,11 @@ class GenUSearchSegmentPublisher {
         );
 
         if (segment.state === 'PUBLISHED') {
+            const verified = this._verifyExistingArtifact(
+                segment,
+                memtable,
+                vectorIds
+            );
             const epoch = this._getPublishedManifestEpochForSegment
                 .get(segmentId)?.manifest_epoch;
             if (epoch == null) {
@@ -724,11 +729,20 @@ class GenUSearchSegmentPublisher {
                     'PUBLISHED segment is absent from manifest history'
                 );
             }
+            const members = this._listManifestSegments
+                .all(epoch)
+                .map(row => row.segment_id);
+            if (!members.includes(segmentId)) {
+                throw codedError(
+                    'RECOVERY_MANIFEST_INVALID',
+                    'PUBLISHED segment is absent from recorded manifest set'
+                );
+            }
             return Object.freeze({
                 segmentId,
                 manifestEpoch: epoch.toString(),
-                artifactPath: segment.artifact_path,
-                artifactDigest: segment.artifact_digest,
+                artifactPath: verified.artifactPath,
+                artifactDigest: verified.artifactDigest,
                 vectorIds: Object.freeze([...vectorIds]),
                 alreadyPublished: true
             });
