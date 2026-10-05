@@ -6,6 +6,10 @@ on:
       - main
       - codex/gen-usearch-g0-f2-upstream-main
     paths:
+      - 'KnowledgeBaseManager.js'
+      - 'config.env.example'
+      - 'modules/knowledgeBase/indexRepository.js'
+      - 'tests/tagIndexGenerationalBaseline.test.js'
       - 'modules/knowledgeBase/schemaManager.js'
       - 'rust-vexus-lite/Cargo.lock'
       - 'rust-vexus-lite/Cargo.toml'
@@ -18,6 +22,10 @@ on:
       - '.github/workflows/gen-usearch-g1.yml'
   pull_request:
     paths:
+      - 'KnowledgeBaseManager.js'
+      - 'config.env.example'
+      - 'modules/knowledgeBase/indexRepository.js'
+      - 'tests/tagIndexGenerationalBaseline.test.js'
       - 'modules/knowledgeBase/schemaManager.js'
       - 'rust-vexus-lite/Cargo.lock'
       - 'rust-vexus-lite/Cargo.toml'
