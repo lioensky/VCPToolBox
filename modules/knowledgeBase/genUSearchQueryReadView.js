@@ -98,19 +98,19 @@ function exactRootPath(root, segmentId, artifactPath) {
 }
 
 function incMemtablePin(memtable) {
-    ReadPins.pinMemtable(memtable);
+    return ReadPins.acquireMemtablePin(memtable);
 }
 
-function decMemtablePin(memtable) {
-    ReadPins.unpinMemtable(memtable);
+function decMemtablePin(pinLease) {
+    return pinLease.release();
 }
 
 function incSegmentPin(segmentId) {
-    ReadPins.pinSegment(segmentId);
+    return ReadPins.acquireSegmentPin(segmentId);
 }
 
-function decSegmentPin(segmentId) {
-    ReadPins.unpinSegment(segmentId);
+function decSegmentPin(pinLease) {
+    return pinLease.release();
 }
 
 function recoveryBlobToVector(blob, dimension) {
@@ -241,7 +241,7 @@ class GenUSearchQueryReadViewCoordinator {
                 ...row,
                 coverageRows: this._listSegmentCoverage.all(row.segment_id)
             }));
-            const pinnedSegmentIds = [];
+            const pinnedSegmentPins = [];
             try {
                 for (const row of manifestRows) {
                     const segmentId = String(row.segment_id || '');
@@ -251,8 +251,10 @@ class GenUSearchQueryReadViewCoordinator {
                             'captured manifest member is missing segment identity'
                         );
                     }
-                    incSegmentPin(segmentId);
-                    pinnedSegmentIds.push(segmentId);
+                    pinnedSegmentPins.push({
+                        segmentId,
+                        pinLease: incSegmentPin(segmentId)
+                    });
                 }
                 return {
                     visibility,
@@ -265,11 +267,11 @@ class GenUSearchQueryReadViewCoordinator {
                     metadataRows,
                     coverageRows,
                     manifestRows,
-                    pinnedSegmentIds
+                    pinnedSegmentPins
                 };
             } catch (error) {
-                for (const segmentId of pinnedSegmentIds.reverse()) {
-                    decSegmentPin(segmentId);
+                for (const entry of pinnedSegmentPins.reverse()) {
+                    decSegmentPin(entry.pinLease);
                 }
                 throw error;
             }
@@ -408,8 +410,8 @@ class GenUSearchQueryReadViewCoordinator {
                     throw codedError('QUERY_READ_VIEW_INVALID', 'invalid MemTable candidate source');
                 }
                 ReadPins.assertMemtableDatabase(memtable, this.db);
-                incMemtablePin(memtable);
-                provisionalMemtables.push(memtable);
+                const memtablePinLease = incMemtablePin(memtable);
+                provisionalMemtables.push(memtablePinLease);
                 const snapshot = GenUSearchMemTable.snapshotForImmutableSegment(memtable);
                 if (!['ACTIVE', 'SEALED_QUERY_VISIBLE'].includes(snapshot.state)) {
                     throw codedError('MEMTABLE_GENERATION_MISSING', 'MemTable is not query-visible');
@@ -421,12 +423,15 @@ class GenUSearchQueryReadViewCoordinator {
                 memtableSources.push({
                     memtable,
                     snapshot,
-                    vectorIdSet: new Set(snapshot.vectorIds)
+                    vectorIdSet: new Set(snapshot.vectorIds),
+                    pinLease: memtablePinLease
                 });
             }
 
             const snapshot = this._readSnapshot();
-            provisionalSegments.push(...snapshot.pinnedSegmentIds);
+            provisionalSegments.push(
+                ...snapshot.pinnedSegmentPins.map(entry => entry.pinLease)
+            );
             this._assertServingRuntime(snapshot.runtime);
 
             if (safeMillis(this.now(), 'now') >= deadline) {
@@ -610,17 +615,20 @@ class GenUSearchQueryReadViewCoordinator {
                 segments,
                 currentByVector,
                 recoveryByVector,
-                coverageByVector
+                coverageByVector,
+                segmentPinLeases: snapshot.pinnedSegmentPins.map(
+                    entry => entry.pinLease
+                )
             });
             provisionalMemtables.length = 0;
             provisionalSegments.length = 0;
             return view;
         } catch (error) {
-            for (const memtable of provisionalMemtables.reverse()) {
-                decMemtablePin(memtable);
+            for (const pinLease of provisionalMemtables.reverse()) {
+                decMemtablePin(pinLease);
             }
-            for (const segmentId of provisionalSegments.reverse()) {
-                decSegmentPin(segmentId);
+            for (const pinLease of provisionalSegments.reverse()) {
+                decSegmentPin(pinLease);
             }
             throw error;
         }
@@ -666,10 +674,10 @@ class GenUSearchQueryReadViewCoordinator {
             );
         }
         for (const source of internal.memtableSources) {
-            decMemtablePin(source.memtable);
+            decMemtablePin(source.pinLease);
         }
-        for (const source of internal.segments) {
-            decSegmentPin(source.segmentId);
+        for (const pinLease of internal.segmentPinLeases) {
+            decSegmentPin(pinLease);
         }
         lifecycle.state = 'RELEASED';
         return true;
