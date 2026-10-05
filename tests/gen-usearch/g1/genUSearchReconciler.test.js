@@ -15,6 +15,8 @@ const GenUSearchMetadataStore = require(
 );
 const {
     hashExactChunkContent,
+    hashCanonical,
+    hashIdentitySnapshot,
     deriveInsertedChunkId,
     assertIdentityOnlyPlan,
     reconcileDocumentChunks
@@ -400,6 +402,115 @@ test('a pending observation from another revision blocks stale plan admission', 
         assert.throws(
             () => fixture.store.admitReconciliationPlan(plan),
             error => error?.code === 'STALE_DOCUMENT_WRITER'
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('plan admission rejects forged old-side semantics even with the correct base snapshot digest', () => {
+    const fixture = createStoreFixture();
+    try {
+        publishCurrent(fixture, {
+            chunkId: 'c-forge',
+            slotIndex: 0,
+            content: 'real-old'
+        });
+        const snapshot = fixture.store.getCurrentChunkIdentitySnapshot('doc-1');
+        const body = {
+            planVersion: 1,
+            identityOnly: true,
+            docId: 'doc-1',
+            baseDocumentUri: 'diary/a.txt',
+            baseIdentityDigest: hashIdentitySnapshot(snapshot),
+            observedSourceDigest: 'forge-digest',
+            observedSourceRevision: 'rev-forge',
+            targetRevision: 'rev-forge',
+            operations: [{
+                kind: 'MODIFY',
+                chunkId: 'c-forge',
+                fromSlot: 0,
+                toSlot: 0,
+                fromContentHash: hashExactChunkContent('FAKE-OLD'),
+                toContentHash: hashExactChunkContent('new')
+            }],
+            summary: {
+                SAME: 0,
+                MODIFY: 1,
+                MOVE: 0,
+                INSERT: 0,
+                DELETE: 0,
+                SPLIT: 0,
+                MERGE: 0,
+                AMBIGUOUS: 0
+            }
+        };
+        const planDigest = hashCanonical(body);
+        const forged = {
+            ...body,
+            planDigest,
+            planId: `g1r_${planDigest.slice(0, 40)}`
+        };
+
+        assert.throws(
+            () => fixture.store.admitReconciliationPlan(forged),
+            error => error?.code === 'RECONCILER_AUTHORITY_VIOLATION'
+        );
+        assert.equal(fixture.store.getReconciliationPlan(forged.planId), null);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('plan admission rejects partial base-snapshot claims', () => {
+    const fixture = createStoreFixture();
+    try {
+        publishCurrent(fixture, {
+            chunkId: 'c-one',
+            slotIndex: 0,
+            content: 'one'
+        });
+        publishCurrent(fixture, {
+            chunkId: 'c-two',
+            slotIndex: 1,
+            content: 'two'
+        });
+        const snapshot = fixture.store.getCurrentChunkIdentitySnapshot('doc-1');
+        const body = {
+            planVersion: 1,
+            identityOnly: true,
+            docId: 'doc-1',
+            baseDocumentUri: 'diary/a.txt',
+            baseIdentityDigest: hashIdentitySnapshot(snapshot),
+            observedSourceDigest: 'partial-digest',
+            observedSourceRevision: 'rev-partial',
+            targetRevision: 'rev-partial',
+            operations: [{
+                kind: 'DELETE',
+                chunkId: 'c-one',
+                fromSlot: 0,
+                contentHash: hashExactChunkContent('one')
+            }],
+            summary: {
+                SAME: 0,
+                MODIFY: 0,
+                MOVE: 0,
+                INSERT: 0,
+                DELETE: 1,
+                SPLIT: 0,
+                MERGE: 0,
+                AMBIGUOUS: 0
+            }
+        };
+        const planDigest = hashCanonical(body);
+        const forged = {
+            ...body,
+            planDigest,
+            planId: `g1r_${planDigest.slice(0, 40)}`
+        };
+        assert.throws(
+            () => fixture.store.admitReconciliationPlan(forged),
+            error => error?.code === 'RECONCILER_AUTHORITY_VIOLATION'
         );
     } finally {
         fixture.cleanup();
