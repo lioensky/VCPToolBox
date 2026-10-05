@@ -149,3 +149,28 @@ UPSTREAM_MERGE            = NOT AUTHORIZED
 ```
 
 G5 PASS closes the last internal implementation gate. It does not by itself authorize the separate final upstream acceptance, Ready-for-Review transition, or merge.
+
+
+## Ready-for-Review Remediation 2
+
+Reviewed implementation head: `8fef6d31d4ed8ac71a6d625562c8e079997252c0`.
+
+The second independent review found a cross-stage dependency between G5 recovery release and a later G3 flush: a RETIRED vector restored into a new Gen0 could have its recovery bytes released before that generation was sealed, making the later flush depend on bytes that no longer existed.
+
+The closure keeps G5 release semantics narrow while making the G3 consumer dependency explicit:
+
+- G5 still releases bytes only after exact current-manifest durable segment proof;
+- released recovery retains `covered_segment_id` as audit authority;
+- G3 may omit that RETIRED/GC_ELIGIBLE member from a later flush only after independently re-proving the same covered segment remains in the current authoritative manifest and still contains the exact vector;
+- if that durable authority is missing/corrupt/stale, the later flush fails closed instead of silently dropping the vector.
+
+Exact-head evidence:
+
+```text
+G5 GC Recovery  37312659656  SUCCESS
+
+G5 GC/recovery acceptance = 16/16
+G5 stage boundary         = 5/5
+```
+
+Final Upstream Acceptance remains **NOT STARTED**. Upstream merge remains **NOT AUTHORIZED**.

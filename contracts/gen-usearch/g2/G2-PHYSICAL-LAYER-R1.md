@@ -128,3 +128,31 @@ unresolved P1 = 0
 G2 = PASS
 G3 = NOT AUTHORIZED
 ```
+
+
+## Ready-for-Review Remediation 2
+
+Reviewed implementation head: `8fef6d31d4ed8ac71a6d625562c8e079997252c0`.
+
+A second independent review found that G2 physical mutation could still begin under an ambient better-sqlite3 transaction. In particular, a later outer rollback could resurrect `QUERY_VISIBLE` coverage after native bytes had already been removed.
+
+Closure:
+
+- G2 writer construction now requires SQLite autocommit state before in-process writer authority can be claimed;
+- `createMemTable()`, `sealMemTable()`, `admitVector()`, `recoverCurrentVectors()`, and `hideAndRemoveVector()` reject ambient transactions before runtime/native mutation;
+- `_criticalWrite()` independently rechecks autocommit before durable physical authority mutation;
+- regression proves ambient hide/remove cannot produce DB/native split-brain;
+- regression proves ambient admission cannot touch native bytes;
+- regression proves failed ambient writer construction does not poison later valid writer construction.
+
+Exact-head evidence:
+
+```text
+G1 Production       37312732718  SUCCESS
+G2 Physical Layer   37312659683  SUCCESS
+
+G2 physical acceptance = 31/31
+G2 stage boundary      = 6/6
+```
+
+This remediation does not authorize runtime cutover, engine activation, Ready-for-Review merge, or upstream merge.

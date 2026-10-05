@@ -176,3 +176,40 @@ G4 = NOT AUTHORIZED
 ```
 
 G3 PASS does not authorize G4 implementation, upstream merge, Ready-for-Review, query serving, GC, compaction, or engine activation.
+
+
+## Ready-for-Review Remediation 2
+
+Reviewed implementation head: `8fef6d31d4ed8ac71a6d625562c8e079997252c0`.
+
+A second independent review found three cross-lifecycle publication gaps. They are closed as follows:
+
+1. **Ambient transaction publication**
+   - `publishSealedMemTable()` now rejects ambient SQLite transactions before BUILDING metadata or artifact bytes can be created;
+   - publication receipts therefore cannot escape from an inner savepoint before an outer commit.
+
+2. **RECOVERY_RELEASED member inside an unflushed recovered generation**
+   - the sealed MemTable remains the private physical candidate set;
+   - a RETIRED/GC_ELIGIBLE + RECOVERY_RELEASED member is excluded from new segment construction only after G3 re-proves its covered segment is a member of the current authoritative manifest, its artifact/coverage/native membership are valid, and embedding authority still matches;
+   - the remaining generation can publish without requiring released recovery bytes.
+
+3. **PUBLISHED idempotent retry**
+   - historical manifest membership is no longer authorization;
+   - retry requires the supplied epoch to equal current sequence/manifest_state;
+   - the segment must be a member of that current manifest;
+   - full current topology and exact coverage are revalidated before returning `alreadyPublished: true`.
+
+The G3 boundary still forbids GC mutation. It now distinguishes read-only inspection of `GC_ELIGIBLE` lifecycle state from any attempted write of GC authority.
+
+Exact-head evidence:
+
+```text
+G3 Immutable Segment Manifest  37312659521  SUCCESS
+G4 QueryReadView Retrieval     37312659943  SUCCESS
+
+G3 immutable-segment acceptance = 23/23
+G3 stage boundary               = 5/5
+G4 query regression             = 24/24
+```
+
+This remediation does not authorize compaction, segment reclaim, runtime cutover, engine activation, or merge.
