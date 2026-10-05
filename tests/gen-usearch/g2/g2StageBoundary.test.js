@@ -22,7 +22,8 @@ test('G2 boundary is frozen and limits authority to Gen0 MEMTABLE coverage', () 
         'runtime bootstrap cleanup',
         'immutable segment',
         'QueryReadView',
-        'GENERATIONAL_ACTIVE'
+        'GENERATIONAL_ACTIVE',
+        'G3 = NOT AUTHORIZED'
     ]) {
         assert.ok(contract.includes(phrase), phrase);
     }
