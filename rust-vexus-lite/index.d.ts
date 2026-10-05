@@ -246,6 +246,7 @@ export declare class VexusIndex {
   add(id: number, vector: Float32Array): void
   /** Gen-USearch signed-int64-safe add using a canonical decimal key. */
   addKey64(id: string, vector: Float32Array): void
+  containsKey64(id: string): boolean
   /** Gen-USearch signed-int64-safe batch add using canonical decimal keys. */
   addBatchKey64(ids: Array<string>, vectors: Float32Array): void
   /**
