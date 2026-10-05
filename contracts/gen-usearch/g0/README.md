@@ -1,6 +1,6 @@
 # Gen-USearch G0 machine contracts
 
-Status: **G0-FINAL-R1 candidate, not yet frozen**.
+Status: **G0 FROZEN**.
 
 This directory contains the complete executable G0 R3.1 architecture authority and its machine traceability closure. It still does **not** implement the production USearch engine.
 
@@ -58,4 +58,4 @@ node --test tests/gen-usearch/g0/g0-contracts.test.js
 node tests/gen-usearch/g0/g0-runner.js
 ```
 
-A PASS here means the G0 Final Review candidate is machine-complete. **G0 is not FROZEN until the final independent review explicitly authorizes freeze.**
+The final independent review passed with unresolved P0=0 and P1=0. **G0 is FROZEN. G1 remains separately unauthorized until explicitly started.**
