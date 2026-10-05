@@ -899,9 +899,6 @@ test('startup recovery rejects mixed embedding fingerprints before physical muta
                 embeddingFingerprint: fingerprint
             });
             if (ordinal === 'b') {
-                const first = seedWriter.createMemTable;
-            }
-            if (ordinal === 'b') {
                 // The first generation must be sealed before admitting another space.
                 const firstCoverage = firstDb.prepare(`
                     SELECT source_id
