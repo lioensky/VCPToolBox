@@ -304,5 +304,6 @@ class GenUSearchMemTable {
 }
 
 GenUSearchMemTable.MAX_SIGNED_INT64 = MAX_SIGNED_INT64;
+Object.freeze(GenUSearchMemTable);
 
 module.exports = GenUSearchMemTable;
