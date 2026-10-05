@@ -1,6 +1,7 @@
 name: Gen-USearch G1 Production
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main

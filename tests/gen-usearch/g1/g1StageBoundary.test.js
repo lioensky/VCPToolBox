@@ -84,13 +84,14 @@ test('G1 workflow covers every production surface and upstream baseline dependen
     for (const rel of required) {
         assert.ok(workflow.includes(rel), rel);
     }
+    assert.ok(workflow.includes('workflow_dispatch:'));
     assert.ok(workflow.includes('actions/checkout@11d5960a326750d5838078e36cf38b85af677262'));
     assert.ok(workflow.includes('actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020'));
 });
 
 test('G1 contract explicitly defers physical serving and cutover to later gates', () => {
     const contract = read('contracts/gen-usearch/g1/G1-PRODUCTION-IMPLEMENTATION-R1.md');
-    assert.match(contract, /Status: \*\*FINAL_REVIEW_CANDIDATE\*\*/);
+    assert.match(contract, /Status: \*\*PASS\*\*/);
     for (const phrase of [
         'production writer for \`gen_usearch_vector_coverage\`',
         'Gen0 MemTable coordination',
