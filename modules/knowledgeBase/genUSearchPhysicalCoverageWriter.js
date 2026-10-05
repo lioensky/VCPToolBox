@@ -180,6 +180,11 @@ class GenUSearchPhysicalCoverageWriter {
             DELETE FROM gen_usearch_vector_coverage
             WHERE source_kind = 'MEMTABLE'
         `);
+        this._countAllMemtableCoverage = db.prepare(`
+            SELECT COUNT(*) AS count
+            FROM gen_usearch_vector_coverage
+            WHERE source_kind = 'MEMTABLE'
+        `).safeIntegers(true);
 
         this._upsertVisibleCoverage = db.prepare(`
             INSERT INTO gen_usearch_vector_coverage (
@@ -196,13 +201,28 @@ class GenUSearchPhysicalCoverageWriter {
             WHERE vector_id = ? AND source_kind = 'MEMTABLE' AND source_id = ?
         `);
 
-        this._bootstrapTransaction = db.transaction(
-            () => this._deleteAllMemtableCoverage.run().changes
-        );
+        this._bootstrapTransaction = db.transaction(() => {
+            const removed = this._deleteAllMemtableCoverage.run().changes;
+            const remaining = this._countAllMemtableCoverage.get()?.count ?? 0n;
+            if (remaining !== 0n) {
+                throw codedError(
+                    'PHYSICAL_COVERAGE_MISSING',
+                    'runtime bootstrap could not durably purge stale MEMTABLE coverage'
+                );
+            }
+            return removed;
+        });
         this._publishCoverageTransaction = db.transaction(
             (vectorId, sourceId, now) => {
                 this._upsertVisibleCoverage.run(vectorId, sourceId, now, now);
-                return this._getCoverage.get(vectorId, sourceId);
+                const coverage = this._getCoverage.get(vectorId, sourceId);
+                if (!coverage || coverage.coverage_state !== 'QUERY_VISIBLE') {
+                    throw codedError(
+                        'PHYSICAL_COVERAGE_MISSING',
+                        'MEMTABLE coverage publication postcondition failed'
+                    );
+                }
+                return coverage;
             }
         );
         this._publishCoverageBatchTransaction = db.transaction(
@@ -215,11 +235,29 @@ class GenUSearchPhysicalCoverageWriter {
                         now
                     );
                 }
+                for (const vectorId of vectorIds) {
+                    const coverage = this._getCoverage.get(vectorId, sourceId);
+                    if (!coverage || coverage.coverage_state !== 'QUERY_VISIBLE') {
+                        throw codedError(
+                            'PHYSICAL_COVERAGE_MISSING',
+                            'MEMTABLE batch coverage publication postcondition failed'
+                        );
+                    }
+                }
                 return vectorIds.length;
             }
         );
         this._hideCoverageTransaction = db.transaction(
-            (vectorId, sourceId) => this._deleteCoverage.run(vectorId, sourceId).changes
+            (vectorId, sourceId) => {
+                const removed = this._deleteCoverage.run(vectorId, sourceId).changes;
+                if (this._getCoverage.get(vectorId, sourceId)) {
+                    throw codedError(
+                        'PHYSICAL_COVERAGE_MISSING',
+                        'MEMTABLE coverage hide postcondition failed'
+                    );
+                }
+                return removed;
+            }
         );
 
         // Claim the in-process writer authority only after every required SQL
