@@ -22,7 +22,8 @@ test('G3 boundary is frozen around immutable segment + manifest authority', () =
         'QueryReadView',
         'compaction',
         'GENERATIONAL_ACTIVE',
-        'Segment dimension is native artifact authority'
+        'Segment dimension is native artifact authority',
+        'G4 = NOT AUTHORIZED'
     ]) {
         assert.ok(contract.includes(phrase), phrase);
     }
