@@ -53,7 +53,7 @@ G2 may implement only:
     A writer may create each `gen0:<runtime-id>:<generation>` source identity at most once. Detached or duplicate MemTables cannot manufacture or mutate authoritative coverage.
 
 11. **One database has one live G2 physical writer in-process.**
-    A second writer for the same underlying SQLite database file is rejected even when opened through a different connection, so it cannot repeat bootstrap and erase live MEMTABLE coverage.
+    A second writer for the same underlying SQLite database file is rejected even when opened through a different connection or filesystem alias. File identity uses device/inode when available and canonical path only as fallback, so symlink/hard-link aliases cannot split authority.
 
 12. **Startup recovery is all-or-nothing for authority.**
     Current heads may be rehydrated only when every row is ACTIVE, has exact RECOVERY_REQUIRED bytes, and matches the target MemTable embedding fingerprint. Mixed or incomplete recovery input fails before coverage publication. Coverage is batch-published only after every physical add has exact native membership proof.
