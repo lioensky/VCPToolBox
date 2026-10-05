@@ -2,7 +2,7 @@
   "schema_version": 1,
   "contract_version": "3.1.0-g0-final-r1",
   "gate": "G0",
-  "status": "CANDIDATE_NOT_FROZEN",
+  "status": "FROZEN",
   "identity_encoding": {
     "vector_id": {
       "type": "canonical_decimal_string",
