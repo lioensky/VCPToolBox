@@ -160,6 +160,42 @@ test('production service derives previous identity snapshot only from SQLite cur
     }
 });
 
+test('document URI changes while reading source make the reconciliation plan stale', async () => {
+    const fixture = createFixture();
+    try {
+        let releaseSource;
+        const sourcePromise = new Promise(resolve => { releaseSource = resolve; });
+        const service = new GenUSearchReconciliationService({
+            store: fixture.store,
+            sourceViewProvider: {
+                async readCommittedSourceView(request) {
+                    assert.deepEqual(request, {
+                        docId: 'doc-1',
+                        currentUri: 'diary/a.txt'
+                    });
+                    return sourcePromise;
+                }
+            }
+        });
+
+        const pendingPlan = service.planCurrentSource({ docId: 'doc-1' });
+        const seq = fixture.store.nextVisibilitySeq();
+        fixture.store.moveDocument({
+            docId: 'doc-1',
+            uri: 'diary/moved.txt',
+            visibilitySeq: seq
+        });
+        releaseSource(committedView([]));
+
+        await assert.rejects(
+            () => pendingPlan,
+            error => error?.code === 'STALE_DOCUMENT_WRITER'
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('caller cannot override source or previous identity authority per request', async () => {
     const fixture = createFixture();
     try {
