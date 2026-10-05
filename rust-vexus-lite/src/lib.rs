@@ -536,6 +536,11 @@ impl VexusIndex {
                 vec_slice.len()
             )));
         }
+        if vec_slice.iter().any(|value| !value.is_finite()) {
+            return Err(Error::from_reason(
+                "Gen-USearch vectors must contain only finite f32 values".to_string(),
+            ));
+        }
 
         if index.size() + 1 >= index.capacity() {
             let new_cap = (index.capacity() as f64 * 1.5) as usize;
@@ -569,6 +574,11 @@ impl VexusIndex {
         let vec_slice: &[f32] = &vectors;
         if vec_slice.len() != count * dim {
             return Err(Error::from_reason("Batch size mismatch".to_string()));
+        }
+        if vec_slice.iter().any(|value| !value.is_finite()) {
+            return Err(Error::from_reason(
+                "Gen-USearch vectors must contain only finite f32 values".to_string(),
+            ));
         }
 
         if index.size() + count >= index.capacity() {
@@ -3812,6 +3822,11 @@ impl Task for ChunkIndexDeltaTask {
                 "Chunk delta IDs must all be positive integers".to_string(),
             ));
         }
+        if self.upsert_vectors.iter().any(|value| !value.is_finite()) {
+            return Err(Error::from_reason(
+                "Gen-USearch vectors must contain only finite f32 values".to_string(),
+            ));
+        }
 
         let unique_removes: HashSet<i64> = self.remove_ids.iter().copied().collect();
         let mut seen_upserts = HashSet::with_capacity(self.upsert_ids.len());
@@ -3867,6 +3882,46 @@ impl Task for ChunkIndexDeltaTask {
             })?;
         }
 
+        // Snapshot every affected key while holding the same write lock.
+        // Predictable input/capacity failures were rejected above; this snapshot
+        // is the rollback authority for unexpected backend add failures.
+        let mut affected_ids: Vec<i64> = unique_removes
+            .iter()
+            .copied()
+            .chain(self.upsert_ids.iter().copied())
+            .collect();
+        affected_ids.sort_unstable();
+        affected_ids.dedup();
+
+        let mut rollback_snapshot: Vec<(i64, Option<Vec<f32>>)> =
+            Vec::with_capacity(affected_ids.len());
+        let mut snapshot_buffer = vec![0.0f32; dim];
+        for id in &affected_ids {
+            snapshot_buffer.fill(0.0);
+            let matches = index.get(*id as u64, &mut snapshot_buffer).map_err(|error| {
+                Error::from_reason(format!(
+                    "Chunk delta failed to snapshot id {} before mutation: {:?}",
+                    id, error
+                ))
+            })?;
+            rollback_snapshot.push((*id, (matches > 0).then(|| snapshot_buffer.clone())));
+        }
+
+        let rollback = |index: &Index| -> Result<()> {
+            for (id, previous) in &rollback_snapshot {
+                let _ = index.remove(*id as u64);
+                if let Some(vector) = previous {
+                    index.add(*id as u64, vector).map_err(|error| {
+                        Error::from_reason(format!(
+                            "Chunk delta rollback failed restoring id {}: {:?}",
+                            id, error
+                        ))
+                    })?;
+                }
+            }
+            Ok(())
+        };
+
         let mut applied_deletes = 0_u32;
         for id in &unique_removes {
             if index.remove(*id as u64).is_ok() {
@@ -3879,12 +3934,18 @@ impl Task for ChunkIndexDeltaTask {
             let start = position * dim;
             let vector = &self.upsert_vectors[start..start + dim];
             let _ = index.remove(*id as u64);
-            index.add(*id as u64, vector).map_err(|error| {
-                Error::from_reason(format!(
-                    "Chunk delta became unusable after partial apply at upsert {} id {}: {:?}",
+            if let Err(error) = index.add(*id as u64, vector) {
+                if let Err(rollback_error) = rollback(&index) {
+                    return Err(Error::from_reason(format!(
+                        "Chunk delta failed at upsert {} id {}: {:?}; rollback also failed: {}",
+                        position, id, error, rollback_error
+                    )));
+                }
+                return Err(Error::from_reason(format!(
+                    "Chunk delta failed at upsert {} id {} and was rolled back: {:?}",
                     position, id, error
-                ))
-            })?;
+                )));
+            }
             applied_upserts = applied_upserts.saturating_add(1);
         }
 

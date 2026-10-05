@@ -96,6 +96,44 @@ test('Gen-USearch key64 atomic delta preserves signed-int64 identity', async () 
     );
 });
 
+test('Gen-USearch key64 APIs reject non-finite vectors before mutation', async () => {
+    const index = new VexusIndex(4, 16);
+    const stable = '9007199254740992';
+    const next = '9007199254740993';
+    const base = new Float32Array([1, 0, 0, 0]);
+
+    index.addKey64(stable, base);
+    const beforeRevision = index.revision;
+
+    assert.throws(
+        () => index.addKey64(next, new Float32Array([NaN, 0, 0, 0])),
+        /finite f32/
+    );
+    assert.throws(
+        () => index.addBatchKey64(
+            [next],
+            new Float32Array([Infinity, 0, 0, 0])
+        ),
+        /finite f32/
+    );
+    await assert.rejects(
+        index.applyChunkDeltaKey64(
+            [stable],
+            [next],
+            new Float32Array([NaN, 0, 0, 0])
+        ),
+        /finite f32/
+    );
+
+    assert.equal(index.revision, beforeRevision);
+    assert.equal(index.searchKey64(base, 4)[0].id, stable);
+    assert.equal(
+        index.searchKey64(new Float32Array([0, 1, 0, 0]), 8)
+            .some(row => row.id === next),
+        false
+    );
+});
+
 test('legacy numeric Vexus API remains intact', () => {
     const index = new VexusIndex(4, 8);
     const vector = new Float32Array([1, 0, 0, 0]);
