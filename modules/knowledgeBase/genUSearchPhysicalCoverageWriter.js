@@ -8,6 +8,7 @@ const ReadPins = require('./genUSearchReadPins');
 const MAX_SIGNED_INT64 = 9223372036854775807n;
 const LIVE_WRITER_BY_DB = new WeakMap();
 const LIVE_WRITER_BY_DATABASE = new Map();
+const MEMTABLE_DATABASE_AUTHORITY = new WeakMap();
 
 function databaseAuthorityKey(db) {
     const name = String(db?.name || '').trim();
@@ -30,6 +31,10 @@ function databaseAuthorityKey(db) {
     } catch (_) {
         return absolute;
     }
+}
+
+function databaseAuthorityIdentity(db) {
+    return databaseAuthorityKey(db) ?? db;
 }
 
 function assertDatabaseWriterAvailable(db) {
@@ -298,10 +303,31 @@ class GenUSearchPhysicalCoverageWriter {
                 `Gen0 MemTable source identity already exists: ${memtable.sourceId}`
             );
         }
-        ReadPins.bindMemtableDatabase(memtable, this.db);
+        MEMTABLE_DATABASE_AUTHORITY.set(
+            memtable,
+            databaseAuthorityIdentity(this.db)
+        );
         this.#sourceIds.add(memtable.sourceId);
         this.#mutationTokens.set(memtable, token);
         return memtable;
+    }
+
+    static assertMemtableDatabaseAuthority(memtable, db) {
+        if (!(memtable instanceof GenUSearchMemTable)) {
+            throw codedError(
+                'QUERY_READ_VIEW_INVALID',
+                'G4 database authority requires a GenUSearchMemTable'
+            );
+        }
+        const actual = MEMTABLE_DATABASE_AUTHORITY.get(memtable);
+        const expected = databaseAuthorityIdentity(db);
+        if (!actual || actual !== expected) {
+            throw codedError(
+                'QUERY_READ_VIEW_INVALID',
+                'MemTable is not writer-bound to the QueryReadView SQLite authority'
+            );
+        }
+        return true;
     }
 
     assertCrashDurableProfile() {
