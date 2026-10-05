@@ -30,11 +30,10 @@ function canonicalGeneration(value) {
     const normalized = typeof value === 'number' && Number.isSafeInteger(value)
         ? String(value)
         : value;
-    if (
-        typeof normalized !== 'string'
-        || !/^[1-9][0-9]*$/.test(normalized)
-    ) {
-        throw new TypeError('Gen0 MemTable generation must be a canonical positive integer');
+    if (typeof normalized !== 'string' || !/^[1-9][0-9]*$/.test(normalized)) {
+        throw new TypeError(
+            'Gen0 MemTable generation must be a canonical positive integer'
+        );
     }
     return normalized;
 }
@@ -57,6 +56,10 @@ function requireVector(vector, dimension) {
 }
 
 class GenUSearchMemTable {
+    #index;
+    #vectorIds = new Set();
+    #state = 'ACTIVE';
+
     constructor(options = {}) {
         const VexusIndex = options.VexusIndex;
         if (typeof VexusIndex !== 'function') {
@@ -78,26 +81,30 @@ class GenUSearchMemTable {
                 'Gen0 MemTable runtimeId must match [A-Za-z0-9._-]{1,128}'
             );
         }
-
         const generation = canonicalGeneration(options.generation);
+        const sourceId = `gen0:${runtimeId}:${generation}`;
 
-        this.dimension = dimension;
-        this.capacity = capacity;
-        this.runtimeId = runtimeId;
-        this.generation = generation;
-        this.sourceKind = 'MEMTABLE';
-        this.sourceId = `gen0:${runtimeId}:${generation}`;
-        this.state = 'ACTIVE';
+        Object.defineProperties(this, {
+            dimension: { value: dimension, enumerable: true },
+            capacity: { value: capacity, enumerable: true },
+            runtimeId: { value: runtimeId, enumerable: true },
+            generation: { value: generation, enumerable: true },
+            sourceKind: { value: 'MEMTABLE', enumerable: true },
+            sourceId: { value: sourceId, enumerable: true }
+        });
 
-        this._index = new VexusIndex(dimension, capacity);
-        this._vectorIds = new Set();
+        this.#index = new VexusIndex(dimension, capacity);
+    }
+
+    get state() {
+        return this.#state;
     }
 
     _assertActive() {
-        if (this.state !== 'ACTIVE') {
+        if (this.#state !== 'ACTIVE') {
             throw codedError(
                 'MEMTABLE_NOT_ACTIVE',
-                `Gen0 MemTable ${this.sourceId} is ${this.state}`
+                `Gen0 MemTable ${this.sourceId} is ${this.#state}`
             );
         }
     }
@@ -107,48 +114,48 @@ class GenUSearchMemTable {
         const vectorId = canonicalVectorId(options.vectorId);
         const vector = requireVector(options.vector, this.dimension);
 
-        if (this._vectorIds.has(vectorId)) {
+        if (this.#vectorIds.has(vectorId)) {
             throw codedError(
                 'MEMTABLE_VECTOR_ALREADY_PRESENT',
                 `Vector ${vectorId} already exists in ${this.sourceId}`
             );
         }
 
-        this._index.addKey64(vectorId, vector);
-        this._vectorIds.add(vectorId);
+        this.#index.addKey64(vectorId, vector);
+        this.#vectorIds.add(vectorId);
         return Object.freeze({
             vectorId,
             sourceId: this.sourceId,
-            state: this.state
+            state: this.#state
         });
     }
 
     removeVector(vectorId) {
         this._assertActive();
         const normalized = canonicalVectorId(vectorId);
-        if (!this._vectorIds.has(normalized)) return false;
+        if (!this.#vectorIds.has(normalized)) return false;
 
-        this._index.removeKey64(normalized);
-        this._vectorIds.delete(normalized);
+        this.#index.removeKey64(normalized);
+        this.#vectorIds.delete(normalized);
         return true;
     }
 
     hasVector(vectorId) {
         const normalized = canonicalVectorId(vectorId);
-        return this._vectorIds.has(normalized);
+        return this.#vectorIds.has(normalized);
     }
 
     seal() {
-        if (this.state === 'SEALED_QUERY_VISIBLE') {
-            return this.state;
+        if (this.#state === 'SEALED_QUERY_VISIBLE') {
+            return this.#state;
         }
         this._assertActive();
-        this.state = 'SEALED_QUERY_VISIBLE';
-        return this.state;
+        this.#state = 'SEALED_QUERY_VISIBLE';
+        return this.#state;
     }
 
     listVectorIds() {
-        return Object.freeze([...this._vectorIds]);
+        return Object.freeze([...this.#vectorIds]);
     }
 
     stats() {
@@ -157,12 +164,26 @@ class GenUSearchMemTable {
             sourceId: this.sourceId,
             runtimeId: this.runtimeId,
             generation: this.generation,
-            state: this.state,
+            state: this.#state,
             dimension: this.dimension,
             capacity: this.capacity,
-            vectorCount: this._vectorIds.size,
-            nativeRevision: this._index.revision
+            vectorCount: this.#vectorIds.size,
+            nativeRevision: this.#index.revision
         });
+    }
+
+    static assertContains(memtable, vectorId) {
+        if (!(memtable instanceof GenUSearchMemTable)) {
+            throw new TypeError('expected GenUSearchMemTable');
+        }
+        const normalized = canonicalVectorId(vectorId);
+        if (!memtable.#vectorIds.has(normalized)) {
+            throw codedError(
+                'PHYSICAL_COVERAGE_MISSING',
+                `Vector ${normalized} is absent from ${memtable.sourceId}`
+            );
+        }
+        return true;
     }
 }
 
