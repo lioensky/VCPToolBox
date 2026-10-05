@@ -455,6 +455,119 @@ test('manifest metadata divergence blocks acquisition before a usable view exist
     }
 });
 
+test('missing current-version authority cannot disappear from the metadata snapshot', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: 'ca'.repeat(32)
+        });
+        fixture.db.prepare(
+            'UPDATE gen_usearch_chunk_heads SET current_version_id = ? WHERE chunk_id = ?'
+        ).run(999999n, 'chunk-a');
+
+        assert.throws(
+            () => fixture.coordinator.acquire({
+                memtables: [memtable],
+                deadline: fixture.now() + 500
+            }),
+            error => error?.code === 'QUERY_READ_VIEW_INVALID'
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            0
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('current head cannot impersonate an ACTIVE version owned by another chunk', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        const first = fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            docId: 'doc-cross-head',
+            chunkId: 'chunk-cross-a',
+            slotIndex: 0,
+            contentHash: 'cb'.repeat(32)
+        });
+        const second = fixture.stageAndAdmit(memtable, {
+            ordinal: 'b',
+            docId: 'doc-cross-head',
+            chunkId: 'chunk-cross-b',
+            slotIndex: 1,
+            vector: new Float32Array([0, 1, 0, 0]),
+            contentHash: 'cc'.repeat(32)
+        });
+
+        fixture.db.prepare(
+            'UPDATE gen_usearch_chunk_heads SET current_version_id = NULL WHERE chunk_id = ?'
+        ).run('chunk-cross-b');
+        fixture.db.prepare(
+            'UPDATE gen_usearch_chunk_heads SET current_version_id = ? WHERE chunk_id = ?'
+        ).run(BigInt(second.staged.chunk_version_id), 'chunk-cross-a');
+
+        assert.notEqual(first.staged.chunk_version_id, second.staged.chunk_version_id);
+        assert.throws(
+            () => fixture.coordinator.acquire({
+                memtables: [memtable],
+                deadline: fixture.now() + 500
+            }),
+            error => error?.code === 'QUERY_READ_VIEW_INVALID'
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            0
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('manifest membership cannot disappear when segment metadata is missing', () => {
+    const fixture = createFixture();
+    try {
+        const memtable = fixture.createMemtable(1);
+        fixture.stageAndAdmit(memtable, {
+            ordinal: 'a',
+            contentHash: 'cd'.repeat(32)
+        });
+        const receipt = fixture.publishMemtable(memtable);
+
+        fixture.db.pragma('foreign_keys = OFF');
+        fixture.db.prepare(
+            'DELETE FROM gen_usearch_segments WHERE segment_id = ?'
+        ).run(receipt.segmentId);
+
+        assert.equal(
+            fixture.db.prepare(
+                'SELECT COUNT(*) AS count FROM gen_usearch_manifest_segments WHERE segment_id = ?'
+            ).get(receipt.segmentId).count,
+            1
+        );
+        assert.throws(
+            () => fixture.coordinator.acquire({
+                memtables: [memtable],
+                deadline: fixture.now() + 500
+            }),
+            error => error?.code === 'RECOVERY_MANIFEST_INVALID'
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.memtablePinCount(memtable),
+            0
+        );
+        assert.equal(
+            GenUSearchQueryReadViewCoordinator.segmentPinCount(receipt.segmentId),
+            0
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('embedding fingerprint and query dimension are fail-closed', () => {
     const fixture = createFixture();
     try {
