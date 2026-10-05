@@ -73,7 +73,6 @@ class GenUSearchPhysicalCoverageWriter {
         });
         this.db = db;
         this.now = typeof options.now === 'function' ? options.now : () => Date.now();
-        LIVE_WRITER_BY_DB.set(db, this);
 
         this._getVector = db.prepare(`
             SELECT
@@ -134,6 +133,10 @@ class GenUSearchPhysicalCoverageWriter {
         this._hideCoverageTransaction = db.transaction(
             (vectorId, sourceId) => this._deleteCoverage.run(vectorId, sourceId).changes
         );
+
+        // Claim the in-process writer authority only after every required SQL
+        // statement and transaction has initialized successfully.
+        LIVE_WRITER_BY_DB.set(db, this);
     }
 
     get bootstrapped() {
