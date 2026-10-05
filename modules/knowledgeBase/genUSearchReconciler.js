@@ -156,6 +156,15 @@ function deriveInsertedChunkId(docId, targetRevision, slotIndex, contentHash) {
     return `guc_${digest.slice(0, 40)}`;
 }
 
+function hashIdentitySnapshot(chunks) {
+    const normalized = normalizePreviousChunks(chunks || []).map(row => ({
+        chunkId: row.chunkId,
+        slotIndex: row.slotIndex,
+        contentHash: row.contentHash
+    }));
+    return hashCanonical(normalized);
+}
+
 function groupByHash(rows) {
     const map = new Map();
     for (const row of rows) {
@@ -386,9 +395,9 @@ function assertIdentityOnlyPlan(plan) {
         throw new TypeError('plan must be an object');
     }
     assertExactKeys(plan, [
-        'planVersion', 'identityOnly', 'docId', 'observedSourceDigest',
-        'observedSourceRevision', 'targetRevision', 'operations', 'summary',
-        'planDigest', 'planId'
+        'planVersion', 'identityOnly', 'docId', 'baseDocumentUri',
+        'baseIdentityDigest', 'observedSourceDigest', 'observedSourceRevision',
+        'targetRevision', 'operations', 'summary', 'planDigest', 'planId'
     ], 'plan');
     if (plan.planVersion !== 1 || plan.identityOnly !== true) {
         throw codedError(
@@ -397,6 +406,8 @@ function assertIdentityOnlyPlan(plan) {
         );
     }
     requireString(plan.docId, 'plan.docId');
+    if (plan.baseDocumentUri !== null) requireString(plan.baseDocumentUri, 'plan.baseDocumentUri');
+    requireSha256(plan.baseIdentityDigest, 'plan.baseIdentityDigest');
     requireString(plan.observedSourceDigest, 'plan.observedSourceDigest');
     requireString(plan.observedSourceRevision, 'plan.observedSourceRevision', { trim: false });
     requireString(plan.targetRevision, 'plan.targetRevision', { trim: false });
@@ -428,6 +439,8 @@ function assertIdentityOnlyPlan(plan) {
         planVersion: plan.planVersion,
         identityOnly: plan.identityOnly,
         docId: plan.docId,
+        baseDocumentUri: plan.baseDocumentUri,
+        baseIdentityDigest: plan.baseIdentityDigest,
         observedSourceDigest: plan.observedSourceDigest,
         observedSourceRevision: plan.observedSourceRevision,
         targetRevision: plan.targetRevision,
@@ -445,6 +458,9 @@ function assertIdentityOnlyPlan(plan) {
 }
 function reconcileDocumentChunks(options = {}) {
     const docId = requireString(options.docId, 'docId');
+    const baseDocumentUri = options.baseDocumentUri == null
+        ? null
+        : requireString(options.baseDocumentUri, 'baseDocumentUri');
     const observedSourceDigest = requireString(
         options.observedSourceDigest,
         'observedSourceDigest'
@@ -460,6 +476,11 @@ function reconcileDocumentChunks(options = {}) {
         { trim: false }
     );
     const previous = normalizePreviousChunks(options.previousChunks || []);
+    const baseIdentityDigest = hashCanonical(previous.map(row => ({
+        chunkId: row.chunkId,
+        slotIndex: row.slotIndex,
+        contentHash: row.contentHash
+    })));
     const next = normalizeNextChunks(options.nextChunks || []);
 
     const previousByHash = groupByHash(previous);
@@ -641,6 +662,8 @@ function reconcileDocumentChunks(options = {}) {
         planVersion: 1,
         identityOnly: true,
         docId,
+        baseDocumentUri,
+        baseIdentityDigest,
         observedSourceDigest,
         observedSourceRevision,
         targetRevision,
@@ -662,6 +685,7 @@ module.exports = {
     hashExactChunkContent,
     stableStringify,
     hashCanonical,
+    hashIdentitySnapshot,
     deriveInsertedChunkId,
     assertIdentityOnlyPlan,
     reconcileDocumentChunks
