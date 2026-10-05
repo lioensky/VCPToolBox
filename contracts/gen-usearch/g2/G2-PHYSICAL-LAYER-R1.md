@@ -64,6 +64,9 @@ G2 may implement only:
 14. **SQLite mutation success is proven by postcondition inside the same transaction.**
     Bootstrap cleanup must verify zero remaining MEMTABLE coverage, publication must read back `QUERY_VISIBLE`, batch publication must verify every row, and hide must verify the authoritative coverage row is absent before any physical delete proceeds. Silent trigger ignore/rewrite is fail-closed.
 
+15. **Physical engine identity is native-bound.**
+    A Gen0 MemTable may publish authority only when its backing object is an authentic `rust-vexus-lite.VexusIndex` native instance. Arbitrary JavaScript classes cannot impersonate the physical index even if they forge revision or membership responses.
+
 ## Explicitly deferred beyond G2
 
 G2 does **not** authorize:
@@ -94,6 +97,7 @@ G2 may pass only when:
 - two connections to the same database file cannot obtain concurrent G2 writer authority;
 - native revision changes without exact key membership cannot manufacture coverage;
 - silent SQLite ignore/rewrite of bootstrap, publication, batch publication, or hide operations cannot produce a successful authority transition;
+- arbitrary JavaScript index implementations cannot impersonate the native Vexus physical source;
 - durable coverage publication enables the existing G1 MVCC CAS path;
 - removal order cannot leave a false coverage fact;
 - G2 stage-boundary tests prove segment/manifest/query/GC/cutover remain unwired;
