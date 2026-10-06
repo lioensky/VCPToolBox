@@ -83,6 +83,13 @@ async function _sendBatch(batchTexts, config, batchNumber) {
         try {
             const requestUrl = `${config.apiUrl}/v1/embeddings`;
             const requestBody = { model, input: batchTexts };
+            
+            // 动态读取并强制传递维度，剥离对大模型默认维度的依赖
+            const dim = parseInt(process.env.VECTORDB_DIMENSION, 10);
+            if (!isNaN(dim)) {
+                requestBody.dimensions = dim;
+            }
+            
             const requestHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` };
 
             const response = await fetch(requestUrl, {
