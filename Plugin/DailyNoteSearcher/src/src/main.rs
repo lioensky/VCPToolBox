@@ -530,11 +530,19 @@ fn start_http_server() {
 }
 
 fn handle_http_connection(mut stream: TcpStream, control: ServerControl) -> Result<(), String> {
+    // Windows 上 accept 的 TcpStream 会继承 listener 的 non-blocking 状态。
+    // 显式切回阻塞模式，杜绝同步读取时报 WSAEWOULDBLOCK (10035)。
+    if let Err(e) = stream.set_nonblocking(false) {
+        return Err(format!("Failed to set stream to blocking mode: {}", e));
+    }
+    let io_timeout = Duration::from_secs(60);
+    let _ = stream.set_read_timeout(Some(io_timeout));
+    let _ = stream.set_write_timeout(Some(io_timeout));
+
     let mut buffer = Vec::new();
     let mut temp = [0_u8; 4096];
     let mut headers_end = None;
     let mut content_length = 0_usize;
-
     loop {
         let read_count = stream.read(&mut temp).map_err(|e| e.to_string())?;
         if read_count == 0 {
@@ -690,9 +698,10 @@ fn write_http_json(stream: &mut TcpStream, status_code: u16, body: &str) -> Resu
     );
     stream
         .write_all(response.as_bytes())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let _ = stream.flush();
+    Ok(())
 }
-
 fn is_path_safe(target: &Path, root: &Path) -> bool {
     let root_canon = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let target_canon = if target.exists() {
