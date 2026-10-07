@@ -61,7 +61,10 @@ class DatabaseCoordinator {
                 error.code = 'ABORT_ERR';
                 throw error;
             }
-            const lastActive = owner.lastActivityAt || startedAt;
+            const lastActive = Math.max(
+                startedAt,
+                Number(owner.lastActivityAt) || 0
+            );
             const timeSinceLastActivity = Date.now() - lastActive;
             const isStalled = timeSinceLastActivity >= stallThresholdMs;
             const isAbsoluteTimeout = (Date.now() - startedAt) >= timeoutMs;

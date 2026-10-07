@@ -306,6 +306,9 @@ class KnowledgeBaseManager {
                 this._unregisterNativeDiaryIndex(diaryName),
             onRecoveryStateChange: active => {
                 this.indexRecoveryActive = active;
+                if (active) {
+                    this.touchActivity();
+                }
             },
             onRecoveryTailChange: tail => {
                 this._indexRecoveryTail = tail;
