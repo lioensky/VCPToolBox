@@ -24,7 +24,10 @@ const MID_EXPAND_MAX = 180;         // 中期最多放宽到180天
 class DreamWaveEngine {
     constructor(knowledgeBaseManager) {
         this.kb = knowledgeBaseManager;
-        this.db = knowledgeBaseManager ? knowledgeBaseManager.db : null;
+    }
+
+    get db() {
+        return this.kb?.db || null;
     }
 
     // =========================================================================
