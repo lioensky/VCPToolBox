@@ -208,42 +208,65 @@ class DirectDiaryTextProcessor {
         }
     }
 
-    postDailyNoteSearcherHttp(host, port, payload, timeoutMs) {
+    async postDailyNoteSearcherHttp(host, port, payload, timeoutMs) {
         const body = JSON.stringify(payload || {});
-        return new Promise((resolve, reject) => {
-            const req = http.request({
-                hostname: host,
-                port,
-                path: '/search',
-                method: 'POST',
-                timeout: timeoutMs,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Content-Length': Buffer.byteLength(body)
-                }
-            }, (res) => {
-                let data = '';
-                res.setEncoding('utf8');
-                res.on('data', chunk => {
-                    data += chunk;
-                    if (data.length > 64 * 1024 * 1024) {
-                        req.destroy(new Error('DailyNoteSearcher HTTP response exceeded 64MB'));
-                    }
-                });
-                res.on('end', () => {
-                    try {
-                        resolve(JSON.parse(String(data || '').trim()));
-                    } catch (error) {
-                        reject(new Error(`DailyNoteSearcher HTTP returned invalid JSON: ${error.message}`));
-                    }
-                });
-            });
+        const isTransientNetworkError = (err) => {
+            if (!err) return false;
+            const msg = String(err.message || err.code || '');
+            return msg.includes('ECONNRESET') ||
+                msg.includes('socket hang up') ||
+                msg.includes('10035') ||
+                msg.includes('ECONNREFUSED') ||
+                msg.includes('EPIPE');
+        };
 
-            req.on('timeout', () => req.destroy(new Error(`DailyNoteSearcher HTTP timed out after ${timeoutMs}ms`)));
-            req.on('error', reject);
-            req.write(body);
-            req.end();
-        });
+        const maxAttempts = 3;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                return await new Promise((resolve, reject) => {
+                    const req = http.request({
+                        hostname: host,
+                        port,
+                        path: '/search',
+                        method: 'POST',
+                        timeout: timeoutMs,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Content-Length': Buffer.byteLength(body)
+                        }
+                    }, (res) => {
+                        let data = '';
+                        res.setEncoding('utf8');
+                        res.on('data', chunk => {
+                            data += chunk;
+                            if (data.length > 64 * 1024 * 1024) {
+                                req.destroy(new Error('DailyNoteSearcher HTTP response exceeded 64MB'));
+                            }
+                        });
+                        res.on('end', () => {
+                            try {
+                                resolve(JSON.parse(String(data || '').trim()));
+                            } catch (error) {
+                                reject(new Error(`DailyNoteSearcher HTTP returned invalid JSON: ${error.message}`));
+                            }
+                        });
+                    });
+
+                    req.on('timeout', () => req.destroy(new Error(`DailyNoteSearcher HTTP timed out after ${timeoutMs}ms`)));
+                    req.on('error', reject);
+                    req.write(body);
+                    req.end();
+                });
+            } catch (error) {
+                if (attempt < maxAttempts && isTransientNetworkError(error)) {
+                    const delayMs = attempt * 60;
+                    this.logger.warn(`[DirectDiaryTextProcessor] DailyNoteSearcher HTTP transient socket error (${error.message}), retrying in ${delayMs}ms (${attempt}/${maxAttempts - 1})...`);
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                    continue;
+                }
+                throw error;
+            }
+        }
     }
 
     getBM25PrefilterLimit() {

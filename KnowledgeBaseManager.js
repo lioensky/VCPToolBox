@@ -172,6 +172,35 @@ class KnowledgeBaseManager {
                     : 0.05;
             })(),
             // 兼容仍读取该字段的旧代码；两种枚举模式都表示启用 Tag 索引落地。
+            // 单 Agent 日记 Chunk 索引落地模式（单一枚举配置）：
+            // - always：传统模式，每次防抖窗口结束均重写完整 usearch。
+            // - generational：推荐模式，加载双槽基线并仅由 SQLite 回放 Chunk 差分，
+            //   仅当累计实际差异达到阈值时发布新一代 usearch。
+            // - none：完全禁止落盘（纯内存重建）。
+            chunkIndexPersistenceMode: (() => {
+                const raw = String(
+                    process.env.KNOWLEDGEBASE_PERSIST_CHUNK_INDEX
+                    || 'generational'
+                ).trim().toLowerCase();
+                if (raw === 'always' || raw === 'true') return 'always';
+                if (raw === 'none' || raw === 'off') return 'none';
+                if (raw === 'generational' || raw === 'false' || !raw) {
+                    return 'generational';
+                }
+                console.warn(
+                    `[KnowledgeBase] Invalid KNOWLEDGEBASE_PERSIST_CHUNK_INDEX="${raw}"; ` +
+                    'falling back to recommended mode "generational".'
+                );
+                return 'generational';
+            })(),
+            chunkIndexBaselineDeltaRatio: (() => {
+                const value = Number(
+                    process.env.KNOWLEDGEBASE_CHUNK_INDEX_BASELINE_DELTA_RATIO
+                );
+                return Number.isFinite(value) && value > 0 && value <= 1
+                    ? value
+                    : 0.05;
+            })(),
             persistTagIndex: true,
             // 🌟 是否默认持久化索引（建议 false，仅在内存重建以保证原子性）
             persistDefault: (process.env.KNOWLEDGEBASE_PERSIST_DEFAULT || 'false').toLowerCase() === 'true',
@@ -308,10 +337,18 @@ class KnowledgeBaseManager {
 
         const dbPath = path.join(this.config.storePath, 'knowledge_base.sqlite');
         this.dbPath = dbPath;
+        const tDb0 = Date.now();
         this.db = this._openDatabaseWithRecovery(dbPath); // 同步连接
+        const tDb = Date.now() - tDb0;
 
+        const tSchema0 = Date.now();
         this._initSchema();
+        const tSchema = Date.now() - tSchema0;
+
+        console.log(`[KnowledgeBaseProbe] ⏱️ DB open: ${tDb}ms, Schema init: ${tSchema}ms. Entering _cleanupDatabaseOrphans...`);
+        const tOrphan0 = Date.now();
         this._cleanupDatabaseOrphans();
+        console.log(`[KnowledgeBaseProbe] ⏱️ _cleanupDatabaseOrphans complete in ${Date.now() - tOrphan0}ms. Ready to restore Global Tag baseline.`);
 
         // 1. 初始化全局 Tag 索引。
         // tags 是唯一权威真相；磁盘 usearch 只是允许落后的双槽基线。
@@ -937,17 +974,26 @@ class KnowledgeBaseManager {
         try {
             const affectedDiaries = new Set();
 
-            const missingFiles = this.db.prepare('SELECT id, path, diary_name FROM files').all()
-                .filter(row => !fsSync.existsSync(path.join(this.config.rootPath, row.path)));
+            const tQueryFiles0 = Date.now();
+            const allFiles = this.db.prepare('SELECT id, path, diary_name FROM files').all();
+            const tQueryFiles = Date.now() - tQueryFiles0;
+
+            const tExists0 = Date.now();
+            const missingFiles = allFiles.filter(row => !fsSync.existsSync(path.join(this.config.rootPath, row.path)));
+            const tExists = Date.now() - tExists0;
 
             missingFiles.forEach(row => affectedDiaries.add(row.diary_name));
 
+            const tOrphanChunk0 = Date.now();
             const orphanChunkCount = this.db.prepare(`
                 SELECT COUNT(*) as count
                 FROM chunks c
                 LEFT JOIN files f ON c.file_id = f.id
                 WHERE f.id IS NULL
             `).get().count || 0;
+            const tOrphanChunk = Date.now() - tOrphanChunk0;
+
+            console.log(`[KnowledgeBaseProbe] 🔍 Orphan detail: ${allFiles.length} files queried (${tQueryFiles}ms), ${allFiles.length} existsSync checks (${tExists}ms), orphan chunk count query (${tOrphanChunk}ms). Missing files: ${missingFiles.length}`);
 
             const cleanupTransaction = this.db.transaction(() => {
                 for (const row of missingFiles) {

@@ -75,7 +75,7 @@ async function findExecutable() {
     );
 }
 
-function postJson(payload, timeoutMs = serviceConfig.timeout, requestPath = '/search') {
+async function postJson(payload, timeoutMs = serviceConfig.timeout, requestPath = '/search') {
     const body = JSON.stringify(payload || {});
     const requestOptions = {
         hostname: serviceConfig.host,
@@ -89,33 +89,54 @@ function postJson(payload, timeoutMs = serviceConfig.timeout, requestPath = '/se
         }
     };
 
-    return new Promise((resolve, reject) => {
-        const req = http.request(requestOptions, (res) => {
-            let data = '';
-            res.setEncoding('utf8');
-            res.on('data', chunk => {
-                data += chunk;
-                if (data.length > 128 * 1024 * 1024) {
-                    req.destroy(new Error('DailyNoteSearcher HTTP response exceeded 128MB'));
-                }
-            });
-            res.on('end', () => {
-                try {
-                    const parsed = JSON.parse(data || '{}');
-                    resolve(parsed);
-                } catch (error) {
-                    reject(new Error(`DailyNoteSearcher returned invalid JSON: ${error.message}; body=${data.slice(0, 300)}`));
-                }
-            });
-        });
+    const isTransientError = (err) => {
+        if (!err) return false;
+        const msg = String(err.message || err.code || '');
+        return msg.includes('ECONNRESET') ||
+            msg.includes('socket hang up') ||
+            msg.includes('10035') ||
+            msg.includes('ECONNREFUSED') ||
+            msg.includes('EPIPE');
+    };
 
-        req.on('timeout', () => {
-            req.destroy(new Error(`DailyNoteSearcher HTTP request timed out after ${timeoutMs}ms`));
-        });
-        req.on('error', reject);
-        req.write(body);
-        req.end();
-    });
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            return await new Promise((resolve, reject) => {
+                const req = http.request(requestOptions, (res) => {
+                    let data = '';
+                    res.setEncoding('utf8');
+                    res.on('data', chunk => {
+                        data += chunk;
+                        if (data.length > 128 * 1024 * 1024) {
+                            req.destroy(new Error('DailyNoteSearcher HTTP response exceeded 128MB'));
+                        }
+                    });
+                    res.on('end', () => {
+                        try {
+                            const parsed = JSON.parse(data || '{}');
+                            resolve(parsed);
+                        } catch (error) {
+                            reject(new Error(`DailyNoteSearcher returned invalid JSON: ${error.message}; body=${data.slice(0, 300)}`));
+                        }
+                    });
+                });
+
+                req.on('timeout', () => {
+                    req.destroy(new Error(`DailyNoteSearcher HTTP request timed out after ${timeoutMs}ms`));
+                });
+                req.on('error', reject);
+                req.write(body);
+                req.end();
+            });
+        } catch (error) {
+            if (attempt < maxAttempts && isTransientError(error)) {
+                await delay(attempt * 60);
+                continue;
+            }
+            throw error;
+        }
+    }
 }
 
 function delay(ms) {

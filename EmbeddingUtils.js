@@ -73,54 +73,24 @@ function _getEmbeddingModelCandidates(config = {}) {
 /**
  * 内部函数：发送单个批次
  */
-function _resolveProvider(config) {
-    // 显式配置优先：EMBEDDING_PROVIDER=aliyun|openai
-    const explicitProvider = process.env.EMBEDDING_PROVIDER;
-    if (explicitProvider) {
-        const p = explicitProvider.toLowerCase().trim();
-        if (p === 'aliyun' || p === 'dashscope') return 'aliyun';
-        if (p === 'openai') return 'openai';
-    }
-    // 回退到 URL 检测：含 dashscope 即自动走原生 API（_normalizeAliyunUrl 会剥离 /compatible-mode）
-    const apiUrl = config.apiUrl || '';
-    if (apiUrl.toLowerCase().includes('dashscope')) {
-        return 'aliyun';
-    }
-    return 'openai';
-}
-
-function _normalizeAliyunUrl(apiUrl) {
-    // DashScope 原生 API 端点不需要 /compatible-mode 前缀
-    if (!apiUrl) return apiUrl;
-    const url = apiUrl.replace(/\/compatible-mode\/?$/, '');
-    return url.replace(/\/+$/, '');
-}
-
 async function _sendBatch(batchTexts, config, batchNumber) {
     const { default: fetch } = await import('node-fetch');
     const modelCandidates = _getEmbeddingModelCandidates(config);
     const baseDelay = 1000;
 
-    const provider = _resolveProvider(config);
-    const isDashScopeNative = provider === 'aliyun';
-
     for (let attempt = 1; attempt <= modelCandidates.length; attempt++) {
         const model = modelCandidates[attempt - 1];
         try {
-            let requestUrl, requestBody;
-            const requestHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` };
-
-            if (isDashScopeNative) {
-                const baseUrl = _normalizeAliyunUrl(config.apiUrl);
-                requestUrl = `${baseUrl}/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding`;
-                requestBody = {
-                    model,
-                    input: { contents: batchTexts.map(text => ({ text: text })) }
-                };
-            } else {
-                requestUrl = `${config.apiUrl}/v1/embeddings`;
-                requestBody = { model, input: batchTexts };
+            const requestUrl = `${config.apiUrl}/v1/embeddings`;
+            const requestBody = { model, input: batchTexts };
+            
+            // 动态读取并强制传递维度，剥离对大模型默认维度的依赖
+            const dim = parseInt(process.env.VECTORDB_DIMENSION, 10);
+            if (!isNaN(dim)) {
+                requestBody.dimensions = dim;
             }
+            
+            const requestHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` };
 
             const response = await fetch(requestUrl, {
                 method: 'POST',
@@ -165,51 +135,35 @@ async function _sendBatch(batchTexts, config, batchNumber) {
                 throw new Error(`API Error ${errorCode}: ${errorMsg}`);
             }
 
-            let embeddingsData;
-            if (isDashScopeNative) {
-                embeddingsData = data.output?.embeddings;
-                if (!embeddingsData) {
-                    console.error(`[Embedding] Missing 'output.embeddings' field in DashScope response`);
-                    console.error(`Response keys: ${Object.keys(data).join(', ')}`);
-                    console.error(`Response preview: ${JSON.stringify(data).substring(0, 500)}`);
-                    throw new Error(`Invalid DashScope API response structure`);
-                }
-            } else {
-                if (!data.data) {
-                    console.error(`[Embedding] Missing 'data' field in response for Batch ${batchNumber}`);
-                    console.error(`Response keys: ${Object.keys(data).join(', ')}`);
-                    console.error(`Response preview: ${JSON.stringify(data).substring(0, 500)}`);
-                    throw new Error(`Invalid API response structure: missing 'data' field`);
-                }
-
-                if (!Array.isArray(data.data)) {
-                    console.error(`[Embedding] 'data' field is not an array for Batch ${batchNumber}`);
-                    console.error(`data type: ${typeof data.data}`);
-                    console.error(`data value: ${JSON.stringify(data.data).substring(0, 200)}`);
-                    throw new Error(`Invalid API response structure: 'data' is not an array`);
-                }
-                embeddingsData = data.data;
+            if (!data.data) {
+                console.error(`[Embedding] Missing 'data' field in response for Batch ${batchNumber}`);
+                console.error(`Response keys: ${Object.keys(data).join(', ')}`);
+                console.error(`Response preview: ${JSON.stringify(data).substring(0, 500)}`);
+                throw new Error(`Invalid API response structure: missing 'data' field`);
             }
 
-            if (embeddingsData.length === 0) {
+            if (!Array.isArray(data.data)) {
+                console.error(`[Embedding] 'data' field is not an array for Batch ${batchNumber}`);
+                console.error(`data type: ${typeof data.data}`);
+                console.error(`data value: ${JSON.stringify(data.data).substring(0, 200)}`);
+                throw new Error(`Invalid API response structure: 'data' is not an array`);
+            }
+
+            if (data.data.length === 0) {
                 console.warn(`[Embedding] Warning: Batch ${batchNumber} returned empty embeddings array`);
             }
 
-            const sortedData = data.data.sort((a, b) => a.index - b.index);
+            const sortedData = data.data.sort((a, b) => (a.index ?? a.text_index ?? 0) - (b.index ?? b.text_index ?? 0));
             const successfullyVectorizedTexts = sortedData
-                .filter(item => item && item.embedding && Number.isInteger(item.index) && item.index >= 0 && item.index < batchTexts.length)
-                .map(item => batchTexts[item.index]);
+                .filter(item => item && item.embedding && ((Number.isInteger(item.index) && item.index >= 0) || (Number.isInteger(item.text_index) && item.text_index >= 0)))
+                .map(item => batchTexts[item.index ?? item.text_index]);
 
             await _writeEmbeddingAuditLog(successfullyVectorizedTexts);
 
             // 简单的 Log，证明并发正在跑
             // console.log(`[Embedding] ✅ Batch ${batchNumber} completed (${batchTexts.length} items) via ${model}.`);
 
-            if (isDashScopeNative) {
-                return embeddingsData.map(item => item.embedding);
-            } else {
-                return sortedData.map(item => item.embedding);
-            }
+            return sortedData.map(item => item.embedding);
 
         } catch (e) {
             console.warn(`[Embedding] Batch ${batchNumber}, Model "${model}" failed (${attempt}/${modelCandidates.length}): ${e.message}`);
