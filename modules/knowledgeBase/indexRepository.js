@@ -587,100 +587,117 @@ class IndexRepository {
             || name.endsWith('簇');
     }
 
-    async getOrLoad(diaryName, options = {}) {
-        this.lastUsed.set(diaryName, Date.now());
-        if (this.diaryIndices.has(diaryName)) {
-            return this.diaryIndices.get(diaryName);
+    async _executeLoadIndex(diaryName) {
+        const persist = this.shouldPersist(diaryName);
+        console.log(
+            `[${this.logPrefix}] 📂 Loading index for diary: ` +
+            `"${diaryName}" (Persist: ${persist})`
+        );
+        const safeName = crypto.createHash('md5')
+            .update(diaryName)
+            .digest('hex');
+        const fileName = `diary_${safeName}`;
+        const capacity = 50000;
+        let index;
+        if (persist) {
+            if (this.chunkIndexPersistenceMode === 'generational') {
+                const baselineRestore = await this.loadDiaryBaseline(diaryName, capacity);
+                if (baselineRestore?.index) {
+                    index = baselineRestore.index;
+                } else {
+                    console.log(
+                        `[${this.logPrefix}] 🔄 No valid generational baseline for "${diaryName}", ` +
+                        'rebuilding from SQLite and publishing initial baseline...'
+                    );
+                    index = new this.VexusIndex(this.config.dimension, capacity);
+                    await this.recoverFromDb(index, 'chunks', diaryName);
+                    this.diaryIndices.set(diaryName, index);
+                    this.publishDiaryBaseline(diaryName, { force: true });
+                }
+            } else {
+                index = await this.loadOrBuild(
+                    fileName,
+                    capacity,
+                    'chunks',
+                    diaryName
+                );
+            }
+        } else {
+            index = new this.VexusIndex(
+                this.config.dimension,
+                capacity
+            );
+            await this.recoverFromDb(index, 'chunks', diaryName);
         }
-        if (this.loadPromises.has(diaryName)) {
-            return this.loadPromises.get(diaryName);
+        return index;
+    }
+
+    async getOrLoad(diaryName, options = {}) {
+        const name = String(diaryName || '').trim();
+        this.lastUsed.set(name, Date.now());
+        if (this.diaryIndices.has(name)) {
+            return this.diaryIndices.get(name);
+        }
+        if (this.loadPromises.has(name)) {
+            return this.loadPromises.get(name);
         }
 
-        const load = async () => {
-            await this.waitForCoordinatorIdle(options);
-            this.recoveryActive = true;
-            this.onRecoveryStateChange(true);
-            try {
-                if (this.diaryIndices.has(diaryName)) {
-                    return this.diaryIndices.get(diaryName);
-                }
-                const persist = this.shouldPersist(diaryName);
-                console.log(
-                    `[${this.logPrefix}] 📂 Loading index for diary: ` +
-                    `"${diaryName}" (Persist: ${persist})`
-                );
-                const safeName = crypto.createHash('md5')
-                    .update(diaryName)
-                    .digest('hex');
-                const fileName = `diary_${safeName}`;
-                const capacity = 50000;
-                let index;
-                if (persist) {
-                    if (this.chunkIndexPersistenceMode === 'generational') {
-                        const baselineRestore = await this.loadDiaryBaseline(diaryName, capacity);
-                        if (baselineRestore?.index) {
-                            index = baselineRestore.index;
-                        } else {
-                            console.log(
-                                `[${this.logPrefix}] 🔄 No valid generational baseline for "${diaryName}", ` +
-                                'rebuilding from SQLite and publishing initial baseline...'
-                            );
-                            index = new this.VexusIndex(this.config.dimension, capacity);
-                            await this.recoverFromDb(index, 'chunks', diaryName);
-                            this.diaryIndices.set(diaryName, index);
-                            this.publishDiaryBaseline(diaryName, { force: true });
+        const execute = async () => {
+            if (!options.bypassCoordinator) {
+                await this.waitForCoordinatorIdle(options);
+            }
+            if (this.diaryIndices.has(name)) {
+                return this.diaryIndices.get(name);
+            }
+
+            const load = async () => {
+                this.recoveryActive = true;
+                this.onRecoveryStateChange(true);
+                try {
+                    if (this.diaryIndices.has(name)) {
+                        return this.diaryIndices.get(name);
+                    }
+                    const index = await this._executeLoadIndex(name);
+                    this.diaryIndices.set(name, index);
+                    try {
+                        this.onDiaryIndexPublished(name, index);
+                    } catch (error) {
+                        if (this.diaryIndices.get(name) === index) {
+                            this.diaryIndices.delete(name);
                         }
-                    } else {
-                        index = await this.loadOrBuild(
-                            fileName,
-                            capacity,
-                            'chunks',
-                            diaryName
+                        this.lastUsed.delete(name);
+                        throw new Error(
+                            `Diary index loaded but native publication failed for ` +
+                            `"${name}": ${error.message}`
                         );
                     }
-                } else {
-                    index = new this.VexusIndex(
-                        this.config.dimension,
-                        capacity
-                    );
-                    await this.recoverFromDb(index, 'chunks', diaryName);
+                    this.ensureDiaryDateIndex(name);
+                    return index;
+                } finally {
+                    this.recoveryActive = false;
+                    this.onRecoveryStateChange(false);
                 }
-                this.diaryIndices.set(diaryName, index);
-                try {
-                    this.onDiaryIndexPublished(diaryName, index);
-                } catch (error) {
-                    if (this.diaryIndices.get(diaryName) === index) {
-                        this.diaryIndices.delete(diaryName);
-                    }
-                    this.lastUsed.delete(diaryName);
-                    throw new Error(
-                        `Diary index loaded but native publication failed for ` +
-                        `"${diaryName}": ${error.message}`
-                    );
-                }
-                this.ensureDiaryDateIndex(diaryName);
-                return index;
-            } finally {
-                this.recoveryActive = false;
-                this.onRecoveryStateChange(false);
-            }
+            };
+
+            const queued = this.recoveryTail.then(load);
+            this.recoveryTail = queued.catch(error => {
+                console.error(
+                    `[${this.logPrefix}] Serialized index load failed for ` +
+                    `"${name}":`,
+                    error
+                );
+            });
+            this.onRecoveryTailChange(this.recoveryTail);
+            return await queued;
         };
 
-        const queued = this.recoveryTail.then(load);
-        this.recoveryTail = queued.catch(error => {
-            console.error(
-                `[${this.logPrefix}] Serialized index load failed for ` +
-                `"${diaryName}":`,
-                error
-            );
-        });
-        this.onRecoveryTailChange(this.recoveryTail);
-        this.loadPromises.set(diaryName, queued);
+        const task = execute();
+        this.loadPromises.set(name, task);
         try {
-            return await queued;
+            return await task;
         } finally {
-            if (this.loadPromises.get(diaryName) === queued) {
-                this.loadPromises.delete(diaryName);
+            if (this.loadPromises.get(name) === task) {
+                this.loadPromises.delete(name);
             }
         }
     }
@@ -757,10 +774,6 @@ class IndexRepository {
      */
     async applyChunkDelta(diaryName, removeIds = [], upserts = []) {
         const normalizedDiaryName = String(diaryName || '').trim();
-        if (!normalizedDiaryName) {
-            throw new TypeError('applyChunkDelta requires a diary name');
-        }
-
         const deletes = [...new Set(
             (Array.isArray(removeIds) ? removeIds : [])
                 .map(Number)
@@ -786,12 +799,18 @@ class IndexRepository {
                 requestedUpserts: 0
             };
         }
+        if (!normalizedDiaryName) {
+            throw new TypeError('applyChunkDelta requires a diary name');
+        }
 
-        const index = await this.getOrLoad(normalizedDiaryName, {
-            allowJsProcessing: true,
-            allowJsDeleteProcessing: true
-        });
-
+        let index = this.diaryIndices.get(normalizedDiaryName);
+        if (!index) {
+            index = await this.getOrLoad(normalizedDiaryName, {
+                allowJsProcessing: true,
+                allowJsDeleteProcessing: true,
+                bypassCoordinator: true
+            });
+        }
         if (typeof index?.applyChunkDelta === 'function') {
             const ids = normalizedUpserts.map(entry => entry.id);
             const vectors = new Float32Array(ids.length * this.config.dimension);
