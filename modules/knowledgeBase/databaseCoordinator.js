@@ -20,9 +20,22 @@ class DatabaseCoordinator {
             1000,
             Number(options.timeoutMs) || 30 * 60 * 1000
         );
+        const rawStall = Number(options.stallThresholdMs);
+        const stallThresholdMs = Number.isFinite(rawStall) && rawStall > 0
+            ? Math.max(10, Math.floor(rawStall))
+            : 120 * 1000;
         const pollMs = Math.max(10, Number(options.pollMs) || 50);
         const startedAt = Date.now();
 
+        if (
+            owner.databaseCorruptionDetected
+            || owner.dbHealthState === 'corrupt'
+        ) {
+            throw new Error(
+                'KnowledgeBase database is unavailable because '
+                + 'corruption was detected.'
+            );
+        }
         while (
             (!options.allowJsProcessing && owner.isProcessing)
             || (!options.allowJsDeleteProcessing && owner.isProcessingDeletes)
@@ -48,10 +61,21 @@ class DatabaseCoordinator {
                 error.code = 'ABORT_ERR';
                 throw error;
             }
-            if (Date.now() - startedAt >= timeoutMs) {
+            const lastActive = Math.max(
+                startedAt,
+                Number(owner.lastActivityAt) || 0
+            );
+            const timeSinceLastActivity = Date.now() - lastActive;
+            const isStalled = timeSinceLastActivity >= stallThresholdMs;
+            const isAbsoluteTimeout = (Date.now() - startedAt) >= timeoutMs;
+
+            if (isStalled || isAbsoluteTimeout) {
+                const reason = isStalled
+                    ? `activity stalled with zero progress for ${Math.round(timeSinceLastActivity / 1000)}s`
+                    : `reached absolute limit of ${Math.round(timeoutMs / 1000)}s`;
                 throw new Error(
                     `Timed out waiting for KnowledgeBase coordinator after `
-                    + `${timeoutMs}ms (processing=${owner.isProcessing}, `
+                    + `${Date.now() - startedAt}ms (${reason}) (processing=${owner.isProcessing}, `
                     + `deletes=${owner.isProcessingDeletes}, `
                     + `externalMutation=${owner.externalMutationOwner || 'none'}, `
                     + `rustLease=${owner.rustWriteLease?.owner || 'none'}, `

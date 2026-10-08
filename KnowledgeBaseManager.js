@@ -252,6 +252,7 @@ class KnowledgeBaseManager {
         this.lastJsWriteFinishedAt = 0;
         this.lastRustWriteFinishedAt = 0;
         this._rustLeaseWaitLogAt = 0;
+        this.lastActivityAt = Date.now();
 
         // 🧭 外部文件写入协调器（DailyNote 等常驻服务使用）
         // 文件变更本身不直接写 SQLite，但必须与 watcher 批处理、Rust SQLite 恢复形成单一时序。
@@ -305,6 +306,9 @@ class KnowledgeBaseManager {
                 this._unregisterNativeDiaryIndex(diaryName),
             onRecoveryStateChange: active => {
                 this.indexRecoveryActive = active;
+                if (active) {
+                    this.touchActivity();
+                }
             },
             onRecoveryTailChange: tail => {
                 this._indexRecoveryTail = tail;
@@ -840,6 +844,9 @@ class KnowledgeBaseManager {
 
     _delay(ms) {
         return this.databaseCoordinator.delay(ms);
+    }
+    touchActivity() {
+        this.lastActivityAt = Date.now();
     }
 
     async _waitForDatabaseCoordinatorIdle(options = {}) {
