@@ -3052,15 +3052,29 @@ class OneRingPreprocessor {
         return this._extractMetaFromMessages(messages);
     }
 
-    async recordAIResponseWithMeta(meta, aiText) {
-        return this.recordAIResponse(meta, aiText);
+    async markAIResponseAborted(meta) {
+        if (!meta?.agentName || !meta.turnId) return;
+        try {
+            // DB 只更新 pending；失败 retry 不影响此前 completed 轮及旧正文。
+            db.markPostTurnAborted(meta.agentName, meta.turnId, new Date().toISOString(), projectBasePath);
+        } catch (error) {
+            console.error('[OneRing] 标记未完成回复失败:', error.message);
+        }
+    }
+
+    async recordAIResponseWithMeta(meta, aiText, outcome) {
+        return this.recordAIResponse(meta, aiText, outcome);
     }
 
     /**
      * AI 回复入库（异步，fire-and-forget，供 Stream/NonStream handler 在最终回复完成后调用）。
      */
-    async recordAIResponseFromMessages(messages, aiText) {
+    async recordAIResponseFromMessages(messages, aiText, outcome) {
         const meta = this._extractMetaFromMessages(messages);
+        if (outcome !== undefined && outcome?.completed !== true) {
+            await this.markAIResponseAborted(meta);
+            return;
+        }
         if (!meta && !this._hasOneRingActivationSignal(messages)) {
             if (debugMode) {
                 console.log('[OneRing] post回复跳过入库：未检测到OneRing触发信息。');
@@ -3145,8 +3159,13 @@ class OneRingPreprocessor {
     /**
      * 兼容旧调用：AI 回复入库（异步，fire-and-forget）。
      */
-    async recordAIResponse(meta, aiText) {
+    async recordAIResponse(meta, aiText, outcome) {
+        if (outcome !== undefined && outcome?.completed !== true) {
+            await this.markAIResponseAborted(meta);
+            return;
+        }
         if (!meta || !meta.agentName || typeof aiText !== 'string' || aiText.trim().length === 0) {
+            await this.markAIResponseAborted(meta);
             console.warn(`[OneRing] post回复未写入OneRing：兼容入口参数无效 meta=${meta ? JSON.stringify(meta) : 'null'} aiTextType=${typeof aiText} textLen=${typeof aiText === 'string' ? aiText.trim().length : 'n/a'}`);
             return;
         }
