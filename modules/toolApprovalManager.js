@@ -111,6 +111,7 @@ class ToolApprovalManager {
             approvalList: [],
             whitelist: [],
             fuzzyToolMatching: false,
+            allowChainedCommandWhitelist: false,
             privacyProtection: {
                 enabled: false
             }
@@ -133,6 +134,8 @@ class ToolApprovalManager {
                     approvalList: Array.isArray(loadedConfig.approvalList) ? loadedConfig.approvalList : [],
                     whitelist: Array.isArray(loadedConfig.whitelist) ? loadedConfig.whitelist : [],
                     fuzzyToolMatching: Boolean(loadedConfig.fuzzyToolMatching),
+                    // 高风险兼容模式必须由 JSON boolean true 显式启用。
+                    allowChainedCommandWhitelist: loadedConfig.allowChainedCommandWhitelist === true,
                     debugMode: Boolean(loadedConfig.debugMode),
                     privacyProtection: (loadedConfig.privacyProtection && typeof loadedConfig.privacyProtection === 'object')
                         ? { ...loadedConfig.privacyProtection, enabled: loadedConfig.privacyProtection.enabled === true }
@@ -399,7 +402,8 @@ class ToolApprovalManager {
      * - 工具级白名单直接成立；
      * - 参数/命令级白名单按参数键分组，调用中该键的“全部值”都必须命中同组某条白名单才成立
      *   （防止 command1 白名单 + command2 危险命令的批量绕过）；
-     * - 命令类参数若含串联/管道/子表达式等元字符，白名单一律不生效。
+     * - 默认拒绝含串联/管道/子表达式等元字符的命令白名单；
+     *   显式开启 allowChainedCommandWhitelist 后按原规则匹配整条命令，不检查后续操作。
      */
     _findWhitelistMatch(toolName, toolArgs) {
         const rules = this._getParsedRules('whitelist').filter(rule => this._toolNameMatches(rule.toolName, toolName));
@@ -429,7 +433,11 @@ class ToolApprovalManager {
             const hitRules = new Set();
 
             for (const { argKey, value } of values) {
-                if (COMMAND_LIKE_ARG_KEY_REGEX.test(argKey) && SHELL_CHAIN_META_REGEX.test(value)) {
+                if (
+                    this.config.allowChainedCommandWhitelist !== true &&
+                    COMMAND_LIKE_ARG_KEY_REGEX.test(argKey) &&
+                    SHELL_CHAIN_META_REGEX.test(value)
+                ) {
                     if (this.config.debugMode) {
                         console.log(`[ToolApprovalManager] [${toolName}] 参数 ${argKey} 含命令串联/子表达式元字符，白名单不生效`);
                     }

@@ -13,6 +13,7 @@ class VCPTavern {
         this.accessLogs = new Map(); // 存储预设的最后访问时间
         this.debugMode = false;
         this.pluginManager = null;
+        this.accessLogSaveQueue = Promise.resolve();
     }
 
     async _loadAccessLogs() {
@@ -27,13 +28,14 @@ class VCPTavern {
         }
     }
 
-    async _saveAccessLogs() {
-        try {
+    _saveAccessLogs() {
+        this.accessLogSaveQueue = this.accessLogSaveQueue.then(async () => {
             const logs = Object.fromEntries(this.accessLogs);
             await fs.writeFile(ACCESS_LOG_FILE, JSON.stringify(logs, null, 2));
-        } catch (error) {
+        }).catch(error => {
             console.error('[VCPTavern] 保存访问日志失败:', error);
-        }
+        });
+        return this.accessLogSaveQueue;
     }
 
     // 计算字符串哈希
@@ -428,15 +430,18 @@ class VCPTavern {
             }
         }
 
-        // 更新访问时间并保存 (带防抖：1分钟内的重复请求不刷新时间戳)
-        const DEBOUNCE_MS = 60 * 1000; // 1分钟防抖窗口
-        const lastLoggedTime = this.accessLogs.get(logKey);
-        if (!lastLoggedTime || (now - lastLoggedTime) >= DEBOUNCE_MS) {
-            this.accessLogs.set(logKey, now);
-            this._saveAccessLogs().catch(e => console.error('[VCPTavern] 异步保存日志失败:', e));
-            if (this.debugMode) console.log(`[VCPTavern] 访问时间已更新 (Key: ${logKey})`);
-        } else {
-            if (this.debugMode) console.log(`[VCPTavern] 防抖生效，跳过时间更新 (距上次仅 ${Math.round((now - lastLoggedTime) / 1000)}s)`);
+        // 仅冻结记录键；请求级对象由主处理器创建，不写入消息或上游 body。
+        // 没有完成回调的独立预处理调用只读历史时间，绝不提前刷新。
+        if (config?.tavernInteraction) {
+            let committed = false;
+            config.tavernInteraction.commit = async () => {
+                if (committed) return;
+                committed = true;
+                const completedAt = Date.now();
+                this.accessLogs.set(logKey, Math.max(completedAt, Number(this.accessLogs.get(logKey)) || 0));
+                await this._saveAccessLogs();
+                if (this.debugMode) console.log(`[VCPTavern] 成功交互时间已更新 (Key: ${logKey})`);
+            };
         }
 
         resolveExtendedVariables = (content) => {
@@ -724,6 +729,7 @@ class VCPTavern {
     }
 
     async shutdown() {
+        await this.accessLogSaveQueue;
         console.log('[VCPTavern] 插件已卸载。');
     }
 }

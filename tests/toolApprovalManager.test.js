@@ -118,3 +118,41 @@ test('审核关闭时一律放行', () => {
     const m = createManager({ enabled: false, approvalList: ['FileOperator'] });
     assert.equal(m.shouldApprove('FileOperator', {}), false);
 });
+
+test('复合命令兼容：必须显式开启，Set-Location 前缀放行整条命令', () => {
+    const command = "Set-Location 'H:\\VCP\\VCPMain\\VCPChat'; $env:PUPPETEER_EXECUTABLE_PATH='C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'; node --test tests/compact-topic-drawer-layout.test.mjs";
+    const baseConfig = {
+        approvalList: ['PowerShellExecutor'],
+        whitelist: ['PowerShellExecutor:command:[Set-Location]']
+    };
+    for (const flag of [undefined, false, 'true', 1]) {
+        const m = createManager({ ...baseConfig, allowChainedCommandWhitelist: flag });
+        assert.equal(m.shouldApprove('PowerShellExecutor', { command }), true);
+    }
+    const m = createManager({ ...baseConfig, allowChainedCommandWhitelist: true });
+    assert.equal(m.getApprovalDecision('PowerShellExecutor', { command }).whitelistedBy,
+        'PowerShellExecutor:command:[Set-Location]');
+    // 兼容模式有意信任全部后续操作，不逐段审查。
+    assert.equal(m.shouldApprove('PowerShellExecutor', { command: command + '; Remove-Item x' }), false);
+    assert.equal(m.shouldApprove('PowerShellExecutor', { command: 'Set-LocationExtra x; node -v' }), true);
+    assert.equal(m.shouldApprove('PowerShellExecutor', { command: 'Remove-Item x; Set-Location H:/work' }), true);
+    assert.equal(m.shouldApprove('PowerShellExecutor', {
+        command1: command, command2: 'Remove-Item x'
+    }), true);
+    assert.equal(m.shouldApprove('PowerShellExecutor', {
+        command1: command, command2: 'Set-Location H:/work; node -v'
+    }), false);
+    m.config.allowChainedCommandWhitelist = false;
+    assert.equal(m.shouldApprove('PowerShellExecutor', { command }), true);
+});
+
+test('复合命令兼容不改变白名单具体程度要求和单词边界', () => {
+    const m = createManager({
+        allowChainedCommandWhitelist: true,
+        approvalList: ['PowerShellExecutor:command:[Set-Location]'],
+        whitelist: ['PowerShellExecutor']
+    });
+    assert.equal(m.shouldApprove('PowerShellExecutor', { command: 'Set-Location H:/work; node -v' }), true);
+    m.config.whitelist = ['PowerShellExecutor:command:[Set]'];
+    assert.equal(m.shouldApprove('PowerShellExecutor', { command: 'Set-Location H:/work; node -v' }), true);
+});

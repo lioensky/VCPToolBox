@@ -13,6 +13,7 @@ export interface ToolApprovalConfig {
   approvalList?: string[];
   whitelist?: string[];
   fuzzyToolMatching?: boolean;
+  allowChainedCommandWhitelist?: boolean;
   privacyProtection?: ToolApprovalPrivacyProtectionConfig;
   timeout?: number;
   toolList?: string[];

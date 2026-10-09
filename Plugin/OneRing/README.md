@@ -236,17 +236,17 @@ user: [系统提示:][OneRing通知:上一条消息由小克于2026-06-05 12:30:
 
 ## AI 回复入库
 
-预消息处理器本身无法在执行时拿到 AI 最终回复，因此 OneRing 在底层响应 handler 中接入异步回调。
+预消息处理器本身无法在执行时拿到 AI 最终回复，因此流式／非流式处理器返回整轮完成状态及聚合正文，由主请求流程通过统一交互结算器异步提交。
 
 当前接入点：
 
 - 流式：`modules/handlers/streamHandler.js`
 - 非流式：`modules/handlers/nonStreamHandler.js`
 
-调用逻辑是 fire-and-forget：
+调用逻辑是 fire-and-forget，但必须同时满足整轮上游有效和服务器响应发送完成：
 
 ```js
-oneRingModule.recordAIResponseFromMessages(originalBody.messages, aiText).catch(...)
+oneRingModule.recordAIResponseWithMeta(frozenMeta, aiText, { completed: true }).catch(...)
 ```
 
 对于 VCP 工具循环，OneRing 不把每一段 AI 中间输出拆成多条 assistant 入库，而是将：
@@ -258,6 +258,17 @@ AI -> 工具 -> AI -> 工具 -> AI
 视为同一轮完整 assistant 回复，最终聚合为一条 assistant 记录写入对应 Agent 数据库。
 
 流式和非流式 handler 只会把可见正文 `content` 交给 OneRing 入库；`reasoning_content` / 推理链只保留在响应日志结构中，不会进入 OneRing DB。
+
+完成门禁与 VCPTavern 时间提交共用同一整轮结果：
+
+- 正常完成且有正文、所有工具循环上游轮次有效、响应发送完成，才插入或更新 assistant。
+- 空回复、纯推理重试耗尽、截断、上游错误、损坏流事件、取消、断连和工具循环上限不入库。
+- 失败时只将当前 pending post turn 标为 aborted，不覆盖 retry 指向的旧成功正文，也不触发摘要生成。
+- 上游连接失败、处理器抛错等提前退出路径同样进行失败结算。
+- 同一请求只结算一次，处理器结果与发送完成事件的先后顺序不影响判断。
+- 旧两参数记录入口保留兼容行为；主请求链路始终传入明确完成状态。其他调用方应传入第三参数，不能把正文非空当成完整性证明。
+- 本门禁针对当前生成回复的最终回调；客户端传回的历史块及历史编辑同步仍沿用原有策略，不追溯删除旧记录。
+- 发送完成是服务器传输层完成，不代表客户端已阅读；协议完成也不保证正文语义完整。
 
 如果 OneRing 插件未加载或被禁用：
 

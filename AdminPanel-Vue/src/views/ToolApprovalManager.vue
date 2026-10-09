@@ -88,6 +88,12 @@
             description="工具参数值边界除标准「始」「末」外，还会兼容异常标记。"
           />
           <UiSettingsSwitchRow
+            v-model="config.allowChainedCommandWhitelist"
+            :disabled="saving"
+            label="允许命令白名单放行复合命令（高风险）"
+            description="默认关闭。开启后，前缀命中即可让整条命令免审核，包括后续串联、环境赋值、管道和重定向操作；不会逐段检查后续操作。适用于信任的 Agent。"
+          />
+          <UiSettingsSwitchRow
             v-model="config.privacyProtectionEnabled"
             :disabled="saving"
             label="启用工具调用隐私保护"
@@ -126,7 +132,7 @@
       >
         <UiField
           label="白名单列表"
-          description="白名单仅在其具体程度不低于命中的审核规则时生效（参数级 > 命令级 > 工具级，同级时白名单优先）。调用中该参数的所有值（含 command1、command2…）都必须命中白名单；命令包含 ; &amp; | ` $ ( ) { } < > 或换行等串联/重定向符号时白名单自动失效。"
+          description="白名单仅在其具体程度不低于命中的审核规则时生效（参数级 > 命令级 > 工具级，同级时白名单优先）。调用中该参数的所有值（含 command1、command2…）都必须命中白名单；默认遇到串联/重定向等特殊字符时失效。开启高风险复合命令兼容后，按规则放行整条命令，不检查后续操作。"
           for-id="tool-approval-whitelist"
         >
           <UiTextarea
@@ -166,6 +172,7 @@ interface ToolApprovalFormState {
   approveAll: boolean
   timeoutMinutes: number
   fuzzyToolMatching: boolean
+  allowChainedCommandWhitelist: boolean
   privacyProtectionEnabled: boolean
   approvalListText: string
   whitelistText: string
@@ -177,6 +184,7 @@ function createDefaultConfig(): ToolApprovalFormState {
     approveAll: false,
     timeoutMinutes: 5,
     fuzzyToolMatching: false,
+    allowChainedCommandWhitelist: false,
     privacyProtectionEnabled: false,
     approvalListText: '',
     whitelistText: ''
@@ -202,6 +210,7 @@ function normalizeToolApprovalConfig(data: ToolApprovalConfig): ToolApprovalForm
     approveAll: Boolean(data.approveAll),
     timeoutMinutes: data.timeoutMinutes ?? data.timeout ?? 5,
     fuzzyToolMatching: Boolean(data.fuzzyToolMatching),
+    allowChainedCommandWhitelist: data.allowChainedCommandWhitelist === true,
     privacyProtectionEnabled: data.privacyProtection?.enabled === true,
     approvalListText: approvalList.join('\n'),
     whitelistText: Array.isArray(data.whitelist) ? data.whitelist.join('\n') : ''
@@ -220,6 +229,7 @@ function buildPayload(state: ToolApprovalFormState) {
     approveAll: state.approveAll,
     timeoutMinutes: state.timeoutMinutes,
     fuzzyToolMatching: state.fuzzyToolMatching,
+    allowChainedCommandWhitelist: state.allowChainedCommandWhitelist,
     privacyProtection: {
       enabled: state.privacyProtectionEnabled
     },

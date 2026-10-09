@@ -38,6 +38,7 @@ const ToolCallParser = require('./vcpLoop/toolCallParser');
 const ToolExecutor = require('./vcpLoop/toolExecutor');
 const StreamHandler = require('./handlers/streamHandler');
 const NonStreamHandler = require('./handlers/nonStreamHandler');
+const { createInteractionCompletion } = require('./handlers/interactionCompletion');
 
 const VCP_TOOL_USE_FORBIDDEN_PLACEHOLDER = '[[VCPToolUse=Forbidden]]';
 
@@ -755,6 +756,8 @@ class ChatCompletionHandler {
     const requestPreprocessorConfig = vcpchatExtensions
       ? { vcpchatExtensions }
       : {};
+    // 请求独享，PluginManager 浅拷贝配置时仍保留此对象引用。
+    requestPreprocessorConfig.tavernInteraction = {};
     const isOriginalRequestStreaming = originalBody.stream === true;
     const responseCacheKey = this.responseReplayCache.buildKey(clientIp, id);
 
@@ -767,6 +770,8 @@ class ChatCompletionHandler {
     let clientDisconnectedAbortReason = null;
     let cleanupClientDisconnectListeners = () => {};
     let finalizeResponseCacheRecorder = () => {};
+    let interactionCompletion = null;
+    let interactionOutcomeAccepted = false;
 
     if (responseCacheKey) {
       finalizeResponseCacheRecorder = installResponseCacheRecorder(res, {
@@ -1189,6 +1194,15 @@ class ChatCompletionHandler {
         console.warn('[OneRing] Failed to freeze response meta before upstream fetch:', oneRingMetaError.message);
       }
 
+      interactionCompletion = createInteractionCompletion({
+        res,
+        signal: abortController.signal,
+        oneRingModule: pluginManager?.messagePreprocessors?.get?.('OneRing'),
+        oneRingMeta: oneRingResponseMeta,
+        messages: processedMessages,
+        tavernInteraction: requestPreprocessorConfig.tavernInteraction
+      });
+
       const willStreamResponse = isOriginalRequestStreaming;
       const finalUpstreamBody = { ...originalBody, stream: willStreamResponse };
 
@@ -1340,11 +1354,11 @@ class ChatCompletionHandler {
         requestPreprocessorConfig
       };
 
-      if (isUpstreamStreaming) {
-        await new StreamHandler(context).handle(req, res, firstAiAPIResponse);
-      } else {
-        await new NonStreamHandler(context).handle(req, res, firstAiAPIResponse);
-      }
+      const outcome = isUpstreamStreaming
+        ? await new StreamHandler(context).handle(req, res, firstAiAPIResponse)
+        : await new NonStreamHandler(context).handle(req, res, firstAiAPIResponse);
+      interactionOutcomeAccepted = true;
+      interactionCompletion.accept(outcome);
     } catch (error) {
       if (error.name === 'AbortError') {
         // 显式 /v1/interrupt 或客户端断联都会走到这里。
@@ -1432,6 +1446,7 @@ class ChatCompletionHandler {
         }
       }
     } finally {
+      if (!interactionOutcomeAccepted) interactionCompletion?.fail();
       cleanupClientDisconnectListeners();
 
       if (!res.writableEnded && !res.destroyed) {
