@@ -2,6 +2,7 @@
 // OneRing.js — 统一上下文预处理器主模块
 // 触发语法：系统提示词中包含 [[OneRing::AgentName::Frontend]]
 // Only 模式：[[OneRing::AgentName::Frontend::Only]] 或独立 [[OneRing::Only]] 只入库/标记，不做跨端上下文追加。
+// 本机临时契约：[[OneRing临时契约::Frontend]] 仅覆盖本次请求客户端，不单独激活。
 
 const fs = require('fs');
 const path = require('path');
@@ -24,6 +25,23 @@ const TRIGGER_REGEX = new RegExp(ONERING_TRIGGER_PATTERN);
 const TRIGGER_GLOBAL_REGEX = new RegExp(ONERING_TRIGGER_PATTERN, 'g');
 const ONLY_TRIGGER_GLOBAL_REGEX = /\[\[OneRing::Only\]\]/gi;
 const VCP_RAG_BLOCK_REGEX = /<!--\s*VCP_RAG_BLOCK_START\b[\s\S]*?<!--\s*VCP_RAG_BLOCK_END\s*-->/gi;
+const TEMP_FRONTEND_TRIGGER_GLOBAL_REGEX = /\[\[OneRing临时契约::([^:\]\r\n]+)\]\]/g;
+
+// 扫描整个顶层连续 system 前缀，允许本机全局提示词和 Agent 主契约位于不同块。
+// 保留原标记供 final hook 在预处理前视图/元信息丢失时恢复；不写入模块级状态。
+function getTemporaryFrontendSource(messages) {
+    if (!Array.isArray(messages)) return null;
+    let frontendSource = null;
+    for (const message of messages) {
+        if (!message || message.role !== 'system') break;
+        const text = stripVcpRagBlocks(fuzzy.extractText(message.content));
+        for (const match of text.matchAll(TEMP_FRONTEND_TRIGGER_GLOBAL_REGEX)) {
+            const candidate = match[1].trim();
+            if (candidate && !isUnresolvedTemplateName(candidate)) frontendSource = candidate;
+        }
+    }
+    return frontendSource;
+}
 
 function stripVcpRagBlocks(text) {
     return typeof text === 'string' ? text.replace(VCP_RAG_BLOCK_REGEX, '') : text;
@@ -979,7 +997,7 @@ class OneRingPreprocessor {
 
         const onlyTriggerMatch = getLastOnlyTriggerMatch(systemText);
         const agentName = triggerMatch[1].trim();
-        const frontendSource = triggerMatch[2].trim();
+        const frontendSource = getTemporaryFrontendSource(originalMessages || messages) || triggerMatch[2].trim();
         const triggerMode = (triggerMatch[3] || '').trim();
         const onlyMode = triggerMode.toLowerCase() === 'only' || !!onlyTriggerMatch;
         const effectiveTriggerMode = onlyMode && !triggerMode ? 'Only' : triggerMode;
@@ -3017,7 +3035,8 @@ class OneRingPreprocessor {
         // AI 回复可能被写入空 agent 的幽灵库（例如 ".db"）。
         // 边界仍限制为开头连续 system 前缀，避免普通上下文/用户正文中的 OneRing 文本误触发。
         const agentName = attachedMeta?.agentName || (triggerMatch ? triggerMatch[1].trim() : null) || noticeMeta?.agentName || null;
-        const frontendSourceFromTrigger = attachedMeta?.frontendSource || (triggerMatch ? triggerMatch[2].trim() : null) || noticeMeta?.frontendSource || null;
+        const temporaryFrontendSource = getTemporaryFrontendSource(messages);
+        const frontendSourceFromTrigger = temporaryFrontendSource || attachedMeta?.frontendSource || (triggerMatch ? triggerMatch[2].trim() : null) || noticeMeta?.frontendSource || null;
         if (!agentName || !frontendSourceFromTrigger) return null;
 
         const tailPostBatch = this._findTailPostBatch(messages, config.ONERING_USER_NAME || 'Ryan', agentName);
@@ -3025,7 +3044,8 @@ class OneRingPreprocessor {
 
         return {
             agentName,
-            frontendSource: tailMeta ? tailMeta.frontendSource : frontendSourceFromTrigger,
+            // 临时契约描述本次请求端，旧上下文尾标不能把手机回复重新归回桌面端。
+            frontendSource: temporaryFrontendSource || (tailMeta ? tailMeta.frontendSource : frontendSourceFromTrigger),
             lastUserSenderName: tailMeta ? tailMeta.senderName : null,
             lastUserTimestamp: tailMeta ? tailMeta.timestamp : null,
             turnId: attachedMeta?.turnId || null,
