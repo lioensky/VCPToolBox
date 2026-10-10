@@ -4,7 +4,9 @@
 - `workflow: qwen21edit2in1`：双图联合编辑，必填 `prompt`、`image`、`image_2`。
 - 图片参数支持 HTTP/HTTPS 直链或 ComfyUI input 目录中已上传文件名（可含子目录）。
 - URL 由插件宿主下载再通过 `/upload/image` 上传；宿主必须能访问图床及 ComfyUI。
-- 不支持 file://、data:、本地绝对路径。每图上限 20 MiB，下载/上传各 30 秒，至多 3 次重定向。
+- 支持 file://：VCP PluginManager 先通过 resolveFileUrl 将手机/PC文件追踪至服务器缓存，仍以 file URL 传给插件；插件用 fileURLToPath 读取并上传。中文及空格路径受支持。
+- file URL 必须在插件执行宿主可读；追踪失败或分布式执行节点无法访问该缓存时明确报错，不自行再次追踪。不支持网络共享 host 的 file URL。
+- 不支持 data: 和裸本地绝对路径。每图上限 20 MiB，HTTP下载/上传各 30 秒，至多 3 次重定向。本地按文件句柄限量读取。
 - 支持 PNG/JPEG/GIF/WebP；签名检查不等于完整解码校验，最终由 ComfyUI 解码。
 - 内网图床是明确支持的用途；只在受信任的庄园工具环境使用，不作为公开匿名 URL 代理。
 - 需要 Node 18+ 的 FormData/Blob（本环境 Node 22）；不新增 npm 依赖。

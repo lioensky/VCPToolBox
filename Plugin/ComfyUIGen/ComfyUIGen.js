@@ -2,6 +2,7 @@
 const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
+const { fileURLToPath } = require('url');
 const { v4: uuidv4 } = require('uuid');
 
 // --- Configuration Loading System ---
@@ -265,24 +266,55 @@ async function prepareWorkflowImages(args, requiredInputs, config) {
     for (const inputName of requiredInputs) {
         const value = args[inputName];
         if (typeof value !== 'string' || !value.trim()) {
-            throw new Error(`Workflow requires '${inputName}' (HTTP image URL or ComfyUI uploaded filename).`);
+            throw new Error(`Workflow requires '${inputName}' (HTTP/file image URL or ComfyUI uploaded filename).`);
         }
         const source = value.trim();
-        if (!/^https?:\/\//i.test(source)) {
+        if (!/^(?:https?:\/\/|file:\/\/)/i.test(source)) {
             if (/^(?:[A-Za-z]+:|\/|\\)/.test(source) || source.split(/[\\/]/).includes('..')) {
-                throw new Error(`'${inputName}' must be an HTTP image URL or ComfyUI uploaded filename.`);
+                throw new Error(`'${inputName}' must be an HTTP/file image URL or ComfyUI uploaded filename.`);
             }
             prepared[inputName] = source;
             continue;
         }
-        const response = await axios.get(source, {
-            responseType: 'arraybuffer',
-            timeout: 30000,
-            maxContentLength: limit,
-            maxBodyLength: limit,
-            maxRedirects: 3
-        });
-        const bytes = Buffer.from(response.data);
+        let bytes;
+        if (/^file:\/\//i.test(source)) {
+            // PluginManager 已完成跨节点追踪；这里只读宿主可用的文件，不再次追踪。
+            const url = new URL(source);
+            if (url.hostname && url.hostname !== 'localhost') {
+                throw new Error(`'${inputName}' file URL must reference a local file, not a network share.`);
+            }
+            const localPath = fileURLToPath(url);
+            let handle;
+            try {
+                handle = await fs.open(localPath, 'r');
+                const stat = await handle.stat();
+                if (!stat.isFile() || stat.size > limit) {
+                    throw new Error('Expected a regular image file at most 20 MiB.');
+                }
+                // 最多读取 limit+1，避免 stat 后文件增长导致无界内存分配。
+                const buffer = Buffer.alloc(Math.min(stat.size + 1, limit + 1));
+                let offset = 0;
+                while (offset < buffer.length) {
+                    const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, null);
+                    if (!bytesRead) break;
+                    offset += bytesRead;
+                }
+                bytes = buffer.subarray(0, offset);
+            } catch (error) {
+                throw new Error(`Cannot read '${inputName}' file URL on plugin host; verify VCP file tracing completed: ${error.message}`);
+            } finally {
+                if (handle) await handle.close();
+            }
+        } else {
+            const response = await axios.get(source, {
+                responseType: 'arraybuffer',
+                timeout: 30000,
+                maxContentLength: limit,
+                maxBodyLength: limit,
+                maxRedirects: 3
+            });
+            bytes = Buffer.from(response.data);
+        }
         // 验证签名而非信任服务器 Content-Type，拒绝 HTML / SVG 等非位图内容。
         let extension;
         if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) extension = 'png';
