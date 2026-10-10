@@ -35,7 +35,7 @@
     "invocationCommands": [
       {
         "commandIdentifier": "ComfyUIGenerateImage",
-        "description": "调用此工具通过 ComfyUI 生成图像，支持配置默认值及单次调用参数覆盖。\n\n📋 **调用格式**:\n\n\n⚠️ **覆盖规则**:\n- 单次调用参数优先于 comfyui-settings.json 默认值。\n- `lora_name` 不传：保留工作流内置的 LoraLoader 设置。\n- `lora_name` 传实际文件名：替换节点式 LoRA，并可用权重参数控制。\n- `lora_name` 显式传空字符串：自动绕过并移除工作流中的 LoraLoader。\n- 用户配置中的 loras 数组仍会作为提示词 token 拼接；它与节点式 LoraLoader 是两套机制。",
+        "description": "调用此工具通过 ComfyUI 生成图像，支持配置默认值及单次调用参数覆盖。\n\n📋 **调用格式**:\n\n\n⚠️ **覆盖规则**:\n- 单次调用参数优先于 comfyui-settings.json 默认值。\n- Qwen 单图编辑：workflow=qwen21edit，必填 prompt、image；双图联合编辑：workflow=qwen21edit2in1，另必填 image_2。\n- image/image_2 支持 HTTP/HTTPS 图片直链或 ComfyUI 已上传文件名；URL 自动下载并上传，每图最多20 MiB。不支持 file:// 本地路径。\n- 两种编辑模板默认 Turbo 8步、CFG 1、euler/simple，单次参数可覆盖；失败直接报错，不回退文生图。详情见 docs/QWEN21_EDIT.md。\n- `lora_name` 不传：保留工作流内置的 LoraLoader 设置。\n- `lora_name` 传实际文件名：替换节点式 LoRA，并可用权重参数控制。\n- `lora_name` 显式传空字符串：自动绕过并移除工作流中的 LoraLoader。\n- 用户配置中的 loras 数组仍会作为提示词 token 拼接；它与节点式 LoraLoader 是两套机制。",
         "example": "<<<[TOOL_REQUEST]>>>\nmaid:「始」CreativeAssistant「末」,\ntool_name:「始」ComfyUIGen「末」,\nworkflow:「始」AnimaEZGen「末」,\nprompt:「始」1girl, silver hair, blue eyes, cinematic anime illustration「末」,\nnegative_prompt:「始」bad hands, blurry「末」,\nwidth:「始」1024「末」,\nheight:「始」1024「末」,\nsteps:「始」24「末」,\ncfg:「始」4「末」,\nsampler:「始」euler_ancestral「末」,\nscheduler:「始」simple「末」,\nseed:「始」-1「末」,\nlora_name:「始」anima_rendering_detailer_base10.safetensors「末」,\nlora_strength:「始」0.4「末」,\nlora_clip_strength:「始」1.0「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]

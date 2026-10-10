@@ -135,6 +135,9 @@ function fillWorkflowParameters(workflow, args, config) {
     // 构建替换映射
     const replacements = {
         // 基础参数 - 调用参数优先于用户配置
+        '{{IMAGE}}': args.image || '',
+        '{{IMAGE_2}}': args.image_2 || '',
+        '{{RESOLUTION}}': resolveNumericArg(args.resolution, settings.defaultResolution ?? 0),
         '{{MODEL}}': args.model || settings.defaultModel || 'sd_xl_base_1.0.safetensors',
         '{{WIDTH}}': resolveNumericArg(args.width, settings.defaultWidth || 1024),
         '{{HEIGHT}}': resolveNumericArg(args.height, settings.defaultHeight || 1024),
@@ -255,6 +258,62 @@ function buildLoRAsString(loras) {
         .join(', ');
 }
 
+// URL 在插件宿主下载；允许庄园内网图床。每张最多 20 MiB。
+async function prepareWorkflowImages(args, requiredInputs, config) {
+    const prepared = { ...args };
+    const limit = 20 * 1024 * 1024;
+    for (const inputName of requiredInputs) {
+        const value = args[inputName];
+        if (typeof value !== 'string' || !value.trim()) {
+            throw new Error(`Workflow requires '${inputName}' (HTTP image URL or ComfyUI uploaded filename).`);
+        }
+        const source = value.trim();
+        if (!/^https?:\/\//i.test(source)) {
+            if (/^(?:[A-Za-z]+:|\/|\\)/.test(source) || source.split(/[\\/]/).includes('..')) {
+                throw new Error(`'${inputName}' must be an HTTP image URL or ComfyUI uploaded filename.`);
+            }
+            prepared[inputName] = source;
+            continue;
+        }
+        const response = await axios.get(source, {
+            responseType: 'arraybuffer',
+            timeout: 30000,
+            maxContentLength: limit,
+            maxBodyLength: limit,
+            maxRedirects: 3
+        });
+        const bytes = Buffer.from(response.data);
+        // 验证签名而非信任服务器 Content-Type，拒绝 HTML / SVG 等非位图内容。
+        let extension;
+        if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) extension = 'png';
+        else if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) extension = 'jpg';
+        else if (['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString())) extension = 'gif';
+        else if (bytes.subarray(0, 4).toString() === 'RIFF' && bytes.subarray(8, 12).toString() === 'WEBP') extension = 'webp';
+        if (!extension || bytes.length > limit) {
+            throw new Error(`'${inputName}' must be PNG, JPEG, GIF or WebP, at most 20 MiB.`);
+        }
+        const form = new FormData();
+        const mime = extension === 'jpg' ? 'image/jpeg' : `image/${extension}`;
+        form.append('image', new Blob([bytes], { type: mime }), `vcp-${uuidv4()}.${extension}`);
+        form.append('type', 'input');
+        form.append('overwrite', 'false');
+        const upload = await axios.post(
+            `${config.COMFYUI_BASE_URL.replace(/\/$/, '')}/upload/image`,
+            form,
+            {
+                headers: config.COMFYUI_API_KEY ? { Authorization: `Bearer ${config.COMFYUI_API_KEY}` } : {},
+                timeout: 30000,
+                maxBodyLength: limit + 65536
+            }
+        );
+        const result = upload.data;
+        if (!result || typeof result.name !== 'string' || !result.name) {
+            throw new Error(`ComfyUI upload failed for '${inputName}': missing filename.`);
+        }
+        prepared[inputName] = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
+    }
+    return prepared;
+}
 // 提交工作流到ComfyUI队列
 async function queuePrompt(workflow, config) {
     const comfyuiAxios = axios.create({
@@ -424,6 +483,7 @@ async function generateImageAndSave(args) {
     let lastError = null;
     let savedImages = null;
     let usedWorkflow = null;
+    let strictWorkflow = false;
 
     for (const wfName of tryWorkflows) {
         try {
@@ -432,10 +492,15 @@ async function generateImageAndSave(args) {
             
             // 兼容旧格式（直接是工作流）和新格式（包含元数据和 workflow 键）
             const workflowObject = wfTemplate.workflow || wfTemplate;
-
+            strictWorkflow = Array.isArray(wfTemplate.requiredInputs) && wfTemplate.requiredInputs.length > 0;
+            const preparedArgs = await prepareWorkflowImages(args, wfTemplate.requiredInputs || [], config);
+            const workflowConfig = {
+                ...config,
+                userSettings: { ...config.userSettings, ...wfTemplate.defaults }
+            };
             const updated = configureWorkflowLora(
-                fillWorkflowParameters(workflowObject, args, config),
-                args
+                fillWorkflowParameters(workflowObject, preparedArgs, workflowConfig),
+                preparedArgs
             );
             const queueResult = await queuePrompt(updated, config);
             debugLog('Queued with prompt_id:', queueResult.prompt_id);
@@ -451,6 +516,7 @@ async function generateImageAndSave(args) {
             break; // 成功，退出回退序列
         } catch (e) {
             lastError = e;
+            if (strictWorkflow) throw e;
             debugLog(`Workflow ${wfName} failed:`, e && (e.message || e.toString()));
             // 继续下一回退候选
         }
@@ -561,5 +627,6 @@ module.exports = {
     fillWorkflowParameters,
     configureWorkflowLora,
     resolveSeed,
-    resolveNumericArg
+    resolveNumericArg,
+    prepareWorkflowImages
 };
