@@ -1,0 +1,28 @@
+{
+  "displayName": "Qwen Image 2.1 图生图",
+  "description": "单图编辑，image 支持 HTTP URL 或 ComfyUI 已上传文件名。默认随输入尺寸，Turbo 8 步。",
+  "version": "1.0",
+  "requiredInputs": ["image"],
+  "defaults": {
+    "defaultSteps": 8,
+    "defaultCfg": 1,
+    "defaultSampler": "euler",
+    "defaultScheduler": "simple",
+    "defaultDenoise": 1,
+    "defaultResolution": 0,
+    "qualityTags": "",
+    "negativePrompt": "",
+    "loras": []
+  },
+  "workflow": {
+    "451": {"class_type": "UNETLoader", "inputs": {"unet_name": "qwen_image_2.1_turbo_int8_convrot.safetensors", "weight_dtype": "default"}},
+    "453": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3vl_8b_int8_convrot.safetensors", "type": "qwen_image", "device": "default"}},
+    "454": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_2.1_vae_bf16.safetensors"}},
+    "470": {"class_type": "LoadImage", "inputs": {"image": "{{IMAGE}}"}},
+    "474": {"class_type": "TextEncodeQwenImage21", "inputs": {"clip": ["453", 0], "vae": ["454", 0], "images.image_1": ["470", 0], "prompt": "{{USER_PROMPT}}", "negative_prompt": "{{NEGATIVE_PROMPT}}", "resolution": "{{RESOLUTION}}"}},
+    "469": {"class_type": "QwenImage21Cache", "inputs": {"model": ["451", 0], "device": "auto", "dtype": "default"}},
+    "458": {"class_type": "KSampler", "inputs": {"model": ["469", 0], "positive": ["474", 0], "negative": ["474", 1], "latent_image": ["474", 2], "seed": "{{SEED}}", "steps": "{{STEPS}}", "cfg": "{{CFG}}", "sampler_name": "{{SAMPLER}}", "scheduler": "{{SCHEDULER}}", "denoise": "{{DENOISE}}"}},
+    "457": {"class_type": "VAEDecode", "inputs": {"samples": ["458", 0], "vae": ["454", 0]}},
+    "461": {"class_type": "SaveImage", "inputs": {"images": ["457", 0], "filename_prefix": "QwenImage21Edit"}}
+  }
+}
