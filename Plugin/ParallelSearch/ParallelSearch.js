@@ -66,6 +66,9 @@ async function processRequest(input, { fetch: fetchImpl = globalThis.fetch } = {
         fetch: fetchImpl
     });
     const options = { signal: AbortSignal.timeout(TIMEOUT_MS), timeout: TIMEOUT_MS };
+    // SDK 初始化通知不使用 request options；总截止时间也必须中止传输。
+    const onAbort = () => { client.close().catch(() => {}); };
+    options.signal.addEventListener('abort', onAbort, { once: true });
     try {
         await client.connect(transport, options);
         const { tools } = await client.listTools({}, options);
@@ -79,6 +82,7 @@ async function processRequest(input, { fetch: fetchImpl = globalThis.fetch } = {
         }
         return { status: 'success', result };
     } finally {
+        options.signal.removeEventListener('abort', onAbort);
         await client.close();
     }
 }

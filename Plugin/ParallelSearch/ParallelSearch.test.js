@@ -84,3 +84,34 @@ test('invalid VCP arguments fail before sending requests', async () => {
     }
     assert.equal(normalizeArguments({ command: 'web_fetch', urls: ['https://example.com'] }).arguments.full_content, undefined);
 });
+
+
+test('overall deadline aborts a pending initialized notification and closes transport', { timeout: 1000 }, async () => {
+    const originalTimeout = AbortSignal.timeout;
+    const server = mockServer();
+    let aborted = false;
+    let pendingSignal;
+    AbortSignal.timeout = () => originalTimeout(30);
+    // Real sockets keep the event loop alive; the pending fetch fixture needs a handle.
+    const keepAlive = setInterval(() => {}, 100);
+    try {
+        await assert.rejects(processRequest({ command: 'web_fetch', urls: ['https://example.com'] }, {
+            fetch: async (url, init) => {
+                if (init.body && JSON.parse(init.body).method === 'notifications/initialized') {
+                    pendingSignal = init.signal;
+                    return new Promise((resolve, reject) => {
+                        const onAbort = () => { aborted = true; reject(init.signal.reason); };
+                        if (init.signal.aborted) onAbort();
+                        else init.signal.addEventListener('abort', onAbort, { once: true });
+                    });
+                }
+                return server.fetch(url, init);
+            }
+        }), /abort|closed/i);
+        assert.equal(aborted, true);
+        assert.equal(pendingSignal.aborted, true);
+    } finally {
+        clearInterval(keepAlive);
+        AbortSignal.timeout = originalTimeout;
+    }
+});
