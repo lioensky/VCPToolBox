@@ -72,11 +72,12 @@ async function processRequest(input, { fetch: fetchImpl = globalThis.fetch } = {
         if (!tools.some(tool => tool.name === params.name)) throw new Error(`服务未提供 ${params.name}。`);
         const response = await client.callTool(params, undefined, options);
         const content = response.content;
-        const result = response.structuredContent;
+        // PluginManager 会解包 result；把 content 和结构化数据一起放入其中。
+        const result = { ...response.structuredContent, content };
         if (response.isError) {
-            return { status: 'error', error: content.filter(item => item.type === 'text').map(item => item.text).join('\n') || 'Parallel MCP 工具调用失败。', content, ...(result ? { result } : {}) };
+            return { status: 'error', error: content.filter(item => item.type === 'text').map(item => item.text).join('\n') || 'Parallel MCP 工具调用失败。', result };
         }
-        return { status: 'success', content, ...(result ? { result } : {}) };
+        return { status: 'success', result };
     } finally {
         await client.close();
     }

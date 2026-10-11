@@ -42,7 +42,7 @@ test('search dispatches anonymous MCP initialization, discovery and useful resul
     const server = mockServer();
     const result = await processRequest({ command: 'web_search', objective: 'Find documentation', search_queries: '["node official documentation"]', session_id: 'conversation-1' }, server);
     assert.equal(result.status, 'success');
-    assert.match(result.content[0].text, /Useful excerpt/);
+    assert.match(result.result.content[0].text, /Useful excerpt/);
     assert.equal(result.result.results[0].url, 'https://example.com');
     assert.deepEqual(server.requests.find(r => r.method === 'tools/call').params, {
         name: 'web_search', arguments: { objective: 'Find documentation', search_queries: ['node official documentation'], session_id: 'conversation-1' }

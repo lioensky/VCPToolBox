@@ -40,7 +40,7 @@ objective:「始」提取版本支持周期「末」
 
 `search_queries` 和 `urls` 使用 JSON 字符串数组。搜索需要非空 `objective` 和至少一个查询；页面提取接受 1–20 个 HTTP/HTTPS URL，可选 `objective`（最多 200 字符）、`search_queries` 和 `full_content`（`true`/`false`，默认 `false`）。优先使用搜索摘录，仅在需要具体页面内容时提取。完整内容可能很大。
 
-两种命令均接受可选 `session_id`（最多 100 字符）。同一会话应复用稳定的 ID；未传入时，服务返回的 `result.session_id` 可用于后续调用。返回值保留 MCP 的 `content` 数组，并将结构化数据放在 `result` 中（来源 URL、标题、摘录及提取错误）。MCP 工具错误返回 `status: "error"`；批量提取的部分失败保留在 `result.errors`，调用方需检查。单次 MCP 操作总时限为 45 秒，VCP 进程超时为 60 秒。
+两种命令均接受可选 `session_id`（最多 100 字符）。同一会话应复用稳定的 ID；未传入时，服务返回的 `session_id` 可用于后续 VCP 调用。插件标准输出将 MCP 的 `content` 数组和结构化数据一起放在 `result` 中（来源 URL、标题、摘录及提取错误）。VCP 插件管理器解包后直接返回这些字段，后续调用可读取 `session_id`。MCP 工具错误返回 `status: "error"`；批量提取的部分失败保留在 `result.errors`，调用方需检查（VCP 返回值中为 `errors`）。单次 MCP 操作总时限为 45 秒，VCP 进程超时为 60 秒。
 
 ## 本地验证
 
