@@ -1,0 +1,31 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ParallelSearch",
+  "displayName": "Parallel 网络搜索",
+  "version": "1.0.0",
+  "description": "通过免费的 Parallel Search MCP 搜索网页和提取页面内容，无需账号或 API 密钥。",
+  "author": "Parallel",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node ParallelSearch.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 60000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "web_search",
+        "description": "command=web_search：objective 为非空搜索目标；search_queries 为 JSON 字符串数组（至少一项，建议 2–3 个相关查询）。返回来源 URL、标题和摘录。匿名搜索使用 Fast 模式；免费服务有速率限制。可选 session_id（最多 100 字符），同一会话的搜索和提取应复用该值。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ParallelSearch「末」,\ncommand:「始」web_search「末」,\nobjective:「始」查找 Node.js 的官方发布信息「末」,\nsearch_queries:「始」[\"Node.js official release schedule\"]「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "web_fetch",
+        "description": "command=web_fetch：urls 为 JSON HTTP/HTTPS URL 数组（1–20 项）。可选 objective（最多 200 字符）、search_queries（JSON 字符串数组）、full_content（true/false，默认 false）、session_id。仅在搜索摘录不足或需要读取具体页面时使用；完整内容可能很大。返回页面摘录及每个 URL 的提取错误。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ParallelSearch「末」,\ncommand:「始」web_fetch「末」,\nurls:「始」[\"https://nodejs.org/en/about/previous-releases\"]「末」,\nobjective:「始」提取版本支持周期「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
