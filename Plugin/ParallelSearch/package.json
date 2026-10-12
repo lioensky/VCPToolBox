@@ -1,0 +1,9 @@
+{
+  "name": "vcp-parallel-search",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Parallel Search MCP synchronous plugin for VCPToolBox",
+  "scripts": { "test": "node --test ParallelSearch.test.js" },
+  "engines": { "node": ">=20" },
+  "dependencies": { "@modelcontextprotocol/sdk": "1.32.1" }
+}
