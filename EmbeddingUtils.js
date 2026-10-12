@@ -84,9 +84,10 @@ async function _sendBatch(batchTexts, config, batchNumber) {
             const requestUrl = `${config.apiUrl}/v1/embeddings`;
             const requestBody = { model, input: batchTexts };
             
-            // 动态读取并强制传递维度，剥离对大模型默认维度的依赖
+            // 默认发送配置维度；不支持 dimensions 参数的模型可通过环境变量关闭。
+            const sendDimensions = String(process.env.EMBEDDING_SEND_DIMENSIONS || 'true').trim().toLowerCase() !== 'false';
             const dim = parseInt(process.env.VECTORDB_DIMENSION, 10);
-            if (!isNaN(dim)) {
+            if (sendDimensions && !isNaN(dim)) {
                 requestBody.dimensions = dim;
             }
             
