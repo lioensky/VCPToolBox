@@ -322,8 +322,8 @@ class AIMemoHandler {
     }
 
     /**
-     * 🌟 AIMemo+ 模式：先用 TagMemo 做向量级初筛（5x dynamicK），再交给 LLM 提取记忆
-     * 与 processAIMemoAggregated 的区别：知识库来自 TagMemo 召回的 chunks，而非整本日记文件
+     * 🌟 AIMemo+ 模式：先用 RiverMemo 做向量级初筛（5x dynamicK），再交给 LLM 提取记忆
+     * 与 processAIMemoAggregated 的区别：知识库来自 RiverMemo 召回的 chunks，而非整本日记文件
      *
      * @param {string[]} dbNames - 日记本名称数组
      * @param {string} userContent
@@ -350,7 +350,7 @@ class AIMemoHandler {
             cacheSalt = ''
         } = tagMemoOptions || {};
 
-        const hasSourceFiles = Array.isArray(sourceFiles) && sourceFiles.length > 0;
+        const hasSourceFiles = Array.isArray(sourceFiles);
 
         if (!queryVector && !hasSourceFiles) {
             console.warn('[AIMemoHandler+] 缺失 queryVector 且没有传入后缀管线来源，回退到完整 AIMemo 流程');
@@ -361,7 +361,7 @@ class AIMemoHandler {
         console.log(
             `[AIMemoHandler+] 启动 AIMemo+ 处理: ${dbNames.length} 个日记本, ` +
             `baseK=${baseK}, searchK=${searchK}, tagWeight=${tagWeight}, ` +
-            `sourceMode=${hasSourceFiles ? 'suffix_pipeline' : 'tagmemo_prerank'}`
+            `sourceMode=${hasSourceFiles ? 'suffix_pipeline' : 'rivermemo_prerank'}`
         );
 
         try {
@@ -403,7 +403,7 @@ class AIMemoHandler {
                 }
             }
 
-            let sourceFingerprint = hasSourceFiles ? cacheSalt || 'suffix_pipeline' : 'tagmemo_prerank';
+            let sourceFingerprint = hasSourceFiles ? cacheSalt || 'suffix_pipeline' : 'rivermemo_prerank';
             let normalizedSourceFiles = [];
 
             if (hasSourceFiles) {
@@ -469,17 +469,17 @@ class AIMemoHandler {
 
                 console.log(`[AIMemoHandler+] 后缀管线候选整理完成: ${chunks.length} 个唯一片段`);
             } else {
-                chunks = await this._retrieveTagMemoChunks(
-                    dbNames, queryVector, searchK, tagWeight, ghostTags, tagTruncationRatio, metrics
+                chunks = await this._retrieveRiverMemoChunks(
+                    dbNames, queryVector, searchK, tagWeight, ghostTags, tagTruncationRatio, { ...metrics, queryText: userContent }
                 );
 
                 if (chunks.length === 0) {
                     const emptyResult = `[AIMemo+ 初筛: ${dbNames.join(' + ')} 未召回任何相关片段]`;
-                    console.log('[AIMemoHandler+] TagMemo 初筛无结果');
+                    console.log('[AIMemoHandler+] RiverMemo 初筛无结果');
                     return emptyResult;
                 }
 
-                console.log(`[AIMemoHandler+] TagMemo 初筛召回 ${chunks.length} 个 chunks，总 token: ${chunks.reduce((sum, c) => sum + c.tokens, 0)}`);
+                console.log(`[AIMemoHandler+] RiverMemo 初筛召回 ${chunks.length} 个 chunks，总 token: ${chunks.reduce((sum, c) => sum + c.tokens, 0)}`);
             }
 
             if (chunks.length === 0) {
@@ -516,16 +516,16 @@ class AIMemoHandler {
             // 标记为 Plus 模式 + 内容前缀
             if (resultObject.vcpInfo) {
                 resultObject.vcpInfo.mode = (resultObject.vcpInfo.mode || 'aggregated') + '_plus';
-                resultObject.vcpInfo.tagMemoChunkCount = chunks.length;
+                resultObject.vcpInfo.riverMemoChunkCount = chunks.length;
                 resultObject.vcpInfo.searchK = hasSourceFiles ? null : searchK;
                 resultObject.vcpInfo.tagWeight = tagWeight;
-                resultObject.vcpInfo.sourceMode = hasSourceFiles ? 'suffix_pipeline' : 'tagmemo_prerank';
+                resultObject.vcpInfo.sourceMode = hasSourceFiles ? 'suffix_pipeline' : 'rivermemo_prerank';
                 resultObject.vcpInfo.sourceFingerprint = sourceFingerprint.substring(0, 16);
             }
 
             resultObject.content = hasSourceFiles
                 ? `[AIMemo+ 后缀管线: ${chunks.length}片段, 跨${dbNames.length}库]\n${resultObject.content}`
-                : `[AIMemo+ TagMemo初筛: ${chunks.length}片段/${searchK}K, 跨${dbNames.length}库]\n${resultObject.content}`;
+                : `[AIMemo+ RiverMemo初筛: ${chunks.length}片段/${searchK}K, 跨${dbNames.length}库]\n${resultObject.content}`;
 
             if (this.ragPlugin.pushVcpInfo && resultObject.vcpInfo) {
                 try {
@@ -547,72 +547,25 @@ class AIMemoHandler {
     }
 
     /**
-     * 🌟 跨日记本 TagMemo 检索 - AIMemo+ 的核心初筛逻辑
-     * 复刻 _processRAGPlaceholder 的 applyTagBoost 感应流程，确保召回质量
+     * 🌟 跨日记本 RiverMemo 检索 - AIMemo+ 的核心初筛逻辑
+     * 由统一 RiverMemo 查询一次完成共享感应和读出，不另行调用增强或重复召回。
      */
-    async _retrieveTagMemoChunks(dbNames, queryVector, k, tagWeight, ghostTags, tagTruncationRatio, metrics) {
+    async _retrieveRiverMemoChunks(dbNames, queryVector, k, tagWeight, ghostTags, tagTruncationRatio, metrics) {
         const vdb = this.ragPlugin?.vectorDBManager;
-        if (!vdb || typeof vdb.search !== 'function') {
+        if (!vdb || typeof vdb.executeNativeRiverQuery !== 'function') {
             console.warn('[AIMemoHandler+] vectorDBManager 不可用');
             return [];
         }
 
-        // 1. 用 applyTagBoost 感应 coreTags（与 _processRAGPlaceholder 完全一致）
-        let coreTagsForSearch = [];
-        let preparedBoostResult = null;
-        if (tagWeight !== null && tagWeight !== undefined && typeof vdb.applyTagBoostAsync === 'function') {
-            try {
-                const initialCoreTags = ghostTags.length > 0 ? [...ghostTags] : [];
-                const boostResult = await vdb.applyTagBoostAsync(
-                    new Float32Array(queryVector),
-                    tagWeight,
-                    initialCoreTags
-                );
-                preparedBoostResult = boostResult;
-                if (boostResult?.info?.matchedTags) {
-                    const rawTags = boostResult.info.matchedTags;
-                    coreTagsForSearch = typeof this.ragPlugin._truncateCoreTags === 'function'
-                        ? this.ragPlugin._truncateCoreTags(rawTags, tagTruncationRatio, metrics)
-                        : rawTags;
-                    if (ghostTags.length > 0) {
-                        coreTagsForSearch = [...coreTagsForSearch, ...ghostTags];
-                    }
-                    console.log(`[AIMemoHandler+] TagBoost 感应到 ${coreTagsForSearch.length} 个核心 Tag (含 ${ghostTags.length} 幽灵)`);
-                } else if (ghostTags.length > 0) {
-                    coreTagsForSearch = ghostTags;
-                }
-            } catch (e) {
-                console.warn('[AIMemoHandler+] applyTagBoost 失败:', e.message);
-                if (ghostTags.length > 0) coreTagsForSearch = ghostTags;
-            }
-        }
-
-        // 2. 跨所有日记本并行搜索
-        const searchPromises = dbNames.map(async (dbName) => {
-            try {
-                const results = await vdb.search(
-                    dbName,
-                    queryVector,
-                    k,
-                    tagWeight,
-                    coreTagsForSearch,
-                    undefined,
-                    preparedBoostResult ? { preparedBoostResult } : undefined
-                );
-                return (results || []).map(r => ({
-                    dbName,
-                    text: r.text || '',
-                    score: r.score || 0,
-                    tokens: this._estimateTokens(r.text || '')
-                }));
-            } catch (e) {
-                console.warn(`[AIMemoHandler+] 搜索 "${dbName}" 失败:`, e.message);
-                return [];
-            }
-        });
-
-        const resultsArrays = await Promise.all(searchPromises);
-        const allChunks = resultsArrays.flat();
+        const result = await vdb.executeNativeRiverQuery(
+            { text: String(metrics.queryText || ''), vector: queryVector },
+            { diaryNames: dbNames, topK: k * dbNames.length, candidateK: Math.max(300, k * dbNames.length),
+                coreTags: ghostTags, sourceObservationConfig: { baseTagBoost: tagWeight ?? 0.6 } }
+        );
+        const allChunks = result.results.map(item => ({
+            dbName: item.diaryName || dbNames[0], text: item.text || '',
+            score: item.score || 0, tokens: this._estimateTokens(item.text || '')
+        }));
 
         // 3. 按分数排序 + 文本指纹去重
         allChunks.sort((a, b) => (b.score || 0) - (a.score || 0));

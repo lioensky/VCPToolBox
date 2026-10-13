@@ -30,6 +30,15 @@
           </header>
 
           <div class="diary-syntax-body">
+            <div v-if="retiredSuffixes.length > 0" class="syntax-card k-card" role="alert">
+              <strong>检测到已退休的 TagMemo 后缀</strong>
+              <p>
+                原语法包含 {{ retiredSuffixes.join("、") }}。不会自动替换或丢弃；
+                确认迁移后将移除旧后缀，并在高级 RAG 中显式使用 RiverMemo。
+                旧权重不直接映射为 RiverMemo 参数，其他有效后缀和 K 倍率保留。
+              </p>
+              <UiButton variant="outline" @click="confirmRetiredMigration">确认迁移旧后缀</UiButton>
+            </div>
             <label class="syntax-field syntax-field--full">
               <span>日记本名称</span>
               <UiInput
@@ -42,7 +51,7 @@
                 支持聚合检索，用 <code>|</code> 分隔多个日记本名。
                 示例：<code>物理|政治|python日记本</code>，最终可生成
                 <code>[[物理|政治|python日记本:1.2]]</code> 或
-                <code>《《物理|政治|python日记本::TagMemo+::Rerank+》》</code>。
+                <code>《《物理|政治|python日记本::RiverMemo::Rerank+》》</code>。
               </small>
             </label>
 
@@ -108,7 +117,7 @@
                   <code>::BM25</code> 负责日记 tag / keyword BM25 匹配，
                   <code>::Rerank</code> 负责普通精排，<code>::Expand</code> 负责父文档展开。
                   注意：普通 <code>::Rerank</code> 与 <code>::Rerank+</code> 只能二选一；
-                  <code>::RiverMemo</code>、<code>::TagMemo</code> 与 <code>::TagMemo+</code> 只能三选一。
+                  高级日记 RAG 默认使用 RiverMemo，<code>::RiverMemo</code> 可显式标记该读出。
                 </p>
               </div>
 
@@ -266,69 +275,9 @@
                 <p>
                   调用浪潮自主研发的语义统一场方程进行记忆推理。该场方程将信息传递动力学与
                   信息传递场统一为同一个数学结构，以一个方程推演记忆与信息的完整运动过程。
-                  RiverMemo 无需填写参数，并会接管 TagMemo 记忆增强；
-                  它与 TagMemo、TagMemo+ 只能三选一。
+                  RiverMemo 复用共享降噪、信号提取与传播底座，无需填写后缀参数。
+                  高级日记 RAG 默认使用此读出；开关只控制是否在语法中显式写出名称。
                 </p>
-              </div>
-
-              <div class="syntax-card syntax-option-card">
-                <div class="syntax-option-head">
-                  <div>
-                    <strong>TagMemo</strong>
-                    <code>::TagMemo</code>
-                  </div>
-                  <AppSwitch
-                    :model-value="enabledSuffixes.tagMemo"
-                    @update:model-value="setExclusiveSuffix('tagMemo', $event)"
-                  />
-                </div>
-                <p>
-                  启用浪潮 TagMemo 拓扑记忆增强。留空权重时系统会动态估算，通常建议不要手写数字。
-                  TagMemo 与 TagMemo+ 只能二选一。
-                </p>
-                <label class="inline-number">
-                  <span>可选权重</span>
-                  <UiInput
-                    v-model="tagMemoWeight"
-                    :disabled="!enabledSuffixes.tagMemo"
-                    type="number"
-                    min="0"
-                    max="2"
-                    step="0.05"
-                    placeholder="留空自动"
-                    @keydown.stop
-                  />
-                </label>
-              </div>
-
-              <div class="syntax-card syntax-option-card">
-                <div class="syntax-option-head">
-                  <div>
-                    <strong>TagMemo+</strong>
-                    <code>::TagMemo+</code>
-                  </div>
-                  <AppSwitch
-                    :model-value="enabledSuffixes.tagMemoPlus"
-                    @update:model-value="setExclusiveSuffix('tagMemoPlus', $event)"
-                  />
-                </div>
-                <p>
-                  在 TagMemo 基础上加入测地线重排，适合标签体系完善的大型知识库。留空权重时自动动态计算。
-                  TagMemo+ 与 TagMemo 只能二选一。
-                </p>
-                <label class="inline-number">
-                  <span>可选权重</span>
-                  <UiInput
-                    v-model="tagMemoPlusWeight"
-                    :disabled="!enabledSuffixes.tagMemoPlus"
-                    type="number"
-                    min="0"
-                    max="2"
-                    step="0.05"
-                    placeholder="留空自动"
-                    @keydown.stop
-                  />
-                </label>
               </div>
 
               <div class="syntax-card syntax-option-card">
@@ -853,13 +802,13 @@
               <code>{{ generatedSyntax }}</code>
             </div>
             <div class="preview-actions">
-              <UiButton variant="outline" @click="copySyntax">
+              <UiButton variant="outline" :disabled="retiredSuffixes.length > 0" @click="copySyntax">
                 <template #leading>
                   <span class="material-symbols-outlined">content_copy</span>
                 </template>
                 复制文本
               </UiButton>
-              <UiButton variant="primary" @click="insertSyntax">
+              <UiButton variant="primary" :disabled="retiredSuffixes.length > 0" @click="insertSyntax">
                 <template #leading>
                   <span class="material-symbols-outlined">keyboard_return</span>
                 </template>
@@ -937,8 +886,7 @@ const kMultiplier = ref(defaultState.kMultiplier);
 const timeRatio = ref(defaultState.timeRatio);
 const bm25Weight = ref(defaultState.bm25Weight);
 const bm25PlusWeight = ref(defaultState.bm25PlusWeight);
-const tagMemoWeight = ref(defaultState.tagMemoWeight);
-const tagMemoPlusWeight = ref(defaultState.tagMemoPlusWeight);
+const retiredSuffixes = ref<string[]>([]);
 const rerankPlusAlpha = ref(defaultState.rerankPlusAlpha);
 const timeDecayHalfLifeDays = ref(defaultState.timeDecayHalfLifeDays);
 const timeDecayMinScore = ref(defaultState.timeDecayMinScore);
@@ -957,6 +905,7 @@ const roleValveDraft = reactive<RoleValveDraft>({
 const enabledSuffixes = reactive<Record<SuffixKey, boolean>>({ ...defaultState.enabledSuffixes });
 
 const generatedSyntax = computed(() => {
+  if (retiredSuffixes.value.length > 0) return "请先确认迁移已退休后缀";
   const rawName = notebookName.value.trim() || "日记本";
 
   if (dslPage.value === "direct") {
@@ -970,8 +919,6 @@ const generatedSyntax = computed(() => {
   if (enabledSuffixes.bm25Plus) suffixes.push(`::BM25+${sanitizeNumber(bm25PlusWeight.value)}`);
   if (enabledSuffixes.bm25) suffixes.push(`::BM25${sanitizeNumber(bm25Weight.value)}`);
   if (enabledSuffixes.riverMemo) suffixes.push("::RiverMemo");
-  if (enabledSuffixes.tagMemo) suffixes.push(`::TagMemo${sanitizeNumber(tagMemoWeight.value)}`);
-  if (enabledSuffixes.tagMemoPlus) suffixes.push(`::TagMemo+${sanitizeNumber(tagMemoPlusWeight.value)}`);
   if (enabledSuffixes.rerank) suffixes.push("::Rerank");
   if (enabledSuffixes.rerankPlus) suffixes.push(`::Rerank+${sanitizeNumber(rerankPlusAlpha.value)}`);
   if (enabledSuffixes.timeDecay) suffixes.push(buildTimeDecaySuffix());
@@ -1024,24 +971,6 @@ function setExclusiveSuffix(key: SuffixKey, value: boolean): void {
   enabledSuffixes[key] = value;
 
   if (!value) {
-    return;
-  }
-
-  if (key === "riverMemo") {
-    enabledSuffixes.tagMemo = false;
-    enabledSuffixes.tagMemoPlus = false;
-    return;
-  }
-
-  if (key === "tagMemo") {
-    enabledSuffixes.riverMemo = false;
-    enabledSuffixes.tagMemoPlus = false;
-    return;
-  }
-
-  if (key === "tagMemoPlus") {
-    enabledSuffixes.riverMemo = false;
-    enabledSuffixes.tagMemo = false;
     return;
   }
 
@@ -1132,7 +1061,14 @@ function removeRoleValveCondition(index: number): void {
   roleValveConditions.value.splice(index, 1);
 }
 
+function confirmRetiredMigration(): void {
+  if (dslPage.value === "advanced") enabledSuffixes.riverMemo = true;
+  retiredSuffixes.value = [];
+  showMessage("已确认迁移旧后缀，请检查预览后替换原语法。", "success");
+}
+
 async function copySyntax(): Promise<void> {
+  if (retiredSuffixes.value.length > 0) return;
   try {
     await navigator.clipboard.writeText(generatedSyntax.value);
     showMessage("日记本语法已复制。", "success");
@@ -1142,6 +1078,7 @@ async function copySyntax(): Promise<void> {
 }
 
 function insertSyntax(): void {
+  if (retiredSuffixes.value.length > 0) return;
   if (props.mode === "replace") {
     emit("replace", generatedSyntax.value);
     showMessage("日记本语法已替换。", "success");
@@ -1166,8 +1103,7 @@ function applyEditorState(state: DiarySyntaxEditorState): void {
   timeRatio.value = state.timeRatio;
   bm25Weight.value = state.bm25Weight;
   bm25PlusWeight.value = state.bm25PlusWeight;
-  tagMemoWeight.value = state.tagMemoWeight;
-  tagMemoPlusWeight.value = state.tagMemoPlusWeight;
+  retiredSuffixes.value = [...state.retiredSuffixes];
   rerankPlusAlpha.value = state.rerankPlusAlpha;
   timeDecayHalfLifeDays.value = state.timeDecayHalfLifeDays;
   timeDecayMinScore.value = state.timeDecayMinScore;

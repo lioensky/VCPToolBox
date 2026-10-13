@@ -371,7 +371,7 @@ struct MemoQueryCacheEntry {
 ///
 /// 活动资产使用 Arc 快照：查询开始时克隆一次 Arc，后续发布不会改变本次查询；
 /// 旧代资产在最后一个查询释放后自动回收。请求观测缓存与活动资产代际绑定，
-/// 让 DTSC 与 Topology V3 直接复用统一管线产物，避免河网经 JS JSON 往返。
+/// 让 RiverMemo Topology V3 直接复用统一管线产物，避免河网经 JS JSON 往返。
 pub(crate) struct MemoRuntime {
     active_artifact: RwLock<Option<(String, u64, Arc<NativeArtifact>)>>,
     generation: AtomicU64,

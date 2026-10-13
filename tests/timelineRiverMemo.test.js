@@ -12,7 +12,7 @@ test('ContextBridge retrieveDiary uses native RiverMemo with an explicit diary s
     let searchCalls = 0;
 
     ragDiaryPlugin.vectorDBManager = {
-        async search() {
+        async searchKnn() {
             searchCalls++;
             return [];
         },
@@ -47,16 +47,17 @@ test('ContextBridge retrieveDiary uses native RiverMemo with an explicit diary s
             queryText: '回忆八月发生的事情',
             k: 8,
             candidateK: 120,
-            riverMemo: true,
-            tagMemo: true
+            engine: 'rivermemo',
+            fallback: 'knn',
+            
         });
 
-        assert.equal(bridge.version, '1.2');
+        assert.equal(bridge.version, '1.3');
         assert.equal(searchCalls, 0, 'native success must not execute the JS search fallback');
         assert(nativeCall, 'native RiverMemo must be invoked');
         assert.equal(nativeCall.query.text, '回忆八月发生的事情');
         assert.strictEqual(nativeCall.query.vector, queryVector);
-        assert.equal(nativeCall.options.diaryNames, 'NovaTimeline');
+        assert.deepEqual(nativeCall.options.diaryNames, ['NovaTimeline']);
         assert.equal(nativeCall.options.topK, 8);
         assert.equal(nativeCall.options.candidateK, 120);
         assert.equal(nativeCall.options.enabled, true);
@@ -80,7 +81,7 @@ test('ContextBridge retrieveDiary falls back to KNN when RiverMemo and TagMemo a
         async executeNativeRiverQuery() {
             throw new Error('native artifact is warming up');
         },
-        async search(...args) {
+        async searchKnn(...args) {
             searchCall = args;
             return [{
                 chunkId: 202,
@@ -98,18 +99,17 @@ test('ContextBridge retrieveDiary falls back to KNN when RiverMemo and TagMemo a
             queryVector: new Float32Array([0, 1, 0, 0]),
             queryText: '七月',
             k: 5,
-            riverMemo: true,
-            tagMemo: true
+            engine: 'rivermemo',
+            fallback: 'knn',
+            
         });
 
         assert(searchCall, 'KNN fallback must execute after native failure');
-        assert.equal(searchCall[0], 'NovaTimeline');
+        assert.deepEqual(searchCall[0], ['NovaTimeline']);
         assert.equal(searchCall[2], 5);
         assert.equal(retrieval.results[0].chunkId, 202);
         assert.equal(retrieval.meta.riverMemoUsed, false);
-        assert.equal(retrieval.meta.tagMemoUsed, false);
         assert.match(retrieval.meta.fallbackReason, /rivermemo-failed/);
-        assert.match(retrieval.meta.fallbackReason, /tagmemo-unavailable/);
     } finally {
         ragDiaryPlugin.vectorDBManager = originalVectorDBManager;
     }
@@ -203,9 +203,9 @@ test('VCPTimeLine requests RiverMemo and expands the best matching complete mont
 
         assert(retrievalOptions, 'Timeline must use the structured retrieval bridge');
         assert.equal(retrievalOptions.diaryNames, 'NovaTimeline');
-        assert.equal(retrievalOptions.riverMemo, true);
-        assert.equal(retrievalOptions.tagMemo, true);
-        assert.equal(retrievalOptions.geodesicRerank, true);
+        assert.equal(retrievalOptions.engine, 'rivermemo');
+        assert.equal(retrievalOptions.fallback, 'knn');
+        assert.equal(retrievalOptions.geodesicRerank, undefined);
         assert.equal(retrievalOptions.k, 20);
         assert.equal(retrievalOptions.candidateK, 100);
         assert.equal(retrievalOptions.queryText, '八月的项目进展\n此前谈到了七月');

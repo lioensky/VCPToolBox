@@ -220,7 +220,7 @@ class MetaThinkingManager {
                             chainName: finalChainName,
                             query: combinedQueryForDisplay,
                             useGroup,
-                            engine: 'rivermemo-native-ann',
+                            engine: 'knn-native-ann',
                             kSequence: finalKSequence,
                             totalStages: chain.length,
                             stages: nativeResults.map(stage => ({
@@ -255,7 +255,7 @@ class MetaThinkingManager {
                     // 有界串行召回，避免大量思维簇同时加载索引。
                     for (let i = 0; i < chain.length; i++) {
                         const k = finalKSequence[i];
-                        const candidates = k === 0 ? [] : await this.ragPlugin.vectorDBManager.search(
+                        const candidates = k === 0 ? [] : await this.ragPlugin.vectorDBManager.searchKnn(
                             chain[i], candidateVector,
                             Math.min(256, Math.max(k, config.candidateK)), 0
                         );
@@ -342,7 +342,7 @@ class MetaThinkingManager {
                             chainName: finalChainName,
                             query: combinedQueryForDisplay,
                             useGroup,
-                            engine: 'rivermemo-native-ann',
+                            engine: 'knn-native-ann',
                             fallbackFrom: 'rivermemo-sense',
                             fallbackReason: error.message,
                             kSequence: finalKSequence,
@@ -419,7 +419,7 @@ class MetaThinkingManager {
 
             try {
                 // 使用当前查询向量搜索当前簇
-                const searchResults = k === 0 ? [] : await this.ragPlugin.vectorDBManager.search(clusterName, currentQueryVector, k);
+                const searchResults = k === 0 ? [] : await this.ragPlugin.vectorDBManager.searchKnn(clusterName, currentQueryVector, k);
 
                 if (!searchResults || searchResults.length === 0) {
                     console.warn(`[MetaThinkingManager] 阶段${i + 1}未找到结果，使用原始查询向量继续`);

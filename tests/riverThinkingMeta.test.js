@@ -15,7 +15,7 @@ function fixture() {
         ragParams: {},
         pushVcpInfo: value => calls.broadcast.push(value),
         vectorDBManager: {
-            async search(name, vector, k) {
+            async searchKnn(name, vector, k) {
                 calls.search.push({ name, vector, k });
                 return [{ chunkId: name === 'A' ? 1 : 2, text: `${name}正文\nTag: 标签甲,标签乙`, vector: [1, 0], score: 0.8 }];
             },
