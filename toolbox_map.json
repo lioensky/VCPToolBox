@@ -18,5 +18,9 @@
   "VCPContactToolBox": {
     "file": "ContactToolBox.txt",
     "description": "该收纳箱收纳了各种通讯、社交、消息推送，话题管理，日程管理，日常小工具相关的工具，用于动态向 Agent 提供说明。"
+  },
+  "VarJEVTool": {
+    "file": "JevToolCall.txt",
+    "description": "JEV 简单工具：回忆、生图、联网搜索、通知、计算、日程、文件与通讯。"
   }
 }

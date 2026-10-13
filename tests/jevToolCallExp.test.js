@@ -108,7 +108,7 @@ JEV:「始ESCAPE」{日用工具} 计算【字符串 "「始」" 与 <<<[TOOL_RE
     );
 });
 
-test('联网搜索默认使用 VSearch grounding 模板且不调用 Jev', async () => {
+test('联网搜索默认使用 VSearch fusion 模板且不调用 Jev', async () => {
     const { planner, decisions } = makePlanner({ configured: true });
     const calls = await planner.plan(
         '{联网搜索} 【最近美国土豆是不是打折】[美国土豆产能][美国当前土豆价格]',
@@ -118,7 +118,7 @@ test('联网搜索默认使用 VSearch grounding 模板且不调用 Jev', async 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].name, 'VSearch');
     assert.deepEqual(calls[0].args, {
-        SearchMode: 'grounding',
+        SearchMode: 'fusion',
         ShowURL: 'false',
         SearchTopic: '最近美国土豆是不是打折',
         Keywords: '美国土豆产能, 美国当前土豆价格',
@@ -134,36 +134,32 @@ test('可在一个联网请求中显式选择 VSearch 与 AnySearch', async () =
     );
 
     assert.deepEqual(calls.map(call => call.name), ['VSearch', 'AnySearch']);
-    assert.equal(calls[0].args.SearchMode, 'grounding');
+    assert.equal(calls[0].args.SearchMode, 'fusion');
     assert.equal(calls[1].args.query, '最近美国土豆是不是打折');
     assert.equal(calls[1].args.command, 'search');
     assert.equal(decisions.length, 0);
 });
 
-test('谷歌搜索使用 SerpSearch 固定命令并确定性映射地区', async () => {
+test('谷歌搜索别名确定性映射 VSearch grounding 并归并地区约束', async () => {
     const { planner } = makePlanner();
     const [call] = await planner.plan(
         "{联网搜索} '谷歌搜索' 【Coffee prices】[美国]"
     );
 
-    assert.equal(call.name, 'SerpSearch');
-    assert.equal(call.args.command, 'google_search');
-    assert.equal(call.args.q, 'Coffee prices 美国');
-    assert.equal(call.args.gl, 'us');
-    assert.equal(call.args.hl, 'en');
+    assert.equal(call.name, 'VSearch');
+    assert.equal(call.args.SearchMode, 'grounding');
+    assert.equal(call.args.SearchTopic, 'Coffee prices');
+    assert.equal(call.args.Keywords, '美国');
 });
 
-test('谷歌学术确定性提取年份范围', async () => {
+test('谷歌学术别名未配置时拒绝而非静默忽略', async () => {
     const { planner, decisions } = makePlanner({ configured: true });
-    const [call] = await planner.plan(
-        "{联网搜索} '谷歌学术' 【large language models in diagnosis】[2020年至2026年][按日期]"
+    await assert.rejects(
+        () => planner.plan(
+            "{联网搜索} '谷歌学术' 【large language models in diagnosis】[2020年至2026年][按日期]"
+        ),
+        /没有工具 "谷歌学术"/
     );
-
-    assert.equal(call.name, 'SerpSearch');
-    assert.equal(call.args.command, 'google_scholar_search');
-    assert.equal(call.args.as_ylo, '2020');
-    assert.equal(call.args.as_yhi, '2026');
-    assert.equal(call.args.scisbd, '2');
     assert.equal(decisions.length, 0);
 });
 
@@ -329,13 +325,12 @@ test('拒绝一个 JEV 块包含多个能力目录', async () => {
 test('完整自然语言、关系词和标点不会干扰语义锚点解析', async () => {
     const { planner, decisions } = makePlanner({ configured: true });
     const [call] = await planner.plan(
-        "请使用 {联网搜索} 中的 '谷歌学术'，在[2024年至今]的范围内搜索【大语言模型在临床诊断中的应用】。"
+        "请使用 {联网搜索}，在[ fusion 模式]下搜索【大语言模型在临床诊断中的应用】。"
     );
 
-    assert.equal(call.name, 'SerpSearch');
-    assert.equal(call.args.command, 'google_scholar_search');
-    assert.equal(call.args.q, '大语言模型在临床诊断中的应用');
-    assert.equal(call.args.as_ylo, '2024');
+    assert.equal(call.name, 'VSearch');
+    assert.equal(call.args.SearchMode, 'fusion');
+    assert.equal(call.args.SearchTopic, '大语言模型在临床诊断中的应用');
     assert.equal(decisions.length, 0);
 });
 
@@ -371,62 +366,22 @@ test('UrlFetch 用 [URL] 直接触发，默认文本且仅映射三种允许模�
     assert.equal(decisions.length, 0);
 });
 
-test('点歌默认常规播放，八种中英文演出模式确定性映射', async () => {
-    const { planner, decisions } = makePlanner({ configured: true });
-    const modes = [
-        ['流光', 'luminous'],
-        ['云阶', 'partita'],
-        ['心象', 'cadenza'],
-        ['凝彩', 'tempera'],
-        ['商籁', 'sonnet'],
-        ['镜台', 'diorama'],
-        ['浮名', 'fume'],
-        ['星诞', 'starborn']
-    ];
-
-    const [regular] = await planner.plan(
-        '请使用 {音乐播放}，播放【星の余韻】。'
-    );
-    assert.deepEqual(regular.args, {
-        command: 'playSong',
-        songname: '星の余韻'
-    });
-
-    for (const [label, expected] of modes) {
-        const [call] = await planner.plan(
-            `请使用 {音乐播放}，播放【星の余韻】，并启用[${label}]演出模式。`
-        );
-        assert.equal(call.name, 'MusicController');
-        assert.equal(call.args.command, 'playSong');
-        assert.equal(call.args.songname, '星の余韻');
-        assert.equal(call.args.stageMode, expected);
-    }
-
-    const [english] = await planner.plan(
-        '请使用 {音乐播放}，播放【星の余韻】，并启用[luminous]演出模式。'
-    );
-    assert.equal(english.args.stageMode, 'luminous');
-    assert.equal(decisions.length, 0);
-});
-
 test('大量并发规划保持调用参数隔离且全部使用确定性模板', async () => {
     const { planner, decisions } = makePlanner({ configured: true });
-    const stageModes = ['流光', '云阶', '心象', '凝彩', '商籁', '镜台', '浮名', '星诞'];
     const expressions = [];
 
     for (let i = 0; i < 40; i++) {
         expressions.push(`请使用 {联网搜索}，打开网页[https://example.com/page-${i}]并读取[文本]。`);
         expressions.push(`请使用 {联网搜索}，打开网页[https://example.com/snapshot-${i}]并获取[截图]。`);
-        expressions.push(`请使用 {音乐播放}，播放【测试歌曲-${i}】，并启用[${stageModes[i % stageModes.length]}]演出模式。`);
         expressions.push(`请使用 {联网搜索} 中的 'B站搜索'，在B站上[搜UP主]，查找【测试UP-${i}】。`);
     }
 
     const batches = await Promise.all(expressions.map(expression => planner.plan(expression)));
-    assert.equal(batches.length, 160);
+    assert.equal(batches.length, 120);
     assert.ok(batches.every(calls => calls.length === 1));
 
     for (let i = 0; i < 40; i++) {
-        const offset = i * 4;
+        const offset = i * 3;
         assert.deepEqual(batches[offset][0].args, {
             mode: 'text',
             url: `https://example.com/page-${i}`
@@ -435,15 +390,14 @@ test('大量并发规划保持调用参数隔离且全部使用确定性模板',
             mode: 'snapshot',
             url: `https://example.com/snapshot-${i}`
         });
-        assert.equal(batches[offset + 2][0].args.songname, `测试歌曲-${i}`);
-        assert.equal(batches[offset + 3][0].args.keyword, `测试UP-${i}`);
-        assert.equal(batches[offset + 3][0].args.search_type, 'bili_user');
+        assert.equal(batches[offset + 2][0].args.keyword, `测试UP-${i}`);
+        assert.equal(batches[offset + 2][0].args.search_type, 'bili_user');
     }
 
     assert.equal(decisions.length, 0);
 });
 
-test('日用工具动作词确定性路由到六类真实插件', async () => {
+test('日用工具动作词确定性路由到真实插件', async () => {
     const { planner, decisions } = makePlanner({ configured: true });
 
     const [memo] = await planner.plan(
@@ -457,15 +411,6 @@ test('日用工具动作词确定性路由到六类真实插件', async () => {
         query: '关于上次A项目会议的讨论内容',
         folder: '小吉的地缘政治',
         maid: 'Nova'
-    });
-
-    const [alarm] = await planner.plan(
-        '请使用 {日用工具}，在[1分钟后]设置闹钟，提醒我【检查烤箱里的点心】。'
-    );
-    assert.equal(alarm.name, 'VCPAlarm');
-    assert.deepEqual(alarm.args, {
-        time_description: '1分钟后',
-        reminder_text: '检查烤箱里的点心'
     });
 
     const [calculator] = await planner.plan(
@@ -496,12 +441,6 @@ test('日用工具动作词确定性路由到六类真实插件', async () => {
         sleeptime: '10分钟',
         tips: '重新检查异步任务状态'
     });
-
-    const [music] = await planner.plan(
-        '请使用 {日用工具}，播放【星の余韻】，并启用[星诞]演出模式。'
-    );
-    assert.equal(music.name, 'MusicController');
-    assert.equal(music.args.stageMode, 'starborn');
 
     assert.equal(decisions.length, 0);
 });
@@ -540,21 +479,6 @@ test('LightMemo 将独立日期约束拼回 query，并保留多文件夹索引'
     assert.equal(singleDateCall.args.folder, '地缘政治');
 });
 
-test('LightMemo 将独立音乐检索标记拼回 query，并优先于播放器路由', async () => {
-    const { planner, decisions } = makePlanner({ configured: true });
-    const [call] = await planner.plan(
-        '[音乐检索]【煮咖啡时适合听的歌】'
-    );
-
-    assert.equal(call.name, 'LightMemo');
-    assert.deepEqual(call.args, {
-        k: '5',
-        search_all_knowledge_bases: 'false',
-        query: '[音乐检索] 煮咖啡时适合听的歌'
-    });
-    assert.equal(decisions.length, 0);
-});
-
 test('AgentAssistant 支持未来通讯时间和委托查询字段', async () => {
     const { planner } = makePlanner();
     const [scheduled] = await planner.plan(
@@ -576,25 +500,21 @@ test('大量并发日用工具规划无参数串扰且不调用 Jev', async () =
 
     for (let i = 0; i < 50; i++) {
         expressions.push(`请使用 {日用工具} 主动回忆【项目记忆-${i}】，从[索引-${i}]中返回[${(i % 5) + 1}条]。`);
-        expressions.push(`请使用 {日用工具}，在[${i + 1}分钟后]设置闹钟，提醒我【提醒-${i}】。`);
         expressions.push(`请使用 {日用工具} 计算【sqrt(${i + 1})】。`);
         expressions.push(`请使用 {日用工具} 联络[Agent-${i}]，告诉她【我是测试Agent，请处理任务-${i}】，并使用[临时通讯]。`);
         expressions.push(`请使用 {日用工具} 睡眠[${i + 1}分钟]，醒来后提醒【继续任务-${i}】。`);
-        expressions.push(`请使用 {日用工具}，播放【歌曲-${i}】，并启用[星诞]演出模式。`);
     }
 
     const batches = await Promise.all(expressions.map(expression => planner.plan(expression)));
-    assert.equal(batches.length, 300);
+    assert.equal(batches.length, 200);
 
     for (let i = 0; i < 50; i++) {
-        const offset = i * 6;
+        const offset = i * 4;
         assert.equal(batches[offset][0].args.query, `项目记忆-${i}`);
         assert.equal(batches[offset][0].args.folder, `索引-${i}`);
-        assert.equal(batches[offset + 1][0].args.reminder_text, `提醒-${i}`);
-        assert.equal(batches[offset + 2][0].args.expression, `sqrt(${i + 1})`);
-        assert.equal(batches[offset + 3][0].args.agent_name, `Agent-${i}`);
-        assert.equal(batches[offset + 4][0].args.tips, `继续任务-${i}`);
-        assert.equal(batches[offset + 5][0].args.songname, `歌曲-${i}`);
+        assert.equal(batches[offset + 1][0].args.expression, `sqrt(${i + 1})`);
+        assert.equal(batches[offset + 2][0].args.agent_name, `Agent-${i}`);
+        assert.equal(batches[offset + 3][0].args.tips, `继续任务-${i}`);
     }
 
     assert.equal(decisions.length, 0);
@@ -605,8 +525,6 @@ test('高置信度日用动作可以省略显式能力目录', async () => {
     const cases = [
         ["请计算【sqrt(81)】。", 'SciCalculator'],
         ["请联络[小娜]，告诉她【我是Nova，请检查方案】。", 'AgentAssistant'],
-        ["请播放【星の余韻】，并启用[星诞]演出模式。", 'MusicController'],
-        ["请在[5分钟后]设置闹钟，提醒我【关掉烤箱】。", 'VCPAlarm'],
         ["请睡眠[10分钟]，醒来后提醒【继续任务】。", 'VCPSleep'],
         ["请主动回忆【上次项目会议】。", 'LightMemo']
     ];
