@@ -29,7 +29,39 @@
     "invocationCommands": [
       {
         "command": "search",
+        "commandIdentifier": "search",
         "description": "功能: 在整台计算机上快速搜索文件，返回文件路径列表。\n重要提示: 此工具的搜索结果(文件路径)可以作为 FileOperator 插件的输入参数，以读取或操作这些文件。\n参数:\n- query (字符串, 必需): 搜索关键词。支持 Everything 的高级搜索语法 (例如: \"path:D:\\videos\\ *.mp4 size:>1gb\")。\n- maxResults (数字, 可选, 默认100): 返回的最大结果数量。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LocalSearchController「末」,\ncommand:「始」search「末」,\nquery:「始」VCP a.txt「末」,\nmaxResults:「始」50「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "便利操作",
+    "jevDescPrompt": "通过本地 Everything 引擎快速检索计算机中的文件与文件夹路径。",
+    "jevPrompt": "用户希望在电脑中快速寻找、检索文件或定位文件路径时调用 search 命令。检索表达式放入主要内容，返回数量通过约束提供。",
+    "agentPrompt": "当需要在本地计算机极速检索特定文件或文件名时，使用 {便利操作} 中的 `ServerSearchController`，搜索词放入【主要内容】：\nJEV:「始」请使用 {便利操作} 中的 `ServerSearchController`，搜索文件【*.pdf CMC数学竞赛】。「末」",
+    "defaultCommand": "search",
+    "commands": [
+      {
+        "commandIdentifier": "search",
+        "description": "通过 Everything 快速搜索本地文件",
+        "aliases": ["本地搜索", "秒搜", "文件搜索", "搜文件", "搜索文件"],
+        "parameters": {
+          "query": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 300,
+            "description": "文件检索关键词（支持 Everything 搜索语法）"
+          },
+          "maxResults": {
+            "type": "text",
+            "source": "constraints",
+            "prefixes": ["数量", "条数", "返回"],
+            "maxLength": 4
+          }
+        }
       }
     ]
   }

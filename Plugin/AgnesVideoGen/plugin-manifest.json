@@ -77,5 +77,65 @@
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgnesVideoGen「末」,\ncommand:「始」concat「末」,\nvideo_url1:「始」http://host:port/pw=KEY/files/agnesvideogen/clip1.mp4「末」,\nvideo_url2:「始」http://host:port/pw=KEY/files/agnesvideogen/clip2.mp4「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "媒体娱乐",
+    "jevDescPrompt": "使用 Agnes Video V2.0 异步生成文生视频或图生视频，或根据 task_id 查询视频生成结果。",
+    "jevPrompt": "用户提供画面动作描述要求生成视频时选择 submit 命令；提供 task_id 要求查询生成状态时选择 query 命令（默认 submit）。在 submit 中，5秒常规时长选 121，10秒长镜头选 241。",
+    "agentPrompt": "当需要使用 Agnes Video 生成视频或查询视频任务进度时，使用 {媒体娱乐} 中的 `AgnesVideoGen`，视频描述或 task_id 放入【主要内容】，时长或参考图放入 []（[5秒]、[10秒]）：\nJEV:「始」请使用 {媒体娱乐} 中的 `AgnesVideoGen`，生成视频【赛博朋克猫咪在霓虹雨夜街头漫步，慢动作跟拍】[5秒]。「末」",
+    "defaultCommand": "submit",
+    "commands": [
+      {
+        "commandIdentifier": "submit",
+        "description": "提交 Agnes 视频生成异步任务",
+        "aliases": ["生成视频", "提交视频", "制作视频", "文生视频", "图生视频"],
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1200,
+            "description": "视频主体、动作、镜头与光影描述"
+          },
+          "num_frames": {
+            "type": "enum",
+            "required": false,
+            "description": "视频生成帧数（24fps下 121帧约5秒，241帧约10秒）",
+            "values": {
+              "121": "121帧（约 5 秒标准时长）",
+              "241": "241帧（约 10 秒加长时长）"
+            },
+            "aliases": {
+              "121": ["5秒", "121", "121帧", "标准时长"],
+              "241": ["10秒", "241", "241帧", "长视频"]
+            },
+            "default": "121"
+          },
+          "image": {
+            "type": "text",
+            "required": false,
+            "source": "url",
+            "maxLength": 500,
+            "description": "可选首帧参考图 URL"
+          }
+        }
+      },
+      {
+        "commandIdentifier": "query",
+        "description": "根据 task_id 查询视频生成进度与结果链接",
+        "aliases": ["查询进度", "视频状态", "查询结果", "查任务"],
+        "parameters": {
+          "task_id": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 100,
+            "description": "submit 返回的 task_id"
+          }
+        }
+      }
+    ]
   }
 }

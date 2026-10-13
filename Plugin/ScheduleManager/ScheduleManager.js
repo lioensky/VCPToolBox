@@ -33,7 +33,7 @@ async function handleRequest(request) {
             const newSchedule = {
                 id: Date.now().toString(),
                 time: request.time,
-                content: request.content
+                content: request.content || request.text || request.title || request.event
             };
             schedules.push(newSchedule);
             

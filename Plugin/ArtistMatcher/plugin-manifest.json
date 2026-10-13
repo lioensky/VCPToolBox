@@ -28,5 +28,35 @@
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ArtistMatcher「末」,\ncommand:「始」GetRandomArtistString「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "媒体娱乐",
+    "jevDescPrompt": "查询画师在 SDXL 模型中的精确 Tag、触发词和拟合度，或随机生成多位优质画师的加权融合灵感串。",
+    "jevPrompt": "用户提供画师名称要求查询 Tag 时选择 FindArtist；选择困难或要求随机生成灵感画师串时选择 GetRandomArtistString（默认 FindArtist）。",
+    "agentPrompt": "当需要查询画师 Tag 或生成随机画师灵感串时，使用 {媒体娱乐} 中的 `ArtistMatcher`：\nJEV:「始」请使用 {媒体娱乐} 中的 `ArtistMatcher`，查询画师【Krenz Cushart】。「末」",
+    "defaultCommand": "FindArtist",
+    "commands": [
+      {
+        "commandIdentifier": "FindArtist",
+        "description": "查询画师的准确 Tag 与拟合度",
+        "aliases": ["查询画师", "搜画师", "画师Tag", "找画师", "匹配画师"],
+        "parameters": {
+          "artist_name": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 200,
+            "description": "画师英文名、中文名或罗马音"
+          }
+        }
+      },
+      {
+        "commandIdentifier": "GetRandomArtistString",
+        "description": "随机生成带权重的优质画师组合串",
+        "aliases": ["随机画师", "随机画师串", "画师灵感", "抽画师", "灵感画师"]
+      }
+    ]
   }
 }

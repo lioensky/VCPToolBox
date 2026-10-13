@@ -692,7 +692,13 @@ def get_global_macro_dashboard_command(args: dict[str, Any]) -> str:
 
 
 def execute_single_command(args: dict[str, Any]) -> str:
-    command = str(pick(args, "command", default="FetchMarketData")).strip()
+    raw_cmd = str(pick(args, "command", default="FetchMarketData")).strip()
+    cmd_map = {
+        "DigitalOracleListProviders": "ListProviders",
+        "DigitalOracleFetchMarketData": "FetchMarketData",
+        "DigitalOracleGlobalMacroDashboard": "GetGlobalMacroDashboard",
+    }
+    command = cmd_map.get(raw_cmd, raw_cmd)
 
     if command == "ListProviders":
         return list_providers_command()

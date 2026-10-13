@@ -172,5 +172,75 @@
     "ClawMailSubMail3Agent": "收到 mail3 新邮件后要联系的 Agent 名称",
     "ClawMailSubMail4User": "mail4 子邮箱地址",
     "ClawMailSubMail4Agent": "收到 mail4 新邮件后要联系的 Agent 名称"
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "便利操作",
+    "jevDescPrompt": "使用 ClawEmail 邮件助手列出最近收件箱邮件摘要、读取邮件正文详情与附件元数据，或查看邮箱文件夹。",
+    "jevPrompt": "用户要求查看最近邮件或收件箱时选择 list_recent；提供 mailId 要求查看邮件详情时选择 read_mail；要求查看邮箱文件夹时选择 list_folders（默认 list_recent）。在 list_recent 中支持在 [] 中指定子邮箱槽位（如 [邮箱:mail1]）或仅看未读（如 [未读]）。",
+    "agentPrompt": "当需要查询邮件摘要或读取邮件内容时，使用 {便利操作} 中的 `VCPClawMail`：\nJEV:「始」请使用 {便利操作} 中的 `VCPClawMail`，查看收件箱最近邮件[未读][mail1]。「末」",
+    "defaultCommand": "list_recent",
+    "commands": [
+      {
+        "commandIdentifier": "list_recent",
+        "description": "列出 ClawEmail 最近邮件摘要",
+        "aliases": ["最近邮件", "查看邮件", "邮件列表", "收件箱", "读邮件列表"],
+        "parameters": {
+          "mailbox": {
+            "type": "enum",
+            "required": false,
+            "description": "指定子邮箱槽位（默认公共邮箱）",
+            "values": {
+              "mail1": "子邮箱 1",
+              "mail2": "子邮箱 2",
+              "mail3": "子邮箱 3",
+              "mail4": "子邮箱 4"
+            },
+            "aliases": {
+              "mail1": ["mail1", "邮箱1", "子邮箱1"],
+              "mail2": ["mail2", "邮箱2", "子邮箱2"],
+              "mail3": ["mail3", "邮箱3", "子邮箱3"],
+              "mail4": ["mail4", "邮箱4", "子邮箱4"]
+            }
+          },
+          "unreadOnly": {
+            "type": "boolean",
+            "required": false,
+            "description": "是否仅展示未读邮件",
+            "trueAliases": ["未读", "仅未读", "未读邮件"],
+            "falseAliases": ["全部", "所有", "已读和未读"],
+            "default": false
+          }
+        }
+      },
+      {
+        "commandIdentifier": "read_mail",
+        "description": "读取特定邮件的详细正文与附件",
+        "aliases": ["读取邮件", "查看邮件详情", "邮件详情", "读信"],
+        "parameters": {
+          "mailId": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 100,
+            "description": "邮件 ID"
+          },
+          "markRead": {
+            "type": "boolean",
+            "required": false,
+            "description": "是否标记为已读",
+            "trueAliases": ["标记已读", "标为已读", "已读"],
+            "falseAliases": ["保持未读", "不标已读"],
+            "default": false
+          }
+        }
+      },
+      {
+        "commandIdentifier": "list_folders",
+        "description": "列出当前邮箱的所有文件夹与垃圾箱 ID",
+        "aliases": ["邮箱文件夹", "列出文件夹", "文件夹列表", "查文件夹"]
+      }
+    ]
   }
 }

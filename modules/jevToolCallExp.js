@@ -153,7 +153,8 @@ class JevToolCallExp {
 
         const uniqueUrls = uniqueStrings(imageUrls);
         const allowsUrlAsPrimary = (categoryKey === 'web_search' || thirdParty) && uniqueUrls.length > 0;
-        if (primary.length === 0 && !allowsUrlAsPrimary) {
+        const allowsThirdPartyEmptyPrimary = thirdParty && (backtickTools.length > 0 || semanticConstraints.length > 0);
+        if (primary.length === 0 && !allowsUrlAsPrimary && !allowsThirdPartyEmptyPrimary) {
             throw new Error('JEV 表达式缺少主要内容，请使用【主要内容】。打开网页时也可直接把 URL 放入 [URL]。');
         }
 
@@ -843,7 +844,16 @@ class JevToolCallExp {
         //    [] 中的自由文本（台词、说明）绝不参与子串匹配，只交给 text 参数原样搬运；
         // 3. 锚点之外的自然语言动作词（如“打开”“查询”）：兜底。
         const primaryText = normalizeAlias(parsed.primary.join(' '));
-        const constraintTags = new Set(parsed.constraints.map(normalizeAlias).filter(Boolean));
+        const constraintTags = new Set();
+        for (const raw of parsed.constraints) {
+            const normalized = normalizeAlias(raw);
+            if (normalized) constraintTags.add(normalized);
+            const colonIndex = raw.search(/[:：]/);
+            if (colonIndex > 0 && colonIndex < raw.length - 1) {
+                const afterColon = normalizeAlias(raw.slice(colonIndex + 1));
+                if (afterColon) constraintTags.add(afterColon);
+            }
+        }
         const wrapperText = normalizeAlias(parsed.raw
             .replace(/【[\s\S]*?】/g, ' ')
             .replace(/\[[\s\S]*?\]/g, ' ')
@@ -993,7 +1003,15 @@ class JevToolCallExp {
     _markExactConstraints(constraints, aliases, consumed) {
         const targets = new Set(aliases.map(normalizeAlias).filter(Boolean));
         constraints.forEach((value, index) => {
-            if (targets.has(normalizeAlias(value))) consumed.add(index);
+            if (targets.has(normalizeAlias(value))) {
+                consumed.add(index);
+                return;
+            }
+            const colonIndex = value.search(/[:：]/);
+            if (colonIndex > 0 && colonIndex < value.length - 1) {
+                const afterColon = normalizeAlias(value.slice(colonIndex + 1));
+                if (targets.has(afterColon)) consumed.add(index);
+            }
         });
     }
 
@@ -1093,9 +1111,13 @@ class JevToolCallExp {
             args[name] = value;
         };
         for (const [name, param] of textParams) {
-            if (param.source === 'primary') assignText(name, param, parsed.primary.join('\n'));
-            else if (param.source === 'url') assignText(name, param, parsed.imageUrls[0]);
-            else if (param.prefixes.length > 0) {
+            if (param.source === 'primary') {
+                const textVal = parsed.primary.length > 0 ? parsed.primary.join('\n') : (parsed.imageUrls[0] || '');
+                assignText(name, param, textVal);
+            } else if (param.source === 'url') {
+                const urlVal = parsed.imageUrls[0] || (IMAGE_URL_RE.test(parsed.primary[0] || '') ? parsed.primary[0] : '');
+                assignText(name, param, urlVal);
+            } else if (param.prefixes.length > 0) {
                 assignText(name, param, this._takePrefixedConstraint(constraints, param.prefixes, consumed));
             }
         }
@@ -1103,11 +1125,22 @@ class JevToolCallExp {
         if (freeText) {
             const remaining = constraints.filter((_, index) => !consumed.has(index));
             if (remaining.length > 0) assignText(freeText[0], freeText[1], remaining.join('\n'));
+        } else {
+            // 单槽位余量回退：仅当命令总共只声明了 1 个 source=constraints 的文本参数且尚未赋值，同时未消费约束恰好剩 1 个时，自动绑定
+            const allConstraintTextParams = textParams.filter(([, param]) => param.source === 'constraints');
+            if (allConstraintTextParams.length === 1) {
+                const [singleName, singleParam] = allConstraintTextParams[0];
+                const remainingUnconsumed = constraints.filter((_, index) => !consumed.has(index));
+                if ((args[singleName] === undefined || args[singleName] === '') && remainingUnconsumed.length === 1) {
+                    assignText(singleName, singleParam, remainingUnconsumed[0]);
+                }
+            }
         }
 
         for (const [name, param] of paramEntries) {
             if (param.required && (args[name] === undefined || args[name] === '')) {
-                throw new Error(`工具 "${entry.toolName}" 命令 ${command.commandIdentifier} 缺少必填参数 ${name}。`);
+                const hint = param.source === 'primary' ? '，请使用【主要内容】提供。' : '。';
+                throw new Error(`工具 "${entry.toolName}" 命令 ${command.commandIdentifier} 缺少必填参数 ${name}${hint}`);
             }
         }
         return args;

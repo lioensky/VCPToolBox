@@ -44,5 +44,78 @@
     "enabled": true,
     "messageType": "mimo_dubbing_status",
     "targetClientType": "VCPLog"
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "媒体娱乐",
+    "jevDescPrompt": "使用小米 MiMo 语音大模型将台词合成为带情感导演指令的高保真配音音频，或查询配音任务状态。",
+    "jevPrompt": "用户提供台词正文要求合成配音时选择 submit 命令；提供任务 UUID 要求查询生成进度时选择 query 命令（默认 submit）。在 submit 中根据角色声线偏好选择预置音色 voice（活泼少女选冰糖，温柔女声选茉莉，清爽青年选苏打，沉稳男声选 Dean）。",
+    "agentPrompt": "当需要为台词生成高表现力语音配音或查询配音进度时，使用 {媒体娱乐} 中的 `MimoDubbing`，台词放入【主要内容】，音色与导演指令放入 []：\nJEV:「始」请使用 {媒体娱乐} 中的 `MimoDubbing`，用[冰糖]音色配音【你终于来了，我等你好久了！】[指导:欣喜轻快]。「末」",
+    "defaultCommand": "submit",
+    "commands": [
+      {
+        "commandIdentifier": "submit",
+        "description": "提交台词与声线指令进行异步语音合成",
+        "aliases": ["合成配音", "生成配音", "语音合成", "台词配音", "提交配音"],
+        "parameters": {
+          "text1": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1000,
+            "description": "待合成配音的台词正文"
+          },
+          "voice": {
+            "type": "enum",
+            "required": false,
+            "description": "MiMo 预置角色音色",
+            "values": {
+              "冰糖": "活泼清脆的年轻女性声线",
+              "茉莉": "温婉柔和的知性女性声线",
+              "苏打": "清爽明朗的青年声线",
+              "白桦": "沉静内敛的叙事声线",
+              "Mia": "灵动自然的英文/双语女声",
+              "Chloe": "优雅柔和的双语女声",
+              "Milo": "充满活力的双语男声",
+              "Dean": "沉稳温柔的成熟男性声线",
+              "mimo_default": "MiMo 默认标准音色"
+            },
+            "aliases": {
+              "冰糖": ["冰糖", "少女音"],
+              "茉莉": ["茉莉", "温柔女声"],
+              "苏打": ["苏打", "清爽音"],
+              "白桦": ["白桦"],
+              "Mia": ["Mia"],
+              "Chloe": ["Chloe"],
+              "Milo": ["Milo"],
+              "Dean": ["Dean", "沉稳男声"],
+              "mimo_default": ["默认音色", "标准音色"]
+            },
+            "default": "冰糖"
+          },
+          "instruction": {
+            "type": "text",
+            "source": "constraints",
+            "prefixes": ["指导", "导演", "语气", "风格"],
+            "maxLength": 200
+          }
+        }
+      },
+      {
+        "commandIdentifier": "query",
+        "description": "根据任务 UUID 查询配音合成结果",
+        "aliases": ["查询配音", "配音状态", "配音结果"],
+        "parameters": {
+          "request_id": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 60,
+            "description": "配音任务的 UUID 编号"
+          }
+        }
+      }
+    ]
   }
 }

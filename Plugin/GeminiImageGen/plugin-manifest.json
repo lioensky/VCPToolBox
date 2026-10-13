@@ -31,5 +31,51 @@
         "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」GeminiImageGen「末」,\ncommand:「始」edit「末」,\nprompt:「始」This is a picture of me. Can you add a llama next to me?「末」,\nimage_url:「始」https://example.com/my-photo.png「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "媒体娱乐",
+    "jevDescPrompt": "使用 Google Gemini 2.5 Flash Image 模型进行创意图像生成或基于现有图片进行自然语言修图编辑。",
+    "jevPrompt": "用户仅提供文本描述要求生成新图时选择 GeminiGenerateImage；提供现有图片链接要求修改或添加元素时选择 GeminiEditImage（默认 GeminiGenerateImage）。",
+    "agentPrompt": "当需要使用 Gemini 模型生成图片或对现有图片进行自然语言修图时，使用 {媒体娱乐} 中的 `GeminiImageGen`，描述放入【主要内容】，修图参考图 URL 放入 []：\nJEV:「始」请使用 {媒体娱乐} 中的 `GeminiImageGen`，生成图片【一只戴着高礼帽长着翅膀的小猪飞越未来绿色科幻城市】。「末」",
+    "defaultCommand": "GeminiGenerateImage",
+    "commands": [
+      {
+        "commandIdentifier": "GeminiGenerateImage",
+        "description": "使用 Gemini 生成全新图像",
+        "aliases": ["生成图片", "Gemini生图", "文生图", "画图"],
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1200,
+            "description": "画面描述提示词"
+          }
+        }
+      },
+      {
+        "commandIdentifier": "GeminiEditImage",
+        "description": "使用 Gemini 编辑修改现有图像",
+        "aliases": ["编辑图片", "修图", "修改图片", "图生图"],
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1000,
+            "description": "修图指令描述"
+          },
+          "image_url": {
+            "type": "text",
+            "required": true,
+            "source": "url",
+            "maxLength": 500,
+            "description": "待编辑的原始图片 URL"
+          }
+        }
+      }
+    ]
   }
 }
