@@ -167,6 +167,19 @@ class JevThirdPartyRegistry {
 
     /** 返回 null 表示不限制；否则为精确插件名集合。 */
     getAllowlist(env = process.env) {
+        // 管理策略优先；不改变第三方实验总开关。坏文件拒绝全部。
+        const policyPath = this.policyPath || path.join(__dirname, '..', 'ToolConfigs', 'jev_third_party_policy.json');
+        try {
+            const policy = JSON.parse(require('fs').readFileSync(policyPath, 'utf8'));
+            if (policy.mode === 'selected' && Array.isArray(policy.allowlist) &&
+                policy.allowlist.every(name => typeof name === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(name))) {
+                return [...new Set(policy.allowlist)];
+            }
+            if (policy.mode === 'unrestricted') return null;
+            return [];
+        } catch (error) {
+            if (error.code !== 'ENOENT') return [];
+        }
         const names = String(env.JEV_THIRD_PARTY_ALLOWLIST || '')
             .split(/[,，|]/)
             .map(name => name.trim())

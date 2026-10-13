@@ -57,7 +57,22 @@ export interface JevRegistryEntryResponse {
   entry: JevRegistryEntry;
 }
 
+export interface JevRegistrySnapshot {
+  entries: JevRegistryEntry[];
+  experiment: { enabled: boolean; allowlist: string[] | null };
+  builtAt: string | null;
+}
+
 export const jevRegistryApi = {
+  async getSnapshot(): Promise<JevRegistrySnapshot> {
+    return requestWithUi({ url: "/admin_api/jev/registry" }, DEFAULT_READ_UI_OPTIONS);
+  },
+  async rebuild(): Promise<JevRegistrySnapshot> {
+    return requestWithUi({ url: "/admin_api/jev/registry/rebuild", method: "POST", body: {} }, DEFAULT_READ_UI_OPTIONS);
+  },
+  async savePolicy(mode: "selected" | "unrestricted", allowlist: string[]): Promise<JevRegistrySnapshot> {
+    return requestWithUi({ url: "/admin_api/jev/registry/policy", method: "POST", body: { mode, allowlist } }, DEFAULT_READ_UI_OPTIONS);
+  },
   /** 精确、大小写敏感查询单个插件的 JEV 注册条目；未登记时抛出 404 错误。 */
   async getEntry(
     pluginName: string,

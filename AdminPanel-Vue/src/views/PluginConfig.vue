@@ -55,6 +55,8 @@
           </p>
         </div>
 
+        <PluginJevDeclaration :declaration="pluginData.manifest.jev" />
+
         <div v-if="!hasEnvContent && !hasConfigSchema" class="config-warning">
           <div class="warning-content">
             <p class="warning-title">该插件暂无配置文件</p>
@@ -435,6 +437,7 @@ import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import { pluginApi, jevRegistryApi, type JevRegistryEntry } from '@/api'
+import PluginJevDeclaration from '@/components/plugins/PluginJevDeclaration.vue'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import UiBadge from '@/components/ui/UiBadge.vue'

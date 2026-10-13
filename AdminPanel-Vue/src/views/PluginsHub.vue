@@ -44,6 +44,9 @@
       </div>
     </UiCard>
 
+    <PluginCommandSearch :plugins="plugins" @open="openPluginConfig" />
+    <JevThirdPartyManager />
+
     <section class="plugins-toolbar" aria-label="插件筛选与视图">
       <div class="view-mode-switch" role="group" aria-label="插件视图切换">
         <UiButton
@@ -422,6 +425,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { pluginApi } from "@/api";
+import PluginCommandSearch from "@/components/plugins/PluginCommandSearch.vue";
+import JevThirdPartyManager from "@/components/plugins/JevThirdPartyManager.vue";
 import { useLocalStorage } from "@/composables/useLocalStorage";
 import {
   recordNavigationVisit,

@@ -1,0 +1,1 @@
+import{V as c,it as a,rt as r}from"./vue-vendor-D81C7juz.js";function f(u,t){const{delay:s}=t,e=a(null),n=a(!1),l=()=>{e.value&&(clearTimeout(e.value),e.value=null,n.value=!1)},o=(...i)=>{e.value&&clearTimeout(e.value),n.value=!0,e.value=setTimeout(()=>{u(...i),n.value=!1,e.value=null},s)};return c(()=>{l()}),Object.assign(o,{cancel:l,isPending:r(n)})}export{f as t};
