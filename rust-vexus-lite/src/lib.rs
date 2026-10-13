@@ -2,7 +2,6 @@
 
 mod knowledge_runtime;
 mod memo_artifact_builder;
-mod memo_dtsc;
 mod memo_pipeline;
 mod memo_sensing;
 mod memo_thinking;
@@ -847,7 +846,7 @@ impl VexusIndex {
     /// 在本 Tag 向量索引与 MemoRuntime 上执行统一查询数学管线。
     ///
     /// EPA、Residual Pyramid、Core/语言/层级门控、Spike 与向量融合全部在
-    /// 同一 Rust 后台任务中完成；返回值同时供 DTSC 和 Topology V3 读出复用。
+    /// 同一 Rust 后台任务中完成；返回值供 RiverMemo Topology V3 读出复用。
     #[napi]
     pub fn run_memo_pipeline(
         &self,
@@ -867,20 +866,6 @@ impl VexusIndex {
             query_vector.to_vec(),
             ghost_vectors.to_vec(),
         )
-    }
-
-    /// 在统一 QueryObservation 上执行 DTSC 测地曲线读出。
-    ///
-    /// 与 RiverMemo Topology V3 读取同一个 MemoRuntime 活动图快照；
-    /// 差异只存在于读出方程，不再拥有独立图资产。
-    #[napi]
-    pub fn rerank_memo_dtsc(
-        &self,
-        db_path: String,
-        artifact_sig: String,
-        input_json: String,
-    ) -> AsyncTask<memo_dtsc::MemoDtscTask> {
-        memo_dtsc::rerank_with_runtime(self.memo_runtime.clone(), db_path, artifact_sig, input_json)
     }
 
     /// 在本 Tag 向量索引拥有的统一 MemoRuntime 上执行 RiverMemo Topology V3。

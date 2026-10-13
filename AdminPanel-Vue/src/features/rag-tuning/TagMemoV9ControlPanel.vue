@@ -4,16 +4,16 @@
       <div class="v9-console__identity">
         <span class="material-symbols-outlined">deployed_code</span>
         <div>
-          <div class="v9-console__eyebrow">TagMemo V9.1 Production Console</div>
-          <h3>V9.1 单轨生产控制台</h3>
+          <div class="v9-console__eyebrow">Shared Memo Foundation Console</div>
+          <h3>共享 Memo 传播底座控制台</h3>
           <p>
-            V9.1 是唯一生产路线：使用有界传播、入流枢纽校正、软非回溯与
-            归一化有限时域场。LightMemo 对照测试固定比较 KNN、V9.1 与独立 Rerank。
+            RiverMemo 复用有界传播、入流枢纽校正、软非回溯与归一化有限时域场。
+            此处调节共享底座，不提供旧 TagMemo / DTSC 读出；LightMemo 对照比较纯 KNN、RiverMemo 与可选 Rerank / JEV。
           </p>
         </div>
       </div>
       <div class="v9-console__status">
-        <UiBadge variant="success">生产：V9.1</UiBadge>
+        <UiBadge variant="success">读出：RiverMemo</UiBadge>
         <UiBadge variant="info">单资产</UiBadge>
         <UiBadge variant="outline">旧版本严格拒绝</UiBadge>
       </div>
@@ -22,8 +22,8 @@
     <div class="v9-console__warning">
       <span class="material-symbols-outlined">verified_user</span>
       <p>
-        资产发布仍采用原子引用替换。显式请求旧版本会返回版本已退役错误；
-        全量自学习成功后会清理 V8.3 预计算状态与兼容增益，不会发生静默回退。
+        统一 Rust MemoRuntime 按代际原子发布资产，AGS / IR / Spike / EPA 及有效更新机制保留。
+        旧检索模式明确拒绝；纯 KNN 仅用于候选、基线及指定业务故障回退。
       </p>
     </div>
 
@@ -34,7 +34,7 @@
             <span class="v9-card__kicker">Production Contract</span>
             <h4>单轨资产与重建语义</h4>
           </div>
-          <UiBadge variant="success">固定 V9.1</UiBadge>
+          <UiBadge variant="success">统一 Rust 资产</UiBadge>
         </header>
 
         <div class="v9-toggle-list">
@@ -42,7 +42,7 @@
             <span class="material-symbols-outlined">filter_1</span>
             <span>
               <strong>唯一活动资产包</strong>
-              <small>查询始终固定到 V9.1 ArtifactBundle，不再构建 V8.3 查询核。</small>
+              <small>RiverMemo 读取统一 MemoRuntime 活动图代际，不另建第二套查询场。</small>
             </span>
           </div>
 
@@ -50,7 +50,7 @@
             <span class="material-symbols-outlined">block</span>
             <span>
               <strong>旧版本确定性拒绝</strong>
-              <small>显式请求 V8.3 会返回 TAGMEMO_VERSION_RETIRED，不允许回退冒充成功。</small>
+              <small>旧 TagMemo 检索模式和 DTSC 读出已退休，不允许静默映射为其他引擎。</small>
             </span>
           </div>
 
@@ -58,7 +58,7 @@
             <span class="material-symbols-outlined">cleaning_services</span>
             <span>
               <strong>全量训练清理退休资产</strong>
-              <small>新 V9.1 pairwise、残差与传播核发布成功后，再清理旧状态和兼容增益。</small>
+              <small>全量训练重建共享 pairwise、残差与传播资产；新代际发布成功后再清理退休状态。</small>
             </span>
           </div>
         </div>
@@ -279,75 +279,7 @@
         </div>
       </article>
 
-      <article class="v9-card v9-card--geometry">
-        <header class="v9-card__header">
-          <div>
-            <span class="v9-card__kicker">Geometry Auxiliary Readout</span>
-            <h4>四层几何辅助奖励地板</h4>
-          </div>
-          <UiBadge variant="danger">V9.2 高敏感</UiBadge>
-        </header>
 
-        <p class="v9-card__description">
-          辅助轨不会叠加创造新奖励，只在节点场、分类证据与闭合门控同时可信时，
-          补足旧测地奖励尚未达到的有界地板。
-        </p>
-
-        <label class="v9-toggle v9-toggle--standalone">
-          <input
-            type="checkbox"
-            :checked="geometryAuxiliary.enabled"
-            @change="setGeometryBoolean('enabled', $event)"
-          />
-          <span>
-            <strong>启用几何辅助轨</strong>
-            <small>关闭后所有几何地板与精确身份锚点均只保留诊断，不参与排序。</small>
-          </span>
-        </label>
-
-        <div class="v9-geometry-grid">
-          <NumericField label="辅助奖励总上限" description="几何辅助轨单候选最多补足的绝对分数。" :model-value="geometryAuxiliary.maxAuxBonus" :min="0" :max="0.05" :step="0.001" @update:model-value="setGeometryNumber('maxAuxBonus', $event)" />
-          <NumericField label="直接证据地板上限" description="direct 证据可获得的辅助目标地板上限。" :model-value="geometryAuxiliary.directFloorCap" :min="0" :max="0.05" :step="0.001" @update:model-value="setGeometryNumber('directFloorCap', $event)" />
-          <NumericField label="结构证据地板上限" description="structural 连续走廊的辅助目标地板上限。" :model-value="geometryAuxiliary.structuralFloorCap" :min="0" :max="0.05" :step="0.001" @update:model-value="setGeometryNumber('structuralFloorCap', $event)" />
-          <NumericField label="主题证据地板上限" description="thematic 主题接触的辅助目标地板上限。" :model-value="geometryAuxiliary.thematicFloorCap" :min="0" :max="0.05" :step="0.001" @update:model-value="setGeometryNumber('thematicFloorCap', $event)" />
-          <NumericField label="最小融合几何分" description="四层融合分达到该值才允许辅助补差。" :model-value="geometryAuxiliary.minFusedScore" :min="0" :max="1" :step="0.01" @update:model-value="setGeometryNumber('minFusedScore', $event)" />
-          <NumericField label="最小闭合分" description="查询、候选与 Tag→Chunk 闭合的综合门槛。" :model-value="geometryAuxiliary.minClosureScore" :min="0" :max="1" :step="0.01" @update:model-value="setGeometryNumber('minClosureScore', $event)" />
-          <NumericField label="最小分类证据" description="当前 direct、structural 或 thematic 通道的最低证据。" :model-value="geometryAuxiliary.minClassEvidence" :min="0" :max="1" :step="0.01" @update:model-value="setGeometryNumber('minClassEvidence', $event)" />
-          <NumericField label="地板可靠性指数" description="越大越压制低可靠候选，仅让高可靠证据接近地板上限。" :model-value="geometryAuxiliary.floorExponent" :min="0.5" :max="4" :step="0.05" @update:model-value="setGeometryNumber('floorExponent', $event)" />
-        </div>
-
-        <div class="v9-anchor">
-          <header>
-            <div>
-              <strong>Exact Identity Anchor</strong>
-              <small>只保护来自 query seed/core 的高势能精确 Tag 接触；公共 Tag 与 emergent 节点不能触发。</small>
-            </div>
-            <UiBadge variant="warning">精确身份保护</UiBadge>
-          </header>
-
-          <label class="v9-toggle v9-toggle--standalone">
-            <input
-              type="checkbox"
-              :checked="identityAnchor.enabled"
-              :disabled="!geometryAuxiliary.enabled"
-              @change="setIdentityBoolean('enabled', $event)"
-            />
-            <span>
-              <strong>启用精确身份锚点</strong>
-              <small>同时受几何辅助总开关、精确命中、特异性和闭合门槛约束。</small>
-            </span>
-          </label>
-
-          <div class="v9-geometry-grid">
-            <NumericField label="最低查询势能" :model-value="identityAnchor.minPotential" :min="0" :max="1" :step="0.01" @update:model-value="setIdentityNumber('minPotential', $event)" />
-            <NumericField label="最低 Tag 特异性" :model-value="identityAnchor.minSpecificity" :min="0" :max="1" :step="0.01" @update:model-value="setIdentityNumber('minSpecificity', $event)" />
-            <NumericField label="最低 Tag→Chunk 闭合" :model-value="identityAnchor.minTagChunkClosure" :min="0" :max="1" :step="0.01" @update:model-value="setIdentityNumber('minTagChunkClosure', $event)" />
-            <NumericField label="最低身份锚强度" :model-value="identityAnchor.minStrength" :min="0" :max="1" :step="0.01" @update:model-value="setIdentityNumber('minStrength', $event)" />
-            <NumericField label="身份地板上限" :model-value="identityAnchor.floorCap" :min="0" :max="0.05" :step="0.001" @update:model-value="setIdentityNumber('floorCap', $event)" />
-            <NumericField label="身份可靠性指数" :model-value="identityAnchor.floorExponent" :min="0.5" :max="4" :step="0.05" @update:model-value="setIdentityNumber('floorExponent', $event)" />
-          </div>
-        </div>
-      </article>
     </div>
   </section>
 </template>
@@ -412,36 +344,6 @@ const residual = computed(() => {
     v9AnchorMax: numberValue(raw.v9AnchorMax, 2),
   };
 });
-const geometryAuxiliary = computed(() => {
-  const geodesic = asRecord(props.modelValue.geodesicRerank);
-  const raw = asRecord(geodesic.geometryAuxiliary);
-  return {
-    enabled: booleanValue(raw.enabled, false),
-    maxAuxBonus: numberValue(raw.maxAuxBonus, 0.018),
-    directFloorCap: numberValue(raw.directFloorCap, 0.018),
-    structuralFloorCap: numberValue(raw.structuralFloorCap, 0.012),
-    thematicFloorCap: numberValue(raw.thematicFloorCap, 0.006),
-    minFusedScore: numberValue(raw.minFusedScore, 0.12),
-    minClosureScore: numberValue(raw.minClosureScore, 0.55),
-    minClassEvidence: numberValue(raw.minClassEvidence, 0.1),
-    floorExponent: numberValue(raw.floorExponent, 1.5),
-  };
-});
-const identityAnchor = computed(() => {
-  const geodesic = asRecord(props.modelValue.geodesicRerank);
-  const geometry = asRecord(geodesic.geometryAuxiliary);
-  const raw = asRecord(geometry.identityAnchor);
-  return {
-    enabled: booleanValue(raw.enabled, false),
-    minPotential: numberValue(raw.minPotential, 0.8),
-    minSpecificity: numberValue(raw.minSpecificity, 0.55),
-    minTagChunkClosure: numberValue(raw.minTagChunkClosure, 0.35),
-    minStrength: numberValue(raw.minStrength, 0.55),
-    floorCap: numberValue(raw.floorCap, 0.018),
-    floorExponent: numberValue(raw.floorExponent, 1.25),
-  };
-});
-
 function asRecord(value: ParamValue | undefined): LooseRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as LooseRecord
@@ -490,54 +392,6 @@ function setResidualNumber(key: string, value: number): void {
 
 function setResidualBoolean(key: string, event: Event): void {
   updateSection("intrinsicResidual", key, (event.target as HTMLInputElement).checked);
-}
-
-function updateGeometrySection(key: string, value: ParamValue): void {
-  const geodesic = asRecord(props.modelValue.geodesicRerank);
-  emit("update:modelValue", {
-    ...props.modelValue,
-    geodesicRerank: {
-      ...geodesic,
-      geometryAuxiliary: {
-        ...asRecord(geodesic.geometryAuxiliary),
-        [key]: value,
-      },
-    },
-  });
-}
-
-function updateIdentitySection(key: string, value: ParamValue): void {
-  const geodesic = asRecord(props.modelValue.geodesicRerank);
-  const geometry = asRecord(geodesic.geometryAuxiliary);
-  emit("update:modelValue", {
-    ...props.modelValue,
-    geodesicRerank: {
-      ...geodesic,
-      geometryAuxiliary: {
-        ...geometry,
-        identityAnchor: {
-          ...asRecord(geometry.identityAnchor),
-          [key]: value,
-        },
-      },
-    },
-  });
-}
-
-function setGeometryNumber(key: string, value: number): void {
-  updateGeometrySection(key, value);
-}
-
-function setGeometryBoolean(key: string, event: Event): void {
-  updateGeometrySection(key, (event.target as HTMLInputElement).checked);
-}
-
-function setIdentityNumber(key: string, value: number): void {
-  updateIdentitySection(key, value);
-}
-
-function setIdentityBoolean(key: string, event: Event): void {
-  updateIdentitySection(key, (event.target as HTMLInputElement).checked);
 }
 
 function clamp(value: number, min: number, max: number): number {

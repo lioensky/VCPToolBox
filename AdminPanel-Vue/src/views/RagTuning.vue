@@ -506,7 +506,6 @@
                   'param-row--changed': entry.changedLeaves > 0,
                   'param-row--wormhole': isWormholeEntry(section.name, entry),
                   'param-row--ordered': isOrderedCooccurrenceEntry(section.name, entry),
-                  'param-row--geodesic': isGeodesicEntry(section.name, entry),
                 },
               ]"
             >
@@ -634,141 +633,6 @@
                       </UiButton>
                     </div>
                   </div>
-                </div>
-              </template>
-
-              <template v-else-if="isGeodesicEntry(section.name, entry)">
-                <div class="geodesic-workbench">
-                  <header class="geodesic-workbench__hero">
-                    <div>
-                      <div class="param-row__heading">
-                        <div class="param-row__title-block">
-                          <h4>{{ entry.meta.label }}</h4>
-                          <p class="param-row__key">{{ entry.key }}</p>
-                        </div>
-                        <div class="param-row__pills">
-                          <UiBadge :variant="getToneBadgeVariant(entry.meta.tone)">
-                            {{ getToneLabel(entry.meta.tone) }}
-                          </UiBadge>
-                          <UiBadge v-if="entry.changedLeaves > 0" variant="info">
-                            已修改 {{ entry.changedLeaves }}
-                          </UiBadge>
-                        </div>
-                      </div>
-                      <p class="param-row__summary">{{ entry.meta.summary }}</p>
-                    </div>
-
-                    <div class="geodesic-balance" aria-label="测地奖励授权强度">
-                      <span>奖励授权强度 α</span>
-                      <strong>{{ formatNumber(getGeodesicAlpha(entry)) }}</strong>
-                      <div class="geodesic-balance__track">
-                        <i :style="{ width: `${getGeodesicAlpha(entry) * 100}%` }"></i>
-                      </div>
-                      <small>它不是“KNN 与测地线二选一”，而是控制可信曲线最多能申请多少正向奖励。</small>
-                    </div>
-                  </header>
-
-                  <div class="geodesic-story" aria-label="V9.2 曲线重排处理流程">
-                    <button
-                      v-for="(panel, panelIndex) in GEODESIC_RERANK_PANELS"
-                      :key="panel.id"
-                      type="button"
-                      :class="[
-                        'geodesic-story__step',
-                        { 'geodesic-story__step--active': activeGeodesicPanelId === panel.id },
-                      ]"
-                      @click="activeGeodesicPanelId = panel.id"
-                    >
-                      <span class="geodesic-story__index">0{{ panelIndex + 1 }}</span>
-                      <span class="material-symbols-outlined">{{ panel.icon }}</span>
-                      <span>
-                        <strong>{{ panel.title }}</strong>
-                        <small>{{ panel.plainTitle }}</small>
-                      </span>
-                    </button>
-                  </div>
-
-                  <section :key="activeGeodesicPanelId" class="geodesic-stage">
-                    <header class="geodesic-stage__header">
-                      <div class="geodesic-stage__icon">
-                        <span class="material-symbols-outlined">{{ activeGeodesicPanel.icon }}</span>
-                      </div>
-                      <div>
-                        <span class="geodesic-stage__eyebrow">当前阶段 · {{ activeGeodesicPanel.title }}</span>
-                        <h5>{{ activeGeodesicPanel.plainTitle }}</h5>
-                        <p>{{ activeGeodesicPanel.summary }}</p>
-                      </div>
-                      <div class="geodesic-stage__metaphor">
-                        <span class="material-symbols-outlined">lightbulb</span>
-                        <p><strong>通俗理解：</strong>{{ activeGeodesicPanel.metaphor }}</p>
-                      </div>
-                    </header>
-
-                    <div class="geodesic-stage__grid">
-                      <article
-                        v-for="subKey in activeGeodesicKeys(entry)"
-                        :key="`${entry.key}-${subKey}`"
-                        class="geodesic-control"
-                      >
-                        <div class="geodesic-control__heading">
-                          <div>
-                            <h6>{{ getNestedMeta(section.name, entry.key, subKey).label }}</h6>
-                            <code>{{ subKey }}</code>
-                          </div>
-                          <UiBadge
-                            :variant="getToneBadgeVariant(getNestedMeta(section.name, entry.key, subKey).tone)"
-                          >
-                            {{ getToneLabel(getNestedMeta(section.name, entry.key, subKey).tone) }}
-                          </UiBadge>
-                        </div>
-
-                        <p>{{ getNestedMeta(section.name, entry.key, subKey).summary }}</p>
-                        <small v-if="getNestedMeta(section.name, entry.key, subKey).range">
-                          {{ getNestedMeta(section.name, entry.key, subKey).range }}
-                        </small>
-
-                        <div class="geodesic-control__input">
-                          <input
-                            :value="(section.raw[entry.key] as Record<string, number>)[subKey]"
-                            type="range"
-                            :aria-label="`${getNestedMeta(section.name, entry.key, subKey).label} 滑杆`"
-                            :min="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).min"
-                            :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
-                            :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
-                            @input="updateGeodesicField(section.raw, entry.key, subKey, $event)"
-                          />
-                          <UiInput
-                            :model-value="(section.raw[entry.key] as Record<string, number>)[subKey]"
-                            type="number"
-                            :aria-label="`${getNestedMeta(section.name, entry.key, subKey).label} 数值输入`"
-                            :min="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).min"
-                            :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
-                            :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
-                            @update:model-value="updateGeodesicField(section.raw, entry.key, subKey, $event)"
-                          />
-                        </div>
-
-                        <details v-if="getNestedMeta(section.name, entry.key, subKey).logic">
-                          <summary>为什么这样调？</summary>
-                          <p>{{ getNestedMeta(section.name, entry.key, subKey).logic }}</p>
-                        </details>
-                      </article>
-                    </div>
-
-                    <footer class="geodesic-stage__footer">
-                      <span>
-                        本阶段 {{ activeGeodesicKeys(entry).length }} 项 ·
-                        全部直属参数 {{ Object.keys(entry.value).length }} 项
-                      </span>
-                      <UiButton
-                        variant="secondary"
-                        :disabled="entry.changedLeaves === 0"
-                        @click="resetGeodesicParams"
-                      >
-                        恢复曲线重排参数
-                      </UiButton>
-                    </footer>
-                  </section>
                 </div>
               </template>
 
@@ -1021,7 +885,6 @@ import RiverMemoV3ControlPanel from "@/features/rag-tuning/RiverMemoV3ControlPan
 import TagMemoV9ControlPanel from "@/features/rag-tuning/TagMemoV9ControlPanel.vue";
 import WormholeRoutingModal from "@/features/rag-tuning/WormholeRoutingModal.vue";
 import {
-  GEODESIC_RERANK_PANELS,
   GROUP_ORDER,
   ORDERED_COOCCURRENCE_PANELS,
   ORDERED_COOCCURRENCE_PRIMARY_KEYS,
@@ -1031,7 +894,6 @@ import {
   getSubParamRange,
   getToneLabel,
   getTupleLabel,
-  type GeodesicRerankPanelId,
   type GroupMeta,
   type ParamMeta,
   type ParamTone,
@@ -1106,8 +968,6 @@ const DEDUP_SOURCE_OPTIONS: ReadonlyArray<{
   { key: "unknown", label: "未知来源", icon: "help", fallback: 0 },
 ];
 const WORMHOLE_PARAM_KEY = "spikeRouting";
-const GEODESIC_GROUP_NAME = "KnowledgeBaseManager";
-const GEODESIC_PARAM_KEY = "geodesicRerank";
 const ORDERED_COOCCURRENCE_GROUP_NAME = "KnowledgeBaseManager";
 const ORDERED_COOCCURRENCE_PARAM_KEY = "orderedCooccurrence";
 const formId = "rag-tuning-form";
@@ -1126,7 +986,6 @@ const statusMessage = ref("");
 const statusType = ref<StatusType>("info");
 const wormholeModalOpen = ref(false);
 const orderedCooccurrenceModalOpen = ref(false);
-const activeGeodesicPanelId = ref<GeodesicRerankPanelId>("prepare");
 const semanticSimulationOpen = ref(false);
 const semanticSimulationFrame = ref<HTMLIFrameElement | null>(null);
 const ragParamThemes = ref<RagParamTheme[]>([]);
@@ -1143,10 +1002,6 @@ let tagConsistencyPollTimer: number | null = null;
 let tagConsistencyStatusRequestPending = false;
 
 function cloneParams(source: RagParams): RagParams {
-  return JSON.parse(JSON.stringify(source));
-}
-
-function cloneParamValue<T extends ParamValue>(source: T): T {
   return JSON.parse(JSON.stringify(source));
 }
 
@@ -1246,6 +1101,7 @@ function buildEntry(
   value: ParamValue,
   original: ParamValue | undefined
 ): ParamEntry | null {
+  if (groupName === "KnowledgeBaseManager" && ["geodesicRerank", "potentialFieldRerank"].includes(paramKey)) return null;
   const base = {
     key: paramKey,
     fieldId: createFieldId(groupName, paramKey),
@@ -1260,23 +1116,6 @@ function buildEntry(
 
   if (isNumericRecord(value)) {
     return { ...base, kind: "nested", value };
-  }
-
-  // geodesicRerank 允许包含 geometryAuxiliary 等深层配置。
-  // 主测地面板只渲染直属数值叶子，深层几何参数由 TagMemoV9ControlPanel 专门管理；
-  // base 的叶子统计仍基于完整 value，因此未保存计数不会遗漏深层修改。
-  if (
-    groupName === GEODESIC_GROUP_NAME
-    && paramKey === GEODESIC_PARAM_KEY
-    && isParamRecord(value)
-  ) {
-    const numericLeaves = Object.fromEntries(
-      Object.entries(value).filter(
-        (entry): entry is [string, number] =>
-          typeof entry[1] === "number" && Number.isFinite(entry[1])
-      )
-    );
-    return { ...base, kind: "nested", value: numericLeaves };
   }
 
   if (typeof value === "number") {
@@ -1483,16 +1322,8 @@ function isWormholeNestedEntry(entry: ParamEntry): entry is NestedParamEntry {
   return entry.kind === "nested" && entry.key === WORMHOLE_PARAM_KEY;
 }
 
-function isGeodesicNestedEntry(entry: ParamEntry): entry is NestedParamEntry {
-  return entry.kind === "nested" && entry.key === GEODESIC_PARAM_KEY;
-}
-
 function isWormholeEntry(sectionName: string, entry: ParamEntry): boolean {
   return sectionName === WORMHOLE_GROUP_NAME && isWormholeNestedEntry(entry);
-}
-
-function isGeodesicEntry(sectionName: string, entry: ParamEntry): boolean {
-  return sectionName === GEODESIC_GROUP_NAME && isGeodesicNestedEntry(entry);
 }
 
 function isOrderedCooccurrenceNestedEntry(entry: ParamEntry): entry is NestedParamEntry {
@@ -1557,52 +1388,6 @@ function getTupleFieldLabel(entry: TupleParamEntry, index: number): string {
 
 function getNestedMeta(groupName: string, paramKey: string, subKey: string): ParamMeta {
   return getParamMeta(groupName, `${paramKey}.${subKey}`);
-}
-
-const activeGeodesicPanel = computed(
-  () =>
-    GEODESIC_RERANK_PANELS.find((panel) => panel.id === activeGeodesicPanelId.value)
-    ?? GEODESIC_RERANK_PANELS[0]
-);
-
-function activeGeodesicKeys(entry: ParamEntry): string[] {
-  if (!isGeodesicNestedEntry(entry)) return [];
-  const available = new Set(Object.keys(entry.value));
-  return activeGeodesicPanel.value.keys.filter((key) => available.has(key));
-}
-
-function normalizeToStep(value: number, min: number, max: number, step: number): number {
-  const clamped = Math.min(max, Math.max(min, value));
-  const stepPrecision = Math.max(0, (String(step).split(".")[1] || "").length);
-  const quantized = min + Math.round((clamped - min) / step) * step;
-  return Number(quantized.toFixed(stepPrecision));
-}
-
-function updateGeodesicField(
-  group: ParamGroup,
-  paramKey: string,
-  subKey: string,
-  rawValue: string | number | Event
-): void {
-  const value = rawValue instanceof Event
-    ? Number((rawValue.target as HTMLInputElement).value)
-    : Number(rawValue);
-  if (!Number.isFinite(value)) return;
-
-  const target = group[paramKey];
-  if (!isParamRecord(target) || typeof target[subKey] !== "number") return;
-
-  const range = getSubParamRange(`${paramKey}.${subKey}`, target[subKey]);
-  target[subKey] = normalizeToStep(value, range.min, range.max, range.step);
-}
-
-function getGeodesicAlpha(entry: ParamEntry): number {
-  if (!isGeodesicNestedEntry(entry)) {
-    return 0;
-  }
-
-  const rawAlpha = Number(entry.value.alpha);
-  return Number.isFinite(rawAlpha) ? Math.max(0, Math.min(1, rawAlpha)) : 0;
 }
 
 function getWormholeQuickLabel(subKey: WormholePrimaryKey): string {
@@ -1721,18 +1506,6 @@ function resetWormholeParams(): void {
 
   params.value[WORMHOLE_GROUP_NAME][WORMHOLE_PARAM_KEY] = { ...original };
   statusMessage.value = "已恢复虫洞脉冲路由的未保存修改。";
-  statusType.value = "info";
-}
-
-function resetGeodesicParams(): void {
-  const original = originalParams.value[GEODESIC_GROUP_NAME]?.[GEODESIC_PARAM_KEY];
-
-  if (!params.value[GEODESIC_GROUP_NAME] || !isParamRecord(original)) {
-    return;
-  }
-
-  params.value[GEODESIC_GROUP_NAME][GEODESIC_PARAM_KEY] = cloneParamValue(original);
-  statusMessage.value = "已恢复测地线重排的未保存修改。";
   statusType.value = "info";
 }
 

@@ -331,7 +331,7 @@ module.exports = function(options) {
     router.post('/rag-active-full-training', (req, res) => {
         try {
             if (!vectorDBManager || typeof vectorDBManager.requestActiveFullTraining !== 'function') {
-                return res.status(503).json({ success: false, error: 'TagMemo active full training is unavailable' });
+                return res.status(503).json({ success: false, error: 'Shared Memo foundation rebuild is unavailable' });
             }
 
             const result = vectorDBManager.requestActiveFullTraining({
@@ -348,7 +348,7 @@ module.exports = function(options) {
 
             res.json({
                 success: true,
-                message: 'Active full training queued',
+                message: 'Shared Memo foundation full training and asset rebuild queued',
                 result
             });
         } catch (error) {

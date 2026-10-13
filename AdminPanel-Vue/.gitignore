@@ -30,10 +30,12 @@ backups/
 backup_*.bat
 
 # Test files
-tests/
+tests/*
 coverage/
 *.test.ts
 *.spec.ts
+# 单轨化 DSL 回归测试随源码保留，其他本地测试维持忽略策略
+!tests/diarySyntaxRetirement.test.ts
 
 # Documentation
 *.md

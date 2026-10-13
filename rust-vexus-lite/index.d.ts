@@ -279,16 +279,9 @@ export declare class VexusIndex {
    * 在本 Tag 向量索引与 MemoRuntime 上执行统一查询数学管线。
    *
    * EPA、Residual Pyramid、Core/语言/层级门控、Spike 与向量融合全部在
-   * 同一 Rust 后台任务中完成；返回值同时供 DTSC 和 Topology V3 读出复用。
+   * 同一 Rust 后台任务中完成；返回值供 RiverMemo Topology V3 读出复用。
    */
   runMemoPipeline(dbPath: string, artifactSig: string, inputJson: string, queryVector: Float32Array, ghostVectors: Float32Array): Promise<unknown>
-  /**
-   * 在统一 QueryObservation 上执行 DTSC 测地曲线读出。
-   *
-   * 与 RiverMemo Topology V3 读取同一个 MemoRuntime 活动图快照；
-   * 差异只存在于读出方程，不再拥有独立图资产。
-   */
-  rerankMemoDtsc(dbPath: string, artifactSig: string, inputJson: string): Promise<unknown>
   /**
    * 在本 Tag 向量索引拥有的统一 MemoRuntime 上执行 RiverMemo Topology V3。
    *

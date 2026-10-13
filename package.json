@@ -33,6 +33,7 @@
     "commander": "^14.0.3",
     "cors": "^2.8.5",
     "dayjs": "^1.11.15",
+    "diff-match-patch": "^1.0.5",
     "dotenv": "^16.5.0",
     "eslint": "^9.39.1",
     "exceljs": "^4.4.0",
@@ -63,7 +64,7 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "rss-parser": "^3.13.0",
     "serpapi": "^2.2.1",
-    "sharp": "0.35.3",
+    "sharp": "0.35.5",
     "ssh2": "^1.17.0",
     "stylelint": "^16.25.0",
     "tar": "^7.5.13",
@@ -83,8 +84,8 @@
       "uuid": "11.1.1"
     },
     "html-to-text": "10.0.1",
-    "ip-address": "10.5.0",
-    "js-yaml": "4.3.1",
+    "ip-address": "10.7.4",
+    "js-yaml": "4.3.2",
     "nanoid": "3.3.18"
   }
 }

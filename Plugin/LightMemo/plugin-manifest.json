@@ -3,7 +3,7 @@
   "name": "LightMemo",
   "version": "1.5.0",
   "displayName": "轻量回忆插件 (LightMemo)",
-  "description": "轻量RAG检索插件：支持标准TagMemo V9、Rust/Rayon Topology V3、KNN及其生产构型A/B对比。",
+  "description": "RiverMemo and explicit pure KNN retrieval, with optional Rerank/JEV and memory A/B comparison.",
   "author": "VCP",
   "pluginType": "hybridservice",
   "requiresJevClient": true,
@@ -69,13 +69,13 @@
     "invocationCommands": [
       {
         "commandIdentifier": "SearchRAG",
-        "description": "调用此工具在日记RAG或TDB冷知识库中进行轻量检索。\n参数:\n- enginemode / engineMode (字符串, 可选, 默认rivermemo): rivermemo=完全Rust一体查询（ANN、候选合并、向量hydrate、语义去重与Topology V3）；tagmemo=TagMemo V9.1；knn=向量/BM25混合检索。\n- query (字符串, 必需): 查询内容；日记检索支持[日期]或[起始~结束]约束，冷知识库支持[知识库]与[知识库:库名]。\n- maid / folder / search_all_knowledge_bases: 控制日记权限范围；必须提供maid/folder之一，或显式开启全库搜索。\n- knowledge_base (字符串, 可选): 显式指定冷知识库。\n- k (数字, 可选, 默认5): 最终结果数量。\n- rerank (布尔/数字/字符串, 可选, 默认false): 显式启用传统Rerank。true为纯精排；rrf、rrf0.7或0~1数字为与原检索排名做RRF。只消费前2×K候选。\n- jev (布尔/数字/字符串, 可选, 默认false): 显式启用Jev决策精排，连接复用根config.env的JEV_*；取值语义与rerank一致，只消费前2×K候选。与rerank同时启用时仅执行Jev，避免双重费用。\n- aimemo / aimemo_preset: 将最终候选交给RAGDiaryPlugin共享的AIMemoHandler总结。\n- BM25 / bm25 / use_bm25 (布尔, 可选, 默认true): 是否启用BM25控制面。\n- tag_boost (数字或字符串, 可选, 默认0.5): RiverMemo源观测或TagMemo增强强度；tagmemo模式可用+后缀开启势能场。\n- core_tags / core_boost_factor: 核心Tag及额外增强系数。\n冷知识库同样支持k、rerank与jev；BM25/tag_boost/maid/folder对冷知识库无效。RiverMemo资产或原生接口不可用时明确报错，不静默回退。\n\n调用示例:\n",
+        "description": "Search diary memory with enginemode=rivermemo (default) or knn. Retired TagMemo modes are rejected. query required; maid/folder or search_all_knowledge_bases defines scope. k defaults to 5. Date constraints are preserved. BM25 applies only to RiverMemo; KNN is pure vector retrieval. Numeric tag_boost and core_tags/core_boost_factor configure shared RiverMemo sensing; + suffix is retired. Optional rerank/jev consume at most 2*K; jev wins if both enabled. aimemo/aimemo_preset summarize final candidates. TDB knowledge_base routing remains independent.",
         "example": "<<<[TOOL_REQUEST]>>>\\ntool_name:「始」LightMemo「末」,\\nenginemode:「始」rivermemo「末」,\\nfolder:「始」VCP开发「末」,\\nquery:「始」RiverMemo如何恢复连续记忆中的逻辑链「末」,\\nk:「始」5「末」,\\ntag_boost:「始」0.6「末」\\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
-        "commandIdentifier": "TagMemoAB",
-        "description": "LightMemo生产构型A/B对比。固定比较KNN、TagMemo V9与完全Rust一体RiverMemo Topology V3，可增加独立Rerank和Jev轨道。\n参数:\n- command: 固定传tagmemo_ab。query、maid、folder、search_all_knowledge_bases: 与普通检索一致。\n- k (整数, 默认5): 每轨展示Top-K。\n- candidate_k / candidateK (整数, 默认max(30,k×5)): 三条基础轨道的候选窗口；外部精排不消费全量窗口。\n- tag_boost、core_tags、core_boost_factor、BM25: 基础轨道参数。\n- compare_rerank / compareRerank / rerank_compare (布尔, 默认true): 增加传统Rerank轨道。\n- compare_jev / compareJev / jev_compare (布尔, 默认false): 增加Jev轨道。Rerank和Jev都只消费三条基础轨道按RRF共识排序后的2×K候选，可同时作为独立对照轨道执行。输出统一排名表与Top-K重合率。",
-        "example": "<<<[TOOL_REQUEST]>>>\\ntool_name:「始」LightMemo「末」,\\ncommand:「始」tagmemo_ab「末」,\\nfolder:「始」VCP开发「末」,\\nquery:「始」TagMemo如何恢复连续记忆中的逻辑链「末」,\\nk:「始」8「末」,\\ntag_boost:「始」0.6「末」,\\ncompare_rerank:「始」true「末」,\\ncompare_jev:「始」true「末」\\n<<<[END_TOOL_REQUEST]>>>"
+        "commandIdentifier": "MemoryAB",
+        "description": "command=memory_ab compares pure KNN and RiverMemo in the same explicit scope. query required; maid/folder or search_all_knowledge_bases defines scope. k defaults to 5; candidate_k sets the comparison window. compare_rerank (default true) and compare_jev (default false) add independent external tracks using the two base tracks consensus 2*K pool. No V9 artifact or DTSC ABI is required.",
+        "example": "<<<[TOOL_REQUEST]>>>\\ntool_name:「始」LightMemo「末」,\\ncommand:「始」memory_ab「末」,\\nfolder:「始」VCP开发「末」,\\nquery:「始」RiverMemo如何恢复连续记忆中的逻辑链「末」,\\nk:「始」8「末」,\\ntag_boost:「始」0.6「末」,\\ncompare_rerank:「始」true「末」,\\ncompare_jev:「始」true「末」\\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

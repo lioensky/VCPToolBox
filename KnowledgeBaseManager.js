@@ -1105,29 +1105,16 @@ class KnowledgeBaseManager {
         return await this.searchService.search(...args);
     }
 
-    _resolveTagMemoRequest(...args) {
-        return this.searchService._resolveTagMemoRequest(...args);
+    async searchMany(...args) {
+        return this.searchService.searchMany(...args);
     }
 
-    _resolveGeodesicCandidateK(...args) {
-        return this.searchService._resolveGeodesicCandidateK(...args);
+    async searchKnn(...args) {
+        return this.searchService.searchKnn(...args);
     }
 
-    async _searchSpecificIndex(...args) {
-        return await this.searchService._searchSpecificIndex(...args);
-    }
-
-    async _searchAllIndices(...args) {
-        return await this.searchService._searchAllIndices(...args);
-    }
-
-    /**
-     * 在指定日记本集合上执行一次逻辑联合搜索。
-     * 各物理 Vexus 索引只负责返回候选；TagMemo 增强、测地线重排、全局 Top-K 与 SQLite hydrate
-     * 均在联合层只执行一次，使该集合在调用方看来等价于一个请求级虚拟索引。
-     */
-    async _searchSelectedIndices(...args) {
-        return await this.searchService._searchSelectedIndices(...args);
+    async searchKnnMany(...args) {
+        return this.searchService.searchKnnMany(...args);
     }
 
     /**
@@ -1138,7 +1125,7 @@ class KnowledgeBaseManager {
      * TagMemo 原生异步增强兼容门面。
      *
      * 返回旧 applyTagBoost 的主要字段形状，同时附带 preparedMemoObservation，
-     * 供后续 DTSC/Topology 读出复用同一次 Rust 感应，禁止重复构造河网。
+     * 供后续 RiverMemo Topology 读出复用同一次 Rust 感应，禁止重复构造河网。
      */
     async applyTagBoostAsync(
         vector,
@@ -1376,7 +1363,6 @@ class KnowledgeBaseManager {
         }
         if (
             typeof this.tagIndex.runMemoPipeline !== 'function'
-            || typeof this.tagIndex.rerankMemoDtsc !== 'function'
             || typeof this.tagIndex.rerankRivermemoTopologyV3 !== 'function'
         ) {
             const error = new Error(
@@ -1763,8 +1749,8 @@ class KnowledgeBaseManager {
     }
 
     /**
-     * 统一 Memo 双读出门面。readoutMode 只允许 dtsc / topology_v3；
-     * 二者共享同一次原生 QueryObservation 和同一个活动图代际。
+     * 统一 Memo 单轨读出门面。readoutMode 只允许 topology_v3；
+     * RiverMemo 复用原生 QueryObservation 和统一活动图代际。
      */
     async rerankWithMemo(
         readoutMode,
@@ -1774,7 +1760,7 @@ class KnowledgeBaseManager {
         options = {}
     ) {
         const mode = String(readoutMode || '').trim().toLowerCase();
-        if (mode !== 'dtsc' && mode !== 'topology_v3') {
+        if (mode !== 'topology_v3') {
             const error = new Error(
                 `Unsupported Memo readout mode: ${readoutMode}`
             );
@@ -1783,7 +1769,7 @@ class KnowledgeBaseManager {
         }
         const prepared = options.preparedMemoObservation
             || await this.prepareUnifiedMemoObservation(query, options);
-        const { artifact, observation, sourceObservationResult } = prepared;
+        const { artifact, sourceObservationResult } = prepared;
 
         if (mode === 'topology_v3') {
             if (!this.riverMemoEngine) {
@@ -1834,222 +1820,6 @@ class KnowledgeBaseManager {
             );
         }
 
-        const geoConfig = {
-            ...(artifact.effectiveConfig
-                ?.potentialFieldRerank || {}),
-            ...(artifact.effectiveConfig
-                ?.geodesicRerank || {}),
-            ...(this.ragParams?.KnowledgeBaseManager
-                ?.potentialFieldRerank || {}),
-            ...(this.ragParams?.KnowledgeBaseManager
-                ?.geodesicRerank || {}),
-            ...(options.config || {})
-        };
-        const resolvedMinGeoSamples = Math.max(
-            1,
-            Math.floor(Number(
-                options.minGeoSamples
-                ?? geoConfig.minGeoSamples
-                ?? 3
-            ))
-        );
-        const nativePayload = await this.tagIndex.rerankMemoDtsc(
-            this.dbPath,
-            artifact.artifactSig,
-            JSON.stringify({
-                dimension: this.config.dimension,
-                observationHandle: prepared.observationHandle,
-                queryGeometryState: {
-                    epa: sourceObservationResult.epa || {},
-                    pyramid: sourceObservationResult.pyramid || {}
-                },
-                topK: Math.max(
-                    1,
-                    Math.floor(
-                        Number(options.topK)
-                        || (Array.isArray(candidates)
-                            ? candidates.length
-                            : 1)
-                    )
-                ),
-                candidates: (Array.isArray(candidates)
-                    ? candidates
-                    : []
-                ).map(candidate => ({
-                    id: Number(
-                        candidate?.id
-                        ?? candidate?.chunkId
-                        ?? candidate?.label
-                    ),
-                    score: Number(candidate?.score) || 0
-                })).filter(candidate =>
-                    Number.isFinite(candidate.id)
-                    && candidate.id > 0
-                ),
-                ...(prepared.observationHandle
-                    ? {}
-                    : {
-                        observation,
-                        originalQueryVector:
-                            Array.from(prepared.queryVector),
-                        enhancedQueryVector:
-                            Array.from(prepared.enhancedVector)
-                    }),
-                config: {
-                    ...geoConfig,
-                    alpha:
-                        options.alpha
-                        ?? options.geoAlpha
-                        ?? geoConfig.alpha,
-                    minGeoSamples: resolvedMinGeoSamples,
-                    // JS SOTA 默认 minFieldTags 跟随 minGeoSamples，而不是固定常量。
-                    minFieldTags:
-                        geoConfig.minFieldTags
-                        ?? resolvedMinGeoSamples,
-                    fallbackToKnnOnLowTrust:
-                        geoConfig.fallbackToKnnOnLowTrust !== false
-                        && geoConfig.fallbackToKnnOnLowTrust !== 0,
-                    sparseAssociationEnabled:
-                        geoConfig.sparseAssociationEnabled !== false
-                        && geoConfig.sparseAssociationEnabled !== 0,
-                    geometryAuxiliary: {
-                        ...(geoConfig.geometryAuxiliary || {}),
-                        enabled:
-                            geoConfig.geometryAuxiliary?.enabled === true
-                            || geoConfig.geometryAuxiliary?.enabled === 1,
-                        identityAnchor: {
-                            ...(geoConfig.geometryAuxiliary
-                                ?.identityAnchor || {}),
-                            enabled:
-                                geoConfig.geometryAuxiliary
-                                    ?.identityAnchor?.enabled === true
-                                || geoConfig.geometryAuxiliary
-                                    ?.identityAnchor?.enabled === 1
-                        }
-                    }
-                }
-            })
-        );
-        const nativeResult = JSON.parse(nativePayload);
-        const originalById = new Map(
-            (Array.isArray(candidates) ? candidates : [])
-                .map(candidate => [
-                    Number(
-                        candidate?.id
-                        ?? candidate?.chunkId
-                        ?? candidate?.label
-                    ),
-                    candidate
-                ])
-                .filter(([id]) => Number.isFinite(id) && id > 0)
-        );
-        const results = (Array.isArray(nativeResult.results)
-            ? nativeResult.results
-            : []
-        ).map(item => Object.freeze({
-            ...(originalById.get(Number(item.id)) || {}),
-            ...item,
-            id: Number(item.id),
-            // 保持旧 TagMemo geodesicRerank 公共字段契约；Rust JSON 使用
-            // camelCase，兼容调用方仍读取历史 snake_case 字段。
-            original_knn_score:
-                Number(item.originalKnnScore) || 0,
-            geo_score:
-                Number(item.geoScore) || 0,
-            normalized_geo:
-                Number(item.normalizedGeo) || 0,
-            geo_bonus:
-                Number(item.geoBonus) || 0,
-            geo_base_bonus:
-                Number(item.geoBaseBonus) || 0,
-            geo_aux_bonus:
-                Number(item.geoAuxBonus) || 0,
-            geo_effect:
-                item.geoEffect || 'neutral',
-            geo_evidence_class:
-                item.geoEvidenceClass || 'neutral',
-            geo_reward_eligible:
-                item.geoRewardEligible === true,
-            geo_confidence:
-                Number(item.geoConfidence) || 0,
-            geo_exact_hits:
-                Number(item.geoExactHits) || 0,
-            geo_direct_exact_hits:
-                Number(item.geoDirectExactHits) || 0,
-            geo_emergent_exact_hits:
-                Number(item.geoEmergentExactHits) || 0,
-            geo_direct_semantic_hits:
-                Number(item.geoDirectSemanticHits) || 0,
-            geo_direct_semantic_strength:
-                Number(item.geoDirectSemanticStrength) || 0,
-            geo_strong_hits:
-                Number(item.geoStrongHits) || 0,
-            geo_hit_count:
-                Number(item.geoHitCount) || 0,
-            geo_weighted_coverage:
-                Number(item.geoWeightedCoverage) || 0,
-            geo_mean_potential:
-                Number(item.geoMeanPotential) || 0,
-            geo_max_potential:
-                Number(item.geoMaxPotential) || 0,
-            geo_continuity:
-                Number(item.geoContinuity) || 0,
-            geo_isolated_ratio:
-                Number(item.geoIsolatedRatio) || 0,
-            geo_raw_isolated_ratio:
-                Number(item.geoRawIsolatedRatio) || 0,
-            geo_sparse_association_confidence:
-                Number(item.geoSparseAssociationConfidence) || 0,
-            geo_sparse_association_pairs:
-                Number(item.geoSparseAssociationPairs) || 0,
-            geo_action_quality:
-                Number(item.geoActionQuality) || 0,
-            geo_closure_quality:
-                Number(item.geoClosureQuality) || 0,
-            geo_direction_consistency:
-                Number(item.geoDirectionConsistency) || 0,
-            geo_vector_lift:
-                Number(item.geoVectorLift) || 0,
-            geo_direct_score:
-                Number(item.geoDirectScore) || 0,
-            geo_structural_score:
-                Number(item.geoStructuralScore) || 0,
-            geo_thematic_score:
-                Number(item.geoThematicScore) || 0,
-            geo_closure_score:
-                Number(item.geoClosureScore) || 0,
-            geo_fused_shadow_score:
-                Number(item.geoFusedShadowScore) || 0
-        }));
-
-        return Object.freeze({
-            schema: nativeResult.schema,
-            version: 'tagmemo_v9_dtsc_native',
-            algorithmVersion: nativeResult.algorithmVersion,
-            artifactSig: artifact.artifactSig,
-            artifactGeneration: artifact.generation,
-            readoutMode: 'dtsc',
-            queryTags: Object.freeze({
-                matchedTags:
-                    sourceObservationResult.matchedTags,
-                coreTagsMatched:
-                    sourceObservationResult.coreTagsMatched,
-                sourceMode:
-                    sourceObservationResult.sourceMode
-            }),
-            results: Object.freeze(results),
-            diagnostics: Object.freeze({
-                ...(nativeResult.diagnostics || {}),
-                sensing:
-                    sourceObservationResult.diagnostics
-                        ?.nativeSensing || null,
-                runtimeOwnership: 'vexus-index-instance',
-                memoRuntime:
-                    typeof this.tagIndex.memoRuntimeStats === 'function'
-                        ? this.tagIndex.memoRuntimeStats()
-                        : null
-            })
-        });
     }
 
     /**
@@ -2127,11 +1897,10 @@ class KnowledgeBaseManager {
             .map(row => Number(row.id))
             .filter(Number.isSafeInteger);
         if (allowedFileIds.length === 0) {
-            const error = new Error(
-                'Native River query resolved an empty file permission scope'
-            );
-            error.code = 'NATIVE_RIVER_QUERY_EMPTY_PERMISSION_SCOPE';
-            throw error;
+            return {
+                results: [],
+                diagnostics: { reason: 'empty-permission-scope' }
+            };
         }
 
         const finalK = Math.max(
@@ -2326,7 +2095,7 @@ class KnowledgeBaseManager {
 // 此路径只在联合 ABI 不可用/失败时执行，保留正确性优先于性能。
 const perIndexK = options.perIndexK
     ?? this.config.nativeRiverQueryPerIndexK;
-const currentSearchPromise = this.search(
+const currentSearchPromise = this.searchKnn(
     diaryNames,
     queryVector,
     candidateK,
@@ -2340,7 +2109,7 @@ const currentSearchPromise = this.search(
 );
 const supplementalSearchPromises = supplementalQueryVectors.map(
     async entry => {
-        const results = await this.search(
+        const results = await this.searchKnn(
             diaryNames,
             entry.vector,
             Math.max(2, Math.round(candidateK / 2)),
@@ -2692,20 +2461,6 @@ candidates = await this.deduplicateResults(
     }
 
     /**
-     * TagMemo DTSC 原生异步兼容入口。旧同步 geodesicRerank 保留给尚未
-     * 异步化的插件；新调用应使用本接口以共享原生感应和 MemoRuntime。
-     */
-    async rerankWithTagMemoAsync(query, candidates, agentContext = {}, options = {}) {
-        return await this.rerankWithMemo(
-            'dtsc',
-            query,
-            candidates,
-            agentContext,
-            options
-        );
-    }
-
-    /**
      * 对已求解的 RiverMemo/V10 Query State 计算只读 Ω 观测。
      */
     measureRiverMemoOmega(queryState, options = {}) {
@@ -2761,8 +2516,8 @@ candidates = await this.deduplicateResults(
     }
 
     /**
-     * 主动触发 TagMemo V9.1 全量自学习训练。
-     * 该入口会清空 1% 阈值累计计数、重建 V9.1 派生资产，并清理退休的 V8.3 预计算。
+     * 主动触发共享 Memo 底座全量自学习训练。
+     * 重建 RiverMemo 依赖的派生资产并保留原有发布、调度及退休状态清理机制。
      */
     requestActiveFullTraining(options = {}) {
         if (!this.tagMemoEngine || typeof this.tagMemoEngine.requestActiveFullTraining !== 'function') {
@@ -2774,41 +2529,6 @@ candidates = await this.deduplicateResults(
         }
 
         return this.tagMemoEngine.requestActiveFullTraining(options);
-    }
-
-    /**
-     * V9.1 公共接口 — 势能场重排
-     * 代理到 TagMemoEngine.geodesicRerank()，供外部直接调用或测试
-     * @param {Array} candidates - 候选结果
-     * @param {object} options - { alpha, minGeoSamples }
-     * @returns {Array} 重排后的结果
-     */
-    geodesicRerank(candidates, options = {}) {
-        if (!this.tagMemoEngine) return candidates;
-        const bundle = options.artifactBundle
-            || this.tagMemoEngine.resolveArtifactBundle({
-                version: options.tagMemoVersion || options.version || null,
-                strictVersion: true
-            }).bundle;
-        // 显式请求配置最高；实时热参数覆盖 Bundle 创建时固化的旧值。
-        // Bundle 配置仅提供热参数文件尚未声明的新字段默认值。
-        const geoConfig = {
-            ...(bundle?.potentialFieldConfig || {}),
-            ...(this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {}),
-            ...(options.config || {})
-        };
-        return this.tagMemoEngine.geodesicRerank(candidates, {
-            alpha: options.alpha ?? options.geoAlpha ?? geoConfig.alpha,
-            minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
-            energyField: options.energyField,
-            energyFieldProvenance: options.energyFieldProvenance,
-            originalQueryVector: options.originalQueryVector,
-            enhancedQueryVector: options.enhancedQueryVector,
-            queryGeometryState: options.queryGeometryState || options.queryState,
-            config: geoConfig,
-            version: bundle?.version,
-            artifactBundle: bundle
-        });
     }
 
     /**
