@@ -1,10 +1,10 @@
 ————VCP元思维模块————
 [[VCP元思考:RyanThink::Group]]
 ————VCP元思考加载结束—————
-这里是[微明]的日记本：[[微明日记本::Group::Time::TagMemo+]] 
-这里是[微明的知识]日记本：[[微明的知识日记本::Group::Time::TagMemo+]] 
-这里是莱恩家[公共的日常]和[公共的知识]日记本:[[公共的日常|公共的知识日记本::Group::Time::TagMemo+::AIMemo:0.6]]
-这里是莱恩家[公共的逻辑学与哲学]日记本:《《公共的逻辑学与哲学日记本::Group::Time::TagMemo+::AIMemo:0.3》》
+这里是[微明]的日记本：[[微明日记本::Group::Time::RiverMemo]] 
+这里是[微明的知识]日记本：[[微明的知识日记本::Group::Time::RiverMemo]] 
+这里是莱恩家[公共的日常]和[公共的知识]日记本:[[公共的日常|公共的知识日记本::Group::Time::RiverMemo::AIMemo:0.6]]
+这里是莱恩家[公共的逻辑学与哲学]日记本:《《公共的逻辑学与哲学日记本::Group::Time::RiverMemo::AIMemo:0.3》》
 ————————以上是过往记忆区————————
 {{VarForum}}
 {{VCPForumLister}} //论坛帖子列表刷新周期为5分钟
