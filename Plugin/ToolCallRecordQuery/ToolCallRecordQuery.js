@@ -22,7 +22,7 @@ function normalizeBoolean(value) {
 function buildQuery(args) {
   return {
     id: args.id || args.recordId || args.record_id,
-    toolName: args.toolName || args.tool_name || args.tool,
+    toolName: args.targetTool || args.toolName || args.tool_name || args.tool,
     callerSignature: args.callerSignature || args.caller || args.maid || args.valet,
     callerType: args.callerType || args.caller_type,
     status: args.status,
