@@ -968,10 +968,16 @@ class LightMemoPlugin {
                 refinementPool.map(item => ({ ...item })),
                 Math.min(k, refinementPool.length)
             );
+            // 普通检索允许失败回退，但评测轨不能把回退检索分冒充外部模型评分。
+            const scored = reranked.filter(item =>
+                item.rerank_failed !== true
+                && typeof item.rerank_score === 'number'
+                && Number.isFinite(item.rerank_score)
+            );
             rerankTrack = {
                 requested: true,
-                available: reranked.some(item => !item.rerank_failed),
-                results: normalizeRanked(reranked, 'rerank_score')
+                available: scored.length > 0,
+                results: normalizeRanked(scored, 'rerank_score')
             };
         }
         const jevConfigured = Boolean(
@@ -985,12 +991,15 @@ class LightMemoPlugin {
                 refinementPool.map(item => ({ ...item })),
                 Math.min(k, refinementPool.length)
             );
+            const scored = jevRanked.filter(item =>
+                item.rerank_failed !== true
+                && typeof item.jev_score === 'number'
+                && Number.isFinite(item.jev_score)
+            );
             jevTrack = {
                 requested: true,
-                available: jevRanked.some(item =>
-                    Number.isFinite(Number(item.jev_score))
-                ),
-                results: normalizeRanked(jevRanked, 'jev_score')
+                available: scored.length > 0,
+                results: normalizeRanked(scored, 'jev_score')
             };
         }
 
@@ -1036,13 +1045,10 @@ class LightMemoPlugin {
                 Number(item.id ?? item.label ?? item.chunkId),
                 {
                     rank: index + 1,
-                    score: Number(
-                        item.jev_score
-                        ?? item.rerank_score
-                        ?? item.score
-                        ?? item.hybridScore
-                        ?? item.vectorScore
-                    ) || 0
+                    score: name === 'rerank' ? item.rerank_score
+                        : name === 'jev' ? item.jev_score
+                        : name === 'knn' ? item.vectorScore ?? item.score
+                        : item.score ?? item.hybridScore
                 }
             ]))
         ]));
@@ -1082,12 +1088,12 @@ class LightMemoPlugin {
         if (rerankTrack.requested) {
             output += `- Rerank：${rerankTrack.available
                 ? '可用'
-                : '已请求，但未配置或调用失败'}\n`;
+                : '未获得有效外部评分（未配置、跳过或调用失败）；不展示回退检索分'}\n`;
         }
         if (jevTrack.requested) {
             output += `- Jev：${jevTrack.available
                 ? '可用'
-                : '已请求，但未配置或调用失败'}\n`;
+                : '未获得有效外部评分（未配置、跳过或调用失败）；不展示回退检索分'}\n`;
         }
         output += '\n';
         output += `| Chunk | 记忆摘要 | ${definitions.map(([, label]) => label).join(' | ')} |\n`;
