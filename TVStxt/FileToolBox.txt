@@ -1,136 +1,228 @@
-# VCP 文件管理与系统控制工具箱能力收纳
-这里收纳了文件搜索、读写、批量操作及系统命令行工具。
+# VCP 文件管理与系统控制
 
-## 1. PowerShell 命令行工具 (PowerShellExecutor)
-直接调用并获取运行结果。支持 VCP-CLI (前端) 和紧凑的后端命令行。
-tool_name:「始」PowerShellExecutor「末」, // 使用 ServerPowerShellExecutor 运行后端版本
-command:「始」Get-ChildItem「末」,
-executionType:「始」blocking/background「末」, // 默认blocking。background用于长时任务。
-newSession:「始」true「末」, // 仅前端，代表新建窗口。
-requireAdmin:「始」true「末」 // 提升权限。Server版需输入6位安全码。 // 例如tool_password:「始」123456「末」
+标准调用格式见置顶。下文 `命令(参数)` 表示：命令填入 `command`，参数分别填入同名字段；`?` 表示可选。标明“无需 command”的工具直接传参数。
 
-## 2. 文件快速搜索 (LocalSearchController)
-基于 Everything 模块实现秒级搜索。
-tool_name:「始」LocalSearchController「末」, // ServerSearchController 代表操作服务器
-command:「始」search「末」,
-query:「始」搜索关键词 (支持Everything语法)「末」,
-maxResults:「始」50「末」
+## 日常常驻
 
-## 3. 基础文件阅读 (FileOperator)
-阅读电脑内任何区域的文件，支持富文本/多媒体。
-tool_name:「始」FileOperator「末」, // ServerFileOperator 代表服务器文件
-command:「始」ReadFile「末」,   
-filePath:「始」/path/to/your/document.pdf「末」
+### 执行端与入口
 
-## VCP 项目代码结构参考
-- **后端 (VCPToolBox)**: 使用 `ServerFileOperator`
-  - `server.js`, `Plugin.js`, `KnowledgeBaseManager.js`, `WebSocketServer.js`
-  - `modules\chatCompletionHandler.js` (核心逻辑)
-  - `Plugin\RAGDiaryPlugin` (记忆/思考)
-- **前端 (VChat)**: 使用 `FileOperator`
-  - `H:\MCP\VCPChat\main.js`, `renderer.js`
-  - `H:\MCP\VCPChat\modules`, `Assistantmodules`
+| 用途 | 前端工具 | 后端工具 |
+|---|---|---|
+| 文件搜索 | LocalSearchController | ServerSearchController |
+| 文件读取与管理 | FileOperator | ServerFileOperator |
+| 文本与代码搜索 | CodeSearcher | ServerCodeSearcher |
+| PowerShell | PowerShellExecutor | ServerPowerShellExecutor |
+| 插件源码 | PluginSourceViewer | ServerPluginSourceViewer |
 
-[===vcp_fold:0.5===]
+前后端路径分别确认；已知位置直接读取，不必先搜索。调查结果需要保留在上下文时使用 `ink=mark_history`。
 
-## 4. 文件管理器完整能力 (FileOperator)
-tool_name:「始」FileOperator「末」, // ServerFileOperator 代表操作服务器文件
+### 文件定位与读取
 
-①查看工作目录下所有文件列表。
-command:「始」ListAllowedDirectories「末」
-②写入文件（同名自动重命名）
-command:「始」WriteFile「末」,
-filePath:「始」/path/to/your/file.txt「末」,
-content:「始」这是要写入的新内容。
-这是第二行。「末」
-③追加文件内容。
-command:「始」AppendFile「末」,
-filePath:「始」/path/to/your/log.txt「末」,
-content:「始」
-在文件末尾追加内容「末」
-④编辑文件，编辑后会完全覆盖已有内容
-command:「始」EditFile「末」,
-filePath:「始」/path/to/existing_file.txt「末」,
-content:「始」这是覆盖后的新内容。「末」
-⑤List指定目录
-command:「始」ListDirectory「末」,
-directoryPath:「始」/path/to/directory「末」,
-showHidden:「始」false「末」 //是否返回隐藏文件
-⑥查询文件元数据（如大小、创建时间、修改时间、是否是目录等）
-command:「始」FileInfo「末」,
-filePath:「始」/path/to/your/file.txt「末」
-⑦复制文件
-command:「始」CopyFile「末」,
-sourcePath:「始」/path/to/source.txt「末」,
-destinationPath:「始」/path/to/destination.txt「末」
-⑧移动文件
-command:「始」MoveFile「末」,
-sourcePath:「始」/path/to/source.txt「末」,
-destinationPath:「始」/path/to/new_directory/source.txt「末」
-⑨重命名文件
-command:「始」RenameFile「末」,
-sourcePath:「始」/path/to/old_name.txt「末」,
-destinationPath:「始」/path/to/new_name.txt「末」
-⑩删除文件
-command:「始」DeleteFile「末」,
-filePath:「始」/path/to/deletable_file.txt「末」
-11.创建文件夹
-command:「始」CreateDirectory「末」,
-directoryPath:「始」/path/to/new_folder/sub_folder「末」
-12.差分化编辑文件，适合对文件内进行部分修改
-command:「始」ApplyDiff「末」,
-filePath:「始」/path/to/your/file.txt「末」,
-searchString:「始」旧内容「末」,
-replaceString:「始」新内容「末」
-13.阅读网络文件，多媒体文件同样可以理解base64！
-command:「始」WebReadFile「末」,
-url:「始」https://example.com/sample.jpg「末」
-14.下载文件（支持自定义保存路径和文件名）
-command:「始」DownloadFile「末」,
-url:「始」http://example.com/archive.zip「末」,
-downloadDir:「始」(可选) 自定义下载目录绝对路径「末」,
-fileName:「始」(可选) 自定义保存文件名，如 my_file.zip「末」
-15.聊天历史编辑器。安全可靠的编辑.json格式的聊天历史文件，有健全的兜底机制避免json文件被损毁。
-command:「始」UpdateHistory「末」,
-filePath:「始」H:\path\to\your\history.json「末」,
-searchString:「始」这是我想修改的旧内容。「末」,
-replaceString:「始」这是替换后的新内容。「末」,
-archery:「始」no_reply「末」 // 可选，更新上下文不需要工具回执。
+```text
+LocalSearchController / ServerSearchController
+  search(query, maxResults?)
+  query 支持 Everything 语法。
 
-## 5. 批量指令构建
-FileOperator支持在一次调用中批量执行多个命令，通过数字后缀区分每组参数：
-<<<[TOOL_REQUEST]>>>
-tool_name:「始」FileOperator「末」,
-command1:「始」RenameFile「末」,
-sourcePath1:「始」/path/to/old_name.txt「末」,
-destinationPath1:「始」/path/to/new_name.txt「末」
-command2:「始」RenameFile「末」,
-sourcePath2:「始」/path/to/old_name2.txt「末」,
-destinationPath2:「始」/path/to/new_name2.txt「末」
-command3:「始」EditFile「末」,
-filePath3:「始」/path/to/existing_file.txt「末」,
-content3:「始」这是覆盖后的新内容。「末」
-<<<[END_TOOL_REQUEST]>>>
+FileOperator / ServerFileOperator
+  ReadFile(filePath, lines?)
+  lines：head:N / tail:N / M-N / N
+  支持文本、富文档及多媒体读取。
+```
 
-## 6. [重要] 转义文件创造 
-当需要创建内部包含「始」「末」等VCP指令语法的文件时（例如生成插件的配置文件），必须使用转义写入。
+### 普通命令执行
 
-即使用 「始ESCAPE」 包裹包含VCP工具指令的内容 「末ESCAPE」
+```text
+PowerShellExecutor
+  ExecutePowerShell(powershell, powershell1?, powershell2?...,
+                    requireAdmin?, newSession?, returnMode?)
+```
 
-[重要提示：在向用户演示指令而非真正调用工具的时候，也应该遵守转义原则！]
+- `command=ExecutePowerShell`，脚本写入 `powershell`；`executionType` 无效。
+- 默认共享持久化会话，继承目录、变量和环境；`newSession=true` 才重建。
+- `returnMode=delta|full`；`requireAdmin=true` 使用独立提权路径，仅支持单条命令。
+- 最多同步等待 60 秒；超时不等于终止，执行占用保留至完成回执或重建会话。结果以底层日志、回执及原生退出码为准。
 
-## 7. Canvas 协同编辑器 (FileOperator)
-创建一个即时的IDE/文档编译窗口，允许你和用户共同编辑内部内容。该窗口拥有强大的渲染器和编译器，非常适合展示代码或大型文案。
-tool_name:「始」FileOperator「末」,
-command:「始」CreateCanvas「末」,
-fileName:「始」new_canvas.js「末」,
-content:「始」console.log('Hello, Canvas!');「末」
+```text
+ServerPowerShellExecutor
+  command=脚本正文
+  executionType=blocking|background（可选，默认 blocking）
+```
 
-## 8. 代码检索器 (CodeSearcher)
-在VCP项目源码中搜索指定的代码片段或关键词。支持正则表达式。
-tool_name:「始」CodeSearcher「末」, // ServerCodeSearcher 代表搜索后端代码
-query:「始」(必需) 关键词或正则表达式「末」,
-search_path:「始」(可选) 指定搜索的相对路径「末」,
-case_sensitive:「始」(可选) true/false，默认false「末」,
-whole_word:「始」(可选) true/false，默认false「末」,
-context_lines:「始」(可选) 匹配行前后显示的上下文行数，默认2「末」
+后端不套用前端字段；提权时按要求提供实时安全码。
+
+有什么事情或者报告可以调用`VCPClawMail`给莱恩主人的网易邮箱(红莲の狮子)发邮件。
+command:'send_mail', to:'lionsky75@163.com', subject, body
+
+或者直接调用插件`WaitingForUrReply` — 弹出浮窗等待用户回复。
+参数：prompt；title?；option01～option09?；placeholder?（预填文本）。
+
+[===vcp_fold:0.6::desc:创建写入追加修改文件，差分替换，查看目录和文件信息，复制移动重命名删除文件，下载网络文件，批量文件管理===]
+
+## 文件管理
+
+使用 `FileOperator`；后端使用 `ServerFileOperator`。
+
+```text
+ListAllowedDirectories()
+ListDirectory(directoryPath, showHidden?)
+FileInfo(filePath)
+CreateDirectory(directoryPath)
+
+WriteFile(filePath, content)
+AppendFile(filePath, content)
+EditFile(filePath, content)
+ApplyDiff(filePath, target, replace)
+
+CopyFile(sourcePath, destinationPath)
+MoveFile(sourcePath, destinationPath)
+RenameFile(sourcePath, destinationPath)
+DeleteFile(filePath)
+
+WebReadFile(url)
+DownloadFile(url, downloadDir?, fileName?)
+```
+
+- `ListAllowedDirectories` 查询允许访问的目录，不是列出目录中的文件。
+- `WriteFile` 同名自动重命名；`AppendFile` 追加；`EditFile` 全文覆盖；`ApplyDiff` 局部替换。
+- `WebReadFile` 支持网络多媒体；`downloadDir` 是目标执行端的绝对路径。
+- 同一文件连续操作使用一次串行批处理，不并发独立写入；批处理不等于跨命令事务回滚。
+- 批处理按数字后缀配对：`command1 + 参数1`、`command2 + 参数2`……
+- 内容含 VCP 分隔符时，使用 `「始ESCAPE」内容「末ESCAPE」`；演示指令也不要输出可被误执行的完整请求。
+- 不假定 `DeleteFile` 有快照或回收站保障。
+
+用户笔记目录：`VCPChat\AppData\Notemodules`。
+
+[===vcp_fold:0.6::desc:搜索代码配置关键词和正则表达式，查看前后端插件源码，调查VCPChat与VCPToolBox实现===]
+
+## 代码搜索与插件源码
+
+**CodeSearcher / ServerCodeSearcher**，无需 `command`：
+
+```text
+query, search_path?, include?, is_regex?, case_sensitive?,
+whole_word?, context_lines?, max_results?
+```
+
+- `search_path` 指定绝对路径；`include` 限定文件名或 glob。
+- `is_regex` 默认 true；纯文本查询可设 false。
+- `case_sensitive`、`whole_word` 默认 false。
+- 按需限制搜索范围、上下文和结果数量。
+
+**PluginSourceViewer / ServerPluginSourceViewer**，无需 `command`：
+
+```text
+targettool
+```
+
+前者查前端分布式插件，后者查后端插件。
+
+路径参考：
+- 后端源码位置先确认；常见入口包括 `server.js`、`Plugin.js`、`KnowledgeBaseManager.js`、`WebSocketServer.js`、`modules\chatCompletionHandler.js`、`Plugin\RAGDiaryPlugin`。
+- 工程源码修改优先使用专职工程 Agent 的 ProjectForge。
+
+[===vcp_fold:0.6::desc:使用DeepWiki调查GitHub仓库架构业务和源码，查询仓库文档目录，对单个或多个仓库提问===]
+
+## DeepWiki 仓库调查
+
+工具：`DeepWikiVCP`。
+
+```text
+wiki_structure(url)
+wiki_ask(url, question, deep_research?)
+wiki_content(url)
+```
+
+- `url` 使用 `组织/仓库`，如 `lioensky/VCPToolBox`。
+- `wiki_ask` 支持逗号分隔的多仓库联合提问；`deep_research` 控制深度调查。
+- 优先针对问题使用 `wiki_ask`；`wiki_content` 返回完整文档，可能很长，仅按需读取。
+
+[===vcp_fold:0.6::desc:查询终端输出，中止阻塞命令，启动和操纵Codex Claude Vim等交互式CLI，粘贴文本发送按键，使用独立终端窗口===]
+
+## 前端终端控制与交互式 CLI
+
+工具：`PowerShellExecutor`。
+
+### 查看与中止
+
+```text
+QueryVisible(maxLines?)
+InterruptPowerShell()
+```
+
+- 查询通常取 200–500 行，只读屏幕，不干扰任务；不是普通命令日志的替代品。
+- 中止发送 Ctrl+C，不保证进程已经退出。
+- 中止另一个阻塞调用时，加全局字段 `archery=no_reply`。
+
+### 操作交互程序
+
+```text
+StartInteractive(powershell, newSession?)
+PasteInteractiveText(text, submit?, newSession?)
+SendInteractiveKey(key, newSession?)
+RunInteractiveSequence(步骤字段, newSession?)
+EndInteractive()
+```
+
+流程：
+
+```text
+StartInteractive → QueryVisible → 粘贴/按键
+→ 确认程序退出并回到 PowerShell → EndInteractive
+```
+
+- 启动后标记交互占用，普通执行被拒绝。
+- 粘贴默认不提交；`submit=true` 则随后按 Enter。
+- 按键支持方向键、Enter、Esc、Tab、编辑键与 Ctrl 组合；`ctrl+c*2` 表示连按，最多 10 次。
+- 控制现有程序时不要设置 `newSession=true`。
+- `EndInteractive` 只清除占用标志，不退出程序。
+
+序列字段：
+
+```text
+command1, wait2, paste3, key4, queryVisible5…
+```
+
+所有步骤共享唯一编号，按数字升序执行：
+- `commandN` 输入命令并按 Enter，不等待程序结束。
+- `pasteN` 仅输入；另用 `keyN=enter` 提交。
+- `waitN` 支持 `50ms`、`1s` 或毫秒数；单步最多 60 秒，累计最多 300 秒。
+- `queryVisibleN` 指返回行数，最多 2000。
+- 至少一个非 wait 步骤；结束后仍保持交互占用。
+
+所有前端终端命令可加 `terminalTarget=sidebar|window`，默认 sidebar。独立窗口每次显式传 window；两视图共享会话，关闭视图不结束程序。
+
+[===vcp_fold:0.6::desc:打开VChat浏览器LoomApp，访问网页并进行浏览器交互操作===]
+
+## VChat 浏览器
+
+工具：`LoomController`。
+
+```text
+OpenVCPChatBrowser(url)
+```
+
+调用使用 `ink=mark_history`。打开后按工具返回的应用协议继续操作；后续支持串行指令。
+
+[===vcp_fold:0.6::desc:修改聊天历史history.json中的内容，安全替换对话记录===]
+
+## 聊天历史编辑
+
+工具：`FileOperator`。
+
+```text
+UpdateHistory(filePath, target, replace)
+```
+
+用于 JSON 聊天历史的内容替换，使用内置校验与兜底机制，不以普通全文覆盖替代。无需回执时可加 `archery=no_reply`。
+
+[===vcp_fold:0.6::desc:创建Canvas协同编辑窗口，与用户共同编辑代码文案和大型文档===]
+
+## Canvas 协同编辑
+
+工具：`FileOperator`。
+
+```text
+CreateCanvas(fileName, content)
+```
+
+创建代码或文档协同编辑窗口；用文件名及扩展名标识内容类型。
