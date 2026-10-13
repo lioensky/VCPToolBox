@@ -12,7 +12,9 @@ const { JevThirdPartyRegistry } = require('../modules/jevThirdPartyRegistry');
 const { JevToolCallExp } = require('../modules/jevToolCallExp');
 
 const ROOT = path.join(__dirname, '..');
-const PLUGIN_ROOT = path.join(ROOT, 'VCPDistributedServer', 'Plugin');
+const LOCAL_PLUGIN_ROOT = path.join(ROOT, 'VCPDistributedServer', 'Plugin');
+const SIBLING_PLUGIN_ROOT = path.join(ROOT, '..', 'VCPChat', 'VCPDistributedServer', 'Plugin');
+const PLUGIN_ROOT = fs.existsSync(LOCAL_PLUGIN_ROOT) ? LOCAL_PLUGIN_ROOT : SIBLING_PLUGIN_ROOT;
 const CONFIG_PATH = path.join(ROOT, 'ToolConfigs', 'jev_tool_call_exp.json');
 const PROMPT_PATH = path.join(ROOT, 'TVStxt', 'JevToolCallDecision.txt');
 

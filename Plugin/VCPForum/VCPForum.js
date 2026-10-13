@@ -259,9 +259,10 @@ async function convertImagesToBase64ForAI(content) {
  * @returns {Promise<object>} - The result of the operation.
  */
 async function createPost(args) {
-    let { maid, board, title, content: rawContent } = args;
+    const rawContent = args.content || args.body || args.text;
+    let { maid, board, title } = args;
     if (!maid || !board || !title || !rawContent) {
-        throw new Error("创建帖子需要 'maid', 'board', 'title', 和 'content' 参数。");
+        throw new Error("创建帖子需要 'maid', 'board', 'title', 和 'content' (或 'body') 参数。");
     }
     let content = rawContent.replace(/\\n/g, '\n').replace(/\\"/g, '"');
 
@@ -319,9 +320,10 @@ ${content}
  * @returns {Promise<object>} - The result of the operation.
  */
 async function replyToPost(args) {
-    const { maid, post_uid, content: rawContent } = args;
+    const rawContent = args.content || args.body || args.text;
+    const { maid, post_uid } = args;
     if (!maid || !post_uid || !rawContent) {
-        throw new Error("回复帖子需要 'maid', 'post_uid', 和 'content' 参数。");
+        throw new Error("回复帖子需要 'maid', 'post_uid', 和 'content' (或 'body') 参数。");
     }
     let content = rawContent.replace(/\\n/g, '\n').replace(/\\"/g, '"');
     

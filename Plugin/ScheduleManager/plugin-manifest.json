@@ -32,5 +32,57 @@
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ScheduleManager「末」,\ncommand:「始」ListSchedules「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "便利操作",
+    "jevDescPrompt": "管理用户日程安排，支持查看所有日程、新增日程与删除指定日程。",
+    "jevPrompt": "用户希望查看、列出或检索已有日程安排时选择 ListSchedules；希望新建、记录或添加日程时选择 AddSchedule；希望删除或移除指定日程时选择 DeleteSchedule。未特别指明动作时默认 ListSchedules。",
+    "agentPrompt": "当需要查看或管理日程时，使用 {便利操作} 中的 `ScheduleManager`，查看日程直接调用，新增日程将内容放入【主要内容】，时间放入 [时间:...]：\nJEV:「始」请使用 {便利操作} 中的 `ScheduleManager`，新增日程【参加数学学院研讨会】[时间:2026-10-15 14:00]。「末」",
+    "defaultCommand": "ListSchedules",
+    "commands": [
+      {
+        "commandIdentifier": "ListSchedules",
+        "description": "查看用户的所有日程安排",
+        "aliases": ["查看日程", "日程列表", "所有日程", "列出日程"]
+      },
+      {
+        "commandIdentifier": "AddSchedule",
+        "description": "添加一个新的日程记录",
+        "aliases": ["新增日程", "添加日程", "记录日程", "建日程"],
+        "parameters": {
+          "text": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 200,
+            "description": "日程内容或事项描述"
+          },
+          "time": {
+            "type": "text",
+            "required": false,
+            "source": "constraints",
+            "prefixes": ["时间", "日期", "在"],
+            "maxLength": 50,
+            "description": "日程时间（建议 YYYY-MM-DD HH:mm）"
+          }
+        }
+      },
+      {
+        "commandIdentifier": "DeleteSchedule",
+        "description": "删除指定的日程记录",
+        "aliases": ["删除日程", "移除日程", "取消日程"],
+        "parameters": {
+          "id": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 50,
+            "description": "待删除日程的唯一编号 ID"
+          }
+        }
+      }
+    ]
   }
 }

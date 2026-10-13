@@ -44,5 +44,38 @@
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」FlashDeepSearch「末」,\nSearchContent:「始」探讨人工智能在气候变化建模中的应用及其伦理影响。「末」,\nSearchBroadness:「始」10「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "信息获取",
+    "jevDescPrompt": "启动闪电深度研究子 Agent，围绕指定主题自动生成探索性关键词矩阵并合成数万字研究研报。",
+    "jevPrompt": "用户要求对特定主题进行跨领域多维度深度研究或撰写研究报告时选 StartResearch。在【】中提供研究主题，可选在 [] 中指定研究广度（如 [广度:10]，范围 5-20，默认 5）。",
+    "agentPrompt": "当需要就复杂课题开展深度多维度研究并生成研报时，使用 {信息获取} 中的 `FlashDeepSearch`：\nJEV:「始」请使用 {信息获取} 中的 `FlashDeepSearch`，深度研究【人工智能在气候变化建模中的应用】[广度:10]。「末」",
+    "defaultCommand": "StartResearch",
+    "commands": [
+      {
+        "commandIdentifier": "StartResearch",
+        "description": "启动深度研究并生成综合研究报告",
+        "aliases": ["深度研究", "闪电研究", "研究研报", "生成研报", "专题研究", "综合研报"],
+        "parameters": {
+          "SearchContent": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 2000,
+            "description": "需要进行深度研究的自然语言主题描述"
+          },
+          "SearchBroadness": {
+            "type": "text",
+            "required": false,
+            "source": "constraints",
+            "prefixes": ["广度", "探索广度", "词数", "数量"],
+            "maxLength": 10,
+            "description": "定义研究探索关键词数量（5-20，默认5）"
+          }
+        }
+      }
+    ]
   }
 }

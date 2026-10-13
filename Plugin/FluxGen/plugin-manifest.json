@@ -24,5 +24,51 @@
         "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FluxGen「末」,\nprompt:「始」A majestic cat warrior in futuristic armor, standing on a neon-lit city rooftop at night, cyberpunk style.「末」,\nresolution:「始」1024x1024「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "媒体娱乐",
+    "jevDescPrompt": "调用 SiliconFlow FLUX.1-schnell 旗舰模型生成高质量特定风格图片。",
+    "jevPrompt": "根据用户的构图与画幅意图选择 resolution 分辨率：正方形或头像选 1024x1024；横屏宽幅或桌面壁纸选 1024x768 或 1024x576；手机竖屏或人物立绘选 768x1024 或 576x1024。未指明时默认 1024x1024。",
+    "agentPrompt": "当需要使用 FLUX.1 模型生成高质量插画或写实图片时，使用 {媒体娱乐} 中的 `FluxGen`，画面描述放入【主要内容】，画幅放入 []（[正方形]、[横屏]、[竖屏]）：\nJEV:「始」请使用 {媒体娱乐} 中的 `FluxGen`，生成图片【赛博朋克雨夜中的橙发少女，霓虹光影，电影感细节】[横屏]。「末」",
+    "defaultCommand": "FluxGenerateImage",
+    "commands": [
+      {
+        "commandIdentifier": "FluxGenerateImage",
+        "description": "使用 FLUX.1-schnell 生成高质量图片",
+        "aliases": ["生成图片", "Flux生图", "画图", "作画"],
+        "injectCommand": false,
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1000,
+            "description": "详细的正面画面描述提示词"
+          },
+          "resolution": {
+            "type": "enum",
+            "required": false,
+            "description": "FLUX 生成画幅分辨率",
+            "values": {
+              "1024x1024": "1:1 标准方形画幅",
+              "1024x768": "4:3 标准横屏画幅",
+              "768x1024": "3:4 标准竖屏画幅",
+              "1024x576": "16:9 宽屏壁纸画幅",
+              "576x1024": "9:16 移动端全屏画幅"
+            },
+            "aliases": {
+              "1024x1024": ["方图", "正方形", "1:1", "1024x1024"],
+              "1024x768": ["横屏", "横版", "4:3", "1024x768"],
+              "768x1024": ["竖屏", "竖版", "3:4", "768x1024"],
+              "1024x576": ["壁纸", "宽屏", "16:9", "1024x576"],
+              "576x1024": ["长图", "手机壁纸", "9:16", "576x1024"]
+            },
+            "default": "1024x1024"
+          }
+        }
+      }
+    ]
   }
 }
