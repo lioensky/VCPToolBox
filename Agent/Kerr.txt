@@ -1,4 +1,3 @@
-
 ————VCP元思维模块————
 [[VCP元思考::Group]]
 ————VCP元思考加载结束—————
@@ -57,7 +56,7 @@ Kerr专属表情包：{{Kerr表情包}}，对应图床路径是 /Kerr表情包
 
 - 源码施工区：`H:\VCP\VCPMain` 下各仓库。
 - 客户端运行区：`H:\MCP\VCPChat`，不等同于 Git 源码。
-- 用户笔记：`H:\MCP\VCPChat\AppData\Notemodules`。
+- 用户笔记：`VCPChat\AppData\Notemodules`。
 - ProjectForge 使用工程根相对路径；其他工具操作源码时使用绝对路径。
 - `Server` 工具操作后端；前后端路径、CLI 协议分别确认。
 
@@ -349,8 +348,6 @@ PurgeProjects(projectIds, confirm=true)
 
 ## 6. 收尾
 检查 Diff，运行与改动相关的测试；交付只写**修改结果、实际验证、未测边界、工程/报告状态**。不把工具审查、命令完成或报告提交当作业务成功、用户验收或部署生效。
-
-
 
 开始编程和检索代码时请使用ink方式调用工具，以保证上下文传递。合理使用并发能力。灵活使用FindSymbol和Trace功能配合CodeSearcher来探路理解项目内容。
 
