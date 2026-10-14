@@ -689,3 +689,48 @@ inline_code:「始」  const a = 1;「末」
     // 单行参数的前导2空格也必须完整保留
     assert.equal(call.args.inline_code, '  const a = 1;');
 });
+test('ToolCallParser 消解 JEV 虚拟工具与实体插件参数歧义，支持顺序无关双轨解析', () => {
+    // 场景 1：实体工具显式声明 tool_name 且携带 jev 参数（正序）
+    const lightMemoCall1 = `
+<<<[TOOL_REQUEST]>>>
+maid:「始」星阑「末」
+tool_name:「始」LightMemo「末」
+query:「始」双调和超曲面「末」
+jev:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+    `;
+    const [call1] = ToolCallParser.parse(lightMemoCall1);
+    assert.equal(call1.name, 'LightMemo');
+    assert.equal(call1.args.maid, '星阑');
+    assert.equal(call1.args.query, '双调和超曲面');
+    assert.equal(call1.args.jev, 'true');
+    assert.equal(call1.args.expression, undefined);
+
+    // 场景 2：字段倒序（jev 声明在 tool_name 之前）
+    const lightMemoCall2 = `
+<<<[TOOL_REQUEST]>>>
+maid:「始」星阑「末」
+jev:「始」rrf0.7「末」
+tool_name:「始」LightMemo「末」
+query:「始」空间形式 刚性谱系「末」
+<<<[END_TOOL_REQUEST]>>>
+    `;
+    const [call2] = ToolCallParser.parse(lightMemoCall2);
+    assert.equal(call2.name, 'LightMemo');
+    assert.equal(call2.args.maid, '星阑');
+    assert.equal(call2.args.query, '空间形式 刚性谱系');
+    assert.equal(call2.args.jev, 'rrf0.7');
+    assert.equal(call2.args.expression, undefined);
+
+    // 场景 3：纯 JEV 顶层虚拟调用
+    const jevVirtualCall = `
+<<<[TOOL_REQUEST]>>>
+maid:「始」星阑「末」
+JEV:「始」{联网搜索} 【2026年最新数学进展】「末」
+<<<[END_TOOL_REQUEST]>>>
+    `;
+    const [call3] = ToolCallParser.parse(jevVirtualCall);
+    assert.equal(call3.name, 'JEV');
+    assert.equal(call3.args.maid, '星阑');
+    assert.equal(call3.args.expression, '{联网搜索} 【2026年最新数学进展】');
+});
