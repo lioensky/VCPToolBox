@@ -73,6 +73,9 @@ ClawMailKey=你的 ClawEmail API Key
 ClawMailUsers=bot@claw.163.com,notice@claw.163.com
 ClawMailDefaultUser=bot@claw.163.com
 
+# 可选：用户的默认收件邮箱；留空则发送时必须显式填写 to。
+ClawMailDefaultTo=
+
 # WebSocket 即达推送，默认启用；禁用后仅保留低频轮询兜底。
 ClawMailRealtimeEnabled=true
 
@@ -153,6 +156,26 @@ markRead:「始」false「末」
 ```
 
 ### 发送邮件
+
+可在插件 `config.env` 中设置 `ClawMailDefaultTo=你的邮箱地址`，作为用户的默认收件邮箱：
+
+- `send_mail` 未传 `to`，或传入空字符串、纯空白、空数组时，使用该默认收件邮箱。
+- 显式填写非空 `to` 时，只使用指定收件人，不会额外发送到默认邮箱。
+- `ClawMailDefaultTo` 未配置或留空时，仍必须显式填写 `to`，否则报错且不会发信。
+- 公共邮箱和子邮箱均适用；默认收件邮箱与 `ClawMailDefaultUser`（默认发件/读取邮箱）独立，不改变 `reply_mail` 回复原邮件的行为。
+- AI 无需事先知道用户邮箱即可发起联系；这不是邮箱地址匿名化功能，发送结果仍会包含实际收件人。
+- 修改配置后重启 VCPToolBox，使常驻插件重新加载配置。
+
+已配置默认收件邮箱时，AI 可以直接省略 `to`：
+
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」VCPClawMail「末」,
+command:「始」send_mail「末」,
+subject:「始」任务进度通知「末」,
+body:「始」任务已完成，请查收。「末」
+<<<[END_TOOL_REQUEST]>>>
+```
 
 正文里可以直接写 URL：
 
