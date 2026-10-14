@@ -40,6 +40,94 @@
     "specialNotes": {
       "originSystem": "**起源系统说明:**\n起源(Origin)代表用户内心真正的渴求与无法言表的选择倾向。每个起源都会微妙而有力地影响占卜结果：\n\n1. **日起源** ☉ - 适合需要明确指引、行动方案的问题\n2. **月起源** ☽ - 适合探索情感、关系、潜意识的问题\n3. **星起源** ✦ - 适合寻求智慧、平衡、长远视角的问题\n4. **虚起源** ◯ - 极小概率自动触发，带来意外的启示\n\n**AI使用建议:**\n- 首次占卜时询问用户选择起源\n- 可以根据用户问题性质推荐合适的起源\n- 解读结果时考虑起源对牌意的影响\n- 虚起源出现时要特别说明其稀有性和特殊含义",
       "fateCheckNumber": "**命运检定数说明:**\n这是一个可选的数字参数，代表命运的微调因子。用户可以：\n- 使用幸运数字\n- 使用当前心情的数值化(1-100)\n- 使用重要日期的数字组合\n- 或完全随机选择\n\n数字本身没有好坏，只是为每次占卜创造独特的命运线索。"
+        }
+      },
+      "jev": {
+        "schemaVersion": 1,
+        "enabled": true,
+        "category": "媒体娱乐",
+        "jevDescPrompt": "融合实时天文星象与日/月/星内在起源的深度塔罗牌占卜（支持单牌、圣三角三牌阵、凯尔特十字与天象观测）。",
+        "jevPrompt": "根据占卜深度选择命令：快速单张指引选 draw_single_card；洞察过去现在未来选 draw_three_card_spread；深度全面剖析选 draw_celtic_cross；仅观测实时行星天象选 get_celestial_data（默认 draw_three_card_spread）。根据问题倾向裁决 origin 起源：求行动与决断选 日；探寻情感与潜意识选 月；求智慧与全局平衡选 星。",
+        "agentPrompt": "当需要进行融合星象的塔罗占卜时，使用 {媒体娱乐} 中的 `TarotDivination`，在 [] 中指明牌阵（[单张牌]、[三牌阵]、[凯尔特十字]）与起源倾向（[日起源]、[月起源]、[星起源]）：\nJEV:「始」请使用 {媒体娱乐} 中的 `TarotDivination`，以[星起源]进行一次[三牌阵]塔罗占卜。「末」",
+        "defaultCommand": "draw_three_card_spread",
+        "commands": [
+      {
+        "commandIdentifier": "draw_three_card_spread",
+        "description": "执行过去、现在、未来三牌阵塔罗占卜",
+        "aliases": ["三牌阵", "圣三角", "三张牌", "塔罗占卜"],
+        "parameters": {
+          "origin": {
+            "type": "enum",
+            "description": "占卜者内在起源倾向（日/月/星）",
+            "values": {
+              "日": "太阳起源：意志与行动的显现，适合决断与目标",
+              "月": "月亮起源：直觉与潜意识的涌动，适合情感与内心",
+              "星": "星辰起源：希望与平衡的光芒，适合智慧与长远法则"
+            },
+            "aliases": {
+              "日": ["日起源", "太阳", "Sun", "sun"],
+              "月": ["月起源", "月亮", "Moon", "moon"],
+              "星": ["星起源", "星辰", "Star", "star"]
+            },
+            "default": "星"
+          },
+          "fate_check_number": {
+            "type": "text",
+            "source": "constraints",
+            "prefixes": ["检定数", "数字", "幸运数"],
+            "maxLength": 10
+          }
+        }
+      },
+      {
+        "commandIdentifier": "draw_single_card",
+        "description": "抽取单张塔罗牌获取核心指引",
+        "aliases": ["单张牌", "单牌占卜", "抽一张牌"],
+        "parameters": {
+          "origin": {
+            "type": "enum",
+            "description": "占卜者内在起源倾向（日/月/星）",
+            "values": {
+              "日": "太阳起源：意志与行动",
+              "月": "月亮起源：直觉与情感",
+              "星": "星辰起源：智慧与平衡"
+            },
+            "aliases": {
+              "日": ["日起源", "太阳", "Sun", "sun"],
+              "月": ["月起源", "月亮", "Moon", "moon"],
+              "星": ["星起源", "星辰", "Star", "star"]
+            },
+            "default": "星"
+          }
+        }
+      },
+      {
+        "commandIdentifier": "draw_celtic_cross",
+        "description": "执行十张牌的凯尔特十字深度牌阵占卜",
+        "aliases": ["凯尔特十字", "十字牌阵", "十张牌", "深度占卜"],
+        "parameters": {
+          "origin": {
+            "type": "enum",
+            "description": "占卜者内在起源倾向（日/月/星）",
+            "values": {
+              "日": "太阳起源：意志与行动",
+              "月": "月亮起源：直觉与情感",
+              "星": "星辰起源：智慧与平衡"
+            },
+            "aliases": {
+              "日": ["日起源", "太阳", "Sun", "sun"],
+              "月": ["月起源", "月亮", "Moon", "moon"],
+              "星": ["星起源", "星辰", "Star", "star"]
+            },
+            "default": "星"
+          }
+        }
+      },
+      {
+        "commandIdentifier": "get_celestial_data",
+        "description": "获取当前实时天文星象与神秘学环境数据",
+        "aliases": ["天象数据", "观测天象", "星象解读", "行星状态"]
+      }
+        ]
+      }
     }
-  }
-}

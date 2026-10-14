@@ -11,7 +11,9 @@ const { JevThirdPartyRegistry } = require('../modules/jevThirdPartyRegistry');
 const { JevToolCallExp } = require('../modules/jevToolCallExp');
 
 const ROOT = path.join(__dirname, '..');
-const MANIFEST_PATH = path.join(ROOT, 'VCPDistributedServer', 'Plugin', 'TableLampRemote', 'plugin-manifest.json');
+const LOCAL_DIST_PATH = path.join(ROOT, 'VCPDistributedServer', 'Plugin', 'TableLampRemote', 'plugin-manifest.json');
+const SIBLING_DIST_PATH = path.join(ROOT, '..', 'VCPChat', 'VCPDistributedServer', 'Plugin', 'TableLampRemote', 'plugin-manifest.json');
+const MANIFEST_PATH = fs.existsSync(LOCAL_DIST_PATH) ? LOCAL_DIST_PATH : SIBLING_DIST_PATH;
 const CONFIG_PATH = path.join(ROOT, 'ToolConfigs', 'jev_tool_call_exp.json');
 const PROMPT_PATH = path.join(ROOT, 'TVStxt', 'JevToolCallDecision.txt');
 

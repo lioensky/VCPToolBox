@@ -34,5 +34,63 @@
         "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」DoubaoComposeImage「末」,\nprompt:「始」把第一张图的女孩和第二张图的猫融合在一起「末」,\nimage_1:「始」https://example.com/girl.png「末」,\nimage_2:「始」file:///path/to/cat.jpg「末」,\nresolution:「始」adaptive「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "媒体娱乐",
+    "jevDescPrompt": "通过 DMXAPI 调用豆包 Seedream 模型生成包含精准中文文字的图像或编辑现有图片。",
+    "jevPrompt": "用户要求从零生成新图片时选 DoubaoGenerateImage；要求基于参考图修改元素时选 DoubaoEditImage（默认 DoubaoGenerateImage）。分辨率默认 1024x1024，修图时可选 adaptive 自适应。",
+    "agentPrompt": "当需要通过 DMX 渠道调用豆包模型生成带中文招牌的图片或修图时，使用 {媒体娱乐} 中的 `DMXDoubaoGen`：\nJEV:「始」请使用 {媒体娱乐} 中的 `DMXDoubaoGen`，生成图片【科技感的店铺门口，霓虹招牌写着未来科技城】[1024x1024]。「末」",
+    "defaultCommand": "DoubaoGenerateImage",
+    "commands": [
+      {
+        "commandIdentifier": "DoubaoGenerateImage",
+        "description": "使用 DMX 豆包模型文生图",
+        "aliases": ["文生图", "生成图片", "豆包生图", "画图"],
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1000,
+            "description": "画面描述提示词"
+          },
+          "resolution": {
+            "type": "enum",
+            "required": false,
+            "description": "生成图像分辨率",
+            "values": {
+              "1024x1024": "标准正方形画幅",
+              "adaptive": "自适应构图比例"
+            },
+            "aliases": {
+              "1024x1024": ["1024x1024", "方图", "正方形"],
+              "adaptive": ["adaptive", "自适应", "自动比例"]
+            },
+            "default": "1024x1024"
+          }
+        }
+      },
+      {
+        "commandIdentifier": "DoubaoEditImage",
+        "description": "使用 DMX 豆包模型修图编辑",
+        "aliases": ["修图", "编辑图片", "图生图"],
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1000
+          },
+          "image": {
+            "type": "text",
+            "required": true,
+            "source": "url",
+            "maxLength": 500
+          }
+        }
+      }
+    ]
   }
 }

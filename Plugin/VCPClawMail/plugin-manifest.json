@@ -55,7 +55,7 @@
       },
       {
         "command": "send_mail",
-        "description": "发送 ClawEmail 邮件。正文中可直接包含图片/文件 URL；attachments 可额外传 URL、file:// 或数组，插件会尽量下载并转换为 SDK 可接受格式。\n参数:\n- command: 固定为 send_mail。\n- mailbox/mailAlias/mailSlot/mail: 可选，发件子邮箱槽位 mail1/mail2/mail3/mail4；不填则使用公共默认邮箱。\n- user: 可选，发件邮箱；不填则使用默认邮箱。若已传 mailbox，则优先使用 mailbox。\n- to: 必填，收件人，逗号分隔或 JSON 数组。\n- cc/bcc: 可选，抄送/密送。\n- subject: 必填，主题。\n- body: 必填，正文文本或 HTML。\n- html: 可选，true/false，默认 false。\n- attachments: 可选，附件 URL/file://，逗号分隔或 JSON 数组。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」send_mail「末」,\nmailbox:「始」mail1「末」,\nto:「始」someone@example.com「末」,\nsubject:「始」主题「末」,\nbody:「始」正文，可包含 https://... 图片，而http或者file类需要放到附件里「末」,\nattachments:「始」https://example.com/file1.pdf,file:///H:/VCP/VCPToolBox/image/demo.png「末」 //可选，决策是否添加附件，支持逗号隔开发送多个。\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "发送 ClawEmail 邮件。正文中可直接包含图片/文件 URL；attachments 可额外传 URL、file:// 或数组，插件会尽量下载并转换为 SDK 可接受格式。\n参数:\n- command: 固定为 send_mail。\n- mailbox/mailAlias/mailSlot/mail: 可选，发件子邮箱槽位 mail1/mail2/mail3/mail4；不填则使用公共默认邮箱。\n- user: 可选，发件邮箱；不填则使用默认邮箱。若已传 mailbox，则优先使用 mailbox。\n- to: 收件人，逗号分隔或 JSON 数组。已配置 ClawMailDefaultTo 时可省略或留空，插件会默认发送到用户邮箱，AI 无需知道该地址；未配置或配置留空时必须显式填写。显式填写的收件人优先，不会额外发送到默认邮箱。\n- cc/bcc: 可选，抄送/密送。\n- subject: 必填，主题。\n- body: 必填，正文文本或 HTML。\n- html: 可选，true/false，默认 false。\n- attachments: 可选，附件 URL/file://，逗号分隔或 JSON 数组。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」send_mail「末」,\nmailbox:「始」mail1「末」,\nto:「始」someone@example.com「末」,\nsubject:「始」主题「末」,\nbody:「始」正文，可包含 https://... 图片，而http或者file类需要放到附件里「末」,\nattachments:「始」https://example.com/file1.pdf,file:///H:/VCP/VCPToolBox/image/demo.png「末」 //可选，决策是否添加附件，支持逗号隔开发送多个。\n<<<[END_TOOL_REQUEST]>>>",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPClawMail「末」,\ncommand:「始」send_mail「末」,\nto:「始」someone@example.com「末」,\nsubject:「始」测试邮件「末」,\nbody:「始」你好，这是一封来自 VCP 的邮件。「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
@@ -103,6 +103,10 @@
     "ClawMailDefaultUser": {
       "type": "string",
       "description": "默认 ClawEmail 邮箱"
+    },
+    "ClawMailDefaultTo": {
+      "type": "string",
+      "description": "可选：用户收件邮箱；send_mail 未填写或留空 to 时使用，留空则必须显式填写 to"
     },
     "ClawMailPollIntervalMs": {
       "type": "integer",
@@ -162,6 +166,7 @@
     "ClawMailKey": "ClawEmail API Key。不是 npx claw-setup 的临时 auth-url；auth-url 只用于官方 CLI/Channel 一键配置。",
     "ClawMailUsers": "例如 bot@claw.163.com,notice@claw.163.com",
     "ClawMailDefaultUser": "不传 user 时使用的邮箱",
+    "ClawMailDefaultTo": "用户的默认收件邮箱，与发件邮箱独立；仅 send_mail 的 to 为空时使用，不影响 reply_mail。",
     "ClawMailPollIntervalMs": "常驻轮询周期，建议 30000-300000",
     "ClawMailPollLimit": "占位符中保留的最近邮件数量",
     "ClawMailSubMail1User": "mail1 子邮箱地址，例如 vcp.x1@claw.163.com",
@@ -172,5 +177,75 @@
     "ClawMailSubMail3Agent": "收到 mail3 新邮件后要联系的 Agent 名称",
     "ClawMailSubMail4User": "mail4 子邮箱地址",
     "ClawMailSubMail4Agent": "收到 mail4 新邮件后要联系的 Agent 名称"
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "便利操作",
+    "jevDescPrompt": "使用 ClawEmail 邮件助手列出最近收件箱邮件摘要、读取邮件正文详情与附件元数据，或查看邮箱文件夹。",
+    "jevPrompt": "用户要求查看最近邮件或收件箱时选择 list_recent；提供 mailId 要求查看邮件详情时选择 read_mail；要求查看邮箱文件夹时选择 list_folders（默认 list_recent）。在 list_recent 中支持在 [] 中指定子邮箱槽位（如 [邮箱:mail1]）或仅看未读（如 [未读]）。",
+    "agentPrompt": "当需要查询邮件摘要或读取邮件内容时，使用 {便利操作} 中的 `VCPClawMail`：\nJEV:「始」请使用 {便利操作} 中的 `VCPClawMail`，查看收件箱最近邮件[未读][mail1]。「末」",
+    "defaultCommand": "list_recent",
+    "commands": [
+      {
+        "commandIdentifier": "list_recent",
+        "description": "列出 ClawEmail 最近邮件摘要",
+        "aliases": ["最近邮件", "查看邮件", "邮件列表", "收件箱", "读邮件列表"],
+        "parameters": {
+          "mailbox": {
+            "type": "enum",
+            "required": false,
+            "description": "指定子邮箱槽位（默认公共邮箱）",
+            "values": {
+              "mail1": "子邮箱 1",
+              "mail2": "子邮箱 2",
+              "mail3": "子邮箱 3",
+              "mail4": "子邮箱 4"
+            },
+            "aliases": {
+              "mail1": ["mail1", "邮箱1", "子邮箱1"],
+              "mail2": ["mail2", "邮箱2", "子邮箱2"],
+              "mail3": ["mail3", "邮箱3", "子邮箱3"],
+              "mail4": ["mail4", "邮箱4", "子邮箱4"]
+            }
+          },
+          "unreadOnly": {
+            "type": "boolean",
+            "required": false,
+            "description": "是否仅展示未读邮件",
+            "trueAliases": ["未读", "仅未读", "未读邮件"],
+            "falseAliases": ["全部", "所有", "已读和未读"],
+            "default": false
+          }
+        }
+      },
+      {
+        "commandIdentifier": "read_mail",
+        "description": "读取特定邮件的详细正文与附件",
+        "aliases": ["读取邮件", "查看邮件详情", "邮件详情", "读信"],
+        "parameters": {
+          "mailId": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 100,
+            "description": "邮件 ID"
+          },
+          "markRead": {
+            "type": "boolean",
+            "required": false,
+            "description": "是否标记为已读",
+            "trueAliases": ["标记已读", "标为已读", "已读"],
+            "falseAliases": ["保持未读", "不标已读"],
+            "default": false
+          }
+        }
+      },
+      {
+        "commandIdentifier": "list_folders",
+        "description": "列出当前邮箱的所有文件夹与垃圾箱 ID",
+        "aliases": ["邮箱文件夹", "列出文件夹", "文件夹列表", "查文件夹"]
+      }
+    ]
   }
 }

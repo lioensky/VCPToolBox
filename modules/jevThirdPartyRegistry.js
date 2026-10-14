@@ -25,9 +25,9 @@ const SUPPORTED_SCHEMA_VERSION = 1;
 const CALLABLE_PLUGIN_TYPES = new Set(['synchronous', 'asynchronous', 'hybridservice']);
 const PARAM_TYPES = new Set(['enum', 'boolean', 'text']);
 const TEXT_SOURCES = new Set(['primary', 'constraints', 'url']);
-const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]*$/;
+const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 const PARAM_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const ENUM_KEY_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+const ENUM_KEY_RE = /^[A-Za-z0-9\u4e00-\u9fa5_.:-]{1,64}$/;
 
 // 由调用协议或 ToolExecutor 统一承载的字段，插件声明不能占用。
 // command 由 injectCommand 统一注入，避免声明与 commandIdentifier 不一致。
@@ -167,6 +167,19 @@ class JevThirdPartyRegistry {
 
     /** 返回 null 表示不限制；否则为精确插件名集合。 */
     getAllowlist(env = process.env) {
+        // 管理策略优先；不改变第三方实验总开关。坏文件拒绝全部。
+        const policyPath = this.policyPath || path.join(__dirname, '..', 'ToolConfigs', 'jev_third_party_policy.json');
+        try {
+            const policy = JSON.parse(require('fs').readFileSync(policyPath, 'utf8'));
+            if (policy.mode === 'selected' && Array.isArray(policy.allowlist) &&
+                policy.allowlist.every(name => typeof name === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(name))) {
+                return [...new Set(policy.allowlist)];
+            }
+            if (policy.mode === 'unrestricted') return null;
+            return [];
+        } catch (error) {
+            if (error.code !== 'ENOENT') return [];
+        }
         const names = String(env.JEV_THIRD_PARTY_ALLOWLIST || '')
             .split(/[,，|]/)
             .map(name => name.trim())

@@ -530,8 +530,13 @@ def main():
     try:
         # Attempt to parse the input as JSON, in case the expression is wrapped in a JSON object.
         data = json.loads(expression_input)
-        if isinstance(data, dict) and 'expression' in data:
-            expression_input = data['expression']
+        if isinstance(data, dict):
+            if 'expression' in data:
+                expression_input = data['expression']
+            elif 'formula' in data:
+                expression_input = data['formula']
+            elif 'expr' in data:
+                expression_input = data['expr']
     except (json.JSONDecodeError, TypeError):
         # If it's not valid JSON or not a dict, assume it's a raw expression string.
         pass

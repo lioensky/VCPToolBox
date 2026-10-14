@@ -30,5 +30,65 @@
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」QwenImageGen「末」,\ncommand:「始」EditImage「末」,\nprompt:「始」给这只猫戴上墨镜「末」,\nimage:「始」https://example.com/cat.png「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "媒体娱乐",
+    "jevDescPrompt": "使用阿里通义千问 Qwen-Image 模型生成高审美图像，或使用 Qwen-Image-Edit 修改现有图片。",
+    "jevPrompt": "用户仅提供文本要求生成新图片时选 GenerateImage；提供参考图要求修改细节时选 EditImage（默认 GenerateImage）。在 GenerateImage 中，正方形选 1328x1328，横屏选 1664x928，竖屏选 928x1664。",
+    "agentPrompt": "当需要使用通义千问图像模型文生图或修图时，使用 {媒体娱乐} 中的 `QwenImageGen`，描述放入【主要内容】，画幅或参考图放入 []（[方图]、[横屏]、[竖屏]）：\nJEV:「始」请使用 {媒体娱乐} 中的 `QwenImageGen`，生成图片【一只戴着宇航员头盔的猫咪在太空漫步】[方图]。「末」",
+    "defaultCommand": "GenerateImage",
+    "commands": [
+      {
+        "commandIdentifier": "GenerateImage",
+        "description": "使用 Qwen-Image 模型文生图",
+        "aliases": ["文生图", "千问生图", "生成图片", "画图"],
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1000,
+            "description": "画面描述提示词"
+          },
+          "image_size": {
+            "type": "enum",
+            "required": false,
+            "description": "通义千问输出画幅尺寸",
+            "values": {
+              "1328x1328": "1:1 超清正方形画幅",
+              "1664x928": "16:9 超清横屏画幅",
+              "928x1664": "9:16 超清竖屏画幅"
+            },
+            "aliases": {
+              "1328x1328": ["方图", "正方形", "1:1", "1328x1328"],
+              "1664x928": ["横屏", "横版", "16:9", "1664x928"],
+              "928x1664": ["竖屏", "竖版", "9:16", "928x1664"]
+            },
+            "default": "1328x1328"
+          }
+        }
+      },
+      {
+        "commandIdentifier": "EditImage",
+        "description": "使用 Qwen-Image-Edit 修改现有图片",
+        "aliases": ["修图", "编辑图片", "修改图片", "图生图"],
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1000
+          },
+          "image": {
+            "type": "text",
+            "required": true,
+            "source": "url",
+            "maxLength": 500
+          }
+        }
+      }
+    ]
   }
 }

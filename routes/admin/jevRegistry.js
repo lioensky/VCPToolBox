@@ -11,6 +11,39 @@ module.exports = function (options) {
     const router = express.Router();
     const pluginManager = options.pluginManager;
 
+    let savingPolicy = false;
+    router.post('/jev/registry/policy', async (req, res) => {
+        const { mode, allowlist } = req.body || {};
+        if (!['selected', 'unrestricted'].includes(mode) || !Array.isArray(allowlist) ||
+            allowlist.length > 1000 || !allowlist.every(name =>
+                typeof name === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(name))) {
+            return res.status(400).json({ status: 'error', error: 'Invalid policy.' });
+        }
+        if (savingPolicy) return res.status(409).json({ status: 'error', error: 'Policy save in progress.' });
+        const previous = jevThirdPartyRegistry.getAllowlist();
+        for (const name of allowlist) {
+            const entry = jevThirdPartyRegistry.getEntry(name);
+            if (entry ? entry.validation?.status !== 'valid' : !previous?.includes(name)) {
+                return res.status(400).json({ status: 'error', error: `Unregistered or invalid plugin: ${name}` });
+            }
+        }
+        savingPolicy = true;
+        const fs = require('fs').promises;
+        const path = require('path');
+        const policyPath = options.jevPolicyPath || path.join(__dirname, '..', '..', 'ToolConfigs', 'jev_third_party_policy.json');
+        const temporary = `${policyPath}.${require('crypto').randomUUID()}.tmp`;
+        try {
+            await fs.writeFile(temporary, JSON.stringify({ mode, allowlist: mode === 'selected' ? [...new Set(allowlist)] : [] }, null, 2), { flag: 'wx' });
+            await fs.rename(temporary, policyPath);
+            res.json({ status: 'success', ...jevThirdPartyRegistry.getSnapshot() });
+        } catch (error) {
+            res.status(500).json({ status: 'error', error: error.message });
+        } finally {
+            await fs.unlink(temporary).catch(() => {});
+            savingPolicy = false;
+        }
+    });
+
     router.get('/jev/registry', (req, res) => {
         try {
             res.json({ status: 'success', ...jevThirdPartyRegistry.getSnapshot() });

@@ -279,3 +279,16 @@ test('多命令按动作词选择，前缀取值越界与文本超长直接报�
         /超过上限 20/
     );
 });
+test('Phase 0: 第三方调用支持省略【主要内容】的无参或纯约束指令，且单槽位约束支持无前缀自动回退', async () => {
+    const { planner } = makePlanner();
+    const [queryCall] = await planner.plan('请使用 {物联网控制} 中的 `SmartAC`，查询空调当前状态。');
+    assert.deepEqual(queryCall.args, { command: 'QueryAC' });
+
+    const [setCall] = await planner.plan('请使用 {设备控制} 中的 `SmartAC`，在[主卧]开启[制冷]。');
+    assert.deepEqual(setCall.args, {
+        command: 'SetAC',
+        mode: 'cool',
+        power: 'true',
+        room: '主卧'
+    });
+});

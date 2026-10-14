@@ -309,7 +309,9 @@ async function main() {
         const parsedArgs = JSON.parse(inputData);
 
         let resultObject;
-        switch (parsedArgs.command) {
+        const normalizedCommand = parsedArgs.command === 'GeminiGenerateImage' ? 'generate'
+            : (parsedArgs.command === 'GeminiEditImage' ? 'edit' : parsedArgs.command);
+        switch (normalizedCommand) {
             case 'generate':
                 resultObject = await generateImage(parsedArgs);
                 break;

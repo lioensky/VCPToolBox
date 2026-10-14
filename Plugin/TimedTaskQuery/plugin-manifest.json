@@ -23,6 +23,45 @@
       }
     ]
   },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "便利操作",
+    "jevDescPrompt": "查询未来定时任务的执行结果与状态，或取消尚未触发的排队定时任务。",
+    "jevPrompt": "用户希望取消任务时裁决 action=cancel；希望查看结果或查询状态时裁决 action=query。未提及取消时默认 query。",
+    "agentPrompt": "当需要追踪已创建的未来定时任务结果或取消任务时，使用 {便利操作} 中的 `TimedTaskQuery`，将 taskId 放入【主要内容】，动作放入 []：\nJEV:「始」请使用 {便利操作} 中的 `TimedTaskQuery`，查询定时任务【task-1779106560000-650e398d】的执行结果。「末」",
+    "defaultCommand": "QueryTimedTaskResult",
+    "commands": [
+      {
+        "commandIdentifier": "QueryTimedTaskResult",
+        "description": "查询或取消定时工具调用任务",
+        "aliases": ["查定时任务", "定时结果", "取消定时任务", "任务状态"],
+        "parameters": {
+          "task_id": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 100,
+            "description": "待查询或取消的定时任务唯一编号 ID"
+          },
+          "action": {
+            "type": "enum",
+            "required": false,
+            "description": "定时任务操作动作（查询或取消）",
+            "values": {
+              "query": "查询定时任务的当前状态与执行回执",
+              "cancel": "取消尚未到点的排队定时任务"
+            },
+            "aliases": {
+              "query": ["查询", "查看", "获取"],
+              "cancel": ["取消", "撤销", "终止"]
+            },
+            "default": "query"
+          }
+        }
+      }
+    ]
+  },
   "permissions": [
     "read_from_file_system",
     "write_to_file_system"

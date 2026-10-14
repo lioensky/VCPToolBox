@@ -1,0 +1,1 @@
+import{D as t,H as a,L as r,N as s,W as o}from"./vue-vendor-D81C7juz.js";import{t as _}from"./_plugin-vue_export-helper-K9rsuiWd.js";var i=s({inheritAttrs:!1,__name:"UiPageActions",setup(p){return(e,n)=>(a(),t("div",r({class:"ui-page-actions"},e.$attrs),[o(e.$slots,"default",{},void 0,!0)],16))}}),c=_(i,[["__scopeId","data-v-d928196a"]]);export{c as t};

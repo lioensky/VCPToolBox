@@ -50,8 +50,72 @@
     ],
     "responseFormatToAI": "请基于以下 DigitalOracle 结构化结果继续分析，并在引用时保留关键信源名称、标的与时间窗口：\n{result}"
   },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "生活服务",
+    "jevDescPrompt": "拉取全球宏观金融监控看板，或定向抓取股票、美债收益率、美联储利率概率、加密资产、恐惧贪婪指数与预测市场数据。",
+    "jevPrompt": "用户希望纵览全球金融市场全景或宏观大盘时选择 DigitalOracleGlobalMacroDashboard；希望定向抓取特定金融信源时选择 DigitalOracleFetchMarketData；希望查看支持的数据源列表时选择 DigitalOracleListProviders。在定向抓取中：预测市场选 polymarket，股票商品价格选 yahoo，美债收益率选 treasury，加密价格选 coingecko，市场情绪选 fear_greed，美联储降息概率选 cme_fedwatch。",
+    "agentPrompt": "当需要获取全球金融宏观看板或特定市场数据时，使用 {生活服务} 中的 `DigitalOracle`：\nJEV:「始」请使用 {生活服务} 中的 `DigitalOracle`，拉取【全球金融宏观监控面板】。「末」",
+    "defaultCommand": "DigitalOracleGlobalMacroDashboard",
+    "commands": [
+      {
+        "commandIdentifier": "DigitalOracleGlobalMacroDashboard",
+        "description": "一键并行拉取全球金融宏观监控总览面板",
+        "aliases": ["宏观看板", "全球金融看板", "市场总览", "全球金融监控面板", "金融面板"]
+      },
+      {
+        "commandIdentifier": "DigitalOracleFetchMarketData",
+        "description": "按指定金融信源定向抓取市场数据",
+        "aliases": ["抓取市场数据", "定向金融数据", "查询信源"],
+        "parameters": {
+          "provider": {
+            "type": "enum",
+            "required": true,
+            "description": "金融与宏观数据提供商标识",
+            "values": {
+              "polymarket": "Polymarket 预测市场事件隐含概率",
+              "yahoo": "Yahoo Finance 股票、ETF、黄金与大宗商品价格",
+              "treasury": "美国财政部国债收益率曲线",
+              "coingecko": "CoinGecko 加密货币现货价格与市值",
+              "fear_greed": "CNN 市场恐惧与贪婪情绪指数",
+              "cme_fedwatch": "CME 美联储 FOMC 利率决议隐含概率",
+              "cftc": "CFTC 机构持仓报告",
+              "worldbank": "世界银行宏观经济指标",
+              "bis": "国际清算银行各国央行政策利率",
+              "edgar": "SEC EDGAR 美股内部人交易记录"
+            },
+            "aliases": {
+              "polymarket": ["预测市场", "Polymarket"],
+              "yahoo": ["雅虎财经", "股票行情", "大宗商品"],
+              "treasury": ["美债", "美债收益率", "国债收益率"],
+              "coingecko": ["加密货币", "币价", "比特币行情"],
+              "fear_greed": ["恐惧贪婪指数", "恐慌贪婪指数", "市场情绪"],
+              "cme_fedwatch": ["美联储利率", "降息概率", "FedWatch"],
+              "cftc": ["机构持仓", "CFTC"],
+              "worldbank": ["世界银行"],
+              "bis": ["央行利率", "政策利率"],
+              "edgar": ["内部人交易", "SEC"]
+            },
+            "default": "fear_greed"
+          },
+          "symbol": {
+            "type": "text",
+            "source": "constraints",
+            "prefixes": ["代码", "标的", "symbol"],
+            "maxLength": 30
+          }
+        }
+      },
+      {
+        "commandIdentifier": "DigitalOracleListProviders",
+        "description": "列出支持的全部金融数据源与参数说明",
+        "aliases": ["信源列表", "列出信源", "支持的数据源"]
+      }
+    ]
+  },
   "dependencies": {
     "python": ">=3.10",
     "libraries": []
   }
-}
+    }

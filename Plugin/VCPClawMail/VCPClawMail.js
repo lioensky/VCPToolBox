@@ -1260,8 +1260,10 @@ async function prepareAttachments(value, body) {
 async function sendMail(args = {}) {
   const mailboxInfo = resolveMailboxArgs(args);
   const user = mailboxInfo.user;
-  const to = normalizeAddressList(args.to);
-  if (!to || to.length === 0) throw new Error('send_mail 需要 to。');
+  // 插件级空配置必须保留，避免意外回退到全局默认收件人。
+  const defaultTo = config.ClawMailDefaultTo ?? process.env.ClawMailDefaultTo;
+  const to = normalizeAddressList(args.to) || normalizeAddressList(defaultTo);
+  if (!to) throw new Error('send_mail 需要 to；也可在 config.env 中配置 ClawMailDefaultTo 作为默认用户收件邮箱。');
   if (!args.subject) throw new Error('send_mail 需要 subject。');
   if (!args.body && !args.htmlBody) throw new Error('send_mail 需要 body。');
 

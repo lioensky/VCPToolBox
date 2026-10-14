@@ -63,5 +63,80 @@
         "example": "默认文本检索：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteSearcher「末」,\nquery:「始」TriviumDB search_hybrid「末」,\nroot_path:「始」knowledge「末」,\nfolder:「始」TDBdocs「末」,\nallowed_extensions:「始」md,txt,json,html「末」,\nis_regex:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>\n\nBM25 正文召回（默认推荐）：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteSearcher「末」,\nmode:「始」bm25「末」,\nquery:「始」分布式节点如何跨节点取文件「末」,\nfolder:「始」VCP桌面知识「末」,\nroot_path:「始」dailynote「末」,\nbm25_limit:「始」20「末」,\nbm25_search_mode:「始」body「末」\n<<<[END_TOOL_REQUEST]>>>\n\nBM25 Tag 行召回（需要只按标签行筛选时使用）：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteSearcher「末」,\nmode:「始」bm25「末」,\nquery:「始」今天聊到桌面图标和壁纸操作「末」,\nfolder:「始」VCP桌面知识「末」,\nroot_path:「始」dailynote「末」,\nbm25_limit:「始」10「末」,\nbm25_search_mode:「始」tag「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "便利操作",
+    "jevDescPrompt": "使用 Rust 驱动的高性能日记与冷知识库全文/正则/BM25 检索器，毫秒级精准检索历史记忆。",
+    "jevPrompt": "在日记或知识库中搜索关键词或代码时选择 SearchDailyNote。检索模式 mode 默认 text（支持全库免目录精确检索），指定角色目录按相关性排序时选 bm25；root_path 默认 dailynote（日记本），搜冷知识库时选 knowledge；仅搜标签行时 bm25_search_mode 选 tag。",
+    "agentPrompt": "当需要全文精确或 BM25 检索历史日记和知识库时，使用 {便利操作} 中的 `DailyNoteSearcher`，搜索词放入【主要内容】，角色目录或模式放入 []（如 [bm25]、[知识库]、[文件夹:VCP桌面知识]）：\nJEV:「始」请使用 {便利操作} 中的 `DailyNoteSearcher`，搜索日记【分布式节点跨节点取文件】[bm25][文件夹:VCP桌面知识]。「末」",
+    "defaultCommand": "SearchDailyNote",
+    "commands": [
+      {
+        "commandIdentifier": "SearchDailyNote",
+        "description": "在日记本或知识库中执行高性能全文或 BM25 检索",
+        "aliases": ["搜索日记", "检索日记", "搜索知识库", "全文搜索", "BM25搜索"],
+        "injectCommand": false,
+        "parameters": {
+          "query": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 500,
+            "description": "搜索关键词或文本片段"
+          },
+          "mode": {
+            "type": "enum",
+            "required": false,
+            "description": "检索模式：bm25 相关性排序召回或 text 精确匹配",
+            "values": {
+              "bm25": "BM25 语义关键词相关性排序召回（默认推荐）",
+              "text": "精确字面量/正则全文检索"
+            },
+            "aliases": {
+              "bm25": ["bm25", "BM25", "相关性", "BM25召回"],
+              "text": ["text", "精确", "字面量", "精确匹配"]
+            },
+            "default": "text"
+          },
+          "root_path": {
+            "type": "enum",
+            "required": false,
+            "description": "搜索根目录：dailynote 日记本或 knowledge 冷知识库",
+            "values": {
+              "dailynote": "热记忆日记本目录",
+              "knowledge": "TDB 冷知识库目录"
+            },
+            "aliases": {
+              "dailynote": ["dailynote", "日记", "日记本"],
+              "knowledge": ["knowledge", "冷知识库", "知识库"]
+            },
+            "default": "dailynote"
+          },
+          "folder": {
+            "type": "text",
+            "required": false,
+            "source": "constraints",
+            "prefixes": ["文件夹", "目录", "角色", "日记本", "folder"],
+            "maxLength": 100
+          },
+          "bm25_search_mode": {
+            "type": "enum",
+            "required": false,
+            "description": "BM25 匹配区域：正文或仅标签行",
+            "values": {
+              "body": "匹配日记正文（默认）",
+              "tag": "仅匹配底部 Tag 标签行"
+            },
+            "aliases": {
+              "body": ["body", "正文", "全文"],
+              "tag": ["tag", "标签", "Tag", "标签行"]
+            },
+            "default": "body"
+          }
+        }
+      }
+    ]
   }
 }

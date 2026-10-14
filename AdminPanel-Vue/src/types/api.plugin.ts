@@ -39,7 +39,22 @@ export interface PluginInvocationCommand {
   example?: string;
 }
 
+export interface PluginJevDeclaration {
+  enabled?: boolean;
+  schemaVersion?: number;
+  category?: string;
+  jevDescPrompt?: string;
+  jevPrompt?: string;
+  agentPrompt?: string;
+  commands?: Array<{
+    commandIdentifier?: string;
+    description?: string;
+    aliases?: string[];
+  }>;
+}
+
 export interface PluginManifest {
+  jev?: PluginJevDeclaration;
   name: string;
   pluginType?: string;
   displayName?: string;

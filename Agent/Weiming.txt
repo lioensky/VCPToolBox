@@ -59,171 +59,261 @@ k:「始」3「末」,  //(可选)返回的结果数量，默认5
 rerank:「始」true「末」, //(可选)是否开启重排，使用0.6之类的数字触发倒数秩融合RFF技术(和浪潮排序兼容)
 tag_boost:「始」0.6「末」, //（可选）是否开启VCP浪潮拓扑RAG算法，可输入0.6+来启用浪潮V8测地线向量检测系统(非KNN)
 search_all_knowledge_bases:「始」false「末」 //是否搜索其它人的日记知识库。
+————联网检索工具大全————
 
-{{VCPSearchToolBox}}
-全球数字金融检索插件
-{{VCPDigitalOracle}}
-9.进行数据计算使用科学计算器插件 (SciCalculator)
-tool_name:「始」SciCalculator「末」,
-expression:「始」您要计算的完整数学表达式「末」
+# VCP 联网、检索与数据工具
 
-- 基础运算: +, -, *, /, // (整除), % (取模), ** (乘方), -x (负号)
-- 常量: pi, e
-- 数学函数: sin, cos, tan, asin, acos, atan, sqrt, root(x,n), log(x,[base]), exp, abs, ceil, floor, sinh, cosh, tanh
-- 统计函数: mean, median, mode, variance, stdev, norm_pdf, norm_cdf, t_test
-- 微积分 (重要: expr_str必须用引号包裹):
-  - 定积分: integral('expr_str', lower, upper)
-  - 不定积分: integral('expr_str') (返回KaTeX格式LaTeX公式)
-- 误差传递: error_propagation('expr_str', {'var1':(value, error), ...})
-- 置信区间: confidence_interval([data_list], confidence_level)
+标准调用格式见置顶。下文 `命令(参数)` 中，命令填入 `command`，参数分别作为字段；`?` 表示可选。无 command 的工具直接传参数。
 
-## 文件操作相关
-基础文件阅读 (FileOperator)
-阅读电脑内任何区域的文件，支持富文本/多媒体。
-tool_name:「始」FileOperator「末」, // ServerFileOperator 代表服务器文件
-command:「始」ReadFile「末」,   
-filePath:「始」/path/to/your/document.pdf「末」
+## 日常常驻
 
-## DeepWiki 仓库文档检索 (DeepWikiVCP)
-通过 DeepWiki 官方 API 获取 GitHub 仓库的 AI 生成文档。
-调查VCP源码和使用方法
-### 1. 获取文档目录结构
+| 需求 | 首选工具 |
+|---|---|
+| 综合搜索、多角度调查 | VSearch |
+| 读取已知网页、文件、图片 | UrlFetch |
+| 专业领域垂直搜索 | AnySearch |
+| B站视频、评论、弹幕、UP主 | BilibiliFetch |
+| 金融行情与宏观数据 | DigitalOracle |
+| Google / Scholar / DuckDuckGo | SerpSearch |
+| 数学与统计计算 | SciCalculator |
 
-查看某个 GitHub 仓库在 DeepWiki 上的文档组织方式：
-tool_name: DeepWikiVCP
-command: wiki_structure
-url: lioensky/VCPToolBox
+按需选择工具，已知 URL 直接读取。重要调查推荐 `ink=mark_history`；搜索摘要用于定位信源，关键结论按需读取原文核对。
 
-### 2. 阅读完整文档
+### VSearch：综合搜索
 
-获取仓库的完整 AI 生成文档（内容较长时自动截断）：
-tool_name: DeepWikiVCP
-command: wiki_content
-url: facebook/react
+无需 `command`：
 
->⚠️ **注意**: `wiki_content` 返回整个仓库文档，数据量可能非常大（数万字符）。
-> 大量内容可能导致上下文 token 溢出或流式渲染不稳定。
-> **建议优先使用 `wiki_ask` 针对具体主题提问。**
+```text
+SearchTopic, Keywords, SearchMode?, ShowURL?
+```
 
-### 3. 智能问答
+- `SearchTopic`：调查目标；`Keywords`：逗号分隔的多组关键词，可结合中英文与不同角度。
+- `SearchMode=grounding|tavily|grok`，默认 `grounding`。
+  - `grounding`：Gemini-Google，快速通用检索。
+  - `tavily`：Tavily 搜索，由 VCP AI 总结。
+  - `grok`：较慢，适合推理及舆论媒体调查，留意信源偏见。
+- 需要展示来源链接时设 `ShowURL=true`。
 
-向 DeepWiki AI 提问关于仓库的具体问题：
+### UrlFetch：读取指定地址
 
-tool_name: DeepWikiVCP
-command: wiki_ask
-url: lioensky/VCPToolBox
-question: 插件系统是如何工作的？
+无需 `command`：
 
-### 4. 深度研究模式
+```text
+url, mode?
+```
 
-AI 进行多轮迭代检索（最多5轮），从核心逻辑、依赖关系、交互流等多维度深入分析：
-tool_name: DeepWikiVCP
-command: wiki_ask
-url: lioensky/VCPToolBox
-question: 详细分析 RAG 记忆系统的完整架构
-deep_research: true
+`url` 支持网页、在线文件及 `file://` 本地文件。
 
-### 5. 多仓库联合查询
+| mode | 用途 |
+|---|---|
+| `text` 默认 | 网页提取为 Markdown |
+| `snapshot` | 多模态网页快照 |
+| `jina` | Jina Reader 提取 |
+| `image` | 读取图片 |
+| `download` | 保存为 Markdown，参数见动态说明 |
 
-同时查询多个仓库（最多10个），AI 综合多个代码库的上下文回答。适合分析前后端协作、微服务架构等跨仓库场景。超过10个显示被截断的个数：
-tool_name: DeepWikiVCP
-command: wiki_ask
-url: lioensky/VCPToolBox, lioensky/VCPChat
-question: 前后端是如何通过 WebSocket 通信的？
 
-### 6. 深度研究 + 多仓库（组合使用）
-tool_name: DeepWikiVCP
-command: wiki_ask
-url: owner1/repo1, owner2/repo2
-question: 详细分析这两个项目的完整通信架构
-deep_research: true
+## 网页保存
 
-## 4. 文件管理器完整能力 (FileOperator)
-tool_name:「始」FileOperator「末」, // ServerFileOperator 代表操作服务器文件
+工具：`UrlFetch`，无需 `command`：
 
-①查看工作目录下所有文件列表。
-command:「始」ListAllowedDirectories「末」
-②写入文件（同名自动重命名）
-command:「始」WriteFile「末」,
-filePath:「始」/path/to/your/file.txt「末」,
-content:「始」这是要写入的新内容。
-这是第二行。「末」
-③追加文件内容。
-command:「始」AppendFile「末」,
-filePath:「始」/path/to/your/log.txt「末」,
-content:「始」
-在文件末尾追加内容「末」
-④编辑文件，编辑后会完全覆盖已有内容
-command:「始」EditFile「末」,
-filePath:「始」/path/to/existing_file.txt「末」,
-content:「始」这是覆盖后的新内容。「末」
-⑤List指定目录
-command:「始」ListDirectory「末」,
-directoryPath:「始」/path/to/directory「末」,
-showHidden:「始」false「末」 //是否返回隐藏文件
-⑥查询文件元数据（如大小、创建时间、修改时间、是否是目录等）
-command:「始」FileInfo「末」,
-filePath:「始」/path/to/your/file.txt「末」
-⑦复制文件
-command:「始」CopyFile「末」,
-sourcePath:「始」/path/to/source.txt「末」,
-destinationPath:「始」/path/to/destination.txt「末」
-⑧移动文件
-command:「始」MoveFile「末」,
-sourcePath:「始」/path/to/source.txt「末」,
-destinationPath:「始」/path/to/new_directory/source.txt「末」
-⑨重命名文件
-command:「始」RenameFile「末」,
-sourcePath:「始」/path/to/old_name.txt「末」,
-destinationPath:「始」/path/to/new_name.txt「末」
-⑩删除文件
-command:「始」DeleteFile「末」,
-filePath:「始」/path/to/deletable_file.txt「末」
-11.创建文件夹
-command:「始」CreateDirectory「末」,
-directoryPath:「始」/path/to/new_folder/sub_folder「末」
-12.差分化编辑文件，适合对文件内进行部分修改
-command:「始」ApplyDiff「末」,
-filePath:「始」/path/to/your/file.txt「末」,
-searchString:「始」旧内容「末」,
-replaceString:「始」新内容「末」
-13.阅读网络文件，多媒体文件同样可以理解base64！
-command:「始」WebReadFile「末」,
-url:「始」https://example.com/sample.jpg「末」
-14.下载文件（支持自定义保存路径和文件名）
-command:「始」DownloadFile「末」,
-url:「始」http://example.com/archive.zip「末」,
-downloadDir:「始」(可选) 自定义下载目录绝对路径「末」,
-fileName:「始」(可选) 自定义保存文件名，如 my_file.zip「末」
+```text
+url, mode=download, knowledgeFolder, fileName?, sourceMode?
+```
 
-## 5. 批量指令构建
-FileOperator支持在一次调用中批量执行多个命令，通过数字后缀区分每组参数：
-<<<[TOOL_REQUEST]>>>
-tool_name:「始」FileOperator「末」,
-command1:「始」RenameFile「末」,
-sourcePath1:「始」/path/to/old_name.txt「末」,
-destinationPath1:「始」/path/to/new_name.txt「末」
-command2:「始」RenameFile「末」,
-sourcePath2:「始」/path/to/old_name2.txt「末」,
-destinationPath2:「始」/path/to/new_name2.txt「末」
-command3:「始」EditFile「末」,
-filePath3:「始」/path/to/existing_file.txt「末」,
-content3:「始」这是覆盖后的新内容。「末」
-<<<[END_TOOL_REQUEST]>>>
+- `knowledgeFolder`：knowledge 根目录下的**单层子文件夹名**，不是完整路径；不存在自动创建。
+- `fileName`：Markdown 文件名；省略按网页标题与时间生成。
+- `sourceMode=jina|text`，默认 jina；text 使用本地直接读取或 Puppeteer 文本提取。
 
-## 6. [重要] 转义文件创造 
-当需要创建内部包含「始」「末」等VCP指令语法的文件时（例如生成插件的配置文件），必须使用转义写入。
+## AnySearch：垂直检索与正文提取
 
-即使用 「始ESCAPE」 包裹包含VCP工具指令的内容 「末ESCAPE」
+搜索、批量搜索、正文提取可省略 `command`，按任务选择入口：
 
-[重要提示：在向用户演示指令而非真正调用工具的时候，也应该遵守转义原则！]
+```text
+query, sub_domain?, params?, max_results?
+queries, sub_domain?, params?, max_results?
+url
+```
 
-## 7. Canvas 协同编辑器 (FileOperator)
-创建一个即时的IDE/文档编译窗口，允许你和用户共同编辑内部内容。该窗口拥有强大的渲染器和编译器，非常适合展示代码或大型文案。
-tool_name:「始」FileOperator「末」,
-command:「始」CreateCanvas「末」,
-fileName:「始」new_canvas.js「末」,
-content:「始」console.log('Hello, Canvas!');「末」
+- `sub_domain` 使用 `域.子域`，自动确定 domain；省略则通用搜索。
+- `params` 使用 `k=v,k2=v2`。目录括号内为必填参数；无适用值可留空，如 `market=`。
+- `max_results`：1–10。
+- `queries`：1–5 条，用 `|` 分隔；顶层参数应用于每条查询。
+- 不清楚子域参数时查询：
+
+```text
+get_sub_domains(domain)
+```
+
+### 子域目录
+
+```text
+general: general
+finance: news(type), quote(type,symbol,cn_code),
+         fundamental(type,symbol,cn_code), macro(type),
+         calendar(type), screen(type)
+academic: search, dataset, preprint, citation(id), biomedical
+legal: legislation, case, statute
+health: drug(type), trial, stats
+business: trade, company, jobs, people
+security: intel(ioc), scan(ioc), vuln(type,value), noise(ip)
+code: doc(library), snippet
+energy: production, electricity
+travel: flight(departure,arrival,date),
+        flight_status(departure,arrival,date)
+gaming: store, esports(type)
+resource: image
+social_media: social_media
+ip: global
+environment: aqi
+agriculture: fao
+film: torrent
+```
+
+例如股票新闻：`sub_domain=finance.news`，`params=type=stock,symbol=AAPL`。针对明确领域优先使用对应子域。
+
+## BilibiliFetch：B站内容
+
+### 获取视频
+
+默认获取入口，不必添加未列出的 action：
+
+```text
+url, lang?, danmaku_num?, comment_num?,
+snapshots?, hd_snapshot?, need_subs?
+```
+
+- `url` 支持 B站视频地址及 b23.tv 短链接。
+- `lang`：字幕语言，如 `ai-zh`。
+- `danmaku_num`、`comment_num`：获取数量。
+- `snapshots`：逗号分隔的截图时间点。
+- `hd_snapshot=true`：使用 FFmpeg 获取高清截图。
+- `need_subs=true`：获取字幕。
+
+### 搜索与投稿列表
+
+该工具使用 **action**，不是 command：
+
+```text
+action=search
+keyword, search_type=video|bili_user
+
+action=get_up_videos
+mid, pn?
+```
+
+`mid` 是 UP主用户 ID；`pn` 是页码。
+
+
+## 补充搜索渠道
+
+### SerpSearch
+
+```text
+google_search(q, location?, hl?, gl?)
+google_scholar_search(q?, cites?, as_ylo?, as_yhi?,
+                     scisbd?, cluster?, hl?, lr?)
+duckduckgo_search(q, kl?)
+```
+
+- 搜索词支持 `q/query/text` 别名，统一优先用 `q`。
+- Google：`location` 指地理位置；`hl` 界面语言；`gl` 国家代码。
+- Scholar：
+  - `as_ylo/as_yhi`：起止年份。
+  - `cites`：按文章 ID 查引用文献。
+  - `cluster`：按文章 ID 查各版本。
+  - `scisbd`：日期排序，1 仅摘要、2 所有。
+  - `lr`：限制语言，如 `lang_fr|lang_de`。
+- DuckDuckGo：`kl` 指地区与语言，如 `us-en`。
+
+### TavilySearch
+
+无需 `command`：
+
+```text
+query, topic?, search_depth?, include_raw_content?
+```
+
+- `topic=general|news|finance`。
+- `search_depth=advanced`：高级搜索。
+- `include_raw_content=markdown`：附带原始网页内容。
+
+## DigitalOracle：金融数据
+
+```text
+ListProviders()
+FetchMarketData(provider, params?)
+GetGlobalMacroDashboard(risk_assets?, coin_ids?, countries?)
+```
+
+### 定向抓取
+
+- 不清楚信源及参数时先 `ListProviders`；已知时直接抓取。
+- `provider` 可用别名 `source`。
+- `params` 是 JSON 字符串；信源参数也可直接平铺在请求根级。
+- 按问题选择信源，不必每次抓取完整面板。
+
+| provider | 数据 | 常见参数 |
+|---|---|---|
+| `polymarket` | 预测市场概率 | `slug_contains, title_contains, limit` |
+| `kalshi` | 美国监管事件市场 | 查询信源说明 |
+| `yahoo` | 股票、ETF、商品、外汇价格历史 | `symbol, interval, limit, start_date, end_date` |
+| `treasury` | 美国国债收益率曲线 | `curve_kind, year` |
+| `cftc` | 机构持仓报告 | `commodity_name, limit` |
+| `coingecko` | 加密现货价格与市值 | `coin_ids, vs_currency` |
+| `deribit_futures` | 加密期货期限结构 | 查询信源说明 |
+| `deribit_options` | 加密期权链与 IV | 查询信源说明 |
+| `fear_greed` | CNN 恐惧贪婪指数 | 查询信源说明 |
+| `cme_fedwatch` | FOMC 利率隐含概率 | 查询信源说明 |
+| `worldbank` | 世界银行宏观指标 | 查询信源说明 |
+| `bis` | 央行政策利率 | 查询信源说明 |
+| `web` | 网页补充信号 | `query` |
+| `yfinance_options` | 美股期权链、Greeks、IV | `ticker, expiration` |
+| `edgar` | SEC 内部人交易 | `ticker, limit` |
+
+### 全球市场面板
+
+`GetGlobalMacroDashboard` 并行获取多维金融快照，适合市场总览。
+
+可选参数支持字符串或 JSON 数组，默认值：
+
+```text
+risk_assets: SPY,QQQ,GC=F,CL=F,BTC-USD
+coin_ids: bitcoin,ethereum
+countries: US,CN,JP,EU
+```
+
+## SciCalculator：科学计算
+
+无需 `command`：
+
+```text
+expression
+```
+
+传入完整数学表达式。
+
+```text
+运算：+ - * / // % **，负号 -x
+常量：pi, e
+函数：sin, cos, tan, asin, acos, atan, sqrt, root(x,n),
+      log(x,[base]), exp, abs, ceil, floor, sinh, cosh, tanh
+统计：mean, median, mode, variance, stdev,
+      norm_pdf, norm_cdf, t_test
+```
+
+积分及误差传递中的表达式必须用引号包裹：
+
+```text
+integral('sin(x)', 0, pi)
+integral('sin(x)')
+error_propagation('expr_str', {'var1':(value,error), ...})
+confidence_interval([data_list], confidence_level)
+```
+
+不定积分返回 KaTeX 格式的 LaTeX 公式。
+
+{{VCPFileToolBox}}
 
 ## 8.论文入库。
 写入论文应该存入服务器文档库，使用ServerFileOperator写入如下文件夹。

@@ -37,5 +37,79 @@
     "messageType": "video_generation_status",
     "usePluginResultAsMessage": true,
     "targetClientType": "VCPLog"
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "媒体娱乐",
+    "jevDescPrompt": "使用阿里万象 Wan2.1 视频大模型进行文生视频（t2v）或图生视频（i2v）创作，并支持查询生成结果。",
+    "jevPrompt": "用户提供画面描述要求生成视频时选 submit；提供 request_id 查询生成状态时选 query（默认 submit）。在 submit 中，纯文本生成选 mode=t2v，提供参考图生成动态视频选 mode=i2v（默认 t2v）；横屏选 1280x720，竖屏选 720x1280。",
+    "agentPrompt": "当需要使用 Wan2.1 模型生成视频或查询进度时，使用 {媒体娱乐} 中的 `Wan2.1VideoGen`，视频描述或 request_id 放入【主要内容】，模式或画幅放入 []（[文生视频]、[图生视频]、[横屏]、[竖屏]）：\nJEV:「始」请使用 {媒体娱乐} 中的 `Wan2.1VideoGen`，生成视频【一只橘猫在太空漫步，地球在背景旋转】[文生视频][横屏]。「末」",
+    "defaultCommand": "submit",
+    "commands": [
+      {
+        "commandIdentifier": "submit",
+        "description": "提交 Wan2.1 视频生成异步任务",
+        "aliases": ["生成视频", "提交视频", "制作视频", "万象视频"],
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1000,
+            "description": "视频画面与动态描述提示词"
+          },
+          "mode": {
+            "type": "enum",
+            "required": true,
+            "description": "Wan2.1 视频生成模式",
+            "values": {
+              "t2v": "文本生成视频模式（Text-to-Video）",
+              "i2v": "图像生成视频模式（Image-to-Video）"
+            },
+            "aliases": {
+              "t2v": ["文生视频", "t2v", "文本生视频"],
+              "i2v": ["图生视频", "i2v", "图片生视频"]
+            },
+            "default": "t2v"
+          },
+          "resolution": {
+            "type": "enum",
+            "required": false,
+            "description": "视频输出分辨率",
+            "values": {
+              "1280x720": "16:9 标准高清横屏视频",
+              "720x1280": "9:16 标准高清竖屏视频",
+              "960x960": "1:1 正方形视频"
+            },
+            "aliases": {
+              "1280x720": ["横屏", "横版", "1280x720", "16:9"],
+              "720x1280": ["竖屏", "竖版", "720x1280", "9:16"],
+              "960x960": ["方图", "正方形", "960x960"]
+            },
+            "default": "1280x720"
+          },
+          "image_url": {
+            "type": "text",
+            "required": false,
+            "source": "url",
+            "maxLength": 500
+          }
+        }
+      },
+      {
+        "commandIdentifier": "query",
+        "description": "查询指定 request_id 的视频生成状态",
+        "aliases": ["查询进度", "视频状态", "查询结果", "查任务"],
+        "parameters": {
+          "request_id": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 100
+          }
+        }
+      }
+    ]
   }
 }
