@@ -130,6 +130,7 @@ class ToolCallParser {
 
     const args = {};
     let toolName = null;
+    let jevVirtualField = null;
     let isArchery = false;
     let archeryNoReply = false;
     let markHistory = false;
@@ -142,10 +143,9 @@ class ToolCallParser {
       if (field.key === 'tool_name') {
         toolName = trimmedValue;
       } else if (field.key.toLowerCase() === 'jev') {
-        // JEV 是实验性虚拟工具字段。它没有真实 plugin manifest，
-        // 由 ToolExecutor 在插件查找前展开为一个或多个白名单真实工具调用。
-        toolName = 'JEV';
-        args.expression = trimmedValue;
+        // JEV 可能是顶层实验性虚拟工具，也可能是真实工具（如 LightMemo、LexibankOperator）的合法参数。
+        // 暂存该字段，留待全部字段扫描完毕后依据 tool_name 是否显式声明进行延迟裁决，消解顺序敏感与身份抢占歧义。
+        jevVirtualField = field;
       } else if (field.key === 'archery') {
         isArchery = trimmedValue === 'true' || trimmedValue === 'no_reply';
         archeryNoReply = trimmedValue === 'no_reply';
@@ -158,6 +158,20 @@ class ToolCallParser {
       } else {
         // 工具参数：保留前导缩进（仅剥离首行紧贴标记的单次换行，以及末尾的单次换行/空白）
         args[field.key] = this._normalizeFieldValue(field.value);
+      }
+    }
+
+    // 字段扫描完成后的延迟裁决：
+    if (jevVirtualField) {
+      if (!toolName) {
+        // 未显式声明 tool_name 时，作为顶层实验性虚拟工具触发：
+        // 它没有真实 plugin manifest，由 ToolExecutor 在插件查找前展开为一个或多个白名单真实工具调用。
+        toolName = 'JEV';
+        args.expression = jevVirtualField.value.trim();
+      } else {
+        // 已显式声明 tool_name（如 LightMemo、LexibankOperator 等）：
+        // jev 作为该实体工具的普通参数处理，保留规范化后的参数值。
+        args[jevVirtualField.key] = this._normalizeFieldValue(jevVirtualField.value);
       }
     }
 

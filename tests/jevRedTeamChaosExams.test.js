@@ -14,23 +14,45 @@ const ROOT = path.join(__dirname, '..');
 const CONFIG_PATH = path.join(ROOT, 'ToolConfigs', 'jev_tool_call_exp.json');
 const PROMPT_PATH = path.join(ROOT, 'TVStxt', 'JevToolCallDecision.txt');
 
-function loadManifest(pluginName) {
-    const localBackend = path.join(ROOT, 'Plugin', pluginName, 'plugin-manifest.json');
-    if (fs.existsSync(localBackend)) return JSON.parse(fs.readFileSync(localBackend, 'utf8'));
-
-    const localDist = path.join(ROOT, 'VCPDistributedServer', 'Plugin', pluginName, 'plugin-manifest.json');
-    if (fs.existsSync(localDist)) return JSON.parse(fs.readFileSync(localDist, 'utf8'));
-
-    const siblingDist = path.join(ROOT, '..', 'VCPChat', 'VCPDistributedServer', 'Plugin', pluginName, 'plugin-manifest.json');
-    if (fs.existsSync(siblingDist)) return JSON.parse(fs.readFileSync(siblingDist, 'utf8'));
-
-    throw new Error(`找不到插件清单: ${pluginName}`);
+function safeLoadManifest(pluginName) {
+    const candidates = [
+        path.join(ROOT, 'Plugin', pluginName, 'plugin-manifest.json'),
+        path.join(ROOT, 'Plugin', pluginName, 'plugin-manifest.json.block'),
+        path.join(ROOT, 'VCPDistributedServer', 'Plugin', pluginName, 'plugin-manifest.json'),
+        path.join(ROOT, '..', 'VCPChat', 'VCPDistributedServer', 'Plugin', pluginName, 'plugin-manifest.json')
+    ];
+    for (const p of candidates) {
+        if (fs.existsSync(p)) {
+            try {
+                return JSON.parse(fs.readFileSync(p, 'utf8'));
+            } catch {
+                return null;
+            }
+        }
+    }
+    return null;
 }
 
-function makePlanner(plugins = []) {
+function makePlanner(plugins = [], t = null) {
+    const missing = [];
+    const items = [];
+    for (const name of plugins) {
+        const m = safeLoadManifest(name);
+        if (!m) {
+            missing.push(name);
+        } else {
+            items.push({ manifest: m, origin: 'local' });
+        }
+    }
+    if (missing.length > 0) {
+        if (t && typeof t.skip === 'function') {
+            t.skip(`[环境提示] 缺少可选插件 [${missing.join(', ')}]，跳过红队测试`);
+        }
+        return { registry: null, planner: null };
+    }
     const registry = new JevThirdPartyRegistry();
-    if (plugins.length > 0) {
-        registry.build(plugins.map(name => ({ manifest: loadManifest(name), origin: 'local' })));
+    if (items.length > 0) {
+        registry.build(items);
     }
     const planner = new JevToolCallExp({
         configPath: CONFIG_PATH,
