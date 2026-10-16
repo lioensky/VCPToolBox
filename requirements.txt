@@ -18,7 +18,3 @@ skyfield
 # Windows通知
 
 win10toast
-
-# YoutubeFetch dependencies
-google-api-python-client>=2.169.0
-youtube-transcript-api==1.2.4
