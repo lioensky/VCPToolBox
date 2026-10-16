@@ -1,7 +1,7 @@
 VCP工具调用格式与指南，总格式指导。
 
 【常用操作速查】
-- 用户要求"打开工具面板"、"启动VCPHumanToolBox"、"打开工具箱"时，使用PowerShellExecutor执行: Start-Process "F:\VCP\VCPChat\VCPHumanToolBox\run_silent.vbs"
+- 用户要求"打开工具面板"、"启动VCPHumanToolBox"、"打开工具箱"时，使用PowerShellExecutor执行: Start-Process "{{VarVchatPath}}\VCPHumanToolBox\run_silent.vbs"
 
 <<<[TOOL_REQUEST]>>>
 maid:「始」你的署名「末」, //重要字段，以进行任务追踪了解工具由谁发起，男性Agent可以使用valet字段，逻辑相同。

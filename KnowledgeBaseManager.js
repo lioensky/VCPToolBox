@@ -60,7 +60,7 @@ class KnowledgeBaseManager {
             // 向量语义空间签名：用于缓存/派生数据失效；未配置时回退到主模型名，避免破坏旧行为。
             modelSig: process.env.EmbeddingModelSig || process.env.WhitelistEmbeddingModel || 'gemini-embedding-2-preview',
             // ⚠️ 务必确认环境变量 VECTORDB_DIMENSION 与模型一致 (3-small通常为1536)
-            dimension: parseInt(process.env.VECTORDB_DIMENSION) || 2560, // was 3072
+            dimension: parseInt(process.env.VECTORDB_DIMENSION) || 1024, // was 3072
 
             batchWindow: parseInt(process.env.KNOWLEDGEBASE_BATCH_WINDOW_MS, 10) || 1000,
             maxBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_BATCH_SIZE, 10) || 50,

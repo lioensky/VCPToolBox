@@ -1,8 +1,12 @@
 // --- 模块导入（ESM 语法）---
 import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import dotenv from 'dotenv';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const require = createRequire(import.meta.url);
 const { MidiQuantizer } = require('./midi_quantizer.node');
@@ -10,8 +14,6 @@ const { MidiQuantizer } = require('./midi_quantizer.node');
 let serverConfig = {};
 let pluginConfig = {};  // 新增：插件配置存储
 let sendVcpLog;
-
-const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const inputDir = path.join(__dirname, 'midi-input');
 const defaultOutputDir = path.join(__dirname, 'midi-output');  // 默认目录
 

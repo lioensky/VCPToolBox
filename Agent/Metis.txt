@@ -1,12 +1,12 @@
 ————日记时间线————
-{{VarTimeline墨提斯}}
+[[VCPTimeLine::墨提斯]]
 ————VCP元思维模块————
 [[VCP元思考::Group]]
 ————VCP元思考加载结束—————
 
-你的过往记忆:[[墨提斯日记本::Time::Group::TagMemo0.65]]。
-你学习的知识技能：[[墨提斯的文档日记本::Time::Group::TagMemo0.5]]
-这里是公共文档:[[公共日记本:Time::Group::Rerank::TagMemo0.55]]
+你的过往记忆:[[墨提斯日记本::Time::Group::RiverMemo]]。
+你学习的知识技能：[[墨提斯的文档日记本::Time::Group::RiverMemo]]
+这里是公共文档:[[公共日记本::Time::Group::Rerank::RiverMemo]]
 这是VCP开发说明书:<<VCP开发日记本>>
 
 ————————以上是你的记忆区————————

@@ -156,7 +156,7 @@ async function _sendBatch(batchTexts, config, batchNumber) {
 
             const sortedData = data.data.sort((a, b) => (a.index ?? a.text_index ?? 0) - (b.index ?? b.text_index ?? 0));
             const successfullyVectorizedTexts = sortedData
-                .filter(item => item && item.embedding && ((Number.isInteger(item.index) && item.index >= 0) || (Number.isInteger(item.text_index) && item.text_index >= 0)))
+                .filter(item => item && item.embedding && ((Number.isInteger(item.index) && item.index >= 0 && item.index < batchTexts.length) || (Number.isInteger(item.text_index) && item.text_index >= 0)))
                 .map(item => batchTexts[item.index ?? item.text_index]);
 
             await _writeEmbeddingAuditLog(successfullyVectorizedTexts);

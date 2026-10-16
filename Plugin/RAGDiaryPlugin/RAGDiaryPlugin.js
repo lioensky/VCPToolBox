@@ -636,7 +636,7 @@ class RAGDiaryPlugin {
 
         const db = this.vectorDBManager?.db;
         const checkStmt = db ? db.prepare('SELECT vector FROM tags WHERE name = ?') : null;
-        const dim = this.vectorDBManager?.config?.dimension || 2560; // was 3072
+        const dim = this.vectorDBManager?.config?.dimension || 1024; // was 3072
 
         const tagsToEmbed = [];
         const tagResults = new Array(tags.length).fill(null);

@@ -161,6 +161,65 @@ const resolveRedirect = async (url, signal) => {
 };
 
 /**
+ * Qwen 联网搜索模式（本地新增；config.env 的 SearchMode=qwen 走这里）
+ */
+const callQwenMode = async (topic, keyword, showURL = false, deadline, signal) => {
+    const now = new Date();
+    const currentTime = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    const systemPrompt = `你是专业语义搜索助手。当前时间: ${currentTime}。系统已为你开启联网搜索：下方【检索主题】与【检索关键词】对应的内容来自刚刚抓取的实时互联网网页，是搜索结果，不是本地知识库、也不是你的训练记忆。请直接依据它提炼关键事实与数据，不要声称自己无法联网或无法获取实时信息。${showURL ? ' 请为每条关键信息标注来源站点名称；若检索结果中带有链接，请原样附上链接。' : ''}`;
+    const userMessage = `【检索主题】：${topic}\n【检索关键词】：${keyword}`;
+
+    // 判定这次到底有没有真的联网检索：命中检索时 DashScope 会把抓到的网页正文塞进上下文，
+    // prompt_tokens 会从几百直接跳到大几千；没检索时就只有系统提示 + 问题的量级。
+    const SEARCH_TOKEN_FLOOR = 1000;
+    // 兜底：即使检索了，模型也可能坚持声称自己不能联网
+    const NO_SEARCH_RE = /(无法|不能|没法|不具备)[^。；\n]{0,16}(联网|上网|连接互联网|访问互联网|访问网络)|没有[^。；\n]{0,8}(联网|上网)(能力|功能)/;
+
+    const attempt = async (userContent, label) => {
+        const remaining = deadline ? getRemainingMs(deadline) : 180000;
+        if (remaining <= 0) return { text: `[搜索超时] 关键词: ${keyword}。`, timedOut: true };
+        log(`[Qwen]${label} 搜索 "${keyword}" 剩余 ${remaining}ms`);
+        const payload = {
+            model: MODEL,
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userContent }
+            ],
+            stream: false,
+            max_tokens: TOKENS,
+            enable_search: true
+        };
+        const response = await axios.post(API_URL, payload, {
+            headers: { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
+            timeout: Math.min(180000, remaining),
+            signal,
+            proxy: false
+        });
+        const promptTokens = response.data && response.data.usage ? response.data.usage.prompt_tokens : null;
+        const text = response.data.choices[0].message.content || '';
+        log(`[Qwen]${label} prompt_tokens=${promptTokens === null ? '未知' : promptTokens}${promptTokens !== null && promptTokens < SEARCH_TOKEN_FLOOR ? '（疑似未触发检索）' : ''}`);
+        return { text, promptTokens };
+    };
+
+    try {
+        let r = await attempt(userMessage, '');
+        const notSearched = r.promptTokens !== null && r.promptTokens < SEARCH_TOKEN_FLOOR;
+        if (!r.timedOut && (notSearched || NO_SEARCH_RE.test(r.text))) {
+            log(`[Qwen] 首次结果${notSearched ? '未触发检索' : '模型自称无法联网'}，显式要求联网检索后重试一次`);
+            const retryContent = `请先联网检索以下内容，再基于检索到的实时网页作答；不要说无法联网。\n${userMessage}`;
+            const r2 = await attempt(retryContent, '(重试)');
+            if (!r2.timedOut && r2.text) r = r2;
+        }
+        return r.text;
+    } catch (error) {
+        const statusCode = error.response?.status || 'N/A';
+        let errorDetail = error.message;
+        try { if (error.response?.data) { errorDetail = typeof error.response.data === 'string' ? error.response.data.substring(0, 500) : JSON.stringify(error.response.data).substring(0, 500); } } catch (e) { }
+        return `[搜索失败] 关键词: ${keyword}。错误: ${errorDetail}`;
+    }
+};
+
+/**
  * Grounding 模式 (Google Search)
  */
 const callGroundingMode = async (topic, keyword, showURL = false, deadline, signal) => {
@@ -193,6 +252,7 @@ ${showURL ? '5. 严格溯源：每一条重要信息必须附带来源 URL。如
         ],
         stream: false,
         max_tokens: TOKENS,
+        enable_search: true,
         // NewAPI 的 /v1/chat/completions 兼容层对 Gemini Grounding 的处理更接近
         // OpenAI-compatible tool 外壳：保留原先可识别的 function/googleSearch 声明，
         // 但显式关闭 function_calling_config，避免 tool_choice: "auto" 触发
@@ -741,6 +801,24 @@ async function main(request) {
         return sendResponse({ status: "success", result: buildAiFriendlyResult(reportText) });
     }
 
+    if (SearchMode === 'qwen') {
+        let allResults = [];
+        let timedOut = false;
+        for (let i = 0; i < keywordList.length; i += CONCURRENCY) {
+            if (getRemainingMs(deadline) <= 0) { timedOut = true; break; }
+            const chunk = keywordList.slice(i, i + CONCURRENCY);
+            const settledResults = [];
+            const controllers = chunk.map(() => new AbortController());
+            const promises = chunk.map((kw, idx) => callQwenMode(SearchTopic, kw, showURL, deadline, controllers[idx].signal)
+                .then(result => { settledResults[idx] = { keyword: kw, result }; })
+                .catch(error => { settledResults[idx] = { keyword: kw, result: `[搜索失败] ${kw}: ${error.message}` }; }));
+            await withDeadline(Promise.allSettled(promises), deadline, () => { timedOut = true; controllers.forEach(c => c.abort()); return null; });
+            settledResults.forEach(item => { if (item) allResults.push(`### 关键词: ${item.keyword}\n${item.result}\n\n---\n\n`); });
+            if (timedOut) break;
+        }
+        const reportText = `## VSearch 检索报告 [模式: Qwen]\n\n**研究主题**: ${SearchTopic}\n\n${allResults.join('') || '[提示] 无结果。'}`;
+        return sendResponse({ status: "success", result: buildAiFriendlyResult(reportText) });
+    }
     // Grounding 模式：并发分批执行；到达安全截止时间时，抛弃未返回搜索，直接返回已完成结果
     let allResults = [];
     let timedOut = false;

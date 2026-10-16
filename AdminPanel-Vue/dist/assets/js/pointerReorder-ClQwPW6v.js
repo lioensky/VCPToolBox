@@ -1,0 +1,1 @@
+function s(e,r){const t=e.getBoundingClientRect();return r<t.top+t.height/2?"before":"after"}function x(e,r,t,f){const n=e.indexOf(r),o=e.indexOf(t);if(n<0||o<0)return[...e];const i=f==="after"?o+1:o,d=i>n?i-1:i;if(d===n)return[...e];const c=[...e],[a]=c.splice(n,1);return c.splice(d,0,a),c}export{x as n,s as t};

@@ -109,7 +109,7 @@ try {
     } else {
         try {
             // It's crucial to know the dimension. We'll read it from the environment or use the default.
-            const dimension = parseInt(process.env.VECTORDB_DIMENSION) || 2560; // was 3072
+            const dimension = parseInt(process.env.VECTORDB_DIMENSION) || 1024; // was 3072
             tagIndex = VexusIndex.load(tagIdxPath, null, dimension, 50000); // Capacity can be a safe default
             
             let removedCount = 0;

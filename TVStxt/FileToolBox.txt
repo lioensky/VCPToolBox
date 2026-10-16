@@ -20,8 +20,8 @@
   - `modules\chatCompletionHandler.js` (核心逻辑)
   - `Plugin\RAGDiaryPlugin` (记忆/思考)
 - **前端 (VChat)**: 使用 `FileOperator`
-  - `F:\VCP\VCPChat\main.js`, `renderer.js`
-  - `F:\VCP\VCPChat\modules`, `Assistantmodules`
+  - `{{VarVchatPath}}\main.js`, `renderer.js`
+  - `{{VarVchatPath}}\modules`, `Assistantmodules`
 
 前后端路径分别确认；已知位置直接读取，不必先搜索。调查结果需要保留在上下文时使用 `ink=mark_history`。
 
