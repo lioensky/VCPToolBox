@@ -19,8 +19,10 @@ const path = require('path');
 const fs = require('fs');
 
 // 优先使用仓库自带的便携 Node；找不到时退回当前进程的 node，避免 pm2 因解释器不存在而完全起不来。
+// 允许用 VCP_NODE_INTERPRETER 覆盖（例如便携运行时场景）。
 const RUNTIME_NODE = path.resolve(__dirname, '..', 'runtimes', 'node', 'node.exe');
-const NODE_INTERPRETER = fs.existsSync(RUNTIME_NODE) ? RUNTIME_NODE : process.execPath;
+const NODE_INTERPRETER = process.env.VCP_NODE_INTERPRETER
+  || (fs.existsSync(RUNTIME_NODE) ? RUNTIME_NODE : process.execPath);
 
 module.exports = {
   apps: [

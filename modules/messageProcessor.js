@@ -1,6 +1,32 @@
 // modules/messageProcessor.js
-const fs = require('fs').promises;
+const fsSync = require('fs');
+const fs = fsSync.promises;
 const path = require('path');
+
+const warnedMissingVarTarKeys = new Set();
+let cachedExampleVarTarKeys = null;
+
+function getKnownExampleVarTarKeys() {
+    if (cachedExampleVarTarKeys) {
+        return cachedExampleVarTarKeys;
+    }
+    const keys = new Set();
+    try {
+        const examplePath = path.join(__dirname, '..', 'config.env.example');
+        if (fsSync.existsSync(examplePath)) {
+            const raw = fsSync.readFileSync(examplePath, 'utf8');
+            const matches = raw.match(/^[ \t]*#?[ \t]*((?:Var|Tar)[A-Za-z0-9_]*)[ \t]*=/gm) || [];
+            for (const line of matches) {
+                const m = line.match(/((?:Var|Tar)[A-Za-z0-9_]*)/);
+                if (m) keys.add(m[1]);
+            }
+        }
+    } catch (_) {
+        // ignore read error
+    }
+    cachedExampleVarTarKeys = keys;
+    return cachedExampleVarTarKeys;
+}
 const lunarCalendar = require('chinese-lunar-calendar');
 const agentManager = require('./agentManager.js'); // 引入新的Agent管理器
 const tvsManager = require('./tvsManager.js'); // 引入新的TVS管理器
@@ -930,6 +956,19 @@ async function replaceOtherVariables(text, model, role, context) {
                     } else {
                         processedText = processedText.replaceAll(placeholder, value || `[未配置 ${envKey}]`);
                     }
+                }
+            }
+        }
+
+        // 检查是否存在 config.env.example 已定义但当前环境未配置的 Var*/Tar* 占位符，给出一次性告警（#497）
+        const unresolvedMatches = processedText.match(/\{\{((?:Var|Tar)[A-Za-z0-9_]+)\}\}/g);
+        if (unresolvedMatches) {
+            const knownExampleKeys = getKnownExampleVarTarKeys();
+            for (const rawToken of unresolvedMatches) {
+                const keyName = rawToken.slice(2, -2);
+                if (knownExampleKeys.has(keyName) && !warnedMissingVarTarKeys.has(keyName)) {
+                    warnedMissingVarTarKeys.add(keyName);
+                    console.warn(`[messageProcessor] Warning: Placeholder {{${keyName}}} was not expanded because "${keyName}" is missing from config.env (defined in config.env.example).`);
                 }
             }
         }
