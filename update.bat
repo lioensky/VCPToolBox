@@ -28,7 +28,7 @@ if errorlevel 1 (
     goto :fail
 )
 
-echo [1/6] Pulling latest source code with fast-forward only...
+echo [1/7] Pulling latest source code with fast-forward only...
 git pull --ff-only
 if errorlevel 1 (
     echo [ERROR] Git pull failed.
@@ -38,7 +38,7 @@ if errorlevel 1 (
 echo [OK] Source code updated.
 echo.
 
-echo [2/6] Installing/updating root Node.js dependencies...
+echo [2/7] Installing/updating root Node.js dependencies...
 call npm install --no-audit --no-fund
 if errorlevel 1 (
     echo [ERROR] Root npm install failed.
@@ -47,7 +47,7 @@ if errorlevel 1 (
 echo [OK] Root Node.js dependencies updated.
 echo.
 
-echo [3/6] Installing/updating Vexus build dependencies...
+echo [3/7] Installing/updating Vexus build dependencies...
 pushd "rust-vexus-lite"
 if errorlevel 1 (
     echo [ERROR] Directory not found: rust-vexus-lite
@@ -63,7 +63,7 @@ popd
 echo [OK] Vexus build dependencies updated.
 echo.
 
-echo [4/6] Building Rust Vexus vector database module...
+echo [4/7] Building Rust Vexus vector database module...
 pushd "rust-vexus-lite"
 if errorlevel 1 (
     echo [ERROR] Directory not found: rust-vexus-lite
@@ -79,7 +79,7 @@ popd
 echo [OK] Rust Vexus module built.
 echo.
 
-echo [5/6] Building DailyNoteSearcher Rust module...
+echo [5/7] Building DailyNoteSearcher Rust module...
 call npm run build:daily-note-searcher
 if errorlevel 1 (
     echo [ERROR] DailyNoteSearcher build failed.
@@ -88,13 +88,17 @@ if errorlevel 1 (
 echo [OK] DailyNoteSearcher built and deployed.
 echo.
 
-echo [6/6] Building CodeSearcher Rust module...
+echo [6/7] Building CodeSearcher Rust module...
 call npm run build:code-searcher
 if errorlevel 1 (
     echo [ERROR] CodeSearcher build failed.
     goto :fail
 )
 echo [OK] CodeSearcher built and deployed.
+echo.
+
+echo [7/7] Checking config.env against config.env.example...
+node -e "const fs=require('fs');if(!fs.existsSync('config.env.example')){console.log('[SKIP] config.env.example not found.');}else if(!fs.existsSync('config.env')){console.log('[WARN] config.env not found. Please copy config.env.example to config.env.');}else{const parse=p=>new Set((fs.readFileSync(p,'utf8').match(/^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=/gm)||[]).map(s=>s.split('=')[0].trim()));const ex=parse('config.env.example'),cur=parse('config.env');const miss=[...ex].filter(k=>!cur.has(k));if(miss.length){console.log('[WARN] Keys in config.env.example but missing from your config.env ('+miss.length+'):');console.log('       '+miss.join(', '));console.log('       (Tip only: review config.env.example and sync needed keys manually.)');}else{console.log('[OK] config.env contains all active keys from config.env.example.');}}"
 echo.
 
 echo ============================================================

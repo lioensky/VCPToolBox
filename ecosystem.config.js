@@ -8,11 +8,17 @@
 // 导致 tag_pair_similarity 表仍为空并反复进入“全量阻塞重算 → 被杀 → 重启”的死循环。
 // 如需在生产环境重新启用内存保护，可手动添加 max_memory_restart，例如 "4096M"。
 
+// 显式指定解释器，避免 pm2 用字面量 'node' 交给 PATH 解析，
+// 从而在多 Node 版本环境下解析到与原生模块 ABI 不匹配的 node。
+// 允许用 VCP_NODE_INTERPRETER 覆盖（例如便携运行时场景）。
+const NODE_INTERPRETER = process.env.VCP_NODE_INTERPRETER || process.execPath;
+
 module.exports = {
   apps: [
     {
       name: 'vcp-main',
       script: 'server.js',
+      interpreter: NODE_INTERPRETER,
       watch: false,
       // 不设置 max_memory_restart：允许主服务按系统可用内存自然增长。
       kill_timeout: 15000,
@@ -23,6 +29,7 @@ module.exports = {
     {
       name: 'vcp-admin',
       script: 'adminServer.js',
+      interpreter: NODE_INTERPRETER,
       watch: false,
       // 不设置 max_memory_restart：避免管理面板被 PM2 因短时 RSS 波动重启。
       kill_timeout: 5000,

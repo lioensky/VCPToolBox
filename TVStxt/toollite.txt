@@ -81,8 +81,8 @@ tool_name:「始」UrlFetch「末」,
 url:「始」(必需) 网页/文件 URL (本地路径请以 file:// 开头)「末」, 
 mode:「始」(可选) 'text' (默认) 或 'snapshot' (多模态网页快照) 或 'jina' (AI级网页转md，推荐该模式) 或 'image' (读取网络图片)「末」
 可用于获取服务器信息例如
-获取每日新闻：file://C:\Tsubasa\VCPToolbox\Plugin\DailyHot\dailyhot_cache.md 
-获取天气预报：file://C:\Tsubasa\VCPToolbox\Plugin\WeatherReporter\weather_cache.txt
+获取每日新闻：file://{{VarVCPToolBoxPath}}\Plugin\DailyHot\dailyhot_cache.md
+获取天气预报：file://{{VarVCPToolBoxPath}}\Plugin\WeatherReporter\weather_cache.txt
 
 ## 3. B站视频/内容爬虫 (BilibiliFetch)
 获取 B 站视频文本（TTS 转化）、弹幕、评论及高清快照。
