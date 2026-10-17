@@ -1,48 +1,8 @@
 'use strict';
 
 const crypto = require('crypto');
-const {
-    hashStable,
-    immutableSnapshot,
-    createBorrowedReadonlyMapView,
-    createBorrowedReadonlySetView,
-    createReadonlyCsr,
-    createReadonlyCsrFromArrays
-} = require('./modules/tagmemoV10/immutable');
-const {
-    buildProvenanceView,
-    createProvenanceViewFromSnapshot
-} = require('./modules/tagmemoV10/provenance');
-const RiverMemoArtifactRepository = require(
-    './modules/tagmemoV10/riverMemoArtifactRepository'
-);
-const {
-    createDualConditionedOperators,
-    createIdentityDualConditionedOperators
-} = require('./modules/tagmemoV10/agentConditioner');
-const { solveDualScaledFields } = require('./modules/tagmemoV10/scaledFieldSolver');
-const { buildCandidateSuperset } = require('./modules/tagmemoV10/candidateSuperset');
-const { projectCandidateCurves } = require('./modules/tagmemoV10/curveProjector');
-const { evaluateCandidateCurves } = require('./modules/tagmemoV10/unifiedPathGeometry');
-const {
-    evaluateRelativeTopologyBatch
-} = require('./modules/tagmemoV10/relativeTopologyMatcher');
-const { computeDstcBatch } = require('./modules/tagmemoV10/dstcObservables');
-const {
-    computeRiverObservability
-} = require('./modules/tagmemoV10/riverObservability');
-const {
-    computeDirectAnchorBatch
-} = require('./modules/tagmemoV10/directAnchorReadout');
-const {
-    scoreExperimentArm,
-    runExperimentArms
-} = require('./modules/tagmemoV10/experimentArms');
-const {
-    createFieldWorkspace
-} = require('./modules/tagmemoV10/fieldWorkspace');
-const V10DerivedAssetManager = require(
-    './modules/tagmemoV10/derivedAssetManager'
+const { hashStable, immutableSnapshot } = require(
+    './modules/tagmemoV10/immutable'
 );
 
 const VERSION = 'v10_alpha';
@@ -61,148 +21,28 @@ class TagMemoV10Engine {
             : () => null;
         this._activeArtifact = null;
         this._artifactGeneration = 0;
-        // 生产图资产、RiverMemo 持久化和精确派生资产均由 Rust MemoRuntime
-        // 与 SqliteStorageEngine 管理。JS 只保留控制面与兼容算法定义。
+        // 生产图资产、RiverMemo 持久化和派生资产均由 Rust MemoRuntime
+        // 管理。JS 只保留配置、artifact 句柄和兼容门面。
         this.artifactRepository = options.artifactRepository || null;
         this.derivedAssetManager = options.derivedAssetManager || null;
-        // RiverMemo 的传播域是全局 Tag 图，而不是任一 Diary/Chunk ANN 索引。
-        // 每个活动 Artifact 只常驻一份全局编译算子；候选索引的加载、卸载和
-        // 请求级文件范围均不得分裂该资产。
-        this._conditionedOperatorCache = new Map();
-        this._conditionedOperatorCacheLimit = 1;
-        this._conditionedOperatorCacheStats = {
-            hits: 0,
-            misses: 0,
-            bypasses: 0,
-            evictions: 0,
-            estimatedBytes: 0
-        };
-        this._nativeDualProjectionWarningLogged = false;
     }
 
     updateRagParams(ragParams) {
         this.ragParams = ragParams || {};
     }
 
-    _clearConditionedOperatorCache(reason = 'manual') {
-        const removed = this._conditionedOperatorCache?.size || 0;
-        this._conditionedOperatorCache?.clear();
-        if (this._conditionedOperatorCacheStats) {
-            this._conditionedOperatorCacheStats.estimatedBytes = 0;
-        }
-        if (removed > 0) {
-            console.log(
-                `[TagMemo-V10] 🧹 Conditioned operator LRU cleared: ` +
-                `reason=${reason}, removed=${removed}`
-            );
-        }
-    }
-
-    _estimateConditionedOperatorBytes(operator) {
-        if (operator?.zeroCopy === true) return 0;
-        const edgeCount = Math.max(0, Number(operator?.edgeCount) || 0);
-        const nodeCount = Math.max(0, Number(operator?.nodeCount) || 0);
-        // targets: Uint32(4); local/transfer/base/authorized/forbidden:
-        // 5 × Float64(8); rowOffsets: (nodeCount + 1) × Uint32(4).
-        return edgeCount * 44 + (nodeCount + 1) * 4;
-    }
-
     getConditionedOperatorCacheDiagnostics() {
-        const stats = this._conditionedOperatorCacheStats;
         return Object.freeze({
-            enabled: this._conditionedOperatorCacheLimit > 0,
-            limit: this._conditionedOperatorCacheLimit,
-            entries: this._conditionedOperatorCache.size,
-            hits: stats.hits,
-            misses: stats.misses,
-            bypasses: stats.bypasses,
-            evictions: stats.evictions,
-            estimatedBytes: stats.estimatedBytes
+            enabled: false,
+            limit: 0,
+            entries: 0,
+            hits: 0,
+            misses: 0,
+            bypasses: 0,
+            evictions: 0,
+            estimatedBytes: 0,
+            runtimeOwnership: 'rust-memo-runtime'
         });
-    }
-
-    _globalConditionedOperatorKey(artifact) {
-        return `global:${artifact.artifactSig}`;
-    }
-
-    _compileGlobalConditionedOperator(artifact) {
-        // 全局河网不施加节点、边权限或软亲和门：Local/Transfer 权重严格等于
-        // sharedTransport。复用基础 CSR，避免再常驻每边 44 字节的双算子副本。
-        return createIdentityDualConditionedOperators(
-            artifact.sharedTransport,
-            {
-                scopeHash: `global:${artifact.artifactSig}`
-            }
-        );
-    }
-
-    warmGlobalConditionedOperator(artifact = null) {
-        const snapshot = artifact || this.getArtifactSnapshot({
-            buildIfMissing: false
-        });
-        if (!snapshot) return null;
-
-        const cacheKey = this._globalConditionedOperatorKey(snapshot);
-        const cached = this._conditionedOperatorCache.get(cacheKey);
-        if (cached) return cached.operator;
-
-        const startedAt = Date.now();
-        const operator = this._compileGlobalConditionedOperator(snapshot);
-        const estimatedBytes = this._estimateConditionedOperatorBytes(operator);
-        this._conditionedOperatorCache.clear();
-        this._conditionedOperatorCache.set(cacheKey, {
-            operator,
-            estimatedBytes
-        });
-        this._conditionedOperatorCacheStats.misses++;
-        this._conditionedOperatorCacheStats.estimatedBytes = estimatedBytes;
-        console.log(
-            `[TagMemo-V10] 🌐 Global conditioned operator resident: ` +
-            `artifact=${snapshot.artifactSig}, edges=${operator.edgeCount}, ` +
-            `mode=${operator.zeroCopy === true ? 'zero-copy' : 'compiled'}, ` +
-            `memory=${(estimatedBytes / 1024 / 1024).toFixed(2)}MiB, ` +
-            `compileMs=${Date.now() - startedAt}`
-        );
-        return operator;
-    }
-
-    _getOrCreateConditionedOperator(
-        artifact,
-        queryState,
-        agentContext,
-        common,
-        options = {}
-    ) {
-        // 显式动态传播门改变算子数学定义，只能请求级编译且不得污染常驻资产。
-        // identityEligibility/rankingEligibility 仅用于后续候选观测，不影响传播。
-        const hasDynamicCallbacks = [
-            'nodeVisibility',
-            'queryGate',
-            'affinityGate'
-        ].some(name => typeof options[name] === 'function');
-        if (hasDynamicCallbacks) {
-            this._conditionedOperatorCacheStats.bypasses++;
-            return {
-                operator: createDualConditionedOperators(
-                    artifact.sharedTransport,
-                    agentContext,
-                    common
-                ),
-                status: 'dynamic-callback'
-            };
-        }
-
-        const cacheKey = this._globalConditionedOperatorKey(artifact);
-        const cached = this._conditionedOperatorCache.get(cacheKey);
-        if (cached) {
-            this._conditionedOperatorCacheStats.hits++;
-            return { operator: cached.operator, status: 'hit' };
-        }
-
-        return {
-            operator: this.warmGlobalConditionedOperator(artifact),
-            status: 'miss'
-        };
     }
 
     ensureExactDerivedAssets() {
@@ -217,14 +57,9 @@ class TagMemoV10Engine {
         return this.derivedAssetManager?.lastDiagnostics || null;
     }
 
-    createFieldWorkspace(queryState) {
-        return createFieldWorkspace(queryState);
-    }
-
     invalidateArtifact(reason = 'source-artifact-changed') {
         const previous = this._activeArtifact;
         this._activeArtifact = null;
-        this._clearConditionedOperatorCache(`artifact-invalidated:${reason}`);
         if (previous) {
             console.warn(
                 `[TagMemo-V10] 🧹 Active artifact invalidated: reason=${reason}, ` +
@@ -406,257 +241,6 @@ class TagMemoV10Engine {
         });
     }
 
-    _resolveArtifactBuildContext(options = {}) {
-        const sourceBundle = options.sourceBundle
-            || this.v9Engine?.getArtifactBundleSnapshot?.('v9');
-        if (!sourceBundle?.propagationKernel) {
-            const error = new Error(
-                'V10 Alpha requires an available V9.2 fact transport snapshot'
-            );
-            error.code = 'TAGMEMO_V10_SOURCE_ARTIFACT_UNAVAILABLE';
-            throw error;
-        }
-        const effectiveConfig = this.getEffectiveConfig(options.config || {});
-        return Object.freeze({
-            sourceBundle,
-            effectiveConfig,
-            configHash: hashStable(effectiveConfig, 32),
-            databaseGeneration: this._computeDatabaseGeneration(),
-            modelSig: sourceBundle.modelSig
-                || this.v9Engine?.modelSig
-                || 'unknown-model'
-        });
-    }
-
-    buildArtifact(options = {}) {
-        const error = new Error(
-            'JS V10 artifact construction is retired; use NativeKnowledgeRuntime'
-        );
-        error.code = 'TAGMEMO_JS_GRAPH_RUNTIME_RETIRED';
-        throw error;
-
-        const context = options.context
-            || this._resolveArtifactBuildContext(options);
-        const sourceBundle = context.sourceBundle;
-        const sharedTransport = createReadonlyCsr(
-            sourceBundle.propagationKernel
-        );
-        if (sharedTransport.maxRowMass >= 1) {
-            const error = new Error(
-                `V10 transport violates convergence budget: maxRowMass=${sharedTransport.maxRowMass}`
-            );
-            error.code = 'TAGMEMO_V10_UNSTABLE_TRANSPORT';
-            throw error;
-        }
-
-        const provenanceView = buildProvenanceView(this.db, {
-            maxTagsPerFile: 100,
-            direction:
-                this.ragParams?.KnowledgeBaseManager?.orderedCooccurrence || {}
-        });
-        const graphGeneration = sharedTransport.contentSig;
-        const provenanceGeneration = provenanceView.generation;
-        const artifactSig = hashStable({
-            schema: ARTIFACT_SCHEMA,
-            version: VERSION,
-            algorithmVersion: ALGORITHM_VERSION,
-            graphGeneration,
-            databaseGeneration: context.databaseGeneration,
-            provenanceGeneration,
-            modelSig: context.modelSig,
-            configHash: context.configHash,
-            sourceArtifactSig: sourceBundle.artifactSig || null,
-            residualArtifactSig:
-                sourceBundle.residualArtifact?.artifactSig || null
-        }, 48);
-
-        return Object.freeze({
-            schema: ARTIFACT_SCHEMA,
-            version: VERSION,
-            algorithmVersion: ALGORITHM_VERSION,
-            artifactSig,
-            generation: null,
-            graphGeneration,
-            databaseGeneration: context.databaseGeneration,
-            provenanceGeneration,
-            modelSig: context.modelSig,
-            configHash: context.configHash,
-            sourceArtifactSig: sourceBundle.artifactSig || null,
-            sourceGraphGeneration: sourceBundle.graphGeneration || '',
-            sharedTransport,
-            // V9 Bundle 采用 RCU 整代替换，发布后不再原位修改。V10 只借用只读
-            // 门面，避免把 Pairwise/残差/入流/虫洞辅助资产按代完整复制一遍。
-            rawResidualRatioView: createBorrowedReadonlyMapView(
-                sourceBundle.rawResidualRatioMap
-            ),
-            anchorGainView: createBorrowedReadonlyMapView(
-                sourceBundle.anchorGainMap
-            ),
-            pairwiseView: createBorrowedReadonlyMapView(
-                sourceBundle.pairwiseView
-            ),
-            inboundMassView: createBorrowedReadonlyMapView(
-                sourceBundle.inboundMassMap
-            ),
-            maxInbound: Math.max(
-                0,
-                Number(sourceBundle.maxInbound) || 0
-            ),
-            wormholeView: createBorrowedReadonlySetView(
-                sourceBundle.wormholeEdges
-            ),
-            provenanceView,
-            effectiveConfig: context.effectiveConfig,
-            publishedAt: null
-        });
-    }
-
-    _viewToArray(view) {
-        if (!view) return [];
-        if (typeof view.toArray === 'function') return view.toArray();
-        if (view instanceof Map || view instanceof Set) return [...view];
-        return Array.isArray(view) ? view.slice() : [];
-    }
-
-    exportArtifactPayload(artifact) {
-        if (
-            !artifact
-            || artifact.schema !== ARTIFACT_SCHEMA
-            || typeof artifact.sharedTransport?.exportSnapshot !== 'function'
-            || typeof artifact.provenanceView?.exportSnapshot !== 'function'
-        ) {
-            throw new TypeError('Cannot persist an invalid V10/RiverMemo artifact');
-        }
-        return {
-            schema: RiverMemoArtifactRepository.PAYLOAD_SCHEMA,
-            artifact: {
-                schema: artifact.schema,
-                version: artifact.version,
-                algorithmVersion: artifact.algorithmVersion,
-                artifactSig: artifact.artifactSig,
-                graphGeneration: artifact.graphGeneration,
-                databaseGeneration: artifact.databaseGeneration,
-                provenanceGeneration: artifact.provenanceGeneration,
-                modelSig: artifact.modelSig,
-                configHash: artifact.configHash,
-                sourceArtifactSig: artifact.sourceArtifactSig,
-                sourceGraphGeneration: artifact.sourceGraphGeneration || '',
-                maxInbound: artifact.maxInbound,
-                effectiveConfig: artifact.effectiveConfig
-            },
-            sharedTransport: artifact.sharedTransport.exportSnapshot(),
-            provenanceView: artifact.provenanceView.exportSnapshot(),
-            rawResidualRatioView: this._viewToArray(
-                artifact.rawResidualRatioView
-            ),
-            anchorGainView: this._viewToArray(artifact.anchorGainView),
-            // Rust Topology V3 已对查询河网 Tag 与候选 Tag 使用原始向量计算
-            // 精确余弦；持久化 Pairwise HashMap 是同一语义量的冗余副本。
-            // JS 活跃 V10 仍通过借用 V9 pairwiseView 支持兼容实验接口。
-            inboundMassView: this._viewToArray(artifact.inboundMassView),
-            wormholeView: this._viewToArray(artifact.wormholeView)
-        };
-    }
-
-    _restoreMapView(entries) {
-        return immutableSnapshot(new Map(
-            (Array.isArray(entries) ? entries : []).map(entry => [
-                entry?.[0],
-                entry?.[1]
-            ])
-        ));
-    }
-
-    restoreArtifact(payload, options = {}) {
-        if (payload?.schema !== RiverMemoArtifactRepository.PAYLOAD_SCHEMA) {
-            throw new TypeError('Invalid persisted RiverMemo artifact payload');
-        }
-        const metadata = payload.artifact || {};
-        const sourceBundle = options.sourceBundle
-            && options.sourceBundle.artifactSig === metadata.sourceArtifactSig
-            ? options.sourceBundle
-            : null;
-        const sharedTransport = createReadonlyCsrFromArrays(
-            payload.sharedTransport
-        );
-        const provenanceView = createProvenanceViewFromSnapshot(
-            payload.provenanceView
-        );
-        if (
-            sharedTransport.contentSig !== metadata.graphGeneration
-            || provenanceView.generation !== metadata.provenanceGeneration
-        ) {
-            throw new Error('Persisted RiverMemo artifact generation mismatch');
-        }
-        return Object.freeze({
-            schema: metadata.schema,
-            version: metadata.version,
-            algorithmVersion: metadata.algorithmVersion,
-            artifactSig: metadata.artifactSig,
-            generation: null,
-            graphGeneration: metadata.graphGeneration,
-            databaseGeneration: metadata.databaseGeneration,
-            provenanceGeneration: metadata.provenanceGeneration,
-            modelSig: metadata.modelSig,
-            configHash: metadata.configHash,
-            sourceArtifactSig: metadata.sourceArtifactSig,
-            sourceGraphGeneration: metadata.sourceGraphGeneration || '',
-            sharedTransport,
-            rawResidualRatioView: sourceBundle
-                ? createBorrowedReadonlyMapView(
-                    sourceBundle.rawResidualRatioMap
-                )
-                : this._restoreMapView(payload.rawResidualRatioView),
-            anchorGainView: sourceBundle
-                ? createBorrowedReadonlyMapView(sourceBundle.anchorGainMap)
-                : this._restoreMapView(payload.anchorGainView),
-            pairwiseView: sourceBundle
-                ? createBorrowedReadonlyMapView(sourceBundle.pairwiseView)
-                : this._restoreMapView(payload.pairwiseView),
-            inboundMassView: sourceBundle
-                ? createBorrowedReadonlyMapView(sourceBundle.inboundMassMap)
-                : this._restoreMapView(payload.inboundMassView),
-            maxInbound: Math.max(
-                0,
-                Number(sourceBundle?.maxInbound ?? metadata.maxInbound) || 0
-            ),
-            wormholeView: sourceBundle
-                ? createBorrowedReadonlySetView(sourceBundle.wormholeEdges)
-                : immutableSnapshot(
-                    new Set(
-                        Array.isArray(payload.wormholeView)
-                            ? payload.wormholeView
-                            : []
-                    )
-                ),
-            provenanceView,
-            effectiveConfig: immutableSnapshot(
-                metadata.effectiveConfig || {}
-            ),
-            publishedAt: Number(options.publishedAt) || null
-        });
-    }
-
-    _artifactManifest(artifact, overrides = {}) {
-        return {
-            artifactSig: artifact.artifactSig,
-            schemaVersion:
-                RiverMemoArtifactRepository.PAYLOAD_SCHEMA,
-            algorithmVersion: artifact.algorithmVersion,
-            sourceV9ArtifactSig: artifact.sourceArtifactSig,
-            sourceGraphGeneration:
-                artifact.sourceGraphGeneration || '',
-            modelSig: artifact.modelSig,
-            configHash: artifact.configHash,
-            databaseGeneration: artifact.databaseGeneration,
-            provenanceGeneration: artifact.provenanceGeneration,
-            nodeCount: artifact.sharedTransport?.nodeCount || 0,
-            edgeCount: artifact.sharedTransport?.edgeCount || 0,
-            createdAt: Date.now(),
-            ...overrides
-        };
-    }
-
     publishNativeArtifactHandle(nativeResult, options = {}) {
         if (
             !nativeResult?.artifactSig
@@ -713,9 +297,6 @@ class TagMemoV10Engine {
             residentAtPublication: nativeResult.resident === true,
             publishedAt
         });
-        this._clearConditionedOperatorCache(
-            'native-artifact-handle-published'
-        );
         this._activeArtifact = artifact;
         console.log(
             `[TagMemo-V10] 🦀 Native control handle published: ` +
@@ -736,7 +317,6 @@ class TagMemoV10Engine {
         ) {
             throw new TypeError('Invalid V10 artifact staging object');
         }
-        this._clearConditionedOperatorCache('native-runtime-owns-graph');
         const generation = ++this._artifactGeneration;
         const publishedAt = Number(options.publishedAt) || Date.now();
         const nodeCount = Math.max(
@@ -824,610 +404,65 @@ class TagMemoV10Engine {
         return this._activeArtifact;
     }
 
-    createSourceFieldFromVector(vector, options = {}) {
-        if (!this.tagIndex || typeof this.tagIndex.search !== 'function') {
-            const error = new Error('V10 source observation requires the global Tag index');
-            error.code = 'TAGMEMO_V10_TAG_INDEX_UNAVAILABLE';
-            throw error;
-        }
-        const input = vector instanceof Float32Array
-            ? vector
-            : new Float32Array(vector || []);
-        if (input.length !== Number(this.config.dimension)) {
-            throw new RangeError(
-                `V10 query vector dimension must be ${this.config.dimension}, got ${input.length}`
-            );
-        }
-        const sourceK = Math.max(1, Math.floor(Number(options.sourceK) || 16));
-        const minimumScore = Math.max(-1, Math.min(1, Number(options.minimumScore) || 0));
-        const results = this.tagIndex.search(input, sourceK);
-        const positive = results
-            .map(item => [
-                Number(item.id),
-                Math.max(0, (Number(item.score) || 0) - minimumScore)
-            ])
-            .filter(([id, mass]) => Number.isFinite(id) && id > 0 && mass > 0);
-        const total = positive.reduce((sum, entry) => sum + entry[1], 0);
-        if (total <= 0) {
-            const error = new Error('V10 query did not activate any Tag source');
-            error.code = 'TAGMEMO_V10_EMPTY_SOURCE';
-            throw error;
-        }
-        return Object.freeze(
-            positive.map(([id, mass]) => Object.freeze([id, mass / total]))
+    _retiredJsGraphOperation(operation) {
+        const error = new Error(
+            `${operation} is retired; use NativeKnowledgeRuntime`
+        );
+        error.code = 'TAGMEMO_JS_GRAPH_RUNTIME_RETIRED';
+        error.retryable = false;
+        return error;
+    }
+
+    createSourceFieldFromVector() {
+        throw this._retiredJsGraphOperation('createSourceFieldFromVector()');
+    }
+
+    projectDualFieldVectors() {
+        throw this._retiredJsGraphOperation('projectDualFieldVectors()');
+    }
+
+    projectFieldVector() {
+        throw this._retiredJsGraphOperation('projectFieldVector()');
+    }
+
+    prepareQuery() {
+        throw this._retiredJsGraphOperation(
+            'prepareQuery(); use KnowledgeBaseManager.prepareUnifiedMemoObservation()'
         );
     }
 
-    projectDualFieldVectors(localEntries, transferEntries) {
-        const dimension = Math.max(1, Number(this.config.dimension) || 0);
-        const local = Array.isArray(localEntries) ? localEntries : [];
-        const transfer = Array.isArray(transferEntries) ? transferEntries : [];
-        const localMassById = new Map(local.map(entry => [
-            Number(entry[0]),
-            Math.max(0, Number(entry[1]) || 0)
-        ]));
-        const transferMassById = new Map(transfer.map(entry => [
-            Number(entry[0]),
-            Math.max(0, Number(entry[1]) || 0)
-        ]));
-        const ids = [...new Set([
-            ...localMassById.keys(),
-            ...transferMassById.keys()
-        ].filter(Number.isFinite))];
-        if (ids.length === 0) {
-            return Object.freeze({
-                localVector: null,
-                transferVector: null,
-                diagnostics: Object.freeze({
-                    backend: 'empty-field',
-                    requestedTags: 0,
-                    foundTags: 0,
-                    missingTags: 0,
-                    nativeElapsedMs: 0
-                })
-            });
-        }
-
-        if (typeof this.tagIndex?.projectDualWeighted === 'function') {
-            const localMasses = new Float64Array(ids.length);
-            const transferMasses = new Float64Array(ids.length);
-            for (let index = 0; index < ids.length; index++) {
-                localMasses[index] = localMassById.get(ids[index]) || 0;
-                transferMasses[index] = transferMassById.get(ids[index]) || 0;
-            }
-            try {
-                const native = this.tagIndex.projectDualWeighted(
-                    ids,
-                    localMasses,
-                    transferMasses
-                );
-                const localVector = native?.localVector
-                    ? new Float32Array(native.localVector)
-                    : null;
-                const transferVector = native?.transferVector
-                    ? new Float32Array(native.transferVector)
-                    : null;
-                return Object.freeze({
-                    localVector,
-                    transferVector,
-                    diagnostics: Object.freeze({
-                        backend: 'native-usearch',
-                        requestedTags: Math.max(
-                            0,
-                            Number(native?.requestedCount) || ids.length
-                        ),
-                        foundTags: Math.max(0, Number(native?.foundCount) || 0),
-                        missingTags: Math.max(0, Number(native?.missingCount) || 0),
-                        nativeElapsedMs: Math.max(
-                            0,
-                            Number(native?.elapsedMs) || 0
-                        )
-                    })
-                });
-            } catch (error) {
-                if (!this._nativeDualProjectionWarningLogged) {
-                    this._nativeDualProjectionWarningLogged = true;
-                    console.warn(
-                        '[TagMemo-V10] Native usearch dual projection failed; ' +
-                        'falling back to exact SQLite projection:',
-                        error.message || error
-                    );
-                }
-            }
-        }
-
-        return Object.freeze({
-            localVector: null,
-            transferVector: null,
-            diagnostics: Object.freeze({
-                backend: 'unavailable',
-                requestedTags: ids.length,
-                foundTags: null,
-                missingTags: ids.length,
-                nativeElapsedMs: null,
-                reason: 'native-dual-projection-unavailable'
-            })
-        });
+    createQueryState() {
+        throw this._retiredJsGraphOperation('createQueryState()');
     }
 
-    projectFieldVector(fieldEntries, options = {}) {
-        const projected = this.projectDualFieldVectors(fieldEntries, []);
-        return projected.localVector;
-    }
-
-    prepareQuery(query, agentContext = {}, options = {}) {
-        if (this._activeArtifact?.storageMode === 'rust-memo-runtime') {
-            const error = new Error(
-                'JS V10 query solving is retired; use KnowledgeBaseManager.prepareUnifiedMemoObservation()'
-            );
-            error.code = 'TAGMEMO_JS_GRAPH_RUNTIME_RETIRED';
-            throw error;
-        }
-        const prepareStartedAt = performance.now();
-        const preparationTimings = {};
-        let stageStartedAt = prepareStartedAt;
-        const markPreparationStage = name => {
-            const now = performance.now();
-            preparationTimings[name] = now - stageStartedAt;
-            stageStartedAt = now;
-        };
-        const artifact = options.artifact || this.getArtifactSnapshot();
-        if (!this._isArtifactCompatibleWithActiveV9(artifact)) {
-            const error = new Error(
-                'V10/RiverMemo artifact does not match the active V9 source artifact'
-            );
-            error.code = 'TAGMEMO_V10_SOURCE_GENERATION_MISMATCH';
-            throw error;
-        }
-        const queryVectorRaw = query?.vector || options.vector;
-        const queryVector = queryVectorRaw instanceof Float32Array
-            ? queryVectorRaw
-            : new Float32Array(queryVectorRaw || []);
-        const configuredObservation = {
-            ...(artifact.effectiveConfig.sourceObservation || {}),
-            // sourceObservation 曾被早期调用方用于配置覆盖；保留兼容，
-            // 新调用统一使用 sourceObservationConfig，避免与观测结果混淆。
-            ...(options.sourceObservation || {}),
-            ...(options.sourceObservationConfig || {})
-        };
-
-        let sourceObservation = options.sourceObservationResult || null;
-        let sourceField = options.sourceField || null;
-        if (!sourceField && !sourceObservation) {
-            const mode = String(
-                configuredObservation.mode || 'v9_epa_pyramid_spike'
-            ).trim().toLowerCase();
-            if (
-                mode === 'v9_epa_pyramid_spike'
-                && typeof this.v9Engine?.observeQueryForV10 === 'function'
-            ) {
-                sourceObservation = this.v9Engine.observeQueryForV10(
-                    queryVector,
-                    {
-                        artifactBundle: this.v9Engine
-                            .getArtifactBundleSnapshot?.('v9'),
-                        baseTagBoost: configuredObservation.baseTagBoost,
-                        coreBoostFactor:
-                            configuredObservation.coreBoostFactor,
-                        coreTags: options.coreTags || []
-                    }
-                );
-                if (
-                    sourceObservation?.sourceMode
-                    === 'v9_epa_pyramid_spike'
-                    && Array.isArray(sourceObservation.sourceField)
-                    && sourceObservation.sourceField.length > 0
-                ) {
-                    sourceField = sourceObservation.sourceField;
-                }
-            }
-        }
-
-        if (!sourceField) {
-            if (configuredObservation.allowKnnFallback !== true) {
-                const error = new Error(
-                    'V10 denoised source observation is unavailable and KNN fallback is disabled'
-                );
-                error.code = 'TAGMEMO_V10_DENOISED_SOURCE_UNAVAILABLE';
-                throw error;
-            }
-            sourceField = this.createSourceFieldFromVector(
-                queryVector,
-                {
-                    sourceK: configuredObservation.fallbackSourceK
-                        ?? configuredObservation.sourceK
-                        ?? 16,
-                    minimumScore: configuredObservation.minimumScore
-                }
-            );
-            sourceObservation = Object.freeze({
-                schema: 'tagmemo-v10-source-observation-fallback-v1',
-                sourceMode: 'tag_knn_fallback',
-                sourceField,
-                enhancedVector: null,
-                queryRiverGraph: null,
-                epa: Object.freeze({}),
-                pyramid: Object.freeze({}),
-                propagation: Object.freeze({}),
-                diagnostics: Object.freeze({
-                    sourceNodes: sourceField.length,
-                    fallback: true
-                })
-            });
-        }
-        markPreparationStage('sourceObservationMs');
-
-        const initial = this.createQueryState(
-            query,
-            agentContext,
-            artifact,
-            {
-                ...options,
-                sourceField,
-                sourceObservation
-            }
-        );
-        markPreparationStage('createQueryStateMs');
-        const solved = this.solveQueryState(initial, {
-            ...options,
-            artifact
-        });
-        markPreparationStage('solveDualFieldsMs');
-        const denoisedVector = sourceObservation?.enhancedVector
-            ? new Float32Array(sourceObservation.enhancedVector)
-            : this.projectFieldVector(solved.sourceField);
-        markPreparationStage('sourceProjectionMs');
-        const projectedFields = this.projectDualFieldVectors(
-            solved.localField,
-            solved.transferField
-        );
-        markPreparationStage('dualProjectionTotalMs');
-        preparationTimings.dualProjectionNativeMs = Math.max(
-            0,
-            Number(projectedFields.diagnostics?.nativeElapsedMs) || 0
-        );
-        preparationTimings.totalMs = performance.now() - prepareStartedAt;
-        return Object.freeze({
-            queryState: solved,
-            denoisedVector,
-            localVector: projectedFields.localVector,
-            transferVector: projectedFields.transferVector,
-            fieldProjectionDiagnostics: projectedFields.diagnostics || null,
-            preparationTimings: Object.freeze(preparationTimings)
-        });
-    }
-
-    createQueryState(query, agentContext = {}, artifact = null, options = {}) {
-        const snapshot = artifact || this.getArtifactSnapshot();
-        if (!snapshot || snapshot.version !== VERSION) {
-            const error = new Error('A V10 Alpha artifact snapshot is required');
-            error.code = 'TAGMEMO_V10_ARTIFACT_UNAVAILABLE';
-            throw error;
-        }
-
-        const normalizedQuery = this._normalizeQuery(query);
-        const normalizedAgentContext = this._normalizeAgentContext(agentContext);
-        const sourceField = this._normalizeSourceField(options.sourceField);
-        const sourceObservation = this._normalizeSourceObservation(
-            options.sourceObservation,
-            sourceField
-        );
-        const solver = immutableSnapshot({
-            local: {
-                ...snapshot.effectiveConfig.localField,
-                ...(options.localField || {})
-            },
-            transfer: {
-                ...snapshot.effectiveConfig.transferField,
-                ...(options.transferField || {})
-            }
-        });
-        const scopeHash = hashStable({
-            agentId: normalizedAgentContext.agentId,
-            diaryNames: normalizedAgentContext.diaryNames,
-            allowedFileIds: normalizedAgentContext.allowedFileIds,
-            deniedFileIds: normalizedAgentContext.deniedFileIds,
-            visibilityMode: normalizedAgentContext.visibilityMode
-        }, 32);
-        const queryId = options.queryId || crypto.randomUUID();
-        const createdAt = Number(options.createdAt) || Date.now();
-
-        return Object.freeze({
-            schema: QUERY_TRACE_SCHEMA,
-            version: VERSION,
-            algorithmVersion: ALGORITHM_VERSION,
-            queryId,
-            artifactSig: snapshot.artifactSig,
-            artifactGeneration: snapshot.generation,
-            configHash: snapshot.configHash,
-            databaseGeneration: snapshot.databaseGeneration,
-            scopeHash,
-            query: normalizedQuery,
-            agentContext: normalizedAgentContext,
-            sourceField,
-            sourceObservation,
-            queryRiverGraph: sourceObservation.queryRiverGraph,
-            solver,
-            conditionedTransportView: null,
-            localField: null,
-            transferField: null,
-            localDomain: null,
-            transferDomain: null,
-            fieldDiagnostics: null,
-            createdAt
-        });
-    }
-
-    buildCandidateSuperset(sourceCandidates, options = {}) {
-        const artifact = options.artifact || this.getArtifactSnapshot();
-        return buildCandidateSuperset(
-            sourceCandidates,
-            {
-                ...artifact.effectiveConfig.candidateSuperset,
-                ...(options.config || {})
-            }
-        );
+    buildCandidateSuperset() {
+        throw this._retiredJsGraphOperation('buildCandidateSuperset()');
     }
 
     projectCandidateCurves() {
-        const error = new Error(
-            'JS V10 candidate curve projection is retired; use NativeKnowledgeRuntime'
-        );
-        error.code = 'TAGMEMO_JS_GRAPH_RUNTIME_RETIRED';
-        throw error;
+        throw this._retiredJsGraphOperation('projectCandidateCurves()');
     }
 
-    _loadTagVectorsById(ids) {
-        const uniqueIds = [...new Set(
-            (Array.isArray(ids) ? ids : [])
-                .map(Number)
-                .filter(id => Number.isFinite(id) && id > 0)
-        )];
-        const vectorById = new Map();
-        const dimension = Math.max(1, Number(this.config.dimension) || 0);
-        if (uniqueIds.length === 0) return vectorById;
-        if (typeof this.tagIndex?.projectDualWeighted !== 'function') {
-            return vectorById;
-        }
-
-        // 向量回填属于 Rust 查询上下文；JS V10 退休路径不再从 SQLite 读取 BLOB。
-        return vectorById;
+    evaluateCandidateCurves() {
+        throw this._retiredJsGraphOperation('evaluateCandidateCurves()');
     }
 
-    evaluateCandidateCurves(curves, queryState, options = {}) {
-        const artifact = options.artifact || this.getArtifactSnapshot();
-        const fieldWorkspace = options.fieldWorkspace
-            || this.createFieldWorkspace(queryState);
-        const semanticSimilarityCache = options.semanticSimilarityCache
-            || new Map();
-        const pathBatch = evaluateCandidateCurves(
-            curves,
-            queryState,
-            {
-                ...artifact.effectiveConfig.pathGeometry,
-                ...(options.config || {}),
-                fieldWorkspace
-            }
-        );
-        const relativeConfig = {
-            ...artifact.effectiveConfig.relativeTopology,
-            ...(options.relativeTopology || {})
-        };
-        if (relativeConfig.enabled === false) return pathBatch;
-
-        // Pairwise 缓存不是完整 Tag×Tag 矩阵。一次性读取查询河网节点向量，
-        // 供匹配器在缓存未命中时执行真实语义对应；禁止在逐候选循环中查库。
-        const riverNodeIds = [...new Set(
-            (Array.isArray(queryState?.queryRiverGraph?.nodes)
-                ? queryState.queryRiverGraph.nodes
-                : []
-            )
-                .map(node => Number(node.id))
-                .filter(id => Number.isFinite(id) && id > 0)
-        )];
-        const queryTagVectorById = this._loadTagVectorsById(riverNodeIds);
-
-        return evaluateRelativeTopologyBatch(
-            pathBatch,
-            queryState,
-            {
-                ...relativeConfig,
-                pairwiseView: artifact.pairwiseView,
-                provenanceView: artifact.provenanceView,
-                queryTagVectorById,
-                semanticSimilarityCache,
-                fieldWorkspace
-            }
-        );
+    computeDstcObservables() {
+        throw this._retiredJsGraphOperation('computeDstcObservables()');
     }
 
-    computeDstcObservables(pathBatch, queryState, options = {}) {
-        const artifact = options.artifact || this.getArtifactSnapshot();
-        return computeDstcBatch(
-            pathBatch,
-            queryState,
-            {
-                ...artifact.effectiveConfig.pathGeometry,
-                ...artifact.effectiveConfig.dstc,
-                ...options
-            }
-        );
+    scoreExperimentArm() {
+        throw this._retiredJsGraphOperation('scoreExperimentArm()');
     }
 
-    _prepareExperimentOptions(dstcBatch, options, artifact) {
-        const queryState = options.queryState || null;
-        const riverObservability = options.riverObservability
-            || computeRiverObservability(
-                queryState,
-                {
-                    ...artifact.effectiveConfig.riverObservability,
-                    structRoleMinOmega:
-                        artifact.effectiveConfig.dstc
-                            ?.topologyV3StructRoleMinOmega
-                }
-            );
-
-        let anchorBatch = options.anchorBatch || null;
-        if (!anchorBatch && queryState) {
-            const provenance = Array.isArray(
-                queryState.sourceObservation?.fieldProvenance
-            )
-                ? queryState.sourceObservation.fieldProvenance
-                : [];
-            const provenanceIds = provenance
-                .filter(entry => {
-                    const value = entry?.[1] || {};
-                    return Number(value.hop) === 0
-                        && (
-                            value.sourceType === 'core'
-                            || value.sourceType === 'seed'
-                        );
-                })
-                .map(entry => Number(entry?.[0]));
-            const fallbackIds = Array.isArray(queryState.sourceField)
-                ? queryState.sourceField.map(entry => Number(entry?.[0]))
-                : [];
-            const anchorIds = provenanceIds.length > 0
-                ? provenanceIds
-                : fallbackIds;
-            const anchorTagVectorById = this._loadTagVectorsById(anchorIds);
-            anchorBatch = computeDirectAnchorBatch(
-                dstcBatch,
-                queryState,
-                {
-                    ...artifact.effectiveConfig.directAnchor,
-                    inboundMassView: artifact.inboundMassView,
-                    maxInbound: artifact.maxInbound,
-                    anchorTagVectorById,
-                    semanticSimilarityCache:
-                        options.semanticSimilarityCache || null
-                }
-            );
-        }
-
-        return {
-            ...artifact.effectiveConfig.dstc,
-            ...options,
-            queryState,
-            riverObservabilityConfig:
-                artifact.effectiveConfig.riverObservability,
-            riverObservability,
-            anchorBatch
-        };
+    runExperimentArms() {
+        throw this._retiredJsGraphOperation('runExperimentArms()');
     }
 
-    scoreExperimentArm(dstcBatch, arm = 'pure', options = {}) {
-        const artifact = options.artifact || this.getArtifactSnapshot();
-        return scoreExperimentArm(
-            dstcBatch,
-            arm,
-            this._prepareExperimentOptions(dstcBatch, options, artifact)
+    solveQueryState() {
+        throw this._retiredJsGraphOperation(
+            'solveQueryState(); use Rust MemoRuntime'
         );
-    }
-
-    runExperimentArms(dstcBatch, options = {}) {
-        const artifact = options.artifact || this.getArtifactSnapshot();
-        return runExperimentArms(
-            dstcBatch,
-            this._prepareExperimentOptions(dstcBatch, options, artifact)
-        );
-    }
-
-    solveQueryState(queryState, options = {}) {
-        if (this._activeArtifact?.storageMode === 'rust-memo-runtime') {
-            const error = new Error(
-                'JS scaled-resolvent runtime is retired; dual fields are owned by Rust MemoRuntime'
-            );
-            error.code = 'TAGMEMO_JS_GRAPH_RUNTIME_RETIRED';
-            throw error;
-        }
-        const artifact = options.artifact || this.getArtifactSnapshot();
-        const replay = this.assertReplayCompatible(queryState, artifact);
-        if (!replay.compatible) {
-            const error = new Error(
-                `V10 query state is not replay-compatible: ${replay.mismatches.join(', ')}`
-            );
-            error.code = 'TAGMEMO_V10_REPLAY_MISMATCH';
-            error.mismatches = replay.mismatches;
-            throw error;
-        }
-
-        const agentContext = {
-            ...queryState.agentContext,
-            publicDiaryNames: options.publicDiaryNames || []
-        };
-        const conditioningConfig = artifact.effectiveConfig.agentConditioning || {};
-        const nodeVisibility = typeof options.nodeVisibility === 'function'
-            ? options.nodeVisibility
-            : () => true;
-        const identityEligibility = typeof options.identityEligibility === 'function'
-            ? options.identityEligibility
-            : () => false;
-        const rankingEligibility = typeof options.rankingEligibility === 'function'
-            ? options.rankingEligibility
-            : () => true;
-        const provenanceClassifier =
-            typeof artifact.provenanceView.createContextClassifier === 'function'
-                ? artifact.provenanceView.createContextClassifier(agentContext)
-                : null;
-        const edgeProvenance = provenanceClassifier
-            ? (sourceId, targetId) =>
-                provenanceClassifier.getEdgeMass(sourceId, targetId)
-            : (sourceId, targetId, context) =>
-                artifact.provenanceView.getEdgeMass(sourceId, targetId, context);
-        const common = {
-            ...conditioningConfig,
-            scopeHash: queryState.scopeHash,
-            failClosed: artifact.effectiveConfig.safety?.failClosed !== false,
-            nodeVisibility,
-            identityEligibility,
-            rankingEligibility,
-            edgeProvenance,
-            queryGate: options.queryGate,
-            affinityGate: options.affinityGate
-        };
-        const operatorResolution = this._getOrCreateConditionedOperator(
-            artifact,
-            queryState,
-            agentContext,
-            common,
-            options
-        );
-        const dualOperator = operatorResolution.operator;
-        const localOperator = dualOperator.localOperator;
-        const transferOperator = dualOperator.transferOperator;
-        const solved = solveDualScaledFields({
-            localOperator,
-            transferOperator,
-            dualOperator,
-            sourceField: queryState.sourceField,
-            local: queryState.solver.local,
-            transfer: queryState.solver.transfer,
-            support: artifact.effectiveConfig.effectiveSupport
-        });
-
-        return Object.freeze({
-            ...queryState,
-            conditionedTransportView: Object.freeze({
-                schema: dualOperator.schema,
-                pairSig: dualOperator.pairSig,
-                edgeCount: dualOperator.edgeCount,
-                permittedEdges: dualOperator.permittedEdges,
-                forbiddenEdgeMass: dualOperator.forbiddenEdgeMass,
-                local: localOperator,
-                transfer: transferOperator
-            }),
-            localField: solved.localField,
-            transferField: solved.transferField,
-            localDomain: solved.localDomain,
-            transferDomain: solved.transferDomain,
-            fieldDiagnostics: Object.freeze({
-                ...solved.diagnostics,
-                conditionedOperatorCacheStatus: operatorResolution.status,
-                conditionedOperatorCache:
-                    this.getConditionedOperatorCacheDiagnostics()
-            })
-        });
     }
 
     assertReplayCompatible(queryState, artifact = null) {
