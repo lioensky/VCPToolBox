@@ -288,6 +288,8 @@ export declare class NativeKnowledgeRuntime {
    * 只返回控制面元数据，不读取或解压持久化 payload。
    */
   getNativeMemoManifest(dbPath: string, modelSig: string, configHash: string): Promise<unknown>
+  /** 通过 Rust Write Actor 清理过期和超额的 RiverMemo 持久化资产。 */
+  pruneNativeMemoArtifacts(dbPath: string, retainReadyArtifacts?: number | undefined | null, failedRetentionMs?: number | undefined | null): Promise<unknown>
   /** 在 Rust 后台线程构建单个日记本的轻量日期索引。 */
   getDiaryDateIndex(dbPath: string, diaryName: string): Promise<unknown>
   /** 在 Rust 后台线程按 Tag 名称查找单个 Tag 向量；Vector BLOB 不经过 Node.js。 */

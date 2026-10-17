@@ -1609,6 +1609,112 @@ impl Task for NativeMemoManifestLookupTask {
     }
 }
 
+#[derive(Debug)]
+pub struct NativeMemoArtifactPruneTask {
+    pub(crate) db_path: String,
+    pub(crate) retain_ready_artifacts: usize,
+    pub(crate) failed_retention_ms: i64,
+}
+
+impl Task for NativeMemoArtifactPruneTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let retain = self.retain_ready_artifacts.clamp(1, 1000) as i64;
+        let retention_ms = self
+            .failed_retention_ms
+            .max(60 * 60 * 1000)
+            .min(365_i64 * 24 * 60 * 60 * 1000);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
+            .unwrap_or(0);
+        let cutoff = now.saturating_sub(retention_ms);
+
+        let receipt = with_registered_write(&self.db_path, move |transaction| {
+            let retired = transaction
+                .execute(
+                    "UPDATE rivermemo_artifacts
+                     SET status = 'retired',
+                         payload = NULL,
+                         payload_checksum = NULL,
+                         updated_at = ?1
+                     WHERE status = 'ready'
+                       AND artifact_sig NOT IN (
+                           SELECT artifact_sig
+                           FROM rivermemo_artifacts
+                           WHERE status = 'ready'
+                           ORDER BY published_at DESC, updated_at DESC
+                           LIMIT ?2
+                       )",
+                    rusqlite::params![now, retain],
+                )
+                .map_err(|error| {
+                    format!("Retire old native Memo artifacts failed: {}", error)
+                })?;
+            let deleted = transaction
+                .execute(
+                    "DELETE FROM rivermemo_artifacts
+                     WHERE status IN ('failed', 'retired')
+                       AND updated_at < ?1",
+                    rusqlite::params![cutoff],
+                )
+                .map_err(|error| {
+                    format!("Delete expired native Memo artifacts failed: {}", error)
+                })?;
+
+            Ok(crate::storage::WriteReceipt {
+                operation: format!(
+                    "prune_rivermemo_artifacts;retired={};deleted={}",
+                    retired, deleted
+                ),
+                database_generation: 0,
+                facts_changed: false,
+            })
+        })
+        .map_err(|error| {
+            Error::from_reason(format!(
+                "Native Memo artifact prune Write Actor commit failed: {}",
+                error
+            ))
+        })?;
+
+        let mut retired = 0_i64;
+        let mut deleted = 0_i64;
+        if let Some(summary) = receipt.operation.split(';').nth(1) {
+            for item in summary.split(',') {
+                let mut pair = item.split('=');
+                match pair.next() {
+                    Some("retired") => {
+                        retired = pair.next().and_then(|value| value.parse().ok()).unwrap_or(0)
+                    }
+                    Some("deleted") => {
+                        deleted = pair.next().and_then(|value| value.parse().ok()).unwrap_or(0)
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        serde_json::to_string(&serde_json::json!({
+            "retired": retired,
+            "deleted": deleted,
+            "retainedReadyArtifacts": retain
+        }))
+        .map_err(|error| {
+            Error::from_reason(format!(
+                "Encode native Memo artifact prune receipt failed: {}",
+                error
+            ))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
 /// 一次原生 River 查询任务：前半段 ANN/合并/去重的结果不解析到 JS，
 /// 而是直接成为 Topology V3 的候选输入。
 pub struct NativeRiverQueryTask {
@@ -2316,6 +2422,9 @@ impl NativeKnowledgeRuntime {
             db_path,
             plan_json,
             tag_vectors: tag_vectors.to_vec(),
+            global_tag_index: self.global_tag_index.clone(),
+            global_tag_content_revision: self.global_tag_content_revision.clone(),
+            memo_runtime: self.memo_runtime.clone(),
         }))
     }
 
@@ -2340,6 +2449,33 @@ impl NativeKnowledgeRuntime {
         Ok(AsyncTask::new(KvVectorLookupTask {
             db_path,
             key,
+        }))
+    }
+
+    /// 通过 Rust Write Actor 清理过期和超额的 RiverMemo 持久化资产。
+    #[napi]
+    pub fn prune_native_memo_artifacts(
+        &self,
+        db_path: String,
+        retain_ready_artifacts: Option<u32>,
+        failed_retention_ms: Option<i64>,
+    ) -> Result<AsyncTask<NativeMemoArtifactPruneTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "pruneNativeMemoArtifacts requires a database path".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(NativeMemoArtifactPruneTask {
+            db_path,
+            retain_ready_artifacts: retain_ready_artifacts.unwrap_or(2) as usize,
+            failed_retention_ms: failed_retention_ms
+                .unwrap_or(7 * 24 * 60 * 60 * 1000),
         }))
     }
 

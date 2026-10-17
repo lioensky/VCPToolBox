@@ -592,17 +592,6 @@ class TagConsistencyService {
                 503
             );
         }
-        if (
-            !this.owner.tagIndex
-            || typeof this.owner.tagIndex.applyTagDelta !== 'function'
-        ) {
-            throw this._createError(
-                '活动 Tag 索引缺少 applyTagDelta ABI，请先重新构建 rust-vexus-lite',
-                'TAG_CONSISTENCY_DELTA_ABI_UNAVAILABLE',
-                503
-            );
-        }
-
         this.running = true;
         try {
             const verifiedPlan = await this._buildPlan();
@@ -662,55 +651,18 @@ class TagConsistencyService {
                 );
             }
 
-            const dimension = Number(receipt.dimension);
             const upsertedTagIds = Array.isArray(receipt.upsertedTagIds)
-                ? receipt.upsertedTagIds.map(Number)
+                ? receipt.upsertedTagIds.map(Number).filter(Number.isSafeInteger)
                 : [];
             const removedTagIds = Array.isArray(receipt.removedTagIds)
-                ? receipt.removedTagIds.map(Number)
+                ? receipt.removedTagIds.map(Number).filter(Number.isSafeInteger)
                 : [];
-            const encodedVectors = String(receipt.upsertedVectorsBase64 || '');
-            const vectorBytes = encodedVectors
-                ? Buffer.from(encodedVectors, 'base64')
-                : Buffer.alloc(0);
-            if (
-                !Number.isSafeInteger(dimension)
-                || dimension !== this.owner.config.dimension
-                || vectorBytes.byteLength !==
-                    upsertedTagIds.length * dimension * Float32Array.BYTES_PER_ELEMENT
-            ) {
+            if (receipt.indexReady !== true) {
                 throw this._createError(
-                    'Rust Tag 一致性提交返回的索引差分向量无效',
-                    'TAG_CONSISTENCY_INVALID_INDEX_DELTA',
-                    500
-                );
-            }
-
-            let deltaResult;
-            try {
-                const vectorView = new Float32Array(
-                    vectorBytes.buffer,
-                    vectorBytes.byteOffset,
-                    vectorBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
-                );
-                for (const value of vectorView) {
-                    if (!Number.isFinite(value)) {
-                        throw new Error('Tag index delta contains a non-finite value');
-                    }
-                }
-                deltaResult = await this.owner.tagIndex.applyTagDelta(
-                    removedTagIds,
-                    upsertedTagIds,
-                    new Float32Array(vectorView)
-                );
-            } catch (error) {
-                const deltaError = this._createError(
-                    'Tag 事实已提交，但活动索引差分失败；索引需要由 Rust 生命周期管理器恢复',
+                    'Tag 事实已提交，但 Rust 活动索引差分未完成；索引需要由 Rust 生命周期管理器恢复',
                     'TAG_CONSISTENCY_INDEX_DELTA_FAILED',
                     500
                 );
-                deltaError.cause = error;
-                throw deltaError;
             }
 
             this.snapshots.delete(snapshot.token);
@@ -722,15 +674,15 @@ class TagConsistencyService {
                 applied: true,
                 summary: verifiedPlan.summary,
                 indexUpdate: {
-                    mode: 'active-rust-delta',
+                    mode: 'native-rust-delta',
                     requestedDeletes: removedTagIds.length,
                     requestedUpserts: upsertedTagIds.length,
-                    totalVectors: Number(deltaResult?.totalVectors) || 0
+                    totalVectors: Number(receipt.totalVectors) || 0
                 },
                 checkpointPublished: false,
                 waveAssetsStale: true,
                 recommendedAction: 'active-full-training',
-                message: 'Tag 事实已由 Rust Write Actor 提交，活动索引已完成原生差分；持久化基线将由 Rust 索引生命周期管理器发布。'
+                message: 'Tag 事实与活动索引差分均由 Rust 完成；持久化基线将由 Rust 索引生命周期管理器发布。'
             };
         } finally {
             this.running = false;

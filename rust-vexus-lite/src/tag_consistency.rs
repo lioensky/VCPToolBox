@@ -1,9 +1,12 @@
+use crate::rivermemo_topology_v3::MemoRuntime;
 use crate::storage::{with_registered_write, WriteReceipt};
 use napi::bindgen_prelude::*;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use usearch::Index;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,7 +37,6 @@ struct TagConsistencyCommitResult {
     affected_files: usize,
     removed_tag_ids: Vec<i64>,
     upserted_tag_ids: Vec<i64>,
-    upserted_vectors_base64: String,
     dimension: usize,
     total_vectors: usize,
     facts_committed: bool,
@@ -45,6 +47,9 @@ pub struct TagConsistencyCommitTask {
     pub(crate) db_path: String,
     pub(crate) plan_json: String,
     pub(crate) tag_vectors: Vec<f32>,
+    pub(crate) global_tag_index: Arc<RwLock<Index>>,
+    pub(crate) global_tag_content_revision: Arc<AtomicU64>,
+    pub(crate) memo_runtime: Arc<MemoRuntime>,
 }
 
 impl Task for TagConsistencyCommitTask {
@@ -312,30 +317,26 @@ impl Task for TagConsistencyCommitTask {
             .take()
             .ok_or_else(|| Error::from_reason("Tag consistency commit completed without details"))?;
 
-        let total_vectors = upserted_vectors.len() / dimension;
-        let mut vector_bytes = Vec::with_capacity(
-            upserted_vectors
-                .len()
-                .checked_mul(std::mem::size_of::<f32>())
-                .ok_or_else(|| Error::from_reason("Tag consistency vector byte size overflow"))?,
+        let total_vectors = upserted_tag_ids.len();
+        let index_ready = apply_tag_index_delta(
+            &self.global_tag_index,
+            &self.global_tag_content_revision,
+            &self.memo_runtime,
+            &removed_tag_ids,
+            &upserted_tag_ids,
+            &upserted_vectors,
+            dimension,
         );
-        for value in &upserted_vectors {
-            vector_bytes.extend_from_slice(&value.to_ne_bytes());
-        }
-        use base64::Engine;
-        let upserted_vectors_base64 =
-            base64::engine::general_purpose::STANDARD.encode(vector_bytes);
 
         serde_json::to_string(&TagConsistencyCommitResult {
             digest,
             affected_files,
             removed_tag_ids,
             upserted_tag_ids,
-            upserted_vectors_base64,
             dimension,
             total_vectors,
             facts_committed: true,
-            index_ready: false,
+            index_ready,
         })
         .map_err(|error| Error::from_reason(format!("Encode Tag consistency result failed: {}", error)))
     }
@@ -343,6 +344,57 @@ impl Task for TagConsistencyCommitTask {
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
     }
+}
+
+fn apply_tag_index_delta(
+    index: &Arc<RwLock<Index>>,
+    content_revision: &Arc<AtomicU64>,
+    memo_runtime: &Arc<MemoRuntime>,
+    remove_ids: &[i64],
+    upsert_ids: &[i64],
+    upsert_vectors: &[f32],
+    dimension: usize,
+) -> bool {
+    if upsert_vectors.len() != upsert_ids.len().saturating_mul(dimension)
+        || remove_ids.iter().chain(upsert_ids.iter()).any(|id| *id <= 0)
+    {
+        return false;
+    }
+
+    let mut seen = HashSet::with_capacity(upsert_ids.len());
+    if upsert_ids.iter().any(|id| !seen.insert(*id)) {
+        return false;
+    }
+
+    let Ok(guard) = index.write() else {
+        return false;
+    };
+    let required_capacity = guard
+        .size()
+        .saturating_add(upsert_ids.len())
+        .saturating_add(1);
+    if required_capacity >= guard.capacity()
+        && guard.reserve(required_capacity.saturating_add(required_capacity / 2)).is_err()
+    {
+        return false;
+    }
+
+    for id in remove_ids {
+        let _ = guard.remove(*id as u64);
+    }
+    for (position, id) in upsert_ids.iter().enumerate() {
+        let start = position.saturating_mul(dimension);
+        let end = start.saturating_add(dimension);
+        let vector = &upsert_vectors[start..end];
+        let _ = guard.remove(*id as u64);
+        if guard.add(*id as u64, vector).is_err() {
+            return false;
+        }
+    }
+    drop(guard);
+
+    content_revision.fetch_add(1, Ordering::AcqRel);
+    memo_runtime.clear().is_ok()
 }
 
 #[derive(Debug)]

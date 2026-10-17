@@ -403,6 +403,7 @@ class KnowledgeBaseManager {
                 || typeof this.nativeKnowledgeRuntime.getTagConsistencySnapshot !== 'function'
                 || typeof this.nativeKnowledgeRuntime.commitTagConsistency !== 'function'
                 || typeof this.nativeKnowledgeRuntime.getNativeMemoManifest !== 'function'
+                || typeof this.nativeKnowledgeRuntime.pruneNativeMemoArtifacts !== 'function'
                 || typeof this.nativeKnowledgeRuntime.restoreGlobalTagIndex !== 'function'
                 || typeof this.nativeKnowledgeRuntime.restoreDiaryIndex !== 'function'
                 || typeof this.nativeKnowledgeRuntime.checkpointGlobalTagIndex !== 'function'
@@ -835,7 +836,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
      * Rust 已完成构建、持久化与 MemoRuntime Arc 发布后的控制面回调。
      * 本方法只发布轻量句柄，禁止编译 JS CSR、解压 payload 或清空原生 runtime。
      */
-    onNativeMemoArtifactPublished(nativeResult, v9Handle = null) {
+    async onNativeMemoArtifactPublished(nativeResult, v9Handle = null) {
         if (!this.tagMemoV10Engine) return null;
         const effectiveConfig = this._buildNativeMemoEffectiveConfig();
         const artifact = this.tagMemoV10Engine.publishNativeArtifactHandle(
@@ -848,17 +849,42 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             `${v9Handle?.artifactSig || artifact.sourceArtifactSig}, ` +
             `nativeGeneration=${artifact.nativeGeneration ?? 'unknown'}.`
         );
+
         try {
-            const pruneResult = this.tagMemoV10Engine?.artifactRepository?.prune();
-            if (pruneResult && (pruneResult.retired > 0 || pruneResult.deleted > 0)) {
+            if (
+                !this.nativeKnowledgeRuntime
+                || typeof this.nativeKnowledgeRuntime.pruneNativeMemoArtifacts
+                    !== 'function'
+            ) {
+                throw new Error(
+                    'NativeKnowledgeRuntime Memo artifact prune ABI is unavailable'
+                );
+            }
+            const rawPruneResult =
+                await this.nativeKnowledgeRuntime.pruneNativeMemoArtifacts(
+                    this.dbPath,
+                    2,
+                    7 * 24 * 60 * 60 * 1000
+                );
+            const pruneResult = typeof rawPruneResult === 'string'
+                ? JSON.parse(rawPruneResult)
+                : rawPruneResult;
+            if (
+                pruneResult
+                && (
+                    Number(pruneResult.retired) > 0
+                    || Number(pruneResult.deleted) > 0
+                )
+            ) {
                 console.log(
                     `[KnowledgeBase] 🧹 Native Memo lifecycle prune complete: ` +
-                    `retired=${pruneResult.retired}, deleted=${pruneResult.deleted}.`
+                    `retired=${Number(pruneResult.retired) || 0}, ` +
+                    `deleted=${Number(pruneResult.deleted) || 0}.`
                 );
             }
         } catch (pruneError) {
             console.warn(
-                '[KnowledgeBase] ⚠️ Native Memo artifact repository prune warning:',
+                '[KnowledgeBase] ⚠️ Native Memo artifact prune warning:',
                 pruneError.message || pruneError
             );
         }
