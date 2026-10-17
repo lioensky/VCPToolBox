@@ -86,12 +86,12 @@ class JevThirdPartyRegistry {
     constructor(options = {}) {
         this.catalogPath = options.catalogPath || DEFAULT_CATALOG_PATH;
         this.officialConfigPath = options.officialConfigPath || DEFAULT_OFFICIAL_CONFIG_PATH;
+        this.policyPath = options.policyPath || null;
         this._catalog = options.catalog || null;
         this._officialConfig = options.officialConfig || null;
         this.entries = new Map();
         this.builtAt = null;
     }
-
     // ---------- 配置 ----------
 
     getCatalog() {

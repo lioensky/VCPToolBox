@@ -71,11 +71,12 @@ function makeAcManifest(overrides = {}) {
 }
 
 function makeRegistry(items) {
-    const registry = new JevThirdPartyRegistry();
+    const registry = new JevThirdPartyRegistry({
+        policyPath: path.join(__dirname, '__non_existent_jev_policy__.json')
+    });
     registry.build(items);
     return registry;
 }
-
 function makePlanner({ items = [{ manifest: makeAcManifest() }], env = EXP_ON, configured = false, answers = {} } = {}) {
     const decisions = [];
     const registry = makeRegistry(items);
