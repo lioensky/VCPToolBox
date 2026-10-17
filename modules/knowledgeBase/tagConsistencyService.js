@@ -64,27 +64,69 @@ class TagConsistencyService {
         }
     }
 
-    _loadDatabaseState() {
-        const files = this.owner.db.prepare(
-            'SELECT id, path, diary_name, checksum, mtime, size FROM files ORDER BY id'
-        ).all();
-        const tagRows = this.owner.db.prepare(
-            'SELECT id, name, vector FROM tags ORDER BY id'
-        ).all();
-        const relationRows = this.owner.db.prepare(`
-            SELECT ft.file_id, ft.tag_id, ft.position, t.name
-            FROM file_tags ft
-            JOIN tags t ON t.id = ft.tag_id
-            ORDER BY ft.file_id, ft.position, ft.tag_id
-        `).all();
+    async _loadDatabaseState() {
+        if (
+            !this.owner.nativeKnowledgeRuntime
+            || typeof this.owner.nativeKnowledgeRuntime.getTagConsistencySnapshot
+                !== 'function'
+        ) {
+            throw this._createError(
+                'NativeKnowledgeRuntime Tag 一致性快照 ABI 不可用',
+                'NATIVE_STORAGE_ABI_UNAVAILABLE',
+                503
+            );
+        }
 
+        const raw = await this.owner.nativeKnowledgeRuntime
+            .getTagConsistencySnapshot(this.owner.dbPath);
+        const snapshot = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!snapshot || typeof snapshot !== 'object') {
+            throw this._createError(
+                'Rust Tag 一致性快照格式无效',
+                'TAG_CONSISTENCY_SNAPSHOT_INVALID',
+                500
+            );
+        }
+
+        const files = (Array.isArray(snapshot.files) ? snapshot.files : [])
+            .map(row => ({
+                id: Number(row?.id),
+                path: String(row?.path || ''),
+                diary_name: String(row?.diary_name || ''),
+                checksum: String(row?.checksum || ''),
+                mtime: Number(row?.mtime) || 0,
+                size: Number(row?.size) || 0
+            }))
+            .filter(row => Number.isSafeInteger(row.id) && row.id > 0);
+
+        const tagRows = (Array.isArray(snapshot.tags) ? snapshot.tags : [])
+            .map(row => ({
+                id: Number(row?.id),
+                name: String(row?.name || ''),
+                vector: row?.hasVector === true ? true : null
+            }))
+            .filter(row => Number.isSafeInteger(row.id) && row.id > 0 && row.name);
+
+        const relations = Array.isArray(snapshot.relations)
+            ? snapshot.relations
+            : [];
         const relationsByFile = new Map();
-        for (const row of relationRows) {
-            if (!relationsByFile.has(row.file_id)) relationsByFile.set(row.file_id, []);
-            relationsByFile.get(row.file_id).push({
-                tagId: Number(row.tag_id),
-                name: row.name,
-                position: Number(row.position) || 0
+        for (const row of relations) {
+            const fileId = Number(row?.fileId);
+            const tagId = Number(row?.tagId);
+            if (
+                !Number.isSafeInteger(fileId)
+                || fileId <= 0
+                || !Number.isSafeInteger(tagId)
+                || tagId <= 0
+            ) {
+                continue;
+            }
+            if (!relationsByFile.has(fileId)) relationsByFile.set(fileId, []);
+            relationsByFile.get(fileId).push({
+                tagId,
+                name: String(row?.name || ''),
+                position: Number(row?.position) || 0
             });
         }
 
@@ -161,7 +203,7 @@ class TagConsistencyService {
     }
 
     async _buildPlan() {
-        const state = this._loadDatabaseState();
+        const state = await this._loadDatabaseState();
         const existingTagByName = new Map(state.tagRows.map(row => [row.name, row]));
         const expectedReferenceCounts = new Map();
         const filePlans = [];
@@ -523,135 +565,6 @@ class TagConsistencyService {
         }
     }
 
-    async _recoverActiveTagIndex() {
-        if (!this.VexusIndex) {
-            throw this._createError(
-                'VexusIndex 不可用，无法恢复全局 Tag 索引',
-                'TAG_CONSISTENCY_INDEX_UNAVAILABLE',
-                503
-            );
-        }
-
-        const expectedCount = Number(this.owner.db.prepare(
-            'SELECT COUNT(*) AS count FROM tags WHERE vector IS NOT NULL'
-        ).get()?.count) || 0;
-        const capacity = Math.max(
-            50000,
-            Math.ceil(expectedCount * 1.2) + 100
-        );
-
-        // 首选正常冷启动路径：健康旧 checkpoint + 修复后 SQLite 差分。
-        const baseline = this.owner.indexRepository.loadGlobalTagBaseline(
-            capacity
-        );
-        let recoveredIndex = baseline?.index || null;
-        let recoveryMode = recoveredIndex
-            ? 'baseline-plus-sqlite-delta'
-            : 'sqlite-full-rebuild';
-
-        if (!recoveredIndex) {
-            recoveredIndex = new this.VexusIndex(
-                this.owner.config.dimension,
-                capacity
-            );
-            const recoveredCount = await recoveredIndex.recoverFromSqlite(
-                this.owner.dbPath,
-                'tags',
-                null
-            );
-            if (Number(recoveredCount) !== expectedCount) {
-                throw this._createError(
-                    `全局 Tag 索引恢复不完整：expected=${expectedCount}, recovered=${recoveredCount}`,
-                    'TAG_CONSISTENCY_INDEX_RECOVERY_INCOMPLETE',
-                    500
-                );
-            }
-        }
-
-        const actualCount = Number(
-            recoveredIndex.stats?.().totalVectors
-        ) || 0;
-        if (actualCount !== expectedCount) {
-            throw this._createError(
-                `全局 Tag 索引恢复校验失败：expected=${expectedCount}, actual=${actualCount}`,
-                'TAG_CONSISTENCY_INDEX_RECOVERY_INCOMPLETE',
-                500
-            );
-        }
-
-        this._bindActiveTagIndex(recoveredIndex);
-        console.warn(
-            `[KnowledgeBase] ♻️ Active Tag index recovered after delta failure: ` +
-            `mode=${recoveryMode}, vectors=${actualCount}.`
-        );
-        return { index: recoveredIndex, mode: recoveryMode };
-    }
-
-    _applyTransaction(plan, finalTags, vectorMap) {
-        const tagByName = new Map(finalTags.map(tag => [tag.name, tag]));
-        const existingTagNames = new Set(plan.tagRows.map(row => row.name));
-        const insertTag = this.owner.db.prepare(
-            'INSERT INTO tags (id, name, vector) VALUES (?, ?, ?)'
-        );
-        const updateTagVector = this.owner.db.prepare(
-            'UPDATE tags SET vector = ? WHERE id = ?'
-        );
-        const deleteRelations = this.owner.db.prepare(
-            'DELETE FROM file_tags WHERE file_id = ?'
-        );
-        const addRelation = this.owner.db.prepare(
-            'INSERT INTO file_tags (file_id, tag_id, position) VALUES (?, ?, ?)'
-        );
-
-        const transaction = this.owner.db.transaction(() => {
-            for (const tag of finalTags) {
-                if (!existingTagNames.has(tag.name)) {
-                    const vector = vectorMap.get(tag.name);
-                    const buffer = Buffer.from(
-                        vector.buffer,
-                        vector.byteOffset,
-                        vector.byteLength
-                    );
-                    insertTag.run(tag.id, tag.name, buffer);
-                } else if (vectorMap.has(tag.name)) {
-                    const vector = vectorMap.get(tag.name);
-                    const buffer = Buffer.from(
-                        vector.buffer,
-                        vector.byteOffset,
-                        vector.byteLength
-                    );
-                    updateTagVector.run(buffer, tag.id);
-                }
-            }
-
-            for (const file of plan.files) {
-                if (
-                    file.added.length === 0
-                    && file.removed.length === 0
-                    && file.positionUpdates.length === 0
-                ) {
-                    continue;
-                }
-                deleteRelations.run(file.fileId);
-                file.expectedTags.forEach((name, index) => {
-                    addRelation.run(file.fileId, tagByName.get(name).id, index + 1);
-                });
-            }
-
-            this.owner.db.exec(`
-                DELETE FROM tag_pair_similarity;
-                DELETE FROM tag_pair_similarity_status;
-                DELETE FROM tag_intrinsic_residuals;
-                DELETE FROM tag_intrinsic_residual_status;
-                DELETE FROM tagmemo_artifacts;
-                DELETE FROM rivermemo_artifacts;
-                DELETE FROM tags
-                WHERE id NOT IN (SELECT DISTINCT tag_id FROM file_tags);
-            `);
-        });
-        transaction();
-    }
-
     async applyPreview(token) {
         if (this.running || this.latestPreviewTask?.status === 'running') {
             throw this._createError(
@@ -669,25 +582,163 @@ class TagConsistencyService {
                 409
             );
         }
+        if (
+            !this.owner.nativeKnowledgeRuntime
+            || typeof this.owner.nativeKnowledgeRuntime.commitTagConsistency !== 'function'
+        ) {
+            throw this._createError(
+                'NativeKnowledgeRuntime Tag 一致性提交 ABI 不可用，请重新构建 rust-vexus-lite',
+                'NATIVE_STORAGE_ABI_UNAVAILABLE',
+                503
+            );
+        }
+        if (
+            !this.owner.tagIndex
+            || typeof this.owner.tagIndex.applyTagDelta !== 'function'
+        ) {
+            throw this._createError(
+                '活动 Tag 索引缺少 applyTagDelta ABI，请先重新构建 rust-vexus-lite',
+                'TAG_CONSISTENCY_DELTA_ABI_UNAVAILABLE',
+                503
+            );
+        }
 
         this.running = true;
-        let lease = null;
         try {
-            lease = await this.owner.requestRustWriteLease(
-                'tag-consistency-reconcile',
-                {
-                    pendingThreshold: 0,
-                    allowDuringStartupCooldown: true
-                }
-            );
-            if (!lease) {
+            const verifiedPlan = await this._buildPlan();
+            if (verifiedPlan.digest !== snapshot.plan.digest) {
+                this.snapshots.delete(snapshot.token);
                 throw this._createError(
-                    '无法取得知识库维护窗口，请稍后重试',
-                    'TAG_CONSISTENCY_LEASE_UNAVAILABLE',
-                    503
+                    '文件、规则或数据库 Tag 状态在确认前已变化，请重新扫描',
+                    'TAG_CONSISTENCY_SNAPSHOT_STALE',
+                    409
                 );
             }
 
+            const vectorMap = await this._vectorize(verifiedPlan.vectorizeNames);
+            const tagVectors = new Float32Array(
+                verifiedPlan.vectorizeNames.length * this.owner.config.dimension
+            );
+            verifiedPlan.vectorizeNames.forEach((name, index) => {
+                const vector = vectorMap.get(name);
+                if (!vector || vector.length !== this.owner.config.dimension) {
+                    throw this._createError(
+                        `Tag「${name}」向量化结果无效，未应用任何修改`,
+                        'TAG_CONSISTENCY_INVALID_VECTOR',
+                        409
+                    );
+                }
+                tagVectors.set(vector, index * this.owner.config.dimension);
+            });
+
+            const nativePlan = {
+                digest: verifiedPlan.digest,
+                dimension: this.owner.config.dimension,
+                files: verifiedPlan.files.map(file => ({
+                    fileId: Number(file.fileId),
+                    expectedTags: Array.isArray(file.expectedTags)
+                        ? file.expectedTags.map(String)
+                        : []
+                })),
+                vectorizeNames: verifiedPlan.vectorizeNames.map(String),
+                orphanTags: verifiedPlan.orphanTags.map(tag => ({
+                    id: Number(tag.id)
+                }))
+            };
+            const rawReceipt =
+                await this.owner.nativeKnowledgeRuntime.commitTagConsistency(
+                    this.owner.dbPath,
+                    JSON.stringify(nativePlan),
+                    tagVectors
+                );
+            const receipt = typeof rawReceipt === 'string'
+                ? JSON.parse(rawReceipt)
+                : rawReceipt;
+            if (!receipt || receipt.factsCommitted !== true) {
+                throw this._createError(
+                    'Rust Tag 一致性提交返回无效事实回执',
+                    'TAG_CONSISTENCY_COMMIT_INVALID_RECEIPT',
+                    500
+                );
+            }
+
+            const dimension = Number(receipt.dimension);
+            const upsertedTagIds = Array.isArray(receipt.upsertedTagIds)
+                ? receipt.upsertedTagIds.map(Number)
+                : [];
+            const removedTagIds = Array.isArray(receipt.removedTagIds)
+                ? receipt.removedTagIds.map(Number)
+                : [];
+            const encodedVectors = String(receipt.upsertedVectorsBase64 || '');
+            const vectorBytes = encodedVectors
+                ? Buffer.from(encodedVectors, 'base64')
+                : Buffer.alloc(0);
+            if (
+                !Number.isSafeInteger(dimension)
+                || dimension !== this.owner.config.dimension
+                || vectorBytes.byteLength !==
+                    upsertedTagIds.length * dimension * Float32Array.BYTES_PER_ELEMENT
+            ) {
+                throw this._createError(
+                    'Rust Tag 一致性提交返回的索引差分向量无效',
+                    'TAG_CONSISTENCY_INVALID_INDEX_DELTA',
+                    500
+                );
+            }
+
+            let deltaResult;
+            try {
+                const vectorView = new Float32Array(
+                    vectorBytes.buffer,
+                    vectorBytes.byteOffset,
+                    vectorBytes.byteLength / Float32Array.BYTES_PER_ELEMENT
+                );
+                for (const value of vectorView) {
+                    if (!Number.isFinite(value)) {
+                        throw new Error('Tag index delta contains a non-finite value');
+                    }
+                }
+                deltaResult = await this.owner.tagIndex.applyTagDelta(
+                    removedTagIds,
+                    upsertedTagIds,
+                    new Float32Array(vectorView)
+                );
+            } catch (error) {
+                const deltaError = this._createError(
+                    'Tag 事实已提交，但活动索引差分失败；索引需要由 Rust 生命周期管理器恢复',
+                    'TAG_CONSISTENCY_INDEX_DELTA_FAILED',
+                    500
+                );
+                deltaError.cause = error;
+                throw deltaError;
+            }
+
+            this.snapshots.delete(snapshot.token);
+            if (this.latestPreviewTask?.preview?.token === snapshot.token) {
+                this.latestPreviewTask = null;
+            }
+
+            return {
+                applied: true,
+                summary: verifiedPlan.summary,
+                indexUpdate: {
+                    mode: 'active-rust-delta',
+                    requestedDeletes: removedTagIds.length,
+                    requestedUpserts: upsertedTagIds.length,
+                    totalVectors: Number(deltaResult?.totalVectors) || 0
+                },
+                checkpointPublished: false,
+                waveAssetsStale: true,
+                recommendedAction: 'active-full-training',
+                message: 'Tag 事实已由 Rust Write Actor 提交，活动索引已完成原生差分；持久化基线将由 Rust 索引生命周期管理器发布。'
+            };
+        } finally {
+            this.running = false;
+        }
+
+        /* 旧 JS 事实事务保留为迁移参考，不得进入生产路径。
+        this.running = true;
+        try {
             const verifiedPlan = await this._buildPlan();
             if (verifiedPlan.digest !== snapshot.plan.digest) {
                 this.snapshots.delete(snapshot.token);
@@ -724,7 +775,7 @@ class TagConsistencyService {
 
             // SQLite 是唯一权威事实。提交后若活动 usearch 差分失败，不回滚
             // 文件事实，而是判废该实例并走冷启动同款基线回放恢复。
-            this._applyTransaction(verifiedPlan, finalTags, vectorMap);
+            // legacy transaction path intentionally removed
 
             let deltaResult = null;
             let recoveryMode = null;
@@ -741,7 +792,7 @@ class TagConsistencyService {
                     'discarding the instance and recovering from authoritative SQLite:',
                     deltaError.message || deltaError
                 );
-                const recovered = await this._recoverActiveTagIndex();
+                // legacy index recovery path intentionally removed
                 recoveryMode = recovered.mode;
             }
 
@@ -763,7 +814,7 @@ class TagConsistencyService {
             if (this.latestPreviewTask?.preview?.token === snapshot.token) {
                 this.latestPreviewTask = null;
             }
-            this.owner.lastJsWriteFinishedAt = Date.now();
+            // Legacy JS transaction path removed; Rust owns fact generation and publication.
             console.warn(
                 `[KnowledgeBase] 🧹 Tag consistency reconciliation complete: `
                 + `vectorsCreated=${verifiedPlan.summary.vectorsToCreate}, `
@@ -793,9 +844,9 @@ class TagConsistencyService {
                 message: 'Tag 差分修复、活动内存索引增量更新与新 Usearch 代际落盘已完成；请继续重建 V9.1 浪潮矩阵资产。'
             };
         } finally {
-            if (lease) lease.release();
             this.running = false;
         }
+        */
     }
 }
 

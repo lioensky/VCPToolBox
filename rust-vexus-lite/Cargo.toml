@@ -23,7 +23,7 @@ sha2 = "0.10"
 flate2 = "1.0"
 
 # HNSW向量索引
-usearch = "2.8"
+usearch = "=2.21.3"
 
 # 哈希Map优化
 hashbrown = "0.14"

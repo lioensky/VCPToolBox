@@ -1,16 +1,17 @@
 use crate::rivermemo_topology_v3::{MemoRuntime, NativeArtifact};
+use crate::storage::{with_registered_read, with_registered_write};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const PAYLOAD_SCHEMA: &str = "rivermemo-persisted-artifact-v2";
 const PAYLOAD_CODEC: &str = "gzip-json-v1";
@@ -75,37 +76,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
 fn hash_text(value: &str, length: usize) -> String {
     let digest = sha256_hex(value.as_bytes());
     digest[..length.min(digest.len())].to_string()
-}
-
-fn open_readonly(path: &str) -> std::result::Result<Connection, String> {
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("open readonly SQLite failed: {}", error))?;
-    connection
-        .busy_timeout(Duration::from_secs(30))
-        .map_err(|error| format!("configure SQLite timeout failed: {}", error))?;
-    connection
-        .pragma_update(None, "query_only", "ON")
-        .map_err(|error| format!("configure SQLite query_only failed: {}", error))?;
-    Ok(connection)
-}
-
-fn open_readwrite(path: &str) -> std::result::Result<Connection, String> {
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .map_err(|error| format!("open readwrite SQLite failed: {}", error))?;
-    connection
-        .busy_timeout(Duration::from_secs(30))
-        .map_err(|error| format!("configure SQLite timeout failed: {}", error))?;
-    connection
-        .pragma_update(None, "journal_mode", "WAL")
-        .map_err(|error| format!("configure SQLite WAL failed: {}", error))?;
-    connection
-        .pragma_update(None, "synchronous", "NORMAL")
-        .map_err(|error| format!("configure SQLite synchronous failed: {}", error))?;
-
-    // Builder 使用独立的 RW 打开函数，但必须与 lib.rs 主路径共享同一个
-    // keepalive；否则 builder 首次写入仍可能成为未受保护的 first-attach。
-    crate::ensure_sqlite_keepalive(path);
-    Ok(connection)
 }
 
 fn number(config: &Value, path: &[&str], fallback: f64) -> f64 {
@@ -503,18 +473,15 @@ fn build_provenance(
     output
 }
 
-fn database_generation(connection: &Connection) -> String {
-    let mut facts = Vec::new();
-    for table in ["files", "chunks", "tags", "file_tags"] {
-        let query = format!("SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM {}", table);
-        let value = connection
-            .query_row(&query, [], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            })
-            .unwrap_or((0, 0));
-        facts.push(format!("{}:{}:{}", table, value.0, value.1));
-    }
-    hash_text(&facts.join("|"), 40)
+fn database_generation(connection: &Connection) -> std::result::Result<String, String> {
+    connection
+        .query_row(
+            "SELECT value FROM kbm_runtime_meta \
+             WHERE key = 'database_generation'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| format!("read persisted database generation failed: {}", error))
 }
 
 fn build_native_artifact(
@@ -648,10 +615,20 @@ fn run_build(
         return Err("native artifact build requires modelSig".to_string());
     }
 
-    let readonly = open_readonly(db_path)?;
-    let rows = load_file_tags(&readonly)?;
-    let pairwise = load_pairwise(&readonly, &input.model_sig)?;
-    let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(&readonly)?;
+    let (rows, pairwise, anchor_gain, residual_sig, database_generation) =
+        with_registered_read(db_path, |readonly| {
+            let rows = load_file_tags(readonly)?;
+            let pairwise = load_pairwise(readonly, &input.model_sig)?;
+            let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly)?;
+            let database_generation = database_generation(readonly)?;
+            Ok((
+                rows,
+                pairwise,
+                anchor_gain,
+                residual_sig,
+                database_generation,
+            ))
+        })?;
     let fact = build_fact_matrix(&rows, &pairwise, &anchor_gain, &input.effective_config);
     let (transport, wormholes) = build_transport(&fact, &anchor_gain, &input.effective_config);
     let provenance = build_provenance(&rows, &input.effective_config);
@@ -694,7 +671,6 @@ fn run_build(
             .collect();
         hash_text(&rows.join("|"), 40)
     };
-    let database_generation = database_generation(&readonly);
     let config_json = serde_json::to_string(&input.effective_config)
         .map_err(|error| format!("encode effective config failed: {}", error))?;
     let config_hash = hash_text(&config_json, 32);
@@ -747,14 +723,20 @@ fn run_build(
         .finish()
         .map_err(|error| format!("finish native artifact compression failed: {}", error))?;
 
-    drop(readonly);
-    let mut writable = open_readwrite(db_path)?;
-    let transaction = writable
-        .transaction()
-        .map_err(|error| format!("begin native artifact transaction failed: {}", error))?;
-    transaction
-        .execute(
-            "INSERT INTO rivermemo_artifacts (\
+    let artifact_sig_for_write = artifact_sig.clone();
+    let source_artifact_sig_for_write = source_artifact_sig.clone();
+    let graph_digest_for_write = graph_digest.clone();
+    let database_generation_for_write = database_generation.clone();
+    let provenance_generation_for_write = provenance_generation.clone();
+    let model_sig_for_write = input.model_sig.clone();
+    let config_hash_for_write = config_hash.clone();
+    let checksum_for_write = checksum.clone();
+    let native_for_write = native.clone();
+
+    with_registered_write(db_path, move |transaction| {
+        transaction
+            .execute(
+                "INSERT INTO rivermemo_artifacts (\
              artifact_sig, schema_version, algorithm_version, source_v9_artifact_sig, \
              source_graph_generation, model_sig, config_hash, database_generation, \
              provenance_generation, payload_codec, payload_checksum, payload, status, \
@@ -766,28 +748,38 @@ fn run_build(
              status='ready', error_message=NULL, updated_at=excluded.updated_at, \
              published_at=excluded.published_at, node_count=excluded.node_count, \
              edge_count=excluded.edge_count",
-            params![
-                artifact_sig,
-                PAYLOAD_SCHEMA,
-                ALGORITHM_VERSION,
-                source_artifact_sig,
-                graph_digest,
-                input.model_sig,
-                config_hash,
-                database_generation,
-                provenance_generation,
-                PAYLOAD_CODEC,
-                checksum,
-                compressed,
-                native.node_ids.len() as i64,
-                native.targets.len() as i64,
-                published_at
-            ],
+                params![
+                    artifact_sig_for_write,
+                    PAYLOAD_SCHEMA,
+                    ALGORITHM_VERSION,
+                    source_artifact_sig_for_write,
+                    graph_digest_for_write,
+                    model_sig_for_write,
+                    config_hash_for_write,
+                    database_generation_for_write,
+                    provenance_generation_for_write,
+                    PAYLOAD_CODEC,
+                    checksum_for_write,
+                    compressed,
+                    native_for_write.node_ids.len() as i64,
+                    native_for_write.targets.len() as i64,
+                    published_at
+                ],
+            )
+            .map_err(|error| format!("persist native artifact failed: {}", error))?;
+
+        Ok(crate::storage::WriteReceipt {
+            operation: "publish_rivermemo_artifact".to_string(),
+            database_generation: 0,
+            facts_changed: false,
+        })
+    })
+    .map_err(|error| {
+        format!(
+            "persist native artifact through Write Actor failed: {}",
+            error
         )
-        .map_err(|error| format!("persist native artifact failed: {}", error))?;
-    transaction
-        .commit()
-        .map_err(|error| format!("commit native artifact failed: {}", error))?;
+    })?;
 
     let generation = runtime.publish(&artifact_sig, native.clone())?;
     Ok(NativeMemoArtifactBuildResult {

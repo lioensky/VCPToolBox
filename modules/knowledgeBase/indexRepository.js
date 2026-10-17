@@ -10,6 +10,7 @@ class IndexRepository {
         this.VexusIndex = options.VexusIndex;
         this.getDbPath = options.getDbPath;
         this.getDb = options.getDb;
+        this.getNativeRuntime = options.getNativeRuntime || (() => null);
         this.waitForCoordinatorIdle = options.waitForCoordinatorIdle;
         this.ensureDiaryDateIndex = options.ensureDiaryDateIndex || (() => {});
         this.invalidateDiaryDateIndex = options.invalidateDiaryDateIndex || (() => {});
@@ -42,29 +43,6 @@ class IndexRepository {
         );
     }
 
-    _readActiveTagBaseline() {
-        const db = this.getDb?.();
-        if (!db) return null;
-        const raw = db.prepare(
-            "SELECT value FROM kv_store WHERE key = 'tag_index_active_baseline'"
-        ).get()?.value;
-        if (!raw) return null;
-        try {
-            const value = JSON.parse(raw);
-            if (
-                !Number.isInteger(Number(value.generation))
-                || !['a', 'b'].includes(value.slot)
-            ) {
-                return null;
-            }
-            return {
-                generation: Number(value.generation),
-                slot: value.slot
-            };
-        } catch (_) {
-            return null;
-        }
-    }
     _diarySafeName(diaryName) {
         return crypto.createHash('md5')
             .update(String(diaryName || '').trim())
@@ -79,499 +57,116 @@ class IndexRepository {
         );
     }
 
-    _readActiveDiaryBaseline(diaryName) {
-        const db = this.getDb?.();
-        if (!db) return null;
+
+    /**
+     * 通过 NativeKnowledgeRuntime 在 Rust 后台恢复日记索引。
+     *
+     * Rust 负责活动槽校验、usearch 加载、SQL 成员差分回放和无基线重建；
+     * 该门面不读取中央数据库，也不接收 Vector BLOB。
+     */
+    async restoreDiaryIndex(diaryName, index, capacity = 50000) {
         const normalized = String(diaryName || '').trim();
-        if (!normalized) return null;
-        const row = db.prepare(`
-            SELECT generation, slot, dimension, model_sig, chunk_count, status
-            FROM chunk_index_baselines
-            WHERE diary_name = ? AND status = 'ready'
-            ORDER BY generation DESC
-            LIMIT 1
-        `).get(normalized);
-        if (!row || !Number.isInteger(Number(row.generation)) || !['a', 'b'].includes(row.slot)) {
-            return null;
+        if (!normalized || !index) return null;
+
+        const runtime = this.getNativeRuntime?.();
+        if (!runtime?.restoreDiaryIndex) {
+            throw new Error('NativeKnowledgeRuntime restoreDiaryIndex ABI is unavailable');
         }
-        return {
-            diaryName: normalized,
-            generation: Number(row.generation),
-            slot: row.slot,
-            dimension: Number(row.dimension),
-            modelSig: row.model_sig,
-            chunkCount: Number(row.chunk_count)
-        };
-    }
 
-    _countDiaryBaselineDelta(diaryName, generation) {
-        const db = this.getDb?.();
-        if (!db || !Number.isInteger(Number(generation))) return null;
-        const normalized = String(diaryName || '').trim();
-        if (!normalized) return null;
-
-        // 集合对称差分统计：
-        // 1. deletes：基线已记录但权威库里已被删除（或移到其他日记本）的 chunk_id 数量
-        // 2. upserts：权威库里有效存在但基线未记录的新 chunk_id 数量
-        const row = db.prepare(`
-            SELECT
-                (
-                    SELECT COUNT(*)
-                    FROM chunk_index_baseline_entries e
-                    LEFT JOIN chunks c ON c.id = e.chunk_id
-                    LEFT JOIN files f ON f.id = c.file_id AND f.diary_name = ?
-                    WHERE e.diary_name = ? AND e.generation = ?
-                      AND (c.id IS NULL OR f.id IS NULL OR c.vector IS NULL)
-                ) AS deletes,
-                (
-                    SELECT COUNT(*)
-                    FROM chunks c
-                    JOIN files f ON f.id = c.file_id
-                    LEFT JOIN chunk_index_baseline_entries e
-                      ON e.diary_name = f.diary_name AND e.generation = ? AND e.chunk_id = c.id
-                    WHERE f.diary_name = ? AND c.vector IS NOT NULL AND e.chunk_id IS NULL
-                ) AS upserts,
-                (
-                    SELECT COUNT(*)
-                    FROM chunks c
-                    JOIN files f ON f.id = c.file_id
-                    WHERE f.diary_name = ? AND c.vector IS NOT NULL
-                ) AS current_count,
-                (
-                    SELECT COUNT(*)
-                    FROM chunk_index_baseline_entries
-                    WHERE diary_name = ? AND generation = ?
-                ) AS baseline_count
-        `).get(
-            normalized, normalized, generation,
-            generation, normalized,
+        const raw = await runtime.restoreDiaryIndex(
+            this.getDbPath(),
             normalized,
-            normalized, generation
+            this._diaryBaselinePath(normalized, 'a'),
+            String(this.config.modelSig || ''),
+            Math.max(1, Number(capacity) || 1),
+            index
         );
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!result || result.restored !== true) {
+            throw new Error(
+                `Invalid Rust diary restore receipt for "${normalized}"`
+            );
+        }
 
-        const upserts = Number(row?.upserts) || 0;
-        const deletes = Number(row?.deletes) || 0;
-        const currentCount = Number(row?.current_count) || 0;
-        const baselineCount = Number(row?.baseline_count) || 0;
-        const delta = upserts + deletes;
-        const ratio = delta / Math.max(1, currentCount, baselineCount);
-        return { upserts, deletes, delta, ratio, currentCount, baselineCount };
+        console.log(
+            `[${this.logPrefix}] ⚡ Rust diary index restored: "${normalized}", ` +
+            `generation=${Number(result.generation) || 0}, slot=${result.slot || 'none'}, ` +
+            `vectors=${Number(result.vectorCount) || 0}, ` +
+            `replayed=${result.replayed === true}, rebuilt=${result.rebuilt === true}.`
+        );
+        return result;
     }
 
     /**
-     * 加载落后的单 Agent usearch 双槽基线，并由 SQLite 在内存原子回放差分。
+     * 将当前内存索引交给 Rust Runtime 执行阈值判断、双槽保存和基线发布。
      */
-    async loadDiaryBaseline(diaryName, capacity = 50000) {
-        const startedAt = Date.now();
-        const db = this.getDb?.();
-        const normalized = String(diaryName || '').trim();
-        const active = this._readActiveDiaryBaseline(normalized);
-        if (!db || !active) return null;
-
-        if (
-            Number(active.dimension) !== Number(this.config.dimension)
-            || active.modelSig !== this.config.modelSig
-        ) {
-            console.log(
-                `[${this.logPrefix}] ⚠️ Diary baseline model signature mismatch for "${normalized}": ` +
-                `stored=(${active.dimension}, ${active.modelSig}) vs config=(${this.config.dimension}, ${this.config.modelSig}).`
-            );
-            return null;
-        }
-
-        const indexPath = this._diaryBaselinePath(normalized, active.slot);
-        if (!fs.existsSync(indexPath)) return null;
-
-        let index;
-        try {
-            const loadStartedAt = Date.now();
-            index = this.VexusIndex.load(
-                indexPath,
-                null,
-                this.config.dimension,
-                Math.max(capacity, Number(active.chunkCount) || 0)
-            );
-            const loadMs = Date.now() - loadStartedAt;
-
-            const delta = this._countDiaryBaselineDelta(normalized, active.generation);
-            if (!delta) {
-                return { index, active, delta: null, loadMs, replayMs: 0, totalMs: loadMs };
-            }
-
-            const replayStartedAt = Date.now();
-
-            // 1. 查找需剔除的旧 chunk_id
-            const deletedRows = db.prepare(`
-                SELECT e.chunk_id
-                FROM chunk_index_baseline_entries e
-                LEFT JOIN chunks c ON c.id = e.chunk_id
-                LEFT JOIN files f ON f.id = c.file_id AND f.diary_name = ?
-                WHERE e.diary_name = ? AND e.generation = ?
-                  AND (c.id IS NULL OR f.id IS NULL OR c.vector IS NULL)
-                ORDER BY e.chunk_id
-            `).all(normalized, normalized, active.generation);
-            const removeIds = deletedRows.map(r => Number(r.chunk_id)).filter(Number.isSafeInteger);
-
-            // 2. 查找需增量灌入的新 chunk_id 与向量
-            const addedRows = db.prepare(`
-                SELECT c.id, c.vector
-                FROM chunks c
-                JOIN files f ON f.id = c.file_id
-                LEFT JOIN chunk_index_baseline_entries e
-                  ON e.diary_name = f.diary_name AND e.generation = ? AND e.chunk_id = c.id
-                WHERE f.diary_name = ? AND c.vector IS NOT NULL AND e.chunk_id IS NULL
-                ORDER BY c.id
-            `).all(active.generation, normalized);
-
-            const upsertIds = [];
-            const flat = new Float32Array(addedRows.length * this.config.dimension);
-            let valid = 0;
-            for (const row of addedRows) {
-                const bytes = row.vector;
-                if (!bytes || bytes.length !== this.config.dimension * 4) continue;
-                let vector;
-                if (bytes.byteOffset % 4 === 0) {
-                    vector = new Float32Array(
-                        bytes.buffer,
-                        bytes.byteOffset,
-                        this.config.dimension
-                    );
-                } else {
-                    const aligned = Buffer.from(bytes);
-                    vector = new Float32Array(
-                        aligned.buffer,
-                        aligned.byteOffset,
-                        this.config.dimension
-                    );
-                }
-                upsertIds.push(Number(row.id));
-                flat.set(vector, valid * this.config.dimension);
-                valid++;
-            }
-
-            if (removeIds.length > 0 || valid > 0) {
-                if (typeof index.applyChunkDelta === 'function') {
-                    const finalFlat = valid === upsertIds.length ? flat : flat.slice(0, valid * this.config.dimension);
-                    await index.applyChunkDelta(removeIds, upsertIds, finalFlat);
-                } else {
-                    for (const id of removeIds) {
-                        try { index.remove(id); } catch (_) {}
-                    }
-                    if (valid > 0) {
-                        index.addBatch(upsertIds, valid === upsertIds.length ? flat : flat.slice(0, valid * this.config.dimension));
-                    }
-                }
-            }
-
-            const replayMs = Date.now() - replayStartedAt;
-            const totalMs = Date.now() - startedAt;
-            console.log(
-                `[${this.logPrefix}] ⚡ Diary baseline restored: "${normalized}", generation=${active.generation}, ` +
-                `slot=${active.slot}, baseline=${delta.baselineCount}, current=${delta.currentCount}, ` +
-                `upserts=${delta.upserts}, deletes=${delta.deletes}, delta=${(delta.ratio * 100).toFixed(2)}%, ` +
-                `load=${loadMs}ms, replay=${replayMs}ms, total=${totalMs}ms.`
-            );
-            return { index, active, delta, loadMs, replayMs, totalMs };
-        } catch (error) {
-            console.warn(
-                `[${this.logPrefix}] ⚠️ Diary baseline load/replay failed for "${normalized}"; ` +
-                `falling back to SQLite rebuild: ${error.message}`
-            );
-            return null;
-        }
-    }
-
-    /**
-     * 将当前内存索引写入非活动槽并原子发布为新代基线。
-     */
-    publishDiaryBaseline(diaryName, options = {}) {
+    async publishDiaryBaseline(diaryName, options = {}) {
         const normalized = String(diaryName || '').trim();
         if (!normalized) return false;
+        const runtime = this.getNativeRuntime?.();
+        if (!runtime?.checkpointDiaryIndex) {
+            throw new Error('NativeKnowledgeRuntime checkpointDiaryIndex ABI is unavailable');
+        }
         const index = this.diaryIndices.get(normalized);
-        if (!index?.save) return false;
-        const db = this.getDb?.();
-        if (!db) return false;
+        if (!index) return false;
 
-        const active = this._readActiveDiaryBaseline(normalized);
-        const delta = active
-            ? this._countDiaryBaselineDelta(normalized, active.generation)
-            : null;
-
-        if (
-            options.force !== true
-            && delta
-            && delta.ratio < this.chunkBaselineDeltaRatio
-        ) {
-            console.log(
-                `[${this.logPrefix}] 🛡️ Diary baseline checkpoint skipped for "${normalized}": ` +
-                `delta=${delta.delta}/${Math.max(delta.currentCount, delta.baselineCount)} ` +
-                `(${(delta.ratio * 100).toFixed(2)}%) < ${(this.chunkBaselineDeltaRatio * 100).toFixed(2)}%.`
-            );
-            return false;
-        }
-
-        const nextSlot = active?.slot === 'a' ? 'b' : 'a';
-        const nextGeneration = Number(
-            db.prepare('SELECT COALESCE(MAX(generation), 0) + 1 AS generation FROM chunk_index_baselines WHERE diary_name = ?')
-                .get(normalized)?.generation
-        ) || 1;
-        const indexPath = this._diaryBaselinePath(normalized, nextSlot);
-        const saveStartedAt = Date.now();
-        index.save(indexPath);
-
-        const publish = db.transaction(() => {
-            db.prepare(`
-                INSERT INTO chunk_index_baselines
-                    (diary_name, generation, slot, dimension, model_sig, chunk_count, status, created_at)
-                VALUES (?, ?, ?, ?, ?, (
-                    SELECT COUNT(*)
-                    FROM chunks c
-                    JOIN files f ON f.id = c.file_id
-                    WHERE f.diary_name = ? AND c.vector IS NOT NULL
-                ), 'ready', ?)
-            `).run(
-                normalized,
-                nextGeneration,
-                nextSlot,
-                this.config.dimension,
-                this.config.modelSig,
-                normalized,
-                Date.now()
-            );
-
-            db.prepare(`
-                INSERT INTO chunk_index_baseline_entries
-                    (diary_name, generation, chunk_id)
-                SELECT ?, ?, c.id
-                FROM chunks c
-                JOIN files f ON f.id = c.file_id
-                WHERE f.diary_name = ? AND c.vector IS NOT NULL
-            `).run(normalized, nextGeneration, normalized);
-
-            db.prepare(
-                'DELETE FROM chunk_index_baselines WHERE diary_name = ? AND generation != ?'
-            ).run(normalized, nextGeneration);
-        });
-        publish();
-
-        console.log(
-            `[${this.logPrefix}] 💾 Diary baseline checkpoint published: "${normalized}", ` +
-            `generation=${nextGeneration}, slot=${nextSlot}, ` +
-            `threshold=${(this.chunkBaselineDeltaRatio * 100).toFixed(2)}%, ` +
-            `elapsed=${Date.now() - saveStartedAt}ms.`
-        );
-        return true;
-    }
-
-    _countTagBaselineDelta(generation) {
-        const db = this.getDb?.();
-        if (!db || !Number.isInteger(Number(generation))) return null;
-        const row = db.prepare(`
-            SELECT
-                (SELECT COUNT(*)
-                 FROM tags t
-                 LEFT JOIN tag_index_baseline_entries e
-                   ON e.generation = ? AND e.tag_id = t.id
-                 WHERE t.vector IS NOT NULL
-                   AND (e.tag_id IS NULL OR e.vector_version != t.vector_version)
-                ) AS upserts,
-                (SELECT COUNT(*)
-                 FROM tag_index_baseline_entries e
-                 LEFT JOIN tags t ON t.id = e.tag_id AND t.vector IS NOT NULL
-                 WHERE e.generation = ? AND t.id IS NULL
-                ) AS deletes,
-                (SELECT COUNT(*) FROM tags WHERE vector IS NOT NULL) AS current_count,
-                (SELECT COUNT(*) FROM tag_index_baseline_entries WHERE generation = ?) AS baseline_count
-        `).get(generation, generation, generation);
-        const upserts = Number(row?.upserts) || 0;
-        const deletes = Number(row?.deletes) || 0;
-        const currentCount = Number(row?.current_count) || 0;
-        const baselineCount = Number(row?.baseline_count) || 0;
-        const delta = upserts + deletes;
-        const ratio = delta / Math.max(1, currentCount, baselineCount);
-        return { upserts, deletes, delta, ratio, currentCount, baselineCount };
-    }
-
-    /**
-     * 加载允许落后的 usearch 基线，并按 SQLite 权威 tags 表回放差分。
-     * 未变化 Tag 的高维 BLOB 不会离开 SQLite。
-     */
-    loadGlobalTagBaseline(capacity = 50000) {
         const startedAt = Date.now();
-        const db = this.getDb?.();
-        const active = this._readActiveTagBaseline();
-        if (!db || !active) return null;
-
-        const manifest = db.prepare(`
-            SELECT generation, slot, dimension, model_sig, tag_count, status
-            FROM tag_index_baselines
-            WHERE generation = ? AND slot = ? AND status = 'ready'
-        `).get(active.generation, active.slot);
-        if (
-            !manifest
-            || Number(manifest.dimension) !== Number(this.config.dimension)
-            || manifest.model_sig !== this.config.modelSig
-        ) {
-            return null;
+        const result = await runtime.checkpointDiaryIndex(
+            this.getDbPath(),
+            normalized,
+            this._diaryBaselinePath(normalized, 'a'),
+            String(this.config.modelSig || ''),
+            this.chunkBaselineDeltaRatio,
+            options.force === true
+        );
+        const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+        if (!parsed || parsed.factsCommitted !== false) {
+            throw new Error(`Invalid Rust diary checkpoint receipt for "${normalized}"`);
         }
 
-        const indexPath = this._tagBaselinePath(active.slot);
-        if (!fs.existsSync(indexPath)) return null;
-
-        let index;
-        try {
-            const loadStartedAt = Date.now();
-            index = this.VexusIndex.load(
-                indexPath,
-                null,
-                this.config.dimension,
-                Math.max(capacity, Number(manifest.tag_count) || 0)
-            );
-            const loadMs = Date.now() - loadStartedAt;
-
-            const delta = this._countTagBaselineDelta(active.generation);
-            const changedRows = db.prepare(`
-                SELECT t.id, t.vector
-                FROM tags t
-                LEFT JOIN tag_index_baseline_entries e
-                  ON e.generation = ? AND e.tag_id = t.id
-                WHERE t.vector IS NOT NULL
-                  AND (e.tag_id IS NULL OR e.vector_version != t.vector_version)
-                ORDER BY t.id
-            `).all(active.generation);
-            const deletedRows = db.prepare(`
-                SELECT e.tag_id
-                FROM tag_index_baseline_entries e
-                LEFT JOIN tags t ON t.id = e.tag_id AND t.vector IS NOT NULL
-                WHERE e.generation = ? AND t.id IS NULL
-                ORDER BY e.tag_id
-            `).all(active.generation);
-
-            const replayStartedAt = Date.now();
-            for (const row of deletedRows) {
-                try { index.remove(Number(row.tag_id)); } catch (_) {}
-            }
-
-            const ids = [];
-            const flat = new Float32Array(changedRows.length * this.config.dimension);
-            let valid = 0;
-            for (const row of changedRows) {
-                const bytes = row.vector;
-                if (!bytes || bytes.length !== this.config.dimension * 4) continue;
-                let vector;
-                if (bytes.byteOffset % 4 === 0) {
-                    vector = new Float32Array(
-                        bytes.buffer,
-                        bytes.byteOffset,
-                        this.config.dimension
-                    );
-                } else {
-                    const aligned = Buffer.from(bytes);
-                    vector = new Float32Array(
-                        aligned.buffer,
-                        aligned.byteOffset,
-                        this.config.dimension
-                    );
-                }
-                ids.push(Number(row.id));
-                flat.set(vector, valid * this.config.dimension);
-                valid++;
-            }
-            if (valid > 0) {
-                index.addBatch(ids, valid === ids.length ? flat : flat.slice(0, valid * this.config.dimension));
-            }
-            const replayMs = Date.now() - replayStartedAt;
-            const totalMs = Date.now() - startedAt;
-            console.log(
-                `[${this.logPrefix}] ⚡ Global Tag baseline restored: generation=${active.generation}, ` +
-                `slot=${active.slot}, baseline=${delta.baselineCount}, current=${delta.currentCount}, ` +
-                `upserts=${delta.upserts}, deletes=${delta.deletes}, delta=${(delta.ratio * 100).toFixed(2)}%, ` +
-                `load=${loadMs}ms, replay=${replayMs}ms, total=${totalMs}ms.`
-            );
-            return { index, active, delta, loadMs, replayMs, totalMs };
-        } catch (error) {
-            console.warn(
-                `[${this.logPrefix}] ⚠️ Global Tag baseline load/replay failed; ` +
-                `falling back to SQLite rebuild: ${error.message}`
-            );
-            return null;
-        }
+        console.log(
+            `[${this.logPrefix}] ${parsed.published ? '💾' : '🛡️'} Diary baseline checkpoint ` +
+            `${parsed.published ? 'published' : 'skipped'}: "${normalized}", ` +
+            `generation=${parsed.generation}, slot=${parsed.slot}, ` +
+            `delta=${(Number(parsed.ratio || 0) * 100).toFixed(2)}%, ` +
+            `threshold=${(this.chunkBaselineDeltaRatio * 100).toFixed(2)}%, ` +
+            `elapsed=${Date.now() - startedAt}ms.`
+        );
+        return parsed.published === true;
     }
 
     /**
-     * 将当前完整内存索引压缩成新的双槽基线。
-     * 先写非活动 usearch 槽，文件发布成功后才在单个 SQLite 事务中切换成员页。
+     * 将全局 Tag 索引交给 Rust Runtime 执行阈值判断、双槽保存和基线发布。
      */
-    publishGlobalTagBaseline(options = {}) {
-        if (!this.tagIndex?.save) return false;
-        const db = this.getDb?.();
-        if (!db) return false;
+    async publishGlobalTagBaseline(options = {}) {
+        const runtime = this.getNativeRuntime?.();
+        if (!runtime?.checkpointGlobalTagIndex) {
+            throw new Error('NativeKnowledgeRuntime checkpointGlobalTagIndex ABI is unavailable');
+        }
+        if (!this.tagIndex) return false;
 
-        const active = this._readActiveTagBaseline();
-        const delta = active
-            ? this._countTagBaselineDelta(active.generation)
-            : null;
-        if (
-            options.force !== true
-            && delta
-            && delta.ratio < this.tagBaselineDeltaRatio
-        ) {
-            console.log(
-                `[${this.logPrefix}] 🛡️ Global Tag baseline checkpoint skipped: ` +
-                `delta=${delta.delta}/${Math.max(delta.currentCount, delta.baselineCount)} ` +
-                `(${(delta.ratio * 100).toFixed(2)}%) < ${(this.tagBaselineDeltaRatio * 100).toFixed(2)}%.`
-            );
-            return false;
+        const startedAt = Date.now();
+        const result = await runtime.checkpointGlobalTagIndex(
+            this.getDbPath(),
+            this._tagBaselinePath('a'),
+            String(this.config.modelSig || ''),
+            this.tagBaselineDeltaRatio,
+            options.force === true
+        );
+        const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+        if (!parsed || parsed.factsCommitted !== false) {
+            throw new Error('Invalid Rust global Tag checkpoint receipt');
         }
 
-        const nextSlot = active?.slot === 'a' ? 'b' : 'a';
-        const nextGeneration = Number(
-            db.prepare('SELECT COALESCE(MAX(generation), 0) + 1 AS generation FROM tag_index_baselines').get()?.generation
-        ) || 1;
-        const indexPath = this._tagBaselinePath(nextSlot);
-        const saveStartedAt = Date.now();
-        this.tagIndex.save(indexPath);
-
-        const publish = db.transaction(() => {
-            db.prepare(`
-                INSERT INTO tag_index_baselines
-                    (generation, slot, dimension, model_sig, tag_count, status, created_at)
-                VALUES (?, ?, ?, ?, (SELECT COUNT(*) FROM tags WHERE vector IS NOT NULL), 'ready', ?)
-            `).run(
-                nextGeneration,
-                nextSlot,
-                this.config.dimension,
-                this.config.modelSig,
-                Date.now()
-            );
-            db.prepare(`
-                INSERT INTO tag_index_baseline_entries
-                    (generation, tag_id, vector_version)
-                SELECT ?, id, vector_version
-                FROM tags
-                WHERE vector IS NOT NULL
-            `).run(nextGeneration);
-            db.prepare(`
-                INSERT INTO kv_store (key, value)
-                VALUES ('tag_index_active_baseline', ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            `).run(JSON.stringify({
-                generation: nextGeneration,
-                slot: nextSlot
-            }));
-            db.prepare(
-                'DELETE FROM tag_index_baselines WHERE generation != ?'
-            ).run(nextGeneration);
-        });
-        publish();
-
         console.log(
-            `[${this.logPrefix}] 💾 Global Tag baseline checkpoint published: ` +
-            `generation=${nextGeneration}, slot=${nextSlot}, ` +
+            `[${this.logPrefix}] ${parsed.published ? '💾' : '🛡️'} Global Tag baseline checkpoint ` +
+            `${parsed.published ? 'published' : 'skipped'}, ` +
+            `generation=${parsed.generation}, slot=${parsed.slot}, ` +
+            `delta=${(Number(parsed.ratio || 0) * 100).toFixed(2)}%, ` +
             `threshold=${(this.tagBaselineDeltaRatio * 100).toFixed(2)}%, ` +
-            `elapsed=${Date.now() - saveStartedAt}ms.`
+            `elapsed=${Date.now() - startedAt}ms.`
         );
-        return true;
+        return parsed.published === true;
     }
 
     shouldPersist(name) {
@@ -600,34 +195,39 @@ class IndexRepository {
         const capacity = 50000;
         let index;
         if (persist) {
-            if (this.chunkIndexPersistenceMode === 'generational') {
-                const baselineRestore = await this.loadDiaryBaseline(diaryName, capacity);
-                if (baselineRestore?.index) {
-                    index = baselineRestore.index;
-                } else {
-                    console.log(
-                        `[${this.logPrefix}] 🔄 No valid generational baseline for "${diaryName}", ` +
-                        'rebuilding from SQLite and publishing initial baseline...'
-                    );
-                    index = new this.VexusIndex(this.config.dimension, capacity);
-                    await this.recoverFromDb(index, 'chunks', diaryName);
-                    this.diaryIndices.set(diaryName, index);
-                    this.publishDiaryBaseline(diaryName, { force: true });
+            index = new this.VexusIndex(this.config.dimension, capacity);
+            this.diaryIndices.set(diaryName, index);
+            try {
+                this.onDiaryIndexPublished(diaryName, index);
+            } catch (error) {
+                if (this.diaryIndices.get(diaryName) === index) {
+                    this.diaryIndices.delete(diaryName);
                 }
-            } else {
-                index = await this.loadOrBuild(
-                    fileName,
-                    capacity,
-                    'chunks',
-                    diaryName
+                throw new Error(
+                    `Diary index native publication failed for ` +
+                    `"${diaryName}": ${error.message}`
                 );
             }
+
+            await this.restoreDiaryIndex(diaryName, index, capacity);
+            await this.publishDiaryBaseline(diaryName, {
+                force: this.chunkIndexPersistenceMode === 'always'
+            });
         } else {
             index = new this.VexusIndex(
                 this.config.dimension,
                 capacity
             );
-            await this.recoverFromDb(index, 'chunks', diaryName);
+            this.diaryIndices.set(diaryName, index);
+            try {
+                this.onDiaryIndexPublished(diaryName, index);
+                await this.restoreDiaryIndex(diaryName, index, capacity);
+            } catch (error) {
+                if (this.diaryIndices.get(diaryName) === index) {
+                    this.diaryIndices.delete(diaryName);
+                }
+                throw error;
+            }
         }
         return index;
     }
@@ -659,19 +259,7 @@ class IndexRepository {
                     }
                     const index = await this._executeLoadIndex(name);
                     this.diaryIndices.set(name, index);
-                    try {
-                        this.onDiaryIndexPublished(name, index);
-                    } catch (error) {
-                        if (this.diaryIndices.get(name) === index) {
-                            this.diaryIndices.delete(name);
-                        }
-                        this.lastUsed.delete(name);
-                        throw new Error(
-                            `Diary index loaded but native publication failed for ` +
-                            `"${name}": ${error.message}`
-                        );
-                    }
-                    this.ensureDiaryDateIndex(name);
+                    await this.ensureDiaryDateIndex(name);
                     return index;
                 } finally {
                     this.recoveryActive = false;
@@ -703,65 +291,40 @@ class IndexRepository {
     }
 
     async loadOrBuild(fileName, capacity, tableType, diaryName = null) {
-        const indexPath = path.join(
-            this.config.storePath,
-            `index_${fileName}.usearch`
-        );
-        let index;
+        const index = new this.VexusIndex(this.config.dimension, capacity);
+        if (!diaryName) return index;
+
+        const normalized = String(diaryName).trim();
+        this.diaryIndices.set(normalized, index);
         try {
-            if (fs.existsSync(indexPath)) {
-                index = this.VexusIndex.load(
-                    indexPath,
-                    null,
-                    this.config.dimension,
-                    capacity
-                );
-            } else {
-                console.log(
-                    `[${this.logPrefix}] Index file not found for ${fileName}, ` +
-                    'rebuilding from SQLite when possible.'
-                );
-                index = new this.VexusIndex(this.config.dimension, capacity);
-                if (diaryName) {
-                    await this.recoverFromDb(index, tableType, diaryName);
-                }
-            }
+            this.onDiaryIndexPublished(normalized, index);
+            await this.restoreDiaryIndex(normalized, index, capacity);
+            return index;
         } catch (error) {
-            console.error(
-                `[${this.logPrefix}] Index load error (${fileName}): ` +
-                error.message
-            );
-            console.warn(
-                `[${this.logPrefix}] Rebuilding index ${fileName} from DB ` +
-                'as a fallback...'
-            );
-            index = new this.VexusIndex(this.config.dimension, capacity);
-            await this.recoverFromDb(index, tableType, diaryName);
+            if (this.diaryIndices.get(normalized) === index) {
+                this.diaryIndices.delete(normalized);
+            }
+            throw error;
         }
-        return index;
     }
 
     async recoverFromDb(index, table, diaryName) {
-        console.log(
-            `[${this.logPrefix}] 🔄 Recovering ${table} ` +
-            `(Filter: ${diaryName || 'None'}) via Rust...`
-        );
+        if (table !== 'chunks' || !diaryName) {
+            throw new Error(
+                'Rust Runtime recovery requires a diary name and chunk scope'
+            );
+        }
+        const normalized = String(diaryName).trim();
+        this.diaryIndices.set(normalized, index);
         try {
-            const count = await index.recoverFromSqlite(
-                this.getDbPath(),
-                table,
-                diaryName || null
-            );
-            console.log(
-                `[${this.logPrefix}] ✅ Recovered ${count} vectors via Rust.`
-            );
-            return count;
+            this.onDiaryIndexPublished(normalized, index);
+            const receipt = await this.restoreDiaryIndex(normalized, index);
+            return Number(receipt?.vectorCount) || 0;
         } catch (error) {
-            console.error(
-                `[${this.logPrefix}] ❌ Rust recovery failed for ${table}:`,
-                error
-            );
-            return 0;
+            if (this.diaryIndices.get(normalized) === index) {
+                this.diaryIndices.delete(normalized);
+            }
+            throw error;
         }
     }
 
@@ -853,36 +416,9 @@ class IndexRepository {
             'chunks',
             normalizedDiaryName
         );
-        const expected = Number(
-            this.getDb?.()?.prepare(`
-                SELECT COUNT(*) AS count
-                FROM chunks c
-                JOIN files f ON f.id = c.file_id
-                WHERE f.diary_name = ? AND c.vector IS NOT NULL
-            `).get(normalizedDiaryName)?.count
-        ) || 0;
-        if (recovered !== expected) {
-            throw new Error(
-                `Chunk index recovery count mismatch for "${normalizedDiaryName}": ` +
-                `expected ${expected}, recovered ${recovered}`
-            );
-        }
-
         this.diaryIndices.set(normalizedDiaryName, replacement);
-        try {
-            this.onDiaryIndexPublished(normalizedDiaryName, replacement);
-        } catch (error) {
-            if (this.diaryIndices.get(normalizedDiaryName) === replacement) {
-                this.diaryIndices.delete(normalizedDiaryName);
-            }
-            this.lastUsed.delete(normalizedDiaryName);
-            throw new Error(
-                `Recovered diary index native publication failed for ` +
-                `"${normalizedDiaryName}": ${error.message}`
-            );
-        }
         this.lastUsed.set(normalizedDiaryName, Date.now());
-        this.ensureDiaryDateIndex(normalizedDiaryName);
+        await this.ensureDiaryDateIndex(normalizedDiaryName);
         this.scheduleSave(normalizedDiaryName);
         console.warn(
             `[${this.logPrefix}] ♻️ Diary index rebuilt atomically after delta ` +
@@ -929,18 +465,6 @@ class IndexRepository {
             }
         }
 
-        // 清理数据库中的双槽基线元数据
-        try {
-            const db = this.getDb?.();
-            if (db) {
-                db.prepare('DELETE FROM chunk_index_baselines WHERE diary_name = ?').run(normalized);
-            }
-        } catch (error) {
-            console.warn(
-                `[${this.logPrefix}] ⚠️ Failed to delete chunk baseline records for "${normalized}": ${error.message}`
-            );
-        }
-
         console.warn(
             `[${this.logPrefix}] 🧹 Removed persisted index and baselines for ` +
             `diary "${normalized}". It will be rebuilt from SQLite.`
@@ -956,10 +480,6 @@ class IndexRepository {
                     continue;
                 }
                 fs.unlinkSync(path.join(this.config.storePath, file));
-            }
-            const db = this.getDb?.();
-            if (db) {
-                db.prepare('DELETE FROM chunk_index_baselines').run();
             }
             console.warn(
                 `[${this.logPrefix}] 🧹 Removed all persisted diary indexes and baseline records ` +
@@ -990,57 +510,46 @@ class IndexRepository {
         const timer = setTimeout(() => {
             this.saveTimers.delete(name);
             console.log(`[${this.logPrefix}] 💾 Save timer fired: ${name}`);
-            this.saveToDisk(name);
+            Promise.resolve(this.saveToDisk(name)).catch(error => {
+                console.error(
+                    `[${this.logPrefix}] Save timer failed for ${name}:`,
+                    error
+                );
+            });
         }, delay);
         timer.unref?.();
         this.saveTimers.set(name, timer);
     }
 
-    saveToDisk(name, options = {}) {
-        if (!this.shouldPersist(name)) return;
+    async saveToDisk(name, options = {}) {
+        if (!this.shouldPersist(name)) return false;
         const startedAt = Date.now();
+
         try {
             if (name === 'global_tags') {
-                return this.publishGlobalTagBaseline({
+                return await this.publishGlobalTagBaseline({
                     ...options,
                     force: options.force === true
                         || this.config.tagIndexPersistenceMode === 'always'
                 });
             }
 
-            if (this.chunkIndexPersistenceMode === 'generational') {
-                return this.publishDiaryBaseline(name, options);
-            }
-
-            const index = this.diaryIndices.get(name);
-            if (index?.save) {
-                let stats = null;
-                try { stats = index.stats ? index.stats() : null; } catch (_) {}
-                console.log(
-                    `[${this.logPrefix}] 💾 Saving index start: ${name}, ` +
-                    `vectors=${stats?.totalVectors ?? 'unknown'}`
-                );
-                const filePath = path.join(
-                    this.config.storePath,
-                    `index_diary_${this._diarySafeName(name)}.usearch`
-                );
-                index.save(filePath);
-            }
-            const elapsed = Date.now() - startedAt;
+            const published = await this.publishDiaryBaseline(name, {
+                ...options,
+                force: options.force === true
+                    || this.chunkIndexPersistenceMode === 'always'
+            });
             console.log(
-                `[${this.logPrefix}] 💾 Saved index: ${name}, elapsed=${elapsed}ms`
+                `[${this.logPrefix}] ${published ? '💾' : '🛡️'} Rust diary checkpoint finished: ` +
+                `${name}, elapsed=${Date.now() - startedAt}ms`
             );
-            if (elapsed > 5000) {
-                console.warn(
-                    `[${this.logPrefix}] 🧯 Slow synchronous index save ` +
-                    `detected: ${name}, elapsed=${elapsed}ms`
-                );
-            }
+            return published;
         } catch (error) {
             console.error(
-                `[${this.logPrefix}] Save failed for ${name}:`,
+                `[${this.logPrefix}] Rust checkpoint failed for ${name}:`,
                 error
             );
+            throw error;
         }
     }
 
@@ -1058,7 +567,7 @@ class IndexRepository {
         );
     }
 
-    evictIdle() {
+    async evictIdle() {
         const startedAt = Date.now();
         const now = Date.now();
         let evicted = 0;
@@ -1073,7 +582,7 @@ class IndexRepository {
                     clearTimeout(this.saveTimers.get(name));
                     this.saveTimers.delete(name);
                 }
-                this.saveToDisk(name);
+                await this.saveToDisk(name);
                 this.unregisterDiaryIndex(name);
                 this.diaryIndices.delete(name);
                 this.lastUsed.delete(name);
@@ -1109,7 +618,7 @@ class IndexRepository {
         await this.recoveryTail;
         for (const [name, timer] of this.saveTimers) {
             clearTimeout(timer);
-            this.saveToDisk(name);
+            await this.saveToDisk(name);
         }
         this.saveTimers.clear();
     }

@@ -330,65 +330,69 @@ class DreamWaveEngine {
     // =========================================================================
 
     /**
-     * 直接从 DB 获取文件的第一个 chunk 向量
-     * 🔧 修复: 路径匹配使用多种格式尝试
+     * 通过 KBM Rust 高层接口获取文件的第一个 Chunk 向量。
+     * 路径变体兼容由 NativeKnowledgeRuntime 的路径 hydrate 统一处理。
      */
-    _getLocalVector(absFilePath) {
-        if (!this.db) return null;
-        try {
-            const relPath = path.relative(DAILY_NOTE_ROOT, absFilePath);
-            const relPathPosix = relPath.replace(/\\/g, '/');
-            const relPathWin = relPath.replace(/\//g, '\\');
+   async _getLocalVector(absFilePath) {
+       if (
+           !this.kb
+           || typeof this.kb.getChunksByFilePaths !== 'function'
+           || !absFilePath
+       ) {
+           return null;
+       }
 
-            const fileRow = this.db.prepare(
-                "SELECT id FROM files WHERE path = ? OR path = ? OR path = ? OR path = ?"
-            ).get(relPathPosix, relPathWin, '/' + relPathPosix, '\\' + relPathWin);
+       try {
+           const relPath = path.relative(DAILY_NOTE_ROOT, absFilePath);
+           return await this._getVectorByRelPath(relPath);
+       } catch (e) {
+           console.error(
+               `[DreamWave] _getLocalVector 失败 (${path.basename(absFilePath)}):`,
+               e.message
+           );
+           return null;
+       }
+   }
 
-            if (!fileRow) return null;
+   /**
+    * 从 search 返回的 fullPath（相对路径）获取首个 Chunk 向量。
+    * fullPath 是相对于 DAILY_NOTE_ROOT 的路径。
+    */
+   async _getVectorByRelPath(relPath) {
+       if (
+           !this.kb
+           || typeof this.kb.getChunksByFilePaths !== 'function'
+           || !relPath
+       ) {
+           return null;
+       }
 
-            const chunkRow = this.db.prepare(
-                "SELECT vector FROM chunks WHERE file_id = ? ORDER BY chunk_index ASC LIMIT 1"
-            ).get(fileRow.id);
+       try {
+           const normalized = String(relPath).replace(/\\/g, '/');
+           const variants = [...new Set([
+               normalized,
+               normalized.replace(/\//g, '\\'),
+               `/${normalized}`,
+               `\\${normalized.replace(/\//g, '\\')}`
+           ])];
+           const rows = await this.kb.getChunksByFilePaths(variants);
+           const firstChunk = (Array.isArray(rows) ? rows : [])
+               .filter(row => row && row.vector)
+               .sort((left, right) =>
+                   Number(left.chunkId ?? left.id) - Number(right.chunkId ?? right.id)
+               )[0];
+           if (!firstChunk) return null;
 
-            if (!chunkRow || !chunkRow.vector) return null;
-
-            const vecDim = Math.floor(chunkRow.vector.length / 4);
-            return new Float32Array(chunkRow.vector.buffer, chunkRow.vector.byteOffset, vecDim);
-        } catch (e) {
-            console.error(`[DreamWave] _getLocalVector 失败 (${path.basename(absFilePath)}):`, e.message);
-            return null;
-        }
-    }
-
-    /**
-     * 从 search 返回的 fullPath（相对路径）获取向量
-     * fullPath 是相对于 DAILY_NOTE_ROOT 的路径
-     */
-    _getVectorByRelPath(relPath) {
-        if (!this.db || !relPath) return null;
-        try {
-            const relPathPosix = relPath.replace(/\\/g, '/');
-            const relPathWin = relPath.replace(/\//g, '\\');
-
-            const fileRow = this.db.prepare(
-                "SELECT id FROM files WHERE path = ? OR path = ? OR path = ? OR path = ?"
-            ).get(relPathPosix, relPathWin, '/' + relPathPosix, '\\' + relPathWin);
-
-            if (!fileRow) return null;
-
-            const chunkRow = this.db.prepare(
-                "SELECT vector FROM chunks WHERE file_id = ? ORDER BY chunk_index ASC LIMIT 1"
-            ).get(fileRow.id);
-
-            if (!chunkRow || !chunkRow.vector) return null;
-
-            const vecDim = Math.floor(chunkRow.vector.length / 4);
-            return new Float32Array(chunkRow.vector.buffer, chunkRow.vector.byteOffset, vecDim);
-        } catch (e) {
-            return null;
-        }
-    }
-
+           const vector = firstChunk.vector instanceof Float32Array
+               ? firstChunk.vector
+               : new Float32Array(firstChunk.vector);
+           return vector.length === Number(this.kb.config?.dimension)
+               ? vector
+               : null;
+       } catch (e) {
+           return null;
+       }
+   }
     // =========================================================================
     // 向量召回（核心联想）
     // =========================================================================
@@ -559,7 +563,11 @@ class DreamWaveEngine {
     // =========================================================================
 
     async generateDreamWave(agentName) {
-        if (!this.kb || !this.db) {
+        if (
+            !this.kb
+            || typeof this.kb.executeNativeRiverQuery !== 'function'
+            || typeof this.kb.getChunksByFilePaths !== 'function'
+        ) {
             throw new Error("知识库未就绪，无法生成梦境浪潮");
         }
 
@@ -583,7 +591,7 @@ class DreamWaveEngine {
 
             recentSeeds.push({ filePath: seed.filePath, content });
 
-            const vector = this._getLocalVector(seed.filePath);
+            const vector = await this._getLocalVector(seed.filePath);
             if (!vector) {
                 console.log(`[DreamWave]   种子 ${path.basename(seed.filePath)} 无向量，跳过联想`);
                 continue;
@@ -641,7 +649,7 @@ class DreamWaveEngine {
         }
 
         for (const l1 of resonantL1) {
-            const vec = this._getVectorByRelPath(l1.fullPath);
+            const vec = await this._getVectorByRelPath(l1.fullPath);
             if (vec) {
                 allCollectedVectors.push(vec);
                 const l2Recalls = await this._recallForVector(
@@ -668,7 +676,7 @@ class DreamWaveEngine {
             const hydrated = await this._hydrateSearchResult(r);
             if (hydrated) {
                 hydratedL2.push(hydrated);
-                const vec = this._getVectorByRelPath(r.fullPath);
+                const vec = await this._getVectorByRelPath(r.fullPath);
                 if (vec) allCollectedVectors.push(vec);
             }
         }
@@ -689,7 +697,7 @@ class DreamWaveEngine {
             const seedRelPath = path.relative(DAILY_NOTE_ROOT, seed.filePath).replace(/\\/g, '/');
             seenMidPaths.add(seedRelPath);
 
-            const vector = this._getLocalVector(seed.filePath);
+            const vector = await this._getLocalVector(seed.filePath);
             if (!vector) continue;
 
             const k = this._determineK(content.length);
@@ -706,7 +714,7 @@ class DreamWaveEngine {
                 if (!seenMidPaths.has(rPath)) {
                     seenMidPaths.add(rPath);
                     midL1Raw.push(r);
-                    const rVec = this._getVectorByRelPath(rPath);
+                    const rVec = await this._getVectorByRelPath(rPath);
                     if (rVec) allCollectedVectors.push(rVec);
                 }
             }

@@ -52,24 +52,19 @@ const QUERY_TRACE_SCHEMA = 'tagmemo-v10-alpha-query-trace-v1';
 
 class TagMemoV10Engine {
     constructor(db, tagIndex, config, ragParams, options = {}) {
-        this.db = db;
         this.tagIndex = tagIndex;
         this.config = config || {};
         this.ragParams = ragParams || {};
         this.v9Engine = options.v9Engine || null;
+        this.getNativeRuntime = typeof options.getNativeRuntime === 'function'
+            ? options.getNativeRuntime
+            : () => null;
         this._activeArtifact = null;
         this._artifactGeneration = 0;
-        this.artifactRepository = options.artifactRepository
-            || new RiverMemoArtifactRepository({
-                getDb: () => this.db,
-                retainedReadyArtifacts: options.retainedReadyArtifacts
-            });
-        this.derivedAssetManager = options.derivedAssetManager
-            || new V10DerivedAssetManager({
-                getDb: () => this.db,
-                modelSig: this.config.modelSig || this.config.model,
-                dimension: this.config.dimension
-            });
+        // 生产图资产、RiverMemo 持久化和精确派生资产均由 Rust MemoRuntime
+        // 与 SqliteStorageEngine 管理。JS 只保留控制面与兼容算法定义。
+        this.artifactRepository = options.artifactRepository || null;
+        this.derivedAssetManager = options.derivedAssetManager || null;
         // RiverMemo 的传播域是全局 Tag 图，而不是任一 Diary/Chunk ANN 索引。
         // 每个活动 Artifact 只常驻一份全局编译算子；候选索引的加载、卸载和
         // 请求级文件范围均不得分裂该资产。
@@ -87,13 +82,6 @@ class TagMemoV10Engine {
 
     updateRagParams(ragParams) {
         this.ragParams = ragParams || {};
-    }
-
-    rebindDatabase(db) {
-        this.db = db;
-        this.derivedAssetManager?.rebindDatabase(db);
-        // 常驻算子只闭包引用不可变 Artifact，不引用 SQLite 连接。
-        // 数据库连接重绑不代表资产代际变化，因此不能制造无意义的冷启动。
     }
 
     _clearConditionedOperatorCache(reason = 'manual') {
@@ -217,8 +205,12 @@ class TagMemoV10Engine {
         };
     }
 
-    ensureExactDerivedAssets(options = {}) {
-        return this.derivedAssetManager.ensureExactAssets(options);
+    ensureExactDerivedAssets() {
+        const error = new Error(
+            'JS V10 exact derived asset maintenance is retired; use NativeKnowledgeRuntime'
+        );
+        error.code = 'TAGMEMO_JS_SQL_RETIRED';
+        throw error;
     }
 
     getDerivedAssetDiagnostics() {
@@ -437,6 +429,12 @@ class TagMemoV10Engine {
     }
 
     buildArtifact(options = {}) {
+        const error = new Error(
+            'JS V10 artifact construction is retired; use NativeKnowledgeRuntime'
+        );
+        error.code = 'TAGMEMO_JS_GRAPH_RUNTIME_RETIRED';
+        throw error;
+
         const context = options.context
             || this._resolveArtifactBuildContext(options);
         const sourceBundle = context.sourceBundle;
@@ -782,90 +780,35 @@ class TagMemoV10Engine {
         return artifact;
     }
 
-    buildPersistAndPublishArtifact(options = {}) {
-        let staging = null;
-        let manifest = null;
-        try {
-            staging = this.buildArtifact(options);
-            manifest = this._artifactManifest(staging);
-            const persisted = this.artifactRepository.persistReady(
-                manifest,
-                this.exportArtifactPayload(staging)
-            );
-            const published = this.publishArtifact(staging, {
-                publishedAt: persisted.publishedAt
-            });
-            this.artifactRepository.prune();
-            return published;
-        } catch (error) {
-            if (manifest) {
-                try {
-                    this.artifactRepository.recordFailure(manifest, error);
-                } catch (recordError) {
-                    console.error(
-                        '[TagMemo-V10] Failed to record RiverMemo companion failure:',
-                        recordError.message
-                    );
-                }
-            }
-            throw error;
-        }
+    _nativeArtifactUnavailableError(operation = 'getArtifactSnapshot') {
+        const error = new Error(
+            `${operation} requires a Rust-owned Memo artifact handle; ` +
+            'JavaScript artifact construction and SQLite persistence are retired'
+        );
+        error.code = 'TAGMEMO_NATIVE_ARTIFACT_UNAVAILABLE';
+        error.operation = operation;
+        error.retryable = true;
+        return error;
     }
 
-    loadCompatiblePersistedArtifact(options = {}) {
-        const context = options.context
-            || this._resolveArtifactBuildContext(options);
-        const criteria = {
-            sourceV9ArtifactSig:
-                context.sourceBundle.artifactSig || '',
-            modelSig: context.modelSig,
-            configHash: context.configHash,
-            databaseGeneration: context.databaseGeneration,
-            algorithmVersion: ALGORITHM_VERSION
-        };
-        const persisted = this.artifactRepository.loadCompatible(criteria);
-        if (!persisted) return null;
-        const staging = this.restoreArtifact(persisted.payload, {
-            publishedAt: persisted.row.published_at,
-            sourceBundle: context.sourceBundle
-        });
-        if (
-            staging.sourceArtifactSig !== criteria.sourceV9ArtifactSig
-            || staging.modelSig !== criteria.modelSig
-            || staging.configHash !== criteria.configHash
-            || staging.databaseGeneration !== criteria.databaseGeneration
-        ) {
-            throw new Error('Persisted RiverMemo compatibility validation failed');
-        }
-        return this.publishArtifact(staging, {
-            publishedAt: persisted.row.published_at
-        });
+    buildPersistAndPublishArtifact() {
+        throw this._nativeArtifactUnavailableError(
+            'buildPersistAndPublishArtifact'
+        );
     }
 
-    restoreOrBuildArtifact(options = {}) {
-        if (options.forceRebuild !== true) {
-            try {
-                const restored = this.loadCompatiblePersistedArtifact(options);
-                if (restored) {
-                    console.log(
-                        `[TagMemo-V10] ♻️ Restored compatible RiverMemo artifact ${restored.artifactSig}.`
-                    );
-                    return restored;
-                }
-            } catch (error) {
-                console.warn(
-                    '[TagMemo-V10] Persisted RiverMemo artifact rejected; rebuilding:',
-                    error.message
-                );
-            }
-        }
-        return this.buildPersistAndPublishArtifact(options);
+    loadCompatiblePersistedArtifact() {
+        throw this._nativeArtifactUnavailableError(
+            'loadCompatiblePersistedArtifact'
+        );
     }
 
-    buildAndPublishArtifact(options = {}) {
-        return options.persist === false
-            ? this.publishArtifact(this.buildArtifact(options))
-            : this.buildPersistAndPublishArtifact(options);
+    restoreOrBuildArtifact() {
+        throw this._nativeArtifactUnavailableError('restoreOrBuildArtifact');
+    }
+
+    buildAndPublishArtifact() {
+        throw this._nativeArtifactUnavailableError('buildAndPublishArtifact');
     }
 
     getArtifactSnapshot(options = {}) {
@@ -876,7 +819,7 @@ class TagMemoV10Engine {
             this.invalidateArtifact('active-v9-signature-mismatch');
         }
         if (!this._activeArtifact && options.buildIfMissing !== false) {
-            return this.restoreOrBuildArtifact(options);
+            throw this._nativeArtifactUnavailableError('getArtifactSnapshot');
         }
         return this._activeArtifact;
     }
@@ -993,86 +936,16 @@ class TagMemoV10Engine {
             }
         }
 
-        if (!this.db?.prepare) {
-            return Object.freeze({
-                localVector: null,
-                transferVector: null,
-                diagnostics: Object.freeze({
-                    backend: 'unavailable',
-                    requestedTags: ids.length,
-                    foundTags: null,
-                    missingTags: null,
-                    nativeElapsedMs: null,
-                    reason: 'native-projection-and-sqlite-unavailable'
-                })
-            });
-        }
-
-        const fallbackStartedAt = Date.now();
-        const localOutput = new Float64Array(dimension);
-        const transferOutput = new Float64Array(dimension);
-        let localTotalWeight = 0;
-        let transferTotalWeight = 0;
-        for (let offset = 0; offset < ids.length; offset += 500) {
-            const batch = ids.slice(offset, offset + 500);
-            const placeholders = batch.map(() => '?').join(',');
-            const rows = this.db.prepare(
-                `SELECT id, vector FROM tags WHERE id IN (${placeholders})`
-            ).all(...batch);
-            for (const row of rows) {
-                if (!row.vector || row.vector.length !== dimension * 4) continue;
-                const id = Number(row.id);
-                const localMass = localMassById.get(id) || 0;
-                const transferMass = transferMassById.get(id) || 0;
-                if (localMass <= 0 && transferMass <= 0) continue;
-                const aligned = row.vector.byteOffset % 4 === 0
-                    ? row.vector
-                    : Buffer.from(row.vector);
-                const tagVector = new Float32Array(
-                    aligned.buffer,
-                    aligned.byteOffset,
-                    dimension
-                );
-                for (let index = 0; index < dimension; index++) {
-                    const value = tagVector[index];
-                    if (localMass > 0) {
-                        localOutput[index] += value * localMass;
-                    }
-                    if (transferMass > 0) {
-                        transferOutput[index] += value * transferMass;
-                    }
-                }
-                localTotalWeight += localMass;
-                transferTotalWeight += transferMass;
-            }
-        }
-
-        const finalize = (output, totalWeight) => {
-            if (totalWeight <= 0) return null;
-            let norm = 0;
-            for (let index = 0; index < dimension; index++) {
-                output[index] /= totalWeight;
-                norm += output[index] * output[index];
-            }
-            norm = Math.sqrt(norm);
-            if (norm <= 1e-12) return null;
-            const projected = new Float32Array(dimension);
-            for (let index = 0; index < dimension; index++) {
-                projected[index] = output[index] / norm;
-            }
-            return projected;
-        };
-
         return Object.freeze({
-            localVector: finalize(localOutput, localTotalWeight),
-            transferVector: finalize(transferOutput, transferTotalWeight),
+            localVector: null,
+            transferVector: null,
             diagnostics: Object.freeze({
-                backend: 'sqlite-fallback',
+                backend: 'unavailable',
                 requestedTags: ids.length,
                 foundTags: null,
-                missingTags: null,
+                missingTags: ids.length,
                 nativeElapsedMs: null,
-                elapsedMs: Date.now() - fallbackStartedAt
+                reason: 'native-dual-projection-unavailable'
             })
         });
     }
@@ -1296,16 +1169,12 @@ class TagMemoV10Engine {
         );
     }
 
-    projectCandidateCurves(candidates, options = {}) {
-        return projectCandidateCurves(
-            this.db,
-            candidates,
-            {
-                dimension: this.config.dimension,
-                derivedAssetManager: this.derivedAssetManager,
-                ...options
-            }
+    projectCandidateCurves() {
+        const error = new Error(
+            'JS V10 candidate curve projection is retired; use NativeKnowledgeRuntime'
         );
+        error.code = 'TAGMEMO_JS_GRAPH_RUNTIME_RETIRED';
+        throw error;
     }
 
     _loadTagVectorsById(ids) {
@@ -1316,29 +1185,12 @@ class TagMemoV10Engine {
         )];
         const vectorById = new Map();
         const dimension = Math.max(1, Number(this.config.dimension) || 0);
-        if (uniqueIds.length === 0 || !this.db?.prepare) return vectorById;
-
-        for (let offset = 0; offset < uniqueIds.length; offset += 500) {
-            const batch = uniqueIds.slice(offset, offset + 500);
-            const placeholders = batch.map(() => '?').join(',');
-            const rows = this.db.prepare(
-                `SELECT id, vector FROM tags WHERE id IN (${placeholders})`
-            ).all(...batch);
-            for (const row of rows) {
-                if (!row.vector || row.vector.length !== dimension * 4) continue;
-                const aligned = row.vector.byteOffset % 4 === 0
-                    ? row.vector
-                    : Buffer.from(row.vector);
-                vectorById.set(
-                    Number(row.id),
-                    new Float32Array(
-                        aligned.buffer,
-                        aligned.byteOffset,
-                        dimension
-                    )
-                );
-            }
+        if (uniqueIds.length === 0) return vectorById;
+        if (typeof this.tagIndex?.projectDualWeighted !== 'function') {
+            return vectorById;
         }
+
+        // 向量回填属于 Rust 查询上下文；JS V10 退休路径不再从 SQLite 读取 BLOB。
         return vectorById;
     }
 
@@ -1716,56 +1568,16 @@ class TagMemoV10Engine {
     }
 
     _computeDatabaseGeneration() {
-        if (!this.db?.prepare) return 'database-unavailable';
-        const facts = {};
-        for (const table of ['files', 'chunks', 'tags', 'file_tags']) {
-            try {
-                if (table === 'files') {
-                    facts[table] = this.db.prepare(`
-                        SELECT
-                            COUNT(*) AS count,
-                            COALESCE(MAX(id), 0) AS maxId,
-                            COALESCE(MAX(updated_at), 0) AS maxUpdatedAt,
-                            COALESCE(SUM(size), 0) AS totalSize
-                        FROM files
-                    `).get();
-                } else if (table === 'file_tags') {
-                    facts[table] = this.db.prepare(`
-                        SELECT
-                            COUNT(*) AS count,
-                            COALESCE(SUM(file_id), 0) AS fileMass,
-                            COALESCE(SUM(tag_id), 0) AS tagMass,
-                            COALESCE(SUM(position), 0) AS positionMass
-                        FROM file_tags
-                    `).get();
-                } else {
-                    facts[table] = this.db.prepare(`
-                        SELECT COUNT(*) AS count, COALESCE(MAX(id), 0) AS maxId
-                        FROM ${table}
-                    `).get();
-                }
-            } catch (error) {
-                facts[table] = { error: error.message };
-            }
+        const runtime = this.getNativeRuntime?.();
+        const generation = runtime?.databaseGeneration?.();
+        if (Number.isSafeInteger(Number(generation)) && Number(generation) >= 0) {
+            return String(Number(generation));
         }
-        return hashStable(facts, 40);
+        return 'database-unavailable';
     }
 
     _computeProvenanceGeneration() {
-        if (!this.db?.prepare) return 'provenance-unavailable';
-        try {
-            const rows = this.db.prepare(`
-                SELECT diary_name, COUNT(*) AS fileCount,
-                       COALESCE(SUM(size), 0) AS totalSize,
-                       COALESCE(MAX(updated_at), 0) AS maxUpdatedAt
-                FROM files
-                GROUP BY diary_name
-                ORDER BY diary_name
-            `).all();
-            return hashStable(rows, 40);
-        } catch (error) {
-            return hashStable({ error: error.message }, 40);
-        }
+        return 'provenance-owned-by-rust-runtime';
     }
 }
 

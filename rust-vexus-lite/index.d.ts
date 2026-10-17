@@ -18,6 +18,20 @@ export interface NativeKnowledgeRuntimeStats {
   memoRuntimeResident: boolean
   memoArtifactSig?: string
   memoGeneration: number
+  storeOpen: boolean
+  storeSchemaVersion: number
+  storeDatabaseGeneration: number
+}
+export interface NativeStoreState {
+  dbPath: string
+  schemaVersion: number
+  databaseGeneration: number
+  acceptingWrites: boolean
+}
+export interface NativeStoreHealth {
+  healthy: boolean
+  state: string
+  databaseGeneration: number
 }
 export interface NativeMemoArtifactBuildResult {
   success: boolean
@@ -44,8 +58,8 @@ export interface MemoPipelineResult {
   enhancedVector: Float32Array
 }
 /**
- * 搜索结果 (返回 ID 而非 Tag 文本)
- * 上层 JS 会拿着 ID 去 SQLite 里查具体的文本内容
+ * 搜索结果（返回 ID 而非 Tag 文本）。
+ * 中央 SQLite 的正文和元数据 hydrate 统一由 NativeKnowledgeRuntime 完成。
  */
 export interface SearchResult {
   id: number
@@ -157,11 +171,22 @@ export interface MemoRuntimeStats {
   edgeCount: number
   resident: boolean
 }
+export interface WatchEvent {
+  event: string
+  path: string
+  generation: number
+  stable: boolean
+  size: number
+  mtimeMs: number
+  emittedAt: number
+}
 export interface WatcherConfig {
   rootPath: string
   ignoreFolders: Array<string>
   ignorePrefixes: Array<string>
   ignoreSuffixes: Array<string>
+  /** 是否在 watcher 启动时执行 Rust 侧初始扫描。 */
+  initialScan?: boolean
   /** 可选扩展名白名单。为空时保持旧行为：仅监听 .md / .txt。 */
   extensions?: Array<string>
   /** 路径事件静默窗口。窗口内的新事件会使旧 generation 自动失效。 */
@@ -178,6 +203,118 @@ export declare class NativeKnowledgeRuntime {
    * 构造完成后只持有纯 Rust Arc，不保存 N-API 对象引用。
    */
   constructor(tagIndex: VexusIndex)
+  /**
+   * 打开并初始化中央 KBM SQLite 存储根。
+   *
+   * 现阶段只初始化 Runtime 元数据表；业务 Schema 迁移会在后续阶段
+   * 收归同一个 Write Actor，避免与旧 JS Schema 管理同时执行。
+   */
+  openAndInitStore(dbPath: string, optionsJson?: string | undefined | null): NativeStoreState
+  /** 在 Runtime 生命周期内启动由 Rust 持有的原生文件监听器。 */
+  startWatch(config: WatcherConfig): void
+  /** 批量读取 Rust 内部有界事件队列中的稳定文件事件。 */
+  drainWatchEvents(maxEvents?: number | undefined | null): Array<WatchEvent>
+  /** 停止 Runtime 持有的原生文件监听器。 */
+  stopWatch(): void
+  storeState(): NativeStoreState | null
+  healthCheck(): Promise<string>
+  databaseGeneration(): number
+  /** 在 Rust Read Pool 后台线程读取中央库中的日记本名称，不暴露任意 SQL。 */
+  listDistinctDiaries(dbPath: string): Promise<string>
+  /** 在 Rust Read Pool 后台线程统计指定日记本的 Chunk 数量。 */
+  getDiaryChunkCount(dbPath: string, diaryName: string): Promise<unknown>
+  /** 在 Rust Read Pool 后台线程按日记本名称解析文件 ID，供权限范围和联合查询使用。 */
+  getFileIdsByDiaries(dbPath: string, diaryNames: Array<string>): Promise<string>
+  /**
+   * 在 Rust Read Pool 后台线程批量探测文件事实状态。
+   *
+   * 该接口只返回文件元数据、Chunk 数量和向量完整性摘要，不跨越
+   * N-API 传输任何 Vector BLOB。
+   */
+  probeIngestionFiles(dbPath: string, filePaths: Array<string>): Promise<unknown>
+  /**
+   * 将 JS 已完成的文本切分与 Embedding 结果提交到 Rust Write Actor。
+   *
+   * Rust 只接受稳定的计划和位置向量，不在这里重写 JS 的 tokenizer/chunker。
+   * 在 Rust Read Pool 后台线程批量探测 Tag 状态。
+   *
+   * 仅返回 Tag ID 和向量是否存在且维度正确，不跨 N-API 传输 Vector BLOB。
+   */
+  probeIngestionTags(dbPath: string, tagNames: Array<string>): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 后台线程查找可复用的迁移向量来源。
+   *
+   * 只返回 live file ID 或 migration tombstone ID；Vector BLOB 始终留在 Rust。
+   */
+  probeMigrationReuse(dbPath: string, requestsJson: string): Promise<unknown>
+  /**
+   * 清理缺失文件记录以及事实表中的孤儿关系。
+   *
+   * 文件系统扫描在 N-API 后台任务中执行，数据库删除统一提交到
+   * NativeKnowledgeRuntime 所属的 SQLite Write Actor。
+   */
+  cleanupDatabaseOrphans(dbPath: string, rootPath: string): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 中确认当前 pairwise 模型已有健康缓存后，
+   * 通过 Write Actor 删除旧模型签名的 pairwise 数值。
+   *
+   * 该维护操作不修改中央事实表，因此不会推进数据库事实代际。
+   */
+  cleanupStalePairwiseSimilarityModels(dbPath: string, modelSig: string): Promise<unknown>
+  commitIngestionBatch(dbPath: string, planJson: string, chunkVectors: Float32Array, tagVectors: Float32Array): Promise<unknown>
+  /** 由 Rust Write Actor 提交文件删除、迁移墓碑和索引删除回执。 */
+  commitDeleteBatch(dbPath: string, filePaths: Array<string>, ttlMs: number): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 后台线程读取 Tag 一致性预览所需的轻量数据库快照。
+   *
+   * 只返回文件元数据、Tag 元数据和 file_tags 关系，不返回向量 BLOB。
+   */
+  getTagConsistencySnapshot(dbPath: string): Promise<unknown>
+  /**
+   * 通过 Rust Write Actor 提交 Tag 一致性快照。
+   *
+   * 文件扫描、规则计算和 Embedding 仍由 Node.js 控制面完成；本方法只接收
+   * 已冻结的快照计划与缺失 Tag 向量，所有事实表修改在 Write Actor 事务中执行。
+   */
+  commitTagConsistency(dbPath: string, planJson: string, tagVectors: Float32Array): Promise<unknown>
+  /** 在 Rust Read Pool 后台线程读取 kv_store 中的单个向量值。 */
+  getKvVector(dbPath: string, key: string): Promise<unknown>
+  /** 通过 Rust Write Actor 写入 kv_store 中的单个向量值。 */
+  setKvVector(dbPath: string, key: string, vector: Float32Array): Promise<unknown>
+  /** 在 Rust Read Pool 后台线程按 key 前缀读取有限数量的 KV 向量。 */
+  listKvVectors(dbPath: string, prefix: string): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 后台线程读取兼容的 RiverMemo artifact manifest。
+   * 只返回控制面元数据，不读取或解压持久化 payload。
+   */
+  getNativeMemoManifest(dbPath: string, modelSig: string, configHash: string): Promise<unknown>
+  /** 在 Rust 后台线程构建单个日记本的轻量日期索引。 */
+  getDiaryDateIndex(dbPath: string, diaryName: string): Promise<unknown>
+  /** 在 Rust 后台线程按 Tag 名称查找单个 Tag 向量；Vector BLOB 不经过 Node.js。 */
+  getTagVectorByName(dbPath: string, tagName: string): Promise<unknown>
+  /** 在 Rust 后台线程按正文查找单个 Chunk 向量；Vector BLOB 不经过 Node.js。 */
+  getChunkVectorByText(dbPath: string, diaryName: string, text: string): Promise<unknown>
+  /** 在 Rust 后台线程读取单个 Chunk 向量；Vector BLOB 不经过 Node.js。 */
+  getChunkVector(dbPath: string, chunkId: number): Promise<unknown>
+  /** 在 Rust 后台线程按 Chunk ID 批量回填正文和文件元数据，结果按请求 ID 顺序返回。 */
+  hydrateChunksByIds(dbPath: string, chunkIds: Array<number>): Promise<string>
+  /** 在 Rust 后台线程按 Tag ID 批量回填 Tag 名称，供纯 ANN 结果适配旧返回结构。 */
+  hydrateTagNamesByIds(dbPath: string, tagIds: Array<number>): Promise<string>
+  /** 在 Rust 后台线程按文件路径批量回填正文和文件元数据，结果使用与 Chunk ID hydrate 相同的 JSON 契约。 */
+  hydrateChunksByFilePaths(dbPath: string, filePaths: Array<string>): Promise<string>
+  /**
+   * 在 Rust 后台线程恢复日记索引。
+   *
+   * 调用方只提供已创建并注册的 VexusIndex；活动槽加载、成员差分回放
+   * 和无基线全量重建均在 Rust 后台执行，向量 BLOB 不经过 Node.js。
+   */
+  restoreDiaryIndex(dbPath: string, diaryName: string, indexPath: string, modelSig: string, capacity: number, diaryIndex: VexusIndex): Promise<unknown>
+  /** 在 Rust 后台线程恢复全局 Tag 索引。 */
+  restoreGlobalTagIndex(dbPath: string, indexPath: string, modelSig: string, capacity: number): Promise<unknown>
+  /** 在 Rust 后台线程执行日记索引双槽代际 checkpoint。 */
+  checkpointDiaryIndex(dbPath: string, diaryName: string, indexPath: string, modelSig: string, threshold: number, force?: boolean | undefined | null): Promise<unknown>
+  /** 在 Rust 后台线程执行全局 Tag 索引双槽代际 checkpoint。 */
+  checkpointGlobalTagIndex(dbPath: string, indexPath: string, modelSig: string, threshold: number, force?: boolean | undefined | null): Promise<unknown>
   /**
    * 注册或原子替换一个日记索引。
    *
@@ -234,6 +371,8 @@ export declare class VexusIndex {
    * 短暂持有句柄造成的共享冲突进行有界重试。
    */
   save(indexPath: string): void
+  /** 在 N-API 后台线程保存索引，禁止调用方在 V8 主线程执行磁盘序列化。 */
+  saveAsync(indexPath: string): Promise<unknown>
   /** 单个添加 (JS 循环调用) */
   add(id: number, vector: Float32Array): void
   /**
@@ -355,10 +494,17 @@ export declare class VexusIndex {
    */
   computePairwiseSimilarities(dbPath: string, modelSig: string, minSimilarity?: number | undefined | null, fullRebuild?: boolean | undefined | null): Promise<unknown>
 }
+/**
+ * 兼容离线工具的独立 watcher。
+ * 生产 KBM 必须使用 NativeKnowledgeRuntime.startWatch/stopWatch，
+ * 不得创建独立 VexusWatcher。
+ */
 export declare class VexusWatcher {
   constructor()
-  /** 启动高性能原生文件监听 */
-  startWatch(config: WatcherConfig, jsCallback: (err: Error | null, arg: string) => any): void
+  /** 启动高性能原生文件监听；事件保留在 Rust 有界队列中。 */
+  startWatch(config: WatcherConfig, callback?: (err: Error | null, arg: string) => any): void
+  /** 批量读取 Rust 内部有界事件队列中的稳定文件事件。 */
+  drainEvents(maxEvents?: number | undefined | null): Array<WatchEvent>
   /** 停止监听 */
   stopWatch(): void
 }

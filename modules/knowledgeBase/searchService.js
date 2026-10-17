@@ -24,8 +24,7 @@ class SearchService {
         const names = scoped
             ? [...new Set((Array.isArray(args[0]) ? args[0] : [args[0]])
                 .map(name => name.trim()).filter(Boolean))]
-            : owner.db.prepare('SELECT DISTINCT diary_name FROM files').all()
-                .map(row => row.diary_name).filter(Boolean);
+            : [];
         return {
             names,
             vector: owner._isVectorLike(vector)
@@ -41,6 +40,9 @@ class SearchService {
 
     async search(...args) {
         const request = this._parse(args);
+        if (request.names.length === 0) {
+            request.names = await this.owner.listDistinctDiaries();
+        }
         if (!request.vector || request.names.length === 0) return [];
         const { options } = request;
         if (options.geodesicRerank || options.tagMemoVersion || options.tagmemoVersion
@@ -75,9 +77,13 @@ class SearchService {
 
     // 纯 ANN：不感应、不增强、不调用任何 Memo 读出或语义去重。
     async searchKnn(...args) {
-        const { names, vector, k, options } = this._parse(args);
-        if (!vector || names.length === 0) return [];
+        const request = this._parse(args);
         const owner = this.owner;
+        const names = request.names.length > 0
+            ? request.names
+            : await owner.listDistinctDiaries();
+        const { vector, k, options } = request;
+        if (!vector || names.length === 0) return [];
         if (vector.length !== owner.config.dimension) {
             throw new RangeError(`KNN query dimension must be ${owner.config.dimension}, got ${vector.length}`);
         }
@@ -94,11 +100,9 @@ class SearchService {
             if (!byId.has(id) || item.score > byId.get(id).score) byId.set(id, { ...item, id });
         }
         const ranked = [...byId.values()].sort((a, b) => b.score - a.score || a.id - b.id);
-        const rows = owner._queryByChunks(`
-            SELECT c.id, c.content AS text, f.path AS sourceFile,
-                   f.diary_name AS diaryName, f.id AS fileId, f.updated_at
-            FROM chunks c JOIN files f ON c.file_id = f.id WHERE c.id`,
-        ranked.map(item => item.id));
+        const rows = await owner.hydrateChunksByIds(
+            ranked.map(item => item.id)
+        );
         const rowsById = new Map(rows.map(row => [Number(row.id), row]));
         const scope = new Set(names);
         const allowed = Array.isArray(options.allowedFileIds) ? new Set(options.allowedFileIds.map(Number)) : null;
@@ -131,25 +135,17 @@ class SearchService {
 
     async getChunksByFilePaths(filePaths) {
         if (!filePaths || filePaths.length === 0) return [];
-        const owner = this.owner;
-        const results = [];
-        for (let i = 0; i < filePaths.length; i += 500) {
-            const batch = filePaths.slice(i, i + 500);
-            const rows = owner.db.prepare(`
-                SELECT c.id, c.content AS text, c.vector, f.path AS sourceFile
-                FROM chunks c JOIN files f ON c.file_id = f.id
-                WHERE f.path IN (${batch.map(() => '?').join(',')})
-            `).all(...batch);
-            results.push(...rows.map(row => ({
-                id: row.id,
-                chunkId: row.id,
-                text: row.text,
-                vector: owner._decodeVectorBlob(row.vector, owner.config.dimension, `chunk:${row.id}`),
-                sourceFile: row.sourceFile,
-                fullPath: row.sourceFile
-            })));
-        }
-        return results;
+        const rows = await this.owner.hydrateChunksByFilePaths(filePaths);
+        return rows.map(row => ({
+            id: row.id,
+            chunkId: row.chunkId,
+            text: row.text,
+            vector: row.vector,
+            sourceFile: row.sourceFile,
+            fullPath: row.sourceFile,
+            diaryName: row.diaryName,
+            fileId: row.fileId
+        }));
     }
 
     async searchSimilarTags(input, k = 10) {
@@ -162,12 +158,22 @@ class SearchService {
             vector = vectors[0];
         }
         if (!vector) return [];
+
+        const limit = Math.max(1, Math.floor(Number(k) || 10));
         const results = owner.tagIndex.search(
-            vector instanceof Float32Array ? vector : new Float32Array(vector), k);
-        const hydrate = owner.db.prepare('SELECT name FROM tags WHERE id = ?');
+            vector instanceof Float32Array ? vector : new Float32Array(vector),
+            limit
+        );
+        const tagIds = results
+            .map(item => Number(item.id))
+            .filter(id => Number.isSafeInteger(id) && id > 0);
+        if (tagIds.length === 0) return [];
+
+        const rows = await owner.hydrateTagNamesByIds(tagIds);
+        const namesById = new Map(rows.map(row => [Number(row.id), row.name]));
         return results.map(item => {
-            const row = hydrate.get(Number(item.id));
-            return row ? { tag: row.name, score: item.score } : null;
+            const tag = namesById.get(Number(item.id));
+            return tag ? { tag, score: item.score } : null;
         }).filter(Boolean);
     }
 }

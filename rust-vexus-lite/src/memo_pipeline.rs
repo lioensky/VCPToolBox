@@ -1,14 +1,15 @@
 use crate::memo_sensing::{sense_typed, SenseConfig, SenseInput, SenseOutput, SenseSeed};
 use crate::rivermemo_topology_v3::{load_artifact_from_runtime, MemoRuntime};
+use crate::storage::with_registered_read;
 use base64::Engine;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use usearch::Index;
 
 const PIPELINE_SCHEMA: &str = "vexus-unified-memo-pipeline-v1";
@@ -66,18 +67,6 @@ fn normalize(vector: &mut [f64]) -> bool {
         *value /= norm;
     }
     true
-}
-
-fn open_readonly(path: &str) -> std::result::Result<Connection, String> {
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("open Memo pipeline SQLite failed: {}", error))?;
-    connection
-        .busy_timeout(Duration::from_secs(30))
-        .map_err(|error| format!("configure Memo pipeline timeout failed: {}", error))?;
-    connection
-        .pragma_update(None, "query_only", "ON")
-        .map_err(|error| format!("configure Memo pipeline query_only failed: {}", error))?;
-    Ok(connection)
 }
 
 #[derive(Deserialize)]
@@ -1299,15 +1288,16 @@ pub struct MemoPipelineResult {
     pub enhanced_vector: Float32Array,
 }
 
-fn run_pipeline(
+fn run_pipeline_with_connection(
     index: &Arc<RwLock<Index>>,
     runtime: &MemoRuntime,
-    db_path: &str,
     artifact_sig: &str,
     dimensions: usize,
     input_json: &str,
     query_vector: &[f32],
     ghost_vectors: &[f32],
+    artifact: &Arc<crate::rivermemo_topology_v3::NativeArtifact>,
+    connection: &Connection,
 ) -> std::result::Result<MemoPipelineComputeOutput, String> {
     let total_started = Instant::now();
     let mut input: PipelineInput = serde_json::from_str(input_json)
@@ -1337,9 +1327,6 @@ fn run_pipeline(
         let start = position * dimensions;
         ghost.vector = ghost_vectors[start..start + dimensions].to_vec();
     }
-    let artifact = load_artifact_from_runtime(runtime, db_path, artifact_sig)?;
-    let connection = open_readonly(db_path)?;
-
     let epa_started = Instant::now();
     let epa = analyze_epa(&connection, &input.query_vector, dimensions);
     let epa_ms = epa_started.elapsed().as_secs_f64() * 1000.0;
@@ -1404,17 +1391,15 @@ fn run_pipeline(
     )?;
     let fusion_ms = fusion_started.elapsed().as_secs_f64() * 1000.0;
     let dual_fields = solve_dual_fields(
-        &artifact,
+        artifact,
         &index_guard,
         &observation.source_field,
         dimensions,
         &input.config,
     )?;
     drop(index_guard);
-    drop(connection);
 
-    let enhanced_vector_f32: Vec<f32> =
-        enhanced_vector.iter().map(|value| *value as f32).collect();
+    let enhanced_vector_f32: Vec<f32> = enhanced_vector.iter().map(|value| *value as f32).collect();
     let observation_handle = runtime.store_query_observation(
         artifact_sig,
         observation,
@@ -1487,6 +1472,32 @@ fn run_pipeline(
     Ok(MemoPipelineComputeOutput {
         metadata_json,
         enhanced_vector: enhanced_vector_f32,
+    })
+}
+
+fn run_pipeline(
+    index: &Arc<RwLock<Index>>,
+    runtime: &MemoRuntime,
+    db_path: &str,
+    artifact_sig: &str,
+    dimensions: usize,
+    input_json: &str,
+    query_vector: &[f32],
+    ghost_vectors: &[f32],
+) -> std::result::Result<MemoPipelineComputeOutput, String> {
+    let artifact = load_artifact_from_runtime(runtime, db_path, artifact_sig)?;
+    with_registered_read(db_path, |connection| {
+        run_pipeline_with_connection(
+            index,
+            runtime,
+            artifact_sig,
+            dimensions,
+            input_json,
+            query_vector,
+            ghost_vectors,
+            &artifact,
+            connection,
+        )
     })
 }
 

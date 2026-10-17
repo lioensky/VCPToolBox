@@ -34,10 +34,6 @@ class RiverMemoEngine {
         this.config = config || {};
     }
 
-    rebindDatabase(db) {
-        this.runtime.rebindDatabase(db);
-    }
-
     getArtifactSnapshot(options = {}) {
         return this.runtime.getArtifactSnapshot(options);
     }
@@ -146,12 +142,7 @@ class RiverMemoEngine {
             hop: Number(entry?.[1]?.hop) || 0,
             sourceType: String(entry?.[1]?.sourceType || '')
         }));
-        const dbPath = String(
-            options.dbPath
-            || this.runtime.db?.name
-            || this.runtime.db?.path
-            || ''
-        );
+        const dbPath = String(options.dbPath || '');
         if (!dbPath || dbPath === ':memory:') {
             const error = new Error(
                 'RiverMemo native Topology V3 requires a file-backed SQLite database path.'
@@ -349,8 +340,9 @@ class RiverMemoEngine {
         );
 
         // 联合路径没有把中间候选返回 JS。只按最终 Top-K ID 批量 hydrate
-        // 正文和路径，恢复现有公共结果对象契约。
-        if (jointUsed && this.runtime.db?.prepare) {
+        // 正文和路径，恢复现有公共结果对象契约。hydrate 必须走 KBM
+        // 异步高层门面，禁止通过旧 runtime.db 同步访问中央 SQLite。
+        if (jointUsed && typeof options.hydrateChunksByIds === 'function') {
             const finalIds = [...new Set(
                 (Array.isArray(nativeResult.results)
                     ? nativeResult.results
@@ -359,24 +351,16 @@ class RiverMemoEngine {
                     .filter(id => Number.isSafeInteger(id) && id > 0)
             )];
             if (finalIds.length > 0) {
-                const placeholders = finalIds.map(() => '?').join(',');
-                const rows = this.runtime.db.prepare(`
-                    SELECT c.id, c.content AS text, f.path AS sourceFile,
-                           f.diary_name AS diaryName, f.id AS fileId
-                    FROM chunks c
-                    JOIN files f ON f.id = c.file_id
-                    WHERE c.id IN (${placeholders})
-                `).all(...finalIds);
-                for (const row of rows) {
-                    inputById.set(Number(row.id), {
-                        id: Number(row.id),
-                        chunkId: Number(row.id),
-                        text: row.text,
-                        sourceFile: row.sourceFile,
-                        fullPath: row.sourceFile,
-                        diaryName: row.diaryName,
-                        fileId: Number(row.fileId),
-                        source: 'rag'
+                const rows = await options.hydrateChunksByIds(finalIds);
+                for (const row of Array.isArray(rows) ? rows : []) {
+                    const id = Number(row?.id ?? row?.chunkId);
+                    if (!Number.isSafeInteger(id) || id <= 0) continue;
+                    inputById.set(id, {
+                        ...row,
+                        id,
+                        chunkId: id,
+                        fullPath: row.fullPath || row.sourceFile,
+                        source: row.source || 'rag'
                     });
                 }
             }

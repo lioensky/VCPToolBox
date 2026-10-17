@@ -1,7 +1,8 @@
+use crate::storage::with_registered_read;
 use flate2::read::GzDecoder;
 use napi::bindgen_prelude::*;
 use rayon::prelude::*;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -597,25 +598,12 @@ impl MemoRuntime {
     }
 }
 
-fn open_readonly(path: &str) -> std::result::Result<Connection, String> {
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("open readonly SQLite failed: {}", error))?;
-    connection
-        .busy_timeout(Duration::from_secs(30))
-        .map_err(|error| format!("configure SQLite timeout failed: {}", error))?;
-    connection
-        .pragma_update(None, "query_only", "ON")
-        .map_err(|error| format!("configure SQLite query_only failed: {}", error))?;
-    Ok(connection)
-}
-
 fn decode_artifact(
-    db_path: &str,
+    connection: &Connection,
     artifact_sig: &str,
 ) -> std::result::Result<Arc<NativeArtifact>, String> {
     const MAX_DECOMPRESSED_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
-    let connection = open_readonly(db_path)?;
     let (codec, expected_checksum, compressed): (String, String, Vec<u8>) = connection
         .query_row(
             "SELECT payload_codec, payload_checksum, payload FROM rivermemo_artifacts \
@@ -862,8 +850,10 @@ pub(crate) fn load_artifact_from_runtime(
         return Ok(artifact);
     }
 
-    // 解码和校验在写锁外完成；发布临界区只替换 Arc。
-    let staging = decode_artifact(db_path, artifact_sig)?;
+    // 解码和校验在写锁外完成；连接由 StorageEngine Read Pool 提供。
+    let staging = with_registered_read(db_path, |connection| {
+        decode_artifact(connection, artifact_sig)
+    })?;
     runtime.publish(artifact_sig, staging.clone())?;
     Ok(staging)
 }
@@ -903,13 +893,11 @@ struct CurveLoadOutput {
 }
 
 fn load_curves(
-    db_path: &str,
+    connection: &Connection,
     candidates: &[CandidateInput],
     dimension: usize,
 ) -> std::result::Result<CurveLoadOutput, String> {
     const SQLITE_BATCH_SIZE: usize = 500;
-
-    let connection = open_readonly(db_path)?;
     let candidate_ids: Vec<i64> = candidates
         .iter()
         .map(|candidate| candidate.id)
@@ -939,11 +927,8 @@ fn load_curves(
             .map_err(|error| format!("prepare batched chunk projection failed: {}", error))?;
         let rows = statement
             .query_map(rusqlite::params_from_iter(batch.iter()), |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
+                let bytes: Vec<u8> = row.get(2)?;
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, bytes))
             })
             .map_err(|error| format!("query batched chunk projection failed: {}", error))?;
         for row in rows {
@@ -988,12 +973,13 @@ fn load_curves(
             .map_err(|error| format!("prepare batched tag curve projection failed: {}", error))?;
         let rows = statement
             .query_map(rusqlite::params_from_iter(batch.iter()), |row| {
+                let bytes: Vec<u8> = row.get(4)?;
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
+                    bytes,
                 ))
             })
             .map_err(|error| format!("query batched tag curve projection failed: {}", error))?;
@@ -1092,10 +1078,7 @@ fn load_tag_vectors_by_ids(
             .take(batch.len())
             .collect::<Vec<_>>()
             .join(",");
-        let sql = format!(
-            "SELECT id, vector FROM tags WHERE id IN ({})",
-            placeholders
-        );
+        let sql = format!("SELECT id, vector FROM tags WHERE id IN ({})", placeholders);
         let mut statement = connection
             .prepare(&sql)
             .map_err(|error| format!("prepare batched Tag vector read failed: {}", error))?;
@@ -2559,7 +2542,9 @@ pub(crate) fn run_native(
 
     let load_started = Instant::now();
     let artifact = load_artifact_from_runtime(runtime, db_path, artifact_sig)?;
-    let curve_load = load_curves(db_path, &input.candidates, dimension)?;
+    let curve_load = with_registered_read(db_path, |connection| {
+        load_curves(connection, &input.candidates, dimension)
+    })?;
     let mut curves = curve_load.curves;
     let original_score_by_id: HashMap<i64, f64> = input
         .candidates
@@ -2643,10 +2628,10 @@ pub(crate) fn run_native(
         .map(|node| node.id)
         .collect();
     requested_tag_ids.extend(seeds.iter().map(|seed| seed.0));
-    let connection = open_readonly(db_path)?;
     let (query_and_seed_tag_vectors, query_tag_sql_batches) =
-        load_tag_vectors_by_ids(&connection, &requested_tag_ids, dimension)?;
-    drop(connection);
+        with_registered_read(db_path, |connection| {
+            load_tag_vectors_by_ids(connection, &requested_tag_ids, dimension)
+        })?;
     let load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
 
     let compute_started = Instant::now();
@@ -2683,12 +2668,8 @@ pub(crate) fn run_native(
         .zip(anchor_results.into_par_iter())
         .map(|(curve, anchor)| {
             let geometry = evaluate_path(&curve, &workspace, &artifact, &input.config);
-            let topology = evaluate_topology(
-                &curve,
-                &input,
-                &artifact,
-                &query_and_seed_tag_vectors,
-            );
+            let topology =
+                evaluate_topology(&curve, &input, &artifact, &query_and_seed_tag_vectors);
             let visible = !explicit_scope || allowed.contains(&curve.file_id);
             let observables = evaluate_observables(&curve, &geometry, &input, &workspace, visible);
             let semantic_total = (input.config.pure_query_weight

@@ -1,7 +1,6 @@
-use rusqlite::{Connection, OpenFlags};
+use crate::storage::with_registered_read;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::time::Duration;
 
 const SQLITE_BATCH_SIZE: usize = 500;
 
@@ -29,18 +28,6 @@ pub(crate) struct SemanticDedupOutput {
     pub(crate) missing_vectors: usize,
     pub(crate) comparison_count: usize,
     pub(crate) suppressed: usize,
-}
-
-fn open_readonly(path: &str) -> std::result::Result<Connection, String> {
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("open semantic dedup SQLite failed: {}", error))?;
-    connection
-        .busy_timeout(Duration::from_secs(30))
-        .map_err(|error| format!("configure semantic dedup timeout failed: {}", error))?;
-    connection
-        .pragma_update(None, "query_only", "ON")
-        .map_err(|error| format!("configure semantic dedup query_only failed: {}", error))?;
-    Ok(connection)
 }
 
 fn descriptor_from_bytes(bytes: &[u8], dimension: usize) -> Option<VectorDescriptor> {
@@ -112,41 +99,42 @@ fn load_descriptors(
     ids: &[i64],
     dimension: usize,
 ) -> std::result::Result<(HashMap<i64, VectorDescriptor>, usize), String> {
-    let connection = open_readonly(db_path)?;
-    let mut descriptors = HashMap::with_capacity(ids.len());
-    let mut sql_batches = 0usize;
+    with_registered_read(db_path, |connection| {
+        let mut descriptors = HashMap::with_capacity(ids.len());
+        let mut sql_batches = 0usize;
 
-    for batch in ids.chunks(SQLITE_BATCH_SIZE) {
-        if batch.is_empty() {
-            continue;
-        }
-        sql_batches += 1;
-        let placeholders = std::iter::repeat("?")
-            .take(batch.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT id, vector FROM chunks WHERE id IN ({})",
-            placeholders
-        );
-        let mut statement = connection
-            .prepare(&sql)
-            .map_err(|error| format!("prepare batched semantic vectors failed: {}", error))?;
-        let rows = statement
-            .query_map(rusqlite::params_from_iter(batch.iter()), |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })
-            .map_err(|error| format!("query batched semantic vectors failed: {}", error))?;
-        for row in rows {
-            let (id, bytes) =
-                row.map_err(|error| format!("decode semantic vector row failed: {}", error))?;
-            if let Some(descriptor) = descriptor_from_bytes(&bytes, dimension) {
-                descriptors.insert(id, descriptor);
+        for batch in ids.chunks(SQLITE_BATCH_SIZE) {
+            if batch.is_empty() {
+                continue;
+            }
+            sql_batches += 1;
+            let placeholders = std::iter::repeat("?")
+                .take(batch.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, vector FROM chunks WHERE id IN ({})",
+                placeholders
+            );
+            let mut statement = connection
+                .prepare(&sql)
+                .map_err(|error| format!("prepare batched semantic vectors failed: {}", error))?;
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(batch.iter()), |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .map_err(|error| format!("query batched semantic vectors failed: {}", error))?;
+            for row in rows {
+                let (id, bytes) =
+                    row.map_err(|error| format!("decode semantic vector row failed: {}", error))?;
+                if let Some(descriptor) = descriptor_from_bytes(&bytes, dimension) {
+                    descriptors.insert(id, descriptor);
+                }
             }
         }
-    }
 
-    Ok((descriptors, sql_batches))
+        Ok((descriptors, sql_batches))
+    })
 }
 
 pub(crate) fn deduplicate(
@@ -190,8 +178,8 @@ pub(crate) fn deduplicate(
         .collect();
 
     // 与 JS 参考实现一致：有效 Query 相似度优先，其次候选分数，最后原始位置。
-    ranked.sort_by(|left, right| {
-        match (left.query_similarity, right.query_similarity) {
+    ranked.sort_by(
+        |left, right| match (left.query_similarity, right.query_similarity) {
             (Some(left_value), Some(right_value)) if left_value != right_value => right_value
                 .partial_cmp(&left_value)
                 .unwrap_or(Ordering::Equal),
@@ -207,8 +195,8 @@ pub(crate) fn deduplicate(
                         .original_index
                         .cmp(&right.candidate.original_index)
                 }),
-        }
-    });
+        },
+    );
 
     let threshold = if threshold.is_finite() {
         threshold.clamp(-1.0, 1.0)
@@ -261,10 +249,7 @@ pub(crate) fn deduplicate(
     });
 
     Ok(SemanticDedupOutput {
-        candidates: selected
-            .into_iter()
-            .map(|entry| entry.candidate)
-            .collect(),
+        candidates: selected.into_iter().map(|entry| entry.candidate).collect(),
         sql_batches,
         hydrated_vectors,
         missing_vectors,

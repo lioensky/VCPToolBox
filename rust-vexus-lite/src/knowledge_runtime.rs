@@ -1,13 +1,28 @@
+use crate::index_lifecycle::{IndexCheckpointTask, IndexRestoreTask, IndexScope};
+use crate::ingestion::{
+    DeleteCommitTask, IngestionCommitTask, IngestionFileProbeTask, IngestionTagProbeTask,
+    MigrationReuseProbeTask, OrphanCleanupTask,
+};
+use crate::pairwise_maintenance::PairwiseModelCleanupTask;
+use crate::tag_consistency::{
+    TagConsistencyCommitTask, TagConsistencySnapshotTask,
+};
 use crate::result_deduplicator::{self, DedupCandidate};
 use crate::rivermemo_topology_v3::{self, MemoRuntime};
-use crate::VexusIndex;
+use crate::storage::{
+    normalize_storage_options, with_registered_read_napi, with_registered_write,
+    SqliteStorageEngine, StorageOptions,
+};
+use crate::{VexusIndex, VexusWatcher, WatchEvent, WatcherConfig};
+use base64::Engine;
+use rusqlite::OptionalExtension;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering as CompareOrdering;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use usearch::Index;
 
 struct RegisteredDiaryIndex {
@@ -35,6 +50,31 @@ pub struct NativeKnowledgeRuntimeStats {
     pub memo_runtime_resident: bool,
     pub memo_artifact_sig: Option<String>,
     pub memo_generation: i64,
+    pub store_open: bool,
+    pub store_schema_version: i64,
+    pub store_database_generation: i64,
+}
+
+#[napi(object)]
+pub struct NativeRuntimeCapabilities {
+    pub abi_version: u32,
+    pub dimension: u32,
+    pub capabilities: Vec<String>,
+}
+
+#[napi(object)]
+pub struct NativeStoreState {
+    pub db_path: String,
+    pub schema_version: i64,
+    pub database_generation: i64,
+    pub accepting_writes: bool,
+}
+
+#[napi(object)]
+pub struct NativeStoreHealth {
+    pub healthy: bool,
+    pub state: String,
+    pub database_generation: i64,
 }
 
 #[derive(Clone)]
@@ -230,7 +270,7 @@ impl Task for NativeMultiIndexAnnTask {
             .any(|query| query.len() != self.dimension)
         {
             return Err(Error::from_reason(
-                "Native supplemental ANN vector dimension mismatch".to_string()
+                "Native supplemental ANN vector dimension mismatch".to_string(),
             ));
         }
 
@@ -281,9 +321,7 @@ impl Task for NativeMultiIndexAnnTask {
                 entry.sources.push(snapshot.diary_name.clone());
             }
 
-            for (query_index, supplemental_query) in
-                self.supplemental_queries.iter().enumerate()
-            {
+            for (query_index, supplemental_query) in self.supplemental_queries.iter().enumerate() {
                 let weight = self
                     .supplemental_weights
                     .get(query_index)
@@ -317,11 +355,9 @@ impl Task for NativeMultiIndexAnnTask {
                     });
                     entry.score = entry.score.max(score);
                     entry.vector_score = entry.vector_score.max(raw_score);
-                    entry.sources.push(format!(
-                        "history_{}:{}",
-                        query_index,
-                        snapshot.diary_name
-                    ));
+                    entry
+                        .sources
+                        .push(format!("history_{}:{}", query_index, snapshot.diary_name));
                 }
             }
 
@@ -341,159 +377,146 @@ impl Task for NativeMultiIndexAnnTask {
         let time_per_diary_limit = self.time_per_diary_limit.clamp(1, 50);
         let time_global_limit = self.time_global_limit.clamp(1, 500);
         if !self.file_candidates.is_empty() {
-            let connection = rusqlite::Connection::open_with_flags(
-                self.semantic_dedup
-                    .as_ref()
-                    .map(|config| config.db_path.as_str())
-                    .ok_or_else(|| Error::from_reason(
-                        "Native hybrid file candidates require SQLite semantic config"
-                            .to_string()
-                    ))?,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .map_err(|error| Error::from_reason(format!(
-                "Open native hybrid SQLite failed: {}",
-                error
-            )))?;
-            connection
-                .busy_timeout(std::time::Duration::from_secs(30))
-                .map_err(|error| Error::from_reason(format!(
-                    "Configure native hybrid SQLite failed: {}",
-                    error
-                )))?;
-
-            let sparse_weight = self.bm25_weight.clamp(0.0, 1.0);
-            let allowed_diaries: HashSet<&str> = self
-                .snapshots
-                .iter()
-                .map(|snapshot| snapshot.diary_name.as_str())
-                .collect();
-            let mut pending_time_by_diary:
-                HashMap<String, HashMap<i64, NativeAnnCandidate>> = HashMap::new();
-            for file_candidate in &self.file_candidates {
-                if file_candidate.path.trim().is_empty() {
-                    continue;
-                }
-                let mut statement = connection
-                    .prepare(
-                        "SELECT c.id, c.vector, f.diary_name FROM chunks c \
-                         JOIN files f ON f.id = c.file_id WHERE f.path = ?1"
+            let semantic_db_path = self
+                .semantic_dedup
+                .as_ref()
+                .map(|config| config.db_path.clone())
+                .ok_or_else(|| {
+                    Error::from_reason(
+                        "Native hybrid file candidates require SQLite semantic config".to_string(),
                     )
-                    .map_err(|error| Error::from_reason(format!(
-                        "Prepare native hybrid file expansion failed: {}",
-                        error
-                    )))?;
-                let rows = statement
-                    .query_map([file_candidate.path.as_str()], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, Vec<u8>>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })
-                    .map_err(|error| Error::from_reason(format!(
-                        "Query native hybrid file expansion failed: {}",
-                        error
-                    )))?;
-                for row in rows {
-                    let (id, bytes, diary_name) =
-                        row.map_err(|error| Error::from_reason(
-                            format!("Decode native hybrid Chunk failed: {}", error)
-                        ))?;
-                    // 文件计划来自 JavaScript 控制面，但 Rust 数据面仍必须再次执行
-                    // 本次已冻结日记作用域校验，禁止同路径或坏计划越权注入候选。
-                    if !allowed_diaries.contains(diary_name.as_str())
-                        || bytes.len() != self.dimension * 4
-                    {
+                })?;
+            with_registered_read_napi(&semantic_db_path, |connection| {
+                let sparse_weight = self.bm25_weight.clamp(0.0, 1.0);
+                let allowed_diaries: HashSet<&str> = self
+                    .snapshots
+                    .iter()
+                    .map(|snapshot| snapshot.diary_name.as_str())
+                    .collect();
+                let mut pending_time_by_diary: HashMap<String, HashMap<i64, NativeAnnCandidate>> =
+                    HashMap::new();
+                for file_candidate in &self.file_candidates {
+                    if file_candidate.path.trim().is_empty() {
                         continue;
                     }
-                    let vector: Vec<f32> = bytes
-                        .chunks_exact(4)
-                        .map(|chunk| f32::from_ne_bytes(
-                            [chunk[0], chunk[1], chunk[2], chunk[3]]
-                        ))
-                        .collect();
-                    let vector_score = cosine_similarity(&self.query, &vector);
-                    let normalized_bm25 = file_candidate
-                        .normalized_bm25_score
-                        .clamp(0.0, 1.0);
-                    let bm25_score = file_candidate.bm25_score.max(0.0);
-                    let time_score = file_candidate.time_score.max(0.0);
-                    let hybrid_score = if bm25_score > 0.0 {
-                        normalized_bm25 * sparse_weight
-                            + vector_score * (1.0 - sparse_weight)
-                    } else {
-                        vector_score
-                    };
-                    let source = if file_candidate.source.trim().is_empty() {
-                        if bm25_score > 0.0 { "bm25" } else { "time" }
-                    } else {
-                        file_candidate.source.as_str()
-                    };
-                    let incoming = NativeAnnCandidate {
-                        id,
-                        score: hybrid_score,
-                        vector_score,
-                        bm25_score,
-                        time_score,
-                        sources: vec![source.to_string()],
-                    };
+                    let mut statement = connection
+                        .prepare(
+                            "SELECT c.id, c.vector, f.diary_name FROM chunks c \
+                         JOIN files f ON f.id = c.file_id WHERE f.path = ?1",
+                        )
+                        .map_err(|error| {
+                            Error::from_reason(format!(
+                                "Prepare native hybrid file expansion failed: {}",
+                                error
+                            ))
+                        })?;
+                    let rows = statement
+                        .query_map([file_candidate.path.as_str()], |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, Vec<u8>>(1)?,
+                                row.get::<_, String>(2)?,
+                            ))
+                        })
+                        .map_err(|error| {
+                            Error::from_reason(format!(
+                                "Query native hybrid file expansion failed: {}",
+                                error
+                            ))
+                        })?;
+                    for row in rows {
+                        let (id, bytes, diary_name) = row.map_err(|error| {
+                            Error::from_reason(format!(
+                                "Decode native hybrid Chunk failed: {}",
+                                error
+                            ))
+                        })?;
+                        // 文件计划来自 JavaScript 控制面，但 Rust 数据面仍必须再次执行
+                        // 本次已冻结日记作用域校验，禁止同路径或坏计划越权注入候选。
+                        if !allowed_diaries.contains(diary_name.as_str())
+                            || bytes.len() != self.dimension * 4
+                        {
+                            continue;
+                        }
+                        let vector: Vec<f32> = bytes
+                            .chunks_exact(4)
+                            .map(|chunk| {
+                                f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+                            })
+                            .collect();
+                        let vector_score = cosine_similarity(&self.query, &vector);
+                        let normalized_bm25 = file_candidate.normalized_bm25_score.clamp(0.0, 1.0);
+                        let bm25_score = file_candidate.bm25_score.max(0.0);
+                        let time_score = file_candidate.time_score.max(0.0);
+                        let hybrid_score = if bm25_score > 0.0 {
+                            normalized_bm25 * sparse_weight + vector_score * (1.0 - sparse_weight)
+                        } else {
+                            vector_score
+                        };
+                        let source = if file_candidate.source.trim().is_empty() {
+                            if bm25_score > 0.0 {
+                                "bm25"
+                            } else {
+                                "time"
+                            }
+                        } else {
+                            file_candidate.source.as_str()
+                        };
+                        let incoming = NativeAnnCandidate {
+                            id,
+                            score: hybrid_score,
+                            vector_score,
+                            bm25_score,
+                            time_score,
+                            sources: vec![source.to_string()],
+                        };
 
-                    if source == "time" || time_score > 0.0 {
-                        // Time 候选先留在日记本私有池中。多个重叠时间范围命中
-                        // 同一 Chunk 时按 ID 合并，不能通过重复范围绕过硬上限。
-                        let diary_pool = pending_time_by_diary
-                            .entry(diary_name)
-                            .or_default();
-                        let entry = diary_pool.entry(id).or_insert_with(|| incoming.clone());
-                        entry.score = entry.score.max(incoming.score);
-                        entry.vector_score =
-                            entry.vector_score.max(incoming.vector_score);
-                        entry.bm25_score =
-                            entry.bm25_score.max(incoming.bm25_score);
-                        entry.time_score =
-                            entry.time_score.max(incoming.time_score);
-                        entry.sources.extend(incoming.sources);
-                    } else {
-                        let entry = merged.entry(id).or_insert_with(|| incoming.clone());
-                        entry.score = entry.score.max(incoming.score);
-                        entry.vector_score =
-                            entry.vector_score.max(incoming.vector_score);
-                        entry.bm25_score =
-                            entry.bm25_score.max(incoming.bm25_score);
-                        entry.sources.extend(incoming.sources);
-                        if bm25_score > 0.0 {
-                            bm25_chunk_candidates += 1;
+                        if source == "time" || time_score > 0.0 {
+                            // Time 候选先留在日记本私有池中。多个重叠时间范围命中
+                            // 同一 Chunk 时按 ID 合并，不能通过重复范围绕过硬上限。
+                            let diary_pool = pending_time_by_diary.entry(diary_name).or_default();
+                            let entry = diary_pool.entry(id).or_insert_with(|| incoming.clone());
+                            entry.score = entry.score.max(incoming.score);
+                            entry.vector_score = entry.vector_score.max(incoming.vector_score);
+                            entry.bm25_score = entry.bm25_score.max(incoming.bm25_score);
+                            entry.time_score = entry.time_score.max(incoming.time_score);
+                            entry.sources.extend(incoming.sources);
+                        } else {
+                            let entry = merged.entry(id).or_insert_with(|| incoming.clone());
+                            entry.score = entry.score.max(incoming.score);
+                            entry.vector_score = entry.vector_score.max(incoming.vector_score);
+                            entry.bm25_score = entry.bm25_score.max(incoming.bm25_score);
+                            entry.sources.extend(incoming.sources);
+                            if bm25_score > 0.0 {
+                                bm25_chunk_candidates += 1;
+                            }
                         }
                     }
                 }
-            }
 
-            // 先执行每日记本硬上限，再执行全局硬上限。
-            let (limited_time_candidates, before_limit, _, _) =
-                limit_time_candidates(
+                // 先执行每日记本硬上限，再执行全局硬上限。
+                let (limited_time_candidates, before_limit, _, _) = limit_time_candidates(
                     pending_time_by_diary,
                     time_per_diary_limit,
                     time_global_limit,
                 );
-            time_chunk_candidates_before_limit = before_limit;
-            time_chunk_candidates = limited_time_candidates.len();
+                time_chunk_candidates_before_limit = before_limit;
+                time_chunk_candidates = limited_time_candidates.len();
 
-            for mut incoming in limited_time_candidates {
-                incoming.sources.sort();
-                incoming.sources.dedup();
-                let entry = merged
-                    .entry(incoming.id)
-                    .or_insert_with(|| incoming.clone());
-                entry.score = entry.score.max(incoming.score);
-                entry.vector_score =
-                    entry.vector_score.max(incoming.vector_score);
-                entry.bm25_score =
-                    entry.bm25_score.max(incoming.bm25_score);
-                entry.time_score =
-                    entry.time_score.max(incoming.time_score);
-                entry.sources.extend(incoming.sources);
-            }
+                for mut incoming in limited_time_candidates {
+                    incoming.sources.sort();
+                    incoming.sources.dedup();
+                    let entry = merged
+                        .entry(incoming.id)
+                        .or_insert_with(|| incoming.clone());
+                    entry.score = entry.score.max(incoming.score);
+                    entry.vector_score = entry.vector_score.max(incoming.vector_score);
+                    entry.bm25_score = entry.bm25_score.max(incoming.bm25_score);
+                    entry.time_score = entry.time_score.max(incoming.time_score);
+                    entry.sources.extend(incoming.sources);
+                }
+                Ok(())
+            })?;
         }
 
         let unique_candidates = merged.len();
@@ -615,7 +638,10 @@ impl Task for NativeMultiIndexAnnTask {
             },
         })
         .map_err(|error| {
-            Error::from_reason(format!("Encode native multi-index ANN result failed: {}", error))
+            Error::from_reason(format!(
+                "Encode native multi-index ANN result failed: {}",
+                error
+            ))
         })
     }
 
@@ -648,6 +674,941 @@ fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
     }
 }
 
+#[derive(Debug)]
+pub struct DiaryDateIndexTask {
+    pub(crate) db_path: String,
+    pub(crate) diary_name: String,
+}
+
+impl Task for DiaryDateIndexTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let diary_name = self.diary_name.clone();
+        let rows = with_registered_read_napi(&self.db_path, move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT f.path, c.content
+                     FROM files f
+                     JOIN chunks c ON c.file_id = f.id AND c.chunk_index = 0
+                     WHERE f.diary_name = ?1
+                     ORDER BY f.path ASC",
+                )
+                .map_err(|error| {
+                    Error::from_reason(format!(
+                        "Prepare diary date index query failed: {}",
+                        error
+                    ))
+                })?;
+            let mapped = statement
+                .query_map([diary_name.as_str()], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                    ))
+                })
+                .map_err(|error| {
+                    Error::from_reason(format!(
+                        "Query diary date index rows failed: {}",
+                        error
+                    ))
+                })?;
+
+            let mut items = Vec::new();
+            for row in mapped {
+                let (relative_path, content) = row.map_err(|error| {
+                    Error::from_reason(format!(
+                        "Decode diary date index row failed: {}",
+                        error
+                    ))
+                })?;
+                if let Some(date) = parse_diary_date(content.lines().next().unwrap_or_default()) {
+                    items.push(serde_json::json!({
+                        "relativePath": relative_path,
+                        "date": date,
+                    }));
+                }
+            }
+            Ok(items)
+        })?;
+
+        serde_json::to_string(&rows).map_err(|error| {
+            Error::from_reason(format!(
+                "Encode diary date index result failed: {}",
+                error
+            ))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+fn parse_diary_date(first_line: &str) -> Option<String> {
+    // 保持旧 JS 正则的锚定语义：只允许行首日期，可选左方括号；
+    // 不做 trim_start，避免把原本无效的缩进行误识别为日记日期。
+    let value = first_line.strip_prefix('[').unwrap_or(first_line);
+    let bytes = value.as_bytes();
+    if bytes.len() < 10 {
+        return None;
+    }
+
+    // 先验证 ASCII 字节，再把前 10 个字节转换为字符串，避免在多字节
+    // Unicode 首行上直接执行 &value[..10] 造成 Rust 字符串切片 panic。
+    let date_bytes = &bytes[..10];
+    let valid_separators =
+        (date_bytes[4] == b'-' || date_bytes[4] == b'.')
+            && (date_bytes[7] == b'-' || date_bytes[7] == b'.');
+    let valid_digits = date_bytes[..4].iter().all(u8::is_ascii_digit)
+        && date_bytes[5..7].iter().all(u8::is_ascii_digit)
+        && date_bytes[8..10].iter().all(u8::is_ascii_digit);
+    if !valid_separators || !valid_digits {
+        return None;
+    }
+
+    let date = std::str::from_utf8(date_bytes).ok()?;
+    Some(date.replace('.', "-"))
+}
+
+#[derive(Debug)]
+pub struct ChunkVectorLookupTask {
+    pub(crate) db_path: String,
+    pub(crate) chunk_id: i64,
+    pub(crate) dimension: usize,
+}
+
+impl Task for ChunkVectorLookupTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let row = with_registered_read_napi(&self.db_path, |connection| {
+            connection
+                .query_row(
+                    "SELECT vector FROM chunks WHERE id = ?1 LIMIT 1",
+                    [self.chunk_id],
+                    |row| row.get::<_, Option<Vec<u8>>>(0),
+                )
+                .optional()
+                .map_err(|error| {
+                    Error::from_reason(format!(
+                        "Query Chunk vector failed for {}: {}",
+                        self.chunk_id, error
+                    ))
+                })
+        })?;
+
+        let Some(Some(bytes)) = row else {
+            return Ok("null".to_string());
+        };
+        if bytes.len() != self.dimension * std::mem::size_of::<f32>() {
+            return Ok("null".to_string());
+        }
+
+        let vector: Vec<f32> = bytes
+            .chunks_exact(std::mem::size_of::<f32>())
+            .map(|chunk| f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        if vector.iter().any(|value| !value.is_finite()) {
+            return Ok("null".to_string());
+        }
+
+        serde_json::to_string(&base64::engine::general_purpose::STANDARD.encode(bytes))
+            .map_err(|error| {
+                Error::from_reason(format!(
+                    "Encode Chunk vector result failed for {}: {}",
+                    self.chunk_id, error
+                ))
+            })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct ChunkVectorByTextLookupTask {
+    pub(crate) db_path: String,
+    pub(crate) diary_name: String,
+    pub(crate) text: String,
+    pub(crate) dimension: usize,
+}
+
+impl Task for ChunkVectorByTextLookupTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let row = with_registered_read_napi(&self.db_path, |connection| {
+            let result = if self.diary_name.trim().is_empty() {
+                connection.query_row(
+                    "SELECT c.vector
+                     FROM chunks c
+                     WHERE c.content = ?1
+                     ORDER BY c.id
+                     LIMIT 1",
+                    [&self.text],
+                    |row| row.get::<_, Option<Vec<u8>>>(0),
+                )
+            } else {
+                connection.query_row(
+                    "SELECT c.vector
+                     FROM chunks c
+                     JOIN files f ON f.id = c.file_id
+                     WHERE c.content = ?1 AND f.diary_name = ?2
+                     ORDER BY c.id
+                     LIMIT 1",
+                    rusqlite::params![&self.text, &self.diary_name],
+                    |row| row.get::<_, Option<Vec<u8>>>(0),
+                )
+            };
+            result.optional().map_err(|error| {
+                Error::from_reason(format!(
+                    "Query Chunk vector by text failed: {}",
+                    error
+                ))
+            })
+        })?;
+
+        let Some(Some(bytes)) = row else {
+            return Ok("null".to_string());
+        };
+        if bytes.len() != self.dimension * std::mem::size_of::<f32>() {
+            return Ok("null".to_string());
+        }
+
+        let vector: Vec<f32> = bytes
+            .chunks_exact(std::mem::size_of::<f32>())
+            .map(|chunk| f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        if vector.iter().any(|value| !value.is_finite()) {
+            return Ok("null".to_string());
+        }
+
+        Ok(serde_json::to_string(
+            &base64::engine::general_purpose::STANDARD.encode(bytes),
+        )
+        .map_err(|error| {
+            Error::from_reason(format!(
+                "Encode Chunk vector by text result failed: {}",
+                error
+            ))
+        })?)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct TagVectorByNameLookupTask {
+    pub(crate) db_path: String,
+    pub(crate) tag_name: String,
+    pub(crate) dimension: usize,
+}
+
+impl Task for TagVectorByNameLookupTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let tag_name = self.tag_name.clone();
+        let row = with_registered_read_napi(&self.db_path, move |connection| {
+            connection
+                .query_row(
+                    "SELECT vector FROM tags WHERE name = ?1 LIMIT 1",
+                    rusqlite::params![tag_name],
+                    |row| row.get::<_, Option<Vec<u8>>>(0),
+                )
+                .optional()
+                .map_err(|error| {
+                    Error::from_reason(format!("Query Tag vector by name failed: {}", error))
+                })
+        })?;
+
+        let Some(Some(bytes)) = row else {
+            return Ok("null".to_string());
+        };
+        if bytes.len() != self.dimension * std::mem::size_of::<f32>() {
+            return Ok("null".to_string());
+        }
+
+        let vector: Vec<f32> = bytes
+            .chunks_exact(std::mem::size_of::<f32>())
+            .map(|chunk| f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        if vector.iter().any(|value| !value.is_finite()) {
+            return Ok("null".to_string());
+        }
+
+        serde_json::to_string(&base64::engine::general_purpose::STANDARD.encode(bytes))
+            .map_err(|error| {
+                Error::from_reason(format!("Encode Tag vector by name result failed: {}", error))
+            })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct KvVectorLookupTask {
+    pub(crate) db_path: String,
+    pub(crate) key: String,
+}
+
+impl Task for KvVectorLookupTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let key = self.key.clone();
+        let value = with_registered_read_napi(&self.db_path, move |connection| {
+            connection
+                .query_row(
+                    "SELECT vector FROM kv_store WHERE key = ?1 LIMIT 1",
+                    rusqlite::params![key],
+                    |row| row.get::<_, Option<Vec<u8>>>(0),
+                )
+                .optional()
+                .map_err(|error| {
+                    Error::from_reason(format!("Query KV vector failed: {}", error))
+                })
+        })?;
+
+        let Some(Some(bytes)) = value else {
+            return Ok("null".to_string());
+        };
+
+        serde_json::to_string(&base64::engine::general_purpose::STANDARD.encode(bytes))
+            .map_err(|error| {
+                Error::from_reason(format!("Encode KV vector result failed: {}", error))
+            })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct KvVectorWriteTask {
+    pub(crate) db_path: String,
+    pub(crate) key: String,
+    pub(crate) vector: Vec<f32>,
+}
+
+impl Task for KvVectorWriteTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let key = self.key.clone();
+        let vector = self.vector.clone();
+        let receipt = with_registered_write(&self.db_path, move |transaction| {
+            let mut bytes = Vec::with_capacity(vector.len() * std::mem::size_of::<f32>());
+            for value in vector {
+                if !value.is_finite() {
+                    return Err("KV vector contains a non-finite value".to_string());
+                }
+                bytes.extend_from_slice(&value.to_ne_bytes());
+            }
+
+            transaction
+                .execute(
+                    "INSERT INTO kv_store (key, vector) VALUES (?1, ?2) \
+                     ON CONFLICT(key) DO UPDATE SET vector = excluded.vector",
+                    rusqlite::params![key, bytes],
+                )
+                .map_err(|error| format!("Write KV vector failed: {}", error))?;
+
+            Ok(crate::storage::WriteReceipt {
+                operation: "set_kv_vector".to_string(),
+                database_generation: 0,
+                facts_changed: false,
+            })
+        })
+        .map_err(|error| {
+            Error::from_reason(format!("KV vector Write Actor commit failed: {}", error))
+        })?;
+
+        serde_json::to_string(&serde_json::json!({
+            "ok": true,
+            "operation": receipt.operation,
+            "databaseGeneration": receipt.database_generation
+        }))
+        .map_err(|error| Error::from_reason(format!("Encode KV vector receipt failed: {}", error)))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct KvVectorListTask {
+    pub(crate) db_path: String,
+    pub(crate) prefix: String,
+}
+
+impl Task for KvVectorListTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let prefix = self.prefix.clone();
+        let rows = with_registered_read_napi(&self.db_path, move |connection| {
+            let escaped_prefix = prefix
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            let pattern = format!("{}%", escaped_prefix);
+            let mut statement = connection
+                .prepare(
+                    "SELECT key, vector FROM kv_store \
+                     WHERE key LIKE ?1 ESCAPE '\\' AND vector IS NOT NULL \
+                     ORDER BY key LIMIT 10000",
+                )
+                .map_err(|error| {
+                    Error::from_reason(format!("Prepare KV vector list failed: {}", error))
+                })?;
+            let mapped = statement
+                .query_map(rusqlite::params![pattern], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<Vec<u8>>>(1)?,
+                    ))
+                })
+                .map_err(|error| {
+                    Error::from_reason(format!("Query KV vector list failed: {}", error))
+                })?;
+
+            let mut values = Vec::new();
+            for row in mapped {
+                let (key, vector) = row.map_err(|error| {
+                    Error::from_reason(format!("Decode KV vector list row failed: {}", error))
+                })?;
+                if !key.starts_with(&prefix) {
+                    continue;
+                }
+                if let Some(bytes) = vector {
+                    values.push(serde_json::json!({
+                        "key": key,
+                        "vector": base64::engine::general_purpose::STANDARD.encode(bytes),
+                    }));
+                }
+            }
+            Ok(values)
+        })?;
+
+        serde_json::to_string(&rows).map_err(|error| {
+            Error::from_reason(format!("Encode KV vector list failed: {}", error))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct ChunkHydrateTask {
+    pub(crate) db_path: String,
+    pub(crate) ids: Vec<i64>,
+}
+
+impl Task for ChunkHydrateTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        if self.ids.is_empty() {
+            return Ok("[]".to_string());
+        }
+
+        let requested_ids = self.ids.clone();
+        let rows = with_registered_read_napi(&self.db_path, move |connection| {
+            let placeholders = std::iter::repeat("?")
+                .take(requested_ids.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT c.id, c.content AS text, c.vector, \
+                        f.path AS sourceFile, f.diary_name AS diaryName, f.id AS fileId \
+                 FROM chunks c JOIN files f ON f.id = c.file_id \
+                 WHERE c.id IN ({})",
+                placeholders
+            );
+            let mut statement = connection.prepare(&sql).map_err(|error| {
+                Error::from_reason(format!("Prepare chunk hydrate query failed: {}", error))
+            })?;
+            let mapped = statement
+                .query_map(rusqlite::params_from_iter(requested_ids.iter()), |row| {
+                    let vector: Option<Vec<u8>> = row.get(2)?;
+                    Ok(serde_json::json!({
+                        "id": row.get::<_, i64>(0)?,
+                        "text": row.get::<_, String>(1)?,
+                        "vector": vector.map(|bytes|
+                            base64::engine::general_purpose::STANDARD.encode(bytes)
+                        ),
+                        "sourceFile": row.get::<_, String>(3)?,
+                        "diaryName": row.get::<_, String>(4)?,
+                        "fileId": row.get::<_, i64>(5)?
+                    }))
+                })
+                .map_err(|error| {
+                    Error::from_reason(format!("Query chunk hydrate rows failed: {}", error))
+                })?;
+
+            let mut by_id = HashMap::new();
+            for row in mapped {
+                let value = row.map_err(|error| {
+                    Error::from_reason(format!("Decode chunk hydrate row failed: {}", error))
+                })?;
+                if let Some(id) = value.get("id").and_then(serde_json::Value::as_i64) {
+                    by_id.insert(id, value);
+                }
+            }
+
+            Ok(requested_ids
+                .into_iter()
+                .filter_map(|id| by_id.remove(&id))
+                .collect::<Vec<_>>())
+        })?;
+
+        serde_json::to_string(&rows).map_err(|error| {
+            Error::from_reason(format!("Encode chunk hydrate result failed: {}", error))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct TagNameHydrateTask {
+    pub(crate) db_path: String,
+    pub(crate) ids: Vec<i64>,
+}
+
+impl Task for TagNameHydrateTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        if self.ids.is_empty() {
+            return Ok("[]".to_string());
+        }
+
+        let requested_ids = self.ids.clone();
+        let rows = with_registered_read_napi(&self.db_path, move |connection| {
+            let placeholders = std::iter::repeat("?")
+                .take(requested_ids.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, name FROM tags WHERE id IN ({})",
+                placeholders
+            );
+            let mut statement = connection.prepare(&sql).map_err(|error| {
+                Error::from_reason(format!("Prepare Tag name hydrate query failed: {}", error))
+            })?;
+            let mapped = statement
+                .query_map(rusqlite::params_from_iter(requested_ids.iter()), |row| {
+                    Ok(serde_json::json!({
+                        "id": row.get::<_, i64>(0)?,
+                        "name": row.get::<_, String>(1)?
+                    }))
+                })
+                .map_err(|error| {
+                    Error::from_reason(format!("Query Tag name hydrate rows failed: {}", error))
+                })?;
+
+            let mut by_id = HashMap::new();
+            for row in mapped {
+                let value = row.map_err(|error| {
+                    Error::from_reason(format!("Decode Tag name hydrate row failed: {}", error))
+                })?;
+                if let Some(id) = value.get("id").and_then(serde_json::Value::as_i64) {
+                    by_id.insert(id, value);
+                }
+            }
+
+            Ok(requested_ids
+                .into_iter()
+                .filter_map(|id| by_id.remove(&id))
+                .collect::<Vec<_>>())
+        })?;
+
+        serde_json::to_string(&rows).map_err(|error| {
+            Error::from_reason(format!("Encode Tag name hydrate result failed: {}", error))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct ChunkPathHydrateTask {
+    pub(crate) db_path: String,
+    pub(crate) paths: Vec<String>,
+}
+
+impl Task for ChunkPathHydrateTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        if self.paths.is_empty() {
+            return Ok("[]".to_string());
+        }
+
+        let requested_paths = self.paths.clone();
+        let rows = with_registered_read_napi(&self.db_path, move |connection| {
+            let placeholders = std::iter::repeat("?")
+                .take(requested_paths.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT c.id, c.content AS text, c.vector, \
+                        f.path AS sourceFile, f.diary_name AS diaryName, f.id AS fileId \
+                 FROM chunks c JOIN files f ON f.id = c.file_id \
+                 WHERE f.path IN ({}) \
+                 ORDER BY f.path ASC, c.id ASC",
+                placeholders
+            );
+            let mut statement = connection.prepare(&sql).map_err(|error| {
+                Error::from_reason(format!(
+                    "Prepare path chunk hydrate query failed: {}",
+                    error
+                ))
+            })?;
+            let mapped = statement
+                .query_map(rusqlite::params_from_iter(requested_paths.iter()), |row| {
+                    let vector: Option<Vec<u8>> = row.get(2)?;
+                    Ok(serde_json::json!({
+                        "id": row.get::<_, i64>(0)?,
+                        "text": row.get::<_, String>(1)?,
+                        "vector": vector.map(|bytes|
+                            base64::engine::general_purpose::STANDARD.encode(bytes)
+                        ),
+                        "sourceFile": row.get::<_, String>(3)?,
+                        "diaryName": row.get::<_, String>(4)?,
+                        "fileId": row.get::<_, i64>(5)?
+                    }))
+                })
+                .map_err(|error| {
+                    Error::from_reason(format!("Query path chunk hydrate rows failed: {}", error))
+                })?;
+
+            let mut grouped: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+            for row in mapped {
+                let value = row.map_err(|error| {
+                    Error::from_reason(format!("Decode path chunk hydrate row failed: {}", error))
+                })?;
+                let path = value
+                    .get("sourceFile")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                grouped.entry(path).or_default().push(value);
+            }
+
+            let mut output = Vec::new();
+            for path in requested_paths {
+                if let Some(mut path_rows) = grouped.remove(&path) {
+                    output.append(&mut path_rows);
+                }
+            }
+            Ok(output)
+        })?;
+
+        serde_json::to_string(&rows).map_err(|error| {
+            Error::from_reason(format!("Encode path chunk hydrate result failed: {}", error))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+#[derive(Debug)]
+pub struct DiaryListTask {
+    pub(crate) db_path: String,
+}
+
+impl Task for DiaryListTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let rows = with_registered_read_napi(&self.db_path, |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT DISTINCT diary_name FROM files \
+                     WHERE diary_name IS NOT NULL AND diary_name <> '' \
+                     ORDER BY diary_name",
+                )
+                .map_err(|error| {
+                    Error::from_reason(format!("Prepare diary list query failed: {}", error))
+                })?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| {
+                    Error::from_reason(format!("Query diary list failed: {}", error))
+                })?;
+            rows.collect::<rusqlite::Result<Vec<String>>>()
+                .map_err(|error| Error::from_reason(format!("Decode diary list failed: {}", error)))
+        })?;
+
+        serde_json::to_string(&rows)
+            .map_err(|error| Error::from_reason(format!("Encode diary list failed: {}", error)))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct FileIdsByDiariesTask {
+    pub(crate) db_path: String,
+    pub(crate) names: Vec<String>,
+}
+
+impl Task for FileIdsByDiariesTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        if self.names.is_empty() {
+            return Ok("[]".to_string());
+        }
+
+        let names = self.names.clone();
+        let rows = with_registered_read_napi(&self.db_path, move |connection| {
+            let placeholders = std::iter::repeat("?")
+                .take(names.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id FROM files WHERE diary_name IN ({}) ORDER BY id",
+                placeholders
+            );
+            let mut statement = connection.prepare(&sql).map_err(|error| {
+                Error::from_reason(format!("Prepare file scope query failed: {}", error))
+            })?;
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(names.iter()), |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|error| {
+                    Error::from_reason(format!("Query file scope failed: {}", error))
+                })?;
+            rows.collect::<rusqlite::Result<Vec<i64>>>()
+                .map_err(|error| Error::from_reason(format!("Decode file scope failed: {}", error)))
+        })?;
+
+        serde_json::to_string(&rows)
+            .map_err(|error| Error::from_reason(format!("Encode file scope failed: {}", error)))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct HealthCheckTask {
+    pub(crate) db_path: String,
+}
+
+impl Task for HealthCheckTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        if self.db_path.trim().is_empty() {
+            return Ok(serde_json::json!({
+                "healthy": false,
+                "state": "not_open",
+                "databaseGeneration": 0
+            })
+            .to_string());
+        }
+
+        let health = with_registered_read_napi(&self.db_path, |connection| {
+            let quick_check: String = connection
+                .query_row("PRAGMA quick_check", [], |row| row.get(0))
+                .map_err(|error| {
+                    Error::from_reason(format!("SQLite quick_check failed: {}", error))
+                })?;
+            let database_generation: String = connection
+                .query_row(
+                    "SELECT value FROM kbm_runtime_meta \
+                     WHERE key = 'database_generation'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| {
+                    Error::from_reason(format!(
+                        "Read KBM database generation during health check failed: {}",
+                        error
+                    ))
+                })?;
+
+            Ok(serde_json::json!({
+                "healthy": quick_check == "ok",
+                "state": if quick_check == "ok" { "healthy" } else { "suspect" },
+                "databaseGeneration": database_generation.parse::<i64>().unwrap_or(0).max(0)
+            }))
+        })?;
+
+        serde_json::to_string(&health).map_err(|error| {
+            Error::from_reason(format!("Encode native health result failed: {}", error))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct DiaryChunkCountTask {
+    pub(crate) db_path: String,
+    pub(crate) diary_name: String,
+}
+
+impl Task for DiaryChunkCountTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let diary_name = self.diary_name.clone();
+        let count = with_registered_read_napi(&self.db_path, move |connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM chunks c \
+                     JOIN files f ON f.id = c.file_id \
+                     WHERE f.diary_name = ?1",
+                    rusqlite::params![diary_name],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| {
+                    Error::from_reason(format!("Query diary Chunk count failed: {}", error))
+                })
+        })?;
+
+        serde_json::to_string(&serde_json::json!({
+            "diaryName": self.diary_name,
+            "count": count.max(0)
+        }))
+        .map_err(|error| {
+            Error::from_reason(format!("Encode diary Chunk count failed: {}", error))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct NativeMemoManifestLookupTask {
+    pub(crate) db_path: String,
+    pub(crate) model_sig: String,
+    pub(crate) config_hash: String,
+}
+
+impl Task for NativeMemoManifestLookupTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let model_sig = self.model_sig.clone();
+        let config_hash = self.config_hash.clone();
+        let row = with_registered_read_napi(&self.db_path, move |connection| {
+            let database_generation: String = connection
+                .query_row(
+                    "SELECT value FROM kbm_runtime_meta \
+                     WHERE key = 'database_generation'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| {
+                    Error::from_reason(format!(
+                        "Read persisted Memo database generation failed: {}",
+                        error
+                    ))
+                })?;
+
+            connection
+                .query_row(
+                    "SELECT artifact_sig, algorithm_version, source_v9_artifact_sig,
+                            source_graph_generation, model_sig, config_hash,
+                            database_generation, provenance_generation,
+                            node_count, edge_count, published_at
+                     FROM rivermemo_artifacts
+                     WHERE model_sig = ?1
+                       AND config_hash = ?2
+                       AND database_generation = ?3
+                       AND algorithm_version = 'memo.native-artifact-v1'
+                       AND status = 'ready'
+                       AND payload IS NOT NULL
+                     ORDER BY published_at DESC, updated_at DESC
+                     LIMIT 1",
+                    rusqlite::params![
+                        model_sig,
+                        config_hash,
+                        database_generation
+                    ],
+                    |row| {
+                        Ok(serde_json::json!({
+                            "artifactSig": row.get::<_, String>(0)?,
+                            "algorithmVersion": row.get::<_, String>(1)?,
+                            "sourceArtifactSig": row.get::<_, String>(2)?,
+                            "sourceGraphGeneration": row.get::<_, String>(3)?,
+                            "modelSig": row.get::<_, String>(4)?,
+                            "configHash": row.get::<_, String>(5)?,
+                            "databaseGeneration": row.get::<_, String>(6)?,
+                            "provenanceGeneration": row.get::<_, String>(7)?,
+                            "nodeCount": row.get::<_, i64>(8)?.max(0),
+                            "edgeCount": row.get::<_, i64>(9)?.max(0),
+                            "publishedAt": row.get::<_, Option<i64>>(10)?
+                        }))
+                    },
+                )
+                .optional()
+                .map_err(|error| {
+                    Error::from_reason(format!(
+                        "Query native Memo artifact manifest failed: {}",
+                        error
+                    ))
+                })
+        })?;
+
+        serde_json::to_string(&row).map_err(|error| {
+            Error::from_reason(format!(
+                "Encode native Memo artifact manifest failed: {}",
+                error
+            ))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
 /// 一次原生 River 查询任务：前半段 ANN/合并/去重的结果不解析到 JS，
 /// 而是直接成为 Topology V3 的候选输入。
 pub struct NativeRiverQueryTask {
@@ -668,8 +1629,8 @@ impl Task for NativeRiverQueryTask {
         // 复用已验证的原生 ANN/合并/语义去重实现。此处只在 Rust 内解析其
         // 小型 ID/分数结果，不发生 N-API resolve，也不携带向量跨边界。
         let ann_payload = self.ann_task.compute()?;
-        let ann_output: serde_json::Value = serde_json::from_str(&ann_payload)
-            .map_err(|error| {
+        let ann_output: serde_json::Value =
+            serde_json::from_str(&ann_payload).map_err(|error| {
                 Error::from_reason(format!(
                     "Decode native River query ANN stage failed: {}",
                     error
@@ -681,17 +1642,12 @@ impl Task for NativeRiverQueryTask {
             .cloned()
             .unwrap_or_default();
 
-        let mut river_input: serde_json::Value =
-            serde_json::from_str(&self.river_input_json).map_err(|error| {
-                Error::from_reason(format!(
-                    "Decode native River query plan failed: {}",
-                    error
-                ))
+        let mut river_input: serde_json::Value = serde_json::from_str(&self.river_input_json)
+            .map_err(|error| {
+                Error::from_reason(format!("Decode native River query plan failed: {}", error))
             })?;
         let input_object = river_input.as_object_mut().ok_or_else(|| {
-            Error::from_reason(
-                "Native River query plan root must be an object".to_string()
-            )
+            Error::from_reason("Native River query plan root must be an object".to_string())
         })?;
         input_object.insert(
             "candidates".to_string(),
@@ -734,10 +1690,7 @@ impl Task for NativeRiverQueryTask {
             &self.db_path,
             &self.artifact_sig,
             &serde_json::to_string(&river_input).map_err(|error| {
-                Error::from_reason(format!(
-                    "Encode native River query plan failed: {}",
-                    error
-                ))
+                Error::from_reason(format!("Encode native River query plan failed: {}", error))
             })?,
         )
         .map_err(Error::from_reason)?;
@@ -782,9 +1735,13 @@ impl Task for NativeRiverQueryTask {
 pub struct NativeKnowledgeRuntime {
     dimension: u32,
     memo_runtime: Arc<MemoRuntime>,
+    global_tag_index: Arc<RwLock<Index>>,
+    global_tag_content_revision: Arc<AtomicU64>,
     diaries: RwLock<HashMap<String, RegisteredDiaryIndex>>,
     registry_generation: AtomicU64,
     accepting_queries: AtomicBool,
+    storage: Mutex<Option<SqliteStorageEngine>>,
+    watcher: Mutex<Option<VexusWatcher>>,
 }
 
 impl NativeKnowledgeRuntime {
@@ -832,10 +1789,1039 @@ impl NativeKnowledgeRuntime {
         Ok(Self {
             dimension: tag_index.dimensions,
             memo_runtime: tag_index.memo_runtime.clone(),
+            global_tag_index: tag_index.index.clone(),
+            global_tag_content_revision: tag_index.content_revision.clone(),
             diaries: RwLock::new(HashMap::new()),
             registry_generation: AtomicU64::new(0),
             accepting_queries: AtomicBool::new(true),
+            storage: Mutex::new(None),
+            watcher: Mutex::new(None),
         })
+    }
+
+    /// 返回生产 KBM 数据面的 ABI 版本和必需能力。
+    #[napi]
+    pub fn capabilities(&self) -> NativeRuntimeCapabilities {
+        NativeRuntimeCapabilities {
+            abi_version: 2,
+            dimension: self.dimension,
+            capabilities: vec![
+                "sqlite.storage-engine.v1".to_string(),
+                "sqlite.write-actor.v1".to_string(),
+                "sqlite.read-pool.v1".to_string(),
+                "sqlite.schema-init.v1".to_string(),
+                "sqlite.ingestion-commit.v1".to_string(),
+                "sqlite.delete-commit.v1".to_string(),
+                "sqlite.tag-consistency.v1".to_string(),
+                "index.async-restore.v1".to_string(),
+                "index.dual-slot-checkpoint.v1".to_string(),
+                "watcher.runtime-owned.v1".to_string(),
+                "memo.native-artifact.v1".to_string(),
+                "river.native-query.v1".to_string(),
+            ],
+        }
+    }
+
+    /// 打开并初始化中央 KBM SQLite 存储根。
+    ///
+    /// 现阶段只初始化 Runtime 元数据表；业务 Schema 迁移会在后续阶段
+    /// 收归同一个 Write Actor，避免与旧 JS Schema 管理同时执行。
+    #[napi]
+    pub fn open_and_init_store(
+        &self,
+        db_path: String,
+        options_json: Option<String>,
+    ) -> Result<NativeStoreState> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "openAndInitStore requires a database path".to_string(),
+            ));
+        }
+
+        let options_map = options_json
+            .as_deref()
+            .map(|value| {
+                serde_json::from_str::<HashMap<String, i64>>(value).map_err(|error| {
+                    Error::from_reason(format!("Invalid storage options JSON: {}", error))
+                })
+            })
+            .transpose()?;
+        let options: StorageOptions = normalize_storage_options(options_map);
+
+        let (engine, ready) =
+            SqliteStorageEngine::open_and_init(&db_path, options).map_err(Error::from_reason)?;
+        let state = NativeStoreState {
+            db_path: ready.db_path,
+            schema_version: ready.schema_version,
+            database_generation: ready.database_generation as i64,
+            accepting_writes: true,
+        };
+        let mut storage = self.storage.lock().map_err(|_| {
+            Error::from_reason("NativeKnowledgeRuntime storage lock poisoned".to_string())
+        })?;
+        if let Some(previous) = storage.replace(engine) {
+            previous.shutdown().map_err(Error::from_reason)?;
+        }
+        Ok(state)
+    }
+
+    fn storage_snapshot(&self) -> Result<Option<SqliteStorageEngine>> {
+        self.storage
+            .lock()
+            .map(|storage| storage.clone())
+            .map_err(|_| {
+                Error::from_reason("NativeKnowledgeRuntime storage lock poisoned".to_string())
+            })
+    }
+
+    #[napi]
+    pub fn store_state(&self) -> Result<Option<NativeStoreState>> {
+        let Some(storage) = self.storage_snapshot()? else {
+            return Ok(None);
+        };
+        Ok(Some(NativeStoreState {
+            db_path: storage.db_path().to_string_lossy().replace('\\', "/"),
+            schema_version: storage.schema_version(),
+            database_generation: storage.database_generation() as i64,
+            accepting_writes: true,
+        }))
+    }
+
+    #[napi]
+    pub fn health_check(&self) -> Result<AsyncTask<HealthCheckTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        let storage = self.storage_snapshot()?;
+        let Some(storage) = storage else {
+            return Ok(AsyncTask::new(HealthCheckTask {
+                db_path: String::new(),
+            }));
+        };
+        Ok(AsyncTask::new(HealthCheckTask {
+            db_path: storage.db_path().to_string_lossy().to_string(),
+        }))
+    }
+
+    #[napi]
+    pub fn database_generation(&self) -> Result<i64> {
+        Ok(self
+            .storage_snapshot()?
+            .map(|storage| storage.database_generation() as i64)
+            .unwrap_or(0))
+    }
+
+    /// 在 Rust Read Pool 后台线程读取中央库中的日记本名称。
+    #[napi]
+    pub fn list_distinct_diaries(&self, db_path: String) -> Result<AsyncTask<DiaryListTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "listDistinctDiaries requires a database path".to_string(),
+            ));
+        }
+        Ok(AsyncTask::new(DiaryListTask { db_path }))
+    }
+
+    /// 在 Rust Read Pool 后台线程统计指定日记本的 Chunk 数量。
+    #[napi]
+    pub fn get_diary_chunk_count(
+        &self,
+        db_path: String,
+        diary_name: String,
+    ) -> Result<AsyncTask<DiaryChunkCountTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() || diary_name.trim().is_empty() {
+            return Err(Error::from_reason(
+                "getDiaryChunkCount requires dbPath and diaryName".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(DiaryChunkCountTask {
+            db_path,
+            diary_name: diary_name.trim().to_string(),
+        }))
+    }
+
+    /// 在 Rust Read Pool 后台线程按日记本名称解析文件 ID。
+    #[napi]
+    pub fn get_file_ids_by_diaries(
+        &self,
+        db_path: String,
+        diary_names: Vec<String>,
+    ) -> Result<AsyncTask<FileIdsByDiariesTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "getFileIdsByDiaries requires a database path".to_string(),
+            ));
+        }
+        let mut names = Vec::new();
+        let mut seen = HashSet::new();
+        for name in diary_names
+            .into_iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+        {
+            if seen.insert(name.clone()) {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(AsyncTask::new(FileIdsByDiariesTask { db_path, names }))
+    }
+
+    /// 在 Rust Read Pool 后台线程批量探测文件事实状态。
+    ///
+    /// 该接口只返回文件元数据、Chunk 数量和向量完整性摘要，不跨越
+    /// N-API 传输任何 Vector BLOB。
+    #[napi]
+    pub fn probe_ingestion_files(
+        &self,
+        db_path: String,
+        file_paths: Vec<String>,
+    ) -> Result<AsyncTask<IngestionFileProbeTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "probeIngestionFiles requires a database path".to_string(),
+            ));
+        }
+
+        let paths: Vec<String> = file_paths
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
+        if paths.is_empty() {
+            return Ok(AsyncTask::new(IngestionFileProbeTask {
+                db_path,
+                paths: Vec::new(),
+                dimension: self.dimension as usize,
+            }));
+        }
+
+        Ok(AsyncTask::new(IngestionFileProbeTask {
+            db_path,
+            paths,
+            dimension: self.dimension as usize,
+        }))
+    }
+
+    /// 将 JS 已完成的文本切分与 Embedding 结果提交到 Rust Write Actor。
+    ///
+    /// Rust 只接受稳定的计划和位置向量，不在这里重写 JS 的 tokenizer/chunker。
+    /// 在 Rust Read Pool 后台线程批量探测 Tag 状态。
+    ///
+    /// 仅返回 Tag ID 和向量是否存在且维度正确，不跨 N-API 传输 Vector BLOB。
+    #[napi]
+    pub fn probe_ingestion_tags(
+        &self,
+        db_path: String,
+        tag_names: Vec<String>,
+    ) -> Result<AsyncTask<IngestionTagProbeTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "probeIngestionTags requires a database path".to_string(),
+            ));
+        }
+
+        let names: Vec<String> = tag_names
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
+
+        Ok(AsyncTask::new(IngestionTagProbeTask {
+            db_path,
+            names,
+            dimension: self.dimension as usize,
+        }))
+    }
+
+    /// 在 Rust Read Pool 后台线程查找可复用的迁移向量来源。
+    ///
+    /// 只返回 live file ID 或 migration tombstone ID；Vector BLOB 始终留在 Rust。
+    #[napi]
+    pub fn probe_migration_reuse(
+        &self,
+        db_path: String,
+        requests_json: String,
+    ) -> Result<AsyncTask<MigrationReuseProbeTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "probeMigrationReuse requires a database path".to_string(),
+            ));
+        }
+        if requests_json.trim().is_empty() {
+            return Err(Error::from_reason(
+                "probeMigrationReuse requires a request JSON payload".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(MigrationReuseProbeTask {
+            db_path,
+            requests_json,
+            dimension: self.dimension as usize,
+        }))
+    }
+
+    /// 清理缺失文件记录以及事实表中的孤儿关系。
+    ///
+    /// 文件系统扫描在 N-API 后台任务中执行，数据库删除统一提交到
+    /// NativeKnowledgeRuntime 所属的 SQLite Write Actor。
+    #[napi]
+    pub fn cleanup_database_orphans(
+        &self,
+        db_path: String,
+        root_path: String,
+    ) -> Result<AsyncTask<OrphanCleanupTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() || root_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "cleanupDatabaseOrphans requires dbPath and rootPath".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(OrphanCleanupTask {
+            db_path,
+            root_path,
+        }))
+    }
+
+    /// 在 Rust Read Pool 中确认当前 pairwise 模型已有健康缓存后，
+    /// 通过 Write Actor 删除旧模型签名的 pairwise 数值。
+    ///
+    /// 该维护操作不修改中央事实表，因此不会推进数据库事实代际。
+    #[napi]
+    pub fn cleanup_stale_pairwise_similarity_models(
+        &self,
+        db_path: String,
+        model_sig: String,
+    ) -> Result<AsyncTask<PairwiseModelCleanupTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() || model_sig.trim().is_empty() {
+            return Err(Error::from_reason(
+                "cleanupStalePairwiseSimilarityModels requires dbPath and modelSig"
+                    .to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(PairwiseModelCleanupTask {
+            db_path,
+            model_sig: model_sig.trim().to_string(),
+        }))
+    }
+
+    #[napi]
+    pub fn commit_ingestion_batch(
+        &self,
+        db_path: String,
+        plan_json: String,
+        chunk_vectors: Float32Array,
+        tag_vectors: Float32Array,
+    ) -> Result<AsyncTask<IngestionCommitTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "commitIngestionBatch requires a database path".to_string(),
+            ));
+        }
+        if plan_json.trim().is_empty() {
+            return Err(Error::from_reason(
+                "commitIngestionBatch requires a plan JSON payload".to_string(),
+            ));
+        }
+
+        let diary_indices = self
+            .diaries
+            .read()
+            .map_err(|error| {
+                Error::from_reason(format!(
+                    "Diary registry read lock failed while admitting ingestion: {}",
+                    error
+                ))
+            })?
+            .iter()
+            .map(|(diary_name, registered)| {
+                (
+                    diary_name.clone(),
+                    (registered.index.clone(), registered.dimension),
+                )
+            })
+            .collect();
+
+        Ok(AsyncTask::new(IngestionCommitTask {
+            db_path,
+            plan_json,
+            chunk_vectors: chunk_vectors.to_vec(),
+            tag_vectors: tag_vectors.to_vec(),
+            diary_indices,
+            global_tag_index: self.global_tag_index.clone(),
+        }))
+    }
+
+    /// 由 Rust Write Actor 提交文件删除、迁移墓碑和索引删除回执。
+    #[napi]
+    pub fn commit_delete_batch(
+        &self,
+        db_path: String,
+        file_paths: Vec<String>,
+        ttl_ms: i64,
+    ) -> Result<AsyncTask<DeleteCommitTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "commitDeleteBatch requires a database path".to_string(),
+            ));
+        }
+        let paths: Vec<String> = file_paths
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
+        if paths.is_empty() {
+            return Err(Error::from_reason(
+                "commitDeleteBatch requires at least one file path".to_string(),
+            ));
+        }
+
+        let diary_indices = self
+            .diaries
+            .read()
+            .map_err(|error| {
+                Error::from_reason(format!(
+                    "Diary registry read lock failed while admitting deletion: {}",
+                    error
+                ))
+            })?
+            .iter()
+            .map(|(diary_name, registered)| {
+                (diary_name.clone(), registered.index.clone())
+            })
+            .collect();
+
+        Ok(AsyncTask::new(DeleteCommitTask {
+            db_path,
+            file_paths: paths,
+            ttl_ms,
+            diary_indices,
+        }))
+    }
+
+    /// 在 Rust Read Pool 后台线程读取 Tag 一致性预览所需的轻量数据库快照。
+    ///
+    /// 只返回文件元数据、Tag 元数据和 file_tags 关系，不返回向量 BLOB。
+    #[napi]
+    pub fn get_tag_consistency_snapshot(
+        &self,
+        db_path: String,
+    ) -> Result<AsyncTask<TagConsistencySnapshotTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "getTagConsistencySnapshot requires a database path".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(TagConsistencySnapshotTask { db_path }))
+    }
+
+    /// 通过 Rust Write Actor 提交 Tag 一致性快照。
+    ///
+    /// 文件扫描、规则计算和 Embedding 仍由 Node.js 控制面完成；本方法只接收
+    /// 已冻结的快照计划与缺失 Tag 向量，所有事实表修改在 Write Actor 事务中执行。
+    #[napi]
+    pub fn commit_tag_consistency(
+        &self,
+        db_path: String,
+        plan_json: String,
+        tag_vectors: Float32Array,
+    ) -> Result<AsyncTask<TagConsistencyCommitTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "commitTagConsistency requires a database path".to_string(),
+            ));
+        }
+        if plan_json.trim().is_empty() {
+            return Err(Error::from_reason(
+                "commitTagConsistency requires a plan JSON payload".to_string(),
+            ));
+        }
+        if tag_vectors.len() > 32_768 * 100_000 {
+            return Err(Error::from_reason(
+                "commitTagConsistency vector payload exceeds native limits".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(TagConsistencyCommitTask {
+            db_path,
+            plan_json,
+            tag_vectors: tag_vectors.to_vec(),
+        }))
+    }
+
+    /// 在 Rust Read Pool 后台线程读取 kv_store 中的单个向量值。
+    #[napi]
+    pub fn get_kv_vector(
+        &self,
+        db_path: String,
+        key: String,
+    ) -> Result<AsyncTask<KvVectorLookupTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() || key.trim().is_empty() {
+            return Err(Error::from_reason(
+                "getKvVector requires dbPath and key".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(KvVectorLookupTask {
+            db_path,
+            key,
+        }))
+    }
+
+    /// 通过 Rust Write Actor 写入 kv_store 中的单个向量值。
+    #[napi]
+    pub fn set_kv_vector(
+        &self,
+        db_path: String,
+        key: String,
+        vector: Float32Array,
+    ) -> Result<AsyncTask<KvVectorWriteTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() || key.trim().is_empty() {
+            return Err(Error::from_reason(
+                "setKvVector requires dbPath and key".to_string(),
+            ));
+        }
+        if vector.len() != self.dimension as usize {
+            return Err(Error::from_reason(format!(
+                "setKvVector dimension mismatch: expected {}, got {}",
+                self.dimension,
+                vector.len()
+            )));
+        }
+
+        Ok(AsyncTask::new(KvVectorWriteTask {
+            db_path,
+            key,
+            vector: vector.to_vec(),
+        }))
+    }
+
+    /// 在 Rust Read Pool 后台线程按 key 前缀读取有限数量的 KV 向量。
+    #[napi]
+    pub fn list_kv_vectors(
+        &self,
+        db_path: String,
+        prefix: String,
+    ) -> Result<AsyncTask<KvVectorListTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() || prefix.trim().is_empty() {
+            return Err(Error::from_reason(
+                "listKvVectors requires dbPath and prefix".to_string(),
+            ));
+        }
+        if prefix.len() > 256 {
+            return Err(Error::from_reason(
+                "listKvVectors prefix exceeds the maximum length".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(KvVectorListTask {
+            db_path,
+            prefix,
+        }))
+    }
+
+    /// 在 Rust Read Pool 后台线程读取兼容的 RiverMemo artifact manifest。
+    /// 只返回控制面元数据，不读取或解压持久化 payload。
+    #[napi]
+    pub fn get_native_memo_manifest(
+        &self,
+        db_path: String,
+        model_sig: String,
+        config_hash: String,
+    ) -> Result<AsyncTask<NativeMemoManifestLookupTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty()
+            || model_sig.trim().is_empty()
+            || config_hash.trim().is_empty()
+        {
+            return Err(Error::from_reason(
+                "getNativeMemoManifest requires dbPath, modelSig and configHash".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(NativeMemoManifestLookupTask {
+            db_path,
+            model_sig: model_sig.trim().to_string(),
+            config_hash: config_hash.trim().to_string(),
+        }))
+    }
+
+    /// 在 Rust 后台线程构建单个日记本的轻量日期索引。
+    #[napi]
+    pub fn get_diary_date_index(
+        &self,
+        db_path: String,
+        diary_name: String,
+    ) -> Result<AsyncTask<DiaryDateIndexTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "getDiaryDateIndex requires a database path".to_string(),
+            ));
+        }
+        let diary_name = diary_name.trim().to_string();
+        if diary_name.is_empty() {
+            return Err(Error::from_reason(
+                "getDiaryDateIndex requires a diary name".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(DiaryDateIndexTask {
+            db_path,
+            diary_name,
+        }))
+    }
+
+    /// 在 Rust 后台线程按 Tag 名称查找单个 Tag 向量；Vector BLOB 不经过 Node.js。
+    #[napi]
+    pub fn get_tag_vector_by_name(
+        &self,
+        db_path: String,
+        tag_name: String,
+    ) -> Result<AsyncTask<TagVectorByNameLookupTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() || tag_name.trim().is_empty() {
+            return Err(Error::from_reason(
+                "getTagVectorByName requires dbPath and tagName".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(TagVectorByNameLookupTask {
+            db_path,
+            tag_name: tag_name.trim().to_string(),
+            dimension: self.dimension as usize,
+        }))
+    }
+
+    /// 在 Rust 后台线程按正文查找单个 Chunk 向量；Vector BLOB 不经过 Node.js。
+    #[napi]
+    pub fn get_chunk_vector_by_text(
+        &self,
+        db_path: String,
+        diary_name: String,
+        text: String,
+    ) -> Result<AsyncTask<ChunkVectorByTextLookupTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "getChunkVectorByText requires a database path".to_string(),
+            ));
+        }
+        if text.is_empty() {
+            return Ok(AsyncTask::new(ChunkVectorByTextLookupTask {
+                db_path,
+                diary_name,
+                text,
+                dimension: self.dimension as usize,
+            }));
+        }
+
+        Ok(AsyncTask::new(ChunkVectorByTextLookupTask {
+            db_path,
+            diary_name,
+            text,
+            dimension: self.dimension as usize,
+        }))
+    }
+
+    /// 在 Rust 后台线程读取单个 Chunk 向量；Vector BLOB 不经过 Node.js。
+    #[napi]
+    pub fn get_chunk_vector(
+        &self,
+        db_path: String,
+        chunk_id: i64,
+    ) -> Result<AsyncTask<ChunkVectorLookupTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "getChunkVector requires a database path".to_string(),
+            ));
+        }
+        if chunk_id <= 0 {
+            return Err(Error::from_reason(
+                "getChunkVector requires a positive chunk ID".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(ChunkVectorLookupTask {
+            db_path,
+            chunk_id,
+            dimension: self.dimension as usize,
+        }))
+    }
+
+    /// 按 Chunk ID 批量回填正文和文件元数据，结果按请求 ID 顺序返回。
+    ///
+    /// SQL 查询在 N-API 后台任务执行，不能在 Node.js 主线程等待 Read Pool。
+    #[napi]
+    pub fn hydrate_chunks_by_ids(
+        &self,
+        db_path: String,
+        chunk_ids: Vec<i64>,
+    ) -> Result<AsyncTask<ChunkHydrateTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "hydrateChunksByIds requires a database path".to_string(),
+            ));
+        }
+
+        let mut ids = Vec::new();
+        let mut seen = HashSet::new();
+        for id in chunk_ids.into_iter().filter(|id| *id > 0) {
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        }
+
+        Ok(AsyncTask::new(ChunkHydrateTask { db_path, ids }))
+    }
+
+    /// 按 Tag ID 批量回填 Tag 名称，供纯 ANN 结果适配旧返回结构。
+    #[napi]
+    pub fn hydrate_tag_names_by_ids(
+        &self,
+        db_path: String,
+        tag_ids: Vec<i64>,
+    ) -> Result<AsyncTask<TagNameHydrateTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "hydrateTagNamesByIds requires a database path".to_string(),
+            ));
+        }
+
+        let mut ids = Vec::new();
+        let mut seen = HashSet::new();
+        for id in tag_ids.into_iter().filter(|id| *id > 0) {
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        }
+
+        Ok(AsyncTask::new(TagNameHydrateTask { db_path, ids }))
+    }
+
+    /// 按文件路径批量回填正文和文件元数据，结果使用与 Chunk ID hydrate 相同的 JSON 契约。
+    #[napi]
+    pub fn hydrate_chunks_by_file_paths(
+        &self,
+        db_path: String,
+        file_paths: Vec<String>,
+    ) -> Result<AsyncTask<ChunkPathHydrateTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "hydrateChunksByFilePaths requires a database path".to_string(),
+            ));
+        }
+
+        let mut paths = Vec::new();
+        let mut seen = HashSet::new();
+        for path in file_paths
+            .into_iter()
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty())
+        {
+            if seen.insert(path.clone()) {
+                paths.push(path);
+            }
+        }
+
+        Ok(AsyncTask::new(ChunkPathHydrateTask { db_path, paths }))
+    }
+
+    /// 在 Rust 后台线程恢复日记索引。
+    ///
+    /// 调用方只提供已创建并注册的 VexusIndex；活动槽加载、成员差分回放
+    /// 和无基线全量重建均在 Rust 后台执行，向量 BLOB 不经过 Node.js。
+    #[napi]
+    pub fn restore_diary_index(
+        &self,
+        db_path: String,
+        diary_name: String,
+        index_path: String,
+        model_sig: String,
+        capacity: u32,
+        diary_index: ClassInstance<VexusIndex>,
+    ) -> Result<AsyncTask<IndexRestoreTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        let diary_name = Self::normalize_diary_name(diary_name)?;
+        if db_path.trim().is_empty() || index_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "restoreDiaryIndex requires dbPath and indexPath".to_string(),
+            ));
+        }
+        if diary_index.dimensions != self.dimension {
+            return Err(Error::from_reason(format!(
+                "Diary restore dimension mismatch for {}: runtime={}, index={}",
+                diary_name, self.dimension, diary_index.dimensions
+            )));
+        }
+
+        let index = self
+            .diaries
+            .read()
+            .map_err(|error| {
+                Error::from_reason(format!("Diary registry read lock failed: {}", error))
+            })?
+            .get(&diary_name)
+            .map(|registered| registered.index.clone())
+            .ok_or_else(|| {
+                Error::from_reason(format!(
+                    "Native diary index is not registered: {}",
+                    diary_name
+                ))
+            })?;
+
+        Ok(AsyncTask::new(IndexRestoreTask {
+            db_path,
+            index_path,
+            index,
+            scope: IndexScope::Diary,
+            diary_name: Some(diary_name),
+            dimension: self.dimension,
+            model_sig,
+            capacity,
+        }))
+    }
+
+    /// 在 Rust 后台线程恢复全局 Tag 索引。
+    #[napi]
+    pub fn restore_global_tag_index(
+        &self,
+        db_path: String,
+        index_path: String,
+        model_sig: String,
+        capacity: u32,
+    ) -> Result<AsyncTask<IndexRestoreTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() || index_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "restoreGlobalTagIndex requires dbPath and indexPath".to_string(),
+            ));
+        }
+
+        Ok(AsyncTask::new(IndexRestoreTask {
+            db_path,
+            index_path,
+            index: self.global_tag_index.clone(),
+            scope: IndexScope::GlobalTags,
+            diary_name: None,
+            dimension: self.dimension,
+            model_sig,
+            capacity,
+        }))
+    }
+
+    /// 在 Rust 后台线程执行日记索引双槽代际 checkpoint。
+    #[napi]
+    pub fn checkpoint_diary_index(
+        &self,
+        db_path: String,
+        diary_name: String,
+        index_path: String,
+        model_sig: String,
+        threshold: f64,
+        force: Option<bool>,
+    ) -> Result<AsyncTask<IndexCheckpointTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        let diary_name = Self::normalize_diary_name(diary_name)?;
+        if db_path.trim().is_empty() || index_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "checkpointDiaryIndex requires dbPath and indexPath".to_string(),
+            ));
+        }
+        let diaries = self.diaries.read().map_err(|error| {
+            Error::from_reason(format!(
+                "Diary registry read lock failed: {}",
+                error
+            ))
+        })?;
+        let registered = diaries.get(&diary_name).ok_or_else(|| {
+            Error::from_reason(format!(
+                "Native diary index is not registered: {}",
+                diary_name
+            ))
+        })?;
+        let index = registered.index.clone();
+        let content_revision = registered.content_revision.clone();
+        drop(diaries);
+        Ok(AsyncTask::new(IndexCheckpointTask {
+            db_path,
+            index_path,
+            index,
+            content_revision,
+            scope: IndexScope::Diary,
+            diary_name: Some(diary_name),
+            dimension: self.dimension,
+            model_sig,
+            threshold,
+            force: force.unwrap_or(false),
+        }))
+    }
+
+    /// 在 Rust 后台线程执行全局 Tag 索引双槽代际 checkpoint。
+    #[napi]
+    pub fn checkpoint_global_tag_index(
+        &self,
+        db_path: String,
+        index_path: String,
+        model_sig: String,
+        threshold: f64,
+        force: Option<bool>,
+    ) -> Result<AsyncTask<IndexCheckpointTask>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() || index_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "checkpointGlobalTagIndex requires dbPath and indexPath".to_string(),
+            ));
+        }
+        Ok(AsyncTask::new(IndexCheckpointTask {
+            db_path,
+            index_path,
+            index: self.global_tag_index.clone(),
+            content_revision: self.global_tag_content_revision.clone(),
+            scope: IndexScope::GlobalTags,
+            diary_name: None,
+            dimension: self.dimension,
+            model_sig,
+            threshold,
+            force: force.unwrap_or(false),
+        }))
     }
 
     /// 注册或原子替换一个日记索引。
@@ -1079,21 +3065,15 @@ impl NativeKnowledgeRuntime {
 
         // 提前校验计划及 observationHandle，让可预见错误在 ANN 前失败，
         // 避免原生执行到末尾后再触发完整旧链路回退。
-        let plan: serde_json::Value =
-            serde_json::from_str(&river_input_json).map_err(|error| {
-                Error::from_reason(format!(
-                    "Invalid native River query plan JSON: {}",
-                    error
-                ))
-            })?;
+        let plan: serde_json::Value = serde_json::from_str(&river_input_json).map_err(|error| {
+            Error::from_reason(format!("Invalid native River query plan JSON: {}", error))
+        })?;
         let observation_handle = plan
             .get("observationHandle")
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
-                Error::from_reason(
-                    "Native River query requires observationHandle".to_string(),
-                )
+                Error::from_reason("Native River query requires observationHandle".to_string())
             })?;
         self.memo_runtime
             .get_query_observation(observation_handle, &artifact_sig)
@@ -1201,10 +3181,7 @@ impl NativeKnowledgeRuntime {
 
         let plan: NativeHybridQueryPlan =
             serde_json::from_str(&hybrid_plan_json).map_err(|error| {
-                Error::from_reason(format!(
-                    "Invalid native hybrid query plan JSON: {}",
-                    error
-                ))
+                Error::from_reason(format!("Invalid native hybrid query plan JSON: {}", error))
             })?;
         if plan.schema != "vcp-native-hybrid-query-plan-v2" {
             return Err(Error::from_reason(format!(
@@ -1237,10 +3214,7 @@ impl NativeKnowledgeRuntime {
 
         let river_plan: serde_json::Value =
             serde_json::from_str(&river_input_json).map_err(|error| {
-                Error::from_reason(format!(
-                    "Invalid native hybrid River input JSON: {}",
-                    error
-                ))
+                Error::from_reason(format!("Invalid native hybrid River input JSON: {}", error))
             })?;
         let observation_handle = river_plan
             .get("observationHandle")
@@ -1308,10 +3282,8 @@ impl NativeKnowledgeRuntime {
                 supplemental_per_index_k,
                 file_candidates: plan.file_candidates,
                 bm25_weight: plan.bm25_weight.clamp(0.0, 1.0),
-                time_per_diary_limit:
-                    plan.time_per_diary_limit.clamp(1, 50),
-                time_global_limit:
-                    plan.time_global_limit.clamp(1, 500),
+                time_per_diary_limit: plan.time_per_diary_limit.clamp(1, 50),
+                time_global_limit: plan.time_global_limit.clamp(1, 500),
                 per_index_k: per_index_k.max(1) as usize,
                 candidate_k,
                 final_k: candidate_k,
@@ -1384,6 +3356,58 @@ impl NativeKnowledgeRuntime {
             .collect()
     }
 
+    /// 在 Runtime 生命周期内启动 Rust 原生文件监听器。
+    ///
+    /// watcher 的所有权归 NativeKnowledgeRuntime；JS 不再单独持有
+    /// VexusWatcher 实例，也不能在 Runtime 关闭后遗留文件事件线程。
+    #[napi]
+    pub fn start_watch(&self, config: WatcherConfig) -> Result<()> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        let mut watcher = self.watcher.lock().map_err(|_| {
+            Error::from_reason("NativeKnowledgeRuntime watcher lock poisoned".to_string())
+        })?;
+        if watcher.is_some() {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime watcher is already running".to_string(),
+            ));
+        }
+        let native_watcher = VexusWatcher::new();
+        native_watcher.start_watch(config)?;
+        *watcher = Some(native_watcher);
+        Ok(())
+    }
+
+    /// 批量取出 Rust watcher 已完成的稳定事件。
+    ///
+    /// 事件留在 Rust 有界队列中，Node.js 只能主动拉取轻量事件，
+    /// 不参与 notify 回调、稳定性判断或文件扫描。
+    #[napi]
+    pub fn drain_watch_events(&self, max_events: Option<u32>) -> Result<Vec<WatchEvent>> {
+        let watcher = self.watcher.lock().map_err(|_| {
+            Error::from_reason("NativeKnowledgeRuntime watcher lock poisoned".to_string())
+        })?;
+        Ok(watcher
+            .as_ref()
+            .map(|value| value.drain_events(max_events.unwrap_or(256)))
+            .unwrap_or_default())
+    }
+
+    /// 停止 Runtime 所有的文件监听，并释放 notify 句柄。
+    #[napi]
+    pub fn stop_watch(&self) -> Result<()> {
+        let mut watcher = self.watcher.lock().map_err(|_| {
+            Error::from_reason("NativeKnowledgeRuntime watcher lock poisoned".to_string())
+        })?;
+        if let Some(native_watcher) = watcher.take() {
+            native_watcher.stop_watch()?;
+        }
+        Ok(())
+    }
+
     #[napi]
     pub fn stats(&self) -> Result<NativeKnowledgeRuntimeStats> {
         let registered_diaries = self
@@ -1397,6 +3421,7 @@ impl NativeKnowledgeRuntime {
             .memo_runtime
             .diagnostics()
             .map_err(Error::from_reason)?;
+        let storage = self.storage_snapshot()?;
         Ok(NativeKnowledgeRuntimeStats {
             accepting_queries: self.accepting_queries.load(Ordering::Acquire),
             dimension: self.dimension,
@@ -1405,6 +3430,15 @@ impl NativeKnowledgeRuntime {
             memo_runtime_resident: artifact_sig.is_some(),
             memo_artifact_sig: artifact_sig,
             memo_generation: memo_generation as i64,
+            store_open: storage.is_some(),
+            store_schema_version: storage
+                .as_ref()
+                .map(|value| value.schema_version())
+                .unwrap_or(0),
+            store_database_generation: storage
+                .as_ref()
+                .map(|value| value.database_generation() as i64)
+                .unwrap_or(0),
         })
     }
 
@@ -1412,12 +3446,24 @@ impl NativeKnowledgeRuntime {
     #[napi]
     pub fn shutdown(&self) -> Result<()> {
         self.accepting_queries.store(false, Ordering::Release);
+        self.stop_watch()?;
         self.diaries
             .write()
             .map_err(|error| {
                 Error::from_reason(format!("Diary registry shutdown lock failed: {}", error))
             })?
             .clear();
+
+        let storage = self
+            .storage
+            .lock()
+            .map_err(|_| {
+                Error::from_reason("NativeKnowledgeRuntime storage lock poisoned".to_string())
+            })?
+            .take();
+        if let Some(storage) = storage {
+            storage.shutdown().map_err(Error::from_reason)?;
+        }
         Ok(())
     }
 }
@@ -1457,14 +3503,16 @@ mod tests {
             ),
         ]);
 
-        let (limited, before, per_diary, global) =
-            limit_time_candidates(pending, 2, 10);
+        let (limited, before, per_diary, global) = limit_time_candidates(pending, 2, 10);
 
         assert_eq!(before, 6);
         assert_eq!(per_diary, 2);
         assert_eq!(global, 10);
         assert_eq!(
-            limited.iter().map(|candidate| candidate.id).collect::<Vec<_>>(),
+            limited
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>(),
             vec![4, 1, 5, 2]
         );
     }
@@ -1479,7 +3527,10 @@ mod tests {
         let (limited, _, _, _) = limit_time_candidates(pending, 2, 3);
 
         assert_eq!(
-            limited.iter().map(|candidate| candidate.id).collect::<Vec<_>>(),
+            limited
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>(),
             vec![3, 1, 2]
         );
     }
@@ -1494,16 +3545,17 @@ mod tests {
         let (limited, _, _, _) = limit_time_candidates(pending, 10, 10);
 
         assert_eq!(
-            limited.iter().map(|candidate| candidate.id).collect::<Vec<_>>(),
+            limited
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>(),
             vec![10, 20, 30]
         );
     }
 
     #[test]
     fn time_limit_clamps_extreme_configuration() {
-        let entries: Vec<(i64, f64)> = (1..=600)
-            .map(|id| (id, 1.0 - id as f64 / 1000.0))
-            .collect();
+        let entries: Vec<(i64, f64)> = (1..=600).map(|id| (id, 1.0 - id as f64 / 1000.0)).collect();
         let pending = HashMap::from([("alpha".to_string(), diary_pool(&entries))]);
 
         let (limited, before, per_diary, global) =

@@ -634,23 +634,34 @@ class RAGDiaryPlugin {
         const ghostTags = [];
         if (!tags || tags.length === 0) return ghostTags;
 
-        const db = this.vectorDBManager?.db;
-        const checkStmt = db ? db.prepare('SELECT vector FROM tags WHERE name = ?') : null;
-        const dim = this.vectorDBManager?.config?.dimension || 3072;
+        const getTagVector = typeof this.vectorDBManager?.getTagVectorByName === 'function'
+            ? this.vectorDBManager.getTagVectorByName.bind(this.vectorDBManager)
+            : null;
 
         const tagsToEmbed = [];
         const tagResults = new Array(tags.length).fill(null);
 
-        // 1. 先查数据库（看是否是已有正规军）
-        tags.forEach((tagName, index) => {
-            if (checkStmt) {
-                try {
-                    const row = checkStmt.get(tagName);
-                    if (row && row.vector) {
-                        tagResults[index] = new Float32Array(row.vector.buffer, row.vector.byteOffset, dim);
+        // 1. 通过 Rust 高层接口读取已有 Tag 向量。
+        if (getTagVector) {
+            const nativeVectors = await Promise.all(
+                tags.map(async (tagName) => {
+                    try {
+                        return await getTagVector(tagName);
+                    } catch (_) {
+                        return null;
                     }
-                } catch (e) { /* ignore */ }
-            }
+                })
+            );
+            nativeVectors.forEach((vector, index) => {
+                if (vector) {
+                    tagResults[index] = vector instanceof Float32Array
+                        ? vector
+                        : new Float32Array(vector);
+                }
+            });
+        }
+
+        tags.forEach((tagName, index) => {
             if (!tagResults[index]) {
                 tagsToEmbed.push({ name: tagName, index });
             }
@@ -3744,18 +3755,10 @@ class RAGDiaryPlugin {
                 .map(name => String(name || '').trim())
                 .filter(Boolean)
         )];
-        const allowedFileIds = [];
-        const db = this.vectorDBManager.db;
-        if (db?.prepare && normalizedDiaryNames.length > 0) {
-            const placeholders = normalizedDiaryNames.map(() => '?').join(',');
-            const rows = db.prepare(
-                `SELECT id FROM files WHERE diary_name IN (${placeholders})`
-            ).all(...normalizedDiaryNames);
-            rows.forEach(row => {
-                const id = Number(row.id);
-                if (Number.isFinite(id)) allowedFileIds.push(id);
-            });
-        }
+        const allowedFileIds = normalizedDiaryNames.length > 0
+            && typeof this.vectorDBManager.getFileIdsByDiaries === 'function'
+            ? await this.vectorDBManager.getFileIdsByDiaries(normalizedDiaryNames)
+            : [];
         if (allowedFileIds.length === 0) {
             const error = new Error('RiverMemo 无法建立显式日记本文件权限作用域');
             error.code = 'RIVERMEMO_EMPTY_PERMISSION_SCOPE';
@@ -4284,7 +4287,9 @@ class RAGDiaryPlugin {
             .sort((a, b) => new Date(b.date) - new Date(a.date));
 
         if (typeof this.vectorDBManager?.getDiaryDateIndex === 'function') {
-            const indexedMetas = normalizeMetas(this.vectorDBManager.getDiaryDateIndex(dbName));
+            const indexedMetas = normalizeMetas(
+                await this.vectorDBManager.getDiaryDateIndex(dbName)
+            );
             requestCache?.diaryDateIndex?.set(dbName, indexedMetas);
             return indexedMetas;
         }
