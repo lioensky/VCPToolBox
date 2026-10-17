@@ -19,7 +19,9 @@ function safeLoadManifest(pluginName) {
         path.join(ROOT, 'Plugin', pluginName, 'plugin-manifest.json'),
         path.join(ROOT, 'Plugin', pluginName, 'plugin-manifest.json.block'),
         path.join(ROOT, 'VCPDistributedServer', 'Plugin', pluginName, 'plugin-manifest.json'),
-        path.join(ROOT, '..', 'VCPChat', 'VCPDistributedServer', 'Plugin', pluginName, 'plugin-manifest.json')
+        path.join(ROOT, 'VCP Distributed Server', 'Plugin', pluginName, 'plugin-manifest.json'),
+        path.join(ROOT, '..', 'VCPChat', 'VCPDistributedServer', 'Plugin', pluginName, 'plugin-manifest.json'),
+        path.join(ROOT, '..', 'VCPChat', 'VCP Distributed Server', 'Plugin', pluginName, 'plugin-manifest.json')
     ];
     for (const p of candidates) {
         if (fs.existsSync(p)) {
@@ -63,8 +65,9 @@ function makeStressPlanner(plugins = [], t = null) {
     return { registry, planner };
 }
 
-test('【压力压测-01】100 次高频并发 Plan 编译与吞吐压测：时延平稳且无内存泄露', async () => {
-    const { planner } = makeStressPlanner(['ZhihuSearch', 'TomatoNovel', 'NovelAIGen']);
+test('【压力压测-01】100 次高频并发 Plan 编译与吞吐压测：时延平稳且无内存泄露', async (t) => {
+    const { planner } = makeStressPlanner(['ZhihuSearch', 'TomatoNovel', 'NovelAIGen'], t);
+    if (!planner) return;
     const queries = [
         '请使用 {信息获取} 中的 `ZhihuSearch` 搜索【量子纠缠】。',
         '请使用 {媒体娱乐} 中的 `TomatoNovel`，[搜书]【大主宰】。',
@@ -90,8 +93,9 @@ test('【压力压测-01】100 次高频并发 Plan 编译与吞吐压测：时�
     }
 });
 
-test('【混沌边界-02】50 组无用约束雪崩攻击：大量废话约束下依然精准提取有效参数', async () => {
-    const { planner } = makeStressPlanner(['NovelAIGen']);
+test('【混沌边界-02】50 组无用约束雪崩攻击：大量废话约束下依然精准提取有效参数', async (t) => {
+    const { planner } = makeStressPlanner(['NovelAIGen'], t);
+    if (!planner) return;
     const junkConstraints = Array.from({ length: 50 }, (_, i) => `[无关标签_${i}]`).join('');
     const input = `请使用 {媒体娱乐} 中的 \`NovelAIGen\`，绘制【1girl, gothic lolita】${junkConstraints}[横屏][排除:bad hands]。`;
 
@@ -103,8 +107,9 @@ test('【混沌边界-02】50 组无用约束雪崩攻击：大量废话约束�
     assert.strictEqual(call.args.uc, 'bad hands');
 });
 
-test('【智能自愈-03】未声明 prefixes 的枚举参数前缀语法智能穿透测试：NovelAI 与 SuperDice 自愈', async () => {
-    const { planner } = makeStressPlanner(['NovelAIGen', 'VCPSuperDice']);
+test('【智能自愈-03】未声明 prefixes 的枚举参数前缀语法智能穿透测试：NovelAI 与 SuperDice 自愈', async (t) => {
+    const { planner } = makeStressPlanner(['NovelAIGen', 'VCPSuperDice'], t);
+    if (!planner) return;
     // NovelAIGen 未声明 prefixes，但用户使用了 [画幅:横屏]
     const [naiCall] = await planner.plan('请使用 {媒体娱乐} 中的 `NovelAIGen`，绘制【cyberpunk city】[画幅:横屏]。');
     assert.strictEqual(naiCall.args.resolution, '1216x832');
@@ -116,8 +121,9 @@ test('【智能自愈-03】未声明 prefixes 的枚举参数前缀语法智能�
     assert.strictEqual(diceCall.args.magic, 'moon');
 });
 
-test('【国际化边界-04】极端 Unicode、零宽空格与阿拉伯语/希伯来语从右到左混淆注入', async () => {
-    const { planner } = makeStressPlanner(['ZhihuSearch']);
+test('【国际化边界-04】极端 Unicode、零宽空格与阿拉伯语/希伯来语从右到左混淆注入', async (t) => {
+    const { planner } = makeStressPlanner(['ZhihuSearch'], t);
+    if (!planner) return;
     // 注入零宽空格 \u200B 与数学符号
     const strangeText = '测试\u200B数学∫∬∑ ∏(VCP)\u202E反向文本';
     const [call] = await planner.plan(`请使用 {信息获取} 中的 \`ZhihuSearch\` 搜索【${strangeText}】。`);
@@ -125,8 +131,9 @@ test('【国际化边界-04】极端 Unicode、零宽空格与阿拉伯语/希�
     assert.strictEqual(call.args.query, strangeText);
 });
 
-test('【安全防线-05】单槽位约束歧义争夺防护：2 个未消费约束时坚决不盲目绑定到单参数', async () => {
-    const { planner } = makeStressPlanner(['MimoDubbing']);
+test('【安全防线-05】单槽位约束歧义争夺防护：2 个未消费约束时坚决不盲目绑定到单参数', async (t) => {
+    const { planner } = makeStressPlanner(['MimoDubbing'], t);
+    if (!planner) return;
     // MimoDubbing 的 submit 有 text1(primary), voice(enum), instruction(constraints, prefixes: 指导/导演/语气)
     // 如果用户不加前缀传了 2 个未消费约束 [轻快欢悦] [低沉耳语]，系统不应随机挑选一个绑定，而应保留 instruction 未决
     const [call] = await planner.plan('请使用 {媒体娱乐} 中的 `MimoDubbing`，合成配音【测试台词】[轻快欢悦][低沉耳语]。');
@@ -137,14 +144,15 @@ test('【安全防线-05】单槽位约束歧义争夺防护：2 个未消费约
     assert.strictEqual(call.args.instruction, undefined);
 });
 
-test('【并发隔离-06】20 组异构跨插件并发请求调用隔离（无 Cross-Talk 污染）', async () => {
+test('【并发隔离-06】20 组异构跨插件并发请求调用隔离（无 Cross-Talk 污染）', async (t) => {
     const { planner } = makeStressPlanner([
         'ZhihuSearch',
         'NovelAIGen',
         'TomatoNovel',
         'MimoDubbing',
         'ScheduleManager'
-    ]);
+    ], t);
+    if (!planner) return;
 
     const inputs = [
         { q: '请使用 {信息获取} 中的 `ZhihuSearch` 搜索【第1项】。', expected: { name: 'ZhihuSearch', query: '第1项' } },
@@ -169,8 +177,9 @@ test('【并发隔离-06】20 组异构跨插件并发请求调用隔离（无 C
     await Promise.all(batch);
 });
 
-test('【降级容错-07】JEV 离线/异常模拟：JevClient 抛出异常时 100% 优雅回退默认参数', async () => {
-    const { registry } = makeStressPlanner(['NovelAIGen']);
+test('【降级容错-07】JEV 离线/异常模拟：JevClient 抛出异常时 100% 优雅回退默认参数', async (t) => {
+    const { registry } = makeStressPlanner(['NovelAIGen'], t);
+    if (!registry) return;
     // 构造一个必定抛错的 Mock JevClient
     const faultyJevClient = {
         isConfigured: () => true,
@@ -194,8 +203,9 @@ test('【降级容错-07】JEV 离线/异常模拟：JevClient 抛出异常时 1
     assert.strictEqual(call.args.resolution, '832x1216', '异常时优雅回退默认竖屏分辨率');
 });
 
-test('【边界阶梯-08】超长参数精准阶梯测试：N-1 放行、N 放行、N+1 严正熔断', async () => {
-    const { planner } = makeStressPlanner(['NovelAIGen']);
+test('【边界阶梯-08】超长参数精准阶梯测试：N-1 放行、N 放行、N+1 严正熔断', async (t) => {
+    const { planner } = makeStressPlanner(['NovelAIGen'], t);
+    if (!planner) return;
     // NovelAISuggestTags 的 prompt maxLength 为 100
     const str99 = 'a'.repeat(99);
     const str100 = 'a'.repeat(100);
