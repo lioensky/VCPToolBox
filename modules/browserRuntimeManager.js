@@ -911,5 +911,6 @@ module.exports = {
     getManagedBrowserWebSocketEndpoint,
     getManagedBrowserDebugTargets,
     getManagedToken,
-    validateManagedToken
+    validateManagedToken,
+    findChromeExecutable
 };

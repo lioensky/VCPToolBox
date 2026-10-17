@@ -816,9 +816,62 @@ function shouldUseManagedChrome(url, mode) {
     return !URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY || isHighRiskDomain(url) || URLFETCH_BROWSER_FIRST;
 }
 
+async function captureAndFormatScreenshot(page, url, options = {}) {
+    // 稍等 1 秒让动画、着色器与动态 DOM 稳定
+    await new Promise(resolve => setTimeout(resolve, 1200));
+
+    const isFullPage = options.fullPage === true;
+    const screenshotOptions = {
+        type: 'png'
+    };
+    if (isFullPage) {
+        screenshotOptions.fullPage = true;
+    }
+
+    const imageBuffer = await page.screenshot(screenshotOptions);
+    const generatedFileName = `${uuidv4()}.png`;
+    const urlFetchImageDir = path.join(PROJECT_BASE_PATH, 'image', 'urlfetch');
+    const localImageServerPath = path.join(urlFetchImageDir, generatedFileName);
+
+    await fs.mkdir(urlFetchImageDir, { recursive: true });
+    await fs.writeFile(localImageServerPath, imageBuffer);
+
+    const relativeServerPathForUrl = path.join('urlfetch', generatedFileName).replace(/\\/g, '/');
+    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+
+    const safeBuffer = Buffer.isBuffer(imageBuffer) ? imageBuffer : Buffer.from(imageBuffer);
+    const base64Image = safeBuffer.toString('base64');
+    const imageMimeType = 'image/png';
+    const pageTitle = await page.title().catch(() => '') || url;
+    const altText = pageTitle ? pageTitle.substring(0, 80) + (pageTitle.length > 80 ? "..." : "") : (generatedFileName || "网页快照");
+    const imageHtml = `<img src="${accessibleImageUrl}" alt="${altText}" width="500">`;
+
+    return {
+        content: [
+            {
+                type: 'text',
+                text: `已成功获取网页快照: ${url}\n- 标题: ${pageTitle}\n- 可访问URL: ${accessibleImageUrl}\n\n请使用以下HTML <img> 标签将图片直接展示给用户：\n${imageHtml}`
+            },
+            {
+                type: 'image_url',
+                image_url: {
+                    url: `data:${imageMimeType};base64,${base64Image}`
+                }
+            }
+        ],
+        details: {
+            serverPath: `image/urlfetch/${generatedFileName}`,
+            fileName: generatedFileName,
+            originalUrl: url,
+            pageTitle: pageTitle,
+            imageUrl: accessibleImageUrl
+        }
+    };
+}
+
 async function fetchWithManagedChrome(url, mode = 'text') {
-    if (mode !== 'text') {
-        throw new Error('managed Chrome backend 当前仅支持 text 模式');
+    if (mode !== 'text' && mode !== 'screenshot') {
+        throw new Error(`managed Chrome backend 当前不支持 ${mode} 模式`);
     }
 
     let browser;
@@ -837,10 +890,15 @@ async function fetchWithManagedChrome(url, mode = 'text') {
         browser = await puppeteer.connect({ browserWSEndpoint });
         page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 900 });
-        const response = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        const navigationWaitUntil = (mode === 'snapshot' || mode === 'screenshot') ? 'domcontentloaded' : 'networkidle2';
+        const response = await page.goto(url, { waitUntil: navigationWaitUntil, timeout: 20000 });
         const pdfText = await extractPdfFromPuppeteerResponse(response, url);
         if (pdfText) {
             return pdfText;
+        }
+
+        if (mode === 'screenshot' || mode === 'snapshot') {
+            return await captureAndFormatScreenshot(page, url);
         }
 
         await autoScroll(page, mode);
@@ -907,6 +965,13 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
 
         if (proxyPort) {
             launchOptions.args.push(`--proxy-server=http://127.0.0.1:${proxyPort}`);
+        }
+
+        const systemBrowser = (typeof browserRuntimeManager?.findChromeExecutable === 'function')
+            ? browserRuntimeManager.findChromeExecutable()
+            : null;
+        if (systemBrowser) {
+            launchOptions.executablePath = systemBrowser;
         }
 
         browser = await puppeteer.launch(launchOptions);
@@ -1026,7 +1091,8 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             };
         }
 
-        const navigationResponse = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        const navigationWaitUntil = (mode === 'snapshot' || mode === 'screenshot') ? 'domcontentloaded' : 'networkidle2';
+        const navigationResponse = await page.goto(url, { waitUntil: navigationWaitUntil, timeout: 20000 });
         if (mode === 'text') {
             const pdfText = await extractPdfFromPuppeteerResponse(navigationResponse, url);
             if (pdfText) {
@@ -1034,58 +1100,14 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             }
         }
 
-        if (mode === 'snapshot') {
+        if (mode === 'snapshot' || mode === 'screenshot') {
             // Check for essential environment variables for saving image
             if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
                 throw new Error("UrlFetch Plugin Snapshot Error: Required environment variables for saving image are not set (PROJECT_BASE_PATH, SERVER_PORT, IMAGESERVER_IMAGE_KEY, VarHttpUrl).");
             }
 
-            // Use the robust auto-scroll function
-            await autoScroll(page, mode);
-
-            // 网页快照模式
-            const imageBuffer = await page.screenshot({ fullPage: true, type: 'png' });
-
-            // Save the image
-            const generatedFileName = `${uuidv4()}.png`;
-            const urlFetchImageDir = path.join(PROJECT_BASE_PATH, 'image', 'urlfetch');
-            const localImageServerPath = path.join(urlFetchImageDir, generatedFileName);
-
-            await fs.mkdir(urlFetchImageDir, { recursive: true });
-            await fs.writeFile(localImageServerPath, imageBuffer);
-
-            // Construct accessible URL
-            const relativeServerPathForUrl = path.join('urlfetch', generatedFileName).replace(/\\/g, '/');
-            const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
-
-            // Prepare response for AI
-            const base64Image = imageBuffer.toString('base64');
-            const imageMimeType = 'image/png';
-            const pageTitle = await page.title();
-            const altText = pageTitle ? pageTitle.substring(0, 80) + (pageTitle.length > 80 ? "..." : "") : (generatedFileName || "网页快照");
-            const imageHtml = `<img src="${accessibleImageUrl}" alt="${altText}" width="500">`;
-
-            return {
-                content: [
-                    {
-                        type: 'text',
-                        text: `已成功获取网页快照: ${url}\n- 标题: ${pageTitle}\n- 可访问URL: ${accessibleImageUrl}\n\n请使用以下HTML <img> 标签将图片直接展示给用户：\n${imageHtml}`
-                    },
-                    {
-                        type: 'image_url',
-                        image_url: {
-                            url: `data:${imageMimeType};base64,${base64Image}`
-                        }
-                    }
-                ],
-                details: {
-                    serverPath: `image/urlfetch/${generatedFileName}`,
-                    fileName: generatedFileName,
-                    originalUrl: url,
-                    pageTitle: pageTitle,
-                    imageUrl: accessibleImageUrl
-                }
-            };
+            // 网页快照模式：直接捕获视口，无需 autoScroll 循环拖延
+            return await captureAndFormatScreenshot(page, url);
         } else {
             // 默认的文本提取模式
             await autoScroll(page, mode); // Scroll page to load all lazy-loaded content
@@ -1277,6 +1299,9 @@ async function main() {
             const data = JSON.parse(inputData);
             const url = data.url;
             let mode = data.mode || 'text'; // 'text', 'snapshot', 'image', 'jina', or 'download'
+            if (mode === 'screenshot') {
+                mode = 'snapshot';
+            }
             const knowledgeFolder = data.knowledgeFolder || data.folder || data.knowledge_subfolder;
             const outputFileName = data.fileName || data.filename || data.outputFileName;
             const downloadSourceMode = data.sourceMode || data.fetchMode || 'jina';

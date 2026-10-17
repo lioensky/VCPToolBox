@@ -18,7 +18,9 @@ const ROOT = path.join(__dirname, '..');
 const CONFIG_PATH = path.join(ROOT, 'ToolConfigs', 'jev_tool_call_exp.json');
 const PROMPT_PATH = path.join(ROOT, 'TVStxt', 'JevToolCallDecision.txt');
 const LOCAL_DIST_ROOT = path.join(ROOT, 'VCPDistributedServer', 'Plugin');
+const LOCAL_DIST_SPACED_ROOT = path.join(ROOT, 'VCP Distributed Server', 'Plugin');
 const SIBLING_DIST_ROOT = path.join(ROOT, '..', 'VCPChat', 'VCPDistributedServer', 'Plugin');
+const SIBLING_DIST_SPACED_ROOT = path.join(ROOT, '..', 'VCPChat', 'VCP Distributed Server', 'Plugin');
 
 /**
  * 安全加载插件 Manifest 清单，不产生未捕获的 ENOENT 异常
@@ -30,22 +32,24 @@ function safeLoadManifest(pluginName, preferredOrigin = 'any') {
     const localBackend = { path: path.join(ROOT, 'Plugin', pluginName, 'plugin-manifest.json'), origin: 'local' };
     const localBlock = { path: path.join(ROOT, 'Plugin', pluginName, 'plugin-manifest.json.block'), origin: 'local' };
     const localDist = { path: path.join(LOCAL_DIST_ROOT, pluginName, 'plugin-manifest.json'), origin: 'cloud' };
+    const localDistSpaced = { path: path.join(LOCAL_DIST_SPACED_ROOT, pluginName, 'plugin-manifest.json'), origin: 'cloud' };
     const siblingDist = { path: path.join(SIBLING_DIST_ROOT, pluginName, 'plugin-manifest.json'), origin: 'cloud' };
+    const siblingDistSpaced = { path: path.join(SIBLING_DIST_SPACED_ROOT, pluginName, 'plugin-manifest.json'), origin: 'cloud' };
 
     let candidates = [];
     if (preferredOrigin === 'cloud') {
-        candidates = [localDist, siblingDist, localBackend, localBlock];
+        candidates = [localDist, localDistSpaced, siblingDist, siblingDistSpaced, localBackend, localBlock];
     } else if (preferredOrigin === 'local') {
-        candidates = [localBackend, localBlock, localDist, siblingDist];
+        candidates = [localBackend, localBlock, localDist, localDistSpaced, siblingDist, siblingDistSpaced];
     } else {
-        candidates = [localBackend, localBlock, localDist, siblingDist];
+        candidates = [localBackend, localBlock, localDist, localDistSpaced, siblingDist, siblingDistSpaced];
     }
 
     for (const c of candidates) {
         if (fs.existsSync(c.path)) {
             try {
                 const manifest = JSON.parse(fs.readFileSync(c.path, 'utf8'));
-                const isDist = c.origin === 'cloud' || c.path.includes('VCPDistributedServer');
+                const isDist = c.origin === 'cloud' || c.path.includes('VCPDistributedServer') || c.path.includes('VCP Distributed Server');
                 return {
                     manifest: isDist ? { ...manifest, isDistributed: true, serverId: 'dist-test-node' } : manifest,
                     origin: c.origin,
@@ -370,9 +374,9 @@ test('工具名、目录不符或文本超长时拒绝，不生成调用', async
 // ----------------------------------------------------------------------
 
 test('Wave 1: 全部 10 个信息获取/日常协作插件声明通过注册表校验且全部为 valid', (t) => {
-    const registry = new JevThirdPartyRegistry();
-    const items = WAVE1_PLUGINS.map(name => ({ manifest: loadManifest(name), origin: 'local' }));
-    const snapshot = registry.build(items);
+    const __env = makeEcosystemPlanner(t, WAVE1_PLUGINS);
+    if (!__env) return;
+    const { snapshot } = __env;
 
     assert.equal(snapshot.total, WAVE1_PLUGINS.length);
     assert.equal(snapshot.validCount, WAVE1_PLUGINS.length);
@@ -385,14 +389,9 @@ test('Wave 1: 全部 10 个信息获取/日常协作插件声明通过注册表�
 });
 
 test('Wave 1: 离线规划验证 ZhihuSearch 站内与全局搜索', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadManifest('ZhihuSearch'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['ZhihuSearch']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {信息获取} 中的 `ZhihuSearch`，在知乎上搜索【大语言模型】并限定[知乎站内]。');
     assert.equal(call1.name, 'ZhihuSearch');
@@ -407,14 +406,9 @@ test('Wave 1: 离线规划验证 ZhihuSearch 站内与全局搜索', async (t) =
 });
 
 test('Wave 1: 离线规划验证 XiaohongshuFetch 笔记抓取', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadManifest('XiaohongshuFetch'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['XiaohongshuFetch']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call] = await planner.plan('请使用 {信息获取} 中的 `XiaohongshuFetch`，抓取小红书笔记【https://www.xiaohongshu.com/discovery/item/123456】。');
     assert.equal(call.name, 'XiaohongshuFetch');
@@ -422,14 +416,9 @@ test('Wave 1: 离线规划验证 XiaohongshuFetch 笔记抓取', async (t) => {
 });
 
 test('Wave 1: 离线规划验证 VolcSearch 中文检索与条数约束', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadManifest('VolcSearch'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['VolcSearch']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call] = await planner.plan('请使用 {信息获取} 中的 `VolcSearch`，检索【2026年开源大模型最新发布】，返回[条数:5]。');
     assert.equal(call.name, 'VolcSearch');
@@ -438,14 +427,9 @@ test('Wave 1: 离线规划验证 VolcSearch 中文检索与条数约束', async 
 });
 
 test('Wave 1: 离线规划验证 YoutubeFetch 视频详情与多命令路由', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadManifest('YoutubeFetch'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['YoutubeFetch']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {信息获取} 中的 `YoutubeFetch`，获取视频详情【https://www.youtube.com/watch?v=dQw4w9WgXcQ】。');
     assert.equal(call1.name, 'YoutubeFetch');
@@ -460,14 +444,9 @@ test('Wave 1: 离线规划验证 YoutubeFetch 视频详情与多命令路由', a
 });
 
 test('Wave 1: 离线规划验证 YoucomSearch 国际网络搜索', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadManifest('YoucomSearch'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['YoucomSearch']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call] = await planner.plan('请使用 {信息获取} 中的 `YoucomSearch`，检索【AGI前沿论文进展】，限定[一周内]。');
     assert.equal(call.name, 'YoucomSearch');
@@ -476,14 +455,9 @@ test('Wave 1: 离线规划验证 YoucomSearch 国际网络搜索', async (t) => 
 });
 
 test('Wave 1: 离线规划验证 BrowserSearch 真实浏览器搜索与引擎路由', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadManifest('BrowserSearch'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['BrowserSearch']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call] = await planner.plan('请使用 {信息获取} 中的 `BrowserSearch`，在[必应]上检索【Rust MoonAST 符号引擎】。');
     assert.equal(call.name, 'BrowserSearch');
@@ -493,14 +467,9 @@ test('Wave 1: 离线规划验证 BrowserSearch 真实浏览器搜索与引擎路
 });
 
 test('Wave 1: 离线规划验证 DeepWikiVCP 开源架构问答与目录结构', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadManifest('DeepWikiVCP'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['DeepWikiVCP']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {信息获取} 中的 `DeepWikiVCP`，基于[仓库:lioensky/VCPToolBox]询问【插件生命周期管理机制】。');
     assert.equal(call1.name, 'DeepWikiVCP');
@@ -515,14 +484,9 @@ test('Wave 1: 离线规划验证 DeepWikiVCP 开源架构问答与目录结构',
 });
 
 test('Wave 1: 离线规划验证 DomainSafetyChecker 域名与网址安全核查', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadManifest('DomainSafetyChecker'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['DomainSafetyChecker']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call] = await planner.plan('请使用 {信息获取} 中的 `DomainSafetyChecker`，核查链接【https://suspicious-login.com/auth】的安全性。');
     assert.equal(call.name, 'DomainSafetyChecker');
@@ -531,14 +495,9 @@ test('Wave 1: 离线规划验证 DomainSafetyChecker 域名与网址安全核查
 });
 
 test('Wave 1: 离线规划验证 TimedTaskQuery 定时任务查询与取消', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadManifest('TimedTaskQuery'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['TimedTaskQuery']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {便利操作} 中的 `TimedTaskQuery`，查询定时任务【task-1779106560000-650e398d】的执行结果。');
     assert.equal(call1.name, 'TimedTaskQuery');
@@ -552,14 +511,9 @@ test('Wave 1: 离线规划验证 TimedTaskQuery 定时任务查询与取消', as
 });
 
 test('Wave 1: 离线规划验证 PubMedSearch 生物医学文献检索与摘要获取', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadManifest('PubMedSearch'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['PubMedSearch']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {信息获取} 中的 `PubMedSearch`，检索【CRISPR Cas9 基因治疗】并按[最新发表]排序。');
     assert.equal(call1.name, 'PubMedSearch');
@@ -580,24 +534,38 @@ test('Wave 1: 离线规划验证 PubMedSearch 生物医学文献检索与摘要�
 // ----------------------------------------------------------------------
 
 test('Wave 2: 前后端便利操作与物联网控制插件全部通过校验且有效', (t) => {
-    const registry = new JevThirdPartyRegistry();
-    const items = [
+    const specs = [
         // 后端插件 (6个)
-        { manifest: loadBackendManifest('ScheduleManager'), origin: 'local' },
-        { manifest: loadBackendManifest('AgentMessage'), origin: 'local' },
-        { manifest: loadBackendManifest('VCPEverything'), origin: 'local' },
-        { manifest: loadBackendManifest('AnkiSearch'), origin: 'local' },
-        { manifest: loadBackendManifest('JapaneseHelper'), origin: 'local' },
-        { manifest: loadBackendManifest('LexibankOperator'), origin: 'local' },
+        { name: 'ScheduleManager', origin: 'local', load: loadBackendManifest },
+        { name: 'AgentMessage', origin: 'local', load: loadBackendManifest },
+        { name: 'VCPEverything', origin: 'local', load: loadBackendManifest },
+        { name: 'AnkiSearch', origin: 'local', load: loadBackendManifest },
+        { name: 'JapaneseHelper', origin: 'local', load: loadBackendManifest },
+        { name: 'LexibankOperator', origin: 'local', load: loadBackendManifest },
         // 前端分布式插件 (6个)
-        { manifest: loadFrontendManifest('WaitingForUrReply'), origin: 'cloud' },
-        { manifest: loadFrontendManifest('TableLampRemote'), origin: 'cloud' },
-        { manifest: loadFrontendManifest('TopicMemo'), origin: 'cloud' },
-        { manifest: loadFrontendManifest('DeepMemo'), origin: 'cloud' },
-        { manifest: loadFrontendManifest('TopicSponsor'), origin: 'cloud' },
-        { manifest: loadFrontendManifest('VCPEverything'), origin: 'cloud' }
+        { name: 'WaitingForUrReply', origin: 'cloud', load: loadFrontendManifest },
+        { name: 'TableLampRemote', origin: 'cloud', load: loadFrontendManifest },
+        { name: 'TopicMemo', origin: 'cloud', load: loadFrontendManifest },
+        { name: 'DeepMemo', origin: 'cloud', load: loadFrontendManifest },
+        { name: 'TopicSponsor', origin: 'cloud', load: loadFrontendManifest },
+        { name: 'VCPEverything', origin: 'cloud', load: loadFrontendManifest }
     ];
+    const missing = [];
+    const items = [];
+    for (const s of specs) {
+        const manifest = s.load(s.name);
+        if (!manifest) {
+            missing.push(`${s.name}(${s.origin})`);
+        } else {
+            items.push({ manifest, origin: s.origin });
+        }
+    }
+    if (missing.length > 0) {
+        t.skip(`[环境提示] 缺少可选插件 [${missing.join(', ')}]，当前环境优雅跳过`);
+        return;
+    }
 
+    const registry = new JevThirdPartyRegistry();
     const snapshot = registry.build(items);
     assert.equal(snapshot.total, items.length);
     assert.equal(snapshot.validCount, items.length);
@@ -613,8 +581,13 @@ test('Wave 2: 前后端便利操作与物联网控制插件全部通过校验且
 });
 
 test('Wave 2: 离线规划验证 WaitingForUrReply 桌面弹窗等待回复', async (t) => {
+    const manifest = loadFrontendManifest('WaitingForUrReply');
+    if (!manifest) {
+        t.skip('[环境提示] 缺少可选插件 [WaitingForUrReply]，当前环境优雅跳过');
+        return;
+    }
     const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadFrontendManifest('WaitingForUrReply'), origin: 'cloud' }]);
+    registry.build([{ manifest, origin: 'cloud' }]);
     const planner = new JevToolCallExp({
         configPath: CONFIG_PATH,
         decisionPromptPath: PROMPT_PATH,
@@ -630,8 +603,13 @@ test('Wave 2: 离线规划验证 WaitingForUrReply 桌面弹窗等待回复', as
 });
 
 test('Wave 2: 离线规划验证 TopicMemo 话题回忆与历史对话阅读', async (t) => {
+    const manifest = loadFrontendManifest('TopicMemo');
+    if (!manifest) {
+        t.skip('[环境提示] 缺少可选插件 [TopicMemo]，当前环境优雅跳过');
+        return;
+    }
     const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadFrontendManifest('TopicMemo'), origin: 'cloud' }]);
+    registry.build([{ manifest, origin: 'cloud' }]);
     const planner = new JevToolCallExp({
         configPath: CONFIG_PATH,
         decisionPromptPath: PROMPT_PATH,
@@ -650,8 +628,13 @@ test('Wave 2: 离线规划验证 TopicMemo 话题回忆与历史对话阅读', a
 });
 
 test('Wave 2: 离线规划验证 DeepMemo 跨话题深度回忆', async (t) => {
+    const manifest = loadFrontendManifest('DeepMemo');
+    if (!manifest) {
+        t.skip('[环境提示] 缺少可选插件 [DeepMemo]，当前环境优雅跳过');
+        return;
+    }
     const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadFrontendManifest('DeepMemo'), origin: 'cloud' }]);
+    registry.build([{ manifest, origin: 'cloud' }]);
     const planner = new JevToolCallExp({
         configPath: CONFIG_PATH,
         decisionPromptPath: PROMPT_PATH,
@@ -667,8 +650,13 @@ test('Wave 2: 离线规划验证 DeepMemo 跨话题深度回忆', async (t) => {
 });
 
 test('Wave 2: 离线规划验证 TopicSponsor 未读与未锁定话题查询', async (t) => {
+    const manifest = loadFrontendManifest('TopicSponsor');
+    if (!manifest) {
+        t.skip('[环境提示] 缺少可选插件 [TopicSponsor]，当前环境优雅跳过');
+        return;
+    }
     const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadFrontendManifest('TopicSponsor'), origin: 'cloud' }]);
+    registry.build([{ manifest, origin: 'cloud' }]);
     const planner = new JevToolCallExp({
         configPath: CONFIG_PATH,
         decisionPromptPath: PROMPT_PATH,
@@ -686,14 +674,9 @@ test('Wave 2: 离线规划验证 TopicSponsor 未读与未锁定话题查询', a
 });
 
 test('Wave 2: 离线规划验证 ScheduleManager 查看、新增与删除日程', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('ScheduleManager'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['ScheduleManager']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {便利操作} 中的 `ScheduleManager`，查看当前所有【日程列表】。');
     assert.equal(call1.name, 'ScheduleManager');
@@ -712,14 +695,9 @@ test('Wave 2: 离线规划验证 ScheduleManager 查看、新增与删除日程'
 });
 
 test('Wave 2: 离线规划验证 AgentMessage 桌面即时通知推送', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('AgentMessage'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['AgentMessage']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call] = await planner.plan('请使用 {便利操作} 中的 `AgentMessage`，推送桌面通知【主人，咖啡已经泡好了哦～】。');
     assert.equal(call.name, 'AgentMessage');
@@ -728,8 +706,13 @@ test('Wave 2: 离线规划验证 AgentMessage 桌面即时通知推送', async (
 });
 
 test('Wave 2: 离线规划验证 ServerSearchController 本地文件秒搜', async (t) => {
+    const manifest = loadBackendManifest('VCPEverything');
+    if (!manifest) {
+        t.skip('[环境提示] 缺少可选插件 [VCPEverything]，当前环境优雅跳过');
+        return;
+    }
     const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('VCPEverything'), origin: 'local' }]);
+    registry.build([{ manifest, origin: 'local' }]);
     const planner = new JevToolCallExp({
         configPath: CONFIG_PATH,
         decisionPromptPath: PROMPT_PATH,
@@ -745,14 +728,9 @@ test('Wave 2: 离线规划验证 ServerSearchController 本地文件秒搜', asy
 });
 
 test('Wave 2: 离线规划验证 AnkiSearch 卡片搜索与牌组统计', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('AnkiSearch'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['AnkiSearch']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {便利操作} 中的 `AnkiSearch`，查看所有【牌组列表】。');
     assert.equal(call1.name, 'AnkiSearch');
@@ -765,14 +743,9 @@ test('Wave 2: 离线规划验证 AnkiSearch 卡片搜索与牌组统计', async 
 });
 
 test('Wave 2: 离线规划验证 JapaneseHelper 日语查词与假名阅读辅助', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('JapaneseHelper'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['JapaneseHelper']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {便利操作} 中的 `JapaneseHelper`，查询日语单词【利害関係者】。');
     assert.equal(call1.name, 'JapaneseHelper');
@@ -787,14 +760,9 @@ test('Wave 2: 离线规划验证 JapaneseHelper 日语查词与假名阅读辅�
 });
 
 test('Wave 2: 离线规划验证 LexibankOperator 全球词源智能路由与概念检索', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('LexibankOperator'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['LexibankOperator']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {信息获取} 中的 `LexibankOperator`，进行词源追溯【日耳曼语系里 water 的同源词音变路径】[语系:Indo-European]。');
     assert.equal(call1.name, 'LexibankOperator');
@@ -815,24 +783,21 @@ test('Wave 2: 离线规划验证 LexibankOperator 全球词源智能路由与概
 // ----------------------------------------------------------------------
 
 test('Wave 3: 全部 9 个媒体娱乐与生活服务多模态插件通过注册表校验且有效', (t) => {
-    const registry = new JevThirdPartyRegistry();
-    const items = [
-        // 前端分布式插件 (1个)
-        { manifest: loadFrontendManifest('VCPSuperDice'), origin: 'cloud' },
-        // 后端插件 (8个)
-        { manifest: loadBackendManifest('Randomness'), origin: 'local' },
-        { manifest: loadBackendManifest('TarotDivination'), origin: 'local' },
-        { manifest: loadBackendManifest('DigitalOracle'), origin: 'local' },
-        { manifest: loadBackendManifest('BangumiOperator'), origin: 'local' },
-        { manifest: loadBackendManifest('NeteaseMusic'), origin: 'local' },
-        { manifest: loadBackendManifest('SunoGen'), origin: 'local' },
-        { manifest: loadBackendManifest('MimoDubbing'), origin: 'local' },
-        { manifest: loadBackendManifest('TomatoNovel'), origin: 'local' }
-    ];
-
-    const snapshot = registry.build(items);
-    assert.equal(snapshot.total, items.length);
-    assert.equal(snapshot.validCount, items.length);
+    const __env = makeEcosystemPlanner(t, [
+        'VCPSuperDice',
+        'Randomness',
+        'TarotDivination',
+        'DigitalOracle',
+        'BangumiOperator',
+        'NeteaseMusic',
+        'SunoGen',
+        'MimoDubbing',
+        'TomatoNovel'
+    ]);
+    if (!__env) return;
+    const { snapshot } = __env;
+    assert.equal(snapshot.total, 9);
+    assert.equal(snapshot.validCount, 9);
     assert.equal(snapshot.invalidCount, 0);
 
     for (const entry of snapshot.entries) {
@@ -845,14 +810,9 @@ test('Wave 3: 全部 9 个媒体娱乐与生活服务多模态插件通过注册
 });
 
 test('Wave 3: 离线规划验证 SuperDice 3D 物理骰子材质与魔法枚举裁决', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadFrontendManifest('VCPSuperDice'), origin: 'cloud' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['VCPSuperDice']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call] = await planner.plan('请使用 {媒体娱乐} 中的 `SuperDice`，投掷【2d6+1d20】并选用[宝石]材质、[月面慢落]魔法与[颜色:#8B5CF6]。');
     assert.equal(call.name, 'SuperDice');
@@ -864,14 +824,9 @@ test('Wave 3: 离线规划验证 SuperDice 3D 物理骰子材质与魔法枚举�
 });
 
 test('Wave 3: 离线规划验证 Randomness TRPG 掷骰、塔罗与卢恩符文三命令路由', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('Randomness'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['Randomness']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {媒体娱乐} 中的 `Randomness`，执行跑团掷骰【(2d8+1d6)kh2+5】。');
     assert.equal(call1.name, 'Randomness');
@@ -885,14 +840,9 @@ test('Wave 3: 离线规划验证 Randomness TRPG 掷骰、塔罗与卢恩符文�
 });
 
 test('Wave 3: 离线规划验证 TarotDivination 牌阵与日月星三起源枚举裁决', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('TarotDivination'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['TarotDivination']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {媒体娱乐} 中的 `TarotDivination`，以[星起源]进行一次[三牌阵]塔罗占卜[检定数:77]。');
     assert.equal(call1.name, 'TarotDivination');
@@ -907,14 +857,9 @@ test('Wave 3: 离线规划验证 TarotDivination 牌阵与日月星三起源枚�
 });
 
 test('Wave 3: 离线规划验证 DigitalOracle 全球金融宏观看板与定向信源抓取', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('DigitalOracle'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['DigitalOracle']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {生活服务} 中的 `DigitalOracle`，拉取【全球金融监控面板】。');
     assert.equal(call1.name, 'DigitalOracle');
@@ -928,14 +873,9 @@ test('Wave 3: 离线规划验证 DigitalOracle 全球金融宏观看板与定向
 });
 
 test('Wave 3: 离线规划验证 BangumiOperator 每日放送表与番剧角色搜索', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('BangumiOperator'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['BangumiOperator']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {媒体娱乐} 中的 `BangumiOperator`，查看【每日放送】新番时间表。');
     assert.equal(call1.name, 'BangumiOperator');
@@ -955,14 +895,9 @@ test('Wave 3: 离线规划验证 BangumiOperator 每日放送表与番剧角色�
 });
 
 test('Wave 3: 离线规划验证 NeteaseMusic 搜歌与每日推荐', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('NeteaseMusic'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['NeteaseMusic']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {媒体娱乐} 中的 `NeteaseMusic`，[搜索歌曲]【晴天 周杰伦】。');
     assert.equal(call1.name, 'NeteaseMusic');
@@ -975,14 +910,9 @@ test('Wave 3: 离线规划验证 NeteaseMusic 搜歌与每日推荐', async (t) 
 });
 
 test('Wave 3: 离线规划验证 SunoGen AI 作曲与纯音乐伴奏布尔裁决', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('SunoGen'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['SunoGen']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call] = await planner.plan('请使用 {媒体娱乐} 中的 `SunoGen`，创作【一首关于星空与数学梦想的安静钢琴曲】[纯音乐][v4]。');
     assert.equal(call.name, 'SunoGen');
@@ -993,14 +923,9 @@ test('Wave 3: 离线规划验证 SunoGen AI 作曲与纯音乐伴奏布尔裁决
 });
 
 test('Wave 3: 离线规划验证 MimoDubbing 多声线语音合成与状态查询', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('MimoDubbing'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['MimoDubbing']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {媒体娱乐} 中的 `MimoDubbing`，用[冰糖]音色配音【你终于来了，我等你好久了！】[指导:欣喜轻快]。');
     assert.equal(call1.name, 'MimoDubbing');
@@ -1016,14 +941,9 @@ test('Wave 3: 离线规划验证 MimoDubbing 多声线语音合成与状态查�
 });
 
 test('Wave 3: 离线规划验证 TomatoNovel 搜书与大纲提取', async (t) => {
-    const registry = new JevThirdPartyRegistry();
-    registry.build([{ manifest: loadBackendManifest('TomatoNovel'), origin: 'local' }]);
-    const planner = new JevToolCallExp({
-        configPath: CONFIG_PATH,
-        decisionPromptPath: PROMPT_PATH,
-        thirdPartyRegistry: registry,
-        env: { JEV_THIRD_PARTY_EXP: 'true' }
-    });
+    const __env = makeEcosystemPlanner(t, ['TomatoNovel']);
+    if (!__env) return;
+    const { planner } = __env;
 
     const [call1] = await planner.plan('请使用 {媒体娱乐} 中的 `TomatoNovel`，[搜书]【十日终焉】。');
     assert.equal(call1.name, 'TomatoNovel');
@@ -1035,7 +955,6 @@ test('Wave 3: 离线规划验证 TomatoNovel 搜书与大纲提取', async (t) =
     assert.equal(call2.args.action, 'download_intro');
     assert.equal(call2.args.query, '7580018670118652952');
 });
-
 
 // ----------------------------------------------------------------------
 // 来源测试: tests/jevWave4Ecosystem.test.js
