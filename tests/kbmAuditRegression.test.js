@@ -232,3 +232,58 @@ test('Memo unavailability degrades to scoped KNN but unrelated errors remain vis
         }), /database corrupt/);
     }
 });
+
+test('Tag-only repair embeds missing Tags without replacing complete stored chunks', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kbm-tag-only-'));
+    const file = path.join(root, 'repair.txt');
+    const content = 'existing body';
+    await fs.writeFile(file, content);
+    const checksum = require('node:crypto').createHash('md5').update(content).digest('hex');
+    const embedded = [];
+    embed = async texts => {
+        embedded.push(...texts);
+        return texts.map(() => [1, 0]);
+    };
+    const owner = {
+        config: { rootPath: root, dimension: 2, modelSig: 'test', maxBatchSize: 50 },
+        pendingFiles: new Set([file]), watcherPathGenerations: new Map(),
+        fileRetryCount: new Map(), diaryIndices: new Map(),
+        probeIngestionFiles: async () => [{
+            path: 'repair.txt', exists: true, checksum, size: Buffer.byteLength(content),
+            completeVectors: true, chunkCount: 1, validVectorCount: 1,
+            completeTags: false, version: 3
+        }],
+        prepareIngestionText: async () => ({ chunks: [content], tags: ['good', 'missing'] }),
+        probeMigrationReuse: async requests => {
+            assert.deepEqual(requests, []);
+            return [];
+        },
+        probeIngestionTags: async () => [
+            { name: 'good', hasVector: true }, { name: 'missing', hasVector: false }
+        ],
+        _prepareTextForEmbedding: text => text,
+        _isSqliteBusyError: () => false, _isSqliteCorruptionError: () => false,
+        invalidateDiaryDateIndex() {},
+        async commitIngestionBatch(plan, chunks, tags) {
+            owner._shuttingDown = true;
+            assert.equal(plan.files[0].tagsOnly, true);
+            assert.equal(plan.files[0].expectedVersion, 3);
+            assert.equal(plan.files[0].chunkCount, 0);
+            assert.deepEqual(plan.chunks, []);
+            assert.equal(chunks.length, 0);
+            assert.equal(tags.length, 2);
+            assert.equal(plan.tags[0].vectorSlot, null);
+            assert.equal(plan.tags[1].vectorSlot, 0);
+            return { indexReady: true };
+        }
+    };
+    try {
+        await new IngestionPipeline(owner)._flushBatch();
+        assert.deepEqual(embedded, ['missing']);
+        assert.equal(owner.pendingFiles.size, 0);
+        assert.equal(owner.fileRetryCount.size, 0);
+    } finally {
+        owner._shuttingDown = true;
+        await fs.rm(root, { recursive: true, force: true });
+    }
+});

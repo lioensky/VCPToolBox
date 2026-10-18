@@ -186,6 +186,9 @@ async _flushBatch() {
                         checksum,
                         mtime: stats.mtimeMs,
                         size: stats.size,
+                        tagsOnly: row?.exists === true && row.checksum === checksum
+                            && storedSize === stats.size && row.completeVectors === true
+                            && row.chunkCount === row.validVectorCount && row.completeTags !== true,
                         chunks: prepared.chunks,
                         tags: prepared.tags,
                         textRulesVersion: prepared.rulesVersion
@@ -217,7 +220,7 @@ async _flushBatch() {
 
             for (const [, docs] of docsByDiary) {
                 docs.forEach(doc => {
-                    migrationRequests.push({
+                    if (!doc.tagsOnly) migrationRequests.push({
                         path: doc.relPath,
                         checksum: doc.checksum,
                         size: doc.size,
@@ -238,6 +241,7 @@ async _flushBatch() {
 
             for (const [dName, docs] of docsByDiary) {
                 docs.forEach(doc => {
+                    if (doc.tagsOnly) return;
                     const candidate = this._migrationEmbeddingFallbacks?.has(doc.relPath)
                         ? null : migrationByPath.get(doc.relPath);
                     if (candidate) {
@@ -405,7 +409,7 @@ async _flushBatch() {
                     const chunkStart = planChunks.length;
                     const tagStart = planTags.length;
 
-                    doc.chunks.forEach((text, chunkIndex) => {
+                    (doc.tagsOnly ? [] : doc.chunks).forEach((text, chunkIndex) => {
                         const meta = metaMap.get(`${doc.relPath}:${chunkIndex}`);
                         const source = meta?.vector;
                         let vectorSlot = null;
@@ -446,7 +450,8 @@ async _flushBatch() {
                         ),
                         size: Math.floor(Number(doc.size) || 0),
                         chunkStart,
-                        chunkCount: doc.chunks.length,
+                        chunkCount: doc.tagsOnly ? 0 : doc.chunks.length,
+                        tagsOnly: doc.tagsOnly === true,
                         tagStart,
                         tagCount: doc.tags.length,
                         migrationCacheId: doc.migrationCacheId || null,

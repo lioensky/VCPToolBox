@@ -471,6 +471,8 @@ pub(crate) struct PlannedFile {
     pub(crate) chunk_count: usize,
     pub(crate) tag_start: usize,
     pub(crate) tag_count: usize,
+    #[serde(default)]
+    pub(crate) tags_only: bool,
     pub(crate) migration_cache_id: Option<i64>,
     pub(crate) migration_source_file_id: Option<i64>,
 }
@@ -582,8 +584,8 @@ impl Task for IngestionCommitTask {
             .ok_or_else(|| Error::from_reason("Ingestion commit completed without details"))?;
 
         let affected_scopes = details
-            .affected_diaries
-            .iter()
+            .diary_index_deltas
+            .keys()
             .map(|diary| format!("diary:{}", diary))
             .chain(
                 (!details.new_tag_ids.is_empty())
@@ -1269,6 +1271,21 @@ fn commit_plan(
     let mut reuse_by_path = HashMap::new();
     let mut retryable_files = Vec::new();
     for file in &plan.files {
+        if file.tags_only {
+            let valid: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM files f WHERE f.path=?1 AND f.checksum=?2 AND f.size=?3
+                   AND f.diary_name=?4
+                   AND EXISTS(SELECT 1 FROM chunks c WHERE c.file_id=f.id)
+                   AND NOT EXISTS(SELECT 1 FROM chunks c WHERE c.file_id=f.id
+                       AND (c.vector IS NULL OR length(c.vector)!=?5)))",
+                params![file.path, file.checksum, file.size, file.diary_name, (plan.dimension*4) as i64],
+                |row| row.get(0),
+            ).map_err(|error| error.to_string())?;
+            if !valid || file.chunk_count != 0
+                || file.migration_cache_id.is_some() || file.migration_source_file_id.is_some() {
+                return Err("KNOWLEDGE_STORE_FILE_VERSION_CONFLICT: Tag-only source changed".to_string());
+            }
+        }
         if file.migration_source_file_id.is_none() && file.migration_cache_id.is_none() {
             continue;
         }
@@ -1367,10 +1384,10 @@ fn commit_plan(
 
         let file_id = if let Some((id, old_diary)) = existing {
             let mut old_chunks = tx
-                .prepare("SELECT id FROM chunks WHERE file_id = ?1 ORDER BY id")
+                .prepare("SELECT id FROM chunks WHERE file_id = ?1 AND ?2=0 ORDER BY id")
                 .map_err(|error| format!("prepare old chunk lookup failed: {}", error))?;
             let rows = old_chunks
-                .query_map([id], |row| row.get::<_, i64>(0))
+                .query_map(params![id, file.tags_only as i64], |row| row.get::<_, i64>(0))
                 .map_err(|error| format!("query old chunks failed: {}", error))?;
             for row in rows {
                 let old_chunk_id =
@@ -1385,8 +1402,10 @@ fn commit_plan(
 
             tx.execute("DELETE FROM file_tags WHERE file_id = ?1", [id])
                 .map_err(|error| format!("delete old file tags failed: {}", error))?;
-            tx.execute("DELETE FROM chunks WHERE file_id = ?1", [id])
-                .map_err(|error| format!("delete old chunks failed: {}", error))?;
+            if !file.tags_only {
+                tx.execute("DELETE FROM chunks WHERE file_id = ?1", [id])
+                    .map_err(|error| format!("delete old chunks failed: {}", error))?;
+            }
             tx.execute(
                 "UPDATE files SET diary_name=?1, checksum=?2, mtime=?3, size=?4, updated_at=?5 WHERE id=?6",
                 params![
@@ -1531,8 +1550,8 @@ fn commit_plan(
     };
 
     for scope in details
-        .affected_diaries
-        .iter()
+        .diary_index_deltas
+        .keys()
         .map(|diary| format!("diary:{}", diary))
         .chain(
             (!details.new_tag_ids.is_empty())
@@ -2217,6 +2236,7 @@ mod receipt_protocol_tests {
             path: "never-indexed.txt".to_string(), diary_name: "Root".to_string(),
             checksum: "old".to_string(), mtime: 0, expected_version: 0, size: 1,
             chunk_start: 0, chunk_count: 0, tag_start: 0, tag_count: 0,
+            tags_only: false,
             migration_cache_id: None, migration_source_file_id: None,
         });
         let error = storage.submit_write(move |tx| {
@@ -2512,6 +2532,77 @@ mod migration_source_tests {
             assert_eq!(count, 0);
             Ok(())
         }).unwrap();
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod tag_only_tests {
+    use super::*;
+
+    #[test]
+    fn tag_repair_preserves_chunks_and_diary_readiness_and_rejects_stale_source() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-tag-only-{}-{}", std::process::id(), current_time_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute_batch(
+                "INSERT INTO files(id,path,diary_name,checksum,mtime,size)
+                 VALUES (1,'repair.txt','Root','same',1,10);
+                 INSERT INTO tags(id,name) VALUES (1,'missing');
+                 INSERT INTO file_tags VALUES (1,1,1);
+                 INSERT INTO kbm_index_states VALUES ('diary:Root','ready',1,1,NULL,0);"
+            ).map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO chunks(id,file_id,chunk_index,content,vector) VALUES (42,1,0,'body',?1)",
+                [vector_bytes(&[1.0,0.0], 0, 2)],
+            ).map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let tags = crate::VexusIndex::new(2, 16).unwrap();
+        let mut plan = serde_json::json!({
+            "operationId":"tag-only", "batchId":"tag-only", "dimension":2, "modelSig":"test",
+            "files":[{"path":"repair.txt","diaryName":"Root","checksum":"same","mtime":1,"size":10,
+                "expectedVersion":0,"chunkStart":0,"chunkCount":0,"tagStart":0,"tagCount":1,
+                "tagsOnly":true}],
+            "chunks":[], "tags":[{"name":"missing","position":1,"vectorSlot":0}]
+        });
+        let mut task = IngestionCommitTask {
+            db_path: db.clone(), plan_json: plan.to_string(),
+            chunk_vectors: vec![], tag_vectors: vec![0.0,1.0],
+            diary_indices: HashMap::new(), global_tag_index: tags.index.clone(),
+            global_tag_content_revision: tags.content_revision.clone(),
+            diary_revisions: HashMap::new(), memo_runtime: tags.memo_runtime.clone(),
+        };
+        let receipt: serde_json::Value = serde_json::from_str(&task.compute().unwrap()).unwrap();
+        assert_eq!(receipt["indexReady"], true);
+        assert_eq!(receipt["removedChunkIds"], serde_json::json!([]));
+        assert_eq!(receipt["upsertedChunkIds"], serde_json::json!([]));
+        storage.read(|connection| {
+            let chunk: (i64,String,Vec<u8>) = connection.query_row(
+                "SELECT id,content,vector FROM chunks WHERE file_id=1", [],
+                |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+            ).map_err(|error| error.to_string())?;
+            assert_eq!(chunk, (42,"body".into(),vector_bytes(&[1.0,0.0],0,2)));
+            let state: (String,i64,i64) = connection.query_row(
+                "SELECT state,facts_generation,applied_generation FROM kbm_index_states WHERE scope='diary:Root'",
+                [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+            ).map_err(|error| error.to_string())?;
+            assert_eq!(state, ("ready".into(),1,1));
+            Ok(())
+        }).unwrap();
+        plan["operationId"] = serde_json::json!("stale");
+        plan["files"][0]["expectedVersion"] = serde_json::json!(1);
+        plan["files"][0]["checksum"] = serde_json::json!("changed");
+        task.plan_json = plan.to_string();
+        assert!(task.compute().unwrap_err().reason.contains("FILE_VERSION_CONFLICT"));
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
