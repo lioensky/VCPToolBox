@@ -597,6 +597,15 @@ impl MemoRuntime {
     }
 }
 
+fn decode_provenance_row(row: &Value) -> Option<(i64, f64)> {
+    let values = row.as_array()?;
+    let mass_index = if values.len() == 2 { 1 } else if values.len() >= 4 { 3 } else { return None };
+    let file_id = values[0].as_i64()?;
+    let mass = values[mass_index].as_f64()?;
+    if file_id <= 0 || !mass.is_finite() || mass < 0.0 { return None; }
+    Some((file_id, mass))
+}
+
 fn decode_artifact(
     connection: &Connection,
     artifact_sig: &str,
@@ -810,15 +819,8 @@ fn decode_artifact(
             let mut contributions = Vec::new();
             if let Some(rows) = parts[1].as_array() {
                 for row in rows {
-                    let Some(values) = row.as_array() else {
-                        continue;
-                    };
-                    if values.len() >= 4 {
-                        if let (Some(file_id), Some(mass)) =
-                            (values[0].as_i64(), values[3].as_f64())
-                        {
-                            contributions.push((file_id, positive(mass)));
-                        }
+                    if let Some(contribution) = decode_provenance_row(row) {
+                        contributions.push(contribution);
                     }
                 }
             }
@@ -2921,4 +2923,21 @@ pub(crate) fn rerank_with_runtime(
         artifact_sig,
         input_json,
     }))
+}
+
+
+#[cfg(test)]
+mod provenance_codec_tests {
+    use super::*;
+
+    #[test]
+    fn compact_and_legacy_contributions_have_identical_meaning() {
+        assert_eq!(decode_provenance_row(&serde_json::json!([7, 0.35])),
+            decode_provenance_row(&serde_json::json!([7, "diary", "path", 0.35])));
+        assert_eq!(decode_provenance_row(&serde_json::json!([7, 0.35])), Some((7, 0.35)));
+        for invalid in [serde_json::json!([7]), serde_json::json!([7, "x"]),
+            serde_json::json!([0, 0.3]), serde_json::json!([7, -0.3])] {
+            assert!(decode_provenance_row(&invalid).is_none());
+        }
+    }
 }

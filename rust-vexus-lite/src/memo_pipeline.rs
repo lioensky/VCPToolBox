@@ -13,7 +13,7 @@ use std::time::Instant;
 use usearch::Index;
 
 const PIPELINE_SCHEMA: &str = "vexus-unified-memo-pipeline-v1";
-const PIPELINE_ALGORITHM: &str = "tagmemo.epa-pyramid-spike-fusion-v9.3-rust";
+const PIPELINE_ALGORITHM: &str = "tagmemo.epa-pyramid-spike-fusion-v9.4-calibrated-rust";
 
 fn positive(value: f64) -> f64 {
     if value.is_finite() {
@@ -123,6 +123,7 @@ struct PipelineConfig {
     max_emergent_nodes: usize,
     tech_tag_threshold: f64,
     normal_tag_threshold: f64,
+    epa_gate_mode: String,
     #[serde(default)]
     spike_routing: SenseConfig,
 }
@@ -154,6 +155,7 @@ impl Default for PipelineConfig {
             max_emergent_nodes: 50,
             tech_tag_threshold: 0.08,
             normal_tag_threshold: 0.015,
+            epa_gate_mode: "backgroundRelative".into(),
             spike_routing: SenseConfig::default(),
         }
     }
@@ -170,6 +172,8 @@ struct EpaCache {
     labels: Vec<String>,
     #[serde(default = "default_k_sem")]
     k_sem: usize,
+    #[serde(default)]
+    coverage: Vec<f64>,
 }
 
 fn default_k_sem() -> usize { 8 }
@@ -205,6 +209,9 @@ struct EpaOutput {
     cache_available: bool,
     out_of_domain: f64,
     semantic_explained_ratio: f64,
+    in_domain_gate: f64,
+    baseline_coverage: f64,
+    background_ratio: f64,
 }
 
 fn decode_f32_base64(encoded: &str, dimension: usize) -> Option<Vec<f32>> {
@@ -222,7 +229,26 @@ fn decode_f32_base64(encoded: &str, dimension: usize) -> Option<Vec<f32>> {
     )
 }
 
+#[cfg(test)]
 fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaOutput {
+    analyze_epa_with_mode(connection, query, dimension, "absolute")
+}
+
+/// Background is the ratio of expected energies for an isotropic unit query after
+/// subtracting the same mean. It is a calibration reference, not an OOD probability.
+fn calibrated_gate(ratio: f64, baseline: f64, background: f64, mode: &str) -> f64 {
+    match mode {
+        "relativeLinear" => clamp01(ratio / baseline),
+        "relativeSqrt" => clamp01((ratio / baseline).max(0.0).sqrt()),
+        "backgroundRelative" => {
+            if baseline <= background + 1e-8 { 0.0 }
+            else { clamp01((ratio-background)/(baseline-background)) }
+        },
+        _ => clamp01(ratio),
+    }
+}
+
+fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usize, mode: &str) -> EpaOutput {
     let empty = || EpaOutput {
         logic_depth: 0.0,
         entropy: 1.0,
@@ -233,6 +259,9 @@ fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaO
         cache_available: false,
         out_of_domain: 1.0,
         semantic_explained_ratio: 0.0,
+        in_domain_gate: 0.0,
+        baseline_coverage: 0.0,
+        background_ratio: 0.0,
     };
     let raw = match connection.query_row(
         "SELECT value FROM kv_store WHERE key = 'epa_basis_cache'",
@@ -271,6 +300,14 @@ fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaO
     let semantic_explained_ratio = if centered_energy > 1e-12 {
         clamp01(total_energy / centered_energy)
     } else { 0.0 };
+    let baseline_coverage=cache.coverage.get(semantic_count.saturating_sub(1)).copied()
+        .filter(|v|v.is_finite() && *v>0.0 && *v<=1.0)
+        .unwrap_or(semantic_count as f64/dimension.max(1) as f64).max(1e-4);
+    let mean_captured=bases.iter().take(semantic_count).map(|b|dot(&mean,b).powi(2)).sum::<f64>();
+    let background_ratio=clamp01((semantic_count as f64/dimension.max(1) as f64+mean_captured)
+        /(1.0+dot(&mean,&mean)));
+    let in_domain_gate=if semantic_count==0 || centered_energy<=1e-12 {0.0}
+        else {calibrated_gate(semantic_explained_ratio,baseline_coverage,background_ratio,mode)};
     let probabilities: Vec<f64> = projections
         .iter().take(semantic_count)
         .map(|value| if total_energy > 1e-12 { value * value / total_energy } else { 0.0 })
@@ -331,7 +368,7 @@ fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaO
     let resonance = bridges.iter().map(|bridge| bridge.strength).sum();
 
     EpaOutput {
-        logic_depth: (1.0 - normalized_entropy) * semantic_explained_ratio,
+        logic_depth: (1.0 - normalized_entropy) * in_domain_gate,
         entropy: normalized_entropy,
         resonance,
         dominant_axes,
@@ -340,6 +377,9 @@ fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaO
         cache_available: true,
         out_of_domain,
         semantic_explained_ratio,
+        in_domain_gate,
+        baseline_coverage,
+        background_ratio,
     }
 }
 
@@ -1350,7 +1390,10 @@ fn run_pipeline_with_connection(
         ghost.vector = ghost_vectors[start..start + dimensions].to_vec();
     }
     let epa_started = Instant::now();
-    let epa = analyze_epa(&connection, &input.query_vector, dimensions);
+    if !["absolute","relativeLinear","relativeSqrt","backgroundRelative"].contains(&input.config.epa_gate_mode.as_str()) {
+        return Err("Invalid epaGateMode".into());
+    }
+    let epa = analyze_epa_with_mode(&connection, &input.query_vector, dimensions, &input.config.epa_gate_mode);
     let epa_ms = epa_started.elapsed().as_secs_f64() * 1000.0;
 
     let pyramid_started = Instant::now();
@@ -1653,6 +1696,35 @@ mod geometry_epa_tests {
     fn encoded(values: &[f32]) -> String {
         let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
         base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn calibrated_gates_preserve_scale_and_reject_background() {
+        assert_eq!(calibrated_gate(0.07,0.07,0.02,"relativeLinear"),1.0);
+        assert_eq!(calibrated_gate(0.07,0.07,0.02,"backgroundRelative"),1.0);
+        assert_eq!(calibrated_gate(0.02,0.07,0.02,"backgroundRelative"),0.0);
+        assert_eq!(calibrated_gate(0.01,0.07,0.02,"backgroundRelative"),0.0);
+        assert_eq!(calibrated_gate(0.1,0.01,0.02,"backgroundRelative"),0.0);
+        assert!((calibrated_gate(0.025,0.1,0.0,"relativeSqrt")-0.5).abs()<1e-12);
+    }
+
+    #[test]
+    fn cached_coverage_calibrates_prefix_without_tail_backing() {
+        let connection=Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE kv_store(key TEXT PRIMARY KEY,value TEXT);").unwrap();
+        let cache=serde_json::json!({
+            "mean":encoded(&[0.0,0.0,0.0,0.0]),
+            "basis":[encoded(&[1.0,0.0,0.0,0.0])],
+            "coverage":[0.75],"kSem":1
+        });
+        connection.execute("INSERT INTO kv_store VALUES ('epa_basis_cache',?1)",[cache.to_string()]).unwrap();
+        let inside=analyze_epa_with_mode(&connection,&[1.0,0.0,0.0,0.0],4,"backgroundRelative");
+        assert_eq!(inside.baseline_coverage,0.75);
+        assert_eq!(inside.background_ratio,0.25);
+        assert_eq!(inside.logic_depth,1.0);
+        let background=analyze_epa_with_mode(&connection,&[0.5,0.8660254,0.0,0.0],4,"backgroundRelative");
+        assert!(background.logic_depth<1e-6);
+        assert_eq!(PipelineConfig::default().epa_gate_mode,"backgroundRelative");
     }
 
     #[test]

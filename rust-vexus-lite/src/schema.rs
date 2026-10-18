@@ -237,8 +237,6 @@ CREATE INDEX IF NOT EXISTS idx_chunk_baseline_entries
     ON chunk_index_baseline_entries(diary_name,generation);
 CREATE INDEX IF NOT EXISTS idx_tag_baseline_entries
     ON tag_index_baseline_entries(generation);
-CREATE INDEX IF NOT EXISTS idx_intrinsic_residual_artifact
-    ON tag_intrinsic_residuals(artifact_sig);
 CREATE INDEX IF NOT EXISTS idx_intrinsic_residual_model
     ON tag_intrinsic_residuals(model_sig);
 CREATE INDEX IF NOT EXISTS idx_intrinsic_status_artifact
@@ -279,7 +277,8 @@ fn migrate_geometry(connection: &Connection) -> Result<(), String> {
         }
     }
     connection.execute_batch(
-        "DROP TABLE IF EXISTS tag_pair_similarity_status;
+        "DROP INDEX IF EXISTS idx_intrinsic_residual_artifact;
+         DROP TABLE IF EXISTS tag_pair_similarity_status;
          DROP TABLE IF EXISTS tag_pair_similarity;
          DELETE FROM kv_store WHERE key='tagmemo_pairwise_fact_generation';
          DELETE FROM kbm_runtime_meta WHERE key IN ('derived_pairwise','derived_intrinsic','derived_epa');
@@ -507,7 +506,9 @@ mod geometry_migration_tests {
         let before: String = conn.query_row(
             "SELECT value FROM kbm_runtime_meta WHERE key='derived_geometry'", [], |r| r.get(0),
         ).unwrap();
+        conn.execute_batch("CREATE INDEX idx_intrinsic_residual_artifact ON tag_intrinsic_residuals(artifact_sig);").unwrap();
         initialize_schema(&conn, 2).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='idx_intrinsic_residual_artifact'", [], |r|r.get::<_,i64>(0)).unwrap(),0);
         let after: String = conn.query_row(
             "SELECT value FROM kbm_runtime_meta WHERE key='derived_geometry'", [], |r| r.get(0),
         ).unwrap();

@@ -19,8 +19,8 @@ async function main() {
     const db = path.resolve(process.argv[2] || '');
     const reportPath = process.argv[3] && path.resolve(process.argv[3]);
     const round = process.argv[4] || 'round2';
-    const selectedMix = Number(process.argv[5] || '0.5');
-    assert(['round1', 'round2'].includes(round));
+    const selectedMix = Number(process.argv[5] || '0.8');
+    assert(['round1', 'round2', 'stage3'].includes(round));
     assert(Number.isFinite(selectedMix) && selectedMix >= 0 && selectedMix <= 1);
     if (!process.argv[2] || !path.basename(db).startsWith('ags-benchmark-')) {
         throw new Error('Refusing non-benchmark database; filename must start with ags-benchmark-');
@@ -48,6 +48,13 @@ async function main() {
         return seed / 0x100000000 - 0.5;
     });
     const outsideProbe = normalize(random);
+    const backgroundQueries = [outsideProbe];
+    for (let i = 1; i < 24; i++) {
+        backgroundQueries.push(normalize(Array.from({ length: dim }, () => {
+            seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+            return seed / 0x100000000 - 0.5;
+        })));
+    }
     reader.close();
     reader = null;
     const index = new VexusIndex(dim, tagCount + 16);
@@ -79,6 +86,7 @@ async function main() {
             ['selected-repeat1', { candidateMode: 'star', priorMode: 'support', starMix: selectedMix, kneeDelta: 0 }],
             ['selected-repeat2', { candidateMode: 'star', priorMode: 'support', starMix: selectedMix, kneeDelta: 0 }],
         ];
+        if (round === 'stage3') cases.splice(1);
         for (const [name, override] of cases) {
             const geometryConfig = structuredClone(config.geometry);
             Object.assign(geometryConfig.global, override);
@@ -123,22 +131,52 @@ async function main() {
             assert(cache.fullCoverage.every((c, i, all) => c >= 0 && c <= 1 && (!i || c >= all[i - 1])));
             entry.artifact = await index.rebuildMemoArtifact(db,
                 JSON.stringify({ modelSig: 'ags-benchmark-model', effectiveConfig: config }));
-            const analyze = async (query, id) => {
+            const analyze = async (query, id, epaGateMode = 'absolute') => {
                 const pipeline = await index.runMemoPipeline(db, entry.artifact.artifactSig,
-                    JSON.stringify({ queryId: id, config: { maxLevels: 1 } }), query, new Float32Array());
+                    JSON.stringify({ queryId: id, config: { maxLevels: 1, epaGateMode } }), query, new Float32Array());
                 const { epa, effectiveTagBoost } = JSON.parse(pipeline.metadataJson);
                 assert.equal(epa.cacheAvailable, true);
-                assert(epa.logicDepth <= epa.semanticExplainedRatio + 1e-9);
+                assert(epa.logicDepth <= epa.inDomainGate + 1e-9);
                 return { outOfDomain: epa.outOfDomain, entropy: epa.entropy,
                     logicDepth: epa.logicDepth, semanticExplainedRatio: epa.semanticExplainedRatio,
-                    effectiveTagBoost };
+                    inDomainGate: epa.inDomainGate, baselineCoverage: epa.baselineCoverage,
+                    backgroundRatio: epa.backgroundRatio, effectiveTagBoost };
             };
             entry.queryProbes = [];
             for (let i = 0; i < queries.length; i++) entry.queryProbes.push(await analyze(queries[i], `probe-${i}`));
             entry.queryMean = Object.fromEntries(Object.keys(entry.queryProbes[0]).map(
                 key => [key, average(entry.queryProbes.map(v => v[key]))]));
             entry.randomProbe = await analyze(outsideProbe, 'random-probe');
-            if (round === 'round2') {
+            if (round === 'stage3') {
+                entry.calibration = {};
+                const summarize = probes => {
+                    const stats = {};
+                    for (const key of Object.keys(probes[0])) {
+                        const values = probes.map(p => p[key]).sort((a,b) => a-b);
+                        stats[key] = { min: values[0], mean: average(values),
+                            median: values[Math.floor(values.length / 2)], max: values.at(-1) };
+                    }
+                    stats.floorFraction = probes.filter(p => p.effectiveTagBoost <= 0.18 + 1e-9).length / probes.length;
+                    stats.logicBelowPointOne = probes.filter(p => p.logicDepth < 0.1).length / probes.length;
+                    return stats;
+                };
+                for (const mode of ['absolute', 'relativeLinear', 'relativeSqrt', 'backgroundRelative']) {
+                    const inside = [], outside = [];
+                    for (let i=0;i<queries.length;i++) inside.push(await analyze(queries[i], `inside-${i}`, mode));
+                    for (let i=0;i<backgroundQueries.length;i++) outside.push(await analyze(backgroundQueries[i], `outside-${i}`, mode));
+                    entry.calibration[mode] = { inside: summarize(inside), outside: summarize(outside), insideProbes: inside, outsideProbes: outside };
+                    console.log(`gate=${mode}: insideDepth=${average(inside.map(p=>p.logicDepth)).toFixed(4)} outsideMax=${Math.max(...outside.map(p=>p.logicDepth)).toFixed(4)} floor=${entry.calibration[mode].inside.floorFraction}`);
+                }
+                const hot = await analyze(queries[0], 'cold-check');
+                index.clearMemoRuntime();
+                const coldStarted=performance.now();
+                const cold = await analyze(queries[0], 'cold-check');
+                entry.coldPipelineMs=performance.now()-coldStarted;
+                assert.deepEqual(cold,hot);
+                entry.coldReloadIdentical=true;
+                assert.equal(reader.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name='idx_intrinsic_residual_artifact'").get().n,0);
+            }
+            if (round === 'round2' || round === 'stage3') {
                 const second = await index.rebuildMemoArtifact(db,
                     JSON.stringify({ modelSig: 'ags-benchmark-model', effectiveConfig: config }));
                 assert.equal(second.graphGeneration, entry.artifact.graphGeneration);

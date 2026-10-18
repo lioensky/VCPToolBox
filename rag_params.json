@@ -353,6 +353,7 @@
       "semanticGainLowSimFallback": 0.1,
       "reverseInversionGuard": 0.9
     },
+    "epaGateMode": "backgroundRelative",
     "activationMultiplier": [
       0.5,
       1.5

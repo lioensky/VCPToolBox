@@ -480,17 +480,24 @@ impl GeometryTask {
         let low=number(anchor,"min",number(local,"v9AnchorMin",0.5,0.0,4.0),0.0,4.0);
         let high=number(anchor,"max",number(local,"v9AnchorMax",2.0,0.0,8.0),0.0,8.0);
         before_publish();
+        let publication_started=Instant::now();
         let _gate=crate::publication_gate::acquire(&self.db_path,&["*".into()])?;
         // Keep index readers held through writer commit, excluding direct index mutations.
         let _index_guard=self.index.read().map_err(|e|e.to_string())?;
         if self.content_revision.load(Ordering::Acquire)!=rev0 { return Err("revision_conflict".into()); }
         let sig=signature.clone(); let model=self.model_sig.clone(); let cfg=self.config_json.clone();
         let cfg_hash=config_hash.clone(); let revision=self.content_revision.clone();
+        let gate_ms=publication_started.elapsed().as_secs_f64()*1000.0;
+        let timings=Arc::new(std::sync::Mutex::new([0.0f64;3]));
+        let write_timings=timings.clone();
         with_registered_write(&self.db_path,move |tx| {
             if revision.load(Ordering::Acquire)!=rev0 { return Err("revision_conflict".into()); }
             storage::ensure_generation(tx,generation)?; dependencies.ensure_current(tx)?;
+            let delete_started=Instant::now();
             tx.execute_batch("DELETE FROM tag_intrinsic_residuals; DELETE FROM tag_intrinsic_residual_status;")
                 .map_err(|e|e.to_string())?;
+            let delete_ms=delete_started.elapsed().as_secs_f64()*1000.0;
+            let insert_started=Instant::now();
             {
                 let mut values=tx.prepare_cached("INSERT INTO tag_intrinsic_residuals
                     (tag_id,residual_energy,neighbor_count,raw_residual_ratio,v8_3_compat_gain,v9_anchor_gain,model_sig,artifact_sig,algorithm_version,config_hash,status)
@@ -509,20 +516,27 @@ impl GeometryTask {
                     }
                 }
             }
+            let insert_ms=insert_started.elapsed().as_secs_f64()*1000.0;
+            let metadata_started=Instant::now();
             tx.execute("INSERT OR REPLACE INTO kv_store(key,value) VALUES ('epa_basis_cache',?1)",[cache]).map_err(|e|e.to_string())?;
             tx.execute("INSERT OR REPLACE INTO tagmemo_artifacts
                 (artifact_sig,asset_type,model_sig,graph_generation,algorithm_version,config_hash,effective_config,status,created_at,updated_at)
                 VALUES (?1,'unified_geometry',?2,?7,?3,?4,?5,'ready',?6,?6)",
                 params![sig,model,ALGORITHM,cfg_hash,cfg,now,graph_generation]).map_err(|e|e.to_string())?;
             tx.execute("DELETE FROM tagmemo_artifacts WHERE asset_type='unified_geometry' AND artifact_sig!=?1",[sig]).map_err(|e|e.to_string())?;
+            *write_timings.lock().map_err(|e|e.to_string())?=[
+                delete_ms,insert_ms,metadata_started.elapsed().as_secs_f64()*1000.0];
             Ok(storage::WriteReceipt { operation:"publish_memo_geometry".into(),database_generation:0,facts_changed:false })
         })?;
         let elapsed=started.elapsed().as_secs_f64()*1000.0;
+        let [delete_ms,insert_ms,metadata_ms]=*timings.lock().map_err(|e|e.to_string())?;
+        let publication_ms=publication_started.elapsed().as_secs_f64()*1000.0;
+        let commit_queue_ms=(publication_ms-gate_ms-delete_ms-insert_ms-metadata_ms).max(0.0);
         Ok(GeometryResult {
             success:true,artifact_sig:signature,config_hash,algorithm_version:ALGORITHM.into(),
             tag_count:ids.len() as u32,computed_count:computed as u32,skipped_count:(ids.len()-computed) as u32,
             vector_fallback_count:fallback as u32,k_eff:k as u32,coverage,elapsed_ms:elapsed,
-            phase_summary:format!("load={load_ms:.3};local={local_ms:.3};global={global_ms:.3};coverage={coverage_ms:.3};publish={:.3}",elapsed-load_ms-local_ms-global_ms-coverage_ms),
+            phase_summary:format!("load={load_ms:.3};local={local_ms:.3};global={global_ms:.3};coverage={coverage_ms:.3};publish={publication_ms:.3};gate={gate_ms:.3};delete={delete_ms:.3};insert={insert_ms:.3};metadata={metadata_ms:.3};commit_queue={commit_queue_ms:.3}"),
         })
     }
 }

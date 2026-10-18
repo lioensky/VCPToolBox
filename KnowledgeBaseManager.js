@@ -2147,6 +2147,9 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
                         0,
                         Math.min(1, Number(options.layerDecay ?? 0.7))
                     ),
+                    epaGateMode: String(
+                        options.epaGateMode ?? kbConfig.epaGateMode ?? 'backgroundRelative'
+                    ),
                     activationMultiplier:
                         kbConfig.activationMultiplier || [0.5, 1.5],
                     dynamicBoostRange:

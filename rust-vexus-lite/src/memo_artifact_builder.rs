@@ -32,15 +32,11 @@ struct FileTag {
     file_id: i64,
     tag_id: i64,
     position: i64,
-    diary_name: String,
-    path: String,
 }
 
 #[derive(Clone)]
 struct ProvenanceContribution {
     file_id: i64,
-    diary_name: String,
-    path: String,
     mass: f64,
 }
 
@@ -113,8 +109,7 @@ fn boolean(config: &Value, path: &[&str], fallback: bool) -> bool {
 fn load_file_tags(connection: &Connection) -> std::result::Result<Vec<FileTag>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT ft.file_id, ft.tag_id, COALESCE(ft.position, 0), \
-             COALESCE(f.diary_name, ''), COALESCE(f.path, '') \
+            "SELECT ft.file_id, ft.tag_id, COALESCE(ft.position, 0) \
              FROM file_tags ft JOIN files f ON f.id = ft.file_id \
              ORDER BY ft.file_id, ft.position ASC, ft.tag_id ASC",
         )
@@ -125,8 +120,6 @@ fn load_file_tags(connection: &Connection) -> std::result::Result<Vec<FileTag>, 
                 file_id: row.get(0)?,
                 tag_id: row.get(1)?,
                 position: row.get(2)?,
-                diary_name: row.get(3)?,
-                path: row.get(4)?,
             })
         })
         .map_err(|error| format!("query file_tags failed: {}", error))?;
@@ -413,7 +406,7 @@ fn build_provenance(
     let forward_gain = number(ordered, &["forwardGain"], 1.0).max(0.0);
     let reverse_gain = number(ordered, &["reverseGain"], 0.35).max(0.0);
     let distance_decay = number(ordered, &["distanceDecay"], 0.08).max(0.0);
-    let mut aggregated: BTreeMap<(i64, i64, i64), ProvenanceContribution> = BTreeMap::new();
+    let mut aggregated: BTreeMap<(i64, i64, i64), f64> = BTreeMap::new();
 
     let mut offset = 0usize;
     while offset < rows.len() {
@@ -437,16 +430,7 @@ fn build_provenance(
                         (left.tag_id, right.tag_id, forward_gain * distance),
                         (right.tag_id, left.tag_id, reverse_gain * distance),
                     ] {
-                        let entry =
-                            aggregated
-                                .entry((source, target, file_id))
-                                .or_insert_with(|| ProvenanceContribution {
-                                    file_id,
-                                    diary_name: left.diary_name.clone(),
-                                    path: left.path.clone(),
-                                    mass: 0.0,
-                                });
-                        entry.mass += mass;
+                        *aggregated.entry((source, target, file_id)).or_default() += mass;
                     }
                 }
             }
@@ -455,11 +439,11 @@ fn build_provenance(
     }
 
     let mut output: BTreeMap<(i64, i64), Vec<ProvenanceContribution>> = BTreeMap::new();
-    for ((source, target, _), contribution) in aggregated {
+    for ((source, target, file_id), mass) in aggregated {
         output
             .entry((source, target))
             .or_default()
-            .push(contribution);
+            .push(ProvenanceContribution { file_id, mass });
     }
     output
 }
@@ -550,7 +534,7 @@ fn artifact_payload(
                 format!("{}:{}", source, target),
                 contributions
                     .iter()
-                    .map(|item| { json!([item.file_id, item.diary_name, item.path, item.mass]) })
+                    .map(|item| json!([item.file_id, item.mass]))
                     .collect::<Vec<_>>()
             ])
         })
@@ -586,7 +570,7 @@ fn artifact_payload(
             "weights": artifact.weights
         },
         "provenanceView": {
-            "schema": "tagmemo-v10-alpha-provenance-snapshot-v1",
+            "schema": "tagmemo-provenance-file-mass-v2",
             "generation": metadata["provenanceGeneration"],
             "edges": provenance_edges
         },
@@ -894,9 +878,12 @@ mod fact_dependency_tests {
         runtime.clear().unwrap();
         assert_ne!(manifest.compute().unwrap(), "null");
         with_registered_read_transaction(&db, |connection| {
-            crate::rivermemo_topology_v3::load_artifact_with_connection(
+            let loaded=crate::rivermemo_topology_v3::load_artifact_with_connection(
                 &runtime, connection, &built.artifact_sig,
-            ).map(|_| ())
+            )?;
+            assert_eq!(loaded.provenance.get(&(1,2)),Some(&vec![(1,1.0)]));
+            assert_eq!(loaded.provenance.get(&(2,1)),Some(&vec![(1,0.35)]));
+            Ok(())
         }).unwrap();
         storage.submit_write(|tx| {
             tx.execute("UPDATE tags SET vector=X'000000000000803f' WHERE id=1", [])

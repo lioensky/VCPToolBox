@@ -11,6 +11,19 @@ test('pure KNN merges selected indices and hydrates without Memo processing', as
     const owner = {
         config: { dimension: 2 },
         _isVectorLike: value => Array.isArray(value) || value instanceof Float32Array,
+        async listDistinctDiaries() { return []; },
+        nativeKnowledgeRuntime: {
+            async searchDiaryIndices(names, vector) {
+                assert.deepEqual(names, ['A', 'B']);
+                assert(vector instanceof Float32Array);
+                return { results: [{ id: 3, score: 1 }, { id: 2, score: 0.9 }, { id: 1, score: 0.8 }],
+                    hydratedChunks: [
+                        { id: 1, text: 'a', sourceFile: 'A/a.md', diaryName: 'A', fileId: 10 },
+                        { id: 2, text: 'b', sourceFile: 'B/b.md', diaryName: 'B', fileId: 20 },
+                        { id: 3, text: 'outside', sourceFile: 'C/c.md', diaryName: 'C', fileId: 30 }
+                    ] };
+            }
+        },
         async _getOrLoadDiaryIndex(name) {
             return { search: () => name === 'A'
                 ? [{ id: 1, score: 0.8 }, { id: 3, score: 1 }]
@@ -58,7 +71,10 @@ test('native joint disabled uses pure candidates, one observation and RiverMemo 
     const prepared = { artifact: { artifactSig: 'test' }, nativePreparedQuery: {}, observationHandle: 'q' };
     const owner = {
         config: { dimension: 2, nativeRiverQueryEnabled: false, nativeRiverQueryCandidateK: 8 },
-        db: { prepare: () => ({ all: () => [{ id: 10 }] }) },
+        async getFileIdsByDiaries(names) {
+            assert.deepEqual(names, ['A']);
+            return [10];
+        },
         async _getOrLoadDiaryIndex() {},
         async prepareUnifiedMemoObservation() { sensing++; return prepared; },
         async search() { throw new Error('recursive generic search'); },

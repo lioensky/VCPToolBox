@@ -426,3 +426,43 @@ d.dependency_key IN ('memo_tag_facts','derived_geometry')) = 2
   ```
   你在 §9 中已经注意到要删除前两行并加入 `DELETE FROM kv_store WHERE key='epa_basis_cache'`。
   **补充一点**：当 `tag_intrinsic_residuals` 和 `epa_basis_cache` 在 `tag_consistency` 已经为空时，`DELETE` 影响行数为 0，不会触发 SQLite 的 `AFTER DELETE` 触发器去递增 `derived_geometry`（不过因为 `tags` / `file_tags` 变动已经触发了 `memo_tag_facts++`，且 `rivermemo_artifacts` 已被清空，所以依然安全）。
+---
+
+## 14. 第三阶段加单 Todo（基于二阶段消融实测的精准收口）
+
+### Todo 1：【P0 数学刻度校准】修复 `analyze_epa` 绝对解释率导致的 `logic_depth` 15 倍过阻尼与 `0.18` 地板锁死
+- **病灶位置**：`rust-vexus-lite/src/memo_pipeline.rs`（`EpaCache`、`analyze_epa` 约 260–335 行、`gate_tags` 约 705–720 行）。
+- **根因**：
+  在 3072 维全库流形上，前 `k_sem = 8` 个正交星团面的全库基准覆盖率 `coverage[k_sem - 1]` 约为 `7.27%`（`0.0727`）。库内真实 Tag 落在前 8 面的平均解释率 `semantic_explained_ratio = total_energy / centered_energy ≈ 0.0660` 已接近理论满水位（相比之下，纯随机方向仅 `8 / 3072 ≈ 0.0026`）。
+  当前代码直接令 `logic_depth = (1.0 - normalized_entropy) * semantic_explained_ratio`，把正常查询的 `logic_depth` 无差别缩小了约 15 倍（均值仅 `0.0222`），导致 `gate_tags` 中的 `dynamic_factor` 永远小于下限 `0.3`，所有 24 个烟测样本的 `effective_boost` 100% 锁死在 `0.18`（`0.6 * 0.3`），丧失了动态区分度。
+- **修改要求**：
+  1. 在 `EpaCache` 中反序列化 `coverage: Vec<f64>`。
+  2. 取前缀基准覆盖率：`baseline = cache.coverage.get(semantic_count.saturating_sub(1)).copied().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(semantic_count as f64 / dimension.max(1) as f64).max(1e-4)`。
+  3. 用相对基准比构造域内门控（在基准测试中对比线性相对比 `clamp01(semantic_explained_ratio / baseline)` 与平方根相对比 `clamp01((semantic_explained_ratio / baseline).sqrt())`）：
+     - 目标 A：纯随机方向的 `logic_depth` 依然被强力压制（`< 0.10`）；
+     - 目标 B：24 个真实 Tag 烟测样本的 `in_domain_gate` 恢复到合理区间（`0.7 ~ 1.0`），`logic_depth` 与 `effective_boost` 脱离 `0.18` 常数地板，展现真实的熵与共振分布差异。
+  4. 在 `EpaOutput` 中保留 `semantic_explained_ratio` 或 `in_domain_gate` 诊断字段，并在单元测试与 `benchmark_memo_geometry.js` 中验证。
+
+### Todo 2：【P1 载荷与构图瘦身】砍掉 `memo_artifact_builder.rs` 中 85.84 MB 的 `provenanceView` 路径字符串重复序列化
+- **病灶位置**：`rust-vexus-lite/src/memo_artifact_builder.rs`（`FileTag`、`ProvenanceContribution`、`build_provenance`、`artifact_payload`）与 `rust-vexus-lite/src/rivermemo_topology_v3.rs`（`decode_artifact` 约 795–825 行）。
+- **根因**：
+  552,616 条边在 `build_provenance` 和 `artifact_payload` 中，把每个贡献文件的 `diary_name` 与 `path` 字符串塞进 `[file_id, diary_name, path, mass]` 四元组重复克隆并序列化了上百万次，导致 JSON 暴涨至 **85.84 MB**（构图 + 序列化耗时约 4.5s）。而消费端 `decode_artifact` 仅读取 `(file_id, mass)`，完全丢弃了字符串。
+- **修改要求**：
+  1. 审计仓库内是否有任何 JS/Rust 消费方读取持久化 `rivermemo_artifacts.payload` 中 `provenanceView.edges` 里的 `diary_name` 和 `path`。
+  2. 将 `ProvenanceContribution` 精简为 `{ file_id: i64, mass: f64 }`（`BTreeMap<(i64, i64, i64), f64>` 直接累加 mass，消除百万次 `String` 克隆）；`provenanceView.edges` 内层数组改为紧凑二元组 `[file_id, mass]`。
+  3. `rivermemo_topology_v3.rs::decode_artifact` 同时兼容二元组 `[file_id, mass]`（`values.len() == 2`）与旧四元组 `[file_id, diary, path, mass]`（`values.len() >= 4`）。
+  4. 在独立基准库上实测优化前后的 raw JSON 体积、压缩后体积、构图耗时、序列化耗时与总耗时。
+
+### Todo 3：【P1 几何发布写入加速】消除 `GeometryTask` 发布阶段的 975ms 二级索引维护开销
+- **病灶位置**：`rust-vexus-lite/src/memo_geometry.rs`（发布事务约 480–515 行）与 `rust-vexus-lite/src/schema.rs`。
+- **根因**：
+  `tag_intrinsic_residuals` 每次发布前都会 `DELETE FROM tag_intrinsic_residuals;` 全表清空重写 37,076 行，但表上挂着二级索引 `idx_intrinsic_residual_artifact(artifact_sig, model_sig)`，且每行重复写入相同的 `model_sig`、`artifact_sig`、`algorithm_version`、`config_hash` 字符串列，导致 3.7 万次 B-Tree 二级索引拆分。
+- **修改要求**：
+  1. 审计全库对 `tag_intrinsic_residuals` 的查询语句（如 `memo_artifact_builder::load_anchor_gains`）。
+  2. 移除不必要的二级索引 `idx_intrinsic_residual_artifact`（表内仅存当前活动 `model_sig` 的行，按主键 `tag_id` 顺序扫描即可），或在批量插入前后治理索引开销，实测 `publish` 阶段耗时下降幅度。
+
+### Todo 4：【P2 回归测试债清理】修复验收报告第 5 节列出的 9 个失败/超时 JS 测试文件
+- **范围**：验收报告中定位的 9 个 JS 测试文件（旧 `databaseSchema.js` 导入缺失、测试桩缺少当前原生补水/ANN/权限接口、以及人格预处理测试进程未退出问题）。
+- **修改要求**：
+  1. 对齐当前 Native 存储与 Schema v2 契约，更新过时的测试夹具与 Mock 桩，禁止为迁就旧测试而恢复已退休的生产代码。
+  2. 修复超时测试的句柄/定时器泄漏，确保全量 JS 测试可干净退出并全绿通过。

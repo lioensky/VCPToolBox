@@ -10,9 +10,6 @@ const {
     VexusIndex,
     NativeKnowledgeRuntime
 } = require('../rust-vexus-lite');
-const {
-    initializeKnowledgeBaseSchema
-} = require('../modules/knowledgeBase/schemaManager');
 const ResultDeduplicator = require('../ResultDeduplicator');
 
 const DIMENSION = 4;
@@ -41,12 +38,12 @@ async function run() {
         path.join(os.tmpdir(), 'vcp-native-semantic-dedup-')
     );
     const dbPath = path.join(tempRoot, 'knowledge_base.sqlite');
+    const tagIndex = new VexusIndex(DIMENSION, 16);
+    const runtime = new NativeKnowledgeRuntime(tagIndex);
+    runtime.openAndInitStore(dbPath);
     const db = new Database(dbPath);
 
     try {
-        initializeKnowledgeBaseSchema(db, {
-            logPrefix: 'NativeSemanticDedupTest'
-        });
         db.prepare(`
             INSERT INTO files
                 (id, path, diary_name, checksum, mtime, size, updated_at)
@@ -65,7 +62,6 @@ async function run() {
         // ANN 中有合法向量，但 SQLite 事实向量零范数；按兼容语义必须保留。
         insertChunk.run(5, 4, 'invalid fact vector', vectorBuffer([0, 0, 0, 0]));
 
-        const tagIndex = new VexusIndex(DIMENSION, 16);
         const diaryIndex = new VexusIndex(DIMENSION, 32);
         diaryIndex.addBatch(
             [1, 2, 3, 4, 5],
@@ -78,7 +74,6 @@ async function run() {
             ])
         );
 
-        const runtime = new NativeKnowledgeRuntime(tagIndex);
         runtime.registerDiaryIndex('SharedMemory', diaryIndex);
 
         const exactPayload = await runtime.searchDiaryIndicesDeduplicated(
@@ -176,6 +171,7 @@ async function run() {
         );
     } finally {
         db.close();
+        runtime.shutdown();
         fs.rmSync(tempRoot, {
             recursive: true,
             force: true

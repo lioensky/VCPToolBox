@@ -49,19 +49,15 @@ test('semantic deduplication suppresses near-identical vectors and keeps distinc
     assert.deepEqual(results.map(result => result.chunkId), [1, 3]);
 });
 
-test('missing vectors are hydrated from SQLite-compatible storage before semantic deduplication', async () => {
+test('missing vectors are hydrated through the async native adapter before semantic deduplication', async () => {
     const stored = new Map([
         [11, vectorBuffer([1, 0, 0])],
         [12, vectorBuffer([0.999, 0.01, 0])]
     ]);
     const db = {
-        prepare(sql) {
-            assert.match(sql, /SELECT vector FROM chunks/);
-            return {
-                get(id) {
-                    return stored.has(id) ? { vector: stored.get(id) } : undefined;
-                }
-            };
+        async hydrateChunksByIds(ids) {
+            assert.deepEqual(ids, [11, 12]);
+            return ids.filter(id => stored.has(id)).map(id => ({ id, vector: stored.get(id) }));
         }
     };
     const deduplicator = new ResultDeduplicator(db, {
@@ -89,18 +85,11 @@ test('missing vectors are hydrated in one SQLite batch with unique chunk ids', a
     let allCount = 0;
     let receivedIds = null;
     const db = {
-        prepare(sql) {
+        async hydrateChunksByIds(ids) {
             prepareCount++;
-            assert.match(sql, /SELECT id, vector FROM chunks WHERE id IN/);
-            return {
-                all(...ids) {
-                    allCount++;
-                    receivedIds = ids;
-                    return ids
-                        .filter(id => stored.has(id))
-                        .map(id => ({ id, vector: stored.get(id) }));
-                }
-            };
+            allCount++;
+            receivedIds = ids;
+            return ids.filter(id => stored.has(id)).map(id => ({ id, vector: stored.get(id) }));
         }
     };
     const deduplicator = new ResultDeduplicator(db, {
@@ -121,23 +110,19 @@ test('missing vectors are hydrated in one SQLite batch with unique chunk ids', a
     assert.ok(results.every(result => result._vector instanceof Float32Array));
 });
 
-test('batch hydration deduplicates repeated chunk ids before querying SQLite', () => {
+test('batch hydration deduplicates repeated chunk ids before invoking native adapter', async () => {
     let receivedIds = null;
     const db = {
-        prepare() {
-            return {
-                all(...ids) {
-                    receivedIds = ids;
-                    return ids.map(id => ({
-                        id,
-                        vector: vectorBuffer(id === 71 ? [1, 0, 0] : [0, 1, 0])
-                    }));
-                }
-            };
+        async hydrateChunksByIds(ids) {
+            receivedIds = ids;
+            return ids.map(id => ({
+                id,
+                vector: vectorBuffer(id === 71 ? [1, 0, 0] : [0, 1, 0])
+            }));
         }
     };
     const deduplicator = new ResultDeduplicator(db, { dimension: 3 });
-    const hydrated = deduplicator._hydrateMissingVectors([
+    const hydrated = await deduplicator._hydrateMissingVectors([
         { chunkId: 71, text: 'first version' },
         { chunkId: 71, text: 'second version' },
         { chunkId: 72, text: 'other chunk' }
