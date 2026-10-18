@@ -25,5 +25,72 @@
         "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VolcSearch「末」,\nquery:「始」2026年AI技术最新进展「末」,\ncount:「始」5「末」,\ntime_range:「始」OneYear「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "信息获取",
+    "jevDescPrompt": "使用火山引擎联网搜索 API 进行中文网络检索，可指定结果条数、发文时间范围、站点范围与正文格式。",
+    "jevPrompt": "用户要求中文网络检索或资讯获取时选择 VolcSearch。在【】中提供检索关键词，可选在 [] 中指定条数（如 [条数:5]）与时间范围（如 [一周内]）。",
+    "agentPrompt": "当需要中文网络检索时，使用 {信息获取} 中的 `VolcSearch`：\nJEV:「始」请使用 {信息获取} 中的 `VolcSearch`，检索【2026年开源大模型最新发布】[条数:5]。「末」",
+    "defaultCommand": "VolcSearch",
+    "commands": [
+      {
+        "commandIdentifier": "VolcSearch",
+        "description": "调用火山引擎联网搜索接口执行中文检索",
+        "aliases": ["火山搜索", "中文搜索", "联网搜索", "资讯检索"],
+        "parameters": {
+          "query": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 500,
+            "description": "检索关键词或问题"
+          },
+          "count": {
+            "type": "text",
+            "required": false,
+            "source": "constraints",
+            "prefixes": ["条数", "数量", "返回", "条"],
+            "maxLength": 3,
+            "description": "返回结果条数"
+          },
+          "time_range": {
+            "type": "enum",
+            "required": false,
+            "description": "指定搜索的发文时间范围",
+            "values": {
+              "OneDay": "1天内",
+              "OneWeek": "1周内",
+              "OneMonth": "1月内",
+              "OneYear": "1年内"
+            },
+            "aliases": {
+              "OneDay": ["一天内", "今天"],
+              "OneWeek": ["一周内", "最近一周"],
+              "OneMonth": ["一月内", "最近一月"],
+              "OneYear": ["一年内", "最近一年"]
+            }
+          },
+          "content_format": {
+            "type": "enum",
+            "required": false,
+            "description": "返回正文的格式",
+            "values": {
+              "text": "纯文本",
+              "markdown": "Markdown"
+            },
+            "default": "text"
+          },
+          "full_content": {
+            "type": "boolean",
+            "required": false,
+            "description": "true 返回完整正文，false 返回短摘要",
+            "trueAliases": ["全文", "完整正文"],
+            "falseAliases": ["摘要", "短摘要"]
+          }
+        }
+      }
+    ]
   }
 }
