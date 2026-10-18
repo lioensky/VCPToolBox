@@ -19,7 +19,8 @@ const {
 const {
     estimateVexusIndexBytes,
     safeIndexStats,
-    buildMemoryProfile
+    buildMemoryProfile,
+    captureMemoryStage
 } = require('./modules/knowledgeBase/memoryProfiler');
 const DiaryMetadataCache = require('./modules/knowledgeBase/diaryMetadataCache');
 const IndexRepository = require('./modules/knowledgeBase/indexRepository');
@@ -315,6 +316,7 @@ class KnowledgeBaseManager {
 
     async initialize() {
         if (this.initialized) return;
+        this._captureMemoryStage('initialize:begin');
         console.log(`[KnowledgeBase] Initializing Multi-Index System (Dim: ${this.config.dimension})...`);
 
         await fs.mkdir(this.config.storePath, { recursive: true });
@@ -458,6 +460,7 @@ class KnowledgeBaseManager {
             );
         }
 
+        this._captureMemoryStage('store:opened');
         const tOrphan0 = Date.now();
         await this._cleanupDatabaseOrphansNative();
         console.log(
@@ -465,6 +468,7 @@ class KnowledgeBaseManager {
             `${Date.now() - tOrphan0}ms.`
         );
 
+        this._captureMemoryStage('store:orphans-cleaned');
         // 3. 初始化全局 Tag 索引。
         // tags 是唯一权威真相；磁盘 .vec 只是经 SQL 背书、允许落后的双槽基线。
         // 活动槽加载、成员差分回放和无基线重建全部由 Rust Runtime 后台执行。
@@ -505,6 +509,7 @@ class KnowledgeBaseManager {
             );
         }
 
+        this._captureMemoryStage('tags:restored');
         // 3. 通过 Rust Read Pool 异步预热日记本名称向量缓存。
         // 启动阶段不再在 Node.js 主线程直接扫描中央 kv_store。
         await this._hydrateDiaryNameCache();
@@ -580,6 +585,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             );
         }
 
+        this._captureMemoryStage('memo:manifest-checked');
         this._startWatcher();
         this._startRagParamsWatcher();
         this._startIdleSweep(); // 🌟 启动空闲索引自动卸载
@@ -587,6 +593,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
 
         this.initialized = true;
         this.startupCompletedAt = Date.now();
+        this._captureMemoryStage('initialize:ready');
         console.log('[KnowledgeBase] ✅ System Ready');
 
         if (this.tagMemoEngine && typeof this.tagMemoEngine.schedulePostStartupDerivedRefresh === 'function') {
@@ -3586,6 +3593,17 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
 
     _safeIndexStats(index) {
         return safeIndexStats(index);
+    }
+
+    _captureMemoryStage(stage) {
+        try {
+            const sample = captureMemoryStage(this, stage);
+            console.log('[KnowledgeBaseMemory] ' + JSON.stringify(sample));
+            return sample;
+        } catch (error) {
+            console.warn('[KnowledgeBaseMemory] Sample failed:', error.message || error);
+            return null;
+        }
     }
 
     getMemoryProfile() {

@@ -1082,8 +1082,10 @@ version = "0.1.0"
 dependencies = [
  "base64 0.21.7",
  "bincode",
+ "bytemuck",
  "flate2",
  "hashbrown",
+ "memmap2",
  "nalgebra",
  "napi",
  "napi-build",

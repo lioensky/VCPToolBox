@@ -162,6 +162,46 @@ function profileRiverMemo(state) {
     };
 }
 
+/**
+ * Scalar-only samples: never hydrate vectors or load a Memo artifact.
+ * RSS includes file-backed pages; mappedBytes is address-space length, not RSS.
+ * external includes arrayBuffers: these fields must not be added together.
+ */
+function captureMemoryStage(state, stage) {
+    const memory = process.memoryUsage();
+    const tag = safeIndexStats(state.tagIndex);
+    let diaryHotBytes = 0;
+    let diaryMappedBytes = 0;
+    for (const index of state.diaryIndices?.values() || []) {
+        const stats = safeIndexStats(index);
+        diaryHotBytes += Math.max(0, Number(stats.hotBytes) || 0);
+        diaryMappedBytes += Math.max(0, Number(stats.mmapBytes) || 0);
+    }
+    const sample = {
+        stage: String(stage).slice(0, 96),
+        at: new Date().toISOString(),
+        uptimeSeconds: process.uptime(),
+        rss: memory.rss,
+        heapUsed: memory.heapUsed,
+        heapTotal: memory.heapTotal,
+        external: memory.external,
+        arrayBuffers: memory.arrayBuffers || 0,
+        tagVectors: tag.totalVectors,
+        tagHotBytes: Math.max(0, Number(tag.hotBytes) || 0),
+        tagMappedBytes: Math.max(0, Number(tag.mmapBytes) || 0),
+        loadedDiaryCount: state.diaryIndices?.size || 0,
+        diaryHotBytes,
+        diaryMappedBytes,
+        trainingPhase: state.tagMemoEngine?.getTrainingStatus?.().phase || 'idle'
+    };
+    if (!Array.isArray(state.memoryStageSamples)) state.memoryStageSamples = [];
+    state.memoryStageSamples.push(sample);
+    if (state.memoryStageSamples.length > 32) {
+        state.memoryStageSamples.splice(0, state.memoryStageSamples.length - 32);
+    }
+    return sample;
+}
+
 function buildMemoryProfile(state) {
     const startedAt = Date.now();
     const dimension = state.config.dimension;
@@ -256,6 +296,9 @@ function buildMemoryProfile(state) {
         },
         tagMemo,
         riverMemo,
+        memoryStageSamples: Array.isArray(state.memoryStageSamples)
+            ? state.memoryStageSamples.map(sample => ({ ...sample }))
+            : [],
         estimatedBytes,
         generatedAt: new Date().toISOString(),
         elapsedMs: Date.now() - startedAt
@@ -265,5 +308,6 @@ function buildMemoryProfile(state) {
 module.exports = {
     estimateVexusIndexBytes,
     safeIndexStats,
-    buildMemoryProfile
+    buildMemoryProfile,
+    captureMemoryStage
 };

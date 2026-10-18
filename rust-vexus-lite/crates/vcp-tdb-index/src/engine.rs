@@ -260,8 +260,14 @@ impl TdbIndex {
     }
 
     pub fn load_snapshot(path: &Path, expected: &AssetIdentity) -> io::Result<Self> {
-        let base = VectorAsset::open(path, expected)?;
-        let mut index = Self::empty(expected.dimension)?;
+        Self::from_validated_asset(VectorAsset::open(path, expected)?)
+    }
+
+    /// Consume the same CRC-validated mapping that the host endorsed.
+    /// No pathname reopen or second full-file scan.
+    pub fn from_validated_asset(base: VectorAsset) -> io::Result<Self> {
+        let dimension = base.identity().dimension;
+        let mut index = Self::empty(dimension)?;
         index.reserve(base.len())?;
         for slot in 0..base.len() {
             let id = base.id_for_slot(slot).unwrap();
@@ -270,7 +276,7 @@ impl TdbIndex {
         }
         if !base.graph_bytes().is_empty() {
             let mut graph = QuIVer::load_from_bytes(base.graph_bytes())?;
-            graph.validate_compact_slots(expected.dimension, &index.ids)?;
+            graph.validate_compact_slots(dimension, &index.ids)?;
             graph.restore_default_sm_snapshot(base.sm_bytes())?;
             if graph.active_count() != index.len() || graph.total_count() != index.len() {
                 return Err(invalid("snapshot graph count mismatch"));

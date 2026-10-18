@@ -193,10 +193,10 @@ fn add_edge(matrix: &mut HashMap<i64, HashMap<i64, f64>>, source: i64, target: i
 
 fn build_fact_matrix(
     rows: &[FileTag],
-    vectors: &HashMap<i64, Vec<f64>>,
+    mut load_vectors: impl FnMut(&[i64]) -> std::result::Result<HashMap<i64, Vec<f64>>, String>,
     anchor_gain: &HashMap<i64, f64>,
     config: &Value,
-) -> HashMap<i64, HashMap<i64, f64>> {
+) -> std::result::Result<HashMap<i64, HashMap<i64, f64>>, String> {
     let ordered = config.get("orderedCooccurrence").unwrap_or(&Value::Null);
     let forward_gain = number(ordered, &["forwardGain"], 1.0).max(0.0);
     let reverse_gain = number(ordered, &["reverseGain"], 0.42).clamp(
@@ -226,7 +226,7 @@ fn build_fact_matrix(
         number(ordered, &["semanticGain", "lowSimFallback"], 0.1),
     );
 
-    let semantic_gain = |left: i64, right: i64| -> f64 {
+    let semantic_gain = |vectors: &HashMap<i64, Vec<f64>>, left: i64, right: i64| -> f64 {
         if !semantic_enabled {
             return 1.0;
         }
@@ -253,6 +253,13 @@ fn build_fact_matrix(
         }
         let tags = &rows[offset..end];
         if tags.len() >= 2 && tags.len() <= 100 {
+            // VCP: bound high-dimensional workspace to one eligible file.
+            // No vector SQL is needed when semantic gain is disabled.
+            let vectors = if semantic_enabled {
+                load_vectors(&tags.iter().map(|tag| tag.tag_id).collect::<Vec<_>>())?
+            } else {
+                HashMap::new()
+            };
             for left_index in 0..tags.len() {
                 for right_index in (left_index + 1)..tags.len() {
                     let left = &tags[left_index];
@@ -260,7 +267,7 @@ fn build_fact_matrix(
                     if left.tag_id == right.tag_id {
                         continue;
                     }
-                    let semantic = semantic_gain(left.tag_id, right.tag_id);
+                    let semantic = semantic_gain(&vectors, left.tag_id, right.tag_id);
                     if left.position > 0 && right.position > 0 {
                         let count = tags.len() as f64;
                         let phi_left =
@@ -298,7 +305,7 @@ fn build_fact_matrix(
         }
         offset = end;
     }
-    matrix
+    Ok(matrix)
 }
 
 fn build_transport(
@@ -595,19 +602,24 @@ fn run_build(
     }
 
     let snapshot_gate = crate::publication_gate::acquire_read(db_path, &["*".into()])?;
-    let (rows, pairwise, anchor_gain, residual_sig, database_generation, dependencies) =
+    let (rows, fact, anchor_gain, residual_sig, database_generation, dependencies) =
         with_registered_read_transaction(db_path, |readonly| {
             let rows = load_file_tags(readonly)?;
-            let ids: Vec<i64> = rows.iter().map(|r| r.tag_id).collect::<BTreeSet<_>>().into_iter().collect();
-            let (pairwise, _) = crate::memo_geometry::read_unit_vectors(readonly, &ids, dimension)?;
             let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
+            let fact = build_fact_matrix(
+                &rows,
+                |ids| crate::memo_geometry::read_unit_vectors(readonly, ids, dimension)
+                    .map(|(vectors, _)| vectors),
+                &anchor_gain,
+                &input.effective_config,
+            )?;
             let database_generation = database_generation(readonly)?;
             let dependencies = crate::storage::DerivedDependencies::capture(
                 readonly, crate::storage::MEMO_ARTIFACT_DEPENDENCIES,
             )?;
             Ok((
                 rows,
-                pairwise,
+                fact,
                 anchor_gain,
                 residual_sig,
                 database_generation,
@@ -616,10 +628,11 @@ fn run_build(
         })?;
     drop(snapshot_gate);
     let load_ms = started.elapsed().as_secs_f64()*1000.0;
-    let fact = build_fact_matrix(&rows, &pairwise, &anchor_gain, &input.effective_config);
-    drop(pairwise);
+    // Fact edge accumulation already completed inside the frozen SQL snapshot.
     let (transport, wormholes) = build_transport(&fact, &anchor_gain, &input.effective_config);
+    drop(fact);
     let provenance = build_provenance(&rows, &input.effective_config);
+    drop(rows);
 
     let mut inbound = HashMap::new();
     let mut sources: Vec<_> = transport.keys().copied().collect();
@@ -676,6 +689,7 @@ fn run_build(
     );
 
     let native = build_native_artifact(&transport, inbound, anchor_gain, wormholes, &provenance);
+    drop(transport);
     let published_at = now_ms();
     let metadata = json!({
         "schema": "tagmemo-v10-alpha-artifact-v1",
@@ -694,8 +708,10 @@ fn run_build(
     });
     let graph_ms = started.elapsed().as_secs_f64()*1000.0-load_ms;
     let payload = artifact_payload(&native, &provenance, &metadata);
+    drop(provenance);
     let raw = serde_json::to_vec(&payload)
         .map_err(|error| format!("encode native artifact payload failed: {}", error))?;
+    drop(payload);
     let checksum = sha256_hex(&raw);
     let encode_ms = started.elapsed().as_secs_f64()*1000.0-load_ms-graph_ms;
     let raw_bytes = raw.len() as u32;
@@ -707,6 +723,7 @@ fn run_build(
         .finish()
         .map_err(|error| format!("finish native artifact compression failed: {}", error))?;
 
+    drop(raw);
     let compressed_bytes = compressed.len() as u32;
     let compression_ms = started.elapsed().as_secs_f64()*1000.0-load_ms-graph_ms-encode_ms;
     // 只在最终提交和内存发布窗口持门禁，耗时图构建与压缩不阻塞查询。
@@ -947,5 +964,43 @@ mod fact_dependency_tests {
         }).unwrap_err().contains("DERIVED_DEPENDENCY_CONFLICT"));
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod bounded_workspace_tests {
+    use super::*;
+
+    #[test]
+    fn file_vector_workspace_is_bounded_and_matches_full_source_bits() {
+        let rows: Vec<_> = (1..=300).flat_map(|file_id| {
+            (1..=4).map(move |position| FileTag {
+                file_id, tag_id: file_id + position, position,
+            })
+        }).collect();
+        let vectors: HashMap<_, _> = (1..=304).map(|id| {
+            let x = id as f64 * 0.013;
+            (id, vec![x.cos(), x.sin()])
+        }).collect();
+        let config = json!({"orderedCooccurrence":{"semanticGainEnabled":true}});
+        let mut calls = 0;
+        let bounded = build_fact_matrix(&rows, |ids| {
+            calls += 1;
+            assert!(ids.len() <= 100);
+            Ok(ids.iter().filter_map(|id| vectors.get(id).map(|v| (*id, v.clone()))).collect())
+        }, &HashMap::new(), &config).unwrap();
+        let full = build_fact_matrix(&rows, |_| Ok(vectors.clone()),
+            &HashMap::new(), &config).unwrap();
+        assert_eq!(calls, 300);
+        for (source, edges) in &full {
+            for (target, weight) in edges {
+                assert_eq!(bounded[source][target].to_bits(), weight.to_bits());
+            }
+        }
+        let plain = build_fact_matrix(&rows, |_| {
+            panic!("semantic gain disabled must not read vectors")
+        }, &HashMap::new(), &json!({})).unwrap();
+        assert!(!plain.is_empty());
     }
 }

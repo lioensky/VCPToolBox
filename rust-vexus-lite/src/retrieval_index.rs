@@ -53,6 +53,15 @@ impl RetrievalIndex {
         Ok(Self { inner: Some(index), identity: expected, private_path: None, reserved })
     }
 
+    pub(crate) fn from_validated_asset(
+        asset: vcp_tdb_index::asset::VectorAsset,
+    ) -> io::Result<Self> {
+        let identity = asset.identity().clone();
+        let index = TdbIndex::from_validated_asset(asset)?;
+        let reserved = index.len();
+        Ok(Self { inner: Some(index), identity, private_path: None, reserved })
+    }
+
     fn core(&self) -> &TdbIndex {
         self.inner.as_ref().expect("retrieval index is live until Drop")
     }

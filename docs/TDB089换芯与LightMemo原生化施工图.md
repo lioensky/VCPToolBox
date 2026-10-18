@@ -4,7 +4,7 @@
 - 状态：**Rust 换芯源码与隔离产物已实现并回归；生产验收未完成，LightMemo 尚未施工**。本文件保留为方案基线，实际格式、验证证据与未测项见[施工与验收记录](TDB089换芯施工与验收记录-2026-10-19.md)。
 - 源码基线：`H:\VCP\VCPMain\VCPToolBox`（HEAD 以施工开始时为准，行号会漂移，以符号名定位）
 - TDB 参考源码：`docs/TriviumDB-master`（`Cargo.toml` version = `0.8.9`）
-- 本机工具链：`rustc 1.88.0` / `cargo 1.88.0`
+- 本机工具链：`rustc 1.89.0` / `cargo 1.89.0`
 - 前置已完成：AGS 统一图、KBM 纯 Rust 单一 SQL 真相源
 
 ---

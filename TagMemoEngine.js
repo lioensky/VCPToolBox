@@ -265,8 +265,10 @@ class TagMemoEngine {
         this._isMatrixRebuilding = true;
         const processedTagIds = new Set(this._accumulatedNewTagIds);
         try {
+            this.knowledgeBaseManager?._captureMemoryStage?.('training:geometry-begin');
             if (this._currentDerivedTask) this._currentDerivedTask.phase = 'geometry';
             const geometry = await this.recomputeGeometry();
+            this.knowledgeBaseManager?._captureMemoryStage?.('training:geometry-end');
             if (!geometry) return false;
 
             if (!this.tagIndex || typeof this.tagIndex.rebuildMemoArtifact !== 'function') {
@@ -274,6 +276,7 @@ class TagMemoEngine {
             }
 
             if (this._currentDerivedTask) this._currentDerivedTask.phase = 'artifact';
+            this.knowledgeBaseManager?._captureMemoryStage?.('training:artifact-begin');
             const dbPath = this.getDbPath();
             const effectiveConfig = this._effectiveNativeConfig();
             const result = await this.tagIndex.rebuildMemoArtifact(
@@ -283,6 +286,7 @@ class TagMemoEngine {
                     effectiveConfig
                 })
             );
+            this.knowledgeBaseManager?._captureMemoryStage?.('training:artifact-end');
             if (
                 !result?.success
                 || result.persisted !== true
@@ -305,6 +309,7 @@ class TagMemoEngine {
             return true;
         } finally {
             this._isMatrixRebuilding = false;
+            this.knowledgeBaseManager?._captureMemoryStage?.('training:finished');
         }
     }
 

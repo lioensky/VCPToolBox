@@ -899,8 +899,7 @@ fn load_endorsed_index(
         if size != i64::try_from(actual_size).ok() || crc != Some(actual_crc as i64) {
             return Err("Vector asset file stamp does not match SQL endorsement".into());
         }
-        drop(checked);
-        Index::load(path, expected).map_err(|error| error.to_string())
+        Index::from_validated_asset(checked).map_err(|error| error.to_string())
     })
 }
 

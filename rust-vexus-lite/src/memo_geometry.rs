@@ -190,17 +190,114 @@ pub(crate) fn read_unit_vectors(
     ids: &[i64],
     dimension: usize,
 ) -> std::result::Result<(HashMap<i64, Vec<f64>>, usize), String> {
-    let rows = storage::load_vectors_by_ids(connection, "tags", ids, dimension)?;
-    let mut output = HashMap::with_capacity(rows.len());
-    for (id, vector) in rows {
-        let mut vector: Vec<f64> = vector.into_iter().map(|value| value as f64).collect();
-        if normalize(&mut vector) {
-            output.insert(id, vector);
+    let mut output = HashMap::new();
+    // Bound the transient SQL f32 table; never overlap a full f32 table with
+    // the normalized f64 workspace. Per-row arithmetic is deliberately unchanged.
+    for batch in ids.chunks(128) {
+        let rows = storage::load_vectors_by_ids(connection, "tags", batch, dimension)?;
+        for (id, vector) in rows {
+            let mut vector: Vec<f64> = vector.into_iter().map(|value| value as f64).collect();
+            if normalize(&mut vector) {
+                output.insert(id, vector);
+            }
         }
     }
     // ABI compatibility: this historical counter now counts authoritative SQL rows.
     let sql_rows = output.len();
     Ok((output, sql_rows))
+}
+
+/// Build-only immutable f64 rows. The SQL snapshot is copied in bounded batches;
+/// Rayon readers borrow mapped slices instead of retaining N heap vectors.
+/// This is not a durable asset: no signature or mathematical precision changes.
+struct UnitVectorWorkspace {
+    map: Option<memmap2::Mmap>,
+    path: std::path::PathBuf,
+    slots: HashMap<i64, usize>,
+    dimension: usize,
+}
+
+impl UnitVectorWorkspace {
+    fn empty(dimension: usize) -> Self {
+        Self { map: None, path: Default::default(), slots: HashMap::new(), dimension }
+    }
+
+    fn build(connection: &Connection, ids: &[i64], dimension: usize)
+        -> std::result::Result<Self, String>
+    {
+        use std::io::Write;
+        dimension.checked_mul(8).filter(|_| dimension > 0)
+            .ok_or_else(|| "invalid geometry workspace dimension".to_string())?;
+        let path = crate::unique_index_sidecar_path(
+            &std::env::temp_dir().join("vcp-geometry"), "workspace",
+        );
+        let file = std::fs::OpenOptions::new().read(true).write(true)
+            .create_new(true).open(&path).map_err(|e| e.to_string())?;
+        // Own cleanup immediately after successful create_new, including all errors.
+        let mut workspace = Self::empty(dimension);
+        workspace.path = path;
+        let result = (|| -> std::result::Result<(), String> {
+        {
+            let mut writer = std::io::BufWriter::new(&file);
+            let mut unique = ids.to_vec();
+            unique.sort_unstable();
+            unique.dedup();
+            for batch in unique.chunks(128) {
+                let (rows, _) = read_unit_vectors(connection, batch, dimension)?;
+                // Stable slots; byte values are unchanged normalized f64 values.
+                for id in batch {
+                    if let Some(vector) = rows.get(id) {
+                        writer.write_all(bytemuck::cast_slice(vector.as_slice()))
+                            .map_err(|e| e.to_string())?;
+                        workspace.slots.insert(*id, workspace.slots.len());
+                    }
+                }
+            }
+            writer.flush().map_err(|e| e.to_string())?;
+        }
+        if !workspace.slots.is_empty() {
+            // SAFETY: this unique private file has no writers after construction.
+            // The mapping is released before deleting the file, also on Windows.
+            let map = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| e.to_string())?;
+            bytemuck::try_cast_slice::<u8, f64>(&map)
+                .map_err(|e| format!("unaligned geometry workspace: {e}"))?;
+            workspace.map = Some(map);
+        }
+        Ok(())
+        })();
+        drop(file);
+        result?;
+        Ok(workspace)
+    }
+
+    fn get(&self, id: &i64) -> Option<&[f64]> {
+        let slot = *self.slots.get(id)?;
+        let values: &[f64] = bytemuck::cast_slice(self.map.as_ref()?.as_ref());
+        let start = slot * self.dimension;
+        values.get(start..start + self.dimension)
+    }
+
+    fn contains_key(&self, id: &i64) -> bool { self.slots.contains_key(id) }
+    fn len(&self) -> usize { self.slots.len() }
+    fn is_empty(&self) -> bool { self.slots.is_empty() }
+}
+
+impl std::ops::Index<&i64> for UnitVectorWorkspace {
+    type Output = [f64];
+    fn index(&self, id: &i64) -> &Self::Output {
+        self.get(id).expect("geometry vector ID has been validated")
+    }
+}
+
+impl Drop for UnitVectorWorkspace {
+    fn drop(&mut self) {
+        drop(self.map.take());
+        if !self.path.as_os_str().is_empty() {
+            if let Err(error) = std::fs::remove_file(&self.path) {
+                eprintln!("[KBM] Geometry workspace cleanup failed '{}': {error}", self.path.display());
+            }
+        }
+    }
 }
 
 #[napi(object)]
@@ -325,8 +422,9 @@ impl GeometryTask {
                     cached = raw.and_then(|s| serde_json::from_str::<Value>(&s).ok())
                         .filter(|v| v["artifactSig"].as_str() == Some(signature.as_str()));
                 }
-                let (vectors,fallback) = if cached.is_some() { (HashMap::new(),0) }
-                    else { read_unit_vectors(conn,&ids,self.dimensions)? };
+                let vectors = if cached.is_some() { UnitVectorWorkspace::empty(self.dimensions) }
+                    else { UnitVectorWorkspace::build(conn, &ids, self.dimensions)? };
+                let fallback = vectors.len();
                 Ok((generation,dependencies,vectors,fallback))
             })?;
         drop(snapshot_gate);
@@ -369,7 +467,7 @@ impl GeometryTask {
                 let sim = dot(target,v).clamp(-1.0,1.0);
                 let semantic = semantic_weight(sim,gate_enabled,peak,sigma,floor,hard_floor);
                 if semantic > 0.0 {
-                    candidates.push(AgsCandidate { id:nid,prior:w.ln_1p()*semantic }); refs.push(v.as_slice());
+                    candidates.push(AgsCandidate { id:nid,prior:w.ln_1p()*semantic }); refs.push(v);
                 }
             }
             result.count = candidates.len();
@@ -419,12 +517,20 @@ impl GeometryTask {
             let weighted:Vec<_>=neighbors.iter().filter_map(|(id,w)| {
                 let v=&vectors[id];
                 let weight=w.ln_1p()*semantic_weight(dot(target,v).clamp(-1.0,1.0),gate_enabled,peak,sigma,floor,hard_floor);
-                (weight>0.0).then_some((v.as_slice(),weight))
+                (weight>0.0).then_some((v,weight))
             }).collect();
             star_direction(target,&mean,&weighted,if candidate_mode=="star" {mix} else {0.0})
         }).collect();
         let refs:Vec<_>=centered.iter().map(Vec::as_slice).collect();
         let mut trace=anchored_gs(AgsTarget::Span,&pool,&refs,k_max,number(global,"minGain",0.02,0.0,1.0));
+        // Global axes own their vectors; candidate construction and adjacency
+        // are no longer needed during coverage or SQL publication.
+        drop(refs);
+        drop(centered);
+        drop(pool);
+        drop(edges);
+        drop(offsets);
+        drop(support);
         let global_ms=started.elapsed().as_secs_f64()*1000.0-load_ms-local_ms;
         // Fixed-size chunks + indexed collect + serial reduction = thread-count-independent bits.
         let partial:Vec<_>=ids.par_chunks(128).map(|batch| {
@@ -436,6 +542,7 @@ impl GeometryTask {
             }}
             (energy,captured)
         }).collect();
+        drop(vectors);
         let mut total=0.0; let mut energies=vec![0.0;trace.basis.len()];
         for (energy,values) in partial { total+=energy; for (e,v) in energies.iter_mut().zip(values) { *e+=v; }}
         let mut cumulative=0.0;
@@ -533,6 +640,38 @@ impl Task for GeometryTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mapped_workspace_preserves_bits_and_releases_file() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY, vector BLOB)").unwrap();
+        let ids: Vec<i64> = (1..=300).collect();
+        for id in &ids {
+            let x = *id as f32 * 0.013;
+            let bytes: Vec<u8> = [x.cos(), x.sin(), -0.0, f32::from_bits(1)]
+                .iter().flat_map(|v| v.to_le_bytes()).collect();
+            connection.execute("INSERT INTO tags VALUES (?1,?2)", params![id, bytes]).unwrap();
+        }
+        connection.execute("UPDATE tags SET vector=zeroblob(16) WHERE id=7", []).unwrap();
+        let (expected, _) = read_unit_vectors(&connection, &ids, 4).unwrap();
+        let workspace = UnitVectorWorkspace::build(&connection, &ids, 4).unwrap();
+        assert_eq!(workspace.len(), expected.len());
+        assert!(!workspace.contains_key(&7));
+        for (id, vector) in expected {
+            assert!(workspace.get(&id).unwrap().iter().zip(vector)
+                .all(|(a, b)| a.to_bits() == b.to_bits()));
+        }
+        let path = workspace.path.clone();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), workspace.len() as u64 * 4 * 8);
+        drop(workspace);
+        assert!(!path.exists());
+        let empty = UnitVectorWorkspace::build(&connection, &[], 4).unwrap();
+        assert!(empty.is_empty());
+        assert!(empty.map.is_none());
+        let path = empty.path.clone();
+        drop(empty);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn prefix_nested_and_orthogonal() {

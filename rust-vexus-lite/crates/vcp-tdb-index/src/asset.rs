@@ -3,7 +3,7 @@
 use memmap2::Mmap;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
 
 #[cfg(test)]
@@ -46,7 +46,7 @@ impl VectorAsset {
     /// The host must keep this file immutable while mapped (publish by rename).
     /// Never truncate or overwrite the inode underlying a live asset.
     pub fn open(path: &Path, expected: &AssetIdentity) -> io::Result<Self> {
-        let file = File::open(path)?;
+        let mut file = File::open(path)?;
         // SAFETY: the host's immutable-asset protocol forbids in-place writes.
         let map = unsafe { Mmap::map(&file)? };
         if map.len() < HEADER + FOOTER || &map[..8] != MAGIC
@@ -98,7 +98,20 @@ impl VectorAsset {
             return Err(invalid("invalid vector asset section layout"));
         }
         let crc = u32::from_le_bytes(map[sm_end..sm_end + 4].try_into().unwrap());
-        if crc32fast::hash(&map[..sm_end]) != crc {
+        // VCP-PATCH: validate through bounded ordinary I/O, not the retained
+        // mapping. Hashing the mmap eagerly faults the entire cold f32 matrix
+        // into this process's working set before the first candidate rerank.
+        // Use the SAME open file as the mapping, not a reopened pathname.
+        let mut hasher = crc32fast::Hasher::new();
+        let mut buffer = vec![0_u8; 256 * 1024];
+        let mut remaining = sm_end;
+        while remaining != 0 {
+            let length = remaining.min(buffer.len());
+            file.read_exact(&mut buffer[..length])?;
+            hasher.update(&buffer[..length]);
+            remaining -= length;
+        }
+        if hasher.finalize() != crc {
             return Err(invalid("vector asset CRC mismatch"));
         }
         let mut seen = HashSet::with_capacity(count);

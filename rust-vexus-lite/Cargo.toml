@@ -24,6 +24,9 @@ regex = "1.13.1"
 # 与现有 TextChunker.js 的 cl100k_base 保持一致
 tiktoken-rs = "0.12.1"
 flate2 = "1.0"
+# Build-only SQL-derived geometry workspace; no precision conversion.
+memmap2 = "0.9"
+bytemuck = "1"
 
 # TDB retrieval kernels are statically linked into the same N-API module.
 vcp-tdb-index = { path = "crates/vcp-tdb-index" }

@@ -41,3 +41,20 @@ test('TDB memory profile accepts zero hot bytes and legacy statistics', () => {
     assert.equal(legacy.tagIndex.mmapBytes, 0);
     assert.equal(legacy.tagIndex.tombstones, 0);
 });
+
+test('stage samples are bounded scalar diagnostics and profiles return copies', () => {
+    const { captureMemoryStage } = require('../modules/knowledgeBase/memoryProfiler');
+    const state = fixture({ totalVectors: 7, hotBytes: 1024, mmapBytes: 8000 });
+    state.tagIndex.memoRuntimeStats = () => { throw new Error('must not load Memo'); };
+    for (let i = 0; i < 40; i++) captureMemoryStage(state, `stage-${i}`);
+    assert.equal(state.memoryStageSamples.length, 32);
+    assert.equal(state.memoryStageSamples[0].stage, 'stage-8');
+    const sample = state.memoryStageSamples[31];
+    assert.equal(sample.tagHotBytes, 1024);
+    assert.equal(sample.tagMappedBytes, 8000);
+    assert.equal(sample.diaryHotBytes, 1024);
+    assert.ok(sample.rss > 0);
+    const profile = buildMemoryProfile(state);
+    profile.memoryStageSamples[0].stage = 'changed';
+    assert.equal(state.memoryStageSamples[0].stage, 'stage-8');
+});
