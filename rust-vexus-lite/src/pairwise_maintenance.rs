@@ -58,7 +58,8 @@ impl Task for PairwiseModelCleanupTask {
                 )
                 .map_err(|error| format!("Count stale pairwise model rows failed: {}", error))?;
 
-            let should_skip = current_rows <= 0 || stale_rows <= 0;
+            // Even when stale numeric rows are already gone, statuses/artifacts can remain.
+            let should_skip = current_rows <= 0;
             let removed_rows = if should_skip {
                 0
             } else {
@@ -71,6 +72,22 @@ impl Task for PairwiseModelCleanupTask {
                         format!("Delete stale pairwise model rows failed: {}", error)
                     })? as i64
             };
+
+            if !should_skip {
+                transaction.execute(
+                    "DELETE FROM tag_pair_similarity_status WHERE model_sig != ?1",
+                    [&model_sig_for_write],
+                ).map_err(|error| format!("Delete stale pairwise statuses failed: {}", error))?;
+                transaction.execute(
+                    "DELETE FROM tagmemo_artifacts WHERE asset_type='pairwise_similarity' AND model_sig != ?1",
+                    [&model_sig_for_write],
+                ).map_err(|error| format!("Delete stale pairwise artifacts failed: {}", error))?;
+            }
+            transaction.execute(
+                "DELETE FROM kbm_operation_receipts
+                 WHERE expires_at < CAST(strftime('%s','now') AS INTEGER)*1000",
+                [],
+            ).map_err(|error| format!("Delete expired operation receipts failed: {}", error))?;
 
             details_for_write
                 .lock()
@@ -116,5 +133,56 @@ impl Task for PairwiseModelCleanupTask {
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_removes_stale_metadata_and_only_expired_receipts() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-pair-cleanup-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute_batch(
+                "INSERT INTO tag_pair_similarity VALUES (1,2,0.9,'current',0);
+                 INSERT INTO tag_pair_similarity_status VALUES (1,2,'old','old-asset','computed',0.8,0.05,0);
+                 INSERT INTO tagmemo_artifacts VALUES
+                   ('old-asset','pairwise_similarity','old','g','v','c','{}','ready',0,0),
+                   ('current-asset','pairwise_similarity','current','g','v','c','{}','ready',0,0);
+                 INSERT INTO kbm_operation_receipts VALUES
+                   ('expired','ingestion','b','d','committed',1,'{}',0,1),
+                   ('active','ingestion','b','d','committed',1,'{}',0,9223372036854775807);"
+            ).map_err(|error| error.to_string())?;
+            Ok(crate::storage::WriteReceipt {
+                operation: "fixture".into(), database_generation: 0, facts_changed: false,
+            })
+        }).unwrap();
+        PairwiseModelCleanupTask { db_path: db.clone(), model_sig: "current".into() }
+            .compute().unwrap();
+        storage.read(|connection| {
+            for (sql, expected) in [
+                ("SELECT COUNT(*) FROM tag_pair_similarity_status", 0),
+                ("SELECT COUNT(*) FROM tagmemo_artifacts WHERE model_sig='old'", 0),
+                ("SELECT COUNT(*) FROM tagmemo_artifacts WHERE model_sig='current'", 1),
+                ("SELECT COUNT(*) FROM kbm_operation_receipts WHERE operation_id='expired'", 0),
+                ("SELECT COUNT(*) FROM kbm_operation_receipts WHERE operation_id='active'", 1),
+            ] {
+                let count: i64 = connection.query_row(sql, [], |row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(count, expected, "{}", sql);
+            }
+            Ok(())
+        }).unwrap();
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -2983,6 +2983,14 @@ impl Task for IntrinsicResidualTask {
                 }
             }
 
+            tx.execute(
+                "DELETE FROM tag_intrinsic_residual_status WHERE artifact_sig != ?1",
+                [&artifact_sig_for_write],
+            ).map_err(|error| format!("Prune superseded residual statuses failed: {}", error))?;
+            tx.execute(
+                "DELETE FROM tagmemo_artifacts WHERE asset_type='intrinsic_residual' AND artifact_sig != ?1",
+                [&artifact_sig_for_write],
+            ).map_err(|error| format!("Prune superseded residual artifacts failed: {}", error))?;
             Ok(crate::storage::WriteReceipt {
                 operation: "publish_intrinsic_residuals".to_string(),
                 database_generation: 0,
