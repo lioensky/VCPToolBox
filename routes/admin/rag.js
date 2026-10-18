@@ -309,7 +309,8 @@ module.exports = function(options) {
             }
 
             const token = String(req.body?.token || '').trim();
-            if (!token || !/^[a-f0-9]{48}$/i.test(token)) {
+            // Rust prepareTagConsistency emits a SHA-256 token (64 hex characters).
+            if (!token || !/^[a-f0-9]{64}$/i.test(token)) {
                 return res.status(400).json({
                     success: false,
                     code: 'TAG_CONSISTENCY_INVALID_TOKEN',

@@ -145,7 +145,7 @@
               <div class="tag-consistency-card">
                 <div class="tag-consistency-card__copy">
                   <strong>按当前规则核对旧 Tag 库</strong>
-                  <p>预检只读取文件与数据库，不请求向量、不写入数据。确认后只向量化差分 Tag。</p>
+                  <p>预检读取文件与数据库并保存临时确认计划，不请求向量、不修改 Tag 事实。确认后只向量化差分 Tag，并自动排队重训练。</p>
                 </div>
 
                 <div
@@ -245,8 +245,8 @@
                 <div v-if="tagMemoAssetsStale" class="tag-consistency-warning" role="alert">
                   <span class="material-symbols-outlined">warning</span>
                   <p>
-                    Tag 真相层已更新。Pairwise、内生残差、传播核与浪潮矩阵仍是旧资产，
-                    请在下方执行“重建 V9.1 资产”。
+                    Tag 真相层已更新，RiverAGS 派生资产尚待确认发布。
+                    自动重训练排队结果见上方提示；若排队失败，可在下方手动重试。排队不代表训练完成，请查看主服务日志。
                   </p>
                 </div>
               </div>
@@ -256,15 +256,15 @@
               <span class="rag-console__label">主动自学习</span>
               <div class="active-training-card">
                 <div class="active-training-card__copy">
-                  <strong>V9.1 全量重训练</strong>
-                  <p>重建 V9.1 Pairwise、内生残差与传播核；发布成功后清理退休 V8.3 预计算，并重置 1% 新标签阈值计数。</p>
+                  <strong>RiverAGS全量重训练</strong>
+                  <p>由 Rust 重算 AGS 双尺度统一几何，再构建并发布 Memo/River 图资产。成功发布后扣除本次已处理的新标签计数；排队不代表训练完成，请查看主服务日志。</p>
                 </div>
                 <UiButton
                   variant="secondary"
                   :disabled="isActiveTraining"
                   @click="triggerActiveFullTraining"
                 >
-                  {{ isActiveTraining ? "训练已排队…" : "重建 V9.1 资产" }}
+                  {{ isActiveTraining ? "正在请求排队…" : "RiverAGS全量重训练" }}
                 </UiButton>
               </div>
             </div>
@@ -1855,11 +1855,16 @@ async function applyTagConsistency(): Promise<void> {
     const summary = response.result.summary;
     tagMemoAssetsStale.value = response.result.waveAssetsStale;
     tagConsistencyPreview.value = null;
+    const indexReady = response.result.indexReady === true;
+    const trainingQueued = response.result.training?.queued === true;
     statusMessage.value =
-      `Tag 修复完成：新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量；`
-      + "全局 Tag 内存索引已重建，请继续重建 V9.1 浪潮资产。";
-    statusType.value = "success";
-    showMessage(statusMessage.value, "success");
+      `Tag 事实已提交：新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量；`
+      + (indexReady ? "全局 Tag 索引差分已就绪；" : "全局 Tag 索引尚未就绪，请检查主服务恢复日志；")
+      + (trainingQueued
+        ? "RiverAGS全量重训练已自动排队，完成情况请查看主服务日志。"
+        : `RiverAGS重训练未确认排队，请手动重试。${response.result.training?.error || ""}`);
+    statusType.value = indexReady && trainingQueued ? "success" : "info";
+    showMessage(statusMessage.value, statusType.value);
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     tagConsistencyPreview.value = null;
@@ -1883,14 +1888,12 @@ async function triggerActiveFullTraining(): Promise<void> {
       loadingKey: "rag-tuning.active-full-training",
     });
     const result = response.result;
-    const resetCount = result?.resetPendingNewTags ?? 0;
-    const threshold = result?.threshold;
+    if (response.success !== true || result?.queued !== true) {
+      throw new Error(response.error || result?.error || "主服务未确认重训练排队");
+    }
 
-    statusMessage.value = threshold
-      ? `已排队 V9.1 全量重建与退休资产清理任务，已重置 ${resetCount}/${threshold} 个阈值计数。`
-      : `已排队 V9.1 全量重建与退休资产清理任务，已重置 ${resetCount} 个阈值计数。`;
+    statusMessage.value = `RiverAGS全量重训练已排队${result.taskId ? `（${result.taskId}）` : ""}。完成情况请查看主服务日志；成功发布后才更新资产和已处理标签计数。`;
     statusType.value = "success";
-    tagMemoAssetsStale.value = false;
     showMessage(statusMessage.value, "success");
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
