@@ -2492,7 +2492,7 @@ pub(crate) fn run_native(
     artifact_sig: &str,
     input_json: &str,
 ) -> std::result::Result<String, String> {
-    let _publication_guard = crate::publication_gate::acquire(db_path, &[String::from("*")])?;
+    let _publication_guard = crate::publication_gate::acquire_read(db_path, &[String::from("*")])?;
     crate::storage::with_registered_read_transaction(db_path, |connection| {
         run_native_with_connection(runtime, connection, artifact_sig, input_json)
     })

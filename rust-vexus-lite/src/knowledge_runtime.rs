@@ -42,7 +42,18 @@ impl Task for GlobalTagSearchTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<String> {
-        let _guard = crate::publication_gate::acquire(&self.db_path, &[String::from("global_tags")]).map_err(Error::from_reason)?;
+        let scopes = [String::from("global_tags")];
+        let mut guard = crate::publication_gate::acquire_read(&self.db_path, &scopes)
+            .map_err(Error::from_reason)?;
+        match ensure_index_scopes_ready(&self.db_path, &scopes) {
+            Ok(()) => {}
+            Err(error) if error.starts_with("KBM_INDEX_NOT_READY:") => {
+                drop(guard);
+                guard = crate::publication_gate::acquire(&self.db_path, &scopes)
+                    .map_err(Error::from_reason)?;
+            }
+            Err(error) => return Err(Error::from_reason(error)),
+        }
         match ensure_index_scopes_ready(&self.db_path, &["global_tags".to_string()]) {
             Ok(()) => {}
             Err(error) if error.starts_with("KBM_INDEX_NOT_READY:") => {
@@ -56,6 +67,7 @@ impl Task for GlobalTagSearchTask {
         }
         ensure_index_scopes_ready(&self.db_path, &["global_tags".to_string()])
             .map_err(Error::from_reason)?;
+        guard.downgrade().map_err(Error::from_reason)?;
         let matches = self.index.read()
             .map_err(|_| Error::from_reason("Global Tag index lock poisoned"))?
             .search(&self.query, self.limit)
@@ -1298,6 +1310,8 @@ impl Task for KvVectorWriteTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        let _guard = crate::publication_gate::acquire(&self.db_path, &[String::from("*")])
+            .map_err(Error::from_reason)?;
         let key = self.key.clone();
         let vector = self.vector.clone();
         let receipt = with_registered_write(&self.db_path, move |transaction| {
@@ -2026,6 +2040,8 @@ impl Task for NativeMemoArtifactPruneTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        let _guard = crate::publication_gate::acquire(&self.db_path, &[String::from("*")])
+            .map_err(Error::from_reason)?;
         let retain = self.retain_ready_artifacts.clamp(1, 1000) as i64;
         let retention_ms = self
             .failed_retention_ms

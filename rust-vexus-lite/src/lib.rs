@@ -1358,6 +1358,8 @@ impl Task for EpaPublishTask {
     type JsValue = EpaBasisResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        let _guard = crate::publication_gate::acquire(&self.db_path, &[String::from("*")])
+            .map_err(Error::from_reason)?;
         let pending = {
             let guard = self
                 .pending_cache
