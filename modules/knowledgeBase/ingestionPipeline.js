@@ -238,7 +238,8 @@ async _flushBatch() {
 
             for (const [dName, docs] of docsByDiary) {
                 docs.forEach(doc => {
-                    const candidate = migrationByPath.get(doc.relPath);
+                    const candidate = this._migrationEmbeddingFallbacks?.has(doc.relPath)
+                        ? null : migrationByPath.get(doc.relPath);
                     if (candidate) {
                         doc.migrationSourceFileId = candidate.liveFileId || null;
                         doc.migrationCacheId = candidate.migrationCacheId || null;
@@ -520,6 +521,16 @@ async _flushBatch() {
 
             const _tTagStart = Date.now();
             const newTagIds = receipt.newTagIds || [];
+            const retryablePaths = new Set();
+            for (const file of receipt.retryableFiles || []) {
+                if (file.code !== 'KNOWLEDGE_STORE_MIGRATION_SOURCE_CHANGED') continue;
+                retryablePaths.add(file.path);
+                this._migrationEmbeddingFallbacks ||= new Set();
+                this._migrationEmbeddingFallbacks.add(file.path);
+            }
+            if (retryablePaths.size > 0) {
+                retryDelayMs = Math.max(1000, this.config.sqliteBusyRetryDelayMs);
+            }
 
             // 5. ✅ 成功处理后，移除文件并清空重试计数
             batchFiles.forEach(f => {
@@ -527,6 +538,7 @@ async _flushBatch() {
                     || (this.watcherPathGenerations.get(path.resolve(f)) || 0)
                         !== (batchPathGenerations.get(path.resolve(f)) || 0)) return;
                 const relativePath = path.relative(this.config.rootPath, f);
+                if (retryablePaths.has(relativePath)) return;
                 if (incompleteFiles.has(relativePath)) {
                     console.warn(
                         `[KnowledgeBase] ⚠️ File "${relativePath}" committed with ` +
@@ -535,6 +547,7 @@ async _flushBatch() {
                     return;
                 }
                 this.pendingFiles.delete(f);
+                this._migrationEmbeddingFallbacks?.delete(relativePath);
                 this.fileRetryCount.delete(f); // 清空重试计数
             });
 

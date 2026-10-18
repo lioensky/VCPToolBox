@@ -520,6 +520,7 @@ pub(crate) struct IngestionCommitResult {
     pub(crate) diary_index_deltas: HashMap<String, DiaryIndexDelta>,
     pub(crate) new_tag_ids: Vec<i64>,
     pub(crate) new_tag_names: Vec<String>,
+    pub(crate) retryable_files: Vec<RetryableIngestionFile>,
     pub(crate) facts_committed: bool,
     pub(crate) index_ready: bool,
 }
@@ -660,6 +661,7 @@ impl Task for IngestionCommitTask {
             diary_index_deltas: details.diary_index_deltas,
             new_tag_ids: details.new_tag_ids,
             new_tag_names: details.new_tag_names,
+            retryable_files: details.retryable_files,
             facts_committed: true,
             index_ready,
         };
@@ -825,6 +827,7 @@ fn apply_committed_index_deltas(
             continue;
         }
         let scoped = CommitDetails {
+            retryable_files: Vec::new(),
             affected_files: Vec::new(), removed_chunk_ids: Vec::new(),
             upserted_chunk_ids: Vec::new(),
             upserted_chunks: details.upserted_chunks.iter()
@@ -839,6 +842,7 @@ fn apply_committed_index_deltas(
     }
     if !details.new_tag_ids.is_empty() {
         let scoped = CommitDetails {
+            retryable_files: Vec::new(),
             affected_files: Vec::new(), removed_chunk_ids: Vec::new(),
             upserted_chunk_ids: Vec::new(), upserted_chunks: Vec::new(),
             affected_diaries: Vec::new(), diary_index_deltas: HashMap::new(),
@@ -990,7 +994,16 @@ fn apply_scope_index_deltas(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct RetryableIngestionFile {
+    path: String,
+    code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CommitDetails {
+    #[serde(default)]
+    retryable_files: Vec<RetryableIngestionFile>,
     affected_files: Vec<i64>,
     removed_chunk_ids: Vec<i64>,
     upserted_chunk_ids: Vec<i64>,
@@ -1125,6 +1138,44 @@ fn add_upsert_delta(
         .push(chunk_id);
 }
 
+fn prefetch_migration_vectors(
+    connection: &rusqlite::Connection,
+    file: &PlannedFile,
+    dimension: usize,
+) -> std::result::Result<Option<Vec<(i64, Vec<u8>)>>, String> {
+    let (sql, source) = if let Some(id) = file.migration_source_file_id {
+        ("SELECT c.chunk_index,c.vector FROM chunks c JOIN files f ON f.id=c.file_id
+          WHERE f.id=?1 AND f.checksum=?2 AND f.size=?3 AND ?4>=0 ORDER BY c.chunk_index", id)
+    } else if let Some(id) = file.migration_cache_id {
+        ("SELECT c.chunk_index,c.vector FROM migration_deleted_chunks c
+          JOIN migration_deleted_files f ON f.id=c.cache_file_id
+          WHERE f.id=?1 AND f.checksum=?2 AND f.size=?3 AND f.expires_at>=?4
+          ORDER BY c.chunk_index", id)
+    } else {
+        return Ok(None);
+    };
+    let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
+    let rows = statement.query_map(
+        params![source, &file.checksum, file.size, current_time_ms()],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+    ).map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+    if rows.len() != file.chunk_count { return Ok(None); }
+    let mut vectors = Vec::with_capacity(rows.len());
+    for (offset, (index, bytes)) in rows.into_iter().enumerate() {
+        let Some(bytes) = bytes else { return Ok(None); };
+        if index != offset as i64 || bytes.len() != dimension * 4
+            || bytes.chunks_exact(4).any(|part| {
+                !f32::from_ne_bytes([part[0],part[1],part[2],part[3]]).is_finite()
+            })
+        {
+            return Ok(None);
+        }
+        vectors.push((index, bytes));
+    }
+    Ok(Some(vectors))
+}
+
 fn commit_plan(
     tx: &rusqlite::Transaction<'_>,
     plan: &IngestionPlan,
@@ -1213,6 +1264,29 @@ fn commit_plan(
         }
     }
 
+    // Freeze every reuse source before any file in this batch can delete its old chunks.
+    let mut reuse_by_path = HashMap::new();
+    let mut retryable_files = Vec::new();
+    for file in &plan.files {
+        if file.migration_source_file_id.is_none() && file.migration_cache_id.is_none() {
+            continue;
+        }
+        let vectors = prefetch_migration_vectors(tx, file, plan.dimension)?;
+        if let Some(vectors) = vectors {
+            reuse_by_path.insert(file.path.clone(), vectors);
+        } else {
+            retryable_files.push(RetryableIngestionFile {
+                path: file.path.clone(),
+                code: "KNOWLEDGE_STORE_MIGRATION_SOURCE_CHANGED".to_string(),
+            });
+        }
+    }
+    let skipped_paths: HashSet<&str> = retryable_files.iter().map(|file| file.path.as_str()).collect();
+    let retained_tag_names: HashSet<&str> = plan.files.iter()
+        .filter(|file| !skipped_paths.contains(file.path.as_str()))
+        .flat_map(|file| plan.tags[file.tag_start..file.tag_start + file.tag_count].iter())
+        .map(|tag| tag.name.as_str()).collect();
+
     let mut accumulator = CommitAccumulator {
         affected_files: Vec::new(),
         removed_chunk_ids: Vec::new(),
@@ -1230,6 +1304,7 @@ fn commit_plan(
             .prepare("SELECT id FROM tags WHERE name = ?1")
             .map_err(|error| format!("prepare existing Tag lookup failed: {}", error))?;
         for tag in &plan.tags {
+            if !retained_tag_names.contains(tag.name.as_str()) { continue; }
             if tag_ids.contains_key(&tag.name) {
                 continue;
             }
@@ -1244,6 +1319,7 @@ fn commit_plan(
     }
 
     for tag in &plan.tags {
+        if !retained_tag_names.contains(tag.name.as_str()) { continue; }
         if tag_ids.contains_key(&tag.name) {
             continue;
         }
@@ -1258,6 +1334,7 @@ fn commit_plan(
     }
 
     for tag in &plan.tags {
+        if !retained_tag_names.contains(tag.name.as_str()) { continue; }
         let Some(slot) = tag.vector_slot else {
             continue;
         };
@@ -1277,6 +1354,7 @@ fn commit_plan(
     }
 
     for file in &plan.files {
+        if skipped_paths.contains(file.path.as_str()) { continue; }
         let existing: Option<(i64, String)> = tx
             .query_row(
                 "SELECT id, diary_name FROM files WHERE path = ?1",
@@ -1364,46 +1442,7 @@ fn commit_plan(
         )
         .map_err(|error| format!("update file version for '{}' failed: {}", file.path, error))?;
 
-        let reused_vectors = if let Some(source_file_id) = file.migration_source_file_id {
-            let mut statement = tx.prepare(
-                "SELECT chunk_index, vector
-                 FROM chunks
-                 WHERE file_id = ?1
-                   AND vector IS NOT NULL
-                   AND length(vector) = ?2
-                 ORDER BY chunk_index"
-            ).map_err(|error| format!("Prepare live migration vector read failed: {}", error))?;
-            let rows = statement.query_map(
-                params![source_file_id, (plan.dimension * 4) as i64],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-            ).map_err(|error| format!("Query live migration vectors failed: {}", error))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|error| format!("Decode live migration vectors failed: {}", error))?
-        } else if let Some(cache_id) = file.migration_cache_id {
-            let mut statement = tx.prepare(
-                "SELECT chunk_index, vector
-                 FROM migration_deleted_chunks
-                 WHERE cache_file_id = ?1
-                   AND length(vector) = ?2
-                 ORDER BY chunk_index"
-            ).map_err(|error| format!("Prepare tombstone vector read failed: {}", error))?;
-            let rows = statement.query_map(
-                params![cache_id, (plan.dimension * 4) as i64],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-            ).map_err(|error| format!("Query tombstone vectors failed: {}", error))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|error| format!("Decode tombstone vectors failed: {}", error))?
-        } else {
-            Vec::new()
-        };
-        let reuse_requested =
-            file.migration_source_file_id.is_some() || file.migration_cache_id.is_some();
-        if reuse_requested && reused_vectors.len() != file.chunk_count {
-            return Err(format!(
-                "Migration reuse vector count mismatch for '{}': expected {}, got {}",
-                file.path, file.chunk_count, reused_vectors.len()
-            ));
-        }
+        let reused_vectors = reuse_by_path.remove(&file.path).unwrap_or_default();
 
         for offset in 0..file.chunk_count {
             let chunk = &plan.chunks[file.chunk_start + offset];
@@ -1469,6 +1508,7 @@ fn commit_plan(
         diaries
     };
     let details = CommitDetails {
+        retryable_files,
         affected_files: accumulator.affected_files,
         removed_chunk_ids: accumulator.removed_chunk_ids,
         upserted_chunk_ids: accumulator.upserted_chunk_ids,
@@ -1535,6 +1575,7 @@ fn commit_plan(
         ],
     )
     .map_err(|error| format!("persist ingestion operation receipt failed: {}", error))?;
+    let facts_changed = !details.affected_files.is_empty();
     committed_details
         .lock()
         .map_err(|_| "Ingestion commit details lock poisoned".to_string())?
@@ -1543,7 +1584,7 @@ fn commit_plan(
     Ok(WriteReceipt {
         operation: "commit_ingestion_batch".to_string(),
         database_generation: 0,
-        facts_changed: true,
+        facts_changed,
     })
 }
 
@@ -2397,6 +2438,79 @@ mod cold_scope_baseline_tests {
         let mut vector = [0.0; 2];
         index.index.read().unwrap().get(1, &mut vector).unwrap();
         assert_eq!(vector, [0.0, 1.0]);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod migration_source_tests {
+    use super::*;
+
+    #[test]
+    fn reuse_is_frozen_before_batch_deletes_and_changed_sources_are_isolated() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-migration-source-{}-{}", std::process::id(), current_time_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute_batch(
+                "INSERT INTO files(id,path,diary_name,checksum,mtime,size)
+                 VALUES (1,'source.txt','test','original',1,10);"
+            ).map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO chunks(file_id,chunk_index,content,vector) VALUES (1,0,'old',?1)",
+                [vector_bytes(&[1.0,0.0], 0, 2)],
+            ).map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let plan: IngestionPlan = serde_json::from_value(serde_json::json!({
+            "operationId":"freeze", "batchId":"freeze", "dimension":2, "modelSig":"test",
+            "files":[
+                {"path":"source.txt","diaryName":"test","checksum":"changed","mtime":2,"size":20,
+                 "expectedVersion":0,"chunkStart":0,"chunkCount":1,"tagStart":0,"tagCount":0},
+                {"path":"copy.txt","diaryName":"test","checksum":"original","mtime":1,"size":10,
+                 "expectedVersion":0,"chunkStart":1,"chunkCount":1,"tagStart":0,"tagCount":0,
+                 "migrationSourceFileId":1},
+                {"path":"bad.txt","diaryName":"test","checksum":"wrong","mtime":1,"size":10,
+                 "expectedVersion":0,"chunkStart":2,"chunkCount":1,"tagStart":0,"tagCount":1,
+                 "migrationSourceFileId":1}
+            ],
+            "chunks":[
+                {"content":"new","chunkIndex":0,"vectorSlot":0},
+                {"content":"old","chunkIndex":0,"vectorSlot":null},
+                {"content":"bad","chunkIndex":0,"vectorSlot":null}
+            ],
+            "tags":[{"name":"must-not-leak","position":1,"vectorSlot":null}]
+        })).unwrap();
+        let details = Arc::new(Mutex::new(None));
+        let output = details.clone();
+        storage.submit_write(move |tx| commit_plan(
+            tx, &plan, "digest", &[0.0,1.0], &[], output,
+        )).unwrap();
+        let result = details.lock().unwrap().take().unwrap();
+        assert_eq!(result.affected_files.len(), 2);
+        assert_eq!(result.retryable_files.len(), 1);
+        assert_eq!(result.retryable_files[0].path, "bad.txt");
+        assert_eq!(result.retryable_files[0].code, "KNOWLEDGE_STORE_MIGRATION_SOURCE_CHANGED");
+        storage.read(|connection| {
+            let vector: Vec<u8> = connection.query_row(
+                "SELECT c.vector FROM chunks c JOIN files f ON f.id=c.file_id WHERE f.path='copy.txt'",
+                [], |row| row.get(0),
+            ).map_err(|error| error.to_string())?;
+            assert_eq!(vector, vector_bytes(&[1.0,0.0], 0, 2));
+            let count: i64 = connection.query_row(
+                "SELECT (SELECT COUNT(*) FROM files WHERE path='bad.txt')+(SELECT COUNT(*) FROM tags)",
+                [], |row| row.get(0),
+            ).map_err(|error| error.to_string())?;
+            assert_eq!(count, 0);
+            Ok(())
+        }).unwrap();
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

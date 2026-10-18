@@ -113,3 +113,58 @@ test('new preview cancels the previous prepared token', async () => {
     assert.deepEqual(cancelled, ['old']);
     assert.equal(service.snapshots.size, 1);
 });
+
+test('changed migration source retries only that file using normal embedding without retry budget', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kbm-migration-retry-'));
+    const good = path.join(root, 'good.txt');
+    const retry = path.join(root, 'retry.txt');
+    await fs.writeFile(good, 'good');
+    await fs.writeFile(retry, 'retry');
+    let round = 0;
+    const embedded = [];
+    embed = async texts => {
+        embedded.push(...texts);
+        return texts.map(() => [1, 0]);
+    };
+    const owner = {
+        config: { rootPath: root, dimension: 2, modelSig: 'test', maxBatchSize: 50, sqliteBusyRetryDelayMs: 1 },
+        pendingFiles: new Set([good, retry]), watcherPathGenerations: new Map(),
+        fileRetryCount: new Map(), diaryIndices: new Map(),
+        probeIngestionFiles: async names => names.map(name => ({ path: name, version: 0 })),
+        prepareIngestionText: async text => ({ chunks: [text], tags: [] }),
+        probeMigrationReuse: async () => [{ path: 'retry.txt', liveFileId: 1 }],
+        probeIngestionTags: async () => [],
+        _isSqliteBusyError: () => false, _isSqliteCorruptionError: () => false,
+        invalidateDiaryDateIndex() {},
+        async commitIngestionBatch(plan, chunks) {
+            owner._shuttingDown = true;
+            round++;
+            if (round === 1) {
+                assert.equal(plan.files.length, 2);
+                assert.equal(chunks.length, 2);
+                return { indexReady: true, retryableFiles: [
+                    { path: 'retry.txt', code: 'KNOWLEDGE_STORE_MIGRATION_SOURCE_CHANGED' }
+                ] };
+            }
+            assert.equal(plan.files.length, 1);
+            assert.equal(plan.files[0].path, 'retry.txt');
+            assert.equal(plan.files[0].migrationSourceFileId, null);
+            assert.equal(chunks.length, 2);
+            return { indexReady: true };
+        }
+    };
+    try {
+        const pipeline = new IngestionPipeline(owner);
+        await pipeline._flushBatch();
+        assert.deepEqual([...owner.pendingFiles], [retry]);
+        assert.equal(owner.fileRetryCount.size, 0);
+        owner._shuttingDown = false;
+        await pipeline._flushBatch();
+        assert.deepEqual(embedded, ['good', 'retry']);
+        assert.equal(owner.pendingFiles.size, 0);
+        assert.equal(owner._migrationEmbeddingFallbacks.size, 0);
+    } finally {
+        owner._shuttingDown = true;
+        await fs.rm(root, { recursive: true, force: true });
+    }
+});
