@@ -628,7 +628,8 @@ impl Task for IngestionCommitTask {
             }
             if !details.new_tag_ids.is_empty() {
                 self.global_tag_content_revision.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                if self.memo_runtime.clear().is_err() { index_ready = false; }
+                // Artifact compatibility is checked against Tag facts and derived dependencies.
+                // Do not destroy unrelated in-flight observation handles on every new Tag.
             }
         }
         for scope in affected_scopes.iter().filter(|_| receipt.facts_changed) {

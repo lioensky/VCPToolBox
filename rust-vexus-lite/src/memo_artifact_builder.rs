@@ -623,7 +623,7 @@ fn run_build(
             let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
             let database_generation = database_generation(readonly)?;
             let dependencies = crate::storage::DerivedDependencies::capture(
-                readonly, &["derived_pairwise", "derived_intrinsic"],
+                readonly, &["memo_tag_facts", "derived_pairwise", "derived_intrinsic"],
             )?;
             Ok((
                 rows,
@@ -845,4 +845,63 @@ pub(crate) fn rebuild_with_runtime(
         db_path,
         input_json,
     }))
+}
+
+
+#[cfg(test)]
+mod fact_dependency_tests {
+    use super::*;
+    use crate::storage::{SqliteStorageEngine, StorageOptions, WriteReceipt};
+
+    #[test]
+    fn ordinary_writes_reuse_cold_artifact_but_tag_changes_invalidate_manifest_and_load() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-artifact-facts-{}-{}", std::process::id(), now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = SqliteStorageEngine::open_and_init(&db, StorageOptions::default()).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute_batch(
+                "INSERT INTO files(id,path,diary_name,checksum,mtime,size) VALUES (1,'tagged.txt','test','h',1,1);
+                 INSERT INTO tags(id,name,vector) VALUES (1,'a',X'0000803f00000000'),(2,'b',X'000000000000803f');
+                 INSERT INTO file_tags VALUES (1,1,1),(1,2,2);"
+            ).map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let runtime = MemoRuntime::new();
+        let built = run_build(&runtime, &db, r#"{"modelSig":"test","effectiveConfig":{}}"#).unwrap();
+        let config_hash = hash_text("{}", 32);
+        let mut manifest = crate::knowledge_runtime::NativeMemoManifestLookupTask {
+            db_path: db.clone(), model_sig: "test".into(), config_hash,
+        };
+        storage.submit_write(|tx| {
+            tx.execute_batch(
+                "INSERT INTO files(path,diary_name,checksum,mtime,size) VALUES ('plain.txt','test','plain',1,1);"
+            ).map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "ordinary".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        runtime.clear().unwrap();
+        assert_ne!(manifest.compute().unwrap(), "null");
+        with_registered_read_transaction(&db, |connection| {
+            crate::rivermemo_topology_v3::load_artifact_with_connection(
+                &runtime, connection, &built.artifact_sig,
+            ).map(|_| ())
+        }).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute("UPDATE tags SET vector=X'000000000000803f' WHERE id=1", [])
+                .map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "tag-change".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        runtime.clear().unwrap();
+        assert_eq!(manifest.compute().unwrap(), "null");
+        let error = with_registered_read_transaction(&db, |connection| {
+            crate::rivermemo_topology_v3::load_artifact_with_connection(
+                &runtime, connection, &built.artifact_sig,
+            ).map(|_| ())
+        }).unwrap_err();
+        assert!(error.contains("DERIVED_DEPENDENCY_CONFLICT"));
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

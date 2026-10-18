@@ -353,7 +353,33 @@ pub(crate) fn initialize_schema(
     // 派生版本独立于事实代际；触发器覆盖发布、维护和删除等所有写入口。
     transaction.execute_batch(
         "INSERT OR IGNORE INTO kbm_runtime_meta(key,value) VALUES
-         ('derived_pairwise','0'),('derived_intrinsic','0'),('derived_epa','0');"
+         ('derived_pairwise','0'),('derived_intrinsic','0'),('derived_epa','0'),
+         ('memo_tag_facts','0');
+         CREATE TRIGGER IF NOT EXISTS trg_memo_tags_insert AFTER INSERT ON tags BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='memo_tag_facts';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_memo_tags_delete AFTER DELETE ON tags BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='memo_tag_facts';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_memo_tags_update AFTER UPDATE OF id,name,vector ON tags
+         WHEN OLD.id IS NOT NEW.id OR OLD.name IS NOT NEW.name OR OLD.vector IS NOT NEW.vector BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='memo_tag_facts';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_memo_relations_insert AFTER INSERT ON file_tags BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='memo_tag_facts';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_memo_relations_delete AFTER DELETE ON file_tags BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='memo_tag_facts';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_memo_relations_update AFTER UPDATE ON file_tags
+         WHEN OLD.file_id IS NOT NEW.file_id OR OLD.tag_id IS NOT NEW.tag_id OR OLD.position IS NOT NEW.position BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='memo_tag_facts';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_memo_provenance_update AFTER UPDATE OF path,diary_name ON files
+         WHEN (OLD.path IS NOT NEW.path OR OLD.diary_name IS NOT NEW.diary_name)
+           AND EXISTS(SELECT 1 FROM file_tags WHERE file_id=NEW.id) BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='memo_tag_facts';
+         END;"
     ).map_err(|error| format!("initialize derived generations failed: {}", error))?;
     for (table, key) in [
         ("tag_pair_similarity", "derived_pairwise"),

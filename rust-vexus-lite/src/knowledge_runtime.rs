@@ -1949,20 +1949,6 @@ impl Task for NativeMemoManifestLookupTask {
         let model_sig = self.model_sig.clone();
         let config_hash = self.config_hash.clone();
         let row = crate::storage::with_registered_read_transaction_napi(&self.db_path, move |connection| {
-            let database_generation: String = connection
-                .query_row(
-                    "SELECT value FROM kbm_runtime_meta \
-                     WHERE key = 'database_generation'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(|error| {
-                    Error::from_reason(format!(
-                        "Read persisted Memo database generation failed: {}",
-                        error
-                    ))
-                })?;
-
             connection
                 .query_row(
                     "SELECT artifact_sig, algorithm_version, source_v9_artifact_sig,
@@ -1972,12 +1958,12 @@ impl Task for NativeMemoManifestLookupTask {
                      FROM rivermemo_artifacts
                      WHERE model_sig = ?1
                        AND config_hash = ?2
-                       AND database_generation = ?3
                        AND algorithm_version = 'memo.native-artifact-v1'
                        AND status = 'ready'
                        AND payload IS NOT NULL
                        AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d
-                            WHERE d.artifact_sig=rivermemo_artifacts.artifact_sig)=2
+                            WHERE d.artifact_sig=rivermemo_artifacts.artifact_sig
+                              AND d.dependency_key IN ('memo_tag_facts','derived_pairwise','derived_intrinsic'))=3
                        AND NOT EXISTS(
                          SELECT 1 FROM kbm_artifact_dependencies d
                          LEFT JOIN kbm_runtime_meta m ON m.key=d.dependency_key
@@ -1988,8 +1974,7 @@ impl Task for NativeMemoManifestLookupTask {
                      LIMIT 1",
                     rusqlite::params![
                         model_sig,
-                        config_hash,
-                        database_generation
+                        config_hash
                     ],
                     |row| {
                         Ok(serde_json::json!({

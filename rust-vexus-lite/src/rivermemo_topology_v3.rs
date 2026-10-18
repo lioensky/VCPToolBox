@@ -849,8 +849,9 @@ pub(crate) fn load_artifact_with_connection(
         "SELECT EXISTS(
            SELECT 1 FROM rivermemo_artifacts a
            WHERE a.artifact_sig=?1 AND a.status='ready'
-             AND a.database_generation=(SELECT value FROM kbm_runtime_meta WHERE key='database_generation')
-             AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d WHERE d.artifact_sig=a.artifact_sig)=2
+             AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d
+                  WHERE d.artifact_sig=a.artifact_sig
+                    AND d.dependency_key IN ('memo_tag_facts','derived_pairwise','derived_intrinsic'))=3
              AND NOT EXISTS(
                SELECT 1 FROM kbm_artifact_dependencies d
                LEFT JOIN kbm_runtime_meta m ON m.key=d.dependency_key
