@@ -3,6 +3,8 @@
 // This is the most reliable way to fix "ghost ID" issues and ensure data synchronization.
 // Usage: node rebuild_vector_indexes.js
 
+require('./guard-server-stopped').assertLegacyKnowledgeWriteDisabled();
+
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');

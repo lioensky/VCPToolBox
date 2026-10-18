@@ -13,6 +13,10 @@
  * node diary-semantic-classifier.js --source "小吉的知识" --categories "分类1,分类2" --filter "小吉的" --dry-run
  */
 
+if (!process.argv.some(arg => ['--dry-run', '-d'].includes(arg))) {
+    require('./guard-server-stopped').assertLegacyKnowledgeWriteDisabled();
+}
+
 const fs = require('fs');
 const fsPromises = require('fs').promises;
 const path = require('path');

@@ -2,6 +2,8 @@
 // Description: A script to detect, merge duplicate tags in the SQLite DB,
 // and surgically remove the corresponding vectors from the .usearch index file.
 
+require('./guard-server-stopped').assertLegacyKnowledgeWriteDisabled();
+
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
