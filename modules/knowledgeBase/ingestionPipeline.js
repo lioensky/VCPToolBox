@@ -45,10 +45,12 @@ async _flushDeleteBatch() {
         try {
             await this._handleDeleteBatch(batchFiles);
             batchFiles.forEach(f => this.pendingDeletes.delete(f));
+            this.databaseCoordinator?.notifyDeletedFilePaths(batchFiles);
             this.touchActivity?.();
         } catch (e) {
             console.error('[KnowledgeBase] ❌ Delete batch failed:', e);
             if (this._isSqliteCorruptionError(e)) {
+                this.databaseCoordinator?.notifyDeletedFilePaths(batchFiles, e);
                 await this._handleRuntimeSqliteCorruption(e, []);
             } else {
                 retryDelayMs = Math.max(1000, this.config.sqliteBusyRetryDelayMs);
@@ -116,8 +118,20 @@ async _flushBatch() {
             // 1. 解析文件并按日记本分组
             const docsByDiary = new Map(); // Map<DiaryName, Array<Doc>>
             const unstableFiles = new Set();
+            const terminalFiles = new Map();
+            const finishTerminalFiles = () => {
+                for (const [filePath, error] of terminalFiles) {
+                    const absolute = path.resolve(filePath);
+                    if ((this.watcherPathGenerations.get(absolute) || 0)
+                        !== (batchPathGenerations.get(absolute) || 0)) continue;
+                    this.pendingFiles.delete(filePath);
+                    this.fileRetryCount.delete(filePath);
+                    this.databaseCoordinator?.notifyIndexedFilePaths([filePath], error);
+                }
+                terminalFiles.clear();
+            };
             const relativePaths = batchFiles.map(filePath =>
-                path.relative(this.config.rootPath, filePath)
+                path.relative(this.config.rootPath, filePath).replace(/\\/g, '/')
             );
             const probeRows = await this.probeIngestionFiles(relativePaths);
             const probeByPath = new Map(
@@ -127,8 +141,8 @@ async _flushBatch() {
             await Promise.all(batchFiles.map(async (filePath) => {
                 try {
                     const stats = await fs.stat(filePath);
-                    const relPath = path.relative(this.config.rootPath, filePath);
-                    const parts = relPath.split(path.sep);
+                    const relPath = path.relative(this.config.rootPath, filePath).replace(/\\/g, '/');
+                    const parts = relPath.split('/');
                     const diaryName = parts.length > 1 ? parts[0] : 'Root';
 
                     const row = probeByPath.get(relPath);
@@ -142,7 +156,10 @@ async _flushBatch() {
                         && row.chunkCount === row.validVectorCount
                         && row.completeTags === true
                         && row.tagCount === row.validTagVectorCount
-                    ) return;
+                    ) {
+                        terminalFiles.set(filePath, null);
+                        return;
+                    }
 
                     const content = await fs.readFile(filePath, 'utf-8');
                     const statsAfterRead = await fs.stat(filePath);
@@ -175,6 +192,7 @@ async _flushBatch() {
                                 mtime: Math.floor(stats.mtimeMs), size: stats.size
                             })
                         );
+                        terminalFiles.set(filePath, null);
                         return;
                     }
 
@@ -199,19 +217,16 @@ async _flushBatch() {
                     if (this._isSqliteBusyError(e) || this._isSqliteCorruptionError(e)
                         || /KNOWLEDGE_STORE_/.test(String(e.message))) throw e;
                     if (e.code !== 'ENOENT') console.warn(`Read error ${filePath}:`, e.message);
+                    terminalFiles.set(filePath, e);
                 }
             }));
 
-            if (docsByDiary.size === 0) {
-                // 稳定且无变更的文件可安全出队；读取期间变化的文件必须保留并重试。
-                batchFiles.forEach(f => {
-                    if (unstableFiles.has(f)) return;
-                    this.pendingFiles.delete(f);
-                    this.fileRetryCount.delete(f);
-                });
-                this.isProcessing = false;
-                return;
+            // 快路径和读取失败已到终态，不依赖其他文件能否进入提交计划。
+            finishTerminalFiles();
+            if (unstableFiles.size > 0) {
+                retryDelayMs = Math.max(500, Number(this.config.batchWindow) || 0);
             }
+            if (docsByDiary.size === 0) return;
 
             // 2. 收集文本并在 Rust 内部解析可复用向量来源。
             const allChunksWithMeta = [];
@@ -526,6 +541,10 @@ async _flushBatch() {
 
             const _tTagStart = Date.now();
             const newTagIds = receipt.newTagIds || [];
+            for (const diaryName of receipt.affectedDiaries || Object.keys(receipt.diaryIndexDeltas || {})) {
+                if (this.diaryIndices.has(diaryName)) this._scheduleIndexSave?.(diaryName);
+            }
+            if (newTagIds.length > 0) this._scheduleIndexSave?.('global_tags');
             const retryablePaths = new Set();
             for (const file of receipt.retryableFiles || []) {
                 if (file.code !== 'KNOWLEDGE_STORE_MIGRATION_SOURCE_CHANGED') continue;
@@ -539,10 +558,11 @@ async _flushBatch() {
 
             // 5. ✅ 成功处理后，移除文件并清空重试计数
             batchFiles.forEach(f => {
+                if (!this.pendingFiles.has(f)) return;
                 if (unstableFiles.has(f) || unstableFiles.has(path.resolve(f))
                     || (this.watcherPathGenerations.get(path.resolve(f)) || 0)
                         !== (batchPathGenerations.get(path.resolve(f)) || 0)) return;
-                const relativePath = path.relative(this.config.rootPath, f);
+                const relativePath = path.relative(this.config.rootPath, f).replace(/\\/g, '/');
                 if (retryablePaths.has(relativePath)) return;
                 if (incompleteFiles.has(relativePath)) {
                     console.warn(
@@ -554,6 +574,7 @@ async _flushBatch() {
                 this.pendingFiles.delete(f);
                 this._migrationEmbeddingFallbacks?.delete(relativePath);
                 this.fileRetryCount.delete(f); // 清空重试计数
+                this.databaseCoordinator?.notifyIndexedFilePaths([f]);
             });
 
             if (incompleteFiles.size > 0) {
@@ -603,6 +624,7 @@ async _flushBatch() {
             }
 
             if (this._isSqliteCorruptionError(e)) {
+                this.databaseCoordinator?.notifyIndexedFilePaths(batchFiles, e);
                 await this._handleRuntimeSqliteCorruption(e, batchFiles);
             } else if (this._isSqliteBusyError(e)) {
                 // SQLITE_BUSY/LOCKED 是共享数据库级竞争，不是任一文件的确定性错误。
@@ -635,6 +657,7 @@ async _flushBatch() {
                         console.error(`[KnowledgeBase] ⛔ File "${f}" failed ${MAX_FILE_RETRIES} times. Removing from queue permanently.`);
                         this.pendingFiles.delete(f);
                         this.fileRetryCount.delete(f);
+                        this.databaseCoordinator?.notifyIndexedFilePaths([f], e);
                     } else {
                         this.fileRetryCount.set(f, count);
                         console.warn(`[KnowledgeBase] ⚠️ File "${f}" retry ${count}/${MAX_FILE_RETRIES}.`);
@@ -659,7 +682,9 @@ async _handleDelete(filePath) {
     },
 
 async _handleDeleteBatch(filePaths) {
-        const relPaths = [...new Set(filePaths.map(filePath => path.relative(this.config.rootPath, filePath)))];
+        const relPaths = [...new Set(filePaths.map(filePath =>
+            path.relative(this.config.rootPath, filePath).replace(/\\/g, '/')
+        ))];
         if (relPaths.length === 0) return;
 
         try {
@@ -680,6 +705,7 @@ async _handleDeleteBatch(filePaths) {
 
             for (const diaryName of affectedDiaries) {
                 this.invalidateDiaryDateIndex(diaryName);
+                if (this.diaryIndices.has(diaryName)) this._scheduleIndexSave?.(diaryName);
             }
 
             if (receipt.indexReady !== true) {

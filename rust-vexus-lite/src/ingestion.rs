@@ -536,7 +536,6 @@ pub struct IngestionCommitTask {
     pub(crate) global_tag_index: Arc<crate::index_handle::IndexHandle>,
     pub(crate) global_tag_content_revision: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) diary_revisions: HashMap<String, Arc<std::sync::atomic::AtomicU64>>,
-    pub(crate) memo_runtime: Arc<crate::rivermemo_topology_v3::MemoRuntime>,
 }
 
 impl Task for IngestionCommitTask {
@@ -1960,8 +1959,7 @@ impl Task for OrphanCleanupTask {
         .map_err(Error::from_reason)?;
 
         let mut missing_files = Vec::new();
-        let mut affected_diaries = HashSet::new();
-        for (file_id, relative_path, diary_name) in file_rows {
+        for (file_id, relative_path, _diary_name) in file_rows {
             let relative = std::path::Path::new(&relative_path);
             if relative.components().any(|component| {
                 !matches!(component, std::path::Component::Normal(_))
@@ -1972,7 +1970,6 @@ impl Task for OrphanCleanupTask {
             match std::fs::metadata(&candidate) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     missing_files.push(file_id);
-                    affected_diaries.insert(diary_name);
                 }
                 Ok(_) => {}
                 Err(error) => return Err(Error::from_reason(format!(
@@ -1983,12 +1980,13 @@ impl Task for OrphanCleanupTask {
 
         let _publication_guard = crate::publication_gate::acquire(&self.db_path, &[String::from("*")]).map_err(Error::from_reason)?;
         let missing_files_for_write = missing_files.clone();
-        let mut invalid_diaries = affected_diaries.clone();
+        let mut invalid_diaries = HashSet::new();
         let affected_diaries_for_write = Arc::new(Mutex::new(None));
         let affected_diaries_for_write_ref = Arc::clone(&affected_diaries_for_write);
         let _receipt = with_registered_write(&self.db_path, move |tx| {
             let orphan_chunks;
             let orphan_file_tags;
+            let mut deleted_files = 0usize;
 
             for file_id in &missing_files_for_write {
                 let relative_path: String = tx
@@ -2008,9 +2006,7 @@ impl Task for OrphanCleanupTask {
                 }
                 match std::fs::metadata(root_path.join(&relative_path)) {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Ok(_) => return Err(
-                        "Orphan cleanup snapshot changed; rescan required".to_string()
-                    ),
+                    Ok(_) => continue,
                     Err(error) => return Err(format!(
                         "Orphan cleanup final file verification deferred: {}", error
                     )),
@@ -2031,6 +2027,8 @@ impl Task for OrphanCleanupTask {
                     .map_err(|error| {
                         format!("Delete missing file failed: {}", error)
                     })?;
+
+                deleted_files += 1;
 
                 if !relative_path.is_empty() {
                     let current_version: i64 = tx
@@ -2136,18 +2134,18 @@ impl Task for OrphanCleanupTask {
             affected_diaries_for_write_ref
                 .lock()
                 .map_err(|_| "Orphan cleanup details lock poisoned".to_string())?
-                .replace((orphan_chunks, orphan_file_tags));
+                .replace((orphan_chunks, orphan_file_tags, deleted_files, invalid_diaries));
             Ok(WriteReceipt {
                 operation: "cleanup_database_orphans".to_string(),
                 database_generation: 0,
-                facts_changed: !missing_files_for_write.is_empty()
+                facts_changed: deleted_files > 0
                     || orphan_chunks > 0
                     || orphan_file_tags > 0,
             })
         })
         .map_err(Error::from_reason)?;
 
-        let (orphan_chunks, orphan_file_tags) = affected_diaries_for_write
+        let (orphan_chunks, orphan_file_tags, deleted_files, affected_diaries) = affected_diaries_for_write
             .lock()
             .map_err(|_| Error::from_reason("Orphan cleanup details lock poisoned"))?
             .take()
@@ -2156,7 +2154,7 @@ impl Task for OrphanCleanupTask {
         let mut affected_diaries: Vec<String> = affected_diaries.into_iter().collect();
         affected_diaries.sort();
         serde_json::to_string(&OrphanCleanupResult {
-            missing_files: missing_files.len(),
+            missing_files: deleted_files,
             orphan_chunks,
             orphan_file_tags,
             affected_diaries,
@@ -2365,7 +2363,6 @@ mod scope_publication_tests {
             global_tag_index: tags.index.clone(),
             global_tag_content_revision: tags.content_revision.clone(),
             diary_revisions: HashMap::from([("hot".into(), diary.content_revision.clone())]),
-            memo_runtime: tags.memo_runtime.clone(),
         };
         let receipt: serde_json::Value = serde_json::from_str(&task.compute().unwrap()).unwrap();
         assert_eq!(receipt["indexReady"], true);
@@ -2579,7 +2576,7 @@ mod tag_only_tests {
             chunk_vectors: vec![], tag_vectors: vec![0.0,1.0],
             diary_indices: HashMap::new(), global_tag_index: tags.index.clone(),
             global_tag_content_revision: tags.content_revision.clone(),
-            diary_revisions: HashMap::new(), memo_runtime: tags.memo_runtime.clone(),
+            diary_revisions: HashMap::new(),
         };
         let receipt: serde_json::Value = serde_json::from_str(&task.compute().unwrap()).unwrap();
         assert_eq!(receipt["indexReady"], true);

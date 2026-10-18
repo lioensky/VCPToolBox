@@ -2621,7 +2621,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             fileCandidates: Array.isArray(rawHybridPlan?.fileCandidates)
                 ? rawHybridPlan.fileCandidates
                     .map(candidate => ({
-                        path: String(candidate?.path || '').trim(),
+                        path: String(candidate?.path || '').trim().replace(/\\/g, '/'),
                         bm25Score: Math.max(
                             0,
                             Number(candidate?.bm25Score) || 0
@@ -2671,7 +2671,11 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         } : null;
 
         const degradedKnn = async () => ({
-            results: await this.searchKnn(diaryNames, queryVector, finalK, {
+            results: nativeHybridPlan
+                ? (await collectCandidates.call(this)).slice(0, finalK).map(result => ({
+                    ...result, retrievalEngine: 'knn'
+                }))
+                : await this.searchKnn(diaryNames, queryVector, finalK, {
                 ...options,
                 allowedFileIds: Array.isArray(options.allowedFileIds)
                     ? allowedFileIds.filter(id => options.allowedFileIds.map(Number).includes(Number(id)))
@@ -2762,212 +2766,9 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
 // 完整旧链路回退：复刻 Query Plan V2 的当前 ANN、历史多向量、
 // BM25/Time 文件展开和 Time 双重限流，再交给原生 Topology V3。
 // 此路径只在联合 ABI 不可用/失败时执行，保留正确性优先于性能。
-const perIndexK = options.perIndexK
-    ?? this.config.nativeRiverQueryPerIndexK;
-const currentSearchPromise = this.searchKnn(
-    diaryNames,
-    queryVector,
-    candidateK,
-    0,
-    [],
-    undefined,
-    {
-        perIndexK,
-        globalK: candidateK
-    }
-);
-const supplementalSearchPromises = supplementalQueryVectors.map(
-    async entry => {
-        const results = await this.searchKnn(
-            diaryNames,
-            entry.vector,
-            Math.max(2, Math.round(candidateK / 2)),
-            0,
-            [],
-            undefined,
-            {
-                perIndexK: Math.max(
-                    2,
-                    Math.round(Number(perIndexK) / 2)
-                ),
-                globalK: Math.max(
-                    2,
-                    Math.round(candidateK / 2)
-                )
-            }
-        );
-        return results.map(result => ({
-            ...result,
-            score: (Number(result.score) || 0) * entry.weight,
-            vectorScore: Number(result.score) || 0,
-            source: 'history'
-        }));
-    }
-);
-const [currentCandidates, ...supplementalCandidates] =
-    await Promise.all([
-        currentSearchPromise,
-        ...supplementalSearchPromises
-    ]);
-let candidates = [
-    ...currentCandidates.map(result => ({
-        ...result,
-        vectorScore: Number(result.score) || 0,
-        source: result.source || 'rag'
-    })),
-    ...supplementalCandidates.flat()
-];
-
-const fileCandidates = nativeHybridPlan?.fileCandidates || [];
-if (fileCandidates.length > 0) {
-    const filePlanByPath = new Map(
-        fileCandidates.map(candidate => [candidate.path, candidate])
-    );
-    const chunks = await this.getChunksByFilePaths(
-        fileCandidates.map(candidate => candidate.path)
-    );
-    const queryMagnitude = Math.sqrt(
-        Array.from(queryVector).reduce(
-            (sum, value) => sum + value * value,
-            0
-        )
-    );
-    const cosineToQuery = vector => {
-        if (
-            !vector
-            || vector.length !== queryVector.length
-            || queryMagnitude <= 1e-12
-        ) {
-            return 0;
-        }
-        let dot = 0;
-        let magnitude = 0;
-        for (let index = 0; index < vector.length; index++) {
-            const value = Number(vector[index]) || 0;
-            dot += queryVector[index] * value;
-            magnitude += value * value;
-        }
-        return magnitude > 1e-12
-            ? dot / (queryMagnitude * Math.sqrt(magnitude))
-            : 0;
-    };
-    const timeByDiary = new Map();
-    const sparseWeight = nativeHybridPlan.bm25Weight;
-    for (const chunk of chunks) {
-        const chunkPath = chunk.fullPath || chunk.sourceFile || '';
-        const filePlan = filePlanByPath.get(chunkPath);
-        if (!filePlan) continue;
-        const vectorScore = cosineToQuery(chunk.vector);
-        const isTime = filePlan.source === 'time'
-            || filePlan.timeScore > 0;
-        const score = filePlan.bm25Score > 0
-            ? filePlan.normalizedBM25Score * sparseWeight
-                + vectorScore * (1 - sparseWeight)
-            : vectorScore;
-        const candidate = {
-            ...chunk,
-            score,
-            vectorScore,
-            bm25Score: filePlan.bm25Score,
-            normalizedBM25Score:
-                filePlan.normalizedBM25Score,
-            timeScore: filePlan.timeScore,
-            source: isTime
-                ? 'time'
-                : (filePlan.source || 'rag')
-        };
-        if (isTime) {
-            const normalizedPath = String(chunkPath)
-                .replace(/\\/g, '/');
-            const diaryName = normalizedPath.split('/')[0]
-                || chunk.diaryName
-                || 'unknown';
-            if (!timeByDiary.has(diaryName)) {
-                timeByDiary.set(diaryName, new Map());
-            }
-            const diaryPool = timeByDiary.get(diaryName);
-            const chunkId = Number(chunk.chunkId ?? chunk.id);
-            const existing = diaryPool.get(chunkId);
-            if (!existing || score > existing.score) {
-                diaryPool.set(chunkId, candidate);
-            }
-        } else {
-            candidates.push(candidate);
-        }
-    }
-
-    const limitedTime = [];
-    const perDiaryLimit = nativeHybridPlan.timePerDiaryLimit;
-    const globalLimit = nativeHybridPlan.timeGlobalLimit;
-    for (const diaryName of [...timeByDiary.keys()].sort()) {
-        const diaryCandidates = Array.from(
-            timeByDiary.get(diaryName).values()
-        ).sort((left, right) =>
-            (right.vectorScore || 0) - (left.vectorScore || 0)
-            || Number(left.chunkId ?? left.id)
-                - Number(right.chunkId ?? right.id)
-        );
-        limitedTime.push(
-            ...diaryCandidates.slice(0, perDiaryLimit)
-        );
-    }
-    limitedTime.sort((left, right) =>
-        (right.vectorScore || 0) - (left.vectorScore || 0)
-        || Number(left.chunkId ?? left.id)
-            - Number(right.chunkId ?? right.id)
-    );
-    candidates.push(...limitedTime.slice(0, globalLimit));
-}
-
-// 先按 Chunk 身份合并多路候选，保留最高主分并合并稀疏/时间证据。
-const mergedByChunk = new Map();
-for (const candidate of candidates) {
-    const id = Number(candidate?.chunkId ?? candidate?.id);
-    if (!Number.isSafeInteger(id) || id <= 0) continue;
-    const existing = mergedByChunk.get(id);
-    if (!existing) {
-        mergedByChunk.set(id, { ...candidate, id, chunkId: id });
-        continue;
-    }
-    if ((candidate.score || 0) > (existing.score || 0)) {
-        Object.assign(existing, candidate, { id, chunkId: id });
-    }
-    existing.vectorScore = Math.max(
-        Number(existing.vectorScore) || 0,
-        Number(candidate.vectorScore) || 0
-    );
-    existing.bm25Score = Math.max(
-        Number(existing.bm25Score) || 0,
-        Number(candidate.bm25Score) || 0
-    );
-    existing.timeScore = Math.max(
-        Number(existing.timeScore) || 0,
-        Number(candidate.timeScore) || 0
-    );
-    if (candidate.source === 'time') existing.source = 'time';
-}
-candidates = await this.deduplicateResults(
-    Array.from(mergedByChunk.values())
-        .sort((left, right) =>
-            (right.score || 0) - (left.score || 0)
-            || left.chunkId - right.chunkId
-        )
-        .slice(0, candidateK),
-    queryVector,
-    {
-        stage: 'native-river-query-v2-fallback',
-        semantic: true,
-        semanticThreshold:
-            options.semanticThreshold
-            ?? this.config.nativeRiverQuerySemanticThreshold,
-        maxResults: candidateK
-    }
-);
+        const candidates = await collectCandidates.call(this);
         return await this.riverMemoEngine.rerank(
-            {
-                text: String(query?.text || ''),
-                vector: queryVector
-            },
+            { text: String(query?.text || ''), vector: queryVector },
             candidates,
             agentContext,
             {
@@ -2977,13 +2778,228 @@ candidates = await this.deduplicateResults(
                 hydrateChunksByIds: ids => this.hydrateChunksByIds(ids),
                 nativePreparedQuery: prepared.nativePreparedQuery,
                 observationHandle: prepared.observationHandle,
-                sourceObservationResult:
-                    prepared.sourceObservationResult,
+                sourceObservationResult: prepared.sourceObservationResult,
                 sourceField: prepared.sourceField,
                 topK: finalK,
                 nativeJointQuery: false
             }
         );
+
+        async function collectCandidates() {
+            const searchOptions = {
+                ...options,
+                allowedFileIds: Array.isArray(options.allowedFileIds)
+                    ? allowedFileIds.filter(id => options.allowedFileIds.map(Number).includes(Number(id)))
+                    : allowedFileIds,
+                deniedFileIds: options.deniedFileIds || []
+            };
+            const perIndexK = options.perIndexK
+                ?? this.config.nativeRiverQueryPerIndexK;
+            const currentSearchPromise = this.searchKnn(
+                diaryNames,
+                queryVector,
+                candidateK,
+                0,
+                [],
+                undefined,
+                {
+                    ...searchOptions,
+                    perIndexK,
+                    globalK: candidateK
+                }
+            );
+            const supplementalSearchPromises = supplementalQueryVectors.map(
+                async entry => {
+                    const results = await this.searchKnn(
+                        diaryNames,
+                        entry.vector,
+                        Math.max(2, Math.round(candidateK / 2)),
+                        0,
+                        [],
+                        undefined,
+                        {
+                            ...searchOptions,
+                            perIndexK: Math.max(
+                                2,
+                                Math.round(Number(perIndexK) / 2)
+                            ),
+                            globalK: Math.max(
+                                2,
+                                Math.round(candidateK / 2)
+                            )
+                        }
+                    );
+                    return results.map(result => ({
+                        ...result,
+                        score: (Number(result.score) || 0) * entry.weight,
+                        vectorScore: Number(result.score) || 0,
+                        source: 'history'
+                    }));
+                }
+            );
+            const [currentCandidates, ...supplementalCandidates] =
+                await Promise.all([
+                    currentSearchPromise,
+                    ...supplementalSearchPromises
+                ]);
+            let candidates = [
+                ...currentCandidates.map(result => ({
+                    ...result,
+                    vectorScore: Number(result.score) || 0,
+                    source: result.source || 'rag'
+                })),
+                ...supplementalCandidates.flat()
+            ];
+
+            const fileCandidates = nativeHybridPlan?.fileCandidates || [];
+            if (fileCandidates.length > 0) {
+                const filePlanByPath = new Map(
+                    fileCandidates.map(candidate => [candidate.path, candidate])
+                );
+                const allowed = new Set(searchOptions.allowedFileIds.map(Number));
+                const denied = new Set(searchOptions.deniedFileIds.map(Number));
+                const chunks = (await this.getChunksByFilePaths(
+                    fileCandidates.map(candidate => candidate.path)
+                )).filter(chunk => allowed.has(Number(chunk.fileId)) && !denied.has(Number(chunk.fileId)));
+                const queryMagnitude = Math.sqrt(
+                    Array.from(queryVector).reduce(
+                        (sum, value) => sum + value * value,
+                        0
+                    )
+                );
+                const cosineToQuery = vector => {
+                    if (
+                        !vector
+                        || vector.length !== queryVector.length
+                        || queryMagnitude <= 1e-12
+                    ) {
+                        return 0;
+                    }
+                    let dot = 0;
+                    let magnitude = 0;
+                    for (let index = 0; index < vector.length; index++) {
+                        const value = Number(vector[index]) || 0;
+                        dot += queryVector[index] * value;
+                        magnitude += value * value;
+                    }
+                    return magnitude > 1e-12
+                        ? dot / (queryMagnitude * Math.sqrt(magnitude))
+                        : 0;
+                };
+                const timeByDiary = new Map();
+                const sparseWeight = nativeHybridPlan.bm25Weight;
+                for (const chunk of chunks) {
+                    const chunkPath = String(chunk.fullPath || chunk.sourceFile || '').replace(/\\/g, '/');
+                    const filePlan = filePlanByPath.get(chunkPath);
+                    if (!filePlan) continue;
+                    const vectorScore = cosineToQuery(chunk.vector);
+                    const isTime = filePlan.source === 'time'
+                        || filePlan.timeScore > 0;
+                    const score = filePlan.bm25Score > 0
+                        ? filePlan.normalizedBM25Score * sparseWeight
+                            + vectorScore * (1 - sparseWeight)
+                        : vectorScore;
+                    const candidate = {
+                        ...chunk,
+                        score,
+                        vectorScore,
+                        bm25Score: filePlan.bm25Score,
+                        normalizedBM25Score:
+                            filePlan.normalizedBM25Score,
+                        timeScore: filePlan.timeScore,
+                        source: isTime
+                            ? 'time'
+                            : (filePlan.source || 'rag')
+                    };
+                    if (isTime) {
+                        const normalizedPath = String(chunkPath)
+                            .replace(/\\/g, '/');
+                        const diaryName = normalizedPath.split('/')[0]
+                            || chunk.diaryName
+                            || 'unknown';
+                        if (!timeByDiary.has(diaryName)) {
+                            timeByDiary.set(diaryName, new Map());
+                        }
+                        const diaryPool = timeByDiary.get(diaryName);
+                        const chunkId = Number(chunk.chunkId ?? chunk.id);
+                        const existing = diaryPool.get(chunkId);
+                        if (!existing || score > existing.score) {
+                            diaryPool.set(chunkId, candidate);
+                        }
+                    } else {
+                        candidates.push(candidate);
+                    }
+                }
+
+                const limitedTime = [];
+                const perDiaryLimit = nativeHybridPlan.timePerDiaryLimit;
+                const globalLimit = nativeHybridPlan.timeGlobalLimit;
+                for (const diaryName of [...timeByDiary.keys()].sort()) {
+                    const diaryCandidates = Array.from(
+                        timeByDiary.get(diaryName).values()
+                    ).sort((left, right) =>
+                        (right.vectorScore || 0) - (left.vectorScore || 0)
+                        || Number(left.chunkId ?? left.id)
+                            - Number(right.chunkId ?? right.id)
+                    );
+                    limitedTime.push(
+                        ...diaryCandidates.slice(0, perDiaryLimit)
+                    );
+                }
+                limitedTime.sort((left, right) =>
+                    (right.vectorScore || 0) - (left.vectorScore || 0)
+                    || Number(left.chunkId ?? left.id)
+                        - Number(right.chunkId ?? right.id)
+                );
+                candidates.push(...limitedTime.slice(0, globalLimit));
+            }
+
+            // 先按 Chunk 身份合并多路候选，保留最高主分并合并稀疏/时间证据。
+            const mergedByChunk = new Map();
+            for (const candidate of candidates) {
+                const id = Number(candidate?.chunkId ?? candidate?.id);
+                if (!Number.isSafeInteger(id) || id <= 0) continue;
+                const existing = mergedByChunk.get(id);
+                if (!existing) {
+                    mergedByChunk.set(id, { ...candidate, id, chunkId: id });
+                    continue;
+                }
+                if ((candidate.score || 0) > (existing.score || 0)) {
+                    Object.assign(existing, candidate, { id, chunkId: id });
+                }
+                existing.vectorScore = Math.max(
+                    Number(existing.vectorScore) || 0,
+                    Number(candidate.vectorScore) || 0
+                );
+                existing.bm25Score = Math.max(
+                    Number(existing.bm25Score) || 0,
+                    Number(candidate.bm25Score) || 0
+                );
+                existing.timeScore = Math.max(
+                    Number(existing.timeScore) || 0,
+                    Number(candidate.timeScore) || 0
+                );
+                if (candidate.source === 'time') existing.source = 'time';
+            }
+            candidates = await this.deduplicateResults(
+                Array.from(mergedByChunk.values())
+                    .sort((left, right) =>
+                        (right.score || 0) - (left.score || 0)
+                        || left.chunkId - right.chunkId
+                    )
+                    .slice(0, candidateK),
+                queryVector,
+                {
+                    stage: 'native-river-query-v2-fallback',
+                    semantic: true,
+                    semanticThreshold:
+                        options.semanticThreshold
+                        ?? this.config.nativeRiverQuerySemanticThreshold,
+                    maxResults: candidateK
+                }
+            );
+            return candidates;
+        }
     }
 
     /**
@@ -3494,7 +3510,8 @@ candidates = await this.deduplicateResults(
      */
     async _hasCompleteStoredVectorsForFile(filePath) {
         const relativePath = path.isAbsolute(String(filePath))
-            ? path.relative(this.config.rootPath, filePath) : String(filePath);
+            ? path.relative(this.config.rootPath, filePath).replace(/\\/g, '/')
+            : String(filePath).replace(/\\/g, '/');
         const [row] = await this.probeIngestionFiles([relativePath]);
         return row?.completeVectors === true;
     }

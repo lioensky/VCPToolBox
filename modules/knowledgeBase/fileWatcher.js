@@ -280,6 +280,7 @@ class KnowledgeBaseFileWatcher {
         this.eventPoller.unref?.();
         this._drainRustEvents();
         this._publishState();
+        void this._reconcileAfterOverflow();
         console.log(
             '[KnowledgeBase] Using Runtime-owned Rust watcher; ' +
             'initial reconciliation is native.'

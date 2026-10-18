@@ -15,6 +15,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+fn valid_tag_vector(bytes: Option<&[u8]>, dimension: usize) -> bool {
+    let Some(bytes) = bytes else { return false; };
+    bytes.len() == dimension * 4 && bytes.chunks_exact(4).all(|part| {
+        f32::from_ne_bytes([part[0], part[1], part[2], part[3]]).is_finite()
+    })
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConsistencyPlan {
@@ -234,7 +241,7 @@ impl Task for TagConsistencyCommitTask {
                 }
 
                 let tag_id = if let Some((id, old_vector)) = existing {
-                    if old_vector.is_none() {
+                    if !valid_tag_vector(old_vector.as_deref(), dimension) {
                         tx.execute(
                             "UPDATE tags SET vector = ?1 WHERE id = ?2",
                             rusqlite::params![&bytes, id],
@@ -651,14 +658,16 @@ impl Task for TagConsistencyPrepareTask {
 
             let mut tags = Vec::new();
             let mut tag_statement = connection
-                .prepare("SELECT id, name, vector IS NOT NULL FROM tags ORDER BY id")
+                .prepare("SELECT id, name, vector FROM tags ORDER BY id")
                 .map_err(|error| Error::from_reason(format!("Prepare Tag rows failed: {}", error)))?;
             let tag_rows = tag_statement
                 .query_map([], |row| {
                     Ok(serde_json::json!({
                         "id": row.get::<_, i64>(0)?,
                         "name": row.get::<_, String>(1)?,
-                        "hasVector": row.get::<_, bool>(2)?
+                        "hasVector": valid_tag_vector(
+                            row.get::<_, Option<Vec<u8>>>(2)?.as_deref(), request.dimension
+                        )
                     }))
                 })
                 .map_err(|error| Error::from_reason(format!("Query Tag rows failed: {}", error)))?;
@@ -1083,6 +1092,50 @@ impl Task for TagConsistencySnapshotTask {
 #[cfg(test)]
 mod plan_protocol_tests {
     use super::*;
+
+    #[test]
+    fn damaged_existing_tag_vectors_are_prepared_and_replaced() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-tag-vector-review-{}-{}", std::process::id(), current_time_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("note.txt"), "Tag: Dimension, Nonfinite").unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute_batch(
+                "INSERT INTO files(path,diary_name,checksum,mtime,size)
+                 VALUES ('note.txt','Root','old',0,0);"
+            ).map_err(|error| error.to_string())?;
+            let nonfinite: Vec<u8> = [f32::NAN,0.0].iter()
+                .flat_map(|value| value.to_ne_bytes()).collect();
+            for (name, bytes) in [("Dimension", vec![0_u8;4]), ("Nonfinite", nonfinite)] {
+                tx.execute("INSERT INTO tags(name,vector) VALUES (?1,?2)",
+                    rusqlite::params![name,bytes]).map_err(|error| error.to_string())?;
+            }
+            Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let raw = TagConsistencyPrepareTask {
+            request_json: serde_json::json!({
+                "dbPath":db, "rootPath":root, "dimension":2, "modelSig":"test"
+            }).to_string(),
+        }.compute().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed["vectorizeNames"], serde_json::json!(["Dimension","Nonfinite"]));
+        let index = crate::VexusIndex::new(2,16).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&TagConsistencyCommitTask {
+            db_path:db.clone(), plan_json:raw, tag_vectors:vec![1.0,0.0,0.0,1.0],
+            global_tag_index:index.index.clone(),
+            global_tag_content_revision:index.content_revision.clone(),
+            memo_runtime:index.memo_runtime.clone(),
+        }.compute().unwrap()).unwrap();
+        assert_eq!(result["upsertedTagIds"].as_array().unwrap().len(), 2);
+        assert_eq!(index.index.read().unwrap().size(), 2);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn prepared_missing_source_cannot_delete_relations_after_reappearance() {

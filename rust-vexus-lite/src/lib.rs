@@ -4760,6 +4760,7 @@ impl VexusWatcher {
         self.reconcile_requested.store(true, Ordering::Release);
         if let Some(handle) = reconcile_slot.as_ref() {
             if !handle.is_finished() {
+                handle.thread().unpark();
                 return Ok(());
             }
         }
@@ -4776,13 +4777,11 @@ impl VexusWatcher {
         let handle = thread::Builder::new()
             .name("vexus-watch-reconcile".to_string())
             .spawn(move || {
-                // 对账 worker 在 watcher 生命周期内保持待命，避免“检查重跑标志”
-                // 到线程退出之间的新请求被遗失。停止时由 stop_watch 取消并 join。
+                // 停泊保留唤醒令牌，避免请求发生在检查标志和 park 之间时丢失。
+                // 新请求与 stop_watch 均负责 unpark，无空闲轮询。
                 while running.load(Ordering::Acquire) {
                     if !reconcile_requested.swap(false, Ordering::AcqRel) {
-                        if !wait_for_watcher_duration(&running, Duration::from_millis(25)) {
-                            break;
-                        }
+                        thread::park();
                         continue;
                     }
                     let known_database_paths = match reconcile_paths.lock() {
@@ -4847,6 +4846,7 @@ impl VexusWatcher {
             }
         }
         if let Some(handle) = reconcile_handle {
+            handle.thread().unpark();
             if handle.join().is_err() {
                 join_errors = join_errors.saturating_add(1);
             }

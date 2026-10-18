@@ -122,13 +122,13 @@ pub(crate) fn plan(
         let mut chunk_statement = connection
             .prepare(
                 "SELECT c.file_id, c.vector FROM chunks c JOIN files f ON f.id=c.file_id
-             WHERE c.id=?1 AND f.diary_name=?2",
+             WHERE c.id=?1 AND f.diary_name=?2 AND c.vector IS NOT NULL",
             )
             .map_err(|e| e.to_string())?;
         let mut tag_statement = connection
             .prepare(
                 "SELECT ft.tag_id, t.vector FROM file_tags ft JOIN tags t ON t.id=ft.tag_id
-             WHERE ft.file_id=?1 ORDER BY ft.position, ft.tag_id LIMIT 128",
+             WHERE ft.file_id=?1 AND t.vector IS NOT NULL ORDER BY ft.position, ft.tag_id LIMIT 128",
             )
             .map_err(|e| e.to_string())?;
         let mut output = Vec::new();

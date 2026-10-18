@@ -1,0 +1,364 @@
+# AGS 双尺度统一几何预计算施工图
+
+> 版本：草案 v1 ｜ 日期：2026-10-18 ｜ 起草：Kerr ｜ 决策：莱恩
+> 范围：`rust-vexus-lite` 预计算层、SQLite schema、`TagMemoEngine.js` 调度链、相关测试
+
+---
+
+## 0. 目标与原则
+
+用**同一个算子 Anchored Greedy Gram-Schmidt（AGS）**在两个尺度上完成全部几何预计算：
+
+| 尺度 | 模式 | 输入 | 产物 | 替代对象 |
+|---|---|---|---|---|
+| 局部 | `Explain`（有目标向量） | Tag 自身 + 共现邻居 | `raw_residual_ratio` → `v9_anchor_gain` | IntrinsicResidualTask |
+| 全局 | `Span`（无目标向量） | 全库高分 Tag 候选池 | K 个正交主题面 + 覆盖率曲线 | EpaBasisTask + EpaPublishTask |
+| — | 内联 | 邻居 Gram 矩阵 | 现场余弦（语义门控） | PairwiseSimTask + 两张 pair 表 |
+
+设计原则：
+
+1. **精度 = 1 − 残差能量比**。局部与全局用同一个量度量，用同一条停止规则截断。
+2. **前缀嵌套**：贪心 GS 的前 k 个面与 K 无关，只需计算一次 K_max，后续按需截取。
+3. **单读、单算、单发布**：一次读事务、一个任务、一个写事务。
+4. **零第二份全库向量**：直接从常驻 usearch 索引按 ID 读取。
+5. **硬切换**：不保留旧表和旧接口的兼容层。
+
+---
+
+## 1. 调研结论（现状事实）
+
+### 1.1 调度链
+`TagMemoEngine.doMatrixRebuild()` 的执行顺序：
+1. `recomputePairwiseSimilarities()`：**每次都执行**；
+2. `recomputeIntrinsicResiduals()`：**仅在** `reason==='threshold'`、强制选项或环境变量开启时执行；
+3. `rebuildMemoArtifact()`。
+
+`requestActiveFullTraining()` 会以 `fullRebuildPairwise + forceIntrinsicResiduals` 进入同一链路。
+
+**隐患**：普通增量重建会刷新 pairwise，但不会刷新残差。结果是 `anchor_gain` 跟不上图的变化，虫洞判定依据的是过期的锚增益。
+
+### 1.2 EPA 生产停摆
+- `computeEpaBasis` 和 `publishEpaBasisCache` 只在 `tests/kbmNativeLifecycle.test.js` 中被调用，**生产代码中没有触发点**。
+- `memo_pipeline::analyze_epa` 读取 `kv_store.epa_basis_cache`，在缓存缺失时返回 `cache_available=false`、`logic_depth=0`、`entropy=1`。
+- `TagMemoEngine.getEPAAnalysis()` 是一个返回固定值 0.5 的桩函数。
+- 结论：EPA 的下游信号目前基本处于失效状态。
+
+### 1.3 无调用方的 napi 接口（死代码）
+`computeSvd`、`computeOrthogonalProjection`、`computeHandshakes`、`project`：在 JS 侧没有任何调用，只出现在 `index.d.ts` 中。Rust 管线内部另有独立实现（`memo_pipeline::orthogonal_projection` / `analyze_handshakes`）。
+
+### 1.4 Pairwise 的全部消费方
+| 位置 | 用途 | 处置 |
+|---|---|---|
+| `lib.rs::IntrinsicResidualTask` | 邻居语义门控 | 改为 Gram 内联 |
+| `memo_artifact_builder::load_pairwise` → `semantic_gain` | 有序共现边的语义增益；**生产中已开启**（`rag_params.orderedCooccurrence.semanticGainEnabled=1`） | 改为构建时从 usearch 读取后内联计算 |
+| `pairwise_maintenance.rs` + `KBM._cleanupStalePairwiseSimilarityModels()` | 启动时清理旧模型签名 | 整体删除 |
+| `tag_consistency.rs:382` | 一致性重建时清表 | 删除对应语句 |
+| `scripts/tagmemo_unified_geometry_probe.js` | 离线探针 | 改为内联余弦 |
+| `ecosystem.config.js` 注释 | 历史说明 | 更新 |
+
+### 1.5 Schema 与依赖版本
+- 表：`tag_pair_similarity`、`tag_pair_similarity_status` 及 4 个索引。
+- 触发器：`trg_tags_vector_version`（其中两条 DELETE pair 语句）、`trg_tags_delete_pair_cache`、`GENERATION_SQL` 中的 5 个 `tagmemo_pairwise_fact_generation` 触发器。
+- 派生版本键：`derived_pairwise`、`derived_intrinsic`、`derived_epa`，并按表动态生成 `trg_{table}_{event}_derived` 触发器。
+- **3 个硬编码依赖校验点**（必须同步修改）：
+  - `rivermemo_topology_v3.rs::load_artifact_with_connection`（约 853 行）
+  - `knowledge_runtime.rs` manifest 查询（约 1980 行）
+  - `memo_artifact_builder.rs::run_build` 中的 `DerivedDependencies::capture`（约 626 行）
+- 测试夹具：`memo_thinking.rs:480`、`storage.rs:1150`。
+
+---
+
+## 2. 目标架构
+
+```
+facts 事务提交 (tags / file_tags)
+        │  memo_tag_facts++
+        ▼
+GeometryTask  ── 读事务：generation + deps + file_tags 流
+   │  Pass1 邻接 CSR + 支持度
+   │  Pass2 局部 AGS(Explain)  rayon，按 tag_id 排序
+   │  Pass3 全局 AGS(Span)     候选池 M → K_max 面
+   │  Pass4 覆盖率流式统计      → K_eff
+   ▼
+单写事务：tag_intrinsic_residuals(+status) + kv_store.epa_basis_cache
+          + tagmemo_artifacts(asset_type='unified_geometry')
+        │  derived_geometry++
+        ▼
+rebuildMemoArtifact  依赖 = {memo_tag_facts, derived_geometry}
+```
+
+**调度规则**：`doMatrixRebuild` 固定执行 `geometry → artifact`，消除残差过期隐患。
+
+---
+
+## 3. 算子规范：`anchored_gs`
+
+新模块 `src/memo_geometry.rs`。
+
+```rust
+pub(crate) enum AgsTarget<'a> { Explain(&'a [f64]), Span }
+pub(crate) struct AgsCandidate { pub id: i64, pub prior: f64 }
+pub(crate) struct AgsTrace {
+    pub picked: Vec<(i64, f64)>,     // (id, gain)
+    pub basis: Vec<Vec<f64>>,        // 正交单位基
+    pub residual_norm: Option<f64>,  // Explain 专有
+}
+```
+
+单步选择规则：
+- 候选 u 先对已选基做正交化，记 `orth=‖u⊥‖`，过滤 `orth ≤ 1e-6`。
+- `gain = Explain ? |⟨r, û⊥⟩| : orth`。
+- `score = gain × orth × prior`；分数相同时取 ID 较小者，保证可复现。
+- `gain < min_gain` 时停止。
+
+### 3.1 局部模式的 Gram 空间加速（推荐实现）
+目标 t 与 n 个邻居先计算一次 `(n+1)×(n+1)` Gram 矩阵 G（单位向量的点积）。此后所有 GS 步骤都在 n 维系数空间中进行，不再触碰 3072 维向量：
+- 第一行 `G[0][j]` 就是 t 与邻居 j 的余弦，**语义门控直接免费获得**；
+- 残差模长平方 `‖r‖² = 1 − Σ c_k²`，其中 c_k 是 t 在已选正交基上的系数。
+
+复杂度：每个 Tag 需要 `O(n²·dim)` 的 Gram 计算加 `O(K·n²)` 的低维 GS。以 n=48 估算，每个 Tag 约 7M flops，3 万个 Tag 用 rayon 并行在秒级完成。
+
+### 3.2 停止规则（两个尺度共用）
+- 局部：沿用 `max_basis`（默认 4）与 `min_gain`，输出 `raw_residual_ratio = ‖r‖`。
+- 全局：先用 Span 模式算到 `K_max`，再根据覆盖率曲线截断：
+  `K_eff = min{k : 1−coverage[k] ≤ ε  或  coverage[k]−coverage[k−1] < δ}`，并满足 `K_eff ≥ K_sem`。
+  前缀嵌套性保证这样截断与直接计算 K_eff 的结果完全一致。
+
+---
+
+## 4. GeometryTask 详细流程
+
+napi 入口（挂在 `VexusIndex` 上）：
+```rust
+#[napi]
+pub fn compute_memo_geometry(&self, db_path: String, model_sig: String, config_json: String)
+    -> AsyncTask<TrackedTask<GeometryTask>>
+// Task 持有 index: Arc<IndexHandle>, content_revision: Arc<AtomicU64>, dimensions
+```
+
+### Pass 0：快照
+- 读事务内：`read_generation`、`DerivedDependencies::capture(&["memo_tag_facts"])`。
+- 记录 `rev0 = content_revision`。
+
+### Pass 1：邻接 CSR（复用现有 flush 语义）
+- 流式读取 `SELECT file_id, tag_id, COALESCE(position,0) FROM file_tags ORDER BY file_id, position`。
+- 跳过 Tag 数为 1 或超过 100 的文件；按位置差做指数衰减（`positionDecay`），对称累加。
+- 同时累加 `support[tag] = Σ w`，并计算 `content_digest`，用于生成 artifact_sig。
+- 输出结构由 `HashMap<i64, HashMap<i64,f64>>` 改为**排序后的 CSR**，以降低内存占用。
+
+### Pass 2：局部 AGS
+- 用 `par_iter` 遍历 Tag ID 有序列表。每个 Tag：
+  1. 按 `w` 取 Top `max_neighbors`；
+  2. 从 usearch 批量读取 `1+n` 个向量并单位化；按 ID 分批，短时持有读锁，每批读取后立即释放；
+  3. 计算 Gram 矩阵，得到 `sim_j = G[0][j]` 和 `prior_j = ln(1+w_j) × gate(sim_j)`；
+  4. 执行 Explain 模式 AGS，得到 `raw_residual_ratio`，再映射为 `v9_anchor_gain`（公式不变）。
+- 状态与现有实现一致：`computed`、`insufficient_neighbors`、`failed`。
+- 同时累加全库单位向量之和，用于计算 `mean`。
+
+### Pass 3：全局 AGS（主题面）
+- 候选：`support ≥ min_support` 且状态为 `computed` 的 Tag。
+  `prior = support^a × raw_residual^b`，默认 `a=0.65, b=0.35`。
+- 按 prior 取 Top `M`（默认 512），读取向量后执行 `x = normalize(unit(t) − mean)`。
+- 执行 `anchored_gs(Span, K_max, min_gain_global)`，label 取锚点 Tag 的名称。
+
+### Pass 4：覆盖率与能量
+- 流式遍历全部 Tag，计算 `x = unit(t) − mean`：
+  `E_total += ‖x‖²`，并对每个 k 累加 `captured[k] += ⟨x, axis_k⟩²`。
+- 由此得到 `energies[k] = captured[k]`、`coverage[k]`（累计值），以及 `K_eff`。
+- 复杂度为 `O(N·K_max·dim)`，可用 rayon 分片后归约。
+
+### Pass 5：一致性校验与发布
+- 若 `content_revision != rev0`，则作废结果并返回 `revision_conflict`，由 JS 侧重新入队。
+- 在 `publication_gate::acquire` 下执行 `with_registered_write`：
+  1. `ensure_generation(source_generation)` 与 `dependencies.ensure_current`；
+  2. `DELETE FROM tag_intrinsic_residuals`，然后重新写入（列定义不变）；
+  3. 状态表按 artifact 替换；
+  4. 对 `kv_store` 执行 `INSERT OR REPLACE` 写入 `epa_basis_cache`（结构见 §5）；
+  5. 登记 `tagmemo_artifacts`，`asset_type='unified_geometry'`；清理同类型的旧签名记录。
+- 结果返回签名、K_eff、覆盖率摘要和各 Pass 的耗时。
+
+### 4.1 向量来源与降级
+- 优先通过 `index.get(id)` 读取。usearch 中存储的是写入时的原始向量，读出后必须单位化。
+- 若 usearch 未命中（索引尚未追上 facts），按 ID 分批从 `tags.vector` BLOB 中补读，并计入 `vector_fallback_count`。
+- **待核实项**：JS 侧是否保证 `apply_tag_delta` 在派生任务入队之前完成。若无法保证，就依赖上述降级路径。
+
+---
+
+## 5. 输出结构
+
+### 5.1 `tag_intrinsic_residuals`
+列定义不变。`algorithm_version` 改为 `unified_geometry_ags_v1`；`v8_3_compat_gain` 继续写入 NULL。
+
+### 5.2 `kv_store.epa_basis_cache`（向后兼容扩展）
+```json
+{
+  "basis": ["<b64 f32>", ...],      // 长度 = K_eff
+  "mean": "<b64 f32>",
+  "energies": [..],                 // 每个面的绝对能量
+  "labels": ["VCP架构", ...],       // 真实 Tag 名
+  "anchorTagIds": [..],
+  "coverage": [..],                 // 累计覆盖率，单调不减
+  "totalEnergy": 0.0,
+  "kSem": 8,
+  "kMax": 32,
+  "epaAlgorithm": "ags-global-anchor",
+  "artifactSig": "...",
+  "tagCount": 0,
+  "timestamp": 0
+}
+```
+`analyze_epa` 的 `EpaCache` 反序列化会忽略未知字段，**旧读取路径无需改动即可工作**。
+
+### 5.3 `analyze_epa` 小改动（Phase 4）
+- 熵只在前缀 `kSem` 上计算，`log2(kSem)` 作为归一化分母，与 K_eff 解耦。
+- 新增 `out_of_domain = ‖q − mean − Σ⟨q−mean, b_k⟩ b_k‖ / ‖q − mean‖`，写入 `EpaOutput`，供 Spike 抑制使用（第一版只输出，不参与计算）。
+
+---
+
+## 6. Schema 迁移（schema_version +1）
+
+在 `initialize_schema` 中，当版本升级时执行：
+```sql
+DROP TRIGGER IF EXISTS trg_tags_delete_pair_cache;
+DROP TRIGGER IF EXISTS trg_pairwise_tags_insert_generation;
+DROP TRIGGER IF EXISTS trg_pairwise_tags_vector_generation;
+DROP TRIGGER IF EXISTS trg_pairwise_tags_delete_generation;
+DROP TRIGGER IF EXISTS trg_pairwise_file_tags_insert_generation;
+DROP TRIGGER IF EXISTS trg_pairwise_file_tags_delete_generation;
+DROP TRIGGER IF EXISTS trg_tag_pair_similarity_INSERT_derived;  -- 及 UPDATE/DELETE
+DROP TRIGGER IF EXISTS trg_tag_intrinsic_residuals_INSERT_derived; -- 及 UPDATE/DELETE，下面重建
+DROP TRIGGER IF EXISTS trg_kv_store_INSERT_derived;               -- 及 UPDATE/DELETE，下面重建
+DROP TABLE IF EXISTS tag_pair_similarity_status;
+DROP TABLE IF EXISTS tag_pair_similarity;
+DELETE FROM kv_store WHERE key IN ('tagmemo_pairwise_fact_generation','epa_basis_cache');
+DELETE FROM kbm_runtime_meta WHERE key IN ('derived_pairwise','derived_intrinsic','derived_epa');
+INSERT OR IGNORE INTO kbm_runtime_meta(key,value) VALUES ('derived_geometry','0');
+DELETE FROM tagmemo_artifacts WHERE asset_type IN ('pairwise_similarity','intrinsic_residual');
+```
+- 重写 `trg_tags_vector_version`：只保留 `vector_version` 自增，删除 pair 相关语句。
+- 从 `SCHEMA_SQL` 中移除两张表及其索引的建表语句。
+- 派生触发器循环改为：`(tag_intrinsic_residuals, derived_geometry)` 与 `(kv_store WHEN key='epa_basis_cache', derived_geometry)`。
+  同一写事务中两张表都会递增版本号，这是预期行为，只要版本号发生变化即可。
+- **迁移副作用**：旧 RiverMemo artifact 的依赖数不再匹配，首次启动时会判定为不兼容并触发完整重建，与硬切换的预期一致。
+
+依赖校验 3 处统一修改为：
+```sql
+d.dependency_key IN ('memo_tag_facts','derived_geometry')) = 2
+```
+建议抽取为 `storage::MEMO_ARTIFACT_DEPENDENCIES: &[&str]` 常量，三处共同引用，避免以后再次出现漂移。
+
+---
+
+## 7. Artifact 构建改造
+
+- `rebuild_memo_artifact` 改为同时传入 `self.index.clone()`。
+- 删除 `load_pairwise`。`semantic_gain` 的余弦改为：先收集所有有序共现 pair 中涉及的 Tag ID，批量从 usearch 读取并单位化，在构建时现场计算点积。按文件分组计算，每个文件最多 100 个 Tag，单文件内 Gram 计算量很小。
+- `DerivedDependencies::capture(&["memo_tag_facts","derived_geometry"])`。
+- `source_artifact_sig` 中的 `residual_sig` 改为 geometry 的 artifact_sig。
+
+---
+
+## 8. JS 改造
+
+**TagMemoEngine.js**
+- 删除 `recomputePairwiseSimilarities`、`recomputeIntrinsicResiduals`。
+- `_intrinsicResidualConfig()` 重命名为 `_geometryConfig()`，读取 `rag_params.KnowledgeBaseManager.geometry`；若该字段不存在，则回退到 `intrinsicResidual` 字段。
+- 新增 `recomputeGeometry()`，调用 `tagIndex.computeMemoGeometry(dbPath, modelSig, JSON.stringify(cfg))`。遇到 `revision_conflict` 时进行一次有界重试。
+- `doMatrixRebuild`：`geometry → artifact`。删除 `fullRebuildPairwise`、`forceIntrinsicResiduals` 选项；`requestActiveFullTraining` 相应简化。
+- `intrinsicResidualArtifact` 改名为 `geometryArtifact`。
+
+**KnowledgeBaseManager.js**
+- 删除 `_cleanupStalePairwiseSimilarityModels()` 及其在启动流程中的调用（约 576 行）。
+- `recomputeIntrinsicResiduals()` 包装改为 `recomputeGeometry()`。
+
+**modules/knowledgeBase/memoryProfiler.js**：同步修改字段名。
+
+**rag_params.json** 新增配置节：
+```json
+"geometry": {
+  "local":  { "maxNeighbors": 48, "minNeighbors": 3, "maxBasis": 4, "minGain": 0.015,
+              "positionDecay": 0.15,
+              "semanticGate": { "enabled": true, "peak": 0.65, "sigma": 0.25, "floor": 0.35, "hardFloor": -1 },
+              "anchorGain": { "base": 0.75, "scale": 1.25, "gamma": 1.0, "min": 0.5, "max": 2.0 } },
+  "global": { "candidatePool": 512, "minSupport": 3, "supportExponent": 0.65, "residualExponent": 0.35,
+              "kMax": 32, "kSem": 8, "epsilon": 0.10, "kneeDelta": 0.005, "minGain": 0.02 }
+}
+```
+
+**index.d.ts**：由 napi 构建重新生成。
+
+---
+
+## 9. Rust 删除清单（lib.rs 及其他）
+
+- 结构体与 Task：`PairwiseSimResult`、`PairwiseSimTask`、`IntrinsicResidualResult`、`IntrinsicResidualTask`、`IntrinsicResidualConfig*`、`IntrinsicResidualMethod`（centroid 和 svd 分支一并退休）、`EpaBasisResult`、`EpaBasisTask`、`EpaPublishTask`、`EpaPendingCache`、`EpaDensityBucket`、`EpaAnchorCandidate`。
+- 函数：`select_epa_density_residual_samples`、`epa_projection_bit`、`epa_density_key`、`epa_residual_norm`、`compute_centroid_residual`、`compute_svd_residual`、`compute_anchored_gs_residual`（迁入 `memo_geometry` 并重写）、`residual_norm_from_basis`、`semantic_gate`（迁入 `memo_geometry`）。
+- napi 方法：`compute_svd`、`compute_orthogonal_projection`、`compute_handshakes`、`project`、`compute_epa_basis`、`publish_epa_basis_cache`、`compute_intrinsic_residuals`、`compute_pairwise_similarities`。
+- 字段：`VexusIndex.epa_pending_cache`。
+- 结构：`SvdResult`、`OrthogonalProjectionResult`、`HandshakeResult`、`ProjectResult`。
+- 模块：`pairwise_maintenance.rs` 整体删除；同时删除 `knowledge_runtime` 中对应的 napi 导出 `cleanupStalePairwiseSimilarityModels`（需核实具体位置）。
+- `tag_consistency.rs:382`：删除两条 pair 表 DELETE 语句，并加入 `DELETE FROM kv_store WHERE key='epa_basis_cache'`。
+- `lib.rs` 预计瘦身约 1500 行。
+
+---
+
+## 10. 测试计划
+
+**删除**：`tests/tagPairwiseIncrementalPersistence.test.js`。
+
+**修改**：
+- `kbmNativeLifecycle.test.js`：pairwise 与 EPA 生命周期用例改为 `computeMemoGeometry`，验证关闭时拒绝新任务、代际冲突时拒绝发布。
+- `nativeMemoManifestCompatibility.test.js`：用 geometry 替代 pairwise 作为前置步骤。
+- `newTagIngestionDerivedInvalidation.test.js`：删除 pair 表相关断言，改为验证 `memo_tag_facts` 递增会使 artifact 失效。
+- `storage.rs`、`schema.rs`、`memo_thinking.rs` 中的夹具：依赖键改为新键集合。
+
+**新增**（`memo_geometry` 单元测试与 JS 集成测试）：
+1. **前缀嵌套**：K=8 与 K_max=32 截取前 8 个面，basis 逐位相同。
+2. **确定性**：在 rayon 不同线程数下运行两次，`artifact_sig` 与全部数值一致。
+3. **覆盖率单调**：`coverage` 不减且不超过 1；Span 模式下主题面两两正交（误差小于 1e-6）。
+4. **Gram 等价**：Gram 空间 AGS 与高维直接 AGS 的残差差异小于 1e-9。
+5. **局部语义**：构造“可被邻居完全线性表示”的 Tag，残差接近 0；构造“与邻居正交”的 Tag，残差接近 1。
+6. **ε 截断**：给定合成数据的本征维度 d，K_eff 能在 d 附近停止。
+7. **代际冲突**：计算期间提交 facts 或执行 `apply_tag_delta`，发布被拒绝。
+8. **迁移**：旧 schema 数据库升级后，旧表和触发器不存在，`derived_geometry` 存在，旧 artifact 被判定为不兼容。
+9. **端到端**：在 `geometry → artifact` 之后执行 `run_memo_pipeline`，`EpaOutput.cache_available == true`。
+
+**性能基准**（使用真实库，记录到 ChangeLog）：总耗时、各 Pass 耗时、RSS 峰值，与旧三任务串行的总耗时对比。
+
+---
+
+## 11. 施工阶段
+
+| 阶段 | 内容 | 验收 |
+|---|---|---|
+| P0 | 核实遗留项：JS 侧 delta 与派生任务的先后顺序；`cleanupStalePairwiseSimilarityModels` 的导出位置；VCPChat 等其他仓库是否调用死接口 | 形成核实记录 |
+| P1 | 新建 `memo_geometry.rs`：实现 `anchored_gs` 双模式、Gram 加速、停止规则，附单元测试 1、3、4、5、6 | `cargo test` 通过 |
+| P2 | 实现 `GeometryTask` 与 napi 接口、发布事务；Artifact 构建切换到内联语义增益 | 测试 2、7、9 通过 |
+| P3 | Schema 迁移、依赖常量抽取、3 处校验点同步修改；按 §9 删除代码 | 测试 8 通过，`cargo clippy` 无告警 |
+| P4 | JS 调度链改造、rag_params 新增配置节、`analyze_epa` 的 `kSem` 与越界度 | 全量 `npm test` 通过 |
+| P5 | 真实库基准测试与回归评估（Spike 输出、RiverMemo Top-K 对比抽样） | 基准记录写入 ChangeLog |
+
+---
+
+## 12. 风险与对策
+
+| 风险 | 对策 |
+|---|---|
+| 主题面能量效率低于 SVD（Eckart–Young） | 用多几个面补偿；记录 coverage 曲线，可直接看到实际代价 |
+| 长尾专名成为主题面 | 设 `minSupport` 阈值；prior 中计入 support 指数 |
+| usearch 与 SQLite 短暂不一致 | revision 双检加 BLOB 降级补读 |
+| Artifact 构建内联余弦增加耗时 | 按文件分组，每文件不超过 100 个 Tag，复杂度为 O(Σ n_f²·dim)，与旧 Pairwise 的计算量同阶，但省去了读写 SQLite 的往返 |
+| 硬切换导致首次启动全量重建 | 属于预期行为；在 ChangeLog 中提示首次启动耗时 |
+| `semanticGainEnabled` 的数值行为发生变化 | 旧路径对缺失的 pair 使用 `lowSimFallback`；新路径总能得到真实余弦，属于修正。在 P5 回归中进行对比 |
+
+---
+
+## 13. 已拍板与待确认
+
+- ✅ AGS 作为唯一算子，覆盖局部与全局两个尺度
+- ✅ Pairwise 退休，改为内联计算
+- ✅ EPA 的密度桶和 SVD 退休，由全局 AGS 主题面替代
+- ✅ 精度由 ε、δ、K_max 控制，熵锁定在前缀 K_sem
+- ✅ 硬切换
+- ⏳ 语义门控：默认**保留内联门控**（零存储成本，可兜底未按提示词规范书写的旧日记）
+- ⏳ 触发时机：默认 `facts → geometry → artifact` 单链，并沿用现有阈值调度

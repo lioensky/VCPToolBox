@@ -490,7 +490,13 @@ class IndexRepository {
                     clearTimeout(this.saveTimers.get(name));
                     this.saveTimers.delete(name);
                 }
+                const index = this.diaryIndices.get(name);
                 await this.saveToDisk(name);
+                if (this.diaryIndices.get(name) !== index
+                    || this.lastUsed.get(name) !== lastUsed
+                    || Date.now() - (this.lastUsed.get(name) || 0) < this.config.indexIdleTTL) {
+                    continue;
+                }
                 this.unregisterDiaryIndex(name);
                 this.diaryIndices.delete(name);
                 this.lastUsed.delete(name);
@@ -524,11 +530,11 @@ class IndexRepository {
     async flushAndStop() {
         this.stopIdleSweep();
         await this.recoveryTail;
-        for (const [name, timer] of this.saveTimers) {
-            clearTimeout(timer);
-            await this.saveToDisk(name);
-        }
+        const names = new Set([...this.saveTimers.keys(), ...this.diaryIndices.keys()]);
+        if (this.tagIndex) names.add('global_tags');
+        for (const timer of this.saveTimers.values()) clearTimeout(timer);
         this.saveTimers.clear();
+        for (const name of names) await this.saveToDisk(name);
     }
 }
 

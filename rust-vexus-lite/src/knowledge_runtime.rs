@@ -536,7 +536,7 @@ impl NativeMultiIndexAnnTask {
                     let mut statement = connection
                         .prepare(
                             "SELECT c.id, c.vector, f.diary_name FROM chunks c \
-                         JOIN files f ON f.id = c.file_id WHERE f.path = ?1",
+                         JOIN files f ON f.id = c.file_id WHERE f.path = ?1 AND c.vector IS NOT NULL",
                         )
                         .map_err(|error| {
                             Error::from_reason(format!(
@@ -578,6 +578,9 @@ impl NativeMultiIndexAnnTask {
                                 f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
                             })
                             .collect();
+                        if vector.iter().any(|value| !value.is_finite()) {
+                            continue;
+                        }
                         let vector_score = cosine_similarity(&self.query, &vector);
                         let normalized_bm25 = file_candidate.normalized_bm25_score.clamp(0.0, 1.0);
                         let bm25_score = file_candidate.bm25_score.max(0.0);
@@ -2890,7 +2893,6 @@ impl NativeKnowledgeRuntime {
             diary_indices,
             global_tag_index: self.global_tag_index.clone(),
             global_tag_content_revision: self.global_tag_content_revision.clone(),
-            memo_runtime: self.memo_runtime.clone(),
             diary_revisions: self.diaries.read()
                 .map_err(|_| Error::from_reason("Diary registry lock poisoned"))?
                 .iter().map(|(name, item)| (name.clone(), item.content_revision.clone())).collect(),

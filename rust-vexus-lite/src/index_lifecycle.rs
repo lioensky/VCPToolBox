@@ -116,7 +116,10 @@ impl Task for IndexCheckpointTask {
             &[state_scope.clone()],
         ).map_err(Error::from_reason)?;
         let _snapshot_guard = crate::publication_gate::acquire_read(
-            &self.db_path, &[state_scope],
+            &self.db_path, std::slice::from_ref(&state_scope),
+        ).map_err(Error::from_reason)?;
+        crate::knowledge_runtime::ensure_index_scopes_ready(
+            &self.db_path, std::slice::from_ref(&state_scope),
         ).map_err(Error::from_reason)?;
 
         if self.db_path.trim().is_empty() || self.index_path.trim().is_empty() {
@@ -1199,6 +1202,21 @@ mod checkpoint_safety_tests {
             scope: IndexScope::GlobalTags, diary_name: None, dimension: 2,
             model_sig: "test".into(), capacity: 16,
         };
+        restore.compute().unwrap();
+        for state in ["invalid", "recovering", "ready"] {
+            let state = state.to_string();
+            storage.submit_write(move |tx| {
+                tx.execute(
+                    "UPDATE kbm_index_states SET state=?1, applied_generation=-1 WHERE scope='global_tags'",
+                    [state],
+                ).map_err(|error| error.to_string())?;
+                Ok(WriteReceipt {
+                    operation: "invalidate-test".into(), database_generation: 0, facts_changed: false,
+                })
+            }).unwrap();
+            assert!(checkpoint.compute().unwrap_err().reason.contains("KBM_INDEX_NOT_READY"));
+            assert!(!std::path::Path::new(&baseline).exists());
+        }
         restore.compute().unwrap();
         let first: serde_json::Value = serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
         assert_eq!(first["published"], true);

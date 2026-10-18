@@ -29,7 +29,7 @@ class DatabaseCoordinator {
                 if (waiter.kind !== kind) continue;
                 if (error) waiter.reject(error);
                 else waiter.resolve();
-                if (waiter.timer) clearTimeout(waiter.timer);
+                // 多路径共享超时，只在整组完成或失败时清理。
             }
             const remaining = new Set(
                 [...waiters].filter(waiter => waiter.kind !== kind)
@@ -62,7 +62,10 @@ class DatabaseCoordinator {
         const signal = options.signal;
         return new Promise((resolve, reject) => {
             const waiters = [];
+            let onAbort;
             const cleanup = () => {
+                clearTimeout(timer);
+                if (onAbort) signal?.removeEventListener?.('abort', onAbort);
                 for (const [normalizedPath, waiter] of waiters) {
                     const entries = this.pathWaiters.get(normalizedPath);
                     if (!entries) continue;
@@ -117,7 +120,7 @@ class DatabaseCoordinator {
                     fail(error);
                     return;
                 }
-                const onAbort = () => {
+                onAbort = () => {
                     signal.removeEventListener?.('abort', onAbort);
                     const error = new Error(
                         'External file mutation was aborted while waiting for a receipt.'

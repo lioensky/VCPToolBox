@@ -119,13 +119,14 @@ fn load_descriptors(
                 .map_err(|error| format!("prepare batched semantic vectors failed: {}", error))?;
             let rows = statement
                 .query_map(rusqlite::params_from_iter(batch.iter()), |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
                 })
                 .map_err(|error| format!("query batched semantic vectors failed: {}", error))?;
             for row in rows {
                 let (id, bytes) =
                     row.map_err(|error| format!("decode semantic vector row failed: {}", error))?;
-                if let Some(descriptor) = descriptor_from_bytes(&bytes, dimension) {
+                if let Some(descriptor) = bytes.as_deref()
+                    .and_then(|bytes| descriptor_from_bytes(bytes, dimension)) {
                     descriptors.insert(id, descriptor);
                 }
             }
@@ -259,6 +260,25 @@ pub(crate) fn deduplicate_with_connection(
 #[cfg(test)]
 mod tests {
     use super::{cosine, descriptor_from_query};
+
+    #[test]
+    fn null_vectors_keep_candidates_without_aborting_deduplication() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE chunks(id INTEGER PRIMARY KEY, vector BLOB);
+             INSERT INTO chunks VALUES (1,NULL),(2,X'0000');"
+        ).unwrap();
+        let output = super::deduplicate_with_connection(
+            &connection,
+            vec![
+                super::DedupCandidate { id: 1, score: 1.0, original_index: 0 },
+                super::DedupCandidate { id: 2, score: 0.5, original_index: 1 },
+            ],
+            &[1.0,0.0], 2, 0.92, 10,
+        ).unwrap();
+        assert_eq!(output.missing_vectors, 2);
+        assert_eq!(output.candidates.len(), 2);
+    }
 
     #[test]
     fn prepared_cosine_uses_f64_accumulation() {

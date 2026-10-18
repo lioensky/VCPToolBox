@@ -1,7 +1,5 @@
 'use strict';
 
-const fs = require('fs').promises;
-const path = require('path');
 const crypto = require('crypto');
 const { getEmbeddingsBatch } = require('../../EmbeddingUtils');
 
@@ -62,130 +60,6 @@ class TagConsistencyService {
         for (const [token, snapshot] of this.snapshots) {
             if (snapshot.expiresAt <= now) this.snapshots.delete(token);
         }
-    }
-
-    async _loadDatabaseState() {
-        if (
-            !this.owner.nativeKnowledgeRuntime
-            || typeof this.owner.nativeKnowledgeRuntime.getTagConsistencySnapshot
-                !== 'function'
-        ) {
-            throw this._createError(
-                'NativeKnowledgeRuntime Tag 一致性快照 ABI 不可用',
-                'NATIVE_STORAGE_ABI_UNAVAILABLE',
-                503
-            );
-        }
-
-        const raw = await this.owner.nativeKnowledgeRuntime
-            .getTagConsistencySnapshot(this.owner.dbPath);
-        const snapshot = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (!snapshot || typeof snapshot !== 'object') {
-            throw this._createError(
-                'Rust Tag 一致性快照格式无效',
-                'TAG_CONSISTENCY_SNAPSHOT_INVALID',
-                500
-            );
-        }
-
-        const files = (Array.isArray(snapshot.files) ? snapshot.files : [])
-            .map(row => ({
-                id: Number(row?.id),
-                path: String(row?.path || ''),
-                diary_name: String(row?.diary_name || ''),
-                checksum: String(row?.checksum || ''),
-                mtime: Number(row?.mtime) || 0,
-                size: Number(row?.size) || 0
-            }))
-            .filter(row => Number.isSafeInteger(row.id) && row.id > 0);
-
-        const tagRows = (Array.isArray(snapshot.tags) ? snapshot.tags : [])
-            .map(row => ({
-                id: Number(row?.id),
-                name: String(row?.name || ''),
-                vector: row?.hasVector === true ? true : null
-            }))
-            .filter(row => Number.isSafeInteger(row.id) && row.id > 0 && row.name);
-
-        const relations = Array.isArray(snapshot.relations)
-            ? snapshot.relations
-            : [];
-        const relationsByFile = new Map();
-        for (const row of relations) {
-            const fileId = Number(row?.fileId);
-            const tagId = Number(row?.tagId);
-            if (
-                !Number.isSafeInteger(fileId)
-                || fileId <= 0
-                || !Number.isSafeInteger(tagId)
-                || tagId <= 0
-            ) {
-                continue;
-            }
-            if (!relationsByFile.has(fileId)) relationsByFile.set(fileId, []);
-            relationsByFile.get(fileId).push({
-                tagId,
-                name: String(row?.name || ''),
-                position: Number(row?.position) || 0
-            });
-        }
-
-        return { files, tagRows, relationsByFile };
-    }
-
-    async _readExpectedTags(fileRow) {
-        const relativePath = String(fileRow.path || '');
-        if (
-            this._isIgnored(relativePath)
-            || !/\.(md|txt)$/i.test(relativePath)
-        ) {
-            return { tags: [], status: 'ignored' };
-        }
-
-        const absolutePath = path.resolve(this.owner.config.rootPath, relativePath);
-        const rootPath = path.resolve(this.owner.config.rootPath);
-        const relativeGuard = path.relative(rootPath, absolutePath);
-        if (relativeGuard.startsWith('..') || path.isAbsolute(relativeGuard)) {
-            return { tags: [], status: 'outside-root' };
-        }
-
-        try {
-            const before = await fs.stat(absolutePath);
-            const content = await fs.readFile(absolutePath, 'utf8');
-            const after = await fs.stat(absolutePath);
-            if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
-                throw this._createError(
-                    `文件在一致性扫描期间发生变化：${relativePath}`,
-                    'TAG_CONSISTENCY_UNSTABLE_FILE',
-                    409
-                );
-            }
-            return {
-                tags: this.owner._extractTags(content),
-                status: 'scanned'
-            };
-        } catch (error) {
-            if (error.code === 'ENOENT') return { tags: [], status: 'missing' };
-            throw error;
-        }
-    }
-
-    _digestPlan(plan) {
-        const canonical = {
-            rulesSignature: plan.rulesSignature,
-            files: plan.files.map(file => ({
-                fileId: file.fileId,
-                path: file.path,
-                status: file.status,
-                expectedTags: file.expectedTags,
-                currentTags: file.currentTags.map(tag => [tag.name, tag.position])
-            })),
-            vectorizeNames: plan.vectorizeNames,
-            orphanTagIds: plan.orphanTags.map(tag => tag.id)
-        };
-        return crypto.createHash('sha256')
-            .update(JSON.stringify(canonical))
-            .digest('hex');
     }
 
     _rulesSignature() {
@@ -505,72 +379,6 @@ class TagConsistencyService {
         return result;
     }
 
-    _allocateFinalTags(plan, vectorMap) {
-        const existingByName = new Map(plan.tagRows.map(row => [row.name, row]));
-        let nextId = plan.tagRows.reduce(
-            (max, row) => Math.max(max, Number(row.id) || 0),
-            0
-        ) + 1;
-
-        return plan.expectedTagNames.map(name => {
-            const existing = existingByName.get(name);
-            const vector = vectorMap.get(name);
-            return {
-                id: existing ? Number(existing.id) : nextId++,
-                name,
-                vector: vector || existing?.vector
-            };
-        });
-    }
-
-    _buildIndexDelta(plan, finalTags, vectorMap) {
-        const finalByName = new Map(finalTags.map(tag => [tag.name, tag]));
-        const removeIds = plan.orphanTags.map(tag => Number(tag.id));
-        const upsertIds = [];
-        const vectors = new Float32Array(
-            vectorMap.size * this.owner.config.dimension
-        );
-        let position = 0;
-
-        for (const [name, rawVector] of vectorMap) {
-            const tag = finalByName.get(name);
-            if (!tag || !Number.isInteger(tag.id) || tag.id <= 0) {
-                throw this._createError(
-                    `Tag「${name}」没有可用的最终 ID，无法构造索引差分`,
-                    'TAG_CONSISTENCY_INVALID_DELTA',
-                    409
-                );
-            }
-            const vector = rawVector instanceof Float32Array
-                ? rawVector
-                : new Float32Array(rawVector || []);
-            if (vector.length !== this.owner.config.dimension) {
-                throw this._createError(
-                    `Tag「${name}」向量维度无效，无法构造索引差分`,
-                    'TAG_CONSISTENCY_INVALID_VECTOR',
-                    409
-                );
-            }
-            upsertIds.push(tag.id);
-            vectors.set(vector, position * this.owner.config.dimension);
-            position++;
-        }
-
-        return { removeIds, upsertIds, vectors };
-    }
-
-    _bindActiveTagIndex(index) {
-        this.owner.tagIndex = index;
-        this.owner.indexRepository.tagIndex = index;
-        if (this.owner.tagMemoEngine) {
-            this.owner.tagMemoEngine.tagIndex = index;
-            this.owner.tagMemoEngine.tagPairSimilarities = new Map();
-            this.owner.tagMemoEngine.tagIntrinsicResiduals = new Map();
-            this.owner.tagMemoEngine.tagRawResidualRatios = new Map();
-            this.owner.tagMemoEngine.intrinsicResidualArtifact = null;
-        }
-    }
-
     applyPreview(token) {
         if (this.owner._shuttingDown) {
             return Promise.reject(this._createError(
@@ -698,6 +506,8 @@ class TagConsistencyService {
                 );
             }
 
+            this.owner._scheduleIndexSave?.('global_tags');
+
             const upsertedTagIds = Array.isArray(receipt.upsertedTagIds)
                 ? receipt.upsertedTagIds.map(Number).filter(Number.isSafeInteger)
                 : [];
@@ -743,117 +553,7 @@ class TagConsistencyService {
             this.running = false;
         }
 
-        /* 旧 JS 事实事务保留为迁移参考，不得进入生产路径。
-        this.running = true;
-        try {
-            const verifiedPlan = await this._buildPlan();
-            if (verifiedPlan.digest !== snapshot.plan.digest) {
-                this.snapshots.delete(snapshot.token);
-                throw this._createError(
-                    '文件、规则或数据库 Tag 状态在确认前已变化，请重新扫描',
-                    'TAG_CONSISTENCY_SNAPSHOT_STALE',
-                    409
-                );
-            }
 
-            if (
-                !this.owner.tagIndex
-                || typeof this.owner.tagIndex.applyTagDelta !== 'function'
-            ) {
-                throw this._createError(
-                    '活动 Tag 索引缺少 applyTagDelta ABI，请先重新构建 rust-vexus-lite',
-                    'TAG_CONSISTENCY_DELTA_ABI_UNAVAILABLE',
-                    503
-                );
-            }
-
-            const vectorMap = await this._vectorize(
-                verifiedPlan.vectorizeNames
-            );
-            const finalTags = this._allocateFinalTags(
-                verifiedPlan,
-                vectorMap
-            );
-            const delta = this._buildIndexDelta(
-                verifiedPlan,
-                finalTags,
-                vectorMap
-            );
-
-            // SQLite 是唯一权威事实。提交后若活动 usearch 差分失败，不回滚
-            // 文件事实，而是判废该实例并走冷启动同款基线回放恢复。
-            // legacy transaction path intentionally removed
-
-            let deltaResult = null;
-            let recoveryMode = null;
-            try {
-                deltaResult = await this.owner.tagIndex.applyTagDelta(
-                    delta.removeIds,
-                    delta.upsertIds,
-                    delta.vectors
-                );
-                this._bindActiveTagIndex(this.owner.tagIndex);
-            } catch (deltaError) {
-                console.error(
-                    '[KnowledgeBase] ❌ Active Tag index delta failed; ' +
-                    'discarding the instance and recovering from authoritative SQLite:',
-                    deltaError.message || deltaError
-                );
-                // legacy index recovery path intentionally removed
-                recoveryMode = recovered.mode;
-            }
-
-            // 用户确认修复是明确的健康维护边界，不受 generational 5% 阈值限制。
-            // 发布失败不损坏旧 checkpoint，但本次接口必须明确报告未完成落盘。
-            const checkpointPublished =
-                this.owner.indexRepository.publishGlobalTagBaseline({
-                    force: true
-                });
-            if (!checkpointPublished) {
-                throw this._createError(
-                    'Tag 数据与内存索引已修复，但新 Usearch 代际 checkpoint 未能发布',
-                    'TAG_CONSISTENCY_CHECKPOINT_FAILED',
-                    500
-                );
-            }
-
-            this.snapshots.delete(snapshot.token);
-            if (this.latestPreviewTask?.preview?.token === snapshot.token) {
-                this.latestPreviewTask = null;
-            }
-            // Legacy JS transaction path removed; Rust owns fact generation and publication.
-            console.warn(
-                `[KnowledgeBase] 🧹 Tag consistency reconciliation complete: `
-                + `vectorsCreated=${verifiedPlan.summary.vectorsToCreate}, `
-                + `vectorsRemoved=${verifiedPlan.summary.vectorsToRemove}, `
-                + `relationsAdded=${verifiedPlan.summary.relationsToAdd}, `
-                + `relationsRemoved=${verifiedPlan.summary.relationsToRemove}, `
-                + `indexMode=${recoveryMode || 'active-rust-delta'}, `
-                + 'checkpoint=forced-generational. '
-                + 'TagMemo derived assets are stale and must be rebuilt.'
-            );
-
-            return {
-                applied: true,
-                summary: verifiedPlan.summary,
-                indexUpdate: {
-                    mode: recoveryMode || 'active-rust-delta',
-                    requestedDeletes: delta.removeIds.length,
-                    requestedUpserts: delta.upsertIds.length,
-                    totalVectors: Number(
-                        deltaResult?.totalVectors
-                        ?? this.owner.tagIndex.stats?.().totalVectors
-                    ) || 0
-                },
-                checkpointPublished: true,
-                waveAssetsStale: true,
-                recommendedAction: 'active-full-training',
-                message: 'Tag 差分修复、活动内存索引增量更新与新 Usearch 代际落盘已完成；请继续重建 V9.1 浪潮矩阵资产。'
-            };
-        } finally {
-            this.running = false;
-        }
-        */
     }
 }
 

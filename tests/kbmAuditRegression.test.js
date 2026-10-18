@@ -23,12 +23,15 @@ for (const mutation of ['change', 'delete']) {
         await fs.writeFile(good, 'good');
         await fs.writeFile(bad, 'bad');
         let submitted;
+        const saves = [];
         const owner = {
             config: { rootPath: root, dimension: 2, modelSig: 'test', maxBatchSize: 50,
                 sqliteBusyRetryDelayMs: 1 },
             pendingFiles: new Set([good, bad]), pendingDeletes: new Set(),
             watcherPathGenerations: new Map(), fileRetryCount: new Map(),
-            diaryIndices: new Map(),
+            diaryIndices: new Map([['Root', {}]]),
+            _scheduleIndexSave(name) { saves.push(name); },
+            async _ensureDiaryDateIndexCached() {},
             probeIngestionFiles: async names => names.map(name => ({ path: name, version: 0 })),
             prepareIngestionText: async text => ({ chunks: [text], tags: [text] }),
             probeMigrationReuse: async () => [],
@@ -40,7 +43,7 @@ for (const mutation of ['change', 'delete']) {
             async commitIngestionBatch(plan, chunks, tags) {
                 submitted = { plan, chunks, tags };
                 owner._shuttingDown = true;
-                return { factsCommitted: true, indexReady: true, newTagIds: [], affectedDiaries: [] };
+                return { factsCommitted: true, indexReady: true, newTagIds: [1], affectedDiaries: ['Root'] };
             }
         };
         let changed = false;
@@ -54,6 +57,7 @@ for (const mutation of ['change', 'delete']) {
         };
         try {
             await new IngestionPipeline(owner)._flushBatch();
+            assert.deepEqual(saves, ['Root', 'global_tags']);
             assert.equal(submitted.plan.files.length, 1);
             assert.equal(submitted.plan.files[0].path, 'good.txt');
             assert.equal(submitted.plan.chunks.length, 1);
@@ -77,8 +81,10 @@ test('confirmation consumes original prepared plan without preparing again', asy
         expiresAt: Date.now() + 10000, modelSig: 'test', dimension: 2,
         files: [], vectorizeNames: [], orphanTags: [], summary: {}
     };
+    const saves = [];
     const owner = {
         dbPath: 'unused', config: { modelSig: 'test', dimension: 2 },
+        _scheduleIndexSave(name) { saves.push(name); },
         nativeKnowledgeRuntime: {
             async commitTagConsistency(_db, raw) {
                 assert.equal(JSON.parse(raw).token, 'original');
@@ -90,6 +96,7 @@ test('confirmation consumes original prepared plan without preparing again', asy
     service._buildPlan = () => { throw new Error('must not prepare during confirmation'); };
     service.snapshots.set(plan.token, { token: plan.token, expiresAt: plan.expiresAt, plan });
     assert.equal((await service.applyPreview(plan.token)).applied, true);
+    assert.deepEqual(saves, ['global_tags']);
 });
 
 test('new preview cancels the previous prepared token', async () => {
