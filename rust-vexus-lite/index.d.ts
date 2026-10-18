@@ -529,12 +529,8 @@ export declare class VexusIndex {
    * 计算阶段只读 SQLite，不持有 JS 写租约；调用方应在结果成功后短租约调用 publish_epa_basis_cache。
    */
   computeEpaBasis(dbPath: string, clusterCount: number, maxBasisDim: number): Promise<unknown>
-  /**
-   * 🌟 EPA: 发布最近一次 Rust 计算完成的 EPA cache。
-   *
-   * 该方法执行短 SQLite 写入，JS 调用方必须先获取 Rust 写租约。
-   */
-  publishEpaBasisCache(dbPath: string): EpaBasisResult
+  /** 在后台通过 Write Actor 发布 EPA 缓存；关闭时等待发布完成。 */
+  publishEpaBasisCache(dbPath: string): Promise<unknown>
   /** 预计算任务：矩阵内生残差 (TagMemo V7) */
   computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null, modelSig?: string | undefined | null, effectiveConfigJson?: string | undefined | null): Promise<unknown>
   /**

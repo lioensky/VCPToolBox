@@ -284,3 +284,34 @@ test('strict joint River query surfaces native failure without legacy execution'
     assert.equal(fixture.calls.joint, 1);
     assert.equal(fixture.calls.legacy, 0);
 });
+
+test('joint query preserves native snapshot hydration without a second database read', async () => {
+    const fixture = createFixture();
+    const nativeKnowledgeRuntime = {
+        async executeRiverQuery() {
+            const payload = JSON.parse(nativePayload(101));
+            payload.results[0].hydratedChunk = {
+                text: 'frozen native snapshot',
+                sourceFile: 'Joint/frozen.md',
+                diaryName: 'Joint',
+                fileId: 1
+            };
+            return JSON.stringify(payload);
+        }
+    };
+    const result = await fixture.engine.rerank(
+        { text: 'query', vector: new Float32Array([1, 0, 0, 0]) },
+        [{ id: 101, chunkId: 101, text: 'stale caller text', score: 1 }],
+        { diaryNames: ['Joint'], allowedFileIds: [1] },
+        {
+            ...baseOptions(fixture),
+            nativeKnowledgeRuntime,
+            nativeJointFallbackToLegacy: false,
+            hydrateChunksByIds() {
+                assert.fail('native snapshot must not be rehydrated from a later transaction');
+            }
+        }
+    );
+    assert.equal(result.results[0].text, 'frozen native snapshot');
+    assert.equal(result.results[0].fullPath, 'Joint/frozen.md');
+});

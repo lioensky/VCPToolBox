@@ -174,6 +174,13 @@ CREATE TABLE IF NOT EXISTS rivermemo_artifacts (
     updated_at INTEGER NOT NULL,
     published_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS kbm_artifact_dependencies (
+    artifact_sig TEXT NOT NULL,
+    dependency_key TEXT NOT NULL,
+    dependency_version TEXT NOT NULL,
+    PRIMARY KEY(artifact_sig, dependency_key),
+    FOREIGN KEY(artifact_sig) REFERENCES rivermemo_artifacts(artifact_sig) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS v10_vector_metrics (
     entity_type TEXT NOT NULL,
     entity_id INTEGER NOT NULL,
@@ -343,6 +350,33 @@ pub(crate) fn initialize_schema(
     transaction.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS idx_files_diary{}", indices
     )).map_err(|error| format!("initialize KBM indices failed: {}", error))?;
+    // 派生版本独立于事实代际；触发器覆盖发布、维护和删除等所有写入口。
+    transaction.execute_batch(
+        "INSERT OR IGNORE INTO kbm_runtime_meta(key,value) VALUES
+         ('derived_pairwise','0'),('derived_intrinsic','0'),('derived_epa','0');"
+    ).map_err(|error| format!("initialize derived generations failed: {}", error))?;
+    for (table, key) in [
+        ("tag_pair_similarity", "derived_pairwise"),
+        ("tag_intrinsic_residuals", "derived_intrinsic"),
+        ("kv_store", "derived_epa"),
+    ] {
+        for event in ["INSERT", "UPDATE", "DELETE"] {
+            let condition = if table == "kv_store" {
+                if event == "DELETE" {
+                    "WHEN OLD.key='epa_basis_cache'"
+                } else {
+                    "WHEN NEW.key='epa_basis_cache'"
+                }
+            } else { "" };
+            transaction.execute_batch(&format!(
+                "CREATE TRIGGER IF NOT EXISTS trg_{table}_{event}_derived
+                 AFTER {event} ON {table} {condition} BEGIN
+                   UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)
+                   WHERE key='{key}';
+                 END;"
+            )).map_err(|error| format!("initialize derived version trigger failed: {}", error))?;
+        }
+    }
     transaction.execute_batch(GENERATION_SQL)
         .map_err(|error| format!("initialize KBM generation triggers failed: {}", error))?;
     if version < requested_version {

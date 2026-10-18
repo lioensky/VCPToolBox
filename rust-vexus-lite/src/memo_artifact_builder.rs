@@ -616,18 +616,22 @@ fn run_build(
         return Err("native artifact build requires modelSig".to_string());
     }
 
-    let (rows, pairwise, anchor_gain, residual_sig, database_generation) =
+    let (rows, pairwise, anchor_gain, residual_sig, database_generation, dependencies) =
         with_registered_read_transaction(db_path, |readonly| {
             let rows = load_file_tags(readonly)?;
             let pairwise = load_pairwise(readonly, &input.model_sig)?;
             let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
             let database_generation = database_generation(readonly)?;
+            let dependencies = crate::storage::DerivedDependencies::capture(
+                readonly, &["derived_pairwise", "derived_intrinsic"],
+            )?;
             Ok((
                 rows,
                 pairwise,
                 anchor_gain,
                 residual_sig,
                 database_generation,
+                dependencies,
             ))
         })?;
     let fact = build_fact_matrix(&rows, &pairwise, &anchor_gain, &input.effective_config);
@@ -725,8 +729,7 @@ fn run_build(
         .map_err(|error| format!("finish native artifact compression failed: {}", error))?;
 
     // 只在最终提交和内存发布窗口持门禁，耗时图构建与压缩不阻塞查询。
-    let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
-        .map_err(|_| "Index publication gate poisoned".to_string())?;
+    let _publication_guard = crate::publication_gate::acquire(db_path, &[String::from("*")])?;
     let source_generation = database_generation.parse::<u64>()
         .map_err(|error| format!("Invalid artifact source generation: {}", error))?;
     let artifact_sig_for_write = artifact_sig.clone();
@@ -738,9 +741,11 @@ fn run_build(
     let config_hash_for_write = config_hash.clone();
     let checksum_for_write = checksum.clone();
     let native_for_write = native.clone();
+    let dependencies_for_write = dependencies.clone();
 
     with_registered_write(db_path, move |transaction| {
         crate::storage::ensure_generation(transaction, source_generation)?;
+        dependencies_for_write.ensure_current(transaction)?;
         transaction
             .execute(
                 "INSERT INTO rivermemo_artifacts (\
@@ -774,6 +779,7 @@ fn run_build(
                 ],
             )
             .map_err(|error| format!("persist native artifact failed: {}", error))?;
+        dependencies_for_write.persist_for_artifact(transaction, &artifact_sig_for_write)?;
 
         Ok(crate::storage::WriteReceipt {
             operation: "publish_rivermemo_artifact".to_string(),
@@ -789,7 +795,8 @@ fn run_build(
     })?;
 
     with_registered_read_transaction(db_path, |connection| {
-        crate::storage::ensure_generation(connection, source_generation)
+        crate::storage::ensure_generation(connection, source_generation)?;
+        dependencies.ensure_current(connection)
     })?;
     let generation = runtime.publish(&artifact_sig, native.clone())?;
     Ok(NativeMemoArtifactBuildResult {

@@ -89,7 +89,7 @@ fn storage_registry() -> &'static Mutex<HashMap<String, SqliteStorageEngine>> {
     STORAGE_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn normalized_path(path: impl AsRef<Path>) -> String {
+pub(crate) fn normalized_path(path: impl AsRef<Path>) -> String {
     let absolute = if path.as_ref().is_absolute() {
         path.as_ref().to_path_buf()
     } else {
@@ -170,22 +170,13 @@ where
         .ok_or_else(|| "KNOWLEDGE_STORE_NOT_REGISTERED".to_string())?;
 
     storage.read(|connection| {
-        connection
-            .execute_batch("BEGIN DEFERRED TRANSACTION")
+        // RAII 保证错误返回和 panic 展开时均先回滚，再将连接归还 Read Pool。
+        let transaction = connection.unchecked_transaction()
             .map_err(|error| format!("begin SQLite read transaction failed: {}", error))?;
-
-        match operation(connection) {
-            Ok(value) => {
-                connection
-                    .execute_batch("COMMIT")
-                    .map_err(|error| format!("commit SQLite read transaction failed: {}", error))?;
-                Ok(value)
-            }
-            Err(error) => {
-                let _ = connection.execute_batch("ROLLBACK");
-                Err(error)
-            }
-        }
+        let value = operation(&transaction)?;
+        transaction.commit()
+            .map_err(|error| format!("commit SQLite read transaction failed: {}", error))?;
+        Ok(value)
     })
 }
 
@@ -738,6 +729,47 @@ pub(crate) fn ensure_generation(connection: &Connection, expected: u64) -> Resul
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DerivedDependencies(Vec<(String, u64)>);
+
+impl DerivedDependencies {
+    pub(crate) fn capture(connection: &Connection, keys: &[&str]) -> Result<Self, String> {
+        let mut values = Vec::with_capacity(keys.len());
+        for key in keys {
+            let raw: String = connection.query_row(
+                "SELECT value FROM kbm_runtime_meta WHERE key=?1", [key], |row| row.get(0),
+            ).map_err(|error| format!("Read derived dependency {} failed: {}", key, error))?;
+            values.push((key.to_string(), raw.parse::<u64>()
+                .map_err(|error| format!("Invalid derived dependency {}: {}", key, error))?));
+        }
+        Ok(Self(values))
+    }
+
+    pub(crate) fn persist_for_artifact(&self, connection: &Connection, signature: &str) -> Result<(), String> {
+        connection.execute("DELETE FROM kbm_artifact_dependencies WHERE artifact_sig=?1", [signature])
+            .map_err(|error| format!("Clear artifact dependencies failed: {}", error))?;
+        for (key, version) in &self.0 {
+            connection.execute(
+                "INSERT INTO kbm_artifact_dependencies(artifact_sig, dependency_key, dependency_version) VALUES (?1,?2,?3)",
+                rusqlite::params![signature, key, version.to_string()],
+            ).map_err(|error| format!("Persist artifact dependency failed: {}", error))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_current(&self, connection: &Connection) -> Result<(), String> {
+        let keys: Vec<&str> = self.0.iter().map(|(key, _)| key.as_str()).collect();
+        let current = Self::capture(connection, &keys)?;
+        if current != *self {
+            return Err(format!(
+                "KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT: expected={:?}, current={:?}",
+                self, current
+            ));
+        }
+        Ok(())
+    }
+}
+
 fn execute_write_command(
     connection: &mut Connection,
     operation: WriteOperation,
@@ -1098,5 +1130,69 @@ mod audit_generation_tests {
         assert!(result.unwrap_err().contains("DERIVED_GENERATION_CONFLICT"));
         let value: String = connection.query_row("SELECT value FROM result", [], |row| row.get(0)).unwrap();
         assert_eq!(value, "healthy");
+    }
+}
+
+
+#[cfg(test)]
+mod snapshot_dependency_tests {
+    use super::*;
+
+    #[test]
+    fn derived_changes_conflict_without_fact_generation_change() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES ('schema_version','1'),('database_generation','7');"
+        ).unwrap();
+        crate::schema::initialize_schema(&connection, 1).unwrap();
+        let snapshot = DerivedDependencies::capture(
+            &connection, &["derived_pairwise", "derived_intrinsic", "derived_epa"],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO tag_pair_similarity VALUES (1,2,0.9,'test',0)", [],
+        ).unwrap();
+        assert_eq!(read_generation(&connection).unwrap(), 7);
+        assert!(snapshot.ensure_current(&connection).unwrap_err().contains("DEPENDENCY_CONFLICT"));
+        let snapshot = DerivedDependencies::capture(&connection, &["derived_epa"]).unwrap();
+        connection.execute(
+            "INSERT INTO kv_store(key,value) VALUES ('epa_basis_cache','{}')", [],
+        ).unwrap();
+        assert!(snapshot.ensure_current(&connection).is_err());
+    }
+
+    #[test]
+    fn registered_read_transaction_keeps_snapshot_across_writer_commit() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-read-snapshot-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("test.sqlite");
+        let (storage, _) = SqliteStorageEngine::open_and_init(&path, StorageOptions::default()).unwrap();
+        with_registered_read_transaction(&path, |connection| {
+            assert_eq!(read_generation(connection)?, 0);
+            storage.submit_write(|tx| {
+                tx.execute("INSERT INTO tags(name) VALUES ('later')", [])
+                    .map_err(|error| error.to_string())?;
+                Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+            })?;
+            assert_eq!(read_generation(connection)?, 0);
+            let count: i64 = connection.query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            assert_eq!(count, 0);
+            Ok(())
+        }).unwrap();
+        assert_eq!(with_registered_read(&path, read_generation).unwrap(), 1);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: Result<(), String> = with_registered_read_transaction(&path, |_| panic!("injected"));
+        }));
+        assert!(panic.is_err());
+        with_registered_read_transaction(&path, |connection| {
+            assert!(!connection.is_autocommit());
+            Ok(())
+        }).unwrap();
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

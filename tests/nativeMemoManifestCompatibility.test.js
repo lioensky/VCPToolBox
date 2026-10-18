@@ -5,14 +5,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const Database = require('better-sqlite3');
 const {
     VexusIndex,
     NativeKnowledgeRuntime
 } = require('../rust-vexus-lite');
-const {
-    initializeKnowledgeBaseSchema
-} = require('../modules/knowledgeBase/schemaManager');
 const {
     stableSerialize
 } = require('../modules/tagmemoV10/immutable');
@@ -31,50 +27,24 @@ function sha256(value, length) {
 async function main() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-native-memo-manifest-'));
     const dbPath = path.join(root, 'knowledge_base.sqlite');
-    const db = new Database(dbPath);
+    const index = new VexusIndex(4, 16);
+    const nativeKnowledgeRuntime = new NativeKnowledgeRuntime(index);
+    nativeKnowledgeRuntime.openAndInitStore(dbPath);
 
     try {
-        initializeKnowledgeBaseSchema(db, {
-            logPrefix: 'NativeMemoManifestTest'
-        });
-
-        db.prepare(`
-            INSERT INTO files (
-                id, path, diary_name, checksum, mtime, size, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(1, 'memo.txt', 'test', 'checksum', 1, 10, 1);
-
-        const insertTag = db.prepare(
-            'INSERT INTO tags (id, name, vector) VALUES (?, ?, ?)'
-        );
-        insertTag.run(1, 'tag-1', vectorBuffer([1, 0, 0, 0]));
-        insertTag.run(2, 'tag-2', vectorBuffer([0, 1, 0, 0]));
-        insertTag.run(3, 'tag-3', vectorBuffer([0, 0, 1, 0]));
-
-        const insertRelation = db.prepare(`
-            INSERT INTO file_tags (file_id, tag_id, position)
-            VALUES (?, ?, ?)
-        `);
-        insertRelation.run(1, 1, 1);
-        insertRelation.run(1, 2, 2);
-        insertRelation.run(1, 3, 3);
-
-        const insertChunk = db.prepare(`
-            INSERT INTO chunks (id, file_id, chunk_index, content, vector)
-            VALUES (?, 1, ?, ?, ?)
-        `);
-        insertChunk.run(
-            101,
-            0,
-            'first shared-file candidate',
-            vectorBuffer([1, 0, 0, 0])
-        );
-        insertChunk.run(
-            102,
-            1,
-            'second shared-file candidate',
-            vectorBuffer([0.8, 0.2, 0, 0])
-        );
+        await nativeKnowledgeRuntime.commitIngestionBatch(dbPath, JSON.stringify({
+            operationId: 'manifest-fixture', batchId: 'manifest-fixture',
+            dimension: 4, modelSig: 'manifest-test-model',
+            files: [{ path: 'memo.txt', diaryName: 'test', checksum: 'checksum',
+                mtime: 1, size: 10, expectedVersion: 0,
+                chunkStart: 0, chunkCount: 2, tagStart: 0, tagCount: 3 }],
+            chunks: [
+                { content: 'first shared-file candidate', chunkIndex: 0, vectorSlot: 0 },
+                { content: 'second shared-file candidate', chunkIndex: 1, vectorSlot: 1 }
+            ],
+            tags: [1, 2, 3].map((id, slot) => ({ name: 'tag-' + id, position: id, vectorSlot: slot }))
+        }), new Float32Array([1,0,0,0, 0.8,0.2,0,0]),
+        new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0]));
 
         const effectiveConfig = {
             zeta: {
@@ -107,16 +77,14 @@ async function main() {
             'fixture must exercise an insertion-order difference'
         );
 
-        const index = new VexusIndex(4, 16);
         const diaryIndex = new VexusIndex(4, 16);
         diaryIndex.addBatch(
-            [101, 102],
+            [1, 2],
             new Float32Array([
                 1, 0, 0, 0,
                 0.8, 0.2, 0, 0
             ])
         );
-        const nativeKnowledgeRuntime = new NativeKnowledgeRuntime(index);
         nativeKnowledgeRuntime.registerDiaryIndex('test', diaryIndex);
 
         const result = await index.rebuildMemoArtifact(
@@ -129,9 +97,6 @@ async function main() {
         assert.strictEqual(result.success, true);
         assert.strictEqual(result.persisted, true);
 
-        index.add(1, new Float32Array([1, 0, 0, 0]));
-        index.add(2, new Float32Array([0, 1, 0, 0]));
-        index.add(3, new Float32Array([0, 0, 1, 0]));
         const pipelineResult = await index.runMemoPipeline(
             dbPath,
             result.artifactSig,
@@ -197,8 +162,8 @@ async function main() {
                     vector: []
                 },
                 candidates: [
-                    { id: 101, score: 0.9 },
-                    { id: 102, score: 0.8 }
+                    { id: 1, score: 0.9 },
+                    { id: 2, score: 0.8 }
                 ],
                 queryState: {
                     queryId: 'typed-array-regression'
@@ -223,7 +188,7 @@ async function main() {
         assert.strictEqual(topology.diagnostics.returnedCandidates, 2);
         assert.deepStrictEqual(
             new Set(topology.results.map(item => Number(item.chunkId))),
-            new Set([101, 102])
+            new Set([1, 2])
         );
         assert.strictEqual(
             topology.diagnostics.chunkSqlBatches,
@@ -389,37 +354,27 @@ async function main() {
             );
         }
 
-        const row = db.prepare(`
-            SELECT config_hash, database_generation, status
-            FROM rivermemo_artifacts
-            WHERE artifact_sig = ?
-        `).get(result.artifactSig);
+        const row = JSON.parse(await nativeKnowledgeRuntime.getNativeMemoManifest(
+            dbPath, 'manifest-test-model', sha256(canonicalJson, 32)
+        ));
         assert(row, 'native artifact manifest must be persisted');
-        assert.strictEqual(row.status, 'ready');
-        assert.strictEqual(
-            row.config_hash,
-            sha256(canonicalJson, 32),
-            'Rust and JS must hash the same canonical JSON'
-        );
-        assert.notStrictEqual(
-            row.config_hash,
-            sha256(ordinaryJson, 32),
-            'test must detect the retired insertion-order hash'
-        );
+        assert.strictEqual(row.artifactSig, result.artifactSig);
+        assert.strictEqual(row.configHash, sha256(canonicalJson, 32));
+        assert.notStrictEqual(row.configHash, sha256(ordinaryJson, 32));
+        assert.strictEqual(row.databaseGeneration, String(nativeKnowledgeRuntime.databaseGeneration()));
+        assert(joint.results.every(item => typeof item.hydratedChunk?.text === 'string'));
 
-        const facts = ['files', 'chunks', 'tags', 'file_tags'].map(table => {
-            const value = db.prepare(
-                `SELECT COUNT(*) AS count,
-                        COALESCE(MAX(rowid), 0) AS maxRowId
-                 FROM ${table}`
-            ).get();
-            return `${table}:${value.count}:${value.maxRowId}`;
-        });
-        assert.strictEqual(
-            row.database_generation,
-            sha256(facts.join('|'), 40),
-            'Rust and JS database-generation contracts must remain identical'
-        );
+        const factGeneration = nativeKnowledgeRuntime.databaseGeneration();
+        await index.computePairwiseSimilarities(dbPath, 'manifest-test-model', -1, true);
+        assert.strictEqual(nativeKnowledgeRuntime.databaseGeneration(), factGeneration);
+        assert.strictEqual(JSON.parse(await nativeKnowledgeRuntime.getNativeMemoManifest(
+            dbPath, 'manifest-test-model', sha256(canonicalJson, 32)
+        )), null, 'derived publication must invalidate the previous manifest without a fact write');
+        await assert.rejects(index.runMemoPipeline(
+            dbPath, result.artifactSig,
+            JSON.stringify({ queryText: 'stale', config: { maxLevels: 1 } }),
+            new Float32Array([1, 0, 0, 0]), new Float32Array()
+        ), /DERIVED_DEPENDENCY_CONFLICT/);
 
         nativeKnowledgeRuntime.shutdown();
         console.log(
@@ -427,16 +382,8 @@ async function main() {
             'batched RiverMemo SQL, one-call joint retrieval and concurrent cold handles are compatible.'
         );
     } finally {
-        db.close();
-        try {
-            fs.rmSync(root, { recursive: true, force: true });
-        } catch (error) {
-            // Rust SQLite keepalive 与进程同生命周期；Windows 在当前测试进程
-            // 退出前会拒绝删除仍被 keepalive 持有的临时数据库。
-            if (process.platform !== 'win32' || error?.code !== 'EBUSY') {
-                throw error;
-            }
-        }
+        nativeKnowledgeRuntime.shutdown();
+        fs.rmSync(root, { recursive: true, force: true });
     }
 }
 

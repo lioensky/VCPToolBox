@@ -6,15 +6,14 @@ fn current_time_ms() -> i64 {
 }
 
 use crate::rivermemo_topology_v3::MemoRuntime;
-use crate::storage::{with_registered_read_napi, with_registered_write, WriteReceipt};
+use crate::storage::{with_registered_write, WriteReceipt};
 use crate::text::{extract_tags, TagRules};
 use napi::bindgen_prelude::*;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use usearch::Index;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,7 +62,7 @@ pub struct TagConsistencyCommitTask {
     pub(crate) db_path: String,
     pub(crate) plan_json: String,
     pub(crate) tag_vectors: Vec<f32>,
-    pub(crate) global_tag_index: Arc<RwLock<Index>>,
+    pub(crate) global_tag_index: Arc<crate::index_handle::IndexHandle>,
     pub(crate) global_tag_content_revision: Arc<AtomicU64>,
     pub(crate) memo_runtime: Arc<MemoRuntime>,
 }
@@ -73,8 +72,7 @@ impl Task for TagConsistencyCommitTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
-            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
+        let _publication_guard = crate::publication_gate::acquire(&self.db_path, &[String::from("*")]).map_err(Error::from_reason)?;
         let plan: ConsistencyPlan = serde_json::from_str(&self.plan_json)
             .map_err(|error| Error::from_reason(format!("Invalid Tag consistency plan JSON: {}", error)))?;
 
@@ -495,7 +493,7 @@ impl Task for TagConsistencyCommitTask {
 }
 
 fn apply_tag_index_delta(
-    index: &Arc<RwLock<Index>>,
+    index: &Arc<crate::index_handle::IndexHandle>,
     content_revision: &Arc<AtomicU64>,
     memo_runtime: &Arc<MemoRuntime>,
     remove_ids: &[i64],
@@ -618,8 +616,6 @@ impl Task for TagConsistencyPrepareTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
-            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
         let request: TagConsistencyPrepareRequest =
             serde_json::from_str(&self.request_json).map_err(|error| {
                 Error::from_reason(format!("Invalid Tag consistency prepare request: {}", error))
@@ -638,7 +634,8 @@ impl Task for TagConsistencyPrepareTask {
             ));
         }
 
-        let snapshot = with_registered_read_napi(&request.db_path, |connection| {
+        let snapshot = crate::storage::with_registered_read_transaction_napi(&request.db_path, |connection| {
+            let generation = crate::storage::read_generation(connection).map_err(Error::from_reason)?;
             let mut files = Vec::new();
             let mut statement = connection
                 .prepare("SELECT id, path FROM files ORDER BY id")
@@ -694,7 +691,7 @@ impl Task for TagConsistencyPrepareTask {
                     Error::from_reason(format!("Decode Tag relation failed: {}", error))
                 })?);
             }
-            Ok((files, tags, relations))
+            Ok((files, tags, relations, generation))
         })?;
 
         let tag_rows = snapshot.1;
@@ -916,7 +913,9 @@ impl Task for TagConsistencyPrepareTask {
             .map_err(|error| Error::from_reason(error.to_string()))?;
         let plan_json = serde_json::to_string(&authoritative)
             .map_err(|error| Error::from_reason(error.to_string()))?;
+        let source_generation = snapshot.3;
         with_registered_write(&request.db_path, move |tx| {
+            crate::storage::ensure_generation(tx, source_generation)?;
             tx.execute(
                 "DELETE FROM kbm_prepared_plans WHERE expires_at < ?1 AND status != 'committed'",
                 [now],

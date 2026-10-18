@@ -4,8 +4,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
-use usearch::Index;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -530,8 +529,8 @@ pub struct IngestionCommitTask {
     pub(crate) plan_json: String,
     pub(crate) chunk_vectors: Vec<f32>,
     pub(crate) tag_vectors: Vec<f32>,
-    pub(crate) diary_indices: HashMap<String, (Arc<RwLock<Index>>, u32)>,
-    pub(crate) global_tag_index: Arc<RwLock<Index>>,
+    pub(crate) diary_indices: HashMap<String, (Arc<crate::index_handle::IndexHandle>, u32)>,
+    pub(crate) global_tag_index: Arc<crate::index_handle::IndexHandle>,
     pub(crate) global_tag_content_revision: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) diary_revisions: HashMap<String, Arc<std::sync::atomic::AtomicU64>>,
     pub(crate) memo_runtime: Arc<crate::rivermemo_topology_v3::MemoRuntime>,
@@ -542,8 +541,7 @@ impl Task for IngestionCommitTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
-            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
+        let _publication_guard = crate::publication_gate::acquire(&self.db_path, &[String::from("*")]).map_err(Error::from_reason)?;
         let plan: IngestionPlan = serde_json::from_str(&self.plan_json).map_err(|error| {
             Error::from_reason(format!("Invalid ingestion plan JSON: {}", error))
         })?;
@@ -821,10 +819,24 @@ fn apply_committed_index_deltas(
     chunk_vectors: &[f32],
     tag_vectors: &[f32],
     details: &CommitDetails,
-    diary_indices: &HashMap<String, (Arc<RwLock<Index>>, u32)>,
-    global_tag_index: &Arc<RwLock<Index>>,
+    diary_indices: &HashMap<String, (Arc<crate::index_handle::IndexHandle>, u32)>,
+    global_tag_index: &Arc<crate::index_handle::IndexHandle>,
 ) -> std::result::Result<bool, String> {
     let mut ready = true;
+    // 先完成数据库 I/O，再取得任何索引写锁，避免锁顺序倒置。
+    let reused_vectors = with_registered_read(db_path, |connection| {
+        let mut vectors = HashMap::new();
+        let mut statement = connection.prepare("SELECT vector FROM chunks WHERE id=?1")
+            .map_err(|error| error.to_string())?;
+        for receipt in details.upserted_chunks.iter().filter(|entry| entry.vector_slot.is_none()) {
+            let bytes = statement.query_row([receipt.chunk_id], |row| row.get::<_, Option<Vec<u8>>>(0))
+                .optional().map_err(|error| error.to_string())?.flatten();
+            if let Some(bytes) = bytes {
+                vectors.insert(receipt.chunk_id, bytes);
+            }
+        }
+        Ok(vectors)
+    })?;
 
     for (diary_name, delta) in &details.diary_index_deltas {
         let Some((index, dimension)) = diary_indices.get(diary_name) else {
@@ -846,15 +858,8 @@ fn apply_committed_index_deltas(
             .filter(|entry| entry.diary_name == *diary_name)
         {
             let Some(slot) = receipt.vector_slot else {
-                let bytes = with_registered_read(db_path, |connection| {
-                    connection.query_row(
-                        "SELECT vector FROM chunks WHERE id = ?1",
-                        [receipt.chunk_id], |row| row.get::<_, Option<Vec<u8>>>(0),
-                    ).optional().map(|value| value.flatten())
-                        .map_err(|error| error.to_string())
-                })?;
                 // NULL 是部分 Embedding 失败，不是索引中应存在的向量。
-                let Some(bytes) = bytes else { continue; };
+                let Some(bytes) = reused_vectors.get(&receipt.chunk_id) else { continue; };
                 if bytes.len() != dimension * 4 {
                     return Err("Reused Chunk vector dimension mismatch".to_string());
                 }
@@ -1506,7 +1511,7 @@ fn commit_plan(
 
 fn apply_deleted_index_deltas(
     diary_index_deltas: &HashMap<String, DiaryIndexDelta>,
-    diary_indices: &HashMap<String, Arc<RwLock<Index>>>,
+    diary_indices: &HashMap<String, Arc<crate::index_handle::IndexHandle>>,
 ) -> bool {
     let mut ready = true;
 
@@ -1554,7 +1559,7 @@ pub struct DeleteCommitTask {
     pub(crate) db_path: String,
     pub(crate) file_paths: Vec<String>,
     pub(crate) ttl_ms: i64,
-    pub(crate) diary_indices: HashMap<String, Arc<RwLock<Index>>>,
+    pub(crate) diary_indices: HashMap<String, Arc<crate::index_handle::IndexHandle>>,
     pub(crate) diary_revisions: HashMap<String, Arc<std::sync::atomic::AtomicU64>>,
 }
 
@@ -1563,8 +1568,7 @@ impl Task for DeleteCommitTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
-            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
+        let _publication_guard = crate::publication_gate::acquire(&self.db_path, &[String::from("*")]).map_err(Error::from_reason)?;
         let paths = self.file_paths.clone();
         let root_path = self.root_path.clone();
         let ttl_ms = self.ttl_ms.max(0);
@@ -1836,8 +1840,6 @@ impl Task for OrphanCleanupTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
-            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
         let root_path = std::path::PathBuf::from(&self.root_path);
         let file_rows: Vec<(i64, String, String)> = with_registered_read(
             &self.db_path,
@@ -1888,8 +1890,9 @@ impl Task for OrphanCleanupTask {
             }
         }
 
+        let _publication_guard = crate::publication_gate::acquire(&self.db_path, &[String::from("*")]).map_err(Error::from_reason)?;
         let missing_files_for_write = missing_files.clone();
-        let invalid_diaries = affected_diaries.clone();
+        let mut invalid_diaries = affected_diaries.clone();
         let affected_diaries_for_write = Arc::new(Mutex::new(None));
         let affected_diaries_for_write_ref = Arc::clone(&affected_diaries_for_write);
         let _receipt = with_registered_write(&self.db_path, move |tx| {
@@ -1921,6 +1924,10 @@ impl Task for OrphanCleanupTask {
                         "Orphan cleanup final file verification deferred: {}", error
                     )),
                 }
+                let diary: String = tx.query_row(
+                    "SELECT diary_name FROM files WHERE id=?1", [file_id], |row| row.get(0),
+                ).map_err(|error| format!("Read current orphan diary failed: {}", error))?;
+                invalid_diaries.insert(diary);
                 tx.execute("DELETE FROM file_tags WHERE file_id = ?1", [file_id])
                     .map_err(|error| {
                         format!("Delete missing file tags failed: {}", error)

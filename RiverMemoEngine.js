@@ -339,16 +339,30 @@ class RiverMemoEngine {
                 .filter(([id]) => id !== null)
         );
 
-        // 联合路径没有把中间候选返回 JS。只按最终 Top-K ID 批量 hydrate
-        // 正文和路径，恢复现有公共结果对象契约。hydrate 必须走 KBM
-        // 异步高层门面，禁止通过旧 runtime.db 同步访问中央 SQLite。
+        // 联合查询优先消费 Rust 在同一读事务内回填的最终正文。
+        // 仅旧 ABI 缺少该字段时才经异步门面补水；不得复用调用方旧正文。
+        if (jointUsed) {
+            inputById.clear();
+            for (const item of Array.isArray(nativeResult.results) ? nativeResult.results : []) {
+                const id = Number(item?.chunkId ?? item?.id);
+                const row = item?.hydratedChunk;
+                if (!Number.isSafeInteger(id) || id <= 0 || !row || typeof row !== 'object') continue;
+                inputById.set(id, {
+                    ...row,
+                    id,
+                    chunkId: id,
+                    fullPath: row.fullPath || row.sourceFile,
+                    source: row.source || 'rag'
+                });
+            }
+        }
         if (jointUsed && typeof options.hydrateChunksByIds === 'function') {
             const finalIds = [...new Set(
                 (Array.isArray(nativeResult.results)
                     ? nativeResult.results
                     : []
                 ).map(item => Number(item?.chunkId ?? item?.id))
-                    .filter(id => Number.isSafeInteger(id) && id > 0)
+                    .filter(id => Number.isSafeInteger(id) && id > 0 && !inputById.has(id))
             )];
             if (finalIds.length > 0) {
                 const rows = await options.hydrateChunksByIds(finalIds);

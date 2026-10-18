@@ -31,6 +31,9 @@ impl Task for PairwiseModelCleanupTask {
             ));
         }
 
+        let _publication_guard = crate::publication_gate::acquire(
+            &self.db_path, &[String::from("*")],
+        ).map_err(Error::from_reason)?;
         let db_path = self.db_path.clone();
         let model_sig_for_write = model_sig.clone();
         let details = Arc::new(Mutex::new(None));

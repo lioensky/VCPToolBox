@@ -1,4 +1,3 @@
-use crate::storage::with_registered_read;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -95,11 +94,10 @@ fn cosine(left: &VectorDescriptor, right: &VectorDescriptor) -> f64 {
 }
 
 fn load_descriptors(
-    db_path: &str,
+    connection: &rusqlite::Connection,
     ids: &[i64],
     dimension: usize,
 ) -> std::result::Result<(HashMap<i64, VectorDescriptor>, usize), String> {
-    with_registered_read(db_path, |connection| {
         let mut descriptors = HashMap::with_capacity(ids.len());
         let mut sql_batches = 0usize;
 
@@ -134,11 +132,11 @@ fn load_descriptors(
         }
 
         Ok((descriptors, sql_batches))
-    })
 }
 
-pub(crate) fn deduplicate(
-    db_path: &str,
+/// 调用方传入固定读事务连接，避免跨查询阶段重新借用连接池。
+pub(crate) fn deduplicate_with_connection(
+    connection: &rusqlite::Connection,
     candidates: Vec<DedupCandidate>,
     query: &[f32],
     dimension: usize,
@@ -157,7 +155,7 @@ pub(crate) fn deduplicate(
     }
 
     let ids: Vec<i64> = candidates.iter().map(|candidate| candidate.id).collect();
-    let (mut descriptors, sql_batches) = load_descriptors(db_path, &ids, dimension)?;
+    let (mut descriptors, sql_batches) = load_descriptors(connection, &ids, dimension)?;
     let hydrated_vectors = descriptors.len();
     let missing_vectors = candidates.len().saturating_sub(hydrated_vectors);
     let query_descriptor = descriptor_from_query(query, dimension);

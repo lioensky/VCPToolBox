@@ -6,7 +6,7 @@ use napi::bindgen_prelude::*;
 use rusqlite::OptionalExtension;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::Arc;
 use usearch::Index;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -18,7 +18,7 @@ pub(crate) enum IndexScope {
 pub struct IndexCheckpointTask {
     pub(crate) db_path: String,
     pub(crate) index_path: String,
-    pub(crate) index: Arc<RwLock<Index>>,
+    pub(crate) index: Arc<crate::index_handle::IndexHandle>,
     pub(crate) content_revision: Arc<AtomicU64>,
     pub(crate) scope: IndexScope,
     pub(crate) diary_name: Option<String>,
@@ -94,11 +94,6 @@ fn ratio(delta: u64, current: u64, baseline: u64) -> f64 {
     delta as f64 / current.max(baseline).max(1) as f64
 }
 
-pub(crate) fn checkpoint_gate() -> &'static Mutex<()> {
-    static CHECKPOINT_GATE: OnceLock<Mutex<()>> = OnceLock::new();
-    CHECKPOINT_GATE.get_or_init(|| Mutex::new(()))
-}
-
 fn vector_signature(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -111,9 +106,18 @@ impl Task for IndexCheckpointTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let _checkpoint_guard = checkpoint_gate()
-            .lock()
-            .map_err(|_| Error::from_reason("Index checkpoint gate poisoned".to_string()))?;
+        let state_scope = match self.scope {
+            IndexScope::Diary => format!("diary:{}", self.diary_name.as_deref().unwrap_or_default()),
+            IndexScope::GlobalTags => String::from("global_tags"),
+        };
+        // 独立协调库只串行化双槽写入；不可在持共享事实门禁后再升级。
+        let _checkpoint_guard = crate::publication_gate::acquire(
+            &format!("{}#index-checkpoints", self.db_path),
+            &[state_scope.clone()],
+        ).map_err(Error::from_reason)?;
+        let _snapshot_guard = crate::publication_gate::acquire_read(
+            &self.db_path, &[state_scope],
+        ).map_err(Error::from_reason)?;
 
         if self.db_path.trim().is_empty() || self.index_path.trim().is_empty() {
             return Err(Error::from_reason(
@@ -699,7 +703,7 @@ pub struct IndexRestoreTask {
     pub(crate) memo_runtime: Option<Arc<crate::rivermemo_topology_v3::MemoRuntime>>,
     pub(crate) db_path: String,
     pub(crate) index_path: String,
-    pub(crate) index: Arc<RwLock<Index>>,
+    pub(crate) index: Arc<crate::index_handle::IndexHandle>,
     pub(crate) scope: IndexScope,
     pub(crate) diary_name: Option<String>,
     pub(crate) dimension: u32,
@@ -763,8 +767,7 @@ impl Task for IndexRestoreTask {
         use std::collections::{HashMap, HashSet};
         use std::path::Path;
 
-        let _publication_guard = checkpoint_gate().lock()
-            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
+        let _publication_guard = crate::publication_gate::acquire(&self.db_path, &[match self.scope { IndexScope::Diary => format!("diary:{}", self.diary_name.as_deref().unwrap_or_default()), IndexScope::GlobalTags => String::from("global_tags") }]).map_err(Error::from_reason)?;
         let dimension = self.dimension as usize;
         if dimension == 0 || self.model_sig.trim().is_empty() {
             return Err(Error::from_reason(

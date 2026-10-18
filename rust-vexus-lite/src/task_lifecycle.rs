@@ -9,6 +9,10 @@ pub(crate) struct TaskLifecycle {
 }
 
 impl TaskLifecycle {
+    pub(crate) fn is_idle(&self) -> bool {
+        *self.active.lock().unwrap_or_else(|error| error.into_inner()) == 0
+    }
+
     pub(crate) fn wait_idle(&self) {
         let mut active = self.active.lock().unwrap_or_else(|error| error.into_inner());
         while *active != 0 {

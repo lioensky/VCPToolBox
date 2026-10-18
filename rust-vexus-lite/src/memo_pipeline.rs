@@ -1,5 +1,5 @@
 use crate::memo_sensing::{sense_typed, SenseConfig, SenseInput, SenseOutput, SenseSeed};
-use crate::rivermemo_topology_v3::{load_artifact_from_runtime, MemoRuntime};
+use crate::rivermemo_topology_v3::{load_artifact_with_connection, MemoRuntime};
 use crate::storage::with_registered_read_transaction;
 use base64::Engine;
 use napi::bindgen_prelude::*;
@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc};
 use std::time::Instant;
 use usearch::Index;
 
@@ -521,7 +521,7 @@ fn load_tag_names(
 }
 
 fn analyze_pyramid(
-    index: &Index,
+    index: &Arc<crate::index_handle::IndexHandle>,
     connection: &Connection,
     query: &[f32],
     dimension: usize,
@@ -548,18 +548,18 @@ fn analyze_pyramid(
     let mut levels_work = Vec::new();
     let mut total_explained = 0.0;
     for level in 0..config.max_levels.clamp(1, 8) {
-        let matches = index
+        let guard = index.read().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
+        let matches = guard
             .search(&residual, config.pyramid_top_k.clamp(1, 128))
             .map_err(|error| format!("Memo pyramid usearch search failed: {:?}", error))?;
         if matches.keys.is_empty() {
             break;
         }
         let ids: Vec<i64> = matches.keys.iter().map(|id| *id as i64).collect();
-        let names = load_tag_names(connection, &ids)?;
         let mut buffer = vec![0.0f32; dimension];
         let mut tags = Vec::new();
         for (position, id) in ids.iter().enumerate() {
-            let found = index
+            let found = guard
                 .get(*id as u64, &mut buffer)
                 .map_err(|error| format!("Memo pyramid Tag vector read failed: {:?}", error))?;
             if found == 0 {
@@ -567,10 +567,7 @@ fn analyze_pyramid(
             }
             tags.push(PyramidTagWork {
                 id: *id,
-                name: names
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Tag#{}", id)),
+                name: String::new(),
                 vector: buffer.clone(),
                 similarity: matches
                     .distances
@@ -580,6 +577,11 @@ fn analyze_pyramid(
                 contribution: 0.0,
                 handshake_magnitude: 0.0,
             });
+        }
+        drop(guard);
+        let names = load_tag_names(connection, &ids)?;
+        for tag in &mut tags {
+            tag.name = names.get(&tag.id).cloned().unwrap_or_else(|| format!("Tag#{}", tag.id));
         }
         if tags.is_empty() {
             break;
@@ -785,7 +787,7 @@ struct FusionDiagnostics {
 }
 
 fn fuse_observation(
-    index: &Index,
+    index: &Arc<crate::index_handle::IndexHandle>,
     connection: &Connection,
     query: &[f32],
     observation: &SenseOutput,
@@ -882,11 +884,13 @@ fn fuse_observation(
         }
     }
 
+    drop(core_statement);
     let requested_count = merged.len() + ghost_tags.len();
+    let guard = index.read().map_err(|error| format!("Fusion index lock failed: {}", error))?;
     let mut buffer = vec![0.0f32; dimension];
     let mut vectors = Vec::with_capacity(requested_count);
     for tag in merged {
-        let found = index
+        let found = guard
             .get(tag.id as u64, &mut buffer)
             .map_err(|error| format!("Memo pipeline fusion vector read failed: {:?}", error))?;
         if found == 0 {
@@ -907,6 +911,7 @@ fn fuse_observation(
         }
     }
 
+    drop(guard);
     // 幽灵节点使用专属负 ID，仅参与去重与向量融合，绝不进入 Artifact/Spike。
     let mut ghost_id = -1i64;
     let mut accepted_ghosts = 0usize;
@@ -1123,7 +1128,7 @@ fn project_field(
 
 fn solve_dual_fields(
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
-    index: &Index,
+    index: &Arc<crate::index_handle::IndexHandle>,
     source_entries: &[(i64, f64)],
     dimension: usize,
     config: &PipelineConfig,
@@ -1215,8 +1220,10 @@ fn solve_dual_fields(
         .collect();
     let local_domain_ids = effective_domain(artifact, &local, config.local_mass_ratio);
     let transfer_domain_ids = effective_domain(artifact, &transfer, config.transfer_mass_ratio);
-    let local_vector = project_field(index, artifact, &local, dimension)?;
-    let transfer_vector = project_field(index, artifact, &transfer, dimension)?;
+    let guard = index.read().map_err(|error| format!("Field projection lock failed: {}", error))?;
+    let local_vector = project_field(&guard, artifact, &local, dimension)?;
+    let transfer_vector = project_field(&guard, artifact, &transfer, dimension)?;
+    drop(guard);
     let local_mass = field_mass(&local);
     let transfer_mass = field_mass(&transfer);
 
@@ -1290,7 +1297,7 @@ pub struct MemoPipelineResult {
 }
 
 fn run_pipeline_with_connection(
-    index: &Arc<RwLock<Index>>,
+    index: &Arc<crate::index_handle::IndexHandle>,
     runtime: &MemoRuntime,
     artifact_sig: &str,
     dimensions: usize,
@@ -1333,11 +1340,8 @@ fn run_pipeline_with_connection(
     let epa_ms = epa_started.elapsed().as_secs_f64() * 1000.0;
 
     let pyramid_started = Instant::now();
-    let index_guard = index
-        .read()
-        .map_err(|error| format!("Memo pipeline index lock failed: {}", error))?;
     let (pyramid, level_tags) = analyze_pyramid(
-        &index_guard,
+        index,
         &connection,
         &input.query_vector,
         dimensions,
@@ -1378,7 +1382,7 @@ fn run_pipeline_with_connection(
 
     let fusion_started = Instant::now();
     let (enhanced_vector, fusion, selected_tags) = fuse_observation(
-        &index_guard,
+        index,
         &connection,
         &input.query_vector,
         &observation,
@@ -1393,12 +1397,11 @@ fn run_pipeline_with_connection(
     let fusion_ms = fusion_started.elapsed().as_secs_f64() * 1000.0;
     let dual_fields = solve_dual_fields(
         artifact,
-        &index_guard,
+        index,
         &observation.source_field,
         dimensions,
         &input.config,
     )?;
-    drop(index_guard);
 
     let enhanced_vector_f32: Vec<f32> = enhanced_vector.iter().map(|value| *value as f32).collect();
     let observation_handle = runtime.store_query_observation(
@@ -1477,7 +1480,7 @@ fn run_pipeline_with_connection(
 }
 
 fn run_pipeline(
-    index: &Arc<RwLock<Index>>,
+    index: &Arc<crate::index_handle::IndexHandle>,
     runtime: &MemoRuntime,
     db_path: &str,
     artifact_sig: &str,
@@ -1486,8 +1489,9 @@ fn run_pipeline(
     query_vector: &[f32],
     ghost_vectors: &[f32],
 ) -> std::result::Result<MemoPipelineComputeOutput, String> {
-    let artifact = load_artifact_from_runtime(runtime, db_path, artifact_sig)?;
     with_registered_read_transaction(db_path, |connection| {
+        crate::storage::read_generation(connection)?;
+        let artifact = load_artifact_with_connection(runtime, connection, artifact_sig)?;
         run_pipeline_with_connection(
             index,
             runtime,
@@ -1503,7 +1507,7 @@ fn run_pipeline(
 }
 
 pub struct MemoPipelineTask {
-    index: Arc<RwLock<Index>>,
+    index: Arc<crate::index_handle::IndexHandle>,
     content_revision: Arc<std::sync::atomic::AtomicU64>,
     runtime: Arc<MemoRuntime>,
     db_path: String,
@@ -1519,9 +1523,14 @@ impl Task for MemoPipelineTask {
     type JsValue = MemoPipelineResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let _gate = crate::index_lifecycle::checkpoint_gate().lock()
-            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
         let scopes = ["global_tags".to_string()];
+        let mut gate = crate::publication_gate::acquire_read(&self.db_path, &scopes)
+            .map_err(Error::from_reason)?;
+        if crate::knowledge_runtime::ensure_index_scopes_ready(&self.db_path, &scopes).is_err() {
+            drop(gate);
+            gate = crate::publication_gate::acquire(&self.db_path, &scopes)
+                .map_err(Error::from_reason)?;
+        }
         match crate::knowledge_runtime::ensure_index_scopes_ready(&self.db_path, &scopes) {
             Ok(()) => {}
             Err(error) if error.starts_with("KBM_INDEX_NOT_READY:") => {
@@ -1535,6 +1544,7 @@ impl Task for MemoPipelineTask {
         }
         crate::knowledge_runtime::ensure_index_scopes_ready(&self.db_path, &scopes)
             .map_err(Error::from_reason)?;
+        gate.downgrade().map_err(Error::from_reason)?;
         run_pipeline(
             &self.index,
             &self.runtime,
@@ -1558,7 +1568,7 @@ impl Task for MemoPipelineTask {
 
 pub(crate) fn run_with_runtime(
     lifecycle: &Arc<crate::task_lifecycle::TaskLifecycle>,
-    index: Arc<RwLock<Index>>,
+    index: Arc<crate::index_handle::IndexHandle>,
     content_revision: Arc<std::sync::atomic::AtomicU64>,
     runtime: Arc<MemoRuntime>,
     db_path: String,

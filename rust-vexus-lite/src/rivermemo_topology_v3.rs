@@ -1,4 +1,3 @@
-use crate::storage::with_registered_read;
 use flate2::read::GzDecoder;
 use napi::bindgen_prelude::*;
 use rayon::prelude::*;
@@ -841,19 +840,34 @@ fn decode_artifact(
     }))
 }
 
-pub(crate) fn load_artifact_from_runtime(
+pub(crate) fn load_artifact_with_connection(
     runtime: &MemoRuntime,
-    db_path: &str,
+    connection: &Connection,
     artifact_sig: &str,
 ) -> std::result::Result<Arc<NativeArtifact>, String> {
+    let compatible: bool = connection.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM rivermemo_artifacts a
+           WHERE a.artifact_sig=?1 AND a.status='ready'
+             AND a.database_generation=(SELECT value FROM kbm_runtime_meta WHERE key='database_generation')
+             AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d WHERE d.artifact_sig=a.artifact_sig)=2
+             AND NOT EXISTS(
+               SELECT 1 FROM kbm_artifact_dependencies d
+               LEFT JOIN kbm_runtime_meta m ON m.key=d.dependency_key
+               WHERE d.artifact_sig=a.artifact_sig
+                 AND (m.value IS NULL OR m.value != d.dependency_version)
+             )
+         )", [artifact_sig], |row| row.get(0),
+    ).map_err(|error| format!("Validate Memo artifact dependencies failed: {}", error))?;
+    if !compatible {
+        return Err("KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT: Memo artifact requires rebuild".to_string());
+    }
     if let Some(artifact) = runtime.get(artifact_sig)? {
         return Ok(artifact);
     }
 
     // 解码和校验在写锁外完成；连接由 StorageEngine Read Pool 提供。
-    let staging = with_registered_read(db_path, |connection| {
-        decode_artifact(connection, artifact_sig)
-    })?;
+    let staging = decode_artifact(connection, artifact_sig)?;
     runtime.publish(artifact_sig, staging.clone())?;
     Ok(staging)
 }
@@ -2477,6 +2491,18 @@ pub(crate) fn run_native(
     artifact_sig: &str,
     input_json: &str,
 ) -> std::result::Result<String, String> {
+    let _publication_guard = crate::publication_gate::acquire(db_path, &[String::from("*")])?;
+    crate::storage::with_registered_read_transaction(db_path, |connection| {
+        run_native_with_connection(runtime, connection, artifact_sig, input_json)
+    })
+}
+
+pub(crate) fn run_native_with_connection(
+    runtime: &MemoRuntime,
+    connection: &Connection,
+    artifact_sig: &str,
+    input_json: &str,
+) -> std::result::Result<String, String> {
     let total_started = Instant::now();
     let mut input: NativeInput = serde_json::from_str(input_json)
         .map_err(|error| format!("invalid RiverMemo native input JSON: {}", error))?;
@@ -2541,10 +2567,8 @@ pub(crate) fn run_native(
     }
 
     let load_started = Instant::now();
-    let artifact = load_artifact_from_runtime(runtime, db_path, artifact_sig)?;
-    let curve_load = with_registered_read(db_path, |connection| {
-        load_curves(connection, &input.candidates, dimension)
-    })?;
+    let artifact = load_artifact_with_connection(runtime, connection, artifact_sig)?;
+    let curve_load = load_curves(connection, &input.candidates, dimension)?;
     let mut curves = curve_load.curves;
     // 显式空集合也意味着无权限；必须在候选归一化和统计前移除越权项。
     let allowed: Option<HashSet<i64>> = input.allowed_file_ids.as_ref()
@@ -2635,9 +2659,7 @@ pub(crate) fn run_native(
         .collect();
     requested_tag_ids.extend(seeds.iter().map(|seed| seed.0));
     let (query_and_seed_tag_vectors, query_tag_sql_batches) =
-        with_registered_read(db_path, |connection| {
-            load_tag_vectors_by_ids(connection, &requested_tag_ids, dimension)
-        })?;
+        load_tag_vectors_by_ids(connection, &requested_tag_ids, dimension)?;
     let load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
 
     let compute_started = Instant::now();

@@ -111,3 +111,65 @@ test('metadata-only refresh preserves fact generation and checks file version', 
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
+
+test('EPA publish is asynchronous, tracked, and rejected after shutdown', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kbm-epa-publish-'));
+    const index = new VexusIndex(2, 16);
+    const runtime = new NativeKnowledgeRuntime(index);
+    try {
+        const db = path.join(root, 'test.sqlite');
+        runtime.openAndInitStore(db);
+        const pending = index.publishEpaBasisCache(db);
+        assert.equal(typeof pending.then, 'function');
+        runtime.shutdown();
+        assert.equal((await pending).success, false);
+        await assert.rejects(index.publishEpaBasisCache(db), /CLOSED/);
+    } finally {
+        runtime.shutdown();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('cached index statistics follow direct and asynchronous mutations', async () => {
+    const index = new VexusIndex(2, 16);
+    index.add(1, new Float32Array([1, 0]));
+    assert.equal(index.stats().totalVectors, 1);
+    index.addBatch([2, 3], new Float32Array([0, 1, 1, 1]));
+    assert.equal(index.stats().totalVectors, 3);
+    await index.applyChunkDelta([1, 2], [4], new Float32Array([1, 0]));
+    assert.equal(index.stats().totalVectors, 2);
+    index.remove(3);
+    assert.equal(index.stats().totalVectors, 1);
+});
+
+test('EPA publishes a computed basis and rejects a stale source snapshot', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kbm-epa-generation-'));
+    const index = new VexusIndex(2, 32);
+    const runtime = new NativeKnowledgeRuntime(index);
+    const db = path.join(root, 'test.sqlite');
+    try {
+        runtime.openAndInitStore(db);
+        const tags = Array.from({ length: 8 }, (_, slot) => ({
+            name: `epa-${slot}`, position: slot + 1, vectorSlot: slot
+        }));
+        const vectors = new Float32Array(tags.flatMap((_, i) =>
+            [Math.cos(i * 0.4), Math.sin(i * 0.4)]));
+        await runtime.commitIngestionBatch(db, JSON.stringify({
+            operationId: 'epa-seed', batchId: 'epa-seed', dimension: 2, modelSig: 'test',
+            files: [{ path: 'note.txt', diaryName: 'test', checksum: 'epa', mtime: 1,
+                size: 1, expectedVersion: 0, chunkStart: 0, chunkCount: 1,
+                tagStart: 0, tagCount: tags.length }],
+            chunks: [{ content: 'epa', chunkIndex: 0, vectorSlot: 0 }], tags
+        }), new Float32Array([1, 0]), vectors);
+        assert.equal((await index.computeEpaBasis(db, 8, 2)).success, true);
+        const generation = runtime.databaseGeneration();
+        assert.equal((await index.publishEpaBasisCache(db)).success, true);
+        assert.equal(runtime.databaseGeneration(), generation);
+        assert.equal((await index.computeEpaBasis(db, 8, 2)).success, true);
+        await runtime.commitDeleteBatch(db, ['note.txt'], 0);
+        await assert.rejects(index.publishEpaBasisCache(db), /GENERATION_CONFLICT/);
+    } finally {
+        runtime.shutdown();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});

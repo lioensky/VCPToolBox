@@ -3,8 +3,8 @@
 //! Read-only method-module planning over one existing Sense observation.
 //! This is a propagation-supported scaffold, not a formal proof.
 use crate::memo_sensing::ObservationTransition;
-use crate::rivermemo_topology_v3::{load_artifact_from_runtime, MemoRuntime};
-use crate::storage::with_registered_read;
+use crate::rivermemo_topology_v3::{load_artifact_with_connection, MemoRuntime};
+use crate::storage::with_registered_read_transaction;
 use napi::bindgen_prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -98,6 +98,7 @@ pub(crate) fn plan(
     artifact_sig: &str,
     input_json: &str,
 ) -> std::result::Result<String, String> {
+    let _guard = crate::publication_gate::acquire_read(db_path, &[String::from("*")])?;
     let input: Input = serde_json::from_str(input_json).map_err(|e| e.to_string())?;
     if input.stages.is_empty()
         || input.stages.len() > 32
@@ -115,9 +116,9 @@ pub(crate) fn plan(
     if observation.transitions.is_empty() || observation.transitions_truncated {
         return Err("Sense transitions unavailable or truncated".into());
     }
-    let artifact = load_artifact_from_runtime(runtime, db_path, artifact_sig)?;
     let dimension = cached.original_query_vector.len();
-    with_registered_read(db_path, |connection| {
+    with_registered_read_transaction(db_path, |connection| {
+        let artifact = load_artifact_with_connection(runtime, connection, artifact_sig)?;
         let mut chunk_statement = connection
             .prepare(
                 "SELECT c.file_id, c.vector FROM chunks c JOIN files f ON f.id=c.file_id
@@ -468,6 +469,16 @@ mod tests {
                     .unwrap();
                 }
             }
+            db.execute_batch(
+                "INSERT INTO rivermemo_artifacts(
+                   artifact_sig,schema_version,algorithm_version,source_v9_artifact_sig,
+                   source_graph_generation,model_sig,config_hash,database_generation,
+                   provenance_generation,status,created_at,updated_at)
+                 VALUES('fixture','test','test','test','test','test','test','0','test','ready',0,0);
+                 INSERT INTO kbm_artifact_dependencies
+                 SELECT 'fixture',key,value FROM kbm_runtime_meta
+                 WHERE key IN ('derived_pairwise','derived_intrinsic');"
+            ).unwrap();
         }
         let input = serde_json::json!({
             "observationHandle": handle,

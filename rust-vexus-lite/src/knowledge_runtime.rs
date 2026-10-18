@@ -30,7 +30,7 @@ use usearch::Index;
 pub struct GlobalTagSearchTask {
     db_path: String,
     memo_runtime: Arc<MemoRuntime>,
-    index: Arc<RwLock<Index>>,
+    index: Arc<crate::index_handle::IndexHandle>,
     content_revision: Arc<AtomicU64>,
     dimension: usize,
     query: Vec<f32>,
@@ -42,8 +42,7 @@ impl Task for GlobalTagSearchTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<String> {
-        let _guard = crate::index_lifecycle::checkpoint_gate().lock()
-            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
+        let _guard = crate::publication_gate::acquire(&self.db_path, &[String::from("global_tags")]).map_err(Error::from_reason)?;
         match ensure_index_scopes_ready(&self.db_path, &["global_tags".to_string()]) {
             Ok(()) => {}
             Err(error) if error.starts_with("KBM_INDEX_NOT_READY:") => {
@@ -85,7 +84,7 @@ impl Task for GlobalTagSearchTask {
 }
 
 struct RegisteredDiaryIndex {
-    index: Arc<RwLock<Index>>,
+    index: Arc<crate::index_handle::IndexHandle>,
     content_revision: Arc<AtomicU64>,
     generation: u64,
     dimension: u32,
@@ -139,7 +138,7 @@ pub struct NativeStoreHealth {
 #[derive(Clone)]
 struct DiarySearchSnapshot {
     diary_name: String,
-    index: Arc<RwLock<Index>>,
+    index: Arc<crate::index_handle::IndexHandle>,
     content_revision: Arc<AtomicU64>,
     generation: u64,
 }
@@ -318,8 +317,7 @@ impl Task for NativeMultiIndexAnnTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
-            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
+        let _publication_guard = self.query_guard(&self.index_scopes)?;
         self.compute_under_publication_gate()
     }
 
@@ -329,8 +327,38 @@ impl Task for NativeMultiIndexAnnTask {
 }
 
 impl NativeMultiIndexAnnTask {
+    fn query_guard(&self, scopes: &[String]) -> Result<crate::publication_gate::PublicationGuard> {
+        let path = self.db_path.as_deref().unwrap_or("unopened");
+        let guard = crate::publication_gate::acquire_read(path, scopes).map_err(Error::from_reason)?;
+        if let Some(db_path) = &self.db_path {
+            match ensure_index_scopes_ready(db_path, &self.index_scopes) {
+                Ok(()) => return Ok(guard),
+                Err(error) if error.starts_with("KBM_INDEX_NOT_READY:") => {}
+                Err(error) => return Err(Error::from_reason(error)),
+            }
+        } else {
+            return Ok(guard);
+        }
+        drop(guard);
+        let mut guard = crate::publication_gate::acquire(path, scopes).map_err(Error::from_reason)?;
+        self.prepare_indices()?;
+        guard.downgrade().map_err(Error::from_reason)?;
+        Ok(guard)
+    }
+
     fn compute_under_publication_gate(&mut self) -> Result<String> {
-        let total_started = std::time::Instant::now();
+        self.prepare_indices()?;
+        let db_path = self.db_path.clone();
+        if let Some(db_path) = db_path {
+            crate::storage::with_registered_read_transaction_napi(&db_path, |connection| {
+                self.compute_with_connection(Some(connection))
+            })
+        } else {
+            self.compute_with_connection(None)
+        }
+    }
+
+    fn prepare_indices(&self) -> Result<()> {
         if let Some(db_path) = &self.db_path {
             for snapshot in &self.snapshots {
                 let scope = format!("diary:{}", snapshot.diary_name);
@@ -346,6 +374,11 @@ impl NativeMultiIndexAnnTask {
             ensure_index_scopes_ready(db_path, &self.index_scopes)
                 .map_err(Error::from_reason)?;
         }
+        Ok(())
+    }
+
+    fn compute_with_connection(&mut self, connection: Option<&rusqlite::Connection>) -> Result<String> {
+        let total_started = std::time::Instant::now();
         if self.query.len() != self.dimension {
             return Err(Error::from_reason(format!(
                 "Native multi-index ANN dimension mismatch: expected {}, got {}",
@@ -475,7 +508,7 @@ impl NativeMultiIndexAnnTask {
                         "Native hybrid file candidates require SQLite semantic config".to_string(),
                     )
                 })?;
-            with_registered_read_napi(&semantic_db_path, |connection| {
+            with_query_connection(connection, &semantic_db_path, |connection| {
                 let sparse_weight = self.bm25_weight.clamp(0.0, 1.0);
                 let allowed_diaries: HashSet<&str> = self
                     .snapshots
@@ -649,8 +682,8 @@ impl NativeMultiIndexAnnTask {
                     original_index,
                 })
                 .collect();
-            let deduplicated = result_deduplicator::deduplicate(
-                &config.db_path,
+            let deduplicated = result_deduplicator::deduplicate_with_connection(
+                connection.ok_or_else(|| Error::from_reason("Query read transaction unavailable"))?,
                 dedup_input,
                 &self.query,
                 self.dimension,
@@ -691,7 +724,7 @@ impl NativeMultiIndexAnnTask {
         let returned_candidates = results.len();
         let hydrated_chunks = if self.semantic_dedup.is_none() {
             if let Some(db_path) = &self.db_path {
-                with_registered_read_napi(db_path, |connection| {
+                with_query_connection(connection, db_path, |connection| {
                     let mut statement = connection.prepare(
                         "SELECT c.content, f.path, f.diary_name, f.id
                          FROM chunks c JOIN files f ON f.id=c.file_id WHERE c.id=?1",
@@ -765,6 +798,17 @@ impl NativeMultiIndexAnnTask {
 
 }
 
+fn with_query_connection<T>(
+    connection: Option<&rusqlite::Connection>,
+    db_path: &str,
+    operation: impl FnOnce(&rusqlite::Connection) -> Result<T>,
+) -> Result<T> {
+    match connection {
+        Some(connection) => operation(connection),
+        None => with_registered_read_napi(db_path, operation),
+    }
+}
+
 fn recover_diary_snapshot(
     db_path: &str,
     snapshot: &DiarySearchSnapshot,
@@ -781,7 +825,7 @@ pub(crate) fn recover_index_snapshot(
     db_path: &str,
     scope: String,
     diary_name: Option<&str>,
-    index: &Arc<RwLock<Index>>,
+    index: &Arc<crate::index_handle::IndexHandle>,
     content_revision: &Arc<AtomicU64>,
     dimension: usize,
 ) -> std::result::Result<(), String> {
@@ -1904,7 +1948,7 @@ impl Task for NativeMemoManifestLookupTask {
     fn compute(&mut self) -> Result<Self::Output> {
         let model_sig = self.model_sig.clone();
         let config_hash = self.config_hash.clone();
-        let row = with_registered_read_napi(&self.db_path, move |connection| {
+        let row = crate::storage::with_registered_read_transaction_napi(&self.db_path, move |connection| {
             let database_generation: String = connection
                 .query_row(
                     "SELECT value FROM kbm_runtime_meta \
@@ -1932,6 +1976,14 @@ impl Task for NativeMemoManifestLookupTask {
                        AND algorithm_version = 'memo.native-artifact-v1'
                        AND status = 'ready'
                        AND payload IS NOT NULL
+                       AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d
+                            WHERE d.artifact_sig=rivermemo_artifacts.artifact_sig)=2
+                       AND NOT EXISTS(
+                         SELECT 1 FROM kbm_artifact_dependencies d
+                         LEFT JOIN kbm_runtime_meta m ON m.key=d.dependency_key
+                         WHERE d.artifact_sig=rivermemo_artifacts.artifact_sig
+                           AND (m.value IS NULL OR m.value != d.dependency_version)
+                       )
                      ORDER BY published_at DESC, updated_at DESC
                      LIMIT 1",
                     rusqlite::params![
@@ -2098,13 +2150,30 @@ impl Task for NativeRiverQueryTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
-            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
+        let mut scopes = self.ann_task.index_scopes.clone();
+        scopes.push(String::from("global_tags"));
+        let _publication_guard = self.ann_task.query_guard(&scopes)?;
+        self.ann_task.prepare_indices()?;
+        let db_path = self.db_path.clone();
+        crate::storage::with_registered_read_transaction_napi(&db_path, |connection| {
+            // 首次读取固定 WAL 快照；全部 SQL 阶段显式复用该连接。
+            crate::storage::read_generation(connection).map_err(Error::from_reason)?;
+            self.compute_with_connection(connection)
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+impl NativeRiverQueryTask {
+    fn compute_with_connection(&mut self, connection: &rusqlite::Connection) -> Result<String> {
         let total_started = std::time::Instant::now();
 
         // 复用已验证的原生 ANN/合并/语义去重实现。此处只在 Rust 内解析其
         // 小型 ID/分数结果，不发生 N-API resolve，也不携带向量跨边界。
-        let ann_payload = self.ann_task.compute_under_publication_gate()?;
+        let ann_payload = self.ann_task.compute_with_connection(Some(connection))?;
         let ann_output: serde_json::Value =
             serde_json::from_str(&ann_payload).map_err(|error| {
                 Error::from_reason(format!(
@@ -2161,9 +2230,9 @@ impl Task for NativeRiverQueryTask {
             ),
         );
 
-        let river_payload = rivermemo_topology_v3::run_native(
+        let river_payload = rivermemo_topology_v3::run_native_with_connection(
             &self.runtime,
-            &self.db_path,
+            connection,
             &self.artifact_sig,
             &serde_json::to_string(&river_input).map_err(|error| {
                 Error::from_reason(format!("Encode native River query plan failed: {}", error))
@@ -2178,6 +2247,26 @@ impl Task for NativeRiverQueryTask {
                     error
                 ))
             })?;
+        if let Some(results) = river_output.get_mut("results").and_then(serde_json::Value::as_array_mut) {
+            let mut statement = connection.prepare(
+                "SELECT c.content,f.path,f.diary_name,f.id FROM chunks c
+                 JOIN files f ON f.id=c.file_id WHERE c.id=?1"
+            ).map_err(|error| Error::from_reason(error.to_string()))?;
+            for item in results {
+                let Some(id) = item.get("chunkId").and_then(serde_json::Value::as_i64) else { continue; };
+                let row = statement.query_row([id], |row| {
+                    Ok(serde_json::json!({
+                        "text": row.get::<_, String>(0)?,
+                        "sourceFile": row.get::<_, String>(1)?,
+                        "diaryName": row.get::<_, String>(2)?,
+                        "fileId": row.get::<_, i64>(3)?
+                    }))
+                }).optional().map_err(|error| Error::from_reason(error.to_string()))?;
+                if let (Some(object), Some(row)) = (item.as_object_mut(), row) {
+                    object.insert("hydratedChunk".to_string(), row);
+                }
+            }
+        }
         if let Some(diagnostics) = river_output
             .get_mut("diagnostics")
             .and_then(serde_json::Value::as_object_mut)
@@ -2202,16 +2291,13 @@ impl Task for NativeRiverQueryTask {
         })
     }
 
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
-    }
 }
 
 #[napi]
 pub struct NativeKnowledgeRuntime {
     dimension: u32,
     memo_runtime: Arc<MemoRuntime>,
-    global_tag_index: Arc<RwLock<Index>>,
+    global_tag_index: Arc<crate::index_handle::IndexHandle>,
     global_tag_content_revision: Arc<AtomicU64>,
     diaries: RwLock<HashMap<String, RegisteredDiaryIndex>>,
     registry_generation: AtomicU64,
@@ -2240,16 +2326,7 @@ impl NativeKnowledgeRuntime {
         diary_name: String,
         registered: &RegisteredDiaryIndex,
     ) -> Result<RegisteredDiaryIndexState> {
-        let total_vectors = registered
-            .index
-            .read()
-            .map_err(|error| {
-                Error::from_reason(format!(
-                    "Diary index state read lock failed for {}: {}",
-                    diary_name, error
-                ))
-            })?
-            .size() as u32;
+        let total_vectors = registered.index.cached_stats().0 as u32;
         Ok(RegisteredDiaryIndexState {
             diary_name,
             generation: registered.generation as i64,
@@ -3475,8 +3552,14 @@ impl NativeKnowledgeRuntime {
             )));
         }
 
-        diary_index.tasks.wait_idle();
-        diary_index.tasks = self.tasks.clone();
+        if !Arc::ptr_eq(&diary_index.tasks, &self.tasks) {
+            if !diary_index.tasks.is_idle() {
+                return Err(Error::from_reason(
+                    "KNOWLEDGE_INDEX_BUSY: await index-owned tasks before registration",
+                ));
+            }
+            diary_index.tasks = self.tasks.clone();
+        }
         let generation = self.registry_generation.fetch_add(1, Ordering::AcqRel) + 1;
         let registered = RegisteredDiaryIndex {
             index: diary_index.index.clone(),
@@ -4298,7 +4381,7 @@ mod tests {
             content_revision: index.content_revision.clone(), generation: 1,
         };
         {
-            let _gate = crate::index_lifecycle::checkpoint_gate().lock().unwrap();
+            let _gate = crate::publication_gate::acquire(&db, &[String::from("diary:test")]).unwrap();
             recover_diary_snapshot(&db, &snapshot, 2).unwrap();
         }
         assert_eq!(snapshot.index.read().unwrap().size(), 0);

@@ -1,6 +1,8 @@
 #![deny(clippy::all)]
 
 mod text;
+mod index_handle;
+mod publication_gate;
 mod index_lifecycle;
 mod ingestion;
 mod knowledge_runtime;
@@ -22,7 +24,7 @@ use storage::{with_registered_read, with_registered_read_transaction, with_regis
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use usearch::Index;
 
@@ -170,7 +172,7 @@ pub struct MemoRuntimeStats {
 #[napi]
 pub struct VexusIndex {
     pub(crate) tasks: Arc<TaskLifecycle>,
-    pub(crate) index: Arc<RwLock<Index>>,
+    pub(crate) index: Arc<crate::index_handle::IndexHandle>,
     pub(crate) dimensions: u32,
     /// 索引内容代际。批量差分成功后只递增一次，供联合查询冻结和校验快照。
     pub(crate) content_revision: Arc<std::sync::atomic::AtomicU64>,
@@ -326,7 +328,7 @@ impl VexusIndex {
             .map_err(|e| Error::from_reason(format!("Failed to reserve capacity: {:?}", e)))?;
 
         Ok(Self {
-            index: Arc::new(RwLock::new(index)),
+            index: Arc::new(index_handle::IndexHandle::new(index)),
             dimensions: dim,
             tasks: Arc::new(TaskLifecycle::default()),
             content_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -374,7 +376,7 @@ impl VexusIndex {
         }
 
         Ok(Self {
-            index: Arc::new(RwLock::new(index)),
+            index: Arc::new(index_handle::IndexHandle::new(index)),
             dimensions: dim,
             tasks: Arc::new(TaskLifecycle::default()),
             content_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -955,16 +957,12 @@ impl VexusIndex {
     /// 获取当前索引状态
     #[napi]
     pub fn stats(&self) -> Result<VexusStats> {
-        let index = self
-            .index
-            .read()
-            .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
-
+        let (count, capacity, memory) = self.index.cached_stats();
         Ok(VexusStats {
-            total_vectors: index.size() as u32,
+            total_vectors: count as u32,
             dimensions: self.dimensions,
-            capacity: index.capacity() as u32,
-            memory_usage: index.memory_usage() as f64,
+            capacity: capacity as u32,
+            memory_usage: memory as f64,
         })
     }
 
@@ -1271,108 +1269,12 @@ impl VexusIndex {
         })
     }
 
-    /// 🌟 EPA: 发布最近一次 Rust 计算完成的 EPA cache。
-    ///
-    /// 该方法执行短 SQLite 写入，JS 调用方必须先获取 Rust 写租约。
+    /// 在后台通过 Write Actor 发布 EPA 缓存；关闭时等待发布完成。
     #[napi]
-    pub fn publish_epa_basis_cache(&self, db_path: String) -> Result<EpaBasisResult> {
-        let pending = {
-            let guard = self
-                .epa_pending_cache
-                .lock()
-                .map_err(|e| Error::from_reason(format!("EPA pending cache lock failed: {}", e)))?;
-            guard.clone()
-        };
-
-        let pending = match pending {
-            Some(cache) => cache,
-            None => {
-                return Ok(EpaBasisResult {
-                    success: false,
-                    message: "no pending EPA basis cache to publish".to_string(),
-                    tag_count: 0,
-                    cluster_count: 0,
-                    basis_count: 0,
-                    elapsed_ms: 0.0,
-                    algorithm: "density-residual-sampling".to_string(),
-                    phase_summary: "publish=no_pending_cache".to_string(),
-                    anchor_count: 0,
-                    representative_sample_count: 0,
-                    density_bucket_count: 0,
-                    publish_elapsed_ms: 0.0,
-                });
-            }
-        };
-
-        let target_db_identity = sqlite_database_identity(&db_path);
-        if target_db_identity != pending.db_identity {
-            return Err(Error::from_reason(format!(
-                "EPA pending cache database mismatch: computed for {}, publish requested for {}",
-                pending.db_identity, target_db_identity
-            )));
-        }
-
-        println!(
-            "[Vexus-Lite][EPA] publish_epa_basis_cache started: db={}, tags={}, clusters={}, basis={}",
+    pub fn publish_epa_basis_cache(&self, db_path: String) -> AsyncTask<TrackedTask<EpaPublishTask>> {
+        self.tracked_task(EpaPublishTask {
             db_path,
-            pending.tag_count,
-            pending.cluster_count,
-            pending.basis_count
-        );
-
-        let started_at = std::time::Instant::now();
-        let cache_json = pending.cache_json.clone();
-        let source_generation = pending.source_generation;
-        with_registered_write(&db_path, move |transaction| {
-            storage::ensure_generation(transaction, source_generation)?;
-            transaction
-                .execute(
-                    "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?1, ?2)",
-                    rusqlite::params!["epa_basis_cache", cache_json],
-                )
-                .map_err(|error| format!("EPA cache write failed: {}", error))?;
-
-            Ok(crate::storage::WriteReceipt {
-                operation: "publish_epa_basis_cache".to_string(),
-                database_generation: 0,
-                facts_changed: false,
-            })
-        })
-        .map_err(|error| format!("EPA cache Write Actor publish failed: {}", error))
-        .map_err(Error::from_reason)?;
-
-        {
-            let mut guard = self
-                .epa_pending_cache
-                .lock()
-                .map_err(|e| Error::from_reason(format!("EPA pending cache lock failed: {}", e)))?;
-            if guard.as_ref().map(|cache| cache.cache_sig.as_str())
-                == Some(pending.cache_sig.as_str())
-            {
-                *guard = None;
-            }
-        }
-
-        let publish_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-        println!(
-            "[Vexus-Lite][EPA] publish_epa_basis_cache finished: publish_elapsed={:.2}ms, compute_elapsed={:.2}ms",
-            publish_ms,
-            pending.elapsed_ms
-        );
-
-        Ok(EpaBasisResult {
-            success: true,
-            message: "ok".to_string(),
-            tag_count: pending.tag_count,
-            cluster_count: pending.cluster_count,
-            basis_count: pending.basis_count,
-            elapsed_ms: pending.elapsed_ms + publish_ms,
-            algorithm: pending.algorithm,
-            phase_summary: format!("{};publish={:.2}ms", pending.phase_summary, publish_ms),
-            anchor_count: pending.anchor_count,
-            representative_sample_count: pending.representative_sample_count,
-            density_bucket_count: pending.density_bucket_count,
-            publish_elapsed_ms: publish_ms,
+            pending_cache: self.epa_pending_cache.clone(),
         })
     }
 
@@ -1434,6 +1336,7 @@ pub struct EpaPendingCache {
     cache_sig: String,
     db_identity: String,
     source_generation: u64,
+    dependencies: storage::DerivedDependencies,
     tag_count: u32,
     cluster_count: u32,
     basis_count: u32,
@@ -1443,6 +1346,123 @@ pub struct EpaPendingCache {
     anchor_count: u32,
     representative_sample_count: u32,
     density_bucket_count: u32,
+}
+
+pub struct EpaPublishTask {
+    db_path: String,
+    pending_cache: Arc<Mutex<Option<EpaPendingCache>>>,
+}
+
+impl Task for EpaPublishTask {
+    type Output = EpaBasisResult;
+    type JsValue = EpaBasisResult;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let pending = {
+            let guard = self
+                .pending_cache
+                .lock()
+                .map_err(|e| Error::from_reason(format!("EPA pending cache lock failed: {}", e)))?;
+            guard.clone()
+        };
+
+        let pending = match pending {
+            Some(cache) => cache,
+            None => {
+                return Ok(EpaBasisResult {
+                    success: false,
+                    message: "no pending EPA basis cache to publish".to_string(),
+                    tag_count: 0,
+                    cluster_count: 0,
+                    basis_count: 0,
+                    elapsed_ms: 0.0,
+                    algorithm: "density-residual-sampling".to_string(),
+                    phase_summary: "publish=no_pending_cache".to_string(),
+                    anchor_count: 0,
+                    representative_sample_count: 0,
+                    density_bucket_count: 0,
+                    publish_elapsed_ms: 0.0,
+                });
+            }
+        };
+
+        let target_db_identity = sqlite_database_identity(&self.db_path);
+        if target_db_identity != pending.db_identity {
+            return Err(Error::from_reason(format!(
+                "EPA pending cache database mismatch: computed for {}, publish requested for {}",
+                pending.db_identity, target_db_identity
+            )));
+        }
+
+        println!(
+            "[Vexus-Lite][EPA] publish_epa_basis_cache started: db={}, tags={}, clusters={}, basis={}",
+            self.db_path,
+            pending.tag_count,
+            pending.cluster_count,
+            pending.basis_count
+        );
+
+        let started_at = std::time::Instant::now();
+        let cache_json = pending.cache_json.clone();
+        let source_generation = pending.source_generation;
+        let dependencies = pending.dependencies.clone();
+        with_registered_write(&self.db_path, move |transaction| {
+            storage::ensure_generation(transaction, source_generation)?;
+            dependencies.ensure_current(transaction)?;
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?1, ?2)",
+                    rusqlite::params!["epa_basis_cache", cache_json],
+                )
+                .map_err(|error| format!("EPA cache write failed: {}", error))?;
+
+            Ok(crate::storage::WriteReceipt {
+                operation: "publish_epa_basis_cache".to_string(),
+                database_generation: 0,
+                facts_changed: false,
+            })
+        })
+        .map_err(|error| format!("EPA cache Write Actor publish failed: {}", error))
+        .map_err(Error::from_reason)?;
+
+        {
+            let mut guard = self
+                .pending_cache
+                .lock()
+                .map_err(|e| Error::from_reason(format!("EPA pending cache lock failed: {}", e)))?;
+            if guard.as_ref().map(|cache| cache.cache_sig.as_str())
+                == Some(pending.cache_sig.as_str())
+            {
+                *guard = None;
+            }
+        }
+
+        let publish_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "[Vexus-Lite][EPA] publish_epa_basis_cache finished: publish_elapsed={:.2}ms, compute_elapsed={:.2}ms",
+            publish_ms,
+            pending.elapsed_ms
+        );
+
+        Ok(EpaBasisResult {
+            success: true,
+            message: "ok".to_string(),
+            tag_count: pending.tag_count,
+            cluster_count: pending.cluster_count,
+            basis_count: pending.basis_count,
+            elapsed_ms: pending.elapsed_ms + publish_ms,
+            algorithm: pending.algorithm,
+            phase_summary: format!("{};publish={:.2}ms", pending.phase_summary, publish_ms),
+            anchor_count: pending.anchor_count,
+            representative_sample_count: pending.representative_sample_count,
+            density_bucket_count: pending.density_bucket_count,
+            publish_elapsed_ms: publish_ms,
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
 }
 
 /// 🌟 EPA: Rust 侧 K-Means + 加权 PCA 计算任务。
@@ -1796,8 +1816,9 @@ impl Task for EpaBasisTask {
         let mut tag_names = Vec::new();
         let mut tag_vectors = Vec::new();
 
-        let source_generation = with_registered_read_transaction(&self.db_path, |connection| {
+        let (source_generation, dependencies) = with_registered_read_transaction(&self.db_path, |connection| {
             let generation = storage::read_generation(connection)?;
+            let dependencies = storage::DerivedDependencies::capture(connection, &["derived_epa"])?;
             let mut statement = connection
                 .prepare("SELECT name, vector FROM tags WHERE vector IS NOT NULL")
                 .map_err(|error| format!("Prepare tags failed: {}", error))?;
@@ -1821,7 +1842,7 @@ impl Task for EpaBasisTask {
                 tag_names.push(name);
                 tag_vectors.push(vector);
             }
-            Ok(generation)
+            Ok((generation, dependencies))
         })
         .map_err(Error::from_reason)?;
 
@@ -2021,6 +2042,7 @@ impl Task for EpaBasisTask {
                 cache_sig,
                 db_identity,
                 source_generation,
+                dependencies,
                 tag_count: tag_count as u32,
                 cluster_count: k_clusters as u32,
                 basis_count: selected_k as u32,
@@ -2476,8 +2498,9 @@ impl Task for IntrinsicResidualTask {
             sha2::Sha256::new()
         };
 
-        let source_generation = with_registered_read_transaction(&self.db_path, |conn| {
+        let (source_generation, dependencies) = with_registered_read_transaction(&self.db_path, |conn| {
             let generation = storage::read_generation(conn)?;
+            let dependencies = storage::DerivedDependencies::capture(conn, &["derived_pairwise", "derived_intrinsic"])?;
             let mut stmt = conn
                 .prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL ORDER BY id")
                 .map_err(|e| format!("Prepare failed: {}", e))?;
@@ -2618,7 +2641,7 @@ impl Task for IntrinsicResidualTask {
                 if let Some(model_sig) = &self.model_sig {
                     let pair_started = Instant::now();
                     let mut stmt = conn
-                        .prepare("SELECT tag_a, tag_b, similarity FROM tag_pair_similarity WHERE model_sig = ?1")
+                        .prepare("SELECT tag_a, tag_b, similarity FROM tag_pair_similarity WHERE model_sig = ?1 ORDER BY tag_a, tag_b")
                         .map_err(|e| format!("Prepare pairwise similarity query failed: {}", e))?;
                     let rows = stmt
                         .query_map(rusqlite::params![model_sig], |row| {
@@ -2639,6 +2662,10 @@ impl Task for IntrinsicResidualTask {
                                 e
                             )
                         })?;
+                        use sha2::Digest;
+                        content_hasher.update(a.to_le_bytes());
+                        content_hasher.update(b.to_le_bytes());
+                        content_hasher.update(sim.to_le_bytes());
                         pairwise_similarity.insert(pair_key(a, b), sim);
                     }
                     println!(
@@ -2651,7 +2678,7 @@ impl Task for IntrinsicResidualTask {
                     println!("[Vexus-Lite][IntrinsicResidual] semantic gate enabled but model_sig missing; using semantic floor.");
                 }
             }
-            Ok(generation)
+            Ok((generation, dependencies))
         })
         .map_err(Error::from_reason)?;
 
@@ -2865,8 +2892,10 @@ impl Task for IntrinsicResidualTask {
             let v9_anchor_max_for_write = cfg.v9_anchor_max;
             let db_path_for_write = self.db_path.clone();
 
+            let _publication_guard = crate::publication_gate::acquire(&self.db_path, &[String::from("*")]).map_err(Error::from_reason)?;
             with_registered_write(&db_path_for_write, move |tx| {
             storage::ensure_generation(tx, source_generation)?;
+            dependencies.ensure_current(tx)?;
             // 数值表保存当前健康 V9.1 artifact；residual_energy 作为 V9.1 锚增益的
             // 通用兼容镜像。退休的 v8_3_compat_gain 列保留物理结构但写入 NULL。
             // 状态表按 artifact 版本化保留，允许 skipped/failed 也参与完整性判断。
@@ -3087,8 +3116,10 @@ impl Task for PairwiseSimTask {
         let mut pair_set: HashSet<(i64, i64)> = HashSet::new();
         let mut max_tag_id = 0_i64;
         let mut file_tag_rows = 0_u64;
-        let (pair_count, graph_generation, source_generation) = storage::with_registered_read_transaction_napi(&self.db_path, |conn| {
+        let (pair_count, graph_generation, source_generation, dependencies) = storage::with_registered_read_transaction_napi(&self.db_path, |conn| {
             let source_generation = storage::read_generation(conn).map_err(Error::from_reason)?;
+            let dependencies = storage::DerivedDependencies::capture(conn, &["derived_pairwise"])
+                .map_err(Error::from_reason)?;
             let current_fact: String = conn.query_row(
                 "SELECT value FROM kv_store WHERE key='tagmemo_pairwise_fact_generation'",
                 [], |row| row.get(0),
@@ -3195,7 +3226,7 @@ impl Task for PairwiseSimTask {
                 file_tag_rows,
                 pair_count
             );
-            Ok((pair_count, graph_generation, source_generation))
+            Ok((pair_count, graph_generation, source_generation, dependencies))
         })
         .map_err(|error| Error::from_reason(error.reason.clone()))?;
 
@@ -3367,8 +3398,10 @@ impl Task for PairwiseSimTask {
             let to_insert_for_write = to_insert;
             let status_rows_for_write = status_rows;
 
+            let _publication_guard = crate::publication_gate::acquire(&self.db_path, &[String::from("*")]).map_err(Error::from_reason)?;
             with_registered_write(&self.db_path, move |tx| {
                 storage::ensure_generation(tx, source_generation)?;
+                dependencies.ensure_current(tx)?;
                 if full_rebuild_for_write {
                     tx.execute("DELETE FROM tag_pair_similarity", [])
                         .map_err(|e| {
@@ -3490,25 +3523,25 @@ impl Task for PairwiseSimTask {
 }
 
 pub(crate) fn save_index_snapshot(
-    index: &Arc<RwLock<Index>>,
+    index: &Arc<crate::index_handle::IndexHandle>,
     index_path: &str,
 ) -> std::result::Result<(), String> {
     let index = index
         .read()
         .map_err(|error| format!("Index save lock failed: {}", error))?;
+    let mut snapshot = vec![0_u8; index.serialized_length()];
+    index.save_to_buffer(&mut snapshot)
+        .map_err(|error| format!("Failed to serialize index snapshot: {:?}", error))?;
+    drop(index);
     let target = std::path::Path::new(index_path);
     let temp = unique_index_sidecar_path(target, "tmp");
     let temp_text = temp.to_string_lossy().into_owned();
 
-    if let Err(error) = index.save(&temp_text) {
+    if let Err(error) = std::fs::write(&temp, snapshot) {
         let _ = std::fs::remove_file(&temp);
-        return Err(format!(
-            "Failed to save temporary index {}: {:?}",
-            temp_text, error
-        ));
+        return Err(format!("Failed to write temporary index {}: {}", temp_text, error));
     }
 
-    drop(index);
     if let Err(error) = sync_index_file(&temp) {
         let _ = std::fs::remove_file(&temp);
         return Err(format!(
@@ -3529,7 +3562,7 @@ pub(crate) fn save_index_snapshot(
 }
 
 pub struct IndexSaveTask {
-    index: Arc<RwLock<Index>>,
+    index: Arc<crate::index_handle::IndexHandle>,
     index_path: String,
 }
 
@@ -3549,7 +3582,7 @@ impl Task for IndexSaveTask {
 }
 
 pub struct ChunkIndexDeltaTask {
-    index: Arc<RwLock<Index>>,
+    index: Arc<crate::index_handle::IndexHandle>,
     content_revision: Arc<std::sync::atomic::AtomicU64>,
     dimensions: u32,
     remove_ids: Vec<i64>,
@@ -3681,7 +3714,7 @@ impl Task for ChunkIndexDeltaTask {
 }
 
 pub struct TagIndexDeltaTask {
-    index: Arc<RwLock<Index>>,
+    index: Arc<crate::index_handle::IndexHandle>,
     content_revision: Arc<std::sync::atomic::AtomicU64>,
     memo_runtime: Arc<MemoRuntime>,
     dimensions: u32,
@@ -3801,7 +3834,7 @@ impl Task for TagIndexDeltaTask {
 }
 
 pub struct RecoverTask {
-    index: Arc<RwLock<Index>>,
+    index: Arc<crate::index_handle::IndexHandle>,
     content_revision: Arc<std::sync::atomic::AtomicU64>,
     db_path: String,
     table_type: String,
