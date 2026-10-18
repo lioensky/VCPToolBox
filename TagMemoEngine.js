@@ -31,8 +31,6 @@ class TagMemoEngine {
         this.tagIntrinsicResiduals = null;
         this.tagRawResidualRatios = null;
         this.tagPairSimilarities = new Map();
-        this.lastEnergyField = null;
-        this.lastEnergyFieldProvenance = null;
     }
 
     _envFlag(name, fallback = false) {
