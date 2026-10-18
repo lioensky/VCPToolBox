@@ -961,13 +961,24 @@ impl Task for IndexRestoreTask {
             let persisted_path = index_slot_path(&self.index_path, &slot);
             if Path::new(&persisted_path).exists() {
                 let loaded = new_restore_index(dimension, self.capacity as usize)?;
-                loaded
-                    .load(&persisted_path)
-                    .map_err(|error| Error::from_reason(format!(
-                        "Load persisted restore index failed: {:?}",
-                        error
-                    )))?;
-                restored_index = Some(loaded);
+                match loaded.load(&persisted_path) {
+                    Ok(()) => restored_index = Some(loaded),
+                    Err(error) => {
+                        // Preserve evidence instead of deleting a damaged baseline.
+                        drop(loaded);
+                        let nonce = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|value| value.as_nanos()).unwrap_or(0);
+                        let quarantine = format!("{}.{}.{}.corrupt",
+                            persisted_path, std::process::id(), nonce);
+                        eprintln!("[KBM] Baseline load failed for '{}': {:?}; rebuilding from SQL; quarantine='{}'",
+                            persisted_path, error, quarantine);
+                        if let Err(rename_error) = std::fs::rename(&persisted_path, &quarantine) {
+                            eprintln!("[KBM] Cannot quarantine damaged baseline '{}': {}; preserving original and rebuilding from SQL",
+                                persisted_path, rename_error);
+                        }
+                    }
+                }
             }
         }
 
@@ -1131,6 +1142,57 @@ mod audit_tests {
         let rebuilt: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
         assert_eq!(rebuilt["rebuilt"], true);
         assert_eq!(rebuilt["replayed"], false);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_safety_tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_baseline_is_quarantined_and_rebuilt_from_sql() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-checkpoint-safety-{}-{}", std::process::id(), now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let baseline = root.join("tags_a.usearch").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            let bytes: Vec<u8> = [1.0_f32, 0.0].iter()
+                .flat_map(|value| value.to_ne_bytes()).collect();
+            tx.execute("INSERT INTO tags(name,vector) VALUES ('tag',?1)", [bytes])
+                .map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let index = crate::VexusIndex::new(2, 16).unwrap();
+        let mut checkpoint = IndexCheckpointTask {
+            db_path: db.clone(), index_path: baseline.clone(), index: index.index.clone(),
+            content_revision: index.content_revision.clone(), scope: IndexScope::GlobalTags,
+            diary_name: None, dimension: 2, model_sig: "test".into(), threshold: 0.05, force: false,
+        };
+        let mut restore = IndexRestoreTask {
+            db_path: db.clone(), index_path: baseline.clone(), index: index.index.clone(),
+            content_revision: index.content_revision.clone(), memo_runtime: None,
+            scope: IndexScope::GlobalTags, diary_name: None, dimension: 2,
+            model_sig: "test".into(), capacity: 16,
+        };
+        restore.compute().unwrap();
+        let first: serde_json::Value = serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
+        assert_eq!(first["published"], true);
+        let active_path = baseline;
+        std::fs::write(&active_path, b"truncated usearch").unwrap();
+        let restored: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
+        assert_eq!(restored["rebuilt"], true);
+        assert_eq!(restored["vectorCount"], 1);
+        assert!(!std::path::Path::new(&active_path).exists());
+        assert!(std::fs::read_dir(&root).unwrap().any(|entry| {
+            entry.unwrap().path().extension().and_then(|value| value.to_str()) == Some("corrupt")
+        }));
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
