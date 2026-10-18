@@ -1,6 +1,8 @@
 #![deny(clippy::all)]
 
 mod text;
+mod global_chunks;
+mod light_memo;
 mod index_handle;
 mod index_source;
 mod index_maintenance;

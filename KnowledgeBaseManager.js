@@ -78,6 +78,8 @@ class KnowledgeBaseManager {
             derivedStartupCooldownMs: parseInt(process.env.KNOWLEDGEBASE_DERIVED_STARTUP_COOLDOWN_MS, 10) || 5 * 60 * 1000,
             // 🌟 索引空闲自动卸载：默认 2 小时未使用则从内存中卸载
             indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
+            lightMemoIndexIdleTTL: Math.max(1, Math.min(0xffffffff,
+                parseInt(process.env.KNOWLEDGEBASE_LIGHTMEMO_IDLE_TTL_MS, 10) || 10 * 60 * 1000)),
             indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
             ignoreFolders: (process.env.IGNORE_FOLDERS ?? 'VCP论坛').split(/[,，]/).map(f => f.trim()).filter(Boolean),
             ignorePrefixes: (process.env.IGNORE_PREFIXES ?? process.env.IGNORE_PREFIX ?? '已整理').split(/[,，]/).map(p => p.trim()).filter(Boolean),
@@ -1722,6 +1724,47 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
     // =========================================================================
     // 核心搜索接口 (修复版)
     // =========================================================================
+
+    async executeLightMemoQuery(query, options = {}) {
+        const runtime = this.nativeKnowledgeRuntime;
+        if (typeof runtime?.executeLightMemoQuery !== 'function') {
+            const error = new Error('LIGHTMEMO_NATIVE_QUERY_UNAVAILABLE: rebuild rust-vexus-lite');
+            error.code = 'LIGHTMEMO_NATIVE_QUERY_UNAVAILABLE';
+            throw error;
+        }
+        const vector = query.vector instanceof Float32Array
+            ? query.vector : new Float32Array(query.vector || []);
+        let prepared = null;
+        if (options.engineMode === 'rivermemo' || options.abMode === true) {
+            prepared = await this.prepareUnifiedMemoObservation(query, options);
+        }
+        const raw = await runtime.executeLightMemoQuery(JSON.stringify({
+            ...options,
+            modelSig: this.config.modelSig,
+            artifactSig: prepared?.artifact?.artifactSig || '',
+            riverInput: prepared ? {
+                observationHandle: prepared.observationHandle,
+                query: { text: String(query.text || '') },
+                queryState: { queryId: prepared.observation?.queryId || null },
+                config: this.riverMemoEngine._nativeConfig(prepared.artifact, options)
+            } : null
+        }), vector);
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (result?.schema !== 'vcp-lightmemo-result-v1' || !Array.isArray(result.results)) {
+            throw new Error('LIGHTMEMO_INVALID_NATIVE_RESULT');
+        }
+        const normalize = item => ({
+            ...item,
+            label: Number(item.label ?? item.chunkId ?? item.id),
+            sourceFile: item.sourceFile && !path.isAbsolute(item.sourceFile)
+                ? path.join(this.config.rootPath, item.sourceFile) : item.sourceFile
+        });
+        result.results = result.results.map(normalize);
+        result.tdbTopK = (result.tdbTopK || []).map(normalize);
+        result.comparisonPool = (result.comparisonPool || []).map(normalize);
+        if (Array.isArray(result.river?.results)) result.river.results = result.river.results.map(normalize);
+        return result;
+    }
 
     async search(...args) {
         return await this.searchService.search(...args);

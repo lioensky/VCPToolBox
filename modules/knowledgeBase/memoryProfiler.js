@@ -204,6 +204,16 @@ function captureMemoryStage(state, stage) {
 
 function buildMemoryProfile(state) {
     const startedAt = Date.now();
+    let lightMemo = { available: false };
+    try {
+        const raw = state.nativeKnowledgeRuntime?.lightMemoIndexStats?.();
+        if (raw) lightMemo = { available: true,
+            ...(typeof raw === 'string' ? JSON.parse(raw) : raw),
+            idleTtlMs: state.config.lightMemoIndexIdleTTL || 600000,
+            note: '原生量化表；不含全库 f32。释放后 allocator 不保证立即归还 RSS。' };
+    } catch (error) {
+        lightMemo = { available: false, error: error.message };
+    }
     const dimension = state.config.dimension;
     const loadedDiaryIndices = [];
 
@@ -296,6 +306,7 @@ function buildMemoryProfile(state) {
         },
         tagMemo,
         riverMemo,
+        lightMemo,
         memoryStageSamples: Array.isArray(state.memoryStageSamples)
             ? state.memoryStageSamples.map(sample => ({ ...sample }))
             : [],

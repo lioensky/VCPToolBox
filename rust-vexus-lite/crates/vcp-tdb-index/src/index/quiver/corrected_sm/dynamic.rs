@@ -558,6 +558,71 @@ unsafe fn dot_any_avx512<const NATIVE_L2: bool>(q: &[f32], x: [&[f32]; 4], four:
 }
 
 impl CorrectedSmIndex {
+    /// VCP-PATCH: graph-free streaming encoder for the global Chunk table.
+    pub fn empty_flat(dim: usize) -> io::Result<Self> {
+        Self::empty_routing(dim)
+    }
+
+    pub fn push_flat_vector(&mut self, vector: &[f32], id: u64) -> io::Result<()> {
+        if id == 0 {
+            return Err(invalid("flat SM identity must be positive"));
+        }
+        self.push_routing_vector(vector, id)
+    }
+
+    /// Score only admitted rows, retaining bounded Top-M without touching FP32.
+    /// Returned scores are approximate negative reconstructed squared L2, not cosine.
+    pub fn search_flat_filtered<F>(
+        &self,
+        query: &[f32],
+        limit: usize,
+        mut allowed: F,
+    ) -> io::Result<Vec<(u64, f32)>>
+    where
+        F: FnMut(usize, u64) -> bool,
+    {
+        if query.len() != self.dimension() || query.iter().any(|v| !v.is_finite()) {
+            return Err(invalid("flat SM query dimension or values invalid"));
+        }
+        if limit == 0 || self.is_empty() {
+            return Ok(Vec::new());
+        }
+        let norm = query.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
+        let normalized = query.iter()
+            .map(|&v| if norm > 0. { (v as f64 / norm) as f32 } else { 0. })
+            .collect::<Vec<_>>();
+        let mut dynamic_query = DynamicQuery::default();
+        dynamic_query.encode(&normalized, true);
+        let fixed_query = (self.dynamic.is_none()).then(|| query_scalar(&normalized));
+        let high = dynamic_query.weak + dynamic_query.delta;
+        let query_norm = (self.dimension() as f32 - dynamic_query.count)
+            * dynamic_query.weak * dynamic_query.weak
+            + dynamic_query.count * high * high;
+        let mut heap = BinaryHeap::with_capacity(limit.min(self.len()) + 1);
+        for (slot, &id) in self.ids.iter().enumerate() {
+            if !allowed(slot, id) {
+                continue;
+            }
+            let score = if self.dynamic.is_some() {
+                self.dynamic_navigation_score(&dynamic_query, slot, 0., query_norm, true) - 1.
+            } else {
+                self.navigation_score(fixed_query.as_ref().unwrap(), slot, 0., query_norm, true) - 1.
+            };
+            if !score.is_finite() {
+                return Err(invalid("flat SM score overflow"));
+            }
+            // Worst score / largest identity stays at the top.
+            heap.push((NonNanF32(-score), id));
+            if heap.len() > limit {
+                heap.pop();
+            }
+        }
+        let mut output = heap.into_iter()
+            .map(|(distance, id)| (id, -distance.0)).collect::<Vec<_>>();
+        output.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        Ok(output)
+    }
+
     /// 从明确维度、位于同一内部顺序的向量和图建立SM快照。
     pub fn from_vectors_and_graph(
         dim: usize,

@@ -94,6 +94,17 @@ CREATE TABLE IF NOT EXISTS tag_index_baseline_entries (
     PRIMARY KEY(generation, tag_id),
     FOREIGN KEY(generation) REFERENCES tag_index_baselines(generation) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS global_chunk_index_baselines (
+    generation INTEGER PRIMARY KEY,
+    slot TEXT NOT NULL CHECK(slot IN ('a','b')),
+    dimension INTEGER NOT NULL,
+    model_sig TEXT NOT NULL,
+    database_generation TEXT NOT NULL,
+    format_version INTEGER NOT NULL,
+    file_size INTEGER NOT NULL,
+    file_digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kv_store (
     key TEXT PRIMARY KEY,
     value TEXT,
@@ -361,6 +372,30 @@ pub(crate) fn initialize_schema(
         .map_err(|error| format!("initialize KBM tables failed: {}", error))?;
     ensure_additive_columns(&transaction)?;
     migrate_geometry(&transaction)?;
+    transaction.execute_batch(
+        "INSERT OR IGNORE INTO kbm_runtime_meta(key,value) VALUES ('global_chunk_facts','0');
+         CREATE TRIGGER IF NOT EXISTS trg_global_chunks_insert AFTER INSERT ON chunks BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='global_chunk_facts';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_global_chunks_delete AFTER DELETE ON chunks BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='global_chunk_facts';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_global_chunks_vector AFTER UPDATE OF vector ON chunks
+         WHEN OLD.vector IS NOT NEW.vector BEGIN
+           UPDATE chunks SET vector_version=OLD.vector_version+1 WHERE id=NEW.id;
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='global_chunk_facts';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_global_chunks_metadata AFTER UPDATE OF content,file_id ON chunks
+         WHEN OLD.content IS NOT NEW.content OR OLD.file_id IS NOT NEW.file_id BEGIN
+           UPDATE chunks SET metadata_version=OLD.metadata_version+1 WHERE id=NEW.id;
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='global_chunk_facts';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_global_files_metadata AFTER UPDATE OF path,diary_name ON files
+         WHEN OLD.path IS NOT NEW.path OR OLD.diary_name IS NOT NEW.diary_name BEGIN
+           UPDATE files SET metadata_version=OLD.metadata_version+1 WHERE id=NEW.id;
+           UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='global_chunk_facts';
+         END;"
+    ).map_err(|error| format!("initialize global Chunk versions failed: {}", error))?;
     transaction.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS idx_files_diary{}", indices
     )).map_err(|error| format!("initialize KBM indices failed: {}", error))?;
@@ -467,6 +502,9 @@ pub(crate) fn initialize_schema(
 
 fn ensure_additive_columns(connection: &Connection) -> Result<(), String> {
     let migrations = [
+        ("chunks", "vector_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("chunks", "metadata_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("files", "metadata_version", "INTEGER NOT NULL DEFAULT 1"),
         (
             "chunk_index_baseline_entries",
             "chunk_vector_sig",

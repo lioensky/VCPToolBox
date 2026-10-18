@@ -162,6 +162,10 @@ export declare class NativeKnowledgeRuntime {
    * 收归同一个 Write Actor，避免与旧 JS Schema 管理同时执行。
    */
   openAndInitStore(dbPath: string, optionsJson?: string | undefined | null): NativeStoreState
+  executeLightMemoQuery(planJson: string, query: Float32Array): Promise<unknown>
+  lightMemoIndexStats(): string
+  /** Never wait for a query lock on the Node main thread. */
+  evictIdleLightMemoIndex(ttlMs: number): boolean
   searchGlobalTags(query: Float32Array, limit: number): Promise<unknown>
   storeState(): NativeStoreState | null
   healthCheck(): Promise<unknown>

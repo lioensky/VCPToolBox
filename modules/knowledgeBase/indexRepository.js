@@ -481,6 +481,20 @@ class IndexRepository {
         const startedAt = Date.now();
         const now = Date.now();
         let evicted = 0;
+        const runtime = this.getNativeRuntime?.();
+        if (typeof runtime?.evictIdleLightMemoIndex === 'function') {
+            const configuredTTL = Number(this.config.lightMemoIndexIdleTTL);
+            const ttl = Number.isFinite(configuredTTL) && configuredTTL > 0
+                ? Math.min(0xffffffff, Math.floor(configuredTTL))
+                : 10 * 60 * 1000;
+            try {
+                if (runtime.evictIdleLightMemoIndex(ttl)) {
+                    console.log(`[${this.logPrefix}] 🧹 Evicted idle LightMemo global Chunk index.`);
+                }
+            } catch (error) {
+                console.warn(`[${this.logPrefix}] LightMemo idle eviction failed: ${error.message}`);
+            }
+        }
         for (const [name, lastUsed] of this.lastUsed) {
             if (now - lastUsed < this.config.indexIdleTTL) continue;
             if (!this.diaryIndices.has(name)) {

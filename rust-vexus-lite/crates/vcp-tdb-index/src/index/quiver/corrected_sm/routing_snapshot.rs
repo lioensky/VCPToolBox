@@ -121,6 +121,26 @@ mod tests {
     use super::super::super::QuIVerConfig;
 
     #[test]
+    fn graph_free_filtered_scan_roundtrips_and_keeps_bounded_stable_top() {
+        for dim in [65, 768, 3072] {
+            let mut index = CorrectedSmIndex::empty_flat(dim).unwrap();
+            let query = vec![1.; dim];
+            for id in [9, 3, 7, 1] {
+                index.push_flat_vector(&query, id).unwrap();
+            }
+            let hits = index.search_flat_filtered(&query, 2, |_, id| id != 1).unwrap();
+            assert_eq!(hits.iter().map(|x| x.0).collect::<Vec<_>>(), vec![3, 7]);
+            let restored = CorrectedSmIndex::from_routing_snapshot_bytes(
+                &index.routing_snapshot_bytes().unwrap(),
+            ).unwrap();
+            assert_eq!(hits, restored.search_flat_filtered(&query, 2, |_, id| id != 1).unwrap());
+            assert!(restored.search_flat_filtered(&query, 2, |_, _| false).unwrap().is_empty());
+            assert!(restored.search_flat_filtered(&[f32::NAN], 2, |_, _| true).is_err());
+            assert!(restored.memory_components()["graph_bytes"].as_u64().unwrap() == 0);
+        }
+    }
+
+    #[test]
     fn embedded_graph_and_sm_roundtrip_preserves_updates_and_score_bits() {
         for dim in [65, 768, 3072] {
             let n = 40;

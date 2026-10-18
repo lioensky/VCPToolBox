@@ -2292,6 +2292,7 @@ pub struct NativeKnowledgeRuntime {
     storage: Mutex<Option<SqliteStorageEngine>>,
     watcher: Mutex<Option<VexusWatcher>>,
     tasks: Arc<TaskLifecycle>,
+    global_chunks: Arc<Mutex<Option<crate::global_chunks::GlobalChunks>>>,
 }
 
 impl NativeKnowledgeRuntime {
@@ -2342,6 +2343,7 @@ impl NativeKnowledgeRuntime {
             storage: Mutex::new(None),
             watcher: Mutex::new(None),
             tasks: tag_index.tasks.clone(),
+            global_chunks: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -2368,6 +2370,7 @@ impl NativeKnowledgeRuntime {
                 "watcher.runtime-owned.v1".to_string(),
                 "memo.native-artifact.v1".to_string(),
                 "river.native-query.v1".to_string(),
+                "lightmemo.native-query.v1".to_string(),
             ],
         }
     }
@@ -2407,6 +2410,9 @@ impl NativeKnowledgeRuntime {
         // 否则新连接会在注册前执行 schema/WAL/quick_check，期间可能与旧
         // Write Actor 并存；注册失败时还会留下无法表达的半替换状态。
         self.tasks.wait_idle();
+        *self.global_chunks.lock().map_err(|_| {
+            Error::from_reason("Global Chunk table lock poisoned")
+        })? = None;
         let mut storage = self.storage.lock().map_err(|_| {
             Error::from_reason("NativeKnowledgeRuntime storage lock poisoned".to_string())
         })?;
@@ -2432,6 +2438,63 @@ impl NativeKnowledgeRuntime {
             .map_err(|_| {
                 Error::from_reason("NativeKnowledgeRuntime storage lock poisoned".to_string())
             })
+    }
+
+    #[napi]
+    pub fn execute_light_memo_query(&self, plan_json: String, query: Float32Array)
+        -> Result<AsyncTask<TrackedTask<crate::light_memo::LightMemoTask>>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason("KNOWLEDGE_STORE_CLOSED"));
+        }
+        if plan_json.len() > 1024 * 1024 || query.len() != self.dimension as usize {
+            return Err(Error::from_reason("LIGHTMEMO_INVALID_PLAN"));
+        }
+        let storage = self.storage_snapshot()?
+            .ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN"))?;
+        Ok(self.tracked_task(crate::light_memo::LightMemoTask {
+            db_path: storage.db_path().to_string_lossy().into_owned(),
+            dimension: self.dimension as usize,
+            query: query.to_vec(),
+            plan_json,
+            table: self.global_chunks.clone(),
+            runtime: self.memo_runtime.clone(),
+        }))
+    }
+
+    #[napi]
+    pub fn light_memo_index_stats(&self) -> Result<String> {
+        match self.global_chunks.try_lock() {
+            Ok(slot) => Ok(match slot.as_ref() {
+                Some(table) => serde_json::json!({
+                    "resident": true, "chunks": table.rows.len(),
+                    "idleMs": table.last_used.elapsed().as_millis() as u64,
+                    "storageMode": "rust-sm-flat", "f32Resident": false
+                }),
+                None => serde_json::json!({
+                    "resident": false, "chunks": 0, "f32Resident": false
+                }),
+            }.to_string()),
+            Err(std::sync::TryLockError::WouldBlock) =>
+                Ok(serde_json::json!({"busy": true}).to_string()),
+            Err(_) => Err(Error::from_reason("Global Chunk table lock poisoned")),
+        }
+    }
+
+    /// Never wait for a query lock on the Node main thread.
+    #[napi]
+    pub fn evict_idle_light_memo_index(&self, ttl_ms: u32) -> Result<bool> {
+        match self.global_chunks.try_lock() {
+            Ok(mut slot) => {
+                if slot.as_ref().is_some_and(|table|
+                    table.last_used.elapsed().as_millis() >= ttl_ms.max(1) as u128) {
+                    *slot = None;
+                    return Ok(true);
+                }
+                Ok(false)
+            }
+            Err(std::sync::TryLockError::WouldBlock) => Ok(false),
+            Err(_) => Err(Error::from_reason("Global Chunk table lock poisoned")),
+        }
     }
 
     #[napi]
@@ -4190,6 +4253,13 @@ impl NativeKnowledgeRuntime {
             errors.push(format!("watcher: {}", error));
         }
         self.tasks.close_and_wait();
+        match self.global_chunks.lock() {
+            Ok(mut slot) => *slot = None,
+            Err(poisoned) => {
+                *poisoned.into_inner() = None;
+                errors.push("Global Chunk table shutdown lock poisoned".into());
+            }
+        }
         match self.diaries.write() {
             Ok(mut diaries) => diaries.clear(),
             Err(poisoned) => {
@@ -4260,6 +4330,7 @@ mod tests {
             storage: Mutex::new(None),
             watcher: Mutex::new(None),
             tasks: Arc::new(TaskLifecycle::default()),
+            global_chunks: Arc::new(Mutex::new(None)),
         };
         runtime.open_and_init_store(db, None).unwrap();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4450,5 +4521,41 @@ mod tests {
         assert_eq!(limited.len(), 1);
         assert_eq!(limited[0].id, 7);
         assert_eq!(limited[0].vector_score, 0.9);
+    }
+}
+
+
+#[cfg(test)]
+mod light_memo_idle_tests {
+    use super::*;
+
+    #[test]
+    fn idle_eviction_skips_busy_and_recent_tables_and_releases_expired_table() {
+        let index = VexusIndex::new(2, 16).unwrap();
+        let runtime = NativeKnowledgeRuntime {
+            dimension: 2, memo_runtime: index.memo_runtime.clone(),
+            global_tag_index: index.index.clone(),
+            global_tag_content_revision: index.content_revision.clone(),
+            diaries: RwLock::new(HashMap::new()), registry_generation: AtomicU64::new(0),
+            accepting_queries: AtomicBool::new(true), storage: Mutex::new(None),
+            watcher: Mutex::new(None), tasks: Arc::new(TaskLifecycle::default()),
+            global_chunks: Arc::new(Mutex::new(Some(
+                crate::global_chunks::GlobalChunks::empty(2, "test").unwrap(),
+            ))),
+        };
+        assert!(!runtime.evict_idle_light_memo_index(60_000).unwrap());
+        {
+            let mut slot = runtime.global_chunks.lock().unwrap();
+            slot.as_mut().unwrap().last_used =
+                std::time::Instant::now() - std::time::Duration::from_secs(120);
+            assert!(!runtime.evict_idle_light_memo_index(1).unwrap());
+        }
+        assert!(runtime.evict_idle_light_memo_index(1).unwrap());
+        assert!(runtime.global_chunks.lock().unwrap().is_none());
+        *runtime.global_chunks.lock().unwrap() = Some(
+            crate::global_chunks::GlobalChunks::empty(2, "test").unwrap(),
+        );
+        runtime.shutdown().unwrap();
+        assert!(runtime.global_chunks.lock().unwrap().is_none());
     }
 }

@@ -271,6 +271,46 @@ async function main() {
             'caller-provided fake candidates must be replaced by native ANN results'
         );
 
+        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, false);
+        const lightPlan = {
+            scope: { folders: ['test'] }, modelSig: 'manifest-test-model',
+            engineMode: 'rivermemo', k: 2, candidateK: 16, abMode: true,
+            artifactSig: result.artifactSig,
+            riverInput: {
+                observationHandle: pipelineMetadata.observationHandle,
+                query: { text: 'shared-file candidate' },
+                queryState: { queryId: 'typed-array-regression' },
+                config: { queryK: 16, denoisedK: 16, localFieldK: 16,
+                    transferFieldK: 16, maxUnionCandidates: 16 }
+            }
+        };
+        const lightQuery = async (plan = lightPlan) => JSON.parse(
+            await nativeKnowledgeRuntime.executeLightMemoQuery(
+                JSON.stringify(plan), new Float32Array([1, 0, 0, 0])));
+        const lightResults = await Promise.all(Array.from({ length: 4 }, () => lightQuery()));
+        for (const light of lightResults) {
+            assert.strictEqual(light.schema, 'vcp-lightmemo-result-v1');
+            assert.strictEqual(light.comparisonPool.length, 2);
+            assert.strictEqual(light.river.diagnostics.offeredCandidates, 2);
+            assert.deepStrictEqual(light.tdbTopK.map(item => item.id), [1, 2]);
+            assert(light.results.every(item => typeof item.text === 'string'));
+            assert(light.comparisonPool.every(item => !Object.hasOwn(item, 'vector')));
+        }
+        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, true);
+        assert.strictEqual(nativeKnowledgeRuntime.evictIdleLightMemoIndex(600000), false);
+        await new Promise(resolve => setTimeout(resolve, 15));
+        assert.strictEqual(nativeKnowledgeRuntime.evictIdleLightMemoIndex(1), true);
+        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, false);
+        const lightReloaded = await lightQuery();
+        assert.deepStrictEqual(lightReloaded.tdbTopK, lightResults[0].tdbTopK);
+        assert.strictEqual(lightReloaded.diagnostics.synchronizedRows, 0);
+        const noSignature = await lightQuery({
+            ...lightPlan, engineMode: 'knn', abMode: false,
+            scope: { maid: 'test' }
+        });
+        assert.strictEqual(noSignature.results.length, 0,
+            'diary-name match does not bypass first-line signature filtering');
+
         // 并发冷加载回归：清空常驻 Arc 后，多条 Memo Pipeline 会同时从
         // SQLite 解码同一个 Artifact。后到的同签名发布不得清空先到查询
         // 已写入的 observationHandle。
@@ -377,7 +417,16 @@ async function main() {
             new Float32Array([1, 0, 0, 0]), new Float32Array()
         );
 
+        nativeKnowledgeRuntime.openAndInitStore(path.join(root, 'other.sqlite'));
+        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, false,
+            'store replacement must discard the previous database table');
+        const other = await lightQuery({
+            ...lightPlan, engineMode: 'knn', abMode: false,
+            scope: { searchAll: true }
+        });
+        assert.strictEqual(other.results.length, 0);
         nativeKnowledgeRuntime.shutdown();
+        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, false);
         console.log(
             '[NativeMemoManifestTest] PASS: canonical manifest, TypedArray/handle Memo ABI, ' +
             'batched RiverMemo SQL, one-call joint retrieval and concurrent cold handles are compatible.'
