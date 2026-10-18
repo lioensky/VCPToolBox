@@ -168,3 +168,67 @@ test('changed migration source retries only that file using normal embedding wit
         await fs.rm(root, { recursive: true, force: true });
     }
 });
+
+test('tag consistency queues full training only after successful commit', async () => {
+    const events = [];
+    const plan = {
+        token: 'train', digest: 'digest', createdAt: Date.now(),
+        expiresAt: Date.now() + 10000, modelSig: 'test', dimension: 2,
+        files: [], vectorizeNames: [], orphanTags: [], summary: {}
+    };
+    const owner = {
+        dbPath: 'unused', config: { modelSig: 'test', dimension: 2 },
+        nativeKnowledgeRuntime: {
+            async commitTagConsistency() {
+                events.push('commit');
+                return { factsCommitted: true, indexReady: true };
+            }
+        },
+        requestActiveFullTraining(options) {
+            events.push(options.reason);
+            return { queued: true, taskId: 'training' };
+        }
+    };
+    const service = new TagConsistencyService(owner);
+    service.snapshots.set(plan.token, { token: plan.token, expiresAt: plan.expiresAt, plan });
+    const result = await service.applyPreview(plan.token);
+    assert.deepEqual(events, ['commit', 'tag-consistency-commit']);
+    assert.equal(result.training.queued, true);
+});
+
+test('Memo unavailability degrades to scoped KNN but unrelated errors remain visible', async () => {
+    const kb = require('../KnowledgeBaseManager');
+    const execute = Object.getPrototypeOf(kb).executeNativeRiverQuery;
+    for (const stage of ['prepare', 'joint']) {
+        const owner = {
+            config: { dimension: 2, nativeRiverQueryEnabled: true },
+            async _getOrLoadDiaryIndex() {},
+            async getFileIdsByDiaries() { return [1, 2]; },
+            async prepareUnifiedMemoObservation() {
+                if (stage === 'prepare') {
+                    throw Object.assign(new Error('stale'), { code: 'MEMO_ARTIFACT_UNAVAILABLE' });
+                }
+                return { artifact: { artifactSig: 'old' } };
+            },
+            riverMemoEngine: { async rerank() {
+                throw new Error('KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT');
+            } },
+            async searchKnn(names, vector, k, options) {
+                assert.deepEqual(names, ['test']);
+                assert.equal(k, 2);
+                assert.deepEqual(options.allowedFileIds, [2]);
+                assert.deepEqual(options.deniedFileIds, [3]);
+                return [{ id: 2, retrievalEngine: 'knn' }];
+            }
+        };
+        const result = await execute.call(owner, { vector: [1, 0] }, {
+            diaryNames: ['test'], topK: 2, allowedFileIds: [2], deniedFileIds: [3]
+        });
+        assert.equal(result.diagnostics.degraded, true);
+        assert.equal(result.results[0].retrievalEngine, 'knn');
+        owner.prepareUnifiedMemoObservation = async () => { throw new Error('database corrupt'); };
+        await assert.rejects(execute.call(owner, { vector: [1, 0] }, {
+            diaryNames: ['test']
+        }), /database corrupt/);
+    }
+});

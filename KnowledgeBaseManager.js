@@ -2670,18 +2670,29 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             )
         } : null;
 
-        const prepared = options.preparedMemoObservation
-            || await this.prepareUnifiedMemoObservation(
-                {
-                    text: String(query?.text || ''),
-                    vector: queryVector
-                },
-                {
-                    ...options,
-                    queryText: String(query?.text || ''),
-                    vector: queryVector
-                }
-            );
+        const degradedKnn = async () => ({
+            results: await this.searchKnn(diaryNames, queryVector, finalK, {
+                ...options,
+                allowedFileIds: Array.isArray(options.allowedFileIds)
+                    ? allowedFileIds.filter(id => options.allowedFileIds.map(Number).includes(Number(id)))
+                    : allowedFileIds,
+                globalK: finalK
+            }),
+            diagnostics: { reason: 'memo-artifact-unavailable', retrievalEngine: 'knn', degraded: true }
+        });
+        const isStaleMemo = error => /(?:MEMO_ARTIFACT_UNAVAILABLE|TAGMEMO_ARTIFACT_UNAVAILABLE|KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT|observation.*(?:not found|expired|unavailable|mismatch))/i
+            .test(String(error.code || '') + ' ' + String(error.message || ''));
+        let prepared;
+        try {
+            prepared = options.preparedMemoObservation
+                || await this.prepareUnifiedMemoObservation(
+                    { text: String(query?.text || ''), vector: queryVector },
+                    { ...options, queryText: String(query?.text || ''), vector: queryVector }
+                );
+        } catch (error) {
+            if (!isStaleMemo(error)) throw error;
+            return degradedKnn();
+        }
         const agentContext = {
             agentId: options.agentId || null,
             diaryNames,
@@ -2740,6 +2751,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
                     }
                 );
             } catch (error) {
+                if (isStaleMemo(error)) return degradedKnn();
                 if (!fallbackEnabled) throw error;
                 console.warn(
                     `[KnowledgeBase][NativeRiverQuery] joint execution failed; ` +
