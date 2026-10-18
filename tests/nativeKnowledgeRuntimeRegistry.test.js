@@ -2,6 +2,16 @@
 
 const assert = require('assert');
 
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kbm-registry-'));
+let activeRuntime;
+process.on('exit', () => {
+    activeRuntime?.shutdown();
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+});
+
 const {
     VexusIndex,
     NativeKnowledgeRuntime
@@ -25,6 +35,8 @@ async function run() {
 
     const tagIndex = new VexusIndex(DIMENSION, 32);
     const runtime = new NativeKnowledgeRuntime(tagIndex);
+    activeRuntime = runtime;
+    runtime.openAndInitStore(path.join(temporaryRoot, 'test.sqlite'));
     assert.strictEqual(
         typeof runtime.executeRiverQueryHybrid,
         'function',
@@ -198,6 +210,8 @@ async function run() {
     assert.strictEqual(runtime.stats().registeredDiaries, 1);
 
     runtime.shutdown();
+    activeRuntime = null;
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
     const stopped = runtime.stats();
     assert.strictEqual(stopped.acceptingQueries, false);
     assert.strictEqual(stopped.registeredDiaries, 0);
