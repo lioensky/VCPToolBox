@@ -2,6 +2,7 @@ use crate::storage::{with_registered_read, with_registered_write, WriteReceipt};
 use napi::bindgen_prelude::*;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use usearch::Index;
@@ -410,6 +411,10 @@ pub(crate) struct IngestionPlan {
     pub(crate) batch_id: String,
     pub(crate) dimension: usize,
     pub(crate) model_sig: String,
+    #[serde(default)]
+    pub(crate) created_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) expires_at: Option<i64>,
     pub(crate) files: Vec<PlannedFile>,
     pub(crate) chunks: Vec<PlannedChunk>,
     pub(crate) tags: Vec<PlannedTag>,
@@ -448,14 +453,14 @@ pub(crate) struct PlannedTag {
     pub(crate) vector_slot: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DiaryIndexDelta {
     pub(crate) removed_chunk_ids: Vec<i64>,
     pub(crate) upserted_chunk_ids: Vec<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct IngestionChunkReceipt {
     pub(crate) chunk_id: i64,
@@ -495,11 +500,18 @@ impl Task for IngestionCommitTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
+            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
         let plan: IngestionPlan = serde_json::from_str(&self.plan_json).map_err(|error| {
             Error::from_reason(format!("Invalid ingestion plan JSON: {}", error))
         })?;
 
         validate_plan(&plan, &self.chunk_vectors, &self.tag_vectors)?;
+        let plan_digest = ingestion_plan_digest(
+            &self.plan_json,
+            &self.chunk_vectors,
+            &self.tag_vectors,
+        );
 
         let operation_id = plan.operation_id.clone();
         let batch_id = plan.batch_id.clone();
@@ -514,6 +526,7 @@ impl Task for IngestionCommitTask {
             commit_plan(
                 tx,
                 &plan_for_write,
+                &plan_digest,
                 &chunk_vectors,
                 &tag_vectors,
                 committed_details_for_write,
@@ -527,15 +540,66 @@ impl Task for IngestionCommitTask {
             .take()
             .ok_or_else(|| Error::from_reason("Ingestion commit completed without details"))?;
 
-        let index_ready = apply_committed_index_deltas(
+        let affected_scopes = details
+            .affected_diaries
+            .iter()
+            .map(|diary| format!("diary:{}", diary))
+            .chain(
+                (!details.new_tag_ids.is_empty())
+                    .then(|| "global_tags".to_string())
+                    .into_iter(),
+            )
+            .collect::<Vec<_>>();
+
+        let mut index_ready = if !receipt.facts_changed {
+            // 历史回执不得重放差分，否则可能复活之后已删除的 chunk。
+            with_registered_read(&db_path, |connection| {
+                for scope in &affected_scopes {
+                    let ready: bool = connection.query_row(
+                        "SELECT state = 'ready' AND facts_generation = applied_generation
+                         FROM kbm_index_states WHERE scope = ?1",
+                        [scope],
+                        |row| row.get(0),
+                    ).optional().map_err(|error| error.to_string())?.unwrap_or(false);
+                    if !ready {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }).unwrap_or(false)
+        } else {
+            apply_committed_index_deltas(
+            &db_path,
             &plan,
             &self.chunk_vectors,
             &self.tag_vectors,
             &details,
             &self.diary_indices,
             &self.global_tag_index,
-        )
-        .map_err(Error::from_reason)?;
+            ).unwrap_or_else(|error| {
+                eprintln!("[KBM] Facts committed but index apply failed: {}", error);
+                false
+            })
+        };
+
+        let index_applied = index_ready;
+        for scope in affected_scopes.iter().filter(|_| receipt.facts_changed) {
+            if let Err(error) = set_index_state(
+                &db_path,
+                scope,
+                if index_applied { "ready" } else { "invalid" },
+                receipt.database_generation,
+                if index_applied {
+                    receipt.database_generation
+                } else {
+                    0
+                },
+                (!index_applied).then_some("index delta application failed"),
+            ) {
+                index_ready = false;
+                eprintln!("[KBM] Facts committed; index state publication failed: {}", error);
+            }
+        }
 
         let output = IngestionCommitResult {
             operation_id,
@@ -564,6 +628,13 @@ impl Task for IngestionCommitTask {
 }
 
 fn validate_plan(plan: &IngestionPlan, chunk_vectors: &[f32], tag_vectors: &[f32]) -> Result<()> {
+    if plan.files.len() > 2000 || plan.chunks.len() > 100_000 || plan.tags.len() > 100_000
+        || plan.operation_id.len() > 256 || plan.batch_id.len() > 256
+        || chunk_vectors.len().saturating_add(tag_vectors.len()) > 64 * 1024 * 1024
+        || plan.chunks.iter().map(|chunk| chunk.content.len()).sum::<usize>() > 64 * 1024 * 1024
+    {
+        return Err(Error::from_reason("KNOWLEDGE_STORE_BATCH_BUDGET_EXCEEDED"));
+    }
     if plan.operation_id.trim().is_empty() || plan.batch_id.trim().is_empty() {
         return Err(Error::from_reason(
             "Ingestion plan requires operationId and batchId".to_string(),
@@ -667,6 +738,11 @@ fn validate_plan(plan: &IngestionPlan, chunk_vectors: &[f32], tag_vectors: &[f32
     }
 
     for file in &plan.files {
+        if std::path::Path::new(&file.path).components().any(|component| {
+            !matches!(component, std::path::Component::Normal(_))
+        }) || file.size < 0 || file.expected_version >= i64::MAX as u64 {
+            return Err(Error::from_reason("KNOWLEDGE_STORE_INVALID_FILE_IDENTITY"));
+        }
         if file.path.trim().is_empty()
             || file.diary_name.trim().is_empty()
             || file.checksum.trim().is_empty()
@@ -687,6 +763,7 @@ fn validate_plan(plan: &IngestionPlan, chunk_vectors: &[f32], tag_vectors: &[f32
 }
 
 fn apply_committed_index_deltas(
+    db_path: &str,
     plan: &IngestionPlan,
     chunk_vectors: &[f32],
     tag_vectors: &[f32],
@@ -716,7 +793,29 @@ fn apply_committed_index_deltas(
             .filter(|entry| entry.diary_name == *diary_name)
         {
             let Some(slot) = receipt.vector_slot else {
-                ready = false;
+                let bytes = with_registered_read(db_path, |connection| {
+                    connection.query_row(
+                        "SELECT vector FROM chunks WHERE id = ?1",
+                        [receipt.chunk_id], |row| row.get::<_, Option<Vec<u8>>>(0),
+                    ).optional().map(|value| value.flatten())
+                        .map_err(|error| error.to_string())
+                })?;
+                // NULL 是部分 Embedding 失败，不是索引中应存在的向量。
+                let Some(bytes) = bytes else { continue; };
+                if bytes.len() != dimension * 4 {
+                    return Err("Reused Chunk vector dimension mismatch".to_string());
+                }
+                let vector: Vec<f32> = bytes.chunks_exact(4)
+                    .map(|value| f32::from_ne_bytes([value[0], value[1], value[2], value[3]]))
+                    .collect();
+                if vector.iter().any(|value| !value.is_finite()) {
+                    return Err("Reused Chunk vector contains non-finite value".to_string());
+                }
+                guard.reserve(guard.size().saturating_add(2))
+                    .map_err(|error| format!("Reserve reused Chunk failed: {:?}", error))?;
+                let _ = guard.remove(receipt.chunk_id as u64);
+                guard.add(receipt.chunk_id as u64, &vector)
+                    .map_err(|error| format!("Apply reused Chunk failed: {:?}", error))?;
                 continue;
             };
             let start = slot
@@ -793,6 +892,19 @@ fn apply_committed_index_deltas(
     Ok(ready)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitDetails {
+    affected_files: Vec<i64>,
+    removed_chunk_ids: Vec<i64>,
+    upserted_chunk_ids: Vec<i64>,
+    upserted_chunks: Vec<IngestionChunkReceipt>,
+    affected_diaries: Vec<String>,
+    diary_index_deltas: HashMap<String, DiaryIndexDelta>,
+    new_tag_ids: Vec<i64>,
+    new_tag_names: Vec<String>,
+}
+
 struct CommitAccumulator {
     affected_files: Vec<i64>,
     removed_chunk_ids: Vec<i64>,
@@ -804,15 +916,76 @@ struct CommitAccumulator {
     diary_index_deltas: HashMap<String, DiaryIndexDelta>,
 }
 
-struct CommitDetails {
-    affected_files: Vec<i64>,
-    removed_chunk_ids: Vec<i64>,
-    upserted_chunk_ids: Vec<i64>,
-    upserted_chunks: Vec<IngestionChunkReceipt>,
-    affected_diaries: Vec<String>,
-    diary_index_deltas: HashMap<String, DiaryIndexDelta>,
-    new_tag_ids: Vec<i64>,
-    new_tag_names: Vec<String>,
+fn set_index_state(
+    db_path: &str,
+    scope: &str,
+    state: &str,
+    facts_generation: u64,
+    applied_generation: u64,
+    error_message: Option<&str>,
+) -> Result<()> {
+    if !matches!(state, "ready" | "invalid" | "recovering") {
+        return Err(Error::from_reason(format!(
+            "Invalid KBM index state '{}'",
+            state
+        )));
+    }
+    let db_path = db_path.to_string();
+    let scope = scope.to_string();
+    let state = state.to_string();
+    let error_message = error_message.map(str::to_string);
+    with_registered_write(&db_path, move |tx| {
+        tx.execute(
+            "INSERT INTO kbm_index_states(
+                scope, state, facts_generation, applied_generation,
+                error_message, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(scope) DO UPDATE SET
+                state = excluded.state,
+                facts_generation = excluded.facts_generation,
+                applied_generation = excluded.applied_generation,
+                error_message = excluded.error_message,
+                updated_at = excluded.updated_at
+             WHERE kbm_index_states.facts_generation = excluded.facts_generation",
+            params![
+                scope,
+                state,
+                facts_generation as i64,
+                applied_generation as i64,
+                error_message,
+                current_time_ms()
+            ],
+        )
+        .map_err(|error| format!("persist KBM index state failed: {}", error))?;
+        Ok(WriteReceipt {
+            operation: "update_index_state".to_string(),
+            database_generation: 0,
+            facts_changed: false,
+        })
+    })
+    .map(|_| ())
+    .map_err(Error::from_reason)
+}
+
+fn ingestion_plan_digest(
+    plan_json: &str,
+    chunk_vectors: &[f32],
+    tag_vectors: &[f32],
+) -> String {
+    let canonical = serde_json::from_str::<serde_json::Value>(plan_json)
+        .and_then(|value| serde_json::to_vec(&value))
+        .unwrap_or_else(|_| plan_json.as_bytes().to_vec());
+    let mut hasher = Sha256::new();
+    hasher.update(b"kbm-ingestion-receipt-v2");
+    hasher.update((canonical.len() as u64).to_le_bytes());
+    hasher.update(&canonical);
+    for values in [chunk_vectors, tag_vectors] {
+        hasher.update((values.len() as u64).to_le_bytes());
+        for value in values {
+            hasher.update(value.to_le_bytes());
+        }
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 fn vector_bytes(values: &[f32], slot: usize, dimension: usize) -> Vec<u8> {
@@ -859,10 +1032,58 @@ fn add_upsert_delta(
 fn commit_plan(
     tx: &rusqlite::Transaction<'_>,
     plan: &IngestionPlan,
+    plan_digest: &str,
     chunk_vectors: &[f32],
     tag_vectors: &[f32],
     committed_details: Arc<Mutex<Option<CommitDetails>>>,
 ) -> std::result::Result<WriteReceipt, String> {
+    let now = current_time_ms();
+    let existing_receipt: Option<(String, String, i64, String, String)> = tx
+        .query_row(
+            "SELECT plan_digest, status, database_generation, receipt_json, operation_type
+             FROM kbm_operation_receipts
+             WHERE operation_id = ?1",
+            [&plan.operation_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .optional()
+        .map_err(|error| format!("lookup ingestion operation receipt failed: {}", error))?;
+
+    if let Some((stored_digest, status, database_generation, receipt_json, operation_type)) = existing_receipt {
+        if operation_type != "ingestion" || stored_digest != plan_digest {
+            return Err(format!(
+                "KNOWLEDGE_STORE_OPERATION_DIGEST_CONFLICT: operationId '{}'",
+                plan.operation_id
+            ));
+        }
+        if status == "committed" {
+            let details: CommitDetails = serde_json::from_str(&receipt_json)
+                .map_err(|error| format!("decode ingestion operation receipt failed: {}", error))?;
+            committed_details
+                .lock()
+                .map_err(|_| "Ingestion commit details lock poisoned".to_string())?
+                .replace(details);
+            return Ok(WriteReceipt {
+                operation: "commit_ingestion_batch/idempotent".to_string(),
+                database_generation: database_generation.max(0) as u64,
+                facts_changed: false,
+            });
+        }
+        return Err(format!(
+            "KNOWLEDGE_STORE_OPERATION_NOT_REUSABLE: operationId '{}', status '{}'",
+            plan.operation_id, status
+        ));
+    }
+
+    if let (Some(created), Some(expires)) = (plan.created_at, plan.expires_at) {
+        if created <= 0 || created > now || expires <= created
+            || expires.saturating_sub(created) > 24 * 60 * 60 * 1000 || now >= expires
+        {
+            return Err("KNOWLEDGE_STORE_BATCH_EXPIRED".to_string());
+        }
+    } else if plan.created_at.is_some() || plan.expires_at.is_some() {
+        return Err("KNOWLEDGE_STORE_INVALID_BATCH_TTL".to_string());
+    }
     if plan.files.is_empty() {
         return Err("Ingestion plan requires at least one file".to_string());
     }
@@ -1151,29 +1372,77 @@ fn commit_plan(
         diaries.sort();
         diaries
     };
+    let details = CommitDetails {
+        affected_files: accumulator.affected_files,
+        removed_chunk_ids: accumulator.removed_chunk_ids,
+        upserted_chunk_ids: accumulator.upserted_chunk_ids,
+        upserted_chunks: accumulator.upserted_chunks,
+        affected_diaries,
+        diary_index_deltas: accumulator
+            .diary_index_deltas
+            .into_iter()
+            .map(|(diary, mut delta)| {
+                delta.removed_chunk_ids.sort_unstable();
+                delta.removed_chunk_ids.dedup();
+                delta.upserted_chunk_ids.sort_unstable();
+                delta.upserted_chunk_ids.dedup();
+                (diary, delta)
+            })
+            .collect(),
+        new_tag_ids: accumulator.new_tag_ids,
+        new_tag_names: accumulator.new_tag_names,
+    };
+
+    for scope in details
+        .affected_diaries
+        .iter()
+        .map(|diary| format!("diary:{}", diary))
+        .chain(
+            (!details.new_tag_ids.is_empty())
+                .then(|| "global_tags".to_string())
+                .into_iter(),
+        )
+    {
+        tx.execute(
+            "INSERT INTO kbm_index_states(
+                scope, state, facts_generation, applied_generation,
+                error_message, updated_at
+             ) VALUES (?1, 'invalid', 0, 0, ?2, ?3)
+             ON CONFLICT(scope) DO UPDATE SET
+                state = 'invalid',
+                facts_generation = 0,
+                error_message = excluded.error_message,
+                updated_at = excluded.updated_at",
+            params![
+                scope,
+                "facts committed; index delta pending",
+                now
+            ],
+        )
+        .map_err(|error| format!("persist pending KBM index state failed: {}", error))?;
+    }
+
+    let receipt_json = serde_json::to_string(&details)
+        .map_err(|error| format!("encode ingestion operation receipt failed: {}", error))?;
+    tx.execute(
+        "INSERT INTO kbm_operation_receipts(
+            operation_id, operation_type, batch_id, plan_digest, status,
+            database_generation, receipt_json, created_at, expires_at
+         ) VALUES (?1, 'ingestion', ?2, ?3, 'committed', 0, ?4, ?5, ?6)",
+        params![
+            &plan.operation_id,
+            &plan.batch_id,
+            plan_digest,
+            receipt_json,
+            now,
+            now.saturating_add(30 * 60 * 1000)
+        ],
+    )
+    .map_err(|error| format!("persist ingestion operation receipt failed: {}", error))?;
     committed_details
         .lock()
         .map_err(|_| "Ingestion commit details lock poisoned".to_string())?
-        .replace(CommitDetails {
-            affected_files: accumulator.affected_files,
-            removed_chunk_ids: accumulator.removed_chunk_ids,
-            upserted_chunk_ids: accumulator.upserted_chunk_ids,
-            upserted_chunks: accumulator.upserted_chunks,
-            affected_diaries,
-            diary_index_deltas: accumulator
-                .diary_index_deltas
-                .into_iter()
-                .map(|(diary, mut delta)| {
-                    delta.removed_chunk_ids.sort_unstable();
-                    delta.removed_chunk_ids.dedup();
-                    delta.upserted_chunk_ids.sort_unstable();
-                    delta.upserted_chunk_ids.dedup();
-                    (diary, delta)
-                })
-                .collect(),
-            new_tag_ids: accumulator.new_tag_ids,
-            new_tag_names: accumulator.new_tag_names,
-        });
+        .replace(details);
 
     Ok(WriteReceipt {
         operation: "commit_ingestion_batch".to_string(),
@@ -1228,6 +1497,7 @@ pub(crate) struct DeleteCommitResult {
 }
 
 pub struct DeleteCommitTask {
+    pub(crate) root_path: Option<String>,
     pub(crate) db_path: String,
     pub(crate) file_paths: Vec<String>,
     pub(crate) ttl_ms: i64,
@@ -1239,7 +1509,10 @@ impl Task for DeleteCommitTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
+            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
         let paths = self.file_paths.clone();
+        let root_path = self.root_path.clone();
         let ttl_ms = self.ttl_ms.max(0);
         let details = Arc::new(Mutex::new(None));
         let details_for_write = Arc::clone(&details);
@@ -1251,6 +1524,21 @@ impl Task for DeleteCommitTask {
             let mut deltas: HashMap<String, DiaryIndexDelta> = HashMap::new();
 
             for file_path in paths {
+                let relative = std::path::Path::new(&file_path);
+                if relative.as_os_str().is_empty() || relative.components().any(|component| {
+                    !matches!(component, std::path::Component::Normal(_))
+                }) {
+                    return Err("KNOWLEDGE_STORE_INVALID_FILE_PATH".to_string());
+                }
+                if let Some(root) = &root_path {
+                    match std::fs::metadata(std::path::Path::new(root).join(relative)) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Ok(_) => continue, // 文件已重建，旧 unlink 不能删除新事实。
+                        Err(error) => return Err(format!(
+                            "KNOWLEDGE_STORE_FILE_VERIFICATION_DEFERRED: {}", error
+                        )),
+                    }
+                }
                 let file = tx
                     .query_row(
                         "SELECT id, path, diary_name, checksum, size FROM files WHERE path = ?1",
@@ -1268,6 +1556,16 @@ impl Task for DeleteCommitTask {
                     .optional()
                     .map_err(|error| format!("lookup deleted file failed: {}", error))?;
                 let Some((file_id, old_path, diary_name, checksum, size)) = file else {
+                    tx.execute(
+                        "INSERT INTO kbm_file_versions(
+                            path, version, exists_flag, updated_at
+                         ) VALUES (?1, 1, 0, ?2)
+                         ON CONFLICT(path) DO UPDATE SET
+                            version=kbm_file_versions.version+1,
+                            exists_flag=0, checksum=NULL, mtime=NULL, size=NULL,
+                            updated_at=excluded.updated_at",
+                        params![file_path, now],
+                    ).map_err(|error| format!("Persist absent-path tombstone failed: {}", error))?;
                     continue;
                 };
 
@@ -1381,6 +1679,29 @@ impl Task for DeleteCommitTask {
                 delta.removed_chunk_ids.sort_unstable();
                 delta.removed_chunk_ids.dedup();
             }
+
+            for diary_name in deltas.keys() {
+                tx.execute(
+                    "INSERT INTO kbm_index_states(
+                        scope, state, facts_generation, applied_generation,
+                        error_message, updated_at
+                     ) VALUES (?1, 'invalid', 0, 0, ?2, ?3)
+                     ON CONFLICT(scope) DO UPDATE SET
+                        state = 'invalid',
+                        facts_generation = 0,
+                        error_message = excluded.error_message,
+                        updated_at = excluded.updated_at",
+                    params![
+                        format!("diary:{}", diary_name),
+                        "delete facts committed; index delta pending",
+                        now
+                    ],
+                )
+                .map_err(|error| {
+                    format!("persist pending deleted index state failed: {}", error)
+                })?;
+            }
+
             details_for_write
                 .lock()
                 .map_err(|_| "delete commit details lock poisoned".to_string())?
@@ -1399,8 +1720,27 @@ impl Task for DeleteCommitTask {
             .take()
             .ok_or_else(|| Error::from_reason("delete commit completed without details"))?;
 
-        let index_ready =
+        let index_applied =
             apply_deleted_index_deltas(&diary_index_deltas, &self.diary_indices);
+        let mut index_ready = index_applied;
+
+        for diary_name in diary_index_deltas.keys() {
+            if let Err(error) = set_index_state(
+                &self.db_path,
+                &format!("diary:{}", diary_name),
+                if index_applied { "ready" } else { "invalid" },
+                receipt.database_generation,
+                if index_applied {
+                    receipt.database_generation
+                } else {
+                    0
+                },
+                (!index_applied).then_some("deleted index delta application failed"),
+            ) {
+                index_ready = false;
+                eprintln!("[KBM] Delete facts committed; index state publication failed: {}", error);
+            }
+        }
 
         serde_json::to_string(&DeleteCommitResult {
             affected_files,
@@ -1437,6 +1777,8 @@ impl Task for OrphanCleanupTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
+            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
         let root_path = std::path::PathBuf::from(&self.root_path);
         let file_rows: Vec<(i64, String, String)> = with_registered_read(
             &self.db_path,
@@ -1468,13 +1810,22 @@ impl Task for OrphanCleanupTask {
         let mut missing_files = Vec::new();
         let mut affected_diaries = HashSet::new();
         for (file_id, relative_path, diary_name) in file_rows {
+            let relative = std::path::Path::new(&relative_path);
+            if relative.components().any(|component| {
+                !matches!(component, std::path::Component::Normal(_))
+            }) {
+                return Err(Error::from_reason("KNOWLEDGE_STORE_INVALID_FILE_PATH"));
+            }
             let candidate = root_path.join(&relative_path);
-            let exists = std::fs::metadata(&candidate)
-                .map(|metadata| metadata.is_file())
-                .unwrap_or(false);
-            if !exists {
-                missing_files.push(file_id);
-                affected_diaries.insert(diary_name);
+            match std::fs::metadata(&candidate) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    missing_files.push(file_id);
+                    affected_diaries.insert(diary_name);
+                }
+                Ok(_) => {}
+                Err(error) => return Err(Error::from_reason(format!(
+                    "Orphan cleanup file verification deferred: {}", error
+                ))),
             }
         }
 
@@ -1498,6 +1849,18 @@ impl Task for OrphanCleanupTask {
                     })?
                     .unwrap_or_default();
 
+                if relative_path.is_empty() {
+                    continue;
+                }
+                match std::fs::metadata(root_path.join(&relative_path)) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Ok(_) => return Err(
+                        "Orphan cleanup snapshot changed; rescan required".to_string()
+                    ),
+                    Err(error) => return Err(format!(
+                        "Orphan cleanup final file verification deferred: {}", error
+                    )),
+                }
                 tx.execute("DELETE FROM file_tags WHERE file_id = ?1", [file_id])
                     .map_err(|error| {
                         format!("Delete missing file tags failed: {}", error)
@@ -1629,5 +1992,119 @@ impl Task for OrphanCleanupTask {
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
+    }
+}
+
+
+#[cfg(test)]
+mod receipt_protocol_tests {
+    use super::*;
+
+    fn empty_plan() -> IngestionPlan {
+        IngestionPlan {
+            operation_id: "operation".to_string(),
+            batch_id: "batch".to_string(),
+            dimension: 2,
+            model_sig: "test".to_string(),
+            created_at: None,
+            expires_at: None,
+            files: vec![],
+            chunks: vec![],
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn digest_is_canonical_and_separates_vector_partitions() {
+        assert_eq!(
+            ingestion_plan_digest(r#"{"a":1,"b":2}"#, &[1.0], &[2.0]),
+            ingestion_plan_digest(r#"{"b":2,"a":1}"#, &[1.0], &[2.0]),
+        );
+        assert_ne!(
+            ingestion_plan_digest("{}", &[1.0], &[2.0]),
+            ingestion_plan_digest("{}", &[1.0, 2.0], &[]),
+        );
+    }
+
+    #[test]
+    fn absent_path_tombstone_blocks_stale_ingestion_and_preserves_recreated_file() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-delete-protocol-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db_path = root.join("test.sqlite");
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db_path, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        let mut task = DeleteCommitTask {
+            root_path: Some(root.to_string_lossy().into_owned()),
+            db_path: db_path.to_string_lossy().into_owned(),
+            file_paths: vec!["never-indexed.txt".to_string()],
+            ttl_ms: 1000,
+            diary_indices: HashMap::new(),
+        };
+        task.compute().unwrap();
+        let version: i64 = storage.read(|connection| {
+            connection.query_row(
+                "SELECT version FROM kbm_file_versions WHERE path='never-indexed.txt'",
+                [], |row| row.get(0),
+            ).map_err(|error| error.to_string())
+        }).unwrap();
+        assert_eq!(version, 1);
+        let mut plan = empty_plan();
+        plan.files.push(PlannedFile {
+            path: "never-indexed.txt".to_string(), diary_name: "Root".to_string(),
+            checksum: "old".to_string(), mtime: 0, expected_version: 0, size: 1,
+            chunk_start: 0, chunk_count: 0, tag_start: 0, tag_count: 0,
+            migration_cache_id: None, migration_source_file_id: None,
+        });
+        let error = storage.submit_write(move |tx| {
+            commit_plan(tx, &plan, "digest", &[], &[], Arc::new(Mutex::new(None)))
+        }).unwrap_err();
+        assert!(error.contains("FILE_VERSION_CONFLICT"), "{}", error);
+        std::fs::write(root.join("never-indexed.txt"), "recreated").unwrap();
+        task.compute().unwrap();
+        let version_after: i64 = storage.read(|connection| {
+            connection.query_row(
+                "SELECT version FROM kbm_file_versions WHERE path='never-indexed.txt'",
+                [], |row| row.get(0),
+            ).map_err(|error| error.to_string())
+        }).unwrap();
+        assert_eq!(version_after, 1);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminal_operations_are_never_reused() {
+        for status in ["cancelled", "expired", "failed"] {
+            let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+            connection.execute_batch(
+                "CREATE TABLE kbm_operation_receipts(
+                    operation_id TEXT PRIMARY KEY, operation_type TEXT,
+                    plan_digest TEXT, status TEXT, database_generation INTEGER,
+                    receipt_json TEXT
+                );"
+            ).unwrap();
+            connection.execute(
+                "INSERT INTO kbm_operation_receipts VALUES (
+                    'operation', 'ingestion', 'digest', ?1, 0, '{}'
+                )",
+                [status],
+            ).unwrap();
+            let transaction = connection.transaction().unwrap();
+            let error = commit_plan(
+                &transaction, &empty_plan(), "digest", &[], &[],
+                Arc::new(Mutex::new(None)),
+            ).unwrap_err();
+            assert!(error.contains("OPERATION_NOT_REUSABLE"), "{}", error);
+            let count: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM kbm_operation_receipts WHERE status=?1",
+                [status], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(count, 1);
+        }
     }
 }

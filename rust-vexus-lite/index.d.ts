@@ -22,6 +22,11 @@ export interface NativeKnowledgeRuntimeStats {
   storeSchemaVersion: number
   storeDatabaseGeneration: number
 }
+export interface NativeRuntimeCapabilities {
+  abiVersion: number
+  dimension: number
+  capabilities: Array<string>
+}
 export interface NativeStoreState {
   dbPath: string
   schemaVersion: number
@@ -58,8 +63,8 @@ export interface MemoPipelineResult {
   enhancedVector: Float32Array
 }
 /**
- * 搜索结果（返回 ID 而非 Tag 文本）。
- * 中央 SQLite 的正文和元数据 hydrate 统一由 NativeKnowledgeRuntime 完成。
+ * 搜索结果 (返回 ID 而非 Tag 文本)
+ * 上层 JS 会拿着 ID 去 SQLite 里查具体的文本内容
  */
 export interface SearchResult {
   id: number
@@ -185,7 +190,7 @@ export interface WatcherConfig {
   ignoreFolders: Array<string>
   ignorePrefixes: Array<string>
   ignoreSuffixes: Array<string>
-  /** 是否在 watcher 启动时执行 Rust 侧初始扫描。 */
+  /** 是否在启动 watcher 时执行 Rust 侧初始扫描。 */
   initialScan?: boolean
   /** 可选扩展名白名单。为空时保持旧行为：仅监听 .md / .txt。 */
   extensions?: Array<string>
@@ -203,6 +208,8 @@ export declare class NativeKnowledgeRuntime {
    * 构造完成后只持有纯 Rust Arc，不保存 N-API 对象引用。
    */
   constructor(tagIndex: VexusIndex)
+  /** 返回生产 KBM 数据面的 ABI 版本和必需能力。 */
+  capabilities(): NativeRuntimeCapabilities
   /**
    * 打开并初始化中央 KBM SQLite 存储根。
    *
@@ -210,21 +217,24 @@ export declare class NativeKnowledgeRuntime {
    * 收归同一个 Write Actor，避免与旧 JS Schema 管理同时执行。
    */
   openAndInitStore(dbPath: string, optionsJson?: string | undefined | null): NativeStoreState
-  /** 在 Runtime 生命周期内启动由 Rust 持有的原生文件监听器。 */
-  startWatch(config: WatcherConfig): void
-  /** 批量读取 Rust 内部有界事件队列中的稳定文件事件。 */
-  drainWatchEvents(maxEvents?: number | undefined | null): Array<WatchEvent>
-  /** 停止 Runtime 持有的原生文件监听器。 */
-  stopWatch(): void
+  searchGlobalTags(query: Float32Array, limit: number): Promise<unknown>
   storeState(): NativeStoreState | null
-  healthCheck(): Promise<string>
+  healthCheck(): Promise<unknown>
   databaseGeneration(): number
-  /** 在 Rust Read Pool 后台线程读取中央库中的日记本名称，不暴露任意 SQL。 */
-  listDistinctDiaries(dbPath: string): Promise<string>
+  cancelPreparedPlan(token: string): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 后台线程读取中央库中当前已索引文件的路径快照。
+   *
+   * 该快照只用于 watcher 溢出后的缺失文件对账；文件系统扫描和事件生成
+   * 仍由 Rust watcher 后台线程完成。
+   */
+  listIndexedFilePaths(dbPath: string): Promise<unknown>
+  /** 在 Rust Read Pool 后台线程读取中央库中的日记本名称。 */
+  listDistinctDiaries(dbPath: string): Promise<unknown>
   /** 在 Rust Read Pool 后台线程统计指定日记本的 Chunk 数量。 */
   getDiaryChunkCount(dbPath: string, diaryName: string): Promise<unknown>
-  /** 在 Rust Read Pool 后台线程按日记本名称解析文件 ID，供权限范围和联合查询使用。 */
-  getFileIdsByDiaries(dbPath: string, diaryNames: Array<string>): Promise<string>
+  /** 在 Rust Read Pool 后台线程按日记本名称解析文件 ID。 */
+  getFileIdsByDiaries(dbPath: string, diaryNames: Array<string>): Promise<unknown>
   /**
    * 在 Rust Read Pool 后台线程批量探测文件事实状态。
    *
@@ -232,6 +242,20 @@ export declare class NativeKnowledgeRuntime {
    * N-API 传输任何 Vector BLOB。
    */
   probeIngestionFiles(dbPath: string, filePaths: Array<string>): Promise<unknown>
+  /**
+   * 在 Rust 后台线程执行文本预处理、Tag 提取、cl100k_base token 计数和 Chunk 切分。
+   *
+   * 返回的 chunks/tags 保持稳定顺序；Embedding 请求仍由 Node.js 的
+   * EmbeddingUtils 编排，Rust 只提供缺失向量任务所需的文本计划。
+   */
+  prepareText(requestJson: string): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 后台线程扫描文件并构建 Tag 一致性计划。
+   *
+   * Rust 负责数据库快照、文件读取、Tag 规则、摘要、摘要哈希和短期
+   * 预览 token；Node.js 只负责展示预览、调用 Embedding 服务和提交向量。
+   */
+  prepareTagConsistency(requestJson: string): Promise<unknown>
   /**
    * 将 JS 已完成的文本切分与 Embedding 结果提交到 Rust Write Actor。
    *
@@ -263,7 +287,7 @@ export declare class NativeKnowledgeRuntime {
   cleanupStalePairwiseSimilarityModels(dbPath: string, modelSig: string): Promise<unknown>
   commitIngestionBatch(dbPath: string, planJson: string, chunkVectors: Float32Array, tagVectors: Float32Array): Promise<unknown>
   /** 由 Rust Write Actor 提交文件删除、迁移墓碑和索引删除回执。 */
-  commitDeleteBatch(dbPath: string, filePaths: Array<string>, ttlMs: number): Promise<unknown>
+  commitDeleteBatch(dbPath: string, filePaths: Array<string>, ttlMs: number, rootPath?: string | undefined | null): Promise<unknown>
   /**
    * 在 Rust Read Pool 后台线程读取 Tag 一致性预览所需的轻量数据库快照。
    *
@@ -279,6 +303,8 @@ export declare class NativeKnowledgeRuntime {
   commitTagConsistency(dbPath: string, planJson: string, tagVectors: Float32Array): Promise<unknown>
   /** 在 Rust Read Pool 后台线程读取 kv_store 中的单个向量值。 */
   getKvVector(dbPath: string, key: string): Promise<unknown>
+  /** 通过 Rust Write Actor 清理过期和超额的 RiverMemo 持久化资产。 */
+  pruneNativeMemoArtifacts(dbPath: string, retainReadyArtifacts?: number | undefined | null, failedRetentionMs?: number | undefined | null): Promise<unknown>
   /** 通过 Rust Write Actor 写入 kv_store 中的单个向量值。 */
   setKvVector(dbPath: string, key: string, vector: Float32Array): Promise<unknown>
   /** 在 Rust Read Pool 后台线程按 key 前缀读取有限数量的 KV 向量。 */
@@ -288,8 +314,6 @@ export declare class NativeKnowledgeRuntime {
    * 只返回控制面元数据，不读取或解压持久化 payload。
    */
   getNativeMemoManifest(dbPath: string, modelSig: string, configHash: string): Promise<unknown>
-  /** 通过 Rust Write Actor 清理过期和超额的 RiverMemo 持久化资产。 */
-  pruneNativeMemoArtifacts(dbPath: string, retainReadyArtifacts?: number | undefined | null, failedRetentionMs?: number | undefined | null): Promise<unknown>
   /** 在 Rust 后台线程构建单个日记本的轻量日期索引。 */
   getDiaryDateIndex(dbPath: string, diaryName: string): Promise<unknown>
   /** 在 Rust 后台线程按 Tag 名称查找单个 Tag 向量；Vector BLOB 不经过 Node.js。 */
@@ -298,12 +322,16 @@ export declare class NativeKnowledgeRuntime {
   getChunkVectorByText(dbPath: string, diaryName: string, text: string): Promise<unknown>
   /** 在 Rust 后台线程读取单个 Chunk 向量；Vector BLOB 不经过 Node.js。 */
   getChunkVector(dbPath: string, chunkId: number): Promise<unknown>
-  /** 在 Rust 后台线程按 Chunk ID 批量回填正文和文件元数据，结果按请求 ID 顺序返回。 */
-  hydrateChunksByIds(dbPath: string, chunkIds: Array<number>): Promise<string>
-  /** 在 Rust 后台线程按 Tag ID 批量回填 Tag 名称，供纯 ANN 结果适配旧返回结构。 */
-  hydrateTagNamesByIds(dbPath: string, tagIds: Array<number>): Promise<string>
-  /** 在 Rust 后台线程按文件路径批量回填正文和文件元数据，结果使用与 Chunk ID hydrate 相同的 JSON 契约。 */
-  hydrateChunksByFilePaths(dbPath: string, filePaths: Array<string>): Promise<string>
+  /**
+   * 按 Chunk ID 批量回填正文和文件元数据，结果按请求 ID 顺序返回。
+   *
+   * SQL 查询在 N-API 后台任务执行，不能在 Node.js 主线程等待 Read Pool。
+   */
+  hydrateChunksByIds(dbPath: string, chunkIds: Array<number>): Promise<unknown>
+  /** 按 Tag ID 批量回填 Tag 名称，供纯 ANN 结果适配旧返回结构。 */
+  hydrateTagNamesByIds(dbPath: string, tagIds: Array<number>): Promise<unknown>
+  /** 按文件路径批量回填正文和文件元数据，结果使用与 Chunk ID hydrate 相同的 JSON 契约。 */
+  hydrateChunksByFilePaths(dbPath: string, filePaths: Array<string>): Promise<unknown>
   /**
    * 在 Rust 后台线程恢复日记索引。
    *
@@ -352,6 +380,35 @@ export declare class NativeKnowledgeRuntime {
   unregisterDiaryIndex(diaryName: string, expectedGeneration: number): boolean
   diaryIndexState(diaryName: string): RegisteredDiaryIndexState | null
   listDiaryIndices(): Array<RegisteredDiaryIndexState>
+  /**
+   * 在 Runtime 生命周期内启动 Rust 原生文件监听器。
+   *
+   * watcher 的所有权归 NativeKnowledgeRuntime；JS 不再单独持有
+   * VexusWatcher 实例，也不能在 Runtime 关闭后遗留文件事件线程。
+   */
+  startWatch(config: WatcherConfig): void
+  /**
+   * 批量取出 Rust watcher 已完成的稳定事件。
+   *
+   * 事件留在 Rust 有界队列中，Node.js 只能主动拉取轻量事件，
+   * 不参与 notify 回调、稳定性判断或文件扫描。
+   */
+  drainWatchEvents(maxEvents?: number | undefined | null): Array<WatchEvent>
+  /**
+   * 对 Runtime 持有的 KBM watcher 执行一次 Rust 侧文件对账。
+   *
+   * 对账结果重新进入同一个有界事件队列，Node.js 不直接递归扫描知识根目录。
+   */
+  reconcileWatch(): void
+  /**
+   * 使用 Rust Read Pool 返回的数据库文件路径快照执行缺失文件对账。
+   *
+   * 文件路径快照只跨 N-API 传递字符串；实际扫描、存在性确认和 unlink
+   * 事件生成仍在 Rust watcher 线程中完成。
+   */
+  reconcileWatchWithPaths(paths: Array<string>): void
+  /** 停止 Runtime 所有的文件监听，并释放 notify 句柄。 */
+  stopWatch(): void
   stats(): NativeKnowledgeRuntimeStats
   /** 停止接受后续查询并清空注册表。已开始任务持有的 Arc 快照不受影响。 */
   shutdown(): void
@@ -496,17 +553,18 @@ export declare class VexusIndex {
    */
   computePairwiseSimilarities(dbPath: string, modelSig: string, minSimilarity?: number | undefined | null, fullRebuild?: boolean | undefined | null): Promise<unknown>
 }
-/**
- * 兼容离线工具的独立 watcher。
- * 生产 KBM 必须使用 NativeKnowledgeRuntime.startWatch/stopWatch，
- * 不得创建独立 VexusWatcher。
- */
 export declare class VexusWatcher {
   constructor()
-  /** 启动高性能原生文件监听；事件保留在 Rust 有界队列中。 */
-  startWatch(config: WatcherConfig, callback?: (err: Error | null, arg: string) => any): void
-  /** 批量读取 Rust 内部有界事件队列中的稳定文件事件。 */
-  drainEvents(maxEvents?: number | undefined | null): Array<WatchEvent>
-  /** 停止监听 */
+  /** 启动高性能原生文件监听 */
+  startWatch(config: WatcherConfig): void
+  /**
+   * 请求一次 Rust 侧后台文件对账。
+   *
+   * 对账线程在 Runtime 内部单飞运行；N-API 调用只负责提交请求，
+   * 不在 Node.js 主线程执行递归文件扫描。扫描结果重新进入同一个
+   * 有界事件队列，停止时由 stop_watch() 取消并 join。
+   */
+  reconcileWatch(): void
   stopWatch(): void
+  drainEvents(maxEvents: number): Array<WatchEvent>
 }

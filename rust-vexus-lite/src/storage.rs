@@ -20,6 +20,7 @@ const DEFAULT_MMAP_SIZE: i64 = 64 * 1024 * 1024;
 pub(crate) struct StorageOptions {
     pub(crate) read_pool_size: usize,
     pub(crate) mmap_size: i64,
+    pub(crate) busy_timeout_ms: u64,
     pub(crate) schema_version: i64,
 }
 
@@ -28,6 +29,7 @@ impl Default for StorageOptions {
         Self {
             read_pool_size: DEFAULT_READ_POOL_SIZE,
             mmap_size: DEFAULT_MMAP_SIZE,
+            busy_timeout_ms: BUSY_TIMEOUT_MS,
             schema_version: 1,
         }
     }
@@ -88,8 +90,13 @@ fn storage_registry() -> &'static Mutex<HashMap<String, SqliteStorageEngine>> {
 }
 
 fn normalized_path(path: impl AsRef<Path>) -> String {
-    let normalized = std::fs::canonicalize(path.as_ref())
-        .unwrap_or_else(|_| path.as_ref().to_path_buf())
+    let absolute = if path.as_ref().is_absolute() {
+        path.as_ref().to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path.as_ref())
+    };
+    let normalized = std::fs::canonicalize(&absolute)
+        .unwrap_or(absolute)
         .to_string_lossy()
         .replace('\\', "/");
     #[cfg(target_os = "windows")]
@@ -219,13 +226,45 @@ impl SqliteStorageEngine {
         db_path: impl AsRef<Path>,
         options: StorageOptions,
     ) -> Result<(Self, StoreReady), String> {
+        static OPEN_GATE: OnceLock<Mutex<()>> = OnceLock::new();
+        let _open_guard = OPEN_GATE.get_or_init(|| Mutex::new(())).lock()
+            .map_err(|_| "KNOWLEDGE_STORE_OPEN_GATE_POISONED".to_string())?;
         let db_path = db_path.as_ref().to_path_buf();
+        if storage_registry().lock()
+            .map_err(|_| "KNOWLEDGE_STORE_REGISTRY_POISONED".to_string())?
+            .contains_key(&normalized_path(&db_path))
+        {
+            return Err("KNOWLEDGE_STORE_ALREADY_REGISTERED".to_string());
+        }
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("create SQLite directory failed: {}", error))?;
         }
 
-        let mut writer = open_writer_connection(&db_path, options.mmap_size)?;
+        match Self::open_and_init_once(&db_path, &options) {
+            Ok(result) => Ok(result),
+            Err(error) if is_corruption_error(&error) => {
+                quarantine_database(&db_path)?;
+                Self::open_and_init_once(&db_path, &options).map_err(|retry_error| {
+                    format!(
+                        "SQLite recovery rebuild failed after quarantining database: {}",
+                        retry_error
+                    )
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn open_and_init_once(
+        db_path: &Path,
+        options: &StorageOptions,
+    ) -> Result<(Self, StoreReady), String> {
+        let mut writer = open_writer_connection(
+            db_path,
+            options.mmap_size,
+            options.busy_timeout_ms,
+        )?;
         initialize_schema_metadata(&mut writer, options.schema_version)?;
         let actual_schema_version = schema::initialize_schema(&writer, options.schema_version)?;
         quick_check(&writer)?;
@@ -236,7 +275,11 @@ impl SqliteStorageEngine {
             .clamp(MIN_READ_POOL_SIZE, MAX_READ_POOL_SIZE);
         let mut read_pool = Vec::with_capacity(pool_size);
         for _ in 0..pool_size {
-            read_pool.push(open_read_connection(&db_path, options.mmap_size)?);
+            read_pool.push(open_read_connection(
+                db_path,
+                options.mmap_size,
+                options.busy_timeout_ms,
+            )?);
         }
 
         let (sender, receiver) = mpsc::sync_channel::<WriteCommand>(128);
@@ -257,7 +300,7 @@ impl SqliteStorageEngine {
             .map_err(|error| format!("spawn SQLite Write Actor failed: {}", error))?;
 
         let inner = Arc::new(StorageInner {
-            db_path: db_path.clone(),
+            db_path: db_path.to_path_buf(),
             read_pool: Mutex::new(read_pool),
             read_pool_changed: Condvar::new(),
             write_sender: Mutex::new(Some(sender)),
@@ -276,7 +319,7 @@ impl SqliteStorageEngine {
         });
 
         let engine = Self { inner };
-        if let Err(error) = register_storage(&db_path, engine.clone()) {
+        if let Err(error) = register_storage(db_path, engine.clone()) {
             let _ = engine.shutdown();
             return Err(error);
         }
@@ -514,6 +557,10 @@ impl SqliteStorageEngine {
         if let Ok(mut shutdown_result) = self.inner.shutdown_result.lock() {
             *shutdown_result = Some(result.clone());
         }
+        // 和等待方使用相同的互斥锁发布完成状态，避免检查条件与 wait
+        // 之间丢失 notify，导致第二个 shutdown 调用永久等待。
+        let _lifecycle = self.inner.lifecycle.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.inner.shutdown_complete.store(true, Ordering::Release);
         self.inner.lifecycle_changed.notify_all();
         result
@@ -559,20 +606,28 @@ impl Drop for ReadConnectionGuard {
     }
 }
 
-fn open_writer_connection(path: &Path, mmap_size: i64) -> Result<Connection, String> {
+fn open_writer_connection(
+    path: &Path,
+    mmap_size: i64,
+    busy_timeout_ms: u64,
+) -> Result<Connection, String> {
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
     )
     .map_err(|error| format!("open SQLite writer failed: {}", error))?;
-    configure_connection(&connection, false, mmap_size)?;
+    configure_connection(&connection, false, mmap_size, busy_timeout_ms)?;
     Ok(connection)
 }
 
-fn open_read_connection(path: &Path, mmap_size: i64) -> Result<Connection, String> {
+fn open_read_connection(
+    path: &Path,
+    mmap_size: i64,
+    busy_timeout_ms: u64,
+) -> Result<Connection, String> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("open SQLite read connection failed: {}", error))?;
-    configure_connection(&connection, true, mmap_size)?;
+    configure_connection(&connection, true, mmap_size, busy_timeout_ms)?;
     Ok(connection)
 }
 
@@ -580,9 +635,10 @@ fn configure_connection(
     connection: &Connection,
     readonly: bool,
     mmap_size: i64,
+    busy_timeout_ms: u64,
 ) -> Result<(), String> {
     connection
-        .busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))
+        .busy_timeout(Duration::from_millis(busy_timeout_ms))
         .map_err(|error| format!("configure SQLite busy timeout failed: {}", error))?;
     connection
         .pragma_update(None, "foreign_keys", "ON")
@@ -683,6 +739,23 @@ fn execute_write_command(
                 [next_generation.to_string()],
             )
             .map_err(|error| format!("persist KBM database generation failed: {}", error))?;
+        transaction
+            .execute(
+                "UPDATE kbm_index_states SET facts_generation = ?1
+                 WHERE state = 'invalid' AND facts_generation = 0",
+                [next_generation as i64],
+            )
+            .map_err(|error| format!("persist KBM pending index generation failed: {}", error))?;
+        transaction
+            .execute(
+                "UPDATE kbm_operation_receipts
+                 SET database_generation = ?1
+                 WHERE status = 'committed' AND database_generation = 0",
+                [next_generation as i64],
+            )
+            .map_err(|error| {
+                format!("persist KBM operation receipt generation failed: {}", error)
+            })?;
     }
     transaction
         .commit()
@@ -691,7 +764,11 @@ fn execute_write_command(
 
     Ok(WriteReceipt {
         operation: receipt.operation,
-        database_generation: next_generation,
+        database_generation: if !receipt.facts_changed && receipt.database_generation > 0 {
+            receipt.database_generation
+        } else {
+            next_generation
+        },
         facts_changed: receipt.facts_changed,
     })
 }
@@ -706,6 +783,128 @@ fn quick_check(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn is_corruption_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+
+    // “quick_check returned …”表示 SQLite 已成功执行完整性检查并返回
+    // 非 ok 结果，可以确认数据库内容损坏。相反，“quick_check failed”
+    // 可能只是 busy、locked、IO 或句柄错误，不能触发隔离。
+    normalized.contains("sqlite quick_check returned")
+        || normalized.contains("database disk image is malformed")
+        || normalized.contains("file is not a database")
+        || normalized.contains("database corruption")
+        || normalized.contains("not a database")
+}
+
+fn quarantine_database(db_path: &Path) -> Result<(), String> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let base = format!(
+        "{}.startup-corrupt-{}-{}.bak",
+        db_path.to_string_lossy(), std::process::id(), timestamp
+    );
+    let files = [
+        (db_path.to_path_buf(), PathBuf::from(format!("{}", base))),
+        (
+            PathBuf::from(format!("{}-wal", db_path.to_string_lossy())),
+            PathBuf::from(format!("{}-wal", base)),
+        ),
+        (
+            PathBuf::from(format!("{}-shm", db_path.to_string_lossy())),
+            PathBuf::from(format!("{}-shm", base)),
+        ),
+    ];
+
+    // Inspect every source before moving any file. A later WAL/SHM inspection
+    // failure must not leave an already moved main database behind.
+    let mut existing = Vec::new();
+    for (source, target) in files {
+        match std::fs::metadata(&source) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!(
+                "inspect quarantine source '{}' failed: {}", source.display(), error
+            )),
+        }
+        match std::fs::symlink_metadata(&target) {
+            Ok(_) => return Err(format!("quarantine target already exists: '{}'", target.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!(
+                "inspect quarantine target '{}' failed: {}", target.display(), error
+            )),
+        }
+        existing.push((source, target));
+    }
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for (source, target) in existing {
+        if let Err(error) = std::fs::rename(&source, &target) {
+            let mut rollback_errors = Vec::new();
+            for (moved_source, moved_target) in moved.iter().rev() {
+                if let Err(rollback_error) = std::fs::rename(moved_target, moved_source) {
+                    rollback_errors.push(format!(
+                        "{} -> {}: {}",
+                        moved_target.display(),
+                        moved_source.display(),
+                        rollback_error
+                    ));
+                }
+            }
+            let rollback_suffix = if rollback_errors.is_empty() {
+                String::new()
+            } else {
+                format!("; rollback errors: {}", rollback_errors.join(", "))
+            };
+            return Err(format!(
+                "quarantine SQLite file '{}' to '{}' failed: {}{}",
+                source.display(),
+                target.display(),
+                error,
+                rollback_suffix
+            ));
+        }
+        moved.push((source, target));
+    }
+
+    let manifest = serde_json::json!({
+        "schema": "kbm-quarantine-manifest-v1",
+        "sourceDatabase": db_path.to_string_lossy(),
+        "createdAtUnixNanos": timestamp.to_string(),
+        "reason": "confirmed-startup-corruption",
+        "files": moved.iter().map(|(source, target)| serde_json::json!({
+            "source": source.to_string_lossy(),
+            "backup": target.to_string_lossy(),
+            "size": std::fs::metadata(target).ok().map(|metadata| metadata.len())
+        })).collect::<Vec<_>>()
+    });
+    let manifest_path = PathBuf::from(format!("{}.manifest.json", base));
+    let manifest_result = (|| -> Result<(), String> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true)
+            .open(&manifest_path)
+            .map_err(|error| format!("create quarantine manifest failed: {}", error))?;
+        file.write_all(&serde_json::to_vec_pretty(&manifest)
+            .map_err(|error| format!("serialize quarantine manifest failed: {}", error))?)
+            .map_err(|error| format!("write quarantine manifest failed: {}", error))?;
+        file.sync_all().map_err(|error| format!("sync quarantine manifest failed: {}", error))
+    })();
+    if let Err(error) = manifest_result {
+        let mut rollback_errors = Vec::new();
+        for (source, backup) in moved.iter().rev() {
+            if let Err(rollback_error) = std::fs::rename(backup, source) {
+                rollback_errors.push(rollback_error.to_string());
+            }
+        }
+        let _ = std::fs::remove_file(&manifest_path);
+        return Err(format!(
+            "{}; quarantine rolled back; rollback errors: {:?}; backup prefix '{}'",
+            error, rollback_errors, base
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn normalize_storage_options(options: Option<HashMap<String, i64>>) -> StorageOptions {
     let mut normalized = StorageOptions::default();
     if let Some(options) = options {
@@ -715,9 +914,141 @@ pub(crate) fn normalize_storage_options(options: Option<HashMap<String, i64>>) -
         if let Some(value) = options.get("mmapSize") {
             normalized.mmap_size = (*value).max(0);
         }
+        if let Some(value) = options.get("busyTimeoutMs") {
+            normalized.busy_timeout_ms = (*value).max(0) as u64;
+        }
         if let Some(value) = options.get("schemaVersion") {
             normalized.schema_version = *value;
         }
     }
     normalized
+}
+
+
+#[cfg(test)]
+mod generation_protocol_tests {
+    use super::*;
+
+    fn database() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES ('database_generation', '7');
+             CREATE TABLE kbm_index_states(
+                 scope TEXT PRIMARY KEY, state TEXT, facts_generation INTEGER,
+                 applied_generation INTEGER
+             );
+             INSERT INTO kbm_index_states VALUES ('diary:test', 'ready', 7, 7);
+             CREATE TABLE kbm_operation_receipts(
+                 operation_id TEXT PRIMARY KEY, status TEXT, database_generation INTEGER
+             );"
+        ).unwrap();
+        connection
+    }
+
+    #[test]
+    fn facts_and_pending_index_generation_commit_atomically() {
+        let mut connection = database();
+        let generation = AtomicU64::new(7);
+        let receipt = execute_write_command(
+            &mut connection,
+            Box::new(|tx| {
+                tx.execute(
+                    "UPDATE kbm_index_states SET state='invalid', facts_generation=0",
+                    [],
+                ).map_err(|error| error.to_string())?;
+                tx.execute(
+                    "INSERT INTO kbm_operation_receipts VALUES ('op', 'committed', 0)",
+                    [],
+                ).map_err(|error| error.to_string())?;
+                Ok(WriteReceipt {
+                    operation: "test".to_string(),
+                    database_generation: 0,
+                    facts_changed: true,
+                })
+            }),
+            &generation,
+        ).unwrap();
+        assert_eq!(receipt.database_generation, 8);
+        let state: (i64, i64) = connection.query_row(
+            "SELECT facts_generation, applied_generation FROM kbm_index_states",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(state, (8, 7));
+        let stored: i64 = connection.query_row(
+            "SELECT database_generation FROM kbm_operation_receipts",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(stored, 8);
+    }
+
+    #[test]
+    fn corrupt_startup_preserves_original_bytes_and_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-corrupt-test-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("test.sqlite");
+        let original = b"deliberately invalid SQLite content";
+        std::fs::write(&path, original).unwrap();
+        let (storage, _) = SqliteStorageEngine::open_and_init(
+            &path, StorageOptions::default(),
+        ).unwrap();
+        let manifests: Vec<_> = std::fs::read_dir(&root).unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.to_string_lossy().ends_with(".manifest.json"))
+            .collect();
+        assert_eq!(manifests.len(), 1);
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&manifests[0]).unwrap()
+        ).unwrap();
+        let backup = manifest["files"][0]["backup"].as_str().unwrap();
+        assert_eq!(std::fs::read(backup).unwrap(), original);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn idempotent_receipt_preserves_historical_generation() {
+        let mut connection = database();
+        let generation = AtomicU64::new(7);
+        let receipt = execute_write_command(
+            &mut connection,
+            Box::new(|_| Ok(WriteReceipt {
+                operation: "idempotent".to_string(),
+                database_generation: 3,
+                facts_changed: false,
+            })),
+            &generation,
+        ).unwrap();
+        assert_eq!(receipt.database_generation, 3);
+        assert_eq!(generation.load(Ordering::Acquire), 7);
+    }
+
+    #[test]
+    fn failed_command_rolls_back_pending_state() {
+        let mut connection = database();
+        let generation = AtomicU64::new(7);
+        let result = execute_write_command(
+            &mut connection,
+            Box::new(|tx| {
+                tx.execute(
+                    "UPDATE kbm_index_states SET state='invalid', facts_generation=0",
+                    [],
+                ).map_err(|error| error.to_string())?;
+                Err("injected failure".to_string())
+            }),
+            &generation,
+        );
+        assert!(result.is_err());
+        let state: String = connection.query_row(
+            "SELECT state FROM kbm_index_states", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(state, "ready");
+        assert_eq!(generation.load(Ordering::Acquire), 7);
+    }
 }

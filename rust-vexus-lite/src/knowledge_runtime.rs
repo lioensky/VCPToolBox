@@ -1,11 +1,13 @@
 use crate::index_lifecycle::{IndexCheckpointTask, IndexRestoreTask, IndexScope};
+use crate::task_lifecycle::{TaskLifecycle, TrackedTask};
+use crate::text::TextPreparationTask;
 use crate::ingestion::{
     DeleteCommitTask, IngestionCommitTask, IngestionFileProbeTask, IngestionTagProbeTask,
     MigrationReuseProbeTask, OrphanCleanupTask,
 };
 use crate::pairwise_maintenance::PairwiseModelCleanupTask;
 use crate::tag_consistency::{
-    TagConsistencyCommitTask, TagConsistencySnapshotTask,
+    TagConsistencyCommitTask, TagConsistencyPrepareTask, TagConsistencySnapshotTask,
 };
 use crate::result_deduplicator::{self, DedupCandidate};
 use crate::rivermemo_topology_v3::{self, MemoRuntime};
@@ -24,6 +26,63 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use usearch::Index;
+
+pub struct GlobalTagSearchTask {
+    db_path: String,
+    memo_runtime: Arc<MemoRuntime>,
+    index: Arc<RwLock<Index>>,
+    content_revision: Arc<AtomicU64>,
+    dimension: usize,
+    query: Vec<f32>,
+    limit: usize,
+}
+
+impl Task for GlobalTagSearchTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<String> {
+        let _guard = crate::index_lifecycle::checkpoint_gate().lock()
+            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
+        match ensure_index_scopes_ready(&self.db_path, &["global_tags".to_string()]) {
+            Ok(()) => {}
+            Err(error) if error.starts_with("KBM_INDEX_NOT_READY:") => {
+                self.memo_runtime.clear().map_err(Error::from_reason)?;
+                recover_index_snapshot(
+                    &self.db_path, "global_tags".to_string(), None,
+                    &self.index, &self.content_revision, self.dimension,
+                ).map_err(Error::from_reason)?;
+            }
+            Err(error) => return Err(Error::from_reason(error)),
+        }
+        ensure_index_scopes_ready(&self.db_path, &["global_tags".to_string()])
+            .map_err(Error::from_reason)?;
+        let matches = self.index.read()
+            .map_err(|_| Error::from_reason("Global Tag index lock poisoned"))?
+            .search(&self.query, self.limit)
+            .map_err(|error| Error::from_reason(format!("Global Tag search failed: {:?}", error)))?;
+        let output = crate::storage::with_registered_read_transaction(&self.db_path, |connection| {
+            let mut statement = connection.prepare("SELECT name FROM tags WHERE id=?1")
+                .map_err(|error| error.to_string())?;
+            let mut output = Vec::new();
+            for (id, distance) in matches.keys.iter().zip(matches.distances.iter()) {
+                let name: Option<String> = statement.query_row([*id as i64], |row| row.get(0))
+                    .optional().map_err(|error| error.to_string())?;
+                if let Some(name) = name {
+                    output.push(serde_json::json!({
+                        "tag": name, "score": 1.0 / (1.0 + *distance as f64)
+                    }));
+                }
+            }
+            serde_json::to_string(&output).map_err(|error| error.to_string())
+        }).map_err(Error::from_reason)?;
+        Ok(output)
+    }
+
+    fn resolve(&mut self, _env: Env, output: String) -> Result<String> {
+        Ok(output)
+    }
+}
 
 struct RegisteredDiaryIndex {
     index: Arc<RwLock<Index>>,
@@ -181,6 +240,7 @@ struct NativeAnnDiagnostics {
 #[serde(rename_all = "camelCase")]
 struct NativeAnnOutput {
     schema: String,
+    hydrated_chunks: Vec<serde_json::Value>,
     results: Vec<NativeAnnCandidate>,
     diagnostics: NativeAnnDiagnostics,
 }
@@ -191,6 +251,8 @@ struct SemanticDedupConfig {
 }
 
 pub struct NativeMultiIndexAnnTask {
+    db_path: Option<String>,
+    index_scopes: Vec<String>,
     dimension: usize,
     query: Vec<f32>,
     supplemental_queries: Vec<Vec<f32>>,
@@ -256,7 +318,24 @@ impl Task for NativeMultiIndexAnnTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
+            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
         let total_started = std::time::Instant::now();
+        if let Some(db_path) = &self.db_path {
+            for snapshot in &self.snapshots {
+                let scope = format!("diary:{}", snapshot.diary_name);
+                match ensure_index_scopes_ready(db_path, &[scope]) {
+                    Ok(()) => {}
+                    Err(error) if error.starts_with("KBM_INDEX_NOT_READY:") => {
+                        recover_diary_snapshot(db_path, snapshot, self.dimension)
+                            .map_err(Error::from_reason)?;
+                    }
+                    Err(error) => return Err(Error::from_reason(error)),
+                }
+            }
+            ensure_index_scopes_ready(db_path, &self.index_scopes)
+                .map_err(Error::from_reason)?;
+        }
         if self.query.len() != self.dimension {
             return Err(Error::from_reason(format!(
                 "Native multi-index ANN dimension mismatch: expected {}, got {}",
@@ -600,8 +679,37 @@ impl Task for NativeMultiIndexAnnTask {
             0.0
         };
         let returned_candidates = results.len();
+        let hydrated_chunks = if self.semantic_dedup.is_none() {
+            if let Some(db_path) = &self.db_path {
+                with_registered_read_napi(db_path, |connection| {
+                    let mut statement = connection.prepare(
+                        "SELECT c.content, f.path, f.diary_name, f.id
+                         FROM chunks c JOIN files f ON f.id=c.file_id WHERE c.id=?1",
+                    ).map_err(|error| Error::from_reason(error.to_string()))?;
+                    let mut rows = Vec::with_capacity(results.len());
+                    for candidate in &results {
+                        let row = statement.query_row([candidate.id], |row| {
+                            Ok(serde_json::json!({
+                                "id": candidate.id, "chunkId": candidate.id,
+                                "text": row.get::<_, String>(0)?,
+                                "sourceFile": row.get::<_, String>(1)?,
+                                "diaryName": row.get::<_, String>(2)?,
+                                "fileId": row.get::<_, i64>(3)?
+                            }))
+                        }).optional().map_err(|error| Error::from_reason(error.to_string()))?;
+                        if let Some(row) = row { rows.push(row); }
+                    }
+                    Ok(rows)
+                })?
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
 
         serde_json::to_string(&NativeAnnOutput {
+            hydrated_chunks,
             schema: if semantic_enabled {
                 "vcp-native-multi-index-ann-dedup-result-v1".to_string()
             } else {
@@ -648,6 +756,137 @@ impl Task for NativeMultiIndexAnnTask {
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
     }
+}
+
+fn recover_diary_snapshot(
+    db_path: &str,
+    snapshot: &DiarySearchSnapshot,
+    dimension: usize,
+) -> std::result::Result<(), String> {
+    recover_index_snapshot(
+        db_path, format!("diary:{}", snapshot.diary_name),
+        Some(&snapshot.diary_name), &snapshot.index, &snapshot.content_revision, dimension,
+    )
+}
+
+// Caller holds the publication gate through recovery and subsequent query.
+fn recover_index_snapshot(
+    db_path: &str,
+    scope: String,
+    diary_name: Option<&str>,
+    index: &Arc<RwLock<Index>>,
+    content_revision: &Arc<AtomicU64>,
+    dimension: usize,
+) -> std::result::Result<(), String> {
+    let state_scope = scope.clone();
+    with_registered_write(db_path, move |tx| {
+        tx.execute(
+            "UPDATE kbm_index_states SET state='recovering' WHERE scope=?1",
+            [&state_scope],
+        ).map_err(|error| error.to_string())?;
+        Ok(crate::storage::WriteReceipt {
+            operation: "begin_index_recovery".to_string(),
+            database_generation: 0, facts_changed: false,
+        })
+    })?;
+    let (recovered_generation, rows) = crate::storage::with_registered_read_transaction(db_path, |connection| {
+        let generation: i64 = connection.query_row(
+            "SELECT facts_generation FROM kbm_index_states WHERE scope=?1 AND state='recovering'",
+            [&scope], |row| row.get(0),
+        ).map_err(|error| format!("Read recovery generation failed: {}", error))?;
+        let sql = if diary_name.is_some() {
+            "SELECT c.id, c.vector FROM chunks c JOIN files f ON f.id=c.file_id
+             WHERE f.diary_name=?1 AND c.vector IS NOT NULL ORDER BY c.id"
+        } else {
+            "SELECT id, vector FROM tags WHERE vector IS NOT NULL AND ?1 IS NULL ORDER BY id"
+        };
+        let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
+        let rows = statement.query_map([diary_name], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        }).map_err(|error| error.to_string())?;
+        let rows = rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?;
+        Ok((generation, rows))
+    })?;
+    let replacement = Index::new(&usearch::IndexOptions {
+        dimensions: dimension, metric: usearch::MetricKind::L2sq,
+        quantization: usearch::ScalarKind::F32, connectivity: 16,
+        expansion_add: 128, expansion_search: 64, multi: false,
+    }).map_err(|error| format!("Construct replacement index failed: {:?}", error))?;
+    replacement.reserve(rows.len().max(1))
+        .map_err(|error| format!("Reserve replacement index failed: {:?}", error))?;
+    for (id, bytes) in rows {
+        if bytes.len() != dimension * 4 {
+            return Err("KNOWLEDGE_STORE_INDEX_VECTOR_DIMENSION_MISMATCH".to_string());
+        }
+        let vector: Vec<f32> = bytes.chunks_exact(4)
+            .map(|part| f32::from_ne_bytes([part[0], part[1], part[2], part[3]]))
+            .collect();
+        if vector.iter().any(|value| !value.is_finite()) {
+            return Err("KNOWLEDGE_STORE_INDEX_NONFINITE_VECTOR".to_string());
+        }
+        replacement.add(id as u64, &vector)
+            .map_err(|error| format!("Build replacement index failed: {:?}", error))?;
+    }
+    {
+        let mut active = index.write()
+            .map_err(|_| "Replacement index lock poisoned".to_string())?;
+        *active = replacement;
+        content_revision.fetch_add(1, Ordering::AcqRel);
+    }
+    with_registered_write(db_path, move |tx| {
+        let published = tx.execute(
+            "UPDATE kbm_index_states SET state='ready',
+             applied_generation=?2, error_message=NULL
+             WHERE scope=?1 AND state='recovering' AND facts_generation=?2",
+            rusqlite::params![scope, recovered_generation],
+        ).map_err(|error| error.to_string())?;
+        if published != 1 {
+            return Err("KBM_INDEX_NOT_READY: facts changed during index recovery".to_string());
+        }
+        Ok(crate::storage::WriteReceipt {
+            operation: "complete_index_recovery".to_string(),
+            database_generation: 0, facts_changed: false,
+        })
+    })?;
+    Ok(())
+}
+
+fn ensure_index_scopes_ready(db_path: &str, scopes: &[String]) -> std::result::Result<(), String> {
+    if scopes.is_empty() {
+        return Ok(());
+    }
+    let requested = scopes.to_vec();
+    crate::storage::with_registered_read(db_path, move |connection| {
+        let mut statement = connection
+            .prepare(
+                "SELECT scope, state, facts_generation, applied_generation
+                 FROM kbm_index_states
+                 WHERE scope = ?1",
+            )
+            .map_err(|error| format!("prepare KBM index gate failed: {}", error))?;
+        for scope in requested {
+            let row = statement
+                .query_row([&scope], |row| {
+                    Ok((
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .optional()
+                .map_err(|error| format!("read KBM index gate failed: {}", error))?;
+            if let Some((state, facts_generation, applied_generation)) = row {
+                if state != "ready" || facts_generation != applied_generation {
+                    return Err(format!(
+                        "KBM_INDEX_NOT_READY: scope '{}', state '{}', factsGeneration={}, appliedGeneration={}",
+                        scope, state, facts_generation, applied_generation
+                    ));
+                }
+            }
+        }
+        Ok(())
+    })
 }
 
 fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
@@ -1426,6 +1665,99 @@ impl Task for FileIdsByDiariesTask {
     }
 }
 
+pub struct CancelPreparedPlanTask {
+    db_path: String,
+    token: String,
+}
+
+impl Task for CancelPreparedPlanTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<String> {
+        let token = self.token.clone();
+        let receipt = with_registered_write(&self.db_path, move |tx| {
+            let changed = tx.execute(
+                "UPDATE kbm_prepared_plans SET status='cancelled'
+                 WHERE token=?1 AND status='prepared'",
+                [&token],
+            ).map_err(|error| error.to_string())?;
+            Ok(crate::storage::WriteReceipt {
+                operation: if changed > 0 { "cancelled" } else { "unchanged" }.to_string(),
+                database_generation: 0,
+                facts_changed: false,
+            })
+        }).map_err(Error::from_reason)?;
+        Ok(serde_json::json!({
+            "token": self.token,
+            "cancelled": receipt.operation == "cancelled"
+        }).to_string())
+    }
+
+    fn resolve(&mut self, _env: Env, output: String) -> Result<String> {
+        Ok(output)
+    }
+}
+
+#[derive(Debug)]
+pub struct IndexedFilePathsTask {
+    pub(crate) db_path: String,
+}
+
+impl Task for IndexedFilePathsTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let paths = with_registered_read_napi(&self.db_path, |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT path FROM files
+                     WHERE path IS NOT NULL AND path <> ''
+                     ORDER BY path",
+                )
+                .map_err(|error| {
+                    Error::from_reason(format!(
+                        "Prepare indexed file path snapshot failed: {}",
+                        error
+                    ))
+                })?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| {
+                    Error::from_reason(format!(
+                        "Query indexed file path snapshot failed: {}",
+                        error
+                    ))
+                })?;
+            let mut paths = Vec::new();
+            for row in rows {
+                let path = row.map_err(|error| {
+                    Error::from_reason(format!(
+                        "Decode indexed file path snapshot failed: {}",
+                        error
+                    ))
+                })?;
+                if !path.trim().is_empty() {
+                    paths.push(path);
+                }
+            }
+            Ok(paths)
+        })?;
+
+        serde_json::to_string(&paths).map_err(|error| {
+            Error::from_reason(format!(
+                "Encode indexed file path snapshot failed: {}",
+                error
+            ))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
 #[derive(Debug)]
 pub struct HealthCheckTask {
     pub(crate) db_path: String,
@@ -1446,11 +1778,19 @@ impl Task for HealthCheckTask {
         }
 
         let health = with_registered_read_napi(&self.db_path, |connection| {
-            let quick_check: String = connection
-                .query_row("PRAGMA quick_check", [], |row| row.get(0))
-                .map_err(|error| {
-                    Error::from_reason(format!("SQLite quick_check failed: {}", error))
-                })?;
+            let mut statement = connection.prepare("PRAGMA quick_check")
+                .map_err(|error| Error::from_reason(format!(
+                    "SQLite health prepare failed: {}", error
+                )))?;
+            let checks = statement.query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| Error::from_reason(format!(
+                    "SQLite health query failed: {}", error
+                )))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| Error::from_reason(format!(
+                    "SQLite health decode failed: {}", error
+                )))?;
+            let healthy = checks.len() == 1 && checks[0] == "ok";
             let database_generation: String = connection
                 .query_row(
                     "SELECT value FROM kbm_runtime_meta \
@@ -1466,11 +1806,32 @@ impl Task for HealthCheckTask {
                 })?;
 
             Ok(serde_json::json!({
-                "healthy": quick_check == "ok",
-                "state": if quick_check == "ok" { "healthy" } else { "suspect" },
+                "healthy": healthy,
+                "state": if healthy { "healthy" } else { "corrupt" },
+                "code": if healthy { "OK" } else { "KNOWLEDGE_STORE_CORRUPT" },
+                "retryable": false,
+                "integrityResults": checks,
                 "databaseGeneration": database_generation.parse::<i64>().unwrap_or(0).max(0)
             }))
-        })?;
+        }).unwrap_or_else(|error| {
+            let message = error.reason.to_ascii_lowercase();
+            let (state, code, retryable) = if message.contains("database disk image is malformed")
+                || message.contains("file is not a database")
+            {
+                ("corrupt", "KNOWLEDGE_STORE_CORRUPT", false)
+            } else if message.contains("locked") || message.contains("busy") {
+                ("busy", "KNOWLEDGE_STORE_BUSY", true)
+            } else if message.contains("closed") || message.contains("not_registered") {
+                ("closed", "KNOWLEDGE_STORE_CLOSED", false)
+            } else {
+                ("suspect", "KNOWLEDGE_STORE_HEALTH_CHECK_FAILED", true)
+            };
+            serde_json::json!({
+                "healthy": false, "state": state, "code": code,
+                "retryable": retryable, "databaseGeneration": 0,
+                "errorMessage": error.reason
+            })
+        });
 
         serde_json::to_string(&health).map_err(|error| {
             Error::from_reason(format!("Encode native health result failed: {}", error))
@@ -1848,9 +2209,14 @@ pub struct NativeKnowledgeRuntime {
     accepting_queries: AtomicBool,
     storage: Mutex<Option<SqliteStorageEngine>>,
     watcher: Mutex<Option<VexusWatcher>>,
+    tasks: Arc<TaskLifecycle>,
 }
 
 impl NativeKnowledgeRuntime {
+    fn tracked_task<T: Task>(&self, task: T) -> AsyncTask<TrackedTask<T>> {
+        AsyncTask::new(TrackedTask::new(&self.tasks, task))
+    }
+
     fn normalize_diary_name(value: String) -> Result<String> {
         let normalized = value.trim().to_string();
         if normalized.is_empty() {
@@ -1902,6 +2268,7 @@ impl NativeKnowledgeRuntime {
             accepting_queries: AtomicBool::new(true),
             storage: Mutex::new(None),
             watcher: Mutex::new(None),
+            tasks: Arc::new(TaskLifecycle::default()),
         })
     }
 
@@ -1919,6 +2286,8 @@ impl NativeKnowledgeRuntime {
                 "sqlite.ingestion-commit.v1".to_string(),
                 "sqlite.delete-commit.v1".to_string(),
                 "sqlite.tag-consistency.v1".to_string(),
+                "tag-consistency.prepare.v1".to_string(),
+                "text.preparation.v1".to_string(),
                 "index.async-restore.v1".to_string(),
                 "index.dual-slot-checkpoint.v1".to_string(),
                 "watcher.runtime-owned.v1".to_string(),
@@ -1959,6 +2328,16 @@ impl NativeKnowledgeRuntime {
             .transpose()?;
         let options: StorageOptions = normalize_storage_options(options_map);
 
+        // 同一个 Runtime 的存储替换必须先关闭旧 Engine，再打开新 Engine。
+        // 否则新连接会在注册前执行 schema/WAL/quick_check，期间可能与旧
+        // Write Actor 并存；注册失败时还会留下无法表达的半替换状态。
+        self.tasks.wait_idle();
+        let mut storage = self.storage.lock().map_err(|_| {
+            Error::from_reason("NativeKnowledgeRuntime storage lock poisoned".to_string())
+        })?;
+        if let Some(previous) = storage.take() {
+            previous.shutdown().map_err(Error::from_reason)?;
+        }
         let (engine, ready) =
             SqliteStorageEngine::open_and_init(&db_path, options).map_err(Error::from_reason)?;
         let state = NativeStoreState {
@@ -1967,12 +2346,7 @@ impl NativeKnowledgeRuntime {
             database_generation: ready.database_generation as i64,
             accepting_writes: true,
         };
-        let mut storage = self.storage.lock().map_err(|_| {
-            Error::from_reason("NativeKnowledgeRuntime storage lock poisoned".to_string())
-        })?;
-        if let Some(previous) = storage.replace(engine) {
-            previous.shutdown().map_err(Error::from_reason)?;
-        }
+        *storage = Some(engine);
         Ok(state)
     }
 
@@ -1983,6 +2357,27 @@ impl NativeKnowledgeRuntime {
             .map_err(|_| {
                 Error::from_reason("NativeKnowledgeRuntime storage lock poisoned".to_string())
             })
+    }
+
+    #[napi]
+    pub fn search_global_tags(&self, query: Float32Array, limit: u32)
+        -> Result<AsyncTask<TrackedTask<GlobalTagSearchTask>>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason("NativeKnowledgeRuntime is shutting down"));
+        }
+        if query.len() != self.dimension as usize || query.iter().any(|value| !value.is_finite()) {
+            return Err(Error::from_reason("Invalid global Tag query vector"));
+        }
+        let storage = self.storage_snapshot()?.ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN"))?;
+        Ok(self.tracked_task(GlobalTagSearchTask {
+            db_path: storage.db_path().to_string_lossy().into_owned(),
+            memo_runtime: self.memo_runtime.clone(),
+            index: self.global_tag_index.clone(),
+            content_revision: self.global_tag_content_revision.clone(),
+            dimension: self.dimension as usize,
+            query: query.to_vec(),
+            limit: limit.clamp(1, 1000) as usize,
+        }))
     }
 
     #[napi]
@@ -1999,7 +2394,7 @@ impl NativeKnowledgeRuntime {
     }
 
     #[napi]
-    pub fn health_check(&self) -> Result<AsyncTask<HealthCheckTask>> {
+    pub fn health_check(&self) -> Result<AsyncTask<TrackedTask<HealthCheckTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2007,11 +2402,11 @@ impl NativeKnowledgeRuntime {
         }
         let storage = self.storage_snapshot()?;
         let Some(storage) = storage else {
-            return Ok(AsyncTask::new(HealthCheckTask {
+            return Ok(self.tracked_task(HealthCheckTask {
                 db_path: String::new(),
             }));
         };
-        Ok(AsyncTask::new(HealthCheckTask {
+        Ok(self.tracked_task(HealthCheckTask {
             db_path: storage.db_path().to_string_lossy().to_string(),
         }))
     }
@@ -2024,9 +2419,47 @@ impl NativeKnowledgeRuntime {
             .unwrap_or(0))
     }
 
+    #[napi]
+    pub fn cancel_prepared_plan(&self, token: String) -> Result<AsyncTask<TrackedTask<CancelPreparedPlanTask>>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason("KNOWLEDGE_STORE_CLOSED"));
+        }
+        if token.trim().is_empty() || token.len() > 256 {
+            return Err(Error::from_reason("KNOWLEDGE_STORE_INVALID_PLAN_TOKEN"));
+        }
+        let storage = self.storage_snapshot()?
+            .ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN"))?;
+        Ok(self.tracked_task(CancelPreparedPlanTask {
+            db_path: storage.db_path().to_string_lossy().into_owned(),
+            token,
+        }))
+    }
+
+    /// 在 Rust Read Pool 后台线程读取中央库中当前已索引文件的路径快照。
+    ///
+    /// 该快照只用于 watcher 溢出后的缺失文件对账；文件系统扫描和事件生成
+    /// 仍由 Rust watcher 后台线程完成。
+    #[napi]
+    pub fn list_indexed_file_paths(
+        &self,
+        db_path: String,
+    ) -> Result<AsyncTask<TrackedTask<IndexedFilePathsTask>>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if db_path.trim().is_empty() {
+            return Err(Error::from_reason(
+                "listIndexedFilePaths requires a database path".to_string(),
+            ));
+        }
+        Ok(self.tracked_task(IndexedFilePathsTask { db_path }))
+    }
+
     /// 在 Rust Read Pool 后台线程读取中央库中的日记本名称。
     #[napi]
-    pub fn list_distinct_diaries(&self, db_path: String) -> Result<AsyncTask<DiaryListTask>> {
+    pub fn list_distinct_diaries(&self, db_path: String) -> Result<AsyncTask<TrackedTask<DiaryListTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2037,7 +2470,7 @@ impl NativeKnowledgeRuntime {
                 "listDistinctDiaries requires a database path".to_string(),
             ));
         }
-        Ok(AsyncTask::new(DiaryListTask { db_path }))
+        Ok(self.tracked_task(DiaryListTask { db_path }))
     }
 
     /// 在 Rust Read Pool 后台线程统计指定日记本的 Chunk 数量。
@@ -2046,7 +2479,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         diary_name: String,
-    ) -> Result<AsyncTask<DiaryChunkCountTask>> {
+    ) -> Result<AsyncTask<TrackedTask<DiaryChunkCountTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2058,7 +2491,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(DiaryChunkCountTask {
+        Ok(self.tracked_task(DiaryChunkCountTask {
             db_path,
             diary_name: diary_name.trim().to_string(),
         }))
@@ -2070,7 +2503,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         diary_names: Vec<String>,
-    ) -> Result<AsyncTask<FileIdsByDiariesTask>> {
+    ) -> Result<AsyncTask<TrackedTask<FileIdsByDiariesTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2093,7 +2526,7 @@ impl NativeKnowledgeRuntime {
             }
         }
         names.sort();
-        Ok(AsyncTask::new(FileIdsByDiariesTask { db_path, names }))
+        Ok(self.tracked_task(FileIdsByDiariesTask { db_path, names }))
     }
 
     /// 在 Rust Read Pool 后台线程批量探测文件事实状态。
@@ -2105,7 +2538,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         file_paths: Vec<String>,
-    ) -> Result<AsyncTask<IngestionFileProbeTask>> {
+    ) -> Result<AsyncTask<TrackedTask<IngestionFileProbeTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2123,18 +2556,59 @@ impl NativeKnowledgeRuntime {
             .filter(|value| !value.is_empty())
             .collect();
         if paths.is_empty() {
-            return Ok(AsyncTask::new(IngestionFileProbeTask {
+            return Ok(self.tracked_task(IngestionFileProbeTask {
                 db_path,
                 paths: Vec::new(),
                 dimension: self.dimension as usize,
             }));
         }
 
-        Ok(AsyncTask::new(IngestionFileProbeTask {
+        Ok(self.tracked_task(IngestionFileProbeTask {
             db_path,
             paths,
             dimension: self.dimension as usize,
         }))
+    }
+
+    /// 在 Rust 后台线程执行文本预处理、Tag 提取、cl100k_base token 计数和 Chunk 切分。
+    ///
+    /// 返回的 chunks/tags 保持稳定顺序；Embedding 请求仍由 Node.js 的
+    /// EmbeddingUtils 编排，Rust 只提供缺失向量任务所需的文本计划。
+    #[napi]
+    pub fn prepare_text(&self, request_json: String) -> Result<AsyncTask<TrackedTask<TextPreparationTask>>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if request_json.trim().is_empty() {
+            return Err(Error::from_reason(
+                "prepareText requires a request JSON payload".to_string(),
+            ));
+        }
+        Ok(self.tracked_task(TextPreparationTask { request_json }))
+    }
+
+    /// 在 Rust Read Pool 后台线程扫描文件并构建 Tag 一致性计划。
+    ///
+    /// Rust 负责数据库快照、文件读取、Tag 规则、摘要、摘要哈希和短期
+    /// 预览 token；Node.js 只负责展示预览、调用 Embedding 服务和提交向量。
+    #[napi]
+    pub fn prepare_tag_consistency(
+        &self,
+        request_json: String,
+    ) -> Result<AsyncTask<TrackedTask<TagConsistencyPrepareTask>>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "NativeKnowledgeRuntime is shutting down".to_string(),
+            ));
+        }
+        if request_json.trim().is_empty() {
+            return Err(Error::from_reason(
+                "prepareTagConsistency requires a request JSON payload".to_string(),
+            ));
+        }
+        Ok(self.tracked_task(TagConsistencyPrepareTask { request_json }))
     }
 
     /// 将 JS 已完成的文本切分与 Embedding 结果提交到 Rust Write Actor。
@@ -2148,7 +2622,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         tag_names: Vec<String>,
-    ) -> Result<AsyncTask<IngestionTagProbeTask>> {
+    ) -> Result<AsyncTask<TrackedTask<IngestionTagProbeTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2166,7 +2640,7 @@ impl NativeKnowledgeRuntime {
             .filter(|value| !value.is_empty())
             .collect();
 
-        Ok(AsyncTask::new(IngestionTagProbeTask {
+        Ok(self.tracked_task(IngestionTagProbeTask {
             db_path,
             names,
             dimension: self.dimension as usize,
@@ -2181,7 +2655,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         requests_json: String,
-    ) -> Result<AsyncTask<MigrationReuseProbeTask>> {
+    ) -> Result<AsyncTask<TrackedTask<MigrationReuseProbeTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2198,7 +2672,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(MigrationReuseProbeTask {
+        Ok(self.tracked_task(MigrationReuseProbeTask {
             db_path,
             requests_json,
             dimension: self.dimension as usize,
@@ -2214,7 +2688,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         root_path: String,
-    ) -> Result<AsyncTask<OrphanCleanupTask>> {
+    ) -> Result<AsyncTask<TrackedTask<OrphanCleanupTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2226,7 +2700,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(OrphanCleanupTask {
+        Ok(self.tracked_task(OrphanCleanupTask {
             db_path,
             root_path,
         }))
@@ -2241,7 +2715,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         model_sig: String,
-    ) -> Result<AsyncTask<PairwiseModelCleanupTask>> {
+    ) -> Result<AsyncTask<TrackedTask<PairwiseModelCleanupTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2254,7 +2728,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(PairwiseModelCleanupTask {
+        Ok(self.tracked_task(PairwiseModelCleanupTask {
             db_path,
             model_sig: model_sig.trim().to_string(),
         }))
@@ -2267,7 +2741,7 @@ impl NativeKnowledgeRuntime {
         plan_json: String,
         chunk_vectors: Float32Array,
         tag_vectors: Float32Array,
-    ) -> Result<AsyncTask<IngestionCommitTask>> {
+    ) -> Result<AsyncTask<TrackedTask<IngestionCommitTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2302,7 +2776,7 @@ impl NativeKnowledgeRuntime {
             })
             .collect();
 
-        Ok(AsyncTask::new(IngestionCommitTask {
+        Ok(self.tracked_task(IngestionCommitTask {
             db_path,
             plan_json,
             chunk_vectors: chunk_vectors.to_vec(),
@@ -2319,7 +2793,8 @@ impl NativeKnowledgeRuntime {
         db_path: String,
         file_paths: Vec<String>,
         ttl_ms: i64,
-    ) -> Result<AsyncTask<DeleteCommitTask>> {
+        root_path: Option<String>,
+    ) -> Result<AsyncTask<TrackedTask<DeleteCommitTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2356,7 +2831,8 @@ impl NativeKnowledgeRuntime {
             })
             .collect();
 
-        Ok(AsyncTask::new(DeleteCommitTask {
+        Ok(self.tracked_task(DeleteCommitTask {
+            root_path,
             db_path,
             file_paths: paths,
             ttl_ms,
@@ -2371,7 +2847,7 @@ impl NativeKnowledgeRuntime {
     pub fn get_tag_consistency_snapshot(
         &self,
         db_path: String,
-    ) -> Result<AsyncTask<TagConsistencySnapshotTask>> {
+    ) -> Result<AsyncTask<TrackedTask<TagConsistencySnapshotTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2383,7 +2859,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(TagConsistencySnapshotTask { db_path }))
+        Ok(self.tracked_task(TagConsistencySnapshotTask { db_path }))
     }
 
     /// 通过 Rust Write Actor 提交 Tag 一致性快照。
@@ -2396,7 +2872,7 @@ impl NativeKnowledgeRuntime {
         db_path: String,
         plan_json: String,
         tag_vectors: Float32Array,
-    ) -> Result<AsyncTask<TagConsistencyCommitTask>> {
+    ) -> Result<AsyncTask<TrackedTask<TagConsistencyCommitTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2418,7 +2894,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(TagConsistencyCommitTask {
+        Ok(self.tracked_task(TagConsistencyCommitTask {
             db_path,
             plan_json,
             tag_vectors: tag_vectors.to_vec(),
@@ -2434,7 +2910,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         key: String,
-    ) -> Result<AsyncTask<KvVectorLookupTask>> {
+    ) -> Result<AsyncTask<TrackedTask<KvVectorLookupTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2446,7 +2922,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(KvVectorLookupTask {
+        Ok(self.tracked_task(KvVectorLookupTask {
             db_path,
             key,
         }))
@@ -2459,7 +2935,7 @@ impl NativeKnowledgeRuntime {
         db_path: String,
         retain_ready_artifacts: Option<u32>,
         failed_retention_ms: Option<i64>,
-    ) -> Result<AsyncTask<NativeMemoArtifactPruneTask>> {
+    ) -> Result<AsyncTask<TrackedTask<NativeMemoArtifactPruneTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2471,7 +2947,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(NativeMemoArtifactPruneTask {
+        Ok(self.tracked_task(NativeMemoArtifactPruneTask {
             db_path,
             retain_ready_artifacts: retain_ready_artifacts.unwrap_or(2) as usize,
             failed_retention_ms: failed_retention_ms
@@ -2486,7 +2962,7 @@ impl NativeKnowledgeRuntime {
         db_path: String,
         key: String,
         vector: Float32Array,
-    ) -> Result<AsyncTask<KvVectorWriteTask>> {
+    ) -> Result<AsyncTask<TrackedTask<KvVectorWriteTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2505,7 +2981,7 @@ impl NativeKnowledgeRuntime {
             )));
         }
 
-        Ok(AsyncTask::new(KvVectorWriteTask {
+        Ok(self.tracked_task(KvVectorWriteTask {
             db_path,
             key,
             vector: vector.to_vec(),
@@ -2518,7 +2994,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         prefix: String,
-    ) -> Result<AsyncTask<KvVectorListTask>> {
+    ) -> Result<AsyncTask<TrackedTask<KvVectorListTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2535,7 +3011,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(KvVectorListTask {
+        Ok(self.tracked_task(KvVectorListTask {
             db_path,
             prefix,
         }))
@@ -2549,7 +3025,7 @@ impl NativeKnowledgeRuntime {
         db_path: String,
         model_sig: String,
         config_hash: String,
-    ) -> Result<AsyncTask<NativeMemoManifestLookupTask>> {
+    ) -> Result<AsyncTask<TrackedTask<NativeMemoManifestLookupTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2564,7 +3040,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(NativeMemoManifestLookupTask {
+        Ok(self.tracked_task(NativeMemoManifestLookupTask {
             db_path,
             model_sig: model_sig.trim().to_string(),
             config_hash: config_hash.trim().to_string(),
@@ -2577,7 +3053,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         diary_name: String,
-    ) -> Result<AsyncTask<DiaryDateIndexTask>> {
+    ) -> Result<AsyncTask<TrackedTask<DiaryDateIndexTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2595,7 +3071,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(DiaryDateIndexTask {
+        Ok(self.tracked_task(DiaryDateIndexTask {
             db_path,
             diary_name,
         }))
@@ -2607,7 +3083,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         tag_name: String,
-    ) -> Result<AsyncTask<TagVectorByNameLookupTask>> {
+    ) -> Result<AsyncTask<TrackedTask<TagVectorByNameLookupTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2619,7 +3095,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(TagVectorByNameLookupTask {
+        Ok(self.tracked_task(TagVectorByNameLookupTask {
             db_path,
             tag_name: tag_name.trim().to_string(),
             dimension: self.dimension as usize,
@@ -2633,7 +3109,7 @@ impl NativeKnowledgeRuntime {
         db_path: String,
         diary_name: String,
         text: String,
-    ) -> Result<AsyncTask<ChunkVectorByTextLookupTask>> {
+    ) -> Result<AsyncTask<TrackedTask<ChunkVectorByTextLookupTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2645,7 +3121,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
         if text.is_empty() {
-            return Ok(AsyncTask::new(ChunkVectorByTextLookupTask {
+            return Ok(self.tracked_task(ChunkVectorByTextLookupTask {
                 db_path,
                 diary_name,
                 text,
@@ -2653,7 +3129,7 @@ impl NativeKnowledgeRuntime {
             }));
         }
 
-        Ok(AsyncTask::new(ChunkVectorByTextLookupTask {
+        Ok(self.tracked_task(ChunkVectorByTextLookupTask {
             db_path,
             diary_name,
             text,
@@ -2667,7 +3143,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         chunk_id: i64,
-    ) -> Result<AsyncTask<ChunkVectorLookupTask>> {
+    ) -> Result<AsyncTask<TrackedTask<ChunkVectorLookupTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2684,7 +3160,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(ChunkVectorLookupTask {
+        Ok(self.tracked_task(ChunkVectorLookupTask {
             db_path,
             chunk_id,
             dimension: self.dimension as usize,
@@ -2699,7 +3175,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         chunk_ids: Vec<i64>,
-    ) -> Result<AsyncTask<ChunkHydrateTask>> {
+    ) -> Result<AsyncTask<TrackedTask<ChunkHydrateTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2719,7 +3195,7 @@ impl NativeKnowledgeRuntime {
             }
         }
 
-        Ok(AsyncTask::new(ChunkHydrateTask { db_path, ids }))
+        Ok(self.tracked_task(ChunkHydrateTask { db_path, ids }))
     }
 
     /// 按 Tag ID 批量回填 Tag 名称，供纯 ANN 结果适配旧返回结构。
@@ -2728,7 +3204,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         tag_ids: Vec<i64>,
-    ) -> Result<AsyncTask<TagNameHydrateTask>> {
+    ) -> Result<AsyncTask<TrackedTask<TagNameHydrateTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2748,7 +3224,7 @@ impl NativeKnowledgeRuntime {
             }
         }
 
-        Ok(AsyncTask::new(TagNameHydrateTask { db_path, ids }))
+        Ok(self.tracked_task(TagNameHydrateTask { db_path, ids }))
     }
 
     /// 按文件路径批量回填正文和文件元数据，结果使用与 Chunk ID hydrate 相同的 JSON 契约。
@@ -2757,7 +3233,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         file_paths: Vec<String>,
-    ) -> Result<AsyncTask<ChunkPathHydrateTask>> {
+    ) -> Result<AsyncTask<TrackedTask<ChunkPathHydrateTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2781,7 +3257,7 @@ impl NativeKnowledgeRuntime {
             }
         }
 
-        Ok(AsyncTask::new(ChunkPathHydrateTask { db_path, paths }))
+        Ok(self.tracked_task(ChunkPathHydrateTask { db_path, paths }))
     }
 
     /// 在 Rust 后台线程恢复日记索引。
@@ -2797,7 +3273,7 @@ impl NativeKnowledgeRuntime {
         model_sig: String,
         capacity: u32,
         diary_index: ClassInstance<VexusIndex>,
-    ) -> Result<AsyncTask<IndexRestoreTask>> {
+    ) -> Result<AsyncTask<TrackedTask<IndexRestoreTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2816,25 +3292,10 @@ impl NativeKnowledgeRuntime {
             )));
         }
 
-        let index = self
-            .diaries
-            .read()
-            .map_err(|error| {
-                Error::from_reason(format!("Diary registry read lock failed: {}", error))
-            })?
-            .get(&diary_name)
-            .map(|registered| registered.index.clone())
-            .ok_or_else(|| {
-                Error::from_reason(format!(
-                    "Native diary index is not registered: {}",
-                    diary_name
-                ))
-            })?;
-
-        Ok(AsyncTask::new(IndexRestoreTask {
+        Ok(self.tracked_task(IndexRestoreTask {
             db_path,
             index_path,
-            index,
+            index: diary_index.index.clone(),
             scope: IndexScope::Diary,
             diary_name: Some(diary_name),
             dimension: self.dimension,
@@ -2851,7 +3312,7 @@ impl NativeKnowledgeRuntime {
         index_path: String,
         model_sig: String,
         capacity: u32,
-    ) -> Result<AsyncTask<IndexRestoreTask>> {
+    ) -> Result<AsyncTask<TrackedTask<IndexRestoreTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2863,7 +3324,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        Ok(AsyncTask::new(IndexRestoreTask {
+        Ok(self.tracked_task(IndexRestoreTask {
             db_path,
             index_path,
             index: self.global_tag_index.clone(),
@@ -2885,7 +3346,7 @@ impl NativeKnowledgeRuntime {
         model_sig: String,
         threshold: f64,
         force: Option<bool>,
-    ) -> Result<AsyncTask<IndexCheckpointTask>> {
+    ) -> Result<AsyncTask<TrackedTask<IndexCheckpointTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2912,7 +3373,7 @@ impl NativeKnowledgeRuntime {
         let index = registered.index.clone();
         let content_revision = registered.content_revision.clone();
         drop(diaries);
-        Ok(AsyncTask::new(IndexCheckpointTask {
+        Ok(self.tracked_task(IndexCheckpointTask {
             db_path,
             index_path,
             index,
@@ -2935,7 +3396,7 @@ impl NativeKnowledgeRuntime {
         model_sig: String,
         threshold: f64,
         force: Option<bool>,
-    ) -> Result<AsyncTask<IndexCheckpointTask>> {
+    ) -> Result<AsyncTask<TrackedTask<IndexCheckpointTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -2946,7 +3407,7 @@ impl NativeKnowledgeRuntime {
                 "checkpointGlobalTagIndex requires dbPath and indexPath".to_string(),
             ));
         }
-        Ok(AsyncTask::new(IndexCheckpointTask {
+        Ok(self.tracked_task(IndexCheckpointTask {
             db_path,
             index_path,
             index: self.global_tag_index.clone(),
@@ -3008,7 +3469,7 @@ impl NativeKnowledgeRuntime {
         query: Float32Array,
         per_index_k: u32,
         global_k: u32,
-    ) -> Result<AsyncTask<NativeMultiIndexAnnTask>> {
+    ) -> Result<AsyncTask<TrackedTask<NativeMultiIndexAnnTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -3057,7 +3518,15 @@ impl NativeKnowledgeRuntime {
         drop(registry);
 
         let final_k = global_k.max(1) as usize;
-        Ok(AsyncTask::new(NativeMultiIndexAnnTask {
+        Ok(self.tracked_task(NativeMultiIndexAnnTask {
+            db_path: Some(
+                self.storage_snapshot()?.ok_or_else(|| {
+                    Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN")
+                })?.db_path().to_string_lossy().into_owned()
+            ),
+            index_scopes: snapshots.iter()
+                .map(|snapshot| format!("diary:{}", snapshot.diary_name))
+                .collect(),
             dimension: self.dimension as usize,
             query: query.to_vec(),
             supplemental_queries: Vec::new(),
@@ -3089,7 +3558,7 @@ impl NativeKnowledgeRuntime {
         global_k: u32,
         semantic_threshold: f64,
         final_k: Option<u32>,
-    ) -> Result<AsyncTask<NativeMultiIndexAnnTask>> {
+    ) -> Result<AsyncTask<TrackedTask<NativeMultiIndexAnnTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -3126,15 +3595,15 @@ impl NativeKnowledgeRuntime {
             Error::from_reason(format!("Diary registry read lock failed: {}", error))
         })?;
         let mut snapshots = Vec::with_capacity(requested.len());
-        for diary_name in requested {
-            let registered = registry.get(&diary_name).ok_or_else(|| {
+        for diary_name in &requested {
+            let registered = registry.get(diary_name).ok_or_else(|| {
                 Error::from_reason(format!(
                     "Native diary index is not registered: {}",
                     diary_name
                 ))
             })?;
             snapshots.push(DiarySearchSnapshot {
-                diary_name,
+                diary_name: diary_name.clone(),
                 index: registered.index.clone(),
                 content_revision: registered.content_revision.clone(),
                 generation: registered.generation,
@@ -3144,7 +3613,12 @@ impl NativeKnowledgeRuntime {
 
         let candidate_k = global_k.max(1) as usize;
         let final_k = final_k.unwrap_or(global_k).max(1) as usize;
-        Ok(AsyncTask::new(NativeMultiIndexAnnTask {
+        Ok(self.tracked_task(NativeMultiIndexAnnTask {
+            db_path: Some(db_path.clone()),
+            index_scopes: requested
+                .iter()
+                .map(|name| format!("diary:{}", name))
+                .collect(),
             dimension: self.dimension as usize,
             query: query.to_vec(),
             supplemental_queries: Vec::new(),
@@ -3180,7 +3654,7 @@ impl NativeKnowledgeRuntime {
         per_index_k: u32,
         candidate_k: u32,
         semantic_threshold: f64,
-    ) -> Result<AsyncTask<NativeRiverQueryTask>> {
+    ) -> Result<AsyncTask<TrackedTask<NativeRiverQueryTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -3250,12 +3724,17 @@ impl NativeKnowledgeRuntime {
         drop(registry);
 
         let candidate_k = candidate_k.max(1) as usize;
-        Ok(AsyncTask::new(NativeRiverQueryTask {
+        Ok(self.tracked_task(NativeRiverQueryTask {
             runtime: self.memo_runtime.clone(),
             db_path: db_path.clone(),
             artifact_sig,
             river_input_json,
             ann_task: NativeMultiIndexAnnTask {
+                db_path: Some(db_path.clone()),
+                index_scopes: snapshots
+                    .iter()
+                    .map(|snapshot| format!("diary:{}", snapshot.diary_name))
+                    .collect(),
                 dimension: self.dimension as usize,
                 query: query.to_vec(),
                 supplemental_queries: Vec::new(),
@@ -3296,7 +3775,7 @@ impl NativeKnowledgeRuntime {
         per_index_k: u32,
         candidate_k: u32,
         semantic_threshold: f64,
-    ) -> Result<AsyncTask<NativeRiverQueryTask>> {
+    ) -> Result<AsyncTask<TrackedTask<NativeRiverQueryTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -3405,12 +3884,17 @@ impl NativeKnowledgeRuntime {
             .per_index_k
             .unwrap_or_else(|| (candidate_k / 2).max(2))
             .max(1);
-        Ok(AsyncTask::new(NativeRiverQueryTask {
+        Ok(self.tracked_task(NativeRiverQueryTask {
             runtime: self.memo_runtime.clone(),
             db_path: db_path.clone(),
             artifact_sig,
             river_input_json,
             ann_task: NativeMultiIndexAnnTask {
+                db_path: Some(db_path.clone()),
+                index_scopes: snapshots
+                    .iter()
+                    .map(|snapshot| format!("diary:{}", snapshot.diary_name))
+                    .collect(),
                 dimension,
                 query: query.to_vec(),
                 supplemental_queries,
@@ -3532,6 +4016,45 @@ impl NativeKnowledgeRuntime {
             .unwrap_or_default())
     }
 
+    /// 对 Runtime 持有的 KBM watcher 执行一次 Rust 侧文件对账。
+    ///
+    /// 对账结果重新进入同一个有界事件队列，Node.js 不直接递归扫描知识根目录。
+    #[napi]
+    pub fn reconcile_watch(&self) -> Result<()> {
+        let watcher = self.watcher.lock().map_err(|_| {
+            Error::from_reason("NativeKnowledgeRuntime watcher lock poisoned".to_string())
+        })?;
+        if let Some(native_watcher) = watcher.as_ref() {
+            native_watcher.reconcile_watch()
+        } else {
+            Err(Error::from_reason(
+                "NativeKnowledgeRuntime watcher is not running".to_string(),
+            ))
+        }
+    }
+
+    /// 使用 Rust Read Pool 返回的数据库文件路径快照执行缺失文件对账。
+    ///
+    /// 文件路径快照只跨 N-API 传递字符串；实际扫描、存在性确认和 unlink
+    /// 事件生成仍在 Rust watcher 线程中完成。
+    #[napi]
+    pub fn reconcile_watch_with_paths(&self, paths: Vec<String>) -> Result<()> {
+        let known_database_paths = paths
+            .into_iter()
+            .map(|path| std::path::PathBuf::from(path.replace('\\', "/")))
+            .collect::<HashSet<_>>();
+        let watcher = self.watcher.lock().map_err(|_| {
+            Error::from_reason("NativeKnowledgeRuntime watcher lock poisoned".to_string())
+        })?;
+        if let Some(native_watcher) = watcher.as_ref() {
+            native_watcher.reconcile_watch_with_paths(known_database_paths)
+        } else {
+            Err(Error::from_reason(
+                "NativeKnowledgeRuntime watcher is not running".to_string(),
+            ))
+        }
+    }
+
     /// 停止 Runtime 所有的文件监听，并释放 notify 句柄。
     #[napi]
     pub fn stop_watch(&self) -> Result<()> {
@@ -3582,25 +4105,35 @@ impl NativeKnowledgeRuntime {
     #[napi]
     pub fn shutdown(&self) -> Result<()> {
         self.accepting_queries.store(false, Ordering::Release);
-        self.stop_watch()?;
-        self.diaries
-            .write()
-            .map_err(|error| {
-                Error::from_reason(format!("Diary registry shutdown lock failed: {}", error))
-            })?
-            .clear();
-
-        let storage = self
-            .storage
-            .lock()
-            .map_err(|_| {
-                Error::from_reason("NativeKnowledgeRuntime storage lock poisoned".to_string())
-            })?
-            .take();
-        if let Some(storage) = storage {
-            storage.shutdown().map_err(Error::from_reason)?;
+        let mut errors = Vec::new();
+        if let Err(error) = self.stop_watch() {
+            errors.push(format!("watcher: {}", error));
         }
-        Ok(())
+        self.tasks.wait_idle();
+        match self.diaries.write() {
+            Ok(mut diaries) => diaries.clear(),
+            Err(poisoned) => {
+                poisoned.into_inner().clear();
+                errors.push("Diary registry shutdown lock poisoned".to_string());
+            }
+        }
+        let storage = match self.storage.lock() {
+            Ok(mut slot) => slot.take(),
+            Err(poisoned) => {
+                errors.push("NativeKnowledgeRuntime storage lock poisoned".to_string());
+                poisoned.into_inner().take()
+            }
+        };
+        if let Some(storage) = storage {
+            if let Err(error) = storage.shutdown() {
+                errors.push(format!("storage: {}", error));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::from_reason(format!("Runtime shutdown errors: {}", errors.join("; "))))
+        }
     }
 }
 
@@ -3624,6 +4157,122 @@ mod tests {
             .iter()
             .map(|(id, score)| (*id, time_candidate(*id, *score)))
             .collect()
+    }
+
+    #[test]
+    fn shutdown_releases_storage_even_when_registry_is_poisoned() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-shutdown-poison-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let index = VexusIndex::new(2, 16).unwrap();
+        let runtime = NativeKnowledgeRuntime {
+            dimension: 2,
+            memo_runtime: index.memo_runtime.clone(),
+            global_tag_index: index.index.clone(),
+            global_tag_content_revision: index.content_revision.clone(),
+            diaries: RwLock::new(HashMap::new()),
+            registry_generation: AtomicU64::new(0),
+            accepting_queries: AtomicBool::new(true),
+            storage: Mutex::new(None),
+            watcher: Mutex::new(None),
+            tasks: Arc::new(TaskLifecycle::default()),
+        };
+        runtime.open_and_init_store(db, None).unwrap();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _registry = runtime.diaries.write().unwrap();
+            panic!("injected registry poison");
+        }));
+        assert!(runtime.shutdown().unwrap_err().reason.contains("registry"));
+        assert!(runtime.storage_snapshot().unwrap().is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn global_tag_search_recovers_invalid_scope_without_ghost_vectors() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-tag-query-gate-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = SqliteStorageEngine::open_and_init(
+            &db, StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute(
+                "INSERT INTO kbm_index_states(scope,state,facts_generation,applied_generation,updated_at)
+                 VALUES ('global_tags','invalid',1,0,0)", [],
+            ).map_err(|error| error.to_string())?;
+            let vector: Vec<u8> = [1.0_f32, 0.0].iter()
+                .flat_map(|value| value.to_ne_bytes()).collect();
+            tx.execute(
+                "INSERT INTO tags(id,name,vector) VALUES (1,'authoritative',?1)",
+                [vector],
+            ).map_err(|error| error.to_string())?;
+            Ok(crate::storage::WriteReceipt {
+                operation: "fixture".to_string(), database_generation: 0, facts_changed: false,
+            })
+        }).unwrap();
+        let index = VexusIndex::new(2, 16).unwrap();
+        index.index.write().unwrap().add(999, &[1.0_f32, 0.0]).unwrap();
+        let mut task = GlobalTagSearchTask {
+            db_path: db.clone(), index: index.index.clone(),
+            memo_runtime: index.memo_runtime.clone(),
+            content_revision: index.content_revision.clone(), dimension: 2,
+            query: vec![1.0, 0.0], limit: 10,
+        };
+        let results: serde_json::Value = serde_json::from_str(&task.compute().unwrap()).unwrap();
+        assert_eq!(results.as_array().unwrap().len(), 1);
+        assert_eq!(results[0]["tag"], "authoritative");
+        assert_eq!(results[0]["score"], 1.0);
+        assert_eq!(index.index.read().unwrap().size(), 1);
+        assert!(!index.index.read().unwrap().contains(999));
+        ensure_index_scopes_ready(&db, &["global_tags".to_string()]).unwrap();
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_diary_index_recovery_removes_ghost_vectors() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-index-recovery-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = SqliteStorageEngine::open_and_init(
+            &db, StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute(
+                "INSERT INTO kbm_index_states(scope,state,facts_generation,applied_generation,updated_at)
+                 VALUES ('diary:test','invalid',1,0,0)", [],
+            ).map_err(|error| error.to_string())?;
+            Ok(crate::storage::WriteReceipt {
+                operation: "test".to_string(), database_generation: 0, facts_changed: false,
+            })
+        }).unwrap();
+        let index = VexusIndex::new(2, 16).unwrap();
+        index.index.write().unwrap().add(999, &[1.0_f32, 0.0]).unwrap();
+        let snapshot = DiarySearchSnapshot {
+            diary_name: "test".to_string(), index: index.index.clone(),
+            content_revision: index.content_revision.clone(), generation: 1,
+        };
+        {
+            let _gate = crate::index_lifecycle::checkpoint_gate().lock().unwrap();
+            recover_diary_snapshot(&db, &snapshot, 2).unwrap();
+        }
+        assert_eq!(snapshot.index.read().unwrap().size(), 0);
+        ensure_index_scopes_ready(&db, &["diary:test".to_string()]).unwrap();
+        assert_eq!(snapshot.content_revision.load(Ordering::Acquire), 1);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

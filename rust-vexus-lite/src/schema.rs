@@ -208,6 +208,34 @@ CREATE TABLE IF NOT EXISTS v10_derived_asset_status (
     updated_at INTEGER NOT NULL,
     PRIMARY KEY(asset_type, model_sig, dimension)
 );
+CREATE TABLE IF NOT EXISTS kbm_prepared_plans (
+    token TEXT PRIMARY KEY NOT NULL,
+    operation_type TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    database_generation INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('prepared','committed','cancelled','expired')),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kbm_operation_receipts (
+    operation_id TEXT PRIMARY KEY NOT NULL,
+    operation_type TEXT NOT NULL,
+    batch_id TEXT,
+    plan_digest TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('committed','expired','cancelled','failed')),
+    database_generation INTEGER NOT NULL DEFAULT 0,
+    receipt_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kbm_index_states (
+    scope TEXT PRIMARY KEY NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('ready','invalid','recovering')),
+    facts_generation INTEGER NOT NULL DEFAULT 0,
+    applied_generation INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    updated_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_files_diary ON files(diary_name);
 CREATE INDEX IF NOT EXISTS idx_file_versions_exists ON kbm_file_versions(exists_flag, updated_at);
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
@@ -231,6 +259,10 @@ CREATE INDEX IF NOT EXISTS idx_intrinsic_residual_model
     ON tag_intrinsic_residuals(model_sig);
 CREATE INDEX IF NOT EXISTS idx_intrinsic_status_artifact
     ON tag_intrinsic_residual_status(artifact_sig,status);
+CREATE INDEX IF NOT EXISTS idx_operation_receipts_expiry
+    ON kbm_operation_receipts(status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_index_states_state
+    ON kbm_index_states(state, updated_at);
 CREATE INDEX IF NOT EXISTS idx_rivermemo_compatible
     ON rivermemo_artifacts(source_v9_artifact_sig,model_sig,config_hash,
                             database_generation,status,updated_at);
@@ -277,13 +309,6 @@ pub(crate) fn initialize_schema(
     connection: &Connection,
     requested_version: i64,
 ) -> Result<i64, String> {
-    connection
-        .execute_batch(SCHEMA_SQL)
-        .map_err(|error| format!("initialize KBM schema failed: {}", error))?;
-    ensure_additive_columns(connection)?;
-    connection
-        .execute_batch(GENERATION_SQL)
-        .map_err(|error| format!("initialize KBM generation triggers failed: {}", error))?;
     let version = connection
         .query_row(
             "SELECT CAST(value AS INTEGER) FROM kbm_runtime_meta WHERE key='schema_version'",
@@ -297,14 +322,29 @@ pub(crate) fn initialize_schema(
             version, requested_version
         ));
     }
+    let transaction = connection.unchecked_transaction()
+        .map_err(|error| format!("begin KBM schema migration failed: {}", error))?;
+    let (tables, indices) = SCHEMA_SQL.split_once(
+        "CREATE INDEX IF NOT EXISTS idx_files_diary"
+    ).ok_or_else(|| "KBM schema boundary missing".to_string())?;
+    transaction.execute_batch(tables)
+        .map_err(|error| format!("initialize KBM tables failed: {}", error))?;
+    ensure_additive_columns(&transaction)?;
+    transaction.execute_batch(&format!(
+        "CREATE INDEX IF NOT EXISTS idx_files_diary{}", indices
+    )).map_err(|error| format!("initialize KBM indices failed: {}", error))?;
+    transaction.execute_batch(GENERATION_SQL)
+        .map_err(|error| format!("initialize KBM generation triggers failed: {}", error))?;
     if version < requested_version {
-        connection
+        transaction
             .execute(
                 "UPDATE kbm_runtime_meta SET value=?1 WHERE key='schema_version'",
                 [requested_version.to_string()],
             )
             .map_err(|error| format!("publish KBM schema version failed: {}", error))?;
     }
+    transaction.commit()
+        .map_err(|error| format!("commit KBM schema migration failed: {}", error))?;
     Ok(requested_version.max(version))
 }
 
@@ -336,7 +376,9 @@ fn ensure_additive_columns(connection: &Connection) -> Result<(), String> {
             .map_err(|error| format!("inspect {} schema failed: {}", table, error))?
             .query_map([], |row| row.get::<_, String>(1))
             .map_err(|error| format!("read {} schema failed: {}", table, error))?
-            .filter_map(Result::ok)
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| format!("decode {} schema failed: {}", table, error))?
+            .iter()
             .any(|name| name == column);
         if !exists {
             connection
@@ -348,4 +390,47 @@ fn ensure_additive_columns(connection: &Connection) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_columns_are_added_before_dependent_indices() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES ('schema_version', '1');
+             CREATE TABLE tags(id INTEGER PRIMARY KEY, name TEXT UNIQUE, vector BLOB);
+             CREATE TABLE tag_intrinsic_residuals(
+                 tag_id INTEGER PRIMARY KEY, residual_energy REAL,
+                 neighbor_count INTEGER, computed_at TEXT
+             );"
+        ).unwrap();
+        initialize_schema(&connection, 1).unwrap();
+        let version: i64 = connection.query_row(
+            "SELECT vector_version FROM tags LIMIT 1", [], |row| row.get(0)
+        ).optional().unwrap().unwrap_or(1);
+        assert_eq!(version, 1);
+        initialize_schema(&connection, 1).unwrap();
+    }
+
+    #[test]
+    fn newer_schema_is_rejected_without_creating_tables() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES ('schema_version', '99');"
+        ).unwrap();
+        assert!(initialize_schema(&connection, 1).is_err());
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='files'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    use rusqlite::OptionalExtension;
 }

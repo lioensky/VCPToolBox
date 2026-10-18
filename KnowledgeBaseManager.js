@@ -361,6 +361,7 @@ class KnowledgeBaseManager {
                 'sqlite.ingestion-commit.v1',
                 'sqlite.delete-commit.v1',
                 'sqlite.tag-consistency.v1',
+                'text.preparation.v1',
                 'index.async-restore.v1',
                 'index.dual-slot-checkpoint.v1',
                 'watcher.runtime-owned.v1',
@@ -399,11 +400,16 @@ class KnowledgeBaseManager {
                 || typeof this.nativeKnowledgeRuntime.setKvVector !== 'function'
                 || typeof this.nativeKnowledgeRuntime.listKvVectors !== 'function'
                 || typeof this.nativeKnowledgeRuntime.getDiaryChunkCount !== 'function'
+                || typeof this.nativeKnowledgeRuntime.prepareText !== 'function'
                 || typeof this.nativeKnowledgeRuntime.getTagVectorByName !== 'function'
                 || typeof this.nativeKnowledgeRuntime.getTagConsistencySnapshot !== 'function'
                 || typeof this.nativeKnowledgeRuntime.commitTagConsistency !== 'function'
                 || typeof this.nativeKnowledgeRuntime.getNativeMemoManifest !== 'function'
                 || typeof this.nativeKnowledgeRuntime.pruneNativeMemoArtifacts !== 'function'
+                || typeof this.nativeKnowledgeRuntime.searchGlobalTags !== 'function'
+                || typeof this.nativeKnowledgeRuntime.cancelPreparedPlan !== 'function'
+                || typeof this.nativeKnowledgeRuntime.listIndexedFilePaths !== 'function'
+                || typeof this.nativeKnowledgeRuntime.reconcileWatchWithPaths !== 'function'
                 || typeof this.nativeKnowledgeRuntime.restoreGlobalTagIndex !== 'function'
                 || typeof this.nativeKnowledgeRuntime.restoreDiaryIndex !== 'function'
                 || typeof this.nativeKnowledgeRuntime.checkpointGlobalTagIndex !== 'function'
@@ -416,14 +422,20 @@ class KnowledgeBaseManager {
             const storeState = this.nativeKnowledgeRuntime.openAndInitStore(
                 dbPath,
                 JSON.stringify({
-                    readPoolSize: Number(
-                        process.env.KNOWLEDGEBASE_RUST_READ_POOL_SIZE
-                    ) || 4,
-                    mmapSize: Number(
-                        process.env.KNOWLEDGEBASE_RUST_MMAP_SIZE
-                    ) || 64 * 1024 * 1024,
-                    schemaVersion: 1
-                })
+                 readPoolSize: Number(
+                     process.env.KNOWLEDGEBASE_RUST_READ_POOL_SIZE
+                 ) || 4,
+                 mmapSize: (() => {
+                     const raw = process.env.KNOWLEDGEBASE_RUST_MMAP_SIZE;
+                     const value = Number(raw);
+                     return raw !== undefined && raw.trim() !== ''
+                         && Number.isSafeInteger(value) && value >= 0
+                         ? value
+                         : 64 * 1024 * 1024;
+                 })(),
+                 busyTimeoutMs: this.config.sqliteBusyTimeoutMs,
+                 schemaVersion: 1
+             })
             );
             console.log(
                 '[KnowledgeBase] 🦀 NativeKnowledgeRuntime ready; ' +
@@ -909,7 +921,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         return code === 'SQLITE_CORRUPT'
             || code === 'SQLITE_NOTADB'
             || code === 'KNOWLEDGE_STORE_CORRUPT'
-            || /database disk image is malformed|file is not a database|database corruption|quick_check failed|KNOWLEDGE_STORE_CORRUPT/i
+            || /database disk image is malformed|file is not a database|database corruption|SQLite quick_check returned|KNOWLEDGE_STORE_CORRUPT/i
                 .test(message);
     }
 
@@ -1193,6 +1205,61 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         return removed;
     }
 
+    async prepareIngestionText(text) {
+        if (
+            !this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.prepareText !== 'function'
+        ) {
+            const error = new Error(
+                'NativeKnowledgeRuntime text preparation API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
+        const embeddingMaxToken = Math.max(
+            1,
+            Math.floor(Number(process.env.WhitelistEmbeddingModelMaxToken) || 8000)
+        );
+        const maxTokens = Math.max(
+            1,
+            Math.floor(embeddingMaxToken * 0.85)
+        );
+        const overlapTokens = Math.min(
+            Math.max(0, Math.floor(maxTokens * 0.1)),
+            Math.max(0, maxTokens - 1)
+        );
+        const raw = await this.nativeKnowledgeRuntime.prepareText(
+            JSON.stringify({
+                text: typeof text === 'string' ? text : '',
+                tagBlacklistSuper: Array.isArray(this.config.tagBlacklistSuper)
+                    ? this.config.tagBlacklistSuper
+                    : [],
+                tagBlacklist: this.config.tagBlacklist instanceof Set
+                    ? [...this.config.tagBlacklist]
+                    : [],
+                maxTags: this.config.maxTagsPerFile,
+                maxTokens,
+                overlapTokens
+            })
+        );
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!result || typeof result !== 'object') {
+            throw new Error('Native text preparation returned an invalid result');
+        }
+        return {
+            preparedText: String(result.preparedText || ''),
+            tags: Array.isArray(result.tags)
+                ? result.tags.map(String).filter(Boolean)
+                : [],
+            chunks: Array.isArray(result.chunks)
+                ? result.chunks.map(String).filter(Boolean)
+                : [],
+            tokenCount: Math.max(0, Math.floor(Number(result.tokenCount) || 0)),
+            rulesVersion: String(result.rulesVersion || '')
+        };
+    }
+
     async probeIngestionFiles(filePaths) {
         if (!this.nativeKnowledgeRuntime
             || typeof this.nativeKnowledgeRuntime.probeIngestionFiles !== 'function') {
@@ -1350,7 +1417,8 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         const raw = await this.nativeKnowledgeRuntime.commitDeleteBatch(
             this.dbPath,
             paths,
-            Math.max(0, Math.floor(Number(ttlMs) || 0))
+            Math.max(0, Math.floor(Number(ttlMs) || 0)),
+            path.resolve(this.config.rootPath)
         );
         const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
         if (!result || result.factsCommitted !== true) {
@@ -3554,6 +3622,7 @@ candidates = await this.deduplicateResults(
 
         this._shutdownPromise = (async () => {
             console.log('[KnowledgeBase] shutting down...');
+            this._shuttingDown = true;
 
             // 先停止文件事件和新一轮批处理，保持 NativeKnowledgeRuntime 可用，
             // 让已接纳的外部变更、删除提交和索引恢复能够正常完成。
@@ -3581,6 +3650,8 @@ candidates = await this.deduplicateResults(
             }
 
             await this.databaseCoordinator.waitForExternalMutations();
+            await this.ingestionPipeline.drain();
+            await this.tagConsistencyService.drain();
             await this._indexRecoveryTail;
 
             if (this.pendingDeletes.size > 0 && !this.databaseCorruptionDetected) {

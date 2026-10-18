@@ -20,6 +20,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.21"
 sha2 = "0.10"
+regex = "1.13.1"
+# 与现有 TextChunker.js 的 cl100k_base 保持一致
+tiktoken-rs = "0.12.1"
 flate2 = "1.0"
 
 # HNSW向量索引

@@ -3,13 +3,13 @@
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
-const { chunkText } = require('../../TextChunker');
 const { getEmbeddingsBatch } = require('../../EmbeddingUtils');
 
 // 实现函数以 KnowledgeBaseManager 作为 this 执行，使状态所有权保持唯一；
 // 本模块拥有摄取行为，Manager 仅保留兼容门面。
 const implementations = {
 _queueDelete(filePath) {
+        if (this._shuttingDown) return;
         this.pendingDeletes.add(filePath);
         if (this.pendingDeletes.size >= this.config.maxDeleteBatchSize) {
             this._flushDeleteBatch();
@@ -50,16 +50,16 @@ async _flushDeleteBatch() {
             console.error('[KnowledgeBase] ❌ Delete batch failed:', e);
             if (this._isSqliteCorruptionError(e)) {
                 await this._handleRuntimeSqliteCorruption(e, []);
-            } else if (this._isSqliteBusyError(e)) {
-                retryDelayMs = this.config.sqliteBusyRetryDelayMs;
+            } else {
+                retryDelayMs = Math.max(1000, this.config.sqliteBusyRetryDelayMs);
                 console.warn(
-                    `[KnowledgeBase] ⏳ SQLite remained busy after ${this.config.sqliteBusyTimeoutMs}ms; ` +
+                    `[KnowledgeBase] Delete verification/commit deferred; ` +
                     `${batchFiles.length} delete(s) remain queued and will retry in ${retryDelayMs}ms.`
                 );
             }
         } finally {
             this.isProcessingDeletes = false;
-            if (!this.databaseCorruptionDetected && this.pendingDeletes.size > 0) {
+            if (!this._shuttingDown && !this.databaseCorruptionDetected && this.pendingDeletes.size > 0) {
                 if (retryDelayMs > 0) {
                     setTimeout(() => this._flushDeleteBatch(), retryDelayMs);
                 } else {
@@ -72,7 +72,7 @@ async _flushDeleteBatch() {
 _scheduleBatch() {
         // 固定收集窗口：首个文件启动计时，后续文件只加入 pendingFiles，
         // 不重置截止时间，避免持续写入导致索引任务无限延期。
-        if (this.batchTimer) return;
+        if (this._shuttingDown || this.batchTimer) return;
         this.batchTimer = setTimeout(() => {
             this.batchTimer = null;
             this._flushBatch();
@@ -80,7 +80,7 @@ _scheduleBatch() {
     },
 
 async _flushBatch() {
-        if (this.isProcessing || this.pendingFiles.size === 0) return;
+        if (this._shuttingDown || this.isProcessing || this.pendingFiles.size === 0) return;
         if (this.externalMutationActive) {
             this.externalMutationBatchDeferred = true;
             return;
@@ -94,6 +94,17 @@ async _flushBatch() {
 
         // 1. 📋 准备批次：先从队列中取出，但不立即永久删除
         const batchFiles = Array.from(this.pendingFiles).slice(0, this.config.maxBatchSize);
+        const batchIdentity = {
+            operationId: crypto.randomUUID(),
+            batchId: crypto.randomUUID(),
+            createdAt: Date.now(),
+            expiresAt: Date.now() + 30 * 60 * 1000,
+            dimension: this.config.dimension,
+            modelSig: this.config.modelSig
+        };
+        const batchPathGenerations = new Map(batchFiles.map(filePath => [
+            filePath, this.watcherPathGenerations.get(path.resolve(filePath)) || 0
+        ]));
         if (this.batchTimer) {
             clearTimeout(this.batchTimer);
             this.batchTimer = null;
@@ -160,11 +171,17 @@ async _flushBatch() {
                         return;
                     }
 
+                    const prepared = await this.prepareIngestionText(content);
                     if (!docsByDiary.has(diaryName)) docsByDiary.set(diaryName, []);
                     docsByDiary.get(diaryName).push({
-                        relPath, diaryName, checksum, mtime: stats.mtimeMs, size: stats.size,
-                        chunks: chunkText(content),
-                        tags: this._extractTags(content)
+                        relPath,
+                        diaryName,
+                        checksum,
+                        mtime: stats.mtimeMs,
+                        size: stats.size,
+                        chunks: prepared.chunks,
+                        tags: prepared.tags,
+                        textRulesVersion: prepared.rulesVersion
                     });
                 } catch (e) {
                     // 元数据快路径也可能执行 UPDATE。忙锁属于数据库级瞬态失败，
@@ -192,15 +209,11 @@ async _flushBatch() {
 
             for (const [, docs] of docsByDiary) {
                 docs.forEach(doc => {
-                    const validChunks = doc.chunks
-                        .map(c => this._prepareTextForEmbedding(c))
-                        .filter(c => c !== '[EMPTY_CONTENT]');
-                    doc.chunks = validChunks;
                     migrationRequests.push({
                         path: doc.relPath,
                         checksum: doc.checksum,
                         size: doc.size,
-                        chunkCount: validChunks.length
+                        chunkCount: doc.chunks.length
                     });
                     doc.tags.forEach(t => uniqueTags.add(t));
                 });
@@ -415,11 +428,21 @@ async _flushBatch() {
                 }
             }
 
+            if (this.config.dimension !== batchIdentity.dimension
+                || this.config.modelSig !== batchIdentity.modelSig) {
+                throw new Error('KNOWLEDGE_STORE_MODEL_CHANGED_DURING_EMBEDDING');
+            }
+            for (const file of planFiles) {
+                const absolute = path.resolve(this.config.rootPath, file.path);
+                const current = await fs.stat(absolute);
+                if (current.size !== file.size || Math.floor(current.mtimeMs) !== file.mtime
+                    || (this.watcherPathGenerations.get(absolute) || 0)
+                        !== (batchPathGenerations.get(absolute) || 0)) {
+                    throw new Error('KNOWLEDGE_STORE_SOURCE_SNAPSHOT_CHANGED');
+                }
+            }
             const commitPlan = {
-                operationId: crypto.randomUUID(),
-                batchId: crypto.randomUUID(),
-                dimension: this.config.dimension,
-                modelSig: this.config.modelSig,
+                ...batchIdentity,
                 files: planFiles,
                 chunks: planChunks,
                 tags: planTags
@@ -435,6 +458,7 @@ async _flushBatch() {
                 );
             });
 
+            if (this._shuttingDown) return;
             const _tPhaseStart = Date.now();
             const receipt = await this.commitIngestionBatch(
                 commitPlan,
@@ -469,7 +493,9 @@ async _flushBatch() {
 
             // 5. ✅ 成功处理后，移除文件并清空重试计数
             batchFiles.forEach(f => {
-                if (unstableFiles.has(f)) return;
+                if (unstableFiles.has(f)
+                    || (this.watcherPathGenerations.get(path.resolve(f)) || 0)
+                        !== (batchPathGenerations.get(f) || 0)) return;
                 const relativePath = path.relative(this.config.rootPath, f);
                 if (incompleteFiles.has(relativePath)) {
                     console.warn(
@@ -539,6 +565,8 @@ async _flushBatch() {
                     `${batchFiles.length} file(s) remain queued without consuming retry budget. ` +
                     `Retrying in ${retryDelayMs}ms.`
                 );
+            } else if (/KNOWLEDGE_STORE_(?:SOURCE_SNAPSHOT_CHANGED|MODEL_CHANGED_DURING_EMBEDDING|FILE_VERSION_CONFLICT|BATCH_EXPIRED)/.test(String(e?.message))) {
+                retryDelayMs = Math.max(1000, this.config.sqliteBusyRetryDelayMs);
             } else if (e?.code === 'EMBEDDING_RESPONSE_MISMATCH') {
                 // 响应数量错位无法建立稳定 descriptor 映射，整批保留。
                 retryDelayMs = Math.max(
@@ -568,7 +596,7 @@ async _flushBatch() {
         }
         finally {
             this.isProcessing = false;
-            if (!this.databaseCorruptionDetected && this.pendingFiles.size > 0) {
+            if (!this._shuttingDown && !this.databaseCorruptionDetected && this.pendingFiles.size > 0) {
                 if (retryDelayMs > 0) {
                     setTimeout(() => this._flushBatch(), retryDelayMs);
                 } else {
@@ -621,7 +649,7 @@ async _handleDeleteBatch(filePaths) {
             console.error(`[KnowledgeBase] Delete error:`, e);
             // 忙锁与损坏都必须交给队列拥有者处理。吞掉 SQLITE_BUSY 会让
             // _flushDeleteBatch() 误删 pendingDeletes，造成 SQLite 中的幽灵记录。
-            if (this._isSqliteCorruptionError(e) || this._isSqliteBusyError(e)) throw e;
+            throw e;
         }
     }
 };
@@ -632,6 +660,23 @@ class IngestionPipeline {
             throw new TypeError('IngestionPipeline requires an owner');
         }
         this.owner = owner;
+        this.inFlight = new Set();
+    }
+
+    _track(operation) {
+        const pending = Promise.resolve().then(operation);
+        this.inFlight.add(pending);
+        pending.then(
+            () => this.inFlight.delete(pending),
+            () => this.inFlight.delete(pending)
+        );
+        return pending;
+    }
+
+    async drain() {
+        while (this.inFlight.size > 0) {
+            await Promise.allSettled([...this.inFlight]);
+        }
     }
 
     _queueDelete(...args) {
@@ -649,10 +694,10 @@ class IngestionPipeline {
     }
 
     async _flushDeleteBatch(...args) {
-        return await implementations._flushDeleteBatch.apply(
+        return await this._track(() => implementations._flushDeleteBatch.apply(
             this.owner,
             args
-        );
+        ));
     }
 
     _scheduleBatch(...args) {
@@ -663,10 +708,10 @@ class IngestionPipeline {
     }
 
     async _flushBatch(...args) {
-        return await implementations._flushBatch.apply(
+        return await this._track(() => implementations._flushBatch.apply(
             this.owner,
             args
-        );
+        ));
     }
 
     async _handleDelete(...args) {

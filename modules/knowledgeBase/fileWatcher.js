@@ -11,6 +11,9 @@ class KnowledgeBaseFileWatcher {
         this.watcher = null;
         this.watcherType = null;
         this.eventPoller = null;
+        this.reconcileInFlight = false;
+        this.reconcileQueued = false;
+        this.lifecycleGeneration = 0;
     }
 
     _isIgnored(diaryName, fileName = '') {
@@ -63,6 +66,10 @@ class KnowledgeBaseFileWatcher {
 
             const payload = JSON.parse(jsonPayload);
             const { event, path: filePath } = payload;
+            if (event === 'overflow') {
+                this._reconcileAfterOverflow();
+                return;
+            }
             if (!filePath || typeof filePath !== 'string') {
                 console.warn(
                     '[KnowledgeBase] Ignored Rust watcher event without '
@@ -100,7 +107,7 @@ class KnowledgeBaseFileWatcher {
                 );
             }
 
-            if (event === 'unlink') {
+            if (event === 'unlink' && hasStableProtocol) {
                 this._queueDelete(normalizedPath);
             } else if (event === 'add' || event === 'change') {
                 owner.pendingDeletes.delete(normalizedPath);
@@ -118,6 +125,84 @@ class KnowledgeBaseFileWatcher {
                 '[KnowledgeBase] Failed to parse Rust watcher event:',
                 error
             );
+        }
+    }
+
+    async _reconcileAfterOverflow() {
+        const runtime = this.owner.nativeKnowledgeRuntime;
+        const listIndexedFilePaths = runtime?.listIndexedFilePaths
+            || runtime?.list_indexed_file_paths;
+        const reconcileWithPaths = runtime?.reconcileWatchWithPaths
+            || runtime?.reconcile_watch_with_paths;
+        const fallbackReconcile = runtime?.reconcileWatch
+            || runtime?.reconcile_watch;
+
+        if (
+            typeof listIndexedFilePaths !== 'function'
+            || typeof reconcileWithPaths !== 'function'
+        ) {
+            if (typeof fallbackReconcile !== 'function') {
+                console.error(
+                    '[KnowledgeBase] Rust watcher queue overflowed, but ' +
+                    'reconciliation ABI is unavailable; rebuild rust-vexus-lite.'
+                );
+                return;
+            }
+            try {
+                fallbackReconcile.call(runtime);
+            } catch (error) {
+                console.error(
+                    '[KnowledgeBase] Failed to request fallback Rust watcher reconciliation:',
+                    error
+                );
+            }
+            return;
+        }
+
+        if (this.reconcileInFlight) {
+            this.reconcileQueued = true;
+            return;
+        }
+
+        this.reconcileInFlight = true;
+        const lifecycleGeneration = this.lifecycleGeneration;
+        try {
+            const rawPaths = await listIndexedFilePaths.call(
+                runtime,
+                this.owner.dbPath
+            );
+            if (
+                lifecycleGeneration !== this.lifecycleGeneration
+                || this.watcher !== runtime
+            ) return;
+            const indexedPaths = typeof rawPaths === 'string'
+                ? JSON.parse(rawPaths)
+                : rawPaths;
+            const paths = [...new Set(
+                (Array.isArray(indexedPaths) ? indexedPaths : [])
+                    .map(value => String(value || '').trim())
+                    .filter(Boolean)
+            )];
+
+            reconcileWithPaths.call(runtime, paths);
+            if (this.owner.debugMode) {
+                console.warn(
+                    '[KnowledgeBase] Rust watcher queue overflowed; ' +
+                    `native reconciliation requested with ${paths.length} indexed path(s).`
+                );
+            }
+        } catch (error) {
+            console.error(
+                '[KnowledgeBase] Failed to reconcile Rust watcher after queue overflow:',
+                error
+            );
+        } finally {
+            if (lifecycleGeneration !== this.lifecycleGeneration) return;
+            this.reconcileInFlight = false;
+            if (this.reconcileQueued) {
+                this.reconcileQueued = false;
+                void this._reconcileAfterOverflow();
+            }
         }
     }
 
@@ -168,6 +253,7 @@ class KnowledgeBaseFileWatcher {
             ignoreFolders: config.ignoreFolders || [],
             ignorePrefixes: config.ignorePrefixes || [],
             ignoreSuffixes: config.ignoreSuffixes || [],
+            initialScan: config.fullScanOnStartup !== false,
             debounceMs: parseInt(
                 process.env.KNOWLEDGEBASE_WATCH_DEBOUNCE_MS,
                 10
@@ -206,10 +292,12 @@ class KnowledgeBaseFileWatcher {
 
     start() {
         if (this.watcher) return this.watcher;
+        this.lifecycleGeneration++;
         return this._startRustWatcher();
     }
 
     async stop() {
+        this.lifecycleGeneration++;
         if (this.eventPoller) {
             clearInterval(this.eventPoller);
             this.eventPoller = null;
@@ -226,6 +314,8 @@ class KnowledgeBaseFileWatcher {
         }
         this.watcher = null;
         this.watcherType = null;
+        this.reconcileInFlight = false;
+        this.reconcileQueued = false;
         this._publishState();
         this.owner.watcherPathGenerations.clear();
     }

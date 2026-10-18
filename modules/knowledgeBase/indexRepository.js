@@ -194,40 +194,36 @@ class IndexRepository {
         const fileName = `diary_${safeName}`;
         const capacity = 50000;
         let index;
-        if (persist) {
-            index = new this.VexusIndex(this.config.dimension, capacity);
+        index = new this.VexusIndex(
+            this.config.dimension,
+            capacity
+        );
+        await this.restoreDiaryIndex(diaryName, index, capacity);
+
+        try {
             this.diaryIndices.set(diaryName, index);
+            this.onDiaryIndexPublished(diaryName, index);
+            if (persist) {
+                await this.publishDiaryBaseline(diaryName, {
+                    force: this.chunkIndexPersistenceMode === 'always'
+                });
+            }
+        } catch (error) {
+            if (this.diaryIndices.get(diaryName) === index) {
+                this.diaryIndices.delete(diaryName);
+            }
             try {
-                this.onDiaryIndexPublished(diaryName, index);
-            } catch (error) {
-                if (this.diaryIndices.get(diaryName) === index) {
-                    this.diaryIndices.delete(diaryName);
-                }
-                throw new Error(
-                    `Diary index native publication failed for ` +
-                    `"${diaryName}": ${error.message}`
+                this.onDiaryIndexRemoved(diaryName);
+            } catch (unregisterError) {
+                console.warn(
+                    `[${this.logPrefix}] Failed to unregister diary index "${diaryName}" after load failure:`,
+                    unregisterError.message || unregisterError
                 );
             }
-
-            await this.restoreDiaryIndex(diaryName, index, capacity);
-            await this.publishDiaryBaseline(diaryName, {
-                force: this.chunkIndexPersistenceMode === 'always'
-            });
-        } else {
-            index = new this.VexusIndex(
-                this.config.dimension,
-                capacity
+            throw new Error(
+                `Diary index native publication failed for ` +
+                `"${diaryName}": ${error.message}`
             );
-            this.diaryIndices.set(diaryName, index);
-            try {
-                this.onDiaryIndexPublished(diaryName, index);
-                await this.restoreDiaryIndex(diaryName, index, capacity);
-            } catch (error) {
-                if (this.diaryIndices.get(diaryName) === index) {
-                    this.diaryIndices.delete(diaryName);
-                }
-                throw error;
-            }
         }
         return index;
     }
@@ -295,14 +291,22 @@ class IndexRepository {
         if (!diaryName) return index;
 
         const normalized = String(diaryName).trim();
-        this.diaryIndices.set(normalized, index);
         try {
-            this.onDiaryIndexPublished(normalized, index);
             await this.restoreDiaryIndex(normalized, index, capacity);
+            this.diaryIndices.set(normalized, index);
+            this.onDiaryIndexPublished(normalized, index);
             return index;
         } catch (error) {
             if (this.diaryIndices.get(normalized) === index) {
                 this.diaryIndices.delete(normalized);
+            }
+            try {
+                this.onDiaryIndexRemoved(normalized);
+            } catch (unregisterError) {
+                console.warn(
+                    `[${this.logPrefix}] Failed to unregister diary index "${normalized}" after load failure:`,
+                    unregisterError.message || unregisterError
+                );
             }
             throw error;
         }
@@ -315,14 +319,22 @@ class IndexRepository {
             );
         }
         const normalized = String(diaryName).trim();
-        this.diaryIndices.set(normalized, index);
         try {
-            this.onDiaryIndexPublished(normalized, index);
             const receipt = await this.restoreDiaryIndex(normalized, index);
+            this.diaryIndices.set(normalized, index);
+            this.onDiaryIndexPublished(normalized, index);
             return Number(receipt?.vectorCount) || 0;
         } catch (error) {
             if (this.diaryIndices.get(normalized) === index) {
                 this.diaryIndices.delete(normalized);
+            }
+            try {
+                this.onDiaryIndexRemoved(normalized);
+            } catch (unregisterError) {
+                console.warn(
+                    `[${this.logPrefix}] Failed to unregister diary index "${normalized}" after recovery failure:`,
+                    unregisterError.message || unregisterError
+                );
             }
             throw error;
         }

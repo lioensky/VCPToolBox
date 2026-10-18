@@ -1,5 +1,6 @@
 #![deny(clippy::all)]
 
+mod text;
 mod index_lifecycle;
 mod ingestion;
 mod knowledge_runtime;
@@ -13,6 +14,7 @@ mod result_deduplicator;
 mod rivermemo_topology_v3;
 mod schema;
 mod storage;
+mod task_lifecycle;
 
 use rivermemo_topology_v3::MemoRuntime;
 use storage::{with_registered_read, with_registered_read_napi, with_registered_write};
@@ -3915,6 +3917,7 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[napi(object)]
@@ -3934,6 +3937,8 @@ pub struct WatcherConfig {
     pub ignore_folders: Vec<String>,
     pub ignore_prefixes: Vec<String>,
     pub ignore_suffixes: Vec<String>,
+    /// 是否在启动 watcher 时执行 Rust 侧初始扫描。
+    pub initial_scan: Option<bool>,
     /// 可选扩展名白名单。为空时保持旧行为：仅监听 .md / .txt。
     pub extensions: Option<Vec<String>>,
     /// 路径事件静默窗口。窗口内的新事件会使旧 generation 自动失效。
@@ -3944,7 +3949,7 @@ pub struct WatcherConfig {
     pub stability_retries: Option<u32>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WatchFileSnapshot {
     size: u64,
     modified_ms: u128,
@@ -3956,10 +3961,16 @@ struct WatchPendingPath {
     observed_as_create: bool,
 }
 
-fn watch_file_snapshot(path: &Path) -> Option<WatchFileSnapshot> {
-    let metadata = std::fs::metadata(path).ok()?;
+fn watch_file_snapshot(
+    path: &Path,
+) -> std::result::Result<Option<WatchFileSnapshot>, std::io::ErrorKind> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.kind()),
+    };
     if !metadata.is_file() {
-        return None;
+        return Err(std::io::ErrorKind::InvalidInput);
     }
     let modified_ms = metadata
         .modified()
@@ -3967,10 +3978,10 @@ fn watch_file_snapshot(path: &Path) -> Option<WatchFileSnapshot> {
         .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
         .map(|value| value.as_millis())
         .unwrap_or(0);
-    Some(WatchFileSnapshot {
+    Ok(Some(WatchFileSnapshot {
         size: metadata.len(),
         modified_ms,
-    })
+    }))
 }
 
 fn watcher_path_allowed(
@@ -4023,17 +4034,59 @@ fn watcher_path_allowed(
 }
 
 const WATCH_EVENT_QUEUE_CAPACITY: usize = 4096;
+const WATCH_PATH_WORKER_LIMIT: usize = 64;
+
+#[derive(Clone)]
+struct WatchScanConfig {
+    root_path: PathBuf,
+    allowed_extensions: Arc<HashSet<String>>,
+    ignore_folders: Arc<HashSet<String>>,
+    ignore_prefixes: Arc<Vec<String>>,
+    ignore_suffixes: Arc<Vec<String>>,
+}
+
+fn reap_finished_watch_workers(
+    worker_handles: &Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
+) {
+    let Ok(mut handles) = worker_handles.lock() else {
+        return;
+    };
+    let mut active = Vec::with_capacity(handles.len());
+    for handle in handles.drain(..) {
+        if handle.is_finished() {
+            let _ = handle.join();
+        } else {
+            active.push(handle);
+        }
+    }
+    *handles = active;
+}
 
 fn enqueue_watch_event(
     events: &Arc<Mutex<VecDeque<WatchEvent>>>,
+    overflowed: &Arc<AtomicBool>,
     event: WatchEvent,
 ) {
     if let Ok(mut queue) = events.lock() {
         if queue.len() >= WATCH_EVENT_QUEUE_CAPACITY {
             queue.pop_front();
+            overflowed.store(true, Ordering::Release);
         }
         queue.push_back(event);
     }
+}
+
+fn wait_for_watcher_duration(running: &AtomicBool, duration: Duration) -> bool {
+    const WAIT_SLICE: Duration = Duration::from_millis(25);
+    let started = std::time::Instant::now();
+    while started.elapsed() < duration {
+        if !running.load(Ordering::Acquire) {
+            return false;
+        }
+        let remaining = duration.saturating_sub(started.elapsed());
+        std::thread::sleep(remaining.min(WAIT_SLICE));
+    }
+    running.load(Ordering::Acquire)
 }
 
 fn emit_initial_watch_events(
@@ -4044,12 +4097,24 @@ fn emit_initial_watch_events(
     ignore_suffixes: &[String],
     generation_counter: &AtomicU64,
     events: &Arc<Mutex<VecDeque<WatchEvent>>>,
+    overflowed: &Arc<AtomicBool>,
+    running: &AtomicBool,
+    known_database_paths: &HashSet<PathBuf>,
 ) {
+    // 整次扫描使用开始时的代际。扫描期间到来的 notify 必须具有更高代际，
+    // 不能因为扫描较晚访问某一路径就覆盖该路径的新事件。
+    let scan_generation = generation_counter.fetch_add(1, Ordering::AcqRel) + 1;
     let mut stack = vec![root_path.to_path_buf()];
+    let mut seen_paths = HashSet::new();
+    let mut scan_complete = true;
     while let Some(directory) = stack.pop() {
+        if !running.load(Ordering::Acquire) {
+            return;
+        }
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) => {
+                scan_complete = false;
                 eprintln!(
                     "[VexusWatcher] Initial scan skipped directory {}: {}",
                     directory.to_string_lossy(),
@@ -4059,11 +4124,34 @@ fn emit_initial_watch_events(
             }
         };
 
-        for entry in entries.flatten() {
+        for entry_result in entries {
+            let entry = match entry_result {
+                Ok(entry) => entry,
+                Err(error) => {
+                    scan_complete = false;
+                    eprintln!(
+                        "[VexusWatcher] Initial scan skipped an entry in {}: {}",
+                        directory.to_string_lossy(),
+                        error
+                    );
+                    continue;
+                }
+            };
+            if !running.load(Ordering::Acquire) {
+                return;
+            }
             let path = entry.path();
             let metadata = match entry.metadata() {
                 Ok(metadata) => metadata,
-                Err(_) => continue,
+                Err(error) => {
+                    scan_complete = false;
+                    eprintln!(
+                        "[VexusWatcher] Initial scan skipped metadata for {}: {}",
+                        path.to_string_lossy(),
+                        error
+                    );
+                    continue;
+                }
             };
             if metadata.is_dir() {
                 let name = entry.file_name().to_string_lossy().to_string();
@@ -4092,7 +4180,9 @@ fn emit_initial_watch_events(
                 continue;
             }
 
-            let generation = generation_counter.fetch_add(1, Ordering::AcqRel) + 1;
+            let normalized_path = path.to_string_lossy().replace('\\', "/");
+            seen_paths.insert(PathBuf::from(&normalized_path));
+            let generation = scan_generation;
             let modified_ms = metadata
                 .modified()
                 .ok()
@@ -4101,9 +4191,10 @@ fn emit_initial_watch_events(
                 .unwrap_or(0);
             enqueue_watch_event(
                 events,
+                overflowed,
                 WatchEvent {
                     event: "add".to_string(),
-                    path: path.to_string_lossy().replace('\\', "/"),
+                    path: normalized_path,
                     generation: generation as i64,
                     stable: true,
                     size: metadata.len().min(i64::MAX as u64) as i64,
@@ -4116,6 +4207,70 @@ fn emit_initial_watch_events(
             );
         }
     }
+
+    if !scan_complete {
+        eprintln!(
+            "[VexusWatcher] Reconciliation scan was incomplete; suppressing missing-file tombstones."
+        );
+        return;
+    }
+
+    for stored_path in known_database_paths {
+        if !running.load(Ordering::Acquire) {
+            return;
+        }
+        // files.path 是知识根目录下的相对路径；不接受父目录、盘符或根路径，
+        // 防止损坏的数据库记录把对账扩展到知识根目录之外。
+        if stored_path.components().any(|component| {
+            !matches!(component, std::path::Component::Normal(_))
+        }) {
+            continue;
+        }
+        let database_path = &root_path.join(stored_path);
+        let normalized_path = database_path.to_string_lossy().replace('\\', "/");
+        if seen_paths.contains(&PathBuf::from(&normalized_path))
+            || !watcher_path_allowed(
+                database_path,
+                root_path,
+                allowed_extensions,
+                ignore_folders,
+                ignore_prefixes,
+                ignore_suffixes,
+            )
+        {
+            continue;
+        }
+
+        // 扫描之后可能已经重建文件；权限、共享句柄和 I/O 错误均不是删除证据。
+        match std::fs::metadata(database_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => continue,
+            Err(error) => {
+                eprintln!(
+                    "[VexusWatcher] Missing-file verification deferred for {}: {}",
+                    normalized_path, error
+                );
+                continue;
+            }
+        }
+        let generation = scan_generation;
+        enqueue_watch_event(
+            events,
+            overflowed,
+            WatchEvent {
+                event: "unlink".to_string(),
+                path: normalized_path,
+                generation: generation as i64,
+                stable: true,
+                size: 0,
+                mtime_ms: 0,
+                emitted_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
+                    .unwrap_or(0),
+            },
+        );
+    }
 }
 
 #[napi]
@@ -4125,6 +4280,12 @@ pub struct VexusWatcher {
     path_generations: Arc<Mutex<HashMap<PathBuf, WatchPendingPath>>>,
     generation_counter: Arc<AtomicU64>,
     events: Arc<Mutex<VecDeque<WatchEvent>>>,
+    overflowed: Arc<AtomicBool>,
+    scan_config: Arc<Mutex<Option<WatchScanConfig>>>,
+    worker_handles: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
+    reconcile_handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+    reconcile_requested: Arc<AtomicBool>,
+    reconcile_paths: Arc<Mutex<HashSet<PathBuf>>>,
     running: Arc<AtomicBool>,
 }
 
@@ -4139,6 +4300,12 @@ impl VexusWatcher {
             events: Arc::new(Mutex::new(VecDeque::with_capacity(
                 WATCH_EVENT_QUEUE_CAPACITY,
             ))),
+            overflowed: Arc::new(AtomicBool::new(false)),
+            scan_config: Arc::new(Mutex::new(None)),
+            worker_handles: Arc::new(Mutex::new(Vec::new())),
+            reconcile_handle: Arc::new(Mutex::new(None)),
+            reconcile_requested: Arc::new(AtomicBool::new(false)),
+            reconcile_paths: Arc::new(Mutex::new(HashSet::new())),
             running: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -4169,19 +4336,37 @@ impl VexusWatcher {
         let path_generations = self.path_generations.clone();
         let generation_counter = self.generation_counter.clone();
         let events = self.events.clone();
+        let overflowed = self.overflowed.clone();
+        let worker_handles = self.worker_handles.clone();
+        let callback_worker_handles = worker_handles.clone();
         let running = self.running.clone();
+        let initial_running = running.clone();
+        if let Ok(mut scan_config) = self.scan_config.lock() {
+            *scan_config = Some(WatchScanConfig {
+                root_path: root_path_buf.clone(),
+                allowed_extensions: allowed_extensions.clone(),
+                ignore_folders: ignore_folders.clone(),
+                ignore_prefixes: ignore_prefixes.clone(),
+                ignore_suffixes: ignore_suffixes.clone(),
+            });
+        }
         let callback_ignore_folders = ignore_folders.clone();
         let callback_ignore_prefixes = ignore_prefixes.clone();
         let callback_ignore_suffixes = ignore_suffixes.clone();
         let callback_allowed_extensions = allowed_extensions.clone();
         let callback_generation_counter = generation_counter.clone();
         let callback_events = events.clone();
+        let callback_overflowed = overflowed.clone();
         running.store(true, Ordering::Release);
+        overflowed.store(false, Ordering::Release);
         if let Ok(mut generations) = path_generations.lock() {
             generations.clear();
         }
 
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
+            if !running.load(Ordering::Acquire) {
+                return;
+            }
             match res {
                 Ok(event) => {
                     // notify 的 rename 事件通常同时携带旧路径与新路径。
@@ -4195,6 +4380,7 @@ impl VexusWatcher {
                     }
 
                     for path in event.paths {
+                        reap_finished_watch_workers(&callback_worker_handles);
                         if !watcher_path_allowed(
                             &path,
                             &root_path_buf_clone,
@@ -4211,6 +4397,10 @@ impl VexusWatcher {
                         let observed_as_create = matches!(event.kind, EventKind::Create(_));
                         let should_spawn = if let Ok(mut generations) = path_generations.lock() {
                             let should_spawn = !generations.contains_key(&path);
+                            if should_spawn && generations.len() >= WATCH_PATH_WORKER_LIMIT {
+                                callback_overflowed.store(true, Ordering::Release);
+                                continue;
+                            }
                             generations.insert(
                                 path.clone(),
                                 WatchPendingPath {
@@ -4234,6 +4424,7 @@ impl VexusWatcher {
                         let cleanup_path = path.clone();
                         let cleanup_pending = path_generations.clone();
                         let task_events = callback_events.clone();
+                        let task_overflowed = callback_overflowed.clone();
 
                         let spawn_result = std::thread::Builder::new()
                             .name("vexus-watch-path".to_string())
@@ -4252,8 +4443,10 @@ impl VexusWatcher {
                                     };
                                     let generation = current.generation;
 
-                                    std::thread::sleep(Duration::from_millis(debounce_ms));
-                                    if !task_running.load(Ordering::Acquire) {
+                                    if !wait_for_watcher_duration(
+                                        &task_running,
+                                        Duration::from_millis(debounce_ms),
+                                    ) {
                                         return;
                                     }
 
@@ -4274,29 +4467,35 @@ impl VexusWatcher {
                                     let mut stable = false;
 
                                     for _ in 0..stability_retries {
-                                        std::thread::sleep(Duration::from_millis(stability_ms));
-                                        if !task_running.load(Ordering::Acquire) {
+                                        if !wait_for_watcher_duration(
+                                            &task_running,
+                                            Duration::from_millis(stability_ms),
+                                        ) {
                                             return;
                                         }
+
                                         let latest = pending
                                             .lock()
                                             .ok()
-                                            .and_then(|generations| generations.get(&task_path).copied());
+                                            .and_then(|generations| {
+                                                generations.get(&task_path).copied()
+                                            });
                                         if latest.map(|value| value.generation) != Some(generation) {
                                             continue 'generation;
                                         }
 
                                         let next_snapshot = watch_file_snapshot(&task_path);
-                                        if next_snapshot == previous_snapshot {
+                                        if next_snapshot.is_ok() && next_snapshot == previous_snapshot {
                                             stable = true;
-                                            final_snapshot = next_snapshot;
+                                            final_snapshot = next_snapshot.ok().flatten();
                                             break;
                                         }
                                         previous_snapshot = next_snapshot;
                                     }
 
                                     if !stable {
-                                        // 本代际明确结束，避免留下无法自行恢复的 generation 状态。
+                                        // 稳定确认耗尽后必须留下可对账信号，不能让路径停留在
+                                        // “已有 generation 但没有 worker”的孤儿状态。
                                         if let Ok(mut generations) = pending.lock() {
                                             if generations
                                                 .get(&task_path)
@@ -4308,8 +4507,9 @@ impl VexusWatcher {
                                                 continue 'generation;
                                             }
                                         }
+                                        task_overflowed.store(true, Ordering::Release);
                                         eprintln!(
-                                            "[VexusWatcher] ⚠️ Path did not stabilize after {} samples; generation {} dropped: {}",
+                                            "[VexusWatcher] ⚠️ Path did not stabilize after {} samples; reconciliation requested for generation {}: {}",
                                             stability_retries,
                                             generation,
                                             task_path.to_string_lossy()
@@ -4317,18 +4517,19 @@ impl VexusWatcher {
                                         return;
                                     }
 
-                                    let observed_as_create = if let Ok(mut generations) = pending.lock() {
-                                        match generations.get(&task_path).copied() {
-                                            Some(value) if value.generation == generation => {
-                                                generations.remove(&task_path);
-                                                value.observed_as_create
+                                    let observed_as_create =
+                                        if let Ok(mut generations) = pending.lock() {
+                                            match generations.get(&task_path).copied() {
+                                                Some(value) if value.generation == generation => {
+                                                    generations.remove(&task_path);
+                                                    value.observed_as_create
+                                                }
+                                                Some(_) => continue 'generation,
+                                                None => return,
                                             }
-                                            Some(_) => continue 'generation,
-                                            None => return,
-                                        }
-                                    } else {
-                                        return;
-                                    };
+                                        } else {
+                                            return;
+                                        };
 
                                     let (event_type, size, modified_ms) = match final_snapshot {
                                         Some(snapshot) => (
@@ -4344,6 +4545,7 @@ impl VexusWatcher {
                                         .unwrap_or(0);
                                     enqueue_watch_event(
                                         &task_events,
+                                        &task_overflowed,
                                         WatchEvent {
                                             event: event_type.to_string(),
                                             path: task_path.to_string_lossy().replace('\\', "/"),
@@ -4358,21 +4560,37 @@ impl VexusWatcher {
                                 }
                             });
 
-                        if let Err(error) = spawn_result {
-                            // spawn 已明确失败，此路径不可能存在活跃 worker；无条件清理，
-                            // 避免并发刷新的新 generation 留下“有状态、无执行者”的孤儿项。
-                            if let Ok(mut generations) = cleanup_pending.lock() {
-                                generations.remove(&cleanup_path);
+                        match spawn_result {
+                            Ok(handle) => {
+                                if let Ok(mut handles) = callback_worker_handles.lock() {
+                                    handles.push(handle);
+                                } else {
+                                    eprintln!(
+                                        "[VexusWatcher] ⚠️ Worker handle registry poisoned; \
+                                         joining path worker immediately: {}",
+                                        cleanup_path.to_string_lossy()
+                                    );
+                                    let _ = handle.join();
+                                }
                             }
-                            eprintln!(
-                                "[VexusWatcher] ❌ Failed to spawn path worker for {}: {}",
-                                cleanup_path.to_string_lossy(),
-                                error
-                            );
+                            Err(error) => {
+                                // spawn 已明确失败，此路径不可能存在活跃 worker；无条件清理，
+                                // 避免并发刷新的新 generation 留下“有状态、无执行者”的孤儿项。
+                                if let Ok(mut generations) = cleanup_pending.lock() {
+                                    generations.remove(&cleanup_path);
+                                }
+                                callback_overflowed.store(true, Ordering::Release);
+                                eprintln!(
+                                    "[VexusWatcher] ❌ Failed to spawn path worker for {}: {}",
+                                    cleanup_path.to_string_lossy(),
+                                    error
+                                );
+                            }
                         }
                     }
                 }
                 Err(e) => {
+                    callback_overflowed.store(true, Ordering::Release);
                     eprintln!("[VexusWatcher] ❌ Native watch error: {:?}", e);
                 }
             }
@@ -4387,7 +4605,7 @@ impl VexusWatcher {
         // 初始对账由 Rust watcher 完成，和 notify 事件使用同一个回调与
         // generation 序列。这样 JS 不再递归扫描文件系统，也不会制造第二套
         // 初始 pending 队列。
-        {
+        if config.initial_scan.unwrap_or(true) {
             let initial_root = root_path_buf.clone();
             let initial_extensions = allowed_extensions.clone();
             let initial_ignore_folders = ignore_folders.clone();
@@ -4395,7 +4613,10 @@ impl VexusWatcher {
             let initial_ignore_suffixes = ignore_suffixes.clone();
             let initial_generation_counter = generation_counter.clone();
             let initial_events = events.clone();
-            std::thread::Builder::new()
+            let initial_overflowed = overflowed.clone();
+            let initial_worker_handles = worker_handles.clone();
+            let initial_running = initial_running.clone();
+            let initial_handle = std::thread::Builder::new()
                 .name("vexus-watch-initial-scan".to_string())
                 .spawn(move || {
                     emit_initial_watch_events(
@@ -4406,6 +4627,9 @@ impl VexusWatcher {
                         &initial_ignore_suffixes,
                         &initial_generation_counter,
                         &initial_events,
+                        &initial_overflowed,
+                        &initial_running,
+                        &HashSet::new(),
                     );
                 })
                 .map_err(|error| {
@@ -4414,6 +4638,15 @@ impl VexusWatcher {
                         error
                     ))
                 })?;
+            if let Ok(mut handles) = initial_worker_handles.lock() {
+                handles.push(initial_handle);
+            } else {
+                eprintln!(
+                    "[VexusWatcher] ⚠️ Worker handle registry poisoned; \
+                     joining initial scan immediately."
+                );
+                let _ = initial_handle.join();
+            };
         }
 
         let mut lock = watcher_ref
@@ -4428,31 +4661,338 @@ impl VexusWatcher {
         Ok(())
     }
 
-    /// 停止监听
+    /// 请求一次 Rust 侧后台文件对账。
+    ///
+    /// 对账线程在 Runtime 内部单飞运行；N-API 调用只负责提交请求，
+    /// 不在 Node.js 主线程执行递归文件扫描。扫描结果重新进入同一个
+    /// 有界事件队列，停止时由 stop_watch() 取消并 join。
+    #[napi]
+    pub fn reconcile_watch(&self) -> Result<()> {
+        self.reconcile_watch_with_paths(HashSet::new())
+    }
+
+    pub fn reconcile_watch_with_paths(&self, known_database_paths: HashSet<PathBuf>) -> Result<()> {
+        if !self.running.load(Ordering::Acquire) {
+            return Err(Error::from_reason(
+                "Cannot reconcile a stopped native watcher".to_string(),
+            ));
+        }
+        let scan_config = self
+            .scan_config
+            .lock()
+            .map_err(|_| Error::from_reason("Watcher scan config lock poisoned".to_string()))?
+            .clone()
+            .ok_or_else(|| {
+                Error::from_reason("Native watcher scan config is unavailable".to_string())
+            })?;
+
+        let mut reconcile_slot = self
+            .reconcile_handle
+            .lock()
+            .map_err(|_| Error::from_reason("Watcher reconcile lock poisoned".to_string()))?;
+
+        *self.reconcile_paths.lock().map_err(|_| {
+            Error::from_reason("Watcher reconcile paths lock poisoned".to_string())
+        })? = known_database_paths;
+        self.reconcile_requested.store(true, Ordering::Release);
+        if let Some(handle) = reconcile_slot.as_ref() {
+            if !handle.is_finished() {
+                return Ok(());
+            }
+        }
+        if let Some(handle) = reconcile_slot.take() {
+            let _ = handle.join();
+        }
+
+        let generation_counter = self.generation_counter.clone();
+        let events = self.events.clone();
+        let overflowed = self.overflowed.clone();
+        let running = self.running.clone();
+        let reconcile_requested = self.reconcile_requested.clone();
+        let reconcile_paths = self.reconcile_paths.clone();
+        let handle = thread::Builder::new()
+            .name("vexus-watch-reconcile".to_string())
+            .spawn(move || {
+                // 对账 worker 在 watcher 生命周期内保持待命，避免“检查重跑标志”
+                // 到线程退出之间的新请求被遗失。停止时由 stop_watch 取消并 join。
+                while running.load(Ordering::Acquire) {
+                    if !reconcile_requested.swap(false, Ordering::AcqRel) {
+                        if !wait_for_watcher_duration(&running, Duration::from_millis(25)) {
+                            break;
+                        }
+                        continue;
+                    }
+                    let known_database_paths = match reconcile_paths.lock() {
+                        Ok(paths) => paths.clone(),
+                        Err(_) => {
+                            overflowed.store(true, Ordering::Release);
+                            break;
+                        }
+                    };
+                    emit_initial_watch_events(
+                        &scan_config.root_path,
+                        &scan_config.allowed_extensions,
+                        &scan_config.ignore_folders,
+                        &scan_config.ignore_prefixes,
+                        &scan_config.ignore_suffixes,
+                        &generation_counter,
+                        &events,
+                        &overflowed,
+                        &running,
+                        &known_database_paths,
+                    );
+                }
+            })
+            .map_err(|error| {
+                Error::from_reason(format!(
+                    "Failed to spawn native watcher reconciliation: {}",
+                    error
+                ))
+            })?;
+        *reconcile_slot = Some(handle);
+        Ok(())
+    }
+
     #[napi]
     pub fn stop_watch(&self) -> Result<()> {
+        // 先禁止新任务并释放 notify 生产者；随后 join 所有已有 worker。
+        // 队列和 generation 必须等生产者完全退出后再清理，避免 stop 与 enqueue 竞态。
         self.running.store(false, Ordering::Release);
+        self.reconcile_requested.store(false, Ordering::Release);
+        let mut lock = self
+            .watcher
+            .lock()
+            .map_err(|e| Error::from_reason(format!("Watcher lock failed: {}", e)))?;
+        *lock = None;
+        drop(lock);
+
+        let handles = self
+            .worker_handles
+            .lock()
+            .map_err(|_| Error::from_reason("Watcher worker handle lock poisoned".to_string()))?
+            .drain(..)
+            .collect::<Vec<_>>();
+        let reconcile_handle = self
+            .reconcile_handle
+            .lock()
+            .map_err(|_| Error::from_reason("Watcher reconcile lock poisoned".to_string()))?
+            .take();
+        let mut join_errors = 0usize;
+        for handle in handles {
+            if handle.join().is_err() {
+                join_errors = join_errors.saturating_add(1);
+            }
+        }
+        if let Some(handle) = reconcile_handle {
+            if handle.join().is_err() {
+                join_errors = join_errors.saturating_add(1);
+            }
+        }
+        if join_errors > 0 {
+            return Err(Error::from_reason(format!(
+                "Native watcher stopped but {} worker thread(s) panicked",
+                join_errors
+            )));
+        }
+
         if let Ok(mut generations) = self.path_generations.lock() {
             generations.clear();
         }
         if let Ok(mut events) = self.events.lock() {
             events.clear();
         }
-        let mut lock = self
-            .watcher
-            .lock()
-            .map_err(|e| Error::from_reason(format!("Watcher lock failed: {}", e)))?;
-        *lock = None;
-        println!("[VexusWatcher] 🦀 Native watcher stopped.");
+        self.overflowed.store(false, Ordering::Release);
+        if let Ok(mut scan_config) = self.scan_config.lock() {
+            *scan_config = None;
+        }
+
+        println!("[VexusWatcher] 🦀 Native watcher stopped and workers joined.");
         Ok(())
     }
 
+    #[napi]
     pub fn drain_events(&self, max_events: u32) -> Vec<WatchEvent> {
         let limit = (max_events as usize).clamp(1, WATCH_EVENT_QUEUE_CAPACITY);
+        let mut output = Vec::new();
+        if self.overflowed.swap(false, Ordering::AcqRel) {
+            output.push(WatchEvent {
+                event: "overflow".to_string(),
+                path: self
+                    .scan_config
+                    .lock()
+                    .ok()
+                    .and_then(|config| config.as_ref().map(|value| {
+                        value.root_path.to_string_lossy().replace('\\', "/")
+                    }))
+                    .unwrap_or_default(),
+                generation: self.generation_counter.load(Ordering::Acquire) as i64,
+                stable: true,
+                size: 0,
+                mtime_ms: 0,
+                emitted_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
+                    .unwrap_or(0),
+            });
+        }
         let Ok(mut queue) = self.events.lock() else {
-            return Vec::new();
+            return output;
         };
-        let count = queue.len().min(limit);
-        queue.drain(..count).collect()
+        let remaining = limit.saturating_sub(output.len());
+        let count = queue.len().min(remaining);
+        output.extend(queue.drain(..count));
+        output
+    }
+}
+
+
+#[cfg(test)]
+mod watcher_reconciliation_tests {
+    use super::*;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "vexus-watch-test-{}-{}",
+                std::process::id(),
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scan(root: &Path, paths: &[&str]) -> Vec<WatchEvent> {
+        let events = Arc::new(Mutex::new(VecDeque::new()));
+        emit_initial_watch_events(
+            root,
+            &HashSet::from(["txt".to_string()]),
+            &HashSet::new(),
+            &[],
+            &[],
+            &AtomicU64::new(0),
+            &events,
+            &Arc::new(AtomicBool::new(false)),
+            &AtomicBool::new(true),
+            &paths.iter().map(PathBuf::from).collect(),
+        );
+        let output = events.lock().unwrap().drain(..).collect::<Vec<_>>();
+        output
+    }
+
+    #[test]
+    fn reconciliation_emits_missing_relative_path_only() {
+        let dir = TestDirectory::new();
+        std::fs::create_dir(dir.0.join("diary")).unwrap();
+        std::fs::write(dir.0.join("diary/present.txt"), "present").unwrap();
+        let events = scan(&dir.0, &["diary/present.txt", "diary/missing.txt"]);
+        let deletions: Vec<_> = events.iter().filter(|event| event.event == "unlink").collect();
+        assert_eq!(deletions.len(), 1);
+        assert_eq!(
+            deletions[0].path,
+            dir.0.join("diary/missing.txt").to_string_lossy().replace('\\', "/")
+        );
+        assert!(deletions[0].stable);
+    }
+
+    #[test]
+    fn incomplete_root_scan_never_emits_deletions() {
+        let dir = TestDirectory::new();
+        let events = scan(&dir.0.join("unavailable"), &["diary/missing.txt"]);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn reconciliation_rejects_parent_and_absolute_paths() {
+        let dir = TestDirectory::new();
+        let absolute = dir.0.join("missing.txt").to_string_lossy().into_owned();
+        let events = scan(&dir.0, &["../missing.txt", &absolute]);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn queue_overflow_is_bounded_and_reported() {
+        let watcher = VexusWatcher::new();
+        for generation in 1..=(WATCH_EVENT_QUEUE_CAPACITY + 100) {
+            enqueue_watch_event(
+                &watcher.events,
+                &watcher.overflowed,
+                WatchEvent {
+                    event: "change".to_string(),
+                    path: "diary/event.txt".to_string(),
+                    generation: generation as i64,
+                    stable: true,
+                    size: 1,
+                    mtime_ms: 0,
+                    emitted_at: 0,
+                },
+            );
+        }
+        assert_eq!(watcher.events.lock().unwrap().len(), WATCH_EVENT_QUEUE_CAPACITY);
+        let events = watcher.drain_events(256);
+        assert_eq!(events.len(), 256);
+        assert_eq!(events[0].event, "overflow");
+        assert!(!watcher.overflowed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn native_watcher_reconciles_repeatedly_and_releases_handles() {
+        let dir = TestDirectory::new();
+        let watcher = VexusWatcher::new();
+        watcher.start_watch(WatcherConfig {
+            root_path: dir.0.to_string_lossy().into_owned(),
+            ignore_folders: vec![],
+            ignore_prefixes: vec![],
+            ignore_suffixes: vec![],
+            initial_scan: Some(false),
+            extensions: None,
+            debounce_ms: Some(25),
+            stability_ms: Some(25),
+            stability_retries: Some(2),
+        }).unwrap();
+
+        let wait_for_missing = |expected: &str| {
+            let started = std::time::Instant::now();
+            while started.elapsed() < Duration::from_secs(5) {
+                if watcher.drain_events(256).iter().any(|event| {
+                    event.event == "unlink" && event.path.ends_with(expected)
+                }) {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            panic!("missing reconciliation event: {}", expected);
+        };
+        watcher.reconcile_watch_with_paths(HashSet::from([
+            PathBuf::from("first.txt")
+        ])).unwrap();
+        wait_for_missing("first.txt");
+        watcher.reconcile_watch_with_paths(HashSet::from([
+            PathBuf::from("second.txt")
+        ])).unwrap();
+        wait_for_missing("second.txt");
+        watcher.stop_watch().unwrap();
+        assert!(watcher.events.lock().unwrap().is_empty());
+        assert!(watcher.worker_handles.lock().unwrap().is_empty());
+        assert!(watcher.reconcile_handle.lock().unwrap().is_none());
+        // Windows 上仍有 notify 目录句柄时，删除/重命名会失败。
+        let moved = dir.0.with_extension("released");
+        std::fs::rename(&dir.0, &moved).unwrap();
+        std::fs::remove_dir_all(moved).unwrap();
+    }
+
+    #[test]
+    fn snapshot_distinguishes_non_file_from_absence() {
+        let dir = TestDirectory::new();
+        assert_eq!(watch_file_snapshot(&dir.0), Err(std::io::ErrorKind::InvalidInput));
+        assert_eq!(watch_file_snapshot(&dir.0.join("missing.txt")), Ok(None));
     }
 }

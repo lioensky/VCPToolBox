@@ -94,7 +94,7 @@ fn ratio(delta: u64, current: u64, baseline: u64) -> f64 {
     delta as f64 / current.max(baseline).max(1) as f64
 }
 
-fn checkpoint_gate() -> &'static Mutex<()> {
+pub(crate) fn checkpoint_gate() -> &'static Mutex<()> {
     static CHECKPOINT_GATE: OnceLock<Mutex<()>> = OnceLock::new();
     CHECKPOINT_GATE.get_or_init(|| Mutex::new(()))
 }
@@ -761,6 +761,8 @@ impl Task for IndexRestoreTask {
         use std::collections::{HashMap, HashSet};
         use std::path::Path;
 
+        let _publication_guard = checkpoint_gate().lock()
+            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
         let dimension = self.dimension as usize;
         if dimension == 0 || self.model_sig.trim().is_empty() {
             return Err(Error::from_reason(
@@ -964,11 +966,13 @@ impl Task for IndexRestoreTask {
         }
 
         let loaded_persisted_index = restored_index.is_some();
-        let target = restored_index.unwrap_or_else(|| {
-            rebuilt = true;
-            new_restore_index(dimension, self.capacity as usize)
-                .expect("restore index construction was validated")
-        });
+        let target = match restored_index {
+            Some(index) => index,
+            None => {
+                rebuilt = true;
+                new_restore_index(dimension, self.capacity as usize)?
+            }
+        };
 
         let current_ids: HashSet<i64> = current_rows.iter().map(|(id, _)| *id).collect();
         if baseline_compatible && loaded_persisted_index {
@@ -1013,6 +1017,29 @@ impl Task for IndexRestoreTask {
             .map_err(|error| Error::from_reason(format!("Publish restored index failed: {}", error)))?;
         *active = target;
         drop(active);
+
+        let state_scope = match self.scope {
+            IndexScope::GlobalTags => "global_tags".to_string(),
+            IndexScope::Diary => format!("diary:{}", self.diary_name.as_deref().unwrap_or_default()),
+        };
+        with_registered_write(&self.db_path, move |tx| {
+            tx.execute(
+                "INSERT INTO kbm_index_states(
+                    scope, state, facts_generation, applied_generation, updated_at
+                 ) SELECT ?1, 'ready', CAST(value AS INTEGER), CAST(value AS INTEGER), ?2
+                   FROM kbm_runtime_meta WHERE key='database_generation'
+                 ON CONFLICT(scope) DO UPDATE SET
+                    state='ready', facts_generation=excluded.facts_generation,
+                    applied_generation=excluded.applied_generation,
+                    error_message=NULL, updated_at=excluded.updated_at",
+                rusqlite::params![state_scope, now_ms()],
+            ).map_err(|error| format!("Publish restored index state failed: {}", error))?;
+            Ok(WriteReceipt {
+                operation: "publish_restored_index_state".to_string(),
+                database_generation: 0,
+                facts_changed: false,
+            })
+        }).map_err(Error::from_reason)?;
 
         serde_json::to_string(&RestoreResult {
             restored: true,

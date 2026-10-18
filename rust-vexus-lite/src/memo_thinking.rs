@@ -410,20 +410,26 @@ mod tests {
                 .as_nanos()
         ));
         let db_path = path.to_str().unwrap();
+        let (storage, _) =
+            crate::storage::SqliteStorageEngine::open_and_init(
+                &path,
+                crate::storage::StorageOptions::default(),
+            )
+            .unwrap();
         {
             let db = rusqlite::Connection::open(&path).unwrap();
             db.execute_batch(
-                "CREATE TABLE files(id INTEGER PRIMARY KEY, diary_name TEXT);
-                 CREATE TABLE chunks(id INTEGER PRIMARY KEY, file_id INTEGER, vector BLOB);
-                 CREATE TABLE tags(id INTEGER PRIMARY KEY, vector BLOB);
-                 CREATE TABLE file_tags(file_id INTEGER, tag_id INTEGER, position INTEGER);",
+                "CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, diary_name TEXT);
+                 CREATE TABLE IF NOT EXISTS chunks(id INTEGER PRIMARY KEY, file_id INTEGER, vector BLOB);
+                 CREATE TABLE IF NOT EXISTS tags(id INTEGER PRIMARY KEY, vector BLOB);
+                 CREATE TABLE IF NOT EXISTS file_tags(file_id INTEGER, tag_id INTEGER, position INTEGER);",
             )
             .unwrap();
             let bytes = |v: [f32; 2]| v.into_iter().flat_map(f32::to_ne_bytes).collect::<Vec<_>>();
             for id in 1..=3 {
                 db.execute(
-                    "INSERT INTO tags VALUES(?1,?2)",
-                    rusqlite::params![id, bytes([1.0, 0.0])],
+                    "INSERT INTO tags(name, vector) VALUES(?1, ?2)",
+                    rusqlite::params![format!("tag-{}", id), bytes([1.0, 0.0])],
                 )
                 .unwrap();
             }
@@ -434,13 +440,22 @@ mod tests {
                 (22, "Other", [1.0, 0.0]),
             ] {
                 db.execute(
-                    "INSERT INTO files VALUES(?1,?2)",
-                    rusqlite::params![id, diary],
+                    "INSERT INTO files(id, path, diary_name, checksum, mtime, size) \
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        id,
+                        format!("{}.md", id),
+                        diary,
+                        format!("checksum-{}", id),
+                        0_i64,
+                        0_i64
+                    ],
                 )
                 .unwrap();
                 db.execute(
-                    "INSERT INTO chunks VALUES(?1,?1,?2)",
-                    rusqlite::params![id, bytes(vector)],
+                    "INSERT INTO chunks(id, file_id, chunk_index, content, vector) \
+                     VALUES(?1, ?1, 0, ?2, ?3)",
+                    rusqlite::params![id, format!("chunk-{}", id), bytes(vector)],
                 )
                 .unwrap();
             }
@@ -478,6 +493,7 @@ mod tests {
         assert_eq!(output["stages"][2]["results"], serde_json::json!([]));
         runtime.clear().unwrap();
         assert!(plan(&runtime, db_path, "fixture", &input.to_string()).is_err());
+        storage.shutdown().unwrap();
         std::fs::remove_file(path).unwrap();
     }
 }
