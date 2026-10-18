@@ -1,0 +1,217 @@
+//! Host ownership for the single TDB retrieval backend.
+//! SQL facts and mathematical vector reads never depend on this object.
+use crate::index_source::SqlIndexBuild;
+use sha2::{Digest, Sha256};
+use std::io;
+use std::path::{Path, PathBuf};
+use vcp_tdb_index::asset::AssetIdentity;
+use vcp_tdb_index::engine::TdbIndex;
+
+pub(crate) struct RetrievalIndex {
+    // Explicit Option permits releasing the mmap before private-file cleanup.
+    inner: Option<TdbIndex>,
+    identity: AssetIdentity,
+    private_path: Option<PathBuf>,
+    reserved: usize,
+}
+
+impl RetrievalIndex {
+    pub(crate) fn empty(dimension: usize) -> io::Result<Self> {
+        Ok(Self {
+            inner: Some(TdbIndex::empty(dimension)?),
+            identity: AssetIdentity {
+                dimension, scope: 0, model_hash: [0; 32], content_digest: [0; 32],
+            },
+            private_path: None,
+            reserved: 0,
+        })
+    }
+
+    pub(crate) fn from_sql(build: SqlIndexBuild) -> Self {
+        let (index, path, identity, _) = build.into_parts();
+        let reserved = index.len();
+        Self { inner: Some(index), identity, private_path: Some(path), reserved }
+    }
+
+    /// Explicit standalone API only. Runtime restores must supply SQL endorsement.
+    pub(crate) fn load_standalone(path: &Path, dimension: usize) -> io::Result<Self> {
+        use std::io::Read;
+        let mut header = [0_u8; 96];
+        std::fs::File::open(path)?.read_exact(&mut header)?;
+        let identity = AssetIdentity {
+            dimension,
+            scope: header[24],
+            model_hash: header[32..64].try_into().unwrap(),
+            content_digest: header[64..96].try_into().unwrap(),
+        };
+        Self::load(path, identity)
+    }
+
+    pub(crate) fn load(path: &Path, expected: AssetIdentity) -> io::Result<Self> {
+        let index = TdbIndex::load_snapshot(path, &expected)?;
+        let reserved = index.len();
+        Ok(Self { inner: Some(index), identity: expected, private_path: None, reserved })
+    }
+
+    pub(crate) fn from_validated_asset(
+        asset: vcp_tdb_index::asset::VectorAsset,
+    ) -> io::Result<Self> {
+        let identity = asset.identity().clone();
+        let index = TdbIndex::from_validated_asset(asset)?;
+        let reserved = index.len();
+        Ok(Self { inner: Some(index), identity, private_path: None, reserved })
+    }
+
+    fn core(&self) -> &TdbIndex {
+        self.inner.as_ref().expect("retrieval index is live until Drop")
+    }
+
+    fn core_mut(&mut self) -> &mut TdbIndex {
+        self.inner.as_mut().expect("retrieval index is live until Drop")
+    }
+
+    pub(crate) fn identity(&self) -> &AssetIdentity { &self.identity }
+    pub(crate) fn size(&self) -> usize { self.core().len() }
+    pub(crate) fn dimensions(&self) -> usize { self.identity.dimension }
+    pub(crate) fn capacity(&self) -> usize { self.reserved.max(self.size()) }
+    pub(crate) fn memory_usage(&self) -> usize { self.core().hot_bytes() }
+    pub(crate) fn mmap_bytes(&self) -> usize { self.core().mapped_bytes() }
+    pub(crate) fn tombstones(&self) -> usize { self.core().tombstones() }
+    #[cfg(test)]
+    pub(crate) fn contains(&self, id: u64) -> bool { self.core().contains(id) }
+
+    pub(crate) fn maintenance_required(&self) -> bool {
+        // A publication threshold measures SQL drift, not routing health or
+        // heap residency. Repeated updates of one ID may leave little SQL drift.
+        const MAX_DELTA_BYTES: usize = 16 * 1024 * 1024;
+        self.core().needs_graph_rebuild() || self.core().delta_bytes() >= MAX_DELTA_BYTES
+    }
+
+    /// Existing host capacity arguments are absolute, unlike Vec::reserve.
+    pub(crate) fn reserve(&mut self, capacity: usize) -> io::Result<()> {
+        if capacity > self.reserved {
+            let additional = capacity.saturating_sub(self.size());
+            self.core_mut().reserve(additional)?;
+            self.reserved = capacity;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn apply_delta(
+        &mut self, removes: &[u64], upserts: &[u64], vectors: &[f32],
+    ) -> io::Result<usize> {
+        let removed = self.core_mut().apply_delta(removes, upserts, vectors)?;
+        // A mutation invalidates the previous snapshot digest; a checkpoint must
+        // provide a fresh SQL-derived identity, not reuse the old endorsement.
+        if removed > 0 || !upserts.is_empty() {
+            self.identity.content_digest = [0; 32];
+        }
+        Ok(removed)
+    }
+
+    pub(crate) fn add(&mut self, id: u64, vector: &[f32]) -> io::Result<()> {
+        self.apply_delta(&[], &[id], vector).map(|_| ())
+    }
+
+    pub(crate) fn remove(&mut self, id: u64) -> io::Result<usize> {
+        self.apply_delta(&[id], &[], &[])
+    }
+
+    pub(crate) fn search(&self, query: &[f32], k: usize) -> io::Result<Vec<(u64, f32)>> {
+        self.core().search(query, k, None)
+    }
+
+    pub(crate) fn write_staging(
+        &self, path: &Path, identity: &AssetIdentity,
+    ) -> io::Result<()> {
+        if identity.dimension != self.identity.dimension {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot dimension mismatch"));
+        }
+        self.core().write_staging(path, identity)
+    }
+
+    pub(crate) fn model_hash(model: &str) -> [u8; 32] {
+        Sha256::digest(model.as_bytes()).into()
+    }
+}
+
+impl Drop for RetrievalIndex {
+    fn drop(&mut self) {
+        drop(self.inner.take());
+        if let Some(path) = self.private_path.take() {
+            if let Err(error) = std::fs::remove_file(&path) {
+                if error.kind() != io::ErrorKind::NotFound {
+                    eprintln!("[KBM] Private retrieval asset cleanup deferred '{}': {}",
+                        path.display(), error);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maintenance_tracks_graph_transition_and_bounded_delta_residency() {
+        let mut small = RetrievalIndex::empty(2).unwrap();
+        small.add(1, &[1.0, 0.0]).unwrap();
+        assert!(!small.maintenance_required());
+
+        let mut crossing = RetrievalIndex::empty(2).unwrap();
+        let ids: Vec<u64> = (1..=2048).collect();
+        crossing.apply_delta(&[], &ids, &vec![1.0; ids.len() * 2]).unwrap();
+        assert!(crossing.maintenance_required());
+
+        // Below the graph threshold, high-dimensional mutable originals must
+        // still have a bounded residency trigger.
+        let mut delta = RetrievalIndex::empty(3072).unwrap();
+        let ids: Vec<u64> = (1..=1400).collect();
+        delta.apply_delta(&[], &ids, &vec![0.5; ids.len() * 3072]).unwrap();
+        assert!(delta.maintenance_required());
+    }
+
+    #[test]
+    fn host_capacity_and_cosine_contract_do_not_expose_originals() {
+        let mut index = RetrievalIndex::empty(2).unwrap();
+        index.reserve(16).unwrap();
+        assert_eq!(index.capacity(), 16);
+        index.add(7, &[3.0, 0.0]).unwrap();
+        index.add(9, &[0.0, 4.0]).unwrap();
+        assert_eq!(index.search(&[2.0, 0.0], 2).unwrap(), vec![(7, 1.0), (9, 0.0)]);
+        assert!(index.apply_delta(&[7], &[9], &[f32::NAN, 0.0]).is_err());
+        assert!(index.contains(7));
+        assert_eq!(index.remove(7).unwrap(), 1);
+        assert_eq!(index.remove(7).unwrap(), 0);
+        assert_eq!(index.size(), 1);
+        assert_eq!(index.mmap_bytes(), 0);
+        assert_eq!(index.dimensions(), 2);
+    }
+
+    #[test]
+    fn sql_owned_asset_is_removed_after_host_mapping_is_released() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE tags(id INTEGER PRIMARY KEY,vector BLOB);
+             INSERT INTO tags VALUES (7,X'0000404000000000');
+             BEGIN;"
+        ).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "vcp-host-owner-{}-{}.vec", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()
+        ));
+        let build = crate::index_source::build_from_connection(
+            &connection, None, 2, "model", &path,
+        ).unwrap();
+        let index = RetrievalIndex::from_sql(build);
+        assert!(path.exists());
+        assert!(index.mmap_bytes() > 0);
+        assert_eq!(index.identity().model_hash, RetrievalIndex::model_hash("model"));
+        assert_eq!(index.search(&[1.0, 0.0], 1).unwrap(), vec![(7, 1.0)]);
+        drop(index);
+        assert!(!path.exists());
+        connection.execute_batch("ROLLBACK").unwrap();
+    }
+}

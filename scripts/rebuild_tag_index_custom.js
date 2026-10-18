@@ -1,5 +1,9 @@
+// RETIRED: direct SQLite writes and legacy index publication are unsupported.
+// Keep the write guard; use native Tag consistency plus Runtime checkpoints.
 // rebuild_tag_index_custom.js
 // 功能：1. 清理数据库中已存在的黑名单标签  2. 重新构建全局 Tag 向量索引
+require('./guard-server-stopped').assertLegacyKnowledgeWriteDisabled();
+
 const fs = require('fs').promises;
 const path = require('path');
 const Database = require('better-sqlite3');

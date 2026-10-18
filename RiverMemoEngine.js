@@ -1,5 +1,6 @@
 'use strict';
 
+const { cleanRiverConfig } = require('./modules/knowledgeBase/memoConfig');
 const {
     computeRiverObservability
 } = require('./modules/tagmemoV10/riverObservability');
@@ -24,18 +25,10 @@ class RiverMemoEngine {
         }
         this.runtime = v10Engine;
         this.config = options.config || {};
-        // 诊断标记：原生缓存按 Artifact 签名在首次成功请求时加载。
-        // 这里只记录本门面观测到的状态，不复制或持有原生资产。
-        this._nativeArtifactCacheObserved = false;
-        this._nativeArtifactSigObserved = null;
     }
 
     updateConfig(config = {}) {
         this.config = config || {};
-    }
-
-    rebindDatabase(db) {
-        this.runtime.rebindDatabase(db);
     }
 
     getArtifactSnapshot(options = {}) {
@@ -54,7 +47,7 @@ class RiverMemoEngine {
             ...config,
             structRoleMinOmega:
                 options.structRoleMinOmega
-                ?? artifact?.effectiveConfig?.dstc?.topologyV3StructRoleMinOmega
+                ?? cleanRiverConfig(artifact?.effectiveConfig).topology?.structRoleMinOmega
         });
     }
 
@@ -81,9 +74,9 @@ class RiverMemoEngine {
             ...(artifact.effectiveConfig?.directAnchor || {}),
             ...(this.config?.directAnchor || {})
         };
-        const dstc = {
-            ...(artifact.effectiveConfig?.dstc || {}),
-            ...(options.dstc || {})
+        const topology = {
+            ...(cleanRiverConfig(artifact.effectiveConfig).topology || {}),
+            ...(cleanRiverConfig(options).topology || {})
         };
         return {
             queryK: candidate.queryK,
@@ -114,23 +107,23 @@ class RiverMemoEngine {
             rarityFloor: anchor.rarityFloor,
             reliabilitySeedSaturation: anchor.reliabilitySeedSaturation,
             fallbackReliabilityCap: anchor.fallbackReliabilityCap,
-            topologyBonusCap: dstc.topologyBonusCap,
-            topologyPathSaturation: dstc.topologyPathSaturation,
-            conditionalBandwidth: dstc.topologyV2ConditionalBandwidth,
-            conditionalClosureBandwidth: dstc.topologyV2ClosureBandwidth,
-            conditionalDirectBandwidth: dstc.topologyV2DirectBandwidth,
-            minimumPeers: dstc.topologyV2MinimumPeers,
-            minimumEffectivePeers: dstc.topologyV2MinimumEffectivePeers,
-            innovationConfidenceZ: dstc.topologyV2InnovationConfidenceZ,
-            innovationScale: dstc.topologyV2InnovationScale,
-            omegaGamma: dstc.topologyV3OmegaGamma,
-            structRoleMinOmega: dstc.topologyV3StructRoleMinOmega,
-            anchorBonusCap: dstc.topologyV3AnchorBonusCap,
-            anchorActivationZ: dstc.topologyV3AnchorActivationZ,
-            anchorActivationFloor: dstc.topologyV3AnchorActivationFloor,
-            anchorSaturation: dstc.topologyV3AnchorSaturation,
-            anchorFrontierContrast: dstc.topologyV3AnchorFrontierContrast,
-            anchorFrontierAbsFloor: dstc.topologyV3AnchorFrontierAbsFloor
+            topologyBonusCap: topology.topologyBonusCap,
+            topologyPathSaturation: topology.topologyPathSaturation,
+            conditionalBandwidth: topology.conditionalBandwidth,
+            conditionalClosureBandwidth: topology.conditionalClosureBandwidth,
+            conditionalDirectBandwidth: topology.conditionalDirectBandwidth,
+            minimumPeers: topology.minimumPeers,
+            minimumEffectivePeers: topology.minimumEffectivePeers,
+            innovationConfidenceZ: topology.innovationConfidenceZ,
+            innovationScale: topology.innovationScale,
+            omegaGamma: topology.omegaGamma,
+            structRoleMinOmega: topology.structRoleMinOmega,
+            anchorBonusCap: topology.anchorBonusCap,
+            anchorActivationZ: topology.anchorActivationZ,
+            anchorActivationFloor: topology.anchorActivationFloor,
+            anchorSaturation: topology.anchorSaturation,
+            anchorFrontierContrast: topology.anchorFrontierContrast,
+            anchorFrontierAbsFloor: topology.anchorFrontierAbsFloor
         };
     }
 
@@ -146,12 +139,7 @@ class RiverMemoEngine {
             hop: Number(entry?.[1]?.hop) || 0,
             sourceType: String(entry?.[1]?.sourceType || '')
         }));
-        const dbPath = String(
-            options.dbPath
-            || this.runtime.db?.name
-            || this.runtime.db?.path
-            || ''
-        );
+        const dbPath = String(options.dbPath || '');
         if (!dbPath || dbPath === ':memory:') {
             const error = new Error(
                 'RiverMemo native Topology V3 requires a file-backed SQLite database path.'
@@ -340,43 +328,48 @@ class RiverMemoEngine {
         const memoRuntimeStats = typeof tagIndex?.memoRuntimeStats === 'function'
             ? tagIndex.memoRuntimeStats()
             : null;
-        this._nativeArtifactCacheObserved = true;
-        this._nativeArtifactSigObserved = artifact.artifactSig;
         const inputById = new Map(
             inputCandidates
                 .map(candidate => [candidateId(candidate), candidate])
                 .filter(([id]) => id !== null)
         );
 
-        // 联合路径没有把中间候选返回 JS。只按最终 Top-K ID 批量 hydrate
-        // 正文和路径，恢复现有公共结果对象契约。
-        if (jointUsed && this.runtime.db?.prepare) {
+        // 联合查询优先消费 Rust 在同一读事务内回填的最终正文。
+        // 仅旧 ABI 缺少该字段时才经异步门面补水；不得复用调用方旧正文。
+        if (jointUsed) {
+            inputById.clear();
+            for (const item of Array.isArray(nativeResult.results) ? nativeResult.results : []) {
+                const id = Number(item?.chunkId ?? item?.id);
+                const row = item?.hydratedChunk;
+                if (!Number.isSafeInteger(id) || id <= 0 || !row || typeof row !== 'object') continue;
+                inputById.set(id, {
+                    ...row,
+                    id,
+                    chunkId: id,
+                    fullPath: row.fullPath || row.sourceFile,
+                    source: row.source || 'rag'
+                });
+            }
+        }
+        if (jointUsed && typeof options.hydrateChunksByIds === 'function') {
             const finalIds = [...new Set(
                 (Array.isArray(nativeResult.results)
                     ? nativeResult.results
                     : []
                 ).map(item => Number(item?.chunkId ?? item?.id))
-                    .filter(id => Number.isSafeInteger(id) && id > 0)
+                    .filter(id => Number.isSafeInteger(id) && id > 0 && !inputById.has(id))
             )];
             if (finalIds.length > 0) {
-                const placeholders = finalIds.map(() => '?').join(',');
-                const rows = this.runtime.db.prepare(`
-                    SELECT c.id, c.content AS text, f.path AS sourceFile,
-                           f.diary_name AS diaryName, f.id AS fileId
-                    FROM chunks c
-                    JOIN files f ON f.id = c.file_id
-                    WHERE c.id IN (${placeholders})
-                `).all(...finalIds);
-                for (const row of rows) {
-                    inputById.set(Number(row.id), {
-                        id: Number(row.id),
-                        chunkId: Number(row.id),
-                        text: row.text,
-                        sourceFile: row.sourceFile,
-                        fullPath: row.sourceFile,
-                        diaryName: row.diaryName,
-                        fileId: Number(row.fileId),
-                        source: 'rag'
+                const rows = await options.hydrateChunksByIds(finalIds);
+                for (const row of Array.isArray(rows) ? rows : []) {
+                    const id = Number(row?.id ?? row?.chunkId);
+                    if (!Number.isSafeInteger(id) || id <= 0) continue;
+                    inputById.set(id, {
+                        ...row,
+                        id,
+                        chunkId: id,
+                        fullPath: row.fullPath || row.sourceFile,
+                        source: row.source || 'rag'
                     });
                 }
             }

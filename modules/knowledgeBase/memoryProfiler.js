@@ -45,13 +45,9 @@ function profileTagMemo(tagMemoEngine) {
         }
     }
 
-    const pairwiseSimilarities = tagMemoEngine.tagPairSimilarities instanceof Map
-        ? tagMemoEngine.tagPairSimilarities.size
-        : 0;
     const intrinsicResiduals = tagMemoEngine.tagIntrinsicResiduals instanceof Map
         ? tagMemoEngine.tagIntrinsicResiduals.size
         : 0;
-    const pairwiseEstimatedBytes = pairwiseSimilarities * 80;
     const cooccurrenceEstimatedBytes = cooccurrenceSources * 96
         + cooccurrenceEdges * 64;
     const intrinsicEstimatedBytes = intrinsicResiduals * 32;
@@ -59,8 +55,7 @@ function profileTagMemo(tagMemoEngine) {
     return {
         available: true,
         modelSig: tagMemoEngine.modelSig || null,
-        pairwiseSimilarities,
-        pairwiseEstimatedBytes,
+        geometryArtifact: tagMemoEngine.geometryArtifact || null,
         cooccurrenceSources,
         cooccurrenceEdges,
         cooccurrenceEstimatedBytes,
@@ -70,8 +65,7 @@ function profileTagMemo(tagMemoEngine) {
         derivedQueueLength: Array.isArray(tagMemoEngine._derivedTaskQueue)
             ? tagMemoEngine._derivedTaskQueue.length
             : 0,
-        estimatedBytes: pairwiseEstimatedBytes
-            + cooccurrenceEstimatedBytes
+        estimatedBytes: cooccurrenceEstimatedBytes
             + intrinsicEstimatedBytes
     };
 }
@@ -168,22 +162,73 @@ function profileRiverMemo(state) {
     };
 }
 
+/**
+ * Scalar-only samples: never hydrate vectors or load a Memo artifact.
+ * RSS includes file-backed pages; mappedBytes is address-space length, not RSS.
+ * external includes arrayBuffers: these fields must not be added together.
+ */
+function captureMemoryStage(state, stage) {
+    const memory = process.memoryUsage();
+    const tag = safeIndexStats(state.tagIndex);
+    let diaryHotBytes = 0;
+    let diaryMappedBytes = 0;
+    for (const index of state.diaryIndices?.values() || []) {
+        const stats = safeIndexStats(index);
+        diaryHotBytes += Math.max(0, Number(stats.hotBytes) || 0);
+        diaryMappedBytes += Math.max(0, Number(stats.mmapBytes) || 0);
+    }
+    const sample = {
+        stage: String(stage).slice(0, 96),
+        at: new Date().toISOString(),
+        uptimeSeconds: process.uptime(),
+        rss: memory.rss,
+        heapUsed: memory.heapUsed,
+        heapTotal: memory.heapTotal,
+        external: memory.external,
+        arrayBuffers: memory.arrayBuffers || 0,
+        tagVectors: tag.totalVectors,
+        tagHotBytes: Math.max(0, Number(tag.hotBytes) || 0),
+        tagMappedBytes: Math.max(0, Number(tag.mmapBytes) || 0),
+        loadedDiaryCount: state.diaryIndices?.size || 0,
+        diaryHotBytes,
+        diaryMappedBytes,
+        trainingPhase: state.tagMemoEngine?.getTrainingStatus?.().phase || 'idle'
+    };
+    if (!Array.isArray(state.memoryStageSamples)) state.memoryStageSamples = [];
+    state.memoryStageSamples.push(sample);
+    if (state.memoryStageSamples.length > 32) {
+        state.memoryStageSamples.splice(0, state.memoryStageSamples.length - 32);
+    }
+    return sample;
+}
+
 function buildMemoryProfile(state) {
     const startedAt = Date.now();
+    let lightMemo = { available: false };
+    try {
+        const raw = state.nativeKnowledgeRuntime?.lightMemoIndexStats?.();
+        if (raw) lightMemo = { available: true,
+            ...(typeof raw === 'string' ? JSON.parse(raw) : raw),
+            idleTtlMs: state.config.lightMemoIndexIdleTTL || 600000,
+            note: '原生量化表；不含全库 f32。释放后 allocator 不保证立即归还 RSS。' };
+    } catch (error) {
+        lightMemo = { available: false, error: error.message };
+    }
     const dimension = state.config.dimension;
     const loadedDiaryIndices = [];
 
     for (const [diaryName, index] of state.diaryIndices.entries()) {
         const stats = safeIndexStats(index);
-        const estimatedBytes = estimateVexusIndexBytes(
-            stats.totalVectors,
-            dimension
-        );
+        const estimatedBytes = Number.isFinite(stats.hotBytes)
+            ? Math.max(0, stats.hotBytes)
+            : estimateVexusIndexBytes(stats.totalVectors, dimension);
         const lastUsedAt = state.diaryIndexLastUsed.get(diaryName) || null;
         loadedDiaryIndices.push({
             name: diaryName,
             stats,
             estimatedBytes,
+            mmapBytes: Math.max(0, Number(stats.mmapBytes) || 0),
+            tombstones: Math.max(0, Number(stats.tombstones) || 0),
             lastUsedAt,
             idleMs: lastUsedAt ? Date.now() - lastUsedAt : null,
             dateIndexItems: state.diaryDateIndexCache.get(diaryName)?.length || 0
@@ -194,10 +239,9 @@ function buildMemoryProfile(state) {
     );
 
     const tagIndexStats = safeIndexStats(state.tagIndex);
-    const tagIndexEstimatedBytes = estimateVexusIndexBytes(
-        tagIndexStats.totalVectors,
-        dimension
-    );
+    const tagIndexEstimatedBytes = Number.isFinite(tagIndexStats.hotBytes)
+        ? Math.max(0, tagIndexStats.hotBytes)
+        : estimateVexusIndexBytes(tagIndexStats.totalVectors, dimension);
     const tagMemo = profileTagMemo(state.tagMemoEngine);
     const riverMemo = profileRiverMemo(state);
     const diaryNameVectorEstimatedBytes =
@@ -242,7 +286,10 @@ function buildMemoryProfile(state) {
         },
         tagIndex: {
             stats: tagIndexStats,
-            estimatedBytes: tagIndexEstimatedBytes
+            estimatedBytes: tagIndexEstimatedBytes,
+            mmapBytes: Math.max(0, Number(tagIndexStats.mmapBytes) || 0),
+            tombstones: Math.max(0, Number(tagIndexStats.tombstones) || 0),
+            memoryNote: 'hotBytes 为堆内存估计；mmapBytes 是映射长度，不代表 RSS。'
         },
         diaryIndices: {
             loadedCount: state.diaryIndices.size,
@@ -259,6 +306,10 @@ function buildMemoryProfile(state) {
         },
         tagMemo,
         riverMemo,
+        lightMemo,
+        memoryStageSamples: Array.isArray(state.memoryStageSamples)
+            ? state.memoryStageSamples.map(sample => ({ ...sample }))
+            : [],
         estimatedBytes,
         generatedAt: new Date().toISOString(),
         elapsedMs: Date.now() - startedAt
@@ -268,5 +319,6 @@ function buildMemoryProfile(state) {
 module.exports = {
     estimateVexusIndexBytes,
     safeIndexStats,
-    buildMemoryProfile
+    buildMemoryProfile,
+    captureMemoryStage
 };

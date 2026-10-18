@@ -1,7 +1,7 @@
 use flate2::read::GzDecoder;
 use napi::bindgen_prelude::*;
 use rayon::prelude::*;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -100,7 +100,7 @@ struct NativeInput {
     candidates: Vec<CandidateInput>,
     query_state: QueryStateInput,
     #[serde(default)]
-    allowed_file_ids: Vec<i64>,
+    allowed_file_ids: Option<Vec<i64>>,
     #[serde(default)]
     config: NativeConfig,
 }
@@ -597,25 +597,21 @@ impl MemoRuntime {
     }
 }
 
-fn open_readonly(path: &str) -> std::result::Result<Connection, String> {
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("open readonly SQLite failed: {}", error))?;
-    connection
-        .busy_timeout(Duration::from_secs(30))
-        .map_err(|error| format!("configure SQLite timeout failed: {}", error))?;
-    connection
-        .pragma_update(None, "query_only", "ON")
-        .map_err(|error| format!("configure SQLite query_only failed: {}", error))?;
-    Ok(connection)
+fn decode_provenance_row(row: &Value) -> Option<(i64, f64)> {
+    let values = row.as_array()?;
+    let mass_index = if values.len() == 2 { 1 } else if values.len() >= 4 { 3 } else { return None };
+    let file_id = values[0].as_i64()?;
+    let mass = values[mass_index].as_f64()?;
+    if file_id <= 0 || !mass.is_finite() || mass < 0.0 { return None; }
+    Some((file_id, mass))
 }
 
 fn decode_artifact(
-    db_path: &str,
+    connection: &Connection,
     artifact_sig: &str,
 ) -> std::result::Result<Arc<NativeArtifact>, String> {
     const MAX_DECOMPRESSED_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
-    let connection = open_readonly(db_path)?;
     let (codec, expected_checksum, compressed): (String, String, Vec<u8>) = connection
         .query_row(
             "SELECT payload_codec, payload_checksum, payload FROM rivermemo_artifacts \
@@ -823,15 +819,8 @@ fn decode_artifact(
             let mut contributions = Vec::new();
             if let Some(rows) = parts[1].as_array() {
                 for row in rows {
-                    let Some(values) = row.as_array() else {
-                        continue;
-                    };
-                    if values.len() >= 4 {
-                        if let (Some(file_id), Some(mass)) =
-                            (values[0].as_i64(), values[3].as_f64())
-                        {
-                            contributions.push((file_id, positive(mass)));
-                        }
+                    if let Some(contribution) = decode_provenance_row(row) {
+                        contributions.push(contribution);
                     }
                 }
             }
@@ -853,17 +842,43 @@ fn decode_artifact(
     }))
 }
 
-pub(crate) fn load_artifact_from_runtime(
+pub(crate) fn load_artifact_with_connection(
     runtime: &MemoRuntime,
-    db_path: &str,
+    connection: &Connection,
     artifact_sig: &str,
 ) -> std::result::Result<Arc<NativeArtifact>, String> {
+    let compatible: bool = connection.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM rivermemo_artifacts a
+           WHERE a.artifact_sig=?1 AND a.status='ready'
+             AND a.algorithm_version='memo.native-artifact-v2-binary'
+             AND a.schema_version='rivermemo-persisted-artifact-v2'
+             AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d
+                  WHERE d.artifact_sig=a.artifact_sig
+                    AND d.dependency_key IN (SELECT value FROM json_each(?2)))=?3
+             AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d WHERE d.artifact_sig=a.artifact_sig)=?3
+             AND NOT EXISTS(
+               SELECT 1 FROM kbm_artifact_dependencies d
+               LEFT JOIN kbm_runtime_meta m ON m.key=d.dependency_key
+               WHERE d.artifact_sig=a.artifact_sig
+                 AND (m.value IS NULL
+                      OR CAST(m.value AS INTEGER) < CAST(d.dependency_version AS INTEGER))
+             )
+         )", rusqlite::params![
+             artifact_sig,
+             serde_json::to_string(crate::storage::MEMO_ARTIFACT_DEPENDENCIES).map_err(|e|e.to_string())?,
+             crate::storage::MEMO_ARTIFACT_DEPENDENCIES.len() as i64
+         ], |row| row.get(0),
+    ).map_err(|error| format!("Validate Memo artifact dependencies failed: {}", error))?;
+    if !compatible {
+        return Err("KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT: Memo artifact is incompatible (format, missing dependencies or version rollback)".to_string());
+    }
     if let Some(artifact) = runtime.get(artifact_sig)? {
         return Ok(artifact);
     }
 
-    // 解码和校验在写锁外完成；发布临界区只替换 Arc。
-    let staging = decode_artifact(db_path, artifact_sig)?;
+    // 解码和校验在写锁外完成；连接由 StorageEngine Read Pool 提供。
+    let staging = decode_artifact(connection, artifact_sig)?;
     runtime.publish(artifact_sig, staging.clone())?;
     Ok(staging)
 }
@@ -903,13 +918,11 @@ struct CurveLoadOutput {
 }
 
 fn load_curves(
-    db_path: &str,
+    connection: &Connection,
     candidates: &[CandidateInput],
     dimension: usize,
 ) -> std::result::Result<CurveLoadOutput, String> {
     const SQLITE_BATCH_SIZE: usize = 500;
-
-    let connection = open_readonly(db_path)?;
     let candidate_ids: Vec<i64> = candidates
         .iter()
         .map(|candidate| candidate.id)
@@ -939,11 +952,8 @@ fn load_curves(
             .map_err(|error| format!("prepare batched chunk projection failed: {}", error))?;
         let rows = statement
             .query_map(rusqlite::params_from_iter(batch.iter()), |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
+                let bytes: Vec<u8> = row.get(2)?;
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, bytes))
             })
             .map_err(|error| format!("query batched chunk projection failed: {}", error))?;
         for row in rows {
@@ -988,12 +998,13 @@ fn load_curves(
             .map_err(|error| format!("prepare batched tag curve projection failed: {}", error))?;
         let rows = statement
             .query_map(rusqlite::params_from_iter(batch.iter()), |row| {
+                let bytes: Vec<u8> = row.get(4)?;
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
+                    bytes,
                 ))
             })
             .map_err(|error| format!("query batched tag curve projection failed: {}", error))?;
@@ -1070,52 +1081,10 @@ fn load_tag_vectors_by_ids(
     ids: &[i64],
     dimension: usize,
 ) -> std::result::Result<(HashMap<i64, Vec<f32>>, usize), String> {
-    const SQLITE_BATCH_SIZE: usize = 500;
-
-    let mut unique_ids: Vec<i64> = ids
-        .iter()
-        .copied()
-        .filter(|id| *id > 0)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    unique_ids.sort_unstable();
-
-    let mut vectors = HashMap::with_capacity(unique_ids.len());
-    let mut sql_batches = 0usize;
-    for batch in unique_ids.chunks(SQLITE_BATCH_SIZE) {
-        if batch.is_empty() {
-            continue;
-        }
-        sql_batches += 1;
-        let placeholders = std::iter::repeat("?")
-            .take(batch.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT id, vector FROM tags WHERE id IN ({})",
-            placeholders
-        );
-        let mut statement = connection
-            .prepare(&sql)
-            .map_err(|error| format!("prepare batched Tag vector read failed: {}", error))?;
-        let rows = statement
-            .query_map(rusqlite::params_from_iter(batch.iter()), |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })
-            .map_err(|error| format!("query batched Tag vectors failed: {}", error))?;
-        for row in rows {
-            // 查询河网与 Anchor 向量的旧逐 ID 读取会忽略单行读取错误；
-            // 共享批量读取必须保持相同的“缺失向量”降级语义。
-            let Ok((id, bytes)) = row else {
-                continue;
-            };
-            if let Some(vector) = decode_vector(&bytes, dimension) {
-                vectors.insert(id, vector);
-            }
-        }
-    }
-    Ok((vectors, sql_batches))
+    let unique_count = ids.iter().copied().filter(|id| *id > 0)
+        .collect::<HashSet<_>>().len();
+    let vectors = crate::storage::load_vectors_by_ids(connection, "tags", ids, dimension)?;
+    Ok((vectors, unique_count.div_ceil(128)))
 }
 
 fn compute_anchor_scores(curves: &mut [Curve], local_domain: &HashSet<i64>) {
@@ -2494,6 +2463,18 @@ pub(crate) fn run_native(
     artifact_sig: &str,
     input_json: &str,
 ) -> std::result::Result<String, String> {
+    let _publication_guard = crate::publication_gate::acquire_read(db_path, &[String::from("*")])?;
+    crate::storage::with_registered_read_transaction(db_path, |connection| {
+        run_native_with_connection(runtime, connection, artifact_sig, input_json)
+    })
+}
+
+pub(crate) fn run_native_with_connection(
+    runtime: &MemoRuntime,
+    connection: &Connection,
+    artifact_sig: &str,
+    input_json: &str,
+) -> std::result::Result<String, String> {
     let total_started = Instant::now();
     let mut input: NativeInput = serde_json::from_str(input_json)
         .map_err(|error| format!("invalid RiverMemo native input JSON: {}", error))?;
@@ -2558,9 +2539,15 @@ pub(crate) fn run_native(
     }
 
     let load_started = Instant::now();
-    let artifact = load_artifact_from_runtime(runtime, db_path, artifact_sig)?;
-    let curve_load = load_curves(db_path, &input.candidates, dimension)?;
+    let artifact = load_artifact_with_connection(runtime, connection, artifact_sig)?;
+    let curve_load = load_curves(connection, &input.candidates, dimension)?;
     let mut curves = curve_load.curves;
+    // 显式空集合也意味着无权限；必须在候选归一化和统计前移除越权项。
+    let allowed: Option<HashSet<i64>> = input.allowed_file_ids.as_ref()
+        .map(|ids| ids.iter().copied().collect());
+    if let Some(scope) = &allowed {
+        curves.retain(|curve| scope.contains(&curve.file_id));
+    }
     let original_score_by_id: HashMap<i64, f64> = input
         .candidates
         .iter()
@@ -2643,16 +2630,12 @@ pub(crate) fn run_native(
         .map(|node| node.id)
         .collect();
     requested_tag_ids.extend(seeds.iter().map(|seed| seed.0));
-    let connection = open_readonly(db_path)?;
     let (query_and_seed_tag_vectors, query_tag_sql_batches) =
-        load_tag_vectors_by_ids(&connection, &requested_tag_ids, dimension)?;
-    drop(connection);
+        load_tag_vectors_by_ids(connection, &requested_tag_ids, dimension)?;
     let load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
 
     let compute_started = Instant::now();
     let morphology = compute_query_morphology(&input);
-    let allowed: HashSet<i64> = input.allowed_file_ids.iter().copied().collect();
-    let explicit_scope = !allowed.is_empty();
 
     // Anchor rarity depends on the complete selected candidate pool, so compute it
     // before consuming `curves`. The indexed parallel result preserves curve order.
@@ -2683,13 +2666,9 @@ pub(crate) fn run_native(
         .zip(anchor_results.into_par_iter())
         .map(|(curve, anchor)| {
             let geometry = evaluate_path(&curve, &workspace, &artifact, &input.config);
-            let topology = evaluate_topology(
-                &curve,
-                &input,
-                &artifact,
-                &query_and_seed_tag_vectors,
-            );
-            let visible = !explicit_scope || allowed.contains(&curve.file_id);
+            let topology =
+                evaluate_topology(&curve, &input, &artifact, &query_and_seed_tag_vectors);
+            let visible = true; // 越权候选已在进入候选池前删除。
             let observables = evaluate_observables(&curve, &geometry, &input, &workspace, visible);
             let semantic_total = (input.config.pure_query_weight
                 + input.config.pure_local_weight
@@ -2896,15 +2875,33 @@ impl Task for RiverMemoTopologyV3Task {
 }
 
 pub(crate) fn rerank_with_runtime(
+    lifecycle: &Arc<crate::task_lifecycle::TaskLifecycle>,
     runtime: Arc<MemoRuntime>,
     db_path: String,
     artifact_sig: String,
     input_json: String,
-) -> AsyncTask<RiverMemoTopologyV3Task> {
-    AsyncTask::new(RiverMemoTopologyV3Task {
+) -> AsyncTask<crate::task_lifecycle::TrackedTask<RiverMemoTopologyV3Task>> {
+    AsyncTask::new(crate::task_lifecycle::TrackedTask::new(lifecycle, RiverMemoTopologyV3Task {
         runtime,
         db_path,
         artifact_sig,
         input_json,
-    })
+    }))
+}
+
+
+#[cfg(test)]
+mod provenance_codec_tests {
+    use super::*;
+
+    #[test]
+    fn compact_and_legacy_contributions_have_identical_meaning() {
+        assert_eq!(decode_provenance_row(&serde_json::json!([7, 0.35])),
+            decode_provenance_row(&serde_json::json!([7, "diary", "path", 0.35])));
+        assert_eq!(decode_provenance_row(&serde_json::json!([7, 0.35])), Some((7, 0.35)));
+        for invalid in [serde_json::json!([7]), serde_json::json!([7, "x"]),
+            serde_json::json!([0, 0.3]), serde_json::json!([7, -0.3])] {
+            assert!(decode_provenance_row(&invalid).is_none());
+        }
+    }
 }

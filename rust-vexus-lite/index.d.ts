@@ -18,6 +18,34 @@ export interface NativeKnowledgeRuntimeStats {
   memoRuntimeResident: boolean
   memoArtifactSig?: string
   memoGeneration: number
+  storeOpen: boolean
+  storeSchemaVersion: number
+  storeDatabaseGeneration: number
+}
+export interface NativeRuntimeCapabilities {
+  abiVersion: number
+  dimension: number
+  capabilities: Array<string>
+}
+export interface NativeStoreState {
+  dbPath: string
+  schemaVersion: number
+  databaseGeneration: number
+  acceptingWrites: boolean
+}
+export interface GeometryResult {
+  success: boolean
+  artifactSig: string
+  configHash: string
+  algorithmVersion: string
+  tagCount: number
+  computedCount: number
+  skippedCount: number
+  vectorFallbackCount: number
+  kEff: number
+  coverage: Array<number>
+  elapsedMs: number
+  phaseSummary: string
 }
 export interface NativeMemoArtifactBuildResult {
   success: boolean
@@ -32,6 +60,9 @@ export interface NativeMemoArtifactBuildResult {
   persisted: boolean
   resident: boolean
   elapsedMs: number
+  phaseSummary: string
+  rawBytes: number
+  compressedBytes: number
 }
 /**
  * 统一 Memo 查询的轻量 N-API 返回值。
@@ -51,84 +82,17 @@ export interface SearchResult {
   id: number
   score: number
 }
-export interface SvdResult {
-  u: Array<number>
-  s: Array<number>
-  k: number
-  dim: number
-}
-export interface OrthogonalProjectionResult {
-  projection: Array<number>
-  residual: Array<number>
-  basisCoefficients: Array<number>
-}
-export interface HandshakeResult {
-  magnitudes: Array<number>
-  directions: Array<number>
-}
-export interface ProjectResult {
-  projections: Array<number>
-  probabilities: Array<number>
-  entropy: number
-  totalEnergy: number
-}
-export interface DualWeightedProjectionResult {
-  localVector?: Array<number>
-  transferVector?: Array<number>
-  requestedCount: number
-  foundCount: number
-  missingCount: number
-  localTotalWeight: number
-  transferTotalWeight: number
-  elapsedMs: number
-}
-export interface MemoFusionResult {
-  vector: Array<number>
-  selectedTagIds: Array<number>
-  requestedCount: number
-  foundCount: number
-  deduplicatedCount: number
-  totalWeight: number
-  elapsedMs: number
-}
-export interface IntrinsicResidualResult {
-  tagCount: number
-  computedCount: number
-  skippedCount: number
-  elapsedMs: number
-  algorithmVersion: string
-  artifactSig: string
-  effectiveConfig: string
-}
-/** 🌟 EPA Rust 基底重算结果 */
-export interface EpaBasisResult {
-  success: boolean
-  message: string
-  tagCount: number
-  clusterCount: number
-  basisCount: number
-  elapsedMs: number
-  algorithm: string
-  phaseSummary: string
-  anchorCount: number
-  representativeSampleCount: number
-  densityBucketCount: number
-  publishElapsedMs: number
-}
-/** 🌟 TagMemo V8.2: 成对语义距离预计算结果 */
-export interface PairwiseSimResult {
-  pairCount: number
-  computedCount: number
-  skippedCount: number
-  storedCount: number
-  elapsedMs: number
-}
 /** 统计信息 */
 export interface VexusStats {
   totalVectors: number
   dimensions: number
   capacity: number
   memoryUsage: number
+  /** Heap-resident routing, metadata and mutable delta estimate; excludes mmap. */
+  hotBytes: number
+  /** Mapped file length, not resident set size. */
+  mmapBytes: number
+  tombstones: number
 }
 /** 对任意 Chunk/日记索引执行单次排他差分后的摘要。  */
 export interface ChunkIndexDeltaResult {
@@ -157,11 +121,22 @@ export interface MemoRuntimeStats {
   edgeCount: number
   resident: boolean
 }
+export interface WatchEvent {
+  event: string
+  path: string
+  generation: number
+  stable: boolean
+  size: number
+  mtimeMs: number
+  emittedAt: number
+}
 export interface WatcherConfig {
   rootPath: string
   ignoreFolders: Array<string>
   ignorePrefixes: Array<string>
   ignoreSuffixes: Array<string>
+  /** 是否在启动 watcher 时执行 Rust 侧初始扫描。 */
+  initialScan?: boolean
   /** 可选扩展名白名单。为空时保持旧行为：仅监听 .md / .txt。 */
   extensions?: Array<string>
   /** 路径事件静默窗口。窗口内的新事件会使旧 generation 自动失效。 */
@@ -178,6 +153,147 @@ export declare class NativeKnowledgeRuntime {
    * 构造完成后只持有纯 Rust Arc，不保存 N-API 对象引用。
    */
   constructor(tagIndex: VexusIndex)
+  /** 返回生产 KBM 数据面的 ABI 版本和必需能力。 */
+  capabilities(): NativeRuntimeCapabilities
+  /**
+   * 打开并初始化中央 KBM SQLite 存储根。
+   *
+   * 现阶段只初始化 Runtime 元数据表；业务 Schema 迁移会在后续阶段
+   * 收归同一个 Write Actor，避免与旧 JS Schema 管理同时执行。
+   */
+  openAndInitStore(dbPath: string, optionsJson?: string | undefined | null): NativeStoreState
+  executeLightMemoQuery(planJson: string, query: Float32Array): Promise<unknown>
+  lightMemoIndexStats(): string
+  /** Never wait for a query lock on the Node main thread. */
+  evictIdleLightMemoIndex(ttlMs: number): boolean
+  searchGlobalTags(query: Float32Array, limit: number): Promise<unknown>
+  storeState(): NativeStoreState | null
+  healthCheck(): Promise<unknown>
+  databaseGeneration(): number
+  cancelPreparedPlan(token: string): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 后台线程读取中央库中当前已索引文件的路径快照。
+   *
+   * 该快照只用于 watcher 溢出后的缺失文件对账；文件系统扫描和事件生成
+   * 仍由 Rust watcher 后台线程完成。
+   */
+  listIndexedFilePaths(dbPath: string): Promise<unknown>
+  /** 在 Rust Read Pool 后台线程读取中央库中的日记本名称。 */
+  listDistinctDiaries(dbPath: string): Promise<unknown>
+  /** 在 Rust Read Pool 后台线程统计指定日记本的 Chunk 数量。 */
+  getDiaryChunkCount(dbPath: string, diaryName: string): Promise<unknown>
+  /** 在 Rust Read Pool 后台线程按日记本名称解析文件 ID。 */
+  getFileIdsByDiaries(dbPath: string, diaryNames: Array<string>): Promise<unknown>
+  refreshFileMetadata(dbPath: string, requestJson: string): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 后台线程批量探测文件事实状态。
+   *
+   * 该接口只返回文件元数据、Chunk 数量和向量完整性摘要，不跨越
+   * N-API 传输任何 Vector BLOB。
+   */
+  probeIngestionFiles(dbPath: string, filePaths: Array<string>): Promise<unknown>
+  /**
+   * 在 Rust 后台线程执行文本预处理、Tag 提取、cl100k_base token 计数和 Chunk 切分。
+   *
+   * 返回的 chunks/tags 保持稳定顺序；Embedding 请求仍由 Node.js 的
+   * EmbeddingUtils 编排，Rust 只提供缺失向量任务所需的文本计划。
+   */
+  prepareText(requestJson: string): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 后台线程扫描文件并构建 Tag 一致性计划。
+   *
+   * Rust 负责数据库快照、文件读取、Tag 规则、摘要、摘要哈希和短期
+   * 预览 token；Node.js 只负责展示预览、调用 Embedding 服务和提交向量。
+   */
+  prepareTagConsistency(requestJson: string): Promise<unknown>
+  /**
+   * 将 JS 已完成的文本切分与 Embedding 结果提交到 Rust Write Actor。
+   *
+   * Rust 只接受稳定的计划和位置向量，不在这里重写 JS 的 tokenizer/chunker。
+   * 在 Rust Read Pool 后台线程批量探测 Tag 状态。
+   *
+   * 仅返回 Tag ID 和向量是否存在且维度正确，不跨 N-API 传输 Vector BLOB。
+   */
+  probeIngestionTags(dbPath: string, tagNames: Array<string>): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 后台线程查找可复用的迁移向量来源。
+   *
+   * 只返回 live file ID 或 migration tombstone ID；Vector BLOB 始终留在 Rust。
+   */
+  probeMigrationReuse(dbPath: string, requestsJson: string): Promise<unknown>
+  /**
+   * 清理缺失文件记录以及事实表中的孤儿关系。
+   *
+   * 文件系统扫描在 N-API 后台任务中执行，数据库删除统一提交到
+   * NativeKnowledgeRuntime 所属的 SQLite Write Actor。
+   */
+  cleanupDatabaseOrphans(dbPath: string, rootPath: string): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 中确认当前 pairwise 模型已有健康缓存后，
+   * 通过 Write Actor 删除旧模型签名的 pairwise 数值。
+   *
+   * 该维护操作不修改中央事实表，因此不会推进数据库事实代际。
+   */
+  commitIngestionBatch(dbPath: string, planJson: string, chunkVectors: Float32Array, tagVectors: Float32Array): Promise<unknown>
+  /** 由 Rust Write Actor 提交文件删除、迁移墓碑和索引删除回执。 */
+  commitDeleteBatch(dbPath: string, filePaths: Array<string>, ttlMs: number, rootPath?: string | undefined | null): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 后台线程读取 Tag 一致性预览所需的轻量数据库快照。
+   *
+   * 只返回文件元数据、Tag 元数据和 file_tags 关系，不返回向量 BLOB。
+   */
+  getTagConsistencySnapshot(dbPath: string): Promise<unknown>
+  /**
+   * 通过 Rust Write Actor 提交 Tag 一致性快照。
+   *
+   * 文件扫描、规则计算和 Embedding 仍由 Node.js 控制面完成；本方法只接收
+   * 已冻结的快照计划与缺失 Tag 向量，所有事实表修改在 Write Actor 事务中执行。
+   */
+  commitTagConsistency(dbPath: string, planJson: string, tagVectors: Float32Array): Promise<unknown>
+  /** 在 Rust Read Pool 后台线程读取 kv_store 中的单个向量值。 */
+  getKvVector(dbPath: string, key: string): Promise<unknown>
+  /** 通过 Rust Write Actor 清理过期和超额的 RiverMemo 持久化资产。 */
+  pruneNativeMemoArtifacts(dbPath: string, retainReadyArtifacts?: number | undefined | null, failedRetentionMs?: number | undefined | null): Promise<unknown>
+  /** 通过 Rust Write Actor 写入 kv_store 中的单个向量值。 */
+  setKvVector(dbPath: string, key: string, vector: Float32Array): Promise<unknown>
+  /** 在 Rust Read Pool 后台线程按 key 前缀读取有限数量的 KV 向量。 */
+  listKvVectors(dbPath: string, prefix: string): Promise<unknown>
+  /**
+   * 在 Rust Read Pool 后台线程读取兼容的 RiverMemo artifact manifest。
+   * 只返回控制面元数据，不读取或解压持久化 payload。
+   */
+  getNativeMemoManifest(dbPath: string, modelSig: string, configHash: string): Promise<unknown>
+  /** 在 Rust 后台线程构建单个日记本的轻量日期索引。 */
+  getDiaryDateIndex(dbPath: string, diaryName: string): Promise<unknown>
+  /** 在 Rust 后台线程按 Tag 名称查找单个 Tag 向量；Vector BLOB 不经过 Node.js。 */
+  getTagVectorByName(dbPath: string, tagName: string): Promise<unknown>
+  /** 在 Rust 后台线程按正文查找单个 Chunk 向量；Vector BLOB 不经过 Node.js。 */
+  getChunkVectorByText(dbPath: string, diaryName: string, text: string): Promise<unknown>
+  /** 在 Rust 后台线程读取单个 Chunk 向量；Vector BLOB 不经过 Node.js。 */
+  getChunkVector(dbPath: string, chunkId: number): Promise<unknown>
+  /**
+   * 按 Chunk ID 批量回填正文和文件元数据，结果按请求 ID 顺序返回。
+   *
+   * SQL 查询在 N-API 后台任务执行，不能在 Node.js 主线程等待 Read Pool。
+   */
+  hydrateChunksByIds(dbPath: string, chunkIds: Array<number>): Promise<unknown>
+  /** 按 Tag ID 批量回填 Tag 名称，供纯 ANN 结果适配旧返回结构。 */
+  hydrateTagNamesByIds(dbPath: string, tagIds: Array<number>): Promise<unknown>
+  /** 按文件路径批量回填正文和文件元数据，结果使用与 Chunk ID hydrate 相同的 JSON 契约。 */
+  hydrateChunksByFilePaths(dbPath: string, filePaths: Array<string>): Promise<unknown>
+  /**
+   * 在 Rust 后台线程恢复日记索引。
+   *
+   * 调用方只提供已创建并注册的 VexusIndex；活动槽加载、成员差分回放
+   * 和无基线全量重建均在 Rust 后台执行，向量 BLOB 不经过 Node.js。
+   */
+  restoreDiaryIndex(dbPath: string, diaryName: string, indexPath: string, modelSig: string, capacity: number, diaryIndex: VexusIndex): Promise<unknown>
+  /** 在 Rust 后台线程恢复全局 Tag 索引。 */
+  restoreGlobalTagIndex(dbPath: string, indexPath: string, modelSig: string, capacity: number): Promise<unknown>
+  /** 在 Rust 后台线程执行日记索引双槽代际 checkpoint。 */
+  checkpointDiaryIndex(dbPath: string, diaryName: string, indexPath: string, modelSig: string, threshold: number, force?: boolean | undefined | null): Promise<unknown>
+  /** 在 Rust 后台线程执行全局 Tag 索引双槽代际 checkpoint。 */
+  checkpointGlobalTagIndex(dbPath: string, indexPath: string, modelSig: string, threshold: number, force?: boolean | undefined | null): Promise<unknown>
   /**
    * 注册或原子替换一个日记索引。
    *
@@ -213,6 +329,35 @@ export declare class NativeKnowledgeRuntime {
   unregisterDiaryIndex(diaryName: string, expectedGeneration: number): boolean
   diaryIndexState(diaryName: string): RegisteredDiaryIndexState | null
   listDiaryIndices(): Array<RegisteredDiaryIndexState>
+  /**
+   * 在 Runtime 生命周期内启动 Rust 原生文件监听器。
+   *
+   * watcher 的所有权归 NativeKnowledgeRuntime；JS 不再单独持有
+   * VexusWatcher 实例，也不能在 Runtime 关闭后遗留文件事件线程。
+   */
+  startWatch(config: WatcherConfig): void
+  /**
+   * 批量取出 Rust watcher 已完成的稳定事件。
+   *
+   * 事件留在 Rust 有界队列中，Node.js 只能主动拉取轻量事件，
+   * 不参与 notify 回调、稳定性判断或文件扫描。
+   */
+  drainWatchEvents(maxEvents?: number | undefined | null): Array<WatchEvent>
+  /**
+   * 对 Runtime 持有的 KBM watcher 执行一次 Rust 侧文件对账。
+   *
+   * 对账结果重新进入同一个有界事件队列，Node.js 不直接递归扫描知识根目录。
+   */
+  reconcileWatch(): void
+  /**
+   * 使用 Rust Read Pool 返回的数据库文件路径快照执行缺失文件对账。
+   *
+   * 文件路径快照只跨 N-API 传递字符串；实际扫描、存在性确认和 unlink
+   * 事件生成仍在 Rust watcher 线程中完成。
+   */
+  reconcileWatchWithPaths(paths: Array<string>): void
+  /** 停止 Runtime 所有的文件监听，并释放 notify 句柄。 */
+  stopWatch(): void
   stats(): NativeKnowledgeRuntimeStats
   /** 停止接受后续查询并清空注册表。已开始任务持有的 Arc 快照不受影响。 */
   shutdown(): void
@@ -234,6 +379,8 @@ export declare class VexusIndex {
    * 短暂持有句柄造成的共享冲突进行有界重试。
    */
   save(indexPath: string): void
+  /** 在 N-API 后台线程保存索引，禁止调用方在 V8 主线程执行磁盘序列化。 */
+  saveAsync(indexPath: string): Promise<unknown>
   /** 单个添加 (JS 循环调用) */
   add(id: number, vector: Float32Array): void
   /**
@@ -254,27 +401,13 @@ export declare class VexusIndex {
   /**
    * 对当前活动 Tag 索引执行一次后台排他差分。
    *
-   * N-API 调用只复制实际变化的向量并立即返回 Promise；耗时的 usearch 删除、
+   * N-API 调用只复制实际变化的向量并立即返回 Promise；耗时的索引删除、
    * upsert 与 MemoRuntime 失效均在 libuv 工作线程执行，不阻塞 Node 事件循环。
    * 搜索通过同一 RwLock 等待差分完成，只会看到差分前或差分后的索引。
    */
   applyTagDelta(removeIds: Array<number>, upsertIds: Array<number>, upsertVectors: Float32Array): Promise<unknown>
   /** 搜索 */
   search(query: Float32Array, k: number): Array<SearchResult>
-  /**
-   * RiverMemo 全局双场投影。
-   *
-   * Tag 向量直接从当前常驻 usearch F32 索引按 key 读取；整个查询只复用一个
-   * dimension 大小的临时缓冲区，不维护第二份全库向量矩阵。
-   */
-  projectDualWeighted(tagIds: Array<number>, localMasses: Float64Array, transferMasses: Float64Array): DualWeightedProjectionResult
-  /**
-   * 使用当前 VexusIndex 唯一 Tag 向量空间完成 TagMemo 上下文融合。
-   *
-   * 只在批量读取请求涉及的 Tag 向量时短持 usearch 读锁；语义去重、
-   * 上下文加权和最终融合均在释放索引锁后执行，不维护第二份全库向量。
-   */
-  fuseMemoContext(original: Float32Array, tagIds: Array<number>, tagWeights: Float64Array, alpha: number, dedupThreshold?: number | undefined | null, maxTags?: number | undefined | null): MemoFusionResult
   /**
    * 在本 Tag 向量索引与 MemoRuntime 上执行统一查询数学管线。
    *
@@ -311,54 +444,20 @@ export declare class VexusIndex {
   stats(): VexusStats
   /** 从 SQLite 数据库恢复索引 (异步版本，不阻塞主线程) */
   recoverFromSqlite(dbPath: string, tableType: string, filterDiaryName?: string | undefined | null): Promise<unknown>
-  /**
-   * 高性能 SVD 分解 (用于 EPA 基底构建)
-   * flattened_vectors: n * dim 的扁平化向量数组
-   * n: 向量数量
-   * max_k: 最大保留的主成分数量
-   */
-  computeSvd(flattenedVectors: Float32Array, n: number, maxK: number): SvdResult
-  /** 高性能 Gram-Schmidt 正交投影 */
-  computeOrthogonalProjection(vector: Float32Array, flattenedTags: Float32Array, nTags: number): OrthogonalProjectionResult
-  /** 高性能握手分析 */
-  computeHandshakes(query: Float32Array, flattenedTags: Float32Array, nTags: number): HandshakeResult
-  /** 高性能 EPA 投影 */
-  project(vector: Float32Array, flattenedBasis: Float32Array, meanVector: Float32Array, k: number): ProjectResult
-  /**
-   * 🌟 EPA: Rust 侧重算基底并暂存在 Rust 内存中。
-   *
-   * 计算阶段只读 SQLite，不持有 JS 写租约；调用方应在结果成功后短租约调用 publish_epa_basis_cache。
-   */
-  computeEpaBasis(dbPath: string, clusterCount: number, maxBasisDim: number): Promise<unknown>
-  /**
-   * 🌟 EPA: 发布最近一次 Rust 计算完成的 EPA cache。
-   *
-   * 该方法执行短 SQLite 写入，JS 调用方必须先获取 Rust 写租约。
-   */
-  publishEpaBasisCache(dbPath: string): EpaBasisResult
-  /** 预计算任务：矩阵内生残差 (TagMemo V7) */
-  computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null, modelSig?: string | undefined | null, effectiveConfigJson?: string | undefined | null): Promise<unknown>
-  /**
-   * 🌟 TagMemo V8.2: 预计算 Tag 对的语义距离（成对余弦相似度）
-   *
-   * - 仅对实际共现的 pair 进行计算（避免 N² 爆炸）
-   * - 单文件 Tag 数 > 100 的脏文件跳过（与 JS / V7 守恒一致）
-   * - 增量模式：已存在且 model_sig 一致的 pair 直接跳过
-   * - sim < min_similarity 的 pair 不写入（默认丢弃噪声）
-   * - 单模型缓存策略：full_rebuild 会清空整张 sim 表，避免旧模型签名残留
-   *
-   * # 参数
-   * - `db_path`: SQLite 路径
-   * - `model_sig`: embedding 模型签名 (含维度)，跨模型自动失效
-   * - `min_similarity`: 噪声阈值，默认 0.05
-   * - `full_rebuild`: 是否清空 sim 表后重算 (默认 false 增量)
-   */
-  computePairwiseSimilarities(dbPath: string, modelSig: string, minSimilarity?: number | undefined | null, fullRebuild?: boolean | undefined | null): Promise<unknown>
+  computeMemoGeometry(dbPath: string, modelSig: string, configJson: string): Promise<unknown>
 }
 export declare class VexusWatcher {
   constructor()
   /** 启动高性能原生文件监听 */
-  startWatch(config: WatcherConfig, jsCallback: (err: Error | null, arg: string) => any): void
-  /** 停止监听 */
+  startWatch(config: WatcherConfig): void
+  /**
+   * 请求一次 Rust 侧后台文件对账。
+   *
+   * 对账线程在 Runtime 内部单飞运行；N-API 调用只负责提交请求，
+   * 不在 Node.js 主线程执行递归文件扫描。扫描结果重新进入同一个
+   * 有界事件队列，停止时由 stop_watch() 取消并 join。
+   */
+  reconcileWatch(): void
   stopWatch(): void
+  drainEvents(maxEvents: number): Array<WatchEvent>
 }

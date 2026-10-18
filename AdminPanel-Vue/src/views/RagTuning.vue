@@ -131,7 +131,7 @@
               <span class="rag-console__label">语义沙盘</span>
               <div class="semantic-sim-card">
                 <div class="semantic-sim-card__copy">
-                  <strong>浪潮语义地形模拟器 · V9.1</strong>
+                  <strong>浪潮语义地形模拟器 · RiverMemo</strong>
                   <p>预览有界传播核、枢纽校正、软非回溯、预算内虫洞与有限时域能量场。</p>
                 </div>
                 <UiButton @click="openSemanticSimulation">
@@ -145,7 +145,7 @@
               <div class="tag-consistency-card">
                 <div class="tag-consistency-card__copy">
                   <strong>按当前规则核对旧 Tag 库</strong>
-                  <p>预检只读取文件与数据库，不请求向量、不写入数据。确认后只向量化差分 Tag。</p>
+                  <p>预检读取文件与数据库并保存临时确认计划，不请求向量、不修改 Tag 事实。确认后只向量化差分 Tag，并自动排队重训练。</p>
                 </div>
 
                 <div
@@ -245,8 +245,8 @@
                 <div v-if="tagMemoAssetsStale" class="tag-consistency-warning" role="alert">
                   <span class="material-symbols-outlined">warning</span>
                   <p>
-                    Tag 真相层已更新。Pairwise、内生残差、传播核与浪潮矩阵仍是旧资产，
-                    请在下方执行“重建 V9.1 资产”。
+                    Tag 真相层已更新，RiverAGS 派生资产尚待确认发布。
+                    自动重训练排队结果见上方提示；若排队失败，可在下方手动重试。排队不代表训练完成，请查看主服务日志。
                   </p>
                 </div>
               </div>
@@ -256,16 +256,17 @@
               <span class="rag-console__label">主动自学习</span>
               <div class="active-training-card">
                 <div class="active-training-card__copy">
-                  <strong>V9.1 全量重训练</strong>
-                  <p>重建 V9.1 Pairwise、内生残差与传播核；发布成功后清理退休 V8.3 预计算，并重置 1% 新标签阈值计数。</p>
+                  <strong>RiverAGS全量重训练</strong>
+                  <p>由 Rust 重算 AGS 双尺度统一几何，再构建并发布 Memo/River 图资产。下方持续显示后台阶段、完成结果与错误；运行中重复请求不会追加训练。</p>
                 </div>
                 <UiButton
                   variant="secondary"
-                  :disabled="isActiveTraining"
+                  :disabled="isActiveTraining || trainingBusy"
                   @click="triggerActiveFullTraining"
                 >
-                  {{ isActiveTraining ? "训练已排队…" : "重建 V9.1 资产" }}
+                  {{ isActiveTraining ? "正在请求排队…" : trainingBusy ? "后台训练进行中…" : "RiverAGS全量重训练" }}
                 </UiButton>
+                <p role="status" aria-live="polite">{{ trainingMessage }}</p>
               </div>
             </div>
 
@@ -288,7 +289,7 @@
             <div class="rag-console__section">
               <span class="rag-console__label">风险提示</span>
               <ul class="rag-console__tips">
-                <li><strong>RiverMemo / V10 已联合校准，除启用开关外不建议调参。</strong></li>
+                <li><strong>RiverMemo 已联合校准，仅保留现役参数；资产参数保存后需重训练。</strong></li>
                 <li>高风险参数建议单独修改并观察效果。</li>
                 <li>虫洞路由参数耦合较强，不建议一次联动改太多项。</li>
                 <li>
@@ -833,10 +834,10 @@
         <section class="semantic-sim-modal__panel">
           <header class="semantic-sim-modal__header">
             <div>
-              <span class="semantic-sim-modal__eyebrow">TagMemo V9.1 Terrain Sandbox</span>
-              <h3 id="semantic-sim-modal-title">浪潮语义地形沙盘 · V9.1</h3>
+              <span class="semantic-sim-modal__eyebrow">RiverMemo Terrain Sandbox</span>
+              <h3 id="semantic-sim-modal-title">浪潮语义地形沙盘 · RiverMemo</h3>
               <p>
-                沙盘会接收尚未保存的有序事实矩阵、V9.1 有界核与软非回溯参数，模拟固定出流预算、
+                沙盘会接收尚未保存的有序事实矩阵、RiverMemo 有界核与软非回溯参数，模拟固定出流预算、
                 入流枢纽校正、预算内虫洞和归一化有限时域场。它是前端教学近似，不读取真实数据库资产。
               </p>
             </div>
@@ -866,6 +867,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   ragApi,
+  type TrainingTask,
   type ParamGroup,
   type TagConsistencyPreview,
   type TagConsistencyPreviewTask,
@@ -948,9 +950,9 @@ const WORMHOLE_GROUP_NAME = "KnowledgeBaseManager";
 const V9_KERNEL_PARAM_KEY = "v9";
 const TAGMEMO_DEDICATED_KEYS = new Set([
   "resultDeduplication",
-  "tagMemoVersioning",
   "v9",
-  "intrinsicResidual",
+  "epaGateMode",
+  "geometry",
   "riverMemo",
 ]);
 const DEDUP_SOURCE_OPTIONS: ReadonlyArray<{
@@ -994,6 +996,39 @@ const newThemeName = ref("");
 const isThemeLoading = ref(false);
 const isThemeSaving = ref(false);
 const isActiveTraining = ref(false);
+const trainingRequestError = ref("");
+const trainingTask = ref<TrainingTask | null>(null);
+const trainingBusy = computed(() => ["queued", "running"].includes(trainingTask.value?.status || ""));
+const trainingMessage = computed(() => {
+  if (trainingRequestError.value) return trainingRequestError.value;
+  const task = trainingTask.value;
+  if (!task || task.status === "idle") return "当前无训练任务。";
+  const phases: Record<string, string> = {
+    queued: "已排队", geometry: "正在计算 AGS 双尺度几何",
+    artifact: "正在构建图资产", publishing: "正在发布资产",
+    completed: "训练完成", failed: "训练失败", "retry-wait": "等待重试",
+  };
+  return `${phases[task.phase] || task.status} · ${task.taskId || ""}`
+    + (task.error ? `：${task.error}` : "")
+    + (task.artifactSig ? ` · 资产 ${task.artifactSig}` : "");
+});
+let trainingPollTimer: number | null = null;
+let trainingPollingStopped = false;
+async function refreshTrainingStatus(): Promise<void> {
+  try {
+    const response = await ragApi.getTrainingStatus();
+    if (!trainingPollingStopped && response.task) {
+      trainingTask.value = response.task;
+      if (response.task.status === "completed") tagMemoAssetsStale.value = false;
+    }
+  } catch (error) {
+    console.warn("Training status unavailable:", error);
+  } finally {
+    if (!trainingPollingStopped) {
+      trainingPollTimer = window.setTimeout(() => { void refreshTrainingStatus(); }, 3000);
+    }
+  }
+}
 const isTagConsistencyScanning = ref(false);
 const isTagConsistencyApplying = ref(false);
 const tagConsistencyPreview = ref<TagConsistencyPreview | null>(null);
@@ -1565,7 +1600,7 @@ function handleSemanticSimulationMessage(event: MessageEvent): void {
     updateSimulationField(subKey, rawValue);
   });
 
-  statusMessage.value = "已从 V9.1 浪潮语义沙盘同步未保存参数。";
+  statusMessage.value = "已从 RiverMemo 浪潮语义沙盘同步未保存参数。";
   statusType.value = "info";
 }
 
@@ -1855,11 +1890,16 @@ async function applyTagConsistency(): Promise<void> {
     const summary = response.result.summary;
     tagMemoAssetsStale.value = response.result.waveAssetsStale;
     tagConsistencyPreview.value = null;
+    const indexReady = response.result.indexReady === true;
+    const trainingQueued = response.result.training?.queued === true;
     statusMessage.value =
-      `Tag 修复完成：新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量；`
-      + "全局 Tag 内存索引已重建，请继续重建 V9.1 浪潮资产。";
-    statusType.value = "success";
-    showMessage(statusMessage.value, "success");
+      `Tag 事实已提交：新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量；`
+      + (indexReady ? "全局 Tag 索引差分已就绪；" : "全局 Tag 索引尚未就绪，请检查主服务恢复日志；")
+      + (trainingQueued
+        ? "RiverAGS全量重训练已自动排队，完成情况请查看主服务日志。"
+        : `RiverAGS重训练未确认排队，请手动重试。${response.result.training?.error || ""}`);
+    statusType.value = indexReady && trainingQueued ? "success" : "info";
+    showMessage(statusMessage.value, statusType.value);
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     tagConsistencyPreview.value = null;
@@ -1872,29 +1912,34 @@ async function applyTagConsistency(): Promise<void> {
 }
 
 async function triggerActiveFullTraining(): Promise<void> {
-  if (isActiveTraining.value) {
+  if (isActiveTraining.value || trainingBusy.value) {
     return;
   }
 
   isActiveTraining.value = true;
+  trainingRequestError.value = "";
 
   try {
     const response = await ragApi.triggerActiveFullTraining({
       loadingKey: "rag-tuning.active-full-training",
     });
     const result = response.result;
-    const resetCount = result?.resetPendingNewTags ?? 0;
-    const threshold = result?.threshold;
+    if (response.success !== true || result?.queued !== true) {
+      throw new Error(response.error || result?.error || "主服务未确认重训练排队");
+    }
 
-    statusMessage.value = threshold
-      ? `已排队 V9.1 全量重建与退休资产清理任务，已重置 ${resetCount}/${threshold} 个阈值计数。`
-      : `已排队 V9.1 全量重建与退休资产清理任务，已重置 ${resetCount} 个阈值计数。`;
+    trainingTask.value = result.task || {
+      taskId: result.taskId || null, status: "queued", phase: "queued",
+    };
+    statusMessage.value = result.alreadyRunning
+      ? "已有后台训练任务，已复用，不会重复排队。"
+      : "RiverAGS全量重训练已排队，阶段与完成结果显示在训练按钮下方。";
     statusType.value = "success";
-    tagMemoAssetsStale.value = false;
     showMessage(statusMessage.value, "success");
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    statusMessage.value = `触发全量自学习失败：${errorMessage}`;
+    trainingRequestError.value = `触发全量自学习失败：${errorMessage}`;
+    statusMessage.value = trainingRequestError.value;
     statusType.value = "error";
     showMessage(statusMessage.value, "error");
   } finally {
@@ -1939,7 +1984,7 @@ async function saveParams(): Promise<void> {
     });
 
     originalParams.value = cloneParams(params.value);
-    statusMessage.value = "RAG 参数已保存。";
+    statusMessage.value = "RAG 参数已保存；几何或构图参数修改后，请手动执行 RiverAGS 全量重训练。";
     statusType.value = "success";
     showMessage("RAG 参数已保存。", "success");
   } catch (error: unknown) {
@@ -1982,11 +2027,14 @@ onMounted(() => {
   void loadParams();
   void loadThemes();
   void refreshTagConsistencyTask();
+  void refreshTrainingStatus();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("message", handleSemanticSimulationMessage);
   clearTagConsistencyPolling();
+  trainingPollingStopped = true;
+  if (trainingPollTimer !== null) window.clearTimeout(trainingPollTimer);
 });
 </script>
 

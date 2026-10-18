@@ -14,8 +14,15 @@
 const { performance } = require('perf_hooks');
 
 class ResultDeduplicator {
-    constructor(db, config = {}) {
-        this.db = db;
+    constructor(dbOrOptions = null, config = {}) {
+        const options = dbOrOptions
+            && typeof dbOrOptions === 'object'
+            && typeof dbOrOptions.prepare !== 'function'
+            ? dbOrOptions
+            : { ...config, legacyDb: dbOrOptions };
+        this.hydrateChunksByIds = typeof options.hydrateChunksByIds === 'function'
+            ? options.hydrateChunksByIds
+            : null;
         this.config = {
             dimension: 3072,
             semanticThreshold: 0.92,
@@ -95,7 +102,7 @@ class ResultDeduplicator {
         }
 
         try {
-            const hydrated = this._hydrateMissingVectors(hardDeduplicated);
+            const hydrated = await this._hydrateMissingVectors(hardDeduplicated);
             const hydrationFinishedAt = performance.now();
             const semanticThreshold = this._resolveSemanticThreshold(options.semanticThreshold);
             const results = this._semanticDeduplicate(
@@ -241,8 +248,8 @@ class ResultDeduplicator {
             .map(entry => entry.candidate);
     }
 
-    _hydrateMissingVectors(candidates) {
-        if (!this.db || typeof this.db.prepare !== 'function') return candidates;
+    async _hydrateMissingVectors(candidates) {
+        if (typeof this.hydrateChunksByIds !== 'function') return candidates;
 
         const missingChunkIds = [];
         const seenChunkIds = new Set();
@@ -264,30 +271,23 @@ class ResultDeduplicator {
         try {
             for (let offset = 0; offset < missingChunkIds.length; offset += batchSize) {
                 const batch = missingChunkIds.slice(offset, offset + batchSize);
-                const placeholders = batch.map(() => '?').join(',');
-                const rows = this.db.prepare(
-                    `SELECT id, vector FROM chunks WHERE id IN (${placeholders})`
-                ).all(...batch);
-                for (const row of rows || []) {
-                    const vector = this._decodeStoredVector(row?.vector);
-                    if (vector) vectorByChunkId.set(Number(row.id), vector);
+                const rows = await this.hydrateChunksByIds(batch);
+                for (const row of Array.isArray(rows) ? rows : []) {
+                    const vector = this._decodeStoredVector(
+                        row?.vector || row?._vector
+                    );
+                    const chunkId = this._getChunkId(row);
+                    if (vector && chunkId !== null) {
+                        vectorByChunkId.set(chunkId, vector);
+                    }
                 }
             }
         } catch (error) {
-            // 非 better-sqlite3 的兼容适配器可能只实现单行 get；生产路径始终走上面的批量查询。
-            try {
-                const statement = this.db.prepare(
-                    'SELECT vector FROM chunks WHERE id = ? LIMIT 1'
-                );
-                for (const chunkId of missingChunkIds) {
-                    const vector = this._decodeStoredVector(
-                        statement.get(chunkId)?.vector
-                    );
-                    if (vector) vectorByChunkId.set(chunkId, vector);
-                }
-            } catch (fallbackError) {
-                return candidates;
-            }
+            console.warn(
+                '[ResultDeduplicator] Native vector hydration failed:',
+                error.message || error
+            );
+            return candidates;
         }
 
         return candidates.map(candidate => {

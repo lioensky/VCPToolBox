@@ -300,8 +300,6 @@ helloagents/
 Thumbs.db
 
 # 源码研究
-docs/TriviumDB-master/
-
 # ===== 编译产物 =====
 rust-vexus-lite/target/
 rust-vexus-lite/crates/vcp-tdb-index/target/

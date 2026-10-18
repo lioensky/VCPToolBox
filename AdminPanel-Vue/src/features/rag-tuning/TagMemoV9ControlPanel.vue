@@ -8,7 +8,7 @@
           <h3>共享 Memo 传播底座控制台</h3>
           <p>
             RiverMemo 复用有界传播、入流枢纽校正、软非回溯与归一化有限时域场。
-            此处调节共享底座，不提供旧 TagMemo / DTSC 读出；LightMemo 对照比较纯 KNN、RiverMemo 与可选 Rerank / JEV。
+            此处调节共享底座，不提供旧检索读出；LightMemo 对照比较纯 KNN、RiverMemo 与可选 Rerank / JEV。
           </p>
         </div>
       </div>
@@ -22,7 +22,7 @@
     <div class="v9-console__warning">
       <span class="material-symbols-outlined">verified_user</span>
       <p>
-        统一 Rust MemoRuntime 按代际原子发布资产，AGS / IR / Spike / EPA 及有效更新机制保留。
+        统一 Rust MemoRuntime 按代际原子发布资产，AGS / Spike / EPA 及有效更新机制保留。
         旧检索模式明确拒绝；纯 KNN 仅用于候选、基线及指定业务故障回退。
       </p>
     </div>
@@ -50,7 +50,7 @@
             <span class="material-symbols-outlined">block</span>
             <span>
               <strong>旧版本确定性拒绝</strong>
-              <small>旧 TagMemo 检索模式和 DTSC 读出已退休，不允许静默映射为其他引擎。</small>
+              <small>旧检索模式与旧读出已退休，不允许静默映射为其他引擎。</small>
             </span>
           </div>
 
@@ -58,7 +58,7 @@
             <span class="material-symbols-outlined">cleaning_services</span>
             <span>
               <strong>全量训练清理退休资产</strong>
-              <small>全量训练重建共享 pairwise、残差与传播资产；新代际发布成功后再清理退休状态。</small>
+              <small>全量训练重建 AGS 局部残差、全局主题面与传播资产；新代际发布成功后再清理退休状态。</small>
             </span>
           </div>
         </div>
@@ -68,7 +68,7 @@
         <header class="v9-card__header">
           <div>
             <span class="v9-card__kicker">Hub-aware Bounded Kernel</span>
-            <h4>V9.1 有界传播、枢纽校正与虫洞预算</h4>
+            <h4>RiverMemo 有界传播、枢纽校正与虫洞预算</h4>
           </div>
           <UiBadge variant="danger">高敏感</UiBadge>
         </header>
@@ -173,10 +173,21 @@
         <header class="v9-card__header">
           <div>
             <span class="v9-card__kicker">Path Dynamics</span>
-            <h4>V9.1 软非回溯与有限时域场</h4>
+            <h4>RiverMemo 软非回溯与有限时域场</h4>
           </div>
-          <UiBadge variant="warning">V9.1 查询动力学</UiBadge>
+          <UiBadge variant="warning">RiverMemo 查询动力学</UiBadge>
         </header>
+
+        <label class="v9-field">
+          <strong>EPA 域内门控</strong>
+          <select :value="modelValue.epaGateMode || 'backgroundRelative'" @change="emit('update:modelValue', { ...modelValue, epaGateMode: ($event.target as HTMLSelectElement).value })">
+            <option value="backgroundRelative">背景校准相对解释率</option>
+            <option value="relativeLinear">线性相对解释率</option>
+            <option value="relativeSqrt">平方根相对解释率</option>
+            <option value="absolute">绝对解释率</option>
+          </select>
+          <small>查询期生效；推荐背景校准模式，避免高维解释率绝对值过小导致增强锁死。</small>
+        </label>
 
         <div class="v9-budget">
           <div>
@@ -222,20 +233,12 @@
         <header class="v9-card__header">
           <div>
             <span class="v9-card__kicker">Residual Instrument</span>
-            <h4>内生残差与锚增益</h4>
+            <h4>AGS 局部几何与锚增益</h4>
           </div>
           <UiBadge variant="info">JS / Rust 单一真相源</UiBadge>
         </header>
 
-        <label class="v9-field">
-          <span class="v9-field__label">残差算法</span>
-          <UiSelect :model-value="residual.method" @update:model-value="setResidualField('method', $event)">
-            <option value="anchored_gs">Anchored Gram-Schmidt</option>
-            <option value="centroid">Centroid Residual</option>
-            <option value="svd">SVD Residual</option>
-          </UiSelect>
-          <small>实际生效配置由 JS 完整传入 Rust，并纳入 artifact signature。</small>
-        </label>
+        <p>固定采用 Anchored Gram-Schmidt。修改几何或构图参数后，先保存，再手动执行 RiverAGS 全量重训练。</p>
 
         <label class="v9-toggle v9-toggle--standalone">
           <input
@@ -244,8 +247,8 @@
             @change="setResidualBoolean('semanticEnabled', $event)"
           />
           <span>
-            <strong>启用 Pairwise 语义门控</strong>
-            <small>使用当前模型签名下的成对余弦缓存调制残差邻域。</small>
+            <strong>启用内联余弦语义门控</strong>
+            <small>从 SQL 原始向量现场计算余弦，不存储成对相似度表。</small>
           </span>
         </label>
 
@@ -264,7 +267,7 @@
         <div class="v9-anchor">
           <header>
             <div>
-              <strong>V9.1 固定锚增益映射</strong>
+              <strong>RiverMemo 固定锚增益映射</strong>
               <small>原始 residual ratio 保持 [0,1]，工程增益使用固定函数映射。</small>
             </div>
             <code>clip(base + scale × r^γ)</code>
@@ -280,6 +283,33 @@
       </article>
 
 
+      <article class="v9-card v9-card--geometry">
+        <header class="v9-card__header"><h4>AGS 全局主题面 / EPA 预计算</h4><UiBadge variant="warning">保存后需重训练</UiBadge></header>
+        <div class="v9-geometry-grid">
+          <label class="v9-field">
+            <strong>候选方向</strong>
+            <select :value="globalGeometry.candidateMode || 'star'" @change="setGeometryField('global.candidateMode', ($event.target as HTMLSelectElement).value)">
+              <option value="star">星团混合</option><option value="anchor">单锚方向</option>
+            </select>
+          </label>
+          <label class="v9-field">
+            <strong>候选先验</strong>
+            <select :value="globalGeometry.priorMode || 'support'" @change="setGeometryField('global.priorMode', ($event.target as HTMLSelectElement).value)">
+              <option value="support">支持度</option><option value="explained">支持度 × 解释率</option><option value="residual">支持度 × 残差</option>
+            </select>
+          </label>
+          <template v-for="field in globalFields" :key="field.key">
+            <NumericField
+              v-if="!(field.key === 'residualExponent' && (globalGeometry.priorMode || 'support') === 'support') && !(['starNeighbors', 'starMix'].includes(field.key) && globalGeometry.candidateMode === 'anchor')"
+              :label="field.label" :model-value="numberValue(globalGeometry[field.key], field.fallback)"
+              :min="field.min" :max="field.max" :step="field.step"
+              @update:model-value="setGeometryField(`global.${field.key}`, $event)"
+            />
+          </template>
+        </div>
+      </article>
+
+
     </div>
   </section>
 </template>
@@ -288,7 +318,6 @@
 import { computed } from "vue";
 import type { ParamGroup, ParamValue } from "@/api";
 import UiBadge from "@/components/ui/UiBadge.vue";
-import UiSelect from "@/components/ui/UiSelect.vue";
 import NumericField from "./TagMemoV9NumericField.vue";
 
 type LooseRecord = Record<string, ParamValue>;
@@ -324,9 +353,13 @@ const spikeRouting = computed(() => {
   };
 });
 const residual = computed(() => {
-  const raw = asRecord(props.modelValue.intrinsicResidual);
+  const local = asRecord(asRecord(props.modelValue.geometry).local);
+  const gate = asRecord(local.semanticGate);
+  const anchor = asRecord(local.anchorGain);
+  const raw: LooseRecord = { ...local, semanticEnabled: gate.enabled, semanticPeak: gate.peak, semanticSigma: gate.sigma,
+    semanticFloor: gate.floor, semanticHardFloor: gate.hardFloor, v9AnchorBase: anchor.base,
+    v9AnchorScale: anchor.scale, v9AnchorGamma: anchor.gamma, v9AnchorMin: anchor.min, v9AnchorMax: anchor.max };
   return {
-    method: stringValue(raw.method, "anchored_gs"),
     maxNeighbors: numberValue(raw.maxNeighbors, 48),
     maxBasis: numberValue(raw.maxBasis, 4),
     minNeighbors: numberValue(raw.minNeighbors, 3),
@@ -354,9 +387,6 @@ function numberValue(value: ParamValue | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-function stringValue(value: ParamValue | undefined, fallback: string): string {
-  return typeof value === "string" ? value : fallback;
-}
 
 function booleanValue(value: ParamValue | undefined, fallback: boolean): boolean {
   if (typeof value === "boolean") return value;
@@ -382,17 +412,52 @@ function setSpikeNumber(key: string, value: number): void {
   updateSection("spikeRouting", key, value);
 }
 
-function setResidualField(key: string, value: string | number): void {
-  updateSection("intrinsicResidual", key, String(value));
+function setGeometryField(path: string, value: ParamValue): void {
+  const next = JSON.parse(JSON.stringify(props.modelValue)) as ParamGroup;
+  const geometry = asRecord(next.geometry);
+  next.geometry = geometry;
+  const parts = path.split(".");
+  let cursor = geometry;
+  for (const part of parts.slice(0, -1)) {
+    cursor[part] = { ...asRecord(cursor[part]) };
+    cursor = cursor[part] as LooseRecord;
+  }
+  cursor[parts[parts.length - 1]] = value;
+  emit("update:modelValue", next);
 }
-
+function residualPath(key: string): string {
+  const paths: Record<string, string> = {
+    semanticEnabled: "semanticGate.enabled", semanticPeak: "semanticGate.peak",
+    semanticSigma: "semanticGate.sigma", semanticFloor: "semanticGate.floor",
+    semanticHardFloor: "semanticGate.hardFloor", v9AnchorBase: "anchorGain.base",
+    v9AnchorScale: "anchorGain.scale", v9AnchorGamma: "anchorGain.gamma",
+    v9AnchorMin: "anchorGain.min", v9AnchorMax: "anchorGain.max",
+  };
+  return `local.${paths[key] || key}`;
+}
 function setResidualNumber(key: string, value: number): void {
-  updateSection("intrinsicResidual", key, value);
+  setGeometryField(residualPath(key), value);
 }
-
 function setResidualBoolean(key: string, event: Event): void {
-  updateSection("intrinsicResidual", key, (event.target as HTMLInputElement).checked);
+  setGeometryField(residualPath(key), (event.target as HTMLInputElement).checked);
 }
+const globalGeometry = computed(() => asRecord(asRecord(props.modelValue.geometry).global));
+const globalFields = [
+  ["candidatePool", "候选池上限", 512, 1, 4096, 1],
+  ["starNeighbors", "星团邻居数", 48, 1, 256, 1],
+  ["starMix", "星团混合比例", 0.8, 0, 1, 0.01],
+  ["minSupport", "最少支持度", 3, 0, 1000, 1],
+  ["supportExponent", "支持度指数", 0.65, 0, 4, 0.01],
+  ["residualExponent", "解释/残差先验指数", 0.35, 0, 4, 0.01],
+  ["kMax", "最大主题面数", 32, 1, 128, 1],
+  ["kSem", "语义前缀面数", 8, 1, 128, 1],
+  ["epsilon", "剩余能量容差", 0.1, 0, 1, 0.001],
+  ["kneeDelta", "覆盖增量停止阈值", 0, 0, 1, 0.001],
+  ["minGain", "最小全局增益", 0.02, 0, 1, 0.001],
+].map(([key, label, fallback, min, max, step]) => ({
+  key: String(key), label: String(label), fallback: Number(fallback),
+  min: Number(min), max: Number(max), step: Number(step),
+}));
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));

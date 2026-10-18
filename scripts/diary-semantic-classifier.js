@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Legacy mutation/reindex mode is retired. Only the guarded read-only preview
+// remains available; do not bypass the write guard for TDB asset migration.
 
 /**
  * 日记语义级分类工具 (Diary Semantic Classifier)
@@ -12,6 +14,10 @@
  * 使用方法：
  * node diary-semantic-classifier.js --source "小吉的知识" --categories "分类1,分类2" --filter "小吉的" --dry-run
  */
+
+if (!process.argv.some(arg => ['--dry-run', '-d'].includes(arg))) {
+    require('./guard-server-stopped').assertLegacyKnowledgeWriteDisabled();
+}
 
 const fs = require('fs');
 const fsPromises = require('fs').promises;

@@ -1,4 +1,5 @@
 const express = require('express');
+const { cleanRagParams } = require('../../modules/knowledgeBase/memoConfig');
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -144,13 +145,14 @@ module.exports = function(options) {
     router.get('/rag-params', async (req, res) => {
         try {
             const content = await fs.readFile(ragParamsPath, 'utf-8');
-            res.json(JSON.parse(content));
+            res.json(cleanRagParams(JSON.parse(content)));
         } catch (error) { res.status(500).json({ error: 'Failed' }); }
     });
 
     router.post('/rag-params', async (req, res) => {
         try {
-            await writeJsonFile(ragParamsPath, req.body);
+            assertPlainObject(req.body);
+            await writeJsonFile(ragParamsPath, cleanRagParams(req.body));
             res.json({ message: 'Saved' });
         } catch (error) { res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Failed' }); }
     });
@@ -181,16 +183,17 @@ module.exports = function(options) {
                 readJsonFile(ragParamsPath, {}),
                 readJsonFile(themePath, {})
             ]);
-            res.json(mergeRagParams(baseParams, themePatch));
+            res.json(cleanRagParams(mergeRagParams(cleanRagParams(baseParams), cleanRagParams(themePatch))));
         } catch (error) { res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Failed' }); }
     });
 
     router.post('/rag-param-themes/:themeName', async (req, res) => {
         try {
+            assertPlainObject(req.body);
             await ensureThemeDir();
             const themeName = normalizeThemeName(req.params.themeName);
             const themePath = getThemeFilePath(themeName);
-            await writeJsonFile(themePath, req.body);
+            await writeJsonFile(themePath, cleanRagParams(req.body));
             res.json({ message: 'Saved', theme: { name: themeName, fileName: getThemeFileName(themeName) } });
         } catch (error) { res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Failed' }); }
     });
@@ -202,7 +205,7 @@ module.exports = function(options) {
                 readJsonFile(ragParamsPath, {}),
                 readJsonFile(getThemeFilePath(themeName))
             ]);
-            const themeParams = mergeRagParams(baseParams, themePatch);
+            const themeParams = cleanRagParams(mergeRagParams(cleanRagParams(baseParams), cleanRagParams(themePatch)));
             await writeJsonFile(ragParamsPath, themeParams);
             res.json({ message: 'Applied', theme: { name: themeName, fileName: getThemeFileName(themeName) }, params: themeParams });
         } catch (error) { res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Failed' }); }
@@ -309,7 +312,8 @@ module.exports = function(options) {
             }
 
             const token = String(req.body?.token || '').trim();
-            if (!token || !/^[a-f0-9]{48}$/i.test(token)) {
+            // Rust prepareTagConsistency emits a SHA-256 token (64 hex characters).
+            if (!token || !/^[a-f0-9]{64}$/i.test(token)) {
                 return res.status(400).json({
                     success: false,
                     code: 'TAG_CONSISTENCY_INVALID_TOKEN',
@@ -325,6 +329,18 @@ module.exports = function(options) {
                 code: error.code,
                 error: error.message || 'Failed to apply Tag consistency reconciliation'
             });
+        }
+    });
+
+    router.get('/rag-active-full-training/status', (req, res) => {
+        try {
+            const engine = vectorDBManager?.tagMemoEngine;
+            if (typeof engine?.getTrainingStatus !== 'function') {
+                return res.status(503).json({ success: false, error: 'Training status unavailable' });
+            }
+            res.json({ success: true, task: engine.getTrainingStatus() });
+        } catch (error) {
+            res.status(500).json({ success: false, error: error.message || 'Failed' });
         }
     });
 
