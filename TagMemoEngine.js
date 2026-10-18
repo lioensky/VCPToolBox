@@ -22,6 +22,8 @@ class TagMemoEngine {
         this._derivedTaskQueue = [];
         this._derivedTaskRunning = false;
         this._derivedTaskSequence = 0;
+        this._lastDerivedTask = null;
+        this._currentDerivedTask = null;
         this._isMatrixRebuilding = false;
         this._shutdownRequested = false;
         this.geometryArtifact = null;
@@ -136,6 +138,11 @@ class TagMemoEngine {
             );
         }
 
+        if (this._activeArtifactBundle?.runtimeArtifactSig === nativeResult.artifactSig
+            && this._activeArtifactBundle?.nativeGeneration === (Number(nativeResult.generation) || null)
+            && this._activeArtifactBundle?.residentAtPublication === (nativeResult.resident === true)) {
+            return this._activeArtifactBundle;
+        }
         const generation = ++this._artifactBundleGeneration;
         const bundle = Object.freeze({
             version: 'v9',
@@ -250,6 +257,7 @@ class TagMemoEngine {
         this._isMatrixRebuilding = true;
         const processedTagIds = new Set(this._accumulatedNewTagIds);
         try {
+            if (this._currentDerivedTask) this._currentDerivedTask.phase = 'geometry';
             const geometry = await this.recomputeGeometry();
             if (!geometry) return false;
 
@@ -257,6 +265,7 @@ class TagMemoEngine {
                 throw this._nativeUnavailable('rebuildMemoArtifact');
             }
 
+            if (this._currentDerivedTask) this._currentDerivedTask.phase = 'artifact';
             const dbPath = this.getDbPath();
             const effectiveConfig = this._effectiveNativeConfig();
             const result = await this.tagIndex.rebuildMemoArtifact(
@@ -274,8 +283,15 @@ class TagMemoEngine {
                 throw new Error('Native Memo artifact was not published as resident');
             }
 
+            if (this._currentDerivedTask) this._currentDerivedTask.phase = 'publishing';
             const handle = this.publishNativeArtifactHandle(result, effectiveConfig);
-            await this.knowledgeBaseManager?.onNativeMemoArtifactPublished?.(result, handle);
+            // A failed companion publication must be retried even when the V9
+            // handle was already published on the previous attempt.
+            if (this._lastCompanionPublishedHandle !== handle) {
+                await this.knowledgeBaseManager?.onNativeMemoArtifactPublished?.(result, handle);
+                this._lastCompanionPublishedHandle = handle;
+            }
+            if (this._currentDerivedTask) this._currentDerivedTask.artifactSig = result.artifactSig;
             for (const id of processedTagIds) this._accumulatedNewTagIds.delete(id);
             this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
             return true;
@@ -294,6 +310,20 @@ class TagMemoEngine {
             };
         }
 
+        const factsChanged = options.reason === 'tag-consistency-commit';
+        const existing = this._derivedTaskQueue.find(task =>
+            task.status === 'queued' || (!factsChanged && task.status === 'running'));
+        if (existing) {
+            return {
+                taskId: existing.id, queued: true, alreadyRunning: true,
+                reason: options.reason || 'admin-active-full-training',
+                task: this.getTrainingStatus()
+            };
+        }
+        clearTimeout(this._matrixRebuildTimer);
+        this._matrixRebuildTimer = null;
+        clearTimeout(this._postStartupDerivedRefreshTimer);
+        this._postStartupDerivedRefreshTimer = null;
         const taskId = this._enqueueDerivedTask(
             'active-full-training',
             () => this.doMatrixRebuild({
@@ -305,7 +335,21 @@ class TagMemoEngine {
             taskId,
             queued: Boolean(taskId),
             reason: options.reason || 'admin-active-full-training',
-            threshold: this._getMatrixRebuildThreshold()
+            threshold: this._getMatrixRebuildThreshold(),
+            task: this.getTrainingStatus()
+        };
+    }
+
+    getTrainingStatus() {
+        const task = this._derivedTaskQueue.find(item => item.status === 'running')
+            || this._derivedTaskQueue.find(item => item.status === 'queued')
+            || this._lastDerivedTask;
+        if (!task) return { taskId: null, status: 'idle', phase: 'idle' };
+        return {
+            taskId: task.id, status: task.status, phase: task.phase,
+            type: task.type, createdAt: task.createdAt, startedAt: task.startedAt,
+            finishedAt: task.finishedAt, attempts: task.attempts,
+            error: task.error || null, artifactSig: task.artifactSig || null
         };
     }
 
@@ -369,6 +413,11 @@ class TagMemoEngine {
             type,
             run,
             status: 'queued',
+            phase: 'queued',
+            createdAt: Date.now(),
+            startedAt: null,
+            finishedAt: null,
+            error: null,
             attempts: 0,
             maxAttempts: options.maxAttempts ?? 3
         };
@@ -393,20 +442,34 @@ class TagMemoEngine {
 
         this._derivedTaskRunning = true;
         task.status = 'running';
+        task.startedAt = Date.now();
+        task.error = null;
+        this._currentDerivedTask = task;
         task.attempts++;
         try {
             const success = await task.run();
             if (!success) throw new Error('native derived task returned false');
+            task.status = 'completed';
+            task.phase = 'completed';
+            task.finishedAt = Date.now();
+            this._lastDerivedTask = task;
             this._derivedTaskQueue = this._derivedTaskQueue.filter(item => item !== task);
         } catch (error) {
+            task.error = String(error.message || error);
             if (task.attempts >= task.maxAttempts) {
+                task.status = 'failed';
+                task.phase = 'failed';
+                task.finishedAt = Date.now();
+                this._lastDerivedTask = task;
                 console.error(`[TagMemoEngine] Derived task failed: ${task.type}`, error.message || error);
                 this._derivedTaskQueue = this._derivedTaskQueue.filter(item => item !== task);
             } else {
                 task.status = 'queued';
+                task.phase = 'retry-wait';
                 this._scheduleDerivedTaskPump(Math.min(900000, task.attempts * 60000));
             }
         } finally {
+            this._currentDerivedTask = null;
             this._derivedTaskRunning = false;
             if (this._derivedTaskQueue.some(item => item.status === 'queued')) {
                 this._scheduleDerivedTaskPump(1000);

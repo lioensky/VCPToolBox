@@ -280,10 +280,16 @@ class KnowledgeBaseFileWatcher {
         this.eventPoller.unref?.();
         this._drainRustEvents();
         this._publishState();
-        void this._reconcileAfterOverflow();
+        // Startup reconciliation also scans and emits add events. It must obey
+        // the same switch as the native initial scan; real overflow recovery
+        // remains enabled independently in _handleRustEvent().
+        if (config.fullScanOnStartup !== false) {
+            void this._reconcileAfterOverflow();
+        }
         console.log(
             '[KnowledgeBase] Using Runtime-owned Rust watcher; ' +
-            'initial reconciliation is native.'
+            `startup scan=${config.fullScanOnStartup !== false ? 'enabled' : 'disabled'}, ` +
+            'overflow recovery=enabled.'
         );
         return this.watcher;
     }

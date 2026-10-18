@@ -329,6 +329,18 @@ module.exports = function(options) {
         }
     });
 
+    router.get('/rag-active-full-training/status', (req, res) => {
+        try {
+            const engine = vectorDBManager?.tagMemoEngine;
+            if (typeof engine?.getTrainingStatus !== 'function') {
+                return res.status(503).json({ success: false, error: 'Training status unavailable' });
+            }
+            res.json({ success: true, task: engine.getTrainingStatus() });
+        } catch (error) {
+            res.status(500).json({ success: false, error: error.message || 'Failed' });
+        }
+    });
+
     router.post('/rag-active-full-training', (req, res) => {
         try {
             if (!vectorDBManager || typeof vectorDBManager.requestActiveFullTraining !== 'function') {

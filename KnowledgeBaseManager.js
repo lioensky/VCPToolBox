@@ -73,16 +73,14 @@ class KnowledgeBaseManager {
             tagIndexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY, 10) || 300000,
             deleteBatchWindow: parseInt(process.env.KNOWLEDGEBASE_DELETE_BATCH_WINDOW_MS, 10) || 1000,
             maxDeleteBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_DELETE_BATCH_SIZE, 10) || 2000,
-            deleteRebuildThreshold: parseInt(process.env.KNOWLEDGEBASE_DELETE_REBUILD_THRESHOLD, 10) || 5000,
             migrationCacheTtlMs: parseInt(process.env.KNOWLEDGEBASE_MIGRATION_CACHE_TTL_MS, 10) || 2 * 60 * 1000,
             derivedStartupCooldownMs: parseInt(process.env.KNOWLEDGEBASE_DERIVED_STARTUP_COOLDOWN_MS, 10) || 5 * 60 * 1000,
             // 🌟 索引空闲自动卸载：默认 2 小时未使用则从内存中卸载
             indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
             indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
-            idleSweepLogTick: (process.env.KNOWLEDGEBASE_IDLE_SWEEP_LOG_TICK || 'false').toLowerCase() === 'true',
-            ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛').split(',').map(f => f.trim()).filter(Boolean),
-            ignorePrefixes: (process.env.IGNORE_PREFIXES || process.env.IGNORE_PREFIX || '已整理').split(',').map(p => p.trim()).filter(Boolean),
-            ignoreSuffixes: (process.env.IGNORE_SUFFIXES || process.env.IGNORE_SUFFIX || '夜伽').split(',').map(s => s.trim()).filter(Boolean),
+            ignoreFolders: (process.env.IGNORE_FOLDERS ?? 'VCP论坛').split(/[,，]/).map(f => f.trim()).filter(Boolean),
+            ignorePrefixes: (process.env.IGNORE_PREFIXES ?? process.env.IGNORE_PREFIX ?? '已整理').split(/[,，]/).map(p => p.trim()).filter(Boolean),
+            ignoreSuffixes: (process.env.IGNORE_SUFFIXES ?? process.env.IGNORE_SUFFIX ?? '夜伽').split(/[,，]/).map(s => s.trim()).filter(Boolean),
 
             tagBlacklist: new Set((process.env.TAG_BLACKLIST || '').split(',').map(t => t.trim()).filter(Boolean)),
             tagBlacklistSuper: (process.env.TAG_BLACKLIST_SUPER || '').split(',').map(t => t.trim()).filter(Boolean),
@@ -90,11 +88,12 @@ class KnowledgeBaseManager {
                 const value = parseInt(process.env.KNOWLEDGEBASE_MAX_TAGS_PER_FILE, 10);
                 return Number.isFinite(value) && value > 0 ? value : 50;
             })(),
-            tagExpandMaxCount: parseInt(process.env.TAG_EXPAND_MAX_COUNT, 10) || 30,
-            fullScanOnStartup: (process.env.KNOWLEDGEBASE_FULL_SCAN_ON_STARTUP || 'true').toLowerCase() === 'true',
+            fullScanOnStartup: (process.env.KNOWLEDGEBASE_FULL_SCAN_ON_STARTUP || 'true').trim().toLowerCase() === 'true',
             // 语言置信度补偿配置
             langConfidenceEnabled: (process.env.LANG_CONFIDENCE_GATING_ENABLED || 'true').toLowerCase() === 'true',
-            langPenaltyUnknown: parseFloat(process.env.LANG_PENALTY_UNKNOWN) || 0.05,
+            // Undefined means inherit hot parameters; explicit zero is valid.
+            langPenaltyUnknown: this._readOptionalPenalty(process.env.LANG_PENALTY_UNKNOWN),
+            langPenaltyCrossDomain: this._readOptionalPenalty(process.env.LANG_PENALTY_CROSS_DOMAIN),
             // Native River 联合查询是 RiverMemo 的默认生产范式。Memo observation
             // 仍由统一管线生成，ANN/合并/向量 hydrate/语义去重/Topology V3
             // 收敛为一次 NativeKnowledgeRuntime 调用。仅显式 false 时紧急关闭。
@@ -306,6 +305,12 @@ class KnowledgeBaseManager {
         this.tagConsistencyService = new TagConsistencyService(this, {
             VexusIndex
         });
+    }
+
+    _readOptionalPenalty(raw) {
+        if (raw === undefined || raw === null || String(raw).trim() === '') return undefined;
+        const value = Number(raw);
+        return Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined;
     }
 
     async initialize() {
@@ -2158,16 +2163,14 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
                         kbConfig.coreBoostRange || [1.2, 1.4],
                     langConfidenceEnabled:
                         this.config.langConfidenceEnabled !== false,
-                    langPenaltyUnknown: Number(
-                        language.penaltyUnknown
-                        ?? this.config.langPenaltyUnknown
-                        ?? 0.05
-                    ),
-                    langPenaltyCrossDomain: Number(
-                        language.penaltyCrossDomain
-                        ?? this.config.langPenaltyCrossDomain
-                        ?? 0.1
-                    ),
+                    langPenaltyUnknown:
+                        this._readOptionalPenalty(this.config.langPenaltyUnknown)
+                        ?? this._readOptionalPenalty(language.penaltyUnknown)
+                        ?? 0.05,
+                    langPenaltyCrossDomain:
+                        this._readOptionalPenalty(this.config.langPenaltyCrossDomain)
+                        ?? this._readOptionalPenalty(language.penaltyCrossDomain)
+                        ?? 0.1,
                     deduplicationThreshold: Number(
                         kbConfig.deduplicationThreshold ?? 0.88
                     ),

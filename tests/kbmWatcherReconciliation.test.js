@@ -73,3 +73,33 @@ test('unstable unlink cannot queue deletion', () => {
     }));
     assert.equal(owner.pendingDeletes.size, 1);
 });
+
+for (const enabled of [false, true]) {
+    test(`startup scan=${enabled} controls startup reconciliation without disabling overflow recovery`, async () => {
+        const { watcher, owner, snapshots, requests } = fixture();
+        owner.config = { rootPath: 'fixture', fullScanOnStartup: enabled };
+        owner.nativeKnowledgeRuntime.startWatch = options => {
+            assert.equal(options.initialScan, enabled);
+            assert.deepEqual(options.ignoreFolders, []);
+        };
+        owner.nativeKnowledgeRuntime.drainWatchEvents = () => [];
+        watcher.watcher = null;
+        watcher.start();
+        try {
+            assert.equal(snapshots.length, enabled ? 1 : 0);
+            if (enabled) {
+                snapshots[0]('[]');
+                await new Promise(resolve => setImmediate(resolve));
+                assert.deepEqual(requests, [[]]);
+            } else {
+                watcher._handleRustEvent({ event: 'overflow' });
+                assert.equal(snapshots.length, 1);
+                snapshots[0]('["diary/known.txt"]');
+                await new Promise(resolve => setImmediate(resolve));
+                assert.deepEqual(requests, [['diary/known.txt']]);
+            }
+        } finally {
+            await watcher.stop();
+        }
+    });
+}

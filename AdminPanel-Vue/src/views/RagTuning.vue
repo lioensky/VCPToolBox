@@ -257,15 +257,16 @@
               <div class="active-training-card">
                 <div class="active-training-card__copy">
                   <strong>RiverAGS全量重训练</strong>
-                  <p>由 Rust 重算 AGS 双尺度统一几何，再构建并发布 Memo/River 图资产。成功发布后扣除本次已处理的新标签计数；排队不代表训练完成，请查看主服务日志。</p>
+                  <p>由 Rust 重算 AGS 双尺度统一几何，再构建并发布 Memo/River 图资产。下方持续显示后台阶段、完成结果与错误；运行中重复请求不会追加训练。</p>
                 </div>
                 <UiButton
                   variant="secondary"
-                  :disabled="isActiveTraining"
+                  :disabled="isActiveTraining || trainingBusy"
                   @click="triggerActiveFullTraining"
                 >
-                  {{ isActiveTraining ? "正在请求排队…" : "RiverAGS全量重训练" }}
+                  {{ isActiveTraining ? "正在请求排队…" : trainingBusy ? "后台训练进行中…" : "RiverAGS全量重训练" }}
                 </UiButton>
+                <p role="status" aria-live="polite">{{ trainingMessage }}</p>
               </div>
             </div>
 
@@ -866,6 +867,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   ragApi,
+  type TrainingTask,
   type ParamGroup,
   type TagConsistencyPreview,
   type TagConsistencyPreviewTask,
@@ -994,6 +996,39 @@ const newThemeName = ref("");
 const isThemeLoading = ref(false);
 const isThemeSaving = ref(false);
 const isActiveTraining = ref(false);
+const trainingRequestError = ref("");
+const trainingTask = ref<TrainingTask | null>(null);
+const trainingBusy = computed(() => ["queued", "running"].includes(trainingTask.value?.status || ""));
+const trainingMessage = computed(() => {
+  if (trainingRequestError.value) return trainingRequestError.value;
+  const task = trainingTask.value;
+  if (!task || task.status === "idle") return "当前无训练任务。";
+  const phases: Record<string, string> = {
+    queued: "已排队", geometry: "正在计算 AGS 双尺度几何",
+    artifact: "正在构建图资产", publishing: "正在发布资产",
+    completed: "训练完成", failed: "训练失败", "retry-wait": "等待重试",
+  };
+  return `${phases[task.phase] || task.status} · ${task.taskId || ""}`
+    + (task.error ? `：${task.error}` : "")
+    + (task.artifactSig ? ` · 资产 ${task.artifactSig}` : "");
+});
+let trainingPollTimer: number | null = null;
+let trainingPollingStopped = false;
+async function refreshTrainingStatus(): Promise<void> {
+  try {
+    const response = await ragApi.getTrainingStatus();
+    if (!trainingPollingStopped && response.task) {
+      trainingTask.value = response.task;
+      if (response.task.status === "completed") tagMemoAssetsStale.value = false;
+    }
+  } catch (error) {
+    console.warn("Training status unavailable:", error);
+  } finally {
+    if (!trainingPollingStopped) {
+      trainingPollTimer = window.setTimeout(() => { void refreshTrainingStatus(); }, 3000);
+    }
+  }
+}
 const isTagConsistencyScanning = ref(false);
 const isTagConsistencyApplying = ref(false);
 const tagConsistencyPreview = ref<TagConsistencyPreview | null>(null);
@@ -1877,11 +1912,12 @@ async function applyTagConsistency(): Promise<void> {
 }
 
 async function triggerActiveFullTraining(): Promise<void> {
-  if (isActiveTraining.value) {
+  if (isActiveTraining.value || trainingBusy.value) {
     return;
   }
 
   isActiveTraining.value = true;
+  trainingRequestError.value = "";
 
   try {
     const response = await ragApi.triggerActiveFullTraining({
@@ -1892,12 +1928,18 @@ async function triggerActiveFullTraining(): Promise<void> {
       throw new Error(response.error || result?.error || "主服务未确认重训练排队");
     }
 
-    statusMessage.value = `RiverAGS全量重训练已排队${result.taskId ? `（${result.taskId}）` : ""}。完成情况请查看主服务日志；成功发布后才更新资产和已处理标签计数。`;
+    trainingTask.value = result.task || {
+      taskId: result.taskId || null, status: "queued", phase: "queued",
+    };
+    statusMessage.value = result.alreadyRunning
+      ? "已有后台训练任务，已复用，不会重复排队。"
+      : "RiverAGS全量重训练已排队，阶段与完成结果显示在训练按钮下方。";
     statusType.value = "success";
     showMessage(statusMessage.value, "success");
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    statusMessage.value = `触发全量自学习失败：${errorMessage}`;
+    trainingRequestError.value = `触发全量自学习失败：${errorMessage}`;
+    statusMessage.value = trainingRequestError.value;
     statusType.value = "error";
     showMessage(statusMessage.value, "error");
   } finally {
@@ -1985,11 +2027,14 @@ onMounted(() => {
   void loadParams();
   void loadThemes();
   void refreshTagConsistencyTask();
+  void refreshTrainingStatus();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("message", handleSemanticSimulationMessage);
   clearTagConsistencyPolling();
+  trainingPollingStopped = true;
+  if (trainingPollTimer !== null) window.clearTimeout(trainingPollTimer);
 });
 </script>
 

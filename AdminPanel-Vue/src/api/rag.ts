@@ -30,7 +30,19 @@ export interface RagParamThemeSaveResponse {
   theme?: RagParamTheme;
 }
 
+export interface TrainingTask {
+  taskId: string | null;
+  status: "idle" | "queued" | "running" | "completed" | "failed";
+  phase: string;
+  error?: string | null;
+  artifactSig?: string | null;
+  startedAt?: number | null;
+  finishedAt?: number | null;
+}
+
 export interface ActiveFullTrainingResult {
+  alreadyRunning?: boolean;
+  task?: TrainingTask;
   taskId?: string;
   queued?: boolean;
   reason?: string;
@@ -226,6 +238,13 @@ export const ragApi = {
         timeoutMs: 30 * 60 * 1000,
       },
       uiOptions
+    );
+  },
+
+  async getTrainingStatus(): Promise<{ success?: boolean; task?: TrainingTask }> {
+    return requestWithUi(
+      { url: "/admin_api/rag-active-full-training/status" },
+      { showLoader: false, suppressErrorMessage: true }
     );
   },
 
