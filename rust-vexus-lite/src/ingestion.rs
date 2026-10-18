@@ -591,6 +591,14 @@ impl Task for IngestionCommitTask {
             )
             .collect::<Vec<_>>();
 
+        let scope_results = if receipt.facts_changed {
+            apply_committed_index_deltas(
+                &db_path, &plan, &self.chunk_vectors, &self.tag_vectors,
+                &details, &self.diary_indices, &self.global_tag_index,
+            )
+        } else {
+            HashMap::new()
+        };
         let mut index_ready = if !receipt.facts_changed {
             // 历史回执不得重放差分，否则可能复活之后已删除的 chunk。
             with_registered_read(&db_path, |connection| {
@@ -608,18 +616,7 @@ impl Task for IngestionCommitTask {
                 Ok(true)
             }).unwrap_or(false)
         } else {
-            apply_committed_index_deltas(
-            &db_path,
-            &plan,
-            &self.chunk_vectors,
-            &self.tag_vectors,
-            &details,
-            &self.diary_indices,
-            &self.global_tag_index,
-            ).unwrap_or_else(|error| {
-                eprintln!("[KBM] Facts committed but index apply failed: {}", error);
-                false
-            })
+            scope_results.values().all(|result| matches!(result, Ok(true)))
         };
 
         if receipt.facts_changed {
@@ -633,19 +630,18 @@ impl Task for IngestionCommitTask {
                 if self.memo_runtime.clear().is_err() { index_ready = false; }
             }
         }
-        let index_applied = index_ready;
         for scope in affected_scopes.iter().filter(|_| receipt.facts_changed) {
+            let result = scope_results.get(scope);
+            let applied = matches!(result, Some(Ok(true)));
+            let state = if applied { "ready" } else if result.is_none() { "recovering" } else { "invalid" };
+            let error = match result {
+                Some(Err(error)) => Some(error.as_str()),
+                Some(Ok(false)) => Some("index delta application incomplete"),
+                _ => None,
+            };
             if let Err(error) = set_index_state(
-                &db_path,
-                scope,
-                if index_applied { "ready" } else { "invalid" },
-                receipt.database_generation,
-                if index_applied {
-                    receipt.database_generation
-                } else {
-                    0
-                },
-                (!index_applied).then_some("index delta application failed"),
+                &db_path, scope, state, receipt.database_generation,
+                if applied { receipt.database_generation } else { 0 }, error,
             ) {
                 index_ready = false;
                 eprintln!("[KBM] Facts committed; index state publication failed: {}", error);
@@ -814,6 +810,48 @@ fn validate_plan(plan: &IngestionPlan, chunk_vectors: &[f32], tag_vectors: &[f32
 }
 
 fn apply_committed_index_deltas(
+    db_path: &str,
+    plan: &IngestionPlan,
+    chunk_vectors: &[f32],
+    tag_vectors: &[f32],
+    details: &CommitDetails,
+    diary_indices: &HashMap<String, (Arc<crate::index_handle::IndexHandle>, u32)>,
+    global_tag_index: &Arc<crate::index_handle::IndexHandle>,
+) -> HashMap<String, std::result::Result<bool, String>> {
+    let mut results = HashMap::new();
+    // A failed or nonresident diary must not prevent independent scopes from publishing.
+    for (diary, delta) in &details.diary_index_deltas {
+        if !diary_indices.contains_key(diary) {
+            continue;
+        }
+        let scoped = CommitDetails {
+            affected_files: Vec::new(), removed_chunk_ids: Vec::new(),
+            upserted_chunk_ids: Vec::new(),
+            upserted_chunks: details.upserted_chunks.iter()
+                .filter(|entry| entry.diary_name == *diary).cloned().collect(),
+            affected_diaries: vec![diary.clone()],
+            diary_index_deltas: HashMap::from([(diary.clone(), delta.clone())]),
+            new_tag_ids: Vec::new(), new_tag_names: Vec::new(),
+        };
+        results.insert(format!("diary:{}", diary), apply_scope_index_deltas(
+            db_path, plan, chunk_vectors, tag_vectors, &scoped, diary_indices, global_tag_index,
+        ));
+    }
+    if !details.new_tag_ids.is_empty() {
+        let scoped = CommitDetails {
+            affected_files: Vec::new(), removed_chunk_ids: Vec::new(),
+            upserted_chunk_ids: Vec::new(), upserted_chunks: Vec::new(),
+            affected_diaries: Vec::new(), diary_index_deltas: HashMap::new(),
+            new_tag_ids: details.new_tag_ids.clone(), new_tag_names: details.new_tag_names.clone(),
+        };
+        results.insert("global_tags".to_string(), apply_scope_index_deltas(
+            db_path, plan, chunk_vectors, tag_vectors, &scoped, diary_indices, global_tag_index,
+        ));
+    }
+    results
+}
+
+fn apply_scope_index_deltas(
     db_path: &str,
     plan: &IngestionPlan,
     chunk_vectors: &[f32],
@@ -1512,28 +1550,21 @@ fn commit_plan(
 fn apply_deleted_index_deltas(
     diary_index_deltas: &HashMap<String, DiaryIndexDelta>,
     diary_indices: &HashMap<String, Arc<crate::index_handle::IndexHandle>>,
-) -> bool {
-    let mut ready = true;
-
+) -> HashMap<String, bool> {
+    let mut results = HashMap::new();
     for (diary_name, delta) in diary_index_deltas {
         let Some(index) = diary_indices.get(diary_name) else {
-            ready = false;
             continue;
         };
-
-        let Ok(guard) = index.write() else {
-            ready = false;
-            continue;
+        let applied = match index.write() {
+            Ok(guard) => delta.removed_chunk_ids.iter().all(|chunk_id| {
+                guard.remove(*chunk_id as u64).is_ok()
+            }),
+            Err(_) => false,
         };
-
-        for chunk_id in &delta.removed_chunk_ids {
-            if guard.remove(*chunk_id as u64).is_err() {
-                ready = false;
-            }
-        }
+        results.insert(diary_name.clone(), applied);
     }
-
-    ready
+    results
 }
 
 fn current_time_ms() -> i64 {
@@ -1785,20 +1816,19 @@ impl Task for DeleteCommitTask {
                 revision.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             }
         }
-        let mut index_ready = index_applied;
+        let mut index_ready = index_applied.values().all(|applied| *applied);
 
         for diary_name in diary_index_deltas.keys() {
+            let result = index_applied.get(diary_name);
+            let applied = result == Some(&true);
+            let state = if applied { "ready" } else if result.is_none() { "recovering" } else { "invalid" };
             if let Err(error) = set_index_state(
                 &self.db_path,
                 &format!("diary:{}", diary_name),
-                if index_applied { "ready" } else { "invalid" },
+                state,
                 receipt.database_generation,
-                if index_applied {
-                    receipt.database_generation
-                } else {
-                    0
-                },
-                (!index_applied).then_some("deleted index delta application failed"),
+                if applied { receipt.database_generation } else { 0 },
+                (result == Some(&false)).then_some("deleted index delta application failed"),
             ) {
                 index_ready = false;
                 eprintln!("[KBM] Delete facts committed; index state publication failed: {}", error);
@@ -2229,6 +2259,144 @@ mod audit_orphan_tests {
             ).map_err(|error| error.to_string())
         }).unwrap();
         assert_eq!(state, ("invalid".into(), 2, 1));
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod scope_publication_tests {
+    use super::*;
+
+    #[test]
+    fn mixed_residency_ingestion_and_delete_publish_scopes_independently() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-scope-publication-{}-{}", std::process::id(), current_time_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        let diary = crate::VexusIndex::new(2, 16).unwrap();
+        let tags = crate::VexusIndex::new(2, 16).unwrap();
+        let plan = serde_json::json!({
+            "operationId":"mixed", "batchId":"mixed", "dimension":2, "modelSig":"test",
+            "files": (["hot", "cold"].iter().enumerate().map(|(slot, name)| {
+                serde_json::json!({
+                    "path":format!("{}.txt", name), "diaryName":name,
+                    "checksum":"hash", "mtime":1, "size":1, "expectedVersion":0,
+                    "chunkStart":slot, "chunkCount":1, "tagStart":0, "tagCount":1
+                })
+            }).collect::<Vec<_>>()),
+            "chunks":[
+                {"content":"hot", "chunkIndex":0, "vectorSlot":0},
+                {"content":"cold", "chunkIndex":0, "vectorSlot":1}
+            ],
+            "tags":[{"name":"new", "position":1, "vectorSlot":0}]
+        });
+        let mut task = IngestionCommitTask {
+            db_path: db.clone(), plan_json: plan.to_string(),
+            chunk_vectors: vec![1.0,0.0,0.0,1.0], tag_vectors: vec![1.0,0.0],
+            diary_indices: HashMap::from([("hot".into(), (diary.index.clone(), 2))]),
+            global_tag_index: tags.index.clone(),
+            global_tag_content_revision: tags.content_revision.clone(),
+            diary_revisions: HashMap::from([("hot".into(), diary.content_revision.clone())]),
+            memo_runtime: tags.memo_runtime.clone(),
+        };
+        let receipt: serde_json::Value = serde_json::from_str(&task.compute().unwrap()).unwrap();
+        assert_eq!(receipt["indexReady"], true);
+        let states = || storage.read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT scope,state FROM kbm_index_states ORDER BY scope"
+            ).map_err(|error| error.to_string())?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }).map_err(|error| error.to_string())?;
+            rows.collect::<rusqlite::Result<HashMap<_,_>>>()
+                .map_err(|error| error.to_string())
+        }).unwrap();
+        assert_eq!(states()["diary:hot"], "ready");
+        assert_eq!(states()["diary:cold"], "recovering");
+        assert_eq!(states()["global_tags"], "ready");
+        assert_eq!(diary.index.read().unwrap().size(), 1);
+        assert_eq!(tags.index.read().unwrap().size(), 1);
+        let mut delete = DeleteCommitTask {
+            root_path: None, db_path: db.clone(),
+            file_paths: vec!["hot.txt".into(), "cold.txt".into()], ttl_ms: 1000,
+            diary_indices: HashMap::from([("hot".into(), diary.index.clone())]),
+            diary_revisions: HashMap::from([("hot".into(), diary.content_revision.clone())]),
+        };
+        let receipt: serde_json::Value = serde_json::from_str(&delete.compute().unwrap()).unwrap();
+        assert_eq!(receipt["indexReady"], true);
+        assert_eq!(states()["diary:hot"], "ready");
+        assert_eq!(states()["diary:cold"], "recovering");
+        assert_eq!(states()["global_tags"], "ready");
+        assert_eq!(diary.index.read().unwrap().size(), 0);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod cold_scope_baseline_tests {
+    use super::*;
+
+    #[test]
+    fn recovering_cold_diary_keeps_baseline_and_replays_delta() {
+        use crate::index_lifecycle::{IndexCheckpointTask, IndexRestoreTask, IndexScope};
+        let root = std::env::temp_dir().join(format!(
+            "kbm-cold-baseline-{}-{}", std::process::id(), current_time_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let baseline = root.join("cold_a.usearch").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        let index = crate::VexusIndex::new(2, 16).unwrap();
+        storage.submit_write(|tx| {
+            let vector = vector_bytes(&[1.0, 0.0], 0, 2);
+            tx.execute_batch(
+                "INSERT INTO files(id,path,diary_name,checksum,mtime,size)
+                 VALUES (1,'cold.txt','cold','hash',1,1);"
+            ).map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO chunks(id,file_id,chunk_index,content,vector)
+                 VALUES (1,1,0,'old',?1)", [vector],
+            ).map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let mut restore = IndexRestoreTask {
+            db_path: db.clone(), index_path: baseline.clone(), index: index.index.clone(),
+            content_revision: index.content_revision.clone(), memo_runtime: None,
+            scope: IndexScope::Diary, diary_name: Some("cold".into()),
+            dimension: 2, model_sig: "test".into(), capacity: 16,
+        };
+        restore.compute().unwrap();
+        IndexCheckpointTask {
+            db_path: db.clone(), index_path: baseline, index: index.index.clone(),
+            content_revision: index.content_revision.clone(), scope: IndexScope::Diary,
+            diary_name: Some("cold".into()), dimension: 2, model_sig: "test".into(),
+            threshold: 0.05, force: true,
+        }.compute().unwrap();
+        storage.submit_write(|tx| {
+            tx.execute("UPDATE chunks SET vector=?1 WHERE id=1",
+                [vector_bytes(&[0.0, 1.0], 0, 2)]).map_err(|error| error.to_string())?;
+            tx.execute(
+                "UPDATE kbm_index_states SET state='recovering',facts_generation=0
+                 WHERE scope='diary:cold'", [],
+            ).map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "cold-update".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
+        assert_eq!(receipt["rebuilt"], false);
+        assert_eq!(receipt["replayed"], true);
+        let mut vector = [0.0; 2];
+        index.index.read().unwrap().get(1, &mut vector).unwrap();
+        assert_eq!(vector, [0.0, 1.0]);
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
