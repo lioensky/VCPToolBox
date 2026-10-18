@@ -39,11 +39,11 @@ test('native consistency preview commits facts and index before queuing derived 
         let queued = 0;
         const owner = { initialized: true, config, dbPath, tagIndex: index,
             nativeKnowledgeRuntime: runtime, _scheduleIndexSave() {},
-            requestActiveFullTraining() {
+            tagMemoEngine: { async scheduleMatrixRebuildForNewTags() {
                 assert.equal(index.stats().totalVectors, 1);
                 queued++;
-                return { queued: true };
-            } };
+                return true;
+            } } };
         const service = new TagConsistencyService(owner, { VexusIndex });
         const preview = await service.createPreview();
         assert.equal(preview.requiresConfirmation, true);

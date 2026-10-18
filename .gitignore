@@ -299,6 +299,9 @@ helloagents/
 # Windows 缩略图缓存
 Thumbs.db
 
+# 源码研究
+docs/TriviumDB-master
+
 # ===== 编译产物 =====
 rust-vexus-lite/target/
 Plugin/DailyNoteSearcher/src/target/

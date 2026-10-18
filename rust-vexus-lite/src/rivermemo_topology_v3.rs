@@ -851,6 +851,8 @@ pub(crate) fn load_artifact_with_connection(
         "SELECT EXISTS(
            SELECT 1 FROM rivermemo_artifacts a
            WHERE a.artifact_sig=?1 AND a.status='ready'
+             AND a.algorithm_version='memo.native-artifact-v2-binary'
+             AND a.schema_version='rivermemo-persisted-artifact-v2'
              AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d
                   WHERE d.artifact_sig=a.artifact_sig
                     AND d.dependency_key IN (SELECT value FROM json_each(?2)))=?3
@@ -859,7 +861,8 @@ pub(crate) fn load_artifact_with_connection(
                SELECT 1 FROM kbm_artifact_dependencies d
                LEFT JOIN kbm_runtime_meta m ON m.key=d.dependency_key
                WHERE d.artifact_sig=a.artifact_sig
-                 AND (m.value IS NULL OR m.value != d.dependency_version)
+                 AND (m.value IS NULL
+                      OR CAST(m.value AS INTEGER) < CAST(d.dependency_version AS INTEGER))
              )
          )", rusqlite::params![
              artifact_sig,
@@ -868,7 +871,7 @@ pub(crate) fn load_artifact_with_connection(
          ], |row| row.get(0),
     ).map_err(|error| format!("Validate Memo artifact dependencies failed: {}", error))?;
     if !compatible {
-        return Err("KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT: Memo artifact requires rebuild".to_string());
+        return Err("KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT: Memo artifact is incompatible (format, missing dependencies or version rollback)".to_string());
     }
     if let Some(artifact) = runtime.get(artifact_sig)? {
         return Ok(artifact);

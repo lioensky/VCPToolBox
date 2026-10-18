@@ -18,6 +18,9 @@ class TagMemoEngine {
         this._accumulatedTagChanges = 0;
         this._matrixRebuildTimer = null;
         this._postStartupDerivedRefreshTimer = null;
+        this._refreshPollTimer = null;
+        this._refreshCheckPromise = null;
+        this._trainingTagCount = 0;
         this._derivedTaskTimer = null;
         this._derivedTaskQueue = [];
         this._derivedTaskRunning = false;
@@ -54,6 +57,11 @@ class TagMemoEngine {
     }
 
     async initialize() {
+        // Polling covers restart, deletes and maintenance writes, not just ingestion.
+        this._refreshPollTimer = setInterval(() => {
+            this.scheduleMatrixRebuildForNewTags([]);
+        }, 60000);
+        this._refreshPollTimer.unref?.();
         console.log(
             `[TagMemoEngine] Native MemoRuntime owns unified geometry and graph assets; ` +
             `model_sig=${this.modelSig}.`
@@ -354,30 +362,54 @@ class TagMemoEngine {
     }
 
     _getMatrixRebuildThreshold() {
-        return 50;
+        return Math.max(1, Math.ceil(this._trainingTagCount * 0.01));
     }
 
     scheduleMatrixRebuildForNewTags(newTagIds = []) {
-        if (!Array.isArray(newTagIds) || this._shutdownRequested) return false;
-        for (const id of newTagIds) {
-            const numeric = Number(id);
-            if (Number.isSafeInteger(numeric) && numeric > 0) {
-                this._accumulatedNewTagIds.add(numeric);
-            }
-        }
-        this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
-        if (this._accumulatedNewTagIds.size < this._getMatrixRebuildThreshold()) {
+        if (!Array.isArray(newTagIds) || this._shutdownRequested) return Promise.resolve(false);
+        // Keep the legacy entry point, but never infer refresh state from new IDs:
+        // Rust counts unique changed tags durably, including relations and deletes.
+        if (this._refreshCheckPromise) return this._refreshCheckPromise;
+        const pending = this._checkMatrixRefresh().catch(error => {
+            console.warn('[TagMemoEngine] Memo refresh check deferred; active graph retained:', error.message);
             return false;
-        }
+        }).finally(() => {
+            if (this._refreshCheckPromise === pending) this._refreshCheckPromise = null;
+        });
+        this._refreshCheckPromise = pending;
+        return pending;
+    }
 
-        if (this._matrixRebuildTimer) clearTimeout(this._matrixRebuildTimer);
+    async _checkMatrixRefresh() {
+        const owner = this.knowledgeBaseManager;
+        const runtime = owner?.nativeKnowledgeRuntime;
+        if (!runtime?.getNativeMemoManifest || !owner?._computeNativeMemoConfigHash) return false;
+        const config = owner._buildNativeMemoEffectiveConfig();
+        const raw = await runtime.getNativeMemoManifest(
+            this.getDbPath(), this.modelSig, owner._computeNativeMemoConfigHash(config)
+        );
+        if (this._shutdownRequested) return false;
+        const row = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!row) return false; // Startup bootstrap owns the no-compatible-artifact case.
+        this._trainingTagCount = Math.max(0, Number(row.trainingTagCount) || 0);
+        this._accumulatedTagChanges = Math.max(0, Number(row.changedTagCount) || 0);
+        if (this._accumulatedTagChanges < this._getMatrixRebuildThreshold()) return false;
+        if (this._matrixRebuildTimer || this._isMatrixRebuilding
+            || this._derivedTaskQueue.some(task => task.status === 'queued' || task.status === 'running')) {
+            return true;
+        }
+        // Fixed deadline: polling or continuous writes must not postpone training forever.
         this._matrixRebuildTimer = setTimeout(() => {
             this._matrixRebuildTimer = null;
-            this._enqueueDerivedTask('threshold-rebuild', () => this.doMatrixRebuild({
-                reason: 'threshold'
-            }));
+            if (!this._shutdownRequested) {
+                this._enqueueDerivedTask('threshold-rebuild', () => this.doMatrixRebuild({
+                    reason: 'threshold'
+                }));
+            }
         }, this._getMatrixRebuildQuietMs());
         this._matrixRebuildTimer.unref?.();
+        console.log(`[TagMemoEngine] Memo refresh queued: changedTags=${this._accumulatedTagChanges}, ` +
+            `baselineTags=${this._trainingTagCount}, threshold=${this._getMatrixRebuildThreshold()} (1%); active graph retained.`);
         return true;
     }
 
@@ -396,6 +428,8 @@ class TagMemoEngine {
                 this._enqueueDerivedTask('startup-bootstrap', () => this.doMatrixRebuild({
                     reason: 'startup-bootstrap'
                 }));
+            } else {
+                this.scheduleMatrixRebuildForNewTags([]);
             }
         }, Math.max(0, Number(delayMs) || 0));
         this._postStartupDerivedRefreshTimer.unref?.();
@@ -471,7 +505,8 @@ class TagMemoEngine {
         } finally {
             this._currentDerivedTask = null;
             this._derivedTaskRunning = false;
-            if (this._derivedTaskQueue.some(item => item.status === 'queued')) {
+            if (!this._shutdownRequested && !this._derivedTaskTimer
+                && this._derivedTaskQueue.some(item => item.status === 'queued')) {
                 this._scheduleDerivedTaskPump(1000);
             }
         }
@@ -480,6 +515,9 @@ class TagMemoEngine {
     async shutdown(options = {}) {
         if (this._shutdownRequested) return;
         this._shutdownRequested = true;
+        clearInterval(this._refreshPollTimer);
+        this._refreshPollTimer = null;
+        await this._refreshCheckPromise;
         clearTimeout(this._matrixRebuildTimer);
         clearTimeout(this._postStartupDerivedRefreshTimer);
         clearTimeout(this._derivedTaskTimer);

@@ -176,7 +176,7 @@ test('changed migration source retries only that file using normal embedding wit
     }
 });
 
-test('tag consistency queues full training only after successful commit', async () => {
+test('tag consistency checks refresh threshold only after successful commit', async () => {
     const events = [];
     const plan = {
         token: 'train', digest: 'digest', createdAt: Date.now(),
@@ -191,15 +191,18 @@ test('tag consistency queues full training only after successful commit', async 
                 return { factsCommitted: true, indexReady: true };
             }
         },
-        requestActiveFullTraining(options) {
-            events.push(options.reason);
-            return { queued: true, taskId: 'training' };
+        tagMemoEngine: {
+            async scheduleMatrixRebuildForNewTags(ids) {
+                assert.deepEqual(ids, []);
+                events.push('threshold-check');
+                return true;
+            }
         }
     };
     const service = new TagConsistencyService(owner);
     service.snapshots.set(plan.token, { token: plan.token, expiresAt: plan.expiresAt, plan });
     const result = await service.applyPreview(plan.token);
-    assert.deepEqual(events, ['commit', 'tag-consistency-commit']);
+    assert.deepEqual(events, ['commit', 'threshold-check']);
     assert.equal(result.training.queued, true);
 });
 

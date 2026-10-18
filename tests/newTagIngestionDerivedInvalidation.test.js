@@ -8,7 +8,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { VexusIndex, NativeKnowledgeRuntime } = require('../rust-vexus-lite');
 
-test('new Tag facts invalidate Memo without pair tables or historical residual deletion', async () => {
+test('new Tag facts retain published Memo until successful replacement', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ags-ingestion-'));
     const db = path.join(root, 'test.sqlite');
     const index = new VexusIndex(2, 32);
@@ -42,9 +42,24 @@ test('new Tag facts invalidate Memo without pair tables or historical residual d
         await ingest('new', 1);
         assert(facts() > before);
         assert.equal(reader.prepare('SELECT COUNT(*) n FROM tag_intrinsic_residuals').get().n, residuals);
-        await assert.rejects(index.runMemoPipeline(db, built.artifactSig,
+        const query = () => index.runMemoPipeline(db, built.artifactSig,
             JSON.stringify({ config: { maxLevels: 1 } }),
-            new Float32Array([1, 0]), new Float32Array()), /DERIVED_DEPENDENCY_CONFLICT/);
+            new Float32Array([1, 0]), new Float32Array());
+        await query();
+        index.clearMemoRuntime();
+        await query();
+        assert.equal(reader.prepare('SELECT COUNT(*) n FROM kbm_memo_changed_tags').get().n, 1);
+        await assert.rejects(index.rebuildMemoArtifact(db,
+            JSON.stringify({ modelSig: 'test' })), /geometry facts are stale/);
+        await query();
+        await index.computeMemoGeometry(db, 'test', '{}');
+        await query(); // Geometry publication alone must not withdraw the graph.
+        const replacement = await index.rebuildMemoArtifact(db, JSON.stringify({ modelSig: 'test' }));
+        assert.notEqual(replacement.artifactSig, built.artifactSig);
+        assert.equal(reader.prepare('SELECT COUNT(*) n FROM kbm_memo_changed_tags').get().n, 0);
+        assert.equal(Number(reader.prepare(
+            "SELECT value FROM kbm_runtime_meta WHERE key='memo_training_tag_count'"
+        ).get().value), 5);
     } finally {
         reader?.close();
         runtime.shutdown();

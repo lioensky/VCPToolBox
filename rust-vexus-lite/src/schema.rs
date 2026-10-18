@@ -162,6 +162,11 @@ CREATE TABLE IF NOT EXISTS kbm_artifact_dependencies (
     PRIMARY KEY(artifact_sig, dependency_key),
     FOREIGN KEY(artifact_sig) REFERENCES rivermemo_artifacts(artifact_sig) ON DELETE CASCADE
 );
+-- No FK: deleted Tag IDs must remain counted until a successful graph publication.
+CREATE TABLE IF NOT EXISTS kbm_memo_changed_tags (
+    tag_id INTEGER PRIMARY KEY NOT NULL,
+    fact_version INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS v10_vector_metrics (
     entity_type TEXT NOT NULL,
     entity_id INTEGER NOT NULL,
@@ -390,6 +395,41 @@ pub(crate) fn initialize_schema(
            UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='memo_tag_facts';
          END;"
     ).map_err(|error| format!("initialize derived generations failed: {}", error))?;
+    // Durable unique-Tag refresh accounting, separate from strict build dependencies.
+    // Recreating only these small triggers also upgrades existing databases safely.
+    for (name, event, table, condition, ids) in [
+        ("insert", "INSERT", "tags", "", vec!["NEW.id"]),
+        ("delete", "DELETE", "tags", "", vec!["OLD.id"]),
+        ("update", "UPDATE OF id,name,vector", "tags",
+         "WHEN OLD.id IS NOT NEW.id OR OLD.name IS NOT NEW.name OR OLD.vector IS NOT NEW.vector",
+         vec!["OLD.id", "NEW.id"]),
+        ("relation_insert", "INSERT", "file_tags", "", vec!["NEW.tag_id"]),
+        ("relation_delete", "DELETE", "file_tags", "", vec!["OLD.tag_id"]),
+        ("relation_update", "UPDATE", "file_tags",
+         "WHEN OLD.file_id IS NOT NEW.file_id OR OLD.tag_id IS NOT NEW.tag_id OR OLD.position IS NOT NEW.position",
+         vec!["OLD.tag_id", "NEW.tag_id"]),
+    ] {
+        let statements = ids.iter().map(|id| format!(
+            "INSERT INTO kbm_memo_changed_tags(tag_id,fact_version)
+             VALUES ({id},(SELECT CAST(value AS INTEGER) FROM kbm_runtime_meta WHERE key='memo_tag_facts')+1)
+             ON CONFLICT(tag_id) DO UPDATE SET fact_version=excluded.fact_version;"
+        )).collect::<Vec<_>>().join("\n");
+        transaction.execute_batch(&format!(
+            "DROP TRIGGER IF EXISTS trg_memo_dirty_{name};
+             CREATE TRIGGER trg_memo_dirty_{name} AFTER {event} ON {table} {condition}
+             BEGIN {statements} END;"
+        )).map_err(|e| format!("initialize Memo refresh accounting failed: {e}"))?;
+    }
+    transaction.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS trg_memo_dirty_provenance
+         AFTER UPDATE OF path,diary_name ON files
+         WHEN OLD.path IS NOT NEW.path OR OLD.diary_name IS NOT NEW.diary_name BEGIN
+           INSERT INTO kbm_memo_changed_tags(tag_id,fact_version)
+           SELECT tag_id,(SELECT CAST(value AS INTEGER) FROM kbm_runtime_meta WHERE key='memo_tag_facts')+1
+           FROM file_tags WHERE file_id=NEW.id
+           ON CONFLICT(tag_id) DO UPDATE SET fact_version=excluded.fact_version;
+         END;"
+    ).map_err(|e| format!("initialize Memo provenance accounting failed: {e}"))?;
     for (table, key) in [
         ("tag_intrinsic_residuals", "derived_geometry"),
         ("kv_store", "derived_geometry"),

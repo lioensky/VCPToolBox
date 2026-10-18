@@ -614,11 +614,10 @@ async _flushBatch() {
             }
             const _tTagAndDateMs = Date.now() - _tTagStart;
 
-            // 数据更新后，检查是否需要重建 V9.1 矩阵（防抖 + 阈值）。
-            // 使用“成功新增的唯一 tag id”累计触发 1% 阈值；
-            // file_tags 组关系仍是共现矩阵真相，但不再作为“新增 1% tag”的计数依据。
+            // Rust 持久化累计唯一变动 Tag（含关联变化），达到训练基线 1% 后后台重算。
+            // 查询始终保留最后成功发布的图；检查失败不影响已提交的日记。
             const _tMatrixStart = Date.now();
-            if (this.tagMemoEngine) this.tagMemoEngine.scheduleMatrixRebuildForNewTags(newTagIds);
+            if (this.tagMemoEngine) await this.tagMemoEngine.scheduleMatrixRebuildForNewTags(newTagIds);
             const _tMatrixMs = Date.now() - _tMatrixStart;
 
             console.log(
@@ -736,6 +735,7 @@ async _handleDeleteBatch(filePaths) {
                     'all resident diary index removals.'
                 );
             }
+            await this.tagMemoEngine?.scheduleMatrixRebuildForNewTags([]);
         } catch (e) {
             console.error(`[KnowledgeBase] Delete error:`, e);
             // 忙锁与损坏都必须交给队列拥有者处理。吞掉 SQLITE_BUSY 会让

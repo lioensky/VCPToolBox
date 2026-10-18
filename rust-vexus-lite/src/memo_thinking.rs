@@ -474,7 +474,7 @@ mod tests {
                    artifact_sig,schema_version,algorithm_version,source_v9_artifact_sig,
                    source_graph_generation,model_sig,config_hash,database_generation,
                    provenance_generation,status,created_at,updated_at)
-                 VALUES('fixture','test','test','test','test','test','test','0','test','ready',0,0);
+                 VALUES('fixture','rivermemo-persisted-artifact-v2','memo.native-artifact-v2-binary','test','test','test','test','0','test','ready',0,0);
                  INSERT INTO kbm_artifact_dependencies
                  SELECT 'fixture',key,value FROM kbm_runtime_meta
                  WHERE key IN ('memo_tag_facts','derived_geometry');"

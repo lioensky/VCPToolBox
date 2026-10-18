@@ -820,7 +820,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         };
         if (
             !nativeResult.artifactSig
-            || nativeResult.algorithmVersion !== 'memo.native-artifact-v1'
+            || nativeResult.algorithmVersion !== 'memo.native-artifact-v2-binary'
             || nativeResult.modelSig !== this.tagMemoEngine.modelSig
             || nativeResult.configHash !== configHash
             || !/^(?:0|[1-9]\d*)$/.test(nativeResult.databaseGeneration)

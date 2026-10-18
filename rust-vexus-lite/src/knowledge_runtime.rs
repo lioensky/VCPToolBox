@@ -1979,11 +1979,15 @@ impl Task for NativeMemoManifestLookupTask {
                     "SELECT artifact_sig, algorithm_version, source_v9_artifact_sig,
                             source_graph_generation, model_sig, config_hash,
                             database_generation, provenance_generation,
-                            node_count, edge_count, published_at
+                            node_count, edge_count, published_at,
+                            COALESCE((SELECT CAST(value AS INTEGER) FROM kbm_runtime_meta
+                                      WHERE key='memo_training_tag_count'), (SELECT COUNT(*) FROM tags)),
+                            (SELECT COUNT(*) FROM kbm_memo_changed_tags)
                      FROM rivermemo_artifacts
                      WHERE model_sig = ?1
                        AND config_hash = ?2
                        AND algorithm_version = 'memo.native-artifact-v2-binary'
+                       AND schema_version = 'rivermemo-persisted-artifact-v2'
                        AND status = 'ready'
                        AND payload IS NOT NULL
                        AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d
@@ -1995,7 +1999,8 @@ impl Task for NativeMemoManifestLookupTask {
                          SELECT 1 FROM kbm_artifact_dependencies d
                          LEFT JOIN kbm_runtime_meta m ON m.key=d.dependency_key
                          WHERE d.artifact_sig=rivermemo_artifacts.artifact_sig
-                           AND (m.value IS NULL OR m.value != d.dependency_version)
+                           AND (m.value IS NULL
+                                OR CAST(m.value AS INTEGER) < CAST(d.dependency_version AS INTEGER))
                        )
                      ORDER BY published_at DESC, updated_at DESC
                      LIMIT 1",
@@ -2018,7 +2023,9 @@ impl Task for NativeMemoManifestLookupTask {
                             "provenanceGeneration": row.get::<_, String>(7)?,
                             "nodeCount": row.get::<_, i64>(8)?.max(0),
                             "edgeCount": row.get::<_, i64>(9)?.max(0),
-                            "publishedAt": row.get::<_, Option<i64>>(10)?
+                            "publishedAt": row.get::<_, Option<i64>>(10)?,
+                            "trainingTagCount": row.get::<_, i64>(11)?.max(0),
+                            "changedTagCount": row.get::<_, i64>(12)?.max(0)
                         }))
                     },
                 )

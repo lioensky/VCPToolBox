@@ -518,11 +518,12 @@ class TagConsistencyService {
                 console.warn('[KnowledgeBase] Tag facts committed; native index recovery required.');
             }
 
-            // Tag IDs/relations may have changed: never reuse the old semantic artifact.
-            // Training is queued after a committed receipt, not awaited as part of the fact transaction.
+            // Published graphs remain available while durable unique-Tag changes
+            // accumulate toward 1%; explicit administrator full training stays separate.
             let training;
             try {
-                training = this.owner.requestActiveFullTraining?.({ reason: 'tag-consistency-commit' });
+                const queued = await this.owner.tagMemoEngine?.scheduleMatrixRebuildForNewTags([]);
+                training = { queued: queued === true, policy: 'changed-tags-1-percent' };
             } catch (error) {
                 console.error('[KnowledgeBase] Tag facts committed, but Memo training could not be queued:', error);
                 training = { queued: false, error: String(error.message || error) };
@@ -546,7 +547,7 @@ class TagConsistencyService {
                 checkpointPublished: false,
                 training: training || { queued: false },
                 waveAssetsStale: true,
-                recommendedAction: 'active-full-training',
+                recommendedAction: 'automatic-threshold-refresh',
                 message: 'Tag 事实与活动索引差分均由 Rust 完成；持久化基线将由 Rust 索引生命周期管理器发布。'
             };
         } finally {

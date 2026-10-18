@@ -762,6 +762,14 @@ fn run_build(
             )
             .map_err(|error| format!("persist native artifact failed: {}", error))?;
         dependencies_for_write.persist_for_artifact(transaction, &artifact_sig_for_write)?;
+        // The generation/dependency CAS above guarantees this graph includes every
+        // committed change. Only a successful publication resets the durable budget.
+        transaction.execute_batch(
+            "INSERT INTO kbm_runtime_meta(key,value)
+             VALUES ('memo_training_tag_count',(SELECT CAST(COUNT(*) AS TEXT) FROM tags))
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+             DELETE FROM kbm_memo_changed_tags;"
+        ).map_err(|e| format!("publish Memo training baseline failed: {e}"))?;
 
         Ok(crate::storage::WriteReceipt {
             operation: "publish_rivermemo_artifact".to_string(),
@@ -843,7 +851,7 @@ mod fact_dependency_tests {
     use crate::storage::{SqliteStorageEngine, StorageOptions, WriteReceipt};
 
     #[test]
-    fn ordinary_writes_reuse_cold_artifact_but_tag_changes_invalidate_manifest_and_load() {
+    fn published_snapshot_survives_tag_changes_and_cold_restore() {
         let root = std::env::temp_dir().join(format!(
             "kbm-artifact-facts-{}-{}", std::process::id(), now_ms()
         ));
@@ -891,13 +899,54 @@ mod fact_dependency_tests {
             Ok(WriteReceipt { operation: "tag-change".into(), database_generation: 0, facts_changed: true })
         }).unwrap();
         runtime.clear().unwrap();
-        assert_eq!(manifest.compute().unwrap(), "null");
+        assert_ne!(manifest.compute().unwrap(), "null");
+        with_registered_read_transaction(&db, |connection| {
+            crate::rivermemo_topology_v3::load_artifact_with_connection(
+                &runtime, connection, &built.artifact_sig,
+            ).map(|_| ())
+        }).unwrap();
+        let status: Value = serde_json::from_str(&manifest.compute().unwrap()).unwrap();
+        assert_eq!(status["trainingTagCount"], 2);
+        assert_eq!(status["changedTagCount"], 1);
+        storage.submit_write(|tx| {
+            tx.execute_batch(
+                "UPDATE file_tags SET position=3 WHERE tag_id=2;
+                 DELETE FROM file_tags WHERE tag_id=1;"
+            ).map_err(|e| e.to_string())?;
+            Ok(WriteReceipt { operation: "relation-change".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let status: Value = serde_json::from_str(&manifest.compute().unwrap()).unwrap();
+        assert_eq!(status["changedTagCount"], 2, "count unique Tags, not mutations");
+        with_registered_read_transaction(&db, |connection| {
+            crate::rivermemo_topology_v3::load_artifact_with_connection(
+                &runtime, connection, &built.artifact_sig,
+            ).map(|_| ())
+        }).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute("UPDATE kbm_runtime_meta SET value='0' WHERE key='memo_tag_facts'", [])
+                .map_err(|e| e.to_string())?;
+            Ok(WriteReceipt { operation: "rollback-fixture".into(), database_generation: 0, facts_changed: false })
+        }).unwrap();
+        assert_eq!(manifest.compute().unwrap(), "null", "rollback must not reuse a future graph");
         let error = with_registered_read_transaction(&db, |connection| {
             crate::rivermemo_topology_v3::load_artifact_with_connection(
                 &runtime, connection, &built.artifact_sig,
             ).map(|_| ())
         }).unwrap_err();
         assert!(error.contains("DERIVED_DEPENDENCY_CONFLICT"));
+        storage.submit_write(|tx| {
+            tx.execute_batch(
+                "UPDATE kbm_runtime_meta SET value='99999' WHERE key='memo_tag_facts';
+                 DELETE FROM kbm_artifact_dependencies WHERE dependency_key='memo_tag_facts';"
+            ).map_err(|e| e.to_string())?;
+            Ok(WriteReceipt { operation: "missing-dependency".into(), database_generation: 0, facts_changed: false })
+        }).unwrap();
+        assert_eq!(manifest.compute().unwrap(), "null");
+        assert!(with_registered_read_transaction(&db, |connection| {
+            crate::rivermemo_topology_v3::load_artifact_with_connection(
+                &runtime, connection, &built.artifact_sig,
+            ).map(|_| ())
+        }).unwrap_err().contains("DERIVED_DEPENDENCY_CONFLICT"));
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

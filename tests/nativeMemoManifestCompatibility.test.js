@@ -370,12 +370,12 @@ async function main() {
         assert.strictEqual(nativeKnowledgeRuntime.databaseGeneration(), factGeneration);
         assert.strictEqual(JSON.parse(await nativeKnowledgeRuntime.getNativeMemoManifest(
             dbPath, 'manifest-test-model', sha256(canonicalJson, 32)
-        )), null, 'derived publication must invalidate the previous manifest without a fact write');
-        await assert.rejects(index.runMemoPipeline(
+        )).artifactSig, result.artifactSig, 'geometry staging must retain the published graph');
+        await index.runMemoPipeline(
             dbPath, result.artifactSig,
             JSON.stringify({ queryText: 'stale', config: { maxLevels: 1 } }),
             new Float32Array([1, 0, 0, 0]), new Float32Array()
-        ), /DERIVED_DEPENDENCY_CONFLICT/);
+        );
 
         nativeKnowledgeRuntime.shutdown();
         console.log(
