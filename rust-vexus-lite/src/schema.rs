@@ -99,25 +99,6 @@ CREATE TABLE IF NOT EXISTS kv_store (
     value TEXT,
     vector BLOB
 );
-CREATE TABLE IF NOT EXISTS tag_pair_similarity (
-    tag_a INTEGER NOT NULL,
-    tag_b INTEGER NOT NULL,
-    similarity REAL NOT NULL,
-    model_sig TEXT NOT NULL,
-    computed_at INTEGER NOT NULL,
-    PRIMARY KEY(tag_a, tag_b)
-);
-CREATE TABLE IF NOT EXISTS tag_pair_similarity_status (
-    tag_a INTEGER NOT NULL,
-    tag_b INTEGER NOT NULL,
-    model_sig TEXT NOT NULL,
-    artifact_sig TEXT NOT NULL,
-    status TEXT NOT NULL,
-    similarity REAL,
-    min_similarity REAL NOT NULL,
-    computed_at INTEGER NOT NULL,
-    PRIMARY KEY(tag_a, tag_b, artifact_sig)
-);
 CREATE TABLE IF NOT EXISTS tag_intrinsic_residuals (
     tag_id INTEGER PRIMARY KEY,
     residual_energy REAL NOT NULL,
@@ -256,10 +237,6 @@ CREATE INDEX IF NOT EXISTS idx_chunk_baseline_entries
     ON chunk_index_baseline_entries(diary_name,generation);
 CREATE INDEX IF NOT EXISTS idx_tag_baseline_entries
     ON tag_index_baseline_entries(generation);
-CREATE INDEX IF NOT EXISTS idx_pair_sim_model ON tag_pair_similarity(model_sig);
-CREATE INDEX IF NOT EXISTS idx_pair_sim_tag_b ON tag_pair_similarity(tag_b);
-CREATE INDEX IF NOT EXISTS idx_pair_status_artifact
-    ON tag_pair_similarity_status(artifact_sig,status);
 CREATE INDEX IF NOT EXISTS idx_intrinsic_residual_artifact
     ON tag_intrinsic_residuals(artifact_sig);
 CREATE INDEX IF NOT EXISTS idx_intrinsic_residual_model
@@ -279,48 +256,45 @@ AFTER UPDATE OF vector ON tags
 WHEN OLD.vector IS NOT NEW.vector
 BEGIN
     UPDATE tags SET vector_version = OLD.vector_version + 1 WHERE id = NEW.id;
-    DELETE FROM tag_pair_similarity WHERE tag_a = OLD.id OR tag_b = OLD.id;
-    DELETE FROM tag_pair_similarity_status WHERE tag_a = OLD.id OR tag_b = OLD.id;
 END;
-CREATE TRIGGER IF NOT EXISTS trg_tags_delete_pair_cache
-AFTER DELETE ON tags
-BEGIN
-    DELETE FROM tag_pair_similarity WHERE tag_a = OLD.id OR tag_b = OLD.id;
-    DELETE FROM tag_pair_similarity_status WHERE tag_a = OLD.id OR tag_b = OLD.id;
-END;
-CREATE INDEX IF NOT EXISTS idx_pair_status_tag_b ON tag_pair_similarity_status(tag_b);
 "#;
 
-const GENERATION_SQL: &str = r#"
-INSERT OR IGNORE INTO kv_store(key,value)
-VALUES ('tagmemo_pairwise_fact_generation','1');
-CREATE TRIGGER IF NOT EXISTS trg_pairwise_tags_insert_generation
-AFTER INSERT ON tags BEGIN
-    UPDATE kv_store SET value=CAST(COALESCE(CAST(value AS INTEGER),0)+1 AS TEXT)
-    WHERE key='tagmemo_pairwise_fact_generation';
-END;
-CREATE TRIGGER IF NOT EXISTS trg_pairwise_tags_vector_generation
-AFTER UPDATE OF vector ON tags
-WHEN OLD.vector IS NOT NEW.vector BEGIN
-    UPDATE kv_store SET value=CAST(COALESCE(CAST(value AS INTEGER),0)+1 AS TEXT)
-    WHERE key='tagmemo_pairwise_fact_generation';
-END;
-CREATE TRIGGER IF NOT EXISTS trg_pairwise_tags_delete_generation
-AFTER DELETE ON tags BEGIN
-    UPDATE kv_store SET value=CAST(COALESCE(CAST(value AS INTEGER),0)+1 AS TEXT)
-    WHERE key='tagmemo_pairwise_fact_generation';
-END;
-CREATE TRIGGER IF NOT EXISTS trg_pairwise_file_tags_insert_generation
-AFTER INSERT ON file_tags BEGIN
-    UPDATE kv_store SET value=CAST(COALESCE(CAST(value AS INTEGER),0)+1 AS TEXT)
-    WHERE key='tagmemo_pairwise_fact_generation';
-END;
-CREATE TRIGGER IF NOT EXISTS trg_pairwise_file_tags_delete_generation
-AFTER DELETE ON file_tags BEGIN
-    UPDATE kv_store SET value=CAST(COALESCE(CAST(value AS INTEGER),0)+1 AS TEXT)
-    WHERE key='tagmemo_pairwise_fact_generation';
-END;
-"#;
+fn migrate_geometry(connection: &Connection) -> Result<(), String> {
+    let switched: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM kbm_runtime_meta WHERE key='geometry_schema_v1')",
+        [], |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    for name in [
+        "trg_tags_delete_pair_cache", "trg_pairwise_tags_insert_generation",
+        "trg_pairwise_tags_vector_generation", "trg_pairwise_tags_delete_generation",
+        "trg_pairwise_file_tags_insert_generation", "trg_pairwise_file_tags_delete_generation",
+    ] {
+        connection.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))
+            .map_err(|e| e.to_string())?;
+    }
+    for table in ["tag_pair_similarity", "tag_intrinsic_residuals", "kv_store"] {
+        for event in ["INSERT", "UPDATE", "DELETE"] {
+            connection.execute_batch(&format!("DROP TRIGGER IF EXISTS trg_{table}_{event}_derived;"))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    connection.execute_batch(
+        "DROP TABLE IF EXISTS tag_pair_similarity_status;
+         DROP TABLE IF EXISTS tag_pair_similarity;
+         DELETE FROM kv_store WHERE key='tagmemo_pairwise_fact_generation';
+         DELETE FROM kbm_runtime_meta WHERE key IN ('derived_pairwise','derived_intrinsic','derived_epa');
+         DELETE FROM tagmemo_artifacts WHERE asset_type IN ('pairwise_similarity','intrinsic_residual');"
+    ).map_err(|e| e.to_string())?;
+    if !switched {
+        connection.execute_batch(
+            "DELETE FROM kv_store WHERE key='epa_basis_cache';
+             DELETE FROM tag_intrinsic_residuals;
+             DELETE FROM tag_intrinsic_residual_status;
+             INSERT INTO kbm_runtime_meta(key,value) VALUES ('geometry_schema_v1','1');"
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 
 pub(crate) fn initialize_schema(
     connection: &Connection,
@@ -347,13 +321,14 @@ pub(crate) fn initialize_schema(
     transaction.execute_batch(tables)
         .map_err(|error| format!("initialize KBM tables failed: {}", error))?;
     ensure_additive_columns(&transaction)?;
+    migrate_geometry(&transaction)?;
     transaction.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS idx_files_diary{}", indices
     )).map_err(|error| format!("initialize KBM indices failed: {}", error))?;
     // 派生版本独立于事实代际；触发器覆盖发布、维护和删除等所有写入口。
     transaction.execute_batch(
         "INSERT OR IGNORE INTO kbm_runtime_meta(key,value) VALUES
-         ('derived_pairwise','0'),('derived_intrinsic','0'),('derived_epa','0'),
+         ('derived_geometry','0'),
          ('memo_tag_facts','0');
          CREATE TRIGGER IF NOT EXISTS trg_memo_tags_insert AFTER INSERT ON tags BEGIN
            UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='memo_tag_facts';
@@ -382,9 +357,8 @@ pub(crate) fn initialize_schema(
          END;"
     ).map_err(|error| format!("initialize derived generations failed: {}", error))?;
     for (table, key) in [
-        ("tag_pair_similarity", "derived_pairwise"),
-        ("tag_intrinsic_residuals", "derived_intrinsic"),
-        ("kv_store", "derived_epa"),
+        ("tag_intrinsic_residuals", "derived_geometry"),
+        ("kv_store", "derived_geometry"),
     ] {
         for event in ["INSERT", "UPDATE", "DELETE"] {
             let condition = if table == "kv_store" {
@@ -403,8 +377,6 @@ pub(crate) fn initialize_schema(
             )).map_err(|error| format!("initialize derived version trigger failed: {}", error))?;
         }
     }
-    transaction.execute_batch(GENERATION_SQL)
-        .map_err(|error| format!("initialize KBM generation triggers failed: {}", error))?;
     if version < requested_version {
         transaction
             .execute(
@@ -507,45 +479,44 @@ mod migration_tests {
 }
 
 
+
 #[cfg(test)]
-mod audit_cache_tests {
+mod geometry_migration_tests {
     use super::*;
 
     #[test]
-    fn vector_change_and_delete_invalidate_positive_and_negative_pairs() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(
+    fn old_objects_retire_and_restart_preserves_geometry_generation() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
             "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
-             INSERT INTO kbm_runtime_meta VALUES ('schema_version','1');"
+             INSERT INTO kbm_runtime_meta VALUES ('schema_version','1'),('derived_pairwise','7');
+             CREATE TABLE tag_pair_similarity(tag_a INTEGER);
+             CREATE TABLE tag_pair_similarity_status(tag_a INTEGER);
+             CREATE TABLE kv_store(key TEXT PRIMARY KEY,value TEXT,vector BLOB);
+             INSERT INTO kv_store(key,value) VALUES ('epa_basis_cache','old');
+             CREATE TRIGGER trg_tags_delete_pair_cache AFTER DELETE ON tag_pair_similarity BEGIN SELECT 1; END;"
         ).unwrap();
-        initialize_schema(&connection, 1).unwrap();
-        // 重复初始化也必须更新旧触发器，而不是被 IF NOT EXISTS 跳过。
-        initialize_schema(&connection, 1).unwrap();
-        connection.execute_batch(
-            "INSERT INTO tags(id,name) VALUES (1,'missing'),(2,'other');
-             INSERT INTO tag_pair_similarity VALUES (1,2,0.9,'m',0);
-             INSERT INTO tag_pair_similarity_status VALUES (1,2,'m','a','missing_vector',NULL,0.05,0);
-             UPDATE tags SET vector=X'0000803f' WHERE id=1;"
+        initialize_schema(&conn, 2).unwrap();
+        let retired: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'tag_pair_similarity%'
+             OR name LIKE 'trg_pairwise_%' OR name='trg_tags_delete_pair_cache'",
+            [], |r| r.get(0),
         ).unwrap();
-        for table in ["tag_pair_similarity", "tag_pair_similarity_status"] {
-            let count: i64 = connection.query_row(
-                &format!("SELECT COUNT(*) FROM {}", table), [], |row| row.get(0)
-            ).unwrap();
-            assert_eq!(count, 0);
-        }
-        let version: i64 = connection.query_row(
-            "SELECT vector_version FROM tags WHERE id=1", [], |row| row.get(0)
+        assert_eq!(retired, 0);
+        conn.execute("INSERT INTO kv_store(key,value) VALUES ('epa_basis_cache','new')", []).unwrap();
+        let before: String = conn.query_row(
+            "SELECT value FROM kbm_runtime_meta WHERE key='derived_geometry'", [], |r| r.get(0),
         ).unwrap();
-        assert_eq!(version, 2);
-        connection.execute_batch(
-            "INSERT INTO tag_pair_similarity VALUES (1,2,0.9,'m',0);
-             INSERT INTO tag_pair_similarity_status VALUES (1,2,'m','a','computed',0.9,0.05,0);
-             DELETE FROM tags WHERE id=2;"
+        initialize_schema(&conn, 2).unwrap();
+        let after: String = conn.query_row(
+            "SELECT value FROM kbm_runtime_meta WHERE key='derived_geometry'", [], |r| r.get(0),
         ).unwrap();
-        let count: i64 = connection.query_row(
-            "SELECT (SELECT COUNT(*) FROM tag_pair_similarity)
-                  + (SELECT COUNT(*) FROM tag_pair_similarity_status)", [], |row| row.get(0)
+        assert_eq!(before, after);
+        let cache: String = conn.query_row(
+            "SELECT value FROM kv_store WHERE key='epa_basis_cache'", [], |r| r.get(0),
         ).unwrap();
-        assert_eq!(count, 0);
+        assert_eq!(cache, "new");
+        conn.execute_batch("INSERT INTO tags(name) VALUES ('a'); UPDATE tags SET vector=X'0000803f';").unwrap();
+        assert_eq!(conn.query_row("SELECT vector_version FROM tags", [], |r| r.get::<_,i64>(0)).unwrap(), 2);
     }
 }

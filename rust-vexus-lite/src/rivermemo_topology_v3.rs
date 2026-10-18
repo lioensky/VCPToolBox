@@ -851,14 +851,19 @@ pub(crate) fn load_artifact_with_connection(
            WHERE a.artifact_sig=?1 AND a.status='ready'
              AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d
                   WHERE d.artifact_sig=a.artifact_sig
-                    AND d.dependency_key IN ('memo_tag_facts','derived_pairwise','derived_intrinsic'))=3
+                    AND d.dependency_key IN (SELECT value FROM json_each(?2)))=?3
+             AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d WHERE d.artifact_sig=a.artifact_sig)=?3
              AND NOT EXISTS(
                SELECT 1 FROM kbm_artifact_dependencies d
                LEFT JOIN kbm_runtime_meta m ON m.key=d.dependency_key
                WHERE d.artifact_sig=a.artifact_sig
                  AND (m.value IS NULL OR m.value != d.dependency_version)
              )
-         )", [artifact_sig], |row| row.get(0),
+         )", rusqlite::params![
+             artifact_sig,
+             serde_json::to_string(crate::storage::MEMO_ARTIFACT_DEPENDENCIES).map_err(|e|e.to_string())?,
+             crate::storage::MEMO_ARTIFACT_DEPENDENCIES.len() as i64
+         ], |row| row.get(0),
     ).map_err(|error| format!("Validate Memo artifact dependencies failed: {}", error))?;
     if !compatible {
         return Err("KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT: Memo artifact requires rebuild".to_string());

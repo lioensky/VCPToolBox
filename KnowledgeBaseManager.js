@@ -395,7 +395,6 @@ class KnowledgeBaseManager {
                 || typeof this.nativeKnowledgeRuntime.storeState !== 'function'
                 || typeof this.nativeKnowledgeRuntime.healthCheck !== 'function'
                 || typeof this.nativeKnowledgeRuntime.cleanupDatabaseOrphans !== 'function'
-                || typeof this.nativeKnowledgeRuntime.cleanupStalePairwiseSimilarityModels !== 'function'
                 || typeof this.nativeKnowledgeRuntime.getKvVector !== 'function'
                 || typeof this.nativeKnowledgeRuntime.setKvVector !== 'function'
                 || typeof this.nativeKnowledgeRuntime.listKvVectors !== 'function'
@@ -434,7 +433,7 @@ class KnowledgeBaseManager {
                          : 64 * 1024 * 1024;
                  })(),
                  busyTimeoutMs: this.config.sqliteBusyTimeoutMs,
-                 schemaVersion: 1
+                 schemaVersion: 2
              })
             );
             console.log(
@@ -573,7 +572,6 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
                 error.message || error
             );
         }
-        await this._cleanupStalePairwiseSimilarityModels();
 
         this._startWatcher();
         this._startRagParamsWatcher();
@@ -1038,56 +1036,6 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         return Array.isArray(value) ||
             value instanceof Float32Array ||
             (ArrayBuffer.isView(value) && typeof value.length === 'number');
-    }
-
-    async _cleanupStalePairwiseSimilarityModels() {
-        const modelSig = String(this.tagMemoEngine?.modelSig || '').trim();
-        if (!modelSig) return null;
-
-        if (
-            !this.nativeKnowledgeRuntime
-            || typeof this.nativeKnowledgeRuntime
-                .cleanupStalePairwiseSimilarityModels !== 'function'
-        ) {
-            const error = new Error(
-                'NativeKnowledgeRuntime pairwise model cleanup API is unavailable'
-            );
-            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
-            throw error;
-        }
-
-        const raw = await this.nativeKnowledgeRuntime
-            .cleanupStalePairwiseSimilarityModels(this.dbPath, modelSig);
-        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (!result || result.factsCommitted !== false) {
-            throw new Error(
-                'Native pairwise model cleanup returned an invalid non-fact receipt'
-            );
-        }
-
-        const currentRows = Math.max(0, Math.floor(Number(result.currentRows) || 0));
-        const staleRows = Math.max(0, Math.floor(Number(result.staleRows) || 0));
-        const removedRows = Math.max(0, Math.floor(Number(result.removedRows) || 0));
-
-        if (result.skipped === true && staleRows > 0) {
-            console.warn(
-                `[KnowledgeBase] 🛡️ Preserved ${staleRows} stale pairwise similarity row(s): ` +
-                `current model_sig=${modelSig} has no cached rows yet.`
-            );
-        } else if (removedRows > 0) {
-            console.warn(
-                `[KnowledgeBase] 🧹 Removed ${removedRows} stale pairwise similarity row(s) ` +
-                `after current model cache verification.`
-            );
-        }
-
-        return {
-            currentRows,
-            staleRows,
-            removedRows,
-            skipped: result.skipped === true,
-            factsCommitted: false
-        };
     }
 
     /**
@@ -3608,9 +3556,9 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
 
 
     // 🌟 TagMemo V7: 触发 Rust 预计算内生残差
-    async recomputeIntrinsicResiduals() {
+    async recomputeGeometry() {
         if (!this.tagMemoEngine) return;
-        await this.tagMemoEngine.recomputeIntrinsicResiduals();
+        await this.tagMemoEngine.recomputeGeometry();
     }
 
     // 🌟 启动空闲索引定期扫描

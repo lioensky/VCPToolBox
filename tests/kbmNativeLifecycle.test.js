@@ -66,12 +66,12 @@ test('index-owned tasks are drained by runtime shutdown and rejected afterward',
         const db = path.join(root, 'test.sqlite');
         runtime.openAndInitStore(db);
         const pending = Array.from({ length: 24 }, () =>
-            index.computePairwiseSimilarities(db, 'test', 0.05, false));
+            index.computeMemoGeometry(db, 'test', '{}'));
         runtime.shutdown();
         for (const result of await Promise.all(pending)) {
-            assert.equal(result.pairCount, 0);
+            assert.equal(result.tagCount, 0);
         }
-        await assert.rejects(index.computePairwiseSimilarities(db, 'test'), /CLOSED/);
+        await assert.rejects(index.computeMemoGeometry(db, 'test', '{}'), /CLOSED/);
         fs.rmSync(root, { recursive: true });
     } finally {
         runtime.shutdown();
@@ -112,18 +112,18 @@ test('metadata-only refresh preserves fact generation and checks file version', 
     }
 });
 
-test('EPA publish is asynchronous, tracked, and rejected after shutdown', async () => {
+test('geometry publish is asynchronous, tracked, and rejected after shutdown', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kbm-epa-publish-'));
     const index = new VexusIndex(2, 16);
     const runtime = new NativeKnowledgeRuntime(index);
     try {
         const db = path.join(root, 'test.sqlite');
         runtime.openAndInitStore(db);
-        const pending = index.publishEpaBasisCache(db);
+        const pending = index.computeMemoGeometry(db, 'test', '{}');
         assert.equal(typeof pending.then, 'function');
         runtime.shutdown();
-        assert.equal((await pending).success, false);
-        await assert.rejects(index.publishEpaBasisCache(db), /CLOSED/);
+        assert.equal((await pending).success, true);
+        await assert.rejects(index.computeMemoGeometry(db, 'test', '{}'), /CLOSED/);
     } finally {
         runtime.shutdown();
         fs.rmSync(root, { recursive: true, force: true });
@@ -142,7 +142,7 @@ test('cached index statistics follow direct and asynchronous mutations', async (
     assert.equal(index.stats().totalVectors, 1);
 });
 
-test('EPA publishes a computed basis and rejects a stale source snapshot', async () => {
+test('geometry publishes once and refreshes after fact changes', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kbm-epa-generation-'));
     const index = new VexusIndex(2, 32);
     const runtime = new NativeKnowledgeRuntime(index);
@@ -161,13 +161,15 @@ test('EPA publishes a computed basis and rejects a stale source snapshot', async
                 tagStart: 0, tagCount: tags.length }],
             chunks: [{ content: 'epa', chunkIndex: 0, vectorSlot: 0 }], tags
         }), new Float32Array([1, 0]), vectors);
-        assert.equal((await index.computeEpaBasis(db, 8, 2)).success, true);
+        const geometry = await index.computeMemoGeometry(db, 'test', '{}');
+        assert.equal(geometry.success, true);
         const generation = runtime.databaseGeneration();
-        assert.equal((await index.publishEpaBasisCache(db)).success, true);
+        const cached = await index.computeMemoGeometry(db, 'test', '{}');
+        assert.equal(cached.skippedCount, 8);
         assert.equal(runtime.databaseGeneration(), generation);
-        assert.equal((await index.computeEpaBasis(db, 8, 2)).success, true);
         await runtime.commitDeleteBatch(db, ['note.txt'], 0);
-        await assert.rejects(index.publishEpaBasisCache(db), /GENERATION_CONFLICT/);
+        const changed = await index.computeMemoGeometry(db, 'test', '{}');
+        assert.notEqual(changed.artifactSig, geometry.artifactSig);
     } finally {
         runtime.shutdown();
         fs.rmSync(root, { recursive: true, force: true });

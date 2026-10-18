@@ -45,13 +45,9 @@ function profileTagMemo(tagMemoEngine) {
         }
     }
 
-    const pairwiseSimilarities = tagMemoEngine.tagPairSimilarities instanceof Map
-        ? tagMemoEngine.tagPairSimilarities.size
-        : 0;
     const intrinsicResiduals = tagMemoEngine.tagIntrinsicResiduals instanceof Map
         ? tagMemoEngine.tagIntrinsicResiduals.size
         : 0;
-    const pairwiseEstimatedBytes = pairwiseSimilarities * 80;
     const cooccurrenceEstimatedBytes = cooccurrenceSources * 96
         + cooccurrenceEdges * 64;
     const intrinsicEstimatedBytes = intrinsicResiduals * 32;
@@ -59,8 +55,7 @@ function profileTagMemo(tagMemoEngine) {
     return {
         available: true,
         modelSig: tagMemoEngine.modelSig || null,
-        pairwiseSimilarities,
-        pairwiseEstimatedBytes,
+        geometryArtifact: tagMemoEngine.geometryArtifact || null,
         cooccurrenceSources,
         cooccurrenceEdges,
         cooccurrenceEstimatedBytes,
@@ -70,8 +65,7 @@ function profileTagMemo(tagMemoEngine) {
         derivedQueueLength: Array.isArray(tagMemoEngine._derivedTaskQueue)
             ? tagMemoEngine._derivedTaskQueue.length
             : 0,
-        estimatedBytes: pairwiseEstimatedBytes
-            + cooccurrenceEstimatedBytes
+        estimatedBytes: cooccurrenceEstimatedBytes
             + intrinsicEstimatedBytes
     };
 }

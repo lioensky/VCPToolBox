@@ -87,6 +87,7 @@ async function main() {
         );
         nativeKnowledgeRuntime.registerDiaryIndex('test', diaryIndex);
 
+        await index.computeMemoGeometry(dbPath, 'manifest-test-model', '{}');
         const result = await index.rebuildMemoArtifact(
             dbPath,
             JSON.stringify({
@@ -365,7 +366,7 @@ async function main() {
         assert(joint.results.every(item => typeof item.hydratedChunk?.text === 'string'));
 
         const factGeneration = nativeKnowledgeRuntime.databaseGeneration();
-        await index.computePairwiseSimilarities(dbPath, 'manifest-test-model', -1, true);
+        await index.computeMemoGeometry(dbPath, 'manifest-test-model', JSON.stringify({ forceRecompute: true }));
         assert.strictEqual(nativeKnowledgeRuntime.databaseGeneration(), factGeneration);
         assert.strictEqual(JSON.parse(await nativeKnowledgeRuntime.getNativeMemoManifest(
             dbPath, 'manifest-test-model', sha256(canonicalJson, 32)

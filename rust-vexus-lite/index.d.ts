@@ -38,6 +38,20 @@ export interface NativeStoreHealth {
   state: string
   databaseGeneration: number
 }
+export interface GeometryResult {
+  success: boolean
+  artifactSig: string
+  configHash: string
+  algorithmVersion: string
+  tagCount: number
+  computedCount: number
+  skippedCount: number
+  vectorFallbackCount: number
+  kEff: number
+  coverage: Array<number>
+  elapsedMs: number
+  phaseSummary: string
+}
 export interface NativeMemoArtifactBuildResult {
   success: boolean
   artifactSig: string
@@ -51,6 +65,9 @@ export interface NativeMemoArtifactBuildResult {
   persisted: boolean
   resident: boolean
   elapsedMs: number
+  phaseSummary: string
+  rawBytes: number
+  compressedBytes: number
 }
 /**
  * 统一 Memo 查询的轻量 N-API 返回值。
@@ -70,27 +87,6 @@ export interface SearchResult {
   id: number
   score: number
 }
-export interface SvdResult {
-  u: Array<number>
-  s: Array<number>
-  k: number
-  dim: number
-}
-export interface OrthogonalProjectionResult {
-  projection: Array<number>
-  residual: Array<number>
-  basisCoefficients: Array<number>
-}
-export interface HandshakeResult {
-  magnitudes: Array<number>
-  directions: Array<number>
-}
-export interface ProjectResult {
-  projections: Array<number>
-  probabilities: Array<number>
-  entropy: number
-  totalEnergy: number
-}
 export interface DualWeightedProjectionResult {
   localVector?: Array<number>
   transferVector?: Array<number>
@@ -108,38 +104,6 @@ export interface MemoFusionResult {
   foundCount: number
   deduplicatedCount: number
   totalWeight: number
-  elapsedMs: number
-}
-export interface IntrinsicResidualResult {
-  tagCount: number
-  computedCount: number
-  skippedCount: number
-  elapsedMs: number
-  algorithmVersion: string
-  artifactSig: string
-  effectiveConfig: string
-}
-/** 🌟 EPA Rust 基底重算结果 */
-export interface EpaBasisResult {
-  success: boolean
-  message: string
-  tagCount: number
-  clusterCount: number
-  basisCount: number
-  elapsedMs: number
-  algorithm: string
-  phaseSummary: string
-  anchorCount: number
-  representativeSampleCount: number
-  densityBucketCount: number
-  publishElapsedMs: number
-}
-/** 🌟 TagMemo V8.2: 成对语义距离预计算结果 */
-export interface PairwiseSimResult {
-  pairCount: number
-  computedCount: number
-  skippedCount: number
-  storedCount: number
   elapsedMs: number
 }
 /** 统计信息 */
@@ -285,7 +249,6 @@ export declare class NativeKnowledgeRuntime {
    *
    * 该维护操作不修改中央事实表，因此不会推进数据库事实代际。
    */
-  cleanupStalePairwiseSimilarityModels(dbPath: string, modelSig: string): Promise<unknown>
   commitIngestionBatch(dbPath: string, planJson: string, chunkVectors: Float32Array, tagVectors: Float32Array): Promise<unknown>
   /** 由 Rust Write Actor 提交文件删除、迁移墓碑和索引删除回执。 */
   commitDeleteBatch(dbPath: string, filePaths: Array<string>, ttlMs: number, rootPath?: string | undefined | null): Promise<unknown>
@@ -510,45 +473,7 @@ export declare class VexusIndex {
   stats(): VexusStats
   /** 从 SQLite 数据库恢复索引 (异步版本，不阻塞主线程) */
   recoverFromSqlite(dbPath: string, tableType: string, filterDiaryName?: string | undefined | null): Promise<unknown>
-  /**
-   * 高性能 SVD 分解 (用于 EPA 基底构建)
-   * flattened_vectors: n * dim 的扁平化向量数组
-   * n: 向量数量
-   * max_k: 最大保留的主成分数量
-   */
-  computeSvd(flattenedVectors: Float32Array, n: number, maxK: number): SvdResult
-  /** 高性能 Gram-Schmidt 正交投影 */
-  computeOrthogonalProjection(vector: Float32Array, flattenedTags: Float32Array, nTags: number): OrthogonalProjectionResult
-  /** 高性能握手分析 */
-  computeHandshakes(query: Float32Array, flattenedTags: Float32Array, nTags: number): HandshakeResult
-  /** 高性能 EPA 投影 */
-  project(vector: Float32Array, flattenedBasis: Float32Array, meanVector: Float32Array, k: number): ProjectResult
-  /**
-   * 🌟 EPA: Rust 侧重算基底并暂存在 Rust 内存中。
-   *
-   * 计算阶段只读 SQLite，不持有 JS 写租约；调用方应在结果成功后短租约调用 publish_epa_basis_cache。
-   */
-  computeEpaBasis(dbPath: string, clusterCount: number, maxBasisDim: number): Promise<unknown>
-  /** 在后台通过 Write Actor 发布 EPA 缓存；关闭时等待发布完成。 */
-  publishEpaBasisCache(dbPath: string): Promise<unknown>
-  /** 预计算任务：矩阵内生残差 (TagMemo V7) */
-  computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null, modelSig?: string | undefined | null, effectiveConfigJson?: string | undefined | null): Promise<unknown>
-  /**
-   * 🌟 TagMemo V8.2: 预计算 Tag 对的语义距离（成对余弦相似度）
-   *
-   * - 仅对实际共现的 pair 进行计算（避免 N² 爆炸）
-   * - 单文件 Tag 数 > 100 的脏文件跳过（与 JS / V7 守恒一致）
-   * - 增量模式：已存在且 model_sig 一致的 pair 直接跳过
-   * - sim < min_similarity 的 pair 不写入（默认丢弃噪声）
-   * - 单模型缓存策略：full_rebuild 会清空整张 sim 表，避免旧模型签名残留
-   *
-   * # 参数
-   * - `db_path`: SQLite 路径
-   * - `model_sig`: embedding 模型签名 (含维度)，跨模型自动失效
-   * - `min_similarity`: 噪声阈值，默认 0.05
-   * - `full_rebuild`: 是否清空 sim 表后重算 (默认 false 增量)
-   */
-  computePairwiseSimilarities(dbPath: string, modelSig: string, minSimilarity?: number | undefined | null, fullRebuild?: boolean | undefined | null): Promise<unknown>
+  computeMemoGeometry(dbPath: string, modelSig: string, configJson: string): Promise<unknown>
 }
 export declare class VexusWatcher {
   constructor()

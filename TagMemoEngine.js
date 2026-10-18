@@ -24,13 +24,12 @@ class TagMemoEngine {
         this._derivedTaskSequence = 0;
         this._isMatrixRebuilding = false;
         this._shutdownRequested = false;
-        this.intrinsicResidualArtifact = null;
+        this.geometryArtifact = null;
 
         // Retained as compatibility state only. Rust MemoRuntime owns all assets.
         this.tagCooccurrenceMatrix = null;
         this.tagIntrinsicResiduals = null;
         this.tagRawResidualRatios = null;
-        this.tagPairSimilarities = new Map();
     }
 
     _envFlag(name, fallback = false) {
@@ -54,7 +53,7 @@ class TagMemoEngine {
 
     async initialize() {
         console.log(
-            `[TagMemoEngine] Native MemoRuntime owns EPA, Residual, Pairwise and graph assets; ` +
+            `[TagMemoEngine] Native MemoRuntime owns unified geometry and graph assets; ` +
             `model_sig=${this.modelSig}.`
         );
         return true;
@@ -154,7 +153,7 @@ class TagMemoEngine {
             effectiveConfig: Object.freeze(
                 JSON.parse(JSON.stringify(effectiveConfig || {}))
             ),
-            residualArtifact: this.intrinsicResidualArtifact,
+            geometryArtifact: this.geometryArtifact,
             algorithmVersion: nativeResult.algorithmVersion || 'memo.native-artifact-v1',
             generation,
             nativeGeneration: Number(nativeResult.generation) || null,
@@ -167,7 +166,6 @@ class TagMemoEngine {
         this.tagCooccurrenceMatrix = null;
         this.tagIntrinsicResiduals = null;
         this.tagRawResidualRatios = null;
-        this.tagPairSimilarities = new Map();
 
         console.log(
             `[TagMemoEngine] Native Memo control handle published: ` +
@@ -217,110 +215,43 @@ class TagMemoEngine {
         return true;
     }
 
-    async recomputePairwiseSimilarities(options = {}) {
-        if (!this.tagIndex || typeof this.tagIndex.computePairwiseSimilarities !== 'function') {
-            throw this._nativeUnavailable('computePairwiseSimilarities');
-        }
-
-        const dbPath = this.getDbPath();
-        if (!dbPath) throw new Error('TagMemoEngine requires a native database path');
-
-        try {
-            return await this.tagIndex.computePairwiseSimilarities(
-                dbPath,
-                this.modelSig,
-                Number(options.minSimilarity ?? 0.05),
-                options.fullRebuild === true
-            );
-        } catch (error) {
-            console.error('[TagMemoEngine] Rust pairwise computation failed:', error.message || error);
-            return null;
-        }
+    _geometryConfig() {
+        const kb = this.ragParams?.KnowledgeBaseManager || {};
+        return JSON.parse(JSON.stringify(kb.geometry || { local: kb.intrinsicResidual || {} }));
     }
 
-    _intrinsicResidualConfig() {
-        const raw = this.ragParams?.KnowledgeBaseManager?.intrinsicResidual || {};
-        const number = (value, fallback, min, max) => {
-            const numeric = Number(value);
-            return Number.isFinite(numeric)
-                ? Math.max(min, Math.min(max, numeric))
-                : fallback;
-        };
-        const integer = (value, fallback, min, max) =>
-            Math.floor(number(value, fallback, min, max));
-        const boolean = (value, fallback) => {
-            if (value === undefined || value === null) return fallback;
-            if (typeof value === 'boolean') return value;
-            return ['true', '1', 'yes', 'on'].includes(String(value).toLowerCase());
-        };
-
-        return {
-            method: ['anchored_gs', 'centroid', 'svd'].includes(
-                String(raw.method || 'anchored_gs').toLowerCase()
-            ) ? String(raw.method || 'anchored_gs').toLowerCase() : 'anchored_gs',
-            maxNeighbors: integer(raw.maxNeighbors, 48, 4, 256),
-            maxBasis: integer(raw.maxBasis, 4, 1, 32),
-            minNeighbors: integer(raw.minNeighbors, 3, 1, 64),
-            semanticEnabled: boolean(raw.semanticEnabled, true),
-            semanticPeak: number(raw.semanticPeak, 0.65, -1, 1),
-            semanticSigma: number(raw.semanticSigma, 0.25, 0.02, 2),
-            semanticFloor: number(raw.semanticFloor, 0.35, 0, 1),
-            semanticHardFloor: number(raw.semanticHardFloor, -1, -1, 1),
-            minGain: number(raw.minGain, 0.015, 0, 1),
-            positionDecay: number(raw.positionDecay, 0.15, 0, 4),
-            v9AnchorBase: number(raw.v9AnchorBase, 0.75, 0, 4),
-            v9AnchorScale: number(raw.v9AnchorScale, 1.25, 0, 4),
-            v9AnchorGamma: number(raw.v9AnchorGamma, 1, 0.1, 8),
-            v9AnchorMin: number(raw.v9AnchorMin, 0.5, 0, 4),
-            v9AnchorMax: number(raw.v9AnchorMax, 2, 0, 8)
-        };
-    }
-
-    async recomputeIntrinsicResiduals() {
-        if (!this.tagIndex || typeof this.tagIndex.computeIntrinsicResiduals !== 'function') {
-            throw this._nativeUnavailable('computeIntrinsicResiduals');
+    async recomputeGeometry() {
+        if (typeof this.tagIndex?.computeMemoGeometry !== 'function') {
+            throw this._nativeUnavailable('computeMemoGeometry');
         }
-
         const dbPath = this.getDbPath();
         if (!dbPath) throw new Error('TagMemoEngine requires a native database path');
-
-        const config = this._intrinsicResidualConfig();
-        const result = await this.tagIndex.computeIntrinsicResiduals(
-            dbPath,
-            config.maxBasis,
-            config.minNeighbors,
-            this.modelSig,
-            JSON.stringify(config)
-        );
-        if (!result) return null;
-
-        this.intrinsicResidualArtifact = Object.freeze({
-            artifactSig: result.artifactSig || null,
-            modelSig: this.modelSig,
-            algorithmVersion: result.algorithmVersion || null,
-            configHash: result.configHash || null
-        });
-        await this._assertNativeHealth('intrinsic residual computation');
-        return result;
+        const config = JSON.stringify(this._geometryConfig());
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                const result = await this.tagIndex.computeMemoGeometry(dbPath, this.modelSig, config);
+                if (!result?.success) throw new Error('Native geometry publication failed');
+                this.geometryArtifact = Object.freeze({
+                    artifactSig: result.artifactSig, modelSig: this.modelSig,
+                    algorithmVersion: result.algorithmVersion, configHash: result.configHash
+                });
+                if (!await this._assertNativeHealth('unified geometry')) {
+                    throw new Error('Native storage is unhealthy after geometry publication');
+                }
+                return result;
+            } catch (error) {
+                if (attempt || !/revision_conflict|DERIVED_(?:GENERATION|DEPENDENCY)_CONFLICT/.test(String(error.message))) throw error;
+            }
+        }
     }
 
     async doMatrixRebuild(options = {}) {
         if (this._shutdownRequested || this._isMatrixRebuilding) return false;
         this._isMatrixRebuilding = true;
+        const processedTagIds = new Set(this._accumulatedNewTagIds);
         try {
-            const pairwise = await this.recomputePairwiseSimilarities({
-                fullRebuild: options.fullRebuildPairwise === true
-            });
-            if (!pairwise) return false;
-
-            if (
-                options.forceIntrinsicResiduals === true
-                || this._envFlag('TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE')
-                || options.reason === 'threshold'
-            ) {
-                const residual = await this.recomputeIntrinsicResiduals();
-                if (!residual) return false;
-            }
+            const geometry = await this.recomputeGeometry();
+            if (!geometry) return false;
 
             if (!this.tagIndex || typeof this.tagIndex.rebuildMemoArtifact !== 'function') {
                 throw this._nativeUnavailable('rebuildMemoArtifact');
@@ -344,7 +275,9 @@ class TagMemoEngine {
             }
 
             const handle = this.publishNativeArtifactHandle(result, effectiveConfig);
-            this.knowledgeBaseManager?.onNativeMemoArtifactPublished?.(result, handle);
+            await this.knowledgeBaseManager?.onNativeMemoArtifactPublished?.(result, handle);
+            for (const id of processedTagIds) this._accumulatedNewTagIds.delete(id);
+            this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
             return true;
         } finally {
             this._isMatrixRebuilding = false;
@@ -365,8 +298,6 @@ class TagMemoEngine {
             'active-full-training',
             () => this.doMatrixRebuild({
                 reason: options.reason || 'admin-active-full-training',
-                fullRebuildPairwise: true,
-                forceIntrinsicResiduals: true
             }),
             { maxAttempts: options.maxAttempts ?? 1 }
         );

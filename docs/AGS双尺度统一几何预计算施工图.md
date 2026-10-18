@@ -362,3 +362,67 @@ d.dependency_key IN ('memo_tag_facts','derived_geometry')) = 2
 - ✅ 硬切换
 - ⏳ 语义门控：默认**保留内联门控**（零存储成本，可兜底未按提示词规范书写的旧日记）
 - ⏳ 触发时机：默认 `facts → geometry → artifact` 单链，并沿用现有阈值调度
+
+
+## 可能存在的暗礁
+### ⚠️ 暗礁 1：`GeometryTask` 缺少「缓存命中短路（Short-circuit）」，会导致每次重启误触发 `derived_geometry++` 并作废 `rivermemo_artifacts`
+* **问题推演**：
+  在 §6 中，你设置了触发器：当 `tag_intrinsic_residuals` 或 `kv_store(epa_basis_cache)` 发生 `INSERT/UPDATE/DELETE` 时，`kbm_runtime_meta.derived_geometry` 自增 1。
+  而在旧版 `IntrinsicResidualTask`（`lib.txt` 1545 行）和 `PairwiseSimTask`（1746 行）中，都有一段**预检短路逻辑**：如果根据 `content_digest + model_sig + config_hash` 算出的 `artifact_sig` 在数据库中已经是 `ready` 状态，则直接返回缓存命中，**不执行写事务**。
+  在你的施工图 §4 中，Pass 0 $\to$ Pass 5 似乎是无条件执行写事务的。如果冷启动 5 分钟后的 `schedulePostStartupDerivedRefresh` 触发了 `GeometryTask`，哪怕全库没有任何新文件或新 Tag，只要 Pass 5 执行了 `DELETE` + `INSERT`，就会触发 `derived_geometry++`，进而导致冷启动刚刚恢复的 `rivermemo_artifacts` 因依赖版本失配 (`DERIVED_DEPENDENCY_CONFLICT`) 而被迫全量重算！
+* **修正方案**：
+  在 **Pass 1 结束算出 `artifact_sig` 后（进入 Pass 2 之前）**，在读事务内检查：
+  1. `tagmemo_artifacts` 中是否存在 `asset_type = 'unified_geometry' AND artifact_sig = ?1 AND status = 'ready'`；
+  2. `kv_store` 中是否存在 `key = 'epa_basis_cache'`。
+  若二者皆满足且未开启 `force_recompute`，**直接短路返回 `skipped_count = tag_count`**，不触碰写事务，从而保护 `derived_geometry` 代际稳定。
+
+### ⚠️ 暗礁 2：Pass 2 / Pass 3 / Pass 4 的向量读取方式——切勿在 Rayon `par_iter` 内高频争用 `usearch` 锁或按邻居重复读取
+* **问题推演**：
+  施工图 §4 写道：
+  > 用 `par_iter` 遍历 Tag ID 有序列表。每个 Tag：从 usearch 批量读取 `1+n` 个向量并单位化；按 ID 分批，短时持有读锁，每批读取后立即释放……
+  这里有两个严重隐患：
+  1. **重复读取与重复归一化放大 48 倍**：共现图是高度偏斜的无标度网络，高频 Hub Tag 会作为数千个 Tag 的邻居出现。如果每个 Tag 在 `par_iter` 中各自去 `usearch.get(neighbor_id)` 并归一化，同一个 Hub Tag 会被从 `usearch` 拷贝并归一化数千次（$30000 \times 49 \approx 147$ 万次 `usearch.get`）。
+  2. **跨线程 fallback 与读写锁饥饿**：SQLite 的 `rusqlite::Connection` 是 `!Sync` 的，无法在 Rayon 的 `par_iter` 闭包内直接执行 BLOB 降级补读；而且多线程高频抢占 `IndexHandle` 的 `RwLock` 会阻塞前台摄取的写锁并导致 `content_revision` 冲突。
+* **修正方案**：
+  在 Pass 1 结束后，你已经拿到了紧凑的活跃 `tag_ids` 列表（按 ID 排序，记为 $V$ 个，通常几千到几万）。
+  在进入 Pass 2 的 `par_iter` **之前**：
+  1. 持一次 `index.read()` 锁，顺序遍历这 $V$ 个唯一 Tag ID，调用 `index.get` 读出并一次性完成单位化（同时顺便就累加好了全库 `mean`！）；
+  2. 若有个别 ID 未命中 `usearch`，此时仍在单线程读事务内，直接从 SQLite `tags` 表补读 BLOB；
+  3. 释放 `index.read()` 锁和 SQLite 读事务！
+  4. 此后 **Pass 2（局部 AGS）、Pass 3（全局 Span）、Pass 4（覆盖率统计）全部在纯内存切片上无锁并行运行**，每个 Tag 向量只读一次、只归一化一次，且在计算结束后立即随局部变量 `drop` 释放，不会产生任何常驻的第二份向量内存！
+
+### ⚠️ 暗礁 3：`memo_artifact_builder` 中获取 `geometry` 签名的表来源（§7）
+* **问题推演**：
+  施工图 §7 提到：`source_artifact_sig` 中的 `residual_sig` 改为 geometry 的 `artifact_sig`。
+  注意在现有 `memo_artifact_builder.txt`（第 157 行）中，`residual_sig` 是从 `SELECT ... artifact_sig FROM tag_intrinsic_residuals WHERE model_sig = ?1` 的第一行顺手读出来的。
+  但在小型知识库或测试用例（如只有 2 个 Tag 共现，小于 `min_neighbors = 3`）中，所有 Tag 的状态都是 `insufficient_neighbors`，此时 **`tag_intrinsic_residuals` 数值表是空的（0 行）**，会导致 `residual_sig` 读出空字符串 `""`！
+* **修正方案**：
+  在 `memo_artifact_builder` 中，应直接从 `tagmemo_artifacts` 表读取：
+  ```sql
+  SELECT artifact_sig FROM tagmemo_artifacts
+  WHERE asset_type = 'unified_geometry' AND model_sig = ?1 AND status = 'ready'
+  ORDER BY updated_at DESC LIMIT 1
+  ```
+
+### ⚠️ 暗礁 4：Schema 版本升级在「新库创建」与「旧库迁移」下的分支覆盖（§6）
+* **问题推演**：
+  在现有 `storage.txt`（第 425 行）中，`initialize_schema_metadata` 会在新库首次打开时先把请求的 `schema_version` 插入 `kbm_runtime_meta`，然后再调用 `schema::initialize_schema`。
+  这意味着：对于**全新创建的数据库**，进入 `initialize_schema` 时 `version == requested_version`；只有**旧库升级**时才满足 `version < requested_version`。
+  此外，Rust 单元测试中大量使用了 `StorageOptions::default()`（默认 `schema_version: 1`）和手动 `initialize_schema(&conn, 1)`。
+* **修正方案**：
+  1. 将 §6 中的 `DROP TRIGGER IF EXISTS ...`、`DROP TABLE IF EXISTS ...`、`DELETE FROM kbm_runtime_meta WHERE key IN ('derived_pairwise', ...)` 设为**无条件幂等执行**（不要仅放在 `if version < requested_version` 分支内），这样无论新库、旧库升级还是单测夹具都能保证干净。
+  2. 同步将 `StorageOptions::default()` (`storage.txt`) 和 `KnowledgeBaseManager.js` (`openAndInitStore`) 中的 `schemaVersion` 升为 `2`。
+
+### ⚠️ 暗礁 5：`tag_consistency.rs` 的失效清理语句需同步对齐 `derived_geometry`
+* **问题推演**：
+  在 `tag_consistency.txt` 第 381–388 行，当 Tag 一致性修复提交时，有一段硬编码的清理 SQL：
+  ```sql
+  DELETE FROM tag_pair_similarity;
+  DELETE FROM tag_pair_similarity_status;
+  DELETE FROM tag_intrinsic_residuals;
+  DELETE FROM tag_intrinsic_residual_status;
+  DELETE FROM tagmemo_artifacts;
+  DELETE FROM rivermemo_artifacts;
+  ```
+  你在 §9 中已经注意到要删除前两行并加入 `DELETE FROM kv_store WHERE key='epa_basis_cache'`。
+  **补充一点**：当 `tag_intrinsic_residuals` 和 `epa_basis_cache` 在 `tag_consistency` 已经为空时，`DELETE` 影响行数为 0，不会触发 SQLite 的 `AFTER DELETE` 触发器去递增 `derived_geometry`（不过因为 `tags` / `file_tags` 变动已经触发了 `memo_tag_facts++`，且 `rivermemo_artifacts` 已被清空，所以依然安全）。

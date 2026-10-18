@@ -5,7 +5,6 @@ use crate::ingestion::{
     DeleteCommitTask, IngestionCommitTask, IngestionFileProbeTask, IngestionTagProbeTask,
     MigrationReuseProbeTask, OrphanCleanupTask,
 };
-use crate::pairwise_maintenance::PairwiseModelCleanupTask;
 use crate::tag_consistency::{
     TagConsistencyCommitTask, TagConsistencyPrepareTask, TagConsistencySnapshotTask,
 };
@@ -1984,12 +1983,14 @@ impl Task for NativeMemoManifestLookupTask {
                      FROM rivermemo_artifacts
                      WHERE model_sig = ?1
                        AND config_hash = ?2
-                       AND algorithm_version = 'memo.native-artifact-v1'
+                       AND algorithm_version = 'memo.native-artifact-v2-binary'
                        AND status = 'ready'
                        AND payload IS NOT NULL
                        AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d
                             WHERE d.artifact_sig=rivermemo_artifacts.artifact_sig
-                              AND d.dependency_key IN ('memo_tag_facts','derived_pairwise','derived_intrinsic'))=3
+                              AND d.dependency_key IN (SELECT value FROM json_each(?3)))=?4
+                       AND (SELECT COUNT(*) FROM kbm_artifact_dependencies d
+                            WHERE d.artifact_sig=rivermemo_artifacts.artifact_sig)=?4
                        AND NOT EXISTS(
                          SELECT 1 FROM kbm_artifact_dependencies d
                          LEFT JOIN kbm_runtime_meta m ON m.key=d.dependency_key
@@ -2000,7 +2001,10 @@ impl Task for NativeMemoManifestLookupTask {
                      LIMIT 1",
                     rusqlite::params![
                         model_sig,
-                        config_hash
+                        config_hash,
+                        serde_json::to_string(crate::storage::MEMO_ARTIFACT_DEPENDENCIES)
+                            .map_err(|e| Error::from_reason(e.to_string()))?,
+                        crate::storage::MEMO_ARTIFACT_DEPENDENCIES.len() as i64
                     ],
                     |row| {
                         Ok(serde_json::json!({
@@ -2819,30 +2823,6 @@ impl NativeKnowledgeRuntime {
     /// 通过 Write Actor 删除旧模型签名的 pairwise 数值。
     ///
     /// 该维护操作不修改中央事实表，因此不会推进数据库事实代际。
-    #[napi]
-    pub fn cleanup_stale_pairwise_similarity_models(
-        &self,
-        db_path: String,
-        model_sig: String,
-    ) -> Result<AsyncTask<TrackedTask<PairwiseModelCleanupTask>>> {
-        if !self.accepting_queries.load(Ordering::Acquire) {
-            return Err(Error::from_reason(
-                "NativeKnowledgeRuntime is shutting down".to_string(),
-            ));
-        }
-        if db_path.trim().is_empty() || model_sig.trim().is_empty() {
-            return Err(Error::from_reason(
-                "cleanupStalePairwiseSimilarityModels requires dbPath and modelSig"
-                    .to_string(),
-            ));
-        }
-
-        Ok(self.tracked_task(PairwiseModelCleanupTask {
-            db_path,
-            model_sig: model_sig.trim().to_string(),
-        }))
-    }
-
     #[napi]
     pub fn commit_ingestion_batch(
         &self,

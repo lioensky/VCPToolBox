@@ -13,7 +13,7 @@ use std::time::Instant;
 use usearch::Index;
 
 const PIPELINE_SCHEMA: &str = "vexus-unified-memo-pipeline-v1";
-const PIPELINE_ALGORITHM: &str = "tagmemo.epa-pyramid-spike-fusion-v9.2-rust";
+const PIPELINE_ALGORITHM: &str = "tagmemo.epa-pyramid-spike-fusion-v9.3-rust";
 
 fn positive(value: f64) -> f64 {
     if value.is_finite() {
@@ -168,7 +168,11 @@ struct EpaCache {
     _energies: Vec<f64>,
     #[serde(default)]
     labels: Vec<String>,
+    #[serde(default = "default_k_sem")]
+    k_sem: usize,
 }
+
+fn default_k_sem() -> usize { 8 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -199,6 +203,8 @@ struct EpaOutput {
     bridges: Vec<EpaBridge>,
     basis_count: usize,
     cache_available: bool,
+    out_of_domain: f64,
+    semantic_explained_ratio: f64,
 }
 
 fn decode_f32_base64(encoded: &str, dimension: usize) -> Option<Vec<f32>> {
@@ -225,6 +231,8 @@ fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaO
         bridges: Vec::new(),
         basis_count: 0,
         cache_available: false,
+        out_of_domain: 1.0,
+        semantic_explained_ratio: 0.0,
     };
     let raw = match connection.query_row(
         "SELECT value FROM kv_store WHERE key = 'epa_basis_cache'",
@@ -247,31 +255,35 @@ fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaO
         .iter()
         .filter_map(|encoded| decode_f32_base64(encoded, dimension))
         .collect();
-    if bases.is_empty() {
-        return empty();
-    }
-
     let centered: Vec<f32> = query
         .iter()
         .zip(mean.iter())
         .map(|(value, average)| value - average)
         .collect();
     let projections: Vec<f64> = bases.iter().map(|basis| dot(&centered, basis)).collect();
-    let total_energy = projections.iter().map(|value| value * value).sum::<f64>();
-    if total_energy <= 1e-12 {
-        return empty();
-    }
+    let centered_energy = dot(&centered, &centered);
+    let captured = projections.iter().map(|value| value * value).sum::<f64>();
+    let out_of_domain = if centered_energy > 1e-12 {
+        ((centered_energy - captured).max(0.0) / centered_energy).sqrt().clamp(0.0, 1.0)
+    } else { 0.0 };
+    let semantic_count = cache.k_sem.max(1).min(bases.len());
+    let total_energy = projections.iter().take(semantic_count).map(|value| value * value).sum::<f64>();
+    let semantic_explained_ratio = if centered_energy > 1e-12 {
+        clamp01(total_energy / centered_energy)
+    } else { 0.0 };
     let probabilities: Vec<f64> = projections
-        .iter()
-        .map(|value| value * value / total_energy)
+        .iter().take(semantic_count)
+        .map(|value| if total_energy > 1e-12 { value * value / total_energy } else { 0.0 })
         .collect();
     let raw_entropy = probabilities
         .iter()
         .filter(|value| **value > 1e-9)
         .map(|value| -value * value.log2())
         .sum::<f64>();
-    let normalized_entropy = if probabilities.len() > 1 {
-        clamp01(raw_entropy / (probabilities.len() as f64).log2())
+    let normalized_entropy = if total_energy <= 1e-12 {
+        1.0
+    } else if cache.k_sem > 1 {
+        clamp01(raw_entropy / (cache.k_sem as f64).log2())
     } else {
         0.0
     };
@@ -319,13 +331,15 @@ fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaO
     let resonance = bridges.iter().map(|bridge| bridge.strength).sum();
 
     EpaOutput {
-        logic_depth: 1.0 - normalized_entropy,
+        logic_depth: (1.0 - normalized_entropy) * semantic_explained_ratio,
         entropy: normalized_entropy,
         resonance,
         dominant_axes,
         bridges,
         basis_count: bases.len(),
         cache_available: true,
+        out_of_domain,
+        semantic_explained_ratio,
     }
 }
 
@@ -1628,5 +1642,56 @@ mod audit_gate_tests {
         assert_eq!(index.content_revision.load(std::sync::atomic::Ordering::Acquire), 1);
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod geometry_epa_tests {
+    use super::*;
+
+    fn encoded(values: &[f32]) -> String {
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn semantic_entropy_ignores_tail_axes_and_reports_out_of_domain() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE kv_store(key TEXT PRIMARY KEY,value TEXT);").unwrap();
+        let write = |basis: Vec<Vec<f32>>| {
+            let cache = serde_json::json!({
+                "mean": encoded(&[0.0,0.0,0.0]),
+                "basis": basis.iter().map(|v| encoded(v)).collect::<Vec<_>>(),
+                "kSem": 2
+            });
+            connection.execute(
+                "INSERT OR REPLACE INTO kv_store VALUES ('epa_basis_cache',?1)",
+                [cache.to_string()],
+            ).unwrap();
+        };
+        write(vec![vec![1.0,0.0,0.0],vec![0.0,1.0,0.0]]);
+        let first = analyze_epa(&connection, &[0.5,0.5,0.70710677], 3);
+        assert!(first.cache_available);
+        assert!((first.entropy-1.0).abs()<1e-12);
+        assert!((first.out_of_domain-0.70710678).abs()<1e-6);
+        write(vec![vec![1.0,0.0,0.0],vec![0.0,1.0,0.0],vec![0.0,0.0,1.0]]);
+        let expanded = analyze_epa(&connection, &[0.5,0.5,0.70710677], 3);
+        assert_eq!(expanded.entropy, first.entropy);
+        assert!(expanded.out_of_domain<1e-6);
+        assert_eq!(expanded.semantic_explained_ratio, first.semantic_explained_ratio);
+        let low_energy = analyze_epa(&connection, &[0.1,0.0,0.9949874], 3);
+        assert!(low_energy.out_of_domain<1e-6); // Tail explains most energy, not the semantic prefix.
+        assert!(low_energy.entropy<1e-12);
+        assert!((low_energy.logic_depth-0.01).abs()<1e-6);
+        let on_axis = analyze_epa(&connection, &[1.0,0.0,0.0], 3);
+        assert_eq!(on_axis.logic_depth,1.0);
+        write(vec![vec![1.0,0.0,0.0]]);
+        let orthogonal = analyze_epa(&connection, &[0.0,1.0,0.0], 3);
+        assert!(orthogonal.cache_available);
+        assert_eq!(orthogonal.out_of_domain,1.0);
+        assert_eq!(orthogonal.entropy,1.0);
+        write(vec![]);
+        assert!(analyze_epa(&connection, &[0.0,1.0,0.0], 3).cache_available);
     }
 }

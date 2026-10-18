@@ -386,8 +386,7 @@ impl Task for TagConsistencyCommitTask {
             }
 
             tx.execute_batch(
-                "DELETE FROM tag_pair_similarity;
-                 DELETE FROM tag_pair_similarity_status;
+                "DELETE FROM kv_store WHERE key='epa_basis_cache';
                  DELETE FROM tag_intrinsic_residuals;
                  DELETE FROM tag_intrinsic_residual_status;
                  DELETE FROM tagmemo_artifacts;

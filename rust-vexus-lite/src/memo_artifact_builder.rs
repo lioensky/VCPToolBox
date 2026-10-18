@@ -4,7 +4,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -15,7 +15,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const PAYLOAD_SCHEMA: &str = "rivermemo-persisted-artifact-v2";
 const PAYLOAD_CODEC: &str = "gzip-json-v1";
-const ALGORITHM_VERSION: &str = "memo.native-artifact-v1";
+const ALGORITHM_VERSION: &str = "memo.native-artifact-v2-binary";
 const V9_ALGORITHM_VERSION: &str = "v9.1-rust-native";
 
 #[derive(Deserialize, Default)]
@@ -58,6 +58,9 @@ pub struct NativeMemoArtifactBuildResult {
     pub persisted: bool,
     pub resident: bool,
     pub elapsed_ms: f64,
+    pub phase_summary: String,
+    pub raw_bytes: u32,
+    pub compressed_bytes: u32,
 }
 
 fn now_ms() -> i64 {
@@ -134,36 +137,6 @@ fn load_file_tags(connection: &Connection) -> std::result::Result<Vec<FileTag>, 
     Ok(output)
 }
 
-fn load_pairwise(
-    connection: &Connection,
-    model_sig: &str,
-) -> std::result::Result<HashMap<(i64, i64), f64>, String> {
-    let mut statement = connection
-        .prepare("SELECT tag_a, tag_b, similarity FROM tag_pair_similarity WHERE model_sig = ?1")
-        .map_err(|error| format!("prepare pairwise failed: {}", error))?;
-    let rows = statement
-        .query_map(params![model_sig], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, f64>(2)?,
-            ))
-        })
-        .map_err(|error| format!("query pairwise failed: {}", error))?;
-    let mut output = HashMap::new();
-    for row in rows {
-        let (left, right, similarity) =
-            row.map_err(|error| format!("decode pairwise row failed: {}", error))?;
-        if !similarity.is_finite() {
-            return Err(format!(
-                "pairwise row ({}, {}) contains non-finite similarity",
-                left, right
-            ));
-        }
-        output.insert((left.min(right), left.max(right)), similarity);
-    }
-    Ok(output)
-}
 
 fn load_anchor_gains(
     connection: &Connection,
@@ -188,9 +161,23 @@ fn load_anchor_gains(
         .map_err(|error| format!("query intrinsic residuals failed: {}", error))?;
     let mut gains = HashMap::new();
     let mut raw = HashMap::new();
-    let mut signature = String::new();
+    let geometry = connection.query_row(
+        "SELECT artifact_sig,graph_generation FROM tagmemo_artifacts
+         WHERE asset_type='unified_geometry' AND model_sig=?1 AND status='ready'
+         ORDER BY updated_at DESC LIMIT 1",
+        [model_sig], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    ).optional().map_err(|e| e.to_string())?;
+    let signature = if let Some((signature, generation)) = geometry {
+        let facts: String = connection.query_row(
+            "SELECT value FROM kbm_runtime_meta WHERE key='memo_tag_facts'", [], |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        if generation != format!("facts:{facts}") {
+            return Err("KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT: geometry facts are stale".into());
+        }
+        signature
+    } else { String::new() };
     for row in rows {
-        let (tag_id, gain, raw_residual, artifact_sig) =
+        let (tag_id, gain, raw_residual, _artifact_sig) =
             row.map_err(|error| format!("decode intrinsic residual row failed: {}", error))?;
         if !gain.is_finite() || !raw_residual.is_finite() {
             return Err(format!(
@@ -200,9 +187,6 @@ fn load_anchor_gains(
         }
         gains.insert(tag_id, gain.clamp(0.5, 2.0));
         raw.insert(tag_id, raw_residual.clamp(0.0, 1.0));
-        if signature.is_empty() && !artifact_sig.is_empty() {
-            signature = artifact_sig;
-        }
     }
     Ok((gains, raw, signature))
 }
@@ -216,7 +200,7 @@ fn add_edge(matrix: &mut HashMap<i64, HashMap<i64, f64>>, source: i64, target: i
 
 fn build_fact_matrix(
     rows: &[FileTag],
-    pairwise: &HashMap<(i64, i64), f64>,
+    vectors: &HashMap<i64, Vec<f64>>,
     anchor_gain: &HashMap<i64, f64>,
     config: &Value,
 ) -> HashMap<i64, HashMap<i64, f64>> {
@@ -253,8 +237,9 @@ fn build_fact_matrix(
         if !semantic_enabled {
             return 1.0;
         }
-        let key = (left.min(right), left.max(right));
-        let similarity = pairwise.get(&key).copied().unwrap_or(low_fallback);
+        let similarity = vectors.get(&left).zip(vectors.get(&right))
+            .map(|(a,b)| crate::memo_geometry::dot(a,b).clamp(-1.0,1.0))
+            .unwrap_or(low_fallback);
         if similarity < 0.15 {
             0.4 + similarity * 1.0
         } else {
@@ -341,7 +326,12 @@ fn build_transport(
 
     let mut raw_rows: HashMap<i64, Vec<(i64, f64, bool)>> = HashMap::new();
     let mut target_inflow: HashMap<i64, f64> = HashMap::new();
-    for (source, edges) in fact {
+    let mut sources: Vec<_> = fact.keys().copied().collect();
+    sources.sort_unstable();
+    for source_id in sources {
+        let source = &source_id;
+        let mut edges: Vec<_> = fact[source].iter().collect();
+        edges.sort_by_key(|(target, _)| **target);
         for (target, compatibility) in edges {
             let evidence = (1.0 + compatibility.max(0.0) * evidence_compression).ln();
             let residual = anchor_gain.get(target).copied().unwrap_or(1.0);
@@ -565,18 +555,21 @@ fn artifact_payload(
             ])
         })
         .collect();
-    let inbound: Vec<Value> = artifact
+    let mut inbound: Vec<Value> = artifact
         .inbound
         .iter()
         .map(|(id, mass)| json!([id, mass]))
         .collect();
-    let anchor_gain: Vec<Value> = artifact
+    inbound.sort_by_key(|v| v[0].as_i64().unwrap_or(0));
+    let mut anchor_gain: Vec<Value> = artifact
         .anchor_gain
         .iter()
         .map(|(id, gain)| json!([id, gain]))
         .collect();
-    let wormholes: Vec<Value> = artifact
-        .wormhole_edges
+    anchor_gain.sort_by_key(|v| v[0].as_i64().unwrap_or(0));
+    let mut wormhole_ids: Vec<_> = artifact.wormhole_edges.iter().copied().collect();
+    wormhole_ids.sort_unstable();
+    let wormholes: Vec<Value> = wormhole_ids
         .iter()
         .map(|(source, target)| json!(format!("{}:{}", source, target)))
         .collect();
@@ -605,6 +598,7 @@ fn artifact_payload(
 }
 
 fn run_build(
+    index: &crate::index_handle::IndexHandle,
     runtime: &MemoRuntime,
     db_path: &str,
     input_json: &str,
@@ -616,14 +610,17 @@ fn run_build(
         return Err("native artifact build requires modelSig".to_string());
     }
 
+    let snapshot_gate = crate::publication_gate::acquire_read(db_path, &["*".into()])?;
     let (rows, pairwise, anchor_gain, residual_sig, database_generation, dependencies) =
         with_registered_read_transaction(db_path, |readonly| {
             let rows = load_file_tags(readonly)?;
-            let pairwise = load_pairwise(readonly, &input.model_sig)?;
+            let ids: Vec<i64> = rows.iter().map(|r| r.tag_id).collect::<BTreeSet<_>>().into_iter().collect();
+            let dimension = index.read().map_err(|e|e.to_string())?.dimensions();
+            let (pairwise, _) = crate::memo_geometry::read_unit_vectors(readonly, index, &ids, dimension)?;
             let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
             let database_generation = database_generation(readonly)?;
             let dependencies = crate::storage::DerivedDependencies::capture(
-                readonly, &["memo_tag_facts", "derived_pairwise", "derived_intrinsic"],
+                readonly, crate::storage::MEMO_ARTIFACT_DEPENDENCIES,
             )?;
             Ok((
                 rows,
@@ -634,48 +631,44 @@ fn run_build(
                 dependencies,
             ))
         })?;
+    drop(snapshot_gate);
+    let load_ms = started.elapsed().as_secs_f64()*1000.0;
     let fact = build_fact_matrix(&rows, &pairwise, &anchor_gain, &input.effective_config);
+    drop(pairwise);
     let (transport, wormholes) = build_transport(&fact, &anchor_gain, &input.effective_config);
     let provenance = build_provenance(&rows, &input.effective_config);
 
     let mut inbound = HashMap::new();
-    for edges in transport.values() {
+    let mut sources: Vec<_> = transport.keys().copied().collect();
+    sources.sort_unstable();
+    let mut graph_hasher = Sha256::new();
+    graph_hasher.update(b"memo-graph-le-v2");
+    graph_hasher.update((sources.len() as u64).to_le_bytes());
+    for source in sources {
+        let mut edges: Vec<_> = transport[&source].iter().collect();
+        edges.sort_by_key(|(target, _)| **target);
+        graph_hasher.update(source.to_le_bytes());
+        graph_hasher.update((edges.len() as u64).to_le_bytes());
         for (target, weight) in edges {
             *inbound.entry(*target).or_default() += *weight;
+            graph_hasher.update(target.to_le_bytes());
+            graph_hasher.update(weight.to_le_bytes());
         }
     }
-
-    let graph_digest = {
-        let mut rows = Vec::new();
-        let mut sources: Vec<i64> = transport.keys().copied().collect();
-        sources.sort_unstable();
-        for source in sources {
-            let mut edges: Vec<(i64, f64)> = transport[&source]
-                .iter()
-                .map(|(target, weight)| (*target, *weight))
-                .collect();
-            edges.sort_by_key(|item| item.0);
-            rows.push(format!("{}:{:?}", source, edges));
+    let graph_digest = format!("{:x}", graph_hasher.finalize())[..48].to_owned();
+    let mut provenance_hasher = Sha256::new();
+    provenance_hasher.update(b"memo-provenance-le-v2");
+    provenance_hasher.update((provenance.len() as u64).to_le_bytes());
+    for ((source, target), values) in &provenance {
+        provenance_hasher.update(source.to_le_bytes());
+        provenance_hasher.update(target.to_le_bytes());
+        provenance_hasher.update((values.len() as u64).to_le_bytes());
+        for value in values {
+            provenance_hasher.update(value.file_id.to_le_bytes());
+            provenance_hasher.update(value.mass.to_le_bytes());
         }
-        hash_text(&rows.join("|"), 48)
-    };
-    let provenance_generation = {
-        let rows: Vec<String> = provenance
-            .iter()
-            .map(|(edge, values)| {
-                format!(
-                    "{}:{}:{:?}",
-                    edge.0,
-                    edge.1,
-                    values
-                        .iter()
-                        .map(|item| (item.file_id, item.mass))
-                        .collect::<Vec<_>>()
-                )
-            })
-            .collect();
-        hash_text(&rows.join("|"), 40)
-    };
+    }
+    let provenance_generation = format!("{:x}", provenance_hasher.finalize())[..40].to_owned();
     let config_json = serde_json::to_string(&input.effective_config)
         .map_err(|error| format!("encode effective config failed: {}", error))?;
     let config_hash = hash_text(&config_json, 32);
@@ -716,11 +709,14 @@ fn run_build(
         "maxInbound": native.max_inbound,
         "effectiveConfig": input.effective_config
     });
+    let graph_ms = started.elapsed().as_secs_f64()*1000.0-load_ms;
     let payload = artifact_payload(&native, &provenance, &metadata);
     let raw = serde_json::to_vec(&payload)
         .map_err(|error| format!("encode native artifact payload failed: {}", error))?;
     let checksum = sha256_hex(&raw);
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::new(6));
+    let encode_ms = started.elapsed().as_secs_f64()*1000.0-load_ms-graph_ms;
+    let raw_bytes = raw.len() as u32;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
     encoder
         .write_all(&raw)
         .map_err(|error| format!("compress native artifact failed: {}", error))?;
@@ -728,6 +724,8 @@ fn run_build(
         .finish()
         .map_err(|error| format!("finish native artifact compression failed: {}", error))?;
 
+    let compressed_bytes = compressed.len() as u32;
+    let compression_ms = started.elapsed().as_secs_f64()*1000.0-load_ms-graph_ms-encode_ms;
     // 只在最终提交和内存发布窗口持门禁，耗时图构建与压缩不阻塞查询。
     let _publication_guard = crate::publication_gate::acquire(db_path, &[String::from("*")])?;
     let source_generation = database_generation.parse::<u64>()
@@ -812,10 +810,15 @@ fn run_build(
         persisted: true,
         resident: true,
         elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+        phase_summary: format!("load={load_ms:.3};graph={graph_ms:.3};encode={encode_ms:.3};compress={compression_ms:.3};publish={:.3}",
+            started.elapsed().as_secs_f64()*1000.0-load_ms-graph_ms-encode_ms-compression_ms),
+        raw_bytes,
+        compressed_bytes,
     })
 }
 
 pub struct NativeMemoArtifactBuildTask {
+    index: Arc<crate::index_handle::IndexHandle>,
     runtime: Arc<MemoRuntime>,
     db_path: String,
     input_json: String,
@@ -826,7 +829,7 @@ impl Task for NativeMemoArtifactBuildTask {
     type JsValue = NativeMemoArtifactBuildResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        run_build(&self.runtime, &self.db_path, &self.input_json).map_err(Error::from_reason)
+        run_build(&self.index, &self.runtime, &self.db_path, &self.input_json).map_err(Error::from_reason)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -836,11 +839,13 @@ impl Task for NativeMemoArtifactBuildTask {
 
 pub(crate) fn rebuild_with_runtime(
     lifecycle: &Arc<crate::task_lifecycle::TaskLifecycle>,
+    index: Arc<crate::index_handle::IndexHandle>,
     runtime: Arc<MemoRuntime>,
     db_path: String,
     input_json: String,
 ) -> AsyncTask<crate::task_lifecycle::TrackedTask<NativeMemoArtifactBuildTask>> {
     AsyncTask::new(crate::task_lifecycle::TrackedTask::new(lifecycle, NativeMemoArtifactBuildTask {
+        index,
         runtime,
         db_path,
         input_json,
@@ -870,7 +875,12 @@ mod fact_dependency_tests {
             Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
         }).unwrap();
         let runtime = MemoRuntime::new();
-        let built = run_build(&runtime, &db, r#"{"modelSig":"test","effectiveConfig":{}}"#).unwrap();
+        let index = crate::VexusIndex::new(2, 16).unwrap();
+        let built = run_build(&index.index, &runtime, &db, r#"{"modelSig":"test","effectiveConfig":{}}"#).unwrap();
+        let repeated = run_build(&index.index, &runtime, &db, r#"{"modelSig":"test","effectiveConfig":{}}"#).unwrap();
+        assert_eq!(built.graph_generation,repeated.graph_generation);
+        assert_eq!(built.provenance_generation,repeated.provenance_generation);
+        assert_eq!(built.artifact_sig,repeated.artifact_sig);
         let config_hash = hash_text("{}", 32);
         let mut manifest = crate::knowledge_runtime::NativeMemoManifestLookupTask {
             db_path: db.clone(), model_sig: "test".into(), config_hash,

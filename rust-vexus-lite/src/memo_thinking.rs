@@ -477,7 +477,7 @@ mod tests {
                  VALUES('fixture','test','test','test','test','test','test','0','test','ready',0,0);
                  INSERT INTO kbm_artifact_dependencies
                  SELECT 'fixture',key,value FROM kbm_runtime_meta
-                 WHERE key IN ('memo_tag_facts','derived_pairwise','derived_intrinsic');"
+                 WHERE key IN ('memo_tag_facts','derived_geometry');"
             ).unwrap();
         }
         let input = serde_json::json!({

@@ -220,6 +220,32 @@
         "failClosed": true
       }
     },
+    "geometry": {
+      "local": {
+        "maxNeighbors": 48,
+        "minNeighbors": 3,
+        "maxBasis": 4,
+        "minGain": 0.015,
+        "positionDecay": 0.15,
+        "semanticGate": { "enabled": true, "peak": 0.65, "sigma": 0.25, "floor": 0.35, "hardFloor": -1 },
+        "anchorGain": { "base": 0.75, "scale": 1.25, "gamma": 1, "min": 0.5, "max": 2 }
+      },
+      "global": {
+        "candidatePool": 512,
+        "candidateMode": "star",
+        "priorMode": "support",
+        "starNeighbors": 48,
+        "starMix": 0.8,
+        "minSupport": 3,
+        "supportExponent": 0.65,
+        "residualExponent": 0.35,
+        "kMax": 32,
+        "kSem": 8,
+        "epsilon": 0.1,
+        "kneeDelta": 0,
+        "minGain": 0.02
+      }
+    },
     "intrinsicResidual": {
       "method": "anchored_gs",
       "maxNeighbors": 48,

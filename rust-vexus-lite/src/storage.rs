@@ -9,6 +9,8 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+pub(crate) const MEMO_ARTIFACT_DEPENDENCIES: &[&str] = &["memo_tag_facts", "derived_geometry"];
+
 const DEFAULT_READ_POOL_SIZE: usize = 4;
 const MIN_READ_POOL_SIZE: usize = 2;
 const MAX_READ_POOL_SIZE: usize = 8;
@@ -30,7 +32,7 @@ impl Default for StorageOptions {
             read_pool_size: DEFAULT_READ_POOL_SIZE,
             mmap_size: DEFAULT_MMAP_SIZE,
             busy_timeout_ms: BUSY_TIMEOUT_MS,
-            schema_version: 1,
+            schema_version: 2,
         }
     }
 }
@@ -1147,14 +1149,14 @@ mod snapshot_dependency_tests {
         ).unwrap();
         crate::schema::initialize_schema(&connection, 1).unwrap();
         let snapshot = DerivedDependencies::capture(
-            &connection, &["derived_pairwise", "derived_intrinsic", "derived_epa"],
+            &connection, MEMO_ARTIFACT_DEPENDENCIES,
         ).unwrap();
         connection.execute(
-            "INSERT INTO tag_pair_similarity VALUES (1,2,0.9,'test',0)", [],
+            "INSERT INTO tag_intrinsic_residuals(tag_id,residual_energy,neighbor_count) VALUES (1,1,3)", [],
         ).unwrap();
         assert_eq!(read_generation(&connection).unwrap(), 7);
         assert!(snapshot.ensure_current(&connection).unwrap_err().contains("DEPENDENCY_CONFLICT"));
-        let snapshot = DerivedDependencies::capture(&connection, &["derived_epa"]).unwrap();
+        let snapshot = DerivedDependencies::capture(&connection, &["derived_geometry"]).unwrap();
         connection.execute(
             "INSERT INTO kv_store(key,value) VALUES ('epa_basis_cache','{}')", [],
         ).unwrap();
