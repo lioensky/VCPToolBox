@@ -8,7 +8,7 @@
           <h3>共享 Memo 传播底座控制台</h3>
           <p>
             RiverMemo 复用有界传播、入流枢纽校正、软非回溯与归一化有限时域场。
-            此处调节共享底座，不提供旧 TagMemo / DTSC 读出；LightMemo 对照比较纯 KNN、RiverMemo 与可选 Rerank / JEV。
+            此处调节共享底座，不提供旧检索读出；LightMemo 对照比较纯 KNN、RiverMemo 与可选 Rerank / JEV。
           </p>
         </div>
       </div>
@@ -50,7 +50,7 @@
             <span class="material-symbols-outlined">block</span>
             <span>
               <strong>旧版本确定性拒绝</strong>
-              <small>旧 TagMemo 检索模式和 DTSC 读出已退休，不允许静默映射为其他引擎。</small>
+              <small>旧检索模式与旧读出已退休，不允许静默映射为其他引擎。</small>
             </span>
           </div>
 
@@ -68,7 +68,7 @@
         <header class="v9-card__header">
           <div>
             <span class="v9-card__kicker">Hub-aware Bounded Kernel</span>
-            <h4>V9.1 有界传播、枢纽校正与虫洞预算</h4>
+            <h4>RiverMemo 有界传播、枢纽校正与虫洞预算</h4>
           </div>
           <UiBadge variant="danger">高敏感</UiBadge>
         </header>
@@ -173,9 +173,9 @@
         <header class="v9-card__header">
           <div>
             <span class="v9-card__kicker">Path Dynamics</span>
-            <h4>V9.1 软非回溯与有限时域场</h4>
+            <h4>RiverMemo 软非回溯与有限时域场</h4>
           </div>
-          <UiBadge variant="warning">V9.1 查询动力学</UiBadge>
+          <UiBadge variant="warning">RiverMemo 查询动力学</UiBadge>
         </header>
 
         <label class="v9-field">
@@ -267,7 +267,7 @@
         <div class="v9-anchor">
           <header>
             <div>
-              <strong>V9.1 固定锚增益映射</strong>
+              <strong>RiverMemo 固定锚增益映射</strong>
               <small>原始 residual ratio 保持 [0,1]，工程增益使用固定函数映射。</small>
             </div>
             <code>clip(base + scale × r^γ)</code>

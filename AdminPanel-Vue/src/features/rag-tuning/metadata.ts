@@ -93,7 +93,7 @@ export const ORDERED_COOCCURRENCE_PANELS: readonly OrderedCooccurrencePanel[] = 
     id: "direction",
     title: "方向层：色",
     axis: "顺逆流阻尼",
-    summary: "控制叙事顺流与逆流回溯之间的能量差，避免 V7 的硬墙又保留方向偏置。",
+    summary: "控制叙事顺流与逆流回溯之间的能量差，避免硬性阻断，同时保留方向偏置。",
     icon: "swap_calls",
     keys: ["reverseGain", "minReverseGain", "maxReverseGain", "reverseAnchorBoost", "reverseAnchorMax"],
   },
@@ -109,7 +109,7 @@ export const ORDERED_COOCCURRENCE_PANELS: readonly OrderedCooccurrencePanel[] = 
     id: "guard",
     title: "工程守卫",
     axis: "叙事方向公理",
-    summary: "确保逆流永远不会突破顺流上限，是 V8.2 灰度调参的最后保险。",
+    summary: "确保逆流永远不会突破顺流上限，是 RiverMemo 灰度调参的最后保险。",
     icon: "security",
     keys: ["reverseInversionGuard"],
   },
@@ -275,7 +275,7 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
     },
     shotgunDecayFactor: {
       label: "霰弹历史衰减因子",
-      summary: "控制 Tagmemo V4 Shotgun Query 中历史语义分段召回结果的分数保留比例。",
+      summary: "控制 RiverMemo Shotgun Query 中历史语义分段召回结果的分数保留比例。",
       logic: "值越高，历史主题段对最终候选的影响越强；值越低，检索越偏向当前输入。0.85 表示历史分段按距离进行温和指数衰减。",
       range: "建议 0.60 ~ 0.95，默认 0.85",
       tone: "sensitive",
@@ -327,15 +327,15 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
   },
   KnowledgeBaseManager: {
     orderedCooccurrence: {
-      label: "有序双向势能流形 (V8.2)",
-      summary: "TagMemo V8.2 核心：把共现拓扑、叙事方向、语义距离三轴解耦——形(双向) × 色(顺逆阻尼) × 质(向量距离)。",
+      label: "有序双向势能流形 (RiverMemo)",
+      summary: "RiverMemo 核心：把共现拓扑、叙事方向、语义距离三轴解耦——形(双向) × 色(顺逆阻尼) × 质(向量距离)。",
       logic: "三层灰度叠加 (α 双向 → β 锚 boost → γ 语义增益)。每层都改完观察一周再叠下一层；共用矩阵重建锁，重建时自动串行。",
       range: "共 12 个子参数，优先关注 reverseGain、reverseAnchorBoost、semanticGainEnabled、reverseInversionGuard。",
       tone: "critical",
     },
     "orderedCooccurrence.forwardGain": {
       label: "顺流增益",
-      summary: "叙事顺向边 A→B 的基础权重倍率。1.0 表示与原 V7 保持一致。",
+      summary: "叙事顺向边 A→B 的基础权重倍率。1.0 表示基础权重不缩放。",
       logic: "几乎不需要调整。除非主路径明显偏弱才考虑提升到 1.1~1.2。",
       range: "建议 0.8 ~ 1.2 (默认 1.0)",
       tone: "stable",
@@ -343,7 +343,7 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
     "orderedCooccurrence.reverseGain": {
       label: "逆流基础增益",
       summary: "回溯方向 B→A 的基础权重倍率。0.42 是经过审计的初始档位。",
-      logic: "调高: 概念回溯通畅，但有同义词回卷风险；调低: 偏向 V7 单向行为，逆向联想被压制。",
+      logic: "调高: 概念回溯通畅，但有同义词回卷风险；调低: 更偏向单向传播，逆向联想被压制。",
       range: "建议 0.30 ~ 0.65 (默认 0.42)",
       tone: "critical",
     },
@@ -363,7 +363,7 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
     },
     "orderedCooccurrence.distanceDecay": {
       label: "序位距离衰减",
-      summary: "Tag 在同一篇日记里序位相邻强、远距离弱。0 表示关闭距离衰减 (V8.2-α 默认)。",
+      summary: "Tag 在同一篇日记里序位相邻强、远距离弱。0 表示关闭距离衰减。",
       logic: "灰度上线建议先关 (0)，验证一周后再开到 0.05~0.12。开启后长日记的首尾标签共现权重会被压低。",
       range: "建议 0 / 0.05 ~ 0.20 (默认 0)",
       tone: "sensitive",
@@ -413,13 +413,13 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
     "orderedCooccurrence.reverseInversionGuard": {
       label: "反转守卫上限",
       summary: "逆流权重相对顺流权重的最大占比。0.95 表示逆流永远不超过顺流 95%。",
-      logic: "保 V8.2 叙事方向公理不被锚 boost × 语义增益的乘积突破。极少需要调整。",
+      logic: "保 RiverMemo 叙事方向公理不被锚 boost × 语义增益的乘积突破。极少需要调整。",
       range: "建议 0.85 ~ 0.99 (默认 0.95)",
       tone: "critical",
     },
     spikeRouting: {
       label: "虫洞脉冲路由",
-      summary: "V7 的传播引擎，负责跳跃、衰减、扩散上限和新节点涌现。",
+      summary: "RiverMemo 的传播引擎，负责跳跃、衰减、扩散上限和新节点涌现。",
       logic: "这是最敏感的一组参数，建议一次只改一项并观察检索结果。",
       range: "共 8 个子参数，优先关注 tensionThreshold、baseMomentum 与两个 decay。",
       tone: "critical",
@@ -477,7 +477,7 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
     },
     activationMultiplier: {
       label: "金字塔激活倍率区间",
-      summary: "定义 TagMemo 激活系数的倍率区间，用于把金字塔特征映射到最终增强强度。",
+      summary: "定义 RiverMemo 激活系数的倍率区间，用于把金字塔特征映射到最终增强强度。",
       logic: "系统会根据覆盖率、相干性和噪音信号在两个边界之间插值；左侧是最低倍率，右侧是最高倍率。",
       range: "建议最小值 0.20 ~ 0.80；最大值 1.0 ~ 2.5",
       tone: "sensitive",
@@ -553,7 +553,7 @@ export interface RiverMemoSectionMeta {
 export const RIVERMEMO_SECTIONS: readonly RiverMemoSectionMeta[] = [
   {
     id: "source",
-    title: "V9 全上下文源观测",
+    title: "RiverMemo 全上下文源观测",
     summary: "继承已验证的 EPA、Residual Pyramid 与 Spike 降噪链。仅展示原生查询实际消费的参数。",
     icon: "filter_alt",
     paths: ["sourceObservation"],
@@ -561,7 +561,7 @@ export const RIVERMEMO_SECTIONS: readonly RiverMemoSectionMeta[] = [
   {
     id: "field",
     title: "双尺度连续场",
-    summary: "以同一 V9 源场和守恒传输算子求解 Local / Transfer resolvent 场及有效支持域。",
+    summary: "以同一 RiverMemo 源场和守恒传输算子求解 Local / Transfer resolvent 场及有效支持域。",
     icon: "waves",
     paths: ["localField", "transferField", "effectiveSupport"],
   },
@@ -608,19 +608,19 @@ const RIVER_CRITICAL: ParamTone = "critical";
 
 export const RIVERMEMO_PARAM_METADATA: Record<string, ParamMeta> = {
   sourceObservation: {
-    label: "V9 源观测",
-    summary: "整个上下文先经过 V9 EPA、残差金字塔与 Spike 传播，形成降噪源场和查询河网。",
+    label: "RiverMemo 源观测",
+    summary: "整个上下文先经过 RiverMemo EPA、残差金字塔与 Spike 传播，形成降噪源场和查询河网。",
     tone: RIVER_CRITICAL,
   },
   "sourceObservation.baseTagBoost": {
     label: "基础 Tag 增强",
-    summary: "传给 V9 降噪链的基础标签增强系数。",
+    summary: "传给 RiverMemo 降噪链的基础标签增强系数。",
     range: "建议保持 0.60",
     tone: RIVER_CRITICAL,
   },
   "sourceObservation.coreBoostFactor": {
     label: "Core Tag 增强",
-    summary: "显式核心标签在 V9 源观测中的增强倍率。",
+    summary: "显式核心标签在 RiverMemo 源观测中的增强倍率。",
     range: "建议保持 1.33",
     tone: RIVER_CRITICAL,
   },
@@ -636,7 +636,7 @@ export const RIVERMEMO_PARAM_METADATA: Record<string, ParamMeta> = {
   },
   "localField.alpha": {
     label: "局部场 α",
-    summary: "控制局部场对传播项的依赖程度；越小越贴近 V9 源。",
+    summary: "控制局部场对传播项的依赖程度；越小越贴近 RiverMemo 源。",
     range: "建议保持 0.15",
     tone: RIVER_CRITICAL,
   },
@@ -693,7 +693,7 @@ export const RIVERMEMO_PARAM_METADATA: Record<string, ParamMeta> = {
     tone: RIVER_SENSITIVE,
   },
   "candidateSuperset.queryK": { label: "原查询 K", summary: "原始上下文向量召回数量。", range: "20 ~ 300；默认 100", tone: RIVER_SENSITIVE },
-  "candidateSuperset.denoisedK": { label: "V9 降噪 K", summary: "V9 降噪向量召回数量。", range: "20 ~ 300；默认 100", tone: RIVER_SENSITIVE },
+  "candidateSuperset.denoisedK": { label: "RiverMemo 降噪 K", summary: "RiverMemo 降噪向量召回数量。", range: "20 ~ 300；默认 100", tone: RIVER_SENSITIVE },
   "candidateSuperset.localFieldK": { label: "局部场 K", summary: "局部场投影向量召回数量。", range: "20 ~ 300；默认 100", tone: RIVER_SENSITIVE },
   "candidateSuperset.transferFieldK": { label: "迁移场 K", summary: "迁移场投影向量召回数量。", range: "20 ~ 300；默认 100", tone: RIVER_SENSITIVE },
   "candidateSuperset.bm25K": { label: "BM25 K", summary: "词法候选来源的召回数量。", range: "0 ~ 200；默认 50", tone: RIVER_STABLE },
@@ -742,7 +742,7 @@ export const RIVERMEMO_PARAM_METADATA: Record<string, ParamMeta> = {
   "directAnchor.fallbackReliabilityCap": { label: "来源回退可靠度上限", summary: "无法确认 hop-0 provenance 时，直接锚可靠度的硬上限。", range: "0 ~ 1；默认 0.50", tone: RIVER_CRITICAL },
   topology: {
     label: "Topology V3 评分泛函",
-    summary: "V9 双场基线、条件拓扑创新、Ω 门控与直接锚创新的最终闭合。",
+    summary: "RiverMemo 双场基线、条件拓扑创新、Ω 门控与直接锚创新的最终闭合。",
     tone: RIVER_CRITICAL,
   },
   "topology.topologyBonusCap": { label: "基础拓扑奖励上限", summary: "基础场分内部路径拓扑项的硬上限。", range: "0 ~ 0.2；默认 0.08", tone: RIVER_CRITICAL },
@@ -846,7 +846,7 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
     return { min: 1, max: 20, step: 1 };
   }
 
-  // 🆕 V8.2: 有序双向势能流形参数
+  // 🆕 RiverMemo: 有序双向势能流形参数
   if (leafKey === 'forwardgain' || leafKey === 'reversegain'
       || leafKey === 'minreversegain' || leafKey === 'maxreversegain') {
     return { min: 0, max: 1.5, step: 0.01 };

@@ -131,7 +131,7 @@
               <span class="rag-console__label">语义沙盘</span>
               <div class="semantic-sim-card">
                 <div class="semantic-sim-card__copy">
-                  <strong>浪潮语义地形模拟器 · V9.1</strong>
+                  <strong>浪潮语义地形模拟器 · RiverMemo</strong>
                   <p>预览有界传播核、枢纽校正、软非回溯、预算内虫洞与有限时域能量场。</p>
                 </div>
                 <UiButton @click="openSemanticSimulation">
@@ -834,10 +834,10 @@
         <section class="semantic-sim-modal__panel">
           <header class="semantic-sim-modal__header">
             <div>
-              <span class="semantic-sim-modal__eyebrow">TagMemo V9.1 Terrain Sandbox</span>
-              <h3 id="semantic-sim-modal-title">浪潮语义地形沙盘 · V9.1</h3>
+              <span class="semantic-sim-modal__eyebrow">RiverMemo Terrain Sandbox</span>
+              <h3 id="semantic-sim-modal-title">浪潮语义地形沙盘 · RiverMemo</h3>
               <p>
-                沙盘会接收尚未保存的有序事实矩阵、V9.1 有界核与软非回溯参数，模拟固定出流预算、
+                沙盘会接收尚未保存的有序事实矩阵、RiverMemo 有界核与软非回溯参数，模拟固定出流预算、
                 入流枢纽校正、预算内虫洞和归一化有限时域场。它是前端教学近似，不读取真实数据库资产。
               </p>
             </div>
@@ -1600,7 +1600,7 @@ function handleSemanticSimulationMessage(event: MessageEvent): void {
     updateSimulationField(subKey, rawValue);
   });
 
-  statusMessage.value = "已从 V9.1 浪潮语义沙盘同步未保存参数。";
+  statusMessage.value = "已从 RiverMemo 浪潮语义沙盘同步未保存参数。";
   statusType.value = "info";
 }
 

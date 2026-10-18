@@ -7,7 +7,7 @@
           <span class="river-console__eyebrow">RiverMemo · Topology V3.1</span>
           <h3>RiverMemo V3 统一信息场控制台</h3>
           <p>
-            继承 V9 的全上下文降噪与有界传播，以双尺度场、查询河网相对拓扑、
+            采用 RiverMemo 的全上下文降噪与有界传播，以双尺度场、查询河网相对拓扑、
             Ω 可观测泛函和 hop-0 直接锚完成统一重排。
           </p>
         </div>
