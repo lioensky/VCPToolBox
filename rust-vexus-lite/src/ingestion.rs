@@ -24,6 +24,45 @@ struct IngestionFileProbe {
     complete_tags: bool,
 }
 
+pub struct FileMetadataRefreshTask {
+    pub(crate) db_path: String,
+    pub(crate) request_json: String,
+}
+
+impl Task for FileMetadataRefreshTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<String> {
+        #[derive(Deserialize)]
+        struct Request { path: String, checksum: String, version: u64, mtime: i64, size: i64 }
+        let request: Request = serde_json::from_str(&self.request_json)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let receipt = with_registered_write(&self.db_path, move |tx| {
+            let changed = tx.execute(
+                "UPDATE files SET mtime=?1,size=?2
+                 WHERE path=?3 AND checksum=?4 AND EXISTS(
+                     SELECT 1 FROM kbm_file_versions WHERE path=?3 AND version=?5 AND exists_flag=1)",
+                params![request.mtime, request.size, request.path, request.checksum, request.version as i64],
+            ).map_err(|error| error.to_string())?;
+            if changed != 1 {
+                return Err("KNOWLEDGE_STORE_FILE_VERSION_CONFLICT".to_string());
+            }
+            tx.execute(
+                "UPDATE kbm_file_versions SET mtime=?1,size=?2 WHERE path=?3 AND version=?4",
+                params![request.mtime, request.size, request.path, request.version as i64],
+            ).map_err(|error| error.to_string())?;
+            Ok(WriteReceipt {
+                operation: "refresh_file_metadata".to_string(),
+                database_generation: 0, facts_changed: false,
+            })
+        }).map_err(Error::from_reason)?;
+        Ok(serde_json::json!({"updated": true, "databaseGeneration": receipt.database_generation}).to_string())
+    }
+
+    fn resolve(&mut self, _env: Env, output: String) -> Result<String> { Ok(output) }
+}
+
 pub struct IngestionFileProbeTask {
     pub(crate) db_path: String,
     pub(crate) paths: Vec<String>,
@@ -493,6 +532,9 @@ pub struct IngestionCommitTask {
     pub(crate) tag_vectors: Vec<f32>,
     pub(crate) diary_indices: HashMap<String, (Arc<RwLock<Index>>, u32)>,
     pub(crate) global_tag_index: Arc<RwLock<Index>>,
+    pub(crate) global_tag_content_revision: Arc<std::sync::atomic::AtomicU64>,
+    pub(crate) diary_revisions: HashMap<String, Arc<std::sync::atomic::AtomicU64>>,
+    pub(crate) memo_runtime: Arc<crate::rivermemo_topology_v3::MemoRuntime>,
 }
 
 impl Task for IngestionCommitTask {
@@ -582,6 +624,17 @@ impl Task for IngestionCommitTask {
             })
         };
 
+        if receipt.facts_changed {
+            for diary in &details.affected_diaries {
+                if let Some(revision) = self.diary_revisions.get(diary) {
+                    revision.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                }
+            }
+            if !details.new_tag_ids.is_empty() {
+                self.global_tag_content_revision.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                if self.memo_runtime.clear().is_err() { index_ready = false; }
+            }
+        }
         let index_applied = index_ready;
         for scope in affected_scopes.iter().filter(|_| receipt.facts_changed) {
             if let Err(error) = set_index_state(
@@ -1502,6 +1555,7 @@ pub struct DeleteCommitTask {
     pub(crate) file_paths: Vec<String>,
     pub(crate) ttl_ms: i64,
     pub(crate) diary_indices: HashMap<String, Arc<RwLock<Index>>>,
+    pub(crate) diary_revisions: HashMap<String, Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl Task for DeleteCommitTask {
@@ -1722,6 +1776,11 @@ impl Task for DeleteCommitTask {
 
         let index_applied =
             apply_deleted_index_deltas(&diary_index_deltas, &self.diary_indices);
+        for diary in diary_index_deltas.keys() {
+            if let Some(revision) = self.diary_revisions.get(diary) {
+                revision.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
         let mut index_ready = index_applied;
 
         for diary_name in diary_index_deltas.keys() {
@@ -1830,6 +1889,7 @@ impl Task for OrphanCleanupTask {
         }
 
         let missing_files_for_write = missing_files.clone();
+        let invalid_diaries = affected_diaries.clone();
         let affected_diaries_for_write = Arc::new(Mutex::new(None));
         let affected_diaries_for_write_ref = Arc::clone(&affected_diaries_for_write);
         let _receipt = with_registered_write(&self.db_path, move |tx| {
@@ -1956,6 +2016,25 @@ impl Task for OrphanCleanupTask {
             )
             .map_err(|error| format!("Delete orphan chunks failed: {}", error))?;
 
+            // 事实删除和作用域失效必须属于同一事务。无归属 Chunk 无法确定
+            // 曾进入哪个常驻索引，因此保守失效所有已登记日记作用域。
+            for diary in &invalid_diaries {
+                tx.execute(
+                    "INSERT INTO kbm_index_states(scope,state,facts_generation,applied_generation,updated_at)
+                     VALUES (?1,'invalid',0,0,?2)
+                     ON CONFLICT(scope) DO UPDATE SET state='invalid',
+                     facts_generation=0, updated_at=excluded.updated_at",
+                    params![format!("diary:{}", diary), current_time_ms()],
+                ).map_err(|error| format!("Invalidate orphan diary index failed: {}", error))?;
+            }
+            if orphan_chunks > 0 {
+                tx.execute(
+                    "UPDATE kbm_index_states SET state='invalid', facts_generation=0,
+                     updated_at=?1 WHERE scope LIKE 'diary:%'",
+                    [current_time_ms()],
+                ).map_err(|error| format!("Invalidate orphan chunk indices failed: {}", error))?;
+            }
+
             affected_diaries_for_write_ref
                 .lock()
                 .map_err(|_| "Orphan cleanup details lock poisoned".to_string())?
@@ -2044,6 +2123,7 @@ mod receipt_protocol_tests {
             file_paths: vec!["never-indexed.txt".to_string()],
             ttl_ms: 1000,
             diary_indices: HashMap::new(),
+            diary_revisions: HashMap::new(),
         };
         task.compute().unwrap();
         let version: i64 = storage.read(|connection| {
@@ -2106,5 +2186,43 @@ mod receipt_protocol_tests {
             ).unwrap();
             assert_eq!(count, 1);
         }
+    }
+}
+
+
+#[cfg(test)]
+mod audit_orphan_tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_invalidates_ready_diary_and_advances_pending_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-orphan-audit-{}-{}", std::process::id(), current_time_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute_batch(
+                "INSERT INTO files(path,diary_name,checksum,mtime,size)
+                 VALUES ('missing.txt','test','hash',0,0);
+                 INSERT INTO chunks(file_id,chunk_index,content) VALUES (1,0,'gone');
+                 INSERT INTO kbm_index_states VALUES ('diary:test','ready',1,1,NULL,0);"
+            ).map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        OrphanCleanupTask { db_path: db.clone(), root_path: root.to_string_lossy().into_owned() }
+            .compute().unwrap();
+        let state: (String, i64, i64) = storage.read(|connection| {
+            connection.query_row(
+                "SELECT state,facts_generation,applied_generation FROM kbm_index_states WHERE scope='diary:test'",
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).map_err(|error| error.to_string())
+        }).unwrap();
+        assert_eq!(state, ("invalid".into(), 2, 1));
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -695,6 +695,8 @@ impl Task for IndexCheckpointTask {
 }
 
 pub struct IndexRestoreTask {
+    pub(crate) content_revision: Arc<AtomicU64>,
+    pub(crate) memo_runtime: Option<Arc<crate::rivermemo_topology_v3::MemoRuntime>>,
     pub(crate) db_path: String,
     pub(crate) index_path: String,
     pub(crate) index: Arc<RwLock<Index>>,
@@ -779,7 +781,7 @@ impl Task for IndexRestoreTask {
             String,
             bool,
             std::collections::HashMap<i64, Option<String>>,
-            Vec<(i64, Vec<u8>)>,
+            Vec<(i64, Vec<u8>, Option<String>)>,
         ) = with_registered_read_transaction(&db_path, move |connection| {
             match scope {
                 IndexScope::Diary => {
@@ -854,7 +856,7 @@ impl Task for IndexRestoreTask {
                         .map_err(|error| format!("Prepare diary restore vectors failed: {}", error))?;
                     let rows = statement
                         .query_map(rusqlite::params![diary], |row| {
-                            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?, None))
                         })
                         .map_err(|error| format!("Query diary restore vectors failed: {}", error))?;
                     let current = rows
@@ -906,7 +908,7 @@ impl Task for IndexRestoreTask {
                             if baseline_compatible && generation > 0 {
                                 let mut statement = connection
                                     .prepare(
-                                        "SELECT tag_id FROM tag_index_baseline_entries
+                                        "SELECT tag_id, vector_version FROM tag_index_baseline_entries
                                          WHERE generation = ?1",
                                     )
                                     .map_err(|error| {
@@ -914,27 +916,28 @@ impl Task for IndexRestoreTask {
                                     })?;
                                 let rows = statement
                                     .query_map(rusqlite::params![generation], |row| {
-                                        row.get::<_, i64>(0)
+                                        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
                                     })
                                     .map_err(|error| {
                                         format!("Query Tag restore baseline entries failed: {}", error)
                                     })?;
                                 for row in rows {
-                                    let tag_id = row.map_err(|error| {
+                                    let (tag_id, version) = row.map_err(|error| {
                                         format!("Decode Tag restore baseline entry failed: {}", error)
                                     })?;
-                                    baseline_ids.insert(tag_id, None);
+                                    baseline_ids.insert(tag_id, Some(version.to_string()));
                                 }
                             }
                         }
                     }
 
                     let mut statement = connection
-                        .prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL ORDER BY id")
+                        .prepare("SELECT id, vector, vector_version FROM tags WHERE vector IS NOT NULL ORDER BY id")
                         .map_err(|error| format!("Prepare Tag restore vectors failed: {}", error))?;
                     let rows = statement
                         .query_map([], |row| {
-                            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?,
+                                Some(row.get::<_, i64>(2)?.to_string())))
                         })
                         .map_err(|error| format!("Query Tag restore vectors failed: {}", error))?;
                     let current = rows
@@ -974,7 +977,7 @@ impl Task for IndexRestoreTask {
             }
         };
 
-        let current_ids: HashSet<i64> = current_rows.iter().map(|(id, _)| *id).collect();
+        let current_ids: HashSet<i64> = current_rows.iter().map(|(id, _, _)| *id).collect();
         if baseline_compatible && loaded_persisted_index {
             for id in baseline_ids.keys().filter(|id| !current_ids.contains(id)) {
                 let _ = target.remove(*id as u64);
@@ -983,14 +986,17 @@ impl Task for IndexRestoreTask {
         }
 
         let mut vector_map = HashMap::with_capacity(current_rows.len());
-        for (id, bytes) in current_rows {
-            let signature = vector_signature(&bytes);
+        for (id, bytes, version) in current_rows {
+            // Tag 使用单调向量版本，不对高维 BLOB 重算哈希；Chunk 保持内容签名。
+            let signature = version.unwrap_or_else(|| vector_signature(&bytes));
             let changed = baseline_ids
                 .get(&id)
                 .and_then(Option::as_deref)
                 .map(|value| value != signature)
                 .unwrap_or(true);
-            vector_map.insert(id, (decode_restore_vector(&bytes, dimension)?, changed));
+            if rebuilt || !baseline_compatible || changed {
+                vector_map.insert(id, (decode_restore_vector(&bytes, dimension)?, changed));
+            }
         }
 
         for (id, (vector, changed)) in vector_map {
@@ -1006,7 +1012,7 @@ impl Task for IndexRestoreTask {
                 target.add(id as u64, &vector).map_err(|error| {
                     Error::from_reason(format!("Apply restore vector {} failed: {:?}", id, error))
                 })?;
-                replayed = replayed || baseline_compatible;
+                replayed = replayed || (baseline_compatible && loaded_persisted_index);
             }
         }
 
@@ -1016,7 +1022,11 @@ impl Task for IndexRestoreTask {
             .write()
             .map_err(|error| Error::from_reason(format!("Publish restored index failed: {}", error)))?;
         *active = target;
+        self.content_revision.fetch_add(1, Ordering::AcqRel);
         drop(active);
+        if let Some(runtime) = &self.memo_runtime {
+            runtime.clear().map_err(Error::from_reason)?;
+        }
 
         let state_scope = match self.scope {
             IndexScope::GlobalTags => "global_tags".to_string(),
@@ -1062,4 +1072,63 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+
+    #[test]
+    fn tag_restore_replays_versions_and_reports_missing_baseline_as_rebuild() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-baseline-audit-{}-{}", std::process::id(), now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            let bytes: Vec<u8> = [1.0_f32, 0.0].iter()
+                .flat_map(|value| value.to_ne_bytes()).collect();
+            tx.execute("INSERT INTO tags(name,vector) VALUES ('tag',?1)", [bytes])
+                .map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let index = crate::VexusIndex::new(2, 16).unwrap();
+        let baseline = root.join("tags_a.usearch").to_string_lossy().into_owned();
+        let mut restore = IndexRestoreTask {
+            db_path: db.clone(), index_path: baseline.clone(), index: index.index.clone(),
+            content_revision: index.content_revision.clone(), memo_runtime: Some(index.memo_runtime.clone()),
+            scope: IndexScope::GlobalTags, diary_name: None, dimension: 2,
+            model_sig: "test".into(), capacity: 16,
+        };
+        restore.compute().unwrap();
+        IndexCheckpointTask {
+            db_path: db.clone(), index_path: baseline.clone(), index: index.index.clone(),
+            content_revision: index.content_revision.clone(), scope: IndexScope::GlobalTags,
+            diary_name: None, dimension: 2, model_sig: "test".into(), threshold: 0.05, force: true,
+        }.compute().unwrap();
+        let same: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
+        assert_eq!(same["replayed"], false);
+        assert_eq!(same["rebuilt"], false);
+        storage.submit_write(|tx| {
+            let bytes: Vec<u8> = [0.0_f32, 1.0].iter()
+                .flat_map(|value| value.to_ne_bytes()).collect();
+            tx.execute("UPDATE tags SET vector=?1 WHERE id=1", [bytes])
+                .map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "update".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let changed: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
+        assert_eq!(changed["replayed"], true);
+        let mut vector = [0.0_f32; 2];
+        index.index.read().unwrap().get(1, &mut vector).unwrap();
+        assert_eq!(vector, [0.0, 1.0]);
+        std::fs::remove_file(baseline).unwrap();
+        let rebuilt: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
+        assert_eq!(rebuilt["rebuilt"], true);
+        assert_eq!(rebuilt["replayed"], false);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

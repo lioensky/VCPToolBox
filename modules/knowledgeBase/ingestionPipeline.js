@@ -103,7 +103,7 @@ async _flushBatch() {
             modelSig: this.config.modelSig
         };
         const batchPathGenerations = new Map(batchFiles.map(filePath => [
-            filePath, this.watcherPathGenerations.get(path.resolve(filePath)) || 0
+            path.resolve(filePath), this.watcherPathGenerations.get(path.resolve(filePath)) || 0
         ]));
         if (this.batchTimer) {
             clearTimeout(this.batchTimer);
@@ -168,6 +168,13 @@ async _flushBatch() {
                         && row.completeTags === true
                         && row.tagCount === row.validTagVectorCount
                     ) {
+                        await this.nativeKnowledgeRuntime.refreshFileMetadata(
+                            this.dbPath,
+                            JSON.stringify({
+                                path: relPath, checksum, version: row.version,
+                                mtime: Math.floor(stats.mtimeMs), size: stats.size
+                            })
+                        );
                         return;
                     }
 
@@ -186,7 +193,8 @@ async _flushBatch() {
                 } catch (e) {
                     // 元数据快路径也可能执行 UPDATE。忙锁属于数据库级瞬态失败，
                     // 必须交给批次错误边界统一保留队列，不能伪装成单文件读取失败后出队。
-                    if (this._isSqliteBusyError(e) || this._isSqliteCorruptionError(e)) throw e;
+                    if (this._isSqliteBusyError(e) || this._isSqliteCorruptionError(e)
+                        || /KNOWLEDGE_STORE_/.test(String(e.message))) throw e;
                     if (e.code !== 'ENOENT') console.warn(`Read error ${filePath}:`, e.message);
                 }
             }));
@@ -375,6 +383,24 @@ async _flushBatch() {
 
             for (const [diaryName, docs] of docsByDiary) {
                 for (const doc of docs) {
+                    const absolute = path.resolve(this.config.rootPath, doc.relPath);
+                    try {
+                        const current = await fs.stat(absolute);
+                        if (current.size !== doc.size || current.mtimeMs !== doc.mtime
+                            || (this.watcherPathGenerations.get(absolute) || 0)
+                                !== (batchPathGenerations.get(absolute) || 0)) {
+                            unstableFiles.add(absolute);
+                            retryDelayMs = Math.max(1000, this.config.sqliteBusyRetryDelayMs);
+                            continue;
+                        }
+                    } catch (error) {
+                        // 单文件消失或暂时无法读取不应丢弃其他文件已完成的向量。
+                        unstableFiles.add(absolute);
+                        retryDelayMs = Math.max(1000, this.config.sqliteBusyRetryDelayMs);
+                        if (error.code === 'ENOENT') this._queueDelete(absolute);
+                        else console.warn(`[KnowledgeBase] Source verification deferred: ${absolute}`, error);
+                        continue;
+                    }
                     const chunkStart = planChunks.length;
                     const tagStart = planTags.length;
 
@@ -432,14 +458,18 @@ async _flushBatch() {
                 || this.config.modelSig !== batchIdentity.modelSig) {
                 throw new Error('KNOWLEDGE_STORE_MODEL_CHANGED_DURING_EMBEDDING');
             }
-            for (const file of planFiles) {
-                const absolute = path.resolve(this.config.rootPath, file.path);
-                const current = await fs.stat(absolute);
-                if (current.size !== file.size || Math.floor(current.mtimeMs) !== file.mtime
-                    || (this.watcherPathGenerations.get(absolute) || 0)
-                        !== (batchPathGenerations.get(absolute) || 0)) {
-                    throw new Error('KNOWLEDGE_STORE_SOURCE_SNAPSHOT_CHANGED');
+            if (planFiles.length === 0) return;
+            // 过滤文件后压紧 Tag 槽位；不能提交被排除文件独有的 Tag 或尾部向量。
+            const retainedTagVectors = [];
+            const retainedTagSlots = new Map();
+            for (const tag of planTags) {
+                if (tag.vectorSlot === null) continue;
+                const oldSlot = tag.vectorSlot;
+                if (!retainedTagSlots.has(oldSlot)) {
+                    retainedTagSlots.set(oldSlot, retainedTagVectors.length);
+                    retainedTagVectors.push(successfulTagVectors[oldSlot]);
                 }
+                tag.vectorSlot = retainedTagSlots.get(oldSlot);
             }
             const commitPlan = {
                 ...batchIdentity,
@@ -449,9 +479,9 @@ async _flushBatch() {
             };
 
             const tagVectorValues = new Float32Array(
-                successfulTagVectors.length * this.config.dimension
+                retainedTagVectors.length * this.config.dimension
             );
-            successfulTagVectors.forEach((vector, index) => {
+            retainedTagVectors.forEach((vector, index) => {
                 tagVectorValues.set(
                     vector,
                     index * this.config.dimension
@@ -493,9 +523,9 @@ async _flushBatch() {
 
             // 5. ✅ 成功处理后，移除文件并清空重试计数
             batchFiles.forEach(f => {
-                if (unstableFiles.has(f)
+                if (unstableFiles.has(f) || unstableFiles.has(path.resolve(f))
                     || (this.watcherPathGenerations.get(path.resolve(f)) || 0)
-                        !== (batchPathGenerations.get(f) || 0)) return;
+                        !== (batchPathGenerations.get(path.resolve(f)) || 0)) return;
                 const relativePath = path.relative(this.config.rootPath, f);
                 if (incompleteFiles.has(relativePath)) {
                     console.warn(

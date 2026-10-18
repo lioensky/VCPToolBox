@@ -320,6 +320,16 @@ impl Task for NativeMultiIndexAnnTask {
     fn compute(&mut self) -> Result<Self::Output> {
         let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
             .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
+        self.compute_under_publication_gate()
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+impl NativeMultiIndexAnnTask {
+    fn compute_under_publication_gate(&mut self) -> Result<String> {
         let total_started = std::time::Instant::now();
         if let Some(db_path) = &self.db_path {
             for snapshot in &self.snapshots {
@@ -753,9 +763,6 @@ impl Task for NativeMultiIndexAnnTask {
         })
     }
 
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
-    }
 }
 
 fn recover_diary_snapshot(
@@ -770,7 +777,7 @@ fn recover_diary_snapshot(
 }
 
 // Caller holds the publication gate through recovery and subsequent query.
-fn recover_index_snapshot(
+pub(crate) fn recover_index_snapshot(
     db_path: &str,
     scope: String,
     diary_name: Option<&str>,
@@ -852,7 +859,7 @@ fn recover_index_snapshot(
     Ok(())
 }
 
-fn ensure_index_scopes_ready(db_path: &str, scopes: &[String]) -> std::result::Result<(), String> {
+pub(crate) fn ensure_index_scopes_ready(db_path: &str, scopes: &[String]) -> std::result::Result<(), String> {
     if scopes.is_empty() {
         return Ok(());
     }
@@ -2091,11 +2098,13 @@ impl Task for NativeRiverQueryTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
+            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
         let total_started = std::time::Instant::now();
 
         // 复用已验证的原生 ANN/合并/语义去重实现。此处只在 Rust 内解析其
         // 小型 ID/分数结果，不发生 N-API resolve，也不携带向量跨边界。
-        let ann_payload = self.ann_task.compute()?;
+        let ann_payload = self.ann_task.compute_under_publication_gate()?;
         let ann_output: serde_json::Value =
             serde_json::from_str(&ann_payload).map_err(|error| {
                 Error::from_reason(format!(
@@ -2268,7 +2277,7 @@ impl NativeKnowledgeRuntime {
             accepting_queries: AtomicBool::new(true),
             storage: Mutex::new(None),
             watcher: Mutex::new(None),
-            tasks: Arc::new(TaskLifecycle::default()),
+            tasks: tag_index.tasks.clone(),
         })
     }
 
@@ -2529,6 +2538,16 @@ impl NativeKnowledgeRuntime {
         Ok(self.tracked_task(FileIdsByDiariesTask { db_path, names }))
     }
 
+    #[napi]
+    pub fn refresh_file_metadata(
+        &self, db_path: String, request_json: String,
+    ) -> Result<AsyncTask<TrackedTask<crate::ingestion::FileMetadataRefreshTask>>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason("KNOWLEDGE_STORE_CLOSED"));
+        }
+        Ok(self.tracked_task(crate::ingestion::FileMetadataRefreshTask { db_path, request_json }))
+    }
+
     /// 在 Rust Read Pool 后台线程批量探测文件事实状态。
     ///
     /// 该接口只返回文件元数据、Chunk 数量和向量完整性摘要，不跨越
@@ -2783,6 +2802,11 @@ impl NativeKnowledgeRuntime {
             tag_vectors: tag_vectors.to_vec(),
             diary_indices,
             global_tag_index: self.global_tag_index.clone(),
+            global_tag_content_revision: self.global_tag_content_revision.clone(),
+            memo_runtime: self.memo_runtime.clone(),
+            diary_revisions: self.diaries.read()
+                .map_err(|_| Error::from_reason("Diary registry lock poisoned"))?
+                .iter().map(|(name, item)| (name.clone(), item.content_revision.clone())).collect(),
         }))
     }
 
@@ -2837,6 +2861,9 @@ impl NativeKnowledgeRuntime {
             file_paths: paths,
             ttl_ms,
             diary_indices,
+            diary_revisions: self.diaries.read()
+                .map_err(|_| Error::from_reason("Diary registry lock poisoned"))?
+                .iter().map(|(name, item)| (name.clone(), item.content_revision.clone())).collect(),
         }))
     }
 
@@ -3296,6 +3323,8 @@ impl NativeKnowledgeRuntime {
             db_path,
             index_path,
             index: diary_index.index.clone(),
+            content_revision: diary_index.content_revision.clone(),
+            memo_runtime: None,
             scope: IndexScope::Diary,
             diary_name: Some(diary_name),
             dimension: self.dimension,
@@ -3328,6 +3357,8 @@ impl NativeKnowledgeRuntime {
             db_path,
             index_path,
             index: self.global_tag_index.clone(),
+            content_revision: self.global_tag_content_revision.clone(),
+            memo_runtime: Some(self.memo_runtime.clone()),
             scope: IndexScope::GlobalTags,
             diary_name: None,
             dimension: self.dimension,
@@ -3429,7 +3460,7 @@ impl NativeKnowledgeRuntime {
     pub fn register_diary_index(
         &self,
         diary_name: String,
-        diary_index: ClassInstance<VexusIndex>,
+        mut diary_index: ClassInstance<VexusIndex>,
     ) -> Result<RegisteredDiaryIndexState> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
@@ -3444,6 +3475,8 @@ impl NativeKnowledgeRuntime {
             )));
         }
 
+        diary_index.tasks.wait_idle();
+        diary_index.tasks = self.tasks.clone();
         let generation = self.registry_generation.fetch_add(1, Ordering::AcqRel) + 1;
         let registered = RegisteredDiaryIndex {
             index: diary_index.index.clone(),
@@ -4109,7 +4142,7 @@ impl NativeKnowledgeRuntime {
         if let Err(error) = self.stop_watch() {
             errors.push(format!("watcher: {}", error));
         }
-        self.tasks.wait_idle();
+        self.tasks.close_and_wait();
         match self.diaries.write() {
             Ok(mut diaries) => diaries.clear(),
             Err(poisoned) => {

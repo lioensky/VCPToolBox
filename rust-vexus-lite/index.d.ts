@@ -235,6 +235,7 @@ export declare class NativeKnowledgeRuntime {
   getDiaryChunkCount(dbPath: string, diaryName: string): Promise<unknown>
   /** 在 Rust Read Pool 后台线程按日记本名称解析文件 ID。 */
   getFileIdsByDiaries(dbPath: string, diaryNames: Array<string>): Promise<unknown>
+  refreshFileMetadata(dbPath: string, requestJson: string): Promise<unknown>
   /**
    * 在 Rust Read Pool 后台线程批量探测文件事实状态。
    *

@@ -3480,8 +3480,11 @@ candidates = await this.deduplicateResults(
      * 🛡️ 启动全量扫描补洞：判断一个文件在 SQLite 中是否已有完整可用的 chunk 向量。
      * 旧逻辑只看 mtime/size，若上次 API 失败但 files 记录已写入，会在开机全扫时被误判为“无需处理”。
      */
-    _hasCompleteStoredVectorsForFile(...args) {
-        return this.ingestionPipeline._hasCompleteStoredVectorsForFile(...args);
+    async _hasCompleteStoredVectorsForFile(filePath) {
+        const relativePath = path.isAbsolute(String(filePath))
+            ? path.relative(this.config.rootPath, filePath) : String(filePath);
+        const [row] = await this.probeIngestionFiles([relativePath]);
+        return row?.completeVectors === true;
     }
 
     /**
@@ -3560,23 +3563,10 @@ candidates = await this.deduplicateResults(
         for (const diaryName of allDiaries) {
             try {
                 const idx = await this._getOrLoadDiaryIndex(diaryName);
-                if (!idx || !idx.stats) continue;
-
-                const stats = idx.stats();
-                if (stats.totalVectors === 0) continue;
-
-                const dbCount = await this.getDiaryChunkCount(diaryName);
-
-                // 容差范围：如果索引比 DB 多出太多（幽灵），或者少太多（由于崩溃丢失），触发异步补齐/清理。
-                const diff = Math.abs(stats.totalVectors - dbCount);
-                if (diff > 10 && diff / (dbCount || 1) > 0.05) {
-                    console.warn(
-                        `[KnowledgeBase] ⚠️ Index/DB mismatch for "${diaryName}" ` +
-                        `(Index: ${stats.totalVectors}, DB: ${dbCount}). Rebuilding...`
-                    );
-                    await this._recoverIndexFromDB(idx, 'chunks', diaryName);
-                    this._saveIndexToDisk(diaryName);
-                }
+                if (!idx) continue;
+                // 兼容维护入口直接交由 Rust 执行权威恢复和状态发布，
+                // 不在主线程等待索引锁，也不依赖向量数量差猜测一致性。
+                await this.indexRepository.restoreDiaryIndex(diaryName, idx);
             } catch (e) {
                 console.warn(
                     `[KnowledgeBase] Ghost check failed for ${diaryName}:`,

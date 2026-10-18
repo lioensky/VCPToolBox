@@ -101,7 +101,7 @@ struct NativeInput {
     candidates: Vec<CandidateInput>,
     query_state: QueryStateInput,
     #[serde(default)]
-    allowed_file_ids: Vec<i64>,
+    allowed_file_ids: Option<Vec<i64>>,
     #[serde(default)]
     config: NativeConfig,
 }
@@ -2546,6 +2546,12 @@ pub(crate) fn run_native(
         load_curves(connection, &input.candidates, dimension)
     })?;
     let mut curves = curve_load.curves;
+    // 显式空集合也意味着无权限；必须在候选归一化和统计前移除越权项。
+    let allowed: Option<HashSet<i64>> = input.allowed_file_ids.as_ref()
+        .map(|ids| ids.iter().copied().collect());
+    if let Some(scope) = &allowed {
+        curves.retain(|curve| scope.contains(&curve.file_id));
+    }
     let original_score_by_id: HashMap<i64, f64> = input
         .candidates
         .iter()
@@ -2636,8 +2642,6 @@ pub(crate) fn run_native(
 
     let compute_started = Instant::now();
     let morphology = compute_query_morphology(&input);
-    let allowed: HashSet<i64> = input.allowed_file_ids.iter().copied().collect();
-    let explicit_scope = !allowed.is_empty();
 
     // Anchor rarity depends on the complete selected candidate pool, so compute it
     // before consuming `curves`. The indexed parallel result preserves curve order.
@@ -2670,7 +2674,7 @@ pub(crate) fn run_native(
             let geometry = evaluate_path(&curve, &workspace, &artifact, &input.config);
             let topology =
                 evaluate_topology(&curve, &input, &artifact, &query_and_seed_tag_vectors);
-            let visible = !explicit_scope || allowed.contains(&curve.file_id);
+            let visible = true; // 越权候选已在进入候选池前删除。
             let observables = evaluate_observables(&curve, &geometry, &input, &workspace, visible);
             let semantic_total = (input.config.pure_query_weight
                 + input.config.pure_local_weight
@@ -2877,15 +2881,16 @@ impl Task for RiverMemoTopologyV3Task {
 }
 
 pub(crate) fn rerank_with_runtime(
+    lifecycle: &Arc<crate::task_lifecycle::TaskLifecycle>,
     runtime: Arc<MemoRuntime>,
     db_path: String,
     artifact_sig: String,
     input_json: String,
-) -> AsyncTask<RiverMemoTopologyV3Task> {
-    AsyncTask::new(RiverMemoTopologyV3Task {
+) -> AsyncTask<crate::task_lifecycle::TrackedTask<RiverMemoTopologyV3Task>> {
+    AsyncTask::new(crate::task_lifecycle::TrackedTask::new(lifecycle, RiverMemoTopologyV3Task {
         runtime,
         db_path,
         artifact_sig,
         input_json,
-    })
+    }))
 }

@@ -1,6 +1,6 @@
 use crate::memo_sensing::{sense_typed, SenseConfig, SenseInput, SenseOutput, SenseSeed};
 use crate::rivermemo_topology_v3::{load_artifact_from_runtime, MemoRuntime};
-use crate::storage::with_registered_read;
+use crate::storage::with_registered_read_transaction;
 use base64::Engine;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -940,6 +940,7 @@ fn fuse_observation(
             .unwrap_or(Ordering::Equal)
             .then_with(|| left.id.cmp(&right.id))
     });
+    vectors.truncate(config.max_fusion_tags.clamp(1, 1024));
     let threshold = config.deduplication_threshold.clamp(-1.0, 1.0);
     let mut selected: Vec<FusionTag> = Vec::new();
     for candidate in vectors {
@@ -1486,7 +1487,7 @@ fn run_pipeline(
     ghost_vectors: &[f32],
 ) -> std::result::Result<MemoPipelineComputeOutput, String> {
     let artifact = load_artifact_from_runtime(runtime, db_path, artifact_sig)?;
-    with_registered_read(db_path, |connection| {
+    with_registered_read_transaction(db_path, |connection| {
         run_pipeline_with_connection(
             index,
             runtime,
@@ -1503,6 +1504,7 @@ fn run_pipeline(
 
 pub struct MemoPipelineTask {
     index: Arc<RwLock<Index>>,
+    content_revision: Arc<std::sync::atomic::AtomicU64>,
     runtime: Arc<MemoRuntime>,
     db_path: String,
     artifact_sig: String,
@@ -1517,6 +1519,22 @@ impl Task for MemoPipelineTask {
     type JsValue = MemoPipelineResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        let _gate = crate::index_lifecycle::checkpoint_gate().lock()
+            .map_err(|_| Error::from_reason("Index publication gate poisoned"))?;
+        let scopes = ["global_tags".to_string()];
+        match crate::knowledge_runtime::ensure_index_scopes_ready(&self.db_path, &scopes) {
+            Ok(()) => {}
+            Err(error) if error.starts_with("KBM_INDEX_NOT_READY:") => {
+                self.runtime.clear().map_err(Error::from_reason)?;
+                crate::knowledge_runtime::recover_index_snapshot(
+                    &self.db_path, "global_tags".to_string(), None,
+                    &self.index, &self.content_revision, self.dimensions,
+                ).map_err(Error::from_reason)?;
+            }
+            Err(error) => return Err(Error::from_reason(error)),
+        }
+        crate::knowledge_runtime::ensure_index_scopes_ready(&self.db_path, &scopes)
+            .map_err(Error::from_reason)?;
         run_pipeline(
             &self.index,
             &self.runtime,
@@ -1539,7 +1557,9 @@ impl Task for MemoPipelineTask {
 }
 
 pub(crate) fn run_with_runtime(
+    lifecycle: &Arc<crate::task_lifecycle::TaskLifecycle>,
     index: Arc<RwLock<Index>>,
+    content_revision: Arc<std::sync::atomic::AtomicU64>,
     runtime: Arc<MemoRuntime>,
     db_path: String,
     artifact_sig: String,
@@ -1547,9 +1567,10 @@ pub(crate) fn run_with_runtime(
     input_json: String,
     query_vector: Vec<f32>,
     ghost_vectors: Vec<f32>,
-) -> AsyncTask<MemoPipelineTask> {
-    AsyncTask::new(MemoPipelineTask {
+) -> AsyncTask<crate::task_lifecycle::TrackedTask<MemoPipelineTask>> {
+    AsyncTask::new(crate::task_lifecycle::TrackedTask::new(lifecycle, MemoPipelineTask {
         index,
+        content_revision,
         runtime,
         db_path,
         artifact_sig,
@@ -1557,5 +1578,45 @@ pub(crate) fn run_with_runtime(
         input_json,
         query_vector,
         ghost_vectors,
-    })
+    }))
+}
+
+
+#[cfg(test)]
+mod audit_gate_tests {
+    use super::*;
+
+    #[test]
+    fn pipeline_recovers_invalid_global_index_before_loading_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-pipeline-audit-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute(
+                "INSERT INTO kbm_index_states VALUES ('global_tags','invalid',1,0,NULL,0)", []
+            ).map_err(|error| error.to_string())?;
+            Ok(crate::storage::WriteReceipt {
+                operation: "fixture".into(), database_generation: 0, facts_changed: false,
+            })
+        }).unwrap();
+        let index = crate::VexusIndex::new(2, 16).unwrap();
+        index.index.write().unwrap().add(999, &[1.0_f32, 0.0]).unwrap();
+        let mut task = MemoPipelineTask {
+            index: index.index.clone(), content_revision: index.content_revision.clone(),
+            runtime: index.memo_runtime.clone(), db_path: db.clone(), artifact_sig: "missing".into(),
+            dimensions: 2, input_json: "{}".into(), query_vector: vec![1.0, 0.0], ghost_vectors: vec![],
+        };
+        assert!(task.compute().is_err()); // 图资产缺失仍应显式失败，不能跳过索引门禁。
+        assert_eq!(index.index.read().unwrap().size(), 0);
+        crate::knowledge_runtime::ensure_index_scopes_ready(&db, &["global_tags".into()]).unwrap();
+        assert_eq!(index.content_revision.load(std::sync::atomic::Ordering::Acquire), 1);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

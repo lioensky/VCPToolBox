@@ -87,16 +87,37 @@ class SearchService {
         if (vector.length !== owner.config.dimension) {
             throw new RangeError(`KNN query dimension must be ${owner.config.dimension}, got ${vector.length}`);
         }
-        const perIndexK = Math.max(k, Math.floor(Number(options.perIndexK) || k));
+        let perIndexK = Math.max(k, Math.floor(Number(options.perIndexK) || k));
         await Promise.all(names.map(name => owner._getOrLoadDiaryIndex(name)));
         const runtime = owner.nativeKnowledgeRuntime;
         if (typeof runtime?.searchDiaryIndices !== 'function') {
             throw new Error('NativeKnowledgeRuntime ANN ABI unavailable');
         }
-        const raw = await runtime.searchDiaryIndices(
-            names, vector, perIndexK, perIndexK * names.length
-        );
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const allowed = Array.isArray(options.allowedFileIds) ? new Set(options.allowedFileIds.map(Number)) : null;
+        const denied = new Set((options.deniedFileIds || []).map(Number));
+        if (allowed?.size === 0) return [];
+        let parsed;
+        // 权限过滤必须有补召回机会；每轮重新消费同一原生查询内的冻结 hydrate。
+        // 设置有限预算，防止极窄权限集合触发无界扫描。
+        const maxFetchK = Math.max(perIndexK, Math.min(10000, Number(options.maxFilterCandidates) || 4096));
+        for (;;) {
+            const raw = await runtime.searchDiaryIndices(
+                names, vector, perIndexK, perIndexK * names.length
+            );
+            parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (!Array.isArray(parsed?.hydratedChunks)) {
+                throw new Error('Native ANN hydration ABI unavailable; rebuild rust-vexus-lite');
+            }
+            const visible = parsed.hydratedChunks.filter(row =>
+                names.includes(row.diaryName) && !denied.has(Number(row.fileId))
+                && (!allowed || allowed.has(Number(row.fileId))));
+            const exhausted = Array.isArray(parsed?.diagnostics?.indices)
+                ? parsed.diagnostics.indices.every(item => Number(item.candidates) < perIndexK)
+                : (parsed.results || []).length < perIndexK;
+            if ((!allowed && denied.size === 0) || visible.length >= k
+                || exhausted || perIndexK >= maxFetchK) break;
+            perIndexK = Math.min(maxFetchK, perIndexK * 2);
+        }
         const pools = [Array.isArray(parsed?.results) ? parsed.results : []];
         const byId = new Map();
         for (const item of pools.flat()) {
@@ -111,8 +132,6 @@ class SearchService {
         const rows = parsed.hydratedChunks;
         const rowsById = new Map(rows.map(row => [Number(row.id), row]));
         const scope = new Set(names);
-        const allowed = Array.isArray(options.allowedFileIds) ? new Set(options.allowedFileIds.map(Number)) : null;
-        const denied = new Set((options.deniedFileIds || []).map(Number));
         return ranked.map(item => {
             const row = rowsById.get(item.id);
             if (!row || !scope.has(row.diaryName) || denied.has(Number(row.fileId))

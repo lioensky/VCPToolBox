@@ -194,7 +194,7 @@ class TagConsistencyService {
             ignoreFolders: config.ignoreFolders,
             ignorePrefixes: config.ignorePrefixes,
             ignoreSuffixes: config.ignoreSuffixes,
-            tagBlacklist: [...config.tagBlacklist].sort(),
+            tagBlacklist: [...(config.tagBlacklist || [])].sort(),
             tagBlacklistSuper: config.tagBlacklistSuper,
             maxTagsPerFile: config.maxTagsPerFile,
             dimension: config.dimension,
@@ -421,15 +421,20 @@ class TagConsistencyService {
         };
         this.latestPreviewTask = task;
 
+        const rulesSignature = this._rulesSignature();
         this.previewTaskPromise = this._buildPlan()
-            .then(plan => {
+            .then(async plan => {
                 const snapshot = {
                     token: plan.token,
                     createdAt: Number(plan.createdAt) || Date.now(),
                     expiresAt: Number(plan.expiresAt)
                         || Date.now() + SNAPSHOT_TTL_MS,
-                    plan
+                    plan,
+                    rulesSignature
                 };
+                for (const old of this.snapshots.values()) {
+                    await this.owner.nativeKnowledgeRuntime.cancelPreparedPlan(old.plan.token);
+                }
                 this.snapshots.clear();
                 this.snapshots.set(snapshot.token, snapshot);
                 task.preview = this._toPublicSnapshot(snapshot);
@@ -617,13 +622,15 @@ class TagConsistencyService {
         }
         this.running = true;
         try {
-            const verifiedPlan = await this._buildPlan();
-            if (verifiedPlan.digest !== snapshot.plan.digest) {
-                this.snapshots.delete(snapshot.token);
+            // Rust 已保存权威计划，提交时校验事实代际和源文件哈希。
+            // 确认阶段不再扫描全库或分配新的 prepared token。
+            const verifiedPlan = snapshot.plan;
+            if (verifiedPlan.dimension !== this.owner.config.dimension
+                || verifiedPlan.modelSig !== this.owner.config.modelSig
+                || (snapshot.rulesSignature && snapshot.rulesSignature !== this._rulesSignature())) {
                 throw this._createError(
-                    '文件、规则或数据库 Tag 状态在确认前已变化，请重新扫描',
-                    'TAG_CONSISTENCY_SNAPSHOT_STALE',
-                    409
+                    '向量模型配置已变化，请重新扫描',
+                    'TAG_CONSISTENCY_SNAPSHOT_STALE', 409
                 );
             }
 
@@ -643,14 +650,6 @@ class TagConsistencyService {
                 tagVectors.set(vector, index * this.owner.config.dimension);
             });
 
-            const finalVerification = await this._buildPlan();
-            if (finalVerification.digest !== snapshot.plan.digest) {
-                throw this._createError(
-                    '文件在向量化期间发生变化，请重新扫描',
-                    'TAG_CONSISTENCY_SNAPSHOT_STALE',
-                    409
-                );
-            }
             const nativePlan = {
                 token: snapshot.plan.token,
                 digest: snapshot.plan.digest,
@@ -674,6 +673,12 @@ class TagConsistencyService {
             if (this.owner._shuttingDown) {
                 throw this._createError(
                     'KnowledgeBase 正在关闭，未提交维护计划', 'KNOWLEDGE_STORE_CLOSED', 503
+                );
+            }
+            if (snapshot.rulesSignature && snapshot.rulesSignature !== this._rulesSignature()) {
+                throw this._createError(
+                    '规则或模型配置在向量化期间发生变化，请重新扫描',
+                    'TAG_CONSISTENCY_SNAPSHOT_STALE', 409
                 );
             }
             const rawReceipt =

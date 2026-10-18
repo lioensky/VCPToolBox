@@ -266,12 +266,22 @@ CREATE INDEX IF NOT EXISTS idx_index_states_state
 CREATE INDEX IF NOT EXISTS idx_rivermemo_compatible
     ON rivermemo_artifacts(source_v9_artifact_sig,model_sig,config_hash,
                             database_generation,status,updated_at);
-CREATE TRIGGER IF NOT EXISTS trg_tags_vector_version
+DROP TRIGGER IF EXISTS trg_tags_vector_version;
+CREATE TRIGGER trg_tags_vector_version
 AFTER UPDATE OF vector ON tags
 WHEN OLD.vector IS NOT NEW.vector
 BEGIN
     UPDATE tags SET vector_version = OLD.vector_version + 1 WHERE id = NEW.id;
+    DELETE FROM tag_pair_similarity WHERE tag_a = OLD.id OR tag_b = OLD.id;
+    DELETE FROM tag_pair_similarity_status WHERE tag_a = OLD.id OR tag_b = OLD.id;
 END;
+CREATE TRIGGER IF NOT EXISTS trg_tags_delete_pair_cache
+AFTER DELETE ON tags
+BEGIN
+    DELETE FROM tag_pair_similarity WHERE tag_a = OLD.id OR tag_b = OLD.id;
+    DELETE FROM tag_pair_similarity_status WHERE tag_a = OLD.id OR tag_b = OLD.id;
+END;
+CREATE INDEX IF NOT EXISTS idx_pair_status_tag_b ON tag_pair_similarity_status(tag_b);
 "#;
 
 const GENERATION_SQL: &str = r#"
@@ -393,6 +403,7 @@ fn ensure_additive_columns(connection: &Connection) -> Result<(), String> {
 }
 
 
+
 #[cfg(test)]
 mod migration_tests {
     use super::*;
@@ -433,4 +444,48 @@ mod migration_tests {
     }
 
     use rusqlite::OptionalExtension;
+}
+
+
+#[cfg(test)]
+mod audit_cache_tests {
+    use super::*;
+
+    #[test]
+    fn vector_change_and_delete_invalidate_positive_and_negative_pairs() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES ('schema_version','1');"
+        ).unwrap();
+        initialize_schema(&connection, 1).unwrap();
+        // 重复初始化也必须更新旧触发器，而不是被 IF NOT EXISTS 跳过。
+        initialize_schema(&connection, 1).unwrap();
+        connection.execute_batch(
+            "INSERT INTO tags(id,name) VALUES (1,'missing'),(2,'other');
+             INSERT INTO tag_pair_similarity VALUES (1,2,0.9,'m',0);
+             INSERT INTO tag_pair_similarity_status VALUES (1,2,'m','a','missing_vector',NULL,0.05,0);
+             UPDATE tags SET vector=X'0000803f' WHERE id=1;"
+        ).unwrap();
+        for table in ["tag_pair_similarity", "tag_pair_similarity_status"] {
+            let count: i64 = connection.query_row(
+                &format!("SELECT COUNT(*) FROM {}", table), [], |row| row.get(0)
+            ).unwrap();
+            assert_eq!(count, 0);
+        }
+        let version: i64 = connection.query_row(
+            "SELECT vector_version FROM tags WHERE id=1", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(version, 2);
+        connection.execute_batch(
+            "INSERT INTO tag_pair_similarity VALUES (1,2,0.9,'m',0);
+             INSERT INTO tag_pair_similarity_status VALUES (1,2,'m','a','computed',0.9,0.05,0);
+             DELETE FROM tags WHERE id=2;"
+        ).unwrap();
+        let count: i64 = connection.query_row(
+            "SELECT (SELECT COUNT(*) FROM tag_pair_similarity)
+                  + (SELECT COUNT(*) FROM tag_pair_similarity_status)", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(count, 0);
+    }
 }

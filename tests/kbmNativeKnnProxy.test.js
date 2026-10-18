@@ -59,3 +59,30 @@ test('similar Tag search consumes native hydrated results with bounded limit', a
         [{ tag: 'native', score: 0.75 }]
     );
 });
+
+test('permission filtering progressively fetches candidates to fill K', async () => {
+    const requested = [];
+    const owner = {
+        config: { dimension: 2 },
+        _isVectorLike: Array.isArray,
+        async _getOrLoadDiaryIndex() {},
+        nativeKnowledgeRuntime: {
+            async searchDiaryIndices(_names, _vector, limit) {
+                requested.push(limit);
+                const count = Math.min(limit, 4);
+                return {
+                    results: Array.from({ length: count }, (_, i) => ({ id: i + 1, score: 1 - i / 10 })),
+                    hydratedChunks: Array.from({ length: count }, (_, i) => ({
+                        id: i + 1, fileId: i + 1, diaryName: 'diary', sourceFile: `diary/${i}.txt`
+                    })),
+                    diagnostics: { indices: [{ candidates: count }] }
+                };
+            }
+        }
+    };
+    const result = await new SearchService(owner).searchKnn(
+        'diary', [1, 0], 2, { deniedFileIds: [1, 2] }
+    );
+    assert.deepEqual(requested, [2, 4]);
+    assert.deepEqual(result.map(item => item.id), [3, 4]);
+});

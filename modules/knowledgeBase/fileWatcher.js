@@ -53,8 +53,8 @@ class KnowledgeBaseFileWatcher {
         const owner = this.owner;
         try {
             const jsonPayload = args.find(
-                argument => typeof argument === 'string'
-            );
+                argument => argument && typeof argument === 'object'
+            ) || args.find(argument => typeof argument === 'string');
             if (!jsonPayload) {
                 console.warn(
                     '[KnowledgeBase] Ignored Rust watcher callback without '
@@ -64,7 +64,8 @@ class KnowledgeBaseFileWatcher {
                 return;
             }
 
-            const payload = JSON.parse(jsonPayload);
+            const payload = typeof jsonPayload === 'string'
+                ? JSON.parse(jsonPayload) : jsonPayload;
             const { event, path: filePath } = payload;
             if (event === 'overflow') {
                 this._reconcileAfterOverflow();
@@ -226,7 +227,7 @@ class KnowledgeBaseFileWatcher {
         }
 
         for (const event of events) {
-            this._handleRustEvent(JSON.stringify(event));
+            this._handleRustEvent(event);
         }
     }
 
@@ -276,6 +277,7 @@ class KnowledgeBaseFileWatcher {
             () => this._drainRustEvents(),
             100
         );
+        this.eventPoller.unref?.();
         this._drainRustEvents();
         this._publishState();
         console.log(

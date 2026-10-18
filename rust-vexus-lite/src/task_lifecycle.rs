@@ -4,6 +4,7 @@ use std::sync::{Arc, Condvar, Mutex};
 #[derive(Default)]
 pub(crate) struct TaskLifecycle {
     active: Mutex<usize>,
+    closed: std::sync::atomic::AtomicBool,
     changed: Condvar,
 }
 
@@ -15,9 +16,19 @@ impl TaskLifecycle {
         }
     }
 
-    fn admit(self: &Arc<Self>) -> TaskAdmission {
-        *self.active.lock().unwrap_or_else(|error| error.into_inner()) += 1;
-        TaskAdmission { lifecycle: self.clone() }
+    pub(crate) fn close_and_wait(&self) {
+        {
+            let _active = self.active.lock().unwrap_or_else(|error| error.into_inner());
+            self.closed.store(true, std::sync::atomic::Ordering::Release);
+        }
+        self.wait_idle();
+    }
+
+    fn admit(self: &Arc<Self>) -> Option<TaskAdmission> {
+        let mut active = self.active.lock().unwrap_or_else(|error| error.into_inner());
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) { return None; }
+        *active += 1;
+        Some(TaskAdmission { lifecycle: self.clone() })
     }
 }
 
@@ -40,7 +51,7 @@ pub struct TrackedTask<T: Task> {
 
 impl<T: Task> TrackedTask<T> {
     pub(crate) fn new(lifecycle: &Arc<TaskLifecycle>, inner: T) -> Self {
-        Self { inner, admission: Some(lifecycle.admit()) }
+        Self { inner, admission: lifecycle.admit() }
     }
 }
 
@@ -51,7 +62,8 @@ impl<T: Task> Task for TrackedTask<T> {
     fn compute(&mut self) -> Result<Self::Output> {
         // This local guard is dropped on success, error and unwinding.
         // Never wait for JS resolve/finally to release native admission.
-        let _admission = self.admission.take();
+        let _admission = self.admission.take().ok_or_else(||
+            napi::Error::from_reason("KNOWLEDGE_STORE_CLOSED"))?;
         self.inner.compute()
     }
 

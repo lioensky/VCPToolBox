@@ -1,5 +1,5 @@
 use crate::rivermemo_topology_v3::{MemoRuntime, NativeArtifact};
-use crate::storage::{with_registered_read, with_registered_write};
+use crate::storage::{with_registered_read_transaction, with_registered_write};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use napi::bindgen_prelude::*;
@@ -167,16 +167,17 @@ fn load_pairwise(
 
 fn load_anchor_gains(
     connection: &Connection,
+    model_sig: &str,
 ) -> std::result::Result<(HashMap<i64, f64>, HashMap<i64, f64>, String), String> {
     let mut statement = connection
         .prepare(
             "SELECT tag_id, COALESCE(v9_anchor_gain, residual_energy, 1.0), \
              COALESCE(raw_residual_ratio, 0.0), COALESCE(artifact_sig, '') \
-             FROM tag_intrinsic_residuals",
+             FROM tag_intrinsic_residuals WHERE model_sig = ?1 ORDER BY tag_id",
         )
         .map_err(|error| format!("prepare intrinsic residuals failed: {}", error))?;
     let rows = statement
-        .query_map([], |row| {
+        .query_map(params![model_sig], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, f64>(1)?,
@@ -616,10 +617,10 @@ fn run_build(
     }
 
     let (rows, pairwise, anchor_gain, residual_sig, database_generation) =
-        with_registered_read(db_path, |readonly| {
+        with_registered_read_transaction(db_path, |readonly| {
             let rows = load_file_tags(readonly)?;
             let pairwise = load_pairwise(readonly, &input.model_sig)?;
-            let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly)?;
+            let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
             let database_generation = database_generation(readonly)?;
             Ok((
                 rows,
@@ -723,6 +724,11 @@ fn run_build(
         .finish()
         .map_err(|error| format!("finish native artifact compression failed: {}", error))?;
 
+    // 只在最终提交和内存发布窗口持门禁，耗时图构建与压缩不阻塞查询。
+    let _publication_guard = crate::index_lifecycle::checkpoint_gate().lock()
+        .map_err(|_| "Index publication gate poisoned".to_string())?;
+    let source_generation = database_generation.parse::<u64>()
+        .map_err(|error| format!("Invalid artifact source generation: {}", error))?;
     let artifact_sig_for_write = artifact_sig.clone();
     let source_artifact_sig_for_write = source_artifact_sig.clone();
     let graph_digest_for_write = graph_digest.clone();
@@ -734,6 +740,7 @@ fn run_build(
     let native_for_write = native.clone();
 
     with_registered_write(db_path, move |transaction| {
+        crate::storage::ensure_generation(transaction, source_generation)?;
         transaction
             .execute(
                 "INSERT INTO rivermemo_artifacts (\
@@ -781,6 +788,9 @@ fn run_build(
         )
     })?;
 
+    with_registered_read_transaction(db_path, |connection| {
+        crate::storage::ensure_generation(connection, source_generation)
+    })?;
     let generation = runtime.publish(&artifact_sig, native.clone())?;
     Ok(NativeMemoArtifactBuildResult {
         success: true,
@@ -818,13 +828,14 @@ impl Task for NativeMemoArtifactBuildTask {
 }
 
 pub(crate) fn rebuild_with_runtime(
+    lifecycle: &Arc<crate::task_lifecycle::TaskLifecycle>,
     runtime: Arc<MemoRuntime>,
     db_path: String,
     input_json: String,
-) -> AsyncTask<NativeMemoArtifactBuildTask> {
-    AsyncTask::new(NativeMemoArtifactBuildTask {
+) -> AsyncTask<crate::task_lifecycle::TrackedTask<NativeMemoArtifactBuildTask>> {
+    AsyncTask::new(crate::task_lifecycle::TrackedTask::new(lifecycle, NativeMemoArtifactBuildTask {
         runtime,
         db_path,
         input_json,
-    })
+    }))
 }

@@ -189,6 +189,17 @@ where
     })
 }
 
+pub(crate) fn with_registered_read_transaction_napi<T, F>(
+    path: impl AsRef<Path>, operation: F,
+) -> NapiResult<T>
+where
+    F: FnOnce(&Connection) -> NapiResult<T>,
+{
+    with_registered_read_transaction(path, |connection| {
+        operation(connection).map_err(|error| error.reason)
+    }).map_err(NapiError::from_reason)
+}
+
 pub(crate) fn with_registered_read_napi<T, F>(path: impl AsRef<Path>, operation: F) -> NapiResult<T>
 where
     F: FnOnce(&Connection) -> NapiResult<T>,
@@ -704,7 +715,7 @@ fn initialize_schema_metadata(
     Ok(())
 }
 
-fn read_generation(connection: &Connection) -> Result<u64, String> {
+pub(crate) fn read_generation(connection: &Connection) -> Result<u64, String> {
     let value: String = connection
         .query_row(
             "SELECT value FROM kbm_runtime_meta WHERE key = 'database_generation'",
@@ -716,6 +727,17 @@ fn read_generation(connection: &Connection) -> Result<u64, String> {
         .parse::<u64>()
         .map_err(|error| format!("invalid KBM database generation: {}", error))
 }
+pub(crate) fn ensure_generation(connection: &Connection, expected: u64) -> Result<(), String> {
+    let current = read_generation(connection)?;
+    if current != expected {
+        return Err(format!(
+            "KNOWLEDGE_STORE_DERIVED_GENERATION_CONFLICT: expected={}, current={}",
+            expected, current
+        ));
+    }
+    Ok(())
+}
+
 fn execute_write_command(
     connection: &mut Connection,
     operation: WriteOperation,
@@ -1050,5 +1072,31 @@ mod generation_protocol_tests {
         ).unwrap();
         assert_eq!(state, "ready");
         assert_eq!(generation.load(Ordering::Acquire), 7);
+    }
+}
+
+
+#[cfg(test)]
+mod audit_generation_tests {
+    use super::*;
+
+    #[test]
+    fn stale_derived_publish_is_rejected_before_overwriting_ready_value() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES ('database_generation','9');
+             CREATE TABLE result(value TEXT);
+             INSERT INTO result VALUES ('healthy');"
+        ).unwrap();
+        let result = execute_write_command(&mut connection, Box::new(|tx| {
+            ensure_generation(tx, 8)?;
+            tx.execute("UPDATE result SET value='stale'", [])
+                .map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "derived".into(), database_generation: 0, facts_changed: false })
+        }), &AtomicU64::new(9));
+        assert!(result.unwrap_err().contains("DERIVED_GENERATION_CONFLICT"));
+        let value: String = connection.query_row("SELECT value FROM result", [], |row| row.get(0)).unwrap();
+        assert_eq!(value, "healthy");
     }
 }

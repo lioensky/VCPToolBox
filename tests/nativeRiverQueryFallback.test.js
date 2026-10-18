@@ -132,7 +132,11 @@ function createFixture() {
         calls,
         engine,
         artifact,
-        prepared
+        prepared,
+        async hydrateChunksByIds(ids) {
+            calls.hydratedIds = ids;
+            return ids.map(id => rows.get(Number(id))).filter(Boolean);
+        }
     };
 }
 
@@ -142,6 +146,7 @@ function baseOptions(fixture) {
         nativePreparedQuery: fixture.prepared,
         observationHandle: 'memoq-test',
         dbPath: 'fixture.sqlite',
+        hydrateChunksByIds: ids => fixture.hydrateChunksByIds(ids),
         topK: 1,
         nativeJointQuery: true,
         nativePerIndexK: 10,
@@ -191,6 +196,7 @@ test('joint River query hydrates only native final IDs and preserves public resu
     assert.equal(result.results.length, 1);
     assert.equal(result.results[0].chunkId, 101);
     assert.equal(result.results[0].text, 'joint final text');
+    assert.deepEqual(fixture.calls.hydratedIds, [101]);
     assert.equal(result.diagnostics.nativeTopologyV3.jointUsed, true);
     assert.equal(
         result.diagnostics.nativeTopologyV3.runtimeOwnership,

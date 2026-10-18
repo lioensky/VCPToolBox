@@ -136,19 +136,12 @@ fn split_tag_content(value: &str) -> impl Iterator<Item = &str> {
     value.split(|character| matches!(character, ',' | '，' | '、' | ';' | '|' | '｜'))
 }
 
-fn regex_replace_all(value: &str, pattern: &str) -> String {
-    match regex::Regex::new(pattern) {
-        Ok(regex) => regex.replace_all(value, "").into_owned(),
-        Err(_) => value.to_string(),
-    }
-}
-
 fn contains_date(value: &str) -> bool {
     const DATE_PATTERN: &str =
         r"(\d{4}年\d{1,2}月\d{1,2}日|\d{4}年\d{1,2}月|\d{1,2}月\d{1,2}日|\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{2}[-./]\d{1,2}[-./]\d{1,2}|\d{4}[-./]\d{1,2})";
-    regex::Regex::new(DATE_PATTERN)
-        .map(|regex| regex.is_match(value))
-        .unwrap_or(false)
+    static DATE_REGEX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    DATE_REGEX.get_or_init(|| regex::Regex::new(DATE_PATTERN).expect("static date regex"))
+        .is_match(value)
 }
 
 pub fn extract_tags(content: &str, rules: &TagRules) -> Vec<String> {
@@ -158,7 +151,9 @@ pub fn extract_tags(content: &str, rules: &TagRules) -> Vec<String> {
         last_content_line -= 1;
     }
 
-    let tag_pattern = regex::Regex::new(r"^\s*Tag:\s*(.+?)\s*$").expect("static Tag regex");
+    static TAG_REGEX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let tag_pattern = TAG_REGEX.get_or_init(||
+        regex::Regex::new(r"^\s*Tag:\s*(.+?)\s*$").expect("static Tag regex"));
     let mut tag_contents = Vec::new();
     let mut index = last_content_line;
     while index > 0 {
@@ -186,13 +181,14 @@ pub fn extract_tags(content: &str, rules: &TagRules) -> Vec<String> {
             .tag_blacklist_super
             .iter()
             .filter(|value| !value.is_empty())
-            .cloned()
+            .map(|value| regex::escape(value))
             .collect::<Vec<_>>()
             .join("|");
         if !pattern.is_empty() {
-            tags = tags
-                .into_iter()
-                .map(|tag| regex_replace_all(&tag, &pattern).trim().to_string())
+            // 动态规则每次提取仅编译一次，不能按每个 Tag 重编译。
+            let regex = regex::Regex::new(&pattern).expect("escaped blacklist regex");
+            tags = tags.into_iter()
+                .map(|tag| regex.replace_all(&tag, "").trim().to_string())
                 .collect();
         }
     }

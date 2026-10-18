@@ -17,7 +17,8 @@ mod storage;
 mod task_lifecycle;
 
 use rivermemo_topology_v3::MemoRuntime;
-use storage::{with_registered_read, with_registered_read_napi, with_registered_write};
+use task_lifecycle::{TaskLifecycle, TrackedTask};
+use storage::{with_registered_read, with_registered_read_transaction, with_registered_write};
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -168,6 +169,7 @@ pub struct MemoRuntimeStats {
 /// 核心索引结构 (无状态，只存向量)
 #[napi]
 pub struct VexusIndex {
+    pub(crate) tasks: Arc<TaskLifecycle>,
     pub(crate) index: Arc<RwLock<Index>>,
     pub(crate) dimensions: u32,
     /// 索引内容代际。批量差分成功后只递增一次，供联合查询冻结和校验快照。
@@ -297,6 +299,12 @@ fn publish_index_file(temp: &std::path::Path, target: &std::path::Path) -> std::
     Ok(())
 }
 
+impl VexusIndex {
+    fn tracked_task<T: Task>(&self, task: T) -> AsyncTask<TrackedTask<T>> {
+        AsyncTask::new(TrackedTask::new(&self.tasks, task))
+    }
+}
+
 #[napi]
 impl VexusIndex {
     /// 创建新的空索引
@@ -320,6 +328,7 @@ impl VexusIndex {
         Ok(Self {
             index: Arc::new(RwLock::new(index)),
             dimensions: dim,
+            tasks: Arc::new(TaskLifecycle::default()),
             content_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             epa_pending_cache: Arc::new(std::sync::Mutex::new(None)),
             memo_runtime: Arc::new(MemoRuntime::new()),
@@ -367,6 +376,7 @@ impl VexusIndex {
         Ok(Self {
             index: Arc::new(RwLock::new(index)),
             dimensions: dim,
+            tasks: Arc::new(TaskLifecycle::default()),
             content_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             epa_pending_cache: Arc::new(std::sync::Mutex::new(None)),
             memo_runtime: Arc::new(MemoRuntime::new()),
@@ -385,8 +395,8 @@ impl VexusIndex {
 
     /// 在 N-API 后台线程保存索引，禁止调用方在 V8 主线程执行磁盘序列化。
     #[napi]
-    pub fn save_async(&self, index_path: String) -> AsyncTask<IndexSaveTask> {
-        AsyncTask::new(IndexSaveTask {
+    pub fn save_async(&self, index_path: String) -> AsyncTask<TrackedTask<IndexSaveTask>> {
+        self.tracked_task(IndexSaveTask {
             index: self.index.clone(),
             index_path,
         })
@@ -485,8 +495,8 @@ impl VexusIndex {
         remove_ids: Vec<i64>,
         upsert_ids: Vec<i64>,
         upsert_vectors: Float32Array,
-    ) -> AsyncTask<ChunkIndexDeltaTask> {
-        AsyncTask::new(ChunkIndexDeltaTask {
+    ) -> AsyncTask<TrackedTask<ChunkIndexDeltaTask>> {
+        self.tracked_task(ChunkIndexDeltaTask {
             index: self.index.clone(),
             content_revision: self.content_revision.clone(),
             dimensions: self.dimensions,
@@ -514,8 +524,8 @@ impl VexusIndex {
         remove_ids: Vec<i64>,
         upsert_ids: Vec<i64>,
         upsert_vectors: Float32Array,
-    ) -> AsyncTask<TagIndexDeltaTask> {
-        AsyncTask::new(TagIndexDeltaTask {
+    ) -> AsyncTask<TrackedTask<TagIndexDeltaTask>> {
+        self.tracked_task(TagIndexDeltaTask {
             index: self.index.clone(),
             content_revision: self.content_revision.clone(),
             memo_runtime: self.memo_runtime.clone(),
@@ -838,9 +848,11 @@ impl VexusIndex {
         input_json: String,
         query_vector: Float32Array,
         ghost_vectors: Float32Array,
-    ) -> AsyncTask<memo_pipeline::MemoPipelineTask> {
+    ) -> AsyncTask<TrackedTask<memo_pipeline::MemoPipelineTask>> {
         memo_pipeline::run_with_runtime(
+            &self.tasks,
             self.index.clone(),
+            self.content_revision.clone(),
             self.memo_runtime.clone(),
             db_path,
             artifact_sig,
@@ -861,8 +873,9 @@ impl VexusIndex {
         db_path: String,
         artifact_sig: String,
         input_json: String,
-    ) -> AsyncTask<rivermemo_topology_v3::RiverMemoTopologyV3Task> {
+    ) -> AsyncTask<TrackedTask<rivermemo_topology_v3::RiverMemoTopologyV3Task>> {
         rivermemo_topology_v3::rerank_with_runtime(
+            &self.tasks,
             self.memo_runtime.clone(),
             db_path,
             artifact_sig,
@@ -879,8 +892,8 @@ impl VexusIndex {
         &self,
         db_path: String,
         input_json: String,
-    ) -> AsyncTask<memo_artifact_builder::NativeMemoArtifactBuildTask> {
-        memo_artifact_builder::rebuild_with_runtime(self.memo_runtime.clone(), db_path, input_json)
+    ) -> AsyncTask<TrackedTask<memo_artifact_builder::NativeMemoArtifactBuildTask>> {
+        memo_artifact_builder::rebuild_with_runtime(&self.tasks, self.memo_runtime.clone(), db_path, input_json)
     }
 
     /// 从已有 Sense 观测构建方法模块框架，不重新感应或修改图资产。
@@ -891,8 +904,8 @@ impl VexusIndex {
         db_path: String,
         artifact_sig: String,
         input_json: String,
-    ) -> AsyncTask<memo_thinking::ThinkingTask> {
-        AsyncTask::new(memo_thinking::ThinkingTask {
+    ) -> AsyncTask<TrackedTask<memo_thinking::ThinkingTask>> {
+        self.tracked_task(memo_thinking::ThinkingTask {
             runtime: self.memo_runtime.clone(),
             db_path,
             artifact_sig,
@@ -962,8 +975,8 @@ impl VexusIndex {
         db_path: String,
         table_type: String,
         filter_diary_name: Option<String>,
-    ) -> AsyncTask<RecoverTask> {
-        AsyncTask::new(RecoverTask {
+    ) -> AsyncTask<TrackedTask<RecoverTask>> {
+        self.tracked_task(RecoverTask {
             index: self.index.clone(),
             content_revision: self.content_revision.clone(),
             db_path,
@@ -1242,14 +1255,14 @@ impl VexusIndex {
         db_path: String,
         cluster_count: u32,
         max_basis_dim: u32,
-    ) -> AsyncTask<EpaBasisTask> {
+    ) -> AsyncTask<TrackedTask<EpaBasisTask>> {
         println!(
             "[Vexus-Lite][EPA] compute_epa_basis task accepted: db={}, cluster_count={}, max_basis_dim={}",
             db_path,
             cluster_count,
             max_basis_dim
         );
-        AsyncTask::new(EpaBasisTask {
+        self.tracked_task(EpaBasisTask {
             db_path,
             dimensions: self.dimensions,
             cluster_count: cluster_count.max(8),
@@ -1309,7 +1322,9 @@ impl VexusIndex {
 
         let started_at = std::time::Instant::now();
         let cache_json = pending.cache_json.clone();
+        let source_generation = pending.source_generation;
         with_registered_write(&db_path, move |transaction| {
+            storage::ensure_generation(transaction, source_generation)?;
             transaction
                 .execute(
                     "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?1, ?2)",
@@ -1370,8 +1385,8 @@ impl VexusIndex {
         min_neighbors: Option<u32>,
         model_sig: Option<String>,
         effective_config_json: Option<String>,
-    ) -> AsyncTask<IntrinsicResidualTask> {
-        AsyncTask::new(IntrinsicResidualTask {
+    ) -> AsyncTask<TrackedTask<IntrinsicResidualTask>> {
+        self.tracked_task(IntrinsicResidualTask {
             db_path,
             dimensions: self.dimensions,
             max_basis: max_svd_rank.unwrap_or(4),
@@ -1401,8 +1416,8 @@ impl VexusIndex {
         model_sig: String,
         min_similarity: Option<f64>,
         full_rebuild: Option<bool>,
-    ) -> AsyncTask<PairwiseSimTask> {
-        AsyncTask::new(PairwiseSimTask {
+    ) -> AsyncTask<TrackedTask<PairwiseSimTask>> {
+        self.tracked_task(PairwiseSimTask {
             db_path,
             dimensions: self.dimensions,
             model_sig,
@@ -1418,6 +1433,7 @@ pub struct EpaPendingCache {
     cache_json: String,
     cache_sig: String,
     db_identity: String,
+    source_generation: u64,
     tag_count: u32,
     cluster_count: u32,
     basis_count: u32,
@@ -1780,7 +1796,8 @@ impl Task for EpaBasisTask {
         let mut tag_names = Vec::new();
         let mut tag_vectors = Vec::new();
 
-        with_registered_read(&self.db_path, |connection| {
+        let source_generation = with_registered_read_transaction(&self.db_path, |connection| {
+            let generation = storage::read_generation(connection)?;
             let mut statement = connection
                 .prepare("SELECT name, vector FROM tags WHERE vector IS NOT NULL")
                 .map_err(|error| format!("Prepare tags failed: {}", error))?;
@@ -1804,7 +1821,7 @@ impl Task for EpaBasisTask {
                 tag_names.push(name);
                 tag_vectors.push(vector);
             }
-            Ok(())
+            Ok(generation)
         })
         .map_err(Error::from_reason)?;
 
@@ -2003,6 +2020,7 @@ impl Task for EpaBasisTask {
                 cache_json,
                 cache_sig,
                 db_identity,
+                source_generation,
                 tag_count: tag_count as u32,
                 cluster_count: k_clusters as u32,
                 basis_count: selected_k as u32,
@@ -2458,7 +2476,8 @@ impl Task for IntrinsicResidualTask {
             sha2::Sha256::new()
         };
 
-        with_registered_read(&self.db_path, |conn| {
+        let source_generation = with_registered_read_transaction(&self.db_path, |conn| {
+            let generation = storage::read_generation(conn)?;
             let mut stmt = conn
                 .prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL ORDER BY id")
                 .map_err(|e| format!("Prepare failed: {}", e))?;
@@ -2632,7 +2651,7 @@ impl Task for IntrinsicResidualTask {
                     println!("[Vexus-Lite][IntrinsicResidual] semantic gate enabled but model_sig missing; using semantic floor.");
                 }
             }
-            Ok(())
+            Ok(generation)
         })
         .map_err(Error::from_reason)?;
 
@@ -2847,6 +2866,7 @@ impl Task for IntrinsicResidualTask {
             let db_path_for_write = self.db_path.clone();
 
             with_registered_write(&db_path_for_write, move |tx| {
+            storage::ensure_generation(tx, source_generation)?;
             // 数值表保存当前健康 V9.1 artifact；residual_energy 作为 V9.1 锚增益的
             // 通用兼容镜像。退休的 v8_3_compat_gain 列保留物理结构但写入 NULL。
             // 状态表按 artifact 版本化保留，允许 skipped/failed 也参与完整性判断。
@@ -3067,7 +3087,12 @@ impl Task for PairwiseSimTask {
         let mut pair_set: HashSet<(i64, i64)> = HashSet::new();
         let mut max_tag_id = 0_i64;
         let mut file_tag_rows = 0_u64;
-        let (pair_count, graph_generation) = with_registered_read_napi(&self.db_path, |conn| {
+        let (pair_count, graph_generation, source_generation) = storage::with_registered_read_transaction_napi(&self.db_path, |conn| {
+            let source_generation = storage::read_generation(conn).map_err(Error::from_reason)?;
+            let current_fact: String = conn.query_row(
+                "SELECT value FROM kv_store WHERE key='tagmemo_pairwise_fact_generation'",
+                [], |row| row.get(0),
+            ).map_err(|error| Error::from_reason(error.to_string()))?;
             let mut content_hasher = {
                 use sha2::Digest;
                 sha2::Sha256::new()
@@ -3163,14 +3188,14 @@ impl Task for PairwiseSimTask {
             let pair_count = pair_set.len() as u32;
             let graph_generation = format!(
                 "fact:{}:content:{}:tags:{}:max_tag:{}:file_tag_rows:{}:pairs:{}",
-                fact_generation,
+                current_fact,
                 content_digest,
                 tag_vectors.len(),
                 max_tag_id,
                 file_tag_rows,
                 pair_count
             );
-            Ok((pair_count, graph_generation))
+            Ok((pair_count, graph_generation, source_generation))
         })
         .map_err(|error| Error::from_reason(error.reason.clone()))?;
 
@@ -3343,6 +3368,7 @@ impl Task for PairwiseSimTask {
             let status_rows_for_write = status_rows;
 
             with_registered_write(&self.db_path, move |tx| {
+                storage::ensure_generation(tx, source_generation)?;
                 if full_rebuild_for_write {
                     tx.execute("DELETE FROM tag_pair_similarity", [])
                         .map_err(|e| {
@@ -3468,7 +3494,7 @@ pub(crate) fn save_index_snapshot(
     index_path: &str,
 ) -> std::result::Result<(), String> {
     let index = index
-        .write()
+        .read()
         .map_err(|error| format!("Index save lock failed: {}", error))?;
     let target = std::path::Path::new(index_path);
     let temp = unique_index_sidecar_path(target, "tmp");
@@ -3482,6 +3508,7 @@ pub(crate) fn save_index_snapshot(
         ));
     }
 
+    drop(index);
     if let Err(error) = sync_index_file(&temp) {
         let _ = std::fs::remove_file(&temp);
         return Err(format!(
