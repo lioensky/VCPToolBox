@@ -1,6 +1,6 @@
 'use strict';
 
-const { hashStable } = require('./immutable');
+const { hashStable } = require('../../../modules/tagmemoV10/immutable');
 
 function edgeKey(sourceId, targetId) {
     return `${Number(sourceId)}:${Number(targetId)}`;

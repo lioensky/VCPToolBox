@@ -1,6 +1,6 @@
 'use strict';
 
-const { hashStable, immutableSnapshot } = require('./immutable');
+const { hashStable, immutableSnapshot } = require('../../../modules/tagmemoV10/immutable');
 
 const PROVENANCE_CLASSES = Object.freeze([
     'public',

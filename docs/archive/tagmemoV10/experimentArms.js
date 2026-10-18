@@ -2,7 +2,7 @@
 
 const {
     computeRiverObservability
-} = require('./riverObservability');
+} = require('../../../modules/tagmemoV10/riverObservability');
 
 const ARM_NAMES = Object.freeze([
     'pure',
