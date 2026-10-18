@@ -709,19 +709,12 @@ impl Task for TagConsistencyPrepareTask {
             })
             .collect();
 
-        let ignored = |relative: &str| {
-            let parts: Vec<&str> = relative.split(['/', '\\']).filter(|part| !part.is_empty()).collect();
-            let diary = parts.first().copied().unwrap_or("Root");
-            let file_name = parts.last().copied().unwrap_or("");
-            let dirs = parts.iter().take(parts.len().saturating_sub(1));
-            dirs.clone().any(|part| {
-                ["node_modules", ".git", "dist", "target", "image"].contains(part)
-                    || part.starts_with('.')
-                    || request.ignore_folders.iter().any(|item| item == part)
-            }) || request.ignore_folders.iter().any(|item| item == diary)
-                || request.ignore_prefixes.iter().any(|item| diary.starts_with(item) || file_name.starts_with(item))
-                || request.ignore_suffixes.iter().any(|item| diary.ends_with(item) || file_name.ends_with(item))
-        };
+        let extensions = HashSet::from(["md".to_string(), "txt".to_string()]);
+        let folders = request.ignore_folders.iter().cloned().collect();
+        let ignored = |relative: &str| !crate::knowledge_path_allowed(
+            std::path::Path::new(relative), &extensions, &folders,
+            &request.ignore_prefixes, &request.ignore_suffixes,
+        );
 
         let rules = TagRules {
             tag_blacklist_super: request.tag_blacklist_super.clone(),
@@ -761,7 +754,7 @@ impl Task for TagConsistencyPrepareTask {
             let mut source_path = None;
             let mut source_hash = None;
             let status;
-            let expected = if ignored(&relative) || !relative.to_ascii_lowercase().ends_with(".md") && !relative.to_ascii_lowercase().ends_with(".txt") {
+            let expected = if ignored(&relative) {
                 status = "ignored";
                 ignored_count += 1;
                 Vec::new()

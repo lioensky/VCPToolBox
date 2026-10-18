@@ -4062,45 +4062,36 @@ fn watcher_path_allowed(
     ignore_prefixes: &[String],
     ignore_suffixes: &[String],
 ) -> bool {
-    let ext = match path.extension() {
-        Some(value) => value.to_string_lossy().to_lowercase(),
-        None => return false,
-    };
-    if !allowed_extensions.contains(&ext) {
-        return false;
-    }
+    let Ok(relative) = path.strip_prefix(root_path) else { return false; };
+    knowledge_path_allowed(relative, allowed_extensions, ignore_folders, ignore_prefixes, ignore_suffixes)
+}
 
-    let rel_path = match path.strip_prefix(root_path) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    let diary_name = rel_path
-        .components()
-        .next()
-        .map(|value| value.as_os_str().to_string_lossy().to_string())
-        .unwrap_or_else(|| "Root".to_string());
-    if ignore_folders.contains(&diary_name) {
+/// Shared lexical filter: also works for deleted paths, without filesystem I/O.
+pub(crate) fn knowledge_path_allowed(
+    relative: &Path,
+    extensions: &HashSet<String>,
+    folders: &HashSet<String>,
+    prefixes: &[String],
+    suffixes: &[String],
+) -> bool {
+    if relative.as_os_str().is_empty() || relative.components().any(|component| {
+        !matches!(component, std::path::Component::Normal(_))
+    }) {
         return false;
     }
-
-    let file_name = path
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_default();
-    if ignore_prefixes
-        .iter()
-        .any(|prefix| diary_name.starts_with(prefix) || file_name.starts_with(prefix))
-    {
+    let parts: Vec<_> = relative.iter().map(|part| part.to_string_lossy()).collect();
+    let file = parts.last().map(|part| part.as_ref()).unwrap_or("");
+    let diary = if parts.len() > 1 { parts[0].as_ref() } else { "Root" };
+    if parts.iter().take(parts.len().saturating_sub(1)).any(|part| {
+        part.starts_with('.') || ["node_modules", ".git", "dist", "target", "image"].contains(&part.as_ref())
+            || folders.contains(part.as_ref())
+    }) || folders.contains(diary) {
         return false;
     }
-    if ignore_suffixes
-        .iter()
-        .any(|suffix| diary_name.ends_with(suffix) || file_name.ends_with(suffix))
-    {
-        return false;
-    }
-
-    true
+    let extension = relative.extension().map(|value| value.to_string_lossy().to_lowercase());
+    extension.is_some_and(|value| extensions.contains(&value))
+        && !prefixes.iter().any(|value| diary.starts_with(value) || file.starts_with(value))
+        && !suffixes.iter().any(|value| diary.ends_with(value) || file.ends_with(value))
 }
 
 const WATCH_EVENT_QUEUE_CAPACITY: usize = 4096;
@@ -5064,5 +5055,57 @@ mod watcher_reconciliation_tests {
         let dir = TestDirectory::new();
         assert_eq!(watch_file_snapshot(&dir.0), Err(std::io::ErrorKind::InvalidInput));
         assert_eq!(watch_file_snapshot(&dir.0.join("missing.txt")), Ok(None));
+    }
+}
+
+
+#[cfg(test)]
+mod path_filter_tests {
+    use super::*;
+
+    #[test]
+    fn shared_filter_handles_nested_folders_root_names_and_custom_extensions() {
+        let extensions = HashSet::from(["txt".into(), "custom".into()]);
+        let folders = HashSet::from(["ignored".into()]);
+        for relative in ["diary/node_modules/a.txt", "diary/.hidden/a.txt",
+            "diary/ignored/a.txt", "target/a.txt", "../outside.txt", "a.md"] {
+            assert!(!knowledge_path_allowed(Path::new(relative), &extensions, &folders, &[], &[]), "{}", relative);
+        }
+        for relative in ["root.txt", "diary/nested/a.TXT", "diary/a.custom"] {
+            assert!(knowledge_path_allowed(Path::new(relative), &extensions, &folders, &[], &[]), "{}", relative);
+        }
+        assert!(!knowledge_path_allowed(Path::new("root.txt"), &extensions, &folders, &["Root".into()], &[]));
+        assert!(!knowledge_path_allowed(Path::new("diary/pre-a.txt"), &extensions, &folders, &["pre-".into()], &[]));
+        assert!(!knowledge_path_allowed(Path::new("diary/a.txt"), &extensions, &folders, &[], &[".txt".into()]));
+    }
+
+    #[test]
+    fn initial_scan_and_notify_filter_agree_on_nested_ignored_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-filter-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let paths = ["diary/kept.txt", "diary/node_modules/no.txt",
+            "diary/.hidden/no.txt", "diary/ignored/no.txt"];
+        for relative in paths {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "Tag: example").unwrap();
+        }
+        let extensions = HashSet::from(["txt".into()]);
+        let folders = HashSet::from(["ignored".into()]);
+        let events = Arc::new(Mutex::new(VecDeque::new()));
+        emit_initial_watch_events(&root, &extensions, &folders, &[], &[],
+            &AtomicU64::new(0), &events, &Arc::new(AtomicBool::new(false)),
+            &AtomicBool::new(true), &HashSet::new());
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        for relative in paths {
+            let path = root.join(relative);
+            let emitted = events.iter().any(|event| event.path == path.to_string_lossy().replace('\\', "/"));
+            assert_eq!(emitted, watcher_path_allowed(&path, &root, &extensions, &folders, &[], &[]));
+        }
+        drop(events);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
