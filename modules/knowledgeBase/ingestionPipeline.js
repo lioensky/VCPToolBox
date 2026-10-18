@@ -406,9 +406,18 @@ async _flushBatch() {
                     const absolute = path.resolve(this.config.rootPath, doc.relPath);
                     try {
                         const current = await fs.stat(absolute);
+                        const expectedGeneration = batchPathGenerations.get(absolute) || 0;
+                        const currentGeneration = this.watcherPathGenerations.get(absolute) || 0;
                         if (current.size !== doc.size || current.mtimeMs !== doc.mtime
-                            || (this.watcherPathGenerations.get(absolute) || 0)
-                                !== (batchPathGenerations.get(absolute) || 0)) {
+                            || currentGeneration !== expectedGeneration) {
+                            console.warn(
+                                `[KnowledgeBase] 🛡️ Pre-commit snapshot changed: ${JSON.stringify({
+                                    path: doc.relPath,
+                                    size: { expected: doc.size, actual: current.size },
+                                    mtimeMs: { expected: doc.mtime, actual: current.mtimeMs },
+                                    generation: { expected: expectedGeneration, actual: currentGeneration }
+                                })}`
+                            );
                             unstableFiles.add(absolute);
                             retryDelayMs = Math.max(1000, this.config.sqliteBusyRetryDelayMs);
                             continue;
@@ -479,7 +488,15 @@ async _flushBatch() {
                 || this.config.modelSig !== batchIdentity.modelSig) {
                 throw new Error('KNOWLEDGE_STORE_MODEL_CHANGED_DURING_EMBEDDING');
             }
-            if (planFiles.length === 0) return;
+            if (planFiles.length === 0) {
+                console.warn(
+                    `[KnowledgeBase] ⏳ Batch deferred without commit: ` +
+                    `selected=${batchFiles.length}, unstable=${unstableFiles.size}, ` +
+                    `pending=${this.pendingFiles.size}, retryIn=${retryDelayMs}ms. ` +
+                    'Embedding results were not committed; inspect snapshot diagnostics above.'
+                );
+                return;
+            }
             // 过滤文件后压紧 Tag 槽位；不能提交被排除文件独有的 Tag 或尾部向量。
             const retainedTagVectors = [];
             const retainedTagSlots = new Map();

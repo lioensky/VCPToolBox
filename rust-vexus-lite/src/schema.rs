@@ -295,6 +295,41 @@ fn migrate_geometry(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// Upgrade legacy Windows keys without changing file/chunk/tag identities.
+/// Called inside the schema transaction, before any startup cleanup or watcher.
+fn migrate_legacy_file_metadata(connection: &Connection) -> Result<(), String> {
+    for (table, column) in [("files", "path"), ("kbm_file_versions", "path")] {
+        let collision: bool = connection.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {table}
+                 GROUP BY replace({column}, char(92), '/') HAVING COUNT(*) > 1)"
+            ),
+            [], |row| row.get(0),
+        ).map_err(|error| format!("inspect legacy {table} paths failed: {error}"))?;
+        if collision {
+            return Err(format!(
+                "KNOWLEDGE_STORE_LEGACY_PATH_COLLISION: {table} contains multiple rows \
+                 for the same normalized path; refusing destructive merge"
+            ));
+        }
+    }
+    connection.execute_batch(
+        "UPDATE files SET path=replace(path, char(92), '/')
+         WHERE instr(path, char(92)) > 0;
+         UPDATE files SET mtime=CAST(mtime AS INTEGER) WHERE typeof(mtime)='real';
+         UPDATE kbm_file_versions SET path=replace(path, char(92), '/')
+         WHERE instr(path, char(92)) > 0;
+         UPDATE kbm_file_versions SET mtime=CAST(mtime AS INTEGER)
+         WHERE typeof(mtime)='real';
+         UPDATE migration_deleted_files SET old_path=replace(old_path, char(92), '/')
+         WHERE instr(old_path, char(92)) > 0;
+         INSERT INTO kbm_file_versions(path,version,exists_flag,checksum,mtime,size,updated_at)
+         SELECT path,1,1,checksum,mtime,size,COALESCE(updated_at,0) FROM files WHERE true
+         ON CONFLICT(path) DO NOTHING;"
+    ).map_err(|error| format!("migrate legacy file metadata failed: {error}"))?;
+    Ok(())
+}
+
 pub(crate) fn initialize_schema(
     connection: &Connection,
     requested_version: i64,
@@ -384,6 +419,7 @@ pub(crate) fn initialize_schema(
             )
             .map_err(|error| format!("publish KBM schema version failed: {}", error))?;
     }
+    migrate_legacy_file_metadata(&transaction)?;
     transaction.commit()
         .map_err(|error| format!("commit KBM schema migration failed: {}", error))?;
     Ok(requested_version.max(version))
@@ -472,6 +508,65 @@ mod migration_tests {
             [], |row| row.get(0),
         ).unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn legacy_windows_paths_and_real_mtime_preserve_facts_and_versions() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES ('schema_version','1');"
+        ).unwrap();
+        initialize_schema(&connection, 2).unwrap();
+        connection.execute_batch(
+            "INSERT INTO files(id,path,diary_name,checksum,mtime,size,updated_at)
+             VALUES (7,'Diary\\note.txt','Diary','hash',1234.75,4,100);
+             INSERT INTO chunks(id,file_id,chunk_index,content,vector)
+             VALUES (9,7,0,'body',X'0000803f');
+             INSERT INTO tags(id,name,vector) VALUES (11,'tag',X'0000803f');
+             INSERT INTO file_tags(file_id,tag_id,position) VALUES (7,11,1);"
+        ).unwrap();
+        initialize_schema(&connection, 2).unwrap();
+        let metadata: (i64, String, i64) = connection.query_row(
+            "SELECT id,path,mtime FROM files", [],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+        ).unwrap();
+        assert_eq!(metadata, (7, "Diary/note.txt".into(), 1234));
+        let facts: (i64, i64, String, String, i64) = connection.query_row(
+            "SELECT c.id,c.file_id,c.content,hex(c.vector),ft.tag_id
+             FROM chunks c JOIN file_tags ft ON ft.file_id=c.file_id", [],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+        ).unwrap();
+        assert_eq!(facts, (9,7,"body".into(),"0000803F".into(),11));
+        connection.execute(
+            "UPDATE kbm_file_versions SET version=8 WHERE path='Diary/note.txt'", [],
+        ).unwrap();
+        initialize_schema(&connection, 2).unwrap();
+        assert_eq!(connection.query_row(
+            "SELECT version FROM kbm_file_versions WHERE path='Diary/note.txt'
+             AND exists_flag=1 AND mtime=1234", [], |r|r.get::<_,i64>(0),
+        ).unwrap(),8);
+    }
+
+    #[test]
+    fn normalized_path_collision_rolls_back_without_losing_vectors() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES ('schema_version','1');"
+        ).unwrap();
+        initialize_schema(&connection, 2).unwrap();
+        connection.execute_batch(
+            "INSERT INTO files(path,diary_name,checksum,mtime,size)
+             VALUES ('Diary\\note.txt','Diary','a',1,1),('Diary/note.txt','Diary','b',2,2);"
+        ).unwrap();
+        assert!(initialize_schema(&connection, 2).unwrap_err().contains("LEGACY_PATH_COLLISION"));
+        assert_eq!(connection.query_row(
+            "SELECT COUNT(*) FROM files", [], |r|r.get::<_,i64>(0),
+        ).unwrap(),2);
+        assert_eq!(connection.query_row(
+            "SELECT COUNT(*) FROM files WHERE instr(path,char(92))>0", [], |r|r.get::<_,i64>(0),
+        ).unwrap(),1);
     }
 
     use rusqlite::OptionalExtension;
