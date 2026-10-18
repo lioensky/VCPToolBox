@@ -97,6 +97,11 @@ class TDBKnowledgeManager {
         this.watcher = null;
         this.watcherType = null;
         this.safetyWatcher = null;
+        this.watcherEventPoller = null;
+        this.watcherPathGenerations = new Map();
+        this.watcherReconcilePromise = null;
+        this.watcherReconcileQueued = false;
+        this.stopping = false;
         this.idleEvictor = null;
         this.libraryQueues = new Map();
         this.fileEventVersions = new Map();
@@ -114,6 +119,7 @@ class TDBKnowledgeManager {
             return;
         }
 
+        this.stopping = false;
         await fs.mkdir(this.config.rootPath, { recursive: true });
         await fs.mkdir(this.config.storePath, { recursive: true });
 
@@ -350,7 +356,7 @@ class TDBKnowledgeManager {
     }
 
     _enqueueIngestJob(action, filePath, options = {}) {
-        if (!this.metaDb) return;
+        if (!this.metaDb || this.stopping) return;
         const normalizedPath = this._normalizeFilePath(filePath);
         const { library, relPath } = this._resolveLibrary(normalizedPath);
         const now = Date.now();
@@ -1144,36 +1150,13 @@ class TDBKnowledgeManager {
     _startWatcher() {
         if (this.watcher) return;
 
-        const handleRustEvent = (...args) => {
-            try {
-                const jsonPayload = args.find(arg => typeof arg === 'string');
-                if (!jsonPayload) return;
-                const payload = JSON.parse(jsonPayload);
-                const { event, path: filePath } = payload;
-                if (!filePath || typeof filePath !== 'string') return;
-
-                const generation = Number(payload.generation);
-                const hasStableProtocol =
-                    payload.stable === true &&
-                    Number.isSafeInteger(generation) &&
-                    generation > 0;
-                const normalizedPath = this._normalizeFilePath(filePath);
-                this._handleWatcherEvent(event, normalizedPath, {
-                    stable: hasStableProtocol,
-                    generation: hasStableProtocol ? generation : null,
-                    source: 'rust'
-                });
-            } catch (e) {
-                console.error('[TDBKnowledge] Failed to parse watcher event:', e.message);
-            }
-        };
-
         if (VexusWatcher) {
             try {
                 const rustWatcher = new VexusWatcher();
                 const startWatch = rustWatcher.startWatch || rustWatcher.start_watch;
-                if (typeof startWatch !== 'function') {
-                    throw new Error('VexusWatcher startWatch/start_watch method not found');
+                const drainEvents = rustWatcher.drainEvents || rustWatcher.drain_events;
+                if (typeof startWatch !== 'function' || typeof drainEvents !== 'function') {
+                    throw new Error('VexusWatcher queue ABI unavailable; using Chokidar');
                 }
 
                 startWatch.call(rustWatcher, {
@@ -1181,11 +1164,16 @@ class TDBKnowledgeManager {
                     ignoreFolders: this.config.excludeFolders,
                     ignorePrefixes: this.config.ignorePrefixes,
                     ignoreSuffixes: this.config.ignoreSuffixes,
-                    extensions: this.config.extensions
-                }, handleRustEvent);
+                    extensions: this.config.extensions,
+                    // Keep the existing JS startup scan as the single scan owner.
+                    initialScan: false
+                });
 
                 this.watcher = rustWatcher;
                 this.watcherType = 'rust';
+                this.watcherPathGenerations.clear();
+                this.watcherEventPoller = setInterval(() => this._drainRustWatcherEvents(), 100);
+                this.watcherEventPoller.unref?.();
                 this._startSafetyWatcher();
                 console.log('[TDBKnowledge] 🦀 Using Rust native watcher.');
                 return;
@@ -1245,7 +1233,88 @@ class TDBKnowledgeManager {
         console.log('[TDBKnowledge] 🛡️ Chokidar safety watcher enabled for cold knowledge files.');
     }
 
+    _drainRustWatcherEvents() {
+        if (this.stopping || this.watcherType !== 'rust' || !this.watcher) return;
+        try {
+            const drain = this.watcher.drainEvents || this.watcher.drain_events;
+            for (const payload of drain.call(this.watcher, 256) || []) {
+                if (payload.event === 'overflow') {
+                    void this._reconcileWatcherFiles();
+                    continue;
+                }
+                if (!['add', 'change', 'unlink'].includes(payload.event)
+                    || typeof payload.path !== 'string' || !payload.path) continue;
+                const filePath = this._normalizeFilePath(payload.path);
+                const generation = Number(payload.generation);
+                const stable = payload.stable === true
+                    && Number.isSafeInteger(generation) && generation > 0;
+                if (stable) {
+                    if (generation <= (this.watcherPathGenerations.get(filePath) || 0)) continue;
+                    this.watcherPathGenerations.set(filePath, generation);
+                }
+                this._handleWatcherEvent(payload.event, filePath, {
+                    stable, generation, source: 'rust'
+                });
+            }
+        } catch (error) {
+            console.warn('[TDBKnowledge] Failed to drain native watcher events:', error.message);
+            void this._reconcileWatcherFiles();
+        }
+    }
+
+    _reconcileWatcherFiles() {
+        if (this.stopping || !this.metaDb) return Promise.resolve();
+        if (this.watcherReconcilePromise) {
+            this.watcherReconcileQueued = true;
+            return this.watcherReconcilePromise;
+        }
+        this.watcherReconcilePromise = (async () => {
+            do {
+                this.watcherReconcileQueued = false;
+                // Standalone VexusWatcher cannot receive known database paths.
+                // Walk asynchronously here, and only tombstone confirmed ENOENT.
+                const walk = async dir => {
+                    if (this.stopping) return;
+                    const entries = await fs.readdir(dir, { withFileTypes: true });
+                    for (const entry of entries) {
+                        if (this.stopping) return;
+                        const filePath = path.join(dir, entry.name);
+                        if (entry.isDirectory()) {
+                            if (entry.name === 'node_modules' || entry.name.startsWith('.')
+                                || this.config.excludeFolders.includes(entry.name)) continue;
+                            try { await walk(filePath); } catch (error) {
+                                console.warn('[TDBKnowledge] Reconciliation directory skipped:', error.message);
+                            }
+                        } else if (entry.isFile() && this._isIndexable(filePath)) {
+                            this._handleWatcherEvent('change', filePath);
+                        }
+                    }
+                };
+                try { await walk(this.config.rootPath); } catch (error) {
+                    console.warn('[TDBKnowledge] Reconciliation scan failed:', error.message);
+                }
+                if (this.stopping || !this.metaDb) return;
+                const rows = this.metaDb.prepare('SELECT path FROM files').all();
+                for (const row of rows) {
+                    if (this.stopping) return;
+                    const filePath = path.resolve(this.config.rootPath, row.path);
+                    try { await fs.stat(filePath); } catch (error) {
+                        if (error.code === 'ENOENT' && !this.stopping) {
+                            this._handleWatcherEvent('unlink', filePath);
+                        }
+                    }
+                }
+            } while (this.watcherReconcileQueued && !this.stopping);
+        })().catch(error => {
+            console.warn('[TDBKnowledge] Watcher reconciliation failed:', error.message);
+        }).finally(() => {
+            this.watcherReconcilePromise = null;
+        });
+        return this.watcherReconcilePromise;
+    }
+
     _handleWatcherEvent(event, filePath, options = {}) {
+        if (this.stopping || !['add', 'change', 'unlink'].includes(event)) return;
         const normalizedPath = this._normalizeFilePath(filePath);
         if (!this._isIndexable(normalizedPath)) return;
 
@@ -1273,10 +1342,10 @@ class TDBKnowledgeManager {
         try {
             const stat1 = await fs.stat(normalizedPath);
             await new Promise(resolve => setTimeout(resolve, 500));
-            if (!this._isCurrentFileEvent(normalizedPath, version)) return;
+            if (this.stopping || !this._isCurrentFileEvent(normalizedPath, version)) return;
 
             const stat2 = await fs.stat(normalizedPath);
-            if (!this._isCurrentFileEvent(normalizedPath, version)) return;
+            if (this.stopping || !this._isCurrentFileEvent(normalizedPath, version)) return;
 
             if (stat1.size === stat2.size && stat1.mtimeMs === stat2.mtimeMs) {
                 this._queueFile(normalizedPath, version);
@@ -1405,6 +1474,14 @@ class TDBKnowledgeManager {
 
     async shutdown() {
         console.log('[TDBKnowledge] shutting down...');
+        this.stopping = true;
+        this.initialized = false;
+        if (this.watcherEventPoller) {
+            clearInterval(this.watcherEventPoller);
+            this.watcherEventPoller = null;
+        }
+        if (this.watcherReconcilePromise) await this.watcherReconcilePromise;
+        this.watcherPathGenerations.clear();
         if (this.batchTimer) clearTimeout(this.batchTimer);
         if (this.queueTimer) {
             clearInterval(this.queueTimer);
