@@ -3902,6 +3902,7 @@ impl Task for RecoverTask {
 
         let mut count = 0u32;
         let mut skipped_dim_mismatch = 0u32;
+        let mut skipped_nonfinite = 0u32;
         let rebuilt = Index::new(&usearch::IndexOptions {
             dimensions: self.dimensions as usize,
             metric: usearch::MetricKind::L2sq,
@@ -3933,10 +3934,8 @@ impl Task for RecoverTask {
                 .collect();
 
             if vector.iter().any(|value| !value.is_finite()) {
-                return Err(Error::from_reason(format!(
-                    "Recover encountered non-finite vector {}",
-                    id
-                )));
+                skipped_nonfinite = skipped_nonfinite.saturating_add(1);
+                continue;
             }
 
             if rebuilt.size() + 1 >= rebuilt.capacity() {
@@ -3971,6 +3970,9 @@ impl Task for RecoverTask {
             );
         }
 
+        if skipped_nonfinite > 0 {
+            eprintln!("[Vexus-Lite] Recovery skipped {} non-finite vectors", skipped_nonfinite);
+        }
         Ok(count)
     }
 

@@ -878,19 +878,28 @@ pub(crate) fn recover_index_snapshot(
     }).map_err(|error| format!("Construct replacement index failed: {:?}", error))?;
     replacement.reserve(rows.len().max(1))
         .map_err(|error| format!("Reserve replacement index failed: {:?}", error))?;
+    let mut skipped_invalid_vectors = 0_u64;
     for (id, bytes) in rows {
         if bytes.len() != dimension * 4 {
-            return Err("KNOWLEDGE_STORE_INDEX_VECTOR_DIMENSION_MISMATCH".to_string());
+            skipped_invalid_vectors += 1;
+            continue;
         }
         let vector: Vec<f32> = bytes.chunks_exact(4)
             .map(|part| f32::from_ne_bytes([part[0], part[1], part[2], part[3]]))
             .collect();
         if vector.iter().any(|value| !value.is_finite()) {
-            return Err("KNOWLEDGE_STORE_INDEX_NONFINITE_VECTOR".to_string());
+            skipped_invalid_vectors += 1;
+            continue;
         }
         replacement.add(id as u64, &vector)
             .map_err(|error| format!("Build replacement index failed: {:?}", error))?;
     }
+    if skipped_invalid_vectors > 0 {
+        eprintln!("[KBM] Recovery for '{}' skipped {} invalid vectors", scope, skipped_invalid_vectors);
+    }
+    let recovery_warning = (skipped_invalid_vectors > 0).then(|| serde_json::json!({
+        "skippedInvalidVectors": skipped_invalid_vectors
+    }).to_string());
     {
         let mut active = index.write()
             .map_err(|_| "Replacement index lock poisoned".to_string())?;
@@ -900,9 +909,9 @@ pub(crate) fn recover_index_snapshot(
     with_registered_write(db_path, move |tx| {
         let published = tx.execute(
             "UPDATE kbm_index_states SET state='ready',
-             applied_generation=?2, error_message=NULL
+             applied_generation=?2, error_message=?3
              WHERE scope=?1 AND state='recovering' AND facts_generation=?2",
-            rusqlite::params![scope, recovered_generation],
+            rusqlite::params![scope, recovered_generation, recovery_warning],
         ).map_err(|error| error.to_string())?;
         if published != 1 {
             return Err("KBM_INDEX_NOT_READY: facts changed during index recovery".to_string());

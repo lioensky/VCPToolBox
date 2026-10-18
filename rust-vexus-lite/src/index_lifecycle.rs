@@ -720,6 +720,7 @@ struct RestoreResult {
     slot: String,
     replayed: bool,
     rebuilt: bool,
+    skipped_invalid_vectors: u64,
 }
 
 fn new_restore_index(dimension: usize, capacity: usize) -> Result<Index> {
@@ -1000,7 +1001,20 @@ impl Task for IndexRestoreTask {
         }
 
         let mut vector_map = HashMap::with_capacity(current_rows.len());
+        let mut skipped_invalid_vectors = 0_u64;
         for (id, bytes, version) in current_rows {
+            let vector = match decode_restore_vector(&bytes, dimension) {
+                Ok(vector) => vector,
+                Err(error) => {
+                    skipped_invalid_vectors += 1;
+                    let _ = target.remove(id as u64);
+                    replayed |= loaded_persisted_index;
+                    if skipped_invalid_vectors <= 10 {
+                        eprintln!("[KBM] Skipping invalid restore vector {}: {}", id, error);
+                    }
+                    continue;
+                }
+            };
             // Tag 使用单调向量版本，不对高维 BLOB 重算哈希；Chunk 保持内容签名。
             let signature = version.unwrap_or_else(|| vector_signature(&bytes));
             let changed = baseline_ids
@@ -1009,7 +1023,7 @@ impl Task for IndexRestoreTask {
                 .map(|value| value != signature)
                 .unwrap_or(true);
             if rebuilt || !baseline_compatible || changed {
-                vector_map.insert(id, (decode_restore_vector(&bytes, dimension)?, changed));
+                vector_map.insert(id, (vector, changed));
             }
         }
 
@@ -1030,6 +1044,9 @@ impl Task for IndexRestoreTask {
             }
         }
 
+        if skipped_invalid_vectors > 0 {
+            eprintln!("[KBM] Restore skipped {} invalid vectors", skipped_invalid_vectors);
+        }
         let vector_count = target.size() as u64;
         let mut active = self
             .index
@@ -1072,6 +1089,7 @@ impl Task for IndexRestoreTask {
             slot,
             replayed,
             rebuilt,
+            skipped_invalid_vectors,
         })
         .map_err(|error| Error::from_reason(format!("Encode restore result failed: {}", error)))
     }
@@ -1193,6 +1211,74 @@ mod checkpoint_safety_tests {
         assert!(std::fs::read_dir(&root).unwrap().any(|entry| {
             entry.unwrap().path().extension().and_then(|value| value.to_str()) == Some("corrupt")
         }));
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod dirty_vector_tests {
+    use super::*;
+
+    #[test]
+    fn dirty_rows_are_reported_and_removed_from_baseline_and_live_recovery() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-dirty-{}-{}", std::process::id(), now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            let bytes: Vec<u8> = [1.0_f32,0.0].iter().flat_map(|value| value.to_ne_bytes()).collect();
+            for name in ["healthy", "dimension", "nonfinite"] {
+                tx.execute("INSERT INTO tags(name,vector) VALUES (?1,?2)",
+                    rusqlite::params![name, bytes]).map_err(|error| error.to_string())?;
+            }
+            Ok(WriteReceipt { operation:"fixture".into(), database_generation:0, facts_changed:true })
+        }).unwrap();
+        let index = crate::VexusIndex::new(2,16).unwrap();
+        let baseline = root.join("tags_a.usearch").to_string_lossy().into_owned();
+        let mut restore = IndexRestoreTask {
+            db_path:db.clone(), index_path:baseline.clone(), index:index.index.clone(),
+            content_revision:index.content_revision.clone(), memo_runtime:None,
+            scope:IndexScope::GlobalTags, diary_name:None, dimension:2,
+            model_sig:"test".into(), capacity:16,
+        };
+        restore.compute().unwrap();
+        IndexCheckpointTask {
+            db_path:db.clone(), index_path:baseline, index:index.index.clone(),
+            content_revision:index.content_revision.clone(), scope:IndexScope::GlobalTags,
+            diary_name:None, dimension:2, model_sig:"test".into(), threshold:0.05, force:true,
+        }.compute().unwrap();
+        storage.submit_write(|tx| {
+            tx.execute("UPDATE tags SET vector=?1 WHERE id=2", [vec![0_u8;4]])
+                .map_err(|error| error.to_string())?;
+            let bytes: Vec<u8> = [f32::NAN,0.0].iter().flat_map(|value| value.to_ne_bytes()).collect();
+            tx.execute("UPDATE tags SET vector=?1 WHERE id=3", [bytes])
+                .map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation:"dirty".into(), database_generation:0, facts_changed:true })
+        }).unwrap();
+        let output: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
+        assert_eq!(output["skippedInvalidVectors"], 2);
+        assert_eq!(output["vectorCount"], 1);
+        assert!(!index.index.read().unwrap().contains(2));
+        assert!(!index.index.read().unwrap().contains(3));
+        {
+            let _gate = crate::publication_gate::acquire(&db, &["global_tags".into()]).unwrap();
+            crate::knowledge_runtime::recover_index_snapshot(
+                &db, "global_tags".into(), None, &index.index, &index.content_revision, 2,
+            ).unwrap();
+        }
+        assert_eq!(index.index.read().unwrap().size(), 1);
+        let warning: String = storage.read(|connection| {
+            connection.query_row(
+                "SELECT error_message FROM kbm_index_states WHERE scope='global_tags'",
+                [], |row| row.get(0),
+            ).map_err(|error| error.to_string())
+        }).unwrap();
+        assert!(warning.contains("\"skippedInvalidVectors\":2"));
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
