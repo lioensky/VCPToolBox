@@ -718,16 +718,27 @@ class MonitorTask {
             clearInterval(this.watchdogInterval);
         }
         
-        this.watchdogInterval = setInterval(() => {
+        this.watchdogInterval = setInterval(async () => {
             const timeSinceLastData = Date.now() - this.lastDataTime;
             
             if (timeSinceLastData > this.watchdogTimeout) {
-                this._log(`看门狗触发: ${Math.round(timeSinceLastData / 1000)}秒 无数据`);
-                this._updateState(TaskState.ERROR, '看门狗超时');
+                this._log(`看门狗触发: ${Math.round(timeSinceLastData / 1000)}秒 无数据，自动停止当前任务`);
+                this._updateState(TaskState.DISCONNECTED, '看门狗超时自动停止');
                 
-                // 触发进程退出，让外部进程管理器重启
-                process.exit(1);
-            }}, WATCHDOG_CHECK_INTERVAL);
+                // 清除看门狗定时器，防止重复执行
+                if (this.watchdogInterval) {
+                    clearInterval(this.watchdogInterval);
+                    this.watchdogInterval = null;
+                }
+
+                // 优雅停止当前监控任务，避免 process.exit(1) 杀死主服务
+                try {
+                    await this.stop();
+                } catch (stopError) {
+                    this._log(`看门狗停止任务失败: ${stopError.message}`);
+                }
+            }
+        }, WATCHDOG_CHECK_INTERVAL);
         
         this._log('看门狗已启动');
     }
