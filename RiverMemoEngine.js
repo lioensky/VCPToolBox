@@ -1,5 +1,6 @@
 'use strict';
 
+const { cleanRiverConfig } = require('./modules/knowledgeBase/memoConfig');
 const {
     computeRiverObservability
 } = require('./modules/tagmemoV10/riverObservability');
@@ -46,7 +47,7 @@ class RiverMemoEngine {
             ...config,
             structRoleMinOmega:
                 options.structRoleMinOmega
-                ?? artifact?.effectiveConfig?.dstc?.topologyV3StructRoleMinOmega
+                ?? cleanRiverConfig(artifact?.effectiveConfig).topology?.structRoleMinOmega
         });
     }
 
@@ -73,9 +74,9 @@ class RiverMemoEngine {
             ...(artifact.effectiveConfig?.directAnchor || {}),
             ...(this.config?.directAnchor || {})
         };
-        const dstc = {
-            ...(artifact.effectiveConfig?.dstc || {}),
-            ...(options.dstc || {})
+        const topology = {
+            ...(cleanRiverConfig(artifact.effectiveConfig).topology || {}),
+            ...(cleanRiverConfig(options).topology || {})
         };
         return {
             queryK: candidate.queryK,
@@ -106,23 +107,23 @@ class RiverMemoEngine {
             rarityFloor: anchor.rarityFloor,
             reliabilitySeedSaturation: anchor.reliabilitySeedSaturation,
             fallbackReliabilityCap: anchor.fallbackReliabilityCap,
-            topologyBonusCap: dstc.topologyBonusCap,
-            topologyPathSaturation: dstc.topologyPathSaturation,
-            conditionalBandwidth: dstc.topologyV2ConditionalBandwidth,
-            conditionalClosureBandwidth: dstc.topologyV2ClosureBandwidth,
-            conditionalDirectBandwidth: dstc.topologyV2DirectBandwidth,
-            minimumPeers: dstc.topologyV2MinimumPeers,
-            minimumEffectivePeers: dstc.topologyV2MinimumEffectivePeers,
-            innovationConfidenceZ: dstc.topologyV2InnovationConfidenceZ,
-            innovationScale: dstc.topologyV2InnovationScale,
-            omegaGamma: dstc.topologyV3OmegaGamma,
-            structRoleMinOmega: dstc.topologyV3StructRoleMinOmega,
-            anchorBonusCap: dstc.topologyV3AnchorBonusCap,
-            anchorActivationZ: dstc.topologyV3AnchorActivationZ,
-            anchorActivationFloor: dstc.topologyV3AnchorActivationFloor,
-            anchorSaturation: dstc.topologyV3AnchorSaturation,
-            anchorFrontierContrast: dstc.topologyV3AnchorFrontierContrast,
-            anchorFrontierAbsFloor: dstc.topologyV3AnchorFrontierAbsFloor
+            topologyBonusCap: topology.topologyBonusCap,
+            topologyPathSaturation: topology.topologyPathSaturation,
+            conditionalBandwidth: topology.conditionalBandwidth,
+            conditionalClosureBandwidth: topology.conditionalClosureBandwidth,
+            conditionalDirectBandwidth: topology.conditionalDirectBandwidth,
+            minimumPeers: topology.minimumPeers,
+            minimumEffectivePeers: topology.minimumEffectivePeers,
+            innovationConfidenceZ: topology.innovationConfidenceZ,
+            innovationScale: topology.innovationScale,
+            omegaGamma: topology.omegaGamma,
+            structRoleMinOmega: topology.structRoleMinOmega,
+            anchorBonusCap: topology.anchorBonusCap,
+            anchorActivationZ: topology.anchorActivationZ,
+            anchorActivationFloor: topology.anchorActivationFloor,
+            anchorSaturation: topology.anchorSaturation,
+            anchorFrontierContrast: topology.anchorFrontierContrast,
+            anchorFrontierAbsFloor: topology.anchorFrontierAbsFloor
         };
     }
 

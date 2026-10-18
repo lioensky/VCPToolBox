@@ -232,7 +232,7 @@ class TagMemoEngine {
 
     _geometryConfig() {
         const kb = this.ragParams?.KnowledgeBaseManager || {};
-        return JSON.parse(JSON.stringify(kb.geometry || { local: kb.intrinsicResidual || {} }));
+        return JSON.parse(JSON.stringify(kb.geometry || {}));
     }
 
     async recomputeGeometry() {

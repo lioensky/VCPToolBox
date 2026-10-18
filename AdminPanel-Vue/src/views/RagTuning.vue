@@ -289,7 +289,7 @@
             <div class="rag-console__section">
               <span class="rag-console__label">风险提示</span>
               <ul class="rag-console__tips">
-                <li><strong>RiverMemo / V10 已联合校准，除启用开关外不建议调参。</strong></li>
+                <li><strong>RiverMemo 已联合校准，仅保留现役参数；资产参数保存后需重训练。</strong></li>
                 <li>高风险参数建议单独修改并观察效果。</li>
                 <li>虫洞路由参数耦合较强，不建议一次联动改太多项。</li>
                 <li>
@@ -950,9 +950,9 @@ const WORMHOLE_GROUP_NAME = "KnowledgeBaseManager";
 const V9_KERNEL_PARAM_KEY = "v9";
 const TAGMEMO_DEDICATED_KEYS = new Set([
   "resultDeduplication",
-  "tagMemoVersioning",
   "v9",
-  "intrinsicResidual",
+  "epaGateMode",
+  "geometry",
   "riverMemo",
 ]);
 const DEDUP_SOURCE_OPTIONS: ReadonlyArray<{
@@ -1984,7 +1984,7 @@ async function saveParams(): Promise<void> {
     });
 
     originalParams.value = cloneParams(params.value);
-    statusMessage.value = "RAG 参数已保存。";
+    statusMessage.value = "RAG 参数已保存；几何或构图参数修改后，请手动执行 RiverAGS 全量重训练。";
     statusType.value = "success";
     showMessage("RAG 参数已保存。", "success");
   } catch (error: unknown) {

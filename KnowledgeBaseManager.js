@@ -633,18 +633,18 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
 
             // 解析和基础结构校验全部通过后再一次性发布，避免编辑中的短暂坏 JSON
             // 覆盖仍在工作的最后健康配置。
-            this.ragParams = parsed;
+            this.ragParams = require('./modules/knowledgeBase/memoConfig').cleanRagParams(parsed);
             console.log('[KnowledgeBase] ✅ RAG 热调控参数已加载');
             if (this.resultDeduplicator) {
                 this.resultDeduplicator.updateConfig(
-                    parsed.KnowledgeBaseManager?.resultDeduplication || {}
+                    this.ragParams.KnowledgeBaseManager?.resultDeduplication || {}
                 );
             }
-            if (this.tagMemoEngine) this.tagMemoEngine.updateRagParams(parsed);
-            if (this.tagMemoV10Engine) this.tagMemoV10Engine.updateRagParams(parsed);
+            if (this.tagMemoEngine) this.tagMemoEngine.updateRagParams(this.ragParams);
+            if (this.tagMemoV10Engine) this.tagMemoV10Engine.updateRagParams(this.ragParams);
             if (this.riverMemoEngine) {
                 this.riverMemoEngine.updateConfig(
-                    parsed.KnowledgeBaseManager?.riverMemo || {}
+                    this.ragParams.KnowledgeBaseManager?.riverMemo || {}
                 );
             }
             return true;
