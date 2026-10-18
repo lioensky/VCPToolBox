@@ -472,6 +472,15 @@ fn ensure_additive_columns(connection: &Connection) -> Result<(), String> {
             "chunk_vector_sig",
             "TEXT",
         ),
+        // VCP-PATCH: legacy endorsements remain format 0 until a new checkpoint.
+        ("chunk_index_baselines", "format_version", "INTEGER NOT NULL DEFAULT 0"),
+        ("chunk_index_baselines", "file_size", "INTEGER"),
+        ("chunk_index_baselines", "file_crc", "INTEGER"),
+        ("chunk_index_baselines", "content_digest", "TEXT"),
+        ("tag_index_baselines", "format_version", "INTEGER NOT NULL DEFAULT 0"),
+        ("tag_index_baselines", "file_size", "INTEGER"),
+        ("tag_index_baselines", "file_crc", "INTEGER"),
+        ("tag_index_baselines", "content_digest", "TEXT"),
         ("tags", "vector_version", "INTEGER NOT NULL DEFAULT 1"),
         ("file_tags", "position", "INTEGER NOT NULL DEFAULT 0"),
         ("tag_intrinsic_residuals", "raw_residual_ratio", "REAL"),
@@ -514,6 +523,53 @@ fn ensure_additive_columns(connection: &Connection) -> Result<(), String> {
 #[cfg(test)]
 mod migration_tests {
     use super::*;
+
+    #[test]
+    fn legacy_index_endorsements_keep_format_zero_and_preserve_entries() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES ('schema_version','1');
+             CREATE TABLE chunk_index_baselines(
+                 diary_name TEXT NOT NULL,generation INTEGER NOT NULL,slot TEXT NOT NULL,
+                 dimension INTEGER NOT NULL,model_sig TEXT NOT NULL,chunk_count INTEGER NOT NULL,
+                 status TEXT NOT NULL,created_at INTEGER NOT NULL,
+                 PRIMARY KEY(diary_name,generation));
+             CREATE TABLE tag_index_baselines(
+                 generation INTEGER PRIMARY KEY,slot TEXT NOT NULL,dimension INTEGER NOT NULL,
+                 model_sig TEXT NOT NULL,tag_count INTEGER NOT NULL,status TEXT NOT NULL,
+                 created_at INTEGER NOT NULL);
+             INSERT INTO chunk_index_baselines VALUES ('Diary',7,'a',3072,'model',1,'ready',123);
+             INSERT INTO tag_index_baselines VALUES (9,'b',3072,'model',1,'ready',456);"
+        ).unwrap();
+        initialize_schema(&connection, 2).unwrap();
+        connection.execute_batch(
+            "INSERT INTO chunk_index_baseline_entries VALUES ('Diary',7,42,'original-signature');
+             INSERT INTO tag_index_baseline_entries VALUES (9,51,8);"
+        ).unwrap();
+        for _ in 0..2 {
+            initialize_schema(&connection, 2).unwrap();
+            for table in ["chunk_index_baselines", "tag_index_baselines"] {
+                let metadata: (i64, Option<i64>, Option<i64>, Option<String>) = connection
+                    .query_row(
+                        &format!("SELECT format_version,file_size,file_crc,content_digest FROM {table}"),
+                        [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+                    ).unwrap();
+                assert_eq!(metadata, (0, None, None, None));
+            }
+            let signature: String = connection.query_row(
+                "SELECT chunk_vector_sig FROM chunk_index_baseline_entries
+                 WHERE diary_name='Diary' AND generation=7 AND chunk_id=42",
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(signature, "original-signature");
+            let version: i64 = connection.query_row(
+                "SELECT vector_version FROM tag_index_baseline_entries
+                 WHERE generation=9 AND tag_id=51", [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(version, 8);
+        }
+    }
 
     #[test]
     fn legacy_columns_are_added_before_dependent_indices() {

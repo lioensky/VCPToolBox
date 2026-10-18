@@ -25,8 +25,8 @@ regex = "1.13.1"
 tiktoken-rs = "0.12.1"
 flate2 = "1.0"
 
-# HNSW向量索引
-usearch = "=2.21.3"
+# TDB retrieval kernels are statically linked into the same N-API module.
+vcp-tdb-index = { path = "crates/vcp-tdb-index" }
 
 # 哈希Map优化
 hashbrown = "0.14"

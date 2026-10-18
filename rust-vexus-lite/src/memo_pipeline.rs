@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc};
 use std::time::Instant;
-use usearch::Index;
+use crate::storage::load_vectors_by_ids;
 
 const PIPELINE_SCHEMA: &str = "vexus-unified-memo-pipeline-v1";
 const PIPELINE_ALGORITHM: &str = "tagmemo.epa-pyramid-spike-fusion-v9.4-calibrated-rust";
@@ -605,34 +605,26 @@ fn analyze_pyramid(
         let guard = index.read().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
         let matches = guard
             .search(&residual, config.pyramid_top_k.clamp(1, 128))
-            .map_err(|error| format!("Memo pyramid usearch search failed: {:?}", error))?;
-        if matches.keys.is_empty() {
+            .map_err(|error| format!("Memo pyramid retrieval search failed: {:?}", error))?;
+        if matches.is_empty() {
             break;
         }
-        let ids: Vec<i64> = matches.keys.iter().map(|id| *id as i64).collect();
-        let mut buffer = vec![0.0f32; dimension];
+        let ids: Vec<i64> = matches.iter().map(|(id, _)| *id as i64).collect();
+        drop(guard);
+        let mut rows = load_vectors_by_ids(connection, "tags", &ids, dimension)?;
         let mut tags = Vec::new();
-        for (position, id) in ids.iter().enumerate() {
-            let found = guard
-                .get(*id as u64, &mut buffer)
-                .map_err(|error| format!("Memo pyramid Tag vector read failed: {:?}", error))?;
-            if found == 0 {
-                continue;
-            }
+        for id in &ids {
+            let Some(vector) = rows.remove(id) else { continue };
+            let similarity = cosine(&residual, &vector);
             tags.push(PyramidTagWork {
                 id: *id,
                 name: String::new(),
-                vector: buffer.clone(),
-                similarity: matches
-                    .distances
-                    .get(position)
-                    .map(|distance| 1.0 / (1.0 + *distance as f64))
-                    .unwrap_or(0.0),
+                vector,
+                similarity,
                 contribution: 0.0,
                 handshake_magnitude: 0.0,
             });
         }
-        drop(guard);
         let names = load_tag_names(connection, &ids)?;
         for tag in &mut tags {
             tag.name = names.get(&tag.id).cloned().unwrap_or_else(|| format!("Tag#{}", tag.id));
@@ -778,11 +770,10 @@ fn gate_tags(
                 continue;
             }
             let is_core = core_names.contains(&tag.name.to_lowercase());
-            let relevance = if tag.similarity != 0.0 {
-                tag.similarity
-            } else {
-                0.5
-            };
+            // Cosine zero is a measured orthogonal relationship, not a
+            // missing-score sentinel. Every pyramid candidate is measured
+            // against its SQL original before entering this gate.
+            let relevance = tag.similarity;
             let core_gain = if is_core {
                 dynamic_core_boost * (0.95 + relevance * 0.1)
             } else {
@@ -841,7 +832,6 @@ struct FusionDiagnostics {
 }
 
 fn fuse_observation(
-    index: &Arc<crate::index_handle::IndexHandle>,
     connection: &Connection,
     query: &[f32],
     observation: &SenseOutput,
@@ -940,17 +930,12 @@ fn fuse_observation(
 
     drop(core_statement);
     let requested_count = merged.len() + ghost_tags.len();
-    let guard = index.read().map_err(|error| format!("Fusion index lock failed: {}", error))?;
-    let mut buffer = vec![0.0f32; dimension];
+    let ids = merged.iter().map(|tag| tag.id).collect::<Vec<_>>();
+    let mut rows = load_vectors_by_ids(connection, "tags", &ids, dimension)?;
     let mut vectors = Vec::with_capacity(requested_count);
     for tag in merged {
-        let found = guard
-            .get(tag.id as u64, &mut buffer)
-            .map_err(|error| format!("Memo pipeline fusion vector read failed: {:?}", error))?;
-        if found == 0 {
-            continue;
-        }
-        if magnitude(&buffer) > 1e-12 {
+        let Some(vector) = rows.remove(&tag.id) else { continue };
+        if magnitude(&vector) > 1e-12 {
             vectors.push(FusionTag {
                 id: tag.id,
                 name: if tag.name.is_empty() {
@@ -960,12 +945,11 @@ fn fuse_observation(
                 },
                 weight: tag.weight,
                 is_core: tag.is_core,
-                vector: buffer.clone(),
+                vector,
             });
         }
     }
 
-    drop(guard);
     // 幽灵节点使用专属负 ID，仅参与去重与向量融合，绝不进入 Artifact/Spike。
     let mut ghost_id = -1i64;
     let mut accepted_ghosts = 0usize;
@@ -1147,25 +1131,19 @@ fn effective_domain(
 }
 
 fn project_field(
-    index: &Index,
+    vectors: &HashMap<i64, Vec<f32>>,
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
     field: &[f64],
     dimension: usize,
 ) -> std::result::Result<Vec<f32>, String> {
     let mut output = vec![0.0f64; dimension];
-    let mut buffer = vec![0.0f32; dimension];
     let mut total = 0.0;
     for (node_index, mass) in field.iter().copied().enumerate() {
         if mass <= 0.0 {
             continue;
         }
         let id = artifact.node_ids[node_index];
-        let found = index
-            .get(id as u64, &mut buffer)
-            .map_err(|error| format!("Memo field projection failed for Tag {}: {:?}", id, error))?;
-        if found == 0 {
-            continue;
-        }
+        let Some(buffer) = vectors.get(&id) else { continue };
         total += mass;
         for offset in 0..dimension {
             output[offset] += buffer[offset] as f64 * mass;
@@ -1182,7 +1160,7 @@ fn project_field(
 
 fn solve_dual_fields(
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
-    index: &Arc<crate::index_handle::IndexHandle>,
+    connection: &Connection,
     source_entries: &[(i64, f64)],
     dimension: usize,
     config: &PipelineConfig,
@@ -1274,10 +1252,12 @@ fn solve_dual_fields(
         .collect();
     let local_domain_ids = effective_domain(artifact, &local, config.local_mass_ratio);
     let transfer_domain_ids = effective_domain(artifact, &transfer, config.transfer_mass_ratio);
-    let guard = index.read().map_err(|error| format!("Field projection lock failed: {}", error))?;
-    let local_vector = project_field(&guard, artifact, &local, dimension)?;
-    let transfer_vector = project_field(&guard, artifact, &transfer, dimension)?;
-    drop(guard);
+    let ids = artifact.node_ids.iter().enumerate()
+        .filter(|(i, _)| local[*i] > 0.0 || transfer[*i] > 0.0)
+        .map(|(_, id)| *id).collect::<Vec<_>>();
+    let vectors = load_vectors_by_ids(connection, "tags", &ids, dimension)?;
+    let local_vector = project_field(&vectors, artifact, &local, dimension)?;
+    let transfer_vector = project_field(&vectors, artifact, &transfer, dimension)?;
     let local_mass = field_mass(&local);
     let transfer_mass = field_mass(&transfer);
 
@@ -1439,7 +1419,6 @@ fn run_pipeline_with_connection(
 
     let fusion_started = Instant::now();
     let (enhanced_vector, fusion, selected_tags) = fuse_observation(
-        index,
         &connection,
         &input.query_vector,
         &observation,
@@ -1454,7 +1433,7 @@ fn run_pipeline_with_connection(
     let fusion_ms = fusion_started.elapsed().as_secs_f64() * 1000.0;
     let dual_fields = solve_dual_fields(
         artifact,
-        index,
+        connection,
         &observation.source_field,
         dimensions,
         &input.config,
@@ -1652,6 +1631,120 @@ pub(crate) fn run_with_runtime(
 #[cfg(test)]
 mod audit_gate_tests {
     use super::*;
+
+    #[test]
+    fn core_gate_preserves_zero_and_negative_cosine_measurements() {
+        let epa = EpaOutput {
+            logic_depth: 0.5, entropy: 0.0, resonance: 0.0,
+            dominant_axes: vec![], bridges: vec![], basis_count: 0,
+            cache_available: false, out_of_domain: 0.0,
+            semantic_explained_ratio: 0.0, in_domain_gate: 1.0,
+            baseline_coverage: 0.0, background_ratio: 0.0,
+        };
+        let pyramid = PyramidOutput {
+            levels: vec![], total_explained_energy: 0.0,
+            features: PyramidFeatures::default(),
+        };
+        let levels = vec![[-1.0, 0.0, 1.0].into_iter().enumerate()
+            .map(|(position, similarity)| PyramidTagWork {
+                id: position as i64 + 1, name: format!("核心{}", position),
+                vector: vec![], similarity, contribution: 1.0,
+                handshake_magnitude: 0.0,
+            }).collect::<Vec<_>>()];
+        let names = levels[0].iter().map(|tag| tag.name.clone()).collect::<Vec<_>>();
+        let (gated, _, core_boost) = gate_tags(
+            &levels, &epa, &pyramid, &names, &PipelineConfig::default(),
+        );
+        assert_eq!(gated.len(), 3);
+        for (tag, cosine) in gated.iter().zip([-1.0, 0.0, 1.0]) {
+            assert!((tag.weight - core_boost * (0.95 + cosine * 0.1)).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn pyramid_uses_index_only_for_ids_and_measures_sql_originals() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,vector BLOB);"
+        ).unwrap();
+        let bytes: Vec<u8> = [3.0_f32, 0.0, 0.0].iter()
+            .flat_map(|value| value.to_le_bytes()).collect();
+        connection.execute("INSERT INTO tags VALUES (1,'sql-original',?1)", [bytes]).unwrap();
+        let index = crate::VexusIndex::new(3, 16).unwrap();
+        index.index.write().unwrap().add(1, &[-9.0, 0.0, 0.0]).unwrap();
+        let config = PipelineConfig {
+            max_levels: 1, pyramid_top_k: 1, ..PipelineConfig::default()
+        };
+        let query = [1.0_f32, 2.0, 0.0];
+        let (output, work) = analyze_pyramid(
+            &index.index, &connection, &query, 3, &config,
+        ).unwrap();
+        assert_eq!(work[0][0].vector, vec![3.0, 0.0, 0.0]);
+        assert!((output.levels[0].tags[0].similarity - 1.0 / 5.0_f64.sqrt()).abs() < 1e-12);
+        assert!((output.levels[0].projection_magnitude - 1.0).abs() < 1e-6);
+        assert!((output.levels[0].residual_magnitude - 2.0).abs() < 1e-6);
+        assert!((output.total_explained_energy - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fusion_and_dual_projection_use_sql_original_f32() {
+        use crate::rivermemo_topology_v3::NativeArtifact;
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,vector BLOB);"
+        ).unwrap();
+        let originals = [[3.0_f32, 0.0, 0.0], [0.0, 4.0, 0.0]];
+        for (slot, vector) in originals.iter().enumerate() {
+            let bytes: Vec<u8> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
+            connection.execute("INSERT INTO tags VALUES (?1,?2,?3)",
+                rusqlite::params![slot as i64 + 1, format!("core-{}", slot + 1), bytes]
+            ).unwrap();
+        }
+        let artifact = NativeArtifact {
+            node_ids: vec![1, 2],
+            node_index: HashMap::from([(1, 0), (2, 1)]),
+            row_offsets: vec![0, 1, 2],
+            targets: vec![1, 0],
+            weights: vec![1.0, 1.0],
+            inbound: HashMap::new(), max_inbound: 0.0,
+            anchor_gain: HashMap::new(), wormhole_edges: HashSet::new(),
+            provenance: HashMap::new(),
+        };
+        let config = PipelineConfig::default();
+        let observation = sense_typed(&artifact, "sql-original-test", SenseInput {
+            query_id: None, seeds: Vec::new(), config: SenseConfig::default(),
+        }).unwrap();
+        let (fused, diagnostics, selected) = fuse_observation(
+            &connection, &[0.0, 0.0, 1.0], &observation, &[],
+            &["core-1".into(), "core-2".into()], &[], 1.0, 3, 0.5, &config,
+        ).unwrap();
+        assert_eq!(diagnostics.found_count, 2);
+        assert_eq!(selected[0].vector, originals[0]);
+        assert_eq!(selected[1].vector, originals[1]);
+        let mut expected_fusion = vec![0.3_f64, 0.4, 0.5];
+        normalize(&mut expected_fusion);
+        for (actual, expected) in fused.iter().zip(expected_fusion) {
+            assert!((actual - expected).abs() <= 1e-6);
+        }
+        let fields = solve_dual_fields(
+            &artifact, &connection, &[(1, 1.0)], 3, &config,
+        ).unwrap();
+        for (field, actual) in [
+            (&fields.local_field, &fields.local_vector),
+            (&fields.transfer_field, &fields.transfer_vector),
+        ] {
+            let mut expected = vec![0.0_f64; 3];
+            for (id, mass) in field {
+                for (out, value) in expected.iter_mut().zip(originals[*id as usize - 1]) {
+                    *out += value as f64 * mass;
+                }
+            }
+            normalize(&mut expected);
+            for (value, expected) in actual.iter().zip(expected) {
+                assert!((*value as f64 - expected).abs() <= 1e-6);
+            }
+        }
+    }
 
     #[test]
     fn pipeline_recovers_invalid_global_index_before_loading_artifact() {

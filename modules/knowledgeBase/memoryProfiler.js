@@ -169,15 +169,16 @@ function buildMemoryProfile(state) {
 
     for (const [diaryName, index] of state.diaryIndices.entries()) {
         const stats = safeIndexStats(index);
-        const estimatedBytes = estimateVexusIndexBytes(
-            stats.totalVectors,
-            dimension
-        );
+        const estimatedBytes = Number.isFinite(stats.hotBytes)
+            ? Math.max(0, stats.hotBytes)
+            : estimateVexusIndexBytes(stats.totalVectors, dimension);
         const lastUsedAt = state.diaryIndexLastUsed.get(diaryName) || null;
         loadedDiaryIndices.push({
             name: diaryName,
             stats,
             estimatedBytes,
+            mmapBytes: Math.max(0, Number(stats.mmapBytes) || 0),
+            tombstones: Math.max(0, Number(stats.tombstones) || 0),
             lastUsedAt,
             idleMs: lastUsedAt ? Date.now() - lastUsedAt : null,
             dateIndexItems: state.diaryDateIndexCache.get(diaryName)?.length || 0
@@ -188,10 +189,9 @@ function buildMemoryProfile(state) {
     );
 
     const tagIndexStats = safeIndexStats(state.tagIndex);
-    const tagIndexEstimatedBytes = estimateVexusIndexBytes(
-        tagIndexStats.totalVectors,
-        dimension
-    );
+    const tagIndexEstimatedBytes = Number.isFinite(tagIndexStats.hotBytes)
+        ? Math.max(0, tagIndexStats.hotBytes)
+        : estimateVexusIndexBytes(tagIndexStats.totalVectors, dimension);
     const tagMemo = profileTagMemo(state.tagMemoEngine);
     const riverMemo = profileRiverMemo(state);
     const diaryNameVectorEstimatedBytes =
@@ -236,7 +236,10 @@ function buildMemoryProfile(state) {
         },
         tagIndex: {
             stats: tagIndexStats,
-            estimatedBytes: tagIndexEstimatedBytes
+            estimatedBytes: tagIndexEstimatedBytes,
+            mmapBytes: Math.max(0, Number(tagIndexStats.mmapBytes) || 0),
+            tombstones: Math.max(0, Number(tagIndexStats.tombstones) || 0),
+            memoryNote: 'hotBytes 为堆内存估计；mmapBytes 是映射长度，不代表 RSS。'
         },
         diaryIndices: {
             loadedCount: state.diaryIndices.size,

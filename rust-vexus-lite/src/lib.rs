@@ -2,6 +2,9 @@
 
 mod text;
 mod index_handle;
+mod index_source;
+mod index_maintenance;
+mod retrieval_index;
 mod publication_gate;
 mod index_lifecycle;
 mod ingestion;
@@ -20,13 +23,12 @@ mod task_lifecycle;
 
 use rivermemo_topology_v3::MemoRuntime;
 use task_lifecycle::{TaskLifecycle, TrackedTask};
-use storage::with_registered_read;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use usearch::Index;
+use crate::retrieval_index::RetrievalIndex as Index;
 
 /// 搜索结果 (返回 ID 而非 Tag 文本)
 /// 上层 JS 会拿着 ID 去 SQLite 里查具体的文本内容
@@ -36,29 +38,6 @@ pub struct SearchResult {
     pub score: f64,
 }
 
-#[napi(object)]
-pub struct DualWeightedProjectionResult {
-    pub local_vector: Option<Vec<f64>>,
-    pub transfer_vector: Option<Vec<f64>>,
-    pub requested_count: u32,
-    pub found_count: u32,
-    pub missing_count: u32,
-    pub local_total_weight: f64,
-    pub transfer_total_weight: f64,
-    pub elapsed_ms: f64,
-}
-
-#[napi(object)]
-pub struct MemoFusionResult {
-    pub vector: Vec<f64>,
-    pub selected_tag_ids: Vec<i64>,
-    pub requested_count: u32,
-    pub found_count: u32,
-    pub deduplicated_count: u32,
-    pub total_weight: f64,
-    pub elapsed_ms: f64,
-}
-
 /// 统计信息
 #[napi(object)]
 pub struct VexusStats {
@@ -66,6 +45,11 @@ pub struct VexusStats {
     pub dimensions: u32,
     pub capacity: u32,
     pub memory_usage: f64,
+    /// Heap-resident routing, metadata and mutable delta estimate; excludes mmap.
+    pub hot_bytes: f64,
+    /// Mapped file length, not resident set size.
+    pub mmap_bytes: f64,
+    pub tombstones: f64,
 }
 
 /** 对任意 Chunk/日记索引执行单次排他差分后的摘要。 */
@@ -138,7 +122,7 @@ fn unique_index_sidecar_path(target: &std::path::Path, role: &str) -> std::path:
 
 fn sync_index_file(path: &std::path::Path) -> std::io::Result<()> {
     // Windows 的 FlushFileBuffers 要求句柄具备写权限；只读句柄即使文件
-    // 可读取也会返回 ERROR_ACCESS_DENIED。usearch 已完成临时文件写入，
+    // 可读取也会返回 ERROR_ACCESS_DENIED。派生资产已完成临时文件写入，
     // 此处仅重新打开同一文件执行持久化屏障，不修改内容。
     std::fs::OpenOptions::new()
         .read(true)
@@ -244,15 +228,7 @@ impl VexusIndex {
     /// 创建新的空索引
     #[napi(constructor)]
     pub fn new(dim: u32, capacity: u32) -> Result<Self> {
-        let index = Index::new(&usearch::IndexOptions {
-            dimensions: dim as usize,
-            metric: usearch::MetricKind::L2sq, // 余弦相似度通常用 L2sq 或 Cosine (如果是归一化向量，L2sq 等价于 Cosine)
-            quantization: usearch::ScalarKind::F32,
-            connectivity: 16,
-            expansion_add: 128,
-            expansion_search: 64,
-            multi: false,
-        })
+        let mut index = Index::empty(dim as usize)
         .map_err(|e| Error::from_reason(format!("Failed to create index: {:?}", e)))?;
 
         index
@@ -280,22 +256,8 @@ impl VexusIndex {
         // 为了保持 JS 调用签名兼容，保留了 map_path 参数但忽略它
         // 或者你可以修改 JS 里的调用去掉第二个参数
 
-        // 创建空索引配置
-        let index = Index::new(&usearch::IndexOptions {
-            dimensions: dim as usize,
-            metric: usearch::MetricKind::L2sq,
-            quantization: usearch::ScalarKind::F32,
-            connectivity: 16,
-            expansion_add: 128,
-            expansion_search: 64,
-            multi: false,
-        })
-        .map_err(|e| Error::from_reason(format!("Failed to create index wrapper: {:?}", e)))?;
-
-        // 加载二进制文件
-        index
-            .load(&index_path)
-            .map_err(|e| Error::from_reason(format!("Failed to load index from disk: {:?}", e)))?;
+        let mut index = Index::load_standalone(std::path::Path::new(&index_path), dim as usize)
+            .map_err(|e| Error::from_reason(format!("Failed to load vector asset: {}", e)))?;
 
         // 检查容量并扩容
         let current_capacity = index.capacity();
@@ -337,7 +299,7 @@ impl VexusIndex {
     /// 单个添加 (JS 循环调用)
     #[napi]
     pub fn add(&self, id: i64, vector: Float32Array) -> Result<()> {
-        let index = self
+        let mut index = self
             .index
             .write()
             .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
@@ -374,7 +336,7 @@ impl VexusIndex {
     /// 内部依然是逐条 add，但避免了多次获取写锁的开销。
     #[napi]
     pub fn add_batch(&self, ids: Vec<i64>, vectors: Float32Array) -> Result<()> {
-        let index = self
+        let mut index = self
             .index
             .write()
             .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
@@ -396,19 +358,9 @@ impl VexusIndex {
                 .map_err(|e| Error::from_reason(format!("Batch auto-expand failed: {:?}", e)))?;
         }
 
-        for (i, id) in ids.iter().enumerate() {
-            let start = i * dim;
-            let v = &vec_slice[start..start + dim];
-            // multi=false 下重复 key 直接 add 会报 duplicate key；
-            // 先尽力 remove 再 add，使批量路径与单条“重嵌入更新”语义一致。
-            let _ = index.remove(*id as u64);
-            index.add(*id as u64, v).map_err(|e| {
-                Error::from_reason(format!(
-                    "Batch add/update failed idx {} id {}: {:?}",
-                    i, id, e
-                ))
-            })?;
-        }
+        let keys: Vec<u64> = ids.iter().map(|id| *id as u64).collect();
+        index.apply_delta(&[], &keys, vec_slice)
+            .map_err(|error| Error::from_reason(format!("Batch add/update failed: {}", error)))?;
         if count > 0 {
             self.content_revision
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -447,7 +399,7 @@ impl VexusIndex {
 
     /// 对当前活动 Tag 索引执行一次后台排他差分。
     ///
-    /// N-API 调用只复制实际变化的向量并立即返回 Promise；耗时的 usearch 删除、
+    /// N-API 调用只复制实际变化的向量并立即返回 Promise；耗时的索引删除、
     /// upsert 与 MemoRuntime 失效均在 libuv 工作线程执行，不阻塞 Node 事件循环。
     /// 搜索通过同一 RwLock 等待差分完成，只会看到差分前或差分后的索引。
     #[napi]
@@ -492,280 +444,12 @@ impl VexusIndex {
             .search(query_slice, k as usize)
             .map_err(|e| Error::from_reason(format!("Search failed: {:?}", e)))?;
 
-        let mut results = Vec::with_capacity(matches.keys.len());
-
-        for (key, &dist) in matches.keys.iter().zip(matches.distances.iter()) {
-            results.push(SearchResult {
-                id: *key as i64,
-                score: 1.0 / (1.0 + dist as f64), // L2sq 距离转相似度分数
-            });
-        }
+        let results = matches.into_iter().map(|(id, cosine)| SearchResult {
+            id: id as i64,
+            score: cosine as f64,
+        }).collect();
 
         Ok(results)
-    }
-
-    /// RiverMemo 全局双场投影。
-    ///
-    /// Tag 向量直接从当前常驻 usearch F32 索引按 key 读取；整个查询只复用一个
-    /// dimension 大小的临时缓冲区，不维护第二份全库向量矩阵。
-    #[napi]
-    pub fn project_dual_weighted(
-        &self,
-        tag_ids: Vec<i64>,
-        local_masses: Float64Array,
-        transfer_masses: Float64Array,
-    ) -> Result<DualWeightedProjectionResult> {
-        let started_at = std::time::Instant::now();
-        let dim = self.dimensions as usize;
-        let local_weights: &[f64] = &local_masses;
-        let transfer_weights: &[f64] = &transfer_masses;
-
-        if local_weights.len() != tag_ids.len() || transfer_weights.len() != tag_ids.len() {
-            return Err(Error::from_reason(format!(
-                "Dual projection size mismatch: ids={}, local={}, transfer={}",
-                tag_ids.len(),
-                local_weights.len(),
-                transfer_weights.len()
-            )));
-        }
-
-        let index = self
-            .index
-            .read()
-            .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
-        let mut tag_vector = vec![0.0f32; dim];
-        let mut local_output = vec![0.0f64; dim];
-        let mut transfer_output = vec![0.0f64; dim];
-        let mut local_total_weight = 0.0f64;
-        let mut transfer_total_weight = 0.0f64;
-        let mut found_count = 0usize;
-
-        for (position, &tag_id) in tag_ids.iter().enumerate() {
-            let local_mass = local_weights[position].max(0.0);
-            let transfer_mass = transfer_weights[position].max(0.0);
-            if tag_id <= 0
-                || (!local_mass.is_finite() && !transfer_mass.is_finite())
-                || (local_mass <= 0.0 && transfer_mass <= 0.0)
-            {
-                continue;
-            }
-
-            let local_mass = if local_mass.is_finite() {
-                local_mass
-            } else {
-                0.0
-            };
-            let transfer_mass = if transfer_mass.is_finite() {
-                transfer_mass
-            } else {
-                0.0
-            };
-            let matches = index.get(tag_id as u64, &mut tag_vector).map_err(|e| {
-                Error::from_reason(format!(
-                    "Failed to read Tag vector {} from usearch: {:?}",
-                    tag_id, e
-                ))
-            })?;
-            if matches == 0 {
-                continue;
-            }
-
-            found_count += 1;
-            for dimension in 0..dim {
-                let value = tag_vector[dimension] as f64;
-                if local_mass > 0.0 {
-                    local_output[dimension] += value * local_mass;
-                }
-                if transfer_mass > 0.0 {
-                    transfer_output[dimension] += value * transfer_mass;
-                }
-            }
-            local_total_weight += local_mass;
-            transfer_total_weight += transfer_mass;
-        }
-
-        let finalize = |mut output: Vec<f64>, total_weight: f64| -> Option<Vec<f64>> {
-            if total_weight <= 0.0 {
-                return None;
-            }
-            let mut norm_sq = 0.0f64;
-            for value in output.iter_mut() {
-                *value /= total_weight;
-                norm_sq += *value * *value;
-            }
-            let norm = norm_sq.sqrt();
-            if norm <= 1e-12 {
-                return None;
-            }
-            for value in output.iter_mut() {
-                *value /= norm;
-            }
-            Some(output)
-        };
-
-        Ok(DualWeightedProjectionResult {
-            local_vector: finalize(local_output, local_total_weight),
-            transfer_vector: finalize(transfer_output, transfer_total_weight),
-            requested_count: tag_ids.len() as u32,
-            found_count: found_count as u32,
-            missing_count: tag_ids.len().saturating_sub(found_count) as u32,
-            local_total_weight,
-            transfer_total_weight,
-            elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
-        })
-    }
-
-    /// 使用当前 VexusIndex 唯一 Tag 向量空间完成 TagMemo 上下文融合。
-    ///
-    /// 只在批量读取请求涉及的 Tag 向量时短持 usearch 读锁；语义去重、
-    /// 上下文加权和最终融合均在释放索引锁后执行，不维护第二份全库向量。
-    #[napi]
-    pub fn fuse_memo_context(
-        &self,
-        original: Float32Array,
-        tag_ids: Vec<i64>,
-        tag_weights: Float64Array,
-        alpha: f64,
-        dedup_threshold: Option<f64>,
-        max_tags: Option<u32>,
-    ) -> Result<MemoFusionResult> {
-        let started_at = std::time::Instant::now();
-        let dim = self.dimensions as usize;
-        let source: &[f32] = &original;
-        let weights: &[f64] = &tag_weights;
-        if source.len() != dim {
-            return Err(Error::from_reason(format!(
-                "Memo fusion dimension mismatch: expected {}, got {}",
-                dim,
-                source.len()
-            )));
-        }
-        if tag_ids.len() != weights.len() {
-            return Err(Error::from_reason(format!(
-                "Memo fusion input mismatch: ids={}, weights={}",
-                tag_ids.len(),
-                weights.len()
-            )));
-        }
-
-        let requested_count = tag_ids.len();
-        let mut requested: Vec<(i64, f64)> = tag_ids
-            .into_iter()
-            .zip(weights.iter().copied())
-            .filter_map(|(id, weight)| {
-                let weight = if weight.is_finite() {
-                    weight.max(0.0)
-                } else {
-                    0.0
-                };
-                (id > 0 && weight > 0.0).then_some((id, weight))
-            })
-            .collect();
-        requested.sort_by(|left, right| {
-            right
-                .1
-                .partial_cmp(&left.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left.0.cmp(&right.0))
-        });
-        requested.truncate(max_tags.unwrap_or(128).clamp(1, 1024) as usize);
-
-        let mut vectors: Vec<(i64, f64, Vec<f32>, f64)> = Vec::with_capacity(requested.len());
-        {
-            let index = self.index.read().map_err(|error| {
-                Error::from_reason(format!("Memo fusion index lock failed: {}", error))
-            })?;
-            let mut buffer = vec![0.0f32; dim];
-            for (id, weight) in requested {
-                let matches = index.get(id as u64, &mut buffer).map_err(|error| {
-                    Error::from_reason(format!(
-                        "Memo fusion failed to read Tag vector {}: {:?}",
-                        id, error
-                    ))
-                })?;
-                if matches == 0 {
-                    continue;
-                }
-                let norm = buffer
-                    .iter()
-                    .map(|value| (*value as f64) * (*value as f64))
-                    .sum::<f64>()
-                    .sqrt();
-                if norm <= 1e-12 {
-                    continue;
-                }
-                vectors.push((id, weight, buffer.clone(), norm));
-            }
-        }
-
-        let found_count = vectors.len();
-        let threshold = dedup_threshold.unwrap_or(0.88).clamp(-1.0, 1.0);
-        let mut selected: Vec<(i64, f64, Vec<f32>, f64)> = Vec::new();
-        for (id, weight, vector, norm) in vectors {
-            let redundant = selected.iter().any(|(_, _, existing, existing_norm)| {
-                let dot = vector
-                    .iter()
-                    .zip(existing.iter())
-                    .map(|(left, right)| (*left as f64) * (*right as f64))
-                    .sum::<f64>();
-                dot / (norm * *existing_norm) > threshold
-            });
-            if !redundant {
-                selected.push((id, weight, vector, norm));
-            }
-        }
-
-        let mut context = vec![0.0f64; dim];
-        let total_weight: f64 = selected.iter().map(|entry| entry.1).sum();
-        if total_weight > 0.0 {
-            for (_, weight, vector, _) in &selected {
-                for dimension in 0..dim {
-                    context[dimension] += vector[dimension] as f64 * *weight;
-                }
-            }
-            for value in &mut context {
-                *value /= total_weight;
-            }
-            let context_norm = context
-                .iter()
-                .map(|value| value * value)
-                .sum::<f64>()
-                .sqrt();
-            if context_norm > 1e-12 {
-                for value in &mut context {
-                    *value /= context_norm;
-                }
-            }
-        }
-
-        let mix = if alpha.is_finite() {
-            alpha.clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let mut fused: Vec<f64> = source
-            .iter()
-            .zip(context.iter())
-            .map(|(source_value, context_value)| {
-                (1.0 - mix) * (*source_value as f64) + mix * *context_value
-            })
-            .collect();
-        let fused_norm = fused.iter().map(|value| value * value).sum::<f64>().sqrt();
-        if fused_norm > 1e-12 {
-            for value in &mut fused {
-                *value /= fused_norm;
-            }
-        }
-
-        Ok(MemoFusionResult {
-            vector: fused,
-            selected_tag_ids: selected.iter().map(|entry| entry.0).collect(),
-            requested_count: requested_count as u32,
-            found_count: found_count as u32,
-            deduplicated_count: selected.len() as u32,
-            total_weight,
-            elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
-        })
     }
 
     /// 在本 Tag 向量索引与 MemoRuntime 上执行统一查询数学管线。
@@ -825,7 +509,7 @@ impl VexusIndex {
         db_path: String,
         input_json: String,
     ) -> AsyncTask<TrackedTask<memo_artifact_builder::NativeMemoArtifactBuildTask>> {
-        memo_artifact_builder::rebuild_with_runtime(&self.tasks, self.index.clone(), self.memo_runtime.clone(), db_path, input_json)
+        memo_artifact_builder::rebuild_with_runtime(&self.tasks, self.dimensions as usize, self.memo_runtime.clone(), db_path, input_json)
     }
 
     /// 从已有 Sense 观测构建方法模块框架，不重新感应或修改图资产。
@@ -870,7 +554,7 @@ impl VexusIndex {
     /// 删除 (按 ID)
     #[napi]
     pub fn remove(&self, id: i64) -> Result<()> {
-        let index = self
+        let mut index = self
             .index
             .write()
             .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
@@ -888,11 +572,15 @@ impl VexusIndex {
     #[napi]
     pub fn stats(&self) -> Result<VexusStats> {
         let (count, capacity, memory) = self.index.cached_stats();
+        let (mmap, tombstones) = self.index.cached_asset_stats();
         Ok(VexusStats {
             total_vectors: count as u32,
             dimensions: self.dimensions,
             capacity: capacity as u32,
             memory_usage: memory as f64,
+            hot_bytes: memory as f64,
+            mmap_bytes: mmap as f64,
+            tombstones: tombstones as f64,
         })
     }
 
@@ -931,18 +619,14 @@ pub(crate) fn save_index_snapshot(
     let index = index
         .read()
         .map_err(|error| format!("Index save lock failed: {}", error))?;
-    let mut snapshot = vec![0_u8; index.serialized_length()];
-    index.save_to_buffer(&mut snapshot)
-        .map_err(|error| format!("Failed to serialize index snapshot: {:?}", error))?;
-    drop(index);
     let target = std::path::Path::new(index_path);
     let temp = unique_index_sidecar_path(target, "tmp");
     let temp_text = temp.to_string_lossy().into_owned();
-
-    if let Err(error) = std::fs::write(&temp, snapshot) {
+    if let Err(error) = index.write_staging(&temp, index.identity()) {
         let _ = std::fs::remove_file(&temp);
-        return Err(format!("Failed to write temporary index {}: {}", temp_text, error));
+        return Err(format!("Failed to stream temporary index {}: {}", temp_text, error));
     }
+    drop(index);
 
     if let Err(error) = sync_index_file(&temp) {
         let _ = std::fs::remove_file(&temp);
@@ -1052,7 +736,7 @@ impl Task for ChunkIndexDeltaTask {
             });
         }
 
-        let index = self.index.write().map_err(|error| {
+        let mut index = self.index.write().map_err(|error| {
             Error::from_reason(format!("Chunk delta index write lock failed: {}", error))
         })?;
 
@@ -1074,30 +758,15 @@ impl Task for ChunkIndexDeltaTask {
             })?;
         }
 
-        let mut applied_deletes = 0_u32;
-        for id in &unique_removes {
-            if index.remove(*id as u64).is_ok() {
-                applied_deletes = applied_deletes.saturating_add(1);
-            }
-        }
-
-        let mut applied_upserts = 0_u32;
-        for (position, id) in self.upsert_ids.iter().enumerate() {
-            let start = position * dim;
-            let vector = &self.upsert_vectors[start..start + dim];
-            let _ = index.remove(*id as u64);
-            index.add(*id as u64, vector).map_err(|error| {
-                Error::from_reason(format!(
-                    "Chunk delta became unusable after partial apply at upsert {} id {}: {:?}",
-                    position, id, error
-                ))
-            })?;
-            applied_upserts = applied_upserts.saturating_add(1);
-        }
+        let removes: Vec<u64> = unique_removes.iter().map(|id| *id as u64).collect();
+        let upserts: Vec<u64> = self.upsert_ids.iter().map(|id| *id as u64).collect();
+        let applied_deletes = index.apply_delta(&removes, &upserts, &self.upsert_vectors)
+            .map_err(|error| Error::from_reason(format!("Chunk delta failed: {}", error)))? as u32;
+        let applied_upserts = upserts.len() as u32;
 
         let total_vectors = index.size() as u32;
-        drop(index);
         let revision = self.content_revision.fetch_add(1, Ordering::AcqRel) + 1;
+        drop(index);
 
         Ok(ChunkIndexDeltaResult {
             requested_deletes: unique_removes.len() as u32,
@@ -1165,7 +834,7 @@ impl Task for TagIndexDeltaTask {
         }
         let unique_removes: HashSet<i64> = self.remove_ids.iter().copied().collect();
 
-        let index = self.index.write().map_err(|error| {
+        let mut index = self.index.write().map_err(|error| {
             Error::from_reason(format!("Tag delta index lock failed: {}", error))
         })?;
 
@@ -1187,31 +856,16 @@ impl Task for TagIndexDeltaTask {
             })?;
         }
 
-        let mut applied_deletes = 0_u32;
-        for id in &unique_removes {
-            if index.remove(*id as u64).is_ok() {
-                applied_deletes = applied_deletes.saturating_add(1);
-            }
-        }
-
-        let mut applied_upserts = 0_u32;
-        for (position, id) in self.upsert_ids.iter().enumerate() {
-            let start = position * dim;
-            let vector = &self.upsert_vectors[start..start + dim];
-            let _ = index.remove(*id as u64);
-            index.add(*id as u64, vector).map_err(|error| {
-                Error::from_reason(format!(
-                    "Tag delta became unusable after partial apply at upsert {} id {}: {:?}",
-                    position, id, error
-                ))
-            })?;
-            applied_upserts = applied_upserts.saturating_add(1);
-        }
+        let removes: Vec<u64> = unique_removes.iter().map(|id| *id as u64).collect();
+        let upserts: Vec<u64> = self.upsert_ids.iter().map(|id| *id as u64).collect();
+        let applied_deletes = index.apply_delta(&removes, &upserts, &self.upsert_vectors)
+            .map_err(|error| Error::from_reason(format!("Tag delta failed: {}", error)))? as u32;
+        let applied_upserts = upserts.len() as u32;
 
         let total_vectors = index.size() as u32;
-        drop(index);
         self.content_revision
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        drop(index);
 
         self.memo_runtime.clear().map_err(|error| {
             Error::from_reason(format!(
@@ -1249,121 +903,39 @@ impl Task for RecoverTask {
     type JsValue = u32;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let expected_byte_len = self.dimensions as usize * std::mem::size_of::<f32>();
-
-        let table_type = self.table_type.clone();
-        let diary_name = self.filter_diary_name.clone();
-        let rows: Vec<(i64, Vec<u8>)> = with_registered_read(&self.db_path, move |connection| {
-            if table_type == "tags" {
-                let mut statement = connection
-                    .prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL")
-                    .map_err(|error| format!("Prepare recovery query failed: {}", error))?;
-                let rows = statement
-                    .query_map([], |row| {
-                        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-                    })
-                    .map_err(|error| format!("Query recovery rows failed: {}", error))?;
-
-                rows.collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(|error| format!("Decode recovery row failed: {}", error))
-            } else if table_type == "chunks" {
-                let diary_name = diary_name.as_deref().ok_or_else(|| {
-                    "Recovery requires a diary name for chunk indices".to_string()
-                })?;
-                let mut statement = connection
-                    .prepare(
-                        "SELECT c.id, c.vector \
-                         FROM chunks c \
-                         JOIN files f ON c.file_id = f.id \
-                         WHERE f.diary_name = ?1 AND c.vector IS NOT NULL",
-                    )
-                    .map_err(|error| format!("Prepare recovery query failed: {}", error))?;
-                let rows = statement
-                    .query_map([diary_name], |row| {
-                        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-                    })
-                    .map_err(|error| format!("Query recovery rows failed: {}", error))?;
-
-                rows.collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(|error| format!("Decode recovery row failed: {}", error))
-            } else {
-                Err("Unsupported recovery table type".to_string())
-            }
-        })
-        .map_err(Error::from_reason)?;
-
-        let mut count = 0u32;
-        let mut skipped_dim_mismatch = 0u32;
-        let mut skipped_nonfinite = 0u32;
-        let rebuilt = Index::new(&usearch::IndexOptions {
-            dimensions: self.dimensions as usize,
-            metric: usearch::MetricKind::L2sq,
-            quantization: usearch::ScalarKind::F32,
-            connectivity: 16,
-            expansion_add: 128,
-            expansion_search: 64,
-            multi: false,
-        })
-        .map_err(|error| {
-            Error::from_reason(format!("Recover index construction failed: {:?}", error))
+        let diary = match self.table_type.as_str() {
+            "tags" => None,
+            "chunks" => Some(self.filter_diary_name.as_deref().ok_or_else(|| {
+                Error::from_reason("Recovery requires a diary name for chunk indices")
+            })?),
+            _ => return Err(Error::from_reason("Unsupported recovery table type")),
+        };
+        let scope = diary.map(|name| format!("diary:{}", name))
+            .unwrap_or_else(|| "global_tags".to_string());
+        let _gate = publication_gate::acquire(&self.db_path, &[scope])
+            .map_err(Error::from_reason)?;
+        let revision = self.content_revision.load(Ordering::Acquire);
+        let staging = unique_index_sidecar_path(std::path::Path::new(&self.db_path), "recovery.vec");
+        let build = storage::with_registered_read_transaction(&self.db_path, |connection| {
+            index_source::build_from_connection(
+                connection, diary, self.dimensions as usize,
+                "unendorsed-standalone-recovery", &staging,
+            )
+        }).map_err(Error::from_reason)?;
+        let count = u32::try_from(build.index().len())
+            .map_err(|_| Error::from_reason("Recovery vector count exceeds N-API limit"))?;
+        let skipped = build.skipped_invalid;
+        let mut index = self.index.write().map_err(|error| {
+            Error::from_reason(format!("Recover index lock failed: {}", error))
         })?;
-
-        rebuilt.reserve(rows.len().max(1)).map_err(|error| {
-            Error::from_reason(format!("Recover initial reserve failed: {:?}", error))
-        })?;
-
-        // 维度不匹配按兼容契约跳过；所有 SQL 读取和临时索引构建完成后，
-        // 才取得活动索引写锁执行一次替换，避免失败时污染旧实例。
-        for (id, vector_bytes) in rows {
-            if vector_bytes.len() != expected_byte_len {
-                skipped_dim_mismatch = skipped_dim_mismatch.saturating_add(1);
-                continue;
-            }
-
-            let vector: Vec<f32> = vector_bytes
-                .chunks_exact(std::mem::size_of::<f32>())
-                .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
-                .collect();
-
-            if vector.iter().any(|value| !value.is_finite()) {
-                skipped_nonfinite = skipped_nonfinite.saturating_add(1);
-                continue;
-            }
-
-            if rebuilt.size() + 1 >= rebuilt.capacity() {
-                let new_capacity = (rebuilt.capacity().max(1) as f64 * 1.5) as usize;
-                rebuilt.reserve(new_capacity).map_err(|error| {
-                    Error::from_reason(format!(
-                        "Recover reserve failed before vector {}: {:?}",
-                        id, error
-                    ))
-                })?;
-            }
-
-            rebuilt.add(id as u64, &vector).map_err(|error| {
-                Error::from_reason(format!("Recover add failed for vector {}: {:?}", id, error))
-            })?;
-            count = count.saturating_add(1);
+        if self.content_revision.load(Ordering::Acquire) != revision {
+            return Err(Error::from_reason("Recovery content revision changed; retry required"));
         }
-
-        let mut index = self
-            .index
-            .write()
-            .map_err(|error| Error::from_reason(format!("Recover index lock failed: {}", error)))?;
-        *index = rebuilt;
+        *index = Index::from_sql(build);
+        self.content_revision.fetch_add(1, Ordering::AcqRel);
         drop(index);
-        self.content_revision
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-
-        if skipped_dim_mismatch > 0 {
-            println!(
-                "[Vexus-Lite] Skipped {} vectors due to dimension mismatch (expected {} bytes)",
-                skipped_dim_mismatch, expected_byte_len
-            );
-        }
-
-        if skipped_nonfinite > 0 {
-            eprintln!("[Vexus-Lite] Recovery skipped {} non-finite vectors", skipped_nonfinite);
+        if skipped > 0 {
+            eprintln!("[Vexus-Lite] Recovery skipped {} invalid SQL vectors", skipped);
         }
         Ok(count)
     }

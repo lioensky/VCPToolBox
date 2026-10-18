@@ -1081,49 +1081,10 @@ fn load_tag_vectors_by_ids(
     ids: &[i64],
     dimension: usize,
 ) -> std::result::Result<(HashMap<i64, Vec<f32>>, usize), String> {
-    const SQLITE_BATCH_SIZE: usize = 500;
-
-    let mut unique_ids: Vec<i64> = ids
-        .iter()
-        .copied()
-        .filter(|id| *id > 0)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    unique_ids.sort_unstable();
-
-    let mut vectors = HashMap::with_capacity(unique_ids.len());
-    let mut sql_batches = 0usize;
-    for batch in unique_ids.chunks(SQLITE_BATCH_SIZE) {
-        if batch.is_empty() {
-            continue;
-        }
-        sql_batches += 1;
-        let placeholders = std::iter::repeat("?")
-            .take(batch.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!("SELECT id, vector FROM tags WHERE id IN ({})", placeholders);
-        let mut statement = connection
-            .prepare(&sql)
-            .map_err(|error| format!("prepare batched Tag vector read failed: {}", error))?;
-        let rows = statement
-            .query_map(rusqlite::params_from_iter(batch.iter()), |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })
-            .map_err(|error| format!("query batched Tag vectors failed: {}", error))?;
-        for row in rows {
-            // 查询河网与 Anchor 向量的旧逐 ID 读取会忽略单行读取错误；
-            // 共享批量读取必须保持相同的“缺失向量”降级语义。
-            let Ok((id, bytes)) = row else {
-                continue;
-            };
-            if let Some(vector) = decode_vector(&bytes, dimension) {
-                vectors.insert(id, vector);
-            }
-        }
-    }
-    Ok((vectors, sql_batches))
+    let unique_count = ids.iter().copied().filter(|id| *id > 0)
+        .collect::<HashSet<_>>().len();
+    let vectors = crate::storage::load_vectors_by_ids(connection, "tags", ids, dimension)?;
+    Ok((vectors, unique_count.div_ceil(128)))
 }
 
 fn compute_anchor_scores(curves: &mut [Curve], local_domain: &HashSet<i64>) {

@@ -1,14 +1,17 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LockResult, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use usearch::Index;
+use crate::retrieval_index::RetrievalIndex as Index;
 
 /// 所有索引写入口共用守卫，成功、错误及展开退出均刷新轻量统计。
 pub(crate) struct IndexHandle {
     inner: RwLock<Index>,
+    pub(crate) maintenance: std::sync::Mutex<()>,
     count: AtomicU64,
     capacity: AtomicU64,
     memory: AtomicU64,
+    mmap: AtomicU64,
+    tombstones: AtomicU64,
 }
 
 impl IndexHandle {
@@ -17,7 +20,10 @@ impl IndexHandle {
             count: AtomicU64::new(index.size() as u64),
             capacity: AtomicU64::new(index.capacity() as u64),
             memory: AtomicU64::new(index.memory_usage() as u64),
+            mmap: AtomicU64::new(index.mmap_bytes() as u64),
+            tombstones: AtomicU64::new(index.tombstones() as u64),
             inner: RwLock::new(index),
+            maintenance: std::sync::Mutex::new(()),
         }
     }
 
@@ -32,6 +38,13 @@ impl IndexHandle {
                 owner: self, guard: error.into_inner(),
             })),
         }
+    }
+
+    pub(crate) fn cached_asset_stats(&self) -> (u64, u64) {
+        (
+            self.mmap.load(Ordering::Acquire),
+            self.tombstones.load(Ordering::Acquire),
+        )
     }
 
     pub(crate) fn cached_stats(&self) -> (u64, u64, u64) {
@@ -62,6 +75,8 @@ impl Drop for IndexWriteGuard<'_> {
         self.owner.count.store(self.guard.size() as u64, Ordering::Release);
         self.owner.capacity.store(self.guard.capacity() as u64, Ordering::Release);
         self.owner.memory.store(self.guard.memory_usage() as u64, Ordering::Release);
+        self.owner.mmap.store(self.guard.mmap_bytes() as u64, Ordering::Release);
+        self.owner.tombstones.store(self.guard.tombstones() as u64, Ordering::Release);
     }
 }
 
@@ -71,19 +86,17 @@ mod tests {
 
     #[test]
     fn statistics_do_not_wait_for_index_lock() {
-        let index = Index::new(&usearch::IndexOptions {
-            dimensions: 2, ..Default::default()
-        }).unwrap();
+        let mut index = Index::empty(2).unwrap();
         index.reserve(16).unwrap();
         let handle = IndexHandle::new(index);
         {
-            let guard = handle.write().unwrap();
+            let mut guard = handle.write().unwrap();
             guard.add(1, &[1.0_f32, 0.0]).unwrap();
             assert_eq!(handle.cached_stats().0, 0);
         }
         assert_eq!(handle.cached_stats().0, 1);
         {
-            let guard = handle.write().unwrap();
+            let mut guard = handle.write().unwrap();
             guard.remove(1).unwrap();
         }
         assert_eq!(handle.cached_stats().0, 0);

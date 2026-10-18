@@ -582,7 +582,7 @@ fn artifact_payload(
 }
 
 fn run_build(
-    index: &crate::index_handle::IndexHandle,
+    dimension: usize,
     runtime: &MemoRuntime,
     db_path: &str,
     input_json: &str,
@@ -599,8 +599,7 @@ fn run_build(
         with_registered_read_transaction(db_path, |readonly| {
             let rows = load_file_tags(readonly)?;
             let ids: Vec<i64> = rows.iter().map(|r| r.tag_id).collect::<BTreeSet<_>>().into_iter().collect();
-            let dimension = index.read().map_err(|e|e.to_string())?.dimensions();
-            let (pairwise, _) = crate::memo_geometry::read_unit_vectors(readonly, index, &ids, dimension)?;
+            let (pairwise, _) = crate::memo_geometry::read_unit_vectors(readonly, &ids, dimension)?;
             let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
             let database_generation = database_generation(readonly)?;
             let dependencies = crate::storage::DerivedDependencies::capture(
@@ -810,7 +809,7 @@ fn run_build(
 }
 
 pub struct NativeMemoArtifactBuildTask {
-    index: Arc<crate::index_handle::IndexHandle>,
+    dimension: usize,
     runtime: Arc<MemoRuntime>,
     db_path: String,
     input_json: String,
@@ -821,7 +820,7 @@ impl Task for NativeMemoArtifactBuildTask {
     type JsValue = NativeMemoArtifactBuildResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        run_build(&self.index, &self.runtime, &self.db_path, &self.input_json).map_err(Error::from_reason)
+        run_build(self.dimension, &self.runtime, &self.db_path, &self.input_json).map_err(Error::from_reason)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -831,13 +830,13 @@ impl Task for NativeMemoArtifactBuildTask {
 
 pub(crate) fn rebuild_with_runtime(
     lifecycle: &Arc<crate::task_lifecycle::TaskLifecycle>,
-    index: Arc<crate::index_handle::IndexHandle>,
+    dimension: usize,
     runtime: Arc<MemoRuntime>,
     db_path: String,
     input_json: String,
 ) -> AsyncTask<crate::task_lifecycle::TrackedTask<NativeMemoArtifactBuildTask>> {
     AsyncTask::new(crate::task_lifecycle::TrackedTask::new(lifecycle, NativeMemoArtifactBuildTask {
-        index,
+        dimension,
         runtime,
         db_path,
         input_json,
@@ -867,9 +866,8 @@ mod fact_dependency_tests {
             Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
         }).unwrap();
         let runtime = MemoRuntime::new();
-        let index = crate::VexusIndex::new(2, 16).unwrap();
-        let built = run_build(&index.index, &runtime, &db, r#"{"modelSig":"test","effectiveConfig":{}}"#).unwrap();
-        let repeated = run_build(&index.index, &runtime, &db, r#"{"modelSig":"test","effectiveConfig":{}}"#).unwrap();
+        let built = run_build(2, &runtime, &db, r#"{"modelSig":"test","effectiveConfig":{}}"#).unwrap();
+        let repeated = run_build(2, &runtime, &db, r#"{"modelSig":"test","effectiveConfig":{}}"#).unwrap();
         assert_eq!(built.graph_generation,repeated.graph_generation);
         assert_eq!(built.provenance_generation,repeated.provenance_generation);
         assert_eq!(built.artifact_sig,repeated.artifact_sig);

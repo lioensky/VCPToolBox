@@ -1,61 +1,51 @@
-// Vexus-Lite测试文件
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { VexusIndex } = require('./index.js');
 
-console.log('🧪 Testing Vexus-Lite...\n');
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-tdb-smoke-'));
+const asset = path.join(root, 'standalone.vec');
 
 try {
-    // 测试1: 创建索引
-    console.log('Test 1: Creating new index...');
-    const vexus = new VexusIndex(128, 1000);  // 128维，容量1000
-    console.log('✅ Index created successfully\n');
-
-    // 测试2: 添加向量
-    console.log('Test 2: Adding vectors...');
-    const tags = ['tag1', 'tag2', 'tag3'];
-    const vectors = new Float32Array([
-        // tag1: 128维随机向量
-        ...Array(128).fill(0).map(() => Math.random()),
-        // tag2: 128维随机向量
-        ...Array(128).fill(0).map(() => Math.random()),
-        // tag3: 128维随机向量
-        ...Array(128).fill(0).map(() => Math.random())
+    const index = new VexusIndex(3, 16);
+    index.addBatch([1, 2, 3], new Float32Array([
+        3, 0, 0,
+        0, 4, 0,
+        -5, 0, 0
+    ]));
+    const query = new Float32Array([2, 0, 0]);
+    assert.deepEqual(index.search(query, 3), [
+        { id: 1, score: 1 },
+        { id: 2, score: 0 },
+        { id: 3, score: -1 }
     ]);
-    
-    const vectorBuffer = Buffer.from(vectors.buffer);
-    vexus.upsert(tags, vectorBuffer);
-    console.log('✅ Vectors added successfully\n');
+    assert.throws(() => index.addBatch(
+        [1, 4], new Float32Array([0, 1, 0, NaN, 0, 0])
+    ));
+    assert.equal(index.stats().totalVectors, 3);
+    assert.equal(index.search(query, 1)[0].id, 1);
 
-    // 测试3: 搜索
-    console.log('Test 3: Searching...');
-    const query = new Float32Array(128).fill(0).map(() => Math.random());
-    const queryBuffer = Buffer.from(query.buffer);
-    const results = vexus.search(queryBuffer, 2);
-    console.log('✅ Search results:', results);
-    console.log('');
+    index.add(1, new Float32Array([0, 0, 7]));
+    index.remove(3);
+    const expected = index.search(new Float32Array([0, 0, 2]), 10);
+    assert.deepEqual(expected, [{ id: 1, score: 1 }, { id: 2, score: 0 }]);
+    index.save(asset);
+    assert.equal(fs.readFileSync(asset).subarray(0, 8).toString(), 'VCPVEC01');
 
-    // 测试4: 统计
-    console.log('Test 4: Getting stats...');
-    const stats = vexus.stats();
-    console.log('✅ Stats:', stats);
-    console.log('');
-
-    // 测试5: 保存
-    console.log('Test 5: Saving index...');
-    vexus.save('./test_index.usearch', './test_map.bin');
-    console.log('✅ Index saved successfully\n');
-
-    // 测试6: 加载
-    console.log('Test 6: Loading index...');
-    const vexus2 = VexusIndex.load('./test_index.usearch', './test_map.bin');
-    const stats2 = vexus2.stats();
-    console.log('✅ Index loaded successfully');
-    console.log('   Loaded stats:', stats2);
-    console.log('');
-
-    console.log('🎉 All tests passed!');
-
-} catch (error) {
-    console.error('❌ Test failed:', error.message);
-    console.error(error.stack);
-    process.exit(1);
+    const restored = VexusIndex.load(asset, null, 3, 16);
+    assert.deepEqual(restored.search(new Float32Array([0, 0, 2]), 10), expected);
+    assert.equal(restored.stats().totalVectors, 2);
+    assert.throws(() => VexusIndex.load(asset, null, 2, 16));
+    console.log('TDB native smoke: cosine, atomic validation, update/delete and snapshot passed.');
+} finally {
+    // Windows permits unlink of these read-only mappings; never truncate a
+    // mapped asset. Keep the directory if a host still denies deferred cleanup.
+    try {
+        fs.rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+        console.warn(`Temporary asset cleanup deferred: ${root}: ${error.message}`);
+    }
 }

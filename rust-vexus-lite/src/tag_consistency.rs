@@ -478,6 +478,18 @@ impl Task for TagConsistencyCommitTask {
         }
         }
 
+        // The fact/index publication is complete. Compaction must acquire its
+        // own shared publication gate, never while holding this exclusive gate.
+        drop(_publication_guard);
+        if index_ready {
+            if let Err(error) = crate::index_maintenance::maintain(
+                &self.db_path, None, &self.global_tag_index,
+                &self.global_tag_content_revision,
+            ) {
+                eprintln!("[KBM] Tag consistency index maintenance deferred: {}", error);
+            }
+        }
+
         let total_vectors = self.global_tag_index.read()
             .map(|index| index.size()).unwrap_or(0);
         serde_json::to_string(&TagConsistencyCommitResult {
@@ -518,34 +530,18 @@ fn apply_tag_index_delta(
         return false;
     }
 
-    let Ok(guard) = index.write() else {
+    let removes: Vec<u64> = remove_ids.iter().map(|id| *id as u64).collect();
+    let upserts: Vec<u64> = upsert_ids.iter().map(|id| *id as u64).collect();
+    let Ok(mut guard) = index.write() else {
         return false;
     };
-    let required_capacity = guard
-        .size()
-        .saturating_add(upsert_ids.len())
-        .saturating_add(1);
-    if required_capacity >= guard.capacity()
-        && guard.reserve(required_capacity.saturating_add(required_capacity / 2)).is_err()
+    if guard.dimensions() != dimension
+        || guard.apply_delta(&removes, &upserts, upsert_vectors).is_err()
     {
         return false;
     }
-
-    for id in remove_ids {
-        let _ = guard.remove(*id as u64);
-    }
-    for (position, id) in upsert_ids.iter().enumerate() {
-        let start = position.saturating_mul(dimension);
-        let end = start.saturating_add(dimension);
-        let vector = &upsert_vectors[start..end];
-        let _ = guard.remove(*id as u64);
-        if guard.add(*id as u64, vector).is_err() {
-            return false;
-        }
-    }
-    drop(guard);
-
     content_revision.fetch_add(1, Ordering::AcqRel);
+    drop(guard);
     memo_runtime.clear().is_ok()
 }
 

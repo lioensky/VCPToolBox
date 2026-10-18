@@ -33,11 +33,6 @@ export interface NativeStoreState {
   databaseGeneration: number
   acceptingWrites: boolean
 }
-export interface NativeStoreHealth {
-  healthy: boolean
-  state: string
-  databaseGeneration: number
-}
 export interface GeometryResult {
   success: boolean
   artifactSig: string
@@ -87,31 +82,17 @@ export interface SearchResult {
   id: number
   score: number
 }
-export interface DualWeightedProjectionResult {
-  localVector?: Array<number>
-  transferVector?: Array<number>
-  requestedCount: number
-  foundCount: number
-  missingCount: number
-  localTotalWeight: number
-  transferTotalWeight: number
-  elapsedMs: number
-}
-export interface MemoFusionResult {
-  vector: Array<number>
-  selectedTagIds: Array<number>
-  requestedCount: number
-  foundCount: number
-  deduplicatedCount: number
-  totalWeight: number
-  elapsedMs: number
-}
 /** 统计信息 */
 export interface VexusStats {
   totalVectors: number
   dimensions: number
   capacity: number
   memoryUsage: number
+  /** Heap-resident routing, metadata and mutable delta estimate; excludes mmap. */
+  hotBytes: number
+  /** Mapped file length, not resident set size. */
+  mmapBytes: number
+  tombstones: number
 }
 /** 对任意 Chunk/日记索引执行单次排他差分后的摘要。  */
 export interface ChunkIndexDeltaResult {
@@ -416,27 +397,13 @@ export declare class VexusIndex {
   /**
    * 对当前活动 Tag 索引执行一次后台排他差分。
    *
-   * N-API 调用只复制实际变化的向量并立即返回 Promise；耗时的 usearch 删除、
+   * N-API 调用只复制实际变化的向量并立即返回 Promise；耗时的索引删除、
    * upsert 与 MemoRuntime 失效均在 libuv 工作线程执行，不阻塞 Node 事件循环。
    * 搜索通过同一 RwLock 等待差分完成，只会看到差分前或差分后的索引。
    */
   applyTagDelta(removeIds: Array<number>, upsertIds: Array<number>, upsertVectors: Float32Array): Promise<unknown>
   /** 搜索 */
   search(query: Float32Array, k: number): Array<SearchResult>
-  /**
-   * RiverMemo 全局双场投影。
-   *
-   * Tag 向量直接从当前常驻 usearch F32 索引按 key 读取；整个查询只复用一个
-   * dimension 大小的临时缓冲区，不维护第二份全库向量矩阵。
-   */
-  projectDualWeighted(tagIds: Array<number>, localMasses: Float64Array, transferMasses: Float64Array): DualWeightedProjectionResult
-  /**
-   * 使用当前 VexusIndex 唯一 Tag 向量空间完成 TagMemo 上下文融合。
-   *
-   * 只在批量读取请求涉及的 Tag 向量时短持 usearch 读锁；语义去重、
-   * 上下文加权和最终融合均在释放索引锁后执行，不维护第二份全库向量。
-   */
-  fuseMemoContext(original: Float32Array, tagIds: Array<number>, tagWeights: Float64Array, alpha: number, dedupThreshold?: number | undefined | null, maxTags?: number | undefined | null): MemoFusionResult
   /**
    * 在本 Tag 向量索引与 MemoRuntime 上执行统一查询数学管线。
    *

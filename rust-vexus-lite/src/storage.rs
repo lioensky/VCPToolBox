@@ -981,6 +981,49 @@ pub(crate) fn normalize_storage_options(options: Option<HashMap<String, i64>>) -
 }
 
 
+/// Read authoritative FP32 rows without normalization or approximate reconstruction.
+pub(crate) fn load_vectors_by_ids(
+    connection: &Connection,
+    table: &str,
+    ids: &[i64],
+    dimension: usize,
+) -> Result<HashMap<i64, Vec<f32>>, String> {
+    if !matches!(table, "tags" | "chunks") {
+        return Err("vector source table must be tags or chunks".into());
+    }
+    let byte_len = dimension.checked_mul(4)
+        .filter(|_| dimension > 0)
+        .ok_or_else(|| "invalid vector dimension".to_string())?;
+    let mut unique = ids.iter().copied().filter(|id| *id > 0).collect::<Vec<_>>();
+    unique.sort_unstable();
+    unique.dedup();
+    let mut output = HashMap::with_capacity(unique.len());
+    for batch in unique.chunks(128) {
+        let placeholders = vec!["?"; batch.len()].join(",");
+        let sql = format!("SELECT id, vector FROM {table} WHERE id IN ({placeholders}) AND vector IS NOT NULL");
+        let mut statement = connection.prepare(&sql)
+            .map_err(|error| format!("prepare authoritative vectors failed: {error}"))?;
+        let mut rows = statement.query(rusqlite::params_from_iter(batch.iter()))
+            .map_err(|error| format!("query authoritative vectors failed: {error}"))?;
+        while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+            let (Ok(id), Ok(bytes)) = (row.get::<_, i64>(0), row.get::<_, Vec<u8>>(1)) else {
+                // Preserve row-level fault isolation; query/I/O failures still propagate.
+                continue;
+            };
+            if bytes.len() != byte_len {
+                continue;
+            }
+            let vector = bytes.chunks_exact(4)
+                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect::<Vec<_>>();
+            if vector.iter().all(|value| value.is_finite()) {
+                output.insert(id, vector);
+            }
+        }
+    }
+    Ok(output)
+}
+
 #[cfg(test)]
 mod generation_protocol_tests {
     use super::*;
@@ -1196,5 +1239,37 @@ mod snapshot_dependency_tests {
         }).unwrap();
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod authoritative_vector_tests {
+    use super::*;
+
+    #[test]
+    fn sql_vectors_preserve_f32_bits_and_isolate_invalid_rows() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE tags(id INTEGER PRIMARY KEY, vector BLOB);
+             CREATE TABLE chunks(id INTEGER PRIMARY KEY, vector BLOB);"
+        ).unwrap();
+        let original = [3.25_f32, -0.0, f32::from_bits(1)];
+        let bytes = original.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
+        connection.execute("INSERT INTO tags VALUES (1,?1)", [&bytes]).unwrap();
+        connection.execute("INSERT INTO chunks VALUES (1,?1)", [&bytes]).unwrap();
+        connection.execute("INSERT INTO tags VALUES (2,?1)", [vec![0_u8; 4]]).unwrap();
+        let nonfinite = [f32::NAN, 0.0, 1.0].iter()
+            .flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
+        connection.execute("INSERT INTO tags VALUES (3,?1)", [nonfinite]).unwrap();
+        connection.execute_batch("INSERT INTO tags VALUES (4,NULL),(5,'invalid');").unwrap();
+        let rows = load_vectors_by_ids(&connection, "tags", &[5,4,3,2,1,1,-1,999], 3).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[&1].iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            original.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        assert_eq!(load_vectors_by_ids(&connection, "chunks", &[1], 3).unwrap()[&1], original);
+        assert!(load_vectors_by_ids(&connection, "tags; DROP TABLE tags", &[1], 3).is_err());
+        assert!(load_vectors_by_ids(&connection, "tags", &[1], 0).is_err());
+        assert!(load_vectors_by_ids(&connection, "tags", &[], 3).unwrap().is_empty());
     }
 }

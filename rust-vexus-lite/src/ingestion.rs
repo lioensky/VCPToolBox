@@ -651,6 +651,28 @@ impl Task for IngestionCommitTask {
             }
         }
 
+        drop(_publication_guard);
+        if index_ready && receipt.facts_changed {
+            for diary in &details.affected_diaries {
+                if let (Some((index, _)), Some(revision)) =
+                    (self.diary_indices.get(diary), self.diary_revisions.get(diary))
+                {
+                    if let Err(error) = crate::index_maintenance::maintain(
+                        &db_path, Some(diary), index, revision,
+                    ) {
+                        eprintln!("[KBM] Diary retrieval maintenance deferred: {}", error);
+                    }
+                }
+            }
+            if !details.new_tag_ids.is_empty() {
+                if let Err(error) = crate::index_maintenance::maintain(
+                    &db_path, None, &self.global_tag_index, &self.global_tag_content_revision,
+                ) {
+                    eprintln!("[KBM] Tag retrieval maintenance deferred: {}", error);
+                }
+            }
+        }
+
         let output = IngestionCommitResult {
             operation_id,
             batch_id,
@@ -888,14 +910,8 @@ fn apply_scope_index_deltas(
             continue;
         };
         let dimension = *dimension as usize;
-        let guard = index
-            .write()
-            .map_err(|_| format!("Diary index '{}' write lock poisoned", diary_name))?;
-
-        for id in &delta.removed_chunk_ids {
-            let _ = guard.remove(*id as u64);
-        }
-
+        let mut upsert_ids = Vec::new();
+        let mut upsert_vectors = Vec::new();
         for receipt in details
             .upserted_chunks
             .iter()
@@ -913,11 +929,8 @@ fn apply_scope_index_deltas(
                 if vector.iter().any(|value| !value.is_finite()) {
                     return Err("Reused Chunk vector contains non-finite value".to_string());
                 }
-                guard.reserve(guard.size().saturating_add(2))
-                    .map_err(|error| format!("Reserve reused Chunk failed: {:?}", error))?;
-                let _ = guard.remove(receipt.chunk_id as u64);
-                guard.add(receipt.chunk_id as u64, &vector)
-                    .map_err(|error| format!("Apply reused Chunk failed: {:?}", error))?;
+                upsert_ids.push(receipt.chunk_id as u64);
+                upsert_vectors.extend_from_slice(&vector);
                 continue;
             };
             let start = slot
@@ -932,22 +945,17 @@ fn apply_scope_index_deltas(
                     diary_name
                 ));
             }
-            let vector = &chunk_vectors[start..end];
-            if guard.size() + 1 >= guard.capacity() {
-                guard
-                    .reserve((guard.size() + 1).saturating_mul(3) / 2)
-                    .map_err(|error| {
-                        format!("Grow diary index '{}' failed: {:?}", diary_name, error)
-                    })?;
-            }
-            let _ = guard.remove(receipt.chunk_id as u64);
-            guard.add(receipt.chunk_id as u64, vector).map_err(|error| {
-                format!(
-                    "Apply diary index '{}' chunk {} failed: {:?}",
-                    diary_name, receipt.chunk_id, error
-                )
-            })?;
+            upsert_ids.push(receipt.chunk_id as u64);
+            upsert_vectors.extend_from_slice(&chunk_vectors[start..end]);
         }
+        let removes: Vec<u64> = delta.removed_chunk_ids.iter().map(|id| *id as u64).collect();
+        let mut guard = index.write()
+            .map_err(|_| format!("Diary index '{}' write lock poisoned", diary_name))?;
+        if guard.dimensions() != dimension {
+            return Err("Diary retrieval dimension mismatch".into());
+        }
+        guard.apply_delta(&removes, &upsert_ids, &upsert_vectors)
+            .map_err(|error| format!("Apply diary index '{}' delta failed: {}", diary_name, error))?;
     }
 
     let mut tag_updates = Vec::new();
@@ -966,9 +974,8 @@ fn apply_scope_index_deltas(
     }
 
     if !tag_updates.is_empty() {
-        let guard = global_tag_index
-            .write()
-            .map_err(|_| "Global Tag index write lock poisoned".to_string())?;
+        let mut ids = Vec::new();
+        let mut vectors = Vec::new();
         for (id, slot) in tag_updates {
             let start = slot
                 .checked_mul(plan.dimension)
@@ -979,16 +986,16 @@ fn apply_scope_index_deltas(
             if end > tag_vectors.len() {
                 return Err("Tag index vector slot out of bounds".to_string());
             }
-            if guard.size() + 1 >= guard.capacity() {
-                guard
-                    .reserve((guard.size() + 1).saturating_mul(3) / 2)
-                    .map_err(|error| format!("Grow global Tag index failed: {:?}", error))?;
-            }
-            let _ = guard.remove(id as u64);
-            guard
-                .add(id as u64, &tag_vectors[start..end])
-                .map_err(|error| format!("Apply global Tag index {} failed: {:?}", id, error))?;
+            ids.push(id as u64);
+            vectors.extend_from_slice(&tag_vectors[start..end]);
         }
+        let mut guard = global_tag_index.write()
+            .map_err(|_| "Global Tag index write lock poisoned".to_string())?;
+        if guard.dimensions() != plan.dimension {
+            return Err("Global Tag retrieval dimension mismatch".into());
+        }
+        guard.apply_delta(&[], &ids, &vectors)
+            .map_err(|error| format!("Apply global Tag delta failed: {}", error))?;
     }
 
     Ok(ready)
@@ -1617,9 +1624,10 @@ fn apply_deleted_index_deltas(
             continue;
         };
         let applied = match index.write() {
-            Ok(guard) => delta.removed_chunk_ids.iter().all(|chunk_id| {
-                guard.remove(*chunk_id as u64).is_ok()
-            }),
+            Ok(mut guard) => {
+                let ids: Vec<u64> = delta.removed_chunk_ids.iter().map(|id| *id as u64).collect();
+                guard.apply_delta(&ids, &[], &[]).is_ok()
+            },
             Err(_) => false,
         };
         results.insert(diary_name.clone(), applied);
@@ -1895,6 +1903,20 @@ impl Task for DeleteCommitTask {
             }
         }
 
+        drop(_publication_guard);
+        if index_ready {
+            for diary in diary_index_deltas.keys() {
+                if let (Some(index), Some(revision)) =
+                    (self.diary_indices.get(diary), self.diary_revisions.get(diary))
+                {
+                    if let Err(error) = crate::index_maintenance::maintain(
+                        &self.db_path, Some(diary), index, revision,
+                    ) {
+                        eprintln!("[KBM] Deleted-index maintenance deferred: {}", error);
+                    }
+                }
+            }
+        }
         serde_json::to_string(&DeleteCommitResult {
             affected_files,
             removed_chunk_ids,
@@ -2411,7 +2433,7 @@ mod cold_scope_baseline_tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let db = root.join("test.sqlite").to_string_lossy().into_owned();
-        let baseline = root.join("cold_a.usearch").to_string_lossy().into_owned();
+        let baseline = root.join("cold_a.vec").to_string_lossy().into_owned();
         let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
             &db, crate::storage::StorageOptions::default(),
         ).unwrap();
@@ -2453,9 +2475,10 @@ mod cold_scope_baseline_tests {
         let receipt: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
         assert_eq!(receipt["rebuilt"], false);
         assert_eq!(receipt["replayed"], true);
-        let mut vector = [0.0; 2];
-        index.index.read().unwrap().get(1, &mut vector).unwrap();
-        assert_eq!(vector, [0.0, 1.0]);
+        let guard = index.index.read().unwrap();
+        assert_eq!(guard.search(&[0.0, 1.0], 1).unwrap(), vec![(1, 1.0)]);
+        assert_eq!(guard.search(&[1.0, 0.0], 1).unwrap(), vec![(1, 0.0)]);
+        drop(guard);
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

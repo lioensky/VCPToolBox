@@ -187,38 +187,20 @@ fn hash(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
 /// Invalid/zero vectors remain absent, never enter Gram matrices or the mean.
 pub(crate) fn read_unit_vectors(
     connection: &Connection,
-    index: &crate::index_handle::IndexHandle,
     ids: &[i64],
     dimension: usize,
 ) -> std::result::Result<(HashMap<i64, Vec<f64>>, usize), String> {
-    let mut output = HashMap::with_capacity(ids.len());
-    let mut missing = Vec::new();
-    let mut buffer = vec![0.0f32; dimension];
-    for batch in ids.chunks(128) {
-        let guard = index.read().map_err(|e| e.to_string())?;
-        for id in batch {
-            let found = guard.get(*id as u64, &mut buffer).map_err(|e| e.to_string())?;
-            let mut v: Vec<f64> = buffer.iter().map(|x| *x as f64).collect();
-            if found > 0 && normalize(&mut v) {
-                output.insert(*id, v);
-            } else {
-                missing.push(*id);
-            }
+    let rows = storage::load_vectors_by_ids(connection, "tags", ids, dimension)?;
+    let mut output = HashMap::with_capacity(rows.len());
+    for (id, vector) in rows {
+        let mut vector: Vec<f64> = vector.into_iter().map(|value| value as f64).collect();
+        if normalize(&mut vector) {
+            output.insert(id, vector);
         }
     }
-    let mut fallback = 0;
-    let mut query = connection.prepare("SELECT vector FROM tags WHERE id=?1")
-        .map_err(|e| e.to_string())?;
-    for id in missing {
-        let bytes: Option<Vec<u8>> = query.query_row([id], |row| row.get(0))
-            .optional().map_err(|e| e.to_string())?.flatten();
-        if let Some(bytes) = bytes.filter(|b| b.len() == dimension * 4) {
-            let mut v: Vec<f64> = bytes.chunks_exact(4)
-                .map(|b| f32::from_le_bytes(b.try_into().unwrap()) as f64).collect();
-            if normalize(&mut v) { output.insert(id, v); fallback += 1; }
-        }
-    }
-    Ok((output, fallback))
+    // ABI compatibility: this historical counter now counts authoritative SQL rows.
+    let sql_rows = output.len();
+    Ok((output, sql_rows))
 }
 
 #[napi(object)]
@@ -344,7 +326,7 @@ impl GeometryTask {
                         .filter(|v| v["artifactSig"].as_str() == Some(signature.as_str()));
                 }
                 let (vectors,fallback) = if cached.is_some() { (HashMap::new(),0) }
-                    else { read_unit_vectors(conn,&self.index,&ids,self.dimensions)? };
+                    else { read_unit_vectors(conn,&ids,self.dimensions)? };
                 Ok((generation,dependencies,vectors,fallback))
             })?;
         drop(snapshot_gate);
@@ -648,6 +630,34 @@ mod task_tests {
         let mut b=snapshot(); b.as_object_mut().unwrap().remove("timestamp");
         assert_eq!(first.artifact_sig,second.artifact_sig);
         assert_eq!(a,b);
+        // Retrieval originals must have no influence on mathematical assets.
+        // Start from the empty-index SQL result, poison every indexed original,
+        // then restore exact SQL originals; all published geometry stays equal.
+        {
+            let mut guard = index.index.write().unwrap();
+            for id in 1..=6 {
+                guard.add(id, &[-9.0, 3.0, 7.0]).unwrap();
+            }
+            index.content_revision.fetch_add(1, Ordering::AcqRel);
+        }
+        let poisoned = task.run().unwrap();
+        let mut poisoned_cache = snapshot();
+        poisoned_cache.as_object_mut().unwrap().remove("timestamp");
+        assert_eq!(poisoned.artifact_sig, first.artifact_sig);
+        assert_eq!(poisoned_cache, a);
+        {
+            let mut guard = index.index.write().unwrap();
+            for i in 0..6 {
+                let angle = i as f32 * 0.5;
+                guard.add(i + 1, &[angle.cos(), angle.sin(), 0.2]).unwrap();
+            }
+            index.content_revision.fetch_add(1, Ordering::AcqRel);
+        }
+        let exact = task.run().unwrap();
+        let mut exact_cache = snapshot();
+        exact_cache.as_object_mut().unwrap().remove("timestamp");
+        assert_eq!(exact.artifact_sig, first.artifact_sig);
+        assert_eq!(exact_cache, a);
         assert_eq!(first.vector_fallback_count,6);
         assert!(first.k_eff>0);
         assert!(first.coverage.windows(2).all(|w|w[0]<=w[1]));

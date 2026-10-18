@@ -24,7 +24,7 @@ use std::cmp::Ordering as CompareOrdering;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use usearch::Index;
+use crate::retrieval_index::RetrievalIndex as Index;
 
 pub struct GlobalTagSearchTask {
     db_path: String,
@@ -75,12 +75,12 @@ impl Task for GlobalTagSearchTask {
             let mut statement = connection.prepare("SELECT name FROM tags WHERE id=?1")
                 .map_err(|error| error.to_string())?;
             let mut output = Vec::new();
-            for (id, distance) in matches.keys.iter().zip(matches.distances.iter()) {
+            for (id, cosine) in &matches {
                 let name: Option<String> = statement.query_row([*id as i64], |row| row.get(0))
                     .optional().map_err(|error| error.to_string())?;
                 if let Some(name) = name {
                     output.push(serde_json::json!({
-                        "tag": name, "score": 1.0 / (1.0 + *distance as f64)
+                        "tag": name, "score": *cosine as f64
                     }));
                 }
             }
@@ -137,13 +137,6 @@ pub struct NativeStoreState {
     pub schema_version: i64,
     pub database_generation: i64,
     pub accepting_writes: bool,
-}
-
-#[napi(object)]
-pub struct NativeStoreHealth {
-    pub healthy: bool,
-    pub state: String,
-    pub database_generation: i64,
 }
 
 #[derive(Clone)]
@@ -435,10 +428,10 @@ impl NativeMultiIndexAnnTask {
                         snapshot.diary_name, error
                     ))
                 })?;
-            ann_candidates += matches.keys.len();
-            for (key, distance) in matches.keys.iter().zip(matches.distances.iter()) {
+            ann_candidates += matches.len();
+            for (key, cosine) in &matches {
                 let id = *key as i64;
-                let score = 1.0 / (1.0 + *distance as f64);
+                let score = *cosine as f64;
                 let entry = merged.entry(id).or_insert_with(|| NativeAnnCandidate {
                     id,
                     score,
@@ -469,14 +462,10 @@ impl NativeMultiIndexAnnTask {
                             snapshot.diary_name, error
                         ))
                     })?;
-                ann_candidates += history_matches.keys.len();
-                for (key, distance) in history_matches
-                    .keys
-                    .iter()
-                    .zip(history_matches.distances.iter())
-                {
+                ann_candidates += history_matches.len();
+                for (key, cosine) in &history_matches {
                     let id = *key as i64;
-                    let raw_score = 1.0 / (1.0 + *distance as f64);
+                    let raw_score = *cosine as f64;
                     let score = raw_score * weight;
                     let entry = merged.entry(id).or_insert_with(|| NativeAnnCandidate {
                         id,
@@ -498,7 +487,7 @@ impl NativeMultiIndexAnnTask {
                 diary_name: snapshot.diary_name.clone(),
                 generation: snapshot.generation,
                 content_revision: snapshot.content_revision.load(Ordering::Acquire),
-                candidates: matches.keys.len(),
+                candidates: matches.len(),
             });
         }
         let lock_and_search_ms = lock_started.elapsed().as_secs_f64() * 1000.0;
@@ -854,48 +843,22 @@ pub(crate) fn recover_index_snapshot(
             database_generation: 0, facts_changed: false,
         })
     })?;
-    let (recovered_generation, rows) = crate::storage::with_registered_read_transaction(db_path, |connection| {
-        let generation: i64 = connection.query_row(
-            "SELECT facts_generation FROM kbm_index_states WHERE scope=?1 AND state='recovering'",
-            [&scope], |row| row.get(0),
-        ).map_err(|error| format!("Read recovery generation failed: {}", error))?;
-        let sql = if diary_name.is_some() {
-            "SELECT c.id, c.vector FROM chunks c JOIN files f ON f.id=c.file_id
-             WHERE f.diary_name=?1 AND c.vector IS NOT NULL ORDER BY c.id"
-        } else {
-            "SELECT id, vector FROM tags WHERE vector IS NOT NULL AND ?1 IS NULL ORDER BY id"
-        };
-        let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
-        let rows = statement.query_map([diary_name], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        }).map_err(|error| error.to_string())?;
-        let rows = rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| error.to_string())?;
-        Ok((generation, rows))
-    })?;
-    let replacement = Index::new(&usearch::IndexOptions {
-        dimensions: dimension, metric: usearch::MetricKind::L2sq,
-        quantization: usearch::ScalarKind::F32, connectivity: 16,
-        expansion_add: 128, expansion_search: 64, multi: false,
-    }).map_err(|error| format!("Construct replacement index failed: {:?}", error))?;
-    replacement.reserve(rows.len().max(1))
-        .map_err(|error| format!("Reserve replacement index failed: {:?}", error))?;
-    let mut skipped_invalid_vectors = 0_u64;
-    for (id, bytes) in rows {
-        if bytes.len() != dimension * 4 {
-            skipped_invalid_vectors += 1;
-            continue;
-        }
-        let vector: Vec<f32> = bytes.chunks_exact(4)
-            .map(|part| f32::from_ne_bytes([part[0], part[1], part[2], part[3]]))
-            .collect();
-        if vector.iter().any(|value| !value.is_finite()) {
-            skipped_invalid_vectors += 1;
-            continue;
-        }
-        replacement.add(id as u64, &vector)
-            .map_err(|error| format!("Build replacement index failed: {:?}", error))?;
-    }
+    let staging = crate::unique_index_sidecar_path(
+        std::path::Path::new(db_path), "recovery.vec",
+    );
+    let (recovered_generation, build) =
+        crate::storage::with_registered_read_transaction(db_path, |connection| {
+            let generation: i64 = connection.query_row(
+                "SELECT facts_generation FROM kbm_index_states WHERE scope=?1 AND state='recovering'",
+                [&scope], |row| row.get(0),
+            ).map_err(|error| format!("Read recovery generation failed: {}", error))?;
+            let build = crate::index_source::build_from_connection(
+                connection, diary_name, dimension, "unendorsed-runtime-recovery", &staging,
+            )?;
+            Ok((generation, build))
+        })?;
+    let skipped_invalid_vectors = build.skipped_invalid;
+    let replacement = Index::from_sql(build);
     if skipped_invalid_vectors > 0 {
         eprintln!("[KBM] Recovery for '{}' skipped {} invalid vectors", scope, skipped_invalid_vectors);
     }
@@ -2400,6 +2363,8 @@ impl NativeKnowledgeRuntime {
                 "text.preparation.v1".to_string(),
                 "index.async-restore.v1".to_string(),
                 "index.dual-slot-checkpoint.v1".to_string(),
+                "index.tdb-vec.v1".to_string(),
+                "index.cosine-score.v1".to_string(),
                 "watcher.runtime-owned.v1".to_string(),
                 "memo.native-artifact.v1".to_string(),
                 "river.native-query.v1".to_string(),

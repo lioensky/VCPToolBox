@@ -369,6 +369,8 @@ class KnowledgeBaseManager {
                 'text.preparation.v1',
                 'index.async-restore.v1',
                 'index.dual-slot-checkpoint.v1',
+                'index.tdb-vec.v1',
+                'index.cosine-score.v1',
                 'watcher.runtime-owned.v1',
                 'memo.native-artifact.v1',
                 'river.native-query.v1'
@@ -464,7 +466,7 @@ class KnowledgeBaseManager {
         );
 
         // 3. 初始化全局 Tag 索引。
-        // tags 是唯一权威真相；磁盘 usearch 只是允许落后的双槽基线。
+        // tags 是唯一权威真相；磁盘 .vec 只是经 SQL 背书、允许落后的双槽基线。
         // 活动槽加载、成员差分回放和无基线重建全部由 Rust Runtime 后台执行。
         let indexReady = false;
         console.log(
@@ -473,7 +475,7 @@ class KnowledgeBaseManager {
         try {
             const restored = await this.nativeKnowledgeRuntime.restoreGlobalTagIndex(
                 dbPath,
-                path.join(this.config.storePath, 'index_global_tags_a.usearch'),
+                path.join(this.config.storePath, 'index_global_tags_a.vec'),
                 this.config.modelSig,
                 tagCapacity
             );

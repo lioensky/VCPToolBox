@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Legacy mutation/reindex mode is retired. Only the guarded read-only preview
+// remains available; do not bypass the write guard for TDB asset migration.
 
 /**
  * 日记语义级分类工具 (Diary Semantic Classifier)

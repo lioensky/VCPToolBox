@@ -39,7 +39,7 @@ class IndexRepository {
     _tagBaselinePath(slot) {
         return path.join(
             this.config.storePath,
-            `index_global_tags_${slot}.usearch`
+            `index_global_tags_${slot}.vec`
         );
     }
 
@@ -53,7 +53,7 @@ class IndexRepository {
         const safeName = this._diarySafeName(diaryName);
         return path.join(
             this.config.storePath,
-            `index_diary_${safeName}_${slot}.usearch`
+            `index_diary_${safeName}_${slot}.vec`
         );
     }
 
@@ -61,7 +61,7 @@ class IndexRepository {
     /**
      * 通过 NativeKnowledgeRuntime 在 Rust 后台恢复日记索引。
      *
-     * Rust 负责活动槽校验、usearch 加载、SQL 成员差分回放和无基线重建；
+     * Rust 负责 SQL 背书校验、TDB 派生资产加载、成员差分回放和无基线重建；
      * 该门面不读取中央数据库，也不接收 Vector BLOB。
      */
     async restoreDiaryIndex(diaryName, index, capacity = 50000) {
@@ -358,7 +358,9 @@ class IndexRepository {
         const targets = [
             legacyPath, `${legacyPath}.tmp`,
             slotAPath, `${slotAPath}.tmp`,
-            slotBPath, `${slotBPath}.tmp`
+            slotBPath, `${slotBPath}.tmp`,
+            path.join(this.config.storePath, `index_diary_${safeName}_a.usearch`),
+            path.join(this.config.storePath, `index_diary_${safeName}_b.usearch`)
         ];
 
         for (const filePath of targets) {
@@ -383,7 +385,7 @@ class IndexRepository {
         try {
             for (const file of fs.readdirSync(this.config.storePath)) {
                 if (
-                    !/^index_diary_[a-f0-9]{32}(?:_[ab]|_slot_[ab])?\.usearch(?:\.tmp)?$/i.test(file)
+                    !/^index_diary_[a-f0-9]{32}(?:_[ab]|_slot_[ab])?\.(?:vec|usearch)(?:\.tmp)?$/i.test(file)
                 ) {
                     continue;
                 }
@@ -404,7 +406,7 @@ class IndexRepository {
         if (!this.shouldPersist(name)) return;
 
         // 全局 Tag 是允许落后的加速基线：每次热变动只重置静默窗口，
-        // 窗口结束后仍须达到实际差分 5% 才会重写 usearch。
+        // 窗口结束后由 Rust 判断差分阈值及格式兼容性，再发布双槽派生资产。
         if (name === 'global_tags' && this.saveTimers.has(name)) {
             clearTimeout(this.saveTimers.get(name));
             this.saveTimers.delete(name);
