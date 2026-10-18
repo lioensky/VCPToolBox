@@ -323,8 +323,8 @@ POST /plugin-callback/LinuxLogMonitor/{taskId}
 - `ERROR` - 错误
 
 ### Watchdog 看门狗
-- 30分钟无数据自动触发 `process.exit(1)`
-- 防止进程僵死，配合进程管理器实现自动重启
+- 30分钟无数据自动优雅停止当前监控任务并释放资源
+- 避免调用 `process.exit(1)` 误杀宿主服务进程（适配 hybridservice direct 常驻模式）
 
 ### Bypass Probe 旁路探测
 - 每60秒发送 `echo keepalive` 命令
