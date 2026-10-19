@@ -1,4 +1,7 @@
-use crate::memo_sensing::{sense_typed, SenseConfig, SenseInput, SenseOutput, SenseSeed};
+#[cfg(test)]
+use crate::memo_sensing::sense_typed;
+use crate::memo_sensing::{sense_with_context, DynamicWormholeContext,
+    SenseConfig, SenseDiagnostics, SenseInput, SenseOutput, SenseSeed};
 use crate::rivermemo_topology_v3::{load_artifact_with_connection, MemoRuntime};
 use crate::storage::with_registered_read_transaction;
 use base64::Engine;
@@ -593,6 +596,7 @@ fn analyze_pyramid(
     config: &PipelineConfig,
 ) -> std::result::Result<(PyramidOutput, Vec<Vec<PyramidTagWork>>), String> {
     analyze_pyramid_with_pool(index, connection, query, dimension, config, &mut TagVectorPool::new())
+        .map(|(output, tags, _)| (output, tags))
 }
 
 fn analyze_pyramid_with_pool(
@@ -602,7 +606,7 @@ fn analyze_pyramid_with_pool(
     dimension: usize,
     config: &PipelineConfig,
     tag_vectors: &mut TagVectorPool,
-) -> std::result::Result<(PyramidOutput, Vec<Vec<PyramidTagWork>>), String> {
+) -> std::result::Result<(PyramidOutput, Vec<Vec<PyramidTagWork>>, Vec<Vec<f32>>), String> {
     let original_energy = magnitude(query).powi(2);
     if original_energy <= 1e-12 {
         return Ok((
@@ -616,12 +620,14 @@ fn analyze_pyramid_with_pool(
                 },
             },
             Vec::new(),
+            Vec::new(),
         ));
     }
 
     let mut residual = query.to_vec();
     let mut levels_output = Vec::new();
     let mut levels_work = Vec::new();
+    let mut residuals = Vec::new();
     let mut total_explained = 0.0;
     for level in 0..config.max_levels.clamp(1, 8) {
         let guard = index.read().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
@@ -684,6 +690,9 @@ fn analyze_pyramid_with_pool(
             energy_explained,
             handshake_features: handshake,
         });
+        if config.spike_routing.dynamic_wormholes {
+            residuals.push(residual.clone());
+        }
         levels_work.push(tags);
         residual = next_residual;
         if residual_energy / original_energy < config.min_energy_ratio.clamp(0.0, 1.0) {
@@ -714,6 +723,7 @@ fn analyze_pyramid_with_pool(
             features,
         },
         levels_work,
+        residuals,
     ))
 }
 
@@ -1481,6 +1491,7 @@ struct PipelineDiagnostics {
     observation_cache_error: Option<String>,
     dual_field: DualFieldDiagnostics,
     fusion: FusionDiagnostics,
+    sensing: SenseDiagnostics,
 }
 
 #[derive(Serialize)]
@@ -1562,7 +1573,7 @@ fn run_pipeline_with_connection(
 
     let mut tag_vectors = TagVectorPool::new();
     let pyramid_started = Instant::now();
-    let (pyramid, level_tags) = analyze_pyramid_with_pool(
+    let (pyramid, level_tags, residuals) = analyze_pyramid_with_pool(
         index,
         &connection,
         &input.query_vector,
@@ -1592,7 +1603,17 @@ fn run_pipeline_with_connection(
     let gating_ms = gating_started.elapsed().as_secs_f64() * 1000.0;
 
     let sensing_started = Instant::now();
-    let observation = sense_typed(
+    let mut seed_levels = HashMap::new();
+    for (level, tags) in level_tags.iter().enumerate() {
+        for tag in tags { seed_levels.entry(tag.id).or_insert(level); }
+    }
+    let mut wormholes = DynamicWormholeContext::new(
+        connection, &mut tag_vectors, residuals, seed_levels,
+    );
+    for (layer, tags) in level_tags.iter().enumerate() {
+        for tag in tags { wormholes.reuse_score(layer, tag.id, tag.similarity); }
+    }
+    let observation = sense_with_context(
         &artifact,
         artifact_sig,
         SenseInput {
@@ -1600,7 +1621,10 @@ fn run_pipeline_with_connection(
             seeds,
             config: input.config.spike_routing.clone(),
         },
+        Some(&mut wormholes),
     )?;
+    let sensing_diagnostics = observation.diagnostics.clone();
+    drop(wormholes);
     let sensing_ms = sensing_started.elapsed().as_secs_f64() * 1000.0;
 
     let fusion_started = Instant::now();
@@ -1699,6 +1723,7 @@ fn run_pipeline_with_connection(
             observation_cache_error: None,
             dual_field: dual_field_diagnostics,
             fusion,
+            sensing: sensing_diagnostics,
         },
     })
     .map_err(|error| format!("encode unified Memo pipeline metadata failed: {}", error))?;
