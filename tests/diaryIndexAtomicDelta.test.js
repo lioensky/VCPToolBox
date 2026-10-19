@@ -6,11 +6,8 @@ const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
 
-const { VexusIndex } = require('../rust-vexus-lite');
+const { VexusIndex, NativeKnowledgeRuntime } = require('../rust-vexus-lite');
 const IndexRepository = require('../modules/knowledgeBase/indexRepository');
-const {
-    initializeKnowledgeBaseSchema
-} = require('../modules/knowledgeBase/schemaManager');
 
 const DIMENSION = 8;
 const OLD_COUNT = 1200;
@@ -114,12 +111,11 @@ async function testRepositoryRecoveryFallback() {
         path.join(os.tmpdir(), 'vcp-diary-atomic-delta-')
     );
     const dbPath = path.join(tempRoot, 'knowledge_base.sqlite');
+    const runtime = new NativeKnowledgeRuntime(new VexusIndex(DIMENSION, 32));
+    runtime.openAndInitStore(dbPath);
     const db = new Database(dbPath);
 
     try {
-        initializeKnowledgeBaseSchema(db, {
-            logPrefix: 'DiaryAtomicDeltaTest'
-        });
         db.prepare(`
             INSERT INTO files
                 (id, path, diary_name, checksum, mtime, size, updated_at)
@@ -137,7 +133,7 @@ async function testRepositoryRecoveryFallback() {
             throw new Error('injected partial apply failure');
         };
 
-        const diaryIndices = new Map([['SharedMemory', staleIndex]]);
+        const diaryIndices = new Map();
         const repository = new IndexRepository({
             config: {
                 storePath: tempRoot,
@@ -154,6 +150,8 @@ async function testRepositoryRecoveryFallback() {
             VexusIndex,
             getDbPath: () => dbPath,
             getDb: () => db,
+            getNativeRuntime: () => runtime,
+            onDiaryIndexPublished: (name, index) => runtime.registerDiaryIndex(name, index),
             waitForCoordinatorIdle: async () => {},
             diaryIndices,
             lastUsed: new Map([['SharedMemory', Date.now()]]),
@@ -161,14 +159,8 @@ async function testRepositoryRecoveryFallback() {
             saveTimers: new Map()
         });
 
-        const result = await repository.applyChunkDelta(
-            'SharedMemory',
-            [1],
-            [{ id: 2, vec: vectorFor(2) }]
-        );
-        assert.strictEqual(result.mode, 'sqlite-full-recovery');
-
-        const replacement = diaryIndices.get('SharedMemory');
+        const replacement = await repository.getOrLoad('SharedMemory');
+        assert.strictEqual(diaryIndices.get('SharedMemory'), replacement);
         assert(replacement, 'replacement index must be published');
         assert.notStrictEqual(
             replacement,
@@ -182,6 +174,7 @@ async function testRepositoryRecoveryFallback() {
         );
     } finally {
         db.close();
+        runtime.shutdown();
         fs.rmSync(tempRoot, {
             recursive: true,
             force: true

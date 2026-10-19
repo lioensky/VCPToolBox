@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <title>VCP 浪潮语义地形沙盘 / TagMemo Terrain Demo</title>
+  <title>VCP 浪潮语义地形沙盘 / RiverMemo Terrain Demo</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
   <style>
@@ -453,9 +453,9 @@
 <div id="app">
   <div id="scene">
     <div id="hud">
-      <div class="title">VCP Semantic Terrain V9.1 / 浪潮语义地形沙盘</div>
+      <div class="title">VCP Semantic Terrain RiverMemo / 浪潮语义地形沙盘</div>
       <div class="subtitle">
-        原始残差塑造概念锚，共现与序位形成事实河道；V9.1 再执行证据压缩、入流枢纽校正和固定出流预算。
+        原始残差塑造概念锚，共现与序位形成事实河道；RiverMemo 再执行证据压缩、入流枢纽校正和固定出流预算。
         查询击中支点后，以软非回溯边状态传播，并通过归一化有限时域响应形成查询级能量场。
       </div>
       <div id="legend">
@@ -463,7 +463,7 @@
         <span class="chip">青色：预算内顺流</span>
         <span class="chip">紫色：受阻尼逆流</span>
         <span class="chip">洋红：预算内虫洞</span>
-        <span class="chip">河宽：V9.1 归一化传导率</span>
+        <span class="chip">河宽：RiverMemo 归一化传导率</span>
         <span class="chip">能量场：归一化 FIR 黄 → 红</span>
       </div>
     </div>
@@ -476,9 +476,9 @@
   </div>
 
   <aside id="panel">
-    <div class="panel-title">V9.1 浪潮调参演示台</div>
+    <div class="panel-title">RiverMemo 浪潮调参演示台</div>
     <div class="panel-desc">
-      这里是前端轻量复刻版，不连接真实数据库。参数与 TagMemoEngine.js 的 V9.1 单轨实现对齐：
+      这里是前端轻量复刻版，不连接真实数据库。参数与 RiverMemo 共享传播底座的单轨实现对齐：
       有序双向事实矩阵先生成有界传播核，再执行枢纽校正、软非回溯和有限时域传播。
       <span id="syncStatus" class="sync-pill">等待调参工作台同步参数</span>
     </div>
@@ -571,7 +571,7 @@
     </div>
 
     <div class="section">
-      <h3>V9.1 Bounded Kernel / 有界传播核</h3>
+      <h3>RiverMemo Bounded Kernel / 有界传播核</h3>
 
       <div class="control" data-param="outboundMass">
         <div class="control-head">
@@ -638,7 +638,7 @@
     </div>
 
     <div class="section">
-      <h3>V9.1 Spike Routing / 软非回溯传播</h3>
+      <h3>RiverMemo Spike Routing / 软非回溯传播</h3>
 
       <div class="control" data-param="maxSafeHops">
         <div class="control-head">
@@ -783,7 +783,7 @@
     if (syncStatus) {
       syncStatus.textContent = "依赖加载失败，请检查 three.js / anime.js 本地文件";
     }
-    console.error("Failed to load TagMemo simulation dependencies:", error);
+    console.error("Failed to load RiverMemo simulation dependencies:", error);
   });
 })();
 </script>
@@ -796,7 +796,7 @@
 const TAGS = [
   // VCP / 浪潮引擎
   { id: 1, name: "浪潮引擎", group: "vcp", residual: 1.98, pos: [-5.2, 0, -1.0], keywords: ["浪潮", "vcp", "语义", "引擎", "tagmemo"] },
-  { id: 2, name: "TagMemo", group: "vcp", residual: 1.74, pos: [-6.3, 0, 0.7], keywords: ["tag", "tagmemo", "标签", "记忆"] },
+  { id: 2, name: "RiverMemo", group: "vcp", residual: 1.74, pos: [-6.3, 0, 0.7], keywords: ["tag", "tagmemo", "标签", "记忆"] },
   { id: 3, name: "残差金字塔", group: "vcp", residual: 1.88, pos: [-4.6, 0, 1.2], keywords: ["残差", "金字塔", "能量", "地形"] },
   { id: 4, name: "EPA投影", group: "vcp", residual: 1.55, pos: [-7.0, 0, -1.5], keywords: ["epa", "投影", "世界观", "逻辑"] },
   { id: 5, name: "LIF脉冲", group: "vcp", residual: 1.70, pos: [-3.8, 0, -2.2], keywords: ["lif", "神经", "脉冲", "电流"] },
@@ -1112,7 +1112,7 @@ const randomQueries = [
   "周末想和朋友去吃四川火锅，顺便聊聊最近工作压力",
   "美国、中国、供应链和能源风险会怎样影响中东局势？",
   "为什么黎曼几何可以描述广义相对论里的空间曲率？",
-  "TagMemo 的 semanticGain 和残差金字塔怎么影响召回？",
+  "RiverMemo 的 semanticGain 和残差金字塔怎么影响召回？",
   "AI 陪伴如何记住我的个人偏好和情绪变化？",
   "虫洞跃迁是不是像浪潮引擎里的跨域记忆联想？",
   "地方美食、地方文化和供应链之间有什么隐藏联系？"
@@ -1174,7 +1174,7 @@ function knnInitialTags(query, k = 5) {
 }
 
 /* ============================================================
-   4. V9.1 Spike Routing：软非回溯 + 归一化有限时域场
+   4. RiverMemo Spike Routing：软非回溯 + 归一化有限时域场
    ============================================================ */
 
 function simulateSpikeRouting(coreHits) {
@@ -1814,7 +1814,7 @@ class SemanticTerrainScene {
       }
     });
 
-    phaseText.textContent = "Query Vector 坠入语义地形，执行 KNN 初始支点命中与 V9.1 有界核装载";
+    phaseText.textContent = "Query Vector 坠入语义地形，执行 KNN 初始支点命中与 RiverMemo 有界核装载";
 
     const schedule = (delay, fn) => {
       const timer = setTimeout(() => {
@@ -2573,7 +2573,7 @@ function runQuery() {
   const reverse = result.events.filter(ev => ev.reverse).length;
 
   readout.textContent =
-`V9.1 · KNN 初始击中 Core Tags:
+`RiverMemo · KNN 初始击中 Core Tags:
 ${hits.map(h => `  - ${h.name}  score=${h.score.toFixed(2)}`).join("\n")}
 
 有界核:

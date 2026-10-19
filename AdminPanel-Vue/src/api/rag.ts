@@ -30,7 +30,19 @@ export interface RagParamThemeSaveResponse {
   theme?: RagParamTheme;
 }
 
+export interface TrainingTask {
+  taskId: string | null;
+  status: "idle" | "queued" | "running" | "completed" | "failed";
+  phase: string;
+  error?: string | null;
+  artifactSig?: string | null;
+  startedAt?: number | null;
+  finishedAt?: number | null;
+}
+
 export interface ActiveFullTrainingResult {
+  alreadyRunning?: boolean;
+  task?: TrainingTask;
   taskId?: string;
   queued?: boolean;
   reason?: string;
@@ -111,8 +123,12 @@ export interface TagConsistencyPreviewResponse {
 export interface TagConsistencyApplyResult {
   applied: boolean;
   summary: TagConsistencySummary;
+  factsCommitted?: boolean;
+  indexReady?: boolean;
+  training?: ActiveFullTrainingResult;
   indexUpdate: {
     mode:
+      | "native-rust-delta"
       | "active-rust-delta"
       | "baseline-plus-sqlite-delta"
       | "sqlite-full-rebuild";
@@ -217,11 +233,18 @@ export const ragApi = {
         url: "/admin_api/rag-tag-consistency/apply",
         method: "POST",
         body: { token },
-        // 与独立 adminServer 的维护代理窗口一致。大型 usearch 删除现已在
-        // Rust 后台线程执行，不冻结页面，但请求需要等待 checkpoint 完成。
+        // 与独立 adminServer 的维护代理窗口一致，等待差分向量化和原生提交。
+        // 持久化基线及派生资产重训由后台生命周期管理，不在此请求内完成。
         timeoutMs: 30 * 60 * 1000,
       },
       uiOptions
+    );
+  },
+
+  async getTrainingStatus(): Promise<{ success?: boolean; task?: TrainingTask }> {
+    return requestWithUi(
+      { url: "/admin_api/rag-active-full-training/status" },
+      { showLoader: false, suppressErrorMessage: true }
     );
   },
 

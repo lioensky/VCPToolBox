@@ -166,10 +166,25 @@ function assertSchema(db) {
 }
 
 function loadFacts(db, options, tables) {
-    const tagRows = db.prepare(
-        'SELECT id, name FROM tags WHERE vector IS NOT NULL ORDER BY id'
-    ).all();
-    const tagNames = new Map(tagRows.map(row => [Number(row.id), row.name]));
+    const tagNames = new Map();
+    const unitVectors = new Map();
+    for (const row of db.prepare(
+        'SELECT id, name, vector FROM tags WHERE vector IS NOT NULL ORDER BY id'
+    ).iterate()) {
+        const id = Number(row.id);
+        tagNames.set(id, row.name);
+        if (!row.vector || row.vector.length % 4) continue;
+        const vector = new Float64Array(row.vector.length / 4);
+        let energy = 0;
+        for (let i = 0; i < vector.length; i++) {
+            vector[i] = row.vector.readFloatLE(i * 4);
+            energy += vector[i] * vector[i];
+        }
+        if (!Number.isFinite(energy) || energy <= 1e-24) continue;
+        const norm = Math.sqrt(energy);
+        for (let i = 0; i < vector.length; i++) vector[i] /= norm;
+        unitVectors.set(id, vector);
+    }
 
     const residuals = new Map();
     if (tables.has('tag_intrinsic_residuals')) {
@@ -186,20 +201,9 @@ function loadFacts(db, options, tables) {
         }
     }
 
-    const pairSimilarity = new Map();
-    let modelSig = null;
-    if (tables.has('tag_pair_similarity')) {
-        modelSig = db.prepare(
-            'SELECT model_sig, COUNT(*) AS c FROM tag_pair_similarity GROUP BY model_sig ORDER BY c DESC LIMIT 1'
-        ).get()?.model_sig || null;
-        if (modelSig) {
-            for (const row of db.prepare(
-                'SELECT tag_a, tag_b, similarity FROM tag_pair_similarity WHERE model_sig = ?'
-            ).iterate(modelSig)) {
-                pairSimilarity.set(`${row.tag_a}:${row.tag_b}`, Number(row.similarity));
-            }
-        }
-    }
+    const modelSig = tables.has('tagmemo_artifacts')
+        ? db.prepare("SELECT model_sig FROM tagmemo_artifacts WHERE asset_type='unified_geometry' AND status='ready' ORDER BY updated_at DESC LIMIT 1").get()?.model_sig || null
+        : null;
 
     const selectedFiles = db.prepare(
         `SELECT file_id
@@ -225,7 +229,7 @@ function loadFacts(db, options, tables) {
         });
     }
 
-    return { tagNames, residuals, pairSimilarity, modelSig, chains };
+    return { tagNames, residuals, unitVectors, modelSig, chains };
 }
 
 function pairKey(a, b) {
@@ -271,7 +275,14 @@ function buildFactMatrix(facts, config) {
                 const a = chain[i];
                 const b = chain[j];
                 if (a.id === b.id) continue;
-                const sim = facts.pairSimilarity.get(pairKey(a.id, b.id)) ?? lowFallback;
+                const va = facts.unitVectors.get(a.id);
+                const vb = facts.unitVectors.get(b.id);
+                let sim = lowFallback;
+                if (va && vb && va.length === vb.length) {
+                    sim = 0;
+                    for (let d = 0; d < va.length; d++) sim += va[d] * vb[d];
+                    sim = Math.max(-1, Math.min(1, sim));
+                }
                 const sem = semanticGain(sim, ordered);
                 if (!orderedChain) {
                     const weight = 0.49 * sem;
@@ -1428,7 +1439,7 @@ function buildReport(options, config, facts, graphData, kernelData, transportDat
             modelSig: facts.modelSig,
             tagsWithVectors: facts.tagNames.size,
             residuals: facts.residuals.size,
-            pairSimilarities: facts.pairSimilarity.size,
+            semanticMode: 'inline-cosine',
             sampledFiles: facts.chains.size,
             retainedNodes: graphData.retained.size,
             curveFiles: graphData.chains.size,
@@ -1532,7 +1543,7 @@ ${report.verdict.text}
 | 模型签名 | \`${report.dataset.modelSig || '未发现'}\` |
 | 有向量 Tag | ${report.dataset.tagsWithVectors} |
 | 采样文件 / 保留节点 | ${report.dataset.sampledFiles} / ${report.dataset.retainedNodes} |
-| Pairwise / 残差 | ${report.dataset.pairSimilarities} / ${report.dataset.residuals} |
+| 语义计算 / 残差 | ${report.dataset.semanticMode} / ${report.dataset.residuals} |
 | 曲线文件 | ${report.dataset.curveFiles} |
 | 虫洞边 | ${report.dataset.wormholeEdges} |
 | 最大输运行质量 | ${markdownNumber(report.dataset.maxTransportRowMass, 6)} |

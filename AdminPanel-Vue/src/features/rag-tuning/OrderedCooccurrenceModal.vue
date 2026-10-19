@@ -12,9 +12,9 @@
               <span class="ordered-modal__eyebrow">Ordered Bidirectional Potential Manifold</span>
               <div class="ordered-modal__title-row">
                 <div>
-                  <h3 id="ordered-cooccurrence-title">有序双向势能流形 (V8.2)</h3>
+                  <h3 id="ordered-cooccurrence-title">有序双向势能流形 (RiverMemo)</h3>
                   <p>
-                    按 TagMemo V8.2 的三轴解耦视角调参：形（拓扑）× 色（方向）× 质（语义），并保留叙事方向守卫。
+                    按 RiverMemo 的三轴解耦视角调参：形（拓扑）× 色（方向）× 质（语义），并保留叙事方向守卫。
                   </p>
                 </div>
 
@@ -34,7 +34,7 @@
                 :disabled="changedLeaves === 0"
                 @click="emit('restore')"
               >
-                恢复 V8.2 参数
+                恢复 RiverMemo 参数
               </button>
               <button type="button" class="btn-secondary" @click="emit('close')">
                 收起流形舱
@@ -108,7 +108,7 @@
                 </article>
               </div>
 
-              <div class="ordered-axis-diagram" aria-label="V8.2 三轴结构图">
+              <div class="ordered-axis-diagram" aria-label="RiverMemo 三轴结构图">
                 <div class="ordered-axis-diagram__rail">
                   <span>形</span>
                   <strong>拓扑邻接</strong>
@@ -261,12 +261,12 @@
                   </li>
                 </ul>
                 <p v-else class="ordered-empty-state">
-                  当前没有未保存修改。V8.2 参数会重建语义传播地形，建议一次只改一个轴面。
+                  当前没有未保存修改。RiverMemo 参数会重建语义传播地形，建议一次只改一个轴面。
                 </p>
               </div>
 
               <div class="ordered-sidebar-card">
-                <span class="ordered-sidebar-card__label">来自 TagMemo V8.2</span>
+                <span class="ordered-sidebar-card__label">来自 RiverMemo</span>
                 <ul class="ordered-insight-list">
                   <li>
                     <strong>形 / 色 / 质正交</strong>
@@ -541,7 +541,7 @@ const COUPLING_HINTS: Record<string, CouplingHint> = {
   },
   minReverseGain: {
     title: "逆流下限避免回溯被彻底切断",
-    body: "下限过高会削弱方向阻尼，下限过低则可能退回 V7 的近似单向行为。",
+    body: "下限过高会削弱方向阻尼，下限过低则可能形成近似单向传播。",
   },
   maxReverseGain: {
     title: "逆流上限决定概念锚 boost 的天花板",

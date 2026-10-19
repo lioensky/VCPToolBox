@@ -424,7 +424,9 @@ pub(crate) fn sense_typed(
             }
         });
         hop_transitions.sort_by(|left, right| {
-            right.flow.total_cmp(&left.flow)
+            right
+                .flow
+                .total_cmp(&left.flow)
                 .then_with(|| left.source_id.cmp(&right.source_id))
                 .then_with(|| left.target_id.cmp(&right.target_id))
                 .then_with(|| left.previous_id.cmp(&right.previous_id))
@@ -590,4 +592,3 @@ pub(crate) fn sense_typed(
         transitions_truncated,
     })
 }
-

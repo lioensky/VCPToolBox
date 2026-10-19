@@ -4,19 +4,14 @@ const { decodeVectorBlob, encodeVectorBlob } = require('./vectorCodec');
 
 class DiaryMetadataCache {
     constructor(options = {}) {
-        this.getDb = options.getDb;
+        this.getNativeRuntime = options.getNativeRuntime;
+        this.getDbPath = options.getDbPath;
         this.dimension = options.dimension;
         this.getEmbeddingsBatch = options.getEmbeddingsBatch;
         this.getEmbeddingConfig = options.getEmbeddingConfig;
         this.nameVectorCache = options.nameVectorCache || new Map();
         this.dateIndexCache = options.dateIndexCache || new Map();
         this.logPrefix = options.logPrefix || 'KnowledgeBase';
-    }
-
-    _db() {
-        const db = this.getDb?.();
-        if (!db) throw new Error('DiaryMetadataCache database is unavailable');
-        return db;
     }
 
     extractDateFromText(text) {
@@ -26,38 +21,48 @@ class DiaryMetadataCache {
         return match ? match[1].replace(/\./g, '-') : null;
     }
 
-    buildDateIndex(diaryName) {
+    async buildDateIndex(diaryName) {
         if (!diaryName) return [];
+
+        const nativeRuntime = this.getNativeRuntime?.();
+        const dbPath = this.getDbPath?.();
+        if (
+            !nativeRuntime
+            || typeof nativeRuntime.getDiaryDateIndex !== 'function'
+            || !dbPath
+        ) {
+            const error = new Error(
+                'NativeKnowledgeRuntime diary date index ABI is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
         try {
-            const rows = this._db().prepare(`
-                SELECT f.path AS relativePath, c.content AS content
-                FROM files f
-                JOIN chunks c ON c.file_id = f.id AND c.chunk_index = 0
-                WHERE f.diary_name = ?
-                ORDER BY f.path ASC
-            `).all(diaryName);
-            const items = [];
-            for (const row of rows) {
-                const date = this.extractDateFromText(row.content);
-                if (date) items.push({ relativePath: row.relativePath, date });
-            }
-            items.sort((left, right) => new Date(right.date) - new Date(left.date));
-            return items;
+            const raw = await nativeRuntime.getDiaryDateIndex(dbPath, diaryName);
+            const rows = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            return (Array.isArray(rows) ? rows : [])
+                .filter(row => row && row.relativePath && row.date)
+                .map(row => ({
+                    relativePath: String(row.relativePath),
+                    date: String(row.date)
+                }))
+                .sort((left, right) => new Date(right.date) - new Date(left.date));
         } catch (error) {
             console.warn(
                 `[${this.logPrefix}] ⚠️ Failed to build diary date index for ` +
                 `"${diaryName}": ${error.message}`
             );
-            return [];
+            throw error;
         }
     }
 
-    ensureDateIndex(diaryName) {
+    async ensureDateIndex(diaryName) {
         if (!diaryName) return [];
         if (this.dateIndexCache.has(diaryName)) {
             return this.dateIndexCache.get(diaryName);
         }
-        const items = this.buildDateIndex(diaryName);
+        const items = await this.buildDateIndex(diaryName);
         this.dateIndexCache.set(diaryName, items);
         if (items.length > 0) {
             console.log(
@@ -68,8 +73,9 @@ class DiaryMetadataCache {
         return items;
     }
 
-    getDateIndex(diaryName) {
-        return this.ensureDateIndex(diaryName).map(item => ({ ...item }));
+    async getDateIndex(diaryName) {
+        const items = await this.ensureDateIndex(diaryName);
+        return items.map(item => ({ ...item }));
     }
 
     invalidateDateIndex(diaryName) {
@@ -82,15 +88,29 @@ class DiaryMetadataCache {
             return this.nameVectorCache.get(diaryName);
         }
 
+        const nativeRuntime = this.getNativeRuntime?.();
+        const dbPath = this.getDbPath?.();
+        if (
+            !nativeRuntime
+            || typeof nativeRuntime.getKvVector !== 'function'
+            || !dbPath
+        ) {
+            const error = new Error(
+                'NativeKnowledgeRuntime KV vector ABI is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
         try {
-            const row = this._db()
-                .prepare('SELECT vector FROM kv_store WHERE key = ?')
-                .get(`diary_name:${diaryName}`);
-            if (row?.vector) {
+            const key = `diary_name:${diaryName}`;
+            const raw = await nativeRuntime.getKvVector(dbPath, key);
+            const encoded = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (typeof encoded === 'string' && encoded.length > 0) {
                 const decoded = decodeVectorBlob(
-                    row.vector,
+                    Buffer.from(encoded, 'base64'),
                     this.dimension,
-                    `diary_name:${diaryName}`
+                    key
                 );
                 if (decoded) {
                     const vector = Array.from(decoded);
@@ -100,7 +120,8 @@ class DiaryMetadataCache {
             }
         } catch (error) {
             console.warn(
-                `[${this.logPrefix}] DB lookup failed for diary name: ${diaryName}`
+                `[${this.logPrefix}] Native KV lookup failed for diary name: ` +
+                `${diaryName}: ${error.message || error}`
             );
         }
 
@@ -111,41 +132,79 @@ class DiaryMetadataCache {
         return this.fetchAndCacheNameVector(diaryName);
     }
 
-    hydrateNameCacheSync() {
-        console.log(`[${this.logPrefix}] Hydrating diary name vectors (Sync)...`);
-        const statement = this._db().prepare(
-            "SELECT key, vector FROM kv_store WHERE key LIKE 'diary_name:%'"
-        );
+    async hydrateNameCache() {
+        console.log(`[${this.logPrefix}] Hydrating diary name vectors through Rust...`);
+        const nativeRuntime = this.getNativeRuntime?.();
+        const dbPath = this.getDbPath?.();
+        if (
+            !nativeRuntime
+            || typeof nativeRuntime.listKvVectors !== 'function'
+            || !dbPath
+        ) {
+            const error = new Error(
+                'NativeKnowledgeRuntime KV vector list ABI is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
+        const raw = await nativeRuntime.listKvVectors(dbPath, 'diary_name:');
+        const rows = typeof raw === 'string' ? JSON.parse(raw) : raw;
         let count = 0;
-        for (const row of statement.iterate()) {
-            const name = row.key.slice('diary_name:'.length);
+        for (const row of Array.isArray(rows) ? rows : []) {
+            const name = String(row?.key || '').slice('diary_name:'.length);
+            const encoded = row?.vector;
+            if (!name || typeof encoded !== 'string' || !encoded) continue;
             const decoded = decodeVectorBlob(
-                row.vector,
+                Buffer.from(encoded, 'base64'),
                 this.dimension,
-                row.key
+                `diary_name:${name}`
             );
             if (!decoded) continue;
             this.nameVectorCache.set(name, Array.from(decoded));
             count++;
         }
-        console.log(
-            `[${this.logPrefix}] Hydrated ${count} diary name vectors.`
-        );
+        console.log(`[${this.logPrefix}] Hydrated ${count} diary name vectors.`);
         return count;
     }
 
     async fetchAndCacheNameVector(name) {
         try {
+            const nativeRuntime = this.getNativeRuntime?.();
+            const dbPath = this.getDbPath?.();
+            if (
+                !nativeRuntime
+                || typeof nativeRuntime.setKvVector !== 'function'
+                || !dbPath
+            ) {
+                const error = new Error(
+                    'NativeKnowledgeRuntime KV vector ABI is unavailable'
+                );
+                error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+                throw error;
+            }
+
             const [vector] = await this.getEmbeddingsBatch(
                 [name],
                 this.getEmbeddingConfig()
             );
             if (!vector) return null;
-            this.nameVectorCache.set(name, vector);
-            this._db().prepare(
-                'INSERT OR REPLACE INTO kv_store (key, vector) VALUES (?, ?)'
-            ).run(`diary_name:${name}`, encodeVectorBlob(vector));
-            return vector;
+            const normalized = vector instanceof Float32Array
+                ? vector
+                : new Float32Array(vector);
+            if (normalized.length !== this.dimension) {
+                throw new RangeError(
+                    `Diary name vector dimension mismatch: expected ` +
+                    `${this.dimension}, got ${normalized.length}`
+                );
+            }
+            this.nameVectorCache.set(name, Array.from(normalized));
+            await nativeRuntime.setKvVector(
+                dbPath,
+                `diary_name:${name}`,
+                normalized
+            );
+            return Array.from(normalized);
         } catch (error) {
             console.error(
                 `[${this.logPrefix}] Failed to vectorize diary name ${name}: ` +

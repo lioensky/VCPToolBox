@@ -49,13 +49,14 @@ RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/py
 # 编译 Rust N-API 向量引擎 (vexus-lite)
 # 关键：把 Rust 子项目单独 COPY 并提前编译，让 Docker layer cache 能复用编译产物。
 # 这样 README、插件、图片、普通 JS 文件变更时，不会触发 Rust 全量重编；
-# 只有 rust-vexus-lite/package.json、Cargo.toml、build.rs、src/** 变化才会失效。
+# 只有 rust-vexus-lite/package.json、Cargo.toml、build.rs、src/**、crates/** 变化才会失效。
 # 仓库内 commit 的预编译 .node 仅作为 node 直跑用户的兜底，镜像必须以源码现编产物为准。
 # =================================================================
 COPY rust-vexus-lite/package.json ./rust-vexus-lite/package.json
 COPY rust-vexus-lite/Cargo.toml ./rust-vexus-lite/Cargo.toml
 COPY rust-vexus-lite/build.rs ./rust-vexus-lite/build.rs
 COPY rust-vexus-lite/src ./rust-vexus-lite/src
+COPY rust-vexus-lite/crates ./rust-vexus-lite/crates
 
 RUN echo ">>> Building rust-vexus-lite native addon..." && \
     cd rust-vexus-lite && \

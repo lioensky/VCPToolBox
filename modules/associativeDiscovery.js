@@ -27,7 +27,12 @@ class AssociativeDiscovery {
         const normalizedSourcePath = sourceFilePath.replace(/\\/g, '/');
         console.log(`[AssociativeDiscovery] Checking file: ${normalizedSourcePath}`);
 
-        if (!this.kbm?.db || typeof this.kbm.executeNativeRiverQuery !== 'function') {
+        if (
+            !this.kbm
+            || typeof this.kbm.executeNativeRiverQuery !== 'function'
+            || typeof this.kbm.listDistinctDiaries !== 'function'
+            || typeof this.kbm.getChunksByFilePaths !== 'function'
+        ) {
             const error = new Error('Rust RiverMemo 尚未初始化或原生联合查询接口不可用');
             error.code = 'RIVERMEMO_UNAVAILABLE';
             throw error;
@@ -73,11 +78,7 @@ class AssociativeDiscovery {
             : [];
         const diaryNames = requestedRange.length > 0
             ? [...new Set(requestedRange)]
-            : this.kbm.db.prepare(
-                'SELECT DISTINCT diary_name FROM files WHERE diary_name IS NOT NULL ORDER BY diary_name'
-            ).all()
-                .map(row => String(row.diary_name || '').trim())
-                .filter(Boolean);
+            : await this.kbm.listDistinctDiaries();
 
         if (diaryNames.length === 0) {
             const error = new Error('没有可用于 RiverMemo 联想的已索引日记本');
@@ -216,39 +217,19 @@ class AssociativeDiscovery {
             // 去重
             const uniqueVariants = [...new Set(variants)];
             
-            let fileRow = null;
-            const stmt = this.kbm.db.prepare("SELECT id FROM files WHERE path = ?");
-            
-            // 依次尝试，直到命中索引
-            for (const variant of uniqueVariants) {
-                fileRow = stmt.get(variant);
-                if (fileRow) {
-                    console.log(`[AssociativeDiscovery] DB hit with variant: ${variant}`);
-                    break;
-                }
-            }
+            // 通过 Rust 高层路径 hydrate 获取首个 Chunk。返回结果已经完成
+            // BLOB 解码、维度校验和有限字段映射，不再触碰中央 SQLite。
+            const rows = await this.kbm.getChunksByFilePaths(uniqueVariants);
+            const firstChunk = (Array.isArray(rows) ? rows : [])
+                .filter(row => row && row.vector && row.sourceFile)
+                .sort((left, right) => Number(left.chunkId ?? left.id) - Number(right.chunkId ?? right.id))[0];
 
-            if (!fileRow) return null;
-
-            // 2. 获取该文件的第一个分片向量作为查询种子。
-            const chunkRow = this.kbm.db.prepare(
-                'SELECT id, vector FROM chunks WHERE file_id = ? ORDER BY chunk_index ASC LIMIT 1'
-            ).get(fileRow.id);
-            if (!chunkRow || !chunkRow.vector) return null;
-
-            // 3. 复用 KBM 的向量解码与维度校验，避免 Buffer byteOffset、
-            // 模型维度变化或损坏 BLOB 进入 Rust N-API。
-            if (typeof this.kbm.getVectorByChunkId === 'function') {
-                return await this.kbm.getVectorByChunkId(chunkRow.id);
-            }
-
-            const floatArray = new Float32Array(
-                chunkRow.vector.buffer,
-                chunkRow.vector.byteOffset,
-                chunkRow.vector.byteLength / 4
-            );
-            return floatArray.length === Number(this.kbm.config.dimension)
-                ? floatArray
+            if (!firstChunk) return null;
+            const vector = firstChunk.vector instanceof Float32Array
+                ? firstChunk.vector
+                : new Float32Array(firstChunk.vector);
+            return vector.length === Number(this.kbm.config.dimension)
+                ? vector
                 : null;
         } catch (e) {
             console.error(`[AssociativeDiscovery] DB error: ${e.message}`);

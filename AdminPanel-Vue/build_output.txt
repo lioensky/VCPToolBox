@@ -1,2 +1,317 @@
-����: ��Ч�﷨��Ĭ��ѡ��������� '1' �Ρ�
-���� "TIMEOUT /?" ���˽��÷���
+
+> admin-panel-vue@1.0.0 build
+> vue-tsc && vite build
+
+[36mvite v8.2.0 [32mbuilding client environment for production...[36m[39m
+[2Ktransforming...✓ 712 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                          1.36 kB │ gzip:   0.70 kB
+dist/assets/noto-sans-sc-88-wght-normal-ClNDOCGW.woff2                   7.33 kB
+dist/assets/noto-sans-sc-87-wght-normal-DYfJ-vGE.woff2                   8.01 kB
+dist/assets/noto-sans-sc-latin-ext-wght-normal-CqPqLCfe.woff2            8.24 kB
+dist/assets/noto-sans-sc-91-wght-normal-CGekvDdH.woff2                   8.70 kB
+dist/assets/noto-sans-sc-vietnamese-wght-normal-y5SU35Rl.woff2           9.09 kB
+dist/assets/noto-sans-sc-90-wght-normal-BWcrRNoG.woff2                   9.34 kB
+dist/assets/noto-sans-sc-99-wght-normal-Q_IptJM5.woff2                   9.70 kB
+dist/assets/noto-sans-sc-cyrillic-wght-normal-CRA5_Pf1.woff2            10.00 kB
+dist/assets/noto-sans-sc-89-wght-normal-IQU_KQA8.woff2                  10.98 kB
+dist/assets/noto-sans-sc-21-wght-normal-DIu_1ZBI.woff2                  11.35 kB
+dist/assets/noto-sans-sc-6-wght-normal-ozUCEY9O.woff2                   11.46 kB
+dist/assets/noto-sans-sc-5-wght-normal-DI846rD9.woff2                   20.17 kB
+dist/assets/noto-sans-sc-latin-wght-normal-DYAKOyvl.woff2               25.24 kB
+dist/assets/noto-sans-sc-85-wght-normal-DBcDBu1n.woff2                  26.90 kB
+dist/assets/topbar-logo-BWi38L8d.png                                    32.21 kB
+dist/assets/noto-sans-sc-84-wght-normal-C7NxT478.woff2                  32.61 kB
+dist/assets/noto-sans-sc-80-wght-normal-BEFypWOO.woff2                  32.63 kB
+dist/assets/noto-sans-sc-86-wght-normal-CLJIoPpl.woff2                  33.57 kB
+dist/assets/noto-sans-sc-41-wght-normal-CZqajZnl.woff2                  36.41 kB
+dist/assets/noto-sans-sc-77-wght-normal-Dkbi3pye.woff2                  36.78 kB
+dist/assets/noto-sans-sc-73-wght-normal-DwSJRYPJ.woff2                  39.31 kB
+dist/assets/noto-sans-sc-79-wght-normal-DoJG4UTB.woff2                  41.23 kB
+dist/assets/noto-sans-sc-60-wght-normal-C1lngC61.woff2                  41.43 kB
+dist/assets/noto-sans-sc-64-wght-normal-CbIuD2Eg.woff2                  41.54 kB
+dist/assets/noto-sans-sc-68-wght-normal-c0FjfUaj.woff2                  41.56 kB
+dist/assets/noto-sans-sc-65-wght-normal-BGqvKda2.woff2                  41.60 kB
+dist/assets/noto-sans-sc-51-wght-normal-C2bq6hC8.woff2                  41.61 kB
+dist/assets/noto-sans-sc-36-wght-normal-CtU9CyKw.woff2                  41.83 kB
+dist/assets/noto-sans-sc-70-wght-normal-ColEcmtJ.woff2                  42.23 kB
+dist/assets/noto-sans-sc-83-wght-normal-C9UjAcMM.woff2                  43.50 kB
+dist/assets/noto-sans-sc-53-wght-normal-Bgkuo2tF.woff2                  43.52 kB
+dist/assets/noto-sans-sc-75-wght-normal-B0qL41rF.woff2                  43.94 kB
+dist/assets/noto-sans-sc-61-wght-normal-BxWkGF5M.woff2                  45.27 kB
+dist/assets/noto-sans-sc-42-wght-normal-CQ4lY28u.woff2                  45.54 kB
+dist/assets/noto-sans-sc-50-wght-normal-C5KfAmFp.woff2                  45.87 kB
+dist/assets/noto-sans-sc-82-wght-normal-DcxfR5OJ.woff2                  46.17 kB
+dist/assets/noto-sans-sc-118-wght-normal-BPEb0gM9.woff2                 46.19 kB
+dist/assets/noto-sans-sc-43-wght-normal-psppu0d8.woff2                  46.62 kB
+dist/assets/noto-sans-sc-40-wght-normal-BVn4-kgX.woff2                  46.62 kB
+dist/assets/noto-sans-sc-34-wght-normal-BF1rqDSt.woff2                  46.88 kB
+dist/assets/noto-sans-sc-72-wght-normal-D1VyfEG3.woff2                  47.03 kB
+dist/assets/noto-sans-sc-31-wght-normal-DW0t445S.woff2                  47.22 kB
+dist/assets/noto-sans-sc-33-wght-normal-BOTZYTjM.woff2                  47.45 kB
+dist/assets/noto-sans-sc-27-wght-normal-BP2pEGQH.woff2                  47.48 kB
+dist/assets/noto-sans-sc-81-wght-normal-ed_TZlfo.woff2                  47.54 kB
+dist/assets/noto-sans-sc-59-wght-normal-Azv2Ku9_.woff2                  47.67 kB
+dist/assets/noto-sans-sc-71-wght-normal-ChZfXpdg.woff2                  47.90 kB
+dist/assets/noto-sans-sc-55-wght-normal-BV_Oy6IF.woff2                  48.13 kB
+dist/assets/noto-sans-sc-76-wght-normal-BPLMO_2x.woff2                  48.42 kB
+dist/assets/noto-sans-sc-78-wght-normal-BFUXeSw6.woff2                  49.15 kB
+dist/assets/noto-sans-sc-63-wght-normal-4La5uKvS.woff2                  49.18 kB
+dist/assets/noto-sans-sc-28-wght-normal-BWPKDbtH.woff2                  50.20 kB
+dist/assets/noto-sans-sc-35-wght-normal-Bosspiyr.woff2                  50.68 kB
+dist/assets/noto-sans-sc-48-wght-normal-DFMjDDY6.woff2                  50.76 kB
+dist/assets/noto-sans-sc-26-wght-normal-YNOygvr_.woff2                  50.88 kB
+dist/assets/noto-sans-sc-39-wght-normal-Ddtm1XVC.woff2                  51.78 kB
+dist/assets/noto-sans-sc-52-wght-normal-P18e_Y0j.woff2                  51.84 kB
+dist/assets/noto-sans-sc-54-wght-normal-DL5lmlUd.woff2                  52.00 kB
+dist/assets/noto-sans-sc-117-wght-normal-Dsz3vkzU.woff2                 52.46 kB
+dist/assets/noto-sans-sc-32-wght-normal-ShbWPcei.woff2                  52.54 kB
+dist/assets/noto-sans-sc-67-wght-normal-CC-WRBV-.woff2                  52.58 kB
+dist/assets/noto-sans-sc-49-wght-normal-B7l_3BZr.woff2                  52.84 kB
+dist/assets/noto-sans-sc-66-wght-normal-BvNozWOY.woff2                  52.86 kB
+dist/assets/noto-sans-sc-116-wght-normal-vdFVzbO2.woff2                 52.98 kB
+dist/assets/noto-sans-sc-56-wght-normal-B4L7Hj8f.woff2                  53.50 kB
+dist/assets/noto-sans-sc-37-wght-normal-ghDiyiuv.woff2                  53.52 kB
+dist/assets/noto-sans-sc-29-wght-normal-45aVmHn_.woff2                  54.00 kB
+dist/assets/noto-sans-sc-44-wght-normal-cbKJlTUe.woff2                  54.24 kB
+dist/assets/noto-sans-sc-38-wght-normal-4Nz8k_dt.woff2                  54.59 kB
+dist/assets/noto-sans-sc-30-wght-normal-B8_s30jZ.woff2                  54.65 kB
+dist/assets/noto-sans-sc-57-wght-normal-DU8YBsDj.woff2                  55.49 kB
+dist/assets/noto-sans-sc-69-wght-normal-D596Jjl2.woff2                  55.60 kB
+dist/assets/noto-sans-sc-47-wght-normal-C5Kgg1_m.woff2                  56.15 kB
+dist/assets/noto-sans-sc-74-wght-normal-Cte7o1QG.woff2                  56.42 kB
+dist/assets/noto-sans-sc-115-wght-normal-BN__2iBG.woff2                 56.50 kB
+dist/assets/noto-sans-sc-23-wght-normal-4HrHKhpL.woff2                  56.79 kB
+dist/assets/noto-sans-sc-112-wght-normal-CiZxJMyY.woff2                 57.64 kB
+dist/assets/noto-sans-sc-58-wght-normal-CE0BKS9u.woff2                  57.64 kB
+dist/assets/noto-sans-sc-46-wght-normal-CErGc6Mt.woff2                  57.66 kB
+dist/assets/noto-sans-sc-114-wght-normal-CRH9SDZu.woff2                 57.96 kB
+dist/assets/noto-sans-sc-101-wght-normal-c94LAl5p.woff2                 58.20 kB
+dist/assets/noto-sans-sc-25-wght-normal-C3Jm6l7O.woff2                  58.32 kB
+dist/assets/noto-sans-sc-113-wght-normal-OgQXOX6x.woff2                 58.64 kB
+dist/assets/noto-sans-sc-62-wght-normal-CXXMAq-5.woff2                  59.11 kB
+dist/assets/noto-sans-sc-109-wght-normal-CnjNbNmw.woff2                 60.37 kB
+dist/assets/noto-sans-sc-102-wght-normal-C1RtbCZr.woff2                 60.70 kB
+dist/assets/noto-sans-sc-107-wght-normal-kFQzJDLH.woff2                 61.07 kB
+dist/assets/noto-sans-sc-110-wght-normal-D2JBr045.woff2                 61.47 kB
+dist/assets/noto-sans-sc-104-wght-normal-CJT2ioDJ.woff2                 61.58 kB
+dist/assets/noto-sans-sc-105-wght-normal-BFoiJwz2.woff2                 61.82 kB
+dist/assets/noto-sans-sc-24-wght-normal-B58DWgHS.woff2                  62.58 kB
+dist/assets/noto-sans-sc-106-wght-normal-D6uUHw3w.woff2                 62.63 kB
+dist/assets/noto-sans-sc-111-wght-normal-ClFr5QXM.woff2                 62.66 kB
+dist/assets/noto-sans-sc-103-wght-normal-DGHo20nu.woff2                 63.86 kB
+dist/assets/noto-sans-sc-100-wght-normal-DrqXJETY.woff2                 64.54 kB
+dist/assets/noto-sans-sc-108-wght-normal-7aXvqIa2.woff2                 64.55 kB
+dist/assets/noto-sans-sc-22-wght-normal-VXjdYcT-.woff2                  65.38 kB
+dist/assets/noto-sans-sc-45-wght-normal-MKIEVRIC.woff2                  67.62 kB
+dist/assets/noto-sans-sc-119-wght-normal-BfzSEbFz.woff2                 76.80 kB
+dist/assets/fontawesome-webfont-B-jkhYfk.woff2                          77.16 kB
+dist/assets/fontawesome-webfont-CDK5bt4p.woff                           98.02 kB
+dist/assets/fontawesome-webfont-CQDK8MU3.ttf                           165.54 kB
+dist/assets/fontawesome-webfont-G5YE5S7X.eot                           165.74 kB
+dist/assets/nova-logo-D7FBVLNi.png                                     238.94 kB
+dist/assets/material-symbols-outlined-latin-400-normal-CeL1QAic.woff2  314.60 kB
+dist/assets/fontawesome-webfont-D13rzr4g.svg                           444.37 kB │ gzip: 136.18 kB
+dist/assets/css/AppSwitch-OVquyxY8.css                                   0.13 kB │ gzip:   0.11 kB
+dist/assets/css/UiPageActions-B9BqSTbc.css                               0.13 kB │ gzip:   0.13 kB
+dist/assets/css/UiSettingsCard-CKuKiZ22.css                              0.16 kB │ gzip:   0.14 kB
+dist/assets/css/PluginJevDeclaration-CN5D0G6q.css                        0.35 kB │ gzip:   0.21 kB
+dist/assets/css/DragHandle-XRBeH-sT.css                                  0.49 kB │ gzip:   0.28 kB
+dist/assets/css/UiDirtyIndicator-4XiW15Ew.css                            0.52 kB │ gzip:   0.29 kB
+dist/assets/css/BaseModal-BOWFSU31.css                                   0.53 kB │ gzip:   0.26 kB
+dist/assets/css/UiToolbar-DGDlh7ua.css                                   0.63 kB │ gzip:   0.23 kB
+dist/assets/css/UiSettingsSwitchRow-CH2zb2Jd.css                         0.69 kB │ gzip:   0.29 kB
+dist/assets/css/AppCheckbox-RxogkuoW.css                                 0.78 kB │ gzip:   0.35 kB
+dist/assets/css/UiSettingsForm-D9KJVVIr.css                              0.80 kB │ gzip:   0.26 kB
+dist/assets/css/UiEmptyState-BKa4bx_A.css                                0.83 kB │ gzip:   0.34 kB
+dist/assets/css/UiIconButton-BZoIkrYw.css                                0.96 kB │ gzip:   0.41 kB
+dist/assets/css/UiTableFrame-BRZzys4p.css                                0.99 kB │ gzip:   0.36 kB
+dist/assets/css/UiField-CNBOruVu.css                                     1.29 kB │ gzip:   0.39 kB
+dist/assets/css/UiBadge-_ZGVXGgC.css                                     1.30 kB │ gzip:   0.47 kB
+dist/assets/css/UiAlert-C7yAjZWb.css                                     1.36 kB │ gzip:   0.46 kB
+dist/assets/css/ConfirmDialog-DDXdDcqQ.css                               1.39 kB │ gzip:   0.54 kB
+dist/assets/css/UiInput-D9lJMo1P.css                                     1.42 kB │ gzip:   0.49 kB
+dist/assets/css/AgentScores-DMKMKeSq.css                                 1.49 kB │ gzip:   0.56 kB
+dist/assets/css/UiTextarea-B2PdnBUg.css                                  1.61 kB │ gzip:   0.55 kB
+dist/assets/css/SarPromptEditor-KhAdGusQ.css                             1.63 kB │ gzip:   0.51 kB
+dist/assets/css/UiSelect-b4f4bbIn.css                                    1.87 kB │ gzip:   0.63 kB
+dist/assets/css/UiCard-DpW_0pQ3.css                                      2.15 kB │ gzip:   0.63 kB
+dist/assets/css/ToolApprovalManager-vOEN9yrD.css                         2.29 kB │ gzip:   0.65 kB
+dist/assets/css/Login-2WM7eU4P.css                                       2.52 kB │ gzip:   0.74 kB
+dist/assets/css/ScheduleManager-5HpBQDNh.css                             2.56 kB │ gzip:   0.82 kB
+dist/assets/css/UiButton-kfrDdq10.css                                    3.38 kB │ gzip:   0.91 kB
+dist/assets/css/DynamicToolsManager-C3ZwdBmT.css                         3.68 kB │ gzip:   0.90 kB
+dist/assets/css/PreprocessorOrderManager-CBgX4Wen.css                    3.91 kB │ gzip:   1.10 kB
+dist/assets/css/VcptavernEditor-DSH4PYZn.css                             4.06 kB │ gzip:   1.12 kB
+dist/assets/css/OneRingManager-Bak13N02.css                              4.11 kB │ gzip:   0.97 kB
+dist/assets/css/AgentAssistantConfig-CfUq3c6X.css                        4.15 kB │ gzip:   0.92 kB
+dist/assets/css/BaseConfig-BVWAohHs.css                                  4.24 kB │ gzip:   1.09 kB
+dist/assets/css/ImageCacheEditor-C8QAkyA2.css                            4.50 kB │ gzip:   1.14 kB
+dist/assets/css/UiSideConsoleNav-BfA9s-pR.css                            4.71 kB │ gzip:   1.07 kB
+dist/assets/css/VcpForum-B5BUH-kd.css                                    4.83 kB │ gzip:   1.22 kB
+dist/assets/css/ToolCallRecordsManager-COu-YzXn.css                      5.36 kB │ gzip:   1.20 kB
+dist/assets/css/AgentTimeLineManager-mf80TjQy.css                        5.52 kB │ gzip:   1.32 kB
+dist/assets/css/SemanticGroupsEditor-DwKvaleI.css                        5.56 kB │ gzip:   1.39 kB
+dist/assets/css/TvsFilesEditor-c2O656zK.css                              6.09 kB │ gzip:   1.44 kB
+dist/assets/css/ForumAssistantConfig-DoGehtmU.css                        6.12 kB │ gzip:   1.27 kB
+dist/assets/css/PluginConfig-CnHNqslI.css                                6.28 kB │ gzip:   1.37 kB
+dist/assets/css/ClawMailManager-DvXkPbuz.css                             7.04 kB │ gzip:   1.55 kB
+dist/assets/css/ToolListEditor-CSuPyLrQ.css                              7.45 kB │ gzip:   1.66 kB
+dist/assets/css/DreamManager-B8poC8Tb.css                                7.74 kB │ gzip:   1.50 kB
+dist/assets/css/ServerLogViewer-DOGZjUlh.css                             8.34 kB │ gzip:   1.91 kB
+dist/assets/css/PlaceholderExplorerManager-BpilEUVz.css                  8.42 kB │ gzip:   1.68 kB
+dist/assets/css/PlaceholderViewer-CptQbKCx.css                           9.07 kB │ gzip:   1.74 kB
+dist/assets/css/SemanticModelRouterEditor-Dv4RBdK_.css                  10.45 kB │ gzip:   1.98 kB
+dist/assets/css/PluginsHub-DDMzBctz.css                                 11.20 kB │ gzip:   2.27 kB
+dist/assets/css/easymde-CuHSnQz_.css                                    11.80 kB │ gzip:   2.87 kB
+dist/assets/css/BridgeHijackConfig--RNMJ1S6.css                         13.10 kB │ gzip:   2.48 kB
+dist/assets/css/ThinkingChainsEditor-hZNr-lFH.css                       13.44 kB │ gzip:   2.29 kB
+dist/assets/css/PluginStore-BwbDW0YX.css                                15.36 kB │ gzip:   2.91 kB
+dist/assets/css/EmojiGallery-tkJr7w8a.css                               15.78 kB │ gzip:   3.02 kB
+dist/assets/css/AgentEmotionManager-L4MIc0oZ.css                        15.91 kB │ gzip:   2.71 kB
+dist/assets/css/ToolboxManager-BzPU-psL.css                             16.42 kB │ gzip:   2.75 kB
+dist/assets/css/ThemeEditor-B22XAw7Y.css                                20.90 kB │ gzip:   3.27 kB
+dist/assets/css/FinalContextViewer-B5vgr6nK.css                         22.45 kB │ gzip:   3.80 kB
+dist/assets/css/AgentFilesEditor-DZU5Pcfs.css                           23.84 kB │ gzip:   4.07 kB
+dist/assets/css/DailyNotesManager-CP5jtFP0.css                          55.66 kB │ gzip:  11.67 kB
+dist/assets/css/MainLayout-CEykuoMc.css                                 75.46 kB │ gzip:  12.00 kB
+dist/assets/css/RagTuning-DeNaYJWS.css                                  77.65 kB │ gzip:   9.73 kB
+dist/assets/css/index-CoBYXyoF.css                                     157.16 kB │ gzip:  55.39 kB
+dist/assets/css/Dashboard-vVXznWlt.css                                 161.77 kB │ gzip:  15.75 kB
+dist/assets/js/VcpForumCard-DH1xdlQc.js                                  0.06 kB │ gzip:   0.07 kB
+dist/assets/js/ActivityChartCard-DbTTWOvb.js                             0.06 kB │ gzip:   0.08 kB
+dist/assets/js/CalendarCard-BFy6hqDB.js                                  0.06 kB │ gzip:   0.08 kB
+dist/assets/js/CpuCard-CcHQLZjx.js                                       0.06 kB │ gzip:   0.08 kB
+dist/assets/js/DreamReviewCard-BPuohDmm.js                               0.06 kB │ gzip:   0.08 kB
+dist/assets/js/MemoryCard-CMCPx6sx.js                                    0.06 kB │ gzip:   0.08 kB
+dist/assets/js/MemoryProfileCard-CgZUJYIE.js                             0.06 kB │ gzip:   0.08 kB
+dist/assets/js/NewApiMonitorCard-zvD67Oqt.js                             0.06 kB │ gzip:   0.08 kB
+dist/assets/js/NewsCard-BeY9bqhG.js                                      0.06 kB │ gzip:   0.08 kB
+dist/assets/js/NodeInfoCard-CaZOLKJo.js                                  0.06 kB │ gzip:   0.08 kB
+dist/assets/js/ProcessCard-Bm5MnEmZ.js                                   0.06 kB │ gzip:   0.08 kB
+dist/assets/js/WeatherCard-Clz9f6hx.js                                   0.06 kB │ gzip:   0.08 kB
+dist/assets/js/ExampleCard-DIRDmnZd.js                                   0.08 kB │ gzip:   0.09 kB
+dist/assets/js/FileTreeCard-OjyJbDs8.js                                  0.08 kB │ gzip:   0.09 kB
+dist/assets/js/_plugin-vue_export-helper-K9rsuiWd.js                     0.08 kB │ gzip:   0.10 kB
+dist/assets/js/utils-doLJC8J8.js                                         0.10 kB │ gzip:   0.11 kB
+dist/assets/js/pointerReorder-ClQwPW6v.js                                0.31 kB │ gzip:   0.22 kB
+dist/assets/js/UiPageActions-DxWEVOPo.js                                 0.35 kB │ gzip:   0.28 kB
+dist/assets/js/useDebounceFn-DNKySx-O.js                                 0.37 kB │ gzip:   0.24 kB
+dist/assets/js/format-Dxecod77.js                                        0.46 kB │ gzip:   0.27 kB
+dist/assets/js/UiTableFrame-BHBrdttP.js                                  0.48 kB │ gzip:   0.35 kB
+dist/assets/js/usePolling-C52Qf8Y0.js                                    0.50 kB │ gzip:   0.32 kB
+dist/assets/js/UiDirtyIndicator-BLrjAQqc.js                              0.52 kB │ gzip:   0.39 kB
+dist/assets/js/UiBadge-BaylIQ-o.js                                       0.53 kB │ gzip:   0.36 kB
+dist/assets/js/UiSettingsForm-Bs2dPOIo.js                                0.60 kB │ gzip:   0.38 kB
+dist/assets/js/UiToolbar-BZqgRj3u.js                                     0.64 kB │ gzip:   0.40 kB
+dist/assets/js/PluginJevDeclaration-B6T4F6E-.js                          0.66 kB │ gzip:   0.46 kB
+dist/assets/js/usePagination-Cgn3PhR2.js                                 0.68 kB │ gzip:   0.39 kB
+dist/assets/js/ui-H0GHmYO_.js                                            0.71 kB │ gzip:   0.39 kB
+dist/assets/js/UiAlert-DxxP7BHs.js                                       0.72 kB │ gzip:   0.44 kB
+dist/assets/js/UiIconButton-RDRSR1EM.js                                  0.83 kB │ gzip:   0.45 kB
+dist/assets/js/media-cache-fixtures-DcRdBt0j.js                          0.84 kB │ gzip:   0.47 kB
+dist/assets/js/UiEmptyState-DM93fkjO.js                                  0.88 kB │ gzip:   0.44 kB
+dist/assets/js/AppSwitch-Be0AS24A.js                                     0.96 kB │ gzip:   0.58 kB
+dist/assets/js/useLocalStorage-B8LVxpBD.js                               0.99 kB │ gzip:   0.54 kB
+dist/assets/js/UiSelect-DBWYhFcA.js                                      1.01 kB │ gzip:   0.60 kB
+dist/assets/js/UiInput-WSyEeXO6.js                                       1.08 kB │ gzip:   0.63 kB
+dist/assets/js/rolldown-runtime-kjsH4l9N.js                              1.10 kB │ gzip:   0.62 kB
+dist/assets/js/useRecentVisits-D6IVj1Qr.js                               1.20 kB │ gzip:   0.58 kB
+dist/assets/js/AppCheckbox-DWQ0D3fZ.js                                   1.24 kB │ gzip:   0.66 kB
+dist/assets/js/UiSettingsCard-DeBRUGft.js                                1.25 kB │ gzip:   0.56 kB
+dist/assets/js/UiSettingsSwitchRow-CMD-6Mcf.js                           1.30 kB │ gzip:   0.66 kB
+dist/assets/js/useVirtualScroll-BWlyT5Fc.js                              1.31 kB │ gzip:   0.58 kB
+dist/assets/js/UiButton-CKg_d1RR.js                                      1.32 kB │ gzip:   0.66 kB
+dist/assets/js/UiTextarea-DAEoBbp8.js                                    1.35 kB │ gzip:   0.71 kB
+dist/assets/js/ConfirmDialog-BXJkjvdu.js                                 1.46 kB │ gzip:   0.80 kB
+dist/assets/js/UiCard-BvH-YX8i.js                                        1.47 kB │ gzip:   0.65 kB
+dist/assets/js/UiField-BMM-vcLz.js                                       1.49 kB │ gzip:   0.70 kB
+dist/assets/js/UiSideConsoleNav-Dd0b6_MI.js                              1.96 kB │ gzip:   0.99 kB
+dist/assets/js/_sdk-5zwJXp43.js                                          2.19 kB │ gzip:   1.13 kB
+dist/assets/js/useMarkdownRenderer-Delw0YPe.js                           2.22 kB │ gzip:   1.24 kB
+dist/assets/js/BaseModal-DyrE8x5g.js                                     2.41 kB │ gzip:   1.14 kB
+dist/assets/js/env-DoShOCZT.js                                           2.63 kB │ gzip:   1.08 kB
+dist/assets/js/Login-DmOs-MEZ.js                                         3.25 kB │ gzip:   1.63 kB
+dist/assets/js/DragHandle-CbIdF8Ln.js                                    3.27 kB │ gzip:   1.41 kB
+dist/assets/js/AgentScores-DuJ9KYDG.js                                   4.48 kB │ gzip:   2.13 kB
+dist/assets/js/SarPromptEditor-BvS0zo2j.js                               5.85 kB │ gzip:   2.60 kB
+dist/assets/js/ClawMailManager-CNsU7sGo.js                               7.47 kB │ gzip:   3.12 kB
+dist/assets/js/ScheduleManager-Dcb1NIHU.js                               7.55 kB │ gzip:   3.08 kB
+dist/assets/js/requestWithUi-DZ1nvr2J.js                                 8.10 kB │ gzip:   3.30 kB
+dist/assets/js/PreprocessorOrderManager-fMuPnX-Y.js                      8.15 kB │ gzip:   3.62 kB
+dist/assets/js/SemanticGroupsEditor-DM6Bhhsg.js                          8.77 kB │ gzip:   3.70 kB
+dist/assets/js/ServerLogViewer-B5GtF0Or.js                               9.52 kB │ gzip:   4.11 kB
+dist/assets/js/ToolApprovalManager-BvgPcyna.js                          10.05 kB │ gzip:   4.11 kB
+dist/assets/js/TvsFilesEditor-AqHClDti.js                               10.69 kB │ gzip:   4.17 kB
+dist/assets/js/OneRingManager-B6b5odCY.js                               13.80 kB │ gzip:   5.03 kB
+dist/assets/js/BaseConfig-DGoHxC-1.js                                   14.36 kB │ gzip:   5.50 kB
+dist/assets/js/VcptavernEditor-C-rPt6yT.js                              15.86 kB │ gzip:   5.96 kB
+dist/assets/js/PlaceholderViewer-CmGNwXBQ.js                            16.16 kB │ gzip:   5.67 kB
+dist/assets/js/DynamicToolsManager-CUlNJf51.js                          16.26 kB │ gzip:   5.40 kB
+dist/assets/js/PlaceholderExplorerManager-BiaUBvsx.js                   16.66 kB │ gzip:   5.80 kB
+dist/assets/js/VcpForum-DdJP4_NO.js                                     16.71 kB │ gzip:   6.43 kB
+dist/assets/js/DreamManager-DByhdLGh.js                                 17.25 kB │ gzip:   5.83 kB
+dist/assets/js/ImageCacheEditor-CjNKtIlS.js                             17.43 kB │ gzip:   5.95 kB
+dist/assets/js/ThinkingChainsEditor-BxfhlTeM.js                         18.45 kB │ gzip:   6.36 kB
+dist/assets/js/app-DYQsYl7y.js                                          19.00 kB │ gzip:   6.27 kB
+dist/assets/js/AgentTimeLineManager-Bl4rBwQ2.js                         19.04 kB │ gzip:   6.32 kB
+dist/assets/js/ToolCallRecordsManager-D3y1kQkB.js                       19.77 kB │ gzip:   6.21 kB
+dist/assets/js/BridgeHijackConfig-BoNoPvjO.js                           20.53 kB │ gzip:   6.67 kB
+dist/assets/js/ToolboxManager-CPq03NcD.js                               21.99 kB │ gzip:   7.52 kB
+dist/assets/js/SemanticModelRouterEditor-Gal2rRVS.js                    22.00 kB │ gzip:   7.06 kB
+dist/assets/js/ForumAssistantConfig-D9injGUk.js                         23.62 kB │ gzip:   8.31 kB
+dist/assets/js/PluginConfig-CR9XqGeZ.js                                 23.67 kB │ gzip:   7.65 kB
+dist/assets/js/PluginsHub-DoNBsigg.js                                   23.71 kB │ gzip:   8.29 kB
+dist/assets/js/AgentAssistantConfig-DaAz-HaY.js                         24.01 kB │ gzip:   8.34 kB
+dist/assets/js/ToolListEditor-DqCtNxXg.js                               25.56 kB │ gzip:   9.56 kB
+dist/assets/js/EmojiGallery-Drh4FyCy.js                                 25.62 kB │ gzip:   9.35 kB
+dist/assets/js/AgentEmotionManager-jogl0h6x.js                          26.65 kB │ gzip:   9.48 kB
+dist/assets/js/PluginStore-BYopvN5z.js                                  28.81 kB │ gzip:   9.93 kB
+dist/assets/js/DailyNotesManager-CtIfFYk5.js                            32.90 kB │ gzip:  11.15 kB
+dist/assets/js/ThemeEditor-M0GTe0mU.js                                  35.93 kB │ gzip:  11.92 kB
+dist/assets/js/FinalContextViewer-BlWos0QD.js                           42.30 kB │ gzip:  14.52 kB
+dist/assets/js/AgentFilesEditor-BvoRK3hh.js                             57.91 kB │ gzip:  17.87 kB
+dist/assets/js/markdown-DjdXysw0.js                                     65.54 kB │ gzip:  22.47 kB
+dist/assets/js/index-BX-cKttR.js                                        66.53 kB │ gzip:  19.12 kB
+dist/assets/js/MainLayout-DW3jL6vt.js                                   69.00 kB │ gzip:  22.39 kB
+dist/assets/js/Dashboard-8R-2uvA3.js                                    92.12 kB │ gzip:  30.80 kB
+dist/assets/js/vue-vendor-D81C7juz.js                                  115.78 kB │ gzip:  45.69 kB
+dist/assets/js/RagTuning-DxyEOj7i.js                                   147.24 kB │ gzip:  47.90 kB
+dist/assets/js/easymde-DBVRU5FX.js                                     331.49 kB │ gzip: 111.57 kB
+dist/assets/js/es-lya0POVz.js                                          965.14 kB │ gzip: 309.08 kB
+
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/ActivityChartCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/CalendarCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/CpuCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/DreamReviewCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/MemoryCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/MemoryProfileCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/NewApiMonitorCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/NewsCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/NodeInfoCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/ProcessCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/VcpForumCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/WeatherCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/contrib/ExampleCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/components/dashboard/contrib/FileTreeCard.vue is dynamically imported by src/dashboard/core/builtinComponentMap.ts but also statically imported by src/dashboard/core/builtinComponentMap.ts, dynamic import will not move module into another chunk.
+[39m
+[32m✓ built in 1.48s[39m

@@ -19,6 +19,12 @@ function nativePayload(id, candidateSources = ['time']) {
         results: [{
             id,
             chunkId: id,
+            hydratedChunk: {
+                text: id === 101 ? 'time final text' : 'bm25 final text',
+                sourceFile: id === 101 ? 'Diary/time.md' : 'Diary/bm25.md',
+                diaryName: 'Diary',
+                fileId: id === 101 ? 1 : 2
+            },
             rank: 1,
             score: 0.8,
             originalScore: 0.7,
@@ -80,11 +86,7 @@ function createFixture() {
     const db = {
         name: 'fixture.sqlite',
         prepare() {
-            return {
-                all(...ids) {
-                    return ids.map(id => rows.get(Number(id))).filter(Boolean);
-                }
-            };
+            throw new Error('Frozen native results must not trigger JS secondary hydration');
         }
     };
     const tagIndex = {

@@ -1,6 +1,8 @@
-// repair_database.js (v2 - No Re-embedding Required)
-// Description: A script to detect, merge duplicate tags in the SQLite DB,
-// and surgically remove the corresponding vectors from the .usearch index file.
+// RETIRED: legacy direct SQLite / USearch repair implementation.
+// Do not bypass the write guard. Use native Tag consistency and Runtime
+// restore/checkpoint APIs; renaming suffixes does not migrate this protocol.
+
+require('./guard-server-stopped').assertLegacyKnowledgeWriteDisabled();
 
 const fs = require('fs');
 const path = require('path');

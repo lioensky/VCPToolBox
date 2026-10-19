@@ -39,4 +39,13 @@ function assertServerStopped({ hint = '' } = {}) {
   console.log('🛡️ [Guard] 服务未运行，守卫放行。');
 }
 
-module.exports = { assertServerStopped, isServerRunning };
+// These tools predate Runtime-owned storage and dual-slot index publication.
+// A process probe cannot make their direct SQL/index writes contract-safe.
+function assertLegacyKnowledgeWriteDisabled() {
+  throw new Error(
+    'KBM_LEGACY_WRITE_DISABLED: 此旧工具尚未迁移到原生 Runtime，禁止直接修改中央库或索引。' +
+    '请使用管理面板的 Tag 一致性/重训流程；离线修复须先迁移并在数据库副本验证。'
+  );
+}
+
+module.exports = { assertServerStopped, isServerRunning, assertLegacyKnowledgeWriteDisabled };

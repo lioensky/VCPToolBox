@@ -1,7 +1,9 @@
-// rebuild_vector_indexes.js
-// Description: A utility script to safely delete and rebuild all Vexus vector indexes from the SQLite database.
-// This is the most reliable way to fix "ghost ID" issues and ensure data synchronization.
-// Usage: node rebuild_vector_indexes.js
+// RETIRED: legacy better-sqlite3 / USearch maintenance implementation.
+// Do not bypass assertLegacyKnowledgeWriteDisabled or adapt suffixes alone.
+// TDB assets require the Rust Runtime restore/checkpoint publication protocol.
+// Retained only as historical reference; this is not a supported rebuild CLI.
+
+require('./guard-server-stopped').assertLegacyKnowledgeWriteDisabled();
 
 const fs = require('fs').promises;
 const path = require('path');

@@ -1,9 +1,6 @@
 'use strict';
 
-const fs = require('fs').promises;
-const fsSync = require('fs');
 const path = require('path');
-const chokidar = require('chokidar');
 
 class KnowledgeBaseFileWatcher {
     constructor(options = {}) {
@@ -11,10 +8,12 @@ class KnowledgeBaseFileWatcher {
             throw new TypeError('KnowledgeBaseFileWatcher requires an owner');
         }
         this.owner = options.owner;
-        this.VexusIndex = options.VexusIndex;
-        this.loadVexusModule = options.loadVexusModule;
         this.watcher = null;
         this.watcherType = null;
+        this.eventPoller = null;
+        this.reconcileInFlight = false;
+        this.reconcileQueued = false;
+        this.lifecycleGeneration = 0;
     }
 
     _isIgnored(diaryName, fileName = '') {
@@ -50,98 +49,12 @@ class KnowledgeBaseFileWatcher {
         owner._queueDelete(filePath);
     }
 
-    _scanInitialFiles() {
-        const owner = this.owner;
-        const config = owner.config;
-        if (!config.fullScanOnStartup) return;
-
-        let queued = 0;
-        const walk = directory => {
-            let entries;
-            try {
-                entries = fsSync.readdirSync(directory, {
-                    withFileTypes: true
-                });
-            } catch (error) {
-                console.warn(
-                    `[KnowledgeBase] Initial scan skipped unreadable `
-                    + `directory "${directory}": ${error.message}`
-                );
-                return;
-            }
-
-            for (const entry of entries) {
-                const absolutePath = path.join(directory, entry.name);
-                const relativePath = path.relative(
-                    config.rootPath,
-                    absolutePath
-                );
-                const parts = relativePath.split(path.sep);
-                const diaryName = parts.length > 1 ? parts[0] : 'Root';
-
-                if (entry.isDirectory()) {
-                    if (
-                        ['node_modules', '.git', 'dist', 'target', 'image']
-                            .includes(entry.name)
-                        || entry.name.startsWith('.')
-                        || config.ignoreFolders.includes(entry.name)
-                        || this._isIgnored(diaryName, entry.name)
-                    ) {
-                        continue;
-                    }
-                    walk(absolutePath);
-                    continue;
-                }
-
-                if (!entry.isFile() || !/\.(md|txt)$/i.test(absolutePath)) {
-                    continue;
-                }
-                if (this._isIgnored(diaryName, entry.name)) continue;
-                this._queueFile(absolutePath);
-                queued++;
-            }
-        };
-
-        walk(config.rootPath);
-        console.log(
-            queued > 0
-                ? `[KnowledgeBase] 🔍 Initial full scan queued ${queued} file(s).`
-                : '[KnowledgeBase] 🔍 Initial full scan found no indexable files.'
-        );
-    }
-
-    async _handleFileWithStabilityCheck(filePath) {
-        try {
-            const first = await fs.stat(filePath);
-            await new Promise(resolve => setTimeout(resolve, 500));
-            const second = await fs.stat(filePath);
-            if (
-                first.size === second.size
-                && first.mtimeMs === second.mtimeMs
-            ) {
-                this._queueFile(filePath);
-            } else {
-                setTimeout(
-                    () => this._handleFileWithStabilityCheck(filePath),
-                    1000
-                );
-            }
-        } catch (error) {
-            if (error.code !== 'ENOENT') {
-                console.warn(
-                    '[KnowledgeBase] Stability check error:',
-                    error.message
-                );
-            }
-        }
-    }
-
     _handleRustEvent(...args) {
         const owner = this.owner;
         try {
             const jsonPayload = args.find(
-                argument => typeof argument === 'string'
-            );
+                argument => argument && typeof argument === 'object'
+            ) || args.find(argument => typeof argument === 'string');
             if (!jsonPayload) {
                 console.warn(
                     '[KnowledgeBase] Ignored Rust watcher callback without '
@@ -151,8 +64,13 @@ class KnowledgeBaseFileWatcher {
                 return;
             }
 
-            const payload = JSON.parse(jsonPayload);
+            const payload = typeof jsonPayload === 'string'
+                ? JSON.parse(jsonPayload) : jsonPayload;
             const { event, path: filePath } = payload;
+            if (event === 'overflow') {
+                this._reconcileAfterOverflow();
+                return;
+            }
             if (!filePath || typeof filePath !== 'string') {
                 console.warn(
                     '[KnowledgeBase] Ignored Rust watcher event without '
@@ -190,14 +108,17 @@ class KnowledgeBaseFileWatcher {
                 );
             }
 
-            if (event === 'unlink') {
+            if (event === 'unlink' && hasStableProtocol) {
                 this._queueDelete(normalizedPath);
             } else if (event === 'add' || event === 'change') {
                 owner.pendingDeletes.delete(normalizedPath);
                 if (hasStableProtocol) {
                     this._queueFile(normalizedPath);
                 } else {
-                    this._handleFileWithStabilityCheck(normalizedPath);
+                    console.warn(
+                        '[KnowledgeBase] Ignoring non-native unstable watcher event:',
+                        normalizedPath
+                    );
                 }
             }
         } catch (error) {
@@ -208,103 +129,170 @@ class KnowledgeBaseFileWatcher {
         }
     }
 
-    _tryStartRustWatcher() {
-        if (
-            !this.VexusIndex
-            || !this.VexusIndex.prototype
-            || typeof this.VexusIndex.prototype.start_watch !== 'undefined'
-        ) {
-            return false;
-        }
+    async _reconcileAfterOverflow() {
+        const runtime = this.owner.nativeKnowledgeRuntime;
+        const listIndexedFilePaths = runtime?.listIndexedFilePaths
+            || runtime?.list_indexed_file_paths;
+        const reconcileWithPaths = runtime?.reconcileWatchWithPaths
+            || runtime?.reconcile_watch_with_paths;
+        const fallbackReconcile = runtime?.reconcileWatch
+            || runtime?.reconcile_watch;
 
-        try {
-            const vexusModule = this.loadVexusModule();
-            if (!vexusModule.VexusWatcher) return false;
-            const rustWatcher = new vexusModule.VexusWatcher();
-            const startWatch = rustWatcher.startWatch
-                || rustWatcher.start_watch;
-            if (typeof startWatch !== 'function') {
-                throw new Error(
-                    'VexusWatcher startWatch/start_watch method not found'
+        if (
+            typeof listIndexedFilePaths !== 'function'
+            || typeof reconcileWithPaths !== 'function'
+        ) {
+            if (typeof fallbackReconcile !== 'function') {
+                console.error(
+                    '[KnowledgeBase] Rust watcher queue overflowed, but ' +
+                    'reconciliation ABI is unavailable; rebuild rust-vexus-lite.'
+                );
+                return;
+            }
+            try {
+                fallbackReconcile.call(runtime);
+            } catch (error) {
+                console.error(
+                    '[KnowledgeBase] Failed to request fallback Rust watcher reconciliation:',
+                    error
                 );
             }
+            return;
+        }
 
-            const config = this.owner.config;
-            startWatch.call(rustWatcher, {
-                rootPath: config.rootPath,
-                ignoreFolders: config.ignoreFolders || [],
-                ignorePrefixes: config.ignorePrefixes || [],
-                ignoreSuffixes: config.ignoreSuffixes || [],
-                debounceMs: parseInt(
-                    process.env.KNOWLEDGEBASE_WATCH_DEBOUNCE_MS,
-                    10
-                ) || 350,
-                stabilityMs: parseInt(
-                    process.env.KNOWLEDGEBASE_WATCH_STABILITY_MS,
-                    10
-                ) || 150,
-                stabilityRetries: parseInt(
-                    process.env.KNOWLEDGEBASE_WATCH_STABILITY_RETRIES,
-                    10
-                ) || 6
-            }, (...args) => this._handleRustEvent(...args));
+        if (this.reconcileInFlight) {
+            this.reconcileQueued = true;
+            return;
+        }
 
-            this.watcher = rustWatcher;
-            this.watcherType = 'rust';
-            this._publishState();
-            console.log('[KnowledgeBase] 🦀 Using Rust native watcher.');
-            this._scanInitialFiles();
-            return true;
-        } catch (error) {
-            console.warn(
-                '[KnowledgeBase] ⚠️ Failed to initialize Rust Watcher, '
-                + `falling back to Chokidar: ${error.message}`
+        this.reconcileInFlight = true;
+        const lifecycleGeneration = this.lifecycleGeneration;
+        try {
+            const rawPaths = await listIndexedFilePaths.call(
+                runtime,
+                this.owner.dbPath
             );
-            return false;
+            if (
+                lifecycleGeneration !== this.lifecycleGeneration
+                || this.watcher !== runtime
+            ) return;
+            const indexedPaths = typeof rawPaths === 'string'
+                ? JSON.parse(rawPaths)
+                : rawPaths;
+            const paths = [...new Set(
+                (Array.isArray(indexedPaths) ? indexedPaths : [])
+                    .map(value => String(value || '').trim())
+                    .filter(Boolean)
+            )];
+
+            reconcileWithPaths.call(runtime, paths);
+            if (this.owner.debugMode) {
+                console.warn(
+                    '[KnowledgeBase] Rust watcher queue overflowed; ' +
+                    `native reconciliation requested with ${paths.length} indexed path(s).`
+                );
+            }
+        } catch (error) {
+            console.error(
+                '[KnowledgeBase] Failed to reconcile Rust watcher after queue overflow:',
+                error
+            );
+        } finally {
+            if (lifecycleGeneration !== this.lifecycleGeneration) return;
+            this.reconcileInFlight = false;
+            if (this.reconcileQueued) {
+                this.reconcileQueued = false;
+                void this._reconcileAfterOverflow();
+            }
         }
     }
 
-    _startChokidarWatcher() {
-        const owner = this.owner;
-        const config = owner.config;
-        console.log('[KnowledgeBase] 🔄 Using Chokidar watcher fallback...');
+    _drainRustEvents() {
+        const runtime = this.owner.nativeKnowledgeRuntime;
+        const drainEvents = runtime?.drainWatchEvents
+            || runtime?.drain_watch_events;
+        if (!runtime || typeof drainEvents !== 'function') return;
 
-        const handleFile = filePath => {
-            const relativePath = path.relative(config.rootPath, filePath);
-            const parts = relativePath.split(path.sep);
-            const diaryName = parts.length > 1 ? parts[0] : 'Root';
-            const fileName = path.basename(relativePath);
-            if (
-                this._isIgnored(diaryName, fileName)
-                || !/\.(md|txt)$/i.test(filePath)
-            ) {
-                return;
+        let events;
+        try {
+            events = drainEvents.call(runtime, 256) || [];
+        } catch (error) {
+            if (this.owner.debugMode) {
+                console.warn(
+                    '[KnowledgeBase] Failed to drain Rust watcher events:',
+                    error
+                );
             }
-            this._handleFileWithStabilityCheck(filePath);
-        };
-
-        const ignoredPatterns = [
-            '**/node_modules/**',
-            '**/.git/**',
-            '**/dist/**',
-            '**/target/**',
-            '**/image/**',
-            '**/.*'
-        ];
-        for (const folder of config.ignoreFolders || []) {
-            if (folder) ignoredPatterns.push(`**/${folder}/**`);
+            return;
         }
 
-        this.watcher = chokidar.watch(config.rootPath, {
-            ignored: ignoredPatterns,
-            ignoreInitial: !config.fullScanOnStartup
+        for (const event of events) {
+            this._handleRustEvent(event);
+        }
+    }
+
+    _startRustWatcher() {
+        const runtime = this.owner.nativeKnowledgeRuntime;
+        const startWatch = runtime?.startWatch
+            || runtime?.start_watch;
+        const drainEvents = runtime?.drainWatchEvents
+            || runtime?.drain_watch_events;
+        if (
+            !runtime
+            || typeof startWatch !== 'function'
+            || typeof drainEvents !== 'function'
+        ) {
+            throw new Error(
+                'NativeKnowledgeRuntime watcher queue ABI is unavailable; '
+                + 'rebuild rust-vexus-lite'
+            );
+        }
+
+        const config = this.owner.config;
+        startWatch.call(runtime, {
+            rootPath: config.rootPath,
+            ignoreFolders: config.ignoreFolders || [],
+            ignorePrefixes: config.ignorePrefixes || [],
+            ignoreSuffixes: config.ignoreSuffixes || [],
+            // Startup uses the single reconciliation below, including indexed
+            // paths for missing-file detection. Do not also launch a native scan.
+            initialScan: false,
+            debounceMs: parseInt(
+                process.env.KNOWLEDGEBASE_WATCH_DEBOUNCE_MS,
+                10
+            ) || 350,
+            stabilityMs: parseInt(
+                process.env.KNOWLEDGEBASE_WATCH_STABILITY_MS,
+                10
+            ) || 150,
+            stabilityRetries: parseInt(
+                process.env.KNOWLEDGEBASE_WATCH_STABILITY_RETRIES,
+                10
+            ) || 6
         });
-        this.watcher
-            .on('add', handleFile)
-            .on('change', handleFile)
-            .on('unlink', filePath => this._queueDelete(filePath));
-        this.watcherType = 'chokidar';
+
+        // JS 只保留轻量生命周期投影；实际 watcher、notify 句柄、
+        // 稳定性判断、初始对账和有界事件队列归 Runtime 所有。
+        this.watcher = runtime;
+        this.watcherType = 'runtime-owned-rust';
+        this.eventPoller = setInterval(
+            () => this._drainRustEvents(),
+            100
+        );
+        this.eventPoller.unref?.();
+        this._drainRustEvents();
         this._publishState();
+        // One authoritative startup scan, with the indexed-path snapshot.
+        // Real overflow recovery remains independently enabled.
+        if (config.fullScanOnStartup !== false) {
+            void this._reconcileAfterOverflow();
+        }
+        console.log(
+            '[KnowledgeBase] Using Runtime-owned Rust watcher; ' +
+            `startup scan=${config.fullScanOnStartup !== false ? 'enabled' : 'disabled'}, ` +
+            'overflow recovery=enabled.'
+        );
+        return this.watcher;
     }
 
     _publishState() {
@@ -314,15 +302,18 @@ class KnowledgeBaseFileWatcher {
 
     start() {
         if (this.watcher) return this.watcher;
-        if (!this._tryStartRustWatcher()) {
-            this._startChokidarWatcher();
-        }
-        return this.watcher;
+        this.lifecycleGeneration++;
+        return this._startRustWatcher();
     }
 
     async stop() {
+        this.lifecycleGeneration++;
+        if (this.eventPoller) {
+            clearInterval(this.eventPoller);
+            this.eventPoller = null;
+        }
         if (!this.watcher) return;
-        if (this.watcherType === 'rust') {
+        if (this.watcherType === 'runtime-owned-rust') {
             const stopWatch = this.watcher.stopWatch
                 || this.watcher.stop_watch;
             if (typeof stopWatch === 'function') {
@@ -333,6 +324,8 @@ class KnowledgeBaseFileWatcher {
         }
         this.watcher = null;
         this.watcherType = null;
+        this.reconcileInFlight = false;
+        this.reconcileQueued = false;
         this._publishState();
         this.owner.watcherPathGenerations.clear();
     }

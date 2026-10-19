@@ -19,7 +19,7 @@
           <small>{{ knowledgeBaseProfile.diaryIndices.loadedCount }} 个日记索引已加载</small>
         </div>
         <div class="dashboard-card-panel summary-item">
-          <span class="summary-label">TagMemo</span>
+          <span class="summary-label">RiverMemo</span>
           <strong>{{ formatBytes(knowledgeBaseProfile.tagMemo.estimatedBytes) }}</strong>
           <small>{{ formatNumber(knowledgeBaseProfile.tagMemo.cooccurrenceEdges ?? 0) }} 条矩阵边</small>
         </div>
@@ -49,7 +49,7 @@
 
         <section class="dashboard-card-panel detail-section">
           <div class="section-title">
-            <span>TagMemo 矩阵</span>
+            <span>RiverMemo 矩阵</span>
             <small :class="{ active: knowledgeBaseProfile.tagMemo.matrixRebuilding }">
               {{ knowledgeBaseProfile.tagMemo.matrixRebuilding ? "重建中" : "就绪" }}
             </small>

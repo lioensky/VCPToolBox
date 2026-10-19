@@ -8,10 +8,130 @@ class DatabaseCoordinator {
             throw new TypeError('DatabaseCoordinator requires an owner');
         }
         this.owner = options.owner;
+        this.pathWaiters = new Map();
     }
 
     delay(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    _normalizePath(filePath) {
+        return path.resolve(String(filePath || ''));
+    }
+
+    _settlePathWaiters(filePaths, kind, error = null) {
+        const paths = Array.isArray(filePaths) ? filePaths : [filePaths];
+        for (const filePath of paths) {
+            const normalizedPath = this._normalizePath(filePath);
+            const waiters = this.pathWaiters.get(normalizedPath);
+            if (!waiters || waiters.size === 0) continue;
+            for (const waiter of waiters) {
+                if (waiter.kind !== kind) continue;
+                if (error) waiter.reject(error);
+                else waiter.resolve();
+                // 多路径共享超时，只在整组完成或失败时清理。
+            }
+            const remaining = new Set(
+                [...waiters].filter(waiter => waiter.kind !== kind)
+            );
+            if (remaining.size > 0) this.pathWaiters.set(normalizedPath, remaining);
+            else this.pathWaiters.delete(normalizedPath);
+        }
+    }
+
+    notifyIndexedFilePaths(filePaths, error = null) {
+        this._settlePathWaiters(filePaths, 'indexed', error);
+    }
+
+    notifyDeletedFilePaths(filePaths, error = null) {
+        this._settlePathWaiters(filePaths, 'deleted', error);
+    }
+
+    _waitForPathReceipts(filePaths, kind, options = {}) {
+        const normalizedPaths = [...new Set(
+            (Array.isArray(filePaths) ? filePaths : [filePaths])
+                .map(filePath => this._normalizePath(filePath))
+                .filter(Boolean)
+        )];
+        if (normalizedPaths.length === 0) return Promise.resolve();
+
+        const timeoutMs = Math.max(
+            1000,
+            Number(options.timeoutMs) || 30 * 60 * 1000
+        );
+        const signal = options.signal;
+        return new Promise((resolve, reject) => {
+            const waiters = [];
+            let onAbort;
+            const cleanup = () => {
+                clearTimeout(timer);
+                if (onAbort) signal?.removeEventListener?.('abort', onAbort);
+                for (const [normalizedPath, waiter] of waiters) {
+                    const entries = this.pathWaiters.get(normalizedPath);
+                    if (!entries) continue;
+                    entries.delete(waiter);
+                    if (entries.size === 0) this.pathWaiters.delete(normalizedPath);
+                }
+            };
+            const fail = error => {
+                cleanup();
+                reject(error);
+            };
+            const timer = setTimeout(() => {
+                const error = new Error(
+                    `Timed out waiting for ${normalizedPaths.length} ${kind} receipt(s).`
+                );
+                error.code = 'KNOWLEDGE_STORE_RECEIPT_TIMEOUT';
+                fail(error);
+            }, timeoutMs);
+
+            for (const normalizedPath of normalizedPaths) {
+                const waiter = {
+                    kind,
+                    resolve: () => {},
+                    reject: fail,
+                    timer
+                };
+                waiters.push([normalizedPath, waiter]);
+                if (!this.pathWaiters.has(normalizedPath)) {
+                    this.pathWaiters.set(normalizedPath, new Set());
+                }
+                this.pathWaiters.get(normalizedPath).add(waiter);
+            }
+
+            let remaining = normalizedPaths.length;
+            const completeOne = () => {
+                remaining -= 1;
+                if (remaining > 0) return;
+                clearTimeout(timer);
+                cleanup();
+                resolve();
+            };
+            for (const [, waiter] of waiters) {
+                waiter.resolve = completeOne;
+            }
+
+            if (signal) {
+                if (signal.aborted) {
+                    const error = new Error(
+                        'External file mutation was aborted while waiting for a receipt.'
+                    );
+                    error.code = 'ABORT_ERR';
+                    fail(error);
+                    return;
+                }
+                onAbort = () => {
+                    signal.removeEventListener?.('abort', onAbort);
+                    const error = new Error(
+                        'External file mutation was aborted while waiting for a receipt.'
+                    );
+                    error.code = 'ABORT_ERR';
+                    fail(error);
+                };
+                signal.addEventListener?.('abort', onAbort, { once: true });
+                for (const [, waiter] of waiters) waiter.onAbort = onAbort;
+            }
+        });
     }
 
     async waitForIdle(options = {}) {
@@ -40,7 +160,6 @@ class DatabaseCoordinator {
             (!options.allowJsProcessing && owner.isProcessing)
             || (!options.allowJsDeleteProcessing && owner.isProcessingDeletes)
             || (!options.allowExternalMutation && owner.externalMutationActive)
-            || owner.rustWriteLease
             || owner.indexRecoveryActive
             || owner.dbHealthState === 'recovering'
         ) {
@@ -78,7 +197,6 @@ class DatabaseCoordinator {
                     + `${Date.now() - startedAt}ms (${reason}) (processing=${owner.isProcessing}, `
                     + `deletes=${owner.isProcessingDeletes}, `
                     + `externalMutation=${owner.externalMutationOwner || 'none'}, `
-                    + `rustLease=${owner.rustWriteLease?.owner || 'none'}, `
                     + `recovery=${owner.indexRecoveryActive}).`
                 );
             }
@@ -148,96 +266,32 @@ class DatabaseCoordinator {
     async awaitIndexedFilePaths(filePaths, options = {}) {
         const owner = this.owner;
         if (!Array.isArray(filePaths) || filePaths.length === 0) return;
-        const timeoutMs = Math.max(
-            1000,
-            Number(options.timeoutMs) || 30 * 60 * 1000
+        const receiptPromise = this._waitForPathReceipts(
+            filePaths,
+            'indexed',
+            options
         );
-        const startedAt = Date.now();
-
         for (const filePath of filePaths) {
             owner.pendingFiles.add(filePath);
         }
         owner._scheduleBatch();
-
-        while (true) {
-            if (
-                owner.databaseCorruptionDetected
-                || owner.dbHealthState === 'corrupt'
-            ) {
-                throw new Error(
-                    'KnowledgeBase indexing stopped because database '
-                    + 'corruption was detected.'
-                );
-            }
-            if (options.signal?.aborted) {
-                const error = new Error(
-                    'External file mutation was aborted while waiting '
-                    + 'for indexing.'
-                );
-                error.code = 'ABORT_ERR';
-                throw error;
-            }
-
-            const stillPending = filePaths.some(
-                filePath => owner.pendingFiles.has(filePath)
-            );
-            if (!stillPending && !owner.isProcessing) return;
-            if (Date.now() - startedAt >= timeoutMs) {
-                throw new Error(
-                    `Timed out waiting for ${filePaths.length} mutated `
-                    + 'diary file(s) to be indexed.'
-                );
-            }
-            await this.delay(50);
-        }
+        return receiptPromise;
     }
 
     async awaitDeletedFilePaths(filePaths, options = {}) {
         const owner = this.owner;
         if (!Array.isArray(filePaths) || filePaths.length === 0) return;
-        const timeoutMs = Math.max(
-            1000,
-            Number(options.timeoutMs) || 30 * 60 * 1000
+        const receiptPromise = this._waitForPathReceipts(
+            filePaths,
+            'deleted',
+            options
         );
-        const startedAt = Date.now();
-
         for (const filePath of filePaths) {
             owner.pendingFiles.delete(filePath);
             owner.pendingDeletes.add(filePath);
         }
         owner._scheduleDeleteBatch();
-
-        while (true) {
-            if (
-                owner.databaseCorruptionDetected
-                || owner.dbHealthState === 'corrupt'
-            ) {
-                throw new Error(
-                    'KnowledgeBase deletion stopped because database '
-                    + 'corruption was detected.'
-                );
-            }
-            if (options.signal?.aborted) {
-                const error = new Error(
-                    'External file mutation was aborted while waiting '
-                    + 'for deletion indexing.'
-                );
-                error.code = 'ABORT_ERR';
-                throw error;
-            }
-
-            const stillPending = filePaths.some(
-                filePath => owner.pendingDeletes.has(filePath)
-            );
-            if (!stillPending && !owner.isProcessingDeletes) return;
-            if (Date.now() - startedAt >= timeoutMs) {
-                throw new Error(
-                    `Timed out waiting for ${filePaths.length} deleted `
-                    + 'diary file(s) to leave the index.'
-                );
-            }
-            await this.delay(50);
-        }
+        return receiptPromise;
     }
 
     runExternalFileMutation(ownerName, operation, options = {}) {
@@ -343,251 +397,6 @@ class DatabaseCoordinator {
                 }
             });
         return task;
-    }
-
-    isRustWriteLeaseExpired(now = Date.now()) {
-        const owner = this.owner;
-        return owner.rustWriteLease
-            && now - owner.rustWriteLease.startedAt > (
-                owner.rustWriteLease.ttlMs
-                || owner.config.rustWriteLeaseTtlMs
-            );
-    }
-
-    canGrantRustWriteLease(options = {}) {
-        const owner = this.owner;
-        if (
-            owner.databaseCorruptionDetected
-            || owner.dbHealthState === 'corrupt'
-        ) {
-            return { ok: false, reason: 'database-corruption' };
-        }
-        if (owner.dbHealthState !== 'healthy') {
-            return {
-                ok: false,
-                reason: `database-${owner.dbHealthState}`
-            };
-        }
-
-        const now = Date.now();
-        if (
-            owner.startupCompletedAt > 0
-            && options.allowDuringStartupCooldown !== true
-        ) {
-            const sinceStartupReady = now - owner.startupCompletedAt;
-            if (
-                sinceStartupReady
-                < owner.config.derivedStartupCooldownMs
-            ) {
-                return {
-                    ok: false,
-                    reason: `startup-cooldown:${
-                        owner.config.derivedStartupCooldownMs
-                        - sinceStartupReady
-                    }ms`
-                };
-            }
-        }
-
-        if (this.isRustWriteLeaseExpired(now)) {
-            console.error(
-                `[KnowledgeBase] 🚨 Rust write lease `
-                + `"${owner.rustWriteLease.owner}" exceeded TTL; `
-                + 'force-releasing stale lease.'
-            );
-            owner.rustWriteLease = null;
-            owner.lastRustWriteFinishedAt = now;
-        }
-
-        if (owner.rustWriteLease) {
-            return {
-                ok: false,
-                reason: `rust-lease-active:${owner.rustWriteLease.owner}`
-            };
-        }
-        if (owner.externalMutationActive) {
-            return {
-                ok: false,
-                reason: `external-mutation-active:${
-                    owner.externalMutationOwner || 'unknown'
-                }`
-            };
-        }
-        if (owner.externalMutationQueueLength > 0) {
-            return {
-                ok: false,
-                reason: `external-mutations-queued:${
-                    owner.externalMutationQueueLength
-                }`
-            };
-        }
-        if (owner.isProcessing) {
-            return { ok: false, reason: 'js-batch-processing' };
-        }
-        if (owner.isProcessingDeletes) {
-            return { ok: false, reason: 'js-delete-processing' };
-        }
-        if (owner.pendingDeletes.size > 0) {
-            return {
-                ok: false,
-                reason: `pending-deletes:${owner.pendingDeletes.size}`
-            };
-        }
-
-        const threshold = options.pendingThreshold
-            ?? owner.config.rustWriteLeasePendingThreshold;
-        if (
-            threshold >= 0
-            && owner.pendingFiles.size > threshold
-        ) {
-            return {
-                ok: false,
-                reason: `pending-files:${owner.pendingFiles.size}>${threshold}`
-            };
-        }
-
-        const graceMs = options.graceMs
-            ?? owner.config.rustWriteLeaseGraceMs;
-        const sinceJsWrite = now - owner.lastJsWriteFinishedAt;
-        if (
-            owner.lastJsWriteFinishedAt > 0
-            && sinceJsWrite < graceMs
-        ) {
-            return {
-                ok: false,
-                reason: `js-write-cooldown:${graceMs - sinceJsWrite}ms`
-            };
-        }
-
-        const sinceRustWrite = now - owner.lastRustWriteFinishedAt;
-        if (
-            owner.lastRustWriteFinishedAt > 0
-            && sinceRustWrite < owner.config.rustWriteLeaseCooldownMs
-        ) {
-            return {
-                ok: false,
-                reason: `rust-write-cooldown:${
-                    owner.config.rustWriteLeaseCooldownMs - sinceRustWrite
-                }ms`
-            };
-        }
-        return { ok: true, reason: 'ok' };
-    }
-
-    async requestRustWriteLease(ownerName, options = {}) {
-        const owner = this.owner;
-        const startedWaitAt = Date.now();
-        const retryMs = options.retryMs
-            ?? owner.config.rustWriteLeaseRetryMs;
-        const maxWaitMs = options.maxWaitMs
-            ?? owner.config.rustWriteLeaseMaxWaitMs;
-        const ttlMs = options.ttlMs
-            ?? owner.config.rustWriteLeaseTtlMs;
-
-        while (true) {
-            const decision = this.canGrantRustWriteLease(options);
-            if (decision.ok) {
-                if (owner.config.rustWriteLeaseCheckpointBeforeGrant) {
-                    const healthy = (
-                        owner.checkpointAndAssertDatabaseHealthy(
-                            `granting Rust lease "${ownerName}"`
-                        )
-                    );
-                    if (!healthy) {
-                        console.error(
-                            `[KnowledgeBase] 🦀🚫 Rust SQLite write lease `
-                            + `"${ownerName}" denied because database health `
-                            + 'check failed.'
-                        );
-                        return null;
-                    }
-                }
-
-                owner.rustWriteLease = {
-                    owner: ownerName,
-                    startedAt: Date.now(),
-                    ttlMs
-                };
-                console.log(
-                    `[KnowledgeBase] 🦀🔐 Rust SQLite write lease granted `
-                    + `to "${ownerName}".`
-                );
-                return {
-                    owner: ownerName,
-                    release: () => this.releaseRustWriteLease(ownerName)
-                };
-            }
-
-            if (Date.now() - startedWaitAt >= maxWaitMs) {
-                console.warn(
-                    `[KnowledgeBase] 🦀⏳ Rust SQLite write lease `
-                    + `"${ownerName}" timed out after ${maxWaitMs}ms; `
-                    + `last reason=${decision.reason}.`
-                );
-                return null;
-            }
-
-            const now = Date.now();
-            if (now - owner._rustLeaseWaitLogAt > 30000) {
-                owner._rustLeaseWaitLogAt = now;
-                console.log(
-                    `[KnowledgeBase] 🦀⏳ Rust SQLite write lease `
-                    + `"${ownerName}" waiting: ${decision.reason}. `
-                    + `pendingFiles=${owner.pendingFiles.size}, `
-                    + `pendingDeletes=${owner.pendingDeletes.size}`
-                );
-            }
-            await this.delay(retryMs);
-        }
-    }
-
-    releaseRustWriteLease(ownerName) {
-        const owner = this.owner;
-        if (!owner.rustWriteLease) return;
-        if (owner.rustWriteLease.owner !== ownerName) {
-            console.warn(
-                `[KnowledgeBase] ⚠️ Ignored Rust write lease release from `
-                + `"${ownerName}"; active owner is `
-                + `"${owner.rustWriteLease.owner}".`
-            );
-            return;
-        }
-
-        owner.rustWriteLease = null;
-        owner.lastRustWriteFinishedAt = Date.now();
-        console.log(
-            `[KnowledgeBase] 🦀🔓 Rust SQLite write lease released by `
-            + `"${ownerName}".`
-        );
-
-        if (!owner.databaseCorruptionDetected) {
-            if (owner.pendingDeletes.size > 0) {
-                setTimeout(
-                    () => owner._flushDeleteBatch(),
-                    owner.config.rustWriteLeaseCooldownMs
-                );
-            }
-            if (owner.pendingFiles.size > 0) {
-                setTimeout(
-                    () => owner._flushBatch(),
-                    owner.config.rustWriteLeaseCooldownMs
-                );
-            }
-        }
-    }
-
-    deferBatchForRustLease(type = 'batch') {
-        const owner = this.owner;
-        const leaseOwner = owner.rustWriteLease?.owner || 'unknown';
-        const delay = owner.config.rustWriteLeaseCooldownMs;
-        console.log(
-            `[KnowledgeBase] 🦀⏸️ Deferring ${type} while Rust SQLite `
-            + `write lease is active (${leaseOwner}).`
-        );
-        setTimeout(() => {
-            if (type === 'delete') owner._flushDeleteBatch();
-            else owner._flushBatch();
-        }, delay);
     }
 
     async waitForExternalMutations() {

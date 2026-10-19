@@ -1,18 +1,19 @@
 use crate::memo_sensing::{sense_typed, SenseConfig, SenseInput, SenseOutput, SenseSeed};
-use crate::rivermemo_topology_v3::{load_artifact_from_runtime, MemoRuntime};
+use crate::rivermemo_topology_v3::{load_artifact_with_connection, MemoRuntime};
+use crate::storage::with_registered_read_transaction;
 use base64::Engine;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
-use usearch::Index;
+use std::sync::{Arc};
+use std::time::Instant;
+use crate::storage::load_vectors_by_ids;
 
 const PIPELINE_SCHEMA: &str = "vexus-unified-memo-pipeline-v1";
-const PIPELINE_ALGORITHM: &str = "tagmemo.epa-pyramid-spike-fusion-v9.2-rust";
+const PIPELINE_ALGORITHM: &str = "tagmemo.epa-pyramid-spike-fusion-v9.4-calibrated-rust";
 
 fn positive(value: f64) -> f64 {
     if value.is_finite() {
@@ -66,18 +67,6 @@ fn normalize(vector: &mut [f64]) -> bool {
         *value /= norm;
     }
     true
-}
-
-fn open_readonly(path: &str) -> std::result::Result<Connection, String> {
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("open Memo pipeline SQLite failed: {}", error))?;
-    connection
-        .busy_timeout(Duration::from_secs(30))
-        .map_err(|error| format!("configure Memo pipeline timeout failed: {}", error))?;
-    connection
-        .pragma_update(None, "query_only", "ON")
-        .map_err(|error| format!("configure Memo pipeline query_only failed: {}", error))?;
-    Ok(connection)
 }
 
 #[derive(Deserialize)]
@@ -134,6 +123,7 @@ struct PipelineConfig {
     max_emergent_nodes: usize,
     tech_tag_threshold: f64,
     normal_tag_threshold: f64,
+    epa_gate_mode: String,
     #[serde(default)]
     spike_routing: SenseConfig,
 }
@@ -165,6 +155,7 @@ impl Default for PipelineConfig {
             max_emergent_nodes: 50,
             tech_tag_threshold: 0.08,
             normal_tag_threshold: 0.015,
+            epa_gate_mode: "backgroundRelative".into(),
             spike_routing: SenseConfig::default(),
         }
     }
@@ -179,7 +170,13 @@ struct EpaCache {
     _energies: Vec<f64>,
     #[serde(default)]
     labels: Vec<String>,
+    #[serde(default = "default_k_sem")]
+    k_sem: usize,
+    #[serde(default)]
+    coverage: Vec<f64>,
 }
+
+fn default_k_sem() -> usize { 8 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -210,6 +207,11 @@ struct EpaOutput {
     bridges: Vec<EpaBridge>,
     basis_count: usize,
     cache_available: bool,
+    out_of_domain: f64,
+    semantic_explained_ratio: f64,
+    in_domain_gate: f64,
+    baseline_coverage: f64,
+    background_ratio: f64,
 }
 
 fn decode_f32_base64(encoded: &str, dimension: usize) -> Option<Vec<f32>> {
@@ -227,7 +229,26 @@ fn decode_f32_base64(encoded: &str, dimension: usize) -> Option<Vec<f32>> {
     )
 }
 
+#[cfg(test)]
 fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaOutput {
+    analyze_epa_with_mode(connection, query, dimension, "absolute")
+}
+
+/// Background is the ratio of expected energies for an isotropic unit query after
+/// subtracting the same mean. It is a calibration reference, not an OOD probability.
+fn calibrated_gate(ratio: f64, baseline: f64, background: f64, mode: &str) -> f64 {
+    match mode {
+        "relativeLinear" => clamp01(ratio / baseline),
+        "relativeSqrt" => clamp01((ratio / baseline).max(0.0).sqrt()),
+        "backgroundRelative" => {
+            if baseline <= background + 1e-8 { 0.0 }
+            else { clamp01((ratio-background)/(baseline-background)) }
+        },
+        _ => clamp01(ratio),
+    }
+}
+
+fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usize, mode: &str) -> EpaOutput {
     let empty = || EpaOutput {
         logic_depth: 0.0,
         entropy: 1.0,
@@ -236,6 +257,11 @@ fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaO
         bridges: Vec::new(),
         basis_count: 0,
         cache_available: false,
+        out_of_domain: 1.0,
+        semantic_explained_ratio: 0.0,
+        in_domain_gate: 0.0,
+        baseline_coverage: 0.0,
+        background_ratio: 0.0,
     };
     let raw = match connection.query_row(
         "SELECT value FROM kv_store WHERE key = 'epa_basis_cache'",
@@ -258,31 +284,43 @@ fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaO
         .iter()
         .filter_map(|encoded| decode_f32_base64(encoded, dimension))
         .collect();
-    if bases.is_empty() {
-        return empty();
-    }
-
     let centered: Vec<f32> = query
         .iter()
         .zip(mean.iter())
         .map(|(value, average)| value - average)
         .collect();
     let projections: Vec<f64> = bases.iter().map(|basis| dot(&centered, basis)).collect();
-    let total_energy = projections.iter().map(|value| value * value).sum::<f64>();
-    if total_energy <= 1e-12 {
-        return empty();
-    }
+    let centered_energy = dot(&centered, &centered);
+    let captured = projections.iter().map(|value| value * value).sum::<f64>();
+    let out_of_domain = if centered_energy > 1e-12 {
+        ((centered_energy - captured).max(0.0) / centered_energy).sqrt().clamp(0.0, 1.0)
+    } else { 0.0 };
+    let semantic_count = cache.k_sem.max(1).min(bases.len());
+    let total_energy = projections.iter().take(semantic_count).map(|value| value * value).sum::<f64>();
+    let semantic_explained_ratio = if centered_energy > 1e-12 {
+        clamp01(total_energy / centered_energy)
+    } else { 0.0 };
+    let baseline_coverage=cache.coverage.get(semantic_count.saturating_sub(1)).copied()
+        .filter(|v|v.is_finite() && *v>0.0 && *v<=1.0)
+        .unwrap_or(semantic_count as f64/dimension.max(1) as f64).max(1e-4);
+    let mean_captured=bases.iter().take(semantic_count).map(|b|dot(&mean,b).powi(2)).sum::<f64>();
+    let background_ratio=clamp01((semantic_count as f64/dimension.max(1) as f64+mean_captured)
+        /(1.0+dot(&mean,&mean)));
+    let in_domain_gate=if semantic_count==0 || centered_energy<=1e-12 {0.0}
+        else {calibrated_gate(semantic_explained_ratio,baseline_coverage,background_ratio,mode)};
     let probabilities: Vec<f64> = projections
-        .iter()
-        .map(|value| value * value / total_energy)
+        .iter().take(semantic_count)
+        .map(|value| if total_energy > 1e-12 { value * value / total_energy } else { 0.0 })
         .collect();
     let raw_entropy = probabilities
         .iter()
         .filter(|value| **value > 1e-9)
         .map(|value| -value * value.log2())
         .sum::<f64>();
-    let normalized_entropy = if probabilities.len() > 1 {
-        clamp01(raw_entropy / (probabilities.len() as f64).log2())
+    let normalized_entropy = if total_energy <= 1e-12 {
+        1.0
+    } else if cache.k_sem > 1 {
+        clamp01(raw_entropy / (cache.k_sem as f64).log2())
     } else {
         0.0
     };
@@ -330,13 +368,18 @@ fn analyze_epa(connection: &Connection, query: &[f32], dimension: usize) -> EpaO
     let resonance = bridges.iter().map(|bridge| bridge.strength).sum();
 
     EpaOutput {
-        logic_depth: 1.0 - normalized_entropy,
+        logic_depth: (1.0 - normalized_entropy) * in_domain_gate,
         entropy: normalized_entropy,
         resonance,
         dominant_axes,
         bridges,
         basis_count: bases.len(),
         cache_available: true,
+        out_of_domain,
+        semantic_explained_ratio,
+        in_domain_gate,
+        baseline_coverage,
+        background_ratio,
     }
 }
 
@@ -532,7 +575,7 @@ fn load_tag_names(
 }
 
 fn analyze_pyramid(
-    index: &Index,
+    index: &Arc<crate::index_handle::IndexHandle>,
     connection: &Connection,
     query: &[f32],
     dimension: usize,
@@ -559,38 +602,32 @@ fn analyze_pyramid(
     let mut levels_work = Vec::new();
     let mut total_explained = 0.0;
     for level in 0..config.max_levels.clamp(1, 8) {
-        let matches = index
+        let guard = index.read().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
+        let matches = guard
             .search(&residual, config.pyramid_top_k.clamp(1, 128))
-            .map_err(|error| format!("Memo pyramid usearch search failed: {:?}", error))?;
-        if matches.keys.is_empty() {
+            .map_err(|error| format!("Memo pyramid retrieval search failed: {:?}", error))?;
+        if matches.is_empty() {
             break;
         }
-        let ids: Vec<i64> = matches.keys.iter().map(|id| *id as i64).collect();
-        let names = load_tag_names(connection, &ids)?;
-        let mut buffer = vec![0.0f32; dimension];
+        let ids: Vec<i64> = matches.iter().map(|(id, _)| *id as i64).collect();
+        drop(guard);
+        let mut rows = load_vectors_by_ids(connection, "tags", &ids, dimension)?;
         let mut tags = Vec::new();
-        for (position, id) in ids.iter().enumerate() {
-            let found = index
-                .get(*id as u64, &mut buffer)
-                .map_err(|error| format!("Memo pyramid Tag vector read failed: {:?}", error))?;
-            if found == 0 {
-                continue;
-            }
+        for id in &ids {
+            let Some(vector) = rows.remove(id) else { continue };
+            let similarity = cosine(&residual, &vector);
             tags.push(PyramidTagWork {
                 id: *id,
-                name: names
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Tag#{}", id)),
-                vector: buffer.clone(),
-                similarity: matches
-                    .distances
-                    .get(position)
-                    .map(|distance| 1.0 / (1.0 + *distance as f64))
-                    .unwrap_or(0.0),
+                name: String::new(),
+                vector,
+                similarity,
                 contribution: 0.0,
                 handshake_magnitude: 0.0,
             });
+        }
+        let names = load_tag_names(connection, &ids)?;
+        for tag in &mut tags {
+            tag.name = names.get(&tag.id).cloned().unwrap_or_else(|| format!("Tag#{}", tag.id));
         }
         if tags.is_empty() {
             break;
@@ -733,11 +770,10 @@ fn gate_tags(
                 continue;
             }
             let is_core = core_names.contains(&tag.name.to_lowercase());
-            let relevance = if tag.similarity != 0.0 {
-                tag.similarity
-            } else {
-                0.5
-            };
+            // Cosine zero is a measured orthogonal relationship, not a
+            // missing-score sentinel. Every pyramid candidate is measured
+            // against its SQL original before entering this gate.
+            let relevance = tag.similarity;
             let core_gain = if is_core {
                 dynamic_core_boost * (0.95 + relevance * 0.1)
             } else {
@@ -796,7 +832,6 @@ struct FusionDiagnostics {
 }
 
 fn fuse_observation(
-    index: &Index,
     connection: &Connection,
     query: &[f32],
     observation: &SenseOutput,
@@ -893,17 +928,14 @@ fn fuse_observation(
         }
     }
 
+    drop(core_statement);
     let requested_count = merged.len() + ghost_tags.len();
-    let mut buffer = vec![0.0f32; dimension];
+    let ids = merged.iter().map(|tag| tag.id).collect::<Vec<_>>();
+    let mut rows = load_vectors_by_ids(connection, "tags", &ids, dimension)?;
     let mut vectors = Vec::with_capacity(requested_count);
     for tag in merged {
-        let found = index
-            .get(tag.id as u64, &mut buffer)
-            .map_err(|error| format!("Memo pipeline fusion vector read failed: {:?}", error))?;
-        if found == 0 {
-            continue;
-        }
-        if magnitude(&buffer) > 1e-12 {
+        let Some(vector) = rows.remove(&tag.id) else { continue };
+        if magnitude(&vector) > 1e-12 {
             vectors.push(FusionTag {
                 id: tag.id,
                 name: if tag.name.is_empty() {
@@ -913,7 +945,7 @@ fn fuse_observation(
                 },
                 weight: tag.weight,
                 is_core: tag.is_core,
-                vector: buffer.clone(),
+                vector,
             });
         }
     }
@@ -951,6 +983,7 @@ fn fuse_observation(
             .unwrap_or(Ordering::Equal)
             .then_with(|| left.id.cmp(&right.id))
     });
+    vectors.truncate(config.max_fusion_tags.clamp(1, 1024));
     let threshold = config.deduplication_threshold.clamp(-1.0, 1.0);
     let mut selected: Vec<FusionTag> = Vec::new();
     for candidate in vectors {
@@ -1098,25 +1131,19 @@ fn effective_domain(
 }
 
 fn project_field(
-    index: &Index,
+    vectors: &HashMap<i64, Vec<f32>>,
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
     field: &[f64],
     dimension: usize,
 ) -> std::result::Result<Vec<f32>, String> {
     let mut output = vec![0.0f64; dimension];
-    let mut buffer = vec![0.0f32; dimension];
     let mut total = 0.0;
     for (node_index, mass) in field.iter().copied().enumerate() {
         if mass <= 0.0 {
             continue;
         }
         let id = artifact.node_ids[node_index];
-        let found = index
-            .get(id as u64, &mut buffer)
-            .map_err(|error| format!("Memo field projection failed for Tag {}: {:?}", id, error))?;
-        if found == 0 {
-            continue;
-        }
+        let Some(buffer) = vectors.get(&id) else { continue };
         total += mass;
         for offset in 0..dimension {
             output[offset] += buffer[offset] as f64 * mass;
@@ -1133,7 +1160,7 @@ fn project_field(
 
 fn solve_dual_fields(
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
-    index: &Index,
+    connection: &Connection,
     source_entries: &[(i64, f64)],
     dimension: usize,
     config: &PipelineConfig,
@@ -1225,8 +1252,12 @@ fn solve_dual_fields(
         .collect();
     let local_domain_ids = effective_domain(artifact, &local, config.local_mass_ratio);
     let transfer_domain_ids = effective_domain(artifact, &transfer, config.transfer_mass_ratio);
-    let local_vector = project_field(index, artifact, &local, dimension)?;
-    let transfer_vector = project_field(index, artifact, &transfer, dimension)?;
+    let ids = artifact.node_ids.iter().enumerate()
+        .filter(|(i, _)| local[*i] > 0.0 || transfer[*i] > 0.0)
+        .map(|(_, id)| *id).collect::<Vec<_>>();
+    let vectors = load_vectors_by_ids(connection, "tags", &ids, dimension)?;
+    let local_vector = project_field(&vectors, artifact, &local, dimension)?;
+    let transfer_vector = project_field(&vectors, artifact, &transfer, dimension)?;
     let local_mass = field_mass(&local);
     let transfer_mass = field_mass(&transfer);
 
@@ -1299,15 +1330,16 @@ pub struct MemoPipelineResult {
     pub enhanced_vector: Float32Array,
 }
 
-fn run_pipeline(
-    index: &Arc<RwLock<Index>>,
+fn run_pipeline_with_connection(
+    index: &Arc<crate::index_handle::IndexHandle>,
     runtime: &MemoRuntime,
-    db_path: &str,
     artifact_sig: &str,
     dimensions: usize,
     input_json: &str,
     query_vector: &[f32],
     ghost_vectors: &[f32],
+    artifact: &Arc<crate::rivermemo_topology_v3::NativeArtifact>,
+    connection: &Connection,
 ) -> std::result::Result<MemoPipelineComputeOutput, String> {
     let total_started = Instant::now();
     let mut input: PipelineInput = serde_json::from_str(input_json)
@@ -1337,19 +1369,16 @@ fn run_pipeline(
         let start = position * dimensions;
         ghost.vector = ghost_vectors[start..start + dimensions].to_vec();
     }
-    let artifact = load_artifact_from_runtime(runtime, db_path, artifact_sig)?;
-    let connection = open_readonly(db_path)?;
-
     let epa_started = Instant::now();
-    let epa = analyze_epa(&connection, &input.query_vector, dimensions);
+    if !["absolute","relativeLinear","relativeSqrt","backgroundRelative"].contains(&input.config.epa_gate_mode.as_str()) {
+        return Err("Invalid epaGateMode".into());
+    }
+    let epa = analyze_epa_with_mode(&connection, &input.query_vector, dimensions, &input.config.epa_gate_mode);
     let epa_ms = epa_started.elapsed().as_secs_f64() * 1000.0;
 
     let pyramid_started = Instant::now();
-    let index_guard = index
-        .read()
-        .map_err(|error| format!("Memo pipeline index lock failed: {}", error))?;
     let (pyramid, level_tags) = analyze_pyramid(
-        &index_guard,
+        index,
         &connection,
         &input.query_vector,
         dimensions,
@@ -1390,7 +1419,6 @@ fn run_pipeline(
 
     let fusion_started = Instant::now();
     let (enhanced_vector, fusion, selected_tags) = fuse_observation(
-        &index_guard,
         &connection,
         &input.query_vector,
         &observation,
@@ -1404,17 +1432,14 @@ fn run_pipeline(
     )?;
     let fusion_ms = fusion_started.elapsed().as_secs_f64() * 1000.0;
     let dual_fields = solve_dual_fields(
-        &artifact,
-        &index_guard,
+        artifact,
+        connection,
         &observation.source_field,
         dimensions,
         &input.config,
     )?;
-    drop(index_guard);
-    drop(connection);
 
-    let enhanced_vector_f32: Vec<f32> =
-        enhanced_vector.iter().map(|value| *value as f32).collect();
+    let enhanced_vector_f32: Vec<f32> = enhanced_vector.iter().map(|value| *value as f32).collect();
     let observation_handle = runtime.store_query_observation(
         artifact_sig,
         observation,
@@ -1490,8 +1515,36 @@ fn run_pipeline(
     })
 }
 
+fn run_pipeline(
+    index: &Arc<crate::index_handle::IndexHandle>,
+    runtime: &MemoRuntime,
+    db_path: &str,
+    artifact_sig: &str,
+    dimensions: usize,
+    input_json: &str,
+    query_vector: &[f32],
+    ghost_vectors: &[f32],
+) -> std::result::Result<MemoPipelineComputeOutput, String> {
+    with_registered_read_transaction(db_path, |connection| {
+        crate::storage::read_generation(connection)?;
+        let artifact = load_artifact_with_connection(runtime, connection, artifact_sig)?;
+        run_pipeline_with_connection(
+            index,
+            runtime,
+            artifact_sig,
+            dimensions,
+            input_json,
+            query_vector,
+            ghost_vectors,
+            &artifact,
+            connection,
+        )
+    })
+}
+
 pub struct MemoPipelineTask {
-    index: Arc<RwLock<Index>>,
+    index: Arc<crate::index_handle::IndexHandle>,
+    content_revision: Arc<std::sync::atomic::AtomicU64>,
     runtime: Arc<MemoRuntime>,
     db_path: String,
     artifact_sig: String,
@@ -1506,6 +1559,28 @@ impl Task for MemoPipelineTask {
     type JsValue = MemoPipelineResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        let scopes = ["global_tags".to_string()];
+        let mut gate = crate::publication_gate::acquire_read(&self.db_path, &scopes)
+            .map_err(Error::from_reason)?;
+        if crate::knowledge_runtime::ensure_index_scopes_ready(&self.db_path, &scopes).is_err() {
+            drop(gate);
+            gate = crate::publication_gate::acquire(&self.db_path, &scopes)
+                .map_err(Error::from_reason)?;
+        }
+        match crate::knowledge_runtime::ensure_index_scopes_ready(&self.db_path, &scopes) {
+            Ok(()) => {}
+            Err(error) if error.starts_with("KBM_INDEX_NOT_READY:") => {
+                self.runtime.clear().map_err(Error::from_reason)?;
+                crate::knowledge_runtime::recover_index_snapshot(
+                    &self.db_path, "global_tags".to_string(), None,
+                    &self.index, &self.content_revision, self.dimensions,
+                ).map_err(Error::from_reason)?;
+            }
+            Err(error) => return Err(Error::from_reason(error)),
+        }
+        crate::knowledge_runtime::ensure_index_scopes_ready(&self.db_path, &scopes)
+            .map_err(Error::from_reason)?;
+        gate.downgrade().map_err(Error::from_reason)?;
         run_pipeline(
             &self.index,
             &self.runtime,
@@ -1528,7 +1603,9 @@ impl Task for MemoPipelineTask {
 }
 
 pub(crate) fn run_with_runtime(
-    index: Arc<RwLock<Index>>,
+    lifecycle: &Arc<crate::task_lifecycle::TaskLifecycle>,
+    index: Arc<crate::index_handle::IndexHandle>,
+    content_revision: Arc<std::sync::atomic::AtomicU64>,
     runtime: Arc<MemoRuntime>,
     db_path: String,
     artifact_sig: String,
@@ -1536,9 +1613,10 @@ pub(crate) fn run_with_runtime(
     input_json: String,
     query_vector: Vec<f32>,
     ghost_vectors: Vec<f32>,
-) -> AsyncTask<MemoPipelineTask> {
-    AsyncTask::new(MemoPipelineTask {
+) -> AsyncTask<crate::task_lifecycle::TrackedTask<MemoPipelineTask>> {
+    AsyncTask::new(crate::task_lifecycle::TrackedTask::new(lifecycle, MemoPipelineTask {
         index,
+        content_revision,
         runtime,
         db_path,
         artifact_sig,
@@ -1546,5 +1624,239 @@ pub(crate) fn run_with_runtime(
         input_json,
         query_vector,
         ghost_vectors,
-    })
+    }))
+}
+
+
+#[cfg(test)]
+mod audit_gate_tests {
+    use super::*;
+
+    #[test]
+    fn core_gate_preserves_zero_and_negative_cosine_measurements() {
+        let epa = EpaOutput {
+            logic_depth: 0.5, entropy: 0.0, resonance: 0.0,
+            dominant_axes: vec![], bridges: vec![], basis_count: 0,
+            cache_available: false, out_of_domain: 0.0,
+            semantic_explained_ratio: 0.0, in_domain_gate: 1.0,
+            baseline_coverage: 0.0, background_ratio: 0.0,
+        };
+        let pyramid = PyramidOutput {
+            levels: vec![], total_explained_energy: 0.0,
+            features: PyramidFeatures::default(),
+        };
+        let levels = vec![[-1.0, 0.0, 1.0].into_iter().enumerate()
+            .map(|(position, similarity)| PyramidTagWork {
+                id: position as i64 + 1, name: format!("核心{}", position),
+                vector: vec![], similarity, contribution: 1.0,
+                handshake_magnitude: 0.0,
+            }).collect::<Vec<_>>()];
+        let names = levels[0].iter().map(|tag| tag.name.clone()).collect::<Vec<_>>();
+        let (gated, _, core_boost) = gate_tags(
+            &levels, &epa, &pyramid, &names, &PipelineConfig::default(),
+        );
+        assert_eq!(gated.len(), 3);
+        for (tag, cosine) in gated.iter().zip([-1.0, 0.0, 1.0]) {
+            assert!((tag.weight - core_boost * (0.95 + cosine * 0.1)).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn pyramid_uses_index_only_for_ids_and_measures_sql_originals() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,vector BLOB);"
+        ).unwrap();
+        let bytes: Vec<u8> = [3.0_f32, 0.0, 0.0].iter()
+            .flat_map(|value| value.to_le_bytes()).collect();
+        connection.execute("INSERT INTO tags VALUES (1,'sql-original',?1)", [bytes]).unwrap();
+        let index = crate::VexusIndex::new(3, 16).unwrap();
+        index.index.write().unwrap().add(1, &[-9.0, 0.0, 0.0]).unwrap();
+        let config = PipelineConfig {
+            max_levels: 1, pyramid_top_k: 1, ..PipelineConfig::default()
+        };
+        let query = [1.0_f32, 2.0, 0.0];
+        let (output, work) = analyze_pyramid(
+            &index.index, &connection, &query, 3, &config,
+        ).unwrap();
+        assert_eq!(work[0][0].vector, vec![3.0, 0.0, 0.0]);
+        assert!((output.levels[0].tags[0].similarity - 1.0 / 5.0_f64.sqrt()).abs() < 1e-12);
+        assert!((output.levels[0].projection_magnitude - 1.0).abs() < 1e-6);
+        assert!((output.levels[0].residual_magnitude - 2.0).abs() < 1e-6);
+        assert!((output.total_explained_energy - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fusion_and_dual_projection_use_sql_original_f32() {
+        use crate::rivermemo_topology_v3::NativeArtifact;
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,vector BLOB);"
+        ).unwrap();
+        let originals = [[3.0_f32, 0.0, 0.0], [0.0, 4.0, 0.0]];
+        for (slot, vector) in originals.iter().enumerate() {
+            let bytes: Vec<u8> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
+            connection.execute("INSERT INTO tags VALUES (?1,?2,?3)",
+                rusqlite::params![slot as i64 + 1, format!("core-{}", slot + 1), bytes]
+            ).unwrap();
+        }
+        let artifact = NativeArtifact {
+            node_ids: vec![1, 2],
+            node_index: HashMap::from([(1, 0), (2, 1)]),
+            row_offsets: vec![0, 1, 2],
+            targets: vec![1, 0],
+            weights: vec![1.0, 1.0],
+            inbound: HashMap::new(), max_inbound: 0.0,
+            anchor_gain: HashMap::new(), wormhole_edges: HashSet::new(),
+            provenance: HashMap::new(),
+        };
+        let config = PipelineConfig::default();
+        let observation = sense_typed(&artifact, "sql-original-test", SenseInput {
+            query_id: None, seeds: Vec::new(), config: SenseConfig::default(),
+        }).unwrap();
+        let (fused, diagnostics, selected) = fuse_observation(
+            &connection, &[0.0, 0.0, 1.0], &observation, &[],
+            &["core-1".into(), "core-2".into()], &[], 1.0, 3, 0.5, &config,
+        ).unwrap();
+        assert_eq!(diagnostics.found_count, 2);
+        assert_eq!(selected[0].vector, originals[0]);
+        assert_eq!(selected[1].vector, originals[1]);
+        let mut expected_fusion = vec![0.3_f64, 0.4, 0.5];
+        normalize(&mut expected_fusion);
+        for (actual, expected) in fused.iter().zip(expected_fusion) {
+            assert!((actual - expected).abs() <= 1e-6);
+        }
+        let fields = solve_dual_fields(
+            &artifact, &connection, &[(1, 1.0)], 3, &config,
+        ).unwrap();
+        for (field, actual) in [
+            (&fields.local_field, &fields.local_vector),
+            (&fields.transfer_field, &fields.transfer_vector),
+        ] {
+            let mut expected = vec![0.0_f64; 3];
+            for (id, mass) in field {
+                for (out, value) in expected.iter_mut().zip(originals[*id as usize - 1]) {
+                    *out += value as f64 * mass;
+                }
+            }
+            normalize(&mut expected);
+            for (value, expected) in actual.iter().zip(expected) {
+                assert!((*value as f64 - expected).abs() <= 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn pipeline_recovers_invalid_global_index_before_loading_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-pipeline-audit-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute(
+                "INSERT INTO kbm_index_states VALUES ('global_tags','invalid',1,0,NULL,0)", []
+            ).map_err(|error| error.to_string())?;
+            Ok(crate::storage::WriteReceipt {
+                operation: "fixture".into(), database_generation: 0, facts_changed: false,
+            })
+        }).unwrap();
+        let index = crate::VexusIndex::new(2, 16).unwrap();
+        index.index.write().unwrap().add(999, &[1.0_f32, 0.0]).unwrap();
+        let mut task = MemoPipelineTask {
+            index: index.index.clone(), content_revision: index.content_revision.clone(),
+            runtime: index.memo_runtime.clone(), db_path: db.clone(), artifact_sig: "missing".into(),
+            dimensions: 2, input_json: "{}".into(), query_vector: vec![1.0, 0.0], ghost_vectors: vec![],
+        };
+        assert!(task.compute().is_err()); // 图资产缺失仍应显式失败，不能跳过索引门禁。
+        assert_eq!(index.index.read().unwrap().size(), 0);
+        crate::knowledge_runtime::ensure_index_scopes_ready(&db, &["global_tags".into()]).unwrap();
+        assert_eq!(index.content_revision.load(std::sync::atomic::Ordering::Acquire), 1);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod geometry_epa_tests {
+    use super::*;
+
+    fn encoded(values: &[f32]) -> String {
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn calibrated_gates_preserve_scale_and_reject_background() {
+        assert_eq!(calibrated_gate(0.07,0.07,0.02,"relativeLinear"),1.0);
+        assert_eq!(calibrated_gate(0.07,0.07,0.02,"backgroundRelative"),1.0);
+        assert_eq!(calibrated_gate(0.02,0.07,0.02,"backgroundRelative"),0.0);
+        assert_eq!(calibrated_gate(0.01,0.07,0.02,"backgroundRelative"),0.0);
+        assert_eq!(calibrated_gate(0.1,0.01,0.02,"backgroundRelative"),0.0);
+        assert!((calibrated_gate(0.025,0.1,0.0,"relativeSqrt")-0.5).abs()<1e-12);
+    }
+
+    #[test]
+    fn cached_coverage_calibrates_prefix_without_tail_backing() {
+        let connection=Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE kv_store(key TEXT PRIMARY KEY,value TEXT);").unwrap();
+        let cache=serde_json::json!({
+            "mean":encoded(&[0.0,0.0,0.0,0.0]),
+            "basis":[encoded(&[1.0,0.0,0.0,0.0])],
+            "coverage":[0.75],"kSem":1
+        });
+        connection.execute("INSERT INTO kv_store VALUES ('epa_basis_cache',?1)",[cache.to_string()]).unwrap();
+        let inside=analyze_epa_with_mode(&connection,&[1.0,0.0,0.0,0.0],4,"backgroundRelative");
+        assert_eq!(inside.baseline_coverage,0.75);
+        assert_eq!(inside.background_ratio,0.25);
+        assert_eq!(inside.logic_depth,1.0);
+        let background=analyze_epa_with_mode(&connection,&[0.5,0.8660254,0.0,0.0],4,"backgroundRelative");
+        assert!(background.logic_depth<1e-6);
+        assert_eq!(PipelineConfig::default().epa_gate_mode,"backgroundRelative");
+    }
+
+    #[test]
+    fn semantic_entropy_ignores_tail_axes_and_reports_out_of_domain() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE kv_store(key TEXT PRIMARY KEY,value TEXT);").unwrap();
+        let write = |basis: Vec<Vec<f32>>| {
+            let cache = serde_json::json!({
+                "mean": encoded(&[0.0,0.0,0.0]),
+                "basis": basis.iter().map(|v| encoded(v)).collect::<Vec<_>>(),
+                "kSem": 2
+            });
+            connection.execute(
+                "INSERT OR REPLACE INTO kv_store VALUES ('epa_basis_cache',?1)",
+                [cache.to_string()],
+            ).unwrap();
+        };
+        write(vec![vec![1.0,0.0,0.0],vec![0.0,1.0,0.0]]);
+        let first = analyze_epa(&connection, &[0.5,0.5,0.70710677], 3);
+        assert!(first.cache_available);
+        assert!((first.entropy-1.0).abs()<1e-12);
+        assert!((first.out_of_domain-0.70710678).abs()<1e-6);
+        write(vec![vec![1.0,0.0,0.0],vec![0.0,1.0,0.0],vec![0.0,0.0,1.0]]);
+        let expanded = analyze_epa(&connection, &[0.5,0.5,0.70710677], 3);
+        assert_eq!(expanded.entropy, first.entropy);
+        assert!(expanded.out_of_domain<1e-6);
+        assert_eq!(expanded.semantic_explained_ratio, first.semantic_explained_ratio);
+        let low_energy = analyze_epa(&connection, &[0.1,0.0,0.9949874], 3);
+        assert!(low_energy.out_of_domain<1e-6); // Tail explains most energy, not the semantic prefix.
+        assert!(low_energy.entropy<1e-12);
+        assert!((low_energy.logic_depth-0.01).abs()<1e-6);
+        let on_axis = analyze_epa(&connection, &[1.0,0.0,0.0], 3);
+        assert_eq!(on_axis.logic_depth,1.0);
+        write(vec![vec![1.0,0.0,0.0]]);
+        let orthogonal = analyze_epa(&connection, &[0.0,1.0,0.0], 3);
+        assert!(orthogonal.cache_available);
+        assert_eq!(orthogonal.out_of_domain,1.0);
+        assert_eq!(orthogonal.entropy,1.0);
+        write(vec![]);
+        assert!(analyze_epa(&connection, &[0.0,1.0,0.0], 3).cache_available);
+    }
 }

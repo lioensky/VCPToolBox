@@ -7,15 +7,13 @@
           <span class="river-console__eyebrow">RiverMemo · Topology V3.1</span>
           <h3>RiverMemo V3 统一信息场控制台</h3>
           <p>
-            继承 V9 的全上下文降噪与有界传播，以双尺度场、查询河网相对拓扑、
+            采用 RiverMemo 的全上下文降噪与有界传播，以双尺度场、查询河网相对拓扑、
             Ω 可观测泛函和 hop-0 直接锚完成统一重排。
           </p>
         </div>
       </div>
       <div class="river-console__status">
-        <UiBadge :variant="enabled ? 'success' : 'outline'">
-          {{ enabled ? "已启用" : "未启用" }}
-        </UiBadge>
+<UiBadge variant="success">单轨生产读出</UiBadge>
         <UiBadge variant="info">Topology V3</UiBadge>
         <UiBadge variant="danger">不建议调参</UiBadge>
       </div>
@@ -24,10 +22,10 @@
     <div class="river-console__warning" role="alert">
       <span class="material-symbols-outlined">warning</span>
       <div>
-        <strong>V10 / RiverMemo 参数已经按统一泛函联合校准，不建议用户修改</strong>
+        <strong>RiverMemo 现役参数已联合校准，建议保留当前值</strong>
         <p>
-          除“启用 RiverMemo”外，这些参数存在强耦合。修改双场 α、Ω、条件带宽、
-          角色限幅或直接锚阈值，可能同时改变候选边界、统计基线与排序权限。
+          这些参数存在强耦合；检索引擎由业务调用方选择，不提供无效总开关。修改双场 α、Ω、条件带宽、
+          直接锚阈值，可能同时改变候选边界、统计基线与排序权限。
           只有在固定回归集、完整 trace 和可回退预设下进行算法实验时，才应展开高级参数。
         </p>
       </div>
@@ -44,20 +42,6 @@
       <code>Sᵢ = Π[ Sᵢ field + Ωᵧ · TopologyInnovation + DirectAnchor ]</code>
     </article>
 
-    <label class="river-master-toggle">
-      <input
-        type="checkbox"
-        :checked="enabled"
-        @change="updateBoolean('enabled', $event)"
-      />
-      <span class="material-symbols-outlined">{{ enabled ? "toggle_on" : "toggle_off" }}</span>
-      <span>
-        <strong>启用 RiverMemo Topology V3</strong>
-        <small>
-          启用后使用固定 V3 生产重排；V9 EPA、Residual Pyramid 与 Spike 降噪仍是查询源底座。
-        </small>
-      </span>
-    </label>
 
     <div class="river-section-list">
       <details
@@ -157,6 +141,7 @@ import UiInput from "@/components/ui/UiInput.vue";
 import UiSelect from "@/components/ui/UiSelect.vue";
 import {
   RIVERMEMO_SECTIONS,
+  RIVERMEMO_PARAM_METADATA,
   getRiverMemoParamMeta,
   getToneLabel,
   type ParamMeta,
@@ -183,20 +168,8 @@ const emit = defineEmits<{
   "update:modelValue": [value: ParamGroup];
 }>();
 
-const SELECT_OPTIONS: Record<string, readonly string[]> = {
-  "sourceObservation.mode": ["v9_epa_pyramid_spike"],
-  "localField.solver": ["scaled_resolvent"],
-  "transferField.solver": ["scaled_resolvent"],
-  "effectiveSupport.method": ["mass_ratio"],
-  "pathGeometry.supportMode": ["effective_domain", "positive_tail"],
-  "dstc.semanticScoreMode": ["positive", "shifted"],
-  "dstc.pureScoreMode": ["topology_limited", "legacy_linear"],
-  "dstc.topologyReliabilityMode": ["path_closure", "path_only"],
-  "dstc.semanticSimilarityMode": ["positive", "shifted"],
-  "dstc.closureMode": ["query_weighted", "tag_only"],
-};
+const SELECT_OPTIONS: Record<string, readonly string[]> = {};
 
-const enabled = computed(() => booleanValue(props.modelValue.enabled, false));
 const advancedSections = computed(() =>
   RIVERMEMO_SECTIONS.filter((section) => section.id !== "source")
     .concat(RIVERMEMO_SECTIONS.filter((section) => section.id === "source"))
@@ -208,11 +181,6 @@ function asRecord(value: ParamValue | undefined): LooseRecord {
     : {};
 }
 
-function booleanValue(value: ParamValue | undefined, fallback: boolean): boolean {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  return fallback;
-}
 
 function flattenValue(value: ParamValue, prefix: string): RiverLeaf[] {
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -228,6 +196,7 @@ function flattenValue(value: ParamValue, prefix: string): RiverLeaf[] {
       : SELECT_OPTIONS[prefix]
         ? "select"
         : "string";
+  if (!RIVERMEMO_PARAM_METADATA[prefix]) return [];
   return [{
     path: prefix,
     value,
@@ -247,7 +216,6 @@ function valueAtPath(path: string): ParamValue | undefined {
 
 function leavesForSection(section: RiverMemoSectionMeta): RiverLeaf[] {
   return section.paths.flatMap((path) => {
-    if (path === "enabled") return [];
     const value = valueAtPath(path);
     return value === undefined ? [] : flattenValue(value, path);
   });
@@ -299,7 +267,7 @@ function numericLeafValue(leaf: RiverLeaf): number {
 
 function numberStep(path: string, value: number): number | string {
   const lower = path.toLowerCase();
-  if (lower.includes("tolerance")) return "any";
+  if (lower.includes("tolerance") || lower.includes("effectivepeers")) return "any";
   if (
     lower.includes("iterations")
     || lower.endsWith("k")

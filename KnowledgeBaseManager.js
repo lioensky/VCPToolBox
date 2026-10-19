@@ -5,29 +5,23 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const chokidar = require('chokidar');
 const { getEmbeddingsBatch } = require('./EmbeddingUtils');
 const ResultDeduplicator = require('./ResultDeduplicator'); // ✅ Tagmemo v4 requirement
 const TagMemoEngine = require('./TagMemoEngine');
 const TagMemoV10Engine = require('./TagMemoV10Engine');
 const RiverMemoEngine = require('./RiverMemoEngine');
 const { decodeVectorBlob } = require('./modules/knowledgeBase/vectorCodec');
-const { queryByChunks } = require('./modules/knowledgeBase/sqliteQueryUtils');
 const { stableSerialize } = require('./modules/tagmemoV10/immutable');
 const {
     prepareTextForEmbedding,
     extractTags
 } = require('./modules/knowledgeBase/textPreprocessor');
 const {
-    initializeKnowledgeBaseSchema
-} = require('./modules/knowledgeBase/schemaManager');
-const SqliteHealthManager = require('./modules/knowledgeBase/sqliteHealthManager');
-const {
     estimateVexusIndexBytes,
     safeIndexStats,
-    buildMemoryProfile
+    buildMemoryProfile,
+    captureMemoryStage
 } = require('./modules/knowledgeBase/memoryProfiler');
-const MigrationVectorCache = require('./modules/knowledgeBase/migrationVectorCache');
 const DiaryMetadataCache = require('./modules/knowledgeBase/diaryMetadataCache');
 const IndexRepository = require('./modules/knowledgeBase/indexRepository');
 const DatabaseCoordinator = require('./modules/knowledgeBase/databaseCoordinator');
@@ -80,24 +74,16 @@ class KnowledgeBaseManager {
             tagIndexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY, 10) || 300000,
             deleteBatchWindow: parseInt(process.env.KNOWLEDGEBASE_DELETE_BATCH_WINDOW_MS, 10) || 1000,
             maxDeleteBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_DELETE_BATCH_SIZE, 10) || 2000,
-            deleteRebuildThreshold: parseInt(process.env.KNOWLEDGEBASE_DELETE_REBUILD_THRESHOLD, 10) || 5000,
             migrationCacheTtlMs: parseInt(process.env.KNOWLEDGEBASE_MIGRATION_CACHE_TTL_MS, 10) || 2 * 60 * 1000,
-            // 🛡️ Rust 派生表写入租约：避免 rusqlite 与 better-sqlite3 双写 WAL 竞态
-            rustWriteLeaseGraceMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_GRACE_MS, 10) || 30000,
-            rustWriteLeaseCooldownMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_COOLDOWN_MS, 10) || 10000,
-            rustWriteLeaseCheckpointBeforeGrant: (process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_CHECKPOINT_BEFORE_GRANT || 'true').toLowerCase() === 'true',
-            rustWriteLeaseRetryMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_RETRY_MS, 10) || 1000,
-            rustWriteLeaseTtlMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_TTL_MS, 10) || 10 * 60 * 1000,
-            rustWriteLeaseMaxWaitMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_MAX_WAIT_MS, 10) || 30 * 60 * 1000,
-            rustWriteLeasePendingThreshold: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_PENDING_THRESHOLD, 10) || 0,
             derivedStartupCooldownMs: parseInt(process.env.KNOWLEDGEBASE_DERIVED_STARTUP_COOLDOWN_MS, 10) || 5 * 60 * 1000,
             // 🌟 索引空闲自动卸载：默认 2 小时未使用则从内存中卸载
             indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
+            lightMemoIndexIdleTTL: Math.max(1, Math.min(0xffffffff,
+                parseInt(process.env.KNOWLEDGEBASE_LIGHTMEMO_IDLE_TTL_MS, 10) || 10 * 60 * 1000)),
             indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
-            idleSweepLogTick: (process.env.KNOWLEDGEBASE_IDLE_SWEEP_LOG_TICK || 'false').toLowerCase() === 'true',
-            ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛').split(',').map(f => f.trim()).filter(Boolean),
-            ignorePrefixes: (process.env.IGNORE_PREFIXES || process.env.IGNORE_PREFIX || '已整理').split(',').map(p => p.trim()).filter(Boolean),
-            ignoreSuffixes: (process.env.IGNORE_SUFFIXES || process.env.IGNORE_SUFFIX || '夜伽').split(',').map(s => s.trim()).filter(Boolean),
+            ignoreFolders: (process.env.IGNORE_FOLDERS ?? 'VCP论坛').split(/[,，]/).map(f => f.trim()).filter(Boolean),
+            ignorePrefixes: (process.env.IGNORE_PREFIXES ?? process.env.IGNORE_PREFIX ?? '已整理').split(/[,，]/).map(p => p.trim()).filter(Boolean),
+            ignoreSuffixes: (process.env.IGNORE_SUFFIXES ?? process.env.IGNORE_SUFFIX ?? '夜伽').split(/[,，]/).map(s => s.trim()).filter(Boolean),
 
             tagBlacklist: new Set((process.env.TAG_BLACKLIST || '').split(',').map(t => t.trim()).filter(Boolean)),
             tagBlacklistSuper: (process.env.TAG_BLACKLIST_SUPER || '').split(',').map(t => t.trim()).filter(Boolean),
@@ -105,11 +91,12 @@ class KnowledgeBaseManager {
                 const value = parseInt(process.env.KNOWLEDGEBASE_MAX_TAGS_PER_FILE, 10);
                 return Number.isFinite(value) && value > 0 ? value : 50;
             })(),
-            tagExpandMaxCount: parseInt(process.env.TAG_EXPAND_MAX_COUNT, 10) || 30,
-            fullScanOnStartup: (process.env.KNOWLEDGEBASE_FULL_SCAN_ON_STARTUP || 'true').toLowerCase() === 'true',
+            fullScanOnStartup: (process.env.KNOWLEDGEBASE_FULL_SCAN_ON_STARTUP || 'true').trim().toLowerCase() === 'true',
             // 语言置信度补偿配置
             langConfidenceEnabled: (process.env.LANG_CONFIDENCE_GATING_ENABLED || 'true').toLowerCase() === 'true',
-            langPenaltyUnknown: parseFloat(process.env.LANG_PENALTY_UNKNOWN) || 0.05,
+            // Undefined means inherit hot parameters; explicit zero is valid.
+            langPenaltyUnknown: this._readOptionalPenalty(process.env.LANG_PENALTY_UNKNOWN),
+            langPenaltyCrossDomain: this._readOptionalPenalty(process.env.LANG_PENALTY_CROSS_DOMAIN),
             // Native River 联合查询是 RiverMemo 的默认生产范式。Memo observation
             // 仍由统一管线生成，ANN/合并/向量 hydrate/语义去重/Topology V3
             // 收敛为一次 NativeKnowledgeRuntime 调用。仅显式 false 时紧急关闭。
@@ -209,7 +196,6 @@ class KnowledgeBaseManager {
             ...config
         };
 
-        this.db = null;
         this.dbPath = null;
         this.databaseCorruptionDetected = false;
         this.dbHealthState = 'healthy'; // healthy | suspect | recovering | corrupt
@@ -246,12 +232,9 @@ class KnowledgeBaseManager {
         this.resultDeduplicator = null; // ✅ Tagmemo v4
         this.ragParams = {}; // ✅ 新增：用于存储热调控参数
         this.ragParamsWatcher = null;
+        this.ragParamsWatcherPoller = null;
+        this.ragParamsWatcherType = null;
 
-        // 🛡️ SQLite Rust 写租约门控：Rust 派生表写入前必须向 JS 主调度器申请窗口。
-        this.rustWriteLease = null;
-        this.lastJsWriteFinishedAt = 0;
-        this.lastRustWriteFinishedAt = 0;
-        this._rustLeaseWaitLogAt = 0;
         this.lastActivityAt = Date.now();
 
         // 🧭 外部文件写入协调器（DailyNote 等常驻服务使用）
@@ -271,17 +254,11 @@ class KnowledgeBaseManager {
         this.indexRecoveryActive = false;
         this._indexRecoveryTail = Promise.resolve();
 
-        this.sqliteHealthManager = new SqliteHealthManager({
-            onConnectionRebound: db => this._rebindDatabaseConnection(db),
-            busyTimeoutMs: this.config.sqliteBusyTimeoutMs
-        });
-        this.migrationVectorCache = new MigrationVectorCache({
-            getDb: () => this.db,
-            dimension: this.config.dimension,
-            ttlMs: this.config.migrationCacheTtlMs
-        });
+        // 中央库健康状态由 NativeKnowledgeRuntime 管理。摄取链路只依赖
+        // 下方稳定的错误分类门面，不再通过 JS 健康管理器重绑数据库连接。
         this.diaryMetadataCache = new DiaryMetadataCache({
-            getDb: () => this.db,
+            getNativeRuntime: () => this.nativeKnowledgeRuntime,
+            getDbPath: () => this.dbPath,
             dimension: this.config.dimension,
             getEmbeddingsBatch,
             getEmbeddingConfig: () => ({
@@ -296,7 +273,7 @@ class KnowledgeBaseManager {
             config: this.config,
             VexusIndex,
             getDbPath: () => this.dbPath,
-            getDb: () => this.db,
+            getNativeRuntime: () => this.nativeKnowledgeRuntime,
             waitForCoordinatorIdle: options => this._waitForDatabaseCoordinatorIdle(options),
             ensureDiaryDateIndex: diaryName => this._ensureDiaryDateIndexCached(diaryName),
             invalidateDiaryDateIndex: diaryName => this.invalidateDiaryDateIndex(diaryName),
@@ -333,125 +310,242 @@ class KnowledgeBaseManager {
         });
     }
 
+    _readOptionalPenalty(raw) {
+        if (raw === undefined || raw === null || String(raw).trim() === '') return undefined;
+        const value = Number(raw);
+        return Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined;
+    }
+
     async initialize() {
         if (this.initialized) return;
+        this._captureMemoryStage('initialize:begin');
         console.log(`[KnowledgeBase] Initializing Multi-Index System (Dim: ${this.config.dimension})...`);
 
         await fs.mkdir(this.config.storePath, { recursive: true });
 
         const dbPath = path.join(this.config.storePath, 'knowledge_base.sqlite');
         this.dbPath = dbPath;
-        const tDb0 = Date.now();
-        this.db = this._openDatabaseWithRecovery(dbPath); // 同步连接
-        const tDb = Date.now() - tDb0;
 
-        const tSchema0 = Date.now();
-        this._initSchema();
-        const tSchema = Date.now() - tSchema0;
-
-        console.log(`[KnowledgeBaseProbe] ⏱️ DB open: ${tDb}ms, Schema init: ${tSchema}ms. Entering _cleanupDatabaseOrphans...`);
-        const tOrphan0 = Date.now();
-        this._cleanupDatabaseOrphans();
-        console.log(`[KnowledgeBaseProbe] ⏱️ _cleanupDatabaseOrphans complete in ${Date.now() - tOrphan0}ms. Ready to restore Global Tag baseline.`);
-
-        // 1. 初始化全局 Tag 索引。
-        // tags 是唯一权威真相；磁盘 usearch 只是允许落后的双槽基线。
-        // 正常启动先加载基线，再仅回放配套成员页与权威 tags 的差分。
-        const tagCapacity = 50000;
-        let indexReady = false;
-        const baselineRestore = this.indexRepository.loadGlobalTagBaseline(
-            tagCapacity
+        console.log(
+            '[KnowledgeBaseProbe] Central SQLite ownership is delegated to ' +
+            'NativeKnowledgeRuntime; JavaScript does not open or initialize the database.'
         );
 
-        if (baselineRestore?.index) {
-            this.tagIndex = baselineRestore.index;
-            this.indexRepository.tagIndex = this.tagIndex;
+        // 1. 先创建空的全局 Tag 索引作为 MemoRuntime 所有权根。
+        // 基线恢复必须在 Rust Store 和启动清理之后执行，避免把已删除事实
+        // 发布到活动索引；此处的空索引只用于构造 NativeKnowledgeRuntime。
+        const tagCapacity = 50000;
+        this.tagIndex = new VexusIndex(
+            this.config.dimension,
+            tagCapacity
+        );
+        this.indexRepository.tagIndex = this.tagIndex;
+
+        // 2. 先打开 Rust Store，再执行所有启动期中央库清理。
+        if (!NativeKnowledgeRuntime) {
+            throw new Error(
+                '[KnowledgeBase] NativeKnowledgeRuntime ABI unavailable; ' +
+                'rebuild rust-vexus-lite before starting KBM.'
+            );
+        }
+
+        try {
+            this.nativeKnowledgeRuntime = new NativeKnowledgeRuntime(
+                this.tagIndex
+            );
+            if (typeof this.nativeKnowledgeRuntime.capabilities !== 'function') {
+                const error = new Error(
+                    'NativeKnowledgeRuntime capability handshake is unavailable; ' +
+                    'rebuild rust-vexus-lite before starting KBM.'
+                );
+                error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+                throw error;
+            }
+            const capabilities = this.nativeKnowledgeRuntime.capabilities();
+            const requiredCapabilities = [
+                'sqlite.storage-engine.v1',
+                'sqlite.write-actor.v1',
+                'sqlite.read-pool.v1',
+                'sqlite.schema-init.v1',
+                'sqlite.ingestion-commit.v1',
+                'sqlite.delete-commit.v1',
+                'sqlite.tag-consistency.v1',
+                'text.preparation.v1',
+                'index.async-restore.v1',
+                'index.dual-slot-checkpoint.v1',
+                'index.tdb-vec.v1',
+                'index.cosine-score.v1',
+                'watcher.runtime-owned.v1',
+                'memo.native-artifact.v1',
+                'river.native-query.v1'
+            ];
+            const missingCapabilities = requiredCapabilities.filter(
+                capability => !Array.isArray(capabilities?.capabilities)
+                    || !capabilities.capabilities.includes(capability)
+            );
+            if (
+                Number(capabilities?.abiVersion) !== 2
+                || Number(capabilities?.dimension) !== this.config.dimension
+                || missingCapabilities.length > 0
+            ) {
+                const error = new Error(
+                    'NativeKnowledgeRuntime capability handshake failed: '
+                    + JSON.stringify({
+                        expectedAbiVersion: 2,
+                        actualAbiVersion: capabilities?.abiVersion ?? null,
+                        expectedDimension: this.config.dimension,
+                        actualDimension: capabilities?.dimension ?? null,
+                        missingCapabilities
+                    })
+                );
+                error.code = 'NATIVE_STORAGE_ABI_MISMATCH';
+                throw error;
+            }
+            if (
+                typeof this.nativeKnowledgeRuntime.openAndInitStore !== 'function'
+                || typeof this.nativeKnowledgeRuntime.storeState !== 'function'
+                || typeof this.nativeKnowledgeRuntime.healthCheck !== 'function'
+                || typeof this.nativeKnowledgeRuntime.cleanupDatabaseOrphans !== 'function'
+                || typeof this.nativeKnowledgeRuntime.getKvVector !== 'function'
+                || typeof this.nativeKnowledgeRuntime.setKvVector !== 'function'
+                || typeof this.nativeKnowledgeRuntime.listKvVectors !== 'function'
+                || typeof this.nativeKnowledgeRuntime.getDiaryChunkCount !== 'function'
+                || typeof this.nativeKnowledgeRuntime.prepareText !== 'function'
+                || typeof this.nativeKnowledgeRuntime.getTagVectorByName !== 'function'
+                || typeof this.nativeKnowledgeRuntime.getTagConsistencySnapshot !== 'function'
+                || typeof this.nativeKnowledgeRuntime.commitTagConsistency !== 'function'
+                || typeof this.nativeKnowledgeRuntime.getNativeMemoManifest !== 'function'
+                || typeof this.nativeKnowledgeRuntime.pruneNativeMemoArtifacts !== 'function'
+                || typeof this.nativeKnowledgeRuntime.searchGlobalTags !== 'function'
+                || typeof this.nativeKnowledgeRuntime.cancelPreparedPlan !== 'function'
+                || typeof this.nativeKnowledgeRuntime.listIndexedFilePaths !== 'function'
+                || typeof this.nativeKnowledgeRuntime.reconcileWatchWithPaths !== 'function'
+                || typeof this.nativeKnowledgeRuntime.restoreGlobalTagIndex !== 'function'
+                || typeof this.nativeKnowledgeRuntime.restoreDiaryIndex !== 'function'
+                || typeof this.nativeKnowledgeRuntime.checkpointGlobalTagIndex !== 'function'
+                || typeof this.nativeKnowledgeRuntime.checkpointDiaryIndex !== 'function'
+            ) {
+                throw new Error(
+                    'NativeKnowledgeRuntime storage ABI unavailable; rebuild rust-vexus-lite'
+                );
+            }
+            const storeState = this.nativeKnowledgeRuntime.openAndInitStore(
+                dbPath,
+                JSON.stringify({
+                 readPoolSize: Number(
+                     process.env.KNOWLEDGEBASE_RUST_READ_POOL_SIZE
+                 ) || 4,
+                 mmapSize: (() => {
+                     const raw = process.env.KNOWLEDGEBASE_RUST_MMAP_SIZE;
+                     const value = Number(raw);
+                     return raw !== undefined && raw.trim() !== ''
+                         && Number.isSafeInteger(value) && value >= 0
+                         ? value
+                         : 64 * 1024 * 1024;
+                 })(),
+                 busyTimeoutMs: this.config.sqliteBusyTimeoutMs,
+                 schemaVersion: 2
+             })
+            );
+            console.log(
+                '[KnowledgeBase] 🦀 NativeKnowledgeRuntime ready; ' +
+                `Rust Store opened at generation=${storeState.databaseGeneration}.`
+            );
+        } catch (error) {
+            try {
+                this.nativeKnowledgeRuntime?.shutdown?.();
+            } catch (_) {}
+            this.nativeKnowledgeRuntime = null;
+            throw new Error(
+                '[KnowledgeBase] NativeKnowledgeRuntime storage initialization failed: '
+                + (error.message || error)
+            );
+        }
+
+        this._captureMemoryStage('store:opened');
+        const tOrphan0 = Date.now();
+        await this._cleanupDatabaseOrphansNative();
+        console.log(
+            `[KnowledgeBaseProbe] ⏱️ Rust orphan cleanup complete in ` +
+            `${Date.now() - tOrphan0}ms.`
+        );
+
+        this._captureMemoryStage('store:orphans-cleaned');
+        // 3. 初始化全局 Tag 索引。
+        // tags 是唯一权威真相；磁盘 .vec 只是经 SQL 背书、允许落后的双槽基线。
+        // 活动槽加载、成员差分回放和无基线重建全部由 Rust Runtime 后台执行。
+        let indexReady = false;
+        console.log(
+            '[KnowledgeBase] 🚀 Restoring Global Tag Index through NativeKnowledgeRuntime...'
+        );
+        try {
+            const restored = await this.nativeKnowledgeRuntime.restoreGlobalTagIndex(
+                dbPath,
+                path.join(this.config.storePath, 'index_global_tags_a.vec'),
+                this.config.modelSig,
+                tagCapacity
+            );
+            const parsed = typeof restored === 'string'
+                ? JSON.parse(restored)
+                : restored;
+            if (!parsed || parsed.restored !== true) {
+                throw new Error('Invalid Rust global Tag restore receipt');
+            }
+            console.log(
+                `[KnowledgeBase] ✅ Global Tag Index ready. ` +
+                `${Number(parsed.vectorCount) || 0} vectors indexed, ` +
+                `generation=${Number(parsed.generation) || 0}, ` +
+                `slot=${parsed.slot || 'none'}.`
+            );
             indexReady = true;
+        } catch (e) {
+            console.error(
+                `[KnowledgeBase] ❌ Global Tag Index recovery failed: ` +
+                e.message
+            );
         }
 
         if (!indexReady) {
-            console.log(
-                '[KnowledgeBase] 🚀 No compatible Global Tag baseline; ' +
-                'building once from SQLite...'
-            );
-            this.tagIndex = new VexusIndex(
-                this.config.dimension,
-                tagCapacity
-            );
-            this.indexRepository.tagIndex = this.tagIndex;
-            try {
-                const count = await this.tagIndex.recoverFromSqlite(
-                    dbPath,
-                    'tags',
-                    null
-                );
-                console.log(
-                    `[KnowledgeBase] ✅ Global Tag Index ready. ` +
-                    `${count} vectors indexed.`
-                );
-                // 首次迁移必须强制建立配套基线；之后 generational 模式才按
-                // 5% 差分阈值合并，always 模式则每次静默窗口后更新。
-                this.indexRepository.publishGlobalTagBaseline({
-                    force: true
-                });
-                indexReady = true;
-            } catch (e) {
-                console.error(
-                    `[KnowledgeBase] ❌ Global Tag Index recovery failed: ` +
-                    e.message
-                );
-            }
-        }
-
-        // 2. 创建实例级原生联合查询运行时。它只克隆 Tag MemoRuntime Arc，
-        // 后续日记索引由 IndexRepository 在完整加载/恢复后发布。
-        if (NativeKnowledgeRuntime && indexReady) {
-            try {
-                this.nativeKnowledgeRuntime = new NativeKnowledgeRuntime(
-                    this.tagIndex
-                );
-                console.log(
-                    '[KnowledgeBase] 🦀 NativeKnowledgeRuntime ready; ' +
-                    'diary registry lifecycle enabled.'
-                );
-            } catch (error) {
-                this.nativeKnowledgeRuntime = null;
-                console.warn(
-                    '[KnowledgeBase] ⚠️ NativeKnowledgeRuntime initialization ' +
-                    `failed; legacy retrieval remains available: ${error.message}`
-                );
-            }
-        } else {
-            console.warn(
-                '[KnowledgeBase] ⚠️ NativeKnowledgeRuntime ABI unavailable; ' +
-                'legacy retrieval remains available.'
+            throw new Error(
+                '[KnowledgeBase] Global Tag Index recovery failed after startup cleanup.'
             );
         }
 
-        // 3. 预热日记本名称向量缓存（同步阻塞，确保 RAG 插件启动即可用）
-        this._hydrateDiaryNameCacheSync();
+        this._captureMemoryStage('tags:restored');
+        // 3. 通过 Rust Read Pool 异步预热日记本名称向量缓存。
+        // 启动阶段不再在 Node.js 主线程直接扫描中央 kv_store。
+        await this._hydrateDiaryNameCache();
 
         // 🧹 初始化 KBM 通用结果去重器。
-        // 它是召回后的独立后处理层，不属于已经下沉 Rust 的 TagMemo 查询主链。
-        this.resultDeduplicator = new ResultDeduplicator(this.db, {
-            dimension: this.config.dimension
+        // 向量补水统一通过 NativeKnowledgeRuntime，生产路径不持有中央数据库连接。
+        this.resultDeduplicator = new ResultDeduplicator({
+            dimension: this.config.dimension,
+            hydrateChunksByIds: chunkIds => this.hydrateChunksByIds(chunkIds)
         });
 
         await this.loadRagParams();
 
-        // 初始化生产 V9.2 浪潮引擎。
-        this.tagMemoEngine = new TagMemoEngine(this.db, this.tagIndex, this.config, this.ragParams, this);
-        await this.tagMemoEngine.initialize();
-
-        // V10/RiverMemo 仅保留轻量控制面；完整图、CSR 与 Provenance 归属
-        // VexusIndex.memoRuntime，不再从 V9 JavaScript Map 编译。
-        this.tagMemoV10Engine = new TagMemoV10Engine(
-            this.db,
+        // 初始化生产 V9.2 控制面；中央数据库所有权归 Rust Runtime。
+        this.tagMemoEngine = new TagMemoEngine(
+            null,
             this.tagIndex,
             this.config,
             this.ragParams,
-            { v9Engine: this.tagMemoEngine }
+            this
         );
+        await this.tagMemoEngine.initialize();
+// V10/RiverMemo 仅保留轻量控制面；完整图、CSR 与 Provenance 归属
+// VexusIndex.memoRuntime，不再从 V9 JavaScript Map 编译或读取中央 SQL。
+this.tagMemoV10Engine = new TagMemoV10Engine(
+    null,
+    this.tagIndex,
+    this.config,
+    this.ragParams,
+    {
+        v9Engine: this.tagMemoEngine,
+        getNativeRuntime: () => this.nativeKnowledgeRuntime
+    }
+);
         // 已停用旧 JS exact derived asset 启动审计。
         // RiverMemo Topology V3 现由 Rust 从原始向量计算并按 artifact 签名持有
         // 原生运行时缓存；v10_vector_metrics / v10_chunk_tag_geometry 仅供已退休的
@@ -477,7 +571,7 @@ class KnowledgeBaseManager {
         // 未命中则由 post-startup 原生 bootstrap 构建。
         let nativeMemoRestored = false;
         try {
-            const restored = this._restoreNativeMemoControlHandles();
+            const restored = await this._restoreNativeMemoControlHandles();
             nativeMemoRestored = !!restored;
             if (!nativeMemoRestored) {
                 console.warn(
@@ -492,8 +586,8 @@ class KnowledgeBaseManager {
                 error.message || error
             );
         }
-        this._cleanupStalePairwiseSimilarityModels();
 
+        this._captureMemoryStage('memo:manifest-checked');
         this._startWatcher();
         this._startRagParamsWatcher();
         this._startIdleSweep(); // 🌟 启动空闲索引自动卸载
@@ -501,6 +595,7 @@ class KnowledgeBaseManager {
 
         this.initialized = true;
         this.startupCompletedAt = Date.now();
+        this._captureMemoryStage('initialize:ready');
         console.log('[KnowledgeBase] ✅ System Ready');
 
         if (this.tagMemoEngine && typeof this.tagMemoEngine.schedulePostStartupDerivedRefresh === 'function') {
@@ -538,18 +633,18 @@ class KnowledgeBaseManager {
 
             // 解析和基础结构校验全部通过后再一次性发布，避免编辑中的短暂坏 JSON
             // 覆盖仍在工作的最后健康配置。
-            this.ragParams = parsed;
+            this.ragParams = require('./modules/knowledgeBase/memoConfig').cleanRagParams(parsed);
             console.log('[KnowledgeBase] ✅ RAG 热调控参数已加载');
             if (this.resultDeduplicator) {
                 this.resultDeduplicator.updateConfig(
-                    parsed.KnowledgeBaseManager?.resultDeduplication || {}
+                    this.ragParams.KnowledgeBaseManager?.resultDeduplication || {}
                 );
             }
-            if (this.tagMemoEngine) this.tagMemoEngine.updateRagParams(parsed);
-            if (this.tagMemoV10Engine) this.tagMemoV10Engine.updateRagParams(parsed);
+            if (this.tagMemoEngine) this.tagMemoEngine.updateRagParams(this.ragParams);
+            if (this.tagMemoV10Engine) this.tagMemoV10Engine.updateRagParams(this.ragParams);
             if (this.riverMemoEngine) {
                 this.riverMemoEngine.updateConfig(
-                    parsed.KnowledgeBaseManager?.riverMemo || {}
+                    this.ragParams.KnowledgeBaseManager?.riverMemo || {}
                 );
             }
             return true;
@@ -563,17 +658,110 @@ class KnowledgeBaseManager {
     }
 
     /**
-     * ✅ 新增：启动参数监听器
+     * 启动参数监听器。
+     *
+     * KBM 生产路径统一使用 Rust notify；这里单独创建一个原生 watcher
+     * 监听项目根目录中的 JSON 事件，再精确筛选 rag_params.json。
      */
     _startRagParamsWatcher() {
-        const paramsPath = path.join(__dirname, 'rag_params.json');
+        const paramsPath = path.resolve(__dirname, 'rag_params.json');
         if (this.ragParamsWatcher) return;
 
-        this.ragParamsWatcher = chokidar.watch(paramsPath);
-        this.ragParamsWatcher.on('change', async () => {
-            console.log('[KnowledgeBase] 🔄 检测到 rag_params.json 变更，正在重新加载...');
-            await this.loadRagParams();
+        const vexusModule = require('./rust-vexus-lite');
+        if (typeof vexusModule.VexusWatcher !== 'function') {
+            throw new Error(
+                'VexusWatcher native class is unavailable; rebuild rust-vexus-lite'
+            );
+        }
+
+        const watcher = new vexusModule.VexusWatcher();
+        const startWatch = watcher.startWatch || watcher.start_watch;
+        const drainEvents = watcher.drainEvents || watcher.drain_events;
+        if (
+            typeof startWatch !== 'function'
+            || typeof drainEvents !== 'function'
+        ) {
+            throw new Error(
+                'VexusWatcher queue ABI is unavailable; rebuild rust-vexus-lite'
+            );
+        }
+
+        let refreshInFlight = false;
+        let refreshQueued = false;
+        const refresh = async () => {
+            if (refreshInFlight) {
+                refreshQueued = true;
+                return;
+            }
+            refreshInFlight = true;
+            try {
+                console.log(
+                    '[KnowledgeBase] 🔄 检测到 rag_params.json 变更，正在重新加载...'
+                );
+                await this.loadRagParams();
+            } catch (error) {
+                console.error(
+                    '[KnowledgeBase] Failed to reload rag_params.json:',
+                    error
+                );
+            } finally {
+                refreshInFlight = false;
+                if (refreshQueued) {
+                    refreshQueued = false;
+                    void refresh();
+                }
+            }
+        };
+
+        startWatch.call(watcher, {
+            rootPath: __dirname,
+            ignoreFolders: ['node_modules', '.git', 'dist', 'target', 'image'],
+            ignorePrefixes: [],
+            ignoreSuffixes: [],
+            extensions: ['json'],
+            debounceMs: parseInt(
+                process.env.KNOWLEDGEBASE_RAG_PARAMS_WATCH_DEBOUNCE_MS,
+                10
+            ) || 350,
+            stabilityMs: parseInt(
+                process.env.KNOWLEDGEBASE_RAG_PARAMS_WATCH_STABILITY_MS,
+                10
+            ) || 150,
+            stabilityRetries: parseInt(
+                process.env.KNOWLEDGEBASE_RAG_PARAMS_WATCH_STABILITY_RETRIES,
+                10
+            ) || 6,
+            initialScan: false
         });
+
+        const poller = setInterval(() => {
+            let events;
+            try {
+                events = drainEvents.call(watcher, 128) || [];
+            } catch (error) {
+                console.warn(
+                    '[KnowledgeBase] Failed to drain rag_params watcher events:',
+                    error.message || error
+                );
+                return;
+            }
+
+            for (const payload of events) {
+                const eventPath = path.resolve(String(payload?.path || ''));
+                if (
+                    eventPath === paramsPath
+                    && ['add', 'change'].includes(payload?.event)
+                    && payload?.stable === true
+                ) {
+                    void refresh();
+                }
+            }
+        }, 100);
+        if (typeof poller.unref === 'function') poller.unref();
+
+        this.ragParamsWatcher = watcher;
+        this.ragParamsWatcherPoller = poller;
+        this.ragParamsWatcherType = 'rust-queue';
     }
 
     _buildNativeMemoEffectiveConfig() {
@@ -591,19 +779,6 @@ class KnowledgeBaseManager {
         }));
     }
 
-    _computeNativeMemoDatabaseGeneration() {
-        const facts = ['files', 'chunks', 'tags', 'file_tags'].map(table => {
-            const row = this.db.prepare(
-                `SELECT COUNT(*) AS count, COALESCE(MAX(rowid), 0) AS maxRowId FROM ${table}`
-            ).get();
-            return `${table}:${Number(row?.count) || 0}:${Number(row?.maxRowId) || 0}`;
-        });
-        return crypto.createHash('sha256')
-            .update(facts.join('|'))
-            .digest('hex')
-            .slice(0, 40);
-    }
-
     _computeNativeMemoConfigHash(effectiveConfig) {
         // 跨语言持久化契约必须使用规范 JSON。Rust 的 serde_json::Map 在当前
         // 构建中按键有序序列化；普通 JSON.stringify 依赖 JS 对象插入顺序，
@@ -614,58 +789,56 @@ class KnowledgeBaseManager {
             .slice(0, 32);
     }
 
-    _restoreNativeMemoControlHandles() {
+    async _restoreNativeMemoControlHandles() {
         if (!this.tagMemoEngine || !this.tagMemoV10Engine) return null;
+        if (
+            !this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.getNativeMemoManifest !== 'function'
+        ) {
+            const error = new Error(
+                'NativeKnowledgeRuntime Memo manifest ABI is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
         const effectiveConfig = this._buildNativeMemoEffectiveConfig();
         const configHash = this._computeNativeMemoConfigHash(effectiveConfig);
-        const databaseGeneration =
-            this._computeNativeMemoDatabaseGeneration();
-        const row = this.db.prepare(`
-            SELECT
-                artifact_sig,
-                algorithm_version,
-                source_v9_artifact_sig,
-                source_graph_generation,
-                model_sig,
-                config_hash,
-                database_generation,
-                provenance_generation,
-                node_count,
-                edge_count,
-                published_at
-            FROM rivermemo_artifacts
-            WHERE model_sig = ?
-              AND config_hash = ?
-              AND database_generation = ?
-              AND algorithm_version = 'memo.native-artifact-v1'
-              AND status = 'ready'
-              AND payload IS NOT NULL
-            ORDER BY published_at DESC, updated_at DESC
-            LIMIT 1
-        `).get(
+        const raw = await this.nativeKnowledgeRuntime.getNativeMemoManifest(
+            this.dbPath,
             this.tagMemoEngine.modelSig,
-            configHash,
-            databaseGeneration
+            configHash
         );
-        if (!row) return null;
+        const row = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!row || typeof row !== 'object') return null;
 
         const nativeResult = {
             success: true,
-            artifactSig: row.artifact_sig,
-            sourceArtifactSig: row.source_v9_artifact_sig,
-            graphGeneration: row.source_graph_generation,
-            sourceGraphGeneration: row.source_graph_generation,
-            databaseGeneration: row.database_generation,
-            provenanceGeneration: row.provenance_generation,
-            modelSig: row.model_sig,
-            configHash: row.config_hash,
-            algorithmVersion: row.algorithm_version,
+            artifactSig: String(row.artifactSig || ''),
+            sourceArtifactSig: String(row.sourceArtifactSig || ''),
+            graphGeneration: String(row.sourceGraphGeneration || ''),
+            sourceGraphGeneration: String(row.sourceGraphGeneration || ''),
+            databaseGeneration: String(row.databaseGeneration || ''),
+            provenanceGeneration: String(row.provenanceGeneration || ''),
+            modelSig: String(row.modelSig || ''),
+            configHash: String(row.configHash || ''),
+            algorithmVersion: String(row.algorithmVersion || ''),
             generation: null,
-            nodeCount: Number(row.node_count) || 0,
-            edgeCount: Number(row.edge_count) || 0,
+            nodeCount: Math.max(0, Number(row.nodeCount) || 0),
+            edgeCount: Math.max(0, Number(row.edgeCount) || 0),
             persisted: true,
             resident: false
         };
+        if (
+            !nativeResult.artifactSig
+            || nativeResult.algorithmVersion !== 'memo.native-artifact-v2-binary'
+            || nativeResult.modelSig !== this.tagMemoEngine.modelSig
+            || nativeResult.configHash !== configHash
+            || !/^(?:0|[1-9]\d*)$/.test(nativeResult.databaseGeneration)
+        ) {
+            return null;
+        }
+
         const v9Handle = this.tagMemoEngine.publishNativeArtifactHandle(
             nativeResult,
             effectiveConfig
@@ -674,7 +847,7 @@ class KnowledgeBaseManager {
             nativeResult,
             {
                 effectiveConfig,
-                publishedAt: Number(row.published_at) || Date.now()
+                publishedAt: Math.max(0, Number(row.publishedAt) || Date.now())
             }
         );
         console.log(
@@ -689,7 +862,7 @@ class KnowledgeBaseManager {
      * Rust 已完成构建、持久化与 MemoRuntime Arc 发布后的控制面回调。
      * 本方法只发布轻量句柄，禁止编译 JS CSR、解压 payload 或清空原生 runtime。
      */
-    onNativeMemoArtifactPublished(nativeResult, v9Handle = null) {
+    async onNativeMemoArtifactPublished(nativeResult, v9Handle = null) {
         if (!this.tagMemoV10Engine) return null;
         const effectiveConfig = this._buildNativeMemoEffectiveConfig();
         const artifact = this.tagMemoV10Engine.publishNativeArtifactHandle(
@@ -702,17 +875,42 @@ class KnowledgeBaseManager {
             `${v9Handle?.artifactSig || artifact.sourceArtifactSig}, ` +
             `nativeGeneration=${artifact.nativeGeneration ?? 'unknown'}.`
         );
+
         try {
-            const pruneResult = this.tagMemoV10Engine?.artifactRepository?.prune();
-            if (pruneResult && (pruneResult.retired > 0 || pruneResult.deleted > 0)) {
+            if (
+                !this.nativeKnowledgeRuntime
+                || typeof this.nativeKnowledgeRuntime.pruneNativeMemoArtifacts
+                    !== 'function'
+            ) {
+                throw new Error(
+                    'NativeKnowledgeRuntime Memo artifact prune ABI is unavailable'
+                );
+            }
+            const rawPruneResult =
+                await this.nativeKnowledgeRuntime.pruneNativeMemoArtifacts(
+                    this.dbPath,
+                    2,
+                    7 * 24 * 60 * 60 * 1000
+                );
+            const pruneResult = typeof rawPruneResult === 'string'
+                ? JSON.parse(rawPruneResult)
+                : rawPruneResult;
+            if (
+                pruneResult
+                && (
+                    Number(pruneResult.retired) > 0
+                    || Number(pruneResult.deleted) > 0
+                )
+            ) {
                 console.log(
                     `[KnowledgeBase] 🧹 Native Memo lifecycle prune complete: ` +
-                    `retired=${pruneResult.retired}, deleted=${pruneResult.deleted}.`
+                    `retired=${Number(pruneResult.retired) || 0}, ` +
+                    `deleted=${Number(pruneResult.deleted) || 0}.`
                 );
             }
         } catch (pruneError) {
             console.warn(
-                '[KnowledgeBase] ⚠️ Native Memo artifact repository prune warning:',
+                '[KnowledgeBase] ⚠️ Native Memo artifact prune warning:',
                 pruneError.message || pruneError
             );
         }
@@ -730,82 +928,27 @@ class KnowledgeBaseManager {
         return null;
     }
 
-    _initSchema() {
-        initializeKnowledgeBaseSchema(this.db);
-        this._cleanupExpiredMigrationCache();
-    }
-
-    _openDatabaseWithRecovery(dbPath) {
-        this.sqliteHealthManager.syncFromOwner(this);
-        const db = this.sqliteHealthManager.openWithRecovery(dbPath);
-        this.sqliteHealthManager.syncToOwner(this);
-        return db;
-    }
-
-    _configureDatabaseConnection(db) {
-        return this.sqliteHealthManager.configureConnection(db);
-    }
-
-    _assertDatabaseIntegrity(db) {
-        return this.sqliteHealthManager.assertIntegrity(db);
-    }
-
-    checkpointAndAssertDatabaseHealthy(reason = 'manual-checkpoint') {
-        this.sqliteHealthManager.syncFromOwner(this);
-        const healthy = this.sqliteHealthManager.checkpointAndAssertHealthy(reason);
-        this.sqliteHealthManager.syncToOwner(this);
-        return healthy;
-    }
-
-    /**
-     * Rust/rusqlite 派生写完成后的专用屏障。
-     * 先淘汰长期存活的 better-sqlite3 连接及其 pager/WAL/SHM 视图，
-     * 再由新连接执行 checkpoint + quick_check；普通 JS 写不走此低频路径。
-     */
-    reopenAndAssertDatabaseHealthy(reason = 'rust-write-barrier') {
-        this.sqliteHealthManager.syncFromOwner(this);
-        const healthy = this.sqliteHealthManager.reopenAndAssertHealthy(reason);
-        this.sqliteHealthManager.syncToOwner(this);
-        return healthy;
-    }
-
-    _rebindDatabaseConnection(db) {
-        this.db = db;
-
-        if (this.tagMemoEngine) {
-            this.tagMemoEngine.db = db;
-            if (this.tagMemoEngine.epa) this.tagMemoEngine.epa.db = db;
-            if (this.tagMemoEngine.residualPyramid) this.tagMemoEngine.residualPyramid.db = db;
-        }
-        if (this.tagMemoV10Engine) {
-            this.tagMemoV10Engine.rebindDatabase(db);
-        }
-        if (this.riverMemoEngine) {
-            this.riverMemoEngine.rebindDatabase(db);
-        }
-
-        if (this.resultDeduplicator) {
-            this.resultDeduplicator.db = db;
-        }
-    }
-
-    _recoverSuspectDatabaseConnection(reason, firstError) {
-        this.sqliteHealthManager.syncFromOwner(this);
-        const recovered = this.sqliteHealthManager.recoverSuspectConnection(reason, firstError);
-        this.sqliteHealthManager.syncToOwner(this);
-        return recovered;
-    }
 
     _isSqliteCorruptionError(error) {
-        return this.sqliteHealthManager.isCorruptionError(error);
+        const code = String(error?.code || '').toUpperCase();
+        const message = String(error?.message || error || '');
+        return code === 'SQLITE_CORRUPT'
+            || code === 'SQLITE_NOTADB'
+            || code === 'KNOWLEDGE_STORE_CORRUPT'
+            || /database disk image is malformed|file is not a database|database corruption|SQLite quick_check returned|KNOWLEDGE_STORE_CORRUPT/i
+                .test(message);
     }
 
     _isSqliteBusyError(error) {
-        return this.sqliteHealthManager.isBusyError(error);
-    }
-
-    _quarantineSqliteDatabase(dbPath, reason = 'corrupt') {
-        return this.sqliteHealthManager.quarantine(dbPath, reason);
+        const code = String(error?.code || '').toUpperCase();
+        const message = String(error?.message || error || '');
+        return code === 'SQLITE_BUSY'
+            || code.startsWith('SQLITE_BUSY_')
+            || code === 'SQLITE_LOCKED'
+            || code.startsWith('SQLITE_LOCKED_')
+            || code === 'KNOWLEDGE_STORE_BUSY'
+            || /database (?:is )?locked|database table is locked|KNOWLEDGE_STORE_BUSY/i
+                .test(message);
     }
 
     async _handleRuntimeSqliteCorruption(error, batchFiles = []) {
@@ -891,8 +1034,8 @@ class KnowledgeBaseManager {
                     `[KnowledgeBase] 🧯 Event loop lag detected: ${lag}ms. ` +
                     `state: pendingFiles=${this.pendingFiles.size}, pendingDeletes=${this.pendingDeletes.size}, ` +
                     `isProcessing=${this.isProcessing}, isProcessingDeletes=${this.isProcessingDeletes}, ` +
-                    `rustLease=${this.rustWriteLease?.owner || 'none'}, loadedIndices=${this.diaryIndices.size}, ` +
-                    `saveTimers=${this.saveTimers.size}, dbHealth=${this.dbHealthState}`
+                    `loadedIndices=${this.diaryIndices.size}, saveTimers=${this.saveTimers.size}, ` +
+                    `dbHealth=${this.dbHealthState}`
                 );
             }
         }, intervalMs);
@@ -901,32 +1044,8 @@ class KnowledgeBaseManager {
         console.log(`[KnowledgeBase] 🧯 Event loop watchdog started (interval=${intervalMs}ms, warnLag=${warnLagMs}ms).`);
     }
 
-    _isRustWriteLeaseExpired(now = Date.now()) {
-        return this.databaseCoordinator.isRustWriteLeaseExpired(now);
-    }
-
-    _canGrantRustWriteLease(options = {}) {
-        return this.databaseCoordinator.canGrantRustWriteLease(options);
-    }
-
-    async requestRustWriteLease(owner, options = {}) {
-        return this.databaseCoordinator.requestRustWriteLease(owner, options);
-    }
-
-    releaseRustWriteLease(owner) {
-        return this.databaseCoordinator.releaseRustWriteLease(owner);
-    }
-
-    _deferBatchForRustLease(type = 'batch') {
-        return this.databaseCoordinator.deferBatchForRustLease(type);
-    }
-
     _decodeVectorBlob(blob, dim, label = 'vector') {
         return decodeVectorBlob(blob, dim, label);
-    }
-
-    _queryByChunks(sqlPrefix, values, sqlSuffix = '', chunkSize = 500) {
-        return queryByChunks(this.db, sqlPrefix, values, sqlSuffix, chunkSize);
     }
 
     _isVectorLike(value) {
@@ -935,108 +1054,79 @@ class KnowledgeBaseManager {
             (ArrayBuffer.isView(value) && typeof value.length === 'number');
     }
 
-    _cleanupStalePairwiseSimilarityModels() {
-        try {
-            if (!this.tagMemoEngine?.modelSig) return;
-
-            // 单模型缓存策略下也不能在冷启动/空库/新签名尚未产出数据时清掉旧缓存。
-            // 否则部分用户在模型签名变化但当前 tags 尚未恢复/尚未计算完成时，会出现“旧数据被删、新数据为 0”的真空窗口。
-            const currentRows = this.db.prepare(
-                'SELECT COUNT(*) as count FROM tag_pair_similarity WHERE model_sig = ?'
-            ).get(this.tagMemoEngine.modelSig)?.count || 0;
-
-            if (currentRows <= 0) {
-                const staleRows = this.db.prepare(
-                    'SELECT COUNT(*) as count FROM tag_pair_similarity WHERE model_sig != ?'
-                ).get(this.tagMemoEngine.modelSig)?.count || 0;
-
-                if (staleRows > 0) {
-                    console.warn(
-                        `[KnowledgeBase] 🛡️ Preserved ${staleRows} stale pairwise similarity row(s): ` +
-                        `current model_sig=${this.tagMemoEngine.modelSig} has no cached rows yet.`
-                    );
-                }
-                return;
-            }
-
-            const result = this.db.prepare(
-                'DELETE FROM tag_pair_similarity WHERE model_sig != ?'
-            ).run(this.tagMemoEngine.modelSig);
-
-            if (result.changes > 0) {
-                console.warn(`[KnowledgeBase] 🧹 Removed ${result.changes} stale pairwise similarity row(s) from old embedding model signatures.`);
-            }
-        } catch (e) {
-            console.warn('[KnowledgeBase] ⚠️ Failed to cleanup stale pairwise similarity model rows:', e.message);
-        }
-    }
-
     /**
-     * 🧹 启动期数据库修复：
-     * - 清理旧版本在 foreign_keys 未开启时遗留的 chunks/file_tags 孤儿记录
-     * - 清理服务器关闭/重启期间漏掉 unlink 事件造成的已不存在文件记录
-     * - 若清理影响到持久化日记索引，删除旧索引文件，避免 stale chunk id 被再次加载
+     * 通过 NativeKnowledgeRuntime 执行启动期事实清理。
+     *
+     * 文件扫描与 SQL 删除都在 Rust 数据面完成；Node.js 只处理轻量回执
+     * 和持久化索引失效通知，不再直接访问中央库。
      */
-    _cleanupDatabaseOrphans() {
-        try {
-            const affectedDiaries = new Set();
-
-            const tQueryFiles0 = Date.now();
-            const allFiles = this.db.prepare('SELECT id, path, diary_name FROM files').all();
-            const tQueryFiles = Date.now() - tQueryFiles0;
-
-            const tExists0 = Date.now();
-            const missingFiles = allFiles.filter(row => !fsSync.existsSync(path.join(this.config.rootPath, row.path)));
-            const tExists = Date.now() - tExists0;
-
-            missingFiles.forEach(row => affectedDiaries.add(row.diary_name));
-
-            const tOrphanChunk0 = Date.now();
-            const orphanChunkCount = this.db.prepare(`
-                SELECT COUNT(*) as count
-                FROM chunks c
-                LEFT JOIN files f ON c.file_id = f.id
-                WHERE f.id IS NULL
-            `).get().count || 0;
-            const tOrphanChunk = Date.now() - tOrphanChunk0;
-
-            console.log(`[KnowledgeBaseProbe] 🔍 Orphan detail: ${allFiles.length} files queried (${tQueryFiles}ms), ${allFiles.length} existsSync checks (${tExists}ms), orphan chunk count query (${tOrphanChunk}ms). Missing files: ${missingFiles.length}`);
-
-            const cleanupTransaction = this.db.transaction(() => {
-                for (const row of missingFiles) {
-                    this.db.prepare('DELETE FROM file_tags WHERE file_id = ?').run(row.id);
-                    this.db.prepare('DELETE FROM chunks WHERE file_id = ?').run(row.id);
-                    this.db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
-                }
-
-                this.db.prepare(`
-                    DELETE FROM file_tags
-                    WHERE file_id NOT IN (SELECT id FROM files)
-                       OR tag_id NOT IN (SELECT id FROM tags)
-                `).run();
-
-                this.db.prepare(`
-                    DELETE FROM chunks
-                    WHERE file_id NOT IN (SELECT id FROM files)
-                `).run();
-            });
-
-            cleanupTransaction();
-
-            for (const diaryName of affectedDiaries) {
-                this._deletePersistedDiaryIndex(diaryName);
-            }
-            if (orphanChunkCount > 0) {
-                // 孤儿 chunks 已经丢失 diary_name，只能保守删除全部持久化日记索引，后续从 SQLite 重建。
-                this._deleteAllPersistedDiaryIndexes();
-            }
-
-            if (missingFiles.length > 0 || orphanChunkCount > 0 || affectedDiaries.size > 0) {
-                console.warn(`[KnowledgeBase] 🧹 Startup cleanup complete. Removed ${missingFiles.length} missing file record(s), ${orphanChunkCount} orphan chunk(s), touched ${affectedDiaries.size} diary index(es).`);
-            }
-        } catch (e) {
-            console.error('[KnowledgeBase] ❌ Startup database cleanup failed:', e.message || e);
+    async _cleanupDatabaseOrphansNative() {
+        if (
+            !this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.cleanupDatabaseOrphans !== 'function'
+        ) {
+            const error = new Error(
+                'NativeKnowledgeRuntime orphan cleanup API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
         }
+
+        const raw = await this.nativeKnowledgeRuntime.cleanupDatabaseOrphans(
+            this.dbPath,
+            this.config.rootPath
+        );
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const affectedDiaries = Array.isArray(result?.affectedDiaries)
+            ? [...new Set(
+                result.affectedDiaries
+                    .map(value => String(value || '').trim())
+                    .filter(Boolean)
+            )]
+            : [];
+
+        for (const diaryName of affectedDiaries) {
+            this._deletePersistedDiaryIndex(diaryName);
+            this.diaryDateIndexCache.delete(diaryName);
+        }
+        if (Number(result?.orphanChunks) > 0) {
+            this._deleteAllPersistedDiaryIndexes();
+        }
+
+        const missingFiles = Math.max(
+            0,
+            Math.floor(Number(result?.missingFiles) || 0)
+        );
+        const orphanChunks = Math.max(
+            0,
+            Math.floor(Number(result?.orphanChunks) || 0)
+        );
+        const orphanFileTags = Math.max(
+            0,
+            Math.floor(Number(result?.orphanFileTags) || 0)
+        );
+
+        if (
+            missingFiles > 0
+            || orphanChunks > 0
+            || orphanFileTags > 0
+            || affectedDiaries.length > 0
+        ) {
+            console.warn(
+                `[KnowledgeBase] 🧹 Rust startup cleanup complete. ` +
+                `Removed ${missingFiles} missing file record(s), ` +
+                `${orphanChunks} orphan chunk(s), ` +
+                `${orphanFileTags} orphan file-tag relation(s), ` +
+                `touched ${affectedDiaries.length} diary index(es).`
+            );
+        }
+
+        return {
+            missingFiles,
+            orphanChunks,
+            orphanFileTags,
+            affectedDiaries
+        };
     }
 
     _deletePersistedDiaryIndex(diaryName) {
@@ -1079,6 +1169,540 @@ class KnowledgeBaseManager {
         return removed;
     }
 
+    async prepareIngestionText(text) {
+        if (
+            !this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.prepareText !== 'function'
+        ) {
+            const error = new Error(
+                'NativeKnowledgeRuntime text preparation API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
+        const embeddingMaxToken = Math.max(
+            1,
+            Math.floor(Number(process.env.WhitelistEmbeddingModelMaxToken) || 8000)
+        );
+        const maxTokens = Math.max(
+            1,
+            Math.floor(embeddingMaxToken * 0.85)
+        );
+        const overlapTokens = Math.min(
+            Math.max(0, Math.floor(maxTokens * 0.1)),
+            Math.max(0, maxTokens - 1)
+        );
+        const raw = await this.nativeKnowledgeRuntime.prepareText(
+            JSON.stringify({
+                text: typeof text === 'string' ? text : '',
+                tagBlacklistSuper: Array.isArray(this.config.tagBlacklistSuper)
+                    ? this.config.tagBlacklistSuper
+                    : [],
+                tagBlacklist: this.config.tagBlacklist instanceof Set
+                    ? [...this.config.tagBlacklist]
+                    : [],
+                maxTags: this.config.maxTagsPerFile,
+                maxTokens,
+                overlapTokens
+            })
+        );
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!result || typeof result !== 'object') {
+            throw new Error('Native text preparation returned an invalid result');
+        }
+        return {
+            preparedText: String(result.preparedText || ''),
+            tags: Array.isArray(result.tags)
+                ? result.tags.map(String).filter(Boolean)
+                : [],
+            chunks: Array.isArray(result.chunks)
+                ? result.chunks.map(String).filter(Boolean)
+                : [],
+            tokenCount: Math.max(0, Math.floor(Number(result.tokenCount) || 0)),
+            rulesVersion: String(result.rulesVersion || '')
+        };
+    }
+
+    async probeIngestionFiles(filePaths) {
+        if (!this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.probeIngestionFiles !== 'function') {
+            const error = new Error(
+                'NativeKnowledgeRuntime ingestion probe API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
+        const paths = [...new Set(
+            (Array.isArray(filePaths) ? filePaths : [filePaths])
+                .map(filePath => String(filePath || '').trim())
+                .filter(Boolean)
+        )];
+        if (paths.length === 0) return [];
+
+        const raw = await this.nativeKnowledgeRuntime.probeIngestionFiles(
+            this.dbPath,
+            paths
+        );
+        const rows = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return (Array.isArray(rows) ? rows : []).map(row => ({
+            path: String(row?.path || ''),
+            exists: row?.exists === true,
+            checksum: typeof row?.checksum === 'string'
+                ? row.checksum
+                : null,
+            mtime: Number.isFinite(Number(row?.mtime))
+                ? Number(row.mtime)
+                : null,
+            size: Number.isFinite(Number(row?.size))
+                ? Number(row.size)
+                : null,
+            version: Number.isSafeInteger(Number(row?.version))
+                && Number(row.version) >= 0
+                ? Number(row.version)
+                : 0,
+            chunkCount: Math.max(0, Math.floor(Number(row?.chunkCount) || 0)),
+            validVectorCount: Math.max(
+                0,
+                Math.floor(Number(row?.validVectorCount) || 0)
+            ),
+            completeVectors: row?.completeVectors === true,
+            tagCount: Math.max(0, Math.floor(Number(row?.tagCount) || 0)),
+            validTagVectorCount: Math.max(
+                0,
+                Math.floor(Number(row?.validTagVectorCount) || 0)
+            ),
+            completeTags: row?.completeTags === true
+        })).filter(row => row.path);
+    }
+
+    async probeIngestionTags(tagNames) {
+        if (!this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.probeIngestionTags !== 'function') {
+            const error = new Error(
+                'NativeKnowledgeRuntime Tag probe API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
+        const names = [...new Set(
+            (Array.isArray(tagNames) ? tagNames : [tagNames])
+                .map(name => String(name || '').trim())
+                .filter(Boolean)
+        )];
+        if (names.length === 0) return [];
+
+        const raw = await this.nativeKnowledgeRuntime.probeIngestionTags(
+            this.dbPath,
+            names
+        );
+        const rows = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return (Array.isArray(rows) ? rows : [])
+            .map(row => ({
+                name: String(row?.name || ''),
+                id: Number.isSafeInteger(Number(row?.id))
+                    ? Number(row.id)
+                    : null,
+                hasVector: row?.hasVector === true
+            }))
+            .filter(row => row.name);
+    }
+
+    async probeMigrationReuse(requests) {
+        if (!this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.probeMigrationReuse !== 'function') {
+            const error = new Error(
+                'NativeKnowledgeRuntime migration reuse API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
+        const normalized = (Array.isArray(requests) ? requests : [])
+            .map(request => ({
+                path: String(request?.path || '').trim(),
+                checksum: String(request?.checksum || '').trim(),
+                size: Math.floor(Number(request?.size) || 0),
+                chunkCount: Math.floor(Number(request?.chunkCount) || 0)
+            }))
+            .filter(request =>
+                request.path
+                && request.checksum
+                && request.size >= 0
+                && request.chunkCount > 0
+            );
+
+        if (normalized.length === 0) return [];
+
+        const raw = await this.nativeKnowledgeRuntime.probeMigrationReuse(
+            this.dbPath,
+            JSON.stringify(normalized)
+        );
+        const rows = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return (Array.isArray(rows) ? rows : [])
+            .map(row => ({
+                path: String(row?.path || ''),
+                liveFileId: Number.isSafeInteger(Number(row?.liveFileId))
+                    ? Number(row.liveFileId)
+                    : null,
+                migrationCacheId: Number.isSafeInteger(Number(row?.migrationCacheId))
+                    ? Number(row.migrationCacheId)
+                    : null
+            }))
+            .filter(row => row.path && (row.liveFileId > 0 || row.migrationCacheId > 0));
+    }
+
+    async commitDeleteBatch(filePaths, ttlMs = this.config.migrationCacheTtlMs) {
+        if (!this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.commitDeleteBatch !== 'function') {
+            const error = new Error(
+                'NativeKnowledgeRuntime delete commit API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
+        const paths = [...new Set(
+            (Array.isArray(filePaths) ? filePaths : [filePaths])
+                .map(filePath => String(filePath || '').trim())
+                .filter(Boolean)
+        )];
+        if (paths.length === 0) return {
+            affectedFiles: [],
+            removedChunkIds: [],
+            diaryIndexDeltas: {},
+            databaseGeneration: 0,
+            factsCommitted: true,
+            indexReady: true
+        };
+
+        const raw = await this.nativeKnowledgeRuntime.commitDeleteBatch(
+            this.dbPath,
+            paths,
+            Math.max(0, Math.floor(Number(ttlMs) || 0)),
+            path.resolve(this.config.rootPath)
+        );
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!result || result.factsCommitted !== true) {
+            throw new Error('Native delete commit returned an invalid receipt');
+        }
+        const diaryIndexDeltas = result.diaryIndexDeltas
+            && typeof result.diaryIndexDeltas === 'object'
+            ? Object.fromEntries(
+                Object.entries(result.diaryIndexDeltas).map(([diaryName, delta]) => [
+                    String(diaryName),
+                    {
+                        removedChunkIds: Array.isArray(delta?.removedChunkIds)
+                            ? delta.removedChunkIds.map(Number).filter(Number.isSafeInteger)
+                            : [],
+                        upsertedChunkIds: []
+                    }
+                ])
+            )
+            : {};
+        return {
+            ...result,
+            affectedFiles: Array.isArray(result.affectedFiles)
+                ? result.affectedFiles.map(Number).filter(Number.isSafeInteger)
+                : [],
+            removedChunkIds: Array.isArray(result.removedChunkIds)
+                ? result.removedChunkIds.map(Number).filter(Number.isSafeInteger)
+                : [],
+            diaryIndexDeltas
+        };
+    }
+
+    async commitIngestionBatch(plan, chunkVectors = [], tagVectors = []) {
+        if (!this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.commitIngestionBatch !== 'function') {
+            const error = new Error(
+                'NativeKnowledgeRuntime ingestion commit API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+        if (!plan || typeof plan !== 'object') {
+            throw new TypeError('commitIngestionBatch requires a plan object');
+        }
+        const dimension = Number(plan.dimension) || this.config.dimension;
+        const normalizeVectors = (vectors, label) => {
+            const value = vectors instanceof Float32Array
+                ? vectors
+                : new Float32Array(vectors || []);
+            if (value.length % dimension !== 0) {
+                throw new RangeError(
+                    `${label} length must be divisible by dimension ${dimension}`
+                );
+            }
+            for (const item of value) {
+                if (!Number.isFinite(item)) {
+                    throw new TypeError(`${label} contains a non-finite value`);
+                }
+            }
+            return value;
+        };
+        const normalizedPlan = {
+            ...plan,
+            dimension,
+            operationId: String(plan.operationId || '').trim(),
+            batchId: String(plan.batchId || '').trim(),
+            modelSig: String(plan.modelSig || this.config.modelSig).trim()
+        };
+        if (!normalizedPlan.operationId || !normalizedPlan.batchId) {
+            throw new TypeError('commitIngestionBatch requires operationId and batchId');
+        }
+        const chunkPayload = normalizeVectors(chunkVectors, 'chunkVectors');
+        const tagPayload = normalizeVectors(tagVectors, 'tagVectors');
+        const raw = await this.nativeKnowledgeRuntime.commitIngestionBatch(
+            this.dbPath,
+            JSON.stringify(normalizedPlan),
+            chunkPayload,
+            tagPayload
+        );
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!result || result.factsCommitted !== true) {
+            throw new Error('Native ingestion commit returned an invalid receipt');
+        }
+        return {
+            ...result,
+            databaseGeneration: Number(result.databaseGeneration) || 0,
+            affectedFiles: Array.isArray(result.affectedFiles)
+                ? result.affectedFiles.map(Number).filter(Number.isSafeInteger)
+                : [],
+            removedChunkIds: Array.isArray(result.removedChunkIds)
+                ? result.removedChunkIds.map(Number).filter(Number.isSafeInteger)
+                : [],
+            upsertedChunkIds: Array.isArray(result.upsertedChunkIds)
+                ? result.upsertedChunkIds.map(Number).filter(Number.isSafeInteger)
+                : [],
+            upsertedChunks: Array.isArray(result.upsertedChunks)
+                ? result.upsertedChunks
+                    .map(entry => ({
+                        chunkId: Number(entry?.chunkId),
+                        diaryName: String(entry?.diaryName || ''),
+                        vectorSlot: Number.isSafeInteger(Number(entry?.vectorSlot))
+                            ? Number(entry.vectorSlot)
+                            : null
+                    }))
+                    .filter(entry =>
+                        Number.isSafeInteger(entry.chunkId)
+                        && entry.chunkId > 0
+                        && entry.diaryName
+                    )
+                : [],
+            affectedDiaries: Array.isArray(result.affectedDiaries)
+                ? result.affectedDiaries.map(String).filter(Boolean)
+                : [],
+            diaryIndexDeltas: result.diaryIndexDeltas
+                && typeof result.diaryIndexDeltas === 'object'
+                ? Object.fromEntries(
+                    Object.entries(result.diaryIndexDeltas).map(([diaryName, delta]) => [
+                        String(diaryName),
+                        {
+                            removedChunkIds: Array.isArray(delta?.removedChunkIds)
+                                ? delta.removedChunkIds
+                                    .map(Number)
+                                    .filter(Number.isSafeInteger)
+                                : [],
+                            upsertedChunkIds: Array.isArray(delta?.upsertedChunkIds)
+                                ? delta.upsertedChunkIds
+                                    .map(Number)
+                                    .filter(Number.isSafeInteger)
+                                : []
+                        }
+                    ])
+                )
+                : {},
+            newTagIds: Array.isArray(result.newTagIds)
+                ? result.newTagIds.map(Number).filter(Number.isSafeInteger)
+                : []
+        };
+    }
+
+    async getFileIdsByDiaries(diaryNames) {
+        if (!this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.getFileIdsByDiaries !== 'function') {
+            const error = new Error(
+                'NativeKnowledgeRuntime file scope API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+        const names = [...new Set(
+            (Array.isArray(diaryNames) ? diaryNames : [diaryNames])
+                .map(name => String(name || '').trim())
+                .filter(Boolean)
+        )];
+        if (names.length === 0) return [];
+        const raw = await this.nativeKnowledgeRuntime.getFileIdsByDiaries(
+            this.dbPath,
+            names
+        );
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return (Array.isArray(result) ? result : [])
+            .map(id => Number(id))
+            .filter(id => Number.isSafeInteger(id) && id > 0);
+    }
+
+    async hydrateTagNamesByIds(tagIds) {
+        if (!this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.hydrateTagNamesByIds !== 'function') {
+            const error = new Error(
+                'NativeKnowledgeRuntime Tag name hydrate API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+        const ids = [...new Set(
+            (Array.isArray(tagIds) ? tagIds : [tagIds])
+                .map(id => Number(id))
+                .filter(id => Number.isSafeInteger(id) && id > 0)
+        )];
+        if (ids.length === 0) return [];
+
+        const raw = await this.nativeKnowledgeRuntime.hydrateTagNamesByIds(
+            this.dbPath,
+            ids
+        );
+        const rows = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return (Array.isArray(rows) ? rows : [])
+            .map(row => ({
+                id: Number(row?.id),
+                name: typeof row?.name === 'string' ? row.name : ''
+            }))
+            .filter(row => Number.isSafeInteger(row.id) && row.id > 0 && row.name);
+    }
+
+    async hydrateChunksByIds(chunkIds) {
+        if (!this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.hydrateChunksByIds !== 'function') {
+            const error = new Error(
+                'NativeKnowledgeRuntime chunk hydrate API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+        const ids = [...new Set(
+            (Array.isArray(chunkIds) ? chunkIds : [chunkIds])
+                .map(id => Number(id))
+                .filter(id => Number.isSafeInteger(id) && id > 0)
+        )];
+        if (ids.length === 0) return [];
+
+        const raw = await this.nativeKnowledgeRuntime.hydrateChunksByIds(
+            this.dbPath,
+            ids
+        );
+        const rows = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return (Array.isArray(rows) ? rows : []).map(row => {
+            let vector = null;
+            if (typeof row?.vector === 'string' && row.vector) {
+                const bytes = Buffer.from(row.vector, 'base64');
+                if (bytes.byteLength % Float32Array.BYTES_PER_ELEMENT === 0) {
+                    const view = new Float32Array(
+                        bytes.buffer,
+                        bytes.byteOffset,
+                        bytes.byteLength / Float32Array.BYTES_PER_ELEMENT
+                    );
+                    if (view.length === this.config.dimension) {
+                        vector = new Float32Array(view);
+                    }
+                }
+            }
+            return {
+                ...row,
+                id: Number(row?.id),
+                chunkId: Number(row?.id),
+                vector
+            };
+        }).filter(row => Number.isSafeInteger(row.id) && row.id > 0);
+    }
+
+    async hydrateChunksByFilePaths(filePaths) {
+        if (!this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.hydrateChunksByFilePaths !== 'function') {
+            const error = new Error(
+                'NativeKnowledgeRuntime path hydrate API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+        const paths = [...new Set(
+            (Array.isArray(filePaths) ? filePaths : [filePaths])
+                .map(filePath => String(filePath || '').trim())
+                .filter(Boolean)
+        )];
+        if (paths.length === 0) return [];
+
+        const raw = await this.nativeKnowledgeRuntime.hydrateChunksByFilePaths(
+            this.dbPath,
+            paths
+        );
+        const rows = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return (Array.isArray(rows) ? rows : []).map(row => {
+            let vector = null;
+            if (typeof row?.vector === 'string' && row.vector) {
+                const bytes = Buffer.from(row.vector, 'base64');
+                if (bytes.byteLength % Float32Array.BYTES_PER_ELEMENT === 0) {
+                    const view = new Float32Array(
+                        bytes.buffer,
+                        bytes.byteOffset,
+                        bytes.byteLength / Float32Array.BYTES_PER_ELEMENT
+                    );
+                    if (view.length === this.config.dimension) {
+                        vector = new Float32Array(view);
+                    }
+                }
+            }
+            return {
+                ...row,
+                id: Number(row?.id),
+                chunkId: Number(row?.id),
+                vector
+            };
+        }).filter(row => Number.isSafeInteger(row.id) && row.id > 0);
+    }
+
+    async listDistinctDiaries() {
+        if (!this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.listDistinctDiaries !== 'function') {
+            const error = new Error(
+                'NativeKnowledgeRuntime diary metadata API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+        const raw = await this.nativeKnowledgeRuntime.listDistinctDiaries(
+            this.dbPath
+        );
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return Array.isArray(result)
+            ? result.map(name => String(name)).filter(Boolean)
+            : [];
+    }
+
+    async getDiaryChunkCount(diaryName) {
+        const normalized = String(diaryName || '').trim();
+        if (!normalized) return 0;
+        if (!this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.getDiaryChunkCount !== 'function') {
+            const error = new Error(
+                'NativeKnowledgeRuntime diary Chunk count API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
+        const raw = await this.nativeKnowledgeRuntime.getDiaryChunkCount(
+            this.dbPath,
+            normalized
+        );
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return Math.max(0, Math.floor(Number(result?.count) || 0));
+    }
+
     async _getOrLoadDiaryIndex(diaryName, options = {}) {
         return this.indexRepository.getOrLoad(diaryName, options);
     }
@@ -1100,6 +1724,47 @@ class KnowledgeBaseManager {
     // =========================================================================
     // 核心搜索接口 (修复版)
     // =========================================================================
+
+    async executeLightMemoQuery(query, options = {}) {
+        const runtime = this.nativeKnowledgeRuntime;
+        if (typeof runtime?.executeLightMemoQuery !== 'function') {
+            const error = new Error('LIGHTMEMO_NATIVE_QUERY_UNAVAILABLE: rebuild rust-vexus-lite');
+            error.code = 'LIGHTMEMO_NATIVE_QUERY_UNAVAILABLE';
+            throw error;
+        }
+        const vector = query.vector instanceof Float32Array
+            ? query.vector : new Float32Array(query.vector || []);
+        let prepared = null;
+        if (options.engineMode === 'rivermemo' || options.abMode === true) {
+            prepared = await this.prepareUnifiedMemoObservation(query, options);
+        }
+        const raw = await runtime.executeLightMemoQuery(JSON.stringify({
+            ...options,
+            modelSig: this.config.modelSig,
+            artifactSig: prepared?.artifact?.artifactSig || '',
+            riverInput: prepared ? {
+                observationHandle: prepared.observationHandle,
+                query: { text: String(query.text || '') },
+                queryState: { queryId: prepared.observation?.queryId || null },
+                config: this.riverMemoEngine._nativeConfig(prepared.artifact, options)
+            } : null
+        }), vector);
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (result?.schema !== 'vcp-lightmemo-result-v1' || !Array.isArray(result.results)) {
+            throw new Error('LIGHTMEMO_INVALID_NATIVE_RESULT');
+        }
+        const normalize = item => ({
+            ...item,
+            label: Number(item.label ?? item.chunkId ?? item.id),
+            sourceFile: item.sourceFile && !path.isAbsolute(item.sourceFile)
+                ? path.join(this.config.rootPath, item.sourceFile) : item.sourceFile
+        });
+        result.results = result.results.map(normalize);
+        result.tdbTopK = (result.tdbTopK || []).map(normalize);
+        result.comparisonPool = (result.comparisonPool || []).map(normalize);
+        if (Array.isArray(result.river?.results)) result.river.results = result.river.results.map(normalize);
+        return result;
+    }
 
     async search(...args) {
         return await this.searchService.search(...args);
@@ -1539,6 +2204,9 @@ class KnowledgeBaseManager {
                         0,
                         Math.min(1, Number(options.layerDecay ?? 0.7))
                     ),
+                    epaGateMode: String(
+                        options.epaGateMode ?? kbConfig.epaGateMode ?? 'backgroundRelative'
+                    ),
                     activationMultiplier:
                         kbConfig.activationMultiplier || [0.5, 1.5],
                     dynamicBoostRange:
@@ -1547,16 +2215,14 @@ class KnowledgeBaseManager {
                         kbConfig.coreBoostRange || [1.2, 1.4],
                     langConfidenceEnabled:
                         this.config.langConfidenceEnabled !== false,
-                    langPenaltyUnknown: Number(
-                        language.penaltyUnknown
-                        ?? this.config.langPenaltyUnknown
-                        ?? 0.05
-                    ),
-                    langPenaltyCrossDomain: Number(
-                        language.penaltyCrossDomain
-                        ?? this.config.langPenaltyCrossDomain
-                        ?? 0.1
-                    ),
+                    langPenaltyUnknown:
+                        this._readOptionalPenalty(this.config.langPenaltyUnknown)
+                        ?? this._readOptionalPenalty(language.penaltyUnknown)
+                        ?? 0.05,
+                    langPenaltyCrossDomain:
+                        this._readOptionalPenalty(this.config.langPenaltyCrossDomain)
+                        ?? this._readOptionalPenalty(language.penaltyCrossDomain)
+                        ?? 0.1,
                     deduplicationThreshold: Number(
                         kbConfig.deduplicationThreshold ?? 0.88
                     ),
@@ -1788,6 +2454,7 @@ class KnowledgeBaseManager {
                     ...options,
                     artifact,
                     dbPath: this.dbPath,
+                    hydrateChunksByIds: ids => this.hydrateChunksByIds(ids),
                     nativePreparedQuery: prepared.nativePreparedQuery,
                     observationHandle: prepared.observationHandle,
                     sourceObservationResult,
@@ -1890,12 +2557,7 @@ class KnowledgeBaseManager {
             diaryNames.map(name => this._getOrLoadDiaryIndex(name))
         );
 
-        const placeholders = diaryNames.map(() => '?').join(',');
-        const allowedFileIds = this.db.prepare(
-            `SELECT id FROM files WHERE diary_name IN (${placeholders})`
-        ).all(...diaryNames)
-            .map(row => Number(row.id))
-            .filter(Number.isSafeInteger);
+        const allowedFileIds = await this.getFileIdsByDiaries(diaryNames);
         if (allowedFileIds.length === 0) {
             return {
                 results: [],
@@ -1965,7 +2627,7 @@ class KnowledgeBaseManager {
             fileCandidates: Array.isArray(rawHybridPlan?.fileCandidates)
                 ? rawHybridPlan.fileCandidates
                     .map(candidate => ({
-                        path: String(candidate?.path || '').trim(),
+                        path: String(candidate?.path || '').trim().replace(/\\/g, '/'),
                         bm25Score: Math.max(
                             0,
                             Number(candidate?.bm25Score) || 0
@@ -2014,18 +2676,33 @@ class KnowledgeBaseManager {
             )
         } : null;
 
-        const prepared = options.preparedMemoObservation
-            || await this.prepareUnifiedMemoObservation(
-                {
-                    text: String(query?.text || ''),
-                    vector: queryVector
-                },
-                {
-                    ...options,
-                    queryText: String(query?.text || ''),
-                    vector: queryVector
-                }
-            );
+        const degradedKnn = async () => ({
+            results: nativeHybridPlan
+                ? (await collectCandidates.call(this)).slice(0, finalK).map(result => ({
+                    ...result, retrievalEngine: 'knn'
+                }))
+                : await this.searchKnn(diaryNames, queryVector, finalK, {
+                ...options,
+                allowedFileIds: Array.isArray(options.allowedFileIds)
+                    ? allowedFileIds.filter(id => options.allowedFileIds.map(Number).includes(Number(id)))
+                    : allowedFileIds,
+                globalK: finalK
+            }),
+            diagnostics: { reason: 'memo-artifact-unavailable', retrievalEngine: 'knn', degraded: true }
+        });
+        const isStaleMemo = error => /(?:MEMO_ARTIFACT_UNAVAILABLE|TAGMEMO_ARTIFACT_UNAVAILABLE|KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT|observation.*(?:not found|expired|unavailable|mismatch))/i
+            .test(String(error.code || '') + ' ' + String(error.message || ''));
+        let prepared;
+        try {
+            prepared = options.preparedMemoObservation
+                || await this.prepareUnifiedMemoObservation(
+                    { text: String(query?.text || ''), vector: queryVector },
+                    { ...options, queryText: String(query?.text || ''), vector: queryVector }
+                );
+        } catch (error) {
+            if (!isStaleMemo(error)) throw error;
+            return degradedKnn();
+        }
         const agentContext = {
             agentId: options.agentId || null,
             diaryNames,
@@ -2060,6 +2737,7 @@ class KnowledgeBaseManager {
                         ...options,
                         artifact: prepared.artifact,
                         dbPath: this.dbPath,
+                        hydrateChunksByIds: ids => this.hydrateChunksByIds(ids),
                         nativePreparedQuery: prepared.nativePreparedQuery,
                         observationHandle: prepared.observationHandle,
                         sourceObservationResult:
@@ -2083,6 +2761,7 @@ class KnowledgeBaseManager {
                     }
                 );
             } catch (error) {
+                if (isStaleMemo(error)) return degradedKnn();
                 if (!fallbackEnabled) throw error;
                 console.warn(
                     `[KnowledgeBase][NativeRiverQuery] joint execution failed; ` +
@@ -2093,227 +2772,240 @@ class KnowledgeBaseManager {
 // 完整旧链路回退：复刻 Query Plan V2 的当前 ANN、历史多向量、
 // BM25/Time 文件展开和 Time 双重限流，再交给原生 Topology V3。
 // 此路径只在联合 ABI 不可用/失败时执行，保留正确性优先于性能。
-const perIndexK = options.perIndexK
-    ?? this.config.nativeRiverQueryPerIndexK;
-const currentSearchPromise = this.searchKnn(
-    diaryNames,
-    queryVector,
-    candidateK,
-    0,
-    [],
-    undefined,
-    {
-        perIndexK,
-        globalK: candidateK
-    }
-);
-const supplementalSearchPromises = supplementalQueryVectors.map(
-    async entry => {
-        const results = await this.searchKnn(
-            diaryNames,
-            entry.vector,
-            Math.max(2, Math.round(candidateK / 2)),
-            0,
-            [],
-            undefined,
-            {
-                perIndexK: Math.max(
-                    2,
-                    Math.round(Number(perIndexK) / 2)
-                ),
-                globalK: Math.max(
-                    2,
-                    Math.round(candidateK / 2)
-                )
-            }
-        );
-        return results.map(result => ({
-            ...result,
-            score: (Number(result.score) || 0) * entry.weight,
-            vectorScore: Number(result.score) || 0,
-            source: 'history'
-        }));
-    }
-);
-const [currentCandidates, ...supplementalCandidates] =
-    await Promise.all([
-        currentSearchPromise,
-        ...supplementalSearchPromises
-    ]);
-let candidates = [
-    ...currentCandidates.map(result => ({
-        ...result,
-        vectorScore: Number(result.score) || 0,
-        source: result.source || 'rag'
-    })),
-    ...supplementalCandidates.flat()
-];
-
-const fileCandidates = nativeHybridPlan?.fileCandidates || [];
-if (fileCandidates.length > 0) {
-    const filePlanByPath = new Map(
-        fileCandidates.map(candidate => [candidate.path, candidate])
-    );
-    const chunks = await this.getChunksByFilePaths(
-        fileCandidates.map(candidate => candidate.path)
-    );
-    const queryMagnitude = Math.sqrt(
-        Array.from(queryVector).reduce(
-            (sum, value) => sum + value * value,
-            0
-        )
-    );
-    const cosineToQuery = vector => {
-        if (
-            !vector
-            || vector.length !== queryVector.length
-            || queryMagnitude <= 1e-12
-        ) {
-            return 0;
-        }
-        let dot = 0;
-        let magnitude = 0;
-        for (let index = 0; index < vector.length; index++) {
-            const value = Number(vector[index]) || 0;
-            dot += queryVector[index] * value;
-            magnitude += value * value;
-        }
-        return magnitude > 1e-12
-            ? dot / (queryMagnitude * Math.sqrt(magnitude))
-            : 0;
-    };
-    const timeByDiary = new Map();
-    const sparseWeight = nativeHybridPlan.bm25Weight;
-    for (const chunk of chunks) {
-        const chunkPath = chunk.fullPath || chunk.sourceFile || '';
-        const filePlan = filePlanByPath.get(chunkPath);
-        if (!filePlan) continue;
-        const vectorScore = cosineToQuery(chunk.vector);
-        const isTime = filePlan.source === 'time'
-            || filePlan.timeScore > 0;
-        const score = filePlan.bm25Score > 0
-            ? filePlan.normalizedBM25Score * sparseWeight
-                + vectorScore * (1 - sparseWeight)
-            : vectorScore;
-        const candidate = {
-            ...chunk,
-            score,
-            vectorScore,
-            bm25Score: filePlan.bm25Score,
-            normalizedBM25Score:
-                filePlan.normalizedBM25Score,
-            timeScore: filePlan.timeScore,
-            source: isTime
-                ? 'time'
-                : (filePlan.source || 'rag')
-        };
-        if (isTime) {
-            const normalizedPath = String(chunkPath)
-                .replace(/\\/g, '/');
-            const diaryName = normalizedPath.split('/')[0]
-                || chunk.diaryName
-                || 'unknown';
-            if (!timeByDiary.has(diaryName)) {
-                timeByDiary.set(diaryName, new Map());
-            }
-            const diaryPool = timeByDiary.get(diaryName);
-            const chunkId = Number(chunk.chunkId ?? chunk.id);
-            const existing = diaryPool.get(chunkId);
-            if (!existing || score > existing.score) {
-                diaryPool.set(chunkId, candidate);
-            }
-        } else {
-            candidates.push(candidate);
-        }
-    }
-
-    const limitedTime = [];
-    const perDiaryLimit = nativeHybridPlan.timePerDiaryLimit;
-    const globalLimit = nativeHybridPlan.timeGlobalLimit;
-    for (const diaryName of [...timeByDiary.keys()].sort()) {
-        const diaryCandidates = Array.from(
-            timeByDiary.get(diaryName).values()
-        ).sort((left, right) =>
-            (right.vectorScore || 0) - (left.vectorScore || 0)
-            || Number(left.chunkId ?? left.id)
-                - Number(right.chunkId ?? right.id)
-        );
-        limitedTime.push(
-            ...diaryCandidates.slice(0, perDiaryLimit)
-        );
-    }
-    limitedTime.sort((left, right) =>
-        (right.vectorScore || 0) - (left.vectorScore || 0)
-        || Number(left.chunkId ?? left.id)
-            - Number(right.chunkId ?? right.id)
-    );
-    candidates.push(...limitedTime.slice(0, globalLimit));
-}
-
-// 先按 Chunk 身份合并多路候选，保留最高主分并合并稀疏/时间证据。
-const mergedByChunk = new Map();
-for (const candidate of candidates) {
-    const id = Number(candidate?.chunkId ?? candidate?.id);
-    if (!Number.isSafeInteger(id) || id <= 0) continue;
-    const existing = mergedByChunk.get(id);
-    if (!existing) {
-        mergedByChunk.set(id, { ...candidate, id, chunkId: id });
-        continue;
-    }
-    if ((candidate.score || 0) > (existing.score || 0)) {
-        Object.assign(existing, candidate, { id, chunkId: id });
-    }
-    existing.vectorScore = Math.max(
-        Number(existing.vectorScore) || 0,
-        Number(candidate.vectorScore) || 0
-    );
-    existing.bm25Score = Math.max(
-        Number(existing.bm25Score) || 0,
-        Number(candidate.bm25Score) || 0
-    );
-    existing.timeScore = Math.max(
-        Number(existing.timeScore) || 0,
-        Number(candidate.timeScore) || 0
-    );
-    if (candidate.source === 'time') existing.source = 'time';
-}
-candidates = await this.deduplicateResults(
-    Array.from(mergedByChunk.values())
-        .sort((left, right) =>
-            (right.score || 0) - (left.score || 0)
-            || left.chunkId - right.chunkId
-        )
-        .slice(0, candidateK),
-    queryVector,
-    {
-        stage: 'native-river-query-v2-fallback',
-        semantic: true,
-        semanticThreshold:
-            options.semanticThreshold
-            ?? this.config.nativeRiverQuerySemanticThreshold,
-        maxResults: candidateK
-    }
-);
+        const candidates = await collectCandidates.call(this);
         return await this.riverMemoEngine.rerank(
-            {
-                text: String(query?.text || ''),
-                vector: queryVector
-            },
+            { text: String(query?.text || ''), vector: queryVector },
             candidates,
             agentContext,
             {
                 ...options,
                 artifact: prepared.artifact,
                 dbPath: this.dbPath,
+                hydrateChunksByIds: ids => this.hydrateChunksByIds(ids),
                 nativePreparedQuery: prepared.nativePreparedQuery,
                 observationHandle: prepared.observationHandle,
-                sourceObservationResult:
-                    prepared.sourceObservationResult,
+                sourceObservationResult: prepared.sourceObservationResult,
                 sourceField: prepared.sourceField,
                 topK: finalK,
                 nativeJointQuery: false
             }
         );
+
+        async function collectCandidates() {
+            const searchOptions = {
+                ...options,
+                allowedFileIds: Array.isArray(options.allowedFileIds)
+                    ? allowedFileIds.filter(id => options.allowedFileIds.map(Number).includes(Number(id)))
+                    : allowedFileIds,
+                deniedFileIds: options.deniedFileIds || []
+            };
+            const perIndexK = options.perIndexK
+                ?? this.config.nativeRiverQueryPerIndexK;
+            const currentSearchPromise = this.searchKnn(
+                diaryNames,
+                queryVector,
+                candidateK,
+                0,
+                [],
+                undefined,
+                {
+                    ...searchOptions,
+                    perIndexK,
+                    globalK: candidateK
+                }
+            );
+            const supplementalSearchPromises = supplementalQueryVectors.map(
+                async entry => {
+                    const results = await this.searchKnn(
+                        diaryNames,
+                        entry.vector,
+                        Math.max(2, Math.round(candidateK / 2)),
+                        0,
+                        [],
+                        undefined,
+                        {
+                            ...searchOptions,
+                            perIndexK: Math.max(
+                                2,
+                                Math.round(Number(perIndexK) / 2)
+                            ),
+                            globalK: Math.max(
+                                2,
+                                Math.round(candidateK / 2)
+                            )
+                        }
+                    );
+                    return results.map(result => ({
+                        ...result,
+                        score: (Number(result.score) || 0) * entry.weight,
+                        vectorScore: Number(result.score) || 0,
+                        source: 'history'
+                    }));
+                }
+            );
+            const [currentCandidates, ...supplementalCandidates] =
+                await Promise.all([
+                    currentSearchPromise,
+                    ...supplementalSearchPromises
+                ]);
+            let candidates = [
+                ...currentCandidates.map(result => ({
+                    ...result,
+                    vectorScore: Number(result.score) || 0,
+                    source: result.source || 'rag'
+                })),
+                ...supplementalCandidates.flat()
+            ];
+
+            const fileCandidates = nativeHybridPlan?.fileCandidates || [];
+            if (fileCandidates.length > 0) {
+                const filePlanByPath = new Map(
+                    fileCandidates.map(candidate => [candidate.path, candidate])
+                );
+                const allowed = new Set(searchOptions.allowedFileIds.map(Number));
+                const denied = new Set(searchOptions.deniedFileIds.map(Number));
+                const chunks = (await this.getChunksByFilePaths(
+                    fileCandidates.map(candidate => candidate.path)
+                )).filter(chunk => allowed.has(Number(chunk.fileId)) && !denied.has(Number(chunk.fileId)));
+                const queryMagnitude = Math.sqrt(
+                    Array.from(queryVector).reduce(
+                        (sum, value) => sum + value * value,
+                        0
+                    )
+                );
+                const cosineToQuery = vector => {
+                    if (
+                        !vector
+                        || vector.length !== queryVector.length
+                        || queryMagnitude <= 1e-12
+                    ) {
+                        return 0;
+                    }
+                    let dot = 0;
+                    let magnitude = 0;
+                    for (let index = 0; index < vector.length; index++) {
+                        const value = Number(vector[index]) || 0;
+                        dot += queryVector[index] * value;
+                        magnitude += value * value;
+                    }
+                    return magnitude > 1e-12
+                        ? dot / (queryMagnitude * Math.sqrt(magnitude))
+                        : 0;
+                };
+                const timeByDiary = new Map();
+                const sparseWeight = nativeHybridPlan.bm25Weight;
+                for (const chunk of chunks) {
+                    const chunkPath = String(chunk.fullPath || chunk.sourceFile || '').replace(/\\/g, '/');
+                    const filePlan = filePlanByPath.get(chunkPath);
+                    if (!filePlan) continue;
+                    const vectorScore = cosineToQuery(chunk.vector);
+                    const isTime = filePlan.source === 'time'
+                        || filePlan.timeScore > 0;
+                    const score = filePlan.bm25Score > 0
+                        ? filePlan.normalizedBM25Score * sparseWeight
+                            + vectorScore * (1 - sparseWeight)
+                        : vectorScore;
+                    const candidate = {
+                        ...chunk,
+                        score,
+                        vectorScore,
+                        bm25Score: filePlan.bm25Score,
+                        normalizedBM25Score:
+                            filePlan.normalizedBM25Score,
+                        timeScore: filePlan.timeScore,
+                        source: isTime
+                            ? 'time'
+                            : (filePlan.source || 'rag')
+                    };
+                    if (isTime) {
+                        const normalizedPath = String(chunkPath)
+                            .replace(/\\/g, '/');
+                        const diaryName = normalizedPath.split('/')[0]
+                            || chunk.diaryName
+                            || 'unknown';
+                        if (!timeByDiary.has(diaryName)) {
+                            timeByDiary.set(diaryName, new Map());
+                        }
+                        const diaryPool = timeByDiary.get(diaryName);
+                        const chunkId = Number(chunk.chunkId ?? chunk.id);
+                        const existing = diaryPool.get(chunkId);
+                        if (!existing || score > existing.score) {
+                            diaryPool.set(chunkId, candidate);
+                        }
+                    } else {
+                        candidates.push(candidate);
+                    }
+                }
+
+                const limitedTime = [];
+                const perDiaryLimit = nativeHybridPlan.timePerDiaryLimit;
+                const globalLimit = nativeHybridPlan.timeGlobalLimit;
+                for (const diaryName of [...timeByDiary.keys()].sort()) {
+                    const diaryCandidates = Array.from(
+                        timeByDiary.get(diaryName).values()
+                    ).sort((left, right) =>
+                        (right.vectorScore || 0) - (left.vectorScore || 0)
+                        || Number(left.chunkId ?? left.id)
+                            - Number(right.chunkId ?? right.id)
+                    );
+                    limitedTime.push(
+                        ...diaryCandidates.slice(0, perDiaryLimit)
+                    );
+                }
+                limitedTime.sort((left, right) =>
+                    (right.vectorScore || 0) - (left.vectorScore || 0)
+                    || Number(left.chunkId ?? left.id)
+                        - Number(right.chunkId ?? right.id)
+                );
+                candidates.push(...limitedTime.slice(0, globalLimit));
+            }
+
+            // 先按 Chunk 身份合并多路候选，保留最高主分并合并稀疏/时间证据。
+            const mergedByChunk = new Map();
+            for (const candidate of candidates) {
+                const id = Number(candidate?.chunkId ?? candidate?.id);
+                if (!Number.isSafeInteger(id) || id <= 0) continue;
+                const existing = mergedByChunk.get(id);
+                if (!existing) {
+                    mergedByChunk.set(id, { ...candidate, id, chunkId: id });
+                    continue;
+                }
+                if ((candidate.score || 0) > (existing.score || 0)) {
+                    Object.assign(existing, candidate, { id, chunkId: id });
+                }
+                existing.vectorScore = Math.max(
+                    Number(existing.vectorScore) || 0,
+                    Number(candidate.vectorScore) || 0
+                );
+                existing.bm25Score = Math.max(
+                    Number(existing.bm25Score) || 0,
+                    Number(candidate.bm25Score) || 0
+                );
+                existing.timeScore = Math.max(
+                    Number(existing.timeScore) || 0,
+                    Number(candidate.timeScore) || 0
+                );
+                if (candidate.source === 'time') existing.source = 'time';
+            }
+            candidates = await this.deduplicateResults(
+                Array.from(mergedByChunk.values())
+                    .sort((left, right) =>
+                        (right.score || 0) - (left.score || 0)
+                        || left.chunkId - right.chunkId
+                    )
+                    .slice(0, candidateK),
+                queryVector,
+                {
+                    stage: 'native-river-query-v2-fallback',
+                    semantic: true,
+                    semanticThreshold:
+                        options.semanticThreshold
+                        ?? this.config.nativeRiverQuerySemanticThreshold,
+                    maxResults: candidateK
+                }
+            );
+            return candidates;
+        }
     }
 
     /**
@@ -2358,16 +3050,9 @@ candidates = await this.deduplicateResults(
         const ids = (Array.isArray(parsed?.results) ? parsed.results : [])
             .map(item => Number(item?.id))
             .filter(id => Number.isSafeInteger(id) && id > 0);
-        if (ids.length === 0 || !this.db?.prepare) return [];
+        if (ids.length === 0) return [];
 
-        const placeholders = ids.map(() => '?').join(',');
-        const rows = this.db.prepare(`
-            SELECT c.id, c.content AS text, c.vector, f.path AS sourceFile,
-                   f.diary_name AS diaryName, f.id AS fileId
-            FROM chunks c
-            JOIN files f ON f.id = c.file_id
-            WHERE c.id IN (${placeholders})
-        `).all(...ids);
+        const rows = await this.hydrateChunksByIds(ids);
         const byId = new Map(rows.map(row => [Number(row.id), row]));
         return ids.map(id => {
             const row = byId.get(id);
@@ -2589,12 +3274,12 @@ candidates = await this.deduplicateResults(
         return this.diaryMetadataCache.buildDateIndex(diaryName);
     }
 
-    _ensureDiaryDateIndexCached(diaryName) {
-        return this.diaryMetadataCache.ensureDateIndex(diaryName);
+    async _ensureDiaryDateIndexCached(diaryName) {
+        return await this.diaryMetadataCache.ensureDateIndex(diaryName);
     }
 
-    getDiaryDateIndex(diaryName) {
-        return this.diaryMetadataCache.getDateIndex(diaryName);
+    async getDiaryDateIndex(diaryName) {
+        return await this.diaryMetadataCache.getDateIndex(diaryName);
     }
 
     invalidateDiaryDateIndex(diaryName) {
@@ -2610,94 +3295,231 @@ candidates = await this.deduplicateResults(
         return this.diaryMetadataCache.getNameVector(diaryName);
     }
 
-    _hydrateDiaryNameCacheSync() {
-        return this.diaryMetadataCache.hydrateNameCacheSync();
+    async _hydrateDiaryNameCache() {
+        return await this.diaryMetadataCache.hydrateNameCache();
+    }
+
+    // 保留旧方法名作为异步兼容门面，禁止恢复同步 SQL 预热。
+    async _hydrateDiaryNameCacheSync() {
+        return await this._hydrateDiaryNameCache();
     }
 
     async _fetchAndCacheDiaryNameVector(name) {
         return this.diaryMetadataCache.fetchAndCacheNameVector(name);
     }
 
-    // 🌟 新增：基于 SQLite kv_store 的持久化插件描述向量缓存
-    async getPluginDescriptionVector(descText, getEmbeddingFn) {
-        let hash;
-        try {
-            hash = crypto.createHash('sha256').update(descText).digest('hex');
-            const key = `plugin_desc_hash:${hash}`;
+        // 🌟 基于 Rust SqliteStorageEngine 的持久化插件描述向量缓存。
+        async getPluginDescriptionVector(descText, getEmbeddingFn) {
+            let hash;
+            try {
+                hash = crypto.createHash('sha256').update(String(descText)).digest('hex');
+                const key = `plugin_desc_hash:${hash}`;
 
-            // 1. 查 SQLite
-            const stmt = this.db.prepare("SELECT vector FROM kv_store WHERE key = ?");
-            const row = stmt.get(key);
+                if (
+                    !this.nativeKnowledgeRuntime
+                    || typeof this.nativeKnowledgeRuntime.getKvVector !== 'function'
+                    || typeof this.nativeKnowledgeRuntime.setKvVector !== 'function'
+                ) {
+                    const error = new Error(
+                        'NativeKnowledgeRuntime KV vector ABI is unavailable'
+                    );
+                    error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+                    throw error;
+                }
 
-            if (row && row.vector) {
-                const decoded = this._decodeVectorBlob(row.vector, this.config.dimension, key);
-                return decoded ? Array.from(decoded) : null;
-            }
+                const raw = await this.nativeKnowledgeRuntime.getKvVector(
+                    this.dbPath,
+                    key
+                );
+                const encoded = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                if (typeof encoded === 'string' && encoded.length > 0) {
+                    const decoded = this._decodeVectorBlob(
+                        Buffer.from(encoded, 'base64'),
+                        this.config.dimension,
+                        key
+                    );
+                    if (decoded) return Array.from(decoded);
+                }
 
-            // 2. 未命中，去查 Embedding API
-            if (typeof getEmbeddingFn !== 'function') {
+                if (typeof getEmbeddingFn !== 'function') {
+                    return null;
+                }
+
+                console.log(`[KnowledgeBase] Cache MISS for plugin description. Fetching API...`);
+                const vec = await getEmbeddingFn(descText);
+                if (!vec) return null;
+    
+                const vector = vec instanceof Float32Array
+                    ? vec
+                    : new Float32Array(vec);
+                if (vector.length !== this.config.dimension) {
+                    throw new RangeError(
+                        `Plugin description vector dimension mismatch: expected ` +
+                        `${this.config.dimension}, got ${vector.length}`
+                    );
+                }
+                const receipt = await this.nativeKnowledgeRuntime.setKvVector(
+                    this.dbPath,
+                    key,
+                    vector
+                );
+                if (typeof receipt === 'string') JSON.parse(receipt);
+                return Array.from(vector);
+            } catch (e) {
+                console.error(
+                    `[KnowledgeBase] Failed to process plugin description vector:`,
+                    e.message || e
+                );
                 return null;
             }
-
-            console.log(`[KnowledgeBase] Cache MISS for plugin description. Fetching API...`);
-            const vec = await getEmbeddingFn(descText);
-
-            if (vec) {
-                // 3. 存入 SQLite
-                const vecBuf = Buffer.from(new Float32Array(vec).buffer);
-                this.db.prepare("INSERT OR REPLACE INTO kv_store (key, vector) VALUES (?, ?)").run(key, vecBuf);
-                return vec;
-            }
-
-        } catch (e) {
-            console.error(`[KnowledgeBase] Failed to process plugin description vector:`, e.message);
         }
-        return null;
-    }
 
     // 兼容性 API: getVectorByText
     async getVectorByText(diaryName, text) {
-        const stmt = this.db.prepare('SELECT vector FROM chunks WHERE content = ? LIMIT 1');
-        const row = stmt.get(text);
-        if (row && row.vector) {
-            return this._decodeVectorBlob(row.vector, this.config.dimension, 'chunk:content_lookup');
+        if (
+            !this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.getChunkVectorByText !== 'function'
+        ) {
+            const error = new Error(
+                'NativeKnowledgeRuntime Chunk text vector API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
         }
-        return null;
+
+        const raw = await this.nativeKnowledgeRuntime.getChunkVectorByText(
+            this.dbPath,
+            String(diaryName || ''),
+            String(text || '')
+        );
+        const encoded = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (typeof encoded !== 'string' || encoded.length === 0) {
+            return null;
+        }
+
+        let bytes;
+        try {
+            bytes = Buffer.from(encoded, 'base64');
+        } catch (_) {
+            return null;
+        }
+        const expectedBytes =
+            this.config.dimension * Float32Array.BYTES_PER_ELEMENT;
+        if (bytes.byteLength !== expectedBytes) {
+            return null;
+        }
+
+        const vector = new Float32Array(
+            bytes.buffer,
+            bytes.byteOffset,
+            this.config.dimension
+        );
+        for (const value of vector) {
+            if (!Number.isFinite(value)) return null;
+        }
+        return new Float32Array(vector);
+    }
+
+    async getTagVectorByName(tagName) {
+        const normalizedName = String(tagName || '').trim();
+        if (!normalizedName) return null;
+        if (
+            !this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.getTagVectorByName !== 'function'
+        ) {
+            const error = new Error(
+                'NativeKnowledgeRuntime Tag vector by name API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
+        const raw = await this.nativeKnowledgeRuntime.getTagVectorByName(
+            this.dbPath,
+            normalizedName
+        );
+        const encoded = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (typeof encoded !== 'string' || encoded.length === 0) return null;
+
+        let bytes;
+        try {
+            bytes = Buffer.from(encoded, 'base64');
+        } catch (_) {
+            return null;
+        }
+
+        const expectedBytes = this.config.dimension * Float32Array.BYTES_PER_ELEMENT;
+        if (bytes.byteLength !== expectedBytes) return null;
+
+        const vector = new Float32Array(
+            bytes.buffer,
+            bytes.byteOffset,
+            this.config.dimension
+        );
+        for (const value of vector) {
+            if (!Number.isFinite(value)) return null;
+        }
+        return new Float32Array(vector);
     }
 
     async getVectorByChunkId(chunkId) {
         const numericChunkId = Number(chunkId);
-        if (!Number.isFinite(numericChunkId)) return null;
-
-        const row = this.db.prepare('SELECT vector FROM chunks WHERE id = ? LIMIT 1').get(numericChunkId);
-        if (row && row.vector) {
-            return this._decodeVectorBlob(row.vector, this.config.dimension, `chunk:${numericChunkId}`);
+        if (!Number.isSafeInteger(numericChunkId) || numericChunkId <= 0) {
+            return null;
         }
-        return null;
+        if (
+            !this.nativeKnowledgeRuntime
+            || typeof this.nativeKnowledgeRuntime.getChunkVector !== 'function'
+        ) {
+            const error = new Error(
+                'NativeKnowledgeRuntime Chunk vector API is unavailable'
+            );
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+
+        const raw = await this.nativeKnowledgeRuntime.getChunkVector(
+            this.dbPath,
+            numericChunkId
+        );
+        const encoded = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (typeof encoded !== 'string' || encoded.length === 0) {
+            return null;
+        }
+
+        let bytes;
+        try {
+            bytes = Buffer.from(encoded, 'base64');
+        } catch (_) {
+            return null;
+        }
+        const expectedBytes =
+            this.config.dimension * Float32Array.BYTES_PER_ELEMENT;
+        if (bytes.byteLength !== expectedBytes) {
+            return null;
+        }
+
+        const vector = new Float32Array(
+            bytes.buffer,
+            bytes.byteOffset,
+            this.config.dimension
+        );
+        for (const value of vector) {
+            if (!Number.isFinite(value)) return null;
+        }
+        return new Float32Array(vector);
     }
 
     /**
      * 🛡️ 启动全量扫描补洞：判断一个文件在 SQLite 中是否已有完整可用的 chunk 向量。
      * 旧逻辑只看 mtime/size，若上次 API 失败但 files 记录已写入，会在开机全扫时被误判为“无需处理”。
      */
-    _hasCompleteStoredVectorsForFile(...args) {
-        return this.ingestionPipeline._hasCompleteStoredVectorsForFile(...args);
-    }
-
-    _decodeReusableChunkRows(rows, expectedChunkCount, labelPrefix) {
-        return this.migrationVectorCache.decodeReusableRows(
-            rows,
-            expectedChunkCount,
-            labelPrefix
-        );
-    }
-
-    _cleanupExpiredMigrationCache(now = Date.now()) {
-        return this.migrationVectorCache.cleanupExpired(now);
-    }
-
-    _findReusableChunkVectors(doc) {
-        return this.migrationVectorCache.findReusableVectors(doc);
+    async _hasCompleteStoredVectorsForFile(filePath) {
+        const relativePath = path.isAbsolute(String(filePath))
+            ? path.relative(this.config.rootPath, filePath).replace(/\\/g, '/')
+            : String(filePath).replace(/\\/g, '/');
+        const [row] = await this.probeIngestionFiles([relativePath]);
+        return row?.completeVectors === true;
     }
 
     /**
@@ -2771,33 +3593,20 @@ candidates = await this.deduplicateResults(
      */
     async _cleanupGhostIndexes() {
         console.log('[KnowledgeBase] 🛡️ Starting Ghost Index self-check...');
-        const allDiaries = this.db.prepare('SELECT DISTINCT diary_name FROM files').all();
+        const allDiaries = await this.listDistinctDiaries();
 
-        for (const { diary_name } of allDiaries) {
+        for (const diaryName of allDiaries) {
             try {
-                const idx = await this._getOrLoadDiaryIndex(diary_name);
-                if (!idx || !idx.stats) continue;
-
-                const stats = idx.stats();
-                if (stats.totalVectors === 0) continue;
-
-                // 随机抽取 20 个 ID 进行验证
-                // 注意：usearch 本身不直接暴露所有 ID 遍历，但我们可以根据 stats 决定是否重建
-                // 如果 SQLite 中的 chunks 数量与索引数量差异过大，则可能存在问题
-                const dbCount = this.db.prepare('SELECT COUNT(*) as count FROM chunks JOIN files ON chunks.file_id = files.id WHERE files.diary_name = ?')
-                    .get(diary_name).count;
-
-                // 容差范围：如果索引比 DB 多出太多（幽灵），或者少太多（由于崩溃丢失），触发异步补齐/清理
-                // 这里的策略是：如果差异超过 5% 或绝对值超过 10，则标记为可疑
-                const diff = Math.abs(stats.totalVectors - dbCount);
-                if (diff > 10 && diff / (dbCount || 1) > 0.05) {
-                    console.warn(`[KnowledgeBase] ⚠️ Index/DB mismatch for "${diary_name}" (Index: ${stats.totalVectors}, DB: ${dbCount}). Rebuilding...`);
-                    // 标记为需要重建
-                    await this._recoverIndexFromDB(idx, 'chunks', diary_name);
-                    this._saveIndexToDisk(diary_name);
-                }
+                const idx = await this._getOrLoadDiaryIndex(diaryName);
+                if (!idx) continue;
+                // 兼容维护入口直接交由 Rust 执行权威恢复和状态发布，
+                // 不在主线程等待索引锁，也不依赖向量数量差猜测一致性。
+                await this.indexRepository.restoreDiaryIndex(diaryName, idx);
             } catch (e) {
-                console.warn(`[KnowledgeBase] Ghost check failed for ${diary_name}:`, e.message);
+                console.warn(
+                    `[KnowledgeBase] Ghost check failed for ${diaryName}:`,
+                    e.message
+                );
             }
         }
         console.log('[KnowledgeBase] 🛡️ Ghost Index self-check complete.');
@@ -2805,9 +3614,9 @@ candidates = await this.deduplicateResults(
 
 
     // 🌟 TagMemo V7: 触发 Rust 预计算内生残差
-    async recomputeIntrinsicResiduals() {
+    async recomputeGeometry() {
         if (!this.tagMemoEngine) return;
-        await this.tagMemoEngine.recomputeIntrinsicResiduals();
+        await this.tagMemoEngine.recomputeGeometry();
     }
 
     // 🌟 启动空闲索引定期扫描
@@ -2829,82 +3638,111 @@ candidates = await this.deduplicateResults(
         return safeIndexStats(index);
     }
 
+    _captureMemoryStage(stage) {
+        try {
+            const sample = captureMemoryStage(this, stage);
+            console.log('[KnowledgeBaseMemory] ' + JSON.stringify(sample));
+            return sample;
+        } catch (error) {
+            console.warn('[KnowledgeBaseMemory] Sample failed:', error.message || error);
+            return null;
+        }
+    }
+
     getMemoryProfile() {
         return buildMemoryProfile(this);
     }
 
     async shutdown() {
-        console.log('[KnowledgeBase] shutting down...');
+        if (this._shutdownPromise) return this._shutdownPromise;
 
-        // 先停止原生 Runtime 接收新查询并撤销注册名。已经开始的查询持有
-        // 独立 Arc 快照，可在后续 shutdown 阶段安全完成。
-        if (this.nativeKnowledgeRuntime) {
-            try {
-                this.nativeKnowledgeRuntime.shutdown();
-            } catch (error) {
-                console.warn(
-                    '[KnowledgeBase] Failed to shutdown NativeKnowledgeRuntime:',
-                    error.message || error
-                );
+        this._shutdownPromise = (async () => {
+            console.log('[KnowledgeBase] shutting down...');
+            this._shuttingDown = true;
+
+            // 先停止文件事件和新一轮批处理，保持 NativeKnowledgeRuntime 可用，
+            // 让已接纳的外部变更、删除提交和索引恢复能够正常完成。
+            await this.fileWatcher.stop();
+            if (this.ragParamsWatcherPoller) {
+                clearInterval(this.ragParamsWatcherPoller);
+                this.ragParamsWatcherPoller = null;
             }
-            this.nativeKnowledgeRuntime = null;
-        }
-        this.nativeDiaryIndexGenerations.clear();
-
-        // 统一 MemoRuntime 归属全局 Tag VexusIndex；关闭前显式释放活动图快照。
-        // 若仍有原生查询持有 Arc，实际内存会在最后一个查询结束后安全回收。
-        if (typeof this.tagIndex?.clearMemoRuntime === 'function') {
-            try {
-                this.tagIndex.clearMemoRuntime();
-            } catch (error) {
-                console.warn(
-                    '[KnowledgeBase] Failed to clear unified Memo runtime during shutdown:',
-                    error.message || error
-                );
+            if (this.ragParamsWatcher) {
+                const stopWatch = this.ragParamsWatcher.stopWatch
+                    || this.ragParamsWatcher.stop_watch;
+                if (typeof stopWatch === 'function') {
+                    stopWatch.call(this.ragParamsWatcher);
+                }
+                this.ragParamsWatcher = null;
+                this.ragParamsWatcherType = null;
             }
-        }
-        this.riverMemoEngine = null;
-        this.tagMemoV10Engine = null;
+            if (this.batchTimer) {
+                clearTimeout(this.batchTimer);
+                this.batchTimer = null;
+            }
+            if (this.deleteBatchTimer) {
+                clearTimeout(this.deleteBatchTimer);
+                this.deleteBatchTimer = null;
+            }
 
-        // 先停止 TagMemo 新任务/计时器，并等待正在运行的派生任务释放 Rust 写租约；
-        // 数据库连接必须在它结束后才能关闭。
-        if (this.tagMemoEngine && typeof this.tagMemoEngine.shutdown === 'function') {
-            await this.tagMemoEngine.shutdown({
-                timeoutMs: this.config.rustWriteLeaseMaxWaitMs
-            });
-        }
+            await this.databaseCoordinator.waitForExternalMutations();
+            await this.ingestionPipeline.drain();
+            await this.tagConsistencyService.drain();
+            await this._indexRecoveryTail;
 
-        await this.databaseCoordinator.waitForExternalMutations();
-        await this._indexRecoveryTail;
-        await this.fileWatcher.stop();
-        if (this.ragParamsWatcher) {
-            this.ragParamsWatcher.close();
-            this.ragParamsWatcher = null;
-        }
-        if (this.batchTimer) {
-            clearTimeout(this.batchTimer);
-            this.batchTimer = null;
-        }
-        if (this.deleteBatchTimer) {
-            clearTimeout(this.deleteBatchTimer);
-            this.deleteBatchTimer = null;
-        }
-        if (this.pendingDeletes.size > 0 && !this.databaseCorruptionDetected) {
-            await this._flushDeleteBatch();
-        }
+            if (this.pendingDeletes.size > 0 && !this.databaseCorruptionDetected) {
+                await this._flushDeleteBatch();
+            }
 
-        // 索引仓储统一等待恢复尾队列、停止空闲扫描并刷写待保存索引。
-        this.indexRepository.tagIndex = this.tagIndex;
-        await this.indexRepository.flushAndStop();
-        this.idleSweepTimer = null;
+            // 索引仓储先排空恢复任务和 checkpoint，再释放其内存索引。
+            this.indexRepository.tagIndex = this.tagIndex;
+            await this.indexRepository.flushAndStop();
+            this.idleSweepTimer = null;
 
-        if (this.eventLoopWatchdogTimer) {
-            clearInterval(this.eventLoopWatchdogTimer);
-            this.eventLoopWatchdogTimer = null;
-        }
+            // 停止 TagMemo 新任务和计时器。此时其 Rust 依赖仍然有效，
+            // 因此在途派生任务不会因 Runtime 提前置空而失去提交通道。
+            if (this.tagMemoEngine && typeof this.tagMemoEngine.shutdown === 'function') {
+                await this.tagMemoEngine.shutdown();
+            }
 
-        this.db?.close();
-        console.log('[KnowledgeBase] Shutdown complete.');
+            if (typeof this.tagIndex?.clearMemoRuntime === 'function') {
+                try {
+                    this.tagIndex.clearMemoRuntime();
+                } catch (error) {
+                    console.warn(
+                        '[KnowledgeBase] Failed to clear unified Memo runtime during shutdown:',
+                        error.message || error
+                    );
+                }
+            }
+            this.riverMemoEngine = null;
+            this.tagMemoV10Engine = null;
+
+            if (this.eventLoopWatchdogTimer) {
+                clearInterval(this.eventLoopWatchdogTimer);
+                this.eventLoopWatchdogTimer = null;
+            }
+
+            // 所有 JS 控制面任务、索引发布和派生提交完成后，最后关闭 Rust
+            // StorageEngine，确保 Writer Actor、Read Pool 和 Windows 文件句柄排空。
+            if (this.nativeKnowledgeRuntime) {
+                try {
+                    this.nativeKnowledgeRuntime.shutdown();
+                } catch (error) {
+                    console.warn(
+                        '[KnowledgeBase] Failed to shutdown NativeKnowledgeRuntime:',
+                        error.message || error
+                    );
+                }
+                this.nativeKnowledgeRuntime = null;
+            }
+            this.nativeDiaryIndexGenerations.clear();
+            this.initialized = false;
+
+            console.log('[KnowledgeBase] Shutdown complete.');
+        })();
+
+        return this._shutdownPromise;
     }
 }
 

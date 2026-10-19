@@ -137,8 +137,12 @@ class ToolExecutor {
    */
   async _resolveVRefFiles(vrefValue, contextMessages = []) {
     const kbManager = this.pluginManager?.vectorDBManager;
-    if (!kbManager || !kbManager.db) {
-      console.warn('[VRef] VectorDBManager 不可用，跳过 vref。');
+    if (
+      !kbManager
+      || typeof kbManager.listDistinctDiaries !== 'function'
+      || typeof kbManager.search !== 'function'
+    ) {
+      console.warn('[VRef] VectorDBManager 原生知识库接口不可用，跳过 vref。');
       return [];
     }
 
@@ -150,14 +154,14 @@ class ToolExecutor {
     const parsedN = parseInt(vrefValue, 10);
     const n = Number.isFinite(parsedN) && parsedN > 0 ? parsedN : 3;
 
-    // Step 2: 获取所有知识库分区名，在每个分区中并行检索
-    const diaryRows = kbManager.db.prepare('SELECT DISTINCT diary_name FROM files').all();
-    if (!Array.isArray(diaryRows) || diaryRows.length === 0) {
+    // Step 2: 通过 Rust 高层接口获取所有知识库分区名，在每个分区中并行检索。
+    const diaryNames = await kbManager.listDistinctDiaries();
+    if (!Array.isArray(diaryNames) || diaryNames.length === 0) {
       return [];
     }
 
     const resultGroups = await Promise.all(
-      diaryRows.map(({ diary_name }) => kbManager.search(diary_name, contextVector, n))
+      diaryNames.map(diaryName => kbManager.search(diaryName, contextVector, n))
     );
 
     // Step 3: 按文件路径去重 — 同一文件可能有多个 chunk 命中，只保留最高分

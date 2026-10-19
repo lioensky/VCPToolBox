@@ -1,0 +1,25 @@
+[package]
+name = "vcp-tdb-index"
+version = "0.8.9"
+edition = "2024"
+# VCP-PATCH: upstream AVX-512 intrinsics require stable Rust 1.89.
+rust-version = "1.89"
+license = "Apache-2.0"
+description = "VCP isolated port of TriviumDB 0.8.9 QuIVer retrieval kernels"
+
+[dependencies]
+bytemuck = { version = "1.25", features = ["derive"] }
+half = { version = "2.7.1", features = ["bytemuck", "serde"] }
+rayon = "1.10"
+crc32fast = "1.5"
+memmap2 = "0.9"
+serde_json = "1.0"
+tracing = "0.1"
+
+[features]
+default = []
+ablation = []
+
+[lints.rust]
+# VCP-PATCH: upstream concurrency hooks are intentionally not ported/enabled.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(feature, values("test-hooks"))'] }

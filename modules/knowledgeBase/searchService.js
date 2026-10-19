@@ -24,8 +24,7 @@ class SearchService {
         const names = scoped
             ? [...new Set((Array.isArray(args[0]) ? args[0] : [args[0]])
                 .map(name => name.trim()).filter(Boolean))]
-            : owner.db.prepare('SELECT DISTINCT diary_name FROM files').all()
-                .map(row => row.diary_name).filter(Boolean);
+            : [];
         return {
             names,
             vector: owner._isVectorLike(vector)
@@ -41,6 +40,9 @@ class SearchService {
 
     async search(...args) {
         const request = this._parse(args);
+        if (request.names.length === 0) {
+            request.names = await this.owner.listDistinctDiaries();
+        }
         if (!request.vector || request.names.length === 0) return [];
         const { options } = request;
         if (options.geodesicRerank || options.tagMemoVersion || options.tagmemoVersion
@@ -75,18 +77,48 @@ class SearchService {
 
     // 纯 ANN：不感应、不增强、不调用任何 Memo 读出或语义去重。
     async searchKnn(...args) {
-        const { names, vector, k, options } = this._parse(args);
-        if (!vector || names.length === 0) return [];
+        const request = this._parse(args);
         const owner = this.owner;
+        const names = request.names.length > 0
+            ? request.names
+            : await owner.listDistinctDiaries();
+        const { vector, k, options } = request;
+        if (!vector || names.length === 0) return [];
         if (vector.length !== owner.config.dimension) {
             throw new RangeError(`KNN query dimension must be ${owner.config.dimension}, got ${vector.length}`);
         }
-        const perIndexK = Math.max(k, Math.floor(Number(options.perIndexK) || k));
-        const pools = await Promise.all(names.map(async name => {
-            const index = await owner._getOrLoadDiaryIndex(name);
-            if (!index || (index.stats && index.stats().totalVectors === 0)) return [];
-            return index.search(vector, perIndexK);
-        }));
+        let perIndexK = Math.max(k, Math.floor(Number(options.perIndexK) || k));
+        await Promise.all(names.map(name => owner._getOrLoadDiaryIndex(name)));
+        const runtime = owner.nativeKnowledgeRuntime;
+        if (typeof runtime?.searchDiaryIndices !== 'function') {
+            throw new Error('NativeKnowledgeRuntime ANN ABI unavailable');
+        }
+        const allowed = Array.isArray(options.allowedFileIds) ? new Set(options.allowedFileIds.map(Number)) : null;
+        const denied = new Set((options.deniedFileIds || []).map(Number));
+        if (allowed?.size === 0) return [];
+        let parsed;
+        // 权限过滤必须有补召回机会；每轮重新消费同一原生查询内的冻结 hydrate。
+        // 设置有限预算，防止极窄权限集合触发无界扫描。
+        const maxFetchK = Math.max(perIndexK, Math.min(10000, Number(options.maxFilterCandidates) || 4096));
+        for (;;) {
+            const raw = await runtime.searchDiaryIndices(
+                names, vector, perIndexK, perIndexK * names.length
+            );
+            parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (!Array.isArray(parsed?.hydratedChunks)) {
+                throw new Error('Native ANN hydration ABI unavailable; rebuild rust-vexus-lite');
+            }
+            const visible = parsed.hydratedChunks.filter(row =>
+                names.includes(row.diaryName) && !denied.has(Number(row.fileId))
+                && (!allowed || allowed.has(Number(row.fileId))));
+            const exhausted = Array.isArray(parsed?.diagnostics?.indices)
+                ? parsed.diagnostics.indices.every(item => Number(item.candidates) < perIndexK)
+                : (parsed.results || []).length < perIndexK;
+            if ((!allowed && denied.size === 0) || visible.length >= k
+                || exhausted || perIndexK >= maxFetchK) break;
+            perIndexK = Math.min(maxFetchK, perIndexK * 2);
+        }
+        const pools = [Array.isArray(parsed?.results) ? parsed.results : []];
         const byId = new Map();
         for (const item of pools.flat()) {
             const id = Number(item.id);
@@ -94,15 +126,12 @@ class SearchService {
             if (!byId.has(id) || item.score > byId.get(id).score) byId.set(id, { ...item, id });
         }
         const ranked = [...byId.values()].sort((a, b) => b.score - a.score || a.id - b.id);
-        const rows = owner._queryByChunks(`
-            SELECT c.id, c.content AS text, f.path AS sourceFile,
-                   f.diary_name AS diaryName, f.id AS fileId, f.updated_at
-            FROM chunks c JOIN files f ON c.file_id = f.id WHERE c.id`,
-        ranked.map(item => item.id));
+        if (!Array.isArray(parsed?.hydratedChunks)) {
+            throw new Error('Native ANN hydration ABI unavailable; rebuild rust-vexus-lite');
+        }
+        const rows = parsed.hydratedChunks;
         const rowsById = new Map(rows.map(row => [Number(row.id), row]));
         const scope = new Set(names);
-        const allowed = Array.isArray(options.allowedFileIds) ? new Set(options.allowedFileIds.map(Number)) : null;
-        const denied = new Set((options.deniedFileIds || []).map(Number));
         return ranked.map(item => {
             const row = rowsById.get(item.id);
             if (!row || !scope.has(row.diaryName) || denied.has(Number(row.fileId))
@@ -131,25 +160,17 @@ class SearchService {
 
     async getChunksByFilePaths(filePaths) {
         if (!filePaths || filePaths.length === 0) return [];
-        const owner = this.owner;
-        const results = [];
-        for (let i = 0; i < filePaths.length; i += 500) {
-            const batch = filePaths.slice(i, i + 500);
-            const rows = owner.db.prepare(`
-                SELECT c.id, c.content AS text, c.vector, f.path AS sourceFile
-                FROM chunks c JOIN files f ON c.file_id = f.id
-                WHERE f.path IN (${batch.map(() => '?').join(',')})
-            `).all(...batch);
-            results.push(...rows.map(row => ({
-                id: row.id,
-                chunkId: row.id,
-                text: row.text,
-                vector: owner._decodeVectorBlob(row.vector, owner.config.dimension, `chunk:${row.id}`),
-                sourceFile: row.sourceFile,
-                fullPath: row.sourceFile
-            })));
-        }
-        return results;
+        const rows = await this.owner.hydrateChunksByFilePaths(filePaths);
+        return rows.map(row => ({
+            id: row.id,
+            chunkId: row.chunkId,
+            text: row.text,
+            vector: row.vector,
+            sourceFile: row.sourceFile,
+            fullPath: row.sourceFile,
+            diaryName: row.diaryName,
+            fileId: row.fileId
+        }));
     }
 
     async searchSimilarTags(input, k = 10) {
@@ -162,13 +183,19 @@ class SearchService {
             vector = vectors[0];
         }
         if (!vector) return [];
-        const results = owner.tagIndex.search(
-            vector instanceof Float32Array ? vector : new Float32Array(vector), k);
-        const hydrate = owner.db.prepare('SELECT name FROM tags WHERE id = ?');
-        return results.map(item => {
-            const row = hydrate.get(Number(item.id));
-            return row ? { tag: row.name, score: item.score } : null;
-        }).filter(Boolean);
+
+        const limit = Math.min(1000, Math.max(1, Math.floor(Number(k) || 10)));
+        const runtime = owner.nativeKnowledgeRuntime;
+        if (typeof runtime?.searchGlobalTags !== 'function') {
+            throw new Error('Native global Tag search ABI unavailable; rebuild rust-vexus-lite');
+        }
+        const raw = await runtime.searchGlobalTags(
+            vector instanceof Float32Array ? vector : new Float32Array(vector),
+            limit
+        );
+        const results = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!Array.isArray(results)) throw new Error('Invalid native global Tag search result');
+        return results;
     }
 }
 

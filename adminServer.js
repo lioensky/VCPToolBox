@@ -575,6 +575,10 @@ app.post("/admin_api/rag-tag-consistency/apply", (req, res) => {
   );
 });
 
+app.get("/admin_api/rag-active-full-training/status", (req, res) => {
+  proxyTagConsistencyRequest(req, res, "rag-active-full-training/status", 10000);
+});
+
 // ============================================================
 // 🧠 关键覆盖：主动浪潮全量训练必须代理到主服务
 // 独立 adminServer 不持有 KnowledgeBaseManager 实例；本地 rag 模块会以 vectorDBManager=null 挂载。

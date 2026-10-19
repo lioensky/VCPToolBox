@@ -13,6 +13,9 @@ async function withMockedKnowledgeBase(run) {
     const original = {
         rootPath: knowledgeBaseManager.config.rootPath,
         db: knowledgeBaseManager.db,
+        dimension: knowledgeBaseManager.config.dimension,
+        getChunksByFilePaths: knowledgeBaseManager.getChunksByFilePaths,
+        listDistinctDiaries: knowledgeBaseManager.listDistinctDiaries,
         executeNativeRiverQuery:
             knowledgeBaseManager.executeNativeRiverQuery,
         getVectorByChunkId:
@@ -24,10 +27,20 @@ async function withMockedKnowledgeBase(run) {
 
     try {
         knowledgeBaseManager.config.rootPath = tempRoot;
+        knowledgeBaseManager.config.dimension = 4;
+        knowledgeBaseManager.getChunksByFilePaths = async variants => {
+            assert(variants.includes('SourceDiary/source.md'));
+            return [{ id: 71, chunkId: 71, vector: new Float32Array([1, 0, 0, 0]),
+                sourceFile: 'SourceDiary/source.md' }];
+        };
+        knowledgeBaseManager.listDistinctDiaries = async () => ['AlphaDiary', 'BetaDiary'];
         await run(tempRoot);
     } finally {
         knowledgeBaseManager.config.rootPath = original.rootPath;
         knowledgeBaseManager.db = original.db;
+        knowledgeBaseManager.config.dimension = original.dimension;
+        knowledgeBaseManager.getChunksByFilePaths = original.getChunksByFilePaths;
+        knowledgeBaseManager.listDistinctDiaries = original.listDistinctDiaries;
         knowledgeBaseManager.executeNativeRiverQuery =
             original.executeNativeRiverQuery;
         knowledgeBaseManager.getVectorByChunkId =
@@ -154,7 +167,7 @@ test(
 
             assert(nativeCall, 'native RiverMemo must be called');
             assert.equal(nativeCall.query.text, '源文件正文\nTag: 项目, 回忆');
-            assert.strictEqual(nativeCall.query.vector, sourceVector);
+            assert.deepEqual(nativeCall.query.vector, sourceVector);
             assert.deepEqual(
                 nativeCall.options.diaryNames,
                 ['TargetDiary']

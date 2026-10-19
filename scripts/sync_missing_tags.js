@@ -66,7 +66,7 @@ async function main() {
         return;
     }
 
-    const db = new Database(dbPath);
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
     const foundTags = new Set();
 
     try {

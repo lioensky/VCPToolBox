@@ -11,6 +11,19 @@ test('pure KNN merges selected indices and hydrates without Memo processing', as
     const owner = {
         config: { dimension: 2 },
         _isVectorLike: value => Array.isArray(value) || value instanceof Float32Array,
+        async listDistinctDiaries() { return []; },
+        nativeKnowledgeRuntime: {
+            async searchDiaryIndices(names, vector) {
+                assert.deepEqual(names, ['A', 'B']);
+                assert(vector instanceof Float32Array);
+                return { results: [{ id: 3, score: 1 }, { id: 2, score: 0.9 }, { id: 1, score: 0.8 }],
+                    hydratedChunks: [
+                        { id: 1, text: 'a', sourceFile: 'A/a.md', diaryName: 'A', fileId: 10 },
+                        { id: 2, text: 'b', sourceFile: 'B/b.md', diaryName: 'B', fileId: 20 },
+                        { id: 3, text: 'outside', sourceFile: 'C/c.md', diaryName: 'C', fileId: 30 }
+                    ] };
+            }
+        },
         async _getOrLoadDiaryIndex(name) {
             return { search: () => name === 'A'
                 ? [{ id: 1, score: 0.8 }, { id: 3, score: 1 }]
@@ -58,7 +71,10 @@ test('native joint disabled uses pure candidates, one observation and RiverMemo 
     const prepared = { artifact: { artifactSig: 'test' }, nativePreparedQuery: {}, observationHandle: 'q' };
     const owner = {
         config: { dimension: 2, nativeRiverQueryEnabled: false, nativeRiverQueryCandidateK: 8 },
-        db: { prepare: () => ({ all: () => [{ id: 10 }] }) },
+        async getFileIdsByDiaries(names) {
+            assert.deepEqual(names, ['A']);
+            return [10];
+        },
         async _getOrLoadDiaryIndex() {},
         async prepareUnifiedMemoObservation() { sensing++; return prepared; },
         async search() { throw new Error('recursive generic search'); },
@@ -134,10 +150,13 @@ test('LightMemo accepts explicit all-library scope without maid or folder', asyn
     const light = require('../Plugin/LightMemo/LightMemo');
     const owner = Object.create(light);
     let gathered = false;
-    owner._gatherCandidateChunks = async options => {
-        gathered = true;
-        assert.equal(options.searchAll, true);
-        return [];
+    owner.getSingleEmbedding = async () => [1, 0];
+    owner.vectorDBManager = {
+        async executeLightMemoQuery(query, options) {
+            gathered = true;
+            assert.equal(options.scope.searchAll, true);
+            return { results: [] };
+        }
     };
     await owner.handleSearch({ query: 'test', search_all_knowledge_bases: 'true', enginemode: 'knn' });
     assert.equal(gathered, true);
@@ -150,27 +169,32 @@ test('Memory A/B excludes fallback scores and isolates external scoring fields',
     const light = require('../Plugin/LightMemo/LightMemo');
     const owner = Object.create(light);
     owner.rerankConfig = { url: 'https://example.invalid/', apiKey: 'test', model: 'test' };
-    owner._gatherCandidateChunks = async () => [{ label: 1, text: 'memory', dbName: 'A' }];
     owner.getSingleEmbedding = async () => [1, 0];
-    owner._scoreByVectorSimilarity = async () => [{ label: 1, text: 'memory', vectorScore: 0.62 }];
-    owner._handleRiverMemoSearch = async () => [{
-        id: 1, label: 1, text: 'memory', score: 0.6773, hybridScore: 0.6773
-    }];
+    owner.vectorDBManager = {
+        async executeLightMemoQuery(query, options) {
+            assert.equal(options.abMode, true);
+            const baseline = { id: 1, label: 1, text: 'memory', vectorScore: 0.62 };
+            return {
+                comparisonPool: [baseline], tdbTopK: [baseline],
+                river: { results: [{ ...baseline, score: 0.6773 }] }
+            };
+        }
+    };
     owner._rerankDocuments = async () => [{
         id: 1, text: 'memory', score: 0.6773, rerank_score: 0.6773, rerank_failed: true
     }];
     let report = await owner.handleMemoryAB({ query: 'test', folder: 'A', k: 1 });
-    assert.match(report, /不展示回退检索分/);
-    assert.match(report, /\| 1 \| memory \| #1 \/ 0\.6200 \| #1 \/ 0\.6773 \| — \|/);
+    assert.match(report, /不冒充回退评分/);
+    assert.match(report, /\| 1 \| memory \| #1 \/ 0\.6200 \| — \| #1 \/ 0\.6773 \|/);
 
     owner._rerankDocuments = async () => [{
         id: 1, text: 'memory', score: 0.6773, rerank_score: 0.91, jev_score: 0.12
     }];
     report = await owner.handleMemoryAB({ query: 'test', folder: 'A', k: 1 });
-    assert.match(report, /\| 1 \| memory \| #1 \/ 0\.6200 \| #1 \/ 0\.6773 \| #1 \/ 0\.9100 \|/);
+    assert.match(report, /\| 1 \| memory \| #1 \/ 0\.6200 \| #1 \/ 0\.9100 \| #1 \/ 0\.6773 \|/);
 
     owner._rerankDocuments = async () => [{ id: 1, text: 'memory', score: 0.6773 }];
     report = await owner.handleMemoryAB({ query: 'test', folder: 'A', k: 1 });
-    assert.match(report, /不展示回退检索分/);
-    assert.match(report, /0\.6773 \| — \|/);
+    assert.match(report, /不冒充回退评分/);
+    assert.match(report, /0\.6200 \| — \| #1 \/ 0\.6773 \|/);
 });
