@@ -102,7 +102,7 @@ class IndexRepository {
      */
     async publishDiaryBaseline(diaryName, options = {}) {
         const normalized = String(diaryName || '').trim();
-        if (!normalized) return false;
+        if (!normalized || !this.shouldPersist(normalized)) return false;
         const runtime = this.getNativeRuntime?.();
         if (!runtime?.checkpointDiaryIndex) {
             throw new Error('NativeKnowledgeRuntime checkpointDiaryIndex ABI is unavailable');
@@ -110,14 +110,18 @@ class IndexRepository {
         const index = this.diaryIndices.get(normalized);
         if (!index) return false;
 
+        // 思维簇独立采用 notify-always；Rust 仍拒绝零差异重复发布。
+        const isThoughtCluster = normalized.endsWith('簇');
+        const threshold = isThoughtCluster ? 0 : this.chunkBaselineDeltaRatio;
         const startedAt = Date.now();
         const result = await runtime.checkpointDiaryIndex(
             this.getDbPath(),
             normalized,
             this._diaryBaselinePath(normalized, 'a'),
             String(this.config.modelSig || ''),
-            this.chunkBaselineDeltaRatio,
-            options.force === true
+            threshold,
+            false,
+            isThoughtCluster || this.config.chunkIndexAllowInitial === true
         );
         const parsed = typeof result === 'string' ? JSON.parse(result) : result;
         if (!parsed || parsed.factsCommitted !== false) {
@@ -129,7 +133,7 @@ class IndexRepository {
             `${parsed.published ? 'published' : 'skipped'}: "${normalized}", ` +
             `generation=${parsed.generation}, slot=${parsed.slot}, ` +
             `delta=${(Number(parsed.ratio || 0) * 100).toFixed(2)}%, ` +
-            `threshold=${(this.chunkBaselineDeltaRatio * 100).toFixed(2)}%, ` +
+            `threshold=${(threshold * 100).toFixed(2)}%, ` +
             `elapsed=${Date.now() - startedAt}ms.`
         );
         return parsed.published === true;
@@ -139,6 +143,7 @@ class IndexRepository {
      * 将全局 Tag 索引交给 Rust Runtime 执行阈值判断、双槽保存和基线发布。
      */
     async publishGlobalTagBaseline(options = {}) {
+        if (!this.shouldPersist('global_tags')) return false;
         const runtime = this.getNativeRuntime?.();
         if (!runtime?.checkpointGlobalTagIndex) {
             throw new Error('NativeKnowledgeRuntime checkpointGlobalTagIndex ABI is unavailable');
@@ -151,7 +156,8 @@ class IndexRepository {
             this._tagBaselinePath('a'),
             String(this.config.modelSig || ''),
             this.tagBaselineDeltaRatio,
-            options.force === true
+            false,
+            this.config.tagIndexAllowInitial === true
         );
         const parsed = typeof result === 'string' ? JSON.parse(result) : result;
         if (!parsed || parsed.factsCommitted !== false) {
@@ -169,17 +175,36 @@ class IndexRepository {
         return parsed.published === true;
     }
 
+    async publishGlobalChunkBaseline() {
+        if (this.chunkIndexPersistenceMode === 'none'
+            || !(this.config.persistDefault
+                || this.config.persistFolders.has('global_chunks'))) return false;
+        const runtime = this.getNativeRuntime?.();
+        if (typeof runtime?.checkpointGlobalChunkIndex !== 'function') return false;
+        const raw = await runtime.checkpointGlobalChunkIndex(
+            String(this.config.modelSig || ''),
+            this.chunkBaselineDeltaRatio,
+            this.config.chunkIndexAllowInitial === true
+        );
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!result || result.factsCommitted !== false) {
+            throw new Error('Invalid Rust global Chunk checkpoint receipt');
+        }
+        return result.published === true;
+    }
+
     shouldPersist(name) {
         if (name === 'global_tags') {
             return this.config.persistTagIndex
                 || this.config.persistFolders.has('global_tags');
         }
+        // 思维簇的保存策略独立于普通日记的模式及白名单。
+        if (name.endsWith('簇')) return true;
         if (this.chunkIndexPersistenceMode === 'none') {
             return false;
         }
         return this.config.persistDefault
-            || this.config.persistFolders.has(name)
-            || name.endsWith('簇');
+            || this.config.persistFolders.has(name);
     }
 
     async _executeLoadIndex(diaryName) {
@@ -204,9 +229,7 @@ class IndexRepository {
             this.diaryIndices.set(diaryName, index);
             this.onDiaryIndexPublished(diaryName, index);
             if (persist) {
-                await this.publishDiaryBaseline(diaryName, {
-                    force: this.chunkIndexPersistenceMode === 'always'
-                });
+                await this.publishDiaryBaseline(diaryName);
             }
         } catch (error) {
             if (this.diaryIndices.get(diaryName) === index) {
@@ -437,18 +460,10 @@ class IndexRepository {
 
         try {
             if (name === 'global_tags') {
-                return await this.publishGlobalTagBaseline({
-                    ...options,
-                    force: options.force === true
-                        || this.config.tagIndexPersistenceMode === 'always'
-                });
+                return await this.publishGlobalTagBaseline();
             }
 
-            const published = await this.publishDiaryBaseline(name, {
-                ...options,
-                force: options.force === true
-                    || this.chunkIndexPersistenceMode === 'always'
-            });
+            const published = await this.publishDiaryBaseline(name);
             console.log(
                 `[${this.logPrefix}] ${published ? '💾' : '🛡️'} Rust diary checkpoint finished: ` +
                 `${name}, elapsed=${Date.now() - startedAt}ms`
@@ -482,6 +497,11 @@ class IndexRepository {
         const now = Date.now();
         let evicted = 0;
         const runtime = this.getNativeRuntime?.();
+        try {
+            await this.publishGlobalChunkBaseline();
+        } catch (error) {
+            console.warn(`[${this.logPrefix}] Global Chunk checkpoint failed: ${error.message}`);
+        }
         if (typeof runtime?.evictIdleLightMemoIndex === 'function') {
             const configuredTTL = Number(this.config.lightMemoIndexIdleTTL);
             const ttl = Number.isFinite(configuredTTL) && configuredTTL > 0
@@ -551,6 +571,7 @@ class IndexRepository {
         for (const timer of this.saveTimers.values()) clearTimeout(timer);
         this.saveTimers.clear();
         for (const name of names) await this.saveToDisk(name);
+        await this.publishGlobalChunkBaseline();
     }
 }
 

@@ -604,7 +604,7 @@ fn analyze_pyramid(
     for level in 0..config.max_levels.clamp(1, 8) {
         let guard = index.read().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
         let matches = guard
-            .search(&residual, config.pyramid_top_k.clamp(1, 128))
+            .search_sql(connection, None, &residual, config.pyramid_top_k.clamp(1, 128))
             .map_err(|error| format!("Memo pyramid retrieval search failed: {:?}", error))?;
         if matches.is_empty() {
             break;
@@ -1676,6 +1676,7 @@ mod audit_gate_tests {
             max_levels: 1, pyramid_top_k: 1, ..PipelineConfig::default()
         };
         let query = [1.0_f32, 2.0, 0.0];
+        connection.execute_batch("BEGIN").unwrap();
         let (output, work) = analyze_pyramid(
             &index.index, &connection, &query, 3, &config,
         ).unwrap();

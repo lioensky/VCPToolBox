@@ -130,11 +130,9 @@ class KnowledgeBaseManager {
                     ? Math.max(-1, Math.min(1, value))
                     : 0.92;
             })(),
-            // 全局 Tag 索引落地模式（单一枚举配置）：
-            // - always：传统模式，每次防抖窗口结束均重写完整 usearch。
-            // - generational：推荐模式，加载双槽基线并回放 SQLite 差分，
-            //   仅当累计实际差异达到阈值时发布新一代 usearch。
-            // 兼容旧布尔配置：true => always，false => generational。
+            // Tag 快照只用于加速恢复，原向量始终以 SQLite 为准。
+            // 历史 always/布尔值仅兼容解析，不能绕过累计差异阈值；
+            // 只有显式 generational 授予无文件、无 SQL 签名时的首代创建许可。
             tagIndexPersistenceMode: (() => {
                 const raw = String(
                     process.env.KNOWLEDGEBASE_PERSIST_TAG_INDEX
@@ -150,6 +148,10 @@ class KnowledgeBaseManager {
                 );
                 return 'generational';
             })(),
+            tagIndexAllowInitial:
+                String(process.env.KNOWLEDGEBASE_PERSIST_TAG_INDEX || '').trim().toLowerCase() === 'generational',
+            chunkIndexAllowInitial:
+                String(process.env.KNOWLEDGEBASE_PERSIST_CHUNK_INDEX || '').trim().toLowerCase() === 'generational',
             tagIndexBaselineDeltaRatio: (() => {
                 const value = Number(
                     process.env.KNOWLEDGEBASE_TAG_INDEX_BASELINE_DELTA_RATIO
@@ -159,11 +161,9 @@ class KnowledgeBaseManager {
                     : 0.05;
             })(),
             // 兼容仍读取该字段的旧代码；两种枚举模式都表示启用 Tag 索引落地。
-            // 单 Agent 日记 Chunk 索引落地模式（单一枚举配置）：
-            // - always：传统模式，每次防抖窗口结束均重写完整 usearch。
-            // - generational：推荐模式，加载双槽基线并仅由 SQLite 回放 Chunk 差分，
-            //   仅当累计实际差异达到阈值时发布新一代 usearch。
-            // - none：完全禁止落盘（纯内存重建）。
+            // Agent/日记与全局 Chunk 快照共用发布策略：
+            // 累计差异达到阈值才发布，显式 generational 才授权首代；
+            // none/off 禁止发布。全局 Chunk 另须默认范围或 global_chunks 白名单。
             chunkIndexPersistenceMode: (() => {
                 const raw = String(
                     process.env.KNOWLEDGEBASE_PERSIST_CHUNK_INDEX
@@ -374,6 +374,7 @@ class KnowledgeBaseManager {
                 'index.async-restore.v1',
                 'index.dual-slot-checkpoint.v1',
                 'index.tdb-vec.v1',
+                'index.sql-authoritative-generational.v1',
                 'index.cosine-score.v1',
                 'watcher.runtime-owned.v1',
                 'memo.native-artifact.v1',
@@ -424,6 +425,7 @@ class KnowledgeBaseManager {
                 || typeof this.nativeKnowledgeRuntime.restoreDiaryIndex !== 'function'
                 || typeof this.nativeKnowledgeRuntime.checkpointGlobalTagIndex !== 'function'
                 || typeof this.nativeKnowledgeRuntime.checkpointDiaryIndex !== 'function'
+                || typeof this.nativeKnowledgeRuntime.checkpointGlobalChunkIndex !== 'function'
             ) {
                 throw new Error(
                     'NativeKnowledgeRuntime storage ABI unavailable; rebuild rust-vexus-lite'
@@ -1085,12 +1087,10 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             )]
             : [];
 
+        // SQL cleanup invalidates affected runtime scopes atomically. Preserve
+        // endorsed disk baselines; restore replays authoritative deletions in memory.
         for (const diaryName of affectedDiaries) {
-            this._deletePersistedDiaryIndex(diaryName);
             this.diaryDateIndexCache.delete(diaryName);
-        }
-        if (Number(result?.orphanChunks) > 0) {
-            this._deleteAllPersistedDiaryIndexes();
         }
 
         const missingFiles = Math.max(

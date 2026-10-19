@@ -122,7 +122,7 @@ impl Task for LightMemoTask {
         let mut resident = self.table.lock()
             .map_err(|_| Error::from_reason("Global Chunk table lock poisoned"))?;
         let directory = std::path::Path::new(&self.db_path).parent().unwrap();
-        let (mut output, generation) = crate::storage::with_registered_read_transaction(
+        let mut output = crate::storage::with_registered_read_transaction(
             &self.db_path, |connection| {
                 let generation = crate::storage::read_generation(connection)?;
                 if resident.as_ref().is_some_and(|table|
@@ -211,23 +211,67 @@ impl Task for LightMemoTask {
                 let results = if plan.engine_mode == "rivermemo" {
                     river["results"].as_array().cloned().unwrap_or_default()
                 } else { tdb.clone() };
-                Ok((json!({
+                Ok(json!({
                     "schema":"vcp-lightmemo-result-v1","results":results,
                     "tdbTopK":tdb,"river":river,
                     "comparisonPool":if plan.ab_mode { candidates } else { Vec::new() },
                     "diagnostics":{"scopeChunks":allowed.len(),"candidateCount":vectors.len(),
                         "synchronizedRows":synchronized,"databaseGeneration":generation,
                         "bm25Mode":"candidate-substring-tf-v1","ffiTrips":1}
-                }), generation))
+                }))
             },
         ).map_err(Error::from_reason)?;
-        if resident.as_ref().unwrap().needs_checkpoint() {
-            resident.as_mut().unwrap().checkpoint(&self.db_path, directory, generation)
-                .map_err(Error::from_reason)?;
-        }
+        // Queries only synchronize memory routing. Snapshot publication belongs
+        // to the independently scheduled, policy-gated checkpoint task.
         resident.as_mut().unwrap().last_used = std::time::Instant::now();
         output["diagnostics"]["totalMs"] = json!(started.elapsed().as_secs_f64()*1000.);
         Ok(output.to_string())
+    }
+
+    fn resolve(&mut self, _env: Env, output: String) -> Result<String> { Ok(output) }
+}
+
+pub struct GlobalChunkCheckpointTask {
+    pub(crate) db_path: String,
+    pub(crate) dimension: usize,
+    pub(crate) model: String,
+    pub(crate) threshold: f64,
+    pub(crate) allow_initial: bool,
+    pub(crate) table: Arc<Mutex<Option<GlobalChunks>>>,
+}
+
+impl Task for GlobalChunkCheckpointTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<String> {
+        let _gate = crate::publication_gate::acquire_read(&self.db_path, &["*".into()])
+            .map_err(Error::from_reason)?;
+        let mut resident = self.table.lock()
+            .map_err(|_| Error::from_reason("Global Chunk table lock poisoned"))?;
+        // Do not rebuild an evicted table just to persist it.
+        let Some(table) = resident.as_mut() else {
+            return Ok(json!({"published":false,"factsCommitted":false}).to_string());
+        };
+        if !table.matches_model(self.dimension, &self.model) {
+            return Err(Error::from_reason("Global Chunk checkpoint model mismatch"));
+        }
+        let last_used = table.last_used;
+        let synchronized = crate::storage::with_registered_read_transaction(&self.db_path, |connection| {
+            let generation = crate::storage::read_generation(connection)?;
+            table.synchronize(connection)?;
+            table.compact_if_needed(connection)?;
+            Ok(generation)
+        });
+        // Background checkpoint work is not retrieval activity, including
+        // failed synchronization and memory compaction.
+        table.last_used = last_used;
+        let generation = synchronized.map_err(Error::from_reason)?;
+        let directory = std::path::Path::new(&self.db_path).parent()
+            .ok_or_else(|| Error::from_reason("Invalid global Chunk database directory"))?;
+        let published = table.checkpoint(&self.db_path, directory, generation,
+            self.threshold, self.allow_initial).map_err(Error::from_reason)?;
+        Ok(json!({"published":published,"factsCommitted":false}).to_string())
     }
 
     fn resolve(&mut self, _env: Env, output: String) -> Result<String> { Ok(output) }
@@ -309,6 +353,28 @@ mod tests {
         assert_eq!(music["results"][0]["id"],3);
         let excluded=run(&mut task,json!({"searchAll":true,"excludedFolders":["MusicDiary"]}));
         assert_eq!(excluded["results"].as_array().unwrap().len(),2);
+        assert!(!std::fs::read_dir(&root).unwrap().any(|entry|
+            entry.unwrap().file_name().to_string_lossy().contains(".vec")));
+        crate::storage::with_registered_read_transaction(&db, |connection| {
+            let count: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM global_chunk_index_baselines",
+                [], |row| row.get(0),
+            ).map_err(|error| error.to_string())?;
+            assert_eq!(count, 0);
+            Ok(())
+        }).unwrap();
+        let idle_since = std::time::Instant::now() - std::time::Duration::from_secs(120);
+        task.table.lock().unwrap().as_mut().unwrap().last_used = idle_since;
+        let mut checkpoint = GlobalChunkCheckpointTask {
+            db_path: db.clone(), dimension: 2, model: "test".into(),
+            threshold: 0.05, allow_initial: false, table: task.table.clone(),
+        };
+        let receipt: Value = serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
+        assert_eq!(receipt["published"], false);
+        assert_eq!(task.table.lock().unwrap().as_ref().unwrap().last_used, idle_since);
+        assert!(!std::fs::read_dir(&root).unwrap().any(|entry|
+            entry.unwrap().file_name().to_string_lossy().contains(".vec")));
+        drop(checkpoint);
         drop(task);
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();

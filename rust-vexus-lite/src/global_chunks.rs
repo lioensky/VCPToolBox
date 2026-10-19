@@ -38,9 +38,6 @@ pub(crate) struct GlobalChunks {
     model: String,
     facts: String,
     pub last_used: Instant,
-    dirty: usize,
-    baseline_count: usize,
-    checkpointed: bool,
 }
 
 fn facts(connection: &Connection) -> Result<String, String> {
@@ -69,7 +66,7 @@ impl GlobalChunks {
             rows: HashMap::new(),
             routing: CorrectedSmIndex::empty_flat(dimension).map_err(|e| e.to_string())?,
             dimension, model: model.into(), facts: String::new(),
-            last_used: Instant::now(), dirty: 0, baseline_count: 0, checkpointed: false,
+            last_used: Instant::now(),
         })
     }
 
@@ -82,7 +79,6 @@ impl GlobalChunks {
             && self.routing.len() > self.rows.len().saturating_mul(5) / 4 {
             let mut replacement = Self::empty(self.dimension, &self.model)?;
             replacement.synchronize(connection)?;
-            replacement.dirty = replacement.rows.len().max(1);
             *self = replacement;
         }
         Ok(())
@@ -148,7 +144,6 @@ impl GlobalChunks {
             });
             changed += 1;
         }
-        self.dirty += changed;
         self.facts = current;
         Ok(changed)
     }
@@ -162,32 +157,45 @@ impl GlobalChunks {
             .map_err(|e| e.to_string())
     }
 
-    pub fn needs_checkpoint(&self) -> bool {
-        !self.checkpointed || self.dirty as f64
-            / self.baseline_count.max(self.rows.len()).max(1) as f64 >= 0.05
-    }
-
     pub fn load(connection: &Connection, directory: &Path, dimension: usize, model: &str)
         -> Result<Self, String> {
-        let manifest: Option<(String, i64, String)> = connection.query_row(
-            "SELECT slot,file_size,file_digest FROM global_chunk_index_baselines
-             WHERE dimension=?1 AND model_sig=?2 AND format_version=1
+        let manifest: Option<(String, i64, String, i64)> = connection.query_row(
+            "SELECT slot,file_size,file_digest,format_version FROM global_chunk_index_baselines
+             WHERE dimension=?1 AND model_sig=?2 AND format_version IN (1,2)
              ORDER BY generation DESC LIMIT 1",
             rusqlite::params![dimension as i64, model],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ).optional().map_err(|e| e.to_string())?;
-        let Some((slot, size, digest)) = manifest else { return Self::empty(dimension, model); };
+        let Some((slot, size, digest, format)) = manifest else { return Self::empty(dimension, model); };
         let loaded: Result<Self, String> = (|| {
             if !matches!(slot.as_str(), "a" | "b") { return Err("invalid Chunk slot".into()); }
             let bytes = std::fs::read(slot_path(directory, &slot)).map_err(|e| e.to_string())?;
-            if bytes.len() as i64 != size || bytes.len() < 8 || &bytes[..8] != MAGIC
-                || format!("{:x}", Sha256::digest(&bytes)) != digest {
+            if bytes.len() as i64 != size || bytes.len() < 8 || &bytes[..8] != MAGIC {
                 return Err("global Chunk asset stamp mismatch".into());
             }
+            let payload_end = if format == 2 {
+                if bytes.len() < 40 {
+                    return Err("global Chunk asset trailer missing".into());
+                }
+                let end = bytes.len() - 32;
+                // Publication computed this stamp once. SQL endorsement is the
+                // authority; restoration does not hash the entire asset again.
+                let stored = bytes[end..].iter()
+                    .map(|byte| format!("{byte:02x}")).collect::<String>();
+                if stored != digest {
+                    return Err("global Chunk SQL endorsement mismatch".into());
+                }
+                end
+            } else {
+                if format!("{:x}", Sha256::digest(&bytes)) != digest {
+                    return Err("legacy global Chunk asset stamp mismatch".into());
+                }
+                bytes.len()
+            };
             use bincode::Options;
             let snapshot: Snapshot = bincode::DefaultOptions::new().with_fixint_encoding()
-                .with_limit(bytes.len() as u64).reject_trailing_bytes()
-                .deserialize(&bytes[8..]).map_err(|e| e.to_string())?;
+                .with_limit(payload_end as u64).reject_trailing_bytes()
+                .deserialize(&bytes[8..payload_end]).map_err(|e| e.to_string())?;
             if snapshot.dimension != dimension || snapshot.model != model {
                 return Err("global Chunk asset identity mismatch".into());
             }
@@ -199,11 +207,10 @@ impl GlobalChunks {
                     != snapshot.rows.len() {
                 return Err("global Chunk metadata shape mismatch".into());
             }
-            let count = snapshot.rows.len();
             Ok(Self {
                 rows: snapshot.rows.into_iter().map(|row| (row.id, row)).collect(),
                 routing, dimension, model: model.into(), facts: snapshot.facts,
-                last_used: Instant::now(), dirty: 0, baseline_count: count, checkpointed: true,
+                last_used: Instant::now(),
             })
         })();
         match loaded {
@@ -215,18 +222,64 @@ impl GlobalChunks {
         }
     }
 
-    /// No read connection is held here. File publication precedes Write Actor endorsement.
-    pub fn checkpoint(&mut self, db_path: &str, directory: &Path, database_generation: u64)
-        -> Result<(), String> {
-        let (generation, active): (i64, String) =
-            crate::storage::with_registered_read(db_path, |connection| {
-                connection.query_row(
-                    "SELECT generation,slot FROM global_chunk_index_baselines
-                     ORDER BY generation DESC LIMIT 1", [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                ).optional().map(|row| row.unwrap_or((0, String::new())))
-                    .map_err(|e| e.to_string())
+    /// Caller holds the Runtime table mutex and shared facts gate. Publication
+    /// is separate from queries; SQL member versions survive eviction/restart.
+    pub fn checkpoint(&mut self, db_path: &str, directory: &Path, database_generation: u64,
+        threshold: f64, allow_initial: bool) -> Result<bool, String> {
+        if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+            return Err("Invalid global Chunk checkpoint threshold".into());
+        }
+        let (generation, active, allowed) =
+            crate::storage::with_registered_read_transaction(db_path, |connection| {
+                if facts(connection)? != self.facts {
+                    return Err("LIGHTMEMO_CHECKPOINT_GENERATION_CONFLICT".into());
+                }
+                let manifest: Option<(i64, String, i64, String, i64)> = connection.query_row(
+                    "SELECT generation,slot,dimension,model_sig,member_versions
+                     FROM global_chunk_index_baselines ORDER BY generation DESC LIMIT 1", [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                ).optional().map_err(|e| e.to_string())?;
+                let Some((generation, slot, dimension, model, versions)) = manifest else {
+                    let mut has_file = false;
+                    for slot in ["a", "b"] {
+                        match std::fs::metadata(slot_path(directory, slot)) {
+                            Ok(_) => has_file = true,
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => return Err(error.to_string()),
+                        }
+                    }
+                    return Ok((0, String::new(), allow_initial && !has_file));
+                };
+                if dimension != self.dimension as i64 || model != self.model {
+                    return Err("Global Chunk baseline model/dimension mismatch".into());
+                }
+                if !matches!(slot.as_str(), "a" | "b") {
+                    return Err("Invalid global Chunk baseline slot".into());
+                }
+                if versions != 1 {
+                    eprintln!("[LightMemo] Legacy Chunk baseline has no member versions; publication skipped");
+                    return Ok((generation, slot, false));
+                }
+                let mut statement = connection.prepare(
+                    "SELECT chunk_id,vector_version,metadata_version,file_version
+                     FROM global_chunk_index_baseline_entries WHERE generation=?1"
+                ).map_err(|e| e.to_string())?;
+                let baseline = statement.query_map([generation], |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    (row.get::<_, i64>(1)?,row.get::<_, i64>(2)?,row.get::<_, i64>(3)?),
+                ))).map_err(|e| e.to_string())?
+                    .collect::<rusqlite::Result<HashMap<_,_>>>().map_err(|e| e.to_string())?;
+                let removed = baseline.keys().filter(|id| !self.rows.contains_key(id)).count();
+                let upserts = self.rows.values().filter(|row|
+                    baseline.get(&row.id) != Some(&(
+                        row.vector_version, row.metadata_version, row.file_version
+                    ))
+                ).count();
+                let delta = removed + upserts;
+                let ratio = delta as f64 / baseline.len().max(self.rows.len()).max(1) as f64;
+                Ok((generation, slot, delta > 0 && ratio >= threshold))
             })?;
+        if !allowed { return Ok(false); }
         let slot = if active == "a" { "b" } else { "a" };
         let mut rows = self.rows.values().cloned().collect::<Vec<_>>();
         rows.sort_by_key(|row| row.id);
@@ -236,43 +289,55 @@ impl GlobalChunks {
         };
         let mut bytes = MAGIC.to_vec();
         bytes.extend(bincode::serialize(&snapshot).map_err(|e| e.to_string())?);
+        let stamp = Sha256::digest(&bytes);
+        let digest = format!("{stamp:x}");
+        bytes.extend_from_slice(&stamp);
         let size = bytes.len() as i64;
-        let digest = format!("{:x}", Sha256::digest(&bytes));
         let target = slot_path(directory, slot);
-        let temp = crate::unique_index_sidecar_path(&target, "tmp");
-        let published = (|| {
-            std::fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-            crate::sync_index_file(&temp).map_err(|e| e.to_string())?;
-            crate::publish_index_file(&temp, &target).map_err(|e| e.to_string())
-        })();
-        if published.is_err() { let _ = std::fs::remove_file(&temp); }
-        published?;
+        let staging = crate::CheckpointStaging::new(&target).map_err(|e| e.to_string())?;
+        std::fs::write(staging.path(), bytes).map_err(|e| e.to_string())?;
+        crate::sync_index_file(staging.path()).map_err(|e| e.to_string())?;
+        crate::publish_index_file(staging.path(), &target).map_err(|e| e.to_string())?;
         let dimension = self.dimension as i64;
         let model = self.model.clone();
         let captured_facts = self.facts.clone();
+        let members = snapshot.rows;
         crate::storage::with_registered_write(db_path, move |tx| {
-            if facts(tx)? != captured_facts {
+            let current: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(generation),0) FROM global_chunk_index_baselines",
+                [], |row| row.get(0),
+            ).map_err(|e| e.to_string())?;
+            if current != generation || facts(tx)? != captured_facts {
                 return Err("LIGHTMEMO_CHECKPOINT_GENERATION_CONFLICT".into());
             }
             tx.execute(
                 "INSERT INTO global_chunk_index_baselines
                  (generation,slot,dimension,model_sig,database_generation,format_version,
-                  file_size,file_digest,created_at) VALUES (?1,?2,?3,?4,?5,1,?6,?7,?8)",
+                  file_size,file_digest,created_at,member_versions) VALUES (?1,?2,?3,?4,?5,2,?6,?7,?8,1)",
                 rusqlite::params![generation + 1, slot, dimension, model,
                     database_generation.to_string(), size, digest,
                     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default().as_millis() as i64],
             ).map_err(|e| e.to_string())?;
+            {
+                let mut insert = tx.prepare(
+                    "INSERT INTO global_chunk_index_baseline_entries
+                     (generation,chunk_id,vector_version,metadata_version,file_version)
+                     VALUES (?1,?2,?3,?4,?5)"
+                ).map_err(|e| e.to_string())?;
+                for row in members {
+                    insert.execute(rusqlite::params![generation + 1, row.id,
+                        row.vector_version, row.metadata_version, row.file_version])
+                        .map_err(|e| e.to_string())?;
+                }
+            }
             tx.execute("DELETE FROM global_chunk_index_baselines WHERE generation<?1",
                 [generation + 1]).map_err(|e| e.to_string())?;
             Ok(crate::storage::WriteReceipt {
                 operation: "checkpoint_global_chunks".into(), database_generation: 0, facts_changed: false,
             })
         })?;
-        self.dirty = 0;
-        self.baseline_count = self.rows.len();
-        self.checkpointed = true;
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -310,7 +375,9 @@ mod tests {
             assert_eq!(table.rows[&1].date,20261019);
             Ok(())
         }).unwrap();
-        table.checkpoint(&db,&root,1).unwrap();
+        assert!(!table.checkpoint(&db,&root,1,0.05,false).unwrap());
+        assert!(table.checkpoint(&db,&root,1,0.05,true).unwrap());
+        assert!(!table.checkpoint(&db,&root,1,0.05,true).unwrap());
         let mut restored = crate::storage::with_registered_read_transaction(&db,
             |c| GlobalChunks::load(c,&root,2,"model")).unwrap();
         assert_eq!(restored.search(&[1.,0.],5,&HashSet::from([1])).unwrap(),vec![1]);
@@ -328,7 +395,7 @@ mod tests {
             assert!(restored.rows[&1].first_line.contains("Bob"));
             Ok(())
         }).unwrap();
-        restored.checkpoint(&db,&root,2).unwrap();
+        assert!(restored.checkpoint(&db,&root,2,0.05,true).unwrap());
         std::fs::write(root.join("index_global_chunks_b.vec"),b"broken").unwrap();
         let mut rebuilt = crate::storage::with_registered_read_transaction(&db,
             |c| GlobalChunks::load(c,&root,2,"model")).unwrap();
@@ -345,6 +412,95 @@ mod tests {
             rebuilt.synchronize(c)?;
             assert!(rebuilt.rows.is_empty()); Ok(())
         }).unwrap();
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod continuity_tests {
+    use super::*;
+
+    #[test]
+    fn sql_member_drift_survives_restart_and_corrupt_asset_recovery() {
+        let root = std::env::temp_dir().join(format!("global-chunk-continuity-{}-{}",
+            std::process::id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default()).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute_batch("INSERT INTO files(id,path,diary_name,checksum,mtime,size)
+                VALUES (1,'Diary/test.txt','Diary','hash',0,0);")
+                .map_err(|e| e.to_string())?;
+            let bytes = [1_f32,0.].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+            for id in 1..=100 {
+                tx.execute("INSERT INTO chunks(id,file_id,chunk_index,content,vector)
+                    VALUES (?1,1,?1,'initial',?2)", rusqlite::params![id, &bytes])
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(crate::storage::WriteReceipt {
+                operation:"fixture".into(),database_generation:0,facts_changed:true,
+            })
+        }).unwrap();
+        let load = || crate::storage::with_registered_read_transaction(&db, |c| {
+            let mut table = GlobalChunks::load(c, &root, 2, "model")?;
+            table.synchronize(c)?;
+            Ok(table)
+        }).unwrap();
+        let mut table = load();
+        // An unendorsed formal file must block initial creation.
+        let first_path = slot_path(&root, "a");
+        std::fs::write(&first_path, b"unendorsed").unwrap();
+        assert!(!table.checkpoint(&db, &root, 1, 0.05, true).unwrap());
+        assert_eq!(std::fs::read(&first_path).unwrap(), b"unendorsed");
+        std::fs::remove_file(&first_path).unwrap();
+        assert!(table.checkpoint(&db, &root, 1, 0.05, true).unwrap());
+        let bytes = std::fs::read(&first_path).unwrap();
+        let modified = std::fs::metadata(&first_path).unwrap().modified().unwrap();
+        storage.submit_write(|tx| {
+            tx.execute("UPDATE chunks SET content='changed' WHERE id<=4", [])
+                .map_err(|e| e.to_string())?;
+            Ok(crate::storage::WriteReceipt {
+                operation:"four-changes".into(),database_generation:0,facts_changed:true,
+            })
+        }).unwrap();
+        table = load();
+        assert!(!table.checkpoint(&db, &root, 2, 0.05, true).unwrap());
+        drop(table);
+        storage.shutdown().unwrap();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default()).unwrap();
+        let mut table = load();
+        assert!(!table.checkpoint(&db, &root, 2, 0.05, true).unwrap());
+        assert_eq!(std::fs::read(&first_path).unwrap(), bytes);
+        assert_eq!(std::fs::metadata(&first_path).unwrap().modified().unwrap(), modified);
+        storage.submit_write(|tx| {
+            tx.execute("UPDATE chunks SET content='changed' WHERE id=5", [])
+                .map_err(|e| e.to_string())?;
+            Ok(crate::storage::WriteReceipt {
+                operation:"fifth-change".into(),database_generation:0,facts_changed:true,
+            })
+        }).unwrap();
+        table = load();
+        assert!(table.checkpoint(&db, &root, 3, 0.05, false).unwrap());
+        let second_path = slot_path(&root, "b");
+        assert!(second_path.exists());
+        std::fs::write(&second_path, b"broken").unwrap();
+        table = load();
+        assert_eq!(table.rows.len(), 100);
+        assert!(!table.checkpoint(&db, &root, 3, 0.05, true).unwrap());
+        assert_eq!(std::fs::read(&second_path).unwrap(), b"broken");
+        crate::storage::with_registered_read_transaction(&db, |c| {
+            let generation: i64 = c.query_row(
+                "SELECT MAX(generation) FROM global_chunk_index_baselines",
+                [], |r| r.get(0)).map_err(|e| e.to_string())?;
+            assert_eq!(generation, 2);
+            Ok(())
+        }).unwrap();
+        drop(table);
+        drop(load);
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

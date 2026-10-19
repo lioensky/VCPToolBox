@@ -303,7 +303,28 @@ async function main() {
         assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, false);
         const lightReloaded = await lightQuery();
         assert.deepStrictEqual(lightReloaded.tdbTopK, lightResults[0].tdbTopK);
-        assert.strictEqual(lightReloaded.diagnostics.synchronizedRows, 0);
+        assert.strictEqual(lightReloaded.diagnostics.synchronizedRows, 2,
+            'without an explicitly published baseline, reload rebuilds memory from SQL');
+        assert(!fs.readdirSync(root).some(name => name.includes('.vec')),
+            'queries and eviction must not implicitly create vector snapshots');
+        const deniedCheckpoint = JSON.parse(await nativeKnowledgeRuntime.checkpointGlobalChunkIndex(
+            'manifest-test-model', 0.05, false));
+        assert.strictEqual(deniedCheckpoint.published, false);
+        const publishedCheckpoint = JSON.parse(await nativeKnowledgeRuntime.checkpointGlobalChunkIndex(
+            'manifest-test-model', 0.05, true));
+        assert.strictEqual(publishedCheckpoint.published, true);
+        const snapshotPath = path.join(root, 'index_global_chunks_a.vec');
+        const snapshotBytes = fs.readFileSync(snapshotPath);
+        const snapshotMtime = fs.statSync(snapshotPath).mtimeMs;
+        await new Promise(resolve => setTimeout(resolve, 15));
+        assert.strictEqual(nativeKnowledgeRuntime.evictIdleLightMemoIndex(1), true);
+        const endorsedReload = await lightQuery();
+        assert.deepStrictEqual(endorsedReload.tdbTopK, lightResults[0].tdbTopK);
+        assert.strictEqual(endorsedReload.diagnostics.synchronizedRows, 0);
+        assert.deepStrictEqual(fs.readFileSync(snapshotPath), snapshotBytes);
+        assert.strictEqual(fs.statSync(snapshotPath).mtimeMs, snapshotMtime);
+        assert.strictEqual(JSON.parse(await nativeKnowledgeRuntime.checkpointGlobalChunkIndex(
+            'manifest-test-model', 0.05, true)).published, false);
         const noSignature = await lightQuery({
             ...lightPlan, engineMode: 'knn', abMode: false,
             scope: { maid: 'test' }

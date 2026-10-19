@@ -228,3 +228,47 @@ fn quiver_mmap_roundtrip_and_incremental_reused_slots() {
     assert!(!loaded.needs_graph_rebuild());
     assert_eq!(loaded.search(&replacement, 1, None).unwrap()[0].0, 9000);
 }
+
+#[test]
+fn external_source_controls_scores_without_retained_originals() {
+    let mut index = TdbIndex::routing_from_source(3, &[7, 9], |_, _| {
+        panic!("small flat routing needs identities only")
+    }).unwrap();
+    assert_eq!(index.mapped_bytes(), 0);
+    assert_eq!(index.delta_bytes(), 0);
+    index.upsert_batch(&[7], &[-9.0, 0.0, 0.0]).unwrap();
+    let search = |index: &TdbIndex| index.search_with_source(
+        &[1.0, 0.0, 0.0], 2, None, |id, row| {
+            row.clear();
+            row.extend_from_slice(if id == 7 { &[3.0, 0.0, 0.0] } else { &[0.0, 4.0, 0.0] });
+            true
+        },
+    ).unwrap();
+    assert_eq!(search(&index), vec![(7, 1.0), (9, 0.0)]);
+    index.release_originals();
+    assert_eq!(index.delta_bytes(), 0);
+    assert_eq!(search(&index), vec![(7, 1.0), (9, 0.0)]);
+    assert!(TdbIndex::routing_from_source(3, &[7, 7], |_, _| false).is_err());
+}
+
+#[test]
+fn graph_routing_build_retains_no_original_matrix_or_mapping() {
+    let ids: Vec<u64> = (1..=QUIVER_MIN_NODES as u64).collect();
+    let mut reads = 0;
+    let index = TdbIndex::routing_from_source(65, &ids, |slot, row| {
+        reads += 1;
+        row.extend((0..65).map(|column| ((slot * 37 + column * 13 + 1) as f32).sin()));
+        true
+    }).unwrap();
+    assert_eq!(reads, ids.len() * 2);
+    assert_eq!(index.mapped_bytes(), 0);
+    assert_eq!(index.delta_bytes(), 0);
+    assert!(!index.needs_graph_rebuild());
+    let query: Vec<f32> = (0..65).map(|column| ((17 * 37 + column * 13 + 1) as f32).sin()).collect();
+    let hits = index.search_with_source(&query, 10, Some(256), |id, row| {
+        row.clear();
+        row.extend((0..65).map(|column| (((id as usize - 1) * 37 + column * 13 + 1) as f32).sin()));
+        true
+    }).unwrap();
+    assert!(hits.iter().any(|(id, score)| *id == 18 && (*score - 1.0).abs() < 1e-5));
+}

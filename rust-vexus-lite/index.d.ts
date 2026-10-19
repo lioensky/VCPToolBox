@@ -163,6 +163,11 @@ export declare class NativeKnowledgeRuntime {
    */
   openAndInitStore(dbPath: string, optionsJson?: string | undefined | null): NativeStoreState
   executeLightMemoQuery(planJson: string, query: Float32Array): Promise<unknown>
+  /**
+   * Publication is scheduled independently from retrieval and never rebuilds
+   * an evicted table merely to save it.
+   */
+  checkpointGlobalChunkIndex(modelSig: string, threshold: number, allowInitial?: boolean | undefined | null): Promise<unknown>
   lightMemoIndexStats(): string
   /** Never wait for a query lock on the Node main thread. */
   evictIdleLightMemoIndex(ttlMs: number): boolean
@@ -291,9 +296,9 @@ export declare class NativeKnowledgeRuntime {
   /** 在 Rust 后台线程恢复全局 Tag 索引。 */
   restoreGlobalTagIndex(dbPath: string, indexPath: string, modelSig: string, capacity: number): Promise<unknown>
   /** 在 Rust 后台线程执行日记索引双槽代际 checkpoint。 */
-  checkpointDiaryIndex(dbPath: string, diaryName: string, indexPath: string, modelSig: string, threshold: number, force?: boolean | undefined | null): Promise<unknown>
+  checkpointDiaryIndex(dbPath: string, diaryName: string, indexPath: string, modelSig: string, threshold: number, force?: boolean | undefined | null, allowInitial?: boolean | undefined | null): Promise<unknown>
   /** 在 Rust 后台线程执行全局 Tag 索引双槽代际 checkpoint。 */
-  checkpointGlobalTagIndex(dbPath: string, indexPath: string, modelSig: string, threshold: number, force?: boolean | undefined | null): Promise<unknown>
+  checkpointGlobalTagIndex(dbPath: string, indexPath: string, modelSig: string, threshold: number, force?: boolean | undefined | null, allowInitial?: boolean | undefined | null): Promise<unknown>
   /**
    * 注册或原子替换一个日记索引。
    *

@@ -20,6 +20,35 @@ impl SqlIndexBuild {
         self.index.as_ref().expect("SQL index build retains its index")
     }
 
+    pub(crate) fn write_snapshot(
+        &self, connection: &Connection, diary: Option<&str>, path: &Path,
+    ) -> Result<(), String> {
+        if connection.is_autocommit() {
+            return Err("Snapshot publication requires an active read transaction".into());
+        }
+        let sql = if diary.is_some() {
+            "SELECT c.vector FROM chunks c JOIN files f ON f.id=c.file_id
+             WHERE c.id=?1 AND f.diary_name=?2"
+        } else {
+            "SELECT vector FROM tags WHERE id=?1 AND ?2 IS NULL"
+        };
+        let mut statement = connection.prepare_cached(sql).map_err(|e| e.to_string())?;
+        let mut source_error = None;
+        let result = self.index().write_staging_with_source(
+            path, &self.identity, |id, output| {
+                match statement.query_row(rusqlite::params![id as i64, diary],
+                    |row| row.get::<_, Vec<u8>>(0)) {
+                    Ok(bytes) => decode_into(&bytes, self.identity.dimension, output),
+                    Err(error) => {
+                        source_error = Some(error.to_string());
+                        false
+                    }
+                }
+            },
+        );
+        result.map_err(|error| source_error.unwrap_or_else(|| error.to_string()))
+    }
+
     pub(crate) fn into_parts(mut self) -> (TdbIndex, PathBuf, AssetIdentity, u64) {
         let index = self.index.take().expect("SQL index build retains its index");
         // Transfer private-file cleanup responsibility together with the mapping.
@@ -47,14 +76,35 @@ fn decode_into(bytes: &[u8], dimension: usize, output: &mut Vec<f32>) -> bool {
     output.iter().all(|value| value.is_finite())
 }
 
-/// Must run inside a frozen read transaction. `staging` must be a unique NEW path.
-/// A diary name selects chunks; None selects the global Tag scope.
+/// Build runtime routing without creating a private vector file.
+pub(crate) fn build_memory_from_connection(
+    connection: &Connection,
+    diary: Option<&str>,
+    dimension: usize,
+    model_sig: &str,
+) -> Result<SqlIndexBuild, String> {
+    build_with_source(connection, diary, dimension, model_sig, None)
+}
+
+/// Test-only disk-backed fixture for legacy asset ownership regression.
+/// Production recovery builds memory routing and never creates this asset.
+#[cfg(test)]
 pub(crate) fn build_from_connection(
     connection: &Connection,
     diary: Option<&str>,
     dimension: usize,
     model_sig: &str,
     staging: &Path,
+) -> Result<SqlIndexBuild, String> {
+    build_with_source(connection, diary, dimension, model_sig, Some(staging))
+}
+
+fn build_with_source(
+    connection: &Connection,
+    diary: Option<&str>,
+    dimension: usize,
+    model_sig: &str,
+    staging: Option<&Path>,
 ) -> Result<SqlIndexBuild, String> {
     if dimension == 0 || dimension > vcp_tdb_index::index::bq::MAX_BQ_DIM
         || model_sig.trim().is_empty() {
@@ -111,8 +161,7 @@ pub(crate) fn build_from_connection(
     };
     let mut lookup = connection.prepare(lookup).map_err(|error| error.to_string())?;
     let mut source_error = None;
-    let index = TdbIndex::rebuild_from_source(
-        staging, &identity, &ids, |slot, output| {
+    let mut fill = |slot: usize, output: &mut Vec<f32>| {
             let result = lookup.query_row(
                 rusqlite::params![ids[slot] as i64, diary],
                 |row| row.get::<_, Vec<u8>>(0),
@@ -124,13 +173,17 @@ pub(crate) fn build_from_connection(
                     false
                 }
             }
-        },
-    ).map_err(|error| format!(
-        "SQL retrieval asset construction failed: {}",
+        };
+    let index = match staging {
+        Some(path) => TdbIndex::rebuild_from_source(path, &identity, &ids, &mut fill),
+        None => TdbIndex::routing_from_source(dimension, &ids, &mut fill),
+    }.map_err(|error| format!(
+        "SQL retrieval construction failed: {}",
         source_error.unwrap_or_else(|| error.to_string())
     ))?;
     Ok(SqlIndexBuild {
-        index: Some(index), path: staging.to_path_buf(), identity, skipped_invalid,
+        index: Some(index), path: staging.map(Path::to_path_buf).unwrap_or_default(),
+        identity, skipped_invalid,
     })
 }
 
