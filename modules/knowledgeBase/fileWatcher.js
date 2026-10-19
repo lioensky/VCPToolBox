@@ -254,7 +254,9 @@ class KnowledgeBaseFileWatcher {
             ignoreFolders: config.ignoreFolders || [],
             ignorePrefixes: config.ignorePrefixes || [],
             ignoreSuffixes: config.ignoreSuffixes || [],
-            initialScan: config.fullScanOnStartup !== false,
+            // Startup uses the single reconciliation below, including indexed
+            // paths for missing-file detection. Do not also launch a native scan.
+            initialScan: false,
             debounceMs: parseInt(
                 process.env.KNOWLEDGEBASE_WATCH_DEBOUNCE_MS,
                 10
@@ -280,9 +282,8 @@ class KnowledgeBaseFileWatcher {
         this.eventPoller.unref?.();
         this._drainRustEvents();
         this._publishState();
-        // Startup reconciliation also scans and emits add events. It must obey
-        // the same switch as the native initial scan; real overflow recovery
-        // remains enabled independently in _handleRustEvent().
+        // One authoritative startup scan, with the indexed-path snapshot.
+        // Real overflow recovery remains independently enabled.
         if (config.fullScanOnStartup !== false) {
             void this._reconcileAfterOverflow();
         }

@@ -79,7 +79,8 @@ for (const enabled of [false, true]) {
         const { watcher, owner, snapshots, requests } = fixture();
         owner.config = { rootPath: 'fixture', fullScanOnStartup: enabled };
         owner.nativeKnowledgeRuntime.startWatch = options => {
-            assert.equal(options.initialScan, enabled);
+            assert.equal(options.initialScan, false,
+                'startup reconciliation must be the only full scan');
             assert.deepEqual(options.ignoreFolders, []);
         };
         owner.nativeKnowledgeRuntime.drainWatchEvents = () => [];

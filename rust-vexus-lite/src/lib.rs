@@ -1118,6 +1118,33 @@ fn wait_for_watcher_duration(running: &AtomicBool, duration: Duration) -> bool {
     running.load(Ordering::Acquire)
 }
 
+/// Full scans are replayable producers, not real-time notify callbacks. Apply
+/// cancellable backpressure instead of dropping events and triggering another
+/// full scan. Never hold the queue mutex while waiting for the JS consumer.
+fn enqueue_scan_event(
+    events: &Arc<Mutex<VecDeque<WatchEvent>>>,
+    overflowed: &AtomicBool,
+    running: &AtomicBool,
+    event: WatchEvent,
+) -> bool {
+    while running.load(Ordering::Acquire) {
+        {
+            let Ok(mut queue) = events.lock() else {
+                overflowed.store(true, Ordering::Release);
+                return false;
+            };
+            if queue.len() < WATCH_EVENT_QUEUE_CAPACITY {
+                queue.push_back(event);
+                return true;
+            }
+        }
+        if !wait_for_watcher_duration(running, Duration::from_millis(25)) {
+            return false;
+        }
+    }
+    false
+}
+
 fn emit_initial_watch_events(
     root_path: &Path,
     allowed_extensions: &HashSet<String>,
@@ -1218,9 +1245,10 @@ fn emit_initial_watch_events(
                 .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
                 .map(|value| value.as_millis())
                 .unwrap_or(0);
-            enqueue_watch_event(
+            if !enqueue_scan_event(
                 events,
                 overflowed,
+                running,
                 WatchEvent {
                     event: "add".to_string(),
                     path: normalized_path,
@@ -1233,7 +1261,9 @@ fn emit_initial_watch_events(
                         .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
                         .unwrap_or(0),
                 },
-            );
+            ) {
+                return;
+            }
         }
     }
 
@@ -1283,9 +1313,10 @@ fn emit_initial_watch_events(
             }
         }
         let generation = scan_generation;
-        enqueue_watch_event(
+        if !enqueue_scan_event(
             events,
             overflowed,
+            running,
             WatchEvent {
                 event: "unlink".to_string(),
                 path: normalized_path,
@@ -1298,7 +1329,9 @@ fn emit_initial_watch_events(
                     .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
                     .unwrap_or(0),
             },
-        );
+        ) {
+            return;
+        }
     }
 }
 
