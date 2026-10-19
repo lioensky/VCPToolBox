@@ -17,8 +17,13 @@ const {
 const { getEmbeddingsBatch, cosineSimilarity } = require("../../EmbeddingUtils.js");
 const { evaluateMoodStateMachine } = require("./OpenHerMoodStateMachine.js");
 
+const {
+  resourceDefaults, resourceSchema, resolveResources, isVector, encodeVector, decodeVector,
+  applyDatabaseBudget, upgradeAnchorStorage, maintainDatabase,
+} = require("./ObserverResources.js");
+
 const PLUGIN_NAME = "OpenHerPersona";
-const PLUGIN_VERSION = "0.6.1-observer";
+const PLUGIN_VERSION = "0.7.0-observer";
 
 const DEFAULT_AGENT_KEY = "__default__";
 const DEFAULT_AGENT_LABEL = "default";
@@ -34,6 +39,7 @@ const ONE_RING_NOTICE_PATTERN = /\[OneRing系统已启动，当前Agent([^，\]\
 const VCP_RAG_BLOCK_PATTERN = /<!--\s*VCP_RAG_BLOCK_START\b[\s\S]*?<!--\s*VCP_RAG_BLOCK_END\s*-->/gi;
 
 const DEFAULT_CONFIG = {
+  ...resourceDefaults(),
   DebugMode: false,
   OpenHerPersonaEnabled: true,
   OpenHerPersonaAsyncObservation: true,
@@ -498,6 +504,55 @@ const agentQueues = new Map();
 const agentObservationGenerations = new Map();
 const messageVectorCache = new Map();
 const MESSAGE_VECTOR_CACHE_LIMIT = 80;
+const pendingEmbeddingRequests = new Set();
+
+// A timed-out observer does not imply the underlying shared request was cancelled.
+// Keep its slot occupied until settlement; refuse new calls rather than accumulate.
+async function requestEmbeddings(texts, timeoutMs) {
+  if (stopped || pendingEmbeddingRequests.size >= activeConfig.OpenHerPersonaGlobalConcurrency) return null;
+  const token = {};
+  pendingEmbeddingRequests.add(token);
+  const request = Promise.resolve().then(() => embeddingProvider(texts));
+  request.then(
+    () => pendingEmbeddingRequests.delete(token),
+    () => pendingEmbeddingRequests.delete(token)
+  );
+  return withTimeout(request, timeoutMs);
+}
+let messageCacheBytes = 0;
+let pendingBytes = 0;
+let pendingCount = 0;
+let runningCount = 0;
+let stopped = false;
+let maintenanceTimer = null;
+let maintenanceStatus = null;
+let lifecycle = 0;
+let generationSequence = 0;
+const resourceCounters = { dropped: 0, deduplicated: 0 };
+
+function runMaintenance() {
+  if (stopped) return;
+  pruneMessageCache();
+  if (!dbHandle) return;
+  try {
+    maintenanceStatus = { at: nowIso(), ...maintainDatabase(dbHandle, activeConfig, AXIS_DEFINITIONS) };
+    pruneMessageCache();
+  } catch (error) {
+    maintenanceStatus = { at: nowIso(), error: error.message };
+    console.warn(`[${PLUGIN_NAME}] maintenance failed: ${error.message}`);
+  }
+}
+
+function restartMaintenance() {
+  if (maintenanceTimer) clearInterval(maintenanceTimer);
+  maintenanceTimer = null;
+  if (stopped) return;
+  if (dbHandle) applyDatabaseBudget(dbHandle, activeConfig);
+  maintenanceTimer = setInterval(runMaintenance, activeConfig.OpenHerPersonaMaintenanceIntervalMs);
+  maintenanceTimer.unref();
+  pruneMessageCache();
+  pumpQueues();
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -559,6 +614,7 @@ function debugLog(...args) {
 
 function getConfigSchema() {
   return {
+    ...resourceSchema(),
     DebugMode: { type: "boolean", label: "调试日志", description: "输出 OpenHerPersona 观测调试日志。" },
     OpenHerPersonaEnabled: { type: "boolean", label: "启用观测器", description: "总开关；关闭后 processMessages 原样放行且不入队观测。" },
     OpenHerPersonaAsyncObservation: { type: "boolean", label: "异步观测", description: "启用 fire-and-forget 观测队列；当前版本固定不注入提示词。" },
@@ -575,15 +631,15 @@ function getConfigSchema() {
 function resolveConfig(config) {
   const merged = { ...DEFAULT_CONFIG, ...(config || {}) };
   return {
+    ...resolveResources(merged),
     DebugMode: normalizeBoolean(merged.DebugMode, DEFAULT_CONFIG.DebugMode),
     OpenHerPersonaEnabled: normalizeBoolean(merged.OpenHerPersonaEnabled, DEFAULT_CONFIG.OpenHerPersonaEnabled),
     OpenHerPersonaAsyncObservation: normalizeBoolean(
       merged.OpenHerPersonaAsyncObservation,
       DEFAULT_CONFIG.OpenHerPersonaAsyncObservation
     ),
-    OpenHerPersonaQueueMaxSize: Math.max(
-      1,
-      normalizeInteger(merged.OpenHerPersonaQueueMaxSize, DEFAULT_CONFIG.OpenHerPersonaQueueMaxSize)
+    OpenHerPersonaQueueMaxSize: clamp(
+      normalizeInteger(merged.OpenHerPersonaQueueMaxSize, DEFAULT_CONFIG.OpenHerPersonaQueueMaxSize), 1, 512
     ),
     OpenHerPersonaEmbeddingTimeoutMs: Math.max(
       200,
@@ -682,6 +738,7 @@ function reloadConfigFromDisk(reason = "watch") {
   const document = readConfigFile();
   if (!document || !document.config || typeof document.config !== "object") return false;
   activeConfig = resolveConfig(document.config);
+  restartMaintenance();
   debugLog(`JSON config reloaded (${reason}).`);
   return true;
 }
@@ -690,6 +747,7 @@ function saveRuntimeConfig(nextConfig) {
   const normalized = resolveConfig(nextConfig);
   writeConfigDocument(buildConfigDocument(normalized, false));
   activeConfig = normalized;
+  restartMaintenance();
   return getConfigStatus();
 }
 
@@ -724,7 +782,7 @@ function startConfigWatcher() {
 }
 
 function openDb() {
-  if (!Database) return null;
+  if (!Database || stopped) return null;
   if (dbHandle) return dbHandle;
   fs.mkdirSync(STATE_DIR, { recursive: true });
   dbHandle = new Database(STATE_DB_PATH);
@@ -777,6 +835,8 @@ function openDb() {
       ON openher_axis_audit(agent_key, at);
   `);
   ensureOpenHerAxisStateColumns(dbHandle);
+  upgradeAnchorStorage(dbHandle, STATE_DB_PATH);
+  applyDatabaseBudget(dbHandle, activeConfig);
   return dbHandle;
 }
 
@@ -1009,7 +1069,7 @@ function saveAgentState(state) {
 
 function saveAudit(agentKey, eventType, payload) {
   const db = openDb();
-  if (!db || agentKey === DEFAULT_AGENT_KEY) return;
+  if (!db || agentKey === DEFAULT_AGENT_KEY || activeConfig.OpenHerPersonaAuditMaxRowsPerAgent === 0) return;
   db.prepare(
     `INSERT OR REPLACE INTO openher_axis_audit (agent_key, at, event_type, payload_json)
      VALUES (?, ?, ?, ?)`
@@ -1122,48 +1182,71 @@ function sanitizeForEmbedding(text, role = "user") {
 }
 
 function withTimeout(promise, ms) {
-  return Promise.race([
-    promise,
-    new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(null), ms);
-      if (typeof timer.unref === "function") timer.unref();
-    }),
-  ]);
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+    if (typeof timer.unref === "function") timer.unref();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function removeCachedVector(key) {
+  const entry = messageVectorCache.get(key);
+  if (!entry) return;
+  messageCacheBytes -= entry.vector.byteLength;
+  messageVectorCache.delete(key);
+}
+
+function pruneMessageCache() {
+  for (const [key, entry] of messageVectorCache) {
+    if (entry.expiresAt <= Date.now()) removeCachedVector(key);
+  }
+  while (messageVectorCache.size > MESSAGE_VECTOR_CACHE_LIMIT ||
+    messageCacheBytes > activeConfig.OpenHerPersonaMessageCacheMaxBytes) {
+    removeCachedVector(messageVectorCache.keys().next().value);
+  }
 }
 
 function rememberMessageVector(key, vector) {
-  messageVectorCache.set(key, vector);
-  if (messageVectorCache.size > MESSAGE_VECTOR_CACHE_LIMIT) {
-    messageVectorCache.delete(messageVectorCache.keys().next().value);
-  }
+  if (stopped || contextBridge || !isVector(vector)) return;
+  removeCachedVector(key);
+  const compact = new Float32Array(vector);
+  if (compact.byteLength > activeConfig.OpenHerPersonaMessageCacheMaxBytes) return;
+  messageVectorCache.set(key, {
+    vector: compact, expiresAt: Date.now() + activeConfig.OpenHerPersonaMessageCacheTtlMs,
+  });
+  messageCacheBytes += compact.byteLength;
+  pruneMessageCache();
 }
 
 async function embedText(text, role = "user") {
   const normalized = sanitizeForEmbedding(text, role).slice(0, 4000);
   if (!normalized) return null;
   const key = hashText(`${role}:${normalized}`);
-  if (messageVectorCache.has(key)) return messageVectorCache.get(key);
+  pruneMessageCache();
+  if (!contextBridge && messageVectorCache.has(key)) return messageVectorCache.get(key).vector;
+  const epoch = lifecycle;
 
   if (contextBridge && typeof contextBridge.getEmbeddingFromCache === "function") {
     const exact = contextBridge.getEmbeddingFromCache(normalized);
-    if (exact) {
+    if (isVector(exact)) {
       rememberMessageVector(key, exact);
       return exact;
     }
   }
   if (contextBridge && typeof contextBridge.getFuzzyEmbeddingFromCache === "function") {
     const fuzzy = contextBridge.getFuzzyEmbeddingFromCache(normalized);
-    if (fuzzy && fuzzy.vector) {
+    if (fuzzy && isVector(fuzzy.vector)) {
       rememberMessageVector(key, fuzzy.vector);
       return fuzzy.vector;
     }
   }
 
-  const embedded = await withTimeout(
-    embeddingProvider([normalized]),
-    activeConfig.OpenHerPersonaEmbeddingTimeoutMs
+  const embedded = await requestEmbeddings(
+    [normalized], activeConfig.OpenHerPersonaEmbeddingTimeoutMs
   );
-  const vector = Array.isArray(embedded) && Array.isArray(embedded[0]) ? embedded[0] : null;
+  const vector = Array.isArray(embedded) && isVector(embedded[0]) ? embedded[0] : null;
+  if (epoch !== lifecycle || stopped) return null;
   if (vector) rememberMessageVector(key, vector);
   return vector;
 }
@@ -1176,31 +1259,23 @@ function getStoredAnchorVectors(agentKey, agentLabel) {
   const db = openDb();
   if (!db) return null;
   const modelSig = getModelSig();
-  const rows = db
-    .prepare(
-      `SELECT layer, axis, sub_axis, anchor_text, vector_json
-       FROM openher_axis_anchors
-       WHERE agent_key = ? AND model_sig = ?`
-    )
-    .all(agentKey, modelSig);
-  const expectedCount = AXIS_DEFINITIONS.reduce((sum, item) => sum + item.anchors.length, 0);
-  if (rows.length < expectedCount) return null;
-
+  // Point queries load only the current definition, not obsolete labels or anchors.
+  const select = db.prepare(`SELECT vector_json, vector_blob FROM openher_axis_anchors
+    WHERE agent_key = ? AND layer = ? AND axis = ? AND sub_axis = ? AND anchor_text = ? AND model_sig = ?`);
   const vectors = {};
-  for (const row of rows) {
-    try {
-      const key = `${row.layer}:${row.axis}:${row.sub_axis}:${row.anchor_text}`;
-      vectors[key] = JSON.parse(row.vector_json);
-    } catch (error) {
-      return null;
-    }
-  }
-
   for (const definition of AXIS_DEFINITIONS) {
     for (const anchor of definition.anchors) {
       const text = anchorText(agentLabel, anchor.text);
-      const key = `${definition.layer}:${definition.axis}:${anchor.subAxis}:${text}`;
-      if (!Array.isArray(vectors[key])) return null;
+      const row = select.get(agentKey, definition.layer, definition.axis, anchor.subAxis, text, modelSig);
+      if (!row) return null;
+      try {
+        const vector = row.vector_blob ? decodeVector(row.vector_blob) : JSON.parse(row.vector_json);
+        if (!isVector(vector)) return null;
+        vectors[`${definition.layer}:${definition.axis}:${anchor.subAxis}:${text}`] =
+          vector instanceof Float32Array ? vector : new Float32Array(vector);
+      } catch (_) {
+        return null;
+      }
     }
   }
   return vectors;
@@ -1224,11 +1299,12 @@ async function ensureAnchorVectors(agentKey, agentLabel, expectedGeneration = nu
     }
   }
 
-  const embedded = await withTimeout(
-    embeddingProvider(flat),
-    activeConfig.OpenHerPersonaEmbeddingTimeoutMs * 4
+  const epoch = lifecycle;
+  const embedded = await requestEmbeddings(
+    flat, activeConfig.OpenHerPersonaEmbeddingTimeoutMs * 4
   );
-  if (!Array.isArray(embedded) || embedded.length !== flat.length || embedded.some((vector) => !Array.isArray(vector))) {
+  if (epoch !== lifecycle) return null;
+  if (stopped || !Array.isArray(embedded) || embedded.length !== flat.length || embedded.some((vector) => !isVector(vector))) {
     return null;
   }
   if (
@@ -1243,12 +1319,12 @@ async function ensureAnchorVectors(agentKey, agentLabel, expectedGeneration = nu
   const vectors = {};
   const insert = db.prepare(
     `INSERT OR REPLACE INTO openher_axis_anchors
-     (agent_key, layer, axis, sub_axis, anchor_text, vector_json, model_sig, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+     (agent_key, layer, axis, sub_axis, anchor_text, vector_json, vector_blob, model_sig, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const transaction = db.transaction(() => {
     layout.forEach(({ definition, anchor, text }, index) => {
-      const vector = embedded[index];
+      const vector = new Float32Array(embedded[index]);
       const vectorKey = `${definition.layer}:${definition.axis}:${anchor.subAxis}:${text}`;
       vectors[vectorKey] = vector;
       insert.run(
@@ -1257,7 +1333,8 @@ async function ensureAnchorVectors(agentKey, agentLabel, expectedGeneration = nu
         definition.axis,
         anchor.subAxis,
         text,
-        JSON.stringify(vector),
+        "[]",
+        encodeVector(vector),
         modelSig,
         now
       );
@@ -1290,7 +1367,7 @@ function scoreAxis(messageVector, anchorVectors, agentLabel, definition) {
     const text = anchorText(agentLabel, anchor.text);
     const vectorKey = `${definition.layer}:${definition.axis}:${anchor.subAxis}:${text}`;
     const anchorVector = anchorVectors[vectorKey];
-    const sim = Array.isArray(anchorVector) ? cosineSimilarity(messageVector, anchorVector) : -1;
+    const sim = isVector(anchorVector) ? cosineSimilarity(messageVector, anchorVector) : -1;
     similarities.push(sim);
   }
 
@@ -2055,38 +2132,98 @@ function buildObservationFingerprint(agentKey, latestMessage, normalizedText = n
   return hashText(`${agentKey}:${latestMessage.role}:${semanticText}`);
 }
 
-function enqueueObservation(agentKey, job) {
-  const key = normalizeAgentKey(agentKey);
-  job.generation = agentObservationGenerations.get(key) || 0;
-  const existing = agentQueues.get(key) || { running: false, jobs: [] };
-  if (existing.jobs.length >= activeConfig.OpenHerPersonaQueueMaxSize) {
-    existing.jobs.shift();
+function takeQueuedJob(queue, dropped = false) {
+  const job = queue.jobs.shift();
+  if (!job) return null;
+  pendingCount -= 1;
+  pendingBytes -= job.bytes;
+  if (dropped) {
+    resourceCounters.dropped += 1;
+    if (job.resolve) job.resolve();
   }
-  existing.jobs.push(job);
-  agentQueues.set(key, existing);
-  if (!existing.running) {
-    drainAgentQueue(key).catch((error) => {
-      console.warn(`[${PLUGIN_NAME}] queue drain failed for ${key}: ${error.message}`);
-    });
+  return job;
+}
+
+function enqueueObservation(agentKey, job, wait = false) {
+  if (stopped) return Promise.resolve();
+  const key = normalizeAgentKey(agentKey);
+  if (!agentObservationGenerations.has(key)) agentObservationGenerations.set(key, ++generationSequence);
+  job.generation = agentObservationGenerations.get(key);
+  job.lifecycle = lifecycle;
+  const queue = agentQueues.get(key) || { running: false, activeHash: null, jobs: [] };
+  if (queue.activeHash === job.inputHash || queue.jobs.some((item) => item.inputHash === job.inputHash)) {
+    resourceCounters.deduplicated += 1;
+    return Promise.resolve();
+  }
+  job.bytes = Buffer.byteLength(job.normalizedText, "utf8");
+  if (job.bytes > activeConfig.OpenHerPersonaQueueMaxBytes) {
+    resourceCounters.dropped += 1;
+    return Promise.resolve();
+  }
+  while (queue.jobs.length >= activeConfig.OpenHerPersonaQueueMaxSize) takeQueuedJob(queue, true);
+  while (pendingCount >= activeConfig.OpenHerPersonaGlobalQueueMaxSize ||
+    pendingBytes + job.bytes > activeConfig.OpenHerPersonaQueueMaxBytes) {
+    const candidate = [...agentQueues.values()].find((item) => item.jobs.length);
+    if (!candidate) break;
+    takeQueuedJob(candidate, true);
+  }
+  let done = Promise.resolve();
+  if (wait) done = new Promise((resolve) => { job.resolve = resolve; });
+  queue.jobs.push(job);
+  pendingCount += 1;
+  pendingBytes += job.bytes;
+  agentQueues.set(key, queue);
+  pumpQueues();
+  return done;
+}
+
+function pumpQueues() {
+  if (stopped) return;
+  for (const [key, queue] of agentQueues) {
+    if (runningCount >= activeConfig.OpenHerPersonaGlobalConcurrency) break;
+    if (!queue.running && queue.jobs.length) void drainAgentQueue(key, queue);
+  }
+  for (const [key, queue] of agentQueues) {
+    if (!queue.running && !queue.jobs.length) {
+      agentQueues.delete(key);
+      agentObservationGenerations.delete(key);
+    }
   }
 }
 
-async function drainAgentQueue(agentKey) {
-  const queue = agentQueues.get(agentKey);
-  if (!queue || queue.running) return;
+async function drainAgentQueue(agentKey, queue) {
+  const job = takeQueuedJob(queue);
+  if (!job) return;
   queue.running = true;
+  queue.activeHash = job.inputHash;
+  runningCount += 1;
   try {
-    while (queue.jobs.length > 0) {
-      const job = queue.jobs.shift();
-      try {
-        await observeJob(job);
-      } catch (error) {
-        console.warn(`[${PLUGIN_NAME}] observation failed for ${agentKey}: ${error.message}`);
-        saveAudit(agentKey, "observe_error", { error: error.message, job: summarizeJob(job) });
-      }
-    }
+    await observeJob(job);
+  } catch (error) {
+    console.warn(`[${PLUGIN_NAME}] observation failed for ${agentKey}: ${error.message}`);
+    if (isObservationJobCurrent(job)) saveAudit(agentKey, "observe_error", { error: error.message, job: summarizeJob(job) });
   } finally {
     queue.running = false;
+    queue.activeHash = null;
+    runningCount -= 1;
+    if (job.resolve) job.resolve();
+    // Round-robin: put this agent behind other waiting agents.
+    if (agentQueues.get(agentKey) === queue) {
+      agentQueues.delete(agentKey);
+      agentQueues.set(agentKey, queue);
+    }
+    pumpQueues();
+  }
+}
+
+function invalidateAgentJobs(key) {
+  const queue = agentQueues.get(key);
+  if (!queue) return;
+  agentObservationGenerations.set(key, ++generationSequence);
+  while (queue.jobs.length) takeQueuedJob(queue, true);
+  if (!queue.running) {
+    agentQueues.delete(key);
+    agentObservationGenerations.delete(key);
   }
 }
 
@@ -2105,7 +2242,7 @@ function summarizeJob(job) {
 function isObservationJobCurrent(job) {
   const key = normalizeAgentKey(job && job.agentKey);
   const currentGeneration = agentObservationGenerations.get(key) || 0;
-  return Number(job && job.generation) === currentGeneration;
+  return !stopped && job.lifecycle === lifecycle && Number(job && job.generation) === currentGeneration;
 }
 
 async function observeJob(job) {
@@ -2116,16 +2253,11 @@ async function observeJob(job) {
     return;
   }
 
-  const anchorVectors = await ensureAnchorVectors(state.agentKey, state.agentLabel, job.generation);
-  if (!anchorVectors) {
-    saveAudit(state.agentKey, "observe_skipped", { reason: "anchors_unavailable", job: summarizeJob(job) });
-    return;
-  }
-
   // RAGDiaryPlugin keeps the original message in the downstream chain while
   // caching the sanitized text. Always reuse that same sanitizer before cache
   // lookup; querying with the raw assistant text would miss an existing vector.
   const messageVector = await embedText(job.normalizedText || job.text, job.role);
+  if (!isObservationJobCurrent(job)) return;
   if (!messageVector) {
     saveAudit(state.agentKey, "observe_skipped", { reason: "message_vector_unavailable", job: summarizeJob(job) });
     return;
@@ -2135,6 +2267,16 @@ async function observeJob(job) {
   // 防止它在 SQLite 记录被删除后重新写回误识别的 Agent。
   if (!isObservationJobCurrent(job)) return;
 
+  const anchorVectors = await ensureAnchorVectors(state.agentKey, state.agentLabel, job.generation);
+  if (!isObservationJobCurrent(job)) return;
+  if (!anchorVectors) {
+    saveAudit(state.agentKey, "observe_skipped", { reason: "anchors_unavailable", job: summarizeJob(job) });
+    return;
+  }
+  if (Object.values(anchorVectors).some((vector) => vector.length !== messageVector.length)) {
+    saveAudit(state.agentKey, "observe_skipped", { reason: "vector_dimension_mismatch" });
+    return;
+  }
   const scores = scoreAllAxes(messageVector, anchorVectors, state.agentLabel);
   applyObservationToState(state, scores, job.inputHash);
   state.lastObservation = {
@@ -2173,7 +2315,7 @@ function getTopAxesFromScores(scores, limit = 6) {
 }
 
 async function processMessages(messages, requestConfig = {}) {
-  if (!activeConfig.OpenHerPersonaEnabled || !Array.isArray(messages) || messages.length === 0) {
+  if (stopped || !activeConfig.OpenHerPersonaEnabled || !Array.isArray(messages) || messages.length === 0) {
     return messages;
   }
 
@@ -2204,7 +2346,6 @@ async function processMessages(messages, requestConfig = {}) {
     role: latestMessage.role,
     observationType: "expression",
     phase: "next_request_history",
-    text: latestMessage.text,
     normalizedText,
     inputHash,
     queuedAt: nowIso(),
@@ -2217,13 +2358,14 @@ async function processMessages(messages, requestConfig = {}) {
   }
 
   // Synchronous observation is kept only for diagnostics/config experiments; it still never mutates prompts.
-  await observeJob(job);
+  await enqueueObservation(identity.agentKey, job, true);
   return messages;
 }
 
 function resetAgentState(agentKey, agentLabel) {
   const key = normalizeAgentKey(agentKey || DEFAULT_AGENT_KEY);
   const label = normalizeAgentLabel(agentLabel || key, key);
+  invalidateAgentJobs(key);
   const db = openDb();
   if (db && key !== DEFAULT_AGENT_KEY) {
     db.prepare("DELETE FROM openher_axis_state WHERE agent_key = ?").run(key);
@@ -2246,10 +2388,7 @@ function deleteAgentState(agentKey) {
     };
   }
 
-  agentObservationGenerations.set(key, (agentObservationGenerations.get(key) || 0) + 1);
-  const queue = agentQueues.get(key);
-  if (queue) queue.jobs.length = 0;
-  agentQueues.delete(key);
+  invalidateAgentJobs(key);
 
   const deletedRows = { state: 0, anchors: 0, audit: 0 };
   const db = openDb();
@@ -2314,6 +2453,16 @@ function getStatus(params = {}) {
       available: Boolean(Database),
       path: STATE_DB_PATH,
       schema: "openher_axis_*",
+      cacheBudgetKiB: activeConfig.OpenHerPersonaSqliteCacheKiB,
+      vectorStorage: "float32-le",
+      maintenance: maintenanceStatus,
+    },
+    resources: {
+      running: runningCount, pending: pendingCount, pendingTextBytes: pendingBytes,
+      messageCacheBytes, messageCacheEntries: messageVectorCache.size,
+      trackedQueues: agentQueues.size, pendingEmbeddingRequests: pendingEmbeddingRequests.size,
+      messageCacheMode: contextBridge ? "shared-only" : "bounded-local-fallback",
+      ...resourceCounters,
     },
     queue: {
       agentKey: identity.agentKey,
@@ -2422,6 +2571,8 @@ async function processToolCall(params) {
 }
 
 function initialize(config, dependencies) {
+  stopped = false;
+  lifecycle += 1;
   activeConfig = loadConfigFromJsonOrMigrate(config || {});
   startConfigWatcher();
   contextBridge = dependencies && dependencies.contextBridge ? dependencies.contextBridge : null;
@@ -2438,7 +2589,7 @@ function initialize(config, dependencies) {
 
   if (Database) {
     openDb();
-    writeMeta("schemaVersion", "1");
+    writeMeta("schemaVersion", "2");
     writeMeta("plugin", PLUGIN_NAME);
     writeMeta("pluginVersion", PLUGIN_VERSION);
     writeMeta("mode", "async_observer");
@@ -2448,10 +2599,23 @@ function initialize(config, dependencies) {
     console.warn(`[${PLUGIN_NAME}] better-sqlite3 unavailable; observer state persistence is disabled.`);
   }
 
+  restartMaintenance();
   debugLog(`initialized. contextBridge=${Boolean(contextBridge)} provider=${embeddingProviderTag}`);
 }
 
 function shutdown() {
+  stopped = true;
+  lifecycle += 1;
+  if (maintenanceTimer) clearInterval(maintenanceTimer);
+  maintenanceTimer = null;
+  for (const queue of agentQueues.values()) {
+    while (queue.jobs.length) takeQueuedJob(queue, true);
+  }
+  agentQueues.clear();
+  agentObservationGenerations.clear();
+  messageVectorCache.clear();
+  messageCacheBytes = 0;
+  contextBridge = null;
   try {
     if (configWatcher) {
       configWatcher.close();
