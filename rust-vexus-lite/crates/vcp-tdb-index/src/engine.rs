@@ -29,8 +29,10 @@ pub struct TdbIndex {
 
 impl TdbIndex {
     pub fn empty(dimension: usize) -> io::Result<Self> {
-        if dimension == 0 || dimension > 3072 {
-            return Err(invalid("index dimension must be within 1..=3072"));
+        if dimension == 0 || dimension > crate::index::bq::MAX_BQ_DIM {
+            return Err(invalid(&format!(
+                "index dimension must be within 1..={}", crate::index::bq::MAX_BQ_DIM
+            )));
         }
         Ok(Self {
             dimension, base: None, ids: Vec::new(), positions: HashMap::new(),

@@ -15,8 +15,8 @@ pub(crate) static FORCE_NO_384_KERNEL: std::sync::LazyLock<bool> = std::sync::La
 });
 
 /// BQ 签名最大 chunks 数量（每个 u64 chunk 覆盖 64 维）
-/// 48 chunks × 64 bits = 3072 维上限
-const MAX_BQ_CHUNKS: usize = 48;
+/// 64 chunks × 64 bits = 4096 维上限；实际存储仍按配置维度紧凑分配。
+const MAX_BQ_CHUNKS: usize = 64;
 pub const MAX_BQ_DIM: usize = MAX_BQ_CHUNKS * 64;
 
 /// 二进制量化指纹 (Binary Quantization Fingerprint)
@@ -24,7 +24,7 @@ pub const MAX_BQ_DIM: usize = MAX_BQ_CHUNKS * 64;
 /// 标准 1-bit LSH 实现，将 f32 向量降维到位向量。
 /// 使用 XOR + Popcount 计算 Hamming 距离。
 ///
-/// 最大支持 3072 维（48 × 64 bits）。
+/// 最大支持 4096 维（64 × 64 bits）。
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
 pub struct BqSignature {
@@ -50,8 +50,9 @@ impl BqSignature {
 
     /// 1-bit 二值量化：> 0.0 的维度置为 1
     pub fn from_vector<T: VectorType>(vec: &[T]) -> Self {
+        assert!(vec.len() <= MAX_BQ_DIM, "BQ vector exceeds maximum dimension");
         let mut data = [0u64; MAX_BQ_CHUNKS];
-        let chunks = vec.len().div_ceil(64).min(MAX_BQ_CHUNKS);
+        let chunks = vec.len().div_ceil(64);
         for i in 0..chunks {
             let mut chunk_bits = 0u64;
             for j in 0..64 {
@@ -105,6 +106,7 @@ impl Bq2Signature {
     }
 
     pub fn from_vector<T: crate::VectorType>(vec: &[T]) -> Self {
+        assert!(vec.len() <= MAX_BQ_DIM, "BQ2 vector exceeds maximum dimension");
         let mut pos = [0u64; MAX_BQ_CHUNKS];
         let mut strong = [0u64; MAX_BQ_CHUNKS];
 
@@ -118,7 +120,7 @@ impl Bq2Signature {
             sum_abs / vec.len() as f32
         };
 
-        let chunks = vec.len().div_ceil(64).min(MAX_BQ_CHUNKS);
+        let chunks = vec.len().div_ceil(64);
         for i in 0..chunks {
             let mut chunk_pos = 0u64;
             let mut chunk_strong = 0u64;
@@ -1141,6 +1143,32 @@ impl Bq2Store {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn high_dimension_tail_is_encoded_without_truncation() {
+        for dim in [3072, 4086, 4096] {
+            let left = vec![1.0_f32; dim];
+            let mut right = left.clone();
+            right[dim - 1] = -1.0;
+            let a = BqSignature::from_vector(&left);
+            let b = BqSignature::from_vector(&right);
+            assert_eq!(a.hamming_distance(&b), 1);
+            let a = Bq2Signature::from_vector(&left);
+            let b = Bq2Signature::from_vector(&right);
+            let mut store = Bq2Store::new(dim);
+            store.push_from_vector(&left);
+            store.push_from_vector(&right);
+            let expected = bq2_distance_raw_scalar(
+                a.pos.as_ptr(), a.strong.as_ptr(),
+                b.pos.as_ptr(), b.strong.as_ptr(), dim,
+            );
+            assert!(expected > a.distance(&a, dim));
+            assert_eq!(a.distance(&b, dim), expected);
+            assert_eq!(store.distance_to_sig(1, &a, dim), expected);
+            assert_eq!(store.get_sig(1), b);
+            assert_eq!(store.hot_bytes(), 2 * dim.div_ceil(64) * 16);
+        }
+    }
+
     use super::*;
 
     #[cfg(target_arch = "x86_64")]

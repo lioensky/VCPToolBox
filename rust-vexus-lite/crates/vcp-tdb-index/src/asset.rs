@@ -1,5 +1,6 @@
 //! VCP-PATCH: immutable, SQL-rebuildable vector assets.
 //! File publication and SQL endorsement belong to the host, not this module.
+use crate::index::bq::MAX_BQ_DIM;
 use memmap2::Mmap;
 use std::collections::HashSet;
 use std::fs::File;
@@ -59,7 +60,7 @@ impl VectorAsset {
         let count = u64_at(&map, 16)?;
         let scope = map[24];
         let layout = map[25];
-        if version != FORMAT_VERSION || dimension == 0 || dimension > 3072
+        if version != FORMAT_VERSION || dimension == 0 || dimension > MAX_BQ_DIM
             || scope > 1 || layout > 1
             || map[26..32].iter().chain(map[144..HEADER].iter()).any(|v| *v != 0)
         {
@@ -162,7 +163,7 @@ pub fn write_staging<F>(
 ) -> io::Result<()>
 where F: FnMut(usize, &mut Vec<f32>) -> bool {
     let dim = identity.dimension;
-    if dim == 0 || dim > 3072 || identity.scope > 1
+    if dim == 0 || dim > MAX_BQ_DIM || identity.scope > 1
         || graph.is_empty() != sm.is_empty()
         || ids.iter().any(|id| *id == 0 || *id > i64::MAX as u64)
         || ids.iter().copied().collect::<HashSet<_>>().len() != ids.len()

@@ -56,7 +56,8 @@ pub(crate) fn build_from_connection(
     model_sig: &str,
     staging: &Path,
 ) -> Result<SqlIndexBuild, String> {
-    if dimension == 0 || dimension > 3072 || model_sig.trim().is_empty() {
+    if dimension == 0 || dimension > vcp_tdb_index::index::bq::MAX_BQ_DIM
+        || model_sig.trim().is_empty() {
         return Err("Invalid SQL retrieval source dimension or model signature".into());
     }
     // Enforce the two-pass snapshot requirement rather than trusting all callers.

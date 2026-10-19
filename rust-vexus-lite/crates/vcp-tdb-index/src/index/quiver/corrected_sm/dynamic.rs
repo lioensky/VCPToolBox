@@ -6,7 +6,7 @@ pub(super) const PORTABLE_MAGIC: &[u8; 8] = b"QSMGEN02";
 
 pub(super) fn check_dimension(dim: usize) -> io::Result<()> {
     if dim == 0 || dim > MAX_BQ_DIM {
-        return Err(invalid("SM维度必须在TDB支持的1至3072范围内"));
+        return Err(invalid(&format!("SM维度必须在TDB支持的1至{MAX_BQ_DIM}范围内")));
     }
     Ok(())
 }
