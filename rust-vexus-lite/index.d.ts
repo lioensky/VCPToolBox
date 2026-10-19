@@ -441,6 +441,10 @@ export declare class VexusIndex {
   planMemoThinking(dbPath: string, artifactSig: string, inputJson: string): Promise<unknown>
   /** 释放本索引持有的统一 Memo 图快照。 */
   clearMemoRuntime(): void
+  /** Release one request observation without invalidating the shared artifact. */
+  releaseMemoObservation(handle: string): boolean
+  /** Read-only retained query payload diagnostics; never evicts observations. */
+  memoObservationMemoryStats(): string
   /** 获取统一 Memo 图快照的常驻诊断。 */
   memoRuntimeStats(): MemoRuntimeStats
   /** 删除 (按 ID) */

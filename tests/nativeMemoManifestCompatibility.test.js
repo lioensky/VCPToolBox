@@ -416,6 +416,37 @@ async function main() {
             );
         }
 
+        const retained = JSON.parse(index.memoObservationMemoryStats());
+        assert.strictEqual(retained.entries, 8,
+            'completed retrievals currently retain their request observations');
+        assert(retained.payloadCapacityBytes > 0);
+        assert.strictEqual(JSON.parse(index.memoObservationMemoryStats()).entries, 8,
+            'memory diagnostics must not evict observations');
+        for (const handle of concurrentHandles) {
+            assert.strictEqual(index.releaseMemoObservation(handle), true);
+            assert.strictEqual(index.releaseMemoObservation(handle), false,
+                'request release must be idempotent');
+        }
+        const released = JSON.parse(index.memoObservationMemoryStats());
+        assert.strictEqual(released.entries, 0);
+        assert.strictEqual(released.payloadCapacityBytes, 0);
+        assert.strictEqual(index.memoRuntimeStats().resident, true,
+            'releasing requests must retain the shared background graph');
+
+        for (let round = 0; round < 32; round++) {
+            const pipeline = await index.runMemoPipeline(
+                dbPath, result.artifactSig,
+                JSON.stringify({ queryText: `memory-round-${round}`,
+                    config: { maxLevels: 1, pyramidTopK: 3 } }),
+                new Float32Array([1, 0, 0, 0]), new Float32Array()
+            );
+            const handle = JSON.parse(pipeline.metadataJson).observationHandle;
+            assert.strictEqual(JSON.parse(index.memoObservationMemoryStats()).entries, 1);
+            assert.strictEqual(index.releaseMemoObservation(handle), true);
+            assert.strictEqual(JSON.parse(index.memoObservationMemoryStats()).payloadCapacityBytes, 0,
+                `round ${round} must not retain completed request payloads`);
+        }
+
         const row = JSON.parse(await nativeKnowledgeRuntime.getNativeMemoManifest(
             dbPath, 'manifest-test-model', sha256(canonicalJson, 32)
         ));

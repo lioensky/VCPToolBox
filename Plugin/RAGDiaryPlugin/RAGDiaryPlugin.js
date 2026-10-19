@@ -1380,6 +1380,8 @@ class RAGDiaryPlugin {
 
     // processMessages 是 messagePreprocessor 的标准接口
     async processMessages(messages, pluginConfig) {
+        const ownedMemoObservations = new Set();
+        let systemMessageTasks = [];
         try {
             // 📝 纯文本快速路径：
             // 当虚拟 system 消息仅包含 {{xx日记本}} / {{xx日记本::LastN}} / {{xx日记本::BM25}} 直接引入占位符时，
@@ -1625,6 +1627,7 @@ class RAGDiaryPlugin {
             );
             const globalProcessedDiaries = new Set(); // 在最外层维护一个 Set
             const requestCache = this._createRequestCache(); // 🌟 单轮请求级缓存：chunks/time/fullDoc/diaryScore/tagBoost
+            requestCache.ownedMemoObservations = ownedMemoObservations;
             if (this.riverThinkingConfig?.enabled && targetSystemMessageIndices.some(index =>
                 /\[\[VCP元思考[^\]]*\]\]/.test(this._extractTextFromContent(messages[index].content))
             )) {
@@ -1635,7 +1638,7 @@ class RAGDiaryPlugin {
                 };
             }
             // 🌟 优化：并发处理所有目标 system 消息，显著提升多日记本场景下的 Rerank 速度
-            await Promise.all(targetSystemMessageIndices.map(async (index) => {
+            systemMessageTasks = targetSystemMessageIndices.map(async (index) => {
                 console.log(`[RAGDiaryPlugin] Processing system message at index: ${index}`);
                 const systemMessage = newMessages[index];
 
@@ -1666,17 +1669,18 @@ class RAGDiaryPlugin {
                     systemMessage.content,
                     () => processedContent
                 );
-            }));
+            });
+            await Promise.all(systemMessageTasks);
 
             // 所有日记门控和检索结束后再执行元思考，不等待自身造成死锁。
             // 观测只保留在本请求；禁止单例 lastObservation 串会话。
             if (requestCache.riverThinking) {
-                const deferredResults = await Promise.all(
-                    requestCache.riverThinking.deferred.map(async task => ({
-                        token: task.token,
-                        result: await task.run()
-                    }))
-                );
+                const deferredTasks = requestCache.riverThinking.deferred.map(async task => ({
+                    token: task.token,
+                    result: await task.run()
+                }));
+                systemMessageTasks.push(...deferredTasks);
+                const deferredResults = await Promise.all(deferredTasks);
                 for (const { token, result } of deferredResults) {
                     for (const index of targetSystemMessageIndices) {
                         newMessages[index].content = this._replaceTextInContent(
@@ -1773,6 +1777,11 @@ class RAGDiaryPlugin {
                 }
             });
             return safeMessages;
+        } finally {
+            await Promise.allSettled(systemMessageTasks);
+            for (const prepared of ownedMemoObservations) {
+                this.vectorDBManager?.releaseMemoObservation?.(prepared);
+            }
         }
     }
 
@@ -3192,6 +3201,7 @@ class RAGDiaryPlugin {
                             maxTransitionRecords: requestCache.riverThinking.config.maxTransitionRecords
                         }
                     );
+                    requestCache.ownedMemoObservations?.add(thinkingObservation);
                 } catch (error) {
                     console.warn('[RAGDiaryPlugin] River thinking observation unavailable:', error.message);
                 }

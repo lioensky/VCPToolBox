@@ -1130,6 +1130,7 @@ fn effective_domain(
     retained
 }
 
+#[cfg(test)]
 fn project_field(
     vectors: &HashMap<i64, Vec<f32>>,
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
@@ -1156,6 +1157,51 @@ fn project_field(
         normalize(&mut output);
     }
     Ok(output.into_iter().map(|value| value as f32).collect())
+}
+
+/// Project both fields in artifact order while retaining at most one SQL batch.
+/// Do not collect all positive-support FP32 rows into a request-wide matrix.
+fn project_dual_fields(
+    connection: &Connection,
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    local: &[f64],
+    transfer: &[f64],
+    dimension: usize,
+) -> std::result::Result<(Vec<f32>, Vec<f32>), String> {
+    let mut outputs = [vec![0.0f64; dimension], vec![0.0f64; dimension]];
+    let mut totals = [0.0f64; 2];
+    for (batch_index, ids) in artifact.node_ids.chunks(128).enumerate() {
+        let start = batch_index * 128;
+        let requested: Vec<i64> = ids.iter().enumerate()
+            .filter(|(offset, _)| local[start + offset] > 0.0
+                || transfer[start + offset] > 0.0)
+            .map(|(_, id)| *id)
+            .collect();
+        let vectors = load_vectors_by_ids(connection, "tags", &requested, dimension)?;
+        for (offset, id) in ids.iter().enumerate() {
+            let Some(vector) = vectors.get(id) else { continue };
+            for (field, mass) in [local[start + offset], transfer[start + offset]]
+                .into_iter().enumerate()
+            {
+                if mass <= 0.0 { continue; }
+                totals[field] += mass;
+                for (output, value) in outputs[field].iter_mut().zip(vector) {
+                    *output += *value as f64 * mass;
+                }
+            }
+        }
+    }
+    for (output, total) in outputs.iter_mut().zip(totals) {
+        if total > 0.0 {
+            for value in output.iter_mut() { *value /= total; }
+            normalize(output);
+        }
+    }
+    let [local, transfer] = outputs;
+    Ok((
+        local.into_iter().map(|value| value as f32).collect(),
+        transfer.into_iter().map(|value| value as f32).collect(),
+    ))
 }
 
 fn solve_dual_fields(
@@ -1252,12 +1298,8 @@ fn solve_dual_fields(
         .collect();
     let local_domain_ids = effective_domain(artifact, &local, config.local_mass_ratio);
     let transfer_domain_ids = effective_domain(artifact, &transfer, config.transfer_mass_ratio);
-    let ids = artifact.node_ids.iter().enumerate()
-        .filter(|(i, _)| local[*i] > 0.0 || transfer[*i] > 0.0)
-        .map(|(_, id)| *id).collect::<Vec<_>>();
-    let vectors = load_vectors_by_ids(connection, "tags", &ids, dimension)?;
-    let local_vector = project_field(&vectors, artifact, &local, dimension)?;
-    let transfer_vector = project_field(&vectors, artifact, &transfer, dimension)?;
+    let (local_vector, transfer_vector) =
+        project_dual_fields(connection, artifact, &local, &transfer, dimension)?;
     let local_mass = field_mass(&local);
     let transfer_mass = field_mass(&transfer);
 
@@ -1631,6 +1673,50 @@ pub(crate) fn run_with_runtime(
 #[cfg(test)]
 mod audit_gate_tests {
     use super::*;
+
+    #[test]
+    fn batched_dual_projection_matches_materialized_projection_bit_for_bit() {
+        use crate::rivermemo_topology_v3::NativeArtifact;
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE tags(id INTEGER PRIMARY KEY,vector BLOB);"
+        ).unwrap();
+        let ids: Vec<i64> = (1..=300).rev().collect();
+        for id in 1..=300_i64 {
+            if id == 129 { continue; }
+            let vector = if id == 258 {
+                vec![f32::NAN, 0.0, 0.0]
+            } else {
+                vec![(id as f32).sin(), id as f32 * 0.01, -0.25]
+            };
+            let bytes: Vec<u8> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
+            connection.execute("INSERT INTO tags VALUES (?1,?2)",
+                rusqlite::params![id, bytes]).unwrap();
+        }
+        let artifact = NativeArtifact {
+            node_index: ids.iter().enumerate().map(|(i, id)| (*id, i)).collect(),
+            node_ids: ids.clone(), row_offsets: vec![], targets: vec![],
+            weights: vec![], inbound: HashMap::new(), max_inbound: 0.0,
+            anchor_gain: HashMap::new(), wormhole_edges: HashSet::new(),
+            provenance: HashMap::new(),
+        };
+        let local: Vec<f64> = (0..300).map(|i|
+            if i % 3 == 0 { 0.0 } else { 1.0 / (i + 1) as f64 }).collect();
+        let transfer: Vec<f64> = (0..300).map(|i|
+            if i % 5 == 0 { 0.0 } else { (i + 1) as f64 * 0.0001 }).collect();
+        let vectors = load_vectors_by_ids(&connection, "tags", &ids, 3).unwrap();
+        let expected_local = project_field(&vectors, &artifact, &local, 3).unwrap();
+        let expected_transfer = project_field(&vectors, &artifact, &transfer, 3).unwrap();
+        let (actual_local, actual_transfer) =
+            project_dual_fields(&connection, &artifact, &local, &transfer, 3).unwrap();
+        assert_eq!(actual_local.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            expected_local.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        assert_eq!(actual_transfer.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            expected_transfer.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        let zeros = vec![0.0; 300];
+        assert_eq!(project_dual_fields(&connection, &artifact, &zeros, &zeros, 3).unwrap(),
+            (vec![0.0; 3], vec![0.0; 3]));
+    }
 
     #[test]
     fn core_gate_preserves_zero_and_negative_cosine_measurements() {

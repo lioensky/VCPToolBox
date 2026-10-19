@@ -577,6 +577,18 @@ impl VexusIndex {
         self.memo_runtime.clear().map_err(Error::from_reason)
     }
 
+    /// Release one request observation without invalidating the shared artifact.
+    #[napi]
+    pub fn release_memo_observation(&self, handle: String) -> Result<bool> {
+        self.memo_runtime.release_query_observation(&handle).map_err(Error::from_reason)
+    }
+
+    /// Read-only retained query payload diagnostics; never evicts observations.
+    #[napi]
+    pub fn memo_observation_memory_stats(&self) -> Result<String> {
+        self.memo_runtime.observation_memory_stats().map_err(Error::from_reason)
+    }
+
     /// 获取统一 Memo 图快照的常驻诊断。
     #[napi]
     pub fn memo_runtime_stats(&self) -> Result<MemoRuntimeStats> {

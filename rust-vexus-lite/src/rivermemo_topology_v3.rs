@@ -362,6 +362,36 @@ pub(crate) struct MemoQueryObservation {
     pub(crate) transfer_domain_ids: Arc<Vec<i64>>,
 }
 
+impl MemoQueryObservation {
+    /// Owned payload capacity only; excludes allocator headers and Arc headers.
+    fn payload_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let observation = &self.observation;
+        self.artifact_sig.capacity()
+            + size_of::<Self>()
+            + size_of::<SenseOutput>()
+            + observation.schema.capacity()
+            + observation.algorithm_version.capacity()
+            + observation.artifact_sig.capacity()
+            + observation.query_id.as_ref().map_or(0, String::capacity)
+            + observation.source_field.capacity() * size_of::<(i64, f64)>()
+            + observation.nodes.capacity() * size_of::<crate::memo_sensing::ObservationNode>()
+            + observation.nodes.iter().map(|node| node.source_type.capacity()
+                + node.origin_type.as_ref().map_or(0, String::capacity)).sum::<usize>()
+            + observation.edges.capacity() * size_of::<crate::memo_sensing::ObservationEdge>()
+            + observation.transitions.capacity() * size_of::<crate::memo_sensing::ObservationTransition>()
+            + observation.diagnostics.backend.capacity()
+            + observation.diagnostics.hop_in_flight_mass.capacity() * size_of::<f64>()
+            + [&self.original_query_vector, &self.enhanced_query_vector,
+                &self.local_vector, &self.transfer_vector].iter()
+                .map(|vector| vector.capacity() * size_of::<f32>()).sum::<usize>()
+            + (self.local_field.capacity() + self.transfer_field.capacity())
+                * size_of::<(i64, f64)>()
+            + (self.local_domain_ids.capacity() + self.transfer_domain_ids.capacity())
+                * size_of::<i64>()
+    }
+}
+
 struct MemoQueryCacheEntry {
     value: Arc<MemoQueryObservation>,
     inserted_at: Instant,
@@ -568,6 +598,19 @@ impl MemoRuntime {
         Ok(entry.value.clone())
     }
 
+    pub(crate) fn release_query_observation(&self, handle: &str)
+        -> std::result::Result<bool, String> {
+        // Remove both ownership and FIFO bookkeeping under the insertion lock order.
+        // Consumers that already cloned the Arc remain valid until they complete.
+        let mut cache = self.query_cache.lock()
+            .map_err(|error| format!("memo query cache lock failed: {}", error))?;
+        let mut order = self.query_cache_order.lock()
+            .map_err(|error| format!("memo query cache order lock failed: {}", error))?;
+        let removed = cache.remove(handle).is_some();
+        order.retain(|entry| entry != handle);
+        Ok(removed)
+    }
+
     pub(crate) fn clear(&self) -> std::result::Result<(), String> {
         let mut guard = self
             .active_artifact
@@ -576,6 +619,38 @@ impl MemoRuntime {
         *guard = None;
         drop(guard);
         self.clear_query_cache()
+    }
+
+    pub(crate) fn observation_memory_stats(&self) -> std::result::Result<String, String> {
+        let cache = self.query_cache.lock()
+            .map_err(|error| format!("memo query cache lock failed: {}", error))?;
+        let now = Instant::now();
+        let mut bytes = 0usize;
+        let mut expired = 0usize;
+        let mut nodes = 0usize;
+        let mut edges = 0usize;
+        let mut field_entries = 0usize;
+        let mut largest = 0usize;
+        let mut oldest_ms = 0u128;
+        for entry in cache.values() {
+            let size = entry.value.payload_bytes();
+            bytes += size;
+            largest = largest.max(size);
+            let age = now.duration_since(entry.inserted_at);
+            oldest_ms = oldest_ms.max(age.as_millis());
+            expired += usize::from(age > self.query_cache_ttl);
+            nodes += entry.value.observation.nodes.len();
+            edges += entry.value.observation.edges.len();
+            field_entries += entry.value.local_field.len() + entry.value.transfer_field.len();
+        }
+        serde_json::to_string(&serde_json::json!({
+            "entries": cache.len(), "expiredEntries": expired,
+            "capacity": self.query_cache_capacity, "ttlMs": self.query_cache_ttl.as_millis(),
+            "payloadCapacityBytes": bytes, "largestPayloadBytes": largest,
+            "nodes": nodes, "edges": edges, "fieldEntries": field_entries,
+            "oldestAgeMs": oldest_ms,
+            "note": "Retained observation payload capacities; excludes allocator/container overhead and active task clones. Read-only: does not evict expired entries."
+        })).map_err(|error| error.to_string())
     }
 
     pub(crate) fn diagnostics(

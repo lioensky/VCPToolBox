@@ -88,6 +88,19 @@ function profileRiverMemo(state) {
         nativeRuntime = { available: false, error: error.message || String(error) };
     }
 
+    let observationMemory = { available: false };
+    try {
+        if (typeof state.tagIndex?.memoObservationMemoryStats === 'function') {
+            const raw = state.tagIndex.memoObservationMemoryStats();
+            observationMemory = {
+                available: true,
+                ...(typeof raw === 'string' ? JSON.parse(raw) : raw)
+            };
+        }
+    } catch (error) {
+        observationMemory = { available: false, error: error.message || String(error) };
+    }
+
     const residentArtifactSig =
         nativeRuntime?.activeArtifactSig
         ?? nativeRuntime?.artifactSig
@@ -144,6 +157,7 @@ function profileRiverMemo(state) {
             estimatedBytes: 0
         },
         conditionedOperator,
+        observationMemory,
         nativeRuntime: {
             available: nativeRuntime !== null
                 && nativeRuntime?.available !== false,
