@@ -5,6 +5,10 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { AsyncLocalStorage } = require('node:async_hooks');
+
+// 单轮请求拥有共享观测；异步读出只借用句柄，不得提前释放。
+const memoObservationScope = new AsyncLocalStorage();
 const { getEmbeddingsBatch } = require('./EmbeddingUtils');
 const ResultDeduplicator = require('./ResultDeduplicator'); // ✅ Tagmemo v4 requirement
 const TagMemoEngine = require('./TagMemoEngine');
@@ -2057,6 +2061,57 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         return { artifact, dbPath: this.dbPath };
     }
 
+    async withMemoObservationScope(operation) {
+        const current = memoObservationScope.getStore();
+        if (current?.owner === this) return operation();
+        const scope = { owner: this, tasks: new Map(), handles: new Set() };
+        return memoObservationScope.run(scope, async () => {
+            try {
+                return await operation();
+            } finally {
+                await Promise.allSettled(scope.tasks.values());
+                for (const handle of scope.handles) {
+                    try {
+                        this.tagIndex?.releaseMemoObservation?.(handle);
+                    } catch (error) {
+                        console.warn(`[KnowledgeBase] Shared Memo release failed: ${error.message}`);
+                    }
+                }
+                scope.tasks.clear();
+                scope.handles.clear();
+            }
+        });
+    }
+
+    _runMemoPipelineShared(dbPath, artifactSig, inputJson, queryVector, ghostVectors) {
+        const scope = memoObservationScope.getStore();
+        if (!scope || scope.owner !== this) {
+            return this.tagIndex.runMemoPipeline(
+                dbPath, artifactSig, inputJson, queryVector, ghostVectors
+            );
+        }
+        // 使用实际 ABI 输入：包含完整 FP32 向量、所有有效配置和资产身份，
+        // 不包含候选索引、权限、K 或排序选项。
+        const key = crypto.createHash('sha256')
+            .update(stableSerialize([dbPath, artifactSig, JSON.parse(inputJson)]))
+            .update(Buffer.from(queryVector.buffer, queryVector.byteOffset, queryVector.byteLength))
+            .update(Buffer.from(ghostVectors.buffer, ghostVectors.byteOffset, ghostVectors.byteLength))
+            .digest('hex');
+        if (!scope.tasks.has(key)) {
+            const task = Promise.resolve().then(async () => {
+                const result = await this.tagIndex.runMemoPipeline(
+                    dbPath, artifactSig, inputJson, queryVector, ghostVectors
+                );
+                const metadata = JSON.parse(result.metadataJson);
+                if (metadata.observationHandle) scope.handles.add(metadata.observationHandle);
+                return result;
+            });
+            // 在启动原生任务前登记 Promise；失败也共享，避免同轮失败风暴。
+            scope.tasks.set(key, task);
+        }
+        return scope.tasks.get(key);
+    }
+
     /**
      * 统一原生感应入口。
      *
@@ -2141,7 +2196,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             isCore: tag.isCore
         }));
 
-        const nativeResult = await this.tagIndex.runMemoPipeline(
+        const nativeResult = await this._runMemoPipelineShared(
             dbPath,
             artifact.artifactSig,
             JSON.stringify({
@@ -2421,6 +2476,8 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
     releaseMemoObservation(prepared) {
         const handle = prepared?.observationHandle;
         if (!handle || typeof this.tagIndex?.releaseMemoObservation !== 'function') return false;
+        const scope = memoObservationScope.getStore();
+        if (scope?.owner === this && scope.handles.has(handle)) return false;
         try {
             return this.tagIndex.releaseMemoObservation(handle);
         } catch (error) {
