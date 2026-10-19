@@ -687,6 +687,13 @@ export const RIVERMEMO_PARAM_METADATA: Record<string, ParamMeta> = {
     range: "建议保持 0.90",
     tone: RIVER_SENSITIVE,
   },
+  "effectiveSupport.maxProjectionNodes": {
+    label: "每场向量投影预算",
+    summary: "Local / Transfer 分别按有效质量域的质量降序取前 K 个，去重并集最多 2K；仅差集向量读取 SQLite。",
+    logic: "支持任意非负整数。0 仅取消数量上限，仍受质量域约束；不代表全正支撑基线。可对比 64、128、256、512 等预算。",
+    range: "非负整数；默认 256；0 表示有效域内不限量",
+    tone: RIVER_SENSITIVE,
+  },
   candidateSuperset: {
     label: "六路候选超集",
     summary: "合并 Query、Denoised、Local、Transfer、BM25 与 Direct Anchor 候选。",
@@ -810,6 +817,10 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
 } {
   const key = subKey.toLowerCase();
   const leafKey = key.split(".").pop() ?? key;
+
+  if (leafKey === "maxprojectionnodes") {
+    return { min: 0, max: Math.max(4096, typeof subVal === "number" ? subVal : 0), step: 1 };
+  }
 
   // Wormhole routing explicit ranges (must be checked before generic threshold rules).
   if (leafKey === "tensionthreshold") {

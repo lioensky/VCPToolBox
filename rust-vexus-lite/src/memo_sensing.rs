@@ -292,19 +292,17 @@ pub(crate) fn sense_typed(
             }
             let start = artifact.row_offsets[spike.node_index];
             let end = artifact.row_offsets[spike.node_index + 1];
-            let mut neighbors: Vec<(usize, f64)> = (start..end)
-                .map(|cursor| (artifact.targets[cursor], positive(artifact.weights[cursor])))
-                .filter(|entry| entry.1 > 0.0)
-                .collect();
-            neighbors
-                .sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
-            neighbors.truncate(config.max_neighbors_per_node.max(1));
-
-            for (target_index, conductance) in neighbors {
+            // Immutable rows are weight-ranked once when the asset is prepared.
+            // No per-state neighbor allocation, sorting or fixed-property hashing.
+            let limit = end.min(start.saturating_add(config.max_neighbors_per_node.max(1)));
+            for cursor in start..limit {
+                let target_index = artifact.targets[cursor];
+                let conductance = positive(artifact.weights[cursor]);
+                if conductance <= 0.0 { break; }
                 let source_id = artifact.node_ids[spike.node_index];
                 let target_id = artifact.node_ids[target_index];
-                let residual = artifact.anchor_gain.get(&target_id).copied().unwrap_or(1.0);
-                let wormhole = artifact.wormhole_edges.contains(&(source_id, target_id))
+                let residual = artifact.node_anchor_gain[target_index];
+                let wormhole = artifact.edge_is_wormhole[cursor]
                     || conductance * residual >= config.tension_threshold;
                 let decay = if wormhole {
                     config.wormhole_decay
@@ -591,4 +589,48 @@ pub(crate) fn sense_typed(
         transitions,
         transitions_truncated,
     })
+}
+
+#[cfg(test)]
+mod csr_preparation_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn ranked_rows_preserve_flags_and_request_thresholds() {
+        let graph = NativeArtifact {
+            node_ids: vec![10, 30, 20, 40],
+            node_index: HashMap::from([(10, 0), (30, 1), (20, 2), (40, 3)]),
+            row_offsets: vec![0, 3, 3, 3, 3],
+            targets: vec![3, 1, 2],
+            weights: vec![0.1, 0.5, 0.5],
+            anchor_gain: HashMap::from([(20, 2.0)]),
+            wormhole_edges: HashSet::from([(10, 30)]),
+            ..NativeArtifact::default()
+        }.prepared();
+        assert_eq!(graph.targets, vec![2, 1, 3]);
+        assert_eq!(graph.weights, vec![0.5, 0.5, 0.1]);
+        assert_eq!(graph.node_anchor_gain, vec![1.0, 1.0, 2.0, 1.0]);
+        assert_eq!(graph.edge_is_wormhole, vec![false, true, false]);
+        let run = |threshold, k| sense_typed(&graph, "test", SenseInput {
+            query_id: None,
+            seeds: vec![SenseSeed { id: 10, energy: 1.0, source_type: "seed".into() }],
+            config: SenseConfig {
+                max_safe_hops: 1, max_neighbors_per_node: k,
+                tension_threshold: threshold, minimum_injected_current: 0.0,
+                ..SenseConfig::default()
+            },
+        }).unwrap();
+        let high = run(2.0, 2);
+        assert_eq!(high.edges.len(), 2);
+        assert!(!high.edges.iter().find(|e| e.target_id == 20).unwrap().wormhole);
+        assert!(high.edges.iter().find(|e| e.target_id == 30).unwrap().wormhole);
+        let low = run(1.0, 2);
+        assert!(low.edges.iter().all(|edge| edge.wormhole));
+        let top_one = run(2.0, 1);
+        assert_eq!(top_one.edges[0].target_id, 20);
+        let again = graph.prepared();
+        assert_eq!(again.targets, vec![2, 1, 3]);
+        assert_eq!(again.edge_is_wormhole, vec![false, true, false]);
+    }
 }

@@ -500,7 +500,6 @@ mod continuity_tests {
             Ok(())
         }).unwrap();
         drop(table);
-        drop(load);
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

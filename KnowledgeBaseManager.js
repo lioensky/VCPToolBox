@@ -2154,9 +2154,15 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             ...(options.transferField || {})
         };
         const effectiveSupportConfig = {
+            ...(riverConfig.effectiveSupport || {}),
             ...(nativeMemoConfig.effectiveSupport || {}),
             ...(options.effectiveSupport || {})
         };
+        const maxFieldProjectionNodes = options.maxFieldProjectionNodes
+            ?? effectiveSupportConfig.maxProjectionNodes ?? 256;
+        if (!Number.isSafeInteger(maxFieldProjectionNodes) || maxFieldProjectionNodes < 0) {
+            throw new RangeError('maxFieldProjectionNodes must be a non-negative safe integer');
+        }
         const language = kbConfig.languageCompensator || {};
         const requestedCoreTags = Array.isArray(options.coreTags)
             ? options.coreTags
@@ -2244,6 +2250,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
                             Number(effectiveSupportConfig.transferMassRatio ?? 0.9)
                         )
                     ),
+                    maxFieldProjectionNodes,
                     maxLevels: Math.max(
                         1,
                         Math.floor(Number(options.maxPyramidLevels) || 3)
@@ -2349,6 +2356,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             || !(enhancedVector instanceof Float32Array)
             || enhancedVector.length !== this.config.dimension
         ) {
+            if (observationHandle) this.releaseMemoObservation({ observationHandle });
             const error = new Error(
                 'Unified native Memo pipeline failed artifact/schema validation'
             );

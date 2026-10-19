@@ -10,6 +10,8 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc};
 use std::time::Instant;
+use crate::storage::{ensure_tag_vectors_loaded, TagVectorPool};
+#[cfg(test)]
 use crate::storage::load_vectors_by_ids;
 
 const PIPELINE_SCHEMA: &str = "vexus-unified-memo-pipeline-v1";
@@ -108,6 +110,7 @@ struct PipelineConfig {
     transfer_tolerance: f64,
     local_mass_ratio: f64,
     transfer_mass_ratio: f64,
+    max_field_projection_nodes: usize,
     max_levels: usize,
     pyramid_top_k: usize,
     min_energy_ratio: f64,
@@ -140,6 +143,7 @@ impl Default for PipelineConfig {
             transfer_tolerance: 1e-9,
             local_mass_ratio: 0.8,
             transfer_mass_ratio: 0.9,
+            max_field_projection_nodes: 256,
             max_levels: 3,
             pyramid_top_k: 10,
             min_energy_ratio: 0.1,
@@ -387,7 +391,7 @@ fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usiz
 struct PyramidTagWork {
     id: i64,
     name: String,
-    vector: Vec<f32>,
+    vector: Arc<[f32]>,
     similarity: f64,
     contribution: f64,
     handshake_magnitude: f64,
@@ -562,24 +566,42 @@ fn load_tag_names(
     ids: &[i64],
 ) -> std::result::Result<HashMap<i64, String>, String> {
     let mut names = HashMap::new();
-    let mut statement = connection
-        .prepare("SELECT name FROM tags WHERE id = ?1")
-        .map_err(|error| format!("prepare Memo pipeline Tag name query failed: {}", error))?;
-    for id in ids {
-        if let Ok(name) = statement.query_row(rusqlite::params![id], |row| row.get::<_, String>(0))
-        {
-            names.insert(*id, name);
+    let mut unique = ids.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    for batch in unique.chunks(128) {
+        let sql = format!("SELECT id, name FROM tags WHERE id IN ({})",
+            vec!["?"; batch.len()].join(","));
+        let mut statement = connection.prepare(&sql)
+            .map_err(|error| format!("prepare Memo Tag names failed: {error}"))?;
+        let rows = statement.query_map(rusqlite::params_from_iter(batch.iter()), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        }).map_err(|error| format!("query Memo Tag names failed: {error}"))?;
+        for row in rows {
+            if let Ok((id, name)) = row { names.insert(id, name); }
         }
     }
     Ok(names)
 }
 
+#[cfg(test)]
 fn analyze_pyramid(
     index: &Arc<crate::index_handle::IndexHandle>,
     connection: &Connection,
     query: &[f32],
     dimension: usize,
     config: &PipelineConfig,
+) -> std::result::Result<(PyramidOutput, Vec<Vec<PyramidTagWork>>), String> {
+    analyze_pyramid_with_pool(index, connection, query, dimension, config, &mut TagVectorPool::new())
+}
+
+fn analyze_pyramid_with_pool(
+    index: &Arc<crate::index_handle::IndexHandle>,
+    connection: &Connection,
+    query: &[f32],
+    dimension: usize,
+    config: &PipelineConfig,
+    tag_vectors: &mut TagVectorPool,
 ) -> std::result::Result<(PyramidOutput, Vec<Vec<PyramidTagWork>>), String> {
     let original_energy = magnitude(query).powi(2);
     if original_energy <= 1e-12 {
@@ -611,10 +633,10 @@ fn analyze_pyramid(
         }
         let ids: Vec<i64> = matches.iter().map(|(id, _)| *id as i64).collect();
         drop(guard);
-        let mut rows = load_vectors_by_ids(connection, "tags", &ids, dimension)?;
+        ensure_tag_vectors_loaded(connection, tag_vectors, &ids, dimension)?;
         let mut tags = Vec::new();
         for id in &ids {
-            let Some(vector) = rows.remove(id) else { continue };
+            let Some(vector) = tag_vectors.get(id).cloned() else { continue };
             let similarity = cosine(&residual, &vector);
             tags.push(PyramidTagWork {
                 id: *id,
@@ -815,7 +837,7 @@ struct FusionTag {
     name: String,
     weight: f64,
     is_core: bool,
-    vector: Vec<f32>,
+    vector: Arc<[f32]>,
 }
 
 #[derive(Clone, Serialize)]
@@ -831,7 +853,17 @@ struct FusionDiagnostics {
     ghost_count: usize,
 }
 
+#[cfg(test)]
 fn fuse_observation(
+    connection: &Connection, query: &[f32], observation: &SenseOutput,
+    gated_tags: &[GatedTag], core_tags: &[String], ghost_tags: &[GhostTagInput],
+    dynamic_core_boost: f64, dimension: usize, alpha: f64, config: &PipelineConfig,
+) -> std::result::Result<(Vec<f64>, FusionDiagnostics, Vec<FusionTag>), String> {
+    fuse_observation_with_pool(connection, query, observation, gated_tags, core_tags,
+        ghost_tags, dynamic_core_boost, dimension, alpha, config, &mut TagVectorPool::new())
+}
+
+fn fuse_observation_with_pool(
     connection: &Connection,
     query: &[f32],
     observation: &SenseOutput,
@@ -842,6 +874,7 @@ fn fuse_observation(
     dimension: usize,
     alpha: f64,
     config: &PipelineConfig,
+    tag_vectors: &mut TagVectorPool,
 ) -> std::result::Result<(Vec<f64>, FusionDiagnostics, Vec<FusionTag>), String> {
     // 与 JS SOTA 完全相同：传播后的原始种子取 max，防止循环共现膨胀；
     // 纯涌现节点按能量排序后只保留 Top-N。
@@ -931,10 +964,10 @@ fn fuse_observation(
     drop(core_statement);
     let requested_count = merged.len() + ghost_tags.len();
     let ids = merged.iter().map(|tag| tag.id).collect::<Vec<_>>();
-    let mut rows = load_vectors_by_ids(connection, "tags", &ids, dimension)?;
+    ensure_tag_vectors_loaded(connection, tag_vectors, &ids, dimension)?;
     let mut vectors = Vec::with_capacity(requested_count);
     for tag in merged {
-        let Some(vector) = rows.remove(&tag.id) else { continue };
+        let Some(vector) = tag_vectors.get(&tag.id).cloned() else { continue };
         if magnitude(&vector) > 1e-12 {
             vectors.push(FusionTag {
                 id: tag.id,
@@ -967,7 +1000,7 @@ fn fuse_observation(
                     1.0
                 },
             is_core: ghost.is_core,
-            vector: ghost.vector.clone(),
+            vector: Arc::from(ghost.vector.clone()),
         });
         ghost_id -= 1;
         accepted_ghosts += 1;
@@ -1048,9 +1081,25 @@ fn fuse_observation(
     Ok((fused, diagnostics, selected))
 }
 
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DualFieldDiagnostics {
+    retained_local_field_nodes: usize,
+    retained_transfer_field_nodes: usize,
+    local_domain_nodes: usize,
+    transfer_domain_nodes: usize,
+    projected_nodes: usize,
+    selected_projection_nodes: usize,
+    sql_fetched_nodes: usize,
+    sql_requested_nodes: usize,
+    sql_batches: usize,
+    local_selected_mass_ratio: f64,
+    transfer_selected_mass_ratio: f64,
+    local_projected_mass_ratio: f64,
+    transfer_projected_mass_ratio: f64,
+    solve_ms: f64,
+    domain_ms: f64,
+    project_ms: f64,
     iterations: usize,
     local_converged: bool,
     transfer_converged: bool,
@@ -1159,8 +1208,8 @@ fn project_field(
     Ok(output.into_iter().map(|value| value as f32).collect())
 }
 
-/// Project both fields in artifact order while retaining at most one SQL batch.
-/// Do not collect all positive-support FP32 rows into a request-wide matrix.
+/// Legacy full-support projection retained only as a regression reference.
+#[cfg(test)]
 fn project_dual_fields(
     connection: &Connection,
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
@@ -1204,6 +1253,62 @@ fn project_dual_fields(
     ))
 }
 
+fn project_supported_fields(
+    connection: &Connection,
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    fields: [&[f64]; 2],
+    domains: [&[i64]; 2],
+    dimension: usize,
+    limit: usize,
+    pool: &mut TagVectorPool,
+    diagnostics: &mut DualFieldDiagnostics,
+) -> std::result::Result<(Vec<f32>, Vec<f32>), String> {
+    let selected: [Vec<i64>; 2] = domains.map(|ids| {
+        ids.iter().copied().take(if limit == 0 { ids.len() } else { limit }).collect()
+    });
+    let mut union: Vec<i64> = selected.iter().flatten().copied().collect();
+    union.sort_unstable();
+    union.dedup();
+    diagnostics.selected_projection_nodes = union.len();
+    let stats = ensure_tag_vectors_loaded(connection, pool, &union, dimension)?;
+    diagnostics.sql_fetched_nodes = stats.fetched_nodes;
+    diagnostics.sql_requested_nodes = stats.requested_nodes;
+    diagnostics.sql_batches = stats.sql_batches;
+    diagnostics.projected_nodes = union.iter().filter(|id| pool.contains_key(id)).count();
+    let mut outputs = [vec![0.0f64; dimension], vec![0.0f64; dimension]];
+    let mut selected_ratios = [0.0; 2];
+    let mut projected_ratios = [0.0; 2];
+    for field in 0..2 {
+        let total_mass = field_mass(fields[field]);
+        let mut selected_mass = 0.0;
+        let mut projected_mass = 0.0;
+        for id in &selected[field] {
+            let Some(&index) = artifact.node_index.get(id) else { continue };
+            let mass = positive(fields[field][index]);
+            selected_mass += mass;
+            let Some(vector) = pool.get(id) else { continue };
+            projected_mass += mass;
+            for (out, value) in outputs[field].iter_mut().zip(vector.iter()) {
+                *out += *value as f64 * mass;
+            }
+        }
+        if projected_mass > 0.0 {
+            for out in &mut outputs[field] { *out /= projected_mass; }
+            normalize(&mut outputs[field]);
+        }
+        if total_mass > 0.0 {
+            selected_ratios[field] = selected_mass / total_mass;
+            projected_ratios[field] = projected_mass / total_mass;
+        }
+    }
+    [diagnostics.local_selected_mass_ratio, diagnostics.transfer_selected_mass_ratio] = selected_ratios;
+    [diagnostics.local_projected_mass_ratio, diagnostics.transfer_projected_mass_ratio] = projected_ratios;
+    let [local, transfer] = outputs;
+    Ok((local.into_iter().map(|v| v as f32).collect(),
+        transfer.into_iter().map(|v| v as f32).collect()))
+}
+
+#[cfg(test)]
 fn solve_dual_fields(
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
     connection: &Connection,
@@ -1211,6 +1316,20 @@ fn solve_dual_fields(
     dimension: usize,
     config: &PipelineConfig,
 ) -> std::result::Result<DualFieldOutput, String> {
+    solve_dual_fields_with_pool(artifact, connection, source_entries, dimension, config,
+        &mut TagVectorPool::new(), &[])
+}
+
+fn solve_dual_fields_with_pool(
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    connection: &Connection,
+    source_entries: &[(i64, f64)],
+    dimension: usize,
+    config: &PipelineConfig,
+    pool: &mut TagVectorPool,
+    river_ids: &[i64],
+) -> std::result::Result<DualFieldOutput, String> {
+    let solve_started = Instant::now();
     let mut source = vec![0.0f64; artifact.node_ids.len()];
     for (id, mass) in source_entries {
         if let Some(index) = artifact.node_index.get(id) {
@@ -1234,6 +1353,7 @@ fn solve_dual_fields(
                 transfer_residual: 0.0,
                 local_mass: 0.0,
                 transfer_mass: 0.0,
+                ..DualFieldDiagnostics::default()
             },
         });
     }
@@ -1282,26 +1402,44 @@ fn solve_dual_fields(
         }
     }
 
-    let local_field: Vec<(i64, f64)> = artifact
-        .node_ids
-        .iter()
-        .copied()
-        .zip(local.iter().copied())
-        .filter(|(_, mass)| *mass > 0.0)
-        .collect();
-    let transfer_field: Vec<(i64, f64)> = artifact
-        .node_ids
-        .iter()
-        .copied()
-        .zip(transfer.iter().copied())
-        .filter(|(_, mass)| *mass > 0.0)
-        .collect();
+    let solve_ms = solve_started.elapsed().as_secs_f64() * 1000.0;
+    let domain_started = Instant::now();
     let local_domain_ids = effective_domain(artifact, &local, config.local_mass_ratio);
     let transfer_domain_ids = effective_domain(artifact, &transfer, config.transfer_mass_ratio);
-    let (local_vector, transfer_vector) =
-        project_dual_fields(connection, artifact, &local, &transfer, dimension)?;
+    // Scalar retention is independent of projection K. Keep meaningful tails for
+    // path potentials/tail penalties, and always preserve support/river nodes.
+    let mut retained: Vec<i64> = local_domain_ids.iter().chain(&transfer_domain_ids)
+        .chain(river_ids).copied().collect();
+    retained.sort_unstable();
+    retained.dedup();
+    let required: HashSet<i64> = retained.into_iter().collect();
+    let scalar = |field: &[f64]| -> Vec<(i64, f64)> {
+        let maximum = field.iter().copied().fold(0.0f64, f64::max);
+        let cutoff = maximum * 1e-12;
+        artifact.node_ids.iter().copied().zip(field.iter().copied())
+            .filter(|(id, mass)| mass.is_finite() && *mass > 0.0
+                && (*mass >= cutoff || required.contains(id)))
+            .collect()
+    };
+    let local_field = scalar(&local);
+    let transfer_field = scalar(&transfer);
     let local_mass = field_mass(&local);
     let transfer_mass = field_mass(&transfer);
+    let mut projection = DualFieldDiagnostics {
+        solve_ms,
+        retained_local_field_nodes: local_field.len(),
+        retained_transfer_field_nodes: transfer_field.len(),
+        local_domain_nodes: local_domain_ids.len(),
+        transfer_domain_nodes: transfer_domain_ids.len(),
+        domain_ms: domain_started.elapsed().as_secs_f64() * 1000.0,
+        ..DualFieldDiagnostics::default()
+    };
+    let project_started = Instant::now();
+    let (local_vector, transfer_vector) = project_supported_fields(
+        connection, artifact, [&local, &transfer],
+        [&local_domain_ids, &transfer_domain_ids], dimension,
+        config.max_field_projection_nodes, pool, &mut projection)?;
+    projection.project_ms = project_started.elapsed().as_secs_f64() * 1000.0;
 
     Ok(DualFieldOutput {
         local_field,
@@ -1318,6 +1456,7 @@ fn solve_dual_fields(
             transfer_residual,
             local_mass,
             transfer_mass,
+            ..projection
         },
     })
 }
@@ -1332,6 +1471,9 @@ struct PipelineDiagnostics {
     gating_ms: f64,
     sensing_ms: f64,
     fusion_ms: f64,
+    dual_field_solve_ms: f64,
+    dual_field_project_ms: f64,
+    dual_field_domain_ms: f64,
     total_ms: f64,
     seed_nodes: usize,
     observation_cached: bool,
@@ -1418,13 +1560,15 @@ fn run_pipeline_with_connection(
     let epa = analyze_epa_with_mode(&connection, &input.query_vector, dimensions, &input.config.epa_gate_mode);
     let epa_ms = epa_started.elapsed().as_secs_f64() * 1000.0;
 
+    let mut tag_vectors = TagVectorPool::new();
     let pyramid_started = Instant::now();
-    let (pyramid, level_tags) = analyze_pyramid(
+    let (pyramid, level_tags) = analyze_pyramid_with_pool(
         index,
         &connection,
         &input.query_vector,
         dimensions,
         &input.config,
+        &mut tag_vectors,
     )?;
     let pyramid_ms = pyramid_started.elapsed().as_secs_f64() * 1000.0;
 
@@ -1460,7 +1604,7 @@ fn run_pipeline_with_connection(
     let sensing_ms = sensing_started.elapsed().as_secs_f64() * 1000.0;
 
     let fusion_started = Instant::now();
-    let (enhanced_vector, fusion, selected_tags) = fuse_observation(
+    let (enhanced_vector, fusion, selected_tags) = fuse_observation_with_pool(
         &connection,
         &input.query_vector,
         &observation,
@@ -1471,14 +1615,17 @@ fn run_pipeline_with_connection(
         dimensions,
         effective_tag_boost,
         &input.config,
+        &mut tag_vectors,
     )?;
     let fusion_ms = fusion_started.elapsed().as_secs_f64() * 1000.0;
-    let dual_fields = solve_dual_fields(
+    let dual_fields = solve_dual_fields_with_pool(
         artifact,
         connection,
         &observation.source_field,
         dimensions,
         &input.config,
+        &mut tag_vectors,
+        &observation.nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
     )?;
 
     let enhanced_vector_f32: Vec<f32> = enhanced_vector.iter().map(|value| *value as f32).collect();
@@ -1493,6 +1640,8 @@ fn run_pipeline_with_connection(
         dual_fields.transfer_field.clone(),
         dual_fields.local_domain_ids.clone(),
         dual_fields.transfer_domain_ids.clone(),
+        Arc::new(tag_vectors),
+        crate::storage::read_generation(connection)?,
     )?;
     let observation_cached = true;
 
@@ -1541,6 +1690,9 @@ fn run_pipeline_with_connection(
             gating_ms,
             sensing_ms,
             fusion_ms,
+            dual_field_solve_ms: dual_field_diagnostics.solve_ms,
+            dual_field_project_ms: dual_field_diagnostics.project_ms,
+            dual_field_domain_ms: dual_field_diagnostics.domain_ms,
             total_ms: total_started.elapsed().as_secs_f64() * 1000.0,
             seed_nodes,
             observation_cached,
@@ -1699,6 +1851,7 @@ mod audit_gate_tests {
             weights: vec![], inbound: HashMap::new(), max_inbound: 0.0,
             anchor_gain: HashMap::new(), wormhole_edges: HashSet::new(),
             provenance: HashMap::new(),
+            ..NativeArtifact::default()
         };
         let local: Vec<f64> = (0..300).map(|i|
             if i % 3 == 0 { 0.0 } else { 1.0 / (i + 1) as f64 }).collect();
@@ -1734,7 +1887,7 @@ mod audit_gate_tests {
         let levels = vec![[-1.0, 0.0, 1.0].into_iter().enumerate()
             .map(|(position, similarity)| PyramidTagWork {
                 id: position as i64 + 1, name: format!("核心{}", position),
-                vector: vec![], similarity, contribution: 1.0,
+                vector: Arc::from(vec![]), similarity, contribution: 1.0,
                 handshake_magnitude: 0.0,
             }).collect::<Vec<_>>()];
         let names = levels[0].iter().map(|tag| tag.name.clone()).collect::<Vec<_>>();
@@ -1766,7 +1919,7 @@ mod audit_gate_tests {
         let (output, work) = analyze_pyramid(
             &index.index, &connection, &query, 3, &config,
         ).unwrap();
-        assert_eq!(work[0][0].vector, vec![3.0, 0.0, 0.0]);
+        assert_eq!(work[0][0].vector.as_ref(), &[3.0, 0.0, 0.0]);
         assert!((output.levels[0].tags[0].similarity - 1.0 / 5.0_f64.sqrt()).abs() < 1e-12);
         assert!((output.levels[0].projection_magnitude - 1.0).abs() < 1e-6);
         assert!((output.levels[0].residual_magnitude - 2.0).abs() < 1e-6);
@@ -1796,8 +1949,10 @@ mod audit_gate_tests {
             inbound: HashMap::new(), max_inbound: 0.0,
             anchor_gain: HashMap::new(), wormhole_edges: HashSet::new(),
             provenance: HashMap::new(),
+            ..NativeArtifact::default()
         };
-        let config = PipelineConfig::default();
+        let artifact = artifact.prepared();
+        let config = PipelineConfig { local_mass_ratio: 1.0, transfer_mass_ratio: 1.0, ..PipelineConfig::default() };
         let observation = sense_typed(&artifact, "sql-original-test", SenseInput {
             query_id: None, seeds: Vec::new(), config: SenseConfig::default(),
         }).unwrap();
@@ -1806,8 +1961,8 @@ mod audit_gate_tests {
             &["core-1".into(), "core-2".into()], &[], 1.0, 3, 0.5, &config,
         ).unwrap();
         assert_eq!(diagnostics.found_count, 2);
-        assert_eq!(selected[0].vector, originals[0]);
-        assert_eq!(selected[1].vector, originals[1]);
+        assert_eq!(selected[0].vector.as_ref(), &originals[0]);
+        assert_eq!(selected[1].vector.as_ref(), &originals[1]);
         let mut expected_fusion = vec![0.3_f64, 0.4, 0.5];
         normalize(&mut expected_fusion);
         for (actual, expected) in fused.iter().zip(expected_fusion) {
@@ -1945,5 +2100,102 @@ mod geometry_epa_tests {
         assert_eq!(orthogonal.entropy,1.0);
         write(vec![]);
         assert!(analyze_epa(&connection, &[0.0,1.0,0.0], 3).cache_available);
+    }
+}
+
+
+#[cfg(test)]
+mod projection_budget_tests {
+    use super::*;
+    use crate::rivermemo_topology_v3::NativeArtifact;
+
+    #[test]
+    fn independent_domains_budget_union_and_pool_reuse() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY, vector BLOB);").unwrap();
+        for (id, values) in [(1, [1.0f32, 0.0]), (2, [0.0, 1.0]), (3, [1.0, 1.0])] {
+            let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+            connection.execute("INSERT INTO tags VALUES (?1,?2)",
+                rusqlite::params![id, bytes]).unwrap();
+        }
+        let artifact = NativeArtifact {
+            node_ids: vec![1, 2, 3],
+            node_index: HashMap::from([(1, 0), (2, 1), (3, 2)]),
+            row_offsets: vec![0; 4], targets: vec![], weights: vec![],
+            inbound: HashMap::new(), max_inbound: 0.0, anchor_gain: HashMap::new(),
+            wormhole_edges: HashSet::new(), provenance: HashMap::new(),
+            ..NativeArtifact::default()
+        };
+        let local = [0.7, 0.2, 0.1];
+        let transfer = [0.1, 0.7, 0.2];
+        let mut pool = TagVectorPool::new();
+        ensure_tag_vectors_loaded(&connection, &mut pool, &[1], 2).unwrap();
+        let original = pool[&1].clone();
+        let mut diagnostics = DualFieldDiagnostics::default();
+        let projected = project_supported_fields(&connection, &artifact,
+            [&local, &transfer], [&[1, 2], &[2, 3]], 2, 1,
+            &mut pool, &mut diagnostics).unwrap();
+        assert_eq!(projected, (vec![1.0, 0.0], vec![0.0, 1.0]));
+        assert_eq!(diagnostics.projected_nodes, 2);
+        assert_eq!(diagnostics.sql_fetched_nodes, 1);
+        assert_eq!(diagnostics.sql_batches, 1);
+        assert!((diagnostics.local_selected_mass_ratio - 0.7).abs() < 1e-12);
+        assert!(Arc::ptr_eq(&original, &pool[&1]));
+        project_supported_fields(&connection, &artifact,
+            [&local, &transfer], [&[1, 2], &[2, 3]], 2, 1,
+            &mut pool, &mut diagnostics).unwrap();
+        assert_eq!(diagnostics.sql_batches, 0);
+        assert_eq!(diagnostics.sql_fetched_nodes, 0);
+        project_supported_fields(&connection, &artifact,
+            [&local, &transfer], [&[1, 2], &[2, 3]], 2, 0,
+            &mut pool, &mut diagnostics).unwrap();
+        assert_eq!(diagnostics.selected_projection_nodes, 3);
+        assert_eq!(diagnostics.sql_fetched_nodes, 1);
+        assert!((diagnostics.local_selected_mass_ratio - 0.9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn arbitrary_budget_and_missing_rows_do_not_expand_support() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY, vector BLOB);").unwrap();
+        let ids: Vec<i64> = (1..=600).collect();
+        let artifact = NativeArtifact {
+            node_index: ids.iter().enumerate().map(|(i,id)| (*id,i)).collect(),
+            node_ids: ids.clone(), row_offsets: vec![0; 601], targets: vec![], weights: vec![],
+            inbound: HashMap::new(), max_inbound: 0.0, anchor_gain: HashMap::new(),
+            wormhole_edges: HashSet::new(), provenance: HashMap::new(),
+            ..NativeArtifact::default()
+        };
+        let values = vec![1.0; 600];
+        for k in [0, 1, 64, 128, 193, 256, 512, 1000] {
+            let mut diagnostics = DualFieldDiagnostics::default();
+            let result = project_supported_fields(&connection, &artifact,
+                [&values, &values], [&ids[..400], &ids[200..]], 2, k,
+                &mut TagVectorPool::new(), &mut diagnostics).unwrap();
+            let count = if k == 0 { 400 } else { k.min(400) };
+            let expected: HashSet<i64> = ids[..count].iter()
+                .chain(ids[200..200+count].iter()).copied().collect();
+            assert_eq!(diagnostics.selected_projection_nodes, expected.len());
+            assert_eq!(diagnostics.sql_requested_nodes, expected.len());
+            assert_eq!(diagnostics.sql_batches, expected.len().div_ceil(128));
+            assert_eq!(diagnostics.projected_nodes, 0);
+            assert_eq!(diagnostics.local_projected_mass_ratio, 0.0);
+            assert_eq!(result, (vec![0.0; 2], vec![0.0; 2]));
+        }
+    }
+
+    #[test]
+    fn budget_config_is_nonnegative_integer_with_default() {
+        let default: PipelineConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.max_field_projection_nodes, 256);
+        for k in [0, 64, 193, 512] {
+            let config: PipelineConfig = serde_json::from_value(
+                serde_json::json!({"maxFieldProjectionNodes": k})).unwrap();
+            assert_eq!(config.max_field_projection_nodes, k);
+        }
+        for value in [serde_json::json!(-1), serde_json::json!(1.5), serde_json::json!("256")] {
+            assert!(serde_json::from_value::<PipelineConfig>(
+                serde_json::json!({"maxFieldProjectionNodes": value})).is_err());
+        }
     }
 }

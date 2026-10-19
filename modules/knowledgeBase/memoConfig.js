@@ -6,7 +6,7 @@ const RIVER_DEFAULTS = {
     sourceObservation: { baseTagBoost: 0.6, coreBoostFactor: 1.33 },
     localField: { alpha: 0.15, maxIterations: 80, tolerance: 1e-9 },
     transferField: { alpha: 0.55, maxIterations: 80, tolerance: 1e-9 },
-    effectiveSupport: { localMassRatio: 0.8, transferMassRatio: 0.9 },
+    effectiveSupport: { localMassRatio: 0.8, transferMassRatio: 0.9, maxProjectionNodes: 256 },
     candidateSuperset: {
         queryK: 100, denoisedK: 100, localFieldK: 100,
         transferFieldK: 100, bm25K: 50, anchorK: 50, maxUnionCandidates: 300

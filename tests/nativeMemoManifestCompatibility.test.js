@@ -203,9 +203,16 @@ async function main() {
         );
         assert.strictEqual(
             topology.diagnostics.queryTagSqlBatches,
-            1,
-            'River and Anchor Tag vectors must share one batched SQL query'
+            0,
+            'River and Anchor Tag vectors reuse the request pool without SQL'
         );
+
+        assert.strictEqual(topology.diagnostics.candidateTagVectorSqlBatches, 0,
+            'candidate Tags already loaded by Pyramid must not fetch vector BLOBs again');
+        assert.strictEqual(topology.diagnostics.candidateTagVectorFetchedNodes, 0);
+        assert.strictEqual(pipelineMetadata.diagnostics.dualField.sqlFetchedNodes, 0);
+        assert(Number.isFinite(pipelineMetadata.diagnostics.dualFieldSolveMs));
+        assert(Number.isFinite(pipelineMetadata.diagnostics.dualFieldProjectMs));
 
         const jointPayload = await nativeKnowledgeRuntime.executeRiverQuery(
             dbPath,
@@ -418,8 +425,10 @@ async function main() {
 
         const retained = JSON.parse(index.memoObservationMemoryStats());
         assert.strictEqual(retained.entries, 8,
-            'completed retrievals currently retain their request observations');
+            'raw ABI caller owns handles until all internal consumers finish');
         assert(retained.payloadCapacityBytes > 0);
+        assert(retained.tagVectorNodes > 0);
+        assert(retained.tagVectorBytes > 0);
         assert.strictEqual(JSON.parse(index.memoObservationMemoryStats()).entries, 8,
             'memory diagnostics must not evict observations');
         for (const handle of concurrentHandles) {
@@ -430,6 +439,8 @@ async function main() {
         const released = JSON.parse(index.memoObservationMemoryStats());
         assert.strictEqual(released.entries, 0);
         assert.strictEqual(released.payloadCapacityBytes, 0);
+        assert.strictEqual(released.tagVectorNodes, 0);
+        assert.strictEqual(released.tagVectorBytes, 0);
         assert.strictEqual(index.memoRuntimeStats().resident, true,
             'releasing requests must retain the shared background graph');
 
