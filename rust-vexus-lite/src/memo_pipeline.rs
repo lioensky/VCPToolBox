@@ -10,7 +10,7 @@ use napi_derive::napi;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::{Arc};
 use std::time::Instant;
 use crate::storage::{ensure_tag_vectors_loaded, TagVectorPool};
@@ -1103,6 +1103,8 @@ struct DualFieldDiagnostics {
     sql_fetched_nodes: usize,
     sql_requested_nodes: usize,
     sql_batches: usize,
+    local_support: ProjectionSupportDiagnostics,
+    transfer_support: ProjectionSupportDiagnostics,
     local_selected_mass_ratio: f64,
     transfer_selected_mass_ratio: f64,
     local_projected_mass_ratio: f64,
@@ -1263,6 +1265,112 @@ fn project_dual_fields(
     ))
 }
 
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectionSupportDiagnostics {
+    core_nodes: usize,
+    selected_nodes: usize,
+    outside_domain_nodes: usize,
+    missing_vector_nodes: usize,
+    stop_reason: String,
+}
+
+struct ProjectionSupport {
+    ids: Vec<i64>,
+    diagnostics: ProjectionSupportDiagnostics,
+}
+
+// A deterministic max-heap: highest field mass first, then lowest Tag ID.
+#[derive(Clone, Copy)]
+struct ProjectionFrontier {
+    mass: f64,
+    id: i64,
+    index: usize,
+}
+impl PartialEq for ProjectionFrontier {
+    fn eq(&self, other: &Self) -> bool {
+        self.mass.total_cmp(&other.mass) == Ordering::Equal && self.id == other.id
+    }
+}
+impl Eq for ProjectionFrontier {}
+impl PartialOrd for ProjectionFrontier {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for ProjectionFrontier {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.mass.total_cmp(&other.mass).then_with(|| other.id.cmp(&self.id))
+    }
+}
+
+/// Core-anchored directed region growing. A candidate is exposed only by an
+/// already selected predecessor; low-mass bridges are never skipped to reach peaks.
+/// Domains remain unchanged for downstream geometry: they supply only the mass target.
+fn select_projection_support(
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    field: &[f64],
+    domain: &[i64],
+    river_ids: &[i64],
+    limit: usize,
+) -> std::result::Result<ProjectionSupport, String> {
+    let mut ids: Vec<i64> = river_ids.iter().copied()
+        .filter(|id| artifact.node_index.contains_key(id)).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if limit > 0 && ids.len() > limit {
+        return Err(format!(
+            "MEMO_PROJECTION_CORE_EXCEEDS_BUDGET: core has {} nodes, per-field budget is {}; increase maxFieldProjectionNodes or use 0",
+            ids.len(), limit));
+    }
+    let domain_set: HashSet<i64> = domain.iter().copied().collect();
+    let target_mass: f64 = domain.iter().filter_map(|id| artifact.node_index.get(id))
+        .map(|&i| positive(field[i])).sum();
+    let mut diagnostics = ProjectionSupportDiagnostics {
+        core_nodes: ids.len(), ..ProjectionSupportDiagnostics::default()
+    };
+    if ids.is_empty() {
+        diagnostics.stop_reason = "empty_core".into();
+        return Ok(ProjectionSupport { ids, diagnostics });
+    }
+    let mut discovered: HashSet<usize> = ids.iter().map(|id| artifact.node_index[id]).collect();
+    let mut frontier = BinaryHeap::new();
+    let cutoff = field.iter().copied().map(positive).fold(0.0_f64, f64::max) * 1e-12;
+    let expose = |source: usize, discovered: &mut HashSet<usize>,
+                  frontier: &mut BinaryHeap<ProjectionFrontier>| {
+        for cursor in artifact.row_offsets[source]..artifact.row_offsets[source + 1] {
+            if positive(artifact.weights[cursor]) <= 0.0 { continue; }
+            let index = artifact.targets[cursor];
+            let mass = positive(field[index]);
+            // Do not fill seats with numerical tails or zero-mass transit nodes.
+            if mass > 0.0 && mass >= cutoff && discovered.insert(index) {
+                frontier.push(ProjectionFrontier { mass, id: artifact.node_ids[index], index });
+            }
+        }
+    };
+    // Stable initial summation and edge exposure, independent of hash iteration.
+    let mut selected_mass: f64 = ids.iter().map(|id| positive(field[artifact.node_index[id]])).sum();
+    for id in &ids { expose(artifact.node_index[id], &mut discovered, &mut frontier); }
+    loop {
+        if selected_mass >= target_mass {
+            diagnostics.stop_reason = "mass_target".into();
+            break;
+        }
+        if limit > 0 && ids.len() >= limit {
+            diagnostics.stop_reason = "budget".into();
+            break;
+        }
+        let Some(next) = frontier.pop() else {
+            diagnostics.stop_reason = "frontier_exhausted".into();
+            break;
+        };
+        ids.push(next.id);
+        selected_mass += next.mass;
+        expose(next.index, &mut discovered, &mut frontier);
+    }
+    diagnostics.selected_nodes = ids.len();
+    diagnostics.outside_domain_nodes = ids.iter().filter(|id| !domain_set.contains(id)).count();
+    Ok(ProjectionSupport { ids, diagnostics })
+}
+
 fn project_supported_fields(
     connection: &Connection,
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
@@ -1270,12 +1378,18 @@ fn project_supported_fields(
     domains: [&[i64]; 2],
     dimension: usize,
     limit: usize,
+    river_ids: &[i64],
     pool: &mut TagVectorPool,
     diagnostics: &mut DualFieldDiagnostics,
 ) -> std::result::Result<(Vec<f32>, Vec<f32>), String> {
-    let selected: [Vec<i64>; 2] = domains.map(|ids| {
-        ids.iter().copied().take(if limit == 0 { ids.len() } else { limit }).collect()
-    });
+    let supports = [
+        select_projection_support(artifact, fields[0], domains[0], river_ids, limit)?,
+        select_projection_support(artifact, fields[1], domains[1], river_ids, limit)?,
+    ];
+    let [local, transfer] = supports;
+    diagnostics.local_support = local.diagnostics;
+    diagnostics.transfer_support = transfer.diagnostics;
+    let selected = [local.ids, transfer.ids];
     let mut union: Vec<i64> = selected.iter().flatten().copied().collect();
     union.sort_unstable();
     union.dedup();
@@ -1285,6 +1399,10 @@ fn project_supported_fields(
     diagnostics.sql_requested_nodes = stats.requested_nodes;
     diagnostics.sql_batches = stats.sql_batches;
     diagnostics.projected_nodes = union.iter().filter(|id| pool.contains_key(id)).count();
+    diagnostics.local_support.missing_vector_nodes =
+        selected[0].iter().filter(|id| !pool.contains_key(id)).count();
+    diagnostics.transfer_support.missing_vector_nodes =
+        selected[1].iter().filter(|id| !pool.contains_key(id)).count();
     let mut outputs = [vec![0.0f64; dimension], vec![0.0f64; dimension]];
     let mut selected_ratios = [0.0; 2];
     let mut projected_ratios = [0.0; 2];
@@ -1327,7 +1445,7 @@ fn solve_dual_fields(
     config: &PipelineConfig,
 ) -> std::result::Result<DualFieldOutput, String> {
     solve_dual_fields_with_pool(artifact, connection, source_entries, dimension, config,
-        &mut TagVectorPool::new(), &[])
+        &mut TagVectorPool::new(), &source_entries.iter().map(|entry| entry.0).collect::<Vec<_>>())
 }
 
 fn solve_dual_fields_with_pool(
@@ -1448,7 +1566,7 @@ fn solve_dual_fields_with_pool(
     let (local_vector, transfer_vector) = project_supported_fields(
         connection, artifact, [&local, &transfer],
         [&local_domain_ids, &transfer_domain_ids], dimension,
-        config.max_field_projection_nodes, pool, &mut projection)?;
+        config.max_field_projection_nodes, river_ids, pool, &mut projection)?;
     projection.project_ms = project_started.elapsed().as_secs_f64() * 1000.0;
 
     Ok(DualFieldOutput {
@@ -2146,7 +2264,7 @@ mod projection_budget_tests {
         let artifact = NativeArtifact {
             node_ids: vec![1, 2, 3],
             node_index: HashMap::from([(1, 0), (2, 1), (3, 2)]),
-            row_offsets: vec![0; 4], targets: vec![], weights: vec![],
+            row_offsets: vec![0, 2, 2, 2], targets: vec![1, 2], weights: vec![0.5, 0.5],
             inbound: HashMap::new(), max_inbound: 0.0, anchor_gain: HashMap::new(),
             wormhole_edges: HashSet::new(), provenance: HashMap::new(),
             ..NativeArtifact::default()
@@ -2158,21 +2276,22 @@ mod projection_budget_tests {
         let original = pool[&1].clone();
         let mut diagnostics = DualFieldDiagnostics::default();
         let projected = project_supported_fields(&connection, &artifact,
-            [&local, &transfer], [&[1, 2], &[2, 3]], 2, 1,
+            [&local, &transfer], [&[1, 2], &[2, 3]], 2, 2, &[1],
             &mut pool, &mut diagnostics).unwrap();
-        assert_eq!(projected, (vec![1.0, 0.0], vec![0.0, 1.0]));
+        assert!(projected.0[0] > projected.0[1]);
+        assert!(projected.1[1] > projected.1[0]);
         assert_eq!(diagnostics.projected_nodes, 2);
         assert_eq!(diagnostics.sql_fetched_nodes, 1);
         assert_eq!(diagnostics.sql_batches, 1);
-        assert!((diagnostics.local_selected_mass_ratio - 0.7).abs() < 1e-12);
+        assert!((diagnostics.local_selected_mass_ratio - 0.9).abs() < 1e-12);
         assert!(Arc::ptr_eq(&original, &pool[&1]));
         project_supported_fields(&connection, &artifact,
-            [&local, &transfer], [&[1, 2], &[2, 3]], 2, 1,
+            [&local, &transfer], [&[1, 2], &[2, 3]], 2, 2, &[1],
             &mut pool, &mut diagnostics).unwrap();
         assert_eq!(diagnostics.sql_batches, 0);
         assert_eq!(diagnostics.sql_fetched_nodes, 0);
         project_supported_fields(&connection, &artifact,
-            [&local, &transfer], [&[1, 2], &[2, 3]], 2, 0,
+            [&local, &transfer], [&[1, 2], &[2, 3]], 2, 0, &[1],
             &mut pool, &mut diagnostics).unwrap();
         assert_eq!(diagnostics.selected_projection_nodes, 3);
         assert_eq!(diagnostics.sql_fetched_nodes, 1);
@@ -2186,7 +2305,9 @@ mod projection_budget_tests {
         let ids: Vec<i64> = (1..=600).collect();
         let artifact = NativeArtifact {
             node_index: ids.iter().enumerate().map(|(i,id)| (*id,i)).collect(),
-            node_ids: ids.clone(), row_offsets: vec![0; 601], targets: vec![], weights: vec![],
+            node_ids: ids.clone(),
+            row_offsets: std::iter::once(0).chain(1..=599).chain(std::iter::once(599)).collect(),
+            targets: (1..600).collect(), weights: vec![1.0; 599],
             inbound: HashMap::new(), max_inbound: 0.0, anchor_gain: HashMap::new(),
             wormhole_edges: HashSet::new(), provenance: HashMap::new(),
             ..NativeArtifact::default()
@@ -2195,11 +2316,10 @@ mod projection_budget_tests {
         for k in [0, 1, 64, 128, 193, 256, 512, 1000] {
             let mut diagnostics = DualFieldDiagnostics::default();
             let result = project_supported_fields(&connection, &artifact,
-                [&values, &values], [&ids[..400], &ids[200..]], 2, k,
+                [&values, &values], [&ids[..400], &ids[200..]], 2, k, &[1],
                 &mut TagVectorPool::new(), &mut diagnostics).unwrap();
             let count = if k == 0 { 400 } else { k.min(400) };
-            let expected: HashSet<i64> = ids[..count].iter()
-                .chain(ids[200..200+count].iter()).copied().collect();
+            let expected: HashSet<i64> = ids[..count].iter().copied().collect();
             assert_eq!(diagnostics.selected_projection_nodes, expected.len());
             assert_eq!(diagnostics.sql_requested_nodes, expected.len());
             assert_eq!(diagnostics.sql_batches, expected.len().div_ceil(128));
@@ -2207,6 +2327,84 @@ mod projection_budget_tests {
             assert_eq!(diagnostics.local_projected_mass_ratio, 0.0);
             assert_eq!(result, (vec![0.0; 2], vec![0.0; 2]));
         }
+    }
+
+    fn support_graph() -> NativeArtifact {
+        // 1 -> 2 -> 3; 1 -> 4; 5 is an unreachable high-mass island.
+        NativeArtifact {
+            node_ids: vec![1, 2, 3, 4, 5],
+            node_index: (1..=5).enumerate().map(|(i, id)| (id, i)).collect(),
+            row_offsets: vec![0, 2, 3, 3, 3, 3],
+            targets: vec![1, 3, 2], weights: vec![0.5, 0.5, 1.0],
+            ..NativeArtifact::default()
+        }
+    }
+
+    #[test]
+    fn growing_keeps_low_mass_bridge_and_rejects_global_islands() {
+        let graph = support_graph();
+        let field = [0.1, 0.01, 0.3, 0.02, 0.57];
+        let support = select_projection_support(&graph, &field, &[5, 3, 1], &[1], 0).unwrap();
+        assert_eq!(support.ids, vec![1, 4, 2, 3]);
+        assert_eq!(support.diagnostics.outside_domain_nodes, 2);
+        assert_eq!(support.diagnostics.stop_reason, "frontier_exhausted");
+        let limited = select_projection_support(&graph, &field, &[5, 3, 1], &[1], 3).unwrap();
+        assert_eq!(limited.ids, vec![1, 4, 2]);
+        assert_eq!(limited.diagnostics.stop_reason, "budget");
+        // Every non-core node has an earlier selected, positive-weight predecessor.
+        for (position, id) in support.ids.iter().enumerate().skip(1) {
+            assert!(support.ids[..position].iter().any(|parent| graph.edge_weight(*parent, *id) > 0.0));
+        }
+    }
+
+    #[test]
+    fn fields_grow_independently_and_ties_use_tag_id() {
+        let graph = support_graph();
+        let local = select_projection_support(&graph, &[0.1, 0.6, 0.1, 0.1, 0.1],
+            &[2, 1, 3, 4, 5], &[1], 2).unwrap();
+        let transfer = select_projection_support(&graph, &[0.1, 0.1, 0.1, 0.6, 0.1],
+            &[4, 1, 2, 3, 5], &[1], 2).unwrap();
+        assert_eq!(local.ids, vec![1, 2]);
+        assert_eq!(transfer.ids, vec![1, 4]);
+        let tied = select_projection_support(&graph, &[0.2; 5],
+            &[1, 2, 3, 4, 5], &[1], 2).unwrap();
+        assert_eq!(tied.ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn core_budget_empty_core_and_mass_stop_are_explicit() {
+        let graph = support_graph();
+        let field = [0.2; 5];
+        let error = select_projection_support(&graph, &field, &[1, 2], &[1, 2], 1)
+            .err().unwrap();
+        assert!(error.starts_with("MEMO_PROJECTION_CORE_EXCEEDS_BUDGET:"));
+        let empty = select_projection_support(&graph, &field, &[1, 2], &[], 2).unwrap();
+        assert!(empty.ids.is_empty());
+        assert_eq!(empty.diagnostics.stop_reason, "empty_core");
+        let stopped = select_projection_support(&graph, &field, &[1], &[1], 256).unwrap();
+        assert_eq!(stopped.ids, vec![1]);
+        assert_eq!(stopped.diagnostics.stop_reason, "mass_target");
+        // Independent seed components stay explicit; no invented connecting edges.
+        let multi = select_projection_support(&graph, &field, &[1, 5], &[5, 1, 5], 2).unwrap();
+        assert_eq!(multi.ids, vec![1, 5]);
+        assert_eq!(multi.diagnostics.core_nodes, 2);
+    }
+
+    #[test]
+    fn zero_edges_cycles_and_numerical_tails_never_fill_seats() {
+        let mut graph = support_graph();
+        graph.weights[0] = 0.0;
+        let support = select_projection_support(&graph, &[0.1, 0.4, 0.3, 1e-15, 0.2],
+            &[1, 2, 3, 5], &[1], 256).unwrap();
+        assert_eq!(support.ids, vec![1]);
+        assert_eq!(support.diagnostics.stop_reason, "frontier_exhausted");
+        let graph = NativeArtifact {
+            node_ids: vec![1, 2], node_index: HashMap::from([(1, 0), (2, 1)]),
+            row_offsets: vec![0, 2, 3], targets: vec![0, 1, 0], weights: vec![1.0; 3],
+            ..NativeArtifact::default()
+        };
+        let support = select_projection_support(&graph, &[0.5, 0.5], &[1, 2], &[1], 0).unwrap();
+        assert_eq!(support.ids, vec![1, 2]);
     }
 
     #[test]
