@@ -10,7 +10,9 @@ use napi_derive::napi;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::collections::BinaryHeap;
 use std::sync::{Arc};
 use std::time::Instant;
 use crate::storage::{ensure_tag_vectors_loaded, TagVectorPool};
@@ -1103,6 +1105,7 @@ struct DualFieldDiagnostics {
     sql_fetched_nodes: usize,
     sql_requested_nodes: usize,
     sql_batches: usize,
+    growth: crate::memo_projection::GrowthDiagnostics,
     local_support: ProjectionSupportDiagnostics,
     transfer_support: ProjectionSupportDiagnostics,
     local_selected_mass_ratio: f64,
@@ -1275,27 +1278,33 @@ struct ProjectionSupportDiagnostics {
     stop_reason: String,
 }
 
+#[cfg(test)]
 struct ProjectionSupport {
     ids: Vec<i64>,
     diagnostics: ProjectionSupportDiagnostics,
 }
 
 // A deterministic max-heap: highest field mass first, then lowest Tag ID.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct ProjectionFrontier {
     mass: f64,
     id: i64,
     index: usize,
 }
+#[cfg(test)]
 impl PartialEq for ProjectionFrontier {
     fn eq(&self, other: &Self) -> bool {
         self.mass.total_cmp(&other.mass) == Ordering::Equal && self.id == other.id
     }
 }
+#[cfg(test)]
 impl Eq for ProjectionFrontier {}
+#[cfg(test)]
 impl PartialOrd for ProjectionFrontier {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
 }
+#[cfg(test)]
 impl Ord for ProjectionFrontier {
     fn cmp(&self, other: &Self) -> Ordering {
         self.mass.total_cmp(&other.mass).then_with(|| other.id.cmp(&self.id))
@@ -1305,6 +1314,7 @@ impl Ord for ProjectionFrontier {
 /// Core-anchored directed region growing. A candidate is exposed only by an
 /// already selected predecessor; low-mass bridges are never skipped to reach peaks.
 /// Domains remain unchanged for downstream geometry: they supply only the mass target.
+#[cfg(test)]
 fn select_projection_support(
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
     field: &[f64],
@@ -1371,6 +1381,7 @@ fn select_projection_support(
     Ok(ProjectionSupport { ids, diagnostics })
 }
 
+#[cfg(test)]
 fn project_supported_fields(
     connection: &Connection,
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
@@ -1382,14 +1393,37 @@ fn project_supported_fields(
     pool: &mut TagVectorPool,
     diagnostics: &mut DualFieldDiagnostics,
 ) -> std::result::Result<(Vec<f32>, Vec<f32>), String> {
-    let supports = [
-        select_projection_support(artifact, fields[0], domains[0], river_ids, limit)?,
-        select_projection_support(artifact, fields[1], domains[1], river_ids, limit)?,
-    ];
-    let [local, transfer] = supports;
-    diagnostics.local_support = local.diagnostics;
-    diagnostics.transfer_support = transfer.diagnostics;
-    let selected = [local.ids, transfer.ids];
+    project_basin_fields(connection, artifact, fields, domains, dimension, limit,
+        river_ids, &[], pool, diagnostics)
+}
+
+fn project_basin_fields(
+    connection: &Connection,
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    fields: [&[f64]; 2],
+    domains: [&[i64]; 2],
+    dimension: usize,
+    limit: usize,
+    river_ids: &[i64],
+    basins: &[crate::memo_projection::Basin],
+    pool: &mut TagVectorPool,
+    diagnostics: &mut DualFieldDiagnostics,
+) -> std::result::Result<(Vec<f32>, Vec<f32>), String> {
+    let supports = crate::memo_projection::grow(artifact, fields, domains, river_ids, basins, limit)?;
+    let selected = supports.ids;
+    let support_diagnostics = |f: usize| {
+        let domain: HashSet<i64> = domains[f].iter().copied().collect();
+        ProjectionSupportDiagnostics {
+            core_nodes: supports.diagnostics.core_nodes,
+            selected_nodes: selected[f].len(),
+            outside_domain_nodes: selected[f].iter().filter(|id| !domain.contains(id)).count(),
+            stop_reason: supports.diagnostics.stop_reason.clone(),
+            ..ProjectionSupportDiagnostics::default()
+        }
+    };
+    diagnostics.local_support = support_diagnostics(0);
+    diagnostics.transfer_support = support_diagnostics(1);
+    diagnostics.growth = supports.diagnostics;
     let mut union: Vec<i64> = selected.iter().flatten().copied().collect();
     union.sort_unstable();
     union.dedup();
@@ -1445,7 +1479,7 @@ fn solve_dual_fields(
     config: &PipelineConfig,
 ) -> std::result::Result<DualFieldOutput, String> {
     solve_dual_fields_with_pool(artifact, connection, source_entries, dimension, config,
-        &mut TagVectorPool::new(), &source_entries.iter().map(|entry| entry.0).collect::<Vec<_>>())
+        &mut TagVectorPool::new(), &source_entries.iter().map(|entry| entry.0).collect::<Vec<_>>(), &[])
 }
 
 fn solve_dual_fields_with_pool(
@@ -1456,6 +1490,7 @@ fn solve_dual_fields_with_pool(
     config: &PipelineConfig,
     pool: &mut TagVectorPool,
     river_ids: &[i64],
+    basins: &[crate::memo_projection::Basin],
 ) -> std::result::Result<DualFieldOutput, String> {
     let solve_started = Instant::now();
     let mut source = vec![0.0f64; artifact.node_ids.len()];
@@ -1563,10 +1598,10 @@ fn solve_dual_fields_with_pool(
         ..DualFieldDiagnostics::default()
     };
     let project_started = Instant::now();
-    let (local_vector, transfer_vector) = project_supported_fields(
+    let (local_vector, transfer_vector) = project_basin_fields(
         connection, artifact, [&local, &transfer],
         [&local_domain_ids, &transfer_domain_ids], dimension,
-        config.max_field_projection_nodes, river_ids, pool, &mut projection)?;
+        config.max_field_projection_nodes, river_ids, basins, pool, &mut projection)?;
     projection.project_ms = project_started.elapsed().as_secs_f64() * 1000.0;
 
     Ok(DualFieldOutput {
@@ -1768,6 +1803,7 @@ fn run_pipeline_with_connection(
         &input.config,
         &mut tag_vectors,
         &observation.nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+        &crate::memo_projection::seed_basins(&observation, artifact),
     )?;
 
     let enhanced_vector_f32: Vec<f32> = enhanced_vector.iter().map(|value| *value as f32).collect();

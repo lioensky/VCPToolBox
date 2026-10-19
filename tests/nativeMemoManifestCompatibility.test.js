@@ -211,6 +211,22 @@ async function main() {
             'candidate Tags already loaded by Pyramid must not fetch vector BLOBs again');
         assert.strictEqual(topology.diagnostics.candidateTagVectorFetchedNodes, 0);
         assert.strictEqual(pipelineMetadata.diagnostics.dualField.sqlFetchedNodes, 0);
+        const fieldGrowth = pipelineMetadata.diagnostics.dualField.growth;
+        assert.strictEqual(fieldGrowth.budget, 256);
+        assert(fieldGrowth.unionNodes <= 256, 'both fields share one union hard cap');
+        assert.strictEqual(fieldGrowth.unionNodes,
+            pipelineMetadata.diagnostics.dualField.selectedProjectionNodes);
+        assert.strictEqual(fieldGrowth.coreNodes,
+            pipelineMetadata.diagnostics.sensing.reachedNodes);
+        assert(fieldGrowth.settledStates <= 8192);
+        assert(fieldGrowth.scannedEdges <= 65536);
+        assert(fieldGrowth.lanes.length > 0, 'seed basins must reach the production pipeline');
+        for (const lane of fieldGrowth.lanes) {
+            assert(lane.innerNodes > 0);
+            assert(lane.reservedNodes <= 8);
+            assert(lane.reservedNodes <= lane.outerNodes);
+            assert(Number.isFinite(lane.radius));
+        }
         assert(Number.isFinite(pipelineMetadata.diagnostics.dualFieldSolveMs));
         assert(Number.isFinite(pipelineMetadata.diagnostics.dualFieldProjectMs));
 

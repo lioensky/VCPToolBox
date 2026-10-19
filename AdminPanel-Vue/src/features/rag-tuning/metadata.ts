@@ -688,10 +688,10 @@ export const RIVERMEMO_PARAM_METADATA: Record<string, ParamMeta> = {
     tone: RIVER_SENSITIVE,
   },
   "effectiveSupport.maxProjectionNodes": {
-    label: "每场向量投影预算",
-    summary: "Local / Transfer 分别按有效质量域的质量降序取前 K 个，去重并集最多 2K；仅差集向量读取 SQLite。",
-    logic: "支持任意非负整数。0 仅取消数量上限，仍受质量域约束；不代表全正支撑基线。可对比 64、128、256、512 等预算。",
-    range: "非负整数；默认 256；0 表示有效域内不限量",
+    label: "双场共享投影预算",
+    summary: "Local / Transfer 共享 K 个去重节点席位，包含全部河网骨架；按种子流域独立扩圈，仅补读缺失原始向量。",
+    logic: "各流域先轮转保底探索，再按新增质量动态分配余量；两场独立保留投影资格。核心超过正预算时报错。0 仅取消数量上限，质量目标与搜索工作限额仍有效。",
+    range: "非负整数；默认共享 256；0 表示取消节点数量上限",
     tone: RIVER_SENSITIVE,
   },
   candidateSuperset: {

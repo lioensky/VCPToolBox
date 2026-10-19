@@ -15,6 +15,7 @@ mod memo_geometry;
 mod tag_consistency;
 mod memo_artifact_builder;
 mod memo_pipeline;
+mod memo_projection;
 mod memo_sensing;
 mod memo_thinking;
 mod result_deduplicator;
