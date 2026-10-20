@@ -232,7 +232,15 @@ class TagMemoEngine {
 
     _geometryConfig() {
         const kb = this.ragParams?.KnowledgeBaseManager || {};
-        return JSON.parse(JSON.stringify(kb.geometry || {}));
+        // cleanRagParams() migrates legacy intrinsicResidual when rag_params is
+        // loaded through KnowledgeBaseManager, but TagMemoEngine can also be
+        // constructed with caller-injected params that never ran that migration.
+        // Keep the local fallback so a legacy-only config still resolves geometry
+        // instead of silently collapsing every tunable to the built-in defaults.
+        // A present AGS section always wins.
+        return JSON.parse(JSON.stringify(
+            kb.geometry || { local: kb.intrinsicResidual || {} }
+        ));
     }
 
     async recomputeGeometry() {

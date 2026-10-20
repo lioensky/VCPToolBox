@@ -152,7 +152,6 @@ function onInputValueChange(value: string): void {
   visibility: hidden;
   transform: translateX(20px);
   transition: opacity 0.3s ease, visibility 0.3s ease, transform 0.3s ease;
-  position: relative;
 }
 
 .message-popup::before {

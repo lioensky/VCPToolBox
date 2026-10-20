@@ -1,4 +1,6 @@
 use crate::rivermemo_topology_v3::NativeArtifact;
+use crate::storage::{ensure_tag_vectors_loaded, TagVectorPool};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -62,6 +64,12 @@ pub(crate) struct SenseConfig {
     pub(crate) max_output_edges: usize,
     /// 0 disables route recording. Recording never changes propagation.
     pub(crate) max_transition_records: usize,
+    /// Only the pipeline supplies residual context; standalone sensing stays legacy.
+    pub(crate) dynamic_wormholes: bool,
+    pub(crate) dynamic_wormhole_threshold: f64,
+    pub(crate) dynamic_wormhole_slots: usize,
+    /// Request-wide unique target budget. Zero disables local vector work.
+    pub(crate) dynamic_wormhole_max_targets: usize,
 }
 
 impl Default for SenseConfig {
@@ -83,6 +91,10 @@ impl Default for SenseConfig {
             max_output_nodes: 0,
             max_output_edges: 0,
             max_transition_records: 0,
+            dynamic_wormholes: true,
+            dynamic_wormhole_threshold: 0.2,
+            dynamic_wormhole_slots: 2,
+            dynamic_wormhole_max_targets: 4096,
         }
     }
 }
@@ -96,6 +108,7 @@ struct SpikeState {
     source_type: String,
     hop: usize,
     seed_id: i64,
+    residual_level: usize,
 }
 
 #[derive(Clone)]
@@ -177,6 +190,13 @@ pub(crate) struct SenseDiagnostics {
     pub(crate) artifact_nodes: usize,
     pub(crate) artifact_edges: usize,
     pub(crate) elapsed_ms: f64,
+    /// Counts accepted-current events before destination state-cap pruning.
+    pub(crate) wormhole_edges_fired: usize,
+    pub(crate) dynamic_wormhole_edges_fired: usize,
+    pub(crate) promoted_wormhole_transitions: usize,
+    pub(crate) dynamic_wormhole_candidates: usize,
+    pub(crate) dynamic_wormhole_selected: usize,
+    pub(crate) dynamic_wormhole_work: DynamicWormholeDiagnostics,
 }
 
 /// A time-expanded transition between accepted propagation states.
@@ -223,13 +243,142 @@ fn fir_weights(config: &SenseConfig) -> Vec<f64> {
     weights
 }
 
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DynamicWormholeDiagnostics {
+    pub(crate) targets_evaluated: usize,
+    pub(crate) sql_fetched_nodes: usize,
+    pub(crate) sql_batches: usize,
+    pub(crate) dot_products: usize,
+    pub(crate) cache_hits: usize,
+    pub(crate) budget_exhausted: bool,
+    pub(crate) load_ms: f64,
+    pub(crate) score_ms: f64,
+    pub(crate) selection_ms: f64,
+}
+
+/// Request-local only: never mutates graph assets or persists residuals.
+/// A source at layer L is supported only by residuals from layers > L.
+pub(crate) struct DynamicWormholeContext<'a> {
+    pub(crate) connection: &'a Connection,
+    pub(crate) pool: &'a mut TagVectorPool,
+    pub(crate) residuals: Vec<Vec<f32>>,
+    residual_norms: Vec<f64>,
+    known_scores: HashMap<(usize, i64), f64>,
+    pub(crate) seed_levels: HashMap<i64, usize>,
+    scores: HashMap<usize, Vec<f64>>,
+    pub(crate) diagnostics: DynamicWormholeDiagnostics,
+}
+
+impl<'a> DynamicWormholeContext<'a> {
+    pub(crate) fn new(
+        connection: &'a Connection, pool: &'a mut TagVectorPool,
+        residuals: Vec<Vec<f32>>, seed_levels: HashMap<i64, usize>,
+    ) -> Self {
+        let residual_norms = residuals.iter().map(|r|
+            r.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt()).collect();
+        Self { connection, pool, residuals, residual_norms, seed_levels,
+            known_scores: HashMap::new(),
+            scores: HashMap::new(), diagnostics: DynamicWormholeDiagnostics::default() }
+    }
+
+    pub(crate) fn reuse_score(&mut self, layer: usize, id: i64, score: f64) {
+        if score.is_finite() {
+            self.known_scores.insert((layer, id), score.clamp(-1.0, 1.0));
+        }
+    }
+
+    fn prepare(
+        &mut self, artifact: &NativeArtifact, active: &HashMap<(Option<usize>, usize), SpikeState>,
+        config: &SenseConfig,
+    ) -> std::result::Result<(), String> {
+        if self.residuals.len() < 2 { return Ok(()); }
+        let mut targets = Vec::new();
+        for spike in active.values().filter(|s| s.energy >= config.firing_threshold
+            && s.momentum >= 0.0 && s.residual_level + 1 < self.residuals.len()) {
+            for cursor in artifact.row_offsets[spike.node_index]..artifact.row_offsets[spike.node_index + 1] {
+                if positive(artifact.weights[cursor]) <= 0.0 { break; }
+                let target = artifact.targets[cursor];
+                if !self.scores.contains_key(&target) { targets.push(target); }
+            }
+        }
+        // Deterministic request budget, independent of HashMap iteration order.
+        targets.sort_unstable();
+        targets.dedup();
+        let remaining = config.dynamic_wormhole_max_targets.saturating_sub(self.scores.len());
+        if targets.len() > remaining { self.diagnostics.budget_exhausted = true; }
+        targets.truncate(remaining);
+        if targets.is_empty() { return Ok(()); }
+        let dimension = self.residuals[0].len();
+        let ids: Vec<i64> = targets.iter().map(|&i| artifact.node_ids[i]).collect();
+        let began = Instant::now();
+        let stats = ensure_tag_vectors_loaded(self.connection, self.pool, &ids, dimension)?;
+        self.diagnostics.load_ms += began.elapsed().as_secs_f64() * 1000.0;
+        self.diagnostics.sql_fetched_nodes += stats.fetched_nodes;
+        self.diagnostics.sql_batches += stats.sql_batches;
+        let began = Instant::now();
+        for target in targets {
+            // Cache negative/missing results too: never retry a dirty SQL row per hop.
+            let mut scores = vec![0.0; self.residuals.len()];
+            if let Some(vector) = self.pool.get(&artifact.node_ids[target]) {
+                let norm = vector.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
+                if vector.len() == dimension && norm.is_finite() && norm > 1e-12 {
+                    for (layer, residual) in self.residuals.iter().enumerate().skip(1) {
+                        let residual_norm = self.residual_norms[layer];
+                        if residual.len() != dimension { continue; }
+                        if residual_norm.is_finite() && residual_norm > 1e-12 {
+                            if let Some(&score) = self.known_scores.get(&(layer, artifact.node_ids[target])) {
+                                scores[layer] = positive(score);
+                                self.diagnostics.cache_hits += 1;
+                            } else {
+                                let dot = residual.iter().zip(vector.iter())
+                                    .map(|(&a,&b)| a as f64 * b as f64).sum::<f64>();
+                                scores[layer] = positive(dot / (norm * residual_norm)).min(1.0);
+                                self.diagnostics.dot_products += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            self.scores.insert(target, scores);
+        }
+        self.diagnostics.targets_evaluated = self.scores.len();
+        self.diagnostics.score_ms += began.elapsed().as_secs_f64() * 1000.0;
+        Ok(())
+    }
+
+    fn resonance(&mut self, target: usize, source_level: usize) -> f64 {
+        let Some(scores) = self.scores.get(&target) else { return 0.0 };
+        self.diagnostics.cache_hits += 1;
+        scores.iter().skip(source_level.saturating_add(1)).copied().fold(0.0, f64::max)
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn sense_typed(
     artifact: &NativeArtifact,
     artifact_sig: &str,
     input: SenseInput,
 ) -> std::result::Result<SenseOutput, String> {
+    sense_with_context(artifact, artifact_sig, input, None)
+}
+
+pub(crate) fn sense_with_context(
+    artifact: &NativeArtifact,
+    artifact_sig: &str,
+    input: SenseInput,
+    mut context: Option<&mut DynamicWormholeContext<'_>>,
+) -> std::result::Result<SenseOutput, String> {
     let started_at = Instant::now();
     let config = input.config;
+    if !config.dynamic_wormholes || config.dynamic_wormhole_slots == 0
+        || config.dynamic_wormhole_max_targets == 0 {
+        context = None;
+    }
+    if !config.dynamic_wormhole_threshold.is_finite()
+        || !(0.0..=1.0).contains(&config.dynamic_wormhole_threshold) {
+        return Err("dynamicWormholeThreshold must be finite and in [0,1]".into());
+    }
     let weights = fir_weights(&config);
     let mut active: HashMap<(Option<usize>, usize), SpikeState> = HashMap::new();
     let mut accumulated: HashMap<usize, f64> = HashMap::new();
@@ -262,6 +411,8 @@ pub(crate) fn sense_typed(
                 source_type: source_type.clone(),
                 hop: 0,
                 seed_id: seed.id,
+                residual_level: context.as_ref()
+                    .and_then(|c| c.seed_levels.get(&seed.id).copied()).unwrap_or(usize::MAX / 2),
             });
         *accumulated.entry(node_index).or_default() += energy * weights[0];
         provenance.entry(node_index).or_insert(Provenance {
@@ -282,7 +433,16 @@ pub(crate) fn sense_typed(
     let mut transitions = Vec::new();
     let mut transitions_truncated = false;
 
+    let mut wormhole_edges_fired = 0;
+    let mut dynamic_wormhole_edges_fired = 0;
+    let mut promoted_wormhole_transitions = 0;
+    let mut dynamic_wormhole_candidates = 0;
+    let mut dynamic_wormhole_selected = 0;
+    let mut neighbor_scratch: Vec<(usize, f64, bool)> = Vec::new();
+    let mut selected_scratch: Vec<(usize, bool)> = Vec::new();
+
     for hop in 0..config.max_safe_hops {
+        if let Some(ctx) = context.as_deref_mut() { ctx.prepare(artifact, &active, &config)?; }
         let mut next: HashMap<(Option<usize>, usize), SpikeState> = HashMap::new();
         let mut hop_transitions = Vec::new();
 
@@ -292,19 +452,55 @@ pub(crate) fn sense_typed(
             }
             let start = artifact.row_offsets[spike.node_index];
             let end = artifact.row_offsets[spike.node_index + 1];
-            let mut neighbors: Vec<(usize, f64)> = (start..end)
-                .map(|cursor| (artifact.targets[cursor], positive(artifact.weights[cursor])))
-                .filter(|entry| entry.1 > 0.0)
-                .collect();
-            neighbors
-                .sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
-            neighbors.truncate(config.max_neighbors_per_node.max(1));
-
-            for (target_index, conductance) in neighbors {
+            let limit = end.min(start.saturating_add(config.max_neighbors_per_node.max(1)));
+            selected_scratch.clear();
+            neighbor_scratch.clear();
+            if let Some(ctx) = context.as_deref_mut() {
+                let began = Instant::now();
+                for cursor in start..end {
+                    let conductance = positive(artifact.weights[cursor]);
+                    if conductance <= 0.0 { break; }
+                    let target = artifact.targets[cursor];
+                    if target == spike.node_index { continue; }
+                    let resonance = ctx.resonance(target, spike.residual_level);
+                    if resonance <= 0.0 || resonance < config.dynamic_wormhole_threshold { continue; }
+                    dynamic_wormhole_candidates += 1;
+                    // Do not spend a slot on an edge rejected by return-current gating.
+                    let return_factor = if spike.previous_index == Some(target) {
+                        config.return_flow_factor.clamp(0.0, 1.0)
+                    } else { 1.0 };
+                    if spike.energy * conductance * config.wormhole_decay * return_factor
+                        < config.minimum_injected_current { continue; }
+                    neighbor_scratch.push((cursor, conductance * resonance.powi(4), true));
+                }
+                neighbor_scratch.sort_unstable_by(|a,b| b.1.total_cmp(&a.1)
+                    .then_with(|| artifact.weights[b.0].total_cmp(&artifact.weights[a.0]))
+                    .then_with(|| artifact.node_ids[artifact.targets[a.0]]
+                        .cmp(&artifact.node_ids[artifact.targets[b.0]])));
+                for &(cursor, _, _) in neighbor_scratch.iter()
+                    .take(config.dynamic_wormhole_slots.min(config.max_neighbors_per_node.max(1))) {
+                    selected_scratch.push((cursor, true));
+                }
+                // Reserve within K, fill remaining seats with unchanged ranked history.
+                for cursor in start..limit {
+                    if selected_scratch.len() >= config.max_neighbors_per_node.max(1) { break; }
+                    if !selected_scratch.iter().any(|&(c,_)| c == cursor) {
+                        selected_scratch.push((cursor, false));
+                    }
+                }
+                ctx.diagnostics.selection_ms += began.elapsed().as_secs_f64() * 1000.0;
+            } else {
+                selected_scratch.extend((start..limit).map(|c| (c, false)));
+            }
+            for &(cursor, dynamic_wormhole) in &selected_scratch {
+                dynamic_wormhole_selected += usize::from(dynamic_wormhole);
+                let target_index = artifact.targets[cursor];
+                let conductance = positive(artifact.weights[cursor]);
+                if conductance <= 0.0 { break; }
                 let source_id = artifact.node_ids[spike.node_index];
                 let target_id = artifact.node_ids[target_index];
-                let residual = artifact.anchor_gain.get(&target_id).copied().unwrap_or(1.0);
-                let wormhole = artifact.wormhole_edges.contains(&(source_id, target_id))
+                let residual = artifact.node_anchor_gain[target_index];
+                let wormhole = dynamic_wormhole || artifact.edge_is_wormhole[cursor]
                     || conductance * residual >= config.tension_threshold;
                 let decay = if wormhole {
                     config.wormhole_decay
@@ -326,6 +522,9 @@ pub(crate) fn sense_typed(
                     continue;
                 }
 
+                wormhole_edges_fired += usize::from(wormhole);
+                dynamic_wormhole_edges_fired += usize::from(dynamic_wormhole);
+                promoted_wormhole_transitions += usize::from(dynamic_wormhole && cursor >= limit);
                 let edge = edge_flows
                     .entry((spike.node_index, target_index))
                     .or_insert(EdgeFlow {
@@ -384,6 +583,7 @@ pub(crate) fn sense_typed(
                     .and_modify(|state| {
                         state.energy += injected;
                         state.momentum = state.momentum.max(next_momentum);
+                        state.residual_level = state.residual_level.min(spike.residual_level);
                     })
                     .or_insert(SpikeState {
                         node_index: target_index,
@@ -393,6 +593,7 @@ pub(crate) fn sense_typed(
                         source_type: spike.source_type.clone(),
                         hop: spike.hop + 1,
                         seed_id: spike.seed_id,
+                        residual_level: spike.residual_level,
                     });
             }
         }
@@ -585,10 +786,171 @@ pub(crate) fn sense_typed(
             artifact_nodes: artifact.node_ids.len(),
             artifact_edges: artifact.targets.len(),
             elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+            wormhole_edges_fired,
+            dynamic_wormhole_edges_fired,
+            promoted_wormhole_transitions,
+            dynamic_wormhole_candidates,
+            dynamic_wormhole_selected,
+            dynamic_wormhole_work: context.as_ref()
+                .map(|ctx| ctx.diagnostics.clone()).unwrap_or_default(),
         },
         nodes,
         edges,
         transitions,
         transitions_truncated,
     })
+}
+
+#[cfg(test)]
+mod csr_preparation_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn ranked_rows_preserve_flags_and_request_thresholds() {
+        let graph = NativeArtifact {
+            node_ids: vec![10, 30, 20, 40],
+            node_index: HashMap::from([(10, 0), (30, 1), (20, 2), (40, 3)]),
+            row_offsets: vec![0, 3, 3, 3, 3],
+            targets: vec![3, 1, 2],
+            weights: vec![0.1, 0.5, 0.5],
+            anchor_gain: HashMap::from([(20, 2.0)]),
+            wormhole_edges: HashSet::from([(10, 30)]),
+            ..NativeArtifact::default()
+        }.prepared();
+        assert_eq!(graph.targets, vec![2, 1, 3]);
+        assert_eq!(graph.weights, vec![0.5, 0.5, 0.1]);
+        assert_eq!(graph.node_anchor_gain, vec![1.0, 1.0, 2.0, 1.0]);
+        assert_eq!(graph.edge_is_wormhole, vec![false, true, false]);
+        let run = |threshold, k| sense_typed(&graph, "test", SenseInput {
+            query_id: None,
+            seeds: vec![SenseSeed { id: 10, energy: 1.0, source_type: "seed".into() }],
+            config: SenseConfig {
+                max_safe_hops: 1, max_neighbors_per_node: k,
+                tension_threshold: threshold, minimum_injected_current: 0.0,
+                ..SenseConfig::default()
+            },
+        }).unwrap();
+        let high = run(2.0, 2);
+        assert_eq!(high.edges.len(), 2);
+        assert!(!high.edges.iter().find(|e| e.target_id == 20).unwrap().wormhole);
+        assert!(high.edges.iter().find(|e| e.target_id == 30).unwrap().wormhole);
+        let low = run(1.0, 2);
+        assert!(low.edges.iter().all(|edge| edge.wormhole));
+        let top_one = run(2.0, 1);
+        assert_eq!(top_one.edges[0].target_id, 20);
+        let again = graph.prepared();
+        assert_eq!(again.targets, vec![2, 1, 3]);
+        assert_eq!(again.edge_is_wormhole, vec![false, true, false]);
+    }
+}
+
+
+#[cfg(test)]
+mod dynamic_wormhole_tests {
+    use super::*;
+
+    fn graph() -> NativeArtifact {
+        NativeArtifact {
+            node_ids: (1..=26).collect(),
+            node_index: (1..=26).enumerate().map(|(i,id)| (id,i)).collect(),
+            row_offsets: std::iter::once(0).chain(std::iter::repeat(25).take(26)).collect(),
+            targets: (1..=25).collect(),
+            weights: (0..25).map(|i| if i < 20 { 0.05 } else { 0.04 }).collect(),
+            ..NativeArtifact::default()
+        }.prepared()
+    }
+
+    fn database() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY,vector BLOB);").unwrap();
+        for id in 2..=26 {
+            let vector = if id == 22 { [0.0f32, 1.0] } else { [1.0f32, 0.0] };
+            let bytes: Vec<u8> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
+            db.execute("INSERT INTO tags VALUES (?1,?2)", rusqlite::params![id,bytes]).unwrap();
+        }
+        db
+    }
+
+    fn input(config: SenseConfig) -> SenseInput {
+        SenseInput { query_id: None,
+            seeds: vec![SenseSeed { id: 1, energy: 1.0, source_type: "seed".into() }],
+            config }
+    }
+
+    #[test]
+    fn residual_rescues_historical_tail_without_inventing_edges() {
+        let graph = graph();
+        let db = database();
+        let mut pool = TagVectorPool::new();
+        let mut ctx = DynamicWormholeContext::new(&db, &mut pool,
+            vec![vec![1.0,0.0],vec![0.0,1.0]], HashMap::from([(1,0)]));
+        let output = sense_with_context(&graph, "test", input(SenseConfig {
+            max_safe_hops: 1, ..SenseConfig::default()
+        }), Some(&mut ctx)).unwrap();
+        assert_eq!(output.edges.len(), 20);
+        let rescued = output.edges.iter().find(|e| e.target_id == 22).unwrap();
+        assert!(rescued.wormhole);
+        assert!((rescued.flow - 0.028).abs() < 1e-12);
+        assert_eq!(output.diagnostics.dynamic_wormhole_edges_fired, 1);
+        assert_eq!(output.diagnostics.promoted_wormhole_transitions, 1);
+        assert_eq!(output.diagnostics.dynamic_wormhole_work.sql_batches, 1);
+        assert_eq!(output.diagnostics.dynamic_wormhole_work.dot_products, 25);
+        assert!(output.edges.iter().all(|e| (2..=26).contains(&e.target_id)));
+    }
+
+    #[test]
+    fn disabled_budget_and_last_layer_keep_legacy_selection() {
+        for (enabled, budget, source_layer) in [(false,4096,0), (true,0,0), (true,4096,1)] {
+            let graph = graph();
+            let db = database();
+            let mut pool = TagVectorPool::new();
+            let mut ctx = DynamicWormholeContext::new(&db, &mut pool,
+                vec![vec![1.0,0.0],vec![0.0,1.0]], HashMap::from([(1,source_layer)]));
+            let output = sense_with_context(&graph, "test", input(SenseConfig {
+                max_safe_hops: 1, dynamic_wormholes: enabled,
+                dynamic_wormhole_max_targets: budget, ..SenseConfig::default()
+            }), Some(&mut ctx)).unwrap();
+            assert!(!output.edges.iter().any(|e| e.target_id == 22));
+            assert_eq!(output.diagnostics.dynamic_wormhole_edges_fired, 0);
+            assert_eq!(output.diagnostics.dynamic_wormhole_work.sql_batches, 0);
+        }
+    }
+
+    #[test]
+    fn current_gate_does_not_spend_a_reserved_seat() {
+        let graph = graph();
+        let db = database();
+        let mut pool = TagVectorPool::new();
+        let mut ctx = DynamicWormholeContext::new(&db, &mut pool,
+            vec![vec![1.0,0.0],vec![0.0,1.0]], HashMap::from([(1,0)]));
+        let output = sense_with_context(&graph, "test", input(SenseConfig {
+            max_safe_hops: 1, minimum_injected_current: 0.03,
+            ..SenseConfig::default()
+        }), Some(&mut ctx)).unwrap();
+        assert_eq!(output.diagnostics.dynamic_wormhole_candidates, 1);
+        assert_eq!(output.diagnostics.dynamic_wormhole_selected, 0);
+        assert_eq!(output.diagnostics.dynamic_wormhole_edges_fired, 0);
+    }
+
+    #[test]
+    fn known_scores_and_missing_vectors_are_request_cached() {
+        let graph = graph();
+        let db = database();
+        db.execute("DELETE FROM tags WHERE id=26", []).unwrap();
+        let mut pool = TagVectorPool::new();
+        let mut ctx = DynamicWormholeContext::new(&db, &mut pool,
+            vec![vec![1.0,0.0],vec![0.0,1.0]], HashMap::from([(1,0)]));
+        ctx.reuse_score(1,22,1.0);
+        let config = SenseConfig { max_safe_hops: 1, ..SenseConfig::default() };
+        let first = sense_with_context(&graph, "test", input(config.clone()), Some(&mut ctx)).unwrap();
+        let dots = ctx.diagnostics.dot_products;
+        let batches = ctx.diagnostics.sql_batches;
+        let second = sense_with_context(&graph, "test", input(config), Some(&mut ctx)).unwrap();
+        assert_eq!(dots, 23);
+        assert_eq!(ctx.diagnostics.dot_products, dots);
+        assert_eq!(ctx.diagnostics.sql_batches, batches);
+        assert_eq!(serde_json::to_value(first.edges).unwrap(),
+            serde_json::to_value(second.edges).unwrap());
+    }
 }

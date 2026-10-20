@@ -30,7 +30,8 @@ test('native consistency preview commits facts and index before queuing derived 
         const config = { rootPath, storePath: root, dimension: 4, modelSig: 'consistency-test',
             ignoreFolders: [], ignorePrefixes: [], ignoreSuffixes: [],
             tagBlacklist: new Set(), tagBlacklistSuper: [], maxTagsPerFile: 50,
-            persistTagIndex: true, persistFolders: new Set(), tagIndexBaselineDeltaRatio: 0.05 };
+            persistTagIndex: true, tagIndexAllowInitial: true,
+            persistFolders: new Set(), tagIndexBaselineDeltaRatio: 0.05 };
         const repository = new IndexRepository({ config, VexusIndex, getDbPath: () => dbPath,
             getNativeRuntime: () => runtime });
         repository.tagIndex = index;
@@ -59,7 +60,8 @@ test('native consistency preview commits facts and index before queuing derived 
         assert.equal(queued, 1);
         assert.deepEqual(db.prepare('SELECT id,name FROM tags ORDER BY id').all(), [{ id: 1, name: 'keep' }]);
         assert.deepEqual(db.prepare('SELECT * FROM file_tags').all(), [{ file_id: 1, tag_id: 1, position: 1 }]);
-        assert.equal(index.search(new Float32Array([1, 0, 0, 0]), 1)[0].id, 1);
+        const hits = JSON.parse(await runtime.searchGlobalTags(new Float32Array([1, 0, 0, 0]), 1));
+        assert.equal(hits[0].tag, 'keep');
         const replay = JSON.parse(await runtime.restoreGlobalTagIndex(
             dbPath, repository._tagBaselinePath('a'), config.modelSig, 32));
         assert.equal(replay.replayed, true);

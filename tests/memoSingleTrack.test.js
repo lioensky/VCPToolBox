@@ -69,7 +69,12 @@ test('native joint disabled uses pure candidates, one observation and RiverMemo 
     let readout = 0;
     let candidates = 0;
     const prepared = { artifact: { artifactSig: 'test' }, nativePreparedQuery: {}, observationHandle: 'q' };
+    let releases = 0;
     const owner = {
+        releaseMemoObservation(value) {
+            assert.equal(value, prepared);
+            releases++;
+        },
         config: { dimension: 2, nativeRiverQueryEnabled: false, nativeRiverQueryCandidateK: 8 },
         async getFileIdsByDiaries(names) {
             assert.deepEqual(names, ['A']);
@@ -96,6 +101,18 @@ test('native joint disabled uses pure candidates, one observation and RiverMemo 
     assert.equal(sensing, 1);
     assert.equal(readout, 1);
     assert.equal(candidates, 1);
+    assert.equal(releases, 1);
+
+    await kb.executeNativeRiverQuery.call(owner,
+        { text: 'borrowed', vector: [1, 0] },
+        { diaryNames: ['A'], topK: 1, preparedMemoObservation: prepared });
+    assert.equal(releases, 1, 'borrowed observations remain caller-owned');
+
+    owner.riverMemoEngine.rerank = async () => { throw new Error('injected readout failure'); };
+    await assert.rejects(kb.executeNativeRiverQuery.call(owner,
+        { text: 'failure', vector: [1, 0] }, { diaryNames: ['A'], topK: 1 }),
+        /injected readout failure/);
+    assert.equal(releases, 2, 'failed readout releases its owned observation');
 });
 
 test('Dream normal empty RiverMemo does not recall KNN; exceptions do', async () => {
@@ -197,4 +214,26 @@ test('Memory A/B excludes fallback scores and isolates external scoring fields',
     report = await owner.handleMemoryAB({ query: 'test', folder: 'A', k: 1 });
     assert.match(report, /不冒充回退评分/);
     assert.match(report, /0\.6200 \| — \| #1 \/ 0\.6773 \|/);
+});
+
+test('LightMemo releases its observation on success and native failure', async () => {
+    const prepared = { observationHandle: 'light-owned', artifact: { artifactSig: 'a' } };
+    let released = 0;
+    const owner = {
+        config: { dimension: 2, modelSig: 'model', rootPath: '.' },
+        async prepareUnifiedMemoObservation() { return prepared; },
+        releaseMemoObservation(value) { assert.equal(value, prepared); released++; },
+        riverMemoEngine: { _nativeConfig() { return {}; } },
+        nativeKnowledgeRuntime: {
+            async executeLightMemoQuery() {
+                return { schema: 'vcp-lightmemo-result-v1', results: [] };
+            }
+        }
+    };
+    await kb.executeLightMemoQuery.call(owner, { vector: [1, 0] }, { engineMode: 'rivermemo' });
+    assert.equal(released, 1);
+    owner.nativeKnowledgeRuntime.executeLightMemoQuery = async () => { throw new Error('native failure'); };
+    await assert.rejects(kb.executeLightMemoQuery.call(owner,
+        { vector: [1, 0] }, { engineMode: 'rivermemo' }), /native failure/);
+    assert.equal(released, 2);
 });

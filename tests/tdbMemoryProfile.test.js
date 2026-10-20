@@ -58,3 +58,21 @@ test('stage samples are bounded scalar diagnostics and profiles return copies', 
     profile.memoryStageSamples[0].stage = 'changed';
     assert.equal(state.memoryStageSamples[0].stage, 'stage-8');
 });
+
+test('River memory profile exposes retained observation capacities without clearing them', () => {
+    const state = fixture({ totalVectors: 3, hotBytes: 1024 });
+    let reads = 0;
+    state.tagMemoV10Engine = { getArtifactSnapshot: () => ({ artifactSig: 'a' }) };
+    state.tagIndex.memoRuntimeStats = () => ({
+        activeArtifactSig: 'a', generation: 1, nodeCount: 3, edgeCount: 4
+    });
+    state.tagIndex.memoObservationMemoryStats = () => {
+        reads++;
+        return JSON.stringify({ entries: 5, expiredEntries: 3, payloadCapacityBytes: 123456 });
+    };
+    const profile = buildMemoryProfile(state);
+    assert.equal(profile.riverMemo.observationMemory.entries, 5);
+    assert.equal(profile.riverMemo.observationMemory.expiredEntries, 3);
+    assert.equal(profile.riverMemo.observationMemory.payloadCapacityBytes, 123456);
+    assert.equal(reads, 1);
+});

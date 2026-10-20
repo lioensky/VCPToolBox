@@ -26,6 +26,7 @@ pub struct IndexCheckpointTask {
     pub(crate) model_sig: String,
     pub(crate) threshold: f64,
     pub(crate) force: bool,
+    pub(crate) allow_initial: bool,
 }
 
 #[derive(Serialize)]
@@ -90,6 +91,7 @@ fn index_slot_path(base_path: &str, slot: &str) -> String {
         .into_owned()
 }
 
+#[cfg(test)]
 fn retire_legacy_assets(base_path: &str) -> std::result::Result<(), String> {
     let base = std::path::Path::new(base_path);
     if base.extension().and_then(|value| value.to_str()) != Some("vec") {
@@ -521,24 +523,38 @@ impl Task for IndexCheckpointTask {
         let baseline_count = baseline_count.max(0) as u64;
         let delta_ratio = ratio(delta, current_count, baseline_count);
 
-        // A low SQL delta cannot endorse a missing, damaged or mismatched
-        // asset. Validate the published file before allowing threshold skip.
-        let compatible_baseline = active_generation > 0 && load_endorsed_index(
-            &self.db_path,
-            std::path::Path::new(&index_slot_path(&self.index_path, &active_slot)),
-            scope,
-            self.diary_name.as_deref(),
-            active_generation,
-            &active_slot,
-            self.dimension as usize,
-            &self.model_sig,
-        ).is_ok();
-        let maintenance_required = self.index.read().map_err(|error| {
-            Error::from_reason(format!("Read checkpoint maintenance state failed: {}", error))
-        })?.maintenance_required();
-        if compatible_baseline && !self.force && !maintenance_required
-            && delta_ratio < self.threshold
-        {
+        let initial_blocked = if active_generation == 0 {
+            let has_signature = with_registered_read_transaction(&self.db_path, |connection| {
+                let count: i64 = match self.scope {
+                    IndexScope::Diary => connection.query_row(
+                        "SELECT COUNT(*) FROM chunk_index_baselines WHERE diary_name=?1",
+                        [self.diary_name.as_deref()], |row| row.get(0),
+                    ),
+                    IndexScope::GlobalTags => connection.query_row(
+                        "SELECT (SELECT COUNT(*) FROM tag_index_baselines)
+                         + (SELECT COUNT(*) FROM kv_store WHERE key='tag_index_active_baseline')",
+                        [], |row| row.get(0),
+                    ),
+                }.map_err(|error| error.to_string())?;
+                Ok(count > 0)
+            }).map_err(Error::from_reason)?;
+            let mut has_file = false;
+            for slot in ["a", "b"] {
+                match std::fs::metadata(index_slot_path(&self.index_path, slot)) {
+                    Ok(_) => has_file = true,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(Error::from_reason(error.to_string())),
+                }
+            }
+            !self.allow_initial || has_signature || has_file
+        } else {
+            false
+        };
+
+        // SQL owns the baseline. Threshold checks never open the snapshot.
+        // Legacy force requests cannot bypass cumulative drift policy.
+        let _legacy_force = self.force;
+        if initial_blocked || (active_generation > 0 && (delta == 0 || delta_ratio < self.threshold)) {
             return serde_json::to_string(&CheckpointResult {
                 published: false,
                 skipped: true,
@@ -563,14 +579,11 @@ impl Task for IndexCheckpointTask {
         let next_slot = slot_flip((active_slot.is_empty()).then_some("").or(Some(active_slot.as_str())));
         let target_index_path = index_slot_path(&self.index_path, next_slot);
         let revision_before_save = self.content_revision.load(Ordering::Acquire);
-        let staging = crate::unique_index_sidecar_path(
-            std::path::Path::new(&target_index_path), "checkpoint-source",
-        );
         let build = with_registered_read_transaction(&self.db_path, |connection| {
             crate::storage::ensure_generation(connection, snapshot_database_generation)?;
-            crate::index_source::build_from_connection(
+            crate::index_source::build_memory_from_connection(
                 connection, self.diary_name.as_deref(), self.dimension as usize,
-                &self.model_sig, &staging,
+                &self.model_sig,
             )
         }).map_err(Error::from_reason)?;
         // Endorse exactly the valid SQL rows represented in the asset. Invalid
@@ -583,16 +596,21 @@ impl Task for IndexCheckpointTask {
         });
         let asset_identity = build.identity.clone();
         let target = std::path::Path::new(&target_index_path);
-        let temp = crate::unique_index_sidecar_path(target, "tmp");
-        build.index().write_staging(&temp, &asset_identity)
-            .map_err(|error| Error::from_reason(format!("Write checkpoint asset failed: {}", error)))?;
-        let checked = vcp_tdb_index::asset::VectorAsset::open(&temp, &asset_identity)
+        // The checkpoint guard serializes this scope through SQL endorsement.
+        // Reuse one staging path per slot; no PID-based generation identities.
+        let staging = crate::CheckpointStaging::new(target)
+            .map_err(|error| Error::from_reason(format!("Prepare checkpoint staging failed: {}", error)))?;
+        let temp = staging.path();
+        with_registered_read_transaction(&self.db_path, |connection| {
+            crate::storage::ensure_generation(connection, snapshot_database_generation)?;
+            build.write_snapshot(connection, self.diary_name.as_deref(), temp)
+        }).map_err(|error| Error::from_reason(format!("Write checkpoint asset failed: {}", error)))?;
+        let checked = vcp_tdb_index::asset::VectorAsset::open(temp, &asset_identity)
             .map_err(|error| Error::from_reason(format!("Validate checkpoint asset failed: {}", error)))?;
         let (file_size, file_crc) = checked.file_stamp();
         drop(checked);
-        crate::sync_index_file(&temp).map_err(|error| Error::from_reason(error.to_string()))?;
-        if let Err(error) = crate::publish_index_file(&temp, target) {
-            let _ = std::fs::remove_file(&temp);
+        crate::sync_index_file(temp).map_err(|error| Error::from_reason(error.to_string()))?;
+        if let Err(error) = crate::publish_index_file(temp, target) {
             return Err(Error::from_reason(format!("Publish checkpoint asset failed: {}", error)));
         }
         let content_digest = asset_identity.content_digest.iter()
@@ -642,6 +660,24 @@ impl Task for IndexCheckpointTask {
                     "KNOWLEDGE_STORE_CHECKPOINT_GENERATION_CONFLICT: snapshot={}, current={}",
                     snapshot_database_generation_for_write,
                     current_database_generation
+                ));
+            }
+
+            let current_baseline: i64 = match scope_for_write {
+                IndexScope::Diary => transaction.query_row(
+                    "SELECT COALESCE(MAX(generation),0) FROM chunk_index_baselines
+                     WHERE diary_name=?1 AND status='ready'",
+                    [diary_name.as_deref()], |row| row.get(0),
+                ),
+                IndexScope::GlobalTags => transaction.query_row(
+                    "SELECT COALESCE(MAX(generation),0) FROM tag_index_baselines
+                     WHERE status='ready'", [], |row| row.get(0),
+                ),
+            }.map_err(|error| format!("Read expected checkpoint baseline failed: {error}"))?;
+            if current_baseline != active_generation {
+                return Err(format!(
+                    "KNOWLEDGE_STORE_CHECKPOINT_BASELINE_CONFLICT: expected={}, current={}",
+                    active_generation, current_baseline
                 ));
             }
 
@@ -788,9 +824,8 @@ impl Task for IndexCheckpointTask {
         })
         .map_err(Error::from_reason)?;
 
-        // The published facts have not changed. Rebase the live index onto the
-        // SQL-built private mmap to release accumulated f32 deltas. Do not map
-        // the replaceable public slot here: Windows readers may outlive a flip.
+        // The published facts have not changed. Adopt SQL-built memory routing;
+        // neither private assets nor public-slot mappings remain live.
         let mut active = self.index.write().map_err(|error| {
             Error::from_reason(format!("Rebase checkpoint index failed: {}", error))
         })?;
@@ -893,7 +928,7 @@ fn load_endorsed_index(
             model_hash: Index::model_hash(model_sig),
             content_digest,
         };
-        let checked = VectorAsset::open(path, &expected)
+        let checked = VectorAsset::open_endorsed(path, &expected)
             .map_err(|error| format!("Validate endorsed vector asset failed: {}", error))?;
         let (actual_size, actual_crc) = checked.file_stamp();
         if size != i64::try_from(actual_size).ok() || crc != Some(actual_crc as i64) {
@@ -940,7 +975,9 @@ impl Task for IndexRestoreTask {
             ));
         }
 
-        retire_legacy_assets(&self.index_path).map_err(Error::from_reason)?;
+        if Path::new(&self.index_path).extension().and_then(|value| value.to_str()) != Some("vec") {
+            return Err(Error::from_reason("Runtime index paths must use the .vec format"));
+        }
         let db_path = self.db_path.clone();
         let diary_name = self.diary_name.clone();
         let model_sig = self.model_sig.clone();
@@ -1141,18 +1178,8 @@ impl Task for IndexRestoreTask {
                 ) {
                     Ok(loaded) => restored_index = Some(loaded),
                     Err(error) => {
-                        // Preserve evidence instead of deleting a damaged baseline.
-                        let nonce = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|value| value.as_nanos()).unwrap_or(0);
-                        let quarantine = format!("{}.{}.{}.corrupt",
-                            persisted_path, std::process::id(), nonce);
-                        eprintln!("[KBM] Baseline load failed for '{}': {:?}; rebuilding from SQL; quarantine='{}'",
-                            persisted_path, error, quarantine);
-                        if let Err(rename_error) = std::fs::rename(&persisted_path, &quarantine) {
-                            eprintln!("[KBM] Cannot quarantine damaged baseline '{}': {}; preserving original and rebuilding from SQL",
-                                persisted_path, rename_error);
-                        }
+                        eprintln!("[KBM] Baseline load failed for '{}': {}; preserving asset and rebuilding memory routing from SQL",
+                            persisted_path, error);
                     }
                 }
             }
@@ -1163,12 +1190,9 @@ impl Task for IndexRestoreTask {
             Some(index) => index,
             None => {
                 rebuilt = true;
-                let staging = crate::unique_index_sidecar_path(
-                    Path::new(&self.index_path), "restore-source",
-                );
                 let build = with_registered_read_transaction(&self.db_path, |connection| {
-                    crate::index_source::build_from_connection(
-                        connection, self.diary_name.as_deref(), dimension, &self.model_sig, &staging,
+                    crate::index_source::build_memory_from_connection(
+                        connection, self.diary_name.as_deref(), dimension, &self.model_sig,
                     )
                 }).map_err(Error::from_reason)?;
                 Index::from_sql(build)
@@ -1209,13 +1233,10 @@ impl Task for IndexRestoreTask {
         let large_replay = changed_ids.len().saturating_mul(dimension)
             .saturating_mul(std::mem::size_of::<f32>()) >= 16 * 1024 * 1024;
         if large_replay {
-            let staging = crate::unique_index_sidecar_path(
-                Path::new(&self.index_path), "restore-large-delta",
-            );
             let build = with_registered_read_transaction(&self.db_path, |connection| {
-                crate::index_source::build_from_connection(
+                crate::index_source::build_memory_from_connection(
                     connection, self.diary_name.as_deref(), dimension,
-                    &self.model_sig, &staging,
+                    &self.model_sig,
                 )
             }).map_err(Error::from_reason)?;
             target = Index::from_sql(build);
@@ -1248,13 +1269,10 @@ impl Task for IndexRestoreTask {
         }
 
         if loaded_persisted_index && target.maintenance_required() {
-            let staging = crate::unique_index_sidecar_path(
-                Path::new(&self.index_path), "restore-compacted",
-            );
             let build = with_registered_read_transaction(&self.db_path, |connection| {
-                crate::index_source::build_from_connection(
+                crate::index_source::build_memory_from_connection(
                     connection, self.diary_name.as_deref(), dimension,
-                    &self.model_sig, &staging,
+                    &self.model_sig,
                 )
             }).map_err(Error::from_reason)?;
             target = Index::from_sql(build);
@@ -1263,6 +1281,7 @@ impl Task for IndexRestoreTask {
         if skipped_invalid_vectors > 0 {
             eprintln!("[KBM] Restore skipped {} invalid vectors", skipped_invalid_vectors);
         }
+        target.release_originals();
         target.reserve(self.capacity as usize).map_err(|error| {
             Error::from_reason(format!("Reserve restored index capacity failed: {}", error))
         })?;
@@ -1366,7 +1385,7 @@ mod audit_tests {
             db_path: db.clone(), index_path: baseline, index: index.index.clone(),
             content_revision: index.content_revision.clone(), scope: IndexScope::GlobalTags,
             diary_name: None, dimension: 3072, model_sig: "test".into(),
-            threshold: 0.05, force: true,
+            threshold: 0.05, force: true, allow_initial: true,
         }.compute().unwrap();
         storage.submit_write(|tx| {
             let bytes: Vec<u8> = vec![-0.5_f32; 3072].iter()
@@ -1389,9 +1408,13 @@ mod audit_tests {
         {
             let active = index.index.read().unwrap();
             assert_eq!(active.size(), 1400);
-            assert!(active.mmap_bytes() > 16 * 1024 * 1024);
+            assert_eq!(active.mmap_bytes(), 0);
             assert!(!active.maintenance_required());
-            assert_eq!(active.search(&vec![0.5; 3072], 1).unwrap(), vec![(1, 1.0)]);
+            let hits = with_registered_read_transaction(&db, |connection| {
+                active.search_sql(connection, None, &vec![0.5; 3072], 1)
+                    .map_err(|error| error.to_string())
+            }).unwrap();
+            assert_eq!(hits, vec![(1, 1.0)]);
         }
         drop(restore);
         drop(index);
@@ -1429,6 +1452,7 @@ mod audit_tests {
             db_path: db.clone(), index_path: baseline.clone(), index: index.index.clone(),
             content_revision: index.content_revision.clone(), scope: IndexScope::GlobalTags,
             diary_name: None, dimension: 2, model_sig: "test".into(), threshold: 0.05, force: true,
+            allow_initial: true,
         }.compute().unwrap();
         let same: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
         assert_eq!(same["replayed"], false);
@@ -1443,8 +1467,11 @@ mod audit_tests {
         let changed: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
         assert_eq!(changed["replayed"], true);
         let guard = index.index.read().unwrap();
-        assert_eq!(guard.search(&[0.0, 1.0], 1).unwrap(), vec![(1, 1.0)]);
-        assert_eq!(guard.search(&[1.0, 0.0], 1).unwrap(), vec![(1, 0.0)]);
+        with_registered_read_transaction(&db, |connection| {
+            assert_eq!(guard.search_sql(connection, None, &[0.0, 1.0], 1).unwrap(), vec![(1, 1.0)]);
+            assert_eq!(guard.search_sql(connection, None, &[1.0, 0.0], 1).unwrap(), vec![(1, 0.0)]);
+            Ok(())
+        }).unwrap();
         drop(guard);
         storage.submit_write(|tx| {
             let mut statement = tx.prepare(
@@ -1468,7 +1495,7 @@ mod audit_tests {
         {
             let active = index.index.read().unwrap();
             assert_eq!(active.size(), 2048);
-            assert!(active.mmap_bytes() > 0);
+            assert_eq!(active.mmap_bytes(), 0);
             assert!(!active.maintenance_required());
         }
         std::fs::remove_file(baseline).unwrap();
@@ -1537,6 +1564,7 @@ mod checkpoint_safety_tests {
             db_path: db.clone(), index_path: baseline.clone(), index: index.index.clone(),
             content_revision: index.content_revision.clone(), scope: IndexScope::GlobalTags,
             diary_name: None, dimension: 2, model_sig: "test".into(), threshold: 0.05, force: false,
+            allow_initial: true,
         };
         let mut restore = IndexRestoreTask {
             db_path: db.clone(), index_path: baseline.clone(), index: index.index.clone(),
@@ -1560,10 +1588,24 @@ mod checkpoint_safety_tests {
             assert!(!std::path::Path::new(&baseline).exists());
         }
         restore.compute().unwrap();
+        let staging_path = std::path::PathBuf::from(format!("{}.tmp", baseline));
+        std::fs::write(&staging_path, b"interrupted staging").unwrap();
+        checkpoint.allow_initial = false;
+        let denied: serde_json::Value = serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
+        assert_eq!(denied["published"], false);
+        assert!(!std::path::Path::new(&baseline).exists());
+        assert_eq!(std::fs::read(&staging_path).unwrap(), b"interrupted staging");
+        checkpoint.allow_initial = true;
+        std::fs::write(&baseline, b"unendorsed interrupted publication").unwrap();
+        let orphan: serde_json::Value = serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
+        assert_eq!(orphan["published"], false);
+        assert_eq!(std::fs::read(&baseline).unwrap(), b"unendorsed interrupted publication");
+        std::fs::remove_file(&baseline).unwrap();
         let first: serde_json::Value = serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
         assert_eq!(first["published"], true);
         assert_eq!(first["slot"], "a");
-        assert!(index.index.read().unwrap().mmap_bytes() > 0);
+        assert!(!staging_path.exists());
+        assert_eq!(index.index.read().unwrap().mmap_bytes(), 0);
         assert!(load_endorsed_index(
             &db, std::path::Path::new(&baseline), IndexScope::GlobalTags,
             None, 1, "a", 2, "test",
@@ -1579,17 +1621,17 @@ mod checkpoint_safety_tests {
             &db, std::path::Path::new(&baseline), IndexScope::GlobalTags,
             None, 1, "a", 2, "test",
         ).err().unwrap().contains("file stamp"));
+        checkpoint.force = true;
         let repaired: serde_json::Value =
             serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
-        assert_eq!(repaired["published"], true);
-        assert_eq!(repaired["slot"], "b");
-        let published_b = index_slot_path(&baseline, "b");
-        std::fs::remove_file(&published_b).unwrap();
+        assert_eq!(repaired["published"], false);
+        assert_eq!(repaired["generation"], 1);
+        std::fs::remove_file(&baseline).unwrap();
         let missing_repaired: serde_json::Value =
             serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
-        assert_eq!(missing_repaired["published"], true);
-        assert_eq!(missing_repaired["slot"], "a");
-        // A legacy endorsement cannot suppress migration, even at zero delta.
+        assert_eq!(missing_repaired["published"], false);
+        assert!(!std::path::Path::new(&baseline).exists());
+        // Legacy format does not authorize a zero-drift rewrite either.
         storage.submit_write(|tx| {
             tx.execute("UPDATE tag_index_baselines SET format_version=0", [])
                 .map_err(|error| error.to_string())?;
@@ -1599,16 +1641,15 @@ mod checkpoint_safety_tests {
         }).unwrap();
         let migrated: serde_json::Value =
             serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
-        assert_eq!(migrated["published"], true);
-        assert_eq!(migrated["slot"], "b");
-        let active_path = index_slot_path(&baseline, "b");
-        assert!(std::path::Path::new(&baseline).exists());
+        assert_eq!(migrated["published"], false);
+        assert_eq!(migrated["generation"], 1);
+        let active_path = baseline.clone();
         std::fs::write(&active_path, b"truncated vector asset").unwrap();
         let restored: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
         assert_eq!(restored["rebuilt"], true);
         assert_eq!(restored["vectorCount"], 1);
-        assert!(!std::path::Path::new(&active_path).exists());
-        assert!(std::fs::read_dir(&root).unwrap().any(|entry| {
+        assert_eq!(std::fs::read(&active_path).unwrap(), b"truncated vector asset");
+        assert!(!std::fs::read_dir(&root).unwrap().any(|entry| {
             entry.unwrap().path().extension().and_then(|value| value.to_str()) == Some("corrupt")
         }));
         storage.shutdown().unwrap();
@@ -1651,6 +1692,7 @@ mod dirty_vector_tests {
             db_path:db.clone(), index_path:baseline, index:index.index.clone(),
             content_revision:index.content_revision.clone(), scope:IndexScope::GlobalTags,
             diary_name:None, dimension:2, model_sig:"test".into(), threshold:0.05, force:true,
+            allow_initial: true,
         }.compute().unwrap();
         storage.submit_write(|tx| {
             tx.execute("UPDATE tags SET vector=?1 WHERE id=2", [vec![0_u8;4]])
@@ -1679,6 +1721,84 @@ mod dirty_vector_tests {
             ).map_err(|error| error.to_string())
         }).unwrap();
         assert!(warning.contains("\"skippedInvalidVectors\":2"));
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod failed_endorsement_tests {
+    use super::*;
+
+    #[test]
+    fn failed_sql_endorsement_preserves_old_baseline_and_pending_drift() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-endorsement-failure-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let baseline = root.join("tags_a.vec").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            let bytes = [1_f32, 0.].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+            tx.execute("INSERT INTO tags(name,vector) VALUES ('tag',?1)", [bytes])
+                .map_err(|e| e.to_string())?;
+            Ok(WriteReceipt { operation:"fixture".into(),database_generation:0,facts_changed:true })
+        }).unwrap();
+        let index = crate::VexusIndex::new(2, 16).unwrap();
+        let mut restore = IndexRestoreTask {
+            db_path:db.clone(),index_path:baseline.clone(),index:index.index.clone(),
+            content_revision:index.content_revision.clone(),memo_runtime:None,
+            scope:IndexScope::GlobalTags,diary_name:None,dimension:2,
+            model_sig:"test".into(),capacity:16,
+        };
+        restore.compute().unwrap();
+        let mut checkpoint = IndexCheckpointTask {
+            db_path:db.clone(),index_path:baseline.clone(),index:index.index.clone(),
+            content_revision:index.content_revision.clone(),scope:IndexScope::GlobalTags,
+            diary_name:None,dimension:2,model_sig:"test".into(),threshold:0.05,
+            force:false,allow_initial:true,
+        };
+        checkpoint.compute().unwrap();
+        let original = std::fs::read(&baseline).unwrap();
+        storage.submit_write(|tx| {
+            let bytes = [0_f32, 1.].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+            tx.execute("UPDATE tags SET vector=?1", [bytes]).map_err(|e| e.to_string())?;
+            tx.execute_batch(
+                "CREATE TRIGGER reject_checkpoint BEFORE INSERT ON tag_index_baselines
+                 BEGIN SELECT RAISE(ABORT,'injected endorsement failure'); END;"
+            ).map_err(|e| e.to_string())?;
+            Ok(WriteReceipt { operation:"change".into(),database_generation:0,facts_changed:true })
+        }).unwrap();
+        restore.compute().unwrap();
+        assert!(checkpoint.compute().unwrap_err().reason.contains("injected endorsement failure"));
+        assert!(root.join("tags_b.vec").exists());
+        assert_eq!(std::fs::read(&baseline).unwrap(), original);
+        let restored: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
+        assert_eq!(restored["generation"], 1);
+        assert_eq!(restored["slot"], "a");
+        assert_eq!(restored["replayed"], true);
+        with_registered_read_transaction(&db, |c| {
+            assert_eq!(index.index.read().unwrap().search_sql(c, None, &[0.,1.], 1)
+                .map_err(|e| e.to_string())?, vec![(1,1.)]);
+            Ok(())
+        }).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute_batch("DROP TRIGGER reject_checkpoint;").map_err(|e| e.to_string())?;
+            Ok(WriteReceipt { operation:"end-injection".into(),database_generation:0,facts_changed:false })
+        }).unwrap();
+        let retried: serde_json::Value = serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
+        assert_eq!(retried["published"], true);
+        assert_eq!(retried["generation"], 2);
+        assert_eq!(retried["delta"], 1);
+        assert_eq!(retried["slot"], "b");
+        drop(checkpoint);
+        drop(restore);
+        drop(index);
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

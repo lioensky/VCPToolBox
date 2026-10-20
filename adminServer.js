@@ -661,6 +661,85 @@ app.post("/admin_api/rag-active-full-training", async (req, res) => {
 });
 
 // ============================================================
+// 🧠 语义模型路由器匹配预览必须代理到主服务
+// 本地 semanticRouter 模块仅具备配置读写与上游模型拉取能力，
+// 预览依赖主进程中的 semanticModelRouter / RAG 插件运行态。
+// 若由本地路由处理会直接返回 503，且不会再进入兜底代理。
+// ============================================================
+function proxySemanticRouterPreviewRequest(req, res) {
+  const targetPath = "/admin_api/semantic-router/preview";
+  console.log(
+    "[AdminServer] Semantic router preview request received — forwarding to main process..."
+  );
+
+  const proxyReq = http.request(
+    `http://127.0.0.1:${MAIN_PORT}${targetPath}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: req.headers.authorization || "",
+        Cookie: req.headers.cookie || "",
+      },
+      timeout: 60 * 1000,
+    },
+    (proxyRes) => {
+      let body = "";
+      proxyRes.on("data", (chunk) => {
+        body += chunk;
+      });
+      proxyRes.on("end", () => {
+        if (res.headersSent) return;
+        res.status(proxyRes.statusCode || 200);
+        res.setHeader(
+          "Content-Type",
+          proxyRes.headers["content-type"] || "application/json"
+        );
+        try {
+          res.json(body ? JSON.parse(body) : {});
+        } catch (_) {
+          res.send(body || "");
+        }
+      });
+    }
+  );
+
+  proxyReq.on("error", (error) => {
+    console.error(
+      `[AdminServer] Failed to forward semantic router preview request to main process: ${
+        error.code || error.message
+      }`
+    );
+    if (!res.headersSent) {
+      res.status(502).json({
+        error: "Bad Gateway",
+        message:
+          "无法将语义路由预览请求转发给主服务。主服务可能未启动或正在重启中。",
+        details: error.message,
+      });
+    }
+  });
+
+  proxyReq.on("timeout", () => {
+    proxyReq.destroy();
+    if (!res.headersSent) {
+      res.status(504).json({
+        error: "Gateway Timeout",
+        message: "主服务语义路由预览接口响应超时。",
+      });
+    }
+  });
+
+  proxyReq.write(JSON.stringify(req.body || {}));
+  proxyReq.end();
+}
+
+app.post(
+  "/admin_api/semantic-router/preview",
+  proxySemanticRouterPreviewRequest
+);
+
+// ============================================================
 // 🔑 关键覆盖：重启主服务（必须在本地路由之前挂载）
 // 本地 routes/admin/server.js 的 /server/restart 会 process.exit(1) 杀死当前进程
 // 在独立后台进程里，这个行为需要被重定向为"通知主进程重启"

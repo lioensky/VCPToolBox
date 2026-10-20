@@ -13,6 +13,7 @@ pub(crate) struct RetrievalIndex {
     identity: AssetIdentity,
     private_path: Option<PathBuf>,
     reserved: usize,
+    sql_owned: bool,
 }
 
 impl RetrievalIndex {
@@ -24,13 +25,16 @@ impl RetrievalIndex {
             },
             private_path: None,
             reserved: 0,
+            sql_owned: false,
         })
     }
 
     pub(crate) fn from_sql(build: SqlIndexBuild) -> Self {
         let (index, path, identity, _) = build.into_parts();
         let reserved = index.len();
-        Self { inner: Some(index), identity, private_path: Some(path), reserved }
+        let private_path = (!path.as_os_str().is_empty()).then_some(path);
+        let sql_owned = private_path.is_none();
+        Self { inner: Some(index), identity, private_path, reserved, sql_owned }
     }
 
     /// Explicit standalone API only. Runtime restores must supply SQL endorsement.
@@ -50,7 +54,7 @@ impl RetrievalIndex {
     pub(crate) fn load(path: &Path, expected: AssetIdentity) -> io::Result<Self> {
         let index = TdbIndex::load_snapshot(path, &expected)?;
         let reserved = index.len();
-        Ok(Self { inner: Some(index), identity: expected, private_path: None, reserved })
+        Ok(Self { inner: Some(index), identity: expected, private_path: None, reserved, sql_owned: false })
     }
 
     pub(crate) fn from_validated_asset(
@@ -59,7 +63,7 @@ impl RetrievalIndex {
         let identity = asset.identity().clone();
         let index = TdbIndex::from_validated_asset(asset)?;
         let reserved = index.len();
-        Ok(Self { inner: Some(index), identity, private_path: None, reserved })
+        Ok(Self { inner: Some(index), identity, private_path: None, reserved, sql_owned: true })
     }
 
     fn core(&self) -> &TdbIndex {
@@ -117,13 +121,72 @@ impl RetrievalIndex {
         self.apply_delta(&[id], &[], &[])
     }
 
+    /// Runtime routing no longer retains startup snapshot originals.
+    pub(crate) fn release_originals(&mut self) {
+        self.sql_owned = true;
+        self.core_mut().release_originals();
+    }
+
     pub(crate) fn search(&self, query: &[f32], k: usize) -> io::Result<Vec<(u64, f32)>> {
+        if self.sql_owned {
+            return Err(io::Error::other("SQL-owned routing requires a Runtime SQL query"));
+        }
         self.core().search(query, k, None)
+    }
+
+    /// The caller owns the read transaction and scope gate. No new connection,
+    /// snapshot file read, or retained original-vector cache is introduced.
+    pub(crate) fn search_sql(
+        &self,
+        connection: &rusqlite::Connection,
+        diary: Option<&str>,
+        query: &[f32],
+        k: usize,
+    ) -> io::Result<Vec<(u64, f32)>> {
+        if connection.is_autocommit() {
+            return Err(io::Error::other("SQL retrieval requires an active read transaction"));
+        }
+        let sql = if diary.is_some() {
+            "SELECT c.vector FROM chunks c JOIN files f ON f.id=c.file_id
+             WHERE c.id=?1 AND f.diary_name=?2"
+        } else {
+            "SELECT vector FROM tags WHERE id=?1 AND ?2 IS NULL"
+        };
+        let mut statement = connection.prepare_cached(sql).map_err(io::Error::other)?;
+        let dimension = self.dimensions();
+        let mut source_error = None;
+        let result = self.core().search_with_source(query, k, None, |id, output| {
+            use rusqlite::OptionalExtension;
+            output.clear();
+            let bytes = statement.query_row(
+                rusqlite::params![id as i64, diary],
+                |row| row.get::<_, Option<Vec<u8>>>(0),
+            ).optional();
+            match bytes {
+                Ok(Some(Some(bytes))) if bytes.len() == dimension * 4 => {
+                    output.extend(bytes.chunks_exact(4)
+                        .map(|part| f32::from_le_bytes(part.try_into().unwrap())));
+                    output.iter().all(|value| value.is_finite())
+                }
+                Ok(_) => false,
+                Err(error) => {
+                    source_error = Some(error);
+                    false
+                }
+            }
+        });
+        if let Some(error) = source_error {
+            return Err(io::Error::other(error));
+        }
+        result
     }
 
     pub(crate) fn write_staging(
         &self, path: &Path, identity: &AssetIdentity,
     ) -> io::Result<()> {
+        if self.sql_owned {
+            return Err(io::Error::other("SQL-owned routing requires generational publication"));
+        }
         if identity.dimension != self.identity.dimension {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "snapshot dimension mismatch"));
         }
@@ -187,6 +250,27 @@ mod tests {
         assert_eq!(index.size(), 1);
         assert_eq!(index.mmap_bytes(), 0);
         assert_eq!(index.dimensions(), 2);
+    }
+
+    #[test]
+    fn sql_memory_routing_uses_authoritative_rows_without_a_private_asset() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE tags(id INTEGER PRIMARY KEY,vector BLOB);
+             INSERT INTO tags VALUES (7,X'0000404000000000');
+             BEGIN;"
+        ).unwrap();
+        let build = crate::index_source::build_memory_from_connection(
+            &connection, None, 2, "model",
+        ).unwrap();
+        let mut index = RetrievalIndex::from_sql(build);
+        assert_eq!(index.mmap_bytes(), 0);
+        assert_eq!(index.core().delta_bytes(), 0);
+        index.add(7, &[-9.0, 0.0]).unwrap();
+        assert_eq!(index.search_sql(&connection, None, &[1.0, 0.0], 1).unwrap(),
+            vec![(7, 1.0)]);
+        connection.execute_batch("ROLLBACK").unwrap();
+        assert!(index.search_sql(&connection, None, &[1.0, 0.0], 1).is_err());
     }
 
     #[test]

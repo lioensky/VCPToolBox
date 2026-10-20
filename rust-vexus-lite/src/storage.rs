@@ -1024,6 +1024,37 @@ pub(crate) fn load_vectors_by_ids(
     Ok(output)
 }
 
+/// Request-local authoritative Tag rows. Arc clones never copy FP32 payloads.
+pub(crate) type TagVectorPool = HashMap<i64, std::sync::Arc<[f32]>>;
+
+#[derive(Default)]
+pub(crate) struct TagVectorLoadStats {
+    pub(crate) requested_nodes: usize,
+    pub(crate) fetched_nodes: usize,
+    pub(crate) sql_batches: usize,
+}
+
+/// Only the unique cache-miss IDs reach SQLite; load_vectors_by_ids batches at 128.
+pub(crate) fn ensure_tag_vectors_loaded(
+    connection: &Connection,
+    pool: &mut TagVectorPool,
+    requested_ids: &[i64],
+    dimension: usize,
+) -> Result<TagVectorLoadStats, String> {
+    let mut missing: Vec<i64> = requested_ids.iter().copied()
+        .filter(|id| *id > 0 && !pool.contains_key(id)).collect();
+    missing.sort_unstable();
+    missing.dedup();
+    let rows = load_vectors_by_ids(connection, "tags", &missing, dimension)?;
+    let stats = TagVectorLoadStats {
+        requested_nodes: missing.len(),
+        fetched_nodes: rows.len(),
+        sql_batches: missing.len().div_ceil(128),
+    };
+    pool.extend(rows.into_iter().map(|(id, vector)| (id, std::sync::Arc::from(vector))));
+    Ok(stats)
+}
+
 #[cfg(test)]
 mod generation_protocol_tests {
     use super::*;

@@ -39,6 +39,27 @@ test('explicit zero penalties, empty ignore rules and trimmed startup flag survi
     }
 });
 
+test('initial snapshot permission requires explicit generational configuration', () => {
+    const keys = ['KNOWLEDGEBASE_PERSIST_TAG_INDEX', 'KNOWLEDGEBASE_PERSIST_CHUNK_INDEX'];
+    const previous = keys.map(key => process.env[key]);
+    try {
+        for (const raw of [undefined, '', 'always', 'true', 'false', 'none', 'invalid', ' generational ']) {
+            for (const key of keys) {
+                if (raw === undefined) delete process.env[key];
+                else process.env[key] = raw;
+            }
+            const config = new Manager().config;
+            assert.equal(config.tagIndexAllowInitial, raw === ' generational ');
+            assert.equal(config.chunkIndexAllowInitial, raw === ' generational ');
+        }
+    } finally {
+        keys.forEach((key, index) => {
+            if (previous[index] === undefined) delete process.env[key];
+            else process.env[key] = previous[index];
+        });
+    }
+});
+
 test('training status HTTP endpoint returns task state without starting training', async () => {
     const express = require('express');
     const router = require('../routes/admin/rag');

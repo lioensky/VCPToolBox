@@ -67,11 +67,11 @@ impl Task for GlobalTagSearchTask {
         ensure_index_scopes_ready(&self.db_path, &["global_tags".to_string()])
             .map_err(Error::from_reason)?;
         guard.downgrade().map_err(Error::from_reason)?;
-        let matches = self.index.read()
-            .map_err(|_| Error::from_reason("Global Tag index lock poisoned"))?
-            .search(&self.query, self.limit)
-            .map_err(|error| Error::from_reason(format!("Global Tag search failed: {:?}", error)))?;
         let output = crate::storage::with_registered_read_transaction(&self.db_path, |connection| {
+            let matches = self.index.read()
+                .map_err(|_| "Global Tag index lock poisoned".to_string())?
+                .search_sql(connection, None, &self.query, self.limit)
+                .map_err(|error| format!("Global Tag search failed: {}", error))?;
             let mut statement = connection.prepare("SELECT name FROM tags WHERE id=?1")
                 .map_err(|error| error.to_string())?;
             let mut output = Vec::new();
@@ -420,8 +420,12 @@ impl NativeMultiIndexAnnTask {
         let mut ann_candidates = 0usize;
         let mut index_diagnostics = Vec::with_capacity(self.snapshots.len());
         for (snapshot, index) in self.snapshots.iter().zip(guards.iter()) {
-            let matches = index
-                .search(&self.query, self.per_index_k)
+            let matches = match connection {
+                Some(connection) => index.search_sql(
+                    connection, Some(&snapshot.diary_name), &self.query, self.per_index_k,
+                ),
+                None => index.search(&self.query, self.per_index_k),
+            }
                 .map_err(|error| {
                     Error::from_reason(format!(
                         "Native ANN search failed for {}: {:?}",
@@ -454,8 +458,13 @@ impl NativeMultiIndexAnnTask {
                     .copied()
                     .unwrap_or(1.0)
                     .clamp(0.0, 1.0);
-                let history_matches = index
-                    .search(supplemental_query, self.supplemental_per_index_k)
+                let history_matches = match connection {
+                    Some(connection) => index.search_sql(
+                        connection, Some(&snapshot.diary_name),
+                        supplemental_query, self.supplemental_per_index_k,
+                    ),
+                    None => index.search(supplemental_query, self.supplemental_per_index_k),
+                }
                     .map_err(|error| {
                         Error::from_reason(format!(
                             "Native supplemental ANN search failed for {}: {:?}",
@@ -843,17 +852,14 @@ pub(crate) fn recover_index_snapshot(
             database_generation: 0, facts_changed: false,
         })
     })?;
-    let staging = crate::unique_index_sidecar_path(
-        std::path::Path::new(db_path), "recovery.vec",
-    );
     let (recovered_generation, build) =
         crate::storage::with_registered_read_transaction(db_path, |connection| {
             let generation: i64 = connection.query_row(
                 "SELECT facts_generation FROM kbm_index_states WHERE scope=?1 AND state='recovering'",
                 [&scope], |row| row.get(0),
             ).map_err(|error| format!("Read recovery generation failed: {}", error))?;
-            let build = crate::index_source::build_from_connection(
-                connection, diary_name, dimension, "unendorsed-runtime-recovery", &staging,
+            let build = crate::index_source::build_memory_from_connection(
+                connection, diary_name, dimension, "unendorsed-runtime-recovery",
             )?;
             Ok((generation, build))
         })?;
@@ -2366,6 +2372,7 @@ impl NativeKnowledgeRuntime {
                 "index.async-restore.v1".to_string(),
                 "index.dual-slot-checkpoint.v1".to_string(),
                 "index.tdb-vec.v1".to_string(),
+                "index.sql-authoritative-generational.v1".to_string(),
                 "index.cosine-score.v1".to_string(),
                 "watcher.runtime-owned.v1".to_string(),
                 "memo.native-artifact.v1".to_string(),
@@ -2458,6 +2465,31 @@ impl NativeKnowledgeRuntime {
             plan_json,
             table: self.global_chunks.clone(),
             runtime: self.memo_runtime.clone(),
+        }))
+    }
+
+    /// Publication is scheduled independently from retrieval and never rebuilds
+    /// an evicted table merely to save it.
+    #[napi]
+    pub fn checkpoint_global_chunk_index(
+        &self, model_sig: String, threshold: f64, allow_initial: Option<bool>,
+    ) -> Result<AsyncTask<TrackedTask<crate::light_memo::GlobalChunkCheckpointTask>>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason("KNOWLEDGE_STORE_CLOSED"));
+        }
+        if model_sig.trim().is_empty() || !threshold.is_finite()
+            || !(0.0..=1.0).contains(&threshold) {
+            return Err(Error::from_reason("Invalid global Chunk checkpoint policy"));
+        }
+        let storage = self.storage_snapshot()?
+            .ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN"))?;
+        Ok(self.tracked_task(crate::light_memo::GlobalChunkCheckpointTask {
+            db_path: storage.db_path().to_string_lossy().into_owned(),
+            dimension: self.dimension as usize,
+            model: model_sig,
+            threshold,
+            allow_initial: allow_initial.unwrap_or(false),
+            table: self.global_chunks.clone(),
         }))
     }
 
@@ -3481,6 +3513,7 @@ impl NativeKnowledgeRuntime {
         model_sig: String,
         threshold: f64,
         force: Option<bool>,
+        allow_initial: Option<bool>,
     ) -> Result<AsyncTask<TrackedTask<IndexCheckpointTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
@@ -3519,6 +3552,7 @@ impl NativeKnowledgeRuntime {
             model_sig,
             threshold,
             force: force.unwrap_or(false),
+            allow_initial: allow_initial.unwrap_or(false),
         }))
     }
 
@@ -3531,6 +3565,7 @@ impl NativeKnowledgeRuntime {
         model_sig: String,
         threshold: f64,
         force: Option<bool>,
+        allow_initial: Option<bool>,
     ) -> Result<AsyncTask<TrackedTask<IndexCheckpointTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
@@ -3553,6 +3588,7 @@ impl NativeKnowledgeRuntime {
             model_sig,
             threshold,
             force: force.unwrap_or(false),
+            allow_initial: allow_initial.unwrap_or(false),
         }))
     }
 

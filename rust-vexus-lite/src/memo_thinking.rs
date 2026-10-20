@@ -334,7 +334,8 @@ mod tests {
             anchor_gain: HashMap::new(),
             wormhole_edges: HashSet::new(),
             provenance: HashMap::new(),
-        }
+            ..NativeArtifact::default()
+        }.prepared()
     }
 
     fn observation(graph: &NativeArtifact, limit: usize) -> crate::memo_sensing::SenseOutput {
@@ -400,6 +401,8 @@ mod tests {
                 vec![],
                 vec![],
                 vec![],
+                Arc::new(HashMap::new()),
+                0,
             )
             .unwrap();
         let path = std::env::temp_dir().join(format!(

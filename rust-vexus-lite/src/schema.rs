@@ -105,6 +105,16 @@ CREATE TABLE IF NOT EXISTS global_chunk_index_baselines (
     file_digest TEXT NOT NULL,
     created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS global_chunk_index_baseline_entries (
+    generation INTEGER NOT NULL,
+    chunk_id INTEGER NOT NULL,
+    vector_version INTEGER NOT NULL,
+    metadata_version INTEGER NOT NULL,
+    file_version INTEGER NOT NULL,
+    PRIMARY KEY(generation, chunk_id),
+    FOREIGN KEY(generation)
+      REFERENCES global_chunk_index_baselines(generation) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS kv_store (
     key TEXT PRIMARY KEY,
     value TEXT,
@@ -502,6 +512,9 @@ pub(crate) fn initialize_schema(
 
 fn ensure_additive_columns(connection: &Connection) -> Result<(), String> {
     let migrations = [
+        // Old manifests have no member-version endorsement. Preserve them for
+        // recovery, but do not silently invent a publication baseline.
+        ("global_chunk_index_baselines", "member_versions", "INTEGER NOT NULL DEFAULT 0"),
         ("chunks", "vector_version", "INTEGER NOT NULL DEFAULT 1"),
         ("chunks", "metadata_version", "INTEGER NOT NULL DEFAULT 1"),
         ("files", "metadata_version", "INTEGER NOT NULL DEFAULT 1"),

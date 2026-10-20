@@ -66,8 +66,8 @@ for (const dimension of [3072, 4096]) {
                 runtime.registerDiaryIndex('Diary', diaryIndex);
                 assert.equal(tags.vectorCount, expectedCount);
                 assert.equal(diary.vectorCount, expectedCount);
-                assert.equal(tagIndex.search(oldVector, 1)[0].id, 1);
-                assert.equal(diaryIndex.search(oldVector, 1)[0].id, 1);
+                assert.equal(parse(await runtime.searchGlobalTags(oldVector, 1))[0].tag, 'old-tag');
+                assert.equal(parse(await runtime.searchDiaryIndices(['Diary'], oldVector, 1, 1)).results[0].id, 1);
                 return { tagIndex, diaryIndex };
             };
 
@@ -87,20 +87,26 @@ for (const dimension of [3072, 4096]) {
             assert.equal(receipt.factsCommitted, true);
             assert.equal(initial.tagIndex.stats().totalVectors, 2);
             assert.equal(initial.diaryIndex.stats().totalVectors, 2);
-            const chunkId = initial.diaryIndex.search(newVector, 1)[0].id;
-            const tagId = initial.tagIndex.search(newVector, 1)[0].id;
+            const chunkId = parse(await runtime.searchDiaryIndices(['Diary'], newVector, 1, 1)).results[0].id;
+            const tagHits = parse(await runtime.searchGlobalTags(newVector, 1));
+            assert.equal(tagHits[0].tag, 'new-tag');
+            const lookup = new Database(dbPath, { readonly: true });
+            const tagId = lookup.prepare("SELECT id FROM tags WHERE name='new-tag'").get().id;
+            lookup.close();
             assert.notEqual(chunkId, 1);
             assert.notEqual(tagId, 1);
             assert.equal(parse(await runtime.checkpointGlobalTagIndex(
-                dbPath, tagPath, model, 0.05, true)).published, true);
+                dbPath, tagPath, model, 0.05, false, true)).published, true);
             assert.equal(parse(await runtime.checkpointDiaryIndex(
-                dbPath, 'Diary', diaryPath, model, 0.05, true)).published, true);
+                dbPath, 'Diary', diaryPath, model, 0.05, false, true)).published, true);
             runtime.shutdown();
             runtime = null;
 
             const restarted = await open(2);
-            assert.equal(restarted.diaryIndex.search(newVector, 1)[0].id, chunkId);
-            assert.equal(restarted.tagIndex.search(newVector, 1)[0].id, tagId);
+            assert.equal(parse(await runtime.searchDiaryIndices(['Diary'], newVector, 1, 1)).results[0].id, chunkId);
+            assert.equal(parse(await runtime.searchGlobalTags(newVector, 1))[0].tag, 'new-tag');
+            assert.equal(restarted.diaryIndex.stats().mmapBytes, 0);
+            assert.equal(restarted.tagIndex.stats().mmapBytes, 0);
             runtime.shutdown();
             runtime = null;
 

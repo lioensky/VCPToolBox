@@ -526,7 +526,8 @@ fn build_native_artifact(
         anchor_gain,
         wormhole_edges: wormholes,
         provenance: native_provenance,
-    })
+        ..NativeArtifact::default()
+    }.prepared())
 }
 
 fn artifact_payload(

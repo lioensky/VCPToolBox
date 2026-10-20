@@ -89,7 +89,8 @@
       },
       "effectiveSupport": {
         "localMassRatio": 0.8,
-        "transferMassRatio": 0.9
+        "transferMassRatio": 0.9,
+        "maxProjectionNodes": 256
       },
       "candidateSuperset": {
         "queryK": 100,

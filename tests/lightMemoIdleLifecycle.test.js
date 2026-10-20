@@ -35,3 +35,35 @@ test('LightMemo idle sweep defaults to ten minutes and survives eviction errors'
     await repo.evictIdle();
     assert.deepEqual(received, [600000]);
 });
+
+test('global Chunk checkpoints respect scope, disabled mode and explicit initial permission', async () => {
+    const calls = [];
+    const config = {
+        persistFolders: new Set(), persistDefault: false,
+        chunkIndexPersistenceMode: 'generational',
+        chunkIndexAllowInitial: false, chunkIndexBaselineDeltaRatio: 0.08,
+        modelSig: 'local-model'
+    };
+    const repo = new IndexRepository({
+        config,
+        getNativeRuntime: () => ({
+            async checkpointGlobalChunkIndex(...args) {
+                calls.push(args);
+                return JSON.stringify({ published: true, factsCommitted: false });
+            }
+        })
+    });
+    assert.equal(await repo.publishGlobalChunkBaseline(), false);
+    config.persistFolders.add('SomeDiary');
+    assert.equal(await repo.publishGlobalChunkBaseline(), false);
+    config.persistFolders.add('global_chunks');
+    assert.equal(await repo.publishGlobalChunkBaseline(), true);
+    assert.deepEqual(calls.pop(), ['local-model', 0.08, false]);
+    config.chunkIndexAllowInitial = true;
+    assert.equal(await repo.publishGlobalChunkBaseline(), true);
+    assert.deepEqual(calls.pop(), ['local-model', 0.08, true]);
+    repo.chunkIndexPersistenceMode = 'none';
+    config.persistDefault = true;
+    assert.equal(await repo.publishGlobalChunkBaseline(), false);
+    assert.equal(calls.length, 0);
+});

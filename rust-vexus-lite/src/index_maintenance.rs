@@ -1,4 +1,4 @@
-//! SQL-derived private compaction, independent of persistence policy.
+//! SQL-derived in-memory compaction; never publishes or creates vector files.
 //! Invoke only after releasing the caller's exclusive publication gate.
 //! Runs within an existing tracked task; no detached workers are created.
 use crate::index_handle::IndexHandle;
@@ -29,20 +29,17 @@ pub(crate) fn maintain(
         }
         (active.dimensions(), revision.load(Ordering::Acquire))
     };
-    let staging = crate::unique_index_sidecar_path(
-        std::path::Path::new(db_path), "maintenance.vec",
-    );
     let (generation, build) = crate::storage::with_registered_read_transaction(
         db_path, |connection| {
             let generation = crate::storage::read_generation(connection)?;
-            let build = crate::index_source::build_from_connection(
-                connection, diary, dimension, "unendorsed-runtime-maintenance", &staging,
+            let build = crate::index_source::build_memory_from_connection(
+                connection, diary, dimension, "unendorsed-runtime-maintenance",
             )?;
             Ok((generation, build))
         },
     )?;
-    // No public file or SQL endorsement is changed. A losing build is dropped
-    // with its mapping and private asset, leaving the live instance untouched.
+    // No file or SQL endorsement is changed. A stale memory build is discarded,
+    // leaving the live instance untouched.
     crate::storage::with_registered_read_transaction(db_path, |connection| {
         crate::storage::ensure_generation(connection, generation)
     })?;
@@ -113,7 +110,9 @@ mod tests {
         let flight = owner.index.maintenance.lock().unwrap();
         assert!(!maintain(&db, None, &owner.index, &owner.content_revision).unwrap());
         drop(flight);
+        let files_before = std::fs::read_dir(&root).unwrap().count();
         assert!(maintain(&db, None, &owner.index, &owner.content_revision).unwrap());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), files_before);
         assert_eq!(owner.content_revision.load(Ordering::Acquire), 0);
         assert_eq!(crate::storage::with_registered_read_transaction(
             &db, crate::storage::read_generation,
@@ -121,13 +120,19 @@ mod tests {
         {
             let active = owner.index.read().unwrap();
             assert_eq!(active.size(), 2048);
-            assert!(active.mmap_bytes() > 0);
+            assert_eq!(active.mmap_bytes(), 0);
             assert!(!active.maintenance_required());
             let angle = 17_f32 * 0.013;
             let query = [angle.cos(), angle.sin(), 0.25];
-            let hits = active.search(&query, 1).unwrap();
-            let wider = active.search(&query, 64).unwrap();
-            let exhaustive = active.search(&query, 2048).unwrap();
+            let (hits, wider, exhaustive) = crate::storage::with_registered_read_transaction(
+                &db, |connection| {
+                    Ok((
+                        active.search_sql(connection, None, &query, 1).map_err(|e| e.to_string())?,
+                        active.search_sql(connection, None, &query, 64).map_err(|e| e.to_string())?,
+                        active.search_sql(connection, None, &query, 2048).map_err(|e| e.to_string())?,
+                    ))
+                },
+            ).unwrap();
             eprintln!("maintenance self-query top1={:?}, top64_self={:?}, full_self={:?}, full_count={}",
                 hits, wider.iter().find(|hit| hit.0 == 17),
                 exhaustive.iter().find(|hit| hit.0 == 17), exhaustive.len());

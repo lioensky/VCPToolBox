@@ -118,6 +118,27 @@ async function run() {
     );
     assert.strictEqual(runtime.stats().registeredDiaries, 2);
 
+    const empty = JSON.parse(await runtime.searchDiaryIndices(
+        ['SharedMemory', 'AnotherMemory'], vectorFor(3), 8, 8
+    ));
+    assert.strictEqual(empty.results.length, 0,
+        'memory-only identities must not become candidates without SQL facts');
+    const Database = require('better-sqlite3');
+    const fixture = new Database(path.join(temporaryRoot, 'test.sqlite'));
+    try {
+        fixture.transaction(() => {
+            fixture.exec(`INSERT INTO files(id,path,diary_name,checksum,mtime,size) VALUES
+                (1,'shared.txt','SharedMemory','fixture',0,0),
+                (2,'another.txt','AnotherMemory','fixture',0,0)`);
+            const insert = fixture.prepare(
+                'INSERT INTO chunks(id,file_id,chunk_index,content,vector) VALUES (?,?,0,?,?)');
+            insert.run(3, 1, 'shared', Buffer.from(vectorFor(3).buffer));
+            insert.run(4, 2, 'another', Buffer.from(vectorFor(4).buffer));
+        })();
+    } finally {
+        fixture.close();
+    }
+
     const annPayload = await runtime.searchDiaryIndices(
         ['SharedMemory', 'AnotherMemory', 'SharedMemory'],
         vectorFor(3),
@@ -131,14 +152,15 @@ async function run() {
     );
     assert.strictEqual(ann.diagnostics.requestedDiaries, 2);
     assert.strictEqual(ann.diagnostics.resolvedIndices, 2);
-    assert.strictEqual(ann.diagnostics.annCandidates, 3);
+    assert.strictEqual(ann.diagnostics.annCandidates, 2);
     assert.strictEqual(ann.diagnostics.uniqueCandidates, 2);
     assert.strictEqual(ann.results.length, 2);
     const sharedChunk = ann.results.find(item => Number(item.id) === 3);
-    assert(sharedChunk, 'cross-index duplicate Chunk must be retained once');
+    assert(sharedChunk, 'SQL-backed Chunk must be retained');
     assert.deepStrictEqual(
         sharedChunk.sources,
-        ['AnotherMemory', 'SharedMemory']
+        ['SharedMemory'],
+        'an identity in another routing index cannot override SQL diary ownership'
     );
     assert.deepStrictEqual(
         ann.diagnostics.indices.map(item => item.diaryName),

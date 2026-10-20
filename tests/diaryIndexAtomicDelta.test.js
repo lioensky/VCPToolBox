@@ -168,10 +168,12 @@ async function testRepositoryRecoveryFallback() {
             'failed/possibly partial instance must never be republished'
         );
         assert.strictEqual(replacement.stats().totalVectors, 1);
-        assert.strictEqual(
-            Number(replacement.search(vectorFor(2), 1)[0].id),
-            2
-        );
+        const recovered = JSON.parse(await runtime.searchDiaryIndices(
+            ['SharedMemory'], vectorFor(2), 1, 1
+        ));
+        assert.strictEqual(Number(recovered.results[0].id), 2);
+        assert.strictEqual(replacement.stats().mmapBytes, 0);
+        assert.throws(() => replacement.search(vectorFor(2), 1), /Runtime SQL query/);
     } finally {
         db.close();
         runtime.shutdown();

@@ -65,6 +65,43 @@ impl TdbIndex {
         result
     }
 
+    /// Build only in-memory routing from a frozen authoritative source.
+    /// Originals remain owned by the host; this method performs no file I/O.
+    pub fn routing_from_source<F>(
+        dimension: usize,
+        ids: &[u64],
+        mut fill: F,
+    ) -> io::Result<Self>
+    where
+        F: FnMut(usize, &mut Vec<f32>) -> bool,
+    {
+        let mut index = Self::empty(dimension)?;
+        if ids.iter().any(|id| *id == 0 || *id > i64::MAX as u64)
+            || ids.iter().copied().collect::<HashSet<_>>().len() != ids.len()
+        {
+            return Err(invalid("invalid routing source identities"));
+        }
+        index.reserve(ids.len())?;
+        index.ids.extend_from_slice(ids);
+        index.positions.extend(ids.iter().enumerate().map(|(slot, id)| (*id, slot)));
+        if ids.len() >= QUIVER_MIN_NODES {
+            let slots: Vec<usize> = (0..ids.len()).collect();
+            let config = QuIVerConfig::default();
+            let mut graph = QuIVer::new(dimension, &config);
+            graph.rebuild_from_cold_slots(ids, &slots, &config, &mut fill)?;
+            index.graph = Some(graph);
+        }
+        Ok(index)
+    }
+
+    /// Keep restored routing, but release snapshot originals and mutable rows.
+    /// Subsequent queries must use search_with_source.
+    pub fn release_originals(&mut self) {
+        self.base = None;
+        self.delta.clear();
+        self.delta.shrink_to_fit();
+    }
+
     pub fn dimension(&self) -> usize { self.dimension }
     pub fn len(&self) -> usize { self.positions.len() }
     pub fn is_empty(&self) -> bool { self.positions.is_empty() }
@@ -200,6 +237,19 @@ impl TdbIndex {
 
     /// Scores are exact cosine on original candidate rows, never reconstructed SM.
     pub fn search(&self, query: &[f32], k: usize, ef: Option<usize>) -> io::Result<Vec<(u64, f32)>> {
+        self.search_with_source(query, k, ef, |id, output| {
+            self.positions.get(&id).is_some_and(|slot| self.fill_slot(*slot, output))
+        })
+    }
+
+    /// Query routing using authoritative host originals, not snapshot vectors.
+    /// The caller must freeze the source for the duration of this query.
+    pub fn search_with_source<F>(
+        &self, query: &[f32], k: usize, ef: Option<usize>, mut fill: F,
+    ) -> io::Result<Vec<(u64, f32)>>
+    where
+        F: FnMut(u64, &mut Vec<f32>) -> bool,
+    {
         if query.len() != self.dimension || query.iter().any(|v| !v.is_finite()) {
             return Err(invalid("invalid search vector"));
         }
@@ -210,18 +260,22 @@ impl TdbIndex {
                 top_k: k, ef_search: ef.unwrap_or(128).max(k),
                 rerank_limit: Some(64_usize.max(k)),
             };
-            let candidates = graph.search(query, |slot, output| self.fill_slot(slot, output), &config);
+            let candidates = graph.search(query, |slot, output| {
+                self.ids.get(slot).is_some_and(|id| *id != 0 && fill(*id, output))
+            }, &config);
             let mut row = Vec::with_capacity(self.dimension);
             candidates.into_iter().filter_map(|(id, _)| {
-                let slot = *self.positions.get(&id)?;
-                self.fill_slot(slot, &mut row).then(|| (id, cosine(query, &row)))
+                if !self.contains(id) { return None; }
+                row.clear();
+                fill(id, &mut row).then(|| (id, cosine(query, &row)))
             }).collect()
         } else {
             // VCP-PATCH: bounded Top-K storage, including deterministic ID ties.
             let mut heap = BinaryHeap::with_capacity(k);
             let mut row = Vec::with_capacity(self.dimension);
-            for (slot, &id) in self.ids.iter().enumerate() {
-                if id != 0 && self.fill_slot(slot, &mut row) {
+            for &id in &self.ids {
+                row.clear();
+                if id != 0 && fill(id, &mut row) {
                     let candidate = RankedRow { id, score: cosine(query, &row) };
                     if heap.len() < k {
                         heap.push(candidate);
@@ -242,6 +296,18 @@ impl TdbIndex {
     /// Compact snapshot slots; graph slots are rebuilt against the compact order.
     /// The caller publishes the staging file using its rollback-safe protocol.
     pub fn write_staging(&self, path: &Path, identity: &AssetIdentity) -> io::Result<()> {
+        self.write_staging_with_source(path, identity, |id, row| {
+            self.positions.get(&id).is_some_and(|slot| self.fill_slot(*slot, row))
+        })
+    }
+
+    /// Write directly from frozen host originals, without an intermediate asset.
+    pub fn write_staging_with_source<F>(
+        &self, path: &Path, identity: &AssetIdentity, mut fill: F,
+    ) -> io::Result<()>
+    where
+        F: FnMut(u64, &mut Vec<f32>) -> bool,
+    {
         if identity.dimension != self.dimension { return Err(invalid("snapshot dimension mismatch")); }
         let slots: Vec<usize> = self.ids.iter().enumerate()
             .filter_map(|(slot, id)| (*id != 0).then_some(slot)).collect();
@@ -249,16 +315,27 @@ impl TdbIndex {
         let mut graph_bytes = Vec::new();
         let mut sm_bytes = Vec::new();
         if ids.len() >= QUIVER_MIN_NODES {
-            let compact: Vec<usize> = (0..ids.len()).collect();
-            let config = QuIVerConfig::default();
-            let mut graph = QuIVer::new(self.dimension, &config);
-            graph.rebuild_from_cold_slots(&ids, &compact, &config,
-                |slot, row| self.fill_slot(slots[slot], row))?;
-            graph.write_to(&mut graph_bytes)?;
-            sm_bytes = graph.default_sm_snapshot_bytes()?;
+            // SQL checkpoint builds already have compact routing. Reuse it
+            // rather than reading the source and constructing the graph twice.
+            // Mutable/tombstoned standalone indices still rebuild as needed.
+            if let Some(graph) = self.graph.as_ref().filter(|graph|
+                graph.default_sm_ready()
+                    && graph.validate_compact_slots(self.dimension, &ids).is_ok()
+            ) {
+                graph.write_to(&mut graph_bytes)?;
+                sm_bytes = graph.default_sm_snapshot_bytes()?;
+            } else {
+                let compact: Vec<usize> = (0..ids.len()).collect();
+                let config = QuIVerConfig::default();
+                let mut graph = QuIVer::new(self.dimension, &config);
+                graph.rebuild_from_cold_slots(&ids, &compact, &config,
+                    |slot, row| fill(ids[slot], row))?;
+                graph.write_to(&mut graph_bytes)?;
+                sm_bytes = graph.default_sm_snapshot_bytes()?;
+            }
         }
         asset::write_staging(path, identity, &ids, &graph_bytes, &sm_bytes,
-            |slot, row| self.fill_slot(slots[slot], row))
+            |slot, row| fill(ids[slot], row))
     }
 
     pub fn load_snapshot(path: &Path, expected: &AssetIdentity) -> io::Result<Self> {

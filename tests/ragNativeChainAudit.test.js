@@ -81,6 +81,36 @@ test('audit real Rust store through KBM and RAG message injection', async () => 
         assert.equal((await kb.getChunksByFilePaths(['A/note.md']))[0].vector.length, 4);
         assert.equal((await kb.getTagVectorByName('alpha')).length, 4);
 
+        // 真实原生多索引查询：共享 Sense，但候选、权限及排序独立。
+        const pipelineOriginal = kb.tagIndex.runMemoPipeline.bind(kb.tagIndex);
+        let pipelineCalls = 0;
+        kb.tagIndex.runMemoPipeline = (...args) => {
+            pipelineCalls++;
+            return pipelineOriginal(...args);
+        };
+        const memoryBefore = JSON.parse(kb.tagIndex.memoObservationMemoryStats()).entries;
+        try {
+            await kb.withMemoObservationScope(async () => {
+                const results = await Promise.all(['A', 'B'].map(name =>
+                    kb.executeNativeRiverQuery(
+                        { text: 'shared native audit', vector: query },
+                        { diaryNames: [name], topK: 1, fallbackToLegacy: false }
+                    )
+                ));
+                assert.equal(pipelineCalls, 1, 'two scopes must execute one native Sense');
+                results.forEach((result, index) => {
+                    assert.equal(result.results.length, 1);
+                    assert(result.results.every(row => row.diaryName === ['A', 'B'][index]));
+                });
+                assert.equal(JSON.parse(kb.tagIndex.memoObservationMemoryStats()).entries,
+                    memoryBefore + 1, 'one shared native observation remains alive');
+            });
+            assert.equal(JSON.parse(kb.tagIndex.memoObservationMemoryStats()).entries,
+                memoryBefore, 'request end releases the shared native observation');
+        } finally {
+            kb.tagIndex.runMemoPipeline = pipelineOriginal;
+        }
+
         rag.vectorDBManager = kb;
         rag.queryCacheEnabled = false;
         rag.ragParams = {};

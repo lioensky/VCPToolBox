@@ -2461,7 +2461,7 @@ mod cold_scope_baseline_tests {
             db_path: db.clone(), index_path: baseline, index: index.index.clone(),
             content_revision: index.content_revision.clone(), scope: IndexScope::Diary,
             diary_name: Some("cold".into()), dimension: 2, model_sig: "test".into(),
-            threshold: 0.05, force: true,
+            threshold: 0.05, force: true, allow_initial: true,
         }.compute().unwrap();
         storage.submit_write(|tx| {
             tx.execute("UPDATE chunks SET vector=?1 WHERE id=1",
@@ -2476,8 +2476,11 @@ mod cold_scope_baseline_tests {
         assert_eq!(receipt["rebuilt"], false);
         assert_eq!(receipt["replayed"], true);
         let guard = index.index.read().unwrap();
-        assert_eq!(guard.search(&[0.0, 1.0], 1).unwrap(), vec![(1, 1.0)]);
-        assert_eq!(guard.search(&[1.0, 0.0], 1).unwrap(), vec![(1, 0.0)]);
+        crate::storage::with_registered_read_transaction(&db, |connection| {
+            assert_eq!(guard.search_sql(connection, Some("cold"), &[0.0, 1.0], 1).unwrap(), vec![(1, 1.0)]);
+            assert_eq!(guard.search_sql(connection, Some("cold"), &[1.0, 0.0], 1).unwrap(), vec![(1, 0.0)]);
+            Ok(())
+        }).unwrap();
         drop(guard);
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
