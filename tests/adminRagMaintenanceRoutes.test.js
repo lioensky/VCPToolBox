@@ -40,6 +40,15 @@ test('admin HTTP accepts Rust preview token and commits before queuing training'
             requestActiveFullTraining() {
                 queued++;
                 return { queued: true, taskId: 'training' };
+            },
+            // 58a6780e moved tag-consistency apply off requestActiveFullTraining
+            // onto the Memo engine's threshold refresh; /rag-active-full-training
+            // still drives requestActiveFullTraining, so both counters matter.
+            tagMemoEngine: {
+                async scheduleMatrixRebuildForNewTags() {
+                    queued++;
+                    return true;
+                }
             }
         };
         const service = new TagConsistencyService(owner);
