@@ -49,7 +49,10 @@ fn gram_gs(
     let n = candidates.len();
     let mut basis: Vec<Vec<f64>> = Vec::new();
     let mut projections: Vec<Vec<f64>> = Vec::new();
+    let mut proj_sq_sum = vec![0.0; n];
+    let mut proj_target_sum = vec![0.0; if target.is_some() { n } else { 0 }];
     let mut target_coefficients: Vec<f64> = Vec::new();
+    let mut active: Vec<usize> = Vec::new();
     let mut used = vec![false; n];
     let mut picked = Vec::new();
     for _ in 0..max_basis.min(n) {
@@ -58,14 +61,13 @@ fn gram_gs(
             if used[i] || !candidates[i].prior.is_finite() || candidates[i].prior <= 0.0 {
                 continue;
             }
-            let norm_sq = diagonal[i] - projections.iter().map(|p| p[i] * p[i]).sum::<f64>();
+            let norm_sq = diagonal[i] - proj_sq_sum[i];
             let orth = norm_sq.max(0.0).sqrt();
             if orth <= 1e-6 {
                 continue;
             }
             let signed = target.map(|(correlations, _)| {
-                (correlations[i] - projections.iter().zip(&target_coefficients)
-                    .map(|(p, c)| p[i] * c).sum::<f64>()) / orth
+                (correlations[i] - proj_target_sum[i]) / orth
             }).unwrap_or(orth);
             let gain = signed.abs();
             let score = gain * orth * candidates[i].prior;
@@ -78,17 +80,28 @@ fn gram_gs(
         let Some((i, _, gain, orth)) = best else { break };
         if gain < min_gain { break; }
         used[i] = true;
+        active.insert(active.partition_point(|&m| m < i), i);
         let mut coefficients = vec![0.0; n];
         coefficients[i] = 1.0;
         for (axis, p) in basis.iter().zip(&projections) {
-            for (value, coefficient) in coefficients.iter_mut().zip(axis) {
-                *value -= p[i] * coefficient;
+            let pi = p[i];
+            for &m in &active {
+                coefficients[m] -= pi * axis[m];
             }
         }
-        for value in &mut coefficients { *value /= orth; }
+        for &m in &active {
+            coefficients[m] /= orth;
+        }
         let row = project(&coefficients, i)?;
+        for (sum, &r) in proj_sq_sum.iter_mut().zip(&row) {
+            *sum += r * r;
+        }
         if let Some((correlations, _)) = target {
-            target_coefficients.push(dot(&coefficients, correlations));
+            let tc = dot(&coefficients, correlations);
+            target_coefficients.push(tc);
+            for (sum, &r) in proj_target_sum.iter_mut().zip(&row) {
+                *sum += r * tc;
+            }
         }
         picked.push((candidates[i].id, gain));
         basis.push(coefficients);
@@ -134,9 +147,13 @@ fn select_axes_lazy(
         // Same argument order as the full Gram entry gram[j][picked].
         columns[picked] = vectors.iter().map(|v| dot(v, vectors[picked])).collect();
         selected.insert(selected.partition_point(|&m| m < picked), picked);
-        let row: Vec<f64> = (0..n)
-            .map(|j| selected.iter().map(|&m| coefficients[m] * columns[m][j]).sum())
-            .collect();
+        let mut row = vec![0.0; n];
+        for &m in &selected {
+            let c = coefficients[m];
+            for (r, &g) in row.iter_mut().zip(&columns[m]) {
+                *r += c * g;
+            }
+        }
         row.iter().all(|value| value.is_finite()).then_some(row)
     }, target, max_basis, min_gain)
 }
@@ -190,9 +207,11 @@ pub(crate) fn anchored_gs(
 ) -> AgsTrace {
     let mut trace = select_axes(target, candidates, vectors, max_basis, min_gain);
     let dim = vectors.first().map_or(0, |v| v.len());
+    let finite_vectors = vectors.iter().all(|v| v.iter().all(|x| x.is_finite()));
     trace.basis = trace.basis.iter().map(|coefficients| {
         let mut axis = vec![0.0; dim];
-        for (c, vector) in coefficients.iter().zip(vectors) {
+        for (&c, vector) in coefficients.iter().zip(vectors) {
+            if finite_vectors && c == 0.0 { continue; }
             for (value, source) in axis.iter_mut().zip(*vector) { *value += c * source; }
         }
         axis
@@ -844,6 +863,24 @@ mod tests {
                     let lazy = select_axes(ags_target, &candidates, &refs, max_basis, min_gain);
                     let full = full_gram_selection(explain, &candidates, &refs, max_basis, min_gain);
                     assert_eq!(trace_bits(&lazy), trace_bits(&full));
+
+                    let anchored = anchored_gs(
+                        explain.map_or(AgsTarget::Span, AgsTarget::Explain),
+                        &candidates,
+                        &refs,
+                        max_basis,
+                        min_gain,
+                    );
+                    let dense_basis: Vec<Vec<u64>> = full.basis.iter().map(|coefficients| {
+                        let mut axis = vec![0.0; dim];
+                        for (c, vector) in coefficients.iter().zip(&refs) {
+                            for (value, source) in axis.iter_mut().zip(*vector) {
+                                *value += c * source;
+                            }
+                        }
+                        axis.into_iter().map(f64::to_bits).collect()
+                    }).collect();
+                    assert_eq!(trace_bits(&anchored).1, dense_basis);
                 }
             }
         }
