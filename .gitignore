@@ -306,6 +306,8 @@ rust-vexus-lite/crates/vcp-tdb-index/target/
 Plugin/DailyNoteSearcher/src/target/
 Plugin/CodeSearcher/src/target/
 Plugin/PaperReader/paperreader-rs/target/
+AdminPanel-Vue/dist
+
 
 # ==== 分布式开发 ====
 VCPDistributedServer
