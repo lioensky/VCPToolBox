@@ -1,4 +1,3 @@
-
 //! Unified anchored greedy Gram-Schmidt geometry.
 //! All floating-point reductions use ID order, never Rayon reduction order.
 use rayon::prelude::*;
@@ -19,8 +18,23 @@ pub(crate) struct AgsTrace {
     pub residual_norm: Option<f64>,
 }
 
+#[inline]
 pub(crate) fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// Four independent accumulators sharing one pass over `vector`, preserving
+/// each dot product's exact coordinate addition order bit-for-bit.
+#[inline]
+fn dot_four(vector: &[f64], [a, b, c, d]: [&[f64]; 4]) -> [f64; 4] {
+    let mut sums = [0.0; 4];
+    for (coordinate, &q) in vector.iter().enumerate() {
+        sums[0] += q * a[coordinate];
+        sums[1] += q * b[coordinate];
+        sums[2] += q * c[coordinate];
+        sums[3] += q * d[coordinate];
+    }
+    sums
 }
 
 fn normalize(vector: &mut [f64]) -> bool {
@@ -34,148 +48,208 @@ fn normalize(vector: &mut [f64]) -> bool {
     true
 }
 
-/// Incremental Gram-space GS: projections cost O(K*n²), not O(K*n²*dim).
-/// Coefficients describe each selected axis in the original candidate basis.
-/// `project(coefficients, i)` returns `dot(coefficients, gram[j])` for every j
-/// after candidate i is selected; `None` abandons the selection.
-fn gram_gs(
+/// Construct a residual in the original space, then reorthogonalize once.
+/// Both passes use a fixed axis/coordinate order; no Gram coefficient solve.
+fn orthogonal_residual(vector: &[f64], basis: &[Vec<f64>]) -> Vec<f64> {
+    let mut residual = vector.to_vec();
+    if basis.is_empty() {
+        return residual;
+    }
+    for _ in 0..2 {
+        for axis in basis {
+            let coefficient = dot(&residual, axis);
+            for (value, q) in residual.iter_mut().zip(axis) {
+                *value -= coefficient * q;
+            }
+        }
+    }
+    residual
+}
+
+/// Four independent candidate accumulators, preserving each dot's coordinate order.
+/// This is portable blocking, not a promise of SIMD or hardware FMA generation.
+fn project_active(axis: &[f64], vectors: &[&[f64]], active: &[usize]) -> Vec<f64> {
+    let mut row = vec![0.0; vectors.len()];
+    let mut groups = active.chunks_exact(4);
+    for group in &mut groups {
+        let [a, b, c, d] = [group[0], group[1], group[2], group[3]];
+        let sums = dot_four(axis, [vectors[a], vectors[b], vectors[c], vectors[d]]);
+        for (&index, sum) in group.iter().zip(sums) {
+            row[index] = sum;
+        }
+    }
+    for &index in groups.remainder() {
+        row[index] = dot(axis, vectors[index]);
+    }
+    row
+}
+
+/// O(K*n*dim + K²*dim + K*n); basis vectors are already in original space.
+/// Incremental scalar energy/correlation accumulators avoid O(K²*n) rescans while
+/// preserving IEEE-754 left-fold addition order bit-for-bit. Near rank loss,
+/// recompute the residual rather than trusting a difference of energies.
+fn direct_axes_core(
+    target: AgsTarget<'_>,
     candidates: &[AgsCandidate],
-    diagonal: &[f64],
-    mut project: impl FnMut(&[f64], usize) -> Option<Vec<f64>>,
-    target: Option<(&[f64], f64)>,
+    vectors: &[&[f64]],
+    precomputed_diagonal: Option<&[f64]>,
+    precomputed_correlations: Option<&[f64]>,
     max_basis: usize,
     min_gain: f64,
-) -> Option<AgsTrace> {
+    keep_basis: bool,
+) -> AgsTrace {
     let n = candidates.len();
-    let mut basis: Vec<Vec<f64>> = Vec::new();
-    let mut projections: Vec<Vec<f64>> = Vec::new();
+    assert_eq!(n, vectors.len(), "AGS candidate/vector mismatch");
+    let dim = vectors.first().map_or(0, |v| v.len());
+    assert!(vectors.iter().all(|v| v.len() == dim), "AGS dimension mismatch");
+    let target = match target {
+        AgsTarget::Explain(t) => {
+            assert!(vectors.is_empty() || t.len() == dim, "AGS target dimension mismatch");
+            Some(t)
+        }
+        AgsTarget::Span => None,
+    };
+
+    let owned_diagonal: Vec<f64>;
+    let diagonal: &[f64] = match precomputed_diagonal {
+        Some(d) => {
+            assert_eq!(d.len(), n, "AGS diagonal length mismatch");
+            d
+        }
+        None => {
+            owned_diagonal = vectors.iter().map(|v| dot(v, v)).collect();
+            &owned_diagonal
+        }
+    };
+
+    let mut used: Vec<bool> = candidates
+        .iter()
+        .zip(diagonal)
+        .map(|(c, norm)| !c.prior.is_finite() || c.prior <= 0.0 || !norm.is_finite())
+        .collect();
+    let mut active: Vec<usize> = (0..n).filter(|&j| !used[j]).collect();
+
+    let owned_correlations: Vec<f64>;
+    let correlations: &[f64] = match (target, precomputed_correlations) {
+        (Some(_), Some(c)) => {
+            assert_eq!(c.len(), n, "AGS correlations length mismatch");
+            c
+        }
+        (Some(t), None) => {
+            owned_correlations = project_active(t, vectors, &active);
+            &owned_correlations
+        }
+        (None, _) => &[],
+    };
+
+    let limit = max_basis.min(n);
+    let mut basis: Vec<Vec<f64>> = Vec::with_capacity(limit);
     let mut proj_sq_sum = vec![0.0; n];
-    let mut proj_target_sum = vec![0.0; if target.is_some() { n } else { 0 }];
-    let mut target_coefficients: Vec<f64> = Vec::new();
-    let mut active: Vec<usize> = Vec::new();
-    let mut used = vec![false; n];
-    let mut picked = Vec::new();
-    for _ in 0..max_basis.min(n) {
-        let mut best: Option<(usize, f64, f64, f64)> = None;
-        for i in 0..n {
-            if used[i] || !candidates[i].prior.is_finite() || candidates[i].prior <= 0.0 {
-                continue;
-            }
+    let mut proj_target_sum = vec![0.0; n];
+    let mut target_residual = target.map(<[f64]>::to_vec);
+    let mut picked = Vec::with_capacity(limit);
+
+    while picked.len() < limit {
+        let mut best: Option<(usize, f64)> = None;
+        let mut best_pos = 0;
+        let mut write_pos = 0;
+        for read_pos in 0..active.len() {
+            let i = active[read_pos];
             let norm_sq = diagonal[i] - proj_sq_sum[i];
-            let orth = norm_sq.max(0.0).sqrt();
-            if orth <= 1e-6 {
+            let numerator = target.map(|_| correlations[i] - proj_target_sum[i]);
+            let (orth, signed) = if norm_sq <= 1e-8 * diagonal[i] {
+                let residual = orthogonal_residual(vectors[i], &basis);
+                let orth = dot(&residual, &residual).sqrt();
+                let signed = target.map_or(orth, |t| dot(t, &residual) / orth);
+                (orth, signed)
+            } else {
+                let orth = norm_sq.sqrt();
+                (orth, numerator.map_or(orth, |value| value / orth))
+            };
+            if !orth.is_finite() || orth <= 1e-6 || !signed.is_finite() {
+                used[i] = true;
                 continue;
             }
-            let signed = target.map(|(correlations, _)| {
-                (correlations[i] - proj_target_sum[i]) / orth
-            }).unwrap_or(orth);
-            let gain = signed.abs();
-            let score = gain * orth * candidates[i].prior;
-            if best.as_ref().is_none_or(|(j, old, _, _)| {
+            active[write_pos] = i;
+            let score = signed.abs() * orth * candidates[i].prior;
+            if best.as_ref().is_none_or(|(j, old)| {
                 score > *old || (score == *old && candidates[i].id < candidates[*j].id)
             }) {
-                best = Some((i, score, gain, orth));
+                best = Some((i, score));
+                best_pos = write_pos;
             }
+            write_pos += 1;
         }
-        let Some((i, _, gain, orth)) = best else { break };
-        if gain < min_gain { break; }
+        active.truncate(write_pos);
+        let Some((i, _)) = best else { break };
         used[i] = true;
-        active.insert(active.partition_point(|&m| m < i), i);
-        let mut coefficients = vec![0.0; n];
-        coefficients[i] = 1.0;
-        for (axis, p) in basis.iter().zip(&projections) {
-            let pi = p[i];
-            for &m in &active {
-                coefficients[m] -= pi * axis[m];
-            }
+        active.remove(best_pos);
+
+        // Even the last Explain step needs a real corrected axis. Only its
+        // candidate projection row can be omitted safely.
+        let mut axis = orthogonal_residual(vectors[i], &basis);
+        let norm = if basis.is_empty() {
+            diagonal[i].sqrt()
+        } else {
+            dot(&axis, &axis).sqrt()
+        };
+        if !norm.is_finite() || norm <= 1e-6 {
+            continue;
         }
-        for &m in &active {
-            coefficients[m] /= orth;
+        for value in &mut axis {
+            *value /= norm;
         }
-        let row = project(&coefficients, i)?;
-        for (sum, &r) in proj_sq_sum.iter_mut().zip(&row) {
-            *sum += r * r;
+        let coefficient = target.map(|t| dot(t, &axis));
+        let gain = coefficient.map_or(norm, f64::abs);
+        if gain < min_gain {
+            break;
         }
-        if let Some((correlations, _)) = target {
-            let tc = dot(&coefficients, correlations);
-            target_coefficients.push(tc);
-            for (sum, &r) in proj_target_sum.iter_mut().zip(&row) {
-                *sum += r * tc;
+        if let Some(coefficient) = coefficient {
+            for (value, q) in target_residual.as_mut().unwrap().iter_mut().zip(&axis) {
+                *value -= coefficient * q;
             }
         }
         picked.push((candidates[i].id, gain));
-        basis.push(coefficients);
-        projections.push(row);
-    }
-    let residual_norm = target.map(|(_, energy)| {
-        let residual = (energy - target_coefficients.iter().map(|c| c * c).sum::<f64>()).max(0.0);
-        if residual < 1e-14 * energy { 0.0 } else { residual.sqrt() }
-    });
-    Some(AgsTrace { picked, basis, residual_norm })
-}
-
-/// Every Gram entry is bounded by this value when every diagonal entry is
-/// (Cauchy-Schwarz: |G_ij| <= sqrt(G_ii * G_jj)), so no entry can overflow.
-const LAZY_GRAM_DIAGONAL_LIMIT: f64 = 1e150;
-
-/// Gram column j of a selected candidate is computed only when it is selected.
-/// Unselected candidates keep a coefficient of exactly +0.0, so in
-/// `dot(coefficients, gram[j])` their terms are +0.0 * finite = +-0.0 and adding
-/// them never changes a nonzero sum. Summing the selected terms in the same
-/// index order therefore reproduces the full-Gram projections bit for bit,
-/// except possibly the sign of an exactly zero sum, which only ever enters
-/// squares, products and absolute values. This holds while every coefficient
-/// and projection is finite; otherwise `None` defers to the full Gram.
-fn select_axes_lazy(
-    candidates: &[AgsCandidate],
-    vectors: &[&[f64]],
-    diagonal: &[f64],
-    target: Option<(&[f64], f64)>,
-    max_basis: usize,
-    min_gain: f64,
-) -> Option<AgsTrace> {
-    if !diagonal.iter().all(|value| value.is_finite() && *value <= LAZY_GRAM_DIAGONAL_LIMIT) {
-        return None;
-    }
-    let n = candidates.len();
-    let mut columns: Vec<Vec<f64>> = vec![Vec::new(); n];
-    let mut selected: Vec<usize> = Vec::new();
-    gram_gs(candidates, diagonal, |coefficients, picked| {
-        if !coefficients.iter().all(|value| value.is_finite()) {
-            return None;
-        }
-        // Same argument order as the full Gram entry gram[j][picked].
-        columns[picked] = vectors.iter().map(|v| dot(v, vectors[picked])).collect();
-        selected.insert(selected.partition_point(|&m| m < picked), picked);
-        let mut row = vec![0.0; n];
-        for &m in &selected {
-            let c = coefficients[m];
-            for (r, &g) in row.iter_mut().zip(&columns[m]) {
-                *r += c * g;
+        if picked.len() < limit && !active.is_empty() {
+            let row = project_active(&axis, vectors, &active);
+            if let Some(c) = coefficient {
+                for &j in &active {
+                    let p = row[j];
+                    proj_sq_sum[j] += p * p;
+                    proj_target_sum[j] += p * c;
+                }
+            } else {
+                for &j in &active {
+                    let p = row[j];
+                    proj_sq_sum[j] += p * p;
+                }
             }
         }
-        row.iter().all(|value| value.is_finite()).then_some(row)
-    }, target, max_basis, min_gain)
+        basis.push(axis);
+    }
+    let residual_norm = target_residual.map(|residual| {
+        let energy = dot(&residual, &residual);
+        let original = target.map_or(0.0, |t| dot(t, t));
+        if energy < 1e-14 * original { 0.0 } else { energy.sqrt() }
+    });
+    if !keep_basis {
+        basis.clear();
+    }
+    AgsTrace { picked, basis, residual_norm }
 }
 
-fn select_axes_full(
+fn direct_axes(
+    target: AgsTarget<'_>,
     candidates: &[AgsCandidate],
     vectors: &[&[f64]],
-    diagonal: &[f64],
-    target: Option<(&[f64], f64)>,
     max_basis: usize,
     min_gain: f64,
+    keep_basis: bool,
 ) -> AgsTrace {
-    let gram: Vec<Vec<f64>> = vectors.iter()
-        .map(|a| vectors.iter().map(|b| dot(a, b)).collect()).collect();
-    gram_gs(candidates, diagonal, |coefficients, _| {
-        Some((0..candidates.len()).map(|j| dot(coefficients, &gram[j])).collect())
-    }, target, max_basis, min_gain).expect("full Gram projections are always available")
+    direct_axes_core(target, candidates, vectors, None, None, max_basis, min_gain, keep_basis)
 }
 
-/// Greedy selection in coefficient space: `basis` holds each axis as
-/// coefficients over `vectors`, not as a vector in the original space.
-/// Callers that need only the selection and residual use this directly.
+/// Local Explain needs no returned axes; internal axes support reorthogonalization.
 fn select_axes(
     target: AgsTarget<'_>,
     candidates: &[AgsCandidate],
@@ -183,19 +257,7 @@ fn select_axes(
     max_basis: usize,
     min_gain: f64,
 ) -> AgsTrace {
-    let diagonal: Vec<f64> = vectors.iter().map(|v| dot(v, v)).collect();
-    let correlations: Vec<f64> = match target {
-        AgsTarget::Explain(t) => vectors.iter().map(|v| dot(t, v)).collect(),
-        AgsTarget::Span => Vec::new(),
-    };
-    let target_data = match target {
-        AgsTarget::Explain(t) => Some((correlations.as_slice(), dot(t, t))),
-        AgsTarget::Span => None,
-    };
-    select_axes_lazy(candidates, vectors, &diagonal, target_data, max_basis, min_gain)
-        .unwrap_or_else(|| {
-            select_axes_full(candidates, vectors, &diagonal, target_data, max_basis, min_gain)
-        })
+    direct_axes(target, candidates, vectors, max_basis, min_gain, false)
 }
 
 pub(crate) fn anchored_gs(
@@ -205,18 +267,7 @@ pub(crate) fn anchored_gs(
     max_basis: usize,
     min_gain: f64,
 ) -> AgsTrace {
-    let mut trace = select_axes(target, candidates, vectors, max_basis, min_gain);
-    let dim = vectors.first().map_or(0, |v| v.len());
-    let finite_vectors = vectors.iter().all(|v| v.iter().all(|x| x.is_finite()));
-    trace.basis = trace.basis.iter().map(|coefficients| {
-        let mut axis = vec![0.0; dim];
-        for (&c, vector) in coefficients.iter().zip(vectors) {
-            if finite_vectors && c == 0.0 { continue; }
-            for (value, source) in axis.iter_mut().zip(*vector) { *value += c * source; }
-        }
-        axis
-    }).collect();
-    trace
+    direct_axes(target, candidates, vectors, max_basis, min_gain, true)
 }
 
 fn effective_k(coverage: &[f64], k_sem: usize, epsilon: f64, delta: f64) -> usize {
@@ -240,7 +291,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const ALGORITHM: &str = "unified_geometry_ags_v2";
+const ALGORITHM: &str = "unified_geometry_ags_v3_reorth";
 
 fn semantic_weight(sim: f64, enabled: bool, peak: f64, sigma: f64, floor: f64, hard_floor: f64) -> f64 {
     if !enabled { 1.0 } else if sim < hard_floor { 0.0 }
@@ -306,12 +357,13 @@ struct UnitVectorWorkspace {
     map: Option<memmap2::Mmap>,
     path: std::path::PathBuf,
     slots: HashMap<i64, usize>,
+    norms: Vec<f64>,
     dimension: usize,
 }
 
 impl UnitVectorWorkspace {
     fn empty(dimension: usize) -> Self {
-        Self { map: None, path: Default::default(), slots: HashMap::new(), dimension }
+        Self { map: None, path: Default::default(), slots: HashMap::new(), norms: Vec::new(), dimension }
     }
 
     fn build(connection: &Connection, ids: &[i64], dimension: usize)
@@ -342,6 +394,7 @@ impl UnitVectorWorkspace {
                         writer.write_all(bytemuck::cast_slice(vector.as_slice()))
                             .map_err(|e| e.to_string())?;
                         workspace.slots.insert(*id, workspace.slots.len());
+                        workspace.norms.push(dot(vector, vector));
                     }
                 }
             }
@@ -360,6 +413,23 @@ impl UnitVectorWorkspace {
         drop(file);
         result?;
         Ok(workspace)
+    }
+
+    #[inline]
+    fn slot(&self, id: &i64) -> Option<usize> {
+        self.slots.get(id).copied()
+    }
+
+    #[inline]
+    fn get_by_slot(&self, slot: usize) -> &[f64] {
+        let values: &[f64] = bytemuck::cast_slice(self.map.as_ref().expect("mapped workspace").as_ref());
+        let start = slot * self.dimension;
+        &values[start..start + self.dimension]
+    }
+
+    #[inline]
+    fn norm_by_slot(&self, slot: usize) -> f64 {
+        self.norms[slot]
     }
 
     fn get(&self, id: &i64) -> Option<&[f64]> {
@@ -389,6 +459,39 @@ impl Drop for UnitVectorWorkspace {
                 eprintln!("[KBM] Geometry workspace cleanup failed '{}': {error}", self.path.display());
             }
         }
+    }
+}
+
+/// Compute `dot(target, v)` across a slice of neighbor vectors using 4-way blocking.
+/// Preserves exact per-vector coordinate addition order bit-for-bit.
+fn dot_neighbors<'a>(target: &[f64], neighbor_vecs: &[&'a [f64]]) -> Vec<f64> {
+    let mut out = vec![0.0; neighbor_vecs.len()];
+    let mut groups = neighbor_vecs.chunks_exact(4).zip(out.chunks_exact_mut(4));
+    for (vecs, dst) in &mut groups {
+        let sums = dot_four(target, [vecs[0], vecs[1], vecs[2], vecs[3]]);
+        dst.copy_from_slice(&sums);
+    }
+    let start = neighbor_vecs.len() & !3;
+    for (dst, &v) in out[start..].iter_mut().zip(&neighbor_vecs[start..]) {
+        *dst = dot(target, v);
+    }
+    out
+}
+
+/// Accumulate squared projections of `x` onto `basis` axes using 4-way blocking.
+/// Preserves `dot(&x, axis).powi(2)` bit-for-bit.
+fn accumulate_captured_energy(x: &[f64], basis: &[Vec<f64>], captured: &mut [f64]) {
+    let mut axis_groups = basis.chunks_exact(4);
+    let mut cap_groups = captured.chunks_exact_mut(4);
+    for (axes, cap) in (&mut axis_groups).zip(&mut cap_groups) {
+        let sums = dot_four(x, [&axes[0], &axes[1], &axes[2], &axes[3]]);
+        cap[0] += sums[0].powi(2);
+        cap[1] += sums[1].powi(2);
+        cap[2] += sums[2].powi(2);
+        cap[3] += sums[3].powi(2);
+    }
+    for (c, axis) in cap_groups.into_remainder().iter_mut().zip(axis_groups.remainder()) {
+        *c += dot(x, axis).powi(2);
     }
 }
 
@@ -548,24 +651,45 @@ impl GeometryTask {
         let hard_floor = number(gate,"hardFloor",number(local,"semanticHardFloor",-1.0,-1.0,1.0),-1.0,1.0);
         let results: Vec<LocalResult> = ids.par_iter().enumerate().map(|(i,id)| {
             let mut result = LocalResult { id:*id,status:"failed",count:0,residual:1.0 };
-            let Some(target) = vectors.get(id) else { return result };
-            let mut neighbors: Vec<_> = edges[offsets[i]..offsets[i+1]].iter()
-                .filter(|(id,_)| vectors.contains_key(id)).copied().collect();
-            neighbors.sort_by(|a,b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-            neighbors.truncate(max_neighbors);
-            let mut candidates = Vec::new(); let mut refs = Vec::new();
-            for (nid,w) in neighbors {
-                let v = &vectors[&nid];
-                let sim = dot(target,v).clamp(-1.0,1.0);
-                let semantic = semantic_weight(sim,gate_enabled,peak,sigma,floor,hard_floor);
+            let Some(target_slot) = vectors.slot(id) else { return result };
+            let target = vectors.get_by_slot(target_slot);
+            let mut neighbors: Vec<(i64, usize, f64)> = edges[offsets[i]..offsets[i+1]].iter()
+                .filter_map(|&(nid, w)| vectors.slot(&nid).map(|slot| (nid, slot, w))).collect();
+            let cmp = |a: &(i64, usize, f64), b: &(i64, usize, f64)| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0));
+            if neighbors.len() > max_neighbors {
+                neighbors.select_nth_unstable_by(max_neighbors - 1, cmp);
+                neighbors.truncate(max_neighbors);
+            }
+            neighbors.sort_unstable_by(cmp);
+            let neighbor_vecs: Vec<&[f64]> = neighbors.iter().map(|&(_, slot, _)| vectors.get_by_slot(slot)).collect();
+            let raw_dots = dot_neighbors(target, &neighbor_vecs);
+            let mut candidates = Vec::with_capacity(neighbors.len());
+            let mut refs = Vec::with_capacity(neighbors.len());
+            let mut diagonal = Vec::with_capacity(neighbors.len());
+            let mut correlations = Vec::with_capacity(neighbors.len());
+            for ((nid, slot, w), (&v, raw_dot)) in neighbors.into_iter().zip(neighbor_vecs.iter().zip(raw_dots)) {
+                let sim = raw_dot.clamp(-1.0, 1.0);
+                let semantic = semantic_weight(sim, gate_enabled, peak, sigma, floor, hard_floor);
                 if semantic > 0.0 {
-                    candidates.push(AgsCandidate { id:nid,prior:w.ln_1p()*semantic }); refs.push(v);
+                    candidates.push(AgsCandidate { id: nid, prior: w.ln_1p() * semantic });
+                    refs.push(v);
+                    diagonal.push(vectors.norm_by_slot(slot));
+                    correlations.push(raw_dot);
                 }
             }
             result.count = candidates.len();
             if result.count < min_neighbors { result.status="insufficient_neighbors"; return result; }
-            // Only the residual is used: skip rebuilding the axes in the original space.
-            let trace = select_axes(AgsTarget::Explain(target),&candidates,&refs,max_basis,min_gain);
+            // Only the residual is returned; reuse precomputed norms and target correlations.
+            let trace = direct_axes_core(
+                AgsTarget::Explain(target),
+                &candidates,
+                &refs,
+                Some(&diagonal),
+                Some(&correlations),
+                max_basis,
+                min_gain,
+                false,
+            );
             result.residual=trace.residual_norm.unwrap_or(1.0).clamp(0.0,1.0);
             // Orthogonal targets correctly have residual=1, not a failed status.
             result.status="computed"; result
@@ -603,13 +727,18 @@ impl GeometryTask {
         let centered: Vec<Vec<f64>> = pool.par_iter().map(|c| {
             let target=&vectors[&c.id];
             let i=ids.binary_search(&c.id).unwrap();
-            let mut neighbors:Vec<_>=edges[offsets[i]..offsets[i+1]].iter()
-                .filter(|(id,_)|vectors.contains_key(id)).copied().collect();
-            neighbors.sort_by(|a,b|b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-            neighbors.truncate(star_neighbors);
-            let weighted:Vec<_>=neighbors.iter().filter_map(|(id,w)| {
-                let v=&vectors[id];
-                let weight=w.ln_1p()*semantic_weight(dot(target,v).clamp(-1.0,1.0),gate_enabled,peak,sigma,floor,hard_floor);
+            let mut neighbors:Vec<(i64, usize, f64)>=edges[offsets[i]..offsets[i+1]].iter()
+                .filter_map(|&(nid, w)| vectors.slot(&nid).map(|slot| (nid, slot, w))).collect();
+            let cmp = |a: &(i64, usize, f64), b: &(i64, usize, f64)| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0));
+            if neighbors.len() > star_neighbors {
+                neighbors.select_nth_unstable_by(star_neighbors - 1, cmp);
+                neighbors.truncate(star_neighbors);
+            }
+            neighbors.sort_unstable_by(cmp);
+            let neighbor_vecs: Vec<&[f64]> = neighbors.iter().map(|&(_, slot, _)| vectors.get_by_slot(slot)).collect();
+            let raw_dots = dot_neighbors(target, &neighbor_vecs);
+            let weighted:Vec<_>=neighbors.iter().zip(neighbor_vecs.iter().zip(raw_dots)).filter_map(|(&(_, _, w), (&v, raw_dot))| {
+                let weight=w.ln_1p()*semantic_weight(raw_dot.clamp(-1.0,1.0),gate_enabled,peak,sigma,floor,hard_floor);
                 (weight>0.0).then_some((v,weight))
             }).collect();
             star_direction(target,&mean,&weighted,if candidate_mode=="star" {mix} else {0.0})
@@ -627,12 +756,18 @@ impl GeometryTask {
         let global_ms=started.elapsed().as_secs_f64()*1000.0-load_ms-local_ms;
         // Fixed-size chunks + indexed collect + serial reduction = thread-count-independent bits.
         let partial:Vec<_>=ids.par_chunks(128).map(|batch| {
-            let mut energy=0.0; let mut captured=vec![0.0;trace.basis.len()];
-            for id in batch { if let Some(v)=vectors.get(id) {
-                let x:Vec<_>=v.iter().zip(&mean).map(|(v,m)|v-m).collect();
-                energy+=dot(&x,&x);
-                for (c,axis) in captured.iter_mut().zip(&trace.basis) { *c+=dot(&x,axis).powi(2); }
-            }}
+            let mut energy=0.0;
+            let mut captured=vec![0.0;trace.basis.len()];
+            let mut x=vec![0.0;self.dimensions];
+            for id in batch {
+                if let Some(v)=vectors.get(id) {
+                    for ((out, &val), &m) in x.iter_mut().zip(v).zip(&mean) {
+                        *out = val - m;
+                    }
+                    energy += dot(&x, &x);
+                    accumulate_captured_energy(&x, &trace.basis, &mut captured);
+                }
+            }
             (energy,captured)
         }).collect();
         drop(vectors);
@@ -649,7 +784,7 @@ impl GeometryTask {
             "mean":encode_vector(&mean),"energies":energies,"coverage":coverage,
             "labels":trace.picked.iter().map(|(id,_)|names[id].clone()).collect::<Vec<_>>(),
             "anchorTagIds":trace.picked.iter().map(|(id,_)|*id).collect::<Vec<_>>(),
-            "totalEnergy":total,"kSem":k_sem,"kMax":k_max,"epaAlgorithm":"ags-global-star-v2",
+            "totalEnergy":total,"kSem":k_sem,"kMax":k_max,"epaAlgorithm":"ags-global-star-v3-reorth",
             "candidateMode":candidate_mode,"priorMode":prior_mode,"fullCoverage":full_coverage,
             "artifactSig":signature,"tagCount":ids.len(),"timestamp":now
         }).to_string();
@@ -751,6 +886,8 @@ mod tests {
         assert_eq!(workspace.len(), expected.len());
         assert!(!workspace.contains_key(&7));
         for (id, vector) in expected {
+            let slot = workspace.slot(&id).unwrap();
+            assert_eq!(workspace.norm_by_slot(slot).to_bits(), dot(&vector, &vector).to_bits());
             assert!(workspace.get(&id).unwrap().iter().zip(vector)
                 .all(|(a, b)| a.to_bits() == b.to_bits()));
         }
@@ -785,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn gram_matches_direct_residual_and_local_semantics() {
+    fn direct_residual_and_local_semantics() {
         let candidates = [AgsCandidate { id: 2, prior: 1.0 }, AgsCandidate { id: 1, prior: 1.0 }];
         let a = [1.0, 0.0, 0.0];
         let b = [0.6, 0.8, 0.0];
@@ -815,26 +952,8 @@ mod tests {
         assert_eq!(star_direction(&target,&mean,&[(&[-1.0,0.0,0.0],1.0)],0.5),target);
     }
 
-    fn full_gram_selection(
-        target: Option<&[f64]>, candidates: &[AgsCandidate], vectors: &[&[f64]],
-        max_basis: usize, min_gain: f64,
-    ) -> AgsTrace {
-        let diagonal: Vec<f64> = vectors.iter().map(|v| dot(v, v)).collect();
-        let correlations: Vec<f64> = target.map_or(Vec::new(), |t| vectors.iter().map(|v| dot(t, v)).collect());
-        let target_data = target.map(|t| (correlations.as_slice(), dot(t, t)));
-        select_axes_full(candidates, vectors, &diagonal, target_data, max_basis, min_gain)
-    }
-
-    fn trace_bits(trace: &AgsTrace) -> (Vec<(i64, u64)>, Vec<Vec<u64>>, Option<u64>) {
-        (
-            trace.picked.iter().map(|(id, gain)| (*id, gain.to_bits())).collect(),
-            trace.basis.iter().map(|axis| axis.iter().map(|v| v.to_bits()).collect()).collect(),
-            trace.residual_norm.map(f64::to_bits),
-        )
-    }
-
     #[test]
-    fn lazy_gram_columns_match_full_gram_bits() {
+    fn randomized_direct_geometry_invariants() {
         let mut state = 0x2545_f491_4f6c_dd1d_u64;
         let mut next = move || {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -858,37 +977,52 @@ mod tests {
                     .collect();
                 let mut target: Vec<f64> = shared.iter().map(|s| next() + s).collect();
                 normalize(&mut target);
+                let diag: Vec<f64> = refs.iter().map(|v| dot(v, v)).collect();
+                let corrs = dot_neighbors(&target, &refs);
                 for explain in [Some(target.as_slice()), None] {
                     let ags_target = explain.map_or(AgsTarget::Span, AgsTarget::Explain);
-                    let lazy = select_axes(ags_target, &candidates, &refs, max_basis, min_gain);
-                    let full = full_gram_selection(explain, &candidates, &refs, max_basis, min_gain);
-                    assert_eq!(trace_bits(&lazy), trace_bits(&full));
-
-                    let anchored = anchored_gs(
+                    let direct = anchored_gs(ags_target, &candidates, &refs, max_basis, min_gain);
+                    let local = select_axes(explain.map_or(AgsTarget::Span, AgsTarget::Explain),
+                        &candidates, &refs, max_basis, min_gain);
+                    let pre = direct_axes_core(
                         explain.map_or(AgsTarget::Span, AgsTarget::Explain),
                         &candidates,
                         &refs,
+                        Some(&diag),
+                        explain.map(|_| corrs.as_slice()),
                         max_basis,
                         min_gain,
+                        false,
                     );
-                    let dense_basis: Vec<Vec<u64>> = full.basis.iter().map(|coefficients| {
-                        let mut axis = vec![0.0; dim];
-                        for (c, vector) in coefficients.iter().zip(&refs) {
-                            for (value, source) in axis.iter_mut().zip(*vector) {
-                                *value += c * source;
-                            }
+                    assert_eq!(direct.picked, local.picked);
+                    assert_eq!(direct.residual_norm, local.residual_norm);
+                    assert_eq!(local.picked, pre.picked);
+                    assert_eq!(local.residual_norm.map(f64::to_bits), pre.residual_norm.map(f64::to_bits));
+                    assert!(local.basis.is_empty());
+                    assert_eq!(direct.picked.len(), direct.basis.len());
+                    for (i, axis) in direct.basis.iter().enumerate() {
+                        for (j, other) in direct.basis.iter().enumerate() {
+                            assert!((dot(axis, other) - if i == j { 1.0 } else { 0.0 }).abs() < 1e-12);
                         }
-                        axis.into_iter().map(f64::to_bits).collect()
-                    }).collect();
-                    assert_eq!(trace_bits(&anchored).1, dense_basis);
+                    }
+                    if let Some(t) = explain {
+                        let mut residual = t.to_vec();
+                        for ((_, gain), axis) in direct.picked.iter().zip(&direct.basis) {
+                            let coefficient = dot(t, axis);
+                            assert!((coefficient.abs() - gain).abs() < 1e-12);
+                            for (r, q) in residual.iter_mut().zip(axis) { *r -= coefficient * q; }
+                        }
+                        let expected = dot(&residual, &residual).sqrt();
+                        assert!((direct.residual_norm.unwrap() - expected).abs() < 1e-7);
+                    }
                 }
             }
         }
     }
 
     #[test]
-    fn overflowing_gram_falls_back_to_full_gram() {
-        // The middle candidate never qualifies, but its Gram entries overflow.
+    fn overflowing_inactive_vector_does_not_contaminate_axes() {
+        // The inactive vector overflows its norm but must not contaminate valid axes.
         let vectors = [[2.0, 0.0], [1e308, 1e308], [0.0, 4.0]];
         let refs: Vec<&[f64]> = vectors.iter().map(|v| v.as_slice()).collect();
         let candidates = [
@@ -896,11 +1030,84 @@ mod tests {
             AgsCandidate { id: 2, prior: 0.0 },
             AgsCandidate { id: 3, prior: 1.0 },
         ];
-        let diagonal: Vec<f64> = refs.iter().map(|v| dot(v, v)).collect();
-        assert!(select_axes_lazy(&candidates, &refs, &diagonal, None, 3, 0.0).is_none());
-        let selected = select_axes(AgsTarget::Span, &candidates, &refs, 3, 0.0);
-        let full = full_gram_selection(None, &candidates, &refs, 3, 0.0);
-        assert_eq!(trace_bits(&selected), trace_bits(&full));
+        let selected = anchored_gs(AgsTarget::Span, &candidates, &refs, 3, 0.0);
+        assert_eq!(selected.picked, vec![(3, 4.0), (1, 2.0)]);
+        assert_eq!(selected.basis, vec![vec![0.0, 1.0], vec![1.0, 0.0]]);
+    }
+
+    #[test]
+    fn direct_reorthogonalization_and_rank_cutoff() {
+        for epsilon in [1e-4, 1e-5, 1e-6, 1e-7] {
+            let mut vectors = Vec::new();
+            for i in 0..12 {
+                let mut v = vec![1.0; 256];
+                normalize(&mut v);
+                v[i] += epsilon;
+                normalize(&mut v);
+                vectors.push(v);
+            }
+            let refs: Vec<_> = vectors.iter().map(Vec::as_slice).collect();
+            let candidates: Vec<_> = (0..12).map(|id|
+                AgsCandidate { id, prior: 1.0 }).collect();
+            let trace = anchored_gs(AgsTarget::Span, &candidates, &refs, 12, 0.0);
+            assert!(!trace.basis.is_empty());
+            if epsilon >= 1e-5 { assert_eq!(trace.basis.len(), 12); }
+            if epsilon == 1e-7 { assert_eq!(trace.basis.len(), 1); }
+            for (i, a) in trace.basis.iter().enumerate() {
+                for (j, b) in trace.basis.iter().enumerate() {
+                    assert!((dot(a, b) - if i == j { 1.0 } else { 0.0 }).abs() < 1e-12);
+                }
+            }
+            let mut target = vec![0.0; 256];
+            target[0] = 1.0;
+            let full = anchored_gs(AgsTarget::Explain(&target), &candidates, &refs, 4, 0.0);
+            let local = select_axes(AgsTarget::Explain(&target), &candidates, &refs, 4, 0.0);
+            assert_eq!(full.picked, local.picked);
+            assert_eq!(full.residual_norm, local.residual_norm);
+            assert!(local.basis.is_empty());
+            let mut residual = target.clone();
+            for axis in &full.basis {
+                let coefficient = dot(&target, axis);
+                for (r, q) in residual.iter_mut().zip(axis) { *r -= coefficient * q; }
+            }
+            assert!((full.residual_norm.unwrap() - dot(&residual, &residual).sqrt()).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn blocked_projection_preserves_dot_bits_and_tail() {
+        let axis: Vec<_> = (0..37).map(|i| (i as f64 * 0.13).sin()).collect();
+        let vectors: Vec<Vec<_>> = (0..11).map(|j| (0..37)
+            .map(|i| ((i + j) as f64 * 0.19).cos()).collect()).collect();
+        let refs: Vec<_> = vectors.iter().map(Vec::as_slice).collect();
+        for count in 0..=11 {
+            let active: Vec<_> = (0..count).collect();
+            let row = project_active(&axis, &refs, &active);
+            for &i in &active { assert_eq!(row[i].to_bits(), dot(&axis, refs[i]).to_bits()); }
+            assert!(row[count..].iter().all(|v| *v == 0.0));
+        }
+        let mut cap_blocked = vec![0.0; vectors.len()];
+        let mut cap_scalar = vec![0.0; vectors.len()];
+        accumulate_captured_energy(&axis, &vectors, &mut cap_blocked);
+        for (c, v) in cap_scalar.iter_mut().zip(&vectors) {
+            *c += dot(&axis, v).powi(2);
+        }
+        for (a, b) in cap_blocked.iter().zip(&cap_scalar) {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+    }
+
+    #[test]
+    fn direct_handles_empty_duplicates_and_invalid_priors() {
+        let empty = anchored_gs(AgsTarget::Explain(&[3.0, 4.0]), &[], &[], 4, 0.0);
+        assert_eq!(empty.residual_norm, Some(5.0));
+        assert!(empty.basis.is_empty());
+        let vectors: [&[f64]; 5] = [&[1.0, 0.0], &[1.0, 0.0],
+            &[0.0, 1.0], &[0.0, 1.0], &[f64::NAN, 0.0]];
+        let candidates: Vec<_> = [1.0, 1.0, f64::INFINITY, 1.0, 1.0]
+            .iter().enumerate().map(|(i, prior)| AgsCandidate { id: i as i64, prior: *prior }).collect();
+        let trace = anchored_gs(AgsTarget::Span, &candidates, &vectors, 5, 0.0);
+        assert_eq!(trace.picked.iter().map(|p| p.0).collect::<Vec<_>>(), vec![0, 3]);
     }
 
     #[test]
