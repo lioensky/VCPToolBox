@@ -58,6 +58,111 @@ function copyArrayMetadata(source, target) {
 }
 
 /**
+ * Shield tool data before both disabled-tag cleanup and role parsing.
+ * Scan text parts together so a block spanning multimodal parts stays opaque.
+ * Restore each fragment afterwards without changing its original text.
+ */
+function protectToolContent(message) {
+    const isArray = Array.isArray(message.content);
+    const texts = isArray
+        ? message.content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text)
+        : (typeof message.content === 'string' ? [message.content] : []);
+    const text = texts.join('');
+    if (/^\s*<!-- VCP_TOOL_PAYLOAD -->/.test(text)) {
+        return { message, restore: messages => messages, skip: true };
+    }
+
+    const markers = [
+        { start: '<<<[TOOL_REQUEST]>>>', end: '<<<[END_TOOL_REQUEST]>>>' },
+        { start: '[[VCP调用结果信息汇总:', end: 'VCP调用结果结束]]' }
+    ];
+    const ranges = [];
+    let cursor = 0;
+    while (cursor < text.length) {
+        let selected = null;
+        let start = -1;
+        for (const marker of markers) {
+            const index = text.indexOf(marker.start, cursor);
+            if (index !== -1 && (start === -1 || index < start)) {
+                selected = marker;
+                start = index;
+            }
+        }
+        if (!selected) break;
+
+        // Balance nested blocks; an incomplete tool block protects the remainder.
+        let depth = 1;
+        let end = start + selected.start.length;
+        while (depth > 0) {
+            const nextStart = text.indexOf(selected.start, end);
+            const nextEnd = text.indexOf(selected.end, end);
+            if (nextEnd === -1) {
+                end = text.length;
+                break;
+            }
+            if (nextStart !== -1 && nextStart < nextEnd) {
+                depth++;
+                end = nextStart + selected.start.length;
+            } else {
+                depth--;
+                end = nextEnd + selected.end.length;
+            }
+        }
+        ranges.push({ start, end });
+        cursor = end;
+    }
+
+    if (ranges.length === 0) {
+        return { message, restore: messages => messages, skip: false };
+    }
+
+    // Choose a request-local placeholder prefix absent from the original content.
+    let prefix = '\uE000VCP_TOOL_LITERAL_';
+    while (text.includes(prefix)) prefix += '_';
+    const fragments = [];
+    let offset = 0;
+    const mask = value => {
+        const partStart = offset;
+        offset += value.length;
+        let result = '';
+        let localCursor = 0;
+        for (const range of ranges) {
+            const start = Math.max(range.start, partStart) - partStart;
+            const end = Math.min(range.end, offset) - partStart;
+            if (end <= start) continue;
+            result += value.slice(localCursor, start);
+            const token = `${prefix}${fragments.length}\uE001`;
+            fragments.push({ token, value: value.slice(start, end) });
+            result += token;
+            localCursor = end;
+        }
+        return result + value.slice(localCursor);
+    };
+    const maskedContent = isArray
+        ? message.content.map(part => part?.type === 'text' && typeof part.text === 'string'
+            ? { ...part, text: mask(part.text) } : part)
+        : mask(message.content);
+    const unmask = value => {
+        for (const fragment of fragments) {
+            value = value.split(fragment.token).join(fragment.value);
+        }
+        return value;
+    };
+    return {
+        message: { ...message, content: maskedContent },
+        skip: false,
+        restore: messages => messages.map(msg => ({
+            ...msg,
+            content: typeof msg.content === 'string'
+                ? unmask(msg.content)
+                : (Array.isArray(msg.content) ? msg.content.map(part =>
+                    part?.type === 'text' && typeof part.text === 'string'
+                        ? { ...part, text: unmask(part.text) } : part) : msg.content)
+        }))
+    };
+}
+
+/**
  * Process a single message content and split it into multiple messages if tags are present.
  * @param {Object} message - The original message object {role, content}.
  * @param {Object} options - Configuration options.
@@ -391,8 +496,13 @@ function process(messages, { ignoreList = [], switches = { system: true, assista
             newMessages.push(msg);
             continue;
         }
-        const processed = processSingleMessage(msg, { ignoreList, switches, scanSwitches, removeDisabledTags });
-        newMessages.push(...processed);
+        const protection = protectToolContent(msg);
+        if (protection.skip) {
+            newMessages.push(msg);
+            continue;
+        }
+        const processed = processSingleMessage(protection.message, { ignoreList, switches, scanSwitches, removeDisabledTags });
+        newMessages.push(...protection.restore(processed));
     }
     return copyArrayMetadata(messages, newMessages);
 }
