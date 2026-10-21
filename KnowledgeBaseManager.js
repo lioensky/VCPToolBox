@@ -1770,7 +1770,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         if (Array.isArray(result.river?.results)) result.river.results = result.river.results.map(normalize);
         return result;
         } finally {
-            if (prepared) this.releaseMemoObservation(prepared);
+            if (prepared) this.releaseMemoObservation?.(prepared);
         }
     }
 
@@ -2356,7 +2356,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             || !(enhancedVector instanceof Float32Array)
             || enhancedVector.length !== this.config.dimension
         ) {
-            if (observationHandle) this.releaseMemoObservation({ observationHandle });
+            if (observationHandle) this.releaseMemoObservation?.({ observationHandle });
             const error = new Error(
                 'Unified native Memo pipeline failed artifact/schema validation'
             );
@@ -2568,7 +2568,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             );
         }
         } finally {
-            if (!options.preparedMemoObservation) this.releaseMemoObservation(prepared);
+            if (!options.preparedMemoObservation) this.releaseMemoObservation?.(prepared);
         }
     }
 
@@ -2875,7 +2875,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             }
         );
         } finally {
-            if (!options.preparedMemoObservation) this.releaseMemoObservation(prepared);
+            if (!options.preparedMemoObservation) this.releaseMemoObservation?.(prepared);
         }
 
         async function collectCandidates() {
