@@ -202,18 +202,74 @@ test('Memory A/B excludes fallback scores and isolates external scoring fields',
     }];
     let report = await owner.handleMemoryAB({ query: 'test', folder: 'A', k: 1 });
     assert.match(report, /不冒充回退评分/);
-    assert.match(report, /\| 1 \| memory \| #1 \/ 0\.6200 \| — \| #1 \/ 0\.6773 \|/);
+    assert.match(report, /\| 1 \| memory \| #1 \/ 0\.6200 \| — \| — \| #1 \/ 0\.6773 \|/);
 
     owner._rerankDocuments = async () => [{
         id: 1, text: 'memory', score: 0.6773, rerank_score: 0.91, jev_score: 0.12
     }];
     report = await owner.handleMemoryAB({ query: 'test', folder: 'A', k: 1 });
-    assert.match(report, /\| 1 \| memory \| #1 \/ 0\.6200 \| #1 \/ 0\.9100 \| #1 \/ 0\.6773 \|/);
+    assert.match(report, /\| 1 \| memory \| #1 \/ 0\.6200 \| #1 \/ 0\.9100 \| — \| #1 \/ 0\.6773 \|/);
 
     owner._rerankDocuments = async () => [{ id: 1, text: 'memory', score: 0.6773 }];
     report = await owner.handleMemoryAB({ query: 'test', folder: 'A', k: 1 });
     assert.match(report, /不冒充回退评分/);
-    assert.match(report, /0\.6200 \| — \| #1 \/ 0\.6773 \|/);
+    assert.match(report, /0\.6200 \| — \| — \| #1 \/ 0\.6773 \|/);
+});
+
+test('Memory A/B restores independent Jev scoring on the complete shared pool', async () => {
+    const light = require('../Plugin/LightMemo/LightMemo');
+    const owner = Object.create(light);
+    const pool = Array.from({ length: 6 }, (_, index) => ({
+        id: index + 1, text: `memory ${index + 1}`, vectorScore: 0.62
+    }));
+    let nativeCalls = 0;
+    let jevCalls = 0;
+    owner.getSingleEmbedding = async () => [1, 0];
+    owner.vectorDBManager = {
+        async executeLightMemoQuery() {
+            nativeCalls++;
+            return {
+                comparisonPool: pool, tdbTopK: pool.slice(0, 1),
+                river: { results: [{ ...pool[0], score: 0.67 }] }
+            };
+        }
+    };
+    owner._rerankDocuments = async (query, documents, k) => {
+        assert.equal(k, pool.length);
+        documents[0].jev_score = 0.99;
+        return [{ ...documents[0], rerank_score: 0.91 }];
+    };
+    owner._jevRerankDocuments = async (query, documents, k) => {
+        jevCalls++;
+        assert.equal(query, 'test');
+        assert.equal(k, pool.length, 'laboratory must not restrict Jev to 2*K');
+        assert.equal(documents.length, pool.length);
+        assert.equal(documents[0].jev_score, undefined, 'Rerank cannot contaminate Jev');
+        assert.deepEqual(documents.map(item => item.retrieval_rank), [1, 2, 3, 4, 5, 6]);
+        return [{ ...documents[5], jev_score: 0.82, rerank_score: 0.12 }];
+    };
+    const args = { query: 'test', folder: 'A', k: 1 };
+    let report = await owner.handleMemoryAB(args);
+    assert.equal(nativeCalls, 1, 'all four tracks share one native query');
+    assert.match(report, /四轨实验室/);
+    assert.match(report, /Jev：获得有效外部评分/);
+    assert.match(report, /\| 6 \| memory 6 \| — \| — \| #1 \/ 0\.8200 \| — \|/);
+    assert.equal(pool[0].jev_score, undefined);
+
+    report = await owner.handleMemoryAB({ ...args, compare_jev: 'false' });
+    assert.equal(jevCalls, 1);
+    assert.match(report, /Jev：关闭、未配置或失败/);
+    await owner.handleMemoryAB({ ...args, compareJev: 'false', compare_rerank: 'false' });
+    assert.equal(jevCalls, 1);
+
+    owner._jevRerankDocuments = async () => [{ ...pool[0], rerank_score: 0.9 }];
+    report = await owner.handleMemoryAB(args);
+    assert.match(report, /Jev：关闭、未配置或失败/);
+    owner._jevRerankDocuments = async () => [{
+        ...pool[0], jev_score: 0.9, rerank_failed: true
+    }];
+    report = await owner.handleMemoryAB(args);
+    assert.match(report, /Jev：关闭、未配置或失败/);
 });
 
 test('LightMemo releases its observation on success and native failure', async () => {
