@@ -387,7 +387,7 @@ async function generateTagsWithAI(content, maxRetries = 3) {
             debugLog(`Calling AI API (attempt ${attempt}/${maxRetries}) with model: ${TAG_MODEL}`);
 
             const fetch = (await import('node-fetch')).default;
-            const response = await fetch(`${API_URL}/v1/chat/completions`, {
+            const response = await fetch(`${API_URL}/${process.env.API_VERSION_PREFIX || 'v1'}/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

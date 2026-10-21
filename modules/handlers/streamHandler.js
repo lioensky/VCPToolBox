@@ -2,6 +2,7 @@
 const { StringDecoder } = require('string_decoder');
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
+const { stripVcpPrivateFields } = require('./upstreamBodySanitizer.js');
 const {
   extractReasoningText,
   removeReasoningFields,
@@ -541,7 +542,7 @@ class StreamHandler {
         }
 
         const nextAiAPIResponse = await fetchWithRetry(
-          `${apiUrl}/v1/chat/completions`,
+          `${apiUrl}/${process.env.API_VERSION_PREFIX || 'v1'}/chat/completions`,
           {
             method: 'POST',
             headers: {
@@ -549,7 +550,7 @@ class StreamHandler {
               Authorization: `Bearer ${apiKey}`,
               Accept: 'text/event-stream',
             },
-            body: JSON.stringify({ ...originalBody, messages: currentMessagesForLoop, stream: true }),
+            body: JSON.stringify(stripVcpPrivateFields({ ...originalBody, messages: currentMessagesForLoop, stream: true })),
             signal: abortController.signal,
           },
           { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates }
@@ -714,7 +715,7 @@ class StreamHandler {
       }
 
       const nextAiAPIResponse = await fetchWithRetry(
-        `${apiUrl}/v1/chat/completions`,
+        `${apiUrl}/${process.env.API_VERSION_PREFIX || 'v1'}/chat/completions`,
         {
           method: 'POST',
           headers: {
@@ -722,7 +723,7 @@ class StreamHandler {
             Authorization: `Bearer ${apiKey}`,
             Accept: 'text/event-stream',
           },
-          body: JSON.stringify({ ...originalBody, messages: currentMessagesForLoop, stream: true }),
+          body: JSON.stringify(stripVcpPrivateFields({ ...originalBody, messages: currentMessagesForLoop, stream: true })),
           signal: abortController.signal,
         },
         { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates }

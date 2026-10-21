@@ -142,7 +142,7 @@ async function reidentifyMediaByBase64Key(base64Key) {
               console.log(`[Reidentify] 使用 Thinking Budget: ${multiModalModelThinkingBudget}`);
           }
 
-          const fetchResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
+          const fetchResponse = await fetch(`${apiUrl}/${process.env.API_VERSION_PREFIX || 'v1'}/chat/completions`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
               body: JSON.stringify(payload),

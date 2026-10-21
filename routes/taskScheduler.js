@@ -7,6 +7,7 @@ const schedule = require('node-schedule');
 let pluginManager;
 let webSocketServer;
 let DEBUG_MODE = false;
+let coreEngine = null;
 
 const TIMED_CONTACTS_DIR = path.join(__dirname, '..', 'VCPTimedContacts');
 const TIMED_RESULTS_DIR = path.join(__dirname, '..', 'VCPTimedResults');
@@ -114,6 +115,28 @@ async function executeTimedContact(task, filePath) {
                 source: 'task_scheduler_executor'
             }
         }, 'VCPLog');
+
+        if (coreEngine && typeof coreEngine.emitProactiveWake === 'function') {
+            const customWake = result?.proactiveWake || result?.result?.proactiveWake || task?.proactiveWake;
+            const wakeTitle = customWake?.title || `定时任务提醒: ${tool_name}`;
+            const wakeContent = customWake?.content || (typeof result === 'string' ? result : (result?.result?.content?.[0]?.text || resultSummary));
+            const wakeLevel = customWake?.level || (task?.urgent ? 'urgent_popup' : 'toast');
+            const audioTts = Boolean(customWake?.audioTts ?? task?.audioTts);
+
+            coreEngine.emitProactiveWake({
+                id: `timed-${task.taskId}`,
+                level: wakeLevel,
+                title: wakeTitle,
+                content: typeof wakeContent === 'string' ? wakeContent : JSON.stringify(wakeContent),
+                audioTts,
+                source: 'task_scheduler',
+                metadata: {
+                    taskId: task.taskId,
+                    toolName: tool_name,
+                    result
+                }
+            });
+        }
 
     } catch (error) {
         console.error(`[TaskScheduler] 执行任务 ${task.taskId} 时发生错误:`, error);
@@ -227,10 +250,19 @@ async function scheduleAllPendingTasks() {
     }
 }
 
-function initialize(_pluginManager, _webSocketServer, _debugMode) {
+function setCoreEngine(_coreEngine) {
+    coreEngine = _coreEngine;
+}
+
+function getCoreEngine() {
+    return coreEngine;
+}
+
+function initialize(_pluginManager, _webSocketServer, _debugMode, _coreEngine = null) {
     pluginManager = _pluginManager;
     webSocketServer = _webSocketServer;
     DEBUG_MODE = _debugMode;
+    if (_coreEngine) coreEngine = _coreEngine;
     
     console.log('正在初始化通用任务调度器...');
     scheduleAllPendingTasks();
@@ -253,5 +285,7 @@ function shutdown() {
 
 module.exports = {
     initialize,
-    shutdown
+    shutdown,
+    setCoreEngine,
+    getCoreEngine
 };

@@ -8,6 +8,7 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const finalContextStore = require('./finalContextStore.js');
+const { stripVcpPrivateFields } = require('./handlers/upstreamBodySanitizer.js');
 
 // 多模态配置真相源（JSON 优先 + 热更新），用于在请求时动态拉取 MultiModalForceTranslateModels
 let multiModalConfigStore = null;
@@ -1204,7 +1205,7 @@ class ChatCompletionHandler {
       });
 
       const willStreamResponse = isOriginalRequestStreaming;
-      const finalUpstreamBody = { ...originalBody, stream: willStreamResponse };
+      const finalUpstreamBody = stripVcpPrivateFields({ ...originalBody, stream: willStreamResponse });
 
       finalContextStore.setLastFinalContext(finalUpstreamBody, {
         requestId: req.body.requestId || null,
@@ -1217,7 +1218,7 @@ class ChatCompletionHandler {
       await writeDebugLog('LogOutputAfterProcessing', finalUpstreamBody);
 
       let firstAiAPIResponse = await fetchWithRetry(
-        `${apiUrl}/v1/chat/completions`,
+        `${apiUrl}/${process.env.API_VERSION_PREFIX || 'v1'}/chat/completions`,
         {
           method: 'POST',
           headers: {

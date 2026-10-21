@@ -280,7 +280,7 @@ async function callLanguageModel(config, topic, history, systemPrompt) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             const response = await axios.post(
-                `${serverConfig.API_URL}/v1/chat/completions`,
+                `${serverConfig.API_URL}/${process.env.API_VERSION_PREFIX || 'v1'}/chat/completions`,
                 {
                     model: config.model,
                     messages: messages,

@@ -119,10 +119,10 @@ function parseEnvBoolean(value, fallback = false) {
 function normalizeOpenAIChatEndpoint(value) {
     const endpoint = String(value || '').trim().replace(/\/+$/, '');
     if (!endpoint) return '';
-    if (/\/v1\/chat\/completions$/i.test(endpoint)) return endpoint;
     if (/\/chat\/completions$/i.test(endpoint)) return endpoint;
-    if (/\/v1$/i.test(endpoint)) return `${endpoint}/chat/completions`;
-    return `${endpoint}/v1/chat/completions`;
+    if (/\/(?:api\/)?v\d+[a-z0-9]*(?:\/openai)?$/i.test(endpoint)) return `${endpoint}/chat/completions`;
+    const prefix = (process.env.API_VERSION_PREFIX || 'v1').replace(/^\/+|\/+$/g, '');
+    return `${endpoint}/${prefix}/chat/completions`;
 }
 
 function normalizeName(value) {

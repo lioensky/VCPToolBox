@@ -87,7 +87,7 @@ router.post('/v1/chat/completions', async (req, res) => {
 
     try {
         const { default: fetch } = await import('node-fetch');
-        const apiResponse = await fetch(`${API_URL}/v1/chat/completions`, {
+        const apiResponse = await fetch(`${API_URL}/${process.env.API_VERSION_PREFIX || 'v1'}/chat/completions`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -129,7 +129,7 @@ router.post('/v1/embeddings', async (req, res) => {
 
     try {
         const { default: fetch } = await import('node-fetch');
-        const apiResponse = await fetch(`${API_URL}/v1/embeddings`, {
+        const apiResponse = await fetch(`${API_URL}/${process.env.API_VERSION_PREFIX || 'v1'}/embeddings`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

@@ -151,7 +151,7 @@ async function translateMediaAndCacheInternal(base64DataWithPrefix, mediaIndexFo
                 payload.extra_body = { thinking_config: { thinking_budget: currentConfig.MultiModalModelThinkingBudget } };
             }
 
-            const fetchResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
+            const fetchResponse = await fetch(`${apiUrl}/${process.env.API_VERSION_PREFIX || 'v1'}/chat/completions`, {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json', 

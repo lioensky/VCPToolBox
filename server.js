@@ -3,6 +3,8 @@ const express = require('express');
 require('./modules/dotenvPatch.js'); // 应用 dotenv.parse 补丁以支持特殊字符
 const dotenv = require('dotenv');
 dotenv.config({ path: 'config.env' });
+const { resolveApiVersionPrefix } = require('./core/upstreamFetch.js');
+process.env.API_VERSION_PREFIX = resolveApiVersionPrefix(process.env.API_URL, process.env.API_VERSION_PREFIX);
 const schedule = require('node-schedule');
 const lunarCalendar = require('chinese-lunar-calendar');
 const dayjs = require('dayjs');
@@ -138,6 +140,7 @@ const NO_CREDENTIAL_BLOCK_DURATION = 15 * 60 * 1000; // 封禁15分钟（无凭�
 
 const ChatCompletionHandler = require('./modules/chatCompletionHandler.js');
 const ToolCallParser = require('./modules/vcpLoop/toolCallParser.js');
+const modelCatalog = require('./modules/modelCatalog.js'); // 模型列表分类过滤（本地新增）
 
 const activeRequests = new Map(); // 新增：用于存储活动中的请求，以便中止
 
@@ -908,7 +911,7 @@ app.get('/v1/models', async (req, res) => {
     };
 
     try {
-        const modelsApiUrl = `${apiUrl}/v1/models`;
+        const modelsApiUrl = `${apiUrl}/${process.env.API_VERSION_PREFIX || 'v1'}/models`;
         const apiResponse = await fetch(modelsApiUrl, {
             method: 'GET',
             headers: {
@@ -942,6 +945,9 @@ app.get('/v1/models', async (req, res) => {
                 }
 
                 modelsData = appendSemanticRouterModels(modelsData);
+                // 按类型过滤：默认只留可对话模型（tts/生图/视频/embedding 等不进聊天下拉框）。
+                // 需要全量或某一类时用 /v1/models?category=all|image|speech…
+                modelsData = modelCatalog.filterModelList(modelsData, req.query);
 
                 // 设置响应头
                 res.status(apiResponse.status);
@@ -1043,6 +1049,84 @@ app.post('/v1/schedule_task', async (req, res) => {
         console.error(`[Server] 通过API创建定时任务文件时出错:`, error);
         res.status(500).json({ status: "error", error: "在服务器上保存定时任务时发生内部错误。" });
     }
+});
+
+// ==================== VCP 设置中心原生端点 ====================
+// 提供本地 config.env 读写与连接配置，避免强依赖 5974 外部辅助服务
+const CONFIG_ENV_FILE = path.join(__dirname, 'config.env');
+
+function readConfigEnvValue(key) {
+    try {
+        const text = fsSync.readFileSync(CONFIG_ENV_FILE, 'utf8');
+        const match = new RegExp('^' + key + '=(.*)$', 'm').exec(text);
+        return match ? match[1].trim() : '';
+    } catch {
+        return '';
+    }
+}
+
+function writeConfigEnvPairs(pairs) {
+    if (!pairs || typeof pairs !== 'object') return;
+    for (const [k, v] of Object.entries(pairs)) {
+        if (/[\r\n\0]/.test(String(v)) || /[\r\n\0]/.test(String(k))) {
+            throw new Error(`CRLF/NUL injection detected in config key or value: ${k}`);
+        }
+    }
+    let text = fsSync.readFileSync(CONFIG_ENV_FILE, 'utf8');
+    for (const [k, v] of Object.entries(pairs)) {
+        const sanitizedVal = String(v).replace(/[\r\n\0]/g, '').trim();
+        const re = new RegExp('^' + k + '=.*$', 'm');
+        if (re.test(text)) text = text.replace(re, () => k + '=' + sanitizedVal);
+        else text += '\n' + k + '=' + sanitizedVal + '\n';
+    }
+    fsSync.writeFileSync(CONFIG_ENV_FILE, text, 'utf8');
+}
+
+app.get(['/vcp-update/upstream', '/v1/config/upstream'], (req, res) => {
+    const key = readConfigEnvValue('API_Key');
+    const curApiUrl = readConfigEnvValue('API_URL');
+    const explicitPrefix = readConfigEnvValue('API_VERSION_PREFIX');
+    const prefix = resolveApiVersionPrefix(curApiUrl, explicitPrefix);
+    res.json({
+        ok: true,
+        apiUrl: curApiUrl,
+        prefix,
+        hasKey: !!key,
+        keyMasked: key ? (key.length > 8 ? key.slice(0, 4) + '****' + key.slice(-4) : '••••••••') : ''
+    });
+});
+
+app.post(['/vcp-update/upstream', '/v1/config/upstream'], (req, res) => {
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+    const reqApiUrl = String(body.apiUrl || '').trim();
+    const reqApiKey = String(body.apiKey || '').trim();
+    const reqPrefix = String(body.prefix || '').trim();
+    const pairs = {};
+    if (reqApiUrl) pairs.API_URL = reqApiUrl;
+    if (reqApiKey) pairs.API_Key = reqApiKey;
+    if (reqPrefix) pairs.API_VERSION_PREFIX = reqPrefix;
+    else if (reqApiUrl) pairs.API_VERSION_PREFIX = resolveApiVersionPrefix(reqApiUrl);
+
+    try {
+        writeConfigEnvPairs(pairs);
+        if (pairs.API_URL) process.env.API_URL = pairs.API_URL;
+        if (pairs.API_Key) process.env.API_Key = pairs.API_Key;
+        if (pairs.API_VERSION_PREFIX) process.env.API_VERSION_PREFIX = pairs.API_VERSION_PREFIX;
+        res.json({ ok: true, needRestart: true });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+app.get(['/vcp-update/client-config', '/v1/config/client-connection'], (req, res) => {
+    const currentPort = port || 6005;
+    res.json({
+        ok: true,
+        serverUrl: `http://127.0.0.1:${currentPort}/v1/chat/completions`,
+        apiKey: readConfigEnvValue('Key'),
+        fileKey: readConfigEnvValue('File_Key'),
+        ipcPipe: '\\\\.\\pipe\\vcp-ipc'
+    });
 });
 
 // 新增：生命周期状态查询路由
@@ -1210,6 +1294,59 @@ const chatCompletionHandler = new ChatCompletionHandler({
     chinaModel1Cot: CHINA_MODEL_1_COT,
     semanticModelRouter,
     multiModalForceTranslateModels: MULTIMODAL_FORCE_TRANSLATE_MODELS // 纯文本模型 tag 命中后强制翻译多模态
+});
+
+// 🌟 方案 2 六边形双传输层：创建核心调度引擎与本地全双工 IPC 适配器
+const { VcpCoreEngine } = require('./core');
+const IpcAdapter = require('./adapters/IpcAdapter');
+
+const vcpCoreEngine = new VcpCoreEngine({
+    apiUrl,
+    apiKey,
+    modelRedirectHandler,
+    pluginManager,
+    activeRequests,
+    writeDebugLog,
+    writeChatLog,
+    webSocketServer,
+    DEBUG_MODE,
+    SHOW_VCP_OUTPUT,
+    reasoningToContentEnabled: REASONING_TO_CONTENT_ENABLED,
+    reasoningToContentTag: REASONING_TO_CONTENT_TAG,
+    reasoningToContentModels: REASONING_TO_CONTENT_MODELS,
+    VCPToolCode,
+    RAGMemoRefresh: RAG_MEMO_REFRESH,
+    enableRoleDivider: ENABLE_ROLE_DIVIDER,
+    enableRoleDividerInLoop: ENABLE_ROLE_DIVIDER_IN_LOOP,
+    roleDividerIgnoreList: ROLE_DIVIDER_IGNORE_LIST,
+    roleDividerSwitches: {
+        system: ROLE_DIVIDER_SYSTEM,
+        assistant: ROLE_DIVIDER_ASSISTANT,
+        user: ROLE_DIVIDER_USER
+    },
+    roleDividerScanSwitches: {
+        system: ROLE_DIVIDER_SCAN_SYSTEM,
+        assistant: ROLE_DIVIDER_SCAN_ASSISTANT,
+        user: ROLE_DIVIDER_SCAN_USER
+    },
+    roleDividerRemoveDisabledTags: ROLE_DIVIDER_REMOVE_DISABLED_TAGS,
+    maxVCPLoopStream: parseInt(process.env.MaxVCPLoopStream),
+    maxVCPLoopNonStream: parseInt(process.env.MaxVCPLoopNonStream),
+    apiRetries: parseInt(process.env.ApiRetries) || 3,
+    apiRetryDelay: parseInt(process.env.ApiRetryDelay) || 1000,
+    apiConnectionTimeoutMs: parseInt(process.env.ApiConnectionTimeoutMs) || 900000,
+    cachedEmojiLists,
+    detectors,
+    superDetectors,
+    chinaModel1: CHINA_MODEL_1,
+    chinaModel1Cot: CHINA_MODEL_1_COT,
+    semanticModelRouter,
+    multiModalForceTranslateModels: MULTIMODAL_FORCE_TRANSLATE_MODELS
+});
+
+const ipcAdapter = new IpcAdapter(vcpCoreEngine, { debugMode: DEBUG_MODE });
+ipcAdapter.start().catch(err => {
+    console.warn('[Server] IpcAdapter failed to start (ignoring):', err.message);
 });
 
 // Route for standard chat completions. VCP info is shown based on the .env config.
@@ -1513,7 +1650,7 @@ async function initialize() {
     pluginManager.startPluginWatcher();
 
     // 初始化通用任务调度器
-    taskScheduler.initialize(pluginManager, webSocketServer, DEBUG_MODE);
+    taskScheduler.initialize(pluginManager, webSocketServer, DEBUG_MODE, vcpCoreEngine);
 }
 
 // Store the server instance globally so it can be accessed by gracefulShutdown
@@ -1675,6 +1812,15 @@ async function gracefulShutdown(exitCode = 0, reason = 'signal') {
                 console.log(`[Server][ShutdownTrace] Phase 6/10 - taskScheduler.shutdown start`);
                 taskScheduler.shutdown();
                 console.log(`[Server][ShutdownTrace] Phase 6/10 - taskScheduler.shutdown done`);
+            }
+
+            if (ipcAdapter) {
+                console.log(`[Server][ShutdownTrace] Phase 6/10 - ipcAdapter.stop start`);
+                await ipcAdapter.stop().catch(() => {});
+                console.log(`[Server][ShutdownTrace] Phase 6/10 - ipcAdapter.stop done`);
+            }
+            if (vcpCoreEngine) {
+                await vcpCoreEngine.shutdown(reason).catch(() => {});
             } else {
                 console.log(`[Server][ShutdownTrace] Phase 6/10 - taskScheduler shutdown skipped`);
             }

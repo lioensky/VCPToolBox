@@ -1,6 +1,7 @@
 // modules/handlers/nonStreamHandler.js
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
+const { stripVcpPrivateFields } = require('./upstreamBodySanitizer.js');
 const {
   buildClientVisibleContent,
   removeReasoningFields,
@@ -231,11 +232,11 @@ class NonStreamHandler {
     };
 
     const fetchNonStreamCompletion = (body, label) => fetchWithRetry(
-      `${apiUrl}/v1/chat/completions`,
+      `${apiUrl}/${process.env.API_VERSION_PREFIX || 'v1'}/chat/completions`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify(body),
+        body: JSON.stringify(stripVcpPrivateFields({ ...body })),
         signal: abortController.signal,
       },
       { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates }

@@ -548,7 +548,7 @@ class ContextFoldingV2 {
             : `请严格按以下格式输出，不要输出任何其他内容：\n[VCP上下文语义折叠-本层摘要:你的摘要内容]\n\n要求：用一句话概括[等待摘要的原始文本:]和[原始文本结束]之间的AI回复核心内容，摘要不超过80字。不要复述原文，不要输出边界标记。\n\n${wrappedContent}`;
 
         try {
-            const response = await axios.post(`${apiUrl}/v1/chat/completions`, {
+            const response = await axios.post(`${apiUrl}/${process.env.API_VERSION_PREFIX || 'v1'}/chat/completions`, {
                 model: this.summaryModel,
                 messages: [
                     { role: 'system', content: this.summarySystemPrompt || '你是一个精确的文本摘要工具。你必须严格按照指定格式输出，不要输出任何其他内容。' },

@@ -87,5 +87,11 @@
     "ip-address": "10.7.4",
     "js-yaml": "4.3.2",
     "nanoid": "3.3.18"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.4.1": true,
+    "cpu-features@0.0.10": true,
+    "puppeteer@25.13.0": true,
+    "ssh2@1.17.0": true
   }
 }

@@ -81,7 +81,7 @@ async function _sendBatch(batchTexts, config, batchNumber) {
     for (let attempt = 1; attempt <= modelCandidates.length; attempt++) {
         const model = modelCandidates[attempt - 1];
         try {
-            const requestUrl = `${config.apiUrl}/v1/embeddings`;
+            const requestUrl = `${config.apiUrl}/${process.env.API_VERSION_PREFIX || 'v1'}/embeddings`;
             const requestBody = { model, input: batchTexts };
             
             // 默认发送配置维度；不支持 dimensions 参数的模型可通过环境变量关闭。

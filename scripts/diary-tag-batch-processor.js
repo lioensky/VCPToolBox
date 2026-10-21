@@ -191,7 +191,7 @@ async function generateTagsWithAI(content, maxRetries = 3) {
     // 构造完整的API URL（如果API_URL已包含完整路径则直接使用）
     const apiEndpoint = API_URL.includes('/chat/completions')
         ? API_URL
-        : `${API_URL}/v1/chat/completions`;
+        : `${API_URL}/${process.env.API_VERSION_PREFIX || 'v1'}/chat/completions`;
     
     // 带退避重试的API调用
     for (let attempt = 1; attempt <= maxRetries; attempt++) {

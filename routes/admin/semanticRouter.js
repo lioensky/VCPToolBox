@@ -304,7 +304,7 @@ module.exports = function(options) {
             }
 
             const { default: fetch } = await import('node-fetch');
-            const response = await fetch(`${apiUrl}/v1/models`, {
+            const response = await fetch(`${apiUrl}/${process.env.API_VERSION_PREFIX || 'v1'}/models`, {
                 method: 'GET',
                 headers: {
                     Authorization: `Bearer ${apiKey}`,
@@ -368,7 +368,7 @@ module.exports = function(options) {
                 models,
                 redirectEnabled,
                 redirectRules,
-                source: `${apiUrl}/v1/models`
+                source: `${apiUrl}/${process.env.API_VERSION_PREFIX || 'v1'}/models`
             });
         } catch (error) {
             console.error('[AdminAPI] Error fetching upstream models for semantic router:', error);

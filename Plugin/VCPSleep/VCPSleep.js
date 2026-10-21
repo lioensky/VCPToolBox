@@ -156,6 +156,12 @@ async function main(args) {
                     text: message
                 }
             ],
+            proactiveWake: {
+                level: 'urgent_popup',
+                title: 'VCP 智能体打盹醒来了',
+                content: message,
+                audioTts: true
+            },
             details: {
                 requestedDurationMs: durationMs,
                 actualDurationMs: wokeAt.getTime() - startedAt.getTime(),
