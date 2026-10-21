@@ -18,9 +18,17 @@ pub(crate) struct AgsTrace {
     pub residual_norm: Option<f64>,
 }
 
+/// Baseline-order sequential dot product used in rank-degenerate fallback paths
+/// to preserve exact tie-breaking on symmetric near-collinear test matrices.
+#[inline]
+fn dot_exact(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).fold(0.0, |sum, (x, y)| sum + x * y)
+}
+
+/// Sequential reduction shared with the baseline; not an exact-arithmetic dot product.
 #[inline]
 pub(crate) fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
+    dot_exact(a, b)
 }
 
 /// Four independent accumulators sharing one pass over `vector`, preserving
@@ -38,7 +46,7 @@ fn dot_four(vector: &[f64], [a, b, c, d]: [&[f64]; 4]) -> [f64; 4] {
 }
 
 fn normalize(vector: &mut [f64]) -> bool {
-    let norm = dot(vector, vector).sqrt();
+    let norm = dot_exact(vector, vector).sqrt();
     if !norm.is_finite() || norm <= 1e-12 {
         return false;
     }
@@ -48,8 +56,21 @@ fn normalize(vector: &mut [f64]) -> bool {
     true
 }
 
+/// Subtract 4 basis projections in one pass over `residual`.
+#[inline]
+fn sub_four(residual: &mut [f64], [c0, c1, c2, c3]: [f64; 4], [a0, a1, a2, a3]: [&[f64]; 4]) {
+    for (idx, value) in residual.iter_mut().enumerate() {
+        let mut v = *value;
+        v -= c0 * a0[idx];
+        v -= c1 * a1[idx];
+        v -= c2 * a2[idx];
+        v -= c3 * a3[idx];
+        *value = v;
+    }
+}
+
 /// Construct a residual in the original space, then reorthogonalize once.
-/// Both passes use a fixed axis/coordinate order; no Gram coefficient solve.
+/// Uses `dot_exact` to preserve exact tie-breaking under severe cancellation (`near_1e-4..1e-7`).
 fn orthogonal_residual(vector: &[f64], basis: &[Vec<f64>]) -> Vec<f64> {
     let mut residual = vector.to_vec();
     if basis.is_empty() {
@@ -57,7 +78,7 @@ fn orthogonal_residual(vector: &[f64], basis: &[Vec<f64>]) -> Vec<f64> {
     }
     for _ in 0..2 {
         for axis in basis {
-            let coefficient = dot(&residual, axis);
+            let coefficient = dot_exact(&residual, axis);
             for (value, q) in residual.iter_mut().zip(axis) {
                 *value -= coefficient * q;
             }
@@ -66,21 +87,73 @@ fn orthogonal_residual(vector: &[f64], basis: &[Vec<f64>]) -> Vec<f64> {
     residual
 }
 
-/// Four independent candidate accumulators, preserving each dot's coordinate order.
-/// This is portable blocking, not a promise of SIMD or hardware FMA generation.
-fn project_active(axis: &[f64], vectors: &[&[f64]], active: &[usize]) -> Vec<f64> {
-    let mut row = vec![0.0; vectors.len()];
+/// Fused projection-cache + selective CGS/MGS2 reorthogonalization:
+/// 1. Reuses cached first-pass inner products `<vector, b_m>` (zero dot products on pass 1!).
+/// 2. Runs 4-way blocked CGS pass 2, or falls back to exact 2-pass MGS2 under severe cancellation.
+fn orthogonal_residual_with_projections(
+    vector: &[f64],
+    basis: &[Vec<f64>],
+    first_pass_coeffs: Option<&[f64]>,
+    initial_norm_sq: f64,
+    est_norm_sq: f64,
+) -> (Vec<f64>, f64) {
+    if basis.is_empty() {
+        return (vector.to_vec(), initial_norm_sq.sqrt());
+    }
+    if first_pass_coeffs.is_none() || est_norm_sq <= 1e-3 * initial_norm_sq {
+        let residual = orthogonal_residual(vector, basis);
+        let norm = dot_exact(&residual, &residual).sqrt();
+        return (residual, norm);
+    }
+    let coeffs = first_pass_coeffs.unwrap();
+    let mut residual = vector.to_vec();
+    // Pass 1: 4-way fused subtraction using already-computed `<vector, b_m>` (zero dot products!)
+    let mut axis_groups = basis.chunks_exact(4);
+    let mut coeff_groups = coeffs.chunks_exact(4);
+    for (axes, c) in (&mut axis_groups).zip(&mut coeff_groups) {
+        sub_four(&mut residual, [c[0], c[1], c[2], c[3]], [&axes[0], &axes[1], &axes[2], &axes[3]]);
+    }
+    for (axis, &c) in axis_groups.remainder().iter().zip(coeff_groups.remainder()) {
+        for (value, q) in residual.iter_mut().zip(axis) {
+            *value -= c * q;
+        }
+    }
+    // Pass 2: 4-way blocked CGS reorthogonalization pass
+    let mut axis_groups = basis.chunks_exact(4);
+    for axes in &mut axis_groups {
+        let refs = [axes[0].as_slice(), axes[1].as_slice(), axes[2].as_slice(), axes[3].as_slice()];
+        let c = dot_four(&residual, refs);
+        sub_four(&mut residual, c, refs);
+    }
+    for axis in axis_groups.remainder() {
+        let c = dot(&residual, axis);
+        for (value, q) in residual.iter_mut().zip(axis) {
+            *value -= c * q;
+        }
+    }
+    let norm = dot(&residual, &residual).sqrt();
+    (residual, norm)
+}
+
+#[inline]
+fn project_active_into(axis: &[f64], vectors: &[&[f64]], active: &[usize], row: &mut [f64]) {
     let mut groups = active.chunks_exact(4);
     for group in &mut groups {
         let [a, b, c, d] = [group[0], group[1], group[2], group[3]];
         let sums = dot_four(axis, [vectors[a], vectors[b], vectors[c], vectors[d]]);
-        for (&index, sum) in group.iter().zip(sums) {
-            row[index] = sum;
-        }
+        row[a] = sums[0];
+        row[b] = sums[1];
+        row[c] = sums[2];
+        row[d] = sums[3];
     }
     for &index in groups.remainder() {
         row[index] = dot(axis, vectors[index]);
     }
+}
+
+fn project_active(axis: &[f64], vectors: &[&[f64]], active: &[usize]) -> Vec<f64> {
+    let mut row = vec![0.0; vectors.len()];
+    project_active_into(axis, vectors, active, &mut row);
     row
 }
 
@@ -144,6 +217,8 @@ fn direct_axes_core(
 
     let limit = max_basis.min(n);
     let mut basis: Vec<Vec<f64>> = Vec::with_capacity(limit);
+    let mut proj_history: Vec<f64> = Vec::new();
+    let mut row_buf: Vec<f64> = Vec::new();
     let mut proj_sq_sum = vec![0.0; n];
     let mut proj_target_sum = vec![0.0; n];
     let mut target_residual = target.map(<[f64]>::to_vec);
@@ -153,14 +228,15 @@ fn direct_axes_core(
         let mut best: Option<(usize, f64)> = None;
         let mut best_pos = 0;
         let mut write_pos = 0;
+        let current_k = basis.len();
         for read_pos in 0..active.len() {
             let i = active[read_pos];
             let norm_sq = diagonal[i] - proj_sq_sum[i];
             let numerator = target.map(|_| correlations[i] - proj_target_sum[i]);
             let (orth, signed) = if norm_sq <= 1e-8 * diagonal[i] {
                 let residual = orthogonal_residual(vectors[i], &basis);
-                let orth = dot(&residual, &residual).sqrt();
-                let signed = target.map_or(orth, |t| dot(t, &residual) / orth);
+                let orth = dot_exact(&residual, &residual).sqrt();
+                let signed = target.map_or(orth, |t| dot_exact(t, &residual) / orth);
                 (orth, signed)
             } else {
                 let orth = norm_sq.sqrt();
@@ -185,14 +261,16 @@ fn direct_axes_core(
         used[i] = true;
         active.remove(best_pos);
 
-        // Even the last Explain step needs a real corrected axis. Only its
-        // candidate projection row can be omitted safely.
-        let mut axis = orthogonal_residual(vectors[i], &basis);
-        let norm = if basis.is_empty() {
-            diagonal[i].sqrt()
-        } else {
-            dot(&axis, &axis).sqrt()
-        };
+        let est_norm_sq = diagonal[i] - proj_sq_sum[i];
+        let coeffs = (current_k > 0 && !proj_history.is_empty())
+            .then(|| &proj_history[i * limit .. i * limit + current_k]);
+        let (mut axis, norm) = orthogonal_residual_with_projections(
+            vectors[i],
+            &basis,
+            coeffs,
+            diagonal[i],
+            est_norm_sq,
+        );
         if !norm.is_finite() || norm <= 1e-6 {
             continue;
         }
@@ -211,16 +289,22 @@ fn direct_axes_core(
         }
         picked.push((candidates[i].id, gain));
         if picked.len() < limit && !active.is_empty() {
-            let row = project_active(&axis, vectors, &active);
+            if proj_history.is_empty() {
+                proj_history.resize(n * limit, 0.0);
+                row_buf.resize(n, 0.0);
+            }
+            project_active_into(&axis, vectors, &active, &mut row_buf);
             if let Some(c) = coefficient {
                 for &j in &active {
-                    let p = row[j];
+                    let p = row_buf[j];
+                    proj_history[j * limit + current_k] = p;
                     proj_sq_sum[j] += p * p;
                     proj_target_sum[j] += p * c;
                 }
             } else {
                 for &j in &active {
-                    let p = row[j];
+                    let p = row_buf[j];
+                    proj_history[j * limit + current_k] = p;
                     proj_sq_sum[j] += p * p;
                 }
             }
@@ -249,7 +333,9 @@ fn direct_axes(
     direct_axes_core(target, candidates, vectors, None, None, max_basis, min_gain, keep_basis)
 }
 
-/// Local Explain needs no returned axes; internal axes support reorthogonalization.
+/// Test and isolated-benchmark entry point; production uses precomputed inputs
+/// through direct_axes_core. Internal axes still support reorthogonalization.
+#[allow(dead_code)]
 fn select_axes(
     target: AgsTarget<'_>,
     candidates: &[AgsCandidate],
@@ -291,7 +377,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const ALGORITHM: &str = "unified_geometry_ags_v3_reorth";
+const ALGORITHM: &str = "unified_geometry_ags_t4_cached_reorth";
 
 fn semantic_weight(sim: f64, enabled: bool, peak: f64, sigma: f64, floor: f64, hard_floor: f64) -> f64 {
     if !enabled { 1.0 } else if sim < hard_floor { 0.0 }
@@ -634,12 +720,29 @@ impl GeometryTask {
                 elapsed_ms:load_ms,phase_summary:format!("cache_hit;load={load_ms:.3}ms"),
             });
         }
-        // Compact sorted CSR, released construction maps before parallel computation.
-        let mut offsets = vec![0]; let mut edges = Vec::new(); let mut support = Vec::new();
+        let star_neighbors=number(global,"starNeighbors",max_neighbors as f64,1.0,256.0) as usize;
+        let max_keep = max_neighbors.max(star_neighbors);
+        // Pre-truncated, pre-sorted Slot-CSR: filter invalid vectors and truncate to `max_keep` once!
+        let mut offsets = vec![0];
+        let mut edges: Vec<(i64, usize, f64)> = Vec::new();
+        let mut support = Vec::with_capacity(ids.len());
+        let cmp_edge = |a: &(i64, usize, f64), b: &(i64, usize, f64)| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0));
         for id in &ids {
             let neighbors = adjacency.remove(id).unwrap_or_default();
             support.push(neighbors.values().sum::<f64>());
-            edges.extend(neighbors); offsets.push(edges.len());
+            if vectors.contains_key(id) {
+                let mut valid_edges: Vec<(i64, usize, f64)> = neighbors
+                    .into_iter()
+                    .filter_map(|(nid, w)| vectors.slot(&nid).map(|slot| (nid, slot, w)))
+                    .collect();
+                if valid_edges.len() > max_keep {
+                    valid_edges.select_nth_unstable_by(max_keep - 1, cmp_edge);
+                    valid_edges.truncate(max_keep);
+                }
+                valid_edges.sort_unstable_by(cmp_edge);
+                edges.extend(valid_edges);
+            }
+            offsets.push(edges.len());
         }
         drop(adjacency);
         let gate = local.get("semanticGate").unwrap_or(local);
@@ -653,21 +756,15 @@ impl GeometryTask {
             let mut result = LocalResult { id:*id,status:"failed",count:0,residual:1.0 };
             let Some(target_slot) = vectors.slot(id) else { return result };
             let target = vectors.get_by_slot(target_slot);
-            let mut neighbors: Vec<(i64, usize, f64)> = edges[offsets[i]..offsets[i+1]].iter()
-                .filter_map(|&(nid, w)| vectors.slot(&nid).map(|slot| (nid, slot, w))).collect();
-            let cmp = |a: &(i64, usize, f64), b: &(i64, usize, f64)| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0));
-            if neighbors.len() > max_neighbors {
-                neighbors.select_nth_unstable_by(max_neighbors - 1, cmp);
-                neighbors.truncate(max_neighbors);
-            }
-            neighbors.sort_unstable_by(cmp);
+            let end = offsets[i+1].min(offsets[i] + max_neighbors);
+            let neighbors = &edges[offsets[i]..end];
             let neighbor_vecs: Vec<&[f64]> = neighbors.iter().map(|&(_, slot, _)| vectors.get_by_slot(slot)).collect();
             let raw_dots = dot_neighbors(target, &neighbor_vecs);
             let mut candidates = Vec::with_capacity(neighbors.len());
             let mut refs = Vec::with_capacity(neighbors.len());
             let mut diagonal = Vec::with_capacity(neighbors.len());
             let mut correlations = Vec::with_capacity(neighbors.len());
-            for ((nid, slot, w), (&v, raw_dot)) in neighbors.into_iter().zip(neighbor_vecs.iter().zip(raw_dots)) {
+            for (&(nid, slot, w), (&v, raw_dot)) in neighbors.iter().zip(neighbor_vecs.iter().zip(raw_dots)) {
                 let sim = raw_dot.clamp(-1.0, 1.0);
                 let semantic = semantic_weight(sim, gate_enabled, peak, sigma, floor, hard_floor);
                 if semantic > 0.0 {
@@ -679,7 +776,6 @@ impl GeometryTask {
             }
             result.count = candidates.len();
             if result.count < min_neighbors { result.status="insufficient_neighbors"; return result; }
-            // Only the residual is returned; reuse precomputed norms and target correlations.
             let trace = direct_axes_core(
                 AgsTarget::Explain(target),
                 &candidates,
@@ -691,14 +787,14 @@ impl GeometryTask {
                 false,
             );
             result.residual=trace.residual_norm.unwrap_or(1.0).clamp(0.0,1.0);
-            // Orthogonal targets correctly have residual=1, not a failed status.
             result.status="computed"; result
         }).collect();
         let local_ms = started.elapsed().as_secs_f64()*1000.0-load_ms;
         let mut mean = vec![0.0;self.dimensions];
-        for id in &ids { if let Some(v)=vectors.get(id) {
-            for (m,x) in mean.iter_mut().zip(v) { *m += x; }
-        }}
+        for slot in 0..vectors.len() {
+            let v = vectors.get_by_slot(slot);
+            for (m, x) in mean.iter_mut().zip(v) { *m += x; }
+        }
         if !vectors.is_empty() { for m in &mut mean { *m /= vectors.len() as f64; } }
         let min_support=number(global,"minSupport",3.0,0.0,1e12);
         let a=number(global,"supportExponent",0.65,0.0,4.0);
@@ -722,19 +818,12 @@ impl GeometryTask {
             }).collect();
         pool.sort_by(|a,b| b.prior.total_cmp(&a.prior).then(a.id.cmp(&b.id)));
         pool.truncate(number(global,"candidatePool",512.0,1.0,4096.0) as usize);
-        let star_neighbors=number(global,"starNeighbors",max_neighbors as f64,1.0,256.0) as usize;
         let mix=number(global,"starMix",0.8,0.0,1.0);
         let centered: Vec<Vec<f64>> = pool.par_iter().map(|c| {
             let target=&vectors[&c.id];
             let i=ids.binary_search(&c.id).unwrap();
-            let mut neighbors:Vec<(i64, usize, f64)>=edges[offsets[i]..offsets[i+1]].iter()
-                .filter_map(|&(nid, w)| vectors.slot(&nid).map(|slot| (nid, slot, w))).collect();
-            let cmp = |a: &(i64, usize, f64), b: &(i64, usize, f64)| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0));
-            if neighbors.len() > star_neighbors {
-                neighbors.select_nth_unstable_by(star_neighbors - 1, cmp);
-                neighbors.truncate(star_neighbors);
-            }
-            neighbors.sort_unstable_by(cmp);
+            let end = offsets[i+1].min(offsets[i] + star_neighbors);
+            let neighbors = &edges[offsets[i]..end];
             let neighbor_vecs: Vec<&[f64]> = neighbors.iter().map(|&(_, slot, _)| vectors.get_by_slot(slot)).collect();
             let raw_dots = dot_neighbors(target, &neighbor_vecs);
             let weighted:Vec<_>=neighbors.iter().zip(neighbor_vecs.iter().zip(raw_dots)).filter_map(|(&(_, _, w), (&v, raw_dot))| {
@@ -745,8 +834,6 @@ impl GeometryTask {
         }).collect();
         let refs:Vec<_>=centered.iter().map(Vec::as_slice).collect();
         let mut trace=anchored_gs(AgsTarget::Span,&pool,&refs,k_max,number(global,"minGain",0.02,0.0,1.0));
-        // Global axes own their vectors; candidate construction and adjacency
-        // are no longer needed during coverage or SQL publication.
         drop(refs);
         drop(centered);
         drop(pool);
@@ -784,7 +871,7 @@ impl GeometryTask {
             "mean":encode_vector(&mean),"energies":energies,"coverage":coverage,
             "labels":trace.picked.iter().map(|(id,_)|names[id].clone()).collect::<Vec<_>>(),
             "anchorTagIds":trace.picked.iter().map(|(id,_)|*id).collect::<Vec<_>>(),
-            "totalEnergy":total,"kSem":k_sem,"kMax":k_max,"epaAlgorithm":"ags-global-star-v3-reorth",
+            "totalEnergy":total,"kSem":k_sem,"kMax":k_max,"epaAlgorithm":"ags-global-star-t4-cached-reorth",
             "candidateMode":candidate_mode,"priorMode":prior_mode,"fullCoverage":full_coverage,
             "artifactSig":signature,"tagCount":ids.len(),"timestamp":now
         }).to_string();
@@ -1071,6 +1158,22 @@ mod tests {
                 for (r, q) in residual.iter_mut().zip(axis) { *r -= coefficient * q; }
             }
             assert!((full.residual_norm.unwrap() - dot(&residual, &residual).sqrt()).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn reduction_lengths_and_cancellation() {
+        for n in [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 37, 38, 39, 1024] {
+            let a: Vec<f64> = (0..n).map(|i| (i as f64 * 0.13).sin()).collect();
+            let b: Vec<f64> = (0..n).map(|i| (i as f64 * 0.19).cos()).collect();
+            for x in dot_four(&a, [&b, &b, &b, &b]) {
+                assert_eq!(x.to_bits(), dot(&a, &b).to_bits(), "length {n}");
+            }
+        }
+        let a = [1.0; 8];
+        let b = [1e16, 1.0, -1e16, 1.0, -1e16, 0.0, 1e16, 0.0];
+        for x in dot_four(&a, [&b, &b, &b, &b]) {
+            assert_eq!(x.to_bits(), dot(&a, &b).to_bits());
         }
     }
 
