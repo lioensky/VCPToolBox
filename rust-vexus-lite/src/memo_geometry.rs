@@ -36,13 +36,16 @@ fn normalize(vector: &mut [f64]) -> bool {
 
 /// Incremental Gram-space GS: projections cost O(K*n²), not O(K*n²*dim).
 /// Coefficients describe each selected axis in the original candidate basis.
+/// `project(coefficients, i)` returns `dot(coefficients, gram[j])` for every j
+/// after candidate i is selected; `None` abandons the selection.
 fn gram_gs(
     candidates: &[AgsCandidate],
-    gram: &[Vec<f64>],
+    diagonal: &[f64],
+    mut project: impl FnMut(&[f64], usize) -> Option<Vec<f64>>,
     target: Option<(&[f64], f64)>,
     max_basis: usize,
     min_gain: f64,
-) -> AgsTrace {
+) -> Option<AgsTrace> {
     let n = candidates.len();
     let mut basis: Vec<Vec<f64>> = Vec::new();
     let mut projections: Vec<Vec<f64>> = Vec::new();
@@ -55,7 +58,7 @@ fn gram_gs(
             if used[i] || !candidates[i].prior.is_finite() || candidates[i].prior <= 0.0 {
                 continue;
             }
-            let norm_sq = gram[i][i] - projections.iter().map(|p| p[i] * p[i]).sum::<f64>();
+            let norm_sq = diagonal[i] - projections.iter().map(|p| p[i] * p[i]).sum::<f64>();
             let orth = norm_sq.max(0.0).sqrt();
             if orth <= 1e-6 {
                 continue;
@@ -83,7 +86,7 @@ fn gram_gs(
             }
         }
         for value in &mut coefficients { *value /= orth; }
-        let row: Vec<f64> = (0..n).map(|j| dot(&coefficients, &gram[j])).collect();
+        let row = project(&coefficients, i)?;
         if let Some((correlations, _)) = target {
             target_coefficients.push(dot(&coefficients, correlations));
         }
@@ -95,7 +98,87 @@ fn gram_gs(
         let residual = (energy - target_coefficients.iter().map(|c| c * c).sum::<f64>()).max(0.0);
         if residual < 1e-14 * energy { 0.0 } else { residual.sqrt() }
     });
-    AgsTrace { picked, basis, residual_norm }
+    Some(AgsTrace { picked, basis, residual_norm })
+}
+
+/// Every Gram entry is bounded by this value when every diagonal entry is
+/// (Cauchy-Schwarz: |G_ij| <= sqrt(G_ii * G_jj)), so no entry can overflow.
+const LAZY_GRAM_DIAGONAL_LIMIT: f64 = 1e150;
+
+/// Gram column j of a selected candidate is computed only when it is selected.
+/// Unselected candidates keep a coefficient of exactly +0.0, so in
+/// `dot(coefficients, gram[j])` their terms are +0.0 * finite = +-0.0 and adding
+/// them never changes a nonzero sum. Summing the selected terms in the same
+/// index order therefore reproduces the full-Gram projections bit for bit,
+/// except possibly the sign of an exactly zero sum, which only ever enters
+/// squares, products and absolute values. This holds while every coefficient
+/// and projection is finite; otherwise `None` defers to the full Gram.
+fn select_axes_lazy(
+    candidates: &[AgsCandidate],
+    vectors: &[&[f64]],
+    diagonal: &[f64],
+    target: Option<(&[f64], f64)>,
+    max_basis: usize,
+    min_gain: f64,
+) -> Option<AgsTrace> {
+    if !diagonal.iter().all(|value| value.is_finite() && *value <= LAZY_GRAM_DIAGONAL_LIMIT) {
+        return None;
+    }
+    let n = candidates.len();
+    let mut columns: Vec<Vec<f64>> = vec![Vec::new(); n];
+    let mut selected: Vec<usize> = Vec::new();
+    gram_gs(candidates, diagonal, |coefficients, picked| {
+        if !coefficients.iter().all(|value| value.is_finite()) {
+            return None;
+        }
+        // Same argument order as the full Gram entry gram[j][picked].
+        columns[picked] = vectors.iter().map(|v| dot(v, vectors[picked])).collect();
+        selected.insert(selected.partition_point(|&m| m < picked), picked);
+        let row: Vec<f64> = (0..n)
+            .map(|j| selected.iter().map(|&m| coefficients[m] * columns[m][j]).sum())
+            .collect();
+        row.iter().all(|value| value.is_finite()).then_some(row)
+    }, target, max_basis, min_gain)
+}
+
+fn select_axes_full(
+    candidates: &[AgsCandidate],
+    vectors: &[&[f64]],
+    diagonal: &[f64],
+    target: Option<(&[f64], f64)>,
+    max_basis: usize,
+    min_gain: f64,
+) -> AgsTrace {
+    let gram: Vec<Vec<f64>> = vectors.iter()
+        .map(|a| vectors.iter().map(|b| dot(a, b)).collect()).collect();
+    gram_gs(candidates, diagonal, |coefficients, _| {
+        Some((0..candidates.len()).map(|j| dot(coefficients, &gram[j])).collect())
+    }, target, max_basis, min_gain).expect("full Gram projections are always available")
+}
+
+/// Greedy selection in coefficient space: `basis` holds each axis as
+/// coefficients over `vectors`, not as a vector in the original space.
+/// Callers that need only the selection and residual use this directly.
+fn select_axes(
+    target: AgsTarget<'_>,
+    candidates: &[AgsCandidate],
+    vectors: &[&[f64]],
+    max_basis: usize,
+    min_gain: f64,
+) -> AgsTrace {
+    let diagonal: Vec<f64> = vectors.iter().map(|v| dot(v, v)).collect();
+    let correlations: Vec<f64> = match target {
+        AgsTarget::Explain(t) => vectors.iter().map(|v| dot(t, v)).collect(),
+        AgsTarget::Span => Vec::new(),
+    };
+    let target_data = match target {
+        AgsTarget::Explain(t) => Some((correlations.as_slice(), dot(t, t))),
+        AgsTarget::Span => None,
+    };
+    select_axes_lazy(candidates, vectors, &diagonal, target_data, max_basis, min_gain)
+        .unwrap_or_else(|| {
+            select_axes_full(candidates, vectors, &diagonal, target_data, max_basis, min_gain)
+        })
 }
 
 pub(crate) fn anchored_gs(
@@ -105,17 +188,7 @@ pub(crate) fn anchored_gs(
     max_basis: usize,
     min_gain: f64,
 ) -> AgsTrace {
-    let gram: Vec<Vec<f64>> = vectors.iter()
-        .map(|a| vectors.iter().map(|b| dot(a, b)).collect()).collect();
-    let correlations: Vec<f64> = match target {
-        AgsTarget::Explain(t) => vectors.iter().map(|v| dot(t, v)).collect(),
-        AgsTarget::Span => Vec::new(),
-    };
-    let target_data = match target {
-        AgsTarget::Explain(t) => Some((correlations.as_slice(), dot(t, t))),
-        AgsTarget::Span => None,
-    };
-    let mut trace = gram_gs(candidates, &gram, target_data, max_basis, min_gain);
+    let mut trace = select_axes(target, candidates, vectors, max_basis, min_gain);
     let dim = vectors.first().map_or(0, |v| v.len());
     trace.basis = trace.basis.iter().map(|coefficients| {
         let mut axis = vec![0.0; dim];
@@ -472,7 +545,8 @@ impl GeometryTask {
             }
             result.count = candidates.len();
             if result.count < min_neighbors { result.status="insufficient_neighbors"; return result; }
-            let trace = anchored_gs(AgsTarget::Explain(target),&candidates,&refs,max_basis,min_gain);
+            // Only the residual is used: skip rebuilding the axes in the original space.
+            let trace = select_axes(AgsTarget::Explain(target),&candidates,&refs,max_basis,min_gain);
             result.residual=trace.residual_norm.unwrap_or(1.0).clamp(0.0,1.0);
             // Orthogonal targets correctly have residual=1, not a failed status.
             result.status="computed"; result
@@ -720,6 +794,76 @@ mod tests {
         assert!(first[1].abs()<1e-12);
         assert_eq!(star_direction(&target,&mean,&[],1.0),target);
         assert_eq!(star_direction(&target,&mean,&[(&[-1.0,0.0,0.0],1.0)],0.5),target);
+    }
+
+    fn full_gram_selection(
+        target: Option<&[f64]>, candidates: &[AgsCandidate], vectors: &[&[f64]],
+        max_basis: usize, min_gain: f64,
+    ) -> AgsTrace {
+        let diagonal: Vec<f64> = vectors.iter().map(|v| dot(v, v)).collect();
+        let correlations: Vec<f64> = target.map_or(Vec::new(), |t| vectors.iter().map(|v| dot(t, v)).collect());
+        let target_data = target.map(|t| (correlations.as_slice(), dot(t, t)));
+        select_axes_full(candidates, vectors, &diagonal, target_data, max_basis, min_gain)
+    }
+
+    fn trace_bits(trace: &AgsTrace) -> (Vec<(i64, u64)>, Vec<Vec<u64>>, Option<u64>) {
+        (
+            trace.picked.iter().map(|(id, gain)| (*id, gain.to_bits())).collect(),
+            trace.basis.iter().map(|axis| axis.iter().map(|v| v.to_bits()).collect()).collect(),
+            trace.residual_norm.map(f64::to_bits),
+        )
+    }
+
+    #[test]
+    fn lazy_gram_columns_match_full_gram_bits() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((state >> 11) as f64) / ((1u64 << 53) as f64) - 0.5
+        };
+        for (n, dim, max_basis, min_gain) in [(3, 8, 4, 0.015), (48, 64, 4, 0.015), (60, 24, 32, 0.0)] {
+            for round in 0..20 {
+                let shared: Vec<f64> = (0..dim).map(|_| next()).collect();
+                let mut vectors: Vec<Vec<f64>> = (0..n).map(|_| {
+                    let weight = next() * 4.0;
+                    let mut v: Vec<f64> = shared.iter().map(|s| next() + weight * s).collect();
+                    normalize(&mut v);
+                    v
+                }).collect();
+                if round % 4 == 0 && n > 2 {
+                    vectors[1] = vectors[0].clone(); // exact duplicate
+                }
+                let refs: Vec<&[f64]> = vectors.iter().map(Vec::as_slice).collect();
+                let candidates: Vec<AgsCandidate> = (0..n)
+                    .map(|i| AgsCandidate { id: ((i * 7) % n) as i64, prior: next() + 0.5 })
+                    .collect();
+                let mut target: Vec<f64> = shared.iter().map(|s| next() + s).collect();
+                normalize(&mut target);
+                for explain in [Some(target.as_slice()), None] {
+                    let ags_target = explain.map_or(AgsTarget::Span, AgsTarget::Explain);
+                    let lazy = select_axes(ags_target, &candidates, &refs, max_basis, min_gain);
+                    let full = full_gram_selection(explain, &candidates, &refs, max_basis, min_gain);
+                    assert_eq!(trace_bits(&lazy), trace_bits(&full));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overflowing_gram_falls_back_to_full_gram() {
+        // The middle candidate never qualifies, but its Gram entries overflow.
+        let vectors = [[2.0, 0.0], [1e308, 1e308], [0.0, 4.0]];
+        let refs: Vec<&[f64]> = vectors.iter().map(|v| v.as_slice()).collect();
+        let candidates = [
+            AgsCandidate { id: 1, prior: 1.0 },
+            AgsCandidate { id: 2, prior: 0.0 },
+            AgsCandidate { id: 3, prior: 1.0 },
+        ];
+        let diagonal: Vec<f64> = refs.iter().map(|v| dot(v, v)).collect();
+        assert!(select_axes_lazy(&candidates, &refs, &diagonal, None, 3, 0.0).is_none());
+        let selected = select_axes(AgsTarget::Span, &candidates, &refs, 3, 0.0);
+        let full = full_gram_selection(None, &candidates, &refs, 3, 0.0);
+        assert_eq!(trace_bits(&selected), trace_bits(&full));
     }
 
     #[test]
