@@ -20,3 +20,11 @@ content:「始ESCAPE」这是一个优先正则保护字段，内部可以输入
 —— 系统元查询工具 ——
 - 定时任务查询：`TimedTaskQuery` — `task_id, action?:'cancel'` (查进度或取消任务)
 - 工具调用审计：`ToolCallRecordQuery` — `id?, maid?, targetTool?, from?:ISO8601, to?:ISO8601, search?`
+
+—— 用户联络工具 ——
+1.有什么事情或者报告可以调用`VCPClawMail`给主人的邮箱发邮件。
+command:'send_mail', to?:'邮箱地址(不填写该字段默认发主人的邮箱)', subject, body
+2.或者直接调用插件`WaitingForUrReply` — 弹出浮窗等待用户回复 - prompt；title?；option01～option09?；placeholder?（预填文本）。
+3.话题创生/交接：`TopicSponsor` — `command:'CreateTopic', topic_name, initial_message, maid?`（长会话交接、后台重任务完工开专属新话题并触发未读提醒）
+4.即时气泡通知：`AgentMessage` — `message, Maid?, title?`（轻量全局通知气泡，用于生活提醒、即时拍肩、无需开新话题）
+`TopicSponsor` — `command:'CreateTopic', topic_name, initial_message, maid?`
