@@ -122,26 +122,38 @@ async function laboratory(args = {}) {
         external = ranked.filter(item => item.rerank_failed !== true
             && Number.isFinite(item.rerank_score)).slice(0, request.k);
     }
+    const compareJev = this._parseBoolean(args.compare_jev ?? args.compareJev, true);
+    let jev = [];
+    if (compareJev && pool.length) {
+        // 独立副本避免 Jev/Rerank 的评分和排序字段污染其他轨道。
+        // 实验室使用完整共同池；Jev 自身的 maxChoices 上限仍然有效。
+        const ranked = await this._jevRerankDocuments(request.text,
+            pool.map((item, index) => ({ ...item, retrieval_rank: index + 1 })),
+            pool.length);
+        jev = ranked.filter(item => item.rerank_failed !== true
+            && Number.isFinite(item.jev_score)).slice(0, request.k);
+    }
     const tracks = [
-        ['TDB 向量基线', response.tdbTopK],
-        ['Rerank', external],
-        ['RiverMemo V3', response.river?.results || []]
+        ['TDB 向量基线', response.tdbTopK, 'vectorScore'],
+        ['Rerank', external, 'rerank_score'],
+        ['Jev', jev, 'jev_score'],
+        ['RiverMemo V3', response.river?.results || [], 'score']
     ];
     const rows = new Map();
     tracks.forEach(([, items]) => items.forEach(item => rows.set(Number(item.id ?? item.chunkId), item)));
-    let output = '# LightMemo 三轨实验室\n\n';
+    let output = '# LightMemo 四轨实验室\n\n';
     output += `- 查询：${this._escapeMarkdownCell(request.originalQuery)}\n`;
     output += `- 共同候选：${pool.length}；Top-K：${request.k}；同快照、同过滤边界。\n`;
     output += '- TDB 按原件余弦排序；比较排序/读出，不代表全库精确召回率。\n';
     output += `- Rerank：${external.length ? '获得有效外部评分' : '关闭、未配置或失败；不冒充回退评分'}。\n`;
+    output += `- Jev：${jev.length ? '获得有效外部评分' : '关闭、未配置或失败；不冒充回退评分'}；共同池受 JevRerankMaxChoices 上限限制。\n`;
     output += '- BM25：候选内子串词频证据，不是全库倒排召回。\n\n';
-    output += '| Chunk | 摘要 | TDB 向量基线 | Rerank | RiverMemo V3 |\n|---:|---|---:|---:|---:|\n';
+    output += '| Chunk | 摘要 | TDB 向量基线 | Rerank | Jev | RiverMemo V3 |\n|---:|---|---:|---:|---:|---:|\n';
     for (const [id, item] of rows) {
-        const cells = tracks.map(([, items], track) => {
+        const cells = tracks.map(([, items, scoreField]) => {
             const index = items.findIndex(item => Number(item.id ?? item.chunkId) === id);
             if (index < 0) return '—';
-            const score = track === 1 ? items[index].rerank_score
-                : track === 0 ? items[index].vectorScore : items[index].score;
+            const score = items[index][scoreField];
             return `#${index + 1} / ${Number(score).toFixed(4)}`;
         });
         output += `| ${id} | ${this._escapeMarkdownCell(String(item.text || '').replace(/\s+/g, ' ').slice(0, 100))} | ${cells.join(' | ')} |\n`;

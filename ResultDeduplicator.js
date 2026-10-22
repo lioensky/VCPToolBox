@@ -368,8 +368,8 @@ class ResultDeduplicator {
 
     _getScore(candidate) {
         const score = Number(
-            candidate?.rerank_score ??
             candidate?.rrf_score ??
+            candidate?.rerank_score ??
             candidate?.score ??
             candidate?.original_score ??
             0

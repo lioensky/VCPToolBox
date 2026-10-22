@@ -3,7 +3,7 @@
   "name": "LightMemo",
   "version": "1.6.0",
   "displayName": "轻量回忆插件 (LightMemo)",
-  "description": "Native filtered global TDB-SM retrieval and RiverMemo V3, optional Rerank/Jev, with a shared-pool three-track laboratory.",
+  "description": "Native filtered global TDB-SM retrieval and RiverMemo V3, optional Rerank/Jev, with a shared-pool four-track laboratory.",
   "author": "VCP",
   "pluginType": "hybridservice",
   "requiresJevClient": true,
@@ -74,8 +74,8 @@
       },
       {
         "commandIdentifier": "MemoryAB",
-        "description": "command=memory_ab compares TDB original-vector cosine ranking, external Rerank, and RiverMemo V3 using one native snapshot and one filtered candidate pool. query and explicit scope required. k defaults to 5 (maximum 100); candidate_k defaults to 30 (maximum 100, at least k). compare_rerank defaults to true. External Rerank sees the complete bounded common pool, not a consensus 2*K pool. This measures ranking/readout, not exact full-corpus recall. BM25 is transitional candidate-local substring TF evidence, not an independent lexical recall route. Jev remains available in ordinary search, not as a laboratory track.",
-        "example": "<<<[TOOL_REQUEST]>>>\\ntool_name:「始」LightMemo「末」,\\ncommand:「始」memory_ab「末」,\\nfolder:「始」VCP开发「末」,\\nquery:「始」RiverMemo如何恢复连续记忆中的逻辑链「末」,\\nk:「始」8「末」,\\ncandidate_k:「始」30「末」,\\ncompare_rerank:「始」true「末」\\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "command=memory_ab compares TDB original-vector cosine ranking, external Rerank, Jev, and RiverMemo V3 using one native snapshot and one filtered candidate pool. query and explicit scope required. k defaults to 5 (maximum 100); candidate_k defaults to 30 (maximum 100, at least k). compare_rerank and compare_jev (aliases compareRerank/compareJev) default to true and can be disabled independently. External Rerank and Jev see the complete bounded common pool, not a consensus 2*K pool; JevRerankMaxChoices still caps Jev candidates. Unconfigured or failed external tracks do not present fallback scores as external scores. This measures ranking/readout, not exact full-corpus recall. BM25 is transitional candidate-local substring TF evidence, not an independent lexical recall route.",
+        "example": "<<<[TOOL_REQUEST]>>>\\ntool_name:「始」LightMemo「末」,\\ncommand:「始」memory_ab「末」,\\nfolder:「始」VCP开发「末」,\\nquery:「始」RiverMemo如何恢复连续记忆中的逻辑链「末」,\\nk:「始」8「末」,\\ncandidate_k:「始」30「末」,\\ncompare_rerank:「始」true「末」,\\ncompare_jev:「始」true「末」\\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

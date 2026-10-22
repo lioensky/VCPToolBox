@@ -257,6 +257,46 @@ fn calibrated_gate(ratio: f64, baseline: f64, background: f64, mode: &str) -> f6
     }
 }
 
+/// Query-independent part of the EPA cache row: decoded basis and mean, and the
+/// values derived from them alone.
+struct EpaBasis {
+    raw: String,
+    dimension: usize,
+    k_sem: usize,
+    labels: Vec<String>,
+    mean: Vec<f32>,
+    bases: Vec<Vec<f32>>,
+    semantic_count: usize,
+    baseline_coverage: f64,
+    background_ratio: f64,
+}
+
+/// The most recently decoded EPA cache row. It is reused only when the stored
+/// JSON text and the dimension are identical, so any write to the row (in any
+/// database) decodes again; the per-query arithmetic is unchanged.
+static EPA_BASIS: std::sync::Mutex<Option<Arc<EpaBasis>>> = std::sync::Mutex::new(None);
+
+fn decode_epa_basis(raw: String, dimension: usize) -> Option<EpaBasis> {
+    let cache: EpaCache = serde_json::from_str(&raw).ok()?;
+    let mean = decode_f32_base64(&cache.mean, dimension)?;
+    let bases: Vec<Vec<f32>> = cache
+        .basis
+        .iter()
+        .filter_map(|encoded| decode_f32_base64(encoded, dimension))
+        .collect();
+    let semantic_count = cache.k_sem.max(1).min(bases.len());
+    let baseline_coverage=cache.coverage.get(semantic_count.saturating_sub(1)).copied()
+        .filter(|v|v.is_finite() && *v>0.0 && *v<=1.0)
+        .unwrap_or(semantic_count as f64/dimension.max(1) as f64).max(1e-4);
+    let mean_captured=bases.iter().take(semantic_count).map(|b|dot(&mean,b).powi(2)).sum::<f64>();
+    let background_ratio=clamp01((semantic_count as f64/dimension.max(1) as f64+mean_captured)
+        /(1.0+dot(&mean,&mean)));
+    Some(EpaBasis {
+        raw, dimension, k_sem: cache.k_sem, labels: cache.labels, mean, bases,
+        semantic_count, baseline_coverage, background_ratio,
+    })
+}
+
 fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usize, mode: &str) -> EpaOutput {
     let empty = || EpaOutput {
         logic_depth: 0.0,
@@ -280,19 +320,24 @@ fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usiz
         Ok(value) => value,
         Err(_) => return empty(),
     };
-    let cache: EpaCache = match serde_json::from_str(&raw) {
-        Ok(value) => value,
-        Err(_) => return empty(),
+    let cached = EPA_BASIS.lock().ok().and_then(|slot| {
+        slot.as_ref().filter(|basis| basis.dimension == dimension && basis.raw == raw).cloned()
+    });
+    let basis = match cached {
+        Some(basis) => basis,
+        None => match decode_epa_basis(raw, dimension) {
+            Some(basis) => {
+                let basis = Arc::new(basis);
+                if let Ok(mut slot) = EPA_BASIS.lock() {
+                    *slot = Some(basis.clone());
+                }
+                basis
+            }
+            None => return empty(),
+        },
     };
-    let mean = match decode_f32_base64(&cache.mean, dimension) {
-        Some(value) => value,
-        None => return empty(),
-    };
-    let bases: Vec<Vec<f32>> = cache
-        .basis
-        .iter()
-        .filter_map(|encoded| decode_f32_base64(encoded, dimension))
-        .collect();
+    let mean = &basis.mean;
+    let bases = &basis.bases;
     let centered: Vec<f32> = query
         .iter()
         .zip(mean.iter())
@@ -304,17 +349,13 @@ fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usiz
     let out_of_domain = if centered_energy > 1e-12 {
         ((centered_energy - captured).max(0.0) / centered_energy).sqrt().clamp(0.0, 1.0)
     } else { 0.0 };
-    let semantic_count = cache.k_sem.max(1).min(bases.len());
+    let semantic_count = basis.semantic_count;
     let total_energy = projections.iter().take(semantic_count).map(|value| value * value).sum::<f64>();
     let semantic_explained_ratio = if centered_energy > 1e-12 {
         clamp01(total_energy / centered_energy)
     } else { 0.0 };
-    let baseline_coverage=cache.coverage.get(semantic_count.saturating_sub(1)).copied()
-        .filter(|v|v.is_finite() && *v>0.0 && *v<=1.0)
-        .unwrap_or(semantic_count as f64/dimension.max(1) as f64).max(1e-4);
-    let mean_captured=bases.iter().take(semantic_count).map(|b|dot(&mean,b).powi(2)).sum::<f64>();
-    let background_ratio=clamp01((semantic_count as f64/dimension.max(1) as f64+mean_captured)
-        /(1.0+dot(&mean,&mean)));
+    let baseline_coverage = basis.baseline_coverage;
+    let background_ratio = basis.background_ratio;
     let in_domain_gate=if semantic_count==0 || centered_energy<=1e-12 {0.0}
         else {calibrated_gate(semantic_explained_ratio,baseline_coverage,background_ratio,mode)};
     let probabilities: Vec<f64> = projections
@@ -328,8 +369,8 @@ fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usiz
         .sum::<f64>();
     let normalized_entropy = if total_energy <= 1e-12 {
         1.0
-    } else if cache.k_sem > 1 {
-        clamp01(raw_entropy / (cache.k_sem as f64).log2())
+    } else if basis.k_sem > 1 {
+        clamp01(raw_entropy / (basis.k_sem as f64).log2())
     } else {
         0.0
     };
@@ -339,7 +380,7 @@ fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usiz
         .filter(|(_, energy)| **energy > 0.05)
         .map(|(index, energy)| EpaAxis {
             index,
-            label: cache
+            label: basis
                 .labels
                 .get(index)
                 .cloned()
@@ -1151,8 +1192,55 @@ fn apply_transport(
     }
 }
 
-fn l1_distance(left: &[f64], right: &[f64]) -> f64 {
-    left.iter().zip(right).map(|(a, b)| (a - b).abs()).sum()
+/// `apply_transport` for both fields in one pass over the CSR. Every output
+/// position receives the same additions in the same order as two separate
+/// passes, and each field keeps its own zero-mass skip.
+fn apply_transport_pair(
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    local: &[f64],
+    transfer: &[f64],
+    local_output: &mut [f64],
+    transfer_output: &mut [f64],
+) {
+    local_output.fill(0.0);
+    transfer_output.fill(0.0);
+    for source in 0..artifact.node_ids.len() {
+        let local_mass = local[source];
+        let transfer_mass = transfer[source];
+        let local_active = local_mass != 0.0;
+        let transfer_active = transfer_mass != 0.0;
+        if !local_active && !transfer_active {
+            continue;
+        }
+        for cursor in artifact.row_offsets[source]..artifact.row_offsets[source + 1] {
+            let weight = positive(artifact.weights[cursor]);
+            let target = artifact.targets[cursor];
+            if local_active {
+                local_output[target] += local_mass * weight;
+            }
+            if transfer_active {
+                transfer_output[target] += transfer_mass * weight;
+            }
+        }
+    }
+}
+
+/// `next = (1 - alpha) * source + alpha * propagated` and the L1 change from
+/// `current`, in one pass with the same arithmetic and index order as a
+/// separate update followed by an L1 sum of non-negative terms.
+fn relax_field(
+    source: &[f64],
+    propagated: &[f64],
+    alpha: f64,
+    current: &[f64],
+    next: &mut [f64],
+) -> f64 {
+    let mut residual = 0.0;
+    for index in 0..source.len() {
+        next[index] = (1.0 - alpha) * source[index] + alpha * propagated[index];
+        residual += (next[index] - current[index]).abs();
+    }
+    residual
 }
 
 fn field_mass(field: &[f64]) -> f64 {
@@ -1540,23 +1628,24 @@ fn solve_dual_fields_with_pool(
 
     for iteration in 1..=config.field_max_iterations.max(1) {
         iterations = iteration;
-        if !local_converged {
+        // The fields are independent; while both move, one CSR pass serves both.
+        if !local_converged && !transfer_converged {
+            apply_transport_pair(artifact, &local, &transfer,
+                &mut propagated_local, &mut propagated_transfer);
+        } else if !local_converged {
             apply_transport(artifact, &local, &mut propagated_local);
-            for index in 0..source.len() {
-                next_local[index] =
-                    (1.0 - local_alpha) * source[index] + local_alpha * propagated_local[index];
-            }
-            local_residual = l1_distance(&next_local, &local);
+        } else if !transfer_converged {
+            apply_transport(artifact, &transfer, &mut propagated_transfer);
+        }
+        if !local_converged {
+            local_residual = relax_field(&source, &propagated_local, local_alpha,
+                &local, &mut next_local);
             local_converged = local_residual <= config.local_tolerance.max(1e-15);
             std::mem::swap(&mut local, &mut next_local);
         }
         if !transfer_converged {
-            apply_transport(artifact, &transfer, &mut propagated_transfer);
-            for index in 0..source.len() {
-                next_transfer[index] = (1.0 - transfer_alpha) * source[index]
-                    + transfer_alpha * propagated_transfer[index];
-            }
-            transfer_residual = l1_distance(&next_transfer, &transfer);
+            transfer_residual = relax_field(&source, &propagated_transfer, transfer_alpha,
+                &transfer, &mut next_transfer);
             transfer_converged = transfer_residual <= config.transfer_tolerance.max(1e-15);
             std::mem::swap(&mut transfer, &mut next_transfer);
         }
@@ -1664,8 +1753,8 @@ struct PipelineMetadataOutput {
 }
 
 pub struct MemoPipelineComputeOutput {
-    metadata_json: String,
-    enhanced_vector: Vec<f32>,
+    pub(crate) metadata_json: String,
+    pub(crate) enhanced_vector: Vec<f32>,
 }
 
 /// 统一 Memo 查询的轻量 N-API 返回值。
@@ -1973,6 +2062,23 @@ impl Task for MemoPipelineTask {
             enhanced_vector: Float32Array::new(output.enhanced_vector),
         })
     }
+}
+
+pub(crate) fn compute_owned(
+    index: Arc<crate::index_handle::IndexHandle>,
+    content_revision: Arc<std::sync::atomic::AtomicU64>,
+    runtime: Arc<MemoRuntime>,
+    db_path: String,
+    artifact_sig: String,
+    dimensions: usize,
+    input_json: String,
+    query_vector: Vec<f32>,
+    ghost_vectors: Vec<f32>,
+) -> Result<MemoPipelineComputeOutput> {
+    MemoPipelineTask {
+        index, content_revision, runtime, db_path, artifact_sig, dimensions,
+        input_json, query_vector, ghost_vectors,
+    }.compute()
 }
 
 pub(crate) fn run_with_runtime(

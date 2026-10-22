@@ -51,3 +51,32 @@ describe("日记 DSL 单轨化", () => {
     expect(source.match(/:disabled="retiredSuffixes.length > 0"/g)).toHaveLength(2);
   });
 });
+
+describe("Jev 日记后缀", () => {
+  it.each(["Jev", "Jev+", "Jev+0.6", "Jev2", "Jev2+", "Jev2+0.6", "Jev4+0"])(
+    "还原 %s 的预设与双排选项",
+    (suffix) => {
+      const [match] = scanDiarySyntaxes(`[[公共|项目日记本::${suffix}:1.5]]`);
+      expect(match.state.enabledSuffixes.jev).toBe(true);
+      expect(match.state.enabledSuffixes.rerank).toBe(false);
+      expect(match.state.enabledSuffixes.rerankPlus).toBe(false);
+      expect(match.state.jevPreset).toBe(suffix.match(/^Jev([1-4])/)?.[1] ?? "");
+      expect(match.state.jevPlus).toBe(suffix.includes("+"));
+      expect(match.state.jevAlpha).toBe(suffix.split("+")[1] ?? "");
+      expect(match.state.kMultiplier).toBe("1.5");
+    }
+  );
+
+  it.each(["Rerank+::Jev2", "Jev2::Rerank+"] )("显式 Jev 优先：%s", (suffix) => {
+    const [match] = scanDiarySyntaxes(`《《公共日记本::${suffix}》》`);
+    expect(match.state.enabledSuffixes.jev).toBe(true);
+    expect(match.state.enabledSuffixes.rerankPlus).toBe(false);
+  });
+
+  it("原有 Rerank+ 仍保持原选项", () => {
+    const [match] = scanDiarySyntaxes("[[公共日记本::Rerank+0.6]]");
+    expect(match.state.enabledSuffixes.jev).toBe(false);
+    expect(match.state.enabledSuffixes.rerankPlus).toBe(true);
+    expect(match.state.rerankPlusAlpha).toBe("0.6");
+  });
+});

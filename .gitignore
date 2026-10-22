@@ -6,6 +6,7 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 .pnpm-debug.log*
+.audit
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
@@ -90,9 +91,6 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
-# 但保留 AdminPanel-Vue 构建产物，让用户开箱即用
-!AdminPanel-Vue/dist/
-!AdminPanel-Vue/dist/**
 
 # Gatsby files
 .cache/

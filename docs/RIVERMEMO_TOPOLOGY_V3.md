@@ -4,7 +4,7 @@
 > 算法标识：`rivermemo.topology-v3.1`
 > 结果协议：`rivermemo-topology-v3-result-v1`
 > 原生计算内核：`rivermemo.topology-v3.1-rust`
-> 文档更新时间：2026-10-19
+> 文档更新时间：2026-10-21
 > 本文只记录拓扑 V3；其他历史、实验或对照构型不属于本文范围。
 >
 > **当前实现状态**：降噪传播底座已切换为 **AGS 统一场背景图**：同一套 AGS
@@ -264,7 +264,7 @@ AGS 的“局部/全局”是**预计算几何尺度**；RiverMemo 的“局部/
 ### 3.2 AGS 双尺度统一几何
 
 AGS（Anchored Greedy Gram-Schmidt）用同一锚定贪心正交化算子生成两类背景资产，生产实现见
-[`anchored_gs()`](../rust-vexus-lite/src/memo_geometry.rs:101)。
+[`anchored_gs()`](../rust-vexus-lite/src/memo_geometry.rs:263)。算子在原始向量坐标中构轴，通过两遍重正交化维护局部与全局基的正交性。
 
 1. **局部 Explain**：用共现邻居解释目标 Tag，得到未解释残差范数比，并映射为锚增益；锚增益参与传输图的虫洞判定及可选反向增益。
 2. **全局 Span**：对高支持度候选的中心化星团方向做贪心正交化，得到具有真实 Tag 标签的主题面、全库均值与覆盖率曲线，供 EPA 读取。
@@ -272,10 +272,10 @@ AGS（Anchored Greedy Gram-Schmidt）用同一锚定贪心正交化算子生成�
 对单位目标向量 \(t\) 和已选局部正交基 \(b_k\)，残差量为：
 
 \[
-r_t=\sqrt{\max\left(0,1-\sum_k\langle t,b_k\rangle^2\right)}
+r_t=\left\|t-\sum_k\langle t,b_k\rangle b_k\right\|_2
 \]
 
-它是**残差范数比**，不是残差能量比；解释能量比为 \(1-r_t^2\)。锚增益采用有界映射：
+单位目标下，它是**残差范数比**，不是残差能量比。实现直接扣除目标投影并计算残差范数，避免以接近的能量相减；在正交与舍入误差范围内，解释能量比为 \(1-r_t^2\)。锚增益采用有界映射：
 
 \[
 a_t=\Pi_{[a_{\min},a_{\max}]}\left(a_0+a_1r_t^\beta\right)
@@ -289,10 +289,20 @@ s_t=\operatorname{normalize}
 \]
 
 其中邻居权重由共现支持与内联语义门控形成，并归一化；默认混合比例为 \(\xi=0.8\)。无有效邻居或混合退化时回退到中心化目标方向。星团构造见
-[`star_direction()`](../rust-vexus-lite/src/memo_geometry.rs:161)。
+[`star_direction()`](../rust-vexus-lite/src/memo_geometry.rs:304)。
 
 全局基具有前缀嵌套性；系统按覆盖率、增量阈值和最大基数截取有效前缀，不要求固定数量的主题面必然覆盖整个知识库。当前几何算法标识见
-[`memo_geometry.rs`](../rust-vexus-lite/src/memo_geometry.rs:151)，为 unified_geometry_ags_v2；主题面缓存标识为 ags-global-star-v2。它们与 Topology V3 排序算法标识属于不同层次。
+[`memo_geometry.rs`](../rust-vexus-lite/src/memo_geometry.rs:294)，为 unified_geometry_ags_v3_reorth；主题面缓存标识为 ags-global-star-v3-reorth。它们与 Topology V3 排序算法标识属于不同层次。
+
+#### 原空间重正交化与数值守恒
+
+令 \(u_i=(I-BB^\top)v_i\)、\(h_i=\|u_i\|_2\)，候选先验为 \(p_i\)。局部 Explain 按 \(|\langle t,u_i\rangle|p_i\) 选点，全局 Span 按 \(h_i^2p_i\) 选点，相同分数按 Tag ID 升序决定。选中轴在原始坐标中执行两遍 Modified Gram-Schmidt 后单位化；局部增益为目标对校正后单位轴的投影绝对值，全局增益为该轴单位化前的范数。
+
+内核增量维护候选投影能量与目标相关项；估计剩余能量不大于原能量的 1e-8 时，回到原空间重算候选残差。非有限或不大于 1e-6 的正交范数不入基，目标残差能量低于原能量的 1e-14 时报告零。四路点积在同一次坐标遍历中维护独立累加器，保持各点积的坐标累加顺序。
+
+正交基下满足能量分解关系 \(\|t\|^2\approx\sum_k\langle t,b_k\rangle^2+\|r\|^2\)。两遍重正交化控制轴间误差，直接残差计算避免小残差中的能量相减消去；数值有效秩与归零语义由上述阈值确定。工作区、增量投影与计算复杂度见[数据库实现说明](../rust-vexus-lite/README.md:194)。
+
+AGS 处理长期背景几何；[`evaluate_path()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1391) 处理候选有序 Tag 曲线在查询双场中的路径质量，不构造 AGS 正交基。Topology V3 消费同代背景资产与查询观测，独立计算 Ω、条件拓扑创新和直接锚奖励；几何版本与拓扑评分版本分别标识各自层次。
 
 ### 3.3 共享传输图
 
@@ -327,7 +337,7 @@ G=(V,E,P)
 当前训练/重建顺序为：事实快照 → AGS 统一几何 → RiverMemo 传输 Artifact → 运行时发布。
 
 局部残差/锚增益、全局 EPA 缓存和统一几何元数据在同一写事务内发布，见
-[`GeometryTask`](../rust-vexus-lite/src/memo_geometry.rs:319)。
+[`GeometryTask`](../rust-vexus-lite/src/memo_geometry.rs:514)。
 向量数学计算以 SQLite 原始向量为权威来源；检索索引不充当几何真值。几何缓存命中时不重写派生资产，避免无变化重启制造代际变动。
 
 传输 Artifact 的依赖键统一为
@@ -335,6 +345,8 @@ G=(V,E,P)
 定义的 memo_tag_facts 与 derived_geometry，源签名纳入统一几何签名。
 旧 Pairwise 持久化表及独立 Pairwise/EPA/残差任务不再属于当前生产预计算链。
 事实更新后的训练调度与已发布快照复用，不应被误写为“每次查询都即时重算背景图”；新观测与后续读出必须遵守运行时的签名及代际校验。
+
+几何算法版本参与资产签名；几何算法身份变化时，须构建匹配的原生模块，并按“统一几何 → 传输 Artifact → 运行时发布”重建派生资产，无需数据库表结构迁移。EPA 主题面与传输背景必须沿同一依赖链发布，不能混用不同几何代际。拓扑加载与观测读出分别校验资产签名、运行时代际和数据库代际。
 
 ---
 

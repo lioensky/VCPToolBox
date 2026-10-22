@@ -548,15 +548,27 @@ async function generateImageAndSave(args) {
             break; // 成功，退出回退序列
         } catch (e) {
             lastError = e;
+            // [芙铃诊断补丁 2026-09-06 / 2026-10-15] 捕获ComfyUI 400响应体原文，终结“替身演员顶包”黑箱
+            let respBody = '';
+            try {
+                if (e && e.response && e.response.data) {
+                    respBody = typeof e.response.data === 'string' ? e.response.data : JSON.stringify(e.response.data);
+                }
+            } catch (_) {}
+            const diagnosticMsg = (e && e.message ? e.message : String(e)) + (respBody ? ' | ComfyUI-400-body: ' + respBody.substring(0, 2048) : '');
+            e.diagnosticMessage = diagnosticMsg;
+            if (respBody) {
+                e.message = diagnosticMsg;
+            }
             if (strictWorkflow) throw e;
-            debugLog(`Workflow ${wfName} failed:`, e && (e.message || e.toString()));
+            debugLog(`Workflow ${wfName} failed:`, diagnosticMsg);
             // 继续下一回退候选
         }
     }
 
     if (!savedImages) {
         // 所有回退均失败
-        throw new Error(`All workflow attempts failed. Primary: ${primaryWorkflowName}. Last error: ${lastError && lastError.message ? lastError.message : String(lastError)}`);
+        throw new Error(`All workflow attempts failed. Primary: ${primaryWorkflowName}. Last error: ${lastError && (lastError.diagnosticMessage || lastError.message) ? (lastError.diagnosticMessage || lastError.message) : String(lastError)}`);
     }
     
     // 7. 构建返回结果 - 结构化格式

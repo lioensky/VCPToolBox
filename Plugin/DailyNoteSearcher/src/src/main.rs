@@ -769,7 +769,8 @@ fn search_in_directory(
     let mut walk_builder = WalkBuilder::new(path);
     walk_builder
         .hidden(false)
-        .git_ignore(true)
+        // 日记数据默认不纳入 Git，不能用 .gitignore 排除搜索内容。
+        .git_ignore(false)
         .max_filesize(Some(MAX_FILE_SIZE));
 
     for ignored in &config.ignored_folders {

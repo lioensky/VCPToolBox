@@ -162,6 +162,13 @@ export declare class NativeKnowledgeRuntime {
    * 收归同一个 Write Actor，避免与旧 JS Schema 管理同时执行。
    */
   openAndInitStore(dbPath: string, optionsJson?: string | undefined | null): NativeStoreState
+  /**
+   * Separate ABI gate: older binaries must never interpret external-only plans
+   * as legacy coupled Memo queries.
+   */
+  executeExternalRerank(requestJson: string, query: Float32Array): Promise<string>
+  /** Native dual ranking: ANN and Sense start together; HTTP never holds SQL locks. */
+  executeParallelRerank(requestJson: string, query: Float32Array, ghosts: Float32Array): Promise<string>
   executeLightMemoQuery(planJson: string, query: Float32Array): Promise<unknown>
   /**
    * Publication is scheduled independently from retrieval and never rebuilds

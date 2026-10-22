@@ -58,24 +58,13 @@ if not exist "%VCP_NODE%" (
 echo [Runtime] Node interpreter pinned to: %VCP_NODE%
 echo.
 
-REM 0. Check if AdminPanel-Vue frontend is built
-if not exist "AdminPanel-Vue\dist\index.html" (
-    echo [Build] AdminPanel-Vue frontend not found, building...
-    if exist "AdminPanel-Vue\package.json" (
-        pushd AdminPanel-Vue
-        call npm install
-        call npm run build
-        popd
-        if exist "AdminPanel-Vue\dist\index.html" (
-            echo [Build] AdminPanel-Vue build successful.
-        ) else (
-            echo [Build] WARNING: AdminPanel-Vue build may have failed. Admin panel may not work.
-        )
-    ) else (
-        echo [Build] WARNING: AdminPanel-Vue/package.json not found. Skipping build.
-    )
+REM 0. Check and ensure AdminPanel-Vue frontend assets
+echo [Build] Verifying AdminPanel-Vue frontend assets...
+call npm run ensure:admin
+if errorlevel 1 (
+    echo [Build] WARNING: AdminPanel-Vue verification/build reported issues.
 ) else (
-    echo [Build] AdminPanel-Vue frontend found, skipping build.
+    echo [Build] AdminPanel-Vue frontend is ready.
 )
 echo.
 

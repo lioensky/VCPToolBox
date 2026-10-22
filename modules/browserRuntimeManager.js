@@ -414,7 +414,9 @@ function buildChromeArgs(config) {
         '--disable-background-mode',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
-        '--disable-features=Translate,MediaRouter,SessionRestore,InfiniteSessionRestore',
+        // 禁用 Chrome 本地端侧 AI 模型与优化指导下载；合并到同一个特性开关，避免覆盖原有设置。
+        '--disable-features=Translate,MediaRouter,SessionRestore,InfiniteSessionRestore,OptimizationGuideModelDownloading,OptimizationHints,OptimizationGuideOnDeviceModel',
+        '--disable-component-update',
         `--window-size=${config.windowWidth},${config.windowHeight}`
     ];
 

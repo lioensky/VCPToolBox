@@ -116,7 +116,7 @@
                   <code>::Group</code> 负责语义组增强，<code>::BM25+</code> 负责日记全文 BM25 匹配，
                   <code>::BM25</code> 负责日记 tag / keyword BM25 匹配，
                   <code>::Rerank</code> 负责普通精排，<code>::Expand</code> 负责父文档展开。
-                  注意：普通 <code>::Rerank</code> 与 <code>::Rerank+</code> 只能二选一；
+                  注意：<code>::Rerank</code>、<code>::Rerank+</code> 与显式 <code>::Jev</code> 只能选择一种；
                   高级日记 RAG 默认使用 RiverMemo，<code>::RiverMemo</code> 可显式标记该读出。
                 </p>
               </div>
@@ -225,7 +225,7 @@
                     @update:model-value="setExclusiveSuffix('rerank', $event)"
                   />
                 </div>
-                <p>先超量召回，再用 Reranker 模型重新排序。普通 Rerank 与 Rerank+ 只能二选一。</p>
+                <p>先超量召回再精排。保留原有行为：JevAdvancedRerank 开关决定使用传统模型或 Jev 默认提示词。</p>
               </div>
 
               <div class="syntax-card syntax-option-card">
@@ -293,7 +293,7 @@
                 </div>
                 <p>
                   双路融合精排。α 越高越信任 Reranker，留空则使用默认 0.5。
-                  Rerank+ 与标准 Rerank 只能二选一。
+                  保留原有 JevAdvancedRerank 开关行为；与标准 Rerank、显式 Jev 互斥。
                 </p>
                 <label class="inline-number">
                   <span>α 权重</span>
@@ -304,6 +304,47 @@
                     min="0"
                     max="1"
                     step="0.05"
+                    placeholder="默认 0.5"
+                    @keydown.stop
+                  />
+                </label>
+              </div>
+
+              <div class="syntax-card syntax-option-card syntax-option-card--wide">
+                <div class="syntax-option-head">
+                  <div>
+                    <strong>Jev 语义精排</strong>
+                    <code>::Jev2+0.6</code>
+                  </div>
+                  <AppSwitch
+                    :model-value="enabledSuffixes.jev"
+                    @update:model-value="setExclusiveSuffix('jev', $event)"
+                  />
+                </div>
+                <p>
+                  强制使用 Jev，不受 JevAdvancedRerank 开关限制。默认使用 JevRerankPrompt，
+                  编号 1～4 对应插件配置中的 JevRerankPrompt1～4；未配置则回退默认提示词。
+                  Jev+ 复用现有双排 RRF 管线，α 表示 Jev 权重，留空为 0.5。
+                </p>
+                <label class="inline-number">
+                  <span>提示词预设</span>
+                  <UiSelect v-model="jevPreset" :disabled="!enabledSuffixes.jev">
+                    <option value="">默认提示词</option>
+                    <option v-for="number in 4" :key="number" :value="String(number)">
+                      {{ number }} 号提示词
+                    </option>
+                  </UiSelect>
+                </label>
+                <label class="inline-number">
+                  <span>双排融合 +</span>
+                  <AppSwitch v-model="jevPlus" :disabled="!enabledSuffixes.jev" />
+                </label>
+                <label class="inline-number">
+                  <span>Jev α 权重</span>
+                  <UiInput
+                    v-model="jevAlpha"
+                    :disabled="!enabledSuffixes.jev || !jevPlus"
+                    type="number" min="0" max="1" step="0.05"
                     placeholder="默认 0.5"
                     @keydown.stop
                   />
@@ -888,6 +929,9 @@ const bm25Weight = ref(defaultState.bm25Weight);
 const bm25PlusWeight = ref(defaultState.bm25PlusWeight);
 const retiredSuffixes = ref<string[]>([]);
 const rerankPlusAlpha = ref(defaultState.rerankPlusAlpha);
+const jevPreset = ref(defaultState.jevPreset);
+const jevPlus = ref(defaultState.jevPlus);
+const jevAlpha = ref(defaultState.jevAlpha);
 const timeDecayHalfLifeDays = ref(defaultState.timeDecayHalfLifeDays);
 const timeDecayMinScore = ref(defaultState.timeDecayMinScore);
 const timeDecayTargetTags = ref(defaultState.timeDecayTargetTags);
@@ -921,6 +965,12 @@ const generatedSyntax = computed(() => {
   if (enabledSuffixes.riverMemo) suffixes.push("::RiverMemo");
   if (enabledSuffixes.rerank) suffixes.push("::Rerank");
   if (enabledSuffixes.rerankPlus) suffixes.push(`::Rerank+${sanitizeNumber(rerankPlusAlpha.value)}`);
+  if (enabledSuffixes.jev) {
+    const preset = /^[1-4]$/.test(jevPreset.value) ? jevPreset.value : "";
+    const alpha = sanitizeNumber(jevAlpha.value);
+    const plus = jevPlus.value ? `+${alpha ? Math.max(0, Math.min(1, Number(alpha))) : ""}` : "";
+    suffixes.push(`::Jev${preset}${plus}`);
+  }
   if (enabledSuffixes.timeDecay) suffixes.push(buildTimeDecaySuffix());
   if (enabledSuffixes.truncate) suffixes.push(`::Truncate${sanitizeNumber(truncateThreshold.value) || "0.4"}`);
   if (enabledSuffixes.associate) suffixes.push("::Associate");
@@ -974,13 +1024,11 @@ function setExclusiveSuffix(key: SuffixKey, value: boolean): void {
     return;
   }
 
-  if (key === "rerank") {
-    enabledSuffixes.rerankPlus = false;
-    return;
-  }
-
-  if (key === "rerankPlus") {
-    enabledSuffixes.rerank = false;
+  const rankKeys: SuffixKey[] = ["rerank", "rerankPlus", "jev"];
+  if (rankKeys.includes(key)) {
+    for (const other of rankKeys) {
+      if (other !== key) enabledSuffixes[other] = false;
+    }
   }
 }
 
@@ -1105,6 +1153,9 @@ function applyEditorState(state: DiarySyntaxEditorState): void {
   bm25PlusWeight.value = state.bm25PlusWeight;
   retiredSuffixes.value = [...state.retiredSuffixes];
   rerankPlusAlpha.value = state.rerankPlusAlpha;
+  jevPreset.value = state.jevPreset ?? "";
+  jevPlus.value = state.jevPlus ?? false;
+  jevAlpha.value = state.jevAlpha ?? "";
   timeDecayHalfLifeDays.value = state.timeDecayHalfLifeDays;
   timeDecayMinScore.value = state.timeDecayMinScore;
   timeDecayTargetTags.value = state.timeDecayTargetTags;
@@ -1114,7 +1165,7 @@ function applyEditorState(state: DiarySyntaxEditorState): void {
   roleValveJoiner.value = state.roleValveJoiner;
   roleValveConditions.value = [...state.roleValveConditions];
 
-  Object.assign(enabledSuffixes, state.enabledSuffixes);
+  Object.assign(enabledSuffixes, defaultState.enabledSuffixes, state.enabledSuffixes);
 }
 
 watch(

@@ -271,6 +271,8 @@ CREATE INDEX IF NOT EXISTS idx_operation_receipts_expiry
     ON kbm_operation_receipts(status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_index_states_state
     ON kbm_index_states(state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_rivermemo_validation
+    ON rivermemo_artifacts(artifact_sig,status,algorithm_version,schema_version);
 CREATE INDEX IF NOT EXISTS idx_rivermemo_compatible
     ON rivermemo_artifacts(source_v9_artifact_sig,model_sig,config_hash,
                             database_generation,status,updated_at);

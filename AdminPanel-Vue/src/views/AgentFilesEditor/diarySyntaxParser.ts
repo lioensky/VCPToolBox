@@ -16,6 +16,7 @@ export type DiarySuffixKey =
   | "base64Memo"
   | "riverMemo"
   | "rerankPlus"
+  | "jev"
   | "truncate"
   | "roleValve";
 
@@ -40,6 +41,9 @@ export interface DiarySyntaxEditorState {
   bm25PlusWeight: string;
   retiredSuffixes: string[];
   rerankPlusAlpha: string;
+  jevPreset: string;
+  jevPlus: boolean;
+  jevAlpha: string;
   timeDecayHalfLifeDays: string;
   timeDecayMinScore: string;
   timeDecayTargetTags: string;
@@ -83,6 +87,9 @@ export function createDefaultDiarySyntaxState(): DiarySyntaxEditorState {
     bm25PlusWeight: "",
     retiredSuffixes: [],
     rerankPlusAlpha: "",
+    jevPreset: "",
+    jevPlus: false,
+    jevAlpha: "",
     timeDecayHalfLifeDays: "",
     timeDecayMinScore: "",
     timeDecayTargetTags: "",
@@ -103,6 +110,7 @@ export function createDefaultDiarySyntaxState(): DiarySyntaxEditorState {
       base64Memo: false,
       riverMemo: false,
       rerankPlus: false,
+      jev: false,
       truncate: false,
       roleValve: false,
     },
@@ -301,6 +309,20 @@ function applyAdvancedSuffix(state: DiarySyntaxEditorState, suffix: string): voi
     state.enabledSuffixes.riverMemo = true;
     return;
   }
+
+  const jev = suffix.match(/^Jev([1-4])?(\+(\d*\.?\d+)?)?$/i);
+  if (jev) {
+    state.enabledSuffixes.jev = true;
+    state.enabledSuffixes.rerank = false;
+    state.enabledSuffixes.rerankPlus = false;
+    state.jevPreset = jev[1] ?? "";
+    state.jevPlus = Boolean(jev[2]);
+    state.jevAlpha = jev[3] ?? "";
+    return;
+  }
+
+  // 与后端一致：显式 Jev 不受 Rerank 后缀书写顺序影响。
+  if (state.enabledSuffixes.jev && /^Rerank(?:\+([0-9.]+)?)?$/i.test(suffix)) return;
 
   const rerankPlus = suffix.match(/^Rerank\+([0-9.]+)?$/i);
   if (rerankPlus) {

@@ -28,7 +28,7 @@ impl TaskLifecycle {
         self.wait_idle();
     }
 
-    fn admit(self: &Arc<Self>) -> Option<TaskAdmission> {
+    pub(crate) fn admit(self: &Arc<Self>) -> Option<TaskAdmission> {
         let mut active = self.active.lock().unwrap_or_else(|error| error.into_inner());
         if self.closed.load(std::sync::atomic::Ordering::Acquire) { return None; }
         *active += 1;
@@ -36,7 +36,7 @@ impl TaskLifecycle {
     }
 }
 
-struct TaskAdmission {
+pub(crate) struct TaskAdmission {
     lifecycle: Arc<TaskLifecycle>,
 }
 
