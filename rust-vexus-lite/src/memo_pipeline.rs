@@ -1664,8 +1664,8 @@ struct PipelineMetadataOutput {
 }
 
 pub struct MemoPipelineComputeOutput {
-    metadata_json: String,
-    enhanced_vector: Vec<f32>,
+    pub(crate) metadata_json: String,
+    pub(crate) enhanced_vector: Vec<f32>,
 }
 
 /// 统一 Memo 查询的轻量 N-API 返回值。
@@ -1973,6 +1973,23 @@ impl Task for MemoPipelineTask {
             enhanced_vector: Float32Array::new(output.enhanced_vector),
         })
     }
+}
+
+pub(crate) fn compute_owned(
+    index: Arc<crate::index_handle::IndexHandle>,
+    content_revision: Arc<std::sync::atomic::AtomicU64>,
+    runtime: Arc<MemoRuntime>,
+    db_path: String,
+    artifact_sig: String,
+    dimensions: usize,
+    input_json: String,
+    query_vector: Vec<f32>,
+    ghost_vectors: Vec<f32>,
+) -> Result<MemoPipelineComputeOutput> {
+    MemoPipelineTask {
+        index, content_revision, runtime, db_path, artifact_sig, dimensions,
+        input_json, query_vector, ghost_vectors,
+    }.compute()
 }
 
 pub(crate) fn run_with_runtime(

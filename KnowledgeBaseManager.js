@@ -2202,7 +2202,13 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             isCore: tag.isCore
         }));
 
-        const nativeResult = await this._runMemoPipelineShared(
+        const runPipeline = options.nativePlanOnly
+            ? (...args) => ({
+                artifact, pipeline: JSON.parse(args[2]),
+                queryVector: args[3], ghostVectors: args[4]
+            })
+            : this._runMemoPipelineShared.bind(this);
+        const nativeResult = await runPipeline(
             dbPath,
             artifact.artifactSig,
             JSON.stringify({
@@ -2342,6 +2348,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             queryVector,
             ghostVectors
         );
+        if (options.nativePlanOnly) return nativeResult;
         const pipeline = nativeResult?.metadataJson
             ? JSON.parse(nativeResult.metadataJson)
             : null;
@@ -2610,6 +2617,38 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
      * observationHandle 和权限作用域，随后由 NativeKnowledgeRuntime 完成
      * ANN→合并→向量 hydrate→语义去重→Topology V3。
      */
+    async executeParallelRerank(query, options = {}) {
+        const runtime = this.nativeKnowledgeRuntime;
+        if (typeof runtime?.executeParallelRerank !== 'function') {
+            throw new Error('NATIVE_PARALLEL_RERANK_ABI_UNAVAILABLE: rebuild rust-vexus-lite');
+        }
+        const diaryNames = [...new Set(
+            (Array.isArray(options.diaryNames) ? options.diaryNames : [options.diaryNames])
+                .map(name => String(name || '').trim()).filter(Boolean)
+        )];
+        if (!diaryNames.length) throw new Error('NATIVE_PARALLEL_RERANK_EMPTY_SCOPE');
+        const [prepared] = await Promise.all([
+            this.prepareUnifiedMemoObservation(query, { ...options, nativePlanOnly: true }),
+            Promise.all(diaryNames.map(name => this._getOrLoadDiaryIndex(name)))
+        ]);
+        const raw = await runtime.executeParallelRerank(JSON.stringify({
+            diaryNames, artifactSig: prepared.artifact.artifactSig,
+            pipeline: prepared.pipeline,
+            riverConfig: this.riverMemoEngine._nativeConfig(prepared.artifact, options),
+            queryText: String(query.text || ''), topK: options.topK,
+            candidateK: options.candidateK, externalK: options.externalK,
+            alpha: options.alpha ?? 0.5, useJev: options.useJev,
+            supplementalQueries: (options.supplementalQueryVectors || []).map(entry => ({
+                vector: Array.from(entry.vector || []), weight: entry.weight ?? 1
+            })),
+            configPath: path.join(__dirname, 'Plugin', 'RAGDiaryPlugin', 'config.env'),
+            excludedPrefixes: [...(options.contextDiaryPrefixes || [])]
+        }), prepared.queryVector, prepared.ghostVectors);
+        const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!Array.isArray(result?.results)) throw new Error('NATIVE_PARALLEL_RERANK_INVALID_RESULT');
+        return result;
+    }
+
     async executeNativeRiverQuery(query, options = {}) {
         const rawVector = query?.vector || options.queryVector;
         const queryVector = rawVector instanceof Float32Array

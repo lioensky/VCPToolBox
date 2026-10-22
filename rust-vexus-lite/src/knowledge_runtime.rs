@@ -2447,6 +2447,191 @@ impl NativeKnowledgeRuntime {
             })
     }
 
+    /// Native dual ranking: ANN and Sense start together; HTTP never holds SQL locks.
+    #[napi]
+    pub async fn execute_parallel_rerank(
+        &self, request_json: String, query: Float32Array, ghosts: Float32Array,
+    ) -> Result<String> {
+        let admission = self.tasks.admit().ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_CLOSED"))?;
+        if request_json.len() > 4 * 1024 * 1024 || query.len() != self.dimension as usize
+            || query.iter().chain(ghosts.iter()).any(|v| !v.is_finite()) {
+            return Err(Error::from_reason("NATIVE_RERANK_INVALID_PLAN"));
+        }
+        let plan: serde_json::Value = serde_json::from_str(&request_json)
+            .map_err(|_| Error::from_reason("NATIVE_RERANK_INVALID_PLAN"))?;
+        let names: Vec<String> = serde_json::from_value(plan["diaryNames"].clone())
+            .map_err(|_| Error::from_reason("NATIVE_RERANK_INVALID_SCOPE"))?;
+        let mut names: Vec<String> = names.into_iter().filter(|n| !n.trim().is_empty())
+            .collect::<HashSet<_>>().into_iter().collect();
+        names.sort();
+        if names.is_empty() { return Err(Error::from_reason("NATIVE_RERANK_EMPTY_SCOPE")); }
+        let snapshots = {
+            let registry = self.diaries.read().map_err(|_| Error::from_reason("Diary registry poisoned"))?;
+            names.iter().map(|name| {
+                let entry = registry.get(name).ok_or_else(|| Error::from_reason("Diary index not registered"))?;
+                Ok(DiarySearchSnapshot { diary_name:name.clone(), index:entry.index.clone(),
+                    content_revision:entry.content_revision.clone(), generation:entry.generation })
+            }).collect::<Result<Vec<_>>>()?
+        };
+        let storage = self.storage_snapshot()?.ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN"))?;
+        let db_path = storage.db_path().to_string_lossy().into_owned();
+        let dimension = self.dimension as usize;
+        let k = plan["topK"].as_u64().unwrap_or(10).clamp(1, 1000) as usize;
+        let candidate_k = plan["candidateK"].as_u64().unwrap_or(300).clamp(k as u64, 5000) as usize;
+        let external_k = plan["externalK"].as_u64().unwrap_or((k * 2) as u64).clamp(1, 255) as usize;
+        let artifact_sig = plan["artifactSig"].as_str().unwrap_or("").to_string();
+        let pipeline_json = plan["pipeline"].to_string();
+        let query_text = plan["queryText"].as_str().unwrap_or("").to_string();
+        let config_path = plan["configPath"].as_str().unwrap_or("").to_string();
+        let force_jev = plan["useJev"].as_bool();
+        let alpha = plan["alpha"].as_f64().unwrap_or(0.5);
+        if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) {
+            return Err(Error::from_reason("NATIVE_RERANK_INVALID_ALPHA"));
+        }
+        let ranker = tokio::task::spawn_blocking(move || {
+            crate::native_rerank::Ranker::load(std::path::Path::new(&config_path), force_jev)
+        }).await.map_err(|_| Error::from_reason("RERANK_CONFIG_TASK_FAILED"))?;
+        let supplemental = plan["supplementalQueries"].as_array().cloned().unwrap_or_default();
+        if supplemental.len() > 32 {
+            return Err(Error::from_reason("NATIVE_RERANK_HISTORY_LIMIT"));
+        }
+        let supplemental_queries = supplemental.iter().map(|entry| {
+            let vector: Vec<f32> = serde_json::from_value(entry["vector"].clone())
+                .map_err(|_| Error::from_reason("NATIVE_RERANK_INVALID_HISTORY"))?;
+            if vector.len() != dimension || vector.iter().any(|v| !v.is_finite()) {
+                return Err(Error::from_reason("NATIVE_RERANK_INVALID_HISTORY"));
+            }
+            Ok(vector)
+        }).collect::<Result<Vec<_>>>()?;
+        let supplemental_weights = supplemental.iter().map(|entry|
+            entry["weight"].as_f64().unwrap_or(1.0).clamp(0.0,1.0)).collect();
+        let mut ann = NativeMultiIndexAnnTask {
+            db_path:Some(db_path.clone()), index_scopes:names.iter().map(|n| format!("diary:{n}")).collect(),
+            dimension, query:query.to_vec(), supplemental_queries, supplemental_weights,
+            supplemental_per_index_k:candidate_k / 2, file_candidates:Vec::new(), bm25_weight:0.6,
+            time_per_diary_limit:10, time_global_limit:50, per_index_k:candidate_k,
+            candidate_k, final_k:candidate_k, snapshots,
+            semantic_dedup:Some(SemanticDedupConfig { db_path:db_path.clone(), threshold:0.92 }),
+        };
+        let index = self.global_tag_index.clone();
+        let revision = self.global_tag_content_revision.clone();
+        let runtime = self.memo_runtime.clone();
+        let sense_db = db_path.clone();
+        let sense_sig = artifact_sig.clone();
+        let sense_query = query.to_vec();
+        let ghost_values = ghosts.to_vec();
+        let sense = tokio::task::spawn_blocking(move || {
+            crate::memo_pipeline::compute_owned(index, revision, runtime, sense_db,
+                sense_sig, dimension, pipeline_json, sense_query, ghost_values)
+        });
+        let ann_db = db_path.clone();
+        let ann_names = names.clone();
+        let excluded: Vec<String> = serde_json::from_value(plan["excludedPrefixes"].clone()).unwrap_or_default();
+        let candidates = tokio::task::spawn_blocking(move || -> Result<(Vec<serde_json::Value>, u64)> {
+            let _gate = ann.query_guard(&ann.index_scopes)?;
+            crate::storage::with_registered_read_transaction_napi(&ann_db, |connection| {
+                let generation = crate::storage::read_generation(connection).map_err(Error::from_reason)?;
+                let output: serde_json::Value = serde_json::from_str(&ann.compute_with_connection(Some(connection))?)
+                    .map_err(|_| Error::from_reason("NATIVE_RERANK_ANN_DECODE"))?;
+                let mut statement = connection.prepare(
+                    "SELECT c.content,f.path,f.diary_name,f.id FROM chunks c JOIN files f ON f.id=c.file_id WHERE c.id=?1"
+                ).map_err(|_| Error::from_reason("NATIVE_RERANK_HYDRATE"))?;
+                let mut docs = Vec::new();
+                for candidate in output["results"].as_array().into_iter().flatten() {
+                    let Some(id) = candidate["id"].as_i64() else { continue };
+                    let row: Option<(String,String,String,i64)> = statement.query_row([id], |r|
+                        Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()
+                        .map_err(|_| Error::from_reason("NATIVE_RERANK_HYDRATE"))?;
+                    if let Some((text,path,diary,file)) = row {
+                        if !ann_names.contains(&diary) || excluded.iter().any(|p| !p.is_empty() && text.contains(p)) { continue; }
+                        docs.push(serde_json::json!({"id":id,"chunkId":id,"text":text,
+                            "sourceFile":path,"fullPath":path,"diaryName":diary,"fileId":file,
+                            "score":candidate["score"],"vectorScore":candidate["vectorScore"]}));
+                    }
+                }
+                Ok((docs, generation))
+            })
+        });
+        // Drain Sense even if ANN fails: no orphan observation or untracked worker.
+        let documents = candidates.await.map_err(|_| Error::from_reason("NATIVE_RERANK_ANN_TASK"));
+        let (documents, candidate_generation) = match documents.and_then(|v| v) {
+            Ok(docs) => docs,
+            Err(error) => {
+                if let Ok(Ok(observation)) = sense.await {
+                    if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&observation.metadata_json) {
+                        if let Some(handle) = meta["observationHandle"].as_str() {
+                            let _ = self.memo_runtime.release_query_observation(handle);
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        };
+        let external_docs = documents.iter().take(external_k).cloned().collect::<Vec<_>>();
+        let external = async {
+            match ranker {
+                Ok(ranker) => {
+                    let backend = ranker.backend();
+                    (backend, ranker.rank(&query_text, &external_docs).await)
+                }
+                Err(error) => ("unconfigured", Err(error)),
+            }
+        };
+        let runtime = self.memo_runtime.clone();
+        let topology = async {
+            let observation = sense.await.map_err(|_| Error::from_reason("NATIVE_RERANK_SENSE_TASK"))??;
+            let metadata: serde_json::Value = serde_json::from_str(&observation.metadata_json)
+                .map_err(|_| Error::from_reason("NATIVE_RERANK_SENSE_DECODE"))?;
+            let handle = metadata["observationHandle"].as_str().unwrap_or("").to_string();
+            let release_handle = handle.clone();
+            let river_runtime = runtime.clone();
+            let docs = documents.clone();
+            let config = plan["riverConfig"].clone();
+            let river = tokio::task::spawn_blocking(move || {
+                crate::storage::with_registered_read_transaction(&db_path, |connection| {
+                    if crate::storage::read_generation(connection)? != candidate_generation {
+                        return Err("MEMO_OBSERVATION_STALE: candidates changed during parallel query".into());
+                    }
+                    let allowed: HashSet<i64> = docs.iter().filter_map(|d| d["fileId"].as_i64()).collect();
+                    let input = serde_json::json!({"observationHandle":handle,"dimension":dimension,
+                        "topK":candidate_k,"candidates":docs,"allowedFileIds":allowed,"config":config});
+                    crate::rivermemo_topology_v3::run_native_with_connection(
+                        &river_runtime, connection, &artifact_sig, &input.to_string())
+                })
+            }).await;
+            let _ = runtime.release_query_observation(&release_handle);
+            let payload = river.map_err(|_| Error::from_reason("NATIVE_RERANK_TOPOLOGY_TASK"))?
+                .map_err(Error::from_reason)?;
+            let result = serde_json::from_str::<serde_json::Value>(&payload)
+                .map_err(|_| Error::from_reason("NATIVE_RERANK_TOPOLOGY_DECODE"))?;
+            Ok::<_, napi::Error>((result, metadata))
+        };
+        let ((backend, external), river) = tokio::join!(external, topology);
+        let (mut river, metadata) = river?;
+        let originals: HashMap<i64, &serde_json::Value> = documents.iter()
+            .filter_map(|d| d["id"].as_i64().map(|id| (id,d))).collect();
+        let mut results = river["results"].as_array().cloned().unwrap_or_default();
+        for item in &mut results {
+            if let Some(original) = item["chunkId"].as_i64().and_then(|id| originals.get(&id)) {
+                for key in ["text","sourceFile","fullPath","fileId","diaryName","id"] {
+                    item[key] = original[key].clone();
+                }
+            }
+        }
+        let error = external.as_ref().err().cloned();
+        if let Ok(scores) = external { results = crate::native_rerank::fuse(results, &scores, alpha); }
+        results.truncate(k);
+        river["results"] = serde_json::json!(results);
+        river["queryTags"] = serde_json::json!({"matchedTags":metadata["matchedTags"],
+            "coreTagsMatched":metadata["coreTagsMatched"],"sourceMode":"rust_parallel"});
+        river["diagnostics"]["nativeRerank"] = serde_json::json!({
+            "backend":backend,"error":error,"parallel":true,"externalCandidates":external_docs.len(),
+            "intermediateCandidatesCrossedNapi":false
+        });
+        drop(admission);
+        Ok(river.to_string())
+    }
+
     #[napi]
     pub fn execute_light_memo_query(&self, plan_json: String, query: Float32Array)
         -> Result<AsyncTask<TrackedTask<crate::light_memo::LightMemoTask>>> {

@@ -1,5 +1,6 @@
 #![deny(clippy::all)]
 
+mod native_rerank;
 mod text;
 mod global_chunks;
 mod light_memo;

@@ -2,7 +2,7 @@
 
 > **SQLite 权威事实层 × TDB 2-bit 冲程检索 × AGS 统一背景场 × Spike 有界传播与请求级动态虫洞 × RiverMemo 共享预算双场投影与统一泛函**
 >
-> 更新日期：2026-10-21。本文说明当前数据库实现：原空间重正交化 AGS 统一几何、双场投影预算、请求级向量复用与动态虫洞，以及它们与事实存储、检索和拓扑读出的协作方式。
+> 更新日期：2026-10-22。本文说明当前数据库实现：原空间重正交化 AGS 统一几何、双场投影预算、请求级向量复用与动态虫洞，以及原生并发双排与事实存储、检索和拓扑读出的协作方式。
 
 Vexus-Lite 已不只是一个“由 JavaScript 调用的向量索引”。它是 VCPToolBox 的嵌入式原生知识与记忆数据引擎：从事实事务、向量路由、几何预计算、传播观测，到候选精排和结果回填，在同一个 Rust 原生模块中协作完成。
 
@@ -502,6 +502,20 @@ RAGDiary 的被动渠道有明确的控制面，而不是每轮无差别地执�
 在这条被动生产链中，JavaScript 主要组织占位符、时间表达式、BM25 文件级证据及历史主题计划；启用原生联合路径后，Chunk 候选展开、向量融合、去重与拓扑排序交给 Rust，而不是逐候选搬回 JavaScript 计算。这里的候选展开也不等于后置的完整父文档读取。
 
 实现见 [RAGDiary 原生查询计划](../Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js:3031) 与 [联合查询调用](../Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js:3199)。
+
+### 原生 Rerank+：Sense 与候选召回并行，HTTP 与拓扑读出并行
+
+新增 [原生并发入口](src/knowledge_runtime.rs:2452) 与 [HTTP / RRF 单元](src/native_rerank.rs:1)。调用方只提交查询、作用域与计划；Rust 同时启动 Sense 和 TDB 候选召回。候选就绪后，外部精排立即开始，不必等待 Sense；RiverMemo 等待 Sense 后读取同一候选域，最后在 Rust 内融合排位，仅返回有界结果。中间候选正文不再为外部精排往返 JavaScript；HTTP 等待期间不持有 SQL 事务或索引读锁。
+
+- **适用范围**：RAGDiary 常规 Rerank+，支持联合日记本与历史霰弹枪查询。要求原生联合查询已启用且新 ABI 可用。普通 Rerank，以及 Time、BM25、TimeDecay 和共享元思考观测组合继续走既有兼容路径。LightMemo 不受此次改动影响。
+- **两种外部后端**：传统 Rerank 使用既有 URL、API、Model 配置；Jev 使用既有启用标志、Provider、API URL、API KEY、Model、代理和 Choice 配置，支持 Typesafe 与 OpenRouter。实现直接读取 [插件配置位置及调用代理](../KnowledgeBaseManager.js)，不修改配置文件；进程环境优先于插件文件，修改已加载的环境配置后需重启。
+- **有界网络**：传统请求每批最多25篇，按 Token 估算限制拆批，单查询并发沿用配置，全进程最多10个 HTTP 请求；连接复用，禁止重定向，响应上限4 MiB。Jev 原生路径不复用 JS 客户端的重试器，失败直接保留 RiverMemo 排名。
+- **失败语义**：未配置、网络错误、无效响应、批次失败或超时，不伪造外部排位，保留 RiverMemo 排序并返回诊断。候选、Sense 与拓扑事实代际不一致时明确报错，不混用新旧数据。任一外部批次失败将放弃本次全部外部排名。
+- **融合语义**：外部精排消费 TDB 小窗口，RiverMemo 消费更大的有界候选域；按 Chunk ID 对齐，缺失外部排位贡献零，平滑常数60，权重沿用 Rerank+ 参数。融合在 RiverMemo 返回域内进行，不额外引入被拓扑候选收缩排除的项目。这不是原先“RiverMemo 缩窗后再外排”的逐项等价替换。
+- **配置新增项**：插件环境模板中的 NativeRerankTimeoutMs 默认30000，约束外部 HTTP 排队及全部批次总等待，不是整个数据库查询时限。RAG_SHOTGUN_HISTORY_ENABLED 默认 true；设为 false 后停止历史上下文分段多向量召回，当前查询仍正常检索。见 [配置模板](../Plugin/RAGDiaryPlugin/config.env.example)。
+- **后处理边界**：最终格式化、联想、全文展开和输出去重仍沿用上层管线；输出去重可能按需读取最终少量结果的向量，并非整个请求完全没有向量跨界。
+
+协议与融合正确性覆盖见 [原生单元测试](src/native_rerank.rs:286) 和 [代理及排序回归](../tests/nativeParallelRerank.test.js)。这些测试不构成延迟或召回质量承诺；部署前须构建匹配的 release 产物。
 
 ### 8.5 LightMemo 主动渠道：对浮现的记忆继续追问
 

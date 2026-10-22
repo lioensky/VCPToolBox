@@ -122,6 +122,8 @@ class RAGDiaryPlugin {
         // 🌟 初始化缓存系统
         this.queryCacheEnabled = (process.env.RAG_QUERY_CACHE_ENABLED || 'true').toLowerCase() === 'true';
         this.contextVectorAllowApi = (process.env.CONTEXT_VECTOR_ALLOW_API_HISTORY || 'false').toLowerCase() === 'true';
+        this.shotgunHistoryEnabled = String(process.env.RAG_SHOTGUN_HISTORY_ENABLED || 'true')
+            .trim().toLowerCase() !== 'false';
 
         if (this.queryCacheEnabled) {
             this.cacheManager.createCache('query', {
@@ -1616,7 +1618,8 @@ class RAGDiaryPlugin {
 
             // 🌟 Tagmemo V4: 获取上下文分段 (Segments)
             // 结合当前查询向量和历史主题分段，形成"霰弹枪"查询阵列
-            const historySegments = this.contextVectorManager.segmentContext(messages);
+            const historySegments = this.shotgunHistoryEnabled === false
+                ? [] : this.contextVectorManager.segmentContext(messages);
             if (historySegments.length > 0) {
                 console.log(`[RAGDiaryPlugin] Tagmemo V4: Detected ${historySegments.length} history segments.`);
             }
@@ -2915,6 +2918,7 @@ class RAGDiaryPlugin {
             requestCache = null
         } = options;
 
+        const effectiveHistorySegments = this.shotgunHistoryEnabled === false ? [] : historySegments;
         const diaryNames = Array.isArray(dbName)
             ? [...new Set(dbName.map(name => String(name || '').trim()).filter(Boolean))]
             : [String(dbName || '').trim()].filter(Boolean);
@@ -3058,6 +3062,12 @@ class RAGDiaryPlugin {
         let candidates = [];
         let riverMemoInfoForBroadcast = null;
         let riverMemoAlreadyRanked = false;
+        let nativeParallelRanked = false;
+        const useNativeParallelRank = useRerankPlus
+            && !useTime && !useBM25 && !useTimeDecay
+            && !requestCache?.riverThinking
+            && typeof this.vectorDBManager?.executeParallelRerank === 'function'
+            && typeof this.vectorDBManager?.nativeKnowledgeRuntime?.executeParallelRerank === 'function';
 
         // Native Query Plan V2：RiverMemo 的当前查询、历史 Shotgun 多向量、
         // Time 文件约束及 BM25 文件级稀疏分数统一交给 Rust。JS 只保留
@@ -3156,7 +3166,7 @@ class RAGDiaryPlugin {
             const decayFactor = Number.isFinite(rawDecayFactor)
                 ? Math.max(0, Math.min(1, rawDecayFactor))
                 : 0.85;
-            const nativeHistorySegments = (historySegments || [])
+            const nativeHistorySegments = (effectiveHistorySegments || [])
                 .slice(-historySegmentLimit)
                 .map((segment, index, selected) => ({
                     vector: segment.vector,
@@ -3237,13 +3247,19 @@ class RAGDiaryPlugin {
                 requestCache.riverThinking.ready?.[Number(useGroup)]?.resolve();
             }
             const nativeResult =
-                await this.vectorDBManager.executeNativeRiverQuery(
+                await (useNativeParallelRank
+                    ? this.vectorDBManager.executeParallelRerank.bind(this.vectorDBManager)
+                    : this.vectorDBManager.executeNativeRiverQuery.bind(this.vectorDBManager))(
                     {
                         text: String(userContent || ''),
                         vector: finalQueryVector
                     },
                     {
                         diaryNames,
+                        alpha: rrfAlpha,
+                        useJev: this.rerankConfig.useJev === true,
+                        externalK: postEngineCandidateK,
+                        contextDiaryPrefixes,
                         preparedMemoObservation: thinkingObservation || undefined,
                         topK: riverTopK,
                         candidateK: riverOfferK,
@@ -3272,6 +3288,7 @@ class RAGDiaryPlugin {
                         enabled: true
                     }
                 );
+            nativeParallelRanked = useNativeParallelRank;
             // 观测在原生读出前发布，元思考与 RiverMemo 均只读借用。
             candidates = this._filterContextDuplicates(
                 (nativeResult.results || []).map(item => ({
@@ -3314,6 +3331,7 @@ class RAGDiaryPlugin {
                     nativeResult.diagnostics?.rankedCandidates || 0,
                 returnedCandidates: candidates.length,
                 nativeJointQuery: true,
+                nativeRerank: nativeResult.diagnostics?.nativeRerank || null,
                 nativeDiagnostics:
                     nativeResult.diagnostics?.nativeTopologyV3 || null
             };
@@ -3420,14 +3438,14 @@ class RAGDiaryPlugin {
             // 🌟 Tagmemo V4: Shotgun Query Implementation
             let searchVectors = [{ vector: finalQueryVector, type: 'current', weight: 1.0 }];
 
-            if (historySegments && historySegments.length > 0) {
+            if (effectiveHistorySegments && effectiveHistorySegments.length > 0) {
                 const config = this.ragParams?.RAGDiaryPlugin || {};
                 const historySegmentLimit = Math.max(0, parseInt(config.shotgunHistorySegmentLimit, 10) || 3);
                 const rawDecayFactor = Number(config.shotgunDecayFactor);
                 const decayFactor = Number.isFinite(rawDecayFactor)
                     ? Math.max(0, Math.min(1, rawDecayFactor))
                     : 0.85;
-                const recentSegments = historySegments.slice(-historySegmentLimit);
+                const recentSegments = effectiveHistorySegments.slice(-historySegmentLimit);
                 recentSegments.forEach((seg, idx) => {
                     const distance = recentSegments.length - idx;
                     const weightMultiplier = Math.pow(decayFactor, distance);
@@ -3509,7 +3527,9 @@ class RAGDiaryPlugin {
         }
 
         // 2. Rerank & Merge: 对处理后的结果进行最终精排与合并
-        if (useTime && timeRanges && timeRanges.length > 0) {
+        if (nativeParallelRanked) {
+            finalResultsForBroadcast = candidates.slice(0, finalK);
+        } else if (useTime && timeRanges && timeRanges.length > 0) {
             // 🌟 V5.4: 在 Time 模式下，强制执行语义/时间双路分配，防止 TimeDecay 或高分语义结果导致时间轴逻辑失效
             // 默认 80/20；可用 ::Time0.1 / ::Time0.3 显式控制时间路比例。
             const kTime = Math.max(1, Math.round(finalK * timeRatio));
@@ -3670,8 +3690,8 @@ class RAGDiaryPlugin {
                     const aIsAssociate = a.source === 'associate' ? 1 : 0;
                     const bIsAssociate = b.source === 'associate' ? 1 : 0;
                     if (aIsAssociate !== bIsAssociate) return aIsAssociate - bIsAssociate; // rag/time 排前
-                    const scoreA = a.rerank_score ?? a.score ?? -1;
-                    const scoreB = b.rerank_score ?? b.score ?? -1;
+                    const scoreA = a.rrf_score ?? a.rerank_score ?? a.score ?? -1;
+                    const scoreB = b.rrf_score ?? b.rerank_score ?? b.score ?? -1;
                     return scoreB - scoreA;
                 });
 
@@ -3913,14 +3933,14 @@ class RAGDiaryPlugin {
 
             if (!fileMap.has(filePath)) {
                 fileMap.set(filePath, {
-                    bestScore: r.rerank_score ?? r.score ?? 0,
+                    bestScore: r.rrf_score ?? r.rerank_score ?? r.score ?? 0,
                     bestResult: r,
                     chunkCount: 1
                 });
             } else {
                 const existing = fileMap.get(filePath);
                 existing.chunkCount++;
-                const currentScore = r.rerank_score ?? r.score ?? 0;
+                const currentScore = r.rrf_score ?? r.rerank_score ?? r.score ?? 0;
                 // 🌟 V10.1 修复：Expand 去重时，rag/time 身份优先于 associate
                 // 防止同一文件的 associate chunk（可能分数更高）覆盖原始 rag 的 source 标记
                 const existingIsOriginal = existing.bestResult.source !== 'associate';
@@ -3979,8 +3999,8 @@ class RAGDiaryPlugin {
         // 3. 合并无路径结果并按分数排序
         expandedResults.push(...noPathResults);
         expandedResults.sort((a, b) => {
-            const scoreA = a.rerank_score ?? a.score ?? 0;
-            const scoreB = b.rerank_score ?? b.score ?? 0;
+            const scoreA = a.rrf_score ?? a.rerank_score ?? a.score ?? 0;
+            const scoreB = b.rrf_score ?? b.rerank_score ?? b.score ?? 0;
             return scoreB - scoreA;
         });
 
@@ -5147,6 +5167,7 @@ class RAGDiaryPlugin {
             fresh_time_start: isFreshTimeConversationStart,
             shotgun_decay: shotgunDecayFactor,
             shotgun_history_limit: shotgunHistorySegmentLimit,
+            shotgun_history_enabled: this.shotgunHistoryEnabled !== false,
             native_time_per_diary_limit: nativeTimePerDiaryLimit,
             native_time_global_limit: nativeTimeGlobalLimit
         });
