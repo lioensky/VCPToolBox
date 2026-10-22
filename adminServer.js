@@ -316,7 +316,8 @@ const localModules = [
   // dailyNotes 必须由主进程处理：主进程持有唯一的 KnowledgeBaseManager，
   // 可将文件变更、SQLite 摄取与 Rust 索引更新纳入同一协调时序。
   // 独立管理进程通过下方 /admin_api 兜底代理透明转发，不改变前端 API。
-  "agentAssistant", // Agent 助手配置（纯文件 I/O）
+  // agentAssistant 同时包含配置 I/O 与依赖插件实例的委托接口，
+  // 必须整体走兜底代理，由主进程处理委托状态及配置热重载。
   "aiChat", // 后台 AI 代理（本地转发主服务 /v1/chat/completions，避免前端暴露 Key）
   "semanticRouter", // 语义模型路由器配置（本地 JSON 读写 + 上游模型拉取）
 ];
