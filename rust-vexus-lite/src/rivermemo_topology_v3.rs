@@ -1083,9 +1083,12 @@ pub(crate) fn load_artifact_with_connection(
     connection: &Connection,
     artifact_sig: &str,
 ) -> std::result::Result<Arc<NativeArtifact>, String> {
-    let compatible: bool = connection.query_row(
-        "SELECT EXISTS(
-           SELECT 1 FROM rivermemo_artifacts a
+    let dependency_keys = serde_json::to_string(crate::storage::MEMO_ARTIFACT_DEPENDENCIES)
+        .map_err(|e| e.to_string())?;
+    let dependency_count = crate::storage::MEMO_ARTIFACT_DEPENDENCIES.len() as i64;
+    let validate = |index_hint: &str| -> rusqlite::Result<bool> { connection.query_row(
+        &format!("SELECT EXISTS(
+           SELECT 1 FROM rivermemo_artifacts a{index_hint}
            WHERE a.artifact_sig=?1 AND a.status='ready'
              AND a.algorithm_version='memo.native-artifact-v2-binary'
              AND a.schema_version='rivermemo-persisted-artifact-v2'
@@ -1100,12 +1103,16 @@ pub(crate) fn load_artifact_with_connection(
                  AND (m.value IS NULL
                       OR CAST(m.value AS INTEGER) < CAST(d.dependency_version AS INTEGER))
              )
-         )", rusqlite::params![
-             artifact_sig,
-             serde_json::to_string(crate::storage::MEMO_ARTIFACT_DEPENDENCIES).map_err(|e|e.to_string())?,
-             crate::storage::MEMO_ARTIFACT_DEPENDENCIES.len() as i64
-         ], |row| row.get(0),
-    ).map_err(|error| format!("Validate Memo artifact dependencies failed: {}", error))?;
+         )"), rusqlite::params![artifact_sig, dependency_keys, dependency_count], |row| row.get(0),
+    ) };
+    // 覆盖索引让校验只读索引页，不必越过行里的大 payload 去读排在它后面的列；
+    // SQLite 默认会选主键索引，所以显式指定。还没建这个索引的库退回原查询，条件不变。
+    let compatible = match validate(" INDEXED BY idx_rivermemo_validation") {
+        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+            if message.starts_with("no such index") => validate(""),
+        other => other,
+    }
+    .map_err(|error| format!("Validate Memo artifact dependencies failed: {}", error))?;
     if !compatible {
         return Err("KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT: Memo artifact is incompatible (format, missing dependencies or version rollback)".to_string());
     }
@@ -3145,5 +3152,119 @@ mod provenance_codec_tests {
             serde_json::json!([0, 0.3]), serde_json::json!([7, -0.3])] {
             assert!(decode_provenance_row(&invalid).is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod validation_index_regression_tests {
+    use super::*;
+
+    const CONFLICT: &str = "KNOWLEDGE_STORE_DERIVED_DEPENDENCY_CONFLICT: Memo artifact is incompatible (format, missing dependencies or version rollback)";
+
+    fn fixture() -> (Connection, MemoRuntime) {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE rivermemo_artifacts(
+                artifact_sig TEXT PRIMARY KEY, schema_version TEXT, algorithm_version TEXT,
+                payload_codec TEXT, payload_checksum TEXT, payload BLOB, status TEXT);
+             CREATE TABLE kbm_artifact_dependencies(
+                artifact_sig TEXT, dependency_key TEXT, dependency_version TEXT,
+                PRIMARY KEY(artifact_sig,dependency_key));
+             CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             CREATE INDEX IF NOT EXISTS idx_rivermemo_validation
+                ON rivermemo_artifacts(artifact_sig,status,algorithm_version,schema_version);
+             INSERT INTO rivermemo_artifacts VALUES(
+                'fixture','rivermemo-persisted-artifact-v2','memo.native-artifact-v2-binary',
+                'bad-codec','checksum',zeroblob(1048576),'ready');
+             INSERT INTO kbm_artifact_dependencies VALUES
+                ('fixture','memo_tag_facts','7'),('fixture','derived_geometry','11');
+             INSERT INTO kbm_runtime_meta VALUES ('memo_tag_facts','7'),('derived_geometry','11');"
+        ).unwrap();
+        let runtime = MemoRuntime::new();
+        runtime.publish("fixture", Arc::new(NativeArtifact::default())).unwrap();
+        (connection, runtime)
+    }
+
+    #[test]
+    fn every_validation_branch_keeps_exact_errors_on_warm_and_cold_assets() {
+        let cases = [
+            ("ready", "", "fixture", true),
+            ("missing asset", "DELETE FROM rivermemo_artifacts", "fixture", false),
+            ("wrong signature", "", "absent", false),
+            ("pending", "UPDATE rivermemo_artifacts SET status='building'", "fixture", false),
+            ("failed", "UPDATE rivermemo_artifacts SET status='failed'", "fixture", false),
+            ("algorithm", "UPDATE rivermemo_artifacts SET algorithm_version='old'", "fixture", false),
+            ("schema", "UPDATE rivermemo_artifacts SET schema_version='old'", "fixture", false),
+            ("missing dependency", "DELETE FROM kbm_artifact_dependencies WHERE dependency_key='memo_tag_facts'", "fixture", false),
+            ("extra dependency", "INSERT INTO kbm_artifact_dependencies VALUES('fixture','extra','0')", "fixture", false),
+            ("wrong dependency", "UPDATE kbm_artifact_dependencies SET dependency_key='other' WHERE dependency_key='memo_tag_facts'", "fixture", false),
+            ("missing meta", "DELETE FROM kbm_runtime_meta WHERE key='memo_tag_facts'", "fixture", false),
+            ("null meta", "UPDATE kbm_runtime_meta SET value=NULL WHERE key='derived_geometry'", "fixture", false),
+            ("tag rollback", "UPDATE kbm_runtime_meta SET value='6' WHERE key='memo_tag_facts'", "fixture", false),
+            ("geometry rollback", "UPDATE kbm_runtime_meta SET value='10' WHERE key='derived_geometry'", "fixture", false),
+            ("advanced generations", "UPDATE kbm_runtime_meta SET value='99'", "fixture", true),
+            ("numeric cast", "UPDATE kbm_runtime_meta SET value='11x' WHERE key='derived_geometry'", "fixture", true),
+            ("unrelated dependency", "INSERT INTO kbm_artifact_dependencies VALUES('other','extra','0')", "fixture", true),
+        ];
+        for (name, mutation, signature, valid) in cases {
+            for cold in [false, true] {
+                let (connection, runtime) = fixture();
+                connection.execute_batch(mutation).unwrap();
+                if cold { runtime.clear().unwrap(); }
+                let result = load_artifact_with_connection(&runtime, &connection, signature).map(|_| ());
+                if !valid {
+                    assert_eq!(result.unwrap_err(), CONFLICT, "{name}, cold={cold}");
+                } else if cold {
+                    assert_eq!(result.unwrap_err(), "unsupported RiverMemo artifact codec: bad-codec", "{name}");
+                } else {
+                    assert!(result.is_ok(), "{name}: {result:?}");
+                }
+            }
+        }
+        let (connection, runtime) = fixture();
+        connection.execute_batch("DROP TABLE kbm_artifact_dependencies").unwrap();
+        let error = load_artifact_with_connection(&runtime, &connection, "fixture").err().unwrap();
+        assert_eq!(error, "Validate Memo artifact dependencies failed: no such table: kbm_artifact_dependencies");
+    }
+
+    #[test]
+    fn a_database_without_the_index_falls_back_to_the_plain_query() {
+        let cases = [
+            ("ready", "", true),
+            ("pending", "UPDATE rivermemo_artifacts SET status='building'", false),
+            ("tag rollback", "UPDATE kbm_runtime_meta SET value='6' WHERE key='memo_tag_facts'", false),
+        ];
+        for (name, mutation, valid) in cases {
+            let (connection, runtime) = fixture();
+            connection.execute_batch("DROP INDEX idx_rivermemo_validation").unwrap();
+            connection.execute_batch(mutation).unwrap();
+            let result = load_artifact_with_connection(&runtime, &connection, "fixture").map(|_| ());
+            if valid {
+                assert!(result.is_ok(), "{name}: {result:?}");
+            } else {
+                assert_eq!(result.unwrap_err(), CONFLICT, "{name}");
+            }
+        }
+        let (connection, runtime) = fixture();
+        connection.execute_batch("DROP INDEX idx_rivermemo_validation; DROP TABLE kbm_artifact_dependencies").unwrap();
+        let error = load_artifact_with_connection(&runtime, &connection, "fixture").err().unwrap();
+        assert_eq!(error, "Validate Memo artifact dependencies failed: no such table: kbm_artifact_dependencies");
+    }
+
+    #[test]
+    fn a_separate_connection_invalidates_an_already_cached_asset() {
+        let path = std::env::temp_dir().join(format!("validation-index-{}.sqlite", std::process::id()));
+        let (connection, runtime) = fixture();
+        connection.execute("VACUUM INTO ?1", [path.to_str().unwrap()]).unwrap();
+        let reader = Connection::open(&path).unwrap();
+        let writer = Connection::open(&path).unwrap();
+        assert!(load_artifact_with_connection(&runtime, &reader, "fixture").is_ok());
+        writer.execute("UPDATE rivermemo_artifacts SET status='failed'", []).unwrap();
+        assert_eq!(load_artifact_with_connection(&runtime, &reader, "fixture").err().unwrap(), CONFLICT);
+        writer.execute("UPDATE rivermemo_artifacts SET status='ready'", []).unwrap();
+        writer.execute("UPDATE kbm_runtime_meta SET value='0' WHERE key='memo_tag_facts'", []).unwrap();
+        assert_eq!(load_artifact_with_connection(&runtime, &reader, "fixture").err().unwrap(), CONFLICT);
+        drop(writer); drop(reader);
+        std::fs::remove_file(path).unwrap();
     }
 }
