@@ -439,7 +439,7 @@ pub(crate) fn read_unit_vectors(
 /// Build-only immutable f64 rows. The SQL snapshot is copied in bounded batches;
 /// Rayon readers borrow mapped slices instead of retaining N heap vectors.
 /// This is not a durable asset: no signature or mathematical precision changes.
-struct UnitVectorWorkspace {
+pub(crate) struct UnitVectorWorkspace {
     map: Option<memmap2::Mmap>,
     path: std::path::PathBuf,
     slots: HashMap<i64, usize>,
@@ -448,11 +448,11 @@ struct UnitVectorWorkspace {
 }
 
 impl UnitVectorWorkspace {
-    fn empty(dimension: usize) -> Self {
+    pub(crate) fn empty(dimension: usize) -> Self {
         Self { map: None, path: Default::default(), slots: HashMap::new(), norms: Vec::new(), dimension }
     }
 
-    fn build(connection: &Connection, ids: &[i64], dimension: usize)
+    pub(crate) fn build(connection: &Connection, ids: &[i64], dimension: usize)
         -> std::result::Result<Self, String>
     {
         use std::io::Write;
@@ -518,7 +518,7 @@ impl UnitVectorWorkspace {
         self.norms[slot]
     }
 
-    fn get(&self, id: &i64) -> Option<&[f64]> {
+    pub(crate) fn get(&self, id: &i64) -> Option<&[f64]> {
         let slot = *self.slots.get(id)?;
         let values: &[f64] = bytemuck::cast_slice(self.map.as_ref()?.as_ref());
         let start = slot * self.dimension;
