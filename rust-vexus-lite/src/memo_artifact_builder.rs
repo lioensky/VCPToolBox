@@ -191,9 +191,51 @@ fn add_edge(matrix: &mut HashMap<i64, HashMap<i64, f64>>, source: i64, target: i
     *matrix.entry(source).or_default().entry(target).or_default() += weight;
 }
 
+/// Unit vectors of one build snapshot, keyed by Tag ID.
+trait UnitVectors {
+    fn unit_vector(&self, id: i64) -> Option<&[f64]>;
+}
+
+impl UnitVectors for crate::memo_geometry::UnitVectorWorkspace {
+    fn unit_vector(&self, id: i64) -> Option<&[f64]> {
+        self.get(&id)
+    }
+}
+
+impl UnitVectors for HashMap<i64, Vec<f64>> {
+    fn unit_vector(&self, id: i64) -> Option<&[f64]> {
+        self.get(&id).map(Vec::as_slice)
+    }
+}
+
+fn semantic_gain_enabled(config: &Value) -> bool {
+    let ordered = config.get("orderedCooccurrence").unwrap_or(&Value::Null);
+    boolean(ordered, &["semanticGainEnabled"], false)
+        || boolean(ordered, &["semanticGain", "enabled"], false)
+}
+
+/// Tags of the files that contribute cooccurrence (2 to 100 Tags), sorted.
+fn cooccurrence_tag_ids(rows: &[FileTag]) -> Vec<i64> {
+    let mut ids = Vec::new();
+    let mut offset = 0usize;
+    while offset < rows.len() {
+        let mut end = offset + 1;
+        while end < rows.len() && rows[end].file_id == rows[offset].file_id {
+            end += 1;
+        }
+        if end - offset >= 2 && end - offset <= 100 {
+            ids.extend(rows[offset..end].iter().map(|tag| tag.tag_id));
+        }
+        offset = end;
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 fn build_fact_matrix(
     rows: &[FileTag],
-    mut load_vectors: impl FnMut(&[i64]) -> std::result::Result<HashMap<i64, Vec<f64>>, String>,
+    vectors: &dyn UnitVectors,
     anchor_gain: &HashMap<i64, f64>,
     config: &Value,
 ) -> std::result::Result<HashMap<i64, HashMap<i64, f64>>, String> {
@@ -207,8 +249,7 @@ fn build_fact_matrix(
     let reverse_guard = number(ordered, &["reverseInversionGuard"], 0.95).clamp(0.0, 1.0);
     let reverse_anchor_enabled = boolean(ordered, &["reverseAnchorBoost"], false);
     let reverse_anchor_max = number(ordered, &["reverseAnchorMax"], 1.5).max(1.0);
-    let semantic_enabled = boolean(ordered, &["semanticGainEnabled"], false)
-        || boolean(ordered, &["semanticGain", "enabled"], false);
+    let semantic_enabled = semantic_gain_enabled(config);
     let semantic_peak = number(
         ordered,
         &["semanticGainPeak"],
@@ -226,11 +267,11 @@ fn build_fact_matrix(
         number(ordered, &["semanticGain", "lowSimFallback"], 0.1),
     );
 
-    let semantic_gain = |vectors: &HashMap<i64, Vec<f64>>, left: i64, right: i64| -> f64 {
+    let semantic_gain = |left: i64, right: i64| -> f64 {
         if !semantic_enabled {
             return 1.0;
         }
-        let similarity = vectors.get(&left).zip(vectors.get(&right))
+        let similarity = vectors.unit_vector(left).zip(vectors.unit_vector(right))
             .map(|(a,b)| crate::memo_geometry::dot(a,b).clamp(-1.0,1.0))
             .unwrap_or(low_fallback);
         if similarity < 0.15 {
@@ -243,6 +284,10 @@ fn build_fact_matrix(
         }
     };
 
+    // One gain per unordered Tag pair. `dot` multiplies the same two vectors in
+    // the same index order whichever comes first, so the stored value has the
+    // bits every later file would compute. Bounded by the number of fact pairs.
+    let mut pair_gains: HashMap<(i64, i64), f64> = HashMap::new();
     let mut matrix = HashMap::new();
     let mut offset = 0usize;
     while offset < rows.len() {
@@ -253,13 +298,6 @@ fn build_fact_matrix(
         }
         let tags = &rows[offset..end];
         if tags.len() >= 2 && tags.len() <= 100 {
-            // VCP: bound high-dimensional workspace to one eligible file.
-            // No vector SQL is needed when semantic gain is disabled.
-            let vectors = if semantic_enabled {
-                load_vectors(&tags.iter().map(|tag| tag.tag_id).collect::<Vec<_>>())?
-            } else {
-                HashMap::new()
-            };
             for left_index in 0..tags.len() {
                 for right_index in (left_index + 1)..tags.len() {
                     let left = &tags[left_index];
@@ -267,7 +305,13 @@ fn build_fact_matrix(
                     if left.tag_id == right.tag_id {
                         continue;
                     }
-                    let semantic = semantic_gain(&vectors, left.tag_id, right.tag_id);
+                    let semantic = if semantic_enabled {
+                        let pair = (left.tag_id.min(right.tag_id), left.tag_id.max(right.tag_id));
+                        *pair_gains.entry(pair)
+                            .or_insert_with(|| semantic_gain(left.tag_id, right.tag_id))
+                    } else {
+                        1.0
+                    };
                     if left.position > 0 && right.position > 0 {
                         let count = tags.len() as f64;
                         let phi_left =
@@ -621,13 +665,17 @@ fn run_build(
         with_registered_read_transaction(db_path, |readonly| {
             let rows = load_file_tags(readonly)?;
             let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
-            let fact = build_fact_matrix(
-                &rows,
-                |ids| crate::memo_geometry::read_unit_vectors(readonly, ids, dimension)
-                    .map(|(vectors, _)| vectors),
-                &anchor_gain,
-                &input.effective_config,
-            )?;
+            // Each Tag vector is read and normalised once per snapshot into the
+            // memory-mapped f64 workspace that geometry precompute also uses, instead
+            // of once per file; no vector SQL when semantic gain is disabled.
+            let vectors = if semantic_gain_enabled(&input.effective_config) {
+                crate::memo_geometry::UnitVectorWorkspace::build(
+                    readonly, &cooccurrence_tag_ids(&rows), dimension)?
+            } else {
+                crate::memo_geometry::UnitVectorWorkspace::empty(dimension)
+            };
+            let fact = build_fact_matrix(&rows, &vectors, &anchor_gain, &input.effective_config)?;
+            drop(vectors);
             let database_generation = database_generation(readonly)?;
             let dependencies = crate::storage::DerivedDependencies::capture(
                 readonly, crate::storage::MEMO_ARTIFACT_DEPENDENCIES,
@@ -987,35 +1035,44 @@ mod fact_dependency_tests {
 mod bounded_workspace_tests {
     use super::*;
 
+    struct NoVectors;
+    impl UnitVectors for NoVectors {
+        fn unit_vector(&self, _: i64) -> Option<&[f64]> {
+            panic!("semantic gain disabled must not read vectors")
+        }
+    }
+
     #[test]
-    fn file_vector_workspace_is_bounded_and_matches_full_source_bits() {
+    fn mapped_workspace_matches_in_memory_vectors_bits() {
+        // Consecutive files share three Tags, so most pairs recur across files.
         let rows: Vec<_> = (1..=300).flat_map(|file_id| {
             (1..=4).map(move |position| FileTag {
                 file_id, tag_id: file_id + position, position,
             })
         }).collect();
-        let vectors: HashMap<_, _> = (1..=304).map(|id| {
-            let x = id as f64 * 0.013;
-            (id, vec![x.cos(), x.sin()])
-        }).collect();
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY, vector BLOB)").unwrap();
+        for id in 1..=304_i64 {
+            let x = id as f32 * 0.013;
+            let bytes: Vec<u8> = [x.cos(), x.sin()].iter().flat_map(|v| v.to_le_bytes()).collect();
+            connection.execute("INSERT INTO tags VALUES (?1,?2)", params![id, bytes]).unwrap();
+        }
+        connection.execute("UPDATE tags SET vector=zeroblob(8) WHERE id=7", []).unwrap();
+        let ids = cooccurrence_tag_ids(&rows);
+        assert_eq!(ids.len(), 303);
+        let workspace = crate::memo_geometry::UnitVectorWorkspace::build(&connection, &ids, 2).unwrap();
+        let (in_memory, _) = crate::memo_geometry::read_unit_vectors(&connection, &ids, 2).unwrap();
         let config = json!({"orderedCooccurrence":{"semanticGainEnabled":true}});
-        let mut calls = 0;
-        let bounded = build_fact_matrix(&rows, |ids| {
-            calls += 1;
-            assert!(ids.len() <= 100);
-            Ok(ids.iter().filter_map(|id| vectors.get(id).map(|v| (*id, v.clone()))).collect())
-        }, &HashMap::new(), &config).unwrap();
-        let full = build_fact_matrix(&rows, |_| Ok(vectors.clone()),
-            &HashMap::new(), &config).unwrap();
-        assert_eq!(calls, 300);
-        for (source, edges) in &full {
+        let mapped = build_fact_matrix(&rows, &workspace, &HashMap::new(), &config).unwrap();
+        let heap = build_fact_matrix(&rows, &in_memory, &HashMap::new(), &config).unwrap();
+        assert_eq!(mapped.len(), heap.len());
+        for (source, edges) in &heap {
+            assert_eq!(mapped[source].len(), edges.len());
             for (target, weight) in edges {
-                assert_eq!(bounded[source][target].to_bits(), weight.to_bits());
+                assert_eq!(mapped[source][target].to_bits(), weight.to_bits());
             }
         }
-        let plain = build_fact_matrix(&rows, |_| {
-            panic!("semantic gain disabled must not read vectors")
-        }, &HashMap::new(), &json!({})).unwrap();
+        let plain = build_fact_matrix(&rows, &NoVectors, &HashMap::new(), &json!({})).unwrap();
         assert!(!plain.is_empty());
     }
 }
