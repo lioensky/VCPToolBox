@@ -3089,7 +3089,32 @@ class RAGDiaryPlugin {
         let riverMemoInfoForBroadcast = null;
         let riverMemoAlreadyRanked = false;
         let nativeParallelRanked = false;
-        const useNativeParallelRank = useRerankPlus
+        const useGreenLane = useRerankPlus
+            && this.vectorDBManager?.config?.nativeRiverQueryEnabled === true
+            && typeof this.vectorDBManager?.executeExternalRerank === 'function'
+            && typeof this.vectorDBManager?.nativeKnowledgeRuntime?.executeExternalRerank === 'function';
+        // Start HTTP preparation before Time plans and shared Sense. Catch immediately
+        // so a slow River branch cannot leave a rejected external task unobserved.
+        const greenStartedAt = Date.now();
+        const sharedSparsePlan = useGreenLane && useBM25
+            ? this._getBM25FileCandidates(
+                diaryNames, userContent, aiContent,
+                Math.max(kForSearch, finalK * (useRerank ? 5 : 3)),
+                bm25Mode, bm25Weight
+            ) : null;
+        const greenTask = useGreenLane ? (async () => {
+            const sparse = sharedSparsePlan ? await sharedSparsePlan : null;
+            return this.vectorDBManager.executeExternalRerank(
+                { text: String(userContent || ''), vector: finalQueryVector },
+                {
+                    diaryNames, topK: finalK, candidateK: Math.max(postEngineCandidateK * 2, 16),
+                    externalK: postEngineCandidateK, useJev, jevPrompt,
+                    contextDiaryPrefixes, fileCandidates: sparse?.files || [],
+                    bm25Weight: bm25Weight ?? 0.6
+                }
+            );
+        })().then(value => ({ value }), error => ({ error })) : null;
+        const useNativeParallelRank = !useGreenLane && useRerankPlus
             && !useTime && !useBM25 && !useTimeDecay
             && !requestCache?.riverThinking
             && typeof this.vectorDBManager?.executeParallelRerank === 'function'
@@ -3111,14 +3136,14 @@ class RAGDiaryPlugin {
                     kForSearch,
                     finalK * (useRerank ? 5 : 3)
                 );
-                bm25InfoForBroadcast = await this._getBM25FileCandidates(
+                bm25InfoForBroadcast = await (sharedSparsePlan || this._getBM25FileCandidates(
                     diaryNames,
                     userContent,
                     aiContent,
                     bm25Limit,
                     bm25Mode,
                     bm25Weight
-                );
+                ));
                 console.log(
                     `[RAGDiaryPlugin] BM25 file plan: ` +
                     `mode=${bm25Mode}, files=${bm25InfoForBroadcast.files.length}, ` +
@@ -3288,6 +3313,7 @@ class RAGDiaryPlugin {
                         externalK: postEngineCandidateK,
                         contextDiaryPrefixes,
                         preparedMemoObservation: thinkingObservation || undefined,
+                        enhancedAnn: useGreenLane,
                         topK: riverTopK,
                         candidateK: riverOfferK,
                         coreTags: Array.isArray(ghostTags) ? ghostTags : [],
@@ -3559,8 +3585,9 @@ class RAGDiaryPlugin {
         } else if (useTime && timeRanges && timeRanges.length > 0) {
             // 🌟 V5.4: 在 Time 模式下，强制执行语义/时间双路分配，防止 TimeDecay 或高分语义结果导致时间轴逻辑失效
             // 默认 80/20；可用 ::Time0.1 / ::Time0.3 显式控制时间路比例。
-            const kTime = Math.max(1, Math.round(finalK * timeRatio));
-            const kSemantic = Math.max(1, finalK - kTime);
+            const riverWindow = useGreenLane ? postEngineCandidateK : finalK;
+            const kTime = Math.max(1, Math.round(riverWindow * timeRatio));
+            const kSemantic = Math.max(1, riverWindow - kTime);
 
             const semanticCandidates = candidates.filter(c => c.source === 'rag');
             const timeCandidates = candidates.filter(c => c.source === 'time');
@@ -3568,7 +3595,7 @@ class RAGDiaryPlugin {
             let finalSemantic = [];
             let finalTime = [];
 
-            if (useRerank) {
+            if (useRerank && !useGreenLane) {
                 // 分别对两路进行 Rerank（如果样本足够）
                 // Rerank+ 需要每一路在进入外部精排前保留当前引擎的检索排位。
                 semanticCandidates.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
@@ -3589,14 +3616,34 @@ class RAGDiaryPlugin {
                 finalTime = timeCandidates.slice(0, kTime);
             }
             finalResultsForBroadcast = [...finalSemantic, ...finalTime];
-        } else if (useRerank && candidates.length > 0) {
+        } else if (useRerank && !useGreenLane && candidates.length > 0) {
             candidates.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
             const rrfOpts = useRerankPlus ? { alpha: rrfAlpha } : null;
             finalResultsForBroadcast = await this._rerankDocuments(userContent, candidates, finalK, rrfOpts, rankOptions);
         } else {
             // 默认按 score 排序并截断
             candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
-            finalResultsForBroadcast = candidates.slice(0, finalK);
+            finalResultsForBroadcast = candidates.slice(0, useGreenLane ? postEngineCandidateK : finalK);
+        }
+
+        if (greenTask) {
+            const external = await greenTask;
+            if (external.error) {
+                console.warn(`[RAGDiaryPlugin] Green lane failed; keeping River order: ${external.error.message}`);
+                finalResultsForBroadcast = finalResultsForBroadcast.slice(0, finalK);
+            } else {
+                finalResultsForBroadcast = this._fuseIndependentRankings(
+                    finalResultsForBroadcast, external.value.results, rrfAlpha, finalK
+                );
+            }
+            const diagnostics = {
+                ...external.value?.diagnostics?.nativeRerank,
+                parallel: true, independentPools: true,
+                error: external.error?.message || null,
+                totalMs: Date.now() - greenStartedAt
+            };
+            riverMemoInfoForBroadcast = { ...riverMemoInfoForBroadcast, nativeRerank: diagnostics };
+            console.log(`[RAGDiaryPlugin] Green lane RRF: diaries=${dbScopeKey}, backend=${useJev ? 'jev' : 'rerank'}, httpReadyMs=${diagnostics.httpReadyMs ?? 'n/a'}, totalMs=${diagnostics.totalMs}, returned=${finalResultsForBroadcast.length}, degraded=${!!external.error}.`);
         }
 
         // 统一添加 source 标识并格式化
@@ -3801,6 +3848,39 @@ class RAGDiaryPlugin {
      * 将限定日记本作用域内的候选交给 RiverMemo Topology V3。
      * 不做静默引擎回退：RiverMemo 不可用或返回坏结果时抛错，由占位符外层生成明确失败信息。
      */
+    _fuseIndependentRankings(river, external, alpha = 0.5, limit = 10) {
+        const weight = Math.max(0, Math.min(1, Number(alpha ?? 0.5)));
+        const merged = new Map();
+        const identity = doc => {
+            const id = Number(doc.chunkId ?? doc.id);
+            return Number.isSafeInteger(id) && id > 0 ? `id:${id}` : `text:${String(doc.text || '').trim()}`;
+        };
+        for (const [items, contribution, rankField] of [
+            [river, 1 - weight, 'retrieval_rank'],
+            [external, weight, 'rerank_rank']
+        ]) {
+            const seen = new Set();
+            for (const doc of items || []) {
+                const key = identity(doc);
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const rank = seen.size;
+                const previous = merged.get(key);
+                const result = previous || { ...doc, rrf_score: 0 };
+                if (rankField === 'rerank_rank' && doc.rerank_score !== undefined) {
+                    result.rerank_score = doc.rerank_score;
+                }
+                result[rankField] = rank;
+                result.rrf_score += contribution / (60 + rank);
+                merged.set(key, result);
+            }
+        }
+        return [...merged.values()].filter(doc => doc.rrf_score > 0)
+            .sort((a, b) => b.rrf_score - a.rrf_score
+                || identity(a).localeCompare(identity(b)))
+            .slice(0, limit);
+    }
+
     async _rerankRAGCandidatesWithRiverMemo({
         queryVector,
         queryText,
@@ -5182,6 +5262,7 @@ class RAGDiaryPlugin {
         const ranking = this._parseRerankModifiers(modifiers);
         return this.cacheManager.generateKey({
             ranking: ranking.useRerank ? {
+                fusionVersion: ranking.useRerankPlus ? 'independent-green-v1' : null,
                 useJev: ranking.useJev,
                 promptHash: ranking.useJev ? crypto.createHash('sha256')
                     .update(ranking.jevPrompt || '').digest('hex') : null

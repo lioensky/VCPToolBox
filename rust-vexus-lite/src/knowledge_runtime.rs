@@ -2447,6 +2447,20 @@ impl NativeKnowledgeRuntime {
             })
     }
 
+    /// Separate ABI gate: older binaries must never interpret external-only plans
+    /// as legacy coupled Memo queries.
+    #[napi]
+    pub async fn execute_external_rerank(
+        &self, request_json: String, query: Float32Array,
+    ) -> Result<String> {
+        let mut plan: serde_json::Value = serde_json::from_str(&request_json)
+            .map_err(|_| Error::from_reason("NATIVE_RERANK_INVALID_PLAN"))?;
+        let object = plan.as_object_mut()
+            .ok_or_else(|| Error::from_reason("NATIVE_RERANK_INVALID_PLAN"))?;
+        object.insert("externalOnly".into(), serde_json::json!(true));
+        self.execute_parallel_rerank(plan.to_string(), query, Float32Array::new(Vec::new())).await
+    }
+
     /// Native dual ranking: ANN and Sense start together; HTTP never holds SQL locks.
     #[napi]
     pub async fn execute_parallel_rerank(
@@ -2515,6 +2529,98 @@ impl NativeKnowledgeRuntime {
             candidate_k, final_k:candidate_k, snapshots,
             semantic_dedup:Some(SemanticDedupConfig { db_path:db_path.clone(), threshold:0.92 }),
         };
+        // Independent green lane: no Memo artifact, Sense, vector hydration or
+        // semantic pairwise dedup before HTTP. SQL scope/publication gates remain.
+        if plan["externalOnly"].as_bool() == Some(true) {
+            let started = std::time::Instant::now();
+            ann.semantic_dedup = None;
+            ann.final_k = external_k.saturating_mul(2).min(candidate_k);
+            let excluded: Vec<String> = serde_json::from_value(
+                plan["excludedPrefixes"].clone()).unwrap_or_default();
+            let sparse_files: Vec<NativeFileCandidate> = serde_json::from_value(
+                plan["fileCandidates"].clone()).unwrap_or_default();
+            let sparse_weight = plan["bm25Weight"].as_f64().unwrap_or(0.6).clamp(0.0, 1.0);
+            let docs = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>> {
+                let payload = ann.compute()?;
+                let output: serde_json::Value = serde_json::from_str(&payload)
+                    .map_err(|_| Error::from_reason("NATIVE_RERANK_ANN_DECODE"))?;
+                let scores: HashMap<i64, serde_json::Value> = output["results"]
+                    .as_array().into_iter().flatten()
+                    .filter_map(|row| row["id"].as_i64().map(|id| (id, row["score"].clone())))
+                    .collect();
+                let mut rows = output["hydratedChunks"].as_array().cloned().unwrap_or_default();
+                for row in &mut rows {
+                    row["score"] = scores.get(&row["id"].as_i64().unwrap_or(0))
+                        .cloned().unwrap_or(serde_json::json!(0));
+                }
+                if !sparse_files.is_empty() {
+                    let _gate = ann.query_guard(&ann.index_scopes)?;
+                    crate::storage::with_registered_read_transaction_napi(&db_path, |connection| {
+                        let mut statement = connection.prepare(
+                            "SELECT c.id,c.content,f.path,f.diary_name,f.id FROM chunks c
+                             JOIN files f ON f.id=c.file_id WHERE f.path=?1"
+                        ).map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+                        for file in sparse_files.iter().take(255) {
+                            let found = statement.query_map([file.path.replace('\\', "/")], |r| {
+                                Ok(serde_json::json!({
+                                    "id":r.get::<_,i64>(0)?, "chunkId":r.get::<_,i64>(0)?,
+                                    "text":r.get::<_,String>(1)?, "sourceFile":r.get::<_,String>(2)?,
+                                    "diaryName":r.get::<_,String>(3)?, "fileId":r.get::<_,i64>(4)?,
+                                    "score": file.normalized_bm25_score.clamp(0.0,1.0)*sparse_weight
+                                }))
+                            }).map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+                            for row in found.take(512) {
+                                rows.push(row.map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?);
+                            }
+                        }
+                        Ok(())
+                    })?;
+                    rows.sort_by(|a,b| b["score"].as_f64().unwrap_or(0.0)
+                        .total_cmp(&a["score"].as_f64().unwrap_or(0.0)));
+                }
+                let mut seen = HashSet::new();
+                Ok(rows.iter()
+                    .filter(|row| {
+                        let text = row["text"].as_str().unwrap_or("").trim();
+                        names.contains(&row["diaryName"].as_str().unwrap_or("").to_string())
+                            && !text.is_empty()
+                            && !excluded.iter().any(|prefix| !prefix.is_empty() && text.contains(prefix))
+                            && seen.insert(text.to_string())
+                    })
+                    .take(external_k)
+                    .map(|row| {
+                        let mut row = row.clone();
+                        row["fullPath"] = row["sourceFile"].clone();
+                        row["source"] = serde_json::json!("rag");
+                        row
+                    }).collect())
+            }).await.map_err(|_| Error::from_reason("NATIVE_RERANK_ANN_TASK"))??;
+            let ready_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let ranker = ranker.map_err(Error::from_reason)?;
+            let backend = ranker.backend();
+            let scores = if docs.len() < 2 {
+                docs.iter().filter_map(|doc| doc["id"].as_i64().map(|id| (id, 1.0))).collect()
+            } else {
+                ranker.rank(&query_text, &docs).await.map_err(Error::from_reason)?
+            };
+            let originals: HashMap<i64, &serde_json::Value> = docs.iter()
+                .filter_map(|doc| doc["id"].as_i64().map(|id| (id, doc))).collect();
+            let results: Vec<serde_json::Value> = scores.iter().enumerate()
+                .filter_map(|(index, (id, score))| originals.get(id).map(|doc| {
+                    let mut doc = (*doc).clone();
+                    doc["rerank_score"] = serde_json::json!(score);
+                    doc["rerank_rank"] = serde_json::json!(index + 1);
+                    doc
+                })).collect();
+            return Ok(serde_json::json!({
+                "results": results,
+                "diagnostics": {"nativeRerank": {
+                    "backend": backend, "greenLane": true,
+                    "externalCandidates": docs.len(), "httpReadyMs": ready_ms,
+                    "totalMs": started.elapsed().as_secs_f64() * 1000.0
+                }}
+            }).to_string());
+        }
         let index = self.global_tag_index.clone();
         let revision = self.global_tag_content_revision.clone();
         let runtime = self.memo_runtime.clone();

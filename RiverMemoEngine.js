@@ -249,9 +249,10 @@ class RiverMemoEngine {
                         error.code = 'NATIVE_RIVER_QUERY_EMPTY_DIARY_SCOPE';
                         throw error;
                     }
-                    const queryVector = query?.vector instanceof Float32Array
-                        ? query.vector
-                        : new Float32Array(query?.vector || []);
+                    const annVector = options.nativeAnnVector || query?.vector;
+                    const queryVector = annVector instanceof Float32Array
+                        ? annVector
+                        : new Float32Array(annVector || []);
                     const nativePerIndexK = Math.max(
                         1,
                         Math.floor(Number(options.nativePerIndexK) || 300)
