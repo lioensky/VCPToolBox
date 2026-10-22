@@ -2638,6 +2638,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             queryText: String(query.text || ''), topK: options.topK,
             candidateK: options.candidateK, externalK: options.externalK,
             alpha: options.alpha ?? 0.5, useJev: options.useJev,
+            jevPrompt: options.jevPrompt,
             supplementalQueries: (options.supplementalQueryVectors || []).map(entry => ({
                 vector: Array.from(entry.vector || []), weight: entry.weight ?? 1
             })),

@@ -30,10 +30,13 @@ test('parallel proxy sends a plan, not a prepared Sense or candidate bodies', as
     };
     const result = await owner.executeParallelRerank({ text: 'query', vector }, {
         diaryNames: ['Diary', 'Diary'], topK: 3, externalK: 6, alpha: 0.7,
+        useJev: true, jevPrompt: 'numbered prompt',
         supplementalQueryVectors: [{ vector: [0, 1], weight: 0.8 }]
     });
     assert.deepEqual(received.diaryNames, ['Diary']);
     assert.equal(received.alpha, 0.7);
+    assert.equal(received.useJev, true);
+    assert.equal(received.jevPrompt, 'numbered prompt');
     assert.equal(received.candidates, undefined);
     assert.equal(received.observationHandle, undefined);
     assert.equal(received.supplementalQueries[0].weight, 0.8);

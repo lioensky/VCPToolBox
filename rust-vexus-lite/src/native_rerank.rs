@@ -128,6 +128,16 @@ impl Ranker {
         })
     }
 
+    /// Per-query override; never mutates process configuration or another ranker.
+    pub(crate) fn with_jev_prompt(mut self, prompt: Option<String>) -> Self {
+        if self.jev {
+            if let Some(prompt) = prompt.filter(|value| !value.trim().is_empty()) {
+                self.prompt = prompt;
+            }
+        }
+        self
+    }
+
     pub(crate) fn backend(&self) -> &'static str {
         if self.jev { "jev" } else { "rerank" }
     }
@@ -364,6 +374,22 @@ mod tests {
             assert!(ranker.rank("query", &[json!({"id":1,"text":"one"})]).await.is_err());
             server.abort();
         }
+    }
+
+    #[test]
+    fn prompt_override_is_local_and_preserves_legacy_default() {
+        let values = HashMap::from([
+            ("JEV_API_KEY".into(), "fixture".into()),
+            ("JevAdvancedRerank".into(), "true".into()),
+            ("JevRerankPrompt".into(), "legacy default".into()),
+        ]);
+        let legacy = Ranker::from_values(&values, None).unwrap();
+        assert_eq!(legacy.backend(), "jev");
+        let numbered = legacy.clone().with_jev_prompt(Some("preset two".into()));
+        assert_eq!(numbered.prompt, "preset two");
+        assert_eq!(legacy.prompt, "legacy default");
+        assert_eq!(legacy.clone().with_jev_prompt(None).prompt, "legacy default");
+        assert_eq!(legacy.with_jev_prompt(Some("  ".into())).prompt, "legacy default");
     }
 
     #[test]

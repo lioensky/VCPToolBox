@@ -175,6 +175,9 @@ class RAGDiaryPlugin {
             useJev: jevAdvancedRerank,
             jevPrompt: process.env.JevRerankPrompt
                 || '请选择最值得用于回答当前查询的记忆。请从逻辑关联、记忆叙事连续性、信息解释力三个层面综合判断；优先保留能直接解释当前问题、补足关键背景或维持人物与事件连续性的内容，压低仅有表面词汇重合、重复、跑题或缺乏上下文价值的内容。',
+            jevPrompts: Object.fromEntries([1, 2, 3, 4].map(number => [
+                number, String(process.env[`JevRerankPrompt${number}`] || '').trim()
+            ])),
             jevMaxChoices: Number.isFinite(configuredJevMaxChoices)
                 ? Math.max(2, Math.min(255, configuredJevMaxChoices))
                 : 255,
@@ -2569,6 +2572,30 @@ class RAGDiaryPlugin {
         return Math.max(0, Math.min(1, parsedRatio));
     }
 
+    /**
+     * 显式 Jev 优先于 Rerank；所有选项均为请求局部值，禁止修改共享配置。
+     * Jev2 中的 2 是提示词编号，+ 后的数值才是外部精排的 RRF 权重。
+     */
+    _parseRerankModifiers(modifiers = '') {
+        const jevMatch = modifiers.match(/::Jev([1-4])?(\+(?:\d*\.?\d+)?)?(?=$|::|:\d+(?:\.\d+)?$)/i);
+        const rerankMatch = modifiers.match(/::Rerank(\+(?:\d*\.?\d+)?)?(?=$|::|:\d+(?:\.\d+)?$)/i);
+        const match = jevMatch || rerankMatch;
+        const plus = jevMatch ? jevMatch[2] : rerankMatch?.[1];
+        const useJev = !!jevMatch || this.rerankConfig.useJev === true;
+        const preset = jevMatch?.[1] || null;
+        const configuredPrompt = preset ? this.rerankConfig.jevPrompts?.[preset] : null;
+        return {
+            useRerank: !!match,
+            useRerankPlus: !!plus,
+            rrfAlpha: plus ? (plus.length > 1
+                ? Math.max(0, Math.min(1, Number(plus.slice(1)))) : 0.5) : null,
+            useJev,
+            jevPreset: preset,
+            jevPrompt: configuredPrompt || this.rerankConfig.jevPrompt,
+            missingPreset: !!preset && !configuredPrompt
+        };
+    }
+
     _extractKMultiplier(modifiers) {
         const kMultiplierMatch = modifiers.match(/:(\d+\.?\d*)/);
         return kMultiplierMatch ? parseFloat(kMultiplierMatch[1]) : 1.0;
@@ -2975,12 +3002,11 @@ class RAGDiaryPlugin {
         }
         const useRiverMemo = true;
 
-        // 🌟 Rerank+ (RRF): 解析 ::Rerank+ 修饰符
-        // 语法: ::Rerank+ (默认α=0.5) 或 ::Rerank+0.7 (α=0.7, Reranker占70%权重)
-        const rerankPlusMatch = modifiers.match(/::Rerank\+(\d+\.?\d*)?/);
-        const useRerankPlus = !!rerankPlusMatch;
-        const rrfAlpha = useRerankPlus ? (rerankPlusMatch[1] ? Math.min(1.0, Math.max(0.0, parseFloat(rerankPlusMatch[1]))) : 0.5) : null;
-        const useRerank = modifiers.includes('::Rerank'); // 匹配 ::Rerank 和 ::Rerank+
+        const rankOptions = this._parseRerankModifiers(modifiers);
+        const { useRerank, useRerankPlus, rrfAlpha, useJev, jevPrompt, jevPreset } = rankOptions;
+        if (rankOptions.missingPreset) {
+            console.warn(`[RAGDiaryPlugin] JevRerankPrompt${jevPreset} 未配置，使用默认 Jev 提示词。`);
+        }
 
         const bm25Mode = this.directDiaryTextProcessor.getBM25Mode(modifiers);
         const useBM25 = bm25Mode !== null;
@@ -3257,7 +3283,8 @@ class RAGDiaryPlugin {
                     {
                         diaryNames,
                         alpha: rrfAlpha,
-                        useJev: this.rerankConfig.useJev === true,
+                        useJev,
+                        jevPrompt,
                         externalK: postEngineCandidateK,
                         contextDiaryPrefixes,
                         preparedMemoObservation: thinkingObservation || undefined,
@@ -3549,11 +3576,11 @@ class RAGDiaryPlugin {
                 const rrfOpts = useRerankPlus ? { alpha: rrfAlpha } : null;
                 // 语义路重排
                 if (semanticCandidates.length > 0) {
-                    finalSemantic = await this._rerankDocuments(userContent, semanticCandidates, kSemantic, rrfOpts);
+                    finalSemantic = await this._rerankDocuments(userContent, semanticCandidates, kSemantic, rrfOpts, rankOptions);
                 }
                 // 时间路重排（时间路通常较少，如果不足 kTime 则全取）
                 if (timeCandidates.length > 0) {
-                    finalTime = await this._rerankDocuments(userContent, timeCandidates, kTime, rrfOpts);
+                    finalTime = await this._rerankDocuments(userContent, timeCandidates, kTime, rrfOpts, rankOptions);
                 }
             } else {
                 semanticCandidates.sort((a, b) => (b.score || 0) - (a.score || 0));
@@ -3565,7 +3592,7 @@ class RAGDiaryPlugin {
         } else if (useRerank && candidates.length > 0) {
             candidates.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
             const rrfOpts = useRerankPlus ? { alpha: rrfAlpha } : null;
-            finalResultsForBroadcast = await this._rerankDocuments(userContent, candidates, finalK, rrfOpts);
+            finalResultsForBroadcast = await this._rerankDocuments(userContent, candidates, finalK, rrfOpts, rankOptions);
         } else {
             // 默认按 score 排序并截断
             candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
@@ -3708,7 +3735,8 @@ class RAGDiaryPlugin {
                     useRiverMemo: useRiverMemo,
                     riverMemo: riverMemoInfoForBroadcast,
                     useRerank: useRerank,
-                    useJevRerank: useRerank && this.rerankConfig.useJev === true,
+                    useJevRerank: useRerank && useJev,
+                    jevPreset: useRerank && useJev ? jevPreset : undefined,
                     useRerankPlus: useRerankPlus, // 🌟 Rerank+ (RRF) 模式标识
                     rrfAlpha: rrfAlpha, // 🌟 RRF 权重参数
                     useExpand: useExpand, // 🌟 V9: 父文档展开标识
@@ -4692,7 +4720,7 @@ class RAGDiaryPlugin {
         return Math.ceil(chineseChars * 1.5 + otherChars * 0.25);
     }
 
-    async _rerankDocumentsWithJev(query, documents, originalK, rrfOptions = null) {
+    async _rerankDocumentsWithJev(query, documents, originalK, rrfOptions = null, rankOptions = {}) {
         if (
             !this.jevClient
             || typeof this.jevClient.decide !== 'function'
@@ -4751,7 +4779,7 @@ class RAGDiaryPlugin {
                 {
                     best_memory: {
                         type: 'choice',
-                        instructions: this.rerankConfig.jevPrompt,
+                        instructions: rankOptions.jevPrompt || this.rerankConfig.jevPrompt,
                         criteria
                     }
                 }
@@ -4819,13 +4847,14 @@ class RAGDiaryPlugin {
         }
     }
 
-    async _rerankDocuments(query, documents, originalK, rrfOptions = null) {
-        if (this.rerankConfig.useJev === true) {
+    async _rerankDocuments(query, documents, originalK, rrfOptions = null, rankOptions = {}) {
+        if ((rankOptions.useJev ?? this.rerankConfig.useJev) === true) {
             return this._rerankDocumentsWithJev(
                 query,
                 documents,
                 originalK,
-                rrfOptions
+                rrfOptions,
+                rankOptions
             );
         }
 
@@ -5150,7 +5179,13 @@ class RAGDiaryPlugin {
 
         const ghostTagString = ghostTags.map(t => `${t.isCore ? '!' : ''}${t.name}`).sort().join(',');
 
+        const ranking = this._parseRerankModifiers(modifiers);
         return this.cacheManager.generateKey({
+            ranking: ranking.useRerank ? {
+                useJev: ranking.useJev,
+                promptHash: ranking.useJev ? crypto.createHash('sha256')
+                    .update(ranking.jevPrompt || '').digest('hex') : null
+            } : null,
             user: userContent.trim(),
             ai: aiContent ? aiContent.trim() : null,
             db: dbName,

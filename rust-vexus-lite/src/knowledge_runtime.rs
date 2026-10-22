@@ -2484,12 +2484,14 @@ impl NativeKnowledgeRuntime {
         let query_text = plan["queryText"].as_str().unwrap_or("").to_string();
         let config_path = plan["configPath"].as_str().unwrap_or("").to_string();
         let force_jev = plan["useJev"].as_bool();
+        let jev_prompt = plan["jevPrompt"].as_str().map(str::to_string);
         let alpha = plan["alpha"].as_f64().unwrap_or(0.5);
         if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) {
             return Err(Error::from_reason("NATIVE_RERANK_INVALID_ALPHA"));
         }
         let ranker = tokio::task::spawn_blocking(move || {
             crate::native_rerank::Ranker::load(std::path::Path::new(&config_path), force_jev)
+                .map(|ranker| ranker.with_jev_prompt(jev_prompt))
         }).await.map_err(|_| Error::from_reason("RERANK_CONFIG_TASK_FAILED"))?;
         let supplemental = plan["supplementalQueries"].as_array().cloned().unwrap_or_default();
         if supplemental.len() > 32 {
