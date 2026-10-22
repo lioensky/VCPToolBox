@@ -16,6 +16,8 @@ on_error() {
     printf '[FAILED] Exit code: %s, script line: %s\n' "$exit_code" "$line_number"
     printf '%s\n' '============================================================'
     exit "$exit_code"
+# Ignore SIGHUP to protect remote SSH compilation from session dropouts
+trap '' HUP
 }
 
 trap 'on_error "$LINENO"' ERR
@@ -50,18 +52,22 @@ if [[ ! -d .git ]] || ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; the
     exit 1
 fi
 
+# Discard local tracked modifications in AdminPanel-Vue/dist before pulling
+if [[ -d AdminPanel-Vue/dist ]]; then
+    git checkout -- AdminPanel-Vue/dist >/dev/null 2>&1 || true
+fi
 CURRENT_STEP="pulling latest source code"
-printf '\n[1/6] Pulling latest source code with fast-forward only...\n'
+printf '\n[1/7] Pulling latest source code with fast-forward only...\n'
 git pull --ff-only
 printf '[OK] Source code updated.\n'
 
 CURRENT_STEP="installing root Node.js dependencies"
-printf '\n[2/6] Installing/updating root Node.js dependencies...\n'
+printf '\n[2/7] Installing/updating root Node.js dependencies...\n'
 npm install --no-audit --no-fund
 printf '[OK] Root Node.js dependencies updated.\n'
 
 CURRENT_STEP="installing Vexus build dependencies"
-printf '\n[3/6] Installing/updating Vexus build dependencies...\n'
+printf '\n[3/7] Installing/updating Vexus build dependencies...\n'
 if [[ ! -d rust-vexus-lite ]]; then
     printf '[ERROR] Directory not found: rust-vexus-lite\n' >&2
     exit 1
@@ -70,19 +76,23 @@ npm --prefix rust-vexus-lite install --no-audit --no-fund
 printf '[OK] Vexus build dependencies updated.\n'
 
 CURRENT_STEP="building Rust Vexus vector database module"
-printf '\n[4/6] Building Rust Vexus vector database module...\n'
+printf '\n[4/7] Building Rust Vexus vector database module...\n'
 npm --prefix rust-vexus-lite run build
 printf '[OK] Rust Vexus module built.\n'
 
 CURRENT_STEP="building DailyNoteSearcher Rust module"
-printf '\n[5/6] Building DailyNoteSearcher Rust module...\n'
+printf '\n[5/7] Building DailyNoteSearcher Rust module...\n'
 npm run build:daily-note-searcher
 printf '[OK] DailyNoteSearcher built and deployed.\n'
 
 CURRENT_STEP="building CodeSearcher Rust module"
-printf '\n[6/6] Building CodeSearcher Rust module...\n'
+printf '\n[6/7] Building CodeSearcher Rust module...\n'
 npm run build:code-searcher
 printf '[OK] CodeSearcher built and deployed.\n'
+CURRENT_STEP="verifying and building AdminPanel-Vue frontend"
+printf '\n[7/7] Verifying and building AdminPanel-Vue frontend...\n'
+npm run ensure:admin
+printf '[OK] AdminPanel-Vue frontend verified.\n'
 
 CURRENT_STEP="completed"
 printf '\n%s\n' '============================================================'
