@@ -1147,19 +1147,45 @@ struct Curve {
     sources: Vec<String>,
 }
 
+/// Tag rows of one file in position order: (Tag ID, position, name).
+type FileTagRows = HashMap<i64, Vec<(i64, i64, String)>>;
+
 struct CurveLoadOutput {
+    /// Candidate curves without Tags; `attach_tags` adds them after selection.
     curves: Vec<Curve>,
+    relations: FileTagRows,
     chunk_sql_batches: usize,
     file_tag_sql_batches: usize,
-    tag_vector_sql_batches: usize,
-    tag_vector_fetched_nodes: usize,
+}
+
+/// Attaches each curve's Tags in position order, keeping only Tags whose vector
+/// is in the pool: missing or invalid vector rows are never loaded, so they are
+/// dropped exactly as before.
+fn attach_tags(curves: &mut [Curve], relations: &FileTagRows, tag_vectors: &TagVectorPool) {
+    for curve in curves {
+        let chunk_vector = curve.chunk_vector.clone();
+        curve.tags = relations
+            .get(&curve.file_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|(id, position, name)| {
+                let vector = tag_vectors.get(id)?;
+                Some(TagData {
+                    id: *id,
+                    position: *position,
+                    name: name.clone(),
+                    vector: vector.clone(),
+                    chunk_cosine: clamp01(cosine(vector, &chunk_vector)),
+                })
+            })
+            .collect();
+    }
 }
 
 fn load_curves(
     connection: &Connection,
     candidates: &[CandidateInput],
     dimension: usize,
-    tag_vectors: &mut TagVectorPool,
 ) -> std::result::Result<CurveLoadOutput, String> {
     const SQLITE_BATCH_SIZE: usize = 500;
     let candidate_ids: Vec<i64> = candidates
@@ -1209,12 +1235,10 @@ fn load_curves(
         }
     }
 
-    // 同一文件的 Tag 曲线只读取和解码一次，供该文件的全部候选 Chunk 复用。
-    // 同一 Tag 出现在多个文件时，按 tag_id 只解码一次，后续行共享同一 Arc。
+    // 同一文件的 Tag 关系只读取一次，供该文件的全部候选 Chunk 复用；
+    // Tag 向量在候选筛选之后才读取（见 attach_tags）。
     let file_ids: Vec<i64> = unique_file_ids.into_iter().collect();
-    let mut tags_by_file: HashMap<i64, Vec<(i64, i64, String, Arc<[f32]>)>> =
-        HashMap::with_capacity(file_ids.len());
-    let mut relations: Vec<(i64, i64, i64, String)> = Vec::new();
+    let mut relations: FileTagRows = HashMap::with_capacity(file_ids.len());
     let mut file_tag_sql_batches = 0usize;
     for batch in file_ids.chunks(SQLITE_BATCH_SIZE) {
         if batch.is_empty() {
@@ -1248,41 +1272,21 @@ fn load_curves(
         for row in rows {
             // 旧实现通过 rows.flatten() 跳过单条 Tag 行解码错误。
             // 批量化后保留同一容错边界，避免一条脏 Tag 污染整次查询。
-            let Ok(relation) = row else { continue };
-            relations.push(relation);
+            let Ok((file_id, tag_id, position, name)) = row else { continue };
+            relations.entry(file_id).or_default().push((tag_id, position, name));
         }
     }
 
-    let requested_ids: Vec<i64> = relations.iter().map(|row| row.1).collect();
-    let tag_stats = ensure_tag_vectors_loaded(connection, tag_vectors, &requested_ids, dimension)?;
-    for (file_id, tag_id, position, name) in relations {
-        let Some(vector) = tag_vectors.get(&tag_id) else { continue };
-        tags_by_file.entry(file_id).or_default()
-            .push((tag_id, position, name, vector.clone()));
-    }
     // 恢复原始候选顺序；稳定排序与旧实现完全一致。
     let mut curves = Vec::with_capacity(candidates.len());
     for candidate in candidates {
         let Some((file_id, chunk_vector)) = chunks_by_id.get(&candidate.id) else {
             continue;
         };
-        let tags = tags_by_file
-            .get(file_id)
-            .into_iter()
-            .flatten()
-            .map(|(id, position, name, vector)| TagData {
-                id: *id,
-                position: *position,
-                name: name.clone(),
-                vector: vector.clone(),
-                chunk_cosine: clamp01(cosine(vector, chunk_vector)),
-            })
-            .collect();
-
         curves.push(Curve {
             id: candidate.id,
             file_id: *file_id,
-            tags,
+            tags: Vec::new(),
             chunk_vector: chunk_vector.clone(),
             query_score: 0.0,
             denoised_score: 0.0,
@@ -1298,37 +1302,20 @@ fn load_curves(
     }
     Ok(CurveLoadOutput {
         curves,
+        relations,
         chunk_sql_batches,
         file_tag_sql_batches,
-        tag_vector_sql_batches: tag_stats.sql_batches,
-        tag_vector_fetched_nodes: tag_stats.fetched_nodes,
     })
 }
 
-fn compute_anchor_scores(curves: &mut [Curve], local_domain: &HashSet<i64>) {
-    if local_domain.is_empty() {
-        return;
-    }
-    let max_hits = curves
-        .iter()
-        .map(|curve| {
-            curve
-                .tags
-                .iter()
-                .filter(|tag| local_domain.contains(&tag.id))
-                .count()
-        })
-        .max()
-        .unwrap_or(0);
+/// `hits(curve)`: the curve's Tags with a vector that lie in the local domain.
+fn compute_anchor_scores(curves: &mut [Curve], hits: impl Fn(&Curve) -> usize) {
+    let max_hits = curves.iter().map(&hits).max().unwrap_or(0);
     if max_hits == 0 {
         return;
     }
     for curve in curves {
-        let hits = curve
-            .tags
-            .iter()
-            .filter(|tag| local_domain.contains(&tag.id))
-            .count();
+        let hits = hits(curve);
         curve.anchor_score = curve.anchor_score.max(hits as f64 / max_hits as f64);
     }
 }
@@ -2769,7 +2756,7 @@ pub(crate) fn run_native_with_connection(
 
     let load_started = Instant::now();
     let artifact = load_artifact_with_connection(runtime, connection, artifact_sig)?;
-    let curve_load = load_curves(connection, &input.candidates, dimension, &mut tag_vectors)?;
+    let curve_load = load_curves(connection, &input.candidates, dimension)?;
     let mut curves = curve_load.curves;
     // 显式空集合也意味着无权限；必须在候选归一化和统计前移除越权项。
     let allowed: Option<HashSet<i64>> = input.allowed_file_ids.as_ref()
@@ -2794,7 +2781,16 @@ pub(crate) fn run_native_with_connection(
         })
         .collect();
     let local_domain: HashSet<i64> = input.query_state.local_domain_ids.iter().copied().collect();
-    compute_anchor_scores(&mut curves, &local_domain);
+    // Anchor hits count only Tags with a loadable vector, as when every candidate
+    // Tag was loaded up front, so the local-domain Tags are checked now; the
+    // other Tags are read only for the curves that survive selection.
+    let file_tags = |curve: &Curve| curve_load.relations.get(&curve.file_id).into_iter().flatten();
+    let domain_tag_ids: Vec<i64> = curves.iter().flat_map(file_tags)
+        .map(|relation| relation.0).filter(|id| local_domain.contains(id)).collect();
+    let domain_stats = ensure_tag_vectors_loaded(connection, &mut tag_vectors, &domain_tag_ids, dimension)?;
+    compute_anchor_scores(&mut curves, |curve| file_tags(curve)
+        .filter(|relation| local_domain.contains(&relation.0) && tag_vectors.contains_key(&relation.0))
+        .count());
     curves.par_iter_mut().for_each(|curve| {
         curve.query_score = cosine(&input.query.vector, &curve.chunk_vector);
         curve.denoised_score = cosine(&input.denoised_vector, &curve.chunk_vector);
@@ -2802,7 +2798,10 @@ pub(crate) fn run_native_with_connection(
         curve.transfer_score = cosine(&input.transfer_vector, &curve.chunk_vector);
     });
     let projected_count = curves.len();
-    let curves = select_superset(curves, &input.config);
+    let mut curves = select_superset(curves, &input.config);
+    let selected_tag_ids: Vec<i64> = curves.iter().flat_map(file_tags).map(|relation| relation.0).collect();
+    let selected_stats = ensure_tag_vectors_loaded(connection, &mut tag_vectors, &selected_tag_ids, dimension)?;
+    attach_tags(&mut curves, &curve_load.relations, &tag_vectors);
     let selected_count = curves.len();
 
     let workspace = FieldWorkspace {
@@ -3082,8 +3081,8 @@ pub(crate) fn run_native_with_connection(
             chunk_sql_batches: curve_load.chunk_sql_batches,
             file_tag_sql_batches: curve_load.file_tag_sql_batches,
             query_tag_sql_batches,
-            candidate_tag_vector_sql_batches: curve_load.tag_vector_sql_batches,
-            candidate_tag_vector_fetched_nodes: curve_load.tag_vector_fetched_nodes,
+            candidate_tag_vector_sql_batches: domain_stats.sql_batches + selected_stats.sql_batches,
+            candidate_tag_vector_fetched_nodes: domain_stats.fetched_nodes + selected_stats.fetched_nodes,
         },
         results,
     };
