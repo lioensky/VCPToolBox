@@ -148,3 +148,71 @@ test('Group and BM25 share a sparse plan while Time only feeds the River pool', 
     assert.equal(sparseCalls, 1);
     assert.deepEqual(results.map(doc => doc.chunkId), [9]);
 });
+
+test('Omega mapping uses conservative endpoints and neutral invalid fallback', () => {
+    const instance = host();
+    for (const [omega, expected] of [[0, 0.7], [0.4, 0.7], [0.65, 0.5], [0.9, 0.3], [1, 0.3]]) {
+        assert(Math.abs(instance._omegaRrfAlpha(omega) - expected) < 1e-12);
+    }
+    for (const invalid of [undefined, null, NaN, Infinity, '0.9', -1, 2]) {
+        assert.equal(instance._omegaRrfAlpha(invalid), 0.5);
+    }
+});
+
+test('only bare plus uses native Omega; explicit weights and missing Omega stay unchanged', async () => {
+    for (const [suffix, omega, expected] of [
+        ['::Rerank+', 0.9, 0.3],
+        ['::Jev2+', 0.4, 0.7],
+        ['::Jev+', undefined, 0.5],
+        ['::Jev+', null, 0.5],
+        ['::Rerank+0.5', 0.9, 0.5],
+        ['::Jev+0', 0.4, 0],
+        ['::Jev+1', 0.9, 1]
+    ]) {
+        const instance = host();
+        let actual;
+        instance._fuseIndependentRankings = (river, external, alpha) => {
+            actual = alpha;
+            return river;
+        };
+        instance.vectorDBManager = {
+            config: { nativeRiverQueryEnabled: true },
+            nativeKnowledgeRuntime: { executeExternalRerank() {} },
+            async executeExternalRerank() { return { results: [] }; },
+            async executeNativeRiverQuery() {
+                return { omega: { omega }, results: [{ chunkId: 1, text: 'river', score: 0.8 }] };
+            },
+            async deduplicateResults(results) { return results; }
+        };
+        await instance._processRAGPlaceholder({
+            dbName: 'A', modifiers: suffix, queryVector: [1, 0],
+            userContent: 'query', dynamicK: 1, timeRanges: [], returnRawResults: true
+        });
+        assert(Math.abs(actual - expected) < 1e-12, suffix);
+    }
+});
+
+test('bare plus requests native automatic fusion and publishes the resolved weight', async () => {
+    const instance = host();
+    let broadcast;
+    instance.pushVcpInfo = info => { broadcast = info; };
+    instance.vectorDBManager = {
+        config: { nativeRiverQueryEnabled: true },
+        nativeKnowledgeRuntime: { executeParallelRerank() {} },
+        async executeNativeRiverQuery() { throw new Error('serial path used'); },
+        async executeParallelRerank(query, options) {
+            assert.equal(options.autoRrfAlpha, true);
+            return {
+                omega: { omega: 0.9 },
+                results: [{ chunkId: 1, text: 'river', score: 0.8 }],
+                diagnostics: { nativeRerank: { alpha: 0.3, riverWeight: 0.7, weightMode: 'omega-v1' } }
+            };
+        },
+        async deduplicateResults(results) { return results; }
+    };
+    await instance._processRAGPlaceholder({
+        dbName: 'A', modifiers: '::Jev+', queryVector: [1, 0],
+        userContent: 'query', dynamicK: 1, timeRanges: []
+    });
+    assert.equal(broadcast.rrfAlpha, 0.3);
+});
