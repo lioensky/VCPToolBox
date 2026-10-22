@@ -1151,8 +1151,55 @@ fn apply_transport(
     }
 }
 
-fn l1_distance(left: &[f64], right: &[f64]) -> f64 {
-    left.iter().zip(right).map(|(a, b)| (a - b).abs()).sum()
+/// `apply_transport` for both fields in one pass over the CSR. Every output
+/// position receives the same additions in the same order as two separate
+/// passes, and each field keeps its own zero-mass skip.
+fn apply_transport_pair(
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    local: &[f64],
+    transfer: &[f64],
+    local_output: &mut [f64],
+    transfer_output: &mut [f64],
+) {
+    local_output.fill(0.0);
+    transfer_output.fill(0.0);
+    for source in 0..artifact.node_ids.len() {
+        let local_mass = local[source];
+        let transfer_mass = transfer[source];
+        let local_active = local_mass != 0.0;
+        let transfer_active = transfer_mass != 0.0;
+        if !local_active && !transfer_active {
+            continue;
+        }
+        for cursor in artifact.row_offsets[source]..artifact.row_offsets[source + 1] {
+            let weight = positive(artifact.weights[cursor]);
+            let target = artifact.targets[cursor];
+            if local_active {
+                local_output[target] += local_mass * weight;
+            }
+            if transfer_active {
+                transfer_output[target] += transfer_mass * weight;
+            }
+        }
+    }
+}
+
+/// `next = (1 - alpha) * source + alpha * propagated` and the L1 change from
+/// `current`, in one pass with the same arithmetic and index order as a
+/// separate update followed by an L1 sum of non-negative terms.
+fn relax_field(
+    source: &[f64],
+    propagated: &[f64],
+    alpha: f64,
+    current: &[f64],
+    next: &mut [f64],
+) -> f64 {
+    let mut residual = 0.0;
+    for index in 0..source.len() {
+        next[index] = (1.0 - alpha) * source[index] + alpha * propagated[index];
+        residual += (next[index] - current[index]).abs();
+    }
+    residual
 }
 
 fn field_mass(field: &[f64]) -> f64 {
@@ -1540,23 +1587,24 @@ fn solve_dual_fields_with_pool(
 
     for iteration in 1..=config.field_max_iterations.max(1) {
         iterations = iteration;
-        if !local_converged {
+        // The fields are independent; while both move, one CSR pass serves both.
+        if !local_converged && !transfer_converged {
+            apply_transport_pair(artifact, &local, &transfer,
+                &mut propagated_local, &mut propagated_transfer);
+        } else if !local_converged {
             apply_transport(artifact, &local, &mut propagated_local);
-            for index in 0..source.len() {
-                next_local[index] =
-                    (1.0 - local_alpha) * source[index] + local_alpha * propagated_local[index];
-            }
-            local_residual = l1_distance(&next_local, &local);
+        } else if !transfer_converged {
+            apply_transport(artifact, &transfer, &mut propagated_transfer);
+        }
+        if !local_converged {
+            local_residual = relax_field(&source, &propagated_local, local_alpha,
+                &local, &mut next_local);
             local_converged = local_residual <= config.local_tolerance.max(1e-15);
             std::mem::swap(&mut local, &mut next_local);
         }
         if !transfer_converged {
-            apply_transport(artifact, &transfer, &mut propagated_transfer);
-            for index in 0..source.len() {
-                next_transfer[index] = (1.0 - transfer_alpha) * source[index]
-                    + transfer_alpha * propagated_transfer[index];
-            }
-            transfer_residual = l1_distance(&next_transfer, &transfer);
+            transfer_residual = relax_field(&source, &propagated_transfer, transfer_alpha,
+                &transfer, &mut next_transfer);
             transfer_converged = transfer_residual <= config.transfer_tolerance.max(1e-15);
             std::mem::swap(&mut transfer, &mut next_transfer);
         }
