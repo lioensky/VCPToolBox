@@ -352,9 +352,29 @@ fn build_transport(
         .copied()
         .filter(|value| *value > 0.0 && value.is_finite())
         .collect();
-    positive.sort_by(|left, right| left.total_cmp(right));
-    let median = positive.get(positive.len() / 2).copied().unwrap_or(1.0);
+    // Linear-time selection of index len/2. `total_cmp` distinguishes every bit
+    // pattern, so this is the same value a full sort would place there.
+    let median = if positive.is_empty() {
+        1.0
+    } else {
+        let middle = positive.len() / 2;
+        *positive.select_nth_unstable_by(middle, |left, right| left.total_cmp(right)).1
+    };
     let smoothing = (median * smoothing_ratio).max(1e-9);
+    let hub_penalty = |inflow: f64| -> f64 {
+        let relative = inflow / (median + smoothing);
+        let raw_penalty = if hub_exponent > 0.0 {
+            relative.max(1e-9).powf(-hub_exponent)
+        } else {
+            1.0
+        };
+        raw_penalty.clamp(hub_floor, hub_ceiling)
+    };
+    // The penalty depends only on the target: one `powf` per target, not per edge.
+    let penalties: HashMap<i64, f64> = target_inflow
+        .iter()
+        .map(|(target, inflow)| (*target, hub_penalty(*inflow)))
+        .collect();
 
     let mut transport = HashMap::new();
     let mut wormholes = HashSet::new();
@@ -363,14 +383,8 @@ fn build_transport(
         let mut total = 0.0;
         let mut wormhole_total = 0.0;
         for (target, conductance, wormhole) in edges {
-            let relative =
-                target_inflow.get(&target).copied().unwrap_or(0.0) / (median + smoothing);
-            let raw_penalty = if hub_exponent > 0.0 {
-                relative.max(1e-9).powf(-hub_exponent)
-            } else {
-                1.0
-            };
-            let value = conductance * raw_penalty.clamp(hub_floor, hub_ceiling);
+            let penalty = penalties.get(&target).copied().unwrap_or_else(|| hub_penalty(0.0));
+            let value = conductance * penalty;
             if value > 0.0 && value.is_finite() {
                 total += value;
                 if wormhole {
