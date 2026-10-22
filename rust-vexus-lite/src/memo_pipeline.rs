@@ -257,6 +257,46 @@ fn calibrated_gate(ratio: f64, baseline: f64, background: f64, mode: &str) -> f6
     }
 }
 
+/// Query-independent part of the EPA cache row: decoded basis and mean, and the
+/// values derived from them alone.
+struct EpaBasis {
+    raw: String,
+    dimension: usize,
+    k_sem: usize,
+    labels: Vec<String>,
+    mean: Vec<f32>,
+    bases: Vec<Vec<f32>>,
+    semantic_count: usize,
+    baseline_coverage: f64,
+    background_ratio: f64,
+}
+
+/// The most recently decoded EPA cache row. It is reused only when the stored
+/// JSON text and the dimension are identical, so any write to the row (in any
+/// database) decodes again; the per-query arithmetic is unchanged.
+static EPA_BASIS: std::sync::Mutex<Option<Arc<EpaBasis>>> = std::sync::Mutex::new(None);
+
+fn decode_epa_basis(raw: String, dimension: usize) -> Option<EpaBasis> {
+    let cache: EpaCache = serde_json::from_str(&raw).ok()?;
+    let mean = decode_f32_base64(&cache.mean, dimension)?;
+    let bases: Vec<Vec<f32>> = cache
+        .basis
+        .iter()
+        .filter_map(|encoded| decode_f32_base64(encoded, dimension))
+        .collect();
+    let semantic_count = cache.k_sem.max(1).min(bases.len());
+    let baseline_coverage=cache.coverage.get(semantic_count.saturating_sub(1)).copied()
+        .filter(|v|v.is_finite() && *v>0.0 && *v<=1.0)
+        .unwrap_or(semantic_count as f64/dimension.max(1) as f64).max(1e-4);
+    let mean_captured=bases.iter().take(semantic_count).map(|b|dot(&mean,b).powi(2)).sum::<f64>();
+    let background_ratio=clamp01((semantic_count as f64/dimension.max(1) as f64+mean_captured)
+        /(1.0+dot(&mean,&mean)));
+    Some(EpaBasis {
+        raw, dimension, k_sem: cache.k_sem, labels: cache.labels, mean, bases,
+        semantic_count, baseline_coverage, background_ratio,
+    })
+}
+
 fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usize, mode: &str) -> EpaOutput {
     let empty = || EpaOutput {
         logic_depth: 0.0,
@@ -280,19 +320,24 @@ fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usiz
         Ok(value) => value,
         Err(_) => return empty(),
     };
-    let cache: EpaCache = match serde_json::from_str(&raw) {
-        Ok(value) => value,
-        Err(_) => return empty(),
+    let cached = EPA_BASIS.lock().ok().and_then(|slot| {
+        slot.as_ref().filter(|basis| basis.dimension == dimension && basis.raw == raw).cloned()
+    });
+    let basis = match cached {
+        Some(basis) => basis,
+        None => match decode_epa_basis(raw, dimension) {
+            Some(basis) => {
+                let basis = Arc::new(basis);
+                if let Ok(mut slot) = EPA_BASIS.lock() {
+                    *slot = Some(basis.clone());
+                }
+                basis
+            }
+            None => return empty(),
+        },
     };
-    let mean = match decode_f32_base64(&cache.mean, dimension) {
-        Some(value) => value,
-        None => return empty(),
-    };
-    let bases: Vec<Vec<f32>> = cache
-        .basis
-        .iter()
-        .filter_map(|encoded| decode_f32_base64(encoded, dimension))
-        .collect();
+    let mean = &basis.mean;
+    let bases = &basis.bases;
     let centered: Vec<f32> = query
         .iter()
         .zip(mean.iter())
@@ -304,17 +349,13 @@ fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usiz
     let out_of_domain = if centered_energy > 1e-12 {
         ((centered_energy - captured).max(0.0) / centered_energy).sqrt().clamp(0.0, 1.0)
     } else { 0.0 };
-    let semantic_count = cache.k_sem.max(1).min(bases.len());
+    let semantic_count = basis.semantic_count;
     let total_energy = projections.iter().take(semantic_count).map(|value| value * value).sum::<f64>();
     let semantic_explained_ratio = if centered_energy > 1e-12 {
         clamp01(total_energy / centered_energy)
     } else { 0.0 };
-    let baseline_coverage=cache.coverage.get(semantic_count.saturating_sub(1)).copied()
-        .filter(|v|v.is_finite() && *v>0.0 && *v<=1.0)
-        .unwrap_or(semantic_count as f64/dimension.max(1) as f64).max(1e-4);
-    let mean_captured=bases.iter().take(semantic_count).map(|b|dot(&mean,b).powi(2)).sum::<f64>();
-    let background_ratio=clamp01((semantic_count as f64/dimension.max(1) as f64+mean_captured)
-        /(1.0+dot(&mean,&mean)));
+    let baseline_coverage = basis.baseline_coverage;
+    let background_ratio = basis.background_ratio;
     let in_domain_gate=if semantic_count==0 || centered_energy<=1e-12 {0.0}
         else {calibrated_gate(semantic_explained_ratio,baseline_coverage,background_ratio,mode)};
     let probabilities: Vec<f64> = projections
@@ -328,8 +369,8 @@ fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usiz
         .sum::<f64>();
     let normalized_entropy = if total_energy <= 1e-12 {
         1.0
-    } else if cache.k_sem > 1 {
-        clamp01(raw_entropy / (cache.k_sem as f64).log2())
+    } else if basis.k_sem > 1 {
+        clamp01(raw_entropy / (basis.k_sem as f64).log2())
     } else {
         0.0
     };
@@ -339,7 +380,7 @@ fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usiz
         .filter(|(_, energy)| **energy > 0.05)
         .map(|(index, energy)| EpaAxis {
             index,
-            label: cache
+            label: basis
                 .labels
                 .get(index)
                 .cloned()
