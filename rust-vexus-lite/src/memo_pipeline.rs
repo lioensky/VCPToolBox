@@ -111,6 +111,8 @@ struct PipelineConfig {
     local_alpha: f64,
     transfer_alpha: f64,
     field_max_iterations: usize,
+    local_push_epsilon: f64,
+    transfer_push_epsilon: f64,
     local_tolerance: f64,
     transfer_tolerance: f64,
     local_mass_ratio: f64,
@@ -144,6 +146,8 @@ impl Default for PipelineConfig {
             local_alpha: 0.15,
             transfer_alpha: 0.55,
             field_max_iterations: 80,
+            local_push_epsilon: 1e-7,
+            transfer_push_epsilon: 1e-8,
             local_tolerance: 1e-9,
             transfer_tolerance: 1e-9,
             local_mass_ratio: 0.8,
@@ -1570,6 +1574,104 @@ fn solve_dual_fields(
         &mut TagVectorPool::new(), &source_entries.iter().map(|entry| entry.0).collect::<Vec<_>>(), &[])
 }
 
+/// Synchronous residual push in node-ID order. Arrivals wait until the next round.
+/// For a nonnegative substochastic transport, compensation leaves L1 error at
+/// most alpha * sum(residual), apart from floating-point rounding.
+fn push_field(
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    source: &[f64], alpha: f64, epsilon: f64,
+) -> (Vec<f64>, usize, f64) {
+    let mut residual = source.to_vec();
+    let mut estimate = vec![0.0; source.len()];
+    let mut incoming = vec![0.0; source.len()];
+    let mut order: Vec<usize> = (0..source.len()).collect();
+    order.sort_unstable_by_key(|&i| artifact.node_ids[i]);
+    let mut rounds = 0;
+    loop {
+        incoming.fill(0.0);
+        let mut active = false;
+        for &i in &order {
+            let mass = residual[i];
+            if mass <= epsilon { continue; }
+            active = true;
+            residual[i] = 0.0;
+            estimate[i] += (1.0 - alpha) * mass;
+            for cursor in artifact.row_offsets[i]..artifact.row_offsets[i + 1] {
+                incoming[artifact.targets[cursor]] += alpha * mass * positive(artifact.weights[cursor]);
+            }
+        }
+        if !active { break; }
+        rounds += 1;
+        for i in 0..residual.len() { residual[i] += incoming[i]; }
+    }
+    let remaining = field_mass(&residual);
+    for i in 0..estimate.len() { estimate[i] += (1.0 - alpha) * residual[i]; }
+    (estimate, rounds, remaining)
+}
+
+// Invalid thresholds use the original solver, as does an explicit zero.
+fn push_enabled(epsilon: f64) -> bool { epsilon.is_finite() && epsilon > 0.0 }
+
+fn solve_field_values(
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    source: &[f64], local_alpha: f64, transfer_alpha: f64, config: &PipelineConfig,
+) -> (Vec<f64>, Vec<f64>, usize, bool, bool, f64, f64) {
+    let mut local = source.to_vec();
+    let mut transfer = source.to_vec();
+    let mut local_converged = false;
+    let mut transfer_converged = false;
+    let mut local_residual = f64::INFINITY;
+    let mut transfer_residual = f64::INFINITY;
+    let mut iterations = 0;
+
+    let mut push_rounds = 0;
+    if push_enabled(config.local_push_epsilon) {
+        (local, push_rounds, local_residual) = push_field(artifact, source, local_alpha, config.local_push_epsilon);
+        local_converged = true;
+    }
+    if push_enabled(config.transfer_push_epsilon) {
+        let rounds;
+        (transfer, rounds, transfer_residual) = push_field(artifact, source, transfer_alpha, config.transfer_push_epsilon);
+        push_rounds = push_rounds.max(rounds);
+        transfer_converged = true;
+    }
+    if !local_converged || !transfer_converged {
+    let mut next_local = vec![0.0; source.len()];
+    let mut next_transfer = vec![0.0; source.len()];
+    let mut propagated_local = vec![0.0; source.len()];
+    let mut propagated_transfer = vec![0.0; source.len()];
+    for iteration in 1..=config.field_max_iterations.max(1) {
+        iterations = iteration;
+        // The fields are independent; while both move, one CSR pass serves both.
+        if !local_converged && !transfer_converged {
+            apply_transport_pair(artifact, &local, &transfer,
+                &mut propagated_local, &mut propagated_transfer);
+        } else if !local_converged {
+            apply_transport(artifact, &local, &mut propagated_local);
+        } else if !transfer_converged {
+            apply_transport(artifact, &transfer, &mut propagated_transfer);
+        }
+        if !local_converged {
+            local_residual = relax_field(&source, &propagated_local, local_alpha,
+                &local, &mut next_local);
+            local_converged = local_residual <= config.local_tolerance.max(1e-15);
+            std::mem::swap(&mut local, &mut next_local);
+        }
+        if !transfer_converged {
+            transfer_residual = relax_field(&source, &propagated_transfer, transfer_alpha,
+                &transfer, &mut next_transfer);
+            transfer_converged = transfer_residual <= config.transfer_tolerance.max(1e-15);
+            std::mem::swap(&mut transfer, &mut next_transfer);
+        }
+        if local_converged && transfer_converged {
+            break;
+        }
+    }
+
+    }
+    (local, transfer, iterations.max(push_rounds), local_converged, transfer_converged, local_residual, transfer_residual)
+}
+
 fn solve_dual_fields_with_pool(
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
     connection: &Connection,
@@ -1614,45 +1716,9 @@ fn solve_dual_fields_with_pool(
 
     let local_alpha = config.local_alpha.clamp(0.0, 0.999999);
     let transfer_alpha = config.transfer_alpha.clamp(0.0, 0.999999);
-    let mut local = source.clone();
-    let mut transfer = source.clone();
-    let mut next_local = vec![0.0; source.len()];
-    let mut next_transfer = vec![0.0; source.len()];
-    let mut propagated_local = vec![0.0; source.len()];
-    let mut propagated_transfer = vec![0.0; source.len()];
-    let mut local_converged = false;
-    let mut transfer_converged = false;
-    let mut local_residual = f64::INFINITY;
-    let mut transfer_residual = f64::INFINITY;
-    let mut iterations = 0;
-
-    for iteration in 1..=config.field_max_iterations.max(1) {
-        iterations = iteration;
-        // The fields are independent; while both move, one CSR pass serves both.
-        if !local_converged && !transfer_converged {
-            apply_transport_pair(artifact, &local, &transfer,
-                &mut propagated_local, &mut propagated_transfer);
-        } else if !local_converged {
-            apply_transport(artifact, &local, &mut propagated_local);
-        } else if !transfer_converged {
-            apply_transport(artifact, &transfer, &mut propagated_transfer);
-        }
-        if !local_converged {
-            local_residual = relax_field(&source, &propagated_local, local_alpha,
-                &local, &mut next_local);
-            local_converged = local_residual <= config.local_tolerance.max(1e-15);
-            std::mem::swap(&mut local, &mut next_local);
-        }
-        if !transfer_converged {
-            transfer_residual = relax_field(&source, &propagated_transfer, transfer_alpha,
-                &transfer, &mut next_transfer);
-            transfer_converged = transfer_residual <= config.transfer_tolerance.max(1e-15);
-            std::mem::swap(&mut transfer, &mut next_transfer);
-        }
-        if local_converged && transfer_converged {
-            break;
-        }
-    }
+    let (local, transfer, iterations, local_converged, transfer_converged,
+        local_residual, transfer_residual) = solve_field_values(
+            artifact, &source, local_alpha, transfer_alpha, config);
 
     let solve_ms = solve_started.elapsed().as_secs_f64() * 1000.0;
     let domain_started = Instant::now();
@@ -2562,5 +2628,107 @@ mod projection_budget_tests {
             assert!(serde_json::from_value::<PipelineConfig>(
                 serde_json::json!({"maxFieldProjectionNodes": value})).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+fn original_field_values(artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+ source: &[f64], local_alpha: f64, transfer_alpha: f64, config: &PipelineConfig)
+ -> (Vec<f64>, Vec<f64>, usize, bool, bool, f64, f64) {
+    let mut local = source.to_vec();
+    let mut transfer = source.to_vec();
+    let mut next_local = vec![0.0; source.len()];
+    let mut next_transfer = vec![0.0; source.len()];
+    let mut propagated_local = vec![0.0; source.len()];
+    let mut propagated_transfer = vec![0.0; source.len()];
+    let mut local_converged = false;
+    let mut transfer_converged = false;
+    let mut local_residual = f64::INFINITY;
+    let mut transfer_residual = f64::INFINITY;
+    let mut iterations = 0;
+
+    for iteration in 1..=config.field_max_iterations.max(1) {
+        iterations = iteration;
+        // The fields are independent; while both move, one CSR pass serves both.
+        if !local_converged && !transfer_converged {
+            apply_transport_pair(artifact, &local, &transfer,
+                &mut propagated_local, &mut propagated_transfer);
+        } else if !local_converged {
+            apply_transport(artifact, &local, &mut propagated_local);
+        } else if !transfer_converged {
+            apply_transport(artifact, &transfer, &mut propagated_transfer);
+        }
+        if !local_converged {
+            local_residual = relax_field(&source, &propagated_local, local_alpha,
+                &local, &mut next_local);
+            local_converged = local_residual <= config.local_tolerance.max(1e-15);
+            std::mem::swap(&mut local, &mut next_local);
+        }
+        if !transfer_converged {
+            transfer_residual = relax_field(&source, &propagated_transfer, transfer_alpha,
+                &transfer, &mut next_transfer);
+            transfer_converged = transfer_residual <= config.transfer_tolerance.max(1e-15);
+            std::mem::swap(&mut transfer, &mut next_transfer);
+        }
+        if local_converged && transfer_converged {
+            break;
+        }
+    }
+
+(local, transfer, iterations, local_converged, transfer_converged, local_residual, transfer_residual)
+}
+
+#[cfg(test)]
+mod local_push_tests {
+    use super::*;
+    fn graph() -> crate::rivermemo_topology_v3::NativeArtifact {
+        crate::rivermemo_topology_v3::NativeArtifact {
+            node_ids: vec![30, 10, 20, 40],
+            node_index: HashMap::from([(30,0),(10,1),(20,2),(40,3)]),
+            row_offsets: vec![0,2,3,4,4], targets: vec![1,2,0,3],
+            weights: vec![0.4,0.6,1.0,0.7],
+            ..Default::default()
+        }
+    }
+    fn bits(v: &[f64]) -> Vec<u64> { v.iter().map(|x| x.to_bits()).collect() }
+    #[test]
+    fn zero_epsilon_preserves_original_bits() {
+        let g=graph();
+        let c=PipelineConfig { local_push_epsilon:0.0, transfer_push_epsilon:0.0, ..Default::default() };
+        for source in [vec![1.0,0.0,0.0,0.0],vec![0.0;4],vec![0.0,0.0,0.0,1.0]] {
+            let a=solve_field_values(&g,&source,0.15,0.55,&c);
+            let b=original_field_values(&g,&source,0.15,0.55,&c);
+            assert_eq!(bits(&a.0),bits(&b.0)); assert_eq!(bits(&a.1),bits(&b.1));
+            assert_eq!((a.2,a.3,a.4,a.5.to_bits(),a.6.to_bits()),(b.2,b.3,b.4,b.5.to_bits(),b.6.to_bits()));
+        }
+    }
+    #[test]
+    fn compensated_error_and_repeatability() {
+        let g=graph();
+        for source in [vec![1.0,0.0,0.0,0.0],vec![0.0;4],vec![0.0,0.0,0.0,1.0]] {
+            for (alpha,eps) in [(0.15,1e-7),(0.55,1e-8)] {
+                let (actual, rounds, remaining)=push_field(&g,&source,alpha,eps);
+                let c=PipelineConfig { local_tolerance:1e-15, transfer_tolerance:1e-15, field_max_iterations:1000, ..Default::default() };
+                let exact=original_field_values(&g,&source,alpha,alpha,&c).0;
+                let error:f64=actual.iter().zip(exact).map(|(a,b)|(a-b).abs()).sum();
+                assert!(error <= alpha*remaining+1e-14, "{error} {remaining}");
+                assert!(remaining <= source.len() as f64*eps+1e-15);
+                for _ in 0..5 {
+                    let again=push_field(&g,&source,alpha,eps);
+                    assert_eq!(bits(&actual),bits(&again.0));
+                    assert_eq!((rounds,remaining.to_bits()),(again.1,again.2.to_bits()));
+                }
+            }
+        }
+    }
+    #[test]
+    fn epsilon_json_defaults_and_independent_selection() {
+        let c:PipelineConfig=serde_json::from_str("{}").unwrap();
+        assert_eq!((c.local_push_epsilon,c.transfer_push_epsilon),(1e-7,1e-8));
+        let c:PipelineConfig=serde_json::from_str(r#"{"localPushEpsilon":0,"transferPushEpsilon":1e-8}"#).unwrap();
+        let source=[1.0,0.0,0.0,0.0]; let g=graph();
+        let a=solve_field_values(&g,&source,0.15,0.55,&c);
+        assert_eq!(bits(&a.0),bits(&original_field_values(&g,&source,0.15,0.55,&c).0));
+        assert_eq!(bits(&a.1),bits(&push_field(&g,&source,0.55,1e-8).0));
     }
 }
