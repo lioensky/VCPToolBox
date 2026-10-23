@@ -5,7 +5,8 @@ use flate2::Compression;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Deserialize;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -666,63 +667,126 @@ fn build_native_artifact(
     }.prepared())
 }
 
-fn artifact_payload(
-    artifact: &NativeArtifact,
-    provenance: &BTreeMap<(i64, i64), Vec<ProvenanceContribution>>,
-    metadata: &Value,
-) -> Value {
-    let provenance_edges: Vec<Value> = provenance
-        .iter()
-        .map(|((source, target), contributions)| {
-            json!([
-                format!("{}:{}", source, target),
-                contributions
-                    .iter()
-                    .map(|item| json!([item.file_id, item.mass]))
-                    .collect::<Vec<_>>()
-            ])
-        })
-        .collect();
-    let mut inbound: Vec<Value> = artifact
-        .inbound
-        .iter()
-        .map(|(id, mass)| json!([id, mass]))
-        .collect();
-    inbound.sort_by_key(|v| v[0].as_i64().unwrap_or(0));
-    let mut anchor_gain: Vec<Value> = artifact
-        .anchor_gain
-        .iter()
-        .map(|(id, gain)| json!([id, gain]))
-        .collect();
-    anchor_gain.sort_by_key(|v| v[0].as_i64().unwrap_or(0));
+/// `"source:target"`, the text `format!("{}:{}", source, target)` produced.
+struct EdgeKey(i64, i64);
+
+impl Serialize for EdgeKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!("{}:{}", self.0, self.1))
+    }
+}
+
+/// `[[fileId, mass], ...]` of one provenance edge.
+struct Contributions<'a>(&'a [ProvenanceContribution]);
+
+impl Serialize for Contributions<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(|item| (item.file_id, item.mass)))
+    }
+}
+
+/// `[["source:target", contributions], ...]` in provenance key order.
+struct ProvenanceEdges<'a>(&'a BTreeMap<(i64, i64), Vec<ProvenanceContribution>>);
+
+impl Serialize for ProvenanceEdges<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(|((source, target), contributions)| {
+            (EdgeKey(*source, *target), Contributions(contributions))
+        }))
+    }
+}
+
+struct ProvenanceView<'a> {
+    generation: &'a Value,
+    edges: ProvenanceEdges<'a>,
+}
+
+impl Serialize for ProvenanceView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(3))?;
+        map.serialize_entry("edges", &self.edges)?;
+        map.serialize_entry("generation", self.generation)?;
+        map.serialize_entry("schema", "tagmemo-provenance-file-mass-v2")?;
+        map.end()
+    }
+}
+
+struct SharedTransport<'a> {
+    content_sig: &'a Value,
+    artifact: &'a NativeArtifact,
+}
+
+impl Serialize for SharedTransport<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(6))?;
+        map.serialize_entry("contentSig", self.content_sig)?;
+        map.serialize_entry("nodeIds", &self.artifact.node_ids)?;
+        map.serialize_entry("rowOffsets", &self.artifact.row_offsets)?;
+        map.serialize_entry("schema", "tagmemo-v10-alpha-csr-snapshot-v1")?;
+        map.serialize_entry("targetIndices", &self.artifact.targets)?;
+        map.serialize_entry("weights", &self.artifact.weights)?;
+        map.end()
+    }
+}
+
+/// The persisted payload, serialised straight from the artifact instead of
+/// through a `serde_json::Value` tree. serde_json is built without
+/// `preserve_order`, so the tree wrote every object with its keys in sorted
+/// order; each `serialize_map` below writes its keys in that same order. All
+/// numbers and strings go through the same serializer as before, so the bytes
+/// are identical. Only the sorted (ID, value) lists are materialised.
+struct ArtifactPayload<'a> {
+    metadata: &'a Value,
+    artifact: &'a NativeArtifact,
+    provenance: &'a BTreeMap<(i64, i64), Vec<ProvenanceContribution>>,
+    anchor_gain: Vec<(i64, f64)>,
+    inbound: Vec<(i64, f64)>,
+    wormholes: Vec<EdgeKey>,
+}
+
+impl Serialize for ArtifactPayload<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(8))?;
+        map.serialize_entry("anchorGainView", &self.anchor_gain)?;
+        map.serialize_entry("artifact", self.metadata)?;
+        map.serialize_entry("inboundMassView", &self.inbound)?;
+        map.serialize_entry("provenanceView", &ProvenanceView {
+            generation: &self.metadata["provenanceGeneration"],
+            edges: ProvenanceEdges(self.provenance),
+        })?;
+        map.serialize_entry("rawResidualRatioView", &Value::Array(Vec::new()))?;
+        map.serialize_entry("schema", PAYLOAD_SCHEMA)?;
+        map.serialize_entry("sharedTransport", &SharedTransport {
+            content_sig: &self.metadata["graphGeneration"],
+            artifact: self.artifact,
+        })?;
+        map.serialize_entry("wormholeView", &self.wormholes)?;
+        map.end()
+    }
+}
+
+fn artifact_payload<'a>(
+    artifact: &'a NativeArtifact,
+    provenance: &'a BTreeMap<(i64, i64), Vec<ProvenanceContribution>>,
+    metadata: &'a Value,
+) -> ArtifactPayload<'a> {
+    // Map keys are unique, so ascending ID is a total order.
+    let mut inbound: Vec<(i64, f64)> =
+        artifact.inbound.iter().map(|(id, mass)| (*id, *mass)).collect();
+    inbound.sort_unstable_by_key(|entry| entry.0);
+    let mut anchor_gain: Vec<(i64, f64)> =
+        artifact.anchor_gain.iter().map(|(id, gain)| (*id, *gain)).collect();
+    anchor_gain.sort_unstable_by_key(|entry| entry.0);
     let mut wormhole_ids: Vec<_> = artifact.wormhole_edges.iter().copied().collect();
     wormhole_ids.sort_unstable();
-    let wormholes: Vec<Value> = wormhole_ids
-        .iter()
-        .map(|(source, target)| json!(format!("{}:{}", source, target)))
-        .collect();
-
-    json!({
-        "schema": PAYLOAD_SCHEMA,
-        "artifact": metadata,
-        "sharedTransport": {
-            "schema": "tagmemo-v10-alpha-csr-snapshot-v1",
-            "contentSig": metadata["graphGeneration"],
-            "nodeIds": artifact.node_ids,
-            "rowOffsets": artifact.row_offsets,
-            "targetIndices": artifact.targets,
-            "weights": artifact.weights
-        },
-        "provenanceView": {
-            "schema": "tagmemo-provenance-file-mass-v2",
-            "generation": metadata["provenanceGeneration"],
-            "edges": provenance_edges
-        },
-        "rawResidualRatioView": [],
-        "anchorGainView": anchor_gain,
-        "inboundMassView": inbound,
-        "wormholeView": wormholes
-    })
+    ArtifactPayload {
+        metadata,
+        artifact,
+        provenance,
+        anchor_gain,
+        inbound,
+        wormholes: wormhole_ids.into_iter().map(|(source, target)| EdgeKey(source, target)).collect(),
+    }
 }
 
 fn run_build(
@@ -849,10 +913,10 @@ fn run_build(
     });
     let graph_ms = started.elapsed().as_secs_f64()*1000.0-load_ms;
     let payload = artifact_payload(&native, &provenance, &metadata);
-    drop(provenance);
     let raw = serde_json::to_vec(&payload)
         .map_err(|error| format!("encode native artifact payload failed: {}", error))?;
     drop(payload);
+    drop(provenance);
     let checksum = sha256_hex(&raw);
     let encode_ms = started.elapsed().as_secs_f64()*1000.0-load_ms-graph_ms;
     let raw_bytes = raw.len() as u32;
@@ -1001,6 +1065,151 @@ pub(crate) fn rebuild_with_runtime(
     }))
 }
 
+
+#[cfg(test)]
+mod streamed_payload_tests {
+    use super::*;
+
+    /// The previous encoding: a `serde_json::Value` tree, then `to_vec`.
+    fn tree_payload(
+        artifact: &NativeArtifact,
+        provenance: &BTreeMap<(i64, i64), Vec<ProvenanceContribution>>,
+        metadata: &Value,
+    ) -> Vec<u8> {
+        let provenance_edges: Vec<Value> = provenance
+            .iter()
+            .map(|((source, target), contributions)| {
+                json!([
+                    format!("{}:{}", source, target),
+                    contributions
+                        .iter()
+                        .map(|item| json!([item.file_id, item.mass]))
+                        .collect::<Vec<_>>()
+                ])
+            })
+            .collect();
+        let mut inbound: Vec<Value> = artifact
+            .inbound
+            .iter()
+            .map(|(id, mass)| json!([id, mass]))
+            .collect();
+        inbound.sort_by_key(|v| v[0].as_i64().unwrap_or(0));
+        let mut anchor_gain: Vec<Value> = artifact
+            .anchor_gain
+            .iter()
+            .map(|(id, gain)| json!([id, gain]))
+            .collect();
+        anchor_gain.sort_by_key(|v| v[0].as_i64().unwrap_or(0));
+        let mut wormhole_ids: Vec<_> = artifact.wormhole_edges.iter().copied().collect();
+        wormhole_ids.sort_unstable();
+        let wormholes: Vec<Value> = wormhole_ids
+            .iter()
+            .map(|(source, target)| json!(format!("{}:{}", source, target)))
+            .collect();
+
+        serde_json::to_vec(&json!({
+            "schema": PAYLOAD_SCHEMA,
+            "artifact": metadata,
+            "sharedTransport": {
+                "schema": "tagmemo-v10-alpha-csr-snapshot-v1",
+                "contentSig": metadata["graphGeneration"],
+                "nodeIds": artifact.node_ids,
+                "rowOffsets": artifact.row_offsets,
+                "targetIndices": artifact.targets,
+                "weights": artifact.weights
+            },
+            "provenanceView": {
+                "schema": "tagmemo-provenance-file-mass-v2",
+                "generation": metadata["provenanceGeneration"],
+                "edges": provenance_edges
+            },
+            "rawResidualRatioView": [],
+            "anchorGainView": anchor_gain,
+            "inboundMassView": inbound,
+            "wormholeView": wormholes
+        }))
+        .unwrap()
+    }
+
+    fn streamed_payload(
+        artifact: &NativeArtifact,
+        provenance: &BTreeMap<(i64, i64), Vec<ProvenanceContribution>>,
+        metadata: &Value,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&artifact_payload(artifact, provenance, metadata)).unwrap()
+    }
+
+    /// Floats whose shortest text takes every branch of the formatter, plus
+    /// values the tree turned into `null`.
+    const AWKWARD: [f64; 14] = [
+        0.1 + 0.2, 1.0, -0.0, 0.0, 5e-324, 1e-310, 1e21, 1e-7, 123456789.0,
+        f64::MAX, f64::MIN_POSITIVE, f64::NAN, f64::INFINITY, f64::NEG_INFINITY,
+    ];
+
+    #[test]
+    fn streamed_payload_has_the_bytes_of_the_value_tree() {
+        let ids: Vec<i64> = vec![1, 2, 3, 40, 512, 9_007_199_254_740_993, i64::MAX];
+        let artifact = NativeArtifact {
+            node_ids: ids.clone(),
+            row_offsets: vec![0, 3, 3, 7, 9, 11, 14, 14],
+            targets: (0..14).map(|index| (index * 5) % ids.len()).collect(),
+            weights: AWKWARD.to_vec(),
+            inbound: (0..200_i64).map(|id| (id * 7919 % 1000 - 300, AWKWARD[id as usize % 14])).collect(),
+            anchor_gain: (0..200_i64).map(|id| (id * 104_729 % 997, 0.5 + id as f64 / 3.0)).collect(),
+            wormhole_edges: [(3, 1), (-4, 2), (1, 3), (1, 2), (i64::MAX, i64::MIN)].into_iter().collect(),
+            ..NativeArtifact::default()
+        };
+        let mut provenance = BTreeMap::new();
+        for source in -3..12_i64 {
+            for target in [source - 1, source + 2, 900] {
+                let contributions = (0..(source + 3) as usize % 5)
+                    .map(|index| ProvenanceContribution {
+                        file_id: index as i64 * 31 + target,
+                        mass: AWKWARD[(index + source as usize % 7) % 14],
+                    })
+                    .collect();
+                provenance.insert((source, target), contributions);
+            }
+        }
+        let metadata = json!({
+            "schema": "tagmemo-v10-alpha-artifact-v1",
+            "graphGeneration": "graph",
+            "provenanceGeneration": "provenance",
+            "maxInbound": 0.1 + 0.2,
+            "effectiveConfig": {
+                "zeta": [1, -1, 2.5, 1e300, -0.0, true, null],
+                "Alpha": {"b": "quote \" backslash \\ newline \n tab \t 合成 \u{1}", "a": {}},
+                "_": [],
+                "a": u64::MAX,
+            }
+        });
+        let streamed = streamed_payload(&artifact, &provenance, &metadata);
+        assert_eq!(String::from_utf8(streamed.clone()).unwrap(),
+            String::from_utf8(tree_payload(&artifact, &provenance, &metadata)).unwrap());
+        // Non-finite weights and masses were written as `null`; they still are.
+        let text = std::str::from_utf8(&streamed).unwrap();
+        assert!(text.contains(",null,") && text.contains(",null]"));
+    }
+
+    #[test]
+    fn empty_artifact_and_provenance_keep_the_tree_bytes() {
+        let empty = NativeArtifact::default();
+        let provenance = BTreeMap::new();
+        for metadata in [json!({}), json!({"graphGeneration": "g", "provenanceGeneration": "p"}), Value::Null] {
+            let streamed = streamed_payload(&empty, &provenance, &metadata);
+            assert_eq!(streamed, tree_payload(&empty, &provenance, &metadata));
+        }
+        let mut one_empty_edge = BTreeMap::new();
+        one_empty_edge.insert((1, 2), Vec::new());
+        let metadata = json!({});
+        assert_eq!(streamed_payload(&empty, &one_empty_edge, &metadata),
+            tree_payload(&empty, &one_empty_edge, &metadata));
+        assert_eq!(
+            String::from_utf8(streamed_payload(&empty, &provenance, &metadata)).unwrap(),
+            r#"{"anchorGainView":[],"artifact":{},"inboundMassView":[],"provenanceView":{"edges":[],"generation":null,"schema":"tagmemo-provenance-file-mass-v2"},"rawResidualRatioView":[],"schema":"rivermemo-persisted-artifact-v2","sharedTransport":{"contentSig":null,"nodeIds":[],"rowOffsets":[],"schema":"tagmemo-v10-alpha-csr-snapshot-v1","targetIndices":[],"weights":[]},"wormholeView":[]}"#
+        );
+    }
+}
 
 #[cfg(test)]
 mod fact_dependency_tests {
