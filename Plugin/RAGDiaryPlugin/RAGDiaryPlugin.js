@@ -2587,6 +2587,7 @@ class RAGDiaryPlugin {
         return {
             useRerank: !!match,
             useRerankPlus: !!plus,
+            autoRrfAlpha: plus === '+',
             rrfAlpha: plus ? (plus.length > 1
                 ? Math.max(0, Math.min(1, Number(plus.slice(1)))) : 0.5) : null,
             useJev,
@@ -3003,7 +3004,9 @@ class RAGDiaryPlugin {
         const useRiverMemo = true;
 
         const rankOptions = this._parseRerankModifiers(modifiers);
-        const { useRerank, useRerankPlus, rrfAlpha, useJev, jevPrompt, jevPreset } = rankOptions;
+        const { useRerank, useRerankPlus, useJev, jevPrompt, jevPreset } = rankOptions;
+        let rrfAlpha = rankOptions.rrfAlpha;
+        let fusionOmega = null;
         if (rankOptions.missingPreset) {
             console.warn(`[RAGDiaryPlugin] JevRerankPrompt${jevPreset} 未配置，使用默认 Jev 提示词。`);
         }
@@ -3308,6 +3311,7 @@ class RAGDiaryPlugin {
                     {
                         diaryNames,
                         alpha: rrfAlpha,
+                        autoRrfAlpha: rankOptions.autoRrfAlpha && canUseNativeRiverFullPath,
                         useJev,
                         jevPrompt,
                         externalK: postEngineCandidateK,
@@ -3342,6 +3346,13 @@ class RAGDiaryPlugin {
                     }
                 );
             nativeParallelRanked = useNativeParallelRank;
+            // Preserve missing/invalid Omega rather than coercing it to zero.
+            fusionOmega = nativeResult.omega?.omega;
+            if (rankOptions.autoRrfAlpha) {
+                rrfAlpha = nativeParallelRanked
+                    ? (nativeResult.diagnostics?.nativeRerank?.alpha ?? rrfAlpha)
+                    : this._omegaRrfAlpha(fusionOmega);
+            }
             // 观测在原生读出前发布，元思考与 RiverMemo 均只读借用。
             candidates = this._filterContextDuplicates(
                 (nativeResult.results || []).map(item => ({
@@ -3640,7 +3651,11 @@ class RAGDiaryPlugin {
                 ...external.value?.diagnostics?.nativeRerank,
                 parallel: true, independentPools: true,
                 error: external.error?.message || null,
-                totalMs: Date.now() - greenStartedAt
+                totalMs: Date.now() - greenStartedAt,
+                alpha: rrfAlpha,
+                riverWeight: 1 - rrfAlpha,
+                weightMode: rankOptions.autoRrfAlpha && canUseNativeRiverFullPath ? 'omega-v1' : 'fixed',
+                omega: typeof fusionOmega === 'number' && Number.isFinite(fusionOmega) ? fusionOmega : null
             };
             riverMemoInfoForBroadcast = { ...riverMemoInfoForBroadcast, nativeRerank: diagnostics };
             console.log(`[RAGDiaryPlugin] Green lane RRF: diaries=${dbScopeKey}, backend=${useJev ? 'jev' : 'rerank'}, httpReadyMs=${diagnostics.httpReadyMs ?? 'n/a'}, totalMs=${diagnostics.totalMs}, returned=${finalResultsForBroadcast.length}, degraded=${!!external.error}.`);
@@ -3848,6 +3863,12 @@ class RAGDiaryPlugin {
      * 将限定日记本作用域内的候选交给 RiverMemo Topology V3。
      * 不做静默引擎回退：RiverMemo 不可用或返回坏结果时抛错，由占位符外层生成明确失败信息。
      */
+    _omegaRrfAlpha(omega) {
+        if (typeof omega !== 'number' || !Number.isFinite(omega) || omega < 0 || omega > 1) return 0.5;
+        // Alpha is the EXTERNAL weight: Omega .4 => RM .3; Omega .9 => RM .7.
+        return 1 - Math.max(0.3, Math.min(0.7, 0.5 + 0.8 * (omega - 0.65)));
+    }
+
     _fuseIndependentRankings(river, external, alpha = 0.5, limit = 10) {
         const weight = Math.max(0, Math.min(1, Number(alpha ?? 0.5)));
         const merged = new Map();
@@ -5262,7 +5283,8 @@ class RAGDiaryPlugin {
         const ranking = this._parseRerankModifiers(modifiers);
         return this.cacheManager.generateKey({
             ranking: ranking.useRerank ? {
-                fusionVersion: ranking.useRerankPlus ? 'independent-green-v1' : null,
+                fusionVersion: ranking.useRerankPlus ? 'independent-omega-v1' : null,
+                nativeRiverQueryEnabled: this.vectorDBManager?.config?.nativeRiverQueryEnabled === true,
                 useJev: ranking.useJev,
                 promptHash: ranking.useJev ? crypto.createHash('sha256')
                     .update(ranking.jevPrompt || '').digest('hex') : null

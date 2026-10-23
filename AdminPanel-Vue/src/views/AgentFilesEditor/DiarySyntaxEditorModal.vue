@@ -324,7 +324,7 @@
                 <p>
                   强制使用 Jev，不受 JevAdvancedRerank 开关限制。默认使用 JevRerankPrompt，
                   编号 1～4 对应插件配置中的 JevRerankPrompt1～4；未配置则回退默认提示词。
-                  Jev+ 复用现有双排 RRF 管线，α 表示 Jev 权重，留空为 0.5。
+                  Jev+ 复用现有双排 RRF 管线，α 表示 Jev 权重，留空为 0.5。当与Rivermemo一起开启时，动态权重由Ω泛函决策。
                 </p>
                 <label class="inline-number">
                   <span>提示词预设</span>

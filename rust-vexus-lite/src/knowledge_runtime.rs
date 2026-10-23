@@ -2499,6 +2499,7 @@ impl NativeKnowledgeRuntime {
         let config_path = plan["configPath"].as_str().unwrap_or("").to_string();
         let force_jev = plan["useJev"].as_bool();
         let jev_prompt = plan["jevPrompt"].as_str().map(str::to_string);
+        let auto_rrf_alpha = plan["autoRrfAlpha"].as_bool().unwrap_or(false);
         let alpha = plan["alpha"].as_f64().unwrap_or(0.5);
         if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) {
             return Err(Error::from_reason("NATIVE_RERANK_INVALID_ALPHA"));
@@ -2726,6 +2727,10 @@ impl NativeKnowledgeRuntime {
                 }
             }
         }
+        let omega = river["omega"]["omega"].as_f64();
+        let alpha = if auto_rrf_alpha {
+            crate::native_rerank::omega_rrf_alpha(omega)
+        } else { alpha };
         let error = external.as_ref().err().cloned();
         if let Ok(scores) = external { results = crate::native_rerank::fuse(results, &scores, alpha); }
         results.truncate(k);
@@ -2734,6 +2739,8 @@ impl NativeKnowledgeRuntime {
             "coreTagsMatched":metadata["coreTagsMatched"],"sourceMode":"rust_parallel"});
         river["diagnostics"]["nativeRerank"] = serde_json::json!({
             "backend":backend,"error":error,"parallel":true,"externalCandidates":external_docs.len(),
+            "alpha":alpha,"riverWeight":1.0-alpha,"omega":omega,
+            "weightMode":if auto_rrf_alpha { "omega-v1" } else { "fixed" },
             "intermediateCandidatesCrossedNapi":false
         });
         drop(admission);

@@ -271,6 +271,14 @@ fn parse_jev(response: &Value, docs: &[Value]) -> Result<Vec<(i64, f64)>, String
     Ok(scores)
 }
 
+/// External RRF weight; keep this mapping aligned with RAGDiaryPlugin.
+pub(crate) fn omega_rrf_alpha(omega: Option<f64>) -> f64 {
+    match omega.filter(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+        Some(value) => 1.0 - (0.5 + 0.8 * (value - 0.65)).clamp(0.3, 0.7),
+        None => 0.5,
+    }
+}
+
 /// Missing ranks contribute zero. Failed HTTP calls must not be supplied as ranks.
 pub(crate) fn fuse(mut river: Vec<Value>, external: &[(i64, f64)], alpha: f64) -> Vec<Value> {
     let mut scores = external.to_vec();
@@ -405,6 +413,16 @@ mod tests {
         assert!(parse_jev(&json!({"answers":{"best_memory":{"type":"choice","probabilities":{}}}}),
             &[json!({"id":1})]).is_err());
     }
+    #[test]
+    fn omega_weights_are_bounded_and_missing_values_are_neutral() {
+        for (omega, expected) in [(0.0, 0.7), (0.4, 0.7), (0.65, 0.5), (0.9, 0.3), (1.0, 0.3)] {
+            assert!((omega_rrf_alpha(Some(omega)) - expected).abs() < 1e-12);
+        }
+        for omega in [None, Some(f64::NAN), Some(f64::INFINITY), Some(-0.1), Some(1.1)] {
+            assert_eq!(omega_rrf_alpha(omega), 0.5);
+        }
+    }
+
     #[test]
     fn fusion_uses_both_orders() {
         let docs = vec![json!({"id":1}),json!({"id":2})];

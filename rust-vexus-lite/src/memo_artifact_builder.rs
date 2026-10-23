@@ -5,7 +5,8 @@ use flate2::Compression;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Deserialize;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -184,15 +185,35 @@ fn load_anchor_gains(
     Ok((gains, raw, signature))
 }
 
-fn add_edge(matrix: &mut HashMap<i64, HashMap<i64, f64>>, source: i64, target: i64, weight: f64) {
+/// Stable grouping keeps every key's original floating-point addition order.
+/// Compact in place after sorting; the first addition still starts at +0.0.
+fn stable_sums<K: Ord + Copy>(mut entries: Vec<(K, f64)>) -> Vec<(K, f64)> {
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut write = 0usize;
+    for read in 0..entries.len() {
+        let (key, value) = entries[read];
+        if write > 0 && entries[write - 1].0 == key {
+            entries[write - 1].1 += value;
+        } else {
+            let mut sum = 0.0;
+            sum += value;
+            entries[write] = (key, sum);
+            write += 1;
+        }
+    }
+    entries.truncate(write);
+    entries
+}
+
+fn add_edge(matrix: &mut Vec<((i64, i64), f64)>, source: i64, target: i64, weight: f64) {
     if source == target || !weight.is_finite() || weight <= 0.0 {
         return;
     }
-    *matrix.entry(source).or_default().entry(target).or_default() += weight;
+    matrix.push(((source, target), weight));
 }
 
 /// Unit vectors of one build snapshot, keyed by Tag ID.
-trait UnitVectors {
+trait UnitVectors: Sync {
     fn unit_vector(&self, id: i64) -> Option<&[f64]>;
 }
 
@@ -231,6 +252,52 @@ fn cooccurrence_tag_ids(rows: &[FileTag]) -> Vec<i64> {
     ids.sort_unstable();
     ids.dedup();
     ids
+}
+
+/// Enumerate pairs in first-occurrence order, retaining operand orientation.
+/// The set is used only for membership, never for iteration or arithmetic.
+fn semantic_pairs(rows: &[FileTag]) -> Vec<(i64, i64)> {
+    let mut seen = HashSet::new();
+    let mut pairs = Vec::new();
+    let mut offset = 0;
+    while offset < rows.len() {
+        let mut end = offset + 1;
+        while end < rows.len() && rows[end].file_id == rows[offset].file_id {
+            end += 1;
+        }
+        let tags = &rows[offset..end];
+        if (2..=100).contains(&tags.len()) {
+            for (i, left) in tags.iter().enumerate() {
+                for right in &tags[i + 1..] {
+                    let key = (left.tag_id.min(right.tag_id), left.tag_id.max(right.tag_id));
+                    if left.tag_id != right.tag_id && seen.insert(key) {
+                        pairs.push((left.tag_id, right.tag_id));
+                    }
+                }
+            }
+        }
+        offset = end;
+    }
+    pairs
+}
+
+fn configured_build_threads(value: Option<&str>, available: usize) -> usize {
+    value.and_then(|text| text.parse::<usize>().ok()).filter(|&n| n > 0)
+        .unwrap_or_else(|| available.clamp(1, 8))
+}
+
+fn evaluate_pair_gains(
+    pairs: &[(i64, i64)],
+    gain: &(impl Fn(i64, i64) -> f64 + Sync),
+    threads: usize,
+) -> Vec<f64> {
+    if threads > 1 && !pairs.is_empty() {
+        if let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+            use rayon::prelude::*;
+            return pool.install(|| pairs.par_iter().map(|&(a, b)| gain(a, b)).collect());
+        }
+    }
+    pairs.iter().map(|&(a, b)| gain(a, b)).collect()
 }
 
 fn build_fact_matrix(
@@ -287,8 +354,16 @@ fn build_fact_matrix(
     // One gain per unordered Tag pair. `dot` multiplies the same two vectors in
     // the same index order whichever comes first, so the stored value has the
     // bits every later file would compute. Bounded by the number of fact pairs.
-    let mut pair_gains: HashMap<(i64, i64), f64> = HashMap::new();
-    let mut matrix = HashMap::new();
+    let pair_gains: HashMap<(i64, i64), f64> = if semantic_enabled {
+        let pairs = semantic_pairs(rows);
+        let available = std::thread::available_parallelism().map_or(1, usize::from);
+        let threads = configured_build_threads(std::env::var("VCP_MEMO_BUILD_THREADS").ok().as_deref(), available);
+        let gains = evaluate_pair_gains(&pairs, &semantic_gain, threads);
+        pairs.into_iter().zip(gains).map(|((a, b), gain)| ((a.min(b), a.max(b)), gain)).collect()
+    } else {
+        HashMap::new()
+    };
+    let mut matrix = Vec::new();
     let mut offset = 0usize;
     while offset < rows.len() {
         let file_id = rows[offset].file_id;
@@ -307,8 +382,7 @@ fn build_fact_matrix(
                     }
                     let semantic = if semantic_enabled {
                         let pair = (left.tag_id.min(right.tag_id), left.tag_id.max(right.tag_id));
-                        *pair_gains.entry(pair)
-                            .or_insert_with(|| semantic_gain(left.tag_id, right.tag_id))
+                        pair_gains[&pair]
                     } else {
                         1.0
                     };
@@ -349,7 +423,11 @@ fn build_fact_matrix(
         }
         offset = end;
     }
-    Ok(matrix)
+    let mut output: HashMap<i64, HashMap<i64, f64>> = HashMap::new();
+    for ((source, target), weight) in stable_sums(matrix) {
+        output.entry(source).or_default().insert(target, weight);
+    }
+    Ok(output)
 }
 
 fn build_transport(
@@ -471,7 +549,7 @@ fn build_provenance(
     let forward_gain = number(ordered, &["forwardGain"], 1.0).max(0.0);
     let reverse_gain = number(ordered, &["reverseGain"], 0.35).max(0.0);
     let distance_decay = number(ordered, &["distanceDecay"], 0.08).max(0.0);
-    let mut aggregated: BTreeMap<(i64, i64, i64), f64> = BTreeMap::new();
+    let mut aggregated: Vec<((i64, i64, i64), f64)> = Vec::new();
 
     let mut offset = 0usize;
     while offset < rows.len() {
@@ -495,7 +573,7 @@ fn build_provenance(
                         (left.tag_id, right.tag_id, forward_gain * distance),
                         (right.tag_id, left.tag_id, reverse_gain * distance),
                     ] {
-                        *aggregated.entry((source, target, file_id)).or_default() += mass;
+                        aggregated.push(((source, target, file_id), mass));
                     }
                 }
             }
@@ -503,14 +581,15 @@ fn build_provenance(
         offset = end;
     }
 
-    let mut output: BTreeMap<(i64, i64), Vec<ProvenanceContribution>> = BTreeMap::new();
-    for ((source, target, file_id), mass) in aggregated {
-        output
-            .entry((source, target))
-            .or_default()
-            .push(ProvenanceContribution { file_id, mass });
+    let mut output: Vec<((i64, i64), Vec<ProvenanceContribution>)> = Vec::new();
+    for ((source, target, file_id), mass) in stable_sums(aggregated) {
+        let edge = (source, target);
+        if output.last().is_none_or(|(previous, _)| *previous != edge) {
+            output.push((edge, Vec::new()));
+        }
+        output.last_mut().unwrap().1.push(ProvenanceContribution { file_id, mass });
     }
-    output
+    output.into_iter().collect()
 }
 
 fn database_generation(connection: &Connection) -> std::result::Result<String, String> {
@@ -588,63 +667,126 @@ fn build_native_artifact(
     }.prepared())
 }
 
-fn artifact_payload(
-    artifact: &NativeArtifact,
-    provenance: &BTreeMap<(i64, i64), Vec<ProvenanceContribution>>,
-    metadata: &Value,
-) -> Value {
-    let provenance_edges: Vec<Value> = provenance
-        .iter()
-        .map(|((source, target), contributions)| {
-            json!([
-                format!("{}:{}", source, target),
-                contributions
-                    .iter()
-                    .map(|item| json!([item.file_id, item.mass]))
-                    .collect::<Vec<_>>()
-            ])
-        })
-        .collect();
-    let mut inbound: Vec<Value> = artifact
-        .inbound
-        .iter()
-        .map(|(id, mass)| json!([id, mass]))
-        .collect();
-    inbound.sort_by_key(|v| v[0].as_i64().unwrap_or(0));
-    let mut anchor_gain: Vec<Value> = artifact
-        .anchor_gain
-        .iter()
-        .map(|(id, gain)| json!([id, gain]))
-        .collect();
-    anchor_gain.sort_by_key(|v| v[0].as_i64().unwrap_or(0));
+/// `"source:target"`, the text `format!("{}:{}", source, target)` produced.
+struct EdgeKey(i64, i64);
+
+impl Serialize for EdgeKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!("{}:{}", self.0, self.1))
+    }
+}
+
+/// `[[fileId, mass], ...]` of one provenance edge.
+struct Contributions<'a>(&'a [ProvenanceContribution]);
+
+impl Serialize for Contributions<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(|item| (item.file_id, item.mass)))
+    }
+}
+
+/// `[["source:target", contributions], ...]` in provenance key order.
+struct ProvenanceEdges<'a>(&'a BTreeMap<(i64, i64), Vec<ProvenanceContribution>>);
+
+impl Serialize for ProvenanceEdges<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(|((source, target), contributions)| {
+            (EdgeKey(*source, *target), Contributions(contributions))
+        }))
+    }
+}
+
+struct ProvenanceView<'a> {
+    generation: &'a Value,
+    edges: ProvenanceEdges<'a>,
+}
+
+impl Serialize for ProvenanceView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(3))?;
+        map.serialize_entry("edges", &self.edges)?;
+        map.serialize_entry("generation", self.generation)?;
+        map.serialize_entry("schema", "tagmemo-provenance-file-mass-v2")?;
+        map.end()
+    }
+}
+
+struct SharedTransport<'a> {
+    content_sig: &'a Value,
+    artifact: &'a NativeArtifact,
+}
+
+impl Serialize for SharedTransport<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(6))?;
+        map.serialize_entry("contentSig", self.content_sig)?;
+        map.serialize_entry("nodeIds", &self.artifact.node_ids)?;
+        map.serialize_entry("rowOffsets", &self.artifact.row_offsets)?;
+        map.serialize_entry("schema", "tagmemo-v10-alpha-csr-snapshot-v1")?;
+        map.serialize_entry("targetIndices", &self.artifact.targets)?;
+        map.serialize_entry("weights", &self.artifact.weights)?;
+        map.end()
+    }
+}
+
+/// The persisted payload, serialised straight from the artifact instead of
+/// through a `serde_json::Value` tree. serde_json is built without
+/// `preserve_order`, so the tree wrote every object with its keys in sorted
+/// order; each `serialize_map` below writes its keys in that same order. All
+/// numbers and strings go through the same serializer as before, so the bytes
+/// are identical. Only the sorted (ID, value) lists are materialised.
+struct ArtifactPayload<'a> {
+    metadata: &'a Value,
+    artifact: &'a NativeArtifact,
+    provenance: &'a BTreeMap<(i64, i64), Vec<ProvenanceContribution>>,
+    anchor_gain: Vec<(i64, f64)>,
+    inbound: Vec<(i64, f64)>,
+    wormholes: Vec<EdgeKey>,
+}
+
+impl Serialize for ArtifactPayload<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(8))?;
+        map.serialize_entry("anchorGainView", &self.anchor_gain)?;
+        map.serialize_entry("artifact", self.metadata)?;
+        map.serialize_entry("inboundMassView", &self.inbound)?;
+        map.serialize_entry("provenanceView", &ProvenanceView {
+            generation: &self.metadata["provenanceGeneration"],
+            edges: ProvenanceEdges(self.provenance),
+        })?;
+        map.serialize_entry("rawResidualRatioView", &Value::Array(Vec::new()))?;
+        map.serialize_entry("schema", PAYLOAD_SCHEMA)?;
+        map.serialize_entry("sharedTransport", &SharedTransport {
+            content_sig: &self.metadata["graphGeneration"],
+            artifact: self.artifact,
+        })?;
+        map.serialize_entry("wormholeView", &self.wormholes)?;
+        map.end()
+    }
+}
+
+fn artifact_payload<'a>(
+    artifact: &'a NativeArtifact,
+    provenance: &'a BTreeMap<(i64, i64), Vec<ProvenanceContribution>>,
+    metadata: &'a Value,
+) -> ArtifactPayload<'a> {
+    // Map keys are unique, so ascending ID is a total order.
+    let mut inbound: Vec<(i64, f64)> =
+        artifact.inbound.iter().map(|(id, mass)| (*id, *mass)).collect();
+    inbound.sort_unstable_by_key(|entry| entry.0);
+    let mut anchor_gain: Vec<(i64, f64)> =
+        artifact.anchor_gain.iter().map(|(id, gain)| (*id, *gain)).collect();
+    anchor_gain.sort_unstable_by_key(|entry| entry.0);
     let mut wormhole_ids: Vec<_> = artifact.wormhole_edges.iter().copied().collect();
     wormhole_ids.sort_unstable();
-    let wormholes: Vec<Value> = wormhole_ids
-        .iter()
-        .map(|(source, target)| json!(format!("{}:{}", source, target)))
-        .collect();
-
-    json!({
-        "schema": PAYLOAD_SCHEMA,
-        "artifact": metadata,
-        "sharedTransport": {
-            "schema": "tagmemo-v10-alpha-csr-snapshot-v1",
-            "contentSig": metadata["graphGeneration"],
-            "nodeIds": artifact.node_ids,
-            "rowOffsets": artifact.row_offsets,
-            "targetIndices": artifact.targets,
-            "weights": artifact.weights
-        },
-        "provenanceView": {
-            "schema": "tagmemo-provenance-file-mass-v2",
-            "generation": metadata["provenanceGeneration"],
-            "edges": provenance_edges
-        },
-        "rawResidualRatioView": [],
-        "anchorGainView": anchor_gain,
-        "inboundMassView": inbound,
-        "wormholeView": wormholes
-    })
+    ArtifactPayload {
+        metadata,
+        artifact,
+        provenance,
+        anchor_gain,
+        inbound,
+        wormholes: wormhole_ids.into_iter().map(|(source, target)| EdgeKey(source, target)).collect(),
+    }
 }
 
 fn run_build(
@@ -654,6 +796,7 @@ fn run_build(
     input_json: &str,
 ) -> std::result::Result<NativeMemoArtifactBuildResult, String> {
     let started = Instant::now();
+    let mut handoff = crate::storage::memo_workspace_slot(db_path).and_then(|slot| slot.take());
     let input: BuildInput = serde_json::from_str(input_json)
         .map_err(|error| format!("invalid native artifact build JSON: {}", error))?;
     if input.model_sig.trim().is_empty() {
@@ -669,11 +812,17 @@ fn run_build(
             // memory-mapped f64 workspace that geometry precompute also uses, instead
             // of once per file; no vector SQL when semantic gain is disabled.
             let vectors = if semantic_gain_enabled(&input.effective_config) {
-                crate::memo_geometry::UnitVectorWorkspace::build(
-                    readonly, &cooccurrence_tag_ids(&rows), dimension)?
+                let ids = cooccurrence_tag_ids(&rows);
+                let key = crate::memo_geometry::workspace::SnapshotKey::capture(
+                    readonly, db_path, &input.model_sig, dimension)?;
+                match handoff.take().and_then(|pending| pending.reuse(&key, &ids)) {
+                    Some(workspace) => workspace,
+                    None => crate::memo_geometry::UnitVectorWorkspace::build(readonly, &ids, dimension)?,
+                }
             } else {
                 crate::memo_geometry::UnitVectorWorkspace::empty(dimension)
             };
+            drop(handoff.take());
             let fact = build_fact_matrix(&rows, &vectors, &anchor_gain, &input.effective_config)?;
             drop(vectors);
             let database_generation = database_generation(readonly)?;
@@ -771,10 +920,10 @@ fn run_build(
     });
     let graph_ms = started.elapsed().as_secs_f64()*1000.0-load_ms;
     let payload = artifact_payload(&native, &provenance, &metadata);
-    drop(provenance);
     let raw = serde_json::to_vec(&payload)
         .map_err(|error| format!("encode native artifact payload failed: {}", error))?;
     drop(payload);
+    drop(provenance);
     let checksum = sha256_hex(&raw);
     let encode_ms = started.elapsed().as_secs_f64()*1000.0-load_ms-graph_ms;
     let raw_bytes = raw.len() as u32;
@@ -925,6 +1074,151 @@ pub(crate) fn rebuild_with_runtime(
 
 
 #[cfg(test)]
+mod streamed_payload_tests {
+    use super::*;
+
+    /// The previous encoding: a `serde_json::Value` tree, then `to_vec`.
+    fn tree_payload(
+        artifact: &NativeArtifact,
+        provenance: &BTreeMap<(i64, i64), Vec<ProvenanceContribution>>,
+        metadata: &Value,
+    ) -> Vec<u8> {
+        let provenance_edges: Vec<Value> = provenance
+            .iter()
+            .map(|((source, target), contributions)| {
+                json!([
+                    format!("{}:{}", source, target),
+                    contributions
+                        .iter()
+                        .map(|item| json!([item.file_id, item.mass]))
+                        .collect::<Vec<_>>()
+                ])
+            })
+            .collect();
+        let mut inbound: Vec<Value> = artifact
+            .inbound
+            .iter()
+            .map(|(id, mass)| json!([id, mass]))
+            .collect();
+        inbound.sort_by_key(|v| v[0].as_i64().unwrap_or(0));
+        let mut anchor_gain: Vec<Value> = artifact
+            .anchor_gain
+            .iter()
+            .map(|(id, gain)| json!([id, gain]))
+            .collect();
+        anchor_gain.sort_by_key(|v| v[0].as_i64().unwrap_or(0));
+        let mut wormhole_ids: Vec<_> = artifact.wormhole_edges.iter().copied().collect();
+        wormhole_ids.sort_unstable();
+        let wormholes: Vec<Value> = wormhole_ids
+            .iter()
+            .map(|(source, target)| json!(format!("{}:{}", source, target)))
+            .collect();
+
+        serde_json::to_vec(&json!({
+            "schema": PAYLOAD_SCHEMA,
+            "artifact": metadata,
+            "sharedTransport": {
+                "schema": "tagmemo-v10-alpha-csr-snapshot-v1",
+                "contentSig": metadata["graphGeneration"],
+                "nodeIds": artifact.node_ids,
+                "rowOffsets": artifact.row_offsets,
+                "targetIndices": artifact.targets,
+                "weights": artifact.weights
+            },
+            "provenanceView": {
+                "schema": "tagmemo-provenance-file-mass-v2",
+                "generation": metadata["provenanceGeneration"],
+                "edges": provenance_edges
+            },
+            "rawResidualRatioView": [],
+            "anchorGainView": anchor_gain,
+            "inboundMassView": inbound,
+            "wormholeView": wormholes
+        }))
+        .unwrap()
+    }
+
+    fn streamed_payload(
+        artifact: &NativeArtifact,
+        provenance: &BTreeMap<(i64, i64), Vec<ProvenanceContribution>>,
+        metadata: &Value,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&artifact_payload(artifact, provenance, metadata)).unwrap()
+    }
+
+    /// Floats whose shortest text takes every branch of the formatter, plus
+    /// values the tree turned into `null`.
+    const AWKWARD: [f64; 14] = [
+        0.1 + 0.2, 1.0, -0.0, 0.0, 5e-324, 1e-310, 1e21, 1e-7, 123456789.0,
+        f64::MAX, f64::MIN_POSITIVE, f64::NAN, f64::INFINITY, f64::NEG_INFINITY,
+    ];
+
+    #[test]
+    fn streamed_payload_has_the_bytes_of_the_value_tree() {
+        let ids: Vec<i64> = vec![1, 2, 3, 40, 512, 9_007_199_254_740_993, i64::MAX];
+        let artifact = NativeArtifact {
+            node_ids: ids.clone(),
+            row_offsets: vec![0, 3, 3, 7, 9, 11, 14, 14],
+            targets: (0..14).map(|index| (index * 5) % ids.len()).collect(),
+            weights: AWKWARD.to_vec(),
+            inbound: (0..200_i64).map(|id| (id * 7919 % 1000 - 300, AWKWARD[id as usize % 14])).collect(),
+            anchor_gain: (0..200_i64).map(|id| (id * 104_729 % 997, 0.5 + id as f64 / 3.0)).collect(),
+            wormhole_edges: [(3, 1), (-4, 2), (1, 3), (1, 2), (i64::MAX, i64::MIN)].into_iter().collect(),
+            ..NativeArtifact::default()
+        };
+        let mut provenance = BTreeMap::new();
+        for source in -3..12_i64 {
+            for target in [source - 1, source + 2, 900] {
+                let contributions = (0..(source + 3) as usize % 5)
+                    .map(|index| ProvenanceContribution {
+                        file_id: index as i64 * 31 + target,
+                        mass: AWKWARD[(index + source as usize % 7) % 14],
+                    })
+                    .collect();
+                provenance.insert((source, target), contributions);
+            }
+        }
+        let metadata = json!({
+            "schema": "tagmemo-v10-alpha-artifact-v1",
+            "graphGeneration": "graph",
+            "provenanceGeneration": "provenance",
+            "maxInbound": 0.1 + 0.2,
+            "effectiveConfig": {
+                "zeta": [1, -1, 2.5, 1e300, -0.0, true, null],
+                "Alpha": {"b": "quote \" backslash \\ newline \n tab \t 合成 \u{1}", "a": {}},
+                "_": [],
+                "a": u64::MAX,
+            }
+        });
+        let streamed = streamed_payload(&artifact, &provenance, &metadata);
+        assert_eq!(String::from_utf8(streamed.clone()).unwrap(),
+            String::from_utf8(tree_payload(&artifact, &provenance, &metadata)).unwrap());
+        // Non-finite weights and masses were written as `null`; they still are.
+        let text = std::str::from_utf8(&streamed).unwrap();
+        assert!(text.contains(",null,") && text.contains(",null]"));
+    }
+
+    #[test]
+    fn empty_artifact_and_provenance_keep_the_tree_bytes() {
+        let empty = NativeArtifact::default();
+        let provenance = BTreeMap::new();
+        for metadata in [json!({}), json!({"graphGeneration": "g", "provenanceGeneration": "p"}), Value::Null] {
+            let streamed = streamed_payload(&empty, &provenance, &metadata);
+            assert_eq!(streamed, tree_payload(&empty, &provenance, &metadata));
+        }
+        let mut one_empty_edge = BTreeMap::new();
+        one_empty_edge.insert((1, 2), Vec::new());
+        let metadata = json!({});
+        assert_eq!(streamed_payload(&empty, &one_empty_edge, &metadata),
+            tree_payload(&empty, &one_empty_edge, &metadata));
+        assert_eq!(
+            String::from_utf8(streamed_payload(&empty, &provenance, &metadata)).unwrap(),
+            r#"{"anchorGainView":[],"artifact":{},"inboundMassView":[],"provenanceView":{"edges":[],"generation":null,"schema":"tagmemo-provenance-file-mass-v2"},"rawResidualRatioView":[],"schema":"rivermemo-persisted-artifact-v2","sharedTransport":{"contentSig":null,"nodeIds":[],"rowOffsets":[],"schema":"tagmemo-v10-alpha-csr-snapshot-v1","targetIndices":[],"weights":[]},"wormholeView":[]}"#
+        );
+    }
+}
+
+#[cfg(test)]
 mod fact_dependency_tests {
     use super::*;
     use crate::storage::{SqliteStorageEngine, StorageOptions, WriteReceipt};
@@ -1032,6 +1326,86 @@ mod fact_dependency_tests {
 
 
 #[cfg(test)]
+mod cold_restore_float_tests {
+    use super::*;
+    use crate::storage::{SqliteStorageEngine, StorageOptions, WriteReceipt};
+
+    /// Every float a cold load reads from the payload, labelled by where it is.
+    fn float_bits(artifact: &NativeArtifact) -> Vec<(String, u64)> {
+        let mut out: Vec<(String, u64)> = artifact.weights.iter().enumerate()
+            .map(|(cursor, weight)| (format!("weight[{cursor}]"), weight.to_bits())).collect();
+        out.push(("maxInbound".into(), artifact.max_inbound.to_bits()));
+        for (name, map) in [("inbound", &artifact.inbound), ("anchorGain", &artifact.anchor_gain)] {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_unstable_by_key(|(id, _)| **id);
+            out.extend(entries.into_iter().map(|(id, value)| (format!("{name}[{id}]"), value.to_bits())));
+        }
+        let mut edges: Vec<_> = artifact.provenance.iter().collect();
+        edges.sort_unstable_by_key(|(edge, _)| **edge);
+        for ((source, target), rows) in edges {
+            out.extend(rows.iter().map(|(file_id, mass)| (format!("provenance[{source}:{target}][{file_id}]"), mass.to_bits())));
+        }
+        out
+    }
+
+    /// The payload stores edge weights, inbound masses, anchor gains and
+    /// provenance masses as JSON text. A cold load must read back the bits the
+    /// build published, so that a restored graph answers exactly like the
+    /// freshly built one; serde_json needs `float_roundtrip` for that (without
+    /// it about one float in nine comes back one unit in the last place off).
+    #[test]
+    fn restored_artifact_has_published_float_bits() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-artifact-floats-{}-{}", std::process::id(), now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = SqliteStorageEngine::open_and_init(&db, StorageOptions::default()).unwrap();
+        storage.submit_write(|tx| {
+            for id in 1..=40_i64 {
+                let vector: Vec<u8> = (0..4_i64)
+                    .flat_map(|axis| (((id * 7 + axis * 3) as f32) * 0.37).sin().to_le_bytes())
+                    .collect();
+                tx.execute("INSERT INTO tags(id,name,vector) VALUES (?1,?2,?3)",
+                    params![id, format!("t{id}"), vector]).map_err(|error| error.to_string())?;
+            }
+            for file_id in 1..=60_i64 {
+                tx.execute("INSERT INTO files(id,path,diary_name,checksum,mtime,size) VALUES (?1,?2,'test','h',1,1)",
+                    params![file_id, format!("f{file_id}.txt")]).map_err(|error| error.to_string())?;
+                for position in 1..=5_i64 {
+                    tx.execute("INSERT INTO file_tags VALUES (?1,?2,?3)",
+                        params![file_id, (file_id * 3 + position * position) % 40 + 1, position])
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let runtime = MemoRuntime::new();
+        let built = run_build(4, &runtime, &db, r#"{"modelSig":"test","effectiveConfig":{}}"#).unwrap();
+        let load = || with_registered_read_transaction(&db, |connection| {
+            crate::rivermemo_topology_v3::load_artifact_with_connection(&runtime, connection, &built.artifact_sig)
+        });
+        let published = load().unwrap();
+        runtime.clear().unwrap();
+        let restored = load().unwrap();
+        assert!(!Arc::ptr_eq(&published, &restored), "the second load must decode the stored payload");
+        assert_eq!(published.node_ids, restored.node_ids);
+        assert_eq!(published.row_offsets, restored.row_offsets);
+        assert_eq!(published.targets, restored.targets);
+        let (expected, actual) = (float_bits(&published), float_bits(&restored));
+        assert!(published.weights.len() >= 200 && expected.len() >= 1000);
+        assert_eq!(expected.iter().map(|(label, _)| label).collect::<Vec<_>>(),
+            actual.iter().map(|(label, _)| label).collect::<Vec<_>>());
+        let differing: Vec<&str> = expected.iter().zip(&actual)
+            .filter(|(left, right)| left.1 != right.1).map(|(left, _)| left.0.as_str()).collect();
+        assert!(differing.is_empty(), "{} of {} floats changed bits on a cold load, e.g. {:?}",
+            differing.len(), expected.len(), &differing[..differing.len().min(4)]);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod bounded_workspace_tests {
     use super::*;
 
@@ -1076,3 +1450,268 @@ mod bounded_workspace_tests {
         assert!(!plain.is_empty());
     }
 }
+
+#[cfg(test)]
+mod sorted_contribution_tests {
+    use super::*;
+    fn baseline_add(matrix: &mut HashMap<i64, HashMap<i64, f64>>, source: i64, target: i64, weight: f64) {
+        if source != target && weight.is_finite() && weight > 0.0 {
+            *matrix.entry(source).or_default().entry(target).or_default() += weight;
+        }
+    }
+fn baseline_fact(
+    rows: &[FileTag],
+    vectors: &dyn UnitVectors,
+    anchor_gain: &HashMap<i64, f64>,
+    config: &Value,
+) -> std::result::Result<HashMap<i64, HashMap<i64, f64>>, String> {
+    let ordered = config.get("orderedCooccurrence").unwrap_or(&Value::Null);
+    let forward_gain = number(ordered, &["forwardGain"], 1.0).max(0.0);
+    let reverse_gain = number(ordered, &["reverseGain"], 0.42).clamp(
+        number(ordered, &["minReverseGain"], 0.25),
+        number(ordered, &["maxReverseGain"], 0.70),
+    );
+    let distance_decay = number(ordered, &["distanceDecay"], 0.0).max(0.0);
+    let reverse_guard = number(ordered, &["reverseInversionGuard"], 0.95).clamp(0.0, 1.0);
+    let reverse_anchor_enabled = boolean(ordered, &["reverseAnchorBoost"], false);
+    let reverse_anchor_max = number(ordered, &["reverseAnchorMax"], 1.5).max(1.0);
+    let semantic_enabled = semantic_gain_enabled(config);
+    let semantic_peak = number(
+        ordered,
+        &["semanticGainPeak"],
+        number(ordered, &["semanticGain", "peak"], 0.65),
+    );
+    let semantic_sigma = number(
+        ordered,
+        &["semanticGainSigma"],
+        number(ordered, &["semanticGain", "sigma"], 0.25),
+    )
+    .max(0.001);
+    let low_fallback = number(
+        ordered,
+        &["semanticGainLowSimFallback"],
+        number(ordered, &["semanticGain", "lowSimFallback"], 0.1),
+    );
+
+    let semantic_gain = |left: i64, right: i64| -> f64 {
+        if !semantic_enabled {
+            return 1.0;
+        }
+        let similarity = vectors.unit_vector(left).zip(vectors.unit_vector(right))
+            .map(|(a,b)| crate::memo_geometry::dot(a,b).clamp(-1.0,1.0))
+            .unwrap_or(low_fallback);
+        if similarity < 0.15 {
+            0.4 + similarity * 1.0
+        } else {
+            0.5 + 0.8
+                * (-((similarity - semantic_peak).powi(2))
+                    / (2.0 * semantic_sigma * semantic_sigma))
+                    .exp()
+        }
+    };
+
+    // One gain per unordered Tag pair. `dot` multiplies the same two vectors in
+    // the same index order whichever comes first, so the stored value has the
+    // bits every later file would compute. Bounded by the number of fact pairs.
+    let mut pair_gains: HashMap<(i64, i64), f64> = HashMap::new();
+    let mut matrix = HashMap::new();
+    let mut offset = 0usize;
+    while offset < rows.len() {
+        let file_id = rows[offset].file_id;
+        let mut end = offset + 1;
+        while end < rows.len() && rows[end].file_id == file_id {
+            end += 1;
+        }
+        let tags = &rows[offset..end];
+        if tags.len() >= 2 && tags.len() <= 100 {
+            for left_index in 0..tags.len() {
+                for right_index in (left_index + 1)..tags.len() {
+                    let left = &tags[left_index];
+                    let right = &tags[right_index];
+                    if left.tag_id == right.tag_id {
+                        continue;
+                    }
+                    let semantic = if semantic_enabled {
+                        let pair = (left.tag_id.min(right.tag_id), left.tag_id.max(right.tag_id));
+                        *pair_gains.entry(pair)
+                            .or_insert_with(|| semantic_gain(left.tag_id, right.tag_id))
+                    } else {
+                        1.0
+                    };
+                    if left.position > 0 && right.position > 0 {
+                        let count = tags.len() as f64;
+                        let phi_left =
+                            0.9 - 0.4 * (left.position - 1).max(0) as f64 / (count - 1.0).max(1.0);
+                        let phi_right =
+                            0.9 - 0.4 * (right.position - 1).max(0) as f64 / (count - 1.0).max(1.0);
+                        let delta = (right.position - left.position).max(1) as f64;
+                        let distance = if distance_decay > 0.0 {
+                            (-distance_decay * (delta - 1.0)).exp()
+                        } else {
+                            1.0
+                        };
+                        let base = phi_left * phi_right * distance;
+                        let forward = base * forward_gain * semantic;
+                        let mut dynamic_reverse = reverse_gain;
+                        if reverse_anchor_enabled {
+                            dynamic_reverse *= anchor_gain
+                                .get(&left.tag_id)
+                                .copied()
+                                .unwrap_or(1.0)
+                                .min(reverse_anchor_max);
+                        }
+                        dynamic_reverse = dynamic_reverse.clamp(0.25, 0.70);
+                        let backward =
+                            (base * dynamic_reverse * semantic).min(forward * reverse_guard);
+                        baseline_add(&mut matrix, left.tag_id, right.tag_id, forward);
+                        baseline_add(&mut matrix, right.tag_id, left.tag_id, backward);
+                    } else {
+                        let weight = 0.7 * 0.7 * semantic;
+                        baseline_add(&mut matrix, left.tag_id, right.tag_id, weight);
+                        baseline_add(&mut matrix, right.tag_id, left.tag_id, weight);
+                    }
+                }
+            }
+        }
+        offset = end;
+    }
+    Ok(matrix)
+}
+
+fn baseline_provenance(
+    rows: &[FileTag],
+    config: &Value,
+) -> BTreeMap<(i64, i64), Vec<ProvenanceContribution>> {
+    let ordered = config.get("orderedCooccurrence").unwrap_or(&Value::Null);
+    let forward_gain = number(ordered, &["forwardGain"], 1.0).max(0.0);
+    let reverse_gain = number(ordered, &["reverseGain"], 0.35).max(0.0);
+    let distance_decay = number(ordered, &["distanceDecay"], 0.08).max(0.0);
+    let mut aggregated: BTreeMap<(i64, i64, i64), f64> = BTreeMap::new();
+
+    let mut offset = 0usize;
+    while offset < rows.len() {
+        let file_id = rows[offset].file_id;
+        let mut end = offset + 1;
+        while end < rows.len() && rows[end].file_id == file_id {
+            end += 1;
+        }
+        let tags = &rows[offset..end];
+        if tags.len() >= 2 && tags.len() <= 100 {
+            for left_index in 0..tags.len() {
+                for right_index in (left_index + 1)..tags.len() {
+                    let left = &tags[left_index];
+                    let right = &tags[right_index];
+                    if left.tag_id == right.tag_id {
+                        continue;
+                    }
+                    let delta = (right.position - left.position).max(1) as f64;
+                    let distance = (-distance_decay * (delta - 1.0).max(0.0)).exp();
+                    for (source, target, mass) in [
+                        (left.tag_id, right.tag_id, forward_gain * distance),
+                        (right.tag_id, left.tag_id, reverse_gain * distance),
+                    ] {
+                        *aggregated.entry((source, target, file_id)).or_default() += mass;
+                    }
+                }
+            }
+        }
+        offset = end;
+    }
+
+    let mut output: BTreeMap<(i64, i64), Vec<ProvenanceContribution>> = BTreeMap::new();
+    for ((source, target, file_id), mass) in aggregated {
+        output
+            .entry((source, target))
+            .or_default()
+            .push(ProvenanceContribution { file_id, mass });
+    }
+    output
+}
+
+
+    #[test]
+    fn stable_sums_preserve_order_and_initial_positive_zero() {
+        let input = vec![(2, -0.0), (1, 1e16), (1, -1e16), (2, 2.0), (1, 1.0)];
+        let result = stable_sums(input);
+        assert_eq!(result, vec![(1, 1.0), (2, 2.0)]);
+        assert_eq!(stable_sums(vec![(1, -0.0)])[0].1.to_bits(), 0.0f64.to_bits());
+        assert!(stable_sums::<i64>(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn repeated_tags_files_positions_and_excluded_files_match_baseline_bits() {
+        let mut rows = Vec::new();
+        for file_id in 1..=32 {
+            for (i, tag_id) in [3, 1, 3, 2, 1, 4].into_iter().enumerate() {
+                rows.push(FileTag { file_id, tag_id, position: if file_id % 3 == 0 { 0 } else { i as i64 + 1 } });
+            }
+        }
+        rows.extend((0..101).map(|i| FileTag { file_id: 33, tag_id: 1000+i, position: i+1 }));
+        rows.push(FileTag { file_id: 34, tag_id: 9999, position: 1 });
+        let vectors: HashMap<i64, Vec<f64>> = [(1, vec![1.0, 0.0]), (2, vec![0.0, 1.0]),
+            (3, vec![0.6, 0.8]), (4, vec![-1.0, 0.0])].into_iter().collect();
+        for config in [json!({}), json!({"orderedCooccurrence":{"semanticGainEnabled":true,"reverseAnchorBoost":true,"distanceDecay":0.08}}),
+                       json!({"orderedCooccurrence":{"forwardGain":0.0,"reverseGain":0.0}})] {
+            let anchors = [(1, 1.3), (2, 0.5)].into_iter().collect();
+            let actual = build_fact_matrix(&rows, &vectors, &anchors, &config).unwrap();
+            let expected = baseline_fact(&rows, &vectors, &anchors, &config).unwrap();
+            assert_eq!(actual.len(), expected.len());
+            for (source, edges) in &expected {
+                assert_eq!(actual[source].len(), edges.len());
+                for (target, weight) in edges { assert_eq!(actual[source][target].to_bits(), weight.to_bits()); }
+            }
+            let actual = build_provenance(&rows, &config);
+            let expected = baseline_provenance(&rows, &config);
+            assert_eq!(actual.len(), expected.len());
+            for (edge, values) in &expected {
+                assert_eq!(actual[edge].len(), values.len());
+                for (a,b) in actual[edge].iter().zip(values) {
+                    assert_eq!(a.file_id,b.file_id); assert_eq!(a.mass.to_bits(),b.mass.to_bits());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod parallel_gain_tests {
+    use super::*;
+    #[test]
+    fn thread_setting_defaults_and_invalid_values() {
+        for text in [None, Some(""), Some("0"), Some("-1"), Some("oops"), Some("99999999999999999999999999")] {
+            assert_eq!(configured_build_threads(text, 20), 8);
+            assert_eq!(configured_build_threads(text, 2), 2);
+        }
+        assert_eq!(configured_build_threads(Some("1"), 20), 1);
+        assert_eq!(configured_build_threads(Some("2"), 20), 2);
+        assert_eq!(configured_build_threads(Some("8"), 20), 8);
+        assert_eq!(configured_build_threads(None, 0), 1);
+    }
+    #[test]
+    fn first_operand_order_duplicates_and_file_limits() {
+        let mut rows = vec![FileTag{file_id:1,tag_id:3,position:1},FileTag{file_id:1,tag_id:1,position:2},
+            FileTag{file_id:1,tag_id:3,position:3},FileTag{file_id:2,tag_id:1,position:1},
+            FileTag{file_id:2,tag_id:3,position:2},FileTag{file_id:3,tag_id:9,position:1}];
+        rows.extend((0..101).map(|i|FileTag{file_id:4,tag_id:100+i,position:i}));
+        assert_eq!(semantic_pairs(&rows), vec![(3,1)]);
+        assert!(semantic_pairs(&[]).is_empty());
+    }
+    #[test]
+    fn parallel_gains_match_sequential_bits_at_one_two_eight_threads() {
+        let pairs: Vec<_> = (1..=1200).map(|i|(i,i+1)).collect();
+        let gain = |a:i64,b:i64| {
+            let left: Vec<_> = (0..3072).map(|i|((a+i) as f64*0.013).sin()).collect();
+            let right: Vec<_> = (0..3072).map(|i|((b+i) as f64*0.017).cos()).collect();
+            crate::memo_geometry::dot(&left,&right)
+        };
+        let expected: Vec<_> = pairs.iter().map(|&(a,b)|gain(a,b).to_bits()).collect();
+        for n in [1,2,8] {
+            let actual: Vec<_> = evaluate_pair_gains(&pairs,&gain,n).into_iter().map(f64::to_bits).collect();
+            assert_eq!(actual,expected);
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "memo_workspace_build_tests.rs"]
+mod workspace_build_tests;

@@ -2,6 +2,9 @@
 //! All floating-point reductions use ID order, never Rayon reduction order.
 use rayon::prelude::*;
 
+#[path = "memo_workspace.rs"]
+pub(crate) mod workspace;
+
 pub(crate) enum AgsTarget<'a> {
     Explain(&'a [f64]),
     Span,
@@ -441,6 +444,8 @@ pub(crate) fn read_unit_vectors(
 /// This is not a durable asset: no signature or mathematical precision changes.
 pub(crate) struct UnitVectorWorkspace {
     map: Option<memmap2::Mmap>,
+    #[cfg(windows)]
+    file: Option<std::fs::File>,
     path: std::path::PathBuf,
     slots: HashMap<i64, usize>,
     norms: Vec<f64>,
@@ -449,7 +454,7 @@ pub(crate) struct UnitVectorWorkspace {
 
 impl UnitVectorWorkspace {
     pub(crate) fn empty(dimension: usize) -> Self {
-        Self { map: None, path: Default::default(), slots: HashMap::new(), norms: Vec::new(), dimension }
+        Self { map: None, #[cfg(windows)] file: None, path: Default::default(), slots: HashMap::new(), norms: Vec::new(), dimension }
     }
 
     pub(crate) fn build(connection: &Connection, ids: &[i64], dimension: usize)
@@ -461,8 +466,15 @@ impl UnitVectorWorkspace {
         let path = crate::unique_index_sidecar_path(
             &std::env::temp_dir().join("vcp-geometry"), "workspace",
         );
-        let file = std::fs::OpenOptions::new().read(true).write(true)
-            .create_new(true).open(&path).map_err(|e| e.to_string())?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Retain the delete-on-close handle through the mmap lifetime.
+            options.custom_flags(0x04000000); // FILE_FLAG_DELETE_ON_CLOSE
+        }
+        let file = options.open(&path).map_err(|e| e.to_string())?;
         // Own cleanup immediately after successful create_new, including all errors.
         let mut workspace = Self::empty(dimension);
         workspace.path = path;
@@ -496,8 +508,15 @@ impl UnitVectorWorkspace {
         }
         Ok(())
         })();
+        #[cfg(windows)]
+        { workspace.file = Some(file); }
+        #[cfg(not(windows))]
         drop(file);
         result?;
+        // On Unix the mapping keeps the unlinked file alive. Both mechanisms
+        // also reclaim an abandoned handoff when the process exits abruptly.
+        #[cfg(unix)]
+        std::fs::remove_file(&workspace.path).map_err(|e| e.to_string())?;
         Ok(workspace)
     }
 
@@ -540,9 +559,13 @@ impl std::ops::Index<&i64> for UnitVectorWorkspace {
 impl Drop for UnitVectorWorkspace {
     fn drop(&mut self) {
         drop(self.map.take());
+        #[cfg(windows)]
+        drop(self.file.take());
         if !self.path.as_os_str().is_empty() {
             if let Err(error) = std::fs::remove_file(&self.path) {
-                eprintln!("[KBM] Geometry workspace cleanup failed '{}': {error}", self.path.display());
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("[KBM] Geometry workspace cleanup failed '{}': {error}", self.path.display());
+                }
             }
         }
     }
@@ -620,6 +643,7 @@ impl GeometryTask {
     }
 
     fn run_with_hook(&self, before_publish: impl FnOnce()) -> std::result::Result<GeometryResult, String> {
+        let handoff = storage::memo_workspace_slot(&self.db_path).map(|slot| slot.begin());
         if self.model_sig.trim().is_empty() { return Err("geometry requires modelSig".into()); }
         let started = Instant::now();
         let config: Value = serde_json::from_str(&self.config_json).map_err(|e| e.to_string())?;
@@ -646,7 +670,7 @@ impl GeometryTask {
         let mut graph_generation = String::new();
         let mut cached: Option<Value> = None;
         let force = config.get("forceRecompute").and_then(Value::as_bool).unwrap_or(false);
-        let (generation, dependencies, vectors, fallback) =
+        let (generation, dependencies, vectors, fallback, workspace_key) =
             with_registered_read_transaction(&self.db_path, |conn| {
                 let generation = storage::read_generation(conn)?;
                 let dependencies = storage::DerivedDependencies::capture(conn, &["memo_tag_facts"])?;
@@ -706,7 +730,8 @@ impl GeometryTask {
                 let vectors = if cached.is_some() { UnitVectorWorkspace::empty(self.dimensions) }
                     else { UnitVectorWorkspace::build(conn, &ids, self.dimensions)? };
                 let fallback = vectors.len();
-                Ok((generation,dependencies,vectors,fallback))
+                let workspace_key = workspace::SnapshotKey::capture(conn, &self.db_path, &self.model_sig, self.dimensions)?;
+                Ok((generation,dependencies,vectors,fallback,workspace_key))
             })?;
         drop(snapshot_gate);
         let load_ms = started.elapsed().as_secs_f64()*1000.0;
@@ -857,7 +882,7 @@ impl GeometryTask {
             }
             (energy,captured)
         }).collect();
-        drop(vectors);
+        // Keep the immutable workspace until successful publication and handoff.
         let mut total=0.0; let mut energies=vec![0.0;trace.basis.len()];
         for (energy,values) in partial { total+=energy; for (e,v) in energies.iter_mut().zip(values) { *e+=v; }}
         let mut cumulative=0.0;
@@ -932,6 +957,7 @@ impl GeometryTask {
                 delete_ms,insert_ms,metadata_started.elapsed().as_secs_f64()*1000.0];
             Ok(storage::WriteReceipt { operation:"publish_memo_geometry".into(),database_generation:0,facts_changed:false })
         })?;
+        if let Some(handoff) = handoff { handoff.offer(workspace_key, ids.clone(), vectors); }
         let elapsed=started.elapsed().as_secs_f64()*1000.0;
         let [delete_ms,insert_ms,metadata_ms]=*timings.lock().map_err(|e|e.to_string())?;
         let publication_ms=publication_started.elapsed().as_secs_f64()*1000.0;
@@ -979,7 +1005,7 @@ mod tests {
                 .all(|(a, b)| a.to_bits() == b.to_bits()));
         }
         let path = workspace.path.clone();
-        assert_eq!(std::fs::metadata(&path).unwrap().len(), workspace.len() as u64 * 4 * 8);
+        assert_eq!(workspace.map.as_ref().map_or(0, |map| map.len() as u64), workspace.len() as u64 * 4 * 8);
         drop(workspace);
         assert!(!path.exists());
         let empty = UnitVectorWorkspace::build(&connection, &[], 4).unwrap();
