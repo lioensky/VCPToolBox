@@ -184,11 +184,31 @@ fn load_anchor_gains(
     Ok((gains, raw, signature))
 }
 
-fn add_edge(matrix: &mut HashMap<i64, HashMap<i64, f64>>, source: i64, target: i64, weight: f64) {
+/// Stable grouping keeps every key's original floating-point addition order.
+/// Compact in place after sorting; the first addition still starts at +0.0.
+fn stable_sums<K: Ord + Copy>(mut entries: Vec<(K, f64)>) -> Vec<(K, f64)> {
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut write = 0usize;
+    for read in 0..entries.len() {
+        let (key, value) = entries[read];
+        if write > 0 && entries[write - 1].0 == key {
+            entries[write - 1].1 += value;
+        } else {
+            let mut sum = 0.0;
+            sum += value;
+            entries[write] = (key, sum);
+            write += 1;
+        }
+    }
+    entries.truncate(write);
+    entries
+}
+
+fn add_edge(matrix: &mut Vec<((i64, i64), f64)>, source: i64, target: i64, weight: f64) {
     if source == target || !weight.is_finite() || weight <= 0.0 {
         return;
     }
-    *matrix.entry(source).or_default().entry(target).or_default() += weight;
+    matrix.push(((source, target), weight));
 }
 
 /// Unit vectors of one build snapshot, keyed by Tag ID.
@@ -342,7 +362,7 @@ fn build_fact_matrix(
     } else {
         HashMap::new()
     };
-    let mut matrix = HashMap::new();
+    let mut matrix = Vec::new();
     let mut offset = 0usize;
     while offset < rows.len() {
         let file_id = rows[offset].file_id;
@@ -402,7 +422,11 @@ fn build_fact_matrix(
         }
         offset = end;
     }
-    Ok(matrix)
+    let mut output: HashMap<i64, HashMap<i64, f64>> = HashMap::new();
+    for ((source, target), weight) in stable_sums(matrix) {
+        output.entry(source).or_default().insert(target, weight);
+    }
+    Ok(output)
 }
 
 fn build_transport(
@@ -524,7 +548,7 @@ fn build_provenance(
     let forward_gain = number(ordered, &["forwardGain"], 1.0).max(0.0);
     let reverse_gain = number(ordered, &["reverseGain"], 0.35).max(0.0);
     let distance_decay = number(ordered, &["distanceDecay"], 0.08).max(0.0);
-    let mut aggregated: BTreeMap<(i64, i64, i64), f64> = BTreeMap::new();
+    let mut aggregated: Vec<((i64, i64, i64), f64)> = Vec::new();
 
     let mut offset = 0usize;
     while offset < rows.len() {
@@ -548,7 +572,7 @@ fn build_provenance(
                         (left.tag_id, right.tag_id, forward_gain * distance),
                         (right.tag_id, left.tag_id, reverse_gain * distance),
                     ] {
-                        *aggregated.entry((source, target, file_id)).or_default() += mass;
+                        aggregated.push(((source, target, file_id), mass));
                     }
                 }
             }
@@ -556,14 +580,15 @@ fn build_provenance(
         offset = end;
     }
 
-    let mut output: BTreeMap<(i64, i64), Vec<ProvenanceContribution>> = BTreeMap::new();
-    for ((source, target, file_id), mass) in aggregated {
-        output
-            .entry((source, target))
-            .or_default()
-            .push(ProvenanceContribution { file_id, mass });
+    let mut output: Vec<((i64, i64), Vec<ProvenanceContribution>)> = Vec::new();
+    for ((source, target, file_id), mass) in stable_sums(aggregated) {
+        let edge = (source, target);
+        if output.last().is_none_or(|(previous, _)| *previous != edge) {
+            output.push((edge, Vec::new()));
+        }
+        output.last_mut().unwrap().1.push(ProvenanceContribution { file_id, mass });
     }
-    output
+    output.into_iter().collect()
 }
 
 fn database_generation(connection: &Connection) -> std::result::Result<String, String> {
@@ -1127,6 +1152,228 @@ mod bounded_workspace_tests {
         }
         let plain = build_fact_matrix(&rows, &NoVectors, &HashMap::new(), &json!({})).unwrap();
         assert!(!plain.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod sorted_contribution_tests {
+    use super::*;
+    fn baseline_add(matrix: &mut HashMap<i64, HashMap<i64, f64>>, source: i64, target: i64, weight: f64) {
+        if source != target && weight.is_finite() && weight > 0.0 {
+            *matrix.entry(source).or_default().entry(target).or_default() += weight;
+        }
+    }
+fn baseline_fact(
+    rows: &[FileTag],
+    vectors: &dyn UnitVectors,
+    anchor_gain: &HashMap<i64, f64>,
+    config: &Value,
+) -> std::result::Result<HashMap<i64, HashMap<i64, f64>>, String> {
+    let ordered = config.get("orderedCooccurrence").unwrap_or(&Value::Null);
+    let forward_gain = number(ordered, &["forwardGain"], 1.0).max(0.0);
+    let reverse_gain = number(ordered, &["reverseGain"], 0.42).clamp(
+        number(ordered, &["minReverseGain"], 0.25),
+        number(ordered, &["maxReverseGain"], 0.70),
+    );
+    let distance_decay = number(ordered, &["distanceDecay"], 0.0).max(0.0);
+    let reverse_guard = number(ordered, &["reverseInversionGuard"], 0.95).clamp(0.0, 1.0);
+    let reverse_anchor_enabled = boolean(ordered, &["reverseAnchorBoost"], false);
+    let reverse_anchor_max = number(ordered, &["reverseAnchorMax"], 1.5).max(1.0);
+    let semantic_enabled = semantic_gain_enabled(config);
+    let semantic_peak = number(
+        ordered,
+        &["semanticGainPeak"],
+        number(ordered, &["semanticGain", "peak"], 0.65),
+    );
+    let semantic_sigma = number(
+        ordered,
+        &["semanticGainSigma"],
+        number(ordered, &["semanticGain", "sigma"], 0.25),
+    )
+    .max(0.001);
+    let low_fallback = number(
+        ordered,
+        &["semanticGainLowSimFallback"],
+        number(ordered, &["semanticGain", "lowSimFallback"], 0.1),
+    );
+
+    let semantic_gain = |left: i64, right: i64| -> f64 {
+        if !semantic_enabled {
+            return 1.0;
+        }
+        let similarity = vectors.unit_vector(left).zip(vectors.unit_vector(right))
+            .map(|(a,b)| crate::memo_geometry::dot(a,b).clamp(-1.0,1.0))
+            .unwrap_or(low_fallback);
+        if similarity < 0.15 {
+            0.4 + similarity * 1.0
+        } else {
+            0.5 + 0.8
+                * (-((similarity - semantic_peak).powi(2))
+                    / (2.0 * semantic_sigma * semantic_sigma))
+                    .exp()
+        }
+    };
+
+    // One gain per unordered Tag pair. `dot` multiplies the same two vectors in
+    // the same index order whichever comes first, so the stored value has the
+    // bits every later file would compute. Bounded by the number of fact pairs.
+    let mut pair_gains: HashMap<(i64, i64), f64> = HashMap::new();
+    let mut matrix = HashMap::new();
+    let mut offset = 0usize;
+    while offset < rows.len() {
+        let file_id = rows[offset].file_id;
+        let mut end = offset + 1;
+        while end < rows.len() && rows[end].file_id == file_id {
+            end += 1;
+        }
+        let tags = &rows[offset..end];
+        if tags.len() >= 2 && tags.len() <= 100 {
+            for left_index in 0..tags.len() {
+                for right_index in (left_index + 1)..tags.len() {
+                    let left = &tags[left_index];
+                    let right = &tags[right_index];
+                    if left.tag_id == right.tag_id {
+                        continue;
+                    }
+                    let semantic = if semantic_enabled {
+                        let pair = (left.tag_id.min(right.tag_id), left.tag_id.max(right.tag_id));
+                        *pair_gains.entry(pair)
+                            .or_insert_with(|| semantic_gain(left.tag_id, right.tag_id))
+                    } else {
+                        1.0
+                    };
+                    if left.position > 0 && right.position > 0 {
+                        let count = tags.len() as f64;
+                        let phi_left =
+                            0.9 - 0.4 * (left.position - 1).max(0) as f64 / (count - 1.0).max(1.0);
+                        let phi_right =
+                            0.9 - 0.4 * (right.position - 1).max(0) as f64 / (count - 1.0).max(1.0);
+                        let delta = (right.position - left.position).max(1) as f64;
+                        let distance = if distance_decay > 0.0 {
+                            (-distance_decay * (delta - 1.0)).exp()
+                        } else {
+                            1.0
+                        };
+                        let base = phi_left * phi_right * distance;
+                        let forward = base * forward_gain * semantic;
+                        let mut dynamic_reverse = reverse_gain;
+                        if reverse_anchor_enabled {
+                            dynamic_reverse *= anchor_gain
+                                .get(&left.tag_id)
+                                .copied()
+                                .unwrap_or(1.0)
+                                .min(reverse_anchor_max);
+                        }
+                        dynamic_reverse = dynamic_reverse.clamp(0.25, 0.70);
+                        let backward =
+                            (base * dynamic_reverse * semantic).min(forward * reverse_guard);
+                        baseline_add(&mut matrix, left.tag_id, right.tag_id, forward);
+                        baseline_add(&mut matrix, right.tag_id, left.tag_id, backward);
+                    } else {
+                        let weight = 0.7 * 0.7 * semantic;
+                        baseline_add(&mut matrix, left.tag_id, right.tag_id, weight);
+                        baseline_add(&mut matrix, right.tag_id, left.tag_id, weight);
+                    }
+                }
+            }
+        }
+        offset = end;
+    }
+    Ok(matrix)
+}
+
+fn baseline_provenance(
+    rows: &[FileTag],
+    config: &Value,
+) -> BTreeMap<(i64, i64), Vec<ProvenanceContribution>> {
+    let ordered = config.get("orderedCooccurrence").unwrap_or(&Value::Null);
+    let forward_gain = number(ordered, &["forwardGain"], 1.0).max(0.0);
+    let reverse_gain = number(ordered, &["reverseGain"], 0.35).max(0.0);
+    let distance_decay = number(ordered, &["distanceDecay"], 0.08).max(0.0);
+    let mut aggregated: BTreeMap<(i64, i64, i64), f64> = BTreeMap::new();
+
+    let mut offset = 0usize;
+    while offset < rows.len() {
+        let file_id = rows[offset].file_id;
+        let mut end = offset + 1;
+        while end < rows.len() && rows[end].file_id == file_id {
+            end += 1;
+        }
+        let tags = &rows[offset..end];
+        if tags.len() >= 2 && tags.len() <= 100 {
+            for left_index in 0..tags.len() {
+                for right_index in (left_index + 1)..tags.len() {
+                    let left = &tags[left_index];
+                    let right = &tags[right_index];
+                    if left.tag_id == right.tag_id {
+                        continue;
+                    }
+                    let delta = (right.position - left.position).max(1) as f64;
+                    let distance = (-distance_decay * (delta - 1.0).max(0.0)).exp();
+                    for (source, target, mass) in [
+                        (left.tag_id, right.tag_id, forward_gain * distance),
+                        (right.tag_id, left.tag_id, reverse_gain * distance),
+                    ] {
+                        *aggregated.entry((source, target, file_id)).or_default() += mass;
+                    }
+                }
+            }
+        }
+        offset = end;
+    }
+
+    let mut output: BTreeMap<(i64, i64), Vec<ProvenanceContribution>> = BTreeMap::new();
+    for ((source, target, file_id), mass) in aggregated {
+        output
+            .entry((source, target))
+            .or_default()
+            .push(ProvenanceContribution { file_id, mass });
+    }
+    output
+}
+
+
+    #[test]
+    fn stable_sums_preserve_order_and_initial_positive_zero() {
+        let input = vec![(2, -0.0), (1, 1e16), (1, -1e16), (2, 2.0), (1, 1.0)];
+        let result = stable_sums(input);
+        assert_eq!(result, vec![(1, 1.0), (2, 2.0)]);
+        assert_eq!(stable_sums(vec![(1, -0.0)])[0].1.to_bits(), 0.0f64.to_bits());
+        assert!(stable_sums::<i64>(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn repeated_tags_files_positions_and_excluded_files_match_baseline_bits() {
+        let mut rows = Vec::new();
+        for file_id in 1..=32 {
+            for (i, tag_id) in [3, 1, 3, 2, 1, 4].into_iter().enumerate() {
+                rows.push(FileTag { file_id, tag_id, position: if file_id % 3 == 0 { 0 } else { i as i64 + 1 } });
+            }
+        }
+        rows.extend((0..101).map(|i| FileTag { file_id: 33, tag_id: 1000+i, position: i+1 }));
+        rows.push(FileTag { file_id: 34, tag_id: 9999, position: 1 });
+        let vectors: HashMap<i64, Vec<f64>> = [(1, vec![1.0, 0.0]), (2, vec![0.0, 1.0]),
+            (3, vec![0.6, 0.8]), (4, vec![-1.0, 0.0])].into_iter().collect();
+        for config in [json!({}), json!({"orderedCooccurrence":{"semanticGainEnabled":true,"reverseAnchorBoost":true,"distanceDecay":0.08}}),
+                       json!({"orderedCooccurrence":{"forwardGain":0.0,"reverseGain":0.0}})] {
+            let anchors = [(1, 1.3), (2, 0.5)].into_iter().collect();
+            let actual = build_fact_matrix(&rows, &vectors, &anchors, &config).unwrap();
+            let expected = baseline_fact(&rows, &vectors, &anchors, &config).unwrap();
+            assert_eq!(actual.len(), expected.len());
+            for (source, edges) in &expected {
+                assert_eq!(actual[source].len(), edges.len());
+                for (target, weight) in edges { assert_eq!(actual[source][target].to_bits(), weight.to_bits()); }
+            }
+            let actual = build_provenance(&rows, &config);
+            let expected = baseline_provenance(&rows, &config);
+            assert_eq!(actual.len(), expected.len());
+            for (edge, values) in &expected {
+                assert_eq!(actual[edge].len(), values.len());
+                for (a,b) in actual[edge].iter().zip(values) {
+                    assert_eq!(a.file_id,b.file_id); assert_eq!(a.mass.to_bits(),b.mass.to_bits());
+                }
+            }
+        }
     }
 }
 
