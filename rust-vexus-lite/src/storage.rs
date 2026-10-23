@@ -67,6 +67,7 @@ struct LifecycleState {
 
 struct StorageInner {
     db_path: PathBuf,
+    memo_workspace: Arc<crate::memo_geometry::workspace::WorkspaceSlot>,
     read_pool: Mutex<Vec<Connection>>,
     read_pool_changed: Condvar,
     write_sender: Mutex<Option<mpsc::SyncSender<WriteCommand>>>,
@@ -142,6 +143,12 @@ fn unregister_storage_if_same(
         registry.remove(&key);
     }
     Ok(())
+}
+
+/// Optional optimization state belongs to this registered database instance.
+pub(crate) fn memo_workspace_slot(path: &str) -> Option<Arc<crate::memo_geometry::workspace::WorkspaceSlot>> {
+    let registry = storage_registry().lock().ok()?;
+    registry.get(&normalized_path(path)).map(|storage| storage.inner.memo_workspace.clone())
 }
 
 pub(crate) fn with_registered_read<T, F>(path: impl AsRef<Path>, operation: F) -> Result<T, String>
@@ -318,6 +325,7 @@ impl SqliteStorageEngine {
             closed: AtomicBool::new(false),
             shutdown_complete: AtomicBool::new(false),
             shutdown_result: Mutex::new(None),
+            memo_workspace: Arc::new(crate::memo_geometry::workspace::WorkspaceSlot::default()),
             database_generation: AtomicU64::new(generation),
             schema_version: actual_schema_version,
         });
@@ -502,6 +510,7 @@ impl SqliteStorageEngine {
                 .unwrap_or_else(|| Err("KNOWLEDGE_STORE_SHUTDOWN_INCOMPLETE".to_string()));
         }
 
+        self.inner.memo_workspace.clear();
         let result = (|| {
             {
                 let mut lifecycle = self

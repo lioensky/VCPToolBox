@@ -732,6 +732,7 @@ fn run_build(
     input_json: &str,
 ) -> std::result::Result<NativeMemoArtifactBuildResult, String> {
     let started = Instant::now();
+    let mut handoff = crate::storage::memo_workspace_slot(db_path).and_then(|slot| slot.take());
     let input: BuildInput = serde_json::from_str(input_json)
         .map_err(|error| format!("invalid native artifact build JSON: {}", error))?;
     if input.model_sig.trim().is_empty() {
@@ -747,11 +748,17 @@ fn run_build(
             // memory-mapped f64 workspace that geometry precompute also uses, instead
             // of once per file; no vector SQL when semantic gain is disabled.
             let vectors = if semantic_gain_enabled(&input.effective_config) {
-                crate::memo_geometry::UnitVectorWorkspace::build(
-                    readonly, &cooccurrence_tag_ids(&rows), dimension)?
+                let ids = cooccurrence_tag_ids(&rows);
+                let key = crate::memo_geometry::workspace::SnapshotKey::capture(
+                    readonly, db_path, &input.model_sig, dimension)?;
+                match handoff.take().and_then(|pending| pending.reuse(&key, &ids)) {
+                    Some(workspace) => workspace,
+                    None => crate::memo_geometry::UnitVectorWorkspace::build(readonly, &ids, dimension)?,
+                }
             } else {
                 crate::memo_geometry::UnitVectorWorkspace::empty(dimension)
             };
+            drop(handoff.take());
             let fact = build_fact_matrix(&rows, &vectors, &anchor_gain, &input.effective_config)?;
             drop(vectors);
             let database_generation = database_generation(readonly)?;
@@ -1415,3 +1422,7 @@ mod parallel_gain_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "memo_workspace_build_tests.rs"]
+mod workspace_build_tests;
