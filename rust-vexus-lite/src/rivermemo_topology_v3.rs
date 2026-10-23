@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -1658,7 +1658,8 @@ fn evaluate_topology(
         query_nodes: input.query_state.river_nodes.len(),
         ..TopologyOutput::default()
     };
-    let mut alignments = HashMap::new();
+    // Ordered by Tag ID so that `mean_closure` does not sum in hash order.
+    let mut alignments = BTreeMap::new();
     let mut total_node_weight = 0.0;
     let mut matched_node_weight = 0.0;
     let mut node_quality_mass = 0.0;
@@ -3007,13 +3008,14 @@ pub(crate) fn run_native_with_connection(
         .take(input.top_k.max(1))
         .enumerate()
         .map(|(index, item)| {
+            // Same set as before, listed in curve order instead of hash order.
+            let mut seen_names = HashSet::new();
             let matched_tags: Vec<String> = item
                 .curve
                 .tags
                 .iter()
+                .filter(|tag| seen_names.insert(tag.name.as_str()))
                 .map(|tag| tag.name.clone())
-                .collect::<HashSet<_>>()
-                .into_iter()
                 .collect();
             let core_tags_matched = matched_tags
                 .iter()
