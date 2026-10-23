@@ -70,6 +70,9 @@ pub(crate) struct SenseConfig {
     pub(crate) dynamic_wormhole_slots: usize,
     /// Request-wide unique target budget. Zero disables local vector work.
     pub(crate) dynamic_wormhole_max_targets: usize,
+    /// Optional stimulated resonance conductance pumping for long-tail wormholes.
+    #[serde(default)]
+    pub(crate) resonance_conductance_pump: f64,
 }
 
 impl Default for SenseConfig {
@@ -95,6 +98,7 @@ impl Default for SenseConfig {
             dynamic_wormhole_threshold: 0.2,
             dynamic_wormhole_slots: 2,
             dynamic_wormhole_max_targets: 4096,
+            resonance_conductance_pump: 0.0,
         }
     }
 }
@@ -103,7 +107,11 @@ impl Default for SenseConfig {
 struct SpikeState {
     node_index: usize,
     previous_index: Option<usize>,
+    /// L1 probability mass (strictly conserved for field accumulation and edge flows).
     energy: f64,
+    /// L2 wavepacket amplitude potential normalized by Rényi-2 effective branching \sqrt{\sum_k w_{uk}^2},
+    /// used to test `firing_threshold` so high-degree hubs are not artificially extinguished at Hop 1.
+    firing_potential: f64,
     momentum: f64,
     source_type: String,
     hop: usize,
@@ -117,8 +125,8 @@ struct Provenance {
     origin_type: Option<String>,
     hop: usize,
     seed_id: Option<i64>,
+    peak_energy: f64,
 }
-
 #[derive(Clone)]
 struct Parent {
     parent_id: i64,
@@ -229,17 +237,6 @@ pub(crate) struct SenseOutput {
     pub(crate) transitions_truncated: bool,
 }
 
-type StateKey = (Option<usize>, usize);
-
-/// Propagation states in key order (previous node, node). Energy sums and the
-/// first state to reach a node must not follow HashMap iteration order, which
-/// depends on the randomly seeded hasher.
-fn ordered_states(states: &HashMap<StateKey, SpikeState>) -> Vec<&SpikeState> {
-    let mut ordered: Vec<&SpikeState> = states.values().collect();
-    ordered.sort_unstable_by_key(|state| (state.previous_index, state.node_index));
-    ordered
-}
-
 fn fir_weights(config: &SenseConfig) -> Vec<f64> {
     let gamma = config.fir_gamma.clamp(0.05, 0.95);
     let mut weights: Vec<f64> = (0..=config.max_safe_hops)
@@ -275,6 +272,7 @@ pub(crate) struct DynamicWormholeContext<'a> {
     pub(crate) pool: &'a mut TagVectorPool,
     pub(crate) residuals: Vec<Vec<f32>>,
     residual_norms: Vec<f64>,
+    manifold_mean: Option<Vec<f32>>,
     known_scores: HashMap<(usize, i64), f64>,
     pub(crate) seed_levels: HashMap<i64, usize>,
     scores: HashMap<usize, Vec<f64>>,
@@ -282,15 +280,34 @@ pub(crate) struct DynamicWormholeContext<'a> {
 }
 
 impl<'a> DynamicWormholeContext<'a> {
+    #[allow(dead_code)]
     pub(crate) fn new(
         connection: &'a Connection, pool: &'a mut TagVectorPool,
         residuals: Vec<Vec<f32>>, seed_levels: HashMap<i64, usize>,
     ) -> Self {
+        Self::new_with_mean(connection, pool, residuals, seed_levels, None)
+    }
+
+    pub(crate) fn new_with_mean(
+        connection: &'a Connection,
+        pool: &'a mut TagVectorPool,
+        residuals: Vec<Vec<f32>>,
+        seed_levels: HashMap<i64, usize>,
+        manifold_mean: Option<Vec<f32>>,
+    ) -> Self {
         let residual_norms = residuals.iter().map(|r|
             r.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt()).collect();
-        Self { connection, pool, residuals, residual_norms, seed_levels,
+        Self {
+            connection,
+            pool,
+            residuals,
+            residual_norms,
+            manifold_mean,
+            seed_levels,
             known_scores: HashMap::new(),
-            scores: HashMap::new(), diagnostics: DynamicWormholeDiagnostics::default() }
+            scores: HashMap::new(),
+            diagnostics: DynamicWormholeDiagnostics::default(),
+        }
     }
 
     pub(crate) fn reuse_score(&mut self, layer: usize, id: i64, score: f64) {
@@ -305,7 +322,8 @@ impl<'a> DynamicWormholeContext<'a> {
     ) -> std::result::Result<(), String> {
         if self.residuals.len() < 2 { return Ok(()); }
         let mut targets = Vec::new();
-        for spike in active.values().filter(|s| s.energy >= config.firing_threshold
+        for spike in active.values().filter(|s| (s.energy >= config.firing_threshold
+            || s.firing_potential >= config.firing_threshold)
             && s.momentum >= 0.0 && s.residual_level + 1 < self.residuals.len()) {
             for cursor in artifact.row_offsets[spike.node_index]..artifact.row_offsets[spike.node_index + 1] {
                 if positive(artifact.weights[cursor]) <= 0.0 { break; }
@@ -328,25 +346,100 @@ impl<'a> DynamicWormholeContext<'a> {
         self.diagnostics.sql_fetched_nodes += stats.fetched_nodes;
         self.diagnostics.sql_batches += stats.sql_batches;
         let began = Instant::now();
+        let mut active_layers: Vec<(usize, &[f32], f64)> = Vec::with_capacity(self.residuals.len());
+        let mut dot_accum: Vec<f64> = Vec::with_capacity(self.residuals.len());
         for target in targets {
             // Cache negative/missing results too: never retry a dirty SQL row per hop.
             let mut scores = vec![0.0; self.residuals.len()];
-            if let Some(vector) = self.pool.get(&artifact.node_ids[target]) {
-                let norm = vector.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
+            let target_id = artifact.node_ids[target];
+            if let Some(vector) = self.pool.get(&target_id) {
+                let mean_slice = self
+                    .manifold_mean
+                    .as_deref()
+                    .filter(|m| m.len() == dimension);
+                let norm = if let Some(m) = mean_slice {
+                    vector
+                        .iter()
+                        .zip(m.iter())
+                        .map(|(&v, &mv)| {
+                            let d = (v - mv) as f64;
+                            d * d
+                        })
+                        .sum::<f64>()
+                        .sqrt()
+                } else {
+                    vector.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt()
+                };
                 if vector.len() == dimension && norm.is_finite() && norm > 1e-12 {
+                    active_layers.clear();
                     for (layer, residual) in self.residuals.iter().enumerate().skip(1) {
                         let residual_norm = self.residual_norms[layer];
                         if residual.len() != dimension { continue; }
                         if residual_norm.is_finite() && residual_norm > 1e-12 {
-                            if let Some(&score) = self.known_scores.get(&(layer, artifact.node_ids[target])) {
+                            if let Some(&score) = self.known_scores.get(&(layer, target_id)) {
                                 scores[layer] = positive(score);
                                 self.diagnostics.cache_hits += 1;
                             } else {
-                                let dot = residual.iter().zip(vector.iter())
-                                    .map(|(&a,&b)| a as f64 * b as f64).sum::<f64>();
-                                scores[layer] = positive(dot / (norm * residual_norm)).min(1.0);
-                                self.diagnostics.dot_products += 1;
+                                active_layers.push((layer, residual.as_slice(), norm * residual_norm));
                             }
+                        }
+                    }
+                    match active_layers.len() {
+                        0 => {}
+                        1 => {
+                            let (l0, r0, denom0) = active_layers[0];
+                            let d0 = if let Some(m) = mean_slice {
+                                (0..dimension)
+                                    .map(|i| (r0[i] as f64) * ((vector[i] - m[i]) as f64))
+                                    .sum::<f64>()
+                            } else {
+                                r0.iter().zip(vector.iter()).map(|(&a, &b)| a as f64 * b as f64).sum::<f64>()
+                            };
+                            scores[l0] = positive(d0 / denom0).min(1.0);
+                            self.diagnostics.dot_products += 1;
+                        }
+                        2 => {
+                            let ((l0, r0, denom0), (l1, r1, denom1)) = (active_layers[0], active_layers[1]);
+                            let (mut d0, mut d1) = (0.0f64, 0.0f64);
+                            if let Some(m) = mean_slice {
+                                for i in 0..dimension {
+                                    let v = (vector[i] - m[i]) as f64;
+                                    d0 += (r0[i] as f64) * v;
+                                    d1 += (r1[i] as f64) * v;
+                                }
+                            } else {
+                                for i in 0..dimension {
+                                    let v = vector[i] as f64;
+                                    d0 += (r0[i] as f64) * v;
+                                    d1 += (r1[i] as f64) * v;
+                                }
+                            }
+                            scores[l0] = positive(d0 / denom0).min(1.0);
+                            scores[l1] = positive(d1 / denom1).min(1.0);
+                            self.diagnostics.dot_products += 2;
+                        }
+                        _ => {
+                            dot_accum.clear();
+                            dot_accum.resize(active_layers.len(), 0.0);
+                            if let Some(m) = mean_slice {
+                                for i in 0..dimension {
+                                    let v = (vector[i] - m[i]) as f64;
+                                    for (acc, &(_, r, _)) in dot_accum.iter_mut().zip(active_layers.iter()) {
+                                        *acc += (r[i] as f64) * v;
+                                    }
+                                }
+                            } else {
+                                for i in 0..dimension {
+                                    let v = vector[i] as f64;
+                                    for (acc, &(_, r, _)) in dot_accum.iter_mut().zip(active_layers.iter()) {
+                                        *acc += (r[i] as f64) * v;
+                                    }
+                                }
+                            }
+                            for (&(layer, _, denom), &d) in active_layers.iter().zip(dot_accum.iter()) {
+                                scores[layer] = positive(d / denom).min(1.0);
+                            }
+                            self.diagnostics.dot_products += active_layers.len();
                         }
                     }
                 }
@@ -361,8 +454,39 @@ impl<'a> DynamicWormholeContext<'a> {
     fn resonance(&mut self, target: usize, source_level: usize) -> f64 {
         let Some(scores) = self.scores.get(&target) else { return 0.0 };
         self.diagnostics.cache_hits += 1;
-        scores.iter().skip(source_level.saturating_add(1)).copied().fold(0.0, f64::max)
+        // Sequential residuals r_{l+1} = r_l - p_l share unpeeled tail components (<r_1, r_2> = ||r_2||^2 != 0),
+        // so taking the envelope maximum across deeper layers avoids double-counting overlapping directions.
+        scores
+            .iter()
+            .skip(source_level.saturating_add(1))
+            .copied()
+            .fold(0.0, f64::max)
     }
+
+    /// Export maximum deep-layer residual resonance per CSR node index for global wormhole field traversal.
+    pub(crate) fn extract_global_node_resonances(&self, node_count: usize, threshold: f64) -> Vec<f64> {
+        let mut out = vec![0.0; node_count];
+        for (&target, scores) in &self.scores {
+            if target < node_count {
+                let max_r = scores.iter().skip(1).copied().fold(0.0, f64::max);
+                if max_r >= threshold {
+                    out[target] = max_r;
+                }
+            }
+        }
+        out
+    }
+}
+
+type StateKey = (Option<usize>, usize);
+
+/// Propagation states in key order (previous node, node). Energy sums and the
+/// first state to reach a node must not follow HashMap iteration order, which
+/// depends on the randomly seeded hasher.
+fn ordered_states(states: &HashMap<StateKey, SpikeState>) -> Vec<&SpikeState> {
+    let mut ordered: Vec<&SpikeState> = states.values().collect();
+    ordered.sort_unstable_by_key(|state| (state.previous_index, state.node_index));
+    ordered
 }
 
 #[cfg(test)]
@@ -391,7 +515,7 @@ pub(crate) fn sense_with_context(
         return Err("dynamicWormholeThreshold must be finite and in [0,1]".into());
     }
     let weights = fir_weights(&config);
-    let mut active: HashMap<StateKey, SpikeState> = HashMap::new();
+    let mut active: HashMap<(Option<usize>, usize), SpikeState> = HashMap::new();
     let mut accumulated: HashMap<usize, f64> = HashMap::new();
     let mut provenance: HashMap<usize, Provenance> = HashMap::new();
     let mut edge_flows: HashMap<(usize, usize), EdgeFlow> = HashMap::new();
@@ -413,11 +537,15 @@ pub(crate) fn sense_with_context(
         };
         active
             .entry((None, node_index))
-            .and_modify(|state| state.energy += energy)
+            .and_modify(|state| {
+                state.energy += energy;
+                state.firing_potential += energy;
+            })
             .or_insert(SpikeState {
                 node_index,
                 previous_index: None,
                 energy,
+                firing_potential: energy,
                 momentum: config.base_momentum,
                 source_type: source_type.clone(),
                 hop: 0,
@@ -431,12 +559,9 @@ pub(crate) fn sense_with_context(
             origin_type: None,
             hop: 0,
             seed_id: Some(seed.id),
+            peak_energy: energy,
         });
     }
-
-    // 空种子是合法的请求级观测：JavaScript SOTA 在 Pyramid 未召回 Tag 时
-    // 跳过 Spike，但仍允许传播后补入字符串 Core/幽灵节点参与最终融合；
-    // 若后续也没有可融合节点，则返回原查询向量而不是把请求升级为异常。
     let mut return_flow_suppressed_mass = 0.0;
     let mut state_truncations = 0usize;
     let mut hop_in_flight_mass = Vec::new();
@@ -449,8 +574,8 @@ pub(crate) fn sense_with_context(
     let mut promoted_wormhole_transitions = 0;
     let mut dynamic_wormhole_candidates = 0;
     let mut dynamic_wormhole_selected = 0;
-    let mut neighbor_scratch: Vec<(usize, f64, bool)> = Vec::new();
-    let mut selected_scratch: Vec<(usize, bool)> = Vec::new();
+    let mut neighbor_scratch: Vec<(usize, f64, f64)> = Vec::new();
+    let mut selected_scratch: Vec<(usize, bool, f64)> = Vec::new();
 
     for hop in 0..config.max_safe_hops {
         if let Some(ctx) = context.as_deref_mut() { ctx.prepare(artifact, &active, &config)?; }
@@ -458,16 +583,33 @@ pub(crate) fn sense_with_context(
         let mut hop_transitions = Vec::new();
 
         for spike in ordered_states(&active) {
-            if spike.energy < config.firing_threshold || spike.momentum < 0.0 {
+            if (spike.energy < config.firing_threshold && spike.firing_potential < config.firing_threshold)
+                || spike.momentum < 0.0
+            {
                 continue;
             }
             let start = artifact.row_offsets[spike.node_index];
             let end = artifact.row_offsets[spike.node_index + 1];
+            let row_l2 = artifact
+                .row_l2_norm
+                .get(spike.node_index)
+                .copied()
+                .filter(|&v| v > 1e-12)
+                .unwrap_or_else(|| {
+                    let s: f64 = (start..end)
+                        .map(|c| {
+                            let w = positive(artifact.weights[c]);
+                            w * w
+                        })
+                        .sum();
+                    s.sqrt().max(1.0)
+                });
             let limit = end.min(start.saturating_add(config.max_neighbors_per_node.max(1)));
             selected_scratch.clear();
             neighbor_scratch.clear();
             if let Some(ctx) = context.as_deref_mut() {
                 let began = Instant::now();
+                let pump = positive(config.resonance_conductance_pump).min(1.0);
                 for cursor in start..end {
                     let conductance = positive(artifact.weights[cursor]);
                     if conductance <= 0.0 { break; }
@@ -480,33 +622,45 @@ pub(crate) fn sense_with_context(
                     let return_factor = if spike.previous_index == Some(target) {
                         config.return_flow_factor.clamp(0.0, 1.0)
                     } else { 1.0 };
-                    if spike.energy * conductance * config.wormhole_decay * return_factor
-                        < config.minimum_injected_current { continue; }
-                    neighbor_scratch.push((cursor, conductance * resonance.powi(4), true));
+                    let effective_c = if pump > 0.0 {
+                        let pumped = (conductance * resonance * config.dynamic_wormhole_threshold.max(0.05)).sqrt();
+                        conductance + pump * (pumped - conductance).max(0.0)
+                    } else {
+                        conductance
+                    };
+                    let l2_eff = (effective_c / row_l2).min(1.0);
+                    let l1_curr = spike.energy * effective_c * config.wormhole_decay * return_factor;
+                    let l2_curr = spike.firing_potential * l2_eff * config.wormhole_decay * return_factor;
+                    let pass_gate = if pump > 0.0 || spike.hop > 0 {
+                        l1_curr >= config.minimum_injected_current || l2_curr >= config.minimum_injected_current
+                    } else {
+                        l1_curr >= config.minimum_injected_current
+                    };
+                    if !pass_gate { continue; }
+                    neighbor_scratch.push((cursor, effective_c * resonance.powi(4), effective_c));
                 }
                 neighbor_scratch.sort_unstable_by(|a,b| b.1.total_cmp(&a.1)
                     .then_with(|| artifact.weights[b.0].total_cmp(&artifact.weights[a.0]))
                     .then_with(|| artifact.node_ids[artifact.targets[a.0]]
                         .cmp(&artifact.node_ids[artifact.targets[b.0]])));
-                for &(cursor, _, _) in neighbor_scratch.iter()
+                for &(cursor, _, eff_c) in neighbor_scratch.iter()
                     .take(config.dynamic_wormhole_slots.min(config.max_neighbors_per_node.max(1))) {
-                    selected_scratch.push((cursor, true));
+                    selected_scratch.push((cursor, true, eff_c));
                 }
                 // Reserve within K, fill remaining seats with unchanged ranked history.
                 for cursor in start..limit {
                     if selected_scratch.len() >= config.max_neighbors_per_node.max(1) { break; }
-                    if !selected_scratch.iter().any(|&(c,_)| c == cursor) {
-                        selected_scratch.push((cursor, false));
+                    if !selected_scratch.iter().any(|&(c, _, _)| c == cursor) {
+                        selected_scratch.push((cursor, false, positive(artifact.weights[cursor])));
                     }
                 }
                 ctx.diagnostics.selection_ms += began.elapsed().as_secs_f64() * 1000.0;
             } else {
-                selected_scratch.extend((start..limit).map(|c| (c, false)));
+                selected_scratch.extend((start..limit).map(|c| (c, false, positive(artifact.weights[c]))));
             }
-            for &(cursor, dynamic_wormhole) in &selected_scratch {
+            for &(cursor, dynamic_wormhole, conductance) in &selected_scratch {
                 dynamic_wormhole_selected += usize::from(dynamic_wormhole);
                 let target_index = artifact.targets[cursor];
-                let conductance = positive(artifact.weights[cursor]);
                 if conductance <= 0.0 { break; }
                 let source_id = artifact.node_ids[spike.node_index];
                 let target_id = artifact.node_ids[target_index];
@@ -519,17 +673,24 @@ pub(crate) fn sense_with_context(
                     config.base_decay
                 };
                 let immediate_return = spike.previous_index == Some(target_index);
+                let return_scale = if immediate_return {
+                    config.return_flow_factor.clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
                 let unpenalized = spike.energy * conductance * decay;
-                let injected = unpenalized
-                    * if immediate_return {
-                        config.return_flow_factor.clamp(0.0, 1.0)
-                    } else {
-                        1.0
-                    };
+                let injected = unpenalized * return_scale;
                 if immediate_return {
                     return_flow_suppressed_mass += positive(unpenalized - injected);
                 }
-                if injected < config.minimum_injected_current {
+                // Rényi-2 L2 wavepacket amplitude: a_{uv} = w_{uv} / ||w_{u,:}||_2 = p_{uv} \sqrt{N_eff(u)}
+                let l2_amplitude = (conductance / row_l2).min(1.0);
+                let injected_potential = spike.firing_potential * l2_amplitude * decay * return_scale;
+                let has_multi_branch = (end - start) > 1 || conductance < 0.05;
+                if injected < config.minimum_injected_current
+                    && ((!has_multi_branch && spike.hop == 0)
+                        || injected_potential < config.minimum_injected_current)
+                {
                     continue;
                 }
 
@@ -560,7 +721,10 @@ pub(crate) fn sense_with_context(
                     hop: spike.hop + 1,
                     wormhole,
                 });
-                if injected > parent.flow || (injected == parent.flow && spike.hop + 1 < parent.hop)
+                if injected > parent.flow
+                    || (injected == parent.flow
+                        && (spike.hop + 1 < parent.hop
+                            || (spike.hop + 1 == parent.hop && source_id < parent.parent_id)))
                 {
                     *parent = Parent {
                         parent_id: source_id,
@@ -593,6 +757,7 @@ pub(crate) fn sense_with_context(
                 next.entry((Some(spike.node_index), target_index))
                     .and_modify(|state| {
                         state.energy += injected;
+                        state.firing_potential += injected_potential;
                         state.momentum = state.momentum.max(next_momentum);
                         state.residual_level = state.residual_level.min(spike.residual_level);
                     })
@@ -600,6 +765,7 @@ pub(crate) fn sense_with_context(
                         node_index: target_index,
                         previous_index: Some(spike.node_index),
                         energy: injected,
+                        firing_potential: injected_potential,
                         momentum: next_momentum,
                         source_type: spike.source_type.clone(),
                         hop: spike.hop + 1,
@@ -615,8 +781,15 @@ pub(crate) fn sense_with_context(
             retained.sort_by(|left, right| {
                 right
                     .energy
-                    .partial_cmp(&left.energy)
+                    .max(right.firing_potential)
+                    .partial_cmp(&left.energy.max(left.firing_potential))
                     .unwrap_or(Ordering::Equal)
+                    .then_with(|| {
+                        right
+                            .energy
+                            .partial_cmp(&left.energy)
+                            .unwrap_or(Ordering::Equal)
+                    })
                     .then_with(|| {
                         (left.previous_index, left.node_index)
                             .cmp(&(right.previous_index, right.node_index))
@@ -657,18 +830,33 @@ pub(crate) fn sense_with_context(
 
         let mut node_energy: HashMap<usize, f64> = HashMap::new();
         let mut in_flight = 0.0;
+        let mut has_viable_wavefront = false;
         for spike in ordered_states(&next) {
             *node_energy.entry(spike.node_index).or_default() += spike.energy;
             in_flight += spike.energy;
+            if spike.momentum >= 0.0
+                && (spike.energy >= config.firing_threshold
+                    || spike.firing_potential >= config.firing_threshold)
+                && (spike.energy > config.minimum_injected_current
+                    || spike.firing_potential > config.minimum_injected_current)
+            {
+                has_viable_wavefront = true;
+            }
             provenance
                 .entry(spike.node_index)
                 .and_modify(|value| {
-                    if spike.hop < value.hop {
+                    if spike.hop < value.hop
+                        || (spike.hop == value.hop
+                            && (spike.energy > value.peak_energy
+                                || (spike.energy == value.peak_energy
+                                    && Some(spike.seed_id) < value.seed_id)))
+                    {
                         *value = Provenance {
                             source_type: "emergent".to_string(),
                             origin_type: Some(spike.source_type.clone()),
                             hop: spike.hop,
                             seed_id: Some(spike.seed_id),
+                            peak_energy: spike.energy,
                         };
                     }
                 })
@@ -677,12 +865,13 @@ pub(crate) fn sense_with_context(
                     origin_type: Some(spike.source_type.clone()),
                     hop: spike.hop,
                     seed_id: Some(spike.seed_id),
+                    peak_energy: spike.energy,
                 });
         }
         hop_in_flight_mass.push(in_flight);
 
         let field_weight = weights[hop + 1];
-        let mut propagated = false;
+        let mut propagated = has_viable_wavefront;
         for (node_index, energy) in node_energy {
             *accumulated.entry(node_index).or_default() += energy * field_weight;
             propagated |= energy > config.minimum_injected_current;
@@ -692,7 +881,6 @@ pub(crate) fn sense_with_context(
         }
         active = next;
     }
-
     let maximum_node_energy = accumulated.values().copied().fold(0.0, f64::max);
     let maximum_edge_flow = edge_flows
         .values()

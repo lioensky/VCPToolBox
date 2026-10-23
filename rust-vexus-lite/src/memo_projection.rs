@@ -32,15 +32,19 @@ pub(crate) fn seed_basins(observation: &SenseOutput, graph: &NativeArtifact) -> 
             .filter(|id| nodes.contains_key(id))).collect();
     roots.sort_unstable();
     roots.dedup();
-    let mut edges = HashMap::<i64, Vec<i64>>::new();
+    let mut edges = HashMap::<i64, Vec<(i64, f64)>>::new();
     for edge in &observation.edges {
-        if positive(edge.flow) > 0.0 && nodes.contains_key(&edge.source_id)
+        let flow = positive(edge.flow);
+        if flow > 0.0 && nodes.contains_key(&edge.source_id)
             && nodes.contains_key(&edge.target_id)
             && graph.edge_weight(edge.source_id, edge.target_id) > 0.0 {
-            edges.entry(edge.source_id).or_default().push(edge.target_id);
+            edges.entry(edge.source_id).or_default().push((edge.target_id, flow));
         }
     }
-    for row in edges.values_mut() { row.sort_unstable(); row.dedup(); }
+    for row in edges.values_mut() {
+        row.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        row.dedup_by_key(|item| item.0);
+    }
     let mut owner = HashMap::new();
     let mut basins = Vec::new();
     let mut queue = VecDeque::new();
@@ -49,12 +53,53 @@ pub(crate) fn seed_basins(observation: &SenseOutput, graph: &NativeArtifact) -> 
         queue.push_back(root);
         basins.push(Basin { id: root, inner: vec![root], importance: 0.0 });
     }
-    // Multiple roots are reserved before traversal, so a strong source cannot
-    // consume another seed's root. Each assigned node has a same-basin predecessor.
+    // Pass 1: Strict Steepest-Inflow Arborescence (`strongest_parent.parent_id == source`).
+    // Every non-root node first joins the basin of the parent that actually delivered its peak flow!
     while let Some(source) = queue.pop_front() {
         let basin = owner[&source];
         if let Some(row) = edges.get(&source) {
-            for &target in row {
+            for &(target, _) in row {
+                if !owner.contains_key(&target)
+                    && nodes.get(&target).and_then(|n| n.strongest_parent.as_ref().map(|p| p.parent_id)) == Some(source)
+                {
+                    owner.insert(target, basin);
+                    basins[basin].inner.push(target);
+                    queue.push_back(target);
+                }
+            }
+        }
+    }
+    // Pass 2: Lineage-Consistent Fallback (`seed_id == basin_root_id`).
+    for index in 0..basins.len() {
+        for &node_id in &basins[index].inner {
+            queue.push_back(node_id);
+        }
+    }
+    while let Some(source) = queue.pop_front() {
+        let basin = owner[&source];
+        let basin_root_id = basins[basin].id;
+        if let Some(row) = edges.get(&source) {
+            for &(target, _) in row {
+                if !owner.contains_key(&target)
+                    && nodes.get(&target).and_then(|n| n.seed_id) == Some(basin_root_id)
+                {
+                    owner.insert(target, basin);
+                    basins[basin].inner.push(target);
+                    queue.push_back(target);
+                }
+            }
+        }
+    }
+    // Pass 3: Remaining reachable nodes assigned by descending edge flow.
+    for index in 0..basins.len() {
+        for &node_id in &basins[index].inner {
+            queue.push_back(node_id);
+        }
+    }
+    while let Some(source) = queue.pop_front() {
+        let basin = owner[&source];
+        if let Some(row) = edges.get(&source) {
+            for &(target, _) in row {
                 if let std::collections::hash_map::Entry::Vacant(entry) = owner.entry(target) {
                     entry.insert(basin);
                     basins[basin].inner.push(target);
@@ -459,5 +504,31 @@ mod tests {
         observation.edges.clear();
         let isolated = seed_basins(&observation, &g);
         assert!(isolated.iter().all(|b| b.inner.len() == 1));
+    }
+
+    #[test]
+    fn steepest_inflow_arborescence_prevents_first_root_monopoly() {
+        let g = graph(4, &[(0, 2, 0.1), (1, 2, 0.9), (2, 3, 0.8)]);
+        let observation = sense_typed(
+            &g,
+            "steepest-inflow-test",
+            SenseInput {
+                query_id: None,
+                seeds: vec![
+                    SenseSeed { id: 1, energy: 1.0, source_type: "seed".into() },
+                    SenseSeed { id: 2, energy: 1.0, source_type: "seed".into() },
+                ],
+                config: SenseConfig {
+                    max_safe_hops: 3,
+                    minimum_injected_current: 0.001,
+                    firing_threshold: 0.001,
+                    ..SenseConfig::default()
+                },
+            },
+        )
+        .unwrap();
+        let basins = seed_basins(&observation, &g);
+        assert_eq!(basins.iter().find(|b| b.id == 1).unwrap().inner, vec![1]);
+        assert_eq!(basins.iter().find(|b| b.id == 2).unwrap().inner, vec![2, 3, 4]);
     }
 }
