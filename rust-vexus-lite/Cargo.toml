@@ -19,7 +19,9 @@ bincode = "1.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 dotenvy = "0.15"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# float_roundtrip: parse floats back to the bits they were written with, so an
+# artifact restored from its stored payload matches the one the build published.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 base64 = "0.21"
 sha2 = "0.10"
 regex = "1.13.1"
