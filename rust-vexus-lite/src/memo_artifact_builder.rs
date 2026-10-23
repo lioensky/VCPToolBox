@@ -1326,6 +1326,86 @@ mod fact_dependency_tests {
 
 
 #[cfg(test)]
+mod cold_restore_float_tests {
+    use super::*;
+    use crate::storage::{SqliteStorageEngine, StorageOptions, WriteReceipt};
+
+    /// Every float a cold load reads from the payload, labelled by where it is.
+    fn float_bits(artifact: &NativeArtifact) -> Vec<(String, u64)> {
+        let mut out: Vec<(String, u64)> = artifact.weights.iter().enumerate()
+            .map(|(cursor, weight)| (format!("weight[{cursor}]"), weight.to_bits())).collect();
+        out.push(("maxInbound".into(), artifact.max_inbound.to_bits()));
+        for (name, map) in [("inbound", &artifact.inbound), ("anchorGain", &artifact.anchor_gain)] {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_unstable_by_key(|(id, _)| **id);
+            out.extend(entries.into_iter().map(|(id, value)| (format!("{name}[{id}]"), value.to_bits())));
+        }
+        let mut edges: Vec<_> = artifact.provenance.iter().collect();
+        edges.sort_unstable_by_key(|(edge, _)| **edge);
+        for ((source, target), rows) in edges {
+            out.extend(rows.iter().map(|(file_id, mass)| (format!("provenance[{source}:{target}][{file_id}]"), mass.to_bits())));
+        }
+        out
+    }
+
+    /// The payload stores edge weights, inbound masses, anchor gains and
+    /// provenance masses as JSON text. A cold load must read back the bits the
+    /// build published, so that a restored graph answers exactly like the
+    /// freshly built one; serde_json needs `float_roundtrip` for that (without
+    /// it about one float in nine comes back one unit in the last place off).
+    #[test]
+    fn restored_artifact_has_published_float_bits() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-artifact-floats-{}-{}", std::process::id(), now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = SqliteStorageEngine::open_and_init(&db, StorageOptions::default()).unwrap();
+        storage.submit_write(|tx| {
+            for id in 1..=40_i64 {
+                let vector: Vec<u8> = (0..4_i64)
+                    .flat_map(|axis| (((id * 7 + axis * 3) as f32) * 0.37).sin().to_le_bytes())
+                    .collect();
+                tx.execute("INSERT INTO tags(id,name,vector) VALUES (?1,?2,?3)",
+                    params![id, format!("t{id}"), vector]).map_err(|error| error.to_string())?;
+            }
+            for file_id in 1..=60_i64 {
+                tx.execute("INSERT INTO files(id,path,diary_name,checksum,mtime,size) VALUES (?1,?2,'test','h',1,1)",
+                    params![file_id, format!("f{file_id}.txt")]).map_err(|error| error.to_string())?;
+                for position in 1..=5_i64 {
+                    tx.execute("INSERT INTO file_tags VALUES (?1,?2,?3)",
+                        params![file_id, (file_id * 3 + position * position) % 40 + 1, position])
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let runtime = MemoRuntime::new();
+        let built = run_build(4, &runtime, &db, r#"{"modelSig":"test","effectiveConfig":{}}"#).unwrap();
+        let load = || with_registered_read_transaction(&db, |connection| {
+            crate::rivermemo_topology_v3::load_artifact_with_connection(&runtime, connection, &built.artifact_sig)
+        });
+        let published = load().unwrap();
+        runtime.clear().unwrap();
+        let restored = load().unwrap();
+        assert!(!Arc::ptr_eq(&published, &restored), "the second load must decode the stored payload");
+        assert_eq!(published.node_ids, restored.node_ids);
+        assert_eq!(published.row_offsets, restored.row_offsets);
+        assert_eq!(published.targets, restored.targets);
+        let (expected, actual) = (float_bits(&published), float_bits(&restored));
+        assert!(published.weights.len() >= 200 && expected.len() >= 1000);
+        assert_eq!(expected.iter().map(|(label, _)| label).collect::<Vec<_>>(),
+            actual.iter().map(|(label, _)| label).collect::<Vec<_>>());
+        let differing: Vec<&str> = expected.iter().zip(&actual)
+            .filter(|(left, right)| left.1 != right.1).map(|(left, _)| left.0.as_str()).collect();
+        assert!(differing.is_empty(), "{} of {} floats changed bits on a cold load, e.g. {:?}",
+            differing.len(), expected.len(), &differing[..differing.len().min(4)]);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod bounded_workspace_tests {
     use super::*;
 
